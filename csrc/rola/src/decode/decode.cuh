@@ -80,14 +80,14 @@ struct DecodeParams {     // every pointer/extent one decode step needs; see dec
   int level_amp_offset[kMaxLevels];  // into the flat [sum_l b_l] SMEM staging
   int level_row_offset[kMaxLevels];  // into the flattened per-head dial array
 
-  //: THE (k, m) BOX, `BoxPlan`'s fields as runtime scalars under `BoxPlan`'s -- see docs/internals/decode/decode.md#decodeparams-note-l174
+  //: THE (k, m) BOX, the lattice's fields as runtime scalars under `rola/ops/lattice.py`'s -- see docs/internals/decode/decode.md#decodeparams-note-l174
   int lat_k;
   int lat_s[kMaxLevels];
   int lat_g[kMaxLevels];
   int lat_gsuf[kMaxLevels];       // prod_{l' > l} lat_g[l']
   int lat_sbits[kMaxLevels];      // log2 lat_s[l]: a digit splits into (owner, run) by shifts
-  int lat_run_shift[kMaxLevels];  // BoxPlan::run_shift(l)
-  int lat_local_bits;             // BoxPlan::kLocalBits = log2 BC
+  int lat_run_shift[kMaxLevels];  // lattice run_shift(l)
+  int lat_local_bits;             // lattice local bits = log2 BC
 
   int lat_inner_bits;  // the walk's unit; log2 s_{D-1}; see decode.md#decodeparams-note-l190
   int lat_outer_bits;  // lat_local_bits - lat_inner_bits: the unit's radix inside an owner

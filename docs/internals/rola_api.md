@@ -42,7 +42,7 @@ reaches into the module itself.
 
 | group | operators |
 |---|---|
-| the carry launch surface | `carry_forward`, `carry_backward` (the reverse surface's refusal only), `carry_ledger_bind`, `carry_trace_bind`, `carry_build_stamp`, `carry_census`, `carry_arms` |
+| the carry launch surface | `carry_forward`, `carry_ledger_bind`, `carry_build_stamp`, `carry_census`, `carry_arms` |
 | build and clock facts | `csrc_build_stamp`, `sm_clock_ghz` |
 | the addressing block | `carry_geometry`, `carry_sub_boxes` |
 | the facts pass | `rola_facts_forward`, `rola_facts_ledger_bind` |

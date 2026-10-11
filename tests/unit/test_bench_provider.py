@@ -1,4 +1,4 @@
-"""rola's runner (measure/provider.py): it reads central cells, names an arm by its subject, the dials it reads
+"""rola's runner (measure/provider.py): it reads central cells, names an arm by its subject, its call count
 and a layer arm's construction, offers the arms this binary carries at the cell's shape, and refuses a cell by name --
 an uncarried carry arm, an iteration build, a cell of another kind. No GPU: nothing here builds an arm, and the binary's
 arm tables are planted."""
@@ -38,20 +38,18 @@ def binary(monkeypatch):
     return tables
 
 
-def test_an_arm_is_named_by_its_subject_its_non_default_dials_and_its_construction():
+def test_an_arm_is_named_by_its_subject_its_call_count_and_its_construction():
     assert provider.arm_name("carry_forward") == "carry_forward"
-    assert provider.arm_name("carry_intra", calls=4) == "carry_intra@calls=4"
-    assert provider.arm_name("carry_forward", schedule="identity") == "carry_forward@schedule=identity"
+    assert provider.arm_name("intra_forward", calls=4) == "intra_forward@calls=4"
     assert provider.arm_name("decode_step", construction="chunk-decode-w16") == "decode_step@layer=chunk-decode-w16"
 
 
-def test_a_cells_arms_are_the_subjects_it_takes_under_the_dials_each_reads(binary):
+def test_a_cells_arms_are_the_subjects_it_takes(binary):
     names = set(provider.arms(by_name("flagship-alt-k4")))
-    assert {"carry_forward", "carry_forward@schedule=identity", "facts_pass", "intra_forward", "carry_intra"} <= names
-    assert not any("@schedule=" in name for name in names if not name.startswith("carry_forward"))
-    assert all("schedule" in SUBJECTS[name.split("@")[0]].dials for name in names if "@schedule=" in name)
-    #: a partial window has no intra grid: the combined op is not offered
-    assert not any(name.startswith(("carry_intra", "intra_forward")) for name in provider.arms(by_name("flat-small-alt-k16")))
+    assert {"carry_forward", "facts_pass", "intra_forward"} <= names
+    assert all(name.split("@")[0] in SUBJECTS for name in names)
+    #: a partial window has no intra grid: the intra is not offered
+    assert not any(name.startswith("intra_forward") for name in provider.arms(by_name("flat-small-alt-k16")))
 
 
 def test_a_layer_cells_arms_are_its_declared_constructions(binary):
@@ -67,14 +65,14 @@ def test_an_arm_is_offered_only_where_the_binary_carries_its_kernel(binary, monk
 
     monkeypatch.setattr(intra, "reads", lambda widths: False)
     names = set(provider.arms(by_name("flagship-alt-k4")))
-    assert "carry_forward" in names and not any(name.startswith(("carry_intra", "intra_forward")) for name in names)
+    assert "carry_forward" in names and not any(name.startswith("intra_forward") for name in names)
     assert "decode_step@layer=chunk-decode-w16" in provider.arms(by_name(DECODE_CELL))
     binary.decode = []
     assert not any(name.startswith("decode_step") for name in provider.arms(by_name(DECODE_CELL)))
 
 
 def test_a_cell_is_refused_by_name(binary):
-    with pytest.raises(LookupError, match=r"deep3-dense: this binary carries no carry arm \(3, 64, 8\)"):
+    with pytest.raises(LookupError, match=r"deep3-dense: this binary carries no carry arm \(128, 3, 128, 3, 32, 1\)"):
         provider.arms(by_name("deep3-dense"))
     with pytest.raises(TypeError, match="rola's runner takes a central carry cell or layer cell"):
         provider.arms(by_name("qkv-L1024-dv64"))

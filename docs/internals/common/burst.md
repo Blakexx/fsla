@@ -22,7 +22,7 @@ two bursts ends the block. The burst tier gives it one block and a dependency it
 <a id="run"></a>
 ## `Burst<Ops>::run(first, count, gather, mma)`
 
-`Ops` is a unit's operand set, a struct of registers (the fold's `FragOperands`: A scaled a
+`Ops` is a unit's operand set, a struct of registers (a fold's: A scaled a
 box and the V tiles; a readout box's would be A scaled and the B tiles). `gather(i, ops)`
 fills unit `i`'s set: loads, shuffles, packed multiplies, and any per-unit arithmetic that
 consumes them at once (the readout's den products). `mma(ops, next)` issues the unit's MMAs

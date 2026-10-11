@@ -16,7 +16,7 @@ every public tensor a VIEW of the solve's packed layout with zero copy. Padding 
 would break both pins for no reason: nothing downstream of the producer needs a padded
 `RouteFactors` to exist as an object.
 
-**KERNEL CONTRACT.** Every op's call surface -- `rola.ops.carry.carry_forward`,
+**KERNEL CONTRACT.** Every op's call surface -- `rola.ops.carry.carry`,
 `rola.ops.decode.derive_decode_geometry`/`_decode_step` -- receives the caller's logical tensors and widths directly and
 pads INTERNALLY, once, before touching `box_shape`, the extension, or any launch-facing
 derivation. The kernel itself is never handed a width other than its own; `y` (or
@@ -52,7 +52,7 @@ in a backward pass, and no parameter reads a pad column, so its gradient is exac
   seam onto `rola.ops.carry`'s C1c launch surface) pads BOTH axes: every level to
   `rola.routing.topology.padded_level_width` (next power of two >= 16 -- the
   box/warp-sub-box register-shape floor), and `v` to the smallest of
-  `rola.ops.carry.SHIPPED_DV` that admits it. The clean-slate rebuild has since landed a
+  `SHIPPED_DV` that admits it. The clean-slate rebuild has since landed a
   real kernel body (`extension().carry_forward`, `docs/internals/carry/carry_kernel.md`), so
   a lawful padded call now reaches a real launch rather than the deleted extension
   symbol's absence -- but only at the one arm the shipped set carries (below): a call
@@ -75,7 +75,7 @@ in a backward pass, and no parameter reads a pad column, so its gradient is exac
 
 ## Where the shipped sets come from
 
-`rola.ops.carry.SHIPPED_DV` is the carry's declaration, `(32, 64, 128)`: `DV` is a FREE
+`SHIPPED_DV` is the carry's declaration, `(32, 64, 128)`: `DV` is a FREE
 AXIS because it is the register shape, and a logical `d_v` outside the set is served by
 padding at the value projection, above this boundary, never by a kernel that masks.
 Decode's and intra's shipped

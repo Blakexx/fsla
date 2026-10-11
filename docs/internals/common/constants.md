@@ -33,8 +33,7 @@ is repointed to import this module rather than restate the literal.
 `warps_per_sm` splits into `ctas_per_sm × warps_per_cta`. The CTA's box is the
 ownership unit, carved per side among its own warps, so the member set the carve
 generates is `f(D, leaves_per_warp, warps_per_cta)` — `warps_per_cta` is therefore
-part of the compile-time arm key `(D, DV, warps_per_cta)`, never a runtime argument
-(`rola/ops/carry.py`'s `LaunchShape`, C1c). 8 is the SHIPPED shape (one CTA per SM,
+a compile-time constant of a launch, never a runtime argument. 8 is the SHIPPED shape (one CTA per SM,
 the register file filled exactly, KERNEL_STANDARDS §R15); 4 is the two-CTA latency
 diagnostic named in `docs/ARCHITECTURE.md` §7 — it never ships, it exists only to
 measure how far the one-CTA body is from hiding its own latency.
@@ -100,8 +99,7 @@ one segment is exactly one k-step of the fold, so the buffering grain and the ar
 grain are the same number and a segment is never partly consumed.
 
 The value rows and the raw factor rows of one segment are the two things the fold's fill
-stages; `carry/box.cuh` sizes both from this constant and `docs/internals/carry/
-smem_ledger.md` names them.
+stages.
 
 It is the BUFFERING grain and not the chain length. A consumer chains every sealed segment
 back to back, so a dense window's MMA chain is as deep as any; short chains occur only where
@@ -141,16 +139,9 @@ floor-at-one refusal, monotonicity in the budget), never a real kernel's numbers
 
 ## On the tip
 
-The carry kernel now calls into this file directly: `box.cuh` sizes `kTiles`, `kRounds`,
-`kOrderBytes` and `kMaskBytes` off `kWindow`, `carry_kernel.cuh`'s window loop walks in
-`kWindow` steps, and `carry_host.cuh` calls `is_warps_per_cta` and `box_leaves` at the
-refusal boundary. This module's job is naming the ONE PLACE these values live so no
-kernel stage re-derives or re-states them: `csrc/rola/src/common/constants.cuh` for
-device code, `rola.engine.constants` for the host, `tests/unit/test_carry_constants.py`
-the agreement gate between them. The S-from-SMEM rule (`derive_stream_count`) is the
-exception: no stream segments exist on this branch yet, so it stays a model tested
-against a stated layout rather than a call site. `rola/ops/carry.py`'s pre-existing
-`WINDOW`/`WARPS_PER_CTA`/`leaves_per_warp` and `common/geom.cuh`'s
-`warps_per_sm`/`leaves_per_warp` are still separately declared on the Python side;
-a later consolidation stage (`development/queue/C_CLEAN_SLATE.md`) is what repoints
-those call sites at this module, not this one.
+No kernel includes `csrc/rola/src/common/constants.cuh` today. This module's job is naming the ONE PLACE these values
+live so no kernel stage re-derives or re-states them: `csrc/rola/src/common/constants.cuh` for device code,
+`rola.engine.constants` for the host, `tests/unit/test_carry_constants.py` the agreement gate between them. The
+S-from-SMEM rule (`derive_stream_count`) is the exception: no stream segments exist on this branch yet, so it stays a
+model tested against a stated layout rather than a call site. `common/geom.cuh`'s `warps_per_sm`/`leaves_per_warp` are
+still separately declared on the host side (`tests/unit/test_carry_geometry.py`).

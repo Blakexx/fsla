@@ -1,7 +1,7 @@
 """THE ONE DERIVATION, against the PARENT KERNEL'S OWN COMPILE-TIME CENSUS.
 
 `csrc/rola/src/common/geom.cuh` computes at runtime what the shipped carry bodies compute
-in their templates (`box.cuh`'s `BoxPlan`/`ModeOrder`/`StreamSpans`). No kernel on this
+in their templates (the parent's `BoxPlan`/`ModeOrder`/`StreamSpans`). No kernel on this
 branch consumes the runtime block -- the pipelined body is what will
 (`docs/internals/common/geom.md#on-the-tip`) -- so THIS FILE IS THE PROOF that the block is
 the same law: for every arm the parent builds, the derivation's own output is checked
@@ -43,7 +43,7 @@ import math
 
 import pytest
 
-from rola.ops import carry as carry_ops
+from rola.ops import geometry as carry_ops
 
 #: THE ARM ROWS THE PARENT BUILT, transcribed from `gen_shards.CARRY_ARMS` at
 #: `k31/k35-final` 335c2b9 (the tip `PARENT_CENSUS` below was read off), in that commit's
@@ -104,7 +104,7 @@ RECARVED = {1: ([2, 16], [8, 4]), 3: ([2, 16], [8, 4]), 5: ([2, 16], [8, 4])}
 
 #: THE ARCH CONSTANTS, mirrored from `geom.cuh` -- three scalars, and the only thing in
 #: this file that is a mirror rather than a call. The SET they feed is the shipped
-#: generator's, read through `carry_ops.sub_boxes`. -- docs/internals/common/geom.md#arch-constants
+#: generator's, read through `geometry.sub_boxes`. -- docs/internals/common/geom.md#arch-constants
 WARPS_PER_SM = 8
 
 #: the page rectangle in leaves, the grain the innermost digits are never carved below.
@@ -287,7 +287,7 @@ def test_the_sub_box_set_is_generated_and_deduplicated(D, warps_per_cta):
         for s in shape:
             prod *= s
         assert prod * warps_per_cta == box, "a member times the worker count IS the box"
-        assert shape[-1] >= PAGE_RECTANGLE or shape[-1] == carry_ops.leaves_per_warp(dv), (
+        assert shape[-1] >= PAGE_RECTANGLE or shape[-1] == leaves_per_warp(dv), (
             "the innermost digits are the vector width: no member divides the canonical "
             "innermost level below the page rectangle")
 

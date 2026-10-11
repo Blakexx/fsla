@@ -1,21 +1,14 @@
-// csrc/rola/src/carry/carry.cu -- THE CARRY DISPATCH: the kernel boundary's refusals, the
-// addressing block's one derivation, and the arm the launch resolves to.
-//
-// This translation unit holds no kernel body of its own beyond the build stamp: an arm's
-// body lives in its generated translation unit, so an arm-subset build is a file subset.
-// See docs/internals/carry/carry.md
+// csrc/rola/src/carry/carry.cu -- THE CARRY DISPATCH: the kernel boundary's refusals, the operand block from the
+// carve, and the arm its key resolves to. An arm's body lives in its generated translation unit, so an arm-subset
+// build is a file subset. see docs/internals/carry/carry.md
 #include "carry/carry_api.cuh"
 
 #include "common/torch_seam.cuh"
 
-#include "carry/box.cuh"
 #include "carry/carry_arm_abi.cuh"
-#include "carry/carry_host.cuh"
-#include "carry/params.cuh"
 #include "common/arch_runtime.cuh"
 #include "common/arm_switch.cuh"
 #include "common/design.cuh"
-#include "common/geom.cuh"
 
 namespace rola::carry {
 
@@ -23,51 +16,188 @@ ROLA_CARRY_ARM_SET_X(ROLA_CARRY_ARM_DECLARE)
 
 namespace {
 
-//: THE PHASE LEDGER BINDING: a device int64 tensor `[ctas][warps][kPhases]` the next launches
-//: add their per-warp phase cycles into; unbound (nullptr) in production. The launch checks
-//: the bound tensor covers its grid. -- carry_kernel.md#phase-ledger
-long long* g_phase_ledger = nullptr;
-int64_t g_phase_ledger_ctas = 0;
-//: THE PHASE TRACE BINDING: a device int64 tensor `[ctas][warps][cap]` the next launches stamp
-//: their first `ctas` CTAs' events into; unbound in production. -- carry_kernel.md#phase-trace
-long long* g_phase_trace = nullptr;
-int64_t g_phase_trace_ctas = 0;
-int64_t g_phase_trace_cap = 0;
+//: THE PHASE LEDGER BINDING: a device int64 tensor `[ctas][warps][kCarryPhases]` the next launches add their per-warp
+//: phase cycles into; unbound (nullptr) in production. -- carry_kernel.md#phases
+long long* g_ledger = nullptr;
+int64_t g_ledger_ctas = 0;
+
+bool pow2(int64_t x) { return x > 0 && (x & (x - 1)) == 0; }
+
+//: A LEVEL'S ROWS as the kernel reads them: `[B, T, H, width]`, digits contiguous, u8 or f16, on the row alignment law.
+Plane plane_of(const Tensor& t, int64_t B, int64_t T, int64_t H, int64_t width, const char* name,
+               int level) {
+  STD_TORCH_CHECK(t.is_cuda() && (t.scalar_type() == Dtype::Byte || t.scalar_type() == Dtype::Half),
+                  name, " level ", level, " is a CUDA u8 or f16 tensor, got ", t.scalar_type());
+  STD_TORCH_CHECK(
+      t.dim() == 4 && t.size(0) == B && t.size(1) == T && t.size(2) == H && t.size(3) == width,
+      name, " level ", level, " is [B, T, H, width] = [", B, ", ", T, ", ", H, ", ", width,
+      "], got ", shape(t.sizes()));
+  STD_TORCH_CHECK(t.stride(3) == 1, name, " level ", level, "'s digits are contiguous");
+  const int64_t size = t.element_size();
+  return Plane{static_cast<const uint8_t*>(t.const_data_ptr()), t.stride(0) * size,
+               t.stride(1) * size, t.stride(2) * size};
+}
+
+//: ONE SIDE OF THE CARVE: its list level and operand levels cover every level, the list level's extent inside one
+//: 32-digit group, an operand slice at least a 4-byte copy. -- see docs/internals/carry/carry.md#refusals
+Side side_of(const std::vector<Tensor>& rows, int64_t list, const std::vector<int64_t>& operand,
+             const std::vector<int64_t>& widths, const std::vector<int64_t>& extents, int64_t B,
+             int64_t T, int64_t H, const char* name) {
+  const int D = (int)widths.size();
+  Side s{};
+  s.list = (int)list;
+  s.operands = (int)operand.size();
+  STD_TORCH_CHECK((int)rows.size() == D, name, " holds ", rows.size(),
+                  " levels' rows; the carve has ", D);
+  STD_TORCH_CHECK(list >= -1 && list < D, name, "'s list level is -1 or a level, got ", list);
+  STD_TORCH_CHECK(list < 0 || extents[list] <= 32, name, "'s list level spans ",
+                  list < 0 ? 0 : extents[list],
+                  " digits of the box; its lists' union is a 32-digit group's");
+  STD_TORCH_CHECK(
+      s.operands >= 1 && (int)operand.size() + (list >= 0 ? 1 : 0) == D, name,
+      " lists one level and forms its operand from the others, every level once: the facts pass's lists "
+      "are one level's until its box list groups land; this side lists ",
+      list, " and forms ", operand.size(), " of ", D);
+  for (int i = 0; i < s.operands; ++i) {
+    const int64_t l = operand[i];
+    STD_TORCH_CHECK(l >= 0 && l < D && l != list && (i == 0 || l > operand[i - 1]), name,
+                    "'s operand levels are distinct levels in level order, not the list level");
+    s.operand[i] = (int)l;
+    s.rows[i] = plane_of(rows[l], B, T, H, widths[l], name, (int)l);
+    s.elem[i] = (int)rows[l].element_size();
+    STD_TORCH_CHECK(extents[l] * s.elem[i] >= 4 && extents[l] * s.elem[i] <= kSliceBytes, name,
+                    " level ", l, "'s slice is ", extents[l] * s.elem[i],
+                    " bytes; a slice is a 4-byte copy to ", kSliceBytes);
+  }
+  return s;
+}
+
+//: ONE SIDE'S LISTS: entries, pass starts, union tokens and counts as the facts pass writes them; empty where the side
+//: has no list level.
+SideLists lists_of(const std::vector<Tensor>& t, int64_t BH, int64_t windows, int64_t width,
+                   int entry_bytes, const char* name) {
+  STD_TORCH_CHECK(t.size() == 4, name, " is (entries, at, union, count), got ", t.size(),
+                  " tensors");
+  if (width == 0) return SideLists{nullptr, nullptr, nullptr, nullptr, 0, 0, entry_bytes};
+  const int64_t groups = (width + 31) / 32;
+  const int64_t want[4][5] = {{BH, windows, width, kListCap, entry_bytes / 2},
+                              {BH, windows, width, kListAt, 0},
+                              {BH, windows, groups, kWindow, 0},
+                              {BH, windows, groups, 0, 0}};
+  const int dims[4] = {entry_bytes > 2 ? 5 : 4, 4, 4, 3};
+  for (int k = 0; k < 4; ++k) {
+    STD_TORCH_CHECK(t[k].is_cuda() && t[k].is_contiguous() && t[k].scalar_type() == Dtype::Short
+                        && t[k].dim() == dims[k],
+                    name, " tensor ", k, " is a contiguous CUDA int16 tensor of ", dims[k],
+                    " dimensions");
+    for (int d = 0; d < dims[k]; ++d)
+      STD_TORCH_CHECK(t[k].size(d) == want[k][d], name, " tensor ", k, " is ", shape(t[k].sizes()),
+                      "; dimension ", d, " is ", want[k][d]);
+  }
+  return SideLists{reinterpret_cast<const uint16_t*>(t[2].const_data_ptr()),
+                   reinterpret_cast<const uint16_t*>(t[3].const_data_ptr()),
+                   static_cast<const uint8_t*>(t[0].const_data_ptr()),
+                   reinterpret_cast<const uint16_t*>(t[1].const_data_ptr()),
+                   (int)width,
+                   (int)groups,
+                   entry_bytes};
+}
 
 }  // namespace
 
-void carry_forward(const Tensor& read, const Tensor& write, const Tensor& gain, const Tensor& v,
-                   Tensor& num, Tensor& den, const std::vector<int64_t>& widths, int64_t dv,
-                   int64_t page_bits, int64_t warps_per_cta,
-                   const std::vector<int64_t>& carve_order, const std::vector<int64_t>& schedule,
-                   const Tensor& liveness, const Tensor& activity,
-                   const std::optional<Tensor>& state_in, const std::optional<Tensor>& state_out,
-                   const std::optional<Tensor>& page_table) {
+void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows, Tensor values,
+                   std::vector<Tensor> write_lists, std::vector<Tensor> read_lists, Tensor unit,
+                   Tensor num, Tensor check, std::vector<int64_t> widths,
+                   std::vector<int64_t> extents, int64_t channels, int64_t write_list,
+                   std::vector<int64_t> write_operand, int64_t read_list,
+                   std::vector<int64_t> read_operand, std::vector<int64_t> key) {
   check_arch_table();
-  CarryCall call =
-      derive_carry_call(read, write, gain, v, num, den, widths, dv, page_bits, warps_per_cta,
-                        carve_order, schedule, liveness, activity, state_in, state_out, page_table);
-  CarryParams& p = call.p;
-  const int64_t BH = call.BH;
   const int D = (int)widths.size();
-  p.ledger = g_phase_ledger;
-  if (p.ledger != nullptr)
-    STD_TORCH_CHECK(g_phase_ledger_ctas >= (int64_t)p.g.owners * BH,
-                    "the bound phase ledger covers ", g_phase_ledger_ctas,
-                    " CTAs, the launch needs ", (int64_t)p.g.owners * BH);
-  p.trace = g_phase_trace;
-  p.trace_ctas = (int)g_phase_trace_ctas;
-  p.trace_cap = (int)g_phase_trace_cap;
+  STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels && (int)extents.size() == D, "the carve names ", D,
+                  " widths and ", extents.size(), " extents; the carry is built to depth ",
+                  kMaxLevels);
+  STD_TORCH_CHECK(values.is_cuda() && values.scalar_type() == Dtype::Half && values.dim() == 4
+                      && values.stride(3) == 1,
+                  "values is the CUDA f16 [B, T, H, d_v] plane, channels contiguous");
+  const int64_t B = values.size(0), L = values.size(1), H = values.size(2), dv = values.size(3),
+                BH = B * H;
+  const int64_t windows = (L + kWindow - 1) / kWindow;
+  STD_TORCH_CHECK(L >= 1 && L * dv < 0x40000000, "the call's tokens and channels index in 32 bits");
+  STD_TORCH_CHECK((channels == 32 || channels == 64) && dv % channels == 0,
+                  "the box's channel extent is 32 or 64 and "
+                  "divides d_v; the carve names ",
+                  channels, " of ", dv);
+  int64_t leaves = 1, boxes = dv / channels;
+  int stride[kMaxLevels] = {};
+  for (int l = D - 1; l >= 0; --l) {
+    STD_TORCH_CHECK(
+        pow2(widths[l]) && widths[l] >= 16 && pow2(extents[l]) && widths[l] % extents[l] == 0,
+        "level ", l, " is ", widths[l], " digits, a power of two from 16, carved by ", extents[l],
+        ", a power of two dividing it");
+    stride[l] = (int)boxes;
+    boxes *= widths[l] / extents[l];
+    leaves *= extents[l];
+  }
+  STD_TORCH_CHECK(leaves * channels == kStateValues, "the box holds ", leaves, " leaves x ",
+                  channels, " channels; a CTA's state is ", kStateValues, " values");
+  STD_TORCH_CHECK(boxes <= 0x7FFFFFFF && BH <= 65535,
+                  "the grid is (boxes, batch-heads) within the launch limits");
 
+  CarryParams p{};
+  p.D = D;
+  p.H = (int)H;
+  p.L = (int)L;
+  p.windows = (int)windows;
+  p.dv = (int)dv;
+  p.channels = (int)channels;
+  for (int l = 0; l < D; ++l) {
+    p.widths[l] = (int)widths[l];
+    p.extents[l] = (int)extents[l];
+    p.stride[l] = stride[l];
+  }
+  p.write =
+      side_of(write_rows, write_list, write_operand, widths, extents, B, L, H, "the write side");
+  p.read = side_of(read_rows, read_list, read_operand, widths, extents, B, L, H, "the read side");
+  p.values = Plane{static_cast<const uint8_t*>(values.const_data_ptr()), values.stride(0) * 2,
+                   values.stride(1) * 2, values.stride(2) * 2};
+  p.write_lists = lists_of(write_lists, BH, windows, write_list < 0 ? 0 : widths[write_list], 8,
+                           "the write lists");
+  p.read_lists =
+      lists_of(read_lists, BH, windows, read_list < 0 ? 0 : widths[read_list], 2, "the read lists");
+  STD_TORCH_CHECK(unit.is_cuda() && unit.is_contiguous() && unit.scalar_type() == Dtype::Char
+                      && unit.sizes() == Shape({BH, L}),
+                  "unit is the contiguous CUDA int8 [BH, L] exponent bytes, got ",
+                  shape(unit.sizes()));
+  STD_TORCH_CHECK(num.is_cuda() && num.is_contiguous() && num.scalar_type() == Dtype::Int
+                      && num.sizes() == Shape({BH, L, dv / 2}),
+                  "num is the contiguous CUDA int32 [BH, L, d_v / 2] packed s16 pairs, got ",
+                  shape(num.sizes()));
+  STD_TORCH_CHECK(check.is_cuda() && check.scalar_type() == Dtype::Float && check.numel() == 1,
+                  "check is one CUDA fp32 value");
+  p.unit = unit.const_data_ptr<int8_t>();
+  p.num = reinterpret_cast<uint32_t*>(num.mutable_data_ptr<int32_t>());
+  p.check = check.mutable_data_ptr<float>();
+  p.ledger = g_ledger;
+  if (p.ledger != nullptr)
+    STD_TORCH_CHECK(g_ledger_ctas >= boxes * BH, "the bound phase ledger covers ", g_ledger_ctas,
+                    " CTAs, the launch needs ", boxes * BH);
+
+  STD_TORCH_CHECK(key.size() == 6, "the arm key is ", CarryArmSet::key, ", got ", key.size(),
+                  " fields");
+  const CarryKey k{(int)key[0], (int)key[1], (int)key[2], (int)key[3], (int)key[4], (int)key[5]};
+  STD_TORCH_CHECK(k.channels == channels && k.fold_factors == p.write.operands
+                      && k.read_factors == p.read.operands,
+                  "the arm key's channels and factors are the carve's: ", channels, ", ",
+                  p.write.operands, ", ", p.read.operands);
   const auto stream = current_stream();
   cudaError_t status = cudaSuccess;
   bool launched = false;
-  arm_switch<CarryArmSet>(D, (int)dv, (int)warps_per_cta, [&](auto A) {
+  arm_switch<CarryArmSet>(k, [&](auto A) {
     using Arm = decltype(A);
-#define ROLA_CARRY_ARM_CALL(I_, D_, DV_, W_)                                          \
-  if (Arm::index == (I_)) {                                                            \
-    launched = true;                                                                   \
-    status = carry_arm_forward_##I_(p, p.g.owners, (int)BH, stream);                   \
+#define ROLA_CARRY_ARM_CALL(I_, FR_, FF_, RR_, RF_, CH_, PR_)                   \
+  if (Arm::index == (I_)) {                                                     \
+    launched = true;                                                            \
+    status = carry_arm_forward_##I_(p, (int)boxes, (int)BH, stream);            \
   }
     ROLA_CARRY_ARM_SET_X(ROLA_CARRY_ARM_CALL)
 #undef ROLA_CARRY_ARM_CALL
@@ -78,42 +208,27 @@ void carry_forward(const Tensor& read, const Tensor& write, const Tensor& gain, 
 
 void carry_ledger_bind(const std::optional<Tensor>& ledger) {
   if (!ledger) {
-    g_phase_ledger = nullptr;
-    g_phase_ledger_ctas = 0;
+    g_ledger = nullptr;
+    g_ledger_ctas = 0;
     return;
   }
   STD_TORCH_CHECK(ledger->is_cuda() && ledger->scalar_type() == Dtype::Long && ledger->dim() == 3
-                      && ledger->size(2) == kPhases && ledger->is_contiguous(),
-                  "the phase ledger is a contiguous CUDA int64 tensor [ctas][warps][", kPhases,
-                  "]");
-  g_phase_ledger = reinterpret_cast<long long*>(ledger->mutable_data_ptr<int64_t>());
-  g_phase_ledger_ctas = ledger->size(0);
-}
-
-void carry_trace_bind(const std::optional<Tensor>& trace, int64_t warps_per_cta) {
-  if (!trace) {
-    g_phase_trace = nullptr;
-    g_phase_trace_ctas = 0;
-    g_phase_trace_cap = 0;
-    return;
-  }
-  STD_TORCH_CHECK(trace->is_cuda() && trace->scalar_type() == Dtype::Long && trace->dim() == 3
-                      && trace->size(1) == warps_per_cta && trace->is_contiguous(),
-                  "the phase trace is a contiguous CUDA int64 tensor [ctas][", warps_per_cta,
-                  " warps][cap]");
-  g_phase_trace = reinterpret_cast<long long*>(trace->mutable_data_ptr<int64_t>());
-  g_phase_trace_ctas = trace->size(0);
-  g_phase_trace_cap = trace->size(2);
+                      && ledger->size(1) == kWarps && ledger->size(2) == kCarryPhases
+                      && ledger->is_contiguous(),
+                  "the phase ledger is a contiguous CUDA int64 tensor [ctas][", kWarps, "][",
+                  kCarryPhases, "]");
+  g_ledger = reinterpret_cast<long long*>(ledger->mutable_data_ptr<int64_t>());
+  g_ledger_ctas = ledger->size(0);
 }
 
 namespace stamp {
 
-//: THE DEVICE-SIDE FACT: the only answer a STALE binary cannot produce.
+//: THE DEVICE-SIDE FACT: the only answer a stale binary cannot produce.
 __global__ void carry_stamp_kernel(int* out) {
-  out[0] = kAtomLeaves * 1000 + warps_per_sm;
+  out[0] = kWindow;
   out[1] = denseref::design::kCapsDigest;
-  out[2] = state_elems_per_sm(denseref::arch::kCaps);
-  out[3] = kClusterCtas;
+  out[2] = kStateValues;
+  out[3] = kPassSlots;
 }
 
 }  // namespace stamp
@@ -125,20 +240,17 @@ int64_t carry_build_stamp() {
   STD_TORCH_CHECK(cudaGetLastError() == cudaSuccess, "the carry build stamp did not run");
   const auto host = to_cpu(buf);
   const int32_t* f = host.const_data_ptr<int32_t>();
-  //: THE FOUR FACTS AS ONE NUMBER, the way every other family's stamp reads: a mixed
-  //: radix wide enough that no field can carry into its neighbour.
-  return ((((int64_t)f[0] * 1000003 + f[1]) * 1000003) + f[2]) * 16 + f[3];
+  //: THE FOUR FACTS AS ONE NUMBER: a mixed radix wide enough that no field carries into its neighbour.
+  return ((((int64_t)f[0] * 1000003 + f[1]) * 1000003) + f[2]) * 1024 + f[3];
 }
 
 std::vector<std::vector<int64_t>> carry_census() {
   std::vector<std::vector<int64_t>> out;
-#define ROLA_CARRY_ARM_CENSUS(I_, D_, DV_, W_)                                          \
-  {                                                                                     \
-    const ArmCensus c = carry_arm_census_##I_();                                        \
-    out.push_back({(int64_t)(I_), (int64_t)(D_), (int64_t)(DV_), (int64_t)(W_), c.regs, \
-                   c.local_bytes, c.smem_bytes, c.max_threads, c.binary_version,        \
-                   c.threads, c.box_leaves, c.atoms, c.boxes, c.state_elems,            \
-                   c.read_bytes, c.pool_bytes});                                       \
+#define ROLA_CARRY_ARM_CENSUS(I_, FR_, FF_, RR_, RF_, CH_, PR_)                                       \
+  {                                                                                                   \
+    const ArmCensus c = carry_arm_census_##I_();                                                      \
+    out.push_back({(int64_t)(I_), FR_, FF_, RR_, RF_, CH_, PR_, c.regs, c.local_bytes, c.smem_bytes, \
+                   c.max_threads, c.binary_version});                                                 \
   }
   ROLA_CARRY_ARM_SET_X(ROLA_CARRY_ARM_CENSUS)
 #undef ROLA_CARRY_ARM_CENSUS
@@ -147,7 +259,7 @@ std::vector<std::vector<int64_t>> carry_census() {
 
 std::vector<std::vector<int64_t>> carry_arms() {
   std::vector<std::vector<int64_t>> out;
-#define ROLA_CARRY_ARM_ROW(I_, D_, DV_, W_) out.push_back({(int64_t)(D_), (int64_t)(DV_), (int64_t)(W_)});
+#define ROLA_CARRY_ARM_ROW(I_, FR_, FF_, RR_, RF_, CH_, PR_) out.push_back({FR_, FF_, RR_, RF_, CH_, PR_});
   ROLA_CARRY_ARM_SET_X(ROLA_CARRY_ARM_ROW)
 #undef ROLA_CARRY_ARM_ROW
   return out;

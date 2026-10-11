@@ -54,9 +54,12 @@ class _Whitelist:
     read_clock = None
 
     # THE DIFF SIDES (`tests/oracle/sides.py`) are executors a declaration names by `module:function` string
-    # (`declare.py`'s SURFACES and KERNEL_VS_ORACLE), called by the build's side worker and never by name in code.
-    carry_reference = None
-    carry_kernel = None
+    # (`declare.py`'s SURFACES), called by the build's side worker and never by name in code.
+    # THE CARRY ORACLE'S GUARDS (`tests/oracle/fixtures.py`): the binary's arm table and the device-side freshness stamp
+    # every carry oracle test asks first (docs/build.md, KERNEL_STANDARDS: the extension trap); the tests that call them
+    # land with the carry's components, and the guards are kept rather than re-derived then.
+    built_arms = None
+    assert_fresh_binary = None
     pytest_tier = None  # `measure/executors.py`, named by `declare.py`'s oracle-tier target
 
     # torch calls `forward` through `Module.__call__`, never by name: every `nn.Module` in the tree defines one and
@@ -105,4 +108,4 @@ _referenced = (_.pytestmark, _.ninja, _.pytest_addoption, _.pytest_configure,  #
                _.forward, _.poison_torch_memory, _._gpu_lock_held, _._host_budget_worker_slot, _._take_gpu_lock,
                _.union_table, _.v_row_bytes, _.y_dtype, _.token_bit, _.backing_kind, _.closed, _.owners_total,
                _.free, _.support_differentiable, _.Activation, _.state_size, _.sequence_length,
-               _.build_temp, _.external_attr, _.compress_type, _.carry_reference, _.carry_kernel, _.pytest_tier)
+               _.build_temp, _.external_attr, _.compress_type, _.built_arms, _.assert_fresh_binary, _.pytest_tier)

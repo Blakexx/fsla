@@ -180,8 +180,7 @@ cells cover.
    exactness gate. There is no separate `tf32x3` tolerance to widen it against or
    to protect — the fp64 oracle is the exactness reference this bound is measured
    against directly.
-2. The **kernel-vs-oracle arm** is `tests/oracle/test_carry_vs_oracle.py`,
-   `tests/oracle/test_prefill_vs_oracle.py` and `tests/oracle/test_decode_vs_oracle.py`,
+2. The **kernel-vs-oracle arm** is `tests/oracle/test_decode_vs_oracle.py` (the carry's and the prefill's return with their kernels),
    each per slot under its output kind
    (`tests/oracle/tolerances.py`). The CPU-only fp64 transcription that
    used to sit beside it (`test_algorithm_vs_oracle.py`) transcribed the TILED
@@ -210,8 +209,7 @@ cells cover.
    separate. A rule that cannot fail is the same defect as a tolerance that cannot
    fail, so each gate plants errors on the kernel's own output that must fail
    (`fixtures.assert_planted_errors_fail`), and
-   `tests/oracle/test_prefill_vs_oracle.py`'s
-   `test_the_per_slot_rule_fails_what_a_global_max_passes` plants a `sqrt(t)` drift
+   `tests/unit/test_oracle_rule.py` plants a `sqrt(t)` drift
    ten times the band that the global form passes. `tests/oracle/tolerances.py`
    records the measured margins.
 
@@ -230,7 +228,6 @@ file per pair rather than one table over all of them:
 
 | file | the pair it relates |
 |---|---|
-| `test_chunk_paging_equivalence.py` | paged vs dense backing — bit identity, a continuation and a three-call chain, absent-atom inertness, residency at every built `BC`, a fragmented non-monotone slot arena, the plan's exact demand through a real launch |
 | `test_decode_bc_blindness.py` | one decode step across prefill arms that differ in `BC` |
 | `test_decode_paging.py`, `test_page_arena_vmm.py`, `test_atom_bitmap.py` | the backing's own structures |
 | `test_stream_discipline_fixture.py` | the crossing paths (below) |
@@ -374,9 +371,9 @@ because the successor of each is a specific file rather than a hope.
 
 | meta-test | what it required | where the claim lives now |
 |---|---|---|
-| M1 census | every built axis DECLARED, and the manifest pinned to the build's own | `tests/unit/test_carry_surface.py` (the ratified census against the binary's own `rola.ops.carry.arms()`) and `check_shard_partition` in `tools/lint/lint_standards.py` (the manifest pin, through `tools/gen_shards.py --check`) |
+| M1 census | every built axis DECLARED, and the manifest pinned to the build's own | `tests/unit/test_arm_switch.py` and `check_shard_partition` in `tools/lint/lint_standards.py` (the manifest pin, through `tools/gen_shards.py --check`) |
 | M2 non-vacuity | a class-(a) row's declared probe must move its output | `assert_planted_errors_fail` in `tests/oracle/fixtures.py`: every gate that compares slots plants one mutant PER CLAUSE and requires each to fail |
-| M3 class drift | a class-(b) pair must NOT be byte-equal | NOWHERE, and it is the one of the three with no successor: the paged/dense pair is class (a) by construction -- `torch.equal`, because addressing is exact or wrong (`tests/integration/test_chunk_paging_equivalence.py`, `tests/integration/test_decode_paging.py`), and no current pair is declared class (b) |
+| M3 class drift | a class-(b) pair must NOT be byte-equal | NOWHERE, and it is the one of the three with no successor: the paged/dense pair is class (a) by construction -- `torch.equal`, because addressing is exact or wrong (`tests/integration/test_decode_paging.py`), and no current pair is declared class (b) |
 
 The definitions below are kept because the two contract classes are still the
 vocabulary the geometry class reasons in.

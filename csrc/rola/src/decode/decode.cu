@@ -768,7 +768,7 @@ int ilog2_exact(int64_t x, const char* what) {
   return e;
 }
 
-//: THE (k, m) BOX, FILLED AND REFUSED HERE. The derivation is `carry/box.cuh`'s -- see docs/internals/decode/decode.md#fill-lattice
+//: THE (k, m) BOX, FILLED AND REFUSED HERE. The derivation is `rola/ops/lattice.py`'s -- see docs/internals/decode/decode.md#fill-lattice
 void fill_lattice(DecodeParams& p, int64_t k, int64_t m, int64_t N) {
   const int kappa = ilog2_exact(k, "the lattice span k");
   const int j = ilog2_exact(m, "the lattice capacity m");
@@ -777,7 +777,7 @@ void fill_lattice(DecodeParams& p, int64_t k, int64_t m, int64_t N) {
   p.lat_k = static_cast<int>(k);
 
   const int D = p.D;
-  //: `BoxPlan`'s section 2.5 as the atom-rectangle law generalizes it: the -- see docs/internals/decode/decode.md#floor-inner
+  //: the lattice's section 2.5 as the atom-rectangle law generalizes it: the -- see docs/internals/decode/decode.md#floor-inner
   const int floor_inner = kAtomShift > kappa ? kAtomShift - kappa : 0;
   int ceil_inner = 0;
   while ((p.lat_k << (ceil_inner + 1)) <= p.level_width[D - 1]
@@ -810,7 +810,7 @@ void fill_lattice(DecodeParams& p, int64_t k, int64_t m, int64_t N) {
   STD_TORCH_CHECK(owners * bc == N, "the lattice partitions ", owners * bc, " leaves against ", N);
   p.lat_local_bits = local_bits;
 
-  //: `BoxPlan::run_shift`: level `l`'s run offset sits at `log2 prod_{l\' > l} s_l\'` in the -- see docs/internals/decode/decode.md#gsuf
+  //: `lattice run_shift`: level `l`'s run offset sits at `log2 prod_{l\' > l} s_l\'` in the -- see docs/internals/decode/decode.md#gsuf
   int gsuf = 1;
   int run_shift = 0;
   for (int l = D - 1; l >= 0; --l) {

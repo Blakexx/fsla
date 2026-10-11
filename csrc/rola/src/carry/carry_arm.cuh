@@ -1,61 +1,42 @@
-// csrc/rola/src/carry/carry_arm.cuh -- THE LAUNCH of one arm: the grid the box plan
-// implies, the shared block the ledger sizes, and the census the device build reports.
-// Included ONLY by the generated per-arm translation units.
-// See docs/internals/carry/carry.md
+// csrc/rola/src/carry/carry_arm.cuh -- THE LAUNCH of one arm: the grid the carve implies, the shared memory its plan
+// sizes, and the census the device build reports. Included only by the generated per-arm translation units.
+// see docs/internals/carry/carry_arm.md
 #pragma once
 
-#include "carry/box.cuh"
 #include "carry/carry_arm_abi.cuh"
 #include "carry/carry_kernel.cuh"
+#include "common/arm_switch.cuh"
 
 namespace rola::carry {
 
-//: THE PARAMETER BLOCK REACHES THE KERNEL AS A GRID CONSTANT: the body reads its fields
-//: through a reference, and only `__grid_constant__` lets that reference address the
-//: constant bank instead of forcing a per-thread local copy of the whole block.
-//: THE GRID: one CTA per (box, batch-head), and the CTA is the SM. ONE ARM, ONE SYMBOL:
-//: the order policy is a runtime dial inside it. -- see docs/internals/carry/carry.md#launch
-template <int D, int DV, int W>
-inline cudaError_t carry_launch(const CarryParams& p, int owners, int bh, cudaStream_t stream) {
-  using BP = BoxPlan<D, DV, W>;
-  const auto fn = carry_kernel<D, DV, W>;
+//: THE GRID: one CTA a (box, batch-head), the CTA the SM. -- see docs/internals/carry/carry_arm.md#launch
+template <class Arm>
+inline cudaError_t carry_launch(const CarryParams& p, int boxes, int bh, cudaStream_t stream) {
+  using P = Plan<Arm>;
+  const auto fn = carry_kernel<Arm>;
   static bool configured = false;
   if (!configured) {
     const cudaError_t e =
-        cudaFuncSetAttribute(fn, cudaFuncAttributeMaxDynamicSharedMemorySize, BP::kSmemBytes);
+        cudaFuncSetAttribute(fn, cudaFuncAttributeMaxDynamicSharedMemorySize, P::kSmemBytes);
     if (e != cudaSuccess) return e;
     configured = true;
   }
-  fn<<<dim3((unsigned)owners, (unsigned)bh), (unsigned)BP::kThreads, BP::kSmemBytes, stream>>>(p);
+  fn<<<dim3((unsigned)boxes, (unsigned)bh), (unsigned)kThreads, P::kSmemBytes, stream>>>(p);
   return cudaGetLastError();
 }
 
-template <int D, int DV, int W>
+template <class Arm>
 inline ArmCensus carry_census() {
-  using BP = BoxPlan<D, DV, W>;
   cudaFuncAttributes a{};
-  cudaFuncGetAttributes(&a, carry_kernel<D, DV, W>);
-  return ArmCensus{(int)a.numRegs,
-                   0,
-                   0,
-                   (int)a.localSizeBytes,
-                   BP::kSmemBytes,
-                   (int)a.maxThreadsPerBlock,
-                   (int)a.binaryVersion,
-                   BP::kThreads,
-                   BP::kBC,
-                   BP::kAtoms,
-                   BP::kBoxes,
-                   BP::kBC * (BP::kDv + 1),
-                   BP::kWarps * BP::kWarpReadBytes,
-                   BP::kPoolSlots * BP::kPoolSlotBytes};
+  cudaFuncGetAttributes(&a, carry_kernel<Arm>);
+  return ArmCensus{(int)a.numRegs, (int)a.localSizeBytes, Plan<Arm>::kSmemBytes,
+                   (int)a.maxThreadsPerBlock, (int)a.binaryVersion};
 }
 
-#define ROLA_CARRY_ARM_DEFINE(I_, D_, DV_, W_)                                       \
-  cudaError_t carry_arm_forward_##I_(const CarryParams& p, int owners, int bh,        \
-                                     cudaStream_t stream) {                           \
-    return carry_launch<D_, DV_, W_>(p, owners, bh, stream);                          \
-  }                                                                                   \
-  ArmCensus carry_arm_census_##I_() { return carry_census<D_, DV_, W_>(); }
+#define ROLA_CARRY_ARM_DEFINE(I_, FR_, FF_, RR_, RF_, CH_, PR_)                                      \
+  cudaError_t carry_arm_forward_##I_(const CarryParams& p, int boxes, int bh, cudaStream_t stream) { \
+    return carry_launch<::rola::Arm<I_, FR_, FF_, RR_, RF_, CH_, PR_>>(p, boxes, bh, stream);        \
+  }                                                                                                  \
+  ArmCensus carry_arm_census_##I_() { return carry_census<::rola::Arm<I_, FR_, FF_, RR_, RF_, CH_, PR_>>(); }
 
 }  // namespace rola::carry

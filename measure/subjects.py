@@ -17,9 +17,8 @@ the sequence enters with, which is what the carry family's oracle and probe run 
 (`measure.cells.layer`): a producer, a routing template and a gain, from which the amplitudes are PRODUCED -- the
 only way to price the producer's own solve or a decode step through the layer.
 
-**EVERYTHING OUTSIDE THE LAUNCH IS BUILT ONCE, HERE.** The packed sides, the support
-words, the state plane, the liveness words, the routing: all of it happens before the
-callable is returned, so a timed span wraps the launch and nothing else.
+**EVERYTHING OUTSIDE THE LAUNCH IS BUILT ONCE, HERE.** The bundle, the facts pass's lists, the carve, the den pass's
+units: all of it happens before the callable is returned, so a timed span wraps the launch and nothing else.
 """
 from __future__ import annotations
 
@@ -40,14 +39,6 @@ class Launch:
     call: Callable[[], object]
     reset: Callable[[], None] | None = None
     outside_allocator: Callable[[], int] | None = None
-
-
-def _restore(state_in):
-    """The reset of a launch whose state plane is read and advanced in place: the plane's entry, copied back."""
-    if state_in is None:
-        return None
-    entry = state_in.clone()
-    return lambda: state_in.copy_(entry)
 
 
 #: THE LEVELS A SUBJECT MAY PRICE, and what each owes (`Subject.level`). rola has no `layer` subject on this line: the
@@ -83,11 +74,6 @@ class Subject:
     #: the whole sequence in one launch set; a count above one prices what each call's fixed
     #: cost adds, and the difference between the two rows IS the per-call price.
     calls: tuple[int, ...] = (1,)
-    #: THE ARM DIALS it reads, each a property of one arm and never of a run (`measure.provider` names an arm by them):
-    #: `schedule`, the carry order policy (`rola.ops.carry.ORDER_POLICIES`). A dial a subject does not read has one
-    #: value, its default, so it cannot be set where it would reach nothing. The state a call binds is the CELL's
-    #: (`measure.cells.state_binding`), never a dial.
-    dials: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.level not in LEVELS:
@@ -96,57 +82,40 @@ class Subject:
 
 # ------------------------------------------------------------------ carry cells
 
-def _carry_operands(fx):
-    from measure.cells import carry_call
+def cell_carve(spec):
+    """The carve the planner picks for a cell's declared sparsity and value width, from the record alone (no draw)."""
+    from rola.engine.carve import plan_carve
 
-    return carry_call(fx["cell"], 1)
-
-
-def _binding(fx, drawn, descriptor):
-    from measure.cells import state_binding
-
-    return state_binding(fx["cell"], drawn, descriptor, 1)
+    declared = spec.declared_sparsity()
+    return plan_carve(tuple(spec.widths), *(tuple(level[side] for level in declared) for side in (0, 1)), spec.dv)
 
 
-def _carry_schedule(name: str, spec):
-    """``first`` | ``identity`` -> the launch's dial: the ORDER POLICY (`CarrySchedule`).
-    ``first`` is the first-live-box sort, the reap; ``identity`` keeps token order and tiles
-    every token, the sort's A/B."""
-    from rola.ops import carry as carry_ops
+def carry_operands(spec):
+    """``(routes, values, facts, carve, unit)``: what the carry launch takes for a cell, from the bundle's rows and
+    values, the facts pass's lists, the carve the planner picks and the den pass's units (zeros: the launch reads them,
+    the pass that writes them is not timed)."""
+    from measure.cells import realize
+    from rola.engine.carve import plan_carve
+    from rola.ops import facts as facts_ops
 
-    del spec
-    #: the cross-binary probe hands one schedule name to both binaries; the baseline's
-    #: vocabulary (`box`, `sparse-gN`: its dense and reaping schedules) names the reap here.
-    if name == "box" or name.startswith("sparse"):
-        name = carry_ops.ORDER_FIRST_BOX
-    if name not in carry_ops.ORDER_POLICIES:
-        raise ValueError(f"schedule {name!r} is one of {tuple(carry_ops.ORDER_POLICIES)}")
-    return carry_ops.CarrySchedule(order=name)
+    routes, values, layout, statics = bundle_of(spec, realize(spec))
+    facts = facts_ops.facts(routes, values, layout, *statics)
+    carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, values.v.shape[-1])
+    unit = torch.zeros((routes.batch * routes.heads, routes.tokens), dtype=torch.int8, device="cuda")
+    return routes, values, facts, carve, unit
 
 
 def carry_forward(fx) -> Launch:
-    """The inter term: one carry launch over a whole cell, state advanced in place.
-
-    The operands are the registry's own `carry_call`, so this prices the same tensors
-    the oracle tier checks.
-    """
+    """The inter term: one carry launch over a whole cell (`carry_operands`)."""
     from rola.ops import carry as carry_ops
 
     spec = fx["cell"]
-    drawn, call = _carry_operands(fx)
-    routes, v = call.pop("routes"), call.pop("v")
-    state_in, state_out, page_table = _binding(fx, drawn, call["descriptor"])
-    #: THE SCHEDULE ARM. The runtime dial the launch carries (`CarrySchedule`, the order
-    #: policy), so a probe's two arms can be the SAME binary differing in exactly the order
-    #: -- which is what the reap is measured as. `first` is what a caller who names nothing
-    #: gets.
-    schedule = _carry_schedule(fx.get("schedule", "first"), spec)
+    operands = carry_operands(spec)
 
     def run():
-        return carry_ops.carry_forward(routes, v, state_in=state_in, state_out=state_out,
-                                       page_table=page_table, schedule=schedule, **call)
+        return carry_ops.carry(*operands)
 
-    return Launch(name=f"carry_forward|{spec.name}", call=run, reset=_restore(state_in))
+    return Launch(name=f"carry_forward|{spec.name}", call=run)
 
 
 def intra_forward(fx) -> Launch:
@@ -198,63 +167,6 @@ def bundle_of(spec, drawn, tokens: slice = slice(None)):
     return routes, values, layout, statics
 
 
-def carry_intra(fx) -> Launch:
-    """THE TWO KERNELS AS ONE OPERATOR: `rola.ops.prefill` over the cell's bundle -- the carry, the intra, and the
-    carry leg's own dequantize-and-pack of the bundle, over facts the caller built.
-
-    A KERNEL-LEVEL SUBJECT, not the op (Blake, 2026-09-15). The liveness words, list exponents and activity bits are the facts
-    pass's, so they are built once here, outside the timed call, exactly as `rola.ops.prefill`'s contract says they are
-    the caller's. What an OP-level number would add -- producing the bundle and its facts, planning and committing the
-    pages -- is not timed here and has no live path to time until the prefill arm is rebuilt
-    (`rola.interface.rola_op`).
-
-    AT `calls` ABOVE ONE the same sequence runs as that many calls over whole windows, each its own bundle, the state
-    carried through one plane zeroed per launch set: what a caller that prefills in chunks pays -- every call's fixed
-    cost that many times over the windows one call runs. A carried chain binds its own plane, so the cell's state
-    binding is the single call's.
-    """
-    from measure.cells import realize
-    from rola.engine.facts import liveness as lv
-    from rola.ops import carry as carry_ops
-    from rola.ops import facts as facts_ops
-    from rola.ops import prefill as prefill_ops
-
-    spec = fx["cell"]
-    calls = fx.get("calls", 1)
-    if not _splits(spec.tokens, calls):
-        raise ValueError(f"{spec.name}: {spec.tokens} tokens is not {calls} calls of whole windows")
-    drawn = realize(spec)
-    modes = _modes_of(spec)
-    step = spec.tokens // calls
-    descriptor = prefill_ops._descriptor(list(spec.widths), spec.dv, 1)
-    parts = []
-    for c in range(calls):
-        routes, values, layout, statics = bundle_of(spec, drawn, slice(c * step, (c + 1) * step))
-        out = facts_ops.facts(routes, values, layout, *statics)
-        parts.append((routes, values, layout, statics, carry_ops.LivenessWords(words=out.words), out.unions,
-                      lv.page_bits(out.words, layout, *statics)))
-    if calls == 1:
-        chain = None
-        state_in, state_out, page_table = _binding(fx, drawn, descriptor)
-        name = f"carry_intra|{spec.name}"
-    else:
-        chain = carry_ops.state_plane(descriptor, 1)
-        state_in, state_out, page_table = chain, chain, None
-        name = f"carry_intra|{spec.name}|calls={calls}"
-
-    def run():
-        if chain is not None:
-            chain.zero_()
-        out = None
-        for routes, values, layout, (read_statics, write_statics), liveness, unions, bits in parts:
-            out = prefill_ops.prefill(routes, values, modes=modes, liveness=liveness, unions=unions, layout=layout,
-                                      read_statics=read_statics, write_statics=write_statics, atom_bits=bits,
-                                      state_in=state_in, state_out=state_out, page_table=page_table)
-        return out
-
-    return Launch(name=name, call=run, reset=_restore(state_in) if chain is None else None)
-
-
 def facts_pass(fx) -> Launch:
     """Both sides' class-1 words and the write lists' exponents, from the cell's draw in the bundle's format: the pass the
     prefill's facts node launches, a side dense where the cell declares it so (its rows unread)."""
@@ -268,24 +180,6 @@ def facts_pass(fx) -> Launch:
         return facts_ops.facts(routes, values, layout, *statics)
 
     return Launch(name=f"facts_pass|{spec.name}", call=run)
-
-
-def _modes_of(spec):
-    """The cell's DRAW as the per-level support declaration.
-
-    DERIVED from the draw rather than carried in the record, because the declaration IS
-    a statement about the draw and two places to state one fact is the drift this family
-    has already paid for once. The oracle tier derives it the same way.
-    """
-    from rola.ops import intra as intra_ops
-
-    if spec.draw == "dense":
-        return (intra_ops.DENSE_BOTH,) * spec.D
-    if spec.draw == "both":
-        return tuple(intra_ops.BOTH_SPARSE if level == 0 else intra_ops.DENSE_BOTH
-                     for level in range(spec.D))
-    return tuple(intra_ops.READ_SPARSE if level % 2 else intra_ops.WRITE_SPARSE
-                 for level in range(spec.D))
 
 
 # ------------------------------------------------------------------ layer cells
@@ -319,10 +213,10 @@ def decode_step(fx) -> Launch:
     step, at the same context position, over the same residency.
     """
     import rola
+    from rola.engine.constants import box_leaves
     from rola.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
     from rola.engine.facts import liveness as lv
     from rola.ops import facts as facts_ops
-    from rola.ops.carry import box_leaves
 
     spec = fx["cell"]
     if spec.decode_steps == 0:
@@ -365,18 +259,14 @@ def decode_step(fx) -> Launch:
                   outside_allocator=lambda: seeded["arena"].committed_bytes if seeded["arena"].backing == "vmm" else 0)
 
 
-#: THE ROSTER: one entry per kernel this line carries, plus the carry, whose arm refuses.
+#: THE ROSTER: one entry per kernel this line carries.
 SUBJECTS = {
     "carry_forward": Subject("carry_forward", "carry", carry_forward,
                              "the inter term: one carry launch over a whole cell",
-                             level="kernel", symbol="carry_kernel", stamp="carry_build_stamp", dials=("schedule",)),
+                             level="kernel", symbol="carry_kernel", stamp="carry_build_stamp"),
     "intra_forward": Subject("intra_forward", "carry", intra_forward,
                              "the within-window term at the shared window",
                              level="kernel", symbol="intra_kernel", stamp="intra_build_stamp"),
-    "carry_intra": Subject("carry_intra", "carry", carry_intra,
-                           "the carry and the intra as one operator, over facts and support words the caller built: "
-                           "the two kernels and the pair's own packing, never the op's facts or paging",
-                           level="kernel", symbol="carry_kernel", stamp="carry_build_stamp", calls=(1, 4)),
     "facts_pass": Subject("facts_pass", "carry", facts_pass,
                           "both sides' class-1 liveness words and the fold's window scales, from the bundle",
                           level="kernel", symbol="facts_pass", stamp="csrc_build_stamp"),
@@ -418,9 +308,8 @@ def applicable(spec, kind: str, calls: int = 1) -> list[str]:
             continue
         if name == "decode_step" and getattr(spec, "decode_steps", 0) == 0:
             continue
-        #: the intra runs its tile grid (whole windows) at widths it reads; the kernel pair runs it
-        if name in ("intra_forward", "carry_intra") and (spec.tokens % _shared_window()
-                                                         or not _intra_reads(spec.widths)):
+        #: the intra runs its tile grid (whole windows) at widths it reads
+        if name == "intra_forward" and (spec.tokens % _shared_window() or not _intra_reads(spec.widths)):
             continue
         out.append(name)
     return out

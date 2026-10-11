@@ -944,24 +944,6 @@
    "count": 1
   },
   {
-   "path": "docs/internals/carry/carry_kernel.md",
-   "message": "names the work code 'P81'",
-   "line_sha256": "1d4d05957e379dc6",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/carry/carry_kernel.md",
-   "message": "names the work code 'P81'",
-   "line_sha256": "95515d5547da2e26",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/constants.md",
-   "message": "names the work code 'C1c'",
-   "line_sha256": "53ffcd7c57ba6657",
-   "count": 1
-  },
-  {
    "path": "docs/internals/common/constants.md",
    "message": "names the work code 'C2e'",
    "line_sha256": "eccc19bb15befb45",
@@ -1095,18 +1077,6 @@
   },
   {
    "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'K3'",
-   "line_sha256": "1e3b971309943776",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'K3'",
-   "line_sha256": "81bf87043c1c4fd5",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
    "message": "names the work code 'K31'",
    "line_sha256": "1971c5469ec32dce",
    "count": 1
@@ -1115,18 +1085,6 @@
    "path": "docs/internals/decode/decode.md",
    "message": "names the work code 'K31'",
    "line_sha256": "3ffccb4e723608a1",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'K4'",
-   "line_sha256": "1e3b971309943776",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'K4'",
-   "line_sha256": "81bf87043c1c4fd5",
    "count": 1
   },
   {
@@ -1157,18 +1115,6 @@
    "path": "docs/internals/decode/decode_lattice.md",
    "message": "names the work code 'C0'",
    "line_sha256": "d92bad173b98db51",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode_lattice.md",
-   "message": "names the work code 'K3'",
-   "line_sha256": "bce0d063f336793c",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode_lattice.md",
-   "message": "names the work code 'K4'",
-   "line_sha256": "bce0d063f336793c",
    "count": 1
   },
   {
@@ -1646,18 +1592,6 @@
    "count": 1
   },
   {
-   "path": "rola/ops/carry.py",
-   "message": "names the work code 'P81'",
-   "line_sha256": "263bdb2c4191daf1",
-   "count": 1
-  },
-  {
-   "path": "rola/ops/carry.py",
-   "message": "names the work code 'P81'",
-   "line_sha256": "96cdde1edeef6911",
-   "count": 1
-  },
-  {
    "path": "rola/ops/decode.py",
    "message": "names the work code 'K50'",
    "line_sha256": "f6afe79f98508718",
@@ -1715,30 +1649,6 @@
    "path": "tests/integration/test_decode_paging.py",
    "message": "names the work code 'K53'",
    "line_sha256": "bc8be1383f0b24f3",
-   "count": 1
-  },
-  {
-   "path": "tests/integration/test_owner_rows.py",
-   "message": "names the work code 'K31-i'",
-   "line_sha256": "9f848ccfb74fd4b6",
-   "count": 1
-  },
-  {
-   "path": "tests/integration/test_owner_rows.py",
-   "message": "names the work code 'K31-i'",
-   "line_sha256": "b4239978c948d324",
-   "count": 1
-  },
-  {
-   "path": "tests/integration/test_owner_rows.py",
-   "message": "names the work code 'K35'",
-   "line_sha256": "73685ef45c8e77b6",
-   "count": 1
-  },
-  {
-   "path": "tests/integration/test_owner_rows.py",
-   "message": "names the work code 'S1b'",
-   "line_sha256": "73685ef45c8e77b6",
    "count": 1
   },
   {
@@ -1803,30 +1713,6 @@
   },
   {
    "path": "tests/oracle/fixtures.py",
-   "message": "names the work code 'C0'",
-   "line_sha256": "8c675ecb3279ac2c",
-   "count": 1
-  },
-  {
-   "path": "tests/oracle/fixtures.py",
-   "message": "names the work code 'C3'",
-   "line_sha256": "15b45c065121acba",
-   "count": 1
-  },
-  {
-   "path": "tests/oracle/fixtures.py",
-   "message": "names the work code 'C3'",
-   "line_sha256": "8c675ecb3279ac2c",
-   "count": 1
-  },
-  {
-   "path": "tests/oracle/fixtures.py",
-   "message": "names the work code 'G4'",
-   "line_sha256": "8c675ecb3279ac2c",
-   "count": 1
-  },
-  {
-   "path": "tests/oracle/fixtures.py",
    "message": "names the work code 'K31'",
    "line_sha256": "07f0d00500c0a5d2",
    "count": 1
@@ -1859,18 +1745,6 @@
    "path": "tests/oracle/test_atom_bitmap.py",
    "message": "names the work code 'P67'",
    "line_sha256": "ae4a90aeac52c9bf",
-   "count": 1
-  },
-  {
-   "path": "tests/oracle/test_carry_vs_oracle.py",
-   "message": "names the work code 'C3'",
-   "line_sha256": "33da966b26e60f76",
-   "count": 1
-  },
-  {
-   "path": "tests/oracle/test_carry_vs_oracle.py",
-   "message": "names the work code 'K2'",
-   "line_sha256": "8f11b9242e52b753",
    "count": 1
   },
   {
@@ -1983,12 +1857,6 @@
   },
   {
    "path": "tests/oracle/test_padding_seam.py",
-   "message": "names the work code 'C1c'",
-   "line_sha256": "2bab60db1d11abdb",
-   "count": 1
-  },
-  {
-   "path": "tests/oracle/test_padding_seam.py",
    "message": "names the work code 'K50'",
    "line_sha256": "1b3497dc07526823",
    "count": 1
@@ -2015,24 +1883,6 @@
    "path": "tests/oracle/test_padding_seam.py",
    "message": "names the work code 'K50'",
    "line_sha256": "f54b8f8c3e679e49",
-   "count": 1
-  },
-  {
-   "path": "tests/oracle/test_prefill_vs_oracle.py",
-   "message": "names the work code 'C1c'",
-   "line_sha256": "5fc7cd601c8516f3",
-   "count": 1
-  },
-  {
-   "path": "tests/oracle/test_prefill_vs_oracle.py",
-   "message": "names the work code 'K50'",
-   "line_sha256": "35897ef037c27efa",
-   "count": 1
-  },
-  {
-   "path": "tests/oracle/test_prefill_vs_oracle.py",
-   "message": "names the work code 'K50'",
-   "line_sha256": "450f52f8a33755c5",
    "count": 1
   },
   {
@@ -2117,12 +1967,6 @@
    "path": "tests/unit/test_carry_geometry.py",
    "message": "names the work code 'K50'",
    "line_sha256": "78b4e11560c06e77",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_carry_surface.py",
-   "message": "names the work code 'C1c'",
-   "line_sha256": "d5ac35d3e9cb9904",
    "count": 1
   },
   {
@@ -2543,12 +2387,6 @@
    "path": "tools/sanitize_oracle.py",
    "message": "names the work code 'K38'",
    "line_sha256": "8cd27f61d8290f1b",
-   "count": 1
-  },
-  {
-   "path": "tools/sanitize_oracle.py",
-   "message": "names the work code 'K39'",
-   "line_sha256": "1d06c1185a25c26f",
    "count": 1
   },
   {

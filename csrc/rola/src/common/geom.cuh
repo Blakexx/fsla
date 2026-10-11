@@ -704,7 +704,7 @@ __host__ __device__ inline int geom_local_row(const SideGeom& s, int strm, int P
 }
 
 //: THE READ-ORDER INDEX of an owner-local canonical row: the region's row law, both sides.
-//: -- see docs/internals/carry/carry_kernel.md#read-order
+//: -- see docs/internals/common/geom.md#read-order
 __host__ __device__ inline int geom_read_index(const CarryGeomRT& g, const SideGeom& r, int local) {
   int index = 0;
 #pragma unroll 1

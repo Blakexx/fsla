@@ -14,7 +14,7 @@ SCOPE IS `__global__` ONLY, NOT `__device__` -- MEASURED, not assumed. The
 manifest's `entries` are keyed from `ptxas -v`'s "Compiling entry function
 '...' for 'sm_XX'" line (`tools/ratify.py`'s `ENTRY` regex) -- `ptxas -v`
 reports ENTRY FUNCTIONS ONLY. A `__device__` helper (`ops.cuh`'s `stage_run`,
-`box.cuh`'s `canon_leaf_acc`, ...) is normally `__forceinline__` and inlined
+`geom.cuh`'s `geom_read_index`, ...) is normally `__forceinline__` and inlined
 into every kernel that calls it; it has NO standalone symbol in this project's
 manifest format regardless of whether it is used. Checking `__device__`
 templates the same way as `__global__` ones was tried first and produced 65

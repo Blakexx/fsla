@@ -117,7 +117,7 @@ consecutive leaves in LATTICE leaf order, spec §4.5's
 consecutive `local` values at a multiple of 16, so it is an ALIGNED DIGIT RECTANGLE for
 every admissible span vector — the levels whose fields lie above bit 4 are fixed, the
 level straddling it keeps an aligned contiguous sub-run, and the levels below are free
-(`carry/box.cuh`, K3/K4). One condition survives, `16 | BC` (an atom lies inside one
+(`rola/ops/lattice.py`). One condition survives, `16 | BC` (an atom lies inside one
 owner), checked at [`fill_lattice`](decode_lattice.md#the-refusals) where a page table is
 present; it is what lets the candidate-atom test ([§4b](#candidate-atoms)) read a unit's
 membership out of ONE aligned window of its innermost write slice. `kAtomLeaves` is geometry-owned and
@@ -1104,8 +1104,8 @@ single generic lambda below, and no `<<<...>>>` is spelled twice.
 <a id="fill-lattice"></a>
 ### `fill_lattice`
 
-THE (k, m) BOX, FILLED AND REFUSED HERE. The derivation is `carry/box.cuh`'s
-`BoxPlan`, evaluated on runtime widths instead of template arguments -- decode takes
+THE (k, m) BOX, FILLED AND REFUSED HERE. The derivation is `rola/ops/lattice.py`'s
+`box_shape`, evaluated on runtime widths instead of template arguments -- decode takes
 its lattice as data, because one built binary serves every topology the producer can
 emit. Every constraint is that header's `static_assert` restated as a runtime check.
 docs/internals/decode/decode_lattice.md#the-refusals
@@ -1113,7 +1113,7 @@ docs/internals/decode/decode_lattice.md#the-refusals
 <a id="floor-inner"></a>
 ### `floor_inner`
 
-`BoxPlan`'s section 2.5 as the atom-rectangle law generalizes it: the INNERMOST
+the lattice's section 2.5 as the atom-rectangle law generalizes it: the INNERMOST
 level takes as much capacity as it can carry -- never less than its balanced share,
 never less than an atom asks, never more than its own width admits -- and the
 rest of `j` is spread balanced over the outer levels, innermost first.  The atom
@@ -1169,7 +1169,7 @@ THE ATOM'S PLACE IN THE LATTICE, required of a PAGED backing only, and now ONE
 condition where the interleaved order needed two: a unit is a contiguous aligned run,
 so an atom is a whole number of units or a unit is a whole number of atoms, and only
 the second makes the candidate enumeration a partition. The interleave's `k^D >= 16`
-and `log2(k) | 4` are discharged by the mixed-radix order itself (`box.cuh`, K3/K4).
+and `log2(k) | 4` are discharged by the mixed-radix order itself (`rola/ops/lattice.py`).
 A dense backing never asks an atom a liveness question and carries no constraint:
 docs/internals/decode/decode.md#candidate-atoms
 
@@ -1181,11 +1181,11 @@ Verbatim `//:` prose blocks from `csrc/rola/src/decode/decode.cuh`, in source or
 ### `kMaxLevels`
 
 THE PAGE GRANULE AND THE OWNER'S SHAPE COME FROM THE BOX, not from a mirror of it:
-`carry/box.cuh` is where the lattice's addressing constants and its constexpr
-`BoxPlan` arithmetic live, and the two families write and read ONE plane in ONE order.
+`rola/ops/lattice.py` is where the lattice's addressing constants and its
+`box_shape` arithmetic live, and the two families write and read ONE plane in ONE order.
 What this path adds is the RUNTIME carrier below -- decode takes `(k, m)` and the
-per-level widths as data rather than as template arms, so it holds `BoxPlan`'s fields
-as scalars under `BoxPlan`'s own names and derives them by `BoxPlan`'s own formulas.
+per-level widths as data rather than as template arms, so it holds the lattice's fields
+as scalars under the lattice's own names and derives them by its formulas.
 
 <a id="kproducermaxbranchwidth"></a>
 ### `kProducerMaxBranchWidth`
@@ -1251,13 +1251,13 @@ into shared memory itself: docs/internals/decode/decode_fold.md
 <a id="decodeparams-note-l174"></a>
 ### in `DecodeParams`, near line 174
 
-THE (k, m) BOX, `BoxPlan`'s fields as runtime scalars under `BoxPlan`'s names:
+THE (k, m) BOX, the lattice's fields as runtime scalars under `rola/ops/lattice.py`'s names:
 `lat_s[l] = k * m_l` is an owner's span at level `l`, `lat_g[l] = B_l / lat_s[l]`
 its owner-grid extent, and a leaf's lattice index is
 `lambda = O * BC + sum_l r_l << lat_run_shift[l]` -- the owner in mixed radix over
 `lat_g`, the OWNER-LOCAL index in mixed radix over the runs `lat_s`, most
 significant level first. `lat_run_shift[l] = log2 prod_{l' > l} s_l'` is
-`BoxPlan::run_shift`, and every suffix product is a SHIFT because every span is a
+lattice run_shift, and every suffix product is a SHIFT because every span is a
 power of two. docs/internals/decode/decode_lattice.md
 
 <a id="decodeparams-note-l190"></a>
@@ -1360,7 +1360,7 @@ What is left per step is data plane only, in the ratified shape: a
 TOKEN-STATIONARY, STATE-STREAMING gather-GEMV.
 
 Three facts a reader must not miss:
-  1. THE LEAF ORDER IS THE LATTICE, in the ONE order `carry/box.cuh` defines: a leaf is
+  1. THE LEAF ORDER IS THE LATTICE, in the ONE order `rola/ops/lattice.py` defines: a leaf is
      named by its owner and by its per-level RUN OFFSETS in mixed radix, and the step
      reaches it by WALKING those factors -- there is no leaf map, no bitmap over the
      leaf space, and no term in `N` in the step's fixed cost.
@@ -1473,7 +1473,7 @@ docs/internals/decode/decode_fold.md#the-identity
 <a id="gsuf"></a>
 ### `gsuf`
 
-`BoxPlan::run_shift`: level `l`'s run offset sits at `log2 prod_{l\' > l} s_l\'` in the
+lattice run_shift: level `l`'s run offset sits at `log2 prod_{l\' > l} s_l\'` in the
 owner-local index, so the whole mixed radix is shifts and masks.
 
 <a id="filllevels"></a>

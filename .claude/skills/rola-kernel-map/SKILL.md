@@ -4,7 +4,7 @@ description: Where each carry-kernel mechanism lives in csrc/rola/src/carry — 
 ---
 Read the source files named below directly, not `docs/internals/carry/*.md`'s history sections —
 those record HOW a mechanism arrived (superseded designs, ruled-out alternatives); the CURRENT
-mechanism is only trustworthy read off the `.cuh`/`.cu` file itself. `docs/internals/carry/box.md`,
+mechanism is only trustworthy read off the `.cuh`/`.cu` file itself. `docs/internals/carry/carry.md`,
 `carry_kernel.md`, `carry.md` etc. mirror `csrc/rola/src/carry/` file-for-file if you need prose
 alongside code, but a doc and its source can drift — the source is the tiebreaker.
 

@@ -8,9 +8,8 @@ the hook only when the environment names them (`ROLA_SCRATCH`); the repo never r
 incident-derived). Read §19–§21 before touching a kernel:
 - §19 THE COMPONENT BUDGET GATE: SKELETON FIRST (stub components composed in the final form, compiling,
   ledger and edges final); then ONE COMPONENT AT A TIME, each with a BUDGET LINE before code (analytic
-  floors, instruction budget from the design's own operation count — `measure/carry_model.py`,
-  `tools/budgets/<kernel>.json` — and WHO executes it HOW MANY TIMES: per-window work once per CTA, never
-  on every warp); gated in the part harness (`measure/harness/bench_carry_parts.py`) at <= 1.3x its
+  floors, instruction budget from the design's own operation count — `tools/budgets/<kernel>.json` — and WHO executes it HOW MANY TIMES: per-window work once per CTA, never
+  on every warp); gated in the family's part harness at <= 1.3x its
   binding floor, then in the composed kernel's phase ledger. No design verdict from an ungated build.
 - §20 ptxas SIGNATURES: `tools/sass_gate.py <.so>` on every iteration build — local memory (runtime index
   into a register struct / constexpr helper with a runtime arg / non-inlined capturing lambda),
@@ -27,8 +26,8 @@ incident-derived). Read §19–§21 before touching a kernel:
 - Perf: `python -m rola_devtools.build run declare.py:all` (this checkout's declared measurement: its instruments and one
   clock-locked interleaved timing session on the cells, `docs/measurement.md`); attribution:
   `tools/region_ledger.py --csv <ncu SourceCounters> --so <.so> --source <kernel.cuh> --budget tools/budgets/<k>.json`.
-- Correctness: `tests/oracle/test_carry_vs_oracle.py` (scoped runs only; never a bare `tests/`).
+- Correctness: `tests/oracle/` (scoped runs only; never a bare `tests/`).
 - Build: `python -m pip install -e . --no-build-isolation` with `ROLA_CUDA_ARCHS`; the machine is `tools/dev.py check`
   (`docs/build.md`); the device stamp proves the binary is the source.
 - Kernel map: `docs/internals/carry/`; the carry body is `csrc/rola/src/carry/carry_kernel.cuh`, its plan
-  `box.cuh`, its host entry `carry.cu`.
+  `plan.cuh`, its host entry `carry.cu`.

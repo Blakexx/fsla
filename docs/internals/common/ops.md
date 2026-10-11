@@ -294,7 +294,7 @@ LOAD an atom iff it is RESIDENT (`page_slot >= 0`; dense = null table = all
 resident) AND `(read | written)`; STORE it iff `written`.  Residency is the
 arena's fact and says only WHERE an atom is; activity is the facts pass' fact
 and says WHETHER it is touched.  So the two backings touch the identical atom
-set, which is what makes `tests/integration/test_chunk_paging_equivalence.py`'s
+set, which is what makes `tests/integration/test_decode_paging.py`'s
 `torch.equal` a certificate of the skip logic and not merely of the addressing.
 
 A NULL `atom_bits` IS THE UNIVERSAL FACT, the same convention a null page table
@@ -723,7 +723,7 @@ zero fill the readout's ring rows past the live count rely on.
 The warp's index as a value ptxas knows to be warp-uniform: three ballots on the thread
 index's bits (`popc(ballot(bit)) >> 5`), because `threadIdx.x >> 5` is a per-thread value
 to its analysis and a loop bounded by anything derived from one is a divergent loop, after
-which every shuffle is fenced and outlined (`carry/carry_kernel.md#uniform`).
+which every shuffle is fenced and outlined.
 
 <a id="warp-sync"></a>
 ## `warp_sync()` -- the warp's edge as one instruction
@@ -757,7 +757,7 @@ already complete, which is the case the design arranges for. `mbar_test` asks on
 returns the answer, for a stream that does other work when its copies have not landed (the
 carry's interleaved loop; the answer is voted over the warp before it steers a branch, so
 the compiler sees a uniform predicate). The carry's pool uses a full/empty pair a slot
-(`carry_kernel.md#pool`) so that warps drift freely by a chunk, where a CTA barrier would
+so that warps drift freely by a chunk, where a CTA barrier would
 hold every warp to the slowest. `mbar_wait_sleep` is `mbar_test` in a loop with a 64 ns `__nanosleep` between polls: on
 sm_80/86 a wait is a polled shared word, and a tight poll takes the issue slots of the warps doing the work it waits on.
 

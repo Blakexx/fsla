@@ -3,8 +3,7 @@
 
 """DECODE's paged backing: one walk, one base translation, and growth per step.
 
-The `T = 1` sibling of `test_chunk_paging_equivalence.py`, and it claims the same
-three things for the same reason. Which page an atom lives on is the ONLY thing a
+Which page an atom lives on is the ONLY thing a
 backing changes: without a table the slot IS the atom, with one it is what the plan
 committed, and the instruction stream, the accumulation order and the ABI are the
 same object. So the claim is `torch.equal` and not a tolerance -- any difference at

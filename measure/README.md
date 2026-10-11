@@ -8,10 +8,9 @@ input -- a carry cell's routing amplitudes, gain, values and the state it enters
 values -- with its draw and the regime it proves, so a name means one input everywhere it appears, in rola and in the
 libraries rola is compared against. A cell names nothing rola runs it with. `measure/cells/` is rola's reading:
 
-* `cells/__init__.py` — what the carry kernel is given for a carry cell: its state descriptor, the launch shape
-  (`WARPS_PER_CTA`), the arm key `(D, DV, warps_per_cta)`, the mode word of its declared sparsity, its liveness words and
-  activity bytes, the state its `state` and `backing` bind, and `carry_call` — one cell's WHOLE call, the same operands in
-  a correctness run and a measured one.
+* `cells/__init__.py` — a central cell's typed record by name (`by_name`), the carry cells by tier (`carry_cells`) and
+  a cell's draw (`realize`). What the carry kernel is given for a cell is built where it is timed
+  (`subjects.carry_operands`).
 * `cells/layer.py` — RoLA's layer CONSTRUCTIONS (a routing template, widths, a gain), each named with the central layer
   inputs it was declared for, from which the amplitudes are PRODUCED. It is the only way to price the producer's own
   solve or a decode step through the layer.
@@ -48,8 +47,7 @@ samples; whether a stored difference is a regression is `python -m rola_results 
 python -m rola_devtools.build run declare.py:all --only 'rola/phases' --only 'rola/sass'
 ```
 
-**`measure/harness/` — the carry's part harness and its calibration** (`bench_carry_parts.py`,
-`bench_carry_calib.py`), gated against `bench/carry_model.py`'s budgets.
+**`measure/harness/` — the carry's calibration** (`bench_carry_calib.py`).
 
 The ROOFLINE instrument moved to `tools/roofline.py`, where every other instrument lives: it is one of
 `declare.py`'s instruments and never was a bench, and being the only one outside `tools/` is what kept it off the

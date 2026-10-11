@@ -35,24 +35,6 @@ using rola::Tensor;
 
 namespace {
 
-// THE ONE REASON the reverse entry can fail on this line, spelled once so a test can
-// assert it and a caller cannot mistake it for a shape refusal.
-constexpr const char* kCarryBackwardUnimplemented =
-    "the carry reverse pass has no implementation on this line: this binary carries the "
-    "forward body and the reverse LAUNCH SURFACE with its refusals only (see "
-    "docs/ARCHITECTURE.md for the pass the surface is waiting for)";
-
-// THE REVERSE SURFACE'S STUB, named so the closed-world arch refusal can be its first statement like every other
-// entry's: the refusal that a device was never measured on outranks the refusal that the pass behind it does not exist.
-void carry_backward_unimplemented(const Tensor&, const Tensor&, const Tensor&, const Tensor&,
-                                  const Tensor&, const Tensor&, const std::vector<int64_t>&,
-                                  int64_t, int64_t, int64_t, const std::vector<int64_t>&,
-                                  const Tensor&, const Tensor&, const std::optional<Tensor>&,
-                                  const std::optional<Tensor>&, const std::optional<Tensor>&) {
-  check_arch_table();
-  STD_TORCH_CHECK(false, kCarryBackwardUnimplemented, " (entry: carry_backward)");
-}
-
 // THE VMM OWNERS, by handle: an operator cannot return a native object, so the owner lives here and the caller holds
 // an integer. A tensor view of an owner keeps the owner alive past its release (VmmOwner::base).
 std::mutex g_owners_mutex;
@@ -124,15 +106,10 @@ STABLE_TORCH_LIBRARY(rola, m) {
 
   // ---- the CARRY LAUNCH SURFACE --------------------------------------------
   m.def(
-      "carry_forward(Tensor read, Tensor write, Tensor gain, Tensor v, Tensor(a!) num, Tensor(b!) den, int[] widths, "
-      "int dv, int page_bits, int warps_per_cta, int[] carve_order, int[] schedule, Tensor liveness, "
-      "Tensor activity, Tensor? state_in, Tensor(c!)? state_out, Tensor? page_table) -> ()");
-  m.def(
-      "carry_backward(Tensor read, Tensor write, Tensor gain, Tensor v, Tensor d_num, Tensor d_den, int[] widths, "
-      "int dv, int page_bits, int warps_per_cta, int[] carve_order, Tensor liveness, Tensor activity, "
-      "Tensor? state_in, Tensor? d_state_out, Tensor? page_table) -> ()");
+      "carry_forward(Tensor[] read_rows, Tensor[] write_rows, Tensor values, Tensor[] write_lists, Tensor[] read_lists, "
+      "Tensor unit, Tensor(a!) num, Tensor(b!) check, int[] widths, int[] extents, int channels, int write_list, "
+      "int[] write_operand, int read_list, int[] read_operand, int[] key) -> ()");
   m.def("carry_ledger_bind(Tensor? ledger) -> ()");
-  m.def("carry_trace_bind(Tensor? trace, int warps_per_cta) -> ()");
   m.def("carry_build_stamp() -> int");
   m.def("carry_census() -> int[][]");
   m.def("carry_arms() -> int[][]");
@@ -223,10 +200,8 @@ STABLE_TORCH_LIBRARY_IMPL(rola, CompositeExplicitAutograd, m) {
   m.impl("intra_build_stamp", TORCH_BOX(&rola::intra::intra_build_stamp));
   m.impl("intra_footprint", TORCH_BOX(&rola::intra::intra_footprint));
   m.impl("carry_forward", TORCH_BOX(&rola::carry::carry_forward));
-  m.impl("carry_backward", TORCH_BOX(&carry_backward_unimplemented));
 
   m.impl("carry_ledger_bind", TORCH_BOX(&rola::carry::carry_ledger_bind));
-  m.impl("carry_trace_bind", TORCH_BOX(&rola::carry::carry_trace_bind));
   m.impl("carry_build_stamp", TORCH_BOX(&rola::carry::carry_build_stamp));
   m.impl("carry_census", TORCH_BOX(&rola::carry::carry_census));
   m.impl("carry_arms", TORCH_BOX(&rola::carry::carry_arms));

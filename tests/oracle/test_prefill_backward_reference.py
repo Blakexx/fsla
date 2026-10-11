@@ -2,8 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """R4's decomposition gate: the reverse pass splits on the forward's window edge.
 
-The mirror of ``test_carry_vs_oracle.py::test_m2_decomposition_is_exact``. The
-CARRY half plus the INTRA half of every cotangent equals ``torch.autograd``
+The CARRY half plus the INTRA half of every cotangent equals ``torch.autograd``
 through the whole operator, in fp64 -- so a window-grid disagreement, a
 double-counted diagonal or a dropped tile pair in the GRADIENT has nowhere to hide
 either.

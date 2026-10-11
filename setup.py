@@ -888,8 +888,8 @@ class RoLABuildExtension(BuildExtension):
                 f"{header} declares {count.group(1)} built / "
                 f"{declared.group(1)} declared arms; this build selected "
                 f"{len(want)} of {len(gen_shards.CARRY_ARMS)} declared")
-        members = sorted(tuple(int(x) for x in m) for m in re.findall(
-            r"^  F\((\d+), (\d+), (\d+), (\d+)\)", text, re.MULTILINE))
+        members = sorted(tuple(int(x) for x in m.split(", ")) for m in re.findall(
+            r"^  F\(([\d, ]+)\)", text, re.MULTILINE))
         if members != sorted((i,) + tuple(gen_shards.CARRY_ARMS[i]) for i in want):
             raise RuntimeError(
                 f"the arm set names {members}, which is not this build's rows of the "

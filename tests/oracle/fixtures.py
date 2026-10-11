@@ -17,7 +17,7 @@ import torch
 
 from rola.ops import carry as carry_ops
 from rola.ops.naive import naive_rola
-from rola.ops.paging import decode_pages, encode_pages, from_split_planes, to_split_planes
+from rola.ops.paging import decode_pages, encode_pages
 from rola.routing.factors import RouteFactors
 from rola.values import Values
 from tests.oracle import tolerances
@@ -41,50 +41,6 @@ def simplex(shape, k_tok, gen, device, live=None):
     if live is not None and live < shape[-1]:
         x[..., live:] = 0.0
     return x / x.sum(-1, keepdim=True)
-
-
-class Cell:
-    """One realized cell. ``widths`` is the topology, ``k_tok`` the routing draw."""
-
-    def __init__(self, widths, T, k_tok=None, seed=0, d_v=64, B=1, H=1,
-                 device="cuda", state_in=False, support=1.0):
-        gen = torch.Generator(device=device).manual_seed(seed)
-        self.widths, self.T, self.d_v, self.B, self.H = tuple(widths), T, d_v, B, H
-        self.N = math.prod(widths)
-        shape = (B, T, H)
-        self.support = support
-        live = tuple(max(1, int(w * support)) for w in widths)
-        self.read = tuple(simplex(shape + (w,), k_tok, gen, device, live=lv)
-                          for w, lv in zip(widths, live))
-        self.write = tuple(simplex(shape + (w,), k_tok, gen, device, live=lv)
-                           for w, lv in zip(widths, live))
-        self.g_write = torch.rand(*shape, device=device, dtype=torch.float64,
-                                  generator=gen) + 0.5
-        self.v = torch.randn(*shape, d_v, device=device, dtype=torch.float64, generator=gen)
-        #: THE OPERAND PLANES ARE bf16: the bytes a kernel entry reads (`owner_rows` takes them).
-        self.read_bf = tuple(t.to(torch.bfloat16) for t in self.read)
-        self.write_bf = tuple(t.to(torch.bfloat16) for t in self.write)
-        self.state_in = None
-        if state_in:
-            self.state_in = 0.1 * torch.randn(B * H, self.N, d_v + 1, device=device,
-                                              dtype=torch.float64, generator=gen)
-
-
-def canonical_from_plane(plane):
-    """A ``[BH, N/16, 16, cols]`` state plane as ``[BH, N, cols]`` CANONICAL.
-
-    The kernel's plane IS the atom-major view of the canonical one in the STORED
-    split-plane form, so this is the hi||lo gather and a reshape. It stays a NAMED step because the assertion it feeds is the family's
-    final-state gate, and a leaf-order error must surface at a named seam rather than as
-    noise inside a comparison.
-    """
-    return from_split_planes(plane).reshape(plane.shape[0], -1, plane.shape[-1])
-
-
-def plane_from_canonical(canonical, bh: int = 1):
-    """A ``[BH, N, cols]`` CANONICAL state as the stored ``[BH, N/16, 16, cols]`` split planes: `canonical_from_plane`
-    inverted, so a drawn entry state is the plane a kernel entry reads."""
-    return to_split_planes(canonical.float().reshape(bh, -1, 16, canonical.shape[-1]))
 
 
 def reordered_close(got, want) -> bool:
@@ -168,25 +124,17 @@ def state_rounded(state):
 
 
 def built_arms() -> set:
-    """`{(D, DV, warps_per_cta)}` -- what THIS binary carries.
+    """The carry arm keys THIS binary carries (`rola.ops.carry.arm_key`).
 
     `arms()` is the binary's own answer (`rola.ops.carry.arms()`), so this is a fact
-    about the `.so` under test and never about the source tree that produced it. EMPTY
-    on this line: C0 cleared the carry family, G4 refills the table and C3 builds the
-    bodies (card `development/queue/C_CLEAN_SLATE.md`).
+    about the `.so` under test and never about the source tree that produced it.
     """
     return {tuple(row) for row in carry_ops.arms()}
 
 
 def assert_fresh_binary():
-    """DEVICE-SIDE, because a path or hash check cannot catch an extension trap.
-
-    THERE IS NO SUCH FACT FOR THE CARRY FAMILY ON THIS LINE: it has no device code, so
-    the stamp entry refuses rather than returning a stale or invented census, and this
-    helper propagates that refusal instead of substituting a weaker check for it
-    (`extension-trap-device-side-check`). C3-K0 restores the fact and this assertion
-    with it.
-    """
+    """DEVICE-SIDE, because a path or hash check cannot catch an extension trap: the carry family's build stamp is
+    a fact only a built kernel produces (`rola.ops.carry.build_stamp`)."""
     return carry_ops.build_stamp()
 
 

@@ -35,13 +35,13 @@ ROOT = Path(__file__).resolve().parents[1]
 PY = sys.executable
 
 
-def measure(cell: str, schedule: str, out: Path, keep_csv: Path | None) -> None:
+def measure(cell: str, out: Path, keep_csv: Path | None) -> None:
     ncu = dev_config.get("toolchain.ncu")
     with tempfile.TemporaryDirectory(prefix="stall_census_", dir=dev_config.scratch("stall_census")) as tmp:
         rep = Path(tmp) / "rep"
         done = process.run([ncu, "--target-processes", "all", "-k", "regex:carry_kernel", "-c", "1", "--section",
                             "SourceCounters", "--metrics", "group:smsp__pcsamp_warp_stall_reasons", "--import-source",
-                            "yes", "-f", "-o", str(rep), *oneshot_argv(cell, arm_name("carry_forward", schedule=schedule))],
+                            "yes", "-f", "-o", str(rep), *oneshot_argv(cell, arm_name("carry_forward"))],
                            cwd=ROOT, timeout=3600)
         exported = process.run([ncu, "--import", f"{rep}.ncu-rep", "--page", "source", "--print-source", "sass", "--csv"],
                                cwd=ROOT, timeout=1800)
@@ -60,20 +60,19 @@ def measure(cell: str, schedule: str, out: Path, keep_csv: Path | None) -> None:
         raise SystemExit(f"stall_census: region_ledger wrote nothing (rc {ledger.returncode}):\n"
                          f"{(ledger.stdout + ledger.stderr)[-1500:]}")
     doc = json.loads(out.read_text())
-    doc.update({"cell": cell, "schedule": schedule, "budget_red": ledger.returncode == 1})
+    doc.update({"cell": cell, "budget_red": ledger.returncode == 1})
     out.write_text(json.dumps(doc, sort_keys=True) + "\n")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cell")
-    ap.add_argument("--schedule", default="first", help="the carry family's order policy the launch runs")
     ap.add_argument("--json", type=Path, required=True)
     ap.add_argument("--csv", type=Path, default=None,
                     help="keep ncu's per-SASS-line export here (the warp timeline joins it); "
                          "default the tool's scratch, `<scratch>/stall_census/<cell>.csv`")
     a = ap.parse_args()
-    measure(a.cell, a.schedule, a.json, a.csv or dev_config.scratch("stall_census") / f"{a.cell}.csv")
+    measure(a.cell, a.json, a.csv or dev_config.scratch("stall_census") / f"{a.cell}.csv")
     doc = json.loads(a.json.read_text())
     print(f"{a.cell}: {doc['samples']} stall samples over {len(doc['components'])} components")
     return 0

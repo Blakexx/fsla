@@ -13,13 +13,22 @@
 
 namespace rola {
 
+//: A CARRY ARM'S KEY: the carve's operation-plan pair (tools/gen_shards.py's `ARM_KEY`, in its order).
+struct CarryKey {
+  int fold_rows, fold_factors, read_rows, read_factors, channels, publish_regs;
+};
+
 //: ONE ARM'S CONSTANTS, handed to the body as compile-time values.
-template <int INDEX, int D_, int DV_, int WARPS_>
+template <int INDEX, int FOLD_ROWS, int FOLD_FACTORS, int READ_ROWS, int READ_FACTORS, int CHANNELS,
+          int PUBLISH_REGS>
 struct Arm {
   static constexpr int index = INDEX;
-  static constexpr int D = D_;
-  static constexpr int DV = DV_;
-  static constexpr int warps_per_cta = WARPS_;
+  static constexpr int fold_rows = FOLD_ROWS;
+  static constexpr int fold_factors = FOLD_FACTORS;
+  static constexpr int read_rows = READ_ROWS;
+  static constexpr int read_factors = READ_FACTORS;
+  static constexpr int channels = CHANNELS;
+  static constexpr int publish_regs = PUBLISH_REGS;
 };
 
 //: THE CARRY FAMILY'S ARM SET, GENERATED -- see docs/internals/common/arm_switch.md#carry-arm-set
@@ -29,15 +38,17 @@ struct CarryArmSet {
   static constexpr int count = ROLA_CARRY_ARM_COUNT;
   static constexpr int declared = ROLA_CARRY_ARM_DECLARED;
   static constexpr const char* family = "carry";
-  static constexpr const char* key = "(D, DV, warps_per_cta)";
+  static constexpr const char* key =
+      "(fold_rows, fold_factors, read_rows, read_factors, channels, publish_regs)";
 
   template <class Body>
-  static int visit(int D, int dv, int warps_per_cta, Body&& body) {
+  static int visit(const CarryKey& k, Body&& body) {
     int hits = 0;
-#define ROLA_ARM_VISIT(I, D_, DV_, W_)                                            \
-  if (D == (D_) && dv == (DV_) && warps_per_cta == (W_)) {                        \
-    ++hits;                                                                       \
-    if (hits == 1) body(Arm<I, D_, DV_, W_>{});                                   \
+#define ROLA_ARM_VISIT(I, FR_, FF_, RR_, RF_, CH_, PR_)                                                       \
+  if (k.fold_rows == (FR_) && k.fold_factors == (FF_) && k.read_rows == (RR_) && k.read_factors == (RF_) \
+      && k.channels == (CH_) && k.publish_regs == (PR_)) {                                                \
+    ++hits;                                                                                               \
+    if (hits == 1) body(Arm<I, FR_, FF_, RR_, RF_, CH_, PR_>{});                                          \
   }
     ROLA_CARRY_ARM_SET_X(ROLA_ARM_VISIT)
 #undef ROLA_ARM_VISIT
@@ -47,26 +58,30 @@ struct CarryArmSet {
   //: THE BUILT SET, SPELLED, so a refusal is one a caller can act on.
   static std::string members() {
     std::string out;
-#define ROLA_ARM_NAME(I, D_, DV_, W_)                                             \
-  out += (out.empty() ? "" : ", ");                                               \
-  out += "(" #D_ ", " #DV_ ", " #W_ ")";
+#define ROLA_ARM_NAME(I, FR_, FF_, RR_, RF_, CH_, PR_) \
+  out += (out.empty() ? "" : ", ");                    \
+  out += "(" #FR_ ", " #FF_ ", " #RR_ ", " #RF_ ", " #CH_ ", " #PR_ ")";
     ROLA_CARRY_ARM_SET_X(ROLA_ARM_NAME)
 #undef ROLA_ARM_NAME
     return out.empty() ? std::string("none") : out;
   }
 
   //: WHICH FIELD HAS NO MEMBER AT ALL -- see docs/internals/common/arm_switch.md#offending-field
-  static std::string offending_field(int D, int dv, int warps_per_cta) {
-    bool d_seen = false, dv_seen = false, w_seen = false;
-#define ROLA_ARM_FIELD(I, D_, DV_, W_)                                            \
-  d_seen = d_seen || D == (D_);                                                   \
-  dv_seen = dv_seen || dv == (DV_);                                               \
-  w_seen = w_seen || warps_per_cta == (W_);
+  static std::string offending_field(const CarryKey& k) {
+    bool seen[6] = {false, false, false, false, false, false};
+#define ROLA_ARM_FIELD(I, FR_, FF_, RR_, RF_, CH_, PR_) \
+  seen[0] = seen[0] || k.fold_rows == (FR_);           \
+  seen[1] = seen[1] || k.fold_factors == (FF_);        \
+  seen[2] = seen[2] || k.read_rows == (RR_);           \
+  seen[3] = seen[3] || k.read_factors == (RF_);        \
+  seen[4] = seen[4] || k.channels == (CH_);            \
+  seen[5] = seen[5] || k.publish_regs == (PR_);
     ROLA_CARRY_ARM_SET_X(ROLA_ARM_FIELD)
 #undef ROLA_ARM_FIELD
-    if (!d_seen) return "D";
-    if (!dv_seen) return "DV";
-    if (!w_seen) return "warps_per_cta";
+    static constexpr const char* names[6] = {"fold_rows",    "fold_factors", "read_rows",
+                                             "read_factors", "channels",     "publish_regs"};
+    for (int i = 0; i < 6; ++i)
+      if (!seen[i]) return names[i];
     return "the combination";
   }
 };
@@ -74,19 +89,21 @@ struct CarryArmSet {
 //: ONE HOST BRANCH OVER A GENERATED ARM SET; an empty set refuses every call by name.
 //: -- see docs/internals/common/arm_switch.md#arm-switch
 template <class ArmSet, class Body>
-inline void arm_switch(int D, int dv, int warps_per_cta, Body&& body) {
+inline void arm_switch(const CarryKey& k, Body&& body) {
   static_assert(ArmSet::count >= 0, "an arm set carries a member count");
   static_assert(ArmSet::count <= ArmSet::declared,
                 "a build carries a subset of the declared arms; a set larger than the "
                 "declaration means the selection and the declaration disagree");
-  const int hits = ArmSet::visit(D, dv, warps_per_cta, std::forward<Body>(body));
-  STD_TORCH_CHECK(hits <= 1, "the ", ArmSet::family, " arm set covers ", ArmSet::key, " = (", D,
-                  ", ", dv, ", ", warps_per_cta, ") ", hits,
+  const int hits = ArmSet::visit(k, std::forward<Body>(body));
+  STD_TORCH_CHECK(hits <= 1, "the ", ArmSet::family, " arm set covers ", ArmSet::key, " = (",
+                  k.fold_rows, ", ", k.fold_factors, ", ", k.read_rows, ", ", k.read_factors, ", ",
+                  k.channels, ", ", k.publish_regs, ") ", hits,
                   " times; an arm set is a set and each key selects one body");
   STD_TORCH_CHECK(hits == 1, "this build carries no ", ArmSet::family, " arm for ", ArmSet::key,
-                  " = (", D, ", ", dv, ", ", warps_per_cta, "); the field that misses is ",
-                  ArmSet::offending_field(D, dv, warps_per_cta), ". It carries ", ArmSet::count,
-                  " of ", ArmSet::declared, " declared arms: ", ArmSet::members());
+                  " = (", k.fold_rows, ", ", k.fold_factors, ", ", k.read_rows, ", ",
+                  k.read_factors, ", ", k.channels, ", ", k.publish_regs,
+                  "); the field that misses is ", ArmSet::offending_field(k), ". It carries ",
+                  ArmSet::count, " of ", ArmSet::declared, " declared arms: ", ArmSet::members());
 }
 
 }  // namespace rola

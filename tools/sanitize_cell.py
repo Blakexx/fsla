@@ -13,8 +13,8 @@ carrying the module, its 160 parametrised rows and torch's own arenas on top of 
 OOM-killed at 23 GB before the report is written (the K2 journal's open item, and it reappears
 under the one-box cell, so the cell was not the whole of it).
 
-This driver runs the SAME cell through the SAME binding (`measure.cells.carry_call`, or for the
-intra the bench subject's bundle, `measure.subjects.bundle_of`, and the facts pass over it) with
+This driver runs the SAME cell through the SAME binding (the carry's operands, `measure.subjects.carry_operands`, or
+for the intra the bench subject's bundle, `measure.subjects.bundle_of`, and the facts pass over it) with
 nothing else resident: one draw, one launch, one synchronise. The intra's row needs it for the
 same reason in another form: its oracle test computes the fp64 reference inside the instrumented
 process, and racecheck slows every torch kernel of that past the test's timeout. It asserts nothing -- correctness
@@ -22,7 +22,7 @@ is the oracle tier's row for the same cell -- and it prints a line naming the la
 checksum of its outputs, which is what makes a vacuous pass (a cell whose arm is not built, an
 empty selection) impossible to read as coverage.
 
-    python tools/sanitize_cell.py --cell one-box-short --order first
+    python tools/sanitize_cell.py --cell one-box-short
     python tools/sanitize_cell.py --kernel intra --cell flagship-alt-k4
 """
 from __future__ import annotations
@@ -40,15 +40,6 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--cell", required=True)
     ap.add_argument("--kernel", default="carry", choices=("carry", "intra"))
-    ap.add_argument("--order", default="first", choices=("first", "identity"),
-                    help="the order policy, the launch's one dial")
-    ap.add_argument("--phase", default="both", choices=("both", "fold", "readout"),
-                    help="which phase's schedule to instrument. racecheck's shadow state is "
-                         "per shared access per barrier interval and this host's budget "
-                         "reaches ONE PHASE at a time on a real draw; zeroing the OTHER "
-                         "side's routing plane makes that phase reap everything, so its "
-                         "schedule still runs and its memory traffic is nil. The arithmetic "
-                         "is the oracle tier's business, not this driver's.")
     args = ap.parse_args()
 
     import torch
@@ -56,30 +47,15 @@ def main() -> int:
     if args.kernel == "intra":
         return _intra(args.cell)
 
-    from measure.cells import by_name, carry_call
+    from measure.cells import by_name
+    from measure.subjects import carry_operands
     from rola.ops import carry as carry_ops
 
     spec = by_name(args.cell)
-    drawn, call = carry_call(spec, 1)
-    routes, v = call.pop("routes"), call.pop("v")
-    if args.phase != "both":
-        dead = torch.zeros_like(routes.read if args.phase == "fold" else routes.write)
-        routes = carry_ops.RoutePlanes(
-            read=dead if args.phase == "fold" else routes.read,
-            write=dead if args.phase == "readout" else routes.write, gain=routes.gain)
-        words = call["liveness"].words.clone()
-        words[:, 0 if args.phase == "fold" else 1] = 0
-        call["liveness"] = carry_ops.LivenessWords(words=words)
-    schedule = carry_ops.CarrySchedule(order=args.order)
-    state = carry_ops.state_plane(call["descriptor"], 1)
-    num, den = carry_ops.carry_forward(routes, v, state_in=None, state_out=state,
-                                       schedule=schedule, **call)
+    num, check = carry_ops.carry(*carry_operands(spec))
     torch.cuda.synchronize()
-    print(f"sanitize_cell: {spec.name} phase={args.phase} "
-          f"order={args.order} LAUNCHED "
-          f"num={int(num.view(torch.int32).abs().sum()):d} "
-          f"den={int(den.view(torch.int32).abs().sum()):d} "
-          f"state={int(state.view(torch.int32).abs().sum()):d}")
+    print(f"sanitize_cell: {spec.name} LAUNCHED "
+          f"num={int(num.abs().sum()):d} check={float(check):g}")
     return 0
 
 

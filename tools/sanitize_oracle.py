@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""K39 -- the compute-sanitizer NAMED gate on the carry/intra/decode oracle cells.
+"""The compute-sanitizer NAMED gate on the facts, intra, decode, produce and entmax oracle cells.
 
 `docs/testing.md`'s "sanitizer lane" section records the shape (a SCHEDULED lane
 over a named subset, never a PR gate -- the tools cost one to two orders of
@@ -14,7 +14,7 @@ This is that measurement, promoted from an ad-hoc invocation (recorded once, by
 hand, in FINDINGS `## PROBE-K35` under "memcheck on paging") to a script anyone
 can run and CI can schedule: `racecheck`/`synccheck`/`initcheck` (memcheck already
 ran, ad hoc, on paging -- K39 card) against ONE named oracle cell per family
-(carry, intra via the combined prefill operator, decode), each run as its own
+(facts, intra, decode, produce, entmax), each run as its own
 `compute-sanitizer`-wrapped pytest process so a hang or an error in one tool
 cannot block another, under the GPU lock every campaign shares.
 
@@ -76,8 +76,7 @@ class Family:
 #: cell -- this script adds no cell of its own, it reruns an existing one under the
 #: sanitizer -- and states whether the family's kernel EXISTS.
 #:
-#: AN ABSENT FAMILY IS REPORTED, NEVER RUN AND NEVER CLEAN. The carry reverse pass has
-#: no body on this line: a
+#: AN ABSENT FAMILY IS REPORTED, NEVER RUN AND NEVER CLEAN. A family with no body on this line: a
 #: sanitizer pair over a cell that refuses at the extension boundary launches nothing,
 #: and a tool that reports no hazards over no launch is the vacuous pass this script
 #: exists to refuse (its own rule, learned when a CLEAN came back from a binary that
@@ -118,45 +117,6 @@ _FAMILIES = {
         test="tests/oracle/test_entmax_cuda_gates.py::"
              "test_teeth_B_values_reject_beyond_tolerance[1.5]",
         kernel="rola::entmax::union_forward", present=True),
-    #: THE CARRY FORWARD, on the cell that pins every map it composes: the state slice's
-    #: two sweeps, the window's four edges, the head's sort and one deposit's MMA, in one
-    #: launch. Racecheck takes the bare driver on the ONE-BOX cells -- `N = BC`, so the grid
-    #: is 1x1 and the coverage is COMPLETE BY CONSTRUCTION: racecheck sees only shared
-    #: memory, shared memory is CTA-local, and every CTA of this family runs identical code.
-    "carry": Family(
-        test="tests/oracle/test_carry_vs_oracle.py::"
-             "test_one_token_writing_one_leaf_is_the_oracles_single_deposit",
-        kernel="rola::carry::carry_forward", present=True,
-        racecheck_driver=("tools/sanitize_cell.py", "--cell", "one-box-tiny", "--order",
-                          "first")),
-    #: THE FOLD over more than one window, dense: every warp on every box and segment, the
-    #: segment locks contended, the entry and exit sweeps around it.
-    "carry_fold": Family(
-        test="tests/oracle/test_carry_vs_oracle.py::"
-             "test_the_folded_state_is_the_fp64_reference[flat-small-multiwindow]",
-        kernel="rola::carry::carry_forward", present=True,
-        racecheck_driver=("tools/sanitize_cell.py", "--cell", "one-box-multiwindow",
-                          "--order", "first")),
-    #: THE SORT WHERE THE REAP IS REAL: a k_tok = 4 draw over two windows, so the live prefix
-    #: is a fraction of the window and tiles skip boxes; and the identity order on the same
-    #: draw, so both policies' heads run under the tool.
-    "carry_sparse": Family(
-        test="tests/oracle/test_carry_vs_oracle.py::"
-             "test_the_sparse_form_is_the_fp64_reference[one-box-alt-k4-first]",
-        kernel="rola::carry::carry_forward", present=True,
-        racecheck_driver=("tools/sanitize_cell.py", "--cell", "one-box-alt-k4", "--order",
-                          "first")),
-    "carry_sparse_reap": Family(
-        test="tests/oracle/test_carry_vs_oracle.py::"
-             "test_the_sparse_form_is_the_fp64_reference[one-box-short-identity]",
-        kernel="rola::carry::carry_forward", present=True,
-        racecheck_driver=("tools/sanitize_cell.py", "--cell", "one-box-short", "--order",
-                          "identity")),
-    #: ABSENT: the carry reverse pass. Its cells are red at the extension boundary; the
-    #: coverage is owed by the stage that builds the body.
-    "carry_backward": Family(
-        test="tests/oracle/test_carry_backward_vs_reference.py::test_every_cotangent_matches_the_reference",
-        kernel="rola::carry::carry_backward", present=False),
 }
 
 _FAMILY_TESTS = {name: row.test for name, row in _FAMILIES.items()}

@@ -5,7 +5,7 @@ KERNEL_STANDARDS §22 (7) and (8). One untimed launch of a cell through the prob
 exported per SASS line, then attributed by `tools/region_ledger.py` against the installed extension and
 `tools/budgets/carry.json`'s components.
 
-    python tools/stall_census.py flagship-dense --json census.json [--schedule first]
+    python tools/stall_census.py flagship-dense --json census.json
 
 The JSON is region_ledger's `--json`, plus the cell, the schedule and whether a component exceeded its budget. It holds:
 - every component's instructions per CTA-window and its stall samples by reason (spin loops as their own

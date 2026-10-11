@@ -148,7 +148,7 @@ sees a width other than its own.
 **Both boundaries are tested.** API tests prove a padded run is bit-identical to the
 same shape declared natively; kernel-boundary tests call the launch surface directly
 with unpadded shapes and assert the refusal
-(`tests/unit/test_carry_surface.py`). A logical-width field in a kernel entry
+(`tests/oracle/test_padding_seam.py`). A logical-width field in a kernel entry
 signature is a lint finding, because a kernel that could read one could pad.
 
 **What the descriptor fixes.** A state binds its format at its first call — `D`, the

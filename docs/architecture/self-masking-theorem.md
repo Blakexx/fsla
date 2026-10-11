@@ -167,9 +167,7 @@ the engine's granularity coarsening legal:
   ([`paging/paging.md`](../internals/paging/paging.md), the atom re-key);
 - **Window unions** over the carry kernel's window tokens are an OR, deliberately
   coarser than the per-token AND (the `BT` token tile the tiled consumer took this
-  union over, and the chunk arm's super-chunk after it, are both retired; the
-  carry kernel's 512-token window head takes the any-digit OR now —
-  `docs/internals/carry/box.md`);
+  union over, and the chunk arm's super-chunk after it, are both retired);
 - The **block rectangle** is the granularity of a visit: every leaf of the block
   is resident for the whole visit whether or not the visit's support names it, so a
   leaf outside the support is read, multiplied by an exactly-zero coefficient, and
@@ -192,7 +190,7 @@ Two live uses:
   back, which is what makes the paged path *bitwise* equal to the unpaged one
   rather than approximately equal
   ([`paging/paging.md`](../internals/paging/paging.md); gated by
-`tests/integration/test_chunk_paging_equivalence.py`).
+`tests/integration/test_decode_paging.py`).
 - **Untouched rows do not walk.** A row whose writes are all zero is left
   bit-identical, so repeated store/reload cannot drift it. This is what separates
   the *store* count from the *visit* count in the state-precision analysis: the

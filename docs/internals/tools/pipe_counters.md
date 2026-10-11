@@ -10,7 +10,7 @@ KERNEL_STANDARDS §22. One untimed launch of a cell through rola's runner (`meas
 - LSU writeback activity, global reduction requests and sectors;
 - DRAM bytes read and written.
 
-    python tools/pipe_counters.py flagship-dense --json counters.json [--schedule first]
+    python tools/pipe_counters.py flagship-dense --json counters.json
 
 The JSON holds every counter's LAUNCH value (`launch`), the counters the profiler did not report (`missing`), and the
 launch's CTA-windows. Nothing derived is stored. A reader divides a sum by `cta_windows` for a unit, and computes

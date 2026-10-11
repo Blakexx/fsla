@@ -47,9 +47,9 @@ COUNTERS = (
 )
 
 
-def measure(cell: str, schedule: str) -> dict:
+def measure(cell: str) -> dict:
     cmd = [dev_config.get("toolchain.ncu"), "--target-processes", "all", "-k", "regex:carry_kernel", "-c", "1",
-           "--metrics", ",".join(COUNTERS), "--csv", *oneshot_argv(cell, arm_name("carry_forward", schedule=schedule))]
+           "--metrics", ",".join(COUNTERS), "--csv", *oneshot_argv(cell, arm_name("carry_forward"))]
     done = process.run(cmd, cwd=ROOT, timeout=3600)
     values = {}
     for line in done.stdout.splitlines():
@@ -59,17 +59,16 @@ def measure(cell: str, schedule: str) -> dict:
                 values[parts[-3]] = float(parts[-1].replace(",", ""))
     if not values:
         raise SystemExit(f"pipe_counters: no counters read (ncu rc {done.returncode}):\n{(done.stdout + done.stderr)[-1500:]}")
-    return {"cell": cell, "schedule": schedule, "cta_windows": phase_ledger.cta_windows(cell), "launch": values,
+    return {"cell": cell, "cta_windows": phase_ledger.cta_windows(cell), "launch": values,
             "missing": sorted(set(COUNTERS) - set(values))}
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cell")
-    ap.add_argument("--schedule", default="first", help="the carry family's order policy the launch runs")
     ap.add_argument("--json", type=Path, required=True)
     a = ap.parse_args()
-    doc = measure(a.cell, a.schedule)
+    doc = measure(a.cell)
     a.json.write_text(json.dumps(doc, sort_keys=True) + "\n")
     print(f"{a.cell}: {len(doc['launch'])} counters, HMMAs {doc['launch'].get('sm__inst_executed_pipe_tensor_op_hmma.sum')}")
     return 0

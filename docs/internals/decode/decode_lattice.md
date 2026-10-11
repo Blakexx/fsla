@@ -28,23 +28,23 @@ findings: under the interleave a token's run over a level that is DENSE for its
 side straddles atoms at 25% occupancy at EITHER span vector; under mixed radix
 with `s_{D-1} >= kAtomLeaves` it FILLS them; where the level is narrower than
 an atom the rectangle spans two levels and the fill is partial
-(`carry/box.md`).
+(`rola/ops/lattice.py`).
 
 Symbols, restated from the spec at first use here: `D` the number of routing
 levels; `B_l` level `l`'s width; `k = 2^kappa` the uniform per-level sub-box
 span; `m = prod_l m_l` the capacity multiplier, distributed innermost-first to
 the atom floor, capped by the level's own width and balanced over the rest
-(spec §2.5 as the atom-rectangle law generalizes it, `carry/box.md`);
+(spec §2.5 as the atom-rectangle law generalizes it, `rola/ops/lattice.py`);
 `s_l = k * m_l` an owner's span at level `l`; `g_l = B_l / s_l` the owner-grid
 extent; `BC = prod_l s_l` the leaves one owner holds; `atom` the 16-leaf page
 granule (`rola::carry::kAtomLeaves`).
 
-`decode.cuh` carries the box's fields on `DecodeParams` under `BoxPlan`'s own
+`decode.cuh` carries the box's fields on `DecodeParams` under the lattice's own
 names (`lat_k`, `lat_s[]`, `lat_g[]`, `lat_gsuf[]`, `lat_run_shift[]`,
 `lat_local_bits`, and the unit's own `lat_inner_bits`, `lat_outer_bits`,
 `lat_oshift[]`) because decode takes `(k, m)` and the widths as DATA rather than
 as template arms — one built binary serves every topology the producer can emit,
-so `BoxPlan`'s constexpr fields become runtime scalars derived by `BoxPlan`'s own
+so the lattice's fields become runtime scalars derived by its own
 formulas. This doc is their authority; `decode.cuh` merely carries them.
 
 ---
@@ -364,7 +364,7 @@ bound.
 ## <a id="the-refusals"></a>5. `fill_lattice` — the box's constraints, as runtime checks
 
 Decode takes its lattice as DATA, not as a template arm, so every constraint
-`box.cuh`'s `BoxPlan` states as a `static_assert` is a `STD_TORCH_CHECK` in
+`rola/ops/lattice.py`'s `box_shape` refuses is a `STD_TORCH_CHECK` in
 `decode.cu::fill_lattice`:
 
 - `k` and `m` are exact powers of two;
@@ -392,7 +392,7 @@ candidate enumeration a PARTITION. The interleave needed two clauses here
 (`k^D % kAtomLeaves == 0` and `4 % log2(k) == 0`); mixed radix discharges both
 by the order itself — an atom is 16 consecutive `local` values at a multiple of
 16, hence an aligned digit rectangle for EVERY admissible span vector
-(`box.cuh`, K3/K4). A DENSE backing never asks an atom a liveness question and
+(`rola/ops/lattice.py`). A DENSE backing never asks an atom a liveness question and
 carries no constraint.
 
 `rola.ops.lattice.derive_lattice` and `box_shape` are the SAME arithmetic,

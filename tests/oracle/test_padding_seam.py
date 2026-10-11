@@ -5,11 +5,8 @@ any level width and any value width is served by host-side padding, with no kern
 change and no oracle arithmetic change.
 
 **TWO CONTRACTS, KEPT SEPARATE (KERNEL_STANDARDS §R13).** The API accepts any shape and
-pads; the kernel accepts only its own descriptor's strict shape and refuses the rest.
-`test_the_api_boundary_pads_and_the_kernel_boundary_refuses` is both halves, side by
-side: the API is `rola.ops.prefill`'s `_descriptor`/`_pack_operands` operand-packing
-seam (C2b2), which pads through `rola.ops.padding` onto the carry launch surface
-(`rola.ops.carry`, C1c) this line's kernel has no body for yet.
+pads; the kernel boundary accepts only its own strict shape and refuses the rest
+(`test_box_shape_is_a_second_kernel_boundary_that_refuses_unpadded_widths`).
 
 **PREFILL (no kernel on this line, C_CLEAN_SLATE):** `naive_rola` is already
 dimension-generic (it derives `N`/strides from whatever `Topology` it is handed and
@@ -33,9 +30,8 @@ import math
 import pytest
 import torch
 
-from rola.ops.carry import box_shape
 from rola.ops.decode import _decode_step, derive_decode_geometry
-from rola.ops.lattice import to_canonical, to_lattice
+from rola.ops.lattice import box_shape, to_canonical, to_lattice
 from rola.ops.naive import naive_rola
 from rola.ops.padding import pad_routes, pad_v
 from rola.ops.paging import bytes_equal
@@ -117,57 +113,6 @@ def test_prefill_padding_is_the_ruled_mechanism_not_an_approximation_of_it():
 # ---------------------------------------------------------------------------
 # TWO CONTRACTS: the API pads, the kernel refuses (KERNEL_STANDARDS §R13)
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.cuda
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="the launch surface is the extension's boundary")
-def test_the_api_boundary_pads_and_the_kernel_boundary_refuses():
-    """(i) API: `rola.ops.prefill`'s `_descriptor`/`_pack_operands` -- the operand-
-    packing seam onto the carry launch surface -- take a genuinely unpadded
-    shape ((31, 45), d_v=8) without ever raising a SHAPE error: they pad, and the kernel
-    takes the padded call. Red while this line builds no arm at the padded ``DV``
-    (`C_CLEAN_SLATE`, TEST-DRIVEN): the refusal names the arm, never a shape. (ii) KERNEL: the
-    descriptor the state addresses bytes with (`rola._state.StateFormat`) refuses that
-    same unpadded shape directly, by name -- the boundary a real kernel launch sits
-    behind.
-    """
-    from rola._state import CANONICAL_ORDER, PAGE_RECTANGLE_BITS, SPLIT_PLANE_DTYPE, StateFormat
-    from rola.engine.facts import liveness as lv
-    from rola.ops import carry as carry_ops
-    from rola.ops.prefill import _conservative_activity, _descriptor, _pack_operands
-
-    widths = (31, 45)
-    B, T, H, d_v = 1, 2, 1, 8
-    device = "cuda"
-    read_levels = tuple(torch.rand(B, T, H, w, dtype=torch.float64, device=device) for w in widths)
-    write_levels = tuple(torch.rand(B, T, H, w, dtype=torch.float64, device=device) for w in widths)
-    g_write = torch.ones(B, T, H, dtype=torch.float64, device=device)
-    v = torch.randn(B, T, H, d_v, dtype=torch.float64, device=device)
-
-    #: (i) THE API PADS: no ValueError about shape reaches the caller. `_pack_operands`
-    #: widens (31, 45) to (32, 64) and d_v=8 to the smallest shipped DV (32) before the
-    #: call ever names `carry_forward`, which runs it.
-    pread, pwrite, gwrite, v_bh, v_bthd = _pack_operands(read_levels, write_levels, g_write, v)
-    bh, dv = v_bh.shape[0], v_bh.shape[2]
-    descriptor = _descriptor(widths, dv, bh)
-    assert descriptor.B == (32, 64) and descriptor.DV == 32, (
-        "the descriptor names the PADDED shape, never the caller's logical one")
-    launch = carry_ops.LaunchShape()
-    geometry = carry_ops.geometry_block(descriptor, launch)
-    #: the call's own statement of its support over the padded layout: the contract's model on its levels
-    layout = lv.LivenessLayout.of(descriptor, T)
-    statics = lv.side_statics(layout, (False,) * layout.D, widths)
-    liveness = carry_ops.LivenessWords(words=lv.liveness_words(read_levels, write_levels, layout, statics, statics))
-    activity = _conservative_activity(descriptor, bh, v_bh.device)
-    routes = carry_ops.RoutePlanes(read=pread, write=pwrite, gain=gwrite)
-    carry_ops.carry_forward(routes, v_bh, descriptor=descriptor, geometry=geometry,
-                            liveness=liveness, activity=activity, launch=launch)
-
-    #: (ii) THE KERNEL REFUSES: the unpadded widths, presented directly to the
-    #: descriptor a real launch would be checked against, are refused by name.
-    with pytest.raises(ValueError, match="level 0 is 31"):
-        StateFormat(D=2, B=widths, order=CANONICAL_ORDER, page_bits=PAGE_RECTANGLE_BITS,
-                   DV=32, dtype=SPLIT_PLANE_DTYPE, ids=1)
 
 
 def test_box_shape_is_a_second_kernel_boundary_that_refuses_unpadded_widths():

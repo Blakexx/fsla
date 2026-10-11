@@ -412,7 +412,7 @@ two hazards, and a wait covers only one of them. Its COMPLETION edge (RAW) is th
 phase behind which the first read of the new contents stands. Its ISSUE edge (WAR) is the barrier
 after the last read of the OLD contents by ANY warp: a warp's wait orders that warp against its own
 copies and never against another warp's reads of the bytes it is about to overwrite. Every shared
-tenant an asynchronous operation writes states both edges in the ledger (`smem_ledger.md`), and a
+tenant an asynchronous operation writes states both edges in its ledger, and a
 review refuses a tenant that names only the wait. On sm_90 the two edges are a pipeline stage's
 empty and full barriers; on sm_80 they are the CTA edges the frame already has, and the issue is
 placed past the edge that ends the last read. Born of the box-words hazard of 2026-09-08 (journal
@@ -447,8 +447,7 @@ ever compared. From here the floor is a GATE, per component, before composition:
   x latency at the stated prefetch distance), its instruction budget derived from the design's own
   operation count, and WHO EXECUTES IT HOW MANY TIMES (a per-window job is done once per CTA, by one
   warp or split across warps -- never replicated on every warp).
-- Each component is built into its family's PART HARNESS (the carry's is
-  `measure/harness/bench_carry_parts.py`: one `__global__` driver per component over the real device
+- Each component is built into its family's PART HARNESS (one `__global__` driver per component over the real device
   functions, inputs shaped by a cell's liveness)
   and measured there -- cycles at the locked clock, instructions, the binding counter -- against its
   floors. It is accepted at <= 1.3x its binding floor and within its instruction budget; the numbers
@@ -555,16 +554,7 @@ HMMA's 32 cycles was one such constant for eight days); (11) THE PIPE TIMELINE (
 tensor pipe's true utilization over a launch, measured on silicon by the profiler's PM sampling (1 us samples), on a
 scale taken from the MMA-only composition's plateau -- the one instrument that says when the pipe idled rather
 than how much in total; validated against the HMMA-count utilization at three points (66.8 / 21.0 / 33.9%
-against 65-66 / 20-21 / 33.7%); (12) THE WARP TIMELINE (`tools/warp_timeline.py`, `docs/internals/tools/warp_timeline.md`):
-one CTA's warps window by window, each activity's REAL cycles from the kernel's stamps beside the instructions it
-executed, from an instrumented launch of the same binary (NVBit, pinned) matched by window, event and ordinal;
-the page draws the four schedulers, their warps and a pipe strip each, and an activity opens into its instructions with the census's stall samples at each (joined by address, attributed by the traced executions' share). Its rules: content from the trace, cycles
-from the stamps, never timing from the trace (the instrumented launch is ~1000x slower); a stamp site is named by
-the event the same run recorded; a phase lasts until the NEXT stamp, so every stretch that follows a stamped
-activity is stamped (the fold's second run ran unstamped under the fill's stamp for two days); the page is read
-before any form is judged, and a change is read as two pages side by side. What it cannot say is the timing inside
-an interval: that is the replay model's (`pipe_sim.md`), validated against these stamps interval by interval, and
-the census's per-instruction samples joined by address.
+against 65-66 / 20-21 / 33.7%).
 HOW IT IS READ: a component's THEORY -- what the form must do to the ledger, and why -- is written as
 its budget line before the build; the measurement is read against that theory. A miss is explained
 by a measurement that ISOLATES the mechanism (a line, a counter, a life range, a variant that removes

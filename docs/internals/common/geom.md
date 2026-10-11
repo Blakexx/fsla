@@ -127,6 +127,15 @@ count, and the kernel knows `D` and `BC` as template arguments, so the untemplat
 a standards violation as well as a cost. The runtime `geom_canon_leaf` stays for the host
 seam, which genuinely does not know `D` at compile time.
 
+<a id="read-order"></a>
+## The read-order index
+
+`geom_read_index(g, r, local)` is the owner-local canonical row `local` re-read in the READ side's carve order. Level
+`l` contributes its `span[l]` digits, `(local >> run_shift[l]) & (span[l] - 1)`, at the bit offset of the spans of the
+levels that rank below it on the read side (`r.rank`, rank 0 innermost): the digits of the innermost-ranked level are the
+index's low bits. It is a permutation of `[0, BC)`, a fixed bit permutation of the row, and the transit region's row is
+this index under the swizzle (`geom_xch_row`; the next section).
+
 <a id="row-swizzle"></a>
 ## The region's swizzle, and why it is free
 
@@ -414,28 +423,17 @@ carve order), not a template parameter, and the shipped kernel passes `false`.
 <a id="on-the-tip"></a>
 ## What consumes this block today
 
-The pipelined body (F-P, `carry_kernel.cuh`/`box.cuh`/`layout.cuh`/`carry_host.cuh`) landed
-and now consumes this block's PLAIN-arithmetic half directly: `kAtomLeaves`, `owner_span_bits`,
-`span_total`/`span_base`, `geom_digit`, `geom_canon_leaf_t`, and the runtime addressing
-(`derive_carry_geom`, `CarveOrder`, `CarryGeomRT`) are all called from the shipped kernel —
-`kAtomLeaves` now has exactly one definition (here), so the duplicate-copy risk this
-foundation block once worried about is resolved by construction rather than by convention.
+The decode step consumes this block's PLAIN-arithmetic half: `kAtomLeaves` (one definition, here) and `geom_ilog2`.
+The carry kernel does not include it. The GENERATED SUB-BOX SET machinery and the runtime addressing (`sub_boxes`,
+`SubBoxSet`, `sb_index`, `sb_shift`, `sb_matches_arch_law`, `derive_carry_geom`, `CarveOrder`, `CarryGeomRT`) are
+exercised only through the host entries (`rola.ops.geometry`) by `tests/unit/test_carry_geometry.py` and
+`tests/unit/test_exchange_law.py`. The geometry test still checks the derivation as a PARITY claim against
+`ARM_PARAMS`/`PARENT_CENSUS`, a table transcribed from the pre-K31 parent tip (335c2b9) rather than re-derived from a
+live binary (the A-side of a parity claim is a pinned tip).
 
-What is NOT yet consumed by any shipped body is the GENERATED SUB-BOX SET machinery for
-composed or multi-member layouts (`sub_boxes`, `SubBoxSet`, `sb_index`, `sb_shift`,
-`sb_matches_arch_law`): the shipped arm's layout is PLAIN, one inner level and one outer
-level (`carry_kernel.md#layout`), and a composed or straddling arm is refused at compile
-time rather than built. That machinery is exercised only by
-`tests/unit/test_carry_geometry.py`, which still checks it as a PARITY claim against
-`ARM_PARAMS`/`PARENT_CENSUS`, a table transcribed from the pre-K31 parent tip (335c2b9)
-rather than re-derived from a live binary (the A-side of a parity claim is a pinned tip) —
-a historical reference kept for when a composed arm lands, not a description of the arm
-shipping today.
-
-`sb_matches_arch_law` — at `warps_per_cta == warps_per_sm` the arm's set IS
-`sub_boxes(D, leaves_per_sm(DV), warps_per_sm)` — likewise has no shipped body to live in
-yet, so the arch law is asserted in the geometry test instead, over the generated set the
-binding exposes.
+`sb_matches_arch_law` — at `warps_per_cta == warps_per_sm` the set IS
+`sub_boxes(D, leaves_per_sm(DV), warps_per_sm)` — has no kernel to live in, so the arch law is asserted in the
+geometry test instead, over the generated set the binding exposes.
 
 <a id="c1a-member-sets"></a>
 **C1a PINS THE PER-SIDE MEMBER SET AT BOTH `warps_per_cta`.** The set is

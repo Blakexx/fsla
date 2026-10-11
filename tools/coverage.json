@@ -10,8 +10,12 @@
  },
  "kernels": {
   "carry_kernel": {
-   "oracle": "tests/oracle/test_carry_vs_oracle.py",
-   "sanitizer": "carry",
+   "oracle": {
+    "owed": "no carry-vs-oracle test: the old one was deleted with the old carry; the new kernel's lands with its components"
+   },
+   "sanitizer": {
+    "owed": "no sanitizer row launches it: the old rows named the deleted oracle test; tools/sanitize_cell.py drives it"
+   },
    "budget": "tools/budgets/carry.json",
    "phases": "tools/phase_ledger.py",
    "ratified": "manifest",
@@ -21,7 +25,7 @@
   },
   "carry_stamp_kernel": {
    "oracle": {
-    "owed": "its reader (tests/unit/test_carry_surface.py) only asserts an int; read it against the footprint the source declares, as decode's and intra's are"
+    "owed": "no test reads its stamp against the footprint the source declares, as decode's and intra's are"
    },
    "sanitizer": {
     "exempt": "one thread writes one constant"

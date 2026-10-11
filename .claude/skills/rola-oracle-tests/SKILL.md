@@ -3,23 +3,20 @@ name: rola-oracle-tests
 description: Adding or running an fp64-oracle cell for the carry kernel — registry cells, GPU-locked pytest, standing failures, re-deriving expectations from the law
 ---
 The fp64 oracle is the truth (KERNEL_STANDARDS §10, "Oracle + conformance diff are the crown
-jewels"). Read `tests/oracle/test_carry_vs_oracle.py`'s own module docstring — it states the gate is
-the fp64 oracle, not the shipped kernel, because there is no bit-identity target across a redesign,
-only the arithmetic.
+jewels"). The gate is the fp64 oracle, not the shipped kernel, because there is no bit-identity target across a
+redesign, only the arithmetic.
 
 ## Adding a cell (rola-devtools' `rola_devtools/cells/carry.json`)
 A carry cell is a record in the central registry, never a draw written in a test: the file's `fields` block defines each
 field (`widths`, `dv`, `tokens`, `draw`, `k_tok`, `cohort`, `support`, `backing`, `state`, `tier`, `regime`), and
 `rola_devtools.cells.carry.realize` draws it and proves its regime; `measure/cells/__init__.py` is rola's reading
-(the descriptor, the launch shape, `carry_call`). The design points to preserve:
+(`by_name`, `carry_cells`, `realize`). The design points to preserve:
 - The oracle reads the ROUNDED operands: `realize` casts the draw to bf16 and `RealizedCell.doubles()` returns their fp64
   values, so the reference sees what the kernel received, not what the cast threw away.
 - `k_tok` (nonzeros per row) is a property of the DRAW, never told to the kernel -- that separation is the design's
   whole claim.
 - The sparse side alternates by level (`realize`'s own ruling comment says which levels are read-sparse and which
   write-sparse); `cohort` draws clustered support through `clustered`, the uniform case through `simplex`.
-- A cell at an arm the binary does not build asks `require_arm` first (the carry oracle's `run` does): a declared test
-  row skips with its name, an undeclared arm runs to the launch surface's refusal and stays red.
 
 ## Running under the GPU lock
 GPU work is serialized by the shared `gpu_lock()` primitive (`rola_devtools.locks.gpu`, K46) — every
@@ -65,20 +62,13 @@ truth (the fp64 reference in `tests/oracle/reference.py`).
 
 ## The compute-sanitizer named gate (K39)
 `tools/sanitize_oracle.py` runs `racecheck`/`synccheck`/`initcheck` (memcheck already ran, ad hoc,
-on paging — `docs/testing.md`'s "sanitizer lane") against one named cell per family (carry, intra,
-decode), each its own `compute-sanitizer`-wrapped pytest process. Invoke `sanitize_oracle.py` BARE
+on paging — `docs/testing.md`'s "sanitizer lane") against one named cell per family (facts, intra,
+decode, produce, entmax), each its own `compute-sanitizer`-wrapped pytest process. Invoke `sanitize_oracle.py` BARE
 (K46): it takes `gpu_lock()` itself, once, for the whole run, and the reentrant marker lets the
 wrapped pytest subprocess's own conftest fixture see the lock already held rather than deadlock on
 it. Run it — it is a SCHEDULED lane, not a PR gate (the tools cost one to two orders of magnitude) —
 whenever a change touches shared-memory publish/consume protocols or barrier placement (the S2d
 ring's bug class), not on every commit.
-
-## The hypothesis `cells` strategy (K39)
-`tests/oracle/test_carry_hypothesis_cells.py` draws (widths, k_tok, seed, cohort, d_v) over the
-DECLARED arm/`d_v` space via a `st.composite` strategy, opt-in under the `hypothesis_cells` marker
-(deselected by default alongside `bench` — `pyproject.toml`'s `addopts`). A SUPPLEMENT to the fixed
-named cells above, never a replacement — run it with `-m hypothesis_cells` when you want shrinking
-to find a minimal failing cell automatically, not as part of the default battery.
 
 - THE RUN RECIPE IS: plain `pytest <file>` from the worktree venv — the conftest takes the GPU lock itself
   (K46); wrapping it in `flock` SELF-DEADLOCKS (G2c lost 120 s to it). Any `flock … pytest` line in an

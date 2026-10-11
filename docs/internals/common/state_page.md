@@ -46,5 +46,4 @@ values keep that absolute precision, not a relative one, which is why the gates 
 ## <a id="split"></a>`SplitBlocks`: the unported carry's page
 
 `[16 x DV hi][16 x DV lo][16 mass hi][16 mass lo]`, an fp32 word as two bf16 halves, `16 * (DV + 1) * 4` bytes. The
-shipped carry body reads and writes it through `box.cuh`'s `BP::Page`; its host refuses the int8 state, so a stateful
-prefill is refused by name until the carry's int8 port, which deletes this struct.
+struct is read by no kernel on this tree; the carry's int8 port deletes it.
