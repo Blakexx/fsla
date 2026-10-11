@@ -1265,6 +1265,7 @@
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "42a56ca49f75", "reviewed": true, "sha256": "", "target": "measure/lab/results/den_sweep/sm_86.json"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "72a111ffe90e", "reviewed": true, "sha256": "", "target": "measure/lab/results/facts_block/sm_86.json"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "72a111ffe90e", "reviewed": true, "sha256": "", "target": "measure/lab/results/facts_pipeline/sm_86.json"},
+  {"doc": "docs/internals/tools/lab.md", "pinned_at": "66b8fdec141e", "reviewed": true, "sha256": "", "target": "measure/lab/results/facts_two/sm_86.json"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "b8309b3ccfc8", "reviewed": true, "sha256": "", "target": "measure/lab/results/fold_step/sm_86.json"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "403c3d6ee7ee", "reviewed": true, "sha256": "", "target": "measure/lab/results/gang_ring/sm_86.json"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "48566cd9d478", "reviewed": true, "sha256": "", "target": "measure/lab/results/list_fold/sm_86.json"},
