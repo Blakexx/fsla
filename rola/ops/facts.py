@@ -18,11 +18,12 @@ import torch
 from rola.engine.facts import lists as list_model
 from rola.engine.facts.liveness import LivenessLayout, SideStatics, mask_words, side_statics
 from rola.ops._ext import extension
-from rola.ops.carry import WINDOW
-from rola.routing.factors import carry_level_s
 
-__all__ = ["LEDGER_PHASES", "LEDGER_WARPS", "WINDOW", "Facts", "call_layout", "call_statics", "facts", "ledger_bind",
-           "list_level", "read_list_level"]
+__all__ = ["COMPOSITE", "LEDGER_PHASES", "LEDGER_WARPS", "WINDOW", "Facts", "call_layout", "call_statics", "facts",
+           "ledger_bind", "list_level", "side_lists"]
+
+#: THE WINDOW the lists are built over, the carry's and the intra's.
+WINDOW = list_model.WINDOW
 
 #: THE PHASE LEDGER'S SHAPE: ``[warps][phases]``, the kernel's own `FactsPhase` order, booked over every block.
 LEDGER_PHASES = ("columns", "vote", "lists", "store")
@@ -35,11 +36,12 @@ class Facts(NamedTuple):
     ``[BH, windows, B_list, 2]`` int16 list exponents -- per window and digit of the list level (:func:`list_level`)
     the smallest ``K`` with every token's ``b m <= 2^K`` (column 0) and ``b m s <= 2^K`` (column 1), ``b`` its write
     byte (a dense level's zero at the floor), ``m`` the write gain times the write levels' scales and ``s`` the value
-    scale; ``-126`` for a list no token writes. ``B_list`` is 0 when the call has no list level. ``fm`` the ``[BH, L,
-    2]`` fp32 factor products, each token's ``(F, m)`` = ``(m s, m)`` in that order (the fold's; written where the call
-    has a list level). A DENSE level's rows and groups are left unwritten: they are its width mask over the live tokens,
+    scale; ``-126`` for a list no token writes. ``B_list`` is 0 when the write side has no list level. ``fm`` the
+    ``[BH, L, 2]`` fp32 factor products, each token's ``(F, m)`` = ``(m s, m)`` in that order (the fold's; every
+    call, the kernel's columns level the write list level or, without one, the write side's first dense level). A DENSE level's rows and groups are left unwritten: they are its width mask over the live tokens,
     which a reader takes from the side's statics. ``write`` and ``read`` each side's lists at its listed level
-    (:class:`rola.engine.facts.lists.ListSet`; empty where the level is dense or absent), ``gains16`` ``[BH, L, 2]`` f16
+    (:class:`rola.engine.facts.lists.ListSet`; empty for a side with no sparse level, ``None`` for a composite side,
+    :func:`side_lists`), ``gains16`` ``[BH, L, 2]`` f16
     each token's ``(m, m s)`` at its window's powers of two and ``gains_exp`` ``[BH, windows, 2]`` their exponents
     (docs/internals/facts/facts.md#lists-out, #gains)."""
 
@@ -47,8 +49,8 @@ class Facts(NamedTuple):
     unions: torch.Tensor
     list_exp: torch.Tensor
     fm: torch.Tensor
-    write: list_model.ListSet
-    read: list_model.ListSet
+    write: list_model.ListSet | None
+    read: list_model.ListSet | None
     gains16: torch.Tensor
     gains_exp: torch.Tensor
 
@@ -66,24 +68,27 @@ def call_statics(routes, layout: LivenessLayout) -> tuple[SideStatics, SideStati
                  for flags in routes.sparse)
 
 
-def list_level(read_statics: SideStatics) -> int:
-    """THE WRITE LISTS' LEVEL, the carry's level R: at depth one the level, at depth two the level that is not the
-    read-sparse one (level S: level 1 when it is read-sparse or level 0 is not, else level 0); ``-1`` deeper, where
-    the carry is not built (docs/internals/owner/owner.md)."""
-    dense = read_statics.dense_levels
-    if len(dense) == 1:
-        return 0
-    level_s = carry_level_s(tuple(not d for d in dense))
-    return 1 - level_s if level_s >= 0 else -1
+#: A SIDE WITH TWO OR MORE SPARSE LEVELS: its lists are composite (keyed by a digit of each), which this pass does not
+#: build (:func:`side_lists` refuses them).
+COMPOSITE = -2
 
 
-def read_list_level(read_statics: SideStatics) -> int:
-    """THE READ LISTS' LEVEL, the carry's level S: at depth one the level, at depth two the read-sparse one
-    (:func:`rola.routing.factors.carry_level_s`); ``-1`` deeper. Its lists exist where it is sparse on the read side."""
-    dense = read_statics.dense_levels
-    if len(dense) == 1:
-        return 0
-    return carry_level_s(tuple(not d for d in dense))
+def list_level(statics: SideStatics) -> int:
+    """A SIDE'S LIST LEVEL: its one sparse level (the carve's ``lists`` for the side, by definition:
+    docs/internals/engine/carve.md); ``-1`` for a side with none, whose every token is a slot; :data:`COMPOSITE` for a
+    side with two or more."""
+    sparse = [level for level, dense in enumerate(statics.dense_levels) if not dense]
+    return sparse[0] if len(sparse) == 1 else (-1 if not sparse else COMPOSITE)
+
+
+def side_lists(facts: Facts, side: str) -> list_model.ListSet:
+    """``side``'s (``"write"`` or ``"read"``) lists, refusing a side the pass built none for because they are composite
+    (docs/internals/facts/facts.md#lists-out)."""
+    lists = getattr(facts, side)
+    if lists is None:
+        raise ValueError(f"the facts pass builds no composite lists: the {side} side has two or more sparse levels, "
+                         "and its lists would be keyed by a digit of each")
+    return lists
 
 
 def _dense_bits(statics: SideStatics) -> int:
@@ -104,17 +109,16 @@ def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, wri
     window_words = WINDOW // 32
     words = torch.empty((BH, 2, layout.rows, layout.words), dtype=torch.int32, device=routes.device)
     unions = torch.empty((BH, 2, layout.groups, layout.tiles), dtype=torch.int32, device=routes.device)
-    level = list_level(read_statics)
-    width = layout.B[level] if level >= 0 else 0
+    level, read_level = list_level(write_statics), list_level(read_statics)
+    columns = level if level >= 0 else write_statics.dense_levels.index(True)
+    width = layout.B[columns]
     list_exp = torch.empty((BH, -(-layout.words // window_words), width, 2), dtype=torch.int16, device=routes.device)
     fm = torch.empty((BH, layout.L, 2), dtype=torch.float32, device=routes.device)
     count = mask_words(layout.rows)
     windows = -(-layout.words // window_words)
-    read_level = read_list_level(read_statics)
     sets = {}
-    for side, lvl, statics in ((1, level, write_statics), (0, read_level, read_statics)):
-        listed = lvl >= 0 and not statics.dense_levels[lvl]
-        width = layout.B[lvl] if listed else 0
+    for side, lvl in ((1, level), (0, read_level)):
+        width = layout.B[lvl] if lvl >= 0 else 0
         groups = -(-width // 32)
 
         def u16(*shape, dtype=torch.int16):
@@ -127,18 +131,20 @@ def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, wri
             union=u16(BH, windows, groups, WINDOW), count=u16(BH, windows, groups),
             cv=entries[..., 2].view(torch.float16) if side else None,
             cm=entries[..., 3].view(torch.float16) if side else None))
-    with_gains = level >= 0
-    gains16 = torch.empty((BH, layout.L if with_gains else 0, 2), dtype=torch.float16, device=routes.device)
-    gains_exp = torch.empty((BH, windows if with_gains else 0, 2), dtype=torch.int16, device=routes.device)
+    gains16 = torch.empty((BH, layout.L, 2), dtype=torch.float16, device=routes.device)
+    gains_exp = torch.empty((BH, windows, 2), dtype=torch.int16, device=routes.device)
     (w_entries, w), (r_entries, r) = sets[1], sets[0]
     outs = [w_entries, w.at, w.union, w.count, r_entries, r.at, r.union, r.count, gains16, gains_exp]
     extension().rola_facts_forward(
         list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
         words, unions, list_exp, fm, outs, list(layout.B),
         _dense_bits(read_statics), [read_statics.mask_word(i) for i in range(count)],
-        _dense_bits(write_statics), [write_statics.mask_word(i) for i in range(count)], level, read_level, WINDOW)
-    return Facts(words=words, unions=unions, list_exp=list_exp, fm=fm, write=w, read=r, gains16=gains16,
-                 gains_exp=gains_exp)
+        _dense_bits(write_statics), [write_statics.mask_word(i) for i in range(count)], columns,
+        max(read_level, -1), WINDOW)
+    if level < 0:
+        list_exp = list_exp[:, :, :0]
+    return Facts(words=words, unions=unions, list_exp=list_exp, fm=fm, write=None if level == COMPOSITE else w,
+                 read=None if read_level == COMPOSITE else r, gains16=gains16, gains_exp=gains_exp)
 
 
 def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurement instrument (docs/internals/facts/facts.md#phase-ledger)

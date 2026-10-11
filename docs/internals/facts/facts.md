@@ -60,7 +60,7 @@ interleave); rows read head-major ran 113 against 212 token-major at 16 heads.
 
 `plan_units` (host) builds, once a call, each span's item list, every unit of the span the same: a code per item
 (`plan_code`: kind, side, level, first group, groups, team). Kinds: `kItemHalf` a write list half (team 0),
-`kItemDenseMax` a dense write list level's span for its maxima (team 0), `kItemReadList` the read list level's span
+`kItemDenseMax` a dense write list level's span for its maxima (team 0; since 2026-10-10 a write side without one sparse level hands the kernel its first dense level as the COLUMNS LEVEL, so every call gets its columns and gains, and the op discards that level's exponents), `kItemReadList` the read list level's span
 (team 1, with lists), `kItemVote` every other sparse level's span (team 1). Team 0's halves are interleaved with team
 1's items (the first half, half the ring items, the second half, the rest) so the two streams' builds fall apart. The
 plan rides in `FactsParams`, `kMaxPlan` codes a span, `kMaxSpans` spans.
@@ -152,8 +152,9 @@ clamped to [-126, 127], 0 for a zero largest. The first item's team barrier is t
     K[w, r, 0]    = ceil(log2(max over the window's tokens of b(t, r) × m(t)))
     K[w, r, 1]    = ceil(log2(max over the window's tokens of b(t, r) × m(t) × s(t)))
 
-per window `w` and digit `r` of the LIST LEVEL — the carry's level R, whose write digits are its write lists
-(`rola.ops.facts.list_level`; none past depth two) — `b` the token's write coefficient on the byte scale: a sparse
+per window `w` and digit `r` of the WRITE LIST LEVEL — the write side's one sparse level, the carve's `fold.lists`
+(`rola.ops.facts.list_level`; none for a side with no sparse level or with two, whose lists are composite) — `b` the
+token's write coefficient on the byte scale: a sparse
 level's u8 digit, a dense level's f16 times 255 (exact; its floor stored,
 [`liveness_contract.md`](liveness_contract.md#floor)), floored at -126 (the smallest normal's exponent: a list no token
 writes). Stored int16 `[BH, windows, B_list, 2]`. The fp16 fold puts each list's largest coefficient at a fixed power
@@ -166,7 +167,10 @@ F`), joined over the team's warps by `atomicMax` and read after the team barrier
 
 ## The lists out
 
-A listed level (the write side's list level, the read side's read list level, each when sparse) gets, per 512-token
+A side's LIST LEVEL is its one sparse level (`rola.ops.facts.list_level`, the carve's `lists` for the side). A side
+with no sparse level has no lists (every token of the window is a slot); a side with two or more gets its words and no
+lists, `None` in `Facts`, and `side_lists` refuses them: they would be COMPOSITE, keyed by a digit of each level, which
+this pass does not build. A list level gets, per 512-token
 window and 32-digit group, a UNION (the group's live tokens ranked, `union_tok`, `union_count`) and per digit a LIST:
 the union's slots of its tokens in slot order, in PASSES of `kPassSlots` = 128 slots, each pass round-robin by
 slot & 7 (`round_robin`: the entry's place from the pass's residue counts), compact, at most `kListCap` = 512

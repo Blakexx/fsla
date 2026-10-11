@@ -193,8 +193,8 @@ def test_a_padded_topology_is_the_model_and_its_pad_digits_are_dead(widths, L, d
 
 def test_a_dense_level_is_neither_read_nor_written():
     """BLIND the dense level's rows and POISON the outputs: a pass that read the level would vote it dead and one that
-    wrote it would clear the poison, while the sparse level is the model's all the same. The dense level is the write
-    lists' level, so its list unit runs and writes only its exponents."""
+    wrote it would clear the poison, while the sparse level is the model's all the same. The call lists nothing: a list
+    level is a side's one sparse level, never a dense one (`facts_ops.list_level`)."""
     widths, L = (32, 16), 64
     layout = _layout(widths, L)
     statics = _statics(layout, (0,), (20, 16))
@@ -203,19 +203,17 @@ def test_a_dense_level_is_neither_read_nor_written():
     want = _model(routes, layout, read_statics, write_statics)
     for side in (routes.amp_read, routes.amp_write):
         side[0].zero_()
-    BH, poison, level = routes.batch * routes.heads, 0x5A5A5A5A, facts_ops.list_level(read_statics)
-    assert level == 0
+    BH, poison = routes.batch * routes.heads, 0x5A5A5A5A
     words = torch.full((BH, lv.SIDES, layout.rows, layout.words), poison, dtype=torch.int32, device="cuda")
     unions = torch.full((BH, lv.SIDES, layout.groups, layout.tiles), poison, dtype=torch.int32, device="cuda")
-    list_exp = torch.full((BH, 1, layout.B[level], 2), 0x5A5A, dtype=torch.int16, device="cuda")
+    list_exp = torch.empty((BH, 1, 0, 2), dtype=torch.int16, device="cuda")
     fm = torch.zeros((BH, layout.L, 2), dtype=torch.float32, device="cuda")
     masks = [statics.mask_word(i) for i in range(lv.mask_words(layout.rows))]
     facts_ops.extension().rola_facts_forward(
         list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
-        words, unions, list_exp, fm, _outputs(BH, L), list(layout.B), 1, masks, 1, masks, level, -1, facts_ops.WINDOW)
+        words, unions, list_exp, fm, _outputs(BH, L), list(layout.B), 1, masks, 1, masks, -1, -1, facts_ops.WINDOW)
     _assert_written(facts_ops.Facts(words, unions, list_exp, fm, *([None] * 4)), want, layout, read_statics, write_statics)
     assert (words[:, :, :layout.B[0]] == poison).all() and (unions[:, :, :layout.group_base(1)] == poison).all()
-    assert (list_exp != 0x5A5A).all()
 
 
 def test_a_token_past_the_end_votes_dead():
@@ -258,15 +256,15 @@ def test_the_factor_products_are_the_declared_fp32_ones(widths, L):
 
 
 def _lists_want(routes, values, layout, read_statics, write_statics, got):
-    """``(write, read)``: each side's lists from the model at its listed level, ``None`` where the level is dense or
-    absent; the write side's coefficient pairs from the pass's own exponents (gated against the reference above)."""
+    """``(write, read)``: each side's lists from the model at its list level, ``None`` for a side with no sparse level;
+    the write side's coefficient pairs from the pass's own exponents (gated against the reference above)."""
     bits = lv.unpack(_model(routes, layout, read_statics, write_statics), layout)
-    wl, rl = facts_ops.list_level(read_statics), facts_ops.read_list_level(read_statics)
+    wl, rl = facts_ops.list_level(write_statics), facts_ops.list_level(read_statics)
     write = read = None
-    if wl >= 0 and not write_statics.dense_levels[wl]:
+    if wl >= 0:
         write = list_model.side_lists(bits[:, lv.WRITE], layout, wl, rows=routes.amp_write[wl],
                                       cols=list_model.columns(routes, values), list_exp=got.list_exp.cpu())
-    if rl >= 0 and not read_statics.dense_levels[rl]:
+    if rl >= 0:
         read = list_model.side_lists(bits[:, lv.READ], layout, rl, rows=None, cols=None, list_exp=None)
     return write, read
 
@@ -336,7 +334,7 @@ def test_the_gains_are_the_model_bit_for_bit(widths, L):
 def _list_exp(routes, values, layout, read_statics, write_statics):
     """``(got, lo, hi)`` as ``[BH, windows, B_list, 2]`` int64: the pass's exponents and the reference's bounds."""
     got = facts_ops.facts(routes, values, layout, read_statics, write_statics).list_exp.long()
-    level = facts_ops.list_level(read_statics)
+    level = facts_ops.list_level(write_statics)
     lo, hi = exponent_bounds(routes, values, level, facts_ops.WINDOW, layout.B[level], _LIST_RTOL)
     return got, lo.reshape(got.shape), hi.reshape(got.shape)
 
@@ -344,14 +342,18 @@ def _list_exp(routes, values, layout, read_statics, write_statics):
 @pytest.mark.parametrize(("widths", "L"), [shape for shape in _SHAPES if len(shape[0]) <= 2])
 @pytest.mark.parametrize("dense", _MODES)
 def test_the_list_exponents_are_the_reference_per_window(widths, L, dense):
-    """Per window and digit of the list level, the smallest K with every token's ``b m`` (and ``b m s``) at most
-    2^K -- a dense list level read for it, its zeros at the floor -- within the fp32 rounding of the products."""
+    """Per window and digit of the write list level, the smallest K with every token's ``b m`` (and ``b m s``) at most
+    2^K, within the fp32 rounding of the products; a call whose write side has no sparse level lists nothing."""
     layout = _layout(widths, L)
     read_statics, write_statics = _sides(layout, dense, widths)
     routes, values = _bundle(widths, L, (read_statics, write_statics), B=2)
+    level = facts_ops.list_level(write_statics)
+    if level < 0:
+        got = facts_ops.facts(routes, values, layout, read_statics, write_statics).list_exp
+        assert got.shape[2] == 0
+        return
     got, lo, hi = _list_exp(routes, values, layout, read_statics, write_statics)
     assert ((got >= lo) & (got <= hi)).all(), (got - lo).abs().max()
-    level = facts_ops.list_level(read_statics)
     want = list_exponents(routes, values, level, facts_ops.WINDOW, layout.B[level]).reshape(got.shape)
     away = lo == hi
     assert torch.equal(got[away], want[away]), "an exponent off a power of two's rounding band differs"
@@ -369,13 +371,33 @@ def test_a_dead_window_keeps_the_floor():
     assert torch.equal(list_exp, torch.full_like(list_exp, -126))
 
 
-def test_deeper_calls_carry_no_list_level():
-    """Past depth two the carry is not built: the pass writes the words and no list exponents."""
+def test_a_deeper_call_lists_each_sides_one_sparse_level():
+    """Past depth two a side with one sparse level lists it, the same lists as the model's."""
+    widths, L = (16, 32, 16), 96
+    layout = _layout(widths, L)
+    read_statics = _statics(layout, (0, 2), widths)
+    write_statics = _statics(layout, (1, 2), widths)
+    routes, values = _bundle(widths, L, (read_statics, write_statics))
+    got = facts_ops.facts(routes, values, layout, read_statics, write_statics)
+    write, read = _lists_want(routes, values, layout, read_statics, write_statics, got)
+    assert facts_ops.list_level(write_statics) == 0 and facts_ops.list_level(read_statics) == 1
+    _assert_lists(got.write, write)
+    _assert_lists(got.read, read)
+
+
+def test_a_composite_side_gets_words_and_no_lists():
+    """A side with two sparse levels (the alternating split at depth three writes levels 0 and 2) gets its words and
+    unions, and its lists are refused by name: they would be keyed by a digit of each level."""
     widths, L = (16, 16, 16), 96
     layout = _layout(widths, L)
     read_statics, write_statics = _sides(layout, "alternating", widths)
     routes, values = _bundle(widths, L, (read_statics, write_statics))
-    assert facts_ops.facts(routes, values, layout, read_statics, write_statics).list_exp.shape[2] == 0
+    got = facts_ops.facts(routes, values, layout, read_statics, write_statics)
+    assert facts_ops.list_level(write_statics) == facts_ops.COMPOSITE and got.write is None
+    _assert_written(got, _model(routes, layout, read_statics, write_statics), layout, read_statics, write_statics)
+    with pytest.raises(ValueError, match="composite lists"):
+        facts_ops.side_lists(got, "write")
+    assert facts_ops.side_lists(got, "read").slot.shape[2] == layout.B[1]
 
 
 def test_a_bound_ledger_books_every_phase_and_changes_nothing():

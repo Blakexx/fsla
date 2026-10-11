@@ -55,8 +55,8 @@ Side side_of(const std::vector<Tensor>& rows, int64_t list, const std::vector<in
                   " digits of the box; its lists' union is a 32-digit group's");
   STD_TORCH_CHECK(
       s.operands >= 1 && (int)operand.size() + (list >= 0 ? 1 : 0) == D, name,
-      " lists one level and forms its operand from the others, every level once: the facts pass's lists "
-      "are one level's until its box list groups land; this side lists ",
+      " lists at most one level and forms its operand from the others, every level once (the kernel "
+      "addresses one list level a side); this side lists ",
       list, " and forms ", operand.size(), " of ", D);
   for (int i = 0; i < s.operands; ++i) {
     const int64_t l = operand[i];

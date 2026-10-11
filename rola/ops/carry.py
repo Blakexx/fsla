@@ -15,6 +15,7 @@ import torch
 
 from rola.engine.facts import lists as list_model
 from rola.engine.types import Carve
+from rola.ops import facts as facts_ops
 from rola.ops._ext import extension
 
 __all__ = ["LEDGER_PHASES", "LEDGER_WARPS", "WINDOW", "arm_key", "arms", "build_stamp", "carry", "census",
@@ -55,9 +56,9 @@ def carry(routes, values, facts, carve: Carve, unit: torch.Tensor) -> tuple[torc
     d_v = values.v.shape[-1]
     num = torch.zeros((BH, routes.tokens, d_v // 2), dtype=torch.int32, device=routes.device)
     check = torch.zeros(1, dtype=torch.float32, device=routes.device)
-    read = facts.read
+    read = facts_ops.side_lists(facts, "read")
     extension().carry_forward(
-        list(routes.amp_read), list(routes.amp_write), values.v, _write_lists(facts.write),
+        list(routes.amp_read), list(routes.amp_write), values.v, _write_lists(facts_ops.side_lists(facts, "write")),
         [read.slot, read.at, read.union, read.count], unit, num, check, list(carve.widths), list(carve.extents),
         carve.channels, _list_level(carve.fold), list(carve.fold.operand), _list_level(carve.readout),
         list(carve.readout.operand), list(arm_key(carve)))

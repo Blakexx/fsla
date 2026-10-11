@@ -56,9 +56,9 @@ state, so the stubs' work is not dead code).
 
 - depth 1 to 4; every width a power of two from 16, every extent a power of two dividing it; the box's leaves times
   its channels exactly a CTA's state; the channel extent 32 or 64, dividing `d_v`.
-- each side lists ONE level and forms its operand from all the others. A side with two sparse levels needs the facts
-  pass's box list groups (the fused unit kernel, ruled 2026-10-10), so until those land the carry refuses it
-  rather than drop a level's weights.
+- each side lists at most one level and forms its operand from all the others: the kernel addresses one list level
+  a side. A side with two sparse levels never reaches it from `rola.ops.carry.carry`, because the facts pass builds
+  no composite lists and `rola.ops.facts.side_lists` refuses them (`docs/internals/facts/facts.md#lists-out`).
 - a list level's box extent at most 32 (one union group); an operand slice a 4-byte copy at least and
   `kSliceBytes` at most.
 - every tensor's dtype, contiguity and exact shape; the arm key's channels and factor counts agreeing with the carve.

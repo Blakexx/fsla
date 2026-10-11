@@ -80,7 +80,7 @@ def lists(name: str) -> tuple[np.ndarray, np.ndarray, int]:
 
     spec = by_name(name)
     routes, _, _, statics = bundle_of(spec, realize(spec, H=1))
-    level_r = facts_ops.list_level(statics[0])
+    level_r = facts_ops.list_level(statics[1])
     read = (routes.amp_read[1 - level_r][0, :, 0, :] != 0).cpu().numpy()
     write = (routes.amp_write[level_r][0, :, 0, :] != 0).cpu().numpy()
     del routes

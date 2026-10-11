@@ -49,7 +49,7 @@ def cell_bundle(name: str, heads: int = 1, thin: bool = False):
     spec = by_name(name)
     routes, values, layout, statics = bundle_of(spec, realize(spec, H=heads))
     if thin:
-        rows = routes.amp_write[1 - facts_ops.list_level(statics[0])]
+        rows = routes.amp_write[1 - facts_ops.list_level(statics[1])]
         for win in range(rows.shape[1] // WINDOW):
             span = rows[:, win * WINDOW:(win + 1) * WINDOW]
             if win % 3 == 1:
@@ -61,7 +61,7 @@ def cell_bundle(name: str, heads: int = 1, thin: bool = False):
     #: the floating draw is gone; at many heads its cached blocks would push the bundle out of device memory
     torch.cuda.empty_cache()
     declared = spec.declared_sparsity()
-    level_r = facts_ops.list_level(statics[0])
+    level_r = facts_ops.list_level(statics[1])
     level_s = 1 - level_r
     return spec, routes, values, out, level_s, int(declared[level_r][1]), int(declared[level_s][0])
 

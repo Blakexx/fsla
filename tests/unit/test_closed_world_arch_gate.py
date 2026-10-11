@@ -174,7 +174,6 @@ def test_this_device_is_tabulated_and_the_gate_admits_it():
     launch takes no arm and no state, so what this cell exercises is the gate and
     nothing else.
     """
-    from rola.engine.facts import liveness as lv
     from rola.ops import facts as facts_ops
     from rola.routing.factors import RouteFactors
     from rola.routing.types import OpaqueRouting, Topology
@@ -191,9 +190,8 @@ def test_this_device_is_tabulated_and_the_gate_admits_it():
     widths, L = (16, 16), 32
     levels = tuple(torch.ones(1, L, 1, width, device="cuda") for width in widths)
     routes = RouteFactors.from_levels(Topology(levels=tuple(OpaqueRouting(width=w) for w in widths)), levels,
-                                      levels, torch.ones(1, L, 1, device="cuda"))
+                                      levels, torch.ones(1, L, 1, device="cuda"), sparse=((False, True), (True, False)))
     layout = facts_ops.call_layout(routes)
-    statics = lv.side_statics(layout, (False,) * layout.D, layout.B)
     words = facts_ops.facts(routes, Values.from_projection(torch.ones(1, L, 1, 8, device="cuda")), layout,
-                            statics, statics).words
+                            *facts_ops.call_statics(routes, layout)).words
     assert words.shape[0] == 1
