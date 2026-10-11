@@ -794,6 +794,37 @@ HMMA in, 28% of them bank conflicts over gathered rows, every warp reloading the
 
 Record: `measure/lab/results/fold_mchan/sm_86.json`.
 
+<a id="read-image"></a>
+### `read_image`
+
+The carry's readout with the state's operand from a bf16 image in shared memory (lab-local code: no production readout
+yet), on nl64k-alt-k4's real read lists (`read_image.inputs.py`; a read list holds slots only) and a synthetic dense
+cell. One CTA an SM a box of 32 lists x 32 read digits x 32 channels; a warp reads digits w, w + 8, w + 16, w + 24,
+holding a digit's 16 state registers while its tokens stream; read rows gathered from a 256-slot pool; bf16 MMAs with
+fp32 accumulate; each token's outputs times its coefficient to s16 pairs added by `red.shared` into its panel row
+(20-word rows); the drain at the pass's end, the union's rows only. A warp's heads (its digits' pass starts and first
+16 slots) and the union count arrive a window ahead. Forms: tokens on M (16-token steps, the state the B operand) or
+on N (8-token tiles, the state the A operand); the state a digit at a time, a ring of two digits, or every digit's
+first step in one straight-line block (as the fold's).
+
+Measured (sm_86, against each form's tensor floor: 2074 cycles a CTA-window at alt-k4 on M, 1628 on N, 65.5K dense):
+
+| cell, form | the MMAs alone | + panel adds | + the drain |
+|---|---|---|---|
+| alt-k4, M, first steps straight-line | 1.55x | 1.86x | 2.44x |
+| alt-k4, M, state ring | 1.54x | 2.00x | 2.52x |
+| alt-k4, N, state ring | 2.08x (1.64x of M's floor) | 2.76x | 3.40x |
+| dense, M | | | 1.16x |
+| dense, N | | | 1.41x |
+
+Tokens on N lose everywhere: an 8-token tile carries a 16-token step's fixed work for half its MMAs. The ring gains
+nothing (two warps a scheduler hide the image's loads). Shared-memory wavefronts an MMA at alt-k4 (ncu): 4.8 the MMAs
+alone, 7.0 with the panel's adds, 8.7 with the drain (0.8 / 1.8 / 2.6 of them bank conflicts: a step's tokens
+collide on residues); dense 2.6. At alt-k4 a read digit is one step a window, so the readout pays each step's fixed
+work and each window's edges at about half its MMAs.
+
+Record: `measure/lab/results/read_image/sm_86.json`.
+
 <a id="mma-k8"></a>
 ### `mma_k8`
 
