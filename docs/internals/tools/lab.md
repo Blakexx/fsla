@@ -757,3 +757,46 @@ The carry's fold (`csrc/rola/src/carry/fold.cuh`) over one head's real write lis
 32 windows), the pool filled once, one CTA an SM each a 32-digit box: the composed shape (a window's units behind a
 barrier), the same units back to back (the step's own cost) and the MMAs alone on fixed rows -- each against the
 structural floor.
+
+Two layouts of the same lists follow (`ordered.bin`, `packed.bin`). A slot's residue mod 8 is its pool row's bank
+group, and an `ldmatrix` phase reads 8 rows, so rows sharing a residue in a phase conflict. ORDERED: each unit's
+entries reordered so a step's 8-entry halves hold distinct residues, and a unit's first step (at most 16 entries)
+dealt across both halves with its pads on the residues each half leaves free. 8-TOKEN STEPS: the step on m16n8k8
+MMAs (half an m16n8k16's cycles, `mma_k8`), heads packed live-first with pads on free residues, a second step only for
+a list past 8 entries.
+
+Measured (sm_86, nl64k-alt-k4, against the 16-token floor; ncu wavefronts per 16-token-equivalent MMA):
+
+| form | composed | steady | wavefronts | of which bank conflicts |
+|---|---|---|---|---|
+| as built | 1.179x | 1.064x | 4.69 | 1.57 |
+| ordered, dealt heads | 1.157x | 1.060x | 3.69 | 0.69 |
+| 8-token steps | 1.012x | 0.844x | 3.48 | 1.30 |
+
+Ordering within a half cannot help at alt-k4 (a list's ~8 entries a window fill one half); dealing them across the
+step's halves does. 8-token steps do 0.70x the tensor work (1.40x the MMAs at half the cycles); their full phases
+conflict more than dealt halves, so their shared-memory saving is small.
+
+Record: `measure/lab/results/fold_part/sm_86.json`.
+
+<a id="fold-mchan"></a>
+### `fold_mchan`
+
+The value carve's fold (M = channel: a warp 16 channels of a box's 256 leaves, 4-warp CTAs, two an SM) on the same
+lists, lab-local code: a 16 x 16 and an 8 x 32 box, composed, steady, the MMAs alone, whole loops with a barrier a
+window, with heads prefetched, with lane-ready step operands (a lane's two row slots and two c pairs, 16 bytes), and
+free-running on landed and drained mbarriers. Per-burst timing reads below the floor at two CTAs an SM (each CTA's
+burst can have the tensor pipe alone); only the whole-loop modes are honest.
+
+Measured (sm_86): the 16 x 16 box 1.45x its floor free-running (1.69x with a barrier a window), 8 x 32 1.26x. Not the
+operand chain: 10.7 shared-memory wavefronts an HMMA at 16 x 16 (ncu) against the 8 an SM issues an fp32-accumulate
+HMMA in, 28% of them bank conflicts over gathered rows, every warp reloading the same slice; 8 x 32 7.45.
+
+Record: `measure/lab/results/fold_mchan/sm_86.json`.
+
+<a id="mma-k8"></a>
+### `mma_k8`
+
+The tensor pipe's cost of an m16n8k8 MMA against an m16n8k16, two warps a scheduler, 32 independent accumulators.
+Measured (sm_86, cycles an MMA a warp): fp32 accumulate 64.0 (k16) and 31.2 (k8); fp16 accumulate 32.0 and 15.6 --
+k8 costs exactly half. Record: `measure/lab/results/mma_k8/sm_86.json`.
