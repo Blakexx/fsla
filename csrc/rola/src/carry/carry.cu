@@ -20,6 +20,10 @@ namespace {
 //: phase cycles into; unbound (nullptr) in production. -- carry_kernel.md#phases
 long long* g_ledger = nullptr;
 int64_t g_ledger_ctas = 0;
+//: THE PROBE BINDING: a device fp32 tensor `[BH, N, d_v]` the next launches write their final state into, absolute;
+//: unbound in production. -- see docs/internals/carry/fold.md#probe
+float* g_probe = nullptr;
+int64_t g_probe_values = 0;
 
 bool pow2(int64_t x) { return x > 0 && (x & (x - 1)) == 0; }
 
@@ -106,10 +110,10 @@ SideLists lists_of(const std::vector<Tensor>& t, int64_t BH, int64_t windows, in
 }  // namespace
 
 void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows, Tensor values,
-                   std::vector<Tensor> write_lists, std::vector<Tensor> read_lists, Tensor unit,
-                   Tensor num, Tensor check, std::vector<int64_t> widths,
-                   std::vector<int64_t> extents, int64_t channels, int64_t write_list,
-                   std::vector<int64_t> write_operand, int64_t read_list,
+                   std::vector<Tensor> write_lists, Tensor write_exp,
+                   std::vector<Tensor> read_lists, Tensor unit, Tensor num, Tensor check,
+                   std::vector<int64_t> widths, std::vector<int64_t> extents, int64_t channels,
+                   int64_t write_list, std::vector<int64_t> write_operand, int64_t read_list,
                    std::vector<int64_t> read_operand, std::vector<int64_t> key) {
   check_arch_table();
   const int D = (int)widths.size();
@@ -164,6 +168,15 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
                            "the write lists");
   p.read_lists =
       lists_of(read_lists, BH, windows, read_list < 0 ? 0 : widths[read_list], 2, "the read lists");
+  if (write_list >= 0) {
+    STD_TORCH_CHECK(
+        write_exp.is_cuda() && write_exp.is_contiguous() && write_exp.scalar_type() == Dtype::Short
+            && write_exp.sizes() == Shape({BH, windows, widths[write_list], 2}),
+        "write_exp is the facts pass's contiguous CUDA int16 [BH, windows, width, 2] list "
+        "exponents at the write list level, got ",
+        shape(write_exp.sizes()));
+    p.write_exp = write_exp.const_data_ptr<int16_t>();
+  }
   STD_TORCH_CHECK(unit.is_cuda() && unit.is_contiguous() && unit.scalar_type() == Dtype::Char
                       && unit.sizes() == Shape({BH, L}),
                   "unit is the contiguous CUDA int8 [BH, L] exponent bytes, got ",
@@ -177,6 +190,11 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   p.unit = unit.const_data_ptr<int8_t>();
   p.num = reinterpret_cast<uint32_t*>(num.mutable_data_ptr<int32_t>());
   p.check = check.mutable_data_ptr<float>();
+  p.probe = g_probe;
+  if (p.probe != nullptr)
+    STD_TORCH_CHECK(g_probe_values == BH * leaves * boxes / (dv / channels) * dv,
+                    "the bound probe holds ", g_probe_values, " values, the call's state ",
+                    BH * leaves * boxes / (dv / channels) * dv);
   p.ledger = g_ledger;
   if (p.ledger != nullptr)
     STD_TORCH_CHECK(g_ledger_ctas >= boxes * BH, "the bound phase ledger covers ", g_ledger_ctas,
@@ -219,6 +237,19 @@ void carry_ledger_bind(const std::optional<Tensor>& ledger) {
                   kCarryPhases, "]");
   g_ledger = reinterpret_cast<long long*>(ledger->mutable_data_ptr<int64_t>());
   g_ledger_ctas = ledger->size(0);
+}
+
+void carry_probe_bind(const std::optional<Tensor>& probe) {
+  if (!probe) {
+    g_probe = nullptr;
+    g_probe_values = 0;
+    return;
+  }
+  STD_TORCH_CHECK(
+      probe->is_cuda() && probe->scalar_type() == Dtype::Float && probe->is_contiguous(),
+      "the probe is a contiguous CUDA fp32 tensor [BH, N, d_v]");
+  g_probe = probe->mutable_data_ptr<float>();
+  g_probe_values = probe->numel();
 }
 
 namespace stamp {

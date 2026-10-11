@@ -5,7 +5,7 @@
 
 #include "carry/carry_arm_abi.cuh"
 #include "carry/carry_kernel.cuh"
-#include "common/arm_switch.cuh"
+#include "common/arm.cuh"
 
 namespace rola::carry {
 

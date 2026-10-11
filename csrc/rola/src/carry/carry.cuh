@@ -46,9 +46,11 @@ struct CarryParams {
   Side write, read;
   Plane values;
   SideLists write_lists, read_lists;
+  const int16_t* write_exp;
   const int8_t* unit;
   uint32_t* num;
   float* check;
+  float* probe;
   long long* ledger;
 };
 
@@ -59,6 +61,7 @@ enum CarryPhase : int {
   kPhasePublish,
   kPhaseReadout,
   kPhaseDrain,
+  kPhaseFill,
   kPhaseFold,
   kCarryPhases
 };

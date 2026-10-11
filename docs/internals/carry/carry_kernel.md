@@ -34,7 +34,7 @@ line and replaces its stub, one at a time.
 ## The phase ledger's phases
 
 `CarryPhase` is the ledger's column order: `lists`, `units`, `publish`, `readout` (a pass's fill wait and steps),
-`drain`, `fold` (a pass's wait and steps). A lap books the cycles since the last into its phase, so the columns sum to
+`drain`, `fill` (the fold's units, its fills' issue and a unit's landing wait), `fold` (a unit's steps and barrier). A lap books the cycles since the last into its phase, so the columns sum to
 the warp's whole run. `rola.ops.carry.LEDGER_PHASES` names the same order.
 
 <a id="phase-ledger"></a>

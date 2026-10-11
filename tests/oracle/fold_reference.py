@@ -115,8 +115,9 @@ def fold_state(routes, values, list_exp, level_s: int, window: int):
     absolute state ``[BH, B_S, B_R, C]`` and its envelope (``sum |A| |v|``, absolute), the absolute mass ``[BH, B_S,
     B_R]`` and the final units ``[BH, B_R, 2]`` (values', mass's), from the facts pass's ``list_exp``.
 
-    ``F = ((g sw_0) sw_1) vs`` and ``m = (g sw_0) sw_1`` in fp32; ``c = f16(fp32(b_R F) 2^(4 - u))``, ``b_R`` on the
-    byte scale (:func:`write_bytes`); ``x`` level S's stored f16 (a dense level) or its byte over 256 (exact); ``A =
+    ``F = ((g sw_0) sw_1) vs`` and ``m = (g sw_0) sw_1`` in fp32; ``c = f16(f16(fp32(b_R F) 2^(4 - E)) 2^(E - u))``
+    -- the facts pass's record at the list's window exponent ``E`` (floored at ``UNIT_MIN``), moved to the state's unit
+    ``u`` by an f16 power of two (zero below 2^-24) -- ``b_R`` on the byte scale (:func:`write_bytes`); ``x`` level S's stored f16 (a dense level) or its byte over 256 (exact); ``A =
     f16(x c)``; the state gains ``sum_t A v`` in its list's unit (exact here), the mass ``sum_t x c_m``; each window
     first rescales both to the units `next_units` gives. A dense level's floor is in its stored rows."""
     level_r = 1 - level_s
@@ -141,9 +142,12 @@ def fold_state(routes, values, list_exp, level_s: int, window: int):
         sl = slice(w * window, (w + 1) * window)
         u, bu, fu = next_units(k[:, :, w, :, 1], u, bu)
         v_unit, bv, fv = next_units(k[:, :, w, :, 0], v_unit, bv)
-        pu = torch.tensor(np.exp2(COEF_TOP - u).astype(np.float32), device=dev)          # [B, H, w_r]
+        e_v = np.maximum(k[:, :, w, :, 1], UNIT_MIN)
+        pe = torch.tensor(np.exp2(COEF_TOP - e_v).astype(np.float32), device=dev)       # [B, H, w_r]
+        move = torch.tensor(np.where(e_v - u < -24, 0.0, np.exp2(e_v - u)).astype(np.float16), device=dev)
         pv = torch.tensor(np.exp2(COEF_TOP - v_unit).astype(np.float32), device=dev)
-        cv = ((b_r[:, sl] * F[:, sl, :, None]) * pu[:, None]).half()                    # [B, Tw, H, w_r]
+        cv = ((b_r[:, sl] * F[:, sl, :, None]) * pe[:, None]).half()                    # [B, Tw, H, w_r]
+        cv = (cv.float() * move[:, None].float()).half()
         cm = ((b_r[:, sl] * m[:, sl, :, None]) * pv[:, None]).half()
         a = (x[:, sl, :, :, None].float() * cv[:, :, :, None, :].float()).half().double()  # [B, Tw, H, w_s, w_r]
         unit_abs = torch.tensor(np.exp2(u - COEF_TOP) * scale, device=dev)               # [B, H, w_r]

@@ -11,6 +11,19 @@ constexpr int pitch_of(int bytes) { return 32 * (((bytes + 31) / 32) | 1); }
 
 constexpr int max_of(int a, int b) { return a > b ? a : b; }
 
+//: THE BLOCK'S SHARED MEMORY on sm_86, the bound every plan's region fits.
+constexpr int kSmemCap = 99 * 1024;
+
+//: THE FOLD'S UNIT, in facts passes: the largest of 4, 2, 1 whose two slots fit `room` bytes at `pitch`, the first
+//: clear of the readout's `read` bytes. -- see docs/internals/carry/plan.md#units
+constexpr bool unit_fits(int passes, int pitch, int read, int room) {
+  return max_of(read, passes * kPassSlots * pitch) + passes * kPassSlots * pitch <= room;
+}
+
+constexpr int unit_passes(int pitch, int read, int room) {
+  return unit_fits(4, pitch, read, room) ? 4 : unit_fits(2, pitch, read, room) ? 2 : 1;
+}
+
 //: THE ARM'S PLAN: each side's warp tile, the registers and the pool rows. -- see docs/internals/carry/plan.md#plan
 template <class Arm>
 struct Plan {
@@ -33,26 +46,37 @@ struct Plan {
   static constexpr int kWritePitch = pitch_of(kValuesAt + 2 * kChannels);
   static constexpr int kReadPitch = pitch_of(kSliceBytes * kReadFactors);
   static constexpr int kPanelWords = kChannels / 2;
-  static constexpr int kWriteSlots = 3, kReadSlots = 2;
+  static constexpr int kWriteSlots = 2, kReadSlots = 2;
+  static constexpr int kFoldMTiles = kFoldRows / 16;
 
   //: THE PERSISTENT TENANTS, then ONE PHASE REGION the publish, the readout and the fold take in turn.
   static constexpr int kUnion = 0;
   static constexpr int kCount = kUnion + 2 * kWindow * 2;
   static constexpr int kWriteAt = kCount + 16;
   static constexpr int kReadAt = kWriteAt + kWriteLists * kListAt * 2;
-  static constexpr int kUnits = kReadAt + kReadBoxLists * kListAt * 2;
+  static constexpr int kWriteExp = kReadAt + kReadBoxLists * kListAt * 2;
+  static constexpr int kUnits = kWriteExp + kWriteLists * 4;
   static constexpr int kClock = kUnits + kWindow;
-  static constexpr int kBars = kClock + kWarps * (kCarryPhases + 1) * 8;
+  static constexpr int kBook = kClock + kWarps * (kCarryPhases + 1) * 8;
+  static constexpr int kBars = kBook + kWriteLists * 8;
   static constexpr int kPhase = (kBars + kWriteSlots * 8 + 127) / 128 * 128;
 
-  static constexpr int kPublishBytes = kPublishRegs ? 0 : kLeaves * kChannels * 2;
+  //: THE PHASE REGION: the publish; the readout's pool and panel; the fold's two unit slots, slot 0 clear of the
+  //: readout's bytes (a window's first unit fills under the readout), slot 1 over them.
+  static constexpr int kPublishRounds = 2;
+  static constexpr int kPublishBytes = kPublishRegs ? 0 : kLeaves * kChannels * 2 / kPublishRounds;
   static constexpr int kReadPool = 0;
   static constexpr int kPanel = kReadPool + kReadSlots * kPassSlots * kReadPitch;
   static constexpr int kReadBytes = kPanel + kPassSlots * kPanelWords * 4;
-  static constexpr int kWritePool = 0;
-  static constexpr int kWriteBytes = kWritePool + kWriteSlots * kPassSlots * kWritePitch;
+  static constexpr int kFoldUnit = unit_passes(kWritePitch, kReadBytes, kSmemCap - kPhase);
+  static constexpr int kUnitSlots = kFoldUnit * kPassSlots;
+  static constexpr int kUnitBytes = kUnitSlots * kWritePitch;
+  static constexpr int kWriteSlot0 = max_of(kReadBytes, kUnitBytes);
+  static constexpr int kWriteBytes = kWriteSlot0 + kUnitBytes;
   static constexpr int kSmemBytes = kPhase + max_of(kPublishBytes, max_of(kReadBytes, kWriteBytes));
-  static_assert(kSmemBytes <= 99 * 1024, "the block's shared memory fits sm_86's 99 KB");
+  static_assert(kSmemBytes <= kSmemCap, "the block's shared memory fits sm_86's 99 KB");
+  static_assert(kPublishBytes <= kWriteSlot0,
+                "a publish round clears write slot 0, which fills under it");
 };
 
 }  // namespace rola::carry

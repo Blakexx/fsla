@@ -22,17 +22,22 @@ count a window ahead) is this component's budget work.
 ## The fill
 
 A pass's slots, each its token's operand slices into its pool row: a slice's 16-byte runs (8 or 4 bytes for a slice
-under 16) over the CTA's threads, then on the write side the values' runs. The token is the union's slot (or the
-slot itself where the side has no list level). The pool row's swizzle and the quad-a-token copy pattern
-(`docs/internals/owner/owner_fill.md`) are this component's budget work.
+under 16, `stage_bytes`) over the CTA's threads, then on the write side the values' runs. The token is the union's
+slot (or the slot itself where the side has no list level). The write side's rows are swizzled: the 16-byte halves of
+each 32-byte pair swapped on rows with bit 2 set, so `ldmatrix` reads eight residue-ordered rows conflict-free
+(`docs/internals/carry/fold.md#step`). The quad-a-token copy pattern (`docs/internals/owner/owner_fill.md`) is this
+component's budget work.
 
 <a id="publish"></a>
 ## The publish
 
 The fold's fp32 state to f16 pairs, the readout's operand. When the two plans' warps own different leaves (the even
 box: the fold's warp owns 4 write-list digits x 32 rows, the readout's 4 read-list digits x 32 rows) the pairs go
-through shared memory; when they own the same leaves (the dense-dense plan), they stay in registers. The stub's
-shared layout is lane-contiguous; the real one is the readout's fragment order.
+through shared memory, in two 32 KB rounds that clear write slot 0 (so a window's first write unit fills under the
+publish), each round converting its share just before storing it; when they own the same leaves (the dense-dense
+plan), they stay in registers. The stub's shared layout is lane-contiguous; the real one is the readout's fragment
+order. The stub folds the readout's copy into one word right after the publish: whether the real readout holds that
+64-register copy across its loop, beside the 128-register state, is the readout component's register plan.
 
 <a id="readout-pass"></a>
 ## A readout pass

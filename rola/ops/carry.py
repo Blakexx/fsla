@@ -19,13 +19,13 @@ from rola.ops import facts as facts_ops
 from rola.ops._ext import extension
 
 __all__ = ["LEDGER_PHASES", "LEDGER_WARPS", "WINDOW", "arm_key", "arms", "build_stamp", "carry", "census",
-           "ledger_bind", "sm_clock_ghz"]
+           "ledger_bind", "probe_bind", "sm_clock_ghz"]
 
 #: THE KERNEL'S WINDOW, in tokens: a kernel constant the intra and the facts pass share, never an argument.
 WINDOW = list_model.WINDOW
 
 #: THE PHASE LEDGER'S SHAPE: ``[ctas][warps][phases]``, the kernel's own `CarryPhase` order.
-LEDGER_PHASES = ("lists", "units", "publish", "readout", "drain", "fold")
+LEDGER_PHASES = ("lists", "units", "publish", "readout", "drain", "fill", "fold")
 LEDGER_WARPS = 8
 
 
@@ -59,7 +59,7 @@ def carry(routes, values, facts, carve: Carve, unit: torch.Tensor) -> tuple[torc
     read = facts_ops.side_lists(facts, "read")
     extension().carry_forward(
         list(routes.amp_read), list(routes.amp_write), values.v, _write_lists(facts_ops.side_lists(facts, "write")),
-        [read.slot, read.at, read.union, read.count], unit, num, check, list(carve.widths), list(carve.extents),
+        facts.list_exp, [read.slot, read.at, read.union, read.count], unit, num, check, list(carve.widths), list(carve.extents),
         carve.channels, _list_level(carve.fold), list(carve.fold.operand), _list_level(carve.readout),
         list(carve.readout.operand), list(arm_key(carve)))
     return num, check
@@ -86,6 +86,12 @@ def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurem
     """Bind the phase ledger the next launches book into, ``[ctas, LEDGER_WARPS, len(LEDGER_PHASES)]`` int64 cycles,
     or ``None``."""
     extension().carry_ledger_bind(ledger)
+
+
+def probe_bind(probe: torch.Tensor | None) -> None:  #: reserved: the fold's oracle instrument (docs/internals/carry/fold.md#probe)
+    """Bind the probe the next launches write their final state into, absolute fp32 ``[BH, N, d_v]`` by global leaf
+    in level order, or ``None``."""
+    extension().carry_probe_bind(probe)
 
 
 def sm_clock_ghz() -> float | None:

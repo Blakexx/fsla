@@ -16,6 +16,15 @@ operand's level count, the channel extent, the publish route. The plan derives t
   channels, a read row the readout's slices; `pitch_of` rounds a row to an odd multiple of 32 bytes so eight
   consecutive rows' 16-byte chunk meets eight bank groups.
 
+<a id="units"></a>
+## The fold's units and its two slots
+
+The fold steps over UNITS of facts passes (`docs/internals/carry/fold.md#unit`). `unit_passes` picks the largest U of
+4, 2, 1 whose two slots fit the phase region with slot 0 clear of the readout's pool and panel: U = 2 at the even box
+(two 256 x 160 B slots, 80 KB with slot 0 at the readout's 32 KB), U = 1 at the dense-dense plan (224-byte rows). A
+list's pads then cost at most one partial step a unit. Measured on nl64k-alt-k4, the 128-slot passes cut a list into
+1.95 steps a window against 1.00 at U = 2.
+
 ## The shared memory
 
 Persistent tenants first: both sides' union tokens (1 KB each) and counts, each side's box lists' pass starts, the
