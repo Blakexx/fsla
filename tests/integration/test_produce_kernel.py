@@ -150,6 +150,42 @@ def _solve_rtol(width: int) -> float:
     return (width + 16) * 2.0 ** -23
 
 
+def _solved(row, solve, width):
+    """``(read, write)`` the reference split of one job's logit row, fp64 ``[tokens, width]``."""
+    if solve in _UNION_ALPHA:
+        return _torch_union_split(row[:, :width], row[:, width:2 * width], _UNION_ALPHA[solve])
+    level = _torch_activation(row[:, :width], _ACTIVATIONS[solve])
+    return level, level
+
+
+def _conditioning(row, solve, width):
+    """THE CONDITIONING TERM J.eps of a solve (2026-10-10): the fp64 reference's response to the rounding of its own
+    inputs. ``J`` is the derivative of each output entry (and of each level's max, the scale) with respect to each logit,
+    one fp64 central difference a logit, and ``eps_c = 2^-24 |logit_c|`` the half-ulp of the fp32 logit; the term is
+    ``sum_c |J_c| eps_c`` a row. A union split's threshold couples the duties, so a row of three live members amplifies a
+    rounding by 20 to 130 (a well-conditioned row has a term under 1e-7). Returns ``{side: (entries, peak)}`` of
+    ``[tokens, width]`` and ``[tokens]``, fp64, and ``"read_mass"``, the same term for the read level's sum RELATIVE to the
+    sum (a product of such sums is the read mass, whose relative terms add)."""
+    columns = 2 * width if solve in _UNION_ALPHA else width
+    step = 1e-5
+    entry = [torch.zeros_like(row[:, :width]) for _ in range(2)]
+    peak = [torch.zeros_like(row[:, 0]) for _ in range(2)]
+    mass = torch.zeros_like(row[:, 0])
+    for column in range(columns):
+        rounding = row[:, column].abs() * 2.0 ** -24
+        sides = []
+        for sign in (1.0, -1.0):
+            moved = row[:, :columns].clone()
+            moved[:, column] += sign * step
+            sides.append(_solved(moved, solve, width))
+        for side in range(2):
+            entry[side] += ((sides[0][side] - sides[1][side]).abs() / (2 * step)) * rounding[:, None]
+            peak[side] += ((sides[0][side].amax(-1) - sides[1][side].amax(-1)).abs() / (2 * step)) * rounding
+        mass += ((sides[0][0].sum(-1) - sides[1][0].sum(-1)).abs() / (2 * step)) * rounding / _solved(
+            row[:, :columns], solve, width)[0].sum(-1)
+    return {"read": (entry[0], peak[0]), "write": (entry[1], peak[1]), "read_mass": mass}
+
+
 @pytest.mark.parametrize(("name", "B", "T"), [("union", 2, 5), ("split", 1, 40), ("tied-deep", 3, 7),
                                               ("wide", 1, 33), ("sparsemax", 2, 9)])
 def test_the_solve_matches_the_fp64_reference_on_the_kernels_logits(name, B, T):
@@ -160,24 +196,27 @@ def test_the_solve_matches_the_fp64_reference_on_the_kernels_logits(name, B, T):
         if kind != 0:
             continue
         row = logits[index].double()
-        if solve in _UNION_ALPHA:
-            read, write = _torch_union_split(row[:, :width], row[:, width:2 * width], _UNION_ALPHA[solve])
-        else:
-            read = write = _torch_activation(row[:, :width], _ACTIVATIONS[solve])
+        read, write = _solved(row, solve, width)
+        conditioning = _conditioning(row, solve, width)
         for side, expected, out in (("read", read, out_read), ("write", write, out_write)):
             if out < 0:
                 continue
             got = levels[index, :, (0 if side == "read" else width):][:, :width].double()
-            error = float((got - expected).abs().max())
-            assert error <= _solve_rtol(width), (
-                f"{name}: job {index} (solve {solve}, width {width}) {side} side is off by {error:.3g}, "
-                f"{error / _solve_rtol(width):.2f} of the bound")
+            #: the solve's bound plus the conditioning term J.eps of its own inputs' rounding (`_conditioning`, 2026-10-10)
+            excess = (got - expected).abs() - _solve_rtol(width) - conditioning[side][0]
+            assert float(excess.max()) <= 0, (
+                f"{name}: job {index} (solve {solve}, width {width}) {side} side is off by "
+                f"{float((got - expected).abs().max()):.3g} past the solve's {_solve_rtol(width):.3g} and its "
+                f"conditioning term")
 
 
-#: the bundle's per-slot bounds against the fp64 composition. A u8 digit is a level within the solve's bound of the
-#: reference's, rounded: the same digit or its neighbour. A scale is a row's max (the write side's over its mass, about
-#: 1): twice the solve's bound. The read mass and the write
-#: gain: measured at most 4.8e-5 and 2.7e-6 relative over these cells.
+#: the bundle's per-slot bounds. THE ROWS AND SCALES ARE GRADED AT THE SEAM: against the reference split solved on the
+#: KERNEL'S OWN logits, as the row-level solve test does, because the logits differ from the fp64 product by the fp32
+#: accumulation (the projection test bounds that) and a union split amplifies a logit difference by its conditioning
+#: (measured: 19 on a row of three live members, a 3.9e-6 logit difference moving a level by 5.7e-5). A u8 digit is a
+#: level within the solve's bound of the reference's, rounded: the same digit or its neighbour. A scale is a row's max
+#: (every level here is a simplex, its mass 1): twice the solve's bound. The read mass and the write gain are graded
+#: against the fp64 composition: measured at most 4.8e-5 and 2.7e-6 relative over these cells.
 _MASS_RTOL = 2.0 ** -12
 
 
@@ -185,37 +224,56 @@ _MASS_RTOL = 2.0 ** -12
     ("union", 2, 5, True, True), ("split", 1, 40, True, True), ("tied-deep", 3, 7, False, True),
     ("wide", 1, 33, True, True), ("sparsemax", 2, 9, True, False),   # no gain column: the gain is 1
 ])
-def test_the_bundle_matches_the_fp64_composition(name, B, T, bias, gain):
+def test_the_bundle_matches_the_reference_on_the_kernels_logits(name, B, T, bias, gain):
     plan, x, route_W, route_bias, gain_bias, v_W = _operands(name, B=B, T=T, hidden=64, bias=bias, gain=gain)
     gain_bias = torch.randn_like(gain_bias)
-    out, _, _ = _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill=0x55)
+    out, _, (logits, _) = _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill=0x55, probe=True)
+    dense = dense_write_levels(plan)
+
+    mass = torch.ones(B, plan.num_heads, T, dtype=torch.float64, device="cuda").transpose(1, 2).contiguous()
+    mass_term = torch.zeros_like(mass)
+    for index, (kind, head, _heads, solve, width, _in0, _in1, out_read, out_write, level, fold_read,
+                _fold_write) in enumerate(job_table(plan)[0]):
+        if kind != 0:
+            continue
+        levels = dict(zip(("read", "write"), _solved(logits[index].double(), solve, width), strict=True))
+        conditioning = _conditioning(logits[index].double(), solve, width)
+        if fold_read:
+            mass[:, :, head] *= levels["read"].sum(-1).reshape(B, T)
+            mass_term[:, :, head] += conditioning["read_mass"].reshape(B, T)
+        for side, written in (("read", out_read), ("write", out_write)):
+            if written < 0:
+                continue
+            expected = levels[side]
+            peak = expected.amax(-1, keepdim=True)
+            unit = expected / peak
+            scale = out[f"scale_{side}"][:, :, head, level].double().reshape(-1, 1)
+            #: twice the solve's bound plus the conditioning term of the level's max (`_conditioning`, 2026-10-10)
+            bound = (width + 16) * 2.0 ** -22 + conditioning[side][1][:, None]
+            assert bool(((scale - peak).abs() <= bound).all()), f"{name}: level {level} {side} scale"
+            if side == "write" and level in dense:
+                #: a dense write level's f16 rows: one u8 digit's worth (the solves' fp32 against fp64), the floor exact
+                start = row_layout(plan, "write", dense=True)[0][level]
+                got = out["dense_write"][:, :, head, start:start + width].reshape(-1, width)
+                assert got.dtype is quant.DENSE_DTYPE
+                off = float((got.double() - unit.clamp_min(quant.DENSE_FLOOR)).abs().max())
+                assert off <= 1 / quant.AMP_LEVELS, f"{name}: level {level} f16 rows off by {off:.3g}"
+                assert bool((got.float() >= quant.DENSE_FLOOR).all()), f"{name}: a dense write coefficient under the floor"
+            else:
+                offset = row_layout(plan, side)[0][level]
+                got = out[f"amp_{side}"][:, :, head, offset:offset + width].reshape(-1, width)
+                digit = int((got.int() - torch.round(unit * quant.AMP_LEVELS).int()).abs().max())
+                assert digit <= 1, f"{name}: level {level} {side} digits off by {digit}"
+
     reference = ProducerWeights(route_W=route_W.double(), gain_bias=gain_bias.double(), v_W=v_W.double(),
                                 route_bias=None if route_bias is None else route_bias.double())
     routes, _ = produce(x.double(), plan, reference)
-    for level, width in enumerate(plan.routing.resolved.branches):
-        for side, rows, scales in (("read", routes.amp_read, routes.scale_read),
-                                   ("write", routes.amp_write, routes.scale_write)):
-            offset = row_layout(plan, side)[0][level]
-            if side == "write" and not routes.sparse[1][level]:
-                #: a dense write level's f16 rows: one u8 digit's worth (the solves' fp32 against fp64), the floor exact
-                start = row_layout(plan, "write", dense=True)[0][level]
-                got = out["dense_write"][..., start:start + width]
-                assert got.dtype is quant.DENSE_DTYPE and rows[level].dtype is quant.DENSE_DTYPE
-                off = float((got.double() - rows[level].double()).abs().max())
-                assert off <= 1 / quant.AMP_LEVELS, f"{name}: level {level} f16 rows off by {off:.3g}"
-                live = (out["scale_write"][..., level] > 0).unsqueeze(-1)
-                assert bool((got.float()[live.expand_as(got)] >= quant.DENSE_FLOOR).all()), (
-                    f"{name}: a dense write coefficient under the floor")
-            else:
-                got = out[f"amp_{side}"][..., offset:offset + width]
-                digit = int((got.int() - rows[level].int()).abs().max())
-                assert digit <= 1, f"{name}: level {level} {side} digits off by {digit}"
-            scale = float((out[f"scale_{side}"][..., level].double() - scales[level].double()).abs().max())
-            assert scale <= (width + 16) * 2.0 ** -22, f"{name}: level {level} {side} scale off by {scale:.3g}"
-    read_mass = routes.read_mass if routes.read_mass is not None else torch.ones_like(routes.g_write)
-    for key, expected in (("read_mass", read_mass), ("g_write", routes.g_write)):
-        error = float(((out[key].double() - expected.double()).abs() / expected.double().abs()).max())
-        assert error <= _MASS_RTOL, f"{name}: {key} off by {error:.3g} relative"
+    #: the read mass is graded at the seam, from the reference levels of the kernel's own logits (the product of the folded
+    #: levels' sums) within `_MASS_RTOL` plus the relative conditioning term of those sums (`_conditioning`: a sum of
+    #: values near 1e-7 is ill-conditioned); the gain is its own projection, graded against the fp64 composition
+    for key, expected, term in (("read_mass", mass, mass_term), ("g_write", routes.g_write, 0.0)):
+        error = (out[key].double() - expected.double()).abs() / expected.double().abs()
+        assert bool((error <= _MASS_RTOL + term).all()), f"{name}: {key} off by {float(error.max()):.3g} relative"
 
 
 @pytest.mark.parametrize(("name", "B", "T"), [("union", 2, 5), ("wide", 1, 33), ("split", 1, 40)])

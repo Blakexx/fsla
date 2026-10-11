@@ -110,7 +110,7 @@ _FAMILIES = {
     #: the arrival counters and the head's finisher, the value digits -- every component, one launch.
     "produce": Family(
         test="tests/integration/test_produce_kernel.py::"
-             "test_the_bundle_matches_the_fp64_composition[union-2-5-True-True]",
+             "test_the_bundle_matches_the_reference_on_the_kernels_logits[union-2-5-True-True]",
         kernel="rola::produce::rola_produce_forward", present=True),
     #: THE PRODUCER'S SOLVES: their own block-wide reductions, on the routing path.
     "entmax": Family(
