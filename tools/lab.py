@@ -42,6 +42,8 @@ import sass_gate
 ROOT = Path(__file__).resolve().parents[1]
 LAB = ROOT / "measure" / "lab"
 EXPERIMENTS = LAB / "experiments"
+#: the kernels' include root: a part harness runs a component's own code (docs/internals/tools/lab.md#parts)
+KERNELS = ROOT / "csrc" / "rola" / "src"
 RESULTS = LAB / "results"
 
 #: a result whose largest sample exceeds its smallest by more than this is flagged unstable
@@ -75,7 +77,7 @@ def build(path: Path, arch: str) -> Path:
     """The experiment's binary for `arch`, compiled with the pinned toolkit."""
     out = dev_config.scratch("lab") / f"{path.stem}.{arch}"
     subprocess.run([dev_config.cuda_bin("nvcc"), "-O3", "-std=c++17", f"-arch={arch}", "-lineinfo", f"-I{LAB}",
-                    "-o", str(out), str(path)], check=True)
+                    f"-I{KERNELS}", "--expt-relaxed-constexpr", "-o", str(out), str(path)], check=True)
     return out
 
 

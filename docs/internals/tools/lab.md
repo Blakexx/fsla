@@ -742,3 +742,18 @@ What each step found (each measured in this lab on the way; the dropped forms ar
   one level-side in four reads 64-byte runs.
 
 Record: `measure/lab/results/facts_block/sm_86.json`.
+
+<a id="parts"></a>
+## Part harnesses
+
+An experiment may include the kernels' own headers (`tools/lab.py` puts `csrc/rola/src` on the include path and builds
+with the production flags), so a component is measured as the kernel runs it, alone and on real inputs, before its
+cost is read in the composed ledger (KERNEL_STANDARDS section 19).
+
+<a id="fold-part"></a>
+### `fold_part`
+
+The carry's fold (`csrc/rola/src/carry/fold.cuh`) over one head's real write lists (`fold_part.inputs.py`: nl64k-alt-k4,
+32 windows), the pool filled once, one CTA an SM each a 32-digit box: the composed shape (a window's units behind a
+barrier), the same units back to back (the step's own cost) and the MMAs alone on fixed rows -- each against the
+structural floor.

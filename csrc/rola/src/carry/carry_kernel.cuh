@@ -56,7 +56,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       const Window ww = window_of(p, p.write, w);
       const int write_slots = slots_of(smem, P::kCount, ww, 1);
       for (int k = ops::once(write_slots > 0); k > 0; --k)
-        fill_unit<P>(p, c, ww, write_slots, 0, smem);
+        fill_unit<P>(p, c, ww, write_slots, w, 0, smem);
     }
 
     uint32_t weight = 0u;
@@ -101,22 +101,20 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     const int units = (write_slots + P::kUnitSlots - 1) / P::kUnitSlots;
     const bool stepped = P::kFoldFactors == 1 && ww.listed;
     uint32_t cf[P::kFoldLists] = {};
-    for (int k = ops::once(stepped); k > 0; --k) fold_units<P>(st, cf, smem, ww, warp, lane);
+    float f[P::kFoldLists] = {};
+    for (int k = ops::once(stepped); k > 0; --k) fold_units<P>(cf, f, smem, ww, warp, lane);
 #pragma unroll 1
     for (int u = 0; u < units; ++u) {
       for (int k = ops::once(u + 1 < units); k > 0; --k)
-        fill_unit<P>(p, c, ww, write_slots, u + 1, smem);
+        fill_unit<P>(p, c, ww, write_slots, w, u + 1, smem);
       const int slot = u & 1;
       const ops::SmemAddr pool = write_pool + (slot ? 0 : P::kWriteSlot0);
-      Heads<P> hd;
-      for (int k = ops::once(stepped); k > 0; --k)
-        fold_heads<P>(p, hd, smem, ww, c, w, u, warp, lane);
       ops::mbar_wait(bars + 8 * slot, static_cast<uint32_t>(slot ? uses1 : uses0) & 1u);
       uses0 += 1 - slot;
       uses1 += slot;
       clock.lap(kPhaseFill);
       for (int k = ops::once(stepped); k > 0; --k)
-        fold_unit<P>(p, st, cf, hd, smem, ww, c, w, u, pool, warp, lane);
+        fold_unit<P>(p, st, cf, f, smem, ww, c, w, u, pool, warp, lane);
       for (int k = ops::once(!stepped); k > 0; --k)
         fold_stub<P>(p, st, smem, ww, c, w, u, min(write_slots - u * P::kUnitSlots, P::kUnitSlots),
                      pool, warp, lane);

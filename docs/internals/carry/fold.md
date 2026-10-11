@@ -46,17 +46,20 @@ each window's first unit fills under the publish and the readout (`fill_unit`, i
 over the readout's region and fills under unit 0's steps. Each lands on its `mbarrier`, one
 `cp.async.mbarrier.arrive.noinc` a thread a fill.
 
-Before a unit's landing wait, `fold_heads` loads each list's first record pair (lane `L` entry `L`), so that latency
-hides under the wait. `fold_unit` issues every list's first step in one straight-line block. At sparse cells a list
-holds 1-16 entries a unit almost always, and an empty list's step is all pads (row 0, c = 0, adding nothing). The
-scheduler is then free to load a list's operands under the MMAs before them. A list past 16 entries continues in a
-cleanup loop, two steps a record load, a pair ahead.
+Each unit's fill also copies every box list's first 16 records into the slot's HEADS in shared memory (zero past the
+list's count, so a pad is row 0 with c = 0). A list holds 1-16 entries a unit almost always at sparse cells, so the
+common step reads its row offsets and c pairs in place (`load_head`): no global load, no shuffles. `fold_unit` issues
+every list's first step in one straight-line block (an empty list's is pads, adding nothing), then ONE check: a unit
+with a list past 16 entries continues those lists from their records in global memory, each step one block (a
+clamped load and a select, never a branch). The rescale to the window's unit is applied beside each list's first MMAs.
 
-MEASURED (2026-10-10, nl64k-alt-k4, sm_86): the fold phase 3.19K cycles a CTA-window against its structural floor of
-2.07K (the busiest scheduler's two warps' steps x 8 MMAs x 32 cycles), 1.54x. The line is 1.03x. Three other forms
-measured no better or spilled: a per-list loop at 3.12K; a ring across lists, whose item bookkeeping cost as much as a
-step's MMAs at one step a list; and explicit two-slot operands, which spilled. The remaining gap is the part harness's
-to locate.
+MEASURED (2026-10-10, sm_86, the part harness `measure/lab/experiments/fold_part.cu` on nl64k-alt-k4's real lists,
+`measure/lab/results/fold_part/sm_86.json`; floor 2.07K = the busiest scheduler's two warps' steps x 8 MMAs x 32
+cycles): the step steady 1.054x, the MMAs alone 1.056x, a window's units behind their barrier 1.197x; in the composed
+kernel's ledger the fold phase 2.92K (1.41x). The forms before: records from global by shuffles 1.25x steady; four
+cleanup checks (each a scheduling block) 1.144x. What remains is the burst's edges: at alt-k4 a warp folds ~4 steps
+a window between CTA barriers, so the first operand chain after the wait and the barrier are ~15% of the burst. That
+cost is structural to sm_86's time-shared phases, one burst a phase a window.
 
 <a id="stub"></a>
 ## The stub

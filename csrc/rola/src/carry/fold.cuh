@@ -58,10 +58,11 @@ __device__ __forceinline__ float next_unit(int k, UnitBook& book) {
   return f;
 }
 
-//: A WINDOW'S UNITS, before the warp's passes: each list's exponent moves its book (lane group `j` list `j`), the
-//: list's state is rescaled to it and its c factor `2^(E - unit)` taken. -- see docs/internals/carry/fold.md#units
+//: A WINDOW'S UNITS, before the warp's passes: each list's exponent moves its book (lane group `j` list `j`); its state's
+//: rescale `f` (applied beside the list's first MMAs) and its c factor `2^(E - unit)` taken.
+//: -- see docs/internals/carry/fold.md#units
 template <class P>
-__device__ __forceinline__ void fold_units(State<P>& st, uint32_t (&cf)[P::kFoldLists],
+__device__ __forceinline__ void fold_units(uint32_t (&cf)[P::kFoldLists], float (&f)[P::kFoldLists],
                                            uint8_t* smem, const Window& win, int warp, int lane) {
   constexpr int kLanes = 32 / P::kFoldLists;
   const int j = lane / kLanes;
@@ -69,16 +70,13 @@ __device__ __forceinline__ void fold_units(State<P>& st, uint32_t (&cf)[P::kFold
       smem + P::kWriteExp)[2 * list_of<P::kFoldLists>(warp, j, win.lists) + 1];
   UnitBook* const book = reinterpret_cast<UnitBook*>(smem + P::kBook) + warp * P::kFoldLists + j;
   UnitBook b = *book;
-  const float f = next_unit(k, b);
+  const float fl = next_unit(k, b);
   const int cexp = max(k, kUnitMin) - b.unit;
   __syncwarp();
   if (lane % kLanes == 0) *book = b;
   static_for<P::kFoldLists>([&](auto J) {
-    const float fj = __shfl_sync(0xffffffffu, f, J * kLanes);
+    f[J] = __shfl_sync(0xffffffffu, fl, J * kLanes);
     cf[J] = pow2_half2(__shfl_sync(0xffffffffu, cexp, J * kLanes));
-    static_for<P::kFoldMTiles>([&](auto M) {
-      static_for<4>([&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] *= fj; }); });
-    });
   });
 }
 
@@ -100,7 +98,7 @@ __device__ __forceinline__ void exps_in(const CarryParams& p, const Window& win,
 //: slot's barrier. -- see docs/internals/carry/fold.md#unit
 template <class P>
 __device__ __forceinline__ void fill_unit(const CarryParams& p, const Place& c, const Window& ww,
-                                          int write_slots, int u, uint8_t* smem) {
+                                          int write_slots, int w, int u, uint8_t* smem) {
   const int slot = u & 1, first = u * P::kUnitSlots;
   const uint8_t* values =
       p.values.base + c.bh / p.H * p.values.sb + c.bh % p.H * p.values.sh + c.channel0 * 2;
@@ -109,6 +107,19 @@ __device__ __forceinline__ void fill_unit(const CarryParams& p, const Place& c, 
       reinterpret_cast<const uint16_t*>(smem + P::kUnion + kWindow * 2), ww, first,
       min(write_slots - first, P::kUnitSlots),
       ops::smem_addr(smem + P::kPhase + (slot ? 0 : P::kWriteSlot0)));
+  if (ww.listed) {
+    const ops::SmemAddr heads = ops::smem_addr(smem + P::kPhase + P::kHeads + slot * P::kHeadBytes);
+    const uint16_t* at = reinterpret_cast<const uint16_t*>(smem + P::kWriteAt);
+#pragma unroll 1
+    for (int k = static_cast<int>(threadIdx.x); k < ww.lists * 16; k += kThreads) {
+      const int list = k >> 4, e = k & 15;
+      const int begin = at[list * kListAt + P::kFoldUnit * u];
+      const int n = at[list * kListAt + P::kFoldUnit * (u + 1)] - begin;
+      const uint2* recs = reinterpret_cast<const uint2*>(p.write_lists.entries)
+                          + list_row(p.write_lists, c, p.windows, w, ww.digit0 + list) * kListCap;
+      ops::stage_run_if<8>(heads + 8 * k, recs + begin + min(e, max(n - 1, 0)), e < n);
+    }
+  }
   ops::mbar_arrive_when_landed(ops::smem_addr(smem + P::kBars) + 8 * slot);
 }
 
@@ -135,6 +146,33 @@ __device__ __forceinline__ void load_step(Operand<P>& o, ops::SmemAddr pool, uin
   const uint32_t ob = __shfl_sync(0xffffffffu, off, 16 * h + 8 * (q & 1) + r);
   o.c01 = ops::hmul2(__shfl_sync(0xffffffffu, cpair, 16 * h + 2 * tq), cf);
   o.c89 = ops::hmul2(__shfl_sync(0xffffffffu, cpair, 16 * h + 2 * tq + 8), cf);
+  const ops::SmemAddr ea = pool + (oa ^ (16u * static_cast<uint32_t>(q & 1)));
+  static_for<P::kFoldMTiles>([&](auto M) { ops::load_frag_t(o.a[M], ea + 32u * M); });
+  const ops::SmemAddr eb = pool + P::kValuesAt + (ob ^ (16u * static_cast<uint32_t>(q >> 1)));
+  static_for<2>([&](auto H) {
+    uint32_t x[4];
+    ops::load_frag_t(x, eb + 32u * H);
+    o.b[2 * H][0] = x[0];
+    o.b[2 * H][1] = x[1];
+    o.b[2 * H + 1][0] = x[2];
+    o.b[2 * H + 1][1] = x[3];
+  });
+}
+
+//: A LIST'S FIRST STEP'S OPERANDS from its heads in shared memory (16 records; zero past its count, a pad's row 0
+//: and c = 0): each lane's two row offsets and its four tokens' c read in place, no shuffles.
+//: -- see docs/internals/carry/fold.md#step
+template <class P>
+__device__ __forceinline__ void load_head(Operand<P>& o, ops::SmemAddr pool, const uint8_t* head,
+                                          uint32_t cf, int lane) {
+  const int r = lane & 7, q = lane >> 3, tq = lane & 3;
+  const uint16_t* h16 = reinterpret_cast<const uint16_t*>(head);
+  const uint32_t oa = row_offset<P>(h16[4 * (8 * (q >> 1) + r)]);
+  const uint32_t ob = row_offset<P>(h16[4 * (8 * (q & 1) + r)]);
+  const uint4 p01 = *reinterpret_cast<const uint4*>(head + 16 * tq);
+  const uint4 p89 = *reinterpret_cast<const uint4*>(head + 16 * tq + 64);
+  o.c01 = ops::hmul2(ops::prmt(p01.y, p01.w, 0x5410u), cf);
+  o.c89 = ops::hmul2(ops::prmt(p89.y, p89.w, 0x5410u), cf);
   const ops::SmemAddr ea = pool + (oa ^ (16u * static_cast<uint32_t>(q & 1)));
   static_for<P::kFoldMTiles>([&](auto M) { ops::load_frag_t(o.a[M], ea + 32u * M); });
   const ops::SmemAddr eb = pool + P::kValuesAt + (ob ^ (16u * static_cast<uint32_t>(q >> 1)));
@@ -185,60 +223,46 @@ __device__ __forceinline__ int2 list_span(const uint8_t* smem, const Window& win
   return make_int2(begin, at[P::kFoldUnit * (u + 1)] - begin);
 }
 
-//: A UNIT'S HEADS, before its landing wait: lane `L`'s record of each list's first pair (entry `L`), so their latency
-//: hides under the wait. -- see docs/internals/carry/fold.md#unit
-template <class P>
-struct Heads {
-  uint2 head[P::kFoldLists];
-};
-
-template <class P>
-__device__ __forceinline__ void fold_heads(const CarryParams& p, Heads<P>& hd, const uint8_t* smem,
-                                           const Window& win, const Place& c, int w, int u,
-                                           int warp, int lane) {
-  static_for<P::kFoldLists>([&](auto J) {
-    const int2 span = list_span<P>(smem, win, u, warp, J);
-    hd.head[J] =
-        lane < span.y ? list_records<P>(p, win, c, w, warp, J)[span.x + lane] : make_uint2(0u, 0u);
-  });
-}
-
-//: A FOLD UNIT, a warp's: every list's first step in one straight-line block (an empty list's is pads, row 0 with
-//: c = 0, adding nothing), so the scheduler loads a list's operands under the MMAs before them; a list's later steps
-//: two a record load, a pair ahead. -- see docs/internals/carry/fold.md#unit
+//: A FOLD UNIT, a warp's: every list's first step from its heads in shared memory, in one straight-line block (an empty
+//: list's is pads, adding nothing), so the scheduler loads a list's operands under the MMAs before them; a list past
+//: 16 entries continues from its records in global memory. -- see docs/internals/carry/fold.md#unit
 template <class P>
 __device__ __forceinline__ void fold_unit(const CarryParams& p, State<P>& st,
-                                          const uint32_t (&cf)[P::kFoldLists], const Heads<P>& hd,
-                                          const uint8_t* smem, const Window& win, const Place& c,
-                                          int w, int u, ops::SmemAddr pool, int warp, int lane) {
+                                          const uint32_t (&cf)[P::kFoldLists],
+                                          float (&f)[P::kFoldLists], const uint8_t* smem,
+                                          const Window& win, const Place& c, int w, int u,
+                                          ops::SmemAddr pool, int warp, int lane) {
+  const uint8_t* heads = smem + P::kPhase + P::kHeads + (u & 1) * P::kHeadBytes;
   static_for<P::kFoldLists>([&](auto J) {
-    uint32_t off, cpair;
-    pair_of<P>(hd.head[J], off, cpair);
     Operand<P> o;
-    load_step<P>(o, pool, off, cpair, cf[J], 0, lane);
+    load_head<P>(o, pool, heads + 128 * list_of<P::kFoldLists>(warp, J, win.lists), cf[J], lane);
+    static_for<P::kFoldMTiles>([&](auto M) {
+      static_for<4>([&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] *= f[J]; }); });
+    });
+    f[J] = 1.0f;
     mma_step<P, J>(st, o);
   });
-  static_for<P::kFoldLists>([&](auto J) {
-    const int2 span = list_span<P>(smem, win, u, warp, J);
-    const int n = span.y, steps = (n + 15) >> 4;
-    for (int k = ops::once(steps > 1); k > 0; --k) {
+  int longest = 0;
+  static_for<P::kFoldLists>(
+      [&](auto J) { longest = max(longest, list_span<P>(smem, win, u, warp, J).y); });
+  for (int k = ops::once(longest > 16); k > 0; --k) {
+    static_for<P::kFoldLists>([&](auto J) {
+      const int2 span = list_span<P>(smem, win, u, warp, J);
+      const int n = span.y, steps = (n + 15) >> 4;
       const uint2* recs = list_records<P>(p, win, c, w, warp, J) + span.x;
-      uint32_t off, cpair;
-      pair_of<P>(hd.head[J], off, cpair);
-      uint2 next = 32 + lane < n ? recs[32 + lane] : make_uint2(0u, 0u);
 #pragma unroll 1
       for (int s = 1; s < steps; ++s) {
-        for (int m = ops::once((s & 1) == 0); m > 0; --m) {
-          const uint2 cur = next;
-          next = 16 * s + 32 + lane < n ? recs[16 * s + 32 + lane] : make_uint2(0u, 0u);
-          pair_of<P>(cur, off, cpair);
-        }
+        const uint2 v = recs[min(16 * s + (lane & 15), n - 1)];
+        const bool live = (lane < 16) & (16 * s + lane < n);
+        const uint2 rec = make_uint2(live ? v.x : 0u, live ? v.y : 0u);
+        uint32_t off, cpair;
+        pair_of<P>(rec, off, cpair);
         Operand<P> o;
-        load_step<P>(o, pool, off, cpair, cf[J], s & 1, lane);
+        load_step<P>(o, pool, off, cpair, cf[J], 0, lane);
         mma_step<P, J>(st, o);
       }
-    }
-  });
+    });
+  }
 }
 
 //: THE PROBE (an instrument; nothing unbound): the state at the call's end, absolute, fp32 `[BH, N, d_v]` by global

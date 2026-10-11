@@ -68,11 +68,15 @@ struct Plan {
   static constexpr int kReadPool = 0;
   static constexpr int kPanel = kReadPool + kReadSlots * kPassSlots * kReadPitch;
   static constexpr int kReadBytes = kPanel + kPassSlots * kPanelWords * 4;
-  static constexpr int kFoldUnit = unit_passes(kWritePitch, kReadBytes, kSmemCap - kPhase);
+  //: each slot's HEADS: its box lists' first 16 records, the common step's offsets and c read in place
+  static constexpr int kHeadBytes = kWriteLists * 16 * 8;
+  static constexpr int kFoldUnit =
+      unit_passes(kWritePitch, kReadBytes, kSmemCap - kPhase - 2 * kHeadBytes);
   static constexpr int kUnitSlots = kFoldUnit * kPassSlots;
   static constexpr int kUnitBytes = kUnitSlots * kWritePitch;
   static constexpr int kWriteSlot0 = max_of(kReadBytes, kUnitBytes);
-  static constexpr int kWriteBytes = kWriteSlot0 + kUnitBytes;
+  static constexpr int kHeads = kWriteSlot0 + kUnitBytes;
+  static constexpr int kWriteBytes = kHeads + 2 * kHeadBytes;
   static constexpr int kSmemBytes = kPhase + max_of(kPublishBytes, max_of(kReadBytes, kWriteBytes));
   static_assert(kSmemBytes <= kSmemCap, "the block's shared memory fits sm_86's 99 KB");
   static_assert(kPublishBytes <= kWriteSlot0,
