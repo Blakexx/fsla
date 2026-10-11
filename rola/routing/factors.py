@@ -94,6 +94,10 @@ class RouteFactors:
         flags = ((False,) * D, (False,) * D) if self.sparse is None else tuple(tuple(map(bool, f)) for f in self.sparse)
         if len(flags) != 2 or any(len(f) != D for f in flags):
             raise ValueError(f"RouteFactors.sparse is (read, write), a bool a level (D={D}); got {self.sparse!r}")
+        for side, side_flags in zip(SIDES, flags):
+            if all(side_flags):
+                raise ValueError(f"RouteFactors.sparse declares every {side} level sparse ({side_flags}); every side "
+                                 "has a dense level (docs/api.md section 2.1)")
         object.__setattr__(self, "sparse", flags)
         prefix, first = self._check_rows()
         for name in ("scale_read", "scale_write"):

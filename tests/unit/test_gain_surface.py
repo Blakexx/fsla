@@ -19,7 +19,7 @@ import pytest
 import torch
 
 from rola.layer import RoLA
-from rola.routing.producer import Routing, uniform, union_routing
+from rola.routing.producer import Routing, split_routing
 from rola.routing.side_gain import GainConfig
 
 _H, _DV = 2, 32
@@ -27,7 +27,9 @@ _HIDDEN = _H * _DV
 
 
 def _layer(*, gain: bool, **kwargs) -> RoLA:
-    return RoLA(Routing(uniform(2, union_routing(4, 1.5)), gain=gain, **kwargs), hidden_size=_HIDDEN,
+    #: the alternating scheme: every side has a dense level (docs/api.md section 2.1)
+    levels = [split_routing(4, 1.5, sparse_duty="write"), split_routing(4, 1.5, sparse_duty="read")]
+    return RoLA(Routing(levels, gain=gain, **kwargs), hidden_size=_HIDDEN,
                 num_heads=_H, d_v=_DV).double()
 
 

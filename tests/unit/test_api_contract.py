@@ -153,14 +153,20 @@ def test_a_dense_levels_zero_digit_reads_as_the_floor_in_a_live_row_only():
 
 
 def test_rows_are_u8_at_every_depth():
-    """RULED 2026-10-03: the producer writes u8 rows at every depth, each against its own max; a row of any other
-    type is refused, and a deep bundle dequantizes to its levels within half a digit a row."""
+    """RULED 2026-10-03: the producer writes u8 rows at every depth, each against its own max -- a dense WRITE level's
+    rows f16 at the floor (2026-10-04), and every side has a dense level (2026-10-08); a row of any other type is
+    refused, and a deep bundle dequantizes to its levels within half a digit a row."""
     from rola.routing.types import OpaqueRouting, Topology
 
     deep = Topology(levels=tuple(OpaqueRouting(width=4) for _ in range(3)))
     level = torch.rand(1, 2, 1, 4, dtype=torch.float64) + 0.1
-    bundle = RouteFactors.from_levels(deep, (level,) * 3, (level,) * 3, torch.ones(1, 2, 1))
-    assert all(row.dtype is torch.uint8 for row in bundle.amp_read + bundle.amp_write)
+    sparse = ((False, True, True), (False, True, True))
+    bundle = RouteFactors.from_levels(deep, (level,) * 3, (level,) * 3, torch.ones(1, 2, 1), sparse=sparse)
+    assert all(row.dtype is torch.uint8 for row in bundle.amp_read + bundle.amp_write[1:])
+    assert bundle.amp_write[0].dtype is torch.float16
+    with pytest.raises(ValueError, match="every read level sparse"):
+        RouteFactors.from_levels(deep, (level,) * 3, (level,) * 3, torch.ones(1, 2, 1),
+                                 sparse=((True,) * 3, (False, True, True)))
     for got in bundle.dequantized()[0]:
         top = level.amax(-1, keepdim=True)
         assert ((got.double() - level).abs() <= top / 510 * (1 + 2 ** -20)).all()
@@ -266,11 +272,11 @@ def test_a_producer_outside_the_framework_still_emits_the_format_or_nothing():
             B, T = stream.shape[0], stream.shape[1]
             level = torch.full((B, T, 2, 4), 0.25, dtype=stream.dtype)
             return RouteFactors.from_levels(self.topology, (level,), (level.clone(),),
-                                            torch.ones(B, T, 2, dtype=stream.dtype))
+                                            torch.ones(B, T, 2, dtype=stream.dtype), sparse=((False,), (False,)))
 
     producer = Uniform()
     factors = producer(_x(producer))
-    assert all(row.dtype is torch.uint8 for row in factors.amp_read + factors.amp_write)
+    assert factors.amp_read[0].dtype is torch.uint8 and factors.amp_write[0].dtype is torch.float16
     assert torch.equal(factors.amp_read[0], torch.full_like(factors.amp_read[0], 255)), "a flat row is all 255s"
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
     _admitted(factors, v)

@@ -196,6 +196,8 @@ exact zeros worth skipping. It is set at production -- the producer flags a side
 has exact zeros, and `from_levels`/`from_rows` default to that rule -- and read by every consumer;
 no consumer derives it from the activations. A flag cannot disagree with the rows: a sparse-flagged
 level with no zeros costs its words, and a dense-flagged level with zeros is read whole.
+EVERY SIDE HAS A DENSE LEVEL: a `sparse` that flags every level of a side is refused -- a side's dense levels are
+the carry's operand on that side and carry the floor (`docs/internals/engine/rules.md#carve`).
 `RouteFactors.rows(level, side)` is a level's rows. A read level's scale carries the read mass; a
 write level's scale is the normalized simplex's max and its mass rides `g_write`. This is what
 the int carry, the intra and the decode kernels read, and it is written by the framework's producer
