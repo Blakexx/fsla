@@ -277,11 +277,24 @@ def dev_config_env(tmp_path):
     dev_config.reload()
 
 
+def alternating_routing(depth):
+    """THE ALTERNATING SPLIT, one routing a level for ``build_routing``/``build_layer``: entmax on the write duty at the
+    even levels (read-dense) and on the read duty at the odd (write-dense), so every side has a dense level and, from
+    depth two, a sparse one (docs/api.md section 2.1). At depth one the one level is softmax on both duties."""
+    from rola import dense_routing, split_routing
+
+    if depth == 1:
+        return [dense_routing(1)]
+    return [split_routing(1, sparse_duty="write" if level % 2 == 0 else "read") for level in range(depth)]
+
+
 def build_routing(*, widths=(16,), routing=None, gain=True, bias=False, gain_bias_init=None, gain_config=None):
-    """One declared :class:`rola.Routing` covering every level in ``widths``."""
+    """One declared :class:`rola.Routing` covering every level in ``widths``; ``routing`` is one level routing for every
+    level, or a list with one a level (`alternating_routing`)."""
     from rola import Routing, dense_routing
 
-    levels = [dense_routing(w) if routing is None else routing.at(w) for w in widths]
+    per_level = routing if isinstance(routing, (list, tuple)) else [routing] * len(widths)
+    levels = [dense_routing(w) if r is None else r.at(w) for r, w in zip(per_level, widths)]
     return Routing(levels, gain=gain, bias=bias, gain_bias_init=gain_bias_init, gain_config=gain_config)
 
 

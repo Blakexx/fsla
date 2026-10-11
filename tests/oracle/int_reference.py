@@ -235,11 +235,11 @@ WEIGHT_LEVELS = {1: 255.0, 2: 65535.0}
 
 
 def unit_rows(rows, scales, sparse) -> tuple[torch.Tensor, ...]:
-    """A bundle side's rows as fp64 unit values: a u8 digit over 255, a dense level's zeros in a live row at the floor
-    (docs/internals/facts/liveness_contract.md#floor)."""
+    """A bundle side's rows as fp64 unit values: a u8 digit over 255 (a dense write level's f16 coefficient as it is),
+    a dense level's zeros in a live row at the floor (docs/internals/facts/liveness_contract.md#floor)."""
     out = []
     for r, scale, is_sparse in zip(rows, scales, sparse, strict=True):
-        unit = r.double() / 255.0
+        unit = r.double() if r.dtype is quant.DENSE_DTYPE else r.double() / 255.0
         if not is_sparse:
             unit = torch.where((scale > 0).unsqueeze(-1), unit.clamp_min(quant.DENSE_FLOOR), unit)
         out.append(unit)

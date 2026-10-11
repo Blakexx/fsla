@@ -19,10 +19,9 @@ import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from conftest import build_layer  # noqa: E402
+from conftest import alternating_routing, build_layer  # noqa: E402
 
 import rola  # noqa: E402
-from rola.routing.producer import union_routing  # noqa: E402
 
 pytestmark = [
     pytest.mark.cuda,
@@ -36,7 +35,7 @@ def _producer(seed=0, widths=_WIDTHS):
     """The routes of a stretch of tokens, from a layer's producer."""
     torch.manual_seed(seed)
     layer = build_layer(hidden_size=_HIDDEN, num_heads=_H, widths=widths, d_v=_DV,
-                        routing=union_routing(1)).cuda().eval()
+                        routing=alternating_routing(len(widths))).cuda().eval()
     return lambda x: layer._produce(x)[0]
 
 

@@ -31,12 +31,14 @@ from rola.routing.entmax.production import _torch_activation, _torch_union_split
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="the producer is a CUDA kernel")
 
+#: EVERY SIDE HAS A DENSE LEVEL (docs/api.md section 2.1), so a topology of entmax levels declares a softmax one: the
+#: union and sparsemax rows begin with a dense level, the split rows alternate which duty is sparse.
 _ROUTINGS = {
-    "union": [rola.union_routing(64), rola.union_routing(32)],
+    "union": [rola.dense_routing(16), rola.union_routing(64), rola.union_routing(32)],
     "split": [rola.split_routing(64, sparse_duty="write"), rola.split_routing(64, sparse_duty="read")],
     "tied-deep": [rola.tied_routing(16), rola.dense_routing(32), rola.union_routing(16)],
-    "wide": [rola.union_routing(256), rola.split_routing(200, sparse_duty="read")],
-    "sparsemax": [rola.union_routing(64, 2.0), rola.tied_routing(32, rola.entmax(2.0))],
+    "wide": [rola.split_routing(256, sparse_duty="write"), rola.split_routing(200, sparse_duty="read")],
+    "sparsemax": [rola.dense_routing(16), rola.union_routing(64, 2.0), rola.tied_routing(32, rola.entmax(2.0))],
 }
 _MAX_COLUMNS = 512
 
@@ -260,6 +262,8 @@ def test_a_bound_ledger_books_every_phase_and_changes_nothing():
     phases = dict(zip(producer.LEDGER_PHASES, range(len(producer.LEDGER_PHASES)), strict=True))
     route = [name for name in producer.LEDGER_PHASES if name != "values"]
     for index, job in enumerate(jobs):
-        names = route if job[0] == 0 else ["job", "project", "barrier", "values"]
+        #: a softmax solve (the dense level's job, solve 0) has no threshold to find
+        names = ["job", "project", "barrier", "values"] if job[0] else [
+            name for name in route if name != "threshold" or job[3] != 0]
         for name in names:
             assert bool((ledger[index, :, phases[name]] > 0).all()), f"job {index}: a warp booked no `{name}`"

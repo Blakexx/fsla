@@ -262,12 +262,11 @@ def _sequence():
     """
     import rola
     from rola.ops.naive import naive_rola
-    from rola.routing.producer import union_routing
-    from tests.conftest import build_layer
+    from tests.conftest import alternating_routing, build_layer
 
     torch.manual_seed(7)
     layer = build_layer(hidden_size=_HIDDEN, num_heads=_H, widths=_WIDTHS, d_v=_DV,
-                        routing=union_routing(1)).cuda().eval()
+                        routing=alternating_routing(len(_WIDTHS))).cuda().eval()
     torch.manual_seed(507)
     x = torch.randn(_B, _T + 8, _HIDDEN, device="cuda")
     v = torch.randn(_B, _T + 8, _H, _DV, device="cuda")

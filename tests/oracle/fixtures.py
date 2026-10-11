@@ -109,8 +109,14 @@ def step_bundles(v, read, write, g_write, topology, *, read_mass=None):
     """Floating step operands in the internal format: ``(RouteFactors, Values)`` as the framework's epilogue writes
     them (u8 rows, f16 values). A drawn level with exact zeros is declared SPARSE, as a production whose activation
     has exact zeros is, so its zeros stay exact rather than reading as the dense floor
-    (docs/internals/facts/liveness_contract.md#floor)."""
+    (docs/internals/facts/liveness_contract.md#floor). Every side has a dense level (docs/api.md section 2.1): a side
+    whose drawn levels ALL have zeros declares the ALTERNATING level dense (the read side's level 0, the write side's
+    level 1, level 0 at depth one) -- the producer's floor then lifts that level's zeros -- and keeps the others
+    sparse."""
     sparse = tuple(tuple(bool((level == 0).any()) for level in side) for side in (read, write))
+    depth = len(read)
+    sparse = tuple(flags if not all(flags) else tuple(i != dense for i in range(depth))
+                   for flags, dense in zip(sparse, (0, 1 % depth)))
     routes = RouteFactors.from_levels(topology, tuple(t.float() for t in read), tuple(t.float() for t in write),
                                       g_write.float(), read_mass=read_mass, sparse=sparse)
     return routes, Values.from_projection(v.float())

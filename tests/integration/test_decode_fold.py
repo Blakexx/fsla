@@ -84,14 +84,15 @@ def _single_leaf_state(BH: int, config, s0: int, device, seed: int):
 
 
 def _routes(rows, scale, *, normalize):
-    """A one-level bundle over ``rows`` (read) and an empty write side. The level is union-routed, whose read duty is
+    """A one-level bundle over ``rows`` (read) and an empty write side, both sides dense (depth one: the read rows are
+    strictly positive and the dead write rows are all-zero rows, which a dense level keeps zero). The level is union-routed, whose read duty is
     never on the simplex, so a carried read mass is exactly what makes the fold normalize it."""
     B, T, H, width = rows.shape
     topology = Topology(levels=(UnionRouting(width=width),))
     ones = torch.ones(B, T, H, dtype=torch.float32, device=rows.device)
-    return RouteFactors.from_rows(topology, (rows,), (quant.aligned_rows(*rows.shape, rows.device),), (scale,),
-                                  (torch.zeros_like(scale),),
-                                  ones, read_mass=ones if normalize else None)
+    return RouteFactors.from_rows(topology, (rows,), (quant.aligned_rows(*rows.shape, rows.device, quant.DENSE_DTYPE),),
+                                  (scale,), (torch.zeros_like(scale),), ones, read_mass=ones if normalize else None,
+                                  sparse=((False,), (False,)))
 
 
 def _y_of(rows, scale, *, normalize, seed, s0=0):

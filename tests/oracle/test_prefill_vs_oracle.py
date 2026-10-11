@@ -75,9 +75,11 @@ def fresh_plane(spec, bh: int = 1):
 
 
 def bundle(drawn, spec):
-    """The cell's draw in the format the kernels read: u8 rows, f16 values."""
+    """The cell's draw in the format the kernels read: u8 rows, f16 values, each level sparse or dense as the cell declares
+    (every cell declares a dense level a side)."""
     topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in spec.widths))
-    return (RouteFactors.from_levels(topology, drawn.read, drawn.write, drawn.gain.float()),
+    sparse = tuple(tuple(level[side] for level in spec.declared_sparsity()) for side in (0, 1))
+    return (RouteFactors.from_levels(topology, drawn.read, drawn.write, drawn.gain.float(), sparse=sparse),
             Values.from_projection(drawn.v))
 
 

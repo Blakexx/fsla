@@ -135,7 +135,7 @@ INTRA_CELLS = ["flat-small-alt-k4", "one-box-short", "deep3-alt-k4"]
 
 
 def _bundle(name):
-    """The cell's draw in the bundle's format: u8 rows, f16 values."""
+    """The cell's draw in the bundle's format: u8 rows, f16 values, each level sparse or dense as the cell declares."""
     from rola.routing.factors import RouteFactors
     from rola.routing.types import OpaqueRouting, Topology
     from rola.values import Values
@@ -143,7 +143,8 @@ def _bundle(name):
     cell = by_name(name)
     drawn = realize(cell)
     topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in cell.widths))
-    routes = RouteFactors.from_levels(topology, drawn.read, drawn.write, drawn.gain.float())
+    sparse = tuple(tuple(level[side] for level in cell.declared_sparsity()) for side in (0, 1))
+    routes = RouteFactors.from_levels(topology, drawn.read, drawn.write, drawn.gain.float(), sparse=sparse)
     return cell, routes, Values.from_projection(drawn.v)
 
 

@@ -95,23 +95,32 @@ def _simplex(shape, p_nonzero, generator):
     return (x / x.sum(-1, keepdim=True)).to(torch.float32)
 
 
-def _bundle(write):
-    """The fixture's write levels in the format (both sides the same levels): the rows the facts pass reads. The
-    reference reads the bundle's OWN levels (`dequantized`), so a value that rounded to a zero digit is dead on both
-    legs and the comparison is about the derivation, not the rounding."""
+def _alternating_sparse(D):
+    """The ALTERNATING declaration (docs/api.md section 2.1), ``(read, write)`` sparse flags a level: read-dense on the
+    even levels, write-dense on the odd ones and, at depth one, on the one level -- every side has a dense level."""
+    return (tuple(level % 2 == 1 for level in range(D)), tuple(level % 2 == 0 and D > 1 for level in range(D)))
+
+
+def _bundle(write, sparse=None):
+    """The fixture's write levels in the format (both sides the same levels): the rows the facts pass reads, each
+    side's levels sparse or dense as ``sparse`` declares (default the alternating split): a dense level is floored by
+    the quantizer, never zero. The reference reads the bundle's OWN levels (`dequantized`), so a value that rounded to a
+    zero digit (or to the floor) is the same on both legs and the comparison is about the derivation, not the
+    rounding."""
     B, T, H = write[0].shape[:3]
     topology = Topology(levels=tuple(OpaqueRouting(width=level.shape[-1]) for level in write))
     ones = torch.ones((B, T, H), device=write[0].device)
-    return (RouteFactors.from_levels(topology, write, write, ones),
+    sparse = _alternating_sparse(len(write)) if sparse is None else sparse
+    return (RouteFactors.from_levels(topology, write, write, ones, sparse=sparse),
             Values.from_projection(torch.ones((B, T, H, 8), device=write[0].device)))
 
 
 def _kernel_bitmap(routes, values):
     """The written atoms of the facts pass's words, every level voted from its rows."""
     layout = facts_ops.call_layout(routes)
-    statics = lv.side_statics(layout, (False,) * layout.D, routes.topology.widths)
-    words = facts_ops.facts(routes, values, layout, statics, statics).words
-    return planes.written_atoms(lv.page_bits(words, layout, statics, statics))
+    statics = facts_ops.call_statics(routes, layout)
+    words = facts_ops.facts(routes, values, layout, *statics).words
+    return planes.written_atoms(lv.page_bits(words, layout, *statics))
 
 
 def _oracle_bitmap(write, widths):
@@ -150,26 +159,28 @@ def test_atom_bitmap_is_exact(arm, support):
 
 
 def test_two_token_cross_product_is_excluded():
-    """THE ADVERSARIAL CELL: two tokens, disjoint live digits per level.
+    """THE ADVERSARIAL CELL: two tokens, disjoint live digits per sparse level.
 
-    At `D = 2, B = 64` leaf `s = d0 * 64 + d1`. Token 0 writes only `(0, 0)`
-    (leaf 0, atom 0); token 1 writes only `(1, 32)` (leaf 96, atom 6). The exact
-    answer is `{0, 6}`. A derivation that ORs over tokens before ANDing over
-    levels also admits `(0, 32)` -> leaf 32 -> atom 2 and `(1, 0)` -> leaf 64 ->
-    atom 4: leaves that were never live at any single token. Those two atoms are
-    named here so the assertion states the trap rather than merely avoiding it.
+    Every side keeps a dense level, so the write side's two SPARSE levels are levels 0 and 1 of a depth-three call and
+    level 2 is the dense one (every digit live, so a leaf's atom is its two sparse digits' and the 16 leaves under
+    them). At `B = (64, 64, 16)` leaf `s = d0 * 1024 + d1 * 16 + d2`. Token 0 writes only `(0, 0)` (atom 0); token 1
+    writes only `(1, 32)` (leaf 1536, atom 96). The exact answer is `{0, 96}`. A derivation that ORs over tokens before
+    ANDing over levels also admits `(0, 32)` -> leaf 512 -> atom 32 and `(1, 0)` -> leaf 1024 -> atom 64: leaves that
+    were never live at any single token. Those two atoms are named here so the assertion states the trap rather than
+    merely avoiding it.
     """
-    widths = (64, 64)
+    widths = (64, 64, 16)
     write = tuple(torch.zeros((1, 2, 1, w), device="cuda", dtype=torch.float32) for w in widths)
     write[0][0, 0, 0, 0] = 1.0
     write[1][0, 0, 0, 0] = 1.0
     write[0][0, 1, 0, 1] = 1.0
     write[1][0, 1, 0, 32] = 1.0
+    write[2][:] = 1.0 / 16
 
-    bits = _kernel_bitmap(*_bundle(write))
+    bits = _kernel_bitmap(*_bundle(write, sparse=((False, True, False), (True, True, False))))
     live = set(torch.nonzero(bits[0]).flatten().tolist())
-    assert live == {0, 6}, f"expected atoms {{0, 6}}, got {sorted(live)}"
-    assert 2 not in live and 4 not in live, (
+    assert live == {0, 96}, f"expected atoms {{0, 96}}, got {sorted(live)}"
+    assert 32 not in live and 64 not in live, (
         "the cross-product atoms are present: the reduction ORed over tokens "
         "before ANDing over levels")
     assert torch.equal(bits, _oracle_bitmap(write, widths))
@@ -181,12 +192,10 @@ def test_stats_through_the_host_seam():
     """
     import sys
     sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
-    from conftest import build_layer
-
-    from rola.routing.producer import union_routing
+    from conftest import alternating_routing, build_layer
 
     torch.manual_seed(0)
-    layer = build_layer(hidden_size=64, num_heads=_H, widths=(16, 16), routing=union_routing(1)).cuda().eval()
+    layer = build_layer(hidden_size=64, num_heads=_H, widths=(16, 16), routing=alternating_routing(2)).cuda().eval()
     x = torch.randn(_B, _T, 64, device="cuda")
     with torch.no_grad():
         routes, values = layer._produce(x)
