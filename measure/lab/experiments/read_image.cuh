@@ -16,15 +16,22 @@
 namespace read_image {
 
 constexpr int kWarps = 8, kThreads = 32 * kWarps;
-constexpr int kLists = 32, kDigits = 32, kChannels = 32;
+//: the box's channels: 32, or 16 where `fold_publish.cu` builds this file (the parts that assume 32 drop out)
+#ifndef READ_IMAGE_CHANNELS
+#define READ_IMAGE_CHANNELS 32
+#endif
+constexpr int kLists = 32, kDigits = 32, kChannels = READ_IMAGE_CHANNELS;
 //: a readout pass's slots: 256 (sm_86's), or 512 (sm_80's) where `read_w1024.cu` builds this file for W = 1024
 #ifndef READ_IMAGE_SLOTS
 #define READ_IMAGE_SLOTS 256
 #endif
-constexpr int kListCap = 512, kListAt = 8, kSlots = READ_IMAGE_SLOTS, kWords = 16, kPanelPitch = 20;
+constexpr int kListCap = 512, kListAt = 8, kSlots = READ_IMAGE_SLOTS, kWords = kChannels / 2;
+//: a panel row's pitch in words, its runs on distinct banks under the facts pass's residue placement: 20 for 32
+//: channels, 12 for 16
+constexpr int kPanelPitch = kChannels == 32 ? 20 : 12;
 //: the image's planes (a plane's access pattern is all a digit's reads see) and a digit's entries staged: 16 and 16, or
 //: 4 and 32 beside a 512-slot pass (so the counts fit sm_86)
-constexpr int kPlanes = kSlots == 512 ? 4 : 16, kHead = kSlots == 512 ? 32 : 16;
+constexpr int kPlanes = kChannels == 16 ? 32 : kSlots == 512 ? 4 : 16, kHead = kSlots == 512 ? 32 : 16;
 constexpr int kPlaneBytes = kLists * kChannels * 2, kRowBytes = kLists * 2;
 //: THE LAYOUT the entries are emitted against (`read_image.inputs.py` mirrors it): image, pool, the lanes' pad bases
 //: (128 bytes, never themselves touched), 8 dummy panel rows (a pad's add lands on its residue's, the banks a real row
@@ -45,6 +52,7 @@ struct Lists {
   uint32_t* panel_out;
 };
 
+#if READ_IMAGE_CHANNELS == 32
 //: A LANE'S CONSTANTS, once a kernel: its shuffle sources (the read row's token, the outputs' two tokens), the read
 //: rows' chunk XOR, its pad word, its state loads' two addresses in its plane (each + 1024 bytes for lists 16-31), its
 //: entry's offset in a head block
@@ -89,6 +97,8 @@ __device__ __forceinline__ void state_in(uint32_t (&f)[16], const Lane& c, uint3
   }
 }
 
+#endif
+
 __device__ __forceinline__ uint2 lds64(uint32_t a) {
   uint2 v;
   asm volatile("ld.shared.v2.u32 {%0, %1}, [%2];" : "=r"(v.x), "=r"(v.y) : "r"(a));
@@ -111,6 +121,7 @@ __device__ __forceinline__ uint32_t s16_exact(float lo, float hi, float cu) {
 //: an entry word's coefficient times the unit (bf16, its low half) as fp32
 __device__ __forceinline__ float coef(uint32_t word) { return __uint_as_float(word << 16); }
 
+#if READ_IMAGE_CHANNELS == 32
 //: FORM 0'S STEP, 16 tokens on M: their read rows by two `ldmatrix.x4` (an address one add and an XOR), 8 MMAs against
 //: the digit's state, each output pair exact and added at its token's panel base (one add a token)
 template <int OUT>
@@ -215,6 +226,7 @@ __device__ __forceinline__ void tile_dense(uint32_t b0, uint32_t p0, const uint3
     }
   }
 }
+#endif
 
 struct HostLists {
   int windows = 0, width = 0, groups = 0;
@@ -278,7 +290,7 @@ inline double floor_of(const HostLists& h, int form, bool dense, bool free) {
       for (int p = 0; p < (dense ? 2 : 1); ++p)
         for (int d = 0; d < kDigits; ++d) {
           const int n = dense ? kSlots : entries_of(h, w, box * kDigits + d);
-          mmas[d % kWarps] += form == 0 ? (n + 15) / 16 * 8 : (n + 7) / 8 * 4;
+          mmas[d % kWarps] += (form == 0 ? (n + 15) / 16 * 4 : (n + 7) / 8 * 2) * (kChannels / 16);
         }
       long long busiest = 0;
       for (int s = 0; s < 4; ++s) {

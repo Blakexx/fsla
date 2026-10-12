@@ -15,12 +15,14 @@ dummy panel row). A lane's add then lands on distinct banks: a step's 8 tokens o
 slot extent (8 x the largest residue's count) `[windows][groups]` u16: the floors, the check and the drain read it. For
 each step form (`m`, tokens on M; `n`, on N), `entries_<form>.bin` is each digit's placed list `[windows][width][512]`
 of 8-byte entries `(pool, word)`: the pool row's byte offset from the CTA's shared base with its swizzle folded in (its
-high half the digit's steps -- of 16 positions on M, tiles of 8 on N -- and bit 24 when they run past the HEAD staged
-entries), and the coefficient times the unit (bf16, `256 x (1 + (slot ^ digit) & 1)`) low with the panel field high:
-the token's row (a pad's dummy row) past the lane bases, less the lane offset of the entry's position in its step
-(16 x (e % 8) on M, 32 x (e % 8 / 2) on N). `heads_<form>.bin` is each warp's window block `[windows][boxes][8][4 x HEAD
-x 8]`: its four digits' first HEAD entries. `banks.json` is the bank model's count (`tools/bank_model.py`) of the
-wavefronts a CTA-window's steps cost per MMA, by part, for each form.
+high half the digit's steps -- of 16 positions on M, tiles of 8 on N -- bit 24 when they run past the HEAD staged
+entries, bits 25-29 the digit), and the coefficient times the unit (bf16, `256 x (1 + (slot ^ digit) & 1)`) low with the
+panel field high: the token's row (a pad's dummy row) past the lane bases, less the lane offset of the entry's position
+in its step (16 x (e % 8) on M, 32 x (e % 8 / 2) on N). `heads_<form>.bin` is each warp's window block
+`[windows][boxes][8][4 x HEAD x 8]`: its four digits' first HEAD entries; `heads_bal_<form>.bin` (when asked) the same
+for a balanced deal of each box-window's digits to warps, longest first, each to the least loaded warp with room, 4 a
+warp. `banks.json` is the bank model's count (`tools/bank_model.py`) of the wavefronts a CTA-window's steps cost per
+MMA, by part, a form.
 """
 from __future__ import annotations
 
@@ -38,7 +40,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 CELL, TOKENS = "nl64k-alt-k4", 16384
 #: `read_image.cu`'s layout: 2-KB image planes before the pool, then the lane bases (128 bytes), the 8 dummy panel rows
 #: (one a residue) and the panel, 80-byte rows
-PLANE_BYTES, DUMMY_ROWS, PANEL_ROWS, PANEL_PITCH = 2048, 128, 768, 80
+PLANE_BYTES, DUMMY_ROWS, PANEL_PITCH = 2048, 128, 80
 #: the coefficients' bf16 bits by `(slot ^ digit) & 1`: 256 and 512
 COEFFICIENT = (0x4380, 0x4400)
 #: the lane offset of an entry's position in its step, and the positions a step holds
@@ -106,9 +108,11 @@ def place(span: list[int]) -> list[tuple[int, bool]]:
     return out
 
 
-def emit(directory: Path, slots, at, count, pass_slots: int, planes: int, head: int) -> list[str]:
-    """Write the files for a `pass_slots`-slot readout pass over `planes` image planes with HEAD entries a digit staged,
-    from read lists whose every box's union fits one pass (a digit's entries `slots[w, d, at[w, d, 0]:at[w, d, -1]]`)."""
+def emit(directory: Path, slots, at, count, pass_slots: int, planes: int, head: int, plane_bytes: int = PLANE_BYTES,
+         pitch: int = PANEL_PITCH, channels: int = 32, balanced: bool = False) -> list[str]:
+    """Write the files for a `pass_slots`-slot readout pass over `planes` image planes of `plane_bytes` with HEAD
+    entries a digit staged, `channels` a box (panel rows `pitch` bytes), from read lists whose every box's union fits
+    one pass (a digit's entries `slots[w, d, at[w, d, 0]:at[w, d, -1]]`)."""
     import bank_model
     import numpy as np
 
@@ -130,24 +134,28 @@ def emit(directory: Path, slots, at, count, pass_slots: int, planes: int, head: 
     header = struct.pack("<4i", 0x44414552, windows, width, groups)
     body = colored.astype(np.uint16).tobytes() + at.astype(np.uint16).tobytes() + extent.astype(np.uint16).tobytes()
     (directory / "read.bin").write_bytes(header + body)
-    pool = planes * PLANE_BYTES
+    pool = planes * plane_bytes
     lane_base = pool + pass_slots * 64
-    model: dict[str, dict[str, float]] = {"colored": {"digits of at most 8 tokens on distinct residues": clean / digits}}
+    panel_rows = DUMMY_ROWS + 8 * pitch
+    model: dict[str, dict[str, float]] = {"colored": {"digits of at most 8 tokens on distinct residues":
+                                                      clean / digits}}
+    files = ["read.bin"]
     for form in ("m", "n"):
         per = PER[form]
         entries = np.zeros((windows, width, cap, 2), np.uint32)
         heads = np.zeros((windows, width // 32, 8, 4 * head * 2), np.uint32)
+        bal = np.zeros_like(heads)
         cost = defaultdict(float)
         mmas = 0
         for w in range(windows):
             for d in range(width):
                 placed = place([int(x) for x in colored[w, d, at[w, d, 0]:at[w, d, -1]]])
                 steps = max(1, -(-len(placed) // per))
-                tag = (steps | (steps * per > head) << 8) << 16
+                tag = (steps | (steps * per > head) << 8 | d % 32 << 9) << 16
                 placed += [(r, True) for _ in range(steps * per // 8 + 2) for r in range(8)]
                 for e in range(max(steps * per, head)):
                     s, pad = placed[e]
-                    field = (DUMMY_ROWS if pad else PANEL_ROWS) + PANEL_PITCH * s - FOLD[form](e)
+                    field = (DUMMY_ROWS if pad else panel_rows) + pitch * s - FOLD[form](e)
                     word = field << 16 | (0 if pad else COEFFICIENT[(s ^ d) & 1])
                     entries[w, d, e] = (pool + _row(s) | tag, word)
                 block = heads[w, d // 32, d % 8]
@@ -165,7 +173,7 @@ def emit(directory: Path, slots, at, count, pass_slots: int, planes: int, head: 
                                 [[step[8 * (q & 1) + r][0] ^ 16 * (2 * kb + (q >> 1)) for r in range(8)]
                                  for q in range(4)])
                         for half in range(2):
-                            for nt in range(4):
+                            for nt in range(channels // 8):
                                 cost["adds"] += bank_model.wavefronts(
                                     [lane_base + 4 * lane + step[8 * half + (lane >> 2)][1] + 16 * nt
                                      for lane in range(32)], 4)
@@ -173,7 +181,7 @@ def emit(directory: Path, slots, at, count, pass_slots: int, planes: int, head: 
                         cost["gathers"] += bank_model.ldmatrix([[step[r][0] ^ 16 * q for r in range(8)]
                                                                 for q in range(4)])
                         for par in range(2):
-                            for m in range(2):
+                            for m in range(channels // 16):
                                 cost["adds"] += bank_model.wavefronts(
                                     [lane_base + 4 * (lane >> 2) + 32 * (lane & 3) + step[2 * (lane & 3) + par][1]
                                      + 32 * m for lane in range(32)], 4)
@@ -182,9 +190,26 @@ def emit(directory: Path, slots, at, count, pass_slots: int, planes: int, head: 
         model[form]["wavefronts a MMA"] = sum(cost.values()) / mmas
         (directory / f"entries_{form}.bin").write_bytes(entries.tobytes())
         (directory / f"heads_{form}.bin").write_bytes(heads.tobytes())
+        files += [f"entries_{form}.bin", f"heads_{form}.bin"]
+        if balanced:
+            for w in range(windows):
+                for box in range(width // 32):
+                    load = [0] * 8
+                    held: list[list[int]] = [[] for _ in range(8)]
+                    tiles = [int(entries[w, box * 32 + d, 0, 0]) >> 16 & 0xFF for d in range(32)]
+                    for d in sorted(range(32), key=lambda d: (-tiles[d], d)):
+                        k = min((x for x in range(8) if len(held[x]) < 4), key=lambda x: (load[x], x))
+                        held[k].append(d)
+                        load[k] += tiles[d]
+                    for k in range(8):
+                        for i, d in enumerate(held[k]):
+                            row = entries[w, box * 32 + d, :head].reshape(-1)
+                            bal[w, box, k, 2 * head * i:2 * head * (i + 1)] = row
+            (directory / f"heads_bal_{form}.bin").write_bytes(bal.tobytes())
+            files.append(f"heads_bal_{form}.bin")
     (directory / "banks.json").write_text(json.dumps(model, indent=1) + "\n")
     print("bank model:", json.dumps(model))
-    return ["read.bin", "entries_m.bin", "entries_n.bin", "heads_m.bin", "heads_n.bin", "banks.json"]
+    return files + ["banks.json"]
 
 
 def write(directory: Path) -> list[str]:
