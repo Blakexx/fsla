@@ -20,7 +20,11 @@ constexpr int kWarps = 8, kThreads = 32 * kWarps;
 #ifndef READ_IMAGE_CHANNELS
 #define READ_IMAGE_CHANNELS 32
 #endif
-constexpr int kLists = 32, kDigits = 32, kChannels = READ_IMAGE_CHANNELS;
+//: the box's read digits: 32, or 16 where `digit_box.cu` builds this file (2 a warp)
+#ifndef READ_IMAGE_DIGITS
+#define READ_IMAGE_DIGITS 32
+#endif
+constexpr int kLists = 32, kDigits = READ_IMAGE_DIGITS, kChannels = READ_IMAGE_CHANNELS;
 //: a readout pass's slots: 256 (sm_86's), or 512 (sm_80's) where `read_w1024.cu` builds this file for W = 1024
 #ifndef READ_IMAGE_SLOTS
 #define READ_IMAGE_SLOTS 256
@@ -38,8 +42,8 @@ constexpr int kPlaneBytes = kLists * kChannels * 2, kRowBytes = kLists * 2;
 //: of that residue would use), panel, heads
 constexpr int kImage = 0, kPool = kImage + kPlanes * kPlaneBytes, kPads = kPool + kSlots * kRowBytes;
 constexpr int kPanel = kPads + 128 + 8 * kPanelPitch * 4, kHeads = kPanel + kSlots * kPanelPitch * 4;
-//: a warp's heads for a window, double-buffered: its 4 digits' first entries, a 16-byte chunk (or two) a lane
-constexpr int kHeadBytes = 4 * kHead * 8, kBytes = kHeads + 2 * kWarps * kHeadBytes;
+//: a warp's heads for a window, double-buffered: its digits' first entries (4, or 2 in a 16-digit box)
+constexpr int kHeadBytes = kDigits / kWarps * kHead * 8, kBytes = kHeads + 2 * kWarps * kHeadBytes;
 //: the dense cell's coefficient times the unit
 constexpr float kUnit = 256.0f;
 

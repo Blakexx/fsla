@@ -109,7 +109,7 @@ def place(span: list[int]) -> list[tuple[int, bool]]:
 
 
 def emit(directory: Path, slots, at, count, pass_slots: int, planes: int, head: int, plane_bytes: int = PLANE_BYTES,
-         pitch: int = PANEL_PITCH, channels: int = 32, balanced: bool = False) -> list[str]:
+         pitch: int = PANEL_PITCH, channels: int = 32, balanced: bool = False, digits: int = 32) -> list[str]:
     """Write the files for a `pass_slots`-slot readout pass over `planes` image planes of `plane_bytes` with HEAD
     entries a digit staged, `channels` a box (panel rows `pitch` bytes), from read lists whose every box's union fits
     one pass (a digit's entries `slots[w, d, at[w, d, 0]:at[w, d, -1]]`)."""
@@ -120,16 +120,16 @@ def emit(directory: Path, slots, at, count, pass_slots: int, planes: int, head: 
     groups = count.shape[-1]
     assert (count <= pass_slots).all(), "a box's union exceeds one readout pass"
     colored, extent = slots.copy(), count.copy()
-    clean = digits = 0
+    clean = small = 0
     for w in range(windows):
         for box in range(groups):
-            rows = range(box * 32, box * 32 + 32)
+            rows = range(box * digits, box * digits + digits)
             spans = [[int(x) for x in slots[w, d, at[w, d, 0]:at[w, d, -1]]] for d in rows]
             new, extent[w, box] = color(spans, int(count[w, box]))
             for d, span in zip(rows, spans, strict=True):
                 colored[w, d, at[w, d, 0]:at[w, d, -1]] = [new[s] for s in span]
                 if len(span) <= 8:
-                    digits += 1
+                    small += 1
                     clean += len({new[s] & 7 for s in span}) == len(span)
     header = struct.pack("<4i", 0x44414552, windows, width, groups)
     body = colored.astype(np.uint16).tobytes() + at.astype(np.uint16).tobytes() + extent.astype(np.uint16).tobytes()
@@ -138,12 +138,12 @@ def emit(directory: Path, slots, at, count, pass_slots: int, planes: int, head: 
     lane_base = pool + pass_slots * 64
     panel_rows = DUMMY_ROWS + 8 * pitch
     model: dict[str, dict[str, float]] = {"colored": {"digits of at most 8 tokens on distinct residues":
-                                                      clean / digits}}
+                                                      clean / small}}
     files = ["read.bin"]
     for form in ("m", "n"):
         per = PER[form]
         entries = np.zeros((windows, width, cap, 2), np.uint32)
-        heads = np.zeros((windows, width // 32, 8, 4 * head * 2), np.uint32)
+        heads = np.zeros((windows, width // digits, 8, digits // 8 * head * 2), np.uint32)
         bal = np.zeros_like(heads)
         cost = defaultdict(float)
         mmas = 0
@@ -151,15 +151,15 @@ def emit(directory: Path, slots, at, count, pass_slots: int, planes: int, head: 
             for d in range(width):
                 placed = place([int(x) for x in colored[w, d, at[w, d, 0]:at[w, d, -1]]])
                 steps = max(1, -(-len(placed) // per))
-                tag = (steps | (steps * per > head) << 8 | d % 32 << 9) << 16
+                tag = (steps | (steps * per > head) << 8 | d % digits << 9) << 16
                 placed += [(r, True) for _ in range(steps * per // 8 + 2) for r in range(8)]
                 for e in range(max(steps * per, head)):
                     s, pad = placed[e]
                     field = (DUMMY_ROWS if pad else panel_rows) + pitch * s - FOLD[form](e)
                     word = field << 16 | (0 if pad else COEFFICIENT[(s ^ d) & 1])
                     entries[w, d, e] = (pool + _row(s) | tag, word)
-                block = heads[w, d // 32, d % 8]
-                i = d % 32 // 8
+                block = heads[w, d // digits, d % 8]
+                i = d % digits // 8
                 block[2 * head * i:2 * head * (i + 1)] = entries[w, d, :head].reshape(-1)
                 mmas += steps * (8 if form == "m" else 4)
                 cost["state"] += 16
@@ -193,17 +193,17 @@ def emit(directory: Path, slots, at, count, pass_slots: int, planes: int, head: 
         files += [f"entries_{form}.bin", f"heads_{form}.bin"]
         if balanced:
             for w in range(windows):
-                for box in range(width // 32):
+                for box in range(width // digits):
                     load = [0] * 8
                     held: list[list[int]] = [[] for _ in range(8)]
-                    tiles = [int(entries[w, box * 32 + d, 0, 0]) >> 16 & 0xFF for d in range(32)]
-                    for d in sorted(range(32), key=lambda d: (-tiles[d], d)):
-                        k = min((x for x in range(8) if len(held[x]) < 4), key=lambda x: (load[x], x))
+                    tiles = [int(entries[w, box * digits + d, 0, 0]) >> 16 & 0xFF for d in range(digits)]
+                    for d in sorted(range(digits), key=lambda d: (-tiles[d], d)):
+                        k = min((x for x in range(8) if len(held[x]) < digits // 8), key=lambda x: (load[x], x))
                         held[k].append(d)
                         load[k] += tiles[d]
                     for k in range(8):
                         for i, d in enumerate(held[k]):
-                            row = entries[w, box * 32 + d, :head].reshape(-1)
+                            row = entries[w, box * digits + d, :head].reshape(-1)
                             bal[w, box, k, 2 * head * i:2 * head * (i + 1)] = row
             (directory / f"heads_bal_{form}.bin").write_bytes(bal.tobytes())
             files.append(f"heads_bal_{form}.bin")

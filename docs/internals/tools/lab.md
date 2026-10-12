@@ -949,6 +949,41 @@ The box is the larger cost. A 16-channel readout takes 1399 cycles for 16 channe
 ran low on the votes and per-list bookkeeping (select 1.07 against 0.59, integer 5.2 against 4.1); the record is forced
 and the form is not taken. Record: `measure/lab/results/fold_publish/sm_86.json`.
 
+<a id="digit-box"></a>
+### `digit_box`, `digit_box32`
+
+A box of 32 lists x 16 digits x 32 channels, whose 32 KB image fits sm_86 whole beside the rest (99 KB with the fold's
+values and heads). The hand-off is `fold_publish`'s: readout, a named barrier, the fold storing each list's rows as its
+last step lands, a named barrier. The image has 16 digit planes of [list][32 channels], 16-byte units swizzled
+`(4 list + (c ^ s(list))) ^ (digit & 7)`, so both the stores and the loads are conflict-free.
+
+The readout is `read_image.cu`'s 32-channel tokens-on-N form over 2 digits a warp, on the read lists re-ranked per
+16-digit half (`digit_box.inputs.py`). The fold stand-in carries the fold's shared traffic over the box's 32 lists,
+which are the 32-digit box's write lists, so both digit boxes fold the same tokens. Each step does:
+- an entry;
+- the write rows over the box's 16 digits by `ldmatrix.x2.trans`;
+- the 32 channels' values by `ldmatrix.x4.trans`;
+- the coefficients by HMUL2, and 4 m16n8k8 MMAs.
+
+`digit_box32.cu` builds the same file at 32 digits for the reference, on a static image only, since its whole image
+cannot fit beside the rest on sm_86. All checked outputs are exact.
+
+| sm_86, alt-k4 | 16-digit box, a CTA-window | 32-digit box, a CTA-window |
+|---|---|---|
+| a static image, free-running | 2208 | 3562 |
+| the hand-off | 3200 | (does not fit) |
+| the readout alone | 1067 | 1985 |
+| the fold alone | 1234 | 1726 |
+
+Per 512 tokens over 32 digits and 32 channels, the costs against the 32-digit box's 3562 (1.00x):
+- two 16-digit boxes, free-running: 4416 (1.24x);
+- two 16-digit boxes with the hand-off: 6400 (1.80x).
+
+The readout splits well: 2 x 1067 against 1985, +7%, since gathers stay one per entry and the read union halves. The
+fold does not: 2 x 1234 against 1726, +43%, since each write token's values are loaded in both boxes and a step's fixed
+work spreads over 4 MMAs instead of 8. The hand-off adds 0.99K a CTA-window (+45%): two barriers on half the work
+each. Records: `measure/lab/results/digit_box/sm_86.json`, `measure/lab/results/digit_box32/sm_86.json`.
+
 <a id="mma-k8"></a>
 ### `mma_k8`
 
