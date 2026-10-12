@@ -797,92 +797,58 @@ Record: `measure/lab/results/fold_mchan/sm_86.json`.
 <a id="read-image"></a>
 ### `read_image`
 
-The carry's readout with the state's operand from a bf16 image in shared memory (lab-local code: no production readout
-yet), on nl64k-alt-k4's real read lists (`read_image.inputs.py`; a read list holds slots only) and a synthetic dense
-cell. One CTA an SM a box of 32 lists x 32 read digits x 32 channels; a warp reads digits w, w + 8, w + 16, w + 24,
-holding a digit's 16 state registers while its tokens stream; read rows gathered from a 256-slot pool; bf16 MMAs with
-fp32 accumulate; each token's outputs times its coefficient to s16 pairs added by `red.shared` into its panel row
-(20-word rows); the drain at the pass's end, the union's rows only. A warp's heads (its digits' pass starts and first
-16 slots) and the union count arrive a window ahead. Forms: tokens on M (16-token steps, the state the B operand) or
-on N (8-token tiles, the state the A operand); the state a digit at a time, a ring of two digits, or every digit's
-first step in one straight-line block (as the fold's).
+The carry's readout step in its ruled final form (lab-local code: no production readout yet), the state's operand from
+a bf16 image in shared memory, on nl64k-alt-k4's real read lists and a dense cell. One CTA an SM a box of 32 lists x
+32 read digits x 32 channels; a warp reads digits w, w + 8, w + 16, w + 24, every digit's first step in one
+straight-line block. The entries arrive in the facts pass's final form (`read_image.inputs.py`): the pool row's byte
+offset with its swizzle folded in (its spare high half the digit's step count and a flag for steps past the staged
+entries), the coefficient times the unit, and the panel row's offset less the lane offset of the entry's token in its
+step -- so a lane's pad base plus the field is its token's row, and a pad's zero field is the lane's own word, with no
+test or select. A pad sits on a residue its 8-entry group leaves free. Each output pair converts on the FMA pipe to the
+exact integer hi x 2^16 + lo (two FFMAs, one LEA or IMAD), added by `red.shared` into its token's panel row; the drain
+runs at the pass's end. A warp's first 16 entries a digit (32 at W = 1024) arrive a window ahead by `cp.async`, a
+16-byte chunk a lane. The lane's constants are held in registers (`lab::held`: ptxas otherwise re-derives them from
+`S2R` every digit), and every branch on loaded data is a vote, so ptxas sees it warp-uniform and puts no convergence
+barrier around the collectives it guards. Forms: tokens on M (16-token steps, the state the B operand) and on N
+(8-token tiles, the state the A operand).
 
-Measured (sm_86, against each form's tensor floor: 2074 cycles a CTA-window at alt-k4 on M, 1628 on N, 65.5K dense):
+The check runs the even channels negative (a low half below zero carries into the high half, so an inexact pack fails)
+with two coefficients by slot and digit; every output word is exact. Cycles are the CTA's span (`WarpSpan`), against
+the tensor floor that matches the variant's synchronization: each window's busiest scheduler with the pass barrier,
+the busiest over all windows when warps free-run. The earlier records took the mean warp's cycles, which undercounts
+free-running warps.
 
-| cell, form | the MMAs alone | + panel adds | + the drain |
-|---|---|---|---|
-| alt-k4, M, first steps straight-line | 1.55x | 1.86x | 2.44x |
-| alt-k4, M, state ring | 1.54x | 2.00x | 2.52x |
-| alt-k4, N, state ring | 2.08x (1.64x of M's floor) | 2.76x | 3.40x |
-| dense, M | | | 1.16x |
-| dense, N | | | 1.41x |
+| sm_86, alt-k4 (W = 512) | + panel adds, barrier | free-running | + the drain | instructions an MMA |
+|---|---|---|---|---|
+| tokens on M (256.7 MMAs a CTA-window) | 1.27x | 1.07x (2207 cycles) | 1.79x | 8.2 |
+| tokens on N (180.3) | 1.52x | 1.36x (1982 cycles) | 2.14x | 10.9 |
+| dense, tokens on M | 1.03x | | 1.07x | 5.4 |
 
-Tokens on N lose everywhere: an 8-token tile carries a 16-token step's fixed work for half its MMAs. The ring gains
-nothing (two warps a scheduler hide the image's loads). Shared-memory wavefronts an MMA at alt-k4 (ncu): 4.8 the MMAs
-alone, 7.0 with the panel's adds, 8.7 with the drain (0.8 / 1.8 / 2.6 of them bank conflicts: a step's tokens
-collide on residues); dense 2.6.
-
-Then, tokens on M with first steps straight-line, on lists dealt round-robin by residue within the 256-slot pass
-(`ordered.bin`), outputs converted on the FMA pipe (one FFMA a value adds 1.5 x 2^23 with the coefficient and unit
-folded in, a PRMT a pair) in place of F2I, half steps (a digit's last 8 tokens or fewer: 8 read rows and their adds
-only, a declared warp-uniform branch choosing the form) and no barrier at the pass's end:
-
-| alt-k4, tokens on M | + panel adds | + the drain | instructions an MMA (with adds) |
-|---|---|---|---|
-| F2I | 1.85x | 2.44x | 21.7 (2.0 on the conversion unit) |
-| ordered lists | 1.85x | | 21.7 |
-| ordered, half steps | 1.99x | 2.50x | 21.9 |
-| ordered, FMA conversion | 1.65x | 2.17x | 18.7 (none) |
-| ordered, FMA conversion, no pass barrier | 1.48x | | 18.8 |
-| dense, FMA conversion | | 1.12x | 12.1 |
-| ordered, FMA conversion, a token's panel base once | 1.60x | 2.12x | 16.2 |
-| the same, free-running | 1.44x | | |
-| ordered, FMA conversion, facts-form entries (byte offsets, swizzle folded), heads path at compile time | 1.62x | 2.13x | 13.2 |
-| the same, free-running | 1.45x | | |
-| tokens on N (8-token tiles, 0.69x the MMAs), facts form, exact pairs | 2.11x (1.65x of M's floor) | | 18.8 |
-| the same, free-running | 1.78x (1.40x of M's floor) | | |
-| dense, a token's panel base once | | 1.12x | 9.6 |
-
-Ordering moves conflicts 1.76 -> 1.65 an MMA only: a digit's ~8 tokens collide on residues with no ninth to deal.
-Half steps save ~0.8 wavefronts an MMA but their branch costs sm_86 more. What remains at alt-k4 is the output path
-(the box's 32 lists make each MMA 64 output values, each a conversion and half an add, half of them padding rows'
-at alt-k4) and each window's chain with ~4 steps a warp (tensor pipe idle ~38% with the MMAs alone).
-
-The facts-form variants state their instruction budget by opcode class (KERNEL_STANDARDS §29; `Bench::budget`, gated
-by `tools/lab.py run` on ncu's executed counts): the step itself now matches its operation count (an entry load,
-three shuffles, four address operations, two read-row loads, 8 MMAs, 16 FFMAs, 8 PRMTs, two panel bases, 8 adds),
-and the gate holds the rest over budget -- integer/address 4.3 an MMA against 1.8, shared loads 1.45 against 1.15,
-select/compare 0.85 against 0.4: each digit's 64-bit list row computed on the common path, each lane's state offsets
-rematerialized a digit, the heads' 64-bit copies a window. On sm_86 the facts form's per-digit choice of heads or
-global path (a branch in the straight-line block) costs more than its 3.3 fewer instructions an MMA save; the count
-is A100's limit, the block structure sm_86's.
-
-The per-card prediction (`Bench::mma`; tensor, shared-memory and issue cycles an MMA from the same counts) puts the
-alt-k4 readout SHARED-MEMORY BOUND ON BOTH CARDS: 8.1 cycles an MMA (7.1 wavefronts, each shared atomic's second cycle)
-against 8.0 of tensor on sm_86 and 2.0 on A100; tokens on N spend 7.15 a tokens-on-M MMA's worth of work, about 12%
-less. A digit's state read from the image (16 wavefronts a digit-window) is the largest single item at alt-k4. An
-earlier run of the facts-form variants was wrong: the pad tokens' dummy words were 32 a CTA while a step's adds reach
-60 bytes past a lane's base, so the last lanes' adds wrote into warp 0's heads and moved its counts (the tokens-on-N
-form, whose pads add nonzero, ran twice its tiles); the lab checks no outputs, so only the counts showed it.
+Both forms meet their budgets (KERNEL_STANDARDS §29). Each budget names the structure the count shows past a step's
+operations: ptxas's three never-executed `LDS` before every `LDGSTS`, the loop's exit `CALL`, its alignment NOPs, the
+past-staged vote, and on N the never-executed `UIADD3` fillers between a tile's dependent MMAs. Per the cards'
+prediction from the same counts, the readout is shared-memory bound on A100: 7.4 cycles an MMA on M (6.4 wavefronts
+and each shared atomic's second cycle), 9.5 on N. A token costs 3.72 cycles on M and 3.36 on N, so tokens on N win on
+both cards at alt-k4. Dense keeps M: N's two accumulators chain its MMAs and its tiles carry no padding to shed.
+The forms this replaced (F2I and PRMT packs, which are inexact under u32 adds when a low half is negative; a state
+ring; half steps; select-routed pads) are recorded at carry-k5 8434df71.
 
 Record: `measure/lab/results/read_image/sm_86.json`.
 
 <a id="read-w1024"></a>
 ### `read_w1024`
 
-`read_image.cu` built with sm_80's 512-slot readout pass (`READ_IMAGE_SLOTS`; 8 image planes, so the count run fits
-sm_86) on nl64k-alt-k4's read lists merged in window pairs (`read_w1024.inputs.py`: 16 windows of 1024 tokens, the
-second window's union ranks after the first's, one pass): a read digit holds ~16 tokens a window, its state read from
-the image serving twice W = 512's. The facts-form steps, outputs checked exactly, counts priced on both cards.
+`read_image.cu` built with sm_80's 512-slot readout pass (`READ_IMAGE_SLOTS`; 4 image planes and 32 staged entries a
+digit, so it fits sm_86) on nl64k-alt-k4's read lists merged in window pairs (`read_w1024.inputs.py`: 16 windows of
+1024 tokens, the second window's union ranks after the first's, one pass). A read digit holds ~16 tokens a window, so
+each read of its state from the image serves twice W = 512's tokens.
 
-| per token, tokens on M, free-running | W = 512 (`read_image`) | W = 1024 |
-|---|---|---|
-| tensor floor (sm_86 cycles) | 4.05 | 3.23 |
-| sm_86 measured | 5.89 (1.45x) | 4.25 (1.31x) |
-| A100 predicted, shared-memory bound | 4.08 (8.07 an MMA) | 3.05 (7.55 an MMA) |
+| per token | W = 512, M | W = 512, N | W = 1024, M | W = 1024, N |
+|---|---|---|---|---|
+| sm_86 measured, free-running | 4.31 | 3.87 | 3.21 | 3.32 |
+| A100 predicted, shared-memory bound | 3.72 | 3.36 | 2.56 | 2.51 |
 
-Tokens on N spend ~7% less shared memory than M at W = 1024 (8.6 cycles an N MMA, 0.82x M's MMAs). Record:
-`measure/lab/results/read_w1024/sm_86.json`.
+Record: `measure/lab/results/read_w1024/sm_86.json`.
 
 <a id="mma-k8"></a>
 ### `mma_k8`

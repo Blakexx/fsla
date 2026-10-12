@@ -953,6 +953,16 @@ method is a procedure with a gate, not a memory.
    (`Bench::exempt`: a rate probe, an isolation, a baseline). Found 2026-10-11: the readout lab's pad words overran
    into a warp's heads -- in bounds, so memcheck passed, and even a zero atomic add is a read-modify-write that raced
    the next window's copy -- and the corrupted counts were measured as a form's cost; its exact check fails on it.
+9. WHAT PTXAS ADDS IS PREVENTED AT THE SOURCE (measured 2026-10-11 in `read_image`, 13.2 -> 8.2 instructions an
+   MMA): a lane's constants are held in registers (`lab::held`, an empty asm; ptxas otherwise re-derives them from
+   `S2R` at every digit); every branch on loaded data is a vote (`__any_sync`), so ptxas sees it warp-uniform and puts
+   no convergence barrier (BSSY/BSYNC, WARPSYNC, BRA.DIV) around the collectives it guards; a loop whose trip count is
+   data is bottom-tested on a vote, its entry test outside it; a prefetch is issued unconditionally into a pad past
+   the last window, never under a guard; a lane-predicated copy in a loop becomes a branch, so data a few lanes need
+   travels inside what every lane copies. What remains is named in the budget: three never-executed `LDS` before
+   every `LDGSTS`, a loop's exit `CALL`, alignment NOPs, `UIADD3` fillers between dependent MMAs.
+10. A FREE-RUNNING CTA IS TIMED BY ITS SPAN (`WarpSpan`) against the free floor, the busiest scheduler over all
+   windows. The mean warp's cycles undercount it, and a per-window floor overstates what it must take.
 ENFORCED: `tools/lab.py run` reads each budgeted kernel's executed instructions by class (ncu's per-opcode counts),
 prints them against the budget, and refuses to record a variant over it (`--force` to record a known-over variant on
 purpose). `tools/sass_gate.py` reds, on every function of every build, conversion-unit instructions and global

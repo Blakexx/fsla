@@ -150,6 +150,13 @@ __device__ __forceinline__ uint32_t smem(const void* p) {
   return static_cast<uint32_t>(__cvta_generic_to_shared(p));
 }
 
+//: `v` HELD in a register across the loops that use it: an empty asm hides its derivation, so ptxas cannot
+//: rematerialize it (a lane's constants otherwise come back from `S2R` and their arithmetic at every use)
+__device__ __forceinline__ uint32_t held(uint32_t v) {
+  asm volatile("" : "+r"(v));
+  return v;
+}
+
 //: THE ASYNCHRONOUS COPIES (`cp.async`, sm_80+) as `ops.cuh` spells them: 16 bytes bypassing L1, or 4 through it; a
 //: group committed and waited, or an mbarrier arrival when all of the thread's prior copies land.
 __device__ __forceinline__ void cp_async16(uint32_t dst, const void* src) {

@@ -38,26 +38,31 @@ INSTRUCTION = re.compile(r"^\s*/\*([0-9a-f]{4,5})\*/\s+(@!?U?P\w+\s+)?([A-Z0-9_.
 #: the encoding line that follows an instruction in `cuobjdump -sass` output
 ENCODING = re.compile(r"^\s*/\*\s*0x[0-9a-f]+\s*\*/\s*$")
 #: THE OPCODE CLASSES an instruction budget is stated in (KERNEL_STANDARDS section 29): each class one pipe or one kind
-#: of overhead, matched by opcode prefix (the first match wins, so `F2FP`'s pack is matched before the conversion unit)
+#: of overhead, matched by opcode prefix (the first match wins, so `F2FP`'s pack is matched before the conversion unit
+#: and `LDGDEPBAR`, the `cp.async` commit, is control before `LDG` would make it global)
 OPCODE_CLASSES = {
     "mma": ("HMMA", "IMMA"),
     "shared load": ("LDSM", "LDS"),
     "shared store": ("STS",),
     "shared atomic": ("ATOMS",),
+    "control": ("BRA", "BSSY", "BSYNC", "BAR", "WARPSYNC", "EXIT", "CALL", "RET", "NOP", "DEPBAR", "YIELD",
+                "LDGDEPBAR"),
     "global": ("LDGSTS", "LDG", "STG", "RED", "ATOMG", "ATOM"),
     "shuffle": ("SHFL",),
     "pack": ("PRMT", "F2FP"),
     "conversion unit": ("F2I", "I2F", "F2F", "MUFU"),
     "float": ("FFMA", "FMUL", "FADD", "FMNMX", "HFMA2", "HMUL2", "HADD2", "HMNMX2"),
-    "select/compare": ("SEL", "FSEL", "ISETP", "FSETP", "HSETP2", "PLOP3"),
-    "integer/address": ("IMAD", "IADD3", "LEA", "LOP3", "SHF", "IMNMX", "IABS", "MOV", "S2R", "CS2R", "POPC", "FLO"),
-    "control": ("BRA", "BSSY", "BSYNC", "BAR", "WARPSYNC", "EXIT", "CALL", "RET", "NOP", "DEPBAR", "YIELD"),
+    "select/compare": ("SEL", "FSEL", "ISETP", "FSETP", "HSETP2", "PLOP3", "VOTE"),
+    "integer/address": ("IMAD", "IADD3", "LEA", "LOP3", "SHF", "IMNMX", "IABS", "MOV", "S2R", "CS2R", "POPC", "FLO",
+                        "LDC", "S2UR", "R2UR"),
 }
 
 
 def opcode_class(opcode: str) -> str:
-    """The class an opcode's budget counts it in, `other` for none."""
-    return next((name for name, prefixes in OPCODE_CLASSES.items() if opcode.startswith(prefixes)), "other")
+    """The class an opcode's budget counts it in, `other` for none; a uniform-datapath op (`UIADD3`, `ULDC`) its vector
+    op's class."""
+    found = next((name for name, prefixes in OPCODE_CLASSES.items() if opcode.startswith(prefixes)), "other")
+    return opcode_class(opcode[1:]) if found == "other" and opcode.startswith("U") and len(opcode) > 1 else found
 
 
 #: `//## File "path", line N` -- one frame of the inline chain under `--print-line-info-inline`
