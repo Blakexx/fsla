@@ -6,7 +6,8 @@
 // every digit's first step in one straight-line block, its state fragments (16 registers) from the image by
 // `ldmatrix.trans`; read rows (32 lists of bf16, 64 bytes, swizzled) gathered from the pass's pool by the entries the
 // facts pass emits in their final form (`read_image.inputs.py`): the pool row's offset, the coefficient, the panel
-// row's offset with the lane's token folded in, so a pad lands on the lane's own word with no test; bf16 MMAs with
+// row's offset with the lane's token folded in, so a pad lands on its residue's dummy row with no test -- the slots
+// colored and the tokens placed so every gather and add is free of bank conflicts (KERNEL_STANDARDS 30); bf16 MMAs with
 // fp32 accumulate; each output pair times its coefficient to the exact integer hi x 2^16 + lo on the FMA pipe, added
 // by `red.shared` into its token's panel row; the drain at the pass's end (`red.global.add`, each word cleared). A
 // warp's heads (its digits' first entries) staged a window ahead by `cp.async`. Outputs checked exactly, the
@@ -34,10 +35,11 @@ constexpr int kListCap = 512, kListAt = 8, kSlots = READ_IMAGE_SLOTS, kWords = 1
 //: 4 and 32 beside a 512-slot pass (so the counts fit sm_86)
 constexpr int kPlanes = kSlots == 512 ? 4 : 16, kHead = kSlots == 512 ? 32 : 16;
 constexpr int kPlaneBytes = kLists * kChannels * 2, kRowBytes = kLists * 2;
-//: THE LAYOUT the entries are emitted against (`read_image.inputs.py` mirrors it): image, pool, the pads' words (a
-//: lane's own word at each of a step's add offsets, 176 bytes), panel, heads
-constexpr int kImage = 0, kPool = kImage + kPlanes * kPlaneBytes, kDummy = kPool + kSlots * kRowBytes;
-constexpr int kPanel = kDummy + 192, kHeads = kPanel + kSlots * kPanelPitch * 4;
+//: THE LAYOUT the entries are emitted against (`read_image.inputs.py` mirrors it): image, pool, the lanes' pad bases
+//: (128 bytes, never themselves touched), 8 dummy panel rows (a pad's add lands on its residue's, the banks a real row
+//: of that residue would use), panel, heads
+constexpr int kImage = 0, kPool = kImage + kPlanes * kPlaneBytes, kPads = kPool + kSlots * kRowBytes;
+constexpr int kPanel = kPads + 128 + 8 * kPanelPitch * 4, kHeads = kPanel + kSlots * kPanelPitch * 4;
 //: a warp's heads for a window, double-buffered: its 4 digits' first entries, a 16-byte chunk (or two) a lane
 constexpr int kHeadBytes = 4 * kHead * 8, kBytes = kHeads + 2 * kWarps * kHeadBytes;
 //: the dense cell's coefficient times the unit
@@ -71,7 +73,7 @@ __device__ __forceinline__ Lane lane_of(uint32_t sm, int warp, int lane) {
   const int srow = FORM == 0 ? 8 * (q & 1) + r : 8 * (lane >> 4) + r, sc = FORM == 0 ? q >> 1 : q & 1;
   const auto h = [](auto v) { return static_cast<decltype(v)>(lab::held(static_cast<uint32_t>(v))); };
   return {h(FORM == 0 ? 8 * (q & 1) + r : r), h(FORM == 0 ? g : 2 * t), h(FORM == 0 ? g + 8 : 2 * t + 1),
-          h(FORM == 0 ? 16u * (q >> 1) : 16u * q), h(sm + kDummy + (FORM == 0 ? 4u * lane : 4u * g + 32u * t)),
+          h(FORM == 0 ? 16u * (q >> 1) : 16u * q), h(sm + kPads + (FORM == 0 ? 4u * lane : 4u * g + 32u * t)),
           h(plane + in_plane(srow, sc)), h(plane + in_plane(srow, 2 + sc)),
           h(8u * (FORM == 0 ? lane & 15 : r))};
 }
@@ -197,6 +199,32 @@ __device__ __forceinline__ void step_dense(uint32_t a0, uint32_t p0, const uint3
   }
 }
 
+//: THE DENSE CELL'S TILE `s` (tokens on N): 8 consecutive slots' read rows by one `ldmatrix.x4`, a lane's read row
+//: and panel rows its bases plus compile-time offsets; the coefficient the unit
+template <int OUT>
+__device__ __forceinline__ void tile_dense(uint32_t b0, uint32_t p0, const uint32_t (&f)[16], float& sink, int s) {
+  uint32_t b[4];
+  lab::ldsm(b, b0 + 512u * s);
+  float acc[2][4] = {};
+#pragma unroll
+  for (int m = 0; m < 2; ++m)
+#pragma unroll
+    for (int kb = 0; kb < 2; ++kb) {
+      const uint32_t a[4] = {f[(m * 2 + kb) * 4], f[(m * 2 + kb) * 4 + 1], f[(m * 2 + kb) * 4 + 2],
+                             f[(m * 2 + kb) * 4 + 3]};
+      lab::mma_bf16_f32(acc[m], a, b[2 * kb], b[2 * kb + 1]);
+    }
+#pragma unroll
+  for (int m = 0; m < 2; ++m) {
+    if constexpr (OUT == 0) {
+      sink += acc[m][0] + acc[m][1] + acc[m][2] + acc[m][3];
+    } else {
+      panel_red(p0 + 640u * s + 32 * m, s16_exact(acc[m][0], acc[m][2], kUnit));
+      panel_red(p0 + 640u * s + 80 + 32 * m, s16_exact(acc[m][1], acc[m][3], kUnit));
+    }
+  }
+}
+
 template <int FORM, int OUT, int DENSE, int BAR>
 __global__ __launch_bounds__(kThreads, 1) void read(Lists ls, long long* times, int* sinks) {
   extern __shared__ __align__(128) uint8_t smem[];
@@ -206,7 +234,7 @@ __global__ __launch_bounds__(kThreads, 1) void read(Lists ls, long long* times, 
   //: the image's even channels -0.0625 and odd +0.0625, the pool's lists +0.0625 (bf16), the rest zero
   uint4* chunks = reinterpret_cast<uint4*>(smem);
   for (int k = static_cast<int>(threadIdx.x); k < kBytes / 16; k += kThreads) {
-    const uint32_t v = k < kPool / 16 ? 0x3d80bd80u : k < kDummy / 16 ? 0x3d803d80u : 0u;
+    const uint32_t v = k < kPool / 16 ? 0x3d80bd80u : k < kPads / 16 ? 0x3d803d80u : 0u;
     chunks[k] = make_uint4(v, v, v, v);
   }
   __syncthreads();
@@ -246,16 +274,19 @@ __global__ __launch_bounds__(kThreads, 1) void read(Lists ls, long long* times, 
     const int count = next;
     if constexpr (DENSE) {
       const int r = lane & 7, q = lane >> 3, g = lane >> 2, t = lane & 3;
-      const uint32_t a0 = (sm + kPool + in_plane(8 * (q & 1) + r, 0)) ^ c.chunk;
-      const uint32_t p0 = sm + kPanel + 80u * g + 4u * t;
+      const uint32_t a0 = (sm + kPool + in_plane(FORM == 0 ? 8 * (q & 1) + r : r, 0)) ^ c.chunk;
+      const uint32_t p0 = sm + kPanel + (FORM == 0 ? 80u * g + 4u * t : 160u * t + 4u * g);
 #pragma unroll 1
       for (int p = 0; p < 2; ++p) {
 #pragma unroll 1
         for (int i = 0; i < 4; ++i) {
           uint32_t f[16];
-          state_in<0>(f, c, plane_off(i));
+          state_in<FORM>(f, c, plane_off(i));
 #pragma unroll
-          for (int s = 0; s < kSlots / 16; ++s) step_dense<OUT>(a0, p0, f, sink, s);
+          for (int s = 0; s < kSlots / (FORM == 0 ? 16 : 8); ++s) {
+            if constexpr (FORM == 0) step_dense<OUT>(a0, p0, f, sink, s);
+            if constexpr (FORM == 1) tile_dense<OUT>(a0, p0, f, sink, s);
+          }
         }
         if constexpr (BAR == 1) __syncthreads();
         if constexpr (OUT == 2) drain(w, p, kSlots);
@@ -309,27 +340,26 @@ __global__ __launch_bounds__(kThreads, 1) void read(Lists ls, long long* times, 
             do step_m<OUT>(sm, listed(i, 16 * s + (lane & 15)), c, f[i], sink);
             while (__any_sync(0xffffffffu, ++s < steps(i)));
     } else {
+      uint32_t f[4][16];
 #pragma unroll
       for (int i = 0; i < 4; ++i) {
-        uint32_t f[16];
-        state_in<1>(f, c, plane_off(i));
+        state_in<1>(f[i], c, plane_off(i));
         const uint2 e = lds64(he + kHead * 8 * i);
         tag[i] = e.x;
-        tile_n<OUT>(sm, e, c, f, sink);
+        tile_n<OUT>(sm, e, c, f[i], sink);
+      }
+#pragma unroll
+      for (int i = 0; i < 4; ++i)
 #pragma unroll
         for (int s = 1; s < kStaged; ++s)
           for (int k = __any_sync(0xffffffffu, steps(i) > s) ? 1 : 0; k > 0; --k)
-            tile_n<OUT>(sm, lds64(he + kHead * 8 * i + 64 * s), c, f, sink);
-      }
+            tile_n<OUT>(sm, lds64(he + kHead * 8 * i + 64 * s), c, f[i], sink);
       for (int rare = past() ? 1 : 0; rare > 0; --rare)
 #pragma unroll
-        for (int i = 0; i < 4; ++i) {
-          uint32_t f[16];
-          state_in<1>(f, c, plane_off(i));
+        for (int i = 0; i < 4; ++i)
           for (int k = __any_sync(0xffffffffu, steps(i) > kStaged) ? 1 : 0, s = kStaged; k > 0; --k)
-            do tile_n<OUT>(sm, listed(i, 8 * s + (lane & 7)), c, f, sink);
+            do tile_n<OUT>(sm, listed(i, 8 * s + (lane & 7)), c, f[i], sink);
             while (__any_sync(0xffffffffu, ++s < steps(i)));
-        }
     }
     if constexpr (BAR == 1) __syncthreads();
     if constexpr (OUT == 2) drain(w, 0, count);
@@ -492,32 +522,43 @@ Verdict verify(const Reference& ref, const Lists& ls) {
               (OUT == 1 ? " (each CTA's panel)" : " (each window-pass's drain)")};
 }
 
-//: THE BUDGETS (KERNEL_STANDARDS section 29), each class's instructions per MMA, from the operation count at alt-k4:
-//: a read digit ~8 tokens a window (one 16-token step, 8 MMAs; ~1.41 8-token tiles, ~5.6 MMAs), a warp 4 digits.
-//: TOKENS ON M -- a step: 2 read-row loads and an entry load, 3 shuffles, 16 FFMAs, 8 adds; integer 14 (the read rows'
-//: mask-XOR and XOR, 2 coefficients' shifts, 2 panel bases, 8 packs). A digit: 4 state loads (immediates). A window
-//: (32 MMAs a warp): the heads' copy (global) and the 3 never-executed `LDS` ptxas sets before an `LDGSTS`; integer
-//: ~14 (the source and count pointers, the buffer's parity, the tags' OR and test, the loop counter); select ~6 (the
-//: loop's test, the past-staged vote and its predicate); control ~8 (2 alignment NOPs, commit, wait, the loop's exit
-//: CALL and branch, the past-staged branch; the pass barrier). Per MMA: shared load 0.97, shuffle 0.38, float 2.0,
-//: integer 2.2, select 0.19, control 0.25 (0.28 with the barrier), global 0.04. TOKENS ON N -- a tile (4 MMAs): a
-//: read-row load and an entry load, 3 shuffles, 8 FFMAs, 4 adds, integer 9 (a mask-XOR, 2 shifts, 2 bases, 4 packs)
-//: and ~1.3 of ptxas's never-executed `UIADD3` fillers between its dependent MMAs (two accumulators, each two MMAs
-//: deep); a digit (~5.6 MMAs): 4 state loads, its tag's extraction (2), the second tile's vote and branch; a window
-//: (~22.6 MMAs): as on M. Per MMA: shared load 1.36, shuffle 0.75, float 2.0, integer 3.7, select 0.45, control 0.55
-//: (0.6), global 0.05. DENSE (tokens on M, a digit 16 steps a pass): a step 2 read-row loads, 16
-//: FFMAs, 8 packs, 8 adds, its addresses immediates; a digit 4 state loads. Per MMA: shared load 0.28, float 2.0,
-//: integer 1.05, control 0.05. AT W = 1024 (`read_w1024.cu`: ~16 tokens a digit, 32 entries staged, two 16-byte
-//: copies a lane): M's digit adds a vote and its branch for its second step (~12 MMAs a digit), N's three for its tiles
-//: past the first (~9.7): select 0.35 and 0.95, global 0.07. Each adds the kernel's setup and the check's copy-out over
-//: its ~1000 MMAs a warp (~0.1 an MMA, mostly integer); "other" (an opcode in no class) is budgeted zero.
+//: THE BUDGETS (KERNEL_STANDARDS sections 29-30), each class's instructions per MMA and the shared-memory wavefronts
+//: per MMA, from the operation count at alt-k4: a read digit ~8 tokens a window (one 16-position step, 8 MMAs; ~1.41
+//: 8-token tiles, ~5.6 MMAs), a warp 4 digits. TOKENS ON M -- a step: 2 read-row loads and an entry load, 3 shuffles,
+//: 16 FFMAs, 8 adds; integer 14 (the read rows' mask-XOR and XOR, 2 coefficients' shifts, 2 panel bases, 8 packs). A
+//: digit: 4 state loads (immediates). A window (32 MMAs a warp): the heads' copy (global) and the 3 never-executed
+//: `LDS` ptxas sets before an `LDGSTS`; integer ~14 (the source and count pointers, the buffer's parity, the tags' OR
+//: and test, the loop counter); select ~6 (the loop's test, the past-staged vote and its predicate); control ~8 (2
+//: alignment NOPs, commit, wait, the loop's exit CALL and branch, the past-staged branch; the pass barrier). Per MMA:
+//: shared load 0.97, shuffle 0.38, float 2.0, integer 2.2, select 0.19, control 0.25 (0.28 with the barrier), global
+//: 0.04. TOKENS ON N -- a tile (4 MMAs): a read-row load and an entry load, 3 shuffles, 8 FFMAs, 4 adds, integer 9 (a
+//: mask-XOR, 2 shifts, 2 bases, 4 packs) and ~1.3 of ptxas's never-executed `UIADD3` fillers between its dependent
+//: MMAs (two accumulators, each two MMAs deep); a digit (~5.6 MMAs): 4 state loads, its tag's extraction (2), the
+//: second tile's vote and branch, after every digit's first tile in one straight-line block (as M's first steps); a
+//: window (~22.6 MMAs): as on M. Per MMA: shared load 1.36, shuffle 0.75, float 2.0,
+//: integer 3.7, select 0.45, control 0.55 (0.6), global 0.05. DENSE (a digit 16 steps or 32 tiles a pass): a step 2
+//: read-row loads, 16 FFMAs, 8 packs, 8 adds (a tile 1, 8, 4, 4), its addresses immediates; a digit 4 state loads.
+//: Per MMA: shared load 0.28, float 2.0, integer 1.05 (N: its fillers too), control 0.05. AT W = 1024 (`read_w1024.cu`:
+//: ~16 tokens a digit, 32 entries staged, two 16-byte copies a lane): M's digit adds a vote and its branch for its
+//: second step (~12 MMAs a digit), N's three for its tiles past the first (~9.7): select 0.35 and 0.95, global 0.07.
+//: Each adds the kernel's setup and the check's copy-out over its ~1000 MMAs a warp (~0.1 an MMA, mostly integer);
+//: "other" (an opcode in no class) is budgeted zero.
+//: WAVEFRONTS, conflict-free by the entries' coloring and placement: a step's 2 read-row loads 8, its 8 adds 8, its
+//: entry load 2 (an 8-byte load serves a half-warp a wavefront); a tile's 4, 4 and 2; a digit's state 16; a window's
+//: heads copy 8 a 512 bytes (`LDGSTS` counts twice a copy's 16 bytes); the init and copy-out ~0.1 an MMA; and the
+//: counter's remainder no operation is named for, ~0.6 a shuffle. Per MMA at alt-k4: M 2.25 + 1.99 + 0.25 + 0.1 +
+//: 0.22 = 4.8, N 2.5 + 2.84 + 0.36 + 0.1 + 0.45 = 6.25; dense 2.0 + 0.13; at W = 1024 M 2.25 + 1.4 + 0.35 + 0.1 + 0.22
+//: = 4.3, N 2.5 + 1.65 + 0.42 + 0.1 + 0.45 = 5.1.
 struct Budget {
-  double shared_load, shuffle, float_, integer, select, control, global;
+  double shared_load, shuffle, float_, integer, select, control, global, wavefronts;
 };
 
-constexpr Budget kBudget[3] = {{1.0, 0.4, 2.0, 2.5, kSlots == 512 ? 0.35 : 0.2, 0.3, kSlots == 512 ? 0.07 : 0.05},
-                               {1.4, 0.8, 2.0, 3.75, kSlots == 512 ? 0.95 : 0.5, 0.6, kSlots == 512 ? 0.08 : 0.06},
-                               {0.3, 0.0, 2.0, 1.15, 0.03, 0.08, 0.01}};
+constexpr bool kWide = kSlots == 512;
+constexpr Budget kBudget[4] = {
+    {1.0, 0.4, 2.0, 2.5, kWide ? 0.35 : 0.2, 0.3, kWide ? 0.07 : 0.05, kWide ? 4.45 : 4.95},
+    {1.4, 0.8, 2.0, 3.75, kWide ? 0.95 : 0.5, 0.6, kWide ? 0.08 : 0.06, kWide ? 5.25 : 6.4},
+    {0.3, 0.0, 2.0, 1.15, 0.03, 0.08, 0.01, 2.25},
+    {0.3, 0.0, 2.0, 1.5, 0.03, 0.08, 0.01, 2.25}};
 
 template <int FORM, int OUT, int DENSE, int BAR = 1>
 void variant(const lab::Bench& b, const Lists& ls, const char* lists, const Reference& ref) {
@@ -529,7 +570,7 @@ void variant(const lab::Bench& b, const Lists& ls, const char* lists, const Refe
   if (OUT == 0) b.exempt(name, "an isolation: the MMAs alone");
   if (OUT == 2) b.exempt(name, "a budgeted step (its OUT 1 variant) plus the pass's drain");
   if (OUT == 1) {
-    const Budget& u = kBudget[DENSE ? 2 : FORM];
+    const Budget& u = kBudget[DENSE ? 2 + FORM : FORM];
     b.mma(name, "hmma_bf16_f32", 16);
     b.budget(name, "mma", 1.0);
     b.budget(name, "shared load", u.shared_load);
@@ -544,6 +585,7 @@ void variant(const lab::Bench& b, const Lists& ls, const char* lists, const Refe
     b.budget(name, "control", u.control);
     b.budget(name, "global", u.global);
     b.budget(name, "other", 0.0);
+    b.budget(name, "wavefronts", u.wavefronts);
   }
   if (b.expect_only) return;
   LAB_CHECK(cudaFuncSetAttribute(read<FORM, OUT, DENSE, BAR>, cudaFuncAttributeMaxDynamicSharedMemorySize, kBytes));
@@ -622,5 +664,7 @@ int main(int argc, char** argv) {
 #if READ_IMAGE_SLOTS == 256
   variant<0, 1, 1>(b, lm, "", ref);
   variant<0, 2, 1>(b, lm, "", ref);
+  variant<1, 1, 1>(b, ln, "", ref);
+  variant<1, 2, 1>(b, ln, "", ref);
 #endif
 }

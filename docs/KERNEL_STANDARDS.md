@@ -973,6 +973,34 @@ replaces it, and the list only shrinks; a lab variant that keeps one on purpose 
 rule, its named debts) none without a check or a stated reason, and builds no MMA kernel without a budget or exemption.
 Measured: `read_image` (docs/internals/tools/lab.md#read-image).
 
+## §30 — SHARED MEMORY IS CONFLICT-FREE BY CONSTRUCTION (law, 2026-10-11, from Blake's "Should we create principles to ensure things are consistently designed to minimize bank conflicts always from ground up")
+The readout lab's bank conflicts were designed in by accident: the panel's pitch suited one access shape and not the
+other form's, pads went to whatever word was spare, and slot numbers were left to the data, so a digit's tokens
+collided on banks at random. On A100 shared memory binds, so a conflict costs more than an instruction. Fixing all
+three cut conflicts from 1.6-2.1 an MMA to 0.02-0.03 and wavefronts 25%, with no instruction added (`read_image`).
+1. EVERY SHARED BUFFER HAS AN ACCESS TABLE BEFORE CODE: each instruction that touches it (loads, `ldmatrix`, atomics,
+   `cp.async` stores) by lanes, addresses and banks; its layout (pitch, swizzle) is chosen to satisfy all its readers
+   and writers, and states the instruction shapes it is conflict-free for. A new access shape on an existing layout
+   gets its own placement rule or layout, never an assumption (§3 extends from fixed tensors to every buffer).
+2. WHEN THE DATA PICKS ADDRESSES, THE PRODUCER MAKES THEM CONFLICT-FREE: gathered rows and atomic targets indexed by
+   slot get slots the facts pass assigns so each instruction's set is conflict-free -- a box-window's union slots
+   colored by residue (a slot's residue mod 8 is its row's bank group) so a list's tokens differ, and each token placed
+   at the position its residue requires in the instruction that touches it. Conflict-freedom is part of the producer's
+   output format (§29.5).
+3. A PAD SITS WHERE A REAL ELEMENT WOULD: a free residue's row for a gather, a dummy row aligned to that residue for
+   an add -- never a spare word that may share a bank with real traffic.
+4. WAVEFRONTS ARE BUDGETED LIKE INSTRUCTIONS: each §29 budget has a `wavefronts` line, the design's bytes a 128-byte
+   wavefront plus what the counter is known to add, and `tools/lab.py` gates ncu's measured count against it (and
+   prints the bank conflicts in it). It is A100's floor, checked on every local run.
+5. A BANK MODEL RUNS BEFORE THE GPU: `tools/bank_model.py` gives an instruction's wavefronts from its lanes'
+   addresses; the producer (the facts pass, or a lab's inputs standing in for it) runs it on what it emits and reports
+   wavefronts by part, so a format change that adds conflicts is seen without hardware. It is checked per operation
+   against ncu's counters once a layout (measured 2026-10-11: `ldmatrix` and atomics exact, entry loads within 0.03).
+6. CONFLICTS ARE PRICED ACROSS DENSITIES: dense, sparse and the W = 1024 lists each, since a data-dependent conflict
+   rate moves with the distribution (§R10).
+Measured: `read_image`, `read_w1024` (docs/internals/tools/lab.md#read-image); the model:
+docs/internals/tools/bank_model.md.
+
 ## CONSTITUTION addendum (Blake, 2026-10-10): R22 — DEGRADE SMOOTHLY, SCALE, PARTITION INTO INDEPENDENT UNITS
 
 Blake: "my concern is any kernel design that 'spills' at some threshold rather than just cleanly degrading. How things

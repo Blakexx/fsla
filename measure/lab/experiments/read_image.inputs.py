@@ -1,36 +1,49 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE READOUT LAB'S INPUTS: one head's read lists as the facts pass hands them to the carry, for `read_image.cu`
-(docs/internals/tools/lab.md#read-image), in the final form a readout step consumes.
+"""THE READOUT LAB'S INPUTS: one head's read lists as the facts pass would hand them to the carry, for `read_image.cu`
+(docs/internals/tools/lab.md#read-image), in the final form a readout step consumes and conflict-free by construction
+(KERNEL_STANDARDS section 30).
+
+The facts pass's choices, made here: a box-window's union slots COLORED -- each token a residue mod 8 (its row's bank
+group in the pool and the panel), greedily so a digit's tokens differ, at most ceil(count / 8) a residue, its slot the
+residue plus 8 x its rank among them; a digit's tokens DEALT one a residue at a time, and each 8-token group PLACED at
+the positions of its residues, the positions left PADS (a free residue's row, coefficient 0, its add on that residue's
+dummy panel row). A lane's add then lands on distinct banks: a step's 8 tokens on M, a tile's 4 even or 4 odd ones on N.
 
 `read.bin` is a header of four int32 -- the magic word 0x44414552, windows, the list level's width, the 32-digit groups
--- then the slots `[windows][width][512]` u16, the facts pass's pass starts `[windows][width][8]` u16 and the unions'
-counts `[windows][groups]` u16: the floors and the check read it. For each step form (`m`, tokens on M; `n`, on N),
-`entries_<form>.bin` is each digit's list `[windows][width][512]` of 8-byte entries, its slots dealt round-robin by
-residue mod 8 (a slot's bank group in the pool and the panel) so a step's 8-entry groups fall on distinct banks where
-the residues allow, an entry `(pool, word)`: the pool row's byte offset from the CTA's shared base with its swizzle
-folded in (its high half the digit's steps, of 16 tokens on M and tiles of 8 on N, and bit 24 when they run past the
-HEAD staged entries; zero past the count), and the coefficient times the unit (bf16, `256 x (1 + (slot ^ digit) & 1)`) low with the panel field high --
-the panel row's offset past the pads' words less the lane offset of the entry's token in its step (16 x (e % 8) on M,
-32 x (e % 8 / 2) on N), so a lane's pad base plus the field is the token's row and a zero field is the lane's own pad
-word. `heads_<form>.bin` is each warp's window block `[windows][boxes][8][4 x HEAD x 8]`: its four digits' first HEAD
-entries, a pad past the count on a residue its 8-entry group leaves free, with the digit's steps and a zero word.
+-- then the colored slots `[windows][width][512]` u16, the pass starts `[windows][width][8]` u16 and each box-window's
+slot extent (8 x the largest residue's count) `[windows][groups]` u16: the floors, the check and the drain read it. For
+each step form (`m`, tokens on M; `n`, on N), `entries_<form>.bin` is each digit's placed list `[windows][width][512]`
+of 8-byte entries `(pool, word)`: the pool row's byte offset from the CTA's shared base with its swizzle folded in (its
+high half the digit's steps -- of 16 positions on M, tiles of 8 on N -- and bit 24 when they run past the HEAD staged
+entries), and the coefficient times the unit (bf16, `256 x (1 + (slot ^ digit) & 1)`) low with the panel field high:
+the token's row (a pad's dummy row) past the lane bases, less the lane offset of the entry's position in its step
+(16 x (e % 8) on M, 32 x (e % 8 / 2) on N). `heads_<form>.bin` is each warp's window block `[windows][boxes][8][4 x HEAD
+x 8]`: its four digits' first HEAD entries. `banks.json` is the bank model's count (`tools/bank_model.py`) of the
+wavefronts a CTA-window's steps cost per MMA, by part, for each form.
 """
 from __future__ import annotations
 
+import json
 import struct
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tools"))
 
 #: the probe cell, its first 32 windows
 CELL, TOKENS = "nl64k-alt-k4", 16384
-#: `read_image.cu`'s layout at a 256-slot pass: 16 image planes of 2 KB before the pool; the pads' words before the panel
-PLANE_BYTES, PADS_BYTES, PANEL_PITCH = 2048, 192, 80
+#: `read_image.cu`'s layout: 2-KB image planes before the pool, then the lane bases (128 bytes), the 8 dummy panel rows
+#: (one a residue) and the panel, 80-byte rows
+PLANE_BYTES, DUMMY_ROWS, PANEL_ROWS, PANEL_PITCH = 2048, 128, 768, 80
 #: the coefficients' bf16 bits by `(slot ^ digit) & 1`: 256 and 512
 COEFFICIENT = (0x4380, 0x4400)
+#: the lane offset of an entry's position in its step, and the positions a step holds
+FOLD = {"m": lambda e: 16 * (e % 16 % 8), "n": lambda e: 32 * (e % 8 // 2)}
+PER = {"m": 16, "n": 8}
 
 
 def lists(windows: int) -> tuple:
@@ -48,52 +61,130 @@ def lists(windows: int) -> tuple:
     return tuple(x[0].cpu().numpy().astype(np.int64) for x in (side.slot, side.at, side.count))
 
 
-def _row(slot):
+def _row(slot: int) -> int:
     return slot * 64 + 16 * ((slot >> 1) & 3)
+
+
+def color(digits: list[list[int]], count: int) -> tuple[dict[int, int], int]:
+    """A box-window's slots recolored: tokens in the most and longest lists first, each the residue its lists use least
+    (then the least loaded) with room left; returns the new slot of each old one and the extent."""
+    room = -(-count // 8)
+    member: dict[int, list[int]] = defaultdict(list)
+    for i, d in enumerate(digits):
+        for s in d:
+            member[s].append(i)
+    residue: dict[int, int] = {}
+    load = [0] * 8
+    for s in sorted(member, key=lambda s: -sum(len(digits[i]) for i in member[s])):
+        r = min((sum(residue.get(t) == r for i in member[s] for t in digits[i]), load[r], r)
+                for r in range(8) if load[r] < room)[2]
+        residue[s] = r
+        load[r] += 1
+    rank = [0] * 8
+    new = {}
+    for s in sorted(residue):
+        new[s] = residue[s] + 8 * rank[residue[s]]
+        rank[residue[s]] += 1
+    return new, 8 * room
+
+
+def place(span: list[int]) -> list[tuple[int, bool]]:
+    """A digit's positions: its tokens dealt one a residue at a time, each 8-token group at its residues' positions
+    (a repeat on a position left free), the rest pads on their position's residue: (slot or residue, pad)."""
+    buckets = [[x for x in span if x & 7 == r] for r in range(8)]
+    dealt = [b[j] for j in range(max(map(len, buckets), default=0)) for b in buckets if len(b) > j]
+    out: list[tuple[int, bool]] = []
+    for g in range(0, len(dealt), 8):
+        group: list[tuple[int, bool] | None] = [None] * 8
+        rest = []
+        for s in dealt[g:g + 8]:
+            if group[s & 7] is None:
+                group[s & 7] = (s, False)
+            else:
+                rest.append((s, False))
+        out += [x if x is not None else (rest.pop() if rest else (r, True)) for r, x in enumerate(group)]
+    return out
 
 
 def emit(directory: Path, slots, at, count, pass_slots: int, planes: int, head: int) -> list[str]:
     """Write the files for a `pass_slots`-slot readout pass over `planes` image planes with HEAD entries a digit staged,
     from read lists whose every box's union fits one pass (a digit's entries `slots[w, d, at[w, d, 0]:at[w, d, -1]]`)."""
+    import bank_model
     import numpy as np
 
     windows, width, cap = slots.shape
     groups = count.shape[-1]
     assert (count <= pass_slots).all(), "a box's union exceeds one readout pass"
+    colored, extent = slots.copy(), count.copy()
+    clean = digits = 0
+    for w in range(windows):
+        for box in range(groups):
+            rows = range(box * 32, box * 32 + 32)
+            spans = [[int(x) for x in slots[w, d, at[w, d, 0]:at[w, d, -1]]] for d in rows]
+            new, extent[w, box] = color(spans, int(count[w, box]))
+            for d, span in zip(rows, spans, strict=True):
+                colored[w, d, at[w, d, 0]:at[w, d, -1]] = [new[s] for s in span]
+                if len(span) <= 8:
+                    digits += 1
+                    clean += len({new[s] & 7 for s in span}) == len(span)
     header = struct.pack("<4i", 0x44414552, windows, width, groups)
-    body = slots.astype(np.uint16).tobytes() + at.astype(np.uint16).tobytes() + count.astype(np.uint16).tobytes()
+    body = colored.astype(np.uint16).tobytes() + at.astype(np.uint16).tobytes() + extent.astype(np.uint16).tobytes()
     (directory / "read.bin").write_bytes(header + body)
     pool = planes * PLANE_BYTES
-    fold = {"m": lambda e: 16 * (e % 16 % 8), "n": lambda e: 32 * (e % 8 // 2)}
-    per = {"m": 16, "n": 8}
-    boxes = width // 32
+    lane_base = pool + pass_slots * 64
+    model: dict[str, dict[str, float]] = {"colored": {"digits of at most 8 tokens on distinct residues": clean / digits}}
     for form in ("m", "n"):
+        per = PER[form]
         entries = np.zeros((windows, width, cap, 2), np.uint32)
-        heads = np.zeros((windows, boxes, 8, 4 * head * 2), np.uint32)
+        heads = np.zeros((windows, width // 32, 8, 4 * head * 2), np.uint32)
+        cost = defaultdict(float)
+        mmas = 0
         for w in range(windows):
             for d in range(width):
-                span = [int(x) for x in slots[w, d, at[w, d, 0]:at[w, d, -1]]]
-                buckets = [[x for x in span if x & 7 == r] for r in range(8)]
-                dealt = [b[j] for j in range(max(map(len, buckets), default=0)) for b in buckets if len(b) > j]
-                n = len(dealt)
-                steps = -(-n // per[form])
-                tag = (steps | (steps * per[form] > head) << 8) << 16
-                for e, s in enumerate(dealt):
-                    field = PADS_BYTES + PANEL_PITCH * s - fold[form](e)
-                    entries[w, d, e] = (pool + _row(s) | tag, COEFFICIENT[(s ^ d) & 1] | field << 16)
-                box, warp, i = d // 32, d % 8, d % 32 // 8
-                block = heads[w, box, warp]
-                for e in range(head):
-                    if e < n:
-                        block[2 * (head * i + e):2 * (head * i + e) + 2] = entries[w, d, e]
-                        continue
-                    group = e // 8 * 8
-                    used = {dealt[x] & 7 for x in range(group, min(n, group + 8))}
-                    pads = [r for r in range(8) if r not in used]
-                    block[2 * (head * i + e)] = pool + _row(pads[(e - max(n, group)) % len(pads)]) | tag
+                placed = place([int(x) for x in colored[w, d, at[w, d, 0]:at[w, d, -1]]])
+                steps = max(1, -(-len(placed) // per))
+                tag = (steps | (steps * per > head) << 8) << 16
+                placed += [(r, True) for _ in range(steps * per // 8 + 2) for r in range(8)]
+                for e in range(max(steps * per, head)):
+                    s, pad = placed[e]
+                    field = (DUMMY_ROWS if pad else PANEL_ROWS) + PANEL_PITCH * s - FOLD[form](e)
+                    word = field << 16 | (0 if pad else COEFFICIENT[(s ^ d) & 1])
+                    entries[w, d, e] = (pool + _row(s) | tag, word)
+                block = heads[w, d // 32, d % 8]
+                i = d % 32 // 8
+                block[2 * head * i:2 * head * (i + 1)] = entries[w, d, :head].reshape(-1)
+                mmas += steps * (8 if form == "m" else 4)
+                cost["state"] += 16
+                for k in range(steps):
+                    step = [(int(entries[w, d, per * k + e, 0]) & 0xFFFF, int(entries[w, d, per * k + e, 1]) >> 16)
+                            for e in range(per)]
+                    cost["entries"] += bank_model.wavefronts([8 * (lane % per) for lane in range(32)], 8)
+                    if form == "m":
+                        for kb in range(2):
+                            cost["gathers"] += bank_model.ldmatrix(
+                                [[step[8 * (q & 1) + r][0] ^ 16 * (2 * kb + (q >> 1)) for r in range(8)]
+                                 for q in range(4)])
+                        for half in range(2):
+                            for nt in range(4):
+                                cost["adds"] += bank_model.wavefronts(
+                                    [lane_base + 4 * lane + step[8 * half + (lane >> 2)][1] + 16 * nt
+                                     for lane in range(32)], 4)
+                    else:
+                        cost["gathers"] += bank_model.ldmatrix([[step[r][0] ^ 16 * q for r in range(8)]
+                                                                for q in range(4)])
+                        for par in range(2):
+                            for m in range(2):
+                                cost["adds"] += bank_model.wavefronts(
+                                    [lane_base + 4 * (lane >> 2) + 32 * (lane & 3) + step[2 * (lane & 3) + par][1]
+                                     + 32 * m for lane in range(32)], 4)
+        model[form] = {"MMAs a CTA-window": mmas / (windows * groups)}
+        model[form].update({f"{k} a MMA": v / mmas for k, v in cost.items()})
+        model[form]["wavefronts a MMA"] = sum(cost.values()) / mmas
         (directory / f"entries_{form}.bin").write_bytes(entries.tobytes())
         (directory / f"heads_{form}.bin").write_bytes(heads.tobytes())
-    return ["read.bin", "entries_m.bin", "entries_n.bin", "heads_m.bin", "heads_n.bin"]
+    (directory / "banks.json").write_text(json.dumps(model, indent=1) + "\n")
+    print("bank model:", json.dumps(model))
+    return ["read.bin", "entries_m.bin", "entries_n.bin", "heads_m.bin", "heads_n.bin", "banks.json"]
 
 
 def write(directory: Path) -> list[str]:

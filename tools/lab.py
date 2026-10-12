@@ -225,10 +225,12 @@ def _plain(name: str) -> str:
 
 def executed_classes(binary: Path, extra: list[str]) -> dict[str, dict[str, float]]:
     """Per kernel (`_plain` name), each opcode class's executed instructions per tensor-pipe instruction (ncu's
-    per-opcode counts over one repetition, the first launch of each kernel)."""
+    per-opcode counts over one repetition, the first launch of each kernel), and its shared-memory wavefronts and bank
+    conflicts per tensor-pipe instruction (`_wavefronts`, `_conflicts`)."""
     out = subprocess.run([dev_config.get("toolchain.ncu"), "--metrics",
                           "sass__inst_executed_per_opcode,sm__inst_executed_pipe_tensor_op_hmma.sum,"
-                          "l1tex__data_pipe_lsu_wavefronts_mem_shared.sum",
+                          "l1tex__data_pipe_lsu_wavefronts_mem_shared.sum,"
+                          "l1tex__data_bank_conflicts_pipe_lsu_mem_shared.sum",
                           "--print-metric-instances", "details", "--csv", str(binary), "--reps", "1", *extra],
                          capture_output=True, text=True, check=True).stdout
     lines = out.splitlines()
@@ -243,13 +245,14 @@ def executed_classes(binary: Path, extra: list[str]) -> dict[str, dict[str, floa
         for op, n in re.findall(r"([A-Z][A-Z0-9_]*)\s*[:=]\s*([0-9.]+)", m["sass__inst_executed_per_opcode"]):
             per[sass.opcode_class(op)] = per.get(sass.opcode_class(op), 0.0) + float(n) / max(mma, 1.0)
         per["_wavefronts"] = float(m["l1tex__data_pipe_lsu_wavefronts_mem_shared.sum"].replace(",", "")) / max(mma, 1.0)
+        per["_conflicts"] = float(m["l1tex__data_bank_conflicts_pipe_lsu_mem_shared.sum"].replace(",", "")) / max(mma, 1.0)
         found[k] = per
     return found
 
 
 def over_budget(binary: Path, table: dict[str, dict], extra: list[str]) -> list[str]:
-    """KERNEL_STANDARDS section 29: each budgeted kernel's executed instructions per MMA by class against its stated
-    budget, printed; the classes over it."""
+    """KERNEL_STANDARDS sections 29-30: each budgeted kernel's executed instructions per MMA by class, and its
+    shared-memory wavefronts per MMA (the class `wavefronts`), against its stated budget, printed; those over it."""
     stated = budgets(binary)
     if not stated:
         return []
@@ -263,14 +266,15 @@ def over_budget(binary: Path, table: dict[str, dict], extra: list[str]) -> list[
         per = measured.get(_plain(k), {})
         print(f"  budget, instructions an MMA: {k[:110]}")
         for b in mine:
-            got = per.get(b["class"], 0.0)
+            got = per.get("_wavefronts" if b["class"] == "wavefronts" else b["class"], 0.0)
             #: a slack for once-a-kernel setup and rounding: 3% and 0.02 an MMA
             flag = "OVER" if got > b["max"] * 1.03 + 0.02 else "ok"
             print(f"    {b['class']:<16} {got:6.2f}  budget {b['max']:6.2f}  {flag}")
             if flag == "OVER":
                 over.append(f"{k[:80]}: {b['class']} {got:.2f} > {b['max']:.2f}")
         print(f"    {'total':<16} {sum(v for c, v in per.items() if not c.startswith('_')):6.2f}"
-              f"   shared-memory wavefronts {per.get('_wavefronts', 0.0):.2f}")
+              f"   shared-memory wavefronts {per.get('_wavefronts', 0.0):.2f}"
+              f" ({per.get('_conflicts', 0.0):.2f} of them bank conflicts)")
         for m in (m for m in mmas if re.search(m["kernel"], k)):
             print(*predict(per, m["kind"], m["k"]), sep="\n")
     return over
