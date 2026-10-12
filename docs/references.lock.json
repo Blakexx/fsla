@@ -1242,6 +1242,7 @@
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "48566cd9d478", "reviewed": true, "sha256": "", "target": "measure/lab/results/publish_rounds/sm_86.json"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "c157d73e8ce7", "reviewed": true, "sha256": "", "target": "measure/lab/results/read_image/sm_86.json"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "48566cd9d478", "reviewed": true, "sha256": "", "target": "measure/lab/results/read_step/sm_86.json"},
+  {"doc": "docs/internals/tools/lab.md", "pinned_at": "fff99dc9330e", "reviewed": true, "sha256": "", "target": "measure/lab/results/read_w1024/sm_86.json"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "f2793c75594d", "reviewed": true, "sha256": "", "target": "measure/lab/results/row_span/sm_86.json"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "2b4ce17b5e54", "reviewed": true, "sha256": "", "target": "measure/lab/results/smem_rates/sm_86.json"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "84dd6b052bad", "reviewed": true, "sha256": "", "target": "measure/lab/results/sparse_pass/sm_86.json"},

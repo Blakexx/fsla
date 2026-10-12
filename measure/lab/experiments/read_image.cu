@@ -25,8 +25,15 @@ namespace read_image {
 
 constexpr int kWarps = 8, kThreads = 32 * kWarps;
 constexpr int kLists = 32, kDigits = 32, kChannels = 32;
-constexpr int kListCap = 512, kListAt = 8, kSlots = 256, kWords = 16, kPanelPitch = 20;
-constexpr int kPlanes = 16, kPlaneBytes = kLists * kChannels * 2, kRowBytes = kLists * 2;
+//: a readout pass's slots: 256 (sm_86's), or 512 (sm_80's) where `read_w1024.cu` builds this file for W = 1024
+#ifndef READ_IMAGE_SLOTS
+#define READ_IMAGE_SLOTS 256
+#endif
+constexpr int kListCap = 512, kListAt = 8, kSlots = READ_IMAGE_SLOTS, kWords = 16, kPanelPitch = 20;
+//: the facts pass's 128-slot passes in a readout pass: a pass's entries are `at[kPassAt p] .. at[kPassAt (p + 1)]`
+constexpr int kPassAt = kSlots / 128;
+//: the image's planes (a plane's access pattern is all a digit's reads see): 16, or 8 beside a 512-slot pass
+constexpr int kPlanes = kSlots == 512 ? 8 : 16, kPlaneBytes = kLists * kChannels * 2, kRowBytes = kLists * 2;
 constexpr int kImage = 0, kPool = kImage + kPlanes * kPlaneBytes, kPanel = kPool + kSlots * kRowBytes;
 //: the pad tokens' adds land on a lane's own word, consecutive across lanes (no bank conflict at a common offset), in a
 //: region that holds a step's largest offset past the base (60 bytes) for the last lane
@@ -377,7 +384,7 @@ __global__ __launch_bounds__(kThreads, 1) void read(Lists ls, long long* times, 
         const int64_t row = static_cast<int64_t>(w) * ls.width + box * kDigits + warp + 8 * i;
         const uint16_t* at = reinterpret_cast<const uint16_t*>(mine) + 8 * i;
         const uint16_t* head = p == 0 ? reinterpret_cast<const uint16_t*>(mine + 64) + 16 * i : nullptr;
-        const int begin = DENSE ? 0 : at[2 * p], n = DENSE ? kSlots : at[2 * p + 2] - begin;
+        const int begin = DENSE ? 0 : at[kPassAt * p], n = DENSE ? kSlots : at[kPassAt * (p + 1)] - begin;
         if constexpr (FORM == 0) digit_m<OUT, DENSE>(sm, ls, head, row, begin, n, f, lane, sink);
         if constexpr (FORM == 1) digit_n<OUT, DENSE>(sm, ls, head, row, begin, n, f, lane, sink);
       };
@@ -389,8 +396,8 @@ __global__ __launch_bounds__(kThreads, 1) void read(Lists ls, long long* times, 
           row = static_cast<int64_t>(w) * ls.width + box * kDigits + warp + 8 * i;
           const uint16_t* at = reinterpret_cast<const uint16_t*>(mine) + 8 * i;
           head = p == 0 ? reinterpret_cast<const uint16_t*>(mine + 64) + 16 * i : nullptr;
-          begin = DENSE ? 0 : at[2 * p];
-          n = DENSE ? kSlots : at[2 * p + 2] - begin;
+          begin = DENSE ? 0 : at[kPassAt * p];
+          n = DENSE ? kSlots : at[kPassAt * (p + 1)] - begin;
         };
         uint32_t f[4][16];
 #pragma unroll
@@ -549,7 +556,7 @@ double floor_of(const HostLists& h, int form, bool dense) {
       for (int p = 0; p < passes; ++p)
         for (int d = 0; d < kDigits; ++d) {
           const uint16_t* a = &h.at[(static_cast<size_t>(w) * h.width + box * kDigits + d) * kListAt];
-          const int n = dense ? kSlots : a[2 * p + 2] - a[2 * p];
+          const int n = dense ? kSlots : a[kPassAt * (p + 1)] - a[kPassAt * p];
           mmas[d % kWarps] += form == 0 ? (n + 15) / 16 * 8 : (n + 7) / 8 * 4;
         }
       long long busiest = 0;
@@ -586,7 +593,7 @@ Verdict verify(const Reference& ref, const Lists& ls) {
       const size_t row = static_cast<size_t>(w) * h.width + box * kDigits + d;
       const uint16_t* at = &h.at[row * kListAt];
       const uint16_t* slots = reinterpret_cast<const uint16_t*>(h.records.data()) + row * kListCap;
-      for (int e = at[2 * p]; e < at[2 * p + 2]; ++e) count[slots[e] & 255] += 1;
+      for (int e = at[kPassAt * p]; e < at[kPassAt * (p + 1)]; ++e) count[slots[e] & (kSlots - 1)] += 1;
     }
   };
   std::vector<uint32_t> got;
@@ -765,6 +772,15 @@ int main(int argc, char** argv) {
                 fn, dm, dn);
   }
   const Reference ref{&host, b.sms};
+#if READ_IMAGE_SLOTS == 512
+  variant<0, 1, 0, 2, 0, 1, 3>(b, lo, fm, fm, " / ordered / W 1024, a 512-slot pass", &ref);
+  variant<0, 1, 0, 2, 0, 0, 3>(b, lo, fm, fm, " / ordered / W 1024, a 512-slot pass", &ref);
+  variant<0, 2, 0, 2, 0, 1, 3>(b, lo, fm, fm, " / ordered / W 1024, a 512-slot pass", &ref);
+  variant<1, 1, 0, 2, 0, 1, 3>(b, lo, fn, fm, " / ordered / W 1024, a 512-slot pass", &ref);
+  variant<1, 1, 0, 2, 0, 0, 3>(b, lo, fn, fm, " / ordered / W 1024, a 512-slot pass", &ref);
+  variant<1, 0, 0, 2, 0, 0, 3>(b, lo, fn, fm, " / ordered / W 1024, a 512-slot pass", &ref);
+  variant<1, 2, 0, 2, 0, 1, 3>(b, lo, fn, fm, " / ordered / W 1024, a 512-slot pass", &ref);
+#else
   variant<0, 1, 0, 0>(b, ls, fm, fm, "", &ref);
   variant<1, 1, 0, 0>(b, ls, fn, fm, "", &ref);
   variant<0, 0, 0, 1>(b, ls, fm, fm, "", &ref);
@@ -803,4 +819,5 @@ int main(int argc, char** argv) {
   variant<0, 2, 1, 2, 1>(b, ls, dm, dm, "", &ref);
   variant<0, 2, 1, 1>(b, ls, dm, dm, "", &ref);
   variant<1, 2, 1, 1>(b, ls, dn, dm, "", &ref);
+#endif
 }

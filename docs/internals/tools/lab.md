@@ -867,6 +867,23 @@ form, whose pads add nonzero, ran twice its tiles); the lab checks no outputs, s
 
 Record: `measure/lab/results/read_image/sm_86.json`.
 
+<a id="read-w1024"></a>
+### `read_w1024`
+
+`read_image.cu` built with sm_80's 512-slot readout pass (`READ_IMAGE_SLOTS`; 8 image planes, so the count run fits
+sm_86) on nl64k-alt-k4's read lists merged in window pairs (`read_w1024.inputs.py`: 16 windows of 1024 tokens, the
+second window's union ranks after the first's, one pass): a read digit holds ~16 tokens a window, its state read from
+the image serving twice W = 512's. The facts-form steps, outputs checked exactly, counts priced on both cards.
+
+| per token, tokens on M, free-running | W = 512 (`read_image`) | W = 1024 |
+|---|---|---|
+| tensor floor (sm_86 cycles) | 4.05 | 3.23 |
+| sm_86 measured | 5.89 (1.45x) | 4.25 (1.31x) |
+| A100 predicted, shared-memory bound | 4.08 (8.07 an MMA) | 3.05 (7.55 an MMA) |
+
+Tokens on N spend ~7% less shared memory than M at W = 1024 (8.6 cycles an N MMA, 0.82x M's MMAs). Record:
+`measure/lab/results/read_w1024/sm_86.json`.
+
 <a id="mma-k8"></a>
 ### `mma_k8`
 
