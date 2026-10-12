@@ -223,10 +223,12 @@ def _plain(name: str) -> str:
     return re.sub(r"\s+", "", re.sub(r"\((int|bool|unsigned int|long)\)", "", re.sub(r"\b\w+::", "", name)))
 
 
-def executed_classes(binary: Path, extra: list[str]) -> dict[str, dict[str, float]]:
+def executed_classes(binary: Path, extra: list[str],
+                     units: dict[str, float] | None = None) -> dict[str, dict[str, float]]:
     """Per kernel (`_plain` name), each opcode class's executed instructions per tensor-pipe instruction (ncu's
     per-opcode counts over one repetition, the first launch of each kernel), and its shared-memory wavefronts and bank
-    conflicts per tensor-pipe instruction (`_wavefronts`, `_conflicts`)."""
+    conflicts per tensor-pipe instruction (`_wavefronts`, `_conflicts`); a kernel with no MMAs that declares its units
+    (`Bench::units`, by `_plain` name in `units`), per unit."""
     out = subprocess.run([dev_config.get("toolchain.ncu"), "--metrics",
                           "sass__inst_executed_per_opcode,sm__inst_executed_pipe_tensor_op_hmma.sum,"
                           "l1tex__data_pipe_lsu_wavefronts_mem_shared.sum,"
@@ -241,6 +243,8 @@ def executed_classes(binary: Path, extra: list[str]) -> dict[str, dict[str, floa
     found = {}
     for k, m in seen.items():
         mma = float(m["sm__inst_executed_pipe_tensor_op_hmma.sum"].replace(",", ""))
+        if not mma:
+            mma = (units or {}).get(k, 0.0)
         per: dict[str, float] = {}
         for op, n in re.findall(r"([A-Z][A-Z0-9_]*)\s*[:=]\s*([0-9.]+)", m["sass__inst_executed_per_opcode"]):
             per[sass.opcode_class(op)] = per.get(sass.opcode_class(op), 0.0) + float(n) / max(mma, 1.0)
@@ -257,14 +261,16 @@ def over_budget(binary: Path, table: dict[str, dict], extra: list[str]) -> list[
     if not stated:
         return []
     mmas = budgets(binary, "mma")
-    measured = executed_classes(binary, extra)
+    units = {k: u for k in table for u in budgets(binary, "units") if re.search(u["kernel"], k)}
+    measured = executed_classes(binary, extra, {_plain(k): float(u["n"]) for k, u in units.items()})
     over = []
     for k in table:
         mine = [b for b in stated if re.search(b["kernel"], k)]
         if not mine:
             continue
         per = measured.get(_plain(k), {})
-        print(f"  budget, instructions an MMA: {k[:110]}")
+        unit = units[k]["unit"] if k in units else "MMA"
+        print(f"  budget, instructions a {unit}: {k[:110]}")
         for b in mine:
             got = per.get("_wavefronts" if b["class"] == "wavefronts" else b["class"], 0.0)
             #: a slack for once-a-kernel setup and rounding: 3% and 0.02 an MMA

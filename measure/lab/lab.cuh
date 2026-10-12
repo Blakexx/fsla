@@ -327,6 +327,16 @@ class Bench {
     std::printf("{\"lab\": \"mma\", \"kernel\": \"%s\", \"kind\": \"%s\", \"k\": %d}\n", escaped.c_str(), kind, k);
   }
 
+  //: THE UNIT a kernel without MMAs is budgeted per: its first launch does `n` of them (a box-window colored, say), so
+  //: `tools/lab.py run` divides its executed counts by `n` where an MMA kernel's divide by its MMAs
+  void units(const std::string& kernel, const char* unit, long long n) const {
+    if (!expect_only) return;
+    std::string escaped;
+    for (char c : kernel) escaped += c == '\\' ? std::string("\\\\") : std::string(1, c);
+    std::printf("{\"lab\": \"units\", \"kernel\": \"%s\", \"unit\": \"%s\", \"n\": %lld}\n", escaped.c_str(),
+                unit, n);
+  }
+
   //: the per-(block, warp) cycles of the last launch, `warps` a block
   std::vector<long long> cycles(int warps) const {
     std::vector<long long> h(static_cast<size_t>(sms) * warps);

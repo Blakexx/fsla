@@ -43,6 +43,9 @@ writes the files and returns their names. `run` and `ncu` call it first (in the 
 * `lab::Bench` — the host runner: `expect(kernel, op, cmp, count)` declares SASS (printed under `--expect`, run by the
   driver before anything is timed), `variant(launch, measure)` warms up and repeats a launch, `record(name, unit,
   samples)` prints a result, `cycles(warps)` and `mean(...)` read the warps' clocks.
+* `Bench::budget(kernel, class, max)` — KERNEL_STANDARDS §29's instruction budget, per MMA, gated on ncu's executed
+  counts by `run`; `Bench::units(kernel, unit, n)` makes a kernel with no MMAs budgeted per unit, its first launch
+  doing `n` of them (`color_union`: a box-window colored).
 * `lab::kernel("tax", {3, 17})` — a kernel's demangled name as an expectation's pattern.
 
 ## What goes wrong, and what guards it
@@ -996,6 +999,86 @@ So the two-part 32 x 32 is the cheapest at both cells. The transfer outweighs th
 against 1.69K): it scales with the state, not the writes, and its two barriers a window stay. Records:
 `measure/lab/results/digit_box/sm_86.json`, `measure/lab/results/digit_box32/sm_86.json`,
 `measure/lab/results/list_box/sm_86.json`.
+
+<a id="color-union"></a>
+### `color_union`
+
+What the facts pass's COLORING costs (KERNEL_STANDARDS §30's producer rule). A slot's residue mod 8 is its pool row's
+bank group, so a box-window's union slots are colored so that each digit's tokens spread over the residues. One warp
+colors one box-window, from its bit tile in shared memory (the facts pass's `tile_at` swizzle) to every union token's
+slot. `color_union.inputs.py`'s `color` is the algorithm's definition, and every output is checked against it exactly.
+
+THE CHOICE, made on the CPU against the bank model (`read_image.inputs.emit`'s readout wavefronts, tokens on N). In
+the table, "gathers" is wavefronts per `ldmatrix` matrix, so 1.0 means no conflicts. "Over" is the slot extent above
+8 x ceil(union / 8), mean / max.
+
+| coloring | alt-k4 gathers | alt-k16 gathers | alt-k4 over |
+|---|---|---|---|
+| none (the union's rank order) | 1.94 | 1.82 | 0 / 0 |
+| greedy over all tokens, most-listed first (the readout lab's) | 1.001 | 1.007 | 0 / 0 |
+| tokens sorted by a home digit (parallel) | 1.30-1.35 | -- | 0 / 0 |
+| digit by digit, each digit's uncolored tokens water-filled | 1.014-1.042 | 1.158 | 3 / 16 |
+| per-digit rounds, each digit coloring its next token (parallel) | 1.067-1.177 | -- | 17 / 40 |
+| TWO PHASES: multi-digit tokens serially, then each digit's singles | 1.000 | 1.011 | 3 / 16 |
+
+In the two-phase form, singles' ties are taken digit by digit, least loaded first. A parallel rotation for the ties
+keeps 1.000 but over-runs the extent 21 / 56; a chained rotation, 10 / 32. On the thinned cell every form is
+1.000-1.022.
+
+THE FORM:
+1. Tokens in two or more of the box's digits go first, in token order. Each takes the residue its digits use least
+   (summed over them), then the least loaded, then the lowest.
+2. Each digit's single tokens water-fill the residues it uses least. The digits go in order, and a level's ties go
+   to the least-loaded residues.
+3. A slot is its residue plus 8 x its rank among that residue's tokens.
+
+In the kernel:
+- The first phase is a counted loop over a list of the multi-digit tokens. Lane d keeps its digit's counts in
+  registers (two u16 a word). A token's membership is loaded one step ahead.
+- Four `redux.sync` sums take the counts over the token's digits; one `__byte_perm` and one `redux.sync` min pick the
+  residue.
+- The second phase water-fills each digit in its own lane. Lanes 0-7 then take the ties digit by digit, with seven
+  shuffles to rank the loads. Last, each digit deals its singles.
+
+Shared accesses: the tile is read by 32 digits' one word, or by one digit's 16 words; both are conflict-free under
+`tile_at`. The fold's two halves read rows in opposite parity, so they meet opposite bank halves. Plan rows are 16
+bytes a digit. Measured conflicts: 0.2-1.9% of wavefronts.
+
+THE BUDGET LINE MISSED. Stated before the code: ~45 instructions a multi-digit token and ~1.15K fixed. Measured: ~64
+and ~2.6K. The causes:
+- each `redux.sync` lands in a uniform register and costs a move back;
+- the residue's count update is a compare, select and add for each of the four count words;
+- ptxas checks divergence before the reductions (`BRA.DIV`);
+- a counted loop, a prefetch and a token list, against the estimate's bare walk;
+- fixed: the plans (16 tile words and an integer division a digit), the tie pass's 32 digits, the slot pass's 16
+  words.
+
+A first form was 1.25-1.8x the final one: a ballot walk, counts bumped by shared atomics (their load-after-atomic
+latency), branches around single-lane stores. The budget is restated from the counts.
+
+Measured (sm_86, 16 warps an SM, a warp a box-window):
+
+| | alt-k4 | alt-k16 | thinned 1/16 |
+|---|---|---|---|
+| multi-digit tokens a box-window | 39.6 | 317 | 0.13 |
+| instructions a box-window | 6,545 | 23,007 | 2,596 |
+| an SM's cycles a box-window | 2,643 | 9,407 | 1,060 |
+| a warp's cycles a box-window | 38,598 | 144,001 | 15,373 |
+
+The SM is issue-heavy: alt-k16 runs 2.45 instructions a cycle. `redux.sync` measured 48 cycles of latency and 2
+SM-cycles a warp-instruction of throughput, the same as `shfl`. At 1,024 box-windows a head (L = 64K, 32-digit
+groups of a 256-wide level), that is ~20 us a head at alt-k4 and ~70 us at alt-k16 on the 3080 Ti, before any
+overlap with the facts pass's DRAM stream. What it buys: on A100 the colored readout's shared time is 2.61 cycles a
+token against 3.36 uncolored (`read_image`), times the 16 CTAs reading each box-window's union.
+
+Levers (not built):
+- an exact skip where the union's rank order already puts every digit's tokens on distinct residues (the thinned
+  cell);
+- the first phase batched: tokens sharing no digit are colored together, with a rotation tie so the result stays exact.
+  Its dependency chains measured 9 steps at alt-k4 and 102 at alt-k16, against 40 and 317;
+- the tie pass over non-empty digits only.
+
+Record: `measure/lab/results/color_union/sm_86.json`.
 
 <a id="mma-k8"></a>
 ### `mma_k8`

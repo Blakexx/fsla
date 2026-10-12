@@ -169,7 +169,7 @@ def emit(directory: Path, slots, at, count, pass_slots: int, planes: int, head: 
     lane_base = pool + pass_slots * row_bytes
     panel_rows = DUMMY_ROWS + 8 * pitch
     model: dict[str, dict[str, float]] = {"colored": {"digits of at most 8 tokens on distinct residues":
-                                                      clean / small}}
+                                                      clean / small if small else None}}
     files = ["read.bin"]
     for form in ("m", "n"):
         per = PER[form]

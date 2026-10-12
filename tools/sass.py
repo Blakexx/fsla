@@ -38,8 +38,9 @@ INSTRUCTION = re.compile(r"^\s*/\*([0-9a-f]{4,5})\*/\s+(@!?U?P\w+\s+)?([A-Z0-9_.
 #: the encoding line that follows an instruction in `cuobjdump -sass` output
 ENCODING = re.compile(r"^\s*/\*\s*0x[0-9a-f]+\s*\*/\s*$")
 #: THE OPCODE CLASSES an instruction budget is stated in (KERNEL_STANDARDS section 29): each class one pipe or one kind
-#: of overhead, matched by opcode prefix (the first match wins, so `F2FP`'s pack is matched before the conversion unit
-#: and `LDGDEPBAR`, the `cp.async` commit, is control before `LDG` would make it global)
+#: of overhead, matched by opcode prefix (the first match wins, so `F2FP`'s pack is matched before the conversion unit,
+#: `REDUX`, the warp reduction, is a shuffle before `RED` would make it global, and `LDGDEPBAR`, the `cp.async` commit,
+#: is control before `LDG` would)
 OPCODE_CLASSES = {
     "mma": ("HMMA", "IMMA"),
     "shared load": ("LDSM", "LDS"),
@@ -47,8 +48,8 @@ OPCODE_CLASSES = {
     "shared atomic": ("ATOMS",),
     "control": ("BRA", "BSSY", "BSYNC", "BAR", "WARPSYNC", "EXIT", "CALL", "RET", "NOP", "DEPBAR", "YIELD",
                 "LDGDEPBAR"),
+    "shuffle": ("SHFL", "REDUX", "MATCH"),
     "global": ("LDGSTS", "LDG", "STG", "RED", "ATOMG", "ATOM"),
-    "shuffle": ("SHFL",),
     "pack": ("PRMT", "F2FP"),
     "conversion unit": ("F2I", "I2F", "F2F", "MUFU"),
     "float": ("FFMA", "FMUL", "FADD", "FMNMX", "HFMA2", "HMUL2", "HADD2", "HMNMX2"),
