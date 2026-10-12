@@ -498,6 +498,7 @@ void variant(const lab::Bench& b, const Lists& ls, double floor, double floor_m,
   //: count (2 loads), its list's row, the step loop's bound and branch. A window: the heads' copies (5), the count's
   //: load, the loop. Per MMA: shared load (7 + 2/1)/8, integer ~14/8, select ~3/8, control ~4/8, global ~6/32.
   if (CONV >= 2 && FORM == 0 && OUT == 1) {
+    b.mma(name, "hmma_bf16_f32", 16);
     b.budget(name, "mma", 1.0);
     b.budget(name, "shared load", 1.15);
     b.budget(name, "shared atomic", 1.0);

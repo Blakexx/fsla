@@ -165,10 +165,39 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
     return failures
 
 
-def budgets(binary: Path) -> list[dict]:
-    """The instruction budgets the experiment states (`Bench::budget`): kernel regex, opcode class, max per MMA."""
+def budgets(binary: Path, kind: str = "budget") -> list[dict]:
+    """The instruction budgets the experiment states (`Bench::budget`: kernel regex, opcode class, max per MMA), or
+    with `kind="mma"` the MMA each budgeted kernel issues (`Bench::mma`: kernel regex, hardware kind, K)."""
     lines = subprocess.run([str(binary), "--expect"], capture_output=True, text=True, check=True).stdout
-    return [e for e in map(json.loads, lines.splitlines()) if e["lab"] == "budget"]
+    return [e for e in map(json.loads, lines.splitlines()) if e["lab"] == kind]
+
+
+#: THE CARDS a lab's counts are priced on (`common/hardware.json`): the local card's product rates, sm_80's defaults
+CARDS = (("sm_86 (RTX 3080 Ti)", "sm_86", "rtx3080ti"), ("sm_80 (A100)", "sm_80", None))
+
+
+def predict(per: dict[str, float], kind: str, k: int) -> list[str]:
+    """KERNEL_STANDARDS section 29's carry-over, per card: an MMA's tensor cycles (the kind's cycles a scheduler, K/16
+    of them, over the schedulers), its shared-memory cycles (wavefronts at the wavefront rate, each shared atomic's cycles
+    past its wavefront) and its issue cycles (instructions over the schedulers), all a tensor-pipe instruction an SM;
+    the largest binds."""
+    sys.path.insert(0, str(ROOT))
+    from measure import hardware
+
+    lines = []
+    for label, arch, product in CARDS:
+        rates = hardware.resolve(arch=arch, product=product)
+        schedulers = rates["schedulers"].cycles
+        pipes = {
+            "tensor": rates[f"mma.{kind}"].cycles * k / 16 / schedulers,
+            "shared": per.get("_wavefronts", 0.0) * rates["wavefront"].cycles
+                      + per.get("shared atomic", 0.0) * (rates["atomic"].cycles - rates["atomic_wavefront"].cycles),
+            "issue": sum(v for c, v in per.items() if not c.startswith("_")) * rates["issue"].cycles / schedulers,
+        }
+        bound = max(pipes, key=pipes.get)
+        lines.append(f"    {label:<20} tensor {pipes['tensor']:5.2f}  shared {pipes['shared']:5.2f}  "
+                     f"issue {pipes['issue']:5.2f}  -> {pipes[bound]:5.2f} cycles an MMA an SM ({bound} binds)")
+    return lines
 
 
 def _plain(name: str) -> str:
@@ -182,7 +211,8 @@ def executed_classes(binary: Path, extra: list[str]) -> dict[str, dict[str, floa
     """Per kernel (`_plain` name), each opcode class's executed instructions per tensor-pipe instruction (ncu's
     per-opcode counts over one repetition, the first launch of each kernel)."""
     out = subprocess.run([dev_config.get("toolchain.ncu"), "--metrics",
-                          "sass__inst_executed_per_opcode,sm__inst_executed_pipe_tensor_op_hmma.sum",
+                          "sass__inst_executed_per_opcode,sm__inst_executed_pipe_tensor_op_hmma.sum,"
+                          "l1tex__data_pipe_lsu_wavefronts_mem_shared.sum",
                           "--print-metric-instances", "details", "--csv", str(binary), "--reps", "1", *extra],
                          capture_output=True, text=True, check=True).stdout
     lines = out.splitlines()
@@ -196,6 +226,7 @@ def executed_classes(binary: Path, extra: list[str]) -> dict[str, dict[str, floa
         per: dict[str, float] = {}
         for op, n in re.findall(r"([A-Z][A-Z0-9_]*)\s*[:=]\s*([0-9.]+)", m["sass__inst_executed_per_opcode"]):
             per[sass.opcode_class(op)] = per.get(sass.opcode_class(op), 0.0) + float(n) / max(mma, 1.0)
+        per["_wavefronts"] = float(m["l1tex__data_pipe_lsu_wavefronts_mem_shared.sum"].replace(",", "")) / max(mma, 1.0)
         found[k] = per
     return found
 
@@ -206,6 +237,7 @@ def over_budget(binary: Path, table: dict[str, dict], extra: list[str]) -> list[
     stated = budgets(binary)
     if not stated:
         return []
+    mmas = budgets(binary, "mma")
     measured = executed_classes(binary, extra)
     over = []
     for k in table:
@@ -221,7 +253,10 @@ def over_budget(binary: Path, table: dict[str, dict], extra: list[str]) -> list[
             print(f"    {b['class']:<16} {got:6.2f}  budget {b['max']:6.2f}  {flag}")
             if flag == "OVER":
                 over.append(f"{k[:80]}: {b['class']} {got:.2f} > {b['max']:.2f}")
-        print(f"    {'total':<16} {sum(per.values()):6.2f}")
+        print(f"    {'total':<16} {sum(v for c, v in per.items() if not c.startswith('_')):6.2f}"
+              f"   shared-memory wavefronts {per.get('_wavefronts', 0.0):.2f}")
+        for m in (m for m in mmas if re.search(m["kernel"], k)):
+            print(*predict(per, m["kind"], m["k"]), sep="\n")
     return over
 
 
