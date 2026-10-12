@@ -947,12 +947,20 @@ method is a procedure with a gate, not a memory.
    in a step. Shared-memory f16x2 atomic adds are a compare-and-swap loop before sm_90 (`ATOMS.CAST.SPIN`): never.
 7. GLOBAL MEMORY NEVER IN A STEP: a step's operands are staged ahead by `cp.async` (LDGSTS); a reduction to global
    memory is a drain outside the steps.
+8. A LAB'S NUMBERS ARE A CORRECT KERNEL'S: every recorded variant checks its outputs against a host reference
+   (`Bench::check`; inputs chosen so the reference is exact), or states why it has none (`Bench::unchecked`: an
+   isolation whose outputs fold into a sink); every MMA kernel in a lab has a budget or a stated exemption
+   (`Bench::exempt`: a rate probe, an isolation, a baseline). Found 2026-10-11: the readout lab's pad words overran
+   into a warp's heads -- in bounds, so memcheck passed, and even a zero atomic add is a read-modify-write that raced
+   the next window's copy -- and the corrupted counts were measured as a form's cost; its exact check fails on it.
 ENFORCED: `tools/lab.py run` reads each budgeted kernel's executed instructions by class (ncu's per-opcode counts),
 prints them against the budget, and refuses to record a variant over it (`--force` to record a known-over variant on
 purpose). `tools/sass_gate.py` reds, on every function of every build, conversion-unit instructions and global
 accesses other than `cp.async` inside an innermost MMA loop; the kernels built before the rule are its named debts
 (the intra's F2I epilogue, the produce kernel's unstaged operands, the fold's past-16 records), each with what
 replaces it, and the list only shrinks; a lab variant that keeps one on purpose declares STEP_XU or STEP_GLOBAL.
+`tools/lab.py run` also records no variant whose output check failed, and (past the experiments recorded before the
+rule, its named debts) none without a check or a stated reason, and builds no MMA kernel without a budget or exemption.
 Measured: `read_image` (docs/internals/tools/lab.md#read-image).
 
 ## CONSTITUTION addendum (Blake, 2026-10-10): R22 — DEGRADE SMOOTHLY, SCALE, PARTITION INTO INDEPENDENT UNITS

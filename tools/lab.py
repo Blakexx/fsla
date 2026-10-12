@@ -128,6 +128,14 @@ def signatures(binary: Path) -> dict[str, dict]:
     return {names[k]: v for k, v in found.items()}
 
 
+#: KERNEL_STANDARDS section 29's debts: the experiments recorded before a lab had to budget its MMA kernels and check
+#: its outputs; each is held to both when it is next changed, and the list only shrinks
+_PRE_29 = {"collective_branch", "den_sweep", "facts_block", "facts_pipeline", "fold_mchan", "fold_part", "fold_step",
+           "gang_ring", "list_fold", "mma_k8", "mma_overlap", "mma_pairing", "mma_queue", "pass_fixed", "pass_pipeline",
+           "pool_layout", "publish_rounds", "read_step", "row_span", "smem_rates", "sparse_pass", "state_publish",
+           "tensor_tax", "vote_stash"}
+
+
 def check(binary: Path, table: dict[str, dict]) -> list[str]:
     """Every expectation the experiment declares, no local memory and no undeclared convergence call anywhere: the
     failures, empty when it may run."""
@@ -145,8 +153,16 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
                 failures.append(f"{k}: {e['op']} {n}, expected {e['cmp']} {e['count']}")
     declared_calls = {k for e in expected for k in table if re.search(e["kernel"], k) and "CALL" in e["op"]}
     declared_branches = {k for e in expected for k in table if re.search(e["kernel"], k) and e["op"] == "BSSY"}
+
+    if binary.name.split(".")[0] not in _PRE_29:
+        stated = budgets(binary) + budgets(binary, "exempt")
+        for k, info in table.items():
+            if count(info["ops"], "HMMA|IMMA") and not any(re.search(b["kernel"], k) for b in stated):
+                failures.append(f"{k}: an MMA kernel with no instruction budget (KERNEL_STANDARDS 29: `Bench::budget`, "
+                                "or `Bench::exempt` with its reason)")
     declared = {op: {k for e in expected for k in table if re.search(e["kernel"], k) and e["op"] == op}
                 for op in ("STEP_XU", "STEP_GLOBAL")}
+
     for k, sig in signatures(binary).items():
         if sig["ldl"] or sig["stack"]:
             failures.append(f"{k}: local memory ({sig['ldl']} LDL/STL, a {sig['stack']}-byte stack frame)")
@@ -313,7 +329,22 @@ def execute(binary: Path, reps: int, extra: list[str]) -> tuple[dict, list[dict]
             device = item
         elif item["lab"] == "result":
             results.append({**item, **summarize(item["samples"])})
+        elif item["lab"] in ("check", "unchecked"):
+            device.setdefault("_checks", []).append(item)
     return device, results
+
+
+def unverified(name: str, device: dict, results: list[dict]) -> list[str]:
+    """KERNEL_STANDARDS section 29: the variants whose outputs failed their check, and (past the debts) the recorded
+    variants with neither a check nor a stated reason for none -- a result belongs to the variant whose label it starts
+    with."""
+    checks = device.get("_checks", [])
+    bad = [f"{c['variant']}: {c['detail']}" for c in checks if c["lab"] == "check" and not c["ok"]]
+    if name in _PRE_29:
+        return bad
+    covered = [c["variant"] for c in checks]
+    bad += [f"{r['name']}: no output check" for r in results if not any(r["name"].startswith(v) for v in covered)]
+    return bad
 
 
 def report(name: str, arch: str, device: dict, results: list[dict], reps: int) -> None:
@@ -331,6 +362,7 @@ def keep(name: str, arch: str, device: dict, results: list[dict], table: dict, r
     toolkit = subprocess.run([dev_config.cuda_bin("nvcc"), "--version"], capture_output=True,
                              text=True).stdout.strip().splitlines()[-1]
     body = {"experiment": name, "question": question(experiments()[name]), "arch": arch, "device": device.get("name"),
+            "checks": device.get("_checks", []),
             "driver": driver, "toolkit": toolkit, "git": git_state(), "reps": reps,
             "date": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
             "utilization_before": utilization, "inputs": digests, "results": results,
@@ -360,6 +392,14 @@ def run(name: str, reps: int, record: bool, force: bool) -> int:
 
     device, results = execute(binary, reps, extra)
     report(name, arch, device, results, reps)
+    for c in device.get("_checks", []):
+        print(f"  {'checked' if c['lab'] == 'check' else 'unchecked'} {c['variant']}: "
+              f"{'ok' if c.get('ok') else 'FAILED' if c['lab'] == 'check' else c['reason']}"
+              + (f" ({c['detail']})" if c["lab"] == "check" else ""))
+    wrong = unverified(name, device, results)
+    if wrong:
+        print(f"lab: {name}'s outputs are not verified, not recorded:", *wrong, sep="\n  ")
+        return 1
     over = over_budget(binary, table, extra)
     if over and not force:
         print(f"lab: {name} OVER ITS INSTRUCTION BUDGET, not recorded (--force to record anyway):", *over,

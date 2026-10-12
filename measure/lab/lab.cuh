@@ -291,6 +291,26 @@ class Bench {
                 cls, max);
   }
 
+  //: AN MMA KERNEL WITHOUT A BUDGET, on purpose (KERNEL_STANDARDS section 29): a rate probe or an isolation, its reason
+  void exempt(const std::string& kernel, const char* reason) const {
+    if (!expect_only) return;
+    std::string escaped;
+    for (char c : kernel) escaped += c == '\\' ? std::string("\\\\") : std::string(1, c);
+    std::printf("{\"lab\": \"exempt\", \"kernel\": \"%s\", \"reason\": \"%s\"}\n", escaped.c_str(), reason);
+  }
+
+  //: A VARIANT'S OUTPUTS CHECKED against a host reference (KERNEL_STANDARDS section 29): `tools/lab.py run` records no
+  //: variant whose check failed, nor one with neither a check nor `unchecked`; `detail` says what was compared
+  void check(const std::string& variant, bool ok, const std::string& detail) const {
+    std::printf("{\"lab\": \"check\", \"variant\": \"%s\", \"ok\": %s, \"detail\": \"%s\"}\n", variant.c_str(),
+                ok ? "true" : "false", detail.c_str());
+  }
+
+  //: a variant whose outputs are not checked, and why (an isolation whose outputs fold into a sink)
+  void unchecked(const std::string& variant, const char* reason) const {
+    std::printf("{\"lab\": \"unchecked\", \"variant\": \"%s\", \"reason\": \"%s\"}\n", variant.c_str(), reason);
+  }
+
   //: THE MMA a budgeted kernel issues (`common/hardware.json`'s kind, e.g. "hmma_bf16_f32", and its K: 16 or 8), so
   //: `tools/lab.py run` prices its counts on every card: tensor, shared-memory and issue cycles an MMA and their max
   void mma(const std::string& kernel, const char* kind, int k) const {

@@ -1252,7 +1252,7 @@
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "56e6db164873", "reviewed": true, "sha256": "", "target": "tools/lab.py"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "5b26266f0d32", "reviewed": true, "sha256": "3d295b533ef2558a", "target": "tools/lab.py::inputs"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "403c3d6ee7ee", "reviewed": true, "sha256": "f78236d85ab18f7e", "target": "tools/lab.py::main"},
-  {"doc": "docs/internals/tools/lab.md", "pinned_at": "be9a51978af6", "reviewed": true, "sha256": "3e194ebefc7acc22", "target": "tools/lab.py::run"},
+  {"doc": "docs/internals/tools/lab.md", "pinned_at": "3f67f7cfe7fa", "reviewed": true, "sha256": "24f32e745895bbb7", "target": "tools/lab.py::run"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "b8309b3ccfc8", "reviewed": true, "sha256": "", "target": "tools/sass_gate.py"},
   {"doc": "docs/internals/tools/life_ranges.md", "pinned_at": "6382b3ab9253", "reviewed": true, "sha256": "", "target": "tools/life_ranges.py"},
   {"doc": "docs/internals/tools/life_ranges.md", "pinned_at": "6382b3ab9253", "reviewed": true, "sha256": "", "target": "tools/region_ledger.py"},

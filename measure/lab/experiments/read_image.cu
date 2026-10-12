@@ -42,6 +42,7 @@ struct Lists {
   const uint16_t* count;
   int windows, width, groups;
   uint32_t* out;
+  uint32_t* panel_out;
 };
 
 //: a 16-byte chunk `c` of a 64-byte row `row` (an image plane's list or a pool slot), swizzled by the row's bits 1-2
@@ -499,6 +500,13 @@ __global__ __launch_bounds__(kThreads, 1) void read(Lists ls, long long* times, 
   }
   const long long spent = clock64() - t0;
   lab::sink(sinks, lab::bits(sink));
+  //: the check's read of the panel, after the timed loop: every word a CTA's adds left in it
+  if constexpr (OUT >= 1) {
+    __syncthreads();
+    for (int k = static_cast<int>(threadIdx.x); k < kSlots * kWords; k += kThreads)
+      ls.panel_out[static_cast<int64_t>(blockIdx.x) * kSlots * kWords + k] =
+          words[kPanel / 4 + (k / kWords) * kPanelPitch + k % kWords];
+  }
   if (lane == 0) times[blockIdx.x * kWarps + warp] = spent;
 }
 
@@ -551,8 +559,70 @@ double floor_of(const HostLists& h, int form, bool dense) {
   return total / (static_cast<double>(h.windows) * boxes);
 }
 
+//: THE CHECK's reference: each live (token, digit) add is 32 lists x 0.0625 x 0.0625 x the unit 256 = 32 a channel, a
+//: word 32 x 65537 (either pair form, exact under u32 adds mod 2^32); a slot's row is that times its live entries --
+//: OUT 1, a CTA's panel summed over its windows; OUT 2, a window-pass's drain summed over the CTAs
+struct Reference {
+  const HostLists* h;
+  int sms;
+};
+
+struct Verdict {
+  long long bad, words;
+  std::string detail;
+};
+
+template <int OUT, int DENSE>
+Verdict verify(const Reference& ref, const Lists& ls) {
+  const HostLists& h = *ref.h;
+  const int boxes = h.width / kDigits, windows = h.windows;
+  const uint32_t word = 32u * 65537u;
+  const auto live = [&](int w, int box, int p, std::vector<uint32_t>& count) {
+    for (int d = 0; d < kDigits; ++d) {
+      if (DENSE) {
+        for (int s = 0; s < kSlots; ++s) count[s] += 1;
+        continue;
+      }
+      const size_t row = static_cast<size_t>(w) * h.width + box * kDigits + d;
+      const uint16_t* at = &h.at[row * kListAt];
+      const uint16_t* slots = reinterpret_cast<const uint16_t*>(h.records.data()) + row * kListCap;
+      for (int e = at[2 * p]; e < at[2 * p + 2]; ++e) count[slots[e] & 255] += 1;
+    }
+  };
+  std::vector<uint32_t> got;
+  long long bad = 0, words = 0;
+  if constexpr (OUT == 1) {
+    got.resize(static_cast<size_t>(ref.sms) * kSlots * kWords);
+    LAB_CHECK(cudaMemcpy(got.data(), ls.panel_out, got.size() * 4, cudaMemcpyDeviceToHost));
+    for (int c = 0; c < ref.sms; ++c) {
+      std::vector<uint32_t> count(kSlots, 0);
+      for (int w = 0; w < windows; ++w)
+        for (int p = 0; p < (DENSE ? 2 : 1); ++p) live(w, c % boxes, p, count);
+      for (int s = 0; s < kSlots; ++s)
+        for (int k = 0; k < kWords; ++k, ++words)
+          bad += got[(static_cast<size_t>(c) * kSlots + s) * kWords + k] != count[s] * word;
+    }
+  } else {
+    got.resize(static_cast<size_t>(windows) * 2 * kSlots * kWords);
+    LAB_CHECK(cudaMemcpy(got.data(), ls.out, got.size() * 4, cudaMemcpyDeviceToHost));
+    for (int w = 0; w < windows; ++w)
+      for (int p = 0; p < 2; ++p) {
+        std::vector<uint32_t> count(kSlots, 0);
+        if (DENSE || p == 0)
+          for (int c = 0; c < ref.sms; ++c) live(w, c % boxes, p, count);
+        for (int s = 0; s < kSlots; ++s)
+          for (int k = 0; k < kWords; ++k, ++words)
+            bad += got[((static_cast<size_t>(w) * 2 + p) * kSlots + s) * kWords + k] != count[s] * word;
+      }
+  }
+  return {bad, words,
+          std::to_string(words - bad) + " of " + std::to_string(words) + " panel words exact" +
+              (OUT == 1 ? " (each CTA's panel)" : " (each window-pass's drain)")};
+}
+
 template <int FORM, int OUT, int DENSE, int RING, int NOPAD = 0, int BAR = 1, int CONV = 0>
-void variant(const lab::Bench& b, const Lists& ls, double floor, double floor_m, const char* lists = "") {
+void variant(const lab::Bench& b, const Lists& ls, double floor, double floor_m, const char* lists = "",
+             const Reference* ref = nullptr) {
   static_assert(BAR == 1 || OUT < 2, "the drain needs the pass's barrier");
   const std::string name = lab::kernel("read_image::read", {FORM, OUT, DENSE, RING, NOPAD, BAR, CONV});
   b.expect(name, "HMMA.16816.F32.BF16", ">=", FORM == 0 ? 8 : 4);
@@ -570,6 +640,13 @@ void variant(const lab::Bench& b, const Lists& ls, double floor, double floor_m,
   //: load, the loop. Per MMA: shared load (7 + 2/1)/8, integer ~14/8, select ~3/8, control ~4/8, global ~6/32.
   //: tokens on N, an 8-token tile 4 MMAs: a read-row load, a head load, 3 shuffles, 8 FFMAs, 4 LEA packs, 4 panel
   //: adds, 2 panel bases; a digit (~1.45 tiles at alt-k4) its 4 state loads and its pass starts
+  //: the variants without a budget, each with why: an isolation, a drain over a budgeted step, or a baseline form
+  const bool budgeted = OUT == 1 && ((CONV == 3 && FORM == 1) || (CONV >= 2 && FORM == 0));
+  if (!budgeted)
+    b.exempt(name, OUT == 0                            ? "an isolation: the MMAs alone"
+                   : OUT == 2 && CONV >= 2             ? "a budgeted step (its OUT 1 variant) plus the pass's drain"
+                   : DENSE                             ? "the dense cell, priced by its floor"
+                                                       : "a baseline form the facts form replaced, its counts recorded");
   if (CONV == 3 && FORM == 1 && OUT == 1) {
     b.mma(name, "hmma_bf16_f32", 16);
     b.budget(name, "mma", 1.0);
@@ -619,6 +696,16 @@ void variant(const lab::Bench& b, const Lists& ls, double floor, double floor_m,
   }
   b.record(label + " / its floor", "x", own);
   b.record(label + " / tokens-on-M floor", "x", m);
+  if constexpr (OUT == 0) {
+    b.unchecked(label, "an isolation: the MMAs alone, their outputs folded into a sink");
+  } else {
+    LAB_CHECK(cudaMemset(ls.out, 0, static_cast<size_t>(ls.windows) * 2 * kSlots * kWords * 4));
+    LAB_CHECK(cudaMemset(ls.panel_out, 0, static_cast<size_t>(b.sms) * kSlots * kWords * 4));
+    read<FORM, OUT, DENSE, RING, NOPAD, BAR, CONV><<<b.sms, kThreads, kBytes>>>(ls, b.times, b.sinks);
+    LAB_CHECK(cudaDeviceSynchronize());
+    const Verdict v = verify<OUT, DENSE>(*ref, ls);
+    b.check(label, v.bad == 0 && v.words > 0, v.detail);
+  }
 }
 
 }  // namespace read_image
@@ -630,6 +717,7 @@ int main(int argc, char** argv) {
   for (int i = 1; i + 1 < argc; ++i)
     if (!std::strcmp(argv[i], "--inputs")) dir = argv[i + 1];
   Lists ls{}, lo{};
+  HostLists host;
   double fm = 1, fn = 1, dm = 1, dn = 1;
   if (!b.expect_only) {
     if (dir.empty()) {
@@ -644,10 +732,14 @@ int main(int argc, char** argv) {
     LAB_CHECK(cudaMalloc(&at, h.at.size() * 2));
     LAB_CHECK(cudaMalloc(&count, h.count.size() * 2));
     LAB_CHECK(cudaMalloc(&out, static_cast<size_t>(h.windows) * 2 * kSlots * kWords * 4));
+    uint32_t* panel_out = nullptr;
+    LAB_CHECK(cudaMalloc(&panel_out, static_cast<size_t>(b.sms) * kSlots * kWords * 4));
     LAB_CHECK(cudaMemcpy(records, h.records.data(), h.records.size(), cudaMemcpyHostToDevice));
     LAB_CHECK(cudaMemcpy(at, h.at.data(), h.at.size() * 2, cudaMemcpyHostToDevice));
     LAB_CHECK(cudaMemcpy(count, h.count.data(), h.count.size() * 2, cudaMemcpyHostToDevice));
-    ls = Lists{reinterpret_cast<const uint16_t*>(records), nullptr, at, count, h.windows, h.width, h.groups, out};
+    ls = Lists{reinterpret_cast<const uint16_t*>(records), nullptr, at, count, h.windows, h.width, h.groups, out,
+               panel_out};
+    host = h;
     const HostLists o = read_lists(dir + "/ordered.bin");
     uint8_t* ordered = nullptr;
     LAB_CHECK(cudaMalloc(&ordered, o.records.size()));
@@ -672,41 +764,43 @@ int main(int argc, char** argv) {
     std::printf("{\"lab\": \"note\", \"floor_m\": %.1f, \"floor_n\": %.1f, \"dense_m\": %.1f, \"dense_n\": %.1f}\n", fm,
                 fn, dm, dn);
   }
-  variant<0, 1, 0, 0>(b, ls, fm, fm);
-  variant<1, 1, 0, 0>(b, ls, fn, fm);
-  variant<0, 0, 0, 1>(b, ls, fm, fm);
-  variant<0, 1, 0, 1>(b, ls, fm, fm);
-  variant<0, 2, 0, 1>(b, ls, fm, fm);
-  variant<1, 0, 0, 1>(b, ls, fn, fm);
-  variant<1, 1, 0, 1>(b, ls, fn, fm);
-  variant<1, 2, 0, 1>(b, ls, fn, fm);
-  variant<0, 0, 0, 2>(b, ls, fm, fm);
-  variant<0, 1, 0, 2>(b, ls, fm, fm);
-  variant<0, 2, 0, 2>(b, ls, fm, fm);
-  variant<0, 0, 0, 2>(b, lo, fm, fm, " / ordered");
-  variant<0, 1, 0, 2>(b, lo, fm, fm, " / ordered");
-  variant<0, 0, 0, 2, 1>(b, lo, fm, fm, " / ordered");
-  variant<0, 1, 0, 2, 1>(b, lo, fm, fm, " / ordered");
-  variant<0, 2, 0, 2, 1>(b, lo, fm, fm, " / ordered");
-  variant<0, 0, 0, 2, 1, 0>(b, lo, fm, fm, " / ordered");
-  variant<0, 1, 0, 2, 1, 0>(b, lo, fm, fm, " / ordered");
-  variant<0, 1, 0, 2, 0, 1, 1>(b, lo, fm, fm, " / ordered");
-  variant<0, 2, 0, 2, 0, 1, 1>(b, lo, fm, fm, " / ordered");
-  variant<0, 1, 0, 2, 1, 1, 1>(b, lo, fm, fm, " / ordered");
-  variant<0, 2, 0, 2, 1, 1, 1>(b, lo, fm, fm, " / ordered");
-  variant<0, 1, 0, 2, 0, 0, 1>(b, lo, fm, fm, " / ordered");
-  variant<0, 2, 1, 2, 0, 1, 1>(b, ls, dm, dm);
-  variant<0, 1, 0, 2, 0, 1, 2>(b, lo, fm, fm, " / ordered");
-  variant<0, 2, 0, 2, 0, 1, 2>(b, lo, fm, fm, " / ordered");
-  variant<0, 1, 0, 2, 0, 0, 2>(b, lo, fm, fm, " / ordered");
-  variant<0, 2, 1, 2, 0, 1, 2>(b, ls, dm, dm);
-  variant<0, 1, 0, 2, 0, 1, 3>(b, lo, fm, fm, " / ordered");
-  variant<0, 2, 0, 2, 0, 1, 3>(b, lo, fm, fm, " / ordered");
-  variant<0, 1, 0, 2, 0, 0, 3>(b, lo, fm, fm, " / ordered");
-  variant<1, 1, 0, 2, 0, 1, 3>(b, lo, fn, fm, " / ordered");
-  variant<1, 1, 0, 2, 0, 0, 3>(b, lo, fn, fm, " / ordered");
-  variant<1, 0, 0, 2, 0, 0, 3>(b, lo, fn, fm, " / ordered");
-  variant<0, 2, 1, 2, 1>(b, ls, dm, dm);
-  variant<0, 2, 1, 1>(b, ls, dm, dm);
-  variant<1, 2, 1, 1>(b, ls, dn, dm);
+  const Reference ref{&host, b.sms};
+  variant<0, 1, 0, 0>(b, ls, fm, fm, "", &ref);
+  variant<1, 1, 0, 0>(b, ls, fn, fm, "", &ref);
+  variant<0, 0, 0, 1>(b, ls, fm, fm, "", &ref);
+  variant<0, 1, 0, 1>(b, ls, fm, fm, "", &ref);
+  variant<0, 2, 0, 1>(b, ls, fm, fm, "", &ref);
+  variant<1, 0, 0, 1>(b, ls, fn, fm, "", &ref);
+  variant<1, 1, 0, 1>(b, ls, fn, fm, "", &ref);
+  variant<1, 2, 0, 1>(b, ls, fn, fm, "", &ref);
+  variant<0, 0, 0, 2>(b, ls, fm, fm, "", &ref);
+  variant<0, 1, 0, 2>(b, ls, fm, fm, "", &ref);
+  variant<0, 2, 0, 2>(b, ls, fm, fm, "", &ref);
+  variant<0, 0, 0, 2>(b, lo, fm, fm, " / ordered", &ref);
+  variant<0, 1, 0, 2>(b, lo, fm, fm, " / ordered", &ref);
+  variant<0, 0, 0, 2, 1>(b, lo, fm, fm, " / ordered", &ref);
+  variant<0, 1, 0, 2, 1>(b, lo, fm, fm, " / ordered", &ref);
+  variant<0, 2, 0, 2, 1>(b, lo, fm, fm, " / ordered", &ref);
+  variant<0, 0, 0, 2, 1, 0>(b, lo, fm, fm, " / ordered", &ref);
+  variant<0, 1, 0, 2, 1, 0>(b, lo, fm, fm, " / ordered", &ref);
+  variant<0, 1, 0, 2, 0, 1, 1>(b, lo, fm, fm, " / ordered", &ref);
+  variant<0, 2, 0, 2, 0, 1, 1>(b, lo, fm, fm, " / ordered", &ref);
+  variant<0, 1, 0, 2, 1, 1, 1>(b, lo, fm, fm, " / ordered", &ref);
+  variant<0, 2, 0, 2, 1, 1, 1>(b, lo, fm, fm, " / ordered", &ref);
+  variant<0, 1, 0, 2, 0, 0, 1>(b, lo, fm, fm, " / ordered", &ref);
+  variant<0, 2, 1, 2, 0, 1, 1>(b, ls, dm, dm, "", &ref);
+  variant<0, 1, 0, 2, 0, 1, 2>(b, lo, fm, fm, " / ordered", &ref);
+  variant<0, 2, 0, 2, 0, 1, 2>(b, lo, fm, fm, " / ordered", &ref);
+  variant<0, 1, 0, 2, 0, 0, 2>(b, lo, fm, fm, " / ordered", &ref);
+  variant<0, 2, 1, 2, 0, 1, 2>(b, ls, dm, dm, "", &ref);
+  variant<0, 1, 0, 2, 0, 1, 3>(b, lo, fm, fm, " / ordered", &ref);
+  variant<0, 2, 0, 2, 0, 1, 3>(b, lo, fm, fm, " / ordered", &ref);
+  variant<0, 1, 0, 2, 0, 0, 3>(b, lo, fm, fm, " / ordered", &ref);
+  variant<1, 1, 0, 2, 0, 1, 3>(b, lo, fn, fm, " / ordered", &ref);
+  variant<1, 1, 0, 2, 0, 0, 3>(b, lo, fn, fm, " / ordered", &ref);
+  variant<1, 0, 0, 2, 0, 0, 3>(b, lo, fn, fm, " / ordered", &ref);
+  variant<1, 2, 0, 2, 0, 1, 3>(b, lo, fn, fm, " / ordered", &ref);
+  variant<0, 2, 1, 2, 1>(b, ls, dm, dm, "", &ref);
+  variant<0, 2, 1, 1>(b, ls, dm, dm, "", &ref);
+  variant<1, 2, 1, 1>(b, ls, dn, dm, "", &ref);
 }
