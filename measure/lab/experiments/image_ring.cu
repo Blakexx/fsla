@@ -12,7 +12,11 @@
 // its group has landed, and publishes the round D on. Modes: 0 the static image, 1 the publish without handshakes (an
 // isolation: its outputs race), 2 the ring on mbarriers, 3 two slots under one named barrier a round: a warp consumes
 // round r and publishes r + 1 before it, so passing it means every warp has landed r + 1 and drained r - 1, whose
-// slot r + 1 reuses. see docs/internals/tools/lab.md#image-ring
+// slot r + 1 reuses; 4 and 5 exchange then compute: the rounds' stores and loads between named barriers with nothing
+// uneven between them, a warp's 4 digits' fragments held in registers (or 2, the window in halves), the tiles after;
+// 6 as 4 with the next window's fold (its stand-in) interleaved with the tiles, as the exchanged copy frees it;
+// 7 the static image with a barrier a window (the rendezvous's skew alone), 8 the exchange alone (an isolation).
+// see docs/internals/tools/lab.md#image-ring
 #include "read_image.cuh"
 
 namespace image_ring {
@@ -62,7 +66,7 @@ __global__ __launch_bounds__(kThreads, 1) void ring(Lists ls, const uint32_t* ze
   const uint32_t sm = lab::smem(smem);
   uint4* chunks = reinterpret_cast<uint4*>(smem);
   for (int k = static_cast<int>(threadIdx.x); k < kRingBytes / 16; k += kThreads) {
-    const uint32_t v = k < kPool / 16 ? (MODE == 0 ? 0x3d80bd80u : 0u) : k < kPads / 16 ? 0x3d803d80u : 0u;
+    const uint32_t v = k < kPool / 16 ? (MODE == 0 || MODE == 7 ? 0x3d80bd80u : 0u) : k < kPads / 16 ? 0x3d803d80u : 0u;
     chunks[k] = make_uint4(v, v, v, v);
   }
   __syncthreads();
@@ -156,28 +160,8 @@ __global__ __launch_bounds__(kThreads, 1) void ring(Lists ls, const uint32_t* ze
       publish(w, 0);
       lab::bar_sync(1, kThreads);
     }
-#pragma unroll
-    for (int i = 0; i < 4; ++i) {
-      uint32_t f[16];
-      if constexpr (MODE == 0) {
-        state_in<1>(f, c, plane_off(i));
-      } else if constexpr (MODE == 3) {
-#pragma unroll
-        for (int p = 0; p < kParts; ++p) {
-          consume(w, kParts * i + p, f);
-          if (kParts * i + p + 1 < kRounds) {
-            publish(w, kParts * i + p + 1);
-            lab::bar_sync(1, kThreads);
-          }
-        }
-      } else {
-#pragma unroll
-        for (int p = 0; p < kParts; ++p) {
-          consume(w, kParts * i + p, f);
-          if (kParts * i + p + D < kRounds) publish(w, kParts * i + p + D);
-        }
-      }
-      //: digit i's tiles: the first staged, the second on a vote, any past the staged from its list
+    //: digit i's tiles: the first staged, the second on a vote, any past the staged from its list
+    const auto digit = [&](int i, const uint32_t(&f)[16]) {
       const uint2 e = lds64(he + kHead * 8 * i);
       const int steps = static_cast<int>((e.x >> 16) & 0xffu);
       tile_n<1>(sm, e, c, f, sink);
@@ -186,10 +170,86 @@ __global__ __launch_bounds__(kThreads, 1) void ring(Lists ls, const uint32_t* ze
       for (int k = __any_sync(0xffffffffu, steps > kHead / 8) ? 1 : 0, s = kHead / 8; k > 0; --k)
         do tile_n<1>(sm, listed(i, 8 * s + (lane & 7)), c, f, sink);
         while (__any_sync(0xffffffffu, ++s < steps));
-    }
+    };
+    //: a quarter of the fold stand-in (8 MMAs), interleaved with a digit's tiles in mode 6
+    const auto fold_quarter = [&](int q) {
 #pragma unroll
-    for (int k = 0; k < 32; ++k)
-      fold_k8(*reinterpret_cast<float(*)[4]>(&acc[k / 8][k / 4 % 2][k % 4][0]), zero, zero, zero);
+      for (int k = 8 * q; k < 8 * q + 8; ++k)
+        fold_k8(*reinterpret_cast<float(*)[4]>(&acc[k / 8][k / 4 % 2][k % 4][0]), zero, zero, zero);
+    };
+    if constexpr (MODE == 8) {
+      uint32_t f[4][16];
+      lab::bar_sync(1, kThreads);
+      publish(w, 0);
+      publish(w, 1);
+      lab::bar_sync(1, kThreads);
+      consume(w, 0, f[0]);
+      consume(w, 1, f[1]);
+      lab::bar_sync(1, kThreads);
+      publish(w, 2);
+      publish(w, 3);
+      lab::bar_sync(1, kThreads);
+      consume(w, 2, f[2]);
+      consume(w, 3, f[3]);
+#pragma unroll
+      for (int k = 0; k < 64; ++k) sink += __uint_as_float((&f[0][0])[k]);
+    } else if constexpr (MODE == 4 || MODE == 5 || MODE == 6) {
+      //: EXCHANGE THEN COMPUTE: every warp stores and loads alike between the named barriers (no skew in them),
+      //: holding its digits' fragments; the uneven tiles run after, from registers. The window's first barrier
+      //: frees the slots the last window's rounds 2 and 3 held
+      constexpr int kHeld = MODE == 5 ? 2 : 4;
+      uint32_t f[kHeld][16];
+      lab::bar_sync(1, kThreads);
+      publish(w, 0);
+      publish(w, 1);
+      lab::bar_sync(1, kThreads);
+      consume(w, 0, f[0]);
+      consume(w, 1, f[1]);
+      if constexpr (MODE == 5) {
+        digit(0, f[0]);
+        digit(1, f[1]);
+      }
+      lab::bar_sync(1, kThreads);
+      publish(w, 2);
+      publish(w, 3);
+      lab::bar_sync(1, kThreads);
+      consume(w, 2, f[kHeld - 2]);
+      consume(w, 3, f[kHeld - 1]);
+#pragma unroll
+      for (int i = 4 - kHeld; i < 4; ++i) {
+        digit(i, f[i - (4 - kHeld)]);
+        if constexpr (MODE == 6) fold_quarter(i);
+      }
+    } else {
+#pragma unroll
+      for (int i = 0; i < 4; ++i) {
+        uint32_t f[16];
+        if constexpr (MODE == 0 || MODE == 7) {
+          if (MODE == 7 && i == 0) lab::bar_sync(1, kThreads);
+          state_in<1>(f, c, plane_off(i));
+        } else if constexpr (MODE == 3) {
+#pragma unroll
+          for (int p = 0; p < kParts; ++p) {
+            consume(w, kParts * i + p, f);
+            if (kParts * i + p + 1 < kRounds) {
+              publish(w, kParts * i + p + 1);
+              lab::bar_sync(1, kThreads);
+            }
+          }
+        } else {
+#pragma unroll
+          for (int p = 0; p < kParts; ++p) {
+            consume(w, kParts * i + p, f);
+            if (kParts * i + p + D < kRounds) publish(w, kParts * i + p + D);
+          }
+        }
+        digit(i, f);
+      }
+    }
+    if constexpr (MODE != 6 && MODE != 8) {
+#pragma unroll
+      for (int q = 0; q < 4; ++q) fold_quarter(q);
+    }
   }
   clock.stop(times);
   lab::cp_wait_all();
@@ -229,11 +289,12 @@ constexpr Budget budget_of() {
 template <int U, int D, int MODE>
 void variant(const lab::Bench& b, const Lists& ls, const uint32_t* zeros, const Reference& ref) {
   const std::string name = lab::kernel("image_ring::ring", {U, D, MODE});
-  b.expect(name, "HMMA.16816.F32.BF16", ">=", 4);
+  //: the exchange alone runs no MMA
+  if (MODE != 8) b.expect(name, "HMMA.16816.F32.BF16", ">=", 4);
   b.expect(name, "STEP_GLOBAL", ">=", 0);
   if (MODE == 0) b.exempt(name, "the baseline: read_image's budgeted tokens-on-N step from a static image");
   if (MODE == 1) b.exempt(name, "an isolation: the publish's stores and packs without the handshakes");
-  if (MODE == 3) b.exempt(name, "a probe of the named barrier's cost against the mbarrier ring's (budgeted)");
+  if (MODE >= 3) b.exempt(name, "a probe of a hand-off's cost against the mbarrier ring's (budgeted)");
   if (MODE == 2) {
     constexpr Budget u = budget_of<U>();
     b.budget(name, "mma", 1.0);
@@ -260,13 +321,19 @@ void variant(const lab::Bench& b, const Lists& ls, const uint32_t* zeros, const 
   const std::string label = MODE == 0   ? std::string("a static image")
                             : MODE == 1 ? "the publish without handshakes, " + rounds
                             : MODE == 2 ? "the ring, " + rounds + " x " + std::to_string(D) + " slots, mbarriers"
-                                        : "the ring, " + rounds + " x 2 slots, a named barrier a round";
+                            : MODE == 3 ? "the ring, " + rounds + " x 2 slots, a named barrier a round"
+                            : MODE == 7 ? std::string("a static image, a barrier a window")
+                            : MODE == 8 ? std::string("the exchange alone, 2 slots of 16 KB")
+                            : MODE == 6 ? std::string("exchange, then the tiles and the fold interleaved, 4 held")
+                            : MODE == 4 ? std::string("exchange then compute, 4 digits held, 2 slots of 16 KB")
+                                        : std::string("exchange then compute in halves, 2 digits held, 2 slots");
   b.record(label, "cycles a CTA-window", s);
   lab::Samples own;
   for (double v : s.v) own.v.push_back(v / floor);
   b.record(label + " / the free floor", "x", own);
-  if constexpr (MODE == 1) {
-    b.unchecked(label, "an isolation: the stores race the loads without handshakes");
+  if constexpr (MODE == 1 || MODE == 8) {
+    b.unchecked(label, MODE == 1 ? "an isolation: the stores race the loads without handshakes"
+                                 : "an isolation: the exchange's loads fold into a sink");
   } else {
     LAB_CHECK(cudaMemset(ls.panel_out, 0, static_cast<size_t>(b.sms) * kSlots * kWords * 4));
     launch();
@@ -309,4 +376,9 @@ int main(int argc, char** argv) {
   variant<1, 2, 3>(b, ln, zeros, ref);
   variant<2, 2, 3>(b, ln, zeros, ref);
   variant<4, 2, 3>(b, ln, zeros, ref);
+  variant<4, 2, 4>(b, ln, zeros, ref);
+  variant<4, 2, 5>(b, ln, zeros, ref);
+  variant<4, 2, 6>(b, ln, zeros, ref);
+  variant<4, 2, 7>(b, ln, zeros, ref);
+  variant<4, 2, 8>(b, ln, zeros, ref);
 }

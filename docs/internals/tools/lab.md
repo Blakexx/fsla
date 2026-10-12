@@ -896,7 +896,22 @@ atomics, plus a shared atomic, and the waiting warps poll shared memory. That co
 barrier (`bar.sync`, hardware) costs instead the warps' skew between barriers, ~300 cycles a round at 32-channel
 rounds. The publish's bytes alone (512 store wavefronts and 64 packs a thread a window) cost +0.76K, where the
 tokens-on-N readout already runs shared memory at ~92% of its tensor floor. The line was rounds within 5% of a sparse
-window, about 0.2K; the ring misses it by 10-45x. Record: `measure/lab/results/image_ring/sm_86.json`.
+window, about 0.2K; the ring misses it by 10-45x.
+
+Then EXCHANGE THEN COMPUTE: every warp does the same stores and loads between named barriers, holding its digits'
+fragments in registers, and the tiles run after.
+
+| sm_86, alt-k4, a CTA-window | cycles |
+|---|---|
+| a static image, a barrier a window (the rendezvous alone) | 3228 (+0.48K) |
+| the exchange alone (64 KB stored and loaded, 4 barriers; an isolation) | 1770 |
+| exchange then compute, 4 digits held (242 registers) / 2 (210) | 4858 / 5151 |
+| exchange, then the tiles and the next fold interleaved, 4 held | 4757 |
+
+Holding the exchanged copy frees the next fold to run beside the tiles, but that recovers little. A rendezvous aligns
+the warps' phases: the exchange (shared memory only, tensor idle), the readout and the fold (tensor only) run one
+after another, where free-running warps overlap one warp's fold with another's readout. The exchange's 1024 wavefronts
+take 1.77K with nothing to hide them. Record: `measure/lab/results/image_ring/sm_86.json`.
 
 <a id="mma-k8"></a>
 ### `mma_k8`
