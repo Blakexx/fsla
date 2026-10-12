@@ -837,8 +837,10 @@ only, a declared warp-uniform branch choosing the form) and no barrier at the pa
 | dense, FMA conversion | | 1.12x | 12.1 |
 | ordered, FMA conversion, a token's panel base once | 1.60x | 2.12x | 16.2 |
 | the same, free-running | 1.44x | | |
-| ordered, FMA conversion, facts-form entries (byte offsets, swizzle folded), heads path at compile time | 1.77x | 2.27x | 12.9 |
-| the same, free-running | 1.46x | | |
+| ordered, FMA conversion, facts-form entries (byte offsets, swizzle folded), heads path at compile time | 1.62x | 2.13x | 13.2 |
+| the same, free-running | 1.45x | | |
+| tokens on N (8-token tiles, 0.69x the MMAs), facts form, exact pairs | 2.11x (1.65x of M's floor) | | 18.8 |
+| the same, free-running | 1.78x (1.40x of M's floor) | | |
 | dense, a token's panel base once | | 1.12x | 9.6 |
 
 Ordering moves conflicts 1.76 -> 1.65 an MMA only: a digit's ~8 tokens collide on residues with no ninth to deal.
@@ -854,6 +856,14 @@ select/compare 0.85 against 0.4: each digit's 64-bit list row computed on the co
 rematerialized a digit, the heads' 64-bit copies a window. On sm_86 the facts form's per-digit choice of heads or
 global path (a branch in the straight-line block) costs more than its 3.3 fewer instructions an MMA save; the count
 is A100's limit, the block structure sm_86's.
+
+The per-card prediction (`Bench::mma`; tensor, shared-memory and issue cycles an MMA from the same counts) puts the
+alt-k4 readout SHARED-MEMORY BOUND ON BOTH CARDS: 8.1 cycles an MMA (7.1 wavefronts, each shared atomic's second cycle)
+against 8.0 of tensor on sm_86 and 2.0 on A100; tokens on N spend 7.15 a tokens-on-M MMA's worth of work, about 12%
+less. A digit's state read from the image (16 wavefronts a digit-window) is the largest single item at alt-k4. An
+earlier run of the facts-form variants was wrong: the pad tokens' dummy words were 32 a CTA while a step's adds reach
+60 bytes past a lane's base, so the last lanes' adds wrote into warp 0's heads and moved its counts (the tokens-on-N
+form, whose pads add nonzero, ran twice its tiles); the lab checks no outputs, so only the counts showed it.
 
 Record: `measure/lab/results/read_image/sm_86.json`.
 

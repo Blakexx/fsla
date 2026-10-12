@@ -28,7 +28,9 @@ constexpr int kLists = 32, kDigits = 32, kChannels = 32;
 constexpr int kListCap = 512, kListAt = 8, kSlots = 256, kWords = 16, kPanelPitch = 20;
 constexpr int kPlanes = 16, kPlaneBytes = kLists * kChannels * 2, kRowBytes = kLists * 2;
 constexpr int kImage = 0, kPool = kImage + kPlanes * kPlaneBytes, kPanel = kPool + kSlots * kRowBytes;
-constexpr int kDummy = kPanel + kSlots * kPanelPitch * 4, kHeads = kDummy + 32 * 4;
+//: the pad tokens' adds land on a lane's own word, consecutive across lanes (no bank conflict at a common offset), in a
+//: region that holds a step's largest offset past the base (60 bytes) for the last lane
+constexpr int kDummy = kPanel + kSlots * kPanelPitch * 4, kHeads = kDummy + 256;
 //: a warp's heads for a window, double-buffered: its 4 digits' pass starts (16 bytes each), then their first 16 slots
 constexpr int kHeadBytes = 4 * 16 + 4 * 64, kBytes = kHeads + 2 * kWarps * kHeadBytes;
 constexpr float kUnit = 256.0f;
@@ -180,7 +182,7 @@ __device__ __forceinline__ void step_m3(uint32_t sm, const Lists& ls, uint32_t h
 #pragma unroll
     for (int nt = 0; nt < 4; ++nt) lab::mma_bf16_f32(acc[nt], a, f[(kb * 4 + nt) * 2], f[(kb * 4 + nt) * 2 + 1]);
   }
-  const float cu = 0x1p0f * kUnit;
+  const float cg = eg ? kUnit : 0.0f, cg8 = eg8 ? kUnit : 0.0f;
   const uint32_t bg = (eg >> 16) ? sm + kPanel - 1 + (eg >> 16) + 4 * t : sm + kDummy + 4 * lane;
   const uint32_t bg8 = (eg8 >> 16) ? sm + kPanel - 1 + (eg8 >> 16) + 4 * t : sm + kDummy + 4 * lane;
 #pragma unroll
@@ -188,8 +190,52 @@ __device__ __forceinline__ void step_m3(uint32_t sm, const Lists& ls, uint32_t h
     if constexpr (OUT == 0) {
       sink += acc[nt][0] + acc[nt][1] + acc[nt][2] + acc[nt][3];
     } else {
-      panel_red(bg + 16 * nt, s16_fma(acc[nt][0], acc[nt][1], cu));
-      panel_red(bg8 + 16 * nt, s16_fma(acc[nt][2], acc[nt][3], cu));
+      panel_red(bg + 16 * nt, s16_fma(acc[nt][0], acc[nt][1], cg));
+      panel_red(bg8 + 16 * nt, s16_fma(acc[nt][2], acc[nt][3], cg8));
+    }
+  }
+}
+
+//: THE EXACT PAIR: two outputs times (coefficient x unit) to the integer hi x 2^16 + lo, so u32 adds sum both channels
+//: exactly while each final fits s16 -- lo's FFMA adds 1.5 x 2^23 (its bits 0x4B400000 + lo), hi's adds 0x4B40 less
+//: (its low half hi - 0x4B40), and one LEA (hi bits << 16, plus lo bits) cancels lo's exponent bits
+__device__ __forceinline__ uint32_t s16_exact(float lo, float hi, float cu) {
+  const uint32_t l = __float_as_uint(fmaf(lo, cu, 12582912.0f));
+  const uint32_t h = __float_as_uint(fmaf(hi, cu, 12563648.0f));
+  return (h << 16) + l;
+}
+
+//: FORM 1 AND CONV 3, TOKENS ON N IN THE FACTS PASS'S FORM: an 8-token tile's read rows (B: K = lists, N = tokens) by
+//: one `ldmatrix.x4`, an address an add and an XOR; 4 MMAs against the digit's state (A, 16 registers); each lane's two
+//: tokens' panel bases once, each output pair exact. HEAD 1: the tile's entries from the warp's heads (tiles 0-1)
+template <int OUT, int HEAD>
+__device__ __forceinline__ void tile_n3(uint32_t sm, const Lists& ls, uint32_t head, int64_t row, int begin, int n,
+                                        const uint32_t (&f)[16], int lane, float& sink, int s) {
+  const int r = lane & 7, q = lane >> 3, g = lane >> 2, t = lane & 3;
+  const uint32_t mine = entry3<HEAD>(ls, head, row, begin, n, 8 * s + (lane & 7));
+  const uint32_t eb = __shfl_sync(0xffffffffu, mine, r);
+  const uint32_t e0 = __shfl_sync(0xffffffffu, mine, 2 * t), e1 = __shfl_sync(0xffffffffu, mine, 2 * t + 1);
+  uint32_t b[4];
+  lab::ldsm(b, (sm + kPool + (eb & 0xffffu)) ^ (16u * static_cast<uint32_t>(q)));
+  float acc[2][4] = {};
+#pragma unroll
+  for (int m = 0; m < 2; ++m)
+#pragma unroll
+    for (int kb = 0; kb < 2; ++kb) {
+      const uint32_t a[4] = {f[(m * 2 + kb) * 4], f[(m * 2 + kb) * 4 + 1], f[(m * 2 + kb) * 4 + 2],
+                             f[(m * 2 + kb) * 4 + 3]};
+      lab::mma_bf16_f32(acc[m], a, b[2 * kb], b[2 * kb + 1]);
+    }
+  const float c0 = e0 ? kUnit : 0.0f, c1 = e1 ? kUnit : 0.0f;
+  const uint32_t b0 = (e0 >> 16) ? sm + kPanel - 1 + (e0 >> 16) + 4 * g : sm + kDummy + 4 * lane;
+  const uint32_t b1 = (e1 >> 16) ? sm + kPanel - 1 + (e1 >> 16) + 4 * g : sm + kDummy + 4 * lane;
+#pragma unroll
+  for (int m = 0; m < 2; ++m) {
+    if constexpr (OUT == 0) {
+      sink += acc[m][0] + acc[m][1] + acc[m][2] + acc[m][3];
+    } else {
+      panel_red(b0 + 32 * m, s16_exact(acc[m][0], acc[m][2], c0));
+      panel_red(b1 + 32 * m, s16_exact(acc[m][1], acc[m][3], c1));
     }
   }
 }
@@ -296,6 +342,13 @@ __global__ __launch_bounds__(kThreads, 1) void read(Lists ls, long long* times, 
       lab::cp_async16(dst + 64 + 64 * i + 16 * (part - 1), ls.offs + row * kListCap + 4 * (part - 1));
     lab::cp_commit();
   };
+  //: CONV 3, form 1: the lane's two A-fragment offsets in a plane (m = 0, 1; kb = 1 is 1024 bytes on), once a kernel
+  uint32_t sn[2];
+#pragma unroll
+  for (int m = 0; m < 2; ++m) {
+    const int srow = 8 * (lane >> 4) + (lane & 7), c = 2 * m + ((lane >> 3) & 1);
+    sn[m] = srow * kRowBytes + 16 * (c ^ ((srow >> 1) & 3));
+  }
   //: CONV 3: the lane's two state-load offsets in a plane (u = 0; u = 1 is 1024 bytes on), once a kernel
   uint32_t so[2];
 #pragma unroll
@@ -345,7 +398,13 @@ __global__ __launch_bounds__(kThreads, 1) void read(Lists ls, long long* times, 
           const uint16_t* head;
           int begin, n;
           args(i, row, head, begin, n);
-          if constexpr (CONV == 3) {
+          if constexpr (CONV == 3 && FORM == 1) {
+#pragma unroll
+            for (int m = 0; m < 2; ++m) {
+              lab::ldsm_t(*reinterpret_cast<uint32_t(*)[4]>(&f[i][(m * 2) * 4]), plane(i) + sn[m]);
+              lab::ldsm_t(*reinterpret_cast<uint32_t(*)[4]>(&f[i][(m * 2 + 1) * 4]), plane(i) + sn[m] + 1024u);
+            }
+          } else if constexpr (CONV == 3) {
 #pragma unroll
             for (int v = 0; v < 2; ++v) {
               uint32_t x[4];
@@ -363,7 +422,11 @@ __global__ __launch_bounds__(kThreads, 1) void read(Lists ls, long long* times, 
           } else {
             state_in<FORM>(f[i], plane(i), lane);
           }
-          if constexpr (CONV == 3) {
+          if constexpr (CONV == 3 && FORM == 1) {
+            const uint32_t h32 = sm + kHeads + ((w & 1) * kWarps + warp) * kHeadBytes + 64 + 64 * i;
+            for (int k = p == 0 ? 1 : 0; k > 0; --k) tile_n3<OUT, 1>(sm, ls, h32, row, begin, n, f[i], lane, sink, 0);
+            for (int k = p == 0 ? 0 : 1; k > 0; --k) tile_n3<OUT, 0>(sm, ls, 0u, row, begin, n, f[i], lane, sink, 0);
+          } else if constexpr (CONV == 3) {
             const uint32_t h32 = sm + kHeads + ((w & 1) * kWarps + warp) * kHeadBytes + 64 + 64 * i;
             for (int k = p == 0 ? 1 : 0; k > 0; --k) step_m3<OUT, 1>(sm, ls, h32, row, begin, n, f[i], lane, sink, 0);
             for (int k = p == 0 ? 0 : 1; k > 0; --k) step_m3<OUT, 0>(sm, ls, 0u, row, begin, n, f[i], lane, sink, 0);
@@ -381,7 +444,15 @@ __global__ __launch_bounds__(kThreads, 1) void read(Lists ls, long long* times, 
           const uint16_t* head;
           int begin, n;
           args(i, row, head, begin, n);
-          const int full = NOPAD ? (n + 7) / 16 : (n + 15) / 16;
+          const int full = FORM == 1 ? (n + 7) / 8 : NOPAD ? (n + 7) / 16 : (n + 15) / 16;
+          if constexpr (CONV == 3 && FORM == 1) {
+            const uint32_t h32 = sm + kHeads + ((w & 1) * kWarps + warp) * kHeadBytes + 64 + 64 * i;
+            for (int k = p == 0 && full > 1 ? 1 : 0; k > 0; --k)
+              tile_n3<OUT, 1>(sm, ls, h32, row, begin, n, f[i], lane, sink, 1);
+#pragma unroll 1
+            for (int s = p == 0 ? 2 : 1; s < full; ++s) tile_n3<OUT, 0>(sm, ls, 0u, row, begin, n, f[i], lane, sink, s);
+            continue;
+          }
 #pragma unroll 1
           for (int s = 1; s < full; ++s) {
             if constexpr (CONV == 3) {
@@ -497,6 +568,22 @@ void variant(const lab::Bench& b, const Lists& ls, double floor, double floor_m,
   //: a select, an add each), an add and 2 XORs for the read rows. A digit: 4 state loads (2 adds), its pass start and
   //: count (2 loads), its list's row, the step loop's bound and branch. A window: the heads' copies (5), the count's
   //: load, the loop. Per MMA: shared load (7 + 2/1)/8, integer ~14/8, select ~3/8, control ~4/8, global ~6/32.
+  //: tokens on N, an 8-token tile 4 MMAs: a read-row load, a head load, 3 shuffles, 8 FFMAs, 4 LEA packs, 4 panel
+  //: adds, 2 panel bases; a digit (~1.45 tiles at alt-k4) its 4 state loads and its pass starts
+  if (CONV == 3 && FORM == 1 && OUT == 1) {
+    b.mma(name, "hmma_bf16_f32", 16);
+    b.budget(name, "mma", 1.0);
+    b.budget(name, "shared load", 1.6);
+    b.budget(name, "shared atomic", 1.0);
+    b.budget(name, "shuffle", 0.8);
+    b.budget(name, "pack", 0.1);
+    b.budget(name, "float", 2.1);
+    b.budget(name, "conversion unit", 0.0);
+    b.budget(name, "select/compare", 0.8);
+    b.budget(name, "integer/address", 3.2);
+    b.budget(name, "control", 0.8);
+    b.budget(name, "global", 0.3);
+  }
   if (CONV >= 2 && FORM == 0 && OUT == 1) {
     b.mma(name, "hmma_bf16_f32", 16);
     b.budget(name, "mma", 1.0);
@@ -616,6 +703,9 @@ int main(int argc, char** argv) {
   variant<0, 1, 0, 2, 0, 1, 3>(b, lo, fm, fm, " / ordered");
   variant<0, 2, 0, 2, 0, 1, 3>(b, lo, fm, fm, " / ordered");
   variant<0, 1, 0, 2, 0, 0, 3>(b, lo, fm, fm, " / ordered");
+  variant<1, 1, 0, 2, 0, 1, 3>(b, lo, fn, fm, " / ordered");
+  variant<1, 1, 0, 2, 0, 0, 3>(b, lo, fn, fm, " / ordered");
+  variant<1, 0, 0, 2, 0, 0, 3>(b, lo, fn, fm, " / ordered");
   variant<0, 2, 1, 2, 1>(b, ls, dm, dm);
   variant<0, 2, 1, 1>(b, ls, dm, dm);
   variant<1, 2, 1, 1>(b, ls, dn, dm);
