@@ -30,11 +30,12 @@ constexpr int kPlanes = 16, kPlaneBytes = kLists * kChannels * 2, kRowBytes = kL
 constexpr int kImage = 0, kPool = kImage + kPlanes * kPlaneBytes, kPanel = kPool + kSlots * kRowBytes;
 constexpr int kDummy = kPanel + kSlots * kPanelPitch * 4, kHeads = kDummy + 32 * 4;
 //: a warp's heads for a window, double-buffered: its 4 digits' pass starts (16 bytes each), then their first 16 slots
-constexpr int kHeadBytes = 4 * 16 + 4 * 32, kBytes = kHeads + 2 * kWarps * kHeadBytes;
+constexpr int kHeadBytes = 4 * 16 + 4 * 64, kBytes = kHeads + 2 * kWarps * kHeadBytes;
 constexpr float kUnit = 256.0f;
 
 struct Lists {
   const uint16_t* slots;
+  const uint32_t* offs;
   const uint16_t* at;
   const uint16_t* count;
   int windows, width, groups;
@@ -138,6 +139,61 @@ __device__ __forceinline__ void half_m(uint32_t sm, const Lists& ls, const uint1
   }
 }
 
+//: a token's panel row for lane word `t`, or the lane's own dummy word for a pad: once a token a step (CONV 2), each
+//: add then a constant offset from it
+__device__ __forceinline__ uint32_t panel_base(uint32_t sm, uint32_t packed, int t, int lane) {
+  return packed != 0u ? sm + kPanel + ((packed & 0xffu) * kPanelPitch + t) * 4 : sm + kDummy + lane * 4;
+}
+
+__device__ __forceinline__ void panel_red(uint32_t at, uint32_t v) {
+  asm volatile("red.shared.add.u32 [%0], %1;" ::"r"(at), "r"(v) : "memory");
+}
+
+//: CONV 3, THE FACTS PASS'S FORM: an entry is its pool row's byte offset (swizzle folded in) low and its panel row's
+//: byte offset plus one high (zero: none), zero past the count. HEAD 1, a pass's first step: from the warp's heads at
+//: shared address `head` (a 32-bit address, no generic pointer to test); HEAD 0, a later step: global memory
+template <int HEAD>
+__device__ __forceinline__ uint32_t entry3(const Lists& ls, uint32_t head, int64_t row, int begin, int n, int e) {
+  uint32_t v;
+  if constexpr (HEAD == 1) {
+    asm volatile("ld.shared.u32 %0, [%1];" : "=r"(v) : "r"(head + 4 * (e & 15)));
+  } else {
+    v = ls.offs[row * kListCap + begin + min(e, max(n - 1, 0))];
+  }
+  return e < n ? v : 0u;
+}
+
+//: CONV 3's step: a read row's address one add and one XOR with the lane's chunk; a token's panel base once
+template <int OUT, int HEAD>
+__device__ __forceinline__ void step_m3(uint32_t sm, const Lists& ls, uint32_t head, int64_t row, int begin,
+                                        int n, const uint32_t (&f)[16], int lane, float& sink, int s) {
+  const int r = lane & 7, q = lane >> 3, g = lane >> 2, t = lane & 3;
+  const uint32_t mine = entry3<HEAD>(ls, head, row, begin, n, 16 * s + (lane & 15));
+  const uint32_t ea = __shfl_sync(0xffffffffu, mine, 8 * (q & 1) + r);
+  const uint32_t eg = __shfl_sync(0xffffffffu, mine, g), eg8 = __shfl_sync(0xffffffffu, mine, g + 8);
+  const uint32_t at = sm + kPool + (ea & 0xffffu);
+  float acc[4][4] = {};
+#pragma unroll
+  for (int kb = 0; kb < 2; ++kb) {
+    uint32_t a[4];
+    lab::ldsm(a, at ^ (32u * kb + 16u * static_cast<uint32_t>(q >> 1)));
+#pragma unroll
+    for (int nt = 0; nt < 4; ++nt) lab::mma_bf16_f32(acc[nt], a, f[(kb * 4 + nt) * 2], f[(kb * 4 + nt) * 2 + 1]);
+  }
+  const float cu = 0x1p0f * kUnit;
+  const uint32_t bg = (eg >> 16) ? sm + kPanel - 1 + (eg >> 16) + 4 * t : sm + kDummy + 4 * lane;
+  const uint32_t bg8 = (eg8 >> 16) ? sm + kPanel - 1 + (eg8 >> 16) + 4 * t : sm + kDummy + 4 * lane;
+#pragma unroll
+  for (int nt = 0; nt < 4; ++nt) {
+    if constexpr (OUT == 0) {
+      sink += acc[nt][0] + acc[nt][1] + acc[nt][2] + acc[nt][3];
+    } else {
+      panel_red(bg + 16 * nt, s16_fma(acc[nt][0], acc[nt][1], cu));
+      panel_red(bg8 + 16 * nt, s16_fma(acc[nt][2], acc[nt][3], cu));
+    }
+  }
+}
+
 //: FORM 0, TOKENS ON M: the digit's state as B, a 16-token step's read rows as A
 template <int OUT, int DENSE, int CONV = 0>
 __device__ __forceinline__ void step_m(uint32_t sm, const Lists& ls, const uint16_t* head, int64_t row, int begin,
@@ -159,6 +215,11 @@ __device__ __forceinline__ void step_m(uint32_t sm, const Lists& ls, const uint1
     for (int nt = 0; nt < 4; ++nt) {
       if constexpr (OUT == 0) {
         sink += acc[nt][0] + acc[nt][1] + acc[nt][2] + acc[nt][3];
+      } else if constexpr (CONV == 2) {
+        const float cg = coef(eg), cg8 = coef(eg8);
+        const uint32_t bg = panel_base(sm, eg, t, lane), bg8 = panel_base(sm, eg8, t, lane);
+        panel_red(bg + 16 * nt, s16_fma(acc[nt][0], acc[nt][1], cg));
+        panel_red(bg8 + 16 * nt, s16_fma(acc[nt][2], acc[nt][3], cg8));
       } else {
         const float cg = coef(eg), cg8 = coef(eg8);
         panel_add(sm, eg, 4 * nt + t,
@@ -229,9 +290,19 @@ __global__ __launch_bounds__(kThreads, 1) void read(Lists ls, long long* times, 
     const int64_t row = static_cast<int64_t>(w) * ls.width + box * kDigits + warp + 8 * i;
     const uint32_t dst = sm + kHeads + ((w & 1) * kWarps + warp) * kHeadBytes;
     if (!DENSE && part == 0) lab::cp_async16(dst + 16 * i, ls.at + row * kListAt);
-    if (!DENSE && (part == 1 || part == 2)) lab::cp_async16(dst + 64 + 32 * i + 16 * (part - 1), ls.slots + row * kListCap + 8 * (part - 1));
+    if (!DENSE && CONV != 3 && (part == 1 || part == 2))
+      lab::cp_async16(dst + 64 + 32 * i + 16 * (part - 1), ls.slots + row * kListCap + 8 * (part - 1));
+    if (!DENSE && CONV == 3 && part >= 1 && part <= 4)
+      lab::cp_async16(dst + 64 + 64 * i + 16 * (part - 1), ls.offs + row * kListCap + 4 * (part - 1));
     lab::cp_commit();
   };
+  //: CONV 3: the lane's two state-load offsets in a plane (u = 0; u = 1 is 1024 bytes on), once a kernel
+  uint32_t so[2];
+#pragma unroll
+  for (int v = 0; v < 2; ++v) {
+    const int srow = 8 * ((lane >> 3) & 1) + (lane & 7), c = 2 * v + (lane >> 4);
+    so[v] = srow * kRowBytes + 16 * (c ^ ((srow >> 1) & 3));
+  }
   heads_in(0);
   int next = DENSE ? 2 * kSlots : ls.count[box];
   const long long t0 = clock64();
@@ -274,8 +345,29 @@ __global__ __launch_bounds__(kThreads, 1) void read(Lists ls, long long* times, 
           const uint16_t* head;
           int begin, n;
           args(i, row, head, begin, n);
-          state_in<FORM>(f[i], plane(i), lane);
-          if constexpr (NOPAD == 1) {
+          if constexpr (CONV == 3) {
+#pragma unroll
+            for (int v = 0; v < 2; ++v) {
+              uint32_t x[4];
+              lab::ldsm_t(x, plane(i) + so[v]);
+              f[i][(2 * v) * 2] = x[0];
+              f[i][(2 * v) * 2 + 1] = x[1];
+              f[i][(2 * v + 1) * 2] = x[2];
+              f[i][(2 * v + 1) * 2 + 1] = x[3];
+              lab::ldsm_t(x, plane(i) + so[v] + 1024u);
+              f[i][(4 + 2 * v) * 2] = x[0];
+              f[i][(4 + 2 * v) * 2 + 1] = x[1];
+              f[i][(4 + 2 * v + 1) * 2] = x[2];
+              f[i][(4 + 2 * v + 1) * 2 + 1] = x[3];
+            }
+          } else {
+            state_in<FORM>(f[i], plane(i), lane);
+          }
+          if constexpr (CONV == 3) {
+            const uint32_t h32 = sm + kHeads + ((w & 1) * kWarps + warp) * kHeadBytes + 64 + 64 * i;
+            for (int k = p == 0 ? 1 : 0; k > 0; --k) step_m3<OUT, 1>(sm, ls, h32, row, begin, n, f[i], lane, sink, 0);
+            for (int k = p == 0 ? 0 : 1; k > 0; --k) step_m3<OUT, 0>(sm, ls, 0u, row, begin, n, f[i], lane, sink, 0);
+          } else if constexpr (NOPAD == 1) {
             for (int k = n > 8 ? 1 : 0; k > 0; --k) step_m<OUT, DENSE, CONV>(sm, ls, head, row, begin, n, f[i], lane, sink, 0);
             for (int k = n > 0 && n <= 8 ? 1 : 0; k > 0; --k)
               half_m<OUT, DENSE, CONV>(sm, ls, head, row, begin, n, f[i], lane, sink, 0);
@@ -291,7 +383,13 @@ __global__ __launch_bounds__(kThreads, 1) void read(Lists ls, long long* times, 
           args(i, row, head, begin, n);
           const int full = NOPAD ? (n + 7) / 16 : (n + 15) / 16;
 #pragma unroll 1
-          for (int s = 1; s < full; ++s) step_m<OUT, DENSE, CONV>(sm, ls, head, row, begin, n, f[i], lane, sink, s);
+          for (int s = 1; s < full; ++s) {
+            if constexpr (CONV == 3) {
+              step_m3<OUT, 0>(sm, ls, 0u, row, begin, n, f[i], lane, sink, s);
+            } else {
+              step_m<OUT, DENSE, CONV>(sm, ls, head, row, begin, n, f[i], lane, sink, s);
+            }
+          }
           for (int k = NOPAD && full > 0 && n - 16 * full > 0 ? 1 : 0; k > 0; --k)
             half_m<OUT, DENSE, CONV>(sm, ls, head, row, begin, n, f[i], lane, sink, full);
         }
@@ -389,6 +487,29 @@ void variant(const lab::Bench& b, const Lists& ls, double floor, double floor_m,
   b.expect(name, "HMMA.16816.F32.BF16", ">=", FORM == 0 ? 8 : 4);
   //: a half-step form chooses a digit's full or half step by its count, a warp-uniform branch among the first steps
   if (NOPAD) b.expect(name, "BSSY", ">=", 0);
+  //: the F2I forms measure the conversion unit on purpose; a digit past 16 tokens (0.2% at alt-k4) reads its later
+  //: entries from global memory inside its steps
+  if (CONV == 0) b.expect(name, "STEP_XU", ">=", 0);
+  if (!DENSE) b.expect(name, "STEP_GLOBAL", ">=", 0);
+  //: THE BUDGET (KERNEL_STANDARDS section 29), the facts-form readout's operation count per MMA at alt-k4, where a
+  //: read digit is one 16-token step a window (8 MMAs) and a warp four digits a window. A step: 2 read-row loads, a
+  //: head load, 3 shuffles, 16 FFMA conversions, 8 packs, 8 panel adds, its 2 tokens' panel bases (a shift, a compare,
+  //: a select, an add each), an add and 2 XORs for the read rows. A digit: 4 state loads (2 adds), its pass start and
+  //: count (2 loads), its list's row, the step loop's bound and branch. A window: the heads' copies (5), the count's
+  //: load, the loop. Per MMA: shared load (7 + 2/1)/8, integer ~14/8, select ~3/8, control ~4/8, global ~6/32.
+  if (CONV >= 2 && FORM == 0 && OUT == 1) {
+    b.budget(name, "mma", 1.0);
+    b.budget(name, "shared load", 1.15);
+    b.budget(name, "shared atomic", 1.0);
+    b.budget(name, "shuffle", 0.4);
+    b.budget(name, "pack", 1.0);
+    b.budget(name, "float", 2.3);
+    b.budget(name, "conversion unit", 0.0);
+    b.budget(name, "select/compare", 0.4);
+    b.budget(name, "integer/address", 1.8);
+    b.budget(name, "control", 0.55);
+    b.budget(name, "global", 0.25);
+  }
   if (b.expect_only) return;
   LAB_CHECK(cudaFuncSetAttribute(read<FORM, OUT, DENSE, RING, NOPAD, BAR, CONV>, cudaFuncAttributeMaxDynamicSharedMemorySize, kBytes));
   const lab::Samples s = b.variant([&] { read<FORM, OUT, DENSE, RING, NOPAD, BAR, CONV><<<b.sms, kThreads, kBytes>>>(ls, b.times, b.sinks); },
@@ -398,7 +519,10 @@ void variant(const lab::Bench& b, const Lists& ls, double floor, double floor_m,
   const std::string label = std::string(DENSE ? "dense / " : "alt-k4 / ") + forms[FORM] + " / " + outs[OUT]
                             + (RING == 2 ? " / first steps straight-line" : RING ? " / state ring" : " / state a digit at a time")
                             + lists + (NOPAD ? " / half steps" : "") + (BAR ? "" : " / no pass barrier")
-                            + (CONV ? " / FMA conversion" : "");
+                            + (CONV == 3   ? " / FMA conversion / facts-form entries"
+                               : CONV == 2 ? " / FMA conversion / a token's panel base once"
+                               : CONV      ? " / FMA conversion"
+                                           : "");
   b.record(label, "cycles a CTA-window", s);
   lab::Samples own, m;
   for (double v : s.v) {
@@ -435,13 +559,24 @@ int main(int argc, char** argv) {
     LAB_CHECK(cudaMemcpy(records, h.records.data(), h.records.size(), cudaMemcpyHostToDevice));
     LAB_CHECK(cudaMemcpy(at, h.at.data(), h.at.size() * 2, cudaMemcpyHostToDevice));
     LAB_CHECK(cudaMemcpy(count, h.count.data(), h.count.size() * 2, cudaMemcpyHostToDevice));
-    ls = Lists{reinterpret_cast<const uint16_t*>(records), at, count, h.windows, h.width, h.groups, out};
+    ls = Lists{reinterpret_cast<const uint16_t*>(records), nullptr, at, count, h.windows, h.width, h.groups, out};
     const HostLists o = read_lists(dir + "/ordered.bin");
     uint8_t* ordered = nullptr;
     LAB_CHECK(cudaMalloc(&ordered, o.records.size()));
     LAB_CHECK(cudaMemcpy(ordered, o.records.data(), o.records.size(), cudaMemcpyHostToDevice));
     lo = ls;
     lo.slots = reinterpret_cast<const uint16_t*>(ordered);
+    std::vector<uint32_t> host_offs(o.records.size() / 2);
+    std::ifstream fo(dir + "/offsets.bin", std::ios::binary);
+    fo.read(reinterpret_cast<char*>(host_offs.data()), static_cast<std::streamsize>(host_offs.size() * 4));
+    if (!fo) {
+      std::fprintf(stderr, "read_image: %s/offsets.bin is short\n", dir.c_str());
+      return 1;
+    }
+    uint32_t* offs = nullptr;
+    LAB_CHECK(cudaMalloc(&offs, host_offs.size() * 4));
+    LAB_CHECK(cudaMemcpy(offs, host_offs.data(), host_offs.size() * 4, cudaMemcpyHostToDevice));
+    lo.offs = offs;
     fm = floor_of(h, 0, false);
     fn = floor_of(h, 1, false);
     dm = floor_of(h, 0, true);
@@ -473,6 +608,13 @@ int main(int argc, char** argv) {
   variant<0, 2, 0, 2, 1, 1, 1>(b, lo, fm, fm, " / ordered");
   variant<0, 1, 0, 2, 0, 0, 1>(b, lo, fm, fm, " / ordered");
   variant<0, 2, 1, 2, 0, 1, 1>(b, ls, dm, dm);
+  variant<0, 1, 0, 2, 0, 1, 2>(b, lo, fm, fm, " / ordered");
+  variant<0, 2, 0, 2, 0, 1, 2>(b, lo, fm, fm, " / ordered");
+  variant<0, 1, 0, 2, 0, 0, 2>(b, lo, fm, fm, " / ordered");
+  variant<0, 2, 1, 2, 0, 1, 2>(b, ls, dm, dm);
+  variant<0, 1, 0, 2, 0, 1, 3>(b, lo, fm, fm, " / ordered");
+  variant<0, 2, 0, 2, 0, 1, 3>(b, lo, fm, fm, " / ordered");
+  variant<0, 1, 0, 2, 0, 0, 3>(b, lo, fm, fm, " / ordered");
   variant<0, 2, 1, 2, 1>(b, ls, dm, dm);
   variant<0, 2, 1, 1>(b, ls, dm, dm);
   variant<1, 2, 1, 1>(b, ls, dn, dm);

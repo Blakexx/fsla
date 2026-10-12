@@ -16,6 +16,10 @@ What it reads, per function of every cubin (every kernel and every outlined devi
                   region ptxas reconverges once on entry
   predicated HMMA -- `@P HMMA`: if-converted tensor work
   instructions per HMMA -- the static ratio, a ceiling the arm states (issue-bound above it)
+  the conversion unit in a step -- F2I/I2F/F2F/MUFU inside an MMA loop: 16 lanes a cycle an SM where the FMA pipe's
+                  forms (a magic-constant FFMA, a PRMT) run at 64 (KERNEL_STANDARDS section 29)
+  global memory in a step -- LDG/STG/RED/ATOMG inside an MMA loop: a step's operands are staged ahead by `cp.async`
+                  (LDGSTS, allowed), and a reduction to global memory belongs to a drain outside the steps
 On a whole extension it also reds every kernel the source defines (`tools/kernels.py`) that no cubin carries: a gate
 that cannot see a kernel has not gated it. It prints the counts it reads, the same way `ratify` prints registers and
 spills, so a clean run is a line of zeros and a red names the signature.
@@ -161,6 +165,32 @@ def mma_gap(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> t
     return inside, around
 
 
+#: KERNEL_STANDARDS section 29's debts: the kernels built before the step lints whose steps still do it
+_STEP_XU_DEBT = {
+    "intra_kernel": "its epilogue's F2I (160 in its steps); the intra's port onto the fp16 family converts on the FMA pipe",
+}
+_STEP_GLOBAL_DEBT = {
+    "carry_kernel": "the fold's steps past a list's 16th entry read records from global memory; the readout-first "
+                    "rebuild stages every step's records",
+    "produce_kernel": "126 global accesses inside its MMA loop: its operands are not staged by cp.async",
+}
+
+
+def step_classes(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> tuple[int, int]:
+    """KERNEL_STANDARDS section 29: inside the innermost MMA loops (`mma_loops`), the instructions on the conversion
+    unit and the global memory accesses other than `cp.async` (LDGSTS)."""
+    xu = memory = 0
+    for target, k in mma_loops(lines, labels):
+        for j in range(target, k + 1):
+            _, op, _, pred = lines[j]
+            if pred == _NEVER:
+                continue
+            kind = sass.opcode_class(op)
+            xu += kind == "conversion unit"
+            memory += kind == "global" and not op.startswith("LDGSTS")
+    return xu, memory
+
+
 def mma_loop_branches(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> int:
     """KERNEL_STANDARDS 27: the branches inside a step -- a convergence barrier (BSSY) or a forward conditional BRA in an
     innermost MMA loop (`mma_loops`; the BRA.DIV / BRA.CONV guards of a collective's cold fallback not counted). Each
@@ -217,6 +247,7 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
         calls, guarded = convergence_calls(whole[name], labels[name])
         branches = mma_loop_branches(whole[name], labels[name])
         gap, around = mma_gap(whole[name], labels[name])
+        xu, memory = step_classes(whole[name], labels[name])
         phmma = sum(1 for i in ins if re.match(r"@!?P\d+ HMMA", i))
         hmma = sum(1 for i in ins if " HMMA" in i or i.startswith("HMMA"))
         per = (n / hmma) if hmma else float("nan")
@@ -231,16 +262,21 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
             reds.append(f"predicated HMMA ({phmma})")
         if branches and not any(debt in name for debt in _STEP_BRANCH_DEBT):
             reds.append(f"branches inside an MMA step ({branches})")
+        if xu and not any(debt in name for debt in _STEP_XU_DEBT):
+            reds.append(f"the conversion unit inside an MMA step ({xu})")
+        if memory and not any(debt in name for debt in _STEP_GLOBAL_DEBT):
+            reds.append(f"global memory inside an MMA step ({memory})")
         if max_per_hmma is not None and hmma and per > max_per_hmma:
             reds.append(f"static instructions per HMMA {per:.1f} > {max_per_hmma}")
         ok &= not reds
         STATS[name] = {"instr": n, "hmma": hmma, "per_hmma": None if not hmma else round(per, 2), "ldl": ldl,
                        "stack": stack, "calls": calls, "guarded": guarded, "pred_hmma": phmma,
-                       "mma_loop_branches": branches, "mma_gap": gap, "mma_gap_around": around, "reds": reds}
+                       "mma_loop_branches": branches, "mma_gap": gap, "mma_gap_around": around,
+                       "step_xu": xu, "step_global": memory, "reds": reds}
         short = name[:70]
         report.append(f"{'RED ' if reds else 'ok  '} {short}: instr {n} hmma {hmma} per-hmma {per:.1f} "
                       f"ldl {ldl} stack {stack} calls {calls} guarded {guarded} predHMMA {phmma} "
-                      f"mma-loop-branches {branches} mma-gap {gap} around {around}"
+                      f"mma-loop-branches {branches} mma-gap {gap} around {around} step-xu {xu} step-global {memory}"
                       + (" :: " + "; ".join(reds) if reds else ""))
     return ok, "\n".join(report)
 

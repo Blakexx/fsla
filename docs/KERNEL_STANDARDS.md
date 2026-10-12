@@ -921,6 +921,40 @@ sustained DRAM peak on the RTX 3080 Ti (1.04x), so the DRAM floor is reachable; 
 calibrated MMA rate (§22), its probe row owed with the first MMA kernel's row. OWED: per-phase issue and eligible
 warps in the phase ledger, so item 4 gates per phase rather than per kernel.
 
+## §29 — EVERY INSTRUCTION IS BUDGETED BY CLASS BEFORE CODE, AND HOISTED BY FREQUENCY (law, 2026-10-11, from Blake's "is there any kind of linting / sass checks we can add to stop us from writing such bad code? ... we do not take a standard analytical / deterministic approach to writing kernels when i feel the patterns are quite easy to formalize")
+The readout lab (`read_image`) ran 18.7 instructions an MMA where its design needs about 9: each panel add
+recomputed its token's row address and its pad select (~5 an MMA), every output converted on the conversion unit
+(F2I) where one FFMA does it, and each digit's bookkeeping recomputed per use. Each was found after the fact by reading
+counts; none was budgeted before the code, and the lessons were relearned after every context compaction. So the
+method is a procedure with a gate, not a memory.
+1. BEFORE CODE, A BUDGET BY OPCODE CLASS: the step's operation count per MMA in `tools/sass.py`'s classes (mma, shared
+   load, shared store, shared atomic, global, shuffle, pack, conversion unit, float, select/compare, integer/address,
+   control), derived from the design at the declared regime: per step, plus each per-digit (per-list) and per-window
+   cost divided by the steps it amortizes over there (at alt-k4 a read digit is one step a window, so its bookkeeping
+   lands on every step). The lab states it with `Bench::budget`; a production component in `tools/budgets/<kernel>.json`.
+2. HOIST BY FREQUENCY: every value is computed at the outermost level its inputs allow -- once a kernel (a lane's
+   fragment offsets), a window, a digit or list, a token, a step, an element -- and never again below it.
+3. AN ADDRESS IS A BASE PLUS A COMPILE-TIME OFFSET: the base computed once at its level (a token's panel row, a
+   digit's plane), each access an immediate or one add; a swizzle is folded into the base (§3) or applied by one XOR
+   with a lane constant.
+4. PADDING IS ROUTED BY A BASE, ONCE: a pad token's base is the lane's dummy row, chosen once a token a step; never a
+   select per element or per access (with §27.1: never a branch).
+5. THE FACTS PASS EMITS THE STEP'S FINAL FORM: what a step consumes per entry (a pool row's byte offset with its
+   swizzle folded in, a panel row's offset, the coefficient in the operand's format) is computed once by the producer,
+   not per use by the consumer.
+6. CONVERSIONS RUN ON THE FMA PIPE: an fp32 to integer conversion is one FFMA adding 1.5 x 2^23 (the rounded integer
+   in the low bits), a pair packed by one PRMT; the conversion unit (F2I/I2F/F2F/MUFU, 16 lanes a cycle an SM) never
+   in a step. Shared-memory f16x2 atomic adds are a compare-and-swap loop before sm_90 (`ATOMS.CAST.SPIN`): never.
+7. GLOBAL MEMORY NEVER IN A STEP: a step's operands are staged ahead by `cp.async` (LDGSTS); a reduction to global
+   memory is a drain outside the steps.
+ENFORCED: `tools/lab.py run` reads each budgeted kernel's executed instructions by class (ncu's per-opcode counts),
+prints them against the budget, and refuses to record a variant over it (`--force` to record a known-over variant on
+purpose). `tools/sass_gate.py` reds, on every function of every build, conversion-unit instructions and global
+accesses other than `cp.async` inside an innermost MMA loop; the kernels built before the rule are its named debts
+(the intra's F2I epilogue, the produce kernel's unstaged operands, the fold's past-16 records), each with what
+replaces it, and the list only shrinks; a lab variant that keeps one on purpose declares STEP_XU or STEP_GLOBAL.
+Measured: `read_image` (docs/internals/tools/lab.md#read-image).
+
 ## CONSTITUTION addendum (Blake, 2026-10-10): R22 — DEGRADE SMOOTHLY, SCALE, PARTITION INTO INDEPENDENT UNITS
 
 Blake: "my concern is any kernel design that 'spills' at some threshold rather than just cleanly degrading. How things

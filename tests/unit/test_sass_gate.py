@@ -1,9 +1,10 @@
 """The SASS gate (`tools/sass_gate.py`) on compiled probes: a clean kernel, one whose runtime-indexed local array must
 go to local memory, one whose shuffle sits in a loop ptxas cannot prove warp-uniform (a convergence subroutine), and
-one whose division calls its slow path (a call that is not one) -- the gate's reds are what it reads, proven on a cubin
-that has them.
+one whose division calls its slow path (a call that is not one), and two whose MMA loops convert on the conversion unit
+or read global memory (§29's step lints) beside one that converts on the FMA pipe and stages by `cp.async` -- the
+gate's reds are what it reads, proven on a cubin that has them.
 
-See KERNEL_STANDARDS §20.
+See KERNEL_STANDARDS §20, §29.
 """
 from __future__ import annotations
 
@@ -36,6 +37,32 @@ __global__ void converge_probe(float* y, const int* n) {
 }
 
 __global__ void divide_probe(float* y, const float* x) { y[threadIdx.x] = x[threadIdx.x] / y[threadIdx.x + 32]; }
+
+__device__ __forceinline__ void mma(float (&d)[4], unsigned a, unsigned b) {
+  asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%4,%4,%4}, {%5,%5}, {%0,%1,%2,%3};"
+               : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]) : "r"(a), "r"(b));
+}
+
+//: a step loop: an MMA, its outputs converted to s16 and stored; `XU` converts on the conversion unit (F2I), else on
+//: the FMA pipe; `GLOBAL` reads its operand from global memory inside the step, else from shared memory
+template <bool XU, bool GLOBAL>
+__device__ void step_loop(int* y, const unsigned* x, int n) {
+  __shared__ unsigned s[256];
+  s[threadIdx.x] = x[threadIdx.x];
+  __syncthreads();
+  float d[4] = {};
+  int out = 0;
+  for (int i = 0; i < n; ++i) {
+    const unsigned a = GLOBAL ? x[i * 32 + threadIdx.x] : s[(i + threadIdx.x) & 255];
+    mma(d, a, a ^ i);
+    out += XU ? __float2int_rn(d[0]) : static_cast<int>(__float_as_uint(fmaf(d[0], 1.0f, 12582912.0f)) & 0xffff);
+  }
+  y[threadIdx.x] = out;
+}
+
+__global__ void step_xu_probe(int* y, const unsigned* x, int n) { step_loop<true, false>(y, x, n); }
+__global__ void step_global_probe(int* y, const unsigned* x, int n) { step_loop<false, true>(y, x, n); }
+__global__ void step_clean_probe(int* y, const unsigned* x, int n) { step_loop<false, false>(y, x, n); }
 """
 
 
@@ -58,6 +85,19 @@ def test_the_gate_passes_the_clean_kernel_and_reds_local_memory(cubin):
     assert not clean["reds"], report
     assert local["stack"] > 0 and local["ldl"] > 0, report
     assert any("stack frame" in r for r in local["reds"]) and not ok
+
+
+def test_the_step_lints_red_the_conversion_unit_and_global_memory_in_an_mma_loop(cubin):
+    """§29: F2I inside an MMA loop and a global load inside one are red; the FMA-pipe conversion over shared memory is
+    clean."""
+    ok, report = sass_gate.gate(cubin, None, None)
+    xu = next(v for k, v in sass_gate.STATS.items() if "step_xu_probe" in k)
+    memory = next(v for k, v in sass_gate.STATS.items() if "step_global_probe" in k)
+    clean = next(v for k, v in sass_gate.STATS.items() if "step_clean_probe" in k)
+    assert xu["step_xu"] > 0 and any("conversion unit" in r for r in xu["reds"]), report
+    assert memory["step_global"] > 0 and any("global memory" in r for r in memory["reds"]), report
+    assert clean["step_xu"] == 0 and clean["step_global"] == 0 and not clean["reds"], report
+    assert not ok
 
 
 def test_a_narrowing_that_matches_nothing_is_red(cubin, capsys, monkeypatch):

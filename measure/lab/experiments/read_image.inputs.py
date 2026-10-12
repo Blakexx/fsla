@@ -8,7 +8,10 @@ then the slots `[windows][width][512]` u16 (a read list holds slots only: a toke
 the pass starts `[windows][width][8]` u16 and the unions' counts `[windows][groups]` u16. `ordered.bin` is the same
 lists with each digit's entries in a 256-slot readout pass (two of the facts pass's) dealt round-robin by residue mod 8
 (a slot's bank group in the pool and the panel), so its 8-entry groups fall on distinct banks where its residues
-allow; the facts pass orders them the same way within its own 128-slot passes.
+allow; the facts pass orders them the same way within its own 128-slot passes. `offsets.bin` is `ordered.bin`'s
+entries in the form the facts pass would emit for the readout, u32 `[windows][width][512]`: the pool row's byte offset
+with its swizzle folded in (`(slot % 256) * 64 + 16 * ((slot >> 1) & 3)`) low, the panel row's byte offset plus one
+(zero marks no entry) high.
 """
 from __future__ import annotations
 
@@ -52,5 +55,10 @@ def write(directory: Path) -> list[str]:
                 dealt = [b[j] for j in range(max(map(len, buckets), default=0)) for b in buckets if len(b) > j]
                 ordered[w, d, begin:end] = dealt
     (directory / "ordered.bin").write_bytes(header + ordered.tobytes() + body[1] + body[2])
+    import numpy as np
+
+    row = ordered.astype(np.uint32) & 255
+    offsets = (row * 64 + 16 * ((row >> 1) & 3)) | ((row * 80 + 1) << 16)
+    (directory / "offsets.bin").write_bytes(offsets.astype(np.uint32).tobytes())
     torch.cuda.empty_cache()
-    return ["read.bin", "ordered.bin"]
+    return ["read.bin", "ordered.bin", "offsets.bin"]

@@ -279,6 +279,18 @@ class Bench {
         escaped.c_str(), op.c_str(), cmp, count);
   }
 
+  //: THE INSTRUCTION BUDGET (KERNEL_STANDARDS section 29): a kernel whose demangled name matches `kernel` executes at
+  //: most `max` instructions of opcode class `cls` (`tools/sass.py`'s `OPCODE_CLASSES`) per tensor-pipe instruction,
+  //: stated from the design's operation count before its code; `tools/lab.py run` reads the executed counts (ncu) and
+  //: refuses to record a variant over it
+  void budget(const std::string& kernel, const char* cls, double max) const {
+    if (!expect_only) return;
+    std::string escaped;
+    for (char c : kernel) escaped += c == '\\' ? std::string("\\\\") : std::string(1, c);
+    std::printf("{\"lab\": \"budget\", \"kernel\": \"%s\", \"class\": \"%s\", \"max\": %.3f}\n", escaped.c_str(),
+                cls, max);
+  }
+
   //: the per-(block, warp) cycles of the last launch, `warps` a block
   std::vector<long long> cycles(int warps) const {
     std::vector<long long> h(static_cast<size_t>(sms) * warps);

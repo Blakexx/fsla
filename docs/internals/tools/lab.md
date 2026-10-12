@@ -835,11 +835,25 @@ only, a declared warp-uniform branch choosing the form) and no barrier at the pa
 | ordered, FMA conversion | 1.65x | 2.17x | 18.7 (none) |
 | ordered, FMA conversion, no pass barrier | 1.48x | | 18.8 |
 | dense, FMA conversion | | 1.12x | 12.1 |
+| ordered, FMA conversion, a token's panel base once | 1.60x | 2.12x | 16.2 |
+| the same, free-running | 1.44x | | |
+| ordered, FMA conversion, facts-form entries (byte offsets, swizzle folded), heads path at compile time | 1.77x | 2.27x | 12.9 |
+| the same, free-running | 1.46x | | |
+| dense, a token's panel base once | | 1.12x | 9.6 |
 
 Ordering moves conflicts 1.76 -> 1.65 an MMA only: a digit's ~8 tokens collide on residues with no ninth to deal.
 Half steps save ~0.8 wavefronts an MMA but their branch costs sm_86 more. What remains at alt-k4 is the output path
 (the box's 32 lists make each MMA 64 output values, each a conversion and half an add, half of them padding rows'
 at alt-k4) and each window's chain with ~4 steps a warp (tensor pipe idle ~38% with the MMAs alone).
+
+The facts-form variants state their instruction budget by opcode class (KERNEL_STANDARDS §29; `Bench::budget`, gated
+by `tools/lab.py run` on ncu's executed counts): the step itself now matches its operation count (an entry load,
+three shuffles, four address operations, two read-row loads, 8 MMAs, 16 FFMAs, 8 PRMTs, two panel bases, 8 adds),
+and the gate holds the rest over budget -- integer/address 4.3 an MMA against 1.8, shared loads 1.45 against 1.15,
+select/compare 0.85 against 0.4: each digit's 64-bit list row computed on the common path, each lane's state offsets
+rematerialized a digit, the heads' 64-bit copies a window. On sm_86 the facts form's per-digit choice of heads or
+global path (a branch in the straight-line block) costs more than its 3.3 fewer instructions an MMA save; the count
+is A100's limit, the block structure sm_86's.
 
 Record: `measure/lab/results/read_image/sm_86.json`.
 

@@ -132,7 +132,7 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
     """Every expectation the experiment declares, no local memory and no undeclared convergence call anywhere: the
     failures, empty when it may run."""
     lines = subprocess.run([str(binary), "--expect"], capture_output=True, text=True, check=True).stdout
-    expected = [json.loads(line) for line in lines.splitlines()]
+    expected = [e for e in map(json.loads, lines.splitlines()) if e["lab"] == "expect"]
     failures = []
     for e in expected:
         hits = [k for k in table if re.search(e["kernel"], k)]
@@ -145,16 +145,84 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
                 failures.append(f"{k}: {e['op']} {n}, expected {e['cmp']} {e['count']}")
     declared_calls = {k for e in expected for k in table if re.search(e["kernel"], k) and "CALL" in e["op"]}
     declared_branches = {k for e in expected for k in table if re.search(e["kernel"], k) and e["op"] == "BSSY"}
+    declared = {op: {k for e in expected for k in table if re.search(e["kernel"], k) and e["op"] == op}
+                for op in ("STEP_XU", "STEP_GLOBAL")}
     for k, sig in signatures(binary).items():
         if sig["ldl"] or sig["stack"]:
             failures.append(f"{k}: local memory ({sig['ldl']} LDL/STL, a {sig['stack']}-byte stack frame)")
         if sig["mma_loop_branches"] and k not in declared_branches:
             failures.append(f"{k}: {sig['mma_loop_branches']} branches inside an MMA step nobody declared "
                             "(KERNEL_STANDARDS 27: a step body is one basic block; a form that keeps them declares BSSY)")
+        if sig["step_xu"] and k not in declared["STEP_XU"]:
+            failures.append(f"{k}: {sig['step_xu']} conversion-unit instructions inside an MMA step nobody declared "
+                            "(KERNEL_STANDARDS 29: convert on the FMA pipe; a form that keeps them declares STEP_XU)")
+        if sig["step_global"] and k not in declared["STEP_GLOBAL"]:
+            failures.append(f"{k}: {sig['step_global']} global accesses inside an MMA step nobody declared "
+                            "(KERNEL_STANDARDS 29: stage by cp.async; a form that keeps them declares STEP_GLOBAL)")
         if sig["calls"] and k not in declared_calls:
             failures.append(f"{k}: {sig['calls']} convergence calls nobody declared (a collective under "
                             "role-dependent control flow becomes a call into a convergence subroutine)")
     return failures
+
+
+def budgets(binary: Path) -> list[dict]:
+    """The instruction budgets the experiment states (`Bench::budget`): kernel regex, opcode class, max per MMA."""
+    lines = subprocess.run([str(binary), "--expect"], capture_output=True, text=True, check=True).stdout
+    return [e for e in map(json.loads, lines.splitlines()) if e["lab"] == "budget"]
+
+
+def _plain(name: str) -> str:
+    """A kernel's name as both demanglers can agree on it: no return type, namespaces, casts or parameters."""
+    name = re.sub(r"^void\s+", "", name)
+    name = name[:name.index(">(") + 1] if ">(" in name else name.split("(")[0]
+    return re.sub(r"\s+", "", re.sub(r"\((int|bool|unsigned int|long)\)", "", re.sub(r"\b\w+::", "", name)))
+
+
+def executed_classes(binary: Path, extra: list[str]) -> dict[str, dict[str, float]]:
+    """Per kernel (`_plain` name), each opcode class's executed instructions per tensor-pipe instruction (ncu's
+    per-opcode counts over one repetition, the first launch of each kernel)."""
+    out = subprocess.run([dev_config.get("toolchain.ncu"), "--metrics",
+                          "sass__inst_executed_per_opcode,sm__inst_executed_pipe_tensor_op_hmma.sum",
+                          "--print-metric-instances", "details", "--csv", str(binary), "--reps", "1", *extra],
+                         capture_output=True, text=True, check=True).stdout
+    lines = out.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith('"ID"'))
+    seen: dict[str, dict[str, str]] = {}
+    for row in csv.DictReader(lines[start:]):
+        seen.setdefault(_plain(row["Kernel Name"]), {}).setdefault(row["Metric Name"], row["Metric Value"])
+    found = {}
+    for k, m in seen.items():
+        mma = float(m["sm__inst_executed_pipe_tensor_op_hmma.sum"].replace(",", ""))
+        per: dict[str, float] = {}
+        for op, n in re.findall(r"([A-Z][A-Z0-9_]*)\s*[:=]\s*([0-9.]+)", m["sass__inst_executed_per_opcode"]):
+            per[sass.opcode_class(op)] = per.get(sass.opcode_class(op), 0.0) + float(n) / max(mma, 1.0)
+        found[k] = per
+    return found
+
+
+def over_budget(binary: Path, table: dict[str, dict], extra: list[str]) -> list[str]:
+    """KERNEL_STANDARDS section 29: each budgeted kernel's executed instructions per MMA by class against its stated
+    budget, printed; the classes over it."""
+    stated = budgets(binary)
+    if not stated:
+        return []
+    measured = executed_classes(binary, extra)
+    over = []
+    for k in table:
+        mine = [b for b in stated if re.search(b["kernel"], k)]
+        if not mine:
+            continue
+        per = measured.get(_plain(k), {})
+        print(f"  budget, instructions an MMA: {k[:110]}")
+        for b in mine:
+            got = per.get(b["class"], 0.0)
+            #: a slack for once-a-kernel setup and rounding: 3% and 0.02 an MMA
+            flag = "OVER" if got > b["max"] * 1.03 + 0.02 else "ok"
+            print(f"    {b['class']:<16} {got:6.2f}  budget {b['max']:6.2f}  {flag}")
+            if flag == "OVER":
+                over.append(f"{k[:80]}: {b['class']} {got:.2f} > {b['max']:.2f}")
+        print(f"    {'total':<16} {sum(per.values()):6.2f}")
+    return over
 
 
 def quiet() -> int:
@@ -257,6 +325,11 @@ def run(name: str, reps: int, record: bool, force: bool) -> int:
 
     device, results = execute(binary, reps, extra)
     report(name, arch, device, results, reps)
+    over = over_budget(binary, table, extra)
+    if over and not force:
+        print(f"lab: {name} OVER ITS INSTRUCTION BUDGET, not recorded (--force to record anyway):", *over,
+              sep="\n  ")
+        return 1
     target = keep(name, arch, device, results, table, reps, utilization, record, digests)
     print(f"lab: recorded {target.relative_to(ROOT) if record else target}")
     return 0
