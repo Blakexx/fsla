@@ -950,39 +950,52 @@ ran low on the votes and per-list bookkeeping (select 1.07 against 0.59, integer
 and the form is not taken. Record: `measure/lab/results/fold_publish/sm_86.json`.
 
 <a id="digit-box"></a>
-### `digit_box`, `digit_box32`
+### `digit_box`, `digit_box32`, `list_box`
 
-A box of 32 lists x 16 digits x 32 channels, whose 32 KB image fits sm_86 whole beside the rest (99 KB with the fold's
-values and heads). The hand-off is `fold_publish`'s: readout, a named barrier, the fold storing each list's rows as its
-last step lands, a named barrier. The image has 16 digit planes of [list][32 channels], 16-byte units swizzled
-`(4 list + (c ^ s(list))) ^ (digit & 7)`, so both the stores and the loads are conflict-free.
+Which box keeps the carry's hand-off from the fold's warps to the readout's cheapest on sm_86 (99 KB of shared
+memory). The candidates:
+- 32 lists x 16 digits (`digit_box`), its whole image resident (32 KB);
+- 16 lists x 32 digits (`list_box`), its whole image resident (32 KB);
+- 32 x 32 (`digit_box32`), its 64 KB image in two parts, since the whole does not fit beside the rest.
 
-The readout is `read_image.cu`'s 32-channel tokens-on-N form over 2 digits a warp, on the read lists re-ranked per
-16-digit half (`digit_box.inputs.py`). The fold stand-in carries the fold's shared traffic over the box's 32 lists,
-which are the 32-digit box's write lists, so both digit boxes fold the same tokens. Each step does:
-- an entry;
-- the write rows over the box's 16 digits by `ldmatrix.x2.trans`;
-- the 32 channels' values by `ldmatrix.x4.trans`;
-- the coefficients by HMUL2, and 4 m16n8k8 MMAs.
+All three are one file, `digit_box.cu`, built per shape. The readout is `read_image.cu`'s 32-channel tokens-on-N form;
+at 16 lists it takes one k-tile on 32-byte read rows, and each list box adds its partial output. The fold stand-in
+carries the fold's shared traffic: per step an entry, the write rows by `ldmatrix.trans`, the values from a zero row
+(addressed as a real row), the coefficients, and m16n8k8 MMAs. Both skip a digit with no readers and a list with no
+writes. The image's 16-byte units are swizzled `(4 list + (c ^ s(list))) ^ (digit & 7)`, so stores and loads are both
+conflict-free.
 
-`digit_box32.cu` builds the same file at 32 digits for the reference, on a static image only, since its whole image
-cannot fit beside the rest on sm_86. All checked outputs are exact.
+The hand-offs:
+- RESIDENT: the readout, a named barrier, the fold storing each list it folded as its last step lands, a named
+  barrier. A list with no writes keeps its rows.
+- TWO-PART: the fold, then for each half of the digits a barrier, the half's stores (every list), a barrier, its
+  readout.
 
-| sm_86, alt-k4 | 16-digit box, a CTA-window | 32-digit box, a CTA-window |
+Two cells (`*.inputs.py`): nl64k-alt-k4 as drawn, and the same with each entry kept with probability 1/16, so lists
+average ~0.5 writes a window. The thinned cell emulates ~1M leaves for the same fan-out (no central cell is that
+large): a box's state, and so its transfer, keeps its size while its work drops 16x. All checked outputs are exact.
+
+Per 512 tokens over 32 lists x 32 digits x 32 channels (two CTA-windows for a halved box), sm_86:
+
+| | alt-k4 | thinned 1/16 |
 |---|---|---|
-| a static image, free-running | 2208 | 3562 |
-| the hand-off | 3200 | (does not fit) |
-| the readout alone | 1067 | 1985 |
-| the fold alone | 1234 | 1726 |
+| 32 x 32, a static image (no transfer: the ideal) | 3929 | 1694 |
+| 32 x 32, the two-part hand-off | 5926 (1.51x) | 3475 (2.05x) |
+| 32 x 16, a static image / the resident hand-off | 5025 / 6795 (1.73x) | 2302 / 3736 (2.21x) |
+| 16 x 32, a static image / the resident hand-off | 5080 / 6700 (1.71x) | 2326 / 3720 (2.20x) |
 
-Per 512 tokens over 32 digits and 32 channels, the costs against the 32-digit box's 3562 (1.00x):
-- two 16-digit boxes, free-running: 4416 (1.24x);
-- two 16-digit boxes with the hand-off: 6400 (1.80x).
+Residency does cut the hand-off itself:
+- alt-k4: 1.62K-1.77K against the two parts' 2.0K;
+- thinned: 1.39K-1.43K against 1.78K (unwritten lists store nothing).
 
-The readout splits well: 2 x 1067 against 1985, +7%, since gathers stay one per entry and the read union halves. The
-fold does not: 2 x 1234 against 1726, +43%, since each write token's values are loaded in both boxes and a step's fixed
-work spreads over 4 MMAs instead of 8. The hand-off adds 0.99K a CTA-window (+45%): two barriers on half the work
-each. Records: `measure/lab/results/digit_box/sm_86.json`, `measure/lab/results/digit_box32/sm_86.json`.
+But a halved box costs 28-37% before any transfer:
+- 32 x 16: the fold loads each write token's values in both digit boxes (fold 2 x 1470 against 1939);
+- 16 x 32: the readout runs each entry in both list boxes and adds its partial twice (readout 2 x 1577 against 2128).
+
+So the two-part 32 x 32 is the cheapest at both cells. The transfer outweighs the work at the thinned cell (1.78K
+against 1.69K): it scales with the state, not the writes, and its two barriers a window stay. Records:
+`measure/lab/results/digit_box/sm_86.json`, `measure/lab/results/digit_box32/sm_86.json`,
+`measure/lab/results/list_box/sm_86.json`.
 
 <a id="mma-k8"></a>
 ### `mma_k8`

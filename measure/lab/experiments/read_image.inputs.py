@@ -63,8 +63,38 @@ def lists(windows: int) -> tuple:
     return tuple(x[0].cpu().numpy().astype(np.int64) for x in (side.slot, side.at, side.count))
 
 
-def _row(slot: int) -> int:
-    return slot * 64 + 16 * ((slot >> 1) & 3)
+def _row(slot: int, row_bytes: int = 64) -> int:
+    """A pool row's byte offset, its 16-byte chunks swizzled so a phase's 8 rows on distinct residues are 8 bank
+    groups: 64-byte rows by `(slot >> 1) & 3`, 32-byte rows by `(slot >> 2) & 1`."""
+    if row_bytes == 64:
+        return slot * 64 + 16 * ((slot >> 1) & 3)
+    return slot * 32 + 16 * ((slot >> 2) & 1)
+
+
+def select(slots, at, digits: int, keep: float = 1.0, seed: int = 0) -> tuple:
+    """Read lists for boxes of `digits` digits, each entry kept with probability `keep` (a box of the same state with
+    fewer writes, as at more leaves for the same fan-out): each box-window's union re-ranked compactly; returns
+    (slots, at, count) in `emit`'s form."""
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    windows, width, cap = slots.shape
+    out = np.zeros_like(slots)
+    out_at = np.zeros_like(at)
+    count = np.zeros((windows, width // digits), np.int64)
+    for w in range(windows):
+        for b in range(width // digits):
+            rows = range(digits * b, digits * b + digits)
+            kept = {}
+            for d in rows:
+                span = [int(x) for x in slots[w, d, at[w, d, 0]:at[w, d, -1]]]
+                kept[d] = [x for x in span if keep >= 1.0 or rng.random() < keep]
+            rank = {x: i for i, x in enumerate(sorted({x for d in rows for x in kept[d]}))}
+            count[w, b] = len(rank)
+            for d in rows:
+                out[w, d, :len(kept[d])] = [rank[x] for x in kept[d]]
+                out_at[w, d, 1:] = len(kept[d])
+    return out, out_at, count
 
 
 def color(digits: list[list[int]], count: int) -> tuple[dict[int, int], int]:
@@ -109,10 +139,11 @@ def place(span: list[int]) -> list[tuple[int, bool]]:
 
 
 def emit(directory: Path, slots, at, count, pass_slots: int, planes: int, head: int, plane_bytes: int = PLANE_BYTES,
-         pitch: int = PANEL_PITCH, channels: int = 32, balanced: bool = False, digits: int = 32) -> list[str]:
+         pitch: int = PANEL_PITCH, channels: int = 32, balanced: bool = False, digits: int = 32,
+         row_bytes: int = 64) -> list[str]:
     """Write the files for a `pass_slots`-slot readout pass over `planes` image planes of `plane_bytes` with HEAD
-    entries a digit staged, `channels` a box (panel rows `pitch` bytes), from read lists whose every box's union fits
-    one pass (a digit's entries `slots[w, d, at[w, d, 0]:at[w, d, -1]]`)."""
+    entries a digit staged, `channels` a box (panel rows `pitch` bytes) and pool rows of `row_bytes` past the planes,
+    from read lists whose every box's union fits one pass (a digit's entries `slots[w, d, at[w, d, 0]:at[w, d, -1]]`)."""
     import bank_model
     import numpy as np
 
@@ -135,7 +166,7 @@ def emit(directory: Path, slots, at, count, pass_slots: int, planes: int, head: 
     body = colored.astype(np.uint16).tobytes() + at.astype(np.uint16).tobytes() + extent.astype(np.uint16).tobytes()
     (directory / "read.bin").write_bytes(header + body)
     pool = planes * plane_bytes
-    lane_base = pool + pass_slots * 64
+    lane_base = pool + pass_slots * row_bytes
     panel_rows = DUMMY_ROWS + 8 * pitch
     model: dict[str, dict[str, float]] = {"colored": {"digits of at most 8 tokens on distinct residues":
                                                       clean / small}}
@@ -150,25 +181,25 @@ def emit(directory: Path, slots, at, count, pass_slots: int, planes: int, head: 
         for w in range(windows):
             for d in range(width):
                 placed = place([int(x) for x in colored[w, d, at[w, d, 0]:at[w, d, -1]]])
-                steps = max(1, -(-len(placed) // per))
+                steps = -(-len(placed) // per)
                 tag = (steps | (steps * per > head) << 8 | d % digits << 9) << 16
                 placed += [(r, True) for _ in range(steps * per // 8 + 2) for r in range(8)]
                 for e in range(max(steps * per, head)):
                     s, pad = placed[e]
                     field = (DUMMY_ROWS if pad else panel_rows) + pitch * s - FOLD[form](e)
                     word = field << 16 | (0 if pad else COEFFICIENT[(s ^ d) & 1])
-                    entries[w, d, e] = (pool + _row(s) | tag, word)
+                    entries[w, d, e] = (pool + _row(s, row_bytes) | tag, word)
                 block = heads[w, d // digits, d % 8]
                 i = d % digits // 8
                 block[2 * head * i:2 * head * (i + 1)] = entries[w, d, :head].reshape(-1)
-                mmas += steps * (8 if form == "m" else 4)
-                cost["state"] += 16
+                mmas += steps * (channels // 8 if form == "m" else channels // 16) * (row_bytes // 32)
+                cost["state"] += channels // 2 * row_bytes // 64
                 for k in range(steps):
                     step = [(int(entries[w, d, per * k + e, 0]) & 0xFFFF, int(entries[w, d, per * k + e, 1]) >> 16)
                             for e in range(per)]
                     cost["entries"] += bank_model.wavefronts([8 * (lane % per) for lane in range(32)], 8)
                     if form == "m":
-                        for kb in range(2):
+                        for kb in range(row_bytes // 32):
                             cost["gathers"] += bank_model.ldmatrix(
                                 [[step[8 * (q & 1) + r][0] ^ 16 * (2 * kb + (q >> 1)) for r in range(8)]
                                  for q in range(4)])
@@ -179,7 +210,7 @@ def emit(directory: Path, slots, at, count, pass_slots: int, planes: int, head: 
                                      for lane in range(32)], 4)
                     else:
                         cost["gathers"] += bank_model.ldmatrix([[step[r][0] ^ 16 * q for r in range(8)]
-                                                                for q in range(4)])
+                                                                for q in range(row_bytes // 16)])
                         for par in range(2):
                             for m in range(channels // 16):
                                 cost["adds"] += bank_model.wavefronts(

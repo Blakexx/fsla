@@ -24,7 +24,11 @@ constexpr int kWarps = 8, kThreads = 32 * kWarps;
 #ifndef READ_IMAGE_DIGITS
 #define READ_IMAGE_DIGITS 32
 #endif
-constexpr int kLists = 32, kDigits = READ_IMAGE_DIGITS, kChannels = READ_IMAGE_CHANNELS;
+//: the box's lists: 32, or 16 where `list_box.cu` builds this file (the read rows 32 bytes)
+#ifndef READ_IMAGE_LISTS
+#define READ_IMAGE_LISTS 32
+#endif
+constexpr int kLists = READ_IMAGE_LISTS, kDigits = READ_IMAGE_DIGITS, kChannels = READ_IMAGE_CHANNELS;
 //: a readout pass's slots: 256 (sm_86's), or 512 (sm_80's) where `read_w1024.cu` builds this file for W = 1024
 #ifndef READ_IMAGE_SLOTS
 #define READ_IMAGE_SLOTS 256
@@ -35,8 +39,8 @@ constexpr int kListCap = 512, kListAt = 8, kSlots = READ_IMAGE_SLOTS, kWords = k
 constexpr int kPanelPitch = kChannels == 32 ? 20 : 12;
 //: the image's planes (a plane's access pattern is all a digit's reads see) and a digit's entries staged: 16 and 16, or
 //: 4 and 32 beside a 512-slot pass (so the counts fit sm_86)
-constexpr int kPlanes = kChannels == 16 ? 32 : kSlots == 512 ? 4 : 16, kHead = kSlots == 512 ? 32 : 16;
 constexpr int kPlaneBytes = kLists * kChannels * 2, kRowBytes = kLists * 2;
+constexpr int kPlanes = (kSlots == 512 ? 8192 : 32768) / kPlaneBytes, kHead = kSlots == 512 ? 32 : 16;
 //: THE LAYOUT the entries are emitted against (`read_image.inputs.py` mirrors it): image, pool, the lanes' pad bases
 //: (128 bytes, never themselves touched), 8 dummy panel rows (a pad's add lands on its residue's, the banks a real row
 //: of that residue would use), panel, heads
@@ -308,11 +312,11 @@ inline double floor_of(const HostLists& h, int form, bool dense, bool free) {
   return total / (static_cast<double>(h.windows) * boxes);
 }
 
-//: THE CHECK's reference: a live (token, digit) add is 32 lists x 0.0625 x (-/+ 0.0625) x the coefficient, -/+ 32 a
-//: channel at the unit 256 (even channels negative), times m = 1 + ((slot ^ digit) & 1) for the lists' coefficients
-//: (1 dense); a panel word holds channels (2k, 2k + 1) on M and (16 (k / 8) + k % 8, + 8) on N as hi x 2^16 + lo, so a
-//: slot's word is its sum of m times one add's word, mod 2^32 -- OUT 1, a CTA's panel summed over its windows; OUT 2,
-//: a window-pass's drain summed over the CTAs
+//: THE CHECK's reference: a live (token, digit) add is the box's lists x 0.0625 x (-/+ 0.0625) x the coefficient, -/+
+//: the lists' count a channel at the unit 256 (even channels negative), times m = 1 + ((slot ^ digit) & 1) for the
+//: lists' coefficients (1 dense); a panel word holds channels (2k, 2k + 1) on M and (16 (k / 8) + k % 8, + 8) on N as
+//: hi x 2^16 + lo, so a slot's word is its sum of m times one add's word, mod 2^32 -- OUT 1, a CTA's panel summed over
+//: its windows; OUT 2, a window-pass's drain summed over the CTAs
 struct Reference {
   const HostLists* h;
   int sms;
@@ -325,7 +329,7 @@ struct Verdict {
 
 inline uint32_t one_add(int form, int k) {
   const int lo = form == 0 ? 2 * k : 16 * (k >> 3) + (k & 7), hi = form == 0 ? lo + 1 : lo + 8;
-  const auto v = [](int ch) { return static_cast<uint32_t>(ch & 1 ? 32 : -32); };
+  const auto v = [](int ch) { return static_cast<uint32_t>(ch & 1 ? kLists : -kLists); };
   return v(hi) * 65536u + v(lo);
 }
 
@@ -359,7 +363,7 @@ Verdict verify(const Reference& ref, const Lists& ls) {
     for (int c = 0; c < ref.sms; ++c) {
       std::vector<uint32_t> m(kSlots, 0);
       for (int w = 0; w < windows; ++w)
-        for (int p = 0; p < (DENSE ? 2 : 1); ++p) live(w, c % boxes, m);
+        for (int p = 0; p < (DENSE ? 2 : 1); ++p) live(w, c % (boxes * (32 / kLists)) / (32 / kLists), m);
       compare(m, &got[static_cast<size_t>(c) * kSlots * kWords]);
     }
   } else {
