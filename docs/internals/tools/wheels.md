@@ -1,6 +1,6 @@
 # `tools/wheels.py` — the two wheels
 
-Mirrors `tools/wheels.py`. It turns one gate build of a clean commit into the two distributions of wheel naming D
+Mirrors `tools/wheels.py`. It turns one gate build of a clean commit into the two distributions
 ([`../../build.md#wheels`](../../build.md#wheels)): `rola`, pure Python, and `rola-cu13`, the binary plugin.
 
 ## The build

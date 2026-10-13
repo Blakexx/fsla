@@ -3,7 +3,7 @@
 Mirror of `rola/engine/rules/`. This page explains WHY the layer exists and how its folds
 connect to the DAGs; the code is the authoritative statement of what each one decides.
 
-Symbols: `C` chunk tokens, `BC` owner block, `D` routing depth, `B` uniform level
+Symbols: `BC` the carry's box in leaves, `D` routing depth, `B` uniform level
 width, `d_v` value width, `N` leaf count, `R`/`W`/`S` the liveness byte's read, write
 and state bits.
 
@@ -14,10 +14,9 @@ and state bits.
 > of them recomputes a fact, and none of them may issue a launch.
 
 The layer exists because those two kinds of statement have different costs, different
-tests and different failure modes, and every one of these folds used to live inline at
-the site that needed it — a preference order in the chunk seam, an envelope split
-across two modules, a truth table in CUDA C++. Inline, none of them could be read as a
-set, and none could be exercised without a device.
+tests and different failure modes. A fold left inline at the site that needs it — a
+preference order in a seam, an envelope split across two modules, a truth table in CUDA
+C++ — cannot be read as a set with the others, and cannot be exercised without a device.
 
 | rule | reads | decides |
 |---|---|---|
@@ -70,19 +69,17 @@ allocates nothing — so `rule` declares it so, and a rule on a captured recipe 
 further argument.
 
 Two of the folds are not in a DAG tuple, and each for a stated reason rather than
-by oversight (`backward_envelope` and `retention` left with the K31 deletion
-batch's reverse pass; baseline = tag `baseline/pre-k31`):
+by oversight:
 
 * `prefill_envelope` / `envelope` are composed
   by `facts/call.py`'s `envelope_refusal` and `require_envelope`, which
   `validate_context` calls BEFORE the walk's first node so that no refusal can
-  arrive with the operands already consumed ([`engine.md` §7](engine.md#refusals)).
+  arrive with the operands already consumed ([`engine.md` §8](engine.md#refusals)).
   Placing them in the tuple would move a refusal after work. The composition is an
   ADAPTER and lives with the adapters: it reads a bundle rather than folding declared
   fact values, so it carries no `rule` marker and could not live here (§2).
-* `run_table` is in NO tuple: its one consumer, the chunk consumer, is deleted, and the
-  carry port decides whether the rebuilt carry takes it as its sweep predicate
-  ([`#run-table`](#run-table)).
+* `run_table` is in NO tuple: no kernel takes the skip table as a launch argument
+  ([`#run-table`](#run-table)); the rebuilt carry has no state I/O yet.
 
 ## <a id="derive-never-author"></a>4. Derive; never hand-author the derived artefact
 
@@ -129,7 +126,10 @@ kernel keeps working for whatever it returns.
 `carve` is the rule: the expert's pinned carve (`PlanOverrides.carve`) after the same
 check the planner's own passes, else the planner's (`rola/engine/carve.py`,
 [`carve.md`](carve.md)). It reads the rows' last dimension and the bundle's flags, never
-their contents.
+their contents. That is the standing rule for every launch-static axis: it is a function of
+launch-static facts (shapes, declared flags, the binary's arms) and never of a routing
+statistic, because the routing distribution moves step to step and a layout chosen from it
+would make the state's shape depend on the data.
 
 **A side's sparse levels are its lists; its dense levels are its operand.** A level's tag
 is its two flags, read then write: `SD`, `DS`, `DD`, `SS`. The fold's lists are the
@@ -157,17 +157,12 @@ through shared memory otherwise.
 
 ## <a id="run-table"></a>The run table: the skip predicate is a host decision
 
-*(Moved from the deleted docs/internals/chunk/chunk.md with the tiled consumer — the
-rule outlives the consumer: the liveness facts and the fold survive, and K31 R2
-re-consumes the `uint32` as a launch argument.)*
-
-The liveness epilogue (`chunk_block_bits`, reducing the union table this call already
-built — `../facts/liveness_contract.md#two-classes-and-nothing-between-them`) emits three FACTS per `(bh, block)`: `READ`,
-`WRITE`, `STATE`. It does not emit a verdict, because the verdict is not a property of the
-routing. What a skipped block would have cost differs by call class and by backing, and a
-call class here is the PRESENCE of the three launch arguments — the entry-state plane, the
-exit-state plane and the page table — never the engagement bits the facade classifies with
-(`rola/engine/types.py`'s `CallClass`), because it is the argument that decides the cost:
+The liveness facts are three bits per `(bh, block)`: `READ`, `WRITE`, `STATE`. They carry
+no verdict, because the verdict is not a property of the routing. What a skipped block would
+have cost differs by call class and by backing, and a call class here is the PRESENCE of the
+three launch arguments — the entry-state plane, the exit-state plane and the page table —
+never the engagement bits the facade classifies with (`rola/engine/types.py`'s `CallClass`),
+because it is the argument that decides the cost:
 
 | call class | `s_in` | `s_out` | `page_tbl` | rule |
 |---|---|---|---|---|
@@ -187,14 +182,13 @@ taxonomy and no call-class knowledge in it. The eighth argument triple — a pag
 no state at all — is refused at the binding before the derivation is reached, and derives
 the stateless row in any case.
 
-**IT IS A HOST DECISION IN THE PLACE HOST DECISIONS LIVE.** The fold is a band-2 rule; the
-deleted consumer's entries took it as a launch argument beside the bitmap it predicates over,
-and the carry port decides whether the rebuilt carry does. The kernel read
-`ChunkParams::run_table` and derived nothing: a second derivation behind the
-extension boundary could not promise that the table a call PLANS is the table it RUNS, and
-the seven rows above could only be exercised through a launch. They are now device-free unit
-cells over all eight liveness bytes × all seven rows (`tests/unit/test_facts_rules.py`), and
-`tests/unit/test_facts_rules.py` transcribes the rows above and holds the doc and the rule to each other.
+**IT IS A HOST DECISION IN THE PLACE HOST DECISIONS LIVE.** The fold is a band-2 rule, and a
+kernel that takes it reads the `uint32` as a launch argument beside the bitmap it predicates
+over and derives nothing: a second derivation behind the extension boundary could not promise
+that the table a call PLANS is the table it RUNS, and the seven rows above could only be
+exercised through a launch. They are device-free unit cells over all eight liveness bytes ×
+all seven rows (`tests/unit/test_facts_rules.py`), which transcribes the rows above and holds
+the doc and the rule to each other.
 
 **The two paged state-out rows differ, and the difference is the entry state.** A CONTINUED
 sequence may hold value in a block it does not write this call, and only a read of that
@@ -222,18 +216,11 @@ no `S` to read — so the `y` term must assume the block carries and degrades to
 store term is `W`; together, `R | W`. That is the paged continued row with `S` forced true,
 which is precisely what having no residency map means.
 
-**The dense FRESH row USED to be the one that cannot skip at all, and P80b closed it.**
-The old rule was `always run`, for one reason: a fresh bind's `s_out` was allocated
-uninitialised precisely because it was written WHOLE, so skipping a block left garbage in
-the returned state. Since P80b the exit sweep stores the atoms this call WRITES and no
-others — in EITHER backing — so "written whole" is no longer true of any call, and the
-fresh dense plane is ZEROED at bind instead (`rola/engine/facts/nodes.py`'s backing node,
-one fill per SEQUENCE). An unwritten atom then reads back the same zero an unmapped paged
-atom does, which is what lets this row collapse to `W` like its paged twin. The paged
-backing never had the problem: an unmapped atom is already a no-op in the epilogue, and a
-mapped slot either was zero-initialised on admission or is carried from a previous call,
-which a skipped block must leave UNCHANGED — which is what skipping does.
-
-**Every arm takes the bitmap.** The predicate is a load and a branch above every register
-the body allocates, so there is no arm whose census cannot hold it — including the one at
-`reg_floor` 255.
+**The dense FRESH row skips like its paged twin.** The exit sweep stores the atoms this call
+WRITES and no others, in EITHER backing, so no call writes its plane whole, and the fresh
+dense plane is ZEROED at bind (`rola/engine/facts/nodes.py`'s backing node, one fill per
+SEQUENCE). An unwritten atom then reads back the same zero an unmapped paged atom does, which
+is what lets this row collapse to `W`. The paged backing needs no fill: an unmapped atom is a
+no-op in the epilogue, and a mapped slot either was zero-initialised on admission or is
+carried from a previous call, which a skipped block must leave UNCHANGED — which is what
+skipping does.

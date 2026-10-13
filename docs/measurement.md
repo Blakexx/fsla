@@ -6,10 +6,10 @@ stored with its provenance. This document is what that sentence means.
 | layer | where | answers |
 |---|---|---|
 | cells | rola-devtools' central registry `rola_devtools.cells` (rola's reading: `measure/cells/`) | WHAT is measured: an input, named once for every package, with its draw, seed and proven regime |
-| subjects | `measure/subjects.py`, `bench/provider.py` (rola's runner) | WHICH launch is timed on a cell, at which LEVEL, each arm's dials, its untimed reset, and which cells this binary cannot run |
+| subjects | `measure/subjects.py`, `measure/provider.py` (rola's runner) | WHICH launch is timed on a cell, at which LEVEL, each arm's dials, its untimed reset, and which cells this binary cannot run |
 | declarations | `declare.py` (this checkout's targets), rola-bench's `declare.py` (checkouts composed) | WHAT RUNS: the build, the instruments, the timing registrations and sessions, the stores, as targets of `rola_devtools.build` |
 | method | rola-devtools' `rola_devtools.timing` (`measure_timing`) | HOW: interleaved call by call, one call at a time, in a fresh random order each rep |
-| preconditions | the targets' requirements (`rola_devtools.build.resources`), `bench/provider.py` | what the box and the binary must be first |
+| preconditions | the targets' requirements (`rola_devtools.build.resources`), `measure/provider.py` | what the box and the binary must be first |
 | statistics | rola-devtools' `rola_devtools.verdict` | whether a difference is real |
 | record | `rola_results` (the measurements store) | where a number lives afterwards, and which stored samples are a baseline |
 
@@ -47,7 +47,7 @@ Not a checklist: the requirements a target holds and the runner's setup do each 
 
 | step | what happens |
 |---|---|
-| GPU lock | a session holds `gpu: all` (`rola_devtools.build.resources`): `/tmp/rola_gpu.lock` exclusive through `gpu_lock()` (`rola_devtools.locks.gpu`), taken by the build system for the whole session and handed to the entry workers as the lock-held marker, so a self-locking tool a target starts does not wait on it. Nothing is wrapped in an external `flock` on the same path, which self-deadlocks (per-open-file-description semantics: the wrapper's lock blocks the tool's own `flock` call forever). `host.gpu_lock` in the dev config names the path (host and containers share it). |
+| GPU lock | a session holds `gpu: all`: the GPU lock exclusive through `gpu_lock()`, taken by the build system for the whole session and handed to the entry workers as the lock-held marker, so a self-locking tool a target starts does not wait on it. The lock's rules are [`testing.md#running-it`](testing.md#running-it)'s. |
 | clock lock | a session holds `clock: 1`: the host's own lock (`rola_devtools.locks.clock`, the dev config's `clock.json`), proven by this binary's clock read (`register_clock_reader`) before the first call and after the last; a session whose read is off the lock fails. A host without one runs unlocked, and the session records its reads. |
 | binary identity | building an arm asks the device for the subject's family stamp and refuses the arm without it: a path or a hash passes against a stale extension, a device-side fact does not. |
 | extension identity | `import rola` must resolve inside the entry's own checkout, or the arm is refused: an editable install in a shared venv otherwise answers with another tree's kernel while the record carries this tree's commit. |
@@ -64,8 +64,9 @@ own layer against attention's, because RoLA's number includes the state its capa
 
 What this line can measure today: the KERNEL level (`carry_forward`, `intra_forward`, `facts_pass`, `entmax_solve`) and one OP-level path
 (`decode_step`, through the engine's decode DAG, which runs the facts pass and commits the pages it writes). There is no
-op-level prefill and no layer subject: `rola.interface.rola_op` refuses on prefill since the box-native rebuild deleted
-the shipped chunk consumer, so the chunk DAG has no live path to time. The flash reference is a layer entry, and until a
+op-level prefill subject and no layer subject: `rola.interface.rola_op` walks the prefill DAG, whose carry leg is not
+yet
+wired to the rebuilt carry ([`open-work.md`](open-work.md)). The flash reference is a layer entry, and until a
 RoLA layer runs beside it, a session that holds both is two levels measured in one place, not a comparison.
 
 ## The reference
@@ -91,19 +92,11 @@ There is one, it is named, and its name travels with every number.
 | `ncu` | a counter, or a duration taken under profiling conditions: replayed, caches flushed, base clocks |
 
 **A comparison across two of them is refused, not warned about.** The gap is not
-noise; it is the launch and sync cost one instrument includes. Measured on this box
-(RTX 3080 Ti, sm_86, 30 interleaved reps per instrument):
-
-| cell | `cuda_events` | `perf_counter` | ratio |
-|---|---:|---:|---:|
-| `topo-D2-w64x64-BC64` global | 0.0725 ms | 0.2942 ms | 4.06× |
-| `atscale-L2048-BC16` global | 12.8251 ms | 13.4350 ms | 1.05× |
-
-The host cost is roughly constant (0.22 ms here), so it is nearly the whole
-measurement on a sub-millisecond cell and a rounding error at scale. The
-`ncu` duration for the same small cell reads 0.0906 ms — 25 % above the event time —
-which is why an ncu duration is a third instrument and not a cross-check on the
-first two.
+noise; it is the launch and sync cost one instrument includes: roughly constant on this
+box (~0.22 ms, RTX 3080 Ti), so nearly the whole measurement on a sub-millisecond cell
+and a rounding error at scale. An `ncu` duration reads above the event time (25 % on a
+small cell), which is why it is a third instrument and not a cross-check on the first
+two.
 
 Every timed entry names its stopwatch (`Timed.instrument`; rola's arms time with `cuda_events`), and a session refuses
 entries that name two.
@@ -129,17 +122,16 @@ and gives, per round, each member's median, their RATIO and their DIFFERENCE.
 `insufficient_data` is a distinct answer from `no_regression` everywhere: the first says the design cannot decide, the
 second says it decided.
 
-**THE SPREAD IS THE SPREAD OF THE QUANTITY JUDGED — measured corrections, not preferences.** A baseline once recorded
-from one session's reps, on the chunk arm (tag `baseline/pre-k31`), put 17 of 44 arms over their limit on the same
-binary a minute later: reps taken back to back on one warm fixture spread less than a comparison that crosses processes.
-The verdict then derived its limit from a reference's medians across sessions, which carried the host's drift instead
-(two clock states ~17 % apart). What is judged now is the paired ratio inside one session, so the limit is that ratio's
-own round-to-round spread, drift both members share cancels in it, and the one thing the ratio crosses that its spread
+**THE SPREAD IS THE SPREAD OF THE QUANTITY JUDGED.** Reps taken back to back on one warm fixture spread less than a
+comparison that crosses processes (a limit taken from one session's reps flagged most arms of an unchanged binary a
+minute later), and a reference's medians across sessions carry the host's drift (two clock states ~17 % apart). What
+is judged is the paired ratio inside one session, so the limit is that ratio's own round-to-round spread, drift both
+members share cancels in it, and the one thing the ratio crosses that its spread
 cannot see -- two worker processes -- is the null gate's.
 
-**AND NEVER A SPREAD SMALLER THAN THE STOPWATCH RESOLVES.** Two arms once sat over their limit on an unchanged binary,
-both with a recorded spread of exactly `0.0000 ms`: the device-event timer quantizes, a small kernel's calls land on the
-same value, and the limit sits at the median the next tick exceeds. The spread used is `max(IQR, resolution)`, where the
+**AND NEVER A SPREAD SMALLER THAN THE STOPWATCH RESOLVES.** The device-event timer quantizes, so a small kernel's calls
+can land on one value, a recorded spread of `0.0000 ms`, and a limit at the median the next tick exceeds. The spread
+used is `max(IQR, resolution)`, where the
 resolution is the smallest gap between the distinct values one member's samples hold, relative to the reference's
 median -- measured on every judgement, because it is a property of the stopwatch and the box -- and the verdict says
 when it bound (`floored_at_resolution`).
@@ -156,28 +148,19 @@ again whenever it is asked for. `python -m rola_results dashboard --out FILE --r
 
 ## SASS
 
-`python tools/ratify.py` and `python tools/sass_bodies.py` are the instruments. Both binaries in a
-comparison no longer need to have been built at the same path (P19,
-`docs/build.md`'s path-trap section) — they must agree on `ratify.SASS_HASH_VERSION`,
-which `--compare` checks and refuses on mismatch.
+`python tools/ratify.py` and `python tools/sass_bodies.py` are the instruments. Two binaries in a
+comparison may be built at different paths ([`build.md#sccache`](build.md#sccache)); they must agree
+on `ratify.SASS_HASH_VERSION`, which `--compare` checks and refuses on mismatch.
 
 **Measuring a kernel's register DEMAND at a bound it does not ship at** is a
 scratch-tree edit — copy the tree, change the `__launch_bounds__` CTA argument at
 the instantiation, run `python tools/ratify.py --census` there, read the spill
-column — and never a flag on the shipped tool. `--force-ctas` was that flag; it
-was deleted once nothing in `csrc/` read its macro, because a tool that
-can force a bound is a tool that can ratify one.
-
-## The sanitizer gap
-
-No sanitizer measurement has been taken of the carry family. `compute-sanitizer` runs a kernel under conditions no timing
-instrument reproduces, so it is a third instrument like `ncu` and needs its own refusal rules and record shape before a
-number from it enters the record. Named here because an undelivered item named is not a delivered one.
+column — and never a flag on the shipped tool, because a tool that can force a
+bound is a tool that can ratify one.
 
 ## What is deliberately not here
 
-* **A second method.** The in-process A/B driver, and later tools/compare.py and the interleaving driver, were deleted
-  once the declared build system timed the same subjects (`docs/internals/DELETIONS.md`): two methods are how a harness
+* **A second method.** The declared build system is the one way a subject is timed: two methods are how a harness
   comes to disagree with itself.
 * **A committed SQLite database.** A binary blob has no diff and cannot be reviewed in a landing. Any query artifact is
   derived and ignored — see the record below, which is exactly this design.
@@ -203,12 +186,28 @@ a DIFF is two sides under one named rule -- `bit-identical`, the per-slot clause
 `support-equal` -- with a claim (`expect` same or different) and a consequence (a build failure or a recorded verdict).
 A side proves which checkout's library it imported; a comparison that compared fewer quantities than it declared, or a
 cell only one side could produce, refuses rather than passes; a cell both sides refuse is listed and not counted. Inside
-one checkout the carry kernel is diffed against the fp64 reference per slot under each output kind's clauses
-(`rola/diff/carry-vs-oracle`); across checkouts rola-bench pairs each surface a checkout exposes (`SURFACES`: the fp64
-oracle, the producer reference, the carry kernel) under ITS rule for the surface (`RULES`) -- the oracle
-bit-identical, the producer support-equal, the kernel per slot at twice the reassociation the checkout states
-(`NUMERICS`: the readout fan-in is an fp32 atomic reduction and is not bit-reproducible run to run), stored at
-`diff/<surface>`. Verdicts are stored, tensors never.
+Across checkouts rola-bench pairs each surface a checkout exposes (`SURFACES` in `declare.py`: the fp64 oracle and the
+producer reference) under ITS rule for the surface (`RULES`) -- the oracle bit-identical, the producer support-equal --
+stored at `diff/<surface>`. Verdicts are stored, tensors never. The carry kernel has no diff surface and no
+kernel-vs-oracle diff: its oracle obligation is owed (`tools/coverage.json`).
+
+## <a id="instruments"></a>The instruments
+
+Each is a target of `declare.py` (`INSTRUMENTS`), run per cell where it reads a launch, its output stored beside the
+timing session:
+
+| target | tool | what it reads |
+|---|---|---|
+| `sass` | `tools/sass_gate.py` | the build's SASS signatures (KERNEL_STANDARDS §20) |
+| `registers` | [`tools/life_ranges.py`](internals/tools/life_ranges.md) | peak live registers per source region |
+| `phases` | [`tools/phase_ledger.py`](internals/tools/phase_ledger.md) | the kernel's phase clock on a cell |
+| `counters` | [`tools/pipe_counters.py`](internals/tools/pipe_counters.md) | the profiler's pipe and resource counters |
+| `census` | [`tools/stall_census.py`](internals/tools/stall_census.md) | every warp-stall sample, by source line |
+| `timeline` | [`tools/pipe_timeline.py`](internals/tools/pipe_timeline.md) | the pipes' activity over a launch |
+| `roofline` | `tools/roofline.py` | the intra's time beside the device's u8 IMMA ceiling |
+| `oracle-tier` | the oracle battery | the counts, the failed cases, the margins |
+
+A question about the machine itself, rather than a shipped kernel, is a lab experiment ([`lab/`](lab/README.md)).
 
 ## The measurements record: `rola_results`
 
@@ -235,7 +234,7 @@ and a timing only compares within the session that interleaved it.
 | `compose_ledger` | `tools/compose_ledger.py` | the commit and diff, the cells | the report |
 | `environment` | `tools/dev.py container check` | the environment key | the proofs |
 | `rola/oracle-tier` | a store target over the tier node | the tier's code, the binary, the environment | the counts, the failed cases, the margins |
-| `rola/carry-vs-oracle`, `diff/<surface>` | a store target over a diff node | both sides' semantics and the rule | the verdict per cell and quantity, never a tensor |
+| `diff/<surface>` | a store target over a diff node | both sides' semantics and the rule | the verdict per cell and quantity, never a tensor |
 
 Reading across runs is a join, never a parser: `instrument_metrics` is every number every instrument recorded in
 long form (run, cell, dotted metric, value), `diff_cells` every stored diff's verdict per cell and quantity, and

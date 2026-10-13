@@ -49,7 +49,7 @@ capacity; that is a bridge for the oracle and for a test, never a measured path.
 `rola.state(pool_slack=0.0)` is the paged backing's other storage-mechanics knob:
 a fraction of full residency, reserved per batch-head as physical slots a `T = 1` decode
 step can admit into itself, with no host round trip. `0.0` — the default — is exact
-commitment, unchanged from before the knob existed. Two calls read and refill it off the
+commitment. Two calls read and refill it off the
 step's own path: `rola.engine.dags.decode_dag.pool_headroom(state)` (the slack slots the
 thinnest batch-head still has) and `refill_pool(state)` (restock what the device spent).
 See [`internals/state.md`](internals/state.md#the-slack-pool) and
@@ -63,15 +63,14 @@ call, from the routing it was actually given. They live behind
 **Any level width, any `d_v`.** A `Routing` level's width and a layer's `d_v` are
 never required to be a power of two or a shipped value — host-side padding at the op's
 own call surface serves the rest, with no kernel change
-([`docs/internals/padding.md`](internals/padding.md)). `rola.rola_op`'s CUDA arm is
-currently deleted pending K31 R2, so this is not yet reachable end to end through the
-layer; the padding seam is built and tested at `rola.ops.carry`/`rola.ops.decode`/
-`rola.ops.intra` ahead of the pipelined kernel body that will consume it.
+([`docs/internals/padding.md`](internals/padding.md)): the prefill's carry leg and the
+decode step pad below the op, and the intra reads the rows at their own widths.
 
 ### 1.1 The built envelope IS the surface
 
-The arm is the chunk consumer, and the chunk consumer is a BUILT MATRIX. **Everything
-outside it raises.** There is no second arm behind this surface: the fp64 oracle
+The prefill is the facts pass, the carry and the intra over a BUILT MATRIX
+(`rola.engine.dags.prefill_dag`). **Everything outside it raises.** There is no second arm behind this surface: the
+fp64 oracle
 (`rola.ops.naive.naive_rola`) is the executable spec — what tests and ratification
 call directly — and it is not reachable by dispatch, because a dispatch to it at
 inference is a silent ~1000x-slower route shipping unnoticed, which is the exact thing
@@ -82,9 +81,8 @@ the no-fallback rule forbids.
 | a gradient anywhere in the operands | none | `BackwardNotImplemented` |
 | the module's mode (layer only) | `eval()` | `BackwardNotImplemented` |
 | device | CUDA | refused |
-| `d_v` | up to the widest value width the carry ships at the depth | refused |
+| `d_v` | the intra's value width (`rola.ops.intra.VALUE_WIDTH`), which the binary's carry arms at the depth must reach | refused |
 | widths | one or two levels, each a whole number of 16-digit granules up to 256, any mix (`rola.ops.intra.admits`) | refused |
-| `D` | the binary's own carry census (`rola.ops.carry.arms`) | refused |
 | `T` | whole 512-token windows (a segment; the layer segments, §4.2) | refused |
 | `decay` | not implemented in the prefill (decode has it) | refused |
 | an unratified activation | — | refused |
@@ -93,18 +91,15 @@ Ask before calling: `rola.expert.envelope_refusal(routes, v, decay)` returns the
 sentence the refusal will carry, or `None`. `rola.expert.require_envelope(...)` is the
 raising form the op itself uses.
 
-**This is a real capability narrowing, and it is stated rather than softened.** Shapes
-outside the matrix — including the flagship `widths = (8, 16)`, which is refused for
-being non-uniform — had a kernel before the tiled consumer's retirement, and there is
-NO TRAINING PATH through this surface at all until the native backward lands. The cards
-that widen the matrix and bring the backward are in
-[`docs/open-work.md`](open-work.md).
+**The envelope is narrow, and that is stated rather than softened.** Shapes outside the
+matrix are refused, and there is NO TRAINING PATH through this surface until the native
+backward lands; what widens it is in [`docs/open-work.md`](open-work.md).
 
 `rola_op` is the **single autograd boundary**, and it is a refusal rather than a
 branch: the failure it prevents — a forward-only kernel reached from a gradient
 context returns a tensor with no `grad_fn` and severs the graph silently — is
-structural, not a bug in any one call site. The deleted consumer's autograd node was the last
-line, loud if the first is ever bypassed.
+structural, not a bug in any one call site. The prefill's autograd node, whose backward
+raises `BackwardNotImplemented`, is the last line, loud if the first is ever bypassed.
 
 ### 1.2 Continuation is LAYERED
 
@@ -118,13 +113,10 @@ OWN thin bundle, and the rule is a membership test:
 So `RoLA.forward` returns `(y, LayerContinuation)` — always the container — and takes
 one back. `LayerContinuation.state` is the op's paged tensor; it is the container's
 only field today, and any future layer-level recurrence is a field ON IT, never on the
-op's state. The container is the contract in both directions: a bare `RoLAState` or the
-retired `(state, conv_rings)` tuple is refused by name, because accepting a lookalike
-would make the layer's own fields silently optional to carry.
-
-This is not the old pooled state object recreated. That object's defect was LAYER
-LUGGAGE INSIDE THE OP's state; keeping each level's object pure is what leaves
-accretion nowhere to land.
+op's state. The container is the contract in both directions: a bare `RoLAState` or a
+`(state, conv_rings)` tuple is refused by name, because accepting a lookalike would make
+the layer's own fields silently optional to carry. Keeping each level's object pure is
+what leaves layer luggage nowhere to land inside the op's state.
 
 ### 1.3 TWO CONTRACTS, ONE TRANSLATOR
 
@@ -135,7 +127,7 @@ are stated apart.
 | | what it accepts | what it does with the rest |
 |---|---|---|
 | **the API** (this page: `rola_op`, `RoLA`, `rola.state()`) | any level width `b_l >= 2`, any `d_v`, any length `L` | **pads** — level logits to the next power of two at or above 16 with `-inf`, `v` to the next shipped `DV` with zero columns |
-| **the kernel** (`rola.ops.carry`, `rola.ops.decode`) | only the state descriptor's strict shape: `B_l` a power of two at or above 16, a shipped `DV`, `N` a multiple of 16, bf16 operands | **refuses**, by name — it never pads and never masks |
+| **the kernel** (`rola.ops.carry`, `rola.ops.decode`) | only the state descriptor's strict shape: `B_l` a power of two at or above 16, a shipped `DV`, `N` a multiple of 16, the internal format's rows and values (§2.1, §4.1) | **refuses**, by name — it never pads and never masks |
 
 **The seam is the only translator.** A padded digit gets amplitude *exactly* zero
 (`-inf` before the entmax or softmax solve), so it is never live, never read, never
@@ -153,22 +145,17 @@ signature is a lint finding, because a kernel that could read one could pad.
 
 **What the descriptor fixes.** A state binds its format at its first call — `D`, the
 per-level `B_l`, the canonical leaf order, the page rectangle, `DV`, and the stored form
-(split bf16 planes) — and every later call is *checked* against it rather than assumed
+(`rola._state.STATE_DTYPE`, [`internals/common/state_page.md`](internals/common/state_page.md)) — and every later call
+is *checked* against it rather than assumed
 to fit. A call that disagrees is refused at the seam, naming the field, instead of
 addressing somebody else's bytes inside a kernel. Re-laying out a state is an explicit
 op, never a side effect of a call. See
 [`internals/state.md`](internals/state.md#format).
 
-**Status.** The kernel half of this contract is live at the OP level: `rola.ops.carry`'s
-launch surface, its three refusals, and now the pipelined box-native body behind it
-(`docs/internals/carry/carry_kernel.md`) are all built and tested — a call into
-`extension().carry_forward` reaches a real, shipped launch, at the one arm the carry
-family's shipped set currently declares (`[D=2, DV=64, warps_per_cta=8]`). What is not
-yet built is the LAYER wiring: `rola.interface.rola_op` (and therefore `rola.RoLA`'s
-prefill path through it) still raises `NotImplementedError` unconditionally, so the op
-is not yet reachable end to end through the public surface this page otherwise
-documents. The envelope table in [1.1](#11-the-built-envelope-is-the-surface) is what
-`rola_op` is built against once that wiring lands, not a description of what runs today.
+**Status.** `rola_op` validates the call against the envelope and walks the prefill DAG.
+The DAG's carry leg (`rola.ops.prefill`) is not yet re-pointed at the rebuilt carry's
+launch surface (`rola.ops.carry.carry`), so a prefill does not yet run end to end
+([`docs/open-work.md`](open-work.md)).
 
 ## 2. The feature map
 
@@ -301,9 +288,8 @@ a topology a foreign producer declared. Measured across the shipped census (`D` 
 the kernel's view wants, and the public `[B, T, H, width_l]` layout is a permute of it —
 so exactly one of the two can be the materialized tensor, and it is the kernel's. The
 public tensors are views. Materializing the public layout instead and folding it back is
-an inverse copy pair. It was priced at 2.82 % of the whole step at `L = 4096`
-(`workflows/refactor/p12_lane3.md`), and the same harness measures it directly against
-the production call it rides: 3.085 ms vs 2.732 ms at `L = 4096` and 0.942 ms vs
+an inverse copy pair. A harness measures it directly against the production call it
+rides: 3.085 ms vs 2.732 ms at `L = 4096` and 0.942 ms vs
 0.835 ms at `L = 1024` — 12.9 % and 12.7 % of production-plus-fold, at both lengths.
 
 ### 2.3 The declared routing, and the producer
@@ -424,9 +410,8 @@ of freedom the product structure lets the recurrence actually distinguish.
 
 `ConstantDecay` set high is a legitimate performance lever: the state forgets fast and
 the realized routing shows it, through exactly the same door a learned source uses.
-Nothing about it is a special case. (Today the chunk arm has no decay and refuses it
-— §1.1 — so the lever reaches production only through the decode arm, which does have
-it, until the kernel-side decay retirement is reopened.)
+Nothing about it is a special case. The prefill refuses a decay today (§1.1), so the
+lever reaches production through the decode step.
 
 The decay is **write-conditioned** (mass decay), never time decay. A leaf whose write
 amplitude is exactly zero ticks its clock by zero, so `keep = (1 - rate) ** 0 = 1`
@@ -444,27 +429,22 @@ y, _ = layer(hidden_states)                            # stateless -> (y, LayerC
 ```
 
 `forward(x, attention_mask=None, continuation=None) -> (y, LayerContinuation)` — ALWAYS
-the container. See §1.2; a bare `RoLAState` or the retired `(state, conv_rings)` tuple
-is refused by name rather than adopted.
+the container (§1.2).
 
 `routing` is the declared `Routing` (§2.3), and the layer owns every weight it implies.
 `d_v` is the per-head value width — the layer's, because it sizes `v_proj`/`o_proj`; the
-default is the width the chunk matrix is built at.
+default, 64, is the intra's value width.
 
 <a id="one-token-step"></a>**One token of a carried sequence is `_step`, then the verdict.** `RoLA._step(x, state)`
 is the whole token with no host read inside it -- the producer's one launch, the gated decode
 step, the output projection -- so a caller can capture it in a CUDA graph and replay it a
 token. A batch-head whose write atoms the state can neither address nor admit skips itself;
 `forward` then asks `growth_pending(state)`, admits and steps again, which advances every
-sequence exactly once (`docs/internals/decode/decode.md#capture`). MEASURED at a decode cell
-(N 64K, H 16, d_v 64, B 1, paged, RTX 3080 Ti): eager `forward` ~600 us a token; the
-captured step 73 us a token (its GPU time), 161-187 us with the verdict read every token --
-a 4-byte copy and a sync, which a serving loop pays at the sync that samples its token.
+sequence exactly once (`docs/internals/decode/decode.md#capture`). Reading the verdict is a
+4-byte copy and a sync, which a serving loop pays at the sync that samples its token.
 
-`value_conv`/`route_conv` (a causal short convolution over the value/routing-source
-stream) were DELETED at K45 (docs/internals/DELETIONS.md): they were never reviewed as
-a mechanism and are not paper-1 scope. Re-adding a convolution hook is a field on
-`LayerContinuation`, not a return to the old ad hoc ring tuple.
+A convolution over the value or routing-source stream, if one is added, is a field on
+`LayerContinuation`.
 
 The layer adds exactly one clause the op cannot know: `self.training` REFUSES,
 independently of gradient reachability, because reentrant gradient checkpointing runs
@@ -476,6 +456,28 @@ forward that pass could take would be a forward no backward can follow.
 inference from a timing, and it is published for exactly that: a benchmark process
 cannot spy on the call it is timing, and wall-clock cannot tell two arms apart. It is a
 SCALAR, not a tally — a caller that needs how many times an arm ran spies on the arm.
+
+### 4.1 The projections and the value format
+
+`v_proj` and `o_proj` run as bf16 GEMMs (their weights read through the inference copy when no
+gradient flows, §2.3), and the projection
+is written to the value format at the layer: `Values.from_projection(v)` (`rola/values.py`)
+holds each token's values `v` in f16 against its largest channel (at 1); that magnitude is
+the token's fp32 `scale`. The op takes the bundle, not the tensor. The plane and the scale are
+what the kernels read; `Values.dequantized()` is
+the fp32 view a consumer still computing on floating values takes at its seam, with the
+projection's gradient stepped straight through when the projection requires one. The arm is
+UNCONDITIONAL because the op's envelope makes it so: there is no CPU lowering, so a
+non-CUDA forward refuses at `rola_op` and no call off CUDA ever observes a projected
+value. Round-tripping
+it through the module dtype was MEASURED to cost two elementwise casts per call — a `v`
+downcast and a `y` upcast, ~12-13% of a small cell's op time — which is why the layer
+narrows once, at the projection, rather than at the op boundary. The GEMMs use cuBLAS's
+fp32 compute type (the accumulate-in-fp32 ruling); the global
+reduced-precision-reduction knob is deliberately left alone, so this is the same
+environment the FlashAttention comparison arm runs in.
+
+`o_proj` rounds the op's fp32 `y` to its bf16 operand, the one rounding on the output side.
 
 ### 4.2 Segments: the layer bounds its own working set
 
@@ -493,30 +495,6 @@ no pair: a segmented call is the whole call (the op's readout to fp32 ULPs,
 `tests/integration/test_layer_segments.py`). A stateless call that spans segments carries an internal
 state and hands none back.
 
-### 4.1 The bf16 projection arm
-
-`v_proj` and `o_proj` run as bf16 GEMMs with weights cast per call, and the projection
-is written to the value format at the layer: `Values.from_projection(v)` (`rola/values.py`)
-holds each token's values `v` in f16 against its largest channel (at 1); that magnitude is
-the token's fp32 `scale`. The op takes the bundle, not the tensor. The plane and the scale are
-what the kernels read; `Values.dequantized()` is
-the fp32 view a consumer still computing on floating values takes at its seam, with the
-projection's gradient stepped straight through when the projection requires one. The arm is
-UNCONDITIONAL because the op's envelope makes it so: there is no CPU lowering, so a
-non-CUDA forward refuses at `rola_op` and no call off CUDA ever observes a projected
-value. Round-tripping
-it through the module dtype was MEASURED to cost two elementwise casts per call — a `v`
-downcast and a `y` upcast, ~12-13% of a small cell's op time — which is why the layer
-narrows once, at the projection, rather than at the op boundary. The GEMMs use cuBLAS's
-fp32 compute type (the accumulate-in-fp32 ruling); the global
-reduced-precision-reduction knob is deliberately left alone, so this is the same
-environment the FlashAttention comparison arm runs in.
-
-There is no dtype exception left on this arm: `value_conv` — the one case that used to
-round-trip `v` back to the module dtype ahead of a convolution — was DELETED at K45
-(docs/internals/DELETIONS.md). `o_proj`'s operand cast is exact regardless: `y` leaves
-the kernel already bf16-rounded.
-
 ## 5. The expert surface
 
 `rola.expert` holds everything BELOW the contract line — the dispatch's own answer,
@@ -530,7 +508,7 @@ layer = rola.RoLA(routes, expert=PlanOverrides())
 
 | name | what it is |
 |---|---|
-| `PlanOverrides` | the pins: `paging` |
+| `PlanOverrides` | the pins: `paging`, `carve` |
 | `envelope_refusal(routes, v, decay=None)` / `require_envelope(...)` | whether a call has an arm, asked before making it — the refusing clause in its own words, or `None`. `v` is named rather than assumed: the `d_v` clause is a fact about the value stream, so the answer is a property of the configuration AND of `v.shape[-1]` |
 | `requires_backward` | the gradient-reachability predicate the envelope's first clause is built from |
 | `GainConfig` | the two-boolean gain layout behind the public `gain` flag |
@@ -542,24 +520,18 @@ machine and with the built matrix. The model facts it carries are the exception,
 because they are not decisions.
 
 **Every pin is a declared restriction rather than a dial, and each refuses by name
-rather than being ignored.** `PlanOverrides` carries exactly one field today, `paging`
-— the state's BACKING, never a launch shape: `None` is the paged
-default, `False` pins the dense plane the bit-identity gate compares against, and
-`True` is refused because paging is on by default and bitwise invisible. A `BC`-style
-launch-shape pin (`state_block`, on the tiled consumer's `Plan`) went with that
-consumer's deletion (`internals/DELETIONS.md`) and has no successor here: the carry
-family's arm — and therefore its `BC` — is a property of the built matrix a topology
-resolves to, not a per-call override.
+rather than being ignored.** `PlanOverrides` carries two fields. `paging` is the state's
+BACKING, never a launch shape: `None` is the paged default, `False` pins the dense plane
+the bit-identity gate compares against, and `True` is refused because paging is on by
+default and bitwise invisible. `carve` pins the carry's box and operation plans; the rule
+checks a pinned carve against the declaration exactly as it checks its own
+([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve)).
 
-**There is no plan object and no derive/execute seam.** `Plan`, `Schedule`,
-`derive_plan` and `execute` were the tiled consumer's, and went with it in P67 D2
-([`internals/DELETIONS.md`](internals/DELETIONS.md)). The geometry they carried is
-now a property of the built arm rather than of a per-launch derivation, so there is
-no launch-shaping object for a caller to hold, synthesize or staleness-test. What
-replaces the adversarial use they enabled: a conformance family drives
-the envelope's own rule (`rola.engine.rules.envelope`) directly and declares the refusal
-clause it expects, and
-`envelope_refusal` answers the same question a synthetic plan used to be built to probe.
+**There is no plan object and no derive/execute seam.** The carry's launch geometry is
+the carve — the rule's, or a pinned one checked the same way — so there is no
+launch-shaping object for a caller to hold or synthesize. A conformance family drives the
+envelope's own rule (`rola.engine.rules.envelope`) directly and declares the refusal
+clause it expects, and `envelope_refusal` answers the same question before a call.
 
 ## 6. What is deliberately not here
 
@@ -571,26 +543,3 @@ clause it expects, and
 - **No silent second path.** Every arm is chosen from a property of the configuration or
   of the operands, before the call, and named in the exception when a configuration
   cannot run. Nothing degrades into anything after a failure.
-
-## Gradients are not bitwise reproducible
-
-`rola_op` trains, and its gradients are **not** run-to-run deterministic. Both scans
-assemble their outputs through fp32 `atomicAdd` fan-ins whose order is the
-scheduler's, and the two scans walk DIFFERENT partitions of the token axis by
-construction — each closes its chunks by its own walk — so nothing about the reverse
-pass is bit-reproducible even on identical inputs on identical hardware. The forward
-already had this property through the same fan-ins; the backward inherits it in a
-worse regime (more contributors, narrower destinations).
-
-Two consequences, stated rather than discovered:
-
-* a training run cannot be reproduced bit-for-bit by re-running it, only
-  statistically;
-* a gate on a gradient must be a tolerance, never an equality.
-
-**Training is STATELESS.** A call carrying both a gradient and a `state=` plane is
-refused by name: the state is caller-owned and mutated in place, and the reverse
-pass has no `d initial_state` — it rebuilds from zero. **Decode has no reverse pass
-at all**, so a grad-bearing single-token continuation is refused too. And the
-reverse pass carries a NARROWER arm matrix than the forward: a grad-bearing call on
-an arm it does not carry is refused at the boundary rather than three launches later.

@@ -8,48 +8,6 @@
    "count": 1
   },
   {
-   "path": "docs/api.md",
-   "message": "names the work code 'D2'",
-   "line_sha256": "47bad006b8a8f445",
-   "count": 1
-  },
-  {
-   "path": "docs/api.md",
-   "message": "names the work code 'K31'",
-   "line_sha256": "0974e2e1ad27969e",
-   "count": 1
-  },
-  {
-   "path": "docs/api.md",
-   "message": "names the work code 'K45'",
-   "line_sha256": "cfa65bdc24321aa8",
-   "count": 1
-  },
-  {
-   "path": "docs/api.md",
-   "message": "names the work code 'K45'",
-   "line_sha256": "dfe54236f6256bc9",
-   "count": 1
-  },
-  {
-   "path": "docs/api.md",
-   "message": "names the work code 'P67'",
-   "line_sha256": "47bad006b8a8f445",
-   "count": 1
-  },
-  {
-   "path": "docs/architecture/closed-world-codegen.md",
-   "message": "names the work code 'P19'",
-   "line_sha256": "986fd5e4fa323dbe",
-   "count": 1
-  },
-  {
-   "path": "docs/architecture/closed-world-codegen.md",
-   "message": "names the work code 'X5'",
-   "line_sha256": "141fec104b6d9418",
-   "count": 1
-  },
-  {
    "path": "docs/architecture/fp32-accumulators.md",
    "message": "names the work code 'D2'",
    "line_sha256": "9dd023d9727fe5cc",
@@ -59,48 +17,6 @@
    "path": "docs/architecture/fp32-accumulators.md",
    "message": "names the work code 'P67'",
    "line_sha256": "9dd023d9727fe5cc",
-   "count": 1
-  },
-  {
-   "path": "docs/architecture/guarantees-choices-preferences.md",
-   "message": "names the work code 'P10'",
-   "line_sha256": "734dd38b692fe9c9",
-   "count": 1
-  },
-  {
-   "path": "docs/architecture/guarantees-choices-preferences.md",
-   "message": "names the work code 'V3'",
-   "line_sha256": "90dac9b0b8e06148",
-   "count": 1
-  },
-  {
-   "path": "docs/architecture/planner.md",
-   "message": "names the work code 'D2'",
-   "line_sha256": "0b49979e00169627",
-   "count": 1
-  },
-  {
-   "path": "docs/architecture/planner.md",
-   "message": "names the work code 'P67'",
-   "line_sha256": "0b49979e00169627",
-   "count": 1
-  },
-  {
-   "path": "docs/architecture/self-masking-theorem.md",
-   "message": "names the work code 'D2'",
-   "line_sha256": "420789030e4a0515",
-   "count": 1
-  },
-  {
-   "path": "docs/architecture/self-masking-theorem.md",
-   "message": "names the work code 'P67'",
-   "line_sha256": "cdda6ba023289352",
-   "count": 1
-  },
-  {
-   "path": "docs/build.md",
-   "message": "names the work code 'C0'",
-   "line_sha256": "384d9bde4b57af7d",
    "count": 1
   },
   {
@@ -1028,72 +944,6 @@
    "count": 1
   },
   {
-   "path": "docs/internals/common/ops.md",
-   "message": "names the work code 'K35'",
-   "line_sha256": "a7e81bdef4b8d449",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/ops.md",
-   "message": "names the work code 'K35'",
-   "line_sha256": "deed1f3f4307b734",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/ops.md",
-   "message": "names the work code 'S2'",
-   "line_sha256": "deed1f3f4307b734",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'D1'",
-   "line_sha256": "a49e87c67dbe22b6",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'D2'",
-   "line_sha256": "13264c321fe2bfbc",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'G4'",
-   "line_sha256": "d6744a842357fa55",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'G6'",
-   "line_sha256": "d6744a842357fa55",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'K31'",
-   "line_sha256": "1971c5469ec32dce",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'K31'",
-   "line_sha256": "3ffccb4e723608a1",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'K53'",
-   "line_sha256": "79f465f7ac4585db",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'P67'",
-   "line_sha256": "13264c321fe2bfbc",
-   "count": 1
-  },
-  {
    "path": "docs/internals/decode/decode.md",
    "message": "names the work code 'S4b'",
    "line_sha256": "11547c870405df36",
@@ -1103,12 +953,6 @@
    "path": "docs/internals/decode/decode.md",
    "message": "names the work code 'S4b'",
    "line_sha256": "a862d3623b6025e9",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode_lattice.md",
-   "message": "names the work code 'C0'",
-   "line_sha256": "d92bad173b98db51",
    "count": 1
   },
   {
@@ -1167,26 +1011,8 @@
   },
   {
    "path": "docs/internals/engine/engine.md",
-   "message": "names the work code 'K31'",
-   "line_sha256": "8d7b5ff54528ebcf",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/engine/engine.md",
    "message": "names the work code 'M1'",
    "line_sha256": "f3c8d17bba5d5917",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/engine/engine.md",
-   "message": "names the work code 'M2'",
-   "line_sha256": "fcd73600e8b218b9",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/engine/engine.md",
-   "message": "names the work code 'M3'",
-   "line_sha256": "fcd73600e8b218b9",
    "count": 1
   },
   {
@@ -1203,18 +1029,6 @@
   },
   {
    "path": "docs/internals/engine/rules.md",
-   "message": "names the work code 'K31'",
-   "line_sha256": "0b7aeeef86317ace",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/engine/rules.md",
-   "message": "names the work code 'K31'",
-   "line_sha256": "af41135c16519241",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/engine/rules.md",
    "message": "names the work code 'M1'",
    "line_sha256": "de3b73a499e0cf20",
    "count": 1
@@ -1226,117 +1040,15 @@
    "count": 1
   },
   {
-   "path": "docs/internals/engine/rules.md",
-   "message": "names the work code 'P80b'",
-   "line_sha256": "384af2e5c2e2d2f5",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/engine/rules.md",
-   "message": "names the work code 'P80b'",
-   "line_sha256": "563a000c3eb4aecb",
-   "count": 1
-  },
-  {
    "path": "docs/internals/entmax/entmax.md",
    "message": "names the work code 'A1'",
    "line_sha256": "eeb9400b3bb5f23c",
    "count": 1
   },
   {
-   "path": "docs/internals/entmax/entmax.md",
-   "message": "names the work code 'K54'",
-   "line_sha256": "434e9952da0486f4",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/entmax/entmax.md",
-   "message": "names the work code 'P73'",
-   "line_sha256": "53a88084314c9bfe",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/entmax/entmax.md",
-   "message": "names the work code 'P74'",
-   "line_sha256": "f9b1f535f0189c35",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/entmax/entmax.md",
-   "message": "names the work code 'S4'",
-   "line_sha256": "24f0e4e4ee998386",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/entmax/factor.md",
-   "message": "names the work code 'P65'",
-   "line_sha256": "53a72cdf563c5ed9",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/entmax/factor.md",
-   "message": "names the work code 'P73'",
-   "line_sha256": "6af828880df4d378",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/entmax/factor.md",
-   "message": "names the work code 'P73'",
-   "line_sha256": "f952995b5bbc8784",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/entmax/factor.md",
-   "message": "names the work code 'S5'",
-   "line_sha256": "6af828880df4d378",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/entmax/factor.md",
-   "message": "names the work code 'S5'",
-   "line_sha256": "f952995b5bbc8784",
-   "count": 1
-  },
-  {
    "path": "docs/internals/facts/liveness_contract.md",
    "message": "names the work code 'K50'",
    "line_sha256": "52cac4c088a407a6",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/padding.md",
-   "message": "names the work code 'C1c'",
-   "line_sha256": "954b0e6bdb18f0e7",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/padding.md",
-   "message": "names the work code 'C3'",
-   "line_sha256": "d20f842ddc311e0e",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/padding.md",
-   "message": "names the work code 'K31'",
-   "line_sha256": "da7675226cab3088",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/padding.md",
-   "message": "names the work code 'K50'",
-   "line_sha256": "b9ad056d247755e4",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/paging/paging.md",
-   "message": "names the work code 'I1'",
-   "line_sha256": "38afe05e01125ae0",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/state.md",
-   "message": "names the work code 'C2'",
-   "line_sha256": "81e5efcaf2bd07ce",
    "count": 1
   },
   {
@@ -1364,192 +1076,6 @@
    "count": 1
   },
   {
-   "path": "docs/measurement.md",
-   "message": "names the work code 'P19'",
-   "line_sha256": "67cff502a9c7055d",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'B1b'",
-   "line_sha256": "bca0294760a820d7",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'D2'",
-   "line_sha256": "0139ce4dda984fd7",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'D2'",
-   "line_sha256": "c7a99988605441a1",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'D2-a'",
-   "line_sha256": "77eb9a8ce7eb23e6",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'D2-d'",
-   "line_sha256": "77eb9a8ce7eb23e6",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'E12'",
-   "line_sha256": "c05700965d2bb0cc",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'K21'",
-   "line_sha256": "1fc2a1fb0afb72ce",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'K23'",
-   "line_sha256": "1fc2a1fb0afb72ce",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'K31-i'",
-   "line_sha256": "cc558588a8b66d82",
-   "count": 2
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'K33'",
-   "line_sha256": "cc558588a8b66d82",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'P39'",
-   "line_sha256": "c7a99988605441a1",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'P65'",
-   "line_sha256": "bca0294760a820d7",
-   "count": 2
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'P67-a'",
-   "line_sha256": "1fc2a1fb0afb72ce",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'P67-b'",
-   "line_sha256": "8646f3134711a1e3",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'P67-c'",
-   "line_sha256": "5f25b6c188474a38",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'P67-e'",
-   "line_sha256": "77eb9a8ce7eb23e6",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'P67-f'",
-   "line_sha256": "225193b096472887",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'P71'",
-   "line_sha256": "225193b096472887",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'P75'",
-   "line_sha256": "bca0294760a820d7",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'S3b'",
-   "line_sha256": "f8a3a083f2b457ba",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'V2'",
-   "line_sha256": "69860efeedd7b3e4",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'V3'",
-   "line_sha256": "69860efeedd7b3e4",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'V3'",
-   "line_sha256": "77eb9a8ce7eb23e6",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'W2'",
-   "line_sha256": "0139ce4dda984fd7",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'W2'",
-   "line_sha256": "5cb3e04f62b52733",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'W2a'",
-   "line_sha256": "f8a3a083f2b457ba",
-   "count": 2
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'W2b'",
-   "line_sha256": "0139ce4dda984fd7",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'W2b'",
-   "line_sha256": "5cb3e04f62b52733",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'W7'",
-   "line_sha256": "94d70c166fd4c37e",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'W9'",
-   "line_sha256": "bca0294760a820d7",
-   "count": 1
-  },
-  {
    "path": "docs/provenance.md",
    "message": "names the work code 'V2'",
    "line_sha256": "35eb35d58c20eb3d",
@@ -1559,30 +1085,6 @@
    "path": "docs/ratification.md",
    "message": "names the work code 'R1b'",
    "line_sha256": "ae992c40b252c074",
-   "count": 1
-  },
-  {
-   "path": "docs/setup.md",
-   "message": "names the work code 'K39'",
-   "line_sha256": "97e1ecfe49db4876",
-   "count": 1
-  },
-  {
-   "path": "docs/setup.md",
-   "message": "names the work code 'K42'",
-   "line_sha256": "fc2508c54057ed34",
-   "count": 1
-  },
-  {
-   "path": "docs/setup.md",
-   "message": "names the work code 'K45'",
-   "line_sha256": "fc2508c54057ed34",
-   "count": 1
-  },
-  {
-   "path": "docs/setup.md",
-   "message": "names the work code 'K46'",
-   "line_sha256": "561c35d4e1879b06",
    "count": 1
   },
   {

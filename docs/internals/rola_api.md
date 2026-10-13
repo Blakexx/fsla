@@ -64,9 +64,7 @@ stale mirror cannot satisfy the capacity `static_assert`; and <a id="decode-buil
 is the device-side fact a stale extension cannot fake ([`decode/decode_api.md`
 §build-stamp](decode/decode_api.md#build-stamp)).
 
-The tiled consumer's entries and the CUDA page-plan producer's eight are not registered and have not been since their
-kernels were deleted ([`DELETIONS.md`](DELETIONS.md)); the page table the carry reads is published by the torch arena in
-`rola/ops/paging.py`.
+The page table a kernel reads is published by the torch arena in `rola/ops/paging.py`; no device entry produces one.
 
 ## <a id="vmm-binding"></a>5. The VMM owner, by handle
 

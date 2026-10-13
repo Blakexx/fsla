@@ -1,8 +1,6 @@
 # `tools/lint` — every lint, its rule, and whether it gates
 
-Mirrors `tools/lint/` file for file. `docs/build.md`'s "Standards lint" section covers
-the first generation of these checks (the ast-grep rules, `lint_standards.py`,
-`run_clang_tidy.sh`); this page carries the whole roster and states, per lint, how it gates.
+Mirrors `tools/lint/` file for file: the whole roster, and, per lint, how it gates.
 
 **A GATE IS A CHECK SOMEBODY CAN SATISFY.** The gating set below is at zero on the tree. A lint the tree does not pass
 yet is not thereby wrong -- its findings are the work -- but refusing every commit until that work is done teaches
@@ -94,6 +92,42 @@ a case-set marker, and this one asks whether it is a `uniform_switch` at all —
 the form the constitution now requires. They find the same site from two directions,
 which is the corroboration that both are connected; reconciling them into one rule waits
 on the fix, so that the flip can decide which message a finding carries.
+
+## <a id="standards"></a>The standards lint, in detail
+
+**`ast_grep_gate.py`** scopes `ast-grep scan --config sgconfig.yml` to `csrc/`: a bare scan defaults to the whole repo
+and re-fires every rule's must-fire fixture under `tools/lint/fixtures/` as a gating error. Each rule's `message` names
+its standards section and incident; `--test-fixtures` is the separate self-test that each rule still fires on its own
+fixture.
+
+**`lint_standards.py`** carries what ast-grep cannot express: the unroll discipline (§6: a dynamic-bound loop in device
+code carries `#pragma unroll 1`, scoped to `__global__`/`__device__` bodies by brace counting), the torch include as a
+text belt to the ast-grep rule, a CTA or grid barrier inside a declared barrier-free region (`__syncwarp` is intra-warp
+and excluded), a committed doc, skill or script wrapping a command in an external `flock` on the GPU lock path (scoped
+to `docs/`, `.claude/skills/`, `measure/`, `tools/`, `CLAUDE.md` and `README.md`; `docs/KERNEL_STANDARDS.md` is exempted
+by name for its `cuda-gdb` recipe and its statement of `flock`'s semantics), the file-reading checks that were once
+tests (`check_supported_table`, `check_shard_partition`, `check_arch_coverage`, `check_vendored_pin`,
+`check_entmax_pin`, which import `rola` and `entmax` and so run from the worktree's own venv), and
+`check_repo_portability` (§17): every tracked file scanned for an absolute home-directory path, a citation of an
+out-of-repo journal by path, a real worktree path or a session's scratch path, with no allowlist (its own source is
+excluded by name, because its patterns spell what they catch). Every finding prints its section, `file:line` and the
+incident.
+
+<a id="compile-commands"></a>**The compile database.** `tools/lint/compdb.sh` reads an already-built tree's
+`build/temp/build.ninja` and writes `compile_commands.json`; both clang-tidy profiles read it, generating it from
+`build/temp` when absent, and FAIL rather than skip when there is no build (pre-commit is never green by absence):
+
+```bash
+pip install -e . --no-build-isolation      # if not already built
+tools/lint/compdb.sh                        # writes ./compile_commands.json
+tools/lint/run_clang_tidy.sh                # .clang-tidy on every host .cpp
+tools/lint/run_clang_tidy_device.sh         # clang-tidy-device.yaml on every device unit the build compiles
+```
+
+The device profile runs clang's CUDA frontend `--cuda-host-only` with the toolkit's `include/cccl` root added (nvcc adds
+it implicitly; clang does not), and a compiler error anywhere fails it: the parse is part of the gate, which is why the
+analyzer is pinned (a distro clang could not parse a torch-bearing unit and reported used parameters as unused). Both
+profiles were validated against planted findings, so a clean pass is the tool running, not an inert config.
 
 ## Fixtures
 

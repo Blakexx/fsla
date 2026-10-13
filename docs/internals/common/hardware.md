@@ -57,7 +57,7 @@ wavefront an SM), `atomic` and `atomic_wavefront` (a shared atomic instruction's
 wavefronts an SM), `mma.<kind>` (an MMA a scheduler) and `tax.<kind>.<class>` (what an instruction of the
 class adds to the kind's MMA chain, read by the issue-hiding gate, not by a choice). NVIDIA documents issue,
 the shared-memory bank rate and peak tensor rates; a shared atomic's cost and the taxes are measured
-([`smem_rates`](../tools/lab.md#smem-rates), `tensor_tax`).
+([`smem_rates`](../../lab/smem_rates.md), [`tensor_tax`](../../lab/tensor_tax.md)).
 
 <a id="check"></a>
 

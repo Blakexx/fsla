@@ -11,21 +11,17 @@ The rules most often violated by newcomers, restated:
   commented-out code, no names or comments referencing removed mechanisms.
   Reasoning for removals lives in docs/internals/DELETIONS.md and git —
   never at the site.
-- COMMENTS: code is self-documenting; the code IS the authoritative,
-  most-current statement of HOW — if you want how, read the code. A comment
-  may state only a constraint or invariant the code cannot express, in a
-  line or three. Mechanism narration, derivations, design essays, "what
-  this block does" — all of it lives in docs/ (docs/internals/ mirrors
-  csrc), which explains WHY and how pieces CONNECT, never how a body works.
-  A long docstring is the same defect as a long comment block. If you are
-  about to write a paragraph above code, you are writing a docs/ section in
-  the wrong file.
+- COMMENTS: code is self-documenting and authoritative for HOW. A comment states only a
+  constraint or invariant the code cannot express, in a line or three; reasons and
+  connections live in docs/ (docs/internals/ mirrors csrc). The rule in full:
+  docs/KERNEL_STANDARDS.md#comment-density.
 - DOCS ARE STATE: current truth written fresh; past states appear only as
-  design rationale ("why it is shaped this way"), never narrative.
-- The fp64 oracle (rola/reference) is the executable spec — crown jewels;
+  design rationale ("why it is shaped this way"), never narrative. The map of
+  the docs: docs/README.md.
+- The fp64 oracle (`rola/ops/naive.py`) is the executable spec — crown jewels;
   changes go through the dual-run protocol, no exceptions.
 - Never run unscoped `pytest tests/`. Every GPU entry point takes
-  `gpu_lock()` itself (`rola_devtools.locks.gpu`, K46) — invoke GPU commands BARE,
+  `gpu_lock()` itself (`rola_devtools.locks.gpu`) — invoke GPU commands BARE,
   never wrapped in an external `flock` on the same lock path (self-deadlocks).
 
 ## Skills: procedures that ship with the repo (KERNEL_STANDARDS §31)

@@ -1,8 +1,8 @@
 # `csrc/rola/src/decode/decode_api.cuh` — the decode path's host-facing declarations
 
-The ONLY decode header `csrc/rola/rola_api.cpp` includes. It declares six
+<a id="note-l3"></a>The ONLY decode header `csrc/rola/rola_api.cpp` includes. It declares seven
 symbols and carries no definitions: the two capacity accessors, the residency
-accessor, the build stamp, the arm list and `rola_decode_forward`. The decode
+accessor, the build stamp, the arm list, the phase-ledger bind and `rola_decode_forward`. The decode
 path itself is documented in
 [`decode.md`](decode.md); this file exists for a compilation reason, and the
 reason is the whole content of this doc.
@@ -26,7 +26,7 @@ audience instead.**
 
 ## <a id="bound-surface"></a>2. The bound surface
 
-`rola_decode_capacity()` exists so a Python test can assert the C++ level-width
+<a id="rola-decode-capacity"></a>`rola_decode_capacity()` exists so a Python test can assert the C++ level-width
 capacity against `rola.routing.topology.MAX_BRANCH_WIDTH`. A `static_assert`
 cannot read a Python constant, so the pair of them is what makes the
 producer/decode capacity relation CHECKABLE rather than merely written down.
@@ -36,14 +36,14 @@ separate claim from the capacity is [`decode.md`
 §33](decode.md#producer-width-mirror), and the capacity gate itself is
 [`decode.md` §6](decode.md#level-width-capacity).
 
-<a id="residency"></a>`rola_decode_residency()` returns the step's DECLARED CTAs per SM,
+<a id="residency"></a><a id="roladecoderesidency"></a>`rola_decode_residency()` returns the step's DECLARED CTAs per SM,
 read off the same `constexpr` the kernel's `__launch_bounds__` are built from. The host's
 grid policy sizes ONE WAVE from it ([`decode.md` §30](decode.md#declared-residency)), and it
 is bound rather than mirrored in Python for the reason the whole bound surface exists: a
 launch bound is exactly the constant that drifts when it is written down twice. It takes no
 arm: at one CTA an SM every arm runs at the same 128-register cap.
 
-<a id="arm-subset"></a>**THE ARM LIST IS DATA, AND A BUILD MAY NAME A SUBSET OF IT.**
+<a id="arm-subset"></a><a id="roladecodearms"></a>**THE ARM LIST IS DATA, AND A BUILD MAY NAME A SUBSET OF IT.**
 the decode family's instantiation matrix is the product `d_v(2) x D(4) x decay(2)`, and
 `decode.cu` writes it out one row per arm (`DECODE_ARM_<i>`) so a BUILD can name a subset
 by index: `ROLA_DECODE_ARMS=5` compiles arm 5 and nothing else
@@ -70,7 +70,8 @@ gates prove EVERY ratified instantiation is present, which a subset contradicts 
 construction, so `setup.py` skips exactly those two gates behind a banner when
 `ROLA_DECODE_ARMS` is set — and nowhere else.
 
-<a id="build-stamp"></a>`rola_decode_build_stamp()` is a DEVICE-SIDE FACT a stale `.so` at the right
+<a id="build-stamp"></a>
+<a id="roladecodebuildstamp"></a>`rola_decode_build_stamp()` is a DEVICE-SIDE FACT a stale `.so` at the right
 path cannot fake: it launches a one-thread kernel, compiled with this translation unit,
 that folds four facts into one `int64_t` in a positional scheme and reads it back:
 
@@ -84,17 +85,22 @@ BINARY actually built from, which is the fact a stale extension can silently dis
 about (the standing "extension trap" lesson). It is bound because a Python-side
 recomputation of the same quantities would just be a second mirror with its own drift.
 
-THE ENUMERATION-SHAPE FIELD IS THE MOST SIGNIFICANT ONE, AND IT WAS ADDED FOR A MEASURED
-REASON: the union-of-products enumeration ([`decode_lattice.md`](decode_lattice.md#the-terms))
-redefined what every unit index in this path MEANS while moving neither struct's size and
-neither ceiling, so the three older fields alone would have certified the new binary as
-the old one. A stamp that cannot separate two binaries is not a stamp. The three older
-fields still divide out unchanged, which is why the inversion in
-`tests/unit/test_decode_capacity.py` only gained a term.
+THE ENUMERATION-SHAPE FIELD IS THE MOST SIGNIFICANT ONE: a change to the enumeration
+([`decode_lattice.md`](decode_lattice.md#the-terms)) can redefine what every unit index in
+this path MEANS while moving neither struct's size nor any ceiling, and a stamp without it
+would certify the new binary as the old one. A stamp that cannot separate two binaries is
+not a stamp. `tests/unit/test_decode_capacity.py` inverts the stamp term by term.
 
-<a id="the-step"></a>`rola_decode_forward` is the single data-plane entry, and it launches
+<a id="the-step"></a><a id="note-l43"></a>`rola_decode_forward` is the single data-plane entry, and it launches
 ONE kernel: the fold, the `(k, m)` lattice's factor tables, the walk and the step's OWN
-per-batch-head residency verdict are phases of it. Its operands are the caller's RAW
+per-batch-head residency verdict are phases of it. There is no probe launch in front of it:
+the write set the walk enumerates is the set the residency test reads, so the test is a pass
+over shared memory. The verdict (`growth`, `done`, and the `growth_any` reduction the host
+reads) sits beside the write-atom set it was reached from (`atom_bits`, what a host
+admission plans from), and under a slack pool a growth step admits itself.
+`write_dense` is the bundle's flag that the innermost level's write side is dense
+(`docs/api.md` §2.1), which lets the write term walk whole atoms (`decode.md#whole-atoms`). Its operands are the
+caller's RAW
 `[B, 1, H, *]` views — `read`, `write`, `g_write`, `v`, plus the per-read-level
 `normalize` flags and each side's dense levels (`floor_read`, `floor_write`, a bit a level) — because the fold is inside the kernel and there is no operand plane
 to hand it ([`decode_fold.md`](decode_fold.md)). `heads` is not an argument: `v`'s own
@@ -117,8 +123,7 @@ between the two backings, and it is what the entry validates differently:
   only the atoms a plan committed.
 
 Slot VALUES are not bounds-checked. That would be a device-side read of the table, and
-the plan owns the bound — the same division of labour the tiled consumer's chunk.cu page_table()
-states. The address the kernel builds from a slot, and what a `-1` means, are
+the plan owns the bound. The address the kernel builds from a slot, and what a `-1` means, are
 [`decode.md` §4](decode.md#paged-address).
 
 ## <a id="the-verdict"></a>4. The verdict buffers — required whichever backing this is
@@ -147,72 +152,6 @@ batch-head's are spent. The head's owner writes its claim into the page table it
 that a pool requires `page_table` (a dense state has no table to admit into). The design and
 the device-side claim are [`paging/paging.md`
 §the-slack-pool](../paging/paging.md#the-slack-pool).
-
-## Comments moved from source
-
-Verbatim `//:` prose blocks from `csrc/rola/src/decode/decode_api.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
-
-<a id="rola-decode-capacity"></a>
-### `rola_decode_capacity`
-
-THE BOUND SURFACE. The two accessors exist so a Python test can assert the C++
-level-width capacity against `rola.routing.topology.MAX_BRANCH_WIDTH` -- a
-`static_assert` cannot read a Python constant:
-docs/internals/decode/decode_api.md#bound-surface
-
-<a id="note-l43"></a>
-### near line 43
-
-THE WHOLE STEP IN ONE LAUNCH -- fold, factor, walk, AND ITS OWN ADMISSION QUESTION --
-over the caller's RAW `[B, 1, H, *]` views. There is no operand plane between the
-producer and the walk, and no probe launch in front of it: the write set the walk
-enumerates is the set the residency test reads, so the test is a pass over shared
-memory. `lattice_k`/`lattice_m` name the `(k, m)` box the state plane is written in --
-the leaf order travels with the plane rather than being assumed. `write_dense` is the
-bundle's flag that the innermost level's write side is dense (`docs/api.md` §2.1), which lets
-the write term walk whole atoms (`decode.md#whole-atoms`).
-The verdict is PER BATCH-HEAD (`growth`, `done`, and the `growth_any` reduction the
-host reads) beside the write-atom set it was reached from (`atom_bits`, which is what
-a host admission then plans from), and under a slack pool a growth step admits
-ITSELF: docs/internals/decode/decode_api.md#the-step
-
-## More comments moved from source
-
-Verbatim trailing/banner `//` comments from `csrc/rola/src/decode/decode_api.cuh` condensed at their call site into a short pointer.
-
-<a id="note-l3"></a>
-### near line 3
-
-THE DECODE PATH'S HOST-FACING DECLARATIONS, and the ONLY decode header
-`csrc/rola/rola_api.cpp` includes.
-
-The split from `decode.cuh` is mechanical and looks gratuitous until you hit it:
-`rola_api.cpp` is HOST-ONLY, and `decode.cuh` carries `__device__` helpers the host
-compiler cannot parse. ONE HEADER PER AUDIENCE, rather than an `#ifdef __CUDACC__`
-that would make one header mean two things to two compilers.
-
-The full argument, and what each bound symbol claims: docs/internals/decode/decode_api.md
-
-<a id="roladecoderesidency"></a>
-### `rola_decode_residency`
-
-THE STEP'S DECLARED RESIDENCY in CTAs per SM, so the grid policy sizes one wave from
-the launch bound itself rather than from a python mirror of it:
-docs/internals/decode/decode_api.md#residency
-
-<a id="roladecodebuildstamp"></a>
-### `rola_decode_build_stamp`
-
-THE DEVICE-SIDE BUILD STAMP, a fact only the loaded binary can produce. A path check
-or a hash of the sources cannot catch a stale `.so` at the right path:
-docs/internals/decode/decode_api.md#build-stamp
-
-<a id="roladecodearms"></a>
-### `rola_decode_arms`
-
-THE ARMS THIS BINARY CARRIES, `[d_v, D, decay]` per row. A full build lists the whole
-declared matrix; an ITERATION build (`ROLA_DECODE_ARMS`) lists its subset and is not
-shippable: docs/internals/decode/decode_api.md#arm-subset
 
 ## <a id="decode-ledger-bind"></a>`rola_decode_ledger_bind`
 

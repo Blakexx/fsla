@@ -987,7 +987,7 @@ accesses other than `cp.async` inside an innermost MMA loop; the kernels built b
 replaces it, and the list only shrinks; a lab variant that keeps one on purpose declares STEP_XU or STEP_GLOBAL.
 `tools/lab.py run` also records no variant whose output check failed, and (past the experiments recorded before the
 rule, its named debts) none without a check or a stated reason, and builds no MMA kernel without a budget or exemption.
-Measured: `read_image` (docs/internals/tools/lab.md#read-image).
+Measured: `read_image` (docs/lab/read_image.md).
 
 ## <a id="s30"></a>§30 — SHARED MEMORY IS CONFLICT-FREE BY CONSTRUCTION (law, 2026-10-11, from Blake's "Should we create principles to ensure things are consistently designed to minimize bank conflicts always from ground up")
 The readout lab's bank conflicts were designed in by accident: the panel's pitch suited one access shape and not the
@@ -1014,7 +1014,7 @@ three cut conflicts from 1.6-2.1 an MMA to 0.02-0.03 and wavefronts 25%, with no
    against ncu's counters once a layout (measured 2026-10-11: `ldmatrix` and atomics exact, entry loads within 0.03).
 6. CONFLICTS ARE PRICED ACROSS DENSITIES: dense, sparse and the W = 1024 lists each, since a data-dependent conflict
    rate moves with the distribution (§R10).
-Measured: `read_image`, `read_w1024` (docs/internals/tools/lab.md#read-image); the model:
+Measured: `read_image`, `read_w1024` (docs/lab/read_image.md, docs/lab/read_w1024.md); the model:
 docs/internals/tools/bank_model.md.
 
 ## <a id="r22"></a>CONSTITUTION addendum (Blake, 2026-10-10): R22 — DEGRADE SMOOTHLY, SCALE, PARTITION INTO INDEPENDENT UNITS

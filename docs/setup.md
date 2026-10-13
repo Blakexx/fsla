@@ -2,14 +2,14 @@
 
 This page is the whole story for a DEVELOPER's machine: someone who is going to
 compile the kernels, run the battery, and use the reading/searching/profiling
-tools the queue's briefs assume. It is not for a USER of the package — a user
+tools the docs and skills use. It is not for a USER of the package — a user
 installs the prebuilt wheel (`README.md`), takes the ratified manifest inside it
 on faith, and never runs anything in this file.
 
 The container (`Dockerfile`, `.devcontainer/devcontainer.json`) exists because
 the closed-world build (`docs/build.md`) is gated on an EXACT `ptxas` string, an
-exact `sccache`, and now an exact set of the surrounding tools every brief
-names by name (`clangd`, `ast-grep`, `hyperfine`, ...). Reproducing all of that
+exact `sccache`, and an exact set of the surrounding tools the docs and skills
+name (`clangd`, `ast-grep`, `hyperfine`, ...). Reproducing all of that
 by hand on a new machine is exactly the kind of silent drift the rest of this
 repository refuses; the container makes it one build instead of a checklist.
 
@@ -120,7 +120,7 @@ were never visible inside. Generating the mounts from the dev config removes the
 
 ## 3b. Building on the bare host (no container) needs `mold`
 
-K39 (Blake ruling, 2026-08-28): `mold` is THE extension's linker unconditionally
+`mold` is THE extension's linker unconditionally (Blake, 2026-08-28)
 -- `setup.py` refuses to build without it, no fallback to `ld.bfd`/`ld.gold`
 (`tools/mold_toolchain.py`, `tools/mold_pin.json`). On a bare host with no root
 and no apt package for it (this repo's dev box: `apt-cache policy mold` has no
@@ -130,101 +130,23 @@ release (`bin/mold` beside `bin/ld.mold`, which `-fuse-ld=mold` selects) under
 `host.tools_dir`, and records it as `toolchain.mold`. The container and the host
 link with the byte-identical binary.
 
-## 3c. The pointer venv, the fast path (many worktrees on one bare host)
+## 3c. The pointer venv: many worktrees on one bare host
 
-K46 (2026-08-29, "agents stop reverse-engineering it from sibling venvs" --
-recurring SKILLS FEEDBACK from K42 and K45). Sections 3b/4 are the FIRST build
-of a single checkout. This is the DIFFERENT question a bare host with many
-concurrent git worktrees (`worktrees-live-in-one-folder`) actually has: each
-worktree needs its OWN `rola` editable install (its own compiled `.so`,
-matching its own SHA and its own arm subset), but reinstalling `torch` +
-`einops` + `entmax` + the rest of `requirements.lock` from scratch for every
-worktree is minutes of wasted work repeated dozens of times for bytes that are
-identical across all of them. The POINTER VENV is a small venv per worktree
-that BORROWS a shared base venv's already-installed packages and adds only
-what is actually per-worktree: this checkout's own root, and this checkout's
-own editable-installed extension.
+Each worktree needs its OWN editable `rola` (its own compiled `.so`, matching its own commit), but reinstalling the
+whole `requirements.lock` for every worktree is minutes of identical bytes. A POINTER VENV borrows a shared base venv
+(`workspace.base_venv`, built once with the full `requirements.lock`) and adds only this checkout's root and its own
+editable extension. `python tools/dev.py worktree <name> <sha>` builds one
+([`internals/tools/dev.md`](internals/tools/dev.md)),
+and holds the three invariants that make it safe:
 
-`python tools/dev.py worktree <name> <sha>` does the whole sequence below in one
-call (`docs/internals/tools/dev.md`); read it before doing this by hand a second time.
+- **The venv is seeded** (`uv venv --seed`), so a bare `pip` inside it never resolves to another python's.
+- **The `.pth` order puts the worktree first**: `site.py` reads `.pth` files in filename order, so the worktree's root
+  and its editable install resolve before the base venv's copy of anything with the same name.
+- **The editable build is `--no-deps`**: the base venv's `torch` is the dependency resolution, and a second `torch`
+  pulled into the pointer venv would compile the extension against one ABI and import it under another.
 
-**1. The shared base venv, built ONCE** (recorded as `workspace.base_venv` in the dev config):
-
-```bash
-uv venv --python 3.11 --seed /path/to/shared/base-venv
-/path/to/shared/base-venv/bin/python -m pip install -r requirements.lock
-```
-
-This is a normal, complete venv — nothing pointer-shaped about it yet. It is
-the thing every worktree's pointer venv borrows from, so building it well once
-(the full `requirements.lock`, the right CUDA-enabled `torch`) is what makes
-every later worktree venv cheap.
-
-**2. Per worktree, a new SEEDED venv:**
-
-```bash
-uv venv --python 3.11 --seed /path/to/worktrees/venv-<name>
-```
-
-**FOOTGUN 1 — a seedless venv silently falls through to a system python.**
-Omitting `--seed` leaves no `pip` binary inside the new venv at all. A later
-bare `pip install ...` (as opposed to `<venv>/bin/python -m pip install ...`)
-then resolves to whatever `pip` happens to be first on `PATH` OUTSIDE the
-venv — installing into a completely different python's site-packages with no
-error, no warning, and an import that "worked" moments ago now resolving to
-the wrong build. This is the same trap family as the device-side-stamp
-extension trap (`extension-trap-device-side-check`): nothing about the venv's
-existence proves what actually received the install. `--seed` (or always
-spelling the install as `python -m pip install`) is not optional.
-
-**3. Two `.pth` files in the new venv's `site-packages`, pointing OUT:**
-
-```bash
-SITE=/path/to/worktrees/venv-<name>/lib/python3.11/site-packages
-echo /path/to/worktrees/<name>                              > "$SITE/aa_rola_<name>.pth"
-echo /path/to/shared/base-venv/lib/python3.11/site-packages  > "$SITE/zz_rola_base.pth"
-```
-
-`site.py` processes `.pth` files in the sorted order of their filenames, so the
-`aa_`/`zz_` prefixes are load-bearing, not decoration: this worktree's own root
-(`aa_...pth`) and its own editable install (`__editable__...pth`, added by step
-4 below, which alphabetically sorts after both) resolve BEFORE the shared base
-venv's copy of anything with the same name. A worktree's own compiled `rola`
-extension is what gets imported, never the base venv's.
-
-**4. The in-tree editable build, `--no-deps`:**
-
-```bash
-cd /path/to/worktrees/<name>
-/path/to/worktrees/venv-<name>/bin/python -m pip install -e . --no-deps --no-build-isolation
-```
-
-**FOOTGUN 2 — `pip install -e .` without `--no-deps` pulls a fresh,
-incompatible torch and yields an ABI-mismatched `.so`.** `pyproject.toml`
-declares `torch` as a dependency; without `--no-deps`, `pip`/`uv pip` resolves
-and installs its OWN copy of `torch` into the pointer venv — not necessarily
-the same build (CPU-only, a different CUDA minor version, a different ABI) as
-the one the shared base venv already carries and the extension is about to
-compile its C++/CUDA ABI against via `torch.utils.cpp_extension`. The result
-imports without error and then crashes or misbehaves at the first real call,
-because the compiled `.so` and the `torch` actually resolved at import time
-were built against two different ABIs. The shared base venv's `torch` (reached
-through the `zz_rola_base.pth` file in step 3) IS the dependency resolution
-here; `--no-deps` is not optional either. `setup.py` takes the machine-wide
-host budget itself (`docs/build.md`, `rola-build` skill) — a pointer-venv build
-is still a build, and still shares the machine-wide compile budget.
-
-Verify with `python -c "import rola; from rola_cu13._build_config import
-BUILD_CONFIG; print(BUILD_CONFIG['archs'])"` against the new venv's python —
-the device-side stamp, never a path check (`extension-trap-device-side-check`)
--- but run it FROM the new worktree's own directory. **FOOTGUN 3, found
-writing the worktree tool: `python -c` puts `''` (the
-process's OWN current directory) first in `sys.path`.** A verification launched
-from inside a DIFFERENT rola worktree (which also carries a `rola/` package)
-resolves `import rola` to THAT worktree instead of the new one — `''` beats
-every `.pth`-added path because it is `sys.path[0]`, checked before any of
-them. `tools/dev.py worktree` runs its verification from inside the new worktree
-for exactly this reason; do the same by hand.
+It verifies from inside the new worktree, by the device-side stamp: `python -c` puts its own working directory first
+on `sys.path`, so a check launched from another worktree imports that worktree's `rola`.
 
 ## 4. First build of the SHIPPED set
 
@@ -291,7 +213,7 @@ stands in for: that the container's compile produced a binary carrying the arms 
 | `mold` 2.42.0 | `tools/dev.py init --image` from `tools/mold_pin.json`, verified | the extension's only linker |
 | `clang-tidy` 22.1.8 | `tools/dev.py init --image` from `tools/clang_tidy_pin.json` (a wheel with its resource headers), verified | both clang-tidy profiles' analyzer, on every translation unit (`docs/build.md`) |
 | `graphviz`, `sqlite3` | apt | dependency/DAG rendering, the store's record index inspection |
-| `clangd`, `clang-tools-14` (clang-query) | apt | the editor/AST tooling briefs assume is present |
+| `clangd`, `clang-tools-14` (clang-query) | apt | the editor and AST tooling the skills use |
 | `universal-ctags` | apt | cross-referencing the `csrc/` tree |
 | `jq`, `fd` (via `fd-find`) | apt | the shell one-liners this repo's own docs use |
 | `hyperfine` | pinned GitHub release, sha256-verified | ad-hoc wall-clock comparisons outside the declared timing sessions |

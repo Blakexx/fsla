@@ -1,7 +1,7 @@
 # `carry/carry_api.cuh` — the carry's host entries
 
-Mirrors `csrc/rola/src/carry/carry_api.cuh`, the declarations the pybind translation unit binds
-(`csrc/rola/rola_api.cpp`); the Python caller is `rola/ops/carry.py`.
+Mirrors `csrc/rola/src/carry/carry_api.cuh`, the declarations the operator registration unit declares on the stable
+ABI (`csrc/rola/rola_api.cpp`); the Python caller is `rola/ops/carry.py`.
 
 <a id="carry-forward"></a>
 ## `carry_forward`

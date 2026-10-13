@@ -9,7 +9,7 @@ Vocabulary, defined here and used unqualified below: `N` = leaf count;
 `cols` = `d_v` plus one mass column (the ratio readout's denominator);
 `BH` = `batch * heads`; **atom** = 16 consecutive leaves in canonical leaf order,
 which is the page granule; **slot** = the physical page an atom is mapped to;
-`BC` = leaves one owner block owns.
+`BC` = the carry's box in leaves, the arena's allocation extent.
 
 ## The two axes: strategy vs backing
 
@@ -93,32 +93,31 @@ what every kernel derives its addressing from:
 
 **PREFILL AND DECODE SHARE ONE ADMISSION LAW: THE DESCRIPTOR** (Blake, 2026-08-29).
 Decode accepts exactly what prefill accepts — the same `D`, the same per-level `B_l`
-(powers of two at or above 16), the same `N = prod_l B_l`, the same `DV`, bf16 operands,
+(powers of two at or above 16), the same `N = prod_l B_l`, the same `DV`, the same operand format,
 and therefore the same topologies. There is no decode-only shape, no decode-only
 tolerance and no decode-only admission branch anywhere, tests included: a second
 admission law is a second contract to keep in step with the first, and the two kernels
 partition ONE paged state.
 
 **Later calls are CHECKED against it, and a mismatch is a refusal at the seam naming
-the field that differs** — at `_kernel_entry` for a chunk call, at `_decode_entry` for a
-step. This REPLACES the old "later calls are NOT checked" clause and the accepted hazard
-that went with it: two states of the same `N` and `cols` built from DIFFERENT widths
-have different leaf orders, and interchanging them used to be silent. It is refused now,
-because the leaf order, the page rectangle and the value width are precisely what a
+the field that differs** — at `_kernel_entry` for a prefill call, at `_decode_entry` for a
+step. Two states of the same `N` and `cols` built from DIFFERENT widths have different
+leaf orders, and interchanging them is refused, because the leaf order, the page rectangle and the value width are
+precisely what a
 kernel addresses bytes with — a state that disagrees with the call is not a risk for the
 caller to own, it is a wrong address. Resubmitting an older state, sharing one between
 two sequences and continuing after a `clone` stay legal and the caller's semantics to
 own. The descriptor is fixed for the state's life and travels with the
 `LayerContinuation`; a re-layout is an explicit state op, never something a call does.
 
-**C1a PINS THIS CONTRACT WITHOUT A KERNEL BODY**
-(`tests/unit/test_state_contract.py`): the seven-field list above, each field's own
+**`tests/unit/test_state_contract.py` PINS THIS CONTRACT WITHOUT A KERNEL BODY**: the seven-field list above, each
+ field's own
 refusal, and that `_kernel_entry` (prefill) and `_decode_entry` (decode) both build the
 call's presented format through `_format_of` and check it through `StateFormat.check` --
 the same two calls, never a second comparison at either seam, which is the ADMISSION LAW
 paragraph above made structural.
 
-**PAD (card `C_CLEAN_SLATE.md`'s C2) KEEPS THIS DESCRIPTOR AT SEVEN FIELDS.** The
+**PADDING KEEPS THIS DESCRIPTOR AT SEVEN FIELDS.** The
 logical-vs-padded split (`b_l` the caller's width, `B_l` the padded, shipped one) lives
 at the op call surface (`rola.ops.padding`, `docs/internals/padding.md`), never here:
 `StateFormat.B` still carries only the lawful, padded width, and `_format_of` still
@@ -257,16 +256,14 @@ reason it is worth stating: a second whole-written `[BH, N, d_v + 1]` fp32 plane
 hundreds of megabytes at the parity curve's `N`, it scales with the growth axis, and a
 transient whose only job is to be swapped in buys nothing the caller can observe.
 
-**What makes it safe is the CTA structure, not a convention.** The owner blocks tile the
-leaf space exactly, so each atom belongs to exactly one CTA and, inside it, to one slot
-group: the deleted consumer's `atom_first()` was `blockIdx.y`, the block's BC-aligned leaf
-base and the group's offset, and the entry fold and the store epilogue iterate the SAME
-`kAtoms` from the SAME base. The entry fold runs ONCE, in the prologue, before the first
-super-chunk is staged; the store runs ONCE, in the epilogue, after the last drain. So no
-CTA ever reads an atom another CTA may already have stored, and no CTA reads its own
-after storing it. Nothing in the walk between them touches the plane — which is why a
-short or ragged final super-chunk changes none of this: the state fold sits outside the
-chunk walk entirely.
+**What makes it safe is the CTA structure, not a convention.** The boxes tile the leaf
+space exactly, so each atom belongs to exactly one CTA. A kernel with state I/O reads its
+box's atoms ONCE, before its first window, and stores them ONCE, after its last, from the
+same base, so no CTA reads an atom another CTA may already have stored and no CTA reads
+its own after storing it. That is the contract the carry's entry and exit sweeps owe;
+the rebuilt carry has no state I/O yet ([`docs/open-work.md`](../open-work.md)). The decode
+step updates in place under its own argument: its write positions partition the leaves
+([`decode/decode.md#determinism`](decode/decode.md#determinism)).
 
 **The cost is that no stateful call is transactional.** A launch that faults part way
 through the grid leaves the plane part advanced, in either backing. Recovering a
