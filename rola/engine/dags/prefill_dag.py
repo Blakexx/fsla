@@ -61,15 +61,17 @@ def support_modes(f):
 @node(gives=("liveness", "unions", "list_exp", "layout", "statics"), needs=("routes", "values"), stream="main")
 def facts(f):
     """THE FACTS PASS over the bundle, one launch: both sides' class-1 words and their tile unions, the write lists'
-    exponents, the layout the words are read in -- the topology's padded widths -- and the two sides' statics, their
-    dense levels unread (`rola.ops.facts`)."""
+    exponents and each side's lists in the form of the carry arm the carve selects, the layout the words are read in --
+    the topology's padded widths -- and the two sides' statics, their dense levels unread (`rola.ops.facts`)."""
+    from rola.engine.carve import plan_carve
     from rola.ops import carry as carry_ops
     from rola.ops import facts as facts_ops
 
     routes = f["routes"]
     layout = facts_ops.call_layout(routes)
     statics = facts_ops.call_statics(routes, layout)
-    out = facts_ops.facts(routes, f["values"], layout, *statics)
+    carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, f["values"].v.shape[-1])
+    out = facts_ops.facts(routes, f["values"], layout, *statics, carry_ops.form(carry_ops.arm_key(carve)))
     return carry_ops.LivenessWords(words=out.words), out.unions, out.list_exp, layout, statics
 
 

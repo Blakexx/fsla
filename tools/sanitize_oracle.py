@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The compute-sanitizer NAMED gate on the facts, intra, decode, produce and entmax oracle cells.
+"""The compute-sanitizer NAMED gate on the facts, carry, intra, decode, produce and entmax oracle cells.
 
 `docs/testing.md`'s "sanitizer lane" section records the shape (a SCHEDULED lane
 over a named subset, never a PR gate -- the tools cost one to two orders of
@@ -14,7 +14,7 @@ This is that measurement, promoted from an ad-hoc invocation (recorded once, by
 hand, in FINDINGS `## PROBE-K35` under "memcheck on paging") to a script anyone
 can run and CI can schedule: `racecheck`/`synccheck`/`initcheck` (memcheck already
 ran, ad hoc, on paging -- K39 card) against ONE named oracle cell per family
-(facts, intra, decode, produce, entmax), each run as its own
+(facts, carry, intra, decode, produce, entmax), each run as its own
 `compute-sanitizer`-wrapped pytest process so a hang or an error in one tool
 cannot block another, under the GPU lock every campaign shares.
 
@@ -87,13 +87,18 @@ class Family:
 #: `-k`-free ids: each row names ONE parametrization so a pair is one launch, not a
 #: whole file serialized under the heaviest instrumentation this repo has.
 _FAMILIES = {
-    #: THE FACTS PASS is the one bit-exact device fact the whole carry line rests on:
-    #: its shared-memory transpose and window reduction, gated against the pure-torch
-    #: model on packed views with a dense level and a tail word.
+    #: THE FACTS PASS is the one bit-exact device fact the whole carry line rests on: the vote's transposes, the
+    #: coloring's claims and quota rounds, the lists' walks and their tables, on both sides' lists at two levels of
+    #: unequal width and a tail word.
     "facts": Family(
         test="tests/integration/test_facts_pass.py::"
-             "test_the_words_are_the_model_bit_for_bit[True-dense1-widths2-40]",
+             "test_the_lists_are_the_model_bit_for_bit[alternating-widths3-33]",
         kernel="rola::facts::rola_facts_forward", present=True),
+    #: THE CARRY on the facts pass's final-form lists: the readout ring and the image's parts, the fold ring, the
+    #: staged heads, the gap slots' zero-filled rows -- one launch of the even arm over four windows.
+    "carry": Family(
+        test="tests/oracle/test_carry_fold.py::test_the_fold_is_the_reference_per_slot[0-0]",
+        kernel="rola::carry::carry_forward", present=True),
     #: THE INTRA KERNEL alone on the bundle: the stage buffers' full/empty barriers, the reader's parts, the value
     #: tile's hand-off and the deposit's staging, at both digit counts -- one launch.
     "intra": Family(
@@ -121,13 +126,11 @@ _FAMILIES = {
 
 _FAMILY_TESTS = {name: row.test for name, row in _FAMILIES.items()}
 
-#: memcheck is NOT re-run here: it already ran (ad hoc) on paging and is recorded
-#: in FINDINGS; the K39 card's own text is "memcheck already runs on paging" --
-#: this script's job is the three tools that never had ANY committed invocation.
-_TOOLS = ("racecheck", "synccheck", "initcheck")
+#: THE TOOLS (docs/KERNEL_STANDARDS.md#sanitizer): memcheck, synccheck and initcheck by default.
+_TOOLS = ("memcheck", "racecheck", "synccheck", "initcheck")
 #: RACECHECK IS DEFERRED (Blake, 2026-10-01): out of the default run for every kernel, runnable only by an explicit
 #: `--tool racecheck`, until it is taken up again (docs/testing.md#the-sanitizer-lane).
-_DEFAULT_TOOLS = ("synccheck", "initcheck")
+_DEFAULT_TOOLS = ("memcheck", "synccheck", "initcheck")
 
 #: entries here are (family, tool) pairs with a recorded reason, mirroring
 #: `docs/testing.md`'s "committed suppressions file, and an explicit skip-list

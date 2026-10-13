@@ -15,7 +15,7 @@ against the state the call is handed. `rola.rola_op` validates the context in th
 | `nodes.classify_call` | `call_class` | the engagement bits: state in, state out, paged |
 | `rules.mask` | `mask` | the band: stateless or stateful |
 | `support_modes` | `modes` | per level, which sides can hold exact zeros, off the bundle's `sparse` flags (`docs/api.md` §2.1) |
-| `facts` | `liveness`, `unions`, `list_exp`, `layout`, `statics` | THE FACTS PASS over the bundle, one launch: both sides' class-1 words and their tile unions, the write lists' exponents, the layout the words are read in and the two sides' statics (`rola.ops.facts`) |
+| `facts` | `liveness`, `unions`, `list_exp`, `layout`, `statics` | THE FACTS PASS over the bundle, one launch: both sides' class-1 words and their tile unions, the write lists' exponents and each side's lists in the form of the carry arm the carve selects, the layout the words are read in and the two sides' statics (`rola.ops.facts`) |
 | `activity` | `atom_bits` | the per-atom `WRITTEN | READ` byte, folded from the words (`rola.engine.facts.liveness.page_bits`) |
 | `box` | `bc` | the carry's box, the arena's allocation extent |
 | `residency` (stateful) | `state_in`, `arena` | the state's entry plane, this call's write atoms committed |

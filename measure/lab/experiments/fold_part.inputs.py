@@ -103,19 +103,19 @@ def write(directory: Path) -> list[str]:
     import torch
 
     from measure.cells import by_name, realize
-    from measure.subjects import bundle_of
+    from measure.subjects import bundle_of, facts_form
     from rola.ops import facts as facts_ops
 
     spec = by_name(CELL)
     routes, values, layout, statics = bundle_of(spec, realize(spec), slice(0, TOKENS))
-    facts = facts_ops.facts(routes, values, layout, *statics)
+    facts = facts_ops.facts(routes, values, layout, *statics, facts_form(spec))
     lists = facts_ops.side_lists(facts, "write")
-    records = lists.slot.as_strided((*lists.slot.shape, 4), (*lists.slot.stride(), 1))[0].contiguous()
+    records = lists.entries[0].contiguous()
     windows, width = records.shape[0], records.shape[1]
     groups = lists.count.shape[-1]
     header = struct.pack("<4i", 0x444C4F46, windows, width, groups)
     body = [records.cpu().numpy().tobytes(), lists.at[0].contiguous().cpu().numpy().tobytes(),
-            lists.count[0].contiguous().cpu().numpy().tobytes()]
+            lists.count[0].to(torch.int16).contiguous().cpu().numpy().tobytes()]
     (directory / "lists.bin").write_bytes(header + b"".join(body))
     host = records.cpu().numpy().view("uint16").reshape(windows, width, -1, 4)
     ordered, heads, packed = _ordered(host, lists.at[0].cpu().numpy().view("uint16"))

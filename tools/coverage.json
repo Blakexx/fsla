@@ -10,12 +10,8 @@
  },
  "kernels": {
   "carry_kernel": {
-   "oracle": {
-    "owed": "no carry-vs-oracle test: the old one was deleted with the old carry; the new kernel's lands with its components"
-   },
-   "sanitizer": {
-    "owed": "no sanitizer row launches it: the old rows named the deleted oracle test; tools/sanitize_cell.py drives it"
-   },
+   "oracle": "tests/oracle/test_carry_fold.py::test_the_fold_is_the_reference_per_slot",
+   "sanitizer": "carry",
    "budget": "tools/budgets/carry.json",
    "phases": "tools/phase_ledger.py",
    "ratified": "manifest",
@@ -120,10 +116,10 @@
    }
   },
   "facts_pass": {
-   "oracle": "tests/integration/test_facts_pass.py::test_the_words_are_the_model_bit_for_bit",
+   "oracle": "tests/integration/test_facts_pass.py::test_the_lists_are_the_model_bit_for_bit",
    "sanitizer": "facts",
    "budget": {
-    "owed": "the facts pass's budget line is on its plan card (the int8 rebuild's facts line); the region ledger's file lands with its optimization pass"
+    "owed": "the line and its per-phase instructions are docs/internals/facts/facts.md#budget, missed as measured there; tools/budgets/facts.json lands with the form that meets it"
    },
    "phases": "tests/integration/test_facts_pass.py::test_a_bound_ledger_books_every_phase_and_changes_nothing",
    "ratified": {

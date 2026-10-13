@@ -11,14 +11,30 @@ s16 pairs at each token's unit (``unit``, the den pass's exponent bytes) into ``
 """
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import torch
 
 from rola.engine.facts import lists as list_model
 from rola.engine.types import Carve
+from rola.ops import facts as facts_ops
 from rola.ops._ext import extension
 
-__all__ = ["LEDGER_PHASES", "LEDGER_WARPS", "WINDOW", "arm_key", "arms", "build_stamp", "carry", "census",
-           "ledger_bind", "probe_bind", "sm_clock_ghz"]
+__all__ = [
+    "LEDGER_PHASES",
+    "LEDGER_WARPS",
+    "WINDOW",
+    "Form",
+    "arm_key",
+    "arms",
+    "build_stamp",
+    "carry",
+    "census",
+    "form",
+    "ledger_bind",
+    "probe_bind",
+    "sm_clock_ghz",
+]
 
 #: THE KERNEL'S WINDOW, in tokens: a kernel constant the intra and the facts pass share, never an argument.
 WINDOW = list_model.WINDOW
@@ -36,13 +52,25 @@ def arm_key(carve: Carve) -> tuple[int, ...]:
             carve.channels, int(carve.publish_in_registers))
 
 
+def _list_level(plan) -> int:
+    return plan.lists[0] if plan.lists else -1
+
+
 def carry(routes, values, facts, carve: Carve, unit: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """THE LAUNCH: ``(num, check)`` -- ``num`` the readout's packed partials at each token's unit, ``check`` the
-    skeleton's fp32 sum of the final state (docs/internals/carry/carry_api.md#carry)."""
-    raise NotImplementedError(
-        "the readout-first carry reads each side's lists in the facts pass's final form -- 8-byte entries with their "
-        "pool and panel offsets, a warp's heads, int32 union counts -- and the den pass's units a window wide; the "
-        "facts pass emits them in its entry form (docs/internals/carry/carry.md#lists)")
+    skeleton's fp32 sum of the final state. ``facts`` is the facts pass's over this bundle in this arm's :func:`form`
+    on the device's card: its lists' passes are the arm's readout pass and fold unit, and the read entries' offsets its
+    read pool row's (docs/internals/carry/carry_api.md#carry)."""
+    BH = routes.batch * routes.heads
+    d_v = values.v.shape[-1]
+    num = torch.zeros((BH, routes.tokens, d_v // 2), dtype=torch.int32, device=routes.device)
+    check = torch.zeros(1, dtype=torch.float32, device=routes.device)
+    extension().carry_forward(
+        list(routes.amp_read), list(routes.amp_write), values.v, list(facts_ops.side_lists(facts, "write")),
+        facts.list_exp, list(facts_ops.side_lists(facts, "read")), unit, num, check, list(carve.widths),
+        list(carve.extents), carve.channels, _list_level(carve.fold), list(carve.fold.operand),
+        _list_level(carve.readout), list(carve.readout.operand), list(arm_key(carve)))
+    return num, check
 
 
 def arms() -> list[tuple[int, ...]]:
@@ -52,8 +80,27 @@ def arms() -> list[tuple[int, ...]]:
 
 def census() -> list[tuple[int, ...]]:
     """Each built arm's device census: its index and key, then registers, local bytes, shared bytes, the block's
-    thread limit and the binary version."""
+    thread limit, the binary version, and its form on this card (:class:`Form`'s fields after the shared bytes)."""
     return [tuple(row) for row in extension().carry_census()]
+
+
+class Form(NamedTuple):
+    """An arm's form on the current card (docs/internals/carry/plan.md#forms): the image's parts, a readout pass's and
+    a fold unit's slots, a read and a write pool row's bytes -- what the facts pass sizes its passes and offsets by."""
+
+    parts: int
+    pass_slots: int
+    unit_slots: int
+    read_row: int
+    write_row: int
+
+
+def form(key: tuple[int, ...]) -> Form:
+    """The form of the built arm ``key`` (:func:`arm_key`) on the current card, refusing a key no built arm carries."""
+    for row in census():
+        if tuple(row[1:7]) == tuple(key):
+            return Form(*row[12:17])
+    raise ValueError(f"no built carry arm has the key {tuple(key)}; this binary carries {arms()}")
 
 
 def build_stamp() -> int:

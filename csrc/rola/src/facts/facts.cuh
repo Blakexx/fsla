@@ -1,21 +1,19 @@
 // csrc/rola/src/facts/facts.cuh -- THE FACTS PASS's constants and operand block: both sides' class-1 words
-// (`liveness_contract.cuh`) and the write lists' exponents from the bundle's rows. see docs/internals/facts/facts.md
+// (`liveness_contract.cuh`), the window's columns, and each side's lists in the carry's final form, a CTA a unit.
+// see docs/internals/facts/facts.md
 #pragma once
 
 #include <cstdint>
 
+#include "carry/carry.cuh"
 #include "facts/liveness_contract.cuh"
 
 namespace rola::facts {
 
-//: THE GRID: one block of sixteen warps an SM, two TEAMS of eight over the block's UNITS (batch-head, window, span).
-//: -- see docs/internals/facts/facts.md#the-grid
-constexpr int kFactsWarps = 16;
+//: THE CTA: eight warps a UNIT, three CTAs an SM. -- see docs/internals/facts/facts.md#the-grid
+constexpr int kFactsWarps = 8;
 constexpr int kFactsThreads = kFactsWarps * 32;
-constexpr int kFactsBlocksPerSm = 1;
-constexpr int kTeams = 2;
-constexpr int kTeamWarps = kFactsWarps / kTeams;
-constexpr int kTeamThreads = kTeamWarps * 32;
+constexpr int kFactsCtasMin = 3;
 
 //: THE ROW ALIGNMENT LAW's grain (`rola.routing.quant.ROW_ALIGN`). -- see docs/internals/facts/liveness_contract.md#alignment
 constexpr int kRowAlign = 32;
@@ -23,120 +21,124 @@ constexpr int kRowAlign = 32;
 //: THE WINDOW, the carry's 512 tokens and the lists' grain.
 constexpr int kWindowWords = 16;
 constexpr int kWindowTokens = kWindowWords * kTokBits;
-
-//: THE TWO STREAMS: RING items (a span of `kSpanDigits` digits) through a warp's ring of `kRingDepth` stages of
-//: `kStageBytes`; the write list level's HALVES (`kHalfDigits`) held whole in the HELD WINDOW through their build.
-//: -- see docs/internals/facts/facts.md#load
-constexpr int kSpanDigits = 128;
-constexpr int kHalfDigits = 64;
-constexpr int kStageBytes = 1024;
-constexpr int kRingDepth = 2;
-constexpr int kStageTokens = kStageBytes / kSpanDigits;
-constexpr int kHalfBytes = kWindowTokens * kHalfDigits;
-constexpr int kHalfRegion = kTokBits * kHalfDigits;
-constexpr int kBlocks = kWindowWords / kTeamWarps;
-constexpr int kHalfQuanta = kHalfDigits / 16 * kTokBits / 32;
-constexpr int kHalfGroups = kHalfDigits / kGroupDigits;
-constexpr int kDenseStageTokens = kStageBytes / (2 * kSpanDigits);
-constexpr int kRingStages = kTokBits / kStageTokens;
-constexpr int kColumnPasses = kWindowTokens / kTeamThreads;
+constexpr int kWindowTiles = kWindowTokens / kTileTokens;
 
 constexpr int kMaxWidth = 256;
-constexpr int kMaxSpans = kMaxWidth / kSpanDigits;
+constexpr int kMaxGroups = kMaxWidth / kGroupDigits;
 constexpr int kMaxMaskWords = kMaxLevels * kMaxWidth / 32;
 
-//: A BIT TILE: an item's digits x the window's 16 words, row `d` word `j` at `16 d + (j ^ (d / 2 % 16))`.
+//: A UNIT, coded (kind, side, level, group). -- see docs/internals/facts/facts.md#the-plan
+enum UnitKind : int { kUnitVote = 0, kUnitList = 1, kUnitColumns = 2 };
+
+constexpr int kMaxUnits = kSides * kMaxLevels * kMaxGroups + 1;
+
+__host__ __device__ constexpr uint32_t unit_code(int kind, int side, int level, int group) {
+  return static_cast<uint32_t>(kind | side << 2 | level << 3 | group << 5);
+}
+
+__host__ __device__ constexpr int unit_kind(uint32_t c) { return c & 3; }
+
+__host__ __device__ constexpr int unit_side(uint32_t c) { return (c >> 2) & 1; }
+
+__host__ __device__ constexpr int unit_level(uint32_t c) { return (c >> 3) & 3; }
+
+__host__ __device__ constexpr int unit_group(uint32_t c) { return (c >> 5) & 7; }
+
+//: A BIT TILE: the group's 32 digits x the window's 16 words, row `d` word `j` at `16 d + (j ^ (d / 2 % 16))`.
 //: -- see docs/internals/facts/facts.md#tiles
-constexpr int kTileWords = kWindowWords;
-
 __host__ __device__ constexpr int tile_at(int d, int j) {
-  return kTileWords * d + (j ^ ((d >> 1) & 15));
+  return kWindowWords * d + (j ^ ((d >> 1) & 15));
 }
 
-//: A UNIT'S PLAN, the same for every unit of a span: its items in order, each a coded (kind, side, level, group0,
-//: groups, team). -- see docs/internals/facts/facts.md#the-plan
-enum ItemKind : int { kItemHalf = 0, kItemVote = 1, kItemReadList = 2, kItemDenseMax = 3 };
-
-constexpr int kMaxPlan = 2 + kSides * kMaxLevels;
-
-__host__ __device__ constexpr uint32_t plan_code(int kind, int side, int level, int group0,
-                                                 int groups, int team) {
-  return static_cast<uint32_t>(kind | side << 2 | level << 3 | group0 << 5 | groups << 8
-                               | team << 11);
-}
-
-__host__ __device__ constexpr int plan_kind(uint32_t c) { return c & 3; }
-
-__host__ __device__ constexpr int plan_side(uint32_t c) { return (c >> 2) & 1; }
-
-__host__ __device__ constexpr int plan_level(uint32_t c) { return (c >> 3) & 3; }
-
-__host__ __device__ constexpr int plan_group0(uint32_t c) { return (c >> 5) & 7; }
-
-__host__ __device__ constexpr int plan_groups(uint32_t c) { return (c >> 8) & 7; }
-
-__host__ __device__ constexpr int plan_team(uint32_t c) { return (c >> 11) & 1; }
-
-//: A BUILD: four warps a 32-digit group (each a quarter of its digits).
-constexpr int kParts = 4;
-constexpr int kListDigits = kGroupDigits / kParts;
+//: THE COLORING: 8 colors, the union at most `kUnionCap` a color, the claim queue a ring twice the most it holds,
+//: `kClaimRounds` rounds on every warp. -- see docs/internals/facts/facts.md#coloring
+constexpr int kColors = 8;
+constexpr int kUnionCap = kWindowTokens / kColors;
+constexpr int kQueueCap = 2 * kWindowTokens;
+constexpr int kClaimRounds = 4;
 
 //: THE LIST EXPONENTS' FLOOR, the smallest normal fp32. -- see docs/internals/facts/facts.md#lists
 constexpr float kListFloor = 1.17549435e-38f;
 
-//: THE LISTS OUT: passes of `kPassSlots` slots, at most `kListCap` entries a list, `kListAt` starts a list, a write
-//: entry's coefficients at 2^(kCoefTop - E), E floored at `kUnitMin`. -- see docs/internals/facts/facts.md#lists-out
-constexpr int kPassSlots = 128;
-constexpr int kMaxPasses = kWindowTokens / kPassSlots;
-constexpr int kListCap = kWindowTokens;
-constexpr int kListAt = 8;
+//: THE LISTS OUT, the carry's final form (`carry/carry.cuh` owns its addresses), a write entry's coefficients at
+//: 2^(kCoefTop - E) with E floored at `kUnitMin`. -- see docs/internals/facts/facts.md#lists-out
+constexpr int kListCap = carry::kListCap;
+constexpr int kListAt = carry::kListAt;
+constexpr int kHeadEntries = carry::kHeadEntries;
+constexpr int kHeadLists = kGroupDigits / kFactsWarps;
 constexpr int kCoefTop = 4;
 constexpr int kUnitMin = kCoefTop - 127;
-static_assert(kMaxPasses + 1 <= kListAt, "a list's pass starts and its end fit its starts");
-//: a building warp's entry table, 16 bytes a (digit, pass) of its quarter of a group
-constexpr int kListTableKeys = kListDigits * kMaxPasses;
-static_assert(kListTableKeys == 32, "a building warp's table is a key a lane");
+constexpr int kMaxPasses = 4;
+static_assert(kWindowTokens == carry::kWindow && kFactsWarps == carry::kWarps
+                  && kGroupDigits == carry::kBoxLists,
+              "the lists are the carry's: its window, and a warp's heads its box lists w + 8 j");
+constexpr int kMinPassLog = 7, kMaxPassLog = 9;
+static_assert(kWindowTokens >> kMinPassLog == kMaxPasses && kMaxPasses + 1 <= kListAt,
+              "a list's pass starts and its end fit its starts");
 
-enum FactsPhase : int { kPhaseColumns, kPhaseVote, kPhaseLists, kPhaseStore, kFactsPhases };
+enum FactsPhase : int {
+  kPhaseLoad,
+  kPhaseVote,
+  kPhaseInputs,
+  kPhaseClaims,
+  kPhaseSingles,
+  kPhaseSlots,
+  kPhaseLists,
+  kFactsPhases
+};
 
-//: THE BLOCK'S SHARED MEMORY, by offset, the teams' apart. -- see docs/internals/facts/facts.md#shared-memory
+//: THE CTA'S SHARED MEMORY, by offset. -- see docs/internals/facts/facts.md#shared-memory
 struct FactsSmem {
-  static constexpr int kHeld = 0;
-  static constexpr int kDenseTop = kHeld + kTeamWarps * kRingDepth * kStageBytes;
-  static constexpr int kCols = kHeld + kHalfBytes;
-  static constexpr int kHalfTiles = kCols + kWindowTokens * 8;
-  static constexpr int kHalfLive = kHalfTiles + 2 * kHalfDigits * kTileWords * 4;
-  static constexpr int kTop = kHalfLive + kHalfDigits / kGroupDigits * kWindowWords * 4;
-  static constexpr int kRing = kTop + 2 * kHalfDigits * 4;
-  static constexpr int kSpanTiles = kRing + kTeamWarps * kRingDepth * kStageBytes;
-  static constexpr int kSpanLive = kSpanTiles + 2 * kSpanDigits * kTileWords * 4;
-  static constexpr int kTables = kSpanLive + 2 * kSpanDigits / kGroupDigits * kWindowWords * 4;
-  static constexpr int kMarks = kTables + kFactsWarps * kListTableKeys * 16;
-  static constexpr int kBytes = kMarks + kFactsWarps * 48;
+  static constexpr int kWin = 0;
+  static constexpr int kTile = kWin + kWindowTokens * kGroupDigits;
+  static constexpr int kSlot = kTile + kGroupDigits * kWindowWords * 4;
+  static constexpr int kUnion = kSlot + kWindowTokens * 2;
+  static constexpr int kCols = kUnion + kWindowTokens * 2;
+  static constexpr int kScratch = kCols + kWindowTokens * 8;
+  //: the coloring's: digits a token, the queue, counts and capacity a digit, the deal's index bases and ends
+  static constexpr int kMasks = kScratch;
+  static constexpr int kQueue = kMasks + kWindowTokens * 4;
+  static constexpr int kCounts = kQueue + kQueueCap * 2;
+  static constexpr int kCap = kCounts + kGroupDigits * 16;
+  static constexpr int kPre = kCap + kGroupDigits * 4;
+  static constexpr int kEnds = kPre + kGroupDigits * kWindowWords * 2;
+  static constexpr int kColorEnd = kEnds + kGroupDigits * kColors * 2;
+  //: the placement's, over the dead digits: a (list, pass)'s color counts, then its earlier passes', and its start
+  static constexpr int kTab = kScratch;
+  static constexpr int kStart = kTab + kGroupDigits * kMaxPasses * 8;
+  static constexpr int kPlaceEnd = kStart + kGroupDigits * kMaxPasses * 2;
+  static constexpr int kSmall = kColorEnd;
+  //: the union's words, word and union color counts, the rounds' appends, the warps' maxima, extent and queue length
+  static constexpr int kUword = kSmall;
+  static constexpr int kMword = kUword + kWindowWords * 4;
+  static constexpr int kTword = kMword + kWindowWords * 4;
+  static constexpr int kWcount = kTword + kWindowWords * 4;
+  static constexpr int kUcount = kWcount + kWindowWords * kColors;
+  static constexpr int kAppends = kUcount + kColors * 4;
+  static constexpr int kWmax = kAppends + kColors * 4;
+  static constexpr int kMisc = kWmax + kFactsWarps * 8;
+  static constexpr int kBytes = kMisc + 16;
 };
 
-static_assert(FactsSmem::kDenseTop + 2 * 2 * kSpanDigits * 4 <= FactsSmem::kCols,
-              "a dense list level's maxima fit");
+static_assert(
+    FactsSmem::kTile % 16 == 0 && FactsSmem::kCols % 16 == 0 && FactsSmem::kScratch % 16 == 0
+        && FactsSmem::kCounts % 16 == 0 && FactsSmem::kEnds % 16 == 0 && FactsSmem::kSmall % 16 == 0
+        && FactsSmem::kUcount % 16 == 0 && FactsSmem::kPlaceEnd <= FactsSmem::kQueue,
+    "each tenant on its access's alignment, the placement's tables inside the dead masks");
 
-//: the kernel's static shared memory beside it (the host checks the compiled kernel's own)
-constexpr int kFactsStaticBytes = 1088;
-static_assert(FactsSmem::kBytes + kFactsStaticBytes <= 99 * 1024,
-              "the block's shared memory fits sm_86's 99 KB");
-
-//: A SIDE'S LISTS OUT, its level's: entries and starts `[BH, windows, B, kListCap | kListAt]` -- a read entry its slot,
-//: a write entry its record -- and the union's tokens and counts `[BH, windows, groups, kWindowTokens | 1]`
+//: A SIDE'S LISTS OUT at its list level: entries, starts, heads, the union by slot, its extent.
+//: -- see docs/internals/facts/facts_api.md#rola-facts-forward
 struct ListsOut {
-  uint16_t* slot;
-  uint2* record;
+  uint2* entries;
   uint16_t* at;
+  uint2* heads;
   uint16_t* union_tok;
-  uint16_t* union_count;
+  int32_t* union_count;
 };
 
-//: A level's rows (under the row alignment law, with their width in digits) by batch, token, head strides in BYTES --
-//: u8 digits, or a dense write level's f16 -- or an fp32 column by its strides in elements.
+//: A level's rows by batch, token, head strides in BYTES and width in digits; an fp32 column by element strides.
 struct RowView {
-  const void* base;
+  const uint8_t* base;
   int64_t sb, st, sh;
   int width;
 };
@@ -155,25 +157,19 @@ struct FactsParams {
   uint32_t* unions;
   uint32_t* list_exp;  // [BH, windows, B_list], a digit's (K_m, K_v) int16 pair
   float2* fm;  // [BH, L], a token's (F, m): the fold's factor products (facts.md#factor-products)
-  ListsOut lists[kSides];  // a side's lists, its listed level's (facts.md#lists-out)
   uint32_t*
       gains16;  // [BH, L], a token's (m, F) as an f16 pair at its window's scales (facts.md#gains)
   int16_t* gains_exp;  // [BH, windows, 2], those scales' exponents
+  ListsOut lists[kSides];
   long long* ledger;
-  int D, H, L, token_words, windows, units, spans, rows_total, groups, tiles, list_level,
-      read_list_level;
+  int D, H, L, token_words, windows, rows_total, groups, tiles, per_window, read_row;
   int B[kMaxLevels];
   int row_base[kMaxLevels];
   int group_base[kMaxLevels];
-  int plan_items[kMaxSpans];
-  uint32_t plan[kMaxSpans][kMaxPlan];
-  uint32_t dense[kSides];
+  int list_level[kSides];
+  int pass_log[kSides];
+  uint32_t unit[kMaxUnits];
   uint32_t mask[kSides][kMaxMaskWords];
 };
-
-//: a side's listed level: the write side's list level, the read side's read list level (-1 for none)
-constexpr int listed_level(const FactsParams& p, int side) {
-  return side == kWrite ? p.list_level : p.read_list_level;
-}
 
 }  // namespace rola::facts

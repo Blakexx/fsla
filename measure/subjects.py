@@ -90,6 +90,13 @@ def cell_carve(spec):
     return plan_carve(tuple(spec.widths), *(tuple(level[side] for level in declared) for side in (0, 1)), spec.dv)
 
 
+def facts_form(spec):
+    """The lists' form for a cell: the carry arm its carve selects, on the device's card (`rola.ops.carry.form`)."""
+    from rola.ops import carry as carry_ops
+
+    return carry_ops.form(carry_ops.arm_key(cell_carve(spec)))
+
+
 def carry_operands(spec):
     """``(routes, values, facts, carve, unit)``: what the carry launch takes for a cell, from the bundle's rows and
     values, the facts pass's lists, the carve the planner picks and the den pass's units (zeros: the launch reads them,
@@ -99,8 +106,8 @@ def carry_operands(spec):
     from rola.ops import facts as facts_ops
 
     routes, values, layout, statics = bundle_of(spec, realize(spec))
-    facts = facts_ops.facts(routes, values, layout, *statics)
     carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, values.v.shape[-1])
+    facts = facts_ops.facts(routes, values, layout, *statics, facts_form(spec))
     unit = torch.zeros((routes.batch * routes.heads, routes.tokens), dtype=torch.int8, device="cuda")
     return routes, values, facts, carve, unit
 
@@ -131,7 +138,7 @@ def intra_forward(fx) -> Launch:
 
     spec = fx["cell"]
     routes, values, layout, statics = bundle_of(spec, realize(spec))
-    unions = facts_ops.facts(routes, values, layout, *statics).unions
+    unions = facts_ops.facts(routes, values, layout, *statics, facts_form(spec)).unions
     bh = routes.batch * routes.heads
     num = torch.zeros(bh, spec.tokens, intra_ops.VALUE_WIDTH, device="cuda")
     den = torch.zeros(bh, spec.tokens, device="cuda")
@@ -168,16 +175,18 @@ def bundle_of(spec, drawn, tokens: slice = slice(None)):
 
 
 def facts_pass(fx) -> Launch:
-    """Both sides' class-1 words and the write lists' exponents, from the cell's draw in the bundle's format: the pass the
-    prefill's facts node launches, a side dense where the cell declares it so (its rows unread)."""
+    """Both sides' class-1 words, the window's columns, the write lists' exponents and each side's lists in the cell's
+    carry form, from the cell's draw in the bundle's format: the pass the prefill's facts node launches, a side dense
+    where the cell declares it so (its rows unread)."""
     from measure.cells import realize
     from rola.ops import facts as facts_ops
 
     spec = fx["cell"]
     routes, values, layout, statics = bundle_of(spec, realize(spec))
+    form = facts_form(spec)
 
     def run():
-        return facts_ops.facts(routes, values, layout, *statics)
+        return facts_ops.facts(routes, values, layout, *statics, form)
 
     return Launch(name=f"facts_pass|{spec.name}", call=run)
 
@@ -228,7 +237,8 @@ def decode_step(fx) -> Launch:
     routes = fx["routes"]
     layout = facts_ops.call_layout(routes)
     statics = facts_ops.call_statics(routes, layout)
-    words = facts_ops.facts(routes, rola.Values.from_projection(fx["v_prefill"]), layout, *statics).words
+    words = facts_ops.facts(routes, rola.Values.from_projection(fx["v_prefill"]), layout, *statics,
+                            facts_form(spec)).words
     bits = lv.page_bits(words, layout, *statics)
     seeded: dict = {}
 

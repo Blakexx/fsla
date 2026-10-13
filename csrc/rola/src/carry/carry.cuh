@@ -23,6 +23,20 @@ constexpr int kSliceBytes = 64;
 //: A LIST'S ENTRIES STAGED a window ahead: its first 16; the rest are read in place.
 constexpr int kHeadEntries = 16;
 
+//: THE LISTS' ADDRESSES, the facts pass's to emit and the carry's to read: a gap slot's token, the panel's rows past
+//: their dummy rows, a pool row's swizzled chunk. -- see docs/internals/carry/carry.md#lists
+constexpr uint16_t kGap = 0x8000;
+constexpr int kPanelRow = kBoxChannels * 2;
+constexpr int kPadBytes = 8 * kPanelRow;
+
+__host__ __device__ __forceinline__ constexpr uint32_t panel_row(uint32_t s) {
+  return 128u * (s >> 1) + 32u * ((2u * (s & 1u)) ^ ((s >> 1) & 3u));
+}
+
+__host__ __device__ __forceinline__ constexpr uint32_t pool_chunk(int row, uint32_t s, uint32_t k) {
+  return row == 128 ? k ^ (s & 7u) : (k & ~3u) | ((k ^ (s >> 1)) & 3u);
+}
+
 //: A PLANE where the bundle holds it: a token's row at `base + b sb + h sh + t st` bytes.
 struct Plane {
   const uint8_t* base;

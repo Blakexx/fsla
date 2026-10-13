@@ -15,8 +15,8 @@ never repeats a residue within 8 tokens. Three bounds shape a coloring:
   slots end by :data:`WINDOW`;
 - the union's colors balanced, so its slots leave few gaps (the extent is ``8 x`` the largest color's count).
 
-:func:`color` is the reference (the kernel's batched form, its claims resolved in lane order); the kernel's claims race,
-so its coloring is graded by :func:`check`, never by equality.
+:func:`color` is the reference (the kernel's form, its concurrent claims resolved in token order); the kernel's claims
+race, so its coloring is graded by :func:`check`, never by equality.
 """
 from __future__ import annotations
 
@@ -24,7 +24,6 @@ from collections.abc import Sequence
 
 WINDOW = 512
 COLORS = 8
-BATCH = 32
 UNION_CAP = WINDOW // COLORS
 
 
@@ -44,62 +43,77 @@ def members(rows: Sequence[int]) -> dict[int, list[int]]:
 def color(rows: Sequence[int]) -> tuple[dict[int, int], int]:
     """The reference coloring of a group's ``rows`` (each a digit's 512 token bits) and its blocked tokens.
 
-    Tokens in two or more digits go first (three or more, then two, each in token order), 32 a batch: each takes the
-    color least used over its digits among those under every digit's capacity and the union's cap (ties to the union's
-    least-used, then ``(c - t) & 7``); a claim that the batch's earlier claims put over a bound is withdrawn and
-    requeued, and a batch that keeps nothing runs its first token alone next. Each digit's single tokens then go, digit
-    by digit in token order, to the union's least-used color under the digit's capacity and the union's cap. A token
-    with no color under its digits' capacities is blocked: it takes the union's least-used color."""
+    The tokens in two or more digits go first, in token order: each takes the color least used over its digits among
+    those under every digit's capacity and the union's cap (ties to the union's least-used, then ``(c - t) & 7``); a
+    token no color allows is blocked and takes the union's least-used color under the cap. The kernel claims them 32 a
+    batch (three-or-more first), every warp a batch a round and then warp 0's batches, the claims racing on shared
+    atomics and a loser requeued -- so its coloring is graded by :func:`check`, never by equality with this one.
+
+    The SINGLE tokens (in one digit) then fill the union to a level, the least whose quotas (``max(0, level - n_c)``,
+    ``n_c`` a color's tokens so far) hold every single, pass by pass: each digit wants its singles at its room's colors
+    (under its capacity) that have quota left, in the rotation ``(d + i) & 7``; each color grants in digit order while
+    its quota lasts; a pass that grants nothing raises the level. Past the union's cap the rest go by quota alone, in
+    digit order over the colors' room (those singles are blocked). Each digit's singles take their colors in color
+    order, its tokens in token order."""
     member = members(rows)
     cap = capacities(rows)
     count = [[0] * COLORS for _ in rows]
     union = [0] * COLORS
-    queue = [t for t in member if len(member[t]) > 2] + [t for t in member if len(member[t]) == 2]
     out: dict[int, int] = {}
-    blocked, solo = 0, False
-
-    def free(t: int, extra: dict[tuple[int, int], int]) -> list[int]:
-        return [c for c in range(COLORS) if union[c] + extra.get((-1, c), 0) < UNION_CAP
-                and all(count[d][c] + extra.get((d, c), 0) < cap[d] for d in member[t])]
-
-    def least(t: int, pool: list[int]) -> int:
-        return min(pool, key=lambda c: (sum(count[d][c] for d in member[t]), union[c], (c - t) & 7, c))
-
-    while queue:
-        batch, queue = queue[:1 if solo else BATCH], queue[1 if solo else BATCH:]
-        claims: dict[tuple[int, int], int] = {}
-        kept, lost = [], []
-        for t in batch:
-            pool = free(t, {})
-            stuck = not pool
-            pick = least(t, pool) if pool else min((c for c in range(COLORS) if union[c] < UNION_CAP),
-                                                    key=lambda c: (union[c], c))
-            over = claims.get((-1, pick), 0) + union[pick] >= UNION_CAP or (
-                not stuck and any(count[d][pick] + claims.get((d, pick), 0) >= cap[d] for d in member[t]))
-            for d in member[t]:
-                claims[(d, pick)] = claims.get((d, pick), 0) + 1
-            claims[(-1, pick)] = claims.get((-1, pick), 0) + 1
-            (lost if over else kept).append((t, pick, stuck))
-        for t, pick, stuck in kept:
-            out[t] = pick
-            union[pick] += 1
-            blocked += stuck
-            for d in member[t]:
-                count[d][pick] += 1
-        solo = not kept
-        queue += [t for t, _, _ in lost]
-
-    for d in range(len(rows)):
-        for t in member:
-            if len(member[t]) != 1 or member[t][0] != d:
-                continue
-            pool = [c for c in range(COLORS) if count[d][c] < cap[d] and union[c] < UNION_CAP]
-            stuck = not pool
-            pick = min(pool or [c for c in range(COLORS) if union[c] < UNION_CAP], key=lambda c: (union[c], c))
-            out[t] = pick
-            union[pick] += 1
+    blocked = 0
+    for t in (t for t in member if len(member[t]) > 1):
+        pool = [c for c in range(COLORS) if union[c] < UNION_CAP and all(count[d][c] < cap[d] for d in member[t])]
+        if pool:
+            pick = min(pool, key=lambda c: (sum(count[d][c] for d in member[t]), union[c], (c - t) & 7))
+        else:
+            pick = min((c for c in range(COLORS) if union[c] < UNION_CAP), key=lambda c: (union[c], c))
+            blocked += 1
+        out[t] = pick
+        union[pick] += 1
+        for d in member[t]:
             count[d][pick] += 1
-            blocked += stuck
+
+    singles = [[t for t in member if member[t] == [d]] for d in range(len(rows))]
+    total = sum(len(s) for s in singles)
+    level = next(lv for lv in range(UNION_CAP + 1) if sum(max(0, lv - n) for n in union) >= total)
+    rem = [len(s) for s in singles]
+    take = [[0] * COLORS for _ in rows]
+    while any(rem) and level <= UNION_CAP:
+        quota = [max(0, level - n) for n in union]
+        want = [[0] * COLORS for _ in rows]
+        for d in range(len(rows)):
+            r = rem[d]
+            for i in range(COLORS):
+                c = (d + i) & 7
+                w = min(r, max(0, cap[d] - count[d][c] - take[d][c])) if quota[c] > 0 else 0
+                want[d][c] = w
+                r -= w
+        granted = 0
+        for c in range(COLORS):
+            for d in range(len(rows)):
+                g = min(want[d][c], quota[c])
+                quota[c] -= g
+                take[d][c] += g
+                rem[d] -= g
+                union[c] += g
+                granted += g
+        level += 0 if granted else 1
+    bound, at = 0, 0
+    for c in range(COLORS):
+        room = UNION_CAP - union[c]
+        for d in range(len(rows)):
+            g = max(0, min(at + rem[d], bound + room) - max(at, bound))
+            take[d][c] += g
+            union[c] += g
+            blocked += g
+            at += rem[d]
+        at = 0
+        bound += room
+    for d, tokens in enumerate(singles):
+        picks = [c for c in range(COLORS) for _ in range(take[d][c])]
+        for t, c in zip(tokens, picks):
+            out[t] = c
+            count[d][c] += 1
     return out, blocked
 
 

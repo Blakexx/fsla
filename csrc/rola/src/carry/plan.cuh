@@ -44,9 +44,7 @@ constexpr Form kForms[] = {{1, 512, 128}, {1, 512, 64}, {1, 256, 128}, {1, 256, 
                            {1, 128, 128}, {1, 128, 64}, {2, 128, 128}, {2, 128, 64}};
 constexpr int kFormCount = sizeof(kForms) / sizeof(kForms[0]);
 
-constexpr int kPlaneBytes = kBoxLists * kBoxChannels * 2, kPanelRow = kBoxChannels * 2;
-//: 8 dummy panel rows before the panel, a pad's adds landing on its residue's
-constexpr int kPadBytes = 8 * kPanelRow;
+constexpr int kPlaneBytes = kBoxLists * kBoxChannels * 2;
 
 //: A FORM's PHASE REGION: its image, the pads and panel, the readout ring's two slots. -- see plan.md#forms
 constexpr int ring_slot(const Form& f, int read_row, int write_row, int k) {

@@ -123,12 +123,13 @@ STABLE_TORCH_LIBRARY(rola, m) {
       "carry_geometry(int[] widths, int level_modes, int bc, int nsr, int nsw, int dv, int interleave, int atom_floor) -> int[]");
   m.def("carry_sub_boxes(int depth, int box_leaves, int workers, int atom_floor) -> int[][]");
 
-  // ---- the facts pass: the bundle's rows to the class-1 words and zeta ------
+  // ---- the facts pass: the bundle's rows to the class-1 words and the lists --
   m.def(
       "rola_facts_forward(Tensor[] read, Tensor[] write, Tensor[] scale_write, Tensor g_write, Tensor v_scale, "
-      "Tensor(a!) words, Tensor(b!) unions, Tensor(c!) list_exp, Tensor(e!) fm, Tensor(f!)[] lists, int[] widths, "
-      "int dense_read, int[] mask_read, int dense_write, int[] mask_write, int list_level, int read_list_level, "
-      "int window) -> ()");
+      "Tensor(a!) words, Tensor(b!) unions, Tensor(c!) list_exp, Tensor(d!) fm, Tensor(e!) gains16, "
+      "Tensor(f!) gains_exp, Tensor(g!)[] write_lists, Tensor(h!)[] read_lists, int[] widths, int dense_read, "
+      "int[] mask_read, int dense_write, int[] mask_write, int write_list_level, int read_list_level, int window, "
+      "int read_pass, int write_pass, int read_row) -> ()");
   m.def("rola_facts_ledger_bind(Tensor? ledger) -> ()");
 
   // ---- the producer: one launch from the tokens to the bundle -------------

@@ -162,15 +162,13 @@ __device__ __forceinline__ void heads_in(const SideLists& l, const Window& win, 
                   reinterpret_cast<const uint8_t*>(l.heads + block * 4 * kHeadEntries) + 16 * lane);
 }
 
-//: A POOL ROW'S SWIZZLE: the 16-byte chunk `k` of slot `s`'s row of `row` bytes -- an 8-chunk row XORs its chunk by
-//: the slot's residue, a row of an odd number of 64-byte quarters its chunk within each four by the residue's high
-//: bits (the row's own start alternates halves of the bank line). -- see docs/internals/carry/parts.md#swizzle
+//: A POOL ROW'S SWIZZLE at a compiled row (`pool_chunk`'s): the row's own start alternates halves of the bank line.
+//: -- see docs/internals/carry/parts.md#swizzle
 template <int Row>
 __device__ __forceinline__ constexpr uint32_t chunk_at(uint32_t s, uint32_t k) {
   static_assert(Row % 64 == 0 && (Row == 128 || (Row / 64) % 2 == 1),
                 "a row of 128 bytes or an odd number of 64");
-  if constexpr (Row == 128) return k ^ (s & 7u);
-  return (k & ~3u) | ((k ^ (s >> 1)) & 3u);
+  return pool_chunk(Row, s, k);
 }
 
 //: LOGICAL CHUNK `k`'s ADDRESS in a row whose chunk 0 sits at `row0` (its swizzle folded in): an XOR inside the
@@ -181,23 +179,24 @@ __device__ __forceinline__ uint32_t chunk_addr(uint32_t row0, uint32_t k) {
   return (row0 ^ (16u * (k & 3u))) + 16u * (k & ~3u);
 }
 
-//: ONE ASYNC RUN of 16, 8 or 4 bytes, the run a slice's width gives.
-__device__ __forceinline__ void stage_bytes(ops::SmemAddr dst, const void* src, int run) {
+//: ONE ASYNC RUN of 16, 8 or 4 bytes, the run a slice's width gives; zero-filled for a gap slot (`live` false).
+__device__ __forceinline__ void stage_bytes(ops::SmemAddr dst, const void* src, int run,
+                                            bool live) {
   // R9-CASES: a copy run, 16, 8 or 4 bytes (the host refuses anything under 4)
   if (run == ops::kStageBytes) {
-    ops::stage_run<16>(dst, src);
+    ops::stage_run_if<16>(dst, src, live);
   } else if (run == 8) {
-    ops::stage_run<8>(dst, src);
+    ops::stage_run_if<8>(dst, src, live);
   } else if (run == 4) {
-    ops::stage_run<4>(dst, src);
+    ops::stage_run_if<4>(dst, src, live);
   } else {
     __trap();
   }
 }
 
 //: A RING FILL: `slots` union slots from `first`, each its token's row -- its side's operand slices at 64 bytes each,
-//: then (`Values`) its values at the box's channels -- swizzled, by `cp.async`, landing on the slot's barrier.
-//: -- see docs/internals/carry/parts.md#fill
+//: then (`Values`) its values at the box's channels -- swizzled, by `cp.async`, landing on the slot's barrier; a gap
+//: slot's row zero-filled. -- see docs/internals/carry/parts.md#fill
 template <int Factors, bool Values>
 __device__ __forceinline__ void fill(const Slices<Factors>& sl, const uint8_t* values,
                                      int64_t values_st, const uint16_t* tok, const Window& win,
@@ -211,9 +210,9 @@ __device__ __forceinline__ void fill(const Slices<Factors>& sl, const uint8_t* v
 #pragma unroll 1
     for (int k = static_cast<int>(threadIdx.x); k < slots * runs; k += kThreads) {
       const int s = k / runs, r = k - s * runs;
-      const int t = win.listed ? tok[first + s] : first + s;
+      const int u = win.listed ? tok[first + s] : first + s, t = u & (kWindow - 1);
       stage_bytes(at(s, i * kSliceBytes + r * run), sl.at[i] + (win.t0 + t) * sl.st[i] + r * run,
-                  run);
+                  run, u == t);
     }
   });
   if constexpr (Values) {
@@ -221,9 +220,9 @@ __device__ __forceinline__ void fill(const Slices<Factors>& sl, const uint8_t* v
 #pragma unroll 1
     for (int k = static_cast<int>(threadIdx.x); k < slots * kRuns; k += kThreads) {
       const int s = k / kRuns, r = k - s * kRuns;
-      const int t = win.listed ? tok[first + s] : first + s;
-      ops::stage_run<16>(at(s, Factors * kSliceBytes + r * ops::kStageBytes),
-                         values + (win.t0 + t) * values_st + r * ops::kStageBytes);
+      const int u = win.listed ? tok[first + s] : first + s, t = u & (kWindow - 1);
+      ops::stage_run_if<16>(at(s, Factors * kSliceBytes + r * ops::kStageBytes),
+                            values + (win.t0 + t) * values_st + r * ops::kStageBytes, u == t);
     }
   }
   ops::mbar_arrive_when_landed(bar);
@@ -327,13 +326,6 @@ __device__ __forceinline__ void state_in(uint32_t (&f)[16], ops::SmemAddr image,
 #pragma unroll
     for (int i = 0; i < 4; ++i) f[k * 4 + i] = a[i];
   }
-}
-
-//: A PANEL ROW'S OFFSET: a slot pair a 128-byte line, each slot's two 32-byte halves at the segments its pair's
-//: residue bits XOR, so a panel add's 4 tokens of distinct residues meet 32 banks; a word `w` is the row XORed by
-//: `32 (w >> 3)`, plus `4 (w & 7)`. -- see docs/internals/carry/parts.md#readout
-__host__ __device__ __forceinline__ constexpr uint32_t panel_row(uint32_t s) {
-  return 128u * (s >> 1) + 32u * ((2u * (s & 1u)) ^ ((s >> 1) & 3u));
 }
 
 //: THE EXACT PAIR: two outputs times the coefficient to the integer hi x 2^16 + lo, exact under u32 adds while each

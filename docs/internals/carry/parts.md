@@ -42,7 +42,8 @@ added. An entry carries the row's chunk-0 offset, so a lane addresses its chunk 
 A ring fill: a range of union slots, each its token's row -- the side's operand slices at 64 bytes each, then on the
 write side its values at the box's channels -- swizzled, by `cp.async` over all 256 threads (a slice's 16-byte runs, 8
 or 4 under 16, `stage_bytes`), each thread arriving on the slot's barrier when its copies land
-(`cp.async.mbarrier.arrive.noinc`).
+(`cp.async.mbarrier.arrive.noinc`). A GAP slot (its token `kGap`, [`carry.md`](carry.md#lists)) is zero-filled: no list
+entry names it but a pad may, whose coefficient 0 then multiplies zeros, and its fill reads nothing.
 
 <a id="maxima"></a>
 ## The digit maxima
@@ -91,7 +92,7 @@ slot past the pass's end its residue's dummy row). Each source is its own loop, 
 
 The PANEL is the pass's slots' 64-byte rows after 8 dummy rows (`kPadBytes`, one a residue), laid out in pairs: slots
 `2k` and `2k + 1` share a 128-byte line, each slot's two 32-byte halves at the segments its pair's residue bits XOR
-(`panel_row`). A panel add touches 4 tokens' 8 words at one half, and a tile's 8 tokens are 8 residues (the facts
+(`csrc/rola/src/carry/carry.cuh`'s `panel_row`). A panel add touches 4 tokens' 8 words at one half, and a tile's 8 tokens are 8 residues (the facts
 pass's coloring, or a dense pass's consecutive slots), so each add meets 32 banks. Measured by the bank model
 (2026-10-12): 1.00 wavefronts an add on colored and dense tiles against 4.00 for plain 64-byte rows (every add's 4
 tokens on one half), 2.1 against 2.75 uncolored; the drain 1.00 a request either way. An entry's panel offset is from

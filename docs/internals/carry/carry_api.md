@@ -15,9 +15,11 @@ refusals are `carry.md#refusals`.
 <a id="carry"></a>
 ## `rola.ops.carry.carry`
 
-The Python call refuses by name until the facts pass emits its lists in the final form (its entry form): the
-entries with their pool and panel offsets, a warp's heads, the int32 union counts. `arm_key` is the compiled body a
-carve selects: each side's dense rows a warp and its operand's level count, the channel extent and the publish field.
+The Python call launches over the bundle's rows and values, the facts pass's lists and exponents and the den pass's
+units, the facts pass run in this arm's `form` (its readout pass, its fold unit, its read pool row, read off the
+binary's census for the device's card), so the lists' passes and offsets are the arm's. `arm_key` is the compiled body
+a carve selects: each side's dense rows a warp and its operand's level count, the channel extent and the publish
+field.
 
 `carry_ledger_bind`, `carry_build_stamp`, `carry_census` and `carry_arms` are the instruments: the phase ledger
 (`carry_kernel.md#phases`), the device stamp, and the binary's own arm list and census.

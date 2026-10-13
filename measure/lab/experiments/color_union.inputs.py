@@ -33,26 +33,28 @@ SEED = 16
 
 
 def tiles(cell: str, keep: float):
-    """`[windows, groups, 32, 16]` u32: each 32-digit group's read rows over each window's tokens, from the facts
-    pass's lists, each (digit, token) kept with probability `keep`."""
+    """`[windows, groups, 32, 16]` u32: each 32-digit group's read rows over each window's tokens, the facts pass's
+    words at the read list level, each (digit, token) kept with probability `keep`."""
     import numpy as np
 
     from measure.cells import by_name, realize
-    from measure.subjects import bundle_of
+    from measure.subjects import bundle_of, facts_form
+    from rola.engine.facts import liveness as lv
     from rola.ops import facts as facts_ops
 
     spec = by_name(cell)
     routes, values, layout, statics = bundle_of(spec, realize(spec), slice(0, 512 * WINDOWS))
-    side = facts_ops.side_lists(facts_ops.facts(routes, values, layout, *statics), "read")
-    slot, at, union = (x[0].cpu().numpy().astype(np.int64) for x in (side.slot, side.at, side.union))
-    windows, width, _ = slot.shape
+    words = facts_ops.facts(routes, values, layout, *statics, facts_form(spec)).words
+    level = facts_ops.list_level(statics[0])
+    base, width = layout.row_base(level), layout.B[level]
+    bits = lv.unpack(words, layout)[0, lv.READ, base:base + width].cpu().numpy()
+    windows = layout.L // 512
     out = np.zeros((windows, width // 32, 32, 16), np.uint32)
     rng = np.random.default_rng(SEED)
     for w in range(windows):
         for d in range(width):
-            for s in slot[w, d, at[w, d, 0]:at[w, d, -1]]:
+            for t in np.flatnonzero(bits[d, 512 * w:512 * w + 512]):
                 if keep >= 1.0 or rng.random() < keep:
-                    t = int(union[w, d // 32, s])
                     out[w, d // 32, d % 32, t >> 5] |= np.uint32(1 << (t & 31))
     return out
 

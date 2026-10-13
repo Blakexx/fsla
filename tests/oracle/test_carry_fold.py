@@ -65,10 +65,11 @@ def test_the_fold_is_the_reference_per_slot(write_sparse, growth):
     routes, values = _bundle(widths, L, write_sparse)
     window = torch.arange(L, device="cuda") // carry_ops.WINDOW
     routes.g_write.mul_(torch.exp2(growth * window.float())[None, :, None])
-    layout = facts_ops.call_layout(routes)
-    facts = facts_ops.facts(routes, values, layout, *facts_ops.call_statics(routes, layout))
     carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, values.v.shape[-1])
     assert carry_ops.arm_key(carve) == (32, 1, 32, 1, 32, 0)
+    layout = facts_ops.call_layout(routes)
+    facts = facts_ops.facts(routes, values, layout, *facts_ops.call_statics(routes, layout),
+                            carry_ops.form(carry_ops.arm_key(carve)))
     BH, N, d_v = routes.batch * routes.heads, widths[0] * widths[1], values.v.shape[-1]
     probe = torch.zeros((BH, N, d_v), dtype=torch.float32, device="cuda")
     unit = torch.zeros((BH, L), dtype=torch.int8, device="cuda")
