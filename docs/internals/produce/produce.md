@@ -51,7 +51,7 @@ order; the chunk holds eight consecutive k, so the kernel permutes the MMA's k o
 lanes' chunks, two k-steps); two k-blocks are in flight a warp. A chunk past the hidden size (which the host requires
 to be a multiple of 8) loads nothing and contributes zeros, as does a column past the job's or a token past the call's.
 
-THE K-LOOP IS A BURST (`common/burst.cuh`, KERNEL_STANDARDS §23): a k-block's chunks are one operand set, the next
+THE K-LOOP IS A BURST (`common/burst.cuh`, KERNEL_STANDARDS §24): a k-block's chunks are one operand set, the next
 set's loads issue before the current set's MMAs, and nothing data-dependent sits inside. What varies is decided once
 a block, outside it, by `csrc/rola/src/common/structure_switch.cuh`'s `uniform_switch`: the warps' share (below) and the tile's LIVE TOKEN GROUPS (1, 2 or 4; three
 round up to four, which only a call's last tile can be) -- nine bodies. So tokens not present cost no MMA: at one

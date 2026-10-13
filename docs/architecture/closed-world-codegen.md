@@ -102,8 +102,7 @@ central claims are numeric buys the second with the first.
   the ratchet refuses a change, the change is what must move. The in-tree
   precedent is a measured optimization held back because 12 instantiations gained
   spill; the resolution is a re-scope of the change to the structural axes where
-  it is clean, not a re-stamped manifest (journal, 2026-08-04: "phase 1 stopped
-  by the ratchet").
+  it is clean, not a re-stamped manifest.
 - **Anything that quietly reopens the input space is refused even when it is
   convenient.** The known instance: `TORCH_EXTENSION_SKIP_NVCC_GEN_DEPENDENCIES`
   escapes an sccache/depfile collision, but it deletes header dependency edges,

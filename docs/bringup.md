@@ -57,7 +57,7 @@ python tools/ratify.py --self-test
 python tools/supported.py --write     # the README table is generated
 ```
 
-`--self-test` must still fail on all four things it is required to reject. The
+`--self-test` must still fail on every mutant it is required to reject. The
 supported-configurations table will move `sm_89` from *not ratified* to *ratified*
 on its own — it is derived from the arch table and the manifest directory, and CI
 fails if it is edited by hand.

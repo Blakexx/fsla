@@ -209,82 +209,25 @@ the kernel never reads beyond them.
 
 ## The budget line and the floor
 
-The int8 rebuild's facts line (ruled 2026-09-30): per head at `(256, 256)`, `L = 64K`, the rows 2 × 512 B a
-token (67 MB, ~84 µs at 800 GB/s), the words 8 MB (~10 µs), the old zeta ~1 µs: a DRAM floor
-of ~95 µs, budget 1.3× (~125 µs), every cell priced as if both sides were read whole.
-Measured (ncu, kernel time): at 16 batch-heads all-sparse 98 µs a head (DRAM at 88% of
-peak), alt 59, all-dense 19 — a dense level unread; the carry cells (one sequence):
-`nl64k-alt-k4` 70 µs, `nl64k-dense` 23 µs, `flagship-cohort-k16` (`L = 1K`) 12.8 µs,
-against the line's "~1.5 µs, launch-bound" — which was not a floor: this kernel reading
-nothing runs 5.3 µs, and the rest is the warps' load chains
-([the grid](#the-grid)). Reading half of each token row (alt) costs a page visit all
-the same, so alt runs at 59 µs where its bytes alone would take 54.
+The line, per head at `(256, 256)`, `L = 64K`: the rows' bytes read once (67 MB both sides read whole, ~84 µs at
+800 GB/s) and the words written (8 MB, ~10 µs), a DRAM floor of ~95 µs at 1.3x; a dense level unread and unwritten
+takes its bytes off the floor. Measured (ncu kernel time, a head's share at four heads / one batch-head, sm_86):
 
-Writing the [tile unions](liveness_contract.md#tile-unions) (2026-09-30) added 131 KB of
-stores a head at `L = 64K` and a ballot a tile to the vote: all-sparse 99 µs a head, alt 62,
-all-dense 23 (from 98, 59, 19), `L = 1K` all-sparse 13.4 µs (from 12.9). The dense case
-pays most because its vote loads nothing and the per-tile ballot is then most of its
-loop; a dense level's union is its width mask on every live tile, one ballot a unit
-rather than a tile.
+| cell | the line | measured |
+|---|---|---|
+| `nl64k-dense` | <= 27 µs at four heads (16.8 MB of list rows, floor ~21) | 27.4–28.4 / 31.4–32.2 µs (DRAM 72–74%) |
+| `nl64k-alt-k4` | <= 61 µs (floor ~47) | 49.6–50.3 / 57.2 µs |
+| `flagship-cohort-k16` (`L = 1K`) | no regression past ~10 µs (an empty launch is 5.3) | 10.6–11.3 µs |
 
-THE LIST EXPONENTS (2026-10-03) MISSED THEIR LINE. The line, stated before the code: `nl64k-alt-k4` <= 78 µs (its
-list rows already read, ~6 added instructions a (digit, token) on 8 of its 16 reading units, the zeta item gone),
-`nl64k-dense` <= 40 µs (the list level's write rows a new 16.8 MB read: a DRAM floor ~31 µs), `flagship-cohort-k16`
-<= 14 µs. Measured (ncu kernel time, one batch-head, from 71 / 25 / 12.8 with zeta): 88 / 58 / 19.6 µs, 18.5M
-instructions at alt with the scheduler issuing on 58% of its cycles — the pass is issue-bound as much as it waits on
-its rows: a vote (digit, token) costs ~8 instructions (a byte load's 64-bit address and predicate, its test), a list
-one ~10 more (its conversion, two products, two maxima, the column load). Variants measured worse: two units a list
-item at four warps each (alt 98, cohort 14.6), 32-bit load offsets in either form (alt 107-115, 20-25M instructions).
-THE LEVER is the load structure, not the arithmetic: the rows staged by `cp.async` 16-byte copies (two a lane a word in
-place of 32 byte loads, several words in flight without registers) and read from shared memory — the sm_90 TMA form
-below, on sm_80/86. Taken the same day: the rebuilt pass below.
+At four heads the pass is DRAM-bound where prefill runs. One batch-head is latency-bound: dense's list items (four a
+window) each wait one DRAM latency on their columns, and too few are in flight to hide it; cohort-k16 is two windows,
+its critical path one list item after the launch. What the load is: the rows staged by `cp.async` 16-byte copies into
+per-warp rings and read from shared memory, the lanes shared over (token block, digit quad), the items heads
+innermost, the columns loaded ahead of the ring, a dense list level's item a warp a unit ([the grid](#the-grid),
+[the load](#the-load-a-held-window-and-per-warp-rings)). Byte loads a lane cost ~8 instructions a (digit, token) and
+left the pass issue-bound (18.5M instructions at alt); 32-bit load offsets and two units a list item at four warps
+measured worse; four units a list item on every list level helped dense and cost alt and cohort.
 
-THE REBUILT PASS (2026-10-03, Blake: "a first class optimized kernel"). The line, stated before the code: alt <= 65
-µs (DRAM floor ~52: 33.5 MB rows + 8.4 MB words), dense <= 41 µs (floor ~31), cohort-k16 <= 10 µs (an empty launch is
-5.3). Measured (ncu kernel time; one batch-head, then four, a head's share):
-
-| cell | zeta form | list exponents, byte loads | rebuilt | at 4 heads (DRAM % of peak) |
-|---|---|---|---|---|
-| `nl64k-alt-k4` | 71 µs | 88 µs | 62.5 µs, 10.6M instr | 63 µs (83%) |
-| `nl64k-dense` | 25 µs | 58 µs | 45.6 µs, 8.1M instr | 40 µs (83%) |
-| `flagship-cohort-k16` | 12.8 µs | 19.6 µs | 11.6 µs | — |
-
-At four heads both cells are DRAM-bound at 83% of peak: the pass is first class where prefill runs. One batch-head is
-latency-bound: dense's list items (4 a window) each wait one DRAM latency on their columns before their words, and too
-few items are in flight to hide it (11% over the line); cohort-k16 is two windows, its critical path one list item after
-the launch (16% over). The columns could reach the list warps through the ring (4-byte copies a word) in place of a
-staging barrier, which a 3-stage ring with two blocks an SM measured no better.
-
-DENSE LEVELS UNWRITTEN (2026-10-03, Blake: "We don't need to write the dense levels' words"). A dense level's words
-are its width mask over the live tokens; every fold takes them from the statics, so the pass writes none: no mask
-items, and a dense list level's units only their exponents. The line, stated before the code: `nl64k-dense` loses its
-8.4 MB of writes a head, leaving its 16.8 MB of list rows (floor ~21 µs a head), line <= 27 at four heads;
-`nl64k-alt-k4` loses half (floor ~47), line <= 61; cohort-k16 no regression. Measured (ncu kernel time, a head's
-share at four heads / one batch-head), each step on the last:
-
-| step | `nl64k-dense` | `nl64k-alt-k4` | `flagship-cohort-k16` |
-|---|---|---|---|
-| before (the rebuilt pass above) | 40 / 45.6 µs | 63 / 62.5 µs | 11.6 µs |
-| dense words unwritten | 34.7 / 38.3 (DRAM 71%) | 61.0 / 59.2 | 11.5 |
-| items heads innermost ([the grid](#the-grid)) | 31.5 | 50.9 (DRAM 86%) | — |
-| column loads ahead of the ring ([the lists](#lists)) | 29.4 | 51.0 | — |
-| a dense list level's item a warp a unit | 27.4–28.4 / 31.4–32.2 (DRAM 72–74%) | 49.6–50.3 / 57.2 | 10.6–11.3 |
-
-Dense meets its line within the ±2% run-to-run spread; alt and cohort are under theirs. Measured and not taken:
-four units a list item on every list level (dense 33 at four heads, but alt 87 and cohort 14.2: the voted list items
-lose their balance); the next item's counter taken during the current one (no change outside the spread).
-
-The sm_80 form is this one, re-measured for its residency point (HBM's page behaviour
-is not GDDR6X's). On sm_90 the ring's slots fill by TMA: a word's `[32 tokens × 32 digits]` box
-in one instruction in place of 64 `cp.async` quanta; the rest is unchanged.
-
-## Where the mechanism came from
-
-The liveness pass it replaces (`csrc/rola/src/facts/liveness.{cu,cuh}`, deleted
-2026-09-30 with its Python op) read the bf16 planes the prefill packed from
-the levels, a lane a token, a warp ballot a digit; its layout, its dense-level mask and
-its past-the-end dead vote are kept unchanged. What is new is the input — the bundle's
-own u8 rows, half the bytes of the bf16 planes, with no packing pass before it —
-the tile that keeps the stores whole, and the fold's scales (zeta then; the list exponents now). The rebuilt load
-(2026-10-03) replaced the digit-lane byte loads the old input's lack of an alignment law asked for: the alignment law,
-the ring, the shared (token block, digit quad) lanes.
+The sm_80 form is this one, re-measured for its residency point (HBM's page behaviour is not GDDR6X's). On sm_90 the
+ring's slots fill by TMA: a word's `[32 tokens × 32 digits]` box in one instruction in place of 64 `cp.async` quanta;
+the rest is unchanged.

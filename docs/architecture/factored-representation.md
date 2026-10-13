@@ -34,11 +34,9 @@ per level; storing the expansion stores `Π b_l` numbers to represent `Σ b_l`
 numbers. At the design scale — `N ≳ 65K` states, the standing target — the
 difference is the difference between a plan that fits and a plan that does not.
 
-The **address side factors too**: `leaf_digit(p, l, base, i) = base +
-(i / level_stride[l]) % level_modulus[l]` (the tiled consumer's `consumer.cuh`;
-the same purity holds of the chunk arm's clause resolve and of
-`rola/ops/naive.py::_leaf_product`)
-is a pure function of the leaf index that reads no routing data. So the support's
+The **address side factors too**: a leaf's digit at a level is a pure function of
+the leaf index that reads no routing data (`rola/ops/naive.py::_leaf_product`'s
+strides; the kernels' shifts over power-of-two widths). So the support's
 *bitmap* is likewise a Kronecker product of the per-level indicators
 ([`decode/decode.md`](../internals/decode/decode.md), which expands two `N`-bit maps by
 Kronecker broadcast rather than storing one).
@@ -47,24 +45,23 @@ Kronecker broadcast rather than storing one).
 
 | Object | Factored form stored | Expansion, and where it lives |
 |---|---|---|
-| **Routing gates** | per-level amplitude arrays `[BH, T, b_l]` | the coefficient panel, synthesized in registers inside the consumer (a `[BT × BC]` tile in the retired tiled arm, a group-sized panel in the chunk arm); the gates are **never materialized** as `[L, N]`. The fused per-head routing path exists precisely so that they cannot be. |
-| **The Kronecker ledger** — the leaf-index arithmetic | `radix_strides`, `level_stride`, `level_modulus` | `leaf_digit()` evaluated per element; the digit table is a per-owner hoist, not a stored map (`chunk/chunk_kernel.cuh`'s clause resolve; the tiled arm's `consumer.cuh` carried the same hoist). |
-| **Bitmap / support words** | per-level digit bitmaps and slice unions, sized by `Σ_l b_l` | candidacy is **evaluated** by a warp-local AND chain in shared memory (~0.2% of the instruction stream), never stored per owner. |
-| **Panel factors** | per-level factors + the clock | the survival and readout panels, built per tile in registers, consumed by the MMA, discarded. |
+| **Routing gates** | the bundle's per-level rows `[B, T, H, b_l]` | the carry's operand, a token's dense slices times its list coefficient, formed in registers for one MMA ([`carry/fold.md#step`](../internals/carry/fold.md#step)); the intra's per-level Grams; decode's per-unit amplitude products. The gates are **never materialized** as `[L, N]`. |
+| **The Kronecker ledger** — the leaf-index arithmetic | the widths and the box's extents | shifts and masks evaluated where a leaf is addressed; decode's unit fixes every level but the innermost, so their product is formed once a unit ([`decode/decode_lattice.md#the-unit`](../internals/decode/decode_lattice.md#the-unit)). |
+| **Liveness words** | per-level digit words and tile unions, sized by `Σ_l b_l` | a box's liveness for a token is **evaluated** as the AND over levels by the consumer, never stored ([`facts/liveness_contract.md`](../internals/facts/liveness_contract.md)). |
 | **The schedule** | the same per-level bitmaps | the per-owner work set, re-evaluated in kernel. Storing it would be the `O(L·N)` wall. |
 | **The token-gather ballots** | the same factor words | live-token masks computed from the support words already loaded. |
 
 The negative cases are as instructive; both are priced and refused:
 
-- **Precomputing the `W` panel to VRAM** — `O(candidates × BT × BC)` ≈ **8.6 GB**
-  at the parity cell. Refused (journal, 2026-08-04 user Q&A, item 2). The
+- **Precomputing the `W` panel to VRAM** — `O(candidates × tokens × box leaves)`,
+  gigabytes at the parity cell. Refused (2026-08-04). The
   implication of "the operand is computed" is *make it cheap* (affine addressing)
   and *hide it* (pipeline), never *materialize it*. This is FlashAttention's
   founding lesson applied to the operand instead of to the score matrix.
 - **Per-candidate compaction** — the same `O(L·N)` wall in a different coordinate
   (8.59 GB at parity). Per-**token** compaction, `O(BH · T · support)`, is
   `N`-independent (13.5 MB against 320 MiB dense) and is therefore the admissible
-  form (journal, 2026-08-04, adaptive-specialization §1B).
+  form (measured 2026-08-04).
 
 ## When it does NOT apply
 
@@ -81,14 +78,14 @@ waste or worse:
    per-element gather has no reuse to exploit, because each element is loaded
    **exactly once per visit** — a theorem, confirmed by probe at a measured
    load-reduction factor of `1.0030` work-weighted and exactly `1.0000` at the
-   flagship (journal, 2026-08-04, `AMP_STAGING_DESIGN.md` declined). *There is
+   flagship (measured 2026-08-04, and the staging declined). *There is
    nothing to amortize.*
 2. **When the factored form is smaller than the hardware's quantum.** Below a
    32-byte sector or a 16-row MMA quantum, a finer representation cannot save a
    byte or an instruction. Measured: with fp32 amplitudes, 8 digits are one 32 B
    sector, so support granularities `G ∈ {1,2,4,8}` have *identical* sector
    counts; and `kMmaKQuantum = 16` makes `G ∈ {1..16}` identical in MMA rows
-   (journal, 2026-08-04, support-granularity design). **The continuum collapses
+   (measured 2026-08-04). **The continuum collapses
    to the hardware's grid.**
 3. **When the expansion is dense.** Factoring is a statement that most of the
    product is structurally absent. Where occupancy approaches 1, the dense form
@@ -102,13 +99,7 @@ waste or worse:
 
 ## Provenance
 
-- Unification statement: campaign journal, 2026-08-05, affine-schedulability
-  entry.
-- Leaf-digit purity: the tiled consumer's `consumer.cuh` (`git show
-  c7eaeb9:csrc/rola/src/consumer.cuh`), and `rola/ops/naive.py::_leaf_product`
-  in the tree today; the Cartesian-product support
-  structure: [`docs/internals/decode/decode.md`](../internals/decode/decode.md#kronecker-support),
-  [`docs/internals/decode/decode_lattice.md`](../internals/decode/decode_lattice.md); reference
-  semantics: `rola/ops/naive.py::_leaf_product`.
-- Materialization refusals and the staging decline: campaign journal,
-  2026-08-04.
+- The Cartesian-product support structure:
+  [`docs/internals/decode/decode.md`](../internals/decode/decode.md#kronecker-support),
+  [`docs/internals/decode/decode_lattice.md`](../internals/decode/decode_lattice.md); reference semantics:
+  `rola/ops/naive.py::_leaf_product`.

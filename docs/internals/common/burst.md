@@ -22,10 +22,10 @@ two bursts ends the block. The burst tier gives it one block and a dependency it
 <a id="run"></a>
 ## `Burst<Ops>::run(first, count, gather, mma)`
 
-`Ops` is a unit's operand set, a struct of registers (a fold's: A scaled a
-box and the V tiles; a readout box's would be A scaled and the B tiles). `gather(i, ops)`
+`Ops` is a unit's operand set, a struct of registers (the producer's k-loop: a k-block's chunks of
+both operands). `gather(i, ops)`
 fills unit `i`'s set: loads, shuffles, packed multiplies, and any per-unit arithmetic that
-consumes them at once (the readout's den products). `mma(ops, next)` issues the unit's MMAs
+consumes them at once. `mma(ops, next)` issues the unit's MMAs
 and ORDERS them after `next`'s gather through `after`: a `prmt` that returns an operand whole
 but depends on a register the other set's gather wrote last, so ptxas must issue that gather
 before the instruction that consumes the operand. Two hooks a burst is the pattern: an early
@@ -38,9 +38,9 @@ exists, bursts `i + 1` after that; an odd count bursts its last unit against the
 set (the hooks then wait for nothing). The count is uniform, so the guards are real branches:
 the tail's two are one-trip loops (`ops::once`), because a plain `if` around a small burst (the
 producer's one-tile, one-group k-block is two HMMAs) is if-converted into predicated HMMAs
-(§20; measured on the producer, 2026-09-29), and a unit past the count is never gathered. A phase that must decide mid-way (the
-fold polls a freed slot's fill halfway through a chunk) runs two bursts with the decision
-between them: the pipeline restarts once, one exposed gather, and the decide tier stays out
+(§20; measured on the producer, 2026-09-29), and a unit past the count is never gathered. A phase that must decide
+mid-way runs two bursts with the decision between them: the pipeline restarts once, one exposed gather, and the
+decide tier stays out
 of the loop.
 
 <a id="users"></a>

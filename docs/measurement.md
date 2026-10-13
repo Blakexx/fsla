@@ -92,19 +92,11 @@ There is one, it is named, and its name travels with every number.
 | `ncu` | a counter, or a duration taken under profiling conditions: replayed, caches flushed, base clocks |
 
 **A comparison across two of them is refused, not warned about.** The gap is not
-noise; it is the launch and sync cost one instrument includes. Measured on this box
-(RTX 3080 Ti, sm_86, 30 interleaved reps per instrument):
-
-| cell | `cuda_events` | `perf_counter` | ratio |
-|---|---:|---:|---:|
-| `topo-D2-w64x64-BC64` global | 0.0725 ms | 0.2942 ms | 4.06× |
-| `atscale-L2048-BC16` global | 12.8251 ms | 13.4350 ms | 1.05× |
-
-The host cost is roughly constant (0.22 ms here), so it is nearly the whole
-measurement on a sub-millisecond cell and a rounding error at scale. The
-`ncu` duration for the same small cell reads 0.0906 ms — 25 % above the event time —
-which is why an ncu duration is a third instrument and not a cross-check on the
-first two.
+noise; it is the launch and sync cost one instrument includes: roughly constant on this
+box (~0.22 ms, RTX 3080 Ti), so nearly the whole measurement on a sub-millisecond cell
+and a rounding error at scale. An `ncu` duration reads above the event time (25 % on a
+small cell), which is why it is a third instrument and not a cross-check on the first
+two.
 
 Every timed entry names its stopwatch (`Timed.instrument`; rola's arms time with `cuda_events`), and a session refuses
 entries that name two.
@@ -130,17 +122,16 @@ and gives, per round, each member's median, their RATIO and their DIFFERENCE.
 `insufficient_data` is a distinct answer from `no_regression` everywhere: the first says the design cannot decide, the
 second says it decided.
 
-**THE SPREAD IS THE SPREAD OF THE QUANTITY JUDGED — measured corrections, not preferences.** A baseline once recorded
-from one session's reps, on the chunk arm (tag `baseline/pre-k31`), put 17 of 44 arms over their limit on the same
-binary a minute later: reps taken back to back on one warm fixture spread less than a comparison that crosses processes.
-The verdict then derived its limit from a reference's medians across sessions, which carried the host's drift instead
-(two clock states ~17 % apart). What is judged now is the paired ratio inside one session, so the limit is that ratio's
-own round-to-round spread, drift both members share cancels in it, and the one thing the ratio crosses that its spread
+**THE SPREAD IS THE SPREAD OF THE QUANTITY JUDGED.** Reps taken back to back on one warm fixture spread less than a
+comparison that crosses processes (a limit taken from one session's reps flagged most arms of an unchanged binary a
+minute later), and a reference's medians across sessions carry the host's drift (two clock states ~17 % apart). What
+is judged is the paired ratio inside one session, so the limit is that ratio's own round-to-round spread, drift both
+members share cancels in it, and the one thing the ratio crosses that its spread
 cannot see -- two worker processes -- is the null gate's.
 
-**AND NEVER A SPREAD SMALLER THAN THE STOPWATCH RESOLVES.** Two arms once sat over their limit on an unchanged binary,
-both with a recorded spread of exactly `0.0000 ms`: the device-event timer quantizes, a small kernel's calls land on the
-same value, and the limit sits at the median the next tick exceeds. The spread used is `max(IQR, resolution)`, where the
+**AND NEVER A SPREAD SMALLER THAN THE STOPWATCH RESOLVES.** The device-event timer quantizes, so a small kernel's calls
+can land on one value, a recorded spread of `0.0000 ms`, and a limit at the median the next tick exceeds. The spread
+used is `max(IQR, resolution)`, where the
 resolution is the smallest gap between the distinct values one member's samples hold, relative to the reference's
 median -- measured on every judgement, because it is a property of the stopwatch and the box -- and the verdict says
 when it bound (`floored_at_resolution`).
@@ -157,22 +148,19 @@ again whenever it is asked for. `python -m rola_results dashboard --out FILE --r
 
 ## SASS
 
-`python tools/ratify.py` and `python tools/sass_bodies.py` are the instruments. Both binaries in a
-comparison no longer need to have been built at the same path (P19,
-`docs/build.md`'s path-trap section) — they must agree on `ratify.SASS_HASH_VERSION`,
-which `--compare` checks and refuses on mismatch.
+`python tools/ratify.py` and `python tools/sass_bodies.py` are the instruments. Two binaries in a
+comparison may be built at different paths ([`build.md#sccache`](build.md#sccache)); they must agree
+on `ratify.SASS_HASH_VERSION`, which `--compare` checks and refuses on mismatch.
 
 **Measuring a kernel's register DEMAND at a bound it does not ship at** is a
 scratch-tree edit — copy the tree, change the `__launch_bounds__` CTA argument at
 the instantiation, run `python tools/ratify.py --census` there, read the spill
-column — and never a flag on the shipped tool. `--force-ctas` was that flag; it
-was deleted once nothing in `csrc/` read its macro, because a tool that
-can force a bound is a tool that can ratify one.
+column — and never a flag on the shipped tool, because a tool that can force a
+bound is a tool that can ratify one.
 
 ## What is deliberately not here
 
-* **A second method.** The in-process A/B driver, and later tools/compare.py and the interleaving driver, were deleted
-  once the declared build system timed the same subjects (`docs/internals/DELETIONS.md`): two methods are how a harness
+* **A second method.** The declared build system is the one way a subject is timed: two methods are how a harness
   comes to disagree with itself.
 * **A committed SQLite database.** A binary blob has no diff and cannot be reviewed in a landing. Any query artifact is
   derived and ignored — see the record below, which is exactly this design.

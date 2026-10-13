@@ -1,8 +1,7 @@
 # `csrc/rola/src/decode/decode_lattice.cuh` — the `(k, m)` box lattice and the T=1 factor tables
 
 <a id="note-l3"></a>The leaf order for `T = 1` decode IS the `(k, m)` box lattice, in the ONE order
-the addressing block defines and the carry family writes (`csrc/rola/src/common/geom.cuh`;
-the `(k, m)` box lattice itself is on the `k35-final` tip, C0): a leaf is
+`rola/ops/lattice.py` defines: a leaf is
 named by its owner coordinate `o_l` at every level and by its per-level RUN
 OFFSET `r_l = d_l - o_l * s_l`, composed in MIXED RADIX most significant level
 first,
@@ -17,17 +16,12 @@ Nothing here is sized in `N`: one bit per DIGIT (`sum_l ceil(B_l/32)` words per
 side) and one entry per live OWNER COORDINATE (`sum_l g_l` at most, per list) is
 the whole apparatus.
 
-THE INTERLEAVE IS DEAD. The R0 spec's LATTICE-1 §2.2 named a second intra-box
-order — the `[u_0..u_{D-1} | c_0..c_{D-1}]` interleave, in which a sub-box `k^D`
-was a contiguous run — and an earlier draft of this walk enumerated
-`(owner, sub-box)` units because of it. Mixed radix is the shipped order (the
-one-order ruling; `csrc/rola/src/common/geom.cuh`'s `weight`, the canonical mixed radix), a sub-box is a scattered rectangle
-under it, and the walk's unit moved accordingly (§3). The measured reason is
-recorded in `docs/internals/DELETIONS.md`'s wave-2c rows and in the batch's
-findings: under the interleave a token's run over a level that is DENSE for its
-side straddles atoms at 25% occupancy at EITHER span vector; under mixed radix
-with `s_{D-1} >= kAtomLeaves` it FILLS them; where the level is narrower than
-an atom the rectangle spans two levels and the fill is partial
+INSIDE AN OWNER THE ORDER IS MIXED RADIX over the runs (the one-order ruling), so a
+sub-box is a scattered rectangle and the walk's unit is an owner's innermost run (§3). The
+reason is the atom: an interleaved order that made a sub-box `k^D` contiguous straddles
+atoms at 25% occupancy for a token's run over a level DENSE for its side, at either span
+vector, where mixed radix with `s_{D-1} >= kAtomLeaves` FILLS them; where the level is
+narrower than an atom the rectangle spans two levels and the fill is partial
 (`rola/ops/lattice.py`).
 
 Symbols, restated from the spec at first use here: `D` the number of routing
@@ -300,7 +294,7 @@ innermost level's run is the CONTIGUOUS TAIL of the owner-local index, so a
 unit's leaves are `s_{D-1}` consecutive lattice indices at an `s_{D-1}`-aligned
 base. At the flagship spans `(8, 16)` that run IS one 16-leaf atom, at full
 occupancy, and the unit's 16 slots are level 1's digits — which is the whole
-reason the unit is this shape rather than the interleave's `(owner, sub-box)`.
+reason the unit is this shape.
 
 <a id="resolve-unit"></a>`resolve_unit` decomposes a unit index by shifts alone WITHIN ITS TERM: the OWNER
 RANK occupies the high bits, one padded field per level (§2.1), and the low
@@ -342,18 +336,16 @@ FIXED LEVELS' AMPLITUDE PRODUCTS `ar`/`aw`/`rate`.
 
 Those products are the unit's second point. Because a unit fixes every level but
 the innermost, their amplitudes are resolved ONCE HERE and a slot below costs a
-single innermost amplitude rather than `D` of them — where the interleaved
-walk's unit cut every level and had to re-form the whole product per leaf.
+single innermost amplitude rather than `D` of them.
 
 THERE IS NO SECOND UNIT SHAPE. A topology whose innermost span is thinner than
 an atom does not get a deeper walk: it gets SEVERAL UNITS PER ATOM, which the
 CANDIDATE enumeration absorbs (`lat_units_per_atom_shift`,
-`decode.md#candidate-atoms`) and the walk never sees. An earlier draft made the
-unit's depth a runtime quantity so that a unit was always at least an atom; it
-was measured to SPILL the step's register budget at `D = 2` and `D = 3` — the
-extra loop level held every live value of the walk's tightest scope across a
-trip count of one at every shipped topology — and the batch's findings carry the
-census rows. This is the "no branch to dodge edge cases" rule applied: one
+`decode.md#candidate-atoms`) and the walk never sees. A unit depth that varies at
+runtime, so that a unit is always at least an atom, SPILLS the step's register
+budget at `D = 2` and `D = 3` (measured): the extra loop level holds every live
+value of the walk's tightest scope across a trip count of one at every shipped
+topology. This is the "no branch to dodge edge cases" rule applied: one
 strategy, uniformly, and the degenerate config pays at the candidate enumeration
 instead of in the walk.
 
@@ -373,12 +365,8 @@ launch, rather than negotiated at one; the decode build stamp carries it, so a
 host that outgrew the device's box fails a device-side check
 (`decode_api.md#build-stamp`).
 
-<!-- ABSENT: kDecodeMaxCap kDecodeMaxSubBox -->
-the interleave's other two ceilings died with it: `kDecodeMaxCap` bounded the
-capacity radix a unit's low bits carried, and `kDecodeMaxSubBox` bounded the
-intra-sub-box scan. Under mixed radix a unit is a contiguous run, there is no
-capacity radix separate from the run offsets, and there is no sub-box scan to
-bound.
+Under mixed radix a unit is a contiguous run, so there is no capacity radix separate
+from the run offsets and no sub-box scan to bound: the span is the one capacity.
 
 ## <a id="the-refusals"></a>5. `fill_lattice` — the box's constraints, as runtime checks
 
@@ -407,11 +395,9 @@ A PAGED backing adds ONE more, checked only where `page_table` is present
 (`rola_decode_forward`, cross-referenced from `decode.md#candidate-atoms`):
 `BC >= kAtomLeaves`, i.e. an owner holds a whole number of atoms. That is what
 makes an atom and a unit nest one way or the other, which is what makes the
-candidate enumeration a PARTITION. The interleave needed two clauses here
-(`k^D % kAtomLeaves == 0` and `4 % log2(k) == 0`); mixed radix discharges both
-by the order itself — an atom is 16 consecutive `local` values at a multiple of
-16, hence an aligned digit rectangle for EVERY admissible span vector
-(`rola/ops/lattice.py`). A DENSE backing never asks an atom a liveness question and
+candidate enumeration a PARTITION. Mixed radix needs nothing more: an atom is 16
+consecutive `local` values at a multiple of 16, hence an aligned digit rectangle
+for EVERY admissible span vector (`rola/ops/lattice.py`). A DENSE backing never asks an atom a liveness question and
 carries no constraint.
 
 `rola.ops.lattice.derive_lattice` and `box_shape` are the SAME arithmetic,

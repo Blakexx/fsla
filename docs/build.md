@@ -181,129 +181,62 @@ selects an arm the binary does not carry is refused by name, with the key field 
 
 ## <a id="sccache"></a>The nvcc invocations are cached (sccache)
 
-The remaining floor the section above names -- "the ratification compiles the
-same translation units the build does" -- is now a compiler-cache hit
-instead of a second cold compile. `tools/sccache_pin.json` pins an exact
-[sccache](https://github.com/mozilla/sccache) build (version, release asset,
-tarball and binary sha256, verified against upstream's published `.sha256`);
-`tools/sccache_toolchain.py` resolves and gates it (closed-world rule 1's
-extension -- an unpinned or mismatched cache is REFUSED, full stop; Blake
-ruling 2026-08-28, "a tool that can run one of two ways must REFUSE, not
-choose": the only non-refusing outcome is `toolchain.sccache_enabled: false` in the dev
-config, an explicit opt-out, never a silent uncached fallback) before wiring `tools/sccache_nvcc.py` in
-as `PYTORCH_NVCC` (`setup.py`) and as the compiler `tools/ratify.py`'s
-post-build recompile uses. The wrapper is a pure pass-through -- it never
-resolves `nvcc` itself, only `exec`s the exact already-`ptxas`-gated path its
-caller hands it through `ROLA_REAL_NVCC` -- so the cache key inherits whatever
-compiler identity `sccache`'s own argv hashing derives from that ALREADY-gated
-binary, by construction.
+The build's and the ratification's compiles of the same translation units are a compiler-cache hit, not a second
+cold compile. `tools/sccache_pin.json` pins an exact [sccache](https://github.com/mozilla/sccache) build (version,
+release asset, tarball and binary sha256, verified against upstream's published `.sha256`), and
+`tools/sccache_toolchain.py` resolves and gates it as an extension of R1: an unpinned or mismatched cache is REFUSED
+(Blake, 2026-08-28: "a tool that can run one of two ways must REFUSE, not choose"); the one non-refusing outcome is
+`toolchain.sccache_enabled: false` in the dev config, an explicit opt-out, never a silent uncached fallback.
 
-**Three mechanical facts, each measured on this tree, not inferred:**
+**The wrapper is a pure pass-through.** `tools/sccache_nvcc.py` is `PYTORCH_NVCC` for `setup.py` and the compiler of
+`tools/ratify.py`'s post-build recompile; it never resolves `nvcc`, only `exec`s the already-`ptxas`-gated path its
+caller hands it (`ROLA_REAL_NVCC`), so the cache key inherits that binary's identity by construction.
 
-* **The depfile flag torch always adds does not break the cache.**
-  `--generate-dependencies-with-compile --dependency-output` (forced by
-  `torch.utils.cpp_extension._write_ninja_file` on every `nvcc` call) was
-  suspected, from the torch source's own comment, to make `.cu` compiles
-  uncacheable. Measured with sccache 0.17.0: a cold compile WITH the flag,
-  followed by the same compile WITHOUT it, produced a 100% hit and a
-  byte-identical `.o` (`cmp`). The flag is kept (header-dependency correctness
-  is not traded away) and the cache still collides across both invocation
-  shapes.
-* **The cache key includes the invoking process's CWD**, even when every path
-  in the command is already absolute. `pip install -e . --no-build-isolation`
-  runs its PEP 660 editable-build hook in a FRESH `tempfile.mkdtemp()`
-  directory every single invocation, which defeated not just sccache but
-  NINJA'S OWN incremental rebuild (a second `pip install -e .` on an unchanged
-  tree measured 396 s -- a full rebuild in everything but name, because ninja
-  had no `build.ninja` from "last time" to compare against). Fixed by pinning
-  `build_temp` to a FIXED, repo-relative `build/temp` directory
-  (`setup.py:RoLABuildExtension.finalize_options`), which `tools/ratify.py`'s
-  `COMPILE_CWD` shares.
-* **The exact compile argv is reused from the build's own record, not
-  reconstructed.** `tools/ratify.py`'s `_nvcc_command` reads `nvcc`/
-  `cuda_cflags`/`cuda_post_cflags` VERBATIM out of `build/temp/build.ninja`
-  when one exists, substituting only the source and object paths -- replacing
-  an independent reconstruction that was wrong in three ways, each found only
-  by a full build measuring 0% hits: missing the torch-injected pybind11-ABI/
-  `TORCH_EXTENSION_NAME` defines, missing `--compiler-options '-fPIC'`, and
-  using `-isystem` where `setup.py`'s actual `CUDAExtension`-based build (a
-  different code path than `torch.utils.cpp_extension`'s JIT `load()`, which
-  DOES use `-isystem`) emits plain `-I` for every include. Falls back to an
-  independent reconstruction only when no build has ever run from
-  `COMPILE_CWD` (a fresh checkout's first build, which has no cache entry to
-  collide with regardless).
+**The build directory is fixed.** The cache key includes the invoking process's working directory, and pip's
+editable build runs in a fresh temporary directory each time, which defeats both sccache and ninja's own incremental
+rebuild. `build_temp` is therefore the fixed, repo-relative `build/temp`
+(`setup.py`'s `RoLABuildExtension.finalize_options`), which `tools/ratify.py`'s `COMPILE_CWD` shares.
 
-**MEASURED, `MAX_JOBS=4` (a lower cap than the `MAX_JOBS=7` table above --
-imposed for host RAM safety during this measurement, not a property of
-sccache; the two tables are not directly comparable), `nice -n 10`, both
-architectures:**
+**The ratification reuses the build's own argv.** `tools/ratify.py`'s `_nvcc_command` reads the compile command
+verbatim out of `build/temp/build.ninja`, substituting only the source and object paths: an independent
+reconstruction differs in defines, flags and include forms, and every difference is a cache miss. It reconstructs
+only when no build has ever run from `COMPILE_CWD`, which has nothing cached to hit anyway. Torch's depfile flag
+(`--generate-dependencies-with-compile`) does not break the cache (measured: a 100% hit and a byte-identical object
+across both invocation shapes), so it is kept.
 
-| | wall | sccache hit rate |
-|---|---|---|
-| cold (empty cache, fresh `build/`) | **3m57.9s** (a second cold run: 4m24.3s) | 41.7% (60/144 -- the post-build ratification's 10 TUs hit the build's own ninja compile, intra-cycle) |
-| warm (cache from a prior build, `build/` deleted and recreated) | **1m12.3s** | 100% (144/144) |
-| scoped edit (one hand-written `.cu`, comment-only, `ratify.py --write` then rebuild) | 45.0s (the `--write` re-ratification itself: 38s) | 100% |
+**THE CORRECTNESS GATE.** A cache-hit build must be bit-identical to a cold build: `tools/sass_bodies.py --compare`
+between a cold-built and a fully cache-hit `.so` reports 0 differing and 0 absent entries, and the two `.so` files and
+their `_build_config.py` are byte-identical. `sccache` is recorded in the manifest's `toolchain` block
+(`{"version": ..., "sha256": ...}` or `null`), and a version drift there is REPORTED, not FAILED: a measured-transparent
+pass-through cannot move a ratified register or spill number the way a `ptxas` swap can.
 
-**THE CORRECTNESS GATE.** A cache-hit build must be bit-identical to a cold
-build. Verified: `tools/sass_bodies.py --compare` between an independently
-cold-built `.so` and a fully cache-hit (100%) rebuilt `.so` -- **716 entries
-compared, 0 differing, 0 absent either way**; the two `.so` files are
-byte-identical (`cmp`); the build record `_build_config.py` (including `manifest_sha256`)
-is byte-identical between the two builds.
+**A written hash map carries the hasher's version and is comparable only with its own.** What goes into a digest is a
+property of `tools/sass_bodies.py`, not of the binary, so maps are stamped with `HASH_VERSION` and `--compare` refuses
+a mismatched or unstamped pair rather than reporting the whole matrix as differing.
 
-`sccache` is recorded in the manifest's `toolchain` block
-(`{"version": ..., "sha256": ...}` or `null` if a ratification ran uncached)
-per the input-closure rule, but a version drift there is REPORTED, not FAILED
-(`tools/ratify.py`'s `main`, same treatment as register drift): sccache is a
-measured-transparent pass-through, so its version cannot move a ratified
-register/spill number the way a `ptxas` swap can. What IS gated hard, before
-the wrapper is used at all, is that the resolved `sccache` matches the pin.
+**Worktree builds and cross-path SASS comparison are ordinary operations.** Every kernel lives in a named namespace,
+so a ratified name is a function of source content and toolchain only: an anonymous-namespace kernel's mangled name
+embeds a discriminator derived from the source directory, and the ast-grep rule refuses one
+([`internals/tools/lint.md`](internals/tools/lint.md)).
 
-**A WRITTEN HASH MAP CARRIES THE HASHER'S VERSION AND IS ONLY COMPARABLE WITH ITS
-OWN.** What goes into a digest is a property of `tools/sass_bodies.py`, not of the
-binary, so widening the capture moves every digest in an unchanged binary. Maps are
-stamped with `HASH_VERSION` and `--compare` refuses a mismatched or unstamped pair
-rather than reporting the whole matrix as differing.
-
-**Worktree builds and cross-path SASS comparison are ordinary operations.** Every kernel
-lives in a named namespace (`rola::decode::detail`, `rola::entmax::detail`, the rule in
-[`internals/tools/lint.md`](internals/tools/lint.md)), so a ratified name is a function of source content and
-toolchain only, never of where the tree is checked out: an anonymous-namespace kernel's mangled name embeds a
-discriminator derived from the source directory.
-
-**`--split-compile` is REJECTED, measured.** It is not a build-speed knob here: it
-changes the assembled code of 1,073 of the 1,228 entries then present, which under the
-closed-world policy is a kernel change requiring re-ratification, and it is slower
-besides -- the parallelism axes multiply, so it collapses `MAX_JOBS` from 7 to 1.
+**`--split-compile` is REJECTED, measured.** It changes the assembled code of most entries (1,073 of 1,228 when
+measured), which under the closed-world policy is a kernel change requiring re-ratification, and it is slower besides:
+the two parallelism axes multiply, collapsing the job count.
 
 ## <a id="fatbin-compression"></a>The fatbin is compressed explicitly
 
 `-Xfatbin -compress-all` is in the flag list (`tools/build_flags.py`, which both the
 build and the ratification import). `fatbinary` compresses by default, but that
 default covers PTX and debug images only, and for the cubins it applies a SIZE
-HEURISTIC: measured on this tree, every cubin it stored raw was <= 9,076,960 B and
-every one it compressed was >= 10,075,232 B. That makes the shipped artifact a
-function of the SHARD PARTITION rather than of the code. The measurement below was
-taken on the tiled consumer's 256-arm matrix (since retired), where at 32 arms
-per shard twelve of the sixteen cubins fell under the threshold; the FLAG is what
-made the artifact size independent of that partition, which is why the measurement
-still governs. Same 256 arms, same sources:
-
-| build | `.so` |
-|---|---|
-| 8 shards x 32, packer default | 141,919,496 B |
-| 4 shards x 64, packer default | 73,743,608 B |
-| **8 shards x 32, `-compress-all`** | **61,322,504 B** |
-
-So the flag decouples size from the partition — and beats the coarser partition
-outright, because it compresses the four large cubins the heuristic already took AND
-the twelve it did not. The partition therefore stays a build-time question decided on
-its own terms (`tools/gen_shards.py`: the chunk partition is contiguous blocks of the
-declared arm list, which is what keeps a ratchet refusal a one-shard event).
+HEURISTIC (every cubin it stored raw was <= 9,076,960 B, every one it compressed >= 10,075,232 B when measured),
+which would make the shipped artifact a function of how the instantiations are partitioned into translation units
+rather than of the code. The explicit flag compresses every cubin, so the artifact's size is the code's: measured on
+one 256-instantiation matrix, `-compress-all` beat both partitions the heuristic was given (61.3 MB against 73.7 and
+141.9 MB).
 
 Compression is applied to the image AFTER `ptxas` has assembled it, so it cannot move
 codegen — proven rather than asserted, by comparing every entry point's SASS across
-the flag change: **716 entries, 0 differing, 0 absent either way**. Taking the
+the flag change: **0 differing, 0 absent either way**. Taking the
 ratification again under the new flag list reproduces every register and spill number,
 so the manifests come back byte-identical.
 
@@ -332,8 +265,8 @@ cuobjdump --list-ptx rola_cu13/_C.abi3.so     # must list NOTHING
 python tools/ratify.py --arch 80 --arch 86       # must PASS
 ```
 
-The shipped `.so` carries 8 ELF images and **0 PTX images**. That is not a
-side effect; it is rule 2, checked.
+The shipped `.so` carries one ELF image per (translation unit, architecture) and **0 PTX images**. That is not a
+side effect; it is R2, checked.
 
 ## <a id="stable-abi"></a>The binary targets torch's stable ABI
 
@@ -384,8 +317,8 @@ host's. A `manylinux` tag, which PyPI requires, is not claimed.
 
 ## Dependencies
 
-`torch` (2.13 or newer) and `einops`. Not `transformers` (the HF model classes stay in the fork),
-not `fla`, not `triton` — the kernels are CUDA. `rola` itself imports neither.
+`torch` (2.13 or newer) and `einops` (`pyproject.toml`); nothing else. The kernels are CUDA, so there is no `triton`
+or `fla` dependency.
 
 ## Standards lint
 

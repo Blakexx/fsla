@@ -16,9 +16,8 @@ Python subprocess this same interpreter later launches inherit the lowered
 niceness through ordinary `fork`+`exec`, so the effect reaches the actual CPU
 load without touching the compiler invocation itself.
 
-`host.nice: false` in the dev config skips this entirely — the coordinator's own interactive gate
-runs opt out (`docs/internals/tools/dev_config.md`). Default is off (nice
-applied); nothing about the compile's behaviour, output, or elapsed wall time
+The default applies it; `host.nice: false` in the dev config skips it entirely (an interactive gate run may opt out,
+`docs/internals/tools/dev_config.md`). Nothing about the compile's behaviour, output, or elapsed wall time
 changes — this is a scheduling hint, not a resource cap, and the probe/bench
 harnesses' own numbers are GPU-timed, not host-scheduler-timed, so they are
 unaffected by the host running its compiles niced.

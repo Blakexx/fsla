@@ -142,9 +142,9 @@ number cleared.
   Light-tier probing is allowed and labelled; a light-tier decision is re-confirmed
   at full rigor before landing.
 - **Through the gates, in the tree the manifest was ratified in.** Register/spill
-  ratchet, bit-identity suites, the scoped test lines, census. A nine-shape
-  compile probe is a *screen*, not a ratchet — it cannot see a 12-instantiation
-  regression in a 1,216-entry space.
+  ratchet, bit-identity suites, the scoped test lines, census. A compile probe
+  of a few shapes is a *screen*, not a ratchet — it cannot see a regression in
+  the instantiations it did not compile.
 - **With a gate that can fail.** Every new gate ships its must-fail
   demonstration. The three sanctioned mechanisms, all with in-tree precedent:
   in-test non-vacuity assertions (which catch vacuous fixtures — a fixture with

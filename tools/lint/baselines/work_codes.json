@@ -957,12 +957,6 @@
   },
   {
    "path": "docs/internals/decode/decode_lattice.md",
-   "message": "names the work code 'C0'",
-   "line_sha256": "d92bad173b98db51",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode_lattice.md",
    "message": "names the work code 'K6'",
    "line_sha256": "6beadcaa660feef7",
    "count": 1
@@ -1082,12 +1076,6 @@
    "count": 1
   },
   {
-   "path": "docs/measurement.md",
-   "message": "names the work code 'P19'",
-   "line_sha256": "67cff502a9c7055d",
-   "count": 1
-  },
-  {
    "path": "docs/provenance.md",
    "message": "names the work code 'V2'",
    "line_sha256": "35eb35d58c20eb3d",
@@ -1097,30 +1085,6 @@
    "path": "docs/ratification.md",
    "message": "names the work code 'R1b'",
    "line_sha256": "ae992c40b252c074",
-   "count": 1
-  },
-  {
-   "path": "docs/setup.md",
-   "message": "names the work code 'K39'",
-   "line_sha256": "97e1ecfe49db4876",
-   "count": 1
-  },
-  {
-   "path": "docs/setup.md",
-   "message": "names the work code 'K42'",
-   "line_sha256": "fc2508c54057ed34",
-   "count": 1
-  },
-  {
-   "path": "docs/setup.md",
-   "message": "names the work code 'K45'",
-   "line_sha256": "fc2508c54057ed34",
-   "count": 1
-  },
-  {
-   "path": "docs/setup.md",
-   "message": "names the work code 'K46'",
-   "line_sha256": "561c35d4e1879b06",
    "count": 1
   },
   {
