@@ -11,43 +11,62 @@ floor, 516 / 665 µs at 4 / 16 live digits a token), and what does a union cost 
 
 THE COLORER, a warp a union (4 warps a CTA, no CTA barrier):
 1. The tile in registers (lane `d` digit `d`'s 16 words); each token's digits by sixteen 32 x 32 bit transposes.
-2. The claims (the facts pass's batched form, 32 tokens a batch, three-or-more first) on BIASED counts: a digit's color
-   field holds `64 - capacity + count`, so its bit 6 marks a full digit and the sums order as the counts do.
-3. The singles and the slots, the facts pass's (residue layout); a single's color from its digit's color ends by a packed
-   subtraction.
-4. The lists: a counting walk over the stash into each (list, pass)'s color counts; each (list, pass, color)'s place
-   base; then a walk a lane an entry placing it at `base + 8 x rank`, each list's whole run first written with its
-   pads as the walk reaches it (coalesced, so every sector is whole before the entries land over it).
+2. THE PASSES, cut from the union in token order: pass `q` holds the union's tokens of union rank `q P .. q P + P - 1`
+   (`P` the carry's pass for the side: 128 write, 256 read), so each pass is colored alone and a list's pass sees its
+   digit's tokens of that pass only. A slot is `q P + 8 x (its color's tokens before it in the pass) + its color`.
+3. The claims of every pass at once, the facts pass's batched form on BIASED byte counts (a (pass, digit, color)
+   field `32 - capacity + count`, bit 5 marking a full digit; the capacity `ceil(n / 8)` of the digit's tokens in the
+   pass; the pass's cap `P / 8` a color): each batch shares its 32 lanes among the passes still queued, so a pass's
+   tokens meet few of their own.
+4. The singles, pass by pass: each digit's in the rotation `(d + i) & 7`, first under its capacity then anywhere, a
+   color granting the pass's room in digit order (a scan over the lanes sharing it); then dealt to their colors.
+5. The lists: a counting walk over the stash into each (list, pass)'s color counts; each (list, pass, color)'s place
+   base; a walk a lane an entry placing it at `base + 8 x rank`, each list's whole run first written with its pads as
+   the walk reaches it (coalesced, so every sector is whole before the entries land over it).
 
 Every list is checked exactly against the mirror given the kernel's coloring (entries, starts, heads), the coloring by
-its invariants (every union token one slot, the residue layout, the union's cap, the extent).
+its invariants (every union token one slot, each pass's tokens its union ranks, each color dense in token order within
+its pass, the extent).
+
+THE PASS LAYOUT, chosen on the cell's tiles by simulation (list places over live entries, 300 units a cell):
+
+| layout | k 4 | k 16 |
+|---|---|---|
+| the window colored whole (the facts pass's today; the serial reference / the kernel's batched claims) | 1.90 / 1.96 | 1.91 / 2.13 |
+| passes cut from the union in token order, each colored alone (serial) | 1.71 | 1.37 |
+| the same, the claims batched 8 a pass (this kernel) | 1.75 | 1.44 |
+| passes of the window's tokens (not the union's) | 2.75 | 1.32 |
+| 32 (pass, color) bins, each token the bin opening its digits the fewest new steps (serial) | 1.48 | 1.36 |
+| the same in batches of 32 | 2.00 | 1.51 |
+| the bound: each digit in one pass | 1.41 | 1.11 |
 
 Measured (RTX 3080 Ti at its boost clock, ~1.96 GHz; medians):
 
 | | k 4 | k 16 |
 |---|---|---|
-| the colorer, both sides' 8,192 unions | 228-258 µs | 580 µs |
-| instructions a union (read / write side) | 7.9K / 8.3K | 15K / 16.7K |
+| the colorer, both sides' 8,192 unions | 318 µs | 644 µs |
+| list places over live entries | 1.77 | 1.47 |
+| the window-colored form (`a044e932`), both sides | 228-258 µs | 580 µs |
 | the stream half's model alone (a persistent CTA an SM, two windows) | 393-420 µs | 447 µs |
-| the model and the colorer on two streams | 597-608 µs | 1,020 µs |
-| tokens over a digit's capacity / gap slots, a union | 0.002 / 12.4 | 0.58 / 16.1 |
+| tokens over a pass capacity / gap slots, a union | 2.1 / 23.6 | 17.3 / 23.1 |
 
-Where a union's instructions go at k 16 (write side, `tools/lab.py ledger`): the lists' walk with its pads 6.6K, the
-claims 4.2K, the singles 2.3K, the slots 1.25K, the counting walk 0.9K, the inputs 1.0K. At k 4: the walk 2.3K, the
-singles 1.8K, the slots 1.25K, the claims 0.9K. The colorer is now issue-bound (45-53% of issue slots, ~14 warps an SM).
+What a place costs: the carry steps every place of a list in every box that holds the list -- 16 CTAs a list at this
+cell (8 boxes along the other level x 2 channel groups at d_v 64), ~3.7 cycles a place a CTA in the readout
+(`read_image`) -- so the places are the colorer's real output, and the per-pass layout's fewer places (-10% at k 4,
+-31% at k 16) outweigh its slower coloring.
 
 Findings on the way (each a form the source keeps):
-- A data-dependent term in a vote loop's bottom test (`__any_sync(..) & (level <= cap)`) left ptxas unable to prove
-  convergence anywhere after it: every collective in the kernel got a fallback call. The whole test inside the vote
-  fixes it.
-- Vote-bottomed loops nested in fully unrolled loops did the same; a plain lane loop with no collective inside does not.
-- The first list form, entries and pads stored 8 bytes at a time to scattered places, wrote 198 MB to DRAM for ~105 MB
-  of lists at k 16 (partial sectors evicted before they were whole) and stalled on its stash loads (long scoreboard 10
-  of 19 cycles an instruction); writing each list whole halved the k 16 time.
+- A data-dependent term in a vote loop's bottom test, a counted loop holding a collective, or vote-bottomed loops nested
+  in fully unrolled loops each left ptxas unable to prove convergence anywhere after: every collective got a fallback
+  call. The whole test inside the vote, and vote-bottomed runtime loops, fix it.
+- Entries and pads stored 8 bytes at a time to scattered places wrote 198 MB to DRAM for ~105 MB of lists at k 16
+  (partial sectors evicted before they were whole) and stalled on the stash's loads; writing each list's run whole as
+  the walk reaches it, and the stash prefetched to L2, halved the k 16 time.
+- Per-pass capacities are small (often 1 a color at k 16), so 32 claims of one pass collide: 20 batches and 116 losers
+  a union at k 16's write side, against ~11 and 35 when the batch's lanes are shared among the passes.
+- The colorer and the stream half's model added rather than overlapped (k 16: 1,020 µs together against 447 + 580).
 
-What it decides: the colorer is correct at a warp a union, but it does not hide beside the stream half -- the two add
-(the model leaves the colorer about 8 warps an SM). Projected at the locked clock with the real stream half (371 µs):
-~640 / ~1,190 µs, 1.24x / 1.79x the line (the fused kernel: 907 / 1,720 µs). Which form the facts pass takes next is
-Blake's decision, in the coordinator's user queue.
+What it decides: the lists' passes are cut from the union in token order and colored alone (the carry's steps fall
+with the places); the colorer's own speed, still above the window-colored form's, is the next item.
 
 Record: none yet (over its stated instruction budget; the stated lines are kept in the source).
