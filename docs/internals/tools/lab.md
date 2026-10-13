@@ -116,6 +116,7 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="vote-stash"></a>[`vote_stash`](../../lab/vote_stash.md)
 - <a id="facts-pipeline"></a>[`facts_pipeline`](../../lab/facts_pipeline.md)
 - <a id="facts-block"></a>[`facts_block`](../../lab/facts_block.md)
+- <a id="facts-two"></a>[`facts_two`](../../lab/facts_two.md)
 - <a id="fold-part"></a>[`fold_part`](../../lab/fold_part.md)
 - <a id="fold-mchan"></a>[`fold_mchan`](../../lab/fold_mchan.md)
 - <a id="read-image"></a>[`read_image`](../../lab/read_image.md)

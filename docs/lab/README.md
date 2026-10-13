@@ -28,6 +28,7 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`vote_stash`](vote_stash.md) | experiment |
 | [`facts_pipeline`](facts_pipeline.md) | experiment |
 | [`facts_block`](facts_block.md) | experiment |
+| [`facts_two`](facts_two.md) | experiment |
 | [`fold_part`](fold_part.md) | part harness |
 | [`fold_mchan`](fold_mchan.md) | part harness |
 | [`read_image`](read_image.md) | part harness |
