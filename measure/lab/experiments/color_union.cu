@@ -254,9 +254,9 @@ __global__ __launch_bounds__(kThreads, 1) void color(const uint32_t* __restrict_
   lab::sink(sinks, fold);
 }
 
-//: THE BATCHED FORM'S SHARED MEMORY a warp: two tiles, each token's digits (u32; then each digit's parity outcomes),
-//: the queue of multi-digit tokens (u16, a ring; then the single tokens' words), each digit's counts (8 u16), full
-//: colors and capacity, each token's color
+//: THE BATCHED FORM'S SHARED MEMORY a warp: two tiles, each token's digits (u32), the queue of multi-digit tokens
+//: (u16, a ring; then the single tokens' words), each digit's counts (8 u16), full colors and capacity, each token's
+//: color
 constexpr int kMasks = 2 * kTileBytes;
 constexpr int kQueue = kMasks + 512 * 4;
 constexpr int kBCounts = kQueue + 512 * 2;
@@ -305,7 +305,6 @@ __global__ __launch_bounds__(kThreads, 1) void batched(const uint32_t* __restric
   const int warp = lab::warp_id(), lane = lab::lane_id();
   uint8_t* const base = smem + warp * kBWarpBytes;
   uint32_t* const masks = reinterpret_cast<uint32_t*>(base + kMasks);
-  uint2* const parity = reinterpret_cast<uint2*>(base + kMasks);
   uint16_t* const queue = reinterpret_cast<uint16_t*>(base + kQueue);
   uint32_t* const singles = reinterpret_cast<uint32_t*>(base + kQueue);
   uint32_t* const counts = reinterpret_cast<uint32_t*>(base + kBCounts);
@@ -631,6 +630,8 @@ void serial(const lab::Bench& b, const Cell& c) {
   const std::string name = lab::kernel("color_union::color", {CELL});
   b.expect(name, "REDUX", ">=", 6);
   b.expect(name, "LDGSTS", ">=", 16);
+  //: its divergent token walks and conditional stores (KERNEL_STANDARDS 29.13), a debt the facts pass's form pays off
+  b.expect(name, "LOOP_CONVERGENCE", "<=", 77);
   declare(b, name, kSerial[CELL]);
   if (b.expect_only) return;
   LAB_CHECK(cudaFuncSetAttribute(color<CELL>, cudaFuncAttributeMaxDynamicSharedMemorySize, kBytes));
@@ -658,6 +659,7 @@ void batched_variant(const lab::Bench& b, const Cell& c) {
   const std::string name = lab::kernel("color_union::batched", {CELL});
   b.expect(name, "ATOMS", ">=", 2);
   b.expect(name, "LDGSTS", ">=", 16);
+  b.expect(name, "LOOP_CONVERGENCE", "<=", 52);
   declare(b, name, kBatched[CELL]);
   if (b.expect_only) return;
   LAB_CHECK(cudaFuncSetAttribute(batched<CELL>, cudaFuncAttributeMaxDynamicSharedMemorySize, kBBytes));

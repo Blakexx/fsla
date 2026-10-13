@@ -24,6 +24,15 @@ tree carried when it began gating are a baseline that only shrinks.
 | `python -m rola_devtools.mirror --check` | every tracked path is declared ships or private for the public mirror in `.github/mirror/declarations.json`, so a new file never ships, and never silently stays behind, undecided (the tool is rola-devtools', linked into the venvs; its README describes the export) |
 | `clang-format` (root `.clang-format`) | the formatting floor, including `MaxEmptyLinesToKeep: 1` and `SeparateDefinitionBlocks: Always` — the formatter's half of the readability rule above |
 
+<a id="portable-agent-files"></a>
+## The agent files are portable
+
+`tools/lint/portable_claude.py` (gating, KERNEL_STANDARDS §31) fails a commit whose agent files -- everything under
+`.claude/` and every `CLAUDE.md` -- name a machine's own path: a home directory, a mount, a drive. The repo's skills,
+hooks and routes ship with the code to every clone and worktree, so they cite repo-relative paths, hooks resolve
+through `$CLAUDE_PROJECT_DIR`, and a site's own locations come from the dev config or the environment
+(`ROLA_SCRATCH`).
+
 <a id="ratchets"></a>
 ## The ratchets
 

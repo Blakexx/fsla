@@ -28,3 +28,23 @@ The rules most often violated by newcomers, restated:
   `gpu_lock()` itself (`rola_devtools.locks.gpu`, K46) — invoke GPU commands BARE,
   never wrapped in an external `flock` on the same lock path (self-deadlocks).
   Builds: MAX_JOBS=4, nice.
+
+## Skills: procedures that ship with the repo (KERNEL_STANDARDS §31)
+
+The repo's skills are in `.claude/skills/`; each is a procedure whose rules and facts are references into `docs/`,
+held current by `tools/docrefs.py`. Start a session in this checkout or worktree, or add it with `/add-dir`, so its
+own branch's skills load. A PreToolUse hook names the skill that covers an action the first time a session takes it
+(`.claude/skill-routes.json`):
+
+| action | skill |
+|---|---|
+| writing or changing CUDA (`csrc/`, `measure/lab/*.cu`) | `rola-kernel-code` |
+| a lab experiment (`measure/lab/`, `tools/lab.py`) | `rola-lab` |
+| an instruction budget, a ledger | `rola-budget` |
+| a shared-memory layout, the bank model | `rola-shared-layout` |
+| tests (`tests/`, `pytest`) | `rola-test` |
+| measuring the shipped kernels | `rola-bench` |
+| a build | `rola-build` |
+| ratification | `rola-ratify` |
+| a commit or a push | `rola-commit` |
+

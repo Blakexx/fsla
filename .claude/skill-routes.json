@@ -1,0 +1,15 @@
+{
+  "about": "KERNEL_STANDARDS section 31: which repo skill covers an action. `edit` globs match a path edited (repo-relative); `bash` substrings match a command run. The PreToolUse hook (.claude/hooks/route_skills.py) names each matching skill the first time a session takes the action.",
+  "routes": [
+    {"skill": "rola-kernel-code", "edit": ["csrc/*", "measure/lab/*.cu", "measure/lab/*.cuh"]},
+    {"skill": "rola-lab", "edit": ["measure/lab/*"], "bash": ["tools/lab.py"]},
+    {"skill": "rola-budget", "edit": ["tools/budgets/*", "docs/internals/tools/budgets.md"],
+     "bash": ["tools/lab.py ledger", "tools/region_ledger.py", "tools/phase_ledger.py"]},
+    {"skill": "rola-shared-layout", "edit": ["tools/bank_model.py"], "bash": ["tools/bank_model.py"]},
+    {"skill": "rola-test", "edit": ["tests/*"], "bash": ["pytest"]},
+    {"skill": "rola-bench", "bash": ["rola_devtools.build run", "declare.py"]},
+    {"skill": "rola-build", "bash": ["pip install -e", "setup.py", "nvcc "]},
+    {"skill": "rola-ratify", "bash": ["tools/ratify.py"]},
+    {"skill": "rola-commit", "bash": ["git commit", "git push"]}
+  ]
+}

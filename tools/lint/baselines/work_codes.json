@@ -8,12 +8,6 @@
    "count": 1
   },
   {
-   "path": "docs/KERNEL_STANDARDS.md",
-   "message": "names the work code 'P81'",
-   "line_sha256": "c87ba432af04e754",
-   "count": 1
-  },
-  {
    "path": "docs/api.md",
    "message": "names the work code 'D2'",
    "line_sha256": "47bad006b8a8f445",

@@ -36,6 +36,7 @@ from collections import Counter
 from pathlib import Path
 
 import dev_config
+import region_ledger
 import sass
 import sass_gate
 
@@ -136,13 +137,44 @@ _PRE_29 = {"collective_branch", "den_sweep", "facts_block", "facts_pipeline", "f
            "tensor_tax", "vote_stash"}
 
 
+#: KERNEL_STANDARDS section 29.13's debts: the experiments recorded before a budgeted kernel had to declare the
+#: convergence regions inside its loops; each declares them when it is next changed, and the list only shrinks
+_PRE_29_13 = {"digit_box", "digit_box32", "fold_publish", "image_ring", "list_box", "read_image", "read_w1024"}
+
+#: a branch's target in `cuobjdump -sass` text (function-relative)
+BRANCH = re.compile(r"\bBRA(?:\.[A-Z.]+)?\s+(?:!?U?P[T\d]+,\s*)?(?:~?URZ,\s*)?(0x[0-9a-f]+)")
+
+
+def loop_convergence(binary: Path) -> dict[str, int]:
+    """Per kernel (demangled): the convergence instructions (`BSSY`, `BSYNC`, `BRA.DIV`) inside its loops -- the spans a
+    backward branch closes -- which KERNEL_STANDARDS section 29.13 has removed by the source patterns of 29.9 or
+    declared (`LOOP_CONVERGENCE`)."""
+    code: dict[str, list[tuple[int, str, str]]] = {}
+    current = None
+    with sass.sass_lines(binary) as lines:
+        for line in lines:
+            if m := sass.FUNCTION.match(line):
+                current = m.group(1)
+                code[current] = []
+            elif current and (m := sass.INSTRUCTION.match(line)):
+                code[current].append((int(m.group(1), 16), m.group(3), line))
+    found = {}
+    for name, body in code.items():
+        loops = [(int(t.group(1), 16), at) for at, op, line in body
+                 if op.startswith("BRA") and (t := BRANCH.search(line)) and int(t.group(1), 16) < at]
+        found[name] = sum(1 for at, op, _ in body if op.startswith(("BSSY", "BSYNC", "BRA.DIV"))
+                          and any(lo <= at <= hi for lo, hi in loops))
+    names = demangle(list(found))
+    return {names[k]: v for k, v in found.items()}
+
+
 def check(binary: Path, table: dict[str, dict]) -> list[str]:
     """Every expectation the experiment declares, no local memory and no undeclared convergence call anywhere: the
     failures, empty when it may run."""
     lines = subprocess.run([str(binary), "--expect"], capture_output=True, text=True, check=True).stdout
     expected = [e for e in map(json.loads, lines.splitlines()) if e["lab"] == "expect"]
     failures = []
-    for e in expected:
+    for e in (e for e in expected if e["op"] != "LOOP_CONVERGENCE"):
         hits = [k for k in table if re.search(e["kernel"], k)]
         if not hits:
             failures.append(f"no kernel matches {e['kernel']!r}")
@@ -153,6 +185,15 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
                 failures.append(f"{k}: {e['op']} {n}, expected {e['cmp']} {e['count']}")
     declared_calls = {k for e in expected for k in table if re.search(e["kernel"], k) and "CALL" in e["op"]}
     declared_branches = {k for e in expected for k in table if re.search(e["kernel"], k) and e["op"] == "BSSY"}
+
+    if binary.name.split(".")[0] not in _PRE_29_13:
+        declared_loops = {k: e["count"] for e in expected if e["op"] == "LOOP_CONVERGENCE"
+                          for k in table if re.search(e["kernel"], k)}
+        budgeted = {k for b in budgets(binary) for k in table if re.search(b["kernel"], k)}
+        for k, n in loop_convergence(binary).items():
+            if k in budgeted and n > declared_loops.get(k, 0):
+                failures.append(f"{k}: {n} convergence instructions inside its loops, {declared_loops.get(k, 0)} "
+                                "declared (KERNEL_STANDARDS 29.13: the source patterns of 29.9, or LOOP_CONVERGENCE)")
 
     if binary.name.split(".")[0] not in _PRE_29:
         stated = budgets(binary) + budgets(binary, "exempt")
@@ -455,6 +496,84 @@ def counters(name: str, metrics: list[str], record: bool) -> int:
     return 0
 
 
+#: a phase heading: a `//:` comment that opens a declaration block (KERNEL_STANDARDS section 29.13)
+PHASE = re.compile(r"^\s*//:\s*(.*)$")
+
+
+def phases(source: Path) -> list[tuple[int, str]]:
+    """(first line, name) of each phase of `source`: a `//:` block opens one, named by its first words."""
+    out = []
+    lines = source.read_text().splitlines()
+    for i, line in enumerate(lines, 1):
+        if (m := PHASE.match(line)) and not PHASE.match(lines[i - 2] if i > 1 else ""):
+            out.append((i, " ".join(m.group(1).split()[:6])))
+    return out
+
+
+def ledger(name: str, pattern: str | None) -> int:
+    """KERNEL_STANDARDS section 29.13: each kernel's executed instructions by phase (its source's `//:` headings), per
+    declared unit or per launch -- ncu's SourceCounters of the kernel's first launch, each SASS offset mapped to its
+    innermost line in the experiment's source (the lab builds carry `-lineinfo`)."""
+    arch = device_arch()
+    path = experiments()[name]
+    binary = build(path, arch)
+    table = kernels(binary)
+    extra, _ = inputs(name)
+    units = {k: (float(u["n"]), u["unit"]) for k in table for u in budgets(binary, "units")
+             if re.search(u["kernel"], k)}
+    heads = phases(path)
+
+    images = [c for c in sass.cubins(binary) if arch in c.name]
+    if len(images) != 1:
+        print(f"lab: {len(images)} images for {arch} in {binary.name}")
+        return 1
+    mangled = dict(zip(demangle(list(kernels_mangled(binary))).values(), kernels_mangled(binary), strict=True))
+    disassembly = sass.disassemble(images[0], "--print-line-info-inline", "-gi")
+    for k in table:
+        if pattern and not re.search(pattern, k):
+            continue
+        core = k.split("(")[0].split("::")[-1] if "<" not in k else k[:k.index(">") + 1].split("::")[-1]
+        out = subprocess.run([dev_config.get("toolchain.ncu"), "--kernel-name-base", "demangled", "--kernel-name",
+                              f"regex:{re.escape(core)}", "--launch-count", "1", "--section", "SourceCounters",
+                              "--page", "source", "--print-source", "sass", "--csv", str(binary), "--reps", "1",
+                              *extra], capture_output=True, text=True, check=True).stdout
+        csv_path = dev_config.scratch("lab") / f"{name}.ledger.csv"
+        csv_path.write_text(out)
+        rows = region_ledger.read_source_counters(csv_path)
+
+        if not rows:
+            print(f"  {k}: no launch profiled")
+            continue
+        base = min(at for at, *_ in rows)
+        frames = sass.frames(own_section(disassembly, mangled[k]))
+        per, unit = units.get(k, (1.0, "launch"))
+        by: dict[str, float] = {}
+        for at, executed, *_ in rows:
+            lines = [ln for f, ln in frames.get(at - base, []) if f == path.name]
+            head = next((h for first, h in reversed(heads) if lines and first <= lines[0]), "(outside the source)")
+            by[head] = by.get(head, 0.0) + executed / per
+        total = sum(by.values())
+        print(f"  {k[:110]}: {total:,.0f} instructions a {unit}")
+        for head, n in sorted(by.items(), key=lambda x: -x[1]):
+            print(f"    {n:10,.1f}  {100 * n / total:5.1f}%  {head}")
+    return 0
+
+
+def own_section(disassembly: str, mangled: str) -> str:
+    """A kernel's own code section of an `nvdisasm` listing: offsets restart in every function, so the frame map of the
+    whole listing would merge them."""
+    lines = disassembly.splitlines()
+    start = next(i for i, line in enumerate(lines) if f".section\t.text.{mangled}," in line)
+    end = next((i for i in range(start + 1, len(lines)) if "\t.section\t" in lines[i]), len(lines))
+    return "\n".join(lines[start:end])
+
+
+def kernels_mangled(binary: Path) -> list[str]:
+    """The binary's kernels by their mangled names, as the disassemblers spell them."""
+    with sass.sass_lines(binary) as lines:
+        return [m.group(1) for line in lines if (m := sass.FUNCTION.match(line))]
+
+
 def show_sass(name: str, pattern: str | None, full: bool, arch: str | None) -> int:
     path = experiments()[name]
     binary = build(path, arch or device_arch())
@@ -487,6 +606,9 @@ def main() -> int:
     r.add_argument("--reps", type=int, default=7)
     r.add_argument("--record", action="store_true", help="write the record into measure/lab/results")
     r.add_argument("--force", action="store_true", help="measure on a busy GPU")
+    g = sub.add_parser("ledger", help="a kernel's executed instructions by phase (KERNEL_STANDARDS 29.13)")
+    g.add_argument("experiment")
+    g.add_argument("--kernel", help="a regex over the demangled kernel names")
     n = sub.add_parser("ncu")
     n.add_argument("experiment")
     n.add_argument("--metric", action="append", required=True, help="an ncu metric; repeat for several")
@@ -503,6 +625,8 @@ def main() -> int:
         return show_sass(args.experiment, args.kernel, args.full, args.arch)
     if args.cmd == "ncu":
         return counters(args.experiment, args.metric, args.record)
+    if args.cmd == "ledger":
+        return ledger(args.experiment, args.kernel)
     return run(args.experiment, args.reps, args.record, args.force)
 
 

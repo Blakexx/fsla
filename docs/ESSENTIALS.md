@@ -22,6 +22,10 @@ incident-derived). Read §19–§21 before touching a kernel:
 - Efficiency is correctness; build the whole design or stop and name the gap; no fallbacks, no dead code;
   comments are decl blocks, prose goes to `docs/internals/`; oracle = truth (`tests/oracle/`).
 
+## The skills
+`.claude/skills/` -- one procedure per common action, routed by `.claude/skill-routes.json` (`CLAUDE.md` has the table);
+load the skill an action names before taking it (§31).
+
 ## The instruments
 - Perf: `python -m rola_devtools.build run declare.py:all` (this checkout's declared measurement: its instruments and one
   clock-locked interleaved timing session on the cells, `docs/measurement.md`); attribution:

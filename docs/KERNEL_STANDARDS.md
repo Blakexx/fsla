@@ -214,7 +214,7 @@ Gate builds: exclusive lock, MAX_JOBS=8, NVCC_THREADS=2. Iteration builds: one o
 (then tools/build/build_lock.sh; now the host budget `setup.py` takes, §23), MAX_JOBS=4, single-arch, arm-subset. Re-derive these numbers if
 cicc's peak changes (a per-leaf nest can push it back to 6 GB — §1).
 
-## §16 — Ratify at milestones, not stages (Blake, 2026-08-28)
+## <a id="s16"></a>§16 — Ratify at milestones, not stages (Blake, 2026-08-28)
 
 A stage's gate is SMALL: an iteration build (single arch, arm subset), the fp64 oracle on the arms
 it touched, the census on those arms, and the model tests. A stage does NOT run the both-arch
@@ -265,7 +265,7 @@ R6. A KERNEL'S SASS DEPENDS ON ITS TU NEIGHBORS: byte-identity is a claim about 
 R7. STAGED-vs-STRAIGHT IS DECIDED BY LATENCY, NOT COUNTS: "identical sectors and issues" lost 9.5% on
     long-scoreboard (e390764). Time, IPC and stall reasons decide; counts describe.
 
-## §17 — Portability: what the repo points at (Blake, 2026-08-28)
+## <a id="s17"></a>§17 — Portability: what the repo points at (Blake, 2026-08-28)
 The repository is SELF-CONTAINED: anything it DEPENDS ON — a tool it runs, a doc it cites, a record it
 reads, a baseline it compares against — lives in the repo or in a NAMED sibling repository with a stable
 layout (the bench/results repo), never in an ad-hoc place (a scratch directory, a home path, a session
@@ -307,7 +307,7 @@ arm kept as a yardstick) are keyed on an explicit declared variable and carry th
 a card. Applied: mold as the only linker; sccache pin miss refuses; run_clang_tidy never skips; one
 build-lock discipline (slots as the parameter).
 
-## §10 addendum (law, 2026-08-28): THE COMMENT-DENSITY GATE
+## <a id="comment-density"></a>§10 addendum (law, 2026-08-28): THE COMMENT-DENSITY GATE
 The constitution's self-documenting-code clause is gated mechanically: `tools/lint/lint_standards.py`
 measures comment lines / total lines per file under csrc/ and is RED above the mandate's threshold
 (named constant; decl-block level, well under 15%). A `//:` prose block outside a file header is a
@@ -324,7 +324,7 @@ most TWO agents that build at once; every build goes through tools/build/build_l
 `pgrep -c cicc` before launching and never wraps a full build in hyperfine (bounded `--runs 3`, on the
 LINK step only). Coordinator error recorded: two briefs omitted the build lock.
 
-## §18 addendum (law, 2026-08-29): `--no-verify` is never a precedent
+## <a id="no-verify"></a>§18 addendum (law, 2026-08-29): `--no-verify` is never a precedent
 A commit bypasses the hooks only with an explicit, per-commit coordinator authorization naming the
 pre-existing hook failure and the stage that fixes it. "Another stage did it" is not authorization. Red
 hooks are fixed (the hook, or the tree), never routed around.
@@ -437,7 +437,7 @@ for every kernel until it is taken up again; synccheck, initcheck and memcheck s
 stands (`docs/testing.md#the-sanitizer-lane`).
 
 
-## §19 — THE COMPONENT BUDGET GATE (law, 2026-09-09, from the P81 rebuild's four reference-grade forms)
+## <a id="s19"></a>§19 — THE COMPONENT BUDGET GATE (law, 2026-09-09, from the carry rebuild's four reference-grade forms)
 Rule 12 said "state the floor before building"; nothing enforced it, and a whole kernel was built four
 times to correctness with its schedule machinery at 3x master's instruction count before the floor was
 ever compared. From here the floor is a GATE, per component, before composition:
@@ -468,7 +468,7 @@ ever compared. From here the floor is a GATE, per component, before composition:
 - A design verdict is never drawn from a build whose components have not passed their gates
   ("slop numbers get misread as design verdicts" is now a gate, not a memory).
 
-## §20 — ptxas SIGNATURES (law, 2026-09-09): what the SASS gate reads, and the rule behind each
+## <a id="s20"></a>§20 — ptxas SIGNATURES (law, 2026-09-09): what the SASS gate reads, and the rule behind each
 `tools/sass_gate.py` runs after every build (`setup.py`'s post-build gate, iteration builds included), on
 every function of every cubin, and fails on any of these -- and on a kernel the source defines that no cubin
 carries; each was re-learned by trial this week and costs a rebuild when missed.
@@ -510,7 +510,7 @@ carries; each was re-learned by trial this week and costs a rebuild when missed.
   issue binds the tensor pipe at two warps a scheduler): the kernel is issue-bound; the budget ledger
   says which component.
 
-## §21 — THE MEASUREMENT PROTOCOL (law, 2026-09-09, after a dense verdict was drawn against the baseline's sparse schedule)
+## <a id="s21"></a>§21 — THE MEASUREMENT PROTOCOL (law, 2026-09-09, after a dense verdict was drawn against the baseline's sparse schedule)
 A comparison is valid only when: the same grid and block (read `launch__grid_size`), the baseline run
 with ITS OWN schedule for the cell, `smsp__inst_executed`, `sm__cycles_active` and `sm__cycles_elapsed`
 beside the time (idle SMs and tail waves are reported, not inferred), the GPU quiet (no sanitizer or
@@ -518,7 +518,7 @@ profiler child alive: a timed-out `compute-sanitizer` leaves its python child on
 probe's clock rows accepted. "Issue active at X%" is a ratio over active cycles and says nothing about
 the instruction count; the count is read, never inferred from the ratio.
 
-## §22 — THE MEASUREMENT SUITE, AND HOW A MEASUREMENT IS READ (law, 2026-09-12, after a week in which a register cap, a "spin", a pipe metric and a schedule default were each misattributed)
+## <a id="s22"></a>§22 — THE MEASUREMENT SUITE, AND HOW A MEASUREMENT IS READ (law, 2026-09-12, after a week in which a register cap, a "spin", a pipe metric and a schedule default were each misattributed)
 WHAT IS MEASURED, on every build, before any component is judged, as one report diffed against the
 previous build's: (1) the SASS composition (§20) and the REGISTER LIFE RANGES (`nvdisasm
 --print-life-ranges`): peak live registers per source region beside the allocation -- a budget
@@ -724,7 +724,7 @@ phase-ledger tool and declared arm set named the carry alone. Nothing had decide
    inside one fails the standards lint, and so does a region that never closes. The decode step's walk is one; the
    work queue's visit folds and switches heads behind barriers after it.
 
-## §26 — A RULE ABOUT THE MACHINE CITES A LAB EXPERIMENT (law, 2026-10-04, from Blake's "create a system where we can experiment with different cuda structures and get information we can eventually record as rules")
+## <a id="s26"></a>§26 — A RULE ABOUT THE MACHINE CITES A LAB EXPERIMENT (law, 2026-10-04, from Blake's "create a system where we can experiment with different cuda structures and get information we can eventually record as rules")
 Two days of fold work rested on a per-instruction cost table that a later experiment overturned, and two rows of the
 probe that replaced it measured instructions ptxas had folded or turned into calls. So:
 1. A CLAIM ABOUT THE HARDWARE OR THE COMPILER — a rate, an overlap, a cost beside the tensor pipe, what ptxas does to a
@@ -874,7 +874,7 @@ probe that replaced it measured instructions ptxas had folded or turned into cal
       build left nothing in flight (TILED computes at 0.72x its floor at k 4 and streams at 1.28x); holding that level
       alone and streaming the others through a ring of small stages freed as voted takes it to 1.16x (resident 0.54x).
 
-## §27 — A STEP IS ONE BLOCK, INTERLEAVED BY CONSTRUCTION (law, 2026-10-06, from Blake's "we should have lints and sass checks that enforce we properly interleave loops by default, and only override if justified")
+## <a id="s27"></a>§27 — A STEP IS ONE BLOCK, INTERLEAVED BY CONSTRUCTION (law, 2026-10-06, from Blake's "we should have lints and sass checks that enforce we properly interleave loops by default, and only override if justified")
 The per-list readout ran 3.2x its MMA floor and the cause was the shape of its code, not the hardware: branches the
 source never meant as branches, a block split between a prefetch and the MMAs it should hide under, and a ring
 rotated by copies. The 2026-10-05 `list_fold` finding had said it ("each entry's pad check a branch that fences the
@@ -899,7 +899,7 @@ the experiment declares them (an expectation on BSSY: a comparison baseline kept
 out. Register moves per MMA in a step (the copy-rotation signature) and the MMA gap (the longest MMA-free run in the
 step loop's body, and around it) are reported, and gate once a lab fixes the bound. Measured: §26.3 s, u, v.
 
-## §28 — NO PHASE IDLES THE BINDING STREAM (law, 2026-10-07, from Blake's "any kernel we write should be going for maximal pipelining, ilp, etc. we shouldn't be compromising our standards, and if linters are letting us we should be making our linters more powerful and standards more clear")
+## <a id="s28"></a>§28 — NO PHASE IDLES THE BINDING STREAM (law, 2026-10-07, from Blake's "any kernel we write should be going for maximal pipelining, ilp, etc. we shouldn't be compromising our standards, and if linters are letting us we should be making our linters more powerful and standards more clear")
 The facts pass's list build was priced by instruction count (about 10 an entry, "inside the ~40% issue headroom")
 and built as its own phase after the vote's barrier: no rows streamed while it ran, about 25% issue with one eligible
 warp a scheduler, and the pass landed at 1.48x its DRAM floor -- near the SUM of its floors, not their max. The
@@ -921,7 +921,7 @@ sustained DRAM peak on the RTX 3080 Ti (1.04x), so the DRAM floor is reachable; 
 calibrated MMA rate (§22), its probe row owed with the first MMA kernel's row. OWED: per-phase issue and eligible
 warps in the phase ledger, so item 4 gates per phase rather than per kernel.
 
-## §29 — EVERY INSTRUCTION IS BUDGETED BY CLASS BEFORE CODE, AND HOISTED BY FREQUENCY (law, 2026-10-11, from Blake's "is there any kind of linting / sass checks we can add to stop us from writing such bad code? ... we do not take a standard analytical / deterministic approach to writing kernels when i feel the patterns are quite easy to formalize")
+## <a id="s29"></a>§29 — EVERY INSTRUCTION IS BUDGETED BY CLASS BEFORE CODE, AND HOISTED BY FREQUENCY (law, 2026-10-11, from Blake's "is there any kind of linting / sass checks we can add to stop us from writing such bad code? ... we do not take a standard analytical / deterministic approach to writing kernels when i feel the patterns are quite easy to formalize")
 The readout lab (`read_image`) ran 18.7 instructions an MMA where its design needs about 9: each panel add
 recomputed its token's row address and its pad select (~5 an MMA), every output converted on the conversion unit
 (F2I) where one FFMA does it, and each digit's bookkeeping recomputed per use. Each was found after the fact by reading
@@ -963,6 +963,22 @@ method is a procedure with a gate, not a memory.
    every `LDGSTS`, a loop's exit `CALL`, alignment NOPs, `UIADD3` fillers between dependent MMAs.
 10. A FREE-RUNNING CTA IS TIMED BY ITS SPAN (`WarpSpan`) against the free floor, the busiest scheduler over all
    windows. The mean warp's cycles undercount it, and a per-window floor overstates what it must take.
+11. A BUDGET IS PRICED, NOT GUESSED (law, 2026-10-12, from Blake's "why do we always seem to fail to hit our budgets"):
+   each line item is its trips times the SASS price of its primitives, from the price list
+   (docs/internals/tools/budgets.md#prices) for the architecture. A primitive with no price is compiled alone and its
+   SASS read before it is used, and enters the list. The coloring labs missed their stated lines 1.4-2.4x on operations
+   counted where instructions are paid: a `redux.sync`'s move back from a uniform register, a runtime-indexed counter
+   as a compare-select-add a word, both sides of a lane-dependent select.
+12. TRIPS COME FROM THE MIRROR, AT THE WARP'S MAXIMUM: an experiment's mirror (its `.inputs.py`) or the facts it
+   stands for counts each phase's trips per cell, and a lane-divergent loop is priced at the warp's longest lane, never
+   the mean (alt-k16's tokens average 2.3 digits; the warp paid ~5-6). The fixed part is itemized phase by phase, never
+   a lump.
+13. A MISS NAMES ITS PHASE AND ITS PRICE: `tools/lab.py ledger <experiment>` attributes executed instructions to the
+   kernel's phases (its `//:` headings) against the line items. A restated budget names the price that was wrong and
+   corrects the list in the same commit; the stated-against-measured record is
+   docs/internals/tools/budgets.md#ledger. Convergence regions inside a budgeted kernel's loops (`BSSY`/`BSYNC`,
+   `BRA.DIV`) are removed by item 9's source patterns or declared (`LOOP_CONVERGENCE`); `tools/lab.py run` refuses an
+   undeclared one.
 ENFORCED: `tools/lab.py run` reads each budgeted kernel's executed instructions by class (ncu's per-opcode counts),
 prints them against the budget, and refuses to record a variant over it (`--force` to record a known-over variant on
 purpose). `tools/sass_gate.py` reds, on every function of every build, conversion-unit instructions and global
@@ -973,7 +989,7 @@ replaces it, and the list only shrinks; a lab variant that keeps one on purpose 
 rule, its named debts) none without a check or a stated reason, and builds no MMA kernel without a budget or exemption.
 Measured: `read_image` (docs/internals/tools/lab.md#read-image).
 
-## §30 — SHARED MEMORY IS CONFLICT-FREE BY CONSTRUCTION (law, 2026-10-11, from Blake's "Should we create principles to ensure things are consistently designed to minimize bank conflicts always from ground up")
+## <a id="s30"></a>§30 — SHARED MEMORY IS CONFLICT-FREE BY CONSTRUCTION (law, 2026-10-11, from Blake's "Should we create principles to ensure things are consistently designed to minimize bank conflicts always from ground up")
 The readout lab's bank conflicts were designed in by accident: the panel's pitch suited one access shape and not the
 other form's, pads went to whatever word was spare, and slot numbers were left to the data, so a digit's tokens
 collided on banks at random. On A100 shared memory binds, so a conflict costs more than an instruction. Fixing all
@@ -1001,7 +1017,7 @@ three cut conflicts from 1.6-2.1 an MMA to 0.02-0.03 and wavefronts 25%, with no
 Measured: `read_image`, `read_w1024` (docs/internals/tools/lab.md#read-image); the model:
 docs/internals/tools/bank_model.md.
 
-## CONSTITUTION addendum (Blake, 2026-10-10): R22 — DEGRADE SMOOTHLY, SCALE, PARTITION INTO INDEPENDENT UNITS
+## <a id="r22"></a>CONSTITUTION addendum (Blake, 2026-10-10): R22 — DEGRADE SMOOTHLY, SCALE, PARTITION INTO INDEPENDENT UNITS
 
 Blake: "my concern is any kernel design that 'spills' at some threshold rather than just cleanly degrading. How things
 scale is important too, instead of just designing for one specific point. Kernels should ideally partition atomic,
@@ -1019,3 +1035,30 @@ determinism".
    disjoint writes, reductions or atomics (run-to-run bitwise determinism is not required: R0 of 2026-09-30), or a
    stage boundary between kernels. A CTA waiting on another CTA's progress needs a strong reason.
 4. EVERYTHING IS A TRADE: a faster form that breaks 1-3 is chosen only with the reason and its numbers written down.
+
+## <a id="first-run"></a>NEW DEVICE CODE RUNS FIRST UNDER A KILL TIMEOUT (law, 2026-10-07, after a hang froze the host)
+A warp shuffle placed as an operand of a short-circuit `||` ran on only the lanes that evaluated it; the warp hung, the
+display driver stopped answering, and the host had to be restarted.
+1. A warp collective is never an operand of `&&`, `||` or `?:`, nor under a lane-dependent branch: compute it on every
+   lane, then combine.
+2. The first run of new or changed device code is under `timeout -s KILL <seconds>`, its waits bounded; a hang is
+   killed, never waited on.
+
+## <a id="s31"></a>§31 — SKILLS SHIP WITH THE REPO, PROCEDURE ONLY, ROUTED BY HOOKS (law, 2026-10-12, from Blake's "have our agent skills point to docs so they stay consistent with code" and "repo portability, work tree support, and the ability to ship and change skills with our repo as it changes")
+Of the fourteen skills on the coordinator's machine, seven were links into a deleted worktree, the repo's own copies
+loaded only in sessions started inside it, and their text had rotted: dead paths, a copy of these standards stopping at
+§21. A skill that already existed for per-section attribution went unused while its method was rebuilt by hand.
+1. A REPO ACTION'S SKILL LIVES IN THE REPO (`.claude/skills/<name>/SKILL.md`), versioned with the code it drives, so
+   every worktree carries its own branch's skills. A session starts in the worktree, or adds it with `/add-dir`. Only
+   cross-repo coordination (cards, the queue, a site's records) is a user-level skill.
+2. A SKILL HOLDS PROCEDURE, THE DOCS HOLD THE TRUTH: a skill is steps and commands; each rule, fact, number and format
+   it relies on is a reference to its doc section, never a copy. `tools/docrefs.py` holds a skill's references strictly:
+   a skill with a pending or broken reference fails the commit, so a skill changes in the commit that changes what it
+   cites.
+3. PORTABLE: nothing under `.claude/` names a machine path. Hooks resolve through `$CLAUDE_PROJECT_DIR`; a site's own
+   locations come from the dev config or the environment (`ROLA_SCRATCH`), as §17 has it for the code.
+   `tools/lint/portable_claude.py` fails a commit that names one.
+4. ROUTED, NOT REMEMBERED: `.claude/skill-routes.json` maps actions -- a path edited, a command run -- to skills; the
+   PreToolUse hook (`.claude/hooks/route_skills.py`) puts the skill to load in context the first time a session takes
+   that action, and `CLAUDE.md` shows the table. Skills make the right path the easy one; lints and gates make the
+   wrong one fail.

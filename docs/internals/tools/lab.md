@@ -25,6 +25,10 @@ re-runs the experiments its rules cite (`docs/KERNEL_STANDARDS.md` §26).
 shows each kernel's registers and leading opcodes (or the whole disassembly). `python tools/lab.py ncu <name> --metric M [--metric ...]
 [--record]` reads hardware counters per kernel (the median over its launches) into `<sm_XX>.counters.json`, for a
 question about traffic rather than time.
+`python tools/lab.py ledger <name> [--kernel REGEX]` attributes a kernel's executed instructions to its phases -- the
+`//:` headings of the experiment's source -- per declared unit (KERNEL_STANDARDS §29.13; the method:
+[budgets.md](budgets.md)). `run` also refuses a budgeted kernel whose loops hold convergence instructions (`BSSY`,
+`BSYNC`, `BRA.DIV`) beyond what it declares as `LOOP_CONVERGENCE`.
 
 An experiment that reads data -- a cell's routing, say -- has a `<name>.inputs.py` beside it whose `write(directory)`
 writes the files and returns their names. `run` and `ncu` call it first (in the scratch space), pass the binary

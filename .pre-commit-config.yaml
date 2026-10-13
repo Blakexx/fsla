@@ -104,6 +104,12 @@ repos:
         entry: python3 tools/lint/readability_spacing.py
         pass_filenames: false
         always_run: true
+      - id: portable-agent-files
+        name: "§31: the agent files name no machine path"
+        language: system
+        entry: python3 tools/lint/portable_claude.py
+        pass_filenames: false
+        always_run: true
 
       # THE RATCHETS (tools/lint/ratchet.py, docs/internals/tools/lint.md#ratchets): lints this tree does not pass
       # yet. Each gates on what a commit ADDS against its baseline in tools/lint/baselines/, which only shrinks: a new

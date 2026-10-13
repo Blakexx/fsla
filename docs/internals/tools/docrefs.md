@@ -42,3 +42,7 @@ each target with the docs citing it and the target's own source as a diff from i
 `accept DOC` pins the doc's new and changed references; `accept --whole DOC` also marks every other reference in it
 read, for the docs pass that read the whole page. `--closing` is the pass's end: it fails on anything pending, unread
 or broken, and lists each.
+
+A SKILL (`.claude/skills/<name>/SKILL.md`) is held strictly at every commit, as `--closing` holds a doc at the pass's
+end: a pending, unread or broken reference in a skill fails the gate (`SKILLS`, KERNEL_STANDARDS §31). A skill is the
+procedure an agent follows, so it changes in the commit that changes what it cites, never in a later pass.
