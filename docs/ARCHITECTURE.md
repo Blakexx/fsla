@@ -362,6 +362,6 @@ never select a wider-type emulation. sm_80 and sm_86 are both core targets, pric
 | what a manifest is and what it refuses | [`ratification.md`](ratification.md), [`architecture/closed-world-codegen.md`](architecture/closed-world-codegen.md) |
 | the tiers, the tolerances, the gates | [`testing.md`](testing.md) |
 | the measurement method and record | [`measurement.md`](measurement.md) |
-| the machine's measured facts | [`internals/tools/lab.md`](internals/tools/lab.md) |
+| the machine's measured facts | [`lab/README.md`](lab/README.md), the method [`internals/tools/lab.md`](internals/tools/lab.md) |
 | what is knowingly unfinished | [`open-work.md`](open-work.md) |
 | what was removed, and why it was safe | [`internals/DELETIONS.md`](internals/DELETIONS.md) |

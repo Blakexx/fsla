@@ -47,7 +47,7 @@ Not a checklist: the requirements a target holds and the runner's setup do each 
 
 | step | what happens |
 |---|---|
-| GPU lock | a session holds `gpu: all` (`rola_devtools.build.resources`): `/tmp/rola_gpu.lock` exclusive through `gpu_lock()` (`rola_devtools.locks.gpu`), taken by the build system for the whole session and handed to the entry workers as the lock-held marker, so a self-locking tool a target starts does not wait on it. Nothing is wrapped in an external `flock` on the same path, which self-deadlocks (per-open-file-description semantics: the wrapper's lock blocks the tool's own `flock` call forever). `host.gpu_lock` in the dev config names the path (host and containers share it). |
+| GPU lock | a session holds `gpu: all`: the GPU lock exclusive through `gpu_lock()`, taken by the build system for the whole session and handed to the entry workers as the lock-held marker, so a self-locking tool a target starts does not wait on it. The lock's rules are [`testing.md#running-it`](testing.md#running-it)'s. |
 | clock lock | a session holds `clock: 1`: the host's own lock (`rola_devtools.locks.clock`, the dev config's `clock.json`), proven by this binary's clock read (`register_clock_reader`) before the first call and after the last; a session whose read is off the lock fails. A host without one runs unlocked, and the session records its reads. |
 | binary identity | building an arm asks the device for the subject's family stamp and refuses the arm without it: a path or a hash passes against a stale extension, a device-side fact does not. |
 | extension identity | `import rola` must resolve inside the entry's own checkout, or the arm is refused: an editable install in a shared venv otherwise answers with another tree's kernel while the record carries this tree's commit. |
@@ -202,6 +202,24 @@ Across checkouts rola-bench pairs each surface a checkout exposes (`SURFACES` in
 producer reference) under ITS rule for the surface (`RULES`) -- the oracle bit-identical, the producer support-equal --
 stored at `diff/<surface>`. Verdicts are stored, tensors never. The carry kernel has no diff surface and no
 kernel-vs-oracle diff: its oracle obligation is owed (`tools/coverage.json`).
+
+## <a id="instruments"></a>The instruments
+
+Each is a target of `declare.py` (`INSTRUMENTS`), run per cell where it reads a launch, its output stored beside the
+timing session:
+
+| target | tool | what it reads |
+|---|---|---|
+| `sass` | `tools/sass_gate.py` | the build's SASS signatures (KERNEL_STANDARDS §20) |
+| `registers` | [`tools/life_ranges.py`](internals/tools/life_ranges.md) | peak live registers per source region |
+| `phases` | [`tools/phase_ledger.py`](internals/tools/phase_ledger.md) | the kernel's phase clock on a cell |
+| `counters` | [`tools/pipe_counters.py`](internals/tools/pipe_counters.md) | the profiler's pipe and resource counters |
+| `census` | [`tools/stall_census.py`](internals/tools/stall_census.md) | every warp-stall sample, by source line |
+| `timeline` | [`tools/pipe_timeline.py`](internals/tools/pipe_timeline.md) | the pipes' activity over a launch |
+| `roofline` | `tools/roofline.py` | the intra's time beside the device's u8 IMMA ceiling |
+| `oracle-tier` | the oracle battery | the counts, the failed cases, the margins |
+
+A question about the machine itself, rather than a shipped kernel, is a lab experiment ([`lab/`](lab/README.md)).
 
 ## The measurements record: `rola_results`
 

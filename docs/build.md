@@ -41,13 +41,13 @@ nothing else to `setup.py`. Everything about the MACHINE is the dev config (`too
 
 | Build parameter | Effect |
 |---|---|
-| `ROLA_CUDA_ARCHS` | `;`-separated compute capabilities, default `80;86`. Naming one without a ratified manifest **fails before anything compiles** (rule 3). |
+| `ROLA_CUDA_ARCHS` | `;`-separated compute capabilities, default `80;86`. Naming one without a ratified manifest **fails before anything compiles** (R3). |
 | `ROLA_CARRY_ARMS` | A `,`/space list of INDICES into the carry family's arm list (`tools/gen_shards.py`'s `CARRY_ARMS`), or the word `all`. **The subset is a FILE subset**: each selected row contributes its generated `csrc/rola/src/instantiations/carry_arm_<i>.cu` and a `ROLA_CARRY_BUILD_<i>` line in the generated selection header (`build/generated/carry_selection.inc`), so an arm outside the set is not compiled at all. **The default is every declared row** — see [the arm list](#carry-arm-lists); `all` names the same set. A build whose arm set is not the shipped set is **NOT SHIPPABLE**: the build prints a banner and skips the two shippability gates, because the manifest ratifies the shipped set and a binary carrying a different set is not the thing that ships, in either direction. It is self-identifying at run time: `rola.ops.carry.arms()` lists what was built and every entry point refuses an arm the binary does not carry. Pair it with `ROLA_CUDA_ARCHS=86` for iteration. |
 | `ROLA_CARRY_PARTS` <a id="carry-parts"></a> | **Iteration only.** `all` (the default), `none`, or a comma list of the carry kernel's parts (`readout.stream`, `readout.loads`, `readout.drain`, `fold.pool`, `fold.ring`, `fold.loads`) to build REAL; the rest are STUBS that keep their HMMAs and drop their other work, written to the generated `build/generated/carry_parts.inc` on every build and ratify. Any subset makes the build an iteration build (banner, manifest gate skipped). Driven by `tools/compose_ledger.py` (`docs/internals/tools/compose_ledger.md`); with every part real the arm's instructions are identical to a build without the switches. Never shipped. |
 | `ROLA_BUILD_PARTS` <a id="parts"></a> | **Iteration only.** `1` also builds `rola_cu13/_C_parts.abi3.so`, the part harness's driver (`measure/harness/bench_carry_calib.py`: the calibration kernels, KERNEL_STANDARDS §22), in the same pass beside the arm with `-lineinfo`. A torch JIT `load()` of the same three sources ran for minutes and was killed by the host's memory watchdog; a gating instrument that cannot run is a defect (§22). Never shipped. |
 | `ROLA_DECODE_ARMS` | **Iteration only.** Comma- or space-separated indices into the decode family's declared arm list (`csrc/rola/src/decode/decode.cu`'s `DECODE_ARM_<i>`, the `d_v x D x decay` matrix in that order, 16 rows). Compiles only those arms. Unset = every arm, which is what a gate build must be. Same NOT-SHIPPABLE banner/skip mechanism as `ROLA_CARRY_ARMS` (one `_is_iteration_build` covers both families). See [below](#arm-subset). |
 | `ROLA_SKIP_POST_BUILD_RATIFY` | Skips the post-build gate. For iterating on non-kernel code only; a shippable binary is one that passed it. |
-| `ROLA_STRICT_MANIFEST` | `0`/unset (default): the two post-build gates (the fatbin's manifest-describes-binary sub-check, `tools/ratify.py`'s own re-run) REPORT a mismatch against the committed `tools/manifests/<toolchain>/` record and the install still succeeds — KERNEL_STANDARDS.md §16 makes that manifest stale between milestones by design, so failing the install on it would fail every ordinary stage build. `1`: restores the pre-K43 hard failure. **The milestone/CI gate build sets it** — it is the build that immediately precedes `tools/ratify.py --write`, so it is the one build that must fail loudly if the tree it is about to ratify is not actually shippable yet. Structural checks (the shard partition actually matching the arm list, the dispatch's link closure) are never affected by this variable — those are properties of the build's own source/binary pair, not of the ratified snapshot, and stay fatal unconditionally. |
+| `ROLA_STRICT_MANIFEST` | `1` makes the post-build ratification fatal on a manifest mismatch; unset or `0` reports it ([the rule](#strict-manifest)). **The milestone/CI gate build sets it.** |
 
 ### The host budget: every build shares one pool
 
@@ -71,20 +71,21 @@ python -m pip install -e . --no-build-isolation
 
 ## What the build does, in order
 
-1. **Rule 2 — gencode.** Emits `-gencode arch=compute_XX,code=sm_XX` only. A
+1. **R2 — gencode.** Emits `-gencode arch=compute_XX,code=sm_XX` only. A
    `code=compute_XX` entry would embed PTX and let the driver just-in-time compile
    for an architecture whose register and spill behaviour was never measured.
-2. **Rule 3 — ratified archs.** `tools/manifests/<toolchain>/sm_XX.json` must exist and be
+2. **R3 — ratified archs.** `tools/manifests/<toolchain>/sm_XX.json` must exist and be
    non-empty for every arch being built. A file-existence question, asked first,
    because the cheapest check is the one that must never be tempting to skip.
-3. **Rule 1 — toolchain.** The configured toolkit's `ptxas --version` selects the
+3. **R1 — toolchain.** The configured toolkit's `ptxas --version` selects the
    toolchain: the record in `tools/toolchains/` that names it, whitespace-normalized
    ([`internals/tools/toolchains.md`](internals/tools/toolchains.md)). A toolkit no
    record names refuses; that toolchain's manifests must pin the same string; torch
    must be built for the toolchain's CUDA major. The whole output, not a parsed release
    number: the build string distinguishes two shipments of one nominal release, and
    it is exactly those that can move an allocation while the version says nothing
-   changed.
+   changed. In the same pass, R5: the vendored subtree under `csrc/third_party/` must hash
+   to its `PIN.json` digest.
 4. **Shards.** The checked-in instantiation shards must be the ones
    `tools/gen_shards.py` produces. Generated sources are committed so that what is
    reviewed is what compiles; a stale one fails here rather than shipping a matrix
@@ -94,33 +95,26 @@ python -m pip install -e . --no-build-isolation
    per carry arm**, so the arms parallelize across `MAX_JOBS` processes instead
    of serializing inside one `cicc`; `tools/manifests/shipped_set.json` declares the rows
    ([the arm list](#carry-arm-lists)).
-6. **Post-build ratification.** `tools/ratify.py --arch …` for exactly the archs
-   just built — the pre-build gates prove the *inputs* were ratified; this proves
-   the codegen still matches what was measured.
-8. **`rola_cu13/_build_config.py`.** Generated, carrying the archs, the assembler, the
-   torch version and ABI flag, the manifest digest and per-arch entry counts, and
-   `ptx_jit_fallback: False`.
+6. **The arm table.** `setup.py`'s post-build arm-table check: the generator's table still matches the
+   declaration, the selection header names exactly the arms this build selected, and the built `_C` carries exactly
+   those ([`ratification.md#arm-switch`](ratification.md#arm-switch)). Always fatal.
+7. **The SASS gate.** `tools/sass_gate.py` on the built `.so` (KERNEL_STANDARDS §20): local memory, convergence
+   subroutines, predicated HMMA, and a kernel the source defines that no cubin carries. It compares against no
+   manifest, so it runs on every build, iteration builds included, and a red is fatal.
+8. **Post-build ratification.** `tools/ratify.py --arch …` for exactly the archs just built — the pre-build gates
+   prove the *inputs* were ratified; this proves the codegen still matches what was measured.
+9. **`rola_cu13/_build_config.py`.** Generated, carrying the archs, the assembler, the torch version and ABI flag,
+   the manifest digest and per-arch entry counts, and `ptx_jit_fallback: False`.
 
-**Steps 6 and 7 REPORT between milestones, and are strict at ratify.**
-KERNEL_STANDARDS.md §16 rules that the
-committed manifest goes stale between milestones by design — a stage lands new
-instantiations, moves SASS bodies, and does not re-ratify. Failing an ordinary
-`pip install -e .` on that routine drift would make every stage build unusable, which is
-what a container build actually hit: a fresh `pip install -e .` of the SHIPPED
-set, on a tip already carrying stage work past the last ratification, hard-failed with
-counts like "35 manifest entries absent from the build, 29 new entries not in the
-manifest" and "8 of 444 ratified bodies moved" — a true finding about staleness, not a
-regression. So: by default (`ROLA_STRICT_MANIFEST` unset or `0`), a manifest mismatch in
-either step 6's "every ratified name present" sub-check or step 7's `ratify.py` re-run
-prints a `WARNING` banner with the counts and the install **succeeds**; the binary is not
-certified shippable, and says so. `ROLA_STRICT_MANIFEST=1` restores the pre-K43 hard
-failure — **the milestone/CI gate build sets it**, since that is the one build that
-immediately precedes `tools/ratify.py --write` and must fail loudly if the tree is not
-actually shippable. This never weakens `tools/ratify.py` itself (`--write`/`--check`
-invoked directly are unaffected) and never softens step 6's *structural* sub-checks (the
-shard partition actually matching the arm list, the dispatch's link closure) — those are
-properties of the build's own source/binary pair, not of the ratified snapshot, and a
-failure there is a real defect regardless of any manifest.
+<a id="strict-manifest"></a>**Step 8 REPORTS between milestones and is strict at ratify.** The committed manifest goes
+stale between milestones by design (KERNEL_STANDARDS §16): a stage lands new instantiations and moves SASS bodies
+without re-ratifying, so failing an ordinary install on that drift would make every stage build unusable. By default
+(`ROLA_STRICT_MANIFEST` unset or `0`) a manifest mismatch prints a `WARNING` banner with the counts and the install
+succeeds, the binary not certified shippable and saying so; `ROLA_STRICT_MANIFEST=1` makes it fatal, and **the
+milestone/CI gate build sets it**, since that build immediately precedes `tools/ratify.py --write`. This never weakens
+`tools/ratify.py` invoked directly, and never softens steps 6 and 7, which are properties of the build's own
+source and binary and fatal regardless of any manifest.
+
 ## <a id="arm-subset"></a>An iteration build may compile one decode arm
 
 Instantiation is the dominant build resource, so a developer testing ONE arm may
@@ -395,107 +389,7 @@ not `fla`, not `triton` — the kernels are CUDA. `rola` itself imports neither.
 
 ## Standards lint
 
-`KERNEL_STANDARDS.md` is enforced two ways, mirrored between the pre-commit
-hooks and `.github/workflows/lint.yml` exactly like clang-format/ruff above:
-
-1. **`ast-grep` rules** (`sgconfig.yml` + `tools/lint/rules/*.yml`, one file
-   per rule) — shapes a parser can see: a warp collective inside a
-   short-circuit or ternary (§12), a `__global__` in an anonymous namespace
-   (anon-namespace-kernels-unratifiable), a width-shaped `if (kDv == ...)`
-   test in device code, a `#include <torch/...>` in a per-arm instantiation
-   TU, a fence gated behind a single-lane predicate (§12). Each rule's
-   `message` names the standards section and the incident it comes from.
-   Each has a fixture under `tools/lint/fixtures/` that the rule must fire
-   on — its test.
-2. **`tools/lint/lint_standards.py`** — the textual/preprocessor checks
-   ast-grep cannot express: unroll discipline (§6: a dynamic-bound loop in
-   device code carries `#pragma unroll 1`, scoped to `__global__`/`__device__`
-   function bodies by brace-counting so host launcher loops are out of
-   scope), the torch-include check again as a text belt to the ast-grep
-   rule, a CTA/grid barrier (`__syncthreads`/`bar.sync`) inside a region a
-   device file declares barrier-free (`//: @barrier-free <reason>` ...
-   `//: @barrier-free-end`; the decode step declares its walk; `__syncwarp` is
-   intra-warp and excluded — §12 requires it around warp collectives), and a
-   committed doc/skill/script wrapping a command in an external `flock` on
-   the GPU lock path (every GPU entry point takes `gpu_lock()` itself
-   now, so that spelling never belongs on a command line again — scoped to
-   `docs/`, `.claude/skills/`, `measure/`, `tools/`, `CLAUDE.md`,
-   `README.md`; `docs/KERNEL_STANDARDS.md` is exempted by name for its ad
-   hoc `cuda-gdb` recipe and its general statement of `flock`'s
-   per-filesystem semantics, neither of which is a repo tool this rule
-   governs). Five retired STATIC tests were ported here (RULED
-   2026-08-29: "a check that does not execute the code under test is a
-   lint, not a test" — docs/testing.md): `check_supported_table`,
-   `check_shard_partition` (build-scoped to `BUILD_CONFIG["archs"]`, not a
-   `tools/manifests/` directory glob, so a single-arch iteration build
-   cannot false-fail it), `check_arch_coverage`, `check_vendored_pin`,
-   `check_entmax_pin` — these import `rola`/`entmax`, so run this script
-   with the worktree's own venv on `PATH` (the devcontainer's `python3`
-   already has them; on a bare host, activate the worktree's venv first —
-   `docs/setup.md` "pointer venv" — the same requirement `pre-commit`'s
-   `language: system` hooks inherit from the invoking shell).
-   Every finding prints its section, `file:line`, and the incident; the
-   script documents its own heuristic misses in its module docstring.
-   `check_repo_portability` (§17: "the repository is
-   SELF-CONTAINED") — every git-tracked file, scanned for an absolute
-   home-directory path, a citation of the coordinator's out-of-repo
-   campaign journal by path, a real worktree checkout path, or a session's
-   scratch-directory path; no allowlist. The four patterns necessarily
-   spell what they catch, so the check excludes its own source file from
-   the scan (named explicitly in the module, not by a general allowlist).
-3. **`tools/lint/run_clang_tidy.sh`** — a conservative `bugprone-*` +
-   `readability-*` set (`.clang-tidy`) on this codebase's host-only TUs
-   (details and scope below).
-
-Run all three:
-
-```bash
-python3 tools/lint/ast_grep_gate.py       # ast-grep scan --config sgconfig.yml csrc
-python3 tools/lint/lint_standards.py
-tools/lint/run_clang_tidy.sh
-```
-
-`tools/lint/ast_grep_gate.py` is the wrapper: a bare `ast-grep
-scan --config sgconfig.yml` defaults to scanning the whole repo, which
-re-fires every rule's must-fire fixture under `tools/lint/fixtures/` as a
-gating error — the drift that made a run of stages bypass the commit
-hook. The wrapper's default mode scopes the scan to `csrc/`;
-`python3 tools/lint/ast_grep_gate.py --test-fixtures` is the separate
-self-test asserting each rule still fires on its own fixture (run it by hand
-after touching `tools/lint/rules/` or `tools/lint/fixtures/`, not on every
-commit).
-
-`python3 tools/dev.py init` wires all three in (`.pre-commit-config.yaml`, run from the checkout's venv), scoped to
-`csrc/`. None is a gate on its own claim of correctness — a hit is a
-finding for a human to rule on, same as `ratify`'s backstop philosophy (§9):
-these checks should ordinarily catch nothing.
-
-### compile_commands.json (for clangd / clang-query / clang-tidy)
-
-`tools/lint/compdb.sh` reads an ALREADY-BUILT tree's `build/temp/build.ninja`
-(the fixed, repo-relative build directory this doc names above) and writes a
-compile database:
-
-```bash
-pip install -e . --no-build-isolation      # if not already built
-tools/lint/compdb.sh                        # writes ./compile_commands.json
-```
-
-Two clang-tidy profiles run the PINNED clang-tidy (`tools/clang_tidy_pin.json`, LLVM 22.1.8, installed by
-`python tools/dev.py init` as `toolchain.clang_tidy`), and every finding fails either:
-
-```bash
-tools/lint/run_clang_tidy.sh          # .clang-tidy on every host .cpp (today csrc/rola/rola_api.cpp)
-tools/lint/run_clang_tidy_device.sh   # tools/lint/clang-tidy-device.yaml on every device unit the build compiles
-```
-
-Both read `compile_commands.json`, generating it via `compdb.sh` from `build/temp`, and FAIL rather than skip when
-there is none (pre-commit is never green by absence). The device profile takes its units from `tools/kernels.py`
-and, under pre-commit, re-reads only the units whose include closure holds a changed file; a full sweep of the
-twelve units takes about seven minutes. It runs clang's CUDA frontend `--cuda-host-only` with the toolkit's
-`include/cccl` root added (nvcc adds it implicitly; clang does not), and a compiler error anywhere fails it: the
-parse is part of the gate. The distro's clang 14 could not parse a torch-bearing unit against this toolkit, and its
-failed parse reported used parameters as unused (measured 2026-09-29) -- which is why the analyzer is pinned
-and why the device profile, once scoped to the one torch-free carry unit, now covers every unit. Both profiles were
-validated live against planted findings (a suspicious semicolon in `rola_api.cpp`; an unused parameter and a dead
-store at the end of `decode.cu`), so a clean pass is the tool running, not an inert config.
+`KERNEL_STANDARDS.md` is enforced by the lint family under `tools/lint/` — the ast-grep rules, `lint_standards.py`,
+the two pinned clang-tidy profiles and the ratchets — run by the commit gate and mirrored in
+`.github/workflows/lint.yml`. Its roster, how each gates, the compile database the clang-tidy profiles read and how to
+run them by hand are [`internals/tools/lint.md`](internals/tools/lint.md).

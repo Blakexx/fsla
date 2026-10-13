@@ -19,5 +19,6 @@ The method: `docs/internals/tools/lab.md#the-loop`. The law: `docs/KERNEL_STANDA
    `python tools/lab.py ledger <name>`; a traffic question is `python tools/lab.py ncu <name> --metric M`
    (`docs/internals/tools/lab.md#the-loop`).
 6. Record with `python tools/lab.py run <name> --record`.
-7. Write its section in `docs/internals/tools/lab.md` (the question, the form, the measured table, what it decides)
-   and, where a design card tracks it, its MEASURED block (the site's own skill); commit with `rola-commit`.
+7. Write its page `docs/lab/<name>.md` (the question, the form, the measured table, what it decides), its row in
+   `docs/lab/README.md` and, where a design card tracks it, its MEASURED block (the site's own skill); commit with
+   `rola-commit`.

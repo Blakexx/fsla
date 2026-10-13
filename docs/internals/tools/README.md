@@ -1,11 +1,11 @@
 # `tools/` — the map: what each entry point is, who calls it, and what it records
 
-The tools inventory, as the consolidation pass leaves it. Every script under `tools/` is here with one line of what it is, what runs it, and
+The tools inventory. Every script under `tools/` is here with one line of what it is, what runs it, and
 what it writes; a tool with more to say has its own page beside this one, and a tool without one is fully stated by its
 own module docstring. A tool that nothing runs is a tool to delete (`DELETIONS.md`), so the CALLED BY column is the
 column that matters.
 
-**Nothing here writes a measurement record any more except through a declared target.** A measurement is a target of
+**No tool writes a measurement record except through a declared target.** A measurement is a target of
 `declare.py` (`rola_devtools.build`), its result is stored by a store target beside it, and the tool itself prints or
 writes `--json`. The two exceptions are named below: `compose_ledger` is a driver that builds what it measures, and a `--calibrate`
 run of `pipe_timeline` writes the plateau it reads back as every later run's scale.
@@ -25,6 +25,10 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 | `mold_toolchain.py` | the linker pin — mold is not an option, it is THE linker | `setup.py`, `dev.py`, the Dockerfile | — |
 | [`wheels.py`](wheels.md) | one gate build of a clean commit, split into the pure-Python wheel and the binary plugin | a person, at a release | the wheels and their record |
 | `supported.py` | the README's supported-configuration table — a REPORT, not a claim | a person, after an arm change | the table |
+| [`kernels.py`](kernels.md) | THE KERNEL LIST: every device unit the build compiles and every kernel the source defines, derived from the tree | `setup.py`, `ratify.py`, every kernel gate | — |
+| `build/dag_to_dot.py` | a DAG tuple (`rola.engine.dags.*`) as Graphviz DOT and SVG | a person, after a DAG change | the `.svg` beside its page |
+| `build/ninjatracing.py` | `.ninja_log` as a Chrome/Perfetto trace, the compile ledger's visual form | a person | the trace |
+| `git-hooks/pre-commit` | THE COMMIT GATE, run from the checkout's venv against `.pre-commit-config.yaml` | git, every commit | — |
 
 ## Ratification and the assembled code
 
@@ -34,6 +38,9 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 | `sass.py` | THE DISASSEMBLER SEAM: the one `cuobjdump`/`nvdisasm` invocation and line grammar | `ratify.py`, `sass_gate.py`, `region_ledger.py`, `life_ranges.py` | — |
 | `sass_gate.py` | the ptxas signatures of KERNEL_STANDARDS §20, red on any of them; guarded convergence fallbacks counted | every iteration build; the `sass` instrument | `--json` |
 | `sass_bodies.py` | per-instantiation SASS body hashes, the codegen-equivalence instrument | a person, comparing two builds | `--json` |
+| `sass_control.py` | the SASS control words (stall count, yield, scoreboards, reuse) and the loop a function compiles to; its `MACHINES` table is the static simulator's per-architecture model | `pipe_sim.py`, `burst_gate.py` | — |
+| [`burst_gate.py`](burst_gate.md) | what every burst loop's SASS must satisfy, deterministically (KERNEL_STANDARDS §23) | the `sass` instrument | exit 1 when red |
+| [`pipe_sim.py`](pipe_sim.md) | a burst loop's steady-state tensor-pipe occupancy from its SASS alone | a person, before a kernel runs | `--json` |
 | `header_selfcheck.py` | every header compiles alone | a person, after moving a declaration | — |
 
 ## The instruments (each a target of `declare.py`)
@@ -49,14 +56,18 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 | `region_ledger.py` | executed instructions and stall samples per COMPONENT, against `tools/budgets/` | a person, attributing a phase | `--json` |
 | [`compose_ledger.py`](compose_ledger.md) | a phase's time attributed to its parts by composition — a DRIVER: it builds each part | a person, after a component lands | its own `compose_ledger` record |
 | `roofline.py` | the intra's wall time on one cell beside the device's own u8 IMMA ceiling — the fraction of the machine, not the wall time | the `roofline` target | `--json` |
+| [`budgets/`](budgets.md) | each kernel's instruction budget by class, per MMA (KERNEL_STANDARDS §29) | `region_ledger.py`, the lab | — |
+| [`bank_model.py`](bank_model.md) | the shared-memory wavefronts a warp instruction costs, from its lanes' byte addresses (§30) | a person, before a GPU run; the lab | — |
+| [`lab.py`](lab.md) | the lab: small SASS-gated CUDA experiments whose measurements become kernel rules ([`docs/lab/`](../../lab/README.md)) | a person | `measure/lab/results/` |
+| `nvbit/warp_trace/` | an NVBit tool: every dynamic instruction of one CTA's warps to a file | a person, tracing a schedule | the trace |
 
 ## The oracle's own gates
 
 | tool | what it is | called by | writes |
 |---|---|---|---|
-| `sanitize_oracle.py` | the compute-sanitizer gate on the carry, intra and decode oracle cells | a person, in the sanitizer lane | — |
+| `sanitize_oracle.py` | the compute-sanitizer gate on the facts, intra, decode, producer and entmax oracle cells | a person, in the sanitizer lane | — |
 | `sanitize_cell.py` | one cell, one launch, no test framework — the racecheck lane's driver | `sanitize_oracle.py` | — |
 | [`docrefs.py`](docrefs.md) | every citation a doc makes, pinned to the content it was read against | the commit gate | `docs/references.lock.json` |
 
 `tools/lint/` is its own family with its own page ([`lint.md`](lint.md)): the ratchets, the standards lint and their
-baselines.
+baselines, and the coverage declaration `tools/coverage.json` ([`coverage.md`](coverage.md)).

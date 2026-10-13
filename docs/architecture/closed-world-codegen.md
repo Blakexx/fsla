@@ -34,18 +34,11 @@ to have. It says nothing about the binary a different assembler would produce fo
 an architecture nobody measured. Read-back has a narrower job in this design:
 **drift detection between ratifications**.
 
-## 2. The four rules
+## 2. The rules
 
-Stated in full, with their enforcement points, in
-[`docs/ratification.md`](../ratification.md#the-four-closed-world-rules). In
-brief:
-
-| | Refused |
-|---|---|
-| **R1** | Building under an assembler the manifest was not ratified under. |
-| **R2** | Emitting `code=compute_XX` — any PTX a driver could JIT. |
-| **R3** | An architecture in the fatbin with no ratified manifest. |
-| **R4** | Launching on a device the kernel's architecture table does not describe. |
+The rules and their enforcement points are one table, in
+[`docs/ratification.md`](../ratification.md#the-four-closed-world-rules); this section
+keeps only their argument.
 
 R2 is the no-fallbacks rule applied to the compiler: an unknown architecture must
 **fail to load**, not silently JIT unmeasured code. R3 and R4 are what make

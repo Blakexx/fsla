@@ -235,7 +235,7 @@ block and into every map `tools/sass_bodies.py` writes, and both refuse a compar
 that does not agree on it. A record carrying no stamp is refused rather than assumed
 to be version 1, because guessing produces a confident wrong answer.
 
-## The four closed-world rules
+## <a id="the-four-closed-world-rules"></a>The closed-world rules
 
 | Rule | Refused | Enforced by |
 |---|---|---|
@@ -244,6 +244,7 @@ to be version 1, because guessing produces a confident wrong answer.
 | **R2** | emitting `code=compute_XX` — any PTX a driver could JIT | `setup.py::gencodes`, asserted on the shipped `.so` (`cuobjdump --list-ptx` reports **0 PTX images**) |
 | **R3** | an architecture in the fatbin with no ratified manifest | `setup.py::_gate_ratified` — a **file-existence** question, asked before anything compiles |
 | **R4** | launching on a device the kernel's arch table does not describe | `common/arch_runtime.cu`'s `check_arch_table()` at run time (first statement of every family's launching entry, carry included), `static_assert` at compile time |
+| **R5** | building from a vendored codegen input (the CUTLASS/CuTe headers under `csrc/third_party/`) that does not match its recorded pin | `setup.py::_gate_vendored`, before the compile; the pin is stamped into `_build_config.py` |
 
 There is no environment variable that turns any of these off.
 
@@ -286,29 +287,12 @@ change must).
 python tools/ratify.py --self-test
 ```
 
-requires the gate to **fail** on the things it must reject:
-
-1. a manifest tightened at one entry,
-2. a perturbed `ptxas` version string,
-3. an architecture with no committed manifest (so rule 3 has a *no* answer),
-4. a per-arch split that does not rejoin to one digest,
-5. per-arch files that disagree about shard membership,
-6. a shard block that is decorative (a membership change that moves nothing) or one
-   that is a property of the filing (a re-filing that moves the digest),
-7. a perturbed source digest,
-8. in-loop local-access growth past a ratified count — plus the hot-loop parser
-   proving, on synthetic SASS, that it counts an in-loop `LDL` and clears a cold
-   one,
-9. local-access growth on the `LDL` the hot-loop gate is right to ignore, which is
-   what shows the cheap ratchet is not a restatement of the expensive one,
-10. a ratified `sass_sha256` that no longer matches, and an entry carrying none at
-    all — plus the hash itself proving, on synthetic SASS, that two different
-    instruction texts hash differently and that re-padding one listing does not
-    move its hash.
-
-A gate whose green run is unfalsifiable says nothing. This project has already
-shipped two gates that turned out to be vacuous before they were fixed, which is
-why the self-test is part of the gate rather than a note about it.
+requires the gate to **fail** on every mutant it must reject — a manifest tightened at one entry, a perturbed
+assembler string, an unratified architecture, a split filing that does not rejoin or disagrees about membership, a
+decorative shard block, a perturbed source digest, in-loop and total local-access growth, a moved or missing body
+hash — and its parsers and hash to behave on synthetic SASS. The list is `tools/ratify.py`'s, which runs it
+([`internals/tools/ratify.md`](internals/tools/ratify.md)). A gate whose green run is unfalsifiable says nothing, which
+is why the self-test is part of the gate rather than a note about it.
 
 ## Where the record lives after the build
 

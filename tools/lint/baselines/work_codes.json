@@ -945,48 +945,6 @@
   },
   {
    "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'D2'",
-   "line_sha256": "13264c321fe2bfbc",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'G4'",
-   "line_sha256": "d6744a842357fa55",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'G6'",
-   "line_sha256": "d6744a842357fa55",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'K31'",
-   "line_sha256": "1971c5469ec32dce",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'K31'",
-   "line_sha256": "3ffccb4e723608a1",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'K53'",
-   "line_sha256": "79f465f7ac4585db",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'P67'",
-   "line_sha256": "13264c321fe2bfbc",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
    "message": "names the work code 'S4b'",
    "line_sha256": "11547c870405df36",
    "count": 1

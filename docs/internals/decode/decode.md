@@ -1,11 +1,11 @@
-<!-- ABSENT: K31_R0_ABI_RIPPLE_SPEC cum intra_panel kPanelMaxExponent GLA_MASS_DECAY_SPEC MmaPrec PREC PANEL_MAX_EXPONENT -->
 # `csrc/rola/src/decode/decode.cuh` + `csrc/rola/src/decode/decode.cu` — the `T = 1` decode path
 
 <a id="note-l3"></a>This doc covers **two** source files, because they are one component: the header
 carries the parameter block and the objects both decode translation units share,
 and the `.cu` carries the GEMV kernel, its dispatch and its host entry. The
 mirror rule is one doc per source basename, so `decode.cuh` and `decode.cu` land
-here together. **Part A** is the header; **Part B** is the translation unit.
+here together. **Part A** is the header; **Part B** is the translation unit; **Part C** is what the
+kernels impose on the host; **Part D** is the int8 step's page, lanes, prologue and work queue.
 
 `decode_lattice.cuh` — the `(k, m)` box lattice's factor tables the prologue
 builds and the walk resolves a unit from — has its own doc,
@@ -19,22 +19,7 @@ unconditional; raw normalization is dead — there is no `GLOBAL` axis anywhere 
 this repository, decode included); `ctas` the step's resident grid ([the work
 queue](#queue)); `k`, `m`,
 `s_l`, `g_l`, `BC` the `(k, m)` lattice's own symbols
-([`decode_lattice.md`](decode_lattice.md), spec `K31_R0_ABI_RIPPLE_SPEC.md`
-§2.1–2.5); `BT` is the tiled consumer's token tile, which appears here only to
-be ruled out.
-
-**The tiled consumer, in this document, is a RETIRED arm.** It was the prefill
-kernel this path was designed against; P67 D2 deleted its shipped shape whole
-and K31 R2 deleted what remained of it entirely, extracting what decode and
-paging still need into `csrc/rola/src/facts/` (`DELETIONS.md`; revival by tag
-`baseline/pre-k31` or the deletion commits' parents). The contrasts drawn
-against it below are kept deliberately and read in the past tense: decode's
-shape is what it is BECAUSE of what it declined to inherit, and a design record
-that erases the thing declined leaves the decision unexplained. Where a section
-says a constant is restated rather than included, the header it was not
-included from is one of the deleted ones, and the restatement is now simply
-this file's own constant. There is no surviving prefill consumer to name a
-current doc for; the prefill arm is deleted pending K31 the rebuild.
+([`decode_lattice.md`](decode_lattice.md)).
 
 ---
 
@@ -54,8 +39,8 @@ degenerate:
 
 So the decode path bypasses selection ARCHITECTURALLY — not by taking a cheap
 default — and its config freezes at the prefill→decode boundary. What is left per
-step is data plane only, and its shape is the one §6b ratified: a
-**token-stationary, state-streaming gather-GEMV**.
+step is data plane only, and its shape is a **token-stationary, state-streaming
+gather-GEMV**.
 
 ## <a id="kronecker-support"></a>2. The structure, and the one fact it rests on
 
@@ -89,25 +74,14 @@ materialized and then swept the way a leaf-granular bitmap would be. The walk
 composes a leaf from three small factors instead of testing membership in a
 big one.
 
-## <a id="bc-absent"></a>3. `BC` names TWO different things, and only one of them is decode's
+## <a id="bc-absent"></a>3. `BC` is the lattice's owner, never a launch shape or an address term
 
-Owner-blocked AMORTIZATION is a property of how the TILED consumer shares a
-`[BC][cols]` block's cost across many tokens; with one token there is nothing
-to amortize, and `DecodeGeometry`'s own docstring is explicit that `BC` MUST
-NOT become one of its fields — that arm never existed here
-([`engine/plan.py`](../../../rola/engine/plan.py)).
-
-The `(k, m)` lattice's `BC = prod_l s_l` is a different quantity that DOES
-exist on this path: the leaf count one OWNER holds, i.e. one unit of the grid
-partition the walk enumerates ([`decode_lattice.md`](decode_lattice.md)).
-Nothing about it is a launch shape or an amortization decision — it is a
-LAYOUT fact, the same one the tiled consumer's `[BC][cols]` block address used
-before it (spec §2.6's survivor table: `λ / BC = O`, by construction rather
-than by a checked property). The DENSE state address is `(bh * N + leaf) *
-cols + c`, leaf-major already, and the PAGED one is keyed to the 16-leaf ATOM
-([§4](#paged-address)) rather than to the owner — so even where `BC` names a
-real quantity here, no address in either backing is computed FROM it directly;
-it is the walk's unit boundary, not a term either address expression carries.
+With one token there is nothing to amortize across a block of leaves, so `DecodeGeometry`
+carries no launch-shape `BC` ([`engine/plan.py`](../../../rola/engine/plan.py)). The `(k, m)`
+lattice's `BC = prod_l s_l` is the leaf count one OWNER holds, one unit of the partition the
+walk enumerates ([`decode_lattice.md`](decode_lattice.md)): a LAYOUT fact (`λ / BC = O` by
+construction). No address in either backing is computed from it: both are keyed to the
+16-leaf ATOM ([§4](#paged-address)), so `BC` is the walk's unit boundary and nothing more.
 
 <a id="decode-step-kernel-note-l397"></a><a id="decodeparams-note-l250"></a>
 ## <a id="paged-address"></a>4. Paged and dense are ONE walk
@@ -123,24 +97,21 @@ owner), checked at [`fill_lattice`](decode_lattice.md#the-refusals) where a page
 present; it is what lets the candidate-atom test ([§4b](#candidate-atoms)) read a unit's
 membership out of ONE aligned window of its innermost write slice. `kAtomLeaves` is geometry-owned and
 fixed across every config forever, which is exactly why the paged address addresses
-through the atom rather than through `BC` ([§3](#bc-absent)); it is mirrored in
-`decode.cuh` rather than included, for the same reason `kMaxLevels` is
-([§5](#max-levels)): the decode TUs share no header with the tiled consumer.
+through the atom rather than through `BC` ([§3](#bc-absent)).
 
-The walk resolves an atom's first row as an ELEMENT offset from `p.state`, and the
-two backings differ in that offset and in nothing else:
+The walk resolves an atom's page as a BYTE offset from `p.state`, and the two backings
+differ in that offset and in nothing else:
 
-| backing | `page_tbl` | atom base | slot |
+| backing | `page_tbl` | page base | slot |
 |---|---|---|---|
-| dense | `nullptr` | `bh * N + (atom << 4)` | the atom itself |
-| paged | `[BH, N/16]` int32 | `slot << 4` | `page_tbl[bh * atoms_per_bh + atom]` |
+| dense | `nullptr` | `(bh * atoms_per_bh + atom) * kBytes` | the atom itself |
+| paged | `[BH, N/16]` int32 | `slot * kBytes` | `page_tbl[bh * atoms_per_bh + atom]` |
 
-so `row = state + atom_base + (leaf & 15) * cols` under both, and the dense form
-recombines to `bh * N + leaf` — today's address, bit for bit. Writing the dense arm
-through the atom rather than through the leaf costs nothing and buys the property
-that matters: a topology whose `N` is NOT a whole number of atoms (`(3, 5, 7)`,
-`(7, 9)`, `(33,)` all appear in the gates) still addresses correctly densely, and it
-simply has no paged keying at all — `AtomKeying` refuses to build one.
+and a leaf's row is `leaf & 15` inside the page's planes
+([`common/state_page.md#geometry`](../common/state_page.md#geometry)). The dense backing is the
+same atom-major page sequence with every page resident, which is what makes the two
+backings one addressing law. `N` is a whole number of atoms by the admission law
+([`docs/internals/state.md`](../state.md)).
 
 **The resolve is once per touched ATOM, not per row.** It is a value-keyed cache
 (`if ((leaf >> 4) != cached_atom) reload`), so it costs at most one `int32` load per
@@ -150,9 +121,8 @@ what makes 16 consecutive leaves share a slot and makes the cache CHEAP; nothing
 its correctness depends on that order.
 
 The table row is pinned as a plain origin and everything per atom is a displacement
-from it, which is the addressing discipline the chunk consumer's SASS gate forced and
-this path adopts. The widening multiply that forms `atom_base` is paid once per atom
-where the previous code paid one per ROW, so the change strictly reduces it.
+from it, the addressing discipline the SASS gate patrols: the widening multiply that forms
+the page base is paid once per atom, never per row.
 
 <a id="absent-atom"></a><a id="decode-step-kernel-note-l516"></a>**An absent atom (`slot < 0`) reads as zeros and is not
 written.** That is exact rather than defensive: a step's plan admits its write set
@@ -270,8 +240,8 @@ growth flag set ([the finish](#queue-finish)) — no walk, no `y`, no state. Its
 in `growth[bh]` and its write-atom set in `atom_bits`, which is exactly what the host
 admission needs and all of it.
 
-The skip is PER BATCH-HEAD and not all-or-nothing, and the thing that used to make that
-unsafe is the done flags below. A batch that shares one verdict wastes every resident
+The skip is PER BATCH-HEAD and not all-or-nothing, and what makes that safe is the done
+flags below. A batch that shares one verdict wastes every resident
 sequence's step on the rarest one's growth; a batch that skips per sequence must answer
 what a replay does to the sequences that already deposited.
 
@@ -291,7 +261,7 @@ survives between steps, and the contract the caller sees is:
 `tests/integration/test_decode_growth_trigger.py` states it as `torch.equal` on the
 gathered plane, and the reordering bound on `y`, against the admit-everything-first order, over a MIXED batch — one
 batch-head needy, the rest not — which is the cell that can tell the per-batch-head
-contract from the global skip it replaced.
+contract from a global skip.
 
 <a id="one-writer"></a>**EVERY CROSS-LAUNCH MUTATION HAS ONE WRITER, AND THAT IS THE WHOLE RACE
 ARGUMENT.** The page table, the pool cursor and the done flag are read by every visit to a
@@ -330,10 +300,6 @@ twice.
 **IT WRITES THE TABLE ITSELF.** No other visit reads the head's table row before the owner's
 publication, so the claim is ordinary residency the moment the walk can see it, and the walk
 addresses through the one table it always does: the walk's body knows nothing about pools.
-The split-K grid replicated the claim in every CTA of the batch-head, where a table write
-would have moved a sibling's predicate; it wrote a shadow row the walk read beside the table,
-and its last CTA folded that row in. One owner deleted all three (`DELETIONS.md`).
-
 **AN ADMITTED ATOM IS AN ADMITTED ATOM.** Pool slots are ordinary arena slots, committed
 and ZEROED by the host before they are named, so an atom the device admitted is
 indistinguishable from one `plan_exact` admitted: same bytes, same table format, no
@@ -407,7 +373,7 @@ the lattice's fields as scalars under the lattice's own names (§9).
 <a id="kproducermaxbranchwidth"></a>
 ## <a id="level-width-capacity"></a>6. The level-width capacity is a GATE, not a convenience
 
-The CEILING below is the producer's; the FLOOR is `rola.ops.decode._admit` (K53), which
+The CEILING below is the producer's; the FLOOR is `rola.ops.decode._admit`, which
 refuses a `B_l` below the one admission law's floor through `rola._state.StateFormat`,
 the same check prefill's seam runs, before a call reaches this capacity check at all.
 
@@ -433,7 +399,7 @@ wave of them: the host takes the declared residency off the kernel's own launch 
 the grid from it ([§21b](#the-split-policy)). The registers are the whole-atom walk's: a warp
 holds a quarter of an atom's leaves a lane group in flight ([`#whole-atoms`](#whole-atoms)),
 which the 64-register cap of 1024 threads could not hold without spilling; at 512 no arm
-spills, and a visit's prologue is issued by 16 warps where it was 32
+spills, and a visit's prologue is issued by 16 warps
 ([`#prologue`](#prologue)).
 
 <a id="decodeparams"></a><a id="decodeparams-note-l152"></a><a id="filllevels"></a><a id="near-line-98"></a>
@@ -485,12 +451,10 @@ kernel.**
 
 ## <a id="state-in-place"></a><a id="state"></a>11. `state` is read and written in place
 
-`state` is the dense `[BH, N, cols]` plane or the arena's `[slots, 16, cols]` one
-([§4](#paged-address)), with `cols = d_v + 1` (the mass column is
-unconditional — raw is dead), and it is read AND
-written in place: a row's read contribution and its write-back are performed by
-the SAME lane in program order. The read-then-write ordering the tiled kernel
-spends a barrier on per tile costs one register here. The semantics of that order
+`state` is the dense `[BH, N / 16, page bytes]` or the arena's `[slots, page bytes]` uint8, one
+int8-format page a slot ([the int8 page](#int8-state), [§4](#paged-address)), and it is read AND
+written in place: a row's read contribution and its write-back are performed by the SAME lane
+group in program order, so the read-then-write ordering costs a register and no barrier. The semantics of that order
 are [§27](#update-then-read).
 
 `y` is `[BH, d_v]` — the FUSED ratio readout, `num / (den + eps)`.
@@ -507,9 +471,8 @@ the CTA.
 The walk is COUNTED, NOT SCANNED, in the same sense a leaf-space bitmap walk never was:
 `resolve_unit` decomposes a unit index by shifts into an owner rank and the fixed run
 offsets directly ([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)), so there is no
-prefix-sum structure over the leaf or row space left to consult here at all — the row
-count the tiled consumer's `cum`/coarse-index apparatus existed to answer is not a
-question this design asks. What replaces it is the owner-list's own realized count `n_o`
+prefix-sum structure over the leaf or row space to consult. What it reads is the owner-list's
+own realized count `n_o`
 per (list, level) — a single small array [`build_lists`](decode_lattice.md#the-owner-lists)
 produces with the lists, consulted directly at unit-resolve time rather than through a
 second index over it.
@@ -560,8 +523,7 @@ is atomic, in arrival order ([§16](#determinism)).
 
 ## <a id="determinism"></a>16. `y` is reproducible to its sums' order, and the state bit for bit
 
-RULED (Blake, 2026-09-29): "I don't care about determinism." The split-K grid combined `y`
-in slot order, so it was byte-reproducible at a fixed split; the work queue adds each visit's
+RULED (Blake, 2026-09-29): "I don't care about determinism." The work queue adds each visit's
 partial into the head's sums with `atomicAdd`, in ARRIVAL order ([the finish](#queue-finish)),
 so `y` moves by the reassociation of a few adds a head, each addend an fp32 sum over a visit's
 leaves. The gates compare `y` under that bound (`tests/oracle/fixtures.py`, `reordered_close`:
@@ -577,8 +539,7 @@ operands alone. No atomic touches `state`, and the gates compare it bit for bit.
 A visit costs a FIXED number of barriers: the prologue's three ([`#prologue`](#prologue)),
 the admission's one (a paged owner's claim and condensation add their own), the fold's one,
 and two around the choice of the next head. None is per position and none is per leaf; the
-count never grew with `N` or with a leaf-space bitmap's word count, which is the axis the
-tiled consumer's per-candidate-tile barriers scaled on.
+count never grows with `N` or with the support.
 
 **THE WALK NEVER NEEDED ONE, AND IT DECLARES SO.** The walk sits between `//: @barrier-free` and
 `//: @barrier-free-end`, so a CTA barrier in it fails the standards lint. A lane group's read contribution and
@@ -588,11 +549,8 @@ inclusive at `j = t` ([§27](#update-then-read)); a warp's claims are its own at
 <a id="kdecodemaxexponent"></a>
 ## <a id="decode-max-exponent"></a>18. `kDecodeMaxExponent` — the same convention, structurally inert here
 
-`expf(88) = 1.65e38 < FLT_MAX`. THE SAME VALUE AND THE SAME CONVENTION as the
-tiled consumer's intra_panel.cuh carried in kPanelMaxExponent — restated here
-rather than included, because that header was that kernel's panel algebra and
-decode shares none of it. The header went with the arm (`DELETIONS.md`); the
-convention is the spec's rule 3, and this file states it for itself.
+`expf(88) = 1.65e38 < FLT_MAX`: the one clamp convention every survival exponential in the
+repository follows, stated here for decode itself.
 
 On this path the clamp is **structurally inert**, and that is worth saying rather
 than leaving a reader to wonder: the exponent is `clock * log1pf(-rate)` with
@@ -666,17 +624,13 @@ static facts, frozen for the sequence and baked into a captured launch.
 function of ITS OWN SUPPORT and exists only on the device, once the factor tables do
 ([`decode_lattice.md#the-terms`](decode_lattice.md#the-terms)), and it varies from head to
 head. So nothing is sized per head: a head with more live positions takes more claims, and a
-CTA that runs out of its heads steals one ([the next head](#queue-next)). The split-K grid
-this replaced cut every head the same number of ways at the dense ceiling and retired the
-segments its support left empty; the queue has no segment to retire (`DELETIONS.md`).
+CTA that runs out of its heads steals one ([the next head](#queue-next)).
 
 ## <a id="row-scales"></a><a id="sr"></a>22. `sr` and `sw` — the two per-token row scales
 
-At `T = 1` there is no owner rectangle, so the per-LEVEL factors the tiled kernel
-hoists into `sr`/`sw` for the fixed levels `l < j` stay in the per-LEAF product
-instead. The split between `R[0,s]` and `sr` is an owner-rectangle artefact, and
-the product is the same product either way. What remains here is exactly the
-per-TOKEN part: the side gains. There is no read-side gain at all: the ratio
+At `T = 1` there is no owner rectangle to hoist per-level factors over, so they stay in
+the per-LEAF product, and what `sr`/`sw` hold is exactly the per-TOKEN part: the side
+gains. There is no read-side gain at all: the ratio
 readout fixes it to 1 identically, in every arm.
 
 <a id="t"></a>
@@ -753,10 +707,9 @@ fabricates a row.
 Not an optimization. §2's survival is INCLUSIVE at `j = t`: the token's own
 deposit is read by the token itself with survival exactly `1`.
 
-The tiled consumer expresses that as TWO terms, because at `BT > 1` the deposit
-and the readout live in different GEMMs: the readout against the decayed entry
-state, plus the causal intra Gram's self term `G[0,0] * Vw`. At `T = 1` those two
-are
+A multi-token kernel expresses that as TWO terms, because the deposit and the readout
+live in different products: the readout against the decayed entry state, plus the
+causal intra Gram's self term `G[0,0] * Vw`. At `T = 1` those two are
 
 ```
 a_r * keep^c * M_entry  +  a_r * a_w * sw * v   ==   a_r * S_exit
@@ -770,13 +723,13 @@ A row in `supp(R) \ supp(W)` has `keep == 1` and no deposit, so
 `S_exit == M_entry` and the same expression is its readout too — one path, no arm.
 
 Both off-by-ones — decaying after the deposit, and reading before it — are `O(1)`
-errors that G4/G6 discriminate at the fp32 tolerance.
+errors the oracle tier discriminates at the fp32 tolerance.
 
 <a id="decode-step-kernel-note-l541"></a>
 ## <a id="decay-at-read"></a>28. Decay at read, via the detached clock, with no sweep and no exponent split
 
-At `T = 1` the tiled kernel's `GLA_MASS_DECAY_SPEC.md` §12 rule-1 half-mass shift
-is exactly the IDENTITY. With `P_ref = P[0]/2`:
+At `T = 1` the half-mass shift a multi-token tile applies to keep its exponents bounded is
+exactly the IDENTITY. With `P_ref = P[0]/2`:
 
 ```
 readout:  fr * s0                 collapses to   keep^c
@@ -784,11 +737,11 @@ fold:     s0 * (s0 M + W fw Vw)   collapses to   keep^c M + W Vw
 ```
 
 So on this path there is no clock prefix buffer, no `p_ref`, no `s0`, no division
-by a cumulative survival, and no `fw` underflow class — **ONE `expf` where the
-tiled kernel evaluates three.**
+by a cumulative survival, and no `fw` underflow class — **ONE `expf`, never a quotient
+of two.**
 
 `log1pf` IS the composition (never a rounded linear-domain `1 - rate`) and there
-is no epsilon floor: both of §12 rule 2's prohibitions, inherited verbatim.
+is no epsilon floor.
 
 The mass column is the `v := 1` column of the identical recurrence, unconditional
 on every arm — one lane-0 statement, never a second path.
@@ -807,21 +760,20 @@ read-side gain to 1 ([§22](#row-scales)).
 second argument is not decoration: it is a REGISTER CAP the assembler must meet, and the census
 is what proves it met it without spilling. `kDecodeBlocksPerSm` is
 `kDecodeResidentThreads / kDecodeThreads = 1`, so every arm runs at 128 registers a thread --
-few warps and full registers, the ideal regime -- and none spills (`tools/sass_gate.py`). It has
-no template axes: DECAY and the deepest arm used to buy their extra live state by giving up a
-CTA of residency, and at one CTA an SM there is none to give up.
+few warps and full registers, the ideal regime -- and none spills (`tools/sass_gate.py`). The
+residency has no template axes: at one CTA an SM there is no CTA of residency for DECAY or the
+deepest arm to trade for live state.
 
 ## <a id="instantiation-matrix"></a><a id="torchcheck"></a><a id="near-line-51"></a>31. The instantiation matrix
 
 `DV(2) x D(4) x DECAY(2) = 16`. Note what is **not** an axis: no `BT` (one token), no `BC`
-(no owner-blocked amortization — [§3](#bc-absent)), no `MmaPrec`/precision split (there is
-no MMA, and the tf32x3/bf16 split died with the `PREC` axis everywhere else —
-`DELETIONS.md`), no `GLOBAL` (raw normalization is dead; the mass column is unconditional
+(no owner-blocked amortization — [§3](#bc-absent)), no precision axis (there is no MMA),
+no `GLOBAL` (raw normalization is dead; the mass column is unconditional
 — [§20](#template-axes)), no OPERAND STORAGE TYPE (the fold reads the rows' type, the gain's
 and the value's digit count as runtime flags selecting a typed loop instead — a template axis
 there would multiply the matrix for a few hundred bytes of gather,
-[`decode_fold.md#the-dtype-arms`](decode_fold.md#the-dtype-arms)), and — the axis this rung
-removed — no ADDRESS-SPACE arm: the factor tables are shared memory unconditionally, at
+[`decode_fold.md#the-dtype-arms`](decode_fold.md#the-dtype-arms)), and no ADDRESS-SPACE arm: the factor tables are
+shared memory unconditionally, at
 every shipped topology, so there is no second arm for a template parameter to select
 between. `d_v` is restricted to `{32, 64}` by a `STD_TORCH_CHECK`, and `D` outside `[1, 4]` is
 refused by name. The kernels live in a NAMED namespace (`rola::decode::detail`): nvcc mangles an
@@ -870,16 +822,12 @@ The step's ORDER, the two memo disciplines and the capturability declaration are
 DAG's page ([`engine/decode_dag.md`](../engine/decode_dag.md)); what follows is what the
 KERNELS impose on the host.
 
-## <a id="decay-domain"></a>36. Decode's decay domain is strictly larger, as a consequence
+## <a id="decay-domain"></a>36. Decode's decay domain has no admissibility precondition
 
-The tiled consumer refused a routing whose per-leaf reference exponent exceeded
-`PANEL_MAX_EXPONENT`, because its rule-1 lowering exponentiated `keep^{+P}` and
-`keep^{-P}` separately and their product is wrong — not merely rounded — once one
-saturates while the other underflows. At `T = 1` that rule-1 half-mass shift is EXACTLY
-the identity: the readout's `fr * s0` collapses to `keep^c`, and the fold's
-`s0 * (s0 M + W fw Vw)` to `keep^c M + W Vw`. So decode forms ONE exponential, never a
-quotient of two, and has no admissibility precondition to check — which is why it does
-not import one.
+A lowering that exponentiates `keep^{+P}` and `keep^{-P}` separately is wrong — not merely
+rounded — once one saturates while the other underflows, which bounds the routings it can
+take. At `T = 1` that half-mass shift is the identity (§28): decode forms ONE exponential,
+never a quotient of two, so it has no admissibility precondition to check.
 
 ## <a id="forward-only"></a>37. Forward only, and the guard is defence in depth
 
@@ -1134,11 +1082,6 @@ stealing visit never owns: it only takes a head whose count is published. An unp
 a paged head a replay re-reads (its done flag set), has nothing to decide: every visit derives
 the same count from its own prologue and writes it.
 
-The split-K grid replicated the admission in every CTA of the head instead, which was sound
-because those CTAs ran together from identical inputs. A queue's visits to one head arrive
-at different times -- a stealer arrives mid-walk -- so the decision has one owner, and the
-claim can write the page table itself ([§4e](#queue-claim-pool)).
-
 <a id="queue-finish"></a>**THE FINISH.** After its last claim each warp sums its lane groups'
 partials by the butterfly ([`#leaf-lanes`](#leaf-lanes)) and writes a row of `fold`: its
 partials, its mass and the positions it walked ([§21](#fold-bank-padding)). After one barrier,
@@ -1163,8 +1106,8 @@ head only if at least `kDecodeWarps` positions are left: a steal pays a whole pr
 takes a head only where every warp gets a position. With nothing to take, the CTA exits, and
 the last one out resets the queue.
 
-MEASURED (sm_86, N 64K at (256, 256), `d_v = 64`, B 1, the split-K grid at `4aed3f17` against
-the queue):
+MEASURED (sm_86, N 64K at (256, 256), `d_v = 64`, B 1), a split-K grid (every head cut the same
+number of ways) against the queue:
 
 | cell | split-K grid | work queue |
 |---|---|---|
