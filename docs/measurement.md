@@ -6,10 +6,10 @@ stored with its provenance. This document is what that sentence means.
 | layer | where | answers |
 |---|---|---|
 | cells | rola-devtools' central registry `rola_devtools.cells` (rola's reading: `measure/cells/`) | WHAT is measured: an input, named once for every package, with its draw, seed and proven regime |
-| subjects | `measure/subjects.py`, `bench/provider.py` (rola's runner) | WHICH launch is timed on a cell, at which LEVEL, each arm's dials, its untimed reset, and which cells this binary cannot run |
+| subjects | `measure/subjects.py`, `measure/provider.py` (rola's runner) | WHICH launch is timed on a cell, at which LEVEL, each arm's dials, its untimed reset, and which cells this binary cannot run |
 | declarations | `declare.py` (this checkout's targets), rola-bench's `declare.py` (checkouts composed) | WHAT RUNS: the build, the instruments, the timing registrations and sessions, the stores, as targets of `rola_devtools.build` |
 | method | rola-devtools' `rola_devtools.timing` (`measure_timing`) | HOW: interleaved call by call, one call at a time, in a fresh random order each rep |
-| preconditions | the targets' requirements (`rola_devtools.build.resources`), `bench/provider.py` | what the box and the binary must be first |
+| preconditions | the targets' requirements (`rola_devtools.build.resources`), `measure/provider.py` | what the box and the binary must be first |
 | statistics | rola-devtools' `rola_devtools.verdict` | whether a difference is real |
 | record | `rola_results` (the measurements store) | where a number lives afterwards, and which stored samples are a baseline |
 
@@ -64,8 +64,9 @@ own layer against attention's, because RoLA's number includes the state its capa
 
 What this line can measure today: the KERNEL level (`carry_forward`, `intra_forward`, `facts_pass`, `entmax_solve`) and one OP-level path
 (`decode_step`, through the engine's decode DAG, which runs the facts pass and commits the pages it writes). There is no
-op-level prefill and no layer subject: `rola.interface.rola_op` refuses on prefill since the box-native rebuild deleted
-the shipped chunk consumer, so the chunk DAG has no live path to time. The flash reference is a layer entry, and until a
+op-level prefill subject and no layer subject: `rola.interface.rola_op` walks the prefill DAG, whose carry leg is not
+yet
+wired to the rebuilt carry ([`open-work.md`](open-work.md)). The flash reference is a layer entry, and until a
 RoLA layer runs beside it, a session that holds both is two levels measured in one place, not a comparison.
 
 ## The reference
@@ -168,12 +169,6 @@ column — and never a flag on the shipped tool. `--force-ctas` was that flag; i
 was deleted once nothing in `csrc/` read its macro, because a tool that
 can force a bound is a tool that can ratify one.
 
-## The sanitizer gap
-
-No sanitizer measurement has been taken of the carry family. `compute-sanitizer` runs a kernel under conditions no timing
-instrument reproduces, so it is a third instrument like `ncu` and needs its own refusal rules and record shape before a
-number from it enters the record. Named here because an undelivered item named is not a delivered one.
-
 ## What is deliberately not here
 
 * **A second method.** The in-process A/B driver, and later tools/compare.py and the interleaving driver, were deleted
@@ -203,12 +198,10 @@ a DIFF is two sides under one named rule -- `bit-identical`, the per-slot clause
 `support-equal` -- with a claim (`expect` same or different) and a consequence (a build failure or a recorded verdict).
 A side proves which checkout's library it imported; a comparison that compared fewer quantities than it declared, or a
 cell only one side could produce, refuses rather than passes; a cell both sides refuse is listed and not counted. Inside
-one checkout the carry kernel is diffed against the fp64 reference per slot under each output kind's clauses
-(`rola/diff/carry-vs-oracle`); across checkouts rola-bench pairs each surface a checkout exposes (`SURFACES`: the fp64
-oracle, the producer reference, the carry kernel) under ITS rule for the surface (`RULES`) -- the oracle
-bit-identical, the producer support-equal, the kernel per slot at twice the reassociation the checkout states
-(`NUMERICS`: the readout fan-in is an fp32 atomic reduction and is not bit-reproducible run to run), stored at
-`diff/<surface>`. Verdicts are stored, tensors never.
+Across checkouts rola-bench pairs each surface a checkout exposes (`SURFACES` in `declare.py`: the fp64 oracle and the
+producer reference) under ITS rule for the surface (`RULES`) -- the oracle bit-identical, the producer support-equal --
+stored at `diff/<surface>`. Verdicts are stored, tensors never. The carry kernel has no diff surface and no
+kernel-vs-oracle diff: its oracle obligation is owed (`tools/coverage.json`).
 
 ## The measurements record: `rola_results`
 
@@ -235,7 +228,7 @@ and a timing only compares within the session that interleaved it.
 | `compose_ledger` | `tools/compose_ledger.py` | the commit and diff, the cells | the report |
 | `environment` | `tools/dev.py container check` | the environment key | the proofs |
 | `rola/oracle-tier` | a store target over the tier node | the tier's code, the binary, the environment | the counts, the failed cases, the margins |
-| `rola/carry-vs-oracle`, `diff/<surface>` | a store target over a diff node | both sides' semantics and the rule | the verdict per cell and quantity, never a tensor |
+| `diff/<surface>` | a store target over a diff node | both sides' semantics and the rule | the verdict per cell and quantity, never a tensor |
 
 Reading across runs is a join, never a parser: `instrument_metrics` is every number every instrument recorded in
 long form (run, cell, dotted metric, value), `diff_cells` every stored diff's verdict per cell and quantity, and

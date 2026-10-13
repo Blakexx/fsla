@@ -22,10 +22,10 @@ The rules most often violated by newcomers, restated:
   the wrong file.
 - DOCS ARE STATE: current truth written fresh; past states appear only as
   design rationale ("why it is shaped this way"), never narrative.
-- The fp64 oracle (rola/reference) is the executable spec — crown jewels;
+- The fp64 oracle (`rola/ops/naive.py`) is the executable spec — crown jewels;
   changes go through the dual-run protocol, no exceptions.
 - Never run unscoped `pytest tests/`. Every GPU entry point takes
-  `gpu_lock()` itself (`rola_devtools.locks.gpu`, K46) — invoke GPU commands BARE,
+  `gpu_lock()` itself (`rola_devtools.locks.gpu`) — invoke GPU commands BARE,
   never wrapped in an external `flock` on the same lock path (self-deadlocks).
 
 ## Skills: procedures that ship with the repo (KERNEL_STANDARDS §31)

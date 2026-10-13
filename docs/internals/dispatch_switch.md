@@ -5,24 +5,16 @@ from runtime values. This header is the mechanism for that selection in a hand-w
 launcher: `entmax.cu`'s forward and backward launchers (`factor.cu`'s four launchers use
 it the same way).
 
-`decode.cu`'s `launch_decode_step` no longer uses it: decode moved to the same
-GENERATED-ARM-LIST shape the carry family uses (`ROLA_DECODE_ARMS`, an X-macro over the
-declared `(DV, D, decay)` rows, tried in order and refused by name if none matches).
-Both generated-list families and this file's function-template dispatch are answers to
-the same problem — a launch selected at runtime from a closed compile-time set — and a
-family picks whichever fits its axis count and instantiation shape: this file when the
-axes compose as a nested nest of nearly-independent nested nests; a generated list when
-the shipped set is itself the thing worth declaring as one table (carry's `(D, DV,
-warps_per_cta)`, decode's `(DV, D, decay)`).
-
-The carry family does not use it either, and never did. Its dispatch walks a GENERATED
-ARM LIST: `tools/gen_shards.py` defines `CARRY_ARMS` (the closed-world `(D, DV,
-warps_per_cta)` table) and emits `carry_selection.inc`, one X-macro over every SHIPPED
-arm, and `carry/carry.cu` expands that same macro four times via `ROLA_CARRY_ARM_SET_X`
-— the arm declarations, the launch dispatch, the census and the per-arm row listing —
-so the enumeration exists once and is single-sourced with the per-arm translation units
-it partitions into (`carry_arm_0.cu`, [`carry/carry_kernel.md`](carry/carry_kernel.md),
-`instantiations/README.md`).
+The carry and decode families select from a GENERATED ARM LIST instead. The carry's is
+the declared shipped set (`tools/manifests/shipped_set.json`, keyed on the carve's plan
+pair): `tools/gen_shards.py` emits `carry_selection.inc`, one X-macro over every built
+arm, and `carry/carry.cu` expands `ROLA_CARRY_ARM_SET_X` four times — the arm
+declarations, the launch dispatch through `arm_switch` ([`common/arm_switch.md`](common/arm_switch.md)),
+the census and the per-arm row listing — so the enumeration exists once and is
+single-sourced with the per-arm translation units it partitions into
+(`instantiations/README.md`). Decode's is `ROLA_DECODE_ARMS` in `decode/decode.cu`, an
+X-macro over the declared `(DV, D, decay)` rows, tried in order and refused by name if
+none matches.
 
 THE RULE BETWEEN THE TWO IS WHERE THE ENUMERATION LIVES. A launcher with a handful of
 axes and one kernel writes its selection here, in the one place its `<<<...>>>`

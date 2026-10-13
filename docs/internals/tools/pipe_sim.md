@@ -34,7 +34,9 @@ starts at once. Occupancy = HMMAs x hmma_pipe x warps a scheduler over the stead
 ## The machine is an architecture
 
 `tools/sass_control.py`'s `MACHINES` holds one row an architecture: the pipe cost of an HMMA (sm_86 32.5 cycles, bf16 with
-fp32 accumulate at half rate; sm_80 full rate), the latency by opcode class, the schedulers, the
+fp32 accumulate at half rate; sm_80 full rate) and of an IMMA a shape, the issue pipes an opcode class holds and the
+tensor
+pipe's extension beside FP32 and integer work (sm_86), the latency by opcode class, the schedulers, the
 memory pipe's wavefront and sector costs and queue, and the issue cost of a global access -- from
 `carry/calibration.md`'s rows. The cubin's `.target` selects the row and an architecture without
 one is refused, never approximated. Hopper and after are a different model, not a row: `wgmma`

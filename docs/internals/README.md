@@ -4,9 +4,8 @@ One markdown file here per source file under `csrc/rola/`, at the same relative
 path minus the `src/` component the mirror does not repeat
 (`csrc/rola/src/decode/decode.cuh` → `docs/internals/decode/decode.md`;
 `csrc/rola/src/paging/vmm_owner.cu` → `docs/internals/paging/vmm_owner.md`). A `.cu`
-and its `.cuh` share one doc, since they are one component. The source families —
-`chunk/`, `decode/`, `entmax/`, `paging/` — therefore appear here as the same
-directories.
+and its `.cuh` share one doc, since they are one component. The source families
+therefore appear here as the same directories.
 
 The mirror rule runs SOURCE → DOC, so a deleted source leaves an orphan doc that
 no test catches. Deleting the doc with the source is therefore part of deleting
@@ -67,20 +66,6 @@ the truth.
 **A commit hash cited in this tree resolves in this repository, unless it predates the
 extraction (2026-08-01): those name commits of the retired pre-extraction fork and
 resolve in no published repository ([`docs/provenance.md`](../provenance.md)).**
-
-## What this tree does not hold, and where it is
-
-The mirror rule runs source → doc, so a family with no sources here has no pages
-here. The carry family's pre-clean-slate body (the window body, the channel-split
-body, the two-scan backward) was deleted from this branch whole in the 2026-08-30
-rebuild (`DELETIONS.md`); its pages went with it, and the old bodies are readable
-on the `k35-final` branch tip, which is never edited again and is the parity
-reference the rebuild is graded against. The carry family's pages HAVE come back,
-one page per source file, as the rebuild (F-P) landed a new body under
-`csrc/rola/src/carry/`: `docs/internals/carry/*` mirrors it today. What is still
-missing on this branch is what `docs/ARCHITECTURE.md` §6.1 and §6.2 state gets
-built and in what order, and what is knowingly missing in the meantime is a row in
-[`docs/open-work.md`](../open-work.md).
 
 ## Where the other docs live
 

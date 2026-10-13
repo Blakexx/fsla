@@ -44,6 +44,11 @@ between them: the pipeline restarts once, one exposed gather, and the decide tie
 of the loop.
 
 <a id="users"></a>
+## Its users
+
+The producer's k-loop (`produce/produce.cu`'s `project`, [`produce.md#accumulate`](../produce/produce.md#accumulate)):
+a k-block's chunks of both operands are one unit's set, gathered while the previous block's MMAs issue, through the
+granular fork below. The carry's fold steps in its own straight-line block form (`docs/internals/carry/fold.md#unit`).
 
 <a id="fork"></a>
 ## The granular fork (2026-09-19)
@@ -60,30 +65,3 @@ ptxas computed the hook's value right behind the loads it waits on (the probe ro
 HMMA alone against 33.0 with both ends pinned, 38.5 unpinned). What it costs: a permute an end,
 about twenty-six instructions a fragment pair, paid in a lockstep pair (the two-warp hooked probe
 row 66.1 against 64.9); what it buys is a lone warp at the pipe's rate through its own gather.
-
-## Its users, and the one that is not
-
-The fold's chunk (`carry/carry_kernel.md#fold`): the decide tier is the walk into the ring; the
-burst is the fragments over it, as two runs with the fill poll between them. Measured at
-nl64k-dense: the fold 47.0K -> 43.7K a warp a window against the same loop written as pairs by
-hand, a fragment pair 2,259 -> 2,147 cycles.
-
-The readout's tile is NOT on it (2026-09-17). Tried three ways -- the mask's `i`-th set bit by
-`__fns` in the gather (a software loop: the tile +40%), a four-bit list built by a serial scan
-at the tile's start (+15%: the scan carried 4.4% of the launch's stall samples), a byte list
-written by the lanes at once into the warp's idle ring (+7%) -- the box burst on the primitive
-stays about 600 cycles a tile behind the rolled loop with den on the FMA pipe, with the hooks
-at the first and fifth HMMA or the fifth and last. The box's burst is eight HMMAs to the
-fragment's eighteen, so the pair's own work (two hooks, a guard, the list load) is a larger
-share of it, and the rolled loop, at the shared pipe rate when paired, gives up less alone than
-the model predicts. A fourth form (2026-09-18) settled which: the mask scanned in the gather
-itself (`__ffs` and clear, in the order the primitive gathers, so no list is built), the
-loads hooked to the third HMMA, den on the FMA pipe -- alone 68 -> 76% in the fitted model,
-paired 100% both ways, and MEASURED +2.6% at nl64k-dense. Its census: the gather lines lost
-29K samples and the HMMA lines gained 53K. Paired, the rolled loop was already at the pipe's
-rate, its gather's waits covered by the partner's HMMAs; hiding them inside the warp bought
-nothing, and the form's extra issue (161 instructions a box pair against 136) was paid in the
-lockstep pair. So the readout is the documented exception to §24 (`ops::mma` outside a burst
-functor, which §24 forbids elsewhere) for a measured reason: a burst on the primitive hides
-latency, and the readout's latency is already hidden by its pair -- no lint enforces the
-rule yet, so the exception is carried here in prose rather than as a checked exemption.

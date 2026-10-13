@@ -589,7 +589,6 @@ pytest tests/unit tests/oracle -m "not cuda"                                 # C
 pytest tests/unit -m cuda                           # tests/unit's CUDA-marked rows
 pytest tests/oracle                                 # kernels vs the fp64/torch baselines, incl. The families
 pytest tests/integration                            # composition, dispatch, two-branches-agree
-ROLA_GRADCHECK_INSURANCE=1 pytest tests/oracle/test_backward_family.py  # one-time, opt-in -- see above
 ```
 
 **The lane, measured** (2026-08-06, sm_86, warm build, under the pre-P70-C
@@ -650,7 +649,7 @@ tree is invoked wrapped in an external `flock` anymore; a lint rule in
 *collection-time deselection* — it is what lets the first line avoid initializing a
 CUDA context at all. It is **not** a device partition: `tests/integration` carries
 rows that launch kernels without being `cuda`-marked (e.g.
-`test_layer_dispatch.py::test_the_bf16_arm_is_paging_invisible_at_its_own_tolerance`),
+`test_facts_pass.py::test_the_words_are_the_model_bit_for_bit`, skipped without a device),
 because in those tiers a device is the premise of the tier rather than a property of a
 row. So `-m "not cuda"` may NOT be used to decide whether a run needs the lock; the
 `tests/conftest.py` fixture keys on TIER (`tests/oracle/`, `tests/integration/`) OR the

@@ -20,15 +20,15 @@ the fold side by side):
 4. **Readout passes**: per 128 read-union slots, the pool filled with each slot's read operand slices
    (`parts.md#fill`), the warps' read steps adding into the panel (`parts.md#readout-pass`), the panel drained to
    `num` (`parts.md#drain`). The pool is two slots by `cp.async` groups: pass q + 1 fills while pass q steps.
-5. **Fold passes**: per 128 write-union slots, the pool filled with each slot's write operand slices and values,
-   the warps' fold steps into the state (`parts.md#fold-pass`). The pool is three slots, each landed on its
-   `mbarrier` (one `cp.async.mbarrier.arrive.noinc` a thread a fill); a slot's parity is its use count across the
-   call's windows, so the ring runs on through window boundaries. A CTA barrier a pass releases the slot.
+5. **Fold units**: the write side's slots in units of U passes (`plan.md#units`), each unit's slot filled with its
+   slots' write operand slices and values, the warps' fold steps into the state (`fold.md#unit`). Two unit slots ring,
+   each landed on its `mbarrier` (one `cp.async.mbarrier.arrive.noinc` a thread a fill); a slot's parity is its use
+   count across the call's windows, so the ring runs on through window boundaries.
 
-THE SKELETON (KERNEL_STANDARDS section 19): every component has its real signature, tenants, copies and edges; the
-MMAs and conversions are stubs that read what the real step reads (an entry, its record, a word of its pool row) and
-feed the state, so nothing is dead code. The state's final sum goes to `check`. Each component then gets its budget
-line and replaces its stub, one at a time.
+Each component's state, as built: the fold steps a listed side with one operand level (`fold.md`), and `fold_stub`
+stands in for its other paths (`fold.md#stub`); the readout pass is a stub that reads what the real step reads and adds
+one panel word an entry (`parts.md#readout-pass`); the publish converts in its real arithmetic through a stub shared
+layout (`parts.md#publish`). The state's final sum goes to `check`.
 
 <a id="phases"></a>
 ## The phase ledger's phases

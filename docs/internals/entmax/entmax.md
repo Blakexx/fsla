@@ -263,9 +263,8 @@ row through shared memory once per merge round.
 
 ### Why the split is a complexity-class fact and not a tuning knob
 
-The first explanation shipped here -- that the bitonic spills against the 64-register
-`__launch_bounds__(128, 8)` -- was measured false by the 2026-08-17 unification probe
-(`workflows/p74-producer/rowsort_unify.md`): the bitonic compiles with ZERO spills at 64
+The bitonic does not lose to register spills against the 64-register
+`__launch_bounds__(128, 8)`: measured 2026-08-17, it compiles with ZERO spills at 64
 registers and at every raised budget to 174, and it loses at all of them (best variant
 +10.3%, 86x the probe's noise band; a hybrid with one shared-memory exchange stage loses
 more, and its elaborate form converges to `cub::WarpMergeSort` itself).

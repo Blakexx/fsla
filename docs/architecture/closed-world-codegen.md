@@ -65,9 +65,8 @@ grows multiplicatively, compile times grow with it, and a JIT path compiles
 exactly the one kernel a user's call needs.
 
 **RoLA does not follow it.** The AOT-only build is a decision taken against that
-alternative — not an oversight and not an un-revisited default — and it is
-recorded as such in `workflows/research/cuda-code-quality.md` (decision X5) and
-in the campaign journal.
+alternative — not an oversight and not an un-revisited default — and this page is
+its record.
 
 **The reason is reproducibility for future readers — not process overhead.**
 A JIT path means the binary that produced a published number does not exist
@@ -129,17 +128,14 @@ PASS or FAIL; it is answering a question nobody asked.
 
 Two measured instances, both in this tree:
 
-- **A symbol name is a key, and it depended on the checkout PATH.** `decode.cu` and
-  `entmax.cu` put their kernels in an anonymous namespace, whose mangled name embeds a
-  discriminator derived from the source directory — an input the ratification manifest
-  never named, because "the source" was assumed to mean the file's *content*. A
-  worktree build at a different path was therefore certifiable-looking and wrong: the
-  manifest's key set didn't match the binary's, and the failure mode was a hard build
-  refusal (`workflows/refactor/p06_review.md`) rather than a silent pass — which is the
-  lucky case. Fixed at the cause, not papered over with a path convention: those three
-  blocks moved into a named internal namespace (P19, `docs/build.md`'s path-trap
-  section, `workflows/refactor/p19_symbols.md`), so the key is a function of content
-  and toolchain only, the two things the manifest already claimed to certify.
+- **A symbol name is a key, and an anonymous namespace makes it depend on the checkout
+  PATH.** A kernel in an anonymous namespace carries a mangled discriminator derived
+  from the source directory — an input the ratification manifest never named, because
+  "the source" was assumed to mean the file's *content* — so a build at another path
+  is certifiable-looking and wrong. The fix is at the cause, not a path convention:
+  every kernel lives in a named namespace (the ast-grep rule
+  `tools/lint/rules/global_fn_in_anon_namespace.yml`), so the key is a function of
+  content and toolchain only, the two things the manifest claims to certify.
 - **A manifest is a value, and it depended on the codegen flag list.** The manifest
   pinned the assembler version and the calibration macros but not the `nvcc` flag
   list itself, so a codegen-affecting flag change left no fingerprint in anything a

@@ -2,7 +2,7 @@
 
 One carry launch (by default three, averaged, after one warm-up) on a registry cell with `PhaseClock` bound
 (`rola.ops.carry.ledger_bind`; `docs/internals/carry/carry_kernel.md#phase-ledger`), printed as cycles a
-warp a window per phase (`rola.ops.carry.LEDGER_PHASES`: lists, units, publish, readout, drain, fold), averaged over
+warp a window per phase (`rola.ops.carry.LEDGER_PHASES`, the kernel's order: `carry_kernel.md#phases`), averaged over
 the CTAs and warps, then the readout's and the fold's cycles per warp so an owner imbalance shows.
 
 The operands are `measure.subjects.carry_operands`, the same the timing session's `carry_forward` entry times. The

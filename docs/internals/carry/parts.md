@@ -1,7 +1,7 @@
 # `carry/parts.cuh` — the carry's components
 
-Mirrors `csrc/rola/src/carry/parts.cuh`. Each component is at its real signature, tenants and copies; the MMAs and
-conversions are stubs (`carry_kernel.md#kernel`).
+Mirrors `csrc/rola/src/carry/parts.cuh`. Each component is at its real signature, tenants and copies. The readout
+pass is a stub and the publish's shared layout is one; the fold is `fold.md`'s (`carry_kernel.md#kernel`).
 
 <a id="place"></a>
 ## The CTA's place
@@ -57,6 +57,5 @@ next pass. CTAs join only here (R22: independent units, joined by atomics).
 <a id="fold-pass"></a>
 ## A fold pass
 
-A warp walks its lists' records in the pass or, with no write list, every slot. The real step forms the write
-operand from the slot's slices times the record's coefficients (`c_v`, `c_m`) and accumulates the values into the
-fp32 state. The stub reads the record and one word of the row's values and adds their product into the state.
+The fold steps a window's write slots in units of passes (`docs/internals/carry/fold.md#unit`); `fold_stub` serves
+the paths its step does not take yet (`docs/internals/carry/fold.md#stub`).

@@ -6,11 +6,10 @@ for a reader who was not here. Nothing here is a status report. If a statement i
 true only of the current implementation, it belongs in
 [`docs/internals/`](../internals/README.md) — the per-source-file mirror, which
 carries the reasons attached to a *line*. If it is the record of who measured
-what on which day, it belongs in the campaign journal, which is deliberately out
-of this tree (the performance-campaign journal, an
-append-only session log). Each document here states a decision and its argument,
-with citations back to the journal entry, the workflow report, the test, or the
-source line, so that a future reader can **re-derive** rather than trust.
+what on which day, it belongs in the measurement record
+([`docs/measurement.md`](../measurement.md)) or the lab's results. Each document here
+states a decision and its argument, with citations back to the test, the lab record,
+or the source line, so that a future reader can **re-derive** rather than trust.
 
 Everything here is falsifiable. Where the record is genuinely uncertain, the
 document says so and names the measurement that would settle it.
@@ -22,7 +21,6 @@ document says so and names the measurement that would settle it.
 | [factored-representation.md](factored-representation.md) | Store the factors; expand transiently where they are consumed. Never materialize the expansion. |
 | [fp32-accumulators.md](fp32-accumulators.md) | Accumulation precision is closed at fp32. Storage precision is a live axis. |
 | [closed-world-codegen.md](closed-world-codegen.md) | Only measured binaries run: pinned assembler, AOT-only, ratified per-arch manifest, runtime refusal. Why JIT compilation is rejected. |
-| [planner.md](planner.md) | Derive launch-static geometry from launch-static facts; never score candidates, never read a routing statistic to fix a layout. The planner MECHANISM is retired; the page carries the rule and what decides a launch in its place. |
 | [guarantees-choices-preferences.md](guarantees-choices-preferences.md) | The taxonomy every proposed change is sorted into, populated with real entries, and what each category demands of a contributor. |
 
 ## Reading order

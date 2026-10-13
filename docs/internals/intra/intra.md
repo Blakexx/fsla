@@ -46,8 +46,8 @@ its `slab0` and its slab `mask`. A 16-digit tail (a width of 16 modulo 32) is a 
 chunk, which the copies zero-fill rather than read; a stage's empty slots past its slabs are
 filled the same way and never read. `geometry()` derives all of it and the footprint,
 `sizeof(Smem)` plus 128 reader rows of `pitch` = `max(stages, kMinPitchStages)` slots of 128
-bytes; the same function answers `intra_footprint`. At (256, 256) the footprint is the one the
-fixed-width kernel had; below it, smaller.
+bytes; the same function answers `intra_footprint`. The footprint grows with the stages, largest
+at (256, 256).
 
 The facts pass's union table is laid out by its own widths, the topology's padded ones, which
 are never narrower than the rows: a level's union groups start at the layout's `group_base`

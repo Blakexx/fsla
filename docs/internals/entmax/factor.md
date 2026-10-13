@@ -12,9 +12,7 @@ vocabulary this file shares with it, are [`entmax.md`](entmax.md).
 Gates: `tests/integration/test_production_levels.py` (the fp64 oracle, forward AND
 VJP, across `tied` / `mixed_per_level` / `dense_only`),
 `tests/unit/test_entmax_production.py` (the masked `production_factor` surface, the
-support word's bit-31 and tail-word contracts, the tile-major arena),
-tests/integration/test_execution_identity_gates.py, deleted with the tiled consumer (which routing family reached
-which kernel).
+support word's bit-31 and tail-word contracts, the tile-major arena).
 
 Symbols are `entmax.md`'s: a *stream* is one (batch, head)-like routing stream, a
 *token* one row of the solve, `width` the level's branch width with `col` indexing
@@ -70,7 +68,9 @@ fp64 reference, and it asserts the SUPPORT SET identical, not merely close.
 ## <a id="the-solve"></a>2. The forward: the union solve's phases B/C/D, fed one tensor
 
 `factor_forward_kernel` is `union_forward_kernel` with the union split removed. Its
-phases are that kernel's, unchanged and documented there
+phases B and C are the same header function, `threshold<LW, IPT, ALPHA15>`, called on
+the masked row where the union calls it on the midpoint row
+([`entmax.md#threshold`](entmax.md#threshold)), and phase D is that kernel's
 ([forward-phases](entmax.md#forward-phases)): row max/min, the finite row-relative
 sentinel that pads without putting an infinity in the scan, `WarpMergeSort`
 descending, the `(Σz, Σz²)` `WarpScan`, the packed-key `Max` reduction that selects
@@ -168,8 +168,10 @@ largest, and the caller (`production.py`) is what groups the plan walk into tabl
 
 ## <a id="stored-form"></a>5. The stored form is what the solve WRITES
 
-The routing factors have exactly one consumer -- the chunk operator -- and it reads
-`bf16`. So `OutT` is `__nv_bfloat16` on the shipped path and the solve writes the stored
+The solve's levels have one consumer, the producer's torch path
+(`rola.ops.produce`'s reference, through `production_routing_factor_levels`), which folds
+them and quantizes them into the bundle's rows (`RouteFactors.from_levels`); it reads
+`bf16`. So `OutT` is `__nv_bfloat16` on that path and the solve writes the stored
 representation directly; there is no fp32 plane and no narrowing pass between them. The
 union arm and the independent/softmax arms are both instantiated for it
 (`entmax.cu::union_forward`, `factor.cu::check_values`), and the value dtype is read off

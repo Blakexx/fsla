@@ -42,7 +42,7 @@ nothing else to `setup.py`. Everything about the MACHINE is the dev config (`too
 | Build parameter | Effect |
 |---|---|
 | `ROLA_CUDA_ARCHS` | `;`-separated compute capabilities, default `80;86`. Naming one without a ratified manifest **fails before anything compiles** (rule 3). |
-| `ROLA_CARRY_ARMS` | A `,`/space list of INDICES into the carry family's arm list (`tools/gen_shards.py`'s `CARRY_ARMS`), or the word `all`. **The subset is a FILE subset**: each selected row contributes its generated `csrc/rola/src/instantiations/carry_arm_<i>.cu` and a `-DROLA_CARRY_BUILD_<i>`, so an arm outside the set is not compiled at all. **The default is the SHIPPED rows** — see [the arm lists](#carry-arm-lists). `all` is the battery's set (shipped + test). A build whose arm set is not the shipped set is **NOT SHIPPABLE**: the build prints a banner and skips the two shippability gates, because the manifest ratifies the shipped set and a binary carrying a different set is not the thing that ships, in either direction. It is self-identifying at run time: `rola.ops.carry.arms()` lists what was built and every entry point refuses an arm the binary does not carry. Pair it with `ROLA_CUDA_ARCHS=86` for iteration. |
+| `ROLA_CARRY_ARMS` | A `,`/space list of INDICES into the carry family's arm list (`tools/gen_shards.py`'s `CARRY_ARMS`), or the word `all`. **The subset is a FILE subset**: each selected row contributes its generated `csrc/rola/src/instantiations/carry_arm_<i>.cu` and a `ROLA_CARRY_BUILD_<i>` line in the generated selection header (`build/generated/carry_selection.inc`), so an arm outside the set is not compiled at all. **The default is every declared row** — see [the arm list](#carry-arm-lists); `all` names the same set. A build whose arm set is not the shipped set is **NOT SHIPPABLE**: the build prints a banner and skips the two shippability gates, because the manifest ratifies the shipped set and a binary carrying a different set is not the thing that ships, in either direction. It is self-identifying at run time: `rola.ops.carry.arms()` lists what was built and every entry point refuses an arm the binary does not carry. Pair it with `ROLA_CUDA_ARCHS=86` for iteration. |
 | `ROLA_CARRY_PARTS` <a id="carry-parts"></a> | **Iteration only.** `all` (the default), `none`, or a comma list of the carry kernel's parts (`readout.stream`, `readout.loads`, `readout.drain`, `fold.pool`, `fold.ring`, `fold.loads`) to build REAL; the rest are STUBS that keep their HMMAs and drop their other work, written to the generated `build/generated/carry_parts.inc` on every build and ratify. Any subset makes the build an iteration build (banner, manifest gate skipped). Driven by `tools/compose_ledger.py` (`docs/internals/tools/compose_ledger.md`); with every part real the arm's instructions are identical to a build without the switches. Never shipped. |
 | `ROLA_BUILD_PARTS` <a id="parts"></a> | **Iteration only.** `1` also builds `rola_cu13/_C_parts.abi3.so`, the part harness's driver (`measure/harness/bench_carry_calib.py`: the calibration kernels, KERNEL_STANDARDS §22), in the same pass beside the arm with `-lineinfo`. A torch JIT `load()` of the same three sources ran for minutes and was killed by the host's memory watchdog; a gating instrument that cannot run is a defect (§22). Never shipped. |
 | `ROLA_DECODE_ARMS` | **Iteration only.** Comma- or space-separated indices into the decode family's declared arm list (`csrc/rola/src/decode/decode.cu`'s `DECODE_ARM_<i>`, the `d_v x D x decay` matrix in that order, 16 rows). Compiles only those arms. Unset = every arm, which is what a gate build must be. Same NOT-SHIPPABLE banner/skip mechanism as `ROLA_CARRY_ARMS` (one `_is_iteration_build` covers both families). See [below](#arm-subset). |
@@ -92,8 +92,8 @@ python -m pip install -e . --no-build-isolation
 5. **Compile.** `ninja`. The carry family's instantiation matrix is generated
    translation units under `csrc/rola/src/instantiations/` — **one translation unit
    per carry arm**, so the arms parallelize across `MAX_JOBS` processes instead
-   of serializing inside one `cicc`. The shipped set carries one row today
-   (`[2, 64, 8]`), so this is one generated unit, `carry_arm_0.cu`.
+   of serializing inside one `cicc`; `tools/manifests/shipped_set.json` declares the rows
+   ([the arm list](#carry-arm-lists)).
 6. **Post-build ratification.** `tools/ratify.py --arch …` for exactly the archs
    just built — the pre-build gates prove the *inputs* were ratified; this proves
    the codegen still matches what was measured.
@@ -160,75 +160,30 @@ binary has is worse than no gate.
 The same rule governs `ROLA_CUDA_ARCHS=86`: iterate single-arch, gate and measure on
 the full both-arch build.
 
-## What it costs
+## <a id="compile-ledger"></a>Why the arm units are torch-free
 
-MEASURED on a 16-core / 23 GB host, clean build directory, both architectures,
-`MAX_JOBS` at the derived default of 7:
+Instantiation is the dominant build resource, and with per-arm units it is not the kernels that dominate but the
+tensor library's headers: a translation unit that includes them parses longer, and holds a larger resident set, than an
+arm's own codegen. So the carry family's per-arm ABI (`csrc/rola/src/carry/carry_arm_abi.cuh`) speaks POINTERS and not
+tensors, and only the dispatch unit includes the torch seam: a tensor-typed seam would re-pay the headers once per arm
+and pin every arm unit's resident set at theirs, the term the job count is derived from. The ast-grep rule
+`tools/lint/rules/torch_include_in_arm_tu.yml` refuses a torch header in a per-arm unit.
 
-| | wall |
-|---|---|
-| clean rebuild, every gate including the post-build ratification | **7m20s / 7m08s** (two runs) |
-| edit inside one shard's arms — one shard, relink, shard and fatbin gates | **49 s** |
-| no source change — gates, ratification, `_build_config.py` | **3m47s** |
-| one shard, one `nvcc`, both architectures | **43 s** |
+Per-arm units are what let the arms compile in parallel across the jobs the host budget grants, and what make `ratify`
+per-unit incremental, keyed on the argv and the content of every input the compiler reported reading.
 
-## <a id="compile-ledger"></a>The per-TU compile ledger
+## <a id="carry-arm-lists"></a>The carry arm list
 
-**Instantiation cost is the dominant build resource, and with per-arm units it is not the
-kernels that dominate — it is the tensor library's header.** Measured per `cicc`,
-sm_86, one `nvcc --threads=1`, cold:
+`tools/manifests/shipped_set.json` declares the carry family's arms and `tools/gen_shards.py` reads it. An arm is the
+carve's operation-plan pair, keyed `fold_rows, fold_factors, read_rows, read_factors, channels, publish_regs`
+([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve)); the box's per-level extents, the depth and the
+widths are runtime addressing. The declaration has one `shipped` list: every declared row is built by a default build,
+ratified in the manifests and shipped. Each row is one generated `carry_arm_<i>.cu`, `i` its index in the
+canonical-sorted
+list.
 
-| translation unit | wall | peak RSS |
-|---|---|---|
-| a bare CUDA TU (`cuda_runtime` + `cuda_bf16`, one trivial kernel) | 0.86 s | 0.19 GB |
-| the same, plus `#include <torch/extension.h>` | **33.7 s** | **2.86 GB** |
-| one carry arm, on the torch-free ABI | **4.7 s** | **0.33 GB** |
-| a two-row shared arm TU (channel-split body) | 1.2 s | 0.21 GB |
-| the carry dispatch TU (dispatch only) | 36.2 s | 2.88 GB |
-
-An arm's own codegen is about 6 s; the header is about 34 s. That measurement is why
-the carry family's per-arm ABI header speaks POINTERS and not tensors — with one TU
-per arm a tensor-typed seam would re-pay the header 22 times (~12 minutes of redundant
-parsing) and pin every arm TU's resident set at 2.9 GB, which is the term `MAX_JOBS` is
-derived from. (These rows measure the k35-final carry family, which C0 deleted from this line; they
-are kept as the cost model the rebuilt arm units are measured against.)
-
-**Whole-build walls**, both architectures unless stated, sccache OFF, `MAX_JOBS=3`
-(these rows measure the k35-final carry family's 23-arm matrix, deleted from this line
-by the clean-slate rebuild and kept as the cost model the rebuilt arm units are measured
-against; today's shipped set carries one arm):
-
-| | one unit | per-arm units |
-|---|---|---|
-| full build, all 23 carry arms | **15m02s** | **4m01s** |
-| the SHIPPED gate build (14 arms of the k35-final matrix) | — (no shipped set) | **3m48s** |
-| all 23 arms, sm_86 only, `MAX_JOBS=7` | — | **3m12s** |
-| `ratify`, both arches, cold | **935 s** | **62 s** |
-| `ratify`, no source change | 935 s (no incrementality) | **28 s** |
-| `ratify`, one arm touched | 935 s | **25 s** |
-| worst single-TU peak `cicc` RSS | **6.14 GB** (`carry.cu`, 23 arms) | **2.92 GB** (`factor.cu`) |
-
-The carry family used to be one translation unit holding every arm: one `cicc`
-compiled them serially at 6.14 GB, with no way to spend a second core on it. `ratify`
-recompiled that same TU on every run, which is what made it a 15-minute act and
-therefore a milestone act rather than a stage one; it is now per-TU incremental, keyed
-on the argv and the content of every input the compiler reported reading.
-
-The two clean rebuilds are byte-identical in every entry point's SASS
-(`tools/sass_bodies.py`), so those numbers are the same binary twice.
-
-## <a id="carry-arm-lists"></a>The carry arm lists: shipped and test
-
-`tools/manifests/shipped_set.json` declares the carry family's arms, each a `(D, DV, warps_per_cta)` row, in two lists,
-and `tools/gen_shards.py` reads it. A **shipped** row is built by a default build and the gate build and ratified in the
-manifests. A **test** row is a conformance arm: built for the oracle battery only (`ROLA_CARRY_ARMS=all
-ROLA_CUDA_ARCHS=86`), never shipped and never ratified. Today the declaration ships one row, `(2, 64, 8)`, and declares no
-test row; the file's note records why `(4, 64, 8)` is not declared.
-
-Every carry cell's call in the battery asks `tests/oracle/fixtures.py`'s `built_arms` whether the binary carries its arm first -- and that answer is the BINARY's, `rola.ops.carry.arms()`, never the source tree's. A declared test
-row the binary did not build **skips with the arm named**. An arm the declaration does not name is not a skip: nothing
-builds it in any configuration, so the cell runs, the launch surface refuses it by name, and the cell stays red until
-the arm is declared and built.
+A binary answers which arms it carries itself (`rola.ops.carry.arms()`), never the source tree. A launch whose carve
+selects an arm the binary does not carry is refused by name, with the key field that has no built member.
 
 ## <a id="sccache"></a>The nvcc invocations are cached (sccache)
 
@@ -316,32 +271,16 @@ binary, so widening the capture moves every digest in an unchanged binary. Maps 
 stamped with `HASH_VERSION` and `--compare` refuses a mismatched or unstamped pair
 rather than reporting the whole matrix as differing.
 
-**THE PATH TRAP IS REMOVED. Worktree builds and cross-path SASS comparison are
-ordinary operations.** `decode.cu` and `entmax.cu` used to put their kernels in an
-anonymous namespace, whose mangled names embed a discriminator derived from the
-SOURCE DIRECTORY — 96 of the ratified names per architecture moved with the checkout
-path, so a worktree build failed the post-build gate by construction (*"192 ratified
-instantiation(s) name no entry point … the manifest certifies a binary that is not
-this one"*) and a cross-path SASS comparison disagreed on all 192 while describing
-identical code. Fixed by moving those three blocks into a named internal namespace
-(`rola::decode::detail`, `rola::entmax::detail` —
-`workflows/refactor/p19_symbols.md`): the ratified names are now a function of source
-content and toolchain only, never of where the tree happens to be checked out.
-Verified non-vacuously: master built in a fresh worktree fails exactly as described
-above; this tree's tip, built in the same worktree, exits 0, ratifies all-green, and
-its SASS map matches a canonical-path build of the same tip with 0 differing bodies.
-
-The decode path is now `decode.cu` alone — fold, factor and walk are one kernel, one
-TU, one `rola::decode::detail` block — so NO kernel in the binary carries an
-anonymous-namespace name: every ratified name is a function of source content and
-toolchain only, a worktree build passes the post-build gates, and a same-tip SASS
-comparison across paths is 0-differing over the whole matrix.
+**Worktree builds and cross-path SASS comparison are ordinary operations.** Every kernel
+lives in a named namespace (`rola::decode::detail`, `rola::entmax::detail`, the rule in
+[`internals/tools/lint.md`](internals/tools/lint.md)), so a ratified name is a function of source content and
+toolchain only, never of where the tree is checked out: an anonymous-namespace kernel's mangled name embeds a
+discriminator derived from the source directory.
 
 **`--split-compile` is REJECTED, measured.** It is not a build-speed knob here: it
 changes the assembled code of 1,073 of the 1,228 entries then present, which under the
 closed-world policy is a kernel change requiring re-ratification, and it is slower
 besides -- the parallelism axes multiply, so it collapses `MAX_JOBS` from 7 to 1.
-Evidence: `workflows/refactor/p02_split_compile_trial_results.md`.
 
 ## <a id="fatbin-compression"></a>The fatbin is compressed explicitly
 
@@ -386,12 +325,10 @@ CUDA context already up so the number is the module and not the context:
 **+3.7 ms once per process, at the first launch** — that is the decompression, and it
 is where it should be. Import is noise-dominated and shows no separable effect.
 
-ONE GAP, RECORDED RATHER THAN CLOSED: the ratification manifest pins the ASSEMBLER
-(`ptxas --version`) and the calibration `#define`s, but NOT the flag list, so a
-codegen-affecting flag change leaves no fingerprint in the manifest. What catches it
-here is that the flag list is single-sourced in `tools/build_flags.py` and both
-compilers import it. Pre-existing; recording the flag list in the manifest's
-`toolchain` block would close it.
+The manifest's `toolchain` block records the codegen flag list (`nvcc_flags`), so a
+codegen-affecting flag change is a fingerprint the ratification gate refuses
+(`tools/ratify.py`'s `check_flags`, one of
+[`ratification.md`'s closed-world rules](ratification.md#the-four-closed-world-rules)).
 
 ## Verifying a built binary
 

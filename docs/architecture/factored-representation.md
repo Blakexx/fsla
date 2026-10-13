@@ -93,9 +93,9 @@ waste or worse:
 3. **When the expansion is dense.** Factoring is a statement that most of the
    product is structurally absent. Where occupancy approaches 1, the dense form
    *is* the compact form, and the factored path pays index arithmetic for nothing.
-   This is why the engine treats representation as a **planner-selected axis**
-   with measured cost curves rather than a universal default — see
-   [planner.md](planner.md).
+   This is why the carve takes each level's representation from its declared flag
+   rather than a universal default: a sparse level is a list, a dense level is
+   expanded into the operand ([`rules.md#carve`](../internals/engine/rules.md#carve)).
 4. **When it would make a declaration execution-affecting.** Expansion may be
    skipped only where the realized masks still decide membership; see the scope
    boundary of the [self-masking theorem](self-masking-theorem.md#7-scope-boundary).
