@@ -39,7 +39,7 @@ group innermost.
 
 - `entries`: a list's 8-byte entries, `kListCap` a list. A read entry is the pool row's byte offset with its swizzle
   folded in (the first word's low half), the coefficient (f16, the second word's low half) and the panel row's offset
-  less the lane offset of the entry's token (its high half), so a pad lands on its residue's dummy row with no test. A
+  from the dummy rows, its swizzle folded in (its high half), a pad's its residue's dummy row, so a pad needs no test. A
   write entry is the slot, then `c_v` and `c_m`.
 - `at`: a list's pass starts in its side's pass (the readout's `kPassSlots`, the fold's `kUnitSlots`).
 - `heads`: per 32-digit group a warp's block, its 4 lists' (or digits') first `kHeadEntries` entries.

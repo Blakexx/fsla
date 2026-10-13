@@ -89,16 +89,20 @@ in place; a side with no list level takes every slot of the pass, its entry impl
 slot past the pass's end its residue's dummy row). Each source is its own loop, so each step is one block
 (KERNEL_STANDARDS §27), guarded by a vote and closed by one.
 
-The PANEL is the pass's slots' 64-byte rows, after the lanes' pad bases (128 bytes, never touched) and 8 dummy rows
-(`kPadBytes`); a panel offset is relative to the pads, so it fits an entry's 16 bits on every card.
+The PANEL is the pass's slots' 64-byte rows after 8 dummy rows (`kPadBytes`, one a residue), laid out in pairs: slots
+`2k` and `2k + 1` share a 128-byte line, each slot's two 32-byte halves at the segments its pair's residue bits XOR
+(`panel_row`). A panel add touches 4 tokens' 8 words at one half, and a tile's 8 tokens are 8 residues (the facts
+pass's coloring, or a dense pass's consecutive slots), so each add meets 32 banks. Measured by the bank model
+(2026-10-12): 1.00 wavefronts an add on colored and dense tiles against 4.00 for plain 64-byte rows (every add's 4
+tokens on one half), 2.1 against 2.75 uncolored; the drain 1.00 a request either way. An entry's panel offset is from
+the dummy rows, so it fits its 16 bits on every card; a lane XORs its half (`32 m`) and adds its word (`4 g`).
 
 Left to the readout component: the coefficient's digit exponent (`(word << 16) + ((e - kImageTop) << 23)`, one LEA)
-and the token's unit, the dense side's coefficient from the row's coefficient slice (implied 1 here), the panel's
-parity layout.
+and the token's unit, the dense side's coefficient from the row's coefficient slice (implied 1 here).
 
 <a id="drain"></a>
 ## The drain
 
-A pass's panel to `num`: each slot's 16 words added as u32 atomics at its token (two tokens a warp request), each word
-cleared for the next pass. CTAs join only here (R22: independent units, joined by atomics). The panel's word pairs
+A pass's panel to `num`: each slot's 16 words added as u32 atomics at its token (two tokens a warp request, a slot
+pair's one line), each word cleared for the next pass. CTAs join only here (R22: independent units, joined by atomics). The panel's word pairs
 channels (c, c + 8); the output's format follows it.

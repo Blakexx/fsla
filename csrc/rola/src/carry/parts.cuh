@@ -329,6 +329,13 @@ __device__ __forceinline__ void state_in(uint32_t (&f)[16], ops::SmemAddr image,
   }
 }
 
+//: A PANEL ROW'S OFFSET: a slot pair a 128-byte line, each slot's two 32-byte halves at the segments its pair's
+//: residue bits XOR, so a panel add's 4 tokens of distinct residues meet 32 banks; a word `w` is the row XORed by
+//: `32 (w >> 3)`, plus `4 (w & 7)`. -- see docs/internals/carry/parts.md#readout
+__host__ __device__ __forceinline__ constexpr uint32_t panel_row(uint32_t s) {
+  return 128u * (s >> 1) + 32u * ((2u * (s & 1u)) ^ ((s >> 1) & 3u));
+}
+
 //: THE EXACT PAIR: two outputs times the coefficient to the integer hi x 2^16 + lo, exact under u32 adds while each
 //: final fits s16. -- see docs/internals/carry/parts.md#pair
 __device__ __forceinline__ uint32_t s16_pair(float lo, float hi, float cu) {
@@ -364,14 +371,13 @@ __device__ __forceinline__ void tile(ops::SmemAddr pool, ops::SmemAddr pads, uin
                              f[(m * 2 + kb) * 4 + 3]};
       ops::hmma(acc[m], a, b[2 * kb], b[2 * kb + 1]);
     }
-  const uint32_t b0 = pads + 4u * g + 32u * t + (e0 >> 16),
-                 b1 = pads + 4u * g + 32u * t + (e1 >> 16);
+  const uint32_t b0 = pads + (e0 >> 16), b1 = pads + (e1 >> 16);
   const float c0 = __half2float(__ushort_as_half(static_cast<unsigned short>(e0)));
   const float c1 = __half2float(__ushort_as_half(static_cast<unsigned short>(e1)));
 #pragma unroll
   for (int m = 0; m < 2; ++m) {
-    panel_red(b0 + 32u * m, s16_pair(acc[m][0], acc[m][2], c0));
-    panel_red(b1 + 32u * m, s16_pair(acc[m][1], acc[m][3], c1));
+    panel_red((b0 ^ (32u * m)) + 4u * g, s16_pair(acc[m][0], acc[m][2], c0));
+    panel_red((b1 ^ (32u * m)) + 4u * g, s16_pair(acc[m][1], acc[m][3], c1));
   }
 }
 
@@ -421,11 +427,11 @@ __device__ __forceinline__ void readout_part(const CarryParams& p, const uint8_t
       for (int k = __any_sync(0xffffffffu, slots > 0) ? 1 : 0; k > 0; --k)
 #pragma unroll 1
         do {
-          const uint32_t slot = 8u * s + (lane & 7), row = 32u * ((lane & 7) >> 1);
-          const uint32_t panel = static_cast<int>(slot) < slots ? kPadBytes + slot * kPanelRow
-                                                                : 128u + 64u * (slot & 7);
+          const uint32_t slot = 8u * s + (lane & 7);
+          const uint32_t panel =
+              static_cast<int>(slot) < slots ? kPadBytes + panel_row(slot) : panel_row(slot & 7);
           const uint2 e = make_uint2(slot * P::kReadRow + 16u * chunk_at<P::kReadRow>(slot, 0),
-                                     0x3c00u | ((panel - row) << 16));
+                                     0x3c00u | (panel << 16));
           tile<P>(pool, pads, e, f, lane);
         } while (__any_sync(0xffffffffu, ++s < (slots + 7) >> 3));
     }
@@ -438,16 +444,18 @@ template <class P>
 __device__ __forceinline__ void drain(const CarryParams& p, uint8_t* smem, const Window& rw,
                                       const Place& c, int w, int first, int slots) {
   constexpr int kWords = kPanelRow / 4;
-  uint32_t* const panel = reinterpret_cast<uint32_t*>(smem + P::kPanel);
+  uint8_t* const panel = smem + P::kPanel;
   const uint16_t* tok = union_of<P>(smem, kRead, w);
 #pragma unroll 1
   for (int k = static_cast<int>(threadIdx.x); k < slots * kWords; k += kThreads) {
     const int s = k / kWords, word = k - s * kWords;
-    const uint32_t v = panel[k];
+    uint32_t* const cell = reinterpret_cast<uint32_t*>(
+        panel + ((panel_row(static_cast<uint32_t>(s)) ^ (32u * (word >> 3))) + 4u * (word & 7)));
+    const uint32_t v = *cell;
     const int t = rw.listed ? tok[first + s] : first + s;
     if (v != 0u)
       atomicAdd(p.num + ((int64_t)c.bh * p.L + rw.t0 + t) * (p.dv / 2) + c.channel0 / 2 + word, v);
-    panel[k] = 0u;
+    *cell = 0u;
   }
 }
 
