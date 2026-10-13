@@ -138,9 +138,17 @@ def place(span: list[int]) -> list[tuple[int, bool]]:
     return out
 
 
+def place_rounds(span: list[int]) -> list[tuple[int, bool]]:
+    """A digit's positions by ROUNDS: step i holds each residue's i-th token at its residue's position and pads on the
+    rest, so a step never repeats a residue and the steps are the largest residue's count."""
+    buckets = [[x for x in span if x & 7 == r] for r in range(8)]
+    return [(b[i], False) if len(b) > i else (r, True) for i in range(max(map(len, buckets), default=0))
+            for r, b in enumerate(buckets)]
+
+
 def emit(directory: Path, slots, at, count, pass_slots: int, planes: int, head: int, plane_bytes: int = PLANE_BYTES,
          pitch: int = PANEL_PITCH, channels: int = 32, balanced: bool = False, digits: int = 32,
-         row_bytes: int = 64) -> list[str]:
+         row_bytes: int = 64, rounds: bool = False) -> list[str]:
     """Write the files for a `pass_slots`-slot readout pass over `planes` image planes of `plane_bytes` with HEAD
     entries a digit staged, `channels` a box (panel rows `pitch` bytes) and pool rows of `row_bytes` past the planes,
     from read lists whose every box's union fits one pass (a digit's entries `slots[w, d, at[w, d, 0]:at[w, d, -1]]`)."""
@@ -180,7 +188,7 @@ def emit(directory: Path, slots, at, count, pass_slots: int, planes: int, head: 
         mmas = 0
         for w in range(windows):
             for d in range(width):
-                placed = place([int(x) for x in colored[w, d, at[w, d, 0]:at[w, d, -1]]])
+                placed = (place_rounds if rounds else place)([int(x) for x in colored[w, d, at[w, d, 0]:at[w, d, -1]]])
                 steps = -(-len(placed) // per)
                 tag = (steps | (steps * per > head) << 8 | d % digits << 9) << 16
                 placed += [(r, True) for _ in range(steps * per // 8 + 2) for r in range(8)]

@@ -1004,79 +1004,80 @@ against 1.69K): it scales with the state, not the writes, and its two barriers a
 ### `color_union`
 
 What the facts pass's COLORING costs (KERNEL_STANDARDS §30's producer rule). A slot's residue mod 8 is its pool row's
-bank group, so a box-window's union slots are colored so that each digit's tokens spread over the residues. One warp
-colors one box-window, from its bit tile in shared memory (the facts pass's `tile_at` swizzle) to every union token's
-slot. `color_union.inputs.py`'s `color` is the algorithm's definition, and every output is checked against it exactly.
+bank group, so a box-window's union slots are colored so that each digit's tokens spread over the residues. The same
+problem holds on both sides: the readout gathers the read union's rows, the fold the write union's, 8 tokens a matrix.
+One warp colors one box-window, from its bit tile in shared memory (the facts pass's `tile_at` swizzle) to every union
+token's slot. Two forms are measured: SERIAL (`color_union.inputs.py`'s `color`, every output checked exactly) and
+BATCHED (its `batched`; the claims race on shared atomics, so outputs are checked by invariants).
 
-THE CHOICE, made on the CPU against the bank model (`read_image.inputs.emit`'s readout wavefronts, tokens on N). In
-the table, "gathers" is wavefronts per `ldmatrix` matrix, so 1.0 means no conflicts. "Over" is the slot extent above
-8 x ceil(union / 8), mean / max.
+THE CHOICE, made on the CPU against the bank model (`read_image.inputs.emit`'s readout wavefronts, tokens on N), read
+and write unions alike. In the table, "gathers" is wavefronts per `ldmatrix` matrix, so 1.0 means no conflicts:
 
-| coloring | alt-k4 gathers | alt-k16 gathers | alt-k4 over |
+| coloring | alt-k4 gathers | alt-k16 gathers | dependent steps (alt-k4 / alt-k16) |
 |---|---|---|---|
-| none (the union's rank order) | 1.94 | 1.82 | 0 / 0 |
-| greedy over all tokens, most-listed first (the readout lab's) | 1.001 | 1.007 | 0 / 0 |
-| tokens sorted by a home digit (parallel) | 1.30-1.35 | -- | 0 / 0 |
-| digit by digit, each digit's uncolored tokens water-filled | 1.014-1.042 | 1.158 | 3 / 16 |
-| per-digit rounds, each digit coloring its next token (parallel) | 1.067-1.177 | -- | 17 / 40 |
-| TWO PHASES: multi-digit tokens serially, then each digit's singles | 1.000 | 1.011 | 3 / 16 |
+| none (the union's rank order) | 1.94 | 1.82 | 0 |
+| digit by digit, each digit water-filled | 1.014-1.042 | 1.158 | 32 |
+| per-digit rounds, each digit coloring its next token (parallel) | 1.067-1.177 | -- | ~14 |
+| SERIAL: multi-digit tokens one at a time, then each digit's singles | 1.000 | 1.011 | 40 / 317 |
+| BATCHED: multi-digit tokens 32 at a time under capacities | 1.000 | 1.006 | 2.4 / 11 |
 
-In the two-phase form, singles' ties are taken digit by digit, least loaded first. A parallel rotation for the ties
-keeps 1.000 but over-runs the extent 21 / 56; a chained rotation, 10 / 32. On the thinned cell every form is
-1.000-1.022.
+`csrcolor` (cuSPARSE, deprecated) solves a different problem: a proper coloring with as many colors as it needs, one
+large graph a call. This one needs exactly 8 colors, a capacity per list and ~1,000 small problems a head that live in
+shared memory.
 
-THE FORM:
-1. Tokens in two or more of the box's digits go first, in token order. Each takes the residue its digits use least
-   (summed over them), then the least loaded, then the lowest.
-2. Each digit's single tokens water-fill the residues it uses least. The digits go in order, and a level's ties go
-   to the least-loaded residues.
-3. A slot is its residue plus 8 x its rank among that residue's tokens.
+THE BATCHED FORM:
+1. A digit of n tokens allows each color ceil(n / 8) times, its CAPACITY.
+2. Tokens in two or more digits are queued, those in three or more first. A batch of 32 (a lane each) sums its digits'
+   counts, ORs their full colors, and takes the least-used allowed color (any color when none is: BLOCKED). It claims
+   the color on every digit by a shared atomic. A claim that finds a digit full is withdrawn and requeued; a batch that
+   keeps nothing runs its first token alone next.
+3. Each digit's single tokens fill its room first-fit from an even or an odd start (any fill within capacity is
+   conflict-free). Every digit starts even; digits whose odd start moves the parity count the needed way flip, in
+   order, until half the imbalance (one prefix count).
+4. THE PARITY LAYOUT: a slot's position fixes only its color's parity; the color's other two bits are the row's
+   16-byte swizzle, folded into the entry's row offset. Positions are dense within each parity, so the pool runs over
+   its size only by the parities' difference (~1 slot on average).
+5. ROUND PLACEMENT: a digit's step i takes each color's i-th token, so a step never repeats a color; the steps are the
+   largest color count, the same as an even fill's. Under it both forms measure exactly 1.000 gathers and adds; a
+   blocked token costs a step, not a conflict.
 
-In the kernel:
-- The first phase is a counted loop over a list of the multi-digit tokens. Lane d keeps its digit's counts in
-  registers (two u16 a word). A token's membership is loaded one step ahead.
-- Four `redux.sync` sums take the counts over the token's digits; one `__byte_perm` and one `redux.sync` min pick the
-  residue.
-- The second phase water-fills each digit in its own lane. Lanes 0-7 then take the ties digit by digit, with seven
-  shuffles to rank the loads. Last, each digit deals its singles.
+The readout's panel must follow the parity layout (derived, not yet in the bank model): 64-byte rows by position with
+a 32-byte swizzle bit, in place of 80-byte rows by slot.
 
-Shared accesses: the tile is read by 32 digits' one word, or by one digit's 16 words; both are conflict-free under
-`tile_at`. The fold's two halves read rows in opposite parity, so they meet opposite bank halves. Plan rows are 16
-bytes a digit. Measured conflicts: 0.2-1.9% of wavefronts.
-
-THE BUDGET LINE MISSED. Stated before the code: ~45 instructions a multi-digit token and ~1.15K fixed. Measured: ~64
-and ~2.6K. The causes:
-- each `redux.sync` lands in a uniform register and costs a move back;
-- the residue's count update is a compare, select and add for each of the four count words;
-- ptxas checks divergence before the reductions (`BRA.DIV`);
-- a counted loop, a prefetch and a token list, against the estimate's bare walk;
-- fixed: the plans (16 tile words and an integer division a digit), the tie pass's 32 digits, the slot pass's 16
-  words.
-
-A first form was 1.25-1.8x the final one: a ballot walk, counts bumped by shared atomics (their load-after-atomic
-latency), branches around single-lane stores. The budget is restated from the counts.
-
-Measured (sm_86, 16 warps an SM, a warp a box-window):
+Measured (sm_86, 12 warps an SM, a warp a box-window; budget lines restated from the counts):
 
 | | alt-k4 | alt-k16 | thinned 1/16 |
 |---|---|---|---|
 | multi-digit tokens a box-window | 39.6 | 317 | 0.13 |
-| instructions a box-window | 6,545 | 23,007 | 2,596 |
-| an SM's cycles a box-window | 2,643 | 9,407 | 1,060 |
-| a warp's cycles a box-window | 38,598 | 144,001 | 15,373 |
+| serial: instructions / SM-cycles a box-window | 6,545 / 3,197 | 23,007 / 11,324 | 2,596 / 1,266 |
+| batched: instructions / SM-cycles a box-window | 3,829 / 2,354 | 7,835 / 5,648 | 1,630 / 909 |
+| batched: tokens over a capacity a box-window | 0 | 0.21 | 0 |
 
-The SM is issue-heavy: alt-k16 runs 2.45 instructions a cycle. `redux.sync` measured 48 cycles of latency and 2
-SM-cycles a warp-instruction of throughput, the same as `shfl`. At 1,024 box-windows a head (L = 64K, 32-digit
-groups of a 256-wide level), that is ~20 us a head at alt-k4 and ~70 us at alt-k16 on the 3080 Ti, before any
-overlap with the facts pass's DRAM stream. What it buys: on A100 the colored readout's shared time is 2.61 cycles a
-token against 3.36 uncolored (`read_image`), times the 16 CTAs reading each box-window's union.
+THE BUDGET LINES MISSED. The serial form was stated at ~45 instructions a multi-digit token and ~1.15K fixed, and
+measured ~64 and ~2.6K:
+- each `redux.sync` lands in a uniform register and costs a move back;
+- the residue's count update is per word;
+- divergence checks before the reductions;
+- fixed: the plans, the 32-digit tie pass, the slot pass.
 
-Levers (not built):
-- an exact skip where the union's rank order already puts every digit's tokens on distinct residues (the thinned
-  cell);
-- the first phase batched: tokens sharing no digit are colored together, with a rotation tie so the result stays exact.
-  Its dependency chains measured 9 steps at alt-k4 and 102 at alt-k16, against 40 and 317;
-- the tie pass over non-empty digits only.
+The batched form was stated at ~1.8K, ~3.7K and ~1.1K, and measured 3.8K, 7.8K and 1.6K:
+- integer/address is 2-2.5x the line: swizzled tile addresses, u16 count unpacks and the slot pass's position
+  arithmetic;
+- control is 3-5x at alt-k16: three divergent loops over a token's digits a batch, each running the batch's largest
+  digit count.
+
+Two first drafts were dropped on their counts:
+- the first serial form was 1.25-1.8x the final one: a ballot walk, counts bumped by shared atomics, branches around
+  single-lane stores;
+- the first transposes and singles cost ~2x their final form: ptxas computed both sides of a lane-dependent select;
+  water-fill levels.
+
+`redux.sync` measured 48 cycles of latency and 2 SM-cycles a warp-instruction of throughput, as `shfl`.
+
+What it buys: on A100 the colored readout's shared time is 2.61 cycles a token against 3.36 uncolored (`read_image`),
+for each of the 16 CTAs reading a box-window's union. At 1,024 box-windows a head the batched form costs ~17 us at
+alt-k4 and ~42 us at alt-k16 on the 3080 Ti standalone. Inside the facts pass, its union, list lengths and rank walks
+are work that pass already does; the batches and the transposes are the new part.
 
 Record: `measure/lab/results/color_union/sm_86.json`.
 

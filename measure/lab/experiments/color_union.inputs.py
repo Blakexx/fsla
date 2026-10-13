@@ -15,8 +15,8 @@ Three cells, 32 windows each, eight 32-digit groups a window: `alt-k4/` nl64k-al
 box-window), `alt-k16/` flagship-alt-k16-L16384 (~317), `thin/` nl64k-alt-k4 with each (digit, token) kept with
 probability 1/16 (~0.1). Each holds `tiles.bin` (a header of four int32 -- 0x524F4C43, box-windows, windows, groups --
 then `[box-windows][32][16]` u32), `expected.bin` (`[box-windows][512]` u16 slots, 0xFFFF off the union, then
-`[box-windows]` u16 extents) and `banks.json` (the readout's wavefronts an MMA under this coloring, the bank model
-through `read_image.inputs.emit`)."""
+`[box-windows]` u16 extents), `banks.json` (the readout's wavefronts an MMA under this coloring, the bank model
+through `read_image.inputs.emit`) and `banks_batched.json` (the same under `batched`, claims in lane order)."""
 from __future__ import annotations
 
 import contextlib
@@ -112,6 +112,76 @@ def color(rows: list[int]) -> tuple[list[int], int, int]:
     return slots, 8 * max(base), sum(len(m) > 1 for m in member.values())
 
 
+def batched(rows: list[int]) -> tuple[dict[int, int], int]:
+    """THE BATCHED FORM's colors (residue a token) and blocked tokens, claims resolved in lane order: the multi-digit
+    tokens queued (three or more digits first, then two, each in token order) and taken 32 at a time, each picking the
+    color least used over its digits among those under every digit's capacity (ceil(n / 8)), ties by (c - t) & 7; a
+    claim over a capacity is withdrawn and requeued; then each digit's singles fill its room first-fit from an even
+    start, and the digits whose odd start moves the parity count the needed way flip, in order, until half the
+    imbalance."""
+    union = 0
+    for x in rows:
+        union |= x
+    member = {t: [d for d in range(32) if rows[d] >> t & 1] for t in range(512) if union >> t & 1}
+    cap = [-(-bin(x).count("1") // 8) for x in rows]
+    cnt = [[0] * 8 for _ in range(32)]
+    queue = [t for t in sorted(member) if len(member[t]) > 2] + [t for t in sorted(member) if len(member[t]) == 2]
+    col, blocked, solo = {}, 0, False
+
+    while queue:
+        batch, queue = queue[:1 if solo else 32], queue[1 if solo else 32:]
+        claims, lost = {}, []
+        for t in batch:
+            full = 0
+            for d in member[t]:
+                full |= sum(1 << c for c in range(8) if cnt[d][c] >= cap[d])
+            allowed = ~full & 0xFF
+            pool = allowed or 0xFF
+            c = min((sum(cnt[d][c] for d in member[t]), (c - t) & 7, c) for c in range(8) if pool >> c & 1)[2]
+            over = any(cnt[d][c] + claims.get((d, c), 0) >= cap[d] for d in member[t]) and allowed != 0
+            for d in member[t]:
+                claims[(d, c)] = claims.get((d, c), 0) + 1
+            if over:
+                lost.append(t)
+            else:
+                col[t] = c
+                blocked += allowed == 0
+        for t in batch:
+            if t in col:
+                for d in member[t]:
+                    cnt[d][col[t]] += 1
+        solo = len(lost) == len(batch)
+        queue += lost
+
+    even = sum(1 for c in col.values() if c & 1 == 0)
+    singles = [[t for t in range(512) if rows[d] >> t & 1 and len(member[t]) == 1] for d in range(32)]
+    fills = []
+    for d in range(32):
+        room = [max(0, cap[d] - cnt[d][c]) for c in range(8)]
+        fill = []
+        for start in (0, 1):
+            n, before = [0] * 8, 0
+            for i in range(8):
+                c = (start + i) & 7
+                n[c] = min(room[c], max(0, len(singles[d]) - before))
+                before += room[c]
+            fill.append(n)
+        fills.append(fill)
+
+    total = len(col) + sum(map(len, singles))
+    need = even + sum(sum(f[0][0::2]) for f in fills) - (total + 1) // 2
+    upto = 0
+    for d in range(32):
+        delta = sum(fills[d][1][0::2]) - sum(fills[d][0][0::2])
+        gain = max(0, -delta) if need > 0 else max(0, delta)
+        upto += gain
+        n = fills[d][1] if gain > 0 and upto <= abs(need) else fills[d][0]
+        dealt = [c for c in range(8) for _ in range(n[c])]
+        for t, c in zip(singles[d], dealt, strict=True):
+            col[t] = c
+    return col, blocked
+
+
 def _banks(t, slots) -> dict:
     """The readout's wavefronts an MMA under this coloring: each digit's colored slots through
     `read_image.inputs.emit` (its own coloring off), the pass sized to hold the largest extent."""
@@ -136,7 +206,7 @@ def _banks(t, slots) -> dict:
                 at[w, g * 32 + d, 1:] = len(row)
     base.color = lambda digits, count: ({x: x for d in digits for x in d}, count)
     with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
-        base.emit(Path(d), lists, at, extent, max(512, -(-int(extent.max()) // 8) * 8), 16, 16)
+        base.emit(Path(d), lists, at, extent, max(512, -(-int(extent.max()) // 8) * 8), 16, 16, rounds=True)
         return json.loads((Path(d) / "banks.json").read_text())
 
 
@@ -163,6 +233,19 @@ def write(directory: Path) -> list[str]:
                          "extent over 8 ceil(union / 8)": float(np.mean(over)), "extent over, max": int(max(over))}
         (directory / name / "banks.json").write_text(json.dumps(banks, indent=1) + "\n")
         print(name, "coloring:", json.dumps(banks["n"]), json.dumps(banks["cell"]))
-        files += [f"{name}/tiles.bin", f"{name}/expected.bin", f"{name}/banks.json"]
+        mirrored = [batched([sum(int(r[j]) << (32 * j) for j in range(16)) for r in box]) for box in flat]
+        slots = []
+        for colors, _ in mirrored:
+            rank = [0] * 8
+            row = [0xFFFF] * 512
+            for tok in sorted(colors):
+                row[tok] = colors[tok] + 8 * rank[colors[tok]]
+                rank[colors[tok]] += 1
+            slots.append(row)
+        model = _banks(t, slots)
+        model["cell"] = {"blocked a box-window": float(np.mean([b for _, b in mirrored]))}
+        (directory / name / "banks_batched.json").write_text(json.dumps(model, indent=1) + "\n")
+        print(name, "batched:", json.dumps(model["n"]), json.dumps(model["cell"]))
+        files += [f"{name}/tiles.bin", f"{name}/expected.bin", f"{name}/banks.json", f"{name}/banks_batched.json"]
     torch.cuda.empty_cache()
     return files
