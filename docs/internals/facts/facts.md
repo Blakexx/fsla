@@ -31,13 +31,13 @@ allocated. Every sparse level's rows are read once, whole, whatever their suppor
 
 ## The grid: a CTA a unit
 
-`kFactsWarps` = 8 warps a CTA, one CTA a UNIT, three CTAs an SM on sm_86 and sm_80 (its 80 registers a thread, held
-there by `kFactsCtasMin`; sm_86's 31 KB of shared memory a CTA allows three as well): a unit is a plan-fixed load and
-its work, independent of every other unit, so the hardware's block scheduler balances the units' unequal costs and
-several CTAs' loads and work overlap on an SM (R22's independent units). The grid is `BH × windows × per_window` CTAs,
-the unit index `((bh × windows + w) × per_window + r)`: a window's units innermost, so the CTAs at work together read
-one head's window of every level -- the bundle is stored head-major (`[B, H, T, ...]`), a contiguous block of each
-side's plane.
+`kFactsWarps` = 8 warps a CTA, one CTA a UNIT, three CTAs an SM on sm_86 and sm_80 (its registers a thread held to
+three CTAs by `kFactsCtasMin`; sm_86's 31 KB of shared memory a CTA allows three as well): a unit is a plan-fixed load
+and its work, independent of every other unit, so the hardware's block scheduler balances the units' unequal costs and
+several CTAs' loads and work overlap on an SM (R22's independent units). The grid is `(per_window, windows, BH)`: a
+window's units by x, innermost, so the CTAs at work together read one head's window of every level -- the bundle is
+stored head-major (`[B, H, T, ...]`), a contiguous block of each side's plane -- and no CTA divides to find its unit
+(the host refuses more than 65,535 windows or batch-heads).
 
 <a id="the-plan"></a>
 

@@ -7,7 +7,6 @@
 #include "common/torch_seam.cuh"
 
 #include <algorithm>
-#include <climits>
 #include <optional>
 #include <vector>
 
@@ -94,18 +93,17 @@ struct Unit {
   int kind, side, level, group, b, h, bh, window;
 };
 
-__device__ __forceinline__ Unit unit_of(const FactsParams& p, int u) {
-  const int r = u % p.per_window, rest = u / p.per_window;
-  const uint32_t code = p.unit[r];
+__device__ __forceinline__ Unit unit_of(const FactsParams& p) {
+  const uint32_t code = p.unit[blockIdx.x];
   Unit x;
   x.kind = unit_kind(code);
   x.side = unit_side(code);
   x.level = unit_level(code);
   x.group = unit_group(code);
-  x.window = rest % p.windows;
-  x.bh = rest / p.windows;
+  x.window = static_cast<int>(blockIdx.y);
+  x.bh = static_cast<int>(blockIdx.z);
   x.b = x.bh / p.H;
-  x.h = x.bh % p.H;
+  x.h = x.bh - x.b * p.H;
   return x;
 }
 
@@ -135,18 +133,18 @@ __device__ __forceinline__ float2 load_column(const FactsParams& p, const Unit& 
 __device__ __forceinline__ void issue_window(const FactsParams& p, const Unit& x, ops::SmemAddr win,
                                              int tid) {
   const RowView v = p.rows[x.side][x.level];
-  const int digit0 = kGroupDigits * x.group;
-  const uint8_t* const rows = v.base + x.b * v.sb + x.h * v.sh + digit0;
-  constexpr int kCopies = kWindowTokens * 2 / kFactsThreads;
+  const int digit0 = kGroupDigits * x.group, part = tid & 1, i = tid >> 1;
+  constexpr int kCopies = kWindowTokens * 2 / kFactsThreads, kStep = kFactsThreads / 2;
+  const int t = x.window * kWindowTokens + i;
+  const uint8_t* const src =
+      v.base + x.b * v.sb + x.h * v.sh + static_cast<int64_t>(t) * v.st + digit0 + 16 * part;
+  const int64_t step = kStep * v.st;
+  const uint32_t run = static_cast<uint32_t>(max(0, min(16, v.width - digit0 - 16 * part)));
+  const ops::SmemAddr dst = win + window_at(i, 16 * part);
 #pragma unroll
-  for (int k = 0; k < kCopies; ++k) {
-    const int q = tid + kFactsThreads * k, i = q >> 1, part = q & 1;
-    const int t = x.window * kWindowTokens + i;
-    const uint32_t run =
-        t < p.L ? static_cast<uint32_t>(max(0, min(16, v.width - digit0 - 16 * part))) : 0u;
-    ops::stage_tile_n(win + window_at(i, 16 * part),
-                      rows + static_cast<int64_t>(t) * v.st + 16 * part, run);
-  }
+  for (int k = 0; k < kCopies; ++k)
+    ops::stage_tile_n(dst + window_at(kStep * k, 0), src + k * step,
+                      t + kStep * k < p.L ? run : 0u);
 }
 
 //: THE COLUMNS OUT, the window's one unit's: each token's `(F, m)` and its gains pair at the window's powers of two,
@@ -203,19 +201,19 @@ __device__ __forceinline__ void vote(const FactsParams& p, const Unit& x, const 
 //: digit a lane, one ballot. -- see docs/internals/facts/facts.md#tiles
 __device__ __forceinline__ void bits_out(const FactsParams& p, const Unit& x, const uint32_t* tile,
                                          int tid, int warp, int lane) {
-  const int word0 = x.window * kWindowWords, nwords = min(kWindowWords, p.token_words - word0);
-  const int digit0 = kGroupDigits * x.group;
+  const int word0 = x.window * kWindowWords, d = tid >> 4, j = tid & 15;
+  const int digits = p.B[x.level] - kGroupDigits * x.group;
+  const bool word_in = j < p.token_words - word0;
   uint32_t* const out = p.words
                         + ((static_cast<int64_t>(x.bh) * kSides + x.side) * p.rows_total
-                           + p.row_base[x.level] + digit0)
+                           + p.row_base[x.level] + kGroupDigits * x.group + d)
                               * p.token_words
-                        + word0;
+                        + word0 + j;
+  constexpr int kHalf = kFactsThreads / kWindowWords;
 #pragma unroll
-  for (int k = 0; k < 2; ++k) {
-    const int i = tid + kFactsThreads * k, d = i >> 4, j = i & 15;
-    if (digit0 + d < p.B[x.level] && j < nwords)
-      out[static_cast<int64_t>(d) * p.token_words + j] = tile[tile_at(d, j)];
-  }
+  for (int k = 0; k < 2; ++k)
+    if (word_in & (d + kHalf * k < digits))
+      out[static_cast<int64_t>(kHalf * k) * p.token_words] = tile[tile_at(d + kHalf * k, j)];
   const uint32_t any = __ballot_sync(
       0xffffffffu, (tile[tile_at(lane, 2 * warp)] | tile[tile_at(lane, 2 * warp + 1)]) != 0u);
   const int tile_index = x.window * kWindowTiles + warp;
@@ -305,32 +303,29 @@ __device__ __forceinline__ void enqueue(uint8_t* smem, int tid, int warp, int la
   const uint32_t* const tword = reinterpret_cast<const uint32_t*>(smem + FactsSmem::kTword);
   uint16_t* const queue = reinterpret_cast<uint16_t*>(smem + FactsSmem::kQueue);
   const uint32_t below = (1u << lane) - 1u;
-  int three = 0, two[2] = {0, 0}, three_at[2] = {0, 0};
+  //: lane `i` (< 16) word `i`'s kinds' tokens, scanned over the words, a kind a half of one register
+  const int i = lane & 15;
+  const uint32_t tw_i = tword[i], counts = __popc(tw_i) | __popc(mword[i] & ~tw_i) << 16;
+  uint32_t incl = counts;
 #pragma unroll
-  for (int i = 0; i < kWindowWords; ++i) {
-    const int t3 = __popc(tword[i]), t2 = __popc(mword[i] & ~tword[i]);
-#pragma unroll
-    for (int jj = 0; jj < 2; ++jj) {
-      three_at[jj] += i < 2 * warp + jj ? t3 : 0;
-      two[jj] += i < 2 * warp + jj ? t2 : 0;
-    }
-    three += t3;
+  for (int off = 1; off < kWindowWords; off <<= 1) {
+    const uint32_t y = __shfl_up_sync(0xffffffffu, incl, off, kWindowWords);
+    incl += i >= off ? y : 0u;
   }
+  const uint32_t all = __shfl_sync(0xffffffffu, incl, kWindowWords - 1), three = all & 0xffffu;
 #pragma unroll
   for (int jj = 0; jj < 2; ++jj) {
     const int j = 2 * warp + jj;
+    const uint32_t before = __shfl_sync(0xffffffffu, incl - counts, j);
     const uint32_t tw = tword[j], mw = mword[j] & ~tw;
     if ((tw >> lane) & 1u)
-      queue[three_at[jj] + __popc(tw & below)] = static_cast<uint16_t>(kTokBits * j + lane);
+      queue[(before & 0xffffu) + __popc(tw & below)] = static_cast<uint16_t>(kTokBits * j + lane);
     if ((mw >> lane) & 1u)
-      queue[three + two[jj] + __popc(mw & below)] = static_cast<uint16_t>(kTokBits * j + lane);
+      queue[three + (before >> 16) + __popc(mw & below)] =
+          static_cast<uint16_t>(kTokBits * j + lane);
   }
-  if (tid == 0) {
-    int multi = 0;
-#pragma unroll
-    for (int i = 0; i < kWindowWords; ++i) multi += __popc(mword[i]);
-    reinterpret_cast<int*>(smem + FactsSmem::kMisc)[1] = multi;
-  }
+  if (tid == 0)
+    reinterpret_cast<int*>(smem + FactsSmem::kMisc)[1] = static_cast<int>(three + (all >> 16));
 }
 
 //: ONE BATCH OF CLAIMS by a warp, the `take` queued tokens from `head` (lane l the l-th): each sums its digits' color
@@ -412,9 +407,11 @@ __device__ __forceinline__ Claim claim_batch(uint8_t* smem, uint32_t head, uint3
 
   const bool loser = live && over;
   if (loser) atomicSub(ucount + c, 1u);
+  //: a withdrawal only in a batch that lost a claim
   x = loser ? m : 0u;
+  const int withdraw = digits * static_cast<int>(__any_sync(0xffffffffu, loser) != 0);
 #pragma unroll 2
-  for (int i = 0; i < digits; ++i) {
+  for (int i = 0; i < withdraw; ++i) {
     if (x != 0u) {
       atomicSub(counts + 4 * (__ffs(x) - 1) + (c >> 1), inc);
       x &= x - 1u;
@@ -605,7 +602,6 @@ __device__ __forceinline__ void slots(uint8_t* smem, const uint32_t* tile, int t
   uint16_t* const by_slot = reinterpret_cast<uint16_t*>(smem + FactsSmem::kUnion);
   uint8_t* const wcount = smem + FactsSmem::kWcount;
   const uint32_t below = (1u << lane) - 1u;
-  constexpr int kEarlierWords = kWindowWords - 1;
 
   int rank[2], col[2];
   bool in[2];
@@ -637,27 +633,35 @@ __device__ __forceinline__ void slots(uint8_t* smem, const uint32_t* tile, int t
 
   __syncthreads();
   reinterpret_cast<uint32_t*>(smem + FactsSmem::kTab)[tid] = 0u;
+  //: the words' color counts scanned over the words, lane `i` (< 16) word `i`, a color a byte
+  const int i = lane & 15;
+  const uint2 own = reinterpret_cast<const uint2*>(wcount)[i];
+  uint32_t lo = own.x, hi = own.y;
+#pragma unroll
+  for (int off = 1; off < kWindowWords; off <<= 1) {
+    const uint32_t ylo = __shfl_up_sync(0xffffffffu, lo, off, kWindowWords),
+                   yhi = __shfl_up_sync(0xffffffffu, hi, off, kWindowWords);
+    lo += i >= off ? ylo : 0u;
+    hi += i >= off ? yhi : 0u;
+  }
+  const uint32_t ex_lo = lo - own.x, ex_hi = hi - own.y;
 #pragma unroll
   for (int jj = 0; jj < 2; ++jj) {
     const int j = 2 * warp + jj;
-    int before = 0;
-#pragma unroll
-    for (int i = 0; i < kEarlierWords; ++i) before += i < j ? wcount[i * kColors + col[jj]] : 0;
+    const uint32_t blo = __shfl_sync(0xffffffffu, ex_lo, j),
+                   bhi = __shfl_sync(0xffffffffu, ex_hi, j);
     if (in[jj]) {
-      const int s = kColors * (before + rank[jj]) + col[jj];
+      const int s = kColors * (static_cast<int>(byte_of(blo, bhi, col[jj])) + rank[jj]) + col[jj];
       slot[kTokBits * j + lane] = static_cast<uint16_t>(s);
       by_slot[s] = static_cast<uint16_t>(kTokBits * j + lane);
     }
   }
-
-  if (warp == 0) {
-    int n = 0;
-#pragma unroll 1
-    for (int i = 0; i < kWindowWords; ++i) n += wcount[i * kColors + (lane & 7)];
-    const uint32_t widest = __reduce_max_sync(0xffffffffu, lane < kColors ? n : 0);
-    if (lane == 0)
-      reinterpret_cast<int*>(smem + FactsSmem::kMisc)[0] = kColors * static_cast<int>(widest);
-  }
+  const uint32_t all = __vmaxu4(__shfl_sync(0xffffffffu, lo, kWindowWords - 1),
+                                __shfl_sync(0xffffffffu, hi, kWindowWords - 1));
+  const uint32_t widest =
+      max(max(all & 0xffu, (all >> 8) & 0xffu), max((all >> 16) & 0xffu, all >> 24));
+  if (tid == 0)
+    reinterpret_cast<int*>(smem + FactsSmem::kMisc)[0] = kColors * static_cast<int>(widest);
   __syncthreads();
 }
 
@@ -838,7 +842,7 @@ __global__ __launch_bounds__(kFactsThreads, kFactsCtasMin) void facts_pass(const
   __shared__ long long s_clock[kFactsWarps][Clock::kRow];
   const int tid = static_cast<int>(threadIdx.x), warp = tid >> 5, lane = tid & 31;
   Clock clock(&s_clock[warp][0], lane, p.ledger != nullptr);
-  const Unit x = unit_of(p, static_cast<int>(blockIdx.x));
+  const Unit x = unit_of(p);
   uint8_t* const win = smem + FactsSmem::kWin;
   uint32_t* const tile = reinterpret_cast<uint32_t*>(smem + FactsSmem::kTile);
   float2* const cols = reinterpret_cast<float2*>(smem + FactsSmem::kCols);
@@ -1124,8 +1128,10 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   p.ledger = detail::g_ledger;
 
   const DeviceGuard guard(first.get_device_index());
-  const int64_t units = int64_t{B} * H * p.windows * p.per_window;
-  STD_TORCH_CHECK(units <= INT32_MAX, "the call's ", units, " units exceed the int32 count");
+  //: THE GRID: a window's units by x, the windows by y, the batch-heads by z
+  STD_TORCH_CHECK(p.windows <= 65535 && B * H <= 65535,
+                  "the grid is (units a window, windows, batch-heads): ", p.windows,
+                  " windows and ", B * H, " batch-heads, each at most 65535");
   //: ONCE: the carveout at its most shared memory, so the SM holds as many units as it can
   static bool configured = false;
   if (!configured) {
@@ -1145,9 +1151,9 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                                          cudaSharedmemCarveoutMaxShared));
     configured = true;
   }
-  detail::
-      facts_pass<<<static_cast<int>(units), kFactsThreads, FactsSmem::kBytes, current_stream()>>>(
-          p);
+  const dim3 grid(static_cast<unsigned>(p.per_window), static_cast<unsigned>(p.windows),
+                  static_cast<unsigned>(B * H));
+  detail::facts_pass<<<grid, kFactsThreads, FactsSmem::kBytes, current_stream()>>>(p);
   ROLA_CUDA_LAUNCH_CHECK();
 }
 
