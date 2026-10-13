@@ -1,7 +1,7 @@
 # `rola/ops/paging.py` — page commitment, keyed to the MMA atom
 
-Moved from the module docstring; the module keeps the vocabulary and the
-one-sentence purpose.  Companion: `vmm_owner.md` (the VMM backing).
+Mirrors `rola/ops/paging.py`, whose docstring keeps the vocabulary and the one-sentence purpose.
+Companion: `vmm_owner.md` (the VMM backing).
 
 ## A page is the MMA atom, not a compute tile
 

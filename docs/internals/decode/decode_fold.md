@@ -1,6 +1,6 @@
 # `csrc/rola/src/decode/decode_fold.cuh` — the decode step's operand pass
 
-Every per-token operand a decode step consumes, read from the internal format (docs/api.md
+<a id="note-l3"></a>Every per-token operand a decode step consumes, read from the internal format (docs/api.md
 section 2.1), normalized where the producer did not already leave the level on the simplex,
 and staged in the SHARED MEMORY of the CTA that is about to consume it.
 
@@ -48,8 +48,14 @@ be silently dropped.
 coefficient times 255 (exact, its floor stored), a dense read level's zero in a live row the floor's `255 × 2^-13`
 ([`../facts/liveness_contract.md#floor`](../facts/liveness_contract.md#floor)) — and a level that
 carries its own mass takes its amplitude as `raw * (scale / 255)`, one fp32 multiply by a
-per-row factor (255 is `kRowMaxDigit`, the row max's digit). `tests/integration/test_decode_fold.py` cell 1 states that through the
-step's own output, on strided views as well as contiguous ones.
+per-row factor (255 is `kRowMaxDigit`, the row max's digit). `tests/integration/test_decode_fold.py` cell 1 states
+that through the step's own output, on strided views as well as contiguous ones.
+
+<a id="fold-digits"></a>**The digit pass** (`fold_digits`) takes every digit of both sides in one pass, a warp a mask
+word. A lane loads its digit and its row's fp32 scale together, one round trip; the warp's ballot of the nonzero test
+(after the floor) is the digit mask's word ([`decode_lattice.md#the-digit-mask`](decode_lattice.md#the-digit-mask));
+and the lane stages `raw * (scale / 255)`, or, for a read level the fold normalizes, the raw digit until its sum is
+known. Slots past a level's width are not loaded and ballot a zero.
 
 ## <a id="the-dtype-arms"></a>3. The dtype arm is runtime, and the step's template axes are not
 
@@ -88,12 +94,13 @@ step's `normalize` argument and `RouteFactors.read_simplex`). The row's scale ca
 normalized amplitude is `raw / sum(raw)`: one divide per digit, no scale read. The write side
 is never normalized, whatever the read side's flags say.
 
-<!-- ABSENT: reduce_kernel -->
-A sum has an ORDER, and floating-point addition is not associative. The torch reduction
-this replaced had whatever order that release's `reduce_kernel` chose — an order no gate can
-hold anything to, because it is not written down anywhere. This one is:
+A sum has an ORDER, and floating-point addition is not associative. A library reduction has
+whatever order that release chose — an order no gate can hold anything to, because it is not
+written down anywhere. This one is:
 
-> **The declared order.** Lane `j` of the level's warp accumulates
+<a id="row-sum"></a>
+
+> **The declared order** (`sum_staged_rows`). Lane `j` of the level's warp accumulates
 > `row[j], row[j+32], row[j+64], …` into an fp32 register in ASCENDING index order.
 > The 32 lane partials are then folded by five `__shfl_down_sync` steps with offsets
 > `16, 8, 4, 2, 1`, each adding lane `j + off` into lane `j`. Lane 0 holds the sum.
@@ -101,6 +108,9 @@ hold anything to, because it is not written down anywhere. This one is:
 
 That is a total order over the additions, reproducible on any device. The digits are u8, so
 every partial is an integer below `2^24`: the sum is EXACT and any order gives the same bits.
+
+<a id="normalize-rows"></a>`normalize_rows` then writes `raw / sum` in place over the level's staging, on the far side
+of the barrier that published the sums.
 
 <a id="the-gate"></a>**How it is gated now that nothing publishes it.** The fold has no
 output a test can read — its destination is shared memory the walk consumes and discards.
@@ -111,10 +121,6 @@ nonzero everywhere, an empty write side, and a state whose rows are zero except 
 multiply per column and one divide, so `y` is a function of the divisor's last bits and of
 nothing else. The reference computes exactly that from a torch reimplementation of the
 declared order.
-
-The cells that showed the declared order and a plain ascending one disagreeing needed an f16
-row, where the order was observable; the normalized levels are read levels, u8, so no row makes it so, and those
-cells went with the f16 rows.
 
 `rola.ops.decode.fold_levels` is the torch fold those references are built on, kept for
 that purpose and called from nowhere on the shipped path — the same arrangement as
@@ -130,57 +136,3 @@ value on the host, and a captured graph replays it with no buffer identity to pr
 `dials` is the one operand the fold does not touch, and the boundary is principled: it is a
 per-HEAD constant of the decay arm rather than a per-token operand, and its fp32 cast
 carries a refusal (`rola.ops.decay.leaf_rate_dials`) that the host has to raise.
-
-## Comments moved from source
-
-Verbatim `//:` prose blocks from `csrc/rola/src/decode/decode_fold.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
-
-<a id="fold-digits"></a>
-### `fold_digits`
-
-THE DIGIT PASS: every digit of both sides in one pass, a warp a mask word. A lane loads its
-digit and its row's fp32 scale together (one round trip), a dense level's zero in a live
-row is raised to the floor, the warp's ballot of the nonzero test is the digit mask's word ([`decode_lattice.md#the-digit-mask`](decode_lattice.md#the-digit-mask)),
-and the lane stages `raw * (scale / 255)` -- or, for a read level the fold
-normalizes, the raw digit itself, until its sum is known. Slots past a level's width are
-not loaded and ballot a zero.
-
-<a id="row-sum"></a>
-### `sum_staged_rows`
-
-THE DECLARED SUM of a normalized level's raw digits, read back from their staging. Warp
-`first + l` owns level `l`; lane `j` accumulates `raw[j], raw[j + 32], ...` in ascending index
-order into an fp32 register, then the five `__shfl_down_sync` steps fold lane `j`
-into lane `j - off`. Lanes past the row's width contribute an exact `0.0f`.
-docs/internals/decode/decode_fold.md#declared-order
-
-<a id="normalize-rows"></a>
-### `normalize_rows`
-
-A normalized level's amplitudes, `raw / sum`, written in place over its staging on the
-far side of the barrier that published the sums.
-
-## More comments moved from source
-
-Verbatim trailing/banner `//` comments from `csrc/rola/src/decode/decode_fold.cuh` condensed at their call site into a short pointer.
-
-<a id="note-l3"></a>
-### near line 3
-
-THE DECODE FOLD -- every per-token operand, read from the internal format, normalized and
-staged in SHARED MEMORY by the CTA that is about to consume it.
-
-Three facts a reader must not miss:
-  1. THE FOLD IS A GATHER, NOT A COPY PASS. Its inputs are whatever VIEW the producer
-     handed out -- a level is ordinarily a slice of one packed plane -- so the fold
-     indexes by stride and the `[B, 1, H, W] -> [B * H, W]` fold is the address it
-     computes, never a materialized intermediate.
-  2. THE SUM'S ORDER IS DECLARED, not incidental: lane-strided ascending partials
-     folded by a 5-step `__shfl_down_sync` tree. A reduction whose order is a
-     property of whatever the library did that release is a reduction no gate can
-     hold to bit-identity.
-  3. IT IS A HEADER, NOT A KERNEL. The step folds its own operands and the growth
-     probe folds its own write side; between them there is no launch and no plane.
-
-The declared order, the dtype arms and the cast argument:
-docs/internals/decode/decode_fold.md

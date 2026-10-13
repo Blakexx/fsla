@@ -968,30 +968,6 @@
    "count": 1
   },
   {
-   "path": "docs/internals/common/ops.md",
-   "message": "names the work code 'K35'",
-   "line_sha256": "a7e81bdef4b8d449",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/ops.md",
-   "message": "names the work code 'K35'",
-   "line_sha256": "deed1f3f4307b734",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/ops.md",
-   "message": "names the work code 'S2'",
-   "line_sha256": "deed1f3f4307b734",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'D1'",
-   "line_sha256": "a49e87c67dbe22b6",
-   "count": 1
-  },
-  {
    "path": "docs/internals/decode/decode.md",
    "message": "names the work code 'D2'",
    "line_sha256": "13264c321fe2bfbc",
@@ -1139,60 +1115,6 @@
    "path": "docs/internals/entmax/entmax.md",
    "message": "names the work code 'A1'",
    "line_sha256": "eeb9400b3bb5f23c",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/entmax/entmax.md",
-   "message": "names the work code 'K54'",
-   "line_sha256": "434e9952da0486f4",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/entmax/entmax.md",
-   "message": "names the work code 'P73'",
-   "line_sha256": "53a88084314c9bfe",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/entmax/entmax.md",
-   "message": "names the work code 'P74'",
-   "line_sha256": "f9b1f535f0189c35",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/entmax/entmax.md",
-   "message": "names the work code 'S4'",
-   "line_sha256": "24f0e4e4ee998386",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/entmax/factor.md",
-   "message": "names the work code 'P65'",
-   "line_sha256": "53a72cdf563c5ed9",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/entmax/factor.md",
-   "message": "names the work code 'P73'",
-   "line_sha256": "6af828880df4d378",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/entmax/factor.md",
-   "message": "names the work code 'P73'",
-   "line_sha256": "f952995b5bbc8784",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/entmax/factor.md",
-   "message": "names the work code 'S5'",
-   "line_sha256": "6af828880df4d378",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/entmax/factor.md",
-   "message": "names the work code 'S5'",
-   "line_sha256": "f952995b5bbc8784",
    "count": 1
   },
   {
