@@ -256,13 +256,18 @@ __host__ __device__ __forceinline__ constexpr uint32_t unit_of(int l, int k, int
   return static_cast<uint32_t>(((4 * l + (k ^ ((l >> 1) & 3))) ^ (d & 7)) & (kPlaneBytes / 16 - 1));
 }
 
-//: A DIGIT'S EXPONENT: the smallest `e` with the digit's largest |state| under 2^e, over the 8 warps' posts.
+//: THE IMAGE'S TOP: a digit's largest value placed under 2^10, so a 32-list sum fits an fp16 accumulator.
+//: -- see docs/internals/carry/parts.md#maxima
+constexpr int kImageTop = 10;
+
+//: A DIGIT'S EXPONENT: the smallest `e` with the digit's largest |state| under 2^e, over the 8 warps' posts, at least
+//: `kImageTop - 127` so its scale `2^(kImageTop - e)` is a normal float.
 template <class P>
 __device__ __forceinline__ int digit_exp(const uint8_t* smem, int d) {
   const float* posts = reinterpret_cast<const float*>(smem + P::kMaxima) + d;
   float x = 0.0f;
   static_for<kWarps>([&](auto W) { x = fmaxf(x, posts[W * kBoxDigits]); });
-  return x > 0.0f ? ((__float_as_int(x) >> 23) & 0xff) - 126 : -126;
+  return max(((__float_as_int(x) >> 23) & 0xff) - 126, kImageTop - 127);
 }
 
 //: A PART'S STORES, the hand-off: the warp's lists' rows of the part's digits into the image, f16 at each digit's
@@ -278,7 +283,7 @@ __device__ __forceinline__ void store_part(const State<P>& st, uint8_t* smem, in
       const int d = 16 * m + 8 * H + g;
       const int e = digit_exp<P>(smem, d);
       if (warp == 0 && t == 0) reinterpret_cast<int*>(smem + P::kExps)[d] = e;
-      const float scale = __int_as_float((127 - e) << 23);
+      const float scale = __int_as_float((127 + kImageTop - e) << 23);
       const ops::SmemAddr plane = image + (d % P::kPlanes) * kPlaneBytes + 4 * t;
       static_for<P::kFoldLists>([&](auto J) {
         static_for<4>([&](auto N) {

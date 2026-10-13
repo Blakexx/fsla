@@ -50,8 +50,12 @@ or 4 under 16, `stage_bytes`), each thread arriving on the slot's barrier when i
 The hand-off's first step (the f16 image at a power of two a digit). A lane's registers hold four digits of each
 of its warp's lists; `post_maxima` takes its largest |state| a digit over the lists, joins the digit row's four lanes
 by two shuffles and posts it (128 FMNMX and 8 SHFL a lane a window). `digit_exp` is a digit's exponent over the 8
-warps' posts: the smallest `e` with every value under `2^e`. The list units (`fold.md#units`) are the
-fold-units component's: the maxima take the accumulators as held.
+warps' posts: the smallest `e` with every value under `2^e`. The image holds a digit at `2^(kImageTop - e)`: its largest
+value under 2^10, so a 32-list sum of image times read row (each at most 1) stays under 2^15, inside an fp16
+accumulator, and one placement serves the fp32- and fp16-accumulate readouts. Measured (2026-10-12, the image's
+quality model, per token against fp64 on the flagship cells): the placement at 2^10 and at 2^15 give the same error,
+as does a block prescale; a leaf keeps 11 bits down to 24 octaves under its digit's largest. The list units
+(`fold.md#units`) are the fold-units component's: the maxima take the accumulators as held.
 
 <a id="image"></a>
 ## The image
@@ -65,7 +69,7 @@ hold its digits (`d % kPlanes`). The fold's stores (a lane a list row's 4-byte w
 ## A part's stores
 
 `store_part<P, Part>`: every warp stores its 4 lists' rows of the part's digits (whole m-tiles), each value times
-`2^-e` for its digit's exponent, packed f16 (32 stores a lane a part on sm_86); warp 0 records the part's exponents for
+`2^(kImageTop - e)` for its digit's exponent, packed f16 (32 stores a lane a part on sm_86); warp 0 records the part's exponents for
 the readers (`kExps`). The part is compile-time: the state's registers are indexed by it.
 
 <a id="pair"></a>
@@ -88,7 +92,7 @@ slot past the pass's end its residue's dummy row). Each source is its own loop, 
 The PANEL is the pass's slots' 64-byte rows, after the lanes' pad bases (128 bytes, never touched) and 8 dummy rows
 (`kPadBytes`); a panel offset is relative to the pads, so it fits an entry's 16 bits on every card.
 
-Left to the readout component: the coefficient's digit exponent (`(word << 16) + (e << 23)`, one LEA)
+Left to the readout component: the coefficient's digit exponent (`(word << 16) + ((e - kImageTop) << 23)`, one LEA)
 and the token's unit, the dense side's coefficient from the row's coefficient slice (implied 1 here), the panel's
 parity layout.
 

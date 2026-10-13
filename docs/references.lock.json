@@ -324,7 +324,7 @@
   {"doc": "docs/internals/carry/parts.md", "pinned_at": "3360bacd82eb", "reviewed": true, "sha256": "633e4b1b46d8cbb8", "target": "csrc/rola/src/carry/parts.cuh::at_of"},
   {"doc": "docs/internals/carry/parts.md", "pinned_at": "3360bacd82eb", "reviewed": true, "sha256": "9e4854f15154d7ad", "target": "csrc/rola/src/carry/parts.cuh::chunk_addr"},
   {"doc": "docs/internals/carry/parts.md", "pinned_at": "3360bacd82eb", "reviewed": true, "sha256": "23b88a799d78b23c", "target": "csrc/rola/src/carry/parts.cuh::chunk_at"},
-  {"doc": "docs/internals/carry/parts.md", "pinned_at": "3360bacd82eb", "reviewed": true, "sha256": "a80d7a95be728487", "target": "csrc/rola/src/carry/parts.cuh::digit_exp"},
+  {"doc": "docs/internals/carry/parts.md", "pinned_at": "40c123c89822", "reviewed": true, "sha256": "58115afc49b27f21", "target": "csrc/rola/src/carry/parts.cuh::digit_exp"},
   {"doc": "docs/internals/carry/parts.md", "pinned_at": "3360bacd82eb", "reviewed": true, "sha256": "79ebf57db66b4f89", "target": "csrc/rola/src/carry/parts.cuh::facts_in"},
   {"doc": "docs/internals/carry/parts.md", "pinned_at": "578bf154f46f", "reviewed": true, "sha256": "08b29d4402b022a4", "target": "csrc/rola/src/carry/parts.cuh::origin_of"},
   {"doc": "docs/internals/carry/parts.md", "pinned_at": "1f1945e3bce8", "reviewed": true, "sha256": "4a8456bb8e5ec8af", "target": "csrc/rola/src/carry/parts.cuh::place_of"},
