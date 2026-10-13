@@ -166,8 +166,10 @@ def wire_hooks(checkout: Path) -> None:
 #: router from a session started anywhere -- the repo's copy installed as the user's, its PreToolUse entry in their
 #: settings
 ROUTER = ROOT / ".claude" / "hooks" / "skill_router_bootstrap.py"
-ROUTER_HOOK = {"matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
-               "hooks": [{"type": "command", "command": 'python3 "$HOME/.claude/hooks/skill_router.py"', "timeout": 5}]}
+ROUTER_HOOKS = {"PreToolUse": {"matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash", "hooks": [
+                    {"type": "command", "command": 'python3 "$HOME/.claude/hooks/skill_router.py"', "timeout": 5}]},
+                "SessionStart": {"matcher": "compact|resume", "hooks": [
+                    {"type": "command", "command": 'python3 "$HOME/.claude/hooks/skill_router.py" --forget', "timeout": 5}]}}
 
 
 def router_state() -> tuple[bool, bool]:
@@ -178,8 +180,9 @@ def router_state() -> tuple[bool, bool]:
         settings = json.loads((home / "settings.json").read_text())
     except (OSError, ValueError):
         settings = {}
-    wired = any("skill_router.py" in hook.get("command", "")
-                for group in settings.get("hooks", {}).get("PreToolUse", []) for hook in group.get("hooks", []))
+    wired = all(any("skill_router.py" in hook.get("command", "")
+                    for group in settings.get("hooks", {}).get(event, []) for hook in group.get("hooks", []))
+                for event in ROUTER_HOOKS)
     return installed.is_file() and installed.read_bytes() == ROUTER.read_bytes(), wired
 
 
@@ -202,7 +205,10 @@ def install_router() -> None:
             settings = json.loads(path.read_text()) if path.is_file() else {}
         except ValueError as ex:
             raise SystemExit(f"{path} does not parse ({ex}); fix it, then rerun init") from ex
-        settings.setdefault("hooks", {}).setdefault("PreToolUse", []).append(ROUTER_HOOK)
+        for event, entry in ROUTER_HOOKS.items():
+            groups = settings.setdefault("hooks", {}).setdefault(event, [])
+            if not any("skill_router.py" in hook.get("command", "") for group in groups for hook in group.get("hooks", [])):
+                groups.append(entry)
         path.write_text(json.dumps(settings, indent=2) + "\n")
         print(f"agent skill router: wired into {path}")
 

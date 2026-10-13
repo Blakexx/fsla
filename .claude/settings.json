@@ -9,6 +9,11 @@
             "command": "cat \"$CLAUDE_PROJECT_DIR/docs/ESSENTIALS.md\" 2>/dev/null || cat docs/ESSENTIALS.md 2>/dev/null; if [ -n \"$ROLA_SCRATCH\" ] && [ -f \"$ROLA_SCRATCH/development/ESSENTIALS.md\" ]; then cat \"$ROLA_SCRATCH/development/ESSENTIALS.md\"; fi; true",
             "timeout": 10,
             "statusMessage": "Re-reading the repo essentials after compaction"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/route_skills.py\" --forget",
+            "timeout": 5
           }
         ]
       }

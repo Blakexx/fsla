@@ -182,7 +182,7 @@ the pseudocode — a rebuild reintroduced the `part && lane_broadcast(...)` shor
 rewriting the acquire, three lines below its own warning. The previous pass's findings are a checklist
 the rebuild is walked against before its first build.
 
-## 14. Waiting on a build (recorded 2026-08-26 from the agent time ledger: 327 min of `until pgrep … sleep` loops)
+## <a id="s14"></a>14. Waiting on a build (recorded 2026-08-26 from the agent time ledger: 327 min of `until pgrep … sleep` loops)
 A long build is launched as a BACKGROUND task writing to a log file, and the agent then ENDS ITS TURN —
 the harness re-invokes it when the command exits, with the exit status. Never wait by polling: no
 `until pgrep … sleep` loops, no `pgrep -f` on a process name (it self-matches, it matches other tracks'
@@ -582,7 +582,7 @@ session becomes a permanent step of it the same day; a node that cannot decide t
 read for (two mechanisms fit the same numbers) is the signal to add the node that splits them, and
 until that node exists the question is OPEN, not answered by the likelier story.
 
-## §23 — THE DEV ENVIRONMENT IS ONE SYSTEM (law, 2026-09-12, from Blake's "one unified dev config ... everything reads that one file", "consolidate everything into one dev env init script, and also ensure docker stays maintained")
+## <a id="s23"></a>§23 — THE DEV ENVIRONMENT IS ONE SYSTEM (law, 2026-09-12, from Blake's "one unified dev config ... everything reads that one file", "consolidate everything into one dev env init script, and also ensure docker stays maintained")
 A tree that measures itself is only as reproducible as the machine it runs on. Before this law, 26 environment variables,
 three per-machine files and fourteen hardcoded paths decided that machine, set by five scattered scripts and a page of
 manual steps, and the dev container had drifted for two weeks unnoticed.

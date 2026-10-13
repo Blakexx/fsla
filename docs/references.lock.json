@@ -1,4 +1,5 @@
 {
+ "python": "3.11",
  "references": [
   {"doc": "README.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": ".github/mirror/declarations.json"},
   {"doc": "README.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "LICENSE"},
@@ -1215,6 +1216,7 @@
   {"doc": "docs/internals/tools/docrefs.md", "pinned_at": "c1e86602038e", "reviewed": true, "sha256": "", "target": "docs/references.lock.json"},
   {"doc": "docs/internals/tools/docrefs.md", "pinned_at": "c1e86602038e", "reviewed": true, "sha256": "", "target": "tools/docrefs.py"},
   {"doc": "docs/internals/tools/docrefs.md", "pinned_at": "9edbb7b546c4", "reviewed": true, "sha256": "7469ffc1bbd81001", "target": "tools/docrefs.py::PACKAGES"},
+  {"doc": "docs/internals/tools/docrefs.md", "pinned_at": "e87322e18bcd", "reviewed": true, "sha256": "89190b5b9b2ba09e", "target": "tools/docrefs.py::PYTHON"},
   {"doc": "docs/internals/tools/docrefs.md", "pinned_at": "3fac56b5a835", "reviewed": true, "sha256": "2921516285dadaca", "target": "tools/docrefs.py::SKILLS"},
   {"doc": "docs/internals/tools/docrefs.md", "pinned_at": "c1e86602038e", "reviewed": true, "sha256": "9c3e163b25990e91", "target": "tools/docrefs.py::Version"},
   {"doc": "docs/internals/tools/docrefs.md", "pinned_at": "c1e86602038e", "reviewed": true, "sha256": "67c02f5bec5dec6f", "target": "tools/docrefs.py::_generated"},

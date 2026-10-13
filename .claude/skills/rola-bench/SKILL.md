@@ -1,12 +1,14 @@
 ---
 name: rola-bench
-description: Load before measuring the shipped kernels' performance: the declared measurement, its protocol, its record.
+description: Load before measuring the shipped kernels' performance or reading the rola-results store: the declared measurement, its preconditions, its record and its verdict.
 ---
 # Measuring the shipped kernels
 
-1. The method and its preconditions: `docs/measurement.md#the-method` and
-   `docs/measurement.md#preconditions-which-the-targets-acquire`; the protocol `docs/KERNEL_STANDARDS.md#s21`; the
-   suite `docs/KERNEL_STANDARDS.md#s22`.
-2. Run the declared measurement (`docs/measurement.md#the-build-everything-declared-a-run-pruned-by-label`).
-3. Read a verdict by the flagging rule (`docs/measurement.md#the-flagging-rule-three-gates-all-must-fire`); the
-   records: `docs/measurement.md#the-measurements-record-rola_results`.
+1. The method and the preconditions the targets acquire themselves (GPU lock, clock lock, binary and extension
+   identity): `docs/measurement.md#the-method`, `docs/measurement.md#preconditions-which-the-targets-acquire`; the
+   protocol every comparison obeys: `docs/KERNEL_STANDARDS.md#s21`; the suite: `docs/KERNEL_STANDARDS.md#s22`.
+2. Run the declared measurement, pruned by label with `--only` and `--skip` for the dev loop
+   (`docs/measurement.md#the-build-everything-declared-a-run-pruned-by-label`).
+3. Read it from the store, never from a terminal: `python -m rola_results show|history|latest|instruments`
+   (`docs/measurement.md#the-measurements-record-rola_results`); a regression is `python -m rola_results verdict`
+   under the three gates (`docs/measurement.md#the-flagging-rule-three-gates-all-must-fire`).

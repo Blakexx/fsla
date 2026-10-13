@@ -6,10 +6,12 @@ description: Load when designing or changing a shared-memory buffer, or data tha
 
 The law: `docs/KERNEL_STANDARDS.md#s30`. The model: `docs/internals/tools/bank_model.md`.
 
-1. Write the buffer's access table: every instruction that touches it, by lanes, addresses and banks; choose the
-   pitch and swizzle that satisfy all of them.
-2. Where data picks the addresses, the producer makes them conflict-free: the coloring and the round placement
-   (`docs/internals/tools/lab.md#color-union`).
-3. A pad sits where a real element would.
-4. Run `tools/bank_model.py` on what the producer emits before any GPU run (a lab's `.inputs.py` calls it).
-5. Budget the wavefronts beside the instructions (`docs/KERNEL_STANDARDS.md#s29`), priced across densities.
+1. In the component's `docs/internals/` page (or the lab's header), write the access table §30.1 asks for and choose
+   the layout from it; name the instruction shapes it is conflict-free for.
+2. Where data picks the addresses, the producer's format carries the placement (§30.2); the measured colorings:
+   `docs/internals/tools/lab.md#color-union`.
+3. Place pads by §30.3.
+4. Before any GPU run, model the producer's emission with `tools/bank_model.py`'s `wavefronts` and `ldmatrix` from the
+   lab's `.inputs.py`, written beside its data as `banks.json` (as `read_image.inputs.py` does); its command line
+   answers one instruction (`docs/internals/tools/bank_model.md`).
+5. Put the `wavefronts` line in the budget (§30.4; `rola-budget`) and price it at every density (§30.6).

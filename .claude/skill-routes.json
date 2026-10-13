@@ -1,15 +1,135 @@
 {
-  "about": "KERNEL_STANDARDS section 31: which repo skill covers an action. `edit` globs match a path edited (repo-relative); `bash` substrings match a command run. The PreToolUse hook (.claude/hooks/route_skills.py) names each matching skill the first time a session takes the action.",
-  "routes": [
-    {"skill": "rola-kernel-code", "edit": ["csrc/*", "measure/lab/*.cu", "measure/lab/*.cuh"]},
-    {"skill": "rola-lab", "edit": ["measure/lab/*"], "bash": ["tools/lab.py"]},
-    {"skill": "rola-budget", "edit": ["tools/budgets/*", "docs/internals/tools/budgets.md"],
-     "bash": ["tools/lab.py ledger", "tools/region_ledger.py", "tools/phase_ledger.py"]},
-    {"skill": "rola-shared-layout", "edit": ["tools/bank_model.py"], "bash": ["tools/bank_model.py"]},
-    {"skill": "rola-test", "edit": ["tests/*"], "bash": ["pytest"]},
-    {"skill": "rola-bench", "bash": ["rola_devtools.build run", "declare.py"]},
-    {"skill": "rola-build", "bash": ["pip install -e", "setup.py", "nvcc "]},
-    {"skill": "rola-ratify", "bash": ["tools/ratify.py"]},
-    {"skill": "rola-commit", "bash": ["git commit", "git push"]}
-  ]
+ "about": "KERNEL_STANDARDS section 31: which repo skill covers an action. `edit` globs match a path edited, relative to the checkout. `bash` regexes match each SIMPLE COMMAND of a Bash call (split on &&, ||, ;, |, newlines; `VAR=value`, `timeout` and `nice` prefixes stripped; a `cd`, `pushd` or `git -C` sets the directory the commands after it run in), anchored at the command's first token, so a command that merely mentions a tool routes nothing. The PreToolUse router (.claude/hooks/route_skills.py) puts each matched skill's text in the acting agent's context once an agent.",
+ "routes": [
+  {
+   "skill": "rola-kernel-code",
+   "edit": [
+    "csrc/rola/*",
+    "measure/lab/experiments/*.cu",
+    "measure/lab/experiments/*.cuh",
+    "measure/lab/lab.cuh",
+    "tools/coverage.json"
+   ]
+  },
+  {
+   "skill": "rola-lab",
+   "edit": [
+    "measure/lab/experiments/*",
+    "common/hardware.json"
+   ],
+   "bash": [
+    "^(python3?\\s+)?tools/lab\\.py\\s+(run|sass|ncu|list)\\b"
+   ]
+  },
+  {
+   "skill": "rola-budget",
+   "edit": [
+    "tools/budgets/*",
+    "docs/internals/tools/budgets.md"
+   ],
+   "bash": [
+    "^(python3?\\s+)?tools/lab\\.py\\s+ledger\\b"
+   ]
+  },
+  {
+   "skill": "rola-instruments",
+   "bash": [
+    "^(python3?\\s+)?tools/(region_ledger|phase_ledger|stall_census|pipe_counters|life_ranges|pipe_timeline|overlap_gate|roofline)\\.py\\b",
+    "^ncu\\b"
+   ]
+  },
+  {
+   "skill": "rola-shared-layout",
+   "edit": [
+    "tools/bank_model.py"
+   ],
+   "bash": [
+    "^(python3?\\s+)?tools/bank_model\\.py\\b"
+   ]
+  },
+  {
+   "skill": "rola-test",
+   "edit": [
+    "tests/*",
+    "rola/ops/naive.py",
+    "tools/sanitize_oracle.py",
+    "tools/sanitize_cell.py"
+   ],
+   "bash": [
+    "^(python3?\\s+-m\\s+)?pytest\\b",
+    "^(python3?\\s+)?tools/sanitize_(oracle|cell)\\.py\\b",
+    "^compute-sanitizer\\b"
+   ]
+  },
+  {
+   "skill": "rola-bench",
+   "edit": [
+    "declare.py",
+    "measure/subjects.py",
+    "measure/provider.py"
+   ],
+   "bash": [
+    "^python3?\\s+-m\\s+rola_devtools\\.build\\b",
+    "^python3?\\s+-m\\s+rola_results\\b"
+   ]
+  },
+  {
+   "skill": "rola-build",
+   "edit": [
+    "setup.py",
+    "tools/build_flags.py",
+    "tools/gen_shards.py",
+    "tools/build_lock.py"
+   ],
+   "bash": [
+    "^(python3?\\s+-m\\s+)?pip\\s+install\\s+-e\\b",
+    "^python3?\\s+setup\\.py\\b",
+    "^nvcc\\b",
+    "^(python3?\\s+)?tools/sass_gate\\.py\\b"
+   ]
+  },
+  {
+   "skill": "rola-ratify",
+   "edit": [
+    "tools/ratify.py",
+    "tools/manifests/*"
+   ],
+   "bash": [
+    "^(python3?\\s+)?tools/ratify\\.py\\b"
+   ]
+  },
+  {
+   "skill": "rola-commit",
+   "bash": [
+    "^git\\s+(-C\\s+\\S+\\s+)?(commit|push)\\b",
+    "^pre-commit\\b",
+    "^(python3?\\s+)?tools/docrefs\\.py\\b"
+   ]
+  },
+  {
+   "skill": "rola-dev",
+   "edit": [
+    "tools/dev.py",
+    "tools/dev_config.py",
+    "tools/devtools.txt",
+    "requirements.lock",
+    ".devcontainer/*",
+    "Dockerfile"
+   ],
+   "bash": [
+    "^(python3?\\s+)?tools/dev\\.py\\b",
+    "^git\\s+(-C\\s+\\S+\\s+)?worktree\\b",
+    "^uv\\s+venv\\b"
+   ]
+  },
+  {
+   "skill": "rola-docs",
+   "edit": [
+    "docs/*",
+    ".claude/*",
+    "CLAUDE.md",
+    "README.md"
+   ]
+  }
+ ]
 }

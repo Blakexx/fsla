@@ -383,16 +383,27 @@ def _visibility(doc: str) -> str:
     return "private" if any(doc == p or doc.startswith(p.rstrip("/") + "/") for p in private) else "public"
 
 
+#: the interpreter the digests are taken under: `ast.unparse`'s output moves between Python versions, so a pin read under
+#: another one reads as drift where nothing moved
+PYTHON = f"{sys.version_info[0]}.{sys.version_info[1]}"
+
+
 def _load(blobs) -> dict[tuple[str, str], dict]:
-    return {(e["doc"], e["target"]): e for blob in blobs for e in json.loads(blob)["references"]}
+    docs = [json.loads(blob) for blob in blobs]
+    pinned = {d["python"] for d in docs if "python" in d}
+    if pinned - {PYTHON}:
+        raise SystemExit(f"docrefs: the locks were pinned under Python {', '.join(sorted(pinned))} and this is "
+                         f"{PYTHON}, whose ast.unparse digests differ; run it from the checkout's venv "
+                         "(`git config rola.venv`)")
+    return {(e["doc"], e["target"]): e for d in docs for e in d["references"]}
 
 
 def _dump(entries: dict[tuple[str, str], dict]) -> None:
     for visibility, path in LOCKS.items():
         rows = [entries[k] for k in sorted(entries) if _visibility(k[0]) == visibility]
         (ROOT / path).parent.mkdir(parents=True, exist_ok=True)
-        (ROOT / path).write_text("{\n \"references\": [\n" + ",\n".join("  " + json.dumps(r, sort_keys=True)
-                                                                     for r in rows) + "\n ]\n}\n")
+        (ROOT / path).write_text(f"{{\n \"python\": \"{PYTHON}\",\n \"references\": [\n"
+                                 + ",\n".join("  " + json.dumps(r, sort_keys=True) for r in rows) + "\n ]\n}\n")
 
 
 def _lock() -> dict[tuple[str, str], dict] | None:

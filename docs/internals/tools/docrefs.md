@@ -31,6 +31,10 @@ docs pass has read it. A doc the public mirror does not ship keeps its pins in `
 (`_visibility` reads `.github/mirror/declarations.json`), so the public lock never names it. `init` pinned the tree's
 references unread, the broken ones with a null digest.
 
+Each lock records the Python version its digests were taken under (`PYTHON`): `ast.unparse`'s output moves between
+versions, so a lock read under another one would show drift where nothing moved, and the tool refuses to give a verdict
+there. It runs from the checkout's venv, as the commit gate does.
+
 ## The gate and the pass
 
 `verdict` compares the survey to the locks. The gate (`python3 tools/docrefs.py`, a pre-commit hook and a CI step)

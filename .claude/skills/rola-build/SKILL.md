@@ -1,15 +1,21 @@
 ---
 name: rola-build
-description: Load before building the extension (pip install -e, setup.py) or compiling a single TU: iteration vs gate builds, the shared host budget, waiting on a build.
+description: Load before building the extension (pip install -e, setup.py, nvcc) or reading a SASS gate on a build: iteration vs gate builds, the shared host budget, waiting on a build, proving the binary.
 ---
 # Building
 
-The build: `docs/build.md#building`. When a build is owed: `docs/KERNEL_STANDARDS.md#s16`.
+The build and its parameters: `docs/build.md#building`. What a stage owes and what only a milestone owes:
+`docs/KERNEL_STANDARDS.md#s16`.
 
-1. An iteration build compiles one architecture and the arms it needs (`docs/build.md#arm-subset`); a gate build the
-   shipped set, once a stage.
-2. Every compile takes the shared host budget (`docs/internals/tools/build_lock.md`); never set job counts by hand.
-3. A long build runs in the background and ends by writing an exit marker; wait on the marker with a bounded wait,
-   never by matching process names, and never edit a source while its build runs.
-4. Prove the binary is the source before using it (`docs/build.md#verifying-a-built-binary`).
-5. At a stage gate, record the per-TU compile ledger (`docs/build.md#compile-ledger`).
+1. An iteration build compiles one architecture and the arms it needs (`ROLA_CUDA_ARCHS`, `ROLA_CARRY_ARMS`,
+   `ROLA_DECODE_ARMS`); a gate build the shipped set, with `ROLA_STRICT_MANIFEST=1` only when it precedes a ratify
+   (`docs/build.md#building`, the table).
+2. Never set job counts: `setup.py` takes the machine-wide host budget and sizes the jobs
+   (`docs/build.md#the-host-budget-every-build-shares-one-pool`, `docs/internals/tools/build_lock.md`).
+3. A long build runs in the background with the exit marker as its last step, and is waited on by the marker with a
+   bounded wait (`docs/KERNEL_STANDARDS.md#s14`).
+4. Prove the binary is the source by the device stamp before using it
+   (`docs/measurement.md#preconditions-which-the-targets-acquire`,
+   `docs/ratification.md#the-device-stamp-keys-on-the-csrc-content-hash`); then `python tools/sass_gate.py <.so>`
+   (`docs/KERNEL_STANDARDS.md#s20`).
+5. A build that fails to start: `python tools/dev.py check` first (`rola-dev`).

@@ -27,7 +27,6 @@ The rules most often violated by newcomers, restated:
 - Never run unscoped `pytest tests/`. Every GPU entry point takes
   `gpu_lock()` itself (`rola_devtools.locks.gpu`, K46) — invoke GPU commands BARE,
   never wrapped in an external `flock` on the same lock path (self-deadlocks).
-  Builds: MAX_JOBS=4, nice.
 
 ## Skills: procedures that ship with the repo (KERNEL_STANDARDS §31)
 
@@ -41,11 +40,14 @@ anywhere else by the user-level bootstrap that `python tools/dev.py init` instal
 |---|---|
 | writing or changing CUDA (`csrc/`, `measure/lab/*.cu`) | `rola-kernel-code` |
 | a lab experiment (`measure/lab/`, `tools/lab.py`) | `rola-lab` |
-| an instruction budget, a ledger | `rola-budget` |
+| an instruction budget | `rola-budget` |
+| attributing a shipped kernel's cost (ncu, the ledgers) | `rola-instruments` |
 | a shared-memory layout, the bank model | `rola-shared-layout` |
 | tests (`tests/`, `pytest`) | `rola-test` |
 | measuring the shipped kernels | `rola-bench` |
 | a build | `rola-build` |
 | ratification | `rola-ratify` |
+| the dev environment, a worktree | `rola-dev` |
+| docs, skills, routes, this file | `rola-docs` |
 | a commit or a push | `rola-commit` |
 
