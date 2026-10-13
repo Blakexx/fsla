@@ -34,10 +34,8 @@ The rules most often violated by newcomers, restated:
 The repo's skills are in `.claude/skills/`; each is a procedure whose rules and facts are references into `docs/`,
 held current by `tools/docrefs.py`. A PreToolUse router puts the skill that covers an action -- from the checkout the
 action touches, so every worktree uses its own branch's skills -- into the acting agent's context the first time it
-takes the action (`.claude/skill-routes.json`). A session started here is routed by this repo's hook; for sessions
-started anywhere else, install the user-level bootstrap once a machine: copy `.claude/hooks/skill_router_bootstrap.py`
-to `~/.claude/hooks/skill_router.py` and add a PreToolUse hook for `Edit|Write|MultiEdit|NotebookEdit|Bash` running
-`python3 "$HOME/.claude/hooks/skill_router.py"` to `~/.claude/settings.json`.
+takes the action (`.claude/skill-routes.json`). A session started here is routed by this repo's hook; sessions started
+anywhere else by the user-level bootstrap that `python tools/dev.py init` installs (`check` verifies it is current).
 
 | action | skill |
 |---|---|

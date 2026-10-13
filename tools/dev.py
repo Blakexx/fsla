@@ -162,6 +162,51 @@ def wire_hooks(checkout: Path) -> None:
                    check=True)
 
 
+#: THE AGENT SKILL ROUTER (KERNEL_STANDARDS section 31): the user-level bootstrap that runs the touched checkout's
+#: router from a session started anywhere -- the repo's copy installed as the user's, its PreToolUse entry in their
+#: settings
+ROUTER = ROOT / ".claude" / "hooks" / "skill_router_bootstrap.py"
+ROUTER_HOOK = {"matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+               "hooks": [{"type": "command", "command": 'python3 "$HOME/.claude/hooks/skill_router.py"', "timeout": 5}]}
+
+
+def router_state() -> tuple[bool, bool]:
+    """(the user's bootstrap is this checkout's, the user's settings run it)."""
+    home = Path.home() / ".claude"
+    installed = home / "hooks" / "skill_router.py"
+    try:
+        settings = json.loads((home / "settings.json").read_text())
+    except (OSError, ValueError):
+        settings = {}
+    wired = any("skill_router.py" in hook.get("command", "")
+                for group in settings.get("hooks", {}).get("PreToolUse", []) for hook in group.get("hooks", []))
+    return installed.is_file() and installed.read_bytes() == ROUTER.read_bytes(), wired
+
+
+def install_router() -> None:
+    """The bootstrap installed where it differs and its hook entry added where it is absent, on a machine where Claude
+    Code keeps a user configuration (`~/.claude`; the image has none); every other user setting is kept, and a settings
+    file that does not parse is refused, never rewritten."""
+    home = Path.home() / ".claude"
+    if not home.is_dir():
+        print("agent skill router: no Claude Code configuration here, nothing to install")
+        return
+    current, wired = router_state()
+    if not current:
+        (home / "hooks").mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROUTER, home / "hooks" / "skill_router.py")
+        print(f"agent skill router: installed {home / 'hooks' / 'skill_router.py'}")
+    if not wired:
+        path = home / "settings.json"
+        try:
+            settings = json.loads(path.read_text()) if path.is_file() else {}
+        except ValueError as ex:
+            raise SystemExit(f"{path} does not parse ({ex}); fix it, then rerun init") from ex
+        settings.setdefault("hooks", {}).setdefault("PreToolUse", []).append(ROUTER_HOOK)
+        path.write_text(json.dumps(settings, indent=2) + "\n")
+        print(f"agent skill router: wired into {path}")
+
+
 def _worktrees() -> list[Path]:
     """Every checkout of this repository: the main one and each linked worktree."""
     listing = subprocess.run(["git", "-C", str(ROOT), "worktree", "list", "--porcelain"], capture_output=True, text=True,
@@ -258,6 +303,7 @@ def cmd_init(a) -> int:
             if os.access(checkout / "tools" / "git-hooks" / "pre-commit", os.X_OK):
                 wire_hooks(checkout)
         _refuse_unwired()
+        install_router()
         for key in GATED_CONSUMERS:
             if (Path(dev_config.get(key)) / ".git").exists():
                 subprocess.run(["git", "-C", dev_config.get(key), "config", "rola.venv", dev_config.get("workspace.base_venv")],
@@ -342,6 +388,12 @@ def cmd_check(a) -> int:
     row(not readable or (hooks.stdout.strip() == "tools/git-hooks" and gate_venv(ROOT) == base),
         f"commit gate wired in {ROOT.name}, run from {base}" if readable else f"{ROOT}: no git repository visible here; "
         "commits are made where it is", "python tools/dev.py init")
+    current, wired = router_state()
+    if (Path.home() / ".claude").is_dir():
+        row(current and wired, "agent skill router: " + ("installed and current" if current else "missing or stale")
+            + ("" if wired else ", not in the user's settings"), "python tools/dev.py init")
+    else:
+        row(True, "agent skill router: no Claude Code configuration here")
     #: commits are made on the host (the image sees no repository), so the consumers' gates are the host's to check
     for key in GATED_CONSUMERS if readable else ():
         if (Path(dev_config.get(key)) / ".git").exists():

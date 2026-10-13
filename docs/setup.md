@@ -28,7 +28,7 @@ locks), so a new machine's first `init` runs with a rola-devtools checkout on th
 the checkout into every venv here, so nothing after it needs the path.
 
 ```bash
-python tools/dev.py init          # detect, install the pinned tools, wire the commit gate, check
+python tools/dev.py init          # detect, install pinned tools, wire the commit gate and agent router, check
 python tools/dev.py clock --mhz 1665   # once per host: lock the SM clock (one administrator prompt under WSL)
 python tools/dev.py check         # every dependency, one row each; exit 1 on a red
 python tools/dev.py worktree <name> <sha>   # a worktree, its pointer venv, its gate, its extension

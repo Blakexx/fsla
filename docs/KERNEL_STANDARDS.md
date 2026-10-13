@@ -1064,5 +1064,5 @@ loaded only in sessions started inside it, and their text had rotted: dead paths
    in the acting agent's context the first time the agent takes the action there. Any number of worktrees on any
    branches route from any session, subagents included, and nothing is registered globally. A session started inside
    the repo is routed by the repo's own hook entry; one started elsewhere by the user-level bootstrap the repo ships
-   (`.claude/hooks/skill_router_bootstrap.py`, installed once a machine as `CLAUDE.md` says). `CLAUDE.md` shows the
-   table. Skills make the right path the easy one; lints and gates make the wrong one fail.
+   (`.claude/hooks/skill_router_bootstrap.py`), which `tools/dev.py init` installs and `check` verifies. `CLAUDE.md`
+   shows the table. Skills make the right path the easy one; lints and gates make the wrong one fail.
