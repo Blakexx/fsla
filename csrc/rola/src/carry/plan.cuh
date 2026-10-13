@@ -1,86 +1,111 @@
-// csrc/rola/src/carry/plan.cuh -- ONE ARM'S PLAN: the warp tiles an arm's key implies, its registers and its shared
-// memory, time-shared by phase on sm_86. see docs/internals/carry/plan.md
+// csrc/rola/src/carry/plan.cuh -- ONE ARM'S PLAN on the compiling card: the box's warp tiles, its registers, and its
+// shared memory -- the persistent tenants, then the image, the panel and the fills' ring, whose sizes the card's
+// capacity picks. see docs/internals/carry/plan.md
 #pragma once
 
 #include "carry/carry.cuh"
+#include "common/arch_caps.cuh"
 
 namespace rola::carry {
 
-//: A POOL ROW'S PITCH, an odd multiple of 32 bytes. -- see docs/internals/carry/plan.md#plan
-constexpr int pitch_of(int bytes) { return 32 * (((bytes + 31) / 32) | 1); }
+namespace arch = ::denseref::arch;
 
 constexpr int max_of(int a, int b) { return a > b ? a : b; }
 
-//: THE BLOCK'S SHARED MEMORY on sm_86, the bound every plan's region fits.
-constexpr int kSmemCap = 99 * 1024;
+constexpr int align_of(int x, int q) { return (x + q - 1) / q * q; }
 
-//: THE FOLD'S UNIT, in facts passes: the largest of 4, 2, 1 whose two slots fit `room` bytes at `pitch`, the first
-//: clear of the readout's `read` bytes. -- see docs/internals/carry/plan.md#units
-constexpr bool unit_fits(int passes, int pitch, int read, int room) {
-  return max_of(read, passes * kPassSlots * pitch) + passes * kPassSlots * pitch <= room;
-}
-
-constexpr int unit_passes(int pitch, int read, int room) {
-  return unit_fits(4, pitch, read, room) ? 4 : unit_fits(2, pitch, read, room) ? 2 : 1;
-}
-
-//: THE ARM'S PLAN: each side's warp tile, the registers and the pool rows. -- see docs/internals/carry/plan.md#plan
-template <class Arm>
-struct Plan {
-  static constexpr int kChannels = Arm::channels;
-  static constexpr int kLeaves = kStateValues / kChannels;
-  static constexpr int kWarpLeaves = kLeaves / kWarps;
-  static constexpr int kFoldRows = Arm::fold_rows, kFoldLists = kWarpLeaves / kFoldRows;
-  static constexpr int kReadRows = Arm::read_rows, kReadLists = kWarpLeaves / kReadRows;
-  static constexpr int kFoldFactors = Arm::fold_factors, kReadFactors = Arm::read_factors;
-  static constexpr bool kPublishRegs = Arm::publish_regs != 0;
-  static constexpr int kStateRegs = kWarpLeaves * kChannels / 32;
-  static constexpr int kReadRegs = kStateRegs / 2;
-  static constexpr int kWriteLists = kWarps * kFoldLists, kReadBoxLists = kWarps * kReadLists;
-  static_assert(kFoldLists * kFoldRows == kWarpLeaves && kReadLists * kReadRows == kWarpLeaves,
-                "a warp's tile is its share of the box");
-  static_assert(kFoldRows >= 16 && kReadRows >= 16,
-                "a warp's operand rows are an MMA tile at least");
-
-  static constexpr int kValuesAt = kSliceBytes * kFoldFactors;
-  static constexpr int kWritePitch = pitch_of(kValuesAt + 2 * kChannels);
-  static constexpr int kReadPitch = pitch_of(kSliceBytes * kReadFactors);
-  static constexpr int kPanelWords = kChannels / 2;
-  static constexpr int kWriteSlots = 2, kReadSlots = 2;
-  static constexpr int kFoldMTiles = kFoldRows / 16;
-
-  //: THE PERSISTENT TENANTS, then ONE PHASE REGION the publish, the readout and the fold take in turn.
+//: THE PERSISTENT TENANTS' BYTES, every card's and arm's. -- see docs/internals/carry/plan.md#tenants
+struct Tenants {
   static constexpr int kUnion = 0;
-  static constexpr int kCount = kUnion + 2 * kWindow * 2;
-  static constexpr int kWriteAt = kCount + 16;
-  static constexpr int kReadAt = kWriteAt + kWriteLists * kListAt * 2;
-  static constexpr int kWriteExp = kReadAt + kReadBoxLists * kListAt * 2;
-  static constexpr int kUnits = kWriteExp + kWriteLists * 4;
-  static constexpr int kClock = kUnits + kWindow;
-  static constexpr int kBook = kClock + kWarps * (kCarryPhases + 1) * 8;
-  static constexpr int kBars = kBook + kWriteLists * 8;
-  static constexpr int kPhase = (kBars + kWriteSlots * 8 + 127) / 128 * 128;
+  static constexpr int kCount = kUnion + 2 * 2 * kWindow * 2;
+  static constexpr int kAt = kCount + 16;
+  static constexpr int kWriteExp = kAt + 2 * 2 * kBoxLists * kListAt * 2;
+  static constexpr int kUnits = kWriteExp + 2 * kBoxLists * 4;
+  static constexpr int kBook = kUnits + 2 * kWindow;
+  static constexpr int kMaxima = kBook + kBoxLists * 8;
+  static constexpr int kExps = kMaxima + kWarps * kBoxDigits * 4;
+  static constexpr int kClock = kExps + kBoxDigits * 4;
+  static constexpr int kBars = kClock + kWarps * (kCarryPhases + 1) * 8;
+  static constexpr int kMaxBars = 10;
+  static constexpr int kReadHeads = kBars + kMaxBars * 8;
+  static constexpr int kHeadBytes = 4 * kHeadEntries * 8;
+  static constexpr int kFoldHeads = kReadHeads + kWarps * kHeadBytes;
+  static constexpr int kEnd = align_of(kFoldHeads + kWarps * kHeadBytes, 128);
+};
 
-  //: THE PHASE REGION: the publish; the readout's pool and panel; the fold's two unit slots, slot 0 clear of the
-  //: readout's bytes (a window's first unit fills under the readout), slot 1 over them.
-  static constexpr int kPublishRounds = 2;
-  static constexpr int kPublishBytes = kPublishRegs ? 0 : kLeaves * kChannels * 2 / kPublishRounds;
-  static constexpr int kReadPool = 0;
-  static constexpr int kPanel = kReadPool + kReadSlots * kPassSlots * kReadPitch;
-  static constexpr int kReadBytes = kPanel + kPassSlots * kPanelWords * 4;
-  //: each slot's HEADS: its box lists' first 16 records, the common step's offsets and c read in place
-  static constexpr int kHeadBytes = kWriteLists * 16 * 8;
-  static constexpr int kFoldUnit =
-      unit_passes(kWritePitch, kReadBytes, kSmemCap - kPhase - 2 * kHeadBytes);
-  static constexpr int kUnitSlots = kFoldUnit * kPassSlots;
-  static constexpr int kUnitBytes = kUnitSlots * kWritePitch;
-  static constexpr int kWriteSlot0 = max_of(kReadBytes, kUnitBytes);
-  static constexpr int kHeads = kWriteSlot0 + kUnitBytes;
-  static constexpr int kWriteBytes = kHeads + 2 * kHeadBytes;
-  static constexpr int kSmemBytes = kPhase + max_of(kPublishBytes, max_of(kReadBytes, kWriteBytes));
-  static_assert(kSmemBytes <= kSmemCap, "the block's shared memory fits sm_86's 99 KB");
-  static_assert(kPublishBytes <= kWriteSlot0,
-                "a publish round clears write slot 0, which fills under it");
+//: A FORM: the image in `parts`, a readout pass of `slots`, a fold unit of `unit` slots.
+struct Form {
+  int parts, slots, unit;
+};
+
+//: THE FORMS IN ORDER OF PREFERENCE: fewest image stores a dense window (parts x passes), then the larger unit.
+constexpr Form kForms[] = {{1, 512, 128}, {1, 512, 64}, {1, 256, 128}, {1, 256, 64},
+                           {2, 512, 128}, {2, 512, 64}, {2, 256, 128}, {2, 256, 64},
+                           {1, 128, 128}, {1, 128, 64}, {2, 128, 128}, {2, 128, 64}};
+constexpr int kFormCount = sizeof(kForms) / sizeof(kForms[0]);
+
+constexpr int kPlaneBytes = kBoxLists * kBoxChannels * 2, kPanelRow = kBoxChannels * 2;
+//: the lanes' pad bases (never themselves touched) and 8 dummy panel rows, a pad's add landing on its residue's
+constexpr int kPadBytes = 128 + 8 * kPanelRow;
+
+//: A FORM's PHASE REGION: its image, the pads and panel, the readout ring's two slots. -- see plan.md#forms
+constexpr int ring_slot(const Form& f, int read_row, int write_row, int k) {
+  return f.slots < kWindow ? max_of(f.slots * read_row, f.unit * write_row)
+                           : (k == 0 ? f.slots * read_row : f.unit * write_row);
+}
+
+constexpr int form_bytes(const Form& f, int read_row, int write_row) {
+  return kBoxDigits / f.parts * kPlaneBytes + kPadBytes + f.slots * kPanelRow
+         + ring_slot(f, read_row, write_row, 0) + ring_slot(f, read_row, write_row, 1);
+}
+
+constexpr int form_of(int room, int read_row, int write_row) {
+  for (int k = 0; k < kFormCount; ++k)
+    if (form_bytes(kForms[k], read_row, write_row) <= room) return k;
+  return kFormCount;
+}
+
+//: THE ARM'S PLAN on card `Cc`: the box's tiles, a side's pool row (its operand slices, then the write side's values),
+//: and the first form the card's shared memory holds. -- see docs/internals/carry/plan.md#plan
+template <class Arm, int Cc = arch::kArch>
+struct Plan : Tenants {
+  static constexpr arch::Caps kCaps = arch::caps_of(Cc);
+  static_assert(Arm::fold_rows == kBoxDigits && Arm::read_rows == kBoxLists
+                    && Arm::channels == kBoxChannels,
+                "the arm is the box's: a fold list 32 digits, a read digit 32 lists, 32 channels");
+  static constexpr int kFoldFactors = Arm::fold_factors, kReadFactors = Arm::read_factors;
+  //: a warp's tiles: lists `w + 8 j` to fold, digits `w + 8 i` to read out
+  static constexpr int kFoldLists = kBoxLists / kWarps, kReadDigits = kBoxDigits / kWarps;
+  static constexpr int kFoldMTiles = kBoxDigits / 16;
+  static constexpr int kStateRegs = kFoldLists * kBoxDigits * kBoxChannels / 32;
+
+  static constexpr int kReadRow = kSliceBytes * kReadFactors;
+  static constexpr int kValuesAt = kSliceBytes * kFoldFactors,
+                       kWriteRow = kValuesAt + kBoxChannels * 2;
+
+  static constexpr int kForm = form_of(kCaps.smem_per_cta_max - kEnd, kReadRow, kWriteRow);
+  static_assert(kForm < kFormCount, "a form fits the card's shared memory");
+  static constexpr int kParts = kForms[kForm].parts, kPassSlots = kForms[kForm].slots;
+  static constexpr int kUnitSlots = kForms[kForm].unit;
+  static_assert(kFoldMTiles % kParts == 0 && kReadDigits % kParts == 0,
+                "a part is whole m-tiles of every fold list and whole digits of every reader");
+
+  //: THE PHASE REGION: the image, the pads, the panel, the readout ring's slots
+  static constexpr int kPlanes = kBoxDigits / kParts;
+  static constexpr int kImageBytes = kPlanes * kPlaneBytes;
+  static constexpr int kPanelBytes = kPassSlots * kPanelRow;
+  static constexpr int kReadBytes = kPassSlots * kReadRow, kUnitBytes = kUnitSlots * kWriteRow;
+  static constexpr int kImage = kEnd;
+  static constexpr int kPads = kImage + kImageBytes;
+  static constexpr int kPanel = kPads + kPadBytes;
+  static constexpr int kRing0 = kPanel + kPanelBytes;
+  static constexpr int kRing1 = kRing0 + ring_slot(kForms[kForm], kReadRow, kWriteRow, 0);
+  static constexpr int kSmemBytes = kEnd + form_bytes(kForms[kForm], kReadRow, kWriteRow);
+  //: the fold's ring: units over the image, then the panel (free only once the drain has read it)
+  static constexpr int kImageUnits = kImageBytes / kUnitBytes;
+  static constexpr int kFoldRing = kImageUnits + kPanelBytes / kUnitBytes;
+  static_assert(kFoldRing >= 1 && 4 + kFoldRing <= kMaxBars,
+                "a barrier a ring slot and the two staging barriers");
 };
 
 }  // namespace rola::carry

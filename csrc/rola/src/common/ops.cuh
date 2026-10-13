@@ -459,6 +459,15 @@ __device__ __forceinline__ void hmma_fresh(float (&d)[4], const uint32_t (&a)[4]
       : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1), "f"(0.0f));
 }
 
+//: THE SAME AT K = 8: acc += A(16x8) . B(8x8), half the k16 atom's tensor work. -- see docs/internals/common/ops.md#hmma
+__device__ __forceinline__ void hmma_k8(float (&d)[4], uint32_t a0, uint32_t a1, uint32_t b) {
+  asm volatile(
+      "mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 "
+      "{%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};\n"
+      : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+      : "r"(a0), "r"(a1), "r"(b));
+}
+
 //: TWO f16 PRODUCTS, each rounded once to nearest (`HMUL2`).
 __device__ __forceinline__ uint32_t hmul2(uint32_t a, uint32_t b) {
   uint32_t d;

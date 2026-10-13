@@ -68,7 +68,14 @@ def _allocate(widths, level_tags, total: int, cap: int) -> list[int] | None:
     return bits if left == 0 else None
 
 
-def _side(lists, operand, extents, leaves: int) -> SidePlan:
+def _side(lists, operand, extents, leaves: int, rows_last: bool) -> SidePlan:
+    """A side's plan. A side with a sparse level lists it and forms its rows from the dense ones; a side with none
+    takes one dense level as its rows and the other as its coefficients, named in that order -- the fold's rows its
+    last dense level, the readout's its first (docs/internals/engine/carve.md#sides)."""
+    if not lists and len(operand) == 2:
+        operand = operand[::-1] if rows_last else operand
+        tile_rows = extents[operand[0]]
+        return SidePlan(lists=(), operand=tuple(operand), tile_lists=leaves // WARPS // tile_rows, tile_rows=tile_rows)
     rows = 1
     for lv in operand:
         rows *= extents[lv]
@@ -100,9 +107,9 @@ def _build(widths, read_sparse, write_sparse, extents, channels: int) -> Carve:
     for e in extents:
         leaves *= e
     fold = _side([lv for lv in range(D) if write_sparse[lv]], [lv for lv in range(D) if not write_sparse[lv]],
-                 extents, leaves)
+                 extents, leaves, rows_last=True)
     readout = _side([lv for lv in range(D) if read_sparse[lv]], [lv for lv in range(D) if not read_sparse[lv]],
-                    extents, leaves)
+                    extents, leaves, rows_last=False)
     return Carve(widths=tuple(widths), extents=tuple(extents), channels=channels, fold=fold, readout=readout,
                  publish_in_registers=_warps_of(fold, extents) == _warps_of(readout, extents))
 

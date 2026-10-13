@@ -4,18 +4,24 @@
 
 #include <cstdint>
 
+#include <cuda_runtime.h>
+
 namespace rola::carry {
 
-//: THE CTA, THE WINDOW, THE PASS, THE STATE AND A SLICE. -- see docs/internals/carry/carry.md#constants
+//: THE CTA, THE WINDOW AND THE LISTS. -- see docs/internals/carry/carry.md#constants
 constexpr int kWarps = 8;
 constexpr int kThreads = kWarps * 32;
 constexpr int kWindow = 512;
-constexpr int kPassSlots = 128;
 constexpr int kListAt = 8;
 constexpr int kListCap = kWindow;
 constexpr int kMaxLevels = 4;
-constexpr int kStateValues = kThreads * 128;
+//: THE BOX, every card's: 32 lists (the write side's list level) x 32 digits (the read side's) x 32 channels.
+constexpr int kBoxLists = 32, kBoxDigits = 32, kBoxChannels = 32;
+constexpr int kStateValues = kBoxLists * kBoxDigits * kBoxChannels;
+//: A SLICE: a token's operand row over the box's 32 digits of one level, f16.
 constexpr int kSliceBytes = 64;
+//: A LIST'S ENTRIES STAGED a window ahead: its first 16; the rest are read in place.
+constexpr int kHeadEntries = 16;
 
 //: A PLANE where the bundle holds it: a token's row at `base + b sb + h sh + t st` bytes.
 struct Plane {
@@ -30,13 +36,14 @@ struct Side {
   Plane rows[kMaxLevels];
 };
 
-//: ONE SIDE'S LISTS, the facts pass's at its list level. -- see docs/internals/carry/carry.md#lists
+//: ONE SIDE'S LISTS, the facts pass's in their final form. -- see docs/internals/carry/carry.md#lists
 struct SideLists {
   const uint16_t* union_tok;
-  const uint16_t* union_count;
-  const uint8_t* entries;
+  const int32_t* union_count;
+  const uint2* entries;
   const uint16_t* at;
-  int width, groups, entry_bytes;
+  const uint2* heads;
+  int width, groups;
 };
 
 //: THE OPERAND BLOCK, a grid constant. -- see docs/internals/carry/carry.md#params
@@ -56,9 +63,9 @@ struct CarryParams {
 
 //: THE PHASE LEDGER's phases. -- see docs/internals/carry/carry_kernel.md#phases
 enum CarryPhase : int {
-  kPhaseLists,
-  kPhaseUnits,
-  kPhasePublish,
+  kPhaseLanded,
+  kPhaseMaxima,
+  kPhaseStore,
   kPhaseReadout,
   kPhaseDrain,
   kPhaseFill,

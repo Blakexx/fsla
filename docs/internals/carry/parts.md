@@ -1,62 +1,100 @@
 # `carry/parts.cuh` — the carry's components
 
-Mirrors `csrc/rola/src/carry/parts.cuh`. Each component is at its real signature, tenants and copies; the MMAs and
-conversions are stubs (`carry_kernel.md#kernel`).
+Mirrors `csrc/rola/src/carry/parts.cuh`. Each component is at its real signature, tenants and copies, and keeps the
+work's counts; what a component leaves to its build is named in its section and in
+`carry_kernel.md#kernel`. The fold is `fold.md`'s.
 
 <a id="place"></a>
 ## The CTA's place
 
 `place_of` is the CTA's batch-head (`blockIdx.y`) and its channel group (the box index's innermost digit);
-`origin_of` a level's first box digit. `slices_of` forms each operand level's slice base once: the plane at the CTA's
+`origin_of` a level's first box digit. `slices_of` forms each operand level's slice base: the plane at the CTA's
 batch and head, displaced to the box's first digit. `window_of` is a side's window: its union group (the 32-digit
 group holding the box's list digits) and the box's first list digit, or every token a slot.
 
 <a id="lists-in"></a>
 ## Lists in
 
-A side's union tokens are copied whole (512 slots, 1 KB) with `cp.async`, its box lists' pass starts one 16-byte copy
-a list, its count by one thread. Copying the whole union is a fixed 1 KB a side a window; the count-bounded copy (the
-count a window ahead) is this component's budget work.
+A window ahead (`carry_kernel.md#staging`), into the window's parity of the tenants: a side's union tokens whole
+(512 slots, 1 KB, 64 copies), its box lists' pass starts (one 16-byte copy a list) and its count (one 4-byte copy).
+`facts_in` copies the write lists' exponent pairs (128 bytes) and the window's token units (512 bytes). `union_of`,
+`at_of` and `slots_of` read a window's tenants back.
+
+<a id="heads-in"></a>
+## Heads in
+
+A warp's own 512 bytes, 16 a lane: its 4 lists' (or digits') first `kHeadEntries` entries for the next window, copied
+once the warp has read this window's (its readout's, or its fold's), so the heads take one buffer a side.
+
+<a id="swizzle"></a>
+## The pool rows' swizzle
+
+A row of 128 bytes XORs its 16-byte chunk by the slot's residue (`slot & 7`); a row of an odd number of 64-byte quarters
+(64 or 192 bytes) starts on alternating halves of the 128-byte bank line, so it XORs its chunk within each four by the
+residue's high bits (`chunk_at`). Either way eight slots of distinct residues meet eight bank groups at one chunk:
+the facts pass's coloring puts a step's tokens on distinct residues (KERNEL_STANDARDS §30). `chunk_addr` is a logical
+chunk's address from a row's chunk 0 with the swizzle folded in: an XOR inside the swizzle's group, the group's offset
+added. An entry carries the row's chunk-0 offset, so a lane addresses its chunk with one XOR.
 
 <a id="fill"></a>
 ## The fill
 
-A pass's slots, each its token's operand slices into its pool row: a slice's 16-byte runs (8 or 4 bytes for a slice
-under 16, `stage_bytes`) over the CTA's threads, then on the write side the values' runs. The token is the union's
-slot (or the slot itself where the side has no list level). The write side's rows are swizzled: the 16-byte halves of
-each 32-byte pair swapped on rows with bit 2 set, so `ldmatrix` reads eight residue-ordered rows conflict-free
-(`docs/internals/carry/fold.md#step`). The quad-a-token copy pattern (`docs/internals/owner/owner_fill.md`) is this
-component's budget work.
+A ring fill: a range of union slots, each its token's row -- the side's operand slices at 64 bytes each, then on the
+write side its values at the box's channels -- swizzled, by `cp.async` over all 256 threads (a slice's 16-byte runs, 8
+or 4 under 16, `stage_bytes`), each thread arriving on the slot's barrier when its copies land
+(`cp.async.mbarrier.arrive.noinc`).
 
-<a id="publish"></a>
-## The publish
+<a id="maxima"></a>
+## The digit maxima
 
-The fold's fp32 state to f16 pairs, the readout's operand. When the two plans' warps own different leaves (the even
-box: the fold's warp owns 4 write-list digits x 32 rows, the readout's 4 read-list digits x 32 rows) the pairs go
-through shared memory, in two 32 KB rounds that clear write slot 0 (so a window's first write unit fills under the
-publish), each round converting its share just before storing it; when they own the same leaves (the dense-dense
-plan), they stay in registers. The stub's shared layout is lane-contiguous; the real one is the readout's fragment
-order. The stub folds the readout's copy into one word right after the publish: whether the real readout holds that
-64-register copy across its loop, beside the 128-register state, is the readout component's register plan.
+The hand-off's first step (the f16 image at a power of two a digit). A lane's registers hold four digits of each
+of its warp's lists; `post_maxima` takes its largest |state| a digit over the lists, joins the digit row's four lanes
+by two shuffles and posts it (128 FMNMX and 8 SHFL a lane a window). `digit_exp` is a digit's exponent over the 8
+warps' posts: the smallest `e` with every value under `2^e`. The list units (`fold.md#units`) are the
+fold-units component's: the maxima take the accumulators as held.
 
-<a id="readout-pass"></a>
-## A readout pass
+<a id="image"></a>
+## The image
 
-A warp walks its lists' entries in the pass (`[at[q], at[q + 1])`, slots residue-ordered by the facts pass) or, with
-no read list, every slot. The real step forms the read operand from the slot's slices times the entry's read
-coefficient and multiplies the f16 state, its outputs times the token's unit to packed s16 panel adds. The stub reads
-one word of the row and adds one panel word an entry.
+A digit's plane is its 32 lists x 32 channels at f16, 2 KB, its 16-byte units at `unit_of(l, k, d)`: the list's four
+chunks, the chunk XORed by the list's second and third bits, the unit XORed by the digit's residue. A part's planes
+hold its digits (`d % kPlanes`). The fold's stores (a lane a list row's 4-byte word) and the readout's `ldmatrix.trans`
+(8 lists' 16-byte chunks) are both conflict-free on it.
+
+<a id="store"></a>
+## A part's stores
+
+`store_part<P, Part>`: every warp stores its 4 lists' rows of the part's digits (whole m-tiles), each value times
+`2^-e` for its digit's exponent, packed f16 (32 stores a lane a part on sm_86); warp 0 records the part's exponents for
+the readers (`kExps`). The part is compile-time: the state's registers are indexed by it.
+
+<a id="pair"></a>
+## The exact pair
+
+`s16_pair`: two outputs times the coefficient to the integer `hi x 2^16 + lo` on the FMA pipe (two FFMAs with the magic
+offsets, one LEA), exact under u32 adds while each final fits s16.
+
+<a id="readout"></a>
+## The readout
+
+`readout_part`, a warp's: each of its digits in the part, its state fragments from the image (the A operand: 32
+channels x 32 lists, four `ldmatrix.trans`), then its tiles over the pass. A TILE is 8 tokens on N: their read rows by
+one `ldmatrix.x4` (B: 32 lists x 8 tokens), four MMAs, each lane's two tokens' outputs as exact pairs added by
+`red.shared` at their panel words. A listed side's tiles are pass 0's first two from the warp's heads, then the rest
+in place; a side with no list level takes every slot of the pass, its entry implied (the slot's row and panel row, a
+slot past the pass's end its residue's dummy row). Each source is its own loop, so each step is one block
+(KERNEL_STANDARDS §27), guarded by a vote and closed by one.
+
+The PANEL is the pass's slots' 64-byte rows, after the lanes' pad bases (128 bytes, never touched) and 8 dummy rows
+(`kPadBytes`); a panel offset is relative to the pads, so it fits an entry's 16 bits on every card.
+
+Left to the readout component: the coefficient's digit exponent (`(word << 16) + (e << 23)`, one LEA)
+and the token's unit, the dense side's coefficient from the row's coefficient slice (implied 1 here), the panel's
+parity layout.
 
 <a id="drain"></a>
 ## The drain
 
-A pass's panel to `num`: each slot's `kPanelWords` words added as u32 atomics at its token (packed s16 pairs at the
-token's unit, decoded once each final fits s16: the den pass ruling, 2026-10-06), the panel cleared for the
-next pass. CTAs join only here (R22: independent units, joined by atomics).
-
-<a id="fold-pass"></a>
-## A fold pass
-
-A warp walks its lists' records in the pass or, with no write list, every slot. The real step forms the write
-operand from the slot's slices times the record's coefficients (`c_v`, `c_m`) and accumulates the values into the
-fp32 state. The stub reads the record and one word of the row's values and adds their product into the state.
+A pass's panel to `num`: each slot's 16 words added as u32 atomics at its token (two tokens a warp request), each word
+cleared for the next pass. CTAs join only here (R22: independent units, joined by atomics). The panel's word pairs
+channels (c, c + 8); the output's format follows it.

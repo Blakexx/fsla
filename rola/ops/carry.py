@@ -15,7 +15,6 @@ import torch
 
 from rola.engine.facts import lists as list_model
 from rola.engine.types import Carve
-from rola.ops import facts as facts_ops
 from rola.ops._ext import extension
 
 __all__ = ["LEDGER_PHASES", "LEDGER_WARPS", "WINDOW", "arm_key", "arms", "build_stamp", "carry", "census",
@@ -25,7 +24,7 @@ __all__ = ["LEDGER_PHASES", "LEDGER_WARPS", "WINDOW", "arm_key", "arms", "build_
 WINDOW = list_model.WINDOW
 
 #: THE PHASE LEDGER'S SHAPE: ``[ctas][warps][phases]``, the kernel's own `CarryPhase` order.
-LEDGER_PHASES = ("lists", "units", "publish", "readout", "drain", "fill", "fold")
+LEDGER_PHASES = ("landed", "maxima", "store", "readout", "drain", "fill", "fold")
 LEDGER_WARPS = 8
 
 
@@ -37,32 +36,13 @@ def arm_key(carve: Carve) -> tuple[int, ...]:
             carve.channels, int(carve.publish_in_registers))
 
 
-def _list_level(plan) -> int:
-    return plan.lists[0] if plan.lists else -1
-
-
-def _write_lists(lists: list_model.ListSet) -> list[torch.Tensor]:
-    """The write side's lists as the kernel reads them: the 8-byte records (slot, 0, c_v, c_m) the slots are column 0
-    of, the pass starts, the union tokens and counts."""
-    slot = lists.slot
-    records = slot.as_strided((*slot.shape, 4), (*slot.stride(), 1))
-    return [records, lists.at, lists.union, lists.count]
-
-
 def carry(routes, values, facts, carve: Carve, unit: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """THE LAUNCH: ``(num, check)`` -- ``num`` the readout's packed partials at each token's unit, ``check`` the
     skeleton's fp32 sum of the final state (docs/internals/carry/carry_api.md#carry)."""
-    BH = routes.batch * routes.heads
-    d_v = values.v.shape[-1]
-    num = torch.zeros((BH, routes.tokens, d_v // 2), dtype=torch.int32, device=routes.device)
-    check = torch.zeros(1, dtype=torch.float32, device=routes.device)
-    read = facts_ops.side_lists(facts, "read")
-    extension().carry_forward(
-        list(routes.amp_read), list(routes.amp_write), values.v, _write_lists(facts_ops.side_lists(facts, "write")),
-        facts.list_exp, [read.slot, read.at, read.union, read.count], unit, num, check, list(carve.widths), list(carve.extents),
-        carve.channels, _list_level(carve.fold), list(carve.fold.operand), _list_level(carve.readout),
-        list(carve.readout.operand), list(arm_key(carve)))
-    return num, check
+    raise NotImplementedError(
+        "the readout-first carry reads each side's lists in the facts pass's final form -- 8-byte entries with their "
+        "pool and panel offsets, a warp's heads, int32 union counts -- and the den pass's units a window wide; the "
+        "facts pass emits them in its entry form (docs/internals/carry/carry.md#lists)")
 
 
 def arms() -> list[tuple[int, ...]]:
@@ -78,7 +58,7 @@ def census() -> list[tuple[int, ...]]:
 
 def build_stamp() -> int:
     """The carry family's DEVICE build stamp, a fact only a built kernel produces (the window, the capability digest,
-    the state's values and the pass's slots, read back off a kernel this binary compiled)."""
+    the state's values and a list's staged entries, read back off a kernel this binary compiled)."""
     return extension().carry_build_stamp()
 
 

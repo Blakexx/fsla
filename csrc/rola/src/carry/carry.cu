@@ -42,8 +42,9 @@ Plane plane_of(const Tensor& t, int64_t B, int64_t T, int64_t H, int64_t width, 
                t.stride(1) * size, t.stride(2) * size};
 }
 
-//: ONE SIDE OF THE CARVE: its list level and operand levels cover every level, the list level's extent inside one
-//: 32-digit group, an operand slice at least a 4-byte copy. -- see docs/internals/carry/carry.md#refusals
+//: ONE SIDE OF THE CARVE: its list level and operand levels cover every level; a listed side's list level spans the
+//: box's 32 lists or digits, its operand levels in level order; a side with no list level names two levels, its row
+//: level then its coefficient level; an operand slice at least a 4-byte copy. -- see docs/internals/carry/carry.md#refusals
 Side side_of(const std::vector<Tensor>& rows, int64_t list, const std::vector<int64_t>& operand,
              const std::vector<int64_t>& widths, const std::vector<int64_t>& extents, int64_t B,
              int64_t T, int64_t H, const char* name) {
@@ -54,18 +55,23 @@ Side side_of(const std::vector<Tensor>& rows, int64_t list, const std::vector<in
   STD_TORCH_CHECK((int)rows.size() == D, name, " holds ", rows.size(),
                   " levels' rows; the carve has ", D);
   STD_TORCH_CHECK(list >= -1 && list < D, name, "'s list level is -1 or a level, got ", list);
-  STD_TORCH_CHECK(list < 0 || extents[list] <= 32, name, "'s list level spans ",
+  STD_TORCH_CHECK(list < 0 || extents[list] == kBoxLists, name, "'s list level spans ",
                   list < 0 ? 0 : extents[list],
-                  " digits of the box; its lists' union is a 32-digit group's");
+                  " digits of the box; the box's lists and digits are ", kBoxLists);
   STD_TORCH_CHECK(
-      s.operands >= 1 && (int)operand.size() + (list >= 0 ? 1 : 0) == D, name,
-      " lists at most one level and forms its operand from the others, every level once (the kernel "
-      "addresses one list level a side); this side lists ",
+      s.operands >= 1 && (int)operand.size() + (list >= 0 ? 1 : 0) == D
+          && (list >= 0 || s.operands == 2),
+      name,
+      " lists at most one level and forms its operand from the others, every level once, or with no list level "
+      "names a row level and a coefficient level; this side lists ",
       list, " and forms ", operand.size(), " of ", D);
   for (int i = 0; i < s.operands; ++i) {
     const int64_t l = operand[i];
-    STD_TORCH_CHECK(l >= 0 && l < D && l != list && (i == 0 || l > operand[i - 1]), name,
-                    "'s operand levels are distinct levels in level order, not the list level");
+    STD_TORCH_CHECK(
+        l >= 0 && l < D && l != list && (list < 0 || i == 0 || l > operand[i - 1])
+            && (list >= 0 || i == 0 || l != operand[0]),
+        name,
+        "'s operand levels are distinct levels, not the list level, in level order where listed");
     s.operand[i] = (int)l;
     s.rows[i] = plane_of(rows[l], B, T, H, widths[l], name, (int)l);
     s.elem[i] = (int)rows[l].element_size();
@@ -76,35 +82,34 @@ Side side_of(const std::vector<Tensor>& rows, int64_t list, const std::vector<in
   return s;
 }
 
-//: ONE SIDE'S LISTS: entries, pass starts, union tokens and counts as the facts pass writes them; empty where the side
-//: has no list level.
+//: ONE SIDE'S LISTS as the facts pass writes them in their final form: 8-byte entries, pass starts, a warp's heads, the
+//: union's tokens and count; empty where the side has no list level. -- see docs/internals/carry/carry.md#lists
 SideLists lists_of(const std::vector<Tensor>& t, int64_t BH, int64_t windows, int64_t width,
-                   int entry_bytes, const char* name) {
-  STD_TORCH_CHECK(t.size() == 4, name, " is (entries, at, union, count), got ", t.size(),
+                   const char* name) {
+  STD_TORCH_CHECK(t.size() == 5, name, " is (entries, at, heads, union, count), got ", t.size(),
                   " tensors");
-  if (width == 0) return SideLists{nullptr, nullptr, nullptr, nullptr, 0, 0, entry_bytes};
+  if (width == 0) return SideLists{nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0};
   const int64_t groups = (width + 31) / 32;
-  const int64_t want[4][5] = {{BH, windows, width, kListCap, entry_bytes / 2},
-                              {BH, windows, width, kListAt, 0},
-                              {BH, windows, groups, kWindow, 0},
-                              {BH, windows, groups, 0, 0}};
-  const int dims[4] = {entry_bytes > 2 ? 5 : 4, 4, 4, 3};
-  for (int k = 0; k < 4; ++k) {
-    STD_TORCH_CHECK(t[k].is_cuda() && t[k].is_contiguous() && t[k].scalar_type() == Dtype::Short
-                        && t[k].dim() == dims[k],
-                    name, " tensor ", k, " is a contiguous CUDA int16 tensor of ", dims[k],
-                    " dimensions");
-    for (int d = 0; d < dims[k]; ++d)
-      STD_TORCH_CHECK(t[k].size(d) == want[k][d], name, " tensor ", k, " is ", shape(t[k].sizes()),
-                      "; dimension ", d, " is ", want[k][d]);
+  const std::vector<std::vector<int64_t>> want = {
+      {BH, windows, width, kListCap, 4},
+      {BH, windows, width, kListAt},
+      {BH, windows, groups, kWarps, 4 * kHeadEntries, 4},
+      {BH, windows, groups, kWindow},
+      {BH, windows, groups}};
+  for (int k = 0; k < 5; ++k) {
+    const Dtype dtype = k == 4 ? Dtype::Int : Dtype::Short;
+    STD_TORCH_CHECK(t[k].is_cuda() && t[k].is_contiguous() && t[k].scalar_type() == dtype
+                        && t[k].sizes() == Shape(want[k]),
+                    name, " tensor ", k, " is a contiguous CUDA ", k == 4 ? "int32 " : "int16 ",
+                    shape(Shape(want[k])), ", got ", shape(t[k].sizes()));
   }
-  return SideLists{reinterpret_cast<const uint16_t*>(t[2].const_data_ptr()),
-                   reinterpret_cast<const uint16_t*>(t[3].const_data_ptr()),
-                   static_cast<const uint8_t*>(t[0].const_data_ptr()),
+  return SideLists{reinterpret_cast<const uint16_t*>(t[3].const_data_ptr()),
+                   t[4].const_data_ptr<int32_t>(),
+                   static_cast<const uint2*>(t[0].const_data_ptr()),
                    reinterpret_cast<const uint16_t*>(t[1].const_data_ptr()),
+                   static_cast<const uint2*>(t[2].const_data_ptr()),
                    (int)width,
-                   (int)groups,
-                   entry_bytes};
+                   (int)groups};
 }
 
 }  // namespace
@@ -127,10 +132,8 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
                 BH = B * H;
   const int64_t windows = (L + kWindow - 1) / kWindow;
   STD_TORCH_CHECK(L >= 1 && L * dv < 0x40000000, "the call's tokens and channels index in 32 bits");
-  STD_TORCH_CHECK((channels == 32 || channels == 64) && dv % channels == 0,
-                  "the box's channel extent is 32 or 64 and "
-                  "divides d_v; the carve names ",
-                  channels, " of ", dv);
+  STD_TORCH_CHECK(channels == kBoxChannels && dv % channels == 0, "the box's channel extent is ",
+                  kBoxChannels, " and divides d_v; the carve names ", channels, " of ", dv);
   int64_t leaves = 1, boxes = dv / channels;
   int stride[kMaxLevels] = {};
   for (int l = D - 1; l >= 0; --l) {
@@ -164,10 +167,10 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   p.read = side_of(read_rows, read_list, read_operand, widths, extents, B, L, H, "the read side");
   p.values = Plane{static_cast<const uint8_t*>(values.const_data_ptr()), values.stride(0) * 2,
                    values.stride(1) * 2, values.stride(2) * 2};
-  p.write_lists = lists_of(write_lists, BH, windows, write_list < 0 ? 0 : widths[write_list], 8,
+  p.write_lists = lists_of(write_lists, BH, windows, write_list < 0 ? 0 : widths[write_list],
                            "the write lists");
   p.read_lists =
-      lists_of(read_lists, BH, windows, read_list < 0 ? 0 : widths[read_list], 2, "the read lists");
+      lists_of(read_lists, BH, windows, read_list < 0 ? 0 : widths[read_list], "the read lists");
   if (write_list >= 0) {
     STD_TORCH_CHECK(
         write_exp.is_cuda() && write_exp.is_contiguous() && write_exp.scalar_type() == Dtype::Short
@@ -178,8 +181,8 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
     p.write_exp = write_exp.const_data_ptr<int16_t>();
   }
   STD_TORCH_CHECK(unit.is_cuda() && unit.is_contiguous() && unit.scalar_type() == Dtype::Char
-                      && unit.sizes() == Shape({BH, L}),
-                  "unit is the contiguous CUDA int8 [BH, L] exponent bytes, got ",
+                      && unit.sizes() == Shape({BH, windows * kWindow}),
+                  "unit is the contiguous CUDA int8 [BH, windows x W] exponent bytes, got ",
                   shape(unit.sizes()));
   STD_TORCH_CHECK(num.is_cuda() && num.is_contiguous() && num.scalar_type() == Dtype::Int
                       && num.sizes() == Shape({BH, L, dv / 2}),
@@ -259,7 +262,7 @@ __global__ void carry_stamp_kernel(int* out) {
   out[0] = kWindow;
   out[1] = denseref::design::kCapsDigest;
   out[2] = kStateValues;
-  out[3] = kPassSlots;
+  out[3] = kHeadEntries;
 }
 
 }  // namespace stamp

@@ -25,11 +25,17 @@ halve) and the allocation runs again, up to `d_v`. When even that cannot fill th
 cap lifts and the box takes the widest levels whole, smaller than the budget if the levels
 are narrow (a depth-one declaration is its own whole box).
 
-Each side's plan follows from the box: its lists are its sparse levels and its operand its
-dense levels, both in level order; a warp owns `box leaves / 8` leaves, its operand rows
-whole while they fit (`tile_rows`), else split across warps, and the rest in lists
-(`tile_lists`). `publish_in_registers` compares the two sides' partitions of the box's
-leaves among the warps.
+## <a id="sides"></a>Each side's plan
+
+Each side's plan follows from the box (`_side`). A side with a sparse level lists it and
+forms its operand from its dense levels, both in level order; a warp owns `box leaves / 8`
+leaves, its operand rows whole while they fit (`tile_rows`), the rest in lists
+(`tile_lists`). A side with no sparse level and two dense levels names one as its rows and
+the other as its coefficients, in that order: the fold's rows its last dense level, the
+readout's its first, so at the box each side is 32 rows a warp in 4 lists, as at the
+alternating carve, and the carry's one box serves both (`docs/internals/carry/carry.md#sides`).
+`publish_in_registers` compares the two sides' partitions of the box's leaves among the
+warps.
 
 ## <a id="check"></a>The check
 
