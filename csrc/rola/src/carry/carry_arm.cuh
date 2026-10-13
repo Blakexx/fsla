@@ -9,25 +9,31 @@
 
 namespace rola::carry {
 
-//: THE PLAN'S SHARED BYTES on the current device's card: the plan the device code was compiled with is the card's,
-//: and the kernel traps at entry on any other launched size. -- see docs/internals/carry/carry_arm.md#plan
+template <class P>
+constexpr CarryForm form_of_plan() {
+  return CarryForm{P::kSmemBytes, P::kParts,   P::kPassSlots,
+                   P::kUnitSlots, P::kReadRow, P::kWriteRow};
+}
+
+//: THE PLAN'S FORM on the current device's card: the plan the device code was compiled with is the card's, and the
+//: kernel traps at entry on any other launched size. -- see docs/internals/carry/carry_arm.md#plan
 template <class Arm>
-inline int carry_smem_bytes() {
+inline CarryForm carry_form() {
   int dev = 0, major = 0, minor = 0;
   cudaGetDevice(&dev);
   cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
   cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
   switch (major * 100 + minor * 10) {
     case 800:
-      return Plan<Arm, 800>::kSmemBytes;
+      return form_of_plan<Plan<Arm, 800>>();
     case 860:
-      return Plan<Arm, 860>::kSmemBytes;
+      return form_of_plan<Plan<Arm, 860>>();
     case 870:
-      return Plan<Arm, 870>::kSmemBytes;
+      return form_of_plan<Plan<Arm, 870>>();
     case 890:
-      return Plan<Arm, 890>::kSmemBytes;
+      return form_of_plan<Plan<Arm, 890>>();
     default:
-      return 0;
+      return CarryForm{};
   }
 }
 
@@ -35,7 +41,7 @@ inline int carry_smem_bytes() {
 template <class Arm>
 inline cudaError_t carry_launch(const CarryParams& p, int boxes, int bh, cudaStream_t stream) {
   const auto fn = carry_kernel<Arm>;
-  const int bytes = carry_smem_bytes<Arm>();
+  const int bytes = carry_form<Arm>().smem_bytes;
   if (bytes == 0) return cudaErrorInvalidDevice;
   static bool configured = false;
   if (!configured) {
@@ -52,8 +58,8 @@ template <class Arm>
 inline ArmCensus carry_census() {
   cudaFuncAttributes a{};
   cudaFuncGetAttributes(&a, carry_kernel<Arm>);
-  return ArmCensus{(int)a.numRegs, (int)a.localSizeBytes, carry_smem_bytes<Arm>(),
-                   (int)a.maxThreadsPerBlock, (int)a.binaryVersion};
+  return ArmCensus{(int)a.numRegs, (int)a.localSizeBytes, (int)a.maxThreadsPerBlock,
+                   (int)a.binaryVersion, carry_form<Arm>()};
 }
 
 #define ROLA_CARRY_ARM_DEFINE(I_, FR_, FF_, RR_, RF_, CH_, PR_)                                      \

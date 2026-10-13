@@ -283,8 +283,9 @@ std::vector<std::vector<int64_t>> carry_census() {
 #define ROLA_CARRY_ARM_CENSUS(I_, FR_, FF_, RR_, RF_, CH_, PR_)                                       \
   {                                                                                                   \
     const ArmCensus c = carry_arm_census_##I_();                                                      \
-    out.push_back({(int64_t)(I_), FR_, FF_, RR_, RF_, CH_, PR_, c.regs, c.local_bytes, c.smem_bytes, \
-                   c.max_threads, c.binary_version});                                                 \
+    out.push_back({(int64_t)(I_), FR_, FF_, RR_, RF_, CH_, PR_, c.regs, c.local_bytes,              \
+                   c.form.smem_bytes, c.max_threads, c.binary_version, c.form.parts,                  \
+                   c.form.pass_slots, c.form.unit_slots, c.form.read_row, c.form.write_row});         \
   }
   ROLA_CARRY_ARM_SET_X(ROLA_CARRY_ARM_CENSUS)
 #undef ROLA_CARRY_ARM_CENSUS

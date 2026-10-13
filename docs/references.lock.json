@@ -349,6 +349,7 @@
   {"doc": "docs/internals/carry/carry_arm.md", "pinned_at": "578bf154f46f", "reviewed": true, "sha256": "", "target": "csrc/rola/src/instantiations"},
   {"doc": "docs/internals/carry/carry_arm.md", "pinned_at": "578bf154f46f", "reviewed": true, "sha256": "", "target": "tools/gen_shards.py"},
   {"doc": "docs/internals/carry/carry_arm_abi.md", "pinned_at": "d0282b9b0322", "reviewed": true, "sha256": "", "target": "csrc/rola/src/carry/carry_arm_abi.cuh"},
+  {"doc": "docs/internals/carry/carry_arm_abi.md", "pinned_at": "967ab849a4e9", "reviewed": true, "sha256": "001b2e43b471ba61", "target": "rola/ops/carry.py::form"},
   {"doc": "docs/internals/carry/carry_kernel.md", "pinned_at": "d0282b9b0322", "reviewed": true, "sha256": "", "target": "csrc/rola/src/carry/carry_kernel.cuh"},
   {"doc": "docs/internals/carry/carry_kernel.md", "pinned_at": "578bf154f46f", "reviewed": true, "sha256": "", "target": "csrc/rola/src/carry/carry_kernel.cuh::PhaseClock"},
   {"doc": "docs/internals/carry/carry_kernel.md", "pinned_at": "578bf154f46f", "reviewed": true, "sha256": "", "target": "csrc/rola/src/carry/carry_kernel.cuh::drain"},

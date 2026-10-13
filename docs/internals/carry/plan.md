@@ -29,10 +29,10 @@ the larger unit; `form_of` takes the first the card holds.
 
 | card, arm | form (parts, pass, unit) | shared bytes |
 |---|---|---|
-| sm_86, the even box `(32, 1, 32, 1, 32, 0)` | 2, 256, 128 | 100,224 of 101,376 |
-| sm_86, dense-dense `(32, 2, 32, 2, 32, 0)` | 2, 128, 64 | 92,032 |
-| sm_80, the even box | 1, 512, 128 | 165,760 of 166,912 |
-| sm_80, dense-dense | 1, 256, 128 | 165,760 |
+| sm_86, the even box `(32, 1, 32, 1, 32, 0)` | 2, 256, 128 | 100,096 of 101,376 |
+| sm_86, dense-dense `(32, 2, 32, 2, 32, 0)` | 2, 128, 64 | 91,904 |
+| sm_80, the even box | 1, 512, 128 | 165,632 of 166,912 |
+| sm_80, dense-dense | 1, 256, 128 | 165,632 |
 
 The fold's ring is the image and the panel once the readout is done: `kImageUnits` units over the image, then the
 panel's (`kFoldRing`: 3 units at sm_86's even box, 6 at sm_80's, 2 at either's dense-dense).

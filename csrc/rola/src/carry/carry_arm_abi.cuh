@@ -1,5 +1,4 @@
-// csrc/rola/src/carry/carry_arm_abi.cuh -- ONE ARM'S ABI: pointers and scalars only, so a per-arm translation unit
-// never parses the torch headers the seam needs. see docs/internals/carry/carry_arm_abi.md
+// carry_arm_abi.cuh -- ONE ARM'S ABI, no torch headers. see docs/internals/carry/carry_arm_abi.md
 #pragma once
 
 #include <cuda_runtime.h>
@@ -8,9 +7,15 @@
 
 namespace rola::carry {
 
+//: ONE ARM'S FORM on the current device's card. -- see docs/internals/carry/carry_arm_abi.md#form
+struct CarryForm {
+  int smem_bytes, parts, pass_slots, unit_slots, read_row, write_row;
+};
+
 //: ONE ARM'S CENSUS, as the device build reports it. -- see docs/internals/carry/carry_arm_abi.md#census
 struct ArmCensus {
-  int regs, local_bytes, smem_bytes, max_threads, binary_version;
+  int regs, local_bytes, max_threads, binary_version;
+  CarryForm form;
 };
 
 #define ROLA_CARRY_ARM_DECLARE(I_, FR_, FF_, RR_, RF_, CH_, PR_)                                       \

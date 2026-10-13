@@ -85,7 +85,7 @@ beat.
 | Choice | The measurement | Where it could move |
 |---|---|---|
 | **The fold reads a unit's first 16 records from shared memory** (the slot's heads, one straight-line block) | the step steady at 1.054x its MMA floor, against 1.25x reading the records from global by shuffles (lab `fold_part`, [`fold.md#unit`](../internals/carry/fold.md#unit)) | A cell whose lists hold past 16 entries a unit as the rule rather than the exception. |
-| **The carry's shared memory takes the first form a card holds** (`form_of`: the fewest image stores a dense window, then the larger fold unit) | sm_86's even box: the image in 2 parts, 256-slot passes, 128-slot units, 100,224 of 101,376 bytes; sm_80's: whole, 512-slot passes ([`plan.md#forms`](../internals/carry/plan.md#forms)) | A card whose shared memory holds a cheaper form, or a plan whose rows change the sizes. |
+| **The carry's shared memory takes the first form a card holds** (`form_of`: the fewest image stores a dense window, then the larger fold unit) | sm_86's even box: the image in 2 parts, 256-slot passes, 128-slot units, 100,096 of 101,376 bytes; sm_80's: whole, 512-slot passes ([`plan.md#forms`](../internals/carry/plan.md#forms)) | A card whose shared memory holds a cheaper form, or a plan whose rows change the sizes. |
 | **The producer's entmax threshold is Newton from the left, not a sort** | a 256-wide row at one decoded token: sorted 13.8K cycles, twelve-round multisection 10K, Newton 2.7K ([`produce.md#threshold`](../internals/produce/produce.md#threshold)) | Prefill, where a CTA holds many live rows and the sort's straight-line network is no longer run once from a cold instruction cache. |
 
 **A choice is only as good as the regime it was measured in**, and this record

@@ -6,8 +6,8 @@ Mirrors `csrc/rola/src/carry/carry_arm.cuh`, included only by the generated per-
 <a id="plan"></a>
 ## The plan's size
 
-`carry_smem_bytes<Arm>` is the plan's shared bytes on the current device's card (`plan.md#forms`), the host's own
-instance of the plan for that card. The kernel compiled for a card holds that card's plan, and traps at entry when the
+`carry_form<Arm>` is the plan's form on the current device's card (`plan.md#forms`, `carry_arm_abi.md#form`), the
+host's own instance of the plan for that card. The kernel compiled for a card holds that card's plan, and traps at entry when the
 launched dynamic size is not its plan's (`%dynamic_smem_size`): code compiled for another card, or a host sized for
 one, never runs.
 
