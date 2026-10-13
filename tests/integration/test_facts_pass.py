@@ -1,5 +1,5 @@
 """Gate for the FACTS PASS (csrc/rola/src/facts/): its words ARE the model's, bit for bit, its list exponents are the
-fp16 fold reference's, per slot, and its lists are the model's final form of the kernel's own coloring, bit for bit.
+fp16 fold reference's, per slot, and its lists are the model's final form, bit for bit.
 
 `tests/unit/test_liveness_contract.py` gates the words' contract and the pure-torch model without a device; this file
 holds the one pass to that model on the bundle's own rows -- u8 and f16, separate tensors and views of one packed plane
@@ -7,9 +7,8 @@ holds the one pass to that model on the bundle's own rows -- u8 and f16, separat
 are dead, a token past `L` votes dead) a property of the kernel; a dense level's rows and groups are the static width
 mask, which the folds take from the statics, so the pass neither reads nor writes them. The
 list exponents are held to `fold_reference.list_exponents` per window, digit and batch-head, exactly except where a
-maximum sits within fp32 rounding of a power of two (docs/internals/facts/facts.md#lists). The lists' coloring races,
-so it is graded by its bounds and the residue layout (`coloring.check`), and the lists are then the model's of that
-coloring in each of the carry's forms (docs/internals/facts/facts.md#lists-out). The class-2 folds the words feed are
+maximum sits within fp32 rounding of a power of two (docs/internals/facts/facts.md#lists). The lists are the model's
+in each of the carry's forms (docs/internals/facts/facts.md#lists-out). The class-2 folds the words feed are
 gated here too: the exact per-page byte against the general box fold at the atom box set and against the leaf-level
 truth.
 
@@ -275,21 +274,19 @@ def test_the_factor_products_are_the_declared_fp32_ones(widths, L):
 
 
 def _lists_want(routes, values, layout, read_statics, write_statics, got, form=_FORM):
-    """``(write, read)``: each side's lists from the model at its list level in ``form``'s passes, of the pass's own
-    coloring (graded by its bounds), ``None`` for a side with no sparse level; the write side's coefficient pairs from
-    the pass's own exponents (gated against the reference above)."""
+    """``(write, read)``: each side's lists from the model at its list level in ``form``'s passes, ``None`` for a side
+    with no sparse level; the write side's coefficient pairs from the pass's own exponents (gated against the reference
+    above)."""
     bits = lv.unpack(_model(routes, layout, read_statics, write_statics), layout)
     wl, rl = facts_ops.list_level(write_statics), facts_ops.list_level(read_statics)
     write = read = None
     if wl >= 0:
         write = list_model.final_lists(bits[:, lv.WRITE], layout, wl, pass_slots=form.unit_slots,
                                        row_bytes=form.write_row, rows=routes.amp_write[wl],
-                                       cols=list_model.columns(routes, values), list_exp=got.list_exp.cpu(),
-                                       unions=got.write.union.cpu().long())
+                                       cols=list_model.columns(routes, values), list_exp=got.list_exp.cpu())
     if rl >= 0:
         read = list_model.final_lists(bits[:, lv.READ], layout, rl, pass_slots=form.pass_slots,
-                                      row_bytes=form.read_row, rows=routes.amp_read[rl], cols=None, list_exp=None,
-                                      unions=got.read.union.cpu().long())
+                                      row_bytes=form.read_row, rows=routes.amp_read[rl], cols=None, list_exp=None)
     return write, read
 
 
@@ -315,9 +312,9 @@ def _assert_lists(got: list_model.Lists, want: list_model.Lists):
 @pytest.mark.parametrize(("widths", "L"), [shape for shape in _SHAPES if len(shape[0]) <= 2])
 @pytest.mark.parametrize("dense", _MODES)
 def test_the_lists_are_the_model_bit_for_bit(widths, L, dense):
-    """Each side's lists at its list level (docs/internals/facts/facts.md#lists-out): the union colored within its
-    bounds and slotted in the residue layout, each digit's entries in round order within the passes, the starts, the
-    heads, and the write entries' coefficient pairs -- bit for bit, at every window."""
+    """Each side's lists at its list level (docs/internals/facts/facts.md#lists-out): the union by rank and its extent,
+    each digit's entries in token order within the passes with each pass's last step padded, the starts, the heads,
+    and the write entries' coefficient pairs -- bit for bit, at every window."""
     layout = _layout(widths, L)
     read_statics, write_statics = _sides(layout, dense, widths)
     routes, values = _bundle(widths, L, (read_statics, write_statics))
@@ -345,7 +342,7 @@ def test_the_lists_follow_the_carrys_form(form):
 
 
 def test_the_lists_cover_many_passes():
-    """A window whose groups' unions span every pass of a 128-slot fold unit: the passes split, each its own rounds."""
+    """A window whose groups' unions span every pass of a 128-slot fold unit: the passes split, each padded alone."""
     widths, L = (64, 64), 1024
     layout = _layout(widths, L)
     read_statics, write_statics = _sides(layout, "alternating", widths)

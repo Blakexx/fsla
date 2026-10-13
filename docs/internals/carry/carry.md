@@ -40,7 +40,8 @@ group innermost.
 
 - `entries`: a list's 8-byte entries, `kListCap` a list. A read entry is the pool row's byte offset with its swizzle
   folded in (the first word's low half), the coefficient (f16, the second word's low half) and the panel row's offset
-  from the dummy rows, its swizzle folded in (its high half), a pad's its residue's dummy row, so a pad needs no test. A
+  from the dummy rows, its swizzle folded in (its high half), a pad's the dummy row of its place in its step, so a pad
+  needs no test. A
   write entry is the slot, then `c_v` and `c_m`.
 - `at`: a list's pass starts in its side's pass (the readout's `kPassSlots`, the fold's `kUnitSlots`).
 - `heads`: per 32-digit group a warp's block, its 4 lists' (or digits') first `kHeadEntries` entries.
@@ -48,7 +49,7 @@ group innermost.
   a GAP slot holds `kGap` (token 0 with bit 15 set), so a fill masks the token to the window and zero-fills the row.
 
 The addresses both kernels compute live here, one copy: `kGap`, the panel's 64-byte row `kPanelRow` past 8 dummy rows
-(`kPadBytes`, a pad's adds landing on its residue's), `panel_row` (a slot pair a 128-byte line, each slot's halves at
+(`kPadBytes`, a pad's adds landing on its place's), `panel_row` (a slot pair a 128-byte line, each slot's halves at
 the segments its pair's residue bits XOR) and `pool_chunk` (a pool row's 16-byte chunk swizzled by the slot's residue,
 or its high bits within each four for a row of an odd number of 64-byte quarters); `parts.cuh`'s `chunk_at` is
 `pool_chunk` at a compiled row.

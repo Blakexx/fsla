@@ -69,7 +69,9 @@ Findings on the way (each a form the source keeps):
   a union at k 16's write side, against ~11 and 35 when the batch's lanes are shared among the passes.
 - The colorer and the stream half's model added rather than overlapped (k 16: 1,020 µs together against 447 + 580).
 
-What it decides: the lists' passes are cut from the union in token order and colored alone (the carry's steps fall
-with the places); the colorer's own speed, still above the window-colored form's, is the next item.
+What it decided: the lists' passes are cut from the union in token order (the carry's steps fall with the places).
+The coloring itself it did not keep: timed in the composed carry on sm_86 (2026-10-13), uncolored lists in the same
+passes ran as fast as these, so the facts pass emits rank slots ([`facts.md`](../internals/facts/facts.md#ranks)) and
+this colorer stays a record for an architecture whose carry the coloring speeds up.
 
 Record: none yet (over its stated instruction budget; the stated lines are kept in the source).

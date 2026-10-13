@@ -23,8 +23,8 @@ sys.path.insert(0, str(ROOT))
 import torch  # noqa: E402
 
 TOKENS, HEADS, WIDTH, WINDOW = 65536, 4, 256, 512
-#: the line (ruled 2026-10-12): 1.15x the lab cell's required-bytes floor, by k
-LINE_US = {4: 389.0, 16: 444.0}
+#: the line (ruled 2026-10-13): 1.15x the pass's required-bytes floor at the colored lists' places, by k
+LINE_US = {4: 516.0, 16: 665.0}
 #: the lab's recorded flat read of the cell's 268 MB of rows (measure/lab/results/facts_two/sm_86.json)
 FLAT_RECORD = ROOT / "measure/lab/results/facts_two/sm_86.json"
 

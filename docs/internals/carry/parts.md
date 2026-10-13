@@ -31,8 +31,9 @@ once the warp has read this window's (its readout's, or its fold's), so the head
 
 A row of 128 bytes XORs its 16-byte chunk by the slot's residue (`slot & 7`); a row of an odd number of 64-byte quarters
 (64 or 192 bytes) starts on alternating halves of the 128-byte bank line, so it XORs its chunk within each four by the
-residue's high bits (`chunk_at`). Either way eight slots of distinct residues meet eight bank groups at one chunk:
-the facts pass's coloring puts a step's tokens on distinct residues (KERNEL_STANDARDS §30). `chunk_addr` is a logical
+residue's high bits (`chunk_at`). Either way eight slots of distinct residues meet eight bank groups at one chunk: a
+dense pass's step is 8 consecutive slots; a list's step is its next 8 rank slots, distinct residues only where they run
+consecutively (the facts pass's [ranks](../facts/facts.md#ranks)). `chunk_addr` is a logical
 chunk's address from a row's chunk 0 with the swizzle folded in: an XOR inside the swizzle's group, the group's offset
 added. An entry carries the row's chunk-0 offset, so a lane addresses its chunk with one XOR.
 
@@ -92,10 +93,10 @@ slot past the pass's end its residue's dummy row). Each source is its own loop, 
 
 The PANEL is the pass's slots' 64-byte rows after 8 dummy rows (`kPadBytes`, one a residue), laid out in pairs: slots
 `2k` and `2k + 1` share a 128-byte line, each slot's two 32-byte halves at the segments its pair's residue bits XOR
-(`csrc/rola/src/carry/carry.cuh`'s `panel_row`). A panel add touches 4 tokens' 8 words at one half, and a tile's 8 tokens are 8 residues (the facts
-pass's coloring, or a dense pass's consecutive slots), so each add meets 32 banks. Measured by the bank model
-(2026-10-12): 1.00 wavefronts an add on colored and dense tiles against 4.00 for plain 64-byte rows (every add's 4
-tokens on one half), 2.1 against 2.75 uncolored; the drain 1.00 a request either way. An entry's panel offset is from
+(`csrc/rola/src/carry/carry.cuh`'s `panel_row`). A panel add touches 4 tokens' 8 words at one half; a tile of 8
+distinct residues (a dense pass's consecutive slots) meets 32 banks an add. Measured by the bank model (2026-10-12):
+1.00 wavefronts an add on dense tiles against 4.00 for plain 64-byte rows (every add's 4 tokens on one half), and 2.1
+against 2.75 on a list's rank slots; the drain 1.00 a request either way. An entry's panel offset is from
 the dummy rows, so it fits its 16 bits on every card; a lane XORs its half (`32 m`) and adds its word (`4 g`).
 
 Left to the readout component: the coefficient's digit exponent (`(word << 16) + ((e - kImageTop) << 23)`, one LEA)

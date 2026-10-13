@@ -847,11 +847,15 @@ three cut conflicts from 1.6-2.1 an MMA to 0.02-0.03 and wavefronts 25%, with no
    `cp.async` stores) by lanes, addresses and banks; its layout (pitch, swizzle) is chosen to satisfy all its readers
    and writers, and states the instruction shapes it is conflict-free for. A new access shape on an existing layout
    gets its own placement rule or layout, never an assumption (§3 extends from fixed tensors to every buffer).
-2. WHEN THE DATA PICKS ADDRESSES, THE PRODUCER MAKES THEM CONFLICT-FREE: gathered rows and atomic targets indexed by
-   slot get slots the facts pass assigns so each instruction's set is conflict-free -- a box-window's union slots
-   colored by residue (a slot's residue mod 8 is its row's bank group) so a list's tokens differ, and each token placed
-   at the position its residue requires in the instruction that touches it. Conflict-freedom is part of the producer's
-   output format (§29.5).
+2. WHEN THE DATA PICKS ADDRESSES, A PRODUCER'S FORMAT CARRIES CONFLICT-FREEDOM ONLY WHERE THE COMPOSED CONSUMER EARNS
+   IT (amended 2026-10-13): gathered rows and atomic targets indexed by slot can get slots the producer places so each
+   instruction's set is conflict-free (a union's slots colored by residue, a slot's residue mod 8 its row's bank group,
+   each token at the position its residue requires), but a placement constraint enters a producer's output format
+   (§29.5) only after the composed consumer is timed with and without it and the producer's cost and the pads it
+   forces are priced against the saving; a part's wavefronts are a hypothesis until then. Measured 2026-10-13: on
+   sm_86 the carry ran as fast on rank slots as on the best residue coloring, its time following its lists' places,
+   while the coloring was most of the facts pass's time, so the facts pass emits rank slots
+   ([`facts.md`](internals/facts/facts.md#ranks)).
 3. A PAD SITS WHERE A REAL ELEMENT WOULD: a free residue's row for a gather, a dummy row aligned to that residue for
    an add -- never a spare word that may share a bank with real traffic.
 4. WAVEFRONTS ARE BUDGETED LIKE INSTRUCTIONS: each §29 budget has a `wavefronts` line, the design's bytes a 128-byte

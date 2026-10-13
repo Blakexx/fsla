@@ -4,12 +4,12 @@
 window's columns, the write list level's exponents and each side's lists in the carry's final form.
 
 The words' LAYOUT, their reader, the folds over them and the pure-torch MODEL the kernel is graded against live in
-:mod:`rola.engine.facts.liveness`; the lists' model in :mod:`rola.engine.facts.lists` and the coloring's in
-:mod:`rola.engine.facts.coloring`; the list exponents' definition is the fp16 fold's reference
-(``tests/oracle/fold_reference.py``, ``list_exponents``). What is here is the call: the layout and the two sides'
-static operands a bundle's topology implies (:func:`call_layout`, :func:`call_statics`), packed into the bits R13
-requires so no logical width crosses the seam, and the launch (docs/internals/facts/facts_api.md). The lists' passes
-are the carry's: a call names the arm's form on the device's card (``rola.ops.carry.form``).
+:mod:`rola.engine.facts.liveness`; the lists' model in :mod:`rola.engine.facts.lists`; the list exponents' definition
+is the fp16 fold's reference (``tests/oracle/fold_reference.py``, ``list_exponents``). What is here is the call: the
+layout and the two sides' static operands a bundle's topology implies (:func:`call_layout`, :func:`call_statics`),
+packed into the bits R13 requires so no logical width crosses the seam, and the launch
+(docs/internals/facts/facts_api.md). The lists' passes are the carry's: a call names the arm's form on the device's
+card (``rola.ops.carry.form``).
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ __all__ = ["COMPOSITE", "LEDGER_PHASES", "LEDGER_WARPS", "WINDOW", "Facts", "cal
 WINDOW = list_model.WINDOW
 
 #: THE PHASE LEDGER'S SHAPE: ``[warps][phases]``, the kernel's own `FactsPhase` order, booked over every CTA.
-LEDGER_PHASES = ("load", "vote", "inputs", "claims", "singles", "slots", "lists")
+LEDGER_PHASES = ("load", "vote", "ranks", "lists")
 LEDGER_WARPS = 8
 
 
@@ -121,9 +121,8 @@ def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, wri
 
     Same words at every sparse level, bit for bit, as :func:`rola.engine.facts.liveness.liveness_words` over the
     bundle's rows, and their unions as :func:`rola.engine.facts.liveness.tile_unions`; the list exponents those of
-    ``list_exponents`` within fp32 rounding; the lists :func:`rola.engine.facts.lists.final_lists` of the kernel's own
-    coloring, which is graded by its bounds (``tests/integration/test_facts_pass.py``). The rows are read where the
-    bundle holds them, any offset or stride of the format, each level's ``[B, T, H, w_l]`` view.
+    ``list_exponents`` within fp32 rounding; the lists :func:`rola.engine.facts.lists.final_lists`, bit for bit. The rows
+    are read where the bundle holds them, any offset or stride of the format, each level's ``[B, T, H, w_l]`` view.
     """
     BH = routes.batch * routes.heads
     windows = -(-layout.L // WINDOW)

@@ -88,7 +88,7 @@ class Family:
 #: whole file serialized under the heaviest instrumentation this repo has.
 _FAMILIES = {
     #: THE FACTS PASS is the one bit-exact device fact the whole carry line rests on: the vote's transposes, the
-    #: coloring's claims and quota rounds, the lists' walks and their tables, on both sides' lists at two levels of
+    #: union's ranks and the passes' bounds, the lists' walks and their pads, on both sides' lists at two levels of
     #: unequal width and a tail word.
     "facts": Family(
         test="tests/integration/test_facts_pass.py::"

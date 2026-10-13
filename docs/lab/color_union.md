@@ -8,7 +8,9 @@ bank group, so a box-window's union slots are colored so that each digit's token
 problem holds on both sides: the readout gathers the read union's rows, the fold the write union's, 8 tokens a matrix.
 One warp colors one box-window, from its bit tile in shared memory (the facts pass's `tile_at` swizzle) to every union
 token's slot. Two forms are measured: SERIAL (`color_union.inputs.py`'s `color`, every output checked exactly) and
-BATCHED (its `batched`; the claims race on shared atomics, so outputs are checked by invariants).
+BATCHED (its `batched`; the claims race on shared atomics, so outputs are checked by invariants). The facts pass no
+longer colors (2026-10-13: the composed carry on sm_86 gained nothing from it,
+[`facts.md`](../internals/facts/facts.md#ranks)); this page stays the record of what a coloring costs.
 
 THE CHOICE, made on the CPU against the bank model (`read_image.inputs.emit`'s readout wavefronts, tokens on N), read
 and write unions alike. In the table, "gathers" is wavefronts per `ldmatrix` matrix, so 1.0 means no conflicts:

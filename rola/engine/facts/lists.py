@@ -4,25 +4,25 @@
 gains pairs -- the pure-torch spec the kernel is graded against (docs/internals/facts/facts.md#lists-out, #gains).
 
 A side's LIST LEVEL (its one sparse level) gets, per window and 32-digit group, a UNION -- the tokens live in any of
-the group's digits -- colored and slotted in the residue layout (:mod:`rola.engine.facts.coloring`): ``union[slot]``
-is the slot's token (``GAP`` in a gap), ``count`` the union's extent. Per digit, its LIST: its tokens in PASSES of
-the carry's pass for the side (the readout's ``pass_slots``, the fold's ``unit_slots``: ``rola.ops.carry.form``),
-each pass in ROUND order -- step ``i`` takes each color's ``i``-th token, colors in order, a missing color a PAD -- so
-8 consecutive entries never repeat a residue; ``at[q]`` the start of pass ``q``, the end from the last pass on.
+the group's digits -- RANKED: ``union[slot]`` is the token of union rank ``slot`` (``GAP`` past the union), ``count``
+the union's EXTENT, its size in whole steps of 8. Per digit, its LIST: its tokens in PASSES of the carry's pass for the
+side (the readout's ``pass_slots``, the fold's ``unit_slots``: ``rola.ops.carry.form``), pass ``q`` its tokens of slot
+``q P .. q P + P - 1`` in token order, each pass's last step filled with PADS; ``at[q]`` the start of pass ``q``, the
+end from the last pass on.
 
 An entry is four int16 words, its two 32-bit halves the carry's ``uint2``:
 - READ: the slot's pool row offset in its pass with the row's swizzle folded in, 0; the coefficient
-  ``f16(byte / 256)``, the slot's panel row offset from the dummy rows. A pad: the pad color's row and dummy panel row,
-  coefficient 0.
+  ``f16(byte / 256)``, the slot's panel row offset from the dummy rows. A pad at place ``c`` of its step: the pass's
+  row ``c`` and dummy panel row ``c``, coefficient 0.
 - WRITE: the slot, 0; ``c_v = f16(fp32(b m s) 2^(4 - E_v))``, ``c_m = f16(fp32(b m) 2^(4 - E_m))`` -- ``b`` the token's
-  level byte, ``m`` and ``m s`` the facts pass's fp32 columns, ``E = max(K, -123)`` the list's exponent. A pad: the
-  pass's first slot of its color, both coefficients 0.
+  level byte, ``m`` and ``m s`` the facts pass's fp32 columns, ``E = max(K, -123)`` the list's exponent. A pad at place
+  ``c`` of its step: the pass's slot ``c``, both coefficients 0.
 A warp's HEADS a (window, group): its 4 lists ``w + 8 j``'s first 16 entries.
 
 The GAINS: each token's ``(m, m s)`` as f16 at its window's powers of two, ``2^s`` with ``s = -4 - floor(log2(max))``
 (the largest of each in ``[2^-4, 2^-3)``; a zero largest ``s = 0``).
 
-Mirrors ``csrc/rola/src/facts/facts.cuh`` (``kListCap``, ``kListAt``, ``kCoefTop``, ``kUnitMin``) and the lists'
+Mirrors ``csrc/rola/src/facts/facts.cuh`` (``kListCap``, ``kListAt``, ``kCoefTop``, ``kUnitMin``, ``kStep``) and the lists'
 addresses in ``csrc/rola/src/carry/carry.cuh`` (``kGap``, ``kPadBytes``, ``panel_row``, ``pool_chunk``).
 """
 from __future__ import annotations
@@ -31,7 +31,6 @@ from typing import NamedTuple
 
 import torch
 
-from rola.engine.facts import coloring
 from rola.engine.facts import liveness as lv
 
 WINDOW = 512
@@ -41,6 +40,8 @@ COEF_TOP = 4
 UNIT_MIN = COEF_TOP - 127
 WARPS = 8
 HEAD_ENTRIES = 16
+#: the carry's step: each of a list's passes is padded to whole steps, a union's extent its size in them
+STEP = 8
 #: a gap slot's token: token 0 flagged (``0x8000`` as int16), so a row fetch masked to the window stays inside it
 GAP = -0x8000
 #: the carry's 8 dummy panel rows before the panel, 64 bytes each
@@ -85,23 +86,12 @@ def _f16_bits(x: float) -> int:
     return int(torch.tensor(x, dtype=torch.float32).half().view(torch.int16))
 
 
-def _rounds(tokens: list[tuple[int, int]]) -> list[int | None]:
-    """A pass's ``(slot, token)`` pairs of one list in round order, 8 a step, ``None`` a pad: step ``i`` takes each
-    color's ``i``-th slot, colors in order."""
-    by_color = [sorted(s for s, _ in tokens if s & 7 == c) for c in range(coloring.COLORS)]
-    steps = max((len(b) for b in by_color), default=0)
-    return [by_color[c][i] if i < len(by_color[c]) else None for i in range(steps) for c in range(coloring.COLORS)]
-
-
 def final_lists(bits: torch.Tensor, layout: lv.LivenessLayout, level: int, *, pass_slots: int, row_bytes: int,
-                rows, cols, list_exp, unions) -> Lists:
+                rows, cols, list_exp) -> Lists:
     """One side's lists at ``level`` from its unpacked words ``bits`` ``[BH, rows, L]`` (:func:`lv.unpack`'s side slice),
     in passes of ``pass_slots`` with pool rows of ``row_bytes`` (``rola.ops.carry.form``). Both sides' coefficients
     read the level's ``rows`` ``[B, T, H, width]`` u8; the WRITE side (``cols`` given) also takes ``cols``
-    (:func:`columns`) and the pass's ``list_exp`` ``[BH, windows, B, 2]``. Each union is colored by the
-    reference (:func:`coloring.color`) when ``unions`` is ``None``, or taken from ``unions`` (a kernel's
-    ``[BH, windows, groups, WINDOW]`` slot map) and checked (:func:`coloring.check` and the residue layout), so a
-    kernel's racing coloring is graded exactly. The READ side passes ``cols`` and ``list_exp`` as ``None``."""
+    (:func:`columns`) and the pass's ``list_exp`` ``[BH, windows, B, 2]``; the READ side passes both as ``None``."""
     BH, L, B = bits.shape[0], layout.L, layout.B[level]
     windows, groups = -(-L // WINDOW), -(-B // lv.GROUP_DIGITS)
     base = layout.row_base(level)
@@ -122,35 +112,24 @@ def final_lists(bits: torch.Tensor, layout: lv.LivenessLayout, level: int, *, pa
             t0, t1 = w * WINDOW, min(L, (w + 1) * WINDOW)
             for g in range(groups):
                 live = bits[bh, base + g * 32:base + min(B, g * 32 + 32), t0:t1]
-                group_rows = [sum(1 << t for t in live[d].nonzero().flatten().tolist()) for d in range(live.shape[0])]
-                if unions is None:
-                    colors, _ = coloring.color(group_rows)
-                    slot_of = coloring.slots(colors)
-                else:
-                    slot_of = {int(t): s for s, t in enumerate(unions[bh, w, g].tolist()) if t != GAP}
-                    colors = {t: s & 7 for t, s in slot_of.items()}
-                    problems, _ = coloring.check(group_rows, colors)
-                    if slot_of != coloring.slots(colors):
-                        problems.append("the slots are not the residue layout of their colors")
-                    if any(t < 0 or t >= WINDOW for t in slot_of):
-                        problems.append("a slot holds neither a window token nor the gap")
-                    if problems:
-                        raise AssertionError(f"window {w} group {g} of batch-head {bh}: " + "; ".join(problems))
-                count[bh, w, g] = coloring.extent(colors)
-                for t, s in slot_of.items():
-                    union_out[bh, w, g, s] = t
+                union = live.any(0).nonzero().flatten().tolist()
+                slot_of = {t: s for s, t in enumerate(union)}
+                count[bh, w, g] = -(-len(union) // STEP) * STEP
+                union_out[bh, w, g, :len(union)] = torch.tensor(union, dtype=torch.int64)
                 for dd in range(live.shape[0]):
                     digit = g * 32 + dd
-                    mine = [(slot_of[t], t) for t in live[dd].nonzero().flatten().tolist()]
+                    mine = live[dd].nonzero().flatten().tolist()
+                    token_of = {slot_of[t]: t for t in mine}
                     words, starts = [], []
-                    for q in range(-(-int(count[bh, w, g]) // pass_slots)):
+                    for q in range(-(-len(union) // pass_slots)):
                         starts.append(len(words))
                         first = q * pass_slots
-                        token_of = dict(mine)
-                        for s in _rounds([(s, t) for s, t in mine if first <= s < first + pass_slots]):
+                        places = [slot_of[t] for t in mine if first <= slot_of[t] < first + pass_slots]
+                        places += [None] * (-len(places) % STEP)
+                        for s in places:
                             words.append(_entry(s, first, token_of, write, pass_slots, row_bytes, rows, b, h, t0,
                                                 digit, m if write else None, ms if write else None,
-                                                list_exp[bh, w, digit] if write else None, len(words) % 8))
+                                                list_exp[bh, w, digit] if write else None, len(words) % STEP))
                     if len(words) > LIST_CAP or len(starts) + 1 > LIST_AT:
                         raise AssertionError(f"list {digit} of window {w}: {len(words)} entries in {len(starts)} "
                                              f"passes, over the list's {LIST_CAP} or {LIST_AT - 1}")
@@ -166,14 +145,14 @@ def final_lists(bits: torch.Tensor, layout: lv.LivenessLayout, level: int, *, pa
     return Lists(entries, at, heads, union_out, count)
 
 
-def _entry(s, first, token_of, write, pass_slots, row_bytes, rows, b, h, t0, digit, m, ms, list_exp, pad_color):
-    """One entry's four int16 words, ``s`` the slot or ``None`` for a pad of color ``pad_color``."""
+def _entry(s, first, token_of, write, pass_slots, row_bytes, rows, b, h, t0, digit, m, ms, list_exp, place):
+    """One entry's four int16 words, ``s`` the slot or ``None`` for a pad at place ``place`` of its step."""
     def i16(x: int) -> int:
         return x - 0x10000 if x >= 0x8000 else x
 
     if write:
         if s is None:
-            return [i16(first + pad_color), 0, 0, 0]
+            return [i16(first + place), 0, 0, 0]
         t = t0 + token_of[s]
         byte = float(rows[b, t, h, digit])
         e_m = max(int(list_exp[0]), UNIT_MIN)
@@ -181,9 +160,9 @@ def _entry(s, first, token_of, write, pass_slots, row_bytes, rows, b, h, t0, dig
         cm = _f16_bits((byte * float(m[b, t, h])) * 2.0 ** (COEF_TOP - e_m))
         cv = _f16_bits((byte * float(ms[b, t, h])) * 2.0 ** (COEF_TOP - e_v))
         return [i16(s), 0, cv, cm]
-    local = (s - first) if s is not None else pad_color
+    local = (s - first) if s is not None else place
     pool = local * row_bytes + 16 * chunk0(row_bytes, local)
-    panel = PAD_BYTES + panel_row(local) if s is not None else panel_row(pad_color)
+    panel = PAD_BYTES + panel_row(local) if s is not None else panel_row(place)
     coef = _f16_bits(float(rows[b, t0 + token_of[s], h, digit]) / 256) if s is not None else 0
     return [i16(pool), 0, coef, i16(panel)]
 

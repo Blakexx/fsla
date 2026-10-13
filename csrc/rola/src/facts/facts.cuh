@@ -10,10 +10,10 @@
 
 namespace rola::facts {
 
-//: THE CTA: eight warps a UNIT, three CTAs an SM. -- see docs/internals/facts/facts.md#the-grid
+//: THE CTA: eight warps a UNIT, four CTAs an SM. -- see docs/internals/facts/facts.md#the-grid
 constexpr int kFactsWarps = 8;
 constexpr int kFactsThreads = kFactsWarps * 32;
-constexpr int kFactsCtasMin = 3;
+constexpr int kFactsCtasMin = 4;
 
 //: THE ROW ALIGNMENT LAW's grain (`rola.routing.quant.ROW_ALIGN`). -- see docs/internals/facts/liveness_contract.md#alignment
 constexpr int kRowAlign = 32;
@@ -50,13 +50,6 @@ __host__ __device__ constexpr int tile_at(int d, int j) {
   return kWindowWords * d + (j ^ ((d >> 1) & 15));
 }
 
-//: THE COLORING: 8 colors, the union at most `kUnionCap` a color, the claim queue a ring twice the most it holds,
-//: `kClaimRounds` rounds on every warp. -- see docs/internals/facts/facts.md#coloring
-constexpr int kColors = 8;
-constexpr int kUnionCap = kWindowTokens / kColors;
-constexpr int kQueueCap = 2 * kWindowTokens;
-constexpr int kClaimRounds = 4;
-
 //: THE LIST EXPONENTS' FLOOR, the smallest normal fp32. -- see docs/internals/facts/facts.md#lists
 constexpr float kListFloor = 1.17549435e-38f;
 
@@ -76,55 +69,26 @@ constexpr int kMinPassLog = 7, kMaxPassLog = 9;
 static_assert(kWindowTokens >> kMinPassLog == kMaxPasses && kMaxPasses + 1 <= kListAt,
               "a list's pass starts and its end fit its starts");
 
-enum FactsPhase : int {
-  kPhaseLoad,
-  kPhaseVote,
-  kPhaseInputs,
-  kPhaseClaims,
-  kPhaseSingles,
-  kPhaseSlots,
-  kPhaseLists,
-  kFactsPhases
-};
+//: THE STEP: the carry steps a list 8 entries at a time, so each of a list's passes is padded to whole steps.
+constexpr int kStep = 8;
 
-//: THE CTA'S SHARED MEMORY, by offset. -- see docs/internals/facts/facts.md#shared-memory
+enum FactsPhase : int { kPhaseLoad, kPhaseVote, kPhaseRanks, kPhaseLists, kFactsPhases };
+
+//: THE CTA'S SHARED MEMORY, by offset: the window, the bit tile, the columns, the union's words, the passes' first
+//: tokens, the warps' maxima. -- see docs/internals/facts/facts.md#shared-memory
 struct FactsSmem {
   static constexpr int kWin = 0;
   static constexpr int kTile = kWin + kWindowTokens * kGroupDigits;
-  static constexpr int kSlot = kTile + kGroupDigits * kWindowWords * 4;
-  static constexpr int kUnion = kSlot + kWindowTokens * 2;
-  static constexpr int kCols = kUnion + kWindowTokens * 2;
-  static constexpr int kScratch = kCols + kWindowTokens * 8;
-  //: the coloring's: digits a token, the queue, counts and capacity a digit, the deal's index bases and ends
-  static constexpr int kMasks = kScratch;
-  static constexpr int kQueue = kMasks + kWindowTokens * 4;
-  static constexpr int kCounts = kQueue + kQueueCap * 2;
-  static constexpr int kCap = kCounts + kGroupDigits * 16;
-  static constexpr int kPre = kCap + kGroupDigits * 4;
-  static constexpr int kEnds = kPre + kGroupDigits * kWindowWords * 2;
-  static constexpr int kColorEnd = kEnds + kGroupDigits * kColors * 2;
-  //: the placement's, over the dead digits: a (list, pass)'s color counts, then its earlier passes', and its start
-  static constexpr int kTab = kScratch;
-  static constexpr int kStart = kTab + kGroupDigits * kMaxPasses * 8;
-  static constexpr int kPlaceEnd = kStart + kGroupDigits * kMaxPasses * 2;
-  static constexpr int kSmall = kColorEnd;
-  //: the union's words, word and union color counts, the rounds' appends, the warps' maxima, extent and queue length
-  static constexpr int kUword = kSmall;
-  static constexpr int kMword = kUword + kWindowWords * 4;
-  static constexpr int kTword = kMword + kWindowWords * 4;
-  static constexpr int kWcount = kTword + kWindowWords * 4;
-  static constexpr int kUcount = kWcount + kWindowWords * kColors;
-  static constexpr int kAppends = kUcount + kColors * 4;
-  static constexpr int kWmax = kAppends + kColors * 4;
-  static constexpr int kMisc = kWmax + kFactsWarps * 8;
-  static constexpr int kBytes = kMisc + 16;
+  static constexpr int kCols = kTile + kGroupDigits * kWindowWords * 4;
+  static constexpr int kUword = kCols + kWindowTokens * 8;
+  static constexpr int kBound = kUword + kWindowWords * 4;
+  static constexpr int kWmax = kBound + kMaxPasses * 4;
+  static constexpr int kBytes = kWmax + kFactsWarps * 8;
 };
 
-static_assert(
-    FactsSmem::kTile % 16 == 0 && FactsSmem::kCols % 16 == 0 && FactsSmem::kScratch % 16 == 0
-        && FactsSmem::kCounts % 16 == 0 && FactsSmem::kEnds % 16 == 0 && FactsSmem::kSmall % 16 == 0
-        && FactsSmem::kUcount % 16 == 0 && FactsSmem::kPlaceEnd <= FactsSmem::kQueue,
-    "each tenant on its access's alignment, the placement's tables inside the dead masks");
+static_assert(FactsSmem::kTile % 16 == 0 && FactsSmem::kCols % 16 == 0
+                  && FactsSmem::kUword % 16 == 0 && FactsSmem::kWmax % 8 == 0,
+              "each tenant on its access's alignment");
 
 //: A SIDE'S LISTS OUT at its list level: entries, starts, heads, the union by slot, its extent.
 //: -- see docs/internals/facts/facts_api.md#rola-facts-forward

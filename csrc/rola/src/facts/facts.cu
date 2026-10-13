@@ -1,6 +1,6 @@
 // THE FACTS PASS'S TRANSLATION UNIT -- the kernel that reads the bundle's rows once, a CTA a unit (a window's side,
 // level and 32-digit group): both sides' class-1 words and tile unions, the window's columns, and each side's lists
-// colored and placed in the carry's final form; and the host entry that validates the bundle's views, plans a
+// ranked and placed in the carry's final form; and the host entry that validates the bundle's views, plans a
 // window's units and launches them.
 // see docs/internals/facts/facts.md
 
@@ -61,31 +61,6 @@ __device__ __forceinline__ float pow2(int e) {
 __device__ __forceinline__ int gains_shift(float top) {
   if (!(top > 0.0f)) return 0;
   return max(-126, min(127, -(static_cast<int>(__float_as_uint(top) >> 23) - 127) - 4));
-}
-
-//: BYTE `c` of a packed octet (bytes 0-3 in `lo`, 4-7 in `hi`), and the octet with `v` added there.
-__device__ __forceinline__ uint32_t byte_of(uint32_t lo, uint32_t hi, int c) {
-  return ((c < 4 ? lo : hi) >> (8 * (c & 3))) & 0xffu;
-}
-
-__device__ __forceinline__ void add_byte(uint32_t& lo, uint32_t& hi, int c, uint32_t v) {
-  const uint32_t x = v << (8 * (c & 3));
-  lo += c < 4 ? x : 0u;
-  hi += c < 4 ? 0u : x;
-}
-
-//: A 32 x 32 BIT TRANSPOSE across the warp, lane d's bit i to lane i's bit d: a stage of stride s swaps the
-//: off-diagonal blocks of lanes d and d ^ s, each lane keeping its half and sending the other rotated into place.
-__device__ __forceinline__ uint32_t transpose(uint32_t x, int lane) {
-  constexpr uint32_t kHalf[5] = {0x0000ffffu, 0x00ff00ffu, 0x0f0f0f0fu, 0x33333333u, 0x55555555u};
-#pragma unroll
-  for (int k = 0; k < 5; ++k) {
-    const int s = 16 >> k;
-    const uint32_t keep = (lane & s) ? ~kHalf[k] : kHalf[k];
-    const uint32_t send = __funnelshift_l(x, x, (lane & s) ? s : 32 - s) & keep;
-    x = (x & keep) | __shfl_xor_sync(0xffffffffu, send, s);
-  }
-  return x;
 }
 
 //: A UNIT'S PLACE: its code's fields and its (batch-head, window). -- see docs/internals/facts/facts.md#the-grid
@@ -173,10 +148,11 @@ __device__ __forceinline__ void columns_out(const FactsParams& p, const Unit& x,
 }
 
 //: THE VOTE, a warp's two blocks: lane `(tk, dq)` token `8 tk + i`'s digits `4 dq ..` as a word, each byte's nonzero
-//: bit at bit `i`; a 4 x 4 byte transpose across the token blocks leaves digit `4 dq + tk`'s 32 token bits, masked.
+//: bit at bit `i`; a 4 x 4 byte transpose across the token blocks leaves digit `4 dq + tk`'s 32 token bits, masked;
+//: the warp's OR of each word its union word.
 //: -- see docs/internals/facts/facts.md#vote
 __device__ __forceinline__ void vote(const FactsParams& p, const Unit& x, const uint8_t* win,
-                                     uint32_t* tile, int warp, int lane) {
+                                     uint32_t* tile, uint32_t* uword, int warp, int lane) {
   const int tk = lane >> 3, dq = lane & 7, d = 4 * dq + tk;
   const bool in = digit_in(p, x.side, x.level, kGroupDigits * x.group + d);
 #pragma unroll
@@ -194,6 +170,8 @@ __device__ __forceinline__ void vote(const FactsParams& p, const Unit& x, const 
     y = __shfl_xor_sync(0xffffffffu, flags, 8);
     flags = (tk & 1) ? prmt_imm<0x3715u>(flags, y) : prmt_imm<0x6240u>(flags, y);
     tile[tile_at(d, j)] = in ? flags : 0u;
+    const uint32_t u = __reduce_or_sync(0xffffffffu, in ? flags : 0u);
+    if (lane == 0) uword[j] = u;
   }
 }
 
@@ -224,465 +202,82 @@ __device__ __forceinline__ void bits_out(const FactsParams& p, const Unit& x, co
              + tile_index] = any;
 }
 
-//: THE COLORING'S INPUTS, a warp's two words and four digits: each token's digits by a transpose and its count's three
-//: ballots (the union's words: in one digit or more, two or more, three or more); each digit's capacity; the claim
-//: state and the union by slot cleared. -- see docs/internals/facts/facts.md#coloring
-__device__ __forceinline__ void prepare(uint8_t* smem, const uint32_t* tile, int tid, int warp,
-                                        int lane) {
-  uint32_t* const masks = reinterpret_cast<uint32_t*>(smem + FactsSmem::kMasks);
-  uint32_t* const uword = reinterpret_cast<uint32_t*>(smem + FactsSmem::kUword);
-  uint32_t* const mword = reinterpret_cast<uint32_t*>(smem + FactsSmem::kMword);
-  uint32_t* const tword = reinterpret_cast<uint32_t*>(smem + FactsSmem::kTword);
-  uint32_t* const cap = reinterpret_cast<uint32_t*>(smem + FactsSmem::kCap);
-  uint4* const counts = reinterpret_cast<uint4*>(smem + FactsSmem::kCounts);
-#pragma unroll
-  for (int jj = 0; jj < 2; ++jj) {
-    const int j = 2 * warp + jj;
-    const uint32_t m = transpose(tile[tile_at(lane, j)], lane);
-    masks[kTokBits * j + lane] = m;
-    const int c = __popc(m);
-    const uint32_t u = __ballot_sync(0xffffffffu, c >= 1), mw = __ballot_sync(0xffffffffu, c >= 2),
-                   tw = __ballot_sync(0xffffffffu, c >= 3);
-    if (lane == 0) {
-      uword[j] = u;
-      mword[j] = mw;
-      tword[j] = tw;
-    }
-  }
-  const int h = lane >> 4, jl = lane & 15;
-#pragma unroll
-  for (int r = 0; r < 2; ++r) {
-    const int d = 4 * warp + 2 * r + h;
-    int n = __popc(tile[tile_at(d, jl)]);
-#pragma unroll
-    for (int off = 8; off > 0; off >>= 1) n += __shfl_xor_sync(0xffffffffu, n, off);
-    if (jl == 0) {
-      cap[d] = static_cast<uint32_t>(n + kColors - 1) / kColors;
-      counts[d] = make_uint4(0u, 0u, 0u, 0u);
-    }
-  }
-  if (tid < kColors) reinterpret_cast<uint32_t*>(smem + FactsSmem::kUcount)[tid] = 0u;
-  if (tid < 2) reinterpret_cast<uint32_t*>(smem + FactsSmem::kAppends)[tid] = 0u;
-  reinterpret_cast<uint32_t*>(smem + FactsSmem::kUnion)[tid] =
-      static_cast<uint32_t>(carry::kGap) * 0x00010001u;
-}
-
-//: EACH DIGIT'S SINGLES BEFORE EACH WORD, warps 1-4 (8 digits a warp, 4 lanes a digit, 4 words a lane): the deal's
-//: index base.
-__device__ __forceinline__ void singles_before(uint8_t* smem, const uint32_t* tile, int warp,
-                                               int lane) {
-  const uint32_t* const uword = reinterpret_cast<const uint32_t*>(smem + FactsSmem::kUword);
-  const uint32_t* const mword = reinterpret_cast<const uint32_t*>(smem + FactsSmem::kMword);
-  uint16_t* const pre = reinterpret_cast<uint16_t*>(smem + FactsSmem::kPre);
-  const int d = 8 * (warp - 1) + (lane >> 2), part = lane & 3;
-  int n[4], sum = 0;
-#pragma unroll
-  for (int q = 0; q < 4; ++q) {
-    const int j = 4 * part + q;
-    n[q] = __popc(tile[tile_at(d, j)] & uword[j] & ~mword[j]);
-    sum += n[q];
-  }
-  int incl = sum;
-#pragma unroll
-  for (int off = 1; off < 4; off <<= 1) {
-    const int y = __shfl_up_sync(0xffffffffu, incl, off, 4);
-    incl += part >= off ? y : 0;
-  }
-  int at = incl - sum;
-#pragma unroll
-  for (int q = 0; q < 4; ++q) {
-    pre[d * kWindowWords + 4 * part + q] = static_cast<uint16_t>(at);
-    at += n[q];
-  }
-}
-
-//: THE QUEUE, a warp's two words: the multi-digit tokens, three-or-more first, each in token order -- a token's place
-//: its kind's tokens in the earlier words plus its rank in its word; thread 0 the queue's length.
-__device__ __forceinline__ void enqueue(uint8_t* smem, int tid, int warp, int lane) {
-  const uint32_t* const mword = reinterpret_cast<const uint32_t*>(smem + FactsSmem::kMword);
-  const uint32_t* const tword = reinterpret_cast<const uint32_t*>(smem + FactsSmem::kTword);
-  uint16_t* const queue = reinterpret_cast<uint16_t*>(smem + FactsSmem::kQueue);
-  const uint32_t below = (1u << lane) - 1u;
-  //: lane `i` (< 16) word `i`'s kinds' tokens, scanned over the words, a kind a half of one register
-  const int i = lane & 15;
-  const uint32_t tw_i = tword[i], counts = __popc(tw_i) | __popc(mword[i] & ~tw_i) << 16;
-  uint32_t incl = counts;
-#pragma unroll
-  for (int off = 1; off < kWindowWords; off <<= 1) {
-    const uint32_t y = __shfl_up_sync(0xffffffffu, incl, off, kWindowWords);
-    incl += i >= off ? y : 0u;
-  }
-  const uint32_t all = __shfl_sync(0xffffffffu, incl, kWindowWords - 1), three = all & 0xffffu;
-#pragma unroll
-  for (int jj = 0; jj < 2; ++jj) {
-    const int j = 2 * warp + jj;
-    const uint32_t before = __shfl_sync(0xffffffffu, incl - counts, j);
-    const uint32_t tw = tword[j], mw = mword[j] & ~tw;
-    if ((tw >> lane) & 1u)
-      queue[(before & 0xffffu) + __popc(tw & below)] = static_cast<uint16_t>(kTokBits * j + lane);
-    if ((mw >> lane) & 1u)
-      queue[three + (before >> 16) + __popc(mw & below)] =
-          static_cast<uint16_t>(kTokBits * j + lane);
-  }
-  if (tid == 0)
-    reinterpret_cast<int*>(smem + FactsSmem::kMisc)[1] = static_cast<int>(three + (all >> 16));
-}
-
-//: ONE BATCH OF CLAIMS by a warp, the `take` queued tokens from `head` (lane l the l-th): each sums its digits' color
-//: counts and takes the least-used color its digits' capacities (full where a count reached it) and the union's cap
-//: allow (ties to the union's least-used, then `(c - t) & 7`; a token no color allows is blocked and takes the union's
-//: least-used), claimed on the union and every digit by shared atomics, a claim over a bound withdrawn.
-//: -- see docs/internals/facts/facts.md#coloring
-struct Claim {
-  uint32_t t, lost, kept;
-  bool loser;
+//: THE RANKS, a warp's two words: each union token at its rank, its SLOT, and the gaps after them; each pass's first
+//: token its bound; the union's extent, its size in whole steps. Each list lane gets its two words' union words and
+//: the union's tokens before them. -- see docs/internals/facts/facts.md#ranks
+struct Ranks {
+  uint32_t u[2];
+  int pre[2];
 };
 
-__device__ __forceinline__ Claim claim_batch(uint8_t* smem, uint32_t head, uint32_t take,
-                                             int lane) {
-  const uint32_t* const masks = reinterpret_cast<const uint32_t*>(smem + FactsSmem::kMasks);
-  const uint16_t* const queue = reinterpret_cast<const uint16_t*>(smem + FactsSmem::kQueue);
-  uint32_t* const counts = reinterpret_cast<uint32_t*>(smem + FactsSmem::kCounts);
-  const uint32_t* const cap = reinterpret_cast<const uint32_t*>(smem + FactsSmem::kCap);
-  uint32_t* const ucount = reinterpret_cast<uint32_t*>(smem + FactsSmem::kUcount);
-  uint16_t* const color = reinterpret_cast<uint16_t*>(smem + FactsSmem::kSlot);
-
-  const bool live = static_cast<uint32_t>(lane) < take;
-  const uint32_t t = live ? queue[(head + lane) & (kQueueCap - 1)] : 0u;
-  const uint32_t m = live ? masks[t] : 0u;
-  const int digits = static_cast<int>(__reduce_max_sync(0xffffffffu, __popc(m)));
-  uint32_t s0 = 0u, s1 = 0u, s2 = 0u, s3 = 0u, digits_full = 0u;
-  uint32_t x = m;
-#pragma unroll 2
-  for (int i = 0; i < digits; ++i) {
-    if (x != 0u) {
-      const int d = __ffs(x) - 1;
-      const uint4 v = reinterpret_cast<const uint4*>(counts)[d];
-      const uint32_t cp = cap[d] * 0x00010001u;
-      s0 += v.x;
-      s1 += v.y;
-      s2 += v.z;
-      s3 += v.w;
-      digits_full |= (__vcmpgeu2(v.x, cp) & 0x00010001u) | (__vcmpgeu2(v.y, cp) & 0x00010001u) << 2
-                     | (__vcmpgeu2(v.z, cp) & 0x00010001u) << 4
-                     | (__vcmpgeu2(v.w, cp) & 0x00010001u) << 6;
-      x &= x - 1u;
-    }
-  }
-  digits_full = (digits_full | digits_full >> 15) & 0xffu;
-
-  const uint4 ua = reinterpret_cast<const uint4*>(ucount)[0],
-              ub = reinterpret_cast<const uint4*>(ucount)[1];
-  const uint32_t u[kColors] = {ua.x, ua.y, ua.z, ua.w, ub.x, ub.y, ub.z, ub.w};
-  const uint32_t f[kColors] = {s0 & 0xffffu, s0 >> 16, s1 & 0xffffu, s1 >> 16,
-                               s2 & 0xffffu, s2 >> 16, s3 & 0xffffu, s3 >> 16};
-  uint32_t union_full = 0u;
-#pragma unroll
-  for (int c = 0; c < kColors; ++c) union_full |= (u[c] >= kUnionCap ? 1u : 0u) << c;
-  const uint32_t allowed = ~(digits_full | union_full) & 0xffu;
-  const bool blocked = allowed == 0u;
-  const uint32_t pool = blocked ? ~union_full & 0xffu : allowed;
-  uint32_t best = ~0u;
-#pragma unroll
-  for (int c = 0; c < kColors; ++c) {
-    const uint32_t key = blocked ? (u[c] << 3 | static_cast<uint32_t>(c))
-                                 : (f[c] << 10 | u[c] << 3 | ((c - t) & 7u));
-    best = (pool >> c) & 1u ? min(best, key) : best;
-  }
-  const uint32_t c = blocked ? best & 7u : ((best & 7u) + t) & 7u;
-  const uint32_t shift = 16u * (c & 1u), inc = 1u << shift;
-
-  bool over = false;
-  if (live) over = atomicAdd(ucount + c, 1u) >= static_cast<uint32_t>(kUnionCap);
-  x = m;
-#pragma unroll 2
-  for (int i = 0; i < digits; ++i) {
-    if (x != 0u) {
-      const int d = __ffs(x) - 1;
-      const uint32_t old = atomicAdd(counts + 4 * d + (c >> 1), inc);
-      over |= !blocked && ((old >> shift) & 0xffffu) >= cap[d];
-      x &= x - 1u;
-    }
-  }
-
-  const bool loser = live && over;
-  if (loser) atomicSub(ucount + c, 1u);
-  //: a withdrawal only in a batch that lost a claim
-  x = loser ? m : 0u;
-  const int withdraw = digits * static_cast<int>(__any_sync(0xffffffffu, loser) != 0);
-#pragma unroll 2
-  for (int i = 0; i < withdraw; ++i) {
-    if (x != 0u) {
-      atomicSub(counts + 4 * (__ffs(x) - 1) + (c >> 1), inc);
-      x &= x - 1u;
-    }
-  }
-  const bool won = live && !over;
-  if (won) color[t] = static_cast<uint16_t>(c);
-  return Claim{t, __ballot_sync(0xffffffffu, loser), __ballot_sync(0xffffffffu, won), loser};
-}
-
-//: THE CLAIMS: up to `kClaimRounds` rounds on every warp, a batch each, while more than a batch is queued, losers
-//: appended past the round's queue (a ring of `kQueueCap`: at most a window's tokens are queued, so a round's appends
-//: never reach its reads); then warp 0's batches to the queue's end, losers requeued and a batch that keeps nothing
-//: followed by its first token alone, which always keeps -- the rounds may keep nothing, warp 0's batches cannot.
-//: -- see docs/internals/facts/facts.md#coloring
-__device__ __forceinline__ void claim_all(uint8_t* smem, int warp, int lane) {
-  uint16_t* const queue = reinterpret_cast<uint16_t*>(smem + FactsSmem::kQueue);
-  uint32_t* const appends = reinterpret_cast<uint32_t*>(smem + FactsSmem::kAppends);
-  const uint32_t below = (1u << lane) - 1u;
-  uint32_t head = 0u,
-           tail = static_cast<uint32_t>(reinterpret_cast<const int*>(smem + FactsSmem::kMisc)[1]);
-#pragma unroll 1
-  for (int r = 0; r < kClaimRounds && tail - head > 32u; ++r) {
-    const uint32_t mine = head + 32u * static_cast<uint32_t>(warp);
-    const Claim cl = claim_batch(smem, mine, mine < tail ? min(32u, tail - mine) : 0u, lane);
-    uint32_t base = 0u;
-    if (lane == 0 && cl.lost != 0u) base = atomicAdd(appends + (r & 1), __popc(cl.lost));
-    base = __shfl_sync(0xffffffffu, base, 0);
-    if (cl.loser)
-      queue[(tail + base + __popc(cl.lost & below)) & (kQueueCap - 1)] =
-          static_cast<uint16_t>(cl.t);
-    __syncthreads();
-    const uint32_t grown = appends[r & 1];
-    if (warp == 0 && lane == 0) appends[(r + 1) & 1] = 0u;
-    head = min(head + kFactsWarps * 32u, tail);
-    tail += grown;
-    __syncthreads();
-  }
-  if (warp != 0) return;
-  bool solo = false;
-  for (int k = __any_sync(0xffffffffu, head < tail) != 0; k > 0; --k)
-#pragma unroll 1
-    do {
-      const uint32_t take = solo ? 1u : min(32u, tail - head);
-      const Claim cl = claim_batch(smem, head, take, lane);
-      head += take;
-      if (cl.loser)
-        queue[(tail + __popc(cl.lost & below)) & (kQueueCap - 1)] = static_cast<uint16_t>(cl.t);
-      tail += __popc(cl.lost);
-      solo = cl.kept == 0u;
-      __syncwarp();
-    } while (__any_sync(0xffffffffu, head < tail));
-}
-
-//: THE SINGLES, warp 0, lane `d` digit `d`: the union filled to a level, pass by pass -- each digit wanting its singles
-//: at its room's colors (under its capacity) that have quota left, in the rotation `(d + i) & 7`; each color granting
-//: in digit order while its quota (`level - n_c`) lasts; a pass that grants nothing raising the level -- and at the
-//: union's cap the rest placed by quota alone; each digit's singles' color ends posted for the deal.
-//: -- see docs/internals/facts/facts.md#coloring
-__device__ void singles(uint8_t* smem, const uint32_t* tile, int lane) {
+__device__ __forceinline__ Ranks ranks(const FactsParams& p, const Unit& x, uint8_t* smem, int tid,
+                                       int warp, int lane) {
   const uint32_t* const uword = reinterpret_cast<const uint32_t*>(smem + FactsSmem::kUword);
-  const uint32_t* const mword = reinterpret_cast<const uint32_t*>(smem + FactsSmem::kMword);
-  const uint32_t* const ucount = reinterpret_cast<const uint32_t*>(smem + FactsSmem::kUcount);
-  const int d = lane;
-  const int k = reinterpret_cast<const uint16_t*>(smem + FactsSmem::kPre)[d * kWindowWords + 15]
-                + __popc(tile[tile_at(d, 15)] & uword[15] & ~mword[15]);
-  const uint4 cw = reinterpret_cast<const uint4*>(smem + FactsSmem::kCounts)[d];
-  const uint32_t cnt_lo = (cw.x & 0xffu) | (cw.x >> 16 & 0xffu) << 8 | (cw.y & 0xffu) << 16
-                          | (cw.y >> 16 & 0xffu) << 24;
-  const uint32_t cnt_hi = (cw.z & 0xffu) | (cw.z >> 16 & 0xffu) << 8 | (cw.w & 0xffu) << 16
-                          | (cw.w >> 16 & 0xffu) << 24;
-  const int room_cap =
-      static_cast<int>(reinterpret_cast<const uint32_t*>(smem + FactsSmem::kCap)[d]);
-  const uint4 ua = reinterpret_cast<const uint4*>(ucount)[0],
-              ub = reinterpret_cast<const uint4*>(ucount)[1];
-  uint32_t u_lo = ua.x | ua.y << 8 | ua.z << 16 | ua.w << 24;
-  uint32_t u_hi = ub.x | ub.y << 8 | ub.z << 16 | ub.w << 24;
-
-  //: the level: the least whose quotas hold every single, lanes testing levels `lane` and `lane + 32`
-  const uint32_t total = __reduce_add_sync(0xffffffffu, static_cast<uint32_t>(k));
-  int level;
-  {
-    int fa = 0, fb = 0;
-#pragma unroll
-    for (int c = 0; c < kColors; ++c) {
-      fa += max(0, lane - static_cast<int>(byte_of(u_lo, u_hi, c)));
-      fb += max(0, lane + 32 - static_cast<int>(byte_of(u_lo, u_hi, c)));
-    }
-    const uint32_t ba = __ballot_sync(0xffffffffu, static_cast<uint32_t>(fa) >= total),
-                   bb = __ballot_sync(0xffffffffu, static_cast<uint32_t>(fb) >= total);
-    level = ba != 0u ? __ffs(ba) - 1 : (bb != 0u ? 32 + __ffs(bb) - 1 : kUnionCap);
-  }
-
-  //: the passes
-  uint32_t take_lo = 0u, take_hi = 0u;
-  int rem = k;
-#pragma unroll 1
-  for (int go = __any_sync(0xffffffffu, rem > 0) != 0; go > 0;
-       go = static_cast<int>(__any_sync(0xffffffffu, rem > 0) != 0)
-            & static_cast<int>(level <= kUnionCap)) {
-    uint32_t w_lo = 0u, w_hi = 0u;
-    int r = rem;
-#pragma unroll
-    for (int i = 0; i < kColors; ++i) {
-      const int c = (d + i) & 7;
-      const int q = level - static_cast<int>(byte_of(u_lo, u_hi, c));
-      const int room = room_cap - static_cast<int>(byte_of(cnt_lo, cnt_hi, c))
-                       - static_cast<int>(byte_of(take_lo, take_hi, c));
-      const int w = q > 0 ? max(0, min(r, room)) : 0;
-      r -= w;
-      add_byte(w_lo, w_hi, c, static_cast<uint32_t>(w));
-    }
-    //: each color's wants before the lane's, its pairs as u16 halves
-    uint32_t want[4] = {
-        (w_lo & 0xffu) | (w_lo >> 8 & 0xffu) << 16, (w_lo >> 16 & 0xffu) | (w_lo >> 24) << 16,
-        (w_hi & 0xffu) | (w_hi >> 8 & 0xffu) << 16, (w_hi >> 16 & 0xffu) | (w_hi >> 24) << 16};
-    uint32_t incl[4] = {want[0], want[1], want[2], want[3]};
-#pragma unroll
-    for (int off = 1; off < 32; off <<= 1) {
-#pragma unroll
-      for (int p = 0; p < 4; ++p) {
-        const uint32_t y = __shfl_up_sync(0xffffffffu, incl[p], off);
-        incl[p] += lane >= off ? y : 0u;
-      }
-    }
-    uint32_t sum[4];
-#pragma unroll
-    for (int p = 0; p < 4; ++p) sum[p] = __shfl_sync(0xffffffffu, incl[p], 31);
-    bool granted = false;
-#pragma unroll
-    for (int c = 0; c < kColors; ++c) {
-      const int sh = 16 * (c & 1);
-      const int wc = static_cast<int>((want[c >> 1] >> sh) & 0xffffu);
-      const int before = static_cast<int>(((incl[c >> 1] - want[c >> 1]) >> sh) & 0xffffu);
-      const int q = max(0, level - static_cast<int>(byte_of(u_lo, u_hi, c)));
-      const int g = max(0, min(wc, q - before));
-      add_byte(take_lo, take_hi, c, static_cast<uint32_t>(g));
-      rem -= g;
-      const int all = min(static_cast<int>((sum[c >> 1] >> sh) & 0xffffu), q);
-      add_byte(u_lo, u_hi, c, static_cast<uint32_t>(all));
-      granted |= all > 0;
-    }
-    level += granted ? 0 : 1;
-  }
-
-  //: the rest by quota alone, in digit order over the colors' room under the cap
-  {
-    int incl = rem;
-#pragma unroll
-    for (int off = 1; off < 32; off <<= 1) {
-      const int y = __shfl_up_sync(0xffffffffu, incl, off);
-      incl += lane >= off ? y : 0;
-    }
-    const int lo = incl - rem, hi = incl;
-    int bound = 0;
-#pragma unroll
-    for (int c = 0; c < kColors; ++c) {
-      const int q = kUnionCap - static_cast<int>(byte_of(u_lo, u_hi, c));
-      add_byte(take_lo, take_hi, c,
-               static_cast<uint32_t>(max(0, min(hi, bound + q) - max(lo, bound))));
-      bound += q;
-    }
-  }
-  //: each color's end among the digit's singles, for the deal
-  uint32_t end[kColors];
-  uint32_t e = 0u;
-#pragma unroll
-  for (int c = 0; c < kColors; ++c) {
-    e += byte_of(take_lo, take_hi, c);
-    end[c] = e;
-  }
-  reinterpret_cast<uint4*>(smem + FactsSmem::kEnds)[d] = make_uint4(
-      end[0] | end[1] << 16, end[2] | end[3] << 16, end[4] | end[5] << 16, end[6] | end[7] << 16);
-}
-
-//: THE SLOTS, a warp's two words: each token's color -- a multi-digit token's claimed, a single's dealt by its index
-//: among its digit's singles against the digit's color ends -- and three ballots giving each color's tokens in the
-//: word; after the words' color counts meet, each token's slot is `8 x (its color's tokens before it) + color`, into the
-//: union by slot; warp 0 the extent. -- see docs/internals/facts/facts.md#coloring
-__device__ __forceinline__ void slots(uint8_t* smem, const uint32_t* tile, int tid, int warp,
-                                      int lane) {
-  const uint32_t* const uword = reinterpret_cast<const uint32_t*>(smem + FactsSmem::kUword);
-  const uint32_t* const mword = reinterpret_cast<const uint32_t*>(smem + FactsSmem::kMword);
-  const uint32_t* const masks = reinterpret_cast<const uint32_t*>(smem + FactsSmem::kMasks);
-  const uint16_t* const pre = reinterpret_cast<const uint16_t*>(smem + FactsSmem::kPre);
-  const uint4* const ends = reinterpret_cast<const uint4*>(smem + FactsSmem::kEnds);
-  uint16_t* const slot = reinterpret_cast<uint16_t*>(smem + FactsSmem::kSlot);
-  uint16_t* const by_slot = reinterpret_cast<uint16_t*>(smem + FactsSmem::kUnion);
-  uint8_t* const wcount = smem + FactsSmem::kWcount;
-  const uint32_t below = (1u << lane) - 1u;
-
-  int rank[2], col[2];
-  bool in[2];
-#pragma unroll
-  for (int jj = 0; jj < 2; ++jj) {
-    const int j = 2 * warp + jj;
-    const uint32_t u = uword[j], single = u & ~mword[j];
-    in[jj] = (u >> lane) & 1u;
-    uint32_t c = slot[kTokBits * j + lane] & 7u;
-    if ((single >> lane) & 1u) {
-      const int d = __ffs(masks[kTokBits * j + lane]) - 1;
-      const uint32_t idx = pre[d * kWindowWords + j] + __popc(tile[tile_at(d, j)] & single & below);
-      const uint4 e = ends[d];
-      c = (idx >= (e.x & 0xffffu)) + (idx >= (e.x >> 16)) + (idx >= (e.y & 0xffffu))
-          + (idx >= (e.y >> 16)) + (idx >= (e.z & 0xffffu)) + (idx >= (e.z >> 16))
-          + (idx >= (e.w & 0xffffu));
-    }
-    c = in[jj] ? c : 0u;
-    const uint32_t v0 = __ballot_sync(0xffffffffu, in[jj] && (c & 1u)),
-                   v1 = __ballot_sync(0xffffffffu, in[jj] && (c & 2u)),
-                   v2 = __ballot_sync(0xffffffffu, in[jj] && (c & 4u));
-    const uint32_t same = u & ((c & 1u) ? v0 : ~v0) & ((c & 2u) ? v1 : ~v1) & ((c & 4u) ? v2 : ~v2);
-    rank[jj] = __popc(same & below);
-    col[jj] = static_cast<int>(c);
-    const int cc = lane & 7;
-    const uint32_t sel = u & ((cc & 1) ? v0 : ~v0) & ((cc & 2) ? v1 : ~v1) & ((cc & 4) ? v2 : ~v2);
-    if (lane < kColors) wcount[j * kColors + lane] = static_cast<uint8_t>(__popc(sel));
-  }
-
-  __syncthreads();
-  reinterpret_cast<uint32_t*>(smem + FactsSmem::kTab)[tid] = 0u;
-  //: the words' color counts scanned over the words, lane `i` (< 16) word `i`, a color a byte
+  int* const bound = reinterpret_cast<int*>(smem + FactsSmem::kBound);
+  const ListsOut out = p.lists[x.side];
+  const int width = p.B[x.level], pl = p.pass_log[x.side];
+  const int64_t group_index = (static_cast<int64_t>(x.bh) * p.windows + x.window)
+                                  * ((width + kGroupDigits - 1) / kGroupDigits)
+                              + x.group;
+  uint16_t* const union_tok = out.union_tok + group_index * kWindowTokens;
   const int i = lane & 15;
-  const uint2 own = reinterpret_cast<const uint2*>(wcount)[i];
-  uint32_t lo = own.x, hi = own.y;
+  const uint32_t ui = uword[i];
+  int incl = __popc(ui);
 #pragma unroll
   for (int off = 1; off < kWindowWords; off <<= 1) {
-    const uint32_t ylo = __shfl_up_sync(0xffffffffu, lo, off, kWindowWords),
-                   yhi = __shfl_up_sync(0xffffffffu, hi, off, kWindowWords);
-    lo += i >= off ? ylo : 0u;
-    hi += i >= off ? yhi : 0u;
+    const int y = __shfl_up_sync(0xffffffffu, incl, off, kWindowWords);
+    incl += i >= off ? y : 0;
   }
-  const uint32_t ex_lo = lo - own.x, ex_hi = hi - own.y;
+  const int excl = incl - __popc(ui), n = __shfl_sync(0xffffffffu, incl, kWindowWords - 1);
+  const uint32_t below = (1u << lane) - 1u;
 #pragma unroll
   for (int jj = 0; jj < 2; ++jj) {
     const int j = 2 * warp + jj;
-    const uint32_t blo = __shfl_sync(0xffffffffu, ex_lo, j),
-                   bhi = __shfl_sync(0xffffffffu, ex_hi, j);
-    if (in[jj]) {
-      const int s = kColors * (static_cast<int>(byte_of(blo, bhi, col[jj])) + rank[jj]) + col[jj];
-      slot[kTokBits * j + lane] = static_cast<uint16_t>(s);
-      by_slot[s] = static_cast<uint16_t>(kTokBits * j + lane);
+    const uint32_t u = __shfl_sync(0xffffffffu, ui, j);
+    const int pre = __shfl_sync(0xffffffffu, excl, j);
+    if ((u >> lane) & 1u) {
+      const int slot = pre + __popc(u & below), t = kTokBits * j + lane;
+      union_tok[slot] = static_cast<uint16_t>(t);
+      if ((slot & ((1 << pl) - 1)) == 0) bound[slot >> pl] = t;
     }
   }
-  const uint32_t all = __vmaxu4(__shfl_sync(0xffffffffu, lo, kWindowWords - 1),
-                                __shfl_sync(0xffffffffu, hi, kWindowWords - 1));
-  const uint32_t widest =
-      max(max(all & 0xffu, (all >> 8) & 0xffu), max((all >> 16) & 0xffu, all >> 24));
-  if (tid == 0)
-    reinterpret_cast<int*>(smem + FactsSmem::kMisc)[0] = kColors * static_cast<int>(widest);
-  __syncthreads();
+  constexpr int kGapStores = kWindowTokens / kFactsThreads;
+#pragma unroll
+  for (int k = 0; k < kGapStores; ++k)
+    if (tid + kFactsThreads * k >= n) union_tok[tid + kFactsThreads * k] = carry::kGap;
+  if (tid < kMaxPasses && (tid << pl) >= n) bound[tid] = kWindowTokens;
+  if (tid == 0) out.union_count[group_index] = (n + kStep - 1) & -kStep;
+  const int s = lane & 7;
+  return Ranks{{__shfl_sync(0xffffffffu, ui, 2 * s), __shfl_sync(0xffffffffu, ui, 2 * s + 1)},
+               {__shfl_sync(0xffffffffu, excl, 2 * s), __shfl_sync(0xffffffffu, excl, 2 * s + 1)}};
 }
 
-//: THE LISTS, a warp's 4 lists `w + 8 j` (its own heads), 8 lanes a list, lane `s` its words `2s`, `2s + 1`: the first
-//: walk counts each entry into its (list, pass)'s color count and takes the write maxima; lane `q` turns pass `q`'s
-//: counts into its steps, start and earlier passes' counts; the second walk places and writes each entry, lane `q` its
-//: pass's pads. -- see docs/internals/facts/facts.md#lists-out
+//: A LIST LANE'S TOKENS BEFORE token `b`, lane `s`'s words `2s`, `2s + 1`.
+__device__ __forceinline__ int tokens_before(const uint32_t (&w)[2], int s, int b) {
+  int n = 0;
+#pragma unroll
+  for (int jj = 0; jj < 2; ++jj) {
+    const int r = b - kTokBits * (2 * s + jj);
+    n += __popc(w[jj] & (r <= 0 ? 0u : (r >= kTokBits ? ~0u : (1u << r) - 1u)));
+  }
+  return n;
+}
+
+//: THE LISTS, a warp's 4 lists `w + 8 j` (its own heads), 8 lanes a list, lane `s` its words `2s`, `2s + 1`: each
+//: lane's tokens in each pass, from the passes' bounds, joined over the list's lanes into each pass's start (whole
+//: steps) and the lane's first place there; on the write side a walk takes the list's maxima; a walk places and writes
+//: each entry, and lane `q` writes pass `q`'s pads. -- see docs/internals/facts/facts.md#lists-out
 template <bool kWriteSide>
-__device__ void lists_out(const FactsParams& p, const Unit& x, uint8_t* smem, int tid, int warp,
-                          int lane) {
+__device__ __forceinline__ void lists_out(const FactsParams& p, const Unit& x, const uint8_t* smem,
+                                          const Ranks& r, int warp, int lane) {
   const uint8_t* const win = smem + FactsSmem::kWin;
   const uint32_t* const tile = reinterpret_cast<const uint32_t*>(smem + FactsSmem::kTile);
-  const uint16_t* const slotv = reinterpret_cast<const uint16_t*>(smem + FactsSmem::kSlot);
   const float2* const cols = reinterpret_cast<const float2*>(smem + FactsSmem::kCols);
-  uint32_t* const tab = reinterpret_cast<uint32_t*>(smem + FactsSmem::kTab);
-  uint16_t* const startv = reinterpret_cast<uint16_t*>(smem + FactsSmem::kStart);
+  const int* const bound = reinterpret_cast<const int*>(smem + FactsSmem::kBound);
   const int dl = lane >> 3, s = lane & 7, d = warp + kFactsWarps * dl;
   const int width = p.B[x.level], digit = kGroupDigits * x.group + d;
   const bool listed = digit < width;
-  const int pl = p.pass_log[x.side], ext = reinterpret_cast<const int*>(smem + FactsSmem::kMisc)[0];
-  const int passes = (ext + (1 << pl) - 1) >> pl;
+  const int pl = p.pass_log[x.side];
   const ListsOut out = p.lists[x.side];
   const int64_t win_index = static_cast<int64_t>(x.bh) * p.windows + x.window;
   const int64_t list = win_index * width + digit;
@@ -692,44 +287,64 @@ __device__ void lists_out(const FactsParams& p, const Unit& x, uint8_t* smem, in
   uint2* const entries = out.entries + list * kListCap;
   const uint32_t words[2] = {tile[tile_at(d, 2 * s)], tile[tile_at(d, 2 * s + 1)]};
 
-  //: the first walk
-  uint32_t run_lo = 0u, run_hi = 0u;
-  float mx = 0.0f, mf = 0.0f;
+  //: the lane's tokens in each pass as u16 pairs, scanned over the list's lanes
+  const int total = __popc(words[0]) + __popc(words[1]);
+  const int b1 = tokens_before(words, s, bound[1]), b2 = tokens_before(words, s, bound[2]),
+            b3 = tokens_before(words, s, bound[3]);
+  const uint32_t own_lo = static_cast<uint32_t>(b1) | static_cast<uint32_t>(b2 - b1) << 16,
+                 own_hi = static_cast<uint32_t>(b3 - b2) | static_cast<uint32_t>(total - b3) << 16;
+  uint32_t lo = own_lo, hi = own_hi;
 #pragma unroll
-  for (int jj = 0; jj < 2; ++jj) {
-    uint32_t xw = words[jj];
-    for (int k = __any_sync(0xffffffffu, xw != 0u) != 0; k > 0; --k)
+  for (int off = 1; off < 8; off <<= 1) {
+    const uint32_t ylo = __shfl_up_sync(0xffffffffu, lo, off, 8),
+                   yhi = __shfl_up_sync(0xffffffffu, hi, off, 8);
+    lo += s >= off ? ylo : 0u;
+    hi += s >= off ? yhi : 0u;
+  }
+  const uint32_t all_lo = __shfl_sync(0xffffffffu, lo, 7, 8),
+                 all_hi = __shfl_sync(0xffffffffu, hi, 7, 8);
+  //: each pass's start in whole steps, and the lane's first place in each pass less its tokens before the pass
+  const int n[kMaxPasses] = {static_cast<int>(all_lo & 0xffffu), static_cast<int>(all_lo >> 16),
+                             static_cast<int>(all_hi & 0xffffu), static_cast<int>(all_hi >> 16)};
+  const int ex[kMaxPasses] = {
+      static_cast<int>((lo - own_lo) & 0xffffu), static_cast<int>((lo - own_lo) >> 16),
+      static_cast<int>((hi - own_hi) & 0xffffu), static_cast<int>((hi - own_hi) >> 16)};
+  const int mine[kMaxPasses] = {0, b1, b2, b3};
+  int start[kMaxPasses + 1], base[kMaxPasses];
+  start[0] = 0;
+#pragma unroll
+  for (int q = 0; q < kMaxPasses; ++q) {
+    start[q + 1] = start[q] + ((n[q] + kStep - 1) & -kStep);
+    base[q] = start[q] + ex[q] - mine[q];
+  }
+  int at_s = start[kMaxPasses], n_s = 0;
+#pragma unroll
+  for (int q = 0; q < kMaxPasses; ++q) {
+    at_s = s == q ? start[q] : at_s;
+    n_s = s == q ? n[q] : n_s;
+  }
+  if (listed) out.at[list * kListAt + s] = static_cast<uint16_t>(at_s);
+
+  //: the write side's maxima, its exponents and scales
+  float sm = 1.0f, sv = 1.0f;
+  if constexpr (kWriteSide) {
+    float mx = 0.0f, mf = 0.0f;
+#pragma unroll
+    for (int jj = 0; jj < 2; ++jj) {
+      uint32_t xw = words[jj];
+      for (int k = __any_sync(0xffffffffu, xw != 0u) != 0; k > 0; --k)
 #pragma unroll 1
-      do {
-        if (xw != 0u) {
-          const int t = kTokBits * (2 * s + jj) + __ffs(xw) - 1;
-          const int sl = slotv[t], c = sl & 7, q = sl >> pl;
-          atomicAdd(tab + (d * kMaxPasses + q) * 2 + (c >> 2), 1u << (8 * (c & 3)));
-          add_byte(run_lo, run_hi, c, 1u);
-          if constexpr (kWriteSide) {
+        do {
+          if (xw != 0u) {
+            const int t = kTokBits * (2 * s + jj) + __ffs(xw) - 1;
             const float b = static_cast<float>(win[window_at(t, d)]);
             const float2 col = cols[t];
             mx = fmaxf(mx, b * col.x);
             mf = fmaxf(mf, b * col.y);
+            xw &= xw - 1u;
           }
-          xw &= xw - 1u;
-        }
-      } while (__any_sync(0xffffffffu, xw != 0u));
-  }
-  __syncwarp();
-  //: the list's tokens of each color before the lane's words; on the write side its exponents and scales
-  uint32_t pre_lo = run_lo, pre_hi = run_hi;
-#pragma unroll
-  for (int off = 1; off < 8; off <<= 1) {
-    const uint32_t ylo = __shfl_up_sync(0xffffffffu, pre_lo, off, 8),
-                   yhi = __shfl_up_sync(0xffffffffu, pre_hi, off, 8);
-    pre_lo += s >= off ? ylo : 0u;
-    pre_hi += s >= off ? yhi : 0u;
-  }
-  pre_lo -= run_lo;
-  pre_hi -= run_hi;
-  float sm = 1.0f, sv = 1.0f;
-  if constexpr (kWriteSide) {
+        } while (__any_sync(0xffffffffu, xw != 0u));
+    }
 #pragma unroll
     for (int off = 1; off < 8; off <<= 1) {
       mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, off));
@@ -742,40 +357,10 @@ __device__ void lists_out(const FactsParams& p, const Unit& x, uint8_t* smem, in
       p.list_exp[list] = static_cast<uint32_t>(static_cast<uint16_t>(km))
                          | static_cast<uint32_t>(static_cast<uint16_t>(kv)) << 16;
   }
-  //: lane `s` pass `s`: its steps, its start and its colors' counts in the earlier passes
-  uint32_t t_lo = 0u, t_hi = 0u;
-  if (s < passes) {
-    t_lo = tab[(d * kMaxPasses + s) * 2];
-    t_hi = tab[(d * kMaxPasses + s) * 2 + 1];
-  }
-  const uint32_t m4 = __vmaxu4(t_lo, t_hi);
-  const int steps =
-      static_cast<int>(max(max(m4 & 0xffu, (m4 >> 8) & 0xffu), max((m4 >> 16) & 0xffu, m4 >> 24)));
-  int start = kColors * steps;
-  uint32_t b_lo = t_lo, b_hi = t_hi;
-#pragma unroll
-  for (int off = 1; off < 8; off <<= 1) {
-    const int y = __shfl_up_sync(0xffffffffu, start, off, 8);
-    const uint32_t ylo = __shfl_up_sync(0xffffffffu, b_lo, off, 8),
-                   yhi = __shfl_up_sync(0xffffffffu, b_hi, off, 8);
-    start += s >= off ? y : 0;
-    b_lo += s >= off ? ylo : 0u;
-    b_hi += s >= off ? yhi : 0u;
-  }
-  start -= kColors * steps;
-  b_lo -= t_lo;
-  b_hi -= t_hi;
-  if (listed) out.at[list * kListAt + s] = static_cast<uint16_t>(start);
-  if (s < kMaxPasses) {
-    tab[(d * kMaxPasses + s) * 2] = b_lo;
-    tab[(d * kMaxPasses + s) * 2 + 1] = b_hi;
-    startv[d * kMaxPasses + s] = static_cast<uint16_t>(start);
-  }
-  __syncwarp();
 
-  //: the second walk: each entry at its pass's start, 8 x its rank among its color there, plus its color
-  run_lo = run_hi = 0u;
+  //: the entries: the lane's `i`-th at its pass's first place plus `i`
   const int row = p.read_row;
+  int i = 0;
 #pragma unroll
   for (int jj = 0; jj < 2; ++jj) {
     uint32_t xw = words[jj];
@@ -783,16 +368,15 @@ __device__ void lists_out(const FactsParams& p, const Unit& x, uint8_t* smem, in
 #pragma unroll 1
       do {
         if (xw != 0u) {
-          const int t = kTokBits * (2 * s + jj) + __ffs(xw) - 1;
+          const int bit = __ffs(xw) - 1, t = kTokBits * (2 * s + jj) + bit;
           xw &= xw - 1u;
-          const uint32_t sl = slotv[t];
-          const int c = static_cast<int>(sl & 7u), q = static_cast<int>(sl >> pl);
-          const uint32_t rank = byte_of(pre_lo + run_lo, pre_hi + run_hi, c);
-          add_byte(run_lo, run_hi, c, 1u);
-          const uint32_t before =
-              (tab[(d * kMaxPasses + q) * 2 + (c >> 2)] >> (8 * (c & 3))) & 0xffu;
-          const int pos =
-              startv[d * kMaxPasses + q] + kColors * static_cast<int>(rank - before) + c;
+          const uint32_t sl =
+              static_cast<uint32_t>(r.pre[jj] + __popc(r.u[jj] & ((1u << bit) - 1u)));
+          const int q = static_cast<int>(sl >> pl);
+          int pos = base[0];
+#pragma unroll
+          for (int k2 = 1; k2 < kMaxPasses; ++k2) pos = q >= k2 ? base[k2] : pos;
+          pos += i++;
           const float b = static_cast<float>(win[window_at(t, d)]);
           uint2 e;
           if constexpr (kWriteSide) {
@@ -801,7 +385,7 @@ __device__ void lists_out(const FactsParams& p, const Unit& x, uint8_t* smem, in
             const uint32_t cm = __half_as_ushort(__float2half_rn(b * col.x * sm));
             e = make_uint2(sl, cv | cm << 16);
           } else {
-            const uint32_t local = sl - (static_cast<uint32_t>(q) << pl);
+            const uint32_t local = sl & ((1u << pl) - 1u);
             const uint32_t coef = __half_as_ushort(__float2half_rn(b * (1.0f / 256.0f)));
             e = make_uint2(local * row + 16u * carry::pool_chunk(row, local, 0u),
                            coef | (carry::kPadBytes + carry::panel_row(local)) << 16);
@@ -813,29 +397,22 @@ __device__ void lists_out(const FactsParams& p, const Unit& x, uint8_t* smem, in
         }
       } while (__any_sync(0xffffffffu, xw != 0u));
   }
-  //: lane `q`'s pads: each color's missing steps in pass `q`
-  if (listed && s < passes) {
-#pragma unroll
-    for (int c = 0; c < kColors; ++c) {
+  //: lane `q`'s pads: pass `q`'s last step filled, a pad at place `c` of its step the pass's slot `c`, coefficient 0
+  if (listed && s < kMaxPasses) {
+#pragma unroll 1
+    for (int pos = at_s + n_s; pos < at_s + ((n_s + kStep - 1) & -kStep); ++pos) {
+      const uint32_t c = static_cast<uint32_t>(pos) & (kStep - 1);
       const uint2 e = kWriteSide ? make_uint2((static_cast<uint32_t>(s) << pl) + c, 0u)
                                  : make_uint2(c * row + 16u * carry::pool_chunk(row, c, 0u),
                                               carry::panel_row(c) << 16);
-#pragma unroll 1
-      for (int i = static_cast<int>(byte_of(t_lo, t_hi, c)); i < steps; ++i) {
-        const int pos = start + kColors * i + c;
-        entries[pos] = e;
-        if (pos < kHeadEntries) heads[pos] = e;
-      }
+      entries[pos] = e;
+      if (pos < kHeadEntries) heads[pos] = e;
     }
   }
-  //: the union by slot and its extent
-  reinterpret_cast<uint32_t*>(out.union_tok + group_index * kWindowTokens)[tid] =
-      reinterpret_cast<const uint32_t*>(smem + FactsSmem::kUnion)[tid];
-  if (tid == 0) out.union_count[group_index] = ext;
 }
 
 //: THE GRID: a CTA a unit, a window's units innermost. Every unit loads its window (a columns unit nothing) and a write
-//: list unit its columns; a vote or list unit votes and writes its bits; a list unit colors its union and writes its
+//: list unit its columns; a vote or list unit votes and writes its bits; a list unit ranks its union and writes its
 //: lists. -- see docs/internals/facts/facts.md#the-grid
 __global__ __launch_bounds__(kFactsThreads, kFactsCtasMin) void facts_pass(const FactsParams p) {
   extern __shared__ __align__(128) uint8_t smem[];
@@ -879,7 +456,7 @@ __global__ __launch_bounds__(kFactsThreads, kFactsCtasMin) void facts_pass(const
   }
 
   //: THE VOTE AND THE BITS OUT
-  vote(p, x, win, tile, warp, lane);
+  vote(p, x, win, tile, reinterpret_cast<uint32_t*>(smem + FactsSmem::kUword), warp, lane);
   __syncthreads();
   bits_out(p, x, tile, tid, warp, lane);
   clock.lap(kPhaseVote);
@@ -888,27 +465,14 @@ __global__ __launch_bounds__(kFactsThreads, kFactsCtasMin) void facts_pass(const
     return;
   }
 
-  //: THE COLORING: its inputs; the queue beside the singles' index bases (warps 1-4); the claims; warp 0's singles;
-  //: the slots
-  prepare(smem, tile, tid, warp, lane);
+  //: THE RANKS AND THE LISTS
+  const Ranks r = ranks(p, x, smem, tid, warp, lane);
   __syncthreads();
-  enqueue(smem, tid, warp, lane);
-  if (warp >= 1 && warp <= 4) singles_before(smem, tile, warp, lane);
-  __syncthreads();
-  clock.lap(kPhaseInputs);
-  claim_all(smem, warp, lane);
-  clock.lap(kPhaseClaims);
-  if (warp == 0) singles(smem, tile, lane);
-  __syncthreads();
-  clock.lap(kPhaseSingles);
-  slots(smem, tile, tid, warp, lane);
-  clock.lap(kPhaseSlots);
-
-  //: THE LISTS
+  clock.lap(kPhaseRanks);
   if (writes) {
-    lists_out<true>(p, x, smem, tid, warp, lane);
+    lists_out<true>(p, x, smem, r, warp, lane);
   } else {
-    lists_out<false>(p, x, smem, tid, warp, lane);
+    lists_out<false>(p, x, smem, r, warp, lane);
   }
   clock.lap(kPhaseLists);
   clock.publish(p.ledger, 0, kFactsWarps, warp);
