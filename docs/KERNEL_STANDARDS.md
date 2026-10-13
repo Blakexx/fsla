@@ -1049,7 +1049,7 @@ Of the fourteen skills on the coordinator's machine, seven were links into a del
 loaded only in sessions started inside it, and their text had rotted: dead paths, a copy of these standards stopping at
 §21. A skill that already existed for per-section attribution went unused while its method was rebuilt by hand.
 1. A REPO ACTION'S SKILL LIVES IN THE REPO (`.claude/skills/<name>/SKILL.md`), versioned with the code it drives, so
-   every worktree carries its own branch's skills. A session starts in the worktree, or adds it with `/add-dir`. Only
+   every worktree carries its own branch's skills; a skill reaches an agent through the action it takes (4). Only
    cross-repo coordination (cards, the queue, a site's records) is a user-level skill.
 2. A SKILL HOLDS PROCEDURE, THE DOCS HOLD THE TRUTH: a skill is steps and commands; each rule, fact, number and format
    it relies on is a reference to its doc section, never a copy. `tools/docrefs.py` holds a skill's references strictly:
@@ -1058,7 +1058,11 @@ loaded only in sessions started inside it, and their text had rotted: dead paths
 3. PORTABLE: nothing under `.claude/` names a machine path. Hooks resolve through `$CLAUDE_PROJECT_DIR`; a site's own
    locations come from the dev config or the environment (`ROLA_SCRATCH`), as §17 has it for the code.
    `tools/lint/portable_claude.py` fails a commit that names one.
-4. ROUTED, NOT REMEMBERED: `.claude/skill-routes.json` maps actions -- a path edited, a command run -- to skills; the
-   PreToolUse hook (`.claude/hooks/route_skills.py`) puts the skill to load in context the first time a session takes
-   that action, and `CLAUDE.md` shows the table. Skills make the right path the easy one; lints and gates make the
-   wrong one fail.
+4. ROUTED BY THE ACTION, FROM THE CHECKOUT IT TOUCHES: `.claude/skill-routes.json` maps actions -- a path edited, a
+   command run -- to skills. The PreToolUse router (`.claude/hooks/route_skills.py`) finds the checkout a call touches
+   (the edited file's; a command's leading `cd` or `git -C`; else the session's) and puts THAT checkout's skill text
+   in the acting agent's context the first time the agent takes the action there. Any number of worktrees on any
+   branches route from any session, subagents included, and nothing is registered globally. A session started inside
+   the repo is routed by the repo's own hook entry; one started elsewhere by the user-level bootstrap the repo ships
+   (`.claude/hooks/skill_router_bootstrap.py`, installed once a machine as `CLAUDE.md` says). `CLAUDE.md` shows the
+   table. Skills make the right path the easy one; lints and gates make the wrong one fail.

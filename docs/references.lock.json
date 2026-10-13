@@ -85,6 +85,7 @@
   {"doc": "docs/ESSENTIALS.md", "pinned_at": "c26168184133", "reviewed": true, "sha256": "", "target": "tests/oracle"},
   {"doc": "docs/KERNEL_STANDARDS.md", "pinned_at": "3fac56b5a835", "reviewed": true, "sha256": "", "target": ".claude"},
   {"doc": "docs/KERNEL_STANDARDS.md", "pinned_at": "3fac56b5a835", "reviewed": true, "sha256": "", "target": ".claude/hooks/route_skills.py"},
+  {"doc": "docs/KERNEL_STANDARDS.md", "pinned_at": "749b1a3d7c30", "reviewed": true, "sha256": "", "target": ".claude/hooks/skill_router_bootstrap.py"},
   {"doc": "docs/KERNEL_STANDARDS.md", "pinned_at": "3fac56b5a835", "reviewed": true, "sha256": "", "target": ".claude/skill-routes.json"},
   {"doc": "docs/KERNEL_STANDARDS.md", "pinned_at": "13de98d29755", "reviewed": true, "sha256": "", "target": "csrc"},
   {"doc": "docs/KERNEL_STANDARDS.md", "pinned_at": "13de98d29755", "reviewed": true, "sha256": "", "target": "csrc/rola/src/common/ops.cuh"},

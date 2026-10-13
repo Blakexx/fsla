@@ -32,9 +32,12 @@ The rules most often violated by newcomers, restated:
 ## Skills: procedures that ship with the repo (KERNEL_STANDARDS §31)
 
 The repo's skills are in `.claude/skills/`; each is a procedure whose rules and facts are references into `docs/`,
-held current by `tools/docrefs.py`. Start a session in this checkout or worktree, or add it with `/add-dir`, so its
-own branch's skills load. A PreToolUse hook names the skill that covers an action the first time a session takes it
-(`.claude/skill-routes.json`):
+held current by `tools/docrefs.py`. A PreToolUse router puts the skill that covers an action -- from the checkout the
+action touches, so every worktree uses its own branch's skills -- into the acting agent's context the first time it
+takes the action (`.claude/skill-routes.json`). A session started here is routed by this repo's hook; for sessions
+started anywhere else, install the user-level bootstrap once a machine: copy `.claude/hooks/skill_router_bootstrap.py`
+to `~/.claude/hooks/skill_router.py` and add a PreToolUse hook for `Edit|Write|MultiEdit|NotebookEdit|Bash` running
+`python3 "$HOME/.claude/hooks/skill_router.py"` to `~/.claude/settings.json`.
 
 | action | skill |
 |---|---|
