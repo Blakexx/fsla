@@ -9,7 +9,8 @@ STASH (each live entry in digit-then-token order, its token and digit and its fi
 `facts_block` cell's 8,192 list units, does the colorer fit beside the stream half within the line (1.15x the real
 floor, 516 / 665 µs at 4 / 16 live digits a token), and what does a union cost by phase?
 
-THE COLORER, a warp a union (4 warps a CTA, no CTA barrier):
+THE COLORER, a warp a union (4 warps a CTA, no CTA barrier; 4 CTAs an SM on the write side, 5 on the read side, whose
+2 passes' tables are smaller):
 1. The tile in registers (lane `d` digit `d`'s 16 words); each token's digits by sixteen 32 x 32 bit transposes.
 2. THE PASSES, cut from the union in token order: pass `q` holds the union's tokens of union rank `q P .. q P + P - 1`
    (`P` the carry's pass for the side: 128 write, 256 read), so each pass is colored alone and a list's pass sees its
@@ -18,10 +19,12 @@ THE COLORER, a warp a union (4 warps a CTA, no CTA barrier):
    field `32 - capacity + count`, bit 5 marking a full digit; the capacity `ceil(n / 8)` of the digit's tokens in the
    pass; the pass's cap `P / 8` a color): each batch shares its 32 lanes among the passes still queued, so a pass's
    tokens meet few of their own.
-4. The singles, pass by pass: each digit's in the rotation `(d + i) & 7`, first under its capacity then anywhere, a
-   color granting the pass's room in digit order (a scan over the lanes sharing it); then dealt to their colors.
-5. The lists: a counting walk over the stash into each (list, pass)'s color counts; each (list, pass, color)'s place
-   base; a walk a lane an entry placing it at `base + 8 x rank`, each list's whole run first written with its pads as
+4. The singles, pass by pass, one a digit a round: each digit takes the first color in the rotation from `d` with room
+   under its capacity and in the pass (else any with room in the pass), the digits choosing one color granted in digit
+   order (a match on the color); then dealt to their colors over the pass's words.
+5. The lists: a counting walk over the stash (a chunk ahead) into each (list, pass)'s color counts; each pass's start
+   and its colors' tokens before; a walk a lane an entry (a chunk ahead) placing it at its pass's start + 8 x (its rank -
+   its color's tokens before) + its color, each list's whole run first written with its pads as
    the walk reaches it (coalesced, so every sector is whole before the entries land over it).
 
 Every list is checked exactly against the mirror given the kernel's coloring (entries, starts, heads), the coloring by
@@ -44,11 +47,11 @@ Measured (RTX 3080 Ti at its boost clock, ~1.96 GHz; medians):
 
 | | k 4 | k 16 |
 |---|---|---|
-| the colorer, both sides' 8,192 unions | 318 µs | 644 µs |
-| list places over live entries | 1.77 | 1.47 |
+| the colorer, both sides' 8,192 unions | 299 µs | 571 µs |
+| list places over live entries | 1.76 | 1.45 |
 | the window-colored form (`a044e932`), both sides | 228-258 µs | 580 µs |
 | the stream half's model alone (a persistent CTA an SM, two windows) | 393-420 µs | 447 µs |
-| tokens over a pass capacity / gap slots, a union | 2.1 / 23.6 | 17.3 / 23.1 |
+| tokens over a pass capacity / gap slots, a union | 1.6 / 23.6 | 15.1 / 23.1 |
 
 What a place costs: the carry steps every place of a list in every box that holds the list -- 16 CTAs a list at this
 cell (8 boxes along the other level x 2 channel groups at d_v 64), ~3.7 cycles a place a CTA in the readout

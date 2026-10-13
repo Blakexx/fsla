@@ -21,8 +21,10 @@ namespace facts_color {
 
 namespace carry = rola::carry;
 
-//: THE CTA: four warps, a union each, four CTAs an SM
-constexpr int kWarps = 4, kThreads = 32 * kWarps, kCtasMin = 4;
+//: THE CTA: four warps, a union each; four CTAs an SM on the write side, five on the read side (its two passes' tables
+//: the smaller)
+constexpr int kWarps = 4;
+template <bool kWrite> constexpr int kCtasOf = kWrite ? 4 : 5;
 constexpr int kWords = 16, kTokens = 32 * kWords, kDigits = 32, kColors = 8, kUnionCap = kTokens / kColors;
 constexpr int kQueueCap = kTokens, kListCap = kTokens, kListAt = 8, kHeadEntries = 16, kMaxPasses = 4;
 constexpr uint32_t kAll = 0xffffffffu;
@@ -34,10 +36,11 @@ constexpr int kRow = 64;
 //: dealt, then the union by slot, then each list's starts and color counts so far), each (pass, digit)'s biased color
 //: counts and each pass's zero record, each pass's color counts, the union's words, each pass's tokens a word, each
 //: word's tokens of its next pass and its first token's pass, each token's color (then its slot)
-struct Smem {
+template <int kQ>
+struct SmemOf {
   static constexpr int kMasks = 0;
   static constexpr int kTab = 0;
-  static constexpr int kBase = 0;
+  static constexpr int kSlots = kMasks + kTokens * 2;
   static constexpr int kQueue = kMasks + kTokens * 4;
   static constexpr int kEnds = kQueue;
   static constexpr int kRuns = kEnds + kDigits * 16;
@@ -45,21 +48,20 @@ struct Smem {
   static constexpr int kRun = kStart + kDigits * kListAt * 2;
   static constexpr int kBySlot = kQueue;
   static constexpr int kRecs = kQueue + kQueueCap * 2;
-  static constexpr int kUcount = kRecs + kMaxPasses * (kDigits + 1) * 8;
-  static constexpr int kUword = kUcount + kMaxPasses * kColors * 4;
+  static constexpr int kUcount = kRecs + kQ * (kDigits + 1) * 8;
+  static constexpr int kUword = kUcount + kQ * kColors * 4;
   static constexpr int kMword = kUword + kWords * 4;
   static constexpr int kTword = kMword + kWords * 4;
   static constexpr int kPmask = kTword + kWords * 4;
-  static constexpr int kHi = kPmask + kMaxPasses * kWords * 4;
-  static constexpr int kQlo = kHi + kWords * 4;
+  static constexpr int kQlo = kPmask + kQ * kWords * 4;
   static constexpr int kColor = kQlo + kWords;
-  static constexpr int kBytes = kColor + kTokens * 2;
+  static constexpr int kBytes = kColor + kTokens;
+  static_assert(kTab + kDigits * kQ * 8 <= kSlots && kRun + kDigits * kColors <= kRecs &&
+                    kRuns + kDigits * 2 <= kRecs && kUcount % 16 == 0 && kUword % 16 == 0 && kPmask % 16 == 0 &&
+                    kColor % 16 == 0,
+                "the lists' tables and the slots inside the dead masks, the deal's inside the dead queue; each tenant "
+                "on its access's alignment");
 };
-static_assert(Smem::kBase + kDigits * kMaxPasses * kColors * 2 <= Smem::kQueue &&
-                  Smem::kRun + kDigits * kColors <= Smem::kRecs && Smem::kRuns + kDigits * 2 <= Smem::kRecs &&
-                  Smem::kUcount % 16 == 0 && Smem::kUword % 16 == 0 && Smem::kPmask % 16 == 0 &&
-                  Smem::kColor % 16 == 0,
-              "the lists' tables inside the dead masks and queue; each tenant on its access's alignment");
 
 //: A (PASS, DIGIT)'S COLOR COUNT, BIASED: `32 - cap + count` a byte, so bit 5 is set where the digit is full in the pass
 //: and the claims' sums order as its counts do; each pass's zero record past its digits for a lane with none left
@@ -105,6 +107,19 @@ __device__ __forceinline__ void add_byte(uint32_t& lo, uint32_t& hi, int c, uint
   hi += c < 4 ? 0u : x;
 }
 
+//: an octet's nonzero bytes, a bit a byte
+__device__ __forceinline__ uint32_t nonzero8(uint32_t lo, uint32_t hi) {
+  const uint32_t a = ((lo & 0x7f7f7f7fu) + 0x7f7f7f7fu | lo) & 0x80808080u;
+  const uint32_t b = ((hi & 0x7f7f7f7fu) + 0x7f7f7f7fu | hi) & 0x80808080u;
+  return ((a * 0x00204081u) >> 28 & 0xfu) | ((b * 0x00204081u) >> 24 & 0xf0u);
+}
+
+__device__ __forceinline__ uint32_t lanemask_lt() {
+  uint32_t m;
+  asm("mov.u32 %0, %%lanemask_lt;" : "=r"(m));
+  return m;
+}
+
 //: A 32 x 32 BIT TRANSPOSE across the warp, lane d's bit i to lane i's bit d (the facts pass's)
 __device__ __forceinline__ uint32_t transpose(uint32_t x, int lane) {
   constexpr uint32_t kHalf[5] = {0x0000ffffu, 0x00ff00ffu, 0x0f0f0f0fu, 0x33333333u, 0x55555555u};
@@ -131,11 +146,13 @@ struct Claim {
 __device__ __forceinline__ uint32_t pair_lo(uint32_t x) { return __byte_perm(x, 0u, 0x4140); }
 __device__ __forceinline__ uint32_t pair_hi(uint32_t x) { return __byte_perm(x, 0u, 0x4342); }
 
+template <int kQ>
 __device__ __forceinline__ Claim claim_batch(uint8_t* smem, uint32_t t, uint32_t q, bool live, uint32_t cap, int lane) {
+  using Smem = SmemOf<kQ>;
   const uint32_t* const masks = reinterpret_cast<const uint32_t*>(smem + Smem::kMasks);
   uint32_t* const recs = reinterpret_cast<uint32_t*>(smem + Smem::kRecs) + 2 * kRecStride * q;
   uint32_t* const ucount = reinterpret_cast<uint32_t*>(smem + Smem::kUcount) + kColors * q;
-  uint16_t* const color = reinterpret_cast<uint16_t*>(smem + Smem::kColor);
+  uint8_t* const color = smem + Smem::kColor;
 
   const uint32_t m = live ? masks[t] : 0u;
   const int digits = static_cast<int>(__reduce_max_sync(kAll, __popc(m)));
@@ -195,49 +212,54 @@ __device__ __forceinline__ Claim claim_batch(uint8_t* smem, uint32_t t, uint32_t
     }
   }
   const bool won = live && !over;
-  if (won) color[t] = static_cast<uint16_t>(c);
+  if (won) color[t] = static_cast<uint8_t>(c);
   return Claim{__ballot_sync(kAll, loser), __ballot_sync(kAll, won), loser};
 }
 
-//: THE SINGLES OF A PASS `q`, lane `d` digit `d`'s `k`: each takes colors in the rotation `(d + i) & 7`, first under its
-//: pass capacity (its biased counts' room) and then anywhere, a color granting the pass's room in digit order (the lanes
-//: sharing it this step, by a scan); each digit's color ends posted for the deal
+//: THE SINGLES OF A PASS `q`, lane `d` digit `d`'s `k`, one a digit a round: each takes the first color in the rotation
+//: from `d` with room under its pass capacity and in the pass (else the first with room in the pass), the lanes choosing
+//: one color granted in digit order while the pass's room lasts; each digit's color ends posted for the deal
+template <int kQ>
 __device__ __forceinline__ void singles(uint8_t* smem, int k, uint32_t q, uint32_t cap, int lane) {
+  using Smem = SmemOf<kQ>;
   const uint2 cw = reinterpret_cast<const uint2*>(smem + Smem::kRecs)[kRecStride * q + lane];
   const uint4 ua = reinterpret_cast<const uint4*>(smem + Smem::kUcount)[2 * q],
               ub = reinterpret_cast<const uint4*>(smem + Smem::kUcount)[2 * q + 1];
   const uint32_t u[kColors] = {ua.x, ua.y, ua.z, ua.w, ub.x, ub.y, ub.z, ub.w};
   //: the digit's room a color (32 - its biased count, at least 0) and the pass's, octets of bytes
-  const uint32_t d_lo = __vsubus4(kBias8 * 0x01010101u, cw.x), d_hi = __vsubus4(kBias8 * 0x01010101u, cw.y);
-  uint32_t r_lo = 0u, r_hi = 0u;
+  uint32_t d_lo = 0u, d_hi = 0u, r_lo = 0u, r_hi = 0u;
 #pragma unroll
-  for (int c = 0; c < kColors; ++c) add_byte(r_lo, r_hi, c, cap - u[c]);
+  for (int c = 0; c < kColors; ++c) {
+    const uint32_t f = byte_of(cw.x, cw.y, c);
+    add_byte(d_lo, d_hi, c, f < kBias8 ? kBias8 - f : 0u);
+    add_byte(r_lo, r_hi, c, cap - u[c]);
+  }
+  const int rot = lane & 7;
   uint32_t t_lo = 0u, t_hi = 0u;
   int left = k;
+  for (int go = __any_sync(kAll, left > 0) != 0; go > 0; --go)
 #pragma unroll 1
-  for (int capped = 1; capped >= 0; --capped) {
-    int i = 0;
-    for (int go = __any_sync(kAll, left > 0) != 0; go > 0; --go)
-#pragma unroll 1
-      do {
-        const int c = (lane + i) & 7;
-        const int room = static_cast<int>(byte_of(d_lo, d_hi, c)) - static_cast<int>(byte_of(t_lo, t_hi, c));
-        const int want = capped ? max(0, min(left, room)) : left;
-        int incl = want;
-        int y = __shfl_up_sync(kAll, incl, 8);
-        incl += lane >= 8 ? y : 0;
-        y = __shfl_up_sync(kAll, incl, 16);
-        incl += lane >= 16 ? y : 0;
-        const int g = max(0, min(want, static_cast<int>(byte_of(r_lo, r_hi, c)) - (incl - want)));
-        add_byte(t_lo, t_hi, c, static_cast<uint32_t>(g));
-        left -= g;
-        uint32_t g_lo = 0u, g_hi = 0u;
-        add_byte(g_lo, g_hi, c, static_cast<uint32_t>(g));
-        r_lo -= __reduce_add_sync(kAll, g_lo);
-        r_hi -= __reduce_add_sync(kAll, g_hi);
-        ++i;
-      } while (__any_sync(kAll, left > 0 && i < kColors));
-  }
+    do {
+      //: the colors with room, a bit a color, rotated to start at the lane's
+      const uint32_t mine = nonzero8(d_lo, d_hi) & nonzero8(r_lo, r_hi), pass = nonzero8(r_lo, r_hi);
+      const uint32_t pick = mine != 0u ? mine : pass;
+      const uint32_t rotated = (pick >> rot | pick << (kColors - rot)) & 0xffu;
+      const int c = left > 0 ? (__ffs(rotated) - 1 + rot) & 7 : kColors;
+      const uint32_t grp = __match_any_sync(kAll, c);
+      const bool got = c < kColors && static_cast<uint32_t>(__popc(grp & lanemask_lt())) < byte_of(r_lo, r_hi, c & 7);
+      uint32_t g_lo = 0u, g_hi = 0u;
+      if (got) {
+        add_byte(t_lo, t_hi, c, 1u);
+        if (mine != 0u) {
+          d_lo -= c < 4 ? 1u << (8 * (c & 3)) : 0u;
+          d_hi -= c < 4 ? 0u : 1u << (8 * (c & 3));
+        }
+        add_byte(g_lo, g_hi, c, 1u);
+        --left;
+      }
+      r_lo -= __reduce_add_sync(kAll, g_lo);
+      r_hi -= __reduce_add_sync(kAll, g_hi);
+    } while (__any_sync(kAll, left > 0));
   uint32_t end[kColors];
   uint32_t e = 0u;
 #pragma unroll
@@ -251,17 +273,22 @@ __device__ __forceinline__ void singles(uint8_t* smem, int k, uint32_t q, uint32
 
 //: THE COLORER: a warp a union, its tile in registers (lane d digit d's 16 words), every table in its own shared memory
 template <bool kWrite, int kCell>
-__global__ __launch_bounds__(kThreads, kCtasMin) void color(const Params p) {
+__global__ __launch_bounds__(32 * kWarps, kCtasOf<kWrite>) void color(const Params p) {
+  constexpr int kQ = kWrite ? 4 : 2;
+  using Smem = SmemOf<kQ>;
   extern __shared__ __align__(16) uint8_t smem_all[];
   const int warp = lab::warp_id(), lane = lab::lane_id();
-  const int u = p.unit0 + static_cast<int>(blockIdx.x) * kWarps + warp;
+  const int local = static_cast<int>(blockIdx.x) * kWarps + warp;
+  if (local >= p.units) return;
+  const int u = p.unit0 + local;
   uint8_t* const smem = smem_all + warp * Smem::kBytes;
   uint32_t* const masks = reinterpret_cast<uint32_t*>(smem + Smem::kMasks);
   uint32_t* const uword = reinterpret_cast<uint32_t*>(smem + Smem::kUword);
   uint32_t* const mword = reinterpret_cast<uint32_t*>(smem + Smem::kMword);
   uint32_t* const tword = reinterpret_cast<uint32_t*>(smem + Smem::kTword);
   uint16_t* const queue = reinterpret_cast<uint16_t*>(smem + Smem::kQueue);
-  uint16_t* const slotv = reinterpret_cast<uint16_t*>(smem + Smem::kColor);
+  uint8_t* const colv = smem + Smem::kColor;
+  uint16_t* const slotv = reinterpret_cast<uint16_t*>(smem + Smem::kSlots);
   uint16_t* const by_slot = reinterpret_cast<uint16_t*>(smem + Smem::kBySlot);
   const uint32_t below = lab::held((1u << lane) - 1u), le = lab::held((2u << lane) - 1u);
   constexpr int kPl = kWrite ? 7 : 8, kPass = 1 << kPl;
@@ -299,9 +326,8 @@ __global__ __launch_bounds__(kThreads, kCtasMin) void color(const Params p) {
   //: the passes -- the union's tokens in token order, `kPass` a pass -- as each word's first token's pass and the
   //: word's tokens of the next pass, and each pass's tokens a word
   uint32_t* const pmask = reinterpret_cast<uint32_t*>(smem + Smem::kPmask);
-  uint32_t* const hiw = reinterpret_cast<uint32_t*>(smem + Smem::kHi);
   uint8_t* const qlov = smem + Smem::kQlo;
-  reinterpret_cast<uint2*>(pmask)[lane] = make_uint2(0u, 0u);
+  if (lane < kQ * kWords / 2) reinterpret_cast<uint2*>(pmask)[lane] = make_uint2(0u, 0u);
   uint32_t ur = 0u;
   __syncwarp();
 #pragma unroll
@@ -317,7 +343,6 @@ __global__ __launch_bounds__(kThreads, kCtasMin) void color(const Params p) {
       uword[j] = uw;
       mword[j] = mw;
       tword[j] = tw;
-      hiw[j] = hi;
       qlov[j] = static_cast<uint8_t>(qlo);
       pmask[qlo * kWords + j] = uw & ~hi;
       if (hi != 0u) pmask[(qlo + 1) * kWords + j] = hi;
@@ -337,7 +362,7 @@ __global__ __launch_bounds__(kThreads, kCtasMin) void color(const Params p) {
     const uint4* const uw4 = reinterpret_cast<const uint4*>(uword);
     const uint4* const mw4 = reinterpret_cast<const uint4*>(mword);
 #pragma unroll
-    for (int q = 0; q < kMaxPasses; ++q) {
+    for (int q = 0; q < kQ; ++q) {
       int n = 0, k = 0;
       const uint4* const pm4 = reinterpret_cast<const uint4*>(pmask + q * kWords);
 #pragma unroll
@@ -355,10 +380,10 @@ __global__ __launch_bounds__(kThreads, kCtasMin) void color(const Params p) {
       if (q < 2) sg01 |= static_cast<uint32_t>(k) << (16 * q);
       else sg23 |= static_cast<uint32_t>(k) << (16 * (q - 2));
     }
-    if (lane < kMaxPasses) reinterpret_cast<uint2*>(smem + Smem::kRecs)[kRecStride * lane + kZero] = make_uint2(0u, 0u);
-    reinterpret_cast<uint32_t*>(smem + Smem::kUcount)[lane] = 0u;
+    if (lane < kQ) reinterpret_cast<uint2*>(smem + Smem::kRecs)[kRecStride * lane + kZero] = make_uint2(0u, 0u);
+    if (lane < kQ * kColors) reinterpret_cast<uint32_t*>(smem + Smem::kUcount)[lane] = 0u;
   }
-  uint32_t tl[kMaxPasses] = {0u, 0u, 0u, 0u};
+  uint32_t tl[kQ] = {};
 #pragma unroll 1
   for (int q = 0; q < passes; ++q) {
     const int i = lane & 15;
@@ -373,7 +398,7 @@ __global__ __launch_bounds__(kThreads, kCtasMin) void color(const Params p) {
     const uint32_t all = __shfl_sync(kAll, incl, kWords - 1), threes = all & 0xffffu;
     const uint32_t ex = incl - cnt;
 #pragma unroll
-    for (int p = 0; p < kMaxPasses; ++p) tl[p] = p == q ? threes + (all >> 16) : tl[p];
+    for (int p = 0; p < kQ; ++p) tl[p] = p == q ? threes + (all >> 16) : tl[p];
     uint16_t* const seg = queue + (q << kPl);
     const uint32_t live = __ballot_sync(kAll, lane < kWords && pm != 0u);
     int j = __ffs(live) - 1;
@@ -396,49 +421,59 @@ __global__ __launch_bounds__(kThreads, kCtasMin) void color(const Params p) {
   //: of a pass); a batch that keeps nothing followed by one token alone (which always keeps)
   {
     constexpr uint32_t kRing = kPass - 1;
-    uint32_t hd[kMaxPasses] = {0u, 0u, 0u, 0u};
+    uint32_t hd[kQ] = {};
     bool solo = false;
     const uint32_t ul = static_cast<uint32_t>(lane);
-    for (int go = __any_sync(kAll, tl[0] | tl[1] | tl[2] | tl[3]) != 0; go > 0; --go)
+    uint32_t any = 0u;
+#pragma unroll
+    for (int p = 0; p < kQ; ++p) any |= tl[p];
+    bool pending = true;
+    for (int go = __any_sync(kAll, any) != 0; go > 0; --go)
 #pragma unroll 1
       do {
         uint32_t active = 0u;
 #pragma unroll
-        for (int p = 0; p < kMaxPasses; ++p) active += tl[p] != hd[p] ? 1u : 0u;
-        const uint32_t share = solo ? 1u : (32u + active - 1u) / active;
-        uint32_t edge[kMaxPasses + 1], taken = 0u;
+        for (int p = 0; p < kQ; ++p) active += tl[p] != hd[p] ? 1u : 0u;
+        //: a pass's share of the lanes: 32, 16, 11 or 8 for 1-4 passes queued
+        const uint32_t share = solo ? 1u : (0x080b1020u >> (8 * (active - 1u))) & 0xffu;
+        uint32_t edge[kQ + 1], kq[kQ], taken = 0u;
         edge[0] = 0u;
 #pragma unroll
-        for (int p = 0; p < kMaxPasses; ++p) {
-          const uint32_t kq = solo && taken != 0u ? 0u : min(min(tl[p] - hd[p], share), 32u - taken);
-          taken += kq;
+        for (int p = 0; p < kQ; ++p) {
+          kq[p] = solo && taken != 0u ? 0u : min(min(tl[p] - hd[p], share), 32u - taken);
+          taken += kq[p];
           edge[p + 1] = taken;
         }
-        const uint32_t q = (ul >= edge[1] ? 1u : 0u) + (ul >= edge[2] ? 1u : 0u) + (ul >= edge[3] ? 1u : 0u);
-        const bool live = ul < edge[kMaxPasses];
-        uint32_t start = edge[0], head = hd[0];
+        uint32_t q = 0u;
 #pragma unroll
-        for (int p = 1; p < kMaxPasses; ++p) {
+        for (int p = 1; p < kQ; ++p) q += ul >= edge[p] ? 1u : 0u;
+        const bool live = ul < edge[kQ];
+        uint32_t start = edge[0], head = hd[0], tail = tl[0];
+#pragma unroll
+        for (int p = 1; p < kQ; ++p) {
           start = q == static_cast<uint32_t>(p) ? edge[p] : start;
           head = q == static_cast<uint32_t>(p) ? hd[p] : head;
+          tail = q == static_cast<uint32_t>(p) ? tl[p] : tail;
         }
         const uint32_t t = live ? queue[(q << kPl) + ((head + ul - start) & kRing)] : 0u;
-        const Claim cl = claim_batch(smem, t, q, live, kPassCap, lane);
+        const Claim cl = claim_batch<kQ>(smem, t, q, live, kPassCap, lane);
         __syncwarp();
+        if (cl.loser) {
+          const uint32_t mine = cl.lost & below & ~((1u << start) - 1u);
+          queue[(q << kPl) + ((tail + __popc(mine)) & kRing)] = static_cast<uint16_t>(t);
+        }
+        const uint32_t lost = __reduce_add_sync(kAll, cl.loser ? 1u << (8 * q) : 0u);
 #pragma unroll
-        for (int p = 0; p < kMaxPasses; ++p) {
-          const uint32_t hi_mask = edge[p + 1] >= 32u ? ~0u : (1u << edge[p + 1]) - 1u;
-          const uint32_t lo_mask = edge[p] >= 32u ? ~0u : (1u << edge[p]) - 1u;
-          const uint32_t lost = cl.lost & hi_mask & ~lo_mask;
-          if (cl.loser && q == static_cast<uint32_t>(p))
-            queue[(static_cast<uint32_t>(p) << kPl) + ((tl[p] + __popc(lost & below)) & kRing)] =
-                static_cast<uint16_t>(t);
-          tl[p] += __popc(lost);
-          hd[p] += edge[p + 1] - edge[p];
+        for (int p = 0; p < kQ; ++p) {
+          tl[p] += (lost >> (8 * p)) & 0xffu;
+          hd[p] += kq[p];
         }
         solo = cl.kept == 0u;
         __syncwarp();
-      } while (__any_sync(kAll, (tl[0] != hd[0]) || (tl[1] != hd[1]) || (tl[2] != hd[2]) || (tl[3] != hd[3])));
+        pending = false;
+#pragma unroll
+        for (int p = 0; p < kQ; ++p) pending |= tl[p] != hd[p];
+      } while (__any_sync(kAll, pending));
   }
 
   clk.mark(3);
@@ -446,7 +481,7 @@ __global__ __launch_bounds__(kThreads, kCtasMin) void color(const Params p) {
 #pragma unroll 1
   for (int q = 0; q < passes; ++q) {
     const int k = static_cast<int>(((q < 2 ? sg01 : sg23) >> (16 * (q & 1))) & 0xffffu);
-    singles(smem, k, static_cast<uint32_t>(q), kPassCap, lane);
+    singles<kQ>(smem, k, static_cast<uint32_t>(q), kPassCap, lane);
     __syncwarp();
     //: the deal over the pass's words: a single's color by its index among its digit's singles of the pass (those
     //: before it in the word by a match on its digit, the earlier words' kept a digit) against the digit's color ends
@@ -476,7 +511,7 @@ __global__ __launch_bounds__(kThreads, kCtasMin) void color(const Params p) {
                                __popc(~((e.w | 0x80008000u) - k1) & 0x00008000u);
         __syncwarp();
         if (sg) {
-          slotv[t] = static_cast<uint16_t>(dealt);
+          colv[t] = static_cast<uint8_t>(dealt);
           if ((grp & below) == 0u) runs[dd] = static_cast<uint16_t>(idx + __popc(grp));
         }
         __syncwarp();
@@ -500,13 +535,14 @@ __global__ __launch_bounds__(kThreads, kCtasMin) void color(const Params p) {
                  own2 = lab::held(0u - ((lane >> 2) & 1u));
 #pragma unroll
   for (int j = 0; j < kWords; ++j) {
-    const uint32_t uw = uword[j], hi = hiw[j], qlo = qlov[j];
+    const uint32_t uw = uword[j], qlo = qlov[j];
+    const uint32_t hi = qlo + 1u < static_cast<uint32_t>(kQ) ? pmask[(qlo + 1u) * kWords + j] : 0u;
     const bool turn = uw != 0u && qlo != cur;
     base = turn ? 0u : base;
     cur = turn ? qlo : cur;
     const bool in = (uw >> lane) & 1u, up = (hi >> lane) & 1u;
     const int t = 32 * j + lane;
-    const uint32_t c = in ? slotv[t] & 7u : 0u;
+    const uint32_t c = in ? colv[t] & 7u : 0u;
     const uint32_t v0 = __ballot_sync(kAll, c & 1u), v1 = __ballot_sync(kAll, c & 2u), v2 = __ballot_sync(kAll, c & 4u);
     const uint32_t m0 = 0u - (c & 1u), m1 = 0u - ((c >> 1) & 1u), m2 = 0u - ((c >> 2) & 1u);
     const uint32_t same = uw & ~(v0 ^ m0) & ~(v1 ^ m1) & ~(v2 ^ m2);
@@ -538,7 +574,6 @@ __global__ __launch_bounds__(kThreads, kCtasMin) void color(const Params p) {
   //: THE COUNTS: each entry of the stash into its (list, pass)'s color count
   const int pl = p.pass_log;
   uint32_t* const tab = reinterpret_cast<uint32_t*>(smem + Smem::kTab);
-  uint16_t* const baset = reinterpret_cast<uint16_t*>(smem + Smem::kBase);
   uint16_t* const startv = reinterpret_cast<uint16_t*>(smem + Smem::kStart);
   uint8_t* const runv = smem + Smem::kRun;
   reinterpret_cast<uint4*>(tab)[lane] = make_uint4(0u, 0u, 0u, 0u);
@@ -547,44 +582,41 @@ __global__ __launch_bounds__(kThreads, kCtasMin) void color(const Params p) {
   const int count = static_cast<int>(e1 - e0);
   const int chunks = __shfl_sync(kAll, (count + 31) >> 5, 0);
   __syncwarp();
+  uint32_t ahead = lane < count ? toks[lane] : 0u;
 #pragma unroll 1
   for (int i = 0; i < chunks; ++i) {
     const int e = 32 * i + lane;
+    const uint32_t tok = ahead;
+    ahead = e + 32 < count ? toks[e + 32] : 0u;
     if (e < count) {
-      const uint32_t tok = toks[e];
       const uint32_t s = slotv[tok & 511u];
-      atomicAdd(tab + ((tok >> 9) * kMaxPasses + (s >> pl)) * 2 + ((s >> 2) & 1u), 1u << (8 * (s & 3u)));
+      atomicAdd(tab + ((tok >> 9) * kQ + (s >> pl)) * 2 + ((s >> 2) & 1u), 1u << (8 * (s & 3u)));
     }
   }
   __syncwarp();
 
-  //: THE STARTS, lane d list d's passes: each its steps (its largest color count) and start; its places' bases, `start -
-  //: 8 x (the color's tokens in the earlier passes) + color` a (pass, color); the list's starts out
+  //: THE STARTS, lane d list d's passes: each its steps (its largest color count), its start and its colors' tokens in
+  //: the earlier passes (over the counts); the list's starts out
   {
-    uint2 tq[kMaxPasses];
+    uint2 tq[kQ];
 #pragma unroll
-    for (int q = 0; q < kMaxPasses; ++q) tq[q] = reinterpret_cast<const uint2*>(tab)[lane * kMaxPasses + q];
+    for (int q = 0; q < kQ; ++q) tq[q] = reinterpret_cast<const uint2*>(tab)[lane * kQ + q];
     __syncwarp();
     uint32_t b_lo = 0u, b_hi = 0u;
     int start = 0;
     uint32_t at[kListAt];
 #pragma unroll
-    for (int q = 0; q < kMaxPasses; ++q) {
+    for (int q = 0; q < kQ; ++q) {
       const uint32_t m4 = __vmaxu4(tq[q].x, tq[q].y);
       const int steps = static_cast<int>(max(max(m4 & 0xffu, (m4 >> 8) & 0xffu), max((m4 >> 16) & 0xffu, m4 >> 24)));
-      uint32_t bp[kColors / 2];
-#pragma unroll
-      for (int c = 0; c < kColors; c += 2)
-        bp[c / 2] = static_cast<uint32_t>(start - kColors * static_cast<int>(byte_of(b_lo, b_hi, c)) + c) |
-                    static_cast<uint32_t>(start - kColors * static_cast<int>(byte_of(b_lo, b_hi, c + 1)) + c + 1) << 16;
-      reinterpret_cast<uint4*>(baset)[lane * kMaxPasses + q] = make_uint4(bp[0], bp[1], bp[2], bp[3]);
+      reinterpret_cast<uint2*>(tab)[lane * kQ + q] = make_uint2(b_lo, b_hi);
       at[q] = static_cast<uint32_t>(start);
       b_lo += tq[q].x;
       b_hi += tq[q].y;
       start += kColors * steps;
     }
 #pragma unroll
-    for (int q = kMaxPasses; q < kListAt; ++q) at[q] = static_cast<uint32_t>(start);
+    for (int q = kQ; q < kListAt; ++q) at[q] = static_cast<uint32_t>(start);
     reinterpret_cast<uint4*>(startv)[lane] =
         make_uint4(at[0] | at[1] << 16, at[2] | at[3] << 16, at[4] | at[5] << 16, at[6] | at[7] << 16);
     reinterpret_cast<uint4*>(p.at)[static_cast<int64_t>(u) * kDigits + lane] =
@@ -602,12 +634,14 @@ __global__ __launch_bounds__(kThreads, kCtasMin) void color(const Params p) {
   const uint32_t pad_lo = kWrite ? static_cast<uint32_t>(cl) : cl * kRow + 16u * carry::pool_chunk(kRow, cl, 0u);
   const uint32_t pad_hi = kWrite ? 0u : carry::panel_row(cl) << 16;
   int last = -1;
+  uint32_t tok_next = lane < count ? toks[lane] : 0u, coef_next = lane < count ? coefs[lane] : 0u;
 #pragma unroll 1
   for (int i = 0; i < chunks; ++i) {
     const int e = 32 * i + lane;
     const bool live = e < count;
-    const uint32_t tok = live ? toks[e] : 0u;
-    const uint32_t coef = live ? coefs[e] : 0u;
+    const uint32_t tok = tok_next, coef = coef_next;
+    tok_next = e + 32 < count ? toks[e + 32] : 0u;
+    coef_next = e + 32 < count ? coefs[e + 32] : 0u;
     const int t = static_cast<int>(tok & 511u), d = static_cast<int>(tok >> 9), key = live ? d : -1;
     const int prev = __shfl_up_sync(kAll, key, 1);
     const uint32_t firsts = __ballot_sync(kAll, lane == 0 || prev != key);
@@ -640,7 +674,8 @@ __global__ __launch_bounds__(kThreads, kCtasMin) void color(const Params p) {
     const uint32_t group = ((next & (0u - next)) - seg) & ~(v0 ^ m0) & ~(v1 ^ m1) & ~(v2 ^ m2);
     const uint32_t ran = runv[d * kColors + c];
     const uint32_t rank = ran + __popc(group & below);
-    const int pos = baset[(d * kMaxPasses + q) * kColors + c] + kColors * static_cast<int>(rank);
+    const uint32_t before = smem[Smem::kTab + (d * kQ + q) * 8 + c];
+    const int pos = startv[d * kListAt + q] + kColors * static_cast<int>(rank - before) + c;
     uint2 o2;
     if constexpr (kWrite) {
       o2 = make_uint2(s, coef);
@@ -839,7 +874,7 @@ void launch_side(const Cell& c, cudaStream_t st = nullptr) {
   p.union_count = c.union_count;
   p.cycles = c.cycles;
   p.phases = c.phases;
-  color<kWrite, kCell><<<(p.units + kWarps - 1) / kWarps, kThreads, kWarps * Smem::kBytes, st>>>(p);
+  color<kWrite, kCell><<<(p.units + kWarps - 1) / kWarps, 32 * kWarps, kWarps * SmemOf<kWrite ? 4 : 2>::kBytes, st>>>(p);
 }
 
 //: THE CHECK: each union's coloring against its invariants (every union token one slot, the residue layout, the
@@ -1033,13 +1068,15 @@ void run_cell(const lab::Bench& b, const std::string& dir) {
   declare<false, kCell>(b, 4096);
   if (b.expect_only) return;
   Cell c = load_cell(dir + "/" + cell, cell);
-  if (c.write_units % kWarps || (c.units - c.write_units) % kWarps || c.row != kRow || c.write_pass != 128 ||
+  if (c.row != kRow || c.write_pass != 128 ||
       c.read_pass != 256) {
-    std::fprintf(stderr, "facts_color: a side's units are not a whole number of CTAs, or the row is not %d\n", kRow);
+    std::fprintf(stderr, "facts_color: the row is not %d or a pass not the sm_86 even arm's\n", kRow);
     std::exit(1);
   }
-  LAB_CHECK(cudaFuncSetAttribute(color<true, kCell>, cudaFuncAttributeMaxDynamicSharedMemorySize, kWarps * Smem::kBytes));
-  LAB_CHECK(cudaFuncSetAttribute(color<false, kCell>, cudaFuncAttributeMaxDynamicSharedMemorySize, kWarps * Smem::kBytes));
+  LAB_CHECK(cudaFuncSetAttribute(color<true, kCell>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                 kWarps * SmemOf<4>::kBytes));
+  LAB_CHECK(cudaFuncSetAttribute(color<false, kCell>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                 kWarps * SmemOf<2>::kBytes));
   cudaEvent_t a, z;
   LAB_CHECK(cudaEventCreate(&a));
   LAB_CHECK(cudaEventCreate(&z));
