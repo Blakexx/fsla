@@ -2,24 +2,6 @@
  "lint": "work_codes",
  "findings": [
   {
-   "path": "docs/KERNEL_STANDARDS.md",
-   "message": "names the work code 'K2'",
-   "line_sha256": "b702998ce4c3f35a",
-   "count": 1
-  },
-  {
-   "path": "docs/architecture/fp32-accumulators.md",
-   "message": "names the work code 'D2'",
-   "line_sha256": "9dd023d9727fe5cc",
-   "count": 1
-  },
-  {
-   "path": "docs/architecture/fp32-accumulators.md",
-   "message": "names the work code 'P67'",
-   "line_sha256": "9dd023d9727fe5cc",
-   "count": 1
-  },
-  {
    "path": "docs/internals/DELETIONS.md",
    "message": "names the work code 'A11b'",
    "line_sha256": "7867d6a2b511a56d",

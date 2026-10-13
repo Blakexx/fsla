@@ -1,5 +1,5 @@
 // csrc/rola/src/common/arm_switch.cuh -- the HOST dispatch over the shipped arm set,
-// the host twin of common/structure_switch.cuh's `uniform_switch`. KERNEL_STANDARDS.md §R9's four layers,
+// the host twin of common/structure_switch.cuh's `uniform_switch`. CONSTITUTION.md §R9's four layers,
 // host side: see docs/internals/common/arm_switch.md
 #pragma once
 

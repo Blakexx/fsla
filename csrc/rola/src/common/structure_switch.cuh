@@ -1,4 +1,4 @@
-// csrc/rola/src/common/structure_switch.cuh -- KERNEL_STANDARDS.md §R9's four enforcement layers, once.
+// csrc/rola/src/common/structure_switch.cuh -- CONSTITUTION.md §R9's four enforcement layers, once.
 // See docs/internals/common/structure_switch.md
 #pragma once
 

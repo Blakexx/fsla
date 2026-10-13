@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""R9 ENFORCEMENT LINT (KERNEL_STANDARDS "§R9 ENFORCEMENT: A STRUCTURE BRANCH FAILS LOUD AT EVERY
+"""R9 ENFORCEMENT LINT (CONSTITUTION "§R9 ENFORCEMENT: A STRUCTURE BRANCH FAILS LOUD AT EVERY
 LAYER"). Gated by `tools/lint/ratchet.py r9_enforcement`.
 
 R9 says a CTA-uniform branch on structure (a runtime switch/if-chain over an

@@ -738,7 +738,7 @@ __host__ __device__ inline int geom_digit(const CarryGeomRT& g, int O, int local
 }
 
 //: THE CANONICAL LEAF of owner `O`'s local slot, and the atom that holds it.
-//: THE SAME MAP WITH THE DEPTH AND THE OWNER LAW COMPILE-TIME (KERNEL_STANDARDS.md §R12: no runtime trip
+//: THE SAME MAP WITH THE DEPTH AND THE OWNER LAW COMPILE-TIME (CONSTITUTION.md §R12: no runtime trip
 //: count in a register-shaped loop). The kernel knows `D` and `BC` as template
 //: arguments, so the spans and the run shifts are IMMEDIATES here and only the
 //: width-derived terms stay runtime. -- see docs/internals/common/geom.md#canon-leaf

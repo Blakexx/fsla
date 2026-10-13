@@ -83,7 +83,7 @@ static_assert(launch_table_is_one_cta_per_sm(),
 //: see docs/internals/common/constants.md#bc (the geom.cuh agreement)
 static_assert(leaves_per_warp(64) == 32, "leaves per warp at DV <= 64");
 static_assert(leaves_per_warp(128) == 16, "leaves per warp halves at DV = 128");
-static_assert(warps_per_sm == 8, "KERNEL_STANDARDS.md §R15");
+static_assert(warps_per_sm == 8, "CONSTITUTION.md §R15");
 
 //: see docs/internals/common/constants.md#s-from-smem
 constexpr int derive_stream_count(int per_stream_bytes, int residency_smem_bytes,

@@ -232,7 +232,7 @@ pytest tests/integration                            # composition, dispatch, two
 
 **The commit lane is the whole battery above, inside five minutes.** The build-shape gates and `tools/ratify.py` run
 additionally at a batch tip (and always when csrc, manifests or codegen flags moved); the latency gate and the sanitizer
-lane are scheduled, never per-commit. **Never `pytest tests/` unscoped.**
+lane run on their own cadence, never per-commit. **Never `pytest tests/` unscoped.**
 
 **Every GPU entry point takes the GPU lock itself** — pytest through a session fixture in `tests/conftest.py`,
 `tools/sanitize_oracle.py`, rola-devtools' build system for a target that holds the GPU — through `gpu_lock()`
@@ -301,8 +301,9 @@ publication read before its join, an inner join standing in for an outer one, a 
 
 `python tools/sanitize_oracle.py` runs `compute-sanitizer` over ONE named oracle cell per family (the facts pass, the
 intra, decode, the producer and the entmax solves), each pair in its own process with a timeout, under the GPU lock.
-It is **a scheduled lane over a named subset, never a PR gate** — the tools cost one to two orders of magnitude, and a
-gate that takes an hour gets disabled — with `--error-exitcode=1`, an explicit skip-list whose entries carry their
+It runs **when a component lands, before a ratify, and on a schedule, never per commit**
+(`docs/KERNEL_STANDARDS.md#sanitizer`) — the tools cost one to two orders of magnitude, and a gate that takes an hour
+gets disabled — with `--error-exitcode=1`, an explicit skip-list whose entries carry their
 reason, and an `ASSERTED` table for an adjudicated idiom that still runs and passes only if every record is that idiom.
 Both are empty, which is the standard. The carry's row is owed (`tools/coverage.json`).
 

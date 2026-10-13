@@ -44,8 +44,8 @@ same week.
 
 **Numerics**
 
-- **Accumulators are fp32** — value state, mass state, clock, decay dials,
-  emission accumulators. → [fp32-accumulators.md](fp32-accumulators.md).
+- **State accumulators are fp32 or exact integer** — the fold's state, the mass, the den pass's sums, the
+  readout's partials (exact s16 pairs), decay dials. → [precision.md](precision.md).
 - **The amplitude is never logged.** The direct staged-factor lowering is required,
   not preferred: a product of factors is formed from the factors, never through a
   log-space sum, in every kernel.
@@ -85,7 +85,7 @@ beat.
 | Choice | The measurement | Where it could move |
 |---|---|---|
 | **The fold reads a unit's first 16 records from shared memory** (the slot's heads, one straight-line block) | the step steady at 1.054x its MMA floor, against 1.25x reading the records from global by shuffles (lab `fold_part`, [`fold.md#unit`](../internals/carry/fold.md#unit)) | A cell whose lists hold past 16 entries a unit as the rule rather than the exception. |
-| **The fold steps in units of U passes** (`unit_passes`: the largest of 4, 2, 1 whose two slots fit) | on nl64k-alt-k4, 128-slot passes cut a list into 1.95 steps a window against 1.00 at U = 2 ([`plan.md#units`](../internals/carry/plan.md#units)) | A plan whose rows leave no room for two slots of U = 2: the dense-dense plan runs at U = 1. |
+| **The carry's shared memory takes the first form a card holds** (`form_of`: the fewest image stores a dense window, then the larger fold unit) | sm_86's even box: the image in 2 parts, 256-slot passes, 128-slot units, 100,224 of 101,376 bytes; sm_80's: whole, 512-slot passes ([`plan.md#forms`](../internals/carry/plan.md#forms)) | A card whose shared memory holds a cheaper form, or a plan whose rows change the sizes. |
 | **The producer's entmax threshold is Newton from the left, not a sort** | a 256-wide row at one decoded token: sorted 13.8K cycles, twelve-round multisection 10K, Newton 2.7K ([`produce.md#threshold`](../internals/produce/produce.md#threshold)) | Prefill, where a CTA holds many live rows and the sort's straight-line network is no longer run once from a cold instruction cache. |
 
 **A choice is only as good as the regime it was measured in**, and this record

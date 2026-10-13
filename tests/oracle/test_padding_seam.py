@@ -4,7 +4,7 @@
 any level width and any value width is served by host-side padding, with no kernel
 change and no oracle arithmetic change.
 
-**TWO CONTRACTS, KEPT SEPARATE (KERNEL_STANDARDS §R13).** The API accepts any shape and
+**TWO CONTRACTS, KEPT SEPARATE (CONSTITUTION §R13).** The API accepts any shape and
 pads; the kernel boundary accepts only its own strict shape and refuses the rest
 (`test_box_shape_is_a_second_kernel_boundary_that_refuses_unpadded_widths`).
 
@@ -111,7 +111,7 @@ def test_prefill_padding_is_the_ruled_mechanism_not_an_approximation_of_it():
 
 
 # ---------------------------------------------------------------------------
-# TWO CONTRACTS: the API pads, the kernel refuses (KERNEL_STANDARDS §R13)
+# TWO CONTRACTS: the API pads, the kernel refuses (CONSTITUTION §R13)
 # ---------------------------------------------------------------------------
 
 

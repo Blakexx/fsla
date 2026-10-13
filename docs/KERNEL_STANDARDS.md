@@ -1,33 +1,18 @@
-# KERNEL_STANDARDS — two tiers (Blake, 2026-08-28)
+# KERNEL_STANDARDS — the laws
 
-**CONSTITUTION** = Blake's standing rulings. Stable; changed only by Blake; they guide every law below.
-They are: §10's correctness instruments (oracle = truth; bit-identity = refactor instrument); efficiency is
-correctness; closed world (only measured binaries run); one form per mechanism, no fallbacks, no dead code;
-build the whole design or stop and name the gap; the ancestral-code standard; §17 portability; ONE ATOMIC PRODUCT
-(Blake, 2026-08-28: the repository in published form is ONE self-contained kernel product — never several kernels
-being separately gated; every test lives in exactly one of the three tiers, `tests/unit`, `tests/integration`,
-`tests/oracle` (docs/testing.md), plus `measure/`; the whole tree is gated holistically at its current state;
-no per-campaign test directories, and no campaign names in the tree — names are roles); SELF-DOCUMENTING
-CODE (Blake, 2026-08-04: code is legible without comments; comments are sparse — a file header and 1-3-line decl
-blocks naming purpose and the one invariant; derivations, histories and why-not-the-other-form prose live in
-`docs/internals/` mirroring `csrc/`); and §R8-R10
-(all architectures; no fuzzy-threshold branching — the kernel handles any distribution; design and probe
-for ALL regimes at once — dense is the worst case and a test of the kernel, never a regime to concede).
+**THE CONSTITUTION** is `docs/CONSTITUTION.md`: Blake's standing rulings, changed only by Blake, above every
+law here.
 
-**LAWS** = the coordinator's procedural and incident-derived rules (§1-§9 craft, §11-§16 and their addenda,
-§R2-R7). Dated, adaptive, revisable by the coordinator; each carries the incident that made it and is
-repealed when the situation changes. A law never contradicts the constitution; where a law is an inference
-from one moment of development it is marked as such and re-examined at the next milestone.
-§R1 ("price overheads against the sparse cell") is STRUCK 2026-08-28 — subsumed by §R10 and wrong in
-direction: overhead concentrating at sparse may be the design paying off; dense remains the worst case.
+**THE LAWS** are this document: the coordinator's procedural and incident-derived rules. Dated, adaptive, revisable
+by the coordinator; each carries the incident that made it and is repealed when the situation changes. A law never
+contradicts the constitution; where a law is an inference from one moment of development it is marked as such and
+re-examined at the next milestone.
 
 # ROLA KERNEL STANDARDS — how we write CUDA here (draft for Blake's read, 2026-08-26)
 
 SCOPE. This document is about CRAFT: how a designed piece is realized at the hardware's grain. It is not
-about design. Design authority is `development/queue/P76_*.md` and Blake's rulings; nothing cited here is
-an argument for or against a design choice. Where RoLA has patterns with no analogue in the reference
-kernels (routed ownership, the two carves, the exchange, the fan-in ring, the cooperative expansion), §R
-gives the RoLA rule directly. References are the local copies under a named sibling checkout,
+about design. Design authority is Blake's rulings and `docs/ARCHITECTURE.md`; nothing cited here is an
+argument for or against a design choice. References are the local copies under a named sibling checkout,
 `rola_references/` (`flash-attention`, `cutlass`, `ThunderKittens`); citations are `path:line`.
 
 Every brief points here. Every review applies it line by line. A check in `ratify` (§9) is the backstop
@@ -55,8 +40,8 @@ The fp32 accumulator of one GEMM becomes the A operand of the next by reinterpre
 and narrowing the type — no store, no shuffle.
 - FA2: `flash_fwd_kernel.h:378-380` (`make_tensor(rP.data(), convert_layout_acc_Aregs<TiledMma>(rP.layout()))` → `gemm_rs`); the layout math `utils.h:199-211`.
 - FA3: `hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp:1156-1160` (same, plus an explicit register permute for fp8, and a documented fallback through SMEM when the register-sourced GMMA is unavailable, `:1161-1162`).
-RoLA: the readout's A fragments ARE the fold accumulator's top halves. Any phase change that
-moves state must be the exchange the design names (§R3), never an ad-hoc copy.
+RoLA: the hand-off converts the fold's fp32 state to the readout's f16 image (`docs/internals/carry/parts.md#store`);
+a phase change that moves state is the transfer the design names, never an ad-hoc copy.
 
 ## 3. Shared memory: copy atoms, swizzles by composition, transposition as a layout operation
 - `ldmatrix` in both variants is a declared copy atom with an arch fallback chosen at the atom, not inline
@@ -128,22 +113,6 @@ The fp64 oracle is the truth. Bit-identity against a previous binary is a REFACT
 design constraint (amended 2026-08-26). No fallbacks, no dead code, no special-case paths; comments
 are file-header/decl blocks only, prose goes to `docs/internals/` mirroring `csrc/`. Build the whole design
 or stop and name the gap; efficiency is correctness.
-
-## R. RoLA-specific patterns (no reference analogue) — the rule comes from the architecture
-- R1 OWNERSHIP CARVES: a stream owns an affine rectangle of digits per level (per-side span vectors);
-  the private slot order puts carved (sparse) levels outermost; liveness is the exact AND over levels.
-  Executors ≠ streams (an executor folds the union of its streams' boxes).
-- R2 COOPERATIVE FETCH + EXPANSION: one union walk per batch; writer-side placement into per-stream
-  segments of value rows AND fully expanded coefficient rows; memo internal to the fetcher; consumers are
-  pure MMA. The per-tile liveness mask is produced by the expansion (it knows which slots it wrote nonzero).
-- R3 THE EXCHANGE (order law): every phase change re-lays the state into the other side's order on every
-  arch; publisher places each leaf's row at the READER's slot (per-reader `[leaf][channel]` segments,
-  16-bit stores at compile-time addresses); the reader pulls its contiguous segment with `ldmatrix.trans`
-  and ejects. No pair-level or run-alignment constraint on carves.
-- R4 THE FAN-IN RING (§2.6-C): union rank keys a C-row SMEM ring; first writer stores, others `red.shared`;
-  the NEXT writer reclaims a complete slot by CAS and flushes it; spin on incomplete; drain at the phase barrier.
-- R5 LO PARK: hi in registers, lo parked into the transit's drained slots, freed registers become
-  leaves (box size); a per-arch/width declaration.
 
 ## 11. Debugging a device hang or race (recorded 2026-08-26 after a stage burned 2.5 h reasoning blind)
 `cuda-gdb` works on this machine when the process is LAUNCHED under it; ATTACHING (`-p`) is refused by
@@ -244,11 +213,7 @@ stage's; >1.2x on any arm is RED (report, do not rationalize; diagnose against �
 include torch headers (the ~34 s header floor lives in the dispatch TU only). Arms are added as reviewed
 rows in the one arm list (TEST-tagged unless shipped). Ratify stays incremental per arm.
 
-## §R addenda — LAWS (coordinator, 2026-08-28; incident-derived, revisable; R1 struck)
-R1. [STRUCK 2026-08-28 — subsumed by §R10; see the preamble.] PRICE OVERHEADS AGAINST THE SPARSE CELL. A fixed per-window / per-contribution cost that is "cheap"
-    next to a dense window's MMA becomes the kernel once sparsity removes that MMA (the ring: 230 M
-    instructions at dense AND at k16; the replicated schedule; the per-lane gate). The design's payoff and
-    its overheads scale with different variables; state both per mechanism.
+## §R addenda — LAWS (coordinator, 2026-08-28; incident-derived, revisable)
 R2. THE FAN-IN'S FIGURE OF MERIT IS 128 B SEGMENTS PER RED INSTRUCTION, not sector fullness and not
     instruction count: one token's 32 contiguous channels per issue (the staged panel layout) = 1 segment;
     4 rows x 8 channels = 4 segments at identical RED count = +93%; fragment-direct = 8 half sectors.
@@ -274,24 +239,6 @@ script blowup: briefs, transcripts, per-session scripts and campaign journals st
 cited FROM the queue, not from repo files. Absolute paths under a home directory are a lint finding.
 Committed records carry repo-relative or host-keyed locations. Skills that ship with the repo point at
 repo docs and the measurements record, never at a journal.
-
-## §R — CONSTITUTION (Blake, 2026-08-28)
-R8. DESIGN MECHANISMS THAT EXPAND TO ALL ARCHITECTURES. Every mechanism states its sm_80 / sm_90 /
-    sm_100 form at design time (wgmma/tcgen05 SMEM- and TMEM-sourced operands, TMA box loads, clusters
-    and DSM, vector RED); a mechanism that only exists on one arch is a workaround, not a design.
-R9. NEVER BRANCH ON A FUZZY THRESHOLD. No dispatch, launch policy or in-kernel path keys on a measured
-    statistic (sparsity fraction, density, live count, "small L"). Branch on STRUCTURE the declaration
-    fixes (tile counts, modes, arm axes). The kernel itself handles any data distribution.
-R10. DESIGN AND CODE FOR ALL REGIMES AT ONCE — dense, sparse, mixed, clustered, small and large L, small
-    and large N. Never overfit a mechanism, a measurement or a verdict to one cell: every design states
-    its cost in each regime, every stage is probed at both ends of the distribution, and a mechanism
-    that wins one regime by losing another is a finding to rule on, not a win.
-
-## CONSTITUTION addendum (Blake, 2026-08-28): NO FALLBACKS AT THE ATOM
-A primitive may select DIFFERENT NATIVE INSTRUCTIONS per architecture; it may never select a wider-type
-emulation on any target architecture. An operation an architecture genuinely lacks is a declared design
-fact with its cost on the card, never an `#if` branch. (Origin: mul_bf16x2's fp32 emulation on sm_80
-lived for months behind a passing oracle; fma.rn.bf16x2 was native all along.)
 
 ## §14 addendum (law, 2026-08-28): CONTAINERS AND THE GPU LOCK
 `flock /tmp/rola_gpu.lock` is per-filesystem: a lock taken inside a container serializes nothing on the
@@ -329,113 +276,15 @@ A commit bypasses the hooks only with an explicit, per-commit coordinator author
 pre-existing hook failure and the stage that fixes it. "Another stage did it" is not authorization. Red
 hooks are fixed (the hook, or the tree), never routed around.
 
-## CONSTITUTION addendum (Blake, 2026-08-29): THE FOUNDATION LAWS
-- R11 THE AXIS LAW: a compile-time axis is legitimate only as a deterministic function of user input the
-  selector can pick; everything else is derived or a constant. Free axes = D and DV. MO and per-level B
-  are runtime addressing; BC, K, M, kWarps, S are derived; W and C are constants.
-- R12 SHAPE COMPILE-TIME, ADDRESSING RUNTIME: only the register shape (leaves-per-warp × DV) is compiled;
-  every SMEM tenant is launch-sized from the state's descriptor; residency is asserted at the seam as a
-  refusal; no runtime trip count in a register-shaped loop; never max-size SMEM.
-- R13 THE STATE OWNS ITS FORMAT: a descriptor (D, per-level B_l powers of two ≥ 16, canonical order,
-  the page rectangle = trailing 4 canonical bits, DV, split bf16 planes) bound at first call and CHECKED
-  after; the warp sub-box's spans are compile-time from (D, DV) and never exceed a level's width under
-  the floor (D=1 requires B ≥ 32); prefill and decode share ONE
-  admission law; N is a multiple of 16 (ragged N refused, never padded); pages are [hi][lo][mass] bf16
-  planes; readout operands are the hi plane in every kernel; a reading token moves hi only.
-- R14 OWNERSHIP GRAINS NEST ON THE PAGE, nothing more: decode's unit is the atom; prefill's box owns whole
-  rows; the kernel consumes activity bits at its own (warp-box) grain and the page table derives its own.
-- R15 THE CTA IS THE SM (target): one CTA per SM with the warps the register file admits (8 × 256 regs),
-  streams partition inside it; latency hiding is the kernel's job (covers, split-phase edges) — exposed
-  latency is a coverage finding, never grounds to split the CTA; ONE CTA per SM is the goal, not a
-  measured choice — a two-CTA launch is only a diagnostic of how far the body is from the target.
-- R16 SHIP WITHOUT ARM REGISTRATION: a Python-package user never registers an arm; the shipped set is
-  D × DV per arch; unknown descriptors are admitted by refusal-checked derivation, not by enumeration.
-- R17 BF16 EVERYTHING: operands are bf16 (one form; float operand paths deleted); state accumulates fp32
-  as split planes; truncation at the readout operand is the declared arithmetic.
-- R18 ONE BODY PER OP FAMILY: the split (channel-carve) body is deleted; dense is the S = 1 point of the
-  one body; a tied carve is a transit with the identity map, never a second body.
-- R19 LAWS LAND WITH THEIR STAGE: a ruling that changes a law is written here in the same stage that
-  implements it, never only on a card; the milestone carries the drift guards (lints, docs rev, skills).
-
-## CONSTITUTION addendum (Blake, 2026-08-29): R9 ENFORCEMENT — A STRUCTURE BRANCH FAILS LOUD AT EVERY LAYER
-A CTA-uniform branch on structure (e.g. a switch over admissible (span, shift) pairs) is legal only with:
-(1) its cases GENERATED at compile time from the arm's shape, never hand-enumerated, with a static_assert
-on the count; (2) a compile-time exhaustiveness assert (the derivation's possible outputs ⊆ the covered
-set) so an arm that could receive an uncovered case does not build; (3) a launch-time refusal at the seam
-naming the uncovered case; (4) a trapping default (`__trap()`, never a fallthrough) and a post-build
-coverage sweep (every arm at every admissible case on a tiny cell).
-
-## CONSTITUTION addendum (Blake, 2026-08-29): R13 — TWO CONTRACTS, ONE TRANSLATOR
-The API accepts any shape (any b_l ≥ 2, any d_v, any L) and serves it by padding; the KERNEL accepts only
-the descriptor's strict shape (powers of two ≥ 16, a shipped DV, N a multiple of 16, bf16 operands) and
-REFUSES the rest — it never pads or masks. The seam is the only translator. Both boundaries are tested:
-API tests prove padded runs bit-identical; kernel-boundary tests call the launch surface with unpadded
-shapes and assert the refusal; a lint keeps logical-width fields out of every kernel entry signature.
-
-## CONSTITUTION addendum (Blake, 2026-08-29): R9 ENFORCEMENT IS ONE PRIMITIVE
-Every CTA-uniform structure branch in device code is a `uniform_switch<Set>(value, body)`
-(`common/structure_switch.cuh`): the four layers — generated Set with a count assert, compile-time
-exhaustiveness (derivation outputs ⊆ Set), the seam's launch refusal reading the same Set, a `__trap()`
-default with the post-build coverage sweep — are the primitive's contract, never re-implemented per site.
-A hand-written device `switch` on a geometry field is a lint finding.
-
-## CONSTITUTION addendum (Blake, 2026-08-29): R20 — THE SM OWNS THE STATE; WARPS PARTITION IT; CTAs GROUP WARPS
-On every architecture the unit of state ownership is the multiprocessor: its box is derived on its own
-from the architecture's state capacity (`leaves_per_sm`, from DV) balanced over the D levels. Warps
-partition that box — each side's level order carves it, sparse levels first, until every warp owns a
-segment — and a CTA is only a grouping of warps holding a contiguous subset of those segments (how many
-is a launch parameter). Where the accumulator lives (registers, tensor memory) changes how a warp touches
-its segment, never who owns what. Every mechanism — the carve, the transit, the activity bits, the
-launch shape, the schedule — is stated in these terms, and a design that couples ownership to the CTA
-or to the accumulator's home is misfiled.
-
-## CONSTITUTION amendment (Blake, 2026-08-29): R20 — THE OWNERSHIP UNIT IS THE CTA's BOX
-R20 read "the SM owns the state; CTAs group warps". Corrected by the arithmetic: a CTA loads and
-stores its box at entry and exit, so its read-side warps' union and its write-side warps' union must be
-the SAME leaves; carving the SM's box first and handing a CTA half the segments gives the two sides
-different halves at two CTAs per SM. Therefore the ownership unit is the CTA's box — carved per side
-among the CTA's warps — and it equals the SM's box exactly when there is one CTA per SM (the goal).
-The shape set is f(D, leaves_per_warp, kWarps); the architecture law (the SM's box) is asserted at
-kWarps = warps_per_sm.
-
-## CONSTITUTION addendum (Blake, 2026-08-30): SOURCE COMMENTS DESCRIBE THE CODE AS IT IS
-A comment in csrc/ or rola/ states what the code does and why, in the present tense, in the library's
-own terms. It never describes a past state of the kernel, a superseded mechanism, a stage or campaign
-identifier, or a comparison to what was ("the previous pass replaced…", "the old fp32 rows…"). History,
-justification and background live in docs/ (DELETIONS.md, ARCHITECTURE's status marks, the internals'
-"why" sections) and in the journal outside the repo. The kernel library references only itself (§17);
-the lint that refuses work codes in source is the mechanical half; reviewers refuse the rest.
-
-## CONSTITUTION addendum (Blake, 2026-09-08): R21 — EVERY ASYNCHRONOUS OPERATION STATES TWO EDGES
-An asynchronous write -- `cp.async` today; TMA, `cp.async.bulk`, `wgmma` on sm_90 and after -- has
-two hazards, and a wait covers only one of them. Its COMPLETION edge (RAW) is the wait or barrier
-phase behind which the first read of the new contents stands. Its ISSUE edge (WAR) is the barrier
-after the last read of the OLD contents by ANY warp: a warp's wait orders that warp against its own
-copies and never against another warp's reads of the bytes it is about to overwrite. Every shared
-tenant an asynchronous operation writes states both edges in its ledger, and a
-review refuses a tenant that names only the wait. On sm_90 the two edges are a pipeline stage's
-empty and full barriers; on sm_80 they are the CTA edges the frame already has, and the issue is
-placed past the edge that ends the last read. Born of the box-words hazard of 2026-09-08 (journal
-section 39): the issue sat before a slot's edge, the outer-level rows are shared between warps,
-and the slower walks read the other side's words -- intermittently, invisibly at window 0 and on
-dense draws, and under the one-ratio tolerance when it fired.
-
-## R21 addendum (2026-09-08): THE SANITIZER LANE IS A GATE, AND ITS OOM IS A VERDICT
-`compute-sanitizer --tool racecheck` models `cp.async`: on the box-words hazard it did not
-report, it exhausted the host (23 GB in fifty seconds) and the target was killed -- the
-"open K2 item" read as a host-budget limit was the race's own signature from the day the box
-words landed. With the hazard gone the lane runs the one-CTA cells in seconds at under 1 GB.
-So: the lane runs at every commit that changes a kernel, on that kernel's cells -- `tools/coverage.json`
-names every kernel's row in `tools/sanitize_oracle.py` (the carry's are `one-box-short` and
-`one-box-multiwindow` at both grains, through `tools/sanitize_cell.py`) -- and must report zero
-hazards; a target killed under the sanitizer is a failing gate, never a resource problem to
-be worked around. Benign races (every warp storing the same word) are not tolerated either:
-a lane with known noise is a lane nobody reads. One warp writes, the readers stand behind an
-edge.
-RACECHECK DEFERRED (Blake, 2026-10-01, overrules the racecheck half of this addendum): racecheck leaves the lane
-for every kernel until it is taken up again; synccheck, initcheck and memcheck stay, and the one-warp-writes rule
-stands (`docs/testing.md#the-sanitizer-lane`).
-
+## <a id="sanitizer"></a>THE SANITIZER LANE (law; its cadence ruled by Blake, 2026-10-12)
+The lane (`tools/sanitize_oracle.py`, `docs/testing.md#the-sanitizer-lane`) runs memcheck, synccheck and initcheck on
+each kernel's one-CTA cells -- `tools/coverage.json` names every kernel's row -- when a component lands, before a
+ratify, and on a schedule; never per commit (Blake: "every commit too noisy ... it nearly crashed the computer
+sometimes though, racecheck especially"). Each run is guarded by a kill timeout and the host budget. It reports zero
+hazards, and a target killed under the sanitizer is a failing gate, never a resource problem to work around: racecheck
+exhausting the host on `cp.async` was a hazard's own signature. Benign races (every warp storing the same word) are not
+tolerated either: one warp writes, the readers stand behind an edge (`docs/CONSTITUTION.md#r21`). Racecheck is deferred
+for every kernel (Blake, 2026-10-01): it does not finish on the mbarrier pipelines.
 
 ## <a id="s19"></a>§19 — THE COMPONENT BUDGET GATE (law, 2026-09-09, from the carry rebuild's four reference-grade forms)
 Rule 12 said "state the floor before building"; nothing enforced it, and a whole kernel was built four
@@ -1013,28 +862,9 @@ three cut conflicts from 1.6-2.1 an MMA to 0.02-0.03 and wavefronts 25%, with no
    wavefronts by part, so a format change that adds conflicts is seen without hardware. It is checked per operation
    against ncu's counters once a layout (measured 2026-10-11: `ldmatrix` and atomics exact, entry loads within 0.03).
 6. CONFLICTS ARE PRICED ACROSS DENSITIES: dense, sparse and the W = 1024 lists each, since a data-dependent conflict
-   rate moves with the distribution (§R10).
+   rate moves with the distribution (CONSTITUTION §R10).
 Measured: `read_image`, `read_w1024` (docs/lab/read_image.md, docs/lab/read_w1024.md); the model:
 docs/internals/tools/bank_model.md.
-
-## <a id="r22"></a>CONSTITUTION addendum (Blake, 2026-10-10): R22 — DEGRADE SMOOTHLY, SCALE, PARTITION INTO INDEPENDENT UNITS
-
-Blake: "my concern is any kernel design that 'spills' at some threshold rather than just cleanly degrading. How things
-scale is important too, instead of just designing for one specific point. Kernels should ideally partition atomic,
-independent work across ctas that join back together in clean ways. At least, normally unless there is some strong
-reason not to. Everything is about tradeoffs"; "It's also ok to join via atomics, I still don't care too much about
-determinism".
-1. NO THRESHOLD CLIFFS. A kernel's cost rises along a curve with density, width, depth and N. A design that changes
-   path or falls off a cliff when the data crosses a capacity (a shared-memory buffer sized for the sparse case, a held
-   window that only fits narrow levels) needs a stated strong reason in its design block. A capacity the PLAN fixes
-   (a box, a stage, a token block) is structure, not a threshold; a capacity the DATA can overrun is a threshold.
-2. DESIGN FOR THE SCALING, NOT A POINT. Every mechanism states how its cost grows with N, D, density and the
-   architecture; a cache that may or may not hold a working set is priced as if it does not, so the cache is upside,
-   never a cliff in the model or the gate.
-3. INDEPENDENT UNITS, CLEAN JOINS. Work is partitioned into atomic, independent units across CTAs that join by
-   disjoint writes, reductions or atomics (run-to-run bitwise determinism is not required: R0 of 2026-09-30), or a
-   stage boundary between kernels. A CTA waiting on another CTA's progress needs a strong reason.
-4. EVERYTHING IS A TRADE: a faster form that breaks 1-3 is chosen only with the reason and its numbers written down.
 
 ## <a id="first-run"></a>NEW DEVICE CODE RUNS FIRST UNDER A KILL TIMEOUT (law, 2026-10-07, after a hang froze the host)
 A warp shuffle placed as an operand of a short-circuit `||` ran on only the lanes that evaluated it; the warp hung, the

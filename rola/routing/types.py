@@ -691,7 +691,7 @@ class Topology:
 
         ``widths == padded_widths`` for an ideal (power-of-two >= 16, every level)
         model: :meth:`padded` still returns an equivalent ``Topology`` in that case,
-        so a caller may always call it uniformly (KERNEL_STANDARDS §R9: a structure
+        so a caller may always call it uniformly (CONSTITUTION §R9: a structure
         branch is a derived fact, never a data-dependent shortcut) -- this property
         exists for callers that want to skip a genuinely zero-cost pad.
         """

@@ -19,7 +19,7 @@ document says so and names the measurement that would settle it.
 | [self-masking-theorem.md](self-masking-theorem.md) | Dead routes are exact zeros and zeros are inert. The licence for over-fetch, identity-store, and trustless capability flags — and the conditions under which it would fail. |
 | [no-delta-rule.md](no-delta-rule.md) | The state update is affine in the input and never in the state. Commutativity, chunkability, schedulability. Where expressiveness goes instead. |
 | [factored-representation.md](factored-representation.md) | Store the factors; expand transiently where they are consumed. Never materialize the expansion. |
-| [fp32-accumulators.md](fp32-accumulators.md) | Accumulation precision is closed at fp32. Storage precision is a live axis. |
+| [precision.md](precision.md) | Every state accumulator is fp32 or exact integer; storage and operands are declared per component, one fp16 family. |
 | [closed-world-codegen.md](closed-world-codegen.md) | Only measured binaries run: pinned assembler, AOT-only, ratified per-arch manifest, runtime refusal. Why JIT compilation is rejected. |
 | [guarantees-choices-preferences.md](guarantees-choices-preferences.md) | The taxonomy every proposed change is sorted into, populated with real entries, and what each category demands of a contributor. |
 

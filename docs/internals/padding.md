@@ -6,7 +6,7 @@ level width `b_l >= 1`, any value width `d_v`) and an op's kernel-facing, PADDED
 rulings ("PADDING AT THE PRODUCER", "d_v PADDING IS ALSO HOST-SIDE") name the
 mechanism; this page states where it lives and why.
 
-## Two contracts, kept separate (KERNEL_STANDARDS §R13)
+## Two contracts, kept separate (CONSTITUTION §R13)
 
 **API CONTRACT.** The layer producer's bundle
 (`RouteFactors`) and `rola.layer.RoLA` stay at the caller's own, unpadded widths --

@@ -51,7 +51,7 @@ values are f16 against its largest channel with an fp32 scale (`rola/values.py`)
 the producer and the kernels.
 
 **Declared arithmetic, per kernel.** Every kernel's arithmetic is declared and mirrored by its gate's reference, and
-accumulation is fp32 or exact integer ([`architecture/fp32-accumulators.md`](architecture/fp32-accumulators.md)):
+accumulation is fp32 or exact integer ([`architecture/precision.md`](architecture/precision.md)):
 
 | kernel | operands | accumulation |
 |---|---|---|
@@ -106,7 +106,7 @@ encodes.
 
 ### 3.1 The format descriptor, and one admission law
 
-**The state owns its format** (KERNEL_STANDARDS §R13). A `StateFormat` binds at the state's first call, from the call
+**The state owns its format** (CONSTITUTION §R13). A `StateFormat` binds at the state's first call, from the call
 itself, and carries:
 
 | field | what it is |
@@ -163,7 +163,7 @@ never on a measured path, since allocating that tensor is exactly what paging ex
 ### 3.4 Activity
 
 Residency is the arena's fact; **activity is the facts' fact**, and only the second decides what a call touches
-(KERNEL_STANDARDS §R14). Per atom, one READ bit and one WRITTEN bit, never pre-ORed, folded on the host from the facts
+(CONSTITUTION §R14). Per atom, one READ bit and one WRITTEN bit, never pre-ORed, folded on the host from the facts
 pass's words (`rola.engine.facts.liveness.page_bits`): exact allocation admits an atom iff it is WRITTEN this call; a
 state sweep LOADS an atom iff it is resident and `(read ∨ written)` and STORES it iff `written`. Dense and paged touch
 the identical atom set, so the byte gate certifies the skip logic and not merely the addressing, and a resident but
@@ -193,7 +193,7 @@ planner can change and every kernel keeps working for whatever it returns.
 | **warp tile** | a side's lists × operand rows: a warp's share of the box | the carve's plan |
 | **decode unit** | an owner and every run offset but the innermost: a contiguous run, one atom at the flagship | the decode step |
 
-**The grains nest on the page and nowhere else** (KERNEL_STANDARDS §R14). Prefill and decode ownership are
+**The grains nest on the page and nowhere else** (CONSTITUTION §R14). Prefill and decode ownership are
 decoupled: two kernels partitioning the same paged state, whose shared contract is the atom, the page table and the
 activity bits.
 
@@ -201,7 +201,7 @@ activity bits.
 
 ## 5. The axis law
 
-KERNEL_STANDARDS §R11 and §R12 in architectural form. **A compile-time axis is legitimate only as a deterministic
+CONSTITUTION §R11 and §R12 in architectural form. **A compile-time axis is legitimate only as a deterministic
 function of user input that the selector can pick; everything else is derived, addressed at runtime, or constant.**
 The compiled key is the family's own:
 
@@ -289,7 +289,7 @@ admits its own growth ([`internals/decode/decode.md`](internals/decode/decode.md
 
 ## 7. Launch shape and the CTA policy
 
-**The CTA is the multiprocessor** (KERNEL_STANDARDS §R15): every heavy kernel launches one CTA an SM with all the warps
+**The CTA is the multiprocessor** (CONSTITUTION §R15): every heavy kernel launches one CTA an SM with all the warps
 its register plan admits — the carry eight warps of up to 255 registers a lane (`__launch_bounds__(kThreads, 1)`, 128
 of them the box's state), decode sixteen warps of up to 128, the facts pass two teams of eight warps. Latency hiding
 is the kernel's job — covers, pipelines and split-phase edges — so exposed
@@ -302,7 +302,7 @@ rather than at a threshold (R22).
 
 ## 8. Shipping
 
-**A user of the Python package never registers an arm** (KERNEL_STANDARDS §R16). The shipped set is each family's
+**A user of the Python package never registers an arm** (CONSTITUTION §R16). The shipped set is each family's
 compiled key above, per architecture, and every other shape a family serves is served by runtime addressing, checked
 at the seam: a call is either lawful and runs, or the refusal names the field (`rola.expert.envelope_refusal`).
 
@@ -310,7 +310,7 @@ at the seam: a call is either lawful and runs, or the refusal names the field (`
 ratified manifest recording registers, spills and SASS bodies, and a device-side stamp asserted before any gate
 ([`ratification.md`](ratification.md), [`architecture/closed-world-codegen.md`](architecture/closed-world-codegen.md)).
 
-**One body per operation family** (KERNEL_STANDARDS §R18). A single-valued axis is not plumbed as a parameter — it is
+**One body per operation family** (CONSTITUTION §R18). A single-valued axis is not plumbed as a parameter — it is
 deleted, and the ratio readout is simply what the readout is.
 
 ---
@@ -318,7 +318,7 @@ deleted, and the ratio readout is simply what the readout is.
 ## 9. Portability
 
 Every structural mechanism states its form on each architecture; a mechanism that exists on only one is a workaround,
-not a design (KERNEL_STANDARDS §R8). A primitive may select different NATIVE instructions per architecture; it may
+not a design (CONSTITUTION §R8). A primitive may select different NATIVE instructions per architecture; it may
 never select a wider-type emulation. sm_80 and sm_86 are both core targets, priced at each
 ([`internals/common/hardware.md`](internals/common/hardware.md)).
 
@@ -342,7 +342,7 @@ never select a wider-type emulation. sm_80 and sm_86 are both core targets, pric
 |---|---|
 | the recurrence and the ratio readout, as the executable spec | `rola/ops/naive.py` |
 | the update is affine in the input and never in the state | [`architecture/no-delta-rule.md`](architecture/no-delta-rule.md) |
-| accumulation precision | [`architecture/fp32-accumulators.md`](architecture/fp32-accumulators.md) |
+| accumulation precision | [`architecture/precision.md`](architecture/precision.md) |
 | storing factors, expanding transiently | [`architecture/factored-representation.md`](architecture/factored-representation.md) |
 | dead routes are exact zeros | [`architecture/self-masking-theorem.md`](architecture/self-masking-theorem.md) |
 | the bundle, the public surface | [`api.md`](api.md), [`internals/rola_api.md`](internals/rola_api.md) |

@@ -4,7 +4,8 @@ Everything here is IN THIS REPO. A site's own notes (scratch, memory, the queue)
 the hook only when the environment names them (`ROLA_SCRATCH`); the repo never references out.
 
 ## The constitution and the laws
-`docs/KERNEL_STANDARDS.md` — the CONSTITUTION (the owner's standing rulings) and the LAWS. Before touching a kernel:
+`docs/CONSTITUTION.md` — the owner's standing rulings; `docs/KERNEL_STANDARDS.md` — the LAWS. Before touching a
+kernel:
 - `#s19` the component budget gate: skeleton first, then one component at a time against its budget line.
 - `#s20` the ptxas signatures `tools/sass_gate.py` reds on, run on every build.
 - `#s21` the measurement protocol: quiet GPU, the baseline's own schedule, counts beside time.
