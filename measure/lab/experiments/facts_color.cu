@@ -260,6 +260,8 @@ __device__ __forceinline__ void singles(uint8_t* smem, int k, uint32_t q, uint32
       r_lo -= __reduce_add_sync(kAll, g_lo);
       r_hi -= __reduce_add_sync(kAll, g_hi);
     } while (__any_sync(kAll, left > 0));
+  uint2* const rec = reinterpret_cast<uint2*>(smem + Smem::kRecs) + kRecStride * q + lane;
+  *rec = make_uint2(cw.x + t_lo, cw.y + t_hi);
   uint32_t end[kColors];
   uint32_t e = 0u;
 #pragma unroll
@@ -357,7 +359,7 @@ __global__ __launch_bounds__(32 * kWarps, kCtasOf<kWrite>) void color(const Para
   //: THE PASSES' INPUTS: lane d its digit's tokens and singles in each pass and its biased counts at the pass's
   //: capacity; each pass's queue, its multi-digit tokens three-or-more first, each kind in token order, at the pass's
   //: segment of the queue
-  uint32_t sg01 = 0u, sg23 = 0u;
+  uint32_t sg01 = 0u, sg23 = 0u, biases = 0u;
   {
     const uint4* const uw4 = reinterpret_cast<const uint4*>(uword);
     const uint4* const mw4 = reinterpret_cast<const uint4*>(mword);
@@ -375,8 +377,9 @@ __global__ __launch_bounds__(32 * kWarps, kCtasOf<kWrite>) void color(const Para
           k += __popc(w[4 * i + r] & pmv[r] & sgv[r]);
         }
       }
-      const uint32_t r = (kBias8 - static_cast<uint32_t>(n + kColors - 1) / kColors) * 0x01010101u;
+      const uint32_t bias = kBias8 - static_cast<uint32_t>(n + kColors - 1) / kColors, r = bias * 0x01010101u;
       reinterpret_cast<uint2*>(smem + Smem::kRecs)[kRecStride * q + lane] = make_uint2(r, r);
+      biases |= bias << (8 * q);
       if (q < 2) sg01 |= static_cast<uint32_t>(k) << (16 * q);
       else sg23 |= static_cast<uint32_t>(k) << (16 * (q - 2));
     }
@@ -571,37 +574,24 @@ __global__ __launch_bounds__(32 * kWarps, kCtasOf<kWrite>) void color(const Para
   }
   __syncwarp();
 
-  //: THE COUNTS: each entry of the stash into its (list, pass)'s color count
   const int pl = p.pass_log;
   uint32_t* const tab = reinterpret_cast<uint32_t*>(smem + Smem::kTab);
   uint16_t* const startv = reinterpret_cast<uint16_t*>(smem + Smem::kStart);
   uint8_t* const runv = smem + Smem::kRun;
-  reinterpret_cast<uint4*>(tab)[lane] = make_uint4(0u, 0u, 0u, 0u);
-  reinterpret_cast<uint4*>(tab)[lane + 32] = make_uint4(0u, 0u, 0u, 0u);
   reinterpret_cast<uint2*>(runv)[lane] = make_uint2(0u, 0u);
   const int count = static_cast<int>(e1 - e0);
   const int chunks = __shfl_sync(kAll, (count + 31) >> 5, 0);
-  __syncwarp();
-  uint32_t ahead = lane < count ? toks[lane] : 0u;
-#pragma unroll 1
-  for (int i = 0; i < chunks; ++i) {
-    const int e = 32 * i + lane;
-    const uint32_t tok = ahead;
-    ahead = e + 32 < count ? toks[e + 32] : 0u;
-    if (e < count) {
-      const uint32_t s = slotv[tok & 511u];
-      atomicAdd(tab + ((tok >> 9) * kQ + (s >> pl)) * 2 + ((s >> 2) & 1u), 1u << (8 * (s & 3u)));
-    }
-  }
-  __syncwarp();
 
-  //: THE STARTS, lane d list d's passes: each its steps (its largest color count), its start and its colors' tokens in
-  //: the earlier passes (over the counts); the list's starts out
+  //: THE STARTS, lane d list d's passes: each its color counts (its pass record less the pass's bias), steps (its
+  //: largest color count), start and colors' tokens in the earlier passes; the list's starts out
   {
     uint2 tq[kQ];
 #pragma unroll
-    for (int q = 0; q < kQ; ++q) tq[q] = reinterpret_cast<const uint2*>(tab)[lane * kQ + q];
-    __syncwarp();
+    for (int q = 0; q < kQ; ++q) {
+      const uint2 r = reinterpret_cast<const uint2*>(smem + Smem::kRecs)[kRecStride * q + lane];
+      const uint32_t b = ((biases >> (8 * q)) & 0xffu) * 0x01010101u;
+      tq[q] = make_uint2(r.x - b, r.y - b);
+    }
     uint32_t b_lo = 0u, b_hi = 0u;
     int start = 0;
     uint32_t at[kListAt];

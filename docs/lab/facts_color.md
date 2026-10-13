@@ -22,8 +22,8 @@ THE COLORER, a warp a union (4 warps a CTA, no CTA barrier; 4 CTAs an SM on the 
 4. The singles, pass by pass, one a digit a round: each digit takes the first color in the rotation from `d` with room
    under its capacity and in the pass (else any with room in the pass), the digits choosing one color granted in digit
    order (a match on the color); then dealt to their colors over the pass's words.
-5. The lists: a counting walk over the stash (a chunk ahead) into each (list, pass)'s color counts; each pass's start
-   and its colors' tokens before; a walk a lane an entry (a chunk ahead) placing it at its pass's start + 8 x (its rank -
+5. The lists: each (list, pass)'s color counts from its pass record less the pass's bias (the claims and the singles
+   counted every token there); each pass's start and its colors' tokens before; a walk a lane an entry (a chunk ahead) placing it at its pass's start + 8 x (its rank -
    its color's tokens before) + its color, each list's whole run first written with its pads as
    the walk reaches it (coalesced, so every sector is whole before the entries land over it).
 
@@ -47,7 +47,7 @@ Measured (RTX 3080 Ti at its boost clock, ~1.96 GHz; medians):
 
 | | k 4 | k 16 |
 |---|---|---|
-| the colorer, both sides' 8,192 unions | 299 µs | 571 µs |
+| the colorer, both sides' 8,192 unions | 284 µs | 554 µs |
 | list places over live entries | 1.76 | 1.45 |
 | the window-colored form (`a044e932`), both sides | 228-258 µs | 580 µs |
 | the stream half's model alone (a persistent CTA an SM, two windows) | 393-420 µs | 447 µs |
