@@ -49,7 +49,7 @@ capacity; that is a bridge for the oracle and for a test, never a measured path.
 `rola.state(pool_slack=0.0)` is the paged backing's other storage-mechanics knob:
 a fraction of full residency, reserved per batch-head as physical slots a `T = 1` decode
 step can admit into itself, with no host round trip. `0.0` — the default — is exact
-commitment, unchanged from before the knob existed. Two calls read and refill it off the
+commitment. Two calls read and refill it off the
 step's own path: `rola.engine.dags.decode_dag.pool_headroom(state)` (the slack slots the
 thinnest batch-head still has) and `refill_pool(state)` (restock what the device spent).
 See [`internals/state.md`](internals/state.md#the-slack-pool) and
@@ -81,9 +81,8 @@ the no-fallback rule forbids.
 | a gradient anywhere in the operands | none | `BackwardNotImplemented` |
 | the module's mode (layer only) | `eval()` | `BackwardNotImplemented` |
 | device | CUDA | refused |
-| `d_v` | up to the widest value width the carry ships at the depth | refused |
+| `d_v` | the intra's value width (`rola.ops.intra.VALUE_WIDTH`), which the binary's carry arms at the depth must reach | refused |
 | widths | one or two levels, each a whole number of 16-digit granules up to 256, any mix (`rola.ops.intra.admits`) | refused |
-| `D` | the binary's own carry census (`rola.ops.carry.arms`) | refused |
 | `T` | whole 512-token windows (a segment; the layer segments, §4.2) | refused |
 | `decay` | not implemented in the prefill (decode has it) | refused |
 | an unratified activation | — | refused |
@@ -92,12 +91,9 @@ Ask before calling: `rola.expert.envelope_refusal(routes, v, decay)` returns the
 sentence the refusal will carry, or `None`. `rola.expert.require_envelope(...)` is the
 raising form the op itself uses.
 
-**This is a real capability narrowing, and it is stated rather than softened.** Shapes
-outside the matrix — including the flagship `widths = (8, 16)`, which is refused for
-being non-uniform — had a kernel before the tiled consumer's retirement, and there is
-NO TRAINING PATH through this surface at all until the native backward lands. The cards
-that widen the matrix and bring the backward are in
-[`docs/open-work.md`](open-work.md).
+**The envelope is narrow, and that is stated rather than softened.** Shapes outside the
+matrix are refused, and there is NO TRAINING PATH through this surface until the native
+backward lands; what widens it is in [`docs/open-work.md`](open-work.md).
 
 `rola_op` is the **single autograd boundary**, and it is a refusal rather than a
 branch: the failure it prevents — a forward-only kernel reached from a gradient
@@ -117,13 +113,10 @@ OWN thin bundle, and the rule is a membership test:
 So `RoLA.forward` returns `(y, LayerContinuation)` — always the container — and takes
 one back. `LayerContinuation.state` is the op's paged tensor; it is the container's
 only field today, and any future layer-level recurrence is a field ON IT, never on the
-op's state. The container is the contract in both directions: a bare `RoLAState` or the
-retired `(state, conv_rings)` tuple is refused by name, because accepting a lookalike
-would make the layer's own fields silently optional to carry.
-
-This is not the old pooled state object recreated. That object's defect was LAYER
-LUGGAGE INSIDE THE OP's state; keeping each level's object pure is what leaves
-accretion nowhere to land.
+op's state. The container is the contract in both directions: a bare `RoLAState` or a
+`(state, conv_rings)` tuple is refused by name, because accepting a lookalike would make
+the layer's own fields silently optional to carry. Keeping each level's object pure is
+what leaves layer luggage nowhere to land inside the op's state.
 
 ### 1.3 TWO CONTRACTS, ONE TRANSLATOR
 
@@ -417,9 +410,8 @@ of freedom the product structure lets the recurrence actually distinguish.
 
 `ConstantDecay` set high is a legitimate performance lever: the state forgets fast and
 the realized routing shows it, through exactly the same door a learned source uses.
-Nothing about it is a special case. (Today the chunk arm has no decay and refuses it
-— §1.1 — so the lever reaches production only through the decode arm, which does have
-it, until the kernel-side decay retirement is reopened.)
+Nothing about it is a special case. The prefill refuses a decay today (§1.1), so the
+lever reaches production through the decode step.
 
 The decay is **write-conditioned** (mass decay), never time decay. A leaf whose write
 amplitude is exactly zero ticks its clock by zero, so `keep = (1 - rate) ** 0 = 1`
@@ -437,27 +429,22 @@ y, _ = layer(hidden_states)                            # stateless -> (y, LayerC
 ```
 
 `forward(x, attention_mask=None, continuation=None) -> (y, LayerContinuation)` — ALWAYS
-the container. See §1.2; a bare `RoLAState` or the retired `(state, conv_rings)` tuple
-is refused by name rather than adopted.
+the container (§1.2).
 
 `routing` is the declared `Routing` (§2.3), and the layer owns every weight it implies.
 `d_v` is the per-head value width — the layer's, because it sizes `v_proj`/`o_proj`; the
-default is the width the chunk matrix is built at.
+default, 64, is the intra's value width.
 
 <a id="one-token-step"></a>**One token of a carried sequence is `_step`, then the verdict.** `RoLA._step(x, state)`
 is the whole token with no host read inside it -- the producer's one launch, the gated decode
 step, the output projection -- so a caller can capture it in a CUDA graph and replay it a
 token. A batch-head whose write atoms the state can neither address nor admit skips itself;
 `forward` then asks `growth_pending(state)`, admits and steps again, which advances every
-sequence exactly once (`docs/internals/decode/decode.md#capture`). MEASURED at a decode cell
-(N 64K, H 16, d_v 64, B 1, paged, RTX 3080 Ti): eager `forward` ~600 us a token; the
-captured step 73 us a token (its GPU time), 161-187 us with the verdict read every token --
-a 4-byte copy and a sync, which a serving loop pays at the sync that samples its token.
+sequence exactly once (`docs/internals/decode/decode.md#capture`). Reading the verdict is a
+4-byte copy and a sync, which a serving loop pays at the sync that samples its token.
 
-`value_conv`/`route_conv` (a causal short convolution over the value/routing-source
-stream) were DELETED at K45 (docs/internals/DELETIONS.md): they were never reviewed as
-a mechanism and are not paper-1 scope. Re-adding a convolution hook is a field on
-`LayerContinuation`, not a return to the old ad hoc ring tuple.
+A convolution over the value or routing-source stream, if one is added, is a field on
+`LayerContinuation`.
 
 The layer adds exactly one clause the op cannot know: `self.training` REFUSES,
 independently of gradient reachability, because reentrant gradient checkpointing runs
@@ -470,25 +457,10 @@ inference from a timing, and it is published for exactly that: a benchmark proce
 cannot spy on the call it is timing, and wall-clock cannot tell two arms apart. It is a
 SCALAR, not a tally — a caller that needs how many times an arm ran spies on the arm.
 
-### 4.2 Segments: the layer bounds its own working set
+### 4.1 The projections and the value format
 
-A prefill runs as SEGMENTS of `T` tokens (ruled 2026-09-29): per segment the layer projects that
-stretch's routes and values, runs `rola_op` on it and carries the state to the next, so the projections
-are bounded along with the op -- which an op-level split cannot do once the whole call's bundle exists.
-The op runs one segment and knows nothing of segmentation.
-
-`T` is DERIVED, never a knob: the caller declares `memory_budget` (bytes); the layer takes the largest
-whole number of 512-token windows whose working set (`RoLA.segment_bytes_per_token`, an upper bound on
-every per-token tensor a segment allocates, gated against the measured peak) fits beside the state
-(`RoLA.state_bytes`, full residency), and REFUSES a budget below one window beside the state.
-`memory_budget=None` is one segment. The window grid is global, so a boundary on a window boundary moves
-no pair: a segmented call is the whole call (the op's readout to fp32 ULPs,
-`tests/integration/test_layer_segments.py`). A stateless call that spans segments carries an internal
-state and hands none back.
-
-### 4.1 The bf16 projection arm
-
-`v_proj` and `o_proj` run as bf16 GEMMs with weights cast per call, and the projection
+`v_proj` and `o_proj` run as bf16 GEMMs (their weights read through the inference copy when no
+gradient flows, §2.3), and the projection
 is written to the value format at the layer: `Values.from_projection(v)` (`rola/values.py`)
 holds each token's values `v` in f16 against its largest channel (at 1); that magnitude is
 the token's fp32 `scale`. The op takes the bundle, not the tensor. The plane and the scale are
@@ -505,10 +477,23 @@ fp32 compute type (the accumulate-in-fp32 ruling); the global
 reduced-precision-reduction knob is deliberately left alone, so this is the same
 environment the FlashAttention comparison arm runs in.
 
-There is no dtype exception left on this arm: `value_conv` — the one case that used to
-round-trip `v` back to the module dtype ahead of a convolution — was DELETED at K45
-(docs/internals/DELETIONS.md). `o_proj` rounds the op's fp32 `y` to its bf16 operand,
-the one rounding on the output side.
+`o_proj` rounds the op's fp32 `y` to its bf16 operand, the one rounding on the output side.
+
+### 4.2 Segments: the layer bounds its own working set
+
+A prefill runs as SEGMENTS of `T` tokens (ruled 2026-09-29): per segment the layer projects that
+stretch's routes and values, runs `rola_op` on it and carries the state to the next, so the projections
+are bounded along with the op -- which an op-level split cannot do once the whole call's bundle exists.
+The op runs one segment and knows nothing of segmentation.
+
+`T` is DERIVED, never a knob: the caller declares `memory_budget` (bytes); the layer takes the largest
+whole number of 512-token windows whose working set (`RoLA.segment_bytes_per_token`, an upper bound on
+every per-token tensor a segment allocates, gated against the measured peak) fits beside the state
+(`RoLA.state_bytes`, full residency), and REFUSES a budget below one window beside the state.
+`memory_budget=None` is one segment. The window grid is global, so a boundary on a window boundary moves
+no pair: a segmented call is the whole call (the op's readout to fp32 ULPs,
+`tests/integration/test_layer_segments.py`). A stateless call that spans segments carries an internal
+state and hands none back.
 
 ## 5. The expert surface
 
@@ -540,21 +525,13 @@ BACKING, never a launch shape: `None` is the paged default, `False` pins the den
 the bit-identity gate compares against, and `True` is refused because paging is on by
 default and bitwise invisible. `carve` pins the carry's box and operation plans; the rule
 checks a pinned carve against the declaration exactly as it checks its own
-([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve)). A `BC`-style
-launch-shape pin (`state_block`, on the tiled consumer's `Plan`) went with that
-consumer's deletion (`internals/DELETIONS.md`) and has no successor here: the carry
-family's arm — and therefore its `BC` — is a property of the built matrix a topology
-resolves to, not a per-call override.
+([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve)).
 
-**There is no plan object and no derive/execute seam.** `Plan`, `Schedule`,
-`derive_plan` and `execute` were the tiled consumer's, and went with it in P67 D2
-([`internals/DELETIONS.md`](internals/DELETIONS.md)). The geometry they carried is
-now a property of the built arm rather than of a per-launch derivation, so there is
-no launch-shaping object for a caller to hold, synthesize or staleness-test. What
-replaces the adversarial use they enabled: a conformance family drives
-the envelope's own rule (`rola.engine.rules.envelope`) directly and declares the refusal
-clause it expects, and
-`envelope_refusal` answers the same question a synthetic plan used to be built to probe.
+**There is no plan object and no derive/execute seam.** The carry's launch geometry is
+the carve — the rule's, or a pinned one checked the same way — so there is no
+launch-shaping object for a caller to hold or synthesize. A conformance family drives the
+envelope's own rule (`rola.engine.rules.envelope`) directly and declares the refusal
+clause it expects, and `envelope_refusal` answers the same question before a call.
 
 ## 6. What is deliberately not here
 
