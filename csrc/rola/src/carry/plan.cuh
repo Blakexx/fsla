@@ -31,7 +31,8 @@ struct Tenants {
   static constexpr int kWriteExp = kPre + 2 * 2 * kPreRows * kListAt * 2;
   static constexpr int kUnits = kWriteExp + 2 * kBoxLists * 4;
   static constexpr int kBook = kUnits + 2 * kWindow;
-  static constexpr int kMaxima = kBook + kBoxLists * 8;
+  static constexpr int kScale = kBook + kBoxLists * 8;
+  static constexpr int kMaxima = kScale + kBoxLists * 8;
   static constexpr int kExps = kMaxima + 2 * kWarps * kBoxDigits * 2;
   static constexpr int kClock = kExps + kBoxDigits * 4;
   static constexpr int kBars = kClock + kWarps * (kCarryPhases + 1) * 8;

@@ -543,38 +543,52 @@ __device__ __forceinline__ void panel_red(uint32_t at, uint32_t v) {
   asm volatile("red.shared.add.u32 [%0], %1;" ::"r"(at), "r"(v) : "memory");
 }
 
-//: A READOUT TILE, 8 tokens on N against a digit's state (the A operand): their read rows (B, at the entries' 16-byte
-//: chunks) by one `ldmatrix.x4`, four MMAs accumulating in fp16 (`F16`) or fp32, each lane's two tokens' outputs as
-//: exact pairs at their panel rows; lane `l` holds entry `l & 7` and scales its coefficient to its token's unit by
-//: `2^(sx - u)` (`sx` the digit's exponent less `kImageTop` and `kCoefTop`). -- see docs/internals/carry/parts.md#readout
-//: @burst
-template <class P, bool F16>
-__device__ __forceinline__ void tile(ops::SmemAddr pool, ops::SmemAddr pads, ops::SmemAddr units,
-                                     int sx, uint2 e, const uint32_t (&f)[16], int lane) {
-  const int g = lane >> 2, t = lane & 3;
+//: A READOUT TILE, 8 tokens on N against a digit's state (the A operand), in three parts a caller can interleave over
+//: two tiles: its operands (`tile_in`: the read rows, B, at the entries' 16-byte chunks by one `ldmatrix.x4`; lane `l`
+//: holds entry `l & 7` and scales its coefficient to its token's unit by `2^(sx - u)`, `sx` the digit's exponent less
+//: `kImageTop` and `kCoefTop`), its four MMAs (`tile_mma`, accumulating in fp16 (`F16`) or fp32) and its adds
+//: (`tile_add`: each lane's two tokens' outputs as exact pairs at their panel rows).
+//: -- see docs/internals/carry/parts.md#readout
+struct TileIn {
+  uint32_t b[4], e0, e1;
+  float c0, c1;
+};
+
+template <class P>
+__device__ __forceinline__ TileIn tile_in(ops::SmemAddr pool, ops::SmemAddr units, int sx, uint2 e,
+                                          int lane) {
+  const int t = lane & 3;
+  TileIn in;
   int u;
   asm volatile("ld.shared.s8 %0, [%1];" : "=r"(u) : "r"(units + (e.x >> 16)));
   const float c = __half2float(__ushort_as_half(static_cast<unsigned short>(e.y)));
   const float cu = __uint_as_float(__float_as_uint(c) + (static_cast<uint32_t>(sx - u) << 23));
-  const uint32_t e0 = __shfl_sync(0xffffffffu, e.y, 2 * t),
-                 e1 = __shfl_sync(0xffffffffu, e.y, 2 * t + 1);
-  const float c0 = __shfl_sync(0xffffffffu, cu, 2 * t),
-              c1 = __shfl_sync(0xffffffffu, cu, 2 * t + 1);
-  uint32_t b[4];
-  ops::load_frag(
-      b, chunk_addr<P::kReadRow>(pool + 16u * (e.x & 0xffffu), static_cast<uint32_t>(lane >> 3)));
-  float acc[2][4] = {};
+  in.e0 = __shfl_sync(0xffffffffu, e.y, 2 * t);
+  in.e1 = __shfl_sync(0xffffffffu, e.y, 2 * t + 1);
+  in.c0 = __shfl_sync(0xffffffffu, cu, 2 * t);
+  in.c1 = __shfl_sync(0xffffffffu, cu, 2 * t + 1);
+  ops::load_frag(in.b, chunk_addr<P::kReadRow>(pool + 16u * (e.x & 0xffffu),
+                                               static_cast<uint32_t>(lane >> 3)));
+  return in;
+}
+
+//: @burst
+template <bool F16>
+__device__ __forceinline__ void tile_mma(float (&acc)[2][4], const TileIn& in,
+                                         const uint32_t (&f)[16]) {
 #pragma unroll
   for (int m = 0; m < 2; ++m) {
     uint32_t h[2] = {0u, 0u};
+#pragma unroll
+    for (int i = 0; i < 4; ++i) acc[m][i] = 0.0f;
 #pragma unroll
     for (int kb = 0; kb < 2; ++kb) {
       const uint32_t a[4] = {f[(m * 2 + kb) * 4], f[(m * 2 + kb) * 4 + 1], f[(m * 2 + kb) * 4 + 2],
                              f[(m * 2 + kb) * 4 + 3]};
       if constexpr (F16) {
-        ops::hmma_f16(h, a, b[2 * kb], b[2 * kb + 1]);
+        ops::hmma_f16(h, a, in.b[2 * kb], in.b[2 * kb + 1]);
       } else {
-        ops::hmma(acc[m], a, b[2 * kb], b[2 * kb + 1]);
+        ops::hmma(acc[m], a, in.b[2 * kb], in.b[2 * kb + 1]);
       }
     }
     if constexpr (F16) {
@@ -586,13 +600,26 @@ __device__ __forceinline__ void tile(ops::SmemAddr pool, ops::SmemAddr pads, ops
       acc[m][3] = g8.y;
     }
   }
+}
 
-  const uint32_t b0 = pads + (e0 >> 16), b1 = pads + (e1 >> 16);
+__device__ __forceinline__ void tile_add(ops::SmemAddr pads, const TileIn& in,
+                                         const float (&acc)[2][4], int lane) {
+  const int g = lane >> 2;
+  const uint32_t b0 = pads + (in.e0 >> 16), b1 = pads + (in.e1 >> 16);
 #pragma unroll
   for (int m = 0; m < 2; ++m) {
-    panel_red((b0 ^ (32u * m)) + 4u * g, s16_pair(acc[m][0], acc[m][2], c0));
-    panel_red((b1 ^ (32u * m)) + 4u * g, s16_pair(acc[m][1], acc[m][3], c1));
+    panel_red((b0 ^ (32u * m)) + 4u * g, s16_pair(acc[m][0], acc[m][2], in.c0));
+    panel_red((b1 ^ (32u * m)) + 4u * g, s16_pair(acc[m][1], acc[m][3], in.c1));
   }
+}
+
+template <class P, bool F16>
+__device__ __forceinline__ void tile(ops::SmemAddr pool, ops::SmemAddr pads, ops::SmemAddr units,
+                                     int sx, uint2 e, const uint32_t (&f)[16], int lane) {
+  const TileIn in = tile_in<P>(pool, units, sx, e, lane);
+  float acc[2][4];
+  tile_mma<F16>(acc, in, f);
+  tile_add(pads, in, acc, lane);
 }
 
 //: A MASKED LANE'S ENTRY in a chunk's last step: its place `c`'s row of the chunk, coefficient 0, a dummy panel row, so
@@ -606,14 +633,17 @@ __device__ __forceinline__ uint2 masked_entry(int first, uint32_t c) {
 
 //: A CHUNK'S READOUT over batches `lo .. hi - 1`, a warp's: each of its digits `8 i + warp`, its state from its image
 //: plane (`d & mask` at `image`) and its exponent, its tiles over the chunk -- a listed side's run of the digit in the
-//: buffer's entries at `ents`, a lane past it masked; else every slot of the chunk, its entry implied. The rows are at
-//: `rows`, the dummy panel rows at `pads`, the panel after them. -- see docs/internals/carry/parts.md#readout
-template <class P, bool F16>
+//: buffer's entries at `ents`, a lane past it masked; else every slot of the chunk, its entry implied. `Pairs`: the
+//: digits two at a time, their tiles stepped together (two independent chains, all loads before the MMAs, the adds
+//: after). The rows are at `rows`, the dummy panel rows at `pads`, the panel after them.
+//: -- see docs/internals/carry/parts.md#readout
+template <class P, bool F16, bool Pairs>
 __device__ __forceinline__ void read_chunk(const uint8_t* smem, const Window& rw, int w, int first,
                                            int slots, int total, int lo, int hi,
                                            ops::SmemAddr image, uint32_t mask, ops::SmemAddr rows,
                                            ops::SmemAddr pads, ops::SmemAddr ents, int warp,
                                            int lane) {
+  constexpr int kStep = Pairs ? 2 : 1;
   const ImageLane il = image_lane(lane);
   const ops::SmemAddr units = ops::smem_addr(smem + P::kUnits) + (w & 1) * kWindow;
   const Run run = chunk_runs<P>(smem, rw, kRead, w, first, slots, total, lane);
@@ -621,52 +651,70 @@ __device__ __forceinline__ void read_chunk(const uint8_t* smem, const Window& rw
   const ops::SmemAddr pool_u = rows - static_cast<uint32_t>(first * P::kReadRow),
                       pads_u = pads - static_cast<uint32_t>(64 * first);
   const uint2 masked = masked_entry<P>(first, static_cast<uint32_t>(lane & 7));
+  //: a lane's entry `e` of a run (`n` at `to`): loaded at a clamped place, the masked entry past the run
+  const auto entry_at = [&](int e, int n, int to) {
+    uint2 v;
+    asm volatile("ld.shared.v2.u32 {%0, %1}, [%2];"
+                 : "=r"(v.x), "=r"(v.y)
+                 : "r"(ents + 8u * static_cast<uint32_t>(n > 0 ? to + min(e, n - 1) : 0)));
+    return e < n ? v : masked;
+  };
   int i = lo;
   for (int go = __any_sync(0xffffffffu, i < hi) ? 1 : 0; go > 0; --go)
 #pragma unroll 1
     do {
-      const int d = warp + kWarps * i;
-      const int sx = reinterpret_cast<const int*>(smem + P::kExps)[d] - kImageTop - kCoefTop;
-      uint32_t f[16];
-      state_in(f, image + (static_cast<uint32_t>(d) & mask) * kPlaneBytes, il, d);
+      int d[kStep], sx[kStep];
+      uint32_t f[kStep][16];
+      static_for<kStep>([&](auto Q) {
+        d[Q] = warp + kWarps * (i + Q);
+        sx[Q] = reinterpret_cast<const int*>(smem + P::kExps)[d[Q]] - kImageTop - kCoefTop;
+        state_in(f[Q], image + (static_cast<uint32_t>(d[Q]) & mask) * kPlaneBytes, il, d[Q]);
+      });
       if (rw.listed) {
-        const int n = __shfl_sync(0xffffffffu, run.n, d), to = __shfl_sync(0xffffffffu, run.to, d);
-        const int tiles = (n + 7) >> 3;
+        int n[kStep], to[kStep], tiles = 0;
+        static_for<kStep>([&](auto Q) {
+          n[Q] = __shfl_sync(0xffffffffu, run.n, d[Q]);
+          to[Q] = __shfl_sync(0xffffffffu, run.to, d[Q]);
+          tiles = max(tiles, (n[Q] + 7) >> 3);
+        });
         int s = 0;
         for (int any = __any_sync(0xffffffffu, s < tiles) ? 1 : 0; any > 0; --any)
 #pragma unroll 1
           do {
-            const int e = 8 * s + (lane & 7);
-            uint2 entry = masked;
-            if (e < n)
-              asm volatile("ld.shared.v2.u32 {%0, %1}, [%2];"
-                           : "=r"(entry.x), "=r"(entry.y)
-                           : "r"(ents + 8u * static_cast<uint32_t>(to + e)));
-            tile<P, F16>(pool_u, pads_u, units, sx, entry, f, lane);
+            TileIn in[kStep];
+            float acc[kStep][2][4];
+            static_for<kStep>([&](auto Q) {
+              in[Q] =
+                  tile_in<P>(pool_u, units, sx[Q], entry_at(8 * s + (lane & 7), n[Q], to[Q]), lane);
+            });
+            static_for<kStep>([&](auto Q) { tile_mma<F16>(acc[Q], in[Q], f[Q]); });
+            static_for<kStep>([&](auto Q) { tile_add(pads_u, in[Q], acc[Q], lane); });
           } while (__any_sync(0xffffffffu, ++s < tiles));
       } else {
         //: every slot of the chunk, its entry implied: its row and token, its coefficient, its panel row (a slot past
         //: the chunk's end its place's dummy row)
-        int s = 0;
-        for (int any = __any_sync(0xffffffffu, slots > 0) ? 1 : 0; any > 0; --any)
+        static_for<kStep>([&](auto Q) {
+          int s = 0;
+          for (int any = __any_sync(0xffffffffu, slots > 0) ? 1 : 0; any > 0; --any)
 #pragma unroll 1
-          do {
-            const uint32_t slot = 8u * s + (lane & 7);
-            const uint32_t panel =
-                static_cast<int>(slot) < slots ? kPadBytes + panel_row(slot) : panel_row(slot & 7);
-            const uint32_t row = slot * (P::kReadRow / 16) + chunk_at<P::kReadRow>(slot, 0);
-            uint32_t coef = 0x3c00u;
-            if constexpr (P::kReadFactors > 1)
-              asm volatile(
-                  "ld.shared.u16 %0, [%1];"
-                  : "=r"(coef)
-                  : "r"(chunk_addr<P::kReadRow>(rows + 16u * row, (kSliceBytes + 2 * d) >> 4)
-                        + (2 * d & 15)));
-            const uint2 e = make_uint2(row | (first + slot) << 16, coef | (panel << 16));
-            tile<P, F16>(rows, pads, units, sx, e, f, lane);
-          } while (__any_sync(0xffffffffu, ++s < (slots + 7) >> 3));
+            do {
+              const uint32_t slot = 8u * s + (lane & 7);
+              const uint32_t panel = static_cast<int>(slot) < slots ? kPadBytes + panel_row(slot)
+                                                                    : panel_row(slot & 7);
+              const uint32_t row = slot * (P::kReadRow / 16) + chunk_at<P::kReadRow>(slot, 0);
+              uint32_t coef = 0x3c00u;
+              if constexpr (P::kReadFactors > 1)
+                asm volatile(
+                    "ld.shared.u16 %0, [%1];"
+                    : "=r"(coef)
+                    : "r"(chunk_addr<P::kReadRow>(rows + 16u * row, (kSliceBytes + 2 * d[Q]) >> 4)
+                          + (2 * d[Q] & 15)));
+              const uint2 e = make_uint2(row | (first + slot) << 16, coef | (panel << 16));
+              tile<P, F16>(rows, pads, units, sx[Q], e, f[Q], lane);
+            } while (__any_sync(0xffffffffu, ++s < (slots + 7) >> 3));
+        });
       }
-    } while (__any_sync(0xffffffffu, ++i < hi));
+    } while (__any_sync(0xffffffffu, (i += kStep) < hi));
 }
 
 //: A GLOBAL ADD of a nonzero word, predicated rather than branched; zero adds nothing.

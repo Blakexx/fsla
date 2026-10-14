@@ -89,7 +89,8 @@ against the instructions' ~7.8K: the warps' latency-bound chains.
 <a id="phases"></a>
 ## The phase ledger's phases
 
-`CarryPhase` is the ledger's column order: `landed` (an item's buffer's copies waited), `maxima`, `store`, `readout`,
+`CarryPhase` is the ledger's column order: `landed` (an item's start: its record read, then its buffer's copies
+waited), `maxima`, `store`, `readout`,
 `drain`, `fill` (a fill's copies issued), `fold` and `wait` (an item's dependence, a fill's region wait and the
 staging, every warp's). A lap books the cycles since the last into its phase, so the columns sum to the warp's whole
 run. `rola.ops.carry.LEDGER_PHASES` names the same order.

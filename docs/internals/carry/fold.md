@@ -25,7 +25,8 @@ list's first step.
 c is then moved to the unit by an f16 power of two, `2^(E - u)` (`pow2_half2`: normal from 2^-14, subnormal to 2^-24,
 zero below), two roundings where a contribution falls past f16's normals, which the reference mirrors. `fold_units`
 runs once a window; the window's exponent pairs come in with its lists (`parts.md#lists-in`), so it never waits on a
-global load.
+global load. It posts each list's rescale and c factor to the list's scale (`ListScale`, the `kScale` tenant), which
+the window's fold chunks read, the first applying the rescale: so no register holds them through the readout.
 
 <a id="step"></a>
 ## The step
@@ -42,8 +43,8 @@ Each loop's step is one block (KERNEL_STANDARDS §27), guarded by a vote and clo
 ## The chunk
 
 A CHUNK is a range of the write union the window's plan sets (`schedule.md#chunks`): the whole union where its buffer
-fits the area, else the largest `64 m` slots two of whose buffers fit, and the rest. `fold_fill` copies its rows and its lists' runs into its buffer
-(`parts.md#entries`); `fold_chunk` takes each of the warp's lists in turn, its run from the buffer, a step's lanes past
+fits the area, else the largest `64 m` slots two of whose buffers fit, and the rest. `fold_fill` copies its rows and
+its lists' runs into its buffer (`parts.md#entries`); `fold_chunk` takes each of the warp's lists in turn, its run from the buffer, a step's lanes past
 it masked (the chunk's first row, c = 0), the rows taken back by the chunk's first slot so an entry's union slot is its
 row. A side with no list level steps every slot of the chunk, c the list's digit of the row's coefficient slice. The
 list's rescale is applied before its first chunk's steps.

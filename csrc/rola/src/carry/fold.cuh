@@ -38,11 +38,16 @@ __device__ __forceinline__ float next_unit(int k, UnitBook& book) {
 }
 
 //: A WINDOW'S UNITS, before the warp's steps: each list's exponent moves its book (lane group `j` list `j`); its state's
-//: rescale `f` (applied beside the list's first MMAs) and its c factor `2^(E - unit)` taken. A side with no list
-//: level keeps its unit. -- see docs/internals/carry/fold.md#units
+//: rescale `f` (applied beside the list's first MMAs) and its c factor `2^(E - unit)` posted to the list's scale (the
+//: `kScale` tenant, read by the window's fold chunks). A side with no list level keeps its unit.
+//: -- see docs/internals/carry/fold.md#units
+struct ListScale {
+  float f;
+  uint32_t cf;
+};
+
 template <class P>
-__device__ __forceinline__ void fold_units(uint32_t (&cf)[P::kFoldLists], float (&f)[P::kFoldLists],
-                                           uint8_t* smem, const Window& ww, int w, int warp,
+__device__ __forceinline__ void fold_units(uint8_t* smem, const Window& ww, int w, int warp,
                                            int lane) {
   constexpr int kLanes = 32 / P::kFoldLists;
   const int j = lane / kLanes;
@@ -54,11 +59,12 @@ __device__ __forceinline__ void fold_units(uint32_t (&cf)[P::kFoldLists], float 
   const float fl = next_unit(k, b);
   const int cexp = max(k, kUnitMin) - b.unit;
   __syncwarp();
-  if (lane % kLanes == 0) *book = b;
-  static_for<P::kFoldLists>([&](auto J) {
-    f[J] = __shfl_sync(0xffffffffu, fl, J * kLanes);
-    cf[J] = pow2_half2(__shfl_sync(0xffffffffu, cexp, J * kLanes));
-  });
+  if (lane % kLanes == 0) {
+    *book = b;
+    reinterpret_cast<ListScale*>(smem + P::kScale)[fold_list(warp, j)] =
+        ListScale{fl, pow2_half2(cexp)};
+  }
+  __syncwarp();
 }
 
 //: AN ENTRY'S LANE VALUES: its slot's row offset in the union (its swizzle folded in; the chunk's pool is taken back
@@ -163,26 +169,27 @@ __device__ __forceinline__ void fold_fill(const CarryParams& p, const uint8_t* s
 }
 
 //: A FOLD CHUNK, a warp's: each of its lists' run of the chunk from the buffer's entries at `ents`, in 16-token steps
-//: and an 8-token tail over the rows at `rows`, the list's rescale applied before its first; a side with no list level
-//: every slot of the chunk, c from the slot's row. -- see docs/internals/carry/fold.md#chunk
+//: and an 8-token tail over the rows at `rows`, the list's scale read from its tenant and its rescale applied before
+//: the window's first chunk (`rescale`); a side with no list level every slot of the chunk, c from the slot's row.
+//: -- see docs/internals/carry/fold.md#chunk
 template <class P>
-__device__ __forceinline__ void fold_chunk(State<P>& st, const uint32_t (&cf)[P::kFoldLists],
-                                           float (&f)[P::kFoldLists], const uint8_t* smem,
+__device__ __forceinline__ void fold_chunk(State<P>& st, bool rescale, const uint8_t* smem,
                                            const Window& ww, int w, int first, int slots, int total,
                                            ops::SmemAddr rows, ops::SmemAddr ents, int warp,
                                            int lane) {
   const Run run = chunk_runs<P>(smem, ww, kWrite, w, first, slots, total, lane);
   const ops::SmemAddr pool = rows - static_cast<uint32_t>(first * P::kWriteRow);
   static_for<P::kFoldLists>([&](auto J) {
-    static_for<P::kFoldMTiles>([&](auto M) {
-      static_for<4>([&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] *= f[J]; }); });
-    });
-    f[J] = 1.0f;
     const int list = fold_list(warp, J);
+    const ListScale sc = reinterpret_cast<const ListScale*>(smem + P::kScale)[list];
+    const float f = rescale ? sc.f : 1.0f;
+    static_for<P::kFoldMTiles>([&](auto M) {
+      static_for<4>([&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] *= f; }); });
+    });
     if (ww.listed) {
       const int n = __shfl_sync(0xffffffffu, run.n, list),
                 to = __shfl_sync(0xffffffffu, run.to, list);
-      steps<P, J>(st, cf[J], pool, first, 0, n, lane, [&](int k) {
+      steps<P, J>(st, sc.cf, pool, first, 0, n, lane, [&](int k) {
         uint2 e;
         asm volatile("ld.shared.v2.u32 {%0, %1}, [%2];"
                      : "=r"(e.x), "=r"(e.y)
@@ -191,7 +198,7 @@ __device__ __forceinline__ void fold_chunk(State<P>& st, const uint32_t (&cf)[P:
       });
     } else {
       //: every slot of the chunk, c the list's digit of the row's coefficient slice (the row's second)
-      steps<P, J>(st, cf[J], pool, first, 0, slots, lane, [&](int k) {
+      steps<P, J>(st, sc.cf, pool, first, 0, slots, lane, [&](int k) {
         const uint32_t row0 = rows + static_cast<uint32_t>(k) * P::kWriteRow
                               + 16u * chunk_at<P::kWriteRow>(static_cast<uint32_t>(k), 0);
         uint32_t cv;

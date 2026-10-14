@@ -7,12 +7,13 @@ chunks and buffers -- the window's plan places in the area at run time (`schedul
 <a id="tenants"></a>
 ## The persistent tenants
 
-`Tenants` holds what lives across the window, 10,752 bytes on every card and arm:
+`Tenants` holds what lives across the window, 11,008 bytes on every card and arm:
 
 - each side's union tokens (1 KB), count and group's boundaries in prefix form, two windows' each by parity: a
   window's are copied while the window before it is still read;
 - the write lists' exponent pairs and the tokens' units, by parity;
-- the unit book (a list's running unit, `fold.md#units`), the digit maxima (each warp's per digit, by parity) and the
+- the unit book (a list's running unit, `fold.md#units`) and the window's scale a list (`fold.md#units`), the digit
+  maxima (each warp's per digit, by parity) and the
   digit exponents (`parts.md#maxima`);
 - the phase clock's rows; the barriers (`#barriers`); the CTA's plans, two windows' by parity (`schedule.md#plan`);
 - the CTA's addresses (`Addr`, 256 bytes reserved: `parts.md#place`).
@@ -42,7 +43,7 @@ digits of its 4 lists (half an m-tile of each) and reads one digit a batch (`kBa
 - the registers: `kStateRegs` = 128 fp32 a lane;
 - the pool rows: a read row is the read side's operand slices (`kReadRow`: 64 bytes, or 128 with a coefficient level),
   a write row the write side's slices then the values (`kWriteRow`: 128 or 192);
-- the shared memory: `kSmemBytes`, the card's whole opt-in maximum a CTA, and `kArea`, what the tenants leave -- 90,624
-  bytes on sm_86, 156,160 on sm_80 and sm_87, 221,696 on sm_90.
+- the shared memory: `kSmemBytes`, the card's whole opt-in maximum a CTA, and `kArea`, what the tenants leave -- 90,368
+  bytes on sm_86, 155,904 on sm_80 and sm_87, 221,440 on sm_90.
 
 The launch sizes for the device's card, and the kernel refuses any other size (`carry_arm.md#plan`).

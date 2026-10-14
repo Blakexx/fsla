@@ -31,13 +31,17 @@ __device__ __forceinline__ void stage_window(const CarryParams& p, const Place& 
   }
 }
 
-//: A THREAD'S ARRIVALS: a bit a barrier, flipped at each of its arrivals -- the staging's and the ring's in `bits`, an
-//: item's done and landed (barrier `kBarDone + k`, `kBarLanded + k`) in `done` and `land`. Every thread arrives at
-//: every phase of a barrier, and a wait is for the phase of the thread's own last arrival, so the bit names its parity
-//: (a barrier never arrived at passes: its phase before the first). -- see docs/internals/carry/carry_kernel.md#barriers
+//: A THREAD'S ARRIVALS: a bit a barrier, flipped at each of its arrivals -- an item's done (barrier `kBarDone + k`) in
+//: `done`, an item's landed (`kBarLanded + k`) in `land`'s low bits and the staging's and the ring's (`b <
+//: kBarDone`) above them. Every thread arrives at every phase of a barrier, and a wait is for the phase of the thread's
+//: own last arrival, so the bit names its parity (a barrier never arrived at passes: its phase before the first).
+//: -- see docs/internals/carry/carry_kernel.md#barriers
 struct Arrivals {
+  static constexpr int kOwn = kPlanItems;
+  static_assert(kOwn + kBarDone <= 32,
+                "the items' landed bits and the staging's and the ring's share a word");
   ops::SmemAddr bars;
-  uint32_t bits, done, land;
+  uint32_t done, land;
 
   __device__ __forceinline__ ops::SmemAddr at(int b) const {
     return bars + 8u * static_cast<uint32_t>(b);
@@ -45,16 +49,16 @@ struct Arrivals {
 
   __device__ __forceinline__ void arrive(int b) {
     ops::mbar_arrive(at(b));
-    bits ^= 1u << b;
+    land ^= 1u << (kOwn + b);
   }
 
   __device__ __forceinline__ void landed(int b) {
     ops::mbar_arrive_when_landed(at(b));
-    bits ^= 1u << b;
+    land ^= 1u << (kOwn + b);
   }
 
   __device__ __forceinline__ void wait(int b) const {
-    ops::mbar_wait(at(b), ((bits >> b) & 1u) ^ 1u);
+    ops::mbar_wait(at(b), ((land >> (kOwn + b)) & 1u) ^ 1u);
   }
 
   __device__ __forceinline__ void item_done(uint32_t k) {
@@ -93,7 +97,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   PhaseClock<kCarryPhases, true> clock(
       reinterpret_cast<long long*>(smem + P::kClock) + warp * PhaseClock<kCarryPhases, true>::kRow,
       lane, p.ledger != nullptr);
-  Arrivals bar{ops::smem_addr(smem + P::kBars), 0u, 0u, 0u};
+  Arrivals bar{ops::smem_addr(smem + P::kBars), 0u, 0u};
   if (threadIdx.x == 0) static_for<kBarCount>([&](auto b) { ops::mbar_init(bar.at(b), kThreads); });
   if (static_cast<int>(threadIdx.x) < kBoxLists)
     reinterpret_cast<UnitBook*>(smem + P::kBook)[threadIdx.x] = UnitBook{kUnitNone, 0.0f};
@@ -116,17 +120,18 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     bar.item_landed(k);
   };
   //: A READ CHUNK'S TILES over batches `lo .. hi - 1` of the image at `image` (digit `d`'s plane `d & mask`)
-  const auto read_out = [&](int w, const Head& h, const Item& it, int lo, int hi,
+  const auto read_out = [&](auto pairs, int w, const Head& h, const Item& it, int lo, int hi,
                             ops::SmemAddr image, uint32_t mask) {
+    constexpr bool kPairs = decltype(pairs)::value;
     const ops::SmemAddr buf = area + 16u * it.buf(),
                         pads = buf + static_cast<uint32_t>(read_pads<P>(it.slots())),
                         ents = buf + static_cast<uint32_t>(read_ents<P>(it.slots()));
     if (p.readout_f16) {
-      read_chunk<P, true>(smem, rw(w), w, it.first(), it.slots(), h.runion(), lo, hi, image, mask,
-                          buf, pads, ents, warp, lane);
+      read_chunk<P, true, kPairs>(smem, rw(w), w, it.first(), it.slots(), h.runion(), lo, hi, image,
+                                  mask, buf, pads, ents, warp, lane);
     } else {
-      read_chunk<P, false>(smem, rw(w), w, it.first(), it.slots(), h.runion(), lo, hi, image, mask,
-                           buf, pads, ents, warp, lane);
+      read_chunk<P, false, kPairs>(smem, rw(w), w, it.first(), it.slots(), h.runion(), lo, hi,
+                                   image, mask, buf, pads, ents, warp, lane);
     }
   };
 
@@ -136,8 +141,6 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       static_for<4>([&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] = 0.f; }); });
     });
   });
-  uint32_t cf[P::kFoldLists];
-  float fs[P::kFoldLists];
   int dexp = 0;
 
   stage_window<P>(p, here(), 0, smem);
@@ -201,7 +204,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         const bool again = it.first() > 0, more = (flags & kFlagMoreReads) != 0u;
         // R9-CASES: ImageMode, the plan's image modes (schedule.cuh)
         if (mode == kModeWhole) {
-          read_out(w, h, it, 0, kBatches, area, kBoxDigits - 1);
+          read_out(std::true_type{}, w, h, it, 0, kBatches, area, kBoxDigits - 1);
           clock.lap(kPhaseReadout);
         } else if (mode == kModeRing16) {
 #pragma unroll 1
@@ -215,7 +218,8 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
             clock.lap(kPhaseStore);
             if (lead) bar.wait_landed(static_cast<uint32_t>(k));
             clock.lap(kPhaseLanded);
-            read_out(w, h, it, 2 * half, 2 * half + 2, area, 2 * kBatchPlanes - 1);
+            read_out(std::true_type{}, w, h, it, 2 * half, 2 * half + 2, area,
+                     2 * kBatchPlanes - 1);
             if (lead || more) bar.arrive(kBarImageFree);
             clock.lap(kPhaseReadout);
           }
@@ -236,7 +240,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
             const ops::SmemAddr slot = area + static_cast<uint32_t>(r * kImageRing / 2);
             bar.wait(kBarStored + r);
             clock.lap(kPhaseStore);
-            read_out(w, h, it, b, b + 1, slot, kBatchPlanes - 1);
+            read_out(std::false_type{}, w, h, it, b, b + 1, slot, kBatchPlanes - 1);
             if (b + 2 < kBatches || more) bar.arrive(kBarImageFree + r);
             clock.lap(kPhaseReadout);
             if (b + 2 < kBatches) {
@@ -257,14 +261,15 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         clock.lap(kPhaseDrain);
       } else if (kind == kItemFold) {
         //: A FOLD CHUNK, the window's units stepped at its first
-        if ((flags & kFlagUnits) != 0u) fold_units<P>(cf, fs, smem, ww(w), w, warp, lane);
+        if ((flags & kFlagUnits) != 0u) fold_units<P>(smem, ww(w), w, warp, lane);
         const ops::SmemAddr buf = area + 16u * it.buf();
-        fold_chunk<P>(st, cf, fs, smem, ww(w), w, it.first(), it.slots(), h.funion(), buf,
-                      buf + static_cast<uint32_t>(fold_ents<P>(it.slots())), warp, lane);
+        fold_chunk<P>(st, (flags & kFlagUnits) != 0u, smem, ww(w), w, it.first(), it.slots(),
+                      h.funion(), buf, buf + static_cast<uint32_t>(fold_ents<P>(it.slots())), warp,
+                      lane);
         clock.lap(kPhaseFold);
       } else if (kind == kItemBoundary) {
         //: THE BOUNDARY: a window with no fold steps its units all the same
-        if ((flags & kFlagUnits) != 0u) fold_units<P>(cf, fs, smem, ww(w), w, warp, lane);
+        if ((flags & kFlagUnits) != 0u) fold_units<P>(smem, ww(w), w, warp, lane);
         clock.lap(kPhaseFold);
       } else {
         __trap();

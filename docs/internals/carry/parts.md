@@ -126,7 +126,11 @@ entries' offsets are the union's, so the chunk's pool and panel are taken back b
 so its products add an exact zero. A side with no list level takes every slot of the chunk, its entry implied -- the
 slot's row, its token (the chunk's first plus the slot), its panel row (a slot past the chunk's end its place's dummy
 row), its coefficient the digit's f16 in the row's coefficient slice (its second). Each source is its own loop, so each
-step is one block (KERNEL_STANDARDS §27), guarded by a vote and closed by one.
+step is one block (KERNEL_STANDARDS §27), guarded by a vote and closed by one. Where a warp reads two digits a batch
+(the image whole or in halves) a listed side steps them together: a step is both digits' tiles, their operands
+(`tile_in`), then their MMAs (`tile_mma`), then their adds (`tile_add`) -- two independent chains in one block, each
+entry loaded at a clamped place (`masked_entry` past its run), so nothing branches. Measured at nl64k-alt-k4: the
+readout 4.0K to 3.6K cycles a warp-window.
 
 
 The PANEL is the chunk's slots' 64-byte rows after 8 dummy rows (`kPadBytes`, one a residue), laid out in pairs: slots
