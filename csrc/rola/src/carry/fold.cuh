@@ -144,8 +144,8 @@ __device__ __forceinline__ void steps(State<P>& st, uint32_t cf, ops::SmemAddr p
   }
 }
 
-//: A FOLD UNIT, a warp's: each of its lists' entries in unit `u` -- the first 16 of unit 0 from the warp's heads, the
-//: rest in place -- in 16-token steps and an 8-token tail, the list's rescale applied before its first; a side with no
+//: A FOLD UNIT, a warp's: each of its lists' entries in unit `u` -- those among the list's first 16 from the warp's
+//: heads, the rest in place -- in 16-token steps and an 8-token tail, the list's rescale applied before its first; a side with no
 //: list level every slot of the unit, c from the slot's row. -- see docs/internals/carry/fold.md#unit
 template <class P>
 __device__ __forceinline__ void fold_unit(const CarryParams& p, State<P>& st,
@@ -188,13 +188,13 @@ __device__ __forceinline__ void fold_unit(const CarryParams& p, State<P>& st,
         return make_uint2(static_cast<uint32_t>(u * P::kUnitSlots + k), cv);
       });
     } else {
-      //: unit 0's first entries from the warp's heads, the rest in place
-      const int staged = u == 0 ? min(n, kHeadEntries) : 0;
+      //: the unit's entries among the list's first 16 from the warp's heads, the rest in place
+      const int staged = max(0, min(n, kHeadEntries - first));
       steps<P, J>(st, cf[J], pool, u, 0, staged, lane, [&](int k) {
         uint2 e;
         asm volatile("ld.shared.v2.u32 {%0, %1}, [%2];"
                      : "=r"(e.x), "=r"(e.y)
-                     : "r"(heads + 8u * (kHeadEntries * J + k)));
+                     : "r"(heads + 8u * (kHeadEntries * J + first + k)));
         return e;
       });
       steps<P, J>(st, cf[J], pool, u, staged, n, lane, [&](int k) { return entries[k]; });

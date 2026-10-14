@@ -490,8 +490,9 @@ __device__ __forceinline__ void readout_part(const CarryParams& p, const uint8_t
       const int first = at[q], tiles = (at[q + 1] - first + 7) >> 3;
       const uint2* entries =
           p.read_lists.entries + list_row(p.read_lists, c, p.windows, w, rw.digit0 + d) * kListCap;
-      //: pass 0's first tiles from the warp's heads, the rest in place: each loop's step one block
-      const int staged = q == 0 ? min(tiles, kHeadEntries / 8) : 0;
+      //: the pass's tiles among the list's first 16 entries from the warp's heads, the rest in place: each loop's step
+      //: one block
+      const int staged = max(0, min(tiles, (kHeadEntries - first) / 8));
       int s = 0;
       for (int k = __any_sync(0xffffffffu, s < staged) ? 1 : 0; k > 0; --k)
 #pragma unroll 1
@@ -499,7 +500,7 @@ __device__ __forceinline__ void readout_part(const CarryParams& p, const uint8_t
           uint2 e;
           asm volatile("ld.shared.v2.u32 {%0, %1}, [%2];"
                        : "=r"(e.x), "=r"(e.y)
-                       : "r"(heads + 8u * (kHeadEntries * i + 8 * s + (lane & 7))));
+                       : "r"(heads + 8u * (kHeadEntries * i + first + 8 * s + (lane & 7))));
           tile<P, F16>(pool, pads, units, sx, e, f, lane);
         } while (__any_sync(0xffffffffu, ++s < staged));
       for (int k = __any_sync(0xffffffffu, s < tiles) ? 1 : 0; k > 0; --k)

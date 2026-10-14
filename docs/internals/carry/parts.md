@@ -110,8 +110,8 @@ for the pairs), each lane's two tokens' outputs as exact pairs added by `red.sha
 holds entry `l & 7` (its token's row, so the B load needs no shuffle) and scales its coefficient to the token's unit: `c
 2^(e - kImageTop - kCoefTop - u)`, the exponent added to the fp32 coefficient's bits (`e` the digit's exponent, `u` the
 token's unit byte, looked up by the token's window place the entry carries); each lane takes its two tokens' scales and
-panel offsets by four shuffles. A listed side's tiles are pass 0's first two from the warp's heads, then the rest in
-place; a side with no list level takes every slot of the pass, its entry implied -- the slot's row, its token (the
+panel offsets by four shuffles. A listed side's tiles among the list's first 16 entries come from the warp's heads,
+whichever pass holds them, the rest in place; a side with no list level takes every slot of the pass, its entry implied -- the slot's row, its token (the
 pass's first plus the slot), its panel row (a slot past the pass's end its place's dummy row), its coefficient the
 digit's f16 in the row's coefficient slice (its second). Each source is its own loop, so each step is one block
 (KERNEL_STANDARDS §27), guarded by a vote and closed by one.

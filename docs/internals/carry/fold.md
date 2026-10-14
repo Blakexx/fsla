@@ -41,9 +41,10 @@ Each loop's step is one block (KERNEL_STANDARDS §27), guarded by a vote and clo
 <a id="unit"></a>
 ## The unit
 
-A UNIT is `kUnitSlots` write slots (`plan.md#forms`). A listed side's entries in it are `[at[u], at[u + 1])`: unit 0's
-first 16 from the warp's heads, the rest in place from global memory (the fold's ring of records is the fold
-component's). A side with no list level steps every slot of the unit, c the list's digit of the row's
+A UNIT is `kUnitSlots` write slots (`plan.md#forms`). A listed side's entries in it are `[at[u], at[u + 1])`: those
+among the list's first 16 from the warp's heads, whichever unit holds them (at nl64k-alt-k4 a list's ~16 places span
+two units and all come from the heads: the fold fell from 7.7K to 6.1K cycles a warp-window), the rest in place from
+global memory (the fold's ring of records is the fold component's). A side with no list level steps every slot of the unit, c the list's digit of the row's
 coefficient slice. `fold_unit` takes each list in turn.
 
 <a id="probe"></a>
