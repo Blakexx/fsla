@@ -14,7 +14,7 @@ namespace rola::carry {
 template <class P>
 __device__ __forceinline__ void stage_window(const CarryParams& p, const Place& c, int w,
                                              uint8_t* smem, ops::SmemAddr bar, int warp, int lane) {
-  const Window rw = window_of(p, p.read, w), ww = window_of(p, p.write, w);
+  const Window rw = window_of<P>(p, smem, kRead, w), ww = window_of<P>(p, smem, kWrite, w);
   lists_in<P>(p, p.read_lists, rw, c, w, smem, kRead);
   lists_in<P>(p, p.write_lists, ww, c, w, smem, kWrite);
   facts_in<P>(p, ww, c, w, smem);
@@ -46,6 +46,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     static_for<4 + P::kFoldRing>([&](auto b) { ops::mbar_init(bars + 8 * b, kThreads); });
   if (static_cast<int>(threadIdx.x) < kBoxLists)
     reinterpret_cast<UnitBook*>(smem + P::kBook)[threadIdx.x] = UnitBook{kUnitNone, 0.0f};
+  if (threadIdx.x == 0) addr_in(*reinterpret_cast<Addr*>(smem + P::kAddr), p, c);
   //: the panel and its dummy rows start at zero
 #pragma unroll 1
   for (int i = static_cast<int>(threadIdx.x); i < (kPadBytes + P::kPanelBytes) / 16; i += kThreads)
@@ -64,21 +65,19 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
                : ops::smem_addr(smem + P::kPanel) + (k - P::kImageUnits) * P::kUnitBytes;
   };
   //: the fills: read pass `q` of window `w`, and fold unit `u`, into a pool landing on `bar`
+  const volatile Addr& addr = *reinterpret_cast<const volatile Addr*>(smem + P::kAddr);
   const auto fill_read = [&](int w, int q, ops::SmemAddr pool, ops::SmemAddr bar) {
-    const Window rw = window_of(p, p.read, w);
+    const Window rw = window_of<P>(p, smem, kRead, w);
     const int first = q * P::kPassSlots;
     fill<P::kReadFactors, false>(
-        slices_of<P::kReadFactors>(p, p.read, c), nullptr, 0, union_of<P>(smem, kRead, w), rw,
-        first, max(0, min(slots_of<P>(smem, rw, kRead, w) - first, P::kPassSlots)), pool, bar);
+        addr.slices[kRead], nullptr, 0, union_of<P>(smem, kRead, w), rw, first,
+        max(0, min(slots_of<P>(smem, rw, kRead, w) - first, P::kPassSlots)), pool, bar);
   };
   const auto fill_unit = [&](int w, int u, ops::SmemAddr pool, ops::SmemAddr bar) {
-    const Window ww = window_of(p, p.write, w);
+    const Window ww = window_of<P>(p, smem, kWrite, w);
     const int first = u * P::kUnitSlots;
-    const uint8_t* values =
-        p.values.base + c.bh / p.H * p.values.sb + c.bh % p.H * p.values.sh + c.channel0 * 2;
     fill<P::kFoldFactors, true>(
-        slices_of<P::kFoldFactors>(p, p.write, c), values, p.values.st,
-        union_of<P>(smem, kWrite, w), ww, first,
+        addr.slices[kWrite], addr.values, p.values.st, union_of<P>(smem, kWrite, w), ww, first,
         max(0, min(slots_of<P>(smem, ww, kWrite, w) - first, P::kUnitSlots)), pool, bar);
   };
 
@@ -93,14 +92,15 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   uint32_t ring_par = 0u, fold_par = 0u;
 
   stage_window<P>(p, c, 0, smem, staged, warp, lane);
-  heads_in(p.write_lists, window_of(p, p.write, 0), c, p.windows, 0, fold_heads, warp, lane);
+  heads_in(p.write_lists, window_of<P>(p, smem, kWrite, 0), c, p.windows, 0, fold_heads, warp,
+           lane);
   ops::mbar_arrive_when_landed(heads_bar);
   ops::mbar_wait(staged, 0u);
   fill_read(0, 0, ring(0), bars);
 
 #pragma unroll 1
   for (int w = 0; w < p.windows; ++w) {
-    const Window rw = window_of(p, p.read, w), ww = window_of(p, p.write, w);
+    const Window rw = window_of<P>(p, smem, kRead, w), ww = window_of<P>(p, smem, kWrite, w);
     const bool next = w + 1 < p.windows;
     const int read_slots = slots_of<P>(smem, rw, kRead, w),
               write_slots = slots_of<P>(smem, ww, kWrite, w);
@@ -193,15 +193,15 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         reinterpret_cast<uint4*>(smem + P::kPanel)[i] = make_uint4(0u, 0u, 0u, 0u);
     //: the next window's fold heads, once this warp's fold is done
     if (next)
-      heads_in(p.write_lists, window_of(p, p.write, w + 1), c, p.windows, w + 1, fold_heads, warp,
-               lane);
+      heads_in(p.write_lists, window_of<P>(p, smem, kWrite, w + 1), c, p.windows, w + 1, fold_heads,
+               warp, lane);
     ops::mbar_arrive_when_landed(heads_bar);
   }
 
   float sum = 0.f;
   static_for<P::kStateRegs>([&](auto k) { sum += st.template at<k>(); });
   atomicAdd(p.check, sum);
-  fold_probe<P>(p, st, smem, window_of(p, p.write, 0), c, warp, lane);
+  fold_probe<P>(p, st, smem, window_of<P>(p, smem, kWrite, 0), place_of(p), warp, lane);
   clock.publish(p.ledger, (long)blockIdx.y * gridDim.x + blockIdx.x, kWarps, warp);
 }
 

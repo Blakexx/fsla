@@ -70,27 +70,53 @@ __device__ __forceinline__ Place place_of(const CarryParams& p) {
   return Place{bh, (int)(blockIdx.x % (unsigned)(p.dv / p.channels)) * p.channels};
 }
 
-//: A SIDE'S OPERAND SLICES for this CTA: a level's slice at the box's digits, `bytes` a token's, at `st` a token.
-template <int Factors>
+//: A SIDE'S OPERAND SLICES for this CTA: a level's slice at the box's digits, `bytes` a token's (a power of two), at
+//: `st` a token.
 struct Slices {
-  const uint8_t* at[Factors];
-  int64_t st[Factors];
-  int bytes[Factors];
+  const uint8_t* at[kMaxLevels];
+  int64_t st[kMaxLevels];
+  int bytes[kMaxLevels];
 };
 
-template <int Factors>
-__device__ __forceinline__ Slices<Factors> slices_of(const CarryParams& p, const Side& s,
-                                                     const Place& c) {
-  Slices<Factors> out;
-  static_for<Factors>([&](auto i) {
-    const int level = s.operand[i];
-    const Plane& pl = s.rows[i];
-    out.at[i] = pl.base + c.bh / p.H * pl.sb + c.bh % p.H * pl.sh
-                + (int64_t)origin_of(p, level) * s.elem[i];
-    out.st[i] = pl.st;
-    out.bytes[i] = p.extents[level] * s.elem[i];
-  });
-  return out;
+//: A SIDE'S WINDOW STATICS, the same every window: its union's group, its box's first list digit and its lists, and
+//: whether it lists.
+struct Statics {
+  int group, digit0, lists, listed;
+};
+
+//: THE CTA'S ADDRESSES, worked out once before the windows, so the window loop divides by nothing: each side's statics
+//: and operand slices, the values at the box's channels. -- see docs/internals/carry/parts.md#place
+struct Addr {
+  Statics side[2];
+  Slices slices[2];
+  const uint8_t* values;
+  int channel0;
+};
+
+static_assert(sizeof(Addr) <= Tenants::kAddrBytes, "the addresses fit their tenant");
+
+__device__ __forceinline__ void addr_in(Addr& out, const CarryParams& p, const Place& c) {
+  const int b = c.bh / p.H, h = c.bh - b * p.H;
+#pragma unroll 1
+  for (int k = 0; k < 2; ++k) {
+    const Side& s = k == 0 ? p.read : p.write;
+    Statics& st = out.side[k];
+    st.listed = s.list >= 0;
+    st.digit0 = st.listed ? origin_of(p, s.list) : 0;
+    st.group = st.digit0 / 32;
+    st.lists = st.listed ? p.extents[s.list] : kBoxLists;
+#pragma unroll 1
+    for (int i = 0; i < s.operands; ++i) {
+      const int level = s.operand[i];
+      const Plane& pl = s.rows[i];
+      out.slices[k].at[i] =
+          pl.base + b * pl.sb + h * pl.sh + (int64_t)origin_of(p, level) * s.elem[i];
+      out.slices[k].st[i] = pl.st;
+      out.slices[k].bytes[i] = p.extents[level] * s.elem[i];
+    }
+  }
+  out.values = p.values.base + b * p.values.sb + h * p.values.sh + c.channel0 * 2;
+  out.channel0 = c.channel0;
 }
 
 //: A SIDE'S WINDOW: its union (the list level's 32-digit group holding the box's digits) and its box lists' first
@@ -100,14 +126,18 @@ struct Window {
   bool listed;
 };
 
-__device__ __forceinline__ Window window_of(const CarryParams& p, const Side& s, int w) {
+template <class P>
+__device__ __forceinline__ Window window_of(const CarryParams& p, const uint8_t* smem, int side,
+                                            int w) {
+  //: read at each use (volatile): held live across the window loop they would cost the state registers
+  const volatile Statics& s = reinterpret_cast<const volatile Addr*>(smem + P::kAddr)->side[side];
   Window out;
   out.t0 = w * kWindow;
   out.tokens = min(kWindow, p.L - out.t0);
-  out.listed = s.list >= 0;
-  out.digit0 = out.listed ? origin_of(p, s.list) : 0;
-  out.group = out.digit0 / 32;
-  out.lists = out.listed ? p.extents[s.list] : kBoxLists;
+  out.listed = s.listed != 0;
+  out.digit0 = s.digit0;
+  out.group = s.group;
+  out.lists = s.lists;
   return out;
 }
 
@@ -223,7 +253,7 @@ __device__ __forceinline__ void stage_bytes(ops::SmemAddr dst, const void* src, 
 //: then (`Values`) its values at the box's channels -- swizzled, by `cp.async`, landing on the slot's barrier; a gap
 //: slot's row zero-filled. -- see docs/internals/carry/parts.md#fill
 template <int Factors, bool Values>
-__device__ __forceinline__ void fill(const Slices<Factors>& sl, const uint8_t* values,
+__device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* values,
                                      int64_t values_st, const uint16_t* tok, const Window& win,
                                      int first, int slots, ops::SmemAddr pool, ops::SmemAddr bar) {
   constexpr int kRow = kSliceBytes * Factors + (Values ? kBoxChannels * 2 : 0);
@@ -231,13 +261,15 @@ __device__ __forceinline__ void fill(const Slices<Factors>& sl, const uint8_t* v
     return pool + s * kRow + 16 * chunk_at<kRow>(static_cast<uint32_t>(s), byte >> 4) + (byte & 15);
   };
   static_for<Factors>([&](auto i) {
-    const int bytes = sl.bytes[i], run = min(bytes, ops::kStageBytes), runs = bytes / run;
+    const int bytes = sl.bytes[i], run = min(bytes, ops::kStageBytes);
+    const int shift = __ffs(bytes) - __ffs(run);
+    const uint8_t* const base = sl.at[i] + win.t0 * sl.st[i];
+    const int64_t st = sl.st[i];
 #pragma unroll 1
-    for (int k = static_cast<int>(threadIdx.x); k < slots * runs; k += kThreads) {
-      const int s = k / runs, r = k - s * runs;
+    for (int k = static_cast<int>(threadIdx.x); k < slots << shift; k += kThreads) {
+      const int s = k >> shift, r = k & ((1 << shift) - 1);
       const int u = win.listed ? tok[first + s] : first + s, t = u & (kWindow - 1);
-      stage_bytes(at(s, i * kSliceBytes + r * run), sl.at[i] + (win.t0 + t) * sl.st[i] + r * run,
-                  run, u == t);
+      stage_bytes(at(s, i * kSliceBytes + r * run), base + t * st + r * run, run, u == t);
     }
   });
   if constexpr (Values) {
@@ -514,7 +546,9 @@ __device__ __forceinline__ void drain(const CarryParams& p, uint8_t* smem, const
     const uint32_t v = *cell;
     const int t = rw.listed ? tok[first + s] : first + s;
     if (v != 0u)
-      atomicAdd(p.num + ((int64_t)c.bh * p.L + rw.t0 + t) * (p.dv / 2) + c.channel0 / 2 + word, v);
+      atomicAdd(p.num + ((int64_t)c.bh * p.L + rw.t0 + t) * (p.dv / 2)
+                    + reinterpret_cast<const volatile Addr*>(smem + P::kAddr)->channel0 / 2 + word,
+                v);
     *cell = 0u;
   }
 }

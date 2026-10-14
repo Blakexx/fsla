@@ -6,7 +6,7 @@ is fixed by the plan and the card, never by the data (R22).
 <a id="tenants"></a>
 ## The persistent tenants
 
-`Tenants` holds what lives across the window, 17,664 bytes on every card and arm:
+`Tenants` holds what lives across the window, 17,920 bytes on every card and arm:
 
 - each side's union tokens (1 KB), count and box lists' pass starts, two windows' each by parity: a window's are copied
   while the window before it is still read;
@@ -15,7 +15,8 @@ is fixed by the plan and the card, never by the data (R22).
   exponents (`parts.md#maxima`);
 - the phase clock's rows; the barriers (`kMaxBars`: the readout ring's two, the fold ring's, the staging barrier and the
   fold heads' barrier, `carry_kernel.md#staging`);
-- each warp's heads, read and fold (512 bytes each a warp).
+- each warp's heads, read and fold (512 bytes each a warp);
+- the CTA's addresses (`Addr`, 256 bytes reserved: `parts.md#place`).
 
 <a id="forms"></a>
 ## The forms

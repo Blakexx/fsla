@@ -8,9 +8,14 @@ work's counts; what a component leaves to its build is named in its section and 
 ## The CTA's place
 
 `place_of` is the CTA's batch-head (`blockIdx.y`) and its channel group (the box index's innermost digit);
-`origin_of` a level's first box digit. `slices_of` forms each operand level's slice base: the plane at the CTA's
-batch and head, displaced to the box's first digit. `window_of` is a side's window: its union group (the 32-digit
-group holding the box's list digits) and the box's first list digit, or every token a slot.
+`origin_of` a level's first box digit. Before the windows, thread 0 works out every address that is the same each
+window into the `Addr` tenant (`addr_in`): each side's STATICS (its union group, the 32-digit group holding the box's
+list digits; the box's first list digit; its lists; whether it lists) and its operand SLICES (each level's plane at
+the CTA's batch and head, displaced to the box's first digit, its token stride and bytes), the values at the box's
+channels, the channel group. The divisions run once: at nl64k-alt-k4 the per-fill address arithmetic they replaced was
+a sixth of the carry's samples, and the carry ran 16% faster without it. The window loop reads the tenant at each use
+(volatile), so none of it holds a register across the windows. `window_of` is a side's window: its tokens from the
+window index, its statics from the tenant.
 
 <a id="lists-in"></a>
 ## Lists in

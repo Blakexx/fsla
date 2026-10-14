@@ -30,7 +30,9 @@ struct Tenants {
   static constexpr int kReadHeads = kBars + kMaxBars * 8;
   static constexpr int kHeadBytes = 4 * kHeadEntries * 8;
   static constexpr int kFoldHeads = kReadHeads + kWarps * kHeadBytes;
-  static constexpr int kEnd = align_of(kFoldHeads + kWarps * kHeadBytes, 128);
+  static constexpr int kAddr = kFoldHeads + kWarps * kHeadBytes;
+  static constexpr int kAddrBytes = 256;
+  static constexpr int kEnd = align_of(kAddr + kAddrBytes, 128);
 };
 
 //: A FORM: the image in `parts`, a readout pass of `slots`, a fold unit of `unit` slots.
