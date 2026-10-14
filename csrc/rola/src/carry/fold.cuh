@@ -14,7 +14,7 @@ namespace rola::carry {
 //: A DENSE WRITE LEVEL'S BYTE SCALE: its f16 digits carry 1/255 of the byte scale c is formed on.
 constexpr float kByteScale = 1.0f / 255.0f;
 
-//: A WARP'S LIST `j`: the box's list `warp + 8 j`, as the heads and the image's stores lay the lists out.
+//: A WARP'S LIST `j`: the box's list `warp + 8 j`, as the image's stores lay the lists out.
 __device__ __forceinline__ constexpr int fold_list(int warp, int j) { return warp + kWarps * j; }
 
 //: 2^e as an f16 pair: normal from 2^-14, subnormal to 2^-24, zero below.
@@ -165,9 +165,9 @@ __device__ __forceinline__ void steps(State<P>& st, uint32_t cf, ops::SmemAddr p
   }
 }
 
-//: A FOLD UNIT, a warp's: each of its lists' entries in unit `u` -- those among the list's first 16 from the warp's
-//: heads, the rest in place -- in 16-token steps and an 8-token tail, the list's rescale applied before its first; a side with no
-//: list level every slot of the unit, c from the slot's row. -- see docs/internals/carry/fold.md#unit
+//: A FOLD UNIT, a warp's: each of its lists' entries of unit `u`'s slots, read in place, in 16-token steps and an
+//: 8-token tail, the list's rescale applied before its first; a side with no list level every slot of the unit, c from
+//: the slot's row. -- see docs/internals/carry/fold.md#unit
 template <class P>
 __device__ __forceinline__ void fold_unit(const CarryParams& p, State<P>& st,
                                           const uint32_t (&cf)[P::kFoldLists],
@@ -175,7 +175,6 @@ __device__ __forceinline__ void fold_unit(const CarryParams& p, State<P>& st,
                                           const Window& ww, const Place& c, int w, int u, int slots,
                                           ops::SmemAddr pool, ops::SmemAddr image,
                                           ops::SmemAddr panel, int warp, int lane) {
-  const ops::SmemAddr heads = ops::smem_addr(smem + P::kFoldHeads) + warp * P::kHeadBytes;
   static_for<P::kFoldLists>([&](auto J) {
     static_for<P::kFoldMTiles>([&](auto M) {
       static_for<4>([&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] *= f[J]; }); });
@@ -185,9 +184,10 @@ __device__ __forceinline__ void fold_unit(const CarryParams& p, State<P>& st,
     const int list = fold_list(warp, J);
     int first = 0, n = 0;
     if (ww.listed) {
-      const uint16_t* at = at_of<P>(smem, kWrite, w, list);
-      first = at[u];
-      n = at[u + 1] - first;
+      const int2 range =
+          chunk_entries(at_of<P>(smem, kWrite, w, list), u * P::kWritePass, P::kWritePass);
+      first = range.x;
+      n = range.y - first;
     } else {
       n = max(0, min(slots - u * P::kUnitSlots, P::kUnitSlots));
     }
@@ -215,20 +215,7 @@ __device__ __forceinline__ void fold_unit(const CarryParams& p, State<P>& st,
           },
           image, panel);
     } else {
-      //: the unit's entries among the list's first 16 from the warp's heads, the rest in place
-      const int staged = max(0, min(n, kHeadEntries - first));
-      steps<P, J>(
-          st, cf[J], pool, u, 0, staged, lane,
-          [&](int k) {
-            uint2 e;
-            asm volatile("ld.shared.v2.u32 {%0, %1}, [%2];"
-                         : "=r"(e.x), "=r"(e.y)
-                         : "r"(heads + 8u * (kHeadEntries * J + first + k)));
-            return e;
-          },
-          image, panel);
-      steps<P, J>(
-          st, cf[J], pool, u, staged, n, lane, [&](int k) { return entries[k]; }, image, panel);
+      steps<P, J>(st, cf[J], pool, u, 0, n, lane, [&](int k) { return entries[k]; }, image, panel);
     }
   });
 }

@@ -61,14 +61,14 @@ def _launch_facts(cell: str, heads: int, repeat: int) -> None:
     import torch
 
     from measure.cells import by_name, realize
-    from measure.subjects import bundle_of, facts_form
+    from measure.subjects import bundle_of, read_row_of
     from rola.ops import facts as facts_ops
 
     spec = by_name(cell)
     routes, values, layout, statics = bundle_of(spec, realize(spec, H=heads))
-    form = facts_form(spec)
+    read_row = read_row_of(spec)
     for _ in range(repeat):
-        facts_ops.facts(routes, values, layout, *statics, form)
+        facts_ops.facts(routes, values, layout, *statics, read_row)
     torch.cuda.synchronize()
 
 

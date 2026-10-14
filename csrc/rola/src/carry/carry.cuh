@@ -12,7 +12,9 @@ namespace rola::carry {
 constexpr int kWarps = 8;
 constexpr int kThreads = kWarps * 32;
 constexpr int kWindow = 512;
-constexpr int kListAt = 8;
+//: A LIST'S BOUNDARIES: its entries before every 64th union slot, the last its length.
+constexpr int kListBound = 64;
+constexpr int kListAt = kWindow / kListBound;
 constexpr int kListCap = kWindow;
 constexpr int kMaxLevels = 4;
 //: THE BOX, every card's: 32 lists (the write side's list level) x 32 digits (the read side's) x 32 channels.
@@ -20,8 +22,6 @@ constexpr int kBoxLists = 32, kBoxDigits = 32, kBoxChannels = 32;
 constexpr int kStateValues = kBoxLists * kBoxDigits * kBoxChannels;
 //: A SLICE: a token's operand row over the box's 32 digits of one level, f16.
 constexpr int kSliceBytes = 64;
-//: A LIST'S ENTRIES STAGED a window ahead: its first 16; the rest are read in place.
-constexpr int kHeadEntries = 16;
 
 //: THE LISTS' ADDRESSES, the facts pass's to emit and the carry's to read: a gap slot's token, the panel's rows past
 //: their dummy rows, a pool row's swizzled chunk. -- see docs/internals/carry/carry.md#lists
@@ -56,7 +56,6 @@ struct SideLists {
   const int32_t* union_count;
   const uint2* entries;
   const uint16_t* at;
-  const uint2* heads;
   int width, groups;
 };
 

@@ -83,32 +83,29 @@ Side side_of(const std::vector<Tensor>& rows, int64_t list, const std::vector<in
   return s;
 }
 
-//: ONE SIDE'S LISTS as the facts pass writes them in their final form: 8-byte entries, pass starts, a warp's heads, the
-//: union's tokens and count; empty where the side has no list level. -- see docs/internals/carry/carry.md#lists
+//: ONE SIDE'S LISTS as the facts pass writes them in their final form: 8-byte entries, boundaries, the union's tokens
+//: and count; empty where the side has no list level. -- see docs/internals/carry/carry.md#lists
 SideLists lists_of(const std::vector<Tensor>& t, int64_t BH, int64_t windows, int64_t width,
                    const char* name) {
-  STD_TORCH_CHECK(t.size() == 5, name, " is (entries, at, heads, union, count), got ", t.size(),
+  STD_TORCH_CHECK(t.size() == 4, name, " is (entries, at, union, count), got ", t.size(),
                   " tensors");
-  if (width == 0) return SideLists{nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0};
+  if (width == 0) return SideLists{nullptr, nullptr, nullptr, nullptr, 0, 0};
   const int64_t groups = (width + 31) / 32;
-  const std::vector<std::vector<int64_t>> want = {
-      {BH, windows, width, kListCap, 4},
-      {BH, windows, width, kListAt},
-      {BH, windows, groups, kWarps, 4 * kHeadEntries, 4},
-      {BH, windows, groups, kWindow},
-      {BH, windows, groups}};
-  for (int k = 0; k < 5; ++k) {
-    const Dtype dtype = k == 4 ? Dtype::Int : Dtype::Short;
+  const std::vector<std::vector<int64_t>> want = {{BH, windows, width, kListCap, 4},
+                                                  {BH, windows, width, kListAt},
+                                                  {BH, windows, groups, kWindow},
+                                                  {BH, windows, groups}};
+  for (int k = 0; k < 4; ++k) {
+    const Dtype dtype = k == 3 ? Dtype::Int : Dtype::Short;
     STD_TORCH_CHECK(t[k].is_cuda() && t[k].is_contiguous() && t[k].scalar_type() == dtype
                         && t[k].sizes() == Shape(want[k]),
-                    name, " tensor ", k, " is a contiguous CUDA ", k == 4 ? "int32 " : "int16 ",
+                    name, " tensor ", k, " is a contiguous CUDA ", k == 3 ? "int32 " : "int16 ",
                     shape(Shape(want[k])), ", got ", shape(t[k].sizes()));
   }
-  return SideLists{reinterpret_cast<const uint16_t*>(t[3].const_data_ptr()),
-                   t[4].const_data_ptr<int32_t>(),
+  return SideLists{reinterpret_cast<const uint16_t*>(t[2].const_data_ptr()),
+                   t[3].const_data_ptr<int32_t>(),
                    static_cast<const uint2*>(t[0].const_data_ptr()),
                    reinterpret_cast<const uint16_t*>(t[1].const_data_ptr()),
-                   static_cast<const uint2*>(t[2].const_data_ptr()),
                    (int)width,
                    (int)groups};
 }
@@ -235,6 +232,7 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
 //: fp16 where the device's fp32-accumulate MMA is slower than its fp16-accumulate one, by its rates; fp32 where they
 //: are equal or no rates are tabulated (its SM's full rate). -- see docs/internals/carry/carry_api.md#carry-readout-accumulate
 int64_t carry_readout_accumulate(int64_t device) {
+  check_arch_table();
   const long long* q = mma_quanta(static_cast<int>(device));
   return q != nullptr && q[denseref::arch::kHmmaF16F32] > q[denseref::arch::kHmmaF16F16] ? 1 : 0;
 }
@@ -274,7 +272,7 @@ __global__ void carry_stamp_kernel(int* out) {
   out[0] = kWindow;
   out[1] = denseref::design::kCapsDigest;
   out[2] = kStateValues;
-  out[3] = kHeadEntries;
+  out[3] = kListBound;
 }
 
 }  // namespace stamp

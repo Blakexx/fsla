@@ -17,9 +17,10 @@ state never leaves the registers inside a call; the readout reads an f16 image o
 - `kWindow = 512`: the window the intra and the facts pass share, so the inter/intra split is one recurrence.
 - THE BOX, every card's: `kBoxLists = 32` lists (the write side's list level) x `kBoxDigits = 32` digits (the read
   side's) x `kBoxChannels = 32` channels, `kStateValues` = 32,768 values = 256 lanes x 128 fp32 registers.
-- `kListAt = 8` pass starts a list (seven passes' starts, then the end), `kListCap = kWindow` entries a list.
+- `kListBound = 64`, `kListAt = 8`: a list's boundaries, its entries before every 64th union slot (the last its
+  length), so the carry chunks a union at any multiple of 64 the facts pass never sees; `kListCap = kWindow` entries a
+  list.
 - `kSliceBytes = 64`: a level's slice in a pool row, the box's 32 digits at f16.
-- `kHeadEntries = 16`: a list's entries a warp stages a window ahead; the rest are read in place.
 - `kMaxLevels = 4`: the depth the operand block addresses.
 
 <a id="sides"></a>
@@ -38,13 +39,13 @@ group innermost.
 `SideLists` is the facts pass's output at a side's list level in its final form, per (batch-head, window)
 ([`facts.md`](../facts/facts.md#lists-out)):
 
-- `entries`: a list's 8-byte entries, `kListCap` a list. A read entry is the pool row's byte offset with its swizzle
-  folded in (the first word's low half), the coefficient (f16, the second word's low half) and the panel row's offset
-  from the dummy rows, its swizzle folded in (its high half), a pad's the dummy row of its place in its step, so a pad
-  needs no test. A
-  write entry is the slot, then `c_v` and `c_m`.
-- `at`: a list's pass starts in its side's pass (the readout's `kPassSlots`, the fold's `kUnitSlots`).
-- `heads`: per 32-digit group a warp's block, its 4 lists' (or digits') first `kHeadEntries` entries.
+- `entries`: a list's 8-byte entries in slot order, `kListCap` a list, no pads. A read entry is its slot's pool row
+  offset in the union in 16-byte chunks with its swizzle folded in (the first word's low half), its token (its high
+  half), the coefficient (f16, the second word's low half) and the panel row's offset from the dummy rows, its swizzle
+  folded in (its high half): a chunk from a multiple of 64 takes its pool and panel back by its first slot's offsets
+  (`parts.md#readout`). A write entry is the slot, then `c_v` and `c_m`. A step's lanes past a chunk's entries are
+  masked by the carry (a read lane's coefficient 0 on a dummy panel row, a write lane's row 0 with c = 0).
+- `at`: a list's boundaries (`kListAt`); `chunk_entries` turns a chunk's slots into its entries.
 - `union_tok` and `union_count` (int32): per 32-digit group each slot's token, window-relative, and the slots' extent;
   a GAP slot holds `kGap` (token 0 with bit 15 set), so a fill masks the token to the window and zero-fills the row.
 
@@ -85,4 +86,4 @@ The key is `rola.ops.carry.arm_key(carve)`; `arm_switch<CarryArmSet>` resolves i
 refuses naming the field no built arm carries (`docs/internals/common/arm_switch.md`). The grid is
 `(boxes, batch-heads)`. The phase ledger, when bound by `carry_ledger_bind`, must cover the grid.
 `carry_build_stamp` reads four facts back off a kernel this binary compiled (`kWindow`, the capability digest,
-`kStateValues`, `kHeadEntries`), the device-side check a stale binary cannot pass.
+`kStateValues`, `kListBound`), the device-side check a stale binary cannot pass.

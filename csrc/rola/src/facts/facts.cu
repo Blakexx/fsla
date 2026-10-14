@@ -202,8 +202,8 @@ __device__ __forceinline__ void bits_out(const FactsParams& p, const Unit& x, co
              + tile_index] = any;
 }
 
-//: THE RANKS, a warp's two words: each union token at its rank, its SLOT, and the gaps after them; each pass's first
-//: token its bound; the union's extent, its size in whole steps. Each list lane gets its two words' union words and
+//: THE RANKS, a warp's two words: each union token at its rank, its SLOT, and the gaps after them; the token at each
+//: 64th slot its boundary's bound; the union's extent, its size in whole steps. Each list lane gets its two words' union words and
 //: the union's tokens before them. -- see docs/internals/facts/facts.md#ranks
 struct Ranks {
   uint32_t u[2];
@@ -215,7 +215,7 @@ __device__ __forceinline__ Ranks ranks(const FactsParams& p, const Unit& x, uint
   const uint32_t* const uword = reinterpret_cast<const uint32_t*>(smem + FactsSmem::kUword);
   int* const bound = reinterpret_cast<int*>(smem + FactsSmem::kBound);
   const ListsOut out = p.lists[x.side];
-  const int width = p.B[x.level], pl = p.pass_log[x.side];
+  const int width = p.B[x.level];
   const int64_t group_index = (static_cast<int64_t>(x.bh) * p.windows + x.window)
                                   * ((width + kGroupDigits - 1) / kGroupDigits)
                               + x.group;
@@ -238,14 +238,14 @@ __device__ __forceinline__ Ranks ranks(const FactsParams& p, const Unit& x, uint
     if ((u >> lane) & 1u) {
       const int slot = pre + __popc(u & below), t = kTokBits * j + lane;
       union_tok[slot] = static_cast<uint16_t>(t);
-      if ((slot & ((1 << pl) - 1)) == 0) bound[slot >> pl] = t;
+      if (slot % kListBound == 0) bound[slot / kListBound] = t;
     }
   }
   constexpr int kGapStores = kWindowTokens / kFactsThreads;
 #pragma unroll
   for (int k = 0; k < kGapStores; ++k)
     if (tid + kFactsThreads * k >= n) union_tok[tid + kFactsThreads * k] = carry::kGap;
-  if (tid < kMaxPasses && (tid << pl) >= n) bound[tid] = kWindowTokens;
+  if (tid < kListAt && tid * kListBound >= n) bound[tid] = kWindowTokens;
   if (tid == 0) out.union_count[group_index] = (n + kStep - 1) & -kStep;
   const int s = lane & 7;
   return Ranks{{__shfl_sync(0xffffffffu, ui, 2 * s), __shfl_sync(0xffffffffu, ui, 2 * s + 1)},
@@ -263,10 +263,10 @@ __device__ __forceinline__ int tokens_before(const uint32_t (&w)[2], int s, int 
   return n;
 }
 
-//: THE LISTS, a warp's 4 lists `w + 8 j` (its own heads), 8 lanes a list, lane `s` its words `2s`, `2s + 1`: each
-//: lane's tokens in each pass, from the passes' bounds, joined over the list's lanes into each pass's start (whole
-//: steps) and the lane's first place there; on the write side a walk takes the list's maxima; a walk places and writes
-//: each entry, and lane `q` writes pass `q`'s pads. -- see docs/internals/facts/facts.md#lists-out
+//: THE LISTS, a warp's 4 lists `w + 8 j`, 8 lanes a list, lane `s` its words `2s`, `2s + 1`: each lane's tokens
+//: before each boundary's bound, summed over the list's lanes into its boundaries and scanned into the lane's first
+//: place; on the write side a walk takes the list's maxima; a walk places and writes each entry.
+//: -- see docs/internals/facts/facts.md#lists-out
 template <bool kWriteSide>
 __device__ __forceinline__ void lists_out(const FactsParams& p, const Unit& x, const uint8_t* smem,
                                           const Ranks& r, int warp, int lane) {
@@ -277,53 +277,39 @@ __device__ __forceinline__ void lists_out(const FactsParams& p, const Unit& x, c
   const int dl = lane >> 3, s = lane & 7, d = warp + kFactsWarps * dl;
   const int width = p.B[x.level], digit = kGroupDigits * x.group + d;
   const bool listed = digit < width;
-  const int pl = p.pass_log[x.side];
   const ListsOut out = p.lists[x.side];
-  const int64_t win_index = static_cast<int64_t>(x.bh) * p.windows + x.window;
-  const int64_t list = win_index * width + digit;
-  const int64_t group_index = win_index * ((width + kGroupDigits - 1) / kGroupDigits) + x.group;
-  uint2* const heads = out.heads + (group_index * kFactsWarps + warp) * (kHeadLists * kHeadEntries)
-                       + dl * kHeadEntries;
+  const int64_t list = (static_cast<int64_t>(x.bh) * p.windows + x.window) * width + digit;
   uint2* const entries = out.entries + list * kListCap;
   const uint32_t words[2] = {tile[tile_at(d, 2 * s)], tile[tile_at(d, 2 * s + 1)]};
 
-  //: the lane's tokens in each pass as u16 pairs, scanned over the list's lanes
-  const int total = __popc(words[0]) + __popc(words[1]);
-  const int b1 = tokens_before(words, s, bound[1]), b2 = tokens_before(words, s, bound[2]),
-            b3 = tokens_before(words, s, bound[3]);
-  const uint32_t own_lo = static_cast<uint32_t>(b1) | static_cast<uint32_t>(b2 - b1) << 16,
-                 own_hi = static_cast<uint32_t>(b3 - b2) | static_cast<uint32_t>(total - b3) << 16;
-  uint32_t lo = own_lo, hi = own_hi;
+  //: the lane's tokens before boundaries 1 .. 7 and its total as u16 pairs, scanned over the list's lanes
+  constexpr int kPairs = kListAt / 2;
+  uint32_t own[kPairs], inc[kPairs];
 #pragma unroll
-  for (int off = 1; off < 8; off <<= 1) {
-    const uint32_t ylo = __shfl_up_sync(0xffffffffu, lo, off, 8),
-                   yhi = __shfl_up_sync(0xffffffffu, hi, off, 8);
-    lo += s >= off ? ylo : 0u;
-    hi += s >= off ? yhi : 0u;
+  for (int k = 0; k < kPairs; ++k) {
+    const int lo = tokens_before(words, s, bound[2 * k + 1]);
+    const int hi = 2 * k + 2 < kListAt ? tokens_before(words, s, bound[2 * k + 2])
+                                       : __popc(words[0]) + __popc(words[1]);
+    own[k] = static_cast<uint32_t>(lo) | static_cast<uint32_t>(hi) << 16;
+    inc[k] = own[k];
   }
-  const uint32_t all_lo = __shfl_sync(0xffffffffu, lo, 7, 8),
-                 all_hi = __shfl_sync(0xffffffffu, hi, 7, 8);
-  //: each pass's start in whole steps, and the lane's first place in each pass less its tokens before the pass
-  const int n[kMaxPasses] = {static_cast<int>(all_lo & 0xffffu), static_cast<int>(all_lo >> 16),
-                             static_cast<int>(all_hi & 0xffffu), static_cast<int>(all_hi >> 16)};
-  const int ex[kMaxPasses] = {
-      static_cast<int>((lo - own_lo) & 0xffffu), static_cast<int>((lo - own_lo) >> 16),
-      static_cast<int>((hi - own_hi) & 0xffffu), static_cast<int>((hi - own_hi) >> 16)};
-  const int mine[kMaxPasses] = {0, b1, b2, b3};
-  int start[kMaxPasses + 1], base[kMaxPasses];
-  start[0] = 0;
 #pragma unroll
-  for (int q = 0; q < kMaxPasses; ++q) {
-    start[q + 1] = start[q] + ((n[q] + kStep - 1) & -kStep);
-    base[q] = start[q] + ex[q] - mine[q];
-  }
-  int at_s = start[kMaxPasses], n_s = 0;
+  for (int off = 1; off < 8; off <<= 1)
 #pragma unroll
-  for (int q = 0; q < kMaxPasses; ++q) {
-    at_s = s == q ? start[q] : at_s;
-    n_s = s == q ? n[q] : n_s;
+    for (int k = 0; k < kPairs; ++k) {
+      const uint32_t y = __shfl_up_sync(0xffffffffu, inc[k], off, 8);
+      inc[k] += s >= off ? y : 0u;
+    }
+  //: lane `s` writes boundary `s` from the list's last lane; its first place is its tokens before
+  uint32_t mine = __shfl_sync(0xffffffffu, inc[0], 7, 8);
+#pragma unroll
+  for (int k = 1; k < kPairs; ++k) {
+    const uint32_t all = __shfl_sync(0xffffffffu, inc[k], 7, 8);
+    mine = s >> 1 == k ? all : mine;
   }
-  if (listed) out.at[list * kListAt + s] = static_cast<uint16_t>(at_s);
+  if (listed)
+    out.at[list * kListAt + s] = static_cast<uint16_t>(s & 1 ? mine >> 16 : mine & 0xffffu);
+  const int first = static_cast<int>((inc[kPairs - 1] - own[kPairs - 1]) >> 16);
 
   //: the write side's maxima, its exponents and scales
   float sm = 1.0f, sv = 1.0f;
@@ -358,9 +344,9 @@ __device__ __forceinline__ void lists_out(const FactsParams& p, const Unit& x, c
                          | static_cast<uint32_t>(static_cast<uint16_t>(kv)) << 16;
   }
 
-  //: the entries: the lane's `i`-th at its pass's first place plus `i`
+  //: the entries: the lane's `i`-th at its first place plus `i`
   const int row = p.read_row;
-  int i = 0;
+  int pos = first;
 #pragma unroll
   for (int jj = 0; jj < 2; ++jj) {
     uint32_t xw = words[jj];
@@ -372,11 +358,6 @@ __device__ __forceinline__ void lists_out(const FactsParams& p, const Unit& x, c
           xw &= xw - 1u;
           const uint32_t sl =
               static_cast<uint32_t>(r.pre[jj] + __popc(r.u[jj] & ((1u << bit) - 1u)));
-          const int q = static_cast<int>(sl >> pl);
-          int pos = base[0];
-#pragma unroll
-          for (int k2 = 1; k2 < kMaxPasses; ++k2) pos = q >= k2 ? base[k2] : pos;
-          pos += i++;
           const float b = static_cast<float>(win[window_at(t, d)]);
           uint2 e;
           if constexpr (kWriteSide) {
@@ -385,30 +366,15 @@ __device__ __forceinline__ void lists_out(const FactsParams& p, const Unit& x, c
             const uint32_t cm = __half_as_ushort(__float2half_rn(b * col.x * sm));
             e = make_uint2(sl, cv | cm << 16);
           } else {
-            const uint32_t local = sl & ((1u << pl) - 1u);
             const uint32_t coef = __half_as_ushort(__float2half_rn(b * (1.0f / 256.0f)));
-            e = make_uint2((local * row + 16u * carry::pool_chunk(row, local, 0u))
-                               | static_cast<uint32_t>(t) << 16,
-                           coef | (carry::kPadBytes + carry::panel_row(local)) << 16);
+            e = make_uint2(
+                (sl * (row / 16) + carry::pool_chunk(row, sl, 0u)) | static_cast<uint32_t>(t) << 16,
+                coef | (carry::kPadBytes + carry::panel_row(sl)) << 16);
           }
-          if (listed) {
-            entries[pos] = e;
-            if (pos < kHeadEntries) heads[pos] = e;
-          }
+          if (listed) entries[pos] = e;
+          ++pos;
         }
       } while (__any_sync(0xffffffffu, xw != 0u));
-  }
-  //: lane `q`'s pads: pass `q`'s last step filled, a pad at place `c` of its step the pass's slot `c`, coefficient 0
-  if (listed && s < kMaxPasses) {
-#pragma unroll 1
-    for (int pos = at_s + n_s; pos < at_s + ((n_s + kStep - 1) & -kStep); ++pos) {
-      const uint32_t c = static_cast<uint32_t>(pos) & (kStep - 1);
-      const uint2 e = kWriteSide ? make_uint2((static_cast<uint32_t>(s) << pl) + c, 0u)
-                                 : make_uint2(c * row + 16u * carry::pool_chunk(row, c, 0u),
-                                              carry::panel_row(c) << 16);
-      entries[pos] = e;
-      if (pos < kHeadEntries) heads[pos] = e;
-    }
   }
 }
 
@@ -549,8 +515,7 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                         std::vector<Tensor> read_lists, std::vector<int64_t> widths,
                         int64_t dense_read, std::vector<int64_t> mask_read, int64_t dense_write,
                         std::vector<int64_t> mask_write, int64_t write_list_level,
-                        int64_t read_list_level, int64_t window, int64_t read_pass,
-                        int64_t write_pass, int64_t read_row) {
+                        int64_t read_list_level, int64_t window, int64_t read_row) {
   check_arch_table();
   const int D = static_cast<int>(widths.size());
   STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels, "the routing depth is one to four levels, got ", D);
@@ -606,27 +571,19 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
     }
   }
   const int64_t list_levels[kSides] = {read_list_level, write_list_level};
-  const int64_t passes[kSides] = {read_pass, write_pass};
   for (int side = 0; side < kSides; ++side) {
     const int64_t level = list_levels[side];
     STD_TORCH_CHECK(level >= -1 && level < D && (level < 0 || !level_is_dense(dense[side], level)),
                     "side ", side, "'s list level is a sparse level of the depth ", D,
                     " or -1 for none, got ", level);
     p.list_level[side] = static_cast<int>(level);
-    int log = kMinPassLog;
-    while (log < kMaxPassLog && (int64_t{1} << log) < passes[side]) ++log;
-    STD_TORCH_CHECK(passes[side] == (int64_t{1} << log), "side ", side,
-                    "'s pass is a power of two from ", 1 << kMinPassLog, " to ", 1 << kMaxPassLog,
-                    " slots (a list's passes and its end fit its ", kListAt, " starts), got ",
-                    passes[side]);
-    p.pass_log[side] = log;
   }
-  STD_TORCH_CHECK(read_row >= 64 && read_row % 64 == 0
-                      && (read_row == 128 || read_row / 64 % 2 == 1)
-                      && read_pass * read_row <= 65536,
-                  "the read pool row is 128 bytes or an odd number of 64, its pass's pool inside a "
-                  "16-bit offset; got ",
-                  read_row, " bytes at a ", read_pass, "-slot pass");
+  STD_TORCH_CHECK(
+      read_row >= 64 && read_row % 64 == 0 && (read_row == 128 || read_row / 64 % 2 == 1)
+          && kWindowTokens * read_row / 16 <= 65536,
+      "the read pool row is 128 bytes or an odd number of 64, a window's pool inside a 16-bit "
+      "offset of 16-byte chunks; got ",
+      read_row, " bytes");
   p.read_row = static_cast<int>(read_row);
   for (int level = 0; level < D; ++level)
     p.scale_write[level] = detail::column_view(scale_write[level], B, T, H, "scale_write[l]");
@@ -666,11 +623,11 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   p.gains16 = static_cast<uint32_t*>(exact(gains16, Dtype::Half, {B * H, T, 2}, "gains16"));
   p.gains_exp =
       static_cast<int16_t*>(exact(gains_exp, Dtype::Short, {B * H, p.windows, 2}, "gains_exp"));
-  //: THE LISTS OUT, a side's at its list level: entries, starts, heads, the union by slot, its extent
+  //: THE LISTS OUT, a side's at its list level: entries, boundaries, the union by slot, its extent
   const std::vector<Tensor>* lists[kSides] = {&read_lists, &write_lists};
   for (int side = 0; side < kSides; ++side) {
-    STD_TORCH_CHECK(lists[side]->size() == 5, "side ", side,
-                    "'s lists are (entries, at, heads, union, count), got ", lists[side]->size(),
+    STD_TORCH_CHECK(lists[side]->size() == 4, "side ", side,
+                    "'s lists are (entries, at, union, count), got ", lists[side]->size(),
                     " tensors");
     if (p.list_level[side] < 0) continue;
     const int64_t width = p.B[p.list_level[side]],
@@ -680,14 +637,11 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
     o.entries = static_cast<uint2*>(
         exact(l[0], Dtype::Short, {B * H, p.windows, width, kListCap, 4}, "a side's entries"));
     o.at = static_cast<uint16_t*>(
-        exact(l[1], Dtype::Short, {B * H, p.windows, width, kListAt}, "a side's starts"));
-    o.heads = static_cast<uint2*>(exact(
-        l[2], Dtype::Short, {B * H, p.windows, groups, kFactsWarps, kHeadLists * kHeadEntries, 4},
-        "a side's heads"));
+        exact(l[1], Dtype::Short, {B * H, p.windows, width, kListAt}, "a side's boundaries"));
     o.union_tok = static_cast<uint16_t*>(
-        exact(l[3], Dtype::Short, {B * H, p.windows, groups, kWindowTokens}, "a side's union"));
+        exact(l[2], Dtype::Short, {B * H, p.windows, groups, kWindowTokens}, "a side's union"));
     o.union_count = static_cast<int32_t*>(
-        exact(l[4], Dtype::Int, {B * H, p.windows, groups}, "a side's union extents"));
+        exact(l[3], Dtype::Int, {B * H, p.windows, groups}, "a side's union extents"));
   }
   detail::plan_units(p, dense);
   p.ledger = detail::g_ledger;

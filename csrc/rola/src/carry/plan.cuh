@@ -27,10 +27,7 @@ struct Tenants {
   static constexpr int kClock = kExps + kBoxDigits * 4;
   static constexpr int kBars = kClock + kWarps * (kCarryPhases + 1) * 8;
   static constexpr int kMaxBars = 10;
-  static constexpr int kReadHeads = kBars + kMaxBars * 8;
-  static constexpr int kHeadBytes = 4 * kHeadEntries * 8;
-  static constexpr int kFoldHeads = kReadHeads + kWarps * kHeadBytes;
-  static constexpr int kAddr = kFoldHeads + kWarps * kHeadBytes;
+  static constexpr int kAddr = kBars + kMaxBars * 8;
   static constexpr int kAddrBytes = 256;
   static constexpr int kEnd = align_of(kAddr + kAddrBytes, 128);
 };
@@ -106,8 +103,8 @@ struct Plan : Tenants {
   //: the fold's ring: units over the image, then the panel (free only once the drain has read it)
   static constexpr int kImageUnits = kImageBytes / kUnitBytes;
   static constexpr int kFoldRing = kImageUnits + kPanelBytes / kUnitBytes;
-  static_assert(kFoldRing >= 1 && 4 + kFoldRing <= kMaxBars,
-                "a barrier a ring slot and the two staging barriers");
+  static_assert(kFoldRing >= 1 && 3 + kFoldRing <= kMaxBars,
+                "a barrier a ring slot and the staging barrier");
   //: THE RESIDENT WRITE PASS: where the readout ring's free slot and the fold ring hold a window's units at once, the
   //: fold takes the window in one pass over them, a slot's row in its unit's region. -- see plan.md#resident
   static constexpr bool kResident = (1 + kFoldRing) * kUnitSlots >= kWindow;

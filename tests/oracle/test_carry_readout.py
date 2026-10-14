@@ -31,7 +31,8 @@ def test_the_readout_is_the_reference_per_slot(write_sparse, growth, accumulate)
     key = carry_ops.arm_key(carve)
     assert key == (32, 1, 32, 1, 32, 0)
     layout = facts_ops.call_layout(routes)
-    facts = facts_ops.facts(routes, values, layout, *facts_ops.call_statics(routes, layout), carry_ops.form(key))
+    facts = facts_ops.facts(routes, values, layout, *facts_ops.call_statics(routes, layout),
+                            carry_ops.form(key).read_row)
     level_s = 1 - write_sparse
     unit = units(routes, values, facts.list_exp, level_s, carry_ops.WINDOW)
     num, _ = carry_ops.carry(routes, values, facts, carve, unit, accumulate=accumulate)

@@ -9,17 +9,15 @@
 
 namespace rola::carry {
 
-//: THE WINDOW'S INPUTS, a window ahead, by every thread: both sides' lists, the write exponents and token units, the
-//: warp's read heads; landing on the staging barrier. -- see docs/internals/carry/carry_kernel.md#staging
+//: THE WINDOW'S INPUTS, a window ahead, by every thread: both sides' lists, the write exponents and token units;
+//: landing on the staging barrier. -- see docs/internals/carry/carry_kernel.md#staging
 template <class P>
 __device__ __forceinline__ void stage_window(const CarryParams& p, const Place& c, int w,
-                                             uint8_t* smem, ops::SmemAddr bar, int warp, int lane) {
+                                             uint8_t* smem, ops::SmemAddr bar) {
   const Window rw = window_of<P>(p, smem, kRead, w), ww = window_of<P>(p, smem, kWrite, w);
   lists_in<P>(p, p.read_lists, rw, c, w, smem, kRead);
   lists_in<P>(p, p.write_lists, ww, c, w, smem, kWrite);
   facts_in<P>(p, ww, c, w, smem);
-  heads_in(p.read_lists, rw, c, p.windows, w,
-           ops::smem_addr(smem + P::kReadHeads) + warp * P::kHeadBytes, warp, lane);
   ops::mbar_arrive_when_landed(bar);
 }
 
@@ -39,11 +37,11 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   PhaseClock<kCarryPhases, true> clock(
       reinterpret_cast<long long*>(smem + P::kClock) + warp * PhaseClock<kCarryPhases, true>::kRow,
       lane, p.ledger != nullptr);
-  //: the barriers: the readout ring's two, the fold ring's, then the window's staging and the fold heads'
+  //: the barriers: the readout ring's two, the fold ring's, then the window's staging
   const ops::SmemAddr bars = ops::smem_addr(smem + P::kBars);
-  const ops::SmemAddr staged = bars + 8 * (2 + P::kFoldRing), heads_bar = staged + 8;
+  const ops::SmemAddr staged = bars + 8 * (2 + P::kFoldRing);
   if (threadIdx.x == 0)
-    static_for<4 + P::kFoldRing>([&](auto b) { ops::mbar_init(bars + 8 * b, kThreads); });
+    static_for<3 + P::kFoldRing>([&](auto b) { ops::mbar_init(bars + 8 * b, kThreads); });
   if (static_cast<int>(threadIdx.x) < kBoxLists)
     reinterpret_cast<UnitBook*>(smem + P::kBook)[threadIdx.x] = UnitBook{kUnitNone, 0.0f};
   if (threadIdx.x == 0) addr_in(*reinterpret_cast<Addr*>(smem + P::kAddr), p, c);
@@ -57,7 +55,6 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   const auto ring = [&](int k) {
     return ops::smem_addr(smem + P::kRing0) + static_cast<uint32_t>(k * (P::kRing1 - P::kRing0));
   };
-  const ops::SmemAddr fold_heads = ops::smem_addr(smem + P::kFoldHeads) + warp * P::kHeadBytes;
   //: a fold ring slot's pool: the image's units, then the panel's
   const auto fold_slot = [&](int k) {
     return k < P::kImageUnits
@@ -91,10 +88,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   int f = 0;
   uint32_t ring_par = 0u, fold_par = 0u;
 
-  stage_window<P>(p, c, 0, smem, staged, warp, lane);
-  heads_in(p.write_lists, window_of<P>(p, smem, kWrite, 0), c, p.windows, 0, fold_heads, warp,
-           lane);
-  ops::mbar_arrive_when_landed(heads_bar);
+  stage_window<P>(p, c, 0, smem, staged);
   ops::mbar_wait(staged, 0u);
   fill_read(0, 0, ring(0), bars);
 
@@ -147,15 +141,15 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         for (int u = 1; u < min(units, 1 + P::kImageUnits); ++u)
           fill_unit(w, u, fold_slot(u - 1), bars + 8 * (1 + u));
         if constexpr (P::kResident)
-          if (next) stage_window<P>(p, c, w + 1, smem, staged, warp, lane);
+          if (next) stage_window<P>(p, c, w + 1, smem, staged);
       }
       drain<P>(p, smem, rw(), c, w, first, max(slots, 0));
       clock.lap(kPhaseDrain);
       ++f;
     }
 
-    //: THE NEXT WINDOW'S INPUTS, the read heads once this warp's readout is done; resident, the panel's units and the
-    //: next window's first pass into the last pass's slot, before the fold
+    //: THE NEXT WINDOW'S INPUTS; resident, the panel's units and the next window's first pass into the last pass's
+    //: slot, before the fold
     if constexpr (P::kResident) {
       //: the panel's units once every thread's drain has cleared it
       for (int k = ops::once(units > 1 + P::kImageUnits); k > 0; --k) {
@@ -169,14 +163,13 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         fill_read(w + 1, 0, ring((f + 1) & 1), bars + 8 * ((f + 1) & 1));
       }
     } else if (next) {
-      stage_window<P>(p, c, w + 1, smem, staged, warp, lane);
+      stage_window<P>(p, c, w + 1, smem, staged);
     }
 
     //: THE FOLD, unit by unit: unit 0 in the readout ring, the rest in the fold ring
     uint32_t cf[P::kFoldLists];
     float fs[P::kFoldLists];
     fold_units<P>(cf, fs, smem, ww(), w, warp, lane);
-    ops::mbar_wait(heads_bar, static_cast<uint32_t>(w & 1));
     const ops::SmemAddr image = ops::smem_addr(smem + P::kImage),
                         panel = ops::smem_addr(smem + P::kPanel);
     if constexpr (P::kResident) {
@@ -232,11 +225,6 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
 #pragma unroll 1
       for (int i = static_cast<int>(threadIdx.x); i < P::kPanelBytes / 16; i += kThreads)
         reinterpret_cast<uint4*>(smem + P::kPanel)[i] = make_uint4(0u, 0u, 0u, 0u);
-    //: the next window's fold heads, once this warp's fold is done
-    if (next)
-      heads_in(p.write_lists, window_of<P>(p, smem, kWrite, w + 1), c, p.windows, w + 1, fold_heads,
-               warp, lane);
-    ops::mbar_arrive_when_landed(heads_bar);
   }
 
   float sum = 0.f;

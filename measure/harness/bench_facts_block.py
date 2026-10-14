@@ -60,7 +60,7 @@ def cell(k: int):
     return sides[0], sides[1], [column(), column()], column(), column()
 
 
-def launch(read, write, scales, g, vs, form, outs):
+def launch(read, write, scales, g, vs, read_row, outs):
     from rola.engine.facts import liveness as lv
     from rola.ops import facts as facts_ops
 
@@ -68,7 +68,7 @@ def launch(read, write, scales, g, vs, form, outs):
     masks = [0xFFFFFFFF] * lv.mask_words(2 * WIDTH)
     facts_ops.extension().rola_facts_forward(
         read, write, scales, g, vs, words, unions, list_exp, fm, gains16, gains_exp, list(wl), list(rl),
-        [WIDTH, WIDTH], 0, masks, 0, masks, 0, 1, WINDOW, form.pass_slots, form.unit_slots, form.read_row)
+        [WIDTH, WIDTH], 0, masks, 0, masks, 0, 1, WINDOW, read_row)
 
 
 def outputs():
@@ -87,16 +87,15 @@ def outputs():
 
 
 def required_bytes(outs) -> float:
-    """The rows, the columns read, and every byte the pass writes: the words and tile unions, each list's entries (its
-    tokens and pads), heads, starts, union and extent, the exponents, the factor products and gains."""
+    """The rows, the columns read, and every byte the pass writes: the words and tile unions, each list's entries,
+    boundaries, union and extent, the exponents, the factor products and gains."""
     words, unions, list_exp, fm, gains16, gains_exp, wl, rl = outs
     rows = 4 * TOKENS * HEADS * WIDTH
     columns = 4 * TOKENS * HEADS * 4
     entries = sum(int((l.at[..., -1].long() & 0xFFFF).sum()) for l in (wl, rl)) * 8
-    heads = sum(int((l.at[..., -1].long() & 0xFFFF).clamp(max=16).sum()) for l in (wl, rl)) * 8
     lists = sum(l.at.numel() * 2 + l.union.numel() * 2 + l.count.numel() * 4 for l in (wl, rl))
     rest = (words.numel() + unions.numel()) * 4 + list_exp.numel() * 2 + fm.numel() * 4 + gains16.numel() * 2
-    return rows + columns + entries + heads + lists + rest + gains_exp.numel() * 2
+    return rows + columns + entries + lists + rest + gains_exp.numel() * 2
 
 
 def main() -> int:
@@ -108,22 +107,20 @@ def main() -> int:
     from rola_devtools.locks.gpu import gpu_lock
 
     from rola.ops import facts as facts_ops
-    from rola.ops.carry import Form
-
-    form = Form(2, 256, 128, 64, 128)
+    read_row = 64
     rate = flat_rate()
     with gpu_lock():
         for k in args.k:
             read, write, scales, g, vs = cell(k)
             outs = outputs()
             for _ in range(3):
-                launch(read, write, scales, g, vs, form, outs)
+                launch(read, write, scales, g, vs, read_row, outs)
             torch.cuda.synchronize()
             times = []
             for _ in range(args.reps):
                 a, b = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
                 a.record()
-                launch(read, write, scales, g, vs, form, outs)
+                launch(read, write, scales, g, vs, read_row, outs)
                 b.record()
                 b.synchronize()
                 times.append(1000.0 * a.elapsed_time(b))
@@ -137,7 +134,7 @@ def main() -> int:
                                      device="cuda")
                 facts_ops.ledger_bind(ledger)
                 try:
-                    launch(read, write, scales, g, vs, form, outs)
+                    launch(read, write, scales, g, vs, read_row, outs)
                     torch.cuda.synchronize()
                 finally:
                     facts_ops.ledger_bind(None)

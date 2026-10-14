@@ -6,16 +6,15 @@ is fixed by the plan and the card, never by the data (R22).
 <a id="tenants"></a>
 ## The persistent tenants
 
-`Tenants` holds what lives across the window, 17,920 bytes on every card and arm:
+`Tenants` holds what lives across the window, 9,728 bytes on every card and arm:
 
-- each side's union tokens (1 KB), count and box lists' pass starts, two windows' each by parity: a window's are copied
+- each side's union tokens (1 KB), count and box lists' boundaries, two windows' each by parity: a window's are copied
   while the window before it is still read;
 - the write lists' exponent pairs and the tokens' units, by parity;
 - the unit book (a list's running unit, `fold.md#units`), the digit maxima (each warp's per digit) and the digit
   exponents (`parts.md#maxima`);
-- the phase clock's rows; the barriers (`kMaxBars`: the readout ring's two, the fold ring's, the staging barrier and the
-  fold heads' barrier, `carry_kernel.md#staging`);
-- each warp's heads, read and fold (512 bytes each a warp);
+- the phase clock's rows; the barriers (`kMaxBars`: the readout ring's two, the fold ring's and the staging barrier,
+  `carry_kernel.md#staging`);
 - the CTA's addresses (`Addr`, 256 bytes reserved: `parts.md#place`).
 
 <a id="forms"></a>
@@ -30,13 +29,13 @@ the larger unit; `form_of` takes the first the card holds.
 
 | card, arm | form (parts, pass, unit) | shared bytes |
 |---|---|---|
-| sm_86, the even box `(32, 1, 32, 1, 32, 0)` | 2, 256, 128 | 100,352 of 101,376 |
-| sm_86, dense-dense `(32, 2, 32, 2, 32, 0)` | 2, 128, 64 | 92,160 |
-| sm_80, the even box | 1, 512, 128 | ~165,900 of 166,912 |
-| sm_80, dense-dense | 1, 256, 128 | ~165,900 |
+| sm_86, the even box `(32, 1, 32, 1, 32, 0)` | 2, 256, 128 | 92,160 of 101,376 |
+| sm_86, dense-dense `(32, 2, 32, 2, 32, 0)` | 2, 128, 128 | 100,352 |
+| sm_80, the even box | 1, 512, 128 | 157,696 of 166,912 |
+| sm_80, dense-dense | 1, 256, 128 | 157,696 |
 
 The fold's ring is the image and the panel once the readout is done: `kImageUnits` units over the image, then the
-panel's (`kFoldRing`: 3 units at sm_86's even box, 6 at sm_80's, 2 at either's dense-dense).
+panel's (`kFoldRing`: 3 units at sm_86's even box, 6 at sm_80's, 1 and 2 at their dense-dense).
 
 <a id="resident"></a>THE RESIDENT WRITE PASS (`kResident`): where the readout ring's free slot and the fold ring hold a
 window's units at once -- `(1 + kFoldRing) x unit >= 512`, the even box on both cards -- the fold takes a window in one

@@ -47,7 +47,6 @@ import torch
 from rola.engine.facts import liveness as lv
 from rola.engine.facts import planes
 from rola.ops import facts as facts_ops
-from rola.ops.carry import Form
 from rola.ops.naive import _leaf_product, _radix_strides
 from rola.ops.paging import MMA_K_QUANTUM
 from rola.routing.factors import RouteFactors
@@ -61,7 +60,7 @@ from rola.routing.types import (
 from rola.values import Values
 
 #: the lists' form the facts pass is called in (sm_86's even carry arm); this file reads its words and unions only
-_LIST_FORM = Form(2, 256, 128, 64, 128)
+_READ_ROW = 64
 
 pytestmark = [
     pytest.mark.cuda,
@@ -123,7 +122,7 @@ def _kernel_bitmap(routes, values):
     """The written atoms of the facts pass's words, every level voted from its rows."""
     layout = facts_ops.call_layout(routes)
     statics = facts_ops.call_statics(routes, layout)
-    words = facts_ops.facts(routes, values, layout, *statics, _LIST_FORM).words
+    words = facts_ops.facts(routes, values, layout, *statics, _READ_ROW).words
     return planes.written_atoms(lv.page_bits(words, layout, *statics))
 
 
@@ -206,7 +205,7 @@ def test_stats_through_the_host_seam():
     _, write = routes.dequantized()
     layout = facts_ops.call_layout(routes)
     statics = facts_ops.call_statics(routes, layout)
-    words = facts_ops.facts(routes, values, layout, *statics, _LIST_FORM).words
+    words = facts_ops.facts(routes, values, layout, *statics, _READ_ROW).words
     bits = lv.page_bits(words, layout, *statics)
     assert bits.dtype == torch.uint8 and bits.device.type == "cuda"
     assert torch.equal(planes.written_atoms(bits), _oracle_bitmap(write, (16, 16)))

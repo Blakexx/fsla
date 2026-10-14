@@ -52,16 +52,13 @@ def write(directory: Path) -> list[str]:
     import bench_facts_block as B
     import torch
 
-    from rola.ops.carry import Form
-
     files = []
-    form = Form(2, READ_PASS, WRITE_PASS, READ_ROW, 128)
     for name, k in CELLS:
         out = directory / name
         out.mkdir(parents=True, exist_ok=True)
         read, write_rows, scales, g, vs = B.cell(k)
         outs = B.outputs()
-        B.launch(read, write_rows, scales, g, vs, form, outs)
+        B.launch(read, write_rows, scales, g, vs, READ_ROW, outs)
         words, list_exp, fm = outs[0], outs[2].long(), outs[3]
 
         def write_coef(byte, bh, t, win, digit):

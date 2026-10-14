@@ -139,9 +139,9 @@ token order (ruled 2026-10-13). After the vote's barrier every warp scans the 16
 scan), and its two words' tokens go out to `union_tok` at their slots -- a word's tokens at consecutive slots, so the
 stores coalesce -- every slot past the union `kGap` (`carry/carry.cuh`: token 0 with bit 15 set, so a row fetch masked
 to the window stays inside it). The union's EXTENT (`union_count`, int32) is its size in whole steps of `kStep` = 8:
-the carry stages the extent's slots and zero-fills a gap's row, so every pad's slot (below) is a staged row. Each
-pass's first token is its BOUND, posted in shared memory (`kWindowTokens` for a pass the union does not reach): pass
-`q` holds the tokens from bound `q` to bound `q + 1`, which the lists count without walking.
+the carry stages the extent's slots and zero-fills a gap's row. The token at every 64th slot is a BOUND, posted in
+shared memory (`kWindowTokens` past the union): a list's tokens before bound `k` are its entries before slot `64 k`,
+which the lists count without walking.
 
 The slots are not colored. A coloring that put each step's 8 tokens on distinct residues mod 8 (the bank groups of
 every slot-indexed row) made the carry's gathers conflict-free, but it padded each list's passes to its most-used
@@ -154,33 +154,28 @@ composed carry first.
 
 ## The lists out
 
-Per list (a digit of the list level), its tokens in PASSES of the carry's pass for the side — the readout's
-`pass_slots` for the read side, the fold's `unit_slots` for the write side, the arm's form on the device's card
-(`rola.ops.carry.form`), a power of two from 128 to 512 (the host refuses another: a list's passes and its end must fit
-its `kListAt` = 8 starts): pass `q` its tokens of slot `q P .. q P + P - 1` in token order, its last step filled with
-PADS, so each pass starts on a step. A list's entries are at most the union's extent, at most 512. `at[q]` is pass
-`q`'s start, and from the last pass on the list's end.
+Per list (a digit of the list level), its tokens in token order -- slot order, the slots being ranks -- with no pads,
+at most 512. `at[j]` (`kListAt` = 8 of them) is the list's entries before slot `64 (j + 1)`, so `at[7]` is its length:
+any chunk of the union whose bounds are multiples of 64 finds its entries (`at[first / 64 - 1]` to
+`at[last / 64 - 1]`), and no chunk size of the carry's reaches this pass (`carry/carry.cuh` `kListBound`; the carry
+plans its chunks per window, `docs/internals/carry/carry.md#lists`).
 
 An entry is 8 bytes, the carry's `uint2`:
-- READ: the slot's pool row offset in its pass with the row's swizzle folded in (`local × row + 16 × chunk0`, `local`
-  the slot less its pass's first, `chunk0` the carry's `pool_chunk` of chunk 0: an 8-chunk row XORs by the residue, a
-  row of an odd number of 64-byte quarters by the residue's high bits), its token's window place (the readout looks up
-  the token's unit by it); the coefficient `f16(byte / 256)`, the slot's panel row offset past the dummy rows
-  (`kPadBytes + panel_row(local)`). A pad at place `c` of its step: the pass's row `c`, token 0 and dummy panel row
-  `c`, coefficient 0.
+- READ: the slot's pool row offset in the union in 16-byte chunks, the row's swizzle folded in
+  (`slot × row / 16 + chunk0`, `chunk0` the carry's `pool_chunk` of chunk 0: an 8-chunk row XORs by the residue, a row
+  of an odd number of 64-byte quarters by the residue's high bits), its token's window place (the readout looks up the
+  token's unit by it); the coefficient `f16(byte / 256)`, the slot's panel row offset past the dummy rows
+  (`kPadBytes + panel_row(slot)`). A chunk starting at a multiple of 64 takes both offsets back by its first slot's:
+  the swizzles and the panel's pairing depend on a slot's low bits only.
 - WRITE: the slot, 0; `c_v = f16(fp32(b F) 2^(4 - E_v))`, `c_m = f16(fp32(b m) 2^(4 - E_m))`, `E = max(K, -123)` the
-  list's exponent. A pad at place `c` of its step: the pass's slot `c`, both coefficients 0.
+  list's exponent.
 
-A warp's HEADS a (window, group): its 4 lists `w + 8 j`'s first 16 entries, copied as they are written.
-
-THE LANES, every warp its 4 lists `w + 8 j` (its own heads), 8 lanes a list, lane `s` the list's words `2s` and
-`2s + 1`. Each lane counts its tokens before each pass's bound (a popcount of each word under a mask), so its tokens in
-each pass; a segmented scan of those counts (four u16 fields in two registers) gives each pass's tokens before the
-lane's and, at the list's last lane, each pass's tokens, so each pass's start in whole steps; lane `s` writes `at[s]`.
-On the write side a walk over the lane's entries takes the list maxima, and their exponents. A walk then places the
-lane's `i`-th entry at its pass's start plus the pass's tokens before the lane's, less the lane's tokens in earlier
-passes, plus `i` -- its slot `pre + popc(union word & below)` from the lane's two union words and their ranks before,
-its pass the slot's high bits -- and writes it; lane `q` writes pass `q`'s pads.
+THE LANES, every warp its 4 lists `w + 8 j`, 8 lanes a list, lane `s` the list's words `2s` and `2s + 1`. Each lane
+counts its tokens before bounds 1 to 7 (a popcount of each word under a mask) and its total; a segmented scan of those
+counts (eight u16 fields in four registers) gives, at the list's last lane, the list's boundaries -- lane `s` writes
+`at[s]` -- and each lane's tokens before its own, its first place. On the write side a walk over the lane's entries
+takes the list maxima, and their exponents. A walk then writes the lane's entries at consecutive places from its
+first, each's slot `pre + popc(union word & below)` from the lane's two union words and their ranks before.
 
 <a id="access-table"></a>
 
@@ -191,7 +186,7 @@ its pass the slot's high bits -- and writes it; lane `q` writes pass `q`'s pads.
 | window | `cp.async` 16-byte quanta, a lane pair a token | the vote: lane `(tk, dq)` row `4 i + tk` word `dq`; the walks: a byte at (token, digit) | the vote 1.0 a load (32 banks by `ring_row`); a walk's byte loads land on random banks, ~1.5; the copies' cost is their global pattern (`ldgsts-copy-ranking`) |
 | tile | the vote: a digit a lane, one word | the bits out: a half-warp a digit row; the lists: a lane a list's two words | 1.0 except the lists' loads: their 4 lists share a bank half, 4.0 against 2.0 ideal, two loads a lane a unit |
 | union words | the vote: lane 0, a word | the ranks: lane `i` word `i % 16` | 1.0 (a broadcast pair) |
-| bounds | the ranks: the lane holding a pass's first slot | the lists: every lane, three words | broadcast, 1.0 |
+| bounds | the ranks: the lane holding a 64th slot | the lists: every lane, seven words | broadcast, 1.0 |
 | columns | a lane a token | the walks: a float2 at a token | random, ~1.5 |
 
 <a id="phase-ledger"></a>
@@ -207,8 +202,8 @@ moves no output (`tests/integration/test_facts_pass.py`).
 ## `FactsParams` — the operand block, by value
 
 Per side and level a `RowView`, per write level and for the gain and value scale a `ColumnView`, the outputs (a
-`ListsOut` a side), the depth, the padded widths, row and group bases, each side's list level and pass (log2), the read
-pool row's bytes, the window's unit codes, per side the digit mask's words. Under a kilobyte and a half. No logical
+`ListsOut` a side), the depth, the padded widths, row and group bases, each side's list level, the read pool row's
+bytes, the window's unit codes, per side the digit mask's words. Under a kilobyte and a half. No logical
 width is in it: `b_l` reaches the mask at the seam and bounds nothing else — the host entry refuses a mask that names a
 digit past a level's rows.
 
@@ -219,39 +214,20 @@ digit past a level's rows.
 THE LINE (ruled 2026-10-12, restated 2026-10-13): the whole pass at <= 1.15x its required bytes' DRAM floor on the
 lab's `facts_block` cell (rows `[4 level-sides, 65,536, 4, 256]` u8, 268 MB, k live digits a token-head; the write side
 lists level 0 and the read side level 1, the other level of each voted). Its required bytes -- the rows, the columns,
-the words and tile unions, every list's entries (its tokens and its pads), heads, starts, union and extent, the
-exponents, the factor products and gains -- were 449 µs at k 4 and 578 µs at k 16 at the lab's flat read (854 GB/s)
-with the colored lists' places, so the line is 516 and 665 µs. Rank slots pad less: the floor is now 445 and 520 µs.
+the words and tile unions, every list's entries, boundaries, union and extent, the exponents, the factor products and
+gains -- are 398 µs at k 4 and 455 µs at k 16 at the lab's flat read (854 GB/s); the line was set at 516 and 665 µs
+from the colored lists' larger outputs and stands.
 
-MEASURED (`measure/harness/bench_facts_block.py`, RTX 3080 Ti at its boost clock, the sm_86 even arm's form, medians):
+MEASURED (`measure/harness/bench_facts_block.py`, RTX 3080 Ti at its boost clock, medians, 2026-10-14):
 
 | | k 4 | k 16 |
 |---|---|---|
-| the pass | 482 µs (1.08x the floor) | 599 µs (1.15x) |
-| the line | 516 µs | 665 µs |
-| the colored form it replaced | 707 µs | ~1,270 µs |
-| phase share, cycles over every warp: load, vote, ranks, lists | 0.46, 0.24, 0.07, 0.23 | 0.35, 0.23, 0.07, 0.35 |
+| the pass | 437 µs (1.10x the floor) | 500 µs (1.10x) |
+| phase share: load, vote, ranks, lists | 0.54, 0.23, 0.08, 0.16 | 0.43, 0.22, 0.07, 0.27 |
 
-At k 16 the pass moves 273 MB from DRAM and writes 175 MB (ncu, one launch), its required bytes: no list sector is
-written twice. Four CTAs an SM keep 62% of the warp slots active.
-
-Executed warp-instructions a window-head (its 32 units: 8 write list, 8 read list, 16 vote), by component
-(`tools/region_ledger.py`, one launch):
-
-| component | k 4 | k 16 |
-|---|---|---|
-| `lists_out` | 103,900 | 170,600 |
-| `vote` | 35,400 | 35,400 |
-| the kernel's own lines (columns' maxima, barriers) | 32,200 | 32,200 |
-| `bits_out` | 22,800 | 22,800 |
-| `issue_window` | 21,500 | 21,500 |
-| `ranks` | 17,900 | 17,900 |
-| `load_column` | 11,800 | 11,800 |
-
-Everything but the lists is fixed a unit. The lists' walks run each warp's longest lane: 37.6 trips a unit at k 4 and
-82.4 at k 16 on this cell (a write unit walks twice, its maxima then its entries), so a list unit costs ~3,000 fixed,
-and a trip ~186 summed over a write unit's two walks and a read unit's one.
+Everything but the lists is fixed a unit; the lists' walks run each warp's longest lane (a write unit walks twice, its
+maxima then its entries).
 
 Per architecture: sm_80 runs the same form at five CTAs an SM (registers); on sm_90 the window fills by TMA (a
 `[512 tokens × 32 bytes]` box of the head's plane in one instruction) under an mbarrier, the rest unchanged. Scaling:
-O(L × rows) bytes read, O(L k) entries, O(L B / 32) unions and heads; nothing O(L N).
+O(L × rows) bytes read, O(L k) entries, O(L B / 32) unions; nothing O(L N).

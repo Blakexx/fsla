@@ -8,21 +8,18 @@ The words' LAYOUT, their reader, the folds over them and the pure-torch MODEL th
 is the fp16 fold's reference (``tests/oracle/fold_reference.py``, ``list_exponents``). What is here is the call: the
 layout and the two sides' static operands a bundle's topology implies (:func:`call_layout`, :func:`call_statics`),
 packed into the bits R13 requires so no logical width crosses the seam, and the launch
-(docs/internals/facts/facts_api.md). The lists' passes are the carry's: a call names the arm's form on the device's
-card (``rola.ops.carry.form``).
+(docs/internals/facts/facts_api.md). The lists carry no chunk size of the carry's; a call names only the arm's read
+pool row (``rola.ops.carry.form``'s ``read_row``), the read entries' row offsets being in its bytes.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple
+from typing import NamedTuple
 
 import torch
 
 from rola.engine.facts import lists as list_model
 from rola.engine.facts.liveness import GROUP_DIGITS, LivenessLayout, SideStatics, mask_words, side_statics
 from rola.ops._ext import extension
-
-if TYPE_CHECKING:
-    from rola.ops.carry import Form
 
 __all__ = ["COMPOSITE", "LEDGER_PHASES", "LEDGER_WARPS", "WINDOW", "Facts", "call_layout", "call_statics", "facts",
            "ledger_bind", "list_level", "side_lists"]
@@ -109,15 +106,14 @@ def _lists(BH: int, windows: int, width: int, device) -> list_model.Lists:
 
     return list_model.Lists(
         entries=empty(BH, windows, width, list_model.LIST_CAP, 4), at=empty(BH, windows, width, list_model.LIST_AT),
-        heads=empty(BH, windows, groups, list_model.WARPS, 4 * list_model.HEAD_ENTRIES, 4),
         union=empty(BH, windows, groups, WINDOW), count=empty(BH, windows, groups, dtype=torch.int32))
 
 
 def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, write_statics: SideStatics,
-          form: Form) -> Facts:
+          read_row: int) -> Facts:
     """THE PASS: both sides' words and tile unions, the window's columns, the write list exponents and each side's
-    lists from the bundle (``routes``, ``values``) in ONE launch, the lists in passes of the carry arm's ``form`` (its
-    readout pass for the read side, its fold unit for the write side, its read pool row).
+    lists from the bundle (``routes``, ``values``) in ONE launch, the read entries' row offsets in the carry arm's read
+    pool rows of ``read_row`` bytes.
 
     Same words at every sparse level, bit for bit, as :func:`rola.engine.facts.liveness.liveness_words` over the
     bundle's rows, and their unions as :func:`rola.engine.facts.liveness.tile_unions`; the list exponents those of
@@ -142,7 +138,7 @@ def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, wri
         words, unions, list_exp, fm, gains16, gains_exp, list(write), list(read), list(layout.B),
         _dense_bits(read_statics), [read_statics.mask_word(i) for i in range(count)],
         _dense_bits(write_statics), [write_statics.mask_word(i) for i in range(count)], max(level, -1),
-        max(read_level, -1), WINDOW, form.pass_slots, form.unit_slots, form.read_row)
+        max(read_level, -1), WINDOW, read_row)
     return Facts(words=words, unions=unions, list_exp=list_exp, fm=fm, write=None if level == COMPOSITE else write,
                  read=None if read_level == COMPOSITE else read, gains16=gains16, gains_exp=gains_exp)
 

@@ -57,32 +57,27 @@ constexpr float kListFloor = 1.17549435e-38f;
 //: 2^(kCoefTop - E) with E floored at `kUnitMin`. -- see docs/internals/facts/facts.md#lists-out
 constexpr int kListCap = carry::kListCap;
 constexpr int kListAt = carry::kListAt;
-constexpr int kHeadEntries = carry::kHeadEntries;
-constexpr int kHeadLists = kGroupDigits / kFactsWarps;
+constexpr int kListBound = carry::kListBound;
 constexpr int kCoefTop = 4;
 constexpr int kUnitMin = kCoefTop - 127;
-constexpr int kMaxPasses = 4;
 static_assert(kWindowTokens == carry::kWindow && kFactsWarps == carry::kWarps
-                  && kGroupDigits == carry::kBoxLists,
-              "the lists are the carry's: its window, and a warp's heads its box lists w + 8 j");
-constexpr int kMinPassLog = 7, kMaxPassLog = 9;
-static_assert(kWindowTokens >> kMinPassLog == kMaxPasses && kMaxPasses + 1 <= kListAt,
-              "a list's pass starts and its end fit its starts");
+                  && kGroupDigits == carry::kBoxLists && kWindowTokens / kListBound == kListAt,
+              "the lists are the carry's: its window, its box lists, a boundary every 64 slots");
 
-//: THE STEP: the carry steps a list 8 entries at a time, so each of a list's passes is padded to whole steps.
+//: THE STEP: a union's extent is its size in whole steps of the carry's 8 entries.
 constexpr int kStep = 8;
 
 enum FactsPhase : int { kPhaseLoad, kPhaseVote, kPhaseRanks, kPhaseLists, kFactsPhases };
 
-//: THE CTA'S SHARED MEMORY, by offset: the window, the bit tile, the columns, the union's words, the passes' first
-//: tokens, the warps' maxima. -- see docs/internals/facts/facts.md#shared-memory
+//: THE CTA'S SHARED MEMORY, by offset: the window, the bit tile, the columns, the union's words, each boundary's first
+//: token, the warps' maxima. -- see docs/internals/facts/facts.md#shared-memory
 struct FactsSmem {
   static constexpr int kWin = 0;
   static constexpr int kTile = kWin + kWindowTokens * kGroupDigits;
   static constexpr int kCols = kTile + kGroupDigits * kWindowWords * 4;
   static constexpr int kUword = kCols + kWindowTokens * 8;
   static constexpr int kBound = kUword + kWindowWords * 4;
-  static constexpr int kWmax = kBound + kMaxPasses * 4;
+  static constexpr int kWmax = kBound + kListAt * 4;
   static constexpr int kBytes = kWmax + kFactsWarps * 8;
 };
 
@@ -90,12 +85,11 @@ static_assert(FactsSmem::kTile % 16 == 0 && FactsSmem::kCols % 16 == 0
                   && FactsSmem::kUword % 16 == 0 && FactsSmem::kWmax % 8 == 0,
               "each tenant on its access's alignment");
 
-//: A SIDE'S LISTS OUT at its list level: entries, starts, heads, the union by slot, its extent.
+//: A SIDE'S LISTS OUT at its list level: entries, boundaries, the union by slot, its extent.
 //: -- see docs/internals/facts/facts_api.md#rola-facts-forward
 struct ListsOut {
   uint2* entries;
   uint16_t* at;
-  uint2* heads;
   uint16_t* union_tok;
   int32_t* union_count;
 };
@@ -131,7 +125,6 @@ struct FactsParams {
   int row_base[kMaxLevels];
   int group_base[kMaxLevels];
   int list_level[kSides];
-  int pass_log[kSides];
   uint32_t unit[kMaxUnits];
   uint32_t mask[kSides][kMaxMaskWords];
 };

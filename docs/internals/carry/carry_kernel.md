@@ -38,8 +38,7 @@ the SASS gate is clean on both arms and both cards.
 Every async copy lands on an mbarrier, none on a commit group: `cp.async.mbarrier.arrive.noinc` makes a barrier track
 all of a thread's earlier copies, so each barrier waits only on what it needs. The barriers: the readout ring's two
 (`f`, the next fill to consume, picks the slot; a bit of `ring_par` each slot's phase), the fold ring's (`fold_par`),
-the staging barrier (`stage_window`: both sides' lists, the facts, the warp's read heads; one phase a window) and the
-fold heads' (one phase a window). A window's inputs are staged after the window before it is read out, into the other
+and the staging barrier (`stage_window`: both sides' lists and the facts; one phase a window). A window's inputs are staged after the window before it is read out, into the other
 parity, so nothing staged overwrites what is still read.
 
 <a id="phases"></a>

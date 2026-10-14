@@ -96,33 +96,31 @@ def arms() -> list[tuple[int, ...]]:
 
 def census() -> list[tuple[int, ...]]:
     """Each built arm's device census: its index and key, then registers, local bytes, shared bytes, the block's
-    thread limit, the binary version, and its form on this card (:class:`Form`'s fields after the shared bytes)."""
+    thread limit, the binary version, and its form on this card (the image's parts, a readout pass's slots, the fold's
+    pass's slots, then its pool rows: :class:`Form`)."""
     return [tuple(row) for row in extension().carry_census()]
 
 
 class Form(NamedTuple):
-    """An arm's form on the current card (docs/internals/carry/plan.md#forms): the image's parts, a readout pass's and
-    the fold's pass's slots (``unit_slots``: a fold unit's, or the whole window where the units are resident,
-    plan.md#resident), a read and a write pool row's bytes -- what the facts pass sizes its passes and offsets by."""
+    """An arm's pool rows on the current card (docs/internals/carry/plan.md#plan): a read and a write row's bytes --
+    what the facts pass addresses the read entries' rows in."""
 
-    parts: int
-    pass_slots: int
-    unit_slots: int
     read_row: int
     write_row: int
 
 
 def form(key: tuple[int, ...]) -> Form:
-    """The form of the built arm ``key`` (:func:`arm_key`) on the current card, refusing a key no built arm carries."""
+    """The pool rows of the built arm ``key`` (:func:`arm_key`) on the current card, refusing a key no built arm
+    carries."""
     for row in census():
         if tuple(row[1:7]) == tuple(key):
-            return Form(*row[12:17])
+            return Form(*row[15:17])
     raise ValueError(f"no built carry arm has the key {tuple(key)}; this binary carries {arms()}")
 
 
 def build_stamp() -> int:
     """The carry family's DEVICE build stamp, a fact only a built kernel produces (the window, the capability digest,
-    the state's values and a list's staged entries, read back off a kernel this binary compiled)."""
+    the state's values and a list's boundary granularity, read back off a kernel this binary compiled)."""
     return extension().carry_build_stamp()
 
 

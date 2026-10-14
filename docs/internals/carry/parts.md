@@ -21,15 +21,10 @@ window index, its statics from the tenant.
 ## Lists in
 
 A window ahead (`carry_kernel.md#staging`), into the window's parity of the tenants: a side's union tokens whole
-(512 slots, 1 KB, 64 copies), its box lists' pass starts (one 16-byte copy a list) and its count (one 4-byte copy).
+(512 slots, 1 KB, 64 copies), its box lists' boundaries (one 16-byte copy a list) and its count (one 4-byte copy).
 `facts_in` copies the write lists' exponent pairs (128 bytes) and the window's token units (512 bytes). `union_of`,
-`at_of` and `slots_of` read a window's tenants back.
-
-<a id="heads-in"></a>
-## Heads in
-
-A warp's own 512 bytes, 16 a lane: its 4 lists' (or digits') first `kHeadEntries` entries for the next window, copied
-once the warp has read this window's (its readout's, or its fold's), so the heads take one buffer a side.
+`at_of` and `slots_of` read a window's tenants back; `chunk_entries` turns a chunk of union slots (from a multiple of
+64) into its entries in a list.
 
 <a id="swizzle"></a>
 ## The pool rows' swizzle
@@ -112,10 +107,12 @@ for the pairs), each lane's two tokens' outputs as exact pairs added by `red.sha
 holds entry `l & 7` (its token's row, so the B load needs no shuffle) and scales its coefficient to the token's unit: `c
 2^(e - kImageTop - kCoefTop - u)`, the exponent added to the fp32 coefficient's bits (`e` the digit's exponent, `u` the
 token's unit byte, looked up by the token's window place the entry carries); each lane takes its two tokens' scales and
-panel offsets by four shuffles. A listed side's tiles among the list's first 16 entries come from the warp's heads,
-whichever pass holds them, the rest in place; a side with no list level takes every slot of the pass, its entry implied -- the slot's row, its token (the
-pass's first plus the slot), its panel row (a slot past the pass's end its place's dummy row), its coefficient the
-digit's f16 in the row's coefficient slice (its second). Each source is its own loop, so each step is one block
+panel offsets by four shuffles. A listed side's tiles take the list's entries of the pass's slots
+(`chunk_entries`), read in place; the entries' offsets are the union's, so the pass's pool and panel are taken back by
+its first slot's (`first x row` and `64 first` bytes), and a lane past the entries holds `masked_entry` -- its place's
+row, coefficient 0, a dummy panel row -- so its products add an exact zero. A side with no list level takes every slot
+of the pass, its entry implied -- the slot's row, its token (the pass's first plus the slot), its panel row (a slot past
+the pass's end its place's dummy row), its coefficient the digit's f16 in the row's coefficient slice (its second). Each source is its own loop, so each step is one block
 (KERNEL_STANDARDS §27), guarded by a vote and closed by one.
 
 

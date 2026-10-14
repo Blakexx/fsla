@@ -18,14 +18,13 @@ import torch
 from rola.engine.facts import liveness as lv
 from rola.ops import facts as facts_ops
 from rola.ops import intra as intra_ops
-from rola.ops.carry import Form
 from rola.routing.factors import RouteFactors
 from rola.routing.types import OpaqueRouting, Topology
 from rola.values import Values
 from tests.oracle import int_reference as iref
 
 #: the lists' form the facts pass is called in (sm_86's even carry arm); this file reads its words and unions only
-_LIST_FORM = Form(2, 256, 128, 64, 128)
+_READ_ROW = 64
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="the intra is a CUDA kernel")
 
@@ -82,7 +81,7 @@ def _run(routes, values, *, weight_digits=2, num=None, den=None, gated=True):
     and gates nothing."""
     layout = facts_ops.call_layout(routes)
     statics = facts_ops.call_statics(routes, layout)
-    unions = facts_ops.facts(routes, values, layout, *statics, _LIST_FORM).unions
+    unions = facts_ops.facts(routes, values, layout, *statics, _READ_ROW).unions
     if not gated:
         statics = tuple(lv.side_statics(layout, (True,) * layout.D, routes.topology.widths) for _ in range(2))
     BH, L = routes.batch * routes.heads, routes.tokens
@@ -217,7 +216,7 @@ def test_the_seam_refuses_what_no_arm_is_built_for():
     routes, values = _bundle(1024, 1, 0.3)
     layout = facts_ops.call_layout(routes)
     statics = facts_ops.call_statics(routes, layout)
-    unions = facts_ops.facts(routes, values, layout, *statics, _LIST_FORM).unions
+    unions = facts_ops.facts(routes, values, layout, *statics, _READ_ROW).unions
     num, den = torch.zeros(1, 1024, 64, device="cuda"), torch.zeros(1, 1024, device="cuda")
     f16 = RouteFactors(topology=routes.topology, amp_read=tuple(r.half() / 255 for r in routes.amp_read),
                        amp_write=tuple(r.half() / 255 for r in routes.amp_write), scale_read=routes.scale_read,
@@ -244,7 +243,7 @@ def test_the_seam_refuses_widths_it_does_not_read():
     routes, values = _bundle(1024, 1, 0.3, widths=(24,))
     layout = facts_ops.call_layout(routes)
     statics = facts_ops.call_statics(routes, layout)
-    unions = facts_ops.facts(routes, values, layout, *statics, _LIST_FORM).unions
+    unions = facts_ops.facts(routes, values, layout, *statics, _READ_ROW).unions
     num, den = torch.zeros(1, 1024, 64, device="cuda"), torch.zeros(1, 1024, device="cuda")
     with pytest.raises(RuntimeError, match="whole 16-digit copy granules"):
         intra_ops.intra_forward(routes, values, unions, layout, *statics, num, den)

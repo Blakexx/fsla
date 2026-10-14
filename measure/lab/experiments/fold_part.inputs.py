@@ -5,7 +5,8 @@
 
 The file is a header of four int32 -- the magic word 0x444C4F46, windows, the list level's width, the 32-digit groups --
 then the records `[windows][width][512]` (8 bytes each: slot, 0, c_v, c_m), the pass starts `[windows][width][8]` u16
-and the unions' counts `[windows][groups]` u16. `ordered.bin` is the same lists with each fold unit's entries reordered
+and the unions' counts `[windows][groups]` u16. The lab steps 128-slot passes each padded to whole steps (the carry's
+form when it was measured): `_passes` re-forms the facts pass's lists (unpadded, a boundary every 64 slots) so. `ordered.bin` is the same lists with each fold unit's entries reordered
 so a step's 8-entry halves hold distinct slot residues mod 8 where the list allows (a residue is a row's bank group in
 the pool), then each unit's heads `[windows][width][units][16]` (8-byte records): a unit of at most 16 entries dealt
 across both halves of its step by residue, the pads between them on residues their half leaves free (c = 0).
@@ -78,6 +79,31 @@ def _packed(span):
     return head
 
 
+def _passes(records, at):
+    """``(records, starts)``: the facts pass's lists (``records`` ``[windows, width, 512, 4]`` u16, ``at`` its
+    boundaries) in 128-slot passes, each padded to whole steps (a pad at place ``c`` the pass's slot ``c``, c = 0), and
+    each pass's start (``starts[q]`` for passes 0-3, then the end)."""
+    import numpy as np
+
+    windows, width = at.shape[:2]
+    out = np.zeros_like(records)
+    starts = np.zeros((windows, width, 8), dtype=np.uint16)
+    for w in range(windows):
+        for j in range(width):
+            pos = 0
+            for q in range(4):
+                begin = 0 if q == 0 else int(at[w, j, 2 * q - 1])
+                end = int(at[w, j, 2 * q + 1])
+                starts[w, j, q] = pos
+                out[w, j, pos:pos + end - begin] = records[w, j, begin:end]
+                pos += end - begin
+                for _ in range(-(end - begin) % 8):
+                    out[w, j, pos] = (128 * q + (pos % 8), 0, 0, 0)
+                    pos += 1
+            starts[w, j, 4:] = pos
+    return out, starts
+
+
 def _ordered(records, at):
     """Each unit's entries reordered by `_halves`, and its heads: a unit of at most 16 entries `_dealt`, a longer unit's
     first 16 in that order."""
@@ -103,22 +129,22 @@ def write(directory: Path) -> list[str]:
     import torch
 
     from measure.cells import by_name, realize
-    from measure.subjects import bundle_of, facts_form
+    from measure.subjects import bundle_of, read_row_of
     from rola.ops import facts as facts_ops
 
     spec = by_name(CELL)
     routes, values, layout, statics = bundle_of(spec, realize(spec), slice(0, TOKENS))
-    facts = facts_ops.facts(routes, values, layout, *statics, facts_form(spec))
+    facts = facts_ops.facts(routes, values, layout, *statics, read_row_of(spec))
     lists = facts_ops.side_lists(facts, "write")
     records = lists.entries[0].contiguous()
     windows, width = records.shape[0], records.shape[1]
     groups = lists.count.shape[-1]
     header = struct.pack("<4i", 0x444C4F46, windows, width, groups)
-    body = [records.cpu().numpy().tobytes(), lists.at[0].contiguous().cpu().numpy().tobytes(),
-            lists.count[0].to(torch.int16).contiguous().cpu().numpy().tobytes()]
+    host, starts = _passes(records.cpu().numpy().view("uint16").reshape(windows, width, -1, 4),
+                           lists.at[0].cpu().numpy().view("uint16"))
+    body = [host.tobytes(), starts.tobytes(), lists.count[0].to(torch.int16).contiguous().cpu().numpy().tobytes()]
     (directory / "lists.bin").write_bytes(header + b"".join(body))
-    host = records.cpu().numpy().view("uint16").reshape(windows, width, -1, 4)
-    ordered, heads, packed = _ordered(host, lists.at[0].cpu().numpy().view("uint16"))
+    ordered, heads, packed = _ordered(host, starts)
     header = struct.pack("<5i", 0x4F4C4F46, windows, width, groups, UNIT_PASSES)
     (directory / "ordered.bin").write_bytes(header + ordered.tobytes() + body[1] + body[2] + heads.tobytes())
     (directory / "packed.bin").write_bytes(packed.tobytes())

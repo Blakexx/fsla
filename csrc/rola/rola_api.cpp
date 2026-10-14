@@ -130,7 +130,7 @@ STABLE_TORCH_LIBRARY(rola, m) {
       "Tensor(a!) words, Tensor(b!) unions, Tensor(c!) list_exp, Tensor(d!) fm, Tensor(e!) gains16, "
       "Tensor(f!) gains_exp, Tensor(g!)[] write_lists, Tensor(h!)[] read_lists, int[] widths, int dense_read, "
       "int[] mask_read, int dense_write, int[] mask_write, int write_list_level, int read_list_level, int window, "
-      "int read_pass, int write_pass, int read_row) -> ()");
+      "int read_row) -> ()");
   m.def("rola_facts_ledger_bind(Tensor? ledger) -> ()");
 
   // ---- the producer: one launch from the tokens to the bundle -------------

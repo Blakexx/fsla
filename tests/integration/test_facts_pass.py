@@ -24,7 +24,6 @@ from rola.engine.facts import lists as list_model
 from rola.engine.facts import liveness as lv
 from rola.engine.facts.planes import ATOM_READ, ATOM_WRITTEN
 from rola.ops import facts as facts_ops
-from rola.ops.carry import Form
 from rola.routing import quant
 from rola.routing.factors import RouteFactors
 from rola.routing.topology import padded_level_width
@@ -47,16 +46,14 @@ _MODES = ("alternating", "tied", "all")
 #: the list maxima's bound, relative: the kernel's fp32 product of at most seven factors, a rounding each.
 _LIST_RTOL = 2.0 ** -20
 
-#: THE CARRY'S FORMS the lists are built for (`rola.ops.carry.form`): sm_86's even arm (a 256-slot readout pass, a
-#: 128-slot fold unit, 64-byte read rows), sm_80's (a 512-slot pass), and a 128-byte and a 192-byte read row, each pool
-#: swizzle the entries fold in.
-_FORMS = (Form(2, 256, 128, 64, 128), Form(1, 512, 128, 64, 128), Form(2, 128, 256, 128, 192),
-          Form(2, 128, 512, 192, 256))
-_FORM = _FORMS[0]
+#: THE CARRY'S READ POOL ROWS the read entries address (`rola.ops.carry.form`'s ``read_row``): the even arm's 64 bytes,
+#: the dense-dense arm's 128 and a 192-byte row, each pool swizzle the entries fold in.
+_READ_ROWS = (64, 128, 192)
+_READ_ROW = _READ_ROWS[0]
 
 
-def _facts(routes, values, layout, read_statics, write_statics, form=_FORM):
-    return facts_ops.facts(routes, values, layout, read_statics, write_statics, form)
+def _facts(routes, values, layout, read_statics, write_statics, read_row=_READ_ROW):
+    return facts_ops.facts(routes, values, layout, read_statics, write_statics, read_row)
 
 
 def _flags(D, mode):
@@ -138,8 +135,8 @@ def _layout(widths, L):
 
 def _outputs(BH, L, windows=1):
     """The outputs of a call that lists nothing, after ``list_exp``: the factor products, the gains planes, and each
-    side's five list tensors, empty."""
-    lists = [[torch.empty(0, dtype=torch.int16 if k < 4 else torch.int32, device="cuda") for k in range(5)]
+    side's four list tensors, empty."""
+    lists = [[torch.empty(0, dtype=torch.int16 if k < 3 else torch.int32, device="cuda") for k in range(4)]
              for _ in range(2)]
     return [torch.empty((BH, L, 2), dtype=torch.float32, device="cuda"),
             torch.empty((BH, L, 2), dtype=torch.float16, device="cuda"),
@@ -228,7 +225,7 @@ def test_a_dense_level_is_neither_read_nor_written():
     facts_ops.extension().rola_facts_forward(
         list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
         words, unions, list_exp, *_outputs(BH, L), list(layout.B), 1, masks, 1, masks, -1, -1, facts_ops.WINDOW,
-        _FORM.pass_slots, _FORM.unit_slots, _FORM.read_row)
+        _READ_ROW)
     _assert_written(facts_ops.Facts(words, unions, list_exp, *([None] * 5)), want, layout, read_statics,
                     write_statics)
     assert (words[:, :, :layout.B[0]] == poison).all() and (unions[:, :, :layout.group_base(1)] == poison).all()
@@ -273,48 +270,39 @@ def test_the_factor_products_are_the_declared_fp32_ones(widths, L):
 # --------------------------------------------------------------- the lists and gains are the model
 
 
-def _lists_want(routes, values, layout, read_statics, write_statics, got, form=_FORM):
-    """``(write, read)``: each side's lists from the model at its list level in ``form``'s passes, ``None`` for a side
-    with no sparse level; the write side's coefficient pairs from the pass's own exponents (gated against the reference
+def _lists_want(routes, values, layout, read_statics, write_statics, got, read_row=_READ_ROW):
+    """``(write, read)``: each side's lists from the model at its list level, the read entries in pool rows of
+    ``read_row`` bytes, ``None`` for a side with no sparse level; the write side's coefficient pairs from the pass's own exponents (gated against the reference
     above)."""
     bits = lv.unpack(_model(routes, layout, read_statics, write_statics), layout)
     wl, rl = facts_ops.list_level(write_statics), facts_ops.list_level(read_statics)
     write = read = None
     if wl >= 0:
-        write = list_model.final_lists(bits[:, lv.WRITE], layout, wl, pass_slots=form.unit_slots,
-                                       row_bytes=form.write_row, rows=routes.amp_write[wl],
+        write = list_model.final_lists(bits[:, lv.WRITE], layout, wl, row_bytes=read_row, rows=routes.amp_write[wl],
                                        cols=list_model.columns(routes, values), list_exp=got.list_exp.cpu())
     if rl >= 0:
-        read = list_model.final_lists(bits[:, lv.READ], layout, rl, pass_slots=form.pass_slots,
-                                      row_bytes=form.read_row, rows=routes.amp_read[rl], cols=None, list_exp=None)
+        read = list_model.final_lists(bits[:, lv.READ], layout, rl, row_bytes=read_row, rows=routes.amp_read[rl],
+                                      cols=None, list_exp=None)
     return write, read
 
 
 def _assert_lists(got: list_model.Lists, want: list_model.Lists):
-    """Every defined slot of the pass's lists is the model's: the unions and their extents, the starts, each list to
-    its end, and each warp's heads to its lists' ends -- gathered on the device, so nothing past an end (undefined by
-    the contract) is read."""
+    """Every defined slot of the pass's lists is the model's: the unions and their extents, the boundaries and each
+    list to its end -- gathered on the device, so nothing past an end (undefined by the contract) is read."""
     assert torch.equal(got.count.cpu().long(), want.count)
     assert torch.equal(got.union.cpu().long(), want.union)
     at = got.at.long() & 0xFFFF
     assert torch.equal(at.cpu(), want.at)
     end = (torch.arange(list_model.LIST_CAP, device=at.device)[:, None] < at[..., -1:, None]).expand_as(got.entries)
     assert torch.equal(got.entries[end].cpu(), want.entries[end.cpu()])
-    BH, windows, width = at.shape[:3]
-    groups = got.heads.shape[2]
-    pad = torch.zeros((BH, windows, groups * 32 - width), dtype=torch.long, device=at.device)
-    ends = torch.cat((at[..., -1], pad), -1).reshape(BH, windows, groups, 4, list_model.WARPS).transpose(-1, -2)
-    held = torch.arange(list_model.HEAD_ENTRIES, device=at.device) < ends[..., None]
-    held = held.reshape(*held.shape[:-2], -1)[..., None].expand_as(got.heads)
-    assert torch.equal(got.heads[held].cpu(), want.heads[held.cpu()])
 
 
 @pytest.mark.parametrize(("widths", "L"), [shape for shape in _SHAPES if len(shape[0]) <= 2])
 @pytest.mark.parametrize("dense", _MODES)
 def test_the_lists_are_the_model_bit_for_bit(widths, L, dense):
     """Each side's lists at its list level (docs/internals/facts/facts.md#lists-out): the union by rank and its extent,
-    each digit's entries in token order within the passes with each pass's last step padded, the starts, the heads,
-    and the write entries' coefficient pairs -- bit for bit, at every window."""
+    each digit's entries in token order, its boundaries every 64 slots, and the write entries' coefficient pairs -- bit
+    for bit, at every window."""
     layout = _layout(widths, L)
     read_statics, write_statics = _sides(layout, dense, widths)
     routes, values = _bundle(widths, L, (read_statics, write_statics))
@@ -327,29 +315,28 @@ def test_the_lists_are_the_model_bit_for_bit(widths, L, dense):
             _assert_lists(side, want)
 
 
-@pytest.mark.parametrize("form", _FORMS[1:])
-def test_the_lists_follow_the_carrys_form(form):
-    """Each of the carry's forms: its passes split the lists and its read pool row's swizzle is folded into the read
-    entries."""
+@pytest.mark.parametrize("read_row", _READ_ROWS[1:])
+def test_the_read_entries_follow_the_pool_row(read_row):
+    """Each read pool row: its bytes and its swizzle folded into the read entries' row offsets."""
     widths, L = (64, 64), 1100
     layout = _layout(widths, L)
     read_statics, write_statics = _sides(layout, "alternating", widths)
     routes, values = _bundle(widths, L, (read_statics, write_statics))
-    got = _facts(routes, values, layout, read_statics, write_statics, form)
-    write, read = _lists_want(routes, values, layout, read_statics, write_statics, got, form)
+    got = _facts(routes, values, layout, read_statics, write_statics, read_row)
+    write, read = _lists_want(routes, values, layout, read_statics, write_statics, got, read_row)
     _assert_lists(got.write, write)
     _assert_lists(got.read, read)
 
 
-def test_the_lists_cover_many_passes():
-    """A window whose groups' unions span every pass of a 128-slot fold unit: the passes split, each padded alone."""
+def test_the_boundaries_cover_a_whole_window():
+    """A window whose groups' unions pass the last boundary: every boundary of a list counted, none past its end."""
     widths, L = (64, 64), 1024
     layout = _layout(widths, L)
     read_statics, write_statics = _sides(layout, "alternating", widths)
     routes, values = _bundle(widths, L, (read_statics, write_statics))
     got = _facts(routes, values, layout, read_statics, write_statics)
     write, read = _lists_want(routes, values, layout, read_statics, write_statics, got)
-    assert (write.count > 3 * _FORM.unit_slots).any(), "no union spans four passes: the cell is vacuous"
+    assert (write.count > 7 * list_model.LIST_BOUND).any(), "no union passes the last boundary: the cell is vacuous"
     _assert_lists(got.write, write)
     _assert_lists(got.read, read)
 
@@ -475,7 +462,7 @@ def test_the_seam_refuses_rows_that_are_not_the_format():
             torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"),
             torch.empty((2, 1, 16, 2), dtype=torch.int16, device="cuda"), *_outputs(2, L), list(layout.B), 0,
             [read_statics.mask_word(0)], 0, [write_statics.mask_word(0)], 1, -1, facts_ops.WINDOW,
-            _FORM.pass_slots, _FORM.unit_slots, _FORM.read_row)
+            _READ_ROW)
 
 
 def test_the_seam_refuses_a_mask_past_the_rows():
@@ -500,7 +487,7 @@ def test_the_seam_refuses_another_window():
             torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"),
             torch.empty((2, 1, 16, 2), dtype=torch.int16, device="cuda"), *_outputs(2, L), list(layout.B), 0,
             [read_statics.mask_word(0)], 0, [write_statics.mask_word(0)], 1, -1, 256,
-            _FORM.pass_slots, _FORM.unit_slots, _FORM.read_row)
+            _READ_ROW)
 
 
 # --------------------------------------------------------------- the producer's bundle, end to end
