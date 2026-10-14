@@ -342,7 +342,8 @@ __device__ __forceinline__ void read_fill(const CarryParams& p, const uint8_t* s
 //: A WARP'S LISTS' UNITS, list `j` the box's list `warp + 8 j`.
 template <class P>
 __device__ __forceinline__ void list_units(int (&u)[P::kFoldLists], const uint8_t* smem, int warp) {
-  const UnitBook* const book = reinterpret_cast<const UnitBook*>(smem + P::kBook);
+  //: read at each use (volatile): merged across a window's stores they would hold registers across it
+  const volatile UnitBook* const book = reinterpret_cast<const volatile UnitBook*>(smem + P::kBook);
   static_for<P::kFoldLists>([&](auto J) { u[J] = book[warp + kWarps * J].unit; });
 }
 
@@ -413,7 +414,9 @@ __device__ __forceinline__ void store_batches(const State<P>& st, uint8_t* smem,
                                               ops::SmemAddr image, int lo, int hi, uint32_t mask,
                                               int dexp, int warp, int lane) {
   const int g = lane >> 2, t = lane & 3;
-  const uint32_t base = unit_of(warp, 0, g);
+  //: the lane's unit base, opaque, so its terms are formed at each call rather than hoisted across the windows
+  uint32_t base;
+  asm volatile("mov.u32 %0, %1;" : "=r"(base) : "r"(unit_of(warp, 0, g)));
   //: channel tile `n`'s chunk is the unit XORed by `n` (the image is 128-byte aligned, so that is its address's)
   const uint32_t lane0 = image + 4u * t;
   int u[P::kFoldLists];

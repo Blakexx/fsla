@@ -73,7 +73,9 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   asm("mov.u32 %0, %%dynamic_smem_size;" : "=r"(launched));
   if (launched != static_cast<uint32_t>(P::kSmemBytes)) __trap();
   const int warp = static_cast<int>(threadIdx.x) / 32, lane = static_cast<int>(threadIdx.x) % 32;
-  const Place c = place_of(p);
+  //: the CTA's place where a part takes it: its batch-head re-read at each use (`Addr` holds its channel), so nothing
+  //: holds a register across the windows for it
+  const auto here = [&] { return Place{static_cast<int>(blockIdx.y), 0}; };
   PhaseClock<kCarryPhases, true> clock(
       reinterpret_cast<long long*>(smem + P::kClock) + warp * PhaseClock<kCarryPhases, true>::kRow,
       lane, p.ledger != nullptr);
@@ -81,7 +83,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   if (threadIdx.x == 0) static_for<kBarCount>([&](auto b) { ops::mbar_init(bar.at(b), kThreads); });
   if (static_cast<int>(threadIdx.x) < kBoxLists)
     reinterpret_cast<UnitBook*>(smem + P::kBook)[threadIdx.x] = UnitBook{kUnitNone, 0.0f};
-  if (threadIdx.x == 0) addr_in(*reinterpret_cast<Addr*>(smem + P::kAddr), p, c);
+  if (threadIdx.x == 0) addr_in(*reinterpret_cast<Addr*>(smem + P::kAddr), p, place_of(p));
   ops::rendezvous();
 
   const ops::SmemAddr area = ops::smem_addr(smem + P::kEnd);
@@ -94,7 +96,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     const int s = q & (pl.rbufs - 1), first = q * pl.rchunk,
               slots = min(static_cast<int>(pl.rchunk), pl.runion - first);
     const ops::SmemAddr buf = at16(pl.rbuf[s]);
-    read_fill<P>(p, smem, rw(w), c, w, first, slots, pl.runion, pl.rchunk, buf,
+    read_fill<P>(p, smem, rw(w), here(), w, first, slots, pl.runion, pl.rchunk, buf,
                  buf + 16u * pl.rents, warp, lane);
     bar.landed(kBarReadLanded + s);
   };
@@ -103,8 +105,8 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     const int s = k & 1, first = k * pl.fchunk,
               slots = min(static_cast<int>(pl.fchunk), pl.funion - first);
     const ops::SmemAddr buf = at16(pl.fbuf[s]);
-    fold_fill<P>(p, smem, ww(w), c, w, first, slots, pl.funion, buf, buf + 16u * pl.fents, warp,
-                 lane);
+    fold_fill<P>(p, smem, ww(w), here(), w, first, slots, pl.funion, buf, buf + 16u * pl.fents,
+                 warp, lane);
     bar.landed(kBarFoldLanded + s);
   };
   //: A READ CHUNK'S TILES over batches `lo .. hi - 1` of the image at `image` (planes `d & mask`)
@@ -128,7 +130,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     const int s = q & (pl.rbufs - 1), first = q * pl.rchunk,
               slots = min(static_cast<int>(pl.rchunk), pl.runion - first);
     bar.wait(kBarReadDone + s);
-    drain<P>(p, smem, rw(w), c, w, first, slots,
+    drain<P>(p, smem, rw(w), here(), w, first, slots,
              at16(pl.rbuf[s])
                  + static_cast<uint32_t>(align_of(pl.rchunk * P::kReadRow, 128) + kPadBytes));
     if (refill) bar.arrive(kBarReadFree + s);
@@ -141,7 +143,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     });
   });
 
-  stage_window<P>(p, c, 0, smem);
+  stage_window<P>(p, here(), 0, smem);
   bar.landed(kBarStaged);
   bar.wait(kBarStaged);
   if (plan_of<P>(smem, 0).runion > 0) read_in(0, 0);
@@ -163,7 +165,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     if (warp == 0) reinterpret_cast<int*>(smem + P::kExps)[lane] = dexp;
     clock.lap(kPhaseMaxima);
     if (next) {
-      stage_window<P>(p, c, w + 1, smem);
+      stage_window<P>(p, here(), w + 1, smem);
       bar.landed(kBarStaged);
     }
     if (fchunks > 0 && pl.beside) fold_in(w, 0);
