@@ -130,5 +130,9 @@ the dummy rows, so it fits its 16 bits on every card; a lane XORs its half (`32 
 ## The drain
 
 A pass's panel to `num`: each slot's 16 words added as u32 atomics at its token (two tokens a warp request, a slot
-pair's one line), each word cleared for the next pass. CTAs join only here (R22: independent units, joined by atomics). The panel's word pairs
-channels (c, c + 8); the output's format follows it.
+pair's one line), each word cleared for the next pass. A thread keeps one word of every 16th slot (its word's panel
+offset and its output column worked out once) and takes four slots a step, loaded and cleared before their adds, so the
+step's loads and atomics overlap; a gap slot's word is zero and adds nothing. CTAs join only here (R22: independent
+units, joined by atomics). The panel's word pairs channels (c, c + 8); the output's format follows it. At nl64k-alt-k4
+the drain is ~3.7K cycles a warp-window, near the chip's global-atomic rate (~0.15 chip clocks a warp request) when
+every SM drains at once: what remains of it is hidden under compute or not at all.

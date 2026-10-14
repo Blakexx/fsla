@@ -531,25 +531,35 @@ __device__ __forceinline__ void readout_part(const CarryParams& p, const uint8_t
 }
 
 //: THE DRAIN: a pass's panel words to `num`, two tokens a request, packed s16 pairs at each token's unit added as
-//: u32, each word cleared. -- see docs/internals/carry/parts.md#drain
+//: u32, each word cleared; a thread keeps one word of every 16th slot, four slots a step loaded before their adds.
+//: -- see docs/internals/carry/parts.md#drain
 template <class P>
 __device__ __forceinline__ void drain(const CarryParams& p, uint8_t* smem, const Window& rw,
                                       const Place& c, int w, int first, int slots) {
-  constexpr int kWords = kPanelRow / 4;
+  constexpr int kWords = kPanelRow / 4, kStride = kThreads / kWords, kAhead = 4;
+  const int word = static_cast<int>(threadIdx.x) % kWords;
+  const uint32_t at = (32u * (word >> 3)) | (4u * (word & 7));
   uint8_t* const panel = smem + P::kPanel;
   const uint16_t* tok = union_of<P>(smem, kRead, w);
+  const int pair = p.dv / 2;
+  uint32_t* const out = p.num + ((int64_t)c.bh * p.L + rw.t0) * pair
+                        + reinterpret_cast<const volatile Addr*>(smem + P::kAddr)->channel0 / 2
+                        + word;
 #pragma unroll 1
-  for (int k = static_cast<int>(threadIdx.x); k < slots * kWords; k += kThreads) {
-    const int s = k / kWords, word = k - s * kWords;
-    uint32_t* const cell = reinterpret_cast<uint32_t*>(
-        panel + ((panel_row(static_cast<uint32_t>(s)) ^ (32u * (word >> 3))) + 4u * (word & 7)));
-    const uint32_t v = *cell;
-    const int t = rw.listed ? tok[first + s] : first + s;
-    if (v != 0u)
-      atomicAdd(p.num + ((int64_t)c.bh * p.L + rw.t0 + t) * (p.dv / 2)
-                    + reinterpret_cast<const volatile Addr*>(smem + P::kAddr)->channel0 / 2 + word,
-                v);
-    *cell = 0u;
+  for (int s0 = static_cast<int>(threadIdx.x) / kWords; s0 < slots; s0 += kAhead * kStride) {
+    uint32_t v[kAhead];
+    int t[kAhead];
+    static_for<kAhead>([&](auto j) {
+      const int s = s0 + j * kStride;
+      uint32_t* const cell =
+          reinterpret_cast<uint32_t*>(panel + (panel_row(static_cast<uint32_t>(s)) ^ at));
+      v[j] = s < slots ? *cell : 0u;
+      t[j] = s < slots ? (rw.listed ? tok[first + s] : first + s) : 0;
+      if (s < slots) *cell = 0u;
+    });
+    static_for<kAhead>([&](auto j) {
+      if (v[j] != 0u) atomicAdd(out + t[j] * pair, v[j]);
+    });
   }
 }
 
