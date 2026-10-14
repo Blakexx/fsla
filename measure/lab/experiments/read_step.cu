@@ -2,7 +2,8 @@
 // digits x 32 level-R digits x 32 channels): per digit (each digit over its own read tokens, gathered) or merged (the
 // warp's digits summed over the union in registers), what does a step cost beside its tensor floor, what do its output
 // adds into the shared panel add, and does draining the panel to global memory cost anything once it is double
-// buffered and spread through the next pass, against draining it in a burst at the pass's end? METHOD: 8 warps, two a
+// buffered and spread through the next pass, against draining it in a burst at the pass's end, or against adding each
+// step's outputs straight to global rows with no panel? METHOD: 8 warps, two a
 // scheduler, the fold's 128 fp32 accumulators live beside the published slice (B fragments: K = level R, permuted so a
 // lane's four k rows are one token's four consecutive digits, N = channels); a step's A = 16 tokens' level-R bytes by
 // one `ldmatrix.x4` (rows = tokens: 96-byte read rows, level R's 32 bytes then level S's, the 16-byte halves swapped on
@@ -60,8 +61,10 @@ constexpr int kShare = kSlots / kWarps / 2;
 //: alone, ptxas compiled it to 12's SASS); 20 holds it both ways; 21 is 12 with the two warps of a scheduler taking
 //: turns at their steps' MMAs (named barriers), each converting and adding while the other's MMAs run; 22 is 12 with
 //: the level-R side native f16 (A loaded as it is, no unpack); 23 is 22 accumulating in fp32 (no conversion to fp32;
-//: half rate on GeForce, so its time here is not the full-rate cards')
-constexpr int kModes = 24;
+//: half rate on GeForce, so its time here is not the full-rate cards'); 24 is 12 with its panel drained in a burst at the
+//: pass's end (every slot, two a warp request); 25 is 12 with each output word added straight to its token's row in
+//: global memory (`red.global.add`, a pad's to a dummy row), no panel and no drain
+constexpr int kModes = 26;
 const char* kModeName[kModes] = {
     "steps alone",
     "+ panel adds",
@@ -86,7 +89,9 @@ const char* kModeName[kModes] = {
     "the same, held both ways",
     "the same as 12, the scheduler's two warps taking turns at the MMAs",
     "the same as 12, the level-R side f16 (no unpack)",
-    "the same as 22, accumulating in fp32 (half rate here)"};
+    "the same as 22, accumulating in fp32 (half rate here)",
+    "the same as 12, + its panel drained in a burst",
+    "the same as 12, the adds to global rows (no panel, no drain)"};
 
 //: FORM 0 per digit (a step = one digit's 16 tokens, its outputs added); 1 merged (a step = 16 union tokens, every
 //: digit's MMAs into one accumulator, one add)
@@ -403,6 +408,40 @@ __device__ __forceinline__ void drain_request(Shared& sh, int p, uint32_t* targe
   }
 }
 
+//: A TOKEN'S ROW in global memory (modes 24-25), from its panel row's offset and the pass: 4,096 rows every CTA shares,
+//: L2-resident, as a window's tokens are to its boxes
+constexpr uint32_t kSharedRows = 4096u;
+
+__device__ __forceinline__ uint32_t token_of(int pass, uint32_t panel_offset) {
+  return (panel_offset + static_cast<uint32_t>(pass) * 131u) & (kSharedRows - 1u);
+}
+
+//: ONE DRAIN REQUEST of the conflict-free panel (mode 24): slots `2 i` and `2 i + 1` of the warp's share, a lane a
+//: word, to their 16-word rows, each word cleared
+__device__ __forceinline__ void drain_free_request(Shared& sh, uint32_t* target, int pass, int i,
+                                                   int lane) {
+  const int w = lab::warp_id(), slot = (kSlots / kWarps) * w + 2 * i + (lane >> 4),
+            word = lane & 15;
+  uint32_t* const at = &sh.panel[0][slot * kFreePitch + word];
+  red_global(target + token_of(pass, static_cast<uint32_t>(slot) * kFreePitch * 4u) * 16u + word,
+             *at);
+  *at = 0u;
+}
+
+//: THE STEP'S OUTPUTS STRAIGHT TO GLOBAL ROWS (mode 25): each token's row from its entry's panel offset, the lane's
+//: channel pair, as `panel_add_offsets` would add them to the panel
+__device__ __forceinline__ void global_add_offsets(uint32_t* target, int pass,
+                                                   const uint32_t (&out)[4][2], uint32_t eg,
+                                                   uint32_t e8, float sg, float s8, int lane) {
+  const uint32_t lg = token_of(pass, (eg >> 16) & 0x7fffu) * 16u + static_cast<uint32_t>(lane & 3),
+                 l8 = token_of(pass, (e8 >> 16) & 0x7fffu) * 16u + static_cast<uint32_t>(lane & 3);
+#pragma unroll
+  for (int n = 0; n < 4; ++n) {
+    red_global(target + lg + 4 * n, convert<0>(out[n][0], sg, n));
+    red_global(target + l8 + 4 * n, convert<0>(out[n][1], s8, n));
+  }
+}
+
 uint32_t hash3(uint32_t a, uint32_t b, uint32_t c) {
   uint32_t h = a * 0x9E3779B1u ^ (b + 0x7F4A7C15u) * 0x85EBCA77u ^ (c + 0x165667B1u) * 0xC2B2AE3Du;
   h ^= h >> 15;
@@ -475,8 +514,9 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
   clock.start();
 #pragma unroll 1
   for (int x = 0; x < passes; ++x) {
-    constexpr bool kSpread = MODE == 3 || MODE == 5, kBurst = MODE == 2 || MODE == 4 || MODE == 7,
-                   kAligned = MODE >= 4, kDen = MODE < 6, kBehind = MODE >= 6;
+    constexpr bool kSpread = MODE == 3 || MODE == 5,
+                   kBurst = MODE == 2 || MODE == 4 || MODE == 7 || MODE == 24, kAligned = MODE >= 4,
+                   kDen = MODE < 6, kBehind = MODE >= 6;
     const int p = kSpread ? (x & 1) : 0, other = p ^ 1;
     if constexpr (kSpread) {
       if (x >= 2)
@@ -614,6 +654,8 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
           for (int x4 = 0; x4 < 4; ++x4) fold_out += o[n][x4][0] ^ o[n][x4][1];
         } else if constexpr (i > 0 && MODE == 23) {
           panel_add_f32(sh, p, o32[n], eg[mp], e8[mp], sg[mp], s8[mp], lane);
+        } else if constexpr (i > 0 && MODE == 25) {
+          global_add_offsets(target, x, o[n], eg[mp], e8[mp], sg[mp], s8[mp], lane);
         } else if constexpr (i > 0 && MODE != 19 && MODE != 20) {
           constexpr int kVar = MODE == 13   ? 1
                                : MODE == 15 ? 2
@@ -707,7 +749,13 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
     if constexpr (kBurst) {
       __syncthreads();
 #pragma unroll 1
-      for (int i = 0; i < kShare; ++i) drain_request<kAligned>(sh, 0, target, x, i, lane);
+      for (int i = 0; i < kShare; ++i) {
+        if constexpr (MODE == 24) {
+          drain_free_request(sh, target, x, i, lane);
+        } else {
+          drain_request<kAligned>(sh, 0, target, x, i, lane);
+        }
+      }
       __syncthreads();
     }
   }
@@ -756,8 +804,14 @@ void variant(const lab::Bench& b, uint32_t* target, const uint32_t* init) {
   b.expect(name, MODE == 23 ? "HMMA.16816.F32" : "HMMA.16816.F16", ">=", MODE >= 6 ? 8 : 10);
   if (MODE == 23) b.expect(name, "HADD2.F32", "==", 0);
   b.expect(name, "LDSM", ">=", 1);
-  if (MODE != 0 && MODE != 14) b.expect(name, "ATOMS", ">=", 8);
-  if (MODE >= 2 && MODE != 6 && MODE < 8) b.expect(name, "RED", ">=", 1);
+  if (MODE != 0 && MODE != 14 && MODE != 25) b.expect(name, "ATOMS", ">=", 8);
+  if (MODE == 25) b.expect(name, "ATOMS", "==", 0);
+  if ((MODE >= 2 && MODE != 6 && MODE < 8) || MODE == 24) b.expect(name, "RED", ">=", 1);
+  if (MODE == 25) b.expect(name, "RED", ">=", 8);
+  //: every form here converts in its step as the readout of its day did (the rule came after), and 25 adds to global
+  //: memory in its step by design
+  b.expect(name, "STEP_XU", ">=", 0);
+  if (MODE == 25) b.expect(name, "STEP_GLOBAL", ">=", 0);
   if (MODE >= 1 && MODE <= 7) b.expect(name, "BSSY", ">=", 1);
   if (b.expect_only) return;
   const std::vector<uint16_t> h = make_entries(FORM, LIVE);
@@ -814,6 +868,8 @@ void modes(const lab::Bench& b, uint32_t* target, const uint32_t* init) {
   if constexpr (FORM == 0) variant<21, FORM, STEPS, LIVE>(b, target, init);
   if constexpr (FORM == 0) variant<22, FORM, STEPS, LIVE>(b, target, init);
   if constexpr (FORM == 0) variant<23, FORM, STEPS, LIVE>(b, target, init);
+  if constexpr (FORM == 0) variant<24, FORM, STEPS, LIVE>(b, target, init);
+  if constexpr (FORM == 0) variant<25, FORM, STEPS, LIVE>(b, target, init);
 }
 
 }  // namespace read_step

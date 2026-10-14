@@ -120,6 +120,21 @@ instruction also costs contention. The fp32-accumulate form runs at half rate he
 floor, 1.07x its own); a full-rate card (A100, A6000) is where it would run, and its time there is unmeasured. sm_80's
 shadow is 8 cycles an MMA, 7 issue slots: 7.6 is the first form near it.
 
+THE PANEL AGAINST ADDING TO GLOBAL ROWS (2026-10-14, modes 24 and 25; Blake: "Lab first, then decide"). Mode 24 is 12
+with its panel drained in a burst at the pass's end (every slot, two a warp request); 25 is 12 with each step's output
+words added straight to their tokens' rows (`red.global.add`), no panel and no drain. Both add into 4,096 rows every
+CTA shares, L2-resident, as a window's boxes all add into its 512 tokens' rows. Cycles a pass:
+
+| step | 12 without adds | 12 (panel adds) | 24 (+ drain) | 25 (global adds) |
+|---|---|---|---|---|
+| 8 steps a digit, 16 live | 8,887 | 12,417 | 11,700 | 81,219 |
+| 2 steps a digit, 16 live | 2,341 | 3,256 | 3,778 | 19,877 |
+| 1 step a digit, 8 live (alt-k4's lists) | 1,218 | 1,674 | 2,358 | 10,710 |
+
+Adding each entry's partials to global memory runs 4.5x the panel and its drain at alt-k4's step, 7x at 8 steps: an
+entry's adds are as many requests as a slot's drain, every box's land on the same rows, and the L2's atomics on them
+serialize. The panel merges a slot's digits first, so the carry keeps the panel and drains a slot once.
+
 A per-digit step's gathered slots are distinct (a list never holds a token twice). The gate: `read_step`'s branchy
 forms declare their branches (KERNEL_STANDARDS 27). Records: `measure/lab/results/read_step/sm_86.json`,
 `sm_86.counters.json`, `sm_86.source.json` (the per-instruction samples, by class and stall reason).
