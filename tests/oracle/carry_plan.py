@@ -92,8 +92,8 @@ def _side(lists, carve_plan, routes, w: int, bh: int, group: int):
     ``group``; every window token and no entries for a side with no list level."""
     if not carve_plan.lists:
         return min(WINDOW, routes.tokens - w * WINDOW), np.zeros(LIST_AT, dtype=np.int64)
-    at = (lists.at[bh, w, BOX * group:BOX * group + BOX].long() & 0xFFFF).cpu().numpy()
-    return int(lists.count[bh, w, group]), at.sum(0)
+    totals = (lists.pre[bh, w, group, -1].long() & 0xFFFF).cpu().numpy()
+    return int(lists.count[bh, w, group]), totals
 
 
 def plans(routes, facts, carve, prefer: str | None = None) -> list[list[WindowPlan]]:

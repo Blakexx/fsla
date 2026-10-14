@@ -287,13 +287,17 @@ def _lists_want(routes, values, layout, read_statics, write_statics, got, read_r
 
 
 def _assert_lists(got: list_model.Lists, want: list_model.Lists):
-    """Every defined slot of the pass's lists is the model's: the unions and their extents, the boundaries and each
-    list to its end -- gathered on the device, so nothing past an end (undefined by the contract) is read."""
+    """Every defined slot of the pass's lists is the model's: the unions and their extents, the boundaries in prefix
+    form and each list to its end -- gathered on the device, so nothing past an end (undefined by the contract) is
+    read."""
     assert torch.equal(got.count.cpu().long(), want.count)
     assert torch.equal(got.union.cpu().long(), want.union)
-    at = got.at.long() & 0xFFFF
-    assert torch.equal(at.cpu(), want.at)
-    end = (torch.arange(list_model.LIST_CAP, device=at.device)[:, None] < at[..., -1:, None]).expand_as(got.entries)
+    pre = got.pre.long() & 0xFFFF
+    assert torch.equal(pre.cpu(), want.pre)
+    BH, windows, width = got.entries.shape[:3]
+    lengths = (pre[..., 1:, -1] - pre[..., :-1, -1]).reshape(BH, windows, -1)[..., :width]
+    end = (torch.arange(list_model.LIST_CAP, device=pre.device) < lengths[..., None])[..., None]
+    end = end.expand_as(got.entries)
     assert torch.equal(got.entries[end].cpu(), want.entries[end.cpu()])
 
 
@@ -301,8 +305,8 @@ def _assert_lists(got: list_model.Lists, want: list_model.Lists):
 @pytest.mark.parametrize("dense", _MODES)
 def test_the_lists_are_the_model_bit_for_bit(widths, L, dense):
     """Each side's lists at its list level (docs/internals/facts/facts.md#lists-out): the union by rank and its extent,
-    each digit's entries in token order, its boundaries every 64 slots, and the write entries' coefficient pairs -- bit
-    for bit, at every window."""
+    each digit's entries in token order, the groups' boundaries in prefix form, and the write entries' coefficient pairs
+    -- bit for bit, at every window."""
     layout = _layout(widths, L)
     read_statics, write_statics = _sides(layout, dense, widths)
     routes, values = _bundle(widths, L, (read_statics, write_statics))

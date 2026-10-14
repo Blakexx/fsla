@@ -10,8 +10,9 @@ One launch over a call's windows. In: both sides' level rows and the values (the
 sides' lists in the facts pass's final form (`(entries, at, union, count)` each, empty tensors for a side with no
 list level, `carry.md#lists`), the den pass's unit bytes a window wide, and the carve flattened: widths, extents,
 channels, each side's list level (-1 for none) and operand levels, the arm key, the readout's accumulation (0
-fp32, 1 fp16), and the readout candidate every window's plan takes first where it fits (-1 none, else 0 to 4 in the
-plan's order, `schedule.md#planner`). Out: `num` and `check`. The refusals are `carry.md#refusals`.
+fp32, 1 fp16), the readout candidate every window's plan takes first where it fits (-1 none, else 0 to 4 in the
+plan's order, `schedule.md#planner`), and optionally the caller's plans tensor (`[BH, windows, box classes, 48]` u8,
+else the call's own). Out: `num`, `check` and the plans. The refusals are `carry.md#refusals`.
 
 <a id="carry-readout-accumulate"></a>
 ## `carry_readout_accumulate`
@@ -29,7 +30,8 @@ forms' numerics differ, GeForce's the coarser; both are gated per slot (`tests/o
 The Python call launches over the bundle's rows and values, the facts pass's lists and exponents and the den pass's
 units, its readout in the device's accumulation (`readout_accumulate`) or the one a gate names, each window's plan its
 own unless a gate or a measurement names a candidate (`prefer`, `READ_CANDIDATES`), the facts pass run with this arm's
-read pool row (`form`, read off the binary's census for the device's card). `arm_key` is the compiled body
+read pool row (`form`, read off the binary's census for the device's card). `plans_out` allocates the plans a gate
+reads (`PLAN_FIELDS`, `tests/oracle/test_carry_plan.py`). `arm_key` is the compiled body
 a carve selects: each side's dense rows a warp and its operand's level count, the channel extent and the publish
 field.
 

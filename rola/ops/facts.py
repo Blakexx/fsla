@@ -105,7 +105,8 @@ def _lists(BH: int, windows: int, width: int, device) -> list_model.Lists:
         return torch.empty(shape, dtype=dtype, device=device)
 
     return list_model.Lists(
-        entries=empty(BH, windows, width, list_model.LIST_CAP, 4), at=empty(BH, windows, width, list_model.LIST_AT),
+        entries=empty(BH, windows, width, list_model.LIST_CAP, 4),
+        pre=empty(BH, windows, groups, list_model.PRE_ROWS, list_model.LIST_AT),
         union=empty(BH, windows, groups, WINDOW), count=empty(BH, windows, groups, dtype=torch.int32))
 
 

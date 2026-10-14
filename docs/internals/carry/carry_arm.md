@@ -14,7 +14,8 @@ one, never runs.
 <a id="launch"></a>
 ## The launch
 
-`carry_launch<Arm>` launches `carry_kernel<Arm>` on `(boxes, batch-heads)` with 256 threads and the plan's
+`carry_launch<Arm>` launches the plan pass (`window_plan_kernel<Arm>`, a thread a box class and window, a batch-head a
+grid row: `schedule.md#pass`) and then `carry_kernel<Arm>` on `(boxes, batch-heads)` with 256 threads and the plan's
 dynamic shared memory, opting in once an arm behind a function-local flag. The launch bound is `(256, 1)`: one CTA an
 SM on every architecture. `carry_census<Arm>` reads the function's attributes back (registers, local bytes, its
 maximum block) beside the plan's shared bytes. `ROLA_CARRY_ARM_DEFINE` stamps both for one row of the shipped

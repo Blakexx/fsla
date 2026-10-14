@@ -83,8 +83,8 @@ Side side_of(const std::vector<Tensor>& rows, int64_t list, const std::vector<in
   return s;
 }
 
-//: ONE SIDE'S LISTS as the facts pass writes them in their final form: 8-byte entries, boundaries, the union's tokens
-//: and count; empty where the side has no list level. -- see docs/internals/carry/carry.md#lists
+//: ONE SIDE'S LISTS as the facts pass writes them in their final form: 8-byte entries, the groups' boundaries in prefix
+//: form, the union's tokens and count; empty where the side has no list level. -- see docs/internals/carry/carry.md#lists
 SideLists lists_of(const std::vector<Tensor>& t, int64_t BH, int64_t windows, int64_t width,
                    const char* name) {
   STD_TORCH_CHECK(t.size() == 4, name, " is (entries, at, union, count), got ", t.size(),
@@ -92,7 +92,7 @@ SideLists lists_of(const std::vector<Tensor>& t, int64_t BH, int64_t windows, in
   if (width == 0) return SideLists{nullptr, nullptr, nullptr, nullptr, 0, 0};
   const int64_t groups = (width + 31) / 32;
   const std::vector<std::vector<int64_t>> want = {{BH, windows, width, kListCap, 4},
-                                                  {BH, windows, width, kListAt},
+                                                  {BH, windows, groups, kPreRows, kListAt},
                                                   {BH, windows, groups, kWindow},
                                                   {BH, windows, groups}};
   for (int k = 0; k < 4; ++k) {
@@ -118,7 +118,7 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
                    std::vector<int64_t> widths, std::vector<int64_t> extents, int64_t channels,
                    int64_t write_list, std::vector<int64_t> write_operand, int64_t read_list,
                    std::vector<int64_t> read_operand, std::vector<int64_t> key, int64_t accumulate,
-                   int64_t prefer) {
+                   int64_t prefer, std::optional<Tensor> plans_out) {
   check_arch_table();
   const int D = (int)widths.size();
   STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels && (int)extents.size() == D, "the carve names ", D,
@@ -205,6 +205,17 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
     STD_TORCH_CHECK(g_probe_values == BH * leaves * boxes / (dv / channels) * dv,
                     "the bound probe holds ", g_probe_values, " values, the call's state ",
                     BH * leaves * boxes / (dv / channels) * dv);
+  //: THE PLANS, a window's a (batch-head, box class), the plan pass's to write and the carry's to stage
+  const int64_t classes = (p.read_lists.groups > 0 ? p.read_lists.groups : 1)
+                          * (p.write_lists.groups > 0 ? p.write_lists.groups : 1);
+  Tensor plans =
+      plans_out ? *plans_out : empty_cuda({BH * windows * classes * kPlanBytes}, Dtype::Byte);
+  STD_TORCH_CHECK(
+      plans.is_cuda() && plans.is_contiguous() && plans.scalar_type() == Dtype::Byte
+          && plans.numel() == BH * windows * classes * kPlanBytes,
+      "plans_out is a contiguous CUDA u8 tensor of ", BH * windows * classes * kPlanBytes,
+      " bytes (a window's plan a batch-head and box class), got ", shape(plans.sizes()));
+  p.plans = static_cast<uint8_t*>(plans.mutable_data_ptr());
   p.ledger = g_ledger;
   if (p.ledger != nullptr)
     STD_TORCH_CHECK(g_ledger_ctas >= boxes * BH, "the bound phase ledger covers ", g_ledger_ctas,

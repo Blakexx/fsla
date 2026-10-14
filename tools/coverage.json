@@ -256,6 +256,22 @@
    "overlap": {
     "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
    }
+  },
+  "window_plan_kernel": {
+   "oracle": "tests/oracle/test_carry_plan.py::test_the_plans_are_the_model",
+   "sanitizer": "carry",
+   "budget": {
+    "exempt": "a thread's O(1) planning a (batch-head, box class, window): no workload to budget beside the carry it plans"
+   },
+   "phases": {
+    "exempt": "one straight-line step a thread: no phases"
+   },
+   "ratified": {
+    "owed": "a new kernel: the next milestone ratify records it"
+   },
+   "overlap": {
+    "exempt": "a small launch before the carry on its stream: its cost is the carry's row's"
+   }
   }
  }
 }

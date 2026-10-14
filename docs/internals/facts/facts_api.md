@@ -21,9 +21,10 @@ scales, the write gain and the value scale (`[B, T, H]` fp32, any strides), and 
 ([`facts.md`](facts.md#lists); any tensor when the write side lists nothing), `fm` the contiguous fp32 `[B·H, T, 2]`
 factor products, `gains16` the f16 `[B·H, T, 2]` and `gains_exp` the int16 `[B·H, windows, 2]`
 ([`facts.md`](facts.md#gains)), and each side's four lists at its list level -- entries `[B·H, windows, B, 512, 4]`,
-boundaries `[B·H, windows, B, 8]` and the union by slot `[B·H, windows, groups, 512]`, all int16, and the extents
+the boundaries in prefix form `[B·H, windows, groups, 33, 8]` and the union by slot `[B·H, windows, groups, 512]`, all
+int16, and the extents
 `[B·H, windows, groups]` int32 ([`facts.md`](facts.md#lists-out)); any tensors for a side that lists nothing. The pass
-writes `fm` and the gains in full, `list_exp`, the boundaries, the unions by slot and the extents in full, each list's
+writes `fm` and the gains in full, `list_exp`, the prefix rows, the unions by slot and the extents in full, each list's
 entries to its end, and of `words` and `unions`
 every sparse level's rows and groups; a dense level's are left as allocated (its words are the width mask, which a
 reader takes from the statics, [`liveness_contract.md`](liveness_contract.md#statics)). `widths` are the layout's PADDED

@@ -148,24 +148,29 @@ __device__ __forceinline__ int64_t list_row(const SideLists& l, const Place& c, 
 //: THE SIDES, as the tenants index them: the read side 0, the write side 1.
 enum SideIndex : int { kRead = 0, kWrite = 1 };
 
-//: A SIDE'S TENANTS for window `w` (two windows' a side, by parity): its union tokens, its count's word pair, a
-//: list's boundaries. -- see docs/internals/carry/plan.md#tenants
+//: A SIDE'S TENANTS for window `w` (two windows' a side, by parity): its union tokens, its count's word pair, its
+//: group's boundaries in prefix form. -- see docs/internals/carry/plan.md#tenants
 template <class P>
 __device__ __forceinline__ const uint16_t* union_of(const uint8_t* smem, int side, int w) {
   return reinterpret_cast<const uint16_t*>(smem + P::kUnion) + (2 * side + (w & 1)) * kWindow;
 }
 
 template <class P>
-__device__ __forceinline__ const uint16_t* at_of(const uint8_t* smem, int side, int w, int list) {
-  return reinterpret_cast<const uint16_t*>(smem + P::kAt)
-         + ((2 * side + (w & 1)) * kBoxLists + list) * kListAt;
+__device__ __forceinline__ const uint16_t* pre_of(const uint8_t* smem, int side, int w) {
+  return reinterpret_cast<const uint16_t*>(smem + P::kPre)
+         + (2 * side + (w & 1)) * kPreRows * kListAt;
 }
 
-//: A CHUNK'S ENTRIES in a list: those of union slots `first .. first + slots - 1` (`first` a multiple of 64, the end a
-//: multiple of 64 or the union's `total`), from its boundaries.
-__device__ __forceinline__ int2 chunk_entries(const uint16_t* at, int first, int slots, int total) {
-  const int last = first + slots >= total ? kListAt - 1 : (first + slots) / kListBound - 1;
-  return make_int2(first == 0 ? 0 : at[first / kListBound - 1], at[last]);
+//: A CHUNK'S COLUMNS in the boundaries, union slots `first .. first + slots - 1` (`first` a multiple of 64, the end a
+//: multiple of 64 or the union's `total`): the one before its first slot (-1 for none) and the one at its end.
+__device__ __forceinline__ int2 chunk_cols(int first, int slots, int total) {
+  return make_int2(first / kListBound - 1,
+                   first + slots >= total ? kListAt - 1 : (first + slots) / kListBound - 1);
+}
+
+//: the prefix rows' value at row `l`, column `c` (column -1 none)
+__device__ __forceinline__ int pre_at(const uint16_t* pre, int l, int c) {
+  return c < 0 ? 0 : static_cast<int>(pre[l * kListAt + c]);
 }
 
 //: a side's slots in window `w`: its union's count, or every token where the side has no list level
@@ -175,7 +180,7 @@ __device__ __forceinline__ int slots_of(const uint8_t* smem, const Window& win, 
                     : win.tokens;
 }
 
-//: LISTS IN, a window ahead: a side's union tokens and count and its box lists' boundaries.
+//: LISTS IN, a window ahead: a side's union tokens and count and its group's boundaries in prefix form.
 //: -- see docs/internals/carry/parts.md#lists-in
 template <class P>
 __device__ __forceinline__ void lists_in(const CarryParams& p, const SideLists& l,
@@ -188,9 +193,9 @@ __device__ __forceinline__ void lists_in(const CarryParams& p, const SideLists& 
   if (t < kUnionCopies)
     ops::stage_tile(ops::smem_addr(smem + P::kUnion + slot * kWindow * 2) + 16 * t,
                     l.union_tok + group * kWindow + 8 * t);
-  if (t >= kUnionCopies && t < kUnionCopies + win.lists)
-    ops::stage_tile(ops::smem_addr(smem + P::kAt) + 16 * (slot * kBoxLists + t - kUnionCopies),
-                    l.at + list_row(l, c, p.windows, w, win.digit0 + t - kUnionCopies) * kListAt);
+  if (t >= kUnionCopies && t < kUnionCopies + kPreRows)
+    ops::stage_tile(ops::smem_addr(smem + P::kPre) + 16 * (slot * kPreRows + t - kUnionCopies),
+                    l.pre + (group * kPreRows + t - kUnionCopies) * kListAt);
   if (t == kThreads - 1)
     ops::stage_run<4>(ops::smem_addr(smem + P::kCount) + 4 * slot, l.union_count + group);
 }
@@ -280,7 +285,7 @@ __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* v
 }
 
 //: A CHUNK'S RUNS, lane `l` list `l`'s: its first entry of the chunk, its count, and its place in a buffer's entries
-//: (the lists' runs in list order). -- see docs/internals/carry/parts.md#entries
+//: (the lists' runs in list order), four loads from the prefix rows. -- see docs/internals/carry/parts.md#entries
 struct Run {
   int at, n, to;
 };
@@ -288,16 +293,13 @@ struct Run {
 template <class P>
 __device__ __forceinline__ Run chunk_runs(const uint8_t* smem, const Window& win, int side, int w,
                                           int first, int slots, int total, int lane) {
-  const bool live = win.listed && lane < win.lists;
-  const int2 e =
-      live ? chunk_entries(at_of<P>(smem, side, w, lane), first, slots, total) : make_int2(0, 0);
-  const int n = e.y - e.x;
-  int to = n;
-  static_for<5>([&](auto K) {
-    const int y = __shfl_up_sync(0xffffffffu, to, 1 << K);
-    to += lane >= (1 << K) ? y : 0;
-  });
-  return Run{e.x, n, to - n};
+  if (!win.listed || lane >= win.lists) return Run{0, 0, 0};
+  const uint16_t* pre = pre_of<P>(smem, side, w);
+  const int2 col = chunk_cols(first, slots, total);
+  const int l = (win.digit0 & (kBoxLists - 1)) + lane;
+  const int a0 = pre_at(pre, l, col.x), a1 = pre_at(pre, l, col.y);
+  const int b0 = pre_at(pre, l + 1, col.x), b1 = pre_at(pre, l + 1, col.y);
+  return Run{b0 - a0, (b1 - a1) - (b0 - a0), a1 - a0};
 }
 
 //: A CHUNK'S ENTRIES, a warp's share: its own lists' runs (`warp + 8 j`) to their places at `dst`, 8 bytes a lane.
@@ -392,7 +394,7 @@ __device__ __forceinline__ int digit_exp(const uint8_t* smem, int d) {
 //: A BATCH'S STORES, the hand-off: the warp's lists' rows of batches `lo .. hi - 1` (8 digits each) into the image at
 //: `image` (digit `d`'s plane `d & mask`), f16 at each digit's power of two, each list moved there from its unit
 //: (`2^(unit + kImageTop - e)`, held to a normal float's range: past it the f16 is zero or the list's value is not the
-//: digit's); warp 0 records the batches' exponents for the readers. -- see docs/internals/carry/parts.md#store
+//: digit's); `dexp` lane `d` digit `d`'s exponent (`digit_exp`). -- see docs/internals/carry/parts.md#store
 //: a lane's unit for list `w + 8 j` at residue `g` is its unit for list `w`, 32 units on: so a batch's stores take
 //: four bases a lane, a list an offset
 constexpr bool units_step_by_list() {
@@ -409,7 +411,7 @@ static_assert(units_step_by_list(),
 template <class P>
 __device__ __forceinline__ void store_batches(const State<P>& st, uint8_t* smem,
                                               ops::SmemAddr image, int lo, int hi, uint32_t mask,
-                                              int warp, int lane) {
+                                              int dexp, int warp, int lane) {
   const int g = lane >> 2, t = lane & 3;
   const uint32_t base = unit_of(warp, 0, g);
   //: channel tile `n`'s chunk is the unit XORed by `n` (the image is 128-byte aligned, so that is its address's)
@@ -419,10 +421,9 @@ __device__ __forceinline__ void store_batches(const State<P>& st, uint8_t* smem,
   static_for<P::kFoldMTiles>([&](auto M) {
     static_for<2>([&](auto H) {
       constexpr int b = 2 * M + H;
+      const int d = 16 * M + 8 * H + g;
+      const int e = __shfl_sync(0xffffffffu, dexp, d);
       if (b >= lo && b < hi) {
-        const int d = 16 * M + 8 * H + g;
-        const int e = digit_exp<P>(smem, d);
-        if (warp == 0 && t == 0) reinterpret_cast<int*>(smem + P::kExps)[d] = e;
         const uint32_t plane = (static_cast<uint32_t>(d) & mask) * kPlaneBytes;
         static_for<P::kFoldLists>([&](auto J) {
           const float scale = pow2(min(max(u[J] + kImageTop - e, -126), 127));

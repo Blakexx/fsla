@@ -12,7 +12,8 @@ namespace rola::carry {
 constexpr int kWarps = 8;
 constexpr int kThreads = kWarps * 32;
 constexpr int kWindow = 512;
-//: A LIST'S BOUNDARIES: its entries before every 64th union slot, the last its length.
+//: A LIST'S BOUNDARIES: its entries before every 64th union slot, the last its length; a group's in PREFIX form,
+//: row `l` the boundaries of its lists before `l` summed, its last row the group's totals.
 constexpr int kListBound = 64;
 constexpr int kListAt = kWindow / kListBound;
 constexpr int kListCap = kWindow;
@@ -20,6 +21,9 @@ constexpr int kMaxLevels = 4;
 //: THE BOX, every card's: 32 lists (the write side's list level) x 32 digits (the read side's) x 32 channels.
 constexpr int kBoxLists = 32, kBoxDigits = 32, kBoxChannels = 32;
 constexpr int kStateValues = kBoxLists * kBoxDigits * kBoxChannels;
+constexpr int kPreRows =
+    kBoxLists + 1;  // a group's prefix rows: one a list, then its totals (`kListBound` above)
+constexpr int kPlanBytes = 48;  // a window's plan for a box class: schedule.md#plan
 //: A SLICE: a token's operand row over the box's 32 digits of one level, f16.
 constexpr int kSliceBytes = 64;
 
@@ -55,7 +59,7 @@ struct SideLists {
   const uint16_t* union_tok;
   const int32_t* union_count;
   const uint2* entries;
-  const uint16_t* at;
+  const uint16_t* pre;
   int width, groups;
 };
 
@@ -71,6 +75,7 @@ struct CarryParams {
   int readout_f16;  // the readout's MMAs accumulate in fp16 (1) or fp32 (0): carry_api.md#carry-readout-accumulate
   int prefer;  // the readout candidate the plans take first where it fits, -1 none: carry_api.md#carry-forward
   uint32_t* num;
+  uint8_t* plans;  // the plan pass's plans, [BH][windows][box classes]: schedule.md#pass
   float* check;
   float* probe;
   long long* ledger;

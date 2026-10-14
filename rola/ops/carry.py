@@ -23,6 +23,8 @@ from rola.ops._ext import extension
 __all__ = [
     "LEDGER_PHASES",
     "LEDGER_WARPS",
+    "PLAN_BYTES",
+    "PLAN_FIELDS",
     "READ_CANDIDATES",
     "WINDOW",
     "Form",
@@ -33,6 +35,7 @@ __all__ = [
     "census",
     "form",
     "ledger_bind",
+    "plans_out",
     "probe_bind",
     "readout_accumulate",
     "sm_clock_ghz",
@@ -59,14 +62,15 @@ def _list_level(plan) -> int:
 
 
 def carry(routes, values, facts, carve: Carve, unit: torch.Tensor, accumulate: str | None = None,
-          prefer: str | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+          prefer: str | None = None, plans: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
     """THE LAUNCH: ``(num, check)`` -- ``num`` the readout's packed partials at each token's unit, ``check`` the
     skeleton's fp32 sum of the final state. ``facts`` is the facts pass's over this bundle, its read entries' offsets
     in this arm's read pool rows (:func:`form`). The readout accumulates in the device's form
     (:func:`readout_accumulate`); ``accumulate`` (``"fp32"`` or ``"fp16"``) is reserved: the gates' choice of form, so
     both forms are gated on any card (``tests/oracle/test_carry_readout.py``). Each window's plan picks its readout's
     form (:data:`READ_CANDIDATES`); ``prefer``, one of them, is reserved: the gates' and the measurements' choice of the
-    candidate a window takes first where it fits (docs/internals/carry/carry_api.md#carry)."""
+    candidate a window takes first where it fits; ``plans`` (:func:`plans_out`) is reserved: the plan pass's output for a
+    gate to read, else the call's own (docs/internals/carry/carry_api.md#carry)."""
     BH = routes.batch * routes.heads
     d_v = values.v.shape[-1]
     num = torch.zeros((BH, routes.tokens, d_v // 2), dtype=torch.int32, device=routes.device)
@@ -76,8 +80,25 @@ def carry(routes, values, facts, carve: Carve, unit: torch.Tensor, accumulate: s
         facts.list_exp, list(facts_ops.side_lists(facts, "read")), unit, num, check, list(carve.widths),
         list(carve.extents), carve.channels, _list_level(carve.fold), list(carve.fold.operand),
         _list_level(carve.readout), list(carve.readout.operand), list(arm_key(carve)),
-        _ACCUMULATE[accumulate or readout_accumulate(routes.device)], _PREFER[prefer])
+        _ACCUMULATE[accumulate or readout_accumulate(routes.device)], _PREFER[prefer], plans)
     return num, check
+
+
+#: A WINDOW'S PLAN's bytes and its fields, in `schedule.cuh`'s `WindowPlan` order (u16 each).
+PLAN_BYTES = 48
+PLAN_FIELDS = ("form", "beside", "rbufs", "runion", "rchunk", "rchunks", "funion", "fchunk", "fchunks", "rbuf0", "rbuf1",
+               "fbuf0", "fbuf1", "rents", "fents", "rzone", "fzone")
+
+
+def plans_out(routes, carve: Carve) -> torch.Tensor:
+    """An uninitialized ``[BH, windows, box classes, PLAN_BYTES]`` u8 tensor for :func:`carry`'s plans: a box class a pair
+    of the two list levels' 32-digit groups (docs/internals/carry/schedule.md#pass)."""
+    groups = 1
+    for plan in (carve.readout, carve.fold):
+        groups *= max(1, -(-carve.widths[plan.lists[0]] // 32)) if plan.lists else 1
+    windows = -(-routes.tokens // WINDOW)
+    return torch.empty((routes.batch * routes.heads, windows, groups, PLAN_BYTES), dtype=torch.uint8,
+                       device=routes.device)
 
 
 _ACCUMULATE = {"fp32": 0, "fp16": 1}

@@ -6,7 +6,8 @@
 The file is a header of four int32 -- the magic word 0x444C4F46, windows, the list level's width, the 32-digit groups --
 then the records `[windows][width][512]` (8 bytes each: slot, 0, c_v, c_m), the pass starts `[windows][width][8]` u16
 and the unions' counts `[windows][groups]` u16. The lab steps 128-slot passes each padded to whole steps (the carry's
-form when it was measured): `_passes` re-forms the facts pass's lists (unpadded, a boundary every 64 slots) so. `ordered.bin` is the same lists with each fold unit's entries reordered
+form when it was measured): `_passes` re-forms the facts pass's lists (unpadded, a list's boundaries every 64 slots,
+taken from the groups' prefix rows) so. `ordered.bin` is the same lists with each fold unit's entries reordered
 so a step's 8-entry halves hold distinct slot residues mod 8 where the list allows (a residue is a row's bank group in
 the pool), then each unit's heads `[windows][width][units][16]` (8-byte records): a unit of at most 16 entries dealt
 across both halves of its step by residue, the pads between them on residues their half leaves free (c = 0).
@@ -126,6 +127,7 @@ def _ordered(records, at):
 
 
 def write(directory: Path) -> list[str]:
+    import numpy as np
     import torch
 
     from measure.cells import by_name, realize
@@ -140,8 +142,9 @@ def write(directory: Path) -> list[str]:
     windows, width = records.shape[0], records.shape[1]
     groups = lists.count.shape[-1]
     header = struct.pack("<4i", 0x444C4F46, windows, width, groups)
-    host, starts = _passes(records.cpu().numpy().view("uint16").reshape(windows, width, -1, 4),
-                           lists.at[0].cpu().numpy().view("uint16"))
+    pre = lists.pre[0].cpu().numpy().view("uint16").astype(np.int64)
+    at = (pre[:, :, 1:] - pre[:, :, :-1]).reshape(windows, -1, pre.shape[-1])[:, :width]
+    host, starts = _passes(records.cpu().numpy().view("uint16").reshape(windows, width, -1, 4), at)
     body = [host.tobytes(), starts.tobytes(), lists.count[0].to(torch.int16).contiguous().cpu().numpy().tobytes()]
     (directory / "lists.bin").write_bytes(header + b"".join(body))
     ordered, heads, packed = _ordered(host, starts)

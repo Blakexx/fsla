@@ -28,22 +28,20 @@ enum CarryBarrier : int {
   kBarCount
 };
 
-constexpr int kPlanBytes = 48;  // a warp's copy of a window's plan: schedule.md#plan
-
 //: THE PERSISTENT TENANTS' BYTES, every card's and arm's. -- see docs/internals/carry/plan.md#tenants
 struct Tenants {
   static constexpr int kUnion = 0;
   static constexpr int kCount = kUnion + 2 * 2 * kWindow * 2;
-  static constexpr int kAt = kCount + 16;
-  static constexpr int kWriteExp = kAt + 2 * 2 * kBoxLists * kListAt * 2;
+  static constexpr int kPre = kCount + 16;
+  static constexpr int kWriteExp = kPre + 2 * 2 * kPreRows * kListAt * 2;
   static constexpr int kUnits = kWriteExp + 2 * kBoxLists * 4;
   static constexpr int kBook = kUnits + 2 * kWindow;
   static constexpr int kMaxima = kBook + kBoxLists * 8;
   static constexpr int kExps = kMaxima + kWarps * kBoxDigits * 4;
   static constexpr int kClock = kExps + kBoxDigits * 4;
   static constexpr int kBars = kClock + kWarps * (kCarryPhases + 1) * 8;
-  static constexpr int kPlans = kBars + kBarCount * 8;
-  static constexpr int kAddr = kPlans + kWarps * 2 * kPlanBytes;
+  static constexpr int kPlans = align_of(kBars + kBarCount * 8, 16);
+  static constexpr int kAddr = kPlans + 2 * kPlanBytes;
   static constexpr int kAddrBytes = 256;
   static constexpr int kEnd = align_of(kAddr + kAddrBytes, 128);
 };

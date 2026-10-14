@@ -8,9 +8,9 @@ choosing chunk sizes the card's area holds.
 <a id="kernel"></a>
 ## The kernel
 
-One CTA a box and batch-head, 8 warps, one CTA an SM. The fold's fp32 state (`kStateRegs` = 128 registers a lane) is
-the C fragments of the fold's MMAs and stays in registers for the whole call. Window 0's inputs are staged, its plan
-made and its first read chunk filled before the loop. A window:
+One CTA a box and batch-head, 8 warps, one CTA an SM, after the plan pass (`schedule.md#pass`). The fold's fp32 state
+(`kStateRegs` = 128 registers a lane) is the C fragments of the fold's MMAs and stays in registers for the whole call.
+Window 0's inputs and plan are staged and its first read chunk filled before the loop. A window:
 
 1. **The maxima**: each warp posts its per-digit maxima of the state before the window's writes
    (`parts.md#maxima`), and waits for every warp's -- so every warp is past the window before, its buffers and the
@@ -22,7 +22,7 @@ made and its first read chunk filled before the loop. A window:
    waited, its tiles over the resident union, its slot freed and, two batches on, stored again; then the drain. TILED
    -- the image form's chunk loop with the ring's batches stored and read for each chunk (on one read buffer: the chunk
    read, drained, then the next filled). Then the readout's release.
-3. **The next window's plan** once its inputs land, and its first read chunk filled now where its buffer ends below
+3. **The next window's plan**, landed with its inputs, and its first read chunk filled now where its buffer ends below
    every fold buffer (after the release).
 4. **The fold**, chunk by chunk (`fold.md#chunk`): a buffer's fill waits for its last readers, and over the readout's
    zone for the release; each chunk's landing waited, its steps, its buffer freed. A warp folds as soon as its own
@@ -33,8 +33,8 @@ made and its first read chunk filled before the loop. A window:
 ## The staging
 
 Every async copy lands on an mbarrier, none on a commit group: `cp.async.mbarrier.arrive.noinc` makes a barrier track
-all of a thread's earlier copies. A window's inputs (`stage_window`: both sides' lists and the facts) are staged into
-the other parity right after the maxima's barrier, a window ahead.
+all of a thread's earlier copies. A window's inputs (`stage_window`: both sides' lists, the facts and the window's plan
+for the CTA's box class) are staged into the other parity right after the maxima's barrier, a window ahead.
 
 <a id="barriers"></a>
 ## The barriers

@@ -18,8 +18,9 @@ state never leaves the registers inside a call; the readout reads an f16 image o
 - THE BOX, every card's: `kBoxLists = 32` lists (the write side's list level) x `kBoxDigits = 32` digits (the read
   side's) x `kBoxChannels = 32` channels, `kStateValues` = 32,768 values = 256 lanes x 128 fp32 registers.
 - `kListBound = 64`, `kListAt = 8`: a list's boundaries, its entries before every 64th union slot (the last its
-  length), so the carry chunks a union at any multiple of 64 the facts pass never sees; `kListCap = kWindow` entries a
-  list.
+  length), so the carry chunks a union at any multiple of 64 the facts pass never sees; `kPreRows` = 33, a group's
+  boundaries in prefix form (a row a list, then the totals); `kListCap = kWindow` entries a list.
+- `kPlanBytes = 48`: a window's plan for a box class (`schedule.md#plan`).
 - `kSliceBytes = 64`: a level's slice in a pool row, the box's 32 digits at f16.
 - `kMaxLevels = 4`: the depth the operand block addresses.
 
@@ -45,7 +46,7 @@ group innermost.
   folded in (its high half): a chunk from a multiple of 64 takes its pool and panel back by its first slot's offsets
   (`parts.md#readout`). A write entry is the slot, then `c_v` and `c_m`. A step's lanes past a chunk's entries are
   masked by the carry (a read lane's coefficient 0 on a dummy panel row, a write lane's row 0 with c = 0).
-- `at`: a list's boundaries (`kListAt`); `chunk_entries` turns a chunk's slots into its entries.
+- `pre`: a group's boundaries in prefix form; `chunk_runs` turns a chunk's slots into each list's run and its place.
 - `union_tok` and `union_count` (int32): per 32-digit group each slot's token, window-relative, and the slots' extent;
   a GAP slot holds `kGap` (token 0 with bit 15 set), so a fill masks the token to the window and zero-fills the row.
 
@@ -63,7 +64,8 @@ or its high bits within each four for a row of an odd number of 64-byte quarters
 the rows and values at their strides (the row alignment law, `docs/internals/facts/facts.md`), the facts pass's
 lists, the den pass's units (`unit`, an exponent byte a token, a window wide so a window's copy is aligned). The
 outputs are `num` (packed s16 pairs at each token's unit, added as u32: `parts.md#drain`) and `check` (the final
-state's sum). `readout_f16` is the readout's accumulation (`carry_api.md#carry-readout-accumulate`); `prefer` a readout
+state's sum). `plans` are the plan pass's (`schedule.md#pass`), a window's for each box class. `readout_f16` is the
+readout's accumulation (`carry_api.md#carry-readout-accumulate`); `prefer` a readout
 candidate every window's plan takes first where it fits, -1 for none (`schedule.md#planner`).
 
 <a id="refusals"></a>

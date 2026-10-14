@@ -5,9 +5,11 @@ gains pairs -- the pure-torch spec the kernel is graded against (docs/internals/
 
 A side's LIST LEVEL (its one sparse level) gets, per window and 32-digit group, a UNION -- the tokens live in any of
 the group's digits -- RANKED: ``union[slot]`` is the token of union rank ``slot`` (``GAP`` past the union), ``count``
-the union's EXTENT, its size in whole steps of 8. Per digit, its LIST: its tokens in token order (slot order), no pads;
-``at[j]`` its entries before union slot ``64 (j + 1)`` (``at[7]`` its length), so any chunk of the union whose bounds
-are multiples of 64 finds its entries without the carry's chunk sizes reaching this pass.
+the union's EXTENT, its size in whole steps of 8. Per digit, its LIST: its tokens in token order (slot order), no pads.
+Its BOUNDARIES are its entries before union slot ``64 (j + 1)``, ``j < 8`` (the last its length); a group's are out in
+PREFIX form, ``pre[l][j]`` the boundaries of the group's lists before ``l`` summed (row 32 the group's totals), so any
+chunk of the union whose bounds are multiples of 64 finds each list's run and its place among the lists' runs by four
+loads, and no chunk size of the carry's reaches this pass.
 
 An entry is four int16 words, its two 32-bit halves the carry's ``uint2``:
 - READ: the slot's pool row offset in the union in 16-byte chunks, the row's swizzle folded in; its token's window
@@ -33,9 +35,10 @@ from rola.engine.facts import liveness as lv
 
 WINDOW = 512
 LIST_CAP = WINDOW
-#: a list's boundaries: one every 64 union slots, the last its length
+#: a list's boundaries: one every 64 union slots, the last its length; a group's prefix rows, one a list and the totals
 LIST_BOUND = 64
 LIST_AT = WINDOW // LIST_BOUND
+PRE_ROWS = lv.GROUP_DIGITS + 1
 COEF_TOP = 4
 UNIT_MIN = COEF_TOP - 127
 #: the carry's step: a union's extent is its size in whole steps
@@ -47,13 +50,13 @@ PAD_BYTES = 8 * 64
 
 
 class Lists(NamedTuple):
-    """One side's lists in the final form: ``entries`` ``[BH, windows, B, LIST_CAP, 4]`` int16, ``at``
-    ``[BH, windows, B, LIST_AT]``, ``union``
+    """One side's lists in the final form: ``entries`` ``[BH, windows, B, LIST_CAP, 4]`` int16, ``pre``
+    ``[BH, windows, groups, PRE_ROWS, LIST_AT]`` the boundaries in prefix form, ``union``
     ``[BH, windows, groups, WINDOW]`` (a slot's token, ``GAP`` in a gap) and ``count`` ``[BH, windows, groups]`` the
     unions' extents. Past a list's end and a union's extent nothing is defined."""
 
     entries: torch.Tensor
-    at: torch.Tensor
+    pre: torch.Tensor
     union: torch.Tensor
     count: torch.Tensor
 
@@ -94,7 +97,7 @@ def final_lists(bits: torch.Tensor, layout: lv.LivenessLayout, level: int, *, ro
     base = layout.row_base(level)
     write = cols is not None
     entries = torch.zeros((BH, windows, B, LIST_CAP, 4), dtype=torch.int16)
-    at = torch.zeros((BH, windows, B, LIST_AT), dtype=torch.int64)
+    pre = torch.zeros((BH, windows, groups, PRE_ROWS, LIST_AT), dtype=torch.int64)
     union_out = torch.full((BH, windows, groups, WINDOW), GAP, dtype=torch.int64)
     count = torch.zeros((BH, windows, groups), dtype=torch.int64)
     rows = rows.cpu()
@@ -112,6 +115,7 @@ def final_lists(bits: torch.Tensor, layout: lv.LivenessLayout, level: int, *, ro
                 slot_of = {t: s for s, t in enumerate(union)}
                 count[bh, w, g] = -(-len(union) // STEP) * STEP
                 union_out[bh, w, g, :len(union)] = torch.tensor(union, dtype=torch.int64)
+                total = torch.zeros(LIST_AT, dtype=torch.int64)
                 for dd in range(live.shape[0]):
                     digit = g * 32 + dd
                     slots = [slot_of[t] for t in live[dd].nonzero().flatten().tolist()]
@@ -119,9 +123,11 @@ def final_lists(bits: torch.Tensor, layout: lv.LivenessLayout, level: int, *, ro
                                     ms if write else None, list_exp[bh, w, digit] if write else None) for s in slots]
                     if words:
                         entries[bh, w, digit, :len(words)] = torch.tensor(words, dtype=torch.int16)
-                    at[bh, w, digit] = torch.tensor([sum(s < LIST_BOUND * (j + 1) for s in slots)
-                                                     for j in range(LIST_AT)])
-    return Lists(entries, at, union_out, count)
+                    pre[bh, w, g, dd] = total
+                    total = total + torch.tensor([sum(s < LIST_BOUND * (j + 1) for s in slots)
+                                                  for j in range(LIST_AT)])
+                pre[bh, w, g, live.shape[0]:] = total
+    return Lists(entries, pre, union_out, count)
 
 
 def _entry(s, token, write, row_bytes, rows, b, h, t0, digit, m, ms, list_exp):

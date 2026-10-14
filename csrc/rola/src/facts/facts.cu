@@ -268,7 +268,7 @@ __device__ __forceinline__ int tokens_before(const uint32_t (&w)[2], int s, int 
 //: place; on the write side a walk takes the list's maxima; a walk places and writes each entry.
 //: -- see docs/internals/facts/facts.md#lists-out
 template <bool kWriteSide>
-__device__ __forceinline__ void lists_out(const FactsParams& p, const Unit& x, const uint8_t* smem,
+__device__ __forceinline__ void lists_out(const FactsParams& p, const Unit& x, uint8_t* smem,
                                           const Ranks& r, int warp, int lane) {
   const uint8_t* const win = smem + FactsSmem::kWin;
   const uint32_t* const tile = reinterpret_cast<const uint32_t*>(smem + FactsSmem::kTile);
@@ -307,8 +307,8 @@ __device__ __forceinline__ void lists_out(const FactsParams& p, const Unit& x, c
     const uint32_t all = __shfl_sync(0xffffffffu, inc[k], 7, 8);
     mine = s >> 1 == k ? all : mine;
   }
-  if (listed)
-    out.at[list * kListAt + s] = static_cast<uint16_t>(s & 1 ? mine >> 16 : mine & 0xffffu);
+  reinterpret_cast<uint16_t*>(smem + FactsSmem::kTable)[d * kListAt + s] =
+      listed ? static_cast<uint16_t>(s & 1 ? mine >> 16 : mine & 0xffffu) : uint16_t{0};
   const int first = static_cast<int>((inc[kPairs - 1] - own[kPairs - 1]) >> 16);
 
   //: the write side's maxima, its exponents and scales
@@ -378,6 +378,32 @@ __device__ __forceinline__ void lists_out(const FactsParams& p, const Unit& x, c
   }
 }
 
+//: THE BOUNDARIES IN PREFIX FORM, warp 0's: lane `j < 8` sums boundary `j` over the lists in order into rows 0..32 (row
+//: `l` the lists before `l`), then each row out as one 16-byte store. -- see docs/internals/facts/facts.md#lists-out
+__device__ __forceinline__ void prefix_out(const FactsParams& p, const Unit& x, uint8_t* smem,
+                                           int lane) {
+  const uint16_t* const table = reinterpret_cast<const uint16_t*>(smem + FactsSmem::kTable);
+  uint16_t* const pre = reinterpret_cast<uint16_t*>(smem + FactsSmem::kPre);
+  if (lane < kListAt) {
+    int sum = 0;
+#pragma unroll 1
+    for (int l = 0; l < kGroupDigits; ++l) {
+      pre[l * kListAt + lane] = static_cast<uint16_t>(sum);
+      sum += table[l * kListAt + lane];
+    }
+    pre[kGroupDigits * kListAt + lane] = static_cast<uint16_t>(sum);
+  }
+  __syncwarp();
+  const int width = p.B[x.level];
+  const int64_t group_index = (static_cast<int64_t>(x.bh) * p.windows + x.window)
+                                  * ((width + kGroupDigits - 1) / kGroupDigits)
+                              + x.group;
+  uint4* const out = reinterpret_cast<uint4*>(p.lists[x.side].pre) + group_index * carry::kPreRows;
+  const uint4* const rows = reinterpret_cast<const uint4*>(pre);
+  out[lane] = rows[lane];
+  if (lane == 0) out[kGroupDigits] = rows[kGroupDigits];
+}
+
 //: THE GRID: a CTA a unit, a window's units innermost. Every unit loads its window (a columns unit nothing) and a write
 //: list unit its columns; a vote or list unit votes and writes its bits; a list unit ranks its union and writes its
 //: lists. -- see docs/internals/facts/facts.md#the-grid
@@ -441,6 +467,8 @@ __global__ __launch_bounds__(kFactsThreads, kFactsCtasMin) void facts_pass(const
   } else {
     lists_out<false>(p, x, smem, r, warp, lane);
   }
+  __syncthreads();
+  if (warp == 0) prefix_out(p, x, smem, lane);
   clock.lap(kPhaseLists);
   clock.publish(p.ledger, 0, kFactsWarps, warp);
 }
@@ -636,8 +664,9 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
     ListsOut& o = p.lists[side];
     o.entries = static_cast<uint2*>(
         exact(l[0], Dtype::Short, {B * H, p.windows, width, kListCap, 4}, "a side's entries"));
-    o.at = static_cast<uint16_t*>(
-        exact(l[1], Dtype::Short, {B * H, p.windows, width, kListAt}, "a side's boundaries"));
+    o.pre = static_cast<uint16_t*>(exact(l[1], Dtype::Short,
+                                         {B * H, p.windows, groups, carry::kPreRows, kListAt},
+                                         "a side's boundaries in prefix form"));
     o.union_tok = static_cast<uint16_t*>(
         exact(l[2], Dtype::Short, {B * H, p.windows, groups, kWindowTokens}, "a side's union"));
     o.union_count = static_cast<int32_t*>(

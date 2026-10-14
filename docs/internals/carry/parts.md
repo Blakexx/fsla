@@ -21,10 +21,10 @@ window index, its statics from the tenant.
 ## Lists in
 
 A window ahead (`carry_kernel.md#staging`), into the window's parity of the tenants: a side's union tokens whole
-(512 slots, 1 KB, 64 copies), its box lists' boundaries (one 16-byte copy a list) and its count (one 4-byte copy).
+(512 slots, 1 KB, 64 copies), its group's boundaries in prefix form (33 rows, a 16-byte copy each) and its count
+(one 4-byte copy).
 `facts_in` copies the write lists' exponent pairs (128 bytes) and the window's token units (512 bytes). `union_of`,
-`at_of` and `slots_of` read a window's tenants back; `chunk_entries` turns a chunk of union slots (from a multiple of
-64) into its entries in a list.
+`pre_of` and `slots_of` read a window's tenants back; `chunk_cols` names a chunk's columns in the prefix rows.
 
 <a id="swizzle"></a>
 ## The pool rows' swizzle
@@ -51,8 +51,8 @@ reads nothing), and the chunk's entries; `fold_fill` (`fold.md#chunk`) the write
 ## The entries
 
 A buffer holds its chunk's entries as the box lists' runs in list order: `chunk_runs` gives lane `l` list `l`'s first
-entry of the chunk (`chunk_entries`), its count, and its place (the lists' counts before it, a shuffle scan), the same
-in every warp; `entries_fill` copies a warp's own lists' runs (`warp + 8 j`), 8 bytes a lane. A consumer takes its
+entry of the chunk, its count, and its place (the lists' counts before it) by four loads from the prefix rows
+(`pre_at`), the same in every warp; `entries_fill` copies a warp's own lists' runs (`warp + 8 j`), 8 bytes a lane. A consumer takes its
 list's place and count from its own scan, so no warp waits on another for them.
 
 <a id="maxima"></a>
