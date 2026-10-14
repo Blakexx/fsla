@@ -2,6 +2,8 @@
 
 Mirrors `tools/burst_gate.py` and `tools/sass_control.py`; the `burst` instrument of every suite
 run. KERNEL_STANDARDS §23 states the rule; this is the gate that holds it on the compiled code.
+`--kernel` names the function it reads where the cubin holds several (a carry arm: the carry and
+its plan pass): offsets restart in every function, so each is read alone.
 
 <a id="control"></a>
 ## The control words

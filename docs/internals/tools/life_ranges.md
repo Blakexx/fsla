@@ -5,7 +5,8 @@ live there. This tool sums that into a report: the kernel's peak live count and 
 the peak and mean per source region (the innermost function the instruction inlines from, struct
 methods as `Struct::method`, the naming `tools/region_ledger.py` uses), and the peak program
 points. The cubin needs `-lineinfo` for the regions; an extension's cubin (`--so`, `--member`)
-reports the peak and histogram without them.
+reports the peak and histogram without them. `--kernel` names the function where the cubin holds
+several (a carry arm: the carry and its plan pass); offsets restart in every function.
 
 Why it exists (KERNEL_STANDARDS §22): a budget argument about registers cites the peak live at
 the program point it concerns, never ptxas's allocation. The P81 fold's two-deep form was

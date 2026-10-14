@@ -53,7 +53,8 @@ def measure(cell: str, out: Path, keep_csv: Path | None) -> None:
             keep_csv.write_text(exported.stdout)
         so = toolchains.built_extension(ROOT)
         sources = [f"csrc/rola/src/carry/{f}" for f in ("carry_kernel.cuh", "parts.cuh", "fold.cuh", "schedule.cuh")]
-        ledger = subprocess.run([PY, "tools/region_ledger.py", "--csv", str(csv), "--so", str(so), "--source", *sources,
+        ledger = subprocess.run([PY, "tools/region_ledger.py", "--csv", str(csv), "--so", str(so), "--kernel",
+                                 "carry_kernel", "--source", *sources,
                                  "--budget", "tools/budgets/carry.json", "--cell", cell, "--per",
                                  str(phase_ledger.cta_windows(cell)), "--json", str(out)],
                                 cwd=ROOT, capture_output=True, text=True, timeout=1800)

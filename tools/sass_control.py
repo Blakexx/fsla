@@ -87,12 +87,22 @@ def control(high: int) -> dict:
             "wait": (c >> 11) & 0x3F, "reuse": (c >> 17) & 0xF}
 
 
-def encoded(cubin: Path) -> dict[int, tuple[str, dict]]:
-    """address -> (instruction text, control bits)."""
+def encoded(cubin: Path, kernel: str | None = None) -> dict[int, tuple[str, dict]]:
+    """address -> (instruction text, control bits), over the one function `kernel` names (`sass.one_kernel`: offsets
+    restart in every function)."""
+    text = subprocess.run(["cuobjdump", "-sass", str(cubin)], capture_output=True, text=True, check=True).stdout
+    want = sass.one_kernel([m.group(1) for line in text.splitlines() if (m := sass.FUNCTION.match(line))], kernel,
+                           cubin.name)
     out: dict[int, list] = {}
     addr = None
-    for line in subprocess.run(["cuobjdump", "-sass", str(cubin)], capture_output=True, text=True,
-                               check=True).stdout.splitlines():
+    inside = False
+    for line in text.splitlines():
+        f = sass.FUNCTION.match(line)
+        if f:
+            inside, addr = f.group(1) == want, None
+            continue
+        if not inside:
+            continue
         m = ENC.match(line)
         if m:
             addr = int(m.group(1), 16)
@@ -146,26 +156,27 @@ def span_of(source: Path, function: str) -> tuple[int, int]:
     raise SystemExit(f"{source.name} has no function {function}")
 
 
-def attributed(cubin: Path, source: Path, function: str) -> list[tuple[int, str, dict]]:
-    """The instructions any inline frame of which lies in `function`'s lines, in address order."""
+def attributed(cubin: Path, source: Path, function: str, kernel: str | None = None) -> list[tuple[int, str, dict]]:
+    """The instructions of the kernel `kernel` names any inline frame of which lies in `function`'s lines, in address
+    order."""
     lo, hi = span_of(source, function)
-    frames = sass.frames(sass.disassemble(cubin, "--print-line-info-inline", "-gi"))
-    enc = encoded(cubin)
+    frames = sass.frames(sass.section(sass.disassemble(cubin, "--print-line-info-inline", "-gi"), kernel, cubin.name))
+    enc = encoded(cubin, kernel)
     return [(a, *enc[a]) for a in sorted(enc)
             if any(f == source.name and lo <= ln <= hi for f, ln in frames.get(a, []))]
 
 
-def loop_of(cubin: Path, source: Path, function: str) -> list[tuple[int, str, dict]]:
+def loop_of(cubin: Path, source: Path, function: str, kernel: str | None = None) -> list[tuple[int, str, dict]]:
     """One iteration of the function's burst loop: among the backward branches in its attributed instructions,
     the loop holding the most HMMAs (a tail or a guard loop after the burst is not the burst), from the branch's
     target to the branch; the whole attribution when there is no loop."""
-    body = attributed(cubin, source, function)
+    body = attributed(cubin, source, function, kernel)
     if not body:
         raise SystemExit(f"no SASS attributed to {function}")
     #: the loops are found over the WHOLE kernel (a primitive's loop branch carries the primitive's frames,
     #: not its user's) and the one chosen is the DENSEST in the function's HMMAs -- the burst itself, never a
     #: phase loop around it
-    enc = encoded(cubin)
+    enc = encoded(cubin, kernel)
     addrs = sorted(enc)
     mine = {a for a, t, _ in body if opcode(t) in MMA}
     best = None

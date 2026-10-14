@@ -249,6 +249,8 @@ def main() -> int:
     ap.add_argument("--arch", default=None)
     ap.add_argument("--source", type=Path, default=Path("csrc/rola/src/common/burst.cuh"))
     ap.add_argument("--function", default="run", help="the function whose lines hold the loop")
+    ap.add_argument("--kernel", default=None,
+                    help="the kernel to read, a regex over the cubin's functions (needed where it holds several)")
     ap.add_argument("--warps", type=int, default=0, help="1 or 2; 0 for both")
     ap.add_argument("--sm-warps", type=int, default=0,
                     help="warps on the SM running the loop, sharing its memory pipe (default: the scheduler's)")
@@ -265,7 +267,7 @@ def main() -> int:
     arch = sc.machine(cubin)
     select(arch)
     print(f"machine {arch}: an HMMA holds the pipe {HMMA_PIPE} cycles a scheduler")
-    body = sc.loop_of(cubin, a.source, a.function)
+    body = sc.loop_of(cubin, a.source, a.function, a.kernel)
     print(f"loop of {a.source.name}:{a.function}: {len(body)} instructions, "
           f"{sum(1 for _, t, _ in body if sc.opcode(t) in sc.MMA)} MMAs, {body[0][0]:#07x}..{body[-1][0]:#07x}")
     for warps in ([a.warps] if a.warps else [1, 2]):

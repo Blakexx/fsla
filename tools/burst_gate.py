@@ -55,9 +55,9 @@ def burst_functions() -> list[tuple[str, str, int, int]]:
     return out
 
 
-def purity(cubin: Path, functions) -> tuple[bool, list[str], dict]:
-    frames = sass.frames(sass.disassemble(cubin, "--print-line-info-inline", "-gi"))
-    enc = sc.encoded(cubin)
+def purity(cubin: Path, functions, kernel: str | None = None) -> tuple[bool, list[str], dict]:
+    frames = sass.frames(sass.section(sass.disassemble(cubin, "--print-line-info-inline", "-gi"), kernel, cubin.name))
+    enc = sc.encoded(cubin, kernel)
     rows = {name: collections.Counter() for _, name, _, _ in functions}
     owner: dict[int, str] = {}
     for off in enc:
@@ -163,6 +163,8 @@ def main() -> int:
                          "instructions are attributed to (a `Burst::run` user, since every user inlines the "
                          "same lines of `common/burst.cuh`)")
     ap.add_argument("--json", type=Path, default=None)
+    ap.add_argument("--kernel", default=None,
+                    help="the function to read, a regex over the cubin's (needed where it holds several)")
     ap.add_argument("--write-floors", action="store_true",
                     help="record every loop's occupancy as its floor (a ratchet: a later build may not read lower)")
     a = ap.parse_args()
@@ -173,7 +175,7 @@ def main() -> int:
     mach = sc.MACHINES[arch]
     print(f"machine {arch}: an HMMA holds the pipe {mach['hmma_pipe']} cycles a scheduler")
 
-    ok, lines, purity_rows = purity(cubin, burst_functions())
+    ok, lines, purity_rows = purity(cubin, burst_functions(), a.kernel)
     for line in lines:
         print(line)
 
@@ -183,7 +185,7 @@ def main() -> int:
     for file, function in loops:
         source = Path(file) if Path(file).exists() else a.source.parent / file
         key = f"{source.name}:{function}"
-        r = coverage(sc.loop_of(cubin, source, function), mach, arch)
+        r = coverage(sc.loop_of(cubin, source, function, a.kernel), mach, arch)
         floor = floors.get(key)
         covered = floor is None or r["occupancy"] >= floor
         ok &= covered

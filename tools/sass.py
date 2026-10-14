@@ -13,6 +13,7 @@ and the analysis stays with the instrument that owns it.
     cubin(path, member)           the one image a ledger reads, by the name it carries
     sass_lines(obj)               `cuobjdump -sass`, streamed (the ratification reads a whole binary this way)
     disassemble(cubin, *flags)    `nvdisasm`, as text
+    section(listing, kernel)      one function's code section of a listing (offsets restart in every function)
 
 `INSTRUCTION` matches an instruction line -- `/*0a10*/ @!P0 IMAD.WIDE R4, R6, ...` -- with the address, the predicate
 and the opcode as groups; `LINE_INFO` matches the `--print-line-info-inline` frame comment above one. A tool that wants
@@ -68,6 +69,8 @@ def opcode_class(opcode: str) -> str:
 
 #: `//## File "path", line N` -- one frame of the inline chain under `--print-line-info-inline`
 LINE_INFO = re.compile(r'//## File "([^"]+)", line (\d+)')
+#: `.section .text.MANGLED,` -- a function's code section in an `nvdisasm` listing; offsets restart in every one
+SECTION = re.compile(r"^\s*\.section\s+\.text\.([^,\s]+),")
 #: `Function : NAME` and `arch = sm_XX`, the section headers of `cuobjdump -sass`
 FUNCTION = re.compile(r"^\s*Function : (\S+)")
 ARCH = re.compile(r"^\s*arch = sm_(\d+)\s*$")
@@ -161,10 +164,45 @@ def disassemble(cubin_path: Path, *flags: str) -> str:
                           capture_output=True, text=True, check=True).stdout
 
 
+def one_kernel(names: list[str], kernel: str | None, where: str) -> str:
+    """The one name of `names` matching the regex `kernel` -- or the only name, with none given; refuses otherwise, so an
+    instrument never merges two functions' offsets (they restart in every function)."""
+    found = [n for n in names if kernel is None or re.search(kernel, n)]
+    if len(found) != 1:
+        raise SystemExit(f"{where}: {len(found)} functions match {kernel!r} among {names}; name one (`--kernel`)")
+    return found[0]
+
+
+def sections(listing: str) -> dict[str, str]:
+    """An `nvdisasm` listing's code sections by mangled name, each from its `.section .text.NAME` line to the next
+    section."""
+    out: dict[str, list[str]] = {}
+    name = None
+    for line in listing.splitlines():
+        m = SECTION.match(line)
+        if m:
+            name = m.group(1)
+            out[name] = [line]
+        elif name is not None and re.match(r"\s*\.section\s", line):
+            name = None
+        elif name is not None:
+            out[name].append(line)
+    return {k: "\n".join(v) for k, v in out.items()}
+
+
+def section(listing: str, kernel: str | None, where: str = "the listing") -> str:
+    """The code section of the one function matching `kernel` (`one_kernel`)."""
+    by_name = sections(listing)
+    return by_name[one_kernel(list(by_name), kernel, where)]
+
+
 def frames(text: str) -> dict[int, list[tuple[str, int]]]:
     """SASS offset -> the inline frame chain at that instruction, innermost first, as (file name, line) pairs, off
-    `--print-line-info-inline` output: the comments precede the instruction they belong to, and an instruction with no
-    comment of its own inherits the chain above it."""
+    `--print-line-info-inline` output of ONE function (`section`): the comments precede the instruction they belong to,
+    and an instruction with no comment of its own inherits the chain above it. Refuses a listing of several functions,
+    whose offsets would overwrite each other's."""
+    if sum(1 for line in text.splitlines() if SECTION.match(line)) > 1:
+        raise SystemExit("sass.frames: a listing of several functions; map one function's section (`sass.section`)")
     pending: list[tuple[str, int]] = []
     chain: list[tuple[str, int]] = []
     out: dict[int, list[tuple[str, int]]] = {}
@@ -182,5 +220,5 @@ def frames(text: str) -> dict[int, list[tuple[str, int]]]:
     return out
 
 
-__all__ = ["ARCH", "ENCODING", "FUNCTION", "INSTRUCTION", "LINE_INFO", "cubin", "cubins", "device_arch", "disassemble",
-           "frames", "sass_lines"]
+__all__ = ["ARCH", "ENCODING", "FUNCTION", "INSTRUCTION", "LINE_INFO", "SECTION", "cubin", "cubins", "device_arch",
+           "disassemble", "frames", "one_kernel", "sass_lines", "section", "sections"]

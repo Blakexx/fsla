@@ -25,6 +25,10 @@ phases, so the miss is a phase and a price rather than a total. The attribution 
 mapped to source lines (the lab builds carry `-lineinfo`); an inlined helper's instructions land on the helper's own
 lines, so a helper is a phase of its own.
 
+`tools/region_ledger.py` maps a production launch's samples the same way, over the one function `--kernel` names: a
+member holding several (a carry arm holds the carry and its plan pass) is refused without it, since offsets restart in
+every function and two functions' frames would overwrite each other's.
+
 Every ledger entry is classified (the method `tools/region_ledger.py` applies to production kernels):
 - (a) inherent: the design's own cost, near its floor;
 - (b) the mechanism is right and its implementation above its floor -- fix to the floor;

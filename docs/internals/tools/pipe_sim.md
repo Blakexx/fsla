@@ -7,7 +7,8 @@ on this card by the reuse bits matching the `.reuse` annotations of the same ope
 give one warp's issue timeline for a loop whose memory is shared memory and registers, once the
 scoreboard classes have a latency each and the machine's shared resources are modelled.
 
-`--arm N` compiles the carry arm with line information; `--source F --function G` names the
+`--arm N` compiles the carry arm with line information (`--kernel` names the function where the
+cubin holds several); `--source F --function G` names the
 loop: the SASS whose inline chain touches the function's lines, from its first instruction to
 its last backward branch, one iteration. `--warps` is the warps a scheduler (one or two),
 `--sm-warps` the warps on the SM running the loop (eight in the kernel's fold and readout, where

@@ -71,10 +71,12 @@ def fn_of(fmap: list[tuple[int, str]], ln: int) -> str:
     return name
 
 
-def frames_map(so: Path, member: str, arch: str) -> dict[int, list[tuple[str, int]]]:
-    """SASS offset -> the inline frame chain at that instruction, innermost first, as (file name, line) pairs
-    (`tools/sass.py`, the one reader of the disassemblers)."""
-    return sass.frames(sass.disassemble(sass.cubin(so, member, arch), "--print-line-info-inline", "-gi"))
+def frames_map(so: Path, member: str, arch: str, kernel: str | None) -> dict[int, list[tuple[str, int]]]:
+    """SASS offset -> the inline frame chain at that instruction, innermost first, as (file name, line) pairs, over the
+    one function `kernel` names (`tools/sass.py`, the one reader of the disassemblers: offsets restart in every
+    function, so two kernels' maps never merge)."""
+    listing = sass.disassemble(sass.cubin(so, member, arch), "--print-line-info-inline", "-gi")
+    return sass.frames(sass.section(listing, kernel, member))
 
 
 class Attribution:
@@ -83,13 +85,13 @@ class Attribution:
     (an innermost frame inside `mbar_wait`). A spin is the wait for another agent's work and
     is reported apart from the component's own instructions."""
 
-    def __init__(self, so: Path, member: str, arch: str, sources: list[Path], ops: Path):
+    def __init__(self, so: Path, member: str, arch: str, sources: list[Path], ops: Path, kernel: str | None = None):
         self.fmaps = {p.name: function_map(p.read_text().splitlines()) for p in sources}
         self.omap = function_map(ops.read_text().splitlines())
         self.ops = ops.name
-        self.so, self.member = so, member
+        self.so, self.member, self.kernel = so, member, kernel
         self.arch = arch
-        self.frames = frames_map(so, member, arch)
+        self.frames = frames_map(so, member, arch, kernel)
 
     def of(self, offset: int, components: set[str] | None = None, glue: str | None = None) -> tuple[str, bool]:
         """The component: the OUTERMOST frame in the kernel's sources whose function is one of
@@ -110,10 +112,10 @@ class Attribution:
         return comp, spin
 
 
-def line_map(so: Path, member: str, arch: str, source_name: str) -> dict[int, int | None]:
+def line_map(so: Path, member: str, arch: str, source_name: str, kernel: str | None) -> dict[int, int | None]:
     """SASS offset -> innermost line in `source_name` (None when the chain has none)."""
     out = {}
-    for off, chain in frames_map(so, member, arch).items():
+    for off, chain in frames_map(so, member, arch, kernel).items():
         ck = [ln for f, ln in chain if f == source_name]
         out[off] = ck[0] if ck else None
     return out
@@ -169,6 +171,8 @@ def main() -> int:
     ap.add_argument("--source", type=Path, nargs="+", required=True,
                     help="the kernel's file (its line views), then the files its components live in")
     ap.add_argument("--member", default="carry_arm")
+    ap.add_argument("--kernel", default=None,
+                    help="the profiled kernel, a regex over the member's functions (needed where it holds several)")
     ap.add_argument("--arch", default=None, help="the cubin's architecture (default: this machine's GPU)")
     ap.add_argument("--ops", type=Path, default=Path("csrc/rola/src/common/ops.cuh"))
     ap.add_argument("--budget", type=Path, default=None)
@@ -180,7 +184,7 @@ def main() -> int:
     ap.add_argument("--lines", default=None, metavar="LO-HI",
                     help="also print the source lines in this range: instructions a unit, samples, opcodes, stall reasons")
     a = ap.parse_args()
-    attr = Attribution(a.so, a.member, a.arch or sass.device_arch(), a.source, a.ops)
+    attr = Attribution(a.so, a.member, a.arch or sass.device_arch(), a.source, a.ops, a.kernel)
     kernel_source = a.source[0]
     rows = read_source_counters(a.csv)
     base = rows[0][0]
@@ -266,7 +270,7 @@ def census(rows, attr: Attribution, components: set[str] | None, per: float,
     base = rows[0][0]
     cen: dict[str, list] = collections.defaultdict(lambda: [0, 0, 0, 0])
     waves: dict[int | None, list] = collections.defaultdict(lambda: [0, 0, 0])
-    lm = line_map(attr.so, attr.member, attr.arch, source.name)
+    lm = line_map(attr.so, attr.member, attr.arch, source.name, attr.kernel)
     for addr, n, sm, _st in rows:
         fn, spin = attr.of(addr - base, components, glue)
         if spin:

@@ -7,7 +7,7 @@ cites the peak live at the program point it concerns, never the allocation: the 
 two-deep form was abandoned at "255 registers" when its HMMAs ran at 127 live.
 
     python tools/life_ranges.py --cubin <cubin> --source csrc/rola/src/carry/carry_kernel.cuh
-    python tools/life_ranges.py --so <extension .so> --source ... [--member carry_arm] [--top N]
+    python tools/life_ranges.py --so <extension .so> --source ... [--member carry_arm] [--kernel carry_kernel] [--top N]
     python tools/life_ranges.py --arm 0 --source ... [--arch sm_86]   # compiles the carry arm with -lineinfo first
 
 The cubin must carry line info (`-lineinfo`); an extension built without it reports the peak
@@ -56,18 +56,18 @@ def cubin_of(args) -> Path:
     return sass.cubin(Path(args.so), args.member, args.arch or sass.device_arch())
 
 
-def line_map(cubin: Path, source_name: str) -> dict[int, int | None]:
-    """SASS offset -> innermost line in `source_name` (the life-range dump drops the line
+def line_map(cubin: Path, source_name: str, kernel: str | None) -> dict[int, int | None]:
+    """SASS offset -> innermost line in `source_name` of the function `kernel` names (the life-range dump drops the line
     comments, so the map comes from a separate line-info dump)."""
-    frames = sass.frames(sass.disassemble(cubin, "--print-line-info-inline", "-gi"))
+    frames = sass.frames(sass.section(sass.disassemble(cubin, "--print-line-info-inline", "-gi"), kernel, cubin.name))
     return {offset: next((line for name, line in chain if name == source_name), None)
             for offset, chain in frames.items()}
 
 
-def live_counts(cubin: Path) -> list[tuple[int, str, int]]:
-    """(offset, instruction, live registers) per SASS instruction."""
+def live_counts(cubin: Path, kernel: str | None) -> list[tuple[int, str, int]]:
+    """(offset, instruction, live registers) per SASS instruction of the function `kernel` names."""
     rows = []
-    for l in sass.disassemble(cubin, "--print-life-ranges").splitlines():
+    for l in sass.section(sass.disassemble(cubin, "--print-life-ranges"), kernel, cubin.name).splitlines():
         m = INSTR_RE.match(l)
         if m:
             rows.append((int(m.group(1), 16), m.group(2).strip(), int(m.group(3))))
@@ -81,6 +81,8 @@ def main() -> int:
     ap.add_argument("--arm", type=int, default=None, help="compile this carry arm with -lineinfo and read it")
     ap.add_argument("--arch", default=None, help="with --arm: the architecture (default: this machine's GPU)")
     ap.add_argument("--member", default="carry_arm")
+    ap.add_argument("--kernel", default=None,
+                    help="the function to read, a regex over the cubin's (needed where it holds several)")
     ap.add_argument("--source", type=Path, required=True)
     ap.add_argument("--top", type=int, default=16)
     ap.add_argument("--json", type=Path, default=None, help="also write the peak and every region's live counts here")
@@ -88,12 +90,12 @@ def main() -> int:
     if sum(x is not None for x in (a.cubin, a.so, a.arm)) != 1:
         ap.error("give exactly one of --cubin, --so or --arm")
     cubin = cubin_of(a)
-    rows = live_counts(cubin)
+    rows = live_counts(cubin, a.kernel)
     if not rows:
         print("no life-range rows: is this a cubin of the kernel?")
         return 1
 
-    lmap = line_map(cubin, a.source.name)
+    lmap = line_map(cubin, a.source.name, a.kernel)
     fmap = function_map(a.source.read_text().splitlines())
     peak = max(r[2] for r in rows)
     hist = collections.Counter((r[2] // 20) * 20 for r in rows)
