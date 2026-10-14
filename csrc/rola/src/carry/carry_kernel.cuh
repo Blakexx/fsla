@@ -116,9 +116,8 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     bar.item_landed(k);
   };
   //: A READ CHUNK'S TILES over batches `lo .. hi - 1` of the image at `image` (digit `d`'s plane `d & mask`)
-  const auto read_out = [&](int w, const Item& it, int lo, int hi, ops::SmemAddr image,
-                            uint32_t mask) {
-    const Head h = plan_head<P>(smem, w);
+  const auto read_out = [&](int w, const Head& h, const Item& it, int lo, int hi,
+                            ops::SmemAddr image, uint32_t mask) {
     const ops::SmemAddr buf = area + 16u * it.buf(),
                         pads = buf + static_cast<uint32_t>(read_pads<P>(it.slots())),
                         ents = buf + static_cast<uint32_t>(read_ents<P>(it.slots()));
@@ -153,10 +152,11 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
 #pragma unroll 1
     do {
       const Item it = plan_item<P>(smem, w, k);
+      const Head h = plan_head<P>(smem, w);
       //: THE FILLS it hosts, each once its region's last user is done; the next window's first read once its inputs
       //: have landed
 #pragma unroll 1
-      for (int f = 0; f < 2; ++f) {
+      for (int f = 0; f < it.fills(); ++f) {
         const uint32_t target = it.fill(f), fw = it.fwait(f);
         if (target != kNoItem) {
           if (fw != kNoItem) bar.wait_done(fw);
@@ -168,7 +168,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         }
       }
       const uint32_t kind = it.kind(), flags = it.flags();
-      const uint32_t mode = plan_head<P>(smem, w).mode();
+      const uint32_t mode = h.mode();
       if ((flags & kFlagFilled) != 0u && (kind != kItemRead || mode == kModeWhole))
         bar.wait_landed(static_cast<uint32_t>(k));
       clock.lap(kPhaseLanded);
@@ -201,7 +201,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         const bool again = it.first() > 0, more = (flags & kFlagMoreReads) != 0u;
         // R9-CASES: ImageMode, the plan's image modes (schedule.cuh)
         if (mode == kModeWhole) {
-          read_out(w, it, 0, kBatches, area, kBoxDigits - 1);
+          read_out(w, h, it, 0, kBatches, area, kBoxDigits - 1);
           clock.lap(kPhaseReadout);
         } else if (mode == kModeRing16) {
 #pragma unroll 1
@@ -215,7 +215,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
             clock.lap(kPhaseStore);
             if (lead) bar.wait_landed(static_cast<uint32_t>(k));
             clock.lap(kPhaseLanded);
-            read_out(w, it, 2 * half, 2 * half + 2, area, 2 * kBatchPlanes - 1);
+            read_out(w, h, it, 2 * half, 2 * half + 2, area, 2 * kBatchPlanes - 1);
             if (lead || more) bar.arrive(kBarImageFree);
             clock.lap(kPhaseReadout);
           }
@@ -236,7 +236,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
             const ops::SmemAddr slot = area + static_cast<uint32_t>(r * kImageRing / 2);
             bar.wait(kBarStored + r);
             clock.lap(kPhaseStore);
-            read_out(w, it, b, b + 1, slot, kBatchPlanes - 1);
+            read_out(w, h, it, b, b + 1, slot, kBatchPlanes - 1);
             if (b + 2 < kBatches || more) bar.arrive(kBarImageFree + r);
             clock.lap(kPhaseReadout);
             if (b + 2 < kBatches) {
@@ -259,7 +259,6 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         //: A FOLD CHUNK, the window's units stepped at its first
         if ((flags & kFlagUnits) != 0u) fold_units<P>(cf, fs, smem, ww(w), w, warp, lane);
         const ops::SmemAddr buf = area + 16u * it.buf();
-        const Head h = plan_head<P>(smem, w);
         fold_chunk<P>(st, cf, fs, smem, ww(w), w, it.first(), it.slots(), h.funion(), buf,
                       buf + static_cast<uint32_t>(fold_ents<P>(it.slots())), warp, lane);
         clock.lap(kPhaseFold);
@@ -271,7 +270,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         __trap();
       }
       if ((flags & kFlagDone) != 0u) bar.item_done(static_cast<uint32_t>(k));
-    } while (__any_sync(0xffffffffu, ++k < plan_head<P>(smem, w).items()));
+    } while (__any_sync(0xffffffffu, ++k < plan_items<P>(smem, w)));
   }
 
   float sum = 0.f;

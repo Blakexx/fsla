@@ -24,7 +24,7 @@ An item (`Item`, 8 bytes): its kind; its flags (`ItemFlag`: `kFlagFilled` its bu
 the window's units step at it, `kFlagMoreReads` a read chunk after it, `kFlagDone` a later item or fill waits for it);
 its chunk (its first slot, a multiple of 64, and its slots); its DEPENDENCE `dep` (READ on the whole mode's STORE,
 DRAIN on its READ); its buffer (bytes / 16 into the area); and up to two FILLS it hosts, each a target item and the
-item whose done it waits for. `kNoItem` names none; `kNextItem` names the next window's first read, its item
+item whose done it waits for, and their count (so an item hosting none skips the fills' loop). `kNoItem` names none; `kNextItem` names the next window's first read, its item
 `kFirstRead`. A window's HEAD (`Head`): its items, its image mode, each side's chunk and union, its order.
 `kPlanItems` = 27 (the maxima, the store, a read and a drain for each of 8 chunks, 8 folds, the boundary);
 `kPlanBytes` = 240, a head and 28 item slots, written whole.

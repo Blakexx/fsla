@@ -34,9 +34,9 @@ __host__ __device__ __forceinline__ constexpr uint32_t bits_of(uint32_t v, int a
   return (v >> at) & ((1u << n) - 1u);
 }
 
-//: AN ITEM, a uint2: x = kind | flags << 3 | first / 64 << 7 | slots << 10 | dep << 20 | fill0 << 25; y = its buffer
-//: (bytes / 16) | fwait0 << 14 | fill1 << 19 | fwait1 << 24 -- a dep or a fill's wait an item whose done it waits for,
-//: a fill an item whose buffer it issues. A WINDOW'S HEAD, a uint4: x = items | mode << 5 | rchunk << 7 | fchunk << 17;
+//: AN ITEM, a uint2: x = kind | flags << 3 | first / 64 << 7 | slots << 10 | dep << 20 | fill0 << 25 | fills << 30;
+//: y = its buffer (bytes / 16) | fwait0 << 14 | fill1 << 19 | fwait1 << 24 -- a dep or a fill's wait an item whose
+//: done it waits for, a fill an item whose buffer it issues, `fills` how many it hosts. A WINDOW'S HEAD, a uint4: x = items | mode << 5 | rchunk << 7 | fchunk << 17;
 //: y = runion | funion << 10; z = serial | late << 1 (its order); w = 0, the head a 16-byte quantum.
 struct Item {
   uint32_t x, y;
@@ -54,6 +54,8 @@ struct Item {
   __device__ __forceinline__ uint32_t dep() const { return bits_of(x, 20, 5); }
 
   __device__ __forceinline__ uint32_t buf() const { return bits_of(y, 0, 14); }
+
+  __device__ __forceinline__ int fills() const { return static_cast<int>(bits_of(x, 30, 2)); }
 
   __device__ __forceinline__ uint32_t fill(int f) const {
     return f == 0 ? bits_of(x, 25, 5) : bits_of(y, 19, 5);
@@ -324,10 +326,11 @@ __device__ __forceinline__ bool build(Sim& s, const Form& f, const Counts& c, ui
     for (int h = max(1, wait + 1); h <= consumer; ++h) {
       uint2& it = s.items[h];
       if (bits_of(it.x, 25, 5) == kNoItem) {
-        it.x = (it.x & ~(31u << 25)) | target << 25;
+        it.x = (it.x & ~(31u << 25)) | target << 25 | 1u << 30;
         it.y = (it.y & ~(31u << 14)) | fw << 14;
       } else if (bits_of(it.y, 19, 5) == kNoItem) {
         it.y = (it.y & ~(0x3ffu << 19)) | target << 19 | fw << 24;
+        it.x = (it.x & ~(3u << 30)) | 2u << 30;
       } else {
         continue;
       }
@@ -434,12 +437,19 @@ __global__ __launch_bounds__(kPlanThreads) void window_plan_kernel(
     items[i] = i < static_cast<int>(bits_of(head.x, 0, 5)) ? s.items[i] : make_uint2(0u, 0u);
 }
 
-//: THE CTA'S PLAN for window `w`, by parity, staged a window ahead: its head and its item `k`, read at each use.
+//: THE CTA'S PLAN for window `w`, by parity, staged a window ahead: its head, its item count and its item `k`, read
+//: at each use.
 template <class P>
 __device__ __forceinline__ Head plan_head(const uint8_t* smem, int w) {
   const volatile uint4* at =
       reinterpret_cast<const volatile uint4*>(smem + P::kPlans + (w & 1) * kPlanBytes);
   return Head{make_uint4(at->x, at->y, at->z, at->w)};
+}
+
+template <class P>
+__device__ __forceinline__ int plan_items(const uint8_t* smem, int w) {
+  return static_cast<int>(bits_of(
+      *reinterpret_cast<const volatile uint32_t*>(smem + P::kPlans + (w & 1) * kPlanBytes), 0, 5));
 }
 
 template <class P>

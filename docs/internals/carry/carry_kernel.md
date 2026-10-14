@@ -26,6 +26,9 @@ in order (`schedule.md#items`), each in four steps:
    BOUNDARY -- the units stepped where the window folds nothing.
 4. **Its done**, where a later item or fill waits for it.
 
+An item reads its record and the window's head once (shared memory, by parity) and passes them to its work; the item
+count is read at each loop test, so nothing from the plan is held across items.
+
 The work is an exclusive chain over the kind (R9's case marker, a trapping last arm), not `uniform_switch`: the
 primitive's independent tests made this body 14% slower at nl64k-alt-k4 (31.7K against 27.9K cycles a warp-window,
 2026-10-14), its 12,672 instructions against the chain's 11,112.

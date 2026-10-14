@@ -214,9 +214,9 @@ def build(f: Form, c: Counts, read_row: int, write_row: int, area: int) -> Windo
         for h in range(max(1, wait + 1), consumer + 1):
             x, y = items[h]
             if _bits(x, 25, 5) == NO_ITEM:
-                items[h] = [(x & ~(31 << 25)) | target << 25, (y & ~(31 << 14)) | fw << 14]
+                items[h] = [(x & ~(31 << 25)) | target << 25 | 1 << 30, (y & ~(31 << 14)) | fw << 14]
             elif _bits(y, 19, 5) == NO_ITEM:
-                items[h] = [x, (y & ~(0x3FF << 19)) | target << 19 | fw << 24]
+                items[h] = [(x & ~(3 << 30)) | 2 << 30, (y & ~(0x3FF << 19)) | target << 19 | fw << 24]
             else:
                 continue
             if wait >= 0:
