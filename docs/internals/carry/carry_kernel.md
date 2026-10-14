@@ -14,14 +14,18 @@ the C fragments of the fold's MMAs and stays in registers for the whole call. A 
 2. **The passes**, per readout pass (one at sparse cells): the next fill into the readout ring's other slot (the next
    pass, or after the last the fold's first unit), the pass's slot waited; then per part of the image a barrier, every
    warp's stores of that part (`parts.md#store`), a barrier, the readout of the part's digits (`parts.md#readout`);
-   then a barrier, after the last pass the fold ring's image units issued, and the drain (`parts.md#drain`).
-3. **The next window's inputs** staged (`#staging`).
-4. **The fold**, unit by unit (`fold.md#unit`): unit 0 in the readout ring, the rest in the fold ring over the image
-   and the panel; each unit waited, folded, and closed by a barrier that frees its slot. Unit 0's barrier also frees
-   the panel (the drain is done) and the readout ring's slot, so the panel's units and the next window's first pass
-   are issued there. Where a unit lay in the panel, the panel is zeroed before the next window's adds.
+   then a barrier, after the last pass the fold ring's image units issued (and on a resident arm the next window's
+   inputs staged, `#staging`), and the drain (`parts.md#drain`).
+3. **The next window's inputs**: on a resident arm (`plan.md#resident`) the panel's units once a barrier shows the
+   drain done, then the next window's first pass into the last pass's slot, before the fold; otherwise staged here.
+4. **The fold**: on a resident arm every unit waited, then one pass over each list (`fold.md#resident`) and a
+   barrier; otherwise unit by unit (`fold.md#unit`): unit 0 in the readout ring, the rest in the fold ring over the
+   image and the panel; each unit waited, folded, and closed by a barrier that frees its slot, unit 0's freeing the
+   panel and the readout ring's slot for the panel's units and the next window's first pass. Where a unit lay in the
+   panel, the panel is zeroed before the next window's adds.
 
-Barriers a window on sm_86's even box at one pass: 2 a part, 1 before the drain, 1 a unit: 5 + U.
+Barriers a window on sm_86's even box at one pass: 2 a part, 1 before the drain, 1 for the fold (and 1 before the
+panel's units where the union takes them): 4 or 5.
 
 Each part as built: the hand-off, the fills, the staging, the ring and the drain are their components'. The readout's
 tiles and the fold's steps issue their MMAs in their real counts; what each component still owes is named in its

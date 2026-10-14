@@ -106,6 +106,10 @@ struct Plan : Tenants {
   static constexpr int kFoldRing = kImageUnits + kPanelBytes / kUnitBytes;
   static_assert(kFoldRing >= 1 && 4 + kFoldRing <= kMaxBars,
                 "a barrier a ring slot and the two staging barriers");
+  //: THE RESIDENT WRITE PASS: where the readout ring's free slot and the fold ring hold a window's units at once, the
+  //: fold takes the window in one pass over them, a slot's row in its unit's region. -- see plan.md#resident
+  static constexpr bool kResident = (1 + kFoldRing) * kUnitSlots >= kWindow;
+  static constexpr int kWritePass = kResident ? kWindow : kUnitSlots;
 };
 
 }  // namespace rola::carry

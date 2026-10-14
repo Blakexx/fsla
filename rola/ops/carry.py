@@ -102,7 +102,8 @@ def census() -> list[tuple[int, ...]]:
 
 class Form(NamedTuple):
     """An arm's form on the current card (docs/internals/carry/plan.md#forms): the image's parts, a readout pass's and
-    a fold unit's slots, a read and a write pool row's bytes -- what the facts pass sizes its passes and offsets by."""
+    the fold's pass's slots (``unit_slots``: a fold unit's, or the whole window where the units are resident,
+    plan.md#resident), a read and a write pool row's bytes -- what the facts pass sizes its passes and offsets by."""
 
     parts: int
     pass_slots: int

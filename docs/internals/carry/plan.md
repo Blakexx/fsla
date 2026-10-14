@@ -30,13 +30,23 @@ the larger unit; `form_of` takes the first the card holds.
 
 | card, arm | form (parts, pass, unit) | shared bytes |
 |---|---|---|
-| sm_86, the even box `(32, 1, 32, 1, 32, 0)` | 2, 256, 128 | 100,096 of 101,376 |
-| sm_86, dense-dense `(32, 2, 32, 2, 32, 0)` | 2, 128, 64 | 91,904 |
-| sm_80, the even box | 1, 512, 128 | 165,632 of 166,912 |
-| sm_80, dense-dense | 1, 256, 128 | 165,632 |
+| sm_86, the even box `(32, 1, 32, 1, 32, 0)` | 2, 256, 128 | 100,352 of 101,376 |
+| sm_86, dense-dense `(32, 2, 32, 2, 32, 0)` | 2, 128, 64 | 92,160 |
+| sm_80, the even box | 1, 512, 128 | ~165,900 of 166,912 |
+| sm_80, dense-dense | 1, 256, 128 | ~165,900 |
 
 The fold's ring is the image and the panel once the readout is done: `kImageUnits` units over the image, then the
 panel's (`kFoldRing`: 3 units at sm_86's even box, 6 at sm_80's, 2 at either's dense-dense).
+
+<a id="resident"></a>THE RESIDENT WRITE PASS (`kResident`): where the readout ring's free slot and the fold ring hold a
+window's units at once -- `(1 + kFoldRing) x unit >= 512`, the even box on both cards -- the fold takes a window in one
+pass over them (`kWritePass` = 512, what the census reports as the arm's fold pass, so the facts pass emits each write
+list in one pass, padded once). Unit 0 lands in the readout ring's free slot under the readout, the image's units after
+it, the panel's after the drain, and the fold waits for those the union needs; an entry's slot finds its row in its
+unit's region (`fold.md#resident`). At nl64k-alt-k4 a ~216-slot union had split each list across two 128-slot units,
+padding it twice and paying each unit's barrier: the resident pass halved the fold's steps, the fold fell from 6.1K
+to 3.6K cycles a warp-window and the carry from ~2,885 to ~2,490 us. The dense-dense arm's units do not fit at once
+(192-byte rows) and keep the unit-by-unit fold.
 
 <a id="plan"></a>
 ## The plan

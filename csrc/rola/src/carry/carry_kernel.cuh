@@ -138,52 +138,90 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         clock.lap(kPhaseReadout);
       });
       ops::rendezvous();
-      //: the image is free once the last pass is read: the fold ring's image units fill under the drain
-      if (q + 1 == passes)
+      //: the image is free once the last pass is read: the fold ring's image units fill under the drain, and a
+      //: resident fold's next window's inputs come in beside them
+      if (q + 1 == passes) {
 #pragma unroll 1
         for (int u = 1; u < min(units, 1 + P::kImageUnits); ++u)
           fill_unit(w, u, fold_slot(u - 1), bars + 8 * (1 + u));
+        if constexpr (P::kResident)
+          if (next) stage_window<P>(p, c, w + 1, smem, staged, warp, lane);
+      }
       drain<P>(p, smem, rw, c, w, first, max(slots, 0));
       clock.lap(kPhaseDrain);
       ++f;
     }
 
-    //: THE NEXT WINDOW'S INPUTS, the read heads once this warp's readout is done
-    if (next) stage_window<P>(p, c, w + 1, smem, staged, warp, lane);
+    //: THE NEXT WINDOW'S INPUTS, the read heads once this warp's readout is done; resident, the panel's units and the
+    //: next window's first pass into the last pass's slot, before the fold
+    if constexpr (P::kResident) {
+      //: the panel's units once every thread's drain has cleared it
+      for (int k = ops::once(units > 1 + P::kImageUnits); k > 0; --k) {
+        ops::rendezvous();
+#pragma unroll 1
+        for (int u = 1 + P::kImageUnits; u < units; ++u)
+          fill_unit(w, u, fold_slot(u - 1), bars + 8 * (1 + u));
+      }
+      if (next) {
+        ops::mbar_wait(staged, static_cast<uint32_t>((w + 1) & 1));
+        fill_read(w + 1, 0, ring((f + 1) & 1), bars + 8 * ((f + 1) & 1));
+      }
+    } else if (next) {
+      stage_window<P>(p, c, w + 1, smem, staged, warp, lane);
+    }
 
     //: THE FOLD, unit by unit: unit 0 in the readout ring, the rest in the fold ring
     uint32_t cf[P::kFoldLists];
     float fs[P::kFoldLists];
     fold_units<P>(cf, fs, smem, ww, w, warp, lane);
     ops::mbar_wait(heads_bar, static_cast<uint32_t>(w & 1));
+    const ops::SmemAddr image = ops::smem_addr(smem + P::kImage),
+                        panel = ops::smem_addr(smem + P::kPanel);
+    if constexpr (P::kResident) {
+      //: THE RESIDENT FOLD: every unit landed, then each list once over them
+      ops::mbar_wait(bars + 8 * (f & 1), (ring_par >> (f & 1)) & 1u);
+      ring_par ^= 1u << (f & 1);
 #pragma unroll 1
-    for (int u = 0; __any_sync(0xffffffffu, u < units); ++u) {
-      const int k = (u - 1) % P::kFoldRing;
-      const ops::SmemAddr pool = u == 0 ? ring(f & 1) : fold_slot(k);
-      if (u == 0) {
-        ops::mbar_wait(bars + 8 * (f & 1), (ring_par >> (f & 1)) & 1u);
-        ring_par ^= 1u << (f & 1);
-      } else {
-        ops::mbar_wait(bars + 8 * (2 + k), (fold_par >> k) & 1u);
-        fold_par ^= 1u << k;
+      for (int u = 1; u < units; ++u) {
+        ops::mbar_wait(bars + 8 * (1 + u), (fold_par >> (u - 1)) & 1u);
+        fold_par ^= 1u << (u - 1);
       }
       clock.lap(kPhaseFill);
-      fold_unit<P>(p, st, cf, fs, smem, ww, c, w, u, write_slots, pool, warp, lane);
+      fold_unit<P>(p, st, cf, fs, smem, ww, c, w, 0, write_slots, ring(f & 1), image, panel, warp,
+                   lane);
       ops::rendezvous();
       clock.lap(kPhaseFold);
-      //: a slot freed: the panel's units once the drain is done, the next window's first pass into unit 0's slot,
-      //: a fold slot's next unit
-      if (u == 0) {
-        ++f;
+      ++f;
+    } else {
 #pragma unroll 1
-        for (int v = 1 + P::kImageUnits; v < min(units, 1 + P::kFoldRing); ++v)
-          fill_unit(w, v, fold_slot(v - 1), bars + 8 * (1 + v));
-        if (next) {
-          ops::mbar_wait(staged, static_cast<uint32_t>((w + 1) & 1));
-          fill_read(w + 1, 0, ring(f & 1), bars + 8 * (f & 1));
+      for (int u = 0; __any_sync(0xffffffffu, u < units); ++u) {
+        const int k = (u - 1) % P::kFoldRing;
+        const ops::SmemAddr pool = u == 0 ? ring(f & 1) : fold_slot(k);
+        if (u == 0) {
+          ops::mbar_wait(bars + 8 * (f & 1), (ring_par >> (f & 1)) & 1u);
+          ring_par ^= 1u << (f & 1);
+        } else {
+          ops::mbar_wait(bars + 8 * (2 + k), (fold_par >> k) & 1u);
+          fold_par ^= 1u << k;
         }
-      } else if (u + P::kFoldRing < units) {
-        fill_unit(w, u + P::kFoldRing, fold_slot(k), bars + 8 * (2 + k));
+        clock.lap(kPhaseFill);
+        fold_unit<P>(p, st, cf, fs, smem, ww, c, w, u, write_slots, pool, image, panel, warp, lane);
+        ops::rendezvous();
+        clock.lap(kPhaseFold);
+        //: a slot freed: the panel's units once the drain is done, the next window's first pass into unit 0's slot,
+        //: a fold slot's next unit
+        if (u == 0) {
+          ++f;
+#pragma unroll 1
+          for (int v = 1 + P::kImageUnits; v < min(units, 1 + P::kFoldRing); ++v)
+            fill_unit(w, v, fold_slot(v - 1), bars + 8 * (1 + v));
+          if (next) {
+            ops::mbar_wait(staged, static_cast<uint32_t>((w + 1) & 1));
+            fill_read(w + 1, 0, ring(f & 1), bars + 8 * (f & 1));
+          }
+        } else if (u + P::kFoldRing < units) {
+          fill_unit(w, u + P::kFoldRing, fold_slot(k), bars + 8 * (2 + k));
+        }
       }
     }
     //: the panel zeroed where the fold's units lay in it, before the next window's adds

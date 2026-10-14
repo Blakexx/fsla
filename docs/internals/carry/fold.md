@@ -41,11 +41,21 @@ Each loop's step is one block (KERNEL_STANDARDS §27), guarded by a vote and clo
 <a id="unit"></a>
 ## The unit
 
-A UNIT is `kUnitSlots` write slots (`plan.md#forms`). A listed side's entries in it are `[at[u], at[u + 1])`: those
+A UNIT is `kUnitSlots` write slots (`plan.md#forms`); a resident arm folds the window's units as one pass
+([`plan.md#resident`](plan.md#resident)). A listed side's entries in it are `[at[u], at[u + 1])`: those
 among the list's first 16 from the warp's heads, whichever unit holds them (at nl64k-alt-k4 a list's ~16 places span
 two units and all come from the heads: the fold fell from 7.7K to 6.1K cycles a warp-window), the rest in place from
 global memory (the fold's ring of records is the fold component's). A side with no list level steps every slot of the unit, c the list's digit of the row's
 coefficient slice. `fold_unit` takes each list in turn.
+
+<a id="resident"></a>
+## The resident pass
+
+On a resident arm (`plan.md#resident`) `fold_unit` runs once a window with every unit landed, a list's entries
+`[at[0], at[1])` its whole list (the facts pass's one 512-slot write pass). `resident_row` finds a slot's row: unit
+`s / kUnitSlots` in its region -- unit 0 the readout ring's free slot, then the image's units, then the panel's -- row
+`s % kUnitSlots` there, its swizzle folded in; the entry carries the row's address and the steps' pool is zero. A side
+with no list level steps every slot of the window the same way, its coefficient from each row's coefficient slice.
 
 <a id="probe"></a>
 ## The probe

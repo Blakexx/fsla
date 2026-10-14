@@ -61,13 +61,31 @@ __device__ __forceinline__ void fold_units(uint32_t (&cf)[P::kFoldLists], float 
   });
 }
 
-//: AN ENTRY'S LANE VALUES: its slot's row offset in the unit's pool (its swizzle folded in) and its c paired with the
-//: next lane's, moved to the list's unit. A pad (past the list's count) is row 0 with c = 0.
+//: A RESIDENT SLOT's ROW, its swizzle folded in: in its unit's region -- unit 0 the readout ring's free slot `ring0`,
+//: then the image's units, then the panel's. -- see docs/internals/carry/fold.md#resident
+template <class P>
+__device__ __forceinline__ uint32_t resident_row(uint32_t s, ops::SmemAddr ring0,
+                                                 ops::SmemAddr image, ops::SmemAddr panel) {
+  const uint32_t u = s / P::kUnitSlots, r = s % P::kUnitSlots;
+  const uint32_t base = u == 0                ? ring0
+                        : u <= P::kImageUnits ? image + (u - 1) * P::kUnitBytes
+                                              : panel + (u - 1 - P::kImageUnits) * P::kUnitBytes;
+  return base + r * P::kWriteRow + 16u * chunk_at<P::kWriteRow>(r, 0);
+}
+
+//: AN ENTRY'S LANE VALUES: its slot's row offset in the unit's pool (its swizzle folded in; resident, its row's
+//: address, `pool` zero) and its c paired with the next lane's, moved to the list's unit. A pad (past the list's count)
+//: is row 0 with c = 0.
 template <class P>
 __device__ __forceinline__ void entry_of(uint2 rec, bool live, int u, uint32_t cf, uint32_t& off,
-                                         uint32_t& cpair) {
-  const uint32_t r = (rec.x & 0xffffu) - static_cast<uint32_t>(u * P::kUnitSlots);
-  off = live ? r * P::kWriteRow + 16u * chunk_at<P::kWriteRow>(r, 0) : 0u;
+                                         uint32_t& cpair, ops::SmemAddr ring0 = 0u,
+                                         ops::SmemAddr image = 0u, ops::SmemAddr panel = 0u) {
+  if constexpr (P::kResident) {
+    off = resident_row<P>(live ? rec.x & 0xffffu : 0u, ring0, image, panel);
+  } else {
+    const uint32_t r = (rec.x & 0xffffu) - static_cast<uint32_t>(u * P::kUnitSlots);
+    off = live ? r * P::kWriteRow + 16u * chunk_at<P::kWriteRow>(r, 0) : 0u;
+  }
   const uint32_t mine = live ? rec.y & 0xffffu : 0u;
   cpair = ops::hmul2(mine | (__shfl_xor_sync(0xffffffffu, mine, 1) << 16), cf);
 }
@@ -126,21 +144,24 @@ __device__ __forceinline__ void step8(State<P>& st, ops::SmemAddr pool, uint32_t
 //: the entry at an index -- each loop's step one block. -- see docs/internals/carry/fold.md#step
 template <class P, int J, class Fetch>
 __device__ __forceinline__ void steps(State<P>& st, uint32_t cf, ops::SmemAddr pool, int u, int s,
-                                      int n, int lane, Fetch fetch) {
+                                      int n, int lane, Fetch fetch, ops::SmemAddr image,
+                                      ops::SmemAddr panel) {
+  //: resident, an entry holds its row's address and the steps' pool is zero
+  const ops::SmemAddr base = P::kResident ? 0u : pool;
   for (int k = __any_sync(0xffffffffu, n - s > 8) ? 1 : 0; k > 0; --k)
 #pragma unroll 1
     do {
       const int e = s + (lane & 15);
       uint32_t off, cpair;
-      entry_of<P>(fetch(min(e, n - 1)), e < n, u, cf, off, cpair);
-      step16<P, J>(st, pool, off, cpair, lane);
+      entry_of<P>(fetch(min(e, n - 1)), e < n, u, cf, off, cpair, pool, image, panel);
+      step16<P, J>(st, base, off, cpair, lane);
       s += 16;
     } while (__any_sync(0xffffffffu, n - s > 8));
   for (int tail = __any_sync(0xffffffffu, n - s > 0) ? 1 : 0; tail > 0; --tail) {
     const int k = s + (lane & 7);
     uint32_t off, cpair;
-    entry_of<P>(fetch(min(k, n - 1)), k < n, u, cf, off, cpair);
-    step8<P, J>(st, pool, off, cpair, lane);
+    entry_of<P>(fetch(min(k, n - 1)), k < n, u, cf, off, cpair, pool, image, panel);
+    step8<P, J>(st, base, off, cpair, lane);
   }
 }
 
@@ -152,7 +173,8 @@ __device__ __forceinline__ void fold_unit(const CarryParams& p, State<P>& st,
                                           const uint32_t (&cf)[P::kFoldLists],
                                           float (&f)[P::kFoldLists], const uint8_t* smem,
                                           const Window& ww, const Place& c, int w, int u, int slots,
-                                          ops::SmemAddr pool, int warp, int lane) {
+                                          ops::SmemAddr pool, ops::SmemAddr image,
+                                          ops::SmemAddr panel, int warp, int lane) {
   const ops::SmemAddr heads = ops::smem_addr(smem + P::kFoldHeads) + warp * P::kHeadBytes;
   static_for<P::kFoldLists>([&](auto J) {
     static_for<P::kFoldMTiles>([&](auto M) {
@@ -177,27 +199,36 @@ __device__ __forceinline__ void fold_unit(const CarryParams& p, State<P>& st,
 
     if (!ww.listed) {
       //: every slot of the unit, c the list's digit of the row's coefficient slice (the row's second)
-      steps<P, J>(st, cf[J], pool, u, 0, n, lane, [&](int k) {
-        const uint32_t row0 =
-            static_cast<uint32_t>(k) * P::kWriteRow + 16u * chunk_at<P::kWriteRow>(k, 0);
-        uint32_t cv;
-        asm volatile("ld.shared.u16 %0, [%1];"
-                     : "=r"(cv)
-                     : "r"(chunk_addr<P::kWriteRow>(pool + row0, (kSliceBytes + 2 * list) >> 4)
-                           + (2 * list & 15)));
-        return make_uint2(static_cast<uint32_t>(u * P::kUnitSlots + k), cv);
-      });
+      steps<P, J>(
+          st, cf[J], pool, u, 0, n, lane,
+          [&](int k) {
+            const uint32_t row0 =
+                P::kResident ? resident_row<P>(static_cast<uint32_t>(k), pool, image, panel)
+                             : pool + static_cast<uint32_t>(k) * P::kWriteRow
+                                   + 16u * chunk_at<P::kWriteRow>(k, 0);
+            uint32_t cv;
+            asm volatile("ld.shared.u16 %0, [%1];"
+                         : "=r"(cv)
+                         : "r"(chunk_addr<P::kWriteRow>(row0, (kSliceBytes + 2 * list) >> 4)
+                               + (2 * list & 15)));
+            return make_uint2(static_cast<uint32_t>(u * P::kUnitSlots + k), cv);
+          },
+          image, panel);
     } else {
       //: the unit's entries among the list's first 16 from the warp's heads, the rest in place
       const int staged = max(0, min(n, kHeadEntries - first));
-      steps<P, J>(st, cf[J], pool, u, 0, staged, lane, [&](int k) {
-        uint2 e;
-        asm volatile("ld.shared.v2.u32 {%0, %1}, [%2];"
-                     : "=r"(e.x), "=r"(e.y)
-                     : "r"(heads + 8u * (kHeadEntries * J + first + k)));
-        return e;
-      });
-      steps<P, J>(st, cf[J], pool, u, staged, n, lane, [&](int k) { return entries[k]; });
+      steps<P, J>(
+          st, cf[J], pool, u, 0, staged, lane,
+          [&](int k) {
+            uint2 e;
+            asm volatile("ld.shared.v2.u32 {%0, %1}, [%2];"
+                         : "=r"(e.x), "=r"(e.y)
+                         : "r"(heads + 8u * (kHeadEntries * J + first + k)));
+            return e;
+          },
+          image, panel);
+      steps<P, J>(
+          st, cf[J], pool, u, staged, n, lane, [&](int k) { return entries[k]; }, image, panel);
     }
   });
 }
