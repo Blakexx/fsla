@@ -14,11 +14,13 @@ void rola_produce_ledger_bind(
 
 void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_bias,
                           Tensor gain_bias, Tensor v_W, Tensor jobs, Tensor amp_read,
-                          Tensor amp_write, std::optional<Tensor> dense_write, Tensor scale_read,
-                          Tensor scale_write, Tensor mass_read, Tensor mass_write, Tensor read_mass,
-                          Tensor g_write, Tensor v, Tensor v_scale, Tensor arrivals,
+                          Tensor amp_write, std::optional<Tensor> dense_read,
+                          std::optional<Tensor> dense_write, Tensor scale_read, Tensor scale_write,
+                          Tensor mass_read, Tensor mass_write, Tensor read_mass, Tensor g_write,
+                          Tensor v, Tensor v_scale, Tensor arrivals,
                           std::optional<Tensor> logit_probe, std::optional<Tensor> level_probe,
                           Tensor shapes, int64_t levels, int64_t route_jobs_per_head,
-                          int64_t dense_mask);  // produce_api.md#rola-produce-forward
+                          int64_t dense_read_mask,
+                          int64_t dense_write_mask);  // produce_api.md#rola-produce-forward
 
 }  // namespace rola::produce

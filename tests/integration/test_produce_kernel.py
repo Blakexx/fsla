@@ -20,7 +20,7 @@ from rola.ops.produce import (
     ProducerPlan,
     ProducerWeights,
     _job_tensor,
-    dense_write_levels,
+    dense_levels,
     hidden_contiguous,
     job_table,
     produce,
@@ -68,7 +68,7 @@ def _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill: int, probe: bool
 
     B, T, hidden = x.shape
     H, D, d_v = plan.num_heads, plan.routing.topology.D, plan.d_v
-    dense = dense_write_levels(plan)
+    dense = {side: dense_levels(plan, side) for side in ("read", "write")}
 
     def poisoned(*shape, dtype=torch.float32):
         out = torch.empty(B, H, T, *shape, dtype=dtype, device="cuda")
@@ -77,7 +77,8 @@ def _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill: int, probe: bool
 
     out = {"amp_read": poisoned(row_layout(plan, "read")[1], dtype=torch.uint8),
            "amp_write": poisoned(row_layout(plan, "write")[1], dtype=torch.uint8),
-           "dense_write": poisoned(row_layout(plan, "write", dense=True)[1], dtype=quant.DENSE_DTYPE) if dense else None,
+           **{f"dense_{side}": poisoned(row_layout(plan, side, dense=True)[1], dtype=quant.DENSE_DTYPE)
+              if dense[side] else None for side in ("read", "write")},
            "scale_read": poisoned(D), "scale_write": poisoned(D), "mass_read": poisoned(D), "mass_write": poisoned(D),
            "read_mass": poisoned(), "g_write": poisoned(), "v": poisoned(d_v, dtype=torch.float16), "v_scale": poisoned()}
     jobs, shapes, per_head = _job_tensor(plan, "cuda:0")
@@ -86,7 +87,8 @@ def _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill: int, probe: bool
               for _ in range(2)]
     extension().rola_produce_forward(
         x.reshape(B * T, hidden).contiguous(), route_W, route_bias, gain_bias, v_W, jobs,
-        *out.values(), arrivals, *probes, shapes, D, per_head, sum(1 << level for level in dense))
+        *out.values(), arrivals, *probes, shapes, D, per_head,
+        *(sum(1 << level for level in dense[side]) for side in ("read", "write")))
     torch.cuda.synchronize()
     return {key: None if t is None else t.transpose(1, 2) for key, t in out.items()}, arrivals, probes
 
@@ -228,7 +230,7 @@ def test_the_bundle_matches_the_reference_on_the_kernels_logits(name, B, T, bias
     plan, x, route_W, route_bias, gain_bias, v_W = _operands(name, B=B, T=T, hidden=64, bias=bias, gain=gain)
     gain_bias = torch.randn_like(gain_bias)
     out, _, (logits, _) = _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill=0x55, probe=True)
-    dense = dense_write_levels(plan)
+    dense = {side: dense_levels(plan, side) for side in ("read", "write")}
 
     mass = torch.ones(B, plan.num_heads, T, dtype=torch.float64, device="cuda").transpose(1, 2).contiguous()
     mass_term = torch.zeros_like(mass)
@@ -251,14 +253,14 @@ def test_the_bundle_matches_the_reference_on_the_kernels_logits(name, B, T, bias
             #: twice the solve's bound plus the conditioning term of the level's max (`_conditioning`, 2026-10-10)
             bound = (width + 16) * 2.0 ** -22 + conditioning[side][1][:, None]
             assert bool(((scale - peak).abs() <= bound).all()), f"{name}: level {level} {side} scale"
-            if side == "write" and level in dense:
-                #: a dense write level's f16 rows: one u8 digit's worth (the solves' fp32 against fp64), the floor exact
-                start = row_layout(plan, "write", dense=True)[0][level]
-                got = out["dense_write"][:, :, head, start:start + width].reshape(-1, width)
+            if level in dense[side]:
+                #: a dense level's f16 rows: one u8 digit's worth (the solves' fp32 against fp64), the floor exact
+                start = row_layout(plan, side, dense=True)[0][level]
+                got = out[f"dense_{side}"][:, :, head, start:start + width].reshape(-1, width)
                 assert got.dtype is quant.DENSE_DTYPE
                 off = float((got.double() - unit.clamp_min(quant.DENSE_FLOOR)).abs().max())
-                assert off <= 1 / quant.AMP_LEVELS, f"{name}: level {level} f16 rows off by {off:.3g}"
-                assert bool((got.float() >= quant.DENSE_FLOOR).all()), f"{name}: a dense write coefficient under the floor"
+                assert off <= 1 / quant.AMP_LEVELS, f"{name}: level {level} {side} f16 rows off by {off:.3g}"
+                assert bool((got.float() >= quant.DENSE_FLOOR).all()), f"{name}: a dense {side} coefficient under the floor"
             else:
                 offset = row_layout(plan, side)[0][level]
                 got = out[f"amp_{side}"][:, :, head, offset:offset + width].reshape(-1, width)

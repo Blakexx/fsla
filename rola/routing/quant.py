@@ -4,9 +4,9 @@
 
 One declaration of the arithmetic the op's oracle takes as its input
 (``tests/oracle/int_reference.py`` is its fp64 statement). A coefficient row is stored against its own max -- u8 with
-the max digit at 255, except a DENSE WRITE level's, f16 at 1 -- and the row's max is its fp32 scale. A dense level is
-never zero: a dense write row is stored with ``DENSE_FLOOR`` of the row max already taken, and a dense read level's u8
-zero digit, in a live row, reads as that floor (docs/internals/facts/liveness_contract.md#floor). A token's values
+the max digit at 255, except a DENSE level's, f16 at 1 -- and the row's max is its fp32 scale. A dense level is never
+zero: its rows are stored with ``DENSE_FLOOR`` of the row max already taken (docs/internals/facts/liveness_contract.md
+#floor). A token's values
 are stored as f16 against their largest channel (at 1), the largest its fp32 scale. ``straight_through`` hands a
 consumer the DEQUANTIZED values with an identity gradient, which is how the format trains (docs/api.md
 section 2.1).
@@ -35,7 +35,7 @@ __all__ = [
 AMP_LEVELS = 255.0
 #: the stored coefficient form: u8 at every depth.
 ROW_DTYPE = torch.uint8
-#: a dense write level's rows: f16 against the row max, the floor taken.
+#: a dense level's rows: f16 against the row max, the floor taken.
 DENSE_DTYPE = torch.float16
 #: a dense level's least coefficient, in a live row, as a fraction of the row max: the numerically safe minimum (f16's
 #: least normal is 2^-14), inside a u8 zero digit's own [0, 1/510).

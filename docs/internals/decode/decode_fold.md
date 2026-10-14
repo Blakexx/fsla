@@ -6,7 +6,7 @@ and staged in the SHARED MEMORY of the CTA that is about to consume it.
 
 Symbols: `B` batch, `H` heads, `BH = B * H`, `bh = b * H + h`; `D` levels; `b_l` level
 `l`'s width; `d_v` the value width. The operands are the read and write coefficient rows
-(`[B, 1, H, b_l]` each, u8 unit-max digits -- a dense write level's f16 -- in the producer's own layout) with their
+(`[B, 1, H, b_l]` each, u8 unit-max digits -- a dense level's f16 -- in the producer's own layout) with their
 fp32 row maxima (`[B, 1, H]` each), the write gain (`[B, 1, H]`) and the token's values
 (`[B, 1, H, d_v]` f16 against its largest channel, and the fp32 token scale).
 
@@ -44,9 +44,9 @@ own convention.
 What the entry refuses is `T != 1`: the fold is defined on one token and a second one would
 be silently dropped.
 
-<a id="raw"></a>A digit's RAW value rounds nothing — a u8 digit is its integer, a dense write level's f16
-coefficient times 255 (exact, its floor stored), a dense read level's zero in a live row the floor's `255 × 2^-13`
-([`../facts/liveness_contract.md#floor`](../facts/liveness_contract.md#floor)) — and a level that
+<a id="raw"></a>A digit's RAW value rounds nothing — a u8 digit is its integer, a dense level's f16 coefficient times
+255 (exact, its floor stored: [`../facts/liveness_contract.md#floor`](../facts/liveness_contract.md#floor)) — and a
+level that
 carries its own mass takes its amplitude as `raw * (scale / 255)`, one fp32 multiply by a
 per-row factor (255 is `kRowMaxDigit`, the row max's digit). `tests/integration/test_decode_fold.py` cell 1 states
 that through the step's own output, on strided views as well as contiguous ones.
@@ -59,8 +59,8 @@ known. Slots past a level's width are not loaded and ballot a zero.
 
 ## <a id="the-dtype-arms"></a>3. The dtype arm is runtime, and the step's template axes are not
 
-The fold reads three INDEPENDENT storage families: the coefficient rows (u8, a dense write
-level's f16; ruled 2026-10-03/04), the write gain (`float` or `bfloat16`) and the values (f16). They are
+The fold reads three INDEPENDENT storage families: the coefficient rows (u8, a dense level's
+f16; ruled 2026-10-03/04/07), the write gain (`float` or `bfloat16`) and the values (f16). They are
 independent because the routing bundle and the value projection are different producers.
 
 Making the gain's type a template axis would multiply the step kernel's instantiation matrix

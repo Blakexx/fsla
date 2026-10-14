@@ -168,12 +168,11 @@ def _kernel_realized_support(routes, side, widths, B, H, device, d_v=64):
     #: shows only what the step WROTE, and a read deposits nothing), the others sparse and empty
     read_flags = (False,) + (True,) * (len(widths) - 1)
     flags = routes.sparse[0] if side == "read" else routes.sparse[1]
-    #: on the write side a dense level is f16 at the floor: a dense read level's u8 digits moved there in that form
-    rows = tuple(quant.aligned_rows(*r.shape, r.device, quant.DENSE_DTYPE).copy_(
-                     (r.float() / quant.AMP_LEVELS).clamp_min(quant.DENSE_FLOOR))
-                 if not sparse and r.dtype is not quant.DENSE_DTYPE else r for r, sparse in zip(rows, flags))
-    routes = RouteFactors.from_rows(topology, tuple(quant.aligned_rows(*r.shape, r.device) for r in rows), rows, (ones,) * len(widths),
-                                    (ones,) * len(widths), ones, sparse=(read_flags, flags))
+    #: a dense level is f16 at the floor on either side: the rows move to the write side in their own form
+    empty = tuple(quant.aligned_rows(*r.shape, r.device, quant.ROW_DTYPE if sparse else quant.DENSE_DTYPE)
+                  for r, sparse in zip(rows, read_flags))
+    routes = RouteFactors.from_rows(topology, empty, rows, (ones,) * len(widths), (ones,) * len(widths), ones,
+                                    sparse=(read_flags, flags))
     values = Values.from_projection(torch.ones(B, 1, H, d_v, **f32))
     state = state_pages(torch.zeros(B, H, N, config.cols, **f32))
     _y, state, _ws = _decode_step(routes, values, config, state)

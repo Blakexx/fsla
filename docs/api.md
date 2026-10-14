@@ -170,9 +170,9 @@ RouteFactors.from_rows(topology, amp_read, amp_write, scale_read, scale_write, g
 ```
 
 **The stored form is the internal quantized format** (ruled 2026-09-26). Each level's rows are
-UNIT-MAX -- u8 with the row's largest digit at 255, except a DENSE WRITE level's rows, f16 at 1 (ruled 2026-10-04);
-a sparse level's zero digit is dead; a dense level is never zero -- its write rows are stored with the floor taken,
-2^-13 of the row's max, and its read rows' zero digit reads as that floor (the dense floor, ruled 2026-10-03/04;
+UNIT-MAX -- u8 with the row's largest digit at 255, except a DENSE level's rows, f16 at 1 (the write side ruled
+2026-10-04, the read side 2026-10-07); a sparse level's zero digit is dead; a dense level is never zero -- its rows are
+stored with the floor taken, 2^-13 of the row's max (the dense floor, ruled 2026-10-03/04;
 `docs/internals/facts/liveness_contract.md#floor`); an all-zero row is a dead token at that level -- with the row's maximum
 carried beside them as its fp32 scale (`amp_read`/`scale_read`, `amp_write`/`scale_write`, one
 `[B, T, H, width]` tensor per level, starting on and stepping by 32 bytes: the row alignment law,

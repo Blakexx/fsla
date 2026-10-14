@@ -81,13 +81,13 @@ def _statics(layout, dense, logical):
 
 def _bundle(widths, L, statics, *, B=1, H=2, seed=0, packed=False):
     """A bundle at logical widths ``widths`` in the format: a sparse level's rows a random support (at least one live
-    digit a token) as u8; a dense read level's mostly nonzero u8 with some zero digits -- a value that rounded to zero,
-    which the width mask reports live all the same; a dense write level's the same values as f16 at the floor
-    (`rola.routing.quant`). ``packed`` gives each side's levels as views of the producer's planes -- one u8 plane, and
-    on the write side an f16 plane of its dense levels -- otherwise each level is its own tensor."""
+    digit a token) as u8; a dense level's mostly nonzero digits with some zeros -- a value that rounded to zero, which
+    the width mask reports live all the same -- as f16 at the floor (`rola.routing.quant`). ``packed`` gives each
+    side's levels as views of the producer's planes -- a u8 plane of its sparse levels and an f16 plane of its dense
+    ones -- otherwise each level is its own tensor."""
     gen = torch.Generator().manual_seed(seed)
     rows = []
-    for index, side in enumerate(statics):
+    for side in statics:
         levels = []
         for level, width in enumerate(widths):
             digits = torch.randint(1, 256, (B, L, H, width), generator=gen)
@@ -95,7 +95,7 @@ def _bundle(widths, L, statics, *, B=1, H=2, seed=0, packed=False):
             if not side.dense_levels[level]:
                 keep[..., 0] |= ~keep.any(-1)
             digits = digits * keep
-            if index == 1 and side.dense_levels[level]:
+            if side.dense_levels[level]:
                 levels.append((digits / quant.AMP_LEVELS).clamp_min(quant.DENSE_FLOOR).to(quant.DENSE_DTYPE))
             else:
                 levels.append(digits.to(torch.uint8))

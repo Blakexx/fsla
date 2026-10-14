@@ -124,11 +124,11 @@ def _reference_y(rows, scale, *, normalize, e, m, s0=0):
 
 
 def _read_rows(B, H, width, *, seed, device="cuda"):
-    """``(rows, scale)``: a stored read level. Every entry is strictly positive, so `supp(R)` is the whole leaf
-    space and the walk visits every row -- the sum being gated is over the FULL width."""
+    """``(rows, scale)``: a stored dense read level, f16 at the floor. Every entry is strictly positive, so `supp(R)`
+    is the whole leaf space and the walk visits every row -- the sum being gated is over the FULL width."""
     gen = torch.Generator(device=device).manual_seed(seed)
     level = 0.5 * (torch.rand(B, 1, H, width, device=device, generator=gen) + 0.25)
-    return quant.quantize_unit_max_rows(level)
+    return quant.quantize_unit_max_rows(level, quant.DENSE_DTYPE, True)
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +146,7 @@ def test_a_strided_view_folds_by_address():
     """A level may be a VIEW of one packed plane, and the fold indexes it there."""
     packed, scale = _read_rows(3, 2, 32, seed=3)
     sliced = packed[..., ::2]
-    dense = quant.aligned_rows(*sliced.shape, sliced.device).copy_(sliced)
+    dense = quant.aligned_rows(*sliced.shape, sliced.device, sliced.dtype).copy_(sliced)
     y_view, e, m = _y_of(sliced, scale, normalize=True, seed=8)
     y_dense, e2, m2 = _y_of(dense, scale, normalize=True, seed=8)
     assert torch.equal(e, e2) and torch.equal(m, m2), "the two runs saw different states"
@@ -182,12 +182,13 @@ def test_the_flag_is_honoured_and_not_assumed():
 
 def test_more_than_one_token_is_refused():
     rows, scale = _read_rows(2, 2, 16, seed=5)
-    two = quant.aligned_rows(2, 2, 2, 16, rows.device).copy_(rows.repeat(1, 2, 1, 1))
+    two = quant.aligned_rows(2, 2, 2, 16, rows.device, rows.dtype).copy_(rows.repeat(1, 2, 1, 1))
     with pytest.raises(ValueError, match="takes one token"):
         _y_of(two, scale.repeat(1, 2, 1), normalize=False, seed=5)
 
 
 def test_a_row_dtype_outside_the_format_is_refused():
     rows, scale = _read_rows(2, 2, 16, seed=5)
+    digits = quant.aligned_rows(*rows.shape, rows.device).copy_((rows.float() * quant.AMP_LEVELS).round().to(torch.uint8))
     with pytest.raises((TypeError, ValueError), match="torch.float16"):
-        _routes(rows.to(torch.float16), scale, normalize=False)
+        _routes(digits, scale, normalize=False)

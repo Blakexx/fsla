@@ -414,7 +414,8 @@ the kernel computes rather than a pass that ran.
 
 `normalize[l]` says whether read level `l` still carries its own mass, so the fold divides
 it by its row sum. `floor_read` and `floor_write` name each side's dense levels, a bit a level:
-their zero digits, in a live row, read as the floor ([`../facts/liveness_contract.md#floor`](../facts/liveness_contract.md#floor)).
+their rows are f16 with the floor stored, and a zero, in a live row, reads as the floor
+([`../facts/liveness_contract.md#floor`](../facts/liveness_contract.md#floor)).
 `g_bf16` names the gain's storage type; the fold branches on it once a step, never per element ([`decode_fold.md#the-dtype-arms`](decode_fold.md#the-dtype-arms)).
 
 `level_amp_offset[l]` is where level `l`'s staged amplitude row starts inside the flat
@@ -1025,8 +1026,8 @@ lever there is the page's layout, not the walk.
 <a id="coefficient-rows"></a>
 ## The coefficient rows, as the bundle holds them
 
-The step reads the bundle's rows as they are (ruled 2026-10-03/04): u8 unit-max digits, a dense
-write level's f16 at 1 with its floor stored, each row beside its fp32 max; the write gain fp32 or bf16; the value in f16 against its
+The step reads the bundle's rows as they are (ruled 2026-10-03/04/07): u8 unit-max digits, a dense
+level's f16 at 1 with its floor stored (either side), each row beside its fp32 max; the write gain fp32 or bf16; the value in f16 against its
 largest channel, and the fp32 token scale. The host entry refuses any other type -- the bundle
 refuses the same at construction, so a refusal here
 names a direct caller of the ABI. How the fold turns each into a staged amplitude:

@@ -51,8 +51,8 @@ __device__ __forceinline__ void fold_digits(const DecodeParams& p, int b, int h,
     const int digit = ((word - p.mask_off[l]) << 5) + lane;
     const bool valid = s < 2 * slots && digit < p.level_width[l];
     const Span& rows = write_side ? p.write[l] : p.read[l];
-    //: on the byte scale: a u8 digit, or a dense write level's f16 coefficient (its floor stored) times 255, exact
-    const bool half = write_side && ((p.floor_write >> l) & 1u) != 0u;
+    //: on the byte scale: a u8 digit, or a dense level's f16 coefficient (its floor stored) times 255, exact
+    const bool half = (((write_side ? p.floor_write : p.floor_read) >> l) & 1u) != 0u;
     x[j] = !valid ? 0.0f
            : half ? facts::kRowMaxDigit * __half2float(row_of<__half>(rows, b, h)[digit * rows.sw])
                   : static_cast<float>(row_of<uint8_t>(rows, b, h)[digit * rows.sw]);

@@ -82,10 +82,11 @@ struct ProduceParams {
   int64_t v_row;
   const int32_t* jobs;  // [n_jobs, kJobFields]
 
-  uint8_t* amp_read;   // [B, H, T, rows_read], u8: every output head-major (produce.md#bundle)
+  uint8_t*
+      amp_read;  // [B, H, T, rows_read], u8: the sparse read levels; every output head-major (produce.md#bundle)
   uint8_t* amp_write;  // [B, H, T, rows_write], u8: the sparse write levels
-  __half*
-      dense_write;  // [B, H, T, dense_rows], f16: the dense write levels, floored, or null (produce.md#dense)
+  __half* dense
+      [2];  // [B, H, T, dense_rows[side]], f16: a side's dense levels, floored, or null (produce.md#dense)
   float* scale_read;  // [B, H, T, D]
   float* scale_write;
   float* mass_read;  // [B, H, T, D], the finisher's operands
@@ -100,8 +101,10 @@ struct ProduceParams {
   long long* ledger;   // [jobs, warps, phases] or null
   int16_t shapes[kMaxJobs];  // a job's shape word (produce.md#jobs), by block index
 
-  int BT, T, hidden, H, C, G, rows_read, rows_write, dense_rows, D, d_v, route_jobs_per_head;
-  int dense_mask;  // the dense write levels, a bit a level: their rows go to `dense_write`
+  int BT, T, hidden, H, C, G, rows_read, rows_write, D, d_v, route_jobs_per_head;
+  int dense_rows[2];
+  int dense_mask
+      [2];  // a side's dense levels (read 0, write 1), a bit a level: their rows go to `dense[side]`
 };
 
 }  // namespace produce

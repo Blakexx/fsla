@@ -45,7 +45,7 @@ readout is the only normalization the family has.
 
 **The operands are the bundle's internal format** ([`api.md`
  §2.1](api.md#21-the-bundle-is-the-contract-and-it-is-the-internal-format)):
-each routing level's rows are u8 digits unit-max against the row's fp32 maximum (a dense write level's rows f16 at 1,
+each routing level's rows are u8 digits unit-max against the row's fp32 maximum (a dense level's rows f16 at 1,
 the dense floor stored: [`liveness_contract.md#floor`](internals/facts/liveness_contract.md#floor)), and each token's
 values are f16 against its largest channel with an fp32 scale (`rola/values.py`). Nothing floating is stored between
 the producer and the kernels.

@@ -153,27 +153,31 @@ def test_a_dense_levels_zero_digit_reads_as_the_floor_in_a_live_row_only():
 
 
 def test_rows_are_u8_at_every_depth():
-    """RULED 2026-10-03: the producer writes u8 rows at every depth, each against its own max -- a dense WRITE level's
-    rows f16 at the floor (2026-10-04), and every side has a dense level (2026-10-08); a row of any other type is
-    refused, and a deep bundle dequantizes to its levels within half a digit a row."""
+    """RULED 2026-10-03: the producer writes u8 rows at every depth, each against its own max -- a dense level's rows
+    f16 at the floor (the write side 2026-10-04, the read side 2026-10-07), and every side has a dense level
+    (2026-10-08); a row of any other type is refused, and a deep bundle dequantizes to its levels within half a digit a
+    row."""
     from rola.routing.types import OpaqueRouting, Topology
 
     deep = Topology(levels=tuple(OpaqueRouting(width=4) for _ in range(3)))
     level = torch.rand(1, 2, 1, 4, dtype=torch.float64) + 0.1
     sparse = ((False, True, True), (False, True, True))
     bundle = RouteFactors.from_levels(deep, (level,) * 3, (level,) * 3, torch.ones(1, 2, 1), sparse=sparse)
-    assert all(row.dtype is torch.uint8 for row in bundle.amp_read + bundle.amp_write[1:])
-    assert bundle.amp_write[0].dtype is torch.float16
+    assert all(row.dtype is torch.uint8 for row in bundle.amp_read[1:] + bundle.amp_write[1:])
+    assert bundle.amp_read[0].dtype is torch.float16 and bundle.amp_write[0].dtype is torch.float16
     with pytest.raises(ValueError, match="every read level sparse"):
         RouteFactors.from_levels(deep, (level,) * 3, (level,) * 3, torch.ones(1, 2, 1),
                                  sparse=((True,) * 3, (False, True, True)))
     for got in bundle.dequantized()[0]:
         top = level.amax(-1, keepdim=True)
         assert ((got.double() - level).abs() <= top / 510 * (1 + 2 ** -20)).all()
+    from rola.routing import quant
+
+    wrong = list(bundle.amp_read)
+    wrong[1] = quant.quantize_unit_max_rows(level, quant.DENSE_DTYPE)[0]
     with pytest.raises(TypeError, match="stored as torch.uint8"):
-        RouteFactors(topology=deep, amp_read=[r.to(torch.float16) for r in bundle.amp_read],
-                     amp_write=[r.to(torch.float16) for r in bundle.amp_write], scale_read=bundle.scale_read,
-                     scale_write=bundle.scale_write, g_write=bundle.g_write)
+        RouteFactors(topology=deep, amp_read=wrong, amp_write=bundle.amp_write, scale_read=bundle.scale_read,
+                     scale_write=bundle.scale_write, g_write=bundle.g_write, sparse=sparse)
 
 
 def test_the_op_refuses_anything_that_is_not_a_bundle():
@@ -276,8 +280,8 @@ def test_a_producer_outside_the_framework_still_emits_the_format_or_nothing():
 
     producer = Uniform()
     factors = producer(_x(producer))
-    assert factors.amp_read[0].dtype is torch.uint8 and factors.amp_write[0].dtype is torch.float16
-    assert torch.equal(factors.amp_read[0], torch.full_like(factors.amp_read[0], 255)), "a flat row is all 255s"
+    assert factors.amp_read[0].dtype is torch.float16 and factors.amp_write[0].dtype is torch.float16
+    assert torch.equal(factors.amp_read[0], torch.ones_like(factors.amp_read[0])), "a flat dense row is all ones"
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
     _admitted(factors, v)
     assert torch.isfinite(_oracle(factors, v)).all()
@@ -328,14 +332,18 @@ def test_the_public_levels_are_the_formats_rows_dequantized():
     """
     producer = _routes(widths=(4, 6))
     factors = _factors(producer)
-    #: RULED 2026-09-26: the u8 rows and their scales ARE the stored layout; the dequantized levels are computed
-    #: at a consumer's seam, for consumers that still compute on floating levels.
+    #: RULED 2026-09-26: the rows (u8, a dense level's f16) and their scales ARE the stored layout; the dequantized
+    #: levels are computed at a consumer's seam, for consumers that still compute on floating levels.
+    from rola.routing import quant
+
     read, _ = factors.dequantized()
     for level, (rows, scale, public) in enumerate(zip(factors.amp_read, factors.scale_read, read)):
-        assert rows.dtype is torch.uint8 and tuple(rows.shape) == tuple(public.shape)
-        assert torch.equal(rows.amax(dim=-1), torch.full_like(rows.amax(dim=-1), 255)), (
+        dense = not factors.sparse[0][level]
+        assert rows.dtype is factors.row_dtype(level, "read") and tuple(rows.shape) == tuple(public.shape)
+        top = 1 if dense else 255
+        assert torch.equal(rows.amax(dim=-1), torch.full_like(rows.amax(dim=-1), top)), (
             f"level {level}'s rows are not unit-max")
-        assert torch.allclose(rows.to(public.dtype) / 255 * scale.unsqueeze(-1), public.detach()), (
+        assert torch.allclose(quant.dequantize_rows(rows, scale, dense).to(public.dtype), public.detach()), (
             f"level {level}'s public level is not its rows dequantized")
 
 
