@@ -40,11 +40,20 @@ added. An entry carries the row's chunk-0 offset, so a lane addresses its chunk 
 <a id="fill"></a>
 ## The fill
 
-A ring fill: a range of union slots, each its token's row -- the side's operand slices at 64 bytes each, then on the
+A chunk's fill issues its copies; the caller arrives on the buffer's landed barrier (`carry_kernel.md#barriers`).
+`fill` copies a range of union slots, each its token's row -- the side's operand slices at 64 bytes each, then on the
 write side its values at the box's channels -- swizzled, by `cp.async` over all 256 threads (a slice's 16-byte runs, 8
-or 4 under 16, `stage_bytes`), each thread arriving on the slot's barrier when its copies land
-(`cp.async.mbarrier.arrive.noinc`). A GAP slot (its token `kGap`, [`carry.md`](carry.md#lists)) is zero-filled: no list
-entry names it but a pad may, whose coefficient 0 then multiplies zeros, and its fill reads nothing.
+or 4 under 16, `stage_bytes`). A GAP slot (its token `kGap`, [`carry.md`](carry.md#lists)) is zero-filled and reads
+nothing. `read_fill` adds the read buffer's dummy panel rows and panel, zero-filled for the plan's chunk (a zero quantum
+reads nothing), and the chunk's entries; `fold_fill` (`fold.md#chunk`) the write chunk's rows and entries.
+
+<a id="entries"></a>
+## The entries
+
+A buffer holds its chunk's entries as the box lists' runs in list order: `chunk_runs` gives lane `l` list `l`'s first
+entry of the chunk (`chunk_entries`), its count, and its place (the lists' counts before it, a shuffle scan), the same
+in every warp; `entries_fill` copies a warp's own lists' runs (`warp + 8 j`), 8 bytes a lane. A consumer takes its
+list's place and count from its own scan, so no warp waits on another for them.
 
 <a id="maxima"></a>
 ## The digit maxima
@@ -66,19 +75,19 @@ bits down to 24 octaves under its digit's largest.
 
 A digit's plane is its 32 lists x 32 channels at f16, 2 KB, its 16-byte units at `unit_of(l, k, d)`: the list's four
 chunks, the chunk XORed by the list's second and third bits, the unit XORed by the digit's residue. A part's planes
-hold its digits (`d % kPlanes`). The fold's stores (a lane a list row's 4-byte word) and the readout's `ldmatrix.trans`
+hold a digit at plane `d & 31` (the whole image) or `d & 7` (a ring's batch). The fold's stores (a lane a list row's 4-byte word) and the readout's `ldmatrix.trans`
 (8 lists' 16-byte chunks) are both conflict-free on it.
 
 <a id="store"></a>
-## A part's stores
+## A batch's stores
 
-`store_part<P, Part>`: every warp stores its 4 lists' rows of the part's digits (whole m-tiles), each value times
-`2^(u + kImageTop - e)` for its list's unit `u` and its digit's exponent `e`, packed f16 (32 stores a lane a part on
-sm_86). A lane's unit for list `w + 8 j` is its unit for list `w`, 32 units on (`units_step_by_list`), and a channel
+`store_batches<P>`: every warp stores its 4 lists' rows of the batches' digits (a batch half an m-tile of each list:
+8 digits), each value times `2^(u + kImageTop - e)` for its list's unit `u` and its digit's exponent `e`, packed f16
+(16 stores a lane a batch). A lane's unit for list `w + 8 j` is its unit for list `w`, 32 units on (`units_step_by_list`), and a channel
 tile's chunk its unit XORed by the tile (the image 128-byte aligned), so a lane's stores are four bases and a list
 offset; the factor is held to a normal float's range (below it the f16 is zero; above it the list's accumulators are
-under 2^-117 of its unit). Warp 0 records the part's exponents for the readers (`kExps`). The part is compile-time: the
-state's registers are indexed by it.
+under 2^-117 of its unit). Warp 0 records the batches' exponents for the readers (`kExps`). Each batch's code is
+compiled and selected by a uniform test: the state's registers are indexed by the batch.
 
 <a id="pair"></a>
 ## The exact pair
@@ -98,8 +107,8 @@ scales and `kappa` are common to `num` and `den` and cancel in the epilogue. Gat
 slot within half its bound in fp32 (~4e-4 relative, the image's rounding) and a fifth of it in fp16. The dense-dense
 arm's branch waits on its fold's reference (the fold, build order 5).
 
-`readout_part`, a warp's: each of its digits in the part, its state fragments from the image (the A operand: 32 channels
-x 32 lists, four `ldmatrix.trans`) and its exponent, then its tiles over the pass. A TILE is 8 tokens on N: their read
+`read_chunk`, a warp's: each of its digits in the batches, its state fragments from its image plane (the A operand: 32
+channels x 32 lists, four `ldmatrix.trans`) and its exponent, then its tiles over the chunk. A TILE is 8 tokens on N: their read
 rows by one `ldmatrix.x4` (B: 32 lists x 8 tokens), four MMAs accumulating in the device's form (fp16 on GeForce, fp32
 where fp32 accumulate runs at full rate:
 [`carry_api.md#carry-readout-accumulate`](carry_api.md#carry-readout-accumulate); the fp16 accumulator converted to fp32
@@ -107,19 +116,19 @@ for the pairs), each lane's two tokens' outputs as exact pairs added by `red.sha
 holds entry `l & 7` (its token's row, so the B load needs no shuffle) and scales its coefficient to the token's unit: `c
 2^(e - kImageTop - kCoefTop - u)`, the exponent added to the fp32 coefficient's bits (`e` the digit's exponent, `u` the
 token's unit byte, looked up by the token's window place the entry carries); each lane takes its two tokens' scales and
-panel offsets by four shuffles. A listed side's tiles take the list's entries of the pass's slots
-(`chunk_entries`), read in place; the entries' offsets are the union's, so the pass's pool and panel are taken back by
-its first slot's (`first x row` and `64 first` bytes), and a lane past the entries holds `masked_entry` -- its place's
-row, coefficient 0, a dummy panel row -- so its products add an exact zero. A side with no list level takes every slot
-of the pass, its entry implied -- the slot's row, its token (the pass's first plus the slot), its panel row (a slot past
-the pass's end its place's dummy row), its coefficient the digit's f16 in the row's coefficient slice (its second). Each source is its own loop, so each step is one block
-(KERNEL_STANDARDS §27), guarded by a vote and closed by one.
+panel offsets by four shuffles. A listed side's tiles take the digit's run from the buffer's entries (`#entries`); the
+entries' offsets are the union's, so the chunk's pool and panel are taken back by its first slot's (`first x row` and
+`64 first` bytes), and a lane past the run holds `masked_entry` -- its place's row, coefficient 0, a dummy panel row --
+so its products add an exact zero. A side with no list level takes every slot of the chunk, its entry implied -- the
+slot's row, its token (the chunk's first plus the slot), its panel row (a slot past the chunk's end its place's dummy
+row), its coefficient the digit's f16 in the row's coefficient slice (its second). Each source is its own loop, so each
+step is one block (KERNEL_STANDARDS §27), guarded by a vote and closed by one.
 
 
-The PANEL is the pass's slots' 64-byte rows after 8 dummy rows (`kPadBytes`, one a residue), laid out in pairs: slots
+The PANEL is the chunk's slots' 64-byte rows after 8 dummy rows (`kPadBytes`, one a residue), laid out in pairs: slots
 `2k` and `2k + 1` share a 128-byte line, each slot's two 32-byte halves at the segments its pair's residue bits XOR
 (`csrc/rola/src/carry/carry.cuh`'s `panel_row`). A panel add touches 4 tokens' 8 words at one half; a tile of 8
-distinct residues (a dense pass's consecutive slots) meets 32 banks an add. Measured by the bank model (2026-10-12):
+distinct residues (a dense chunk's consecutive slots) meets 32 banks an add. Measured by the bank model (2026-10-12):
 1.00 wavefronts an add on dense tiles against 4.00 for plain 64-byte rows (every add's 4 tokens on one half), and 2.1
 against 2.75 on a list's rank slots; the drain 1.00 a request either way. An entry's panel offset is from
 the dummy rows, so it fits its 16 bits on every card; a lane XORs its half (`32 m`) and adds its word (`4 g`).
@@ -128,10 +137,10 @@ the dummy rows, so it fits its 16 bits on every card; a lane XORs its half (`32 
 <a id="drain"></a>
 ## The drain
 
-A pass's panel to `num`: each slot's 16 words added as u32 atomics at its token (two tokens a warp request, a slot
-pair's one line), each word cleared for the next pass. A thread keeps one word of every 16th slot -- 16 slots on, its
-panel cell is 1 KB on, the swizzle's bits unchanged, so its cells are one address and an add -- and takes two slots a
-step, loaded and cleared before their adds; an add is predicated on its word, so a gap slot's zero adds nothing and
+A chunk's panel to `num`, once every warp has read the chunk: each slot's 16 words added as u32 atomics at its token
+(two tokens a warp request, a slot pair's one line); the next fill zeroes the panel. A thread keeps one word of every
+16th slot -- 16 slots on, its panel cell is 1 KB on, the swizzle's bits unchanged, so its cells are one address and an
+add -- and takes two slots a step, loaded before their adds; an add is predicated on its word, so a gap slot's zero adds nothing and
 the step does not branch. CTAs join only here (R22: independent
 units, joined by atomics). The panel's word pairs channels (c, c + 8); the output's format follows it. At nl64k-alt-k4
 the drain is ~2.2K cycles a warp-window of its own, near the chip's global-atomic rate (~0.15 chip clocks a warp

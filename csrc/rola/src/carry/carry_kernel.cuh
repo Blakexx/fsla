@@ -1,29 +1,59 @@
-// csrc/rola/src/carry/carry_kernel.cuh -- THE CARRY KERNEL: one CTA a box, readout-first windows -- the state before
-// the window's writes handed to the image part by part and read out pass by pass, then the window's writes folded in
-// -- the fp32 state in registers throughout, every async copy landing on an mbarrier. see
-// docs/internals/carry/carry_kernel.md
+// csrc/rola/src/carry/carry_kernel.cuh -- THE CARRY KERNEL: one CTA a box, window by window under the window's plan
+// (`schedule.cuh`): the state before the window's writes handed to the image and read out chunk by chunk, then the
+// window's writes folded in chunk by chunk -- the fp32 state in registers throughout, every buffer's copies landing on
+// a barrier, every reuse waiting for its last readers. see docs/internals/carry/carry_kernel.md
 #pragma once
 
 #include "carry/fold.cuh"
+#include "carry/schedule.cuh"
 #include "common/phase_clock.cuh"
 
 namespace rola::carry {
 
-//: THE WINDOW'S INPUTS, a window ahead, by every thread: both sides' lists, the write exponents and token units;
-//: landing on the staging barrier. -- see docs/internals/carry/carry_kernel.md#staging
+//: THE WINDOW'S INPUTS, a window ahead, by every thread: both sides' lists, the write exponents and token units.
+//: -- see docs/internals/carry/carry_kernel.md#staging
 template <class P>
 __device__ __forceinline__ void stage_window(const CarryParams& p, const Place& c, int w,
-                                             uint8_t* smem, ops::SmemAddr bar) {
+                                             uint8_t* smem) {
   const Window rw = window_of<P>(p, smem, kRead, w), ww = window_of<P>(p, smem, kWrite, w);
   lists_in<P>(p, p.read_lists, rw, c, w, smem, kRead);
   lists_in<P>(p, p.write_lists, ww, c, w, smem, kWrite);
   facts_in<P>(p, ww, c, w, smem);
-  ops::mbar_arrive_when_landed(bar);
 }
 
-//: THE KERNEL, a grid constant block in, one CTA an SM: grid `(boxes, batch-heads)`. The readout ring's two slots take
-//: the window's passes then the fold's first unit; the fold's ring over the image and the panel takes the rest.
-//: -- see docs/internals/carry/carry_kernel.md#kernel
+//: A THREAD'S ARRIVALS: a bit a barrier, flipped at each of its arrivals. Every thread arrives at every phase of every
+//: barrier, and a wait is for the phase of the thread's own last arrival, so the bit names its parity (a barrier never
+//: arrived at passes: its phase before the first). -- see docs/internals/carry/carry_kernel.md#barriers
+struct Arrivals {
+  ops::SmemAddr bars;
+  uint32_t bits;
+
+  __device__ __forceinline__ ops::SmemAddr at(int b) const {
+    return bars + 8u * static_cast<uint32_t>(b);
+  }
+
+  __device__ __forceinline__ void arrive(int b) {
+    ops::mbar_arrive(at(b));
+    bits ^= 1u << b;
+  }
+
+  __device__ __forceinline__ void landed(int b) {
+    ops::mbar_arrive_when_landed(at(b));
+    bits ^= 1u << b;
+  }
+
+  __device__ __forceinline__ void wait(int b) const {
+    ops::mbar_wait(at(b), ((bits >> b) & 1u) ^ 1u);
+  }
+
+  //: the release's phase, which a window may leave unwaited, waited once every warp has posted the next window's
+  //: maxima (it is complete), so a thread observes each phase before it arrives at the next; every other barrier is
+  //: arrived at only where a later wait in its window takes it
+  __device__ __forceinline__ void settle() const { wait(kBarReleased); }
+};
+
+//: THE KERNEL, a grid constant block in, one CTA an SM: grid `(boxes, batch-heads)`. A window: the maxima; the readout
+//: in its plan's form; the next window's plan; the fold chunk by chunk. -- see docs/internals/carry/carry_kernel.md#kernel
 template <class Arm>
 __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constant__ CarryParams p) {
   using P = Plan<Arm>;
@@ -37,45 +67,61 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   PhaseClock<kCarryPhases, true> clock(
       reinterpret_cast<long long*>(smem + P::kClock) + warp * PhaseClock<kCarryPhases, true>::kRow,
       lane, p.ledger != nullptr);
-  //: the barriers: the readout ring's two, the fold ring's, then the window's staging
-  const ops::SmemAddr bars = ops::smem_addr(smem + P::kBars);
-  const ops::SmemAddr staged = bars + 8 * (2 + P::kFoldRing);
-  if (threadIdx.x == 0)
-    static_for<3 + P::kFoldRing>([&](auto b) { ops::mbar_init(bars + 8 * b, kThreads); });
+  Arrivals bar{ops::smem_addr(smem + P::kBars), 0u};
+  if (threadIdx.x == 0) static_for<kBarCount>([&](auto b) { ops::mbar_init(bar.at(b), kThreads); });
   if (static_cast<int>(threadIdx.x) < kBoxLists)
     reinterpret_cast<UnitBook*>(smem + P::kBook)[threadIdx.x] = UnitBook{kUnitNone, 0.0f};
   if (threadIdx.x == 0) addr_in(*reinterpret_cast<Addr*>(smem + P::kAddr), p, c);
-  //: the panel and its dummy rows start at zero
-#pragma unroll 1
-  for (int i = static_cast<int>(threadIdx.x); i < (kPadBytes + P::kPanelBytes) / 16; i += kThreads)
-    reinterpret_cast<uint4*>(smem + P::kPads)[i] = make_uint4(0u, 0u, 0u, 0u);
   ops::rendezvous();
 
-  //: the readout ring's slot `k`, an address computed rather than an array indexed at run time
-  const auto ring = [&](int k) {
-    return ops::smem_addr(smem + P::kRing0) + static_cast<uint32_t>(k * (P::kRing1 - P::kRing0));
+  const ops::SmemAddr area = ops::smem_addr(smem + P::kEnd);
+  const auto rw = [&](int w) { return window_of<P>(p, smem, kRead, w); };
+  const auto ww = [&](int w) { return window_of<P>(p, smem, kWrite, w); };
+  const auto at16 = [&](uint32_t k) { return area + 16u * k; };
+  //: READ CHUNK `q` of window `w` into read buffer `q & 1` (of one, 0); FOLD CHUNK `k` into fold buffer `k & 1`
+  const auto read_in = [&](int w, int q) {
+    volatile WindowPlan& pl = plan_of<P>(smem, warp, w);
+    const int s = q & (pl.rbufs - 1), first = q * pl.rchunk,
+              slots = min(static_cast<int>(pl.rchunk), pl.runion - first);
+    const ops::SmemAddr buf = at16(pl.rbuf[s]);
+    read_fill<P>(p, smem, rw(w), c, w, first, slots, pl.runion, pl.rchunk, buf,
+                 buf + 16u * pl.rents, warp, lane);
+    bar.landed(kBarReadLanded + s);
   };
-  //: a fold ring slot's pool: the image's units, then the panel's
-  const auto fold_slot = [&](int k) {
-    return k < P::kImageUnits
-               ? ops::smem_addr(smem + P::kImage) + k * P::kUnitBytes
-               : ops::smem_addr(smem + P::kPanel) + (k - P::kImageUnits) * P::kUnitBytes;
+  const auto fold_in = [&](int w, int k) {
+    volatile WindowPlan& pl = plan_of<P>(smem, warp, w);
+    const int s = k & 1, first = k * pl.fchunk,
+              slots = min(static_cast<int>(pl.fchunk), pl.funion - first);
+    const ops::SmemAddr buf = at16(pl.fbuf[s]);
+    fold_fill<P>(p, smem, ww(w), c, w, first, slots, pl.funion, buf, buf + 16u * pl.fents, warp,
+                 lane);
+    bar.landed(kBarFoldLanded + s);
   };
-  //: the fills: read pass `q` of window `w`, and fold unit `u`, into a pool landing on `bar`
-  const volatile Addr& addr = *reinterpret_cast<const volatile Addr*>(smem + P::kAddr);
-  const auto fill_read = [&](int w, int q, ops::SmemAddr pool, ops::SmemAddr bar) {
-    const Window rw = window_of<P>(p, smem, kRead, w);
-    const int first = q * P::kPassSlots;
-    fill<P::kReadFactors, false>(
-        addr.slices[kRead], nullptr, 0, union_of<P>(smem, kRead, w), rw, first,
-        max(0, min(slots_of<P>(smem, rw, kRead, w) - first, P::kPassSlots)), pool, bar);
+  //: A READ CHUNK'S TILES over batches `lo .. hi - 1` of the image at `image` (planes `d & mask`)
+  const auto read_out = [&](int w, int q, int lo, int hi, ops::SmemAddr image, uint32_t mask) {
+    volatile WindowPlan& pl = plan_of<P>(smem, warp, w);
+    const int s = q & (pl.rbufs - 1), first = q * pl.rchunk,
+              slots = min(static_cast<int>(pl.rchunk), pl.runion - first);
+    const ops::SmemAddr buf = at16(pl.rbuf[s]),
+                        pads = buf + static_cast<uint32_t>(align_of(pl.rchunk * P::kReadRow, 128));
+    if (p.readout_f16) {
+      read_chunk<P, true>(smem, rw(w), w, first, slots, pl.runion, lo, hi, image, mask, buf, pads,
+                          buf + 16u * pl.rents, warp, lane);
+    } else {
+      read_chunk<P, false>(smem, rw(w), w, first, slots, pl.runion, lo, hi, image, mask, buf, pads,
+                           buf + 16u * pl.rents, warp, lane);
+    }
   };
-  const auto fill_unit = [&](int w, int u, ops::SmemAddr pool, ops::SmemAddr bar) {
-    const Window ww = window_of<P>(p, smem, kWrite, w);
-    const int first = u * P::kUnitSlots;
-    fill<P::kFoldFactors, true>(
-        addr.slices[kWrite], addr.values, p.values.st, union_of<P>(smem, kWrite, w), ww, first,
-        max(0, min(slots_of<P>(smem, ww, kWrite, w) - first, P::kUnitSlots)), pool, bar);
+  //: A READ CHUNK'S DRAIN, once every warp has read it; its buffer freed where a later fill waits for it
+  const auto drain_out = [&](int w, int q, bool refill) {
+    volatile WindowPlan& pl = plan_of<P>(smem, warp, w);
+    const int s = q & (pl.rbufs - 1), first = q * pl.rchunk,
+              slots = min(static_cast<int>(pl.rchunk), pl.runion - first);
+    bar.wait(kBarReadDone + s);
+    drain<P>(p, smem, rw(w), c, w, first, slots,
+             at16(pl.rbuf[s])
+                 + static_cast<uint32_t>(align_of(pl.rchunk * P::kReadRow, 128) + kPadBytes));
+    if (refill) bar.arrive(kBarReadFree + s);
   };
 
   State<P> st;
@@ -84,147 +130,169 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       static_for<4>([&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] = 0.f; }); });
     });
   });
-  //: the readout ring's next fill to consume (slot `f & 1`), and each slot's barrier phase as a bit
-  int f = 0;
-  uint32_t ring_par = 0u, fold_par = 0u;
 
-  stage_window<P>(p, c, 0, smem, staged);
-  ops::mbar_wait(staged, 0u);
-  fill_read(0, 0, ring(0), bars);
+  stage_window<P>(p, c, 0, smem);
+  bar.landed(kBarStaged);
+  bar.wait(kBarStaged);
+  plan_window<P>(p, smem, 0, warp, lane);
+  if (plan_of<P>(smem, warp, 0).runion > 0) read_in(0, 0);
 
 #pragma unroll 1
   for (int w = 0; w < p.windows; ++w) {
-    //: a side's window read from the tenant at each use, so none of it holds a register across the window
-    const auto rw = [&] { return window_of<P>(p, smem, kRead, w); };
-    const auto ww = [&] { return window_of<P>(p, smem, kWrite, w); };
     const bool next = w + 1 < p.windows;
-    const int read_slots = slots_of<P>(smem, rw(), kRead, w),
-              write_slots = slots_of<P>(smem, ww(), kWrite, w);
-    const int passes = max(1, (read_slots + P::kPassSlots - 1) / P::kPassSlots);
-    const int units = max(1, (write_slots + P::kUnitSlots - 1) / P::kUnitSlots);
+    volatile WindowPlan& pl = plan_of<P>(smem, warp, w);
+    const int rchunks = pl.rchunks, fchunks = pl.fchunks;
 
-    //: THE DIGIT MAXIMA of the state before the window's writes
+    //: THE DIGIT MAXIMA of the state before the window's writes, every warp's posted: so every warp is past the window
+    //: before, and its buffers and the other parity's tenants are free
     post_maxima<P>(st, smem, warp, lane);
+    bar.arrive(kBarPosted);
+    bar.wait(kBarPosted);
+    bar.settle();
     clock.lap(kPhaseMaxima);
+    if (next) {
+      stage_window<P>(p, c, w + 1, smem);
+      bar.landed(kBarStaged);
+    }
+    if (fchunks > 0 && pl.beside) fold_in(w, 0);
 
-#pragma unroll 1
-    for (int q = 0; __any_sync(0xffffffffu, q < passes); ++q) {
-      //: THE NEXT FILL into the other slot: the next pass, or after the last the fold's first unit
-      const int slot = f & 1;
-      if (q + 1 < passes) {
-        fill_read(w, q + 1, ring(slot ^ 1), bars + 8 * (slot ^ 1));
-      } else {
-        fill_unit(w, 0, ring(slot ^ 1), bars + 8 * (slot ^ 1));
-      }
-      ops::mbar_wait(bars + 8 * slot, (ring_par >> slot) & 1u);
-      ring_par ^= 1u << slot;
+    const int form = pl.form;
+    if (form == kFormUnion && rchunks > 0) {
+      //: THE UNION RESIDENT: the image a ring of batches, each stored, read over the union, its slot freed
+      store_batches<P>(st, smem, area, 0, 1, kBatchPlanes - 1, warp, lane);
+      bar.arrive(kBarStored);
+      store_batches<P>(st, smem, area + kImageRing / 2, 1, 2, kBatchPlanes - 1, warp, lane);
+      bar.arrive(kBarStored + 1);
+      clock.lap(kPhaseStore);
+      bar.wait(kBarReadLanded);
       clock.lap(kPhaseLanded);
-      const int first = q * P::kPassSlots, slots = min(read_slots - first, P::kPassSlots);
-      //: THE HAND-OFF AND THE READOUT, part by part
-      static_for<P::kParts>([&](auto Part) {
-        ops::rendezvous();
-        store_part<P, Part>(st, smem, warp, lane);
-        ops::rendezvous();
+      int b = 0;
+#pragma unroll 1
+      do {
+        const int s = b & 1;
+        const ops::SmemAddr slot = area + static_cast<uint32_t>(s * kImageRing / 2);
+        bar.wait(kBarStored + s);
         clock.lap(kPhaseStore);
-        if (p.readout_f16) {
-          readout_part<P, true>(p, smem, rw(), c, w, q, slots, Part, ring(slot), warp, lane);
-        } else {
-          readout_part<P, false>(p, smem, rw(), c, w, q, slots, Part, ring(slot), warp, lane);
-        }
+        read_out(w, 0, b, b + 1, slot, kBatchPlanes - 1);
         clock.lap(kPhaseReadout);
-      });
-      ops::rendezvous();
-      //: the image is free once the last pass is read: the fold ring's image units fill under the drain, and a
-      //: resident fold's next window's inputs come in beside them
-      if (q + 1 == passes) {
+        if (b + 2 < kBatches) {
+          bar.arrive(kBarImageFree + s);
+          bar.wait(kBarImageFree + s);
+          store_batches<P>(st, smem, slot, b + 2, b + 3, kBatchPlanes - 1, warp, lane);
+          bar.arrive(kBarStored + s);
+          clock.lap(kPhaseStore);
+        }
+      } while (__any_sync(0xffffffffu, ++b < kBatches));
+      bar.arrive(kBarReadDone);
+      drain_out(w, 0, false);
+    } else if (form != kFormUnion) {
+      //: THE IMAGE WHOLE, stored once; or (tiled) a ring of batches stored again for each chunk
+      if (form == kFormImage) {
+        store_batches<P>(st, smem, area, 0, kBatches, kBoxDigits - 1, warp, lane);
+        bar.arrive(kBarStored);
+        bar.wait(kBarStored);
+        clock.lap(kPhaseStore);
+      }
+      //: two read buffers: the chunk before drained once every warp has read it, then the next chunk into its buffer;
+      //: one: the chunk drained, then the next into it
+      const bool two = pl.rbufs == 2;
+      int q = 0;
+      for (int go = __any_sync(0xffffffffu, rchunks > 0) ? 1 : 0; go > 0; --go)
 #pragma unroll 1
-        for (int u = 1; u < min(units, 1 + P::kImageUnits); ++u)
-          fill_unit(w, u, fold_slot(u - 1), bars + 8 * (1 + u));
-        if constexpr (P::kResident)
-          if (next) stage_window<P>(p, c, w + 1, smem, staged);
-      }
-      drain<P>(p, smem, rw(), c, w, first, max(slots, 0));
-      clock.lap(kPhaseDrain);
-      ++f;
+        do {
+          const int s = two ? q & 1 : 0;
+          if (two && q >= 1) drain_out(w, q - 1, q + 1 < rchunks);
+          clock.lap(kPhaseDrain);
+          if (two && q + 1 < rchunks) {
+            bar.wait(kBarReadFree + (s ^ 1));
+            read_in(w, q + 1);
+          }
+          bar.wait(kBarReadLanded + s);
+          clock.lap(kPhaseLanded);
+          if (form == kFormImage) {
+            read_out(w, q, 0, kBatches, area, kBoxDigits - 1);
+            clock.lap(kPhaseReadout);
+          } else {
+            int b = 0;
+            do {
+              const int r = b & 1;
+              const ops::SmemAddr slot = area + static_cast<uint32_t>(r * kImageRing / 2);
+              if (b >= 2 || q >= 1) bar.wait(kBarImageFree + r);
+              store_batches<P>(st, smem, slot, b, b + 1, kBatchPlanes - 1, warp, lane);
+              bar.arrive(kBarStored + r);
+              bar.wait(kBarStored + r);
+              clock.lap(kPhaseStore);
+              read_out(w, q, b, b + 1, slot, kBatchPlanes - 1);
+              if (b + 2 < kBatches || q + 1 < rchunks) bar.arrive(kBarImageFree + r);
+              clock.lap(kPhaseReadout);
+            } while (__any_sync(0xffffffffu, ++b < kBatches));
+          }
+          bar.arrive(kBarReadDone + s);
+          if (!two) {
+            drain_out(w, q, q + 1 < rchunks);
+            clock.lap(kPhaseDrain);
+            if (q + 1 < rchunks) {
+              bar.wait(kBarReadFree);
+              read_in(w, q + 1);
+            }
+          }
+        } while (__any_sync(0xffffffffu, ++q < rchunks));
+      if (two && rchunks > 0) drain_out(w, rchunks - 1, false);
     }
+    bar.arrive(kBarReleased);
+    clock.lap(kPhaseDrain);
 
-    //: THE NEXT WINDOW'S INPUTS; resident, the panel's units and the next window's first pass into the last pass's
-    //: slot, before the fold
-    if constexpr (P::kResident) {
-      //: the panel's units once every thread's drain has cleared it
-      for (int k = ops::once(units > 1 + P::kImageUnits); k > 0; --k) {
-        ops::rendezvous();
-#pragma unroll 1
-        for (int u = 1 + P::kImageUnits; u < units; ++u)
-          fill_unit(w, u, fold_slot(u - 1), bars + 8 * (1 + u));
+    //: THE NEXT WINDOW'S PLAN, and its first read chunk now where it leaves the fold's buffers alone
+    bool early = false, late = false;
+    if (next) {
+      bar.wait(kBarStaged);
+      plan_window<P>(p, smem, w + 1, warp, lane);
+      volatile WindowPlan& nx = plan_of<P>(smem, warp, w + 1);
+      early = nx.runion > 0 && (fchunks == 0 || nx.rbuf[1] <= pl.fzone);
+      if (early) {
+        bar.wait(kBarReleased);
+        read_in(w + 1, 0);
       }
-      if (next) {
-        ops::mbar_wait(staged, static_cast<uint32_t>((w + 1) & 1));
-        fill_read(w + 1, 0, ring((f + 1) & 1), bars + 8 * ((f + 1) & 1));
-      }
-    } else if (next) {
-      stage_window<P>(p, c, w + 1, smem, staged);
+      late = !early && nx.runion > 0;
     }
+    clock.lap(kPhasePlan);
 
-    //: THE FOLD, unit by unit: unit 0 in the readout ring, the rest in the fold ring
+    //: THE FOLD, chunk by chunk: a buffer's fill waits for its last readers, and over the readout's zone for its release
     uint32_t cf[P::kFoldLists];
     float fs[P::kFoldLists];
-    fold_units<P>(cf, fs, smem, ww(), w, warp, lane);
-    const ops::SmemAddr image = ops::smem_addr(smem + P::kImage),
-                        panel = ops::smem_addr(smem + P::kPanel);
-    if constexpr (P::kResident) {
-      //: THE RESIDENT FOLD: every unit landed, then each list once over them
-      ops::mbar_wait(bars + 8 * (f & 1), (ring_par >> (f & 1)) & 1u);
-      ring_par ^= 1u << (f & 1);
+    fold_units<P>(cf, fs, smem, ww(w), w, warp, lane);
+    int k = 0;
+    for (int go = __any_sync(0xffffffffu, fchunks > 0) ? 1 : 0; go > 0; --go)
 #pragma unroll 1
-      for (int u = 1; u < units; ++u) {
-        ops::mbar_wait(bars + 8 * (1 + u), (fold_par >> (u - 1)) & 1u);
-        fold_par ^= 1u << (u - 1);
-      }
-      clock.lap(kPhaseFill);
-      fold_unit<P>(p, st, cf, fs, smem, ww(), c, w, 0, write_slots, ring(f & 1), image, panel, warp,
-                   lane);
-      ops::rendezvous();
-      clock.lap(kPhaseFold);
-      ++f;
-    } else {
-#pragma unroll 1
-      for (int u = 0; __any_sync(0xffffffffu, u < units); ++u) {
-        const int k = (u - 1) % P::kFoldRing;
-        const ops::SmemAddr pool = u == 0 ? ring(f & 1) : fold_slot(k);
-        if (u == 0) {
-          ops::mbar_wait(bars + 8 * (f & 1), (ring_par >> (f & 1)) & 1u);
-          ring_par ^= 1u << (f & 1);
-        } else {
-          ops::mbar_wait(bars + 8 * (2 + k), (fold_par >> k) & 1u);
-          fold_par ^= 1u << k;
+      do {
+        const int s = k & 1;
+        if (k == 0 && !pl.beside) {
+          bar.wait(kBarReleased);
+          fold_in(w, 0);
         }
+        if (k + 1 < fchunks) {
+          bar.wait(kBarFoldFree + (s ^ 1));
+          if (pl.fbuf[s ^ 1] < pl.rzone) bar.wait(kBarReleased);
+          fold_in(w, k + 1);
+        }
+        bar.wait(kBarFoldLanded + s);
         clock.lap(kPhaseFill);
-        fold_unit<P>(p, st, cf, fs, smem, ww(), c, w, u, write_slots, pool, image, panel, warp,
-                     lane);
-        ops::rendezvous();
+        const int first = k * pl.fchunk,
+                  slots = min(static_cast<int>(pl.fchunk), pl.funion - first);
+        const ops::SmemAddr buf = at16(pl.fbuf[s]);
+        fold_chunk<P>(st, cf, fs, smem, ww(w), w, first, slots, pl.funion, buf,
+                      buf + 16u * pl.fents, warp, lane);
+        //: freed where a later fill waits for it: the chunk two on, or the next window's first read chunk
+        if (k + 2 < fchunks || late) bar.arrive(kBarFoldFree + s);
         clock.lap(kPhaseFold);
-        //: a slot freed: the panel's units once the drain is done, the next window's first pass into unit 0's slot,
-        //: a fold slot's next unit
-        if (u == 0) {
-          ++f;
-#pragma unroll 1
-          for (int v = 1 + P::kImageUnits; v < min(units, 1 + P::kFoldRing); ++v)
-            fill_unit(w, v, fold_slot(v - 1), bars + 8 * (1 + v));
-          if (next) {
-            ops::mbar_wait(staged, static_cast<uint32_t>((w + 1) & 1));
-            fill_read(w + 1, 0, ring(f & 1), bars + 8 * (f & 1));
-          }
-        } else if (u + P::kFoldRing < units) {
-          fill_unit(w, u + P::kFoldRing, fold_slot(k), bars + 8 * (2 + k));
-        }
-      }
+      } while (__any_sync(0xffffffffu, ++k < fchunks));
+    if (late) {
+      if (fchunks > 0) bar.wait(kBarFoldFree + ((fchunks - 1) & 1));
+      if (fchunks > 1) bar.wait(kBarFoldFree + ((fchunks - 2) & 1));
+      bar.wait(kBarReleased);
+      read_in(w + 1, 0);
+      clock.lap(kPhaseFill);
     }
-    //: the panel zeroed where the fold's units lay in it, before the next window's adds
-    for (int k = ops::once(units > 1 + P::kImageUnits); k > 0; --k)
-#pragma unroll 1
-      for (int i = static_cast<int>(threadIdx.x); i < P::kPanelBytes / 16; i += kThreads)
-        reinterpret_cast<uint4*>(smem + P::kPanel)[i] = make_uint4(0u, 0u, 0u, 0u);
   }
 
   float sum = 0.f;

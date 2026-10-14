@@ -6,9 +6,9 @@ parses the torch headers and the dispatch unit never parses a kernel body.
 <a id="form"></a>
 ## The form
 
-`CarryForm` is an arm's plan on the current device's card (`plan.md#forms`): its shared bytes, the image's parts, a
-readout pass's and a fold unit's slots, a read and a write pool row's bytes. The facts pass sizes each side's passes
-and entry offsets by it (`rola.ops.carry.form`), so the lists it emits are the ones the carry walks.
+`CarryForm` is an arm's plan on the current device's card (`plan.md#plan`): its shared bytes, the area its windows'
+plans place buffers in, a read and a write pool row's bytes. The facts pass addresses the read entries' rows in the
+read row (`rola.ops.carry.form`).
 
 <a id="census"></a>
 ## The census

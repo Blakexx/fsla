@@ -69,6 +69,7 @@ struct CarryParams {
   const int16_t* write_exp;
   const int8_t* unit;
   int readout_f16;  // the readout's MMAs accumulate in fp16 (1) or fp32 (0): carry_api.md#carry-readout-accumulate
+  int prefer;  // the readout candidate the plans take first where it fits, -1 none: carry_api.md#carry-forward
   uint32_t* num;
   float* check;
   float* probe;
@@ -84,6 +85,7 @@ enum CarryPhase : int {
   kPhaseDrain,
   kPhaseFill,
   kPhaseFold,
+  kPhasePlan,
   kCarryPhases
 };
 

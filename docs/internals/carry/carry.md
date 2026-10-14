@@ -63,7 +63,8 @@ or its high bits within each four for a row of an odd number of 64-byte quarters
 the rows and values at their strides (the row alignment law, `docs/internals/facts/facts.md`), the facts pass's
 lists, the den pass's units (`unit`, an exponent byte a token, a window wide so a window's copy is aligned). The
 outputs are `num` (packed s16 pairs at each token's unit, added as u32: `parts.md#drain`) and `check` (the final
-state's sum).
+state's sum). `readout_f16` is the readout's accumulation (`carry_api.md#carry-readout-accumulate`); `prefer` a readout
+candidate every window's plan takes first where it fits, -1 for none (`schedule.md#planner`).
 
 <a id="refusals"></a>
 ## The kernel boundary refuses

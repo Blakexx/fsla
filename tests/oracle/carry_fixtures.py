@@ -26,14 +26,14 @@ def levels(widths, L, live, *, B=1, H=2, seed=0):
     return out
 
 
-def alternating_bundle(widths, L, write_sparse, *, d_v=64, seed=0):
-    """An alternating bundle: the write side sparse at ``write_sparse`` (4 live digits a token), the read side sparse at
-    the other level, each side dense elsewhere."""
+def alternating_bundle(widths, L, write_sparse, *, live=4, d_v=64, seed=0):
+    """An alternating bundle: the write side sparse at ``write_sparse`` (``live`` digits a token), the read side sparse
+    at the other level, each side dense elsewhere."""
     D = len(widths)
     write_flags = tuple(level == write_sparse for level in range(D))
     read_flags = tuple(not flag for flag in write_flags)
-    live_w = [4 if flag else width for flag, width in zip(write_flags, widths)]
-    live_r = [4 if flag else width for flag, width in zip(read_flags, widths)]
+    live_w = [live if flag else width for flag, width in zip(write_flags, widths)]
+    live_r = [live if flag else width for flag, width in zip(read_flags, widths)]
     gen = torch.Generator().manual_seed(seed + 1)
     topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in widths))
     routes = RouteFactors.from_levels(topology, levels(widths, L, live_r, seed=seed),
@@ -42,3 +42,16 @@ def alternating_bundle(widths, L, write_sparse, *, d_v=64, seed=0):
                                       sparse=(read_flags, write_flags))
     values = Values.from_projection(torch.randn((1, L, 2, d_v), generator=gen).cuda())
     return routes, values
+
+
+#: THE PLAN'S FORMS, each exercised by a cell -- its widths, live digits a token, the readout candidate it prefers --
+#: and named as `tests/oracle/carry_plan.forms` names them: every readout candidate, the fold beside the readout, after
+#: it and in chunks, and both boundaries (docs/internals/carry/schedule.md#planner).
+FORM_CELLS = (
+    ((64, 64), 4, None, {"image-chunks", "fold-after", "late"}),
+    ((64, 64), 4, "tiled", {"tiled"}),
+    ((64, 64), 4, "tiled-one", {"tiled-one"}),
+    ((256, 256), 4, None, {"union", "fold-beside", "early"}),
+    ((256, 256), 2, None, {"image"}),
+    ((64, 64), 16, None, {"fold-chunks"}),
+)

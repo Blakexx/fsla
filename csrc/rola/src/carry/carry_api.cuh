@@ -16,7 +16,8 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
                    std::vector<Tensor> read_lists, Tensor unit, Tensor num, Tensor check,
                    std::vector<int64_t> widths, std::vector<int64_t> extents, int64_t channels,
                    int64_t write_list, std::vector<int64_t> write_operand, int64_t read_list,
-                   std::vector<int64_t> read_operand, std::vector<int64_t> key, int64_t accumulate);
+                   std::vector<int64_t> read_operand, std::vector<int64_t> key, int64_t accumulate,
+                   int64_t prefer);
 
 int64_t carry_readout_accumulate(int64_t device);  // carry_api.md#carry-readout-accumulate
 

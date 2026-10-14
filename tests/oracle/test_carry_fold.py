@@ -12,7 +12,8 @@ import torch
 from rola.engine.carve import plan_carve
 from rola.ops import carry as carry_ops
 from rola.ops import facts as facts_ops
-from tests.oracle.carry_fixtures import alternating_bundle
+from tests.oracle import carry_plan
+from tests.oracle.carry_fixtures import FORM_CELLS, alternating_bundle
 from tests.oracle.fold_reference import fold_state
 
 
@@ -22,14 +23,9 @@ def _rtol(L: int) -> float:
     return L / 16 * 2.0 ** -23
 
 
-@pytest.mark.parametrize("write_sparse", [0, 1])
-@pytest.mark.parametrize("growth", [0, 8, -8])
-def test_the_fold_is_the_reference_per_slot(write_sparse, growth):
-    """The even box (`[DS, SD]` and `[SD, DS]` at 64 x 64): every leaf and channel of the final state within the bound
-    of the reference's over four windows -- the write gain steady, or scaled 2^growth a window, so the units climb
-    and rescale the state, or are held under the bound's headroom."""
-    widths, L = (64, 64), 2048
-    routes, values = alternating_bundle(widths, L, write_sparse)
+def _fold_ratio(widths, L, write_sparse, growth, *, live=4, prefer=None):
+    """``(ratio, plans)``: the call's largest slot distance from the reference over its bound, and its boxes' plans."""
+    routes, values = alternating_bundle(widths, L, write_sparse, live=live)
     window = torch.arange(L, device="cuda") // carry_ops.WINDOW
     routes.g_write.mul_(torch.exp2(growth * window.float())[None, :, None])
     carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, values.v.shape[-1])
@@ -42,7 +38,7 @@ def test_the_fold_is_the_reference_per_slot(write_sparse, growth):
     unit = torch.zeros((BH, L), dtype=torch.int8, device="cuda")
     carry_ops.probe_bind(probe)
     try:
-        carry_ops.carry(routes, values, facts, carve, unit)
+        carry_ops.carry(routes, values, facts, carve, unit, prefer=prefer)
         torch.cuda.synchronize()
     finally:
         carry_ops.probe_bind(None)
@@ -52,6 +48,24 @@ def test_the_fold_is_the_reference_per_slot(write_sparse, growth):
         state, env = state.permute(0, 2, 1, 3), env.permute(0, 2, 1, 3)
     want, env = state.reshape(BH, N, d_v), env.reshape(BH, N, d_v)
     err = (probe.double() - want).abs()
-    ratio = (err / (env * _rtol(L)).clamp_min(1e-300)).max().item()
     assert (env > 0).float().mean() > 0.5, "most slots unwritten: the cell is vacuous"
+    return (err / (env * _rtol(L)).clamp_min(1e-300)).max().item(), carry_plan.plans(routes, facts, carve, prefer)
+
+
+@pytest.mark.parametrize("write_sparse", [0, 1])
+@pytest.mark.parametrize("growth", [0, 8, -8])
+def test_the_fold_is_the_reference_per_slot(write_sparse, growth):
+    """The even box (`[DS, SD]` and `[SD, DS]` at 64 x 64): every leaf and channel of the final state within the bound
+    of the reference's over four windows -- the write gain steady, or scaled 2^growth a window, so the units climb
+    and rescale the state, or are held under the bound's headroom."""
+    ratio, _ = _fold_ratio((64, 64), 2048, write_sparse, growth)
+    assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"
+
+
+@pytest.mark.parametrize(("widths", "live", "prefer", "forms"), FORM_CELLS)
+def test_every_plan_form_folds_to_the_reference(widths, live, prefer, forms):
+    """Each of the plan's forms (`tests/oracle/carry_fixtures.py` `FORM_CELLS`), its cell taking them by the plans'
+    model: the final state within its bound per slot, the units climbing 2^8 a window."""
+    ratio, plans = _fold_ratio(widths, 2048, 0, 8, live=live, prefer=prefer)
+    assert forms <= carry_plan.forms(plans), f"the cell takes {sorted(carry_plan.forms(plans))}, not {sorted(forms)}"
     assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"

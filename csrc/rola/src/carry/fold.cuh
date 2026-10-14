@@ -1,4 +1,4 @@
-// csrc/rola/src/carry/fold.cuh -- THE FOLD: a warp's write lists over a window's units into the fp32 state -- each
+// csrc/rola/src/carry/fold.cuh -- THE FOLD: a warp's write lists over a window's chunks into the fp32 state -- each
 // list in its running unit, steps of 16 tokens and an 8-token tail, a step's A the slots' dense slice times the
 // entries' c, its B their values, fp32-accumulate MMAs. see docs/internals/carry/fold.md
 #pragma once
@@ -61,31 +61,14 @@ __device__ __forceinline__ void fold_units(uint32_t (&cf)[P::kFoldLists], float 
   });
 }
 
-//: A RESIDENT SLOT's ROW, its swizzle folded in: in its unit's region -- unit 0 the readout ring's free slot `ring0`,
-//: then the image's units, then the panel's. -- see docs/internals/carry/fold.md#resident
+//: AN ENTRY'S LANE VALUES: its slot's row offset in the union (its swizzle folded in; the chunk's pool is taken back
+//: by its first slot `first`) and its c paired with the next lane's, moved to the list's unit. A pad (past the run) is
+//: the chunk's first row with c = 0.
 template <class P>
-__device__ __forceinline__ uint32_t resident_row(uint32_t s, ops::SmemAddr ring0,
-                                                 ops::SmemAddr image, ops::SmemAddr panel) {
-  const uint32_t u = s / P::kUnitSlots, r = s % P::kUnitSlots;
-  const uint32_t base = u == 0                ? ring0
-                        : u <= P::kImageUnits ? image + (u - 1) * P::kUnitBytes
-                                              : panel + (u - 1 - P::kImageUnits) * P::kUnitBytes;
-  return base + r * P::kWriteRow + 16u * chunk_at<P::kWriteRow>(r, 0);
-}
-
-//: AN ENTRY'S LANE VALUES: its slot's row offset in the unit's pool (its swizzle folded in; resident, its row's
-//: address, `pool` zero) and its c paired with the next lane's, moved to the list's unit. A pad (past the list's count)
-//: is row 0 with c = 0.
-template <class P>
-__device__ __forceinline__ void entry_of(uint2 rec, bool live, int u, uint32_t cf, uint32_t& off,
-                                         uint32_t& cpair, ops::SmemAddr ring0 = 0u,
-                                         ops::SmemAddr image = 0u, ops::SmemAddr panel = 0u) {
-  if constexpr (P::kResident) {
-    off = resident_row<P>(live ? rec.x & 0xffffu : 0u, ring0, image, panel);
-  } else {
-    const uint32_t r = (rec.x & 0xffffu) - static_cast<uint32_t>(u * P::kUnitSlots);
-    off = live ? r * P::kWriteRow + 16u * chunk_at<P::kWriteRow>(r, 0) : 0u;
-  }
+__device__ __forceinline__ void entry_of(uint2 rec, bool live, int first, uint32_t cf,
+                                         uint32_t& off, uint32_t& cpair) {
+  const uint32_t s = live ? rec.x & 0xffffu : static_cast<uint32_t>(first);
+  off = s * P::kWriteRow + 16u * chunk_at<P::kWriteRow>(s, 0);
   const uint32_t mine = live ? rec.y & 0xffffu : 0u;
   cpair = ops::hmul2(mine | (__shfl_xor_sync(0xffffffffu, mine, 1) << 16), cf);
 }
@@ -141,81 +124,83 @@ __device__ __forceinline__ void step8(State<P>& st, ops::SmemAddr pool, uint32_t
 }
 
 //: A LIST'S STEPS over its entries `s .. n`: 16-token steps while more than 8 remain, then an 8-token tail, `fetch`
-//: the entry at an index -- each loop's step one block. -- see docs/internals/carry/fold.md#step
+//: the entry at an index -- each loop's step one block. `pool` is the chunk's rows taken back by its first slot.
+//: -- see docs/internals/carry/fold.md#step
 template <class P, int J, class Fetch>
-__device__ __forceinline__ void steps(State<P>& st, uint32_t cf, ops::SmemAddr pool, int u, int s,
-                                      int n, int lane, Fetch fetch, ops::SmemAddr image,
-                                      ops::SmemAddr panel) {
-  //: resident, an entry holds its row's address and the steps' pool is zero
-  const ops::SmemAddr base = P::kResident ? 0u : pool;
+__device__ __forceinline__ void steps(State<P>& st, uint32_t cf, ops::SmemAddr pool, int first,
+                                      int s, int n, int lane, Fetch fetch) {
   for (int k = __any_sync(0xffffffffu, n - s > 8) ? 1 : 0; k > 0; --k)
 #pragma unroll 1
     do {
       const int e = s + (lane & 15);
       uint32_t off, cpair;
-      entry_of<P>(fetch(min(e, n - 1)), e < n, u, cf, off, cpair, pool, image, panel);
-      step16<P, J>(st, base, off, cpair, lane);
+      entry_of<P>(fetch(min(e, n - 1)), e < n, first, cf, off, cpair);
+      step16<P, J>(st, pool, off, cpair, lane);
       s += 16;
     } while (__any_sync(0xffffffffu, n - s > 8));
   for (int tail = __any_sync(0xffffffffu, n - s > 0) ? 1 : 0; tail > 0; --tail) {
     const int k = s + (lane & 7);
     uint32_t off, cpair;
-    entry_of<P>(fetch(min(k, n - 1)), k < n, u, cf, off, cpair, pool, image, panel);
-    step8<P, J>(st, base, off, cpair, lane);
+    entry_of<P>(fetch(min(k, n - 1)), k < n, first, cf, off, cpair);
+    step8<P, J>(st, pool, off, cpair, lane);
   }
 }
 
-//: A FOLD UNIT, a warp's: each of its lists' entries of unit `u`'s slots, read in place, in 16-token steps and an
-//: 8-token tail, the list's rescale applied before its first; a side with no list level every slot of the unit, c from
-//: the slot's row. -- see docs/internals/carry/fold.md#unit
+//: A FOLD CHUNK'S FILL, the copies issued: its rows (slices then values) at `buf`, its entries at `ents` (a warp its
+//: own lists' runs). -- see docs/internals/carry/parts.md#fill
 template <class P>
-__device__ __forceinline__ void fold_unit(const CarryParams& p, State<P>& st,
-                                          const uint32_t (&cf)[P::kFoldLists],
-                                          float (&f)[P::kFoldLists], const uint8_t* smem,
-                                          const Window& ww, const Place& c, int w, int u, int slots,
-                                          ops::SmemAddr pool, ops::SmemAddr image,
-                                          ops::SmemAddr panel, int warp, int lane) {
+__device__ __forceinline__ void fold_fill(const CarryParams& p, const uint8_t* smem,
+                                          const Window& ww, const Place& c, int w, int first,
+                                          int slots, int total, ops::SmemAddr buf,
+                                          ops::SmemAddr ents, int warp, int lane) {
+  const volatile Addr& addr = *reinterpret_cast<const volatile Addr*>(smem + P::kAddr);
+  fill<P::kFoldFactors, true>(addr.slices[kWrite], addr.values, p.values.st,
+                              union_of<P>(smem, kWrite, w), ww, first, slots, buf);
+  if (ww.listed)
+    entries_fill<P>(p, p.write_lists, ww, c, w,
+                    chunk_runs<P>(smem, ww, kWrite, w, first, slots, total, lane), ents, warp,
+                    lane);
+}
+
+//: A FOLD CHUNK, a warp's: each of its lists' run of the chunk from the buffer's entries at `ents`, in 16-token steps
+//: and an 8-token tail over the rows at `rows`, the list's rescale applied before its first; a side with no list level
+//: every slot of the chunk, c from the slot's row. -- see docs/internals/carry/fold.md#chunk
+template <class P>
+__device__ __forceinline__ void fold_chunk(State<P>& st, const uint32_t (&cf)[P::kFoldLists],
+                                           float (&f)[P::kFoldLists], const uint8_t* smem,
+                                           const Window& ww, int w, int first, int slots, int total,
+                                           ops::SmemAddr rows, ops::SmemAddr ents, int warp,
+                                           int lane) {
+  const Run run = chunk_runs<P>(smem, ww, kWrite, w, first, slots, total, lane);
+  const ops::SmemAddr pool = rows - static_cast<uint32_t>(first * P::kWriteRow);
   static_for<P::kFoldLists>([&](auto J) {
     static_for<P::kFoldMTiles>([&](auto M) {
       static_for<4>([&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] *= f[J]; }); });
     });
     f[J] = 1.0f;
-
     const int list = fold_list(warp, J);
-    int first = 0, n = 0;
     if (ww.listed) {
-      const int2 range =
-          chunk_entries(at_of<P>(smem, kWrite, w, list), u * P::kWritePass, P::kWritePass);
-      first = range.x;
-      n = range.y - first;
+      const int n = __shfl_sync(0xffffffffu, run.n, list),
+                to = __shfl_sync(0xffffffffu, run.to, list);
+      steps<P, J>(st, cf[J], pool, first, 0, n, lane, [&](int k) {
+        uint2 e;
+        asm volatile("ld.shared.v2.u32 {%0, %1}, [%2];"
+                     : "=r"(e.x), "=r"(e.y)
+                     : "r"(ents + 8u * static_cast<uint32_t>(to + k)));
+        return e;
+      });
     } else {
-      n = max(0, min(slots - u * P::kUnitSlots, P::kUnitSlots));
-    }
-    const uint2* entries =
-        ww.listed
-            ? p.write_lists.entries
-                  + list_row(p.write_lists, c, p.windows, w, ww.digit0 + list) * kListCap + first
-            : nullptr;
-
-    if (!ww.listed) {
-      //: every slot of the unit, c the list's digit of the row's coefficient slice (the row's second)
-      steps<P, J>(
-          st, cf[J], pool, u, 0, n, lane,
-          [&](int k) {
-            const uint32_t row0 =
-                P::kResident ? resident_row<P>(static_cast<uint32_t>(k), pool, image, panel)
-                             : pool + static_cast<uint32_t>(k) * P::kWriteRow
-                                   + 16u * chunk_at<P::kWriteRow>(k, 0);
-            uint32_t cv;
-            asm volatile("ld.shared.u16 %0, [%1];"
-                         : "=r"(cv)
-                         : "r"(chunk_addr<P::kWriteRow>(row0, (kSliceBytes + 2 * list) >> 4)
-                               + (2 * list & 15)));
-            return make_uint2(static_cast<uint32_t>(u * P::kUnitSlots + k), cv);
-          },
-          image, panel);
-    } else {
-      steps<P, J>(st, cf[J], pool, u, 0, n, lane, [&](int k) { return entries[k]; }, image, panel);
+      //: every slot of the chunk, c the list's digit of the row's coefficient slice (the row's second)
+      steps<P, J>(st, cf[J], pool, first, 0, slots, lane, [&](int k) {
+        const uint32_t row0 = rows + static_cast<uint32_t>(k) * P::kWriteRow
+                              + 16u * chunk_at<P::kWriteRow>(static_cast<uint32_t>(k), 0);
+        uint32_t cv;
+        asm volatile(
+            "ld.shared.u16 %0, [%1];"
+            : "=r"(cv)
+            : "r"(chunk_addr<P::kWriteRow>(row0, (kSliceBytes + 2 * list) >> 4) + (2 * list & 15)));
+        return make_uint2(static_cast<uint32_t>(first + k), cv);
+      });
     }
   });
 }

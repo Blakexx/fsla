@@ -23,6 +23,7 @@ from rola.ops._ext import extension
 __all__ = [
     "LEDGER_PHASES",
     "LEDGER_WARPS",
+    "READ_CANDIDATES",
     "WINDOW",
     "Form",
     "arm_key",
@@ -41,7 +42,7 @@ __all__ = [
 WINDOW = list_model.WINDOW
 
 #: THE PHASE LEDGER'S SHAPE: ``[ctas][warps][phases]``, the kernel's own `CarryPhase` order.
-LEDGER_PHASES = ("landed", "maxima", "store", "readout", "drain", "fill", "fold")
+LEDGER_PHASES = ("landed", "maxima", "store", "readout", "drain", "fill", "fold", "plan")
 LEDGER_WARPS = 8
 
 
@@ -57,14 +58,15 @@ def _list_level(plan) -> int:
     return plan.lists[0] if plan.lists else -1
 
 
-def carry(routes, values, facts, carve: Carve, unit: torch.Tensor,
-          accumulate: str | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+def carry(routes, values, facts, carve: Carve, unit: torch.Tensor, accumulate: str | None = None,
+          prefer: str | None = None) -> tuple[torch.Tensor, torch.Tensor]:
     """THE LAUNCH: ``(num, check)`` -- ``num`` the readout's packed partials at each token's unit, ``check`` the
-    skeleton's fp32 sum of the final state. ``facts`` is the facts pass's over this bundle in this arm's :func:`form`
-    on the device's card: its lists' passes are the arm's readout pass and fold unit, and the read entries' offsets its
-    read pool row's. The readout accumulates in the device's form (:func:`readout_accumulate`); ``accumulate``
-    (``"fp32"`` or ``"fp16"``) is reserved: the gates' choice of form, so both forms are gated on any card
-    (``tests/oracle/test_carry_readout.py``; docs/internals/carry/carry_api.md#carry)."""
+    skeleton's fp32 sum of the final state. ``facts`` is the facts pass's over this bundle, its read entries' offsets
+    in this arm's read pool rows (:func:`form`). The readout accumulates in the device's form
+    (:func:`readout_accumulate`); ``accumulate`` (``"fp32"`` or ``"fp16"``) is reserved: the gates' choice of form, so
+    both forms are gated on any card (``tests/oracle/test_carry_readout.py``). Each window's plan picks its readout's
+    form (:data:`READ_CANDIDATES`); ``prefer``, one of them, is reserved: the gates' and the measurements' choice of the
+    candidate a window takes first where it fits (docs/internals/carry/carry_api.md#carry)."""
     BH = routes.batch * routes.heads
     d_v = values.v.shape[-1]
     num = torch.zeros((BH, routes.tokens, d_v // 2), dtype=torch.int32, device=routes.device)
@@ -74,11 +76,16 @@ def carry(routes, values, facts, carve: Carve, unit: torch.Tensor,
         facts.list_exp, list(facts_ops.side_lists(facts, "read")), unit, num, check, list(carve.widths),
         list(carve.extents), carve.channels, _list_level(carve.fold), list(carve.fold.operand),
         _list_level(carve.readout), list(carve.readout.operand), list(arm_key(carve)),
-        _ACCUMULATE[accumulate or readout_accumulate(routes.device)])
+        _ACCUMULATE[accumulate or readout_accumulate(routes.device)], _PREFER[prefer])
     return num, check
 
 
 _ACCUMULATE = {"fp32": 0, "fp16": 1}
+#: THE READOUT'S CANDIDATES, in the plan's order (docs/internals/carry/schedule.md#planner): the image whole and the
+#: union resident; the union resident and the image a ring; the image whole and the union in chunks; both in chunks;
+#: both in chunks on one read buffer.
+READ_CANDIDATES = ("image", "union", "image-chunks", "tiled", "tiled-one")
+_PREFER = {None: -1, **{name: k for k, name in enumerate(READ_CANDIDATES)}}
 
 
 def readout_accumulate(device: torch.device | None = None) -> str:
@@ -96,8 +103,8 @@ def arms() -> list[tuple[int, ...]]:
 
 def census() -> list[tuple[int, ...]]:
     """Each built arm's device census: its index and key, then registers, local bytes, shared bytes, the block's
-    thread limit, the binary version, and its form on this card (the image's parts, a readout pass's slots, the fold's
-    pass's slots, then its pool rows: :class:`Form`)."""
+    thread limit, the binary version, and its form on this card (the area its plans place buffers in, then its pool
+    rows: :class:`Form`)."""
     return [tuple(row) for row in extension().carry_census()]
 
 
@@ -114,7 +121,7 @@ def form(key: tuple[int, ...]) -> Form:
     carries."""
     for row in census():
         if tuple(row[1:7]) == tuple(key):
-            return Form(*row[15:17])
+            return Form(*row[13:15])
     raise ValueError(f"no built carry arm has the key {tuple(key)}; this binary carries {arms()}")
 
 

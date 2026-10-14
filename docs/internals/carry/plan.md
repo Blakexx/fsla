@@ -1,51 +1,36 @@
 # `carry/plan.cuh` — one arm's plan
 
-Mirrors `csrc/rola/src/carry/plan.cuh`: the box's tiles, registers and shared memory on the compiling card. Every size
-is fixed by the plan and the card, never by the data (R22).
+Mirrors `csrc/rola/src/carry/plan.cuh`: the box's tiles, registers, pool rows and shared memory on the compiling card.
+Every compiled size is fixed by the arm and the card, never by the data (R22); what the data sizes -- each window's
+chunks and buffers -- the window's plan places in the area at run time (`schedule.md`).
 
 <a id="tenants"></a>
 ## The persistent tenants
 
-`Tenants` holds what lives across the window, 9,728 bytes on every card and arm:
+`Tenants` holds what lives across the window, 10,368 bytes on every card and arm:
 
 - each side's union tokens (1 KB), count and box lists' boundaries, two windows' each by parity: a window's are copied
   while the window before it is still read;
 - the write lists' exponent pairs and the tokens' units, by parity;
 - the unit book (a list's running unit, `fold.md#units`), the digit maxima (each warp's per digit) and the digit
   exponents (`parts.md#maxima`);
-- the phase clock's rows; the barriers (`kMaxBars`: the readout ring's two, the fold ring's and the staging barrier,
-  `carry_kernel.md#staging`);
+- the phase clock's rows; the barriers (`#barriers`); each warp's plans, two windows' by parity (`schedule.md#plan`);
 - the CTA's addresses (`Addr`, 256 bytes reserved: `parts.md#place`).
 
-<a id="forms"></a>
-## The forms
+<a id="barriers"></a>
+## The barriers
 
-A FORM is how the phase region holds a window: the image in `parts` (the whole state, or half its digits at a time,
-`parts.md#store`), a readout pass of `slots` union slots, a fold unit of `unit` slots. `form_bytes` is its region: the
-image, the pads and the panel (`parts.md#readout`), and the readout ring's two slots, which the window's passes and then
-the fold's first unit take in turn (`ring_slot`: a pass and a unit where one pass covers the window, else both the
-larger). `kForms` lists the forms in a fixed order, the fewest image stores a dense window first (parts x passes), then
-the larger unit; `form_of` takes the first the card holds.
+`CarryBarrier`, every card's, each counting all 256 threads (`carry_kernel.md#barriers`): the staging (a window's
+inputs landed) and the maxima (every warp's posted) once a window; two image slots, each stored and freed; two read
+buffers, each landed, read (every warp's tiles in its panel) and freed (drained); two fold buffers, each landed and
+freed; and the readout's release (every drain of the window done).
 
-| card, arm | form (parts, pass, unit) | shared bytes |
-|---|---|---|
-| sm_86, the even box `(32, 1, 32, 1, 32, 0)` | 2, 256, 128 | 92,160 of 101,376 |
-| sm_86, dense-dense `(32, 2, 32, 2, 32, 0)` | 2, 128, 128 | 100,352 |
-| sm_80, the even box | 1, 512, 128 | 157,696 of 166,912 |
-| sm_80, dense-dense | 1, 256, 128 | 157,696 |
+<a id="image"></a>
+## The image
 
-The fold's ring is the image and the panel once the readout is done: `kImageUnits` units over the image, then the
-panel's (`kFoldRing`: 3 units at sm_86's even box, 6 at sm_80's, 1 and 2 at their dense-dense).
-
-<a id="resident"></a>THE RESIDENT WRITE PASS (`kResident`): where the readout ring's free slot and the fold ring hold a
-window's units at once -- `(1 + kFoldRing) x unit >= 512`, the even box on both cards -- the fold takes a window in one
-pass over them (`kWritePass` = 512, what the census reports as the arm's fold pass, so the facts pass emits each write
-list in one pass, padded once). Unit 0 lands in the readout ring's free slot under the readout, the image's units after
-it, the panel's after the drain, and the fold waits for those the union needs; an entry's slot finds its row in its
-unit's region (`fold.md#resident`). At nl64k-alt-k4 a ~216-slot union had split each list across two 128-slot units,
-padding it twice and paying each unit's barrier: the resident pass halved the fold's steps, the fold fell from 6.1K
-to 3.6K cycles a warp-window and the carry from ~2,885 to ~2,490 us. The dense-dense arm's units do not fit at once
-(192-byte rows) and keep the unit-by-unit fold.
+`kPlaneBytes` a digit (32 lists x 32 channels, f16), the whole image `kImageWhole` (64 KB) or a ring of two batches
+`kImageRing` (32 KB): `kBatchPlanes` = 8 digits a batch, so a warp stores 8 digits of its 4 lists (half an m-tile of
+each) and reads one digit a batch (`kBatches` = 4).
 
 <a id="plan"></a>
 ## The plan
@@ -54,11 +39,11 @@ to 3.6K cycles a warp-window and the carry from ~2,885 to ~2,490 us. The dense-d
 (`arch::kArch`). The key fixes each side's dense rows a warp and its operand's level count; the plan asserts the box's
 32 rows a side and 32 channels, and derives:
 
-- each side's tiles: a warp folds lists `w + 8 j` and reads out digits `w + 8 i` (4 each), so a part of the image is
-  whole m-tiles of every fold list and whole digits of every reader;
+- each side's tiles: a warp folds lists `w + 8 j` and reads out digits `w + 8 i` (4 each);
 - the registers: `kStateRegs` = 128 fp32 a lane;
 - the pool rows: a read row is the read side's operand slices (`kReadRow`: 64 bytes, or 128 with a coefficient level),
   a write row the write side's slices then the values (`kWriteRow`: 128 or 192);
-- the form (`kForm`) and its offsets: `kImage`, `kPads`, `kPanel`, `kRing0`, `kRing1`, `kSmemBytes`.
+- the shared memory: `kSmemBytes`, the card's whole opt-in maximum a CTA, and `kArea`, what the tenants leave -- 91,008
+  bytes on sm_86, 156,544 on sm_80 and sm_87, 222,080 on sm_90.
 
 The launch sizes for the device's card, and the kernel refuses any other size (`carry_arm.md#plan`).

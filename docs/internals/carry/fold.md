@@ -38,23 +38,15 @@ m-tiles of the box's 32 digits) times c by HMUL2, B the values (four n-tiles of 
 MMAs. `step8`: the same over 8 tokens, one `ldmatrix.trans` each. There are no mass MMAs: the den pass owns the mass.
 Each loop's step is one block (KERNEL_STANDARDS §27), guarded by a vote and closed by one.
 
-<a id="unit"></a>
-## The unit
+<a id="chunk"></a>
+## The chunk
 
-A UNIT is `kUnitSlots` write slots (`plan.md#forms`); a resident arm folds the window's units as one pass
-([`plan.md#resident`](plan.md#resident)). A listed side's entries in it are the list's entries of the unit's slots
-(`chunk_entries`, `parts.md#lists-in`), read in place from global memory, a step's lanes past them masked (row 0,
-c = 0). A side with no list level steps every slot of the unit, c the list's digit of the row's coefficient slice.
-`fold_unit` takes each list in turn.
-
-<a id="resident"></a>
-## The resident pass
-
-On a resident arm (`plan.md#resident`) `fold_unit` runs once a window with every unit landed, a list's entries
-`[at[0], at[1])` its whole list (the facts pass's one 512-slot write pass). `resident_row` finds a slot's row: unit
-`s / kUnitSlots` in its region -- unit 0 the readout ring's free slot, then the image's units, then the panel's -- row
-`s % kUnitSlots` there, its swizzle folded in; the entry carries the row's address and the steps' pool is zero. A side
-with no list level steps every slot of the window the same way, its coefficient from each row's coefficient slice.
+A CHUNK is a range of the write union the window's plan sets (`schedule.md#planner`): the whole union where its buffer
+fits, else `64 m` slots and the rest. `fold_fill` copies its rows and its lists' runs into its buffer
+(`parts.md#entries`); `fold_chunk` takes each of the warp's lists in turn, its run from the buffer, a step's lanes past
+it masked (the chunk's first row, c = 0), the rows taken back by the chunk's first slot so an entry's union slot is its
+row. A side with no list level steps every slot of the chunk, c the list's digit of the row's coefficient slice. The
+list's rescale is applied before its first chunk's steps.
 
 <a id="probe"></a>
 ## The probe

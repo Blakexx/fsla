@@ -117,8 +117,8 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
                    std::vector<Tensor> read_lists, Tensor unit, Tensor num, Tensor check,
                    std::vector<int64_t> widths, std::vector<int64_t> extents, int64_t channels,
                    int64_t write_list, std::vector<int64_t> write_operand, int64_t read_list,
-                   std::vector<int64_t> read_operand, std::vector<int64_t> key,
-                   int64_t accumulate) {
+                   std::vector<int64_t> read_operand, std::vector<int64_t> key, int64_t accumulate,
+                   int64_t prefer) {
   check_arch_table();
   const int D = (int)widths.size();
   STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels && (int)extents.size() == D, "the carve names ", D,
@@ -193,6 +193,11 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   STD_TORCH_CHECK(accumulate == 0 || accumulate == 1,
                   "the readout accumulates in fp32 (0) or fp16 (1), got ", accumulate);
   p.readout_f16 = static_cast<int>(accumulate);
+  STD_TORCH_CHECK(
+      prefer >= -1 && prefer < 5,
+      "the preferred readout candidate is -1 (none) or one of the plan's five, 0 to 4, got ",
+      prefer);
+  p.prefer = static_cast<int>(prefer);
   p.num = reinterpret_cast<uint32_t*>(num.mutable_data_ptr<int32_t>());
   p.check = check.mutable_data_ptr<float>();
   p.probe = g_probe;
@@ -294,8 +299,8 @@ std::vector<std::vector<int64_t>> carry_census() {
   {                                                                                                   \
     const ArmCensus c = carry_arm_census_##I_();                                                      \
     out.push_back({(int64_t)(I_), FR_, FF_, RR_, RF_, CH_, PR_, c.regs, c.local_bytes,              \
-                   c.form.smem_bytes, c.max_threads, c.binary_version, c.form.parts,                  \
-                   c.form.pass_slots, c.form.unit_slots, c.form.read_row, c.form.write_row});         \
+                   c.form.smem_bytes, c.max_threads, c.binary_version, c.form.area,                   \
+                   c.form.read_row, c.form.write_row});                                               \
   }
   ROLA_CARRY_ARM_SET_X(ROLA_CARRY_ARM_CENSUS)
 #undef ROLA_CARRY_ARM_CENSUS
