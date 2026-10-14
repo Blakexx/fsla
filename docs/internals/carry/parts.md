@@ -79,7 +79,9 @@ hold its digits (`d % kPlanes`). The fold's stores (a lane a list row's 4-byte w
 
 `store_part<P, Part>`: every warp stores its 4 lists' rows of the part's digits (whole m-tiles), each value times
 `2^(u + kImageTop - e)` for its list's unit `u` and its digit's exponent `e`, packed f16 (32 stores a lane a part on
-sm_86); the factor is held to a normal float's range (below it the f16 is zero; above it the list's accumulators are
+sm_86). A lane's unit for list `w + 8 j` is its unit for list `w`, 32 units on (`units_step_by_list`), and a channel
+tile's chunk its unit XORed by the tile (the image 128-byte aligned), so a lane's stores are four bases and a list
+offset; the factor is held to a normal float's range (below it the f16 is zero; above it the list's accumulators are
 under 2^-117 of its unit). Warp 0 records the part's exponents for the readers (`kExps`). The part is compile-time: the
 state's registers are indexed by it.
 

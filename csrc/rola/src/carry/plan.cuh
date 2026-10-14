@@ -96,6 +96,8 @@ struct Plan : Tenants {
   static constexpr int kPanelBytes = kPassSlots * kPanelRow;
   static constexpr int kReadBytes = kPassSlots * kReadRow, kUnitBytes = kUnitSlots * kWriteRow;
   static constexpr int kImage = kEnd;
+  static_assert(kImage % 128 == 0,
+                "the image 128-byte aligned: a store's chunk XOR is its address's");
   static constexpr int kPads = kImage + kImageBytes;
   static constexpr int kPanel = kPads + kPadBytes;
   static constexpr int kRing0 = kPanel + kPanelBytes;

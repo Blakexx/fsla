@@ -341,11 +341,26 @@ __device__ __forceinline__ int digit_exp(const uint8_t* smem, int d) {
 //: power of two, each list moved there from its unit (`2^(unit + kImageTop - e)`, held to a normal float's range: past
 //: it the f16 is zero or the list's value is not the digit's); warp 0 records the part's exponents for the readers.
 //: -- see docs/internals/carry/parts.md#store
+//: a lane's unit for list `w + 8 j` at residue `g` is its unit for list `w`, 32 units on: so a part's stores take
+//: four bases a lane, a list an offset
+constexpr bool units_step_by_list() {
+  for (int w = 0; w < kWarps; ++w)
+    for (int g = 0; g < 8; ++g)
+      for (int j = 0; j < kBoxLists / kWarps; ++j)
+        if (unit_of(w + kWarps * j, 0, g) != unit_of(w, 0, g) + 32u * j) return false;
+  return true;
+}
+
+static_assert(units_step_by_list(),
+              "a list's image unit is its warp's first list's, 32 units a list on");
+
 template <class P, int Part>
 __device__ __forceinline__ void store_part(const State<P>& st, uint8_t* smem, int warp, int lane) {
   constexpr int kTiles = P::kFoldMTiles / P::kParts;
   const int g = lane >> 2, t = lane & 3;
-  const ops::SmemAddr image = ops::smem_addr(smem + P::kImage);
+  const uint32_t base = unit_of(warp, 0, g);
+  //: channel tile `n`'s chunk is the unit XORed by `n` (the image is 128-byte aligned, so that is its address's)
+  const uint32_t lane0 = ops::smem_addr(smem + P::kImage) + 4u * t;
   int u[P::kFoldLists];
   list_units<P>(u, smem, warp);
   static_for<kTiles>([&](auto K) {
@@ -354,14 +369,15 @@ __device__ __forceinline__ void store_part(const State<P>& st, uint8_t* smem, in
       const int d = 16 * m + 8 * H + g;
       const int e = digit_exp<P>(smem, d);
       if (warp == 0 && t == 0) reinterpret_cast<int*>(smem + P::kExps)[d] = e;
-      const ops::SmemAddr plane = image + (d % P::kPlanes) * kPlaneBytes + 4 * t;
+      const uint32_t plane = static_cast<uint32_t>((d % P::kPlanes) * kPlaneBytes);
       static_for<P::kFoldLists>([&](auto J) {
         const float scale = pow2(min(max(u[J] + kImageTop - e, -126), 127));
         static_for<4>([&](auto N) {
           const __half2 h =
               __floats2half2_rn(st.acc[J][m][N][2 * H] * scale, st.acc[J][m][N][2 * H + 1] * scale);
-          const uint32_t at = (plane + 16 * unit_of(warp + kWarps * J, 0, g)) ^ (16u * N);
           const uint32_t v = *reinterpret_cast<const uint32_t*>(&h);
+          const uint32_t at = lane0 + 16u * (base ^ static_cast<uint32_t>(N)) + plane
+                              + 512u * static_cast<uint32_t>(J);
           asm volatile("st.shared.u32 [%0], %1;" ::"r"(at), "r"(v) : "memory");
         });
       });

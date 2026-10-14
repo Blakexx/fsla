@@ -397,6 +397,7 @@
   {"doc": "docs/internals/carry/parts.md", "pinned_at": "3360bacd82eb", "reviewed": true, "sha256": "3544e55a097ec0ed", "target": "csrc/rola/src/carry/parts.cuh::slots_of"},
   {"doc": "docs/internals/carry/parts.md", "pinned_at": "48c245ff647c", "reviewed": true, "sha256": "9f07e5072517bec0", "target": "csrc/rola/src/carry/parts.cuh::stage_bytes"},
   {"doc": "docs/internals/carry/parts.md", "pinned_at": "3360bacd82eb", "reviewed": true, "sha256": "cc815a1baa1ebcd0", "target": "csrc/rola/src/carry/parts.cuh::union_of"},
+  {"doc": "docs/internals/carry/parts.md", "pinned_at": "2b71e2e3f409", "reviewed": true, "sha256": "357fd26cb7f9abfc", "target": "csrc/rola/src/carry/parts.cuh::units_step_by_list"},
   {"doc": "docs/internals/carry/parts.md", "pinned_at": "ff7fa1cef36d", "reviewed": true, "sha256": "d8417ad46b2c5072", "target": "csrc/rola/src/carry/parts.cuh::window_of"},
   {"doc": "docs/internals/carry/parts.md", "pinned_at": "48c245ff647c", "reviewed": true, "sha256": "f77d489b93c9daab", "target": "docs/internals/carry/carry.md#lists"},
   {"doc": "docs/internals/carry/parts.md", "pinned_at": "a69b57bd5f4b", "reviewed": true, "sha256": "dd36d842427238fe", "target": "docs/internals/carry/carry_api.md#carry-readout-accumulate"},
