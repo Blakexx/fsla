@@ -6,13 +6,14 @@ device function (or struct method) each SASS instruction inlines from -- against
 `tools/budgets/<kernel>.json`. KERNEL_STANDARDS §19: a component over budget is red.
 
     tools/region_ledger.py --csv <ncu SourceCounters csv> --so <extension .so> \\
-        --source csrc/rola/src/carry/carry_kernel.cuh --budget tools/budgets/carry.json \\
-        --per <cta-windows in the launch>
+        --source csrc/rola/src/carry/carry_kernel.cuh csrc/rola/src/carry/parts.cuh ... \\
+        --budget tools/budgets/carry.json --per <cta-windows in the launch>
 
 The csv is `ncu --section SourceCounters --page source --print-source sass --csv` of ONE launch
-(rola-ledger skill). Attribution: the innermost frame in the kernel's source of each SASS line
-(`nvdisasm --print-line-info-inline`), the function by the nearest preceding definition --
-`__device__` functions, `__global__` kernels, `struct` blocks and their methods.
+(rola-ledger skill). Attribution: the outermost frame in the kernel's sources (the kernel's file first, then the
+files of its components) whose function is a budget component, else the outermost frame's function
+(`nvdisasm --print-line-info-inline`), the function by the nearest preceding definition -- `__device__` functions,
+`__global__` kernels, `struct` blocks and their methods.
 """
 from __future__ import annotations
 
@@ -82,29 +83,29 @@ class Attribution:
     (an innermost frame inside `mbar_wait`). A spin is the wait for another agent's work and
     is reported apart from the component's own instructions."""
 
-    def __init__(self, so: Path, member: str, arch: str, source: Path, ops: Path):
-        self.fmap = function_map(source.read_text().splitlines())
+    def __init__(self, so: Path, member: str, arch: str, sources: list[Path], ops: Path):
+        self.fmaps = {p.name: function_map(p.read_text().splitlines()) for p in sources}
         self.omap = function_map(ops.read_text().splitlines())
-        self.source, self.ops = source.name, ops.name
+        self.ops = ops.name
         self.so, self.member = so, member
         self.arch = arch
         self.frames = frames_map(so, member, arch)
 
-    def of(self, offset: int, components: set[str] | None = None) -> tuple[str, bool]:
-        """The component: the OUTERMOST frame in the kernel's source whose function is one of
-        `components` (the budget's names), else the outermost frame's function -- in the
-        composed kernel every chain ends in the kernel itself, which is no component."""
+    def of(self, offset: int, components: set[str] | None = None, glue: str | None = None) -> tuple[str, bool]:
+        """The component: the OUTERMOST frame in the kernel's sources whose function is one of
+        `components` (the budget's names) other than `glue` (the kernel's own body, every chain's last frame), else the
+        outermost frame's function -- the kernel itself, its glue."""
         chain = self.frames.get(offset, [])
         comp = "?"
         for f, ln in chain:
-            if f == self.source:
-                c = component_of(fn_of(self.fmap, ln), components)
-                if c is not None:
+            if f in self.fmaps:
+                c = component_of(fn_of(self.fmaps[f], ln), components)
+                if c is not None and c != glue:
                     comp = c
         if comp == "?":
             for f, ln in chain:
-                if f == self.source:
-                    comp = fn_of(self.fmap, ln)
+                if f in self.fmaps:
+                    comp = fn_of(self.fmaps[f], ln)
         spin = any(f == self.ops and fn_of(self.omap, ln) == "mbar_wait" for f, ln in chain)
         return comp, spin
 
@@ -165,7 +166,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", type=Path, required=True)
     ap.add_argument("--so", type=Path, required=True)
-    ap.add_argument("--source", type=Path, required=True)
+    ap.add_argument("--source", type=Path, nargs="+", required=True,
+                    help="the kernel's file (its line views), then the files its components live in")
     ap.add_argument("--member", default="carry_arm")
     ap.add_argument("--arch", default=None, help="the cubin's architecture (default: this machine's GPU)")
     ap.add_argument("--ops", type=Path, default=Path("csrc/rola/src/common/ops.cuh"))
@@ -179,15 +181,17 @@ def main() -> int:
                     help="also print the source lines in this range: instructions a unit, samples, opcodes, stall reasons")
     a = ap.parse_args()
     attr = Attribution(a.so, a.member, a.arch or sass.device_arch(), a.source, a.ops)
+    kernel_source = a.source[0]
     rows = read_source_counters(a.csv)
     base = rows[0][0]
 
     budget_doc = json.loads(a.budget.read_text()) if a.budget else {}
     components = set(budget_doc.get("components", {}).values()) if budget_doc else None
+    glue = budget_doc.get("components", {}).get("glue") if budget_doc else None
     agg: dict[str, list] = collections.defaultdict(lambda: [0, 0, collections.Counter()])
     tot = samp = 0
     for addr, n, sm, st in rows:
-        fn, spin = attr.of(addr - base, components)
+        fn, spin = attr.of(addr - base, components, glue)
         if spin:
             fn = fn + " [spin]"
         e = agg[fn]
@@ -212,8 +216,8 @@ def main() -> int:
     detail = read_source_detail(a.csv)
     if a.lines:
         lo, hi = (int(x) for x in a.lines.split("-"))
-        print_lines(rows, attr, detail, a.source, lo, hi, a.per)
-    doc = census(rows, attr, components, a.per, detail, a.source, a.top)
+        print_lines(rows, attr, detail, kernel_source, lo, hi, a.per)
+    doc = census(rows, attr, components, a.per, detail, kernel_source, a.top, glue)
     if a.json:
         doc["per"] = a.per
         doc["instructions_per_unit"] = round(tot / a.per, 1)
@@ -253,7 +257,7 @@ def print_lines(rows, attr: Attribution, detail: dict, source: Path, lo: int, hi
 
 
 def census(rows, attr: Attribution, components: set[str] | None, per: float,
-           detail: dict[int, tuple[str, int, int]], source: Path, top: int) -> dict:
+           detail: dict[int, tuple[str, int, int]], source: Path, top: int, glue: str | None = None) -> dict:
     """THE PHASE CENSUS (§22): per component, the HMMAs a unit COUNTED from the dump, the
     other instructions, and the stall samples split between the HMMA instructions and the
     rest -- the build ledger turns these into tensor utilization a phase and a warp's time
@@ -264,7 +268,7 @@ def census(rows, attr: Attribution, components: set[str] | None, per: float,
     waves: dict[int | None, list] = collections.defaultdict(lambda: [0, 0, 0])
     lm = line_map(attr.so, attr.member, attr.arch, source.name)
     for addr, n, sm, _st in rows:
-        fn, spin = attr.of(addr - base, components)
+        fn, spin = attr.of(addr - base, components, glue)
         if spin:
             continue
         op, wf, ideal = detail.get(addr, ("?", 0, 0))

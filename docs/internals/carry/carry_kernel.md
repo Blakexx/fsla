@@ -46,6 +46,36 @@ two phases behind: the next phase needs the waiter's own arrival. A buffer's ref
 readers complete (a read buffer's drain, a fold buffer's chunk, an image slot's batch), so a region is rewritten only
 once every warp is done with it, with no barrier over the whole CTA except the maxima's and a form's stores.
 
+<a id="budget"></a>
+## The budget
+
+`tools/budgets/carry.json` (KERNEL_STANDARDS §29): each component's instructions a CTA-window on the gating cell
+nl64k-alt-k4, its price a trip times its trips, the trips at each warp's maximum from the facts pass's lists and the
+plans' model (`tests/oracle/carry_plan.py`). A warp-window there: a union of ~216 slots and ~256 entries a side, the
+union form, a resident fold; 7 readout tiles over 4 digits, 4 eight-token fold steps over 4 lists.
+
+| component | a trip's price (sm_86 SASS) | trips a warp-window | design a warp-window |
+|---|---|---|---|
+| readout (`read_chunk`) | a tile ~40 (4 MMAs, 3 shared loads, 4 shuffles, 4 shared adds, ~12 float, ~10 address); a digit ~16; an item ~10 | 7 tiles, 4 digits, 4 items | 384 |
+| fold (`fold_chunk`) | an 8-token step ~30 (8 MMAs, 3 loads, 4 shuffles, 4 HMUL2); a list ~12 and its rescale 32 FMUL | 4 steps, 4 lists | 296 |
+| units (`fold_units`) | once a window | 1 | 30 |
+| stores (`store_batches`) | a batch: 4 lists x (4 x 5 for two values' scale, pack, store, address + 4) + 5 | 4 batches | 400 |
+| maxima (`post_maxima`) | a (list, half-tile): 8 FMNMX with abs, an exponent ~4, its max ~2; 16 of them + 20 | 1 | 245 |
+| drain | a panel word ~6 (load, token, address, predicated add); two slots' loop ~6 | 13.5 words a thread | 120 |
+| read fill (`read_fill`) | a 16-byte copy ~13; an entry run ~10 | 6.9 copies a thread, 4 runs | 130 |
+| fold fill (`fold_fill`) | the same | 6.75 copies a thread, 4 runs | 128 |
+| staging (`stage_window`) | its ~240 copies over 256 threads, and its tests | 1 | 40 |
+| barriers (`Arrivals`) | an arrival ~3, a satisfied wait ~3 | ~27 | 81 |
+| glue (the kernel's body) | the plan's fields and the windows' statics read once, loop control | 1 | 150 |
+
+The design is ~2,020 instructions a warp-window: ~4.0K cycles of issue a window over 8 warps on 4 schedulers, ~0.55 ms a
+call at one head. Measured (2026-10-14, carry-k5 839dadb5) 3,884 (31,069 a CTA-window), every component over its line
+but the stores (1.09x): the fills 2.3-3.0x (each copy re-derives its token, its source and its swizzle; each run its
+list's row), the glue 2.6x and the barriers' own instructions 2.8x (fields re-read at each use), the drain 2.3x, the
+readout 1.7x, the fold 1.4x, the maxima 1.3x -- each class (b), the mechanism right and its form above its floor.
+Beside them the barriers' spinning (~280 a warp-window, the waits for other warps) and ~24.4K cycles a warp-window
+against the instructions' ~7.8K: the warps' latency-bound chains.
+
 <a id="phases"></a>
 ## The phase ledger's phases
 

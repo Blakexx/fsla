@@ -3,7 +3,8 @@
 KERNEL_STANDARDS §22 (7) and (8). One untimed launch of a cell through the probe worker, under
 `ncu --section SourceCounters` with the warp stall-reason group and the kernel's source imported. The capture is
 exported per SASS line, then attributed by `tools/region_ledger.py` against the installed extension and
-`tools/budgets/carry.json`'s components.
+`tools/budgets/carry.json`'s components, over the carry's files (the kernel's, then its components'): an instruction is
+its outermost component's, the kernel's own body (`glue`) only where none is.
 
     python tools/stall_census.py flagship-dense --json census.json
 

@@ -52,9 +52,10 @@ def measure(cell: str, out: Path, keep_csv: Path | None) -> None:
         if keep_csv is not None:
             keep_csv.write_text(exported.stdout)
         so = toolchains.built_extension(ROOT)
-        ledger = subprocess.run([PY, "tools/region_ledger.py", "--csv", str(csv), "--so", str(so), "--source",
-                                 "csrc/rola/src/carry/carry_kernel.cuh", "--budget", "tools/budgets/carry.json", "--cell",
-                                 cell, "--per", str(phase_ledger.cta_windows(cell)), "--json", str(out)],
+        sources = [f"csrc/rola/src/carry/{f}" for f in ("carry_kernel.cuh", "parts.cuh", "fold.cuh", "schedule.cuh")]
+        ledger = subprocess.run([PY, "tools/region_ledger.py", "--csv", str(csv), "--so", str(so), "--source", *sources,
+                                 "--budget", "tools/budgets/carry.json", "--cell", cell, "--per",
+                                 str(phase_ledger.cta_windows(cell)), "--json", str(out)],
                                 cwd=ROOT, capture_output=True, text=True, timeout=1800)
     if not out.exists():
         raise SystemExit(f"stall_census: region_ledger wrote nothing (rc {ledger.returncode}):\n"

@@ -68,3 +68,4 @@ the entry's last column.
 | `read_image` readout (instructions an MMA) | ~9 | 18.7 -> 8.2 | the §29.9 source patterns; ptxas's additions priced above |
 | `color_union` serial (a box-window) | ~45 a token + 1.15K | ~64 a token + 2.6K | `REDUX` moves, uniform-index counters, `BRA.DIV`; the fixed part itemized |
 | `color_union` batched (a box-window) | 1.8K / 3.7K / 1.1K | 3.8K / 7.8K / 1.6K | the warp's longest lane, swizzled addresses, both-sided selects, conditional stores |
+| the carry at nl64k-alt-k4 (a warp-window) | ~2,020 | 3,884 | open: every copy's token, source and swizzle re-derived; plan and window fields re-read at each use ([`carry_kernel.md#budget`](../carry/carry_kernel.md#budget)) |
