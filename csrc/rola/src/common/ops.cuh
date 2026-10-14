@@ -449,6 +449,17 @@ __device__ __forceinline__ void hmma(float (&d)[4], const uint32_t (&a)[4], uint
       : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
 }
 
+//: THE fp16 ATOM, fp16 ACCUMULATE: acc += A(16x16) . B(16x8), f16 operands, the accumulator two f16 pairs (rows g and
+//: g + 8, columns 2t and 2t + 1). -- see docs/internals/common/ops.md#hmma
+__device__ __forceinline__ void hmma_f16(uint32_t (&d)[2], const uint32_t (&a)[4], uint32_t b0,
+                                         uint32_t b1) {
+  asm volatile(
+      "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
+      "{%0,%1}, {%2,%3,%4,%5}, {%6,%7}, {%0,%1};\n"
+      : "+r"(d[0]), "+r"(d[1])
+      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+
 //: THE SAME INTO A FRESH fp32 FRAGMENT (C = 0). -- see docs/internals/common/ops.md#hmma
 __device__ __forceinline__ void hmma_fresh(float (&d)[4], const uint32_t (&a)[4], uint32_t b0,
                                            uint32_t b1) {

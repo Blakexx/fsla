@@ -69,6 +69,7 @@ struct CarryParams {
   SideLists write_lists, read_lists;
   const int16_t* write_exp;
   const int8_t* unit;
+  int readout_f16;  // the readout's MMAs accumulate in fp16 (1) or fp32 (0): carry_api.md#carry-readout-accumulate
   uint32_t* num;
   float* check;
   float* probe;

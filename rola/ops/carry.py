@@ -33,6 +33,7 @@ __all__ = [
     "form",
     "ledger_bind",
     "probe_bind",
+    "readout_accumulate",
     "sm_clock_ghz",
 ]
 
@@ -56,11 +57,14 @@ def _list_level(plan) -> int:
     return plan.lists[0] if plan.lists else -1
 
 
-def carry(routes, values, facts, carve: Carve, unit: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+def carry(routes, values, facts, carve: Carve, unit: torch.Tensor,
+          accumulate: str | None = None) -> tuple[torch.Tensor, torch.Tensor]:
     """THE LAUNCH: ``(num, check)`` -- ``num`` the readout's packed partials at each token's unit, ``check`` the
     skeleton's fp32 sum of the final state. ``facts`` is the facts pass's over this bundle in this arm's :func:`form`
     on the device's card: its lists' passes are the arm's readout pass and fold unit, and the read entries' offsets its
-    read pool row's (docs/internals/carry/carry_api.md#carry)."""
+    read pool row's. The readout accumulates in the device's form (:func:`readout_accumulate`); ``accumulate``
+    (``"fp32"`` or ``"fp16"``) is reserved: the gates' choice of form, so both forms are gated on any card
+    (``tests/oracle/test_carry_readout.py``; docs/internals/carry/carry_api.md#carry)."""
     BH = routes.batch * routes.heads
     d_v = values.v.shape[-1]
     num = torch.zeros((BH, routes.tokens, d_v // 2), dtype=torch.int32, device=routes.device)
@@ -69,8 +73,20 @@ def carry(routes, values, facts, carve: Carve, unit: torch.Tensor) -> tuple[torc
         list(routes.amp_read), list(routes.amp_write), values.v, list(facts_ops.side_lists(facts, "write")),
         facts.list_exp, list(facts_ops.side_lists(facts, "read")), unit, num, check, list(carve.widths),
         list(carve.extents), carve.channels, _list_level(carve.fold), list(carve.fold.operand),
-        _list_level(carve.readout), list(carve.readout.operand), list(arm_key(carve)))
+        _list_level(carve.readout), list(carve.readout.operand), list(arm_key(carve)),
+        _ACCUMULATE[accumulate or readout_accumulate(routes.device)])
     return num, check
+
+
+_ACCUMULATE = {"fp32": 0, "fp16": 1}
+
+
+def readout_accumulate(device: torch.device | None = None) -> str:
+    """The readout's MMA accumulation on ``device`` (the current one by default): ``"fp16"`` where its fp32-accumulate
+    MMA runs slower than its fp16-accumulate one by its rates (a GeForce card), else ``"fp32"``
+    (docs/internals/carry/carry_api.md#carry-readout-accumulate)."""
+    index = torch.cuda.current_device() if device is None or device.index is None else device.index
+    return "fp16" if extension().carry_readout_accumulate(index) else "fp32"
 
 
 def arms() -> list[tuple[int, ...]]:

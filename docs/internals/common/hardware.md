@@ -33,9 +33,10 @@ defaults, which are what the SM design does.
   cannot know the product it will meet. `hardware.cuh` carries every tabulated architecture's `Caps` row,
   `tabulated(cc)` and `caps_of(cc)`; [`arch_caps.cuh`](arch_caps.md) includes it and derives residency, staging
   depth and the register budget, and [`arch_runtime.cu`](arch_runtime.md) checks the row against the driver.
-- RUN TIME reads rates: a choice among exact forms (a sparse side's digit groups) prices them with the device's
-  resolved rates, which reach a kernel as quanta ([`cost.cuh`](cost.md)) -- the same device always gets the same
-  numbers.
+- RUN TIME reads rates: a choice among exact forms (the readout's accumulation, a sparse side's digit groups) prices
+  them with the device's resolved rates -- the binary carries every architecture's and product's MMA rates
+  (`kMmaRows`), found by the device's name ([`arch_runtime.md#mma-quanta`](arch_runtime.md#mma-quanta)) -- which reach
+  a kernel as quanta ([`cost.cuh`](cost.md)): the same device always gets the same numbers.
 
 `hardware.cuh` also carries the MMA kinds (`Mma`), the order a product's quanta carry their MMA rates in.
 

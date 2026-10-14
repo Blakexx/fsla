@@ -136,11 +136,13 @@ Every operation is defined by WHAT THE ALGORITHM NEEDS. A helper with no caller 
   64 x {8..256} x 16, K-major A) substitutes its own member. <a id="kmmaacceptsregistera"></a>`kMmaAcceptsRegisterA`
   states the operand sources the built `mma` accepts; a kernel whose accumulator must land on a particular side
   asserts against them at its own site.
-- <a id="hmma"></a>`hmma`, `hmma_fresh`, `hmma_k8`, `hmul2`, `hfma2`, `pack_half2`: the fp16 family -- `m16n8k16` f16
-  into fp32 (`hmma_fresh` into a fresh fragment, C = 0; `hmma_k8` the `m16n8k8` atom, half the tensor work, the fold's
-  8-token tail), two f16 products or fused products each rounded once to nearest, two
-  fp32 to an f16 pair rounded to nearest (`cvt.rn.f16x2.f32`, `lo` in the low half). Every rounding is explicit so
-  `tests/oracle/fold_reference.py` can mirror it.
+- <a id="hmma"></a>`hmma`, `hmma_fresh`, `hmma_k8`, `hmma_f16`, `hmul2`, `hfma2`, `pack_half2`: the fp16 family --
+  `m16n8k16` f16 into fp32 (`hmma_fresh` into a fresh fragment, C = 0; `hmma_k8` the `m16n8k8` atom, half the tensor
+  work, the fold's 8-token tail; `hmma_f16` into an fp16 accumulator, two f16 pairs a lane -- rows `lane / 4` and `+ 8`,
+  columns `2 (lane % 4)` and `+ 1` -- at twice GeForce's fp32-accumulate rate), two f16 products or fused products each
+  rounded once to nearest, two fp32 to an f16 pair rounded to nearest (`cvt.rn.f16x2.f32`, `lo` in the low half). Every
+  rounding is explicit so `tests/oracle/fold_reference.py` can mirror it.
+
 - <a id="imma-u8"></a>`imma_u8_k32`, `imma_u8_k32_fresh`, `imma_u8s8_k32`: `mma.sync.m16n8k32` over u8 and s8 into
   s32, 4096 multiply-adds. A is four registers a lane (rows `lane / 4` and `+ 8`, four consecutive k a register at
   `4 (lane % 4)` and `+ 16`), B two (column `lane / 4`), the accumulator four s32 -- exactly the register image

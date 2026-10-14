@@ -381,11 +381,11 @@ __device__ __forceinline__ void panel_red(uint32_t at, uint32_t v) {
 }
 
 //: A READOUT TILE, 8 tokens on N against a digit's state (the A operand): their read rows (B) by one `ldmatrix.x4`,
-//: four MMAs, each lane's two tokens' outputs as exact pairs at their panel rows; lane `l` holds entry `l & 7` and
-//: scales its coefficient to its token's unit by `2^(sx - u)` (`sx` the digit's exponent less `kImageTop` and
-//: `kCoefTop`). -- see docs/internals/carry/parts.md#readout
+//: four MMAs accumulating in fp16 (`F16`) or fp32, each lane's two tokens' outputs as exact pairs at their panel rows;
+//: lane `l` holds entry `l & 7` and scales its coefficient to its token's unit by `2^(sx - u)` (`sx` the digit's
+//: exponent less `kImageTop` and `kCoefTop`). -- see docs/internals/carry/parts.md#readout
 //: @burst
-template <class P>
+template <class P, bool F16>
 __device__ __forceinline__ void tile(ops::SmemAddr pool, ops::SmemAddr pads, ops::SmemAddr units,
                                      int sx, uint2 e, const uint32_t (&f)[16], int lane) {
   const int g = lane >> 2, t = lane & 3;
@@ -402,13 +402,28 @@ __device__ __forceinline__ void tile(ops::SmemAddr pool, ops::SmemAddr pads, ops
                  chunk_addr<P::kReadRow>(pool + (e.x & 0xffffu), static_cast<uint32_t>(lane >> 3)));
   float acc[2][4] = {};
 #pragma unroll
-  for (int m = 0; m < 2; ++m)
+  for (int m = 0; m < 2; ++m) {
+    uint32_t h[2] = {0u, 0u};
 #pragma unroll
     for (int kb = 0; kb < 2; ++kb) {
       const uint32_t a[4] = {f[(m * 2 + kb) * 4], f[(m * 2 + kb) * 4 + 1], f[(m * 2 + kb) * 4 + 2],
                              f[(m * 2 + kb) * 4 + 3]};
-      ops::hmma(acc[m], a, b[2 * kb], b[2 * kb + 1]);
+      if constexpr (F16) {
+        ops::hmma_f16(h, a, b[2 * kb], b[2 * kb + 1]);
+      } else {
+        ops::hmma(acc[m], a, b[2 * kb], b[2 * kb + 1]);
+      }
     }
+    if constexpr (F16) {
+      const float2 g0 = __half22float2(*reinterpret_cast<const __half2*>(&h[0])),
+                   g8 = __half22float2(*reinterpret_cast<const __half2*>(&h[1]));
+      acc[m][0] = g0.x;
+      acc[m][1] = g0.y;
+      acc[m][2] = g8.x;
+      acc[m][3] = g8.y;
+    }
+  }
+
   const uint32_t b0 = pads + (e0 >> 16), b1 = pads + (e1 >> 16);
 #pragma unroll
   for (int m = 0; m < 2; ++m) {
@@ -421,7 +436,7 @@ __device__ __forceinline__ void tile(ops::SmemAddr pool, ops::SmemAddr pads, ops
 //: exponent, its tiles over pass `q` -- a listed side's entries (the first 16 of pass 0 from the warp's heads, the rest
 //: in place), else every slot of the pass, the coefficient the digit's of the slot's row's coefficient slice (its
 //: second). -- see docs/internals/carry/parts.md#readout
-template <class P>
+template <class P, bool F16>
 __device__ __forceinline__ void readout_part(const CarryParams& p, const uint8_t* smem,
                                              const Window& rw, const Place& c, int w, int q,
                                              int slots, int part, ops::SmemAddr pool, int warp,
@@ -453,11 +468,11 @@ __device__ __forceinline__ void readout_part(const CarryParams& p, const uint8_t
           asm volatile("ld.shared.v2.u32 {%0, %1}, [%2];"
                        : "=r"(e.x), "=r"(e.y)
                        : "r"(heads + 8u * (kHeadEntries * i + 8 * s + (lane & 7))));
-          tile<P>(pool, pads, units, sx, e, f, lane);
+          tile<P, F16>(pool, pads, units, sx, e, f, lane);
         } while (__any_sync(0xffffffffu, ++s < staged));
       for (int k = __any_sync(0xffffffffu, s < tiles) ? 1 : 0; k > 0; --k)
 #pragma unroll 1
-        do tile<P>(pool, pads, units, sx, entries[first + 8 * s + (lane & 7)], f, lane);
+        do tile<P, F16>(pool, pads, units, sx, entries[first + 8 * s + (lane & 7)], f, lane);
         while (__any_sync(0xffffffffu, ++s < tiles));
     } else {
       //: every slot of the pass, its entry implied: its row and token, its coefficient, its panel row (a slot past the
@@ -477,7 +492,7 @@ __device__ __forceinline__ void readout_part(const CarryParams& p, const uint8_t
                          : "r"(chunk_addr<P::kReadRow>(pool + row0, (kSliceBytes + 2 * d) >> 4)
                                + (2 * d & 15)));
           const uint2 e = make_uint2(row0 | (q * P::kPassSlots + slot) << 16, coef | (panel << 16));
-          tile<P>(pool, pads, units, sx, e, f, lane);
+          tile<P, F16>(pool, pads, units, sx, e, f, lane);
         } while (__any_sync(0xffffffffu, ++s < (slots + 7) >> 3));
     }
   }

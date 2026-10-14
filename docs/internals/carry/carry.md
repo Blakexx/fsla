@@ -75,7 +75,7 @@ state's sum).
   digits; a side with no list level names exactly a row level and a coefficient level; an operand slice is a 4-byte
   copy at least and `kSliceBytes` at most.
 - every tensor's dtype, contiguity and exact shape (the lists' five, `unit` `[BH, windows x W]`); the arm key's channels
-  and factor counts agreeing with the carve.
+  and factor counts agreeing with the carve; the readout's accumulation fp32 (0) or fp16 (1).
 
 The closed-world arch refusal (`check_arch_table`) is the first statement of every entry.
 

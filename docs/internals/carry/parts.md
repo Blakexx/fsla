@@ -92,19 +92,25 @@ over the CTA's box -- `S` the state before the token's window, `x` the read coef
 stored (a sparse level's byte / 256, a dense level's f16), `a` the read row of the list level as stored (f16), `kappa`
 the state's byte scale (`kByteScale`); `unit(t) = 2^u(t)`, `u` the den pass's unit byte. The read side's per-token
 scales and `kappa` are common to `num` and `den` and cancel in the epilogue. Gated per slot against
-`tests/oracle/readout_reference.py` (`tests/oracle/test_carry_readout.py`): within half the bound on the even box.
+`tests/oracle/readout_reference.py` (`tests/oracle/test_carry_readout.py`): on the even box over four windows, every
+slot within half its bound in fp32 (~4e-4 relative, the image's rounding) and a fifth of it in fp16. The dense-dense
+arm's branch waits on its fold's reference (the fold, build order 5).
 
-`readout_part`, a warp's: each of its digits in the part, its state fragments from the image (the A operand: 32
-channels x 32 lists, four `ldmatrix.trans`) and its exponent, then its tiles over the pass. A TILE is 8 tokens on N:
-their read rows by one `ldmatrix.x4` (B: 32 lists x 8 tokens), four MMAs, each lane's two tokens' outputs as exact
-pairs added by `red.shared` at their panel words. Lane `l` holds entry `l & 7` (its token's row, so the B load needs no
-shuffle) and scales its coefficient to the token's unit: `c 2^(e - kImageTop - kCoefTop - u)`, the exponent added to
-the fp32 coefficient's bits (`e` the digit's exponent, `u` the token's unit byte, looked up by the token's window place
-the entry carries); each lane takes its two tokens' scales and panel offsets by four shuffles. A listed side's tiles
-are pass 0's first two from the warp's heads, then the rest in place; a side with no list level takes every slot of the
-pass, its entry implied -- the slot's row, its token (the pass's first plus the slot), its panel row (a slot past the
-pass's end its place's dummy row), its coefficient the digit's f16 in the row's coefficient slice (its second). Each
-source is its own loop, so each step is one block (KERNEL_STANDARDS §27), guarded by a vote and closed by one.
+`readout_part`, a warp's: each of its digits in the part, its state fragments from the image (the A operand: 32 channels
+x 32 lists, four `ldmatrix.trans`) and its exponent, then its tiles over the pass. A TILE is 8 tokens on N: their read
+rows by one `ldmatrix.x4` (B: 32 lists x 8 tokens), four MMAs accumulating in the device's form (fp16 on GeForce, fp32
+where fp32 accumulate runs at full rate:
+[`carry_api.md#carry-readout-accumulate`](carry_api.md#carry-readout-accumulate); the fp16 accumulator converted to fp32
+for the pairs), each lane's two tokens' outputs as exact pairs added by `red.shared` at their panel words. Lane `l`
+holds entry `l & 7` (its token's row, so the B load needs no shuffle) and scales its coefficient to the token's unit: `c
+2^(e - kImageTop - kCoefTop - u)`, the exponent added to the fp32 coefficient's bits (`e` the digit's exponent, `u` the
+token's unit byte, looked up by the token's window place the entry carries); each lane takes its two tokens' scales and
+panel offsets by four shuffles. A listed side's tiles are pass 0's first two from the warp's heads, then the rest in
+place; a side with no list level takes every slot of the pass, its entry implied -- the slot's row, its token (the
+pass's first plus the slot), its panel row (a slot past the pass's end its place's dummy row), its coefficient the
+digit's f16 in the row's coefficient slice (its second). Each source is its own loop, so each step is one block
+(KERNEL_STANDARDS §27), guarded by a vote and closed by one.
+
 
 The PANEL is the pass's slots' 64-byte rows after 8 dummy rows (`kPadBytes`, one a residue), laid out in pairs: slots
 `2k` and `2k + 1` share a 128-byte line, each slot's two 32-byte halves at the segments its pair's residue bits XOR

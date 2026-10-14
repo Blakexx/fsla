@@ -7,6 +7,7 @@
 
 #include "carry/carry_arm_abi.cuh"
 #include "common/arch_runtime.cuh"
+#include "common/hardware.cuh"
 #include "common/arm_switch.cuh"
 #include "common/design.cuh"
 
@@ -119,7 +120,8 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
                    std::vector<Tensor> read_lists, Tensor unit, Tensor num, Tensor check,
                    std::vector<int64_t> widths, std::vector<int64_t> extents, int64_t channels,
                    int64_t write_list, std::vector<int64_t> write_operand, int64_t read_list,
-                   std::vector<int64_t> read_operand, std::vector<int64_t> key) {
+                   std::vector<int64_t> read_operand, std::vector<int64_t> key,
+                   int64_t accumulate) {
   check_arch_table();
   const int D = (int)widths.size();
   STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels && (int)extents.size() == D, "the carve names ", D,
@@ -191,6 +193,9 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   STD_TORCH_CHECK(check.is_cuda() && check.scalar_type() == Dtype::Float && check.numel() == 1,
                   "check is one CUDA fp32 value");
   p.unit = unit.const_data_ptr<int8_t>();
+  STD_TORCH_CHECK(accumulate == 0 || accumulate == 1,
+                  "the readout accumulates in fp32 (0) or fp16 (1), got ", accumulate);
+  p.readout_f16 = static_cast<int>(accumulate);
   p.num = reinterpret_cast<uint32_t*>(num.mutable_data_ptr<int32_t>());
   p.check = check.mutable_data_ptr<float>();
   p.probe = g_probe;
@@ -225,6 +230,13 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   });
   STD_TORCH_CHECK(launched, "the carry arm set resolved a member that carries no launch");
   STD_TORCH_CHECK(status == cudaSuccess, "the carry launch failed: ", cudaGetErrorString(status));
+}
+
+//: fp16 where the device's fp32-accumulate MMA is slower than its fp16-accumulate one, by its rates; fp32 where they
+//: are equal or no rates are tabulated (its SM's full rate). -- see docs/internals/carry/carry_api.md#carry-readout-accumulate
+int64_t carry_readout_accumulate(int64_t device) {
+  const long long* q = mma_quanta(static_cast<int>(device));
+  return q != nullptr && q[denseref::arch::kHmmaF16F32] > q[denseref::arch::kHmmaF16F16] ? 1 : 0;
 }
 
 void carry_ledger_bind(const std::optional<Tensor>& ledger) {

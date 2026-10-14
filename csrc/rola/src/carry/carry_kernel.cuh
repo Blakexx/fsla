@@ -130,7 +130,11 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         store_part<P, Part>(st, smem, warp, lane);
         ops::rendezvous();
         clock.lap(kPhaseStore);
-        readout_part<P>(p, smem, rw, c, w, q, slots, Part, ring(slot), warp, lane);
+        if (p.readout_f16) {
+          readout_part<P, true>(p, smem, rw, c, w, q, slots, Part, ring(slot), warp, lane);
+        } else {
+          readout_part<P, false>(p, smem, rw, c, w, q, slots, Part, ring(slot), warp, lane);
+        }
         clock.lap(kPhaseReadout);
       });
       ops::rendezvous();

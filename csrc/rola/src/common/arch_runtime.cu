@@ -6,6 +6,8 @@
 #include "common/torch_seam.cuh"
 #include <cuda_runtime.h>
 
+#include <cstring>
+#include <map>
 #include <mutex>
 #include <set>
 
@@ -64,6 +66,29 @@ void check_arch_table() {
 
   const std::lock_guard<std::mutex> hold(mu);
   admitted.insert(dev);
+}
+
+//: -- see docs/internals/common/arch_runtime.md#mma-quanta
+const long long* mma_quanta(int device) {
+  static std::mutex mu;
+  static std::map<int, const long long*> resolved;
+  const std::lock_guard<std::mutex> hold(mu);
+  const auto at = resolved.find(device);
+  if (at != resolved.end()) return at->second;
+  cudaDeviceProp prop{};
+  ROLA_CUDA_CHECK(cudaGetDeviceProperties(&prop, device));
+  const int cc = prop.major * 100 + prop.minor * 10;
+  const long long* out = nullptr;
+  for (const auto& row : denseref::arch::kMmaRows) {
+    if (row.cc != cc) continue;
+    if (row.device == nullptr && out == nullptr) out = row.mma;
+    if (row.device != nullptr && std::strcmp(row.device, prop.name) == 0) {
+      out = row.mma;
+      break;
+    }
+  }
+  resolved[device] = out;
+  return out;
 }
 
 }  // namespace rola
