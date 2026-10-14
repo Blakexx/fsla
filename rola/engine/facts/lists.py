@@ -11,9 +11,9 @@ side (the readout's ``pass_slots``, the fold's ``unit_slots``: ``rola.ops.carry.
 end from the last pass on.
 
 An entry is four int16 words, its two 32-bit halves the carry's ``uint2``:
-- READ: the slot's pool row offset in its pass with the row's swizzle folded in, 0; the coefficient
-  ``f16(byte / 256)``, the slot's panel row offset from the dummy rows. A pad at place ``c`` of its step: the pass's
-  row ``c`` and dummy panel row ``c``, coefficient 0.
+- READ: the slot's pool row offset in its pass with the row's swizzle folded in, its token's window place (the carry
+  looks up the token's unit by it); the coefficient ``f16(byte / 256)``, the slot's panel row offset from the dummy
+  rows. A pad at place ``c`` of its step: the pass's row ``c``, token 0 and dummy panel row ``c``, coefficient 0.
 - WRITE: the slot, 0; ``c_v = f16(fp32(b m s) 2^(4 - E_v))``, ``c_m = f16(fp32(b m) 2^(4 - E_m))`` -- ``b`` the token's
   level byte, ``m`` and ``m s`` the facts pass's fp32 columns, ``E = max(K, -123)`` the list's exponent. A pad at place
   ``c`` of its step: the pass's slot ``c``, both coefficients 0.
@@ -164,7 +164,7 @@ def _entry(s, first, token_of, write, pass_slots, row_bytes, rows, b, h, t0, dig
     pool = local * row_bytes + 16 * chunk0(row_bytes, local)
     panel = PAD_BYTES + panel_row(local) if s is not None else panel_row(place)
     coef = _f16_bits(float(rows[b, t0 + token_of[s], h, digit]) / 256) if s is not None else 0
-    return [i16(pool), 0, coef, i16(panel)]
+    return [i16(pool), token_of[s] if s is not None else 0, coef, i16(panel)]
 
 
 def gains_shift(top: torch.Tensor) -> torch.Tensor:

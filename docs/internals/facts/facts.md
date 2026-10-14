@@ -164,9 +164,10 @@ PADS, so each pass starts on a step. A list's entries are at most the union's ex
 An entry is 8 bytes, the carry's `uint2`:
 - READ: the slot's pool row offset in its pass with the row's swizzle folded in (`local × row + 16 × chunk0`, `local`
   the slot less its pass's first, `chunk0` the carry's `pool_chunk` of chunk 0: an 8-chunk row XORs by the residue, a
-  row of an odd number of 64-byte quarters by the residue's high bits), 0; the coefficient `f16(byte / 256)`, the slot's
-  panel row offset past the dummy rows (`kPadBytes + panel_row(local)`). A pad at place `c` of its step: the pass's row
-  `c` and dummy panel row `c`, coefficient 0.
+  row of an odd number of 64-byte quarters by the residue's high bits), its token's window place (the readout looks up
+  the token's unit by it); the coefficient `f16(byte / 256)`, the slot's panel row offset past the dummy rows
+  (`kPadBytes + panel_row(local)`). A pad at place `c` of its step: the pass's row `c`, token 0 and dummy panel row
+  `c`, coefficient 0.
 - WRITE: the slot, 0; `c_v = f16(fp32(b F) 2^(4 - E_v))`, `c_m = f16(fp32(b m) 2^(4 - E_m))`, `E = max(K, -123)` the
   list's exponent. A pad at place `c` of its step: the pass's slot `c`, both coefficients 0.
 

@@ -11,35 +11,11 @@
 
 namespace rola::carry {
 
-//: THE UNITS' CONSTANTS: c's top 2^4, a state held under 2^100 of its unit, the lowest unit, a list never live, a
-//: window's largest add in units, the facts pass's dead exponent. -- see docs/internals/carry/fold.md#units
-constexpr int kCoefTop = 4;
-constexpr int kUnitHeadroom = 100;
-constexpr int kUnitMin = kCoefTop - 127;
-constexpr int kUnitNone = -1000;
-constexpr float kWindowAdd = kWindow * 16.0f;
-constexpr int kExpDead = -126;
 //: A DENSE WRITE LEVEL'S BYTE SCALE: its f16 digits carry 1/255 of the byte scale c is formed on.
 constexpr float kByteScale = 1.0f / 255.0f;
 
 //: A WARP'S LIST `j`: the box's list `warp + 8 j`, as the heads and the image's stores lay the lists out.
 __device__ __forceinline__ constexpr int fold_list(int warp, int j) { return warp + kWarps * j; }
-
-//: A LIST'S UNIT ACROSS WINDOWS, in shared memory: its exponent and its state's bound in units.
-struct UnitBook {
-  int unit;
-  float bound;
-};
-
-__device__ __forceinline__ float pow2(int e) {
-  return __uint_as_float(static_cast<uint32_t>(e + 127) << 23);
-}
-
-//: the smallest `e` with `x <= 2^e`, `kUnitNone` for zero
-__device__ __forceinline__ int ceil_exp(float x) {
-  const uint32_t bits = __float_as_uint(x);
-  return bits == 0u ? kUnitNone : static_cast<int>(bits >> 23) - 127 + ((bits & 0x7fffffu) != 0u);
-}
 
 //: 2^e as an f16 pair: normal from 2^-14, subnormal to 2^-24, zero below.
 __device__ __forceinline__ uint32_t pow2_half2(int e) {

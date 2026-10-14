@@ -110,10 +110,11 @@ def next_units(k: np.ndarray, unit: np.ndarray, bound: np.ndarray):
     return nxt, (bound * f + WINDOW_ADD).astype(np.float32), f
 
 
-def fold_state(routes, values, list_exp, level_s: int, window: int):
+def fold_state(routes, values, list_exp, level_s: int, window: int, at_window=None):
     """THE FOLD'S DECLARED ARITHMETIC over a call (one batch-head at a time): ``(state, env, mass, units)`` -- the
     absolute state ``[BH, B_S, B_R, C]`` and its envelope (``sum |A| |v|``, absolute), the absolute mass ``[BH, B_S,
-    B_R]`` and the final units ``[BH, B_R, 2]`` (values', mass's), from the facts pass's ``list_exp``.
+    B_R]`` and the final units ``[BH, B_R, 2]`` (values', mass's), from the facts pass's ``list_exp``. ``at_window(w,
+    state, env)``, when given, sees each window's absolute state and envelope ``[B, H, B_S, B_R, C]`` before its writes.
 
     ``F = ((g sw_0) sw_1) vs`` and ``m = (g sw_0) sw_1`` in fp32; ``c = f16(f16(fp32(b_R F) 2^(4 - E)) 2^(E - u))``
     -- the facts pass's record at the list's window exponent ``E`` (floored at ``UNIT_MIN``), moved to the state's unit
@@ -140,6 +141,8 @@ def fold_state(routes, values, list_exp, level_s: int, window: int):
     bv = bu.copy()
     for w in range(windows):
         sl = slice(w * window, (w + 1) * window)
+        if at_window is not None:
+            at_window(w, state * torch.tensor(np.exp2(u - COEF_TOP) * scale, device=dev)[:, :, None, :, None], env)
         u, bu, fu = next_units(k[:, :, w, :, 1], u, bu)
         v_unit, bv, fv = next_units(k[:, :, w, :, 0], v_unit, bv)
         e_v = np.maximum(k[:, :, w, :, 1], UNIT_MIN)

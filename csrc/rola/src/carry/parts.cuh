@@ -16,6 +16,31 @@ namespace rola::carry {
 
 namespace ops = ::denseref::ops;
 
+//: THE UNITS' CONSTANTS: c's top 2^4, a state held under 2^100 of its unit, the lowest unit, a list never live, a
+//: window's largest add in units, the facts pass's dead exponent. -- see docs/internals/carry/fold.md#units
+constexpr int kCoefTop = 4;
+constexpr int kUnitHeadroom = 100;
+constexpr int kUnitMin = kCoefTop - 127;
+constexpr int kUnitNone = -1000;
+constexpr float kWindowAdd = kWindow * 16.0f;
+constexpr int kExpDead = -126;
+
+//: A LIST'S UNIT ACROSS WINDOWS, in shared memory: its exponent and its state's bound in units.
+struct UnitBook {
+  int unit;
+  float bound;
+};
+
+__device__ __forceinline__ float pow2(int e) {
+  return __uint_as_float(static_cast<uint32_t>(e + 127) << 23);
+}
+
+//: the smallest `e` with `x <= 2^e`, `kUnitNone` for zero
+__device__ __forceinline__ int ceil_exp(float x) {
+  const uint32_t bits = __float_as_uint(x);
+  return bits == 0u ? kUnitNone : static_cast<int>(bits >> 23) - 127 + ((bits & 0x7fffffu) != 0u);
+}
+
 //: A WARP'S STATE, the fold's accumulators: per list, its digits' m-tiles by the channels' four n-tiles, fp32 in the
 //: list's unit. -- see docs/internals/carry/fold.md#state
 template <class P>
@@ -228,23 +253,34 @@ __device__ __forceinline__ void fill(const Slices<Factors>& sl, const uint8_t* v
   ops::mbar_arrive_when_landed(bar);
 }
 
-//: THE DIGIT MAXIMA, the hand-off's first step: a warp's largest |state| a digit over its lists, the four lanes of a
-//: digit row joined by two shuffles, posted for the CTA. Its lists' units are the fold-units component's.
-//: -- see docs/internals/carry/parts.md#maxima
+//: A WARP'S LISTS' UNITS, list `j` the box's list `warp + 8 j`.
+template <class P>
+__device__ __forceinline__ void list_units(int (&u)[P::kFoldLists], const uint8_t* smem, int warp) {
+  const UnitBook* const book = reinterpret_cast<const UnitBook*>(smem + P::kBook);
+  static_for<P::kFoldLists>([&](auto J) { u[J] = book[warp + kWarps * J].unit; });
+}
+
+//: THE DIGIT MAXIMA, the hand-off's first step: a warp's largest |state| a digit over its lists, each list's at its
+//: unit, as an exponent -- `ceil_exp` of the list's largest |accumulator| plus its unit, the largest over the lists --
+//: the four lanes of a digit row joined by two shuffles, posted for the CTA. -- see docs/internals/carry/parts.md#maxima
 template <class P>
 __device__ __forceinline__ void post_maxima(const State<P>& st, uint8_t* smem, int warp, int lane) {
-  float* const posts = reinterpret_cast<float*>(smem + P::kMaxima) + warp * kBoxDigits;
+  int* const posts = reinterpret_cast<int*>(smem + P::kMaxima) + warp * kBoxDigits;
+  int u[P::kFoldLists];
+  list_units<P>(u, smem, warp);
   static_for<P::kFoldMTiles>([&](auto M) {
     static_for<2>([&](auto H) {
-      float x = 0.0f;
+      int e = 2 * kUnitNone;
       static_for<P::kFoldLists>([&](auto J) {
+        float x = 0.0f;
         static_for<4>([&](auto N) {
           x = fmaxf(x, fmaxf(fabsf(st.acc[J][M][N][2 * H]), fabsf(st.acc[J][M][N][2 * H + 1])));
         });
+        e = max(e, ceil_exp(x) + u[J]);
       });
-      x = fmaxf(x, __shfl_xor_sync(0xffffffffu, x, 1));
-      x = fmaxf(x, __shfl_xor_sync(0xffffffffu, x, 2));
-      if ((lane & 3) == 0) posts[16 * M + 8 * H + (lane >> 2)] = x;
+      e = max(e, __shfl_xor_sync(0xffffffffu, e, 1));
+      e = max(e, __shfl_xor_sync(0xffffffffu, e, 2));
+      if ((lane & 3) == 0) posts[16 * M + 8 * H + (lane >> 2)] = e;
     });
   });
 }
@@ -259,32 +295,36 @@ __host__ __device__ __forceinline__ constexpr uint32_t unit_of(int l, int k, int
 //: -- see docs/internals/carry/parts.md#maxima
 constexpr int kImageTop = 10;
 
-//: A DIGIT'S EXPONENT: the smallest `e` with the digit's largest |state| under 2^e, over the 8 warps' posts, at least
-//: `kImageTop - 127` so its scale `2^(kImageTop - e)` is a normal float.
+//: A DIGIT'S EXPONENT: the smallest `e` with the digit's largest |state| (its lists at their units) at most 2^e, over
+//: the 8 warps' posts, at least `kImageTop - 127`.
 template <class P>
 __device__ __forceinline__ int digit_exp(const uint8_t* smem, int d) {
-  const float* posts = reinterpret_cast<const float*>(smem + P::kMaxima) + d;
-  float x = 0.0f;
-  static_for<kWarps>([&](auto W) { x = fmaxf(x, posts[W * kBoxDigits]); });
-  return max(((__float_as_int(x) >> 23) & 0xff) - 126, kImageTop - 127);
+  const int* posts = reinterpret_cast<const int*>(smem + P::kMaxima) + d;
+  int e = kImageTop - 127;
+  static_for<kWarps>([&](auto W) { e = max(e, posts[W * kBoxDigits]); });
+  return e;
 }
 
 //: A PART'S STORES, the hand-off: the warp's lists' rows of the part's digits into the image, f16 at each digit's
-//: power of two; warp 0 records the part's exponents for the readers. -- see docs/internals/carry/parts.md#store
+//: power of two, each list moved there from its unit (`2^(unit + kImageTop - e)`, held to a normal float's range: past
+//: it the f16 is zero or the list's value is not the digit's); warp 0 records the part's exponents for the readers.
+//: -- see docs/internals/carry/parts.md#store
 template <class P, int Part>
 __device__ __forceinline__ void store_part(const State<P>& st, uint8_t* smem, int warp, int lane) {
   constexpr int kTiles = P::kFoldMTiles / P::kParts;
   const int g = lane >> 2, t = lane & 3;
   const ops::SmemAddr image = ops::smem_addr(smem + P::kImage);
+  int u[P::kFoldLists];
+  list_units<P>(u, smem, warp);
   static_for<kTiles>([&](auto K) {
     constexpr int m = Part * kTiles + K;
     static_for<2>([&](auto H) {
       const int d = 16 * m + 8 * H + g;
       const int e = digit_exp<P>(smem, d);
       if (warp == 0 && t == 0) reinterpret_cast<int*>(smem + P::kExps)[d] = e;
-      const float scale = __int_as_float((127 + kImageTop - e) << 23);
       const ops::SmemAddr plane = image + (d % P::kPlanes) * kPlaneBytes + 4 * t;
       static_for<P::kFoldLists>([&](auto J) {
+        const float scale = pow2(min(max(u[J] + kImageTop - e, -126), 127));
         static_for<4>([&](auto N) {
           const __half2 h =
               __floats2half2_rn(st.acc[J][m][N][2 * H] * scale, st.acc[J][m][N][2 * H + 1] * scale);
@@ -340,20 +380,26 @@ __device__ __forceinline__ void panel_red(uint32_t at, uint32_t v) {
   asm volatile("red.shared.add.u32 [%0], %1;" ::"r"(at), "r"(v) : "memory");
 }
 
-//: A READOUT TILE, 8 tokens on N against a digit's state (the A operand): their read rows (B: 32 lists x 8 tokens)
-//: by one `ldmatrix.x4`, four MMAs, each lane's two tokens' outputs as exact pairs at their panel rows. An entry is the
-//: pool row's offset (its swizzle folded in), the coefficient (low half) and the panel offset (high half); the
-//: coefficient's digit exponent and the token's unit are the readout component's.
+//: A READOUT TILE, 8 tokens on N against a digit's state (the A operand): their read rows (B) by one `ldmatrix.x4`,
+//: four MMAs, each lane's two tokens' outputs as exact pairs at their panel rows; lane `l` holds entry `l & 7` and
+//: scales its coefficient to its token's unit by `2^(sx - u)` (`sx` the digit's exponent less `kImageTop` and
+//: `kCoefTop`). -- see docs/internals/carry/parts.md#readout
 //: @burst
 template <class P>
-__device__ __forceinline__ void tile(ops::SmemAddr pool, ops::SmemAddr pads, uint2 e,
-                                     const uint32_t (&f)[16], int lane) {
-  const int r = lane & 7, g = lane >> 2, t = lane & 3;
-  const uint32_t eb = __shfl_sync(0xffffffffu, e.x, r) & 0xffffu;
+__device__ __forceinline__ void tile(ops::SmemAddr pool, ops::SmemAddr pads, ops::SmemAddr units,
+                                     int sx, uint2 e, const uint32_t (&f)[16], int lane) {
+  const int g = lane >> 2, t = lane & 3;
+  int u;
+  asm volatile("ld.shared.s8 %0, [%1];" : "=r"(u) : "r"(units + (e.x >> 16)));
+  const float c = __half2float(__ushort_as_half(static_cast<unsigned short>(e.y)));
+  const float cu = __uint_as_float(__float_as_uint(c) + (static_cast<uint32_t>(sx - u) << 23));
   const uint32_t e0 = __shfl_sync(0xffffffffu, e.y, 2 * t),
                  e1 = __shfl_sync(0xffffffffu, e.y, 2 * t + 1);
+  const float c0 = __shfl_sync(0xffffffffu, cu, 2 * t),
+              c1 = __shfl_sync(0xffffffffu, cu, 2 * t + 1);
   uint32_t b[4];
-  ops::load_frag(b, chunk_addr<P::kReadRow>(pool + eb, static_cast<uint32_t>(lane >> 3)));
+  ops::load_frag(b,
+                 chunk_addr<P::kReadRow>(pool + (e.x & 0xffffu), static_cast<uint32_t>(lane >> 3)));
   float acc[2][4] = {};
 #pragma unroll
   for (int m = 0; m < 2; ++m)
@@ -364,8 +410,6 @@ __device__ __forceinline__ void tile(ops::SmemAddr pool, ops::SmemAddr pads, uin
       ops::hmma(acc[m], a, b[2 * kb], b[2 * kb + 1]);
     }
   const uint32_t b0 = pads + (e0 >> 16), b1 = pads + (e1 >> 16);
-  const float c0 = __half2float(__ushort_as_half(static_cast<unsigned short>(e0)));
-  const float c1 = __half2float(__ushort_as_half(static_cast<unsigned short>(e1)));
 #pragma unroll
   for (int m = 0; m < 2; ++m) {
     panel_red((b0 ^ (32u * m)) + 4u * g, s16_pair(acc[m][0], acc[m][2], c0));
@@ -373,9 +417,10 @@ __device__ __forceinline__ void tile(ops::SmemAddr pool, ops::SmemAddr pads, uin
   }
 }
 
-//: THE READOUT OF A PART, a warp's: each of its digits `w + 8 i` in the part, its state from the image, its tiles
-//: over pass `q` -- a listed side's entries (the first 16 of pass 0 from the warp's heads, the rest in place), else
-//: every slot of the pass. -- see docs/internals/carry/parts.md#readout
+//: THE READOUT OF A PART, a warp's: each of its digits `w + 8 i` in the part, its state from the image and its
+//: exponent, its tiles over pass `q` -- a listed side's entries (the first 16 of pass 0 from the warp's heads, the rest
+//: in place), else every slot of the pass, the coefficient the digit's of the slot's row's coefficient slice (its
+//: second). -- see docs/internals/carry/parts.md#readout
 template <class P>
 __device__ __forceinline__ void readout_part(const CarryParams& p, const uint8_t* smem,
                                              const Window& rw, const Place& c, int w, int q,
@@ -386,9 +431,11 @@ __device__ __forceinline__ void readout_part(const CarryParams& p, const uint8_t
   const ops::SmemAddr image = ops::smem_addr(smem + P::kImage),
                       pads = ops::smem_addr(smem + P::kPads);
   const ops::SmemAddr heads = ops::smem_addr(smem + P::kReadHeads) + warp * P::kHeadBytes;
+  const ops::SmemAddr units = ops::smem_addr(smem + P::kUnits) + (w & 1) * kWindow;
 #pragma unroll 1
   for (int k = 0; k < kDigits; ++k) {
     const int i = part * kDigits + k, d = warp + kWarps * i;
+    const int sx = reinterpret_cast<const int*>(smem + P::kExps)[d] - kImageTop - kCoefTop;
     uint32_t f[16];
     state_in<P>(f, image, il, d);
     if (rw.listed) {
@@ -406,15 +453,15 @@ __device__ __forceinline__ void readout_part(const CarryParams& p, const uint8_t
           asm volatile("ld.shared.v2.u32 {%0, %1}, [%2];"
                        : "=r"(e.x), "=r"(e.y)
                        : "r"(heads + 8u * (kHeadEntries * i + 8 * s + (lane & 7))));
-          tile<P>(pool, pads, e, f, lane);
+          tile<P>(pool, pads, units, sx, e, f, lane);
         } while (__any_sync(0xffffffffu, ++s < staged));
       for (int k = __any_sync(0xffffffffu, s < tiles) ? 1 : 0; k > 0; --k)
 #pragma unroll 1
-        do tile<P>(pool, pads, entries[first + 8 * s + (lane & 7)], f, lane);
+        do tile<P>(pool, pads, units, sx, entries[first + 8 * s + (lane & 7)], f, lane);
         while (__any_sync(0xffffffffu, ++s < tiles));
     } else {
-      //: every slot of the pass, its entry implied: its row, its panel row (a slot past the pass's end its residue's
-      //: dummy row), the coefficient one
+      //: every slot of the pass, its entry implied: its row and token, its coefficient, its panel row (a slot past the
+      //: pass's end its place's dummy row)
       int s = 0;
       for (int k = __any_sync(0xffffffffu, slots > 0) ? 1 : 0; k > 0; --k)
 #pragma unroll 1
@@ -422,9 +469,15 @@ __device__ __forceinline__ void readout_part(const CarryParams& p, const uint8_t
           const uint32_t slot = 8u * s + (lane & 7);
           const uint32_t panel =
               static_cast<int>(slot) < slots ? kPadBytes + panel_row(slot) : panel_row(slot & 7);
-          const uint2 e = make_uint2(slot * P::kReadRow + 16u * chunk_at<P::kReadRow>(slot, 0),
-                                     0x3c00u | (panel << 16));
-          tile<P>(pool, pads, e, f, lane);
+          const uint32_t row0 = slot * P::kReadRow + 16u * chunk_at<P::kReadRow>(slot, 0);
+          uint32_t coef = 0x3c00u;
+          if constexpr (P::kReadFactors > 1)
+            asm volatile("ld.shared.u16 %0, [%1];"
+                         : "=r"(coef)
+                         : "r"(chunk_addr<P::kReadRow>(pool + row0, (kSliceBytes + 2 * d) >> 4)
+                               + (2 * d & 15)));
+          const uint2 e = make_uint2(row0 | (q * P::kPassSlots + slot) << 16, coef | (panel << 16));
+          tile<P>(pool, pads, units, sx, e, f, lane);
         } while (__any_sync(0xffffffffu, ++s < (slots + 7) >> 3));
     }
   }

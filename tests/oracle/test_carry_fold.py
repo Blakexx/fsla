@@ -12,9 +12,7 @@ import torch
 from rola.engine.carve import plan_carve
 from rola.ops import carry as carry_ops
 from rola.ops import facts as facts_ops
-from rola.routing.factors import RouteFactors
-from rola.routing.types import OpaqueRouting, Topology
-from rola.values import Values
+from tests.oracle.carry_fixtures import alternating_bundle
 from tests.oracle.fold_reference import fold_state
 
 
@@ -24,37 +22,6 @@ def _rtol(L: int) -> float:
     return L / 16 * 2.0 ** -23
 
 
-def _levels(widths, L, live, *, B=1, H=2, seed=0):
-    """Each level's rows on the simplex: ``live[l]`` digits a token at random (the rest exact zeros), positive."""
-    gen = torch.Generator().manual_seed(seed)
-    out = []
-    for width, k in zip(widths, live):
-        x = torch.rand((B, L, H, width), generator=gen) + 0.05
-        if k < width:
-            keep = torch.rand((B, L, H, width), generator=gen).argsort(-1) < k
-            x = x * keep
-        out.append((x / x.sum(-1, keepdim=True)).cuda())
-    return out
-
-
-def _bundle(widths, L, write_sparse, *, d_v=64, seed=0):
-    """An alternating bundle: the write side sparse at ``write_sparse`` (4 live digits a token), the read side sparse at
-    the other level, each side dense elsewhere."""
-    D = len(widths)
-    write_flags = tuple(level == write_sparse for level in range(D))
-    read_flags = tuple(not flag for flag in write_flags)
-    live_w = [4 if flag else width for flag, width in zip(write_flags, widths)]
-    live_r = [4 if flag else width for flag, width in zip(read_flags, widths)]
-    gen = torch.Generator().manual_seed(seed + 1)
-    topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in widths))
-    routes = RouteFactors.from_levels(topology, _levels(widths, L, live_r, seed=seed),
-                                      _levels(widths, L, live_w, seed=seed + 7),
-                                      (torch.rand((1, L, 2), generator=gen) + 0.5).cuda(),
-                                      sparse=(read_flags, write_flags))
-    values = Values.from_projection(torch.randn((1, L, 2, d_v), generator=gen).cuda())
-    return routes, values
-
-
 @pytest.mark.parametrize("write_sparse", [0, 1])
 @pytest.mark.parametrize("growth", [0, 8, -8])
 def test_the_fold_is_the_reference_per_slot(write_sparse, growth):
@@ -62,7 +29,7 @@ def test_the_fold_is_the_reference_per_slot(write_sparse, growth):
     of the reference's over four windows -- the write gain steady, or scaled 2^growth a window, so the units climb
     and rescale the state, or are held under the bound's headroom."""
     widths, L = (64, 64), 2048
-    routes, values = _bundle(widths, L, write_sparse)
+    routes, values = alternating_bundle(widths, L, write_sparse)
     window = torch.arange(L, device="cuda") // carry_ops.WINDOW
     routes.g_write.mul_(torch.exp2(growth * window.float())[None, :, None])
     carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, values.v.shape[-1])

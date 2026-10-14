@@ -50,14 +50,16 @@ entry names it but a pad may, whose coefficient 0 then multiplies zeros, and its
 ## The digit maxima
 
 The hand-off's first step (the f16 image at a power of two a digit). A lane's registers hold four digits of each
-of its warp's lists; `post_maxima` takes its largest |state| a digit over the lists, joins the digit row's four lanes
-by two shuffles and posts it (128 FMNMX and 8 SHFL a lane a window). `digit_exp` is a digit's exponent over the 8
-warps' posts: the smallest `e` with every value under `2^e`. The image holds a digit at `2^(kImageTop - e)`: its largest
-value under 2^10, so a 32-list sum of image times read row (each at most 1) stays under 2^15, inside an fp16
-accumulator, and one placement serves the fp32- and fp16-accumulate readouts. Measured (2026-10-12, the image's
-quality model, per token against fp64 on the flagship cells): the placement at 2^10 and at 2^15 give the same error,
-as does a block prescale; a leaf keeps 11 bits down to 24 octaves under its digit's largest. The list units
-(`fold.md#units`) are the fold-units component's: the maxima take the accumulators as held.
+of its warp's lists, each list in its own running unit ([`fold.md#units`](fold.md#units)), so the lists meet on one
+scale by exponent: `post_maxima` takes, a digit, each list's largest |accumulator|'s `ceil_exp` plus the list's unit,
+the largest over the lists (exactly the exponent of the digit's largest |state| on one scale, whatever the units'
+spread), joins the digit row's four lanes by two shuffles and posts it (128 FMNMX, 16 exponent steps and 8 SHFL a lane
+a window). `digit_exp` is a digit's exponent over the 8 warps' posts: the smallest `e` with every value at most `2^e`,
+at least `kImageTop - 127`. The image holds a digit at `2^(kImageTop - e)`: its largest value at most 2^10, so a
+32-list sum of image times read row (each at most 1) stays within 2^15, inside an fp16 accumulator, and one placement
+serves the fp32- and fp16-accumulate readouts. Measured (2026-10-12, the image's quality model, per token against fp64
+on the flagship cells): the placement at 2^10 and at 2^15 give the same error, as does a block prescale; a leaf keeps 11
+bits down to 24 octaves under its digit's largest.
 
 <a id="image"></a>
 ## The image
@@ -71,8 +73,10 @@ hold its digits (`d % kPlanes`). The fold's stores (a lane a list row's 4-byte w
 ## A part's stores
 
 `store_part<P, Part>`: every warp stores its 4 lists' rows of the part's digits (whole m-tiles), each value times
-`2^(kImageTop - e)` for its digit's exponent, packed f16 (32 stores a lane a part on sm_86); warp 0 records the part's exponents for
-the readers (`kExps`). The part is compile-time: the state's registers are indexed by it.
+`2^(u + kImageTop - e)` for its list's unit `u` and its digit's exponent `e`, packed f16 (32 stores a lane a part on
+sm_86); the factor is held to a normal float's range (below it the f16 is zero; above it the list's accumulators are
+under 2^-117 of its unit). Warp 0 records the part's exponents for the readers (`kExps`). The part is compile-time: the
+state's registers are indexed by it.
 
 <a id="pair"></a>
 ## The exact pair
@@ -83,13 +87,24 @@ offsets, one LEA), exact under u32 adds while each final fits s16.
 <a id="readout"></a>
 ## The readout
 
+THE OUTPUT: each token's partials at its unit, `P(t, c) x unit(t) = sum_{d, r} x(t, d) a(t, r) S(d, r, c) / kappa`
+over the CTA's box -- `S` the state before the token's window, `x` the read coefficient of the image's digit level as
+stored (a sparse level's byte / 256, a dense level's f16), `a` the read row of the list level as stored (f16), `kappa`
+the state's byte scale (`kByteScale`); `unit(t) = 2^u(t)`, `u` the den pass's unit byte. The read side's per-token
+scales and `kappa` are common to `num` and `den` and cancel in the epilogue. Gated per slot against
+`tests/oracle/readout_reference.py` (`tests/oracle/test_carry_readout.py`): within half the bound on the even box.
+
 `readout_part`, a warp's: each of its digits in the part, its state fragments from the image (the A operand: 32
-channels x 32 lists, four `ldmatrix.trans`), then its tiles over the pass. A TILE is 8 tokens on N: their read rows by
-one `ldmatrix.x4` (B: 32 lists x 8 tokens), four MMAs, each lane's two tokens' outputs as exact pairs added by
-`red.shared` at their panel words. A listed side's tiles are pass 0's first two from the warp's heads, then the rest
-in place; a side with no list level takes every slot of the pass, its entry implied (the slot's row and panel row, a
-slot past the pass's end its residue's dummy row). Each source is its own loop, so each step is one block
-(KERNEL_STANDARDS §27), guarded by a vote and closed by one.
+channels x 32 lists, four `ldmatrix.trans`) and its exponent, then its tiles over the pass. A TILE is 8 tokens on N:
+their read rows by one `ldmatrix.x4` (B: 32 lists x 8 tokens), four MMAs, each lane's two tokens' outputs as exact
+pairs added by `red.shared` at their panel words. Lane `l` holds entry `l & 7` (its token's row, so the B load needs no
+shuffle) and scales its coefficient to the token's unit: `c 2^(e - kImageTop - kCoefTop - u)`, the exponent added to
+the fp32 coefficient's bits (`e` the digit's exponent, `u` the token's unit byte, looked up by the token's window place
+the entry carries); each lane takes its two tokens' scales and panel offsets by four shuffles. A listed side's tiles
+are pass 0's first two from the warp's heads, then the rest in place; a side with no list level takes every slot of the
+pass, its entry implied -- the slot's row, its token (the pass's first plus the slot), its panel row (a slot past the
+pass's end its place's dummy row), its coefficient the digit's f16 in the row's coefficient slice (its second). Each
+source is its own loop, so each step is one block (KERNEL_STANDARDS §27), guarded by a vote and closed by one.
 
 The PANEL is the pass's slots' 64-byte rows after 8 dummy rows (`kPadBytes`, one a residue), laid out in pairs: slots
 `2k` and `2k + 1` share a 128-byte line, each slot's two 32-byte halves at the segments its pair's residue bits XOR
@@ -99,8 +114,6 @@ distinct residues (a dense pass's consecutive slots) meets 32 banks an add. Meas
 against 2.75 on a list's rank slots; the drain 1.00 a request either way. An entry's panel offset is from
 the dummy rows, so it fits its 16 bits on every card; a lane XORs its half (`32 m`) and adds its word (`4 g`).
 
-Left to the readout component: the coefficient's digit exponent (`(word << 16) + ((e - kImageTop) << 23)`, one LEA)
-and the token's unit, the dense side's coefficient from the row's coefficient slice (implied 1 here).
 
 <a id="drain"></a>
 ## The drain

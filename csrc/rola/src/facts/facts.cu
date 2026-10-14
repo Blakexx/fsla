@@ -387,7 +387,8 @@ __device__ __forceinline__ void lists_out(const FactsParams& p, const Unit& x, c
           } else {
             const uint32_t local = sl & ((1u << pl) - 1u);
             const uint32_t coef = __half_as_ushort(__float2half_rn(b * (1.0f / 256.0f)));
-            e = make_uint2(local * row + 16u * carry::pool_chunk(row, local, 0u),
+            e = make_uint2((local * row + 16u * carry::pool_chunk(row, local, 0u))
+                               | static_cast<uint32_t>(t) << 16,
                            coef | (carry::kPadBytes + carry::panel_row(local)) << 16);
           }
           if (listed) {
