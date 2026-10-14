@@ -42,8 +42,9 @@ template <class Arm>
 inline cudaError_t carry_launch(const CarryParams& p, int boxes, int bh, cudaStream_t stream) {
   const int plans = (p.read_lists.groups > 0 ? p.read_lists.groups : 1)
                     * (p.write_lists.groups > 0 ? p.write_lists.groups : 1) * p.windows;
-  window_plan_kernel<Arm><<<dim3((unsigned)((plans + kThreads - 1) / kThreads), (unsigned)bh),
-                            (unsigned)kThreads, 0, stream>>>(p);
+  window_plan_kernel<Arm>
+      <<<dim3((unsigned)((plans + kPlanThreads - 1) / kPlanThreads), (unsigned)bh),
+         (unsigned)kPlanThreads, 0, stream>>>(p);
   const auto fn = carry_kernel<Arm>;
   const int bytes = carry_form<Arm>().smem_bytes;
   if (bytes == 0) return cudaErrorInvalidDevice;

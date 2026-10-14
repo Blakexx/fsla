@@ -7,13 +7,13 @@ chunks and buffers -- the window's plan places in the area at run time (`schedul
 <a id="tenants"></a>
 ## The persistent tenants
 
-`Tenants` holds what lives across the window, 9,984 bytes on every card and arm:
+`Tenants` holds what lives across the window, 10,752 bytes on every card and arm:
 
 - each side's union tokens (1 KB), count and group's boundaries in prefix form, two windows' each by parity: a
   window's are copied while the window before it is still read;
 - the write lists' exponent pairs and the tokens' units, by parity;
-- the unit book (a list's running unit, `fold.md#units`), the digit maxima (each warp's per digit) and the digit
-  exponents (`parts.md#maxima`);
+- the unit book (a list's running unit, `fold.md#units`), the digit maxima (each warp's per digit, by parity) and the
+  digit exponents (`parts.md#maxima`);
 - the phase clock's rows; the barriers (`#barriers`); the CTA's plans, two windows' by parity (`schedule.md#plan`);
 - the CTA's addresses (`Addr`, 256 bytes reserved: `parts.md#place`).
 
@@ -21,16 +21,15 @@ chunks and buffers -- the window's plan places in the area at run time (`schedul
 ## The barriers
 
 `CarryBarrier`, every card's, each counting all 256 threads (`carry_kernel.md#barriers`): the staging (a window's
-inputs landed) and the maxima (every warp's posted) once a window; two image slots, each stored and freed; two read
-buffers, each landed, read (every warp's tiles in its panel) and freed (drained); two fold buffers, each landed and
-freed; and the readout's release (every drain of the window done).
+inputs landed); the ring's two slots, each stored and freed; and an item's DONE (every warp past it) and LANDED (its
+buffer's copies), a pair for each of a plan's `kPlanItems` items (`schedule.md#items`).
 
 <a id="image"></a>
 ## The image
 
-`kPlaneBytes` a digit (32 lists x 32 channels, f16), the whole image `kImageWhole` (64 KB) or a ring of two batches
-`kImageRing` (32 KB): `kBatchPlanes` = 8 digits a batch, so a warp stores 8 digits of its 4 lists (half an m-tile of
-each) and reads one digit a batch (`kBatches` = 4).
+`kPlaneBytes` a digit (32 lists x 32 channels, f16), the whole image `kImageWhole` (64 KB) or `kImageRing` (32 KB):
+a ring of two batches or one half of two (`schedule.md#buffers`). `kBatchPlanes` = 8 digits a batch, so a warp stores 8
+digits of its 4 lists (half an m-tile of each) and reads one digit a batch (`kBatches` = 4).
 
 <a id="plan"></a>
 ## The plan
@@ -43,7 +42,7 @@ each) and reads one digit a batch (`kBatches` = 4).
 - the registers: `kStateRegs` = 128 fp32 a lane;
 - the pool rows: a read row is the read side's operand slices (`kReadRow`: 64 bytes, or 128 with a coefficient level),
   a write row the write side's slices then the values (`kWriteRow`: 128 or 192);
-- the shared memory: `kSmemBytes`, the card's whole opt-in maximum a CTA, and `kArea`, what the tenants leave -- 91,392
-  bytes on sm_86, 156,928 on sm_80 and sm_87, 222,464 on sm_90.
+- the shared memory: `kSmemBytes`, the card's whole opt-in maximum a CTA, and `kArea`, what the tenants leave -- 90,624
+  bytes on sm_86, 156,160 on sm_80 and sm_87, 221,696 on sm_90.
 
 The launch sizes for the device's card, and the kernel refuses any other size (`carry_arm.md#plan`).

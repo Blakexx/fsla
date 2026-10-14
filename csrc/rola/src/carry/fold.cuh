@@ -146,20 +146,20 @@ __device__ __forceinline__ void steps(State<P>& st, uint32_t cf, ops::SmemAddr p
   }
 }
 
-//: A FOLD CHUNK'S FILL, the copies issued: its rows (slices then values) at `buf`, its entries at `ents` (a warp its
+//: A FOLD CHUNK'S FILL, the copies issued: its rows (slices then values) at `buf`, its entries after them (a warp its
 //: own lists' runs). -- see docs/internals/carry/parts.md#fill
 template <class P>
 __device__ __forceinline__ void fold_fill(const CarryParams& p, const uint8_t* smem,
                                           const Window& ww, const Place& c, int w, int first,
-                                          int slots, int total, ops::SmemAddr buf,
-                                          ops::SmemAddr ents, int warp, int lane) {
+                                          int slots, int total, ops::SmemAddr buf, int warp,
+                                          int lane) {
   const volatile Addr& addr = *reinterpret_cast<const volatile Addr*>(smem + P::kAddr);
-  fill<P::kFoldFactors, true>(addr.slices[kWrite], addr.values, p.values.st,
+  fill<P::kFoldFactors, true>(addr.slices[kWrite], addr.values, static_cast<int>(p.values.st),
                               union_of<P>(smem, kWrite, w), ww, first, slots, buf);
   if (ww.listed)
     entries_fill<P>(p, p.write_lists, ww, c, w,
-                    chunk_runs<P>(smem, ww, kWrite, w, first, slots, total, lane), ents, warp,
-                    lane);
+                    chunk_runs<P>(smem, ww, kWrite, w, first, slots, total, lane),
+                    buf + static_cast<uint32_t>(fold_ents<P>(slots)), warp, lane);
 }
 
 //: A FOLD CHUNK, a warp's: each of its lists' run of the chunk from the buffer's entries at `ents`, in 16-token steps

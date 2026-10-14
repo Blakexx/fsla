@@ -41,8 +41,8 @@ Each loop's step is one block (KERNEL_STANDARDS §27), guarded by a vote and clo
 <a id="chunk"></a>
 ## The chunk
 
-A CHUNK is a range of the write union the window's plan sets (`schedule.md#planner`): the whole union where its buffer
-fits, else `64 m` slots and the rest. `fold_fill` copies its rows and its lists' runs into its buffer
+A CHUNK is a range of the write union the window's plan sets (`schedule.md#chunks`): the whole union where its buffer
+fits the area, else the largest `64 m` slots two of whose buffers fit, and the rest. `fold_fill` copies its rows and its lists' runs into its buffer
 (`parts.md#entries`); `fold_chunk` takes each of the warp's lists in turn, its run from the buffer, a step's lanes past
 it masked (the chunk's first row, c = 0), the rows taken back by the chunk's first slot so an entry's union slot is its
 row. A side with no list level steps every slot of the chunk, c the list's digit of the row's coefficient slice. The

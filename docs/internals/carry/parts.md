@@ -24,7 +24,8 @@ A window ahead (`carry_kernel.md#staging`), into the window's parity of the tena
 (512 slots, 1 KB, 64 copies), its group's boundaries in prefix form (33 rows, a 16-byte copy each) and its count
 (one 4-byte copy).
 `facts_in` copies the write lists' exponent pairs (128 bytes) and the window's token units (512 bytes). `union_of`,
-`pre_of` and `slots_of` read a window's tenants back; `chunk_cols` names a chunk's columns in the prefix rows.
+`pre_of` and `slots_of` read a window's tenants back (`pre_of` forms its parity at each use, so its offset is never
+held across a window's items); `chunk_cols` names a chunk's columns in the prefix rows.
 
 <a id="swizzle"></a>
 ## The pool rows' swizzle
@@ -44,8 +45,9 @@ A chunk's fill issues its copies; the caller arrives on the buffer's landed barr
 `fill` copies a range of union slots, each its token's row -- the side's operand slices at 64 bytes each, then on the
 write side its values at the box's channels -- swizzled, by `cp.async` over all 256 threads (a slice's 16-byte runs, 8
 or 4 under 16, `stage_bytes`). A GAP slot (its token `kGap`, [`carry.md`](carry.md#lists)) is zero-filled and reads
-nothing. `read_fill` adds the read buffer's dummy panel rows and panel, zero-filled for the plan's chunk (a zero quantum
-reads nothing), and the chunk's entries; `fold_fill` (`fold.md#chunk`) the write chunk's rows and entries.
+nothing. `read_fill` adds the read buffer's dummy panel rows and its panel's whole 128-byte lines, zero-filled (a zero
+quantum reads nothing), and the chunk's entries; `fold_fill` (`fold.md#chunk`) the write chunk's rows and entries. Each
+part sits at the chunk's own slots (`read_pads`, `read_ents`, `fold_ents`; `schedule.md#buffers`).
 
 <a id="entries"></a>
 ## The entries
@@ -62,8 +64,10 @@ The hand-off's first step (the f16 image at a power of two a digit). A lane's re
 of its warp's lists, each list in its own running unit ([`fold.md#units`](fold.md#units)), so the lists meet on one
 scale by exponent: `post_maxima` takes, a digit, each list's largest |accumulator|'s `ceil_exp` plus the list's unit,
 the largest over the lists (exactly the exponent of the digit's largest |state| on one scale, whatever the units'
-spread), joins the digit row's four lanes by two shuffles and posts it (128 FMNMX, 16 exponent steps and 8 SHFL a lane
-a window). `digit_exp` is a digit's exponent over the 8 warps' posts: the smallest `e` with every value at most `2^e`,
+spread), joins the digit row's four lanes by two shuffles and posts it at the window's parity, an int16 (128 FMNMX, 16
+exponent steps and 8 SHFL a lane a window): a warp that runs a window ahead posts into the other parity while a slower
+one still reads these. `digit_exp` is a digit's exponent over the 8 warps' posts: the smallest `e` with every value at
+most `2^e`,
 at least `kImageTop - 127`. The image holds a digit at `2^(kImageTop - e)`: its largest value at most 2^10, so a
 32-list sum of image times read row (each at most 1) stays within 2^15, inside an fp16 accumulator, and one placement
 serves the fp32- and fp16-accumulate readouts. Measured (2026-10-12, the image's quality model, per token against fp64

@@ -49,6 +49,8 @@ def main() -> int:
     ap.add_argument("--per-warp", default="readout,fold",
                     help="the phases whose per-warp rows are printed: an imbalance is seen, not inferred")
     ap.add_argument("--json", type=Path, default=None, help="also write the reading here: every phase, every warp")
+    ap.add_argument("--prefer", default=None,
+                    help="the plan candidate each window takes where it fits (`rola.ops.carry.CANDIDATES`)")
     a = ap.parse_args()
 
     import torch
@@ -59,7 +61,10 @@ def main() -> int:
     from rola.ops import carry as c
 
     spec = by_name(a.cell)
-    launch = c.carry
+
+    def launch(*ops):
+        return c.carry(*ops, prefer=a.prefer)
+
     operands = carry_operands(spec)
     phases = c.LEDGER_PHASES
     warps = c.LEDGER_WARPS

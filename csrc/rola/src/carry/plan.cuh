@@ -12,20 +12,15 @@ namespace arch = ::denseref::arch;
 
 constexpr int align_of(int x, int q) { return (x + q - 1) / q * q; }
 
-//: THE BARRIERS, every card's: the staging and the maxima a window, two image slots, two read buffers and two fold
-//: buffers (each landed and freed; a read buffer also read), and the readout's release. -- see plan.md#barriers
+//: THE BARRIERS, every card's: the staging a window, the ring's two slots (each stored and freed), and an item's done
+//: and landed, a pair an item of the window's plan. -- see docs/internals/carry/plan.md#barriers
 enum CarryBarrier : int {
   kBarStaged,
-  kBarPosted,
   kBarStored,
   kBarImageFree = kBarStored + 2,
-  kBarReadLanded = kBarImageFree + 2,
-  kBarReadDone = kBarReadLanded + 2,
-  kBarReadFree = kBarReadDone + 2,
-  kBarFoldLanded = kBarReadFree + 2,
-  kBarFoldFree = kBarFoldLanded + 2,
-  kBarReleased = kBarFoldFree + 2,
-  kBarCount
+  kBarDone = kBarImageFree + 2,
+  kBarLanded = kBarDone + kPlanItems,
+  kBarCount = kBarLanded + kPlanItems
 };
 
 //: THE PERSISTENT TENANTS' BYTES, every card's and arm's. -- see docs/internals/carry/plan.md#tenants
@@ -37,7 +32,7 @@ struct Tenants {
   static constexpr int kUnits = kWriteExp + 2 * kBoxLists * 4;
   static constexpr int kBook = kUnits + 2 * kWindow;
   static constexpr int kMaxima = kBook + kBoxLists * 8;
-  static constexpr int kExps = kMaxima + kWarps * kBoxDigits * 4;
+  static constexpr int kExps = kMaxima + 2 * kWarps * kBoxDigits * 2;
   static constexpr int kClock = kExps + kBoxDigits * 4;
   static constexpr int kBars = kClock + kWarps * (kCarryPhases + 1) * 8;
   static constexpr int kPlans = align_of(kBars + kBarCount * 8, 16);

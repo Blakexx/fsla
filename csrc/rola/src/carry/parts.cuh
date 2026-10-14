@@ -6,6 +6,7 @@
 #include <cuda_fp16.h>
 
 #include <cstdint>
+#include <type_traits>
 
 #include "carry/plan.cuh"
 #include "common/ops.cuh"
@@ -73,7 +74,7 @@ __device__ __forceinline__ Place place_of(const CarryParams& p) {
 //: `st` a token.
 struct Slices {
   const uint8_t* at[kMaxLevels];
-  int64_t st[kMaxLevels];
+  int st[kMaxLevels];
   int bytes[kMaxLevels];
 };
 
@@ -110,7 +111,7 @@ __device__ __forceinline__ void addr_in(Addr& out, const CarryParams& p, const P
       const Plane& pl = s.rows[i];
       out.slices[k].at[i] =
           pl.base + b * pl.sb + h * pl.sh + (int64_t)origin_of(p, level) * s.elem[i];
-      out.slices[k].st[i] = pl.st;
+      out.slices[k].st[i] = static_cast<int>(pl.st);
       out.slices[k].bytes[i] = p.extents[level] * s.elem[i];
     }
   }
@@ -155,10 +156,13 @@ __device__ __forceinline__ const uint16_t* union_of(const uint8_t* smem, int sid
   return reinterpret_cast<const uint16_t*>(smem + P::kUnion) + (2 * side + (w & 1)) * kWindow;
 }
 
+//: the parity opaque, so the offset is formed at each use rather than held across a window's items
 template <class P>
 __device__ __forceinline__ const uint16_t* pre_of(const uint8_t* smem, int side, int w) {
+  int parity;
+  asm volatile("and.b32 %0, %1, 1;" : "=r"(parity) : "r"(w));
   return reinterpret_cast<const uint16_t*>(smem + P::kPre)
-         + (2 * side + (w & 1)) * kPreRows * kListAt;
+         + (2 * side + parity) * kPreRows * kListAt;
 }
 
 //: A CHUNK'S COLUMNS in the boundaries, union slots `first .. first + slots - 1` (`first` a multiple of 64, the end a
@@ -250,37 +254,64 @@ __device__ __forceinline__ void stage_bytes(ops::SmemAddr dst, const void* src, 
 }
 
 //: A CHUNK'S ROWS: `slots` union slots from `first`, each its token's row -- its side's operand slices at 64 bytes
-//: each, then (`Values`) its values at the box's channels -- swizzled, by `cp.async`; a gap slot's row zero-filled.
+//: each, then (`Values`) its values at the box's channels -- swizzled, by `cp.async`: a quad of lanes a slot, lane `r`
+//: of the quad chunk `r` of each slice and of the values, the slot's token, sources and row formed once for them; a
+//: narrow slice (8 or 4 bytes) its quad's first lane's; a gap slot's row zero-filled.
 //: -- see docs/internals/carry/parts.md#fill
 template <int Factors, bool Values>
 __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* values,
-                                     int64_t values_st, const uint16_t* tok, const Window& win,
+                                     int values_st, const uint16_t* tok, const Window& win,
                                      int first, int slots, ops::SmemAddr pool) {
   constexpr int kRow = kSliceBytes * Factors + (Values ? kBoxChannels * 2 : 0);
-  const auto at = [&](int s, int byte) {
-    return pool + s * kRow + 16 * chunk_at<kRow>(static_cast<uint32_t>(s), byte >> 4) + (byte & 15);
-  };
+  constexpr int kQuads = kThreads / 4, kChunks = kSliceBytes / ops::kStageBytes;
+  const int r = static_cast<int>(threadIdx.x) & 3;
+  const uint8_t* base[Factors];
+  int st[Factors], bytes[Factors];
+  bool active[Factors], narrow = false;
   static_for<Factors>([&](auto i) {
-    const int bytes = sl.bytes[i], run = min(bytes, ops::kStageBytes);
-    const int shift = __ffs(bytes) - __ffs(run);
-    const uint8_t* const base = sl.at[i] + win.t0 * sl.st[i];
-    const int64_t st = sl.st[i];
-#pragma unroll 4
-    for (int k = static_cast<int>(threadIdx.x); k < slots << shift; k += kThreads) {
-      const int s = k >> shift, r = k & ((1 << shift) - 1);
-      const int u = win.listed ? tok[first + s] : first + s, t = u & (kWindow - 1);
-      stage_bytes(at(s, i * kSliceBytes + r * run), base + t * st + r * run, run, u == t);
-    }
+    bytes[i] = sl.bytes[i];
+    st[i] = sl.st[i];
+    base[i] = sl.at[i] + static_cast<int64_t>(win.t0) * st[i] + ops::kStageBytes * r;
+    active[i] = ops::kStageBytes * r < bytes[i];
+    narrow |= bytes[i] < ops::kStageBytes;
   });
-  if constexpr (Values) {
-    constexpr int kRuns = kBoxChannels * 2 / ops::kStageBytes;
-#pragma unroll 4
-    for (int k = static_cast<int>(threadIdx.x); k < slots * kRuns; k += kThreads) {
-      const int s = k / kRuns, r = k - s * kRuns;
+
+  const uint8_t* const vbase =
+      Values ? values + static_cast<int64_t>(win.t0) * values_st + ops::kStageBytes * r : nullptr;
+  //: a slice narrower than a chunk (8 or 4 bytes) its quad's first lane's whole run; else each lane its chunk, a chunk
+  //: past a slice's bytes zero-filled into the slice's unused space
+  const auto rows = [&](auto kNarrow) {
+#pragma unroll 2
+    for (int s = static_cast<int>(threadIdx.x) >> 2; s < slots; s += kQuads) {
       const int u = win.listed ? tok[first + s] : first + s, t = u & (kWindow - 1);
-      ops::stage_run_if<16>(at(s, Factors * kSliceBytes + r * ops::kStageBytes),
-                            values + (win.t0 + t) * values_st + r * ops::kStageBytes, u == t);
+      const bool live = u == t;
+      const ops::SmemAddr row = pool + static_cast<uint32_t>(s * kRow);
+      static_for<Factors>([&](auto i) {
+        const ops::SmemAddr dst = row
+                                  + 16u
+                                        * chunk_at<kRow>(static_cast<uint32_t>(s),
+                                                         static_cast<uint32_t>(kChunks * i + r));
+        const uint8_t* const src = base[i] + t * st[i];
+        if constexpr (decltype(kNarrow)::value) {
+          if (!active[i] && r == 0) stage_bytes(dst, src, bytes[i], live);
+          if (active[i]) ops::stage_run_if<16>(dst, src, live);
+        } else {
+          ops::stage_run_if<16>(dst, src, live && active[i]);
+        }
+      });
+      if constexpr (Values)
+        ops::stage_run_if<16>(
+            row
+                + 16u
+                      * chunk_at<kRow>(static_cast<uint32_t>(s),
+                                       static_cast<uint32_t>(kChunks * Factors + r)),
+            vbase + t * values_st, live);
     }
+  };
+  if (narrow) {
+    rows(std::true_type{});
+  } else {
+    rows(std::false_type{});
   }
 }
 
@@ -308,35 +339,57 @@ __device__ __forceinline__ void entries_fill(const CarryParams& p, const SideLis
                                              const Window& win, const Place& c, int w,
                                              const Run& run, ops::SmemAddr dst, int warp,
                                              int lane) {
+  //: the box's first list's row, once: a list's is `kListCap` entries a list on
+  const uint2* const lists = l.entries + list_row(l, c, p.windows, w, win.digit0) * kListCap;
   static_for<kBoxLists / kWarps>([&](auto J) {
     const int list = warp + kWarps * J;
     const int at = __shfl_sync(0xffffffffu, run.at, list),
               n = __shfl_sync(0xffffffffu, run.n, list),
               to = __shfl_sync(0xffffffffu, run.to, list);
-    const uint2* src = l.entries + list_row(l, c, p.windows, w, win.digit0 + list) * kListCap + at;
+    const uint2* const src = lists + list * kListCap + at + lane;
+    const ops::SmemAddr place = dst + 8u * static_cast<uint32_t>(to + lane);
 #pragma unroll 1
-    for (int k = lane; k < n; k += 32) ops::stage_run<8>(dst + 8u * (to + k), src + k);
+    for (int k = 0; k < n; k += 32) ops::stage_run_lanes<8>(place + 8u * k, src + k, k + lane < n);
   });
 }
 
-//: A READ CHUNK'S FILL, the copies issued: its rows at `buf`, its dummy panel rows and panel zeroed (`cap` slots, the
-//: plan's chunk), its entries at `ents` (a warp its own digits' runs). -- see docs/internals/carry/parts.md#fill
+//: A CHUNK'S BUFFER, laid out at its own slots: a read buffer's rows, its dummy panel rows, its panel (a slot pair a
+//: 128-byte line), its entries; a fold buffer's rows, its entries. -- see docs/internals/carry/schedule.md#buffers
+template <class P>
+__host__ __device__ constexpr int read_pads(int slots) {
+  return align_of(slots * P::kReadRow, 128);
+}
+
+template <class P>
+__host__ __device__ constexpr int read_ents(int slots) {
+  return read_pads<P>(slots) + kPadBytes + align_of(slots * kPanelRow, 128);
+}
+
+template <class P>
+__host__ __device__ constexpr int fold_ents(int slots) {
+  return align_of(slots * P::kWriteRow, 128);
+}
+
+//: A READ CHUNK'S FILL, the copies issued: its rows at `buf`, its dummy panel rows and panel zeroed, its entries (a
+//: warp its own digits' runs). -- see docs/internals/carry/parts.md#fill
 template <class P>
 __device__ __forceinline__ void read_fill(const CarryParams& p, const uint8_t* smem,
                                           const Window& rw, const Place& c, int w, int first,
-                                          int slots, int total, int cap, ops::SmemAddr buf,
-                                          ops::SmemAddr ents, int warp, int lane) {
+                                          int slots, int total, ops::SmemAddr buf, int warp,
+                                          int lane) {
   const volatile Addr& addr = *reinterpret_cast<const volatile Addr*>(smem + P::kAddr);
   fill<P::kReadFactors, false>(addr.slices[kRead], nullptr, 0, union_of<P>(smem, kRead, w), rw,
                                first, slots, buf);
-  const ops::SmemAddr pads = buf + static_cast<uint32_t>(align_of(cap * P::kReadRow, 128));
+  const ops::SmemAddr pads = buf + static_cast<uint32_t>(read_pads<P>(slots));
   //: a zero quantum reads nothing: its source is any global address
 #pragma unroll 4
-  for (int k = static_cast<int>(threadIdx.x); k < (kPadBytes + cap * kPanelRow) / 16; k += kThreads)
+  for (int k = static_cast<int>(threadIdx.x); k < (read_ents<P>(slots) - read_pads<P>(slots)) / 16;
+       k += kThreads)
     ops::stage_tile_if(pads + 16u * static_cast<uint32_t>(k), p.num, false);
   if (rw.listed)
     entries_fill<P>(p, p.read_lists, rw, c, w,
-                    chunk_runs<P>(smem, rw, kRead, w, first, slots, total, lane), ents, warp, lane);
+                    chunk_runs<P>(smem, rw, kRead, w, first, slots, total, lane),
+                    buf + static_cast<uint32_t>(read_ents<P>(slots)), warp, lane);
 }
 
 //: A WARP'S LISTS' UNITS, list `j` the box's list `warp + 8 j`.
@@ -349,10 +402,13 @@ __device__ __forceinline__ void list_units(int (&u)[P::kFoldLists], const uint8_
 
 //: THE DIGIT MAXIMA, the hand-off's first step: a warp's largest |state| a digit over its lists, each list's at its
 //: unit, as an exponent -- `ceil_exp` of the list's largest |accumulator| plus its unit, the largest over the lists --
-//: the four lanes of a digit row joined by two shuffles, posted for the CTA. -- see docs/internals/carry/parts.md#maxima
+//: the four lanes of a digit row joined by two shuffles, posted for the CTA at window `w`'s parity.
+//: -- see docs/internals/carry/parts.md#maxima
 template <class P>
-__device__ __forceinline__ void post_maxima(const State<P>& st, uint8_t* smem, int warp, int lane) {
-  int* const posts = reinterpret_cast<int*>(smem + P::kMaxima) + warp * kBoxDigits;
+__device__ __forceinline__ void post_maxima(const State<P>& st, uint8_t* smem, int w, int warp,
+                                            int lane) {
+  int16_t* const posts =
+      reinterpret_cast<int16_t*>(smem + P::kMaxima) + ((w & 1) * kWarps + warp) * kBoxDigits;
   int u[P::kFoldLists];
   list_units<P>(u, smem, warp);
   static_for<P::kFoldMTiles>([&](auto M) {
@@ -367,7 +423,7 @@ __device__ __forceinline__ void post_maxima(const State<P>& st, uint8_t* smem, i
       });
       e = max(e, __shfl_xor_sync(0xffffffffu, e, 1));
       e = max(e, __shfl_xor_sync(0xffffffffu, e, 2));
-      if ((lane & 3) == 0) posts[16 * M + 8 * H + (lane >> 2)] = e;
+      if ((lane & 3) == 0) posts[16 * M + 8 * H + (lane >> 2)] = static_cast<int16_t>(e);
     });
   });
 }
@@ -383,10 +439,11 @@ __host__ __device__ __forceinline__ constexpr uint32_t unit_of(int l, int k, int
 constexpr int kImageTop = 10;
 
 //: A DIGIT'S EXPONENT: the smallest `e` with the digit's largest |state| (its lists at their units) at most 2^e, over
-//: the 8 warps' posts, at least `kImageTop - 127`.
+//: the 8 warps' posts at window `w`'s parity, at least `kImageTop - 127`.
 template <class P>
-__device__ __forceinline__ int digit_exp(const uint8_t* smem, int d) {
-  const int* posts = reinterpret_cast<const int*>(smem + P::kMaxima) + d;
+__device__ __forceinline__ int digit_exp(const uint8_t* smem, int w, int d) {
+  const int16_t* posts =
+      reinterpret_cast<const int16_t*>(smem + P::kMaxima) + (w & 1) * kWarps * kBoxDigits + d;
   int e = kImageTop - 127;
   static_for<kWarps>([&](auto W) { e = max(e, posts[W * kBoxDigits]); });
   return e;

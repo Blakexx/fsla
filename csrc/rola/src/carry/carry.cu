@@ -79,6 +79,10 @@ Side side_of(const std::vector<Tensor>& rows, int64_t list, const std::vector<in
     STD_TORCH_CHECK(extents[l] * s.elem[i] >= 4 && extents[l] * s.elem[i] <= kSliceBytes, name,
                     " level ", l, "'s slice is ", extents[l] * s.elem[i],
                     " bytes; a slice is a 4-byte copy to ", kSliceBytes);
+    //: a window's token offsets are 32-bit (`fill`): a token's stride under 2^31 / the window
+    STD_TORCH_CHECK(s.rows[i].st > 0 && s.rows[i].st < (int64_t{1} << 31) / kWindow, name,
+                    " level ", l, "'s token stride is ", s.rows[i].st,
+                    " bytes; a window's offsets are 32-bit");
   }
   return s;
 }
@@ -166,6 +170,8 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   p.read = side_of(read_rows, read_list, read_operand, widths, extents, B, L, H, "the read side");
   p.values = Plane{static_cast<const uint8_t*>(values.const_data_ptr()), values.stride(0) * 2,
                    values.stride(1) * 2, values.stride(2) * 2};
+  STD_TORCH_CHECK(p.values.st > 0 && p.values.st < (int64_t{1} << 31) / kWindow,
+                  "values' token stride is ", p.values.st, " bytes; a window's offsets are 32-bit");
   p.write_lists = lists_of(write_lists, BH, windows, write_list < 0 ? 0 : widths[write_list],
                            "the write lists");
   p.read_lists =
@@ -193,10 +199,9 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   STD_TORCH_CHECK(accumulate == 0 || accumulate == 1,
                   "the readout accumulates in fp32 (0) or fp16 (1), got ", accumulate);
   p.readout_f16 = static_cast<int>(accumulate);
-  STD_TORCH_CHECK(
-      prefer >= -1 && prefer < 5,
-      "the preferred readout candidate is -1 (none) or one of the plan's five, 0 to 4, got ",
-      prefer);
+  STD_TORCH_CHECK(prefer >= -1 && prefer < kCandidates,
+                  "the preferred plan candidate is -1 (none) or one of the ", kCandidates, ", got ",
+                  prefer);
   p.prefer = static_cast<int>(prefer);
   p.num = reinterpret_cast<uint32_t*>(num.mutable_data_ptr<int32_t>());
   p.check = check.mutable_data_ptr<float>();

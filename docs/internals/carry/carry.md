@@ -20,7 +20,8 @@ state never leaves the registers inside a call; the readout reads an f16 image o
 - `kListBound = 64`, `kListAt = 8`: a list's boundaries, its entries before every 64th union slot (the last its
   length), so the carry chunks a union at any multiple of 64 the facts pass never sees; `kPreRows` = 33, a group's
   boundaries in prefix form (a row a list, then the totals); `kListCap = kWindow` entries a list.
-- `kPlanBytes = 48`: a window's plan for a box class (`schedule.md#plan`).
+- `kPlanItems = 27`, `kPlanBytes = 240`: a window's plan for a box class, its head and its items (`schedule.md#items`);
+  `kCandidates = 60`, the named forms (`schedule.md#planner`).
 - `kSliceBytes = 64`: a level's slice in a pool row, the box's 32 digits at f16.
 - `kMaxLevels = 4`: the depth the operand block addresses.
 
@@ -65,8 +66,8 @@ the rows and values at their strides (the row alignment law, `docs/internals/fac
 lists, the den pass's units (`unit`, an exponent byte a token, a window wide so a window's copy is aligned). The
 outputs are `num` (packed s16 pairs at each token's unit, added as u32: `parts.md#drain`) and `check` (the final
 state's sum). `plans` are the plan pass's (`schedule.md#pass`), a window's for each box class. `readout_f16` is the
-readout's accumulation (`carry_api.md#carry-readout-accumulate`); `prefer` a readout
-candidate every window's plan takes first where it fits, -1 for none (`schedule.md#planner`).
+readout's accumulation (`carry_api.md#carry-readout-accumulate`); `prefer` a named form every window's plan takes
+where it builds, -1 for none (`schedule.md#planner`).
 
 <a id="refusals"></a>
 ## The kernel boundary refuses
@@ -79,7 +80,8 @@ candidate every window's plan takes first where it fits, -1 for none (`schedule.
   digits; a side with no list level names exactly a row level and a coefficient level; an operand slice is a 4-byte
   copy at least and `kSliceBytes` at most.
 - every tensor's dtype, contiguity and exact shape (the lists' five, `unit` `[BH, windows x W]`); the arm key's channels
-  and factor counts agreeing with the carve; the readout's accumulation fp32 (0) or fp16 (1).
+  and factor counts agreeing with the carve; the readout's accumulation fp32 (0) or fp16 (1); a named form -1 or
+  below `kCandidates`; a window's token stride under 2^31 / `kWindow` (a window's offsets are 32-bit).
 
 The closed-world arch refusal (`check_arch_table`) is the first statement of every entry.
 

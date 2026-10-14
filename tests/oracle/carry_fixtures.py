@@ -44,14 +44,15 @@ def alternating_bundle(widths, L, write_sparse, *, live=4, d_v=64, seed=0):
     return routes, values
 
 
-#: THE PLAN'S FORMS, each exercised by a cell -- its widths, live digits a token, the readout candidate it prefers --
-#: and named as `tests/oracle/carry_plan.forms` names them: every readout candidate, the fold beside the readout, after
-#: it and in chunks, and both boundaries (docs/internals/carry/schedule.md#planner).
+#: THE PLAN'S FORMS, each exercised by a cell -- its widths, live digits a token, the candidate it names (None: the
+#: rule's) -- and named as `tests/oracle/carry_plan.forms` names them: each image mode, alone and over read chunks,
+#: the serial order, the fold in chunks, the late drain, fills free and waiting, and the next window's first read
+#: (docs/internals/carry/schedule.md#planner).
 FORM_CELLS = (
-    ((64, 64), 4, None, {"image-chunks", "fold-after", "late"}),
-    ((64, 64), 4, "tiled", {"tiled"}),
-    ((64, 64), 4, "tiled-one", {"tiled-one"}),
-    ((256, 256), 4, None, {"union", "fold-beside", "early"}),
-    ((256, 256), 2, None, {"image"}),
-    ((64, 64), 16, None, {"fold-chunks"}),
+    ((64, 64), 4, None, {"ring16-chunks", "fill-free", "fill-waits", "next"}),
+    ((64, 64), 4, "ring8/union/pipelined", {"ring8-chunks"}),
+    ((64, 64), 16, None, {"serial", "fold-chunks"}),
+    ((256, 256), 2, None, {"whole"}),
+    ((256, 256), 4, "ring16/union/pipelined-late", {"ring16", "late"}),
+    ((256, 256), 16, "whole/union/serial-late", {"whole-chunks"}),
 )

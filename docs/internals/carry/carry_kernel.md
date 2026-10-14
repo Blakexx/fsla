@@ -10,41 +10,47 @@ choosing chunk sizes the card's area holds.
 
 One CTA a box and batch-head, 8 warps, one CTA an SM, after the plan pass (`schedule.md#pass`). The fold's fp32 state
 (`kStateRegs` = 128 registers a lane) is the C fragments of the fold's MMAs and stays in registers for the whole call.
-Window 0's inputs and plan are staged and its first read chunk filled before the loop. A window:
+Window 0's inputs and plan are staged and its first read chunk filled before the loop. A window runs its plan's items
+in order (`schedule.md#items`), each in four steps:
 
-1. **The maxima**: each warp posts its per-digit maxima of the state before the window's writes
-   (`parts.md#maxima`), and waits for every warp's -- so every warp is past the window before, its buffers and the
-   other parity's tenants free. Then the next window's inputs are staged, and the fold's first buffer filled where it
-   lands beside the readout.
-2. **The readout** in the plan's form (`schedule.md#forms`): IMAGE -- every batch stored, one barrier, then each chunk:
-   the chunk before drained once every warp has read it, the next chunk into its buffer once that drain is everywhere
-   done, the chunk's tiles over every batch. UNION -- batches 0 and 1 stored into the ring, then each batch: its stores
-   waited, its tiles over the resident union, its slot freed and, two batches on, stored again; then the drain. TILED
-   -- the image form's chunk loop with the ring's batches stored and read for each chunk (on one read buffer: the chunk
-   read, drained, then the next filled). Then the readout's release.
-3. **The next window's plan**, landed with its inputs, and its first read chunk filled now where its buffer ends below
-   every fold buffer (after the release).
-4. **The fold**, chunk by chunk (`fold.md#chunk`): a buffer's fill waits for its last readers, and over the readout's
-   zone for the release; each chunk's landing waited, its steps, its buffer freed. A warp folds as soon as its own
-   stores are done -- its registers are the state -- so warps flow from their reads into their folds. Then the next
-   window's first read chunk, if it waited for the fold.
+1. **Its fills**: for each fill it hosts, wait for its region's last user done (`fwait`), then issue the target's
+   copies (`fill_item`: its rows, its panel zeroed, its entries) to arrive at the target's landed barrier as they land;
+   the next window's first read once that window's inputs have landed.
+2. **Its waits**: its own buffer landed (a ring read waits after its first stores, so the copies land under them) and
+   its dependence done by every warp.
+3. **Its work**: MAXIMA -- each warp's digit maxima posted (`parts.md#maxima`), every warp's joined, each digit's
+   exponent; STORE -- the next window's inputs staged, the image stored whole in the whole mode; READ -- the chunk's
+   tiles over every digit from the whole image, or from a ring the item stores itself (two 8-plane slots or one
+   16-plane half, a slot freed once every warp has read it, for the batch two on or the next chunk's); DRAIN -- the
+   chunk's panel to `num`; FOLD -- the chunk's steps (`fold.md#chunk`), the window's units stepped at its first;
+   BOUNDARY -- the units stepped where the window folds nothing.
+4. **Its done**, where a later item or fill waits for it.
+
+The work is an exclusive chain over the kind (R9's case marker, a trapping last arm), not `uniform_switch`: the
+primitive's independent tests made this body 14% slower at nl64k-alt-k4 (31.7K against 27.9K cycles a warp-window,
+2026-10-14), its 12,672 instructions against the chain's 11,112.
+
+A warp moves on as soon as its own work is done: a FOLD needs only the warp's own stores (its registers are the
+state), so warps flow from their reads into their folds; only a dependence, a fill's region wait and the maxima wait
+for the other warps.
 
 <a id="staging"></a>
 ## The staging
 
 Every async copy lands on an mbarrier, none on a commit group: `cp.async.mbarrier.arrive.noinc` makes a barrier track
 all of a thread's earlier copies. A window's inputs (`stage_window`: both sides' lists, the facts and the window's plan
-for the CTA's box class) are staged into the other parity right after the maxima's barrier, a window ahead.
+for the CTA's box class) are staged into the other parity at the window's STORE, after the maxima retire the window
+before, a window ahead.
 
 <a id="barriers"></a>
 ## The barriers
 
-`Arrivals` keeps a bit a barrier (`plan.md#barriers`), flipped at each of the thread's arrivals. Every thread arrives
-at every phase of every barrier, and every wait is for the phase of the thread's own last arrival, so the bit names its
-parity; a barrier never arrived at passes (its phase before the first). Waiting on one's own last arrival never falls
-two phases behind: the next phase needs the waiter's own arrival. A buffer's refill waits for the phase its last
-readers complete (a read buffer's drain, a fold buffer's chunk, an image slot's batch), so a region is rewritten only
-once every warp is done with it, with no barrier over the whole CTA except the maxima's and a form's stores.
+`Arrivals` keeps a bit a barrier (`plan.md#barriers`) -- the staging's and the ring's in one word, the items' done and
+landed in two -- flipped at each of the thread's arrivals. Every thread arrives at every phase of a barrier, and every
+wait is for the phase of the thread's own last arrival, so the bit names its parity; a barrier never arrived at passes
+(its phase before the first). An item's pair is its index in the window: a window's done arrivals come only after the
+maxima, which every warp passes only once the window before is done, and a landed slot's phase is waited by its
+consumer before any warp can reach the same slot a window on, so no arrival counts toward another window's phase.
 
 <a id="budget"></a>
 ## The budget
@@ -52,7 +58,8 @@ once every warp is done with it, with no barrier over the whole CTA except the m
 `tools/budgets/carry.json` (KERNEL_STANDARDS §29): each component's instructions a CTA-window on the gating cell
 nl64k-alt-k4, its price a trip times its trips, the trips at each warp's maximum from the facts pass's lists and the
 plans' model (`tests/oracle/carry_plan.py`). A warp-window there: a union of ~216 slots and ~256 entries a side, the
-union form, a resident fold; 7 readout tiles over 4 digits, 4 eight-token fold steps over 4 lists.
+image in halves, one read chunk and one fold chunk; 7 readout tiles over 4 digits, 4 eight-token fold steps over 4
+lists.
 
 | component | a trip's price (sm_86 SASS) | trips a warp-window | design a warp-window |
 |---|---|---|---|
@@ -79,9 +86,10 @@ against the instructions' ~7.8K: the warps' latency-bound chains.
 <a id="phases"></a>
 ## The phase ledger's phases
 
-`CarryPhase` is the ledger's column order: `landed` (a read chunk's wait), `maxima`, `store`, `readout`, `drain`,
-`fill` (a fold chunk's wait), `fold` and `plan`. A lap books the cycles since the last into its phase, so the columns
-sum to the warp's whole run. `rola.ops.carry.LEDGER_PHASES` names the same order.
+`CarryPhase` is the ledger's column order: `landed` (an item's buffer's copies waited), `maxima`, `store`, `readout`,
+`drain`, `fill` (a fill's copies issued), `fold` and `wait` (an item's dependence, a fill's region wait and the
+staging, every warp's). A lap books the cycles since the last into its phase, so the columns sum to the warp's whole
+run. `rola.ops.carry.LEDGER_PHASES` names the same order.
 
 <a id="phase-ledger"></a>
 ## The phase ledger

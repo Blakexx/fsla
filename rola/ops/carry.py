@@ -21,11 +21,10 @@ from rola.ops import facts as facts_ops
 from rola.ops._ext import extension
 
 __all__ = [
+    "CANDIDATES",
     "LEDGER_PHASES",
     "LEDGER_WARPS",
     "PLAN_BYTES",
-    "PLAN_FIELDS",
-    "READ_CANDIDATES",
     "WINDOW",
     "Form",
     "arm_key",
@@ -45,7 +44,7 @@ __all__ = [
 WINDOW = list_model.WINDOW
 
 #: THE PHASE LEDGER'S SHAPE: ``[ctas][warps][phases]``, the kernel's own `CarryPhase` order.
-LEDGER_PHASES = ("landed", "maxima", "store", "readout", "drain", "fill", "fold", "plan")
+LEDGER_PHASES = ("landed", "maxima", "store", "readout", "drain", "fill", "fold", "wait")
 LEDGER_WARPS = 8
 
 
@@ -67,10 +66,10 @@ def carry(routes, values, facts, carve: Carve, unit: torch.Tensor, accumulate: s
     skeleton's fp32 sum of the final state. ``facts`` is the facts pass's over this bundle, its read entries' offsets
     in this arm's read pool rows (:func:`form`). The readout accumulates in the device's form
     (:func:`readout_accumulate`); ``accumulate`` (``"fp32"`` or ``"fp16"``) is reserved: the gates' choice of form, so
-    both forms are gated on any card (``tests/oracle/test_carry_readout.py``). Each window's plan picks its readout's
-    form (:data:`READ_CANDIDATES`); ``prefer``, one of them, is reserved: the gates' and the measurements' choice of the
-    candidate a window takes first where it fits; ``plans`` (:func:`plans_out`) is reserved: the plan pass's output for a
-    gate to read, else the call's own (docs/internals/carry/carry_api.md#carry)."""
+    both forms are gated on any card (``tests/oracle/test_carry_readout.py``). Each window's plan is the planner rule's
+    (docs/internals/carry/schedule.md#planner); ``prefer``, a named form (:data:`CANDIDATES`), is reserved: the gates'
+    and the measurements' choice of the form a window takes where it builds; ``plans`` (:func:`plans_out`) is reserved:
+    the plan pass's output for a gate to read, else the call's own (docs/internals/carry/carry_api.md#carry)."""
     BH = routes.batch * routes.heads
     d_v = values.v.shape[-1]
     num = torch.zeros((BH, routes.tokens, d_v // 2), dtype=torch.int32, device=routes.device)
@@ -84,10 +83,8 @@ def carry(routes, values, facts, carve: Carve, unit: torch.Tensor, accumulate: s
     return num, check
 
 
-#: A WINDOW'S PLAN's bytes and its fields, in `schedule.cuh`'s `WindowPlan` order (u16 each).
-PLAN_BYTES = 48
-PLAN_FIELDS = ("form", "beside", "rbufs", "runion", "rchunk", "rchunks", "funion", "fchunk", "fchunks", "rbuf0", "rbuf1",
-               "fbuf0", "fbuf1", "rents", "fents", "rzone", "fzone")
+#: A WINDOW'S PLAN's bytes: its head (16), then its items (8 each), as `schedule.cuh` packs them.
+PLAN_BYTES = 240
 
 
 def plans_out(routes, carve: Carve) -> torch.Tensor:
@@ -102,11 +99,13 @@ def plans_out(routes, carve: Carve) -> torch.Tensor:
 
 
 _ACCUMULATE = {"fp32": 0, "fp16": 1}
-#: THE READOUT'S CANDIDATES, in the plan's order (docs/internals/carry/schedule.md#planner): the image whole and the
-#: union resident; the union resident and the image a ring; the image whole and the union in chunks; both in chunks;
-#: both in chunks on one read buffer.
-READ_CANDIDATES = ("image", "union", "image-chunks", "tiled", "tiled-one")
-_PREFER = {None: -1, **{name: k for k, name in enumerate(READ_CANDIDATES)}}
+#: THE PLAN'S CANDIDATES, in the plan pass's order (docs/internals/carry/schedule.md#planner): an image mode by a
+#: fold chunk by an order -- the read chunks pipelined or each drained before the next, the last drain before the fold
+#: or after its first chunk.
+CANDIDATES = tuple(f"{mode}/{fold}/{order}" for mode in ("whole", "ring8", "ring16")
+                   for fold in ("union", "256", "192", "128", "64")
+                   for order in ("pipelined", "pipelined-late", "serial", "serial-late"))
+_PREFER = {None: -1, **{name: k for k, name in enumerate(CANDIDATES)}}
 
 
 def readout_accumulate(device: torch.device | None = None) -> str:
