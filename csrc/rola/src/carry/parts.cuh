@@ -531,36 +531,44 @@ __device__ __forceinline__ void readout_part(const CarryParams& p, const uint8_t
   }
 }
 
+//: A GLOBAL ADD of a nonzero word, predicated rather than branched; zero adds nothing.
+__device__ __forceinline__ void red_nonzero(uint32_t* at, uint32_t v) {
+  asm volatile(
+      "{\n .reg .pred p;\n setp.ne.u32 p, %1, 0;\n @p red.global.add.u32 [%0], %1;\n}\n" ::"l"(at),
+      "r"(v));
+}
+
 //: THE DRAIN: a pass's panel words to `num`, two tokens a request, packed s16 pairs at each token's unit added as
-//: u32, each word cleared; a thread keeps one word of every 16th slot, four slots a step loaded before their adds.
-//: -- see docs/internals/carry/parts.md#drain
+//: u32, each word cleared; a thread keeps one word of every 16th slot (16 slots on, its panel cell 1 KB on), two slots
+//: a step loaded and cleared before their adds. -- see docs/internals/carry/parts.md#drain
 template <class P>
 __device__ __forceinline__ void drain(const CarryParams& p, uint8_t* smem, const Window& rw,
                                       const Place& c, int w, int first, int slots) {
-  constexpr int kWords = kPanelRow / 4, kStride = kThreads / kWords, kAhead = 4;
-  const int word = static_cast<int>(threadIdx.x) % kWords;
-  const uint32_t at = (32u * (word >> 3)) | (4u * (word & 7));
-  uint8_t* const panel = smem + P::kPanel;
-  const uint16_t* tok = union_of<P>(smem, kRead, w);
+  constexpr int kWords = kPanelRow / 4, kStride = kThreads / kWords, kAhead = 2;
+  constexpr uint32_t kCellStride = kStride * kPanelRow;
+  static_assert(kStride % 8 == 0, "a stride of slots keeps a cell's swizzle bits");
+  const int word = static_cast<int>(threadIdx.x) % kWords,
+            s0 = static_cast<int>(threadIdx.x) / kWords;
+  uint32_t* const cell0 = reinterpret_cast<uint32_t*>(
+      smem + P::kPanel
+      + (panel_row(static_cast<uint32_t>(s0)) ^ ((32u * (word >> 3)) | (4u * (word & 7)))));
+  const uint16_t* tok = union_of<P>(smem, kRead, w) + first;
   const int pair = p.dv / 2;
   uint32_t* const out = p.num + ((int64_t)c.bh * p.L + rw.t0) * pair
                         + reinterpret_cast<const volatile Addr*>(smem + P::kAddr)->channel0 / 2
                         + word;
 #pragma unroll 1
-  for (int s0 = static_cast<int>(threadIdx.x) / kWords; s0 < slots; s0 += kAhead * kStride) {
+  for (int i = 0; s0 + i * kStride < slots; i += kAhead) {
     uint32_t v[kAhead];
     int t[kAhead];
-    static_for<kAhead>([&](auto j) {
-      const int s = s0 + j * kStride;
-      uint32_t* const cell =
-          reinterpret_cast<uint32_t*>(panel + (panel_row(static_cast<uint32_t>(s)) ^ at));
-      v[j] = s < slots ? *cell : 0u;
-      t[j] = s < slots ? (rw.listed ? tok[first + s] : first + s) : 0;
+    static_for<kAhead>([&](auto k) {
+      const int s = s0 + (i + k) * kStride;
+      uint32_t* const cell = cell0 + (i + k) * (kCellStride / 4);
+      v[k] = s < slots ? *cell : 0u;
+      t[k] = s < slots ? (rw.listed ? tok[s] : first + s) : 0;
       if (s < slots) *cell = 0u;
     });
-    static_for<kAhead>([&](auto j) {
-      if (v[j] != 0u) atomicAdd(out + t[j] * pair, v[j]);
-    });
+    static_for<kAhead>([&](auto k) { red_nonzero(out + t[k] * pair, v[k]); });
   }
 }
 

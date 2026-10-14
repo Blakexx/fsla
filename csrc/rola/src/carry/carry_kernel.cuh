@@ -100,10 +100,12 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
 
 #pragma unroll 1
   for (int w = 0; w < p.windows; ++w) {
-    const Window rw = window_of<P>(p, smem, kRead, w), ww = window_of<P>(p, smem, kWrite, w);
+    //: a side's window read from the tenant at each use, so none of it holds a register across the window
+    const auto rw = [&] { return window_of<P>(p, smem, kRead, w); };
+    const auto ww = [&] { return window_of<P>(p, smem, kWrite, w); };
     const bool next = w + 1 < p.windows;
-    const int read_slots = slots_of<P>(smem, rw, kRead, w),
-              write_slots = slots_of<P>(smem, ww, kWrite, w);
+    const int read_slots = slots_of<P>(smem, rw(), kRead, w),
+              write_slots = slots_of<P>(smem, ww(), kWrite, w);
     const int passes = max(1, (read_slots + P::kPassSlots - 1) / P::kPassSlots);
     const int units = max(1, (write_slots + P::kUnitSlots - 1) / P::kUnitSlots);
 
@@ -131,9 +133,9 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         ops::rendezvous();
         clock.lap(kPhaseStore);
         if (p.readout_f16) {
-          readout_part<P, true>(p, smem, rw, c, w, q, slots, Part, ring(slot), warp, lane);
+          readout_part<P, true>(p, smem, rw(), c, w, q, slots, Part, ring(slot), warp, lane);
         } else {
-          readout_part<P, false>(p, smem, rw, c, w, q, slots, Part, ring(slot), warp, lane);
+          readout_part<P, false>(p, smem, rw(), c, w, q, slots, Part, ring(slot), warp, lane);
         }
         clock.lap(kPhaseReadout);
       });
@@ -147,7 +149,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         if constexpr (P::kResident)
           if (next) stage_window<P>(p, c, w + 1, smem, staged, warp, lane);
       }
-      drain<P>(p, smem, rw, c, w, first, max(slots, 0));
+      drain<P>(p, smem, rw(), c, w, first, max(slots, 0));
       clock.lap(kPhaseDrain);
       ++f;
     }
@@ -173,7 +175,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     //: THE FOLD, unit by unit: unit 0 in the readout ring, the rest in the fold ring
     uint32_t cf[P::kFoldLists];
     float fs[P::kFoldLists];
-    fold_units<P>(cf, fs, smem, ww, w, warp, lane);
+    fold_units<P>(cf, fs, smem, ww(), w, warp, lane);
     ops::mbar_wait(heads_bar, static_cast<uint32_t>(w & 1));
     const ops::SmemAddr image = ops::smem_addr(smem + P::kImage),
                         panel = ops::smem_addr(smem + P::kPanel);
@@ -187,7 +189,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         fold_par ^= 1u << (u - 1);
       }
       clock.lap(kPhaseFill);
-      fold_unit<P>(p, st, cf, fs, smem, ww, c, w, 0, write_slots, ring(f & 1), image, panel, warp,
+      fold_unit<P>(p, st, cf, fs, smem, ww(), c, w, 0, write_slots, ring(f & 1), image, panel, warp,
                    lane);
       ops::rendezvous();
       clock.lap(kPhaseFold);
@@ -205,7 +207,8 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
           fold_par ^= 1u << k;
         }
         clock.lap(kPhaseFill);
-        fold_unit<P>(p, st, cf, fs, smem, ww, c, w, u, write_slots, pool, image, panel, warp, lane);
+        fold_unit<P>(p, st, cf, fs, smem, ww(), c, w, u, write_slots, pool, image, panel, warp,
+                     lane);
         ops::rendezvous();
         clock.lap(kPhaseFold);
         //: a slot freed: the panel's units once the drain is done, the next window's first pass into unit 0's slot,
