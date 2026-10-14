@@ -8,8 +8,7 @@
 
 namespace rola::carry {
 
-//: AN ITEM'S KIND and FLAGS (its buffer filled by a fill; the window's units step; more reads after it; a later item
-//: waits for it), and a window's IMAGE MODE: whole, a ring of two 8-digit batches, one 16-digit half.
+//: AN ITEM'S KIND and FLAGS (its buffer filled by a fill; the window's units step), and a window's IMAGE MODE: whole, a ring of two 8-digit batches, one 16-digit half.
 //: -- see docs/internals/carry/schedule.md#items
 enum ItemKind : uint32_t {
   kItemMaxima,
@@ -20,7 +19,7 @@ enum ItemKind : uint32_t {
   kItemBoundary
 };
 
-enum ItemFlag : uint32_t { kFlagFilled = 1u, kFlagUnits = 2u, kFlagMoreReads = 4u, kFlagDone = 8u };
+enum ItemFlag : uint32_t { kFlagFilled = 1u, kFlagUnits = 2u };
 
 enum ImageMode : uint32_t { kModeWhole, kModeRing8, kModeRing16, kImageModes };
 
@@ -254,11 +253,11 @@ __device__ __forceinline__ bool build(Sim& s, const Form& f, const Counts& c, ui
     s.drain_at[q] = put(kItemDrain, 0u, q * rc, min(rc, c.ru - q * rc), s.read_at[q]);
   };
   put(kItemMaxima, 0u, 0, 0, kNoItem);
-  put(kItemStore, mode == kModeWhole ? kFlagDone : 0u, 0, 0, kNoItem);
+  put(kItemStore, 0u, 0, 0, kNoItem);
 #pragma unroll 1
   for (int q = 0; q < nr; ++q) {
-    s.read_at[q] = put(kItemRead, kFlagFilled | kFlagDone | (q + 1 < nr ? kFlagMoreReads : 0u),
-                       q * rc, min(rc, c.ru - q * rc), mode == kModeWhole ? 1u : kNoItem);
+    s.read_at[q] = put(kItemRead, kFlagFilled, q * rc, min(rc, c.ru - q * rc),
+                       mode == kModeWhole ? 1u : kNoItem);
     if (serial && !(late && q == nr - 1)) drain(q);
     if (!serial && q >= 1) drain(q - 1);
   }
@@ -334,7 +333,6 @@ __device__ __forceinline__ bool build(Sim& s, const Form& f, const Counts& c, ui
       } else {
         continue;
       }
-      if (wait >= 0) s.items[wait].x |= kFlagDone << 3;
       return true;
     }
     return false;

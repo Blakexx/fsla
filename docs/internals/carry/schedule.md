@@ -21,7 +21,7 @@ chunk `t + 1` reads while `t`'s panel waits -- or by its own DRAIN (SERIAL, one 
 FOLD, the BOUNDARY; LATE puts the last DRAIN after the first FOLD.
 
 An item (`Item`, 8 bytes): its kind; its flags (`ItemFlag`: `kFlagFilled` its buffer filled by a fill, `kFlagUnits`
-the window's units step at it, `kFlagMoreReads` a read chunk after it, `kFlagDone` a later item or fill waits for it);
+the window's units step at it);
 its chunk (its first slot, a multiple of 64, and its slots); its DEPENDENCE `dep` (READ on the whole mode's STORE,
 DRAIN on its READ); its buffer (bytes / 16 into the area); and up to two FILLS it hosts, each a target item and the
 item whose done it waits for, and their count (so an item hosting none skips the fills' loop). `kNoItem` names none; `kNextItem` names the next window's first read, its item
@@ -83,7 +83,7 @@ by an order (pipelined or serial, the last drain late or not). `CarryParams.pref
 and the measurements (`rola.ops.carry.CANDIDATES`); a window takes it where it builds and is distinct (a fold chunk
 below the union), else the rule's.
 
-Worked, on the even box (64-byte read rows, 128-byte write rows; the area 90,368 bytes on sm_86, 155,904 on sm_80 and
+Worked, on the even box (64-byte read rows, 128-byte write rows; the area 90,624 bytes on sm_86, 156,160 on sm_80 and
 sm_87): a nl64k-alt-k4 window of ~216-slot unions and ~260 entries a side takes the halves, one read buffer (30.3 KB at
 the top) and the whole union's fold buffer (29.8 KB), which misses fitting beside the two by ~2.6 KB: it goes over the
 image, its fill hosted at the drain after the reads, and the next window's first read buffer is filled at the fold. On

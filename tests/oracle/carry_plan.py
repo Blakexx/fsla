@@ -21,7 +21,7 @@ PAD_BYTES, PANEL_ROW, BOX = 512, 64, 32
 IMAGE_WHOLE, IMAGE_RING = 32 * 2048, 16 * 2048
 NO_ITEM, NEXT_ITEM = 31, 30
 MAXIMA, STORE, READ, DRAIN, FOLD, BOUNDARY = range(6)
-FILLED, UNITS, MORE_READS, DONE = 1, 2, 4, 8
+FILLED, UNITS = 1, 2
 WHOLE, RING16 = 0, 2  # the image modes' codes: whole, ring of 8-plane batches (1), 16-plane halves
 FOLD_OPTIONS, ORDERS = 5, 4
 
@@ -163,9 +163,9 @@ def build(f: Form, c: Counts, read_row: int, write_row: int, area: int) -> Windo
         drain_at[q] = put(DRAIN, 0, q * rc, min(rc, c.ru - q * rc), read_at[q])
 
     put(MAXIMA, 0, 0, 0, NO_ITEM)
-    put(STORE, DONE if mode == WHOLE else 0, 0, 0, NO_ITEM)
+    put(STORE, 0, 0, 0, NO_ITEM)
     for q in range(nr):
-        read_at[q] = put(READ, FILLED | DONE | (MORE_READS if q + 1 < nr else 0), q * rc, min(rc, c.ru - q * rc),
+        read_at[q] = put(READ, FILLED, q * rc, min(rc, c.ru - q * rc),
                          1 if mode == WHOLE else NO_ITEM)
         if serial and not (late and q == nr - 1):
             drain(q)
@@ -219,8 +219,6 @@ def build(f: Form, c: Counts, read_row: int, write_row: int, area: int) -> Windo
                 items[h] = [(x & ~(3 << 30)) | 2 << 30, (y & ~(0x3FF << 19)) | target << 19 | fw << 24]
             else:
                 continue
-            if wait >= 0:
-                items[wait][0] |= DONE << 3
             return True
         return False
 

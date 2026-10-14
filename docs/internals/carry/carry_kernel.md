@@ -11,20 +11,19 @@ choosing chunk sizes the card's area holds.
 One CTA a box and batch-head, 8 warps, one CTA an SM, after the plan pass (`schedule.md#pass`). The fold's fp32 state
 (`kStateRegs` = 128 registers a lane) is the C fragments of the fold's MMAs and stays in registers for the whole call.
 Window 0's inputs and plan are staged and its first read chunk filled before the loop. A window runs its plan's items
-in order (`schedule.md#items`), each in four steps:
+in order (`schedule.md#items`), each in three steps:
 
-1. **Its fills**: for each fill it hosts, wait for its region's last user done (`fwait`), then issue the target's
+1. **Its fills**: for each fill it hosts, a rendezvous where it waits for its region's last user (`fwait`), then the target's
    copies (`fill_item`: its rows, its panel zeroed, its entries) to arrive at the target's landed barrier as they land;
    the next window's first read once that window's inputs have landed.
 2. **Its waits**: its own buffer landed (a ring read waits after its first stores, so the copies land under them) and
-   its dependence done by every warp.
+   a rendezvous for its dependence.
 3. **Its work**: MAXIMA -- each warp's digit maxima posted (`parts.md#maxima`), every warp's joined, each digit's
    exponent; STORE -- the next window's inputs staged, the image stored whole in the whole mode; READ -- the chunk's
    tiles over every digit from the whole image, or from a ring the item stores itself (two 8-plane slots or one
-   16-plane half, a slot freed once every warp has read it, for the batch two on or the next chunk's); DRAIN -- the
+   16-plane half, a slot reused after a rendezvous, for the batch two on or the next chunk's); DRAIN -- the
    chunk's panel to `num`; FOLD -- the chunk's steps (`fold.md#chunk`), the window's units stepped at its first;
    BOUNDARY -- the units stepped where the window folds nothing.
-4. **Its done**, where a later item or fill waits for it.
 
 An item reads its record and the window's head once (shared memory, by parity) and passes them to its work; the item
 count is read at each loop test, so nothing from the plan is held across items.
@@ -48,12 +47,15 @@ before, a window ahead.
 <a id="barriers"></a>
 ## The barriers
 
-`Arrivals` keeps a bit a barrier (`plan.md#barriers`) -- the staging's and the ring's in one word, the items' done and
-landed in two -- flipped at each of the thread's arrivals. Every thread arrives at every phase of a barrier, and every
-wait is for the phase of the thread's own last arrival, so the bit names its parity; a barrier never arrived at passes
-(its phase before the first). An item's pair is its index in the window: a window's done arrivals come only after the
-maxima, which every warp passes only once the window before is done, and a landed slot's phase is waited by its
-consumer before any warp can reach the same slot a window on, so no arrival counts toward another window's phase.
+Every CTA-wide rendezvous -- an item's dependence, a fill's wait for its region's last user, the maxima, a ring's
+stores and reuses -- is the hardware barrier (`ops::rendezvous`) at the consumer: every warp runs the same items, so a
+barrier where the consumer starts means every warp is done with what came before. On sm_80 and sm_86 an mbarrier is
+software -- an arrive fences the warp's outstanding atomics, the waiters poll -- about twice the hardware barrier's cost
+a round (`docs/lab/image_ring.md`); measured here, 3,018 to 2,960 us at nl64k-alt-k4. mbarriers remain only where async
+copies land: `Arrivals` keeps a bit a barrier (the items' landed and the staging's, `plan.md#barriers`), flipped at
+each of the thread's arrivals; a wait is for the phase of the thread's own last arrival, so the bit names its parity (a
+barrier never arrived at passes: its phase before the first). An item's landed barrier is its index in the window, its
+phase waited by its consumer before any warp reaches the same index a window on.
 
 <a id="budget"></a>
 ## The budget
