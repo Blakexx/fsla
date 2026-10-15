@@ -633,7 +633,10 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
   float sum = 0.0f;
 #pragma unroll
   for (int k = 0; k < P::kStateRegs; ++k) sum += (&st.acc[0][0][0][0])[k];
-  atomicAdd(p.check, sum);
+  //: the check a warp's: its lanes' sums joined by shuffles, one add a warp (`carry_kernel.md#check`)
+#pragma unroll
+  for (int o = 16; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
+  if ((tid() & 31) == 0) atomicAdd(p.check, sum);
 }
 
 template <int FORM, bool CLOCK>
@@ -748,6 +751,50 @@ void form(const lab::Bench& b, Call& c, const char* name, const char* cell, Laun
   LAB_CHECK(cudaFree(ledger));
 }
 
+//: THE FIXED COST A CALL: a form's launch timed with every clock off over the call's first 1, 2, 4 ... windows, and the
+//: line through them -- its intercept the call's fixed cost (plan pass, prologue, epilogue, the last wave's tail), its
+//: slope a window's
+template <class Launch>
+void sweep(const lab::Bench& b, Call& c, const char* name, const char* cell, Launch launch) {
+  const int all = c.cap.p.windows;
+  const std::string label = std::string(name) + " / " + cell + " / by windows";
+  cudaEvent_t e0, e1;
+  LAB_CHECK(cudaEventCreate(&e0));
+  LAB_CHECK(cudaEventCreate(&e1));
+  c.cap.p.ledger = nullptr;
+  double sn = 0, st = 0, snn = 0, snt = 0;
+  int k = 0;
+  for (int n = 1; n <= all; n *= 2, ++k) {
+    c.cap.p.windows = n;
+    const lab::Samples us = b.variant(
+        [&] {
+          LAB_CHECK(cudaMemset(c.num, 0, c.num_bytes));
+          LAB_CHECK(cudaEventRecord(e0));
+          launch(c.cap.p, false);
+          LAB_CHECK(cudaEventRecord(e1));
+        },
+        [&] {
+          float ms = 0.0f;
+          LAB_CHECK(cudaEventElapsedTime(&ms, e0, e1));
+          return 1000.0 * ms;
+        });
+    b.record(label + " / " + std::to_string(n), "us a launch, every clock off", us);
+    const double t = us.median();
+    sn += n;
+    st += t;
+    snn += double(n) * n;
+    snt += n * t;
+  }
+  c.cap.p.windows = all;
+  const double slope = (k * snt - sn * st) / (k * snn - sn * sn), fixed = (st - slope * sn) / k;
+  b.record(label + " / fixed", "us a call, the line's intercept", lab::Samples{{fixed}});
+  b.record(label + " / a window", "us a window, the line's slope", lab::Samples{{slope}});
+  b.unchecked(label,
+              "a shorter call's readout is a prefix of the full call's, checked with the form");
+  LAB_CHECK(cudaEventDestroy(e0));
+  LAB_CHECK(cudaEventDestroy(e1));
+}
+
 }  // namespace carry_window
 
 int main(int argc, char** argv) {
@@ -783,6 +830,14 @@ int main(int argc, char** argv) {
     std::printf(
         "{\"lab\": \"note\", \"cell\": \"%s\", \"moved\": %d, \"ctas\": %lld, \"windows\": %d}\n",
         cell[1], c.moved, static_cast<long long>(c.cap.boxes * c.cap.bh), c.cap.p.windows);
+    if (only < 0 || only == 0)
+      sweep(b, c, "the production kernel", cell[1], [&](const rc::CarryParams& p, bool) {
+        LAB_CHECK(rc::carry_launch<Arm>(p, static_cast<int>(c.cap.boxes),
+                                        static_cast<int>(c.cap.bh), nullptr));
+      });
+    if (only < 0 || only == 6)
+      sweep(b, c, "form 6, form 5 with the stores in chains", cell[1],
+            [&](const rc::CarryParams& p, bool on) { launch_either<6>(c, p, on); });
     if (only < 0 || only == 0)
       form(
           b, c, "the production kernel", cell[1],

@@ -88,6 +88,13 @@ readout 1.7x, the fold 1.4x, the maxima 1.3x -- each class (b), the mechanism ri
 Beside them the barriers' spinning (~280 a warp-window, the waits for other warps) and ~24.4K cycles a warp-window
 against the instructions' ~7.8K: the warps' latency-bound chains.
 
+<a id="check"></a>
+## The check
+
+The state's fp32 sum, the skeleton's `check` (`carry_api.md#carry-forward`): each lane's sum of its state, the warp's
+lanes' joined by five shuffles, one atomic add a warp. One add a thread put 32,768 adds a call on one address; they
+serialized at its L2 slice for ~47 us a call on sm_86 (`docs/lab/carry_window.md`), most of the call's fixed cost.
+
 <a id="phases"></a>
 ## The phase ledger's phases
 

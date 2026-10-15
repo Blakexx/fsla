@@ -256,9 +256,11 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     } while (__any_sync(0xffffffffu, ++k < plan_items<P>(smem, w)));
   }
 
+  //: THE CHECK, a warp's sum added once a warp -- see docs/internals/carry/carry_kernel.md#check
   float sum = 0.f;
   static_for<P::kStateRegs>([&](auto k) { sum += st.template at<k>(); });
-  atomicAdd(p.check, sum);
+  static_for<5>([&](auto o) { sum += __shfl_xor_sync(0xffffffffu, sum, 16 >> o); });
+  if (lane == 0) atomicAdd(p.check, sum);
   fold_probe<P>(p, st, smem, window_of<P>(p, smem, kWrite, 0), place_of(p), warp, lane);
   clock.publish(p.ledger, (long)blockIdx.y * gridDim.x + blockIdx.x, kWarps, warp);
 }
