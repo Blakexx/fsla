@@ -10,9 +10,9 @@ One launch over a call's windows. In: both sides' level rows and the values (the
 sides' lists in the facts pass's final form (`(entries, at, union, count)` each, empty tensors for a side with no
 list level, `carry.md#lists`), the den pass's unit bytes a window wide, and the carve flattened: widths, extents,
 channels, each side's list level (-1 for none) and operand levels, the arm key, the readout's accumulation (0
-fp32, 1 fp16), the readout candidate every window's plan takes first where it fits (-1 none, else 0 to 4 in the
-plan's order, `schedule.md#planner`), and optionally the caller's plans tensor (`[BH, windows, box classes, 48]` u8,
-else the call's own). Out: `num`, `check` and the plans. The refusals are `carry.md#refusals`.
+fp32, 1 fp16), the named form every window takes where it builds (-1 none, else one of the 60 in the plan pass's order,
+`schedule.md#planner`), and optionally the caller's plans tensor (`[BH, windows, box classes, 240]` u8, else the call's
+own). Out: `num`, `check` and the plans. The refusals are `carry.md#refusals`.
 
 <a id="carry-readout-accumulate"></a>
 ## `carry_readout_accumulate`
@@ -37,3 +37,13 @@ field.
 
 `carry_ledger_bind`, `carry_build_stamp`, `carry_census` and `carry_arms` are the instruments: the phase ledger
 (`carry_kernel.md#phases`), the device stamp, and the binary's own arm list and census.
+
+<a id="carry-capture-bind"></a>
+## `carry_capture_bind`
+
+Binds a host u8 tensor of `carry_capture_bytes()` bytes; the next launch copies a `CarryCapture` into it -- its byte
+count, the grid's boxes and batch-heads, then the operand block as the launch built it -- before it launches. A lab
+experiment runs a window form on a real call's inputs from it: the caller saves each tensor the call read or wrote
+beside the capture, and the experiment moves every pointer word of the block that falls in a saved tensor to its own
+copy (`measure/lab/experiments/carry_window.inputs.py`). Unbound (`None`) in production; `rola.ops.carry.capture_bind`
+and `capture_bytes` are the Python calls.

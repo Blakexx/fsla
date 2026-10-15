@@ -67,7 +67,8 @@ lists, the den pass's units (`unit`, an exponent byte a token, a window wide so 
 outputs are `num` (packed s16 pairs at each token's unit, added as u32: `parts.md#drain`) and `check` (the final
 state's sum). `plans` are the plan pass's (`schedule.md#pass`), a window's for each box class. `readout_f16` is the
 readout's accumulation (`carry_api.md#carry-readout-accumulate`); `prefer` a named form every window's plan takes
-where it builds, -1 for none (`schedule.md#planner`).
+where it builds, -1 for none (`schedule.md#planner`). A bound capture copies the block and its grid out before the
+launch (`CarryCapture`, `carry_api.md#carry-capture-bind`).
 
 <a id="refusals"></a>
 ## The kernel boundary refuses

@@ -30,6 +30,8 @@ __all__ = [
     "arm_key",
     "arms",
     "build_stamp",
+    "capture_bind",
+    "capture_bytes",
     "carry",
     "census",
     "form",
@@ -155,6 +157,18 @@ def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurem
     """Bind the phase ledger the next launches book into, ``[ctas, LEDGER_WARPS, len(LEDGER_PHASES)]`` int64 cycles,
     or ``None``."""
     extension().carry_ledger_bind(ledger)
+
+
+def capture_bind(out: torch.Tensor | None) -> None:  #: reserved: the lab's window on a real call (docs/internals/carry/carry_api.md#carry-capture-bind)
+    """Bind the host u8 tensor (:func:`capture_bytes` long) the next launch copies its operand block and grid into, or
+    ``None``."""
+    extension().carry_capture_bind(out)
+
+
+def capture_bytes() -> int:
+    """A capture's bytes in this binary: its byte count, boxes and batch-heads (int64 each), then the operand
+    block."""
+    return int(extension().carry_capture_bytes())
 
 
 def probe_bind(probe: torch.Tensor | None) -> None:  #: reserved: the fold's oracle instrument (docs/internals/carry/fold.md#probe)

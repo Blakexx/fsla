@@ -114,6 +114,8 @@ STABLE_TORCH_LIBRARY(rola, m) {
   m.def("carry_readout_accumulate(int device) -> int");
   m.def("carry_ledger_bind(Tensor? ledger) -> ()");
   m.def("carry_probe_bind(Tensor? probe) -> ()");
+  m.def("carry_capture_bind(Tensor? out) -> ()");
+  m.def("carry_capture_bytes() -> int");
   m.def("carry_build_stamp() -> int");
   m.def("carry_census() -> int[][]");
   m.def("carry_arms() -> int[][]");
@@ -209,6 +211,8 @@ STABLE_TORCH_LIBRARY_IMPL(rola, CompositeExplicitAutograd, m) {
 
   m.impl("carry_ledger_bind", TORCH_BOX(&rola::carry::carry_ledger_bind));
   m.impl("carry_probe_bind", TORCH_BOX(&rola::carry::carry_probe_bind));
+  m.impl("carry_capture_bind", TORCH_BOX(&rola::carry::carry_capture_bind));
+  m.impl("carry_capture_bytes", TORCH_BOX(&rola::carry::carry_capture_bytes));
   m.impl("carry_build_stamp", TORCH_BOX(&rola::carry::carry_build_stamp));
   m.impl("carry_census", TORCH_BOX(&rola::carry::carry_census));
   m.impl("carry_arms", TORCH_BOX(&rola::carry::carry_arms));

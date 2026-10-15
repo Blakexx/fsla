@@ -23,6 +23,8 @@ int64_t carry_readout_accumulate(int64_t device);  // carry_api.md#carry-readout
 
 void carry_ledger_bind(const std::optional<Tensor>& ledger);
 void carry_probe_bind(const std::optional<Tensor>& probe);
+void carry_capture_bind(const std::optional<Tensor>& out);  // carry_api.md#carry-capture-bind
+int64_t carry_capture_bytes();
 int64_t carry_build_stamp();
 std::vector<std::vector<int64_t>> carry_census();
 std::vector<std::vector<int64_t>> carry_arms();

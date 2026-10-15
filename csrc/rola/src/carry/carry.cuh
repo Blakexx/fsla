@@ -12,8 +12,7 @@ namespace rola::carry {
 constexpr int kWarps = 8;
 constexpr int kThreads = kWarps * 32;
 constexpr int kWindow = 512;
-//: A LIST'S BOUNDARIES: its entries before every 64th union slot, the last its length; a group's in PREFIX form,
-//: row `l` the boundaries of its lists before `l` summed, its last row the group's totals.
+//: A LIST'S BOUNDARIES: its entries before every 64th union slot. -- see docs/internals/carry/carry.md#lists
 constexpr int kListBound = 64;
 constexpr int kListAt = kWindow / kListBound;
 constexpr int kListCap = kWindow;
@@ -82,6 +81,12 @@ struct CarryParams {
   float* check;
   float* probe;
   long long* ledger;
+};
+
+//: A LAUNCH CAPTURED, its operand block and grid. -- see docs/internals/carry/carry_api.md#carry-capture-bind
+struct CarryCapture {
+  int64_t bytes, boxes, bh;
+  CarryParams p;
 };
 
 //: THE PHASE LEDGER's phases. -- see docs/internals/carry/carry_kernel.md#phases

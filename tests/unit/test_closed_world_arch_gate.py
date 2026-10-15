@@ -80,6 +80,8 @@ _LAUNCHLESS = {
     "carry_census": "a cudaFuncGetAttributes query of the compiled arms, not a kernel launch",
     "carry_ledger_bind": "binds the device buffer the next carry launch adds into; issues no launch",
     "carry_probe_bind": "binds the device buffer the next carry launch writes its final state into; issues no launch",
+    "carry_capture_bind": "binds the host buffer the next carry launch copies its operand block into; issues no launch",
+    "carry_capture_bytes": "returns a compiled-in size",
     "rola_decode_ledger_bind": "binds the device buffer the next decode step books into; issues no launch",
     "rola_produce_ledger_bind": "binds the device buffer the next producer launch books into; issues no launch",
     "rola_facts_ledger_bind": "binds the device buffer the next facts pass books into; issues no launch",

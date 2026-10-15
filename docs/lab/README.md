@@ -36,6 +36,7 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`image_ring`](image_ring.md) | part harness |
 | [`fold_publish`](fold_publish.md) | part harness |
 | [`digit_box`, `digit_box32`, `list_box`](digit_box.md) | part harness |
+| [`carry_window`](carry_window.md) | part harness |
 | [`color_union`](color_union.md) | part harness |
 | [`mma_k8`](mma_k8.md) | part harness |
 | [`facts_color`](facts_color.md) | experiment |

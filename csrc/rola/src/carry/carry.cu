@@ -11,6 +11,8 @@
 #include "common/arm_switch.cuh"
 #include "common/design.cuh"
 
+#include <cstring>
+
 namespace rola::carry {
 
 ROLA_CARRY_ARM_SET_X(ROLA_CARRY_ARM_DECLARE)
@@ -25,6 +27,9 @@ int64_t g_ledger_ctas = 0;
 //: unbound in production. -- see docs/internals/carry/fold.md#probe
 float* g_probe = nullptr;
 int64_t g_probe_values = 0;
+//: THE CAPTURE BINDING: a host u8 tensor of `sizeof(CarryCapture)` bytes the next launch copies its operand block and
+//: grid into; unbound in production. -- see docs/internals/carry/carry_api.md#carry-capture-bind
+uint8_t* g_capture = nullptr;
 
 bool pow2(int64_t x) { return x > 0 && (x & (x - 1)) == 0; }
 
@@ -233,6 +238,10 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
                       && k.read_factors == p.read.operands,
                   "the arm key's channels and factors are the carve's: ", channels, ", ",
                   p.write.operands, ", ", p.read.operands);
+  if (g_capture != nullptr) {
+    const CarryCapture c{(int64_t)sizeof(CarryCapture), boxes, BH, p};
+    std::memcpy(g_capture, &c, sizeof c);
+  }
   const auto stream = current_stream();
   cudaError_t status = cudaSuccess;
   bool launched = false;
@@ -285,6 +294,19 @@ void carry_probe_bind(const std::optional<Tensor>& probe) {
   g_probe = probe->mutable_data_ptr<float>();
   g_probe_values = probe->numel();
 }
+
+void carry_capture_bind(const std::optional<Tensor>& out) {
+  if (!out) {
+    g_capture = nullptr;
+    return;
+  }
+  STD_TORCH_CHECK(!out->is_cuda() && out->scalar_type() == Dtype::Byte && out->is_contiguous()
+                      && out->numel() == (int64_t)sizeof(CarryCapture),
+                  "the capture is a contiguous host u8 tensor of ", sizeof(CarryCapture), " bytes");
+  g_capture = static_cast<uint8_t*>(out->mutable_data_ptr());
+}
+
+int64_t carry_capture_bytes() { return (int64_t)sizeof(CarryCapture); }
 
 namespace stamp {
 
