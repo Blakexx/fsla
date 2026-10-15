@@ -19,6 +19,8 @@ namespace carry_window {
 namespace rc = rola::carry;
 using Arm = rola::Arm<0, 32, 1, 32, 1, 32, 0>;
 using P = rc::Plan<Arm>;
+//: the phase trace's laps a window and its start's phase (`lap`)
+constexpr int kLapsAWindow = 32, kStart = 15, kEnd = 14;
 
 //: A CAPTURED CALL, re-hosted: its operand block with every pointer moved to this process's copy of its buffer, the
 //: grid, and the readout's output buffer with the call's result beside it.
@@ -89,12 +91,44 @@ inline Call load(const std::string& dir) {
   return c;
 }
 
-//: THE LEDGER'S READING: the mean over CTAs of the busiest warp's cycles, a window -- and each phase's, the mean warp's
+//: THE LEDGER'S READING: the mean over CTAs of the busiest warp's cycles (a trace's: the CTA's span), a window -- and each phase's, the mean warp's
 struct Reading {
   double window = 0.0;
   double phase[rc::kCarryPhases] = {};
   double busiest[rc::kCarryPhases] = {};
 };
+
+//: A TRACE'S READING (the lab's forms): each phase the stamps' differences, a warp's laps in order from its start
+inline Reading read_trace(const long long* trace, int ctas, int windows) {
+  const size_t per = static_cast<size_t>(windows) * kLapsAWindow + 2;
+  std::vector<long long> h(static_cast<size_t>(ctas) * rc::kWarps * per);
+  LAB_CHECK(cudaMemcpy(h.data(), trace, h.size() * 8, cudaMemcpyDeviceToHost));
+  Reading r;
+  for (int c = 0; c < ctas; ++c) {
+    double most[rc::kCarryPhases] = {};
+    long long first = 0, last = 0;
+    for (int w = 0; w < rc::kWarps; ++w) {
+      const long long* e = h.data() + (static_cast<size_t>(c) * rc::kWarps + w) * per;
+      double mine[rc::kCarryPhases] = {};
+      size_t k = 1;
+      for (; k < per && e[k] != 0; ++k)
+        if ((e[k] & 15) < rc::kCarryPhases)
+          mine[e[k] & 15] += double((e[k] >> 4) - (e[k - 1] >> 4));
+      first = w == 0 ? e[0] >> 4 : std::min(first, e[0] >> 4);
+      last = std::max(last, e[k - 1] >> 4);
+      for (int ph = 0; ph < rc::kCarryPhases; ++ph) {
+        r.phase[ph] += mine[ph];
+        most[ph] = std::max(most[ph], mine[ph]);
+      }
+    }
+    r.window += double(last - first);
+    for (int ph = 0; ph < rc::kCarryPhases; ++ph) r.busiest[ph] += most[ph];
+  }
+  r.window /= double(ctas) * windows;
+  for (double& x : r.phase) x /= double(ctas) * rc::kWarps * windows;
+  for (double& x : r.busiest) x /= double(ctas) * windows;
+  return r;
+}
 
 inline Reading read_ledger(const long long* ledger, int ctas, int windows) {
   std::vector<long long> h(static_cast<size_t>(ctas) * rc::kWarps * rc::kCarryPhases);
@@ -134,17 +168,23 @@ __device__ __forceinline__ int tid() {
   return t;
 }
 
-//: THE PHASE CLOCK, holding no register: a warp's lane 0 adds the cycles since its row's mark to phase `ph`, its row
-//: (the `kClock` tenant) addressed from the thread index at each lap; bound only with the ledger
-__device__ __forceinline__ void lap(const rc::CarryParams& p, uint8_t* smem, int ph) {
+//: THE PHASE TRACE: at each lap a warp's lane 0 stores the clock, the phase in its low 4 bits, at the warp's next slot
+//: of `p.ledger` (`kLapsAWindow` a window), one predicated store with nothing to wait on; the host takes each phase's
+//: cycles from consecutive stamps. Its one register is the warp's lap count. `kStart` marks the start.
+
+__device__ __forceinline__ long long* trace_of(const rc::CarryParams& p, int warp) {
+  return p.ledger
+         + (static_cast<long long>(blockIdx.y * gridDim.x + blockIdx.x) * rc::kWarps + warp)
+               * (static_cast<long long>(p.windows) * kLapsAWindow + 2);
+}
+
+template <bool On = true>
+__device__ __forceinline__ void lap(const rc::CarryParams& p, int& laps, int ph) {
+  if constexpr (!On) return;
   const int t = tid();
-  if (p.ledger != nullptr && (t & 31) == 0) {
-    long long* const row =
-        reinterpret_cast<long long*>(smem + P::kClock) + (t >> 5) * (rc::kCarryPhases + 1);
-    const long long now = clock64();
-    row[ph] += now - row[rc::kCarryPhases];
-    row[rc::kCarryPhases] = now;
-  }
+  const long long now = clock64();
+  if (p.ledger != nullptr && (t & 31) == 0) trace_of(p, t >> 5)[laps] = (now << 4) | ph;
+  ++laps;
 }
 
 //: A SIDE'S CHUNK, the whole union: its slots and its buffer's bytes (`read_bytes` / `fold_bytes`)
@@ -361,8 +401,9 @@ __device__ __forceinline__ void fold_lists(rc::State<P>& st, const uint8_t* smem
 //: side (a window that does not fit traps). FORM 3: the next window's panel zeroed by stores, its entries copied before
 //: the fold, its rows in four slices, one before each of the warp's lists' steps. FORM 4: the window's read buffer
 //: issued at its top (rows, panel by stores, entries), the drain a warp's share inside the fold before its list
-//: `(warp >> 1) & 3` (a scheduler's two warps at different lists). FORM 5: form 4, its fills' loads ahead.
-template <int FORM>
+//: `(warp >> 1) & 3` (a scheduler's two warps at different lists). FORM 5: form 4, its fills' loads ahead. CLOCK: the
+//: phase trace compiled in (the attribution) or out (the timing).
+template <int FORM, bool CLOCK>
 __global__ __launch_bounds__(rc::kThreads, 1) void window(
     const __grid_constant__ rc::CarryParams p) {
   extern __shared__ __align__(128) uint8_t smem[];
@@ -372,14 +413,10 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
     if (t < rc::kBoxLists)
       reinterpret_cast<rc::UnitBook*>(smem + P::kBook)[t] = rc::UnitBook{rc::kUnitNone, 0.0f};
     if (t == 0) rc::addr_in(*reinterpret_cast<rc::Addr*>(smem + P::kAddr), p, rc::place_of(p));
-    if ((t & 31) == 0) {
-      long long* const row =
-          reinterpret_cast<long long*>(smem + P::kClock) + (t >> 5) * (rc::kCarryPhases + 1);
-      for (int ph = 0; ph < rc::kCarryPhases; ++ph) row[ph] = 0;
-      row[rc::kCarryPhases] = clock64();
-    }
   }
   ops::rendezvous();
+  int laps = 0;
+  lap<true>(p, laps, kStart);
   rc::State<P> st;
 #pragma unroll
   for (int k = 0; k < P::kStateRegs; ++k) (&st.acc[0][0][0][0])[k] = 0.0f;
@@ -399,14 +436,14 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
     //: THE WINDOW'S INPUTS AND READ ROWS landed, the next window's staged
     ops::stage_wait<0>();
     ops::rendezvous();
-    lap(p, smem, rc::kPhaseLanded);
+    lap<CLOCK>(p, laps, rc::kPhaseLanded);
     if constexpr (FORM >= 4) {
       //: THE WINDOW'S READ BUFFER, under the maxima and the first half's stores
       const Sized r = sized<rc::kRead>(p, smem, w);
       read_rows<FORM >= 5>(p, smem, w, area + top_of(r.bytes), 0, r.slots);
       panel_entries<FORM >= 5>(p, smem, w, area + top_of(r.bytes), r.slots);
       ops::stage_commit();
-      lap(p, smem, rc::kPhaseFill);
+      lap<CLOCK>(p, laps, rc::kPhaseFill);
     }
     if (w + 1 < p.windows) stage(p, w + 1, smem);
     ops::stage_commit();
@@ -414,17 +451,22 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
     {
       const int t = tid();
       rc::post_maxima<P>(st, smem, w, t >> 5, t & 31);
+      lap<CLOCK>(p, laps, rc::kPhaseMaxima);
       ops::rendezvous();
+      lap<CLOCK>(p, laps, rc::kPhaseWait);
       dexp = rc::digit_exp<P>(smem, w, tid() & 31);
       if (tid() < 32) reinterpret_cast<int*>(smem + P::kExps)[tid()] = dexp;
     }
-    lap(p, smem, rc::kPhaseMaxima);
+    lap<CLOCK>(p, laps, rc::kPhaseMaxima);
     //: THE HALVES: each stored into the image, then read out
     const Sized r = sized<rc::kRead>(p, smem, w);
     if (r.bytes + rc::kImageRing > P::kArea) __trap();
 #pragma unroll 1
     for (int half = 0; half < 2; ++half) {
-      if (half > 0) ops::rendezvous();
+      if (half > 0) {
+        ops::rendezvous();
+        lap<CLOCK>(p, laps, rc::kPhaseWait);
+      }
       {
         const int t = tid();
         rc::store_batches<P>(st, smem, area, 2 * half, 2 * half + 2, 2 * rc::kBatchPlanes - 1, dexp,
@@ -433,8 +475,9 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
       if constexpr (FORM >= 4) {
         if (half == 0) ops::stage_wait<1>();
       }
+      lap<CLOCK>(p, laps, rc::kPhaseStore);
       ops::rendezvous();
-      lap(p, smem, rc::kPhaseStore);
+      lap<CLOCK>(p, laps, rc::kPhaseWait);
       {
         const int t = tid();
         const uint32_t rows = area + top_of(r.bytes), pads = rows + rc::read_pads<P>(r.slots),
@@ -450,9 +493,10 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
                                          t & 31);
         }
       }
-      lap(p, smem, rc::kPhaseReadout);
+      lap<CLOCK>(p, laps, rc::kPhaseReadout);
     }
     ops::rendezvous();
+    lap<CLOCK>(p, laps, rc::kPhaseWait);
     //: THE FOLD'S ROWS, over the image every warp has read
     const Sized f = sized<rc::kWrite>(p, smem, w);
     if (f.bytes > static_cast<int>(top_of(r.bytes))) __trap();
@@ -467,11 +511,11 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
       }
     }
     ops::stage_commit();
-    lap(p, smem, rc::kPhaseFill);
+    lap<CLOCK>(p, laps, rc::kPhaseFill);
     if constexpr (FORM >= 4) {
       ops::stage_wait<0>();
       ops::rendezvous();
-      lap(p, smem, rc::kPhaseWait);
+      lap<CLOCK>(p, laps, rc::kPhaseWait);
       //: THE FOLD, each warp's share of the drain before its list `warp & 3`
       {
         const int t = tid();
@@ -485,17 +529,17 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
                          area + top_of(r.bytes) + rc::read_pads<P>(r.slots) + rc::kPadBytes);
         });
       }
-      lap(p, smem, rc::kPhaseFold);
+      lap<CLOCK>(p, laps, rc::kPhaseFold);
     } else {
       //: THE DRAIN, the panel to `num`
       rc::drain<P>(p, smem, rc::window_of<P>(p, smem, rc::kRead, w),
                    rc::Place{static_cast<int>(blockIdx.y), 0}, w, 0, r.slots,
                    area + top_of(r.bytes) + rc::read_pads<P>(r.slots) + rc::kPadBytes);
-      lap(p, smem, rc::kPhaseDrain);
+      lap<CLOCK>(p, laps, rc::kPhaseDrain);
       //: THE NEXT WINDOW'S READ ROWS, at the top once every warp has drained (its inputs and the fold's rows landed)
       ops::stage_wait<0>();
       ops::rendezvous();
-      lap(p, smem, rc::kPhaseWait);
+      lap<CLOCK>(p, laps, rc::kPhaseWait);
       const bool next = w + 1 < p.windows;
       const Sized n = next ? sized<rc::kRead>(p, smem, w + 1) : Sized{0, 0};
       if (next && f.bytes > static_cast<int>(top_of(n.bytes))) __trap();
@@ -503,7 +547,7 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
       if constexpr (FORM == 1) {
         if (next) read_fill(p, smem, w + 1, area);
         ops::stage_commit();
-        lap(p, smem, rc::kPhaseFill);
+        lap<CLOCK>(p, laps, rc::kPhaseFill);
         //: THE FOLD, the window's units stepped first
         {
           const int t = tid();
@@ -515,7 +559,7 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
       } else {
         //: THE NEXT WINDOW'S PANEL, zeroed by stores, and its entries
         if (next) panel_entries(p, smem, w + 1, nbuf, n.slots);
-        lap(p, smem, rc::kPhaseFill);
+        lap<CLOCK>(p, laps, rc::kPhaseFill);
         //: THE FOLD, the window's units stepped first, the next window's rows a slice before each list
         {
           const int t = tid();
@@ -534,74 +578,126 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
         }
         ops::stage_commit();
       }
-      lap(p, smem, rc::kPhaseFold);
+      lap<CLOCK>(p, laps, rc::kPhaseFold);
     }
   }
 
+  lap<true>(p, laps, kEnd);
   float sum = 0.0f;
 #pragma unroll
   for (int k = 0; k < P::kStateRegs; ++k) sum += (&st.acc[0][0][0][0])[k];
   atomicAdd(p.check, sum);
-  const int t = tid();
-  if (p.ledger != nullptr && (t & 31) == 0) {
-    const long long* const row =
-        reinterpret_cast<const long long*>(smem + P::kClock) + (t >> 5) * (rc::kCarryPhases + 1);
-    long long* const out =
-        p.ledger
-        + ((static_cast<long long>(blockIdx.y) * gridDim.x + blockIdx.x) * rc::kWarps + (t >> 5))
-              * rc::kCarryPhases;
-    for (int ph = 0; ph < rc::kCarryPhases; ++ph)
-      atomicAdd(reinterpret_cast<unsigned long long*>(out + ph), row[ph]);
-  }
 }
 
-template <int FORM>
+template <int FORM, bool CLOCK>
 void launch_form(const Call& c, const rc::CarryParams& p) {
-  window<FORM><<<dim3(static_cast<unsigned>(c.cap.boxes), static_cast<unsigned>(c.cap.bh)),
-                 rc::kThreads, P::kSmemBytes>>>(p);
+  static const bool sized =
+      cudaFuncSetAttribute(window<FORM, CLOCK>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                           P::kSmemBytes)
+      == cudaSuccess;
+  if (!sized) std::exit(2);
+  window<FORM, CLOCK><<<dim3(static_cast<unsigned>(c.cap.boxes), static_cast<unsigned>(c.cap.bh)),
+                        rc::kThreads, P::kSmemBytes>>>(p);
   LAB_CHECK(cudaGetLastError());
 }
 
+//: a form's launch, its clock compiled in or out
+template <int FORM>
+void launch_either(const Call& c, const rc::CarryParams& p, bool clock) {
+  if (clock) {
+    launch_form<FORM, true>(c, p);
+  } else {
+    launch_form<FORM, false>(c, p);
+  }
+}
+
+//: A FORM'S READINGS: its launch timed with every clock off (the result), then its phases with its clock on (the
+//: attribution, from its trace or the production kernel's ledger); its readout output checked after each against the
+//: call's
 template <class Launch>
-void form(const lab::Bench& b, Call& c, const char* name, const char* cell, Launch launch) {
+void form(const lab::Bench& b, Call& c, const char* name, const char* cell, Launch launch,
+          bool traced = true) {
   const int ctas = static_cast<int>(c.cap.boxes * c.cap.bh), windows = c.cap.p.windows;
+  const size_t words =
+      static_cast<size_t>(ctas) * rc::kWarps
+      * (traced ? static_cast<size_t>(windows) * kLapsAWindow + 2 : rc::kCarryPhases);
   long long* ledger = nullptr;
-  LAB_CHECK(cudaMalloc(&ledger, sizeof(long long) * ctas * rc::kWarps * rc::kCarryPhases));
-  c.cap.p.ledger = ledger;
-  Reading last;
-  const auto run = [&] {
-    LAB_CHECK(cudaMemset(ledger, 0, sizeof(long long) * ctas * rc::kWarps * rc::kCarryPhases));
+  LAB_CHECK(cudaMalloc(&ledger, sizeof(long long) * words));
+  const auto reset = [&] {
+    LAB_CHECK(cudaMemset(ledger, 0, sizeof(long long) * words));
     LAB_CHECK(cudaMemset(c.num, 0, c.num_bytes));
     LAB_CHECK(cudaMemset(c.check, 0, 4));
-    launch(c.cap.p);
   };
-  const lab::Samples s = b.variant(run, [&] {
-    last = read_ledger(ledger, ctas, windows);
-    return last.window;
-  });
+  //: the readout's output against the call's: the words that differ, and by most in an s16 half
+  const auto compare = [&] {
+    std::vector<uint32_t> got(c.want.size());
+    LAB_CHECK(cudaMemcpy(got.data(), c.num, c.num_bytes, cudaMemcpyDeviceToHost));
+    size_t bad = got.empty() ? 1 : 0;
+    int worst = 0;
+    for (size_t i = 0; i < got.size(); ++i) {
+      bad += got[i] != c.want[i];
+      const int lo =
+          static_cast<int16_t>(got[i] & 0xffffu) - static_cast<int16_t>(c.want[i] & 0xffffu);
+      const int hi = static_cast<int16_t>(got[i] >> 16) - static_cast<int16_t>(c.want[i] >> 16);
+      worst = std::max(worst, std::max(std::abs(lo), std::abs(hi)));
+    }
+    return std::make_pair(bad, worst);
+  };
+  cudaEvent_t e0, e1;
+  LAB_CHECK(cudaEventCreate(&e0));
+  LAB_CHECK(cudaEventCreate(&e1));
+  //: timed with every clock off: a lab form's start and end stamps alone (its span), the production kernel unbound
+  c.cap.p.ledger = traced ? ledger : nullptr;
+  lab::Samples span;
+  const lab::Samples us = b.variant(
+      [&] {
+        reset();
+        LAB_CHECK(cudaEventRecord(e0));
+        launch(c.cap.p, false);
+        LAB_CHECK(cudaEventRecord(e1));
+      },
+      [&] {
+        float ms = 0.0f;
+        LAB_CHECK(cudaEventElapsedTime(&ms, e0, e1));
+        if (traced) span.v.push_back(read_trace(ledger, ctas, windows).window);
+        return 1000.0 * ms;
+      });
+  const auto off = compare();
+  c.cap.p.ledger = ledger;
+  Reading last;
+  lab::Samples clocked_us;
+  const lab::Samples s = b.variant(
+      [&] {
+        reset();
+        LAB_CHECK(cudaEventRecord(e0));
+        launch(c.cap.p, true);
+        LAB_CHECK(cudaEventRecord(e1));
+      },
+      [&] {
+        float ms = 0.0f;
+        LAB_CHECK(cudaEventElapsedTime(&ms, e0, e1));
+        clocked_us.v.push_back(1000.0 * ms);
+        last = traced ? read_trace(ledger, ctas, windows) : read_ledger(ledger, ctas, windows);
+        return last.window;
+      });
+  const auto on = compare();
   const std::string label = std::string(name) + " / " + cell;
-  b.record(label, "cycles a CTA-window (busiest warp)", s);
+  b.record(label, "us a launch, every clock off", us);
+  if (traced) b.record(label + " / span", "cycles a CTA-window, its span, every clock off", span);
+  b.record(label + " / clocked", "cycles a CTA-window, its clock on", s);
+  b.record(label + " / clocked launch", "us a launch, its clock on", clocked_us);
   for (int ph = 0; ph < rc::kCarryPhases; ++ph) {
     b.record(label + " / " + kPhases[ph], "cycles a warp-window", lab::Samples{{last.phase[ph]}});
     b.record(label + " / " + kPhases[ph] + " busiest", "cycles a warp-window",
              lab::Samples{{last.busiest[ph]}});
   }
-  std::vector<uint32_t> got(c.want.size());
-  LAB_CHECK(cudaMemcpy(got.data(), c.num, c.num_bytes, cudaMemcpyDeviceToHost));
-  size_t bad = 0;
-  int worst = 0;
-  for (size_t i = 0; i < got.size(); ++i) {
-    bad += got[i] != c.want[i];
-    const int lo =
-        static_cast<int16_t>(got[i] & 0xffffu) - static_cast<int16_t>(c.want[i] & 0xffffu);
-    const int hi = static_cast<int16_t>(got[i] >> 16) - static_cast<int16_t>(c.want[i] >> 16);
-    worst = std::max(worst, std::max(std::abs(lo), std::abs(hi)));
-  }
-  b.check(label, bad == 0 && !got.empty(),
-          std::to_string(bad) + " of " + std::to_string(got.size())
-              + " num words differ from the call's, by at most " + std::to_string(worst)
-              + " in an s16 half");
+  b.check(label, off.first == 0 && on.first == 0,
+          "clocks off " + std::to_string(off.first) + ", on " + std::to_string(on.first) + " of "
+              + std::to_string(c.want.size()) + " num words differ from the call's, by at most "
+              + std::to_string(std::max(off.second, on.second)) + " in an s16 half");
   c.cap.p.ledger = nullptr;
+  LAB_CHECK(cudaEventDestroy(e0));
+  LAB_CHECK(cudaEventDestroy(e1));
   LAB_CHECK(cudaFree(ledger));
 }
 
@@ -614,13 +710,10 @@ int main(int argc, char** argv) {
   b.expect(production, "HMMA", ">=", 1);
   b.exempt(production,
            "the production kernel, the baseline: its budget is tools/budgets/carry.json");
-  const std::string form1 = lab::kernel("carry_window::window", {1}),
-                    form3 = lab::kernel("carry_window::window", {3}),
-                    form4 = lab::kernel("carry_window::window", {4}),
-                    form5 = lab::kernel("carry_window::window", {5});
-  //: the steps themselves are one block each; the spans the gate reads as steps besides them run from a shuffle's cold
-  //: fallback, laid out past the epilogue, back into the window loop, over the epilogue's ledger and check adds
-  for (const std::string& k : {form1, form3, form4, form5}) {
+  //: each form's kernels, its clock in and out; the steps themselves are one block each, the spans the gate reads as
+  //: steps besides them run from a shuffle's cold fallback, laid out past the epilogue, back into the window loop
+  for (int f : {1, 3, 4, 5}) {
+    const std::string k = "carry_window::window<\\(int\\)" + std::to_string(f) + ",";
     b.expect(k, "HMMA", ">=", 1);
     b.expect(k, "STEP_GLOBAL", ">=", 0);
     b.expect(k, "BSSY", ">=", 0);
@@ -644,29 +737,24 @@ int main(int argc, char** argv) {
         "{\"lab\": \"note\", \"cell\": \"%s\", \"moved\": %d, \"ctas\": %lld, \"windows\": %d}\n",
         cell[1], c.moved, static_cast<long long>(c.cap.boxes * c.cap.bh), c.cap.p.windows);
     if (only < 0 || only == 0)
-      form(b, c, "the production kernel", cell[1], [&](const rc::CarryParams& p) {
-        LAB_CHECK(rc::carry_launch<Arm>(p, static_cast<int>(c.cap.boxes),
-                                        static_cast<int>(c.cap.bh), nullptr));
-      });
-    LAB_CHECK(cudaFuncSetAttribute(window<1>, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                   P::kSmemBytes));
-    LAB_CHECK(cudaFuncSetAttribute(window<3>, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                   P::kSmemBytes));
+      form(
+          b, c, "the production kernel", cell[1],
+          [&](const rc::CarryParams& p, bool) {
+            LAB_CHECK(rc::carry_launch<Arm>(p, static_cast<int>(c.cap.boxes),
+                                            static_cast<int>(c.cap.bh), nullptr));
+          },
+          false);
     if (only < 0 || only == 1)
       form(b, c, "form 1, option A by hand", cell[1],
-           [&](const rc::CarryParams& p) { launch_form<1>(c, p); });
-    LAB_CHECK(cudaFuncSetAttribute(window<4>, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                   P::kSmemBytes));
-    LAB_CHECK(cudaFuncSetAttribute(window<5>, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                   P::kSmemBytes));
-    if (only < 0 || only == 5)
-      form(b, c, "form 5, form 4 with the fills' loads ahead", cell[1],
-           [&](const rc::CarryParams& p) { launch_form<5>(c, p); });
-    if (only < 0 || only == 4)
-      form(b, c, "form 4, A with the read buffer at the top, the drain in the fold", cell[1],
-           [&](const rc::CarryParams& p) { launch_form<4>(c, p); });
+           [&](const rc::CarryParams& p, bool on) { launch_either<1>(c, p, on); });
     if (only < 0 || only == 3)
       form(b, c, "form 3, A with the next rows under the fold", cell[1],
-           [&](const rc::CarryParams& p) { launch_form<3>(c, p); });
+           [&](const rc::CarryParams& p, bool on) { launch_either<3>(c, p, on); });
+    if (only < 0 || only == 4)
+      form(b, c, "form 4, A with the read buffer at the top, the drain in the fold", cell[1],
+           [&](const rc::CarryParams& p, bool on) { launch_either<4>(c, p, on); });
+    if (only < 0 || only == 5)
+      form(b, c, "form 5, form 4 with the fills' loads ahead", cell[1],
+           [&](const rc::CarryParams& p, bool on) { launch_either<5>(c, p, on); });
   }
 }

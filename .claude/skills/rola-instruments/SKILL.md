@@ -18,5 +18,6 @@ the map of the tools: `docs/internals/tools/README.md`.
    (`docs/internals/tools/pipe_timeline.md`); time against the floors, `tools/overlap_gate.py`
    (`docs/internals/tools/overlap_gate.md`).
 3. A reading obeys §21 (a quiet GPU, the baseline's own schedule, counts beside time) and the GPU lock
-   (`docs/testing.md#running-it`).
+   (`docs/testing.md#running-it`). The phase clock costs ~16% of the carry's time: a time is read with the ledger
+   unbound, the ledger only attributes it (`docs/internals/tools/phase_ledger.md`).
 4. Classify every ledger entry (a)/(b)/(c) (`docs/internals/tools/budgets.md#checking-it`) before any verdict.

@@ -12,7 +12,11 @@ Measured work: the GPU lock exclusive (`rola_devtools.locks.gpu`). Under `ncu` i
 profile with `--launches 1`.
 
 `--per-warp` names the phases whose per-warp rows are printed (default `readout,fold`). A single launch's totals move
-by up to ~5% run to run; time is the probe's. `--warmup` (default 1) runs launches before the ledger is bound: a fresh
+by up to ~5% run to run; time is the probe's.
+
+The clock is not free: bound, the carry runs ~16% longer (nl64k-alt-k4's first 32 windows on sm_86: 902 us against
+1,045, `docs/lab/carry_window.md`), since each lap's clock read is a point ptxas does not schedule across. The ledger
+attributes a launch's time to phases; the time itself is read with it unbound. `--warmup` (default 1) runs launches before the ledger is bound: a fresh
 binary's first launch is never a reading. `--prefer` names the plan's form each window takes where it builds
 (`rola.ops.carry.CANDIDATES`, `docs/internals/carry/schedule.md#planner`), so forms are read side by side.
 

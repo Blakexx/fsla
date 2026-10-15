@@ -30,28 +30,36 @@ The forms:
 - 5, form 4 with its fills' loads ahead (a thread's four slots' tokens loaded before any copy) and each warp's entries
   copied in one pass over its four lists' runs.
 
-Cycles a CTA-window, sm_86 (RTX 3080 Ti), median of 7 (a phase's column is the mean warp's; with a barrier at both ends
-it is the slowest warp's work):
+Each form is read twice: its launch timed with every clock off -- a lab form's warps stamping only their start and end,
+so its span in cycles is free of the SM's clock (which moves ~9% between processes here), the production kernel's
+ledger unbound -- and then with its clock on, for the phases. The clock costs ~11% of a lab form's time and ~16% of the
+production kernel's (a clock read is a point ptxas does not schedule across), so the phases attribute, the span times.
+sm_86 (RTX 3080 Ti), median of 7; the production kernel's clock-off cycles taken from its time at form 5's cycles a
+microsecond in the same run:
 
-| | total | landed | maxima | store | readout | drain | fill | fold | wait |
-|---|---|---|---|---|---|---|---|---|---|
-| production, alt-k4 | 25,904 | 3,902 | 1,750 | 4,007 | 3,572 | 1,889 | 3,958 | 3,912 | 2,907 |
-| form 1, alt-k4 | 17,554 | 1,073 | 1,847 | 2,506 | 3,215 | 1,427 | 4,034 | 3,145 | 290 |
-| form 3, alt-k4 | 17,859 | 1,099 | 1,832 | 2,492 | 3,177 | 1,444 | 3,439 | 4,049 | 299 |
-| form 4, alt-k4 | 17,047 | 761 | 1,884 | 2,433 | 3,265 | -- | 3,984 | 4,201 | 553 |
-| form 5, alt-k4 | 16,645 | 734 | 1,791 | 2,477 | 3,233 | -- | 3,730 | 4,136 | 544 |
-| production, thinned | 18,463 | 3,355 | 1,796 | 2,222 | 2,084 | 697 | 2,679 | 2,568 | 3,044 |
-| form 1, thinned | 12,876 | 1,115 | 1,842 | 2,489 | 2,090 | 406 | 2,718 | 1,862 | 261 |
-| form 5, thinned | 12,171 | 880 | 1,776 | 2,520 | 2,113 | -- | 2,416 | 1,937 | 514 |
+| | us, clock off | vs production | cycles a CTA-window, clock off | clocked | landed | maxima | store | readout | drain | fill | fold | wait |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| production, alt-k4 | 902 | 1.00 | ~22,160 | 25,908 | 3,915 | 1,753 | 4,002 | 3,571 | 1,888 | 3,956 | 3,907 | 2,907 |
+| form 1, alt-k4 | 660 | 0.73 | 16,213 | 18,229 | 1,036 | 1,918 | 2,115 | 3,142 | 1,409 | 3,675 | 3,099 | 1,813 |
+| form 3, alt-k4 | 682 | 0.76 | 16,699 | 18,703 | 1,111 | 1,910 | 2,106 | 3,144 | 1,467 | 3,110 | 4,029 | 1,815 |
+| form 4, alt-k4 | 664 | 0.74 | 16,225 | 18,031 | 454 | 1,895 | 2,164 | 3,238 | -- | 3,975 | 4,207 | 2,078 |
+| form 5, alt-k4 | 634 | 0.70 | 15,572 | 17,379 | 355 | 1,798 | 2,100 | 3,154 | -- | 3,683 | 4,133 | 2,116 |
+| production, thinned | 546 | 1.00 | ~15,140 | 18,503 | 3,385 | 1,794 | 2,225 | 2,089 | 696 | 2,684 | 2,587 | 3,045 |
+| form 1, thinned | 414 | 0.76 | 11,610 | 13,580 | 1,147 | 1,922 | 2,116 | 2,035 | 382 | 2,364 | 1,822 | 1,770 |
+| form 5, thinned | 403 | 0.74 | 11,194 | 12,929 | 490 | 1,732 | 2,127 | 2,039 | -- | 2,456 | 1,952 | 2,118 |
+
+A phase is the mean warp's cycles with the clock on; "wait" is the warps' time at the barriers that end the maxima, the
+stores and the readout's halves.
 
 Live registers (`tools/life_ranges.py`): production peaks at 251 of 253 usable and holds ~198 at an item start; form 1
 peaks at 233 in the readout's tiles, its fold steps at most 188, its fills 184-210, its base ~157-165; form 5 is
 allocated 223. Static instructions: form 1 6,215 against 11,736.
 
 What it decides:
-- The item machine costs ~8.3K a CTA-window at alt-k4 (its waits, its landed checks, its per-item glue); a window
-  written by hand from the same parts recovers it and holds ~40 fewer registers at every phase.
-- The window is bound by latency, not issue: form 1 executes ~3.3K warp instructions a warp-window in 17.6K cycles
+- The item machine costs ~6K a CTA-window at alt-k4, clock off (its waits, its landed checks, its per-item glue); a
+  window written by hand from the same parts recovers it (form 1: 0.73 of the production kernel's time) and holds ~40
+  fewer registers at every phase.
+- The window is bound by latency, not issue: form 1 executes ~3.3K warp instructions a warp-window in ~16K cycles
   (`lab.py ledger`), and the stall samples are "wait" (a fixed-latency dependence) and "short_sb" (a shared-memory
   result) in every phase, issue ~20%. Two warps a scheduler hide nothing a part leaves serial; the barriers themselves
   are ~6% of the samples.

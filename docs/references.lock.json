@@ -1440,6 +1440,7 @@
   {"doc": "docs/internals/tools/overlap_gate.md", "pinned_at": "71eee72735d3", "reviewed": true, "sha256": "1640de3659d6eca8", "target": "tools/overlap_gate.py::ROWS"},
   {"doc": "docs/internals/tools/phase_ledger.md", "pinned_at": "6382b3ab9253", "reviewed": true, "sha256": "6ab80f55fea8eb91", "target": "docs/internals/carry/carry_kernel.md#phase-ledger"},
   {"doc": "docs/internals/tools/phase_ledger.md", "pinned_at": "06823dec58e6", "reviewed": true, "sha256": "5ea385eed2e83210", "target": "docs/internals/carry/schedule.md#planner"},
+  {"doc": "docs/internals/tools/phase_ledger.md", "pinned_at": "affa8a1605b9", "reviewed": true, "sha256": "", "target": "docs/lab/carry_window.md"},
   {"doc": "docs/internals/tools/phase_ledger.md", "pinned_at": "06823dec58e6", "reviewed": true, "sha256": "2317f3b6144ffbf7", "target": "measure/subjects.py::carry_operands"},
   {"doc": "docs/internals/tools/phase_ledger.md", "pinned_at": "06823dec58e6", "reviewed": true, "sha256": "50d0bdc2ec4a4a69", "target": "rola/ops/carry.py::CANDIDATES"},
   {"doc": "docs/internals/tools/phase_ledger.md", "pinned_at": "06823dec58e6", "reviewed": true, "sha256": "c22acf8a3f4f0751", "target": "rola/ops/carry.py::LEDGER_PHASES"},
