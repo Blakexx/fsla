@@ -1410,6 +1410,7 @@
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "3f67f7cfe7fa", "reviewed": true, "sha256": "24f32e745895bbb7", "target": "tools/lab.py::run"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "b8309b3ccfc8", "reviewed": true, "sha256": "", "target": "tools/sass_gate.py"},
   {"doc": "docs/internals/tools/life_ranges.md", "pinned_at": "6382b3ab9253", "reviewed": true, "sha256": "", "target": "tools/life_ranges.py"},
+  {"doc": "docs/internals/tools/life_ranges.md", "pinned_at": "348a76fd0aeb", "reviewed": true, "sha256": "ba89b03df32ab7d7", "target": "tools/life_ranges.py::listable"},
   {"doc": "docs/internals/tools/life_ranges.md", "pinned_at": "6382b3ab9253", "reviewed": true, "sha256": "", "target": "tools/region_ledger.py"},
   {"doc": "docs/internals/tools/lint.md", "pinned_at": "3fac56b5a835", "reviewed": true, "sha256": "", "target": ".claude"},
   {"doc": "docs/internals/tools/lint.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "", "target": ".claude/skills"},

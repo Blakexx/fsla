@@ -1052,12 +1052,6 @@
    "count": 1
   },
   {
-   "path": "docs/internals/tools/life_ranges.md",
-   "message": "names the work code 'P81'",
-   "line_sha256": "a8ed83bb5e0ad23d",
-   "count": 1
-  },
-  {
    "path": "docs/provenance.md",
    "message": "names the work code 'V2'",
    "line_sha256": "35eb35d58c20eb3d",
@@ -1607,12 +1601,6 @@
    "path": "tests/unit/test_state_contract.py",
    "message": "names the work code 'K53'",
    "line_sha256": "af36becdf3dc8c1f",
-   "count": 1
-  },
-  {
-   "path": "tools/life_ranges.py",
-   "message": "names the work code 'P81'",
-   "line_sha256": "07eb594451f64cbc",
    "count": 1
   },
   {
