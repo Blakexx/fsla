@@ -93,6 +93,7 @@ inline Call load(const std::string& dir) {
 struct Reading {
   double window = 0.0;
   double phase[rc::kCarryPhases] = {};
+  double busiest[rc::kCarryPhases] = {};
 };
 
 inline Reading read_ledger(const long long* ledger, int ctas, int windows) {
@@ -100,7 +101,7 @@ inline Reading read_ledger(const long long* ledger, int ctas, int windows) {
   LAB_CHECK(cudaMemcpy(h.data(), ledger, h.size() * 8, cudaMemcpyDeviceToHost));
   Reading r;
   for (int c = 0; c < ctas; ++c) {
-    double busiest = 0.0;
+    double busiest = 0.0, most[rc::kCarryPhases] = {};
     for (int w = 0; w < rc::kWarps; ++w) {
       double sum = 0.0;
       for (int ph = 0; ph < rc::kCarryPhases; ++ph) {
@@ -108,13 +109,16 @@ inline Reading read_ledger(const long long* ledger, int ctas, int windows) {
             double(h[(static_cast<size_t>(c) * rc::kWarps + w) * rc::kCarryPhases + ph]);
         sum += x;
         r.phase[ph] += x;
+        most[ph] = std::max(most[ph], x);
       }
       busiest = std::max(busiest, sum);
     }
     r.window += busiest;
+    for (int ph = 0; ph < rc::kCarryPhases; ++ph) r.busiest[ph] += most[ph];
   }
   r.window /= double(ctas) * windows;
   for (double& x : r.phase) x /= double(ctas) * rc::kWarps * windows;
+  for (double& x : r.busiest) x /= double(ctas) * windows;
   return r;
 }
 
@@ -182,9 +186,182 @@ __device__ __forceinline__ void read_fill(const rc::CarryParams& p, uint8_t* sme
                    area + top_of(r.bytes), t >> 5, t & 31);
 }
 
+//: A CHUNK'S ENTRIES IN ONE PASS (parts.cuh's `entries_fill`): a warp's four lists' runs as one, each lane an entry --
+//: its list by the runs' running counts, its source and place by its list's -- 8 bytes a lane
+template <class P_>
+__device__ __forceinline__ void entries_ahead(const rc::CarryParams& p, const rc::SideLists& l,
+                                              const rc::Window& win, int w, const rc::Run& run,
+                                              uint32_t dst, int warp, int lane) {
+  const uint2* const lists =
+      l.entries
+      + rc::list_row(l, rc::Place{static_cast<int>(blockIdx.y), 0}, p.windows, w, win.digit0)
+            * rc::kListCap;
+  int at[4], to[4], end[4];
+  int total = 0;
+  rola::static_for<4>([&](auto J) {
+    const int list = warp + rc::kWarps * J;
+    at[J] = __shfl_sync(0xffffffffu, run.at, list);
+    to[J] = __shfl_sync(0xffffffffu, run.to, list);
+    total += __shfl_sync(0xffffffffu, run.n, list);
+    end[J] = total;
+  });
+#pragma unroll 1
+  for (int e = lane; e < total; e += 32) {
+    const int j = (e >= end[0]) + (e >= end[1]) + (e >= end[2]);
+    const int k = e - (j == 0 ? 0 : j == 1 ? end[0] : j == 2 ? end[1] : end[2]);
+    const int a = j == 0 ? at[0] : j == 1 ? at[1] : j == 2 ? at[2] : at[3];
+    const int o = j == 0 ? to[0] : j == 1 ? to[1] : j == 2 ? to[2] : to[3];
+    asm volatile(
+        "cp.async.ca.shared.global [%0], [%1], 8;\n" ::"r"(dst + 8u * static_cast<uint32_t>(o + k)),
+        "l"(lists + (warp + rc::kWarps * j) * rc::kListCap + a + k));
+  }
+}
+
+//: A READ BUFFER'S PANEL AND DUMMY ROWS zeroed by stores, and its entries copied (a warp its own digits' runs);
+//: `Ahead` the entries in one pass
+template <bool Ahead = false>
+__device__ __forceinline__ void panel_entries(const rc::CarryParams& p, uint8_t* smem, int w,
+                                              uint32_t buf, int slots) {
+  const int t = tid();
+  const uint32_t pads = buf + rc::read_pads<P>(slots);
+  const int quanta = (rc::read_ents<P>(slots) - rc::read_pads<P>(slots)) / 16;
+#pragma unroll 4
+  for (int k = t; k < quanta; k += rc::kThreads)
+    asm volatile("st.shared.v4.u32 [%0], {%1, %1, %1, %1};" ::"r"(pads + 16u * k), "r"(0)
+                 : "memory");
+  const rc::Window rw = rc::window_of<P>(p, smem, rc::kRead, w);
+  if (!rw.listed) return;
+  const rc::Run run = rc::chunk_runs<P>(smem, rw, rc::kRead, w, 0, slots, slots, t & 31);
+  if constexpr (Ahead) {
+    entries_ahead<P>(p, p.read_lists, rw, w, run, buf + rc::read_ents<P>(slots), t >> 5, t & 31);
+  } else {
+    rc::entries_fill<P>(p, p.read_lists, rw, rc::Place{static_cast<int>(blockIdx.y), 0}, w, run,
+                        buf + rc::read_ents<P>(slots), t >> 5, t & 31);
+  }
+}
+
+//: AN ASYNC 16-BYTE COPY issued where `issue`, zero-filled where not `live`
+__device__ __forceinline__ void copy16(uint32_t dst, const void* src, bool issue, bool live) {
+  asm volatile(
+      "{\n.reg .pred p;\nsetp.ne.b32 p, %2, 0;\n@p cp.async.cg.shared.global [%0], [%1], 16, %3;\n}\n" ::
+          "r"(dst),
+      "l"(src), "r"(static_cast<int>(issue)), "r"(live ? 16 : 0));
+}
+
+//: A CHUNK'S ROWS WITH ITS LOADS AHEAD (parts.cuh's `fill`, slices of 16 bytes or more): a thread's slots four at a
+//: time, their four tokens loaded before any copy, so a slot's copies wait on no other slot's load
+template <int Factors, bool Values>
+__device__ __forceinline__ void fill_ahead(const volatile rc::Slices& sl, const uint8_t* values,
+                                           int values_st, const uint16_t* tok,
+                                           const rc::Window& win, int first, int slots,
+                                           uint32_t pool) {
+  constexpr int kRow = rc::kSliceBytes * Factors + (Values ? rc::kBoxChannels * 2 : 0);
+  constexpr int kQuads = rc::kThreads / 4, kChunks = rc::kSliceBytes / ops::kStageBytes, kAhead = 4;
+  const int q = tid() >> 2, r = tid() & 3;
+  const uint8_t* base[Factors];
+  int st[Factors];
+  bool active[Factors];
+  rola::static_for<Factors>([&](auto i) {
+    if (sl.bytes[i] < ops::kStageBytes) __trap();
+    st[i] = sl.st[i];
+    base[i] = sl.at[i] + static_cast<int64_t>(win.t0) * st[i] + ops::kStageBytes * r;
+    active[i] = ops::kStageBytes * r < sl.bytes[i];
+  });
+  const uint8_t* const vbase =
+      Values ? values + static_cast<int64_t>(win.t0) * values_st + ops::kStageBytes * r : nullptr;
+#pragma unroll 1
+  for (int s0 = q; s0 < slots; s0 += kAhead * kQuads) {
+    int u[kAhead];
+    rola::static_for<kAhead>([&](auto j) {
+      const int s = s0 + kQuads * j;
+      u[j] = s < slots ? (win.listed ? tok[first + s] : first + s) : rc::kGap;
+    });
+    rola::static_for<kAhead>([&](auto j) {
+      const int s = s0 + kQuads * j, t = u[j] & (rc::kWindow - 1);
+      const bool issue = s < slots, live = u[j] == t;
+      const uint32_t row = pool + static_cast<uint32_t>(s * kRow);
+      rola::static_for<Factors>([&](auto i) {
+        copy16(row
+                   + 16u
+                         * rc::chunk_at<kRow>(static_cast<uint32_t>(s),
+                                              static_cast<uint32_t>(kChunks * i + r)),
+               base[i] + t * st[i], issue, live && active[i]);
+      });
+      if constexpr (Values)
+        copy16(row
+                   + 16u
+                         * rc::chunk_at<kRow>(static_cast<uint32_t>(s),
+                                              static_cast<uint32_t>(kChunks * Factors + r)),
+               vbase + t * values_st, issue, live);
+    });
+  }
+}
+
+//: A READ BUFFER'S ROWS `s0 .. s1 - 1` (`s0` a multiple of 8, the rows' swizzle period); `Ahead` by `fill_ahead`
+template <bool Ahead = false>
+__device__ __forceinline__ void read_rows(const rc::CarryParams& p, uint8_t* smem, int w,
+                                          uint32_t buf, int s0, int s1) {
+  const volatile rc::Addr& addr = *reinterpret_cast<const volatile rc::Addr*>(smem + P::kAddr);
+  const rc::Window rw = rc::window_of<P>(p, smem, rc::kRead, w);
+  const uint32_t at = buf + static_cast<uint32_t>(s0 * P::kReadRow);
+  if constexpr (Ahead) {
+    fill_ahead<P::kReadFactors, false>(addr.slices[rc::kRead], nullptr, 0,
+                                       rc::union_of<P>(smem, rc::kRead, w), rw, s0, s1 - s0, at);
+  } else {
+    rc::fill<P::kReadFactors, false>(addr.slices[rc::kRead], nullptr, 0,
+                                     rc::union_of<P>(smem, rc::kRead, w), rw, s0, s1 - s0, at);
+  }
+}
+
+//: A FOLD BUFFER'S FILL with its loads ahead: its rows (`fill_ahead`), then its entries (fold.cuh's `fold_fill`)
+__device__ __forceinline__ void fold_fill_ahead(const rc::CarryParams& p, uint8_t* smem, int w,
+                                                uint32_t buf, int slots) {
+  const volatile rc::Addr& addr = *reinterpret_cast<const volatile rc::Addr*>(smem + P::kAddr);
+  const rc::Window ww = rc::window_of<P>(p, smem, rc::kWrite, w);
+  fill_ahead<P::kFoldFactors, true>(addr.slices[rc::kWrite], addr.values,
+                                    static_cast<int>(p.values.st),
+                                    rc::union_of<P>(smem, rc::kWrite, w), ww, 0, slots, buf);
+  const int t = tid();
+  if (ww.listed)
+    entries_ahead<P>(p, p.write_lists, ww, w,
+                     rc::chunk_runs<P>(smem, ww, rc::kWrite, w, 0, slots, slots, t & 31),
+                     buf + rc::fold_ents<P>(slots), t >> 5, t & 31);
+}
+
+//: A FOLD over the whole union of a listed side, `hook(J)` run before list `J`'s steps (fold.cuh's `fold_chunk`, its
+//: rescale applied)
+template <class Hook>
+__device__ __forceinline__ void fold_lists(rc::State<P>& st, const uint8_t* smem,
+                                           const rc::Window& ww, int w, int slots, uint32_t rows,
+                                           int warp, int lane, Hook hook) {
+  const rc::Run run = rc::chunk_runs<P>(smem, ww, rc::kWrite, w, 0, slots, slots, lane);
+  const uint32_t ents = rows + rc::fold_ents<P>(slots);
+  rola::static_for<P::kFoldLists>([&](auto J) {
+    hook(J);
+    const int list = rc::fold_list(warp, J);
+    const rc::ListScale sc = reinterpret_cast<const rc::ListScale*>(smem + P::kScale)[list];
+    rola::static_for<P::kFoldMTiles>([&](auto M) {
+      rola::static_for<4>(
+          [&](auto N) { rola::static_for<4>([&](auto I) { st.acc[J][M][N][I] *= sc.f; }); });
+    });
+    const int n = __shfl_sync(0xffffffffu, run.n, list),
+              to = __shfl_sync(0xffffffffu, run.to, list);
+    rc::steps<P, J>(st, sc.cf, rows, 0, 0, n, lane, [&](int k) {
+      uint2 e;
+      asm volatile("ld.shared.v2.u32 {%0, %1}, [%2];"
+                   : "=r"(e.x), "=r"(e.y)
+                   : "r"(ents + 8u * static_cast<uint32_t>(to + k)));
+      return e;
+    });
+  });
+}
+
 //: FORM 1, OPTION A by hand: a window's maxima, then each image half stored and read out, the fold's rows over the
 //: image once every warp has read it, the drain, the next window's read rows at the area's top, the fold. One chunk a
-//: side (a window that does not fit traps).
+//: side (a window that does not fit traps). FORM 3: the next window's panel zeroed by stores, its entries copied before
+//: the fold, its rows in four slices, one before each of the warp's lists' steps. FORM 4: the window's read buffer
+//: issued at its top (rows, panel by stores, entries), the drain a warp's share inside the fold before its list
+//: `(warp >> 1) & 3` (a scheduler's two warps at different lists). FORM 5: form 4, its fills' loads ahead.
 template <int FORM>
 __global__ __launch_bounds__(rc::kThreads, 1) void window(
     const __grid_constant__ rc::CarryParams p) {
@@ -212,8 +389,10 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
   ops::stage_commit();
   ops::stage_wait<0>();
   ops::rendezvous();
-  read_fill(p, smem, 0, area);
-  ops::stage_commit();
+  if constexpr (FORM < 4) {
+    read_fill(p, smem, 0, area);
+    ops::stage_commit();
+  }
 
 #pragma unroll 1
   for (int w = 0; w < p.windows; ++w) {
@@ -221,6 +400,14 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
     ops::stage_wait<0>();
     ops::rendezvous();
     lap(p, smem, rc::kPhaseLanded);
+    if constexpr (FORM >= 4) {
+      //: THE WINDOW'S READ BUFFER, under the maxima and the first half's stores
+      const Sized r = sized<rc::kRead>(p, smem, w);
+      read_rows<FORM >= 5>(p, smem, w, area + top_of(r.bytes), 0, r.slots);
+      panel_entries<FORM >= 5>(p, smem, w, area + top_of(r.bytes), r.slots);
+      ops::stage_commit();
+      lap(p, smem, rc::kPhaseFill);
+    }
     if (w + 1 < p.windows) stage(p, w + 1, smem);
     ops::stage_commit();
     //: THE DIGIT MAXIMA of the state before the window's writes
@@ -242,6 +429,9 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
         const int t = tid();
         rc::store_batches<P>(st, smem, area, 2 * half, 2 * half + 2, 2 * rc::kBatchPlanes - 1, dexp,
                              t >> 5, t & 31);
+      }
+      if constexpr (FORM >= 4) {
+        if (half == 0) ops::stage_wait<1>();
       }
       ops::rendezvous();
       lap(p, smem, rc::kPhaseStore);
@@ -268,36 +458,84 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
     if (f.bytes > static_cast<int>(top_of(r.bytes))) __trap();
     {
       const int t = tid();
-      rc::fold_fill<P>(p, smem, rc::window_of<P>(p, smem, rc::kWrite, w),
-                       rc::Place{static_cast<int>(blockIdx.y), 0}, w, 0, f.slots, f.slots, area,
-                       t >> 5, t & 31);
+      if constexpr (FORM >= 5) {
+        fold_fill_ahead(p, smem, w, area, f.slots);
+      } else {
+        rc::fold_fill<P>(p, smem, rc::window_of<P>(p, smem, rc::kWrite, w),
+                         rc::Place{static_cast<int>(blockIdx.y), 0}, w, 0, f.slots, f.slots, area,
+                         t >> 5, t & 31);
+      }
     }
     ops::stage_commit();
     lap(p, smem, rc::kPhaseFill);
-    //: THE DRAIN, the panel to `num`
-    rc::drain<P>(p, smem, rc::window_of<P>(p, smem, rc::kRead, w),
-                 rc::Place{static_cast<int>(blockIdx.y), 0}, w, 0, r.slots,
-                 area + top_of(r.bytes) + rc::read_pads<P>(r.slots) + rc::kPadBytes);
-    lap(p, smem, rc::kPhaseDrain);
-    //: THE NEXT WINDOW'S READ ROWS, at the top once every warp has drained (its inputs and the fold's rows landed)
-    ops::stage_wait<0>();
-    ops::rendezvous();
-    lap(p, smem, rc::kPhaseWait);
-    if (w + 1 < p.windows) {
-      if (f.bytes > static_cast<int>(top_of(sized<rc::kRead>(p, smem, w + 1).bytes))) __trap();
-      read_fill(p, smem, w + 1, area);
+    if constexpr (FORM >= 4) {
+      ops::stage_wait<0>();
+      ops::rendezvous();
+      lap(p, smem, rc::kPhaseWait);
+      //: THE FOLD, each warp's share of the drain before its list `warp & 3`
+      {
+        const int t = tid();
+        const rc::Window ww = rc::window_of<P>(p, smem, rc::kWrite, w);
+        if (!ww.listed) __trap();
+        rc::fold_units<P>(smem, ww, w, t >> 5, t & 31);
+        fold_lists(st, smem, ww, w, f.slots, area, t >> 5, t & 31, [&](auto J) {
+          if (((tid() >> 6) & (P::kFoldLists - 1)) == decltype(J)::value)
+            rc::drain<P>(p, smem, rc::window_of<P>(p, smem, rc::kRead, w),
+                         rc::Place{static_cast<int>(blockIdx.y), 0}, w, 0, r.slots,
+                         area + top_of(r.bytes) + rc::read_pads<P>(r.slots) + rc::kPadBytes);
+        });
+      }
+      lap(p, smem, rc::kPhaseFold);
+    } else {
+      //: THE DRAIN, the panel to `num`
+      rc::drain<P>(p, smem, rc::window_of<P>(p, smem, rc::kRead, w),
+                   rc::Place{static_cast<int>(blockIdx.y), 0}, w, 0, r.slots,
+                   area + top_of(r.bytes) + rc::read_pads<P>(r.slots) + rc::kPadBytes);
+      lap(p, smem, rc::kPhaseDrain);
+      //: THE NEXT WINDOW'S READ ROWS, at the top once every warp has drained (its inputs and the fold's rows landed)
+      ops::stage_wait<0>();
+      ops::rendezvous();
+      lap(p, smem, rc::kPhaseWait);
+      const bool next = w + 1 < p.windows;
+      const Sized n = next ? sized<rc::kRead>(p, smem, w + 1) : Sized{0, 0};
+      if (next && f.bytes > static_cast<int>(top_of(n.bytes))) __trap();
+      const uint32_t nbuf = area + top_of(n.bytes);
+      if constexpr (FORM == 1) {
+        if (next) read_fill(p, smem, w + 1, area);
+        ops::stage_commit();
+        lap(p, smem, rc::kPhaseFill);
+        //: THE FOLD, the window's units stepped first
+        {
+          const int t = tid();
+          const rc::Window ww = rc::window_of<P>(p, smem, rc::kWrite, w);
+          rc::fold_units<P>(smem, ww, w, t >> 5, t & 31);
+          rc::fold_chunk<P>(st, true, smem, ww, w, 0, f.slots, f.slots, area,
+                            area + rc::fold_ents<P>(f.slots), t >> 5, t & 31);
+        }
+      } else {
+        //: THE NEXT WINDOW'S PANEL, zeroed by stores, and its entries
+        if (next) panel_entries(p, smem, w + 1, nbuf, n.slots);
+        lap(p, smem, rc::kPhaseFill);
+        //: THE FOLD, the window's units stepped first, the next window's rows a slice before each list
+        {
+          const int t = tid();
+          const rc::Window ww = rc::window_of<P>(p, smem, rc::kWrite, w);
+          if (!ww.listed) __trap();
+          rc::fold_units<P>(smem, ww, w, t >> 5, t & 31);
+          fold_lists(st, smem, ww, w, f.slots, area, t >> 5, t & 31, [&](auto J) {
+            if (next) {
+              constexpr int j = decltype(J)::value;
+              const int s0 = (n.slots * j / P::kFoldLists) & ~7,
+                        s1 = j + 1 == P::kFoldLists ? n.slots
+                                                    : (n.slots * (j + 1) / P::kFoldLists) & ~7;
+              read_rows(p, smem, w + 1, nbuf, s0, s1);
+            }
+          });
+        }
+        ops::stage_commit();
+      }
+      lap(p, smem, rc::kPhaseFold);
     }
-    ops::stage_commit();
-    lap(p, smem, rc::kPhaseFill);
-    //: THE FOLD, the window's units stepped first
-    {
-      const int t = tid();
-      const rc::Window ww = rc::window_of<P>(p, smem, rc::kWrite, w);
-      rc::fold_units<P>(smem, ww, w, t >> 5, t & 31);
-      rc::fold_chunk<P>(st, true, smem, ww, w, 0, f.slots, f.slots, area,
-                        area + rc::fold_ents<P>(f.slots), t >> 5, t & 31);
-    }
-    lap(p, smem, rc::kPhaseFold);
   }
 
   float sum = 0.0f;
@@ -315,6 +553,13 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
     for (int ph = 0; ph < rc::kCarryPhases; ++ph)
       atomicAdd(reinterpret_cast<unsigned long long*>(out + ph), row[ph]);
   }
+}
+
+template <int FORM>
+void launch_form(const Call& c, const rc::CarryParams& p) {
+  window<FORM><<<dim3(static_cast<unsigned>(c.cap.boxes), static_cast<unsigned>(c.cap.bh)),
+                 rc::kThreads, P::kSmemBytes>>>(p);
+  LAB_CHECK(cudaGetLastError());
 }
 
 template <class Launch>
@@ -336,8 +581,11 @@ void form(const lab::Bench& b, Call& c, const char* name, const char* cell, Laun
   });
   const std::string label = std::string(name) + " / " + cell;
   b.record(label, "cycles a CTA-window (busiest warp)", s);
-  for (int ph = 0; ph < rc::kCarryPhases; ++ph)
+  for (int ph = 0; ph < rc::kCarryPhases; ++ph) {
     b.record(label + " / " + kPhases[ph], "cycles a warp-window", lab::Samples{{last.phase[ph]}});
+    b.record(label + " / " + kPhases[ph] + " busiest", "cycles a warp-window",
+             lab::Samples{{last.busiest[ph]}});
+  }
   std::vector<uint32_t> got(c.want.size());
   LAB_CHECK(cudaMemcpy(got.data(), c.num, c.num_bytes, cudaMemcpyDeviceToHost));
   size_t bad = 0;
@@ -366,15 +614,18 @@ int main(int argc, char** argv) {
   b.expect(production, "HMMA", ">=", 1);
   b.exempt(production,
            "the production kernel, the baseline: its budget is tools/budgets/carry.json");
-  const std::string form1 = lab::kernel("carry_window::window", {1});
-  b.expect(form1, "HMMA", ">=", 1);
+  const std::string form1 = lab::kernel("carry_window::window", {1}),
+                    form3 = lab::kernel("carry_window::window", {3}),
+                    form4 = lab::kernel("carry_window::window", {4}),
+                    form5 = lab::kernel("carry_window::window", {5});
   //: the steps themselves are one block each; the spans the gate reads as steps besides them run from a shuffle's cold
   //: fallback, laid out past the epilogue, back into the window loop, over the epilogue's ledger and check adds
-  b.expect(form1, "STEP_GLOBAL", ">=", 0);
-  b.expect(form1, "BSSY", ">=", 0);
-  b.exempt(
-      form1,
-      "a window form compared against the production kernel: its counts set the window's class lines");
+  for (const std::string& k : {form1, form3, form4, form5}) {
+    b.expect(k, "HMMA", ">=", 1);
+    b.expect(k, "STEP_GLOBAL", ">=", 0);
+    b.expect(k, "BSSY", ">=", 0);
+    b.exempt(k, "a window form against the production kernel: its counts set the window's lines");
+  }
   if (b.expect_only) return 0;
   std::string dir;
   int only = -1;
@@ -399,11 +650,23 @@ int main(int argc, char** argv) {
       });
     LAB_CHECK(cudaFuncSetAttribute(window<1>, cudaFuncAttributeMaxDynamicSharedMemorySize,
                                    P::kSmemBytes));
+    LAB_CHECK(cudaFuncSetAttribute(window<3>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                   P::kSmemBytes));
     if (only < 0 || only == 1)
-      form(b, c, "form 1, option A by hand", cell[1], [&](const rc::CarryParams& p) {
-        window<1><<<dim3(static_cast<unsigned>(c.cap.boxes), static_cast<unsigned>(c.cap.bh)),
-                    rc::kThreads, P::kSmemBytes>>>(p);
-        LAB_CHECK(cudaGetLastError());
-      });
+      form(b, c, "form 1, option A by hand", cell[1],
+           [&](const rc::CarryParams& p) { launch_form<1>(c, p); });
+    LAB_CHECK(cudaFuncSetAttribute(window<4>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                   P::kSmemBytes));
+    LAB_CHECK(cudaFuncSetAttribute(window<5>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                   P::kSmemBytes));
+    if (only < 0 || only == 5)
+      form(b, c, "form 5, form 4 with the fills' loads ahead", cell[1],
+           [&](const rc::CarryParams& p) { launch_form<5>(c, p); });
+    if (only < 0 || only == 4)
+      form(b, c, "form 4, A with the read buffer at the top, the drain in the fold", cell[1],
+           [&](const rc::CarryParams& p) { launch_form<4>(c, p); });
+    if (only < 0 || only == 3)
+      form(b, c, "form 3, A with the next rows under the fold", cell[1],
+           [&](const rc::CarryParams& p) { launch_form<3>(c, p); });
   }
 }

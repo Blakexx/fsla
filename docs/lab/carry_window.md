@@ -23,21 +23,40 @@ The forms:
   fold's rows over the image once every warp has read it, the drain, the next window's read rows at the area's top, the
   fold. One chunk a side; async copies by `cp.async` groups, a CTA barrier at each hand-off. No address is held across
   phases (the thread index re-read at each), and the phase clock holds no register.
+- 3, form 1 with the next window's panel zeroed by stores, its entries before the fold, its rows in four slices, one
+  before each of a warp's lists in the fold.
+- 4, form 1 with the window's read buffer issued at its top (under the maxima and the first half's stores, the panel by
+  stores), and the drain inside the fold, a warp's share before its list `(warp >> 1) & 3`.
+- 5, form 4 with its fills' loads ahead (a thread's four slots' tokens loaded before any copy) and each warp's entries
+  copied in one pass over its four lists' runs.
 
-Cycles a CTA-window, sm_86 (RTX 3080 Ti), median of 5:
+Cycles a CTA-window, sm_86 (RTX 3080 Ti), median of 7 (a phase's column is the mean warp's; with a barrier at both ends
+it is the slowest warp's work):
 
 | | total | landed | maxima | store | readout | drain | fill | fold | wait |
 |---|---|---|---|---|---|---|---|---|---|
-| production, alt-k4 | 25,902 | 3,905 | 1,751 | 4,012 | 3,567 | 1,888 | 3,959 | 3,909 | 2,907 |
-| form 1, alt-k4 | 17,556 | 1,065 | 1,847 | 2,507 | 3,214 | 1,427 | 4,032 | 3,145 | 292 |
-| production, thinned | 18,478 | 3,372 | 1,796 | 2,218 | 2,085 | 697 | 2,682 | 2,575 | 3,041 |
-| form 1, thinned | 12,900 | 1,113 | 1,842 | 2,490 | 2,089 | 406 | 2,719 | 1,862 | 264 |
+| production, alt-k4 | 25,904 | 3,902 | 1,750 | 4,007 | 3,572 | 1,889 | 3,958 | 3,912 | 2,907 |
+| form 1, alt-k4 | 17,554 | 1,073 | 1,847 | 2,506 | 3,215 | 1,427 | 4,034 | 3,145 | 290 |
+| form 3, alt-k4 | 17,859 | 1,099 | 1,832 | 2,492 | 3,177 | 1,444 | 3,439 | 4,049 | 299 |
+| form 4, alt-k4 | 17,047 | 761 | 1,884 | 2,433 | 3,265 | -- | 3,984 | 4,201 | 553 |
+| form 5, alt-k4 | 16,645 | 734 | 1,791 | 2,477 | 3,233 | -- | 3,730 | 4,136 | 544 |
+| production, thinned | 18,463 | 3,355 | 1,796 | 2,222 | 2,084 | 697 | 2,679 | 2,568 | 3,044 |
+| form 1, thinned | 12,876 | 1,115 | 1,842 | 2,489 | 2,090 | 406 | 2,718 | 1,862 | 261 |
+| form 5, thinned | 12,171 | 880 | 1,776 | 2,520 | 2,113 | -- | 2,416 | 1,937 | 514 |
 
-The total is the busiest warp's; a phase is the mean warp's. Live registers (`tools/life_ranges.py`): production peaks
-at 251 of 253 usable and holds ~198 at an item start; form 1 peaks at 233 in the readout's tiles, its fold steps at most
-188, its fills 184-210, its base ~157-165. Static instructions: 6,215 against 11,736.
+Live registers (`tools/life_ranges.py`): production peaks at 251 of 253 usable and holds ~198 at an item start; form 1
+peaks at 233 in the readout's tiles, its fold steps at most 188, its fills 184-210, its base ~157-165; form 5 is
+allocated 223. Static instructions: form 1 6,215 against 11,736.
 
-What it decides: the item machine costs ~8.3K a CTA-window at alt-k4 (its waits, its landed checks and its per-item
-glue); a window written by hand from the same parts recovers it and holds ~40 fewer registers at every phase. The fills
-(4.0K a warp-window, the copies' issue) are now the largest phase, then the store and the maxima: the next forms move
-the fills under the fold, zero the panel by stores, and post the maxima in the fold's tail.
+What it decides:
+- The item machine costs ~8.3K a CTA-window at alt-k4 (its waits, its landed checks, its per-item glue); a window
+  written by hand from the same parts recovers it and holds ~40 fewer registers at every phase.
+- The window is bound by latency, not issue: form 1 executes ~3.3K warp instructions a warp-window in 17.6K cycles
+  (`lab.py ledger`), and the stall samples are "wait" (a fixed-latency dependence) and "short_sb" (a shared-memory
+  result) in every phase, issue ~20%. Two warps a scheduler hide nothing a part leaves serial; the barriers themselves
+  are ~6% of the samples.
+- Moving work under the fold hides little while the fold is serial too: the rows' slices in form 3 and the drain in
+  form 4 each moved most of their cost into the fold (+0.9K, +1.1K). Loading a fill's tokens ahead and copying a
+  warp's entries in one pass took 0.25K off the fills.
+- Each part runs well over the lab stand-in the design was priced on (`digit_box`): the readout 3.2K (2.1K), the fold
+  ~3.1K (1.9K), the two halves' stores 2.5K (~0.4K), the maxima 1.8K (~0.4K, posts and a barrier).
