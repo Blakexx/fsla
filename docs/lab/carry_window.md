@@ -29,6 +29,8 @@ The forms:
   stores), and the drain inside the fold, a warp's share before its list `(warp >> 1) & 3`.
 - 5, form 4 with its fills' loads ahead (a thread's four slots' tokens loaded before any copy) and each warp's entries
   copied in one pass over its four lists' runs.
+- 6, form 5 with each half's stores as independent chains (`store_half`: a lane's units and exponents read first, its
+  eight scales formed, then its 32 pairs scaled, packed and stored).
 
 Each form is read twice: its launch timed with every clock off -- a lab form's warps stamping only their start and end,
 so its span in cycles is free of the SM's clock (which moves ~9% between processes here), the production kernel's
@@ -43,9 +45,11 @@ microsecond in the same run:
 | form 1, alt-k4 | 660 | 0.73 | 16,213 | 18,229 | 1,036 | 1,918 | 2,115 | 3,142 | 1,409 | 3,675 | 3,099 | 1,813 |
 | form 3, alt-k4 | 682 | 0.76 | 16,699 | 18,703 | 1,111 | 1,910 | 2,106 | 3,144 | 1,467 | 3,110 | 4,029 | 1,815 |
 | form 4, alt-k4 | 664 | 0.74 | 16,225 | 18,031 | 454 | 1,895 | 2,164 | 3,238 | -- | 3,975 | 4,207 | 2,078 |
+| form 6, alt-k4 | -- | 0.70 | 15,463 | -- | -- | -- | 1,928 | -- | -- | -- | -- | -- |
 | form 5, alt-k4 | 634 | 0.70 | 15,572 | 17,379 | 355 | 1,798 | 2,100 | 3,154 | -- | 3,683 | 4,133 | 2,116 |
 | production, thinned | 546 | 1.00 | ~15,140 | 18,503 | 3,385 | 1,794 | 2,225 | 2,089 | 696 | 2,684 | 2,587 | 3,045 |
 | form 1, thinned | 414 | 0.76 | 11,610 | 13,580 | 1,147 | 1,922 | 2,116 | 2,035 | 382 | 2,364 | 1,822 | 1,770 |
+| form 6, thinned | -- | 0.73 | 11,122 | -- | -- | -- | 1,953 | -- | -- | -- | -- | -- |
 | form 5, thinned | 403 | 0.74 | 11,194 | 12,929 | 490 | 1,732 | 2,127 | 2,039 | -- | 2,456 | 1,952 | 2,118 |
 
 A phase is the mean warp's cycles with the clock on; "wait" is the warps' time at the barriers that end the maxima, the
@@ -68,3 +72,9 @@ What it decides:
   warp's entries in one pass took 0.25K off the fills.
 - Each part runs well over the lab stand-in the design was priced on (`digit_box`): the readout 3.2K (2.1K), the fold
   ~3.1K (1.9K), the two halves' stores 2.5K (~0.4K), the maxima 1.8K (~0.4K, posts and a barrier).
+- The window is mostly fixed cost: the thinned cell, with 1/16 of the entries, still costs ~11.1K of alt-k4's ~15.5K
+  (form 6), so ~70% of the window at nl64k-alt-k4 does not shrink with its writes. Form 6 executes ~2,980 warp
+  instructions a warp-window with its clock off (~6K cycles of issue at two warps a scheduler), against ~80 MMAs.
+- The stores' floor is the hand-off's format, not their order: chained, they run ~0.17K under form 5's; their ~400
+  instructions are near the ~260 their scaling needs (each value to its digit's exponent, then packed to f16 and
+  stored), where `digit_box`'s stand-in stored bf16 straight from the accumulators (~130).

@@ -368,6 +368,44 @@ __device__ __forceinline__ void fold_fill_ahead(const rc::CarryParams& p, uint8_
                      buf + rc::fold_ents<P>(slots), t >> 5, t & 31);
 }
 
+//: A HALF'S STORES (parts.cuh's `store_batches` for batches `2 HALF` and `2 HALF + 1`, the image's 16 planes): a lane's
+//: four lists' units and two digits' exponents read first, its eight scales formed, then its 32 pairs scaled, packed
+//: and stored as independent chains
+template <int HALF>
+__device__ __forceinline__ void store_half(const rc::State<P>& st, const uint8_t* smem,
+                                           uint32_t image, int dexp) {
+  const int t = tid(), warp = t >> 5, g = (t & 31) >> 2, q = t & 3;
+  const volatile rc::UnitBook* const book =
+      reinterpret_cast<const volatile rc::UnitBook*>(smem + P::kBook);
+  int u[P::kFoldLists], e[2];
+  rola::static_for<P::kFoldLists>([&](auto J) { u[J] = book[warp + rc::kWarps * J].unit; });
+  rola::static_for<2>(
+      [&](auto H) { e[H] = __shfl_sync(0xffffffffu, dexp, 16 * HALF + 8 * H + g); });
+  uint32_t base;
+  asm volatile("mov.u32 %0, %1;" : "=r"(base) : "r"(rc::unit_of(warp, 0, g)));
+  float sc[P::kFoldLists][2];
+  uint32_t at[2][4];
+  rola::static_for<2>([&](auto H) {
+    rola::static_for<P::kFoldLists>(
+        [&](auto J) { sc[J][H] = rc::pow2(min(max(u[J] + rc::kImageTop - e[H], -126), 127)); });
+    rola::static_for<4>([&](auto N) {
+      at[H][N] = image + 4u * q + 16u * (base ^ static_cast<uint32_t>(N))
+                 + static_cast<uint32_t>((8 * H + g) * rc::kPlaneBytes);
+    });
+  });
+  rola::static_for<P::kFoldLists>([&](auto J) {
+    rola::static_for<2>([&](auto H) {
+      rola::static_for<4>([&](auto N) {
+        const __half2 h = __floats2half2_rn(st.acc[J][HALF][N][2 * H] * sc[J][H],
+                                            st.acc[J][HALF][N][2 * H + 1] * sc[J][H]);
+        asm volatile("st.shared.u32 [%0], %1;" ::"r"(at[H][N] + 512u * J),
+                     "r"(*reinterpret_cast<const uint32_t*>(&h))
+                     : "memory");
+      });
+    });
+  });
+}
+
 //: A FOLD over the whole union of a listed side, `hook(J)` run before list `J`'s steps (fold.cuh's `fold_chunk`, its
 //: rescale applied)
 template <class Hook>
@@ -402,7 +440,8 @@ __device__ __forceinline__ void fold_lists(rc::State<P>& st, const uint8_t* smem
 //: the fold, its rows in four slices, one before each of the warp's lists' steps. FORM 4: the window's read buffer
 //: issued at its top (rows, panel by stores, entries), the drain a warp's share inside the fold before its list
 //: `(warp >> 1) & 3` (a scheduler's two warps at different lists). FORM 5: form 4, its fills' loads ahead. CLOCK: the
-//: phase trace compiled in (the attribution) or out (the timing).
+//: phase trace compiled in (the attribution) or out (the timing). FORM 6: form 5 with each half's stores in
+//: independent chains (`store_half`).
 template <int FORM, bool CLOCK>
 __global__ __launch_bounds__(rc::kThreads, 1) void window(
     const __grid_constant__ rc::CarryParams p) {
@@ -469,8 +508,16 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
       }
       {
         const int t = tid();
-        rc::store_batches<P>(st, smem, area, 2 * half, 2 * half + 2, 2 * rc::kBatchPlanes - 1, dexp,
-                             t >> 5, t & 31);
+        if constexpr (FORM >= 6) {
+          if (half == 0) {
+            store_half<0>(st, smem, area, dexp);
+          } else {
+            store_half<1>(st, smem, area, dexp);
+          }
+        } else {
+          rc::store_batches<P>(st, smem, area, 2 * half, 2 * half + 2, 2 * rc::kBatchPlanes - 1,
+                               dexp, t >> 5, t & 31);
+        }
       }
       if constexpr (FORM >= 4) {
         if (half == 0) ops::stage_wait<1>();
@@ -712,7 +759,7 @@ int main(int argc, char** argv) {
            "the production kernel, the baseline: its budget is tools/budgets/carry.json");
   //: each form's kernels, its clock in and out; the steps themselves are one block each, the spans the gate reads as
   //: steps besides them run from a shuffle's cold fallback, laid out past the epilogue, back into the window loop
-  for (int f : {1, 3, 4, 5}) {
+  for (int f : {1, 3, 4, 5, 6}) {
     const std::string k = "carry_window::window<\\(int\\)" + std::to_string(f) + ",";
     b.expect(k, "HMMA", ">=", 1);
     b.expect(k, "STEP_GLOBAL", ">=", 0);
@@ -753,6 +800,9 @@ int main(int argc, char** argv) {
     if (only < 0 || only == 4)
       form(b, c, "form 4, A with the read buffer at the top, the drain in the fold", cell[1],
            [&](const rc::CarryParams& p, bool on) { launch_either<4>(c, p, on); });
+    if (only < 0 || only == 6)
+      form(b, c, "form 6, form 5 with the stores in chains", cell[1],
+           [&](const rc::CarryParams& p, bool on) { launch_either<6>(c, p, on); });
     if (only < 0 || only == 5)
       form(b, c, "form 5, form 4 with the fills' loads ahead", cell[1],
            [&](const rc::CarryParams& p, bool on) { launch_either<5>(c, p, on); });
