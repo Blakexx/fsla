@@ -12,7 +12,7 @@ namespace rola::carry {
 constexpr int kWarps = 8;
 constexpr int kThreads = kWarps * 32;
 constexpr int kWindow = 512;
-//: A LIST'S BOUNDARIES: its entries before every 64th union slot. -- see docs/internals/carry/carry.md#lists
+//: A LIST'S BOUNDARIES (every 64th union slot) in a group's prefix rows. -- see docs/internals/carry/carry.md#lists
 constexpr int kListBound = 64;
 constexpr int kListAt = kWindow / kListBound;
 constexpr int kListCap = kWindow;
@@ -20,6 +20,7 @@ constexpr int kMaxLevels = 4;
 //: THE BOX, every card's: 32 lists (the write side's list level) x 32 digits (the read side's) x 32 channels.
 constexpr int kBoxLists = 32, kBoxDigits = 32, kBoxChannels = 32;
 constexpr int kStateValues = kBoxLists * kBoxDigits * kBoxChannels;
+constexpr int kPreRows = kBoxLists + 1;
 //: A WINDOW'S PLAN for a box class: its head and items. -- see docs/internals/carry/schedule.md#items
 constexpr int kPlanItems = 3 + 3 * kListAt;
 constexpr int kPlanBytes = (16 + 8 * kPlanItems + 15) / 16 * 16;
@@ -59,7 +60,7 @@ struct SideLists {
   const uint16_t* union_tok;
   const int32_t* union_count;
   const uint2* entries;
-  const uint16_t* bounds;
+  const uint16_t* pre;
   const int32_t* totals;
   int width, groups;
 };

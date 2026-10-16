@@ -100,7 +100,7 @@ constexpr bool least_plan_fits() {
 }
 
 //: A SIDE'S COUNTS in a window: its union's slots and `S[j]`, its box lists' entries before union slot `64 (j + 1)`
-//: (the prefix rows' totals row); every window token and no entries where the side has no list level.
+//: (the group's exact totals); every window token and no entries where the side has no list level.
 //: -- see docs/internals/carry/schedule.md#totals
 __device__ __forceinline__ int side_counts(const SideLists& l, bool listed, int tokens,
                                            int64_t group, int (&S)[kListAt]) {

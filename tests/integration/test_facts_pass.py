@@ -293,17 +293,17 @@ def _lists_want(routes, values, layout, read_statics, write_statics, got, read_r
 
 
 def _assert_lists(got: list_model.Lists, want: list_model.Lists):
-    """Every defined slot of the pass's lists is the model's: the unions and their extents, each list's boundaries and
-    the groups' totals, and each list to its end -- gathered on the device, so nothing past an end (undefined by the
+    """Every defined slot of the pass's lists is the model's: the unions and their extents, the boundaries' prefix rows
+    and the groups' totals, and each list to its end -- gathered on the device, so nothing past an end (undefined by the
     contract) is read."""
     assert torch.equal(got.count.cpu().long(), want.count)
     assert torch.equal(got.union.cpu().long(), want.union)
-    bounds = got.bounds.long() & 0xFFFF
-    assert torch.equal(bounds.cpu(), want.bounds)
+    pre = got.pre.long() & 0xFFFF
+    assert torch.equal(pre.cpu(), want.pre)
     assert torch.equal(got.totals.cpu().long(), want.totals)
     BH, windows, width = got.entries.shape[:3]
-    lengths = bounds[..., -1].reshape(BH, windows, -1)[..., :width]
-    end = (torch.arange(got.entries.shape[3], device=bounds.device) < lengths[..., None])[..., None]
+    lengths = ((pre[..., 1:, -1] - pre[..., :-1, -1]) & 0xFFFF).reshape(BH, windows, -1)[..., :width]
+    end = (torch.arange(got.entries.shape[3], device=pre.device) < lengths[..., None])[..., None]
     end = end.expand_as(got.entries)
     assert torch.equal(got.entries[end].cpu(), want.entries[end.cpu()])
 

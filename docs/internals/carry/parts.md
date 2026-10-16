@@ -21,11 +21,11 @@ window index, its statics from the tenant.
 ## Lists in
 
 A window ahead (`carry_kernel.md#staging`), into the window's parity of the tenants: a side's union tokens whole
-(512 slots, 1 KB, 64 copies), its group's lists' boundaries (32 rows, a 16-byte copy each), its totals (two copies)
-and its count (one 4-byte copy).
+(512 slots, 1 KB, 64 copies), its group's boundaries in prefix form (33 rows, a 16-byte copy each) and its count
+(one 4-byte copy); the planner alone reads the exact totals.
 `facts_in` copies the write lists' exponent pairs (128 bytes) and the window's token units (512 bytes). `union_of`,
-`bounds_of`, `totals_of` and `slots_of` read a window's tenants back (`bounds_of` forms its parity at each use, so its
-offset is never held across a window's items); `chunk_cols` names a chunk's columns in the boundaries.
+`pre_of` and `slots_of` read a window's tenants back (`pre_of` forms its parity at each use, so its offset is never
+held across a window's items); `chunk_cols` names a chunk's columns in the boundaries.
 
 <a id="swizzle"></a>
 ## The pool rows' swizzle
@@ -52,10 +52,11 @@ part sits at the chunk's own slots (`read_pads`, `read_ents`, `fold_ents`; `sche
 <a id="entries"></a>
 ## The entries
 
-A buffer holds its chunk's entries as the box lists' runs in list order: `chunk_runs` gives lane `l` list `l`'s first
-entry of the chunk and its count by two loads of its boundaries (`bound_at`), and its place (the box's lists' counts
-before it) by a scan of the counts over the warp, the same in every warp; `entries_fill` copies a warp's own lists' runs (`warp + 8 j`), 8 bytes a lane. A consumer takes its
-list's place and count from its own scan, so no warp waits on another for them.
+A buffer holds its chunk's entries as the group's lists' runs in list order: `chunk_runs` gives lane `l` list `l`'s
+first entry of the chunk, its count and its place (the group's lists' counts before it) by four loads of the prefix
+rows (`pre_at`), each a difference within the chunk modulo 2^16, the same in every warp; `entries_fill` copies a warp's
+own lists' runs (`warp + 8 j`), 8 bytes a lane. A consumer takes its list's place and count from its own loads, so no
+warp waits on another for them.
 
 <a id="maxima"></a>
 ## The digit maxima

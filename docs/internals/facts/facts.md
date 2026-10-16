@@ -165,12 +165,13 @@ composed carry first.
 ## The lists out
 
 Per list (a digit of the list level), its tokens in token order -- slot order, the slots being ranks -- with no pads,
-at most 512. Its BOUNDARIES (`kListAt` = 8) are its entries before slot `64 (j + 1)`, the last its length, out a list
-(`bounds`, int16, a row of 8 a list, each at most a union's slots) beside the group's TOTALS (`totals`, int32, each
-boundary summed over the group's lists): any chunk of the union whose bounds are multiples of 64 finds each list's run
-by two loads and its place among the lists' runs by a scan of the runs, and the totals are the carry's planner's
-counts. A sum over a group's lists passes 16 bits where a union holds more than 2,047 slots (grouped queries' rows), a
-list's own boundary never; no chunk size of the carry's reaches this pass (`carry/carry.cuh` `kListBound`; the carry
+at most 512 a head. Its BOUNDARIES (`kListAt` = 8 a head) are its entries before slot `64 (j + 1)`, the last its
+length, out in PREFIX FORM over the group's lists (`pre`, a row of 8 a list and a row of the group's after them: row
+`l` the boundaries of lists `< l` summed) modulo 2^16, beside the group's exact TOTALS (`totals`, int32, the planner's
+counts). Any chunk of the union whose bounds are multiples of 64 finds each list's run and its place among the lists'
+runs by four loads, each a difference of two columns: a chunk's entries fit in shared memory, fewer than 2^16, so the
+differences are exact although a union of grouped queries' rows passes 16 bits. A scan of the runs per chunk instead
+cost the window 4% (2026-10-16); no chunk size of the carry's reaches this pass (`carry/carry.cuh` `kListBound`; the carry
 plans its chunks per window, `docs/internals/carry/carry.md#lists`).
 
 An entry is 8 bytes, the carry's `uint2`:
@@ -189,9 +190,9 @@ counts its tokens before the head's eight bounds and its total (a popcount of ea
 scan of those counts (nine u16 fields in five registers) gives, at the list's last lane, the list's boundaries --
 lane `s` posts boundary `s` to the CTA's table past the list's entries in the heads before, lane 7 also its entries
 through the head -- and each lane's tokens before its own, its first place. After the walks a barrier, and warp 0
-writes each list's boundaries at the head's columns `k0 ..` (a later head's own columns overwrite the ones past this
-head's rows; the last head's entries through it fill every column past its eight) and sums each column over the lists
-into the group's totals (`bounds_out`). On the write side a walk over the lane's entries
+writes the head's columns `k0 ..` (a later head's own columns overwrite the ones past this head's rows; the last
+head's entries through it fill every column past its eight), lane `c` column `k0 + c` in prefix form down the lists and
+its sum, the group's total (`bounds_out`). On the write side a walk over the lane's entries
 takes the list maxima, and their exponents. A walk then writes the lane's entries at consecutive places from its
 first, each's slot `pre + popc(union word & below)` from the lane's two union words and their ranks before.
 
@@ -233,7 +234,7 @@ digit past a level's rows.
 THE LINE (ruled 2026-10-12, restated 2026-10-13): the whole pass at <= 1.15x its required bytes' DRAM floor on the
 lab's `facts_block` cell (rows `[4 level-sides, 65,536, 4, 256]` u8, 268 MB, k live digits a token-head; the write side
 lists level 0 and the read side level 1, the other level of each voted). Its required bytes -- the rows, the columns,
-the words and tile unions, every list's entries, the lists' boundaries, the groups' totals, union and extent, the
+the words and tile unions, every list's entries, the boundaries' prefix rows, the groups' totals, union and extent, the
 exponents, the factor products and
 gains -- are 398 µs at k 4 and 455 µs at k 16 at the lab's flat read (854 GB/s); the line was set at 516 and 665 µs
 from the colored lists' larger outputs and stands.

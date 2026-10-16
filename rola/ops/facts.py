@@ -109,7 +109,7 @@ def _lists(BH: int, windows: int, width: int, device, heads: int = 1) -> list_mo
 
     return list_model.Lists(
         entries=empty(BH, windows, width, heads * list_model.LIST_CAP, 4),
-        bounds=empty(BH, windows, groups, GROUP_DIGITS, heads * list_model.LIST_AT),
+        pre=empty(BH, windows, groups, list_model.PRE_ROWS, heads * list_model.LIST_AT),
         totals=empty(BH, windows, groups, heads * list_model.LIST_AT, dtype=torch.int32),
         union=empty(BH, windows, groups, heads * WINDOW), count=empty(BH, windows, groups, dtype=torch.int32))
 

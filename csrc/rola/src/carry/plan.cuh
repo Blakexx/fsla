@@ -20,9 +20,8 @@ enum CarryBarrier : int { kBarStaged, kBarNext, kBarLanded, kBarCount = kBarLand
 struct Tenants {
   static constexpr int kUnion = 0;
   static constexpr int kCount = kUnion + 2 * 2 * kWindow * 2;
-  static constexpr int kBounds = kCount + 16;
-  static constexpr int kTotals = kBounds + 2 * 2 * kBoxLists * kListAt * 2;
-  static constexpr int kWriteExp = kTotals + 2 * 2 * kListAt * 4;
+  static constexpr int kPre = kCount + 16;
+  static constexpr int kWriteExp = kPre + 2 * 2 * kPreRows * kListAt * 2;
   static constexpr int kUnits = kWriteExp + 2 * kBoxLists * 4;
   static constexpr int kBook = kUnits + 2 * kWindow;
   static constexpr int kScale = kBook + kBoxLists * 8;

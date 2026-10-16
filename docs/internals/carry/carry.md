@@ -18,8 +18,9 @@ state never leaves the registers inside a call; the readout reads an f16 image o
 - THE BOX, every card's: `kBoxLists = 32` lists (the write side's list level) x `kBoxDigits = 32` digits (the read
   side's) x `kBoxChannels = 32` channels, `kStateValues` = 32,768 values = 256 lanes x 128 fp32 registers.
 - `kListBound = 64`, `kListAt = 8`: a list's boundaries, its entries before every 64th union slot (the last its
-  length), so the carry chunks a union at any multiple of 64 the facts pass never sees, out a row a list beside the
-  group's totals; `kListCap = kWindow` entries a list.
+  length), so the carry chunks a union at any multiple of 64 the facts pass never sees, out in prefix form over the
+  group's lists modulo 2^16 (`kPreRows = 33`: a row a list, then the group's) beside the group's exact totals;
+  `kListCap = kWindow` entries a list.
 - `kPlanItems = 27`, `kPlanBytes = 240`: a window's plan for a box class, its head and its items (`schedule.md#items`);
   `kCandidates = 60`, the named forms (`schedule.md#planner`).
 - `kSliceBytes = 64`: a level's slice in a pool row, the box's 32 digits at f16.

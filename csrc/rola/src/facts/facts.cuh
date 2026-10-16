@@ -74,8 +74,8 @@ constexpr int kStep = 8;
 
 enum FactsPhase : int { kPhaseLoad, kPhaseVote, kPhaseRanks, kPhaseLists, kFactsPhases };
 
-//: THE CTA'S SHARED MEMORY, by offset: the window, bit tile, columns, union words, bounds' tokens, warps' maxima, lists'
-//: boundaries and the group's totals. -- see docs/internals/facts/facts.md#shared-memory
+//: THE CTA'S SHARED MEMORY, by offset: the window, the bit tile, the columns, the union's words, each boundary's first
+//: token, the warps' maxima, a head's lists' boundaries. -- see docs/internals/facts/facts.md#shared-memory
 struct FactsSmem {
   static constexpr int kWin = 0;
   static constexpr int kTile = kWin + kWindowTokens * kGroupDigits;
@@ -84,20 +84,19 @@ struct FactsSmem {
   static constexpr int kBound = kUword + kWindowWords * 4;
   static constexpr int kWmax = kBound + kListAt * 4;
   static constexpr int kTable = kWmax + kFactsWarps * 8;
-  static constexpr int kTotals = kTable + kGroupDigits * (kListAt + 1) * 2;
-  static constexpr int kBytes = kTotals + (kListAt + 1) * 4 + 12;
+  static constexpr int kBytes = kTable + kGroupDigits * (kListAt + 1) * 2;
 };
 
 static_assert(FactsSmem::kTile % 16 == 0 && FactsSmem::kCols % 16 == 0
                   && FactsSmem::kUword % 16 == 0 && FactsSmem::kWmax % 8 == 0
-                  && FactsSmem::kTable % 16 == 0 && FactsSmem::kTotals % 16 == 0,
+                  && FactsSmem::kTable % 16 == 0,
               "each tenant on its access's alignment");
 
-//: A SIDE'S LISTS OUT at its list level: entries, lists' boundaries, groups' totals, the union by slot, its extent.
+//: A SIDE'S LISTS OUT at its list level: entries, prefix rows (mod 2^16), exact totals, the union by slot, its extent.
 //: -- see docs/internals/facts/facts_api.md#rola-facts-forward
 struct ListsOut {
   uint2* entries;
-  uint16_t* bounds;
+  uint16_t* pre;
   int32_t* totals;
   uint16_t* union_tok;
   int32_t* union_count;

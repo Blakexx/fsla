@@ -7,9 +7,9 @@ chunks and buffers -- the window's plan places in the area at run time (`schedul
 <a id="tenants"></a>
 ## The persistent tenants
 
-`Tenants` holds what lives across the window, 10,880 bytes on every card and arm:
+`Tenants` holds what lives across the window, 10,752 bytes on every card and arm:
 
-- each side's union tokens (1 KB), count, group's lists' boundaries (512 bytes) and totals, two windows' each by
+- each side's union tokens (1 KB), count and group's boundaries in prefix form (528 bytes), two windows' each by
   parity: a
   window's are copied while the window before it is still read;
 - the write lists' exponent pairs and the tokens' units, by parity;

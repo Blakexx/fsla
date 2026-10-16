@@ -196,7 +196,8 @@ template <int Side>
 __device__ __forceinline__ Sized sized(const rc::CarryParams& p, const uint8_t* smem, int w) {
   const rc::Window win = rc::window_of<P>(p, smem, Side, w);
   const int slots = rc::slots_of<P>(smem, win, Side, w);
-  const int entries = win.listed ? rc::totals_of<P>(smem, Side, w)[rc::kListAt - 1] : 0;
+  const int entries =
+      win.listed ? rc::pre_at(rc::pre_of<P>(smem, Side, w), rc::kBoxLists, rc::kListAt - 1) : 0;
   return Sized{slots, Side == rc::kRead ? rc::read_bytes<P>(slots, entries)
                                         : rc::fold_bytes<P>(slots, entries)};
 }
