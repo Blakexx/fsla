@@ -39,14 +39,18 @@ inline CarryForm carry_form() {
 //: THE GRIDS: the plan pass, a block a (box class, batch-head) and a thread a window of a tile; then the carry, one
 //: CTA a (box, batch-head), the CTA the SM. -- see docs/internals/carry/carry_arm.md#launch
 template <class Arm>
-inline cudaError_t carry_launch(const CarryParams& p, int boxes, int bh, cudaStream_t stream) {
+inline cudaError_t carry_launch(const CarryParams& p0, int boxes, int bh, cudaStream_t stream) {
+  const int bytes = carry_form<Arm>().smem_bytes;
+  if (bytes == 0) return cudaErrorInvalidDevice;
+  //: the call's read tables on the device's card, and an area that holds the least plan
+  CarryParams p = p0;
+  p.tables = tables_of(p0.tables.heads, bytes);
+  if (!least_plan_fits<Plan<Arm>>(p.tables.area)) return cudaErrorInvalidConfiguration;
   const int classes = (p.read_lists.groups > 0 ? p.read_lists.groups : 1)
                       * (p.write_lists.groups > 0 ? p.write_lists.groups : 1);
   window_plan_kernel<Arm>
       <<<dim3((unsigned)classes, (unsigned)bh), (unsigned)kPlanThreads, 0, stream>>>(p);
   const auto fn = carry_kernel<Arm>;
-  const int bytes = carry_form<Arm>().smem_bytes;
-  if (bytes == 0) return cudaErrorInvalidDevice;
   static bool configured = false;
   if (!configured) {
     const cudaError_t e =

@@ -88,6 +88,8 @@ inline Call load(const std::string& dir) {
     std::fprintf(stderr, "carry_window: the readout's output was not moved to its copy\n");
     std::exit(1);
   }
+  //: the read tables on this card, as the production launch lays them out (the capture precedes that)
+  c.cap.p.tables = rc::tables_of(c.cap.p.tables.heads, P::kSmemBytes);
   return c;
 }
 
@@ -196,8 +198,9 @@ template <int Side>
 __device__ __forceinline__ Sized sized(const rc::CarryParams& p, const uint8_t* smem, int w) {
   const rc::Window win = rc::window_of<P>(p, smem, Side, w);
   const int slots = rc::slots_of<P>(smem, win, Side, w);
-  const int entries =
-      win.listed ? rc::pre_at(rc::pre_of<P>(smem, Side, w), rc::kBoxLists, rc::kListAt - 1) : 0;
+  const int entries = win.listed ? rc::pre_at(rc::pre_of<P>(p, smem, Side, w), rc::kBoxLists,
+                                              rc::kListAt - 1, rc::kListAt)
+                                 : 0;
   return Sized{slots, Side == rc::kRead ? rc::read_bytes<P>(slots, entries)
                                         : rc::fold_bytes<P>(slots, entries)};
 }
@@ -271,7 +274,7 @@ __device__ __forceinline__ void panel_entries(const rc::CarryParams& p, uint8_t*
                  : "memory");
   const rc::Window rw = rc::window_of<P>(p, smem, rc::kRead, w);
   if (!rw.listed) return;
-  const rc::Run run = rc::chunk_runs<P>(smem, rw, rc::kRead, w, 0, slots, slots, t & 31);
+  const rc::Run run = rc::chunk_runs<P>(p, smem, rw, rc::kRead, w, 0, slots, slots, t & 31);
   if constexpr (Ahead) {
     entries_ahead<P>(p, p.read_lists, rw, w, run, buf + rc::read_ents<P>(slots), t >> 5, t & 31);
   } else {
@@ -346,10 +349,10 @@ __device__ __forceinline__ void read_rows(const rc::CarryParams& p, uint8_t* sme
   const uint32_t at = buf + static_cast<uint32_t>(s0 * P::kReadRow);
   if constexpr (Ahead) {
     fill_ahead<P::kReadFactors, false>(addr.slices[rc::kRead], nullptr, 0,
-                                       rc::union_of<P>(smem, rc::kRead, w), rw, s0, s1 - s0, at);
+                                       rc::union_of<P>(p, smem, rc::kRead, w), rw, s0, s1 - s0, at);
   } else {
     rc::fill<P::kReadFactors, false>(addr.slices[rc::kRead], nullptr, 0,
-                                     rc::union_of<P>(smem, rc::kRead, w), rw, s0, s1 - s0, at);
+                                     rc::union_of<P>(p, smem, rc::kRead, w), rw, s0, s1 - s0, at);
   }
 }
 
@@ -360,11 +363,11 @@ __device__ __forceinline__ void fold_fill_ahead(const rc::CarryParams& p, uint8_
   const rc::Window ww = rc::window_of<P>(p, smem, rc::kWrite, w);
   fill_ahead<P::kFoldFactors, true>(addr.slices[rc::kWrite], addr.values,
                                     static_cast<int>(p.values.st),
-                                    rc::union_of<P>(smem, rc::kWrite, w), ww, 0, slots, buf);
+                                    rc::union_of<P>(p, smem, rc::kWrite, w), ww, 0, slots, buf);
   const int t = tid();
   if (ww.listed)
     entries_ahead<P>(p, p.write_lists, ww, w,
-                     rc::chunk_runs<P>(smem, ww, rc::kWrite, w, 0, slots, slots, t & 31),
+                     rc::chunk_runs<P>(p, smem, ww, rc::kWrite, w, 0, slots, slots, t & 31),
                      buf + rc::fold_ents<P>(slots), t >> 5, t & 31);
 }
 
@@ -412,7 +415,7 @@ template <class Hook>
 __device__ __forceinline__ void fold_lists(rc::State<P>& st, const uint8_t* smem,
                                            const rc::Window& ww, int w, int slots, uint32_t rows,
                                            int warp, int lane, Hook hook) {
-  const rc::Run run = rc::chunk_runs<P>(smem, ww, rc::kWrite, w, 0, slots, slots, lane);
+  const rc::Run run = rc::chunk_runs<P>(p, smem, ww, rc::kWrite, w, 0, slots, slots, lane);
   const uint32_t ents = rows + rc::fold_ents<P>(slots);
   rola::static_for<P::kFoldLists>([&](auto J) {
     hook(J);
@@ -446,7 +449,7 @@ template <int FORM, bool CLOCK>
 __global__ __launch_bounds__(rc::kThreads, 1) void window(
     const __grid_constant__ rc::CarryParams p) {
   extern __shared__ __align__(128) uint8_t smem[];
-  const uint32_t area = ops::smem_addr(smem + P::kEnd);
+  const uint32_t area = ops::smem_addr(smem + P::kAreaAt);
   {
     const int t = tid();
     if (t < rc::kBoxLists)
@@ -531,13 +534,13 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
                        ents = rows + rc::read_ents<P>(r.slots);
         const rc::Window rw = rc::window_of<P>(p, smem, rc::kRead, w);
         if (p.readout_f16) {
-          rc::read_chunk<P, true, true>(smem, rw, w, 0, r.slots, r.slots, 2 * half, 2 * half + 2,
+          rc::read_chunk<P, true, true>(p, smem, rw, w, 0, r.slots, r.slots, 2 * half, 2 * half + 2,
                                         area, 2 * rc::kBatchPlanes - 1, rows, pads, ents, t >> 5,
                                         t & 31);
         } else {
-          rc::read_chunk<P, false, true>(smem, rw, w, 0, r.slots, r.slots, 2 * half, 2 * half + 2,
-                                         area, 2 * rc::kBatchPlanes - 1, rows, pads, ents, t >> 5,
-                                         t & 31);
+          rc::read_chunk<P, false, true>(p, smem, rw, w, 0, r.slots, r.slots, 2 * half,
+                                         2 * half + 2, area, 2 * rc::kBatchPlanes - 1, rows, pads,
+                                         ents, t >> 5, t & 31);
         }
       }
       lap<CLOCK>(p, laps, rc::kPhaseReadout);
@@ -600,7 +603,7 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
           const int t = tid();
           const rc::Window ww = rc::window_of<P>(p, smem, rc::kWrite, w);
           rc::fold_units<P>(smem, ww, w, t >> 5, t & 31);
-          rc::fold_chunk<P>(st, true, smem, ww, w, 0, f.slots, f.slots, area,
+          rc::fold_chunk<P>(p, st, true, smem, ww, w, 0, f.slots, f.slots, area,
                             area + rc::fold_ents<P>(f.slots), t >> 5, t & 31);
         }
       } else {

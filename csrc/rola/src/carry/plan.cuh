@@ -1,6 +1,5 @@
-// csrc/rola/src/carry/plan.cuh -- ONE ARM'S PLAN on the compiling card: the box's warp tiles, its registers, its pool
-// rows, and its shared memory -- the persistent tenants, then the planned AREA each window's plan places its buffers
-// in (`schedule.cuh`). see docs/internals/carry/plan.md
+// csrc/rola/src/carry/plan.cuh -- ONE ARM'S PLAN on the compiling card: its tiles, registers, pool rows and shared
+// memory (the tenants, the AREA, the read tables). see docs/internals/carry/plan.md
 #pragma once
 
 #include "carry/carry.cuh"
@@ -12,31 +11,41 @@ namespace arch = ::denseref::arch;
 
 constexpr int align_of(int x, int q) { return (x + q - 1) / q * q; }
 
-//: THE ASYNC COPIES' BARRIERS: the staging, and each slot's landed; every other rendezvous is the hardware barrier.
-//: -- see docs/internals/carry/plan.md#barriers
+//: THE ASYNC COPIES' BARRIERS: the staging, each slot's landed. -- see docs/internals/carry/plan.md#barriers
 enum CarryBarrier : int { kBarStaged, kBarSlot, kBarCount = kBarSlot + 2 };
 
-//: THE PERSISTENT TENANTS' BYTES, every card's and arm's. -- see docs/internals/carry/plan.md#tenants
+//: THE FIXED TENANTS' BYTES, every card's, arm's and call's. -- see docs/internals/carry/plan.md#tenants
 struct Tenants {
-  static constexpr int kUnion = 0;
-  static constexpr int kCount = kUnion + 2 * 2 * kWindow * 2;
-  static constexpr int kPre = kCount + 16;
-  static constexpr int kWriteExp = kPre + 2 * 2 * kPreRows * kListAt * 2;
-  static constexpr int kUnits = kWriteExp + 2 * kBoxLists * 4;
-  static constexpr int kBook = kUnits + 2 * kWindow;
+  static constexpr int kCount = 0;
+  static constexpr int kUnionW = kCount + 16;
+  static constexpr int kPreW = kUnionW + 2 * kWindow * 2;
+  static constexpr int kWriteExp = kPreW + 2 * kPreRows * kListAt * 2;
+  static constexpr int kBook = kWriteExp + 2 * kBoxLists * 4;
   static constexpr int kScale = kBook + kBoxLists * 8;
   static constexpr int kMaxima = kScale + kBoxLists * 8;
   static constexpr int kExps = kMaxima + 2 * kWarps * kBoxDigits * 2;
   static constexpr int kClock = kExps + kBoxDigits * 4;
   static constexpr int kBars = kClock + kWarps * (kCarryPhases + 1) * 8;
-  static constexpr int kPlans = align_of(kBars + kBarCount * 8, 16);
-  static constexpr int kAddr = kPlans + 2 * kPlanWords * 4;
+  static constexpr int kAddr = align_of(kBars + kBarCount * 8, 16);
   static constexpr int kAddrBytes = 256;
-  static constexpr int kEnd = align_of(kAddr + kAddrBytes, 128);
+  static constexpr int kEnd = align_of(kAddr + kAddrBytes, 16);
 };
 
+//: THE READ TABLES at `heads` query heads a write head, at the top of a CTA's `smem` bytes; the area below them.
+//: -- see docs/internals/carry/plan.md#read-tables
+__host__ __device__ constexpr ReadTables tables_of(int heads, int smem) {
+  const int pre_bytes = align_of(2 * kPreRows * kListAt * heads * 2, 16);
+  const int bytes =
+      2 * heads * kWindow * 2 + pre_bytes + 2 * heads * kWindow + 2 * plan_words(heads) * 4;
+  const int union_at = (smem - bytes) / 128 * 128, area_at = align_of(Tenants::kEnd, 128);
+  const int pre_at = union_at + 2 * heads * kWindow * 2, units_at = pre_at + pre_bytes;
+  return ReadTables{heads,   plan_words(heads), union_at,
+                    pre_at,  units_at,          units_at + 2 * heads * kWindow,
+                    area_at, union_at - area_at};
+}
+
 constexpr int kPlaneBytes = kBoxLists * kBoxChannels * 2;
-//: THE IMAGE: whole, or a ring of two 8-plane batches. -- see docs/internals/carry/plan.md#image
+//: THE IMAGE: whole, or a 16-plane half. -- see docs/internals/carry/plan.md#image
 constexpr int kBatchPlanes = 8, kBatches = kBoxDigits / kBatchPlanes;
 constexpr int kImageWhole = kBoxDigits * kPlaneBytes, kImageRing = 2 * kBatchPlanes * kPlaneBytes;
 
@@ -61,7 +70,8 @@ struct Plan : Tenants {
                        kWriteRow = kValuesAt + kBoxChannels * 2;
 
   static constexpr int kSmemBytes = kCaps.smem_per_cta_max;
-  static constexpr int kArea = kSmemBytes - kEnd;
+  static constexpr int kAreaAt = tables_of(1, kSmemBytes).area_at;
+  static constexpr int kArea = tables_of(1, kSmemBytes).area;
 };
 
 }  // namespace rola::carry

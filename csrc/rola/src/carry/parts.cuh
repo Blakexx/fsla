@@ -163,29 +163,40 @@ __device__ __forceinline__ int64_t list_row(const SideLists& l, const Place& c, 
 //: THE SIDES, as the tenants index them: the read side 0, the write side 1.
 enum SideIndex : int { kRead = 0, kWrite = 1 };
 
-//: A SIDE'S TENANTS for window `w` (two windows' a side, by parity): its union tokens, its count's word pair, its
-//: group's boundaries in prefix form. -- see docs/internals/carry/plan.md#tenants
-template <class P>
-__device__ __forceinline__ const uint16_t* union_of(const uint8_t* smem, int side, int w) {
-  return reinterpret_cast<const uint16_t*>(smem + P::kUnion) + (2 * side + (w & 1)) * kWindow;
+//: A SIDE'S TENANTS for window `w` (two windows' a side, by parity): its union tokens and its group's boundaries in
+//: prefix form -- the read side's in the call's read tables, a row of them its query heads' -- and its columns a row.
+//: -- see docs/internals/carry/plan.md#tenants
+__device__ __forceinline__ int cols_of(const CarryParams& p, int side) {
+  return kListAt * (side == kRead ? p.tables.heads : 1);
 }
 
 template <class P>
-__device__ __forceinline__ const uint16_t* pre_of(const uint8_t* smem, int side, int w) {
-  return reinterpret_cast<const uint16_t*>(smem + P::kPre)
-         + (2 * side + parity_of(w)) * kPreRows * kListAt;
+__device__ __forceinline__ const uint16_t* union_of(const CarryParams& p, const uint8_t* smem,
+                                                    int side, int w) {
+  return side == kRead
+             ? reinterpret_cast<const uint16_t*>(smem + p.tables.union_at)
+                   + parity_of(w) * p.tables.heads * kWindow
+             : reinterpret_cast<const uint16_t*>(smem + P::kUnionW) + parity_of(w) * kWindow;
+}
+
+template <class P>
+__device__ __forceinline__ const uint16_t* pre_of(const CarryParams& p, const uint8_t* smem,
+                                                  int side, int w) {
+  return reinterpret_cast<const uint16_t*>(smem + (side == kRead ? p.tables.pre_at : P::kPreW))
+         + parity_of(w) * kPreRows * cols_of(p, side);
 }
 
 //: A CHUNK'S COLUMNS in the boundaries, union slots `first .. first + slots - 1` (`first` a multiple of 64, the end a
-//: multiple of 64 or the union's `total`): the one before its first slot (-1 for none) and the one at its end.
-__device__ __forceinline__ int2 chunk_cols(int first, int slots, int total) {
+//: multiple of 64 or the union's `total`): the one before its first slot (-1 for none) and the one at its end, of a
+//: row's `cols`.
+__device__ __forceinline__ int2 chunk_cols(int first, int slots, int total, int cols) {
   return make_int2(first / kListBound - 1,
-                   first + slots >= total ? kListAt - 1 : (first + slots) / kListBound - 1);
+                   first + slots >= total ? cols - 1 : (first + slots) / kListBound - 1);
 }
 
-//: the prefix rows' value at row `l`, column `c` (column -1 none), modulo 2^16
-__device__ __forceinline__ int pre_at(const uint16_t* pre, int l, int c) {
-  return c < 0 ? 0 : static_cast<int>(pre[l * kListAt + c]);
+//: the prefix rows' value at row `l`, column `c` (column -1 none) of a row's `cols`, modulo 2^16
+__device__ __forceinline__ int pre_at(const uint16_t* pre, int l, int c, int cols) {
+  return c < 0 ? 0 : static_cast<int>(pre[l * cols + c]);
 }
 
 //: a side's slots in window `w`: its union's count, or every token where the side has no list level
@@ -195,41 +206,58 @@ __device__ __forceinline__ int slots_of(const uint8_t* smem, const Window& win, 
                     : win.tokens;
 }
 
-//: LISTS IN, a window ahead: a side's union tokens and count and its group's boundaries in prefix form.
-//: -- see docs/internals/carry/parts.md#lists-in
+//: LISTS IN, a window ahead: a side's union tokens and count and its group's boundaries in prefix form, a row its query
+//: heads' columns. -- see docs/internals/carry/parts.md#lists-in
 template <class P>
 __device__ __forceinline__ void lists_in(const CarryParams& p, const SideLists& l,
                                          const Window& win, const Place& c, int w, uint8_t* smem,
                                          int side) {
   if (!win.listed) return;
-  const int t = static_cast<int>(threadIdx.x), slot = 2 * side + (w & 1);
+  const int cols = cols_of(p, side), slots = kWindow * l.heads;
   const int64_t group = ((int64_t)c.bh * p.windows + w) * l.groups + win.group;
-  constexpr int kUnionCopies = kWindow * 2 / ops::kStageBytes;
-  if (t < kUnionCopies)
-    ops::stage_tile(ops::smem_addr(smem + P::kUnion + slot * kWindow * 2) + 16 * t,
-                    l.union_tok + group * kWindow + 8 * t);
-  if (t >= kUnionCopies && t < kUnionCopies + kPreRows)
-    ops::stage_tile(ops::smem_addr(smem + P::kPre) + 16 * (slot * kPreRows + t - kUnionCopies),
-                    l.pre + (group * kPreRows + t - kUnionCopies) * kListAt);
-  if (t == kThreads - 1)
-    ops::stage_run<4>(ops::smem_addr(smem + P::kCount) + 4 * slot, l.union_count + group);
+  const int union_copies = slots * 2 / ops::kStageBytes, row_copies = cols * 2 / ops::kStageBytes;
+  const ops::SmemAddr unions = ops::smem_addr(union_of<P>(p, smem, side, w)),
+                      pres = ops::smem_addr(pre_of<P>(p, smem, side, w));
+  //: the thread opaque, so the copies' sources are formed at each staging, never held across the windows
+#pragma unroll 1
+  for (int k = opaque(static_cast<int>(threadIdx.x)); k < union_copies + kPreRows * row_copies;
+       k += kThreads) {
+    if (k < union_copies) {
+      ops::stage_tile(unions + 16 * k, l.union_tok + group * slots + 8 * k);
+    } else {
+      const int r = k - union_copies;
+      ops::stage_tile(pres + 16 * r, l.pre + group * kPreRows * cols + 8 * r);
+    }
+  }
+  if (threadIdx.x == kThreads - 1)
+    ops::stage_run<4>(ops::smem_addr(smem + P::kCount) + 4 * (2 * side + (w & 1)),
+                      l.union_count + group);
 }
 
-//: FACTS IN, a window ahead: the box's write lists' exponent pairs and the window's tokens' readout units.
+//: FACTS IN, a window ahead: the box's write lists' exponent pairs and each of the read side's query heads' tokens'
+//: readout units (query head `j` of write head `bh` the call's `bh g + j`).
 template <class P>
 __device__ __forceinline__ void facts_in(const CarryParams& p, const Window& ww, const Place& c,
                                          int w, uint8_t* smem) {
-  const int t = static_cast<int>(threadIdx.x);
   constexpr int kUnitCopies = kWindow / ops::kStageBytes,
                 kExpCopies = kBoxLists * 4 / ops::kStageBytes;
-  if (t < kUnitCopies)
-    ops::stage_tile(ops::smem_addr(smem + P::kUnits) + (w & 1) * kWindow + 16 * t,
-                    p.unit + ((int64_t)c.bh * p.windows + w) * kWindow + 16 * t);
-  if (ww.listed && t >= kUnitCopies && t < kUnitCopies + kExpCopies)
-    ops::stage_tile(
-        ops::smem_addr(smem + P::kWriteExp) + (w & 1) * kBoxLists * 4 + 16 * (t - kUnitCopies),
-        p.write_exp + list_row(p.write_lists, c, p.windows, w, ww.digit0) * 2
-            + 8 * (t - kUnitCopies));
+  const int heads = p.tables.heads;
+  const ops::SmemAddr units = ops::smem_addr(smem + p.tables.units_at) + (w & 1) * heads * kWindow;
+#pragma unroll 1
+  for (int k = opaque(static_cast<int>(threadIdx.x)); k < heads * kUnitCopies + kExpCopies;
+       k += kThreads) {
+    if (k < heads * kUnitCopies) {
+      const int j = k / kUnitCopies;
+      ops::stage_tile(units + 16 * k, p.unit
+                                          + ((int64_t)(c.bh * heads + j) * p.windows + w) * kWindow
+                                          + 16 * (k - j * kUnitCopies));
+    } else if (ww.listed) {
+      const int e = k - heads * kUnitCopies;
+      ops::stage_tile(
+          ops::smem_addr(smem + P::kWriteExp) + (w & 1) * kBoxLists * 4 + 16 * e,
+          p.write_exp + list_row(p.write_lists, c, p.windows, w, ww.digit0) * 2 + 8 * e);
+    }
+  }
 }
 
 //: A POOL ROW'S SWIZZLE at a compiled row (`pool_chunk`'s): the row's own start alternates halves of the bank line.
@@ -334,14 +362,16 @@ struct Run {
 };
 
 template <class P>
-__device__ __forceinline__ Run chunk_runs(const uint8_t* smem, const Window& win, int side, int w,
-                                          int first, int slots, int total, int lane) {
+__device__ __forceinline__ Run chunk_runs(const CarryParams& p, const uint8_t* smem,
+                                          const Window& win, int side, int w, int first, int slots,
+                                          int total, int lane) {
   if (!win.listed || lane >= win.lists) return Run{0, 0, 0};
-  const uint16_t* pre = pre_of<P>(smem, side, w);
-  const int2 col = chunk_cols(first, slots, total);
+  const uint16_t* pre = pre_of<P>(p, smem, side, w);
+  const int cols = cols_of(p, side);
+  const int2 col = chunk_cols(first, slots, total, cols);
   const int l = (win.digit0 & (kBoxLists - 1)) + lane;
-  const int a0 = pre_at(pre, l, col.x), a1 = pre_at(pre, l, col.y);
-  const int b0 = pre_at(pre, l + 1, col.x), b1 = pre_at(pre, l + 1, col.y);
+  const int a0 = pre_at(pre, l, col.x, cols), a1 = pre_at(pre, l, col.y, cols);
+  const int b0 = pre_at(pre, l + 1, col.x, cols), b1 = pre_at(pre, l + 1, col.y, cols);
   return Run{(b0 - a0) & 0xffff, ((b1 - a1) - (b0 - a0)) & 0xffff, (a1 - a0) & 0xffff};
 }
 
@@ -351,15 +381,16 @@ __device__ __forceinline__ void entries_fill(const CarryParams& p, const SideLis
                                              const Window& win, const Place& c, int w,
                                              const Run& run, ops::SmemAddr dst, int warp,
                                              int lane) {
-  //: the box's first list's row, once: a list's is `kListCap` entries a list on
-  const uint2* const lists =
-      l.entries + list_row(l, c, p.windows, opaque(w), win.digit0) * kListCap;
+  //: the box's first list's row, once: a list's is `kListCap` entries a query head on (opaque, so the lists' sources
+  //: are formed at each fill rather than held across the windows)
+  const int cap = kListCap * opaque(l.heads);
+  const uint2* const lists = l.entries + list_row(l, c, p.windows, opaque(w), win.digit0) * cap;
   static_for<kBoxLists / kWarps>([&](auto J) {
     const int list = warp + kWarps * J;
     const int at = __shfl_sync(0xffffffffu, run.at, list),
               n = __shfl_sync(0xffffffffu, run.n, list),
               to = __shfl_sync(0xffffffffu, run.to, list);
-    const uint2* const src = lists + list * kListCap + at + lane;
+    const uint2* const src = lists + list * cap + at + lane;
     const ops::SmemAddr place = dst + 8u * static_cast<uint32_t>(to + lane);
 #pragma unroll 1
     for (int k = 0; k < n; k += 32) ops::stage_run_lanes<8>(place + 8u * k, src + k, k + lane < n);
@@ -391,7 +422,7 @@ __device__ __forceinline__ void read_fill(const CarryParams& p, const uint8_t* s
                                           int slots, int total, ops::SmemAddr buf, int warp,
                                           int lane) {
   const volatile Addr& addr = *reinterpret_cast<const volatile Addr*>(smem + P::kAddr);
-  fill<P::kReadFactors, false>(addr.slices[kRead], nullptr, 0, union_of<P>(smem, kRead, w), rw,
+  fill<P::kReadFactors, false>(addr.slices[kRead], nullptr, 0, union_of<P>(p, smem, kRead, w), rw,
                                first, slots, buf);
   const ops::SmemAddr pads = buf + static_cast<uint32_t>(read_pads<P>(slots));
   //: a zero quantum reads nothing: its source is any global address
@@ -401,7 +432,7 @@ __device__ __forceinline__ void read_fill(const CarryParams& p, const uint8_t* s
     ops::stage_tile_if(pads + 16u * static_cast<uint32_t>(k), p.num, false);
   if (rw.listed)
     entries_fill<P>(p, p.read_lists, rw, c, w,
-                    chunk_runs<P>(smem, rw, kRead, w, first, slots, total, lane),
+                    chunk_runs<P>(p, smem, rw, kRead, w, first, slots, total, lane),
                     buf + static_cast<uint32_t>(read_ents<P>(slots)), warp, lane);
 }
 
@@ -651,15 +682,16 @@ __device__ __forceinline__ uint2 masked_entry(int first, uint32_t c) {
 //: after). The rows are at `rows`, the dummy panel rows at `pads`, the panel after them.
 //: -- see docs/internals/carry/parts.md#readout
 template <class P, bool F16, bool Pairs>
-__device__ __forceinline__ void read_chunk(const uint8_t* smem, const Window& rw, int w, int first,
-                                           int slots, int total, int lo, int hi,
-                                           ops::SmemAddr image, uint32_t mask, ops::SmemAddr rows,
-                                           ops::SmemAddr pads, ops::SmemAddr ents, int warp,
-                                           int lane) {
+__device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* smem,
+                                           const Window& rw, int w, int first, int slots, int total,
+                                           int lo, int hi, ops::SmemAddr image, uint32_t mask,
+                                           ops::SmemAddr rows, ops::SmemAddr pads,
+                                           ops::SmemAddr ents, int warp, int lane) {
   constexpr int kStep = Pairs ? 2 : 1;
   const ImageLane il = image_lane(lane);
-  const ops::SmemAddr units = ops::smem_addr(smem + P::kUnits) + (w & 1) * kWindow;
-  const Run run = chunk_runs<P>(smem, rw, kRead, w, first, slots, total, lane);
+  const ops::SmemAddr units =
+      ops::smem_addr(smem + p.tables.units_at) + (w & 1) * p.tables.heads * kWindow;
+  const Run run = chunk_runs<P>(p, smem, rw, kRead, w, first, slots, total, lane);
   //: the entries' row and panel offsets are the union's: the chunk's pool and panel taken back by its first slot
   const ops::SmemAddr pool_u = rows - static_cast<uint32_t>(first * P::kReadRow),
                       pads_u = pads - static_cast<uint32_t>(64 * first);
@@ -752,7 +784,7 @@ __device__ __forceinline__ void drain(const CarryParams& p, const uint8_t* smem,
   const int word = tid % kWords, s0 = tid / kWords;
   const ops::SmemAddr cell0 =
       panel + (panel_row(static_cast<uint32_t>(s0)) ^ ((32u * (word >> 3)) | (4u * (word & 7))));
-  const uint16_t* tok = union_of<P>(smem, kRead, w) + first;
+  const uint16_t* tok = union_of<P>(p, smem, kRead, w) + first;
   const int pair = p.dv / 2;
   uint32_t* const out = p.num + ((int64_t)c.bh * p.L + rw.t0) * pair
                         + reinterpret_cast<const volatile Addr*>(smem + P::kAddr)->channel0 / 2

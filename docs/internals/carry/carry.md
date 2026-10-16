@@ -21,8 +21,8 @@ state never leaves the registers inside a call; the readout reads an f16 image o
   length), so the carry chunks a union at any multiple of 64 the facts pass never sees, out in prefix form over the
   group's lists modulo 2^16 (`kPreRows = 33`: a row a list, then the group's) beside the group's exact totals;
   `kListCap = kWindow` entries a list.
-- `kPlanWords = 16`, `kMaxSteps = 30`: a window's plan record for a box class, its plan word and a 16-bit step word a
-  step (`schedule.md#plan`).
+- `max_steps(g)`, `plan_words(g)`: a window's plan record for a box class at `g` query heads a write head, its plan
+  word and a 16-bit step word a step (`schedule.md#plan`).
 - `kSliceBytes = 64`: a level's slice in a pool row, the box's 32 digits at f16.
 - `kMaxLevels = 4`: the depth the operand block addresses.
 
@@ -39,17 +39,19 @@ group innermost.
 <a id="lists"></a>
 ## The lists
 
-`SideLists` is the facts pass's output at a side's list level in its final form, per (batch-head, window)
-([`facts.md`](../facts/facts.md#lists-out)):
+`SideLists` is the facts pass's output at a side's list level in its final form, per (batch-head, window), merged
+over `heads` query heads' rows (the read side's a write head's `g`, the write side's one;
+[`facts.md`](../facts/facts.md#lists-out)):
 
-- `entries`: a list's 8-byte entries in slot order, `kListCap` a list, no pads. A read entry is its slot's pool row
+- `entries`: a list's 8-byte entries in slot order, `kListCap` a query head, no pads. A read entry is its slot's pool row
   offset in the union in 16-byte chunks with its swizzle folded in (the first word's low half), its token (its high
   half), the coefficient (f16, the second word's low half) and the panel row's offset from the dummy rows, its swizzle
   folded in (its high half): a chunk from a multiple of 64 takes its pool and panel back by its first slot's offsets
   (`parts.md#readout`). A write entry is the slot, then `c_v` and `c_m`. A step's lanes past a chunk's entries are
   masked by the carry (a read lane's coefficient 0 on a dummy panel row, a write lane's row 0 with c = 0).
-- `bounds` (int16, a row a list) and `totals` (int32, the group's): `chunk_runs` turns a chunk's slots into each list's
-  run and its place, `side_counts` reads the totals.
+- `pre` (int16, the boundaries in prefix form modulo 2^16, `kPreRows` rows of `8 heads` columns) and `totals` (int32,
+  the group's exact): `chunk_runs` turns a chunk's slots into each list's run and its place, `side_counts` reads the
+  totals.
 - `union_tok` and `union_count` (int32): per 32-digit group each slot's token, window-relative, and the slots' extent;
   a GAP slot holds `kGap` (token 0 with bit 15 set), so a fill masks the token to the window and zero-fills the row.
 

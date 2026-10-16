@@ -26,12 +26,13 @@ before a window's steps, the compiler holds it in a register across the readout,
 <a id="lists-in"></a>
 ## Lists in
 
-A window ahead (`carry_kernel.md#staging`), into the window's parity of the tenants: a side's union tokens whole
-(512 slots, 1 KB, 64 copies), its group's boundaries in prefix form (33 rows, a 16-byte copy each) and its count
-(one 4-byte copy); the planner alone reads the exact totals.
-`facts_in` copies the write lists' exponent pairs (128 bytes) and the window's token units (512 bytes). `union_of`,
-`pre_of` and `slots_of` read a window's tenants back (`pre_of` forms its parity at each use, `#window`);
-`chunk_cols` names a chunk's columns in the boundaries.
+A window ahead (`carry_kernel.md#staging`), into the window's parity of the tenants -- the read side's in the call's
+read tables (`plan.md#read-tables`): a side's union tokens whole (512 slots a query head, 1 KB), its group's boundaries
+in prefix form (33 rows of `cols_of` columns, 8 a query head) and its count (one 4-byte copy), its copies over the CTA's
+threads; the planner alone reads the exact totals. `facts_in` copies the write lists' exponent pairs (128 bytes) and
+each query head's token units (512 bytes a head; head `j` of write head `bh` is the call's `bh g + j`). `union_of`,
+`pre_of` and `slots_of` read a window's tenants back (`pre_of` forms its parity at each use, `#window`); `chunk_cols`
+names a chunk's columns in the boundaries.
 
 <a id="swizzle"></a>
 ## The pool rows' swizzle

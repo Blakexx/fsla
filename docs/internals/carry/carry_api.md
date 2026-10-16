@@ -31,7 +31,7 @@ The Python call launches over the bundle's rows and values, the facts pass's lis
 units, its readout in the device's accumulation (`readout_accumulate`) or the one a gate names, each window's plan its
 own unless a gate or a measurement forces a form (`forced`, as `forced_word` encodes it), the facts pass run with
 this arm's read pool row (`form`, read off the binary's census for the device's card). `plans_out` allocates the plan
-records a gate reads (`PLAN_WORDS` a window, `tests/oracle/test_carry_plan.py`). `arm_key` is the compiled body
+records a gate reads (`plan_words` a window, `tests/oracle/test_carry_plan.py`). `arm_key` is the compiled body
 a carve selects: each side's dense rows a warp and its operand's level count, the channel extent and the publish
 field.
 

@@ -19,14 +19,13 @@ __device__ __forceinline__ void stage_window(const CarryParams& p, const Place& 
   lists_in<P>(p, p.read_lists, rw, c, w, smem, kRead);
   lists_in<P>(p, p.write_lists, ww, c, w, smem, kWrite);
   facts_in<P>(p, ww, c, w, smem);
-  constexpr int kPlanCopies = kPlanWords * 4 / ops::kStageBytes,
-                kPlanThread = kThreads - 1 - kPlanCopies;
-  const int t = static_cast<int>(threadIdx.x) - kPlanThread;
-  if (t >= 0 && t < kPlanCopies) {
+  const int words = p.tables.plan_words, copies = words * 4 / ops::kStageBytes;
+  const int t = opaque(static_cast<int>(threadIdx.x)) - (kThreads - 1 - copies);
+  if (t >= 0 && t < copies) {
     const int cls = rw.group * max(1, p.write_lists.groups) + ww.group;
     ops::stage_tile(
-        ops::smem_addr(smem + P::kPlans) + (w & 1) * kPlanWords * 4 + 16 * t,
-        p.plans + ((static_cast<int64_t>(c.bh) * p.windows + w) * box_classes(p) + cls) * kPlanWords
+        ops::smem_addr(smem + p.tables.plans_at) + (w & 1) * words * 4 + 16 * t,
+        p.plans + ((static_cast<int64_t>(c.bh) * p.windows + w) * box_classes(p) + cls) * words
             + 4 * t);
   }
 }
@@ -100,7 +99,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   if (threadIdx.x == 0) addr_in(*reinterpret_cast<Addr*>(smem + P::kAddr), p, place_of(p));
   ops::rendezvous();
 
-  const ops::SmemAddr area = ops::smem_addr(smem + P::kEnd);
+  const ops::SmemAddr area = ops::smem_addr(smem + P::kAreaAt);
   const auto rw = [&](int w) { return window_of<P>(p, smem, kRead, w); };
   const auto ww = [&](int w) { return window_of<P>(p, smem, kWrite, w); };
   //: AN ENTRY'S FILL of window `w`: its copies issued into its place, arriving at its slot's landed barrier as they
@@ -121,11 +120,11 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     const ops::SmemAddr pads = buf + static_cast<uint32_t>(read_pads<P>(e.slots())),
                         ents = buf + static_cast<uint32_t>(read_ents<P>(e.slots()));
     if (p.readout_f16) {
-      read_chunk<P, true, kPairs>(smem, rw(w), w, e.first(), e.slots(), e.total(), lo, hi, image,
+      read_chunk<P, true, kPairs>(p, smem, rw(w), w, e.first(), e.slots(), e.total(), lo, hi, image,
                                   mask, buf, pads, ents, warp, lane);
     } else {
-      read_chunk<P, false, kPairs>(smem, rw(w), w, e.first(), e.slots(), e.total(), lo, hi, image,
-                                   mask, buf, pads, ents, warp, lane);
+      read_chunk<P, false, kPairs>(p, smem, rw(w), w, e.first(), e.slots(), e.total(), lo, hi,
+                                   image, mask, buf, pads, ents, warp, lane);
     }
   };
 
@@ -141,7 +140,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   flow.staged();
   flow.wait_staged();
   if (stream_of<P>(p, smem, 0).n > 0)
-    fill_entry(0, entry_at(stream_of<P>(p, smem, 0), 0), kSlotTop, step_of<P>(smem, 0, 0).at());
+    fill_entry(0, entry_at(stream_of<P>(p, smem, 0), 0), kSlotTop, step_of<P>(p, smem, 0, 0).at());
 
 #pragma unroll 1
   for (int w = 0; w < p.windows; ++w) {
@@ -173,7 +172,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       const Stream s = stream_of<P>(p, smem, w);
       const bool work = t < s.n, cross = t + 1 >= s.n && (work || t == 0);
       const bool drained = t > 0 && t - 1 < s.nr;
-      const StepWord sw = step_of<P>(smem, w, t);
+      const StepWord sw = step_of<P>(p, smem, w, t);
       if (sw.next() && cross) flow.wait_staged();
       if (drained || (t > 0 && ((work && !sw.ahead()) || sw.next()))) ops::rendezvous();
       clock.lap(kPhaseWait);
@@ -184,7 +183,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         const Entry d = entry_at(stream_of<P>(p, smem, w), t - 1);
         drain<P>(p, smem, rw(w), here(), w, d.first(), d.slots(),
                  area
-                     + static_cast<uint32_t>(step_of<P>(smem, w, t - 1).at()
+                     + static_cast<uint32_t>(step_of<P>(p, smem, w, t - 1).at()
                                              + read_pads<P>(d.slots()) + kPadBytes));
         clock.lap(kPhaseDrain);
         if (sw.reuse()) ops::rendezvous();
@@ -193,12 +192,12 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       //: THE FILLS: entry `t` unless filled ahead, then the next where planned
 #pragma unroll 1
       for (int f = 0; f < 2; ++f) {
-        const StepWord sf = step_of<P>(smem, w, t);
+        const StepWord sf = step_of<P>(p, smem, w, t);
         if (f == 0 ? work && !sf.ahead() : sf.next()) {
           const bool other = f == 1 && cross;
           const int fw = other ? w + 1 : w, ft = f == 0 ? t : other ? 0 : t + 1;
           fill_entry(fw, entry_at(stream_of<P>(p, smem, fw), ft),
-                     flow.slot() ^ (f == 1 && work ? 1 : 0), step_of<P>(smem, fw, ft).at());
+                     flow.slot() ^ (f == 1 && work ? 1 : 0), step_of<P>(p, smem, fw, ft).at());
         }
       }
       clock.lap(kPhaseFill);
@@ -209,7 +208,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       //: THE ENTRY'S WORK: a read chunk from the whole image, or from the halves it stores itself; a fold chunk
       if (work) {
         const ops::SmemAddr buf =
-            area + static_cast<uint32_t>(step_of<P>(smem, w, flow.step()).at());
+            area + static_cast<uint32_t>(step_of<P>(p, smem, w, flow.step()).at());
         const Stream sw2 = stream_of<P>(p, smem, w);
         if (t < sw2.nr) {
           // R9-CASES: ImageMode, the plan's image modes (schedule.cuh)
@@ -242,8 +241,8 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
           flow.wait_slot(flow.slot());
           clock.lap(kPhaseLanded);
           const Entry e = entry_at(stream_of<P>(p, smem, w), flow.step());
-          fold_chunk<P>(st, flow.step() == stream_of<P>(p, smem, w).nr, smem, ww(w), w, e.first(),
-                        e.slots(), e.total(), buf,
+          fold_chunk<P>(p, st, flow.step() == stream_of<P>(p, smem, w).nr, smem, ww(w), w,
+                        e.first(), e.slots(), e.total(), buf,
                         buf + static_cast<uint32_t>(fold_ents<P>(e.slots())), warp, lane);
           clock.lap(kPhaseFold);
         }

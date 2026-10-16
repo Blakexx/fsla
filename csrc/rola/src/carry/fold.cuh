@@ -161,10 +161,10 @@ __device__ __forceinline__ void fold_fill(const CarryParams& p, const uint8_t* s
                                           int lane) {
   const volatile Addr& addr = *reinterpret_cast<const volatile Addr*>(smem + P::kAddr);
   fill<P::kFoldFactors, true>(addr.slices[kWrite], addr.values, static_cast<int>(p.values.st),
-                              union_of<P>(smem, kWrite, w), ww, first, slots, buf);
+                              union_of<P>(p, smem, kWrite, w), ww, first, slots, buf);
   if (ww.listed)
     entries_fill<P>(p, p.write_lists, ww, c, w,
-                    chunk_runs<P>(smem, ww, kWrite, w, first, slots, total, lane),
+                    chunk_runs<P>(p, smem, ww, kWrite, w, first, slots, total, lane),
                     buf + static_cast<uint32_t>(fold_ents<P>(slots)), warp, lane);
 }
 
@@ -173,11 +173,11 @@ __device__ __forceinline__ void fold_fill(const CarryParams& p, const uint8_t* s
 //: the window's first chunk (`rescale`); a side with no list level every slot of the chunk, c from the slot's row.
 //: -- see docs/internals/carry/fold.md#chunk
 template <class P>
-__device__ __forceinline__ void fold_chunk(State<P>& st, bool rescale, const uint8_t* smem,
-                                           const Window& ww, int w, int first, int slots, int total,
-                                           ops::SmemAddr rows, ops::SmemAddr ents, int warp,
-                                           int lane) {
-  const Run run = chunk_runs<P>(smem, ww, kWrite, w, first, slots, total, lane);
+__device__ __forceinline__ void fold_chunk(const CarryParams& p, State<P>& st, bool rescale,
+                                           const uint8_t* smem, const Window& ww, int w, int first,
+                                           int slots, int total, ops::SmemAddr rows,
+                                           ops::SmemAddr ents, int warp, int lane) {
+  const Run run = chunk_runs<P>(p, smem, ww, kWrite, w, first, slots, total, lane);
   const ops::SmemAddr pool = rows - static_cast<uint32_t>(first * P::kWriteRow);
   static_for<P::kFoldLists>([&](auto J) {
     const int list = fold_list(warp, J);

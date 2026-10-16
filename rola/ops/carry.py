@@ -23,7 +23,6 @@ from rola.ops._ext import extension
 __all__ = [
     "LEDGER_PHASES",
     "LEDGER_WARPS",
-    "PLAN_WORDS",
     "WINDOW",
     "Form",
     "arm_key",
@@ -36,6 +35,7 @@ __all__ = [
     "forced_word",
     "form",
     "ledger_bind",
+    "plan_words",
     "plans_out",
     "probe_bind",
     "readout_accumulate",
@@ -87,18 +87,22 @@ def carry(routes, values, facts, carve: Carve, unit: torch.Tensor, accumulate: s
     return num, check
 
 
-#: A WINDOW'S PLAN RECORD's 32-bit words: its plan word, then its steps' 16-bit words (`carry.cuh` `kPlanWords`).
-PLAN_WORDS = 16
+def plan_words(heads: int = 1) -> int:
+    """A window's plan record's 32-bit words at ``heads`` query heads a write head (`carry.cuh` `plan_words`): its plan
+    word, then a 16-bit step word a step -- its read chunks (8 a head), its fold chunks (8), the retiring step -- in
+    whole 16-byte copies."""
+    steps = list_model.LIST_AT * heads + list_model.LIST_AT + 1
+    return (1 + (steps + 1) // 2 + 3) // 4 * 4
 
 
 def plans_out(routes, carve: Carve) -> torch.Tensor:
-    """An uninitialized ``[BH, windows, box classes, PLAN_WORDS]`` int32 tensor for :func:`carry`'s plan records: a box
-    class a pair of the two list levels' 32-digit groups (docs/internals/carry/schedule.md#pass)."""
+    """An uninitialized ``[BH, windows, box classes, plan_words(g)]`` int32 tensor for :func:`carry`'s plan records: a
+    box class a pair of the two list levels' 32-digit groups (docs/internals/carry/schedule.md#pass)."""
     groups = 1
     for plan in (carve.readout, carve.fold):
         groups *= max(1, -(-carve.widths[plan.lists[0]] // 32)) if plan.lists else 1
     windows = -(-routes.tokens // WINDOW)
-    return torch.empty((routes.batch * routes.heads, windows, groups, PLAN_WORDS), dtype=torch.int32,
+    return torch.empty((routes.batch * routes.heads, windows, groups, plan_words(routes.group)), dtype=torch.int32,
                        device=routes.device)
 
 

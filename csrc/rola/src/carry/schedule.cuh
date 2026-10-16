@@ -63,12 +63,12 @@ __host__ __device__ constexpr int fold_bytes(int slots, int entries) {
   return fold_ents<P>(slots) + align_of(entries * 8, 128);
 }
 
-//: THE LEAST PLAN fits every window: the halves and one 64-slot read buffer of lists full on every token; one such
+//: THE LEAST PLAN fits every window of an area: the halves and one 64-slot read buffer of lists full on every token; one such
 //: fold buffer.
 template <class P>
-constexpr bool least_plan_fits() {
-  return kImageRing + read_bytes<P>(kListBound, kListBound * kBoxDigits) <= P::kArea
-         && fold_bytes<P>(kListBound, kListBound * kBoxLists) <= P::kArea;
+__host__ __device__ constexpr bool least_plan_fits(int area) {
+  return kImageRing + read_bytes<P>(kListBound, kListBound * kBoxDigits) <= area
+         && fold_bytes<P>(kListBound, kListBound * kBoxLists) <= area;
 }
 
 //: A SIDE'S COUNTS in a window: its union's slots and `S[j]`, its box lists' entries before union slot `64 (j + 1)`
@@ -78,8 +78,8 @@ __device__ __forceinline__ int side_counts(const SideLists& l, bool listed, int 
                                            int64_t group, int (&S)[kListAt]) {
   int4 lo = make_int4(0, 0, 0, 0), hi = lo;
   if (listed) {
-    lo = reinterpret_cast<const int4*>(l.totals)[2 * group];
-    hi = reinterpret_cast<const int4*>(l.totals)[2 * group + 1];
+    lo = reinterpret_cast<const int4*>(l.totals + group * kListAt * l.heads)[0];
+    hi = reinterpret_cast<const int4*>(l.totals + group * kListAt * l.heads)[1];
   }
   static_assert(kListAt == 8, "a group's totals are two 16-byte words");
   const int q[kListAt] = {lo.x, lo.y, lo.z, lo.w, hi.x, hi.y, hi.z, hi.w};
@@ -136,8 +136,9 @@ struct Counts {
 //: flight (one, or with read chunks two, of the largest), else in halves; the fold's largest chunk in the area.
 //: -- see docs/internals/carry/schedule.md#planner
 template <class P>
-__device__ __forceinline__ uint32_t rule_plan(const Counts& c) {
-  const int rc = c.ru > 0 ? largest_chunk(c.ru, c.rs, P::kArea - kImageRing,
+__device__ __forceinline__ uint32_t rule_plan(const CarryParams& p, const Counts& c) {
+  const int area = p.tables.area;
+  const int rc = c.ru > 0 ? largest_chunk(c.ru, c.rs, area - kImageRing,
                                           [](int s, int e) { return read_bytes<P>(s, e); })
                           : 0;
   const int nr = c.ru > 0 ? (c.ru + rc - 1) / rc : 0;
@@ -145,10 +146,10 @@ __device__ __forceinline__ uint32_t rule_plan(const Counts& c) {
       nr > 0 ? read_bytes<P>(min(rc, c.ru),
                              rc < c.ru ? chunk_max(c.rs, rc / kListBound, c.ru) : c.rs[kListAt - 1])
              : 0;
-  const bool whole = nr > 0 && kImageWhole + (nr > 1 ? 2 : 1) * most <= P::kArea;
-  const int fc = c.fu > 0 ? largest_chunk(c.fu, c.fs, P::kArea,
-                                          [](int s, int e) { return fold_bytes<P>(s, e); })
-                          : 0;
+  const bool whole = nr > 0 && kImageWhole + (nr > 1 ? 2 : 1) * most <= area;
+  const int fc =
+      c.fu > 0 ? largest_chunk(c.fu, c.fs, area, [](int s, int e) { return fold_bytes<P>(s, e); })
+               : 0;
   return plan_word(whole ? kModeWhole : kModeHalves, rc, fc, c.ru, c.fu);
 }
 
@@ -156,7 +157,9 @@ __device__ __forceinline__ uint32_t rule_plan(const Counts& c) {
 //: steps, 0 the rule's and the field's largest the union), where every chunk fits alone beside its image and a whole
 //: image has reads to serve; else the rule's.
 template <class P>
-__device__ __forceinline__ uint32_t forced_plan(int forced, const Counts& c, uint32_t rule) {
+__device__ __forceinline__ uint32_t forced_plan(const CarryParams& p, const Counts& c,
+                                                uint32_t rule) {
+  const int forced = p.forced, area = p.tables.area;
   if (forced < 0) return rule;
   const PlanWord r{rule};
   const int fm = forced & 3, fr = (forced >> 2) & 0xff, ff = (forced >> 10) & 0xf;
@@ -167,13 +170,12 @@ __device__ __forceinline__ uint32_t forced_plan(int forced, const Counts& c, uin
 #pragma unroll 1
   for (int first = 0; first < c.ru; first += rc) {
     const int s = min(rc, c.ru - first);
-    fits =
-        fits && image_bytes(mode) + read_bytes<P>(s, entries_of(c.rs, first, s, c.ru)) <= P::kArea;
+    fits = fits && image_bytes(mode) + read_bytes<P>(s, entries_of(c.rs, first, s, c.ru)) <= area;
   }
 #pragma unroll 1
   for (int first = 0; first < c.fu; first += fc) {
     const int s = min(fc, c.fu - first);
-    fits = fits && fold_bytes<P>(s, entries_of(c.fs, first, s, c.fu)) <= P::kArea;
+    fits = fits && fold_bytes<P>(s, entries_of(c.fs, first, s, c.fu)) <= area;
   }
   return fits ? plan_word(mode, rc, fc, c.ru, c.fu) : rule;
 }
@@ -226,7 +228,7 @@ template <class P>
 __device__ __forceinline__ Win win_of(const CarryParams& p, int bh, int w, int cls) {
   Win x;
   window_counts(p, bh, w, cls, x.c);
-  x.word = forced_plan<P>(p.forced, x.c, rule_plan<P>(x.c));
+  x.word = forced_plan<P>(p, x.c, rule_plan<P>(p, x.c));
   const PlanWord pw{x.word};
   x.nr = pw.reads();
   x.n = x.nr + pw.folds();
@@ -269,9 +271,7 @@ template <class Arm>
 __global__ __launch_bounds__(kPlanThreads) void window_plan_kernel(
     const __grid_constant__ CarryParams p) {
   using P = Plan<Arm>;
-  static_assert(least_plan_fits<P>(), "the least plan fits the area");
-  static_assert(2 * kListAt + 1 <= kMaxSteps, "a window's steps fit its record");
-  constexpr int B = P::kArea;
+  const int B = p.tables.area;
   __shared__ uint32_t parities[kPlanWarps];
   const int cls = static_cast<int>(blockIdx.x), bh = static_cast<int>(blockIdx.y);
   const int lane = static_cast<int>(threadIdx.x) % 32, warp = static_cast<int>(threadIdx.x) / 32;
@@ -334,7 +334,8 @@ __global__ __launch_bounds__(kPlanThreads) void window_plan_kernel(
     //: fill that reuses its place
     const Win nx = win_of<P>(p, bh, w + 1 < p.windows ? w + 1 : w, cls);
     uint32_t* const out =
-        p.plans + ((static_cast<int64_t>(bh) * p.windows + w) * box_classes(p) + cls) * kPlanWords;
+        p.plans
+        + ((static_cast<int64_t>(bh) * p.windows + w) * box_classes(p) + cls) * p.tables.plan_words;
     uint32_t pair = 0u;
     int gone = 0, gone_b = 0;
 #pragma unroll 1
@@ -386,8 +387,8 @@ struct Stream {
 template <class P>
 __device__ __forceinline__ Stream stream_of(const CarryParams& p, const uint8_t* smem, int w) {
   const int parity = parity_of(w);
-  const PlanWord word{
-      *reinterpret_cast<const volatile uint32_t*>(smem + P::kPlans + 4 * kPlanWords * parity)};
+  const PlanWord word{*reinterpret_cast<const volatile uint32_t*>(
+      smem + p.tables.plans_at + 4 * p.tables.plan_words * parity)};
   const volatile int* const count = reinterpret_cast<const volatile int*>(smem + P::kCount);
   const int tokens = min(kWindow, p.L - w * kWindow);
   const int ru = count[2 * kRead + parity], fu = count[2 * kWrite + parity];
@@ -405,9 +406,10 @@ __device__ __forceinline__ Stream stream_of(const CarryParams& p, const uint8_t*
 
 //: STEP `t`'s word of window `w`'s record, staged by parity
 template <class P>
-__device__ __forceinline__ StepWord step_of(const uint8_t* smem, int w, int t) {
+__device__ __forceinline__ StepWord step_of(const CarryParams& p, const uint8_t* smem, int w,
+                                            int t) {
   return StepWord{*reinterpret_cast<const volatile uint16_t*>(
-      smem + P::kPlans + 4 * kPlanWords * parity_of(w) + 4 + 2 * t)};
+      smem + p.tables.plans_at + 4 * p.tables.plan_words * parity_of(w) + 4 + 2 * t)};
 }
 
 //: ENTRY `t` of a window's stream, two words as a consumer re-extracts them: x = side | first / 64 << 1 | slots << 9,

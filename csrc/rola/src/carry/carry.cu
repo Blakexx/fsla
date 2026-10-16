@@ -96,15 +96,15 @@ Side side_of(const std::vector<Tensor>& rows, int64_t list, const std::vector<in
 //: the groups' totals, the union's tokens and count; empty where the side has no list level.
 //: -- see docs/internals/carry/carry.md#lists
 SideLists lists_of(const std::vector<Tensor>& t, int64_t BH, int64_t windows, int64_t width,
-                   const char* name) {
+                   int64_t heads, const char* name) {
   STD_TORCH_CHECK(t.size() == 5, name, " is (entries, pre, totals, union, count), got ", t.size(),
                   " tensors");
-  if (width == 0) return SideLists{nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0};
+  if (width == 0) return SideLists{nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 1};
   const int64_t groups = (width + 31) / 32;
-  const std::vector<std::vector<int64_t>> want = {{BH, windows, width, kListCap, 4},
-                                                  {BH, windows, groups, kPreRows, kListAt},
-                                                  {BH, windows, groups, kListAt},
-                                                  {BH, windows, groups, kWindow},
+  const std::vector<std::vector<int64_t>> want = {{BH, windows, width, kListCap * heads, 4},
+                                                  {BH, windows, groups, kPreRows, kListAt * heads},
+                                                  {BH, windows, groups, kListAt * heads},
+                                                  {BH, windows, groups, kWindow * heads},
                                                   {BH, windows, groups}};
   for (int k = 0; k < 5; ++k) {
     const bool wide = k == 2 || k == 4;
@@ -120,7 +120,8 @@ SideLists lists_of(const std::vector<Tensor>& t, int64_t BH, int64_t windows, in
                    reinterpret_cast<const uint16_t*>(t[1].const_data_ptr()),
                    t[2].const_data_ptr<int32_t>(),
                    (int)width,
-                   (int)groups};
+                   (int)groups,
+                   (int)heads};
 }
 
 }  // namespace
@@ -181,10 +182,18 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
                    values.stride(1) * 2, values.stride(2) * 2};
   STD_TORCH_CHECK(p.values.st > 0 && p.values.st < (int64_t{1} << 31) / kWindow,
                   "values' token stride is ", p.values.st, " bytes; a window's offsets are 32-bit");
-  p.write_lists = lists_of(write_lists, BH, windows, write_list < 0 ? 0 : widths[write_list],
+  //: the read side's query heads a write head, by its union's slots; the write side's one
+  const int64_t heads = read_list >= 0 && read_lists.size() == 5 && read_lists[3].dim() == 4
+                            ? read_lists[3].size(3) / kWindow
+                            : 1;
+  STD_TORCH_CHECK(heads >= 1, "the read lists merge whole windows of query heads' rows, got ",
+                  heads);
+  p.write_lists = lists_of(write_lists, BH, windows, write_list < 0 ? 0 : widths[write_list], 1,
                            "the write lists");
-  p.read_lists =
-      lists_of(read_lists, BH, windows, read_list < 0 ? 0 : widths[read_list], "the read lists");
+  p.read_lists = lists_of(read_lists, BH, windows, read_list < 0 ? 0 : widths[read_list], heads,
+                          "the read lists");
+  p.tables.heads = static_cast<int>(heads);
+  p.tables.plan_words = plan_words(static_cast<int>(heads));
   if (write_list >= 0) {
     STD_TORCH_CHECK(
         write_exp.is_cuda() && write_exp.is_contiguous() && write_exp.scalar_type() == Dtype::Short
@@ -224,11 +233,11 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   //: THE PLANS, a window's a (batch-head, box class), the plan pass's to write and the carry's to stage
   const int64_t classes = (p.read_lists.groups > 0 ? p.read_lists.groups : 1)
                           * (p.write_lists.groups > 0 ? p.write_lists.groups : 1);
-  Tensor plans =
-      plans_out ? *plans_out : empty_cuda({BH, windows, classes, kPlanWords}, Dtype::Int);
+  const int64_t words = p.tables.plan_words;
+  Tensor plans = plans_out ? *plans_out : empty_cuda({BH, windows, classes, words}, Dtype::Int);
   STD_TORCH_CHECK(plans.is_cuda() && plans.is_contiguous() && plans.scalar_type() == Dtype::Int
-                      && plans.sizes() == Shape({BH, windows, classes, kPlanWords}),
-                  "plans_out is the contiguous CUDA int32 [BH, windows, box classes, ", kPlanWords,
+                      && plans.sizes() == Shape({BH, windows, classes, words}),
+                  "plans_out is the contiguous CUDA int32 [BH, windows, box classes, ", words,
                   "] plan records, got ", shape(plans.sizes()));
   p.plans = reinterpret_cast<uint32_t*>(plans.mutable_data_ptr<int32_t>());
   p.ledger = g_ledger;

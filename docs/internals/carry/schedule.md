@@ -17,8 +17,8 @@ union), `E` entries, `B` the area's bytes, `n` a window's entries, `t` a step (`
 ## The plan
 
 `PlanWord`: mode | read chunk / 64 << 1 | fold chunk / 64 << 9 | read chunks << 13 | fold chunks << 21 (`plan_word`).
-A window's RECORD is `kPlanWords` = 16 words: the plan word, then the step words in pairs (`kMaxSteps` = 30; a window
-has at most 2 `kListAt` + 1 = 17 steps at one head a group). The CTA stages it with the window's inputs, by parity, and
+A window's RECORD is `plan_words(g)` words at `g` query heads a write head: the plan word, then the step words in
+pairs (`max_steps(g)` = 8 `g` read chunks + 8 fold chunks + the retiring step; 12 words at one head). The CTA stages it with the window's inputs, by parity, and
 reads it at each use: `stream_of` gives the window's mode, chunks, unions (its staged counts), entries and image;
 `entry_at` entry `t`'s chunk (the read chunks first: its first slot `q C`, its slots `min(C, U - q C)`), two words a
 consumer re-extracts its fields from; `step_of` step `t`'s word.
@@ -109,7 +109,7 @@ read and write list levels' groups, which fixes a CTA's counts, `box_classes`) a
 parity at each window, an exclusive scan of the windows' entry counts' parities (the tiles before carried); its first
 entry filled ahead where the window before's last entry -- re-derived from that window's counts -- leaves it room;
 then its steps, the next window's first decided from that window's counts the same way, so the two threads agree. The
-record to `CarryParams.plans` (`[BH][windows][classes][kPlanWords]`). 12.1 us at nl64k-alt-k4 (8,192 windows); gated
+record to `CarryParams.plans` (`[BH][windows][classes][plan_words(g)]`). 12.1 us at nl64k-alt-k4 (8,192 windows); gated
 word for word against the model on every form cell under a spread of forced forms, and the model's rule held to never
 filling over anything live on random windows (`tests/oracle/test_carry_plan.py`).
 
