@@ -69,10 +69,13 @@ def _units(spec, routes, values):
 def run(spec):
     """``(routes, values, unit, num)``: one carry launch over the cell, its units the den pass's (:func:`_units`, until
     the pass is built beside the carry)."""
-    routes, values, facts, carve, _ = carry_operands(spec)
-    if not any(routes.sparse[0]):
-        raise NotImplementedError(f"{spec.name}: a read side with no list level (the dense-dense plan) has no readout "
-                                  "reference yet: its partials' scale is stated with its fold's reference")
+    routes, values, facts, carve, zero = carry_operands(spec)
+    if routes.topology.D != 2 or not any(routes.sparse[0]):
+        #: the launch first, so the carry's own refusal or fault is what the cell reports where it has one
+        carry_ops.carry(routes, values, facts, carve, zero)
+        torch.cuda.synchronize()
+        raise NotImplementedError(f"{spec.name}: the readout reference states one read list level at depth two; this "
+                                  "carve's partials' scale is stated with its fold's reference")
     unit = _units(spec, routes, values)
     num, _ = carry_ops.carry(routes, values, facts, carve, unit)
     torch.cuda.synchronize()

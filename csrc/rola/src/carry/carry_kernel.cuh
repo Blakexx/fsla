@@ -32,13 +32,15 @@ __device__ __forceinline__ void stage_window(const CarryParams& p, const Place& 
 }
 
 //: A THREAD'S ARRIVALS on the async copies' barriers: a bit a barrier, flipped at each of its arrivals -- an item's
-//: landed (`kBarLanded + k`) at bit `k`, the staging's above them. Every thread arrives at every phase of a barrier,
-//: and a wait is for the phase of the thread's own last arrival, so the bit names its parity (a barrier never arrived
-//: at passes: its phase before the first). Every other rendezvous is the hardware barrier (`ops::rendezvous`).
+//: landed (`kBarLanded + k`) at bit `k`, the staging's and the next window's first read's above them. Every thread
+//: arrives at every phase of a barrier, and a wait is for the phase of the thread's own last arrival, so the bit names
+//: its parity (a barrier never arrived at passes: its phase before the first) -- one phase in flight a barrier. Every
+//: other rendezvous is the hardware barrier (`ops::rendezvous`).
 //: -- see docs/internals/carry/carry_kernel.md#barriers
 struct Arrivals {
-  static constexpr int kStagedBit = kPlanItems;
-  static_assert(kStagedBit < 32, "the items' landed bits and the staging's share a word");
+  static constexpr int kStagedBit = kPlanItems, kNextBit = kPlanItems + 1;
+  static_assert(kNextBit < 32,
+                "the items' landed bits, the staging's and the next read's share a word");
   ops::SmemAddr bars;
   uint32_t land;
 
@@ -53,6 +55,15 @@ struct Arrivals {
 
   __device__ __forceinline__ void wait_staged() const {
     ops::mbar_wait(at(kBarStaged), ((land >> kStagedBit) & 1u) ^ 1u);
+  }
+
+  __device__ __forceinline__ void next_landed() {
+    ops::mbar_arrive_when_landed(at(kBarNext));
+    land ^= 1u << kNextBit;
+  }
+
+  __device__ __forceinline__ void wait_next() const {
+    ops::mbar_wait(at(kBarNext), ((land >> kNextBit) & 1u) ^ 1u);
   }
 
   __device__ __forceinline__ void item_landed(uint32_t k) {
@@ -92,8 +103,9 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   const ops::SmemAddr area = ops::smem_addr(smem + P::kEnd);
   const auto rw = [&](int w) { return window_of<P>(p, smem, kRead, w); };
   const auto ww = [&](int w) { return window_of<P>(p, smem, kWrite, w); };
-  //: A FILL of item `k` of window `w`'s plan: its copies issued, arriving at its landed barrier as they land
-  const auto fill_item = [&](int w, uint32_t k) {
+  //: A FILL of item `k` of window `w`'s plan: its copies issued, arriving at its landed barrier as they land -- a
+  //: window's first read, filled by the window before, at the next read's own
+  const auto fill_item = [&](int w, uint32_t k, bool first) {
     const Head h = plan_head<P>(smem, w);
     const Item it = plan_item<P>(smem, w, static_cast<int>(k));
     const ops::SmemAddr buf = area + 16u * it.buf();
@@ -102,7 +114,19 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     } else {
       fold_fill<P>(p, smem, ww(w), here(), w, it.first(), it.slots(), h.funion(), buf, warp, lane);
     }
-    bar.item_landed(k);
+    if (first) {
+      bar.next_landed();
+    } else {
+      bar.item_landed(k);
+    }
+  };
+  //: AN ITEM'S LANDED WAIT: a window's first read at the next read's barrier, every other filled item at its own
+  const auto wait_item = [&](const Item& it, uint32_t k) {
+    if (it.kind() == kItemRead && it.first() == 0) {
+      bar.wait_next();
+    } else {
+      bar.wait_landed(k);
+    }
   };
   //: A READ CHUNK'S TILES over batches `lo .. hi - 1` of the image at `image` (digit `d`'s plane `d & mask`)
   const auto read_out = [&](auto pairs, int w, const Head& h, const Item& it, int lo, int hi,
@@ -131,7 +155,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   stage_window<P>(p, here(), 0, smem);
   bar.staged();
   bar.wait_staged();
-  if (plan_head<P>(smem, 0).runion() > 0) fill_item(0, kFirstRead);
+  if (plan_head<P>(smem, 0).runion() > 0) fill_item(0, kFirstRead, true);
 
 #pragma unroll 1
   for (int w = 0; w < p.windows; ++w) {
@@ -151,14 +175,14 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
           const bool next = target == kNextItem;
           if (next) bar.wait_staged();
           clock.lap(kPhaseWait);
-          fill_item(next ? w + 1 : w, next ? static_cast<uint32_t>(kFirstRead) : target);
+          fill_item(next ? w + 1 : w, next ? static_cast<uint32_t>(kFirstRead) : target, next);
           clock.lap(kPhaseFill);
         }
       }
       const uint32_t kind = it.kind(), flags = it.flags();
       const uint32_t mode = h.mode();
       if ((flags & kFlagFilled) != 0u && (kind != kItemRead || mode == kModeWhole))
-        bar.wait_landed(static_cast<uint32_t>(k));
+        wait_item(it, static_cast<uint32_t>(k));
       clock.lap(kPhaseLanded);
       if (it.dep() != kNoItem) ops::rendezvous();
       clock.lap(kPhaseWait);
@@ -199,7 +223,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
                              warp, lane);
             ops::rendezvous();
             clock.lap(kPhaseStore);
-            if (lead) bar.wait_landed(static_cast<uint32_t>(k));
+            if (lead) wait_item(it, static_cast<uint32_t>(k));
             clock.lap(kPhaseLanded);
             read_out(std::true_type{}, w, h, it, 2 * half, 2 * half + 2, area,
                      2 * kBatchPlanes - 1);
@@ -214,7 +238,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
                              kBatchPlanes - 1, dexp, warp, lane);
           ops::rendezvous();
           clock.lap(kPhaseStore);
-          bar.wait_landed(static_cast<uint32_t>(k));
+          wait_item(it, static_cast<uint32_t>(k));
           clock.lap(kPhaseLanded);
 #pragma unroll 1
           for (int b = 0; b < kBatches; ++b) {

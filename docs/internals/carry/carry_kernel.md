@@ -52,10 +52,14 @@ stores and reuses -- is the hardware barrier (`ops::rendezvous`) at the consumer
 barrier where the consumer starts means every warp is done with what came before. On sm_80 and sm_86 an mbarrier is
 software -- an arrive fences the warp's outstanding atomics, the waiters poll -- about twice the hardware barrier's cost
 a round (`docs/lab/image_ring.md`); measured here, 3,018 to 2,960 us at nl64k-alt-k4. mbarriers remain only where async
-copies land: `Arrivals` keeps a bit a barrier (the items' landed and the staging's, `plan.md#barriers`), flipped at
-each of the thread's arrivals; a wait is for the phase of the thread's own last arrival, so the bit names its parity (a
-barrier never arrived at passes: its phase before the first). An item's landed barrier is its index in the window, its
-phase waited by its consumer before any warp reaches the same index a window on.
+copies land: `Arrivals` keeps a bit a barrier (the items' landed, the staging's and the next read's,
+`plan.md#barriers`), flipped at each of the thread's arrivals; a wait is for the phase of the thread's own last
+arrival, so the bit names its parity (a barrier never arrived at passes: its phase before the first), which holds only
+while a barrier has one phase in flight. An item's landed barrier is its index in the window, its phase waited by its
+consumer before any warp reaches the same index a window on. A window's first read chunk is filled by the window
+before, so it lands on its own barrier, the NEXT read's: on its item's index it would share a barrier with the filling
+window's own item there -- a fold chunk where that window reads nothing -- and two phases in flight make a wait for
+the second return at the first.
 
 <a id="budget"></a>
 ## The budget

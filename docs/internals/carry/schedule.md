@@ -70,7 +70,9 @@ and serial where their buffers do not place pipelined. `build` makes a window's 
   place `t` frees when nothing frees earlier;
 - each fill hosted (`host`) at the first item past its region's last user, never before the store (the maxima retire
   the window before), at most two an item, that user flagged done;
-- THE BOUNDARY: the next window's first read buffer at the top, its fill hosted once its region's users here are done.
+- THE BOUNDARY: the next window's first read buffer at the top, its fill hosted once its region's users here are done
+  and past the store: a host's fills run before its work, and the store's work stages the next window's inputs the
+  fill reads (its runs and union). A window that reads nothing has no first-read region holding it back.
 
 Why a rule, not a search (measured 2026-10-14, nl64k-alt-k4 on sm_86, every named form timed warm): the rule's form is
 the fastest (3.22-3.26 ms a call with the plan pass). Each extra fold chunk costs ~500 us there -- it splits every

@@ -20,6 +20,7 @@ WINDOW, LIST_BOUND, LIST_AT = 512, 64, 8
 PAD_BYTES, PANEL_ROW, BOX = 512, 64, 32
 IMAGE_WHOLE, IMAGE_RING = 32 * 2048, 16 * 2048
 NO_ITEM, NEXT_ITEM = 31, 30
+STORE_ITEM = 1  # the store's work stages the next window's inputs, so the next window's first read is hosted past it
 MAXIMA, STORE, READ, DRAIN, FOLD, BOUNDARY = range(6)
 FILLED, UNITS = 1, 2
 WHOLE, RING16 = 0, 2  # the image modes' codes: whole, ring of 8-plane batches (1), 16-plane halves
@@ -209,9 +210,9 @@ def build(f: Form, c: Counts, read_row: int, write_row: int, area: int) -> Windo
                 best, best_wait = at, w
         return best, best_wait
 
-    def host(target, wait, consumer):
+    def host(target, wait, consumer, first=STORE_ITEM):
         fw = NO_ITEM if wait < 0 else wait
-        for h in range(max(1, wait + 1), consumer + 1):
+        for h in range(max(first, wait + 1), consumer + 1):
             x, y = items[h]
             if _bits(x, 25, 5) == NO_ITEM:
                 items[h] = [(x & ~(31 << 25)) | target << 25 | 1 << 30, (y & ~(31 << 14)) | fw << 14]
@@ -243,7 +244,7 @@ def build(f: Form, c: Counts, read_row: int, write_row: int, area: int) -> Windo
             return None
     if c.rnext > 0:
         wait = max([last for _, hi, last in regions if hi > B - c.rnext], default=-1)
-        if not host(NEXT_ITEM, wait, boundary):
+        if not host(NEXT_ITEM, wait, boundary, STORE_ITEM + 1):
             return None
 
     head = (len(items) | mode << 5 | rc << 7 | fc << 17, c.ru | c.fu << 10, int(serial) | int(late) << 1, 0)

@@ -27,10 +27,15 @@ def test_the_plans_are_the_model(widths, live, prefer):
     chunk, dependence, buffer, hosted fills and their waits) as the model plans them -- so the forms the carry's gates
     assert by are the kernel's."""
     routes, values = alternating_bundle(widths, 2048, 0, live=live)
-    carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, values.v.shape[-1])
     layout = facts_ops.call_layout(routes)
-    facts = facts_ops.facts(routes, values, layout, *facts_ops.call_statics(routes, layout),
-                            carry_ops.form(carry_ops.arm_key(carve)).read_row)
+    _assert_plans_are_the_model(routes, values, layout, facts_ops.call_statics(routes, layout), prefer)
+
+
+def _assert_plans_are_the_model(routes, values, layout, statics, prefer=None):
+    """The plan pass's words for every (batch-head, box class, window), head and items, against the model's; returns
+    the model's plans."""
+    carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, values.v.shape[-1])
+    facts = facts_ops.facts(routes, values, layout, *statics, carry_ops.form(carry_ops.arm_key(carve)).read_row)
     plans = carry_ops.plans_out(routes, carve)
     unit = torch.zeros((routes.batch * routes.heads, routes.tokens), dtype=torch.int8, device="cuda")
     carry_ops.carry(routes, values, facts, carve, unit, prefer=prefer, plans=plans)
@@ -45,3 +50,26 @@ def test_the_plans_are_the_model(widths, live, prefer):
             n = len(pl.items)
             assert tuple(got[:4]) == pl.head, (box, w, "head")
             assert tuple(zip(got[4:4 + 2 * n:2], got[5:5 + 2 * n:2])) == pl.items, (box, w, "items")
+    return want
+
+
+def test_a_window_that_reads_nothing_hosts_the_next_read_past_the_store():
+    """A window whose box reads nothing has no first-read region holding the next window's first read back, so its
+    host is the store's bound: past the store, whose work stages the next window's inputs the fill reads (a cohort
+    draw, whose groups go unread for whole windows; docs/internals/carry/schedule.md#planner). The plans are the
+    model's, and every next-window fill sits past the store."""
+    from measure.cells import by_name, realize
+    from measure.subjects import bundle_of
+
+    spec = by_name("flagship-cohort-k4-L4096")
+    routes, values, layout, statics = bundle_of(spec, realize(spec))
+    want = _assert_plans_are_the_model(routes, values, layout, statics)
+    empty_then_read = 0
+    for windows in want:
+        for w, pl in enumerate(windows):
+            hosts = [h for h, (x, y) in enumerate(pl.items)
+                     if carry_plan.NEXT_ITEM in (carry_plan._bits(x, 25, 5), carry_plan._bits(y, 19, 5))]
+            assert all(h > carry_plan.STORE_ITEM for h in hosts), (w, hosts)
+            reads = carry_plan._bits(pl.head[1], 0, 10)
+            empty_then_read += int(reads == 0 and bool(hosts))
+    assert empty_then_read > 0, "no window reads nothing before one that reads: the cell is vacuous"

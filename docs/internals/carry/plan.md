@@ -22,8 +22,9 @@ chunks and buffers -- the window's plan places in the area at run time (`schedul
 ## The barriers
 
 `CarryBarrier`, every card's, the async copies' barriers, each counting all 256 threads (`carry_kernel.md#barriers`):
-the staging (a window's inputs landed) and an item's LANDED (its buffer's copies), one for each of a plan's
-`kPlanItems` items (`schedule.md#items`). Every other rendezvous is the hardware barrier.
+the staging (a window's inputs landed), the NEXT read (a window's first read chunk, filled by the window before) and an
+item's LANDED (its buffer's copies), one for each of a plan's `kPlanItems` items (`schedule.md#items`). Every other
+rendezvous is the hardware barrier.
 
 <a id="image"></a>
 ## The image

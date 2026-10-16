@@ -23,9 +23,10 @@ enum ItemFlag : uint32_t { kFlagFilled = 1u, kFlagUnits = 2u };
 
 enum ImageMode : uint32_t { kModeWhole, kModeRing8, kModeRing16, kImageModes };
 
-//: an index naming no item; a fill's target the next window's first read, which is its item `kFirstRead`
+//: an index naming no item; a fill's target the next window's first read, which is its item `kFirstRead`; the store,
+//: whose work stages the next window's inputs, item `kStoreItem`
 constexpr uint32_t kNoItem = 31u, kNextItem = 30u;
-constexpr int kFirstRead = 2;
+constexpr int kStoreItem = 1, kFirstRead = 2;
 static_assert(kPlanItems < static_cast<int>(kNextItem),
               "an item index fits five bits, beside its two names");
 
@@ -317,12 +318,12 @@ __device__ __forceinline__ bool build(Sim& s, const Form& f, const Counts& c, ui
     wait = best_wait;
     return best;
   };
-  //: A FILL'S HOST: the first item past its region's last user, never before the store, at most two fills an item;
-  //: that user flagged done
-  const auto host = [&](uint32_t target, int wait, int consumer) {
+  //: A FILL'S HOST: the first item past its region's last user and at `from` or later, at most two fills an item; that
+  //: user flagged done
+  const auto host = [&](uint32_t target, int wait, int consumer, int from) {
     const uint32_t fw = wait < 0 ? kNoItem : static_cast<uint32_t>(wait);
 #pragma unroll 1
-    for (int h = max(1, wait + 1); h <= consumer; ++h) {
+    for (int h = max(from, wait + 1); h <= consumer; ++h) {
       uint2& it = s.items[h];
       if (bits_of(it.x, 25, 5) == kNoItem) {
         it.x = (it.x & ~(31u << 25)) | target << 25 | 1u << 30;
@@ -346,7 +347,7 @@ __device__ __forceinline__ bool build(Sim& s, const Form& f, const Counts& c, ui
     region(at, bytes, s.drain_at[q]);
     set_buf(s.read_at[q], at);
     set_buf(s.drain_at[q], at);
-    if (!host(s.read_at[q], wait, s.read_at[q])) return false;
+    if (!host(s.read_at[q], wait, s.read_at[q], kStoreItem)) return false;
   }
 #pragma unroll 1
   for (int j = 0; j < nf; ++j) {
@@ -356,15 +357,16 @@ __device__ __forceinline__ bool build(Sim& s, const Form& f, const Counts& c, ui
     if (at < 0) return false;
     region(at, bytes, s.fold_at[j]);
     set_buf(s.fold_at[j], at);
-    if (!host(s.fold_at[j], wait, s.fold_at[j])) return false;
+    if (!host(s.fold_at[j], wait, s.fold_at[j], kStoreItem)) return false;
   }
-  //: THE BOUNDARY: the next window's first read buffer at the top, once its region's last user here is done
+  //: THE BOUNDARY: the next window's first read buffer at the top, once its region's last user here is done and past
+  //: the store (a host's fills run before its work, and the store's stages the inputs the fill reads)
   if (c.rnext > 0) {
     int wait = -1;
 #pragma unroll 1
     for (int r = 0; r < nreg; ++r)
       if (16 * s.hi[r] > B - c.rnext) wait = max(wait, static_cast<int>(s.last[r]));
-    if (!host(kNextItem, wait, boundary)) return false;
+    if (!host(kNextItem, wait, boundary, kStoreItem + 1)) return false;
   }
 
   head = make_uint4(static_cast<uint32_t>(n) | mode << 5 | static_cast<uint32_t>(rc) << 7

@@ -12,9 +12,9 @@ namespace arch = ::denseref::arch;
 
 constexpr int align_of(int x, int q) { return (x + q - 1) / q * q; }
 
-//: THE ASYNC COPIES' BARRIERS, every card's: the staging a window and an item's landed, one an item of the window's
-//: plan; every other rendezvous is the hardware barrier. -- see docs/internals/carry/plan.md#barriers
-enum CarryBarrier : int { kBarStaged, kBarLanded, kBarCount = kBarLanded + kPlanItems };
+//: THE ASYNC COPIES' BARRIERS: the staging, the next window's first read, an item's landed (one an item); every
+//: other rendezvous is the hardware barrier. -- see docs/internals/carry/plan.md#barriers
+enum CarryBarrier : int { kBarStaged, kBarNext, kBarLanded, kBarCount = kBarLanded + kPlanItems };
 
 //: THE PERSISTENT TENANTS' BYTES, every card's and arm's. -- see docs/internals/carry/plan.md#tenants
 struct Tenants {
