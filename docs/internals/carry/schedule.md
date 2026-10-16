@@ -44,7 +44,7 @@ chunk from a multiple of 64 takes its pool and panel back by its first slot (`ca
 ## The segment sums
 
 `side_counts`: a side's union slots and `S[j]`, its box lists' entries before union slot `64 (j + 1)` -- the facts
-pass's prefix rows' totals row, one 16-byte load (`facts.md#lists-out`). Any chunk's entries are a difference of two of
+pass's group totals, two 16-byte loads (`facts.md#lists-out`). Any chunk's entries are a difference of two of
 them (`entries_of`); `chunk_max` is the most any chunk of `64 m` slots holds.
 
 <a id="chunks"></a>
@@ -85,9 +85,9 @@ by an order (pipelined or serial, the last drain late or not). `CarryParams.pref
 and the measurements (`rola.ops.carry.CANDIDATES`); a window takes it where it builds and is distinct (a fold chunk
 below the union), else the rule's.
 
-Worked, on the even box (64-byte read rows, 128-byte write rows; the area 90,624 bytes on sm_86, 156,160 on sm_80 and
+Worked, on the even box (64-byte read rows, 128-byte write rows; the area 90,496 bytes on sm_86, 156,032 on sm_80 and
 sm_87): a nl64k-alt-k4 window of ~216-slot unions and ~260 entries a side takes the halves, one read buffer (30.3 KB at
-the top) and the whole union's fold buffer (29.8 KB), which misses fitting beside the two by ~2.6 KB: it goes over the
+the top) and the whole union's fold buffer (29.8 KB), which misses fitting beside the two by ~2.7 KB: it goes over the
 image, its fill hosted at the drain after the reads, and the next window's first read buffer is filled at the fold. On
 sm_80 the image is whole and the fold buffer lands beside the readout.
 

@@ -378,30 +378,28 @@ __device__ __forceinline__ void lists_out(const FactsParams& p, const Unit& x, u
   }
 }
 
-//: THE BOUNDARIES IN PREFIX FORM, warp 0's: lane `j < 8` sums boundary `j` over the lists in order into rows 0..32 (row
-//: `l` the lists before `l`), then each row out as one 16-byte store. -- see docs/internals/facts/facts.md#lists-out
-__device__ __forceinline__ void prefix_out(const FactsParams& p, const Unit& x, uint8_t* smem,
+//: THE BOUNDARIES OUT, warp 0's: each list's row as one 16-byte store, and lane `j < 8` boundary `j` summed over the
+//: lists into the group's totals. -- see docs/internals/facts/facts.md#lists-out
+__device__ __forceinline__ void bounds_out(const FactsParams& p, const Unit& x, uint8_t* smem,
                                            int lane) {
   const uint16_t* const table = reinterpret_cast<const uint16_t*>(smem + FactsSmem::kTable);
-  uint16_t* const pre = reinterpret_cast<uint16_t*>(smem + FactsSmem::kPre);
+  int32_t* const totals = reinterpret_cast<int32_t*>(smem + FactsSmem::kTotals);
   if (lane < kListAt) {
     int sum = 0;
 #pragma unroll 1
-    for (int l = 0; l < kGroupDigits; ++l) {
-      pre[l * kListAt + lane] = static_cast<uint16_t>(sum);
-      sum += table[l * kListAt + lane];
-    }
-    pre[kGroupDigits * kListAt + lane] = static_cast<uint16_t>(sum);
+    for (int l = 0; l < kGroupDigits; ++l) sum += table[l * kListAt + lane];
+    totals[lane] = sum;
   }
   __syncwarp();
   const int width = p.B[x.level];
   const int64_t group_index = (static_cast<int64_t>(x.bh) * p.windows + x.window)
                                   * ((width + kGroupDigits - 1) / kGroupDigits)
                               + x.group;
-  uint4* const out = reinterpret_cast<uint4*>(p.lists[x.side].pre) + group_index * carry::kPreRows;
-  const uint4* const rows = reinterpret_cast<const uint4*>(pre);
-  out[lane] = rows[lane];
-  if (lane == 0) out[kGroupDigits] = rows[kGroupDigits];
+  reinterpret_cast<uint4*>(p.lists[x.side].bounds)[group_index * kGroupDigits + lane] =
+      reinterpret_cast<const uint4*>(table)[lane];
+  if (lane < kListAt * 4 / 16)
+    reinterpret_cast<uint4*>(p.lists[x.side].totals)[group_index * (kListAt * 4 / 16) + lane] =
+        reinterpret_cast<const uint4*>(totals)[lane];
 }
 
 //: THE GRID: a CTA a unit, a window's units innermost. Every unit loads its window (a columns unit nothing) and a write
@@ -468,7 +466,7 @@ __global__ __launch_bounds__(kFactsThreads, kFactsCtasMin) void facts_pass(const
     lists_out<false>(p, x, smem, r, warp, lane);
   }
   __syncthreads();
-  if (warp == 0) prefix_out(p, x, smem, lane);
+  if (warp == 0) bounds_out(p, x, smem, lane);
   clock.lap(kPhaseLists);
   clock.publish(p.ledger, 0, kFactsWarps, warp);
 }
@@ -654,9 +652,9 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   //: THE LISTS OUT, a side's at its list level: entries, boundaries, the union by slot, its extent
   const std::vector<Tensor>* lists[kSides] = {&read_lists, &write_lists};
   for (int side = 0; side < kSides; ++side) {
-    STD_TORCH_CHECK(lists[side]->size() == 4, "side ", side,
-                    "'s lists are (entries, at, union, count), got ", lists[side]->size(),
-                    " tensors");
+    STD_TORCH_CHECK(lists[side]->size() == 5, "side ", side,
+                    "'s lists are (entries, bounds, totals, union, count), got ",
+                    lists[side]->size(), " tensors");
     if (p.list_level[side] < 0) continue;
     const int64_t width = p.B[p.list_level[side]],
                   groups = (width + kGroupDigits - 1) / kGroupDigits;
@@ -664,13 +662,15 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
     ListsOut& o = p.lists[side];
     o.entries = static_cast<uint2*>(
         exact(l[0], Dtype::Short, {B * H, p.windows, width, kListCap, 4}, "a side's entries"));
-    o.pre = static_cast<uint16_t*>(exact(l[1], Dtype::Short,
-                                         {B * H, p.windows, groups, carry::kPreRows, kListAt},
-                                         "a side's boundaries in prefix form"));
+    o.bounds = static_cast<uint16_t*>(exact(l[1], Dtype::Short,
+                                            {B * H, p.windows, groups, kGroupDigits, kListAt},
+                                            "a side's lists' boundaries"));
+    o.totals = static_cast<int32_t*>(
+        exact(l[2], Dtype::Int, {B * H, p.windows, groups, kListAt}, "a side's groups' totals"));
     o.union_tok = static_cast<uint16_t*>(
-        exact(l[2], Dtype::Short, {B * H, p.windows, groups, kWindowTokens}, "a side's union"));
+        exact(l[3], Dtype::Short, {B * H, p.windows, groups, kWindowTokens}, "a side's union"));
     o.union_count = static_cast<int32_t*>(
-        exact(l[3], Dtype::Int, {B * H, p.windows, groups}, "a side's union extents"));
+        exact(l[4], Dtype::Int, {B * H, p.windows, groups}, "a side's union extents"));
   }
   detail::plan_units(p, dense);
   p.ledger = detail::g_ledger;

@@ -92,29 +92,33 @@ Side side_of(const std::vector<Tensor>& rows, int64_t list, const std::vector<in
   return s;
 }
 
-//: ONE SIDE'S LISTS as the facts pass writes them in their final form: 8-byte entries, the groups' boundaries in prefix
-//: form, the union's tokens and count; empty where the side has no list level. -- see docs/internals/carry/carry.md#lists
+//: ONE SIDE'S LISTS as the facts pass writes them in their final form: 8-byte entries, each list's boundaries, the
+//: groups' totals, the union's tokens and count; empty where the side has no list level.
+//: -- see docs/internals/carry/carry.md#lists
 SideLists lists_of(const std::vector<Tensor>& t, int64_t BH, int64_t windows, int64_t width,
                    const char* name) {
-  STD_TORCH_CHECK(t.size() == 4, name, " is (entries, at, union, count), got ", t.size(),
-                  " tensors");
-  if (width == 0) return SideLists{nullptr, nullptr, nullptr, nullptr, 0, 0};
+  STD_TORCH_CHECK(t.size() == 5, name, " is (entries, bounds, totals, union, count), got ",
+                  t.size(), " tensors");
+  if (width == 0) return SideLists{nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0};
   const int64_t groups = (width + 31) / 32;
   const std::vector<std::vector<int64_t>> want = {{BH, windows, width, kListCap, 4},
-                                                  {BH, windows, groups, kPreRows, kListAt},
+                                                  {BH, windows, groups, kBoxLists, kListAt},
+                                                  {BH, windows, groups, kListAt},
                                                   {BH, windows, groups, kWindow},
                                                   {BH, windows, groups}};
-  for (int k = 0; k < 4; ++k) {
-    const Dtype dtype = k == 3 ? Dtype::Int : Dtype::Short;
-    STD_TORCH_CHECK(t[k].is_cuda() && t[k].is_contiguous() && t[k].scalar_type() == dtype
+  for (int k = 0; k < 5; ++k) {
+    const bool wide = k == 2 || k == 4;
+    STD_TORCH_CHECK(t[k].is_cuda() && t[k].is_contiguous()
+                        && t[k].scalar_type() == (wide ? Dtype::Int : Dtype::Short)
                         && t[k].sizes() == Shape(want[k]),
-                    name, " tensor ", k, " is a contiguous CUDA ", k == 3 ? "int32 " : "int16 ",
+                    name, " tensor ", k, " is a contiguous CUDA ", wide ? "int32 " : "int16 ",
                     shape(Shape(want[k])), ", got ", shape(t[k].sizes()));
   }
-  return SideLists{reinterpret_cast<const uint16_t*>(t[2].const_data_ptr()),
-                   t[3].const_data_ptr<int32_t>(),
+  return SideLists{reinterpret_cast<const uint16_t*>(t[3].const_data_ptr()),
+                   t[4].const_data_ptr<int32_t>(),
                    static_cast<const uint2*>(t[0].const_data_ptr()),
                    reinterpret_cast<const uint16_t*>(t[1].const_data_ptr()),
+                   t[2].const_data_ptr<int32_t>(),
                    (int)width,
                    (int)groups};
 }

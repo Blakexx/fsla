@@ -18,8 +18,8 @@ state never leaves the registers inside a call; the readout reads an f16 image o
 - THE BOX, every card's: `kBoxLists = 32` lists (the write side's list level) x `kBoxDigits = 32` digits (the read
   side's) x `kBoxChannels = 32` channels, `kStateValues` = 32,768 values = 256 lanes x 128 fp32 registers.
 - `kListBound = 64`, `kListAt = 8`: a list's boundaries, its entries before every 64th union slot (the last its
-  length), so the carry chunks a union at any multiple of 64 the facts pass never sees; `kPreRows` = 33, a group's
-  boundaries in prefix form (a row a list, then the totals); `kListCap = kWindow` entries a list.
+  length), so the carry chunks a union at any multiple of 64 the facts pass never sees, out a row a list beside the
+  group's totals; `kListCap = kWindow` entries a list.
 - `kPlanItems = 27`, `kPlanBytes = 240`: a window's plan for a box class, its head and its items (`schedule.md#items`);
   `kCandidates = 60`, the named forms (`schedule.md#planner`).
 - `kSliceBytes = 64`: a level's slice in a pool row, the box's 32 digits at f16.
@@ -47,7 +47,8 @@ group innermost.
   folded in (its high half): a chunk from a multiple of 64 takes its pool and panel back by its first slot's offsets
   (`parts.md#readout`). A write entry is the slot, then `c_v` and `c_m`. A step's lanes past a chunk's entries are
   masked by the carry (a read lane's coefficient 0 on a dummy panel row, a write lane's row 0 with c = 0).
-- `pre`: a group's boundaries in prefix form; `chunk_runs` turns a chunk's slots into each list's run and its place.
+- `bounds` (int16, a row a list) and `totals` (int32, the group's): `chunk_runs` turns a chunk's slots into each list's
+  run and its place, `side_counts` reads the totals.
 - `union_tok` and `union_count` (int32): per 32-digit group each slot's token, window-relative, and the slots' extent;
   a GAP slot holds `kGap` (token 0 with bit 15 set), so a fill masks the token to the window and zero-fills the row.
 

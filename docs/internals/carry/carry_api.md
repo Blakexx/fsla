@@ -7,7 +7,7 @@ ABI (`csrc/rola/rola_api.cpp`); the Python caller is `rola/ops/carry.py`.
 ## `carry_forward`
 
 One launch over a call's windows. In: both sides' level rows and the values (the bundle, read where it lies), both
-sides' lists in the facts pass's final form (`(entries, at, union, count)` each, empty tensors for a side with no
+sides' lists in the facts pass's final form (`(entries, bounds, totals, union, count)` each, empty tensors for a side with no
 list level, `carry.md#lists`), the den pass's unit bytes a window wide, and the carve flattened: widths, extents,
 channels, each side's list level (-1 for none) and operand levels, the arm key, the readout's accumulation (0
 fp32, 1 fp16), the named form every window takes where it builds (-1 none, else one of the 60 in the plan pass's order,

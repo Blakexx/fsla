@@ -142,8 +142,8 @@ def write(directory: Path) -> list[str]:
     windows, width = records.shape[0], records.shape[1]
     groups = lists.count.shape[-1]
     header = struct.pack("<4i", 0x444C4F46, windows, width, groups)
-    pre = lists.pre[0].cpu().numpy().view("uint16").astype(np.int64)
-    at = (pre[:, :, 1:] - pre[:, :, :-1]).reshape(windows, -1, pre.shape[-1])[:, :width]
+    bounds = lists.bounds[0].cpu().numpy().view("uint16").astype(np.int64)
+    at = bounds.reshape(windows, -1, bounds.shape[-1])[:, :width]
     host, starts = _passes(records.cpu().numpy().view("uint16").reshape(windows, width, -1, 4), at)
     body = [host.tobytes(), starts.tobytes(), lists.count[0].to(torch.int16).contiguous().cpu().numpy().tobytes()]
     (directory / "lists.bin").write_bytes(header + b"".join(body))

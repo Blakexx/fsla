@@ -267,7 +267,7 @@ def _side(lists, carve_plan, routes, w: int, bh: int, group: int):
     ``group``; every window token and no entries for a side with no list level."""
     if not carve_plan.lists:
         return min(WINDOW, routes.tokens - w * WINDOW), (0,) * LIST_AT
-    totals = (lists.pre[bh, w, group, -1].long() & 0xFFFF).cpu().numpy()
+    totals = lists.totals[bh, w, group].long().cpu().numpy()
     return int(lists.count[bh, w, group]), tuple(int(v) for v in np.asarray(totals))
 
 

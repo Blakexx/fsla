@@ -104,13 +104,14 @@ constexpr bool least_plan_fits() {
 //: -- see docs/internals/carry/schedule.md#totals
 __device__ __forceinline__ int side_counts(const SideLists& l, bool listed, int tokens,
                                            int64_t group, int (&S)[kListAt]) {
-  uint4 v = make_uint4(0u, 0u, 0u, 0u);
-  if (listed) v = reinterpret_cast<const uint4*>(l.pre)[(group + 1) * kPreRows - 1];
-  const uint32_t q[4] = {v.x, v.y, v.z, v.w};
-  static_for<4>([&](auto K) {
-    S[2 * K] = static_cast<int>(q[K] & 0xffffu);
-    S[2 * K + 1] = static_cast<int>(q[K] >> 16);
-  });
+  int4 lo = make_int4(0, 0, 0, 0), hi = lo;
+  if (listed) {
+    lo = reinterpret_cast<const int4*>(l.totals)[2 * group];
+    hi = reinterpret_cast<const int4*>(l.totals)[2 * group + 1];
+  }
+  static_assert(kListAt == 8, "a group's totals are two 16-byte words");
+  const int q[kListAt] = {lo.x, lo.y, lo.z, lo.w, hi.x, hi.y, hi.z, hi.w};
+  static_for<kListAt>([&](auto K) { S[K] = q[K]; });
   return listed ? l.union_count[group] : tokens;
 }
 

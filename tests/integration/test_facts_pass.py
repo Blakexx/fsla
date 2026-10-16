@@ -135,8 +135,8 @@ def _layout(widths, L):
 
 def _outputs(BH, L, windows=1):
     """The outputs of a call that lists nothing, after ``list_exp``: the factor products, the gains planes, and each
-    side's four list tensors, empty."""
-    lists = [[torch.empty(0, dtype=torch.int16 if k < 3 else torch.int32, device="cuda") for k in range(4)]
+    side's five list tensors, empty."""
+    lists = [[torch.empty(0, dtype=torch.int32 if k in (2, 4) else torch.int16, device="cuda") for k in range(5)]
              for _ in range(2)]
     return [torch.empty((BH, L, 2), dtype=torch.float32, device="cuda"),
             torch.empty((BH, L, 2), dtype=torch.float16, device="cuda"),
@@ -287,16 +287,17 @@ def _lists_want(routes, values, layout, read_statics, write_statics, got, read_r
 
 
 def _assert_lists(got: list_model.Lists, want: list_model.Lists):
-    """Every defined slot of the pass's lists is the model's: the unions and their extents, the boundaries in prefix
-    form and each list to its end -- gathered on the device, so nothing past an end (undefined by the contract) is
-    read."""
+    """Every defined slot of the pass's lists is the model's: the unions and their extents, each list's boundaries and
+    the groups' totals, and each list to its end -- gathered on the device, so nothing past an end (undefined by the
+    contract) is read."""
     assert torch.equal(got.count.cpu().long(), want.count)
     assert torch.equal(got.union.cpu().long(), want.union)
-    pre = got.pre.long() & 0xFFFF
-    assert torch.equal(pre.cpu(), want.pre)
+    bounds = got.bounds.long() & 0xFFFF
+    assert torch.equal(bounds.cpu(), want.bounds)
+    assert torch.equal(got.totals.cpu().long(), want.totals)
     BH, windows, width = got.entries.shape[:3]
-    lengths = (pre[..., 1:, -1] - pre[..., :-1, -1]).reshape(BH, windows, -1)[..., :width]
-    end = (torch.arange(list_model.LIST_CAP, device=pre.device) < lengths[..., None])[..., None]
+    lengths = bounds[..., -1].reshape(BH, windows, -1)[..., :width]
+    end = (torch.arange(list_model.LIST_CAP, device=bounds.device) < lengths[..., None])[..., None]
     end = end.expand_as(got.entries)
     assert torch.equal(got.entries[end].cpu(), want.entries[end.cpu()])
 
