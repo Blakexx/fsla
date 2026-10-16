@@ -21,8 +21,8 @@ state never leaves the registers inside a call; the readout reads an f16 image o
   length), so the carry chunks a union at any multiple of 64 the facts pass never sees, out in prefix form over the
   group's lists modulo 2^16 (`kPreRows = 33`: a row a list, then the group's) beside the group's exact totals;
   `kListCap = kWindow` entries a list.
-- `kPlanItems = 27`, `kPlanBytes = 240`: a window's plan for a box class, its head and its items (`schedule.md#items`);
-  `kCandidates = 60`, the named forms (`schedule.md#planner`).
+- `kPlanWords = 16`, `kMaxSteps = 30`: a window's plan record for a box class, its plan word and a 16-bit step word a
+  step (`schedule.md#plan`).
 - `kSliceBytes = 64`: a level's slice in a pool row, the box's 32 digits at f16.
 - `kMaxLevels = 4`: the depth the operand block addresses.
 
@@ -67,9 +67,9 @@ or its high bits within each four for a row of an odd number of 64-byte quarters
 the rows and values at their strides (the row alignment law, `docs/internals/facts/facts.md`), the facts pass's
 lists, the den pass's units (`unit`, an exponent byte a token, a window wide so a window's copy is aligned). The
 outputs are `num` (packed s16 pairs at each token's unit, added as u32: `parts.md#drain`) and `check` (the final
-state's sum). `plans` are the plan pass's (`schedule.md#pass`), a window's for each box class. `readout_f16` is the
-readout's accumulation (`carry_api.md#carry-readout-accumulate`); `prefer` a named form every window's plan takes
-where it builds, -1 for none (`schedule.md#planner`). A bound capture copies the block and its grid out before the
+state's sum). `plans` are the plan pass's records (`schedule.md#pass`), a window's for each box class.
+`readout_f16` is the readout's accumulation (`carry_api.md#carry-readout-accumulate`); `forced` a plan form every
+window takes where it fits, -1 for none (`schedule.md#planner`). A bound capture copies the block and its grid out before the
 launch (`CarryCapture`, `carry_api.md#carry-capture-bind`).
 
 <a id="refusals"></a>
@@ -83,8 +83,9 @@ launch (`CarryCapture`, `carry_api.md#carry-capture-bind`).
   digits; a side with no list level names exactly a row level and a coefficient level; an operand slice is a 4-byte
   copy at least and `kSliceBytes` at most.
 - every tensor's dtype, contiguity and exact shape (the lists' five, `unit` `[BH, windows x W]`); the arm key's channels
-  and factor counts agreeing with the carve; the readout's accumulation fp32 (0) or fp16 (1); a named form -1 or
-  below `kCandidates`; a window's token stride under 2^31 / `kWindow` (a window's offsets are 32-bit).
+  and factor counts agreeing with the carve; the readout's accumulation fp32 (0) or fp16 (1); a forced form -1 or a
+  mode (0 to 2) with two chunk fields in 14 bits; a window's token stride under 2^31 / `kWindow` (a window's offsets
+  are 32-bit).
 
 The closed-world arch refusal (`check_arch_table`) is the first statement of every entry.
 

@@ -17,7 +17,7 @@ from tests.oracle.carry_fixtures import FORM_CELLS, alternating_bundle
 from tests.oracle.readout_reference import readout, units, unpack_num
 
 
-def _readout_ratio(widths, L, write_sparse, growth, accumulate, *, live=4, prefer=None):
+def _readout_ratio(widths, L, write_sparse, growth, accumulate, *, live=4, forced=None):
     """``(ratio, plans)``: the call's largest slot distance from the reference over its bound, and its boxes' plans."""
     routes, values = alternating_bundle(widths, L, write_sparse, live=live)
     window = torch.arange(L, device="cuda") // carry_ops.WINDOW
@@ -30,7 +30,7 @@ def _readout_ratio(widths, L, write_sparse, growth, accumulate, *, live=4, prefe
                             carry_ops.form(key).read_row)
     level_s = 1 - write_sparse
     unit = units(routes, values, facts.list_exp, level_s, carry_ops.WINDOW)
-    num, _ = carry_ops.carry(routes, values, facts, carve, unit, accumulate=accumulate, prefer=prefer)
+    num, _ = carry_ops.carry(routes, values, facts, carve, unit, accumulate=accumulate, forced=forced)
     torch.cuda.synchronize()
     want, bound = readout(routes, values, facts.list_exp, level_s, carry_ops.WINDOW, unit, accumulate)
     got = unpack_num(num).double()
@@ -38,7 +38,7 @@ def _readout_ratio(widths, L, write_sparse, growth, accumulate, *, live=4, prefe
     assert (want[:, later].abs() > 64).float().mean() > 0.5, "most later slots under 64 units: the cell is vacuous"
     assert torch.equal(got[:, :carry_ops.WINDOW], torch.zeros_like(got[:, :carry_ops.WINDOW])), (
         "the first window read a state before any write")
-    return ((got - want).abs() / bound).max().item(), carry_plan.plans(routes, facts, carve, prefer)
+    return ((got - want).abs() / bound).max().item(), carry_plan.plans(routes, facts, carve, forced)
 
 
 @pytest.mark.parametrize("accumulate", ["fp32", "fp16"])
@@ -52,10 +52,10 @@ def test_the_readout_is_the_reference_per_slot(write_sparse, growth, accumulate)
     assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"
 
 
-@pytest.mark.parametrize(("widths", "live", "prefer", "forms"), FORM_CELLS)
-def test_every_plan_form_reads_out_to_the_reference(widths, live, prefer, forms):
+@pytest.mark.parametrize(("widths", "live", "forced", "forms"), FORM_CELLS)
+def test_every_plan_form_reads_out_to_the_reference(widths, live, forced, forms):
     """Each of the plan's forms (`tests/oracle/carry_fixtures.py` `FORM_CELLS`), its cell taking them by the plans'
     model: every slot of ``num`` within its bound, the units climbing 2^8 a window, the device's accumulate form."""
-    ratio, plans = _readout_ratio(widths, 2048, 0, 8, carry_ops.readout_accumulate(), live=live, prefer=prefer)
+    ratio, plans = _readout_ratio(widths, 2048, 0, 8, carry_ops.readout_accumulate(), live=live, forced=forced)
     assert forms <= carry_plan.forms(plans), f"the cell takes {sorted(carry_plan.forms(plans))}, not {sorted(forms)}"
     assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"

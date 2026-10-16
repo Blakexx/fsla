@@ -29,9 +29,9 @@ forms' numerics differ, GeForce's the coarser; both are gated per slot (`tests/o
 
 The Python call launches over the bundle's rows and values, the facts pass's lists and exponents and the den pass's
 units, its readout in the device's accumulation (`readout_accumulate`) or the one a gate names, each window's plan its
-own unless a gate or a measurement names a form (`prefer`, one of `CANDIDATES`), the facts pass run with this arm's
-read pool row (`form`, read off the binary's census for the device's card). `plans_out` allocates the plans a gate
-reads (`PLAN_BYTES` a window, `tests/oracle/test_carry_plan.py`). `arm_key` is the compiled body
+own unless a gate or a measurement forces a form (`forced`, as `forced_word` encodes it), the facts pass run with
+this arm's read pool row (`form`, read off the binary's census for the device's card). `plans_out` allocates the plan
+records a gate reads (`PLAN_WORDS` a window, `tests/oracle/test_carry_plan.py`). `arm_key` is the compiled body
 a carve selects: each side's dense rows a warp and its operand's level count, the channel extent and the publish
 field.
 

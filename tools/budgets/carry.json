@@ -11,7 +11,7 @@
   "read_fill": "read_fill",
   "fold_fill": "fold_fill",
   "staging": "stage_window",
-  "barriers": "Arrivals",
+  "barriers": "Flow",
   "glue": "carry_kernel"
  },
  "cells": {

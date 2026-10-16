@@ -17,8 +17,8 @@ by up to ~5% run to run; time is the probe's.
 The clock is not free: bound, the carry runs ~16% longer (nl64k-alt-k4's first 32 windows on sm_86: 902 us against
 1,045, `docs/lab/carry_window.md`), since each lap's clock read is a point ptxas does not schedule across. The ledger
 attributes a launch's time to phases; the time itself is read with it unbound. `--warmup` (default 1) runs launches before the ledger is bound: a fresh
-binary's first launch is never a reading. `--prefer` names the plan's form each window takes where it builds
-(`rola.ops.carry.CANDIDATES`, `docs/internals/carry/schedule.md#planner`), so forms are read side by side.
+binary's first launch is never a reading. `--forced` names the plan's form each window takes where it fits
+(`rola.ops.carry.forced_word`, `docs/internals/carry/schedule.md#planner`), so forms are read side by side.
 
 `--json PATH` also writes the reading: the cell, launches, warm-up, the launch's CTA-windows, every phase's cycles a
 warp a window and the total, and every phase's per-warp row. `cta_windows(cell)` (CTAs times windows) is the one divisor

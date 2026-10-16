@@ -21,10 +21,8 @@ constexpr int kMaxLevels = 4;
 constexpr int kBoxLists = 32, kBoxDigits = 32, kBoxChannels = 32;
 constexpr int kStateValues = kBoxLists * kBoxDigits * kBoxChannels;
 constexpr int kPreRows = kBoxLists + 1;
-//: A WINDOW'S PLAN for a box class: its head and items. -- see docs/internals/carry/schedule.md#items
-constexpr int kPlanItems = 3 + 3 * kListAt;
-constexpr int kPlanBytes = (16 + 8 * kPlanItems + 15) / 16 * 16;
-constexpr int kCandidates = 3 * 5 * 4;
+//: A WINDOW'S PLAN RECORD: its plan word, then a 16-bit step word a step. -- see docs/internals/carry/schedule.md#plan
+constexpr int kPlanWords = 16, kMaxSteps = 2 * (kPlanWords - 1);
 //: A SLICE: a token's operand row over the box's 32 digits of one level, f16.
 constexpr int kSliceBytes = 64;
 
@@ -75,9 +73,10 @@ struct CarryParams {
   const int16_t* write_exp;
   const int8_t* unit;
   int readout_f16;  // the readout's MMAs accumulate in fp16 (1) or fp32 (0): carry_api.md#carry-readout-accumulate
-  int prefer;  // the plan candidate a window takes where it fits, -1 none: carry_api.md#carry-forward
+  int forced;  // a forced plan form, -1 none: carry_api.md#carry-forward
   uint32_t* num;
-  uint8_t* plans;  // the plan pass's plans, [BH][windows][box classes]: schedule.md#pass
+  uint32_t*
+      plans;  // the plan pass's records, [BH][windows][box classes][kPlanWords]: schedule.md#pass
   float* check;
   float* probe;
   long long* ledger;

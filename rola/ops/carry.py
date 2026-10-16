@@ -21,10 +21,9 @@ from rola.ops import facts as facts_ops
 from rola.ops._ext import extension
 
 __all__ = [
-    "CANDIDATES",
     "LEDGER_PHASES",
     "LEDGER_WARPS",
-    "PLAN_BYTES",
+    "PLAN_WORDS",
     "WINDOW",
     "Form",
     "arm_key",
@@ -34,6 +33,7 @@ __all__ = [
     "capture_bytes",
     "carry",
     "census",
+    "forced_word",
     "form",
     "ledger_bind",
     "plans_out",
@@ -63,15 +63,16 @@ def _list_level(plan) -> int:
 
 
 def carry(routes, values, facts, carve: Carve, unit: torch.Tensor, accumulate: str | None = None,
-          prefer: str | None = None, plans: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+          forced: str | None = None, plans: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
     """THE LAUNCH: ``(num, check)`` -- ``num`` the readout's packed partials at each token's unit, ``check`` the
     skeleton's fp32 sum of the final state. ``facts`` is the facts pass's over this bundle, its read entries' offsets
     in this arm's read pool rows (:func:`form`). The readout accumulates in the device's form
     (:func:`readout_accumulate`); ``accumulate`` (``"fp32"`` or ``"fp16"``) is reserved: the gates' choice of form, so
     both forms are gated on any card (``tests/oracle/test_carry_readout.py``). Each window's plan is the planner rule's
-    (docs/internals/carry/schedule.md#planner); ``prefer``, a named form (:data:`CANDIDATES`), is reserved: the gates'
-    and the measurements' choice of the form a window takes where it builds; ``plans`` (:func:`plans_out`) is reserved:
-    the plan pass's output for a gate to read, else the call's own (docs/internals/carry/carry_api.md#carry)."""
+    (docs/internals/carry/schedule.md#planner); ``forced`` (:func:`forced_word`) is reserved: the gates' and the
+    measurements' choice of the plan a window takes where every chunk of it fits; ``plans`` (:func:`plans_out`) is
+    reserved: the plan pass's output for a gate to read, else the call's own
+    (docs/internals/carry/carry_api.md#carry)."""
     routes.refuse_grouped("the carry")
     BH = routes.batch * routes.heads
     d_v = values.v.shape[-1]
@@ -82,33 +83,45 @@ def carry(routes, values, facts, carve: Carve, unit: torch.Tensor, accumulate: s
         facts.list_exp, list(facts_ops.side_lists(facts, "read")), unit, num, check, list(carve.widths),
         list(carve.extents), carve.channels, _list_level(carve.fold), list(carve.fold.operand),
         _list_level(carve.readout), list(carve.readout.operand), list(arm_key(carve)),
-        _ACCUMULATE[accumulate or readout_accumulate(routes.device)], _PREFER[prefer], plans)
+        _ACCUMULATE[accumulate or readout_accumulate(routes.device)], forced_word(forced), plans)
     return num, check
 
 
-#: A WINDOW'S PLAN's bytes: its head (16), then its items (8 each), as `schedule.cuh` packs them.
-PLAN_BYTES = 240
+#: A WINDOW'S PLAN RECORD's 32-bit words: its plan word, then its steps' 16-bit words (`carry.cuh` `kPlanWords`).
+PLAN_WORDS = 16
 
 
 def plans_out(routes, carve: Carve) -> torch.Tensor:
-    """An uninitialized ``[BH, windows, box classes, PLAN_BYTES]`` u8 tensor for :func:`carry`'s plans: a box class a pair
-    of the two list levels' 32-digit groups (docs/internals/carry/schedule.md#pass)."""
+    """An uninitialized ``[BH, windows, box classes, PLAN_WORDS]`` int32 tensor for :func:`carry`'s plan records: a box
+    class a pair of the two list levels' 32-digit groups (docs/internals/carry/schedule.md#pass)."""
     groups = 1
     for plan in (carve.readout, carve.fold):
         groups *= max(1, -(-carve.widths[plan.lists[0]] // 32)) if plan.lists else 1
     windows = -(-routes.tokens // WINDOW)
-    return torch.empty((routes.batch * routes.heads, windows, groups, PLAN_BYTES), dtype=torch.uint8,
+    return torch.empty((routes.batch * routes.heads, windows, groups, PLAN_WORDS), dtype=torch.int32,
                        device=routes.device)
 
 
 _ACCUMULATE = {"fp32": 0, "fp16": 1}
-#: THE PLAN'S CANDIDATES, in the plan pass's order (docs/internals/carry/schedule.md#planner): an image mode by a
-#: fold chunk by an order -- the read chunks pipelined or each drained before the next, the last drain before the fold
-#: or after its first chunk.
-CANDIDATES = tuple(f"{mode}/{fold}/{order}" for mode in ("whole", "ring8", "ring16")
-                   for fold in ("union", "256", "192", "128", "64")
-                   for order in ("pipelined", "pipelined-late", "serial", "serial-late"))
-_PREFER = {None: -1, **{name: k for k, name in enumerate(CANDIDATES)}}
+_MODES = {"rule": 0, "whole": 1, "halves": 2}
+
+
+def forced_word(forced: str | None) -> int:
+    """A FORCED PLAN FORM as the plan pass takes it (docs/internals/carry/schedule.md#planner): ``"mode/read/fold"``,
+    the mode ``rule``, ``whole`` or ``halves`` and each chunk ``rule``, ``union`` or a multiple of 64 slots -- a window
+    takes it where every chunk of it fits, else the rule's plan; ``None`` the rule's everywhere."""
+    if forced is None:
+        return -1
+    mode, read, fold = forced.split("/")
+
+    def chunk(name: str, union: int) -> int:
+        if name in ("rule", "union"):
+            return 0 if name == "rule" else union
+        if int(name) % 64 or not 0 < int(name) // 64 < union:
+            raise ValueError(f"a forced chunk is rule, union or a multiple of 64 slots below {64 * union}: {name}")
+        return int(name) // 64
+
+    return _MODES[mode] | chunk(read, 0xFF) << 2 | chunk(fold, 0xF) << 10
 
 
 def readout_accumulate(device: torch.device | None = None) -> str:

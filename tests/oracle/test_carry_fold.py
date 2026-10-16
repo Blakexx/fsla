@@ -23,7 +23,7 @@ def _rtol(L: int) -> float:
     return L / 16 * 2.0 ** -23
 
 
-def _fold_ratio(widths, L, write_sparse, growth, *, live=4, prefer=None):
+def _fold_ratio(widths, L, write_sparse, growth, *, live=4, forced=None):
     """``(ratio, plans)``: the call's largest slot distance from the reference over its bound, and its boxes' plans."""
     routes, values = alternating_bundle(widths, L, write_sparse, live=live)
     window = torch.arange(L, device="cuda") // carry_ops.WINDOW
@@ -38,7 +38,7 @@ def _fold_ratio(widths, L, write_sparse, growth, *, live=4, prefer=None):
     unit = torch.zeros((BH, L), dtype=torch.int8, device="cuda")
     carry_ops.probe_bind(probe)
     try:
-        carry_ops.carry(routes, values, facts, carve, unit, prefer=prefer)
+        carry_ops.carry(routes, values, facts, carve, unit, forced=forced)
         torch.cuda.synchronize()
     finally:
         carry_ops.probe_bind(None)
@@ -49,7 +49,7 @@ def _fold_ratio(widths, L, write_sparse, growth, *, live=4, prefer=None):
     want, env = state.reshape(BH, N, d_v), env.reshape(BH, N, d_v)
     err = (probe.double() - want).abs()
     assert (env > 0).float().mean() > 0.5, "most slots unwritten: the cell is vacuous"
-    return (err / (env * _rtol(L)).clamp_min(1e-300)).max().item(), carry_plan.plans(routes, facts, carve, prefer)
+    return (err / (env * _rtol(L)).clamp_min(1e-300)).max().item(), carry_plan.plans(routes, facts, carve, forced)
 
 
 @pytest.mark.parametrize("write_sparse", [0, 1])
@@ -62,10 +62,10 @@ def test_the_fold_is_the_reference_per_slot(write_sparse, growth):
     assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"
 
 
-@pytest.mark.parametrize(("widths", "live", "prefer", "forms"), FORM_CELLS)
-def test_every_plan_form_folds_to_the_reference(widths, live, prefer, forms):
+@pytest.mark.parametrize(("widths", "live", "forced", "forms"), FORM_CELLS)
+def test_every_plan_form_folds_to_the_reference(widths, live, forced, forms):
     """Each of the plan's forms (`tests/oracle/carry_fixtures.py` `FORM_CELLS`), its cell taking them by the plans'
     model: the final state within its bound per slot, the units climbing 2^8 a window."""
-    ratio, plans = _fold_ratio(widths, 2048, 0, 8, live=live, prefer=prefer)
+    ratio, plans = _fold_ratio(widths, 2048, 0, 8, live=live, forced=forced)
     assert forms <= carry_plan.forms(plans), f"the cell takes {sorted(carry_plan.forms(plans))}, not {sorted(forms)}"
     assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"

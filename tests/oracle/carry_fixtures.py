@@ -44,15 +44,14 @@ def alternating_bundle(widths, L, write_sparse, *, live=4, d_v=64, seed=0):
     return routes, values
 
 
-#: THE PLAN'S FORMS, each exercised by a cell -- its widths, live digits a token, the candidate it names (None: the
-#: rule's) -- and named as `tests/oracle/carry_plan.forms` names them: each image mode, alone and over read chunks,
-#: the serial order, the fold in chunks, the late drain, fills free and waiting, and the next window's first read
-#: (docs/internals/carry/schedule.md#planner).
+#: THE PLAN'S FORMS, each exercised by a cell -- its widths, live digits a token, the form it forces (None: the rule's)
+#: -- and named as `tests/oracle/carry_plan.forms` names them: each image mode, alone and over read chunks, the fold in
+#: chunks, an entry filled ahead and one filled at its own step, a window's first filled by the window before, and a
+#: fill that waits on the retired read's drain (docs/internals/carry/schedule.md#planner).
 FORM_CELLS = (
-    ((64, 64), 4, None, {"ring16-chunks", "fill-free", "fill-waits", "next"}),
-    ((64, 64), 4, "ring8/union/pipelined", {"ring8-chunks"}),
-    ((64, 64), 16, None, {"serial", "fold-chunks"}),
-    ((256, 256), 2, None, {"whole"}),
-    ((256, 256), 4, "ring16/union/pipelined-late", {"ring16", "late"}),
-    ((256, 256), 16, "whole/union/serial-late", {"whole-chunks"}),
+    ((64, 64), 4, None, {"halves", "halves-chunks", "ahead", "deferred", "reuse"}),
+    ((64, 64), 16, None, {"fold-chunks", "next"}),
+    ((256, 256), 2, None, {"whole", "next"}),
+    ((256, 256), 4, "whole/64/rule", {"whole-chunks"}),
+    ((256, 256), 2, "halves/128/128", {"halves-chunks", "fold-chunks"}),
 )

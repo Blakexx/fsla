@@ -17,6 +17,12 @@ a sixth of the carry's samples, and the carry ran 16% faster without it. The win
 (volatile), so none of it holds a register across the windows. `window_of` is a side's window: its tokens from the
 window index, its statics from the tenant.
 
+<a id="window"></a>
+`opaque` and `parity_of` pass the window index (and a thread's) through an opaque move, so a window-invariant offset --
+a window's first token, a list's row base, a tenant by parity, the drain's cell -- is formed at each use: computed once
+before a window's steps, the compiler holds it in a register across the readout, the kernel's register peak, and at
+255 a thread one such value spills.
+
 <a id="lists-in"></a>
 ## Lists in
 
@@ -24,8 +30,8 @@ A window ahead (`carry_kernel.md#staging`), into the window's parity of the tena
 (512 slots, 1 KB, 64 copies), its group's boundaries in prefix form (33 rows, a 16-byte copy each) and its count
 (one 4-byte copy); the planner alone reads the exact totals.
 `facts_in` copies the write lists' exponent pairs (128 bytes) and the window's token units (512 bytes). `union_of`,
-`pre_of` and `slots_of` read a window's tenants back (`pre_of` forms its parity at each use, so its offset is never
-held across a window's items); `chunk_cols` names a chunk's columns in the boundaries.
+`pre_of` and `slots_of` read a window's tenants back (`pre_of` forms its parity at each use, `#window`);
+`chunk_cols` names a chunk's columns in the boundaries.
 
 <a id="swizzle"></a>
 ## The pool rows' swizzle

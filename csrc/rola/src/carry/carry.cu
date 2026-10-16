@@ -131,7 +131,7 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
                    std::vector<int64_t> widths, std::vector<int64_t> extents, int64_t channels,
                    int64_t write_list, std::vector<int64_t> write_operand, int64_t read_list,
                    std::vector<int64_t> read_operand, std::vector<int64_t> key, int64_t accumulate,
-                   int64_t prefer, std::optional<Tensor> plans_out) {
+                   int64_t forced, std::optional<Tensor> plans_out) {
   check_arch_table();
   const int D = (int)widths.size();
   STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels && (int)extents.size() == D, "the carve names ", D,
@@ -208,10 +208,12 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   STD_TORCH_CHECK(accumulate == 0 || accumulate == 1,
                   "the readout accumulates in fp32 (0) or fp16 (1), got ", accumulate);
   p.readout_f16 = static_cast<int>(accumulate);
-  STD_TORCH_CHECK(prefer >= -1 && prefer < kCandidates,
-                  "the preferred plan candidate is -1 (none) or one of the ", kCandidates, ", got ",
-                  prefer);
-  p.prefer = static_cast<int>(prefer);
+  STD_TORCH_CHECK(
+      forced >= -1 && forced < (1 << 14) && (forced < 0 || (forced & 3) != 3),
+      "the forced plan form is -1 (none) or mode | read chunk << 2 | fold chunk << 10 (mode 0 "
+      "the rule's, 1 whole, 2 halves), got ",
+      forced);
+  p.forced = static_cast<int>(forced);
   p.num = reinterpret_cast<uint32_t*>(num.mutable_data_ptr<int32_t>());
   p.check = check.mutable_data_ptr<float>();
   p.probe = g_probe;
@@ -223,13 +225,12 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   const int64_t classes = (p.read_lists.groups > 0 ? p.read_lists.groups : 1)
                           * (p.write_lists.groups > 0 ? p.write_lists.groups : 1);
   Tensor plans =
-      plans_out ? *plans_out : empty_cuda({BH * windows * classes * kPlanBytes}, Dtype::Byte);
-  STD_TORCH_CHECK(
-      plans.is_cuda() && plans.is_contiguous() && plans.scalar_type() == Dtype::Byte
-          && plans.numel() == BH * windows * classes * kPlanBytes,
-      "plans_out is a contiguous CUDA u8 tensor of ", BH * windows * classes * kPlanBytes,
-      " bytes (a window's plan a batch-head and box class), got ", shape(plans.sizes()));
-  p.plans = static_cast<uint8_t*>(plans.mutable_data_ptr());
+      plans_out ? *plans_out : empty_cuda({BH, windows, classes, kPlanWords}, Dtype::Int);
+  STD_TORCH_CHECK(plans.is_cuda() && plans.is_contiguous() && plans.scalar_type() == Dtype::Int
+                      && plans.sizes() == Shape({BH, windows, classes, kPlanWords}),
+                  "plans_out is the contiguous CUDA int32 [BH, windows, box classes, ", kPlanWords,
+                  "] plan records, got ", shape(plans.sizes()));
+  p.plans = reinterpret_cast<uint32_t*>(plans.mutable_data_ptr<int32_t>());
   p.ledger = g_ledger;
   if (p.ledger != nullptr)
     STD_TORCH_CHECK(g_ledger_ctas >= boxes * BH, "the bound phase ledger covers ", g_ledger_ctas,

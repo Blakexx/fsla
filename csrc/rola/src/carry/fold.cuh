@@ -52,7 +52,7 @@ __device__ __forceinline__ void fold_units(uint8_t* smem, const Window& ww, int 
   constexpr int kLanes = 32 / P::kFoldLists;
   const int j = lane / kLanes;
   const int16_t* exps =
-      reinterpret_cast<const int16_t*>(smem + P::kWriteExp) + (w & 1) * kBoxLists * 2;
+      reinterpret_cast<const int16_t*>(smem + P::kWriteExp) + parity_of(w) * kBoxLists * 2;
   const int k = ww.listed ? exps[2 * fold_list(warp, j) + 1] : kExpDead;
   UnitBook* const book = reinterpret_cast<UnitBook*>(smem + P::kBook) + fold_list(warp, j);
   UnitBook b = *book;

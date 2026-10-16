@@ -1,11 +1,13 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE CARRY'S PLANS, modeled: per (batch-head, box, window) the plan `csrc/rola/src/carry/schedule.cuh`'s plan pass
-writes from the facts pass's counts -- the rule's form (or a named candidate's), its items, buffers and fills -- word
-for word, so a gate asserts the kernel's plans and the forms its cell exercises (docs/internals/carry/schedule.md#planner).
+"""THE CARRY'S PLANS, modeled: per (batch-head, box class, window) the record `csrc/rola/src/carry/schedule.cuh`'s plan
+pass writes from the facts pass's counts -- the plan word (the forced form's where it fits, else the rule's) and a step
+word a step by the rule -- word for word, so a gate asserts the kernel's records and the forms its cell exercises
+(docs/internals/carry/schedule.md#planner).
 
 Symbols: ``W`` the window (512 tokens), ``U`` a side's union slots in a window, ``S[j]`` a side's box lists' entries
-before union slot ``64 (j + 1)``, ``B`` the area's bytes.
+before union slot ``64 (j + 1)``, ``B`` the area's bytes, ``n`` a window's entries (its read chunks, then its fold
+chunks), ``t`` a step (``n`` the step that only retires the last entry).
 """
 from __future__ import annotations
 
@@ -19,39 +21,27 @@ from rola.ops import facts as facts_ops
 WINDOW, LIST_BOUND, LIST_AT = 512, 64, 8
 PAD_BYTES, PANEL_ROW, BOX = 512, 64, 32
 IMAGE_WHOLE, IMAGE_RING = 32 * 2048, 16 * 2048
-NO_ITEM, NEXT_ITEM = 31, 30
-STORE_ITEM = 1  # the store's work stages the next window's inputs, so the next window's first read is hosted past it
-MAXIMA, STORE, READ, DRAIN, FOLD, BOUNDARY = range(6)
-FILLED, UNITS = 1, 2
-WHOLE, RING16 = 0, 2  # the image modes' codes: whole, ring of 8-plane batches (1), 16-plane halves
-FOLD_OPTIONS, ORDERS = 5, 4
+WHOLE, HALVES = 0, 1
+TOP = 0
 
 
 class Counts(NamedTuple):
-    """A window's counts: each side's union and segment sums, the next window's first read buffer's bytes."""
+    """A window's counts: each side's union and segment sums."""
 
     ru: int
     rs: tuple
     fu: int
     fs: tuple
-    rnext: int
 
 
-class Form(NamedTuple):
-    """A window's form: its image mode, its fold chunk, its order (read chunks each drained before the next: serial;
-    the last drain after the fold's first chunk: late)."""
+class Win(NamedTuple):
+    """A window as the plan pass sees it: its counts, its plan word, its entries and read entries, its image's bytes."""
 
-    mode: int
-    fc: int
-    serial: bool
-    late: bool
-
-
-class WindowPlan(NamedTuple):
-    """One window's plan: its head's four words and its items' two words each, as the plan pass writes them."""
-
-    head: tuple
-    items: tuple
+    c: Counts
+    word: int
+    n: int
+    nr: int
+    image: int
 
 
 def _a128(x: int) -> int:
@@ -94,172 +84,156 @@ def largest_chunk(u: int, S, room: int, nbytes) -> int:
     return LIST_BOUND * (two if two > 0 else one)
 
 
-def read_chunk_of(ru: int, rs, read_row: int, area: int) -> int:
-    return largest_chunk(ru, rs, area - IMAGE_RING, lambda s, e: read_bytes(s, e, read_row))
+def chunks_of(u: int, chunk: int) -> int:
+    return -(-u // chunk) if chunk > 0 else 0
 
 
-def first_read_bytes(ru: int, rs, read_row: int, area: int) -> int:
-    first = min(read_chunk_of(ru, rs, read_row, area), ru)
-    return read_bytes(first, entries_of(rs, 0, first, ru), read_row)
+def plan_word(mode: int, rc: int, fc: int, ru: int, fu: int) -> int:
+    """`plan_word`: mode | read chunk / 64 << 1 | fold chunk / 64 << 9 | read chunks << 13 | fold chunks << 21."""
+    return (mode | -(-rc // LIST_BOUND) << 1 | -(-fc // LIST_BOUND) << 9 | chunks_of(ru, rc) << 13
+            | chunks_of(fu, fc) << 21)
 
 
-def rule_form(c: Counts, read_row: int, write_row: int, area: int) -> Form:
-    """The image whole where it fits beside the read buffers in flight, else in 16-digit halves; the fold's largest
-    chunk in the area; the reads pipelined (`rule_form`)."""
-    rc = read_chunk_of(c.ru, c.rs, read_row, area) if c.ru > 0 else 0
-    nr = -(-c.ru // rc) if c.ru > 0 else 0
+def chunks(word: int) -> tuple[int, int, int, int, int]:
+    """``(mode, read chunk, fold chunk, read chunks, fold chunks)`` of a plan word."""
+    return (word & 1, LIST_BOUND * (word >> 1 & 0xFF), LIST_BOUND * (word >> 9 & 0xF), word >> 13 & 0xFF,
+            word >> 21 & 0xF)
+
+
+def rule_plan(c: Counts, read_row: int, write_row: int, area: int) -> int:
+    """`rule_plan`: the read chunk beside the halves, the image whole where it fits beside the read buffers in flight,
+    the fold's largest chunk in the area."""
+    rc = largest_chunk(c.ru, c.rs, area - IMAGE_RING, lambda s, e: read_bytes(s, e, read_row)) if c.ru > 0 else 0
+    nr = chunks_of(c.ru, rc)
     most = 0
     if nr > 0:
         most = read_bytes(min(rc, c.ru), chunk_max(c.rs, rc // LIST_BOUND, c.ru) if rc < c.ru
                           else _sum_at(c.rs, LIST_AT - 1), read_row)
     whole = nr > 0 and IMAGE_WHOLE + (2 if nr > 1 else 1) * most <= area
     fc = largest_chunk(c.fu, c.fs, area, lambda s, e: fold_bytes(s, e, write_row)) if c.fu > 0 else 0
-    return Form(WHOLE if whole else RING16, fc, False, False)
+    return plan_word(WHOLE if whole else HALVES, rc, fc, c.ru, c.fu)
 
 
-def named_form(cand: int, c: Counts) -> Form | None:
-    """A named candidate's form (an image mode by a fold chunk by an order), None where it names no form distinct
-    from another (`named_form`)."""
-    if not 0 <= cand < len(carry_ops.CANDIDATES):
-        return None
-    fopt, order = cand // ORDERS % FOLD_OPTIONS, cand % ORDERS
-    f = Form(cand // (FOLD_OPTIONS * ORDERS), c.fu if fopt == 0 else LIST_BOUND * (FOLD_OPTIONS - fopt), order >= 2,
-             (order & 1) != 0)
-    return f if fopt == 0 or f.fc < c.fu else None
+def forced_plan(forced: int, c: Counts, rule: int, read_row: int, write_row: int, area: int) -> int:
+    """`forced_plan`: the forced form's plan where every chunk fits alone beside its image and a whole image has reads
+    to serve; else the rule's."""
+    if forced < 0:
+        return rule
+    r_mode, r_rc, r_fc, _, _ = chunks(rule)
+    fm, fr, ff = forced & 3, forced >> 2 & 0xFF, forced >> 10 & 0xF
+    mode = r_mode if fm == 0 else fm - 1
+    rc = 0 if c.ru == 0 else r_rc if fr == 0 else c.ru if fr == 0xFF else LIST_BOUND * fr
+    fc = 0 if c.fu == 0 else r_fc if ff == 0 else c.fu if ff == 0xF else LIST_BOUND * ff
+    image = IMAGE_WHOLE if mode == WHOLE else IMAGE_RING
+    fits = mode == HALVES or c.ru > 0
+    for first in range(0, c.ru, rc or 1):
+        s = min(rc, c.ru - first)
+        fits = fits and image + read_bytes(s, entries_of(c.rs, first, s, c.ru), read_row) <= area
+    for first in range(0, c.fu, fc or 1):
+        s = min(fc, c.fu - first)
+        fits = fits and fold_bytes(s, entries_of(c.fs, first, s, c.fu), write_row) <= area
+    return plan_word(mode, rc, fc, c.ru, c.fu) if fits else rule
 
 
-def _bits(v: int, at: int, n: int) -> int:
-    return (v >> at) & ((1 << n) - 1)
+def win_of(c: Counts, forced: int, read_row: int, write_row: int, area: int) -> Win:
+    """`win_of`: a window's plan word and what the rule reads off it."""
+    word = forced_plan(forced, c, rule_plan(c, read_row, write_row, area), read_row, write_row, area)
+    mode, _, _, nr, nf = chunks(word)
+    return Win(c, word, nr + nf, nr, (IMAGE_WHOLE if mode == WHOLE else IMAGE_RING) if nr > 0 else 0)
 
 
-def build(f: Form, c: Counts, read_row: int, write_row: int, area: int) -> WindowPlan | None:
-    """A window's plan in a form (`build`): its items in order, each buffer placed, each fill hosted; None where the
-    form does not fit."""
+def entry_bytes(x: Win, t: int, read_row: int, write_row: int) -> int:
+    """Entry ``t``'s buffer bytes (`entry_bytes_of`): its chunk's slots and entries from the exact totals."""
+    _, rc, fc, _, _ = chunks(x.word)
+    read = t < x.nr
+    chunk, total = (rc, x.c.ru) if read else (fc, x.c.fu)
+    first = (t if read else t - x.nr) * chunk
+    slots = min(chunk, total - first)
+    if read:
+        return read_bytes(slots, entries_of(x.c.rs, first, slots, total), read_row)
+    return fold_bytes(slots, entries_of(x.c.fs, first, slots, total), write_row)
+
+
+def slot_place(slot: int, nbytes: int, base: int, area: int) -> int:
+    return area - nbytes if slot == TOP else base
+
+
+def disjoint(a: int, ab: int, b: int, bb: int) -> bool:
+    return a + ab <= b or b + bb <= a
+
+
+def fits_beside(at: int, nbytes: int, live_at: int, live_bytes: int, image: int, area: int) -> bool:
+    return at >= image and at + nbytes <= area and disjoint(at, nbytes, live_at, live_bytes)
+
+
+class Record(NamedTuple):
+    """One window's record as the plan pass writes it: its plan word and its steps, each ``(at, ahead, next, reuse)``
+    -- the entry's place, filled ahead, the next entry filled now, the rendezvous between the retired read's drain and
+    a fill that reuses its place."""
+
+    word: int
+    steps: tuple
+
+    def words(self) -> tuple:
+        """The record's 32-bit words the plan pass writes: the plan word, then the steps' 16-bit words in pairs."""
+        packed = [at // 128 | ahead << 11 | nxt << 12 | reuse << 13 for at, ahead, nxt, reuse in self.steps]
+        packed += [0] * (len(packed) & 1)
+        return (self.word,) + tuple(lo | hi << 16 for lo, hi in zip(packed[::2], packed[1::2]))
+
+
+def records(wins: list[Win], read_row: int, write_row: int, area: int) -> list[Record]:
+    """A box class's records over its windows (`window_plan_kernel`): the slot parity an exclusive scan of the entry
+    counts' parities, each window's first entry filled ahead where the window before leaves it room, its steps by the
+    rule."""
     B = area
-    mode, fc, serial, late = f
-    rc = read_chunk_of(c.ru, c.rs, read_row, area) if c.ru > 0 else 0
-    nr = -(-c.ru // rc) if c.ru > 0 else 0
-    nf = -(-c.fu // fc) if c.fu > 0 else 0
-    ibytes = IMAGE_WHOLE if mode == WHOLE else IMAGE_RING
 
-    def bytes_of(kind, first, slots):
-        if kind == READ:
-            return read_bytes(slots, entries_of(c.rs, first, slots, c.ru), read_row)
-        return fold_bytes(slots, entries_of(c.fs, first, slots, c.fu), write_row)
+    def eb(x, t):
+        return entry_bytes(x, t, read_row, write_row)
 
-    r0 = bytes_of(READ, 0, min(rc, c.ru)) if nr > 0 else 0
-    if ((mode == WHOLE and nr == 0) or (serial and nr <= 1) or (late and (nr == 0 or nf == 0))
-            or (nr > 0 and ibytes + r0 > B)):
-        return None
-
-    items: list[list[int]] = []
-    read_at, drain_at, fold_at = [0] * LIST_AT, [0] * LIST_AT, [0] * LIST_AT
-
-    def put(kind, flags, first, slots, dep):
-        items.append([kind | flags << 3 | (first // LIST_BOUND) << 7 | slots << 10 | dep << 20 | NO_ITEM << 25,
-                      NO_ITEM << 14 | NO_ITEM << 19 | NO_ITEM << 24])
-        return len(items) - 1
-
-    def drain(q):
-        drain_at[q] = put(DRAIN, 0, q * rc, min(rc, c.ru - q * rc), read_at[q])
-
-    put(MAXIMA, 0, 0, 0, NO_ITEM)
-    put(STORE, 0, 0, 0, NO_ITEM)
-    for q in range(nr):
-        read_at[q] = put(READ, FILLED, q * rc, min(rc, c.ru - q * rc),
-                         1 if mode == WHOLE else NO_ITEM)
-        if serial and not (late and q == nr - 1):
-            drain(q)
-        if not serial and q >= 1:
-            drain(q - 1)
-    if not serial and nr > 0 and not late:
-        drain(nr - 1)
-    for j in range(nf):
-        fold_at[j] = put(FOLD, FILLED | (UNITS if j == 0 else 0), j * fc, min(fc, c.fu - j * fc), NO_ITEM)
-        if j == 0 and late:
-            drain(nr - 1)
-    boundary = put(BOUNDARY, UNITS if nf == 0 else 0, 0, 0, NO_ITEM)
-
-    regions: list[list[int]] = []  # [lo, hi, last user], bytes
-
-    def set_buf(k, lo):
-        items[k][1] = (items[k][1] & ~0x3FFF) | lo // 16
-
-    if nr > 0:
-        regions.append([0, ibytes, read_at[nr - 1]])
-        regions.append([B - r0, B, drain_at[0]])
-        set_buf(read_at[0], B - r0)
-        set_buf(drain_at[0], B - r0)
-
-    def place(nbytes, consumer):
-        best, best_wait = -1, 1 << 30
-        spots = [0, B - nbytes]
-        for lo, hi, _ in regions:
-            spots += [hi, lo - nbytes]
-        for at in spots:
-            if at < 0 or at + nbytes > B:
-                continue
-            w, ok = -1, True
-            for lo, hi, last in regions:
-                if lo < at + nbytes and at < hi:
-                    if last >= consumer:
-                        ok = False
-                        break
-                    w = max(w, last)
-            if ok and (w < best_wait or (w == best_wait and at < best)):
-                best, best_wait = at, w
-        return best, best_wait
-
-    def host(target, wait, consumer, first=STORE_ITEM):
-        fw = NO_ITEM if wait < 0 else wait
-        for h in range(max(first, wait + 1), consumer + 1):
-            x, y = items[h]
-            if _bits(x, 25, 5) == NO_ITEM:
-                items[h] = [(x & ~(31 << 25)) | target << 25 | 1 << 30, (y & ~(31 << 14)) | fw << 14]
-            elif _bits(y, 19, 5) == NO_ITEM:
-                items[h] = [(x & ~(3 << 30)) | 2 << 30, (y & ~(0x3FF << 19)) | target << 19 | fw << 24]
-            else:
-                continue
-            return True
-        return False
-
-    for q in range(1, nr):
-        nbytes = bytes_of(READ, q * rc, min(rc, c.ru - q * rc))
-        at, wait = place(nbytes, read_at[q])
-        if at < 0:
-            return None
-        regions.append([at, at + nbytes, drain_at[q]])
-        set_buf(read_at[q], at)
-        set_buf(drain_at[q], at)
-        if not host(read_at[q], wait, read_at[q]):
-            return None
-    for j in range(nf):
-        nbytes = bytes_of(FOLD, j * fc, min(fc, c.fu - j * fc))
-        at, wait = place(nbytes, fold_at[j])
-        if at < 0:
-            return None
-        regions.append([at, at + nbytes, fold_at[j]])
-        set_buf(fold_at[j], at)
-        if not host(fold_at[j], wait, fold_at[j]):
-            return None
-    if c.rnext > 0:
-        wait = max([last for _, hi, last in regions if hi > B - c.rnext], default=-1)
-        if not host(NEXT_ITEM, wait, boundary, STORE_ITEM + 1):
-            return None
-
-    head = (len(items) | mode << 5 | rc << 7 | fc << 17, c.ru | c.fu << 10, int(serial) | int(late) << 1, 0)
-    return WindowPlan(head, tuple(tuple(it) for it in items))
-
-
-def plan(c: Counts, read_row: int, write_row: int, area: int, prefer: int = -1) -> WindowPlan:
-    """The plan pass's plan of one window: the named candidate's form where it builds, else the rule's, its reads
-    pipelined, else serial."""
-    f = named_form(prefer, c)
-    got = build(f, c, read_row, write_row, area) if f is not None else None
-    if got is None:
-        f = rule_form(c, read_row, write_row, area)
-        got = build(f, c, read_row, write_row, area) or build(f._replace(serial=True), c, read_row, write_row, area)
-    return got
+    out, par = [], 0
+    for w, x in enumerate(wins):
+        ahead, at = False, 0
+        if x.n > 0:
+            b0 = eb(x, 0)
+            at, ahead = slot_place(par, b0, x.image, B), True
+            if w > 0 and wins[w - 1].n > 0:
+                pv = wins[w - 1]
+                ppar, lt = par ^ (pv.n & 1), pv.n - 1
+                lread, lb = lt < pv.nr, eb(pv, lt)
+                lbase = pv.image if lread else 0
+                if not lread and lt == pv.nr and pv.nr > 0:
+                    rb = eb(pv, pv.nr - 1)
+                    rat = slot_place(ppar ^ ((pv.nr - 1) & 1), rb, pv.image, B)
+                    lbase = pv.image if fits_beside(slot_place(ppar ^ (lt & 1), lb, pv.image, B), lb, rat, rb,
+                                                    pv.image, B) else 0
+                ahead = fits_beside(at, b0, slot_place(ppar ^ (lt & 1), lb, lbase, B), lb,
+                                    pv.image if lread else 0, B)
+        nx = wins[w + 1] if w + 1 < len(wins) else None
+        steps, gone, gone_b = [], 0, 0
+        for t in range(x.n + 1):
+            work, read = t < x.n, t < x.nr
+            cross = t + 1 >= x.n and (work or t == 0)
+            slot = par ^ (t & 1)
+            b = eb(x, t) if work else 0
+            if work and not ahead:
+                at = slot_place(slot, b, x.image if read else 0, B)
+            nxt, nat, nb = False, 0, 0
+            if not cross and work:
+                nb = eb(x, t + 1)
+                nat = slot_place(slot ^ 1, nb, x.image if t + 1 < x.nr or read else 0, B)
+                nxt = fits_beside(nat, nb, at, b, x.image if read else 0, B)
+            elif cross and nx is not None and nx.n > 0:
+                nb = eb(nx, 0)
+                nat = slot_place(slot ^ 1 if work else slot, nb, nx.image, B)
+                nxt = fits_beside(nat, nb, at if work else 0, b, x.image if work and read else 0, B)
+            drained = t > 0 and t - 1 < x.nr
+            reuse = drained and ((work and not ahead and not disjoint(at, b, gone, gone_b))
+                                 or (nxt and not disjoint(nat, nb, gone, gone_b)))
+            steps.append((at if work else 0, int(ahead), int(nxt), int(reuse)))
+            gone, gone_b, ahead, at = at, b, nxt, nat
+        out.append(Record(x.word, tuple(steps)))
+        par ^= x.n & 1
+    return out
 
 
 def _side(lists, carve_plan, routes, w: int, bh: int, group: int):
@@ -271,14 +245,14 @@ def _side(lists, carve_plan, routes, w: int, bh: int, group: int):
     return int(lists.count[bh, w, group]), tuple(int(v) for v in np.asarray(totals))
 
 
-def plans(routes, facts, carve, prefer: str | None = None) -> list[list[WindowPlan]]:
-    """Every box class's plans over the call's windows (a class per pair of the two list levels' groups, each
+def plans(routes, facts, carve, forced: str | None = None) -> list[list[Record]]:
+    """Every box class's records over the call's windows (a class per pair of the two list levels' groups, each
     batch-head, in the plan tensor's order), as the plan pass on this card writes them (its area and pool rows from
     the arm's census)."""
     key = carry_ops.arm_key(carve)
     row = next(r for r in carry_ops.census() if tuple(r[1:7]) == tuple(key))
     area, read_row, write_row = row[12], row[13], row[14]
-    pref = -1 if prefer is None else carry_ops.CANDIDATES.index(prefer)
+    word = carry_ops.forced_word(forced)
     windows = -(-routes.tokens // WINDOW)
     write = facts_ops.side_lists(facts, "write") if carve.fold.lists else None
     read = facts_ops.side_lists(facts, "read") if carve.readout.lists else None
@@ -287,40 +261,36 @@ def plans(routes, facts, carve, prefer: str | None = None) -> list[list[WindowPl
     for bh in range(routes.batch * routes.heads):
         for gr in range(groups(carve.readout)):
             for gw in range(groups(carve.fold)):
-                sides = [(_side(read, carve.readout, routes, w, bh, gr), _side(write, carve.fold, routes, w, bh, gw))
-                         for w in range(windows)]
-                box = []
-                for w, ((ru, rs), (fu, fs)) in enumerate(sides):
-                    nu, ns = sides[w + 1][0] if w + 1 < windows else (0, None)
-                    rnext = first_read_bytes(nu, ns, read_row, area) if nu > 0 else 0
-                    c = Counts(ru, rs, fu, fs, rnext)
-                    box.append(plan(c, read_row, write_row, area, pref))
-                out.append(box)
+                wins = []
+                for w in range(windows):
+                    ru, rs = _side(read, carve.readout, routes, w, bh, gr)
+                    fu, fs = _side(write, carve.fold, routes, w, bh, gw)
+                    wins.append(win_of(Counts(ru, rs, fu, fs), word, read_row, write_row, area))
+                out.append(records(wins, read_row, write_row, area))
     return out
 
 
-def forms(box_plans: list[list[WindowPlan]]) -> set[str]:
+def forms(box_records: list[list[Record]]) -> set[str]:
     """The forms a call exercises: each image mode read under, and ``<mode>-chunks`` where a window reads more than one
-    chunk under it; ``serial`` (a chunk drained before the next is read), ``fold-chunks``, ``late`` (the last drain
-    after the fold's first chunk), ``fill-free`` (a fill waiting for nothing), ``fill-waits`` (a fill waiting for its
-    region's last user), ``next`` (the next window's first read filled here)."""
+    chunk under it; ``fold-chunks``; ``ahead`` (an entry filled while the one before computes), ``next`` (a window's
+    first entry filled by the window before), ``deferred`` (an entry filled at its own step), ``reuse`` (a fill that
+    waits on the retired read's drain), ``empty`` (a window of no entries)."""
     out = set()
-    for box in box_plans:
-        for pl in box:
-            kinds = [_bits(x, 0, 3) for x, _ in pl.items]
-            mode = ("whole", "ring8", "ring16")[_bits(pl.head[0], 5, 2)]
-            if READ in kinds:
-                out.add(mode)
-            if kinds.count(READ) > 1:
-                out.add(f"{mode}-chunks")
-                if kinds[kinds.index(READ) + 1] == DRAIN:
-                    out.add("serial")
-            if kinds.count(FOLD) > 1:
+    for box in box_records:
+        for w, rec in enumerate(box):
+            mode, _, _, nr, nf = chunks(rec.word)
+            name = ("whole", "halves")[mode]
+            if nr > 0:
+                out.add(name)
+            if nr > 1:
+                out.add(f"{name}-chunks")
+            if nf > 1:
                 out.add("fold-chunks")
-            if FOLD in kinds and DRAIN in kinds and kinds.index(FOLD) < len(kinds) - 1 - kinds[::-1].index(DRAIN):
-                out.add("late")
-            for x, y in pl.items:
-                for target, fw in ((_bits(x, 25, 5), _bits(y, 14, 5)), (_bits(y, 19, 5), _bits(y, 24, 5))):
-                    if target != NO_ITEM:
-                        out.add("next" if target == NEXT_ITEM else "fill-waits" if fw != NO_ITEM else "fill-free")
+            if nr + nf == 0:
+                out.add("empty")
+            for t, (_, ahead, _, reuse) in enumerate(rec.steps):
+                if t < nr + nf:
+                    out.add(("deferred", "next" if t == 0 and w > 0 else "ahead")[ahead])
+                if reuse:
+                    out.add("reuse")
     return out

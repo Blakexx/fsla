@@ -1,7 +1,7 @@
-// csrc/rola/src/carry/carry_kernel.cuh -- THE CARRY KERNEL: one CTA a box, window by window the window's plan's items
-// in order (`schedule.cuh`): the maxima, the store, each read chunk's readout and drain, each fold chunk -- the fp32
-// state in registers throughout, each fill issued at its host once its region's last user is done, each item waiting
-// for its buffer's copies and the item it depends on. see docs/internals/carry/carry_kernel.md
+// csrc/rola/src/carry/carry_kernel.cuh -- THE CARRY KERNEL: one CTA a box, window by window: the maxima, the store,
+// then the window's entries (`schedule.cuh`) in order -- each read chunk's readout, drained as the next begins, each
+// fold chunk -- the fp32 state in registers throughout, entry t + 1 filled into the other slot while t computes where
+// the two fit. see docs/internals/carry/carry_kernel.md
 #pragma once
 
 #include "carry/fold.cuh"
@@ -11,7 +11,7 @@
 namespace rola::carry {
 
 //: THE WINDOW'S INPUTS, a window ahead, by every thread: both sides' lists, the write exponents and token units, and
-//: the window's plan for the CTA's box class. -- see docs/internals/carry/carry_kernel.md#staging
+//: the window's plan record for the CTA's box class. -- see docs/internals/carry/carry_kernel.md#staging
 template <class P>
 __device__ __forceinline__ void stage_window(const CarryParams& p, const Place& c, int w,
                                              uint8_t* smem) {
@@ -19,30 +19,28 @@ __device__ __forceinline__ void stage_window(const CarryParams& p, const Place& 
   lists_in<P>(p, p.read_lists, rw, c, w, smem, kRead);
   lists_in<P>(p, p.write_lists, ww, c, w, smem, kWrite);
   facts_in<P>(p, ww, c, w, smem);
-  constexpr int kPlanCopies = kPlanBytes / ops::kStageBytes,
+  constexpr int kPlanCopies = kPlanWords * 4 / ops::kStageBytes,
                 kPlanThread = kThreads - 1 - kPlanCopies;
   const int t = static_cast<int>(threadIdx.x) - kPlanThread;
   if (t >= 0 && t < kPlanCopies) {
     const int cls = rw.group * max(1, p.write_lists.groups) + ww.group;
     ops::stage_tile(
-        ops::smem_addr(smem + P::kPlans) + (w & 1) * kPlanBytes + 16 * t,
-        p.plans + ((static_cast<int64_t>(c.bh) * p.windows + w) * box_classes(p) + cls) * kPlanBytes
-            + 16 * t);
+        ops::smem_addr(smem + P::kPlans) + (w & 1) * kPlanWords * 4 + 16 * t,
+        p.plans + ((static_cast<int64_t>(c.bh) * p.windows + w) * box_classes(p) + cls) * kPlanWords
+            + 4 * t);
   }
 }
 
-//: A THREAD'S ARRIVALS on the async copies' barriers: a bit a barrier, flipped at each of its arrivals -- an item's
-//: landed (`kBarLanded + k`) at bit `k`, the staging's and the next window's first read's above them. Every thread
-//: arrives at every phase of a barrier, and a wait is for the phase of the thread's own last arrival, so the bit names
-//: its parity (a barrier never arrived at passes: its phase before the first) -- one phase in flight a barrier. Every
-//: other rendezvous is the hardware barrier (`ops::rendezvous`).
-//: -- see docs/internals/carry/carry_kernel.md#barriers
-struct Arrivals {
-  static constexpr int kStagedBit = kPlanItems, kNextBit = kPlanItems + 1;
-  static_assert(kNextBit < 32,
-                "the items' landed bits, the staging's and the next read's share a word");
+//: A THREAD'S FLOW WORD: a bit a barrier, flipped at each of its arrivals -- a slot's landed at bit `slot`, the
+//: staging's at bit 2 -- then the stream's cursor, its entry's slot at bit 3 and the window's step from bit 4 (the slot
+//: flips at each entry's step, so it alternates across windows too). Every thread arrives at every phase of a barrier, and a wait
+//: is for the phase of the thread's own last arrival, so a barrier's bit names its parity (one never arrived at passes:
+//: its phase before the first) -- one phase in flight a barrier. Every other rendezvous is the hardware barrier
+//: (`ops::rendezvous`). -- see docs/internals/carry/carry_kernel.md#barriers
+struct Flow {
+  static constexpr int kStagedBit = 2, kSlotBit = 3, kStepShift = 4;
   ops::SmemAddr bars;
-  uint32_t land;
+  uint32_t v;
 
   __device__ __forceinline__ ops::SmemAddr at(int b) const {
     return bars + 8u * static_cast<uint32_t>(b);
@@ -50,34 +48,35 @@ struct Arrivals {
 
   __device__ __forceinline__ void staged() {
     ops::mbar_arrive_when_landed(at(kBarStaged));
-    land ^= 1u << kStagedBit;
+    v ^= 1u << kStagedBit;
   }
 
   __device__ __forceinline__ void wait_staged() const {
-    ops::mbar_wait(at(kBarStaged), ((land >> kStagedBit) & 1u) ^ 1u);
+    ops::mbar_wait(at(kBarStaged), ((v >> kStagedBit) & 1u) ^ 1u);
   }
 
-  __device__ __forceinline__ void next_landed() {
-    ops::mbar_arrive_when_landed(at(kBarNext));
-    land ^= 1u << kNextBit;
+  __device__ __forceinline__ void slot_landed(int slot) {
+    ops::mbar_arrive_when_landed(at(kBarSlot + slot));
+    v ^= 1u << slot;
   }
 
-  __device__ __forceinline__ void wait_next() const {
-    ops::mbar_wait(at(kBarNext), ((land >> kNextBit) & 1u) ^ 1u);
+  __device__ __forceinline__ void wait_slot(int slot) const {
+    ops::mbar_wait(at(kBarSlot + slot), ((v >> slot) & 1u) ^ 1u);
   }
 
-  __device__ __forceinline__ void item_landed(uint32_t k) {
-    ops::mbar_arrive_when_landed(at(kBarLanded + static_cast<int>(k)));
-    land ^= 1u << k;
+  __device__ __forceinline__ int step() const { return static_cast<int>(v >> kStepShift); }
+
+  __device__ __forceinline__ int slot() const { return static_cast<int>((v >> kSlotBit) & 1u); }
+
+  __device__ __forceinline__ void step_on(bool entry) {
+    v = (v + (1u << kStepShift)) ^ (entry ? 1u << kSlotBit : 0u);
   }
 
-  __device__ __forceinline__ void wait_landed(uint32_t k) const {
-    ops::mbar_wait(at(kBarLanded + static_cast<int>(k)), ((land >> k) & 1u) ^ 1u);
-  }
+  __device__ __forceinline__ void open() { v &= (1u << kStepShift) - 1u; }
 };
 
-//: THE KERNEL, a grid constant block in, one CTA an SM: grid `(boxes, batch-heads)`. A window: its plan's items in
-//: order, each its hosted fills, its waits, its work, its done. -- see docs/internals/carry/carry_kernel.md#kernel
+//: THE KERNEL, a grid constant block in, one CTA an SM: grid `(boxes, batch-heads)`. A window: the maxima, the store,
+//: its entries step by step, its end. -- see docs/internals/carry/carry_kernel.md#kernel
 template <class Arm>
 __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constant__ CarryParams p) {
   using P = Plan<Arm>;
@@ -93,8 +92,9 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   PhaseClock<kCarryPhases, true> clock(
       reinterpret_cast<long long*>(smem + P::kClock) + warp * PhaseClock<kCarryPhases, true>::kRow,
       lane, p.ledger != nullptr);
-  Arrivals bar{ops::smem_addr(smem + P::kBars), 0u};
-  if (threadIdx.x == 0) static_for<kBarCount>([&](auto b) { ops::mbar_init(bar.at(b), kThreads); });
+  Flow flow{ops::smem_addr(smem + P::kBars), 0u};
+  if (threadIdx.x == 0)
+    static_for<kBarCount>([&](auto b) { ops::mbar_init(flow.at(b), kThreads); });
   if (static_cast<int>(threadIdx.x) < kBoxLists)
     reinterpret_cast<UnitBook*>(smem + P::kBook)[threadIdx.x] = UnitBook{kUnitNone, 0.0f};
   if (threadIdx.x == 0) addr_in(*reinterpret_cast<Addr*>(smem + P::kAddr), p, place_of(p));
@@ -103,44 +103,29 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   const ops::SmemAddr area = ops::smem_addr(smem + P::kEnd);
   const auto rw = [&](int w) { return window_of<P>(p, smem, kRead, w); };
   const auto ww = [&](int w) { return window_of<P>(p, smem, kWrite, w); };
-  //: A FILL of item `k` of window `w`'s plan: its copies issued, arriving at its landed barrier as they land -- a
-  //: window's first read, filled by the window before, at the next read's own
-  const auto fill_item = [&](int w, uint32_t k, bool first) {
-    const Head h = plan_head<P>(smem, w);
-    const Item it = plan_item<P>(smem, w, static_cast<int>(k));
-    const ops::SmemAddr buf = area + 16u * it.buf();
-    if (it.kind() == kItemRead) {
-      read_fill<P>(p, smem, rw(w), here(), w, it.first(), it.slots(), h.runion(), buf, warp, lane);
+  //: AN ENTRY'S FILL of window `w`: its copies issued into its place, arriving at its slot's landed barrier as they
+  //: land
+  const auto fill_entry = [&](int w, const Entry& e, int slot, int at) {
+    const ops::SmemAddr buf = area + static_cast<uint32_t>(at);
+    if (e.side() == kRead) {
+      read_fill<P>(p, smem, rw(w), here(), w, e.first(), e.slots(), e.total(), buf, warp, lane);
     } else {
-      fold_fill<P>(p, smem, ww(w), here(), w, it.first(), it.slots(), h.funion(), buf, warp, lane);
+      fold_fill<P>(p, smem, ww(w), here(), w, e.first(), e.slots(), e.total(), buf, warp, lane);
     }
-    if (first) {
-      bar.next_landed();
-    } else {
-      bar.item_landed(k);
-    }
-  };
-  //: AN ITEM'S LANDED WAIT: a window's first read at the next read's barrier, every other filled item at its own
-  const auto wait_item = [&](const Item& it, uint32_t k) {
-    if (it.kind() == kItemRead && it.first() == 0) {
-      bar.wait_next();
-    } else {
-      bar.wait_landed(k);
-    }
+    flow.slot_landed(slot);
   };
   //: A READ CHUNK'S TILES over batches `lo .. hi - 1` of the image at `image` (digit `d`'s plane `d & mask`)
-  const auto read_out = [&](auto pairs, int w, const Head& h, const Item& it, int lo, int hi,
+  const auto read_out = [&](auto pairs, int w, const Entry& e, ops::SmemAddr buf, int lo, int hi,
                             ops::SmemAddr image, uint32_t mask) {
     constexpr bool kPairs = decltype(pairs)::value;
-    const ops::SmemAddr buf = area + 16u * it.buf(),
-                        pads = buf + static_cast<uint32_t>(read_pads<P>(it.slots())),
-                        ents = buf + static_cast<uint32_t>(read_ents<P>(it.slots()));
+    const ops::SmemAddr pads = buf + static_cast<uint32_t>(read_pads<P>(e.slots())),
+                        ents = buf + static_cast<uint32_t>(read_ents<P>(e.slots()));
     if (p.readout_f16) {
-      read_chunk<P, true, kPairs>(smem, rw(w), w, it.first(), it.slots(), h.runion(), lo, hi, image,
+      read_chunk<P, true, kPairs>(smem, rw(w), w, e.first(), e.slots(), e.total(), lo, hi, image,
                                   mask, buf, pads, ents, warp, lane);
     } else {
-      read_chunk<P, false, kPairs>(smem, rw(w), w, it.first(), it.slots(), h.runion(), lo, hi,
-                                   image, mask, buf, pads, ents, warp, lane);
+      read_chunk<P, false, kPairs>(smem, rw(w), w, e.first(), e.slots(), e.total(), lo, hi, image,
+                                   mask, buf, pads, ents, warp, lane);
     }
   };
 
@@ -150,134 +135,121 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       static_for<4>([&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] = 0.f; }); });
     });
   });
-  int dexp = 0;
-
+  //: a lane's digit exponent, every warp's own record of the window's (the same values), read at each use
+  const auto dexp = [&] { return reinterpret_cast<const volatile int*>(smem + P::kExps)[lane]; };
   stage_window<P>(p, here(), 0, smem);
-  bar.staged();
-  bar.wait_staged();
-  if (plan_head<P>(smem, 0).runion() > 0) fill_item(0, kFirstRead, true);
+  flow.staged();
+  flow.wait_staged();
+  if (stream_of<P>(p, smem, 0).n > 0)
+    fill_entry(0, entry_at(stream_of<P>(p, smem, 0), 0), kSlotTop, step_of<P>(smem, 0, 0).at());
 
 #pragma unroll 1
   for (int w = 0; w < p.windows; ++w) {
-    if (w > 0) bar.wait_staged();
-    int k = 0;
+    if (w > 0) flow.wait_staged();
+    clock.lap(kPhaseWait);
+    //: THE DIGIT MAXIMA of the state before the window's writes, every warp's posted, and each digit's exponent (lane
+    //: `d` digit `d`'s), recorded by every warp for its stores and the readers
+    post_maxima<P>(st, smem, w, warp, lane);
+    ops::rendezvous();
+    reinterpret_cast<volatile int*>(smem + P::kExps)[lane] = digit_exp<P>(smem, w, lane);
+    clock.lap(kPhaseMaxima);
+    //: THE STORE: the next window's inputs staged; a whole image stored
+    if (w + 1 < p.windows) {
+      stage_window<P>(p, here(), w + 1, smem);
+      flow.staged();
+    }
+    if (stream_of<P>(p, smem, w).image == kImageWhole)
+      store_batches<P>(st, smem, area, 0, kBatches, kBoxDigits - 1, dexp(), warp, lane);
+    clock.lap(kPhaseStore);
+
+    //: THE WINDOW'S STEPS: one an entry, then one that only retires the last; a window of no entries fills the next
+    //: window's first in its one step
+    flow.open();
 #pragma unroll 1
     do {
-      const Item it = plan_item<P>(smem, w, k);
-      const Head h = plan_head<P>(smem, w);
-      //: THE FILLS it hosts, each once its region's last user is done; the next window's first read once its inputs
-      //: have landed
-#pragma unroll 1
-      for (int f = 0; f < it.fills(); ++f) {
-        const uint32_t target = it.fill(f), fw = it.fwait(f);
-        if (target != kNoItem) {
-          if (fw != kNoItem) ops::rendezvous();
-          const bool next = target == kNextItem;
-          if (next) bar.wait_staged();
-          clock.lap(kPhaseWait);
-          fill_item(next ? w + 1 : w, next ? static_cast<uint32_t>(kFirstRead) : target, next);
-          clock.lap(kPhaseFill);
-        }
-      }
-      const uint32_t kind = it.kind(), flags = it.flags();
-      const uint32_t mode = h.mode();
-      if ((flags & kFlagFilled) != 0u && (kind != kItemRead || mode == kModeWhole))
-        wait_item(it, static_cast<uint32_t>(k));
-      clock.lap(kPhaseLanded);
-      if (it.dep() != kNoItem) ops::rendezvous();
+      //: THE STEP, by its word: entry `t`'s place and whether filled ahead, the next filled now, the retired read's
+      //: drain's rendezvous
+      const int t = flow.step();
+      const Stream s = stream_of<P>(p, smem, w);
+      const bool work = t < s.n, cross = t + 1 >= s.n && (work || t == 0);
+      const bool drained = t > 0 && t - 1 < s.nr;
+      const StepWord sw = step_of<P>(smem, w, t);
+      if (sw.next() && cross) flow.wait_staged();
+      if (drained || (t > 0 && ((work && !sw.ahead()) || sw.next()))) ops::rendezvous();
       clock.lap(kPhaseWait);
 
-      //: THE ITEM'S WORK, by its kind -- an exclusive chain (`carry_kernel.md#kernel`)
-      // R9-CASES: ItemKind, the plan pass's item kinds (schedule.cuh)
-      if (kind == kItemMaxima) {
-        //: THE DIGIT MAXIMA of the state before the window's writes, every warp's posted, and each digit's exponent
-        //: (lane `d` digit `d`'s), warp 0's recorded for the readers
-        post_maxima<P>(st, smem, w, warp, lane);
-        ops::rendezvous();
-        dexp = digit_exp<P>(smem, w, lane);
-        if (warp == 0) reinterpret_cast<int*>(smem + P::kExps)[lane] = dexp;
-        clock.lap(kPhaseMaxima);
-      } else if (kind == kItemStore) {
-        //: THE STORE: the next window's inputs staged; the image stored whole in its mode
-        if (w + 1 < p.windows) {
-          stage_window<P>(p, here(), w + 1, smem);
-          bar.staged();
+      //: ENTRY `t - 1` RETIRED: every warp done with it; a read chunk's panel drained, and every warp done draining
+      //: where a fill reuses its place
+      if (drained) {
+        const Entry d = entry_at(stream_of<P>(p, smem, w), t - 1);
+        drain<P>(p, smem, rw(w), here(), w, d.first(), d.slots(),
+                 area
+                     + static_cast<uint32_t>(step_of<P>(smem, w, t - 1).at()
+                                             + read_pads<P>(d.slots()) + kPadBytes));
+        clock.lap(kPhaseDrain);
+        if (sw.reuse()) ops::rendezvous();
+        clock.lap(kPhaseWait);
+      }
+      //: THE FILLS: entry `t` unless filled ahead, then the next where planned
+#pragma unroll 1
+      for (int f = 0; f < 2; ++f) {
+        const StepWord sf = step_of<P>(smem, w, t);
+        if (f == 0 ? work && !sf.ahead() : sf.next()) {
+          const bool other = f == 1 && cross;
+          const int fw = other ? w + 1 : w, ft = f == 0 ? t : other ? 0 : t + 1;
+          fill_entry(fw, entry_at(stream_of<P>(p, smem, fw), ft),
+                     flow.slot() ^ (f == 1 && work ? 1 : 0), step_of<P>(smem, fw, ft).at());
         }
-        if (mode == kModeWhole)
-          store_batches<P>(st, smem, area, 0, kBatches, kBoxDigits - 1, dexp, warp, lane);
-        clock.lap(kPhaseStore);
-      } else if (kind == kItemRead) {
-        //: A READ CHUNK: the image whole; or a ring the chunk stores itself, a slot freed once every warp has read it
-        //: (for the batch two on, or the next chunk's)
-        const bool again = it.first() > 0;
-        // R9-CASES: ImageMode, the plan's image modes (schedule.cuh)
-        if (mode == kModeWhole) {
-          read_out(std::true_type{}, w, h, it, 0, kBatches, area, kBoxDigits - 1);
-          clock.lap(kPhaseReadout);
-        } else if (mode == kModeRing16) {
-#pragma unroll 1
-          for (int half = 0; half < 2; ++half) {
-            const bool lead = half == 0;
-            if (!lead || again) ops::rendezvous();
-            store_batches<P>(st, smem, area, 2 * half, 2 * half + 2, 2 * kBatchPlanes - 1, dexp,
-                             warp, lane);
-            ops::rendezvous();
-            clock.lap(kPhaseStore);
-            if (lead) wait_item(it, static_cast<uint32_t>(k));
+      }
+      clock.lap(kPhaseFill);
+
+      //: THE UNITS, stepped at the window's first fold chunk, or at its end where it folds nothing
+      if (t == stream_of<P>(p, smem, w).nr) fold_units<P>(smem, ww(w), w, warp, lane);
+
+      //: THE ENTRY'S WORK: a read chunk from the whole image, or from the halves it stores itself; a fold chunk
+      if (work) {
+        const ops::SmemAddr buf =
+            area + static_cast<uint32_t>(step_of<P>(smem, w, flow.step()).at());
+        const Stream sw2 = stream_of<P>(p, smem, w);
+        if (t < sw2.nr) {
+          // R9-CASES: ImageMode, the plan's image modes (schedule.cuh)
+          if (sw2.mode == kModeWhole) {
+            flow.wait_slot(flow.slot());
             clock.lap(kPhaseLanded);
-            read_out(std::true_type{}, w, h, it, 2 * half, 2 * half + 2, area,
-                     2 * kBatchPlanes - 1);
+            if (t == 0) ops::rendezvous();
+            clock.lap(kPhaseWait);
+            read_out(std::true_type{}, w, entry_at(stream_of<P>(p, smem, w), flow.step()), buf, 0,
+                     kBatches, area, kBoxDigits - 1);
             clock.lap(kPhaseReadout);
-          }
-        } else if (mode == kModeRing8) {
-          //: batches 0 and 1 stored, then each batch read and its slot refilled two on, every reuse after a rendezvous
-          if (again) ops::rendezvous();
+          } else if (sw2.mode == kModeHalves) {
 #pragma unroll 1
-          for (int b = 0; b < 2; ++b)
-            store_batches<P>(st, smem, area + static_cast<uint32_t>(b * kImageRing / 2), b, b + 1,
-                             kBatchPlanes - 1, dexp, warp, lane);
-          ops::rendezvous();
-          clock.lap(kPhaseStore);
-          wait_item(it, static_cast<uint32_t>(k));
-          clock.lap(kPhaseLanded);
-#pragma unroll 1
-          for (int b = 0; b < kBatches; ++b) {
-            const ops::SmemAddr slot = area + static_cast<uint32_t>((b & 1) * kImageRing / 2);
-            read_out(std::false_type{}, w, h, it, b, b + 1, slot, kBatchPlanes - 1);
-            clock.lap(kPhaseReadout);
-            if (b + 2 < kBatches) {
+            for (int half = 0; half < 2; ++half) {
+              if (half > 0) ops::rendezvous();
+              store_batches<P>(st, smem, area, 2 * half, 2 * half + 2, 2 * kBatchPlanes - 1, dexp(),
+                               warp, lane);
               ops::rendezvous();
-              store_batches<P>(st, smem, slot, b + 2, b + 3, kBatchPlanes - 1, dexp, warp, lane);
               clock.lap(kPhaseStore);
-            } else if (b + 1 < kBatches) {
-              ops::rendezvous();
+              if (half == 0) flow.wait_slot(flow.slot());
+              clock.lap(kPhaseLanded);
+              read_out(std::true_type{}, w, entry_at(stream_of<P>(p, smem, w), flow.step()), buf,
+                       2 * half, 2 * half + 2, area, 2 * kBatchPlanes - 1);
+              clock.lap(kPhaseReadout);
             }
+          } else {
+            __trap();
           }
         } else {
-          __trap();
+          flow.wait_slot(flow.slot());
+          clock.lap(kPhaseLanded);
+          const Entry e = entry_at(stream_of<P>(p, smem, w), flow.step());
+          fold_chunk<P>(st, flow.step() == stream_of<P>(p, smem, w).nr, smem, ww(w), w, e.first(),
+                        e.slots(), e.total(), buf,
+                        buf + static_cast<uint32_t>(fold_ents<P>(e.slots())), warp, lane);
+          clock.lap(kPhaseFold);
         }
-      } else if (kind == kItemDrain) {
-        //: A DRAIN: the read chunk's panel to `num`, once every warp has read it out
-        const ops::SmemAddr buf = area + 16u * it.buf();
-        drain<P>(p, smem, rw(w), here(), w, it.first(), it.slots(),
-                 buf + static_cast<uint32_t>(read_pads<P>(it.slots()) + kPadBytes));
-        clock.lap(kPhaseDrain);
-      } else if (kind == kItemFold) {
-        //: A FOLD CHUNK, the window's units stepped at its first
-        if ((flags & kFlagUnits) != 0u) fold_units<P>(smem, ww(w), w, warp, lane);
-        const ops::SmemAddr buf = area + 16u * it.buf();
-        fold_chunk<P>(st, (flags & kFlagUnits) != 0u, smem, ww(w), w, it.first(), it.slots(),
-                      h.funion(), buf, buf + static_cast<uint32_t>(fold_ents<P>(it.slots())), warp,
-                      lane);
-        clock.lap(kPhaseFold);
-      } else if (kind == kItemBoundary) {
-        //: THE BOUNDARY: a window with no fold steps its units all the same
-        if ((flags & kFlagUnits) != 0u) fold_units<P>(smem, ww(w), w, warp, lane);
-        clock.lap(kPhaseFold);
-      } else {
-        __trap();
       }
-    } while (__any_sync(0xffffffffu, ++k < plan_items<P>(smem, w)));
+      flow.step_on(flow.step() < stream_of<P>(p, smem, w).n);
+    } while (__any_sync(0xffffffffu, flow.step() <= stream_of<P>(p, smem, w).n));
   }
 
   //: THE CHECK, a warp's sum added once a warp -- see docs/internals/carry/carry_kernel.md#check

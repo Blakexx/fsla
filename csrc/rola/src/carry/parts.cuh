@@ -119,6 +119,20 @@ __device__ __forceinline__ void addr_in(Addr& out, const CarryParams& p, const P
   out.channel0 = c.channel0;
 }
 
+//: a window's index and parity, opaque, so an offset by them is formed at each use rather than held across a
+//: window's steps
+__device__ __forceinline__ int opaque(int w) {
+  int out;
+  asm volatile("mov.b32 %0, %1;" : "=r"(out) : "r"(w));
+  return out;
+}
+
+__device__ __forceinline__ int parity_of(int w) {
+  int parity;
+  asm volatile("and.b32 %0, %1, 1;" : "=r"(parity) : "r"(w));
+  return parity;
+}
+
 //: A SIDE'S WINDOW: its union (the list level's 32-digit group holding the box's digits) and its box lists' first
 //: digit, or every window token a slot where the side has no list level.
 struct Window {
@@ -132,7 +146,7 @@ __device__ __forceinline__ Window window_of(const CarryParams& p, const uint8_t*
   //: read at each use (volatile): held live across the window loop they would cost the state registers
   const volatile Statics& s = reinterpret_cast<const volatile Addr*>(smem + P::kAddr)->side[side];
   Window out;
-  out.t0 = w * kWindow;
+  out.t0 = opaque(w) * kWindow;
   out.tokens = min(kWindow, p.L - out.t0);
   out.listed = s.listed != 0;
   out.digit0 = s.digit0;
@@ -156,13 +170,10 @@ __device__ __forceinline__ const uint16_t* union_of(const uint8_t* smem, int sid
   return reinterpret_cast<const uint16_t*>(smem + P::kUnion) + (2 * side + (w & 1)) * kWindow;
 }
 
-//: the parity opaque, so the offset is formed at each use rather than held across a window's items
 template <class P>
 __device__ __forceinline__ const uint16_t* pre_of(const uint8_t* smem, int side, int w) {
-  int parity;
-  asm volatile("and.b32 %0, %1, 1;" : "=r"(parity) : "r"(w));
   return reinterpret_cast<const uint16_t*>(smem + P::kPre)
-         + (2 * side + parity) * kPreRows * kListAt;
+         + (2 * side + parity_of(w)) * kPreRows * kListAt;
 }
 
 //: A CHUNK'S COLUMNS in the boundaries, union slots `first .. first + slots - 1` (`first` a multiple of 64, the end a
@@ -341,7 +352,8 @@ __device__ __forceinline__ void entries_fill(const CarryParams& p, const SideLis
                                              const Run& run, ops::SmemAddr dst, int warp,
                                              int lane) {
   //: the box's first list's row, once: a list's is `kListCap` entries a list on
-  const uint2* const lists = l.entries + list_row(l, c, p.windows, w, win.digit0) * kListCap;
+  const uint2* const lists =
+      l.entries + list_row(l, c, p.windows, opaque(w), win.digit0) * kListCap;
   static_for<kBoxLists / kWarps>([&](auto J) {
     const int list = warp + kWarps * J;
     const int at = __shfl_sync(0xffffffffu, run.at, list),
@@ -735,8 +747,9 @@ __device__ __forceinline__ void drain(const CarryParams& p, const uint8_t* smem,
   constexpr int kWords = kPanelRow / 4, kStride = kThreads / kWords, kAhead = 2;
   constexpr uint32_t kCellStride = kStride * kPanelRow;
   static_assert(kStride % 8 == 0, "a stride of slots keeps a cell's swizzle bits");
-  const int word = static_cast<int>(threadIdx.x) % kWords,
-            s0 = static_cast<int>(threadIdx.x) / kWords;
+  //: the thread, opaque, so its cell is formed at each drain rather than hoisted across the windows
+  const int tid = opaque(static_cast<int>(threadIdx.x));
+  const int word = tid % kWords, s0 = tid / kWords;
   const ops::SmemAddr cell0 =
       panel + (panel_row(static_cast<uint32_t>(s0)) ^ ((32u * (word >> 3)) | (4u * (word & 7))));
   const uint16_t* tok = union_of<P>(smem, kRead, w) + first;
