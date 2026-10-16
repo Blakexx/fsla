@@ -1,0 +1,140 @@
+# Copyright 2026 Blake Bottum
+# SPDX-License-Identifier: Apache-2.0
+"""THE CARRY AGAINST THE fp64 RECURRENCE: the inter term of a whole call, per slot, on every central oracle cell.
+
+THE GATE IS THE TRUTH, NOT A DECLARED ARITHMETIC. The components' gates (`test_carry_readout.py`, `test_carry_fold.py`)
+hold the kernel to references of its own rounding; this file holds it to `tests/oracle/reference.py`'s inter term on
+the bundle's own dequantized operands, so a shared misreading of the math by a kernel and its fidelity reference has
+nowhere to hide. ``num`` is compared in the recurrence's units (`readout_reference.num_in_truth`: the per-token factor
+the epilogue cancels against ``den``), against each slot's envelope (the same reference on ``|v|``).
+
+RED BY PLAN (ruling 2026-09-29): a cell whose carve the carry has no arm for, whose read side lists nothing (its
+readout reference is unwritten), whose length is off the window, or whose entry state the carry cannot yet take (the
+segment boundary is unbuilt) fails, by name. The carry's ``den`` and its state reach the oracle through the op
+(`test_prefill_vs_oracle.py`): the den pass and the state's hand-off write them.
+
+Symbols: ``W`` the window (`rola.ops.carry.WINDOW`), ``L`` tokens, ``C`` value channels, ``u(t)`` a token's unit byte.
+"""
+from __future__ import annotations
+
+import pytest
+import torch
+
+from measure.cells import carry_cells, realize
+from measure.subjects import carry_operands
+from rola.ops import carry as carry_ops
+from tests.oracle import reference
+from tests.oracle.fixtures import assert_planted_errors_fail, assert_slots_close, relative
+from tests.oracle.fold_reference import unit_scale
+from tests.oracle.readout_reference import UNIT_HEADROOM, UNIT_LEVELS, UNIT_NONE, _read_rows, num_in_truth
+from tests.oracle.tolerances import CARRY_NUM
+
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
+
+ORACLE_CELLS = carry_cells(tier="oracle")
+IDS = [cell.name for cell in ORACLE_CELLS]
+
+
+def _entry(spec, routes):
+    """The cell's drawn entry state ``[B, H, N, C + 1]`` fp64, or ``None`` for a fresh cell."""
+    entry = realize(spec).entry
+    return None if entry is None else entry.double().reshape(routes.batch, routes.heads, *entry.shape[-2:])
+
+
+def _units(spec, routes, values):
+    """``[BH, windows x W]`` int8: each token's unit byte as the den pass sizes it (`readout_reference.units`' rule), from the
+    TRUE state before its window -- so the gate leans on no fidelity reference, and a partial window is a window."""
+    level_s = routes.level_s
+    x, a = _read_rows(routes, level_s)
+    read, write = routes.dequantized()
+    state = reference.inter_reference(tuple(r.double() for r in read), tuple(w.double() for w in write),
+                                      routes.g_write.double(), values.dequantized().double(), routes.topology.widths,
+                                      carry_ops.WINDOW, state_in=_entry(spec, routes), states=True)
+    B, T, H, _ = x.shape
+    widths, kappa = routes.topology.widths, unit_scale(routes, level_s)
+    num = torch.zeros(B, T, H, dtype=torch.float64, device=x.device)
+    for w, before in enumerate(state):
+        top = before[..., :-1].abs().amax(-1).reshape(B, H, *widths) / kappa
+        top = top if level_s == 0 else top.transpose(-1, -2)                          # [B, H, B_S, B_R]
+        sl = slice(w * carry_ops.WINDOW, (w + 1) * carry_ops.WINDOW)
+        num[:, sl] = torch.einsum("bthd,bthr,bhdr->bth", x[:, sl], a[:, sl], top)
+    u = torch.where(num > 0, torch.ceil(torch.log2(UNIT_HEADROOM * num.clamp_min(1e-300))) - UNIT_LEVELS,
+                    torch.full_like(num, UNIT_NONE))
+    #: the den pass writes the window grid whole: a partial window's tail reads nothing
+    grid = torch.full((B * H, len(state) * carry_ops.WINDOW), UNIT_NONE, dtype=torch.int8, device=x.device)
+    grid[:, :T] = u.clamp(-128, 127).to(torch.int8).permute(0, 2, 1).reshape(B * H, T)
+    return grid
+
+
+def run(spec):
+    """``(routes, values, unit, num)``: one carry launch over the cell, its units the den pass's (:func:`_units`, until
+    the pass is built beside the carry)."""
+    routes, values, facts, carve, _ = carry_operands(spec)
+    if not any(routes.sparse[0]):
+        raise NotImplementedError(f"{spec.name}: a read side with no list level (the dense-dense plan) has no readout "
+                                  "reference yet: its partials' scale is stated with its fold's reference")
+    unit = _units(spec, routes, values)
+    num, _ = carry_ops.carry(routes, values, facts, carve, unit)
+    torch.cuda.synchronize()
+    return routes, values, unit, num
+
+
+def ref(spec, routes, values, magnitudes=False):
+    """The inter term's numerator in fp64 from the bundle's own operands and the cell's entry state; with
+    ``magnitudes``, the same on ``|v|`` and ``|entry|``: each slot's envelope."""
+    read, write = routes.dequantized()
+    v = values.dequantized().double()
+    state = _entry(spec, routes)
+    if magnitudes:
+        v, state = v.abs(), None if state is None else state.abs()
+    num, _den, _state = reference.inter_reference(tuple(x.double() for x in read), tuple(x.double() for x in write),
+                                                  routes.g_write.double(), v, routes.topology.widths,
+                                                  carry_ops.WINDOW, state_in=state)
+    return num
+
+
+def check(spec, routes, values, unit, num):
+    """``num`` in the recurrence's units, per slot against the inter term's numerator and its envelope."""
+    assert_slots_close(num_in_truth(num, routes, unit), ref(spec, routes, values), output=CARRY_NUM,
+                       envelope=ref(spec, routes, values, magnitudes=True), what=f"{spec.name} num")
+
+
+@pytest.mark.parametrize("spec", ORACLE_CELLS, ids=IDS)
+def test_the_inter_numerator_is_the_fp64_reference(spec):
+    """Every token and channel of ``num`` over the whole call, in the recurrence's units, against the inter term's
+    numerator: the state before each window read by the window's tokens, nothing within the window."""
+    check(spec, *run(spec))
+
+
+def test_the_rule_fails_planted_errors_on_the_kernels_own_output():
+    """THE RULE HAS TEETH on the carry's numerator: on a real cell the kernel's output passes, and a wiped median slot
+    and the smallest slots moved past their allowance fail."""
+    spec = next(c for c in ORACLE_CELLS if c.name == "flagship-alt-k4")
+    routes, values, unit, num = run(spec)
+    assert_planted_errors_fail(num_in_truth(num, routes, unit), ref(spec, routes, values), output=CARRY_NUM,
+                               envelope=ref(spec, routes, values, magnitudes=True), what=f"{spec.name} num")
+
+
+def test_the_decomposition_is_exact():
+    """``inter(W) + intra(W)`` is the SAME full recurrence for every ``W``, and equals the canonical fp64 oracle: the
+    no-double-count claim, and the reason an inter-only kernel can be gated at all. It runs no kernel."""
+    from rola.ops.constants import READOUT_EPS
+    from rola.ops.naive import naive_rola
+    from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
+
+    spec = next(c for c in ORACLE_CELLS if c.name == "flat-small-dense")
+    read, write, gain, v = realize(spec).doubles()
+    tot = None
+    for W in (1, 8, 64):
+        ni, di, _ = reference.inter_reference(read, write, gain, v, spec.widths, W)
+        na, da = reference.intra_reference(read, write, gain, v, spec.widths, W)
+        cur = (ni + na, di + da)
+        if tot is None:
+            tot = cur
+        else:
+            assert relative(cur[0], tot[0]) < 1e-12
+            assert relative(cur[1], tot[1]) < 1e-12
+    routing = IndependentRouting(width=1, read=SoftmaxActivation(), write=SoftmaxActivation())
+    topology = Topology(levels=tuple(routing.at(w) for w in spec.widths))
+    y, _ = naive_rola(v, read, write, gain, topology, None, output_final_state=False)
+    assert relative(tot[0] / (tot[1][..., None] + READOUT_EPS), y) < 1e-10

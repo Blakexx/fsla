@@ -13,7 +13,7 @@ one session and one memory pass over the cells, every result stored.
 Per checkout: `binary` (the gated build, held on every host slot, cached while its binary stands), `environment` (the
 machine facts, every run), the instruments of `INSTRUMENTS` (SASS and the register walk once, cached; the phase clock,
 pipe counters, stall census, timeline and the intra roofline on every carry cell, every run, holding the GPU), and with
-a timing server the timing registrations: `carry_forward` on the carry cells, `entmax_solve@layer=C`
+a timing server the timing registrations: `carry_forward` and `carry_intra` on the carry cells, `entmax_solve@layer=C`
 and `decode_step@layer=C` for each RoLA construction on the layer cells declared for it, and the clock reader. Every
 target depends on the binary and the environment, whose outputs reach its key. Every cell is a NODE (`rola_devtools.cells.declare`) whose output is its record and the digest of the code that drew it;
 a target that runs on cells takes those nodes as its data inputs, so nothing here or in the build system resolves a cell
@@ -63,7 +63,7 @@ INSTRUMENTS = {
     "timeline": ("tools/pipe_timeline.py", ["--cell", "{cell}"], True, {"gpu": "all"}, [], 900),
     "roofline": ("tools/roofline.py", ["--cells", "{cell}"], True, {"gpu": "all"}, [], 120),
 }
-CARRY_ARMS = ("carry_forward",)
+CARRY_ARMS = ("carry_forward", "carry_intra")
 LAYER_ARMS = ("entmax_solve", "decode_step")
 #: seconds an instrument may run on one cell
 #: EACH INSTRUMENT'S TIMEOUT IS PER CELL AND SIZED TO THE INSTRUMENT: a phase-clock launch is seconds on the largest
@@ -104,7 +104,8 @@ def declare(g, env: Env, *, timing=None, instruments=tuple(INSTRUMENTS)) -> dict
     environment = g.node("environment", executor=EXECUTORS + "probe_environment", env=env, cache=False)
     facts = {"binary": binary, "environment": environment}
     out = {"binary": binary, "environment": environment, "instruments": {}, "entries": {}, "clock": None,
-           "sides": _sides(g, env, facts)}
+           "sides": _sides(g, env, facts), "diffs": {}}
+    out["diffs"]["carry-vs-oracle"] = _kernel_vs_oracle(g, env, out["sides"])
     #: THE ORACLE TIER AS ONE TARGET: pytest over `tests/oracle`, keyed on the tier's code and the binary, cached while
     #: both stand; its output is the outcome and the margins, stored beside the instruments (`rola/oracle-tier`)
     out["instruments"]["oracle-tier"] = g.node(
@@ -143,11 +144,19 @@ def declare(g, env: Env, *, timing=None, instruments=tuple(INSTRUMENTS)) -> dict
 
 #: THE DIFF SURFACES (`tests/oracle/sides.py`): what each IS -- the side executor, the cells it runs on (a cell kind
 #: and, where it has one, a tier), and what the side holds while it runs. Exposed for rola-bench, which pairs a surface
-#: across checkouts and OWNS the rule it compares them under (its `RULES`), as it owns the timing methodology.
+#: across checkouts and OWNS the rule it compares them under (its `RULES`), as it owns the timing methodology; the
+#: only diff this file declares itself is the kernel against its own oracle, below. What rola states about a surface's
+#: numerics is a FACT, in `NUMERICS`: the carry's ``num`` is EXACT run to run -- its readout adds exact integer pairs,
+#: MEASURED 2026-10-15, three runs of one binary over every oracle cell it reads, every slot bit-identical.
 SURFACES = {
     "oracle": ("tests.oracle.sides:oracle", "carry", "oracle", {"host_cpu": "all"}),
     "producer": ("tests.oracle.sides:producer", "producer", None, {"host_cpu": "all"}),
+    "carry-kernel": ("tests.oracle.sides:carry_kernel", "carry", "oracle", {"gpu": "all"}),
 }
+NUMERICS = {"carry-kernel": {"exact": ["num"]}}
+#: the kernel-vs-oracle diff INSIDE one checkout: the carry's slots against the fp64 inter term's, PER SLOT under each
+#: output kind's clauses and envelope (`tests/oracle/tolerances.py`) -- the numeric half of the oracle tier
+KERNEL_VS_ORACLE = ("carry-kernel", "tests.oracle.sides:carry_reference", {"num": "CARRY_NUM"})
 
 
 #: THE BACKWARD'S BUDGET. The oracle side runs `naive_rola` forward AND backward in fp64, and autograd retains the
@@ -190,6 +199,23 @@ def _sides(g, env: Env, facts: dict) -> dict:
             for name, (executor, _kind, _tier, holds) in SURFACES.items()}
 
 
+def _kernel_vs_oracle(g, env: Env, sides: dict):
+    """The carry against the fp64 inter term, in this checkout: the clause rule per output kind."""
+    from rola_devtools.diff import diff, side
+
+    kernel_surface, reference_executor, kinds = KERNEL_VS_ORACLE
+    outputs = load(Path(env.cwd) / "tests" / "oracle" / "tolerances.py")
+    nodes = cell_nodes(g, surface_cells(kernel_surface))
+    reference = side(g, "side/carry-reference", env=env, executor=reference_executor, cells=nodes,
+                     code=_code(*SIDE_CODE), binds="rola", holds={"gpu": "all"})
+    per_quantity = {q: {"clauses": [list(c) for c in outputs[k].clauses], "rtol": outputs[k].rtol,
+                        "envelope_from": f"{q}_envelope"} for q, k in kinds.items()}
+    #: RECORDED, not a build failure: the verdict is stored per cell, red cells included (a carve the binary has no arm
+    #: for is red by decision until kernel work ships it), and the rest of the build measures on
+    return diff(g, "diff/carry-vs-oracle", left=sides[kernel_surface], right=reference, strategy="per-slot",
+                params={"per_quantity": per_quantity}, minimum=len(nodes), on_difference="record")
+
+
 def root(g, python: str = sys.executable, label: str = "rola", rounds: str = "8", reps: str = "11",
          store_root: str = "") -> dict:
     """rola measuring and gating itself: EVERY node this checkout has, and the CLI prunes by label (`--only`, `--skip`)."""
@@ -203,6 +229,8 @@ def root(g, python: str = sys.executable, label: str = "rola", rounds: str = "8"
                              rounds=int(rounds), reps=int(reps))
     memory = measure_memory(g, "memory", server=server, entries=list(mine["entries"].values()))
     stores += [store(g, "store/session", source=session, location="timing/session", root=root_dir),
-               store(g, "store/memory", source=memory, location="timing/memory", root=root_dir)]
+               store(g, "store/memory", source=memory, location="timing/memory", root=root_dir),
+               store(g, "store/carry-vs-oracle", source=mine["diffs"]["carry-vs-oracle"],
+                     location="rola/carry-vs-oracle", root=root_dir)]
     stop = stop_timing_server(g, server=server, after=[session, memory, *stores])
     return {"all": g.group("all", [*stores, stop])}

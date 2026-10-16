@@ -99,6 +99,12 @@ _FAMILIES = {
     "carry": Family(
         test="tests/oracle/test_carry_fold.py::test_the_fold_is_the_reference_per_slot[0-0]",
         kernel="rola::carry::carry_forward", present=True),
+    #: THE CARRY OVER A WHOLE CALL on cohort routing, eight windows: the plan's chunked unions and the readout's
+    #: gathers where the lists cluster -- the cell the oracle's whole-call gate runs (`test_carry_vs_oracle.py`).
+    "carry_call": Family(
+        test="tests/oracle/test_carry_vs_oracle.py::"
+             "test_the_inter_numerator_is_the_fp64_reference[flagship-cohort-k4-L4096]",
+        kernel="rola::carry::carry_forward", present=True),
     #: THE INTRA KERNEL alone on the bundle: the stage buffers' full/empty barriers, the reader's parts, the value
     #: tile's hand-off and the deposit's staging, at both digit counts -- one launch.
     "intra": Family(

@@ -103,11 +103,10 @@ def carry_operands(spec):
     values, the facts pass's lists, the carve the planner picks and the den pass's units (zeros: the launch reads them,
     the pass that writes them is not timed)."""
     from measure.cells import realize
-    from rola.engine.carve import plan_carve
     from rola.ops import facts as facts_ops
 
     routes, values, layout, statics = bundle_of(spec, realize(spec))
-    carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, values.v.shape[-1])
+    carve = plan_carve_of(routes, values)
     facts = facts_ops.facts(routes, values, layout, *statics, read_row_of(spec))
     unit = torch.zeros((routes.batch * routes.heads, routes.tokens), dtype=torch.int8, device="cuda")
     return routes, values, facts, carve, unit
@@ -124,6 +123,51 @@ def carry_forward(fx) -> Launch:
         return carry_ops.carry(*operands)
 
     return Launch(name=f"carry_forward|{spec.name}", call=run)
+
+
+def carry_intra(fx) -> Launch:
+    """THE TWO KERNELS AS ONE OPERATOR: the carry and the intra over one cell's bundle, facts the caller built.
+
+    A KERNEL-LEVEL SUBJECT, not the op (Blake, 2026-09-15): the facts pass runs once here, untimed, as the prefill's
+    contract says it is the caller's; producing the bundle, the den pass, the epilogue and the pages are not timed. At
+    ``calls`` above one the sequence runs as that many calls over whole windows, the state carried between them: what a
+    chunked prefill pays. RED BY PLAN until each piece is ported: the intra raises by name, and a chain refuses until the
+    carry's segment boundary carries a state between calls.
+    """
+    from measure.cells import realize
+    from rola.ops import carry as carry_ops
+    from rola.ops import facts as facts_ops
+    from rola.ops import intra as intra_ops
+
+    spec = fx["cell"]
+    calls = fx.get("calls", 1)
+    if calls > 1:
+        raise NotImplementedError(f"carry_intra at calls={calls}: the carry's segment boundary is unbuilt, so a chain "
+                                  "carries no state between its calls")
+    routes, values, layout, statics = bundle_of(spec, realize(spec))
+    carve = plan_carve_of(routes, values)
+    facts = facts_ops.facts(routes, values, layout, *statics, read_row_of(spec))
+    unit = torch.zeros((routes.batch * routes.heads, routes.tokens), dtype=torch.int8, device="cuda")
+    bh = routes.batch * routes.heads
+    num = torch.zeros(bh, spec.tokens, intra_ops.VALUE_WIDTH, device="cuda")
+    den = torch.zeros(bh, spec.tokens, device="cuda")
+
+    def run():
+        carry_ops.carry(routes, values, facts, carve, unit)
+        return intra_ops.intra_forward(routes, values, facts.unions, layout, *statics, num, den)
+
+    def reset():
+        num.zero_()
+        den.zero_()
+
+    return Launch(name=f"carry_intra|{spec.name}", call=run, reset=reset)
+
+
+def plan_carve_of(routes, values):
+    """The carve the planner picks for a bundle (`rola.engine.carve.plan_carve`)."""
+    from rola.engine.carve import plan_carve
+
+    return plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, values.v.shape[-1])
 
 
 def intra_forward(fx) -> Launch:
@@ -275,6 +319,10 @@ SUBJECTS = {
     "carry_forward": Subject("carry_forward", "carry", carry_forward,
                              "the inter term: one carry launch over a whole cell",
                              level="kernel", symbol="carry_kernel", stamp="carry_build_stamp"),
+    "carry_intra": Subject("carry_intra", "carry", carry_intra,
+                           "the carry and the intra as one operator, over facts the caller built: the two kernels, "
+                           "never the op's facts, den pass, epilogue or paging",
+                           level="kernel", symbol="carry_kernel", stamp="carry_build_stamp", calls=(1, 4)),
     "intra_forward": Subject("intra_forward", "carry", intra_forward,
                              "the within-window term at the shared window",
                              level="kernel", symbol="intra_kernel", stamp="intra_build_stamp"),
@@ -320,7 +368,7 @@ def applicable(spec, kind: str, calls: int = 1) -> list[str]:
         if name == "decode_step" and getattr(spec, "decode_steps", 0) == 0:
             continue
         #: the intra runs its tile grid (whole windows) at widths it reads
-        if name == "intra_forward" and (spec.tokens % _shared_window() or not _intra_reads(spec.widths)):
+        if name in ("intra_forward", "carry_intra") and (spec.tokens % _shared_window() or not _intra_reads(spec.widths)):
             continue
         out.append(name)
     return out

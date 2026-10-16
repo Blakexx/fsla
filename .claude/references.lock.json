@@ -95,7 +95,7 @@
   {"doc": ".claude/skills/rola-test/SKILL.md", "pinned_at": "3fac56b5a835", "reviewed": true, "sha256": "be720183ef838f0e", "target": "docs/testing.md#changing-the-oracle-the-dual-run-protocol"},
   {"doc": ".claude/skills/rola-test/SKILL.md", "pinned_at": "1522787068fb", "reviewed": true, "sha256": "88d491c6065e150c", "target": "docs/testing.md#running-it"},
   {"doc": ".claude/skills/rola-test/SKILL.md", "pinned_at": "1de3924eb872", "reviewed": true, "sha256": "7d8a71a99a655893", "target": "docs/testing.md#the-oracle-tier--semantics"},
-  {"doc": ".claude/skills/rola-test/SKILL.md", "pinned_at": "1522787068fb", "reviewed": true, "sha256": "2d58a6d592b46b72", "target": "docs/testing.md#the-sanitizer-lane"},
+  {"doc": ".claude/skills/rola-test/SKILL.md", "pinned_at": "7609ab9d41f8", "reviewed": true, "sha256": "1d8c6bcecf97a134", "target": "docs/testing.md#the-sanitizer-lane"},
   {"doc": ".claude/skills/rola-test/SKILL.md", "pinned_at": "fbb38e2e3e0f", "reviewed": true, "sha256": "95ba86337ca54dc5", "target": "docs/testing.md#tolerance-discipline"},
   {"doc": ".claude/skills/rola-test/SKILL.md", "pinned_at": "e87322e18bcd", "reviewed": true, "sha256": "", "target": "tests/oracle/tolerances.py"},
   {"doc": ".claude/skills/rola-test/SKILL.md", "pinned_at": "e87322e18bcd", "reviewed": true, "sha256": "", "target": "tools/coverage.json"},

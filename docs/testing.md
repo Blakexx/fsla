@@ -95,6 +95,16 @@ demonstrate its claimed regime fails rather than passes vacuously. The oracle ti
 `tier = oracle` (`tests/unit/test_central_cells.py`). **The length axis is not decoration**: an error that ACCUMULATES
 along the sequence grows as `sqrt(T)`, so a short fixture under-charges it, and the multi-window cells carry it.
 
+<a id="whole-call-gates"></a>
+THE WHOLE-CALL GATES run on those cells and stay red, cell by cell, until the system under them is ported (ruling
+2026-09-29: a red test is the plan's record of what is unported; base infrastructure is re-pointed at a new seam, never
+deleted with the implementation it exercised): the carry's inter numerator against the fp64 inter term in the
+recurrence's units (`tests/oracle/test_carry_vs_oracle.py`, its drawn-cell supplement
+`test_carry_hypothesis_cells.py`), the op's readout and handed-back state against `naive_rola`
+(`tests/oracle/test_prefill_vs_oracle.py`), and the state's backings bit-identical through a fresh call and a
+continuation (`tests/integration/test_chunk_paging_equivalence.py`). `declare.py`'s `carry-vs-oracle` diff stores the
+carry's verdict per cell beside the instruments.
+
 Decode is its own family (`tests/oracle/test_decode_family.py`): the prefill-to-decode hand-off, a 32-step horizon with
 checkpoints ALONG it (a per-step check cannot see cross-call compounding), and frozen density declarations proven
 performance-only under drifting realized routing.
@@ -304,12 +314,13 @@ publication read before its join, an inner join standing in for an outer one, a 
 ### The sanitizer lane
 
 `python tools/sanitize_oracle.py` runs `compute-sanitizer` over ONE named oracle cell per family (the facts pass, the
-intra, decode, the producer and the entmax solves), each pair in its own process with a timeout, under the GPU lock.
+carry's fold and a whole call, the intra, decode, the producer and the entmax solves), each pair in its own process
+with a timeout, under the GPU lock.
 It runs **when a component lands, before a ratify, and on a schedule, never per commit**
 (`docs/KERNEL_STANDARDS.md#sanitizer`) — the tools cost one to two orders of magnitude, and a gate that takes an hour
 gets disabled — with `--error-exitcode=1`, an explicit skip-list whose entries carry their
 reason, and an `ASSERTED` table for an adjudicated idiom that still runs and passes only if every record is that idiom.
-Both are empty, which is the standard. The carry's row is owed (`tools/coverage.json`).
+Both are empty, which is the standard.
 
 **RACECHECK IS DEFERRED for every kernel** (Blake, 2026-10-01). The lane runs synccheck and initcheck by default;
 racecheck runs only by an explicit `--tool racecheck`, and nothing waits on it: it does not finish on the mbarrier

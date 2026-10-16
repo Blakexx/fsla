@@ -22,6 +22,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+from rola.routing import quant
 from tests.oracle.fold_reference import fold_state, unit_scale
 
 #: THE IMAGE'S TOP (`parts.cuh` `kImageTop`) and c's (`fold.cuh` `kCoefTop`)
@@ -112,3 +113,30 @@ def unpack_num(num: torch.Tensor, channels: int = 32) -> torch.Tensor:
     out[..., torch.as_tensor(channel, device=num.device)] = lo
     out[..., torch.as_tensor(channel + 8, device=num.device)] = hi
     return out
+
+
+def truth_scale(routes, unit: torch.Tensor, level_s: int) -> torch.Tensor:
+    """``[B, T, H]`` fp64: what a token's partials at its unit are multiplied by to be the recurrence's numerator, the
+    per-token factor the epilogue cancels against ``den``: ``2^u(t)``, ``kappa`` and each read level's row scale, a u8
+    level's stored value scaled to its digit over 255 (level S's coefficient is the byte over 256, level R's row the
+    byte). A read side with no list level states its partials elsewhere: refused by name."""
+    if level_s < 0 or not any(routes.sparse[0]):
+        raise NotImplementedError("a read side with no list level (the dense-dense plan) has no readout reference yet: "
+                                  "its partials' scale is stated with its fold's reference")
+    level_r = 1 - level_s
+    stored = {level_s: quant.AMP_LEVELS + 1, level_r: 1.0}
+    factor = unit_scale(routes, level_s)
+    for level in (level_s, level_r):
+        rows = routes.amp_read[level]
+        k = 1.0 if rows.dtype == torch.float16 else stored[level] / quant.AMP_LEVELS
+        factor = factor * k * routes.scale_read[level].double()
+    B, T, H = factor.shape
+    return factor * torch.exp2(unit[:, :T].double().reshape(B, H, T).permute(0, 2, 1))
+
+
+def num_in_truth(num: torch.Tensor, routes, unit: torch.Tensor) -> torch.Tensor:
+    """``[B, T, H, C]`` fp64: the carry's ``num`` (:func:`unpack_num`) times :func:`truth_scale` -- the inter term's
+    numerator, comparable with `tests.oracle.reference.inter_reference`'s."""
+    B, T, H = routes.batch, routes.tokens, routes.heads
+    got = unpack_num(num[:, :T]).double().reshape(B, H, T, -1).permute(0, 2, 1, 3)
+    return got * truth_scale(routes, unit, routes.level_s)[..., None]

@@ -52,12 +52,13 @@ def deposit_value(v):
 
 
 def inter_reference(read_levels, write_levels, g_write, v, widths, window,
-                    state_in=None):
+                    state_in=None, states=False):
     """``(num, den, state_out)`` in fp64, canonical leaf order.
 
     ``num`` is ``[B,T,H,d_v]``, ``den`` ``[B,T,H]``, ``state_out``
     ``[B,H,N,d_v+1]``. The readout is against state-at-window-start and carries
     NO within-window pair -- that is the whole content of the inter/intra split.
+    With ``states``, the list of each window's state before its writes instead.
     """
     Bn, T, H, d_v = v.shape
     N = math.prod(widths)
@@ -66,8 +67,10 @@ def inter_reference(read_levels, write_levels, g_write, v, widths, window,
              if state_in is None else state_in.double().clone())
     num = torch.zeros(Bn, T, H, d_v, device=v.device, dtype=torch.float64)
     den = torch.zeros(Bn, T, H, device=v.device, dtype=torch.float64)
+    before = []
     for t0 in range(0, T, window):
         sl = slice(t0, min(t0 + window, T))
+        before.append(state)
         R = leaf_product(read_levels, widths, sl)
         out = torch.einsum("bthn,bhnc->bthc", R, state)
         num[:, sl] = out[..., :d_v]
@@ -76,7 +79,7 @@ def inter_reference(read_levels, write_levels, g_write, v, widths, window,
         Wm = g_write[:, sl].double()[..., None] * leaf_product(write_levels, widths, sl)
         state = state + torch.einsum("bthn,bthc->bhnc", Wm, vt[:, sl])
         del Wm
-    return num, den, state
+    return before if states else (num, den, state)
 
 
 def intra_reference(read_levels, write_levels, g_write, v, widths, window):
