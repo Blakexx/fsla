@@ -45,6 +45,9 @@ constexpr int BLOCK_THREADS = BLOCK_WARPS * WARP_SIZE;
 //: With `BLOCK_THREADS`, this is `__launch_bounds__(128, 8)`: a 64-register target -- see docs/internals/entmax/entmax.md#minblockspersm
 constexpr int MIN_BLOCKS_PER_SM = 8;
 
+//: the backward's target a width class: 72 registers where a thread holds 8 items' two terms across its reduction
+constexpr int backward_min_blocks(int ipt) { return ipt == 8 ? 7 : MIN_BLOCKS_PER_SM; }
+
 //: `(stream, stream2, token, col, tile, lane)` -- ONE address expression serves -- see docs/internals/entmax/entmax.md#strides-2
 struct Strides {
   int64_t stream, stream2, token, col, tile, lane;

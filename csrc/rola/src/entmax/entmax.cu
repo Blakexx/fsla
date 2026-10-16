@@ -163,7 +163,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
 // BACKWARD -- the alpha-entmax Jacobian action through the union split.
 // see docs/internals/entmax/entmax.md#launch-bounds
 template <int LW, int IPT, bool ALPHA15, typename LogitT, typename OutT>
-__global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backward_kernel(
+__global__ __launch_bounds__(BLOCK_THREADS, backward_min_blocks(IPT)) void union_backward_kernel(
     const LogitT* __restrict__ read_logits, const LogitT* __restrict__ write_logits,
     const float* __restrict__ midpoint_values, const int32_t* __restrict__ support_words,
     const OutT* __restrict__ read_values, const OutT* __restrict__ write_values,
