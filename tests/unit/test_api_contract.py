@@ -93,9 +93,9 @@ def test_a_well_formed_hand_built_bundle_is_legal():
 @pytest.mark.parametrize("break_it,message", [
     ("width", "wide but the topology"),
     ("levels", "one tensor per routing level"),
-    ("prefix", r"one \[B, T, H\] prefix"),
+    ("prefix", "a side's routing levels share one prefix"),
     ("dtype", "is stored as"),
-    ("gain_shape", r"g_write must be a \[B, T, H\]"),
+    ("gain_shape", r"g_write must be a \[B, T, H_w\]"),
 ])
 def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, message):
     """Unsealing removed the ORIGIN check, not the invariants. Each row plants one
@@ -127,6 +127,38 @@ def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, mes
         fields["g_write"] = fields["g_write"][..., :1]
     with pytest.raises((ValueError, TypeError), match=message):
         RouteFactors(**fields)
+
+
+def _grouped(heads, write_heads, *, B=2, T=6):
+    """A hand-built bundle of ``heads`` query heads over ``write_heads`` write heads, the layer's topology."""
+    topology, gen = _factors(_routes()).topology, torch.Generator().manual_seed(11)
+
+    def side(h):
+        return tuple(torch.rand((B, T, h, w), generator=gen).softmax(-1) for w in topology.widths)
+
+    return RouteFactors.from_levels(topology, side(heads), side(write_heads), torch.ones(B, T, write_heads))
+
+
+def test_a_grouped_bundle_names_its_query_heads_write_heads_and_group():
+    """GROUPED QUERIES (docs/api.md section 2.1): the read side at H query heads, the write side at H_w write heads,
+    each write head read by H / H_w consecutive query heads."""
+    routes = _grouped(4, 2)
+    assert (routes.heads, routes.write_heads, routes.group) == (4, 2, 2)
+    assert routes.g_write.shape == (2, 6, 2) and routes.scale_read[0].shape == (2, 6, 4)
+
+
+def test_the_write_heads_must_divide_the_query_heads():
+    with pytest.raises(ValueError, match="its H_w divide H"):
+        _grouped(3, 2)
+
+
+def test_a_consumer_of_one_head_count_refuses_a_grouped_bundle_by_name():
+    """The kernels read one head count until each reads groups; each refuses a grouped bundle at its seam, the
+    prefill's before any fact is found."""
+    routes = _grouped(4, 2)
+    with pytest.raises(NotImplementedError, match="the prefill reads one head count"):
+        _validate(routes, torch.randn(2, 6, 2, 8))
+    _grouped(2, 2).refuse_grouped("a consumer")
 
 
 def test_the_digit_header_mirrors_the_quantizer():

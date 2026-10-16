@@ -51,6 +51,7 @@ class DecodeContext:
       needs=("routes", "values", "decay", "state"), masks=_DECODE, capturable=True)
 def decode_call(f):
     routes, state = f["routes"], f["state"]
+    routes.refuse_grouped("the decode step")
     return (tuple(routes.topology.widths), f["values"].d_v, f["decay"] is not None,
             routes.batch * routes.heads, routes.device, bool(state.paged), not routes.sparse[1][-1])
 

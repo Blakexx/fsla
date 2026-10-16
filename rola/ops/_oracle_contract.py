@@ -55,26 +55,32 @@ def validate_inputs(
     g_write: torch.Tensor,
     topology: Topology,
     decay: DecayConfig,
-) -> tuple[int, int, int, int]:
-    """Shapes and domains. Returns `(B, T, H, d_v)`."""
+) -> tuple[int, int, int, int, int]:
+    """Shapes and domains. Returns `(B, T, H, H_w, d_v)`: `H` the query heads (the read side's), `H_w` the write
+    heads (the write side's, the values', the gain's and the decay's), `H_w` dividing `H`."""
     if v.ndim != 4:
-        raise ValueError(f"v must have shape [B,T,H,d_v], got {tuple(v.shape)}")
-    B, T, H, d_v = v.shape
+        raise ValueError(f"v must have shape [B,T,H_w,d_v], got {tuple(v.shape)}")
+    B, T, H_w, d_v = v.shape
+    read_levels = tuple(read_levels)
+    H = read_levels[0].shape[2] if read_levels and isinstance(read_levels[0], torch.Tensor) else H_w
+    if H % H_w:
+        raise ValueError(f"the write heads H_w={H_w} must divide the query heads H={H}: each write head is read "
+                         "by H / H_w consecutive query heads")
     widths = topology.widths
-    for name, levels in (("read_levels", read_levels), ("write_levels", write_levels)):
+    for name, levels, heads in (("read_levels", read_levels, H), ("write_levels", write_levels, H_w)):
         levels = tuple(levels)
         if len(levels) != topology.D:
             raise ValueError(f"{name} must contain one tensor per level (D={topology.D}), got {len(levels)}")
         for level, (factors, width) in enumerate(zip(levels, widths)):
             if not isinstance(factors, torch.Tensor):
                 raise TypeError(f"{name}[{level}] must be a torch.Tensor, got {type(factors).__name__}")
-            if tuple(factors.shape) != (B, T, H, width):
+            if tuple(factors.shape) != (B, T, heads, width):
                 raise ValueError(
-                    f"{name}[{level}] must have shape [B,T,H,width_l]=({B},{T},{H},{width}), "
+                    f"{name}[{level}] must have shape [B,T,heads,width_l]=({B},{T},{heads},{width}), "
                     f"got {tuple(factors.shape)}"
                 )
-    if tuple(g_write.shape) != (B, T, H):
-        raise ValueError(f"g_write must have shape [B,T,H]={(B, T, H)}, got {tuple(g_write.shape)}")
+    if tuple(g_write.shape) != (B, T, H_w):
+        raise ValueError(f"g_write must have shape [B,T,H_w]={(B, T, H_w)}, got {tuple(g_write.shape)}")
     if torch.any(g_write <= 0):
         raise ValueError("g_write must be strictly positive: g_write[t] > 0")
     if decay is not None:
@@ -82,17 +88,17 @@ def validate_inputs(
             raise TypeError(f"decay must be None or LeafMassDecay, got {type(decay).__name__}")
         decay.validate_against(topology)
         for level, dial in enumerate(decay.dials):
-            if dial.shape[0] != H:
+            if dial.shape[0] != H_w:
                 raise ValueError(
-                    f"decay.dials[{level}] head dim {dial.shape[0]} must match H={H}"
+                    f"decay.dials[{level}] head dim {dial.shape[0]} must match the write heads H_w={H_w}"
                 )
-    return B, T, H, d_v
+    return B, T, H, H_w, d_v
 
 
 def initial_cache(
     initial_state: torch.Tensor | None, *, B: int, H: int, N: int, d_v: int, device
 ) -> torch.Tensor:
-    """The carried state a run starts from, `[B,H,N,d_v+1]` fp64 (the mass column)."""
+    """The carried state a run starts from, `[B,H,N,d_v+1]` fp64 (the mass column), `H` the write heads."""
     expected = (B, H, N, d_v + 1)
     if initial_state is None:
         return torch.zeros(expected, device=device, dtype=torch.float64)

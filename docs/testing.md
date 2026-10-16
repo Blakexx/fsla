@@ -51,6 +51,10 @@ Three promises a caller can rely on:
 * **The address map is the oracle's own**, derived from the widths rather than imported from `Topology`, so a wrong
   stride convention cannot agree with itself in every gate the repository has.
 
+**Grouped queries are the ungrouped layer with each write head's side repeated** for its query heads (`docs/api.md`
+[grouped queries](api.md#grouped-queries)): THE IDENTITY GATE, `tests/oracle/test_oracle_grouped.py`, holds the oracle
+to it per slot and fails on the other head assignment; a grouped kernel's gate is the oracle at its own heads.
+
 **The oracle has no outside anchor** (Blake, 2026-09-15): no default-off cross-check against another library's loop is
 kept, because a default-off gate reports a skip where it should report a failure. The recurrence's claim to BE the gated
 linear-attention loop is held by review of the lines it is written in and by the mutants its own tier plants.

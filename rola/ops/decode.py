@@ -457,6 +457,7 @@ def _decode_step(
     rows reach the kernel exactly as the bundle holds them.
     """
     guard_no_grad((*routes.tensors(), *values.tensors(), *(decay.dials if decay is not None else ())))
+    routes.refuse_grouped("the decode step")
     if routes.tokens != 1:
         raise ValueError(f"the decode step takes one token, and a one-token bundle is all rows: the routes are "
                          f"[B, T={routes.tokens}, H]")

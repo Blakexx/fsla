@@ -175,8 +175,8 @@ UNIT-MAX -- u8 with the row's largest digit at 255, except a DENSE level's rows,
 stored with the floor taken, 2^-13 of the row's max (the dense floor, ruled 2026-10-03/04;
 `docs/internals/facts/liveness_contract.md#floor`); an all-zero row is a dead token at that level -- with the row's maximum
 carried beside them as its fp32 scale (`amp_read`/`scale_read`, `amp_write`/`scale_write`, one
-`[B, T, H, width]` tensor per level, starting on and stepping by 32 bytes: the row alignment law,
-`docs/internals/facts/liveness_contract.md#alignment`). Every level is stored as rows, once (ruled 2026-10-01: the
+tensor per level, `[B, T, H, width]` read and `[B, T, H_w, width]` write, starting on and stepping by 32 bytes: the
+row alignment law, `docs/internals/facts/liveness_contract.md#alignment`). Every level is stored as rows, once (ruled 2026-10-01: the
 intra and decode read rows, and the carry reads rows through the facts pass's words). `sparse` is
 `(read, write)`, a bool a level: the levels whose support the facts pass words because they may hold
 exact zeros worth skipping. It is set at production -- the producer flags a side whose activation
@@ -185,6 +185,14 @@ no consumer derives it from the activations. A flag cannot disagree with the row
 level with no zeros costs its words, and a dense-flagged level with zeros is read whole.
 EVERY SIDE HAS A DENSE LEVEL: a `sparse` that flags every level of a side is refused -- a side's dense levels are
 the carry's operand on that side and carry the floor (`docs/internals/engine/rules.md#carve`).
+<a id="grouped-queries"></a>
+GROUPED QUERIES: the read side is the `H` query heads' (`heads`), the write side the `H_w` write heads' (`write_heads`):
+its rows, scales and `g_write` (`[B, T, H_w]`), and with it the values, the decay dials and the state. `H_w` divides
+`H`, and query head `h` reads write head `h // group` (`group = H / H_w`, consecutive: PyTorch SDPA's `enable_gqa`
+order); `H_w = H` is the ungrouped layer. The oracle reads grouped bundles (`tests/oracle/test_oracle_grouped.py`: a
+grouped run is the ungrouped run with each write head's side repeated for its query heads). The facts pass, the carry,
+the intra, the decode step, the carried state and the prefill read one head count today, and each refuses a grouped
+bundle by name (`RouteFactors.refuse_grouped`).
 `RouteFactors.rows(level, side)` is a level's rows. A read level's scale carries the read mass; a
 write level's scale is the normalized simplex's max and its mass rides `g_write`. This is what
 the int carry, the intra and the decode kernels read, and it is written by the framework's producer
@@ -399,7 +407,8 @@ rola.ConstantDecay(rate, widths=..., num_heads=...)                    # user-fi
 rola.LearnedDecay(rate, widths=..., num_heads=..., scope='state')      # 'state' | 'global'
 ```
 
-Both emit a `LeafMassDecay` whose `dials[l]` is `[H, width_l]` in `[0, 1)`. A source is
+Both emit a `LeafMassDecay` whose `dials[l]` is `[H, width_l]` in `[0, 1)`, `H` the write heads (the decay is the
+state's: [grouped queries](#grouped-queries)). A source is
 validated against the topology at layer construction. Duck-typed like a producer:
 declare `widths` and `num_heads`, return a `LeafMassDecay`.
 

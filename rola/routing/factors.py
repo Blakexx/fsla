@@ -56,13 +56,14 @@ def _requires_grad(levels) -> bool:
 class RouteFactors:
     """The feature-mapped routing sides in THE INTERNAL FORMAT, and their side gain. Tensors, and nothing else.
 
-    ``amp_read``/``amp_write``: one ``[B, T, H, width_l]`` row set per level, each row UNIT-MAX -- u8 with its
+    ``amp_read``/``amp_write``: one row set per level, ``[B, T, H, width_l]`` read and ``[B, T, H_w, width_l]``
+    write (``H_w`` write heads, each read by ``H / H_w`` consecutive query heads), each row UNIT-MAX -- u8 with its
     largest digit at 255, except a DENSE level's rows (either side), f16 at 1 with the floor taken (a dense level is
     never zero). An all-zero row is a dead token at that level. ``sparse``: ``(read, write)``, a bool a level -- the
     levels whose support the facts pass words (they may hold exact zeros worth skipping); set at production, read
     by every consumer, never derived from the activations. All dense by default. ``scale_read``/``scale_write``: the rows' maxima,
-    fp32 ``[B, T, H]`` per level -- a read level's scale carries the read mass, a write level's the normalized
-    simplex's max (its mass rides ``g_write``). ``g_write``: ``[B, T, H]`` write-side gain (there is no read
+    fp32 per level at its side's prefix -- a read level's scale carries the read mass, a write level's the normalized
+    simplex's max (its mass rides ``g_write``). ``g_write``: ``[B, T, H_w]`` write-side gain (there is no read
     gain: the readout is a ratio). ``read_mass``: the ``[B, T, H]`` per-token read scale the read levels carry,
     or ``None``. ``source``: the producer's floating ``(read, write)`` levels, held ONLY when they require a
     gradient -- the straight-through gradient's anchor for :meth:`dequantized`; ``None`` otherwise, so an
@@ -99,35 +100,38 @@ class RouteFactors:
                 raise ValueError(f"RouteFactors.sparse declares every {side} level sparse ({side_flags}); every side "
                                  "has a dense level (docs/api.md section 2.1)")
         object.__setattr__(self, "sparse", flags)
-        prefix, first = self._check_rows()
+        prefixes = self._check_rows()
+        labels = {"read": "[B, T, H]", "write": "[B, T, H_w]"}
         for name in ("scale_read", "scale_write"):
-            scales = getattr(self, name)
+            scales, prefix, label = getattr(self, name), prefixes[name[6:]], labels[name[6:]]
             if len(scales) != D:
                 raise ValueError(f"RouteFactors.{name} holds one tensor per level (D={D}), got {len(scales)}")
             for level, scale in enumerate(scales):
                 if (not isinstance(scale, torch.Tensor) or scale.dtype is not torch.float32
                         or tuple(scale.shape) != prefix):
-                    raise ValueError(f"RouteFactors.{name}[{level}] is the rows' maxima, fp32 [B, T, H]={prefix}; "
+                    raise ValueError(f"RouteFactors.{name}[{level}] is the rows' maxima, fp32 {label}={prefix}; "
                                      f"got {getattr(scale, 'dtype', type(scale).__name__)} "
                                      f"{tuple(getattr(scale, 'shape', ()))}")
-        for name, column in (("g_write", self.g_write), ("read_mass", self.read_mass)):
+        for name, side in (("g_write", "write"), ("read_mass", "read")):
+            column, prefix, label = getattr(self, name), prefixes[side], labels[side]
             if column is None and name == "read_mass":
                 continue
             if not isinstance(column, torch.Tensor) or tuple(column.shape) != prefix:
                 shape = getattr(column, "shape", type(column).__name__)
-                raise ValueError(f"RouteFactors.{name} must be a [B, T, H]={prefix} tensor, got {shape}")
+                raise ValueError(f"RouteFactors.{name} must be a {label}={prefix} tensor, got {shape}")
         if self.source is not None:
             for side, levels, rows in (("read", self.source[0], self.amp_read),
                                        ("write", self.source[1], self.amp_write)):
                 if len(levels) != D or any(tuple(a.shape) != tuple(r.shape) for a, r in zip(levels, rows)):
                     raise ValueError(f"RouteFactors.source's {side} levels are the rows' floating originals")
 
-    def _check_rows(self) -> tuple[tuple[int, ...], torch.Tensor]:
-        """Every row set: one tensor a level, ``[B, T, H, width_l]``, one prefix, device and dtype."""
+    def _check_rows(self) -> dict[str, tuple[int, ...]]:
+        """Every row set: one tensor a level, ``[B, T, H, width_l]`` read and ``[B, T, H_w, width_l]`` write, a
+        prefix a side (one B and T, ``H_w`` dividing ``H``), one device and dtype. Returns each side's prefix."""
         D, widths = self.topology.D, self.topology.widths
-        prefix, first = None, None
+        prefixes, first = {}, None
         for name in ("amp_read", "amp_write"):
-            rows = getattr(self, name)
+            rows, prefix = getattr(self, name), None
             if len(rows) != D:
                 raise ValueError(f"RouteFactors.{name} must hold one tensor per routing level (D={D}), got {len(rows)}")
             for level, tensor in enumerate(rows):
@@ -137,11 +141,12 @@ class RouteFactors:
                 if tensor.shape[-1] != widths[level]:
                     raise ValueError(f"RouteFactors.{name}[{level}] is {tensor.shape[-1]} wide but the topology's "
                                      f"level {level} is {widths[level]}")
-                if first is None:
-                    prefix, first = tuple(tensor.shape[:3]), tensor
+                if prefix is None:
+                    prefix = tuple(tensor.shape[:3])
                 elif tuple(tensor.shape[:3]) != prefix:
-                    raise ValueError(f"every routing level shares one [B, T, H] prefix; {name}[{level}] is "
+                    raise ValueError(f"a side's routing levels share one prefix; {name}[{level}] is "
                                      f"{tuple(tensor.shape[:3])} against {prefix}")
+                first = tensor if first is None else first
                 if tensor.device != first.device:
                     raise ValueError(f"every routing level lives on one device; {name}[{level}] is on "
                                      f"{tensor.device} against {first.device}")
@@ -153,7 +158,13 @@ class RouteFactors:
                                      f"and step by multiples of {quant.ROW_ALIGN} bytes (strides "
                                      f"{tuple(tensor.stride())}, address {tensor.data_ptr() % quant.ROW_ALIGN} past the "
                                      f"grain; docs/internals/facts/liveness_contract.md#alignment)")
-        return prefix, first
+            prefixes[name[4:]] = prefix
+        (b, t, h), (bw, tw, hw) = prefixes["read"], prefixes["write"]
+        if (b, t) != (bw, tw) or hw < 1 or h % hw:
+            raise ValueError(f"the write side's [B, T, H_w]={prefixes['write']} must share the read side's B and T "
+                             f"and its H_w divide H ({prefixes['read']}): each write head is read by H / H_w "
+                             "consecutive query heads (docs/api.md section 2.1)")
+        return prefixes
 
     @classmethod
     def from_levels(cls, topology: Topology, read, write, g_write, read_mass=None, *, sparse=None) -> RouteFactors:
@@ -203,7 +214,25 @@ class RouteFactors:
 
     @property
     def heads(self) -> int:
+        """The query heads ``H``: the read side's."""
         return self.amp_read[0].shape[2]
+
+    @property
+    def write_heads(self) -> int:
+        """The write heads ``H_w``: the write side's, the values' and the state's."""
+        return self.amp_write[0].shape[2]
+
+    @property
+    def group(self) -> int:
+        """The query heads reading each write head, ``H / H_w`` (1 for an ungrouped layer)."""
+        return self.heads // self.write_heads
+
+    def refuse_grouped(self, consumer: str) -> None:
+        """THE SEAM'S REFUSAL for a consumer that reads one head count: a grouped bundle (``group`` > 1) is refused by
+        name rather than read at the wrong heads (docs/api.md section 2.1)."""
+        if self.group != 1:
+            raise NotImplementedError(f"{consumer} reads one head count, and this bundle groups {self.heads} query "
+                                      f"heads over {self.write_heads} write heads (docs/api.md section 2.1)")
 
     @property
     def device(self) -> torch.device:

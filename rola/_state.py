@@ -361,6 +361,7 @@ class RoLAState:
         the atom re-key, so a `BC` flip between calls neither rebuilds the arena nor
         moves a byte.
         """
+        routes.refuse_grouped("the carried state")
         presented = _format_of(routes, d_v, routes.batch * routes.heads)
         if not self.bound:
             self._shape = (routes.batch, routes.heads, routes.topology.N, d_v + 1)

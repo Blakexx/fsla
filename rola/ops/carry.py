@@ -72,6 +72,7 @@ def carry(routes, values, facts, carve: Carve, unit: torch.Tensor, accumulate: s
     (docs/internals/carry/schedule.md#planner); ``prefer``, a named form (:data:`CANDIDATES`), is reserved: the gates'
     and the measurements' choice of the form a window takes where it builds; ``plans`` (:func:`plans_out`) is reserved:
     the plan pass's output for a gate to read, else the call's own (docs/internals/carry/carry_api.md#carry)."""
+    routes.refuse_grouped("the carry")
     BH = routes.batch * routes.heads
     d_v = values.v.shape[-1]
     num = torch.zeros((BH, routes.tokens, d_v // 2), dtype=torch.int32, device=routes.device)

@@ -121,6 +121,7 @@ def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, wri
     ``list_exponents`` within fp32 rounding; the lists :func:`rola.engine.facts.lists.final_lists`, bit for bit. The rows
     are read where the bundle holds them, any offset or stride of the format, each level's ``[B, T, H, w_l]`` view.
     """
+    routes.refuse_grouped("the facts pass")
     BH = routes.batch * routes.heads
     windows = -(-layout.L // WINDOW)
     device = routes.device

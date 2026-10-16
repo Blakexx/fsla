@@ -180,6 +180,7 @@ def validate_context(ctx: PrefillContext) -> None:
     #: THE LAST DIM IS NOT CHECKED, IT IS READ. `d_v` is the value stream's own width
     #: and the routing carries no value geometry, so there is nothing to agree with;
     #: what must match the bundle is the token addressing, `[B, T, H]`.
+    routes.refuse_grouped("the prefill")
     expected = (routes.batch, routes.tokens, routes.heads)
     if (values.batch, values.tokens, values.heads) != expected:
         raise ValueError(
