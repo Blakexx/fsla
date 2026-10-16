@@ -70,12 +70,12 @@ def run(spec):
     """``(routes, values, unit, num)``: one carry launch over the cell, its units the den pass's (:func:`_units`, until
     the pass is built beside the carry)."""
     routes, values, facts, carve, zero = carry_operands(spec)
-    if routes.topology.D != 2 or not any(routes.sparse[0]):
+    if routes.topology.D != 2 or not any(routes.sparse[0]) or routes.group != 1:
         #: the launch first, so the carry's own refusal or fault is what the cell reports where it has one
         carry_ops.carry(routes, values, facts, carve, zero)
         torch.cuda.synchronize()
-        raise NotImplementedError(f"{spec.name}: the readout reference states one read list level at depth two; this "
-                                  "carve's partials' scale is stated with its fold's reference")
+        raise NotImplementedError(f"{spec.name}: the readout reference states one read list level at depth two, "
+                                  "ungrouped; this carve's partials' scale is stated with its fold's reference")
     unit = _units(spec, routes, values)
     num, _ = carry_ops.carry(routes, values, facts, carve, unit)
     torch.cuda.synchronize()
