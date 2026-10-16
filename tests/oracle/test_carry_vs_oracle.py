@@ -36,9 +36,9 @@ IDS = [cell.name for cell in ORACLE_CELLS]
 
 
 def _entry(spec, routes):
-    """The cell's drawn entry state ``[B, H, N, C + 1]`` fp64, or ``None`` for a fresh cell."""
+    """The cell's drawn entry state ``[B, H_w, N, C + 1]`` fp64 (a write head's), or ``None`` for a fresh cell."""
     entry = realize(spec).entry
-    return None if entry is None else entry.double().reshape(routes.batch, routes.heads, *entry.shape[-2:])
+    return None if entry is None else entry.double().reshape(routes.batch, routes.write_heads, *entry.shape[-2:])
 
 
 def _units(spec, routes, values):
@@ -54,6 +54,7 @@ def _units(spec, routes, values):
     widths, kappa = routes.topology.widths, unit_scale(routes, level_s)
     num = torch.zeros(B, T, H, dtype=torch.float64, device=x.device)
     for w, before in enumerate(state):
+        before = before.repeat_interleave(routes.group, 1)                         # a query head its write head's
         top = before[..., :-1].abs().amax(-1).reshape(B, H, *widths) / kappa
         top = top if level_s == 0 else top.transpose(-1, -2)                          # [B, H, B_S, B_R]
         sl = slice(w * carry_ops.WINDOW, (w + 1) * carry_ops.WINDOW)
@@ -70,12 +71,12 @@ def run(spec):
     """``(routes, values, unit, num)``: one carry launch over the cell, its units the den pass's (:func:`_units`, until
     the pass is built beside the carry)."""
     routes, values, facts, carve, zero = carry_operands(spec)
-    if routes.topology.D != 2 or not any(routes.sparse[0]) or routes.group != 1:
+    if routes.topology.D != 2 or not any(routes.sparse[0]):
         #: the launch first, so the carry's own refusal or fault is what the cell reports where it has one
         carry_ops.carry(routes, values, facts, carve, zero)
         torch.cuda.synchronize()
-        raise NotImplementedError(f"{spec.name}: the readout reference states one read list level at depth two, "
-                                  "ungrouped; this carve's partials' scale is stated with its fold's reference")
+        raise NotImplementedError(f"{spec.name}: the readout reference states one read list level at depth two; "
+                                  "this carve's partials' scale is stated with its fold's reference")
     unit = _units(spec, routes, values)
     num, _ = carry_ops.carry(routes, values, facts, carve, unit)
     torch.cuda.synchronize()

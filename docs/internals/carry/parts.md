@@ -7,7 +7,7 @@ work's counts; what a component leaves to its build is named in its section and 
 <a id="place"></a>
 ## The CTA's place
 
-`place_of` is the CTA's batch-head (`blockIdx.y`) and its channel group (the box index's innermost digit);
+`place_of` is the CTA's batch and write head (`blockIdx.y`) and its channel group (the box index's innermost digit);
 `origin_of` a level's first box digit. Before the windows, thread 0 works out every address that is the same each
 window into the `Addr` tenant (`addr_in`): each side's STATICS (its union group, the 32-digit group holding the box's
 list digits; the box's first list digit; its lists; whether it lists) and its operand SLICES (each level's plane at
@@ -51,7 +51,8 @@ added. An entry carries the row's chunk-0 offset, so a lane addresses its chunk 
 A chunk's fill issues its copies; the caller arrives on the buffer's landed barrier (`carry_kernel.md#barriers`).
 `fill` copies a range of union slots, each its token's row -- the side's operand slices at 64 bytes each, then on the
 write side its values at the box's channels -- swizzled, by `cp.async` over all 256 threads (a slice's 16-byte runs, 8
-or 4 under 16, `stage_bytes`). A GAP slot (its token `kGap`, [`carry.md`](carry.md#lists)) is zero-filled and reads
+or 4 under 16, `stage_bytes`). A read slot's row names its query head (`carry.md#sides`): its source is the slice at
+that head, a head stride on (`Slices::sh`). A GAP slot (`kGap`, [`carry.md`](carry.md#lists)) is zero-filled and reads
 nothing. `read_fill` adds the read buffer's dummy panel rows and its panel's whole 128-byte lines, zero-filled (a zero
 quantum reads nothing), and the chunk's entries; `fold_fill` (`fold.md#chunk`) the write chunk's rows and entries. Each
 part sits at the chunk's own slots (`read_pads`, `read_ents`, `fold_ents`; `schedule.md#buffers`).
@@ -127,10 +128,11 @@ where fp32 accumulate runs at full rate:
 for the pairs), each lane's two tokens' outputs as exact pairs added by `red.shared` at their panel words. Lane `l`
 holds entry `l & 7` (its token's row, so the B load needs no shuffle) and scales its coefficient to the token's unit: `c
 2^(e - kImageTop - kCoefTop - u)`, the exponent added to the fp32 coefficient's bits (`e` the digit's exponent, `u` the
-token's unit byte, looked up by the token's window place the entry carries); each lane takes its two tokens' scales and
-panel offsets by four shuffles. A listed side's tiles take the digit's run from the buffer's entries (`#entries`); the
-entries' offsets are the union's, so the chunk's pool and panel are taken back by its first slot's (`first x row` and
-`64 first` bytes), and a lane past the run holds `masked_entry` -- its place's row, coefficient 0, a dummy panel row --
+token's unit byte, looked up by the row the entry carries -- its query head's units, `carry.md#sides`); each lane
+takes its two tokens' scales and panel offsets by four shuffles. A listed side's tiles take the digit's run from the
+buffer's entries (`#entries`); the entries' offsets are the union's, so the chunk's pool is taken back by its first
+slot's (`first x row` bytes) and each entry's panel offset made the chunk's by subtracting `64 first` from its high half,
+modulo 2^16 as a grouped union's offsets are written, and a lane past the run holds `masked_entry` -- its place's row, coefficient 0, a dummy panel row --
 so its products add an exact zero. A side with no list level takes every slot of the chunk, its entry implied -- the
 slot's row, its token (the chunk's first plus the slot), its panel row (a slot past the chunk's end its place's dummy
 row), its coefficient the digit's f16 in the row's coefficient slice (its second). Each source is its own loop, so each
@@ -153,7 +155,8 @@ the dummy rows, so it fits its 16 bits on every card; a lane XORs its half (`32 
 <a id="drain"></a>
 ## The drain
 
-A chunk's panel to `num`, once every warp has read the chunk: each slot's 16 words added as u32 atomics at its token
+A chunk's panel to `num`, once every warp has read the chunk: each slot's 16 words added as u32 atomics at its row's
+query head and token
 (two tokens a warp request, a slot pair's one line); the next fill zeroes the panel. A thread keeps one word of every
 16th slot -- 16 slots on, its panel cell is 1 KB on, the swizzle's bits unchanged, so its cells are one address and an
 add -- and takes two slots a step, loaded before their adds; an add is predicated on its word, so a gap slot's zero adds nothing and

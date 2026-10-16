@@ -71,6 +71,20 @@ def test_a_window_that_reads_nothing_is_planned_as_the_model():
     assert nothing_then_reads > 0, "no window reading nothing precedes one that reads: the cell is vacuous"
 
 
+def test_grouped_plans_are_the_model():
+    """GROUPED QUERIES (four query heads a write head): the read union is the group's merged rows, so a window's read
+    chunks, its records' size and the area are the group's (`tables_of`); the records are the model's word for word."""
+    from measure.cells import by_name, realize
+    from measure.subjects import bundle_of
+
+    spec = by_name("flagship-alt-k4-g4")
+    routes, values, layout, statics = bundle_of(spec, realize(spec))
+    assert routes.group == 4
+    want = _assert_plans_are_the_model(routes, values, layout, statics)
+    assert max(cp.chunks(rec.word)[3] for windows in want for rec in windows) > 1, (
+        "no window reads more than one chunk: the group's union never passes one head's buffer")
+
+
 def _sides(rng: random.Random):
     """A random window's counts: each side's union (none, small or full) and segment sums of up to 32 lists a slot."""
     def side():

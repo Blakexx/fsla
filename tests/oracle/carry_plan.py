@@ -57,11 +57,12 @@ def fold_bytes(slots: int, entries: int, write_row: int) -> int:
 
 
 def _sum_at(S, j: int) -> int:
-    return int(S[j]) if 0 <= j < LIST_AT else 0
+    return int(S[j]) if 0 <= j < len(S) else 0
 
 
 def entries_of(S, first: int, slots: int, total: int) -> int:
-    hi = LIST_AT - 1 if first + slots >= total else (first + slots) // LIST_BOUND - 1
+    """`entries_of`: ``S`` a side's segment sums, 8 a query head of its union."""
+    hi = len(S) - 1 if first + slots >= total else (first + slots) // LIST_BOUND - 1
     return _sum_at(S, hi) - _sum_at(S, first // LIST_BOUND - 1)
 
 
@@ -73,7 +74,7 @@ def chunk_max(S, m: int, total: int) -> int:
 def largest_chunk(u: int, S, room: int, nbytes) -> int:
     """The whole union where one buffer of it fits ``room``; else the largest ``64 m`` below it two of whose largest
     buffers fit, else one (`largest_chunk`)."""
-    if nbytes(u, _sum_at(S, LIST_AT - 1)) <= room:
+    if nbytes(u, _sum_at(S, len(S) - 1)) <= room:
         return u
     two, one, m = 0, 1, 1
     while LIST_BOUND * m < u:
@@ -82,6 +83,20 @@ def largest_chunk(u: int, S, room: int, nbytes) -> int:
         one = m if b <= room else one
         m += 1
     return LIST_BOUND * (two if two > 0 else one)
+
+
+def tables_bytes(heads: int) -> int:
+    """The read tables' bytes at ``heads`` query heads a write head (`tables_of`): the union, the prefix rows, the
+    units and the plan records, each two windows'."""
+    return (2 * heads * WINDOW * 2 + -(-2 * 33 * LIST_AT * heads * 2 // 16) * 16 + 2 * heads * WINDOW
+            + 2 * carry_ops.plan_words(heads) * 4)
+
+
+def area_of(smem: int, area_one: int, heads: int) -> int:
+    """The call's area (`tables_of`): from the fixed tenants' end -- the census's one-head area below its tables -- to
+    the tables at the top of shared memory."""
+    top = lambda g: (smem - tables_bytes(g)) // 128 * 128  # noqa: E731
+    return area_one - (top(1) - top(heads))
 
 
 def chunks_of(u: int, chunk: int) -> int:
@@ -108,7 +123,7 @@ def rule_plan(c: Counts, read_row: int, write_row: int, area: int) -> int:
     most = 0
     if nr > 0:
         most = read_bytes(min(rc, c.ru), chunk_max(c.rs, rc // LIST_BOUND, c.ru) if rc < c.ru
-                          else _sum_at(c.rs, LIST_AT - 1), read_row)
+                          else _sum_at(c.rs, len(c.rs) - 1), read_row)
     whole = nr > 0 and IMAGE_WHOLE + (2 if nr > 1 else 1) * most <= area
     fc = largest_chunk(c.fu, c.fs, area, lambda s, e: fold_bytes(s, e, write_row)) if c.fu > 0 else 0
     return plan_word(WHOLE if whole else HALVES, rc, fc, c.ru, c.fu)
@@ -247,18 +262,18 @@ def _side(lists, carve_plan, routes, w: int, bh: int, group: int):
 
 def plans(routes, facts, carve, forced: str | None = None) -> list[list[Record]]:
     """Every box class's records over the call's windows (a class per pair of the two list levels' groups, each
-    batch-head, in the plan tensor's order), as the plan pass on this card writes them (its area and pool rows from
+    batch and write head, in the plan tensor's order), as the plan pass on this card writes them (its area and pool rows from
     the arm's census)."""
     key = carry_ops.arm_key(carve)
     row = next(r for r in carry_ops.census() if tuple(r[1:7]) == tuple(key))
-    area, read_row, write_row = row[12], row[13], row[14]
+    area, read_row, write_row = area_of(row[9], row[12], routes.group), row[13], row[14]
     word = carry_ops.forced_word(forced)
     windows = -(-routes.tokens // WINDOW)
     write = facts_ops.side_lists(facts, "write") if carve.fold.lists else None
     read = facts_ops.side_lists(facts, "read") if carve.readout.lists else None
     groups = lambda p: max(1, carve.widths[p.lists[0]] // BOX) if p.lists else 1  # noqa: E731
     out = []
-    for bh in range(routes.batch * routes.heads):
+    for bh in range(routes.batch * routes.write_heads):
         for gr in range(groups(carve.readout)):
             for gw in range(groups(carve.fold)):
                 wins = []

@@ -74,7 +74,7 @@ __device__ __forceinline__ Place place_of(const CarryParams& p) {
 //: `st` a token.
 struct Slices {
   const uint8_t* at[kMaxLevels];
-  int st[kMaxLevels];
+  int st[kMaxLevels], sh[kMaxLevels];
   int bytes[kMaxLevels];
 };
 
@@ -96,6 +96,7 @@ struct Addr {
 static_assert(sizeof(Addr) <= Tenants::kAddrBytes, "the addresses fit their tenant");
 
 __device__ __forceinline__ void addr_in(Addr& out, const CarryParams& p, const Place& c) {
+  //: the read side's rows at the write head's first query head, `h g`
   const int b = c.bh / p.H, h = c.bh - b * p.H;
 #pragma unroll 1
   for (int k = 0; k < 2; ++k) {
@@ -109,9 +110,10 @@ __device__ __forceinline__ void addr_in(Addr& out, const CarryParams& p, const P
     for (int i = 0; i < s.operands; ++i) {
       const int level = s.operand[i];
       const Plane& pl = s.rows[i];
-      out.slices[k].at[i] =
-          pl.base + b * pl.sb + h * pl.sh + (int64_t)origin_of(p, level) * s.elem[i];
+      out.slices[k].at[i] = pl.base + b * pl.sb + h * (k == 0 ? p.tables.heads : 1) * pl.sh
+                            + (int64_t)origin_of(p, level) * s.elem[i];
       out.slices[k].st[i] = static_cast<int>(pl.st);
+      out.slices[k].sh[i] = static_cast<int>(pl.sh);
       out.slices[k].bytes[i] = p.extents[level] * s.elem[i];
     }
   }
@@ -305,11 +307,12 @@ __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* v
   constexpr int kQuads = kThreads / 4, kChunks = kSliceBytes / ops::kStageBytes;
   const int r = static_cast<int>(threadIdx.x) & 3;
   const uint8_t* base[Factors];
-  int st[Factors], bytes[Factors];
+  int st[Factors], sh[Factors], bytes[Factors];
   bool active[Factors], narrow = false;
   static_for<Factors>([&](auto i) {
     bytes[i] = sl.bytes[i];
     st[i] = sl.st[i];
+    sh[i] = Values ? 0 : sl.sh[i];
     base[i] = sl.at[i] + static_cast<int64_t>(win.t0) * st[i] + ops::kStageBytes * r;
     active[i] = ops::kStageBytes * r < bytes[i];
     narrow |= bytes[i] < ops::kStageBytes;
@@ -322,15 +325,17 @@ __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* v
   const auto rows = [&](auto kNarrow) {
 #pragma unroll 2
     for (int s = static_cast<int>(threadIdx.x) >> 2; s < slots; s += kQuads) {
-      const int u = win.listed ? tok[first + s] : first + s, t = u & (kWindow - 1);
-      const bool live = u == t;
+      //: a slot's row: its query head `j` (the read side's) and token `t`, bit 15 a gap
+      const int u = win.listed ? tok[first + s] : first + s, t = u & (kWindow - 1),
+                j = Values ? 0 : (u >> 9) & 0x3f;
+      const bool live = (u & 0x8000) == 0;
       const ops::SmemAddr row = pool + static_cast<uint32_t>(s * kRow);
       static_for<Factors>([&](auto i) {
         const ops::SmemAddr dst = row
                                   + 16u
                                         * chunk_at<kRow>(static_cast<uint32_t>(s),
                                                          static_cast<uint32_t>(kChunks * i + r));
-        const uint8_t* const src = base[i] + t * st[i];
+        const uint8_t* const src = base[i] + t * st[i] + j * sh[i];
         if constexpr (decltype(kNarrow)::value) {
           if (!active[i] && r == 0) stage_bytes(dst, src, bytes[i], live);
           if (active[i]) ops::stage_run_if<16>(dst, src, live);
@@ -692,9 +697,10 @@ __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* 
   const ops::SmemAddr units =
       ops::smem_addr(smem + p.tables.units_at) + (w & 1) * p.tables.heads * kWindow;
   const Run run = chunk_runs<P>(p, smem, rw, kRead, w, first, slots, total, lane);
-  //: the entries' row and panel offsets are the union's: the chunk's pool and panel taken back by its first slot
-  const ops::SmemAddr pool_u = rows - static_cast<uint32_t>(first * P::kReadRow),
-                      pads_u = pads - static_cast<uint32_t>(64 * first);
+  //: the entries' row and panel offsets are the union's: the chunk's pool taken back by its first slot, and each
+  //: entry's panel offset made the chunk's (modulo 2^16, as a grouped union's are written) before it is shuffled
+  const ops::SmemAddr pool_u = rows - static_cast<uint32_t>(first * P::kReadRow);
+  const uint32_t panel_back = static_cast<uint32_t>(64 * first) << 16;
   const uint2 masked = masked_entry<P>(first, static_cast<uint32_t>(lane & 7));
   //: a lane's entry `e` of a run (`n` at `to`): loaded at a clamped place, the masked entry past the run
   const auto entry_at = [&](int e, int n, int to) {
@@ -702,7 +708,9 @@ __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* 
     asm volatile("ld.shared.v2.u32 {%0, %1}, [%2];"
                  : "=r"(v.x), "=r"(v.y)
                  : "r"(ents + 8u * static_cast<uint32_t>(n > 0 ? to + min(e, n - 1) : 0)));
-    return e < n ? v : masked;
+    v = e < n ? v : masked;
+    v.y -= panel_back;
+    return v;
   };
   int i = lo;
   for (int go = __any_sync(0xffffffffu, i < hi) ? 1 : 0; go > 0; --go)
@@ -733,7 +741,7 @@ __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* 
                   tile_in<P>(pool_u, units, sx[Q], entry_at(8 * s + (lane & 7), n[Q], to[Q]), lane);
             });
             static_for<kStep>([&](auto Q) { tile_mma<F16>(acc[Q], in[Q], f[Q]); });
-            static_for<kStep>([&](auto Q) { tile_add(pads_u, in[Q], acc[Q], lane); });
+            static_for<kStep>([&](auto Q) { tile_add(pads, in[Q], acc[Q], lane); });
           } while (__any_sync(0xffffffffu, ++s < tiles));
       } else {
         //: every slot of the chunk, its entry implied: its row and token, its coefficient, its panel row (a slot past
@@ -786,7 +794,8 @@ __device__ __forceinline__ void drain(const CarryParams& p, const uint8_t* smem,
       panel + (panel_row(static_cast<uint32_t>(s0)) ^ ((32u * (word >> 3)) | (4u * (word & 7))));
   const uint16_t* tok = union_of<P>(p, smem, kRead, w) + first;
   const int pair = p.dv / 2;
-  uint32_t* const out = p.num + ((int64_t)c.bh * p.L + rw.t0) * pair
+  //: the write head's first query head's rows; a slot's row its query head `j` (`L` rows on) and token
+  uint32_t* const out = p.num + ((int64_t)c.bh * p.tables.heads * p.L + rw.t0) * pair
                         + reinterpret_cast<const volatile Addr*>(smem + P::kAddr)->channel0 / 2
                         + word;
 #pragma unroll 1
@@ -800,9 +809,10 @@ __device__ __forceinline__ void drain(const CarryParams& p, const uint8_t* smem,
         asm volatile("ld.shared.u32 %0, [%1];"
                      : "=r"(v[k])
                      : "r"(cell0 + static_cast<uint32_t>((i + k) * kCellStride)));
-      t[k] = s < slots ? (rw.listed ? tok[s] : first + s) : 0;
+      const int u = s < slots ? (rw.listed ? tok[s] : first + s) : 0;
+      t[k] = ((u >> 9) & 0x3f) * p.L + (u & (kWindow - 1));
     });
-    static_for<kAhead>([&](auto k) { red_nonzero(out + t[k] * pair, v[k]); });
+    static_for<kAhead>([&](auto k) { red_nonzero(out + static_cast<int64_t>(t[k]) * pair, v[k]); });
   }
 }
 

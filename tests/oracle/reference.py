@@ -56,23 +56,26 @@ def inter_reference(read_levels, write_levels, g_write, v, widths, window,
     """``(num, den, state_out)`` in fp64, canonical leaf order.
 
     ``num`` is ``[B,T,H,d_v]``, ``den`` ``[B,T,H]``, ``state_out``
-    ``[B,H,N,d_v+1]``. The readout is against state-at-window-start and carries
+    ``[B,H_w,N,d_v+1]``. The readout is against state-at-window-start and carries
     NO within-window pair -- that is the whole content of the inter/intra split.
     With ``states``, the list of each window's state before its writes instead.
+    GROUPED (``H = g H_w``): query head ``h`` reads write head ``h // g``'s state;
+    ``v``, the write levels and the gain are the write heads'.
     """
-    Bn, T, H, d_v = v.shape
+    Bn, T, Hw, d_v = v.shape
+    g = read_levels[0].shape[2] // Hw
     N = math.prod(widths)
     vt = deposit_value(v)
-    state = (torch.zeros(Bn, H, N, d_v + 1, device=v.device, dtype=torch.float64)
+    state = (torch.zeros(Bn, Hw, N, d_v + 1, device=v.device, dtype=torch.float64)
              if state_in is None else state_in.double().clone())
-    num = torch.zeros(Bn, T, H, d_v, device=v.device, dtype=torch.float64)
-    den = torch.zeros(Bn, T, H, device=v.device, dtype=torch.float64)
+    num = torch.zeros(Bn, T, g * Hw, d_v, device=v.device, dtype=torch.float64)
+    den = torch.zeros(Bn, T, g * Hw, device=v.device, dtype=torch.float64)
     before = []
     for t0 in range(0, T, window):
         sl = slice(t0, min(t0 + window, T))
         before.append(state)
         R = leaf_product(read_levels, widths, sl)
-        out = torch.einsum("bthn,bhnc->bthc", R, state)
+        out = torch.einsum("bthn,bhnc->bthc", R, state.repeat_interleave(g, 1))
         num[:, sl] = out[..., :d_v]
         den[:, sl] = out[..., d_v]
         del R, out
@@ -88,15 +91,16 @@ def intra_reference(read_levels, write_levels, g_write, v, widths, window):
     Materializes the ``[w, w]`` similarity per window, which is exactly what the
     kernel must never do -- a reference is allowed to be slow and obvious.
     """
-    Bn, T, H, d_v = v.shape
-    vt = deposit_value(v)
-    num = torch.zeros(Bn, T, H, d_v, device=v.device, dtype=torch.float64)
-    den = torch.zeros(Bn, T, H, device=v.device, dtype=torch.float64)
+    Bn, T, Hw, d_v = v.shape
+    g = read_levels[0].shape[2] // Hw
+    vt = deposit_value(v).repeat_interleave(g, 2)
+    num = torch.zeros(Bn, T, g * Hw, d_v, device=v.device, dtype=torch.float64)
+    den = torch.zeros(Bn, T, g * Hw, device=v.device, dtype=torch.float64)
     for t0 in range(0, T, window):
         sl = slice(t0, min(t0 + window, T))
         n = sl.stop - sl.start
         R = leaf_product(read_levels, widths, sl)
-        Wm = g_write[:, sl].double()[..., None] * leaf_product(write_levels, widths, sl)
+        Wm = (g_write[:, sl].double()[..., None] * leaf_product(write_levels, widths, sl)).repeat_interleave(g, 2)
         A = torch.einsum("brhn,bchn->bhrc", R, Wm)
         mask = torch.tril(torch.ones(n, n, device=v.device, dtype=torch.float64))
         A = A * mask

@@ -71,37 +71,34 @@ __host__ __device__ constexpr bool least_plan_fits(int area) {
          && fold_bytes<P>(kListBound, kListBound * kBoxLists) <= area;
 }
 
-//: A SIDE'S COUNTS in a window: its union's slots and `S[j]`, its box lists' entries before union slot `64 (j + 1)`
-//: (the group's exact totals); every window token and no entries where the side has no list level.
+//: A SIDE'S SEGMENT SUMS in a window: `S[j]`, its group's lists' entries before union slot `64 (j + 1)`, `cols` of them
+//: (8 a query head), read from the facts pass's exact totals; none where the side has no list level.
 //: -- see docs/internals/carry/schedule.md#totals
-__device__ __forceinline__ int side_counts(const SideLists& l, bool listed, int tokens,
-                                           int64_t group, int (&S)[kListAt]) {
-  int4 lo = make_int4(0, 0, 0, 0), hi = lo;
-  if (listed) {
-    lo = reinterpret_cast<const int4*>(l.totals + group * kListAt * l.heads)[0];
-    hi = reinterpret_cast<const int4*>(l.totals + group * kListAt * l.heads)[1];
+struct Sums {
+  const int32_t* at;
+  int cols;
+
+  __device__ __forceinline__ int operator[](int j) const {
+    return at != nullptr && j >= 0 ? at[j] : 0;
   }
-  static_assert(kListAt == 8, "a group's totals are two 16-byte words");
-  const int q[kListAt] = {lo.x, lo.y, lo.z, lo.w, hi.x, hi.y, hi.z, hi.w};
-  static_for<kListAt>([&](auto K) { S[K] = q[K]; });
+};
+
+//: A SIDE'S COUNTS: its union's slots (every window token where it has no list level) and its segment sums.
+__device__ __forceinline__ int side_counts(const SideLists& l, bool listed, int tokens,
+                                           int64_t group, Sums& S) {
+  S = Sums{listed ? l.totals + group * kListAt * l.heads : nullptr,
+           kListAt * (listed ? l.heads : 1)};
   return listed ? l.union_count[group] : tokens;
 }
 
 //: THE ENTRIES of union slots `first .. first + slots - 1` (`first` a multiple of 64, the end one or the union's end
 //: `total`), from the segment sums; the most any chunk of `64 m` slots holds.
-__device__ __forceinline__ int sum_at(const int (&S)[kListAt], int j) {
-  int v = 0;
-  static_for<kListAt>([&](auto J) { v = J == j ? S[J] : v; });
-  return v;
+__device__ __forceinline__ int entries_of(const Sums& S, int first, int slots, int total) {
+  const int hi = first + slots >= total ? S.cols - 1 : (first + slots) / kListBound - 1;
+  return S[hi] - S[first / kListBound - 1];
 }
 
-__device__ __forceinline__ int entries_of(const int (&S)[kListAt], int first, int slots,
-                                          int total) {
-  const int hi = first + slots >= total ? kListAt - 1 : (first + slots) / kListBound - 1;
-  return sum_at(S, hi) - sum_at(S, first / kListBound - 1);
-}
-
-__device__ __forceinline__ int chunk_max(const int (&S)[kListAt], int m, int total) {
+__device__ __forceinline__ int chunk_max(const Sums& S, int m, int total) {
   int most = 0;
 #pragma unroll 1
   for (int first = 0; first < total; first += kListBound * m)
@@ -113,9 +110,8 @@ __device__ __forceinline__ int chunk_max(const int (&S)[kListAt], int m, int tot
 //: below the union two of whose largest buffers fit (one lands while the other computes), else one.
 //: -- see docs/internals/carry/schedule.md#chunks
 template <class Bytes>
-__device__ __forceinline__ int largest_chunk(int u, const int (&S)[kListAt], int room,
-                                             Bytes bytes) {
-  if (bytes(u, S[kListAt - 1]) <= room) return u;
+__device__ __forceinline__ int largest_chunk(int u, const Sums& S, int room, Bytes bytes) {
+  if (bytes(u, S[S.cols - 1]) <= room) return u;
   int two = 0, one = 1;
 #pragma unroll 1
   for (int m = 1; kListBound * m < u; ++m) {
@@ -129,7 +125,7 @@ __device__ __forceinline__ int largest_chunk(int u, const int (&S)[kListAt], int
 //: A WINDOW'S COUNTS: each side's union and segment sums.
 struct Counts {
   int ru, fu;
-  int rs[kListAt], fs[kListAt];
+  Sums rs, fs;
 };
 
 //: THE RULE'S PLAN: the read chunk sized beside the halves, the image whole where it fits beside the read buffers in
@@ -143,8 +139,8 @@ __device__ __forceinline__ uint32_t rule_plan(const CarryParams& p, const Counts
                           : 0;
   const int nr = c.ru > 0 ? (c.ru + rc - 1) / rc : 0;
   const int most =
-      nr > 0 ? read_bytes<P>(min(rc, c.ru),
-                             rc < c.ru ? chunk_max(c.rs, rc / kListBound, c.ru) : c.rs[kListAt - 1])
+      nr > 0 ? read_bytes<P>(min(rc, c.ru), rc < c.ru ? chunk_max(c.rs, rc / kListBound, c.ru)
+                                                      : c.rs[c.rs.cols - 1])
              : 0;
   const bool whole = nr > 0 && kImageWhole + (nr > 1 ? 2 : 1) * most <= area;
   const int fc =

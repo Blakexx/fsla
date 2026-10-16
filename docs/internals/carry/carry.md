@@ -30,7 +30,10 @@ state never leaves the registers inside a call; the readout reads an f16 image o
 ## A side of the carve
 
 `Side` is one side's plan as the kernel addresses it. A side with a sparse level lists it (`list`) and forms its rows
-from its other levels (`operand`, in level order). A side with no sparse level (`list` -1) names two dense levels in
+from its other levels (`operand`, in level order). GROUPED QUERIES: the CTA is a write head's (`H` in the block, the
+values' and the write rows' heads); its read rows are its `g` query heads', `g` by the read rows' heads over `H`, so a
+read union's slot holds a ROW, `j 512 + t` -- query head `j` of the write head (the call's `bh g + j`), token `t` --
+and a grouped read side lists at a level (refused otherwise, by name). A side with no sparse level (`list` -1) names two dense levels in
 `operand`: its row level, then its coefficient level, whose digit is each slot's coefficient for a list or a digit
 (`docs/internals/engine/carve.md#sides`). Each operand level carries its plane and element bytes. A level's slice is the
 box's digits of it from the box's first digit: `origin_of` decomposes the CTA's box index in level order, the channel
@@ -52,8 +55,8 @@ over `heads` query heads' rows (the read side's a write head's `g`, the write si
 - `pre` (int16, the boundaries in prefix form modulo 2^16, `kPreRows` rows of `8 heads` columns) and `totals` (int32,
   the group's exact): `chunk_runs` turns a chunk's slots into each list's run and its place, `side_counts` reads the
   totals.
-- `union_tok` and `union_count` (int32): per 32-digit group each slot's token, window-relative, and the slots' extent;
-  a GAP slot holds `kGap` (token 0 with bit 15 set), so a fill masks the token to the window and zero-fills the row.
+- `union_tok` and `union_count` (int32): per 32-digit group each slot's row (its query head and window-relative token,
+  `#sides`), and the slots' extent; a GAP slot holds `kGap` (bit 15 set), and a fill zero-fills its row.
 
 The addresses both kernels compute live here, one copy: `kGap`, the panel's 64-byte row `kPanelRow` past 8 dummy rows
 (`kPadBytes`, a pad's adds landing on its place's), `panel_row` (a slot pair a 128-byte line, each slot's halves at
@@ -67,9 +70,9 @@ or its high bits within each four for a row of an odd number of 64-byte quarters
 `CarryParams` reaches the kernel as a grid constant. The box is the carve's: `extents` a level, `channels`, and
 `stride`, a level's step in the box index (the channel groups innermost). Every pointer is the bundle's own memory:
 the rows and values at their strides (the row alignment law, `docs/internals/facts/facts.md`), the facts pass's
-lists, the den pass's units (`unit`, an exponent byte a token, a window wide so a window's copy is aligned). The
-outputs are `num` (packed s16 pairs at each token's unit, added as u32: `parts.md#drain`) and `check` (the final
-state's sum). `plans` are the plan pass's records (`schedule.md#pass`), a window's for each box class.
+lists, the den pass's units (`unit`, an exponent byte a query head's token, a window wide so a window's copy is
+aligned). The outputs are `num` (a query head's: packed s16 pairs at each token's unit, added as u32:
+`parts.md#drain`) and `check` (the final state's sum). `plans` are the plan pass's records (`schedule.md#pass`), a window's for each box class.
 `readout_f16` is the readout's accumulation (`carry_api.md#carry-readout-accumulate`); `forced` a plan form every
 window takes where it fits, -1 for none (`schedule.md#planner`). A bound capture copies the block and its grid out before the
 launch (`CarryCapture`, `carry_api.md#carry-capture-bind`).

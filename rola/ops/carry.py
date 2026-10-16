@@ -72,8 +72,8 @@ def carry(routes, values, facts, carve: Carve, unit: torch.Tensor, accumulate: s
     (docs/internals/carry/schedule.md#planner); ``forced`` (:func:`forced_word`) is reserved: the gates' and the
     measurements' choice of the plan a window takes where every chunk of it fits; ``plans`` (:func:`plans_out`) is
     reserved: the plan pass's output for a gate to read, else the call's own
-    (docs/internals/carry/carry_api.md#carry)."""
-    routes.refuse_grouped("the carry")
+    (docs/internals/carry/carry_api.md#carry). A grouped bundle's CTAs are its write heads', each reading its query
+    heads' rows; ``num`` and ``unit`` are a query head's."""
     BH = routes.batch * routes.heads
     d_v = values.v.shape[-1]
     num = torch.zeros((BH, routes.tokens, d_v // 2), dtype=torch.int32, device=routes.device)
@@ -102,8 +102,8 @@ def plans_out(routes, carve: Carve) -> torch.Tensor:
     for plan in (carve.readout, carve.fold):
         groups *= max(1, -(-carve.widths[plan.lists[0]] // 32)) if plan.lists else 1
     windows = -(-routes.tokens // WINDOW)
-    return torch.empty((routes.batch * routes.heads, windows, groups, plan_words(routes.group)), dtype=torch.int32,
-                       device=routes.device)
+    return torch.empty((routes.batch * routes.write_heads, windows, groups, plan_words(routes.group)),
+                       dtype=torch.int32, device=routes.device)
 
 
 _ACCUMULATE = {"fp32": 0, "fp16": 1}

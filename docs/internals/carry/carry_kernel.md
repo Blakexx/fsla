@@ -8,7 +8,8 @@ choosing chunk sizes the card's area holds.
 <a id="kernel"></a>
 ## The kernel
 
-One CTA a box and batch-head, 8 warps, one CTA an SM, after the plan pass (`schedule.md#pass`). The fold's fp32 state
+One CTA a box and batch and write head (its query heads' reads with it, `carry.md#sides`), 8 warps, one CTA an SM,
+after the plan pass (`schedule.md#pass`). The fold's fp32 state
 (`kStateRegs` = 128 registers a lane) is the C fragments of the fold's MMAs and stays in registers for the whole call.
 Window 0's inputs and record are staged and its first entry filled before the loop. A window:
 

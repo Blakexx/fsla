@@ -69,9 +69,10 @@ the union's, so a chunk from a multiple of 64 takes its pool and panel back by i
 <a id="totals"></a>
 ## The segment sums
 
-`side_counts`: a side's union slots and `S[j]`, its box lists' entries before union slot `64 (j + 1)` -- the facts
-pass's group totals, two 16-byte loads (`facts.md#lists-out`). Any chunk's entries are a difference of two of
-them (`entries_of`); `chunk_max` is the most any chunk of `64 m` slots holds.
+`side_counts`: a side's union slots and its segment sums (`Sums`): `S[j]`, its group's lists' entries before union slot
+`64 (j + 1)`, 8 a query head of the union -- the facts pass's exact group totals, read where used
+(`facts.md#lists-out`). Any chunk's entries are a difference of two of them (`entries_of`); `chunk_max` is the most any
+chunk of `64 m` slots holds.
 
 <a id="chunks"></a>
 ## The chunks

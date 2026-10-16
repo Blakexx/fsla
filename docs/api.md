@@ -191,9 +191,10 @@ its rows, scales and `g_write` (`[B, T, H_w]`), and with it the values, the deca
 `H`, and query head `h` reads write head `h // group` (`group = H / H_w`, consecutive: PyTorch SDPA's `enable_gqa`
 order); `H_w = H` is the ungrouped layer. The oracle reads grouped bundles (`tests/oracle/test_oracle_grouped.py`: a
 grouped run is the ungrouped run with each write head's side repeated for its query heads). The facts pass reads them,
-a write head's read side one union a window over its query heads' rows (`docs/internals/facts/facts.md#lists-out`).
-The carry, the intra, the decode step, the carried state and the prefill read one head count today, and each refuses
-a grouped bundle by name (`RouteFactors.refuse_grouped`).
+a write head's read side one union a window over its query heads' rows (`docs/internals/facts/facts.md#lists-out`), and
+the carry reads them: a CTA a write head, its query heads' rows with it (`docs/internals/carry/carry.md#sides`). The
+intra, the decode step, the carried state and the prefill read one head count today, and each refuses a grouped
+bundle by name (`RouteFactors.refuse_grouped`).
 `RouteFactors.rows(level, side)` is a level's rows. A read level's scale carries the read mass; a
 write level's scale is the normalized simplex's max and its mass rides `g_write`. This is what
 the int carry, the intra and the decode kernels read, and it is written by the framework's producer

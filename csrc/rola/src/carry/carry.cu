@@ -175,19 +175,22 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
     p.extents[l] = (int)extents[l];
     p.stride[l] = stride[l];
   }
+  //: THE GROUP: the read side's query heads a write head, by its rows; its lists merge them, so it lists
+  STD_TORCH_CHECK(
+      !read_rows.empty() && read_rows[0].dim() == 4 && read_rows[0].size(2) % H == 0,
+      "the read side's rows hold a whole number of query heads a write head; values hold ", H,
+      " write heads");
+  const int64_t heads = read_rows[0].size(2) / H;
+  STD_TORCH_CHECK(heads == 1 || read_list >= 0, "a grouped read side lists at a level: ", heads,
+                  " query heads a write head read every window token of each with no list level");
   p.write =
       side_of(write_rows, write_list, write_operand, widths, extents, B, L, H, "the write side");
-  p.read = side_of(read_rows, read_list, read_operand, widths, extents, B, L, H, "the read side");
+  p.read = side_of(read_rows, read_list, read_operand, widths, extents, B, L, H * heads,
+                   "the read side");
   p.values = Plane{static_cast<const uint8_t*>(values.const_data_ptr()), values.stride(0) * 2,
                    values.stride(1) * 2, values.stride(2) * 2};
   STD_TORCH_CHECK(p.values.st > 0 && p.values.st < (int64_t{1} << 31) / kWindow,
                   "values' token stride is ", p.values.st, " bytes; a window's offsets are 32-bit");
-  //: the read side's query heads a write head, by its union's slots; the write side's one
-  const int64_t heads = read_list >= 0 && read_lists.size() == 5 && read_lists[3].dim() == 4
-                            ? read_lists[3].size(3) / kWindow
-                            : 1;
-  STD_TORCH_CHECK(heads >= 1, "the read lists merge whole windows of query heads' rows, got ",
-                  heads);
   p.write_lists = lists_of(write_lists, BH, windows, write_list < 0 ? 0 : widths[write_list], 1,
                            "the write lists");
   p.read_lists = lists_of(read_lists, BH, windows, read_list < 0 ? 0 : widths[read_list], heads,
@@ -203,14 +206,16 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
         shape(write_exp.sizes()));
     p.write_exp = write_exp.const_data_ptr<int16_t>();
   }
-  STD_TORCH_CHECK(unit.is_cuda() && unit.is_contiguous() && unit.scalar_type() == Dtype::Char
-                      && unit.sizes() == Shape({BH, windows * kWindow}),
-                  "unit is the contiguous CUDA int8 [BH, windows x W] exponent bytes, got ",
-                  shape(unit.sizes()));
-  STD_TORCH_CHECK(num.is_cuda() && num.is_contiguous() && num.scalar_type() == Dtype::Int
-                      && num.sizes() == Shape({BH, L, dv / 2}),
-                  "num is the contiguous CUDA int32 [BH, L, d_v / 2] packed s16 pairs, got ",
-                  shape(num.sizes()));
+  STD_TORCH_CHECK(
+      unit.is_cuda() && unit.is_contiguous() && unit.scalar_type() == Dtype::Char
+          && unit.sizes() == Shape({BH * heads, windows * kWindow}),
+      "unit is the contiguous CUDA int8 [B H, windows x W] exponent bytes a query head, got ",
+      shape(unit.sizes()));
+  STD_TORCH_CHECK(
+      num.is_cuda() && num.is_contiguous() && num.scalar_type() == Dtype::Int
+          && num.sizes() == Shape({BH * heads, L, dv / 2}),
+      "num is the contiguous CUDA int32 [B H, L, d_v / 2] packed s16 pairs a query head, got ",
+      shape(num.sizes()));
   STD_TORCH_CHECK(check.is_cuda() && check.scalar_type() == Dtype::Float && check.numel() == 1,
                   "check is one CUDA fp32 value");
   p.unit = unit.const_data_ptr<int8_t>();
