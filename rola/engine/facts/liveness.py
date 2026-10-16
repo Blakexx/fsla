@@ -220,8 +220,9 @@ def _pack(bits: torch.Tensor, layout: LivenessLayout) -> torch.Tensor:
 
 def liveness_words(read_rows, write_rows, layout: LivenessLayout, read_statics: SideStatics,
                    write_statics: SideStatics) -> torch.Tensor:
-    """THE MODEL OF THE PASS: `[BH, 2, rows, words]` words from each side's per-level ``[B, T, H, w_l]`` rows (``BH``
-    batch-major), the executable spec.
+    """THE MODEL OF THE PASS: `[B H_w, g + 1, rows, words]` words from each side's per-level rows (read
+    ``[B, T, H, w_l]``, write ``[B, T, H_w, w_l]``, ``g = H / H_w``; batch-major), the executable spec: slots
+    ``0 .. g - 1`` a write head's query heads' read side, slot ``g`` its write side (``[BH, 2, ...]`` ungrouped).
 
     A sparse level's digit is live where its row is nonzero and the digit mask names it; a
     dense level's row is the static width mask, broadcast over every token and costing no
@@ -237,24 +238,26 @@ def liveness_words(read_rows, write_rows, layout: LivenessLayout, read_statics: 
                 base = layout.row_base(level)
                 live[:, base:base + layout.B[level], :] = True
         sides.append(_pack(live & mask[None, :, None], layout))
-    return torch.stack(sides, dim=1)
+    write = sides[1]
+    read = sides[0].reshape(write.shape[0], -1, *write.shape[1:])
+    return torch.cat((read, write[:, None]), dim=1)
 
 
 def tile_unions(words: torch.Tensor, layout: LivenessLayout) -> torch.Tensor:
-    """THE MODEL OF THE TILE UNIONS: `[BH, 2, rows, words]` words -> `[BH, 2, groups, tiles]` int32, bit ``i`` of
+    """THE MODEL OF THE TILE UNIONS: `[BH, slots, rows, words]` words -> `[BH, slots, groups, tiles]` int32, bit ``i`` of
     (group ``g`` of level ``l``, tile ``t``) set when digit ``32 g + i`` of level ``l`` is live at a token in
     ``[64 t, 64 t + 64)``: the OR of the tile's two words, a row a bit."""
-    BH = words.shape[0]
+    BH, slots = words.shape[:2]
     pad = 2 * layout.tiles - layout.words
     if pad:
         words = torch.cat([words, words.new_zeros((*words.shape[:-1], pad))], dim=-1)
-    live = (words.reshape(BH, SIDES, layout.rows, layout.tiles, 2) != 0).any(-1)
+    live = (words.reshape(BH, slots, layout.rows, layout.tiles, 2) != 0).any(-1)
     groups = []
     for level, width in enumerate(layout.B):
         base = layout.row_base(level)
         rows = live[:, :, base:base + width]
-        rows = torch.cat([rows, rows.new_zeros((BH, SIDES, -width % GROUP_DIGITS, layout.tiles))], dim=2)
-        groups.append(rows.reshape(BH, SIDES, -1, GROUP_DIGITS, layout.tiles))
+        rows = torch.cat([rows, rows.new_zeros((BH, slots, -width % GROUP_DIGITS, layout.tiles))], dim=2)
+        groups.append(rows.reshape(BH, slots, -1, GROUP_DIGITS, layout.tiles))
     bits = torch.cat(groups, dim=2).to(torch.int64)
     weights = (1 << torch.arange(GROUP_DIGITS, device=words.device, dtype=torch.int64))[:, None]
     unions = (bits * weights).sum(dim=3)
@@ -408,7 +411,8 @@ def atom_boxes(layout: LivenessLayout) -> list[Box]:
 
 
 def atom_activity(words: torch.Tensor, layout: LivenessLayout, side: int, statics: SideStatics) -> torch.Tensor:
-    """`[BH, N/16]` bool: :func:`box_activity` at the ATOM box set, every box at once.
+    """`[BH, N/16]` bool: :func:`box_activity` at the ATOM box set, every box at once, of the words' slot ``side``
+    (``READ``, ``WRITE`` ungrouped; a query head's or the write side's grouped).
 
     The same law -- the OR over tokens of the AND over levels of the OR over the box's
     digit run -- folded as one outer product over the levels, which the atom set admits
@@ -434,13 +438,17 @@ def atom_activity(words: torch.Tensor, layout: LivenessLayout, side: int, static
 
 def page_bits(words: torch.Tensor, layout: LivenessLayout, read_statics: SideStatics,
               write_statics: SideStatics) -> torch.Tensor:
-    """`[BH, N/16]` uint8: the EXACT activity byte, `ATOM_READ | ATOM_WRITTEN`.
+    """`[BH, N/16]` uint8: the EXACT activity byte, `ATOM_READ | ATOM_WRITTEN`, a write head's (its state's): read
+    by any of its query heads (slots ``0 .. g - 1``), written by its write side (slot ``g``).
 
     :func:`page_activity` is this fold at an arbitrary carve, where a box straddling a
     page makes the answer a sound over-report; at the atom box set the map is a
     bijection and the byte is exact, which is what `plan_exact` allocates on and what a
     residency check reads.
     """
-    read = atom_activity(words, layout, READ, read_statics).to(torch.uint8) * ATOM_READ
-    write = atom_activity(words, layout, WRITE, write_statics).to(torch.uint8) * ATOM_WRITTEN
-    return read | write
+    heads = words.shape[1] - 1
+    read = atom_activity(words, layout, READ, read_statics)
+    for slot in range(1, heads):
+        read = read | atom_activity(words, layout, slot, read_statics)
+    write = atom_activity(words, layout, heads, write_statics).to(torch.uint8) * ATOM_WRITTEN
+    return read.to(torch.uint8) * ATOM_READ | write

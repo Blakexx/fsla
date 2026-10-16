@@ -35,19 +35,23 @@ allocated. Every sparse level's rows are read once, whole, whatever their suppor
 registers a thread held to four CTAs by `kFactsCtasMin`, 46 used, which allow five) and five on sm_80 (registers): a
 unit is a plan-fixed load
 and its work, independent of every other unit, so the hardware's block scheduler balances the units' unequal costs and
-several CTAs' loads and work overlap on an SM (R22's independent units). The grid is `(per_window, windows, BH)`: a
-window's units by x, innermost, so the CTAs at work together read one head's window of every level -- the bundle is
-stored head-major (`[B, H, T, ...]`), a contiguous block of each side's plane -- and no CTA divides to find its unit
-(the host refuses more than 65,535 windows or batch-heads).
+several CTAs' loads and work overlap on an SM (R22's independent units). The grid is `(per_window, windows, BH)`, `BH`
+the write heads' batch-heads (`B·H_w`; grouped queries, [`api.md`](../../api.md#grouped-queries)): a window's units by
+x, innermost, so the CTAs at work together read one head's window of every level -- the bundle is stored head-major
+(`[B, H, T, ...]`), a contiguous block of each side's plane -- and no CTA divides to find its unit (the host refuses
+more than 65,535 windows or batch-heads).
 
 <a id="the-plan"></a>
 
 ## The plan: a window's units
 
 `plan_units` (host) lists a window's units once a call, the same for every window (`FactsParams::unit`, coded by
-`unit_code`: kind, side, level, group): for each side and level in order, a `kUnitList` unit a group of the side's LIST
-LEVEL (its one sparse level, `rola.ops.facts.list_level`) and a `kUnitVote` unit a group of every other sparse level;
-and when the write side lists nothing (no sparse level, or two), one `kUnitColumns` unit for the window's columns. A
+`unit_code`: kind, side, level, group, head): for each side and level in order, a `kUnitList` unit a group of the
+side's LIST LEVEL (its one sparse level, `rola.ops.facts.list_level`) and a `kUnitVote` unit a group of every other
+sparse level -- on the read side one a query head of the write head's `g`, its head in the code; and when the write
+side lists nothing (no sparse level, or two), one `kUnitColumns` unit for the window's columns. A read list unit takes
+its write head's query heads IN TURN, one union over their rows (the ranks below): head `j`'s window loaded, voted and
+its bits out at its slot, ranked and listed past the heads before it, the CTA's shared memory reused a head. A
 side with two or more sparse levels gets its words and no lists: they would be COMPOSITE, keyed by a digit of each
 level, which this pass does not build.
 
@@ -143,6 +147,12 @@ the carry stages the extent's slots and zero-fills a gap's row. The token at eve
 shared memory (`kWindowTokens` past the union): a list's tokens before bound `k` are its entries before slot `64 k`,
 which the lists count without walking.
 
+A GROUPED read side ranks its write head's query heads' rows as one union, head-major: head `j`'s union tokens take
+the slots past the heads before it (`at`), each slot's ROW `512 j + t` its `union_tok` (the carry's fills and drains
+decode a row by a shift and a mask). A head's bounds are the tokens at the merged union's 64th slots that fall in its
+rows -- at most eight, from boundary `k0 = at / 64` -- the rest `kWindowTokens`; the gaps and the extent are written
+after the last head.
+
 The slots are not colored. A coloring that put each step's 8 tokens on distinct residues mod 8 (the bank groups of
 every slot-indexed row) made the carry's gathers conflict-free, but it padded each list's passes to its most-used
 color and was most of this pass's time; on sm_86 the composed carry ran as fast on rank slots as on the best coloring,
@@ -166,19 +176,22 @@ plans its chunks per window, `docs/internals/carry/carry.md#lists`).
 An entry is 8 bytes, the carry's `uint2`:
 - READ: the slot's pool row offset in the union in 16-byte chunks, the row's swizzle folded in
   (`slot × row / 16 + chunk0`, `chunk0` the carry's `pool_chunk` of chunk 0: an 8-chunk row XORs by the residue, a row
-  of an odd number of 64-byte quarters by the residue's high bits), its token's window place (the readout looks up the
-  token's unit by it); the coefficient `f16(byte / 256)`, the slot's panel row offset past the dummy rows
-  (`kPadBytes + panel_row(slot)`). A chunk starting at a multiple of 64 takes both offsets back by its first slot's:
-  the swizzles and the panel's pairing depend on a slot's low bits only.
+  of an odd number of 64-byte quarters by the residue's high bits), its ROW (`512 j + t`, the token's window place `t`
+  ungrouped: the readout looks up the row's unit by it); the coefficient `f16(byte / 256)`, the slot's panel row offset
+  past the dummy rows modulo 2^16 (`kPadBytes + panel_row(slot)`, past 16 bits where a grouped union passes ~1,000
+  slots). A chunk starting at a multiple of 64 takes both offsets back by its first slot's, modulo 2^16: the swizzles
+  and the panel's pairing depend on a slot's low bits only, and a chunk's own span is far inside 16 bits.
 - WRITE: the slot, 0; `c_v = f16(fp32(b F) 2^(4 - E_v))`, `c_m = f16(fp32(b m) 2^(4 - E_m))`, `E = max(K, -123)` the
   list's exponent.
 
 THE LANES, every warp its 4 lists `w + 8 j`, 8 lanes a list, lane `s` the list's words `2s` and `2s + 1`. Each lane
-counts its tokens before bounds 1 to 7 (a popcount of each word under a mask) and its total; a segmented scan of those
-counts (eight u16 fields in four registers) gives, at the list's last lane, the list's boundaries -- lane `s` posts
-boundary `s` to the CTA's table -- and each lane's tokens before its own, its first place. After the walks a barrier,
-and warp 0 writes the table's 32 rows, a 16-byte store a row, and sums each column over the lists into the group's
-totals (`bounds_out`). On the write side a walk over the lane's entries
+counts its tokens before the head's eight bounds and its total (a popcount of each word under a mask); a segmented
+scan of those counts (nine u16 fields in five registers) gives, at the list's last lane, the list's boundaries --
+lane `s` posts boundary `s` to the CTA's table past the list's entries in the heads before, lane 7 also its entries
+through the head -- and each lane's tokens before its own, its first place. After the walks a barrier, and warp 0
+writes each list's boundaries at the head's columns `k0 ..` (a later head's own columns overwrite the ones past this
+head's rows; the last head's entries through it fill every column past its eight) and sums each column over the lists
+into the group's totals (`bounds_out`). On the write side a walk over the lane's entries
 takes the list maxima, and their exponents. A walk then writes the lane's entries at consecutive places from its
 first, each's slot `pre + popc(union word & below)` from the lane's two union words and their ranks before.
 

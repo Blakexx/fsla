@@ -76,15 +76,17 @@ def _statics(layout, dense, logical):
     return lv.side_statics(layout, tuple(level in dense for level in range(layout.D)), logical)
 
 
-def _bundle(widths, L, statics, *, B=1, H=2, seed=0, packed=False):
+def _bundle(widths, L, statics, *, B=1, H=2, seed=0, packed=False, group=1):
     """A bundle at logical widths ``widths`` in the format: a sparse level's rows a random support (at least one live
     digit a token) as u8; a dense level's mostly nonzero digits with some zeros -- a value that rounded to zero, which
     the width mask reports live all the same -- as f16 at the floor (`rola.routing.quant`). ``packed`` gives each
     side's levels as views of the producer's planes -- a u8 plane of its sparse levels and an f16 plane of its dense
-    ones -- otherwise each level is its own tensor."""
+    ones -- otherwise each level is its own tensor. ``group``: ``H`` write heads each read by ``group`` query heads."""
     gen = torch.Generator().manual_seed(seed)
     rows = []
-    for side in statics:
+    write_heads = H
+    for index, side in enumerate(statics):
+        H = write_heads * group if index == 0 else write_heads
         levels = []
         for level, width in enumerate(widths):
             digits = torch.randint(1, 256, (B, L, H, width), generator=gen)
@@ -117,15 +119,16 @@ def _bundle(widths, L, statics, *, B=1, H=2, seed=0, packed=False):
             rows.append(tuple(quant.aligned_rows(B, L, H, w, "cuda", level.dtype).copy_(level)
                               for w, level in zip(widths, levels)))
 
-    def column():
-        return (torch.rand((B, L, H), generator=gen) + 0.1).cuda()
+    def column(heads=write_heads):
+        return (torch.rand((B, L, heads), generator=gen) + 0.1).cuda()
 
     D = len(widths)
     routes = RouteFactors(topology=Topology(levels=tuple(OpaqueRouting(width=w) for w in widths)),
-                          amp_read=rows[0], amp_write=rows[1], scale_read=tuple(column() for _ in range(D)),
+                          amp_read=rows[0], amp_write=rows[1],
+                          scale_read=tuple(column(write_heads * group) for _ in range(D)),
                           scale_write=tuple(column() for _ in range(D)), g_write=column(),
                           sparse=tuple(tuple(not dense for dense in side.dense_levels) for side in statics))
-    values = Values(v=torch.zeros((B, L, H, 8), dtype=torch.float16, device="cuda"), scale=column())
+    values = Values(v=torch.zeros((B, L, write_heads, 8), dtype=torch.float16, device="cuda"), scale=column())
     return routes, values
 
 
@@ -149,16 +152,19 @@ def _model(routes, layout, read_statics, write_statics):
 
 
 def _assert_written(got, want, layout, read_statics, write_statics):
-    """The pass's words and unions are the model's at every sparse level of each side."""
+    """The pass's words and unions are the model's at every sparse level of each slot: each query head's read side,
+    then the write side."""
     unions = lv.tile_unions(want, layout)
-    for side, statics in enumerate((read_statics, write_statics)):
+    heads = want.shape[1] - 1
+    for slot in range(heads + 1):
+        statics = read_statics if slot < heads else write_statics
         for level, dense in enumerate(statics.dense_levels):
             if dense:
                 continue
             rows = slice(layout.row_base(level), layout.row_base(level) + layout.B[level])
             groups = slice(layout.group_base(level), layout.group_base(level + 1))
-            assert torch.equal(got.words[:, side, rows].cpu(), want[:, side, rows]), (side, level)
-            assert torch.equal(got.unions[:, side, groups].cpu(), unions[:, side, groups]), (side, level)
+            assert torch.equal(got.words[:, slot, rows].cpu(), want[:, slot, rows]), (slot, level)
+            assert torch.equal(got.unions[:, slot, groups].cpu(), unions[:, slot, groups]), (slot, level)
 
 
 # --------------------------------------------------------------- the words are the model
@@ -278,10 +284,10 @@ def _lists_want(routes, values, layout, read_statics, write_statics, got, read_r
     wl, rl = facts_ops.list_level(write_statics), facts_ops.list_level(read_statics)
     write = read = None
     if wl >= 0:
-        write = list_model.final_lists(bits[:, lv.WRITE], layout, wl, row_bytes=read_row, rows=routes.amp_write[wl],
+        write = list_model.final_lists(bits[:, -1], layout, wl, row_bytes=read_row, rows=routes.amp_write[wl],
                                        cols=list_model.columns(routes, values), list_exp=got.list_exp.cpu())
     if rl >= 0:
-        read = list_model.final_lists(bits[:, lv.READ], layout, rl, row_bytes=read_row, rows=routes.amp_read[rl],
+        read = list_model.final_lists(bits[:, :-1], layout, rl, row_bytes=read_row, rows=routes.amp_read[rl],
                                       cols=None, list_exp=None)
     return write, read
 
@@ -297,9 +303,32 @@ def _assert_lists(got: list_model.Lists, want: list_model.Lists):
     assert torch.equal(got.totals.cpu().long(), want.totals)
     BH, windows, width = got.entries.shape[:3]
     lengths = bounds[..., -1].reshape(BH, windows, -1)[..., :width]
-    end = (torch.arange(list_model.LIST_CAP, device=bounds.device) < lengths[..., None])[..., None]
+    end = (torch.arange(got.entries.shape[3], device=bounds.device) < lengths[..., None])[..., None]
     end = end.expand_as(got.entries)
     assert torch.equal(got.entries[end].cpu(), want.entries[end.cpu()])
+
+
+#: GROUPED QUERIES: shapes whose merged read unions pass a window (every token live in a group at the draw's density),
+#: a narrow level, and a many-window call with a tail window
+_GROUPED = (((16, 16), 64), ((64, 64), 1100), ((256, 256), 1100))
+
+
+@pytest.mark.parametrize(("widths", "L"), _GROUPED)
+@pytest.mark.parametrize("group", (2, 4))
+def test_grouped_reads_are_one_union_a_window_bit_for_bit(widths, L, group):
+    """GROUPED QUERIES (docs/internals/facts/facts.md#lists-out): ``H`` write heads each read by ``group`` query
+    heads. The words and unions are each slot's -- every query head's read side, then the write side -- and the read
+    side's lists one union a (window, group) over the query heads' rows, head-major, the write side's a write head's:
+    the model's, bit for bit, the boundaries every 64 slots of the merged union."""
+    layout = _layout(widths, L)
+    read_statics, write_statics = _sides(layout, "alternating", widths)
+    routes, values = _bundle(widths, L, (read_statics, write_statics), group=group)
+    got = _facts(routes, values, layout, read_statics, write_statics)
+    _assert_written(got, _model(routes, layout, read_statics, write_statics), layout, read_statics, write_statics)
+    write, read = _lists_want(routes, values, layout, read_statics, write_statics, got)
+    assert read.count.max() > min(L, list_model.WINDOW), "no merged union passes one head's rows: the cell is vacuous"
+    _assert_lists(got.write, write)
+    _assert_lists(got.read, read)
 
 
 @pytest.mark.parametrize(("widths", "L"), [shape for shape in _SHAPES if len(shape[0]) <= 2])

@@ -92,49 +92,61 @@ def final_lists(bits: torch.Tensor, layout: lv.LivenessLayout, level: int, *, ro
     """One side's lists at ``level`` from its unpacked words ``bits`` ``[BH, rows, L]`` (:func:`lv.unpack`'s side slice),
     the read side's pool rows of ``row_bytes``. Both sides' coefficients read the level's ``rows`` ``[B, T, H, width]``
     u8; the WRITE side (``cols`` given) also takes ``cols`` (:func:`columns`) and the pass's ``list_exp``
-    ``[BH, windows, B, 2]``; the READ side passes both as ``None``."""
-    BH, L, B = bits.shape[0], layout.L, layout.B[level]
+    ``[BH, windows, B, 2]``; the READ side passes both as ``None``.
+
+    GROUPED READS: ``bits`` ``[B H_w, g, rows, L]``, a write head's g query heads' read slots, are one union a (window,
+    group) over the window's g W rows, head-major (row ``j W + i``, its head's tokens in order then the next head's):
+    a list's entries in row order, the entry's token field its row, boundaries every 64 slots of the merged union
+    (``g LIST_AT`` of them), a read entry's panel offset modulo 2^16 (the carry takes it back by its chunk's first)."""
+    if bits.dim() == 3:
+        bits = bits.unsqueeze(1)
+    BH, heads, L, B = bits.shape[0], bits.shape[1], layout.L, layout.B[level]
     windows, groups = -(-L // WINDOW), -(-B // lv.GROUP_DIGITS)
+    columns_at = heads * LIST_AT
     base = layout.row_base(level)
     write = cols is not None
-    entries = torch.zeros((BH, windows, B, LIST_CAP, 4), dtype=torch.int16)
-    bounds = torch.zeros((BH, windows, groups, lv.GROUP_DIGITS, LIST_AT), dtype=torch.int64)
-    totals = torch.zeros((BH, windows, groups, LIST_AT), dtype=torch.int64)
-    union_out = torch.full((BH, windows, groups, WINDOW), GAP, dtype=torch.int64)
+    entries = torch.zeros((BH, windows, B, heads * LIST_CAP, 4), dtype=torch.int16)
+    bounds = torch.zeros((BH, windows, groups, lv.GROUP_DIGITS, columns_at), dtype=torch.int64)
+    totals = torch.zeros((BH, windows, groups, columns_at), dtype=torch.int64)
+    union_out = torch.full((BH, windows, groups, heads * WINDOW), GAP, dtype=torch.int64)
     count = torch.zeros((BH, windows, groups), dtype=torch.int64)
     rows = rows.cpu()
     if write:
         m, ms = (c.cpu() for c in cols)
-    H = rows.shape[2]
+    H = rows.shape[2] // heads
 
     for bh in range(BH):
         b, h = divmod(bh, H)
         for w in range(windows):
             t0, t1 = w * WINDOW, min(L, (w + 1) * WINDOW)
             for g in range(groups):
-                live = bits[bh, base + g * 32:base + min(B, g * 32 + 32), t0:t1]
-                union = live.any(0).nonzero().flatten().tolist()
-                slot_of = {t: s for s, t in enumerate(union)}
+                lo, hi = base + g * 32, base + min(B, g * 32 + 32)
+                union = [(j, t) for j in range(heads) for t in bits[bh, j, lo:hi, t0:t1].any(0).nonzero().flatten().tolist()]
+                slot_of = {row: s for s, row in enumerate(union)}
                 count[bh, w, g] = -(-len(union) // STEP) * STEP
-                union_out[bh, w, g, :len(union)] = torch.tensor(union, dtype=torch.int64)
-                for dd in range(live.shape[0]):
+                union_out[bh, w, g, :len(union)] = torch.tensor([j * WINDOW + t for j, t in union], dtype=torch.int64)
+                for dd in range(hi - lo):
                     digit = g * 32 + dd
-                    slots = [slot_of[t] for t in live[dd].nonzero().flatten().tolist()]
-                    words = [_entry(s, union[s], write, row_bytes, rows, b, h, t0, digit, m if write else None,
-                                    ms if write else None, list_exp[bh, w, digit] if write else None) for s in slots]
+                    slots = [slot_of[(j, t)] for j in range(heads)
+                             for t in bits[bh, j, lo + dd, t0:t1].nonzero().flatten().tolist()]
+                    words = [_entry(s, union[s], write, row_bytes, rows, b, h * heads + union[s][0], t0, digit,
+                                    m if write else None, ms if write else None,
+                                    list_exp[bh, w, digit] if write else None) for s in slots]
                     if words:
                         entries[bh, w, digit, :len(words)] = torch.tensor(words, dtype=torch.int16)
-                    bounds[bh, w, g, dd] = torch.tensor([sum(s < LIST_BOUND * (j + 1) for s in slots)
-                                                         for j in range(LIST_AT)])
+                    bounds[bh, w, g, dd] = torch.tensor([sum(s < LIST_BOUND * (k + 1) for s in slots)
+                                                         for k in range(columns_at)])
                 totals[bh, w, g] = bounds[bh, w, g].sum(0)
     return Lists(entries, bounds, totals, union_out, count)
 
 
-def _entry(s, token, write, row_bytes, rows, b, h, t0, digit, m, ms, list_exp):
-    """One entry's four int16 words, ``s`` its slot and ``token`` its window place."""
+def _entry(s, row, write, row_bytes, rows, b, h, t0, digit, m, ms, list_exp):
+    """One entry's four int16 words, ``s`` its slot, ``row`` its (head in the group, window place) and ``h`` its
+    query head."""
     def i16(x: int) -> int:
         return x - 0x10000 if x >= 0x8000 else x
 
+    j, token = row
     byte = float(rows[b, t0 + token, h, digit])
     if write:
         t = t0 + token
@@ -144,7 +156,7 @@ def _entry(s, token, write, row_bytes, rows, b, h, t0, digit, m, ms, list_exp):
         cv = _f16_bits((byte * float(ms[b, t, h])) * 2.0 ** (COEF_TOP - e_v))
         return [i16(s), 0, cv, cm]
     pool = s * row_bytes // 16 + chunk0(row_bytes, s)
-    return [i16(pool), token, _f16_bits(byte / 256), i16(PAD_BYTES + panel_row(s))]
+    return [i16(pool), j * WINDOW + token, _f16_bits(byte / 256), i16((PAD_BYTES + panel_row(s)) & 0xFFFF)]
 
 
 def gains_shift(top: torch.Tensor) -> torch.Tensor:

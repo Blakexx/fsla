@@ -33,8 +33,10 @@ LEDGER_WARPS = 8
 
 
 class Facts(NamedTuple):
-    """One call's facts: ``words`` the ``[BH, 2, rows, ceil(L / 32)]`` int32 class-1 table (:class:`LivenessLayout`),
-    ``unions`` the ``[BH, 2, groups, ceil(L / 64)]`` int32 tile unions (``tile_unions``), and ``list_exp`` the
+    """One call's facts, a write head's (``BH = B H_w``): ``words`` the ``[BH, g + 1, rows, ceil(L / 32)]`` int32
+    class-1 table (:class:`LivenessLayout`; slots ``0 .. g - 1`` the query heads' read side, ``g`` the write side;
+    ``[BH, 2, ...]`` ungrouped), ``unions`` the ``[BH, g + 1, groups, ceil(L / 64)]`` int32 tile unions
+    (``tile_unions``), and ``list_exp`` the
     ``[BH, windows, B_list, 2]`` int16 list exponents -- per window and digit of the write list level
     (:func:`list_level`) the smallest ``K`` with every token's ``b m <= 2^K`` (column 0) and ``b m s <= 2^K`` (column
     1), ``b`` its write byte, ``m`` the write gain times the write levels' scales and ``s`` the value scale; ``-126``
@@ -97,18 +99,19 @@ def _dense_bits(statics: SideStatics) -> int:
     return sum(1 << level for level, dense in enumerate(statics.dense_levels) if dense)
 
 
-def _lists(BH: int, windows: int, width: int, device) -> list_model.Lists:
-    """A side's lists out at a level of ``width`` digits (0 for none), uninitialized."""
+def _lists(BH: int, windows: int, width: int, device, heads: int = 1) -> list_model.Lists:
+    """A side's lists out at a level of ``width`` digits (0 for none), uninitialized; a grouped read side's over its
+    write head's ``heads`` query heads' rows."""
     groups = -(-width // GROUP_DIGITS)
 
     def empty(*shape, dtype=torch.int16):
         return torch.empty(shape, dtype=dtype, device=device)
 
     return list_model.Lists(
-        entries=empty(BH, windows, width, list_model.LIST_CAP, 4),
-        bounds=empty(BH, windows, groups, GROUP_DIGITS, list_model.LIST_AT),
-        totals=empty(BH, windows, groups, list_model.LIST_AT, dtype=torch.int32),
-        union=empty(BH, windows, groups, WINDOW), count=empty(BH, windows, groups, dtype=torch.int32))
+        entries=empty(BH, windows, width, heads * list_model.LIST_CAP, 4),
+        bounds=empty(BH, windows, groups, GROUP_DIGITS, heads * list_model.LIST_AT),
+        totals=empty(BH, windows, groups, heads * list_model.LIST_AT, dtype=torch.int32),
+        union=empty(BH, windows, groups, heads * WINDOW), count=empty(BH, windows, groups, dtype=torch.int32))
 
 
 def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, write_statics: SideStatics,
@@ -121,20 +124,23 @@ def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, wri
     bundle's rows, and their unions as :func:`rola.engine.facts.liveness.tile_unions`; the list exponents those of
     ``list_exponents`` within fp32 rounding; the lists :func:`rola.engine.facts.lists.final_lists`, bit for bit. The rows
     are read where the bundle holds them, any offset or stride of the format, each level's ``[B, T, H, w_l]`` view.
+
+    GROUPED QUERIES (docs/api.md#grouped-queries): everything is a write head's -- ``words`` and ``unions``
+    ``[B H_w, g + 1, ...]`` (slots ``0 .. g - 1`` its query heads' read side, slot ``g`` its write side), the columns,
+    the write lists -- and its read lists one union a (window, group) over its g query heads' rows.
     """
-    routes.refuse_grouped("the facts pass")
-    BH = routes.batch * routes.heads
+    BH, heads = routes.batch * routes.write_heads, routes.group
     windows = -(-layout.L // WINDOW)
     device = routes.device
-    words = torch.empty((BH, 2, layout.rows, layout.words), dtype=torch.int32, device=device)
-    unions = torch.empty((BH, 2, layout.groups, layout.tiles), dtype=torch.int32, device=device)
+    words = torch.empty((BH, heads + 1, layout.rows, layout.words), dtype=torch.int32, device=device)
+    unions = torch.empty((BH, heads + 1, layout.groups, layout.tiles), dtype=torch.int32, device=device)
     level, read_level = list_level(write_statics), list_level(read_statics)
     list_exp = torch.empty((BH, windows, layout.B[level] if level >= 0 else 0, 2), dtype=torch.int16, device=device)
     fm = torch.empty((BH, layout.L, 2), dtype=torch.float32, device=device)
     gains16 = torch.empty((BH, layout.L, 2), dtype=torch.float16, device=device)
     gains_exp = torch.empty((BH, windows, 2), dtype=torch.int16, device=device)
     write = _lists(BH, windows, layout.B[level] if level >= 0 else 0, device)
-    read = _lists(BH, windows, layout.B[read_level] if read_level >= 0 else 0, device)
+    read = _lists(BH, windows, layout.B[read_level] if read_level >= 0 else 0, device, heads)
     count = mask_words(layout.rows)
     extension().rola_facts_forward(
         list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,

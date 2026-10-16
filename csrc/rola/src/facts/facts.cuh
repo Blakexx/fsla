@@ -26,14 +26,17 @@ constexpr int kWindowTiles = kWindowTokens / kTileTokens;
 constexpr int kMaxWidth = 256;
 constexpr int kMaxGroups = kMaxWidth / kGroupDigits;
 constexpr int kMaxMaskWords = kMaxLevels * kMaxWidth / 32;
+//: THE QUERY HEADS a write head's read side merges, at most (a window's rows of every head at a 16-bit pool offset)
+constexpr int kMaxGroup = 16;
 
-//: A UNIT, coded (kind, side, level, group). -- see docs/internals/facts/facts.md#the-plan
+//: A UNIT, coded (kind, side, level, group, head in the group). -- see docs/internals/facts/facts.md#the-plan
 enum UnitKind : int { kUnitVote = 0, kUnitList = 1, kUnitColumns = 2 };
 
-constexpr int kMaxUnits = kSides * kMaxLevels * kMaxGroups + 1;
+constexpr int kMaxUnits = kMaxLevels * kMaxGroups * (kMaxGroup + 1) + 1;
 
-__host__ __device__ constexpr uint32_t unit_code(int kind, int side, int level, int group) {
-  return static_cast<uint32_t>(kind | side << 2 | level << 3 | group << 5);
+__host__ __device__ constexpr uint32_t unit_code(int kind, int side, int level, int group,
+                                                 int head) {
+  return static_cast<uint32_t>(kind | side << 2 | level << 3 | group << 5 | head << 8);
 }
 
 __host__ __device__ constexpr int unit_kind(uint32_t c) { return c & 3; }
@@ -43,6 +46,8 @@ __host__ __device__ constexpr int unit_side(uint32_t c) { return (c >> 2) & 1; }
 __host__ __device__ constexpr int unit_level(uint32_t c) { return (c >> 3) & 3; }
 
 __host__ __device__ constexpr int unit_group(uint32_t c) { return (c >> 5) & 7; }
+
+__host__ __device__ constexpr int unit_head(uint32_t c) { return (c >> 8) & 15; }
 
 //: A BIT TILE: the group's 32 digits x the window's 16 words, row `d` word `j` at `16 d + (j ^ (d / 2 % 16))`.
 //: -- see docs/internals/facts/facts.md#tiles
@@ -79,8 +84,8 @@ struct FactsSmem {
   static constexpr int kBound = kUword + kWindowWords * 4;
   static constexpr int kWmax = kBound + kListAt * 4;
   static constexpr int kTable = kWmax + kFactsWarps * 8;
-  static constexpr int kTotals = kTable + kGroupDigits * kListAt * 2;
-  static constexpr int kBytes = kTotals + kListAt * 4;
+  static constexpr int kTotals = kTable + kGroupDigits * (kListAt + 1) * 2;
+  static constexpr int kBytes = kTotals + (kListAt + 1) * 4 + 12;
 };
 
 static_assert(FactsSmem::kTile % 16 == 0 && FactsSmem::kCols % 16 == 0
@@ -124,7 +129,7 @@ struct FactsParams {
   int16_t* gains_exp;  // [BH, windows, 2], those scales' exponents
   ListsOut lists[kSides];
   long long* ledger;
-  int D, H, L, token_words, windows, rows_total, groups, tiles, per_window, read_row;
+  int D, H, g, L, token_words, windows, rows_total, groups, tiles, per_window, read_row;
   int B[kMaxLevels];
   int row_base[kMaxLevels];
   int group_base[kMaxLevels];
