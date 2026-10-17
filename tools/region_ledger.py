@@ -242,7 +242,7 @@ def print_lines(rows, attr: Attribution, detail: dict, source: Path, lo: int, hi
     here = 0
     for addr, n, sm, st in rows:
         chain = attr.frames.get(addr - base, [])
-        inner = [ln for f, ln in chain if f == attr.source]
+        inner = [ln for f, ln in chain if f == source.name]
         if not inner or not (lo <= inner[0] <= hi):
             continue
         e = lines[inner[0]]

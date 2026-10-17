@@ -938,7 +938,10 @@ gated, and an instrument's missing target is a red.
    warps a scheduler its registers admit, at most 100% -- is under 1/1.15 (§28's line): a warp never runs faster beside
    another than alone, so a loop under it cannot be covered by the warps the design has. The kernels under it are
    named debts with what replaces them, each function held at its floor (`tools/budgets/step_floors.json`, by
-   architecture), and the list only shrinks.
+   architecture), and the list only shrinks. The cover is a model's reading: a floor is lowered (`--write-floors`) only
+   in a commit whose locked comparison shows the kernel no slower on its cells, the numbers in the commit (2026-10-16:
+   the carry's warp and lane made opaque per phase read 42.2% against 44.2% and ran 0.9-2.8% faster). An
+   architecture the host cannot run is lowered on the local card's comparison, marked owed to its own rented run.
 5. A TARGET THAT DISAPPEARS IS RED: a floor, budget line or gate row naming a function, loop or cell the tree no longer
    has fails; it never reads as nothing.
 6. ONE PRIMITIVE A JOB: before writing a helper, the common headers (`common/ops.cuh`, `common/*.cuh`) are read for

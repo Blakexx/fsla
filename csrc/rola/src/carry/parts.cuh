@@ -299,7 +299,8 @@ __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* v
                                      int first, int slots, ops::SmemAddr pool) {
   constexpr int kRow = kSliceBytes * Factors + (Values ? kBoxChannels * 2 : 0);
   constexpr int kQuads = kThreads / 4, kChunks = kSliceBytes / ops::kStageBytes;
-  const int r = static_cast<int>(threadIdx.x) & 3;
+  //: the thread opaque, so its quad lane and first slot are formed at each fill, never held across the windows
+  const int tid = ops::opaque(static_cast<int>(threadIdx.x)), r = tid & 3;
   const uint8_t* base[Factors];
   int st[Factors], sh[Factors], bytes[Factors];
   bool active[Factors], narrow = false;
@@ -318,7 +319,7 @@ __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* v
   //: past a slice's bytes zero-filled into the slice's unused space
   const auto rows = [&](auto kNarrow) {
 #pragma unroll 2
-    for (int s = static_cast<int>(threadIdx.x) >> 2; s < slots; s += kQuads) {
+    for (int s = tid >> 2; s < slots; s += kQuads) {
       //: a slot's row: its query head `j` (the read side's) and token `t`, bit 15 a gap
       const int u = win.listed ? tok[first + s] : first + s, t = u & (kWindow - 1),
                 j = Values ? 0 : (u >> 9) & 0x3f;
@@ -427,8 +428,8 @@ __device__ __forceinline__ void read_fill(const CarryParams& p, const uint8_t* s
   const ops::SmemAddr pads = buf + static_cast<uint32_t>(read_pads<P>(slots));
   //: a zero quantum reads nothing: its source is any global address
 #pragma unroll 4
-  for (int k = static_cast<int>(threadIdx.x); k < (read_ents<P>(slots) - read_pads<P>(slots)) / 16;
-       k += kThreads)
+  for (int k = ops::opaque(static_cast<int>(threadIdx.x));
+       k < (read_ents<P>(slots) - read_pads<P>(slots)) / 16; k += kThreads)
     ops::stage_tile_if(pads + 16u * static_cast<uint32_t>(k), p.num, false);
   if (rw.listed)
     entries_fill<P>(p, p.read_lists, rw, c, w,

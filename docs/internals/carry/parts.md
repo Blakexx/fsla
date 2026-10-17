@@ -22,7 +22,8 @@ window index, its statics from the tenant.
 move, so a window-invariant offset --
 a window's first token, a list's row base, a tenant by parity, the drain's cell -- is formed at each use: computed once
 before a window's steps, the compiler holds it in a register across the readout, the kernel's register peak, and at
-255 a thread one such value spills.
+255 a thread one such value spills. The fill's quad lane and first slot come from the thread index the same way, and
+the kernel passes each part its warp and lane opaque (`carry_kernel.md#kernel`).
 
 <a id="lists-in"></a>
 ## Lists in

@@ -11,6 +11,10 @@ choosing chunk sizes the card's area holds.
 One CTA a box and batch and write head (its query heads' reads with it, `carry.md#sides`), 8 warps, one CTA an SM,
 after the plan pass (`schedule.md#pass`). The fold's fp32 state
 (`kStateRegs` = 128 registers a lane) is the C fragments of the fold's MMAs and stays in registers for the whole call.
+Every part in the window loop takes the warp and lane opaque (`wid`, `lid`: `ops::opaque` of the thread index), so
+each forms its lane addresses where it runs; held from before the loop, every phase's were live through every other
+(measured 2026-10-16 at nl64k-alt-k4, arm 0 on sm_86: the readout's peak 251 -> 239 live, ptxas's allocation 255 ->
+246, every other part 13-42 fewer; one launch 0.9-2.8% faster on the three nl64k cells, `num` bit-identical).
 Window 0's inputs and record are staged and its first entry filled before the loop. A window:
 
 1. **The maxima**: each warp's digit maxima posted (`parts.md#maxima`), every warp's joined, each digit's exponent,

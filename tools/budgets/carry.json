@@ -15,20 +15,20 @@
   "glue": "carry_kernel"
  },
  "registers": {
-  "readout": 252,
-  "fold": 220,
-  "units": 204,
-  "stores": 232,
-  "maxima": 205,
-  "exponents": 206,
-  "drain": 215,
-  "read_fill": 227,
-  "fold_fill": 227,
-  "staging": 212,
-  "barriers": 205,
-  "glue": 245
+  "readout": 239,
+  "fold": 191,
+  "units": 172,
+  "stores": 190,
+  "maxima": 173,
+  "exponents": 173,
+  "drain": 182,
+  "read_fill": 193,
+  "fold_fill": 195,
+  "staging": 178,
+  "barriers": 174,
+  "glue": 220
  },
- "registers_basis": "peak live registers a component, measured on arm 0 at 87240898 (2026-10-16): a ratchet until the window's design states each phase's live set (KERNEL_STANDARDS section 32)",
+ "registers_basis": "peak live registers a component, measured on arm 0 (2026-10-16, the warp and lane opaque a phase): a ratchet until the window's design states each phase's live set (KERNEL_STANDARDS section 32)",
  "cells": {
   "nl64k-alt-k4": {
    "readout": 3072,

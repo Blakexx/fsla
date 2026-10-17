@@ -99,6 +99,10 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   if (threadIdx.x == 0) addr_in(*reinterpret_cast<Addr*>(smem + P::kAddr), p, place_of(p));
   ops::rendezvous();
 
+  //: the warp and the lane, opaque at each use, so each phase forms its own addresses where it runs rather than
+  //: every phase's held across the window (KERNEL_STANDARDS §32.3)
+  const auto wid = [] { return ops::opaque(static_cast<int>(threadIdx.x)) / 32; };
+  const auto lid = [] { return ops::opaque(static_cast<int>(threadIdx.x)) % 32; };
   const ops::SmemAddr area = ops::smem_addr(smem + P::kAreaAt);
   const auto rw = [&](int w) { return window_of<P>(p, smem, kRead, w); };
   const auto ww = [&](int w) { return window_of<P>(p, smem, kWrite, w); };
@@ -107,9 +111,9 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   const auto fill_entry = [&](int w, const Entry& e, int slot, int at) {
     const ops::SmemAddr buf = area + static_cast<uint32_t>(at);
     if (e.side() == kRead) {
-      read_fill<P>(p, smem, rw(w), here(), w, e.first(), e.slots(), e.total(), buf, warp, lane);
+      read_fill<P>(p, smem, rw(w), here(), w, e.first(), e.slots(), e.total(), buf, wid(), lid());
     } else {
-      fold_fill<P>(p, smem, ww(w), here(), w, e.first(), e.slots(), e.total(), buf, warp, lane);
+      fold_fill<P>(p, smem, ww(w), here(), w, e.first(), e.slots(), e.total(), buf, wid(), lid());
     }
     flow.slot_landed(slot);
   };
@@ -121,10 +125,10 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
                         ents = buf + static_cast<uint32_t>(read_ents<P>(e.slots()));
     if (p.readout_f16) {
       read_chunk<P, true, kPairs>(p, smem, rw(w), w, e.first(), e.slots(), e.total(), lo, hi, image,
-                                  mask, buf, pads, ents, warp, lane);
+                                  mask, buf, pads, ents, wid(), lid());
     } else {
       read_chunk<P, false, kPairs>(p, smem, rw(w), w, e.first(), e.slots(), e.total(), lo, hi,
-                                   image, mask, buf, pads, ents, warp, lane);
+                                   image, mask, buf, pads, ents, wid(), lid());
     }
   };
 
@@ -135,7 +139,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     });
   });
   //: a lane's digit exponent, every warp's own record of the window's (the same values), read at each use
-  const auto dexp = [&] { return reinterpret_cast<const volatile int*>(smem + P::kExps)[lane]; };
+  const auto dexp = [&] { return reinterpret_cast<const volatile int*>(smem + P::kExps)[lid()]; };
   stage_window<P>(p, here(), 0, smem);
   flow.staged();
   flow.wait_staged();
@@ -148,9 +152,9 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     clock.lap(kPhaseWait);
     //: THE DIGIT MAXIMA of the state before the window's writes, every warp's posted, and each digit's exponent (lane
     //: `d` digit `d`'s), recorded by every warp for its stores and the readers
-    post_maxima<P>(st, smem, w, warp, lane);
+    post_maxima<P>(st, smem, w, wid(), lid());
     ops::rendezvous();
-    reinterpret_cast<volatile int*>(smem + P::kExps)[lane] = digit_exp<P>(smem, w, lane);
+    reinterpret_cast<volatile int*>(smem + P::kExps)[lid()] = digit_exp<P>(smem, w, lid());
     clock.lap(kPhaseMaxima);
     //: THE STORE: the next window's inputs staged; a whole image stored
     if (w + 1 < p.windows) {
@@ -158,7 +162,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       flow.staged();
     }
     if (stream_of<P>(p, smem, w).image == kImageWhole)
-      store_batches<P>(st, smem, area, 0, kBatches, kBoxDigits - 1, dexp(), warp, lane);
+      store_batches<P>(st, smem, area, 0, kBatches, kBoxDigits - 1, dexp(), wid(), lid());
     clock.lap(kPhaseStore);
 
     //: THE WINDOW'S STEPS: one an entry, then one that only retires the last; a window of no entries fills the next
@@ -203,7 +207,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       clock.lap(kPhaseFill);
 
       //: THE UNITS, stepped at the window's first fold chunk, or at its end where it folds nothing
-      if (t == stream_of<P>(p, smem, w).nr) fold_units<P>(smem, ww(w), w, warp, lane);
+      if (t == stream_of<P>(p, smem, w).nr) fold_units<P>(smem, ww(w), w, wid(), lid());
 
       //: THE ENTRY'S WORK: a read chunk from the whole image, or from the halves it stores itself; a fold chunk
       if (work) {
@@ -225,7 +229,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
             for (int half = 0; half < 2; ++half) {
               if (half > 0) ops::rendezvous();
               store_batches<P>(st, smem, area, 2 * half, 2 * half + 2, 2 * kBatchPlanes - 1, dexp(),
-                               warp, lane);
+                               wid(), lid());
               ops::rendezvous();
               clock.lap(kPhaseStore);
               if (half == 0) flow.wait_slot(flow.slot());
@@ -243,7 +247,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
           const Entry e = entry_at(stream_of<P>(p, smem, w), flow.step());
           fold_chunk<P>(p, st, flow.step() == stream_of<P>(p, smem, w).nr, smem, ww(w), w,
                         e.first(), e.slots(), e.total(), buf,
-                        buf + static_cast<uint32_t>(fold_ents<P>(e.slots())), warp, lane);
+                        buf + static_cast<uint32_t>(fold_ents<P>(e.slots())), wid(), lid());
           clock.lap(kPhaseFold);
         }
       }
