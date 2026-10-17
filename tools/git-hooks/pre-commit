@@ -37,6 +37,6 @@ pre-commit hook-impl \
   --hook-type=pre-commit \
   --hook-dir "$(cd "$(dirname "$0")" && pwd)" \
   -- "$@" >"$log" 2>&1 || status=$?
-grep -Ev '\.(Passed|Skipped)$' "$log" || true
+grep -Ev '(Passed|Skipped)$' "$log" || true
 echo "pre-commit: $(grep -c '\.Passed$' "$log" || true) passed, $(grep -c '\.Failed$' "$log" || true) failed"
 exit "$status"
