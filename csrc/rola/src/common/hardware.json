@@ -1,6 +1,7 @@
 {
   "schema": {
     "mma": ["hmma_f16_f32", "hmma_f16_f16", "hmma_bf16_f32", "imma_u8_s8_k32"],
+    "latency": ["ffma", "lds", "ldsm", "hmma"],
     "taxed": ["fp32", "half2", "hmax2", "add_xor", "imad", "lop3", "prmt", "fmnmx", "lds", "cvt_f32_f16x2", "cvt_u32_f32", "cvt_f16_f32"],
     "caps": [
       {"name": "cc", "type": "int", "kind": "IDENTITY", "doc": "compute capability x10, e.g. 860"},
@@ -61,6 +62,12 @@
           "hmma_f16_f16": {"cycles": 16, "documented": "GA102 whitepaper Table 3: RTX A6000, 84 SMs at 1800 MHz, 154.8 dense FP16 tensor TFLOPS with FP16 accumulate"},
           "hmma_bf16_f32": {"cycles": 16, "documented": "GA102 whitepaper Table 3: RTX A6000, 84 SMs at 1800 MHz, 154.8 dense BF16 tensor TFLOPS with FP32 accumulate"},
           "imma_u8_s8_k32": {"cycles": 16, "documented": "GA102 whitepaper Table 3: RTX A6000, 84 SMs at 1800 MHz, 309.7 dense INT8 tensor TOPS"}
+        },
+        "latency": {
+          "ffma": {"cycles": 4.0, "measured": "issue_latency", "row": "FFMA / latency", "on": "rtx3080ti"},
+          "lds": {"cycles": 23.0, "measured": "issue_latency", "row": "LDS.32 (address from the load) / latency", "on": "rtx3080ti"},
+          "ldsm": {"cycles": 29.0, "measured": "issue_latency", "row": "LDSM.x4 (address from the load) / latency", "on": "rtx3080ti"},
+          "hmma": {"cycles": 24.0, "measured": "issue_latency", "row": "fp16-accumulate HMMA.16816 on one accumulator / latency", "on": "rtx3080ti"}
         }
       }
     },

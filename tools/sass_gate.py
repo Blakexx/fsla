@@ -20,6 +20,9 @@ What it reads, per function of every cubin (every kernel and every outlined devi
                   forms (a magic-constant FFMA, a PRMT) run at 64 (KERNEL_STANDARDS section 29)
   global memory in a step -- LDG/STG/RED/ATOMG inside an MMA loop: a step's operands are staged ahead by `cp.async`
                   (LDGSTS, allowed), and a reduction to global memory belongs to a drain outside the steps
+  the step cover -- each innermost MMA loop simulated for one warp from ptxas's control words (`pipe_sim`), its pipe
+                  share alone times the warps a scheduler its registers admit, under `STEP_LINE` (KERNEL_STANDARDS
+                  section 32); a debt kernel held at its floor (`--write-floors` records them)
 On a whole extension it also reds every kernel the source defines (`tools/kernels.py`) that no cubin carries: a gate
 that cannot see a kernel has not gated it. It prints the counts it reads, the same way `ratify` prints registers and
 spills, so a clean run is a line of zeros and a red names the signature.
@@ -37,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dev_config  # noqa: E402 -- path insert must precede these imports
 import kernels  # noqa: E402
 import sass  # noqa: E402
+import sass_control  # noqa: E402
 
 #: an instruction line's opcode, off the shared grammar (`tools/sass.py`)
 INSTR = sass.INSTRUCTION
@@ -59,11 +63,11 @@ def cubins_of(path: Path, member: str | None) -> list[Path]:
 _RES = re.compile(r"Function (\S+):\s*\n\s*REG:(\d+) STACK:(\d+)")
 
 
-def stacks(cubin: Path) -> dict[str, int]:
-    """`{function: stack frame bytes}` off `cuobjdump -res-usage`."""
+def resources(cubin: Path) -> dict[str, tuple[int, int]]:
+    """`{function: (registers, stack frame bytes)}` off `cuobjdump -res-usage`."""
     text = subprocess.run([dev_config.cuda_bin("cuobjdump"), "-res-usage", str(cubin)], capture_output=True,
                           text=True, check=True).stdout
-    return {m.group(1): int(m.group(3)) for m in _RES.finditer(text)}
+    return {m.group(1): (int(m.group(2)), int(m.group(3))) for m in _RES.finditer(text)}
 
 
 #: the last `gate` call's signature per function, for `--json`
@@ -208,6 +212,53 @@ def mma_loop_branches(lines: list[tuple[int, str, str, str]], labels: dict[str, 
     return len(found)
 
 
+#: THE STEP LINE (KERNEL_STANDARDS section 32): the share of a step loop's time its tensor pipe can be kept busy, at
+#: least 1 / section 28's line
+STEP_LINE = 100 / 1.15
+#: the kernels whose step loops are under the line, each with what replaces them; each function held at its floor
+#: (`STEP_FLOORS`, by architecture and mangled name: a ratchet), and the list only shrinks
+_STEP_COVER_DEBT = {
+    "carry_kernel": "the read side's software pipeline (the readout's next tile loaded under its MMAs, the image's "
+                    "batches stored while read) and the fold chain's",
+    "produce_kernel": "its operands staged by cp.async a step ahead (with section 29's global-memory debt)",
+    "intra_kernel": "the intra's port onto the fp16 family rebuilds its step",
+    "readout_part": "the readout component's rebuild replaces the skeleton's",
+    "calib_kernel": "a calibration probe, not a production step",
+}
+STEP_FLOORS = Path(__file__).resolve().parent / "budgets" / "step_floors.json"
+_PARTITION_REGISTERS = 16384
+
+
+def step_cover(cubin: Path, name: str, lines: list[tuple[int, str, str, str]], labels: dict[str, int],
+               registers: int) -> dict | None:
+    """KERNEL_STANDARDS section 32 on the SASS: each innermost MMA loop's period for one warp alone, simulated from
+    ptxas's control words with the tensor pipe as a resource (`pipe_sim`, the model `burst_gate` reads), its pipe
+    time's share of it (the occupancy), and the COVER: that share times the warps a scheduler the registers admit,
+    at most 100 -- the most the loop's warps together can keep the pipe busy, since a warp sharing its scheduler
+    never runs faster than alone. The worst loop's reading, or None without an MMA loop."""
+    loops = mma_loops(lines, labels)
+    if not loops:
+        return None
+    import burst_gate
+
+    arch = sass_control.machine(cubin)
+    mach = sass_control.MACHINES[arch]
+    encoded = sass_control.encoded(cubin, f"^{re.escape(name)}$")
+    grain = -(-registers // 8) * 8
+    warps = max(1, _PARTITION_REGISTERS // (grain * 32)) if registers else 1
+    worst = None
+    for target, k in loops:
+        body = [(a, *encoded[a]) for a, _, _, _ in lines[target:k + 1] if a in encoded]
+        c = burst_gate.coverage(body, mach, arch)
+        c["cover"] = round(min(100.0, c["occupancy"] * warps), 1)
+        c["warps"] = warps
+        if worst is None or c["cover"] < worst["cover"]:
+            worst = c
+    worst["loops"] = len(loops)
+    worst["key"] = f"{arch} {name}"
+    return worst
+
+
 def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[bool, str]:
     funcs: dict[str, list[str]] = {}
     whole: dict[str, list[tuple[int, str, str]]] = {}
@@ -237,12 +288,13 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
     ok = True
     report = []
     STATS.clear()
-    frame = stacks(cubin)
+    frame = resources(cubin)
+    floors = json.loads(STEP_FLOORS.read_text()) if STEP_FLOORS.exists() else {}
     for name, ins in funcs.items():
         if kernel and not re.search(kernel, name):
             continue
         n = len(ins)
-        stack = frame.get(name, 0)
+        registers, stack = frame.get(name, (0, 0))
         ldl = sum(1 for i in ins if re.search(r"\b(LDL|STL)\b", i))
         calls, guarded = convergence_calls(whole[name], labels[name])
         branches = mma_loop_branches(whole[name], labels[name])
@@ -268,15 +320,29 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
             reds.append(f"global memory inside an MMA step ({memory})")
         if max_per_hmma is not None and hmma and per > max_per_hmma:
             reds.append(f"static instructions per HMMA {per:.1f} > {max_per_hmma}")
+        cover = step_cover(cubin, name, whole[name], labels[name], registers)
+        debt = next((d for d in _STEP_COVER_DEBT if d in name), None)
+        if cover is not None and cover["cover"] < STEP_LINE:
+            if debt is None:
+                reds.append(f"a step loop's pipe cover {cover['cover']}% < {STEP_LINE:.1f}%")
+            elif cover["key"] not in floors:
+                reds.append(f"a step loop's pipe cover {cover['cover']}% with no floor (`--write-floors`)")
+            elif cover["cover"] < floors[cover["key"]]:
+                reds.append(f"a step loop's pipe cover {cover['cover']}% below its floor {floors[cover['key']]}%")
         ok &= not reds
         STATS[name] = {"instr": n, "hmma": hmma, "per_hmma": None if not hmma else round(per, 2), "ldl": ldl,
                        "stack": stack, "calls": calls, "guarded": guarded, "pred_hmma": phmma,
                        "mma_loop_branches": branches, "mma_gap": gap, "mma_gap_around": around,
-                       "step_xu": xu, "step_global": memory, "reds": reds}
+                       "step_xu": xu, "step_global": memory, "registers": registers,
+                       "step_cover": None if cover is None else {k: cover[k] for k in (
+                           "cover", "occupancy", "warps", "period", "pipe", "exposed", "worst", "loops", "key")},
+                       "reds": reds}
         short = name[:70]
         report.append(f"{'RED ' if reds else 'ok  '} {short}: instr {n} hmma {hmma} per-hmma {per:.1f} "
                       f"ldl {ldl} stack {stack} calls {calls} guarded {guarded} predHMMA {phmma} "
                       f"mma-loop-branches {branches} mma-gap {gap} around {around} step-xu {xu} step-global {memory}"
+                      + ("" if cover is None else f" step-cover {cover['cover']}% (alone {cover['occupancy']}% x "
+                                                  f"{cover['warps']} warps, exposed {cover['exposed']})")
                       + (" :: " + "; ".join(reds) if reds else ""))
     return ok, "\n".join(report)
 
@@ -295,6 +361,9 @@ def main() -> int:
     ap.add_argument("--member", default=None, help="narrow to the cubins whose name holds this (a measurement)")
     ap.add_argument("--max-per-hmma", type=float, default=None)
     ap.add_argument("--json", type=Path, default=None, help="also write every function's signature here, by cubin")
+    ap.add_argument("--write-floors", action="store_true",
+                    help="record each step-cover debt's worst reading as its floor (a ratchet: a later build may not "
+                         "read lower)")
     a = ap.parse_args()
     allok = True
     doc = {}
@@ -318,6 +387,14 @@ def main() -> int:
             allok = False
     if a.json:
         a.json.write_text(json.dumps(doc, sort_keys=True) + "\n")
+    if a.write_floors:
+        floors = json.loads(STEP_FLOORS.read_text()) if STEP_FLOORS.exists() else {}
+        for cubin in doc.values():
+            for name, st in cubin["functions"].items():
+                if any(d in name for d in _STEP_COVER_DEBT) and st["step_cover"] is not None:
+                    floors[st["step_cover"]["key"]] = st["step_cover"]["cover"]
+        STEP_FLOORS.write_text(json.dumps(dict(sorted(floors.items())), indent=1) + "\n")
+        print(f"step floors written to {STEP_FLOORS}")
 
     print(f"guarded convergence fallbacks (cold code, not red): {guarded}")
     return 0 if allok else 1

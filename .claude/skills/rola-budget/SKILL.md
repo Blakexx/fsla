@@ -20,3 +20,9 @@ The method and its data: `docs/internals/tools/budgets.md`. The law: `docs/KERNE
    (`docs/internals/tools/budgets.md#checking-it`), then fix the code to its floor or correct the price.
 7. Restate a budget only with the corrected price, in the same commit, and add the lab's row to
    `docs/internals/tools/budgets.md#ledger`.
+8. A production kernel's budget also states each component's live registers and each phase's predicted cycles
+   (`docs/internals/tools/budgets.md#building-a-budget` item 5, `docs/KERNEL_STANDARDS.md#s32`); check them with
+   `python tools/life_ranges.py --arm 0 --kernel <regex> --source <kernel file> --source <component files>... --budget
+   tools/budgets/<kernel>.json` (`docs/internals/tools/life_ranges.md#budget`) and `python tools/phase_ledger.py
+   <cell> --budget tools/budgets/<kernel>.json` (`docs/internals/tools/phase_ledger.md#budget`). A phase over 1.3x
+   its prediction stops work until the wrong price or model is named.

@@ -55,10 +55,12 @@ A rate is `{"cycles": ..., <source>}` with exactly one source:
 
 The rates: `schedulers` (an SM), `issue` (an instruction a scheduler), `wavefront` (a shared-memory load
 wavefront an SM), `atomic` and `atomic_wavefront` (a shared atomic instruction's least and each of its
-wavefronts an SM), `mma.<kind>` (an MMA a scheduler) and `tax.<kind>.<class>` (what an instruction of the
-class adds to the kind's MMA chain, read by the issue-hiding gate, not by a choice). NVIDIA documents issue,
-the shared-memory bank rate and peak tensor rates; a shared atomic's cost and the taxes are measured
-([`smem_rates`](../../lab/smem_rates.md), [`tensor_tax`](../../lab/tensor_tax.md)).
+wavefronts an SM), `mma.<kind>` (an MMA a scheduler), `tax.<kind>.<class>` (what an instruction of the
+class adds to the kind's MMA chain, read by the issue-hiding gate, not by a choice) and `latency.<class>` (issue to a
+dependent's issue: an FFMA, a 32-bit shared load, an `ldmatrix` of four, an HMMA on its accumulator; the schema's
+`latency` list). NVIDIA documents issue, the shared-memory bank rate and peak tensor rates; a shared atomic's cost,
+the taxes and the latencies are measured ([`smem_rates`](../../lab/smem_rates.md),
+[`tensor_tax`](../../lab/tensor_tax.md), [`issue_latency`](../../lab/issue_latency.md)).
 
 <a id="check"></a>
 

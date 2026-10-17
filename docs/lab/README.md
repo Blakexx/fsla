@@ -40,3 +40,4 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`color_union`](color_union.md) | part harness |
 | [`mma_k8`](mma_k8.md) | part harness |
 | [`facts_color`](facts_color.md) | experiment |
+| [`issue_latency`](issue_latency.md) | experiment |

@@ -15,9 +15,7 @@
    "budget": "tools/budgets/carry.json",
    "phases": "tools/phase_ledger.py",
    "ratified": "manifest",
-   "overlap": {
-    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
-   }
+   "overlap": "carry-alt-k4"
   },
   "carry_stamp_kernel": {
    "oracle": {

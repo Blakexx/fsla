@@ -16,6 +16,10 @@ kernel in `tools/budgets/<kernel>.json` ([phase_ledger.md](phase_ledger.md) read
    A primitive missing from the table is compiled alone and its SASS read (`tools/lab.py sass`) before it is priced;
    it then enters the table with the experiment it was read from.
 4. The line item is trips x price, by class; the budget is the sum, stated before the code (`Bench::budget`).
+5. A production kernel's budget also states, before the code, each component's peak live registers (`registers`,
+   gated by `tools/life_ranges.py --budget`, [`life_ranges.md#budget`](life_ranges.md#budget)) and, per cell, each
+   ledger phase's predicted cycles a warp a window (`phase_cycles`, gated by `tools/phase_ledger.py --budget`,
+   [`phase_ledger.md#budget`](phase_ledger.md#budget)): KERNEL_STANDARDS §32.
 
 ## Checking it
 

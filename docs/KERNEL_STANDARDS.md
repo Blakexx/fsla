@@ -746,7 +746,8 @@ with what replaces it, and the list only shrinks. `tools/lab.py` refuses a lab n
 the experiment declares them (an expectation on BSSY: a comparison baseline kept on purpose). The burst tier's lint
 (§24) holds the source side: no data-dependent `if` inside a burst function, `@burst-exempt <reason>` the only way
 out. Register moves per MMA in a step (the copy-rotation signature) and the MMA gap (the longest MMA-free run in the
-step loop's body, and around it) are reported, and gate once a lab fixes the bound. Measured: §26.3 s, u, v.
+step loop's body, and around it) are reported; the gate on what they cost is §32.4's step cover. Measured: §26.3 s,
+u, v.
 
 ## <a id="s28"></a>§28 — NO PHASE IDLES THE BINDING STREAM (law, 2026-10-07, from Blake's "any kernel we write should be going for maximal pipelining, ilp, etc. we shouldn't be compromising our standards, and if linters are letting us we should be making our linters more powerful and standards more clear")
 The facts pass's list build was priced by instruction count (about 10 an entry, "inside the ~40% issue headroom")
@@ -767,8 +768,8 @@ ENFORCED: `tools/overlap_gate.py` times each kernel's perf rows and reds elapsed
 kernel names its row, or why it has none, in `tools/coverage.json`'s `overlap` obligation (the §25 ratchet). The
 instrument, checked against a probe row: a pure 512 MB read stream (a torch reduction) reaches 96% of the profiler's
 sustained DRAM peak on the RTX 3080 Ti (1.04x), so the DRAM floor is reachable; the tensor floor takes the product's
-calibrated MMA rate (§22), its probe row owed with the first MMA kernel's row. OWED: per-phase issue and eligible
-warps in the phase ledger, so item 4 gates per phase rather than per kernel.
+calibrated MMA rate (§22), its probe row owed with the first MMA kernel's row. Per phase, item 4 is §32's: each
+phase against its predicted cycles (§32.2) and every MMA step loop's pipe cover (§32.4).
 
 ## <a id="s29"></a>§29 — EVERY INSTRUCTION IS BUDGETED BY CLASS BEFORE CODE, AND HOISTED BY FREQUENCY (law, 2026-10-11, from Blake's "is there any kind of linting / sass checks we can add to stop us from writing such bad code? ... we do not take a standard analytical / deterministic approach to writing kernels when i feel the patterns are quite easy to formalize")
 The readout lab (`read_image`) ran 18.7 instructions an MMA where its design needs about 9: each panel add
@@ -782,7 +783,9 @@ method is a procedure with a gate, not a memory.
    cost divided by the steps it amortizes over there (at alt-k4 a read digit is one step a window, so its bookkeeping
    lands on every step). The lab states it with `Bench::budget`; a production component in `tools/budgets/<kernel>.json`.
 2. HOIST BY FREQUENCY: every value is computed at the outermost level its inputs allow -- once a kernel (a lane's
-   fragment offsets), a window, a digit or list, a token, a step, an element -- and never again below it.
+   fragment offsets), a window, a digit or list, a token, a step, an element -- and never again below it, WITHIN THE
+   REGISTER LINE (§32.3): a hoisted value is a register for its whole level, and one that would pass a phase's line
+   is re-derived at its use instead.
 3. AN ADDRESS IS A BASE PLUS A COMPILE-TIME OFFSET: the base computed once at its level (a token's panel row, a
    digit's plane), each access an immediate or one add; a swizzle is folded into the base (§3) or applied by one XOR
    with a lane constant.
@@ -900,3 +903,51 @@ loaded only in sessions started inside it, and their text had rotted: dead paths
    the repo is routed by the repo's own hook entry; one started elsewhere by the user-level bootstrap the repo ships
    (`.claude/hooks/skill_router_bootstrap.py`), which `tools/dev.py init` installs and `check` verifies. `CLAUDE.md`
    shows the table. Skills make the right path the easy one; lints and gates make the wrong one fail.
+
+## <a id="s32"></a>§32 — THE STEADY STATE IS DESIGNED FIRST, AND EVERY GATE SEES IT (law, 2026-10-16, from Blake's "why we keep failing to properly overlap and write good kernels. What about our standards are causing failure and can be codified into our docs, skills, lints" and "we should be software pipelining rather than relying on more warps")
+The carry's rebuild passed every component gate and composed into a kernel whose step loops keep the tensor pipe
+busy 40-44% of the time at its two warps a scheduler: the readout's tile loops issue each `ldmatrix` one instruction
+before the MMA that reads it, about 200 registers stay live through every phase (so no phase has room for a second
+stage's operands), and four query heads a write head bought no time per query head. The instruments to see it existed
+and none was in the path: the pipe model (`tools/pipe_sim.py`) read only loops named by function, whose names the
+rebuild deleted -- its floors pointed at nothing and nothing failed; the MMA gap was reported "until a lab fixes the
+bound"; §28's per-phase reading and the carry's overlap row were owed; the two builds of a change were compared by
+unlocked times across runs; and a helper the common header had (`ops::fresh`) was reinvented in the carry. Components
+pass alone; the time goes in the composition, and no gate looked there. So the composition is designed first and
+gated, and an instrument's missing target is a red.
+1. THE STEADY STATE FIRST: before a kernel's components are written (§19's skeleton), its design states ONE WARP's
+   steady-state window (or item) as a timeline: each phase, the stream it runs under, every load issued a stage ahead
+   of its use (its load-to-use distance in issue cycles against `common/hardware.json`'s latencies, lab
+   `issue_latency`), and the registers live in each phase. Components get interfaces split at those stages (an issue
+   half and a wait half), so the composition overlaps by construction, never by a later rebuild. More warps is never
+   the overlap mechanism (§5, CONSTITUTION R15): a warp's own steps cover its pipe at the warps a scheduler its
+   registers admit.
+2. PREDICT, THEN MEASURE, AND A MISS STOPS: each phase's cycles a warp a window are predicted (its budget line, the
+   pipe model) and written to the budget (`phase_cycles` per cell) before a schedule or composition change is built;
+   `tools/phase_ledger.py --budget` reds a phase over 1.3x its prediction or without one. A miss stops work on the
+   kernel until the price or the model that was wrong is named and corrected (§29.13) -- §22's abandonment rule
+   applied to a phase.
+3. REGISTERS ARE BUDGETED PER PHASE: the budget's `registers` line states each component's peak live registers, under
+   the allocation of the warps a scheduler the design wants; `tools/life_ranges.py --budget` reds a component past
+   its line or without one. §29.2's hoisting stops at the line: a value whose hoisting would pass it is re-derived at
+   its use (`ops::opaque`, docs/internals/common/ops.md#opaque), a few instructions there instead of a register held
+   across the window. A spill is never the signal (§20 reds it); the line is.
+4. EVERY STEP LOOP COVERS ITS PIPE: `tools/sass_gate.py` simulates every innermost MMA loop of every function, on every
+   build, for one warp from ptxas's control words (`tools/pipe_sim.py`; MMA costs by shape and latencies from labs
+   `tensor_tax`, `mma_queue`, `mma_k8`, `issue_latency`), and reds a loop whose COVER -- its pipe share alone times the
+   warps a scheduler its registers admit, at most 100% -- is under 1/1.15 (§28's line): a warp never runs faster beside
+   another than alone, so a loop under it cannot be covered by the warps the design has. The kernels under it are
+   named debts with what replaces them, each function held at its floor (`tools/budgets/step_floors.json`, by
+   architecture), and the list only shrinks.
+5. A TARGET THAT DISAPPEARS IS RED: a floor, budget line or gate row naming a function, loop or cell the tree no longer
+   has fails; it never reads as nothing.
+6. ONE PRIMITIVE A JOB: before writing a helper, the common headers (`common/ops.cuh`, `common/*.cuh`) are read for
+   it; a kernel-local copy of a common primitive is a defect, and an unused common primitive is dead code.
+7. A/B IS THE DECLARED SUITE: two builds are compared only in one interleaved, clock-locked session -- rola-bench's
+   suite with the baseline as a reference checkout, pruned to the sessions (`rola-bench`) -- or by ncu's cycles of one
+   launch each; times from separate unlocked runs are never compared.
+ENFORCED: items 3, 4 and 5 by the tools named; the SASS gate runs inside every build (`setup.py`), so an under-line
+step fails the build. Item 2's predictions are owed for the carry by the window's design (its first form), and its
+ledger check is red until they exist. Measured 2026-10-16 at 87240898: the carry's worst step loops cover 44.2% and
+39.6% (its two arms, sm_86) and 23.6% and 20.4% on sm_80's eight-cycle MMA; its components peak at 204-252 live
+registers.

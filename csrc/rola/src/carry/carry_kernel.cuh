@@ -20,7 +20,7 @@ __device__ __forceinline__ void stage_window(const CarryParams& p, const Place& 
   lists_in<P>(p, p.write_lists, ww, c, w, smem, kWrite);
   facts_in<P>(p, ww, c, w, smem);
   const int words = p.tables.plan_words, copies = words * 4 / ops::kStageBytes;
-  const int t = opaque(static_cast<int>(threadIdx.x)) - (kThreads - 1 - copies);
+  const int t = ops::opaque(static_cast<int>(threadIdx.x)) - (kThreads - 1 - copies);
   if (t >= 0 && t < copies) {
     const int cls = rw.group * max(1, p.write_lists.groups) + ww.group;
     ops::stage_tile(

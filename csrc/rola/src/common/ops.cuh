@@ -228,9 +228,13 @@ __device__ __forceinline__ int once(bool cond) {
   return n;
 }
 
-//: TWO VALUES MADE OPAQUE at this point, so what derives from them is rebuilt here rather than
-//: hoisted out of the loop. -- see docs/internals/common/ops.md#fresh
-__device__ __forceinline__ void fresh(int& a, int& b) { asm volatile("" : "+r"(a), "+r"(b)); }
+//: A VALUE MADE OPAQUE at this use, so what derives from it is formed here rather than hoisted and held
+//: live across the loop around it. -- see docs/internals/common/ops.md#opaque
+__device__ __forceinline__ int opaque(int v) {
+  int out;
+  asm volatile("mov.b32 %0, %1;" : "=r"(out) : "r"(v));
+  return out;
+}
 
 //: THE SM'S CYCLE COUNTER, for the phase ledger. -- see docs/internals/common/ops.md#cycles
 __device__ __forceinline__ long long cycles() {

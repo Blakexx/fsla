@@ -101,6 +101,24 @@ two.
 Every timed entry names its stopwatch (`Timed.instrument`; rola's arms time with `cuda_events`), and a session refuses
 entries that name two.
 
+<a id="comparing-two-builds"></a>
+## Comparing two builds
+
+A change is judged against its baseline in ONE session: the baseline checkout (a worktree at the old commit, built,
+with its venv) is a reference of rola-bench's suite, and the run is pruned to the timing sessions and their stores:
+
+```bash
+python -m rola_devtools.build run declare.py:suite \
+    --arg target=worktree:<new checkout>,venv:<its venv> --arg references='worktree:<baseline>,venv:<its venv>' \
+    --only 'store/session/*'
+```
+
+Each session interleaves both checkouts' entries call by call at the locked clock (above), so the ratio between them
+is read from one session's samples (`python -m rola_results verdict`). Times from two separate runs are never
+compared, and an unlocked clock's are never read at all (KERNEL_STANDARDS §32.7): this host's sustained clock has two
+states ~17% apart (the method, above), larger than the effects a change is judged on. One launch's cycles each under `ncu`
+(`sm__cycles_elapsed.max`) compare two builds without a session where the question is one kernel's cycles.
+
 ## The flagging rule: three gates, all must fire
 
 `rola_devtools.verdict` judges a candidate against a reference timed in the same sessions; which stored sessions and

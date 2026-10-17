@@ -25,16 +25,18 @@ import sass  # noqa: E402
 
 #: THE MACHINE, an architecture: the cycles an HMMA holds the tensor pipe a scheduler (sm_86: bf16 with
 #: fp32 accumulate at half rate, calibration `hmma_1w` 32.4; sm_80 full rate, 8 cycles an m16n8k16 from the A100's
-#: 1024 FMA an SM a clock, unmeasured here), an IMMA's by shape (`imma_pipe`) and the issue-to-result
+#: 1024 FMA an SM a clock, unmeasured here), an fp16-accumulate HMMA's (`hmma_f16_pipe`: lab `tensor_tax` 16.1), an
+#: m16n8k8 half its m16n8k16 (lab `mma_k8`), an IMMA's by shape (`imma_pipe`) and the issue-to-result
 #: latency of the scoreboard classes (calibration.md's rows where one exists -- the dependent-chain rows put a
-#: shared load, a matrix load and a shuffle at 25, 25 and 24 on sm_86, 2026-09-19; `REDUX` 40, the `redux_chain` row
+#: shared load, a matrix load and a shuffle at 25, 25 and 24 on sm_86, 2026-09-19; an HMMA on its accumulator 24
+#: and an FFMA 4, lab `issue_latency` 2026-10-16 (an LDSM.x4 there 29: owed to the memory side); `REDUX` 40, the `redux_chain` row
 #: less its link's two fixed-latency instructions; `R2UR` 39 is measured in place,
 #: the census's scoreboard wait at its consumer on two cells, and owes a probe row -- else the microbenchmark
 #: literature, bounded above), and the HMMAs the pipe queues past the one it executes (`hmma_queue`: the
 #: calibration row with four loads after each burst hid 35 of their 42 cycles, one slot's worth, so two in
 #: flight). A cubin of an architecture without a row is refused.
 MACHINES = {
-    "sm_86": {"hmma_pipe": 32.5, "imma_pipe": {"16832": 16.0, "16816": 8.0},
+    "sm_86": {"hmma_pipe": 32.5, "hmma_f16_pipe": 16.1, "imma_pipe": {"16832": 16.0, "16816": 8.0},
               #: a scheduler's issue pipes and the cycles a warp instruction holds one (16-lane integer ALU, the
               #: FMA pair taking an FP32 instruction a cycle, IMAD on the heavy half), shared by its warps; and the
               #: tensor pipe's extension a cycle an FP32 or IADD3 instruction costs it (probe `imma_pattern`
@@ -44,13 +46,13 @@ MACHINES = {
                                 "FSEL": 2, "FMNMX": 2, "MOV": 2},
                         "fma": {"FFMA": 1, "FMUL": 1, "FADD": 1, "HFMA2": 1, "HADD2": 1, "HMUL2": 1, "IMAD": 2}},
               "tensor_interference": {"FFMA": 1.15, "FMUL": 0.85, "FADD": 1.0, "IADD3": 1.45, "IMAD": 0.23}, "latency": {"LDSM": 25, "LDS": 25, "LDG": 400, "SHFL": 24, "STS": 20, "S2R": 20,
-                                              "VOTE": 20, "HMMA": 35, "IMMA": 35, "MUFU": 20, "I2F": 12, "F2I": 12, "F2F": 12,
-                                              "HFMA2": 6, "FFMA": 5, "R2UR": 39, "REDUX": 40, "DEFAULT": 6}, "read": 6, "hmma_queue": 0,
+                                              "VOTE": 20, "HMMA": 24, "IMMA": 35, "MUFU": 20, "I2F": 12, "F2I": 12, "F2F": 12,
+                                              "HFMA2": 6, "FFMA": 4, "R2UR": 39, "REDUX": 40, "DEFAULT": 6}, "read": 6, "hmma_queue": 0,
               "schedulers": 4, "mem_wavefront": 1.0, "mem_sector": 2.0, "mem_queue": 4.0, "issue": {"RED": 12, "ATOM": 12, "ATOMG": 12,
                                                                                     "STG": 4, "LDG": 4}},
-    "sm_80": {"hmma_pipe": 8.0, "imma_pipe": {"16832": 8.0, "16816": 4.0}, "latency": {"LDSM": 25, "LDS": 25, "LDG": 400, "SHFL": 24, "STS": 20, "S2R": 20,
-                                              "VOTE": 20, "HMMA": 35, "IMMA": 35, "MUFU": 20, "I2F": 12, "F2I": 12, "F2F": 12,
-                                              "HFMA2": 6, "FFMA": 5, "R2UR": 39, "REDUX": 40, "DEFAULT": 6}, "read": 6, "hmma_queue": 0,
+    "sm_80": {"hmma_pipe": 8.0, "hmma_f16_pipe": 8.0, "imma_pipe": {"16832": 8.0, "16816": 4.0}, "latency": {"LDSM": 25, "LDS": 25, "LDG": 400, "SHFL": 24, "STS": 20, "S2R": 20,
+                                              "VOTE": 20, "HMMA": 24, "IMMA": 35, "MUFU": 20, "I2F": 12, "F2I": 12, "F2F": 12,
+                                              "HFMA2": 6, "FFMA": 4, "R2UR": 39, "REDUX": 40, "DEFAULT": 6}, "read": 6, "hmma_queue": 0,
               "schedulers": 4, "mem_wavefront": 1.0, "mem_sector": 2.0, "mem_queue": 4.0, "issue": {"RED": 12, "ATOM": 12, "ATOMG": 12,
                                                                                     "STG": 4, "LDG": 4}},
 }
@@ -123,7 +125,8 @@ MMA = ("HMMA", "IMMA")
 def mma_cost(text: str, mach: dict) -> float:
     op = opcode(text)
     if op == "HMMA":
-        return mach["hmma_pipe"]
+        pipe = mach["hmma_f16_pipe"] if re.search(r"HMMA\.\d+\.F16\b", text) else mach["hmma_pipe"]
+        return pipe / 2 if "HMMA.1688" in text else pipe
     if op == "IMMA":
         m = re.search(r"IMMA\.(\d{5})", text)
         return mach["imma_pipe"][m.group(1) if m else "16832"]

@@ -16,6 +16,9 @@
 # FAILING CLOSED IS THE POINT: a missing `pre-commit` refuses the commit rather than
 # letting it through unchecked, because an absent gate that says nothing is
 # indistinguishable from a gate that passed.
+#
+# QUIET ON PASS: a passing or skipped check prints nothing, a failing one prints in full, and
+# the last line counts both -- the full roster is `pre-commit run`'s.
 set -euo pipefail
 
 venv="$(git config --get rola.venv || true)"
@@ -26,8 +29,14 @@ if [ -z "$venv" ] || [ ! -x "$venv/bin/pre-commit" ]; then
 fi
 export PATH="$venv/bin:$PATH"
 
-exec pre-commit hook-impl \
+log="$(mktemp)"
+trap 'rm -f "$log"' EXIT
+status=0
+pre-commit hook-impl \
   --config=.pre-commit-config.yaml \
   --hook-type=pre-commit \
   --hook-dir "$(cd "$(dirname "$0")" && pwd)" \
-  -- "$@"
+  -- "$@" >"$log" 2>&1 || status=$?
+grep -Ev '\.(Passed|Skipped)$' "$log" || true
+echo "pre-commit: $(grep -c '\.Passed$' "$log" || true) passed, $(grep -c '\.Failed$' "$log" || true) failed"
+exit "$status"

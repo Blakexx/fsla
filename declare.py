@@ -48,13 +48,13 @@ BUILD_DATA = ["csrc", "pyproject.toml", "tools/manifests", "tools/toolchains", "
 #: name -> (tool, arguments, runs per carry cell, holds, data files its result depends on)
 INSTRUMENTS = {
     "sass": ("tools/sass_gate.py", ["{binary}"], False, {"host_cpu": 1}, [], 600),
-    "registers": ("tools/life_ranges.py", ["--arm", "0", "--kernel", "carry_kernel", "--source",
-                                           "csrc/rola/src/carry/carry_kernel.cuh"], False,
+    "registers": ("tools/life_ranges.py", ["--arm", "0", "--kernel", "carry_kernel",
+                                           *(a for f in ("carry_kernel", "parts", "fold", "schedule", "plan")
+                                             for a in ("--source", f"csrc/rola/src/carry/{f}.cuh")),
+                                           "--budget", "tools/budgets/carry.json"], False,
                   {"host_cpu": 1}, ["csrc/rola/src"], 600),
     "burst": ("tools/burst_gate.py", ["--arm", "0", "--kernel", "carry_kernel", "--source",
-                                     "csrc/rola/src/carry/carry_kernel.cuh",
-                                     "--loop", "csrc/rola/src/carry/carry_kernel.cuh:frag_mma",
-                                     "--loop", "csrc/rola/src/carry/carry_kernel.cuh:readout_tile"], False,
+                                     "csrc/rola/src/carry/carry_kernel.cuh"], False,
               {"host_cpu": 1}, ["csrc/rola/src"], 600),
     "phases": ("tools/phase_ledger.py", ["{cell}", "--launches", "1"], True, {"gpu": "all"}, [], 120),
     "counters": ("tools/pipe_counters.py", ["{cell}"], True, {"gpu": "all"}, [], 900),

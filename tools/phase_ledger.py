@@ -6,6 +6,11 @@ as cycles a warp a window per phase, averaged over the CTAs and warps; and per w
 owner imbalance shows. KERNEL_STANDARDS §19's per-phase instrument for the composed kernel.
 
     python tools/phase_ledger.py flagship-alt-k4 [--launches 3]
+    python tools/phase_ledger.py nl64k-alt-k4 --budget tools/budgets/carry.json   # against the predicted phases
+
+With `--budget`, each phase against the cycles the design predicted for it (the cell's `phase_cycles`): red where a
+phase takes more than `MISS` times its prediction, or has none (KERNEL_STANDARDS section 32: a miss stops work until
+the price or the model that was wrong is named).
 
 The ledger is `rola.ops.carry.LEDGER_PHASES` columns by `LEDGER_WARPS` warps by one row a CTA, a CTA a box of
 the carve (docs/internals/carry/carry_kernel.md#phase-ledger). Measured work: takes the GPU lock exclusive.
@@ -20,6 +25,24 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+
+#: the largest measured / predicted a phase passes at (KERNEL_STANDARDS section 32)
+MISS = 1.3
+
+
+def judge(cell: str, per_phase: dict[str, float], budget: Path) -> bool:
+    """Each phase's measured cycles a warp a window against the budget's prediction for the cell; True when none
+    misses."""
+    predicted = json.loads(budget.read_text())["cells"].get(cell, {}).get("phase_cycles", {})
+    ok = True
+    for name, got in per_phase.items():
+        want = predicted.get(name)
+        red = want is None or got > MISS * want
+        ok &= not red
+        shown = "no prediction" if want is None else f"predicted {want:.0f}, {got / want:.2f}x" if want else "0"
+        print(f"{'RED ' if red else 'ok  '} {name:8s} {got:7.0f}  ({shown})")
+    return ok
 
 
 def ctas(cell: str) -> int:
@@ -49,6 +72,8 @@ def main() -> int:
     ap.add_argument("--per-warp", default="readout,fold",
                     help="the phases whose per-warp rows are printed: an imbalance is seen, not inferred")
     ap.add_argument("--json", type=Path, default=None, help="also write the reading here: every phase, every warp")
+    ap.add_argument("--budget", type=Path, default=None,
+                    help="a budget whose cell names `phase_cycles`, each phase's predicted cycles a warp a window")
     ap.add_argument("--forced", default=None,
                     help="the plan form each window takes where it fits (`rola.ops.carry.forced_word`)")
     a = ap.parse_args()
@@ -94,6 +119,8 @@ def main() -> int:
                                       "total": round(float(per.sum()), 1),
                                       "per_warp": {n: [round(by_warp[w][i].item(), 1) for w in range(warps)]
                                                    for i, n in enumerate(phases)}}) + "\n")
+    if a.budget:
+        return 0 if judge(a.cell, dict(zip(phases, per.tolist())), a.budget) else 1
     return 0
 
 

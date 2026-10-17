@@ -4,6 +4,9 @@ description: Load before writing or changing CUDA in this repo (csrc/ or measure
 ---
 # Writing kernel code
 
+0. The steady state first: one warp's window (or item) as a timeline -- each phase's stream, every load a stage
+   ahead of its use, each phase's live registers -- before any component, and components split at those stages
+   (`docs/KERNEL_STANDARDS.md#s32`). Read `csrc/rola/src/common/ops.cuh` for a primitive before writing one.
 1. The design first: the component's page under `docs/internals/` (it mirrors `csrc/rola/src/`; a csrc file without
    its page, or a page naming an identifier the tree lacks, fails the commit:
    `docs/internals/tools/lint.md#the-gating-set`) and `docs/ARCHITECTURE.md`. A new component starts as a skeleton of
@@ -19,7 +22,8 @@ description: Load before writing or changing CUDA in this repo (csrc/ or measure
    (`docs/internals/tools/budgets.md#building-a-budget`). Comments are declaration blocks; prose goes to the mirror
    page (`docs/KERNEL_STANDARDS.md#comment-density`).
 6. Read the SASS before anything runs: `python tools/lab.py sass <experiment>` in the lab,
-   `python tools/sass_gate.py <.so>` on an extension build.
+   `python tools/sass_gate.py <.so>` on an extension build (it runs inside every build too); its step cover reads
+   every MMA loop's pipe share (`docs/KERNEL_STANDARDS.md#s32` item 4).
 7. Run new device code first under `timeout -s KILL` (`docs/KERNEL_STANDARDS.md#first-run`).
 8. Prove it: correctness with `rola-test`; cost with `rola-lab` (an experiment), `rola-instruments` (a shipped
    kernel's attribution) or `rola-bench` (the declared measurement). Commit with `rola-commit`.

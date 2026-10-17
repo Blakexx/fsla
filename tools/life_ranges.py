@@ -10,6 +10,8 @@ marks; the liveness is this tool's own, over the function's real control flow
     python tools/life_ranges.py --cubin <cubin> --source csrc/rola/src/carry/carry_kernel.cuh
     python tools/life_ranges.py --so <extension .so> --source ... [--member carry_arm] [--kernel carry_kernel] [--top N]
     python tools/life_ranges.py --arm 0 --source ... [--arch sm_86]   # compiles the carry arm with -lineinfo first
+    python tools/life_ranges.py --arm 0 --kernel carry_kernel --source csrc/rola/src/carry/carry_kernel.cuh \
+        --source csrc/rola/src/carry/parts.cuh ... --budget tools/budgets/carry.json   # the register budget
 
 The cubin must carry line info (`-lineinfo`); an extension built without it reports the peak
 and the histogram but no regions. Regions are the innermost source function (struct methods as
@@ -29,7 +31,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dev_config  # noqa: E402
 import sass  # noqa: E402
-from region_ledger import fn_of, function_map  # noqa: E402
+from region_ledger import component_of, fn_of, function_map  # noqa: E402
 
 
 def compile_arm(arm: int, arch: str) -> Path:
@@ -45,6 +47,28 @@ def compile_arm(arm: int, arch: str) -> Path:
                     f"csrc/rola/src/instantiations/carry_arm_{arm}.cu", "-o", str(cubin)], cwd=root, check=True,
                    capture_output=True, timeout=1800)
     return cubin
+
+
+def component_peaks(cubin: Path, kernel: str | None, rows: list[tuple[int, str, int]], sources: list[Path],
+                    components: dict[str, str]) -> dict[str, int]:
+    """THE REGISTER BUDGET's reading (KERNEL_STANDARDS section 32): each budget component's peak live registers, an
+    instruction attributed as `tools/region_ledger.py` attributes it -- the outermost inline frame in `sources` whose
+    function is a component's (the kernel's own body, the last frame of every chain, its `glue`)."""
+    frames = sass.frames(sass.section(sass.disassemble(cubin, "--print-line-info-inline", "-gi"), kernel, cubin.name))
+    fmaps = {p.name: function_map(p.read_text().splitlines()) for p in sources}
+    by_function = {fn: name for name, fn in components.items()}
+    glue = next((name for name, fn in components.items() if fn.endswith("_kernel")), None)
+    peaks: dict[str, int] = collections.defaultdict(int)
+    for offset, _ins, live in rows:
+        owner = glue
+        for f, ln in frames.get(offset, []):
+            if f in fmaps:
+                c = component_of(fn_of(fmaps[f], ln), set(by_function))
+                if c is not None and by_function[c] != glue:
+                    owner = by_function[c]
+        if owner is not None:
+            peaks[owner] = max(peaks[owner], live)
+    return dict(peaks)
 
 
 def cubin_of(args) -> Path:
@@ -228,7 +252,11 @@ def main() -> int:
     ap.add_argument("--member", default="carry_arm")
     ap.add_argument("--kernel", default=None,
                     help="the function to read, a regex over the cubin's (needed where it holds several)")
-    ap.add_argument("--source", type=Path, required=True)
+    ap.add_argument("--source", type=Path, required=True, action="append",
+                    help="the kernel's source (first) and, with --budget, its components' sources")
+    ap.add_argument("--budget", type=Path, default=None,
+                    help="a budget (tools/budgets/<kernel>.json): red where a component's peak live registers pass its "
+                         "`registers` line, or it has none")
     ap.add_argument("--top", type=int, default=16)
     ap.add_argument("--json", type=Path, default=None, help="also write the peak and every region's live counts here")
     a = ap.parse_args()
@@ -240,8 +268,9 @@ def main() -> int:
         print("no life-range rows: is this a cubin of the kernel?")
         return 1
 
-    lmap = line_map(cubin, a.source.name, a.kernel)
-    fmap = function_map(a.source.read_text().splitlines())
+    source = a.source[0]
+    lmap = line_map(cubin, source.name, a.kernel)
+    fmap = function_map(source.read_text().splitlines())
     peak = max(r[2] for r in rows)
     hist = collections.Counter((r[2] // 20) * 20 for r in rows)
     print(f"instructions {len(rows)}  peak live registers {peak}")
@@ -257,7 +286,20 @@ def main() -> int:
                                                     for fn, v in sorted(per.items())}}, sort_keys=True) + "\n")
     if not any(lmap.values()):
         print("no line info in this cubin: build with -lineinfo for regions")
-        return 0
+        return 1 if a.budget else 0
+    red = False
+    if a.budget:
+        budget = json.loads(a.budget.read_text())
+        lines = budget.get("registers", {})
+        peaks = component_peaks(cubin, a.kernel, rows, a.source, budget["components"])
+        print(f"\n{'component':14s} {'peak live':>9s} {'line':>5s}")
+        for name in budget["components"]:
+            line, got = lines.get(name), peaks.get(name, 0)
+            over = line is None or got > line
+            red |= over
+            print(f"{'RED ' if over else 'ok  '}{name:10s} {got:9d} {'-' if line is None else line:>5}")
+        if red:
+            print(f"RED: a component past its `registers` line in {a.budget}, or with none")
     print(f"\n{'region':26s} {'peak':>5s} {'mean':>6s} {'instr':>6s}")
     for fn, v in sorted(per.items(), key=lambda x: -max(x[1]))[: a.top]:
         print(f"{fn:26s} {max(v):5d} {sum(v) / len(v):6.1f} {len(v):6d}")
@@ -265,7 +307,7 @@ def main() -> int:
     for off, ins, live in sorted(rows, key=lambda r: -r[2])[:6]:
         ln = lmap.get(off)
         print(f"  {off:#07x} live {live}  {fn_of(fmap, ln) if ln else '?'}:{ln}  {ins[:60]}")
-    return 0
+    return 1 if red else 0
 
 
 if __name__ == "__main__":

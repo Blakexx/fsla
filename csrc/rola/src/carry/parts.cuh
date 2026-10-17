@@ -121,14 +121,8 @@ __device__ __forceinline__ void addr_in(Addr& out, const CarryParams& p, const P
   out.channel0 = c.channel0;
 }
 
-//: a window's index and parity, opaque, so an offset by them is formed at each use rather than held across a
+//: a window's parity, opaque (`ops::opaque`), so an offset by it is formed at each use rather than held across a
 //: window's steps
-__device__ __forceinline__ int opaque(int w) {
-  int out;
-  asm volatile("mov.b32 %0, %1;" : "=r"(out) : "r"(w));
-  return out;
-}
-
 __device__ __forceinline__ int parity_of(int w) {
   int parity;
   asm volatile("and.b32 %0, %1, 1;" : "=r"(parity) : "r"(w));
@@ -148,7 +142,7 @@ __device__ __forceinline__ Window window_of(const CarryParams& p, const uint8_t*
   //: read at each use (volatile): held live across the window loop they would cost the state registers
   const volatile Statics& s = reinterpret_cast<const volatile Addr*>(smem + P::kAddr)->side[side];
   Window out;
-  out.t0 = opaque(w) * kWindow;
+  out.t0 = ops::opaque(w) * kWindow;
   out.tokens = min(kWindow, p.L - out.t0);
   out.listed = s.listed != 0;
   out.digit0 = s.digit0;
@@ -222,7 +216,7 @@ __device__ __forceinline__ void lists_in(const CarryParams& p, const SideLists& 
                       pres = ops::smem_addr(pre_of<P>(p, smem, side, w));
   //: the thread opaque, so the copies' sources are formed at each staging, never held across the windows
 #pragma unroll 1
-  for (int k = opaque(static_cast<int>(threadIdx.x)); k < union_copies + kPreRows * row_copies;
+  for (int k = ops::opaque(static_cast<int>(threadIdx.x)); k < union_copies + kPreRows * row_copies;
        k += kThreads) {
     if (k < union_copies) {
       ops::stage_tile(unions + 16 * k, l.union_tok + group * slots + 8 * k);
@@ -246,7 +240,7 @@ __device__ __forceinline__ void facts_in(const CarryParams& p, const Window& ww,
   const int heads = p.tables.heads;
   const ops::SmemAddr units = ops::smem_addr(smem + p.tables.units_at) + (w & 1) * heads * kWindow;
 #pragma unroll 1
-  for (int k = opaque(static_cast<int>(threadIdx.x)); k < heads * kUnitCopies + kExpCopies;
+  for (int k = ops::opaque(static_cast<int>(threadIdx.x)); k < heads * kUnitCopies + kExpCopies;
        k += kThreads) {
     if (k < heads * kUnitCopies) {
       const int j = k / kUnitCopies;
@@ -388,8 +382,9 @@ __device__ __forceinline__ void entries_fill(const CarryParams& p, const SideLis
                                              int lane) {
   //: the box's first list's row, once: a list's is `kListCap` entries a query head on (opaque, so the lists' sources
   //: are formed at each fill rather than held across the windows)
-  const int cap = kListCap * opaque(l.heads);
-  const uint2* const lists = l.entries + list_row(l, c, p.windows, opaque(w), win.digit0) * cap;
+  const int cap = kListCap * ops::opaque(l.heads);
+  const uint2* const lists =
+      l.entries + list_row(l, c, p.windows, ops::opaque(w), win.digit0) * cap;
   static_for<kBoxLists / kWarps>([&](auto J) {
     const int list = warp + kWarps * J;
     const int at = __shfl_sync(0xffffffffu, run.at, list),
@@ -788,7 +783,7 @@ __device__ __forceinline__ void drain(const CarryParams& p, const uint8_t* smem,
   constexpr uint32_t kCellStride = kStride * kPanelRow;
   static_assert(kStride % 8 == 0, "a stride of slots keeps a cell's swizzle bits");
   //: the thread, opaque, so its cell is formed at each drain rather than hoisted across the windows
-  const int tid = opaque(static_cast<int>(threadIdx.x));
+  const int tid = ops::opaque(static_cast<int>(threadIdx.x));
   const int word = tid % kWords, s0 = tid / kWords;
   const ops::SmemAddr cell0 =
       panel + (panel_row(static_cast<uint32_t>(s0)) ^ ((32u * (word >> 3)) | (4u * (word & 7))));

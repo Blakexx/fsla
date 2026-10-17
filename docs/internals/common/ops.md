@@ -202,10 +202,11 @@ Every operation is defined by WHAT THE ALGORITHM NEEDS. A helper with no caller 
 
 #### Scheduling controls
 
-- <a id="fresh"></a>`fresh(a, b)`: two values made opaque where it stands (an empty `asm volatile` reading and
-  writing them), so nothing derived from them afterwards is computed before it. A step run once a window rebuilds its
-  addressing where it is used instead of ptxas hoisting it out of the window loop and holding it live across the
-  MMA bursts, where registers are scarce.
+- <a id="opaque"></a>`opaque(v)`: a value made opaque at this use (a `mov` in an `asm volatile`), so nothing
+  derived from it is computed before it or shared with another use. A value hoisted out of a window loop is held live
+  across the MMA bursts, where registers are scarce (KERNEL_STANDARDS §32): a thread's index, a window's index or its
+  parity passed through it makes each offset formed where it is used, a few instructions there, instead of a register
+  held across the window.
 - <a id="once"></a>`once(cond)`: `for (int n = ops::once(cond); n > 0; --n)` is a real branch where `if (cond)` on a
   warp-uniform value would be if-converted and every warp would issue the body predicated off (KERNEL_STANDARDS §20).
   The bound is hidden from ptxas by an empty `asm volatile`, so the loop cannot be flattened as 0-or-1 trips.

@@ -20,6 +20,11 @@ attributes a launch's time to phases; the time itself is read with it unbound. `
 binary's first launch is never a reading. `--forced` names the plan's form each window takes where it fits
 (`rola.ops.carry.forced_word`, `docs/internals/carry/schedule.md#planner`), so forms are read side by side.
 
+<a id="budget"></a>
+`--budget tools/budgets/<kernel>.json` judges each phase against the cycles a warp a window the design predicted for it
+(the cell's `phase_cycles` in the budget, KERNEL_STANDARDS §32.2): red over `MISS` = 1.3 times its prediction, or with
+none. The carry's predictions are owed by the window's design, so its check is red until they exist.
+
 `--json PATH` also writes the reading: the cell, launches, warm-up, the launch's CTA-windows, every phase's cycles a
 warp a window and the total, and every phase's per-warp row. `cta_windows(cell)` (CTAs times windows) is the one divisor
 every per-unit number in the instruments uses (`tools/pipe_counters.py`, `tools/stall_census.py`).
