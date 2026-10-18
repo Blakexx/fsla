@@ -118,6 +118,24 @@ the readout's per-digit work and the bookkeeping fall by half a token. A deeper 
 512 wins. In every box-window of these forms the fold's ring fits beside the last read chunk's panel
 (`ring_beside_panel`), so that panel can drain while the fold runs.
 
+## The forms ranked (`rank`)
+
+Every form at a cell -- resident, or streamed at each read ring -- at W 512 and 1024, best first, against today at the
+calibration cells' efficiencies and with every phase at its floor (the phases still in turn; their overlap is the
+kernel's next work). On sm_86, a 512 tokens (2026-10-17):
+
+| cell | best form | at today's efficiencies | phases at their floors |
+|---|---|---|---|
+| nl64k-alt-k4 | streamed, read ring 4, W 1024 | 0.63x | 0.34x |
+| nl64k-alt-k4-g4 | streamed, read ring 5, W 512 | 0.81x | 0.40x |
+| flagship-alt-k16 | streamed, read ring 4, W 512 | 0.61x | 0.33x |
+| flagship-cohort-k4 | streamed, read ring 4, W 1024 | 0.76x | 0.40x |
+| nl64k-dense | resident, W 1024 | 0.99x | 0.60x |
+
+Only the leaf carve's forms are ranked: the value carve and the 64-channel box were dropped on measured grounds
+(their fold shared-memory bound, a 16-channel tile's warps each reloading the shared operand; the box's halved lists
+doubling the readout's partials), and pricing them here needs their readout and hand-off, which no lab has measured.
+
 OWED before it ranks a carve: the alternative carves' prices (each step's primitives by its warp tile, checked against
 the readout and fold labs), registers, the read stream's second point (a multi-pass read lab), and labs for the prices
 it lacks.

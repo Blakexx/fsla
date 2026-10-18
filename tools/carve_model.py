@@ -610,6 +610,26 @@ class Model:
         return cyc
 
 
+def rank(model: Model, base: CellStats) -> list[str]:
+    """THE FORMS RANKED on this card at a cell: each -- resident, or streamed at each read ring -- at W 512 and 1024,
+    best first, its cycles a 512 tokens against today's at the calibration cells' efficiencies, and with every phase at
+    its floor (the phases still in turn)."""
+    side = "listed" if base.read[0].listed else "dense"
+    ref = sum(model.window(base).values())
+    rows = []
+    for form, stats in (("resident", base), *((f"streamed, read ring {d}", streamed(base, d)) for d in READ_RING)):
+        for k in (1, 2):
+            form_k = merged(stats, k)
+            eff = model.effs[side]
+            at_eff = sum(model.window(form_k).values()) / k
+            model.effs[side] = dict.fromkeys(eff, 1.0)
+            at_floor = sum(model.window(form_k).values()) / k
+            model.effs[side] = eff
+            rows.append((at_eff, f"{base.name:20s} {form:24s} W {WINDOW * k:5d}: {at_eff / ref:5.2f}x today, "
+                                 f"phases at their floors {at_floor / ref:5.2f}x"))
+    return [line for _, line in sorted(rows)]
+
+
 def validate(cells: tuple[str, ...] = CALIBRATION + HELD_OUT, ledgers: Path | None = None) -> list[str]:
     """The gate's table: each cell's instructions and wavefronts a CTA-window predicted from the calibration cells'
     prices against its measured counts, by phase; with `ledgers` (a directory of `phase_ledger.py --json` readings,
@@ -683,6 +703,10 @@ def main() -> int:
     p.add_argument("cells", nargs="+")
     p.add_argument("--k", type=int, nargs="+", default=[1, 2])
     p.add_argument("--ledgers", type=Path, required=True)
+    p = sub.add_parser("rank", help="every form on cells, best first: its cycles a 512 tokens at the calibration cells' "
+                                    "efficiencies and with every phase at its floor")
+    p.add_argument("cells", nargs="+")
+    p.add_argument("--ledgers", type=Path, required=True)
     p = sub.add_parser("measured", help="a launch's per-region counts a CTA-window, from its SourceCounters dump")
     p.add_argument("csv", type=Path)
     p.add_argument("--so", type=Path, default=ROOT / "rola_cu13" / "_C.abi3.so")
@@ -721,6 +745,11 @@ def main() -> int:
                               if form_k.ring else "")
                     print(f"{name:20s} {form:24s} W {WINDOW * k:5d}: {tot:8.0f} a 512 tokens ({tot / ref:.2f}x)  "
                           + " ".join(f"{p} {v / k:.0f}" for p, v in sorted(cyc.items())) + beside)
+    elif a.cmd == "rank":
+        model = Model(a.ledgers)
+        for name in a.cells:
+            for line in rank(model, cell_stats(name)):
+                print(line)
     elif a.cmd == "measured":
         regions = measured(a.csv, a.so, a.cta_windows)
         total = sum(r.instructions for r in regions.values())
