@@ -1,0 +1,504 @@
+// measure/lab/experiments/row_stream.cu -- QUESTION: when the fold's rows are streamed a list at a time into each
+// warp's ring (merge width 1) instead of staged once a window, how much of their copies hides under the fold, at what
+// ring depth, and what do the copies cost? METHOD: the carry's fold step over real nl64k-alt-k4 write lists
+// (`row_stream.inputs.py`): 80 CTAs, box `b` of one head over 64 windows, its rows a token's 32-byte slice of its slice
+// group and 64-byte values of its channel tile -- shared between the boxes as the carry's are, so L2 serves what one
+// box fetched to the others; 8 warps a CTA each fold its 4 lists `w + 8 j` into 128 fp32 registers, 16-token steps
+// while more than 8 entries remain, then an 8-token tail. RESIDENT: each window's union rows copied once, a CTA
+// barrier, the fold, a barrier. STREAMED: each warp's ring of `D` stages of 8 rows, copied ahead across lists and
+// windows from its window's stage record (a pre-pass's plan) staged a window ahead, or with its lookups at their use;
+// `CA` the copies allocated in L1 (`cp.async.ca`) or not (`.cg`, the carry's); bounds: each form's fold alone and
+// copies alone. A sample is the CTA's span a window; every forming variant's state is checked against the mirror's.
+// see docs/internals/tools/lab.md#row-stream
+#include <cuda_fp16.h>
+
+#include <type_traits>
+
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <string>
+#include <vector>
+
+#include "common/static_for.cuh"
+#include "lab.cuh"
+
+namespace row_stream {
+
+constexpr int kWarps = 8, kThreads = 32 * kWarps, kWindow = 512, kLists = 32, kRow = 128, kGroups = 8, kTiles = 2;
+constexpr int kStage = 8 * kRow, kSlices = 256, kValues = 128;
+
+//: THE INPUTS on the device: per window and write group a list's entries `n[32]`, an entry's token `tok[32][512]`, the
+//: union's slots `cnt` and a slot's token `uni[512]`; a token's slices `[windows][512][256 B]` and values
+//: `[windows][512][128 B]`; per window, write group and warp its stage record (`record_bytes` each)
+struct In {
+  const uint16_t* n;
+  const uint16_t* tok;
+  const uint16_t* cnt;
+  const uint16_t* uni;
+  const uint8_t* slices;
+  const uint8_t* values;
+  const uint8_t* rec;
+  float* out;
+  int windows, record_bytes;
+};
+
+//: THIS CTA'S BOX (the carry's order): its channel tile, write group and slice group
+struct Box {
+  int tile, group, slice;
+};
+
+__device__ __forceinline__ Box box_of() {
+  const int b = static_cast<int>(blockIdx.x);
+  return Box{b % kTiles, (b / kTiles) % kGroups, b / (kTiles * kGroups)};
+}
+
+//: chunk `c` (0 .. 7) of window `w` token `t`'s row: slice chunks 0, 1 (2, 3 zero-filled), value chunks 4 .. 7
+__device__ __forceinline__ const uint8_t* chunk_src(const In& in, const Box& x, int w, int t, int c) {
+  const size_t wt = static_cast<size_t>(w) * kWindow + t;
+  return c < 4 ? in.slices + wt * kSlices + 32 * x.slice + 16 * (c & 1)
+               : in.values + wt * kValues + 64 * x.tile + 16 * (c - 4);
+}
+
+__device__ __forceinline__ uint32_t smem(const void* p) {
+  return static_cast<uint32_t>(__cvta_generic_to_shared(p));
+}
+
+//: a 16-byte copy, zero-filled where `live` is false; `CA` allocates in L1
+template <int CA>
+__device__ __forceinline__ void copy16(uint32_t dst, const void* src, bool live) {
+  const int bytes = live ? 16 : 0;
+  if constexpr (CA) {
+    asm volatile("cp.async.ca.shared.global [%0], [%1], 16, %2;" ::"r"(dst), "l"(src), "r"(bytes) : "memory");
+  } else {
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;" ::"r"(dst), "l"(src), "r"(bytes) : "memory");
+  }
+}
+
+__device__ __forceinline__ void commit() { asm volatile("cp.async.commit_group;" ::: "memory"); }
+
+template <int N>
+__device__ __forceinline__ void wait_groups() {
+  asm volatile("cp.async.wait_group %0;" ::"n"(N) : "memory");
+}
+
+__device__ __forceinline__ void ldsm_t(uint32_t (&x)[4], uint32_t at) {
+  asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];"
+               : "=r"(x[0]), "=r"(x[1]), "=r"(x[2]), "=r"(x[3])
+               : "r"(at));
+}
+
+__device__ __forceinline__ void mma16(float (&d)[4], const uint32_t (&a)[4], uint32_t b0, uint32_t b1) {
+  asm volatile(
+      "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
+      : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+
+__device__ __forceinline__ void mma8(float (&d)[4], uint32_t a0, uint32_t a1, uint32_t b) {
+  asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};"
+               : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+               : "r"(a0), "r"(a1), "r"(b));
+}
+
+__device__ __forceinline__ uint32_t hmul2(uint32_t a, uint32_t b) {
+  const __half2 r = __hmul2(*reinterpret_cast<const __half2*>(&a), *reinterpret_cast<const __half2*>(&b));
+  return *reinterpret_cast<const uint32_t*>(&r);
+}
+
+//: c for two entries of a step, 1 where live and 0 past the list
+__device__ __forceinline__ uint32_t live2(int e, int n) {
+  return (e < n ? 0x3c00u : 0u) | ((e + 1 < n ? 0x3c00u : 0u) << 16);
+}
+
+//: A STEP of 16 tokens (`Steps16`) or 8 into list `J`'s accumulators, its entries `s ..` of `n`; `row(i)` the shared
+//: address of entry `i`'s row and `key(i)` its chunks' swizzle (chunk `k` of a row at `(k ^ key) * 16`)
+template <int Steps16, class Row, class Key>
+__device__ __forceinline__ void step(float (&acc)[2][4][4], int s, int n, Row row, Key key, int lane) {
+  const int t = lane & 3, tile = lane >> 3, r = lane & 7;
+  if constexpr (Steps16) {
+    const uint32_t c01 = live2(s + 2 * t, n), c89 = live2(s + 8 + 2 * t, n);
+    uint32_t a[2][4];
+    rola::static_for<2>([&](auto M) {
+      const int e = (tile >= 2 ? 8 : 0) + r, k = 2 * M + (tile & 1);
+      ldsm_t(a[M], row(e) + 16u * static_cast<uint32_t>((k ^ key(e)) & 7));
+      a[M][0] = hmul2(a[M][0], c01);
+      a[M][1] = hmul2(a[M][1], c01);
+      a[M][2] = hmul2(a[M][2], c89);
+      a[M][3] = hmul2(a[M][3], c89);
+    });
+    uint32_t b[4][2];
+    rola::static_for<2>([&](auto H) {
+      const int e = (tile & 1 ? 8 : 0) + r, k = 4 + 2 * H + (tile >> 1);
+      uint32_t x[4];
+      ldsm_t(x, row(e) + 16u * static_cast<uint32_t>((k ^ key(e)) & 7));
+      b[2 * H][0] = x[0];
+      b[2 * H][1] = x[1];
+      b[2 * H + 1][0] = x[2];
+      b[2 * H + 1][1] = x[3];
+    });
+    rola::static_for<2>([&](auto M) {
+      rola::static_for<4>([&](auto N) { mma16(acc[M][N], a[M], b[N][0], b[N][1]); });
+    });
+  } else {
+    const uint32_t c01 = live2(s + 2 * t, n);
+    uint32_t a[4], b[4];
+    ldsm_t(a, row(r) + 16u * static_cast<uint32_t>((tile ^ key(r)) & 7));
+    ldsm_t(b, row(r) + 16u * static_cast<uint32_t>(((4 + tile) ^ key(r)) & 7));
+#pragma unroll
+    for (int k = 0; k < 4; ++k) a[k] = hmul2(a[k], c01);
+    rola::static_for<2>([&](auto M) {
+      rola::static_for<4>([&](auto N) { mma8(acc[M][N], a[2 * M], a[2 * M + 1], b[N]); });
+    });
+  }
+}
+
+//: a list's steps over its `n` entries (fold.cuh's `steps`): 16 tokens while more than 8 remain, then 8; `prep(s, two)`
+//: once before the step at entry `s` (`two`: a 16-token step, two stages), `row(s, i)` entry `s + i`'s row; `Fold` 0
+//: runs the preps alone (the copies' bound)
+template <int Fold, class Prep, class Row, class Key>
+__device__ __forceinline__ void steps(float (&acc)[2][4][4], int n, Prep prep, Row row, Key key, int lane) {
+  int s = 0;
+  for (int k = __any_sync(0xffffffffu, n - s > 8) ? 1 : 0; k > 0; --k)
+#pragma unroll 1
+    do {
+      prep(s, std::true_type{});
+      if constexpr (Fold) step<1>(acc, s, n, [&](int i) { return row(s, i); }, [&](int i) { return key(s, i); }, lane);
+      s += 16;
+    } while (__any_sync(0xffffffffu, n - s > 8));
+  for (int k = __any_sync(0xffffffffu, n - s > 0) ? 1 : 0; k > 0; --k) {
+    prep(s, std::false_type{});
+    if constexpr (Fold) step<0>(acc, s, n, [&](int i) { return row(s, i); }, [&](int i) { return key(s, i); }, lane);
+  }
+}
+
+//: THE STATE OUT, each element at its (list, digit, channel)
+__device__ __forceinline__ void state_out(float* out, const float (&acc)[4][2][4][4], int warp, int lane) {
+  const int g = lane >> 2, t = lane & 3;
+  rola::static_for<4>([&](auto J) {
+    rola::static_for<2>([&](auto M) {
+      rola::static_for<4>([&](auto N) {
+        rola::static_for<4>([&](auto I) {
+          const int list = warp + kWarps * J, digit = 16 * M + g + 8 * (I >> 1), ch = 8 * N + 2 * t + (I & 1);
+          out[(static_cast<size_t>(blockIdx.x) * kLists + list) * 1024 + digit * 32 + ch] = acc[J][M][N][I];
+        });
+      });
+    });
+  });
+}
+
+__device__ __forceinline__ void span_out(long long* t, long long t0, int warp, int lane) {
+  const long long t1 = clock64();
+  if (lane == 0) {
+    t[2 * (blockIdx.x * kWarps + warp)] = t0;
+    t[2 * (blockIdx.x * kWarps + warp) + 1] = t1;
+  }
+}
+
+//: RESIDENT: each window's union rows copied once into the pool (slot `i` its row, chunks swizzled by `i & 7`) and
+//: each list's entries as slots into shared memory (the carry stages its entries so), the fold, a barrier before the
+//: next window's copies; `PART` as the streamed kernel's
+template <int CA, int PART>
+__global__ void __launch_bounds__(kThreads, 1) resident(In in, long long* t) {
+  extern __shared__ __align__(128) uint8_t sm[];
+  uint16_t* slot_of = reinterpret_cast<uint16_t*>(sm);
+  uint16_t* ent = slot_of + kWindow;
+  uint8_t* pool = sm + 2 * kWindow + 2 * kLists * kWindow;
+  const int warp = lab::warp_id(), lane = lab::lane_id();
+  const Box x = box_of();
+  float acc[4][2][4][4] = {};
+  __syncthreads();
+  const long long t0 = clock64();
+#pragma unroll 1
+  for (int w = 0; w < in.windows; ++w) {
+    const size_t bw = static_cast<size_t>(w) * kGroups + x.group;
+    const int u = in.cnt[bw];
+    const uint16_t* uni = in.uni + bw * kWindow;
+#pragma unroll 1
+    for (int k = static_cast<int>(threadIdx.x); k < 8 * u; k += kThreads) {
+      const int i = k >> 3, c = k & 7;
+      if constexpr (PART != 1)
+        copy16<CA>(smem(pool) + i * kRow + 16 * ((c ^ i) & 7), chunk_src(in, x, w, uni[i], c), c < 2 || c >= 4);
+    }
+    commit();
+#pragma unroll 1
+    for (int i = static_cast<int>(threadIdx.x); i < u; i += kThreads) slot_of[uni[i]] = static_cast<uint16_t>(i);
+    __syncthreads();
+    int n[4];
+    rola::static_for<4>([&](auto J) {
+      const int l = warp + kWarps * J;
+      n[J] = in.n[bw * kLists + l];
+      const uint16_t* tok = in.tok + (bw * kLists + l) * kWindow;
+#pragma unroll 1
+      for (int e = lane; e < n[J]; e += 32) ent[l * kWindow + e] = slot_of[tok[e]];
+    });
+    wait_groups<0>();
+    __syncthreads();
+    rola::static_for<4>([&](auto J) {
+      const uint16_t* le = ent + (warp + kWarps * J) * kWindow;
+      const int nj = n[J];
+      steps<PART != 2>(
+          acc[J], nj, [](int, auto) {},
+          [&](int s, int i) { return smem(pool) + kRow * static_cast<uint32_t>(le[min(s + i, max(nj - 1, 0))]); },
+          [&](int s, int i) { return static_cast<int>(le[min(s + i, max(nj - 1, 0))]); }, lane);
+    });
+    __syncthreads();
+  }
+  span_out(t, t0, warp, lane);
+  state_out(in.out, acc, warp, lane);
+}
+
+//: STREAMED: each warp's ring of `D` stages of 8 rows (`D >= 2`: a 16-token step holds two), its stages its window
+//: records' in order (its lists `w + 8 j`, each list's entries 8 a stage), each copied as soon as a slot no step holds
+//: is free, across lists and windows. `AHEAD`: the producer reads a stage's tokens from its window's record, copied to
+//: shared memory a window ahead, and the consumer its lists' entries a window ahead into registers; else each from
+//: global memory at its use. `PART` 1 the fold alone (no copies, the ring's stale rows), 2 the copies alone; 3 the
+//: copies alone with a stage's pad rows fetched too (other tokens' rows)
+template <int D, int CA, int PART, int AHEAD>
+__global__ void __launch_bounds__(kThreads, 1) streamed(In in, long long* t) {
+  extern __shared__ __align__(128) uint8_t sm[];
+  const int warp = lab::warp_id(), lane = lab::lane_id(), W = in.windows, C = in.record_bytes, r = lane >> 2,
+            c = lane & 3;
+  const Box x = box_of();
+  const uint32_t ring = smem(sm) + warp * D * kStage;
+  const uint16_t* recs = reinterpret_cast<const uint16_t*>(sm + kWarps * D * kStage + warp * 2 * C);
+  float acc[4][2][4][4] = {};
+  const auto list_n = [&](int w, int j) {
+    return w < W ? static_cast<int>(in.n[(static_cast<size_t>(w) * kGroups + x.group) * kLists + warp + kWarps * j])
+                 : 0;
+  };
+  const auto record = [&](int w) {
+    return in.rec + ((static_cast<size_t>(w) * kGroups + x.group) * kWarps + warp) * C;
+  };
+  //: window `w`'s record into its buffer `w & 1`, a lane a 16-byte chunk
+  const auto fetch = [&](int w) {
+#pragma unroll 1
+    for (int q = lane; q < (w < W ? C / 16 : 0); q += 32)
+      copy16<CA>(smem(recs) + (w & 1) * C + 16 * q, record(w) + 16 * q, true);
+  };
+  //: u16 `i` of window `w`'s record, from its buffer (`AHEAD`) or global memory
+  const auto rec_at = [&](int w, int i) {
+    return static_cast<int>(AHEAD ? recs[(w & 1) * (C / 2) + i] : reinterpret_cast<const uint16_t*>(record(w))[i]);
+  };
+  //: THE PRODUCER'S CURSOR: the window and stage it copies next, the window's stages, the issues (a stage each, an
+  //: empty one past the last window), the groups committed and the group carrying the next window's record
+  int pw = 0, ps = 0, issued = 0, groups = 0, carrier = 0;
+  if constexpr (AHEAD) {
+    fetch(0);
+    commit();
+    wait_groups<0>();
+    __syncwarp();
+    fetch(1);
+  }
+  int S = rec_at(0, 0);
+  //: the cursor to the next window holding stages, its record landed first
+  const auto enter = [&] {
+#pragma unroll 1
+    do {
+      ++pw;
+      ps = 0;
+      if constexpr (AHEAD) {
+        if (pw < W) {
+          if (groups - 1 - carrier < D - 1) {
+            commit();
+            ++groups;
+            wait_groups<0>();
+          } else {
+            wait_groups<D - 1>();
+          }
+          __syncwarp();
+        }
+        fetch(pw + 1);
+        carrier = groups;
+      }
+      S = pw < W ? rec_at(pw, 0) : 0;
+    } while ((pw < W) & (S == 0));
+  };
+  const auto issue = [&] {
+    if (pw < W) {
+      int tk = rec_at(pw, 8 + 8 * ps + r);
+      const bool live = tk != 0xFFFF || PART == 3;
+      if constexpr (PART == 3) tk = tk != 0xFFFF ? tk : (37 * r + ps) & (kWindow - 1);
+      const int here = live ? tk : 0;
+      const uint32_t dst = ring + (issued % D) * kStage + r * kRow;
+      if constexpr (PART != 1) {
+        copy16<CA>(dst + 16 * ((c ^ r) & 7), chunk_src(in, x, pw, here, c), live && c < 2);
+        copy16<CA>(dst + 16 * (((c + 4) ^ r) & 7), chunk_src(in, x, pw, here, c + 4), live);
+      }
+      if (++ps >= S) enter();
+    }
+    commit();
+    ++groups;
+    ++issued;
+  };
+  const long long t0 = clock64();
+#pragma unroll 1
+  for (int q = 0; q < D - 1; ++q) issue();
+  //: THE CONSUMER: its next stage, the entries of its window's and the next window's lists (lane `j` list `j`'s)
+  int used = 0, cn = list_n(0, lane & 3), cn_next = list_n(1, lane & 3);
+#pragma unroll 1
+  for (int w = 0; w < W; ++w) {
+    rola::static_for<4>([&](auto J) {
+      const int nj = AHEAD ? __shfl_sync(0xffffffffu, cn, J) : list_n(w, J), base = used;
+      //: entry `s + i` of the list sits in stage `base + (s + i) / 8`, row `(s + i) % 8`; the step holds stages
+      //: `first ..` (two for 16 tokens): the ring's other slots take the stages ahead, then every stage but those
+      //: ahead has landed
+      steps<PART < 2>(
+          acc[J], nj,
+          [&](int s, auto two) {
+            constexpr int kTwo = decltype(two)::value ? 1 : 0;
+            const int first = base + s / 8;
+#pragma unroll 1
+            while (issued < first + D) issue();
+            wait_groups<D - 1 - kTwo>();
+            __syncwarp();
+          },
+          [&](int s, int i) { return ring + ((base + (s + i) / 8) % D) * kStage + ((s + i) & 7) * kRow; },
+          [&](int s, int i) { return (s + i) & 7; }, lane);
+      used = base + (nj + 7) / 8;
+    });
+    cn = cn_next;
+    cn_next = list_n(w + 2, lane & 3);
+  }
+  wait_groups<0>();
+  span_out(t, t0, warp, lane);
+  state_out(in.out, acc, warp, lane);
+}
+
+//: the inputs from `--inputs`
+struct Host {
+  std::vector<uint16_t> n, tok, cnt, uni;
+  std::vector<uint8_t> slices, values, rec;
+  std::vector<float> state;
+  int ctas = 0, windows = 0, record_bytes = 0;
+};
+
+std::vector<uint8_t> file(const std::string& path, size_t bytes) {
+  std::vector<uint8_t> v(bytes);
+  std::ifstream(path, std::ios::binary).read(reinterpret_cast<char*>(v.data()), bytes);
+  return v;
+}
+
+Host load(const std::string& dir) {
+  Host h;
+  std::ifstream f(dir + "/lists.bin", std::ios::binary);
+  int head[4];
+  f.read(reinterpret_cast<char*>(head), sizeof(head));
+  h.ctas = head[1];
+  h.windows = head[2];
+  const size_t wg = static_cast<size_t>(h.windows) * kGroups;
+  h.n.resize(wg * kLists);
+  h.tok.resize(wg * kLists * kWindow);
+  h.cnt.resize(wg);
+  h.uni.resize(wg * kWindow);
+  for (size_t i = 0; i < wg; ++i) {
+    f.read(reinterpret_cast<char*>(&h.n[i * kLists]), kLists * 2);
+    f.read(reinterpret_cast<char*>(&h.tok[i * kLists * kWindow]), kLists * kWindow * 2);
+    f.read(reinterpret_cast<char*>(&h.cnt[i]), 2);
+    f.read(reinterpret_cast<char*>(&h.uni[i * kWindow]), kWindow * 2);
+  }
+  const size_t tokens = static_cast<size_t>(h.windows) * kWindow;
+  h.slices = file(dir + "/slices.bin", tokens * kSlices);
+  h.values = file(dir + "/values.bin", tokens * kValues);
+  std::ifstream rf(dir + "/records.bin", std::ios::binary);
+  int rh[2];
+  rf.read(reinterpret_cast<char*>(rh), sizeof(rh));
+  h.record_bytes = rh[1];
+  h.rec.resize(static_cast<size_t>(h.windows) * kGroups * kWarps * h.record_bytes);
+  rf.read(reinterpret_cast<char*>(h.rec.data()), h.rec.size());
+  h.state.resize(static_cast<size_t>(h.ctas) * kLists * 1024);
+  std::ifstream(dir + "/state.bin", std::ios::binary)
+      .read(reinterpret_cast<char*>(h.state.data()), h.state.size() * 4);
+  return h;
+}
+
+template <class T>
+T* up(const std::vector<T>& v) {
+  T* d = nullptr;
+  LAB_CHECK(cudaMalloc(&d, v.size() * sizeof(T)));
+  LAB_CHECK(cudaMemcpy(d, v.data(), v.size() * sizeof(T), cudaMemcpyHostToDevice));
+  return d;
+}
+
+//: `part` as the kernels' `PART`: 1 to 3 (a part alone, a bound) form no state, so go unchecked; `keeps`: the step
+//: signatures a form keeps -- `kBranches` the streamed producer's cursor inside the fold's step loop, `kGlobal` its
+//: lookups from global memory at their use
+constexpr int kBranches = 1, kGlobal = 2;
+
+template <class Kernel>
+void run(const lab::Bench& b, const std::string& kname, const std::string& variant, Kernel kernel, int smem_bytes,
+         const In& in, const Host& h, int ctas, int part, int keeps) {
+  b.expect(kname, "LDGSTS", ">=", part == 1 ? 0 : 1);
+  if (keeps & kBranches) b.expect(kname, "BSSY", ">=", 0);
+  if (keeps & kGlobal) b.expect(kname, "STEP_GLOBAL", ">=", 0);
+  b.expect(kname, "HMMA", part >= 2 ? "==" : ">=", part >= 2 ? 0 : 16);
+  b.exempt(kname, "a copy-overlap probe: the carry's fold step over streamed or staged rows, its cost the question");
+  if (b.expect_only) return;
+  LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_bytes));
+  const lab::Samples s = b.variant([&] { kernel<<<ctas, kThreads, smem_bytes>>>(in, b.times); },
+                                   [&] { return b.span(kWarps, ctas) / h.windows; });
+  if (part) {
+    b.unchecked(variant, part == 1 ? "a bound: the fold over stale rows, no state formed"
+                                   : "a bound: copies and their waits alone, no state formed");
+  } else {
+    std::vector<float> out(static_cast<size_t>(ctas) * kLists * 1024);
+    LAB_CHECK(cudaMemcpy(out.data(), in.out, out.size() * 4, cudaMemcpyDeviceToHost));
+    size_t bad = 0;
+    for (size_t i = 0; i < out.size(); ++i) bad += out[i] != h.state[i];
+    b.check(variant, bad == 0, std::to_string(bad) + " of " + std::to_string(out.size()) + " state values differ");
+  }
+  b.record(variant, "cycles a window", s);
+}
+
+}  // namespace row_stream
+
+int main(int argc, char** argv) {
+  using namespace row_stream;
+  lab::Bench b(argc, argv);
+  std::string dir;
+  for (int i = 1; i + 1 < argc; ++i)
+    if (!std::strcmp(argv[i], "--inputs")) dir = argv[i + 1];
+  Host h;
+  In in{};
+  int ctas = 0;
+  if (!b.expect_only) {
+    if (dir.empty()) {
+      std::fprintf(stderr, "row_stream: --inputs <directory> (tools/lab.py writes it)\n");
+      return 1;
+    }
+    h = load(dir);
+    if (h.ctas > b.sms) {
+      std::fprintf(stderr, "row_stream: %d boxes need as many SMs, the device has %d\n", h.ctas, b.sms);
+      return 1;
+    }
+    ctas = h.ctas;
+    float* out = nullptr;
+    LAB_CHECK(cudaMalloc(&out, static_cast<size_t>(ctas) * kLists * 1024 * 4));
+    in = In{up(h.n), up(h.tok), up(h.cnt), up(h.uni), up(h.slices), up(h.values), up(h.rec), out, h.windows,
+            h.record_bytes};
+  }
+  const int pool = 2 * kWindow + 2 * kLists * kWindow + kWindow * kRow;
+  const auto ring = [&](int d) { return kWarps * (d * kStage + 2 * h.record_bytes); };
+  const auto res = [&](auto kernel, std::initializer_list<int> args, const char* variant, int part) {
+    run(b, lab::kernel("resident", args), variant, kernel, pool, in, h, ctas, part, 0);
+  };
+  const auto str = [&](auto kernel, std::initializer_list<int> args, const char* variant, int d, int part, int n) {
+    run(b, lab::kernel("streamed", args), variant, kernel, ring(d), in, h, n, part,
+        kBranches | (*(args.begin() + 3) ? 0 : kGlobal));
+  };
+  res(resident<0, 0>, {0, 0}, "resident (union staged, barrier, fold)", 0);
+  str(streamed<2, 0, 0, 1>, {2, 0, 0, 1}, "streamed, ring 2 (a 16-token step's own stages)", 2, 0, ctas);
+  str(streamed<3, 0, 0, 1>, {3, 0, 0, 1}, "streamed, ring 3", 3, 0, ctas);
+  str(streamed<4, 0, 0, 1>, {4, 0, 0, 1}, "streamed, ring 4", 4, 0, ctas);
+  str(streamed<6, 0, 0, 1>, {6, 0, 0, 1}, "streamed, ring 6", 6, 0, ctas);
+  str(streamed<4, 0, 0, 0>, {4, 0, 0, 0}, "streamed, ring 4, lookups at their use", 4, 0, ctas);
+  str(streamed<4, 0, 1, 1>, {4, 0, 1, 1}, "bound: streamed, the fold alone (ring 4)", 4, 1, ctas);
+  str(streamed<4, 0, 2, 1>, {4, 0, 2, 1}, "bound: streamed, the copies alone (ring 4)", 4, 2, ctas);
+  str(streamed<4, 0, 2, 1>, {4, 0, 2, 1}, "bound: streamed, the copies alone, 40 boxes", 4, 2, ctas / 2);
+  str(streamed<4, 0, 3, 1>, {4, 0, 3, 1}, "bound: streamed, the copies alone, pad rows fetched", 4, 3, ctas);
+  str(streamed<4, 0, 2, 0>, {4, 0, 2, 0}, "bound: streamed, the copies alone, lookups at their use", 4, 2, ctas);
+  res(resident<0, 1>, {0, 1}, "bound: resident, the fold alone (no copies)", 1);
+  res(resident<0, 2>, {0, 2}, "bound: resident, the copies alone (no fold)", 2);
+  res(resident<1, 0>, {1, 0}, "resident, L1-allocating copies (.ca)", 0);
+  str(streamed<4, 1, 0, 1>, {4, 1, 0, 1}, "streamed, ring 4, L1-allocating copies (.ca)", 4, 0, ctas);
+}

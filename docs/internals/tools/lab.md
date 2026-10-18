@@ -128,3 +128,4 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="mma-k8"></a>[`mma_k8`](../../lab/mma_k8.md)
 - <a id="facts-color"></a>[`facts_color`](../../lab/facts_color.md)
 - <a id="issue-latency"></a>[`issue_latency`](../../lab/issue_latency.md)
+- <a id="row-stream"></a>[`row_stream`](../../lab/row_stream.md)
