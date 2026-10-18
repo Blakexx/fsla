@@ -207,6 +207,8 @@ class Events:
     fold_entries: float = 0.0
     drained: float = 0.0        #: panel slots drained
     steps: float = 0.0          #: the window's steps (entries + 1)
+    read_imbalance: float = 1.0  #: the slowest warp's readout tile-steps over the mean warp's, each window
+    fold_imbalance: float = 1.0  #: the same for the fold's MMA pipe time
 
 
 def events_today(s: CellStats) -> Events:
@@ -215,7 +217,9 @@ def events_today(s: CellStats) -> Events:
     from tests.oracle import carry_plan as cp
 
     ev = Events()
+    read_max = read_mean = fold_max = fold_mean = 0.0
     for rd, wr, word in zip(s.read, s.write, s.words):
+        rwarp, fwarp = np.zeros(8), np.zeros(8)
         mode, rc, fc, nr, nf = cp.chunks(word)
         ev.read_chunks += nr
         ev.fold_chunks += nf
@@ -236,10 +240,12 @@ def events_today(s: CellStats) -> Events:
                         t = max(-(-int(n[d]) // 8) for d in pair)
                         ev.read_tiles += t
                         ev.read_mmas += 8 * t
+                        rwarp[w] += t
                     else:
                         t = -(-slots // 8)
                         ev.read_tiles += 2 * t
                         ev.read_mmas += 8 * t
+                        rwarp[w] += 2 * t
         for first in range(0, wr.union, fc or 1):
             if not nf:
                 break
@@ -254,9 +260,16 @@ def events_today(s: CellStats) -> Events:
                 ev.fold_steps8 += b
                 ev.fold_mmas16 += 8 * a
                 ev.fold_mmas8 += 8 * b
+                fwarp[l % 8] += 8 * a * PIPE["HMMA.16816.F32"] + 8 * b * PIPE["HMMA.1688.F32"]
+        read_max += rwarp.max()
+        read_mean += rwarp.mean()
+        fold_max += fwarp.max()
+        fold_mean += fwarp.mean()
     k = len(s.words)
     for f in ev.__dataclass_fields__:
         setattr(ev, f, getattr(ev, f) / k)
+    ev.read_imbalance = read_max / read_mean if read_mean else 1.0
+    ev.fold_imbalance = fold_max / fold_mean if fold_mean else 1.0
     return ev
 
 
@@ -326,6 +339,66 @@ def by_phase(regions: dict) -> dict[str, list]:
     return out
 
 
+#: a scheduler's cycles an MMA by SASS shape on the calibration card (`common/hardware.json`'s product rates; an
+#: m16n8k8 half its k16, lab `mma_k8`), and the schedulers an SM
+PIPE = {"HMMA.16816.F32": 32.132, "HMMA.16816.F16": 16.131, "HMMA.1688.F32": 16.066, "HMMA.1688.F16": 8.066}
+SCHEDULERS = 4
+#: each model phase's phase-ledger columns (`fills` waits on its copies in `landed`; the bookkeeping runs in `wait`)
+LEDGER = {"readout": ("readout",), "fold": ("fold",), "handoff": ("maxima", "store"), "fills": ("fill", "landed"),
+          "drain": ("drain",), "glue": ("wait",)}
+
+
+def floors(instructions: float, wavefronts: float, pipe: float) -> dict[str, float]:
+    """A phase's floors in cycles a CTA-window: its instructions over the schedulers at one a clock, its shared
+    wavefronts at one a clock, its MMAs' pipe time over the schedulers."""
+    return {"issue": instructions / SCHEDULERS, "shared": wavefronts, "tensor": pipe / SCHEDULERS}
+
+
+def phase_counts(regions: dict) -> dict[str, list]:
+    """Each phase's [instructions, wavefronts, MMA pipe cycles] from measured regions."""
+    out: dict[str, list] = {}
+    for (loop, fn), r in regions.items():
+        o = out.setdefault(driver_of(loop, fn)[0], [0.0, 0.0, 0.0])
+        o[0] += r.instructions
+        o[1] += r.wavefronts
+        o[2] += sum(n * PIPE[k] for k, n in (r.mmas or {}).items())
+    return out
+
+
+def imbalance(ev: Events) -> dict[str, float]:
+    """Each phase's slowest warp over its mean warp (a phase ends at a rendezvous, so its slowest warp sets its time)."""
+    return {"readout": ev.read_imbalance, "fold": ev.fold_imbalance}
+
+
+#: the events whose work differs between a phase's warps (its per-digit and per-list work does not)
+VARYING = {"readout": ("read_tiles",), "fold": ("fold_steps16", "fold_steps8", "fold_steps")}
+
+
+def varying_share(prices: dict, ev: Events) -> dict[str, float]:
+    """Each MMA phase's instructions that vary between its warps, a share of the phase's."""
+    out = {}
+    for phase, events in VARYING.items():
+        part = sum(i * event_count(ev, e) for (p, e), (i, _w) in prices.items() if p == phase and e in events)
+        whole = sum(i * event_count(ev, e) for (p, e), (i, _w) in prices.items() if p == phase)
+        out[phase] = part / whole if whole else 0.0
+    return out
+
+
+def idle(own: dict[str, float], share: dict[str, float], ev: Events) -> float:
+    """THE RENDEZVOUS' IDLE: a phase ends when its slowest warp does, so the others wait the slowest warp's extra work --
+    the phase's varying share times its imbalance less one (the ledger books it in `wait`)."""
+    imb = imbalance(ev)
+    return sum(own.get(p, 0.0) * share.get(p, 0.0) * (imb[p] - 1.0) for p in imb)
+
+
+def efficiencies(counts: dict, ledger: dict, ev: Events, prices: dict) -> dict[str, float]:
+    """Each phase's measured cycles over its binding floor on a calibration cell; the bookkeeping's after the
+    rendezvous' idle is taken out of the wait it is booked in."""
+    own = {p: sum(ledger[x] for x in LEDGER[p]) for p in counts}
+    own["glue"] = own.get("glue", 0.0) - idle(own, varying_share(prices, ev), ev)
+    return {p: own[p] / max(floors(*c).values()) for p, c in counts.items()}
+
+
 #: THE VALIDATION CELLS: the prices are a listed side's on the first, a dense side's on the second; the rest are held out
 CALIBRATION = ("nl64k-alt-k4", "nl64k-dense")
 HELD_OUT = ("nl64k-alt-k4-g4", "flagship-cohort-k4", "flagship-alt-k4", "flagship-alt-k16", "flagship-dense")
@@ -353,9 +426,18 @@ def profile(cell: str) -> Path:
     return out
 
 
-def validate(cells: tuple[str, ...] = CALIBRATION + HELD_OUT) -> list[str]:
+def mma_pipe(ev: Events) -> dict[str, float]:
+    """Each MMA phase's pipe cycles a CTA-window from today's carve's events (the readout's fp16-accumulate on this
+    card, the fold's fp32)."""
+    return {"readout": ev.read_mmas * PIPE["HMMA.16816.F16"],
+            "fold": ev.fold_mmas16 * PIPE["HMMA.16816.F32"] + ev.fold_mmas8 * PIPE["HMMA.1688.F32"]}
+
+
+def validate(cells: tuple[str, ...] = CALIBRATION + HELD_OUT, ledgers: Path | None = None) -> list[str]:
     """The gate's table: each cell's instructions and wavefronts a CTA-window predicted from the calibration cells'
-    prices against its measured counts, by phase."""
+    prices against its measured counts, by phase; with `ledgers` (a directory of `phase_ledger.py --json` readings,
+    `ledger_<cell>.json`, the clock locked), each window's cycles from the phases' floors at the calibration cells'
+    efficiencies against the ledger's."""
     sys.path.insert(0, str(ROOT / "tools"))
     import phase_ledger
 
@@ -364,10 +446,23 @@ def validate(cells: tuple[str, ...] = CALIBRATION + HELD_OUT) -> list[str]:
     ev = {c: events_today(cell_stats(c)) for c in cells}
     prices = {"listed": calibrate(reg[CALIBRATION[0]], ev[CALIBRATION[0]]),
               "dense": calibrate(reg[CALIBRATION[1]], ev[CALIBRATION[1]])}
+    import json
+
+    led = {c: json.loads((ledgers / f"ledger_{c}.json").read_text())["per_phase"] for c in cells} if ledgers else {}
+    effs = ({side: efficiencies(phase_counts(reg[cal]), led[cal], ev[cal], prices[side])
+             for side, cal in (("listed", CALIBRATION[0]), ("dense", CALIBRATION[1]))} if ledgers else {})
     rows = []
     for c in cells:
         side = "dense" if not cell_stats(c).read[0].listed else "listed"
         pred, meas = predict(prices[side], ev[c]), by_phase(reg[c])
+        if ledgers:
+            pipe = mma_pipe(ev[c])
+            cyc = {p: max(floors(i, w, pipe.get(p, 0.0)).values()) * effs[side][p] for p, (i, w) in pred.items()}
+            cyc["glue"] = cyc.get("glue", 0.0) + idle(cyc, varying_share(prices[side], ev[c]), ev[c])
+            got = {p: sum(led[c][x] for x in LEDGER[p]) for p in LEDGER}
+            tot_p, tot_m = sum(cyc.values()), sum(led[c].values())
+            rows.append(f"{c:20s} {'cycles':12s} {tot_m:9.0f} predicted {tot_p:9.0f} ({100 * (tot_p / tot_m - 1):+5.1f}%)  "
+                        + " ".join(f"{p} {100 * (cyc.get(p, 0) / got[p] - 1):+.0f}%" for p in sorted(got) if got[p]))
         for k, what in ((0, "instructions"), (1, "wavefronts")):
             total_m = sum(v[k] for v in meas.values())
             total_p = sum(v[k] for v in pred.values())
@@ -399,7 +494,9 @@ def main() -> int:
     p.add_argument("cells", nargs="+")
     p = sub.add_parser("events", help="today's carve's events a CTA-window on cells")
     p.add_argument("cells", nargs="+")
-    sub.add_parser("validate", help="the validation table: calibration cells' prices against the held-out cells")
+    p = sub.add_parser("validate", help="the validation table: calibration cells' prices against the held-out cells")
+    p.add_argument("--ledgers", type=Path, default=None,
+                   help="a directory of ledger_<cell>.json phase-ledger readings (clock locked): adds cycles")
     p = sub.add_parser("measured", help="a launch's per-region counts a CTA-window, from its SourceCounters dump")
     p.add_argument("csv", type=Path)
     p.add_argument("--so", type=Path, default=ROOT / "rola_cu13" / "_C.abi3.so")
@@ -414,7 +511,7 @@ def main() -> int:
             ev = events_today(cell_stats(name))
             print(name, " ".join(f"{k} {v:.1f}" for k, v in ev.__dict__.items()))
     elif a.cmd == "validate":
-        print("\n".join(validate()))
+        print("\n".join(validate(ledgers=a.ledgers)))
     elif a.cmd == "measured":
         regions = measured(a.csv, a.so, a.cta_windows)
         total = sum(r.instructions for r in regions.values())

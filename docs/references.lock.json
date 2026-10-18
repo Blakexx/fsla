@@ -1327,7 +1327,7 @@
   {"doc": "docs/internals/tools/carve_model.md", "pinned_at": "1b059f423ceb", "reviewed": true, "sha256": "", "target": "tests/oracle/carry_plan.py"},
   {"doc": "docs/internals/tools/carve_model.md", "pinned_at": "1b059f423ceb", "reviewed": true, "sha256": "", "target": "tools/carve_model.py"},
   {"doc": "docs/internals/tools/carve_model.md", "pinned_at": "1b059f423ceb", "reviewed": true, "sha256": "08992d18f9e632b7", "target": "tools/carve_model.py::DRIVERS"},
-  {"doc": "docs/internals/tools/carve_model.md", "pinned_at": "1b059f423ceb", "reviewed": true, "sha256": "490d77f1f6d62a06", "target": "tools/carve_model.py::measured"},
+  {"doc": "docs/internals/tools/carve_model.md", "pinned_at": "e33037220931", "reviewed": true, "sha256": "9842cabe8606cd52", "target": "tools/carve_model.py::measured"},
   {"doc": "docs/internals/tools/compose_ledger.md", "pinned_at": "578bf154f46f", "reviewed": true, "sha256": "", "target": "docs/internals/carry/parts.md"},
   {"doc": "docs/internals/tools/compose_ledger.md", "pinned_at": "6382b3ab9253", "reviewed": true, "sha256": "", "target": "docs/internals/tools/pipe_timeline.md"},
   {"doc": "docs/internals/tools/compose_ledger.md", "pinned_at": "6382b3ab9253", "reviewed": true, "sha256": "", "target": "tools/compose_ledger.py"},

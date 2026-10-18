@@ -59,7 +59,27 @@ What it shows of today's carry at nl64k-alt-k4 (a CTA-window): 34.7K warp instru
 readout (bookkeeping 9.3K, about 4,000 a step of the plan; fills 6.8K; hand-off 6.4K, 3,660 an image stored; drain
 3.4K, 16 a drained slot); each phase 2-3x its own binding floor, the phases in turn.
 
-OWED before it ranks a carve: cycles per phase (each phase's efficiency against its floors, calibrated on a quiet GPU's
-phase ledger -- a Windows-side GPU user inflated it on 2026-10-17), the alternative carves' prices (each step's
-primitives by its warp tile), streamed rows, W = 1024 (consecutive windows' lists merged, exactly), and the labs for the
-prices it lacks.
+<a id="cycles"></a>
+## Cycles (`validate --ledgers DIR`)
+
+A phase's cycles a CTA-window are its binding floor -- the largest of its instructions over the four schedulers, its
+shared wavefronts at one a clock, its MMAs' pipe time over the schedulers -- times its EFFICIENCY, the measured cycles
+over that floor on the calibration cell of its side (the phase ledger, clock locked, the GPU quiet). Each model phase
+is ledger columns: the readout, the fold, the hand-off (maxima and store), the fills (fill and landed: the wait for
+their copies), the drain, the bookkeeping (wait). A phase ends at a rendezvous, so the warps other than its slowest
+IDLE through the slowest warp's extra work, booked in the ledger's wait: the phase's cycles times the share of its work
+that differs between warps (its tile-steps or fold steps, not its per-digit or per-list work) times its slowest warp's
+work over its mean warp's, less one. Measured per warp, a phase's own time differs little between warps (at most 1.15x
+at cohort-k4, whose per-window work differs 3.2x): the difference is in the wait.
+
+Held-out window cycles (2026-10-17, clock locked at 1.665 GHz): flagship-dense -0.3%, cohort-k4 +7.6%, flagship
+alt-k4 -9.2%, alt-k16 +8.7%, nl64k g 4 -17.1% (its readout's instructions and wavefronts predicted exactly, at 3.0x its
+floor against alt-k4's 2.4x; its fills carry the `pre_at` conflicts). The flagship cells' bookkeeping misses by -24 to
+-50%: two windows a CTA, so a call's first window's waits weigh on it.
+
+What it shows of today's carry, a CTA-window: every phase 2-3x its own binding floor, the phases in turn; the dense fold
+at 1.10x its tensor floor.
+
+OWED before it ranks a carve: the alternative carves' prices (each step's primitives by its warp tile, checked against
+the readout and fold labs), registers, streamed rows, W = 1024 (consecutive windows' lists merged, exactly), and labs
+for the prices it lacks.
