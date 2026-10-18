@@ -17,9 +17,14 @@ the wavefronts confirmed by ncu (`l1tex__data_pipe_lsu_wavefronts_mem_shared`). 
 | `red.shared.add.u32` (ATOMS.ADD), a lane a bank | 1 | 2.00 | 2.0 |
 | the same, two lanes a bank | 2 | 1.00 | 2.0 |
 | the same, four lanes a bank | 4 | 1.00 | 4.0 |
+| `st.shared.u32`, a warp's 128 contiguous bytes | 1 | 2.00 | 2.0 |
+| `st.shared.v2`, 256 | 2 | 1.00-1.06 | 2.0-2.1 |
+| `st.shared.v4`, 512 | 4 | 1.14 | 4.6 |
 
 Loads run at the documented bank rate, a wavefront a cycle. A shared atomic takes the larger of two cycles an
-instruction and a cycle a wavefront: a two-way conflict between the warp's halves is free.
+instruction and a cycle a wavefront: a two-way conflict between the warp's halves is free. A plain store does the
+same: 4 bytes a lane costs 2 cycles for its one wavefront, 8 or 16 bytes a lane about a cycle a wavefront -- the
+same bytes stored 8 or 16 to a lane take about half the pipe's cycles of 4 to a lane.
 
 WHAT GLOBAL TRAFFIC TAKES FROM THE PIPE: 16 warps, 8 issuing `ldmatrix.x4` (alone 1.011 cycles a wavefront) while 8
 stream global data, 512 bytes a warp-instruction, in one form -- from a 16 KB table (L1 hits) or a 4 MB one (L2 hits)

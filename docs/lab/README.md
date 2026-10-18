@@ -43,3 +43,4 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`issue_latency`](issue_latency.md) | experiment |
 | [`row_stream`](row_stream.md) | experiment |
 | [`read_stream`](read_stream.md) | experiment |
+| [`handoff`](handoff.md) | experiment |

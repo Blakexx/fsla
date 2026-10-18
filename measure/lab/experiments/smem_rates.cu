@@ -1,8 +1,9 @@
 // measure/lab/experiments/smem_rates.cu -- QUESTION: what does an SM's shared-memory pipe sustain a wavefront (128
 // bytes a cycle is the documented bank rate) for loads -- `ld.shared.v4` and `ldmatrix.x4`, 4 wavefronts a warp each --
-// and for atomic adds -- `red.shared.add.u32` with a lane a bank (1 wavefront a warp), two lanes a bank (2), four (4)
-// -- and which global traffic takes its cycles: data a load returns to registers from L1 or from L2, allocated in L1
-// or not, and a `cp.async` copy's write into shared memory, allocated in L1 or not?
+// for atomic adds -- `red.shared.add.u32` with a lane a bank (1 wavefront a warp), two lanes a bank (2), four (4) --
+// and for stores of 4, 8 and 16 bytes a lane (1, 2, 4 wavefronts a warp); and which global traffic takes its cycles:
+// data a load returns to registers from L1 or from L2, allocated in L1 or not, and a `cp.async` copy's write into
+// shared memory, allocated in L1 or not?
 // METHOD: one CTA an SM, 8 or 16 warps (2 or 4 a scheduler), each issuing independent operations at addresses that
 // change every iteration (volatile asm, so none is hoisted or merged); the block's span over the wavefronts the SM
 // issued. The sharing: 8 warps issue `ldmatrix.x4` as above while 8 stream global data in one form, then each alone;
@@ -28,7 +29,7 @@ __device__ __forceinline__ void red_add(uint32_t a, uint32_t v) {
 
 //: FORM 0 `ld.shared.v4` (a warp's 512 contiguous bytes); 1 `ldmatrix.x4` (four 8 x 16-byte matrices, rows 16 bytes
 //: apart); 2 `red.shared.add` a lane a bank; 3 `red.shared.add` two lanes a bank (lanes l and l + 16 on one bank, words
-//: 32 apart); 4 four lanes a bank
+//: 32 apart); 4 four lanes a bank; 5-7 `st.shared` of 4, 8 and 16 bytes a lane (a warp's contiguous 128, 256, 512)
 template <int FORM>
 __global__ void __launch_bounds__(512, 1) pipe(int iters, long long* t, int* out) {
   extern __shared__ __align__(128) uint32_t words[];
@@ -56,8 +57,17 @@ __global__ void __launch_bounds__(512, 1) pipe(int iters, long long* t, int* out
         red_add(at + 4u * lane, static_cast<uint32_t>(it));
       } else if constexpr (FORM == 3) {
         red_add(at + 4u * (lane & 15) + 128u * (lane >> 4), static_cast<uint32_t>(it));
-      } else {
+      } else if constexpr (FORM == 4) {
         red_add(at + 4u * (lane & 7) + 128u * (lane >> 3), static_cast<uint32_t>(it));
+      } else if constexpr (FORM == 5) {
+        asm volatile("st.shared.u32 [%0], %1;" ::"r"(at + 4u * lane), "r"(static_cast<uint32_t>(it)) : "memory");
+      } else if constexpr (FORM == 6) {
+        asm volatile("st.shared.v2.u32 [%0], {%1, %1};" ::"r"(at + 8u * lane), "r"(static_cast<uint32_t>(it))
+                     : "memory");
+      } else {
+        asm volatile("st.shared.v4.u32 [%0], {%1, %1, %1, %1};" ::"r"(at + 16u * lane),
+                     "r"(static_cast<uint32_t>(it))
+                     : "memory");
       }
     }
   }
@@ -66,18 +76,21 @@ __global__ void __launch_bounds__(512, 1) pipe(int iters, long long* t, int* out
   lab::sink(out, fold ^ words[threadIdx.x]);
 }
 
-const char* kFormName[5] = {"ld.shared.v4, 4 wavefronts a warp", "ldmatrix.x4, 4 wavefronts a warp",
+const char* kFormName[8] = {"ld.shared.v4, 4 wavefronts a warp", "ldmatrix.x4, 4 wavefronts a warp",
                             "red.shared.add, a lane a bank, 1 wavefront a warp",
                             "red.shared.add, two lanes a bank, 2 wavefronts a warp",
-                            "red.shared.add, four lanes a bank, 4 wavefronts a warp"};
-constexpr int kWavefronts[5] = {4, 4, 1, 2, 4};
+                            "red.shared.add, four lanes a bank, 4 wavefronts a warp",
+                            "st.shared.u32, 1 wavefront a warp", "st.shared.v2, 2 wavefronts a warp",
+                            "st.shared.v4, 4 wavefronts a warp"};
+constexpr int kWavefronts[8] = {4, 4, 1, 2, 4, 1, 2, 4};
 
 template <int FORM>
 void form(const lab::Bench& b, int warps) {
   const std::string name = lab::kernel("pipe", {FORM});
   if (FORM == 0) b.expect(name, "LDS.128", ">=", kUnroll);
   if (FORM == 1) b.expect(name, "LDSM.16.M88.4", ">=", kUnroll);
-  if (FORM >= 2) b.expect(name, "ATOMS.ADD", ">=", kUnroll);
+  if (FORM >= 2 && FORM <= 4) b.expect(name, "ATOMS.ADD", ">=", kUnroll);
+  if (FORM >= 5) b.expect(name, "STS", ">=", kUnroll);
   if (b.expect_only) return;
   const int bytes = kRowWords * 16 * 4;
   LAB_CHECK(cudaFuncSetAttribute(pipe<FORM>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));
@@ -97,7 +110,8 @@ constexpr uint32_t kLarge = 4u << 20, kSmall = 16u << 10;
 constexpr int kRingsAt = kHalf * kRowWords * 4, kDoneAt = kRingsAt + kHalf * kRing, kShareBytes = kDoneAt + 16;
 
 //: FORM `GF`: 0 `ld.global.nc.v4` (`__ldg`) over a 16 KB table (L1 hits); 1 the same over a 4 MB table (L2 hits,
-//: allocated in L1); 2 `ld.global.cg.v4` over it (not allocated); 3 `cp.async.cg` from it into the warp's ring; 4 `cp.async.ca`
+//: allocated in L1); 2 `ld.global.cg.v4` over it (not allocated); 3 `cp.async.cg` from it into the warp's ring; 4
+//: `cp.async.ca`
 const char* kGlobalName[5] = {"ld.global.nc.v4, L1 hits", "ld.global.nc.v4, L2 hits", "ld.global.cg.v4, L2 hits",
                               "cp.async.cg into shared memory, L2 hits", "cp.async.ca into shared memory, L2 hits"};
 
@@ -233,6 +247,9 @@ int main(int argc, char** argv) {
     form<2>(b, warps);
     form<3>(b, warps);
     form<4>(b, warps);
+    form<5>(b, warps);
+    form<6>(b, warps);
+    form<7>(b, warps);
     if (b.expect_only) break;
   }
   uint8_t* table = nullptr;
