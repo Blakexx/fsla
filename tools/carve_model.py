@@ -69,6 +69,11 @@ class CellStats:
     write: tuple[Side, ...]
     read: tuple[Side, ...]
     words: tuple[int, ...]
+    area: int = 0        #: the plan's area on this card, bytes
+    read_row: int = 0    #: a read row's bytes in the pool
+    write_row: int = 0
+    window: int = WINDOW
+    streamed: bool = False  #: rows streamed a list (a digit) at a time into each warp's ring, none resident
 
 
 def _sides(lists, plan, routes, bh: int, g: int, windows: int) -> list[Side]:
@@ -90,8 +95,9 @@ def _sides(lists, plan, routes, bh: int, g: int, windows: int) -> list[Side]:
     return out
 
 
-def cell_stats(name: str) -> CellStats:
-    """Every box-window's two sides on a registry cell, from the facts pass's lists as the carry reads them."""
+def cell_stats(name: str, forced: str | None = None) -> CellStats:
+    """Every box-window's two sides on a registry cell, from the facts pass's lists as the carry reads them; the plan
+    words the rule's, or a forced form's (`rola.ops.carry.forced_word`) where it fits."""
     from measure.cells import by_name
     from measure.subjects import carry_operands
     from rola.ops import facts as facts_ops
@@ -109,9 +115,108 @@ def cell_stats(name: str) -> CellStats:
             for gw in range(groups(carve.fold)):
                 rs += _sides(read, carve.readout, routes, bh, gr, windows)
                 ws += _sides(write, carve.fold, routes, bh, gw, windows)
-    words = tuple(rec.word for box in cp.plans(routes, facts, carve) for rec in box)
+    words = tuple(rec.word for box in cp.plans(routes, facts, carve, forced) for rec in box)
     assert len(words) == len(ws), "the plan records' order is the sides'"
-    return CellStats(name, routes.group, tuple(ws), tuple(rs), words)
+    from rola.ops import carry as carry_ops
+
+    key = carry_ops.arm_key(carve)
+    row = next(r for r in carry_ops.census() if tuple(r[1:7]) == tuple(key))
+    return CellStats(name, routes.group, tuple(ws), tuple(rs), words, cp.area_of(row[9], row[12], routes.group),
+                     row[13], row[14])
+
+
+def _sums(side: Side) -> tuple:
+    """A side's segment sums as the plan reads them: the lists' entries before each segment's end."""
+    return tuple(int(x) for x in np.cumsum(side.segments.sum(0)))
+
+
+def merged(s: CellStats, k: int) -> CellStats:
+    """THE WINDOW AT `k` x 512 TOKENS: each `k` consecutive windows of a box merged -- their unions added (their tokens
+    are disjoint), each list's segments concatenated -- and each merged window planned by the same rule in the area
+    its larger tables leave (the window inputs and the read tables are two windows' each: union tokens, prefix rows,
+    units)."""
+    from tests.oracle import carry_plan as cp
+
+    if k == 1:
+        return s
+    w = WINDOW * k
+    grow_fixed = 2 * (w - WINDOW) * 2 + 2 * 33 * (w - WINDOW) // SEGMENT * 2
+    grow_tables = (2 * s.group * (w - WINDOW) * 2 + 2 * 33 * (w - WINDOW) // SEGMENT * s.group * 2
+                   + 2 * s.group * (w - WINDOW))
+    area = s.area - grow_fixed - grow_tables
+    per_box = len(s.words)  # windows run in order inside each box's records; boxes follow one another
+    reads, writes, words = [], [], []
+    i = 0
+    boxes_windows = _box_windows(s)
+    for n in boxes_windows:
+        for j in range(0, n, k):
+            idx = list(range(i + j, min(i + j + k, i + n)))
+            rd = _merge([s.read[t] for t in idx])
+            wr = _merge([s.write[t] for t in idx])
+            reads.append(rd)
+            writes.append(wr)
+            c = cp.Counts(rd.union, _sums(rd) if rd.listed else (0,) * rd.segments.shape[1],
+                          wr.union, _sums(wr) if wr.listed else (0,) * wr.segments.shape[1])
+            rows = tuple(0 if (s.streamed and side.listed) else row
+                         for row, side in ((s.read_row, rd), (s.write_row, wr)))
+            words.append(cp.win_of(c, -1, *rows, area).word)
+        i += n
+    assert i == per_box
+    return CellStats(f"{s.name}@W{w}", s.group, tuple(writes), tuple(reads), tuple(words), area, s.read_row,
+                     s.write_row, w, s.streamed)
+
+
+#: A STREAMED SIDE'S RING: each warp's stages of 8 rows, two in flight (the readout's and the fold's rings are live in
+#: different phases, so the larger is the area's)
+RING_STAGES, RING_ROWS = 2, 8
+
+
+def streamed(s: CellStats) -> CellStats:
+    """THE FORM WITH ROWS STREAMED: no chunk of a listed side holds rows -- a read chunk is its panel and entries, a
+    fold chunk its entries -- and each warp's ring of row stages takes the area's (the larger side's) share; every entry
+    fetches its row (a token in several lists fetched once a list). A dense side keeps its rows resident (every token
+    is in all 32 lists). Re-planned by the same rule."""
+    from tests.oracle import carry_plan as cp
+
+    listed = (s.read[0].listed, s.write[0].listed)
+    ring = 8 * RING_STAGES * RING_ROWS * max(row for row, lst in zip((s.read_row, s.write_row), listed) if lst) \
+        if any(listed) else 0
+    area = s.area - ring
+    rows = tuple(0 if lst else row for row, lst in zip((s.read_row, s.write_row), listed))
+    words = []
+    for rd, wr in zip(s.read, s.write):
+        c = cp.Counts(rd.union, _sums(rd) if rd.listed else (0,) * rd.segments.shape[1],
+                      wr.union, _sums(wr) if wr.listed else (0,) * wr.segments.shape[1])
+        words.append(cp.win_of(c, -1, *rows, area).word)
+    return CellStats(s.name + "+streamed", s.group, s.write, s.read, tuple(words), area, s.read_row, s.write_row,
+                     s.window, True)
+
+
+def _merge(sides: list[Side]) -> Side:
+    """Consecutive windows' sides as one: the later window's union slots follow the earlier's (its tokens rank after
+    them), each list's entries spread evenly over its segment's slots and re-binned at the merged union's 64-slot
+    boundaries (a segment's entries' places within it are not in the facts' prefix rows)."""
+    per_slot = []
+    for x in sides:
+        dens = np.repeat(x.segments / SEGMENT, SEGMENT, axis=1)[:, :x.union]
+        if x.union and x.segments[:, -1].any() and x.union % SEGMENT:
+            last = x.union // SEGMENT  # the last segment holds fewer than 64 slots
+            dens[:, last * SEGMENT:] = (x.segments[:, last] / (x.union - last * SEGMENT))[:, None]
+        per_slot.append(dens)
+    allslots = np.concatenate(per_slot, axis=1)
+    union = allslots.shape[1]
+    pad = -(-union // SEGMENT) * SEGMENT - union
+    binned = np.pad(allslots, ((0, 0), (0, pad))).reshape(BOX_LISTS, -1, SEGMENT).sum(2)
+    return Side(sides[0].listed, union, binned)
+
+
+def _box_windows(s: CellStats) -> list[int]:
+    """Each box's windows (the records run box by box, every box the call's windows)."""
+    from measure.cells import by_name
+
+    tokens = by_name(s.name.split("@")[0].split("+")[0]).tokens
+    n = -(-tokens // WINDOW)
+    return [n] * (len(s.words) // n)
 
 
 @dataclass
@@ -180,9 +285,10 @@ def measured(csv: Path, so: Path, cta_windows: int) -> dict[tuple, Region]:
     return out
 
 
-def _steps(n: int) -> tuple[int, int]:
+def _steps(n: float) -> tuple[int, int]:
     """A list's fold steps over `n` entries (fold.cuh's `steps`): 16-token steps while more than 8 remain, then an 8-token
-    tail where any remain."""
+    tail where any remain (a merged window's `n` rounded to the nearest entry)."""
+    n = int(round(n))
     s16 = max(0, -(-(n - 8) // 16)) if n > 8 else 0
     return s16, int(n - 16 * s16 > 0)
 
@@ -230,14 +336,14 @@ def events_today(s: CellStats) -> Events:
                 break
             slots = min(rc, rd.union - first)
             n = rd.in_chunk(first, slots)
-            ev.read_rows += slots
+            ev.read_rows += n.sum() if (s.streamed and rd.listed) else slots
             ev.read_entries += n.sum() if rd.listed else 0
             ev.drained += slots
             for w in range(8):
                 for pair in ((w, w + 8), (w + 16, w + 24)):
                     ev.read_digits += 2
                     if rd.listed:
-                        t = max(-(-int(n[d]) // 8) for d in pair)
+                        t = max(-(-int(round(n[d])) // 8) for d in pair)
                         ev.read_tiles += t
                         ev.read_mmas += 8 * t
                         rwarp[w] += t
@@ -251,7 +357,7 @@ def events_today(s: CellStats) -> Events:
                 break
             slots = min(fc, wr.union - first)
             n = wr.in_chunk(first, slots)
-            ev.fold_rows += slots
+            ev.fold_rows += n.sum() if (s.streamed and wr.listed) else slots
             ev.fold_entries += n.sum() if wr.listed else 0
             for l in range(32):
                 a, b = _steps(int(n[l]))
@@ -433,6 +539,38 @@ def mma_pipe(ev: Events) -> dict[str, float]:
             "fold": ev.fold_mmas16 * PIPE["HMMA.16816.F32"] + ev.fold_mmas8 * PIPE["HMMA.1688.F32"]}
 
 
+class Model:
+    """THE CALIBRATED MODEL: prices and efficiencies from the calibration cells (their SourceCounters dumps and phase
+    ledgers), predicting a cell's or a form's window."""
+
+    def __init__(self, ledgers: Path):
+        import json
+
+        sys.path.insert(0, str(ROOT / "tools"))
+        import phase_ledger
+
+        so = ROOT / "rola_cu13" / "_C.abi3.so"
+        self.prices, self.effs = {}, {}
+        for side, cal in (("listed", CALIBRATION[0]), ("dense", CALIBRATION[1])):
+            reg = measured(profile(cal), so, phase_ledger.cta_windows(cal))
+            ev = events_today(cell_stats(cal))
+            led = json.loads((ledgers / f"ledger_{cal}.json").read_text())["per_phase"]
+            self.prices[side] = calibrate(reg, ev)
+            self.effs[side] = efficiencies(phase_counts(reg), led, ev, self.prices[side])
+
+    def window(self, stats: CellStats, hidden: bool = False) -> dict[str, float]:
+        """A cell's (or a form's) predicted cycles a CTA-window, by phase; `hidden`: a streamed form's copies cost only
+        their issue (no wait for them to land), the bound where the rings run far enough ahead."""
+        side = "listed" if stats.read[0].listed else "dense"
+        ev = events_today(stats)
+        pred = predict(self.prices[side], ev)
+        pipe = mma_pipe(ev)
+        cyc = {p: max(floors(i, w, pipe.get(p, 0.0)).values()) * (1.0 if (hidden and p == "fills") else self.effs[side][p])
+               for p, (i, w) in pred.items()}
+        cyc["glue"] = cyc.get("glue", 0.0) + idle(cyc, varying_share(self.prices[side], ev), ev)
+        return cyc
+
+
 def validate(cells: tuple[str, ...] = CALIBRATION + HELD_OUT, ledgers: Path | None = None) -> list[str]:
     """The gate's table: each cell's instructions and wavefronts a CTA-window predicted from the calibration cells'
     prices against its measured counts, by phase; with `ledgers` (a directory of `phase_ledger.py --json` readings,
@@ -497,12 +635,22 @@ def main() -> int:
     p = sub.add_parser("validate", help="the validation table: calibration cells' prices against the held-out cells")
     p.add_argument("--ledgers", type=Path, default=None,
                    help="a directory of ledger_<cell>.json phase-ledger readings (clock locked): adds cycles")
+
+    p = sub.add_parser("forms", help="predicted window cycles of forced forms against the rule's, on a cell")
+    p.add_argument("cell")
+    p.add_argument("forms", nargs="+")
+    p.add_argument("--ledgers", type=Path, required=True)
+    p = sub.add_parser("window", help="predicted cycles a 512 tokens at windows of k x 512 tokens, on cells")
+    p.add_argument("cells", nargs="+")
+    p.add_argument("--k", type=int, nargs="+", default=[1, 2])
+    p.add_argument("--ledgers", type=Path, required=True)
     p = sub.add_parser("measured", help="a launch's per-region counts a CTA-window, from its SourceCounters dump")
     p.add_argument("csv", type=Path)
     p.add_argument("--so", type=Path, default=ROOT / "rola_cu13" / "_C.abi3.so")
     p.add_argument("--cta-windows", type=int, required=True)
     p.add_argument("--top", type=int, default=30)
     a = ap.parse_args()
+
     if a.cmd == "stats":
         for name in a.cells:
             print(describe(cell_stats(name)))
@@ -512,6 +660,26 @@ def main() -> int:
             print(name, " ".join(f"{k} {v:.1f}" for k, v in ev.__dict__.items()))
     elif a.cmd == "validate":
         print("\n".join(validate(ledgers=a.ledgers)))
+    elif a.cmd == "forms":
+        model = Model(a.ledgers)
+        base = sum(model.window(cell_stats(a.cell)).values())
+        print(f"{a.cell} rule: {base:.0f} cycles a CTA-window")
+        for form in a.forms:
+            cyc = model.window(cell_stats(a.cell, form))
+            print(f"  {form:18s} {sum(cyc.values()):8.0f} ({sum(cyc.values()) / base:.3f}x)  "
+                  + " ".join(f"{k} {v:.0f}" for k, v in sorted(cyc.items())))
+    elif a.cmd == "window":
+        model = Model(a.ledgers)
+        for name in a.cells:
+            base = cell_stats(name)
+            ref = sum(model.window(base).values())
+            for form, stats0, hidden in (("resident", base, False), ("streamed, copies waited", streamed(base), False),
+                                         ("streamed, copies hidden", streamed(base), True)):
+                for k in a.k:
+                    cyc = model.window(merged(stats0, k), hidden)
+                    tot = sum(cyc.values()) / k
+                    print(f"{name:20s} {form:24s} W {WINDOW * k:5d}: {tot:8.0f} a 512 tokens ({tot / ref:.2f}x)  "
+                          + " ".join(f"{p} {v / k:.0f}" for p, v in sorted(cyc.items())))
     elif a.cmd == "measured":
         regions = measured(a.csv, a.so, a.cta_windows)
         total = sum(r.instructions for r in regions.values())

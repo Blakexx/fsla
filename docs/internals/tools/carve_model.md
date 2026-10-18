@@ -80,6 +80,37 @@ floor against alt-k4's 2.4x; its fills carry the `pre_at` conflicts). The flagsh
 What it shows of today's carry, a CTA-window: every phase 2-3x its own binding floor, the phases in turn; the dense fold
 at 1.10x its tensor floor.
 
+<a id="forms"></a>
+## Forms (`forms`), the window (`window`) and streamed rows
+
+A FORCED FORM is planned by the plan model's `forced_plan` and priced the same way. Against measured launches at
+nl64k-alt-k4 (ncu, the rule 5.473M cycles): the whole image with 128-slot read chunks predicted 1.155x, measured 1.156x;
+halves with 128-slot read chunks 1.271x against 1.371x; halves with 128-slot fold chunks 1.121x against 1.233x -- an
+extra chunk's cost read ~7-9% low.
+
+THE WINDOW AT k x 512 TOKENS (`merged`): consecutive windows of a box merged exactly -- unions added, each list's
+entries carried over (a segment's entries spread over its slots and re-binned at the merged union's 64-slot boundaries,
+since the prefix rows hold no finer place) -- planned by the same rule in the area the larger window tables leave
+(7.2 KB less at g 1). STREAMED ROWS (`streamed`): a listed side's chunks hold no rows (a read chunk its panel and
+entries, a fold chunk its entries), each warp's ring of 2 stages of 8 rows takes the area's share, and every entry
+fetches its row; a dense side stays resident. Its copies' cost is bounded: waited at today's fill efficiency, or hidden
+(their issue only) -- the streaming lab measures where it falls.
+
+Predicted cycles a 512 tokens, sm_86, against today (2026-10-17):
+
+| cell | resident W 1024 | streamed W 512 | streamed W 1024 |
+|---|---|---|---|
+| nl64k-alt-k4 | 1.12x | 1.01x / 0.80x | 0.72x / 0.54x |
+| nl64k-alt-k4-g4 | 1.53x | 0.89x / 0.72x | 1.52x / 1.27x |
+| flagship-alt-k16 | 1.11x | 0.86x / 0.61x | 0.97x / 0.70x |
+| flagship-cohort-k4 | 0.95x | 1.01x / 0.85x | 0.84x / 0.69x |
+| nl64k-dense | 0.99x | (resident) | 0.99x |
+
+(waited / hidden). Resident, a 1,024-token window's union no longer fits beside the image, the read splits into
+chunks and each re-stores the halves: W 1024 loses. Streamed, the read chunk is its panel (64 bytes a slot) and fits
+whole, so the hand-off, the readout's per-digit work and the bookkeeping fall by half a token. At g 4 a 1,024-token
+read union (~1,700 slots) still splits.
+
 OWED before it ranks a carve: the alternative carves' prices (each step's primitives by its warp tile, checked against
 the readout and fold labs), registers, streamed rows, W = 1024 (consecutive windows' lists merged, exactly), and labs
 for the prices it lacks.
