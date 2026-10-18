@@ -22,6 +22,7 @@ windows, so a token's read row is fetched by each box of its slice group. A box-
 - `rows.bin`: bf16 `[windows x 512][8 slice groups][32 lists]`: a token's read row, its 32 lists one value, 0.0625 or
   0.125 -- so every product the MMAs form is exact and a misplaced row changes the sum.
 - `panel.bin`: u32 `[ctas][2 passes][256 slots][16 words]`: each CTA's drained panel summed over the windows.
+- `staged.bin`: int32 records a stream, then `staged_records`'s u32 array: the staged form's one record stream a warp.
 """
 from __future__ import annotations
 
@@ -37,6 +38,11 @@ ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT))
 
 CTAS, TILES, SLICES, LISTS, PASSES = 80, 2, 8, 32, 2
+#: the staged records: a stage's copy carries the tokens `STAGED_AHEAD` stages on; `STAGED_TAIL` pad stages past a
+#: stream's last, which the producer copies running ahead
+STAGED_AHEAD, STAGED_TAIL = 8, 16
+#: a pad's token in the staged records: token 0 (a valid address) with its top bit set, copied as zeros from nothing
+PAD = 0x80000000
 #: the panel's slots and words, and the bf16 bits of a read row's two values
 SLOTS, WORDS, VALUE = 256, 16, (0x3D80, 0x3E00)
 #: THE DATASETS: (subdirectory, cell, windows) -- the calibration cell, a cell of longer lists, and a clustered cell
@@ -65,8 +71,7 @@ def write(directory: Path) -> list[str]:
 
 
 def placed_tiles(base, spans: list[list[int]], d: int, p: int, token_of: dict[int, int]) -> list[tuple[int, int]]:
-    """Digit `d`'s entries in pass `p` placed (a pad tile where it has none): (token, word) each, a pad the tile's first
-    live token (0 in an all-pad tile)."""
+    """Digit `d`'s entries in pass `p` placed (a pad tile where it has none): (token, word) each, a pad's token -1."""
     mine = [s for s in spans[d] if s // SLOTS == p]
     placed = base.place(mine) or [(res, True) for res in range(8)]
     panel_rows = base.DUMMY_ROWS + 8 * base.PANEL_PITCH
@@ -75,9 +80,6 @@ def placed_tiles(base, spans: list[list[int]], d: int, p: int, token_of: dict[in
         field = (base.DUMMY_ROWS if pad else panel_rows) + base.PANEL_PITCH * (s % SLOTS) - base.FOLD["n"](e)
         entries.append((-1 if pad else token_of[s], field << 16 | (0 if pad else base.COEFFICIENT[(s ^ d) & 1])))
 
-    for k in range(0, len(entries), 8):
-        first = next((t for t, _ in entries[k:k + 8] if t >= 0), 0)
-        entries[k:k + 8] = [(first if t < 0 else t, word) for t, word in entries[k:k + 8]]
     return entries
 
 
@@ -134,8 +136,9 @@ def dataset(directory: Path, cell: str, windows: int) -> list[str]:
         plan = [x for p in by_pass for x in p]
         rec[w, g, warp, 0] = len(plan) // 8
         if plan:
-            rec[w, g, warp, 8:8 + len(plan)] = [t for t, _ in plan]
+            rec[w, g, warp, 8:8 + len(plan)] = [t for t, _ in pads_first(plan)]
             words[w, g, warp, :2 * len(plan)] = [v for _, x in plan for v in ((x & 0xFFFF) << 16, x >> 16)]
+    flat = staged_records(plans, windows, groups)
 
     one = np.array([one_add(k) for k in range(WORDS)], np.uint64)
     panel = ((m.astype(np.uint64)[..., None] * one) & 0xFFFFFFFF).astype(np.uint32)
@@ -147,9 +150,45 @@ def dataset(directory: Path, cell: str, windows: int) -> list[str]:
     (directory / "words.bin").write_bytes(words.tobytes())
     (directory / "rows.bin").write_bytes(rows.tobytes())
     (directory / "panel.bin").write_bytes(panel.tobytes())
+    (directory / "staged.bin").write_bytes(struct.pack("<i", flat.shape[2]) + flat.tobytes())
     print(f"read_stream {cell}: records {token_record} + {word_record} bytes ({stages} stages at most), "
-          f"{tiles.sum() / (windows * groups):.1f} tiles and {passes.mean():.2f} passes a box-window")
-    return ["head.bin", "passes.bin", "tiles.bin", "records.bin", "words.bin", "rows.bin", "panel.bin"]
+          f"{tiles.sum() / (windows * groups):.1f} tiles and {passes.mean():.2f} passes a box-window, "
+          f"{flat.shape[2] - STAGED_AHEAD - STAGED_TAIL} staged stages a warp at most")
+    return ["head.bin", "passes.bin", "tiles.bin", "records.bin", "words.bin", "rows.bin", "panel.bin", "staged.bin"]
+
+
+def pads_first(plan: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """A plan's pads at their tile's first live token (0 in an all-pad tile): the same line, its coefficient zero."""
+    out = []
+    for k in range(0, len(plan), 8):
+        first = next((t for t, _ in plan[k:k + 8] if t >= 0), 0)
+        out += [(first if t < 0 else t, word) for t, word in plan[k:k + 8]]
+    return out
+
+
+def staged_records(plans: dict, windows: int, groups: int) -> np.ndarray:
+    """THE STAGED RECORDS: u32 `[groups][8 warps][STAGED_AHEAD + stages + STAGED_TAIL][24]`, one stream a warp across
+    its windows and passes in the consumer's order. Record `r` is 96 bytes: stage `r - STAGED_AHEAD`'s 8 entries
+    lane-ready (`words.bin`'s, zero before the first stage), then stage `r`'s 8 tokens -- `512 w + t`, a pad `PAD`
+    (token 0 with its top bit set) -- so a stage's copy brings its entries and the tokens of the stage `STAGED_AHEAD`
+    on; past the last stage, pads."""
+    streams = {}
+    for g in range(groups):
+        for warp in range(8):
+            stream = []
+            for w in range(windows):
+                for p in plans.get((w, g, warp), []):
+                    stream += [(-1 if t < 0 else 512 * w + t, x) for t, x in p]
+            streams[g, warp] = stream
+    stages = max(len(x) for x in streams.values()) // 8
+    flat = np.zeros((groups, 8, STAGED_AHEAD + stages + STAGED_TAIL, 24), np.uint32)
+    flat[..., 16:] = PAD
+    for (g, warp), stream in streams.items():
+        for k in range(len(stream) // 8):
+            tile = stream[8 * k:8 * k + 8]
+            flat[g, warp, k + STAGED_AHEAD, :16] = [v for _, x in tile for v in ((x & 0xFFFF) << 16, x >> 16)]
+            flat[g, warp, k, 16:] = [PAD if t < 0 else t for t, _ in tile]
+    return flat
 
 
 if __name__ == "__main__":

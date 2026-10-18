@@ -22,6 +22,7 @@ Files (little-endian):
   its lists `w + 8 j` in order, each list's entries 8 a stage.
 - `state.bin`: f32 `[ctas][32 lists][32 digits][32 channels]`: the sum over the windows and each list's entries of
   slice x values, digits 16 .. 31 zero -- the state every form must reach bit for bit.
+- `staged.bin`: int32 records a stream, then `staged_records`'s u32 array: the staged form's one record stream a warp.
 """
 from __future__ import annotations
 
@@ -37,6 +38,10 @@ sys.path.insert(0, str(ROOT))
 CTAS, GROUPS, TILES, WARPS = 80, 8, 2, 8
 #: an entry's coefficient (f16 1.0; a pad's 0)
 ONE = 0x3C00
+#: the staged records: a stage's copy carries the tokens of the stage `STAGED_AHEAD` on (the ring's depth);
+#: `STAGED_TAIL` pad stages past a stream's last, which the producer copies running ahead; a pad's token `PAD`, token 0
+#: (a valid address) with its top bit set, copied as zeros from nothing
+STAGED_AHEAD, STAGED_TAIL, PAD = 4, 8, 0x80000000
 W = 512
 #: THE DATASETS: (subdirectory, cell, windows) -- the calibration cell, a cell of longer lists, and a clustered cell
 DATASETS = (("", "nl64k-alt-k4", 64), ("k16", "flagship-alt-k16-L16384", 32), ("c16", "flagship-cohort-k16-L16384", 32))
@@ -79,6 +84,7 @@ def dataset(directory: Path, cell: str, windows: int) -> list[str]:
     state = np.zeros((CTAS, 32, 32, 32), dtype=np.float64)
     boxes = [box(b) for b in range(CTAS)]
     plans: dict[tuple[int, int, int], list[np.ndarray]] = {}
+    steps: dict[tuple[int, int], list[list[int]]] = {(g, wp): [] for g in range(GROUPS) for wp in range(WARPS)}
     out = bytearray(struct.pack("<4i", 0x4D525453, CTAS, windows, GROUPS))
     for w in range(windows):
         for g in range(GROUPS):
@@ -95,6 +101,9 @@ def dataset(directory: Path, cell: str, windows: int) -> list[str]:
             for wp in range(WARPS):
                 plans[w, g, wp] = [stage(tok[wp + 8 * j], int(n[wp + 8 * j]), k)
                                    for j in range(4) for k in range(0, n[wp + 8 * j], 8)]
+                for j in range(4):
+                    l = wp + 8 * j
+                    steps[g, wp] += step_stages(512 * w + tok[l, :n[l]].astype(np.int64))
             un = np.zeros(W, dtype=np.uint16)
             u = int(count[0, w, g])
             un[:u] = union[0, w, g, :u] & 0x1FF
@@ -111,7 +120,38 @@ def dataset(directory: Path, cell: str, windows: int) -> list[str]:
     (directory / "values.bin").write_bytes(values.tobytes())
     assert state.max() < 2 ** 24, "the state must stay exact in fp32"
     (directory / "state.bin").write_bytes(state.astype(np.float32).tobytes())
-    return ["lists.bin", "slices.bin", "values.bin", "records.bin", "state.bin"]
+    flat = staged_records(steps)
+    (directory / "staged.bin").write_bytes(struct.pack("<i", flat.shape[2]) + flat.tobytes())
+    return ["lists.bin", "slices.bin", "values.bin", "records.bin", "state.bin", "staged.bin"]
+
+
+def step_stages(tokens: np.ndarray) -> list[list[int]]:
+    """A digit's steps (the fold's: 16 tokens while more than 8 remain, then 8), a stage each: its 16 tokens (global,
+    `512 w + t`), a pad past the digit's entries and in a tail's last 8."""
+    out, n, k = [], len(tokens), 0
+    while n - k > 8:
+        out.append([int(t) for t in tokens[k:k + 16]] + [-1] * (16 - len(tokens[k:k + 16])))
+        k += 16
+    if n - k > 0:
+        out.append([int(t) for t in tokens[k:k + 8]] + [-1] * (16 - len(tokens[k:k + 8])))
+    return out
+
+
+def staged_records(steps: dict) -> np.ndarray:
+    """THE STAGED RECORDS: u32 `[groups][8 warps][STAGED_AHEAD + stages + STAGED_TAIL][24]`, one stream a warp across
+    its windows and digits in the consumer's order. Record `r` is 96 bytes: stage `r - STAGED_AHEAD`'s 16 coefficients
+    (f16, lane `t`'s c(2t), c(2t + 1), c(2t + 8), c(2t + 9) at 8 t; 1 an entry, 0 a pad), then stage `r`'s 16 tokens
+    as pairs (q, q + 8) at 8 q."""
+    stages = max(len(x) for x in steps.values())
+    flat = np.zeros((GROUPS, WARPS, STAGED_AHEAD + stages + STAGED_TAIL, 24), np.uint32)
+    flat[..., 8:] = PAD
+    for (g, wp), stream in steps.items():
+        for k, toks in enumerate(stream):
+            c = [ONE if t >= 0 else 0 for t in toks]
+            halves = [c[2 * t + i] for t in range(4) for i in (0, 1, 8, 9)]
+            flat[g, wp, k + STAGED_AHEAD, :8] = [halves[2 * i] | halves[2 * i + 1] << 16 for i in range(8)]
+            flat[g, wp, k, 8:] = [PAD if t < 0 else t for q in range(8) for t in (toks[q], toks[q + 8])]
+    return flat
 
 
 if __name__ == "__main__":

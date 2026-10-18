@@ -334,12 +334,185 @@ __global__ void __launch_bounds__(kThreads, 1) stream(In in, long long* t) {
   }
 }
 
+//: a pointer HELD in a register (`lab::held`'s 64-bit form), and `base + a * b` as one wide multiply-add on it
+__device__ __forceinline__ const uint8_t* held64(const uint8_t* v) {
+  asm volatile("" : "+l"(v));
+  return v;
+}
+
+__device__ __forceinline__ const uint8_t* wide(const uint8_t* base, uint32_t a, uint32_t b) {
+  const uint8_t* r;
+  asm("mad.wide.u32 %0, %1, %2, %3;" : "=l"(r) : "r"(a), "r"(b), "l"(base));
+  return r;
+}
+
+//: a token's 16-byte copy; where `token` is a pad (its top bit set) zeros read from nothing, or (`SKIP`) no copy -- the
+//: slot keeps an earlier stage's finite row, which a pad's zero coefficient cancels
+template <int SKIP>
+__device__ __forceinline__ void copy16_token(uint32_t dst, const void* src, uint32_t token) {
+  if constexpr (SKIP) {
+    asm volatile("{ .reg .pred p; setp.ge.s32 p, %2, 0; @p cp.async.cg.shared.global [%0], [%1], 16; }" ::"r"(dst),
+                 "l"(src), "r"(token)
+                 : "memory");
+  } else {
+    asm volatile("{ .reg .pred p; setp.lt.s32 p, %2, 0; cp.async.cg.shared.global [%0], [%1], 16, p; }" ::"r"(dst),
+                 "l"(src), "r"(token)
+                 : "memory");
+  }
+}
+
+//: a 16-byte copy issued only where `live`
+__device__ __forceinline__ void copy16_if(uint32_t dst, const void* src, uint32_t live) {
+  asm volatile("{ .reg .pred p; setp.ne.b32 p, %2, 0; @p cp.async.cg.shared.global [%0], [%1], 16; }" ::"r"(dst),
+               "l"(src), "r"(live)
+               : "memory");
+}
+
+//: THE STAGED STREAM, the stream's floor form: each warp's ring of 8 stages of 608 bytes -- a tile's 8 read rows, its
+//: 8 entries lane-ready, the 8 tokens of the stage 8 on -- its stages one record stream across windows and passes
+//: (`staged.bin`), so the producer reads a stage's tokens from the slot it refills, copies its rows (a pad's as zeros,
+//: read from nothing) and its record (its entries, the tokens 8 on) in one burst, and checks no window. `PART` 0, 1
+//: the readout with the producer and no row copies, 2 the copies alone
+constexpr int kStaged = 8, kStagedStage = 8 * kRow + 64 + 32, kStagedRecord = 96;
+constexpr int kStagedPads = kRing + kWarps * kStaged * kStagedStage;
+constexpr int kStagedPanel = kStagedPads + 128 + 8 * kPanelPitch * 4;
+constexpr int kStagedBytes = kStagedPanel + kSlots * kPanelPitch * 4;
+
+template <int PART, int SET, int SKIP = 0>
+__global__ void __launch_bounds__(kThreads, 1) staged(In in, const uint8_t* records, int stream_records,
+                                                      long long* t) {
+  extern __shared__ __align__(128) uint8_t smem[];
+  const int warp = lab::warp_id(), lane = lab::lane_id(), W = in.windows, r = lane >> 2, c = lane & 3;
+  const Box x = box_of();
+  const uint32_t sm = lab::smem(smem);
+  //: the image's even channels -0.0625 and odd +0.0625 (bf16), the rest zero
+  uint4* chunks = reinterpret_cast<uint4*>(smem);
+  for (int k = static_cast<int>(threadIdx.x); k < kStagedBytes / 16; k += kThreads) {
+    const uint32_t v = k < kRing / 16 ? 0x3d80bd80u : 0u;
+    chunks[k] = make_uint4(v, v, v, v);
+  }
+  __syncthreads();
+  const read_image::Lane lc = lane_of(sm, warp, lane, kStagedPads);
+  //: the lane's constants held in registers: the ring, its 16 bytes of each record (lanes 0-5), its row's source base
+  //: and offsets in a stage
+  const uint32_t ring = lab::held(sm + kRing + warp * kStaged * kStagedStage);
+  const uint8_t* const stream =
+      records + (static_cast<size_t>(x.read) * kWarps + warp) * stream_records * kStagedRecord;
+  const uint8_t* const rec_lane = held64(stream + kStaged * kStagedRecord + 16 * lane);
+  const uint8_t* const rows_c = held64(in.rows + x.slice * kRow + 16 * c);
+  const uint32_t row_c = lab::held(r * kRow + 16 * (c ^ ((r >> 1) & 3))), rec_dst = lab::held(8 * kRow + 16 * lane);
+  const uint32_t rec_live = lab::held(lane < 6 ? 1u : 0u), tok_at = lab::held(8 * kRow + 64 + 4 * r);
+  const auto slot_of = [&](uint32_t s) { return ring + (s & (kStaged - 1)) * kStagedStage; };
+  //: stages 0-7's tokens into their slots (records 0-7's last 32 bytes, two lanes a slot)
+  if (lane < 16)
+    copy16<0>(slot_of(lane >> 1) + 8 * kRow + 64 + 16 * (lane & 1),
+              stream + (lane >> 1) * kStagedRecord + 64 + 16 * (lane & 1));
+  commit();
+  wait_groups<0>();
+  __syncwarp();
+  //: THE PRODUCER: stage `ps` into its slot -- its tokens from the slot, then its rows and its record -- a group each
+  //: a pad's token, masked to a valid row where its copy writes zeros; where it is not copied its address is unused
+  constexpr uint32_t kMask = SKIP ? 0xffffffffu : 0x7fffffffu;
+  uint32_t ps = 0;
+  const uint8_t* prec = rec_lane;
+  const auto issue = [&] {
+    const uint32_t slot = slot_of(ps), tk = lds32(slot + tok_at);
+    if constexpr (PART != 1) copy16_token<SKIP>(slot + row_c, wide(rows_c, tk & kMask, 8 * kRow), tk);
+    copy16_if(slot + rec_dst, prec, rec_live);
+    commit();
+    prec += kStagedRecord;
+    ++ps;
+  };
+  const long long t0 = clock64();
+#pragma unroll 1
+  for (int q = 0; q < kStaged - 1; ++q) issue();
+  //: THE CONSUMER, `stream`'s: its passes and its digits' tiles a pass held a window ahead, the stage `cs` it reads
+  const auto passes_of = [&](int w) {
+    return w < W ? static_cast<int>(in.passes[static_cast<size_t>(w) * kGroups + x.read]) : 0;
+  };
+  const auto tiles_of = [&](int w, int p) {
+    return w < W && lane < 4 ? static_cast<int>(in.tiles[(static_cast<size_t>(w) * kPasses + p) * 256 + 32 * x.read +
+                                                         warp + 8 * lane])
+                             : 0;
+  };
+  int np = passes_of(0), np_next = passes_of(1), ct0 = tiles_of(0, 0), ct1 = tiles_of(0, 1);
+  int ct0_next = tiles_of(1, 0), ct1_next = tiles_of(1, 1);
+  uint32_t cs = 0;
+  const uint32_t row_q = lab::held((lane & 7) * kRow + 16 * ((((lane & 7) >> 1) & 3) ^ (lane >> 3)));
+  const uint32_t ent = lab::held(8 * kRow + 16 * (lane & 3));
+  const auto step = [&](const uint32_t (&f)[16]) {
+    const uint32_t slot = slot_of(cs);
+    tile(slot + row_q, lds128(slot + ent), lc.pad, f);
+  };
+  const uint32_t cell = lab::held(sm + kStagedPanel + ((32 * warp + (lane >> 4)) * kPanelPitch + (lane & 15)) * 4);
+  const auto drain = [&](int p) {
+    uint32_t* target = in.panel_out + ((static_cast<size_t>(blockIdx.x) * kPasses + p) * kSlots + 32 * warp +
+                                       (lane >> 4)) * kWords + (lane & 15);
+#pragma unroll
+    for (int k = 0; k < 16; ++k) {
+      const uint32_t v = lds32(cell + k * 2 * kPanelPitch * 4);
+      asm volatile("st.shared.u32 [%0], %1;" ::"r"(cell + k * 2 * kPanelPitch * 4), "r"(0u) : "memory");
+      asm volatile("red.global.add.u32 [%0], %1;" ::"l"(target + k * 2 * kWords), "r"(v) : "memory");
+    }
+  };
+#pragma unroll 1
+  for (int w = 0; w < W; ++w) {
+#pragma unroll 1
+    for (int p = 0; p < np; ++p) {
+      const int ct = p == 0 ? ct0 : ct1;
+      //: every digit's first tile, one block: its four slots held, the ring's other slots ahead
+      issue();
+      wait_groups<kStaged - 4>();
+      __syncwarp();
+      uint32_t f[4][16];
+#pragma unroll
+      for (int i = 0; i < 4; ++i) {
+        if constexpr (PART != 2) {
+          read_image::state_in<1>(f[i], lc, read_image::plane_off(i));
+          step(f[i]);
+        }
+        ++cs;
+      }
+#pragma unroll 1
+      for (int q = 0; q < 3; ++q) issue();
+      //: each digit's rest, a tile waiting for its stage
+#pragma unroll
+      for (int i = 0; i < 4; ++i) {
+        const int n = __shfl_sync(0xffffffffu, ct, i) - 1;
+#pragma unroll 1
+        for (int s = 0; s < n; ++s) {
+          issue();
+          wait_groups<kStaged - 1>();
+          __syncwarp();
+          if constexpr (PART != 2) step(f[i]);
+          ++cs;
+        }
+      }
+      __syncthreads();
+      if constexpr (PART != 2) drain(p);
+      __syncthreads();
+    }
+    np = np_next;
+    np_next = passes_of(w + 2);
+    ct0 = ct0_next;
+    ct1 = ct1_next;
+    ct0_next = tiles_of(w + 2, 0);
+    ct1_next = tiles_of(w + 2, 1);
+  }
+  wait_groups<0>();
+  const long long t1 = clock64();
+  if (lane == 0) {
+    t[2 * (blockIdx.x * kWarps + warp)] = t0;
+    t[2 * (blockIdx.x * kWarps + warp) + 1] = t1;
+  }
+}
+
 //: the inputs from a dataset's directory
 struct Host {
   std::vector<uint16_t> passes, tiles;
-  std::vector<uint8_t> rec, words, rows;
+  std::vector<uint8_t> rec, words, rows, staged;
   std::vector<uint32_t> panel;
-  int ctas = 0, windows = 0, token_bytes = 0, word_bytes = 0;
+  int ctas = 0, windows = 0, token_bytes = 0, word_bytes = 0, stream_records = 0;
 };
 
 std::vector<uint8_t> file(const std::string& path) {
@@ -372,6 +545,9 @@ Host load(const std::string& dir) {
   h.rec = file(dir + "/records.bin");
   h.words = file(dir + "/words.bin");
   h.rows = file(dir + "/rows.bin");
+  h.staged = file(dir + "/staged.bin");
+  h.stream_records = *reinterpret_cast<const int*>(h.staged.data());
+  h.staged.erase(h.staged.begin(), h.staged.begin() + 4);
   return h;
 }
 
@@ -381,6 +557,21 @@ T* up(const std::vector<T>& v) {
   LAB_CHECK(cudaMalloc(&d, v.size() * sizeof(T)));
   LAB_CHECK(cudaMemcpy(d, v.data(), v.size() * sizeof(T), cudaMemcpyHostToDevice));
   return d;
+}
+
+//: one launch from a cleared panel, its drained panel against the mirror's: the drains of the timed launches summed
+//: over their repetitions would not match
+template <class Launch>
+void check_panel(const lab::Bench& b, const std::string& variant, const In& in, const Host& h, Launch launch) {
+  LAB_CHECK(cudaMemset(in.panel_out, 0, h.panel.size() * 4));
+  launch();
+  LAB_CHECK(cudaDeviceSynchronize());
+  std::vector<uint32_t> got(h.panel.size());
+  LAB_CHECK(cudaMemcpy(got.data(), in.panel_out, got.size() * 4, cudaMemcpyDeviceToHost));
+  size_t bad = 0;
+  for (size_t i = 0; i < got.size(); ++i) bad += got[i] != h.panel[i];
+  b.check(variant, bad == 0, std::to_string(got.size() - bad) + " of " + std::to_string(got.size()) +
+                                 " drained panel words exact (each CTA's, summed over the windows)");
 }
 
 template <int D, int PART, int SET, int CA = 0>
@@ -405,16 +596,30 @@ void run(const lab::Bench& b, const std::string& variant, const In& in, const Ho
                          : PART == 4 ? "a bound: the stream with no waits, its rows racing their copies"
                                      : "a bound: the readout over stale rows, no panel formed");
   } else {
-    //: one launch from a cleared panel: the drains of the timed launches summed over their repetitions
-    LAB_CHECK(cudaMemset(in.panel_out, 0, h.panel.size() * 4));
-    stream<D, PART, SET, CA><<<h.ctas, kThreads, bytes>>>(in, b.times);
-    LAB_CHECK(cudaDeviceSynchronize());
-    std::vector<uint32_t> got(h.panel.size());
-    LAB_CHECK(cudaMemcpy(got.data(), in.panel_out, got.size() * 4, cudaMemcpyDeviceToHost));
-    size_t bad = 0;
-    for (size_t i = 0; i < got.size(); ++i) bad += got[i] != h.panel[i];
-    b.check(variant, bad == 0, std::to_string(got.size() - bad) + " of " + std::to_string(got.size()) +
-                                   " drained panel words exact (each CTA's, summed over the windows)");
+    check_panel(b, variant, in, h, [&] { stream<D, PART, SET, CA><<<h.ctas, kThreads, bytes>>>(in, b.times); });
+  }
+  b.record(variant, "cycles a window", s);
+}
+
+template <int PART, int SET, int SKIP = 0>
+void run_staged(const lab::Bench& b, const std::string& variant, const In& in, const Host& h, const uint8_t* records) {
+  const std::string name = lab::kernel("read_stream::staged", {PART, SET, SKIP});
+  b.expect(name, "LDGSTS", ">=", PART == 1 ? 1 : 2);
+  b.expect(name, "HMMA.16816.F32.BF16", PART == 2 ? "==" : ">=", PART == 2 ? 0 : 4);
+  b.expect(name, "BSSY", ">=", 0);
+  b.exempt(name, "a copy-overlap probe: the readout's tile over staged rows, its cost the question");
+  if (b.expect_only) return;
+  LAB_CHECK(cudaFuncSetAttribute(staged<PART, SET, SKIP>, cudaFuncAttributeMaxDynamicSharedMemorySize, kStagedBytes));
+  const auto launch = [&] {
+    staged<PART, SET, SKIP><<<h.ctas, kThreads, kStagedBytes>>>(in, records, h.stream_records, b.times);
+  };
+  LAB_CHECK(cudaMemset(in.panel_out, 0, h.panel.size() * 4));
+  const lab::Samples s = b.variant(launch, [&] { return b.span(kWarps, h.ctas) / h.windows; });
+  if (PART) {
+    b.unchecked(variant, PART == 2 ? "a bound: copies and their waits alone, no panel formed"
+                                   : "a bound: the readout over stale rows, no panel formed");
+  } else {
+    check_panel(b, variant, in, h, launch);
   }
   b.record(variant, "cycles a window", s);
 }
@@ -431,6 +636,7 @@ int main(int argc, char** argv) {
   //: flagship-cohort-k16 in `c16/`
   Host h[3];
   In in[3] = {};
+  const uint8_t* st[3] = {};
   const char* sub[3] = {"", "/k16", "/c16"};
   if (!b.expect_only) {
     if (dir.empty()) {
@@ -447,6 +653,7 @@ int main(int argc, char** argv) {
       LAB_CHECK(cudaMalloc(&out, h[k].panel.size() * 4));
       in[k] = In{up(h[k].passes), up(h[k].tiles), up(h[k].rec), up(h[k].words), up(h[k].rows), out,
                  h[k].windows, h[k].token_bytes, h[k].word_bytes};
+      st[k] = up(h[k].staged);
     }
   }
   run<4, 0, 0>(b, "streamed, ring 4 (the first tiles' block, nothing ahead)", in[0], h[0]);
@@ -468,4 +675,14 @@ int main(int argc, char** argv) {
   run<5, 0, 0, 1>(b, "streamed, ring 5, L1-allocating copies (.ca)", in[0], h[0]);
   run<5, 0, 1, 1>(b, "alt-k16: streamed, ring 5, L1-allocating copies (.ca)", in[1], h[1]);
   run<5, 0, 2, 1>(b, "cohort-k16: streamed, ring 5, L1-allocating copies (.ca)", in[2], h[2]);
+  run_staged<0, 0>(b, "staged, ring 8", in[0], h[0], st[0]);
+  run_staged<1, 0>(b, "staged: bound: the readout with the producer, no row copies", in[0], h[0], st[0]);
+  run_staged<2, 0>(b, "staged: bound: the copies alone", in[0], h[0], st[0]);
+  run_staged<0, 1>(b, "alt-k16: staged, ring 8", in[1], h[1], st[1]);
+  run_staged<1, 1>(b, "alt-k16: staged: bound: the readout with the producer, no row copies", in[1], h[1], st[1]);
+  run_staged<0, 2>(b, "cohort-k16: staged, ring 8", in[2], h[2], st[2]);
+  run_staged<1, 2>(b, "cohort-k16: staged: bound: the readout with the producer, no row copies", in[2], h[2], st[2]);
+  run_staged<0, 0, 1>(b, "staged, ring 8, pads not copied", in[0], h[0], st[0]);
+  run_staged<0, 1, 1>(b, "alt-k16: staged, ring 8, pads not copied", in[1], h[1], st[1]);
+  run_staged<0, 2, 1>(b, "cohort-k16: staged, ring 8, pads not copied", in[2], h[2], st[2]);
 }

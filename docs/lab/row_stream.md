@@ -29,40 +29,59 @@ so L2 serves what one box fetched to the others, as in the carry. Every forming 
   per-window row bases are running pointers. The consumer's step reads its coefficients from the stage, its lane's row
   and swizzle offsets held in registers (opaque, so ptxas cannot re-form them each step); a list's entries arrive a
   window ahead in registers.
+- STAGED (the stream's floor form): each warp's ring of 4 stages of 2,144 bytes -- a step's 16 rows (a tail's first
+  8), its 16 coefficients lane-ready, the 16 tokens of the stage 4 on -- its stages one record stream across windows
+  and digits (a pre-pass's plan, tokens global), so the producer reads a stage's tokens from the slot it refills,
+  copies its rows (three 16-byte copies a lane) and its 96-byte record in one burst, and checks no window. A pad (an
+  entry past a digit's, a tail's last 8 rows) is not copied: the slot keeps an earlier stage's finite row, which its
+  zero coefficient cancels. A step reads its coefficients from its stage with one 8-byte load.
 
 sm_86 (RTX 3080 Ti), SM clock locked at 1.665 GHz, cycles a CTA-window:
 
 | form | alt-k4 | alt-k16 | cohort-k16 |
 |---|---|---|---|
-| resident (copies waited, lookups at their use) | 9,635 | | |
-| streamed, ring 2 (a 16-token step's own two stages) | 3,563 | | |
-| streamed, ring 3 | 3,216 | | |
-| streamed, ring 4 | 3,068 | 8,012 | 8,709 |
-| streamed, ring 6 | 3,080 | | |
-| streamed, ring 4, records on mbarriers | 3,299 | | 8,793 |
-| streamed, ring 4, lookups from global memory at their use | 5,469 | | |
-| bound: the fold with the producer, no row copies | 3,053 | 7,172 | 7,319 |
-| bound: the same, records on mbarriers | 3,338 | | |
-| bound: the fold alone, no producer | 1,894 | 5,131 | 5,139 |
-| bound: the copies alone | 2,489 | 7,598 | 8,033 |
-| bound: the copies alone, 40 boxes | 2,101 | | |
-| bound: the copies alone, lookups at their use | 4,626 | | |
-| bound: resident, the fold alone | 5,949 | | |
-| bound: resident, the copies alone | 7,860 | | |
-| resident, copies allocated in L1 (`.ca`) | 9,826 | | |
-| streamed, ring 4, copies allocated in L1 (`.ca`) | 3,093 | 7,396 | 8,367 |
+| resident (copies waited, lookups at their use) | 9,634 |  |  |
+| streamed, ring 2 (a 16-token step's own two stages) | 3,562 |  |  |
+| streamed, ring 3 | 3,210 |  |  |
+| streamed, ring 4 | 3,062 | 8,018 | 8,706 |
+| streamed, ring 6 | 3,072 |  |  |
+| streamed, ring 4, records on mbarriers | 3,298 |  | 8,786 |
+| streamed, ring 4, lookups from global memory at their use | 5,463 |  |  |
+| bound: the fold with the producer, no row copies | 3,054 | 7,173 | 7,321 |
+| bound: the same, records on mbarriers | 3,330 |  |  |
+| bound: the fold alone, no producer | 1,894 | 5,121 | 5,138 |
+| bound: the copies alone | 2,485 | 7,584 | 8,029 |
+| bound: the copies alone, 40 boxes | 2,104 |  |  |
+| bound: the copies alone, lookups at their use | 4,621 |  |  |
+| bound: resident, the fold alone | 5,948 |  |  |
+| bound: resident, the copies alone | 7,864 |  |  |
+| resident, copies allocated in L1 (`.ca`) | 9,820 |  |  |
+| streamed, ring 4, copies allocated in L1 (`.ca`) | 3,099 | 7,395 | 8,366 |
+| STAGED, ring 4 (pads not copied) | 2,319 | 6,424 | 6,697 |
+| staged, ring 4, pads copied as zeros | 2,394 | 6,457 | 6,701 |
+| bound: staged, the fold with the producer, no row copies (pads as zeros) | 1,980 | 5,262 | 5,105 |
+| bound: staged, the copies alone (pads as zeros) | 1,723 |  |  |
 
 Instructions a MMA (ncu): the fold alone 6.3 at alt-k4, 6.2 at alt-k16, 7.0 at cohort-k16 (9.5 before its lane
 offsets were held and its coefficients read from the stage: ptxas re-formed ~20 lane constants each step); streamed
 14.5, 14.4, 16.6 -- the producer ~27 instructions a stage of 8 rows (a token load, two 64-bit sources, two
 destinations, the two copies and ptxas's three fillers, the record pointers, the window check, the slot, the commit),
-its structural floor ~22, against ~5.7 MMAs a stage at alt-k4.
+its structural floor ~22, against ~5.7 MMAs a stage at alt-k4. Staged: 8.7, 8.4, 8.9 -- its stream 2.4, 2.2, 1.8 a
+MMA over the fold alone; a 16-token step 63 instructions (the producer 27 a 16-row stage: a token pair, three
+sources -- ptxas forms each in a shift and a carry -- three pad tests, three copies and the record's, the record
+pointer, ptxas's 3 fillers; the consumer's step 36). Shared-memory wavefronts a MMA (ncu bank reads and writes / 32):
+the fold alone 1.6, 2.0, 2.2; streamed 3.4, 4.3, 5.0; staged 2.5, 3.4, 3.9 (4.1, 4.0, 3.9 with its pads copied as
+zeros). L2 sectors a MMA: streamed 4.8, 6.1, 7.8; staged 3.4, 5.3, 6.4.
 
 What it settles:
 
-- The stream costs the fold 1.62x at alt-k4, 1.56x at alt-k16 and 1.69x at cohort-k16 (streamed against the fold with
-  no producer); in instructions it is the producer's ~8 a MMA, its bookkeeping a stage of 8 rows -- halved only by
-  larger stages.
+- The stream costs the fold 1.62x at alt-k4, 1.57x at alt-k16 and 1.69x at cohort-k16 (streamed against the fold with
+  no producer); in instructions it is the producer's ~8 a MMA, its bookkeeping a stage of 8 rows.
+- Staged, it costs 1.22x, 1.25x and 1.30x: a stage a step, one record stream (no window checks), the record riding
+  in the stage's copy and a step refilling the slot the step before it read take the producer from ~8 instructions a
+  MMA to ~2; what remains at alt-k16 and cohort-k16 is
+  the copies' L2 traffic (84% and 77% of the L2's peak). Not copying pads takes a third of the shared-memory traffic
+  at alt-k4 (2.5 wavefronts a MMA against 4.1).
 - A copy's shared destination keeps its source's 32-byte phase: stages of 1,040 bytes (the coefficients appended
   unpadded, every other stage 16 bytes off) ran the stream 15-35% slower (unlocked runs, not recorded).
 - Records land with the stage groups: on an mbarrier (`cp.async.mbarrier.arrive`, `ARRIVES.LDGSTSBAR`) the stream
