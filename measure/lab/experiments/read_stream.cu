@@ -71,8 +71,14 @@ __device__ __forceinline__ read_image::Lane lane_of(uint32_t sm, int warp, int l
           h(plane + read_image::in_plane(srow, sc)), h(plane + read_image::in_plane(srow, 2 + sc)), h(8u * r)};
 }
 
+//: a 16-byte copy; `CA` allocates it in L1
+template <int CA>
 __device__ __forceinline__ void copy16(uint32_t dst, const void* src) {
-  asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(dst), "l"(src) : "memory");
+  if constexpr (CA) {
+    asm volatile("cp.async.ca.shared.global [%0], [%1], 16;" ::"r"(dst), "l"(src) : "memory");
+  } else {
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(dst), "l"(src) : "memory");
+  }
 }
 
 __device__ __forceinline__ void commit() { asm volatile("cp.async.commit_group;" ::: "memory"); }
@@ -132,8 +138,9 @@ __device__ __forceinline__ void tile(uint32_t rows, uint4 e, uint32_t pad, const
 //: window ahead into registers, the panel drained after each pass. `PART` 1 the readout with the producer, no row
 //: copies (the ring's stale rows), 2 the copies alone, 3 the readout with no producer (its entries from global
 //: memory, a tile ahead), 4 the stream with no waits on its stages (a bound: what waiting on the copies costs), 5 as 3
-//: with no drain. `SET` names the dataset's instantiation, so the profiler keeps each dataset's counters apart
-template <int D, int PART, int SET>
+//: with no drain. `SET` names the dataset's instantiation, so the profiler keeps each dataset's counters apart; `CA`
+//: allocates the copies in L1 (`cp.async.ca`), else not (`.cg`)
+template <int D, int PART, int SET, int CA>
 __global__ void __launch_bounds__(kThreads, 1) stream(In in, long long* t) {
   extern __shared__ __align__(128) uint8_t smem[];
   using L = Layout<D>;
@@ -161,7 +168,7 @@ __global__ void __launch_bounds__(kThreads, 1) stream(In in, long long* t) {
   const auto fetch = [&](int w) {
 #pragma unroll 1
     for (int q = lane; q < (w < W ? C / 16 : 0); q += 32)
-      copy16(recs + (w & 1) * C + 16 * q, in.rec + warp_record(w) * C + 16 * q);
+      copy16<CA>(recs + (w & 1) * C + 16 * q, in.rec + warp_record(w) * C + 16 * q);
   };
   //: THE PRODUCER'S CURSOR: the window and stage it copies next and the window's stages; its running addresses -- the
   //: lane's token in the window's record, the stage's entries in global memory, its row's base in the window's rows,
@@ -207,8 +214,8 @@ __global__ void __launch_bounds__(kThreads, 1) stream(In in, long long* t) {
   const auto issue = [&] {
     if (pw < W) {
       const uint32_t tk = lds16(pe);
-      if constexpr (PART != 1) copy16(pslot + row_c, prow + tk * (kSliceGroups * kRow));
-      if (lane < 4) copy16(pslot + 8 * kRow + 16 * lane, pwd);
+      if constexpr (PART != 1) copy16<CA>(pslot + row_c, prow + tk * (kSliceGroups * kRow));
+      if (lane < 4) copy16<CA>(pslot + 8 * kRow + 16 * lane, pwd);
       pe += 16;
       pwd += 64;
       if (++ps >= S) enter();
@@ -376,9 +383,9 @@ T* up(const std::vector<T>& v) {
   return d;
 }
 
-template <int D, int PART, int SET>
+template <int D, int PART, int SET, int CA = 0>
 void run(const lab::Bench& b, const std::string& variant, const In& in, const Host& h) {
-  const std::string name = lab::kernel("read_stream::stream", {D, PART, SET});
+  const std::string name = lab::kernel("read_stream::stream", {D, PART, SET, CA});
   b.expect(name, "LDGSTS", ">=", 1);
   b.expect(name, "HMMA.16816.F32.BF16", PART == 2 ? "==" : ">=", PART == 2 ? 0 : 4);
   //: the producer's cursor runs inside the readout's tile loop, a stage a tile; with no producer, the entries load from
@@ -388,9 +395,9 @@ void run(const lab::Bench& b, const std::string& variant, const In& in, const Ho
   b.exempt(name, "a copy-overlap probe: the readout's tile over streamed rows, its cost the question");
   if (b.expect_only) return;
   const int bytes = Layout<D>::kRec + kWarps * 2 * h.token_bytes;
-  LAB_CHECK(cudaFuncSetAttribute(stream<D, PART, SET>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));
+  LAB_CHECK(cudaFuncSetAttribute(stream<D, PART, SET, CA>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));
   LAB_CHECK(cudaMemset(in.panel_out, 0, h.panel.size() * 4));
-  const lab::Samples s = b.variant([&] { stream<D, PART, SET><<<h.ctas, kThreads, bytes>>>(in, b.times); },
+  const lab::Samples s = b.variant([&] { stream<D, PART, SET, CA><<<h.ctas, kThreads, bytes>>>(in, b.times); },
                                    [&] { return b.span(kWarps, h.ctas) / h.windows; });
   if (PART) {
     b.unchecked(variant, PART == 5   ? "a bound: the readout with no producer and no drain, no panel formed"
@@ -400,7 +407,7 @@ void run(const lab::Bench& b, const std::string& variant, const In& in, const Ho
   } else {
     //: one launch from a cleared panel: the drains of the timed launches summed over their repetitions
     LAB_CHECK(cudaMemset(in.panel_out, 0, h.panel.size() * 4));
-    stream<D, PART, SET><<<h.ctas, kThreads, bytes>>>(in, b.times);
+    stream<D, PART, SET, CA><<<h.ctas, kThreads, bytes>>>(in, b.times);
     LAB_CHECK(cudaDeviceSynchronize());
     std::vector<uint32_t> got(h.panel.size());
     LAB_CHECK(cudaMemcpy(got.data(), in.panel_out, got.size() * 4, cudaMemcpyDeviceToHost));
@@ -458,4 +465,7 @@ int main(int argc, char** argv) {
   run<5, 1, 2>(b, "cohort-k16: bound: the readout with the producer, no row copies", in[2], h[2]);
   run<5, 3, 2>(b, "cohort-k16: bound: the readout alone, no producer", in[2], h[2]);
   run<5, 5, 2>(b, "cohort-k16: bound: the readout alone, no producer, no drain", in[2], h[2]);
+  run<5, 0, 0, 1>(b, "streamed, ring 5, L1-allocating copies (.ca)", in[0], h[0]);
+  run<5, 0, 1, 1>(b, "alt-k16: streamed, ring 5, L1-allocating copies (.ca)", in[1], h[1]);
+  run<5, 0, 2, 1>(b, "cohort-k16: streamed, ring 5, L1-allocating copies (.ca)", in[2], h[2]);
 }

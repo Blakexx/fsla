@@ -32,14 +32,15 @@ sm_86 (RTX 3080 Ti), SM clock locked at 1.665 GHz, cycles a CTA-window:
 
 | form | alt-k4 | alt-k16 | cohort-k16 |
 |---|---|---|---|
-| streamed, ring 4 (the first tiles' block holds the ring, nothing ahead) | 5,360 | | |
-| streamed, ring 5 | 5,120 | 12,333 | 21,680 |
-| streamed, ring 6 | 5,406 | | |
-| bound: the readout with the producer, no row copies | 4,801 | 12,113 | 20,184 |
-| bound: the copies alone | 2,704 | | |
-| bound: the readout alone, no producer (its entries from global memory a tile ahead) | 3,762 | 9,469 | 15,861 |
-| bound: the same, no drain | 2,789 | 7,638 | 13,500 |
-| bound: the stream with no waits on its stages | 5,108 | | |
+| streamed, ring 4 (the first tiles' block holds the ring, nothing ahead) | 5,362 | | |
+| streamed, ring 5 | 5,122 | 12,323 | 21,644 |
+| streamed, ring 6 | 5,410 | | |
+| streamed, ring 5, copies allocated in L1 (`.ca`) | 5,123 | 12,337 | 19,875 |
+| bound: the readout with the producer, no row copies | 4,799 | 12,103 | 20,174 |
+| bound: the copies alone | 2,714 | | |
+| bound: the readout alone, no producer (its entries from global memory a tile ahead) | 3,764 | 9,466 | 15,861 |
+| bound: the same, no drain | 2,788 | 7,637 | 13,499 |
+| bound: the stream with no waits on its stages | 5,106 | | |
 
 Instructions a MMA (ncu): the readout alone 16.5 at alt-k4, 14.0 at alt-k16, 13.0 at cohort-k16 (25.2 at alt-k4
 before the floor pass), of which the drain 2.8, 1.7, 1.4 (11.0 before: 12 of an iteration's 15 instructions rebuilt
@@ -51,13 +52,16 @@ loops, the passes' barriers, the drain, the record) spreads over ~22 MMAs.
 
 What it settles:
 
-- The stream costs the readout 1.36x at alt-k4, 1.30x at alt-k16 and 1.37x at cohort-k16 (streamed at ring 5 against
+- The stream costs the readout 1.36x at alt-k4, 1.30x at alt-k16 and 1.36x at cohort-k16 (streamed at ring 5 against
   the readout with no producer, drains included): its producer's instructions between tiles of 4 MMAs, not its waits
-  (with no waits the stream runs the same, 5,108 against 5,120). Its forms measured at carry-k5 a43afc27 -- the
+  (with no waits the stream runs the same, 5,106 against 5,122). Its forms measured at carry-k5 a43afc27 -- the
   consumer loading its entries, the token a stage ahead, two tiles a stage -- do not help.
 - The readout's floor at sparse is its output path: each output leaves registers after K = 32 (two MMAs), at 2.5
   instructions a value -- 4 a MMA -- before the stream and the window's fixed work.
 - A ring of 5 stages: 4 costs 5%; 6 costs 6%, its records only a window ahead (a window holds 4 stages at least,
   fewer than the 5 groups ring 6 waits on, so its entry drains the ring).
+- Allocating the copies in L1 (`.ca`) serves a box's re-fetches from L1 (a token two of its digits read): 32%
+  fewer L2 sectors at alt-k4, 42% at alt-k16, 49% at cohort-k16 (ncu). Cohort-k16 runs 8.2% faster -- not by
+  bandwidth, its L2 at 34% of peak with `.cg`; the cause is not pinned -- alt-k4 and alt-k16 the same: `.ca`.
 
 Record: `measure/lab/results/read_stream/sm_86.json`.

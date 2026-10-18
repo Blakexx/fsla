@@ -634,4 +634,8 @@ int main(int argc, char** argv) {
   on(hc, inc, streamed<4, 0, 2, 1, 2>, {4, 0, 2, 1, 2, 0}, "cohort-k16: bound: the copies alone (ring 4)", 4, 2, cc);
   on(hc, inc, streamed<4, 0, 0, 1, 2, 1>, {4, 0, 0, 1, 2, 1}, "cohort-k16: streamed, ring 4, records on mbarriers", 4,
      0, cc);
+  on(h16, in16, streamed<4, 1, 0, 1, 1>, {4, 1, 0, 1, 1, 0}, "alt-k16: streamed, ring 4, L1-allocating copies (.ca)", 4,
+     0, c16);
+  on(hc, inc, streamed<4, 1, 0, 1, 2>, {4, 1, 0, 1, 2, 0}, "cohort-k16: streamed, ring 4, L1-allocating copies (.ca)",
+     4, 0, cc);
 }

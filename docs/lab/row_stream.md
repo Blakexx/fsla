@@ -34,23 +34,23 @@ sm_86 (RTX 3080 Ti), SM clock locked at 1.665 GHz, cycles a CTA-window:
 
 | form | alt-k4 | alt-k16 | cohort-k16 |
 |---|---|---|---|
-| resident (copies waited, lookups at their use) | 9,632 | | |
-| streamed, ring 2 (a 16-token step's own two stages) | 3,564 | | |
-| streamed, ring 3 | 3,205 | | |
-| streamed, ring 4 | 3,057 | 8,016 | 8,707 |
-| streamed, ring 6 | 3,075 | | |
-| streamed, ring 4, records on mbarriers | 3,298 | | 8,785 |
-| streamed, ring 4, lookups from global memory at their use | 5,461 | | |
-| bound: the fold with the producer, no row copies | 3,055 | 7,162 | 7,322 |
-| bound: the same, records on mbarriers | 3,331 | | |
-| bound: the fold alone, no producer | 1,894 | 5,130 | 5,141 |
-| bound: the copies alone | 2,486 | 7,595 | 8,031 |
+| resident (copies waited, lookups at their use) | 9,635 | | |
+| streamed, ring 2 (a 16-token step's own two stages) | 3,563 | | |
+| streamed, ring 3 | 3,216 | | |
+| streamed, ring 4 | 3,068 | 8,012 | 8,709 |
+| streamed, ring 6 | 3,080 | | |
+| streamed, ring 4, records on mbarriers | 3,299 | | 8,793 |
+| streamed, ring 4, lookups from global memory at their use | 5,469 | | |
+| bound: the fold with the producer, no row copies | 3,053 | 7,172 | 7,319 |
+| bound: the same, records on mbarriers | 3,338 | | |
+| bound: the fold alone, no producer | 1,894 | 5,131 | 5,139 |
+| bound: the copies alone | 2,489 | 7,598 | 8,033 |
 | bound: the copies alone, 40 boxes | 2,101 | | |
-| bound: the copies alone, lookups at their use | 4,620 | | |
-| bound: resident, the fold alone | 5,944 | | |
-| bound: resident, the copies alone | 7,862 | | |
+| bound: the copies alone, lookups at their use | 4,626 | | |
+| bound: resident, the fold alone | 5,949 | | |
+| bound: resident, the copies alone | 7,860 | | |
 | resident, copies allocated in L1 (`.ca`) | 9,826 | | |
-| streamed, ring 4, copies allocated in L1 (`.ca`) | 3,099 | | |
+| streamed, ring 4, copies allocated in L1 (`.ca`) | 3,093 | 7,396 | 8,367 |
 
 Instructions a MMA (ncu): the fold alone 6.3 at alt-k4, 6.2 at alt-k16, 7.0 at cohort-k16 (9.5 before its lane
 offsets were held and its coefficients read from the stage: ptxas re-formed ~20 lane constants each step); streamed
@@ -60,7 +60,7 @@ its structural floor ~22, against ~5.7 MMAs a stage at alt-k4.
 
 What it settles:
 
-- The stream costs the fold 1.61x at alt-k4, 1.56x at alt-k16 and 1.69x at cohort-k16 (streamed against the fold with
+- The stream costs the fold 1.62x at alt-k4, 1.56x at alt-k16 and 1.69x at cohort-k16 (streamed against the fold with
   no producer); in instructions it is the producer's ~8 a MMA, its bookkeeping a stage of 8 rows -- halved only by
   larger stages.
 - A copy's shared destination keeps its source's 32-byte phase: stages of 1,040 bytes (the coefficients appended
@@ -69,6 +69,9 @@ What it settles:
   runs 8% slower at alt-k4, 1% at cohort-k16.
 - A ring of 4 stages is enough: 6 gains nothing, 3 costs 5%, 2 (a 16-token step's own stages, nothing ahead) 17%.
 - Lookups ahead are a requirement of the form: read from global memory at their use, the stream runs 1.79x.
-- Allocating the copies in L1 (`.ca`) gains nothing on the re-fetched rows (+1% streamed, +2% resident): `.cg`.
+- Allocating the copies in L1 (`.ca`) serves a box's re-fetches from L1 -- a pad row (its stage's first token's line)
+  and a token two of its lists share: 36% fewer L2 sectors at alt-k4, 30% at alt-k16, 8% at cohort-k16 (ncu). Where
+  the copies bind it is faster -- alt-k16, its L2 at 80% of peak with `.cg`, 7.7%; cohort-k16 3.9% -- and at alt-k4,
+  bound by the producer's instructions, +0.8% (resident +2%): `.ca`.
 
 Record: `measure/lab/results/row_stream/sm_86.json`.
