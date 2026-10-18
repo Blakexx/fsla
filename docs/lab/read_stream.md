@@ -62,6 +62,8 @@ What it settles:
   fewer than the 5 groups ring 6 waits on, so its entry drains the ring).
 - Allocating the copies in L1 (`.ca`) serves a box's re-fetches from L1 (a token two of its digits read): 32%
   fewer L2 sectors at alt-k4, 42% at alt-k16, 49% at cohort-k16 (ncu). Cohort-k16 runs 8.2% faster -- not by
-  bandwidth, its L2 at 34% of peak with `.cg`; the cause is not pinned -- alt-k4 and alt-k16 the same: `.ca`.
+  bandwidth, its L2 at 34% of peak with `.cg`; the cause is not pinned -- alt-k4 and alt-k16 the same. But a `.ca`
+  copy takes 5.4 shared-memory pipe cycles a 128 bytes against `.cg`'s 0.5 ([`smem_rates`](smem_rates.md)), and the
+  pipe binds sm_80: `.cg`.
 
 Record: `measure/lab/results/read_stream/sm_86.json`.

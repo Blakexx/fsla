@@ -70,8 +70,10 @@ What it settles:
 - A ring of 4 stages is enough: 6 gains nothing, 3 costs 5%, 2 (a 16-token step's own stages, nothing ahead) 17%.
 - Lookups ahead are a requirement of the form: read from global memory at their use, the stream runs 1.79x.
 - Allocating the copies in L1 (`.ca`) serves a box's re-fetches from L1 -- a pad row (its stage's first token's line)
-  and a token two of its lists share: 36% fewer L2 sectors at alt-k4, 30% at alt-k16, 8% at cohort-k16 (ncu). Where
-  the copies bind it is faster -- alt-k16, its L2 at 80% of peak with `.cg`, 7.7%; cohort-k16 3.9% -- and at alt-k4,
-  bound by the producer's instructions, +0.8% (resident +2%): `.ca`.
+  and a token two of its digits share: 36% fewer L2 sectors at alt-k4, 30% at alt-k16, 8% at cohort-k16 (ncu); where
+  the copies bind on sm_86 it is faster -- alt-k16, its L2 at 80% of peak with `.cg`, 7.7%; cohort-k16 3.9% -- and at
+  alt-k4, bound by the producer's instructions, +0.8% (resident +2%). But a `.ca` copy takes 5.4 shared-memory pipe
+  cycles a 128 bytes against `.cg`'s 0.5 ([`smem_rates`](smem_rates.md)), and the pipe binds sm_80: `.cg`, the
+  re-fetches removed at their source (a pad copied as zeros, reading nothing; shared tokens by the merge width).
 
 Record: `measure/lab/results/row_stream/sm_86.json`.
