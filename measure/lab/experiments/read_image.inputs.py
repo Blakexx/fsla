@@ -48,10 +48,11 @@ FOLD = {"m": lambda e: 16 * (e % 16 % 8), "n": lambda e: 32 * (e % 8 // 2)}
 PER = {"m": 16, "n": 8}
 
 
-def lists(windows: int) -> tuple:
+def lists(windows: int, with_tokens: bool = False) -> tuple:
     """nl64k-alt-k4's read lists over `windows` windows of 512 tokens, from the facts pass's words: (slots, at, count)
     as int64 arrays -- each digit's tokens as their ranks in its 32-digit group's union, in token order (`at[0]` 0, the
-    rest its count), and each union's count."""
+    rest its count), and each union's count; `with_tokens` adds each union's tokens `[windows][groups][512]` (a rank's
+    token in its window)."""
     import numpy as np
 
     from measure.cells import by_name, realize
@@ -68,17 +69,19 @@ def lists(windows: int) -> tuple:
     slots = np.zeros((windows, width, 512), np.int64)
     at = np.zeros((windows, width, 8), np.int64)
     count = np.zeros((windows, width // 32), np.int64)
+    tokens = np.zeros((windows, width // 32, 512), np.int64)
     for w in range(windows):
         for g in range(width // 32):
             group = bits[32 * g:32 * g + 32, 512 * w:512 * w + 512]
             union = group.any(0)
             rank = np.cumsum(union) - 1
             count[w, g] = union.sum()
+            tokens[w, g, :count[w, g]] = np.flatnonzero(union)
             for d in range(32):
                 mine = rank[group[d]]
                 slots[w, 32 * g + d, :len(mine)] = mine
                 at[w, 32 * g + d, 1:] = len(mine)
-    return slots, at, count
+    return (slots, at, count, tokens) if with_tokens else (slots, at, count)
 
 
 def _row(slot: int, row_bytes: int = 64) -> int:

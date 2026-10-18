@@ -166,27 +166,29 @@ def merged(s: CellStats, k: int) -> CellStats:
                      s.write_row, w, s.ring)
 
 
-#: A STREAMED SIDE'S RING: each warp's stages of 8 rows (a 16-token step holds two)
-RING_ROWS = 8
-#: A STREAMED SIDE'S COPIES on sm_86 (lab `row_stream`): cycles an SM a warp `cp.async` (8 rows' 64 bytes) and a global
-#: line (a row's 64 bytes from one source); a stage record's bytes an entry (its slot and c pair); and by ring stages,
-#: the share of the smaller of the copies and their side's MMA phase that hides under the larger (the fold's, measured
-#: at nl64k-alt-k4; the readout's taken as the fold's)
-COPY = {"instruction": 25.7, "line": 0.82}
-RECORD_ENTRY = 8
-HIDE = {2: 0.57, 3: 0.72, 4: 0.74}
+#: A STREAMED SIDE'S COST beyond its MMA phase on sm_86 (labs `row_stream`, `read_stream`): cycles a CTA-window, a fixed
+#: part and a part a stage of the window's busiest warp (8 rows a stage, counted x 8) -- the producer's records, cursor
+#: and waits and the copies' exposed share. The fold's from three cells (fit at nl64k-alt-k4 and flagship-alt-k16,
+#: flagship-cohort-k16 predicted within 4.5%); the readout's at nl64k-alt-k4, split as the fold's
+STREAM = {"fold": (693.0, 14.85), "readout": (499.0, 10.68)}
+#: THE READ RING: its stages' bytes (8 rows of 64 bytes and their entry words) and each depth's addition to the
+#: readout's fixed part (4: the first tiles' block holds the ring, nothing ahead); the fold's ring (4 stages of 8 rows of
+#: 128 bytes, a 16-token step's two and two ahead) takes the image's place, a window's read chunks all run before its
+#: fold
+READ_STAGE = 8 * 64 + 64
+READ_RING = {4: 367.0, 5: 10.0, 6: 0.0}
 
 
 def streamed(s: CellStats, stages: int) -> CellStats:
     """THE FORM WITH ROWS STREAMED: no chunk of a listed side holds rows or entries -- a read chunk is its panel -- and
-    each warp's ring of `stages` row stages; every entry fetches its row (a token in several lists fetched once a list),
-    each warp's entries arriving as its window's stage record. The read ring takes the area's share beside the image;
-    the fold's takes the image's place (a window's read chunks all run before its fold). A dense side keeps its rows
-    resident (every token is in all 32 lists). Re-planned by the same rule."""
+    every entry fetches its row into its warp's ring (a token in several lists fetched once a list), each warp's entries
+    arriving as its window's stage record. The read ring, `stages` deep, takes the area's share beside the image; the
+    fold's takes the image's place. A dense side keeps its rows resident (every token is in all 32 lists). Re-planned
+    by the same rule."""
     from tests.oracle import carry_plan as cp
 
     listed = (s.read[0].listed, s.write[0].listed)
-    area = s.area - (8 * stages * RING_ROWS * s.read_row if listed[0] else 0)
+    area = s.area - (8 * stages * READ_STAGE if listed[0] else 0)
     rows = tuple(0 if lst else row for row, lst in zip((s.read_row, s.write_row), listed))
     words = []
     for rd, wr in zip(s.read, s.write):
@@ -195,6 +197,24 @@ def streamed(s: CellStats, stages: int) -> CellStats:
         words.append(cp.win_of(c, -1, *rows, area).word)
     return CellStats(f"{s.name}+ring{stages}", s.group, s.write, s.read, tuple(words), area, s.read_row, s.write_row,
                      s.window, stages)
+
+
+#: THE FOLD'S RING: 8 warps x 4 stages x 8 rows of 128 bytes, in the image's place once the read chunks have run
+FOLD_RING = 8 * 4 * 8 * 128
+
+
+def ring_beside_panel(s: CellStats, area: int) -> float:
+    """The share of a streamed form's box-windows whose fold ring fits in `area` (the plan's whole area: the image and
+    the read ring are dead once the read chunks have run) beside its last read chunk's panel (64 bytes a slot), so
+    that panel can drain while the fold runs; elsewhere the drain ends before the fold begins."""
+    from tests.oracle import carry_plan as cp
+
+    fit = 0
+    for rd, word in zip(s.read, s.words):
+        _mode, rc, _fc, nr, _nf = cp.chunks(word)
+        last = rd.union - rc * (nr - 1) if nr else 0
+        fit += -(-last * cp.PANEL_ROW // 128) * 128 + FOLD_RING <= area
+    return fit / len(s.words)
 
 
 def _merge(sides: list[Side]) -> Side:
@@ -313,10 +333,8 @@ class Events:
     read_chunks: float = 0.0
     read_rows: float = 0.0      #: union slots filled, read side
     fold_rows: float = 0.0
-    read_entries: float = 0.0
-    fold_entries: float = 0.0
-    read_stages: float = 0.0    #: a streamed listed side's ring stages of 8 rows (a list's or digit's run its own)
-    fold_stages: float = 0.0
+    read_stages: float = 0.0    #: a streamed listed side's stages of its window's busiest warp, x 8 (a digit at least one)
+    fold_stages: float = 0.0    #: the same for the fold (a list's run its own)
     staged_entries: float = 0.0  #: entries staged into chunks (a resident listed side's)
     staged_chunks: float = 0.0   #: chunks whose rows or entries are staged (every side's but a streamed listed one's)
     drained: float = 0.0        #: panel slots drained
@@ -333,7 +351,7 @@ def events_today(s: CellStats) -> Events:
     ev = Events()
     read_max = read_mean = fold_max = fold_mean = 0.0
     for rd, wr, word in zip(s.read, s.write, s.words):
-        rwarp, fwarp = np.zeros(8), np.zeros(8)
+        rwarp, fwarp, rstage, fstage = np.zeros(8), np.zeros(8), np.zeros(8), np.zeros(8)
         mode, rc, fc, nr, nf = cp.chunks(word)
         ev.read_chunks += nr
         ev.staged_chunks += (0 if (s.ring and rd.listed) else nr) + (0 if (s.ring and wr.listed) else nf)
@@ -345,8 +363,9 @@ def events_today(s: CellStats) -> Events:
             slots = min(rc, rd.union - first)
             n = rd.in_chunk(first, slots)
             ev.read_rows += 0 if (s.ring and rd.listed) else slots
-            ev.read_stages += sum(-(-int(round(x)) // 8) for x in n) if (s.ring and rd.listed) else 0
-            ev.read_entries += n.sum() if rd.listed else 0
+            if s.ring and rd.listed:
+                for d in range(32):
+                    rstage[d % 8] += max(1, -(-int(round(n[d])) // 8))
             ev.staged_entries += n.sum() if (rd.listed and not s.ring) else 0
             ev.drained += slots
             for w in range(8):
@@ -368,8 +387,9 @@ def events_today(s: CellStats) -> Events:
             slots = min(fc, wr.union - first)
             n = wr.in_chunk(first, slots)
             ev.fold_rows += 0 if (s.ring and wr.listed) else slots
-            ev.fold_stages += sum(-(-int(round(x)) // 8) for x in n) if (s.ring and wr.listed) else 0
-            ev.fold_entries += n.sum() if wr.listed else 0
+            if s.ring and wr.listed:
+                for l in range(32):
+                    fstage[l % 8] += -(-int(round(n[l])) // 8)
             ev.staged_entries += n.sum() if (wr.listed and not s.ring) else 0
             for l in range(32):
                 a, b = _steps(int(n[l]))
@@ -379,6 +399,8 @@ def events_today(s: CellStats) -> Events:
                 ev.fold_mmas16 += 8 * a
                 ev.fold_mmas8 += 8 * b
                 fwarp[l % 8] += 8 * a * PIPE["HMMA.16816.F32"] + 8 * b * PIPE["HMMA.1688.F32"]
+        ev.read_stages += 8 * rstage.max()
+        ev.fold_stages += 8 * fstage.max()
         read_max += rwarp.max()
         read_mean += rwarp.mean()
         fold_max += fwarp.max()
@@ -544,16 +566,6 @@ def profile(cell: str) -> Path:
     return out
 
 
-def copies(s: CellStats, ev: Events) -> dict[str, float]:
-    """A streamed side's copies a CTA-window by the MMA phase they run beside, at `COPY`'s prices: a warp `cp.async`
-    each 64 bytes of a stage's 8 rows, a line each 64 bytes of a row an entry fetches, and each warp's stage record (its
-    entries' bytes, 512 a warp `cp.async`, at least one a warp)."""
-    return {phase: COPY["instruction"] * (row / 64 * stages + 8 + entries * RECORD_ENTRY / 512)
-            + COPY["line"] * (row / 64 * entries + entries * RECORD_ENTRY / 128)
-            for phase, row, stages, entries in (("readout", s.read_row, ev.read_stages, ev.read_entries),
-                                                ("fold", s.write_row, ev.fold_stages, ev.fold_entries)) if stages}
-
-
 def mma_pipe(ev: Events) -> dict[str, float]:
     """Each MMA phase's pipe cycles a CTA-window from today's carve's events (the readout's fp16-accumulate on this
     card, the fold's fp32)."""
@@ -581,16 +593,19 @@ class Model:
             self.effs[side] = efficiencies(phase_counts(reg), led, ev, self.prices[side])
 
     def window(self, stats: CellStats) -> dict[str, float]:
-        """A cell's (or a form's) predicted cycles a CTA-window, by phase; a streamed side's row copies (`copies`) run
-        beside its MMA phase, `HIDE` of the smaller hidden under the larger, the rest booked in `fills`."""
+        """A cell's (or a form's) predicted cycles a CTA-window, by phase; a streamed side's cost beyond its MMA phase
+        (`STREAM`, the read ring's depth) booked in `fills` -- its part a stage already the busiest warp's, so the
+        rendezvous' idle does not take it again."""
         side = "listed" if stats.read[0].listed else "dense"
         ev = events_today(stats)
         pred = predict(self.prices[side], ev)
         pipe = mma_pipe(ev)
         cyc = {p: max(floors(i, w, pipe.get(p, 0.0)).values()) * self.effs[side][p] for p, (i, w) in pred.items()}
-        for phase, cost in copies(stats, ev).items():
-            own = cyc.get(phase, 0.0)
-            cyc["fills"] = cyc.get("fills", 0.0) + max(0.0, cost - own) + (1.0 - HIDE[stats.ring]) * min(cost, own)
+        for phase, stages in (("readout", ev.read_stages), ("fold", ev.fold_stages)):
+            if stages:
+                fixed, per = STREAM[phase]
+                cyc["fills"] = (cyc.get("fills", 0.0) + fixed + per * stages
+                                + (READ_RING[stats.ring] if phase == "readout" else 0.0))
         cyc["glue"] = cyc.get("glue", 0.0) + idle(cyc, varying_share(self.prices[side], ev), ev)
         return cyc
 
@@ -697,12 +712,15 @@ def main() -> int:
         for name in a.cells:
             base = cell_stats(name)
             ref = sum(model.window(base).values())
-            for form, stats0 in (("resident", base), *((f"streamed, ring {d}", streamed(base, d)) for d in HIDE)):
+            for form, stats0 in (("resident", base), *((f"streamed, read ring {d}", streamed(base, d)) for d in READ_RING)):
                 for k in a.k:
-                    cyc = model.window(merged(stats0, k))
+                    form_k = merged(stats0, k)
+                    cyc = model.window(form_k)
                     tot = sum(cyc.values()) / k
+                    beside = (f"  fold ring beside the last panel {100 * ring_beside_panel(form_k, base.area):.0f}%"
+                              if form_k.ring else "")
                     print(f"{name:20s} {form:24s} W {WINDOW * k:5d}: {tot:8.0f} a 512 tokens ({tot / ref:.2f}x)  "
-                          + " ".join(f"{p} {v / k:.0f}" for p, v in sorted(cyc.items())))
+                          + " ".join(f"{p} {v / k:.0f}" for p, v in sorted(cyc.items())) + beside)
     elif a.cmd == "measured":
         regions = measured(a.csv, a.so, a.cta_windows)
         total = sum(r.instructions for r in regions.values())

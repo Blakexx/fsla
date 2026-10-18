@@ -1,11 +1,12 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE ROW STREAM'S INPUTS: real write lists of nl64k-alt-k4 for `row_stream.cu`
-(docs/internals/tools/lab.md#row-stream), the rows they read, shared between the boxes as the carry's are, the warps'
-stage records, and the exact state the fold over them must reach.
+"""THE ROW STREAM'S INPUTS: real write lists for `row_stream.cu` (docs/internals/tools/lab.md#row-stream), the rows
+they read, shared between the boxes as the carry's are, the warps' stage records, and the exact state the fold over
+them must reach -- each of `DATASETS` (nl64k-alt-k4's 64 windows; flagship-alt-k16-L16384's 32 in `k16/` and
+flagship-cohort-k16-L16384's in `c16/`).
 
 CTA `b` is box `b` of one head (the carry's order, its channel tile fastest): channel tile `b % 2`, write group
-`(b // 2) % 8` (its 32 lists), level-1 slice group `b // 16`; every CTA folds windows `0 .. WINDOWS - 1`, so a token's
+`(b // 2) % 8` (its 32 lists), level-1 slice group `b // 16`; every CTA folds its dataset's windows, so a token's
 slice is read by each box of its slice group and its values by each box of its channel tile, as the carry reads them.
 Files (little-endian):
 - `lists.bin`: int32 header (magic 0x4D525453, ctas, windows, groups); then per window, per write group: u16 `n[32]`
@@ -32,8 +33,10 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-CELL, CTAS, WINDOWS, GROUPS, TILES, WARPS = "nl64k-alt-k4", 80, 64, 8, 2, 8
+CTAS, GROUPS, TILES, WARPS = 80, 8, 2, 8
 W = 512
+#: THE DATASETS: (subdirectory, cell, windows) -- the calibration cell, a cell of longer lists, and a clustered cell
+DATASETS = (("", "nl64k-alt-k4", 64), ("k16", "flagship-alt-k16-L16384", 32), ("c16", "flagship-cohort-k16-L16384", 32))
 
 
 def box(b: int) -> tuple[int, int, int]:
@@ -42,24 +45,32 @@ def box(b: int) -> tuple[int, int, int]:
 
 
 def write(directory: Path) -> list[str]:
+    out = []
+    for sub, cell, windows in DATASETS:
+        (directory / sub).mkdir(exist_ok=True)
+        out += [str(Path(sub) / f) for f in dataset(directory / sub, cell, windows)]
+    return out
+
+
+def dataset(directory: Path, cell: str, windows: int) -> list[str]:
     from measure.cells import by_name
     from measure.subjects import carry_operands
     from rola.ops import facts as facts_ops
 
-    _routes, _values, facts, _carve, _unit = carry_operands(by_name(CELL))
+    _routes, _values, facts, _carve, _unit = carry_operands(by_name(cell))
     lists = facts_ops.side_lists(facts, "write")
     entries = lists.entries.cpu().numpy()
     pre = lists.pre.long().cpu().numpy() & 0xFFFF
     union = lists.union.cpu().numpy().astype(np.int64) & 0xFFFF
     count = lists.count.cpu().numpy()
     rng = np.random.default_rng(20261017)
-    slices = rng.integers(0, 2, size=(WINDOWS, W, 8, 16)).astype(np.float16)
-    values = rng.integers(0, 3, size=(WINDOWS, W, 64)).astype(np.float16)
+    slices = rng.integers(0, 2, size=(windows, W, 8, 16)).astype(np.float16)
+    values = rng.integers(0, 3, size=(windows, W, 64)).astype(np.float16)
     state = np.zeros((CTAS, 32, 32, 32), dtype=np.float64)
     boxes = [box(b) for b in range(CTAS)]
     plans: dict[tuple[int, int, int], list[np.ndarray]] = {}
-    out = bytearray(struct.pack("<4i", 0x4D525453, CTAS, WINDOWS, GROUPS))
-    for w in range(WINDOWS):
+    out = bytearray(struct.pack("<4i", 0x4D525453, CTAS, windows, GROUPS))
+    for w in range(windows):
         for g in range(GROUPS):
             n = ((pre[0, w, g][1:33] - pre[0, w, g][:32]) & 0xFFFF)[:, -1].astype(np.int64)
             tok = np.zeros((32, W), dtype=np.uint16)
@@ -82,7 +93,7 @@ def write(directory: Path) -> list[str]:
             out += n.astype(np.uint16).tobytes() + tok.tobytes() + struct.pack("<H", u) + un.tobytes()
     (directory / "lists.bin").write_bytes(bytes(out))
     most = max(len(x) for x in plans.values())
-    rec = np.zeros((WINDOWS, GROUPS, WARPS, 8 * (1 + most)), dtype=np.uint16)
+    rec = np.zeros((windows, GROUPS, WARPS, 8 * (1 + most)), dtype=np.uint16)
     for (w, g, wp), stages in plans.items():
         rec[w, g, wp, 0] = len(stages)
         if stages:

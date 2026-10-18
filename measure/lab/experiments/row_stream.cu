@@ -15,6 +15,7 @@
 #include <type_traits>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -153,22 +154,24 @@ __device__ __forceinline__ void step(float (&acc)[2][4][4], int s, int n, Row ro
   }
 }
 
-//: a list's steps over its `n` entries (fold.cuh's `steps`): 16 tokens while more than 8 remain, then 8; `prep(s, two)`
-//: once before the step at entry `s` (`two`: a 16-token step, two stages), `row(s, i)` entry `s + i`'s row; `Fold` 0
-//: runs the preps alone (the copies' bound)
-template <int Fold, class Prep, class Row, class Key>
-__device__ __forceinline__ void steps(float (&acc)[2][4][4], int n, Prep prep, Row row, Key key, int lane) {
+//: a list's steps over its `n` entries (fold.cuh's `steps`): 16 tokens while more than 8 remain, then 8; `prep(two)`
+//: before each step and `post(two)` after it (`two`: a 16-token step, two stages), `row(s, i)` entry `s + i`'s row;
+//: `Fold` 0 runs the preps and posts alone (the copies' bound)
+template <int Fold, class Prep, class Post, class Row, class Key>
+__device__ __forceinline__ void steps(float (&acc)[2][4][4], int n, Prep prep, Post post, Row row, Key key, int lane) {
   int s = 0;
   for (int k = __any_sync(0xffffffffu, n - s > 8) ? 1 : 0; k > 0; --k)
 #pragma unroll 1
     do {
-      prep(s, std::true_type{});
+      prep(std::true_type{});
       if constexpr (Fold) step<1>(acc, s, n, [&](int i) { return row(s, i); }, [&](int i) { return key(s, i); }, lane);
+      post(std::true_type{});
       s += 16;
     } while (__any_sync(0xffffffffu, n - s > 8));
   for (int k = __any_sync(0xffffffffu, n - s > 0) ? 1 : 0; k > 0; --k) {
-    prep(s, std::false_type{});
+    prep(std::false_type{});
     if constexpr (Fold) step<0>(acc, s, n, [&](int i) { return row(s, i); }, [&](int i) { return key(s, i); }, lane);
+    post(std::false_type{});
   }
 }
 
@@ -238,7 +241,7 @@ __global__ void __launch_bounds__(kThreads, 1) resident(In in, long long* t) {
       const uint16_t* le = ent + (warp + kWarps * J) * kWindow;
       const int nj = n[J];
       steps<PART != 2>(
-          acc[J], nj, [](int, auto) {},
+          acc[J], nj, [](auto) {}, [](auto) {},
           [&](int s, int i) { return smem(pool) + kRow * static_cast<uint32_t>(le[min(s + i, max(nj - 1, 0))]); },
           [&](int s, int i) { return static_cast<int>(le[min(s + i, max(nj - 1, 0))]); }, lane);
     });
@@ -249,19 +252,21 @@ __global__ void __launch_bounds__(kThreads, 1) resident(In in, long long* t) {
 }
 
 //: STREAMED: each warp's ring of `D` stages of 8 rows (`D >= 2`: a 16-token step holds two), its stages its window
-//: records' in order (its lists `w + 8 j`, each list's entries 8 a stage), each copied as soon as a slot no step holds
-//: is free, across lists and windows. `AHEAD`: the producer reads a stage's tokens from its window's record, copied to
-//: shared memory a window ahead, and the consumer its lists' entries a window ahead into registers; else each from
-//: global memory at its use. `PART` 1 the fold alone (no copies, the ring's stale rows), 2 the copies alone; 3 the
-//: copies alone with a stage's pad rows fetched too (other tokens' rows)
-template <int D, int CA, int PART, int AHEAD>
+//: records' in order (its lists `w + 8 j`, each list's entries 8 a stage), each slot refilled as its step ends,
+//: across lists and windows. `AHEAD`: the producer reads a stage's tokens from its window's record, copied to shared
+//: memory two windows ahead, and the consumer its lists' entries a window ahead into registers; else each from global
+//: memory at its use. `PART` 1 the fold alone (no row copies, the ring's stale rows), 2 the copies alone; 3 the copies
+//: alone with a stage's pad rows fetched too (other tokens' rows); 4 the fold alone with no producer. `SET` names the
+//: dataset's instantiation, so the profiler keeps each dataset's counters apart
+template <int D, int CA, int PART, int AHEAD, int SET = 0>
 __global__ void __launch_bounds__(kThreads, 1) streamed(In in, long long* t) {
   extern __shared__ __align__(128) uint8_t sm[];
   const int warp = lab::warp_id(), lane = lab::lane_id(), W = in.windows, C = in.record_bytes, r = lane >> 2,
             c = lane & 3;
   const Box x = box_of();
-  const uint32_t ring = smem(sm) + warp * D * kStage;
-  const uint16_t* recs = reinterpret_cast<const uint16_t*>(sm + kWarps * D * kStage + warp * 2 * C);
+  const uint32_t ring = smem(sm) + warp * D * kStage, ring_last = ring + (D - 1) * kStage;
+  const auto next_slot = [&](uint32_t slot) { return slot == ring_last ? ring : slot + kStage; };
+  uint16_t* const recs = reinterpret_cast<uint16_t*>(sm + kWarps * D * kStage + warp * 3 * C);
   float acc[4][2][4][4] = {};
   const auto list_n = [&](int w, int j) {
     return w < W ? static_cast<int>(in.n[(static_cast<size_t>(w) * kGroups + x.group) * kLists + warp + kWarps * j])
@@ -270,28 +275,37 @@ __global__ void __launch_bounds__(kThreads, 1) streamed(In in, long long* t) {
   const auto record = [&](int w) {
     return in.rec + ((static_cast<size_t>(w) * kGroups + x.group) * kWarps + warp) * C;
   };
-  //: window `w`'s record into its buffer `w & 1`, a lane a 16-byte chunk
+  //: window `w`'s record into its buffer `w % 3` (fetched two windows ahead), a lane a 16-byte chunk
   const auto fetch = [&](int w) {
 #pragma unroll 1
     for (int q = lane; q < (w < W ? C / 16 : 0); q += 32)
-      copy16<CA>(smem(recs) + (w & 1) * C + 16 * q, record(w) + 16 * q, true);
+      copy16<CA>(smem(recs) + (w % 3) * C + 16 * q, record(w) + 16 * q, true);
   };
-  //: u16 `i` of window `w`'s record, from its buffer (`AHEAD`) or global memory
-  const auto rec_at = [&](int w, int i) {
-    return static_cast<int>(AHEAD ? recs[(w & 1) * (C / 2) + i] : reinterpret_cast<const uint16_t*>(record(w))[i]);
+  //: window `w`'s record: its buffer (`AHEAD`) or global memory
+  const auto rec_of = [&](int w) -> const uint16_t* {
+    return AHEAD ? recs + (w % 3) * (C / 2) : reinterpret_cast<const uint16_t*>(record(w));
   };
-  //: THE PRODUCER'S CURSOR: the window and stage it copies next, the window's stages, the issues (a stage each, an
-  //: empty one past the last window), the groups committed and the group carrying the next window's record
-  int pw = 0, ps = 0, issued = 0, groups = 0, carrier = 0;
+  //: THE PRODUCER'S CURSOR: the window and stage it copies next and the window's stages; its running addresses -- the
+  //: lane's token in the window's record, the ring slot it fills next, the window's first token; the groups committed
+  //: and the groups carrying the next two windows' records
+  int pw = 0, ps = 0, groups = 0, carrier = 0, carrier_next = 0;
   if constexpr (AHEAD) {
     fetch(0);
     commit();
     wait_groups<0>();
     __syncwarp();
     fetch(1);
+    fetch(2);
   }
-  int S = rec_at(0, 0);
-  //: the cursor to the next window holding stages, its record landed first
+  const uint32_t row_s = r * kRow + 16 * ((c ^ r) & 7), row_v = r * kRow + 16 * (((c + 4) ^ r) & 7);
+  const uint8_t* const slice_c = in.slices + 32 * x.slice + 16 * (c & 1);
+  const uint8_t* const values_c = in.values + 64 * x.tile + 16 * c;
+  const uint16_t* pe = rec_of(0) + 8 + r;
+  uint32_t pslot = ring;
+  size_t first_token = 0;
+  int S = rec_of(0)[0];
+  //: the cursor to the next window holding stages, its record landed first (a wait on every group but the newest D - 1,
+  //: or every group where fewer have been committed since)
   const auto enter = [&] {
 #pragma unroll 1
     do {
@@ -308,54 +322,64 @@ __global__ void __launch_bounds__(kThreads, 1) streamed(In in, long long* t) {
           }
           __syncwarp();
         }
-        fetch(pw + 1);
-        carrier = groups;
+        fetch(pw + 2);
+        carrier = carrier_next;
+        carrier_next = groups;
       }
-      S = pw < W ? rec_at(pw, 0) : 0;
+      pe = rec_of(pw) + 8 + r;
+      first_token = static_cast<size_t>(pw) * kWindow;
+      S = pw < W ? rec_of(pw)[0] : 0;
     } while ((pw < W) & (S == 0));
   };
+  if (S == 0) enter();
   const auto issue = [&] {
     if (pw < W) {
-      int tk = rec_at(pw, 8 + 8 * ps + r);
+      int tk = *pe;
       const bool live = tk != 0xFFFF || PART == 3;
       if constexpr (PART == 3) tk = tk != 0xFFFF ? tk : (37 * r + ps) & (kWindow - 1);
-      const int here = live ? tk : 0;
-      const uint32_t dst = ring + (issued % D) * kStage + r * kRow;
+      const size_t token = first_token + (live ? tk : 0);
       if constexpr (PART != 1) {
-        copy16<CA>(dst + 16 * ((c ^ r) & 7), chunk_src(in, x, pw, here, c), live && c < 2);
-        copy16<CA>(dst + 16 * (((c + 4) ^ r) & 7), chunk_src(in, x, pw, here, c + 4), live);
+        copy16<CA>(pslot + row_s, slice_c + token * kSlices, live && c < 2);
+        copy16<CA>(pslot + row_v, values_c + token * kValues, live);
       }
+      pe += 8;
       if (++ps >= S) enter();
     }
+    pslot = next_slot(pslot);
     commit();
     ++groups;
-    ++issued;
   };
   const long long t0 = clock64();
+  if constexpr (PART != 4) {
 #pragma unroll 1
-  for (int q = 0; q < D - 1; ++q) issue();
-  //: THE CONSUMER: its next stage, the entries of its window's and the next window's lists (lane `j` list `j`'s)
-  int used = 0, cn = list_n(0, lane & 3), cn_next = list_n(1, lane & 3);
+    for (int q = 0; q < D; ++q) issue();
+  }
+  //: THE CONSUMER: the ring slots of its step's stages, the entries of its window's and the next window's lists (lane
+  //: `j` list `j`'s); a step waits for its stages, every stage but the D - its stages ahead, and refills its slots
+  int cn = list_n(0, lane & 3), cn_next = list_n(1, lane & 3);
+  uint32_t cslot = ring, cslot2 = next_slot(ring);
 #pragma unroll 1
   for (int w = 0; w < W; ++w) {
     rola::static_for<4>([&](auto J) {
-      const int nj = AHEAD ? __shfl_sync(0xffffffffu, cn, J) : list_n(w, J), base = used;
-      //: entry `s + i` of the list sits in stage `base + (s + i) / 8`, row `(s + i) % 8`; the step holds stages
-      //: `first ..` (two for 16 tokens): the ring's other slots take the stages ahead, then every stage but those
-      //: ahead has landed
-      steps<PART < 2>(
+      const int nj = AHEAD ? __shfl_sync(0xffffffffu, cn, J) : list_n(w, J);
+      steps<PART < 2 || PART == 4>(
           acc[J], nj,
-          [&](int s, auto two) {
-            constexpr int kTwo = decltype(two)::value ? 1 : 0;
-            const int first = base + s / 8;
-#pragma unroll 1
-            while (issued < first + D) issue();
-            wait_groups<D - 1 - kTwo>();
-            __syncwarp();
+          [&](auto two) {
+            cslot2 = next_slot(cslot);
+            if constexpr (PART != 4) {
+              wait_groups<decltype(two)::value ? D - 2 : D - 1>();
+              __syncwarp();
+            }
           },
-          [&](int s, int i) { return ring + ((base + (s + i) / 8) % D) * kStage + ((s + i) & 7) * kRow; },
-          [&](int s, int i) { return (s + i) & 7; }, lane);
-      used = base + (nj + 7) / 8;
+          [&](auto two) {
+            cslot = next_slot(decltype(two)::value ? cslot2 : cslot);
+            if constexpr (PART != 4) {
+              issue();
+              if constexpr (decltype(two)::value) issue();
+            }
+          },
+          [&](int, int i) { return (i < 8 ? cslot : cslot2) + (i & 7) * kRow; }, [&](int, int i) { return i & 7; },
+          lane);
     });
     cn = cn_next;
     cn_next = list_n(w + 2, lane & 3);
@@ -420,9 +444,10 @@ T* up(const std::vector<T>& v) {
   return d;
 }
 
-//: `part` as the kernels' `PART`: 1 to 3 (a part alone, a bound) form no state, so go unchecked; `keeps`: the step
+//: `part` as the kernels' `PART`: 1 to 4 (a part alone, a bound) form no state, so go unchecked; `keeps`: the step
 //: signatures a form keeps -- `kBranches` the streamed producer's cursor inside the fold's step loop, `kGlobal` its
-//: lookups from global memory at their use
+//: lookups from global memory at their use (or, with no producer, the window loop's list entries, the loop ptxas then
+//: takes for the innermost)
 constexpr int kBranches = 1, kGlobal = 2;
 
 template <class Kernel>
@@ -431,14 +456,15 @@ void run(const lab::Bench& b, const std::string& kname, const std::string& varia
   b.expect(kname, "LDGSTS", ">=", part == 1 ? 0 : 1);
   if (keeps & kBranches) b.expect(kname, "BSSY", ">=", 0);
   if (keeps & kGlobal) b.expect(kname, "STEP_GLOBAL", ">=", 0);
-  b.expect(kname, "HMMA", part >= 2 ? "==" : ">=", part >= 2 ? 0 : 16);
+  const bool folds = part == 0 || part == 1 || part == 4;
+  b.expect(kname, "HMMA", folds ? ">=" : "==", folds ? 16 : 0);
   b.exempt(kname, "a copy-overlap probe: the carry's fold step over streamed or staged rows, its cost the question");
   if (b.expect_only) return;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_bytes));
   const lab::Samples s = b.variant([&] { kernel<<<ctas, kThreads, smem_bytes>>>(in, b.times); },
                                    [&] { return b.span(kWarps, ctas) / h.windows; });
   if (part) {
-    b.unchecked(variant, part == 1 ? "a bound: the fold over stale rows, no state formed"
+    b.unchecked(variant, folds ? "a bound: the fold over stale rows, no state formed"
                                    : "a bound: copies and their waits alone, no state formed");
   } else {
     std::vector<float> out(static_cast<size_t>(ctas) * kLists * 1024);
@@ -458,47 +484,66 @@ int main(int argc, char** argv) {
   std::string dir;
   for (int i = 1; i + 1 < argc; ++i)
     if (!std::strcmp(argv[i], "--inputs")) dir = argv[i + 1];
-  Host h;
-  In in{};
-  int ctas = 0;
+  //: each dataset's inputs (`row_stream.inputs.py`'s `DATASETS`): nl64k-alt-k4, flagship-alt-k16 in `k16/` and
+  //: flagship-cohort-k16 in `c16/`
+  Host h, h16, hc;
+  In in{}, in16{}, inc{};
+  const auto device = [&](const std::string& d, Host& host, In& to) {
+    host = load(d);
+    if (host.ctas > b.sms) {
+      std::fprintf(stderr, "row_stream: %d boxes need as many SMs, the device has %d\n", host.ctas, b.sms);
+      std::exit(1);
+    }
+    float* out = nullptr;
+    LAB_CHECK(cudaMalloc(&out, static_cast<size_t>(host.ctas) * kLists * 1024 * 4));
+    to = In{up(host.n), up(host.tok), up(host.cnt), up(host.uni), up(host.slices), up(host.values), up(host.rec),
+            out, host.windows, host.record_bytes};
+  };
   if (!b.expect_only) {
     if (dir.empty()) {
       std::fprintf(stderr, "row_stream: --inputs <directory> (tools/lab.py writes it)\n");
       return 1;
     }
-    h = load(dir);
-    if (h.ctas > b.sms) {
-      std::fprintf(stderr, "row_stream: %d boxes need as many SMs, the device has %d\n", h.ctas, b.sms);
-      return 1;
-    }
-    ctas = h.ctas;
-    float* out = nullptr;
-    LAB_CHECK(cudaMalloc(&out, static_cast<size_t>(ctas) * kLists * 1024 * 4));
-    in = In{up(h.n), up(h.tok), up(h.cnt), up(h.uni), up(h.slices), up(h.values), up(h.rec), out, h.windows,
-            h.record_bytes};
+    device(dir, h, in);
+    device(dir + "/k16", h16, in16);
+    device(dir + "/c16", hc, inc);
   }
-  const int pool = 2 * kWindow + 2 * kLists * kWindow + kWindow * kRow;
-  const auto ring = [&](int d) { return kWarps * (d * kStage + 2 * h.record_bytes); };
+  const int ctas = h.ctas, pool = 2 * kWindow + 2 * kLists * kWindow + kWindow * kRow;
   const auto res = [&](auto kernel, std::initializer_list<int> args, const char* variant, int part) {
     run(b, lab::kernel("resident", args), variant, kernel, pool, in, h, ctas, part, 0);
   };
+  const auto on = [&](const Host& hs, const In& is, auto kernel, std::initializer_list<int> args,
+                      const std::string& variant, int d, int part, int n) {
+    run(b, lab::kernel("streamed", args), variant, kernel, kWarps * (d * kStage + 3 * hs.record_bytes), is, hs, n,
+        part, kBranches | (*(args.begin() + 3) && part != 4 ? 0 : kGlobal));
+  };
   const auto str = [&](auto kernel, std::initializer_list<int> args, const char* variant, int d, int part, int n) {
-    run(b, lab::kernel("streamed", args), variant, kernel, ring(d), in, h, n, part,
-        kBranches | (*(args.begin() + 3) ? 0 : kGlobal));
+    on(h, in, kernel, args, variant, d, part, n);
   };
   res(resident<0, 0>, {0, 0}, "resident (union staged, barrier, fold)", 0);
-  str(streamed<2, 0, 0, 1>, {2, 0, 0, 1}, "streamed, ring 2 (a 16-token step's own stages)", 2, 0, ctas);
-  str(streamed<3, 0, 0, 1>, {3, 0, 0, 1}, "streamed, ring 3", 3, 0, ctas);
-  str(streamed<4, 0, 0, 1>, {4, 0, 0, 1}, "streamed, ring 4", 4, 0, ctas);
-  str(streamed<6, 0, 0, 1>, {6, 0, 0, 1}, "streamed, ring 6", 6, 0, ctas);
-  str(streamed<4, 0, 0, 0>, {4, 0, 0, 0}, "streamed, ring 4, lookups at their use", 4, 0, ctas);
-  str(streamed<4, 0, 1, 1>, {4, 0, 1, 1}, "bound: streamed, the fold alone (ring 4)", 4, 1, ctas);
-  str(streamed<4, 0, 2, 1>, {4, 0, 2, 1}, "bound: streamed, the copies alone (ring 4)", 4, 2, ctas);
-  str(streamed<4, 0, 2, 1>, {4, 0, 2, 1}, "bound: streamed, the copies alone, 40 boxes", 4, 2, ctas / 2);
-  str(streamed<4, 0, 3, 1>, {4, 0, 3, 1}, "bound: streamed, the copies alone, pad rows fetched", 4, 3, ctas);
-  str(streamed<4, 0, 2, 0>, {4, 0, 2, 0}, "bound: streamed, the copies alone, lookups at their use", 4, 2, ctas);
+  str(streamed<2, 0, 0, 1>, {2, 0, 0, 1, 0}, "streamed, ring 2 (a 16-token step's own stages)", 2, 0, ctas);
+  str(streamed<3, 0, 0, 1>, {3, 0, 0, 1, 0}, "streamed, ring 3", 3, 0, ctas);
+  str(streamed<4, 0, 0, 1>, {4, 0, 0, 1, 0}, "streamed, ring 4", 4, 0, ctas);
+  str(streamed<6, 0, 0, 1>, {6, 0, 0, 1, 0}, "streamed, ring 6", 6, 0, ctas);
+  str(streamed<4, 0, 0, 0>, {4, 0, 0, 0, 0}, "streamed, ring 4, lookups at their use", 4, 0, ctas);
+  str(streamed<4, 0, 1, 1>, {4, 0, 1, 1, 0}, "bound: streamed, the fold alone (ring 4)", 4, 1, ctas);
+  str(streamed<4, 0, 4, 1>, {4, 0, 4, 1, 0}, "bound: streamed, the fold alone, no producer", 4, 4, ctas);
+  str(streamed<4, 0, 2, 1>, {4, 0, 2, 1, 0}, "bound: streamed, the copies alone (ring 4)", 4, 2, ctas);
+  str(streamed<4, 0, 2, 1>, {4, 0, 2, 1, 0}, "bound: streamed, the copies alone, 40 boxes", 4, 2, ctas / 2);
+  str(streamed<4, 0, 3, 1>, {4, 0, 3, 1, 0}, "bound: streamed, the copies alone, pad rows fetched", 4, 3, ctas);
+  str(streamed<4, 0, 2, 0>, {4, 0, 2, 0, 0}, "bound: streamed, the copies alone, lookups at their use", 4, 2, ctas);
   res(resident<0, 1>, {0, 1}, "bound: resident, the fold alone (no copies)", 1);
   res(resident<0, 2>, {0, 2}, "bound: resident, the copies alone (no fold)", 2);
   res(resident<1, 0>, {1, 0}, "resident, L1-allocating copies (.ca)", 0);
-  str(streamed<4, 1, 0, 1>, {4, 1, 0, 1}, "streamed, ring 4, L1-allocating copies (.ca)", 4, 0, ctas);
+  str(streamed<4, 1, 0, 1>, {4, 1, 0, 1, 0}, "streamed, ring 4, L1-allocating copies (.ca)", 4, 0, ctas);
+  const int c16 = h16.ctas;
+  on(h16, in16, streamed<4, 0, 0, 1, 1>, {4, 0, 0, 1, 1}, "alt-k16: streamed, ring 4", 4, 0, c16);
+  on(h16, in16, streamed<4, 0, 1, 1, 1>, {4, 0, 1, 1, 1}, "alt-k16: bound: the fold alone (ring 4)", 4, 1, c16);
+  on(h16, in16, streamed<4, 0, 4, 1, 1>, {4, 0, 4, 1, 1}, "alt-k16: bound: the fold alone, no producer", 4, 4, c16);
+  on(h16, in16, streamed<4, 0, 2, 1, 1>, {4, 0, 2, 1, 1}, "alt-k16: bound: the copies alone (ring 4)", 4, 2, c16);
+  const int cc = hc.ctas;
+  on(hc, inc, streamed<4, 0, 0, 1, 2>, {4, 0, 0, 1, 2}, "cohort-k16: streamed, ring 4", 4, 0, cc);
+  on(hc, inc, streamed<4, 0, 1, 1, 2>, {4, 0, 1, 1, 2}, "cohort-k16: bound: the fold alone (ring 4)", 4, 1, cc);
+  on(hc, inc, streamed<4, 0, 4, 1, 2>, {4, 0, 4, 1, 2}, "cohort-k16: bound: the fold alone, no producer", 4, 4, cc);
+  on(hc, inc, streamed<4, 0, 2, 1, 2>, {4, 0, 2, 1, 2}, "cohort-k16: bound: the copies alone (ring 4)", 4, 2, cc);
 }

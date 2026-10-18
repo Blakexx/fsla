@@ -91,30 +91,33 @@ extra chunk's cost read ~7-9% low.
 THE WINDOW AT k x 512 TOKENS (`merged`): consecutive windows of a box merged exactly -- unions added, each list's
 entries carried over (a segment's entries spread over its slots and re-binned at the merged union's 64-slot boundaries,
 since the prefix rows hold no finer place) -- planned by the same rule in the area the larger window tables leave
-(7.2 KB less at g 1). STREAMED ROWS (`streamed`, a ring depth): a listed side's chunks hold no rows or entries (a
-read chunk is its panel), every entry fetches its row into its warp's ring of 8-row stages, and each warp's entries
-arrive as its window's stage record (a pre-pass's plan, copied a window ahead); the read ring sits beside the image and
-the fold's takes the image's place (a window's read chunks all run before its fold); a dense side stays resident. The
-copies are priced by the row-stream lab ([`row_stream`](../../lab/row_stream.md)): 25.7 cycles a warp `cp.async` and
-0.82 a line, an SM's, a record 8 bytes an entry; they run beside their side's MMA phase, the smaller of the two hidden
-by the lab's share for the ring (2 stages 57%, 3 72%, 4 74%) -- the fold's measured, the readout's taken as the fold's.
+(7.2 KB less at g 1). STREAMED ROWS (`streamed`, the read ring's depth): a listed side's chunks hold no rows or entries
+(a read chunk is its panel), every entry fetches its row into its warp's ring, and each warp's entries arrive as its
+window's stage record (a pre-pass's plan, copied two windows ahead); the read ring (576 bytes a stage, 8 rows and their
+entry words) sits beside the image and the fold's takes the image's place (a window's read chunks all run before its
+fold); a dense side stays resident. A streamed side costs its MMA phase plus the labs' measured stream: a fixed part
+and a part a stage of the window's busiest warp (fold 693 + 14.85 a stage, [`row_stream`](../../lab/row_stream.md),
+three cells; readout 499 + 10.68, [`read_stream`](../../lab/read_stream.md), one cell, split as the fold's), the read
+ring's depth adding its own (4 stages +367), booked in `fills`.
 
-Predicted cycles a 512 tokens, sm_86, against today (ring 4; rings 2 and 3 within ~5% of it):
+Predicted cycles a 512 tokens, sm_86, against today (each form at its best read ring, 4 unless marked):
 
 | cell | resident W 1024 | streamed W 512 | streamed W 1024 |
 |---|---|---|---|
-| nl64k-alt-k4 | 1.12x | 0.77x | 0.52x |
-| nl64k-alt-k4-g4 | 1.53x | 0.69x | 1.23x |
-| flagship-alt-k16 | 1.11x | 0.58x | 0.67x |
-| flagship-cohort-k4 | 0.95x | 0.82x | 0.67x |
+| nl64k-alt-k4 | 1.12x | 0.83x (ring 5) | 0.63x |
+| nl64k-alt-k4-g4 | 1.53x | 0.81x (ring 5) | 1.26x |
+| flagship-alt-k16 | 1.11x | 0.61x | 0.82x |
+| flagship-cohort-k4 | 0.95x | 0.92x | 0.76x |
 | nl64k-dense | 0.99x | (resident) | 0.99x |
 
 Resident, a 1,024-token window's union no longer fits beside the image, the read splits into chunks and each re-stores
-the halves: W 1024 loses. Streamed, the fills fall to the copies' exposed share (the entries' staging and the chunks'
-fill machinery go with the rows), and where the read chunk -- its panel, 64 bytes a slot -- fits whole at W 1024, the
-hand-off, the readout's per-digit work and the bookkeeping fall by half a token. At g 4 (a ~1,700-slot read union) and
-alt-k16 the 1,024-token read chunk still splits and the hand-off and readout grow: there W 512 wins.
+the halves: W 1024 loses. Streamed, the entries' staging and the chunks' fill machinery go with the rows, and where the
+read chunk -- its panel, 64 bytes a slot -- fits whole at W 1024 beside the image and a 4-stage read ring, the hand-off,
+the readout's per-digit work and the bookkeeping fall by half a token. A deeper read ring costs that fit (alt-k4 at W
+1024: 0.90x at ring 5). At g 4 (a ~1,700-slot read union) and alt-k16 the 1,024-token read chunk still splits: there W
+512 wins. In every box-window of these forms the fold's ring fits beside the last read chunk's panel
+(`ring_beside_panel`), so that panel can drain while the fold runs.
 
 OWED before it ranks a carve: the alternative carves' prices (each step's primitives by its warp tile, checked against
-the readout and fold labs), registers, the readout's copies' overlap (a read-side row-stream lab), the fold's ring
-beside a read chunk's panel still draining, and labs for the prices it lacks.
+the readout and fold labs), registers, the read stream's second point (a multi-pass read lab), and labs for the prices
+it lacks.
