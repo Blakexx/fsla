@@ -18,7 +18,8 @@ Files (little-endian):
   product and sum the MMAs form is exact.
 - `records.bin`: int32 header (magic 0x4D525453, a record's bytes); then u16 records `[windows][groups][8 warps]`: a
   warp's stage plan for the window, as a pre-pass would emit it -- its stages `S` (in a 16-byte header), then each
-  stage's 8 tokens (0xFFFF a pad row), its lists `w + 8 j` in order, each list's entries 8 a stage.
+  stage's 8 tokens (a pad row the stage's first: the same line, its c zero), its lists `w + 8 j` in order, each
+  list's entries 8 a stage.
 - `state.bin`: f32 `[ctas][32 lists][32 digits][32 channels]`: the sum over the windows and each list's entries of
   slice x values, digits 16 .. 31 zero -- the state every form must reach bit for bit.
 """
@@ -84,7 +85,7 @@ def dataset(directory: Path, cell: str, windows: int) -> list[str]:
                         state[b, l, :16] += prod[sg, :, 32 * ct:32 * ct + 32]
             for wp in range(WARPS):
                 stages = [np.pad(tok[wp + 8 * j, k:min(k + 8, n[wp + 8 * j])], (0, max(0, k + 8 - n[wp + 8 * j])),
-                                 constant_values=0xFFFF)
+                                 constant_values=tok[wp + 8 * j, k])
                           for j in range(4) for k in range(0, n[wp + 8 * j], 8)]
                 plans[w, g, wp] = stages
             un = np.zeros(W, dtype=np.uint16)

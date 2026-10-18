@@ -1331,7 +1331,7 @@
   {"doc": "docs/internals/tools/carve_model.md", "pinned_at": "1b059f423ceb", "reviewed": true, "sha256": "08992d18f9e632b7", "target": "tools/carve_model.py::DRIVERS"},
   {"doc": "docs/internals/tools/carve_model.md", "pinned_at": "e33037220931", "reviewed": true, "sha256": "9842cabe8606cd52", "target": "tools/carve_model.py::measured"},
   {"doc": "docs/internals/tools/carve_model.md", "pinned_at": "1fbfbb426f3a", "reviewed": true, "sha256": "a93cb7c309f19463", "target": "tools/carve_model.py::merged"},
-  {"doc": "docs/internals/tools/carve_model.md", "pinned_at": "82a4126552ab", "reviewed": true, "sha256": "d892396513a2b51f", "target": "tools/carve_model.py::rank"},
+  {"doc": "docs/internals/tools/carve_model.md", "pinned_at": "ed9781e3397f", "reviewed": true, "sha256": "da071643fb3576e6", "target": "tools/carve_model.py::rank"},
   {"doc": "docs/internals/tools/carve_model.md", "pinned_at": "16bd0ab24465", "reviewed": true, "sha256": "7694eb67e8cacf7b", "target": "tools/carve_model.py::ring_beside_panel"},
   {"doc": "docs/internals/tools/carve_model.md", "pinned_at": "16bd0ab24465", "reviewed": true, "sha256": "3ab254b7c1a098ae", "target": "tools/carve_model.py::streamed"},
   {"doc": "docs/internals/tools/compose_ledger.md", "pinned_at": "578bf154f46f", "reviewed": true, "sha256": "", "target": "docs/internals/carry/parts.md"},

@@ -93,49 +93,39 @@ entries carried over (a segment's entries spread over its slots and re-binned at
 since the prefix rows hold no finer place) -- planned by the same rule in the area the larger window tables leave
 (7.2 KB less at g 1). STREAMED ROWS (`streamed`, the read ring's depth): a listed side's chunks hold no rows or entries
 (a read chunk is its panel), every entry fetches its row into its warp's ring, and each warp's entries arrive as its
-window's stage record (a pre-pass's plan, copied two windows ahead); the read ring (576 bytes a stage, 8 rows and their
-entry words) sits beside the image and the fold's takes the image's place (a window's read chunks all run before its
-fold); a dense side stays resident. A streamed side costs its MMA phase plus the labs' measured stream: a fixed part
-and a part a stage of the window's busiest warp (fold 693 + 14.85 a stage, [`row_stream`](../../lab/row_stream.md),
-three cells; readout 499 + 10.68, [`read_stream`](../../lab/read_stream.md), one cell, split as the fold's), the read
-ring's depth adding its own (4 stages +367), booked in `fills`.
-
-Predicted cycles a 512 tokens, sm_86, against today (each form at its best read ring, 4 unless marked):
-
-| cell | resident W 1024 | streamed W 512 | streamed W 1024 |
-|---|---|---|---|
-| nl64k-alt-k4 | 1.12x | 0.83x (ring 5) | 0.63x |
-| nl64k-alt-k4-g4 | 1.53x | 0.81x (ring 5) | 1.26x |
-| flagship-alt-k16 | 1.11x | 0.61x | 0.82x |
-| flagship-cohort-k4 | 0.95x | 0.92x | 0.76x |
-| nl64k-dense | 0.99x | (resident) | 0.99x |
-
-Resident, a 1,024-token window's union no longer fits beside the image, the read splits into chunks and each re-stores
-the halves: W 1024 loses. Streamed, the entries' staging and the chunks' fill machinery go with the rows, and where the
-read chunk -- its panel, 64 bytes a slot -- fits whole at W 1024 beside the image and a 4-stage read ring, the hand-off,
-the readout's per-digit work and the bookkeeping fall by half a token. A deeper read ring costs that fit (alt-k4 at W
-1024: 0.90x at ring 5). At g 4 (a ~1,700-slot read union) and alt-k16 the 1,024-token read chunk still splits: there W
-512 wins. In every box-window of these forms the fold's ring fits beside the last read chunk's panel
-(`ring_beside_panel`), so that panel can drain while the fold runs.
+window's stage record (a pre-pass's plan, copied ahead with the stage group it is issued in); the read ring (576 bytes a
+stage, 8 rows and their entry words) sits beside the image and the fold's takes the image's place (a window's read
+chunks all run before its fold); a dense side stays resident. A streamed side costs its MMA phase times the labs'
+measured stream factor -- the fold 1.49 ([`row_stream`](../../lab/row_stream.md)), the readout with its drain 1.38
+([`read_stream`](../../lab/read_stream.md)), each the mean of three cells and each cell predicted from the other two
+within 1% and 8% -- the factor's excess applied to the model's phase after rescaling at nl64k-alt-k4 (lab bare / model
+phase: fold 0.643, readout and drain 0.699), booked in `fills`; a 4-stage read ring adds 264 cycles a CTA-window.
+With every phase at its floor the stream's cost scales with its phase (an assumption: the producer's own instructions
+need not shrink with it).
 
 ## The forms ranked (`rank`)
 
 Every form at a cell -- resident, or streamed at each read ring -- at W 512 and 1024, best first, against today at the
 calibration cells' efficiencies and with every phase at its floor (the phases still in turn; their overlap is the
-kernel's next work). On sm_86, a 512 tokens (2026-10-17):
+kernel's next work). On sm_86, a 512 tokens (2026-10-17; W = 512 ruled, W 1024 shown for its revisit on the A100):
 
-| cell | best form | at today's efficiencies | phases at their floors |
-|---|---|---|---|
-| nl64k-alt-k4 | streamed, read ring 4, W 1024 | 0.63x | 0.34x |
-| nl64k-alt-k4-g4 | streamed, read ring 5, W 512 | 0.81x | 0.40x |
-| flagship-alt-k16 | streamed, read ring 4, W 512 | 0.61x | 0.33x |
-| flagship-cohort-k4 | streamed, read ring 4, W 1024 | 0.76x | 0.40x |
-| nl64k-dense | resident, W 1024 | 0.99x | 0.60x |
+| cell | resident W 1024 | streamed W 512 | streamed W 1024 | streamed W 512, phases at their floors |
+|---|---|---|---|---|
+| nl64k-alt-k4 | 1.12x | 0.83x (read ring 5) | 0.65x (4) | 0.39x |
+| nl64k-alt-k4-g4 | 1.53x | 0.86x (5) | 1.34x (5) | 0.39x |
+| flagship-alt-k16 | 1.11x | 0.63x (4) | 0.87x (5) | 0.29x |
+| flagship-cohort-k4 | 0.95x | 0.86x (5) | 0.74x (4) | 0.40x |
+| nl64k-dense | 0.99x | 1.00x (resident) | 0.99x | 0.60x |
 
-Only the leaf carve's forms are ranked: the value carve and the 64-channel box were dropped on measured grounds
-(their fold shared-memory bound, a 16-channel tile's warps each reloading the shared operand; the box's halved lists
-doubling the readout's partials), and pricing them here needs their readout and hand-off, which no lab has measured.
+Resident, a 1,024-token window's union no longer fits beside the image, the read splits into chunks and each re-stores
+the halves: W 1024 loses. Streamed, the entries' staging and the chunks' fill machinery go with the rows, and where the
+read chunk -- its panel, 64 bytes a slot -- fits whole at W 1024 beside the image and a 4-stage read ring, the hand-off,
+the readout's per-digit work and the bookkeeping fall by half a token; at g 4 (a ~1,700-slot read union) and alt-k16 it
+still splits. In every box-window of these forms the fold's ring fits beside the last read chunk's panel
+(`ring_beside_panel`), so that panel can drain while the fold runs. Only the leaf carve's forms are ranked: the value
+carve and the 64-channel box were dropped on measured grounds (their fold shared-memory bound, a 16-channel tile's
+warps each reloading the shared operand; the box's halved lists doubling the readout's partials), and pricing them here
+needs their readout and hand-off, which no lab has measured.
 
-OWED before it ranks a carve: the alternative carves' prices (each step's primitives by its warp tile, checked against
-the readout and fold labs), registers, the read stream's second point (a multi-pass read lab), and labs for the prices
-it lacks.
+OWED: the alternative carves' prices (each step's primitives by its warp tile, checked against the readout and fold
+labs), registers, sm_80's calibration (the A100), and labs for the prices it lacks.

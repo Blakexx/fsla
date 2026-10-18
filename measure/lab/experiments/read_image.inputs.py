@@ -48,8 +48,8 @@ FOLD = {"m": lambda e: 16 * (e % 16 % 8), "n": lambda e: 32 * (e % 8 // 2)}
 PER = {"m": 16, "n": 8}
 
 
-def lists(windows: int, with_tokens: bool = False) -> tuple:
-    """nl64k-alt-k4's read lists over `windows` windows of 512 tokens, from the facts pass's words: (slots, at, count)
+def lists(windows: int, with_tokens: bool = False, cell: str = CELL) -> tuple:
+    """`cell`'s read lists over `windows` windows of 512 tokens, from the facts pass's words: (slots, at, count)
     as int64 arrays -- each digit's tokens as their ranks in its 32-digit group's union, in token order (`at[0]` 0, the
     rest its count), and each union's count; `with_tokens` adds each union's tokens `[windows][groups][512]` (a rank's
     token in its window)."""
@@ -60,7 +60,7 @@ def lists(windows: int, with_tokens: bool = False) -> tuple:
     from rola.engine.facts import liveness as lv
     from rola.ops import facts as facts_ops
 
-    spec = by_name(CELL)
+    spec = by_name(cell)
     routes, values, layout, statics = bundle_of(spec, realize(spec), slice(0, 512 * windows))
     words = facts_ops.facts(routes, values, layout, *statics, read_row_of(spec)).words
     level = facts_ops.list_level(statics[0])

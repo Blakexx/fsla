@@ -255,10 +255,12 @@ __global__ void __launch_bounds__(kThreads, 1) resident(In in, long long* t) {
 //: records' in order (its lists `w + 8 j`, each list's entries 8 a stage), each slot refilled as its step ends,
 //: across lists and windows. `AHEAD`: the producer reads a stage's tokens from its window's record, copied to shared
 //: memory two windows ahead, and the consumer its lists' entries a window ahead into registers; else each from global
-//: memory at its use. `PART` 1 the fold alone (no row copies, the ring's stale rows), 2 the copies alone; 3 the copies
-//: alone with a stage's pad rows fetched too (other tokens' rows); 4 the fold alone with no producer. `SET` names the
-//: dataset's instantiation, so the profiler keeps each dataset's counters apart
-template <int D, int CA, int PART, int AHEAD, int SET = 0>
+//: memory at its use. `PART` 1 the fold alone (no row copies, the ring's stale rows), 2 the copies alone, 4 the fold
+//: alone with no producer. `SET` names the
+//: dataset's instantiation, so the profiler keeps each dataset's counters apart. A record lands with the stage group it
+//: was issued in (a window's entry waits on every group but the newest D - 1, or on every group where fewer were
+//: committed since); `MB` 1 on its buffer's mbarrier instead (every lane's copies, `cp.async.mbarrier.arrive`)
+template <int D, int CA, int PART, int AHEAD, int SET = 0, int MB = 0>
 __global__ void __launch_bounds__(kThreads, 1) streamed(In in, long long* t) {
   extern __shared__ __align__(128) uint8_t sm[];
   const int warp = lab::warp_id(), lane = lab::lane_id(), W = in.windows, C = in.record_bytes, r = lane >> 2,
@@ -267,6 +269,7 @@ __global__ void __launch_bounds__(kThreads, 1) streamed(In in, long long* t) {
   const uint32_t ring = smem(sm) + warp * D * kStage, ring_last = ring + (D - 1) * kStage;
   const auto next_slot = [&](uint32_t slot) { return slot == ring_last ? ring : slot + kStage; };
   uint16_t* const recs = reinterpret_cast<uint16_t*>(sm + kWarps * D * kStage + warp * 3 * C);
+  const uint32_t bars = smem(sm) + kWarps * (D * kStage + 3 * C) + warp * 24;
   float acc[4][2][4][4] = {};
   const auto list_n = [&](int w, int j) {
     return w < W ? static_cast<int>(in.n[(static_cast<size_t>(w) * kGroups + x.group) * kLists + warp + kWarps * j])
@@ -275,11 +278,15 @@ __global__ void __launch_bounds__(kThreads, 1) streamed(In in, long long* t) {
   const auto record = [&](int w) {
     return in.rec + ((static_cast<size_t>(w) * kGroups + x.group) * kWarps + warp) * C;
   };
-  //: window `w`'s record into its buffer `w % 3` (fetched two windows ahead), a lane a 16-byte chunk
+  //: window `w`'s record into its buffer `w % 3` (fetched two windows ahead), a lane a 16-byte chunk; with `MB` every
+  //: lane's arrival on the buffer's mbarrier once its copies land
   const auto fetch = [&](int w) {
 #pragma unroll 1
     for (int q = lane; q < (w < W ? C / 16 : 0); q += 32)
       copy16<CA>(smem(recs) + (w % 3) * C + 16 * q, record(w) + 16 * q, true);
+    if constexpr (MB) {
+      if (w < W) lab::mbar_arrive_when_landed(bars + 8 * (w % 3));
+    }
   };
   //: window `w`'s record: its buffer (`AHEAD`) or global memory
   const auto rec_of = [&](int w) -> const uint16_t* {
@@ -289,7 +296,15 @@ __global__ void __launch_bounds__(kThreads, 1) streamed(In in, long long* t) {
   //: lane's token in the window's record, the ring slot it fills next, the window's first token; the groups committed
   //: and the groups carrying the next two windows' records
   int pw = 0, ps = 0, groups = 0, carrier = 0, carrier_next = 0;
-  if constexpr (AHEAD) {
+  if constexpr (AHEAD && MB) {
+    if (lane == 0)
+      for (int k = 0; k < 3; ++k) lab::mbar_init(bars + 8 * k, 32);
+    __syncwarp();
+    fetch(0);
+    lab::mbar_wait(bars, 0);
+    fetch(1);
+    fetch(2);
+  } else if constexpr (AHEAD) {
     fetch(0);
     commit();
     wait_groups<0>();
@@ -300,9 +315,11 @@ __global__ void __launch_bounds__(kThreads, 1) streamed(In in, long long* t) {
   const uint32_t row_s = r * kRow + 16 * ((c ^ r) & 7), row_v = r * kRow + 16 * (((c + 4) ^ r) & 7);
   const uint8_t* const slice_c = in.slices + 32 * x.slice + 16 * (c & 1);
   const uint8_t* const values_c = in.values + 64 * x.tile + 16 * c;
+  const bool slice_live = c < 2;
   const uint16_t* pe = rec_of(0) + 8 + r;
   uint32_t pslot = ring;
-  size_t first_token = 0;
+  const uint8_t* slice_w = slice_c;
+  const uint8_t* values_w = values_c;
   int S = rec_of(0)[0];
   //: the cursor to the next window holding stages, its record landed first (a wait on every group but the newest D - 1,
   //: or every group where fewer have been committed since)
@@ -311,7 +328,10 @@ __global__ void __launch_bounds__(kThreads, 1) streamed(In in, long long* t) {
     do {
       ++pw;
       ps = 0;
-      if constexpr (AHEAD) {
+      if constexpr (AHEAD && MB) {
+        if (pw < W) lab::mbar_wait(bars + 8 * (pw % 3), (pw / 3) & 1);
+        fetch(pw + 2);
+      } else if constexpr (AHEAD) {
         if (pw < W) {
           if (groups - 1 - carrier < D - 1) {
             commit();
@@ -327,20 +347,18 @@ __global__ void __launch_bounds__(kThreads, 1) streamed(In in, long long* t) {
         carrier_next = groups;
       }
       pe = rec_of(pw) + 8 + r;
-      first_token = static_cast<size_t>(pw) * kWindow;
+      slice_w = slice_c + static_cast<size_t>(pw) * kWindow * kSlices;
+      values_w = values_c + static_cast<size_t>(pw) * kWindow * kValues;
       S = pw < W ? rec_of(pw)[0] : 0;
     } while ((pw < W) & (S == 0));
   };
   if (S == 0) enter();
   const auto issue = [&] {
     if (pw < W) {
-      int tk = *pe;
-      const bool live = tk != 0xFFFF || PART == 3;
-      if constexpr (PART == 3) tk = tk != 0xFFFF ? tk : (37 * r + ps) & (kWindow - 1);
-      const size_t token = first_token + (live ? tk : 0);
+      const uint32_t tk = *pe;
       if constexpr (PART != 1) {
-        copy16<CA>(pslot + row_s, slice_c + token * kSlices, live && c < 2);
-        copy16<CA>(pslot + row_v, values_c + token * kValues, live);
+        copy16<CA>(pslot + row_s, slice_w + tk * kSlices, slice_live);
+        copy16<CA>(pslot + row_v, values_w + tk * kValues, true);
       }
       pe += 8;
       if (++ps >= S) enter();
@@ -444,7 +462,7 @@ T* up(const std::vector<T>& v) {
   return d;
 }
 
-//: `part` as the kernels' `PART`: 1 to 4 (a part alone, a bound) form no state, so go unchecked; `keeps`: the step
+//: `part` as the kernels' `PART`: 1, 2 or 4 (a part alone, a bound) form no state, so go unchecked; `keeps`: the step
 //: signatures a form keeps -- `kBranches` the streamed producer's cursor inside the fold's step loop, `kGlobal` its
 //: lookups from global memory at their use (or, with no producer, the window loop's list entries, the loop ptxas then
 //: takes for the innermost)
@@ -514,36 +532,39 @@ int main(int argc, char** argv) {
   };
   const auto on = [&](const Host& hs, const In& is, auto kernel, std::initializer_list<int> args,
                       const std::string& variant, int d, int part, int n) {
-    run(b, lab::kernel("streamed", args), variant, kernel, kWarps * (d * kStage + 3 * hs.record_bytes), is, hs, n,
+    run(b, lab::kernel("streamed", args), variant, kernel, kWarps * (d * kStage + 3 * hs.record_bytes) + 192, is, hs, n,
         part, kBranches | (*(args.begin() + 3) && part != 4 ? 0 : kGlobal));
   };
   const auto str = [&](auto kernel, std::initializer_list<int> args, const char* variant, int d, int part, int n) {
     on(h, in, kernel, args, variant, d, part, n);
   };
   res(resident<0, 0>, {0, 0}, "resident (union staged, barrier, fold)", 0);
-  str(streamed<2, 0, 0, 1>, {2, 0, 0, 1, 0}, "streamed, ring 2 (a 16-token step's own stages)", 2, 0, ctas);
-  str(streamed<3, 0, 0, 1>, {3, 0, 0, 1, 0}, "streamed, ring 3", 3, 0, ctas);
-  str(streamed<4, 0, 0, 1>, {4, 0, 0, 1, 0}, "streamed, ring 4", 4, 0, ctas);
-  str(streamed<6, 0, 0, 1>, {6, 0, 0, 1, 0}, "streamed, ring 6", 6, 0, ctas);
-  str(streamed<4, 0, 0, 0>, {4, 0, 0, 0, 0}, "streamed, ring 4, lookups at their use", 4, 0, ctas);
-  str(streamed<4, 0, 1, 1>, {4, 0, 1, 1, 0}, "bound: streamed, the fold alone (ring 4)", 4, 1, ctas);
-  str(streamed<4, 0, 4, 1>, {4, 0, 4, 1, 0}, "bound: streamed, the fold alone, no producer", 4, 4, ctas);
-  str(streamed<4, 0, 2, 1>, {4, 0, 2, 1, 0}, "bound: streamed, the copies alone (ring 4)", 4, 2, ctas);
-  str(streamed<4, 0, 2, 1>, {4, 0, 2, 1, 0}, "bound: streamed, the copies alone, 40 boxes", 4, 2, ctas / 2);
-  str(streamed<4, 0, 3, 1>, {4, 0, 3, 1, 0}, "bound: streamed, the copies alone, pad rows fetched", 4, 3, ctas);
-  str(streamed<4, 0, 2, 0>, {4, 0, 2, 0, 0}, "bound: streamed, the copies alone, lookups at their use", 4, 2, ctas);
+  str(streamed<2, 0, 0, 1>, {2, 0, 0, 1, 0, 0}, "streamed, ring 2 (a 16-token step's own stages)", 2, 0, ctas);
+  str(streamed<3, 0, 0, 1>, {3, 0, 0, 1, 0, 0}, "streamed, ring 3", 3, 0, ctas);
+  str(streamed<4, 0, 0, 1>, {4, 0, 0, 1, 0, 0}, "streamed, ring 4", 4, 0, ctas);
+  str(streamed<6, 0, 0, 1>, {6, 0, 0, 1, 0, 0}, "streamed, ring 6", 6, 0, ctas);
+  str(streamed<4, 0, 0, 0>, {4, 0, 0, 0, 0, 0}, "streamed, ring 4, lookups at their use", 4, 0, ctas);
+  str(streamed<4, 0, 1, 1>, {4, 0, 1, 1, 0, 0}, "bound: streamed, the fold alone (ring 4)", 4, 1, ctas);
+  str(streamed<4, 0, 4, 1>, {4, 0, 4, 1, 0, 0}, "bound: streamed, the fold alone, no producer", 4, 4, ctas);
+  str(streamed<4, 0, 0, 1, 0, 1>, {4, 0, 0, 1, 0, 1}, "streamed, ring 4, records on mbarriers", 4, 0, ctas);
+  str(streamed<4, 0, 1, 1, 0, 1>, {4, 0, 1, 1, 0, 1}, "bound: the fold alone, records on mbarriers", 4, 1, ctas);
+  str(streamed<4, 0, 2, 1>, {4, 0, 2, 1, 0, 0}, "bound: streamed, the copies alone (ring 4)", 4, 2, ctas);
+  str(streamed<4, 0, 2, 1>, {4, 0, 2, 1, 0, 0}, "bound: streamed, the copies alone, 40 boxes", 4, 2, ctas / 2);
+  str(streamed<4, 0, 2, 0>, {4, 0, 2, 0, 0, 0}, "bound: streamed, the copies alone, lookups at their use", 4, 2, ctas);
   res(resident<0, 1>, {0, 1}, "bound: resident, the fold alone (no copies)", 1);
   res(resident<0, 2>, {0, 2}, "bound: resident, the copies alone (no fold)", 2);
   res(resident<1, 0>, {1, 0}, "resident, L1-allocating copies (.ca)", 0);
-  str(streamed<4, 1, 0, 1>, {4, 1, 0, 1, 0}, "streamed, ring 4, L1-allocating copies (.ca)", 4, 0, ctas);
+  str(streamed<4, 1, 0, 1>, {4, 1, 0, 1, 0, 0}, "streamed, ring 4, L1-allocating copies (.ca)", 4, 0, ctas);
   const int c16 = h16.ctas;
-  on(h16, in16, streamed<4, 0, 0, 1, 1>, {4, 0, 0, 1, 1}, "alt-k16: streamed, ring 4", 4, 0, c16);
-  on(h16, in16, streamed<4, 0, 1, 1, 1>, {4, 0, 1, 1, 1}, "alt-k16: bound: the fold alone (ring 4)", 4, 1, c16);
-  on(h16, in16, streamed<4, 0, 4, 1, 1>, {4, 0, 4, 1, 1}, "alt-k16: bound: the fold alone, no producer", 4, 4, c16);
-  on(h16, in16, streamed<4, 0, 2, 1, 1>, {4, 0, 2, 1, 1}, "alt-k16: bound: the copies alone (ring 4)", 4, 2, c16);
+  on(h16, in16, streamed<4, 0, 0, 1, 1>, {4, 0, 0, 1, 1, 0}, "alt-k16: streamed, ring 4", 4, 0, c16);
+  on(h16, in16, streamed<4, 0, 1, 1, 1>, {4, 0, 1, 1, 1, 0}, "alt-k16: bound: the fold alone (ring 4)", 4, 1, c16);
+  on(h16, in16, streamed<4, 0, 4, 1, 1>, {4, 0, 4, 1, 1, 0}, "alt-k16: bound: the fold alone, no producer", 4, 4, c16);
+  on(h16, in16, streamed<4, 0, 2, 1, 1>, {4, 0, 2, 1, 1, 0}, "alt-k16: bound: the copies alone (ring 4)", 4, 2, c16);
   const int cc = hc.ctas;
-  on(hc, inc, streamed<4, 0, 0, 1, 2>, {4, 0, 0, 1, 2}, "cohort-k16: streamed, ring 4", 4, 0, cc);
-  on(hc, inc, streamed<4, 0, 1, 1, 2>, {4, 0, 1, 1, 2}, "cohort-k16: bound: the fold alone (ring 4)", 4, 1, cc);
-  on(hc, inc, streamed<4, 0, 4, 1, 2>, {4, 0, 4, 1, 2}, "cohort-k16: bound: the fold alone, no producer", 4, 4, cc);
-  on(hc, inc, streamed<4, 0, 2, 1, 2>, {4, 0, 2, 1, 2}, "cohort-k16: bound: the copies alone (ring 4)", 4, 2, cc);
+  on(hc, inc, streamed<4, 0, 0, 1, 2>, {4, 0, 0, 1, 2, 0}, "cohort-k16: streamed, ring 4", 4, 0, cc);
+  on(hc, inc, streamed<4, 0, 1, 1, 2>, {4, 0, 1, 1, 2, 0}, "cohort-k16: bound: the fold alone (ring 4)", 4, 1, cc);
+  on(hc, inc, streamed<4, 0, 4, 1, 2>, {4, 0, 4, 1, 2, 0}, "cohort-k16: bound: the fold alone, no producer", 4, 4, cc);
+  on(hc, inc, streamed<4, 0, 2, 1, 2>, {4, 0, 2, 1, 2, 0}, "cohort-k16: bound: the copies alone (ring 4)", 4, 2, cc);
+  on(hc, inc, streamed<4, 0, 0, 1, 2, 1>, {4, 0, 0, 1, 2, 1}, "cohort-k16: streamed, ring 4, records on mbarriers", 4,
+     0, cc);
 }
