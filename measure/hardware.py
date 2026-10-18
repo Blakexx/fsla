@@ -212,7 +212,8 @@ def check(cfg: dict | None = None, header_text: str | None = None) -> list[str]:
     names = [f["name"] for f in cfg["schema"]["caps"] if f["name"] != "cc"]
     kinds, taxed = cfg["schema"]["mma"], cfg["schema"]["taxed"]
     known = {*CHOICE, *(f"mma.{k}" for k in kinds), *(f"tax.{k}.{c}" for k in kinds for c in taxed),
-             *(f"latency.{k}" for k in cfg["schema"]["latency"])}
+             *(f"latency.{k}" for k in cfg["schema"]["latency"]),
+             *(f"shared.{k}" for k in cfg["schema"]["shared"]), *(f"pipe.{k}" for k in cfg["schema"]["pipe"])}
     for arch, row in cfg["arch"].items():
         if sorted(row["caps"]) != sorted(names):
             findings.append(f"{arch}: its capabilities are not the schema's")

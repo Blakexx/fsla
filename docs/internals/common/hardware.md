@@ -58,9 +58,31 @@ wavefront an SM), `atomic` and `atomic_wavefront` (a shared atomic instruction's
 wavefronts an SM), `mma.<kind>` (an MMA a scheduler), `tax.<kind>.<class>` (what an instruction of the
 class adds to the kind's MMA chain, read by the issue-hiding gate, not by a choice) and `latency.<class>` (issue to a
 dependent's issue: an FFMA, a 32-bit shared load, an `ldmatrix` of four, an HMMA on its accumulator; the schema's
-`latency` list). NVIDIA documents issue, the shared-memory bank rate and peak tensor rates; a shared atomic's cost,
+`latency` list), `shared.<kind>` and `pipe.<name>` (below; the schema's `shared` and `pipe` lists). NVIDIA documents issue, the shared-memory bank rate and peak tensor rates; a shared atomic's cost,
 the taxes and the latencies are measured ([`smem_rates`](../../lab/smem_rates.md),
 [`tensor_tax`](../../lab/tensor_tax.md), [`issue_latency`](../../lab/issue_latency.md)).
+
+<a id="shared"></a>
+
+### The shared-memory pipe's prices (`shared.*`)
+
+What the pipe takes, an SM, beyond a load's wavefront (`wavefront`) and a shared atomic's (`atomic`,
+`atomic_wavefront`), all measured in [`smem_rates`](../../lab/smem_rates.md) on the RTX 3080 Ti (sm_80's announced
+the same until a rented A100 measures them): `store` and `store_wavefront` (a plain shared store takes the larger of 2
+cycles an instruction and ~1.14 a wavefront: 4 bytes a lane costs twice what 8 or 16 do a byte); `copy_bypass` and
+`copy_access` (a `cp.async.cg` copy's write into shared memory, 0.5 cycles a 128 bytes; a `.ca` copy's, 5.4);
+`global_read` and `global_fill` (a global load's data read out of the banks, 1.19 a 128 bytes, and what a line from L2
+adds by being written into them first, 0.38). [`tools/pipes.py`](../tools/pipes.md) prices a launch's traffic by these.
+
+<a id="pipes"></a>
+
+### The arithmetic pipes (`pipe.*`)
+
+Cycles a warp instruction holds its pipe a scheduler, from the CUDA C++ Programming Guide's throughput table (results
+a clock an SM, over four schedulers and 32 lanes): `alu` 2 (integer add, compare, logic, shift: 64 a clock on 8.0 and
+8.6), `fma` 2 on sm_80 and 1 on sm_86 (fp32: 64 and 128), `fma_fp16` 1 (a half2 instruction), `fmaheavy` 2 (integer
+multiply and multiply-add), `xu` 8 (special functions, conversions: 16). Checked on sm_86 against ncu's busy counters
+to the percent ([pipes.md#checked](../tools/pipes.md#checked)).
 
 <a id="check"></a>
 

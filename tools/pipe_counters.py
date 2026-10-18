@@ -9,7 +9,8 @@ as launch totals, raw.
 One oneshot launch through the probe worker under `ncu --metrics` (the toolchain's `ncu`): HMMAs and instructions
 executed, scheduler cycles elapsed and active, issue activity, warps active and eligible, shared loads and stores, ldsm
 and global reductions and loads, shared-memory wavefronts and bank conflicts, LSU writeback, global reduction requests
-and sectors, DRAM bytes. The JSON carries every counter's launch value and the launch's CTA-windows, so a reader divides
+and sectors, DRAM bytes, and the standard set `tools/pipes.py` prices per card (docs/internals/tools/pipes.md). The
+JSON carries every counter's launch value and the launch's CTA-windows, so a reader divides
 a sum into a unit and derives utilization; nothing derived is stored. Docs: docs/internals/tools/pipe_counters.md.
 """
 from __future__ import annotations
@@ -21,6 +22,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import pipes  # noqa: E402
+
 import dev_config  # noqa: E402 -- path insert must precede this import
 import phase_ledger  # noqa: E402
 from rola_devtools import process  # noqa: E402
@@ -29,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "measure"))
 from measure.provider import arm_name, oneshot_argv  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-COUNTERS = (
+_OWN = (
     "gpu__time_duration.sum",
     "sm__inst_executed_pipe_tensor_op_hmma.sum", "smsp__inst_executed.sum",
     "sm__cycles_elapsed.avg", "smsp__cycles_active.avg",
@@ -45,6 +48,7 @@ COUNTERS = (
     "l1tex__t_requests_pipe_lsu_mem_global_op_red.sum", "lts__t_sectors_op_red.sum",
     "dram__bytes_read.sum", "dram__bytes_write.sum",
 )
+COUNTERS = (*_OWN, *(m for m in pipes.metric_names() if m not in _OWN))
 
 
 def measure(cell: str) -> dict:

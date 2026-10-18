@@ -34,6 +34,16 @@ An experiment that reads data -- a cell's routing, say -- has a `<name>.inputs.p
 writes the files and returns their names. `run` and `ncu` call it first (in the scratch space), pass the binary
 `--inputs <directory>`, and the record carries each file's digest under `inputs`.
 
+<a id="counters"></a>
+
+## The standard counters
+
+`run` reads the standard counter set of [`pipes.py`](pipes.md) for every kernel of the experiment (its first launch),
+prints per card each pipe's cycles a unit (its MMAs, else its declared `Bench::units`, else a launch an SM) with the
+binding one named, and on this card each pipe's busy share, L2 sectors and the three largest stall reasons; the record
+keeps the counters under `counters` (KERNEL_STANDARDS §29.14). The tensor pipe is priced from a declared `Bench::mma`,
+else from the work the tensor-pipe counter counts and the one MMA kind the SASS issues.
+
 ## The kit (`measure/lab/lab.cuh`)
 
 * `lab::WarpClock` — a warp's cycles over a region, lane 0's `clock64`, stored at `(block, warp)`.

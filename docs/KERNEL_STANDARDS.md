@@ -831,6 +831,20 @@ method is a procedure with a gate, not a memory.
    docs/internals/tools/budgets.md#ledger. Convergence regions inside a budgeted kernel's loops (`BSSY`/`BSYNC`,
    `BRA.DIV`) are removed by item 9's source patterns or declared (`LOOP_CONVERGENCE`); `tools/lab.py run` refuses an
    undeclared one.
+14. EVERY RUN PRICES EVERY PIPE (amended 2026-10-18, from Blake's approval of the process changes after the lean
+   hand-off): a form's floor is its binding pipe, not its instruction count. `tools/lab.py run` prints, for every
+   kernel and per card, each pipe's cycles a unit -- tensor, the shared-memory pipe priced by kind of traffic (load
+   wavefronts; stores and atomics at the larger of their instructions and wavefronts; copies and global loads by
+   their bytes), issue, the integer, FMA and transcendental pipes at their cycles an instruction -- and on the local
+   card each pipe's busy share, L2 sectors and the stall reasons ([`tools/pipes.py`](internals/tools/pipes.md); its
+   prices checked against `smem_rates` and `handoff` to the percent). The hand-off's old form had been measured only
+   inside the composed window and was bound by the integer pipe, which no gate printed: the lean form cut it 27%
+   (3,059 to 2,248 cycles a window) and still runs 1.7x over its integer pipe's 1,310. A budget states its binding
+   pipe's cycles beside its instructions; a kernel over 1.3x its binding pipe names the stall that holds it.
+15. A BUDGET LINE NAMES ITS FORM (amended 2026-10-18): each line item cites the cheapest known form for its job from
+   docs/internals/tools/budgets.md#forms (integer keys for scaled compares, an atomic a lane for a cross-warp
+   reduction, held bases, the widest store, `.cg` copies, scalars in the record) or says why it departs; a form found
+   cheaper replaces its row in the commit that measures it.
 ENFORCED: `tools/lab.py run` reads each budgeted kernel's executed instructions by class (ncu's per-opcode counts),
 prints them against the budget, and refuses to record a variant over it (`--force` to record a known-over variant on
 purpose). `tools/sass_gate.py` reds, on every function of every build, conversion-unit instructions and global
@@ -931,7 +945,10 @@ gated, and an instrument's missing target is a red.
    the allocation of the warps a scheduler the design wants; `tools/life_ranges.py --budget` reds a component past
    its line or without one. §29.2's hoisting stops at the line: a value whose hoisting would pass it is re-derived at
    its use (`ops::opaque`, docs/internals/common/ops.md#opaque), a few instructions there instead of a register held
-   across the window. A spill is never the signal (§20 reds it); the line is.
+   across the window. A spill is never the signal (§20 reds it); the line is. A RE-DERIVATION IS A PRICED LINE ITEM
+   (amended 2026-10-18): its instructions at its trips (§29.11), in the budget beside the register it saves -- the
+   carry's open ledger miss (3,884 instructions a warp-window against ~2,020) is mostly tokens, sources and swizzles
+   re-derived at each use and priced nowhere.
 4. EVERY STEP LOOP COVERS ITS PIPE: `tools/sass_gate.py` simulates every innermost MMA loop of every function, on every
    build, for one warp from ptxas's control words (`tools/pipe_sim.py`; MMA costs by shape and latencies from labs
    `tensor_tax`, `mma_queue`, `mma_k8`, `issue_latency`), and reds a loop whose COVER -- its pipe share alone times the
@@ -954,3 +971,18 @@ step fails the build. Item 2's predictions are owed for the carry by the window'
 ledger check is red until they exist. Measured 2026-10-16 at 87240898: the carry's worst step loops cover 44.2% and
 39.6% (its two arms, sm_86) and 23.6% and 20.4% on sm_80's eight-cycle MMA; its components peak at 204-252 live
 registers.
+
+## <a id="s33"></a>§33 — DATA STAYS IN REGISTERS UNLESS SOMETHING STAGES IT (law, 2026-10-18, from Blake's "'Staging rule as a kernel standard' ok")
+Shared memory is the pipe that binds the sparse carry on sm_80 (the staged fold ~2.5-3.9 wavefronts a MMA and the
+readout ~7-10 against sm_80's 2, 2026-10-18), so nothing passes through it without a reason. A value is staged in
+shared memory only when:
+1. other warps read it (a value shared across warps: a stream's stage, the image, the panel);
+2. it must be rearranged on the way (a transpose or relayout an MMA operand needs: `ldmatrix` from a staged row);
+3. it must be buffered beyond what the warp's registers hold (a ring deep enough to cover a stream's latency); or
+4. the MMA reads it from shared memory (sm_90's `wgmma` B operand by descriptor; sm_100's `tcgen05` operands).
+Otherwise it stays in the registers that produce and consume it. Staging is not a pipe saving to be had by skipping it:
+a load from L2 into registers is written into the banks and read out, ~1.6 pipe cycles a 128 bytes, as much as a
+`cp.async.cg` copy (0.5) and the `ldmatrix` that reads it (1.0) (`smem_rates`, 2026-10-18), and it holds registers
+for the loads in flight -- so rows an MMA reads from global memory are staged by `.cg` copies (form `budgets.md#forms`),
+and the direct-to-register row path is dropped. sm_80/sm_86 as stated; sm_90: item 4 stages B, TMA's bulk copy
+replaces the per-lane copies; sm_100: accumulators in tensor memory, operands as item 4.

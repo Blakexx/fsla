@@ -6,6 +6,9 @@ description: Load when designing or changing a shared-memory buffer, or data tha
 
 The law: `docs/KERNEL_STANDARDS.md#s30`. The model: `docs/internals/tools/bank_model.md`.
 
+0. Stage the data at all only for a reason `docs/KERNEL_STANDARDS.md#s33` names (other warps read it, it is
+   rearranged, buffered past the registers, or the MMA reads it from shared memory); else it stays in registers.
+
 1. In the component's `docs/internals/` page (or the lab's header), write the access table §30.1 asks for and choose
    the layout from it; name the instruction shapes it is conflict-free for.
 2. Where data picks the addresses, a placement enters the producer's format only once the composed consumer is timed

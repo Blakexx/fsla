@@ -27,6 +27,7 @@ import datetime
 import hashlib
 import importlib.util
 import json
+import pipes
 import re
 import statistics
 import subprocess
@@ -233,30 +234,6 @@ def budgets(binary: Path, kind: str = "budget") -> list[dict]:
 CARDS = (("sm_86 (RTX 3080 Ti)", "sm_86", "rtx3080ti"), ("sm_80 (A100)", "sm_80", None))
 
 
-def predict(per: dict[str, float], kind: str, k: int) -> list[str]:
-    """KERNEL_STANDARDS section 29's carry-over, per card: an MMA's tensor cycles (the kind's cycles a scheduler, K/16
-    of them, over the schedulers), its shared-memory cycles (wavefronts at the wavefront rate, each shared atomic's cycles
-    past its wavefront) and its issue cycles (instructions over the schedulers), all a tensor-pipe instruction an SM;
-    the largest binds."""
-    sys.path.insert(0, str(ROOT))
-    from measure import hardware
-
-    lines = []
-    for label, arch, product in CARDS:
-        rates = hardware.resolve(arch=arch, product=product)
-        schedulers = rates["schedulers"].cycles
-        pipes = {
-            "tensor": rates[f"mma.{kind}"].cycles * k / 16 / schedulers,
-            "shared": per.get("_wavefronts", 0.0) * rates["wavefront"].cycles
-                      + per.get("shared atomic", 0.0) * (rates["atomic"].cycles - rates["atomic_wavefront"].cycles),
-            "issue": sum(v for c, v in per.items() if not c.startswith("_")) * rates["issue"].cycles / schedulers,
-        }
-        bound = max(pipes, key=pipes.get)
-        lines.append(f"    {label:<20} tensor {pipes['tensor']:5.2f}  shared {pipes['shared']:5.2f}  "
-                     f"issue {pipes['issue']:5.2f}  -> {pipes[bound]:5.2f} cycles an MMA an SM ({bound} binds)")
-    return lines
-
-
 def _plain(name: str) -> str:
     """A kernel's name as both demanglers can agree on it: no return type, namespaces, casts or parameters."""
     name = re.sub(r"^void\s+", "", name)
@@ -264,16 +241,11 @@ def _plain(name: str) -> str:
     return re.sub(r"\s+", "", re.sub(r"\((int|bool|unsigned int|long)\)", "", re.sub(r"\b\w+::", "", name)))
 
 
-def executed_classes(binary: Path, extra: list[str],
-                     units: dict[str, float] | None = None) -> dict[str, dict[str, float]]:
-    """Per kernel (`_plain` name), each opcode class's executed instructions per tensor-pipe instruction (ncu's
-    per-opcode counts over one repetition, the first launch of each kernel), and its shared-memory wavefronts and bank
-    conflicts per tensor-pipe instruction (`_wavefronts`, `_conflicts`); a kernel with no MMAs that declares its units
-    (`Bench::units`, by `_plain` name in `units`), per unit."""
+def counters_of(binary: Path, extra: list[str]) -> dict[str, dict]:
+    """Per kernel (`_plain` name), its first launch's standard counters (docs/internals/tools/pipes.md): `pipes.short`'s
+    names and `opcodes` (executed instructions by opcode)."""
     out = subprocess.run([dev_config.get("toolchain.ncu"), "--metrics",
-                          "sass__inst_executed_per_opcode,sm__inst_executed_pipe_tensor_op_hmma.sum,"
-                          "l1tex__data_pipe_lsu_wavefronts_mem_shared.sum,"
-                          "l1tex__data_bank_conflicts_pipe_lsu_mem_shared.sum",
+                          ",".join(["sass__inst_executed_per_opcode", *pipes.metric_names()]),
                           "--print-metric-instances", "details", "--csv", str(binary), "--reps", "1", *extra],
                          capture_output=True, text=True, check=True).stdout
     lines = out.splitlines()
@@ -283,34 +255,84 @@ def executed_classes(binary: Path, extra: list[str],
         seen.setdefault(_plain(row["Kernel Name"]), {}).setdefault(row["Metric Name"], row["Metric Value"])
     found = {}
     for k, m in seen.items():
-        mma = float(m["sm__inst_executed_pipe_tensor_op_hmma.sum"].replace(",", ""))
-        if not mma:
-            mma = (units or {}).get(k, 0.0)
+        values = {metric: float(v.replace(",", "") or 0) for metric, v in m.items()
+                  if metric != "sass__inst_executed_per_opcode"}
+        c = pipes.short(values)
+        c["opcodes"] = {op: float(n) for op, n in
+                        re.findall(r"([A-Z][A-Z0-9_]*)\s*[:=]\s*([0-9.]+)", m["sass__inst_executed_per_opcode"])}
+        found[k] = c
+    return found
+
+
+def executed_classes(raw: dict[str, dict], units: dict[str, float] | None = None) -> dict[str, dict[str, float]]:
+    """Per kernel, each opcode class's executed instructions per tensor-pipe instruction, and its shared-memory
+    wavefronts and bank conflicts per tensor-pipe instruction (`_wavefronts`, `_conflicts`); a kernel with no MMAs that
+    declares its units (`Bench::units`, by `_plain` name in `units`), per unit."""
+    found = {}
+    for k, c in raw.items():
+        n = per_unit(c, k, units)
         per: dict[str, float] = {}
-        for op, n in re.findall(r"([A-Z][A-Z0-9_]*)\s*[:=]\s*([0-9.]+)", m["sass__inst_executed_per_opcode"]):
-            per[sass.opcode_class(op)] = per.get(sass.opcode_class(op), 0.0) + float(n) / max(mma, 1.0)
-        per["_wavefronts"] = float(m["l1tex__data_pipe_lsu_wavefronts_mem_shared.sum"].replace(",", "")) / max(mma, 1.0)
-        per["_conflicts"] = float(m["l1tex__data_bank_conflicts_pipe_lsu_mem_shared.sum"].replace(",", "")) / max(mma, 1.0)
+        for op, v in c["opcodes"].items():
+            per[sass.opcode_class(op)] = per.get(sass.opcode_class(op), 0.0) + v / n
+        per["_wavefronts"] = c["wavefronts"] / n
+        per["_conflicts"] = c["conflicts"] / n
         found[k] = per
     return found
 
 
-def over_budget(binary: Path, table: dict[str, dict], extra: list[str]) -> list[str]:
+def per_unit(c: dict, kernel: str, units: dict[str, float] | None) -> float:
+    """What a kernel's counts (summed over its SMs) are divided by: its tensor-pipe instructions, else its declared
+    units, else its SMs (a launch an SM)."""
+    return c["hmma"] + c["imma"] or (units or {}).get(kernel, 0.0) or pipes.sms(c)
+
+
+def _num(v: float) -> str:
+    return f"{v:,.0f}" if abs(v) >= 1000 else f"{v:.2f}"
+
+
+def pipes_report(raw: dict[str, dict], table: dict[str, dict], units: dict[str, float],
+                 mmas: dict[str, tuple[str, int]]) -> None:
+    """Every kernel's standard counters, printed (KERNEL_STANDARDS §29.14): per card the pipes' cycles a unit, the
+    binding one named; on this card each pipe's busy share of the elapsed cycles, L2 sectors a unit and the three
+    largest stall reasons."""
+    sys.path.insert(0, str(ROOT))
+    from measure import hardware
+
+    local = hardware.product_of(smi("name")[0])
+    arch = device_arch()
+    here = hardware.resolve(product=local) if local else hardware.resolve(arch=arch)
+    kinds = {_plain(k): pipes.mma_kind(v["ops"]) for k, v in table.items()}
+    for k, c in raw.items():
+        n = per_unit(c, k, units)
+        unit = "MMA" if c["hmma"] + c["imma"] else "unit" if k in units else "launch"
+        print(f"  pipes, cycles a {unit} an SM: {k[:110]}")
+        for label, card, product in CARDS:
+            p = pipes.pipe_cycles(c, n, hardware.resolve(arch=card, product=product), arch, mmas.get(k), kinds.get(k))
+            bound = max(p, key=p.get)
+            print(f"    {label:<20} " + "  ".join(f"{name} {_num(v)}" for name, v in p.items())
+                  + f"  -> {bound} binds")
+        b = pipes.busy_here(c, here, arch, mmas.get(k), kinds.get(k))
+        stalls = sorted(c["stalls"].items(), key=lambda kv: -kv[1])[:3]
+        print(f"    busy here, % of elapsed: issue {b['issue']:.0f}  tensor {b['tensor']:.0f} (priced)  "
+              f"alu {b['alu']:.0f}  fma {b['fma']:.0f} (heavy {b['fmaheavy']:.0f})  shared {b['shared']:.0f} (priced)"
+              f"  | L2 sectors read {_num(c['l2_read'] / n)} write {_num(c['l2_write'] / n)}"
+              f"  | stalled: " + ", ".join(f"{r} {v:.0f}%" for r, v in stalls))
+
+
+def over_budget(binary: Path, table: dict[str, dict], raw: dict[str, dict], units: dict[str, float]) -> list[str]:
     """KERNEL_STANDARDS sections 29-30: each budgeted kernel's executed instructions per MMA by class, and its
     shared-memory wavefronts per MMA (the class `wavefronts`), against its stated budget, printed; those over it."""
     stated = budgets(binary)
     if not stated:
         return []
-    mmas = budgets(binary, "mma")
-    units = {k: u for k in table for u in budgets(binary, "units") if re.search(u["kernel"], k)}
-    measured = executed_classes(binary, extra, {_plain(k): float(u["n"]) for k, u in units.items()})
+    measured = executed_classes(raw, units)
     over = []
     for k in table:
         mine = [b for b in stated if re.search(b["kernel"], k)]
         if not mine:
             continue
         per = measured.get(_plain(k), {})
-        unit = units[k]["unit"] if k in units else "MMA"
+        unit = "unit" if _plain(k) in units else "MMA"
         print(f"  budget, instructions a {unit}: {k[:110]}")
         for b in mine:
             got = per.get("_wavefronts" if b["class"] == "wavefronts" else b["class"], 0.0)
@@ -322,9 +344,16 @@ def over_budget(binary: Path, table: dict[str, dict], extra: list[str]) -> list[
         print(f"    {'total':<16} {sum(v for c, v in per.items() if not c.startswith('_')):6.2f}"
               f"   shared-memory wavefronts {per.get('_wavefronts', 0.0):.2f}"
               f" ({per.get('_conflicts', 0.0):.2f} of them bank conflicts)")
-        for m in (m for m in mmas if re.search(m["kernel"], k)):
-            print(*predict(per, m["kind"], m["k"]), sep="\n")
     return over
+
+
+def declared(binary: Path, table: dict[str, dict]) -> tuple[dict[str, float], dict[str, tuple[str, int]]]:
+    """The experiment's declarations by `_plain` kernel name: each kernel's units (`Bench::units`) and the MMA it
+    issues (`Bench::mma`: hardware kind, K)."""
+    units = {_plain(k): float(u["n"]) for k in table for u in budgets(binary, "units") if re.search(u["kernel"], k)}
+    mmas = {_plain(k): (m["kind"], int(m["k"])) for k in table for m in budgets(binary, "mma")
+            if re.search(m["kernel"], k)}
+    return units, mmas
 
 
 def quiet() -> int:
@@ -407,7 +436,7 @@ def report(name: str, arch: str, device: dict, results: list[dict], reps: int) -
 
 
 def keep(name: str, arch: str, device: dict, results: list[dict], table: dict, reps: int, utilization: int,
-         record: bool, digests: dict[str, str]) -> Path:
+         record: bool, digests: dict[str, str], counters: dict[str, dict]) -> Path:
     """The run's record: into `measure/lab/results` under `--record`, else the scratch space."""
     driver, = smi("driver_version")
     toolkit = subprocess.run([dev_config.cuda_bin("nvcc"), "--version"], capture_output=True,
@@ -418,7 +447,8 @@ def keep(name: str, arch: str, device: dict, results: list[dict], table: dict, r
             "date": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
             "utilization_before": utilization, "inputs": digests, "results": results,
             "kernels": {k: {"regs": v.get("regs"), "ops": dict(Counter(v["ops"]).most_common(12))}
-                        for k, v in table.items()}}
+                        for k, v in table.items()},
+            "counters": {k: {m: v for m, v in c.items() if m != "opcodes"} for k, c in counters.items()}}
     target = (RESULTS / name if record else dev_config.scratch("lab") / "results" / name) / f"{arch}.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(body, indent=1) + "\n")
@@ -451,12 +481,15 @@ def run(name: str, reps: int, record: bool, force: bool) -> int:
     if wrong:
         print(f"lab: {name}'s outputs are not verified, not recorded:", *wrong, sep="\n  ")
         return 1
-    over = over_budget(binary, table, extra)
+    raw = counters_of(binary, extra)
+    units, mmas = declared(binary, table)
+    pipes_report(raw, table, units, mmas)
+    over = over_budget(binary, table, raw, units)
     if over and not force:
         print(f"lab: {name} OVER ITS INSTRUCTION BUDGET, not recorded (--force to record anyway):", *over,
               sep="\n  ")
         return 1
-    target = keep(name, arch, device, results, table, reps, utilization, record, digests)
+    target = keep(name, arch, device, results, table, reps, utilization, record, digests, raw)
     print(f"lab: recorded {target.relative_to(ROOT) if record else target}")
     return 0
 

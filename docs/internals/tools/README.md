@@ -49,6 +49,7 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 |---|---|---|---|
 | [`phase_ledger.py`](phase_ledger.md) | one carry launch with the kernel's phase clock bound | the `phases` target | `--json` |
 | [`pipe_counters.py`](pipe_counters.md) | the profiler's pipe and resource counters for one launch | the `counters` target | `--json` |
+| [`pipes.py`](pipes.md) | one counter set for any launch and its pricing per card: each pipe's cycles, the binding one | `lab.py`, `pipe_counters.py` | -- (a module) |
 | [`carve_model.py`](carve_model.md) | the carry's mechanics for any carve on any card, over a real cell's lists (KERNEL_STANDARDS §32.2) | -- (in build: the carve study) | prints |
 | [`overlap_gate.py`](overlap_gate.md) | each kernel's perf rows against the largest of their floors (§28) | -- | exit 1 when red |
 | [`stall_census.py`](stall_census.md) | every warp-stall sample of one launch, by source line | the `census` target | `--json` |

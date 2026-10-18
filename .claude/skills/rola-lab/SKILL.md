@@ -17,7 +17,8 @@ The method: `docs/internals/tools/lab.md#the-loop`. The law: `docs/KERNEL_STANDA
 5. Read the SASS (`python tools/lab.py sass <name>`); the first run is under a kill timeout
    (`docs/KERNEL_STANDARDS.md#first-run`); then `python tools/lab.py run <name>`, and over budget
    `python tools/lab.py ledger <name>`; a traffic question is `python tools/lab.py ncu <name> --metric M`
-   (`docs/internals/tools/lab.md#the-loop`).
+   (`docs/internals/tools/lab.md#the-loop`). Read its pipes report: the binding pipe per card, and on this card how
+   far the kernel runs over it and which stalls hold it (`docs/internals/tools/pipes.md`).
 6. Record with `python tools/lab.py run <name> --record`.
 7. Write its page `docs/lab/<name>.md` (the question, the form, the measured table, what it decides), its row in
    `docs/lab/README.md` and, where a design card tracks it, its MEASURED block (the site's own skill); commit with

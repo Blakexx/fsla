@@ -7,8 +7,10 @@
 // METHOD: one CTA an SM, 8 or 16 warps (2 or 4 a scheduler), each issuing independent operations at addresses that
 // change every iteration (volatile asm, so none is hoisted or merged); the block's span over the wavefronts the SM
 // issued. The sharing: 8 warps issue `ldmatrix.x4` as above while 8 stream global data in one form, then each alone;
-// the ldmatrix warps' cycles a wavefront and the stream's bytes a cycle, the pipe cycles the stream took from them.
-// see docs/internals/tools/lab.md#smem-rates
+// the ldmatrix warps' cycles a wavefront and the stream's bytes a cycle, the pipe cycles the stream took from them:
+// `1 - alone / beside` of the ldmatrix warps' cycles over the stream's 128-byte units a cycle, a sample per repetition,
+// and what a 128 bytes from L2 adds to a load over an L1 hit -- the rates `common/hardware.json`'s `shared` prices
+// cite. see docs/internals/tools/lab.md#smem-rates
 #include "lab.cuh"
 
 namespace smem_rates {
@@ -183,13 +185,14 @@ __global__ void __launch_bounds__(512, 1) share(int iters, const uint8_t* table,
 }
 
 //: one sharing variant: the ldmatrix warps' cycles a wavefront (roles 1, 3) and the stream's bytes a cycle (2, 3), each
-//: over its own warps' span, the mean over SMs
+//: over its own warps' span, the mean over SMs; role 3 also the stream's pipe cycles a 128 bytes against `alone`, the
+//: ldmatrix warps' cycles a wavefront alone. Returns the ldmatrix warps' median (role 1) or the pipe cycles' (3).
 template <int GF, int ROLE>
-void share_form(const lab::Bench& b, const uint8_t* table, int* done_n) {
+double share_form(const lab::Bench& b, const uint8_t* table, int* done_n, double alone = 0.0) {
   const std::string name = lab::kernel("share", {GF, ROLE});
   if (ROLE & 1) b.expect(name, "LDSM.16.M88.4", ">=", kUnroll);
   if (ROLE & 2) b.expect(name, GF >= 3 ? "LDGSTS" : "LDG.E", ">=", kBatch);
-  if (b.expect_only) return;
+  if (b.expect_only) return 0.0;
   LAB_CHECK(cudaFuncSetAttribute(share<GF, ROLE>, cudaFuncAttributeMaxDynamicSharedMemorySize, kShareBytes));
   lab::Samples bytes;
   const lab::Samples ldsm = b.variant(
@@ -228,12 +231,19 @@ void share_form(const lab::Bench& b, const uint8_t* table, int* done_n) {
     b.unchecked(stream, "a rate probe: its loads fold into a sink");
     b.record(stream, "bytes a cycle", bytes);
   }
+  if (ROLE != 3) return ldsm.median();
+  lab::Samples pipe;
+  for (size_t i = 0; i < ldsm.v.size(); ++i) pipe.v.push_back((1.0 - alone / ldsm.v[i]) / (bytes.v[i] / 128.0));
+  const std::string row = "pipe cycles a 128 B: " + std::string(kGlobalName[GF]);
+  b.unchecked(row, "a rate probe: its loads fold into a sink");
+  b.record(row, "cycles a 128 B", pipe);
+  return pipe.median();
 }
 
 template <int GF>
-void shared_by(const lab::Bench& b, const uint8_t* table, int* done_n) {
+double shared_by(const lab::Bench& b, const uint8_t* table, int* done_n, double alone) {
   share_form<GF, 2>(b, table, done_n);
-  share_form<GF, 3>(b, table, done_n);
+  return share_form<GF, 3>(b, table, done_n, alone);
 }
 
 }  // namespace smem_rates
@@ -259,10 +269,14 @@ int main(int argc, char** argv) {
     LAB_CHECK(cudaMemset(table, 0x5a, kLarge));
     LAB_CHECK(cudaMalloc(&done_n, sizeof(int) * b.sms * kShareWarps));
   }
-  share_form<0, 1>(b, table, done_n);
-  shared_by<0>(b, table, done_n);
-  shared_by<1>(b, table, done_n);
-  shared_by<2>(b, table, done_n);
-  shared_by<3>(b, table, done_n);
-  shared_by<4>(b, table, done_n);
+  const double alone = share_form<0, 1>(b, table, done_n);
+  const double hit = shared_by<0>(b, table, done_n, alone);
+  shared_by<1>(b, table, done_n, alone);
+  const double from_l2 = shared_by<2>(b, table, done_n, alone);
+  shared_by<3>(b, table, done_n, alone);
+  shared_by<4>(b, table, done_n, alone);
+  if (b.expect_only) return 0;
+  const std::string fill = "pipe cycles a 128 B a load from L2 adds over an L1 hit (ld.global.cg less ld.global.nc)";
+  b.unchecked(fill, "the difference of two rate probes' medians");
+  b.record(fill, "cycles a 128 B", lab::Samples{{from_l2 - hit}});
 }

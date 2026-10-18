@@ -29,16 +29,25 @@ same bytes stored 8 or 16 to a lane take about half the pipe's cycles of 4 to a 
 WHAT GLOBAL TRAFFIC TAKES FROM THE PIPE: 16 warps, 8 issuing `ldmatrix.x4` (alone 1.011 cycles a wavefront) while 8
 stream global data, 512 bytes a warp-instruction, in one form -- from a 16 KB table (L1 hits) or a 4 MB one (L2 hits)
 -- the stream's own rate beside them, and the pipe cycles it took: `1 - 1.011 / (ldmatrix's cycles a wavefront)` over
-the stream's 128-byte units a cycle. Bank reads and writes a 128 bytes streamed are ncu's (`l1tex__data_bank_reads`,
-`_writes`, the stream alone; 32 a full wavefront).
+the stream's 128-byte units a cycle, a sample a repetition (recorded as `pipe cycles a 128 B: <stream>`, the rows
+`common/hardware.json`'s `shared` prices cite), and what a line from L2 adds to a load over an L1 hit (the `.cg` row
+less the L1 hits'). Bank reads and writes a 128 bytes streamed are ncu's (`l1tex__data_bank_reads`, `_writes`, the
+stream alone; 32 a full wavefront).
 
 | stream | alone, B/cycle | beside, B/cycle | ldmatrix beside, cycles/wf | pipe cycles/128 B | bank R/W per 128 B |
 |---|---|---|---|---|---|
 | `ld.global.nc.v4` (`__ldg`), L1 hits | 119.8 | 53.7 | 2.028 | 1.19 | 32 / 0 |
-| `ld.global.nc.v4`, L2 hits (allocated in L1) | 21.3 | 16.3 | 1.304 | 1.76 | 32 / 25 |
-| `ld.global.cg.v4`, L2 hits | 15.5 | 16.3 | 1.273 | 1.62 | 32 / 32 |
+| `ld.global.nc.v4`, L2 hits (allocated in L1) | 20.8 | 16.3 | 1.300 | 1.74 | 32 / 25 |
+| `ld.global.cg.v4`, L2 hits | 16.3 | 16.3 | 1.265 | 1.58 | 32 / 32 |
 | `cp.async.cg` into shared memory, L2 hits | 18.0 | 17.9 | 1.087 | 0.50 | 0 / 32 |
-| `cp.async.ca` into shared memory, L2 hits | 20.9 | 18.4 | 4.669 | 5.44 | 35 / 58 |
+| `cp.async.ca` into shared memory, L2 hits | 21.9 | 18.4 | 4.572 | 5.43 | 35 / 58 |
+
+A line from L2 adds 0.38 pipe cycles a 128 bytes to a load over an L1 hit (its write into the banks).
+
+THE PRICES CHECKED: [`tools/pipes.py`](../internals/tools/pipes.md) prices each kernel's shared-memory traffic by kind
+at these rates; on this lab's pipe-bound kernels (every form above at 8 and 16 warps, and each stream beside
+`ldmatrix`) the priced pipe reads 96-105% of the elapsed cycles, except `cp.async.ca` beside `ldmatrix` (34%: its
+cost there is not additive) ([pipes.md#checked](../internals/tools/pipes.md#checked)).
 
 What it settles:
 

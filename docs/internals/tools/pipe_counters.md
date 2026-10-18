@@ -9,6 +9,7 @@ KERNEL_STANDARDS §22. One untimed launch of a cell through rola's runner (`meas
 - shared-memory wavefronts and bank conflicts on loads and stores;
 - LSU writeback activity, global reduction requests and sectors;
 - DRAM bytes read and written.
+- the standard set [`pipes.py`](pipes.md) prices per card (each pipe's cycles, the binding one).
 
     python tools/pipe_counters.py flagship-dense --json counters.json
 
