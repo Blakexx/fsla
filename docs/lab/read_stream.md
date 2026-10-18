@@ -21,44 +21,43 @@ from global memory, so L2 serves what one box fetched to the others. Each CTA's 
 | tiles: mean; the busiest warp's a pass, x 8 | 45.0; 55.8 | 155.8; 180.8 | 175.7; 355.9 |
 | passes | 1.00 | 2.00 | 1.98 |
 
-STREAMED: each warp's ring of `D` stages, a stage a tile's 8 read rows and its 8 entry words (576 bytes); the producer
-walks its window's token record (each stage's 8 tokens, a pad the tile's first live token), copied a window ahead with
-the stage group it is issued in, and copies each stage's rows and its words (two lanes, from the window's word record
-in global memory), one stage a tile, its addresses running pointers.
+STREAMED: each warp's ring of `D` stages, a stage a tile's 8 read rows and its 8 entries lane-ready (fp32 coefficient,
+panel offset: 576 bytes, the rows' 32-byte phase kept); the producer walks its window's token record (each stage's 8
+tokens, a pad the tile's first live token), copied a window ahead with the stage group it is issued in, and copies each
+stage's rows and entries, one stage a tile, its addresses running pointers. The consumer's tile reads its two tokens'
+entries with one 16-byte load (no shuffles, no unpacking), its row address and entry offset held in registers; the
+drain is unrolled on held addresses, a request a 128-byte line.
 
 sm_86 (RTX 3080 Ti), SM clock locked at 1.665 GHz, cycles a CTA-window:
 
 | form | alt-k4 | alt-k16 | cohort-k16 |
 |---|---|---|---|
-| streamed, ring 4 (the first tiles' block holds the ring, nothing ahead) | 5,750 | | |
-| streamed, ring 5 | 5,486 | 13,717 | 24,542 |
-| streamed, ring 6 | 5,793 | | |
-| streamed, ring 5, the consumer's words from global memory a tile ahead | 6,474 | 17,366 | 33,733 |
-| streamed, ring 5, the next stage's token a stage ahead | 5,583 | 14,020 | 25,072 |
-| streamed, two tiles a stage, ring 3 (6 tiles) | 5,379 | 13,660 | 25,028 |
-| bound: the readout with the producer, no row copies | 5,249 | 13,692 | 23,089 |
-| bound: the same, two tiles a stage | 4,896 | | |
-| bound: the same, the consumer's words a tile ahead | 5,096 | | |
-| bound: the same, the token a stage ahead | 5,250 | | |
-| bound: the stream with no waits on its stages | 5,517 | | |
-| bound: the copies alone | 2,695 | | |
-| bound: the readout alone, no producer (its words from global memory a tile ahead) | 4,057 | 10,361 | 16,838 |
+| streamed, ring 4 (the first tiles' block holds the ring, nothing ahead) | 5,360 | | |
+| streamed, ring 5 | 5,120 | 12,333 | 21,680 |
+| streamed, ring 6 | 5,406 | | |
+| bound: the readout with the producer, no row copies | 4,801 | 12,113 | 20,184 |
+| bound: the copies alone | 2,704 | | |
+| bound: the readout alone, no producer (its entries from global memory a tile ahead) | 3,762 | 9,469 | 15,861 |
+| bound: the same, no drain | 2,789 | 7,638 | 13,500 |
+| bound: the stream with no waits on its stages | 5,108 | | |
 
-Instructions (ncu, a stage): the producer 35.2 at alt-k4, 26.8 at alt-k16, 28.0 at cohort-k16 (its records, cursor,
-waits and the entry words' copy); the row copy 3.8-3.9.
+Instructions a MMA (ncu): the readout alone 16.5 at alt-k4, 14.0 at alt-k16, 13.0 at cohort-k16 (25.2 at alt-k4
+before the floor pass), of which the drain 2.8, 1.7, 1.4 (11.0 before: 12 of an iteration's 15 instructions rebuilt
+its 64-bit addresses); streamed 25.1, 20.2, 19.9 (34.9 at alt-k4 before). A rest tile with no producer runs 42
+instructions for its 4 MMAs: the output path 16 (8 FFMA scaling and converting each output, 4 packs, 4 shared
+atomics), the MMAs and the row `ldmatrix` 5, the entries' prefetch 9, panel bases and row 3, slot and loop 6, the
+rest 3; at alt-k4 a warp holds ~5.6 tiles a window, so its window's fixed work (4 digits' state loads, the digits'
+loops, the passes' barriers, the drain, the record) spreads over ~22 MMAs.
 
 What it settles:
 
-- The stream costs the readout 1.35x at alt-k4, 1.32x at alt-k16 and 1.46x at cohort-k16 (streamed at ring 5 against
-  the readout with no producer, drains included): 1,429, 3,356 and 7,704 cycles a CTA-window. As a factor of the bare
-  readout it predicts its third cell from the other two within 8%; a fixed part and a part a stage does not (-21% with
-  the busiest warp's stages a pass, cohort-k16's passes twice as uneven as its mean).
-- The producer is nearly all of it, its own instructions between tiles of 4 MMAs, not its waits: with no waits the
-  stream runs the same (5,517 against 5,486), and without its row copies it costs 1,192 of the 1,429 at alt-k4.
-- None of three producer forms helps: the consumer's words from global memory (+18% to +38%, its loads beside the row
-  copies), the token a stage ahead (+2%), two tiles a stage (-2% to +2%: the producer's own cost falls 30%, 1,192 to
-  839 at alt-k4, and the copies' interleaving takes it back).
-- A ring of 5 stages: 4 costs 5%; 6 costs 6%, its records only a window ahead (a window holds 4 stages at least, fewer
-  than the 5 groups ring 6 waits on, so its entry drains the ring).
+- The stream costs the readout 1.36x at alt-k4, 1.30x at alt-k16 and 1.37x at cohort-k16 (streamed at ring 5 against
+  the readout with no producer, drains included): its producer's instructions between tiles of 4 MMAs, not its waits
+  (with no waits the stream runs the same, 5,108 against 5,120). Its forms measured at carry-k5 a43afc27 -- the
+  consumer loading its entries, the token a stage ahead, two tiles a stage -- do not help.
+- The readout's floor at sparse is its output path: each output leaves registers after K = 32 (two MMAs), at 2.5
+  instructions a value -- 4 a MMA -- before the stream and the window's fixed work.
+- A ring of 5 stages: 4 costs 5%; 6 costs 6%, its records only a window ahead (a window holds 4 stages at least,
+  fewer than the 5 groups ring 6 waits on, so its entry drains the ring).
 
 Record: `measure/lab/results/read_stream/sm_86.json`.

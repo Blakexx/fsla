@@ -9,19 +9,16 @@ CTA `b` is box `b` of one head (the carry's order, its channel tile fastest): ch
 `(b // 2) % 8` (its read rows' 32 lists), read group `b // 16` (its 32 read digits); every CTA reads its dataset's
 windows, so a token's read row is fetched by each box of its slice group. A box-window's colored slots run in passes of
 256 (a panel's rows), each digit's entries placed within its pass. Files (little-endian):
-- `head.bin`: int32 (magic 0x4D525453, ctas, windows, a token record's bytes, a word record's bytes, and the two of
-  the paired records).
+- `head.bin`: int32 (magic 0x4D525453, ctas, windows, a token record's bytes, a word record's bytes).
 - `passes.bin`: u16 `[windows][8 read groups]`: a box-window's passes.
 - `tiles.bin`: u16 `[windows][2 passes][256]`: a read digit's 8-token tiles in a pass, at least one where the pass runs
   (an empty digit's all pads, as the readout steps every digit's first tile).
 - `records.bin`: u16 `[windows][8 read groups][8 warps]` token records: a warp's stages for the window in a 16-byte
   header, then each stage's 8 tokens -- the stages in the readout's order, each pass's every digit's first tile, then
   each digit's rest; a pad the tile's first live token (or 0 in an all-pad tile: the same line, its coefficient zero).
-- `words.bin`: u32 `[windows][8 read groups][8 warps]` word records: each stage's 8 entry words
-  (`read_image.inputs.py`'s: the coefficient low, the panel row's offset past the lane's base high), in the same order.
-- `records2.bin`, `words2.bin`: the same with two tiles a stage -- a stage's 16 tokens interleaved (row `r` of its
-  first tile, then of its second), its 16 words the first tile's then the second's; tiles paired within a pass, a
-  pass's last stage of one tile its tile twice.
+- `words.bin`: u32 `[windows][8 read groups][8 warps]` word records: each stage's 8 entries lane-ready, 8 bytes each --
+  the coefficient times the unit as fp32 and the panel row's offset past the lane's base (`read_image.inputs.py`'s
+  entry word, split) -- in the same order.
 - `rows.bin`: bf16 `[windows x 512][8 slice groups][32 lists]`: a token's read row, its 32 lists one value, 0.0625 or
   0.125 -- so every product the MMAs form is exact and a misplaced row changes the sum.
 - `panel.bin`: u32 `[ctas][2 passes][256 slots][16 words]`: each CTA's drained panel summed over the windows.
@@ -130,7 +127,7 @@ def dataset(directory: Path, cell: str, windows: int) -> list[str]:
                         np.add.at(m[b], (pa, sl), mult * (1 + high[tok, sg]))
 
     stages = max(sum(len(p) for p in x) // 8 for x in plans.values())
-    token_record, word_record = 16 + 16 * stages, 32 * stages
+    token_record, word_record = 16 + 16 * stages, 64 * stages
     rec = np.zeros((windows, groups, 8, token_record // 2), np.uint16)
     words = np.zeros((windows, groups, 8, word_record // 4), np.uint32)
     for (w, g, warp), by_pass in plans.items():
@@ -138,29 +135,12 @@ def dataset(directory: Path, cell: str, windows: int) -> list[str]:
         rec[w, g, warp, 0] = len(plan) // 8
         if plan:
             rec[w, g, warp, 8:8 + len(plan)] = [t for t, _ in plan]
-            words[w, g, warp, :len(plan)] = [x for _, x in plan]
-    stages2 = max(sum(-(-len(p) // 16) for p in x) for x in plans.values())
-    token_record2, word_record2 = 16 + 32 * stages2, 64 * stages2
-    rec2 = np.zeros((windows, groups, 8, token_record2 // 2), np.uint16)
-    words2 = np.zeros((windows, groups, 8, word_record2 // 4), np.uint32)
-    for (w, g, warp), by_pass in plans.items():
-        pairs = []
-        for p in by_pass:
-            tiles_p = [p[8 * k:8 * k + 8] for k in range(len(p) // 8)]
-            pairs += [(tiles_p[k], tiles_p[k + 1] if k + 1 < len(tiles_p) else tiles_p[k])
-                      for k in range(0, len(tiles_p), 2)]
-        rec2[w, g, warp, 0] = len(pairs)
-        for j, (a, b) in enumerate(pairs):
-            rec2[w, g, warp, 8 + 16 * j:8 + 16 * j + 16] = [t for r in range(8) for t in (a[r][0], b[r][0])]
-            words2[w, g, warp, 16 * j:16 * j + 16] = [x for _, x in a] + [x for _, x in b]
+            words[w, g, warp, :2 * len(plan)] = [v for _, x in plan for v in ((x & 0xFFFF) << 16, x >> 16)]
 
     one = np.array([one_add(k) for k in range(WORDS)], np.uint64)
     panel = ((m.astype(np.uint64)[..., None] * one) & 0xFFFFFFFF).astype(np.uint32)
 
-    (directory / "head.bin").write_bytes(struct.pack("<7i", 0x4D525453, CTAS, windows, token_record, word_record,
-                                                     token_record2, word_record2))
-    (directory / "records2.bin").write_bytes(rec2.tobytes())
-    (directory / "words2.bin").write_bytes(words2.tobytes())
+    (directory / "head.bin").write_bytes(struct.pack("<5i", 0x4D525453, CTAS, windows, token_record, word_record))
     (directory / "passes.bin").write_bytes(passes.tobytes())
     (directory / "tiles.bin").write_bytes(tiles.tobytes())
     (directory / "records.bin").write_bytes(rec.tobytes())
@@ -169,8 +149,7 @@ def dataset(directory: Path, cell: str, windows: int) -> list[str]:
     (directory / "panel.bin").write_bytes(panel.tobytes())
     print(f"read_stream {cell}: records {token_record} + {word_record} bytes ({stages} stages at most), "
           f"{tiles.sum() / (windows * groups):.1f} tiles and {passes.mean():.2f} passes a box-window")
-    return ["head.bin", "passes.bin", "tiles.bin", "records.bin", "words.bin", "records2.bin", "words2.bin", "rows.bin",
-            "panel.bin"]
+    return ["head.bin", "passes.bin", "tiles.bin", "records.bin", "words.bin", "rows.bin", "panel.bin"]
 
 
 if __name__ == "__main__":

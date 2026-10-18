@@ -167,10 +167,10 @@ def merged(s: CellStats, k: int) -> CellStats:
 
 
 #: A STREAMED SIDE'S COST beyond its MMA phase on sm_86 (labs `row_stream`, `read_stream`): the stream multiplies the
-#: side's bare phase by 1.49 (fold) and 1.38 (readout with its drain), the means of three cells (each predicted from the
-#: other two within 1% and 8%), rescaled to the model's phases at nl64k-alt-k4 (lab bare / model phase: fold 0.643,
-#: readout and drain 0.699) -- the fractions of the model's phase the stream adds
-STREAM = {"fold": 0.49 * 0.643, "readout": 0.38 * 0.699}
+#: side's bare phase by 1.62 (fold) and 1.34 (readout with its drain), the means of three cells (each third cell
+#: predicted from the other two within 7% and 3%), rescaled to the model's phases at nl64k-alt-k4 (lab bare / model
+#: phase: fold 0.604, readout and drain 0.648) -- the fractions of the model's phase the stream adds
+STREAM = {"fold": 0.62 * 0.604, "readout": 0.34 * 0.648}
 #: THE READ RING: its stages' bytes (8 rows of 64 bytes and their entry words) and each depth's cycles a CTA-window
 #: beyond 5 stages' (4: the first tiles' block holds the ring, nothing ahead); the fold's ring (4 stages of 8 rows of
 #: 128 bytes, a 16-token step's two and two ahead) takes the image's place, a window's read chunks all run before its

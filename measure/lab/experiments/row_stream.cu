@@ -27,7 +27,9 @@
 namespace row_stream {
 
 constexpr int kWarps = 8, kThreads = 32 * kWarps, kWindow = 512, kLists = 32, kRow = 128, kGroups = 8, kTiles = 2;
-constexpr int kStage = 8 * kRow, kSlices = 256, kValues = 128;
+//: a streamed stage: 8 rows, then its 8 entries' coefficients (f16) in a 128-byte pad, so every stage keeps the
+//: rows' 32-byte phase (a copy's destination off its source's phase doubles its L2 sectors)
+constexpr int kStage = 8 * kRow + 128, kSlices = 256, kValues = 128;
 
 //: THE INPUTS on the device: per window and write group a list's entries `n[32]`, an entry's token `tok[32][512]`, the
 //: union's slots `cnt` and a slot's token `uni[512]`; a token's slices `[windows][512][256 B]` and values
@@ -105,6 +107,12 @@ __device__ __forceinline__ void mma8(float (&d)[4], uint32_t a0, uint32_t a1, ui
 __device__ __forceinline__ uint32_t hmul2(uint32_t a, uint32_t b) {
   const __half2 r = __hmul2(*reinterpret_cast<const __half2*>(&a), *reinterpret_cast<const __half2*>(&b));
   return *reinterpret_cast<const uint32_t*>(&r);
+}
+
+__device__ __forceinline__ uint32_t lds32(uint32_t a) {
+  uint32_t v;
+  asm volatile("ld.shared.u32 %0, [%1];" : "=r"(v) : "r"(a));
+  return v;
 }
 
 //: c for two entries of a step, 1 where live and 0 past the list
@@ -266,7 +274,8 @@ __global__ void __launch_bounds__(kThreads, 1) streamed(In in, long long* t) {
   const int warp = lab::warp_id(), lane = lab::lane_id(), W = in.windows, C = in.record_bytes, r = lane >> 2,
             c = lane & 3;
   const Box x = box_of();
-  const uint32_t ring = smem(sm) + warp * D * kStage, ring_last = ring + (D - 1) * kStage;
+  //: the lane's constants held in registers (opaque, so ptxas keeps them rather than re-forming them each step)
+  const uint32_t ring = lab::held(smem(sm) + warp * D * kStage), ring_last = lab::held(ring + (D - 1) * kStage);
   const auto next_slot = [&](uint32_t slot) { return slot == ring_last ? ring : slot + kStage; };
   uint16_t* const recs = reinterpret_cast<uint16_t*>(sm + kWarps * D * kStage + warp * 3 * C);
   const uint32_t bars = smem(sm) + kWarps * (D * kStage + 3 * C) + warp * 24;
@@ -312,11 +321,13 @@ __global__ void __launch_bounds__(kThreads, 1) streamed(In in, long long* t) {
     fetch(1);
     fetch(2);
   }
-  const uint32_t row_s = r * kRow + 16 * ((c ^ r) & 7), row_v = r * kRow + 16 * (((c + 4) ^ r) & 7);
+  const uint32_t row_s = lab::held(r * kRow + 16 * ((c ^ r) & 7));
+  const uint32_t row_v = lab::held(r * kRow + 16 * (((c + 4) ^ r) & 7));
   const uint8_t* const slice_c = in.slices + 32 * x.slice + 16 * (c & 1);
   const uint8_t* const values_c = in.values + 64 * x.tile + 16 * c;
-  const bool slice_live = c < 2;
+  const bool slice_live = c < 2 || lane == 2;
   const uint16_t* pe = rec_of(0) + 8 + r;
+  const uint8_t* pcg = record(0) + 32;
   uint32_t pslot = ring;
   const uint8_t* slice_w = slice_c;
   const uint8_t* values_w = values_c;
@@ -347,6 +358,7 @@ __global__ void __launch_bounds__(kThreads, 1) streamed(In in, long long* t) {
         carrier_next = groups;
       }
       pe = rec_of(pw) + 8 + r;
+      pcg = record(pw) + 32;
       slice_w = slice_c + static_cast<size_t>(pw) * kWindow * kSlices;
       values_w = values_c + static_cast<size_t>(pw) * kWindow * kValues;
       S = pw < W ? rec_of(pw)[0] : 0;
@@ -357,48 +369,103 @@ __global__ void __launch_bounds__(kThreads, 1) streamed(In in, long long* t) {
     if (pw < W) {
       const uint32_t tk = *pe;
       if constexpr (PART != 1) {
-        copy16<CA>(pslot + row_s, slice_w + tk * kSlices, slice_live);
+        //: the slice's chunks (lanes `c` 0, 1); lane 2 the stage's coefficients in the same instruction; the slice
+        //: slots' last 32 bytes, zeroed once, rewritten with zeros by the rest
+        const bool cs = lane == 2;
+        copy16<CA>(cs ? pslot + 8 * kRow : pslot + row_s, cs ? pcg : slice_w + tk * kSlices, slice_live);
         copy16<CA>(pslot + row_v, values_w + tk * kValues, true);
+      } else {
+        if (lane == 2) copy16<CA>(pslot + 8 * kRow, pcg, true);
       }
-      pe += 8;
+      pe += 16;
+      pcg += 32;
       if (++ps >= S) enter();
     }
     pslot = next_slot(pslot);
     commit();
     ++groups;
   };
+  //: the warp's ring zeroed once: a slice slot's last 32 bytes stay zero
+  for (int k = lane; k < D * kStage / 16; k += 32)
+    asm volatile("st.shared.v4.u32 [%0], {%1, %1, %1, %1};" ::"r"(ring + 16 * k), "r"(0) : "memory");
+  __syncwarp();
   const long long t0 = clock64();
   if constexpr (PART != 4) {
 #pragma unroll 1
     for (int q = 0; q < D; ++q) issue();
   }
-  //: THE CONSUMER: the ring slots of its step's stages, the entries of its window's and the next window's lists (lane
-  //: `j` list `j`'s); a step waits for its stages, every stage but the D - its stages ahead, and refills its slots
+  //: THE CONSUMER: the ring slot of its next stage, the entries of its window's and the next window's lists (lane `j`
+  //: list `j`'s); a lane's row and swizzle offsets in a stage held for both step forms, its stages' coefficients read
+  //: from the stage. A step waits for its stages, every stage but the D - its stages ahead, and refills its slots.
   int cn = list_n(0, lane & 3), cn_next = list_n(1, lane & 3);
-  uint32_t cslot = ring, cslot2 = next_slot(ring);
+  uint32_t cslot = ring;
+  const int tile = lane >> 3, rr = lane & 7;
+  const auto off = [&](int k) { return lab::held(static_cast<uint32_t>(rr * kRow + 16 * ((k ^ rr) & 7))); };
+  const uint32_t a0 = off(tile & 1), a1 = off(2 + (tile & 1)), b0 = off(4 + (tile >> 1)), b1 = off(6 + (tile >> 1));
+  const uint32_t e8a = off(tile), e8b = off(4 + tile), coff = lab::held(8 * kRow + 4 * (lane & 3));
+  const bool hi_a = lab::held(tile >= 2 ? 1u : 0u) != 0, hi_b = lab::held(tile & 1) != 0;
+  constexpr bool kFold = PART < 2 || PART == 4;
+  //: a list's steps over its `n` entries: 16 tokens while more than 8 remain (A's rows from the stage `hi_a` picks, B's
+  //: from `hi_b`'s), then 8
+  const auto fold_list = [&](float (&ac)[2][4][4], int n) {
+    int s = 0;
+    for (int k = __any_sync(0xffffffffu, n - s > 8) ? 1 : 0; k > 0; --k)
+#pragma unroll 1
+      do {
+        const uint32_t second = next_slot(cslot);
+        if constexpr (PART != 4) {
+          wait_groups<D - 2>();
+          __syncwarp();
+        }
+        if constexpr (kFold) {
+          const uint32_t sa = hi_a ? second : cslot, sb = hi_b ? second : cslot;
+          uint32_t a[2][4], x[4], y[4];
+          ldsm_t(a[0], sa + a0);
+          ldsm_t(a[1], sa + a1);
+          ldsm_t(x, sb + b0);
+          ldsm_t(y, sb + b1);
+          const uint32_t c01 = lds32(cslot + coff), c89 = lds32(second + coff);
+          rola::static_for<2>([&](auto M) {
+            a[M][0] = hmul2(a[M][0], c01);
+            a[M][1] = hmul2(a[M][1], c01);
+            a[M][2] = hmul2(a[M][2], c89);
+            a[M][3] = hmul2(a[M][3], c89);
+            mma16(ac[M][0], a[M], x[0], x[1]);
+            mma16(ac[M][1], a[M], x[2], x[3]);
+            mma16(ac[M][2], a[M], y[0], y[1]);
+            mma16(ac[M][3], a[M], y[2], y[3]);
+          });
+        }
+        cslot = next_slot(second);
+        if constexpr (PART != 4) {
+          issue();
+          issue();
+        }
+        s += 16;
+      } while (__any_sync(0xffffffffu, n - s > 8));
+    for (int k = __any_sync(0xffffffffu, n - s > 0) ? 1 : 0; k > 0; --k) {
+      if constexpr (PART != 4) {
+        wait_groups<D - 1>();
+        __syncwarp();
+      }
+      if constexpr (kFold) {
+        uint32_t a[4], b[4];
+        ldsm_t(a, cslot + e8a);
+        ldsm_t(b, cslot + e8b);
+        const uint32_t c01 = lds32(cslot + coff);
+#pragma unroll
+        for (int q = 0; q < 4; ++q) a[q] = hmul2(a[q], c01);
+        rola::static_for<2>([&](auto M) {
+          rola::static_for<4>([&](auto N) { mma8(ac[M][N], a[2 * M], a[2 * M + 1], b[N]); });
+        });
+      }
+      cslot = next_slot(cslot);
+      if constexpr (PART != 4) issue();
+    }
+  };
 #pragma unroll 1
   for (int w = 0; w < W; ++w) {
-    rola::static_for<4>([&](auto J) {
-      const int nj = AHEAD ? __shfl_sync(0xffffffffu, cn, J) : list_n(w, J);
-      steps<PART < 2 || PART == 4>(
-          acc[J], nj,
-          [&](auto two) {
-            cslot2 = next_slot(cslot);
-            if constexpr (PART != 4) {
-              wait_groups<decltype(two)::value ? D - 2 : D - 1>();
-              __syncwarp();
-            }
-          },
-          [&](auto two) {
-            cslot = next_slot(decltype(two)::value ? cslot2 : cslot);
-            if constexpr (PART != 4) {
-              issue();
-              if constexpr (decltype(two)::value) issue();
-            }
-          },
-          [&](int, int i) { return (i < 8 ? cslot : cslot2) + (i & 7) * kRow; }, [&](int, int i) { return i & 7; },
-          lane);
-    });
+    rola::static_for<4>([&](auto J) { fold_list(acc[J], AHEAD ? __shfl_sync(0xffffffffu, cn, J) : list_n(w, J)); });
     cn = cn_next;
     cn_next = list_n(w + 2, lane & 3);
   }

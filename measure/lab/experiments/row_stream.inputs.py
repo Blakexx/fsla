@@ -18,8 +18,8 @@ Files (little-endian):
   product and sum the MMAs form is exact.
 - `records.bin`: int32 header (magic 0x4D525453, a record's bytes); then u16 records `[windows][groups][8 warps]`: a
   warp's stage plan for the window, as a pre-pass would emit it -- its stages `S` (in a 16-byte header), then each
-  stage's 8 tokens (a pad row the stage's first: the same line, its c zero), its lists `w + 8 j` in order, each
-  list's entries 8 a stage.
+  stage's 8 tokens and their 8 coefficients (f16; a pad row the stage's first, the same line, its coefficient zero),
+  its lists `w + 8 j` in order, each list's entries 8 a stage.
 - `state.bin`: f32 `[ctas][32 lists][32 digits][32 channels]`: the sum over the windows and each list's entries of
   slice x values, digits 16 .. 31 zero -- the state every form must reach bit for bit.
 """
@@ -35,6 +35,8 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 CTAS, GROUPS, TILES, WARPS = 80, 8, 2, 8
+#: an entry's coefficient (f16 1.0; a pad's 0)
+ONE = 0x3C00
 W = 512
 #: THE DATASETS: (subdirectory, cell, windows) -- the calibration cell, a cell of longer lists, and a clustered cell
 DATASETS = (("", "nl64k-alt-k4", 64), ("k16", "flagship-alt-k16-L16384", 32), ("c16", "flagship-cohort-k16-L16384", 32))
@@ -43,6 +45,13 @@ DATASETS = (("", "nl64k-alt-k4", 64), ("k16", "flagship-alt-k16-L16384", 32), ("
 def box(b: int) -> tuple[int, int, int]:
     """CTA `b`'s (channel tile, write group, slice group)."""
     return b % TILES, (b // TILES) % GROUPS, b // (TILES * GROUPS)
+
+
+def stage(tok: np.ndarray, n: int, k: int) -> np.ndarray:
+    """A list's stage from entry `k` (`n` entries): its 8 tokens (a pad the stage's first) and their coefficients."""
+    live = min(8, n - k)
+    tokens = np.concatenate([tok[k:k + live], np.full(8 - live, tok[k], np.uint16)])
+    return np.concatenate([tokens, np.where(np.arange(8) < live, ONE, 0).astype(np.uint16)])
 
 
 def write(directory: Path) -> list[str]:
@@ -84,21 +93,19 @@ def dataset(directory: Path, cell: str, windows: int) -> list[str]:
                     if gb == g:
                         state[b, l, :16] += prod[sg, :, 32 * ct:32 * ct + 32]
             for wp in range(WARPS):
-                stages = [np.pad(tok[wp + 8 * j, k:min(k + 8, n[wp + 8 * j])], (0, max(0, k + 8 - n[wp + 8 * j])),
-                                 constant_values=tok[wp + 8 * j, k])
-                          for j in range(4) for k in range(0, n[wp + 8 * j], 8)]
-                plans[w, g, wp] = stages
+                plans[w, g, wp] = [stage(tok[wp + 8 * j], int(n[wp + 8 * j]), k)
+                                   for j in range(4) for k in range(0, n[wp + 8 * j], 8)]
             un = np.zeros(W, dtype=np.uint16)
             u = int(count[0, w, g])
             un[:u] = union[0, w, g, :u] & 0x1FF
             out += n.astype(np.uint16).tobytes() + tok.tobytes() + struct.pack("<H", u) + un.tobytes()
     (directory / "lists.bin").write_bytes(bytes(out))
     most = max(len(x) for x in plans.values())
-    rec = np.zeros((windows, GROUPS, WARPS, 8 * (1 + most)), dtype=np.uint16)
+    rec = np.zeros((windows, GROUPS, WARPS, 8 + 16 * most), dtype=np.uint16)
     for (w, g, wp), stages in plans.items():
         rec[w, g, wp, 0] = len(stages)
         if stages:
-            rec[w, g, wp, 8:8 * (1 + len(stages))] = np.concatenate(stages)
+            rec[w, g, wp, 8:8 + 16 * len(stages)] = np.concatenate(stages)
     (directory / "records.bin").write_bytes(struct.pack("<2i", 0x4D525453, rec.shape[-1] * 2) + rec.tobytes())
     (directory / "slices.bin").write_bytes(slices.tobytes())
     (directory / "values.bin").write_bytes(values.tobytes())

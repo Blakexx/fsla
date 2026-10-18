@@ -1,15 +1,16 @@
 // measure/lab/experiments/read_stream.cu -- QUESTION: when the readout's rows are streamed a digit at a time into each
 // warp's ring (merge width 1) instead of gathered from a staged pool, what does the stream cost beyond the readout,
-// and at what ring depth? METHOD: the readout's tokens-on-N form (`read_image.cuh`: a tile 8 tokens, 4 bf16 MMAs
-// against the digit's state from the image, each output pair exact and added into its token's panel row; each pass's
-// every digit's first tile in one straight-line block, then each digit's rest; the panel drained a pass) over three
-// cells' read lists (`read_stream.inputs.py`): 80 CTAs, box `b` of one head, a warp its digits w, w + 8, w + 16,
-// w + 24; a stage a tile's 8 read rows (a token's 64 bytes of its slice group, shared between the boxes as the
-// carry's are, so L2 serves what one box fetched to the others) and its 8 entry words, copied ahead across digits,
-// passes and windows from the warp's window records (a pre-pass's plan): its tokens staged a window ahead, its
-// words copied from global memory with its rows. Bounds: the readout with the producer and no row copies, the copies
-// alone, the readout with no producer. A sample is the CTA's span a window; each forming variant's drained panel is
-// checked word for word.
+// at what ring depth, and how few instructions a MMA do the readout and its stream take? METHOD: the readout's
+// tokens-on-N form (a tile 8 tokens, 4 bf16 MMAs against the digit's state from the image, each lane's two tokens'
+// outputs scaled by their coefficients, packed exact and added into their panel rows; each pass's every digit's first
+// tile in one straight-line block, then each digit's rest; the panel drained a pass) over three cells' read lists
+// (`read_stream.inputs.py`): 80 CTAs, box `b` of one head, a warp its digits w, w + 8, w + 16, w + 24; a stage a
+// tile's 8 read rows (a token's 64 bytes of its slice group, shared between the boxes as the carry's are, so L2
+// serves what one box fetched to the others) and its 8 entries lane-ready (fp32 coefficient, panel offset), copied
+// ahead across digits, passes and windows from the warp's window records (a pre-pass's plan). The lane's addresses
+// held in registers; the drain unrolled on held addresses. Bounds: the readout with the producer and no row copies,
+// the copies alone, the readout with no producer, and the same with no drain. A sample is the CTA's span a window;
+// each forming variant's drained panel is checked word for word.
 // see docs/internals/tools/lab.md#read-stream
 #include <cstdlib>
 
@@ -26,13 +27,13 @@ using read_image::kWarps;
 using read_image::kWords;
 
 constexpr int kWindow = 512, kGroups = 8, kTiles = 2, kSliceGroups = 8, kRow = 64, kPasses = 2;
-//: THE LAYOUT: the image's planes, each warp's ring of `D` stages (`T` tiles' 8 read rows each, then their entry
-//: words), the lanes' pad bases (128 bytes), the 8 dummy panel rows and the panel, each warp's two token records
-constexpr int kRing = kPlanes * kPlaneBytes;
+//: THE LAYOUT: the image's planes, each warp's ring of `D` stages (8 read rows, then their 8 entries, 8 bytes each:
+//: 576 bytes, the rows' 32-byte phase kept), the lanes' pad bases (128 bytes), the 8 dummy panel rows and the panel,
+//: each warp's two token records
+constexpr int kRing = kPlanes * kPlaneBytes, kStage = 8 * kRow + 64;
 
-template <int D, int T>
+template <int D>
 struct Layout {
-  static constexpr int kStage = T * 8 * kRow + 64;
   static constexpr int kPads = kRing + kWarps * D * kStage, kPanel = kPads + 128 + 8 * kPanelPitch * 4;
   static constexpr int kRec = kPanel + kSlots * kPanelPitch * 4;
 };
@@ -87,34 +88,60 @@ __device__ __forceinline__ uint32_t lds32(uint32_t a) {
   return v;
 }
 
+__device__ __forceinline__ uint4 lds128(uint32_t a) {
+  uint4 v;
+  asm volatile("ld.shared.v4.u32 {%0, %1, %2, %3}, [%4];" : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w) : "r"(a));
+  return v;
+}
+
 __device__ __forceinline__ uint32_t lds16(uint32_t a) {
   uint16_t v;
   asm volatile("ld.shared.u16 %0, [%1];" : "=h"(v) : "r"(a));
   return v;
 }
 
+//: A TILE: 8 tokens on N -- their read rows (B) by one `ldmatrix.x4` at `rows`, 4 MMAs against the digit's state (A),
+//: each lane's two tokens' outputs scaled by their coefficients (`e`: coefficient and panel offset of tokens 2t and
+//: 2t + 1), packed exact and added at their panel rows
+__device__ __forceinline__ void tile(uint32_t rows, uint4 e, uint32_t pad, const uint32_t (&f)[16]) {
+  uint32_t b[4];
+  lab::ldsm(b, rows);
+  float acc[2][4] = {};
+#pragma unroll
+  for (int m = 0; m < 2; ++m)
+#pragma unroll
+    for (int kb = 0; kb < 2; ++kb) {
+      const uint32_t a[4] = {f[(m * 2 + kb) * 4], f[(m * 2 + kb) * 4 + 1], f[(m * 2 + kb) * 4 + 2],
+                             f[(m * 2 + kb) * 4 + 3]};
+      lab::mma_bf16_f32(acc[m], a, b[2 * kb], b[2 * kb + 1]);
+    }
+  const float c0 = __uint_as_float(e.x), c1 = __uint_as_float(e.z);
+  const uint32_t p0 = pad + e.y, p1 = pad + e.w;
+#pragma unroll
+  for (int m = 0; m < 2; ++m) {
+    read_image::panel_red(p0 + 32 * m, read_image::s16_exact(acc[m][0], acc[m][2], c0));
+    read_image::panel_red(p1 + 32 * m, read_image::s16_exact(acc[m][1], acc[m][3], c1));
+  }
+}
+
 //: THE READOUT STREAMED: each warp's ring of `D` stages (`D >= 4`: the first tiles' block holds four); the warp's
 //: stages its window records' in order, each copied as soon as a slot no tile holds is free, across digits, passes and
-//: windows -- the producer reading a stage's tokens from its token record (copied a window ahead) and copying its
-//: rows and its entry words; the consumer its passes and its digits' tiles a window ahead into registers, the panel
-//: drained after each pass. `PART` 1 the readout with the producer, no row copies (the ring's stale rows), 2 the copies
-//: alone, 3 the readout with no producer (its entry words from global memory, a tile ahead), 4 the stream with no waits
-//: on its stages (a bound: what waiting on the copies costs). `SET` names the dataset's
-//: instantiation, so the profiler keeps each dataset's counters apart. A token record lands with the stage group it was
-//: issued in, a window ahead: every warp-window holds at least 4 stages (a digit's first tile a pass), so at `D <= 5`
-//: a window's entry waits only on the groups the ring's next stage needs. `WL`: the consumer loads its entry words from
-//: global memory a tile ahead (as with no producer), the producer copying rows alone. `TA`: the producer loads the next
-//: stage's token a stage ahead. `T`: tiles a stage (2: the records' paired stages, a pass's last perhaps one tile)
-template <int D, int PART, int SET, int WL, int TA, int T>
+//: windows -- the producer reading a stage's tokens from its token record (copied a window ahead with the stage group
+//: it is issued in: every warp-window holds at least 4 stages, so at `D <= 5` a window's entry waits only on the groups
+//: the ring's next stage needs) and copying its rows and its entries; the consumer its passes and its digits' tiles a
+//: window ahead into registers, the panel drained after each pass. `PART` 1 the readout with the producer, no row
+//: copies (the ring's stale rows), 2 the copies alone, 3 the readout with no producer (its entries from global
+//: memory, a tile ahead), 4 the stream with no waits on its stages (a bound: what waiting on the copies costs), 5 as 3
+//: with no drain. `SET` names the dataset's instantiation, so the profiler keeps each dataset's counters apart
+template <int D, int PART, int SET>
 __global__ void __launch_bounds__(kThreads, 1) stream(In in, long long* t) {
-  static_assert(T == 1 || (!TA && !WL), "a stage of two tiles loads its two tokens at once and copies its words");
   extern __shared__ __align__(128) uint8_t smem[];
-  using L = Layout<D, T>;
-  constexpr int kStage = L::kStage;
+  using L = Layout<D>;
   const int warp = lab::warp_id(), lane = lab::lane_id(), W = in.windows, C = in.token_bytes, CW = in.word_bytes,
             r = lane >> 2, c = lane & 3;
   const Box x = box_of();
   const uint32_t sm = lab::smem(smem);
+  constexpr bool kProducer = PART != 3 && PART != 5;
   //: the image's even channels -0.0625 and odd +0.0625 (bf16), the rest zero
   uint4* chunks = reinterpret_cast<uint4*>(smem);
   for (int k = static_cast<int>(threadIdx.x); k < (L::kRec + kWarps * 2 * C) / 16; k += kThreads) {
@@ -123,10 +150,10 @@ __global__ void __launch_bounds__(kThreads, 1) stream(In in, long long* t) {
   }
   __syncthreads();
   const read_image::Lane lc = lane_of(sm, warp, lane, L::kPads);
-  const uint32_t ring = sm + kRing + warp * D * kStage, ring_last = ring + (D - 1) * kStage;
+  //: the lane's constants held in registers (opaque, so ptxas keeps them rather than re-forming them each tile)
+  const uint32_t ring = lab::held(sm + kRing + warp * D * kStage), ring_last = lab::held(ring + (D - 1) * kStage);
   const uint32_t recs = sm + L::kRec + warp * 2 * C;
   const auto next_slot = [&](uint32_t slot) { return slot == ring_last ? ring : slot + kStage; };
-  float sink = 0.0f;
   const auto warp_record = [&](int w) {
     return (static_cast<size_t>(w) * kGroups + x.read) * kWarps + warp;
   };
@@ -137,7 +164,7 @@ __global__ void __launch_bounds__(kThreads, 1) stream(In in, long long* t) {
       copy16(recs + (w & 1) * C + 16 * q, in.rec + warp_record(w) * C + 16 * q);
   };
   //: THE PRODUCER'S CURSOR: the window and stage it copies next and the window's stages; its running addresses -- the
-  //: lane's token in the window's record, the stage's words in global memory, its row's base in the window's rows,
+  //: lane's token in the window's record, the stage's entries in global memory, its row's base in the window's rows,
   //: the ring slot it fills next; the groups committed and the group carrying the next window's record
   int pw = 0, ps = 0, groups = 0, carrier = 0;
   fetch(0);
@@ -145,13 +172,12 @@ __global__ void __launch_bounds__(kThreads, 1) stream(In in, long long* t) {
   wait_groups<0>();
   __syncwarp();
   fetch(1);
-  const uint32_t row_c = r * kRow + 16 * (c ^ ((r >> 1) & 3));
+  const uint32_t row_c = lab::held(r * kRow + 16 * (c ^ ((r >> 1) & 3)));
   const uint8_t* const rows_c = in.rows + x.slice * kRow + 16 * c;
-  uint32_t pe = recs + 16 + 2 * T * r, pslot = ring;
-  const uint8_t* pwd = in.words + warp_record(0) * CW + 16 * (lane & (2 * T - 1));
+  uint32_t pe = recs + 16 + 2 * r, pslot = ring;
+  const uint8_t* pwd = in.words + warp_record(0) * CW + 16 * (lane & 3);
   const uint8_t* prow = rows_c;
   int S = static_cast<int>(lds16(recs));
-  uint32_t tk_next = TA ? lds16(pe) : 0u;
   //: the cursor to the next window holding stages, its record landed first (a wait on every group but the newest D - 1,
   //: or every group where fewer have been committed since)
   const auto enter = [&] {
@@ -172,38 +198,33 @@ __global__ void __launch_bounds__(kThreads, 1) stream(In in, long long* t) {
       fetch(pw + 1);
       carrier = groups;
       const uint32_t rec = recs + (pw & 1) * C;
-      pe = rec + 16 + 2 * T * r;
-      pwd = in.words + warp_record(pw) * CW + 16 * (lane & (2 * T - 1));
+      pe = rec + 16 + 2 * r;
+      pwd = in.words + warp_record(pw) * CW + 16 * (lane & 3);
       prow = rows_c + static_cast<size_t>(pw) * kWindow * kSliceGroups * kRow;
       S = pw < W ? static_cast<int>(lds16(rec)) : 0;
     } while ((pw < W) & (S == 0));
   };
   const auto issue = [&] {
     if (pw < W) {
-      const uint32_t tk = TA ? tk_next : T == 1 ? lds16(pe) : lds32(pe);
-      if constexpr (PART != 1) {
-        copy16(pslot + row_c, prow + (tk & 0xffffu) * (kSliceGroups * kRow));
-        if constexpr (T == 2) copy16(pslot + 8 * kRow + row_c, prow + (tk >> 16) * (kSliceGroups * kRow));
-      }
-      if constexpr (!WL) {
-        if (lane < 2 * T) copy16(pslot + T * 8 * kRow + 16 * lane, pwd);
-      }
-      pe += 16 * T;
-      pwd += 32 * T;
+      const uint32_t tk = lds16(pe);
+      if constexpr (PART != 1) copy16(pslot + row_c, prow + tk * (kSliceGroups * kRow));
+      if (lane < 4) copy16(pslot + 8 * kRow + 16 * lane, pwd);
+      pe += 16;
+      pwd += 64;
       if (++ps >= S) enter();
-      if constexpr (TA) tk_next = pw < W ? lds16(pe) : 0u;
     }
     pslot = next_slot(pslot);
     commit();
     ++groups;
   };
   const long long t0 = clock64();
-  if constexpr (PART != 3) {
+  if constexpr (kProducer) {
 #pragma unroll 1
     for (int q = 0; q < D - 1; ++q) issue();
   }
   //: THE CONSUMER: its next ring slot, its window's passes and its digits' tiles a pass (lane `i` digit `w + 8 i`'s, of
-  //: pass 0 and 1), each held a window ahead; with no producer, its window's words at their use
+  //: pass 0 and 1), each held a window ahead; the lane's row address and entries' offset in a stage held; with no
+  //: producer, its window's entries from global memory a tile ahead
   const auto passes_of = [&](int w) {
     return w < W ? static_cast<int>(in.passes[static_cast<size_t>(w) * kGroups + x.read]) : 0;
   };
@@ -215,48 +236,48 @@ __global__ void __launch_bounds__(kThreads, 1) stream(In in, long long* t) {
   int np = passes_of(0), np_next = passes_of(1), ct0 = tiles_of(0, 0), ct1 = tiles_of(0, 1);
   int ct0_next = tiles_of(1, 0), ct1_next = tiles_of(1, 1);
   uint32_t cslot = ring;
-  const uint32_t row_r = static_cast<uint32_t>((lane & 7) * kRow + 16 * (((lane & 7) >> 1) & 3));
-  const uint32_t* cwd = nullptr;
-  uint32_t cw_next = 0;
-  //: a tile, the `half`-th of the stage at ring slot `slot`: its rows and its entry words from the slot (from global
-  //: memory where no producer runs, the next tile's loaded a tile ahead)
-  const auto tile = [&](const uint32_t (&f)[16], uint32_t slot, int half) {
-    uint32_t word;
-    if constexpr (PART == 3 || WL) {
-      word = cw_next;
-      cwd += 8;
-      cw_next = __ldg(cwd + (lane & 7));
+  const uint32_t row_q = lab::held((lane & 7) * kRow + 16 * ((((lane & 7) >> 1) & 3) ^ (lane >> 3)));
+  const uint32_t ent = lab::held(8 * kRow + 16 * (lane & 3));
+  const uint8_t* cwd = nullptr;
+  uint4 e_next = {};
+  //: a tile at ring slot `slot`: its rows and entries from the slot (from global memory where no producer runs)
+  const auto step = [&](const uint32_t (&f)[16], uint32_t slot) {
+    uint4 e;
+    if constexpr (kProducer) {
+      e = lds128(slot + ent);
     } else {
-      word = lds32(slot + T * 8 * kRow + 32 * half + 4 * (lane & 7));
+      e = e_next;
+      cwd += 64;
+      e_next = __ldg(reinterpret_cast<const uint4*>(cwd + 16 * (lane & 3)));
     }
-    read_image::tile_n<1>(sm, make_uint2(slot + 8 * kRow * half + row_r - sm, word), lc, f, sink);
+    tile(slot + row_q, e, lc.pad, f);
   };
-  //: the drain of pass `p`: each warp's 32 slots, two a request, each word cleared
+  //: the drain of pass `p`: each warp's 32 slots, two a request (a 128-byte line), unrolled on held addresses, each
+  //: word cleared
+  const uint32_t cell = lab::held(sm + L::kPanel + ((32 * warp + (lane >> 4)) * kPanelPitch + (lane & 15)) * 4);
   const auto drain = [&](int p) {
-    uint32_t* words = reinterpret_cast<uint32_t*>(smem);
-#pragma unroll 1
+    uint32_t* target = in.panel_out + ((static_cast<size_t>(blockIdx.x) * kPasses + p) * kSlots + 32 * warp +
+                                       (lane >> 4)) * kWords + (lane & 15);
+#pragma unroll
     for (int k = 0; k < 16; ++k) {
-      const int slot = 32 * warp + 2 * k + (lane >> 4), word = lane & 15;
-      uint32_t* cell = words + L::kPanel / 4 + slot * kPanelPitch + word;
-      uint32_t* target =
-          in.panel_out + ((static_cast<int64_t>(blockIdx.x) * kPasses + p) * kSlots + slot) * kWords + word;
-      asm volatile("red.global.add.u32 [%0], %1;" ::"l"(target), "r"(*cell) : "memory");
-      *cell = 0u;
+      const uint32_t v = lds32(cell + k * 2 * kPanelPitch * 4);
+      asm volatile("st.shared.u32 [%0], %1;" ::"r"(cell + k * 2 * kPanelPitch * 4), "r"(0u) : "memory");
+      asm volatile("red.global.add.u32 [%0], %1;" ::"l"(target + k * 2 * kWords), "r"(v) : "memory");
     }
   };
 #pragma unroll 1
   for (int w = 0; w < W; ++w) {
-    if constexpr (PART == 3 || WL) {
-      cwd = reinterpret_cast<const uint32_t*>(in.words + warp_record(w) * CW);
-      cw_next = __ldg(cwd + (lane & 7));
+    if constexpr (!kProducer) {
+      cwd = in.words + warp_record(w) * CW;
+      e_next = __ldg(reinterpret_cast<const uint4*>(cwd + 16 * (lane & 3)));
     }
 #pragma unroll 1
     for (int p = 0; p < np; ++p) {
       const int ct = p == 0 ? ct0 : ct1;
-      //: every digit's first tile, one block: its 4 / T slots held, the ring's other slots ahead
-      if constexpr (PART != 3) {
+      //: every digit's first tile, one block: its four slots held, the ring's other slots ahead
+      if constexpr (kProducer) {
         issue();
-        if constexpr (PART != 4) wait_groups<D - 4 / T>();
+        if constexpr (PART != 4) wait_groups<D - 4>();
         __syncwarp();
       }
       uint32_t f[4][16];
@@ -264,35 +285,31 @@ __global__ void __launch_bounds__(kThreads, 1) stream(In in, long long* t) {
       for (int i = 0; i < 4; ++i) {
         if constexpr (PART != 2) {
           read_image::state_in<1>(f[i], lc, read_image::plane_off(i));
-          tile(f[i], cslot, i % T);
+          step(f[i], cslot);
         }
-        if (i % T == T - 1) cslot = next_slot(cslot);
+        cslot = next_slot(cslot);
       }
-      if constexpr (PART != 3) {
+      if constexpr (kProducer) {
 #pragma unroll 1
-        for (int q = 0; q < 4 / T - 1; ++q) issue();
+        for (int q = 0; q < 3; ++q) issue();
       }
-      //: each digit's rest, a stage's first tile waiting for its stage
-      int k = 0;
+      //: each digit's rest, a tile waiting for its stage
 #pragma unroll
       for (int i = 0; i < 4; ++i) {
         const int n = __shfl_sync(0xffffffffu, ct, i) - 1;
 #pragma unroll 1
-        for (int s = 0; s < n; ++s, ++k) {
-          if constexpr (PART != 3) {
-            if (k % T == 0) {
-              issue();
-              if constexpr (PART != 4) wait_groups<D - 1>();
-              __syncwarp();
-            }
+        for (int s = 0; s < n; ++s) {
+          if constexpr (kProducer) {
+            issue();
+            if constexpr (PART != 4) wait_groups<D - 1>();
+            __syncwarp();
           }
-          if constexpr (PART != 2) tile(f[i], cslot, k % T);
-          if (k % T == T - 1) cslot = next_slot(cslot);
+          if constexpr (PART != 2) step(f[i], cslot);
+          cslot = next_slot(cslot);
         }
       }
-      if (k % T != 0) cslot = next_slot(cslot);
       __syncthreads();
-      if constexpr (PART != 2) drain(p);
+      if constexpr (PART != 2 && PART != 5) drain(p);
       __syncthreads();
     }
     np = np_next;
@@ -308,15 +325,14 @@ __global__ void __launch_bounds__(kThreads, 1) stream(In in, long long* t) {
     t[2 * (blockIdx.x * kWarps + warp)] = t0;
     t[2 * (blockIdx.x * kWarps + warp) + 1] = t1;
   }
-  (void)sink;
 }
 
 //: the inputs from a dataset's directory
 struct Host {
   std::vector<uint16_t> passes, tiles;
-  std::vector<uint8_t> rec, words, rec2, words2, rows;
+  std::vector<uint8_t> rec, words, rows;
   std::vector<uint32_t> panel;
-  int ctas = 0, windows = 0, token_bytes = 0, word_bytes = 0, token_bytes2 = 0, word_bytes2 = 0;
+  int ctas = 0, windows = 0, token_bytes = 0, word_bytes = 0;
 };
 
 std::vector<uint8_t> file(const std::string& path) {
@@ -342,16 +358,12 @@ Host load(const std::string& dir) {
   h.ctas = head[1];
   h.windows = head[2];
   h.token_bytes = head[3];
-  h.token_bytes2 = head[5];
-  h.word_bytes2 = head[6];
   h.word_bytes = head[4];
   h.passes = as<uint16_t>(file(dir + "/passes.bin"));
   h.tiles = as<uint16_t>(file(dir + "/tiles.bin"));
   h.panel = as<uint32_t>(file(dir + "/panel.bin"));
   h.rec = file(dir + "/records.bin");
   h.words = file(dir + "/words.bin");
-  h.rec2 = file(dir + "/records2.bin");
-  h.words2 = file(dir + "/words2.bin");
   h.rows = file(dir + "/rows.bin");
   return h;
 }
@@ -364,30 +376,31 @@ T* up(const std::vector<T>& v) {
   return d;
 }
 
-template <int D, int PART, int SET, int WL = 0, int TA = 0, int T = 1>
+template <int D, int PART, int SET>
 void run(const lab::Bench& b, const std::string& variant, const In& in, const Host& h) {
-  const std::string name = lab::kernel("read_stream::stream", {D, PART, SET, WL, TA, T});
+  const std::string name = lab::kernel("read_stream::stream", {D, PART, SET});
   b.expect(name, "LDGSTS", ">=", 1);
   b.expect(name, "HMMA.16816.F32.BF16", PART == 2 ? "==" : ">=", PART == 2 ? 0 : 4);
-  //: the producer's cursor runs inside the readout's tile loop, a stage a tile; with no producer, the entry words load
-  //: from global memory inside it
+  //: the producer's cursor runs inside the readout's tile loop, a stage a tile; with no producer, the entries load from
+  //: global memory inside it
   b.expect(name, "BSSY", ">=", 0);
-  if (PART == 3 || WL) b.expect(name, "STEP_GLOBAL", ">=", 0);
+  if (PART == 3 || PART == 5) b.expect(name, "STEP_GLOBAL", ">=", 0);
   b.exempt(name, "a copy-overlap probe: the readout's tile over streamed rows, its cost the question");
   if (b.expect_only) return;
-  const int bytes = Layout<D, T>::kRec + kWarps * 2 * (T == 1 ? h.token_bytes : h.token_bytes2);
-  LAB_CHECK(cudaFuncSetAttribute(stream<D, PART, SET, WL, TA, T>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));
+  const int bytes = Layout<D>::kRec + kWarps * 2 * h.token_bytes;
+  LAB_CHECK(cudaFuncSetAttribute(stream<D, PART, SET>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));
   LAB_CHECK(cudaMemset(in.panel_out, 0, h.panel.size() * 4));
-  const lab::Samples s = b.variant([&] { stream<D, PART, SET, WL, TA, T><<<h.ctas, kThreads, bytes>>>(in, b.times); },
+  const lab::Samples s = b.variant([&] { stream<D, PART, SET><<<h.ctas, kThreads, bytes>>>(in, b.times); },
                                    [&] { return b.span(kWarps, h.ctas) / h.windows; });
   if (PART) {
-    b.unchecked(variant, PART == 2   ? "a bound: copies and their waits alone, no panel formed"
+    b.unchecked(variant, PART == 5   ? "a bound: the readout with no producer and no drain, no panel formed"
+                         : PART == 2 ? "a bound: copies and their waits alone, no panel formed"
                          : PART == 4 ? "a bound: the stream with no waits, its rows racing their copies"
                                      : "a bound: the readout over stale rows, no panel formed");
   } else {
     //: one launch from a cleared panel: the drains of the timed launches summed over their repetitions
     LAB_CHECK(cudaMemset(in.panel_out, 0, h.panel.size() * 4));
-    stream<D, PART, SET, WL, TA, T><<<h.ctas, kThreads, bytes>>>(in, b.times);
+    stream<D, PART, SET><<<h.ctas, kThreads, bytes>>>(in, b.times);
     LAB_CHECK(cudaDeviceSynchronize());
     std::vector<uint32_t> got(h.panel.size());
     LAB_CHECK(cudaMemcpy(got.data(), in.panel_out, got.size() * 4, cudaMemcpyDeviceToHost));
@@ -410,7 +423,7 @@ int main(int argc, char** argv) {
   //: each dataset's inputs (`read_stream.inputs.py`'s `DATASETS`): nl64k-alt-k4, flagship-alt-k16 in `k16/` and
   //: flagship-cohort-k16 in `c16/`
   Host h[3];
-  In in[3] = {}, in2[3] = {};
+  In in[3] = {};
   const char* sub[3] = {"", "/k16", "/c16"};
   if (!b.expect_only) {
     if (dir.empty()) {
@@ -427,11 +440,6 @@ int main(int argc, char** argv) {
       LAB_CHECK(cudaMalloc(&out, h[k].panel.size() * 4));
       in[k] = In{up(h[k].passes), up(h[k].tiles), up(h[k].rec), up(h[k].words), up(h[k].rows), out,
                  h[k].windows, h[k].token_bytes, h[k].word_bytes};
-      in2[k] = in[k];
-      in2[k].rec = up(h[k].rec2);
-      in2[k].words = up(h[k].words2);
-      in2[k].token_bytes = h[k].token_bytes2;
-      in2[k].word_bytes = h[k].word_bytes2;
     }
   }
   run<4, 0, 0>(b, "streamed, ring 4 (the first tiles' block, nothing ahead)", in[0], h[0]);
@@ -440,23 +448,14 @@ int main(int argc, char** argv) {
   run<5, 1, 0>(b, "bound: the readout with the producer, no row copies (ring 5)", in[0], h[0]);
   run<5, 2, 0>(b, "bound: the copies alone (ring 5)", in[0], h[0]);
   run<5, 3, 0>(b, "bound: the readout alone, no producer", in[0], h[0]);
+  run<5, 5, 0>(b, "bound: the readout alone, no producer, no drain", in[0], h[0]);
   run<5, 4, 0>(b, "bound: the stream with no waits on its stages (ring 5)", in[0], h[0]);
-  run<5, 0, 0, 1>(b, "streamed, ring 5, the consumer's words from global memory a tile ahead", in[0], h[0]);
-  run<5, 1, 0, 1>(b, "bound: the consumer's words a tile ahead, the producer and no row copies", in[0], h[0]);
-  run<5, 0, 0, 0, 1>(b, "streamed, ring 5, the next stage's token a stage ahead", in[0], h[0]);
-  run<3, 0, 0, 0, 0, 2>(b, "streamed, two tiles a stage, ring 3 (6 tiles)", in2[0], h[0]);
-  run<3, 1, 0, 0, 0, 2>(b, "bound: two tiles a stage, the producer and no row copies", in2[0], h[0]);
-  run<5, 1, 0, 0, 1>(b, "bound: the token a stage ahead, the producer and no row copies", in[0], h[0]);
   run<5, 0, 1>(b, "alt-k16: streamed, ring 5", in[1], h[1]);
   run<5, 1, 1>(b, "alt-k16: bound: the readout with the producer, no row copies", in[1], h[1]);
   run<5, 3, 1>(b, "alt-k16: bound: the readout alone, no producer", in[1], h[1]);
-  run<5, 0, 1, 1>(b, "alt-k16: streamed, ring 5, the consumer's words a tile ahead", in[1], h[1]);
-  run<5, 0, 1, 0, 1>(b, "alt-k16: streamed, ring 5, the next stage's token a stage ahead", in[1], h[1]);
-  run<3, 0, 1, 0, 0, 2>(b, "alt-k16: streamed, two tiles a stage, ring 3", in2[1], h[1]);
+  run<5, 5, 1>(b, "alt-k16: bound: the readout alone, no producer, no drain", in[1], h[1]);
   run<5, 0, 2>(b, "cohort-k16: streamed, ring 5", in[2], h[2]);
   run<5, 1, 2>(b, "cohort-k16: bound: the readout with the producer, no row copies", in[2], h[2]);
   run<5, 3, 2>(b, "cohort-k16: bound: the readout alone, no producer", in[2], h[2]);
-  run<5, 0, 2, 1>(b, "cohort-k16: streamed, ring 5, the consumer's words a tile ahead", in[2], h[2]);
-  run<5, 0, 2, 0, 1>(b, "cohort-k16: streamed, ring 5, the next stage's token a stage ahead", in[2], h[2]);
-  run<3, 0, 2, 0, 0, 2>(b, "cohort-k16: streamed, two tiles a stage, ring 3", in2[2], h[2]);
+  run<5, 5, 2>(b, "cohort-k16: bound: the readout alone, no producer, no drain", in[2], h[2]);
 }

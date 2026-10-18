@@ -96,10 +96,10 @@ since the prefix rows hold no finer place) -- planned by the same rule in the ar
 window's stage record (a pre-pass's plan, copied ahead with the stage group it is issued in); the read ring (576 bytes a
 stage, 8 rows and their entry words) sits beside the image and the fold's takes the image's place (a window's read
 chunks all run before its fold); a dense side stays resident. A streamed side costs its MMA phase times the labs'
-measured stream factor -- the fold 1.49 ([`row_stream`](../../lab/row_stream.md)), the readout with its drain 1.38
-([`read_stream`](../../lab/read_stream.md)), each the mean of three cells and each cell predicted from the other two
-within 1% and 8% -- the factor's excess applied to the model's phase after rescaling at nl64k-alt-k4 (lab bare / model
-phase: fold 0.643, readout and drain 0.699), booked in `fills`; a 4-stage read ring adds 264 cycles a CTA-window.
+measured stream factor -- the fold 1.62 ([`row_stream`](../../lab/row_stream.md)), the readout with its drain 1.34
+([`read_stream`](../../lab/read_stream.md)), each the mean of three cells, each third cell predicted from the other two
+within 7% and 3% -- the factor's excess applied to the model's phase after rescaling at nl64k-alt-k4 (lab bare / model
+phase: fold 0.604, readout and drain 0.648), booked in `fills`; a 4-stage read ring adds 264 cycles a CTA-window.
 With every phase at its floor the stream's cost scales with its phase (an assumption: the producer's own instructions
 need not shrink with it).
 
@@ -112,9 +112,9 @@ kernel's next work). On sm_86, a 512 tokens (2026-10-17; W = 512 ruled, W 1024 s
 | cell | resident W 1024 | streamed W 512 | streamed W 1024 | streamed W 512, phases at their floors |
 |---|---|---|---|---|
 | nl64k-alt-k4 | 1.12x | 0.83x (read ring 5) | 0.65x (4) | 0.39x |
-| nl64k-alt-k4-g4 | 1.53x | 0.86x (5) | 1.34x (5) | 0.39x |
+| nl64k-alt-k4-g4 | 1.53x | 0.85x (5) | 1.32x (5) | 0.38x |
 | flagship-alt-k16 | 1.11x | 0.63x (4) | 0.87x (5) | 0.29x |
-| flagship-cohort-k4 | 0.95x | 0.86x (5) | 0.74x (4) | 0.40x |
+| flagship-cohort-k4 | 0.95x | 0.86x (5) | 0.73x (4) | 0.40x |
 | nl64k-dense | 0.99x | 1.00x (resident) | 0.99x | 0.60x |
 
 Resident, a 1,024-token window's union no longer fits beside the image, the read splits into chunks and each re-stores
