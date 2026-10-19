@@ -4,6 +4,7 @@
     "latency": ["ffma", "lds", "ldsm", "hmma"],
     "shared": ["store", "store_wavefront", "copy_bypass", "copy_access", "global_read", "global_fill"],
     "pipe": ["alu", "fma", "fma_fp16", "fmaheavy", "xu"],
+    "global": ["l2_line", "red_request"],
     "taxed": ["fp32", "half2", "hmax2", "add_xor", "imad", "lop3", "prmt", "fmnmx", "lds", "cvt_f32_f16x2", "cvt_u32_f32", "cvt_f16_f32"],
     "caps": [
       {"name": "cc", "type": "int", "kind": "IDENTITY", "doc": "compute capability x10, e.g. 860"},
@@ -44,11 +45,15 @@
         "atomic_wavefront": {"cycles": 1.0, "announced": "the RTX 3080 Ti's (sm_86) measured value; unmeasured on sm_80"},
         "shared": {
           "store": {"cycles": 2.003, "announced": "the RTX 3080 Ti's (sm_86) measured value; unmeasured on sm_80"},
-          "store_wavefront": {"cycles": 1.145, "announced": "the RTX 3080 Ti's (sm_86) measured value; unmeasured on sm_80"},
+          "store_wavefront": {"cycles": 1.143, "announced": "the RTX 3080 Ti's (sm_86) measured value; unmeasured on sm_80"},
           "copy_bypass": {"cycles": 0.5, "announced": "the RTX 3080 Ti's (sm_86) measured value; unmeasured on sm_80"},
-          "copy_access": {"cycles": 5.426, "announced": "the RTX 3080 Ti's (sm_86) measured value; unmeasured on sm_80"},
+          "copy_access": {"cycles": 5.336, "announced": "the RTX 3080 Ti's (sm_86) measured value; unmeasured on sm_80"},
           "global_read": {"cycles": 1.194, "announced": "the RTX 3080 Ti's (sm_86) measured value; unmeasured on sm_80"},
-          "global_fill": {"cycles": 0.382, "announced": "the RTX 3080 Ti's (sm_86) measured value; unmeasured on sm_80"}
+          "global_fill": {"cycles": 0.389, "announced": "the RTX 3080 Ti's (sm_86) measured value; unmeasured on sm_80"}
+        },
+        "global": {
+          "l2_line": {"cycles": 7.122, "announced": "the RTX 3080 Ti's (sm_86) measured value; unmeasured on sm_80"},
+          "red_request": {"cycles": 5.098, "announced": "the RTX 3080 Ti's (sm_86) measured value; unmeasured on sm_80"}
         },
         "pipe": {
           "alu": {"cycles": 2, "documented": "CUDA C++ Programming Guide, arithmetic instruction throughput, compute capability 8.0: 64 results a clock an SM for 32-bit integer add, compare, logic and shift -- 16 lanes a scheduler"},
@@ -76,11 +81,15 @@
         "atomic_wavefront": {"cycles": 1.0, "measured": "smem_rates", "row": "red.shared.add, four lanes a bank, 4 wavefronts a warp / 8 warps", "on": "rtx3080ti"},
         "shared": {
           "store": {"cycles": 2.003, "measured": "smem_rates", "row": "st.shared.u32, 1 wavefront a warp / 8 warps", "on": "rtx3080ti"},
-          "store_wavefront": {"cycles": 1.145, "measured": "smem_rates", "row": "st.shared.v4, 4 wavefronts a warp / 8 warps", "on": "rtx3080ti"},
+          "store_wavefront": {"cycles": 1.143, "measured": "smem_rates", "row": "st.shared.v4, 4 wavefronts a warp / 8 warps", "on": "rtx3080ti"},
           "copy_bypass": {"cycles": 0.5, "measured": "smem_rates", "row": "pipe cycles a 128 B: cp.async.cg into shared memory, L2 hits", "on": "rtx3080ti"},
-          "copy_access": {"cycles": 5.426, "measured": "smem_rates", "row": "pipe cycles a 128 B: cp.async.ca into shared memory, L2 hits", "on": "rtx3080ti"},
+          "copy_access": {"cycles": 5.336, "measured": "smem_rates", "row": "pipe cycles a 128 B: cp.async.ca into shared memory, L2 hits", "on": "rtx3080ti"},
           "global_read": {"cycles": 1.194, "measured": "smem_rates", "row": "pipe cycles a 128 B: ld.global.nc.v4, L1 hits", "on": "rtx3080ti"},
-          "global_fill": {"cycles": 0.382, "measured": "smem_rates", "row": "pipe cycles a 128 B a load from L2 adds over an L1 hit (ld.global.cg less ld.global.nc)", "on": "rtx3080ti"}
+          "global_fill": {"cycles": 0.389, "measured": "smem_rates", "row": "pipe cycles a 128 B a load from L2 adds over an L1 hit (ld.global.cg less ld.global.nc)", "on": "rtx3080ti"}
+        },
+        "global": {
+          "l2_line": {"cycles": 7.122, "measured": "smem_rates", "row": "cycles a 128 B from L2: cp.async.cg alone, every SM streaming", "on": "rtx3080ti"},
+          "red_request": {"cycles": 5.098, "measured": "drain", "row": "alt-k4: cycles a line request, every SM draining", "on": "rtx3080ti"}
         },
         "pipe": {
           "alu": {"cycles": 2, "documented": "CUDA C++ Programming Guide, arithmetic instruction throughput, compute capability 8.6: 64 results a clock an SM for 32-bit integer add, compare, logic and shift -- 16 lanes a scheduler"},

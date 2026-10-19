@@ -56,10 +56,12 @@ A rate is `{"cycles": ..., <source>}` with exactly one source:
 The rates: `schedulers` (an SM), `issue` (an instruction a scheduler), `wavefront` (a shared-memory load
 wavefront an SM), `atomic` and `atomic_wavefront` (a shared atomic instruction's least and each of its
 wavefronts an SM), `mma.<kind>` (an MMA a scheduler), `tax.<kind>.<class>` (what an instruction of the
-class adds to the kind's MMA chain, read by the issue-hiding gate, not by a choice) and `latency.<class>` (issue to a
+class adds to the kind's MMA chain, read by the issue-hiding gate, not by a choice), `latency.<class>` (issue to a
 dependent's issue: an FFMA, a 32-bit shared load, an `ldmatrix` of four, an HMMA on its accumulator; the schema's
-`latency` list), `shared.<kind>` and `pipe.<name>` (below; the schema's `shared` and `pipe` lists). NVIDIA documents issue, the shared-memory bank rate and peak tensor rates; a shared atomic's cost,
-the taxes and the latencies are measured ([`smem_rates`](../../lab/smem_rates.md),
+`latency` list), and `shared.<kind>`, `global.<kind>` and `pipe.<name>` (below; the schema's lists). NVIDIA documents
+issue, the shared-memory bank rate, peak tensor rates and the arithmetic pipes' throughputs; a shared atomic's cost,
+the shared pipe's and the global path's other prices, the taxes and the latencies are measured
+([`smem_rates`](../../lab/smem_rates.md), [`drain`](../../lab/drain.md),
 [`tensor_tax`](../../lab/tensor_tax.md), [`issue_latency`](../../lab/issue_latency.md)).
 
 <a id="shared"></a>
@@ -73,6 +75,16 @@ cycles an instruction and ~1.14 a wavefront: 4 bytes a lane costs twice what 8 o
 `copy_access` (a `cp.async.cg` copy's write into shared memory, 0.5 cycles a 128 bytes; a `.ca` copy's, 5.4);
 `global_read` and `global_fill` (a global load's data read out of the banks, 1.19 a 128 bytes, and what a line from L2
 adds by being written into them first, 0.38). [`tools/pipes.py`](../tools/pipes.md) prices a launch's traffic by these.
+
+<a id="global"></a>
+
+### The SM's global path (`global.*`)
+
+Measured with every SM busy, on the RTX 3080 Ti (sm_80's announced the same until a rented A100 measures them):
+`l2_line`, the cycles an SM's share of L2 takes to deliver a 128-byte line (`smem_rates`' `cp.async.cg` stream alone:
+~18 bytes a cycle an SM), and `red_request`, a global atomic's line request (the [`drain`](../../lab/drain.md) lab's
+skipping form: ~5 cycles). [`tools/pipes.py`](../tools/pipes.md) prices a launch's L2 lines and atomic requests by
+them.
 
 <a id="pipes"></a>
 

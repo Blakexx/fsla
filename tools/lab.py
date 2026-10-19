@@ -315,6 +315,7 @@ def pipes_report(raw: dict[str, dict], table: dict[str, dict], units: dict[str, 
         stalls = sorted(c["stalls"].items(), key=lambda kv: -kv[1])[:3]
         print(f"    busy here, % of elapsed: issue {b['issue']:.0f}  tensor {b['tensor']:.0f} (priced)  "
               f"alu {b['alu']:.0f}  fma {b['fma']:.0f} (heavy {b['fmaheavy']:.0f})  shared {b['shared']:.0f} (priced)"
+              f"  global {b['global']:.0f} (priced)"
               f"  | L2 sectors read {_num(c['l2_read'] / n)} write {_num(c['l2_write'] / n)}"
               f"  | stalled: " + ", ".join(f"{r} {v:.0f}%" for r, v in stalls))
 

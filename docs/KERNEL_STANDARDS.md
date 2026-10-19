@@ -835,7 +835,8 @@ method is a procedure with a gate, not a memory.
    hand-off): a form's floor is its binding pipe, not its instruction count. `tools/lab.py run` prints, for every
    kernel and per card, each pipe's cycles a unit -- tensor, the shared-memory pipe priced by kind of traffic (load
    wavefronts; stores and atomics at the larger of their instructions and wavefronts; copies and global loads by
-   their bytes), issue, the integer, FMA and transcendental pipes at their cycles an instruction -- and on the local
+   their bytes), issue, the integer, FMA and transcendental pipes at their cycles an instruction, the SM's global path
+   (L2's lines and atomic requests, every SM busy) -- and on the local
    card each pipe's busy share, L2 sectors and the stall reasons ([`tools/pipes.py`](internals/tools/pipes.md); its
    prices checked against `smem_rates` and `handoff` to the percent). The hand-off's old form had been measured only
    inside the composed window and was bound by the integer pipe, which no gate printed: the lean form cut it 27%

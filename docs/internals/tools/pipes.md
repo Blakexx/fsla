@@ -19,6 +19,9 @@ Per card (the local product, sm_80's defaults), each pipe's cycles a unit an SM:
   copies and global loads by their bytes (a load from L2 into registers is written into the banks and read out).
 - ISSUE, and the integer (`alu`), FMA and transcendental (`xu`) pipes: ncu's per-pipe instruction counts at each
   pipe's cycles an instruction a scheduler ([hardware.md#pipes](../common/hardware.md#pipes)).
+- GLOBAL: the SM's path to L2, priced with every SM busy ([hardware.md#global](../common/hardware.md#global)) -- each
+  128-byte line read from or written to L2 (`l2_line`, ~18 bytes a cycle an SM) and each global atomic request
+  (`red_request`, ~5 cycles: the drain's floor).
 
 On the card the launch ran on: tensor and shared priced as busy shares of the elapsed cycles, issue and the integer
 and FMA pipes measured (ncu's busy counters), L2 sectors read and written, and each stall reason's share of the active
@@ -38,6 +41,8 @@ count. The hand-off's lean form (2026-10-18) takes 2,248 cycles a window against
 | issue, FMA-heavy at 2 | the same | | the same to the percent |
 | the tensor counter's count | `read_image` (declared kind) | 16 a scheduler an MMA | 16.0 |
 | tensor priced | `read_image`'s readout (near tensor-bound) | | 85-97% busy (the profiler's ratio read 34-48%) |
+| the global path, priced | `smem_rates`' L2 streams alone and beside `ldmatrix` (loads into registers, `.cg` and `.ca` copies) | | 84-99% busy |
+| the global path's atomics | `drain`'s skipping form (its price's source) and the forms beside copies | | its drain phase ~85%, 93% with a copy every add |
 
 Records: `measure/lab/results/smem_rates/sm_86.json`, `handoff/sm_86.json`, `read_image/sm_86.json` (2026-10-18,
 sm_86 locked).
@@ -48,8 +53,9 @@ sm_86 locked).
 
 - Stores of 8 bytes a lane price 5-14% high (one store rate serves 8 and 16 bytes); a kernel mixing store widths is
   priced at the larger of its totals, a floor under its true cost.
-- `cp.async.ca` beside `ldmatrix` prices at 34% where its pipe binds: its 5.4 cycles a 128 B are not additive there.
-  It is never used where the pipe binds.
+- `cp.async.ca` beside `ldmatrix` prices its shared pipe at 34%: the global path binds it (88%), not the shared pipe.
+- The global path's prices are sm_86's with every SM busy; sm_80's are announced the same until a rented A100 measures
+  them (its L2 serves more bytes a cycle an SM, so its global path likely prices high there).
 - ncu's elapsed cycles include the launch's ramp (~10% over a lab's own timing of a short kernel).
 - A kernel whose run length depends on other warps' timing (`smem_rates`' role 3) reads different work in ncu's replay
   passes.

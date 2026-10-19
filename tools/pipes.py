@@ -1,7 +1,8 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """THE PIPES A LAUNCH TAKES: one set of ncu counters for any kernel's launch and its pricing per card -- each pipe's
-cycles (tensor, the shared-memory pipe by kind of traffic, issue, the integer, FMA and transcendental pipes) at
+cycles (tensor, the shared-memory pipe by kind of traffic, issue, the integer, FMA and transcendental pipes, the SM's
+global path: L2's lines and its atomic requests) at
 `common/hardware.json`'s rates, the largest binding; and, on the card it ran on, each pipe's busy share of the elapsed
 cycles, L2 sectors and the stall reasons. The lab (`tools/lab.py run`) reads it for every experiment kernel, the
 production capture (`tools/pipe_counters.py`) for a carry launch. Stdlib only. docs/internals/tools/pipes.md
@@ -33,6 +34,7 @@ METRICS = {
     "global_reads": "l1tex__data_pipe_lsu_wavefronts_mem_lg_cmd_read.sum",
     "global_fill_bytes": "l1tex__m_xbar2l1tex_read_bytes_mem_lg_op_ld.sum",
     "l2_read": "lts__t_sectors_srcunit_tex_op_read.sum",
+    "red_requests": "lts__t_requests_srcunit_tex_op_red.sum",
     "l2_write": "lts__t_sectors_srcunit_tex_op_write.sum",
     "elapsed": "sm__cycles_elapsed.avg",
     "elapsed_sum": "sm__cycles_elapsed.sum",
@@ -117,7 +119,16 @@ def pipe_cycles(c: dict, n: float, rates: dict, arch_ran: str, mma: tuple[str, i
     out["fma"] = max((c["fma"] - c["fma_fp16"]) * r["pipe.fma"] + c["fma_fp16"] * r["pipe.fma_fp16"],
                      c["fmaheavy"] * r["pipe.fmaheavy"]) / n / s
     out["xu"] = c["xu"] / n * r["pipe.xu"] / s
+    out["global"] = global_cycles(c, rates) / n
     return out
+
+
+def global_cycles(c: dict, rates: dict) -> float:
+    """The SM's global path a launch takes (summed over its SMs), at the card's prices with every SM busy
+    (docs/internals/common/hardware.md#global): each 128-byte line read from or written to L2, and each global atomic
+    request."""
+    r = {k: v.cycles for k, v in rates.items()}
+    return (c["l2_read"] + c["l2_write"]) / 4 * r["global.l2_line"] + c["red_requests"] * r["global.red_request"]
 
 
 def busy_here(c: dict, rates: dict, arch_ran: str, mma: tuple[str, int] | None, kind: str | None) -> dict[str, float]:
@@ -126,4 +137,5 @@ def busy_here(c: dict, rates: dict, arch_ran: str, mma: tuple[str, int] | None, 
     priced = pipe_cycles(c, sms(c), rates, arch_ran, mma, kind)
     whole = max(c["elapsed"], 1.0) / 100
     return {"issue": c["busy_issue"], "tensor": priced.get("tensor", 0.0) / whole, "alu": c["busy_alu"],
-            "fma": c["busy_fma"], "fmaheavy": c["busy_fmaheavy"], "shared": priced["shared"] / whole}
+            "fma": c["busy_fma"], "fmaheavy": c["busy_fmaheavy"], "shared": priced["shared"] / whole,
+            "global": priced["global"] / whole}

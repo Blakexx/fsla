@@ -10,8 +10,10 @@
 // store; 1 slots (s, s + 4) (16 banks apart: 1 wavefront); 2 as 1 with one `atom.shared.exch` reading and clearing; 3
 // as 1 with no clear in the drain, a 16-byte sweep after the barrier; 4 as 1 with a warp's `cp.async` of 512 bytes
 // every 4 adds (a stream beside it); 7 the same every add; 6 as 1 with no clear (a bound); 5 the fill alone (a
-// bound); 8 as 3 with the warp's groups of 4 requests past its slots in the union not issued (a warp-uniform count). Each draining form's `num` is checked word for word against the mirror's. A sample is the CTA's span a
-// window. see docs/lab/drain.md
+// bound); 8 as 3 with the warp's groups of 4 requests past its slots in the union not issued (a warp-uniform count).
+// Each draining form's `num` is checked word for word against the mirror's; a row prices a line request from form 8.
+// A sample is the CTA's span a window. see docs/lab/drain.md
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -189,14 +191,15 @@ T* up(const std::vector<T>& v) {
 }
 
 template <int FORM, int SET>
-void run(const lab::Bench& b, const std::string& variant, const In& in, const Host& h) {
+double run(const lab::Bench& b, const std::string& variant, const In& in, const Host& h) {
   const std::string name = lab::kernel("drain_lab::drain", {FORM, SET});
   if (FORM != 5) b.expect(name, "RED.E.ADD", ">=", 4);
   if (FORM == 2) b.expect(name, "ATOMS.EXCH", ">=", 4);
   if (FORM == 4 || FORM == 7) b.expect(name, "LDGSTS", ">=", 1);
-  b.units(name, "a CTA-window", static_cast<long long>(h.ctas) * h.windows);
+  //: fixed counts (the expect pass runs before any input is read): 80 boxes, the cell's 64 or 32 windows
+  b.units(name, "a CTA-window", 80LL * (SET == 0 ? 64 : 32));
   b.exempt(name, "a rate probe of the drain's forms; no MMAs");
-  if (b.expect_only) return;
+  if (b.expect_only) return 0.0;
   LAB_CHECK(cudaFuncSetAttribute(drain<FORM, SET>, cudaFuncAttributeMaxDynamicSharedMemorySize, kBytes));
   const auto launch = [&] { drain<FORM, SET><<<h.ctas, kThreads, kBytes>>>(in, b.times); };
   const lab::Samples s = b.variant(launch, [&] { return b.span(kWarps, h.ctas) / h.windows; });
@@ -214,12 +217,37 @@ void run(const lab::Bench& b, const std::string& variant, const In& in, const Ho
                                    " num words exact");
   }
   b.record(variant, "cycles a window", s);
+  return s.median();
+}
+
+//: the half-line requests a CTA-window FORM 8 issues (a warp's groups holding a live slot, 4 adds of two lines each),
+//: the mean over the cell's CTA-windows
+double requests_skipping(const Host& h) {
+  double n = 0;
+  for (int w = 0; w < h.windows; ++w)
+    for (int b = 0; b < h.ctas; ++b) {
+      const int u = h.counts[w * kGroups + b / 16];
+      for (int p = 0; p * kSlots < u; ++p) {
+        const int m = std::min(kSlots, u - p * kSlots);
+        for (int warp = 0; warp < kWarps; ++warp) n += 8.0 * std::min(4, std::max(0, (m - 32 * warp + 7) / 8));
+      }
+    }
+  return n / (static_cast<double>(h.windows) * h.ctas);
+}
+
+//: the global path's price of a line request with every SM draining (`common/hardware.json`'s `global.red_request`):
+//: the skipping form's cycles less the fill's, over its requests a CTA-window
+void red_request(const lab::Bench& b, const std::string& label, double skipping, double fill, const Host& h) {
+  if (b.expect_only) return;
+  const std::string row = label + "cycles a line request, every SM draining";
+  b.unchecked(row, "the difference of two checked forms' medians over the requests the inputs fix");
+  b.record(row, "cycles a request", lab::Samples{{(skipping - fill) / requests_skipping(h)}});
 }
 
 template <int SET>
 void cell(const lab::Bench& b, const char* label, const In& in, const Host& h) {
   const std::string l = label;
-  run<5, SET>(b, l + "bound: the fill alone", in, h);
+  const double fill = run<5, SET>(b, l + "bound: the fill alone", in, h);
   run<0, SET>(b, l + "slots (s, s + 1), load and 4-byte clear", in, h);
   run<1, SET>(b, l + "slots (s, s + 4), load and 4-byte clear", in, h);
   run<2, SET>(b, l + "slots (s, s + 4), exchange", in, h);
@@ -227,7 +255,9 @@ void cell(const lab::Bench& b, const char* label, const In& in, const Host& h) {
   run<6, SET>(b, l + "bound: slots (s, s + 4), no clear", in, h);
   run<4, SET>(b, l + "slots (s, s + 4) beside copies, 512 bytes every 4 adds", in, h);
   run<7, SET>(b, l + "slots (s, s + 4) beside copies, 512 bytes every add", in, h);
-  run<8, SET>(b, l + "slots (s, s + 4), load; 16-byte clear sweep; groups past the union skipped", in, h);
+  const double skipping =
+      run<8, SET>(b, l + "slots (s, s + 4), load; 16-byte clear sweep; groups past the union skipped", in, h);
+  red_request(b, l, skipping, fill, h);
 }
 
 }  // namespace drain_lab

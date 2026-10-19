@@ -231,6 +231,14 @@ double share_form(const lab::Bench& b, const uint8_t* table, int* done_n, double
     b.unchecked(stream, "a rate probe: its loads fold into a sink");
     b.record(stream, "bytes a cycle", bytes);
   }
+  if (ROLE == 2 && GF == 3) {
+    //: the global path's price of a line from L2 with every SM streaming: `common/hardware.json`'s `global.l2_line`
+    lab::Samples line;
+    for (const double v : bytes.v) line.v.push_back(128.0 / v);
+    const std::string row = "cycles a 128 B from L2: cp.async.cg alone, every SM streaming";
+    b.unchecked(row, "a rate probe: its copies fold into a sink");
+    b.record(row, "cycles a 128 B", line);
+  }
   if (ROLE != 3) return ldsm.median();
   lab::Samples pipe;
   for (size_t i = 0; i < ldsm.v.size(); ++i) pipe.v.push_back((1.0 - alone / ldsm.v[i]) / (bytes.v[i] / 128.0));

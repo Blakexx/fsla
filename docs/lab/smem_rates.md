@@ -36,13 +36,15 @@ stream alone; 32 a full wavefront).
 
 | stream | alone, B/cycle | beside, B/cycle | ldmatrix beside, cycles/wf | pipe cycles/128 B | bank R/W per 128 B |
 |---|---|---|---|---|---|
-| `ld.global.nc.v4` (`__ldg`), L1 hits | 119.8 | 53.7 | 2.028 | 1.19 | 32 / 0 |
-| `ld.global.nc.v4`, L2 hits (allocated in L1) | 20.8 | 16.3 | 1.300 | 1.74 | 32 / 25 |
-| `ld.global.cg.v4`, L2 hits | 16.3 | 16.3 | 1.265 | 1.58 | 32 / 32 |
+| `ld.global.nc.v4` (`__ldg`), L1 hits | 119.7 | 53.7 | 2.028 | 1.19 | 32 / 0 |
+| `ld.global.nc.v4`, L2 hits (allocated in L1) | 20.7 | 16.3 | 1.300 | 1.74 | 32 / 25 |
+| `ld.global.cg.v4`, L2 hits | 16.3 | 16.3 | 1.266 | 1.58 | 32 / 32 |
 | `cp.async.cg` into shared memory, L2 hits | 18.0 | 17.9 | 1.087 | 0.50 | 0 / 32 |
-| `cp.async.ca` into shared memory, L2 hits | 21.9 | 18.4 | 4.572 | 5.43 | 35 / 58 |
+| `cp.async.ca` into shared memory, L2 hits | 22.3 | 18.6 | 4.487 | 5.34 | 35 / 58 |
 
-A line from L2 adds 0.38 pipe cycles a 128 bytes to a load over an L1 hit (its write into the banks).
+A line from L2 adds 0.39 pipe cycles a 128 bytes to a load over an L1 hit (its write into the banks). The
+`cp.async.cg` stream alone, every SM streaming, takes 7.12 cycles a 128-byte line (~18 bytes a cycle an SM): the SM's
+global path's price of a line in `common/hardware.json`.
 
 THE PRICES CHECKED: [`tools/pipes.py`](../internals/tools/pipes.md) prices each kernel's shared-memory traffic by kind
 at these rates; on this lab's pipe-bound kernels (every form above at 8 and 16 warps, and each stream beside
@@ -56,7 +58,7 @@ What it settles:
   `ldmatrix` that reads it (1.0). Loading straight into MMA fragments saves no pipe cycles over staging; it saves the
   copier's instructions and the ring, and holds registers for the loads in flight.
 - `cp.async.cg` is the cheapest way in: its write into shared memory takes half a pipe cycle a 128 bytes.
-- `cp.async.ca` fills L1, reads the line back and writes shared memory, and holds the pipe beyond its bank passes: 5.4
-  cycles a 128 bytes, the `ldmatrix` beside it 4.6x slower. Never where the pipe binds.
+- `cp.async.ca` fills L1, reads the line back and writes shared memory, and holds the pipe beyond its bank passes: 5.3
+  cycles a 128 bytes, the `ldmatrix` beside it 4.4x slower. Never where the pipe binds.
 
 Records: `measure/lab/results/smem_rates/sm_86.json`, `sm_86.counters.json`.
