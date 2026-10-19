@@ -657,6 +657,13 @@ __device__ __forceinline__ uint32_t s16_pair(float lo, float hi, float cu) {
   return (h << 16) + l;
 }
 
+//: a 16-bit shared load, zero-extended
+__device__ __forceinline__ uint32_t ld_u16(ops::SmemAddr at) {
+  uint32_t v;
+  asm volatile("ld.shared.u16 %0, [%1];" : "=r"(v) : "r"(at));
+  return v;
+}
+
 __device__ __forceinline__ void panel_red(uint32_t at, uint32_t v) {
   asm volatile("red.shared.add.u32 [%0], %1;" ::"r"(at), "r"(v) : "memory");
 }
@@ -692,7 +699,7 @@ __device__ __forceinline__ TileIn tile_in(ops::SmemAddr pool, ops::SmemAddr unit
 
 //: @burst
 template <bool F16>
-__device__ __forceinline__ void tile_mma(float (&acc)[2][4], const TileIn& in,
+__device__ __forceinline__ void tile_mma(float (&acc)[2][4], const uint32_t (&b)[4],
                                          const uint32_t (&f)[16]) {
 #pragma unroll
   for (int m = 0; m < 2; ++m) {
@@ -704,9 +711,9 @@ __device__ __forceinline__ void tile_mma(float (&acc)[2][4], const TileIn& in,
       const uint32_t a[4] = {f[(m * 2 + kb) * 4], f[(m * 2 + kb) * 4 + 1], f[(m * 2 + kb) * 4 + 2],
                              f[(m * 2 + kb) * 4 + 3]};
       if constexpr (F16) {
-        ops::hmma_f16(h, a, in.b[2 * kb], in.b[2 * kb + 1]);
+        ops::hmma_f16(h, a, b[2 * kb], b[2 * kb + 1]);
       } else {
-        ops::hmma(acc[m], a, in.b[2 * kb], in.b[2 * kb + 1]);
+        ops::hmma(acc[m], a, b[2 * kb], b[2 * kb + 1]);
       }
     }
     if constexpr (F16) {
@@ -731,13 +738,52 @@ __device__ __forceinline__ void tile_add(ops::SmemAddr pads, const TileIn& in,
   }
 }
 
-template <class P, bool F16>
-__device__ __forceinline__ void tile(ops::SmemAddr pool, ops::SmemAddr pads, ops::SmemAddr units,
-                                     int sx, uint2 e, const uint32_t (&f)[16], int lane) {
-  const TileIn in = tile_in<P>(pool, units, sx, e, lane);
-  float acc[2][4];
-  tile_mma<F16>(acc, in, f);
-  tile_add(pads, in, acc, lane);
+//: A TILE OF M DIGITS (the unified readout's OUTPUT SCALING, m = M): 8 tokens' rows loaded once (`row0` the lane's row),
+//: each lane's two tokens' panel rows and each digit's coefficient at the token's unit (`2^(sx - u)`); its exit each
+//: digit's exact pair summed as u32 words before one atomic a token and channel pair -- 4 atomics a tile at every M. A
+//: digit's pair is exact while its own products lie within 2^22 of the pair's offset; chained as one FFMA sum the digits'
+//: products leave that range (their s16 bound is the final sum's). -- see docs/internals/carry/parts.md#readout
+template <int M>
+struct TileInM {
+  uint32_t b[4], e0, e1;
+  float c0[M], c1[M];
+};
+
+template <class P, int M>
+__device__ __forceinline__ TileInM<M> tile_in_m(ops::SmemAddr row0, ops::SmemAddr units,
+                                                const int (&sx)[M], uint2 e,
+                                                const uint32_t (&coef)[M], int lane) {
+  const int t = lane & 3;
+  TileInM<M> in;
+  int u;
+  asm volatile("ld.shared.s8 %0, [%1];" : "=r"(u) : "r"(units + (e.x >> 16)));
+  in.e0 = __shfl_sync(0xffffffffu, e.y, 2 * t);
+  in.e1 = __shfl_sync(0xffffffffu, e.y, 2 * t + 1);
+  static_for<M>([&](auto Q) {
+    const float c = __half2float(__ushort_as_half(static_cast<unsigned short>(coef[Q])));
+    const float cu = __uint_as_float(__float_as_uint(c) + (static_cast<uint32_t>(sx[Q] - u) << 23));
+    in.c0[Q] = __shfl_sync(0xffffffffu, cu, 2 * t);
+    in.c1[Q] = __shfl_sync(0xffffffffu, cu, 2 * t + 1);
+  });
+  ops::load_frag(in.b, chunk_addr<P::kReadRow>(row0, static_cast<uint32_t>(lane >> 3)));
+  return in;
+}
+
+template <int M>
+__device__ __forceinline__ void tile_add_m(ops::SmemAddr pads, const TileInM<M>& in,
+                                           const float (&acc)[M][2][4], int lane) {
+  const int g = lane >> 2;
+  const uint32_t b0 = pads + (in.e0 >> 16), b1 = pads + (in.e1 >> 16);
+#pragma unroll
+  for (int m = 0; m < 2; ++m) {
+    uint32_t w0 = 0u, w1 = 0u;
+    static_for<M>([&](auto Q) {
+      w0 += s16_pair(acc[Q][m][0], acc[Q][m][2], in.c0[Q]);
+      w1 += s16_pair(acc[Q][m][1], acc[Q][m][3], in.c1[Q]);
+    });
+    panel_red((b0 ^ (32u * m)) + 4u * g, w0);
+    panel_red((b1 ^ (32u * m)) + 4u * g, w1);
+  }
 }
 
 //: A MASKED LANE'S ENTRY in a chunk's last step: its place `c`'s row of the chunk, coefficient 0, a dummy panel row, so
@@ -810,32 +856,38 @@ __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* 
               in[Q] =
                   tile_in<P>(pool_u, units, sx[Q], entry_at(8 * s + (lane & 7), n[Q], to[Q]), lane);
             });
-            static_for<kStep>([&](auto Q) { tile_mma<F16>(acc[Q], in[Q], f[Q]); });
+            static_for<kStep>([&](auto Q) { tile_mma<F16>(acc[Q], in[Q].b, f[Q]); });
             static_for<kStep>([&](auto Q) { tile_add(pads, in[Q], acc[Q], lane); });
           } while (__any_sync(0xffffffffu, ++s < tiles));
       } else {
-        //: every slot of the chunk, its entry implied: its row and token, its coefficient, its panel row (a slot past
-        //: the chunk's end its place's dummy row)
-        static_for<kStep>([&](auto Q) {
-          int s = 0;
-          for (int any = __any_sync(0xffffffffu, slots > 0) ? 1 : 0; any > 0; --any)
+        //: every slot of the chunk, its entry implied: its row and token, each digit's coefficient, its panel row (a slot
+        //: past the chunk's end its place's dummy row); the step's digits summed into one exit a tile (every token is in
+        //: every digit's list, so their union is each digit's own)
+        int s = 0;
+        for (int any = __any_sync(0xffffffffu, slots > 0) ? 1 : 0; any > 0; --any)
 #pragma unroll 1
-            do {
-              const uint32_t slot = 8u * s + (lane & 7);
-              const uint32_t panel = static_cast<int>(slot) < slots ? kPadBytes + panel_row(slot)
-                                                                    : panel_row(slot & 7);
-              const uint32_t row = slot * (P::kReadRow / 16) + chunk_at<P::kReadRow>(slot, 0);
-              uint32_t coef = 0x3c00u;
-              if constexpr (P::kReadFactors > 1)
-                asm volatile(
-                    "ld.shared.u16 %0, [%1];"
-                    : "=r"(coef)
-                    : "r"(chunk_addr<P::kReadRow>(rows + 16u * row, (kSliceBytes + 2 * d[Q]) >> 4)
-                          + (2 * d[Q] & 15)));
-              const uint2 e = make_uint2(row | (first + slot) << 16, coef | (panel << 16));
-              tile<P, F16>(rows, pads, units, sx[Q], e, f[Q], lane);
-            } while (__any_sync(0xffffffffu, ++s < (slots + 7) >> 3));
-        });
+          do {
+            const uint32_t slot = 8u * s + (lane & 7);
+            const uint32_t panel =
+                static_cast<int>(slot) < slots ? kPadBytes + panel_row(slot) : panel_row(slot & 7);
+            const uint32_t row = slot * (P::kReadRow / 16) + chunk_at<P::kReadRow>(slot, 0);
+            uint32_t coef[kStep];
+            static_for<kStep>([&](auto Q) {
+              if constexpr (P::kReadFactors > 1) {
+                coef[Q] =
+                    ld_u16(chunk_addr<P::kReadRow>(rows + 16u * row, (kSliceBytes + 2 * d[Q]) >> 4)
+                           + (2 * d[Q] & 15));
+              } else {
+                coef[Q] = 0x3c00u;
+              }
+            });
+            const TileInM<kStep> in =
+                tile_in_m<P, kStep>(rows + 16u * row, units, sx,
+                                    make_uint2((first + slot) << 16, panel << 16), coef, lane);
+            float acc[kStep][2][4];
+            static_for<kStep>([&](auto Q) { tile_mma<F16>(acc[Q], in.b, f[Q]); });
+            tile_add_m(pads, in, acc, lane);
+          } while (__any_sync(0xffffffffu, ++s < (slots + 7) >> 3));
       }
     } while (__any_sync(0xffffffffu, (i += kStep) < hi));
 }

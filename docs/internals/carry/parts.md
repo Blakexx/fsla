@@ -161,6 +161,18 @@ step is one block (KERNEL_STANDARDS §27), guarded by a vote and closed by one. 
 entry loaded at a clamped place (`masked_entry` past its run), so nothing branches. Measured at nl64k-alt-k4: the
 readout 4.0K to 3.6K cycles a warp-window.
 
+A SIDE WITH NO LIST LEVEL reads its two digits as ONE GROUP (the unified readout's output scaling at m = 2, by
+structure: every token is in every digit's list, so the group's union is each digit's own and grouping adds no MMAs): a
+tile loads its 8 rows once (`tile_in_m`), takes each digit's coefficient from the row and scales it to the token's unit,
+runs 4 MMAs a digit against its own state, and leaves by one exit (`tile_add_m`): each digit's exact pair formed as
+alone (`s16_pair`) and the pairs summed as u32 words before one `red.shared` a token and channel pair -- the panel's
+words bit for bit the per-digit form's. NOT AN FFMA CHAIN: a pair is exact while its products lie within 2^22 of the
+pair's offset, a bound on each digit's products, not on their sum (the s16 bound is the final sum's over 32 digits);
+chaining two digits' products onto one offset left that range on production's dense cells (most of `num` wrong,
+2026-10-19), though the lab's inputs (token units 0-2) never reached it. Measured (sm_86 locked, against the per-digit
+form, `num` bit-identical): the dense readout 96.5K -> 67.0K cycles a warp-window at nl64k-dense, its step loop's cover
+42% -> 67-70%; a call nl64k-dense 28,795 -> 24,176 us, nl16k-dense 3,639 -> 3,062, flagship-dense 492 -> 419.
+
 
 The PANEL is the chunk's slots' 64-byte rows after 8 dummy rows (`kPadBytes`, one a residue), laid out in pairs: slots
 `2k` and `2k + 1` share a 128-byte line, each slot's two 32-byte halves at the segments its pair's residue bits XOR
