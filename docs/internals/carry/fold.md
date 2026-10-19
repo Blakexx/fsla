@@ -18,8 +18,13 @@ A record's c is the facts pass's `f16(fp32(b m s) 2^(4 - E))`, `E` its list's wi
 (`docs/internals/facts/facts.md#lists-out`). The state cannot follow `E` window by window: a quiet window would scale
 it up past fp32's range. So each list keeps a running unit `u` in a shared-memory book (`UnitBook`: the unit and the
 state's bound in units). `next_unit` is the kernel twin of `next_units`: a live list's `E`, held within the bound's
-headroom (`kUnitHeadroom` = 100 binades), never below `kUnitMin`. A dead window keeps the unit, as does a side with no
-list level. The state is rescaled by `2^(u_old - u_new)`, an exact power of two, zero below fp32's normals, beside the
+headroom (`kUnitHeadroom` = 100 binades), never below `kUnitMin`. A dead window keeps the unit. A side with no list
+level has no records and no list exponents: every list takes the window's BOUND, `dense_exp` = `5 - shift` from the
+facts pass's shift of the window's largest factor F (`facts.md#gains`: F under `2^(-3 - shift)`, a dense byte under
+2^8), staged with the window's inputs in the exponents' place. A bound and not each list's own maximum: the dense
+level's floor (a dense coefficient never under 2^-13 of its row's largest) holds every list's largest within 2^13 of it,
+inside f16's 18 normal binades (measured 2026-10-19 against exact per-list exponents: the same state error on
+flagship-dense, 2.8x it on corner-concentrated, both within the fold's bound). The state is rescaled by `2^(u_old - u_new)`, an exact power of two, zero below fp32's normals, beside the
 list's first step.
 
 c is then moved to the unit by an f16 power of two, `2^(E - u)` (`pow2_half2`: normal from 2^-14, subnormal to 2^-24,
@@ -46,8 +51,13 @@ A CHUNK is a range of the write union the window's plan sets (`schedule.md#chunk
 fits the area, else the largest `64 m` slots two of whose buffers fit, and the rest. `fold_fill` copies its rows and
 its lists' runs into its buffer (`parts.md#entries`); `fold_chunk` takes each of the warp's lists in turn, its run from the buffer, a step's lanes past
 it masked (the chunk's first row, c = 0), the rows taken back by the chunk's first slot so an entry's union slot is its
-row. A side with no list level steps every slot of the chunk, c the list's digit of the row's coefficient slice. The
-list's rescale is applied before its first chunk's steps.
+row. A side with no list level steps every slot of the chunk: its buffer holds each slot's token's `(F, m)` in the
+entries' place, and c = `f16(fp32(b 255 F) 2^(4 - E))` with `b` the list's digit of the row's coefficient slice (its
+second) and `E` the window's bound -- the facts records' arithmetic, rounded once, by the packed conversion (`F2FP`, the
+ALU pipe: the scalar one runs on the conversion unit, which a step may not hold). Until 2026-10-19 this branch took c
+as `b` alone, without F or the list's unit: the dense-dense carry's state was wrong from its second window, and no gate
+read it (the whole-call gate refused read sides with no list level; the probe wrote such a side's lists at one leaf).
+The list's rescale is applied before its first chunk's steps.
 
 <a id="probe"></a>
 ## The probe

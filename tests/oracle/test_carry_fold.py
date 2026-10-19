@@ -52,6 +52,39 @@ def _fold_ratio(widths, L, write_sparse, growth, *, live=4, forced=None):
     return (err / (env * _rtol(L)).clamp_min(1e-300)).max().item(), carry_plan.plans(routes, facts, carve, forced)
 
 
+#: fresh cells whose write side has no list level (every level dense)
+DENSE_CELLS = ("flagship-dense", "flat-small-multiwindow", "corner-window-flip")
+
+
+@pytest.mark.parametrize("name", DENSE_CELLS)
+def test_a_write_side_with_no_list_level_folds_to_the_reference(name):
+    """A dense write side's final state per slot within the bound of the reference's: each token's factor F in its
+    coefficient, every list at its window's bound (`dense_exponents`)."""
+    from measure.cells import carry_cells
+    from measure.subjects import carry_operands
+
+    spec = next(c for c in carry_cells(tier="oracle") if c.name == name)
+    routes, values, facts, carve, unit = carry_operands(spec)
+    assert not carve.fold.lists, f"{name}'s write side lists"
+    widths, L = routes.topology.widths, routes.tokens
+    BH, N, d_v = routes.batch * routes.heads, widths[0] * widths[1], values.v.shape[-1]
+    probe = torch.zeros((BH, N, d_v), dtype=torch.float32, device="cuda")
+    carry_ops.probe_bind(probe)
+    try:
+        carry_ops.carry(routes, values, facts, carve, unit)
+        torch.cuda.synchronize()
+    finally:
+        carry_ops.probe_bind(None)
+    level_s = routes.level_s
+    state, env, _, _ = fold_state(routes, values, facts.list_exp, level_s, carry_ops.WINDOW)
+    if level_s == 1:
+        state, env = state.permute(0, 2, 1, 3), env.permute(0, 2, 1, 3)
+    want, env = state.reshape(BH, N, d_v), env.reshape(BH, N, d_v)
+    assert (env > 0).float().mean() > 0.5, "most slots unwritten: the cell is vacuous"
+    ratio = ((probe.double() - want).abs() / (env * _rtol(L)).clamp_min(1e-300)).max().item()
+    assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"
+
+
 @pytest.mark.parametrize("write_sparse", [0, 1])
 @pytest.mark.parametrize("growth", [0, 8, -8])
 def test_the_fold_is_the_reference_per_slot(write_sparse, growth):

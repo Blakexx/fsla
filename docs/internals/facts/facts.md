@@ -119,7 +119,8 @@ token's two in one 8-byte load; at 8 bytes a token-head it adds no `O(L·N)` ter
 Each token's `(m, F)` as an f16 pair at its window's powers of two (`gains16`) and the exponents (`gains_exp`): the
 window's largest `m` and `F` (each warp's largest posted in shared memory before the vote's barrier, joined after it)
 give `gains_shift(top)` = `-4 - floor(log2 top)` (the largest in [2^-4, 2^-3)), clamped to [-126, 127], 0 for a zero
-largest.
+largest. The carry's fold reads `fm` and `gains_exp` where its write side has no list level: each slot's F into its c, the
+window's shift as every list's exponent bound (`../carry/fold.md#units`).
 
 <a id="lists"></a>
 

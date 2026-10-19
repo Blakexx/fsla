@@ -83,6 +83,9 @@ struct CarryParams {
   Plane values;
   SideLists write_lists, read_lists;
   const int16_t* write_exp;
+  //: a write side with no list level: each token's (F, m) and each window's shifts of them, the facts pass's
+  const float2* factors;
+  const int16_t* factor_shift;
   const int8_t* unit;
   int readout_f16;  // the readout's MMAs accumulate in fp16 (1) or fp32 (0): carry_api.md#carry-readout-accumulate
   int forced;  // a forced plan form, -1 none: carry_api.md#carry-forward

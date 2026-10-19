@@ -58,9 +58,10 @@ __host__ __device__ constexpr int read_bytes(int slots, int entries) {
   return read_ents<P>(slots) + align_of(entries * 8, 128);
 }
 
+//: (a fold buffer of a write side with no list level holds each slot's (F, m) in its entries' place)
 template <class P>
-__host__ __device__ constexpr int fold_bytes(int slots, int entries) {
-  return fold_ents<P>(slots) + align_of(entries * 8, 128);
+__host__ __device__ constexpr int fold_bytes(int slots, int entries, bool listed) {
+  return fold_ents<P>(slots) + align_of((listed ? entries : slots) * 8, 128);
 }
 
 //: THE LEAST PLAN fits every window of an area: the halves and one 64-slot read buffer of lists full on every token; one such
@@ -68,7 +69,7 @@ __host__ __device__ constexpr int fold_bytes(int slots, int entries) {
 template <class P>
 __host__ __device__ constexpr bool least_plan_fits(int area) {
   return kImageRing + read_bytes<P>(kListBound, kListBound * kBoxDigits) <= area
-         && fold_bytes<P>(kListBound, kListBound * kBoxLists) <= area;
+         && fold_bytes<P>(kListBound, kListBound * kBoxLists, true) <= area;
 }
 
 //: A SIDE'S SEGMENT SUMS in a window: `S[j]`, its group's lists' entries before union slot `64 (j + 1)`, `cols` of them
@@ -140,9 +141,10 @@ __device__ __forceinline__ uint32_t rule_plan(const CarryParams& p, const Counts
                                                       : c.rs[c.rs.cols - 1])
              : 0;
   const bool whole = nr > 0 && kImageWhole + most <= area;
-  const int fc =
-      c.fu > 0 ? largest_chunk(c.fu, c.fs, area, [](int s, int e) { return fold_bytes<P>(s, e); })
-               : 0;
+  const bool wl = p.write.list >= 0;
+  const int fc = c.fu > 0 ? largest_chunk(c.fu, c.fs, area,
+                                          [wl](int s, int e) { return fold_bytes<P>(s, e, wl); })
+                          : 0;
   return plan_word(whole ? kModeWhole : kModeHalves, rc, fc, c.ru, c.fu);
 }
 
@@ -168,7 +170,7 @@ __device__ __forceinline__ uint32_t forced_plan(const CarryParams& p, const Coun
 #pragma unroll 1
   for (int first = 0; first < c.fu; first += fc) {
     const int s = min(fc, c.fu - first);
-    fits = fits && fold_bytes<P>(s, entries_of(c.fs, first, s, c.fu)) <= area;
+    fits = fits && fold_bytes<P>(s, entries_of(c.fs, first, s, c.fu), p.write.list >= 0) <= area;
   }
   return fits ? plan_word(mode, rc, fc, c.ru, c.fu) : rule;
 }
@@ -215,6 +217,7 @@ struct Win {
   Counts c;
   uint32_t word;
   int n, nr, image;
+  bool wl;
 };
 
 template <class P>
@@ -226,6 +229,7 @@ __device__ __forceinline__ Win win_of(const CarryParams& p, int bh, int w, int c
   x.nr = pw.reads();
   x.n = x.nr + pw.folds();
   x.image = x.nr > 0 ? image_bytes(pw.mode()) : 0;
+  x.wl = p.write.list >= 0;
   return x;
 }
 
@@ -236,7 +240,7 @@ __device__ __forceinline__ int entry_bytes_of(const Win& x, int t) {
   const int chunk = read ? pw.read_chunk() : pw.fold_chunk(), total = read ? x.c.ru : x.c.fu;
   const int first = (read ? t : t - x.nr) * chunk, slots = min(chunk, total - first);
   return read ? read_bytes<P>(slots, entries_of(x.c.rs, first, slots, total))
-              : fold_bytes<P>(slots, entries_of(x.c.fs, first, slots, total));
+              : fold_bytes<P>(slots, entries_of(x.c.fs, first, slots, total), x.wl);
 }
 
 //: A STEP WORD, 16 bits a step of a window (its entries, then one that only retires the last): the entry's place / 128

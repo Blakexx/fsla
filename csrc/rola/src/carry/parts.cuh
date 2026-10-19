@@ -253,6 +253,10 @@ __device__ __forceinline__ void facts_in(const CarryParams& p, const Window& ww,
       ops::stage_tile(
           ops::smem_addr(smem + P::kWriteExp) + (w & 1) * kBoxLists * 4 + 16 * e,
           p.write_exp + list_row(p.write_lists, c, p.windows, w, ww.digit0) * 2 + 8 * e);
+    } else if (k == heads * kUnitCopies) {
+      //: a write side with no list level: the window's shifts of (m, F), in the exponents' place
+      ops::stage_run<4>(ops::smem_addr(smem + P::kWriteExp) + (w & 1) * kBoxLists * 4,
+                        p.factor_shift + (static_cast<int64_t>(c.bh) * p.windows + w) * 2);
     }
   }
 }

@@ -26,12 +26,14 @@ TOP = 0
 
 
 class Counts(NamedTuple):
-    """A window's counts: each side's union and segment sums."""
+    """A window's counts: each side's union and segment sums, and whether the write side lists (a side with no list
+    level's fold buffer holds each slot's factors in its entries' place)."""
 
     ru: int
     rs: tuple
     fu: int
     fs: tuple
+    wl: bool = True
 
 
 class Win(NamedTuple):
@@ -52,8 +54,8 @@ def read_bytes(slots: int, entries: int, read_row: int) -> int:
     return _a128(slots * read_row) + PAD_BYTES + _a128(slots * PANEL_ROW) + _a128(entries * 8)
 
 
-def fold_bytes(slots: int, entries: int, write_row: int) -> int:
-    return _a128(slots * write_row) + _a128(entries * 8)
+def fold_bytes(slots: int, entries: int, write_row: int, listed: bool = True) -> int:
+    return _a128(slots * write_row) + _a128((entries if listed else slots) * 8)
 
 
 def _sum_at(S, j: int) -> int:
@@ -123,7 +125,7 @@ def rule_plan(c: Counts, read_row: int, write_row: int, area: int) -> int:
         most = read_bytes(min(rc, c.ru), chunk_max(c.rs, rc // LIST_BOUND, c.ru) if rc < c.ru
                           else _sum_at(c.rs, len(c.rs) - 1), read_row)
     whole = nr > 0 and IMAGE_WHOLE + most <= area
-    fc = largest_chunk(c.fu, c.fs, area, lambda s, e: fold_bytes(s, e, write_row)) if c.fu > 0 else 0
+    fc = largest_chunk(c.fu, c.fs, area, lambda s, e: fold_bytes(s, e, write_row, c.wl)) if c.fu > 0 else 0
     return plan_word(WHOLE if whole else HALVES, rc, fc, c.ru, c.fu)
 
 
@@ -144,7 +146,7 @@ def forced_plan(forced: int, c: Counts, rule: int, read_row: int, write_row: int
         fits = fits and image + read_bytes(s, entries_of(c.rs, first, s, c.ru), read_row) <= area
     for first in range(0, c.fu, fc or 1):
         s = min(fc, c.fu - first)
-        fits = fits and fold_bytes(s, entries_of(c.fs, first, s, c.fu), write_row) <= area
+        fits = fits and fold_bytes(s, entries_of(c.fs, first, s, c.fu), write_row, c.wl) <= area
     return plan_word(mode, rc, fc, c.ru, c.fu) if fits else rule
 
 
@@ -164,7 +166,7 @@ def entry_bytes(x: Win, t: int, read_row: int, write_row: int) -> int:
     slots = min(chunk, total - first)
     if read:
         return read_bytes(slots, entries_of(x.c.rs, first, slots, total), read_row)
-    return fold_bytes(slots, entries_of(x.c.fs, first, slots, total), write_row)
+    return fold_bytes(slots, entries_of(x.c.fs, first, slots, total), write_row, x.c.wl)
 
 
 def slot_place(slot: int, nbytes: int, base: int, area: int) -> int:
@@ -278,7 +280,8 @@ def plans(routes, facts, carve, forced: str | None = None) -> list[list[Record]]
                 for w in range(windows):
                     ru, rs = _side(read, carve.readout, routes, w, bh, gr)
                     fu, fs = _side(write, carve.fold, routes, w, bh, gw)
-                    wins.append(win_of(Counts(ru, rs, fu, fs), word, read_row, write_row, area))
+                    wins.append(win_of(Counts(ru, rs, fu, fs, bool(carve.fold.lists)), word, read_row,
+                                       write_row, area))
                 out.append(records(wins, read_row, write_row, area))
     return out
 

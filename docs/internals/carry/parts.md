@@ -57,7 +57,8 @@ or 4 under 16, `stage_bytes`). A read slot's row names its query head (`carry.md
 that head, a head stride on (`Slices::sh`), as a 32-bit offset from the slice's base at the window's first token (the
 host holds a window's token and head strides under 2^31 together). A GAP slot (`kGap`, [`carry.md`](carry.md#lists)) is zero-filled and reads
 nothing. `read_fill` adds the read buffer's dummy panel rows and its panel's whole 128-byte lines, zero-filled (a zero
-quantum reads nothing), and the chunk's entries; `fold_fill` (`fold.md#chunk`) the write chunk's rows and entries. Each
+quantum reads nothing), and the chunk's entries; `fold_fill` (`fold.md#chunk`) the write chunk's rows and entries, or on a side with no list level each slot's token's
+`(F, m)` in the entries' place (8-byte copies from the facts pass's `fm`). Each
 part sits at the chunk's own slots (`read_pads`, `read_ents`, `fold_ents`; `schedule.md#buffers`).
 
 <a id="entries"></a>

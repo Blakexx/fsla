@@ -61,7 +61,8 @@ next window's step 0 (staged by parity a window ahead); the drained read's place
 A chunk's buffer is laid out at its OWN slots (`parts.cuh`'s `read_pads`, `read_ents`, `fold_ents`): a read buffer's
 rows (`C x row`), the dummy panel rows (`kPadBytes`), the panel (`C x 64`, 128-byte aligned: a slot pair shares a
 128-byte line and a slot's row may sit in its line's upper half, so the whole line is zeroed), its entries (`E x 8`);
-a fold buffer's rows (slices then values) and entries. `read_bytes` and `fold_bytes` are their sizes, so a chunk's
+a fold buffer's rows (slices then values) and entries (a side with no list level: each slot's `(F, m)`, 8 bytes a slot,
+in their place). `read_bytes` and `fold_bytes` are their sizes, so a chunk's
 footprint is its actual count, never the window's largest chunk; every size is a multiple of 128, so a place is too.
 The IMAGE (`ImageMode`) is whole (32 planes, 64 KB) or a 16-plane half (32 KB). An entry's row and panel offsets are
 the union's, so a chunk from a multiple of 64 takes its pool and panel back by its first slot (`carry.md#lists`).

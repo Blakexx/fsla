@@ -37,6 +37,11 @@ __device__ __forceinline__ float next_unit(int k, UnitBook& book) {
   return f;
 }
 
+//: A WRITE SIDE WITH NO LIST LEVEL'S WINDOW EXPONENT, every list's, from the window's shift of F (`gains_shift`: its
+//: largest F in [2^-4, 2^-3) after it): F under 2^(-3 - shift) and a dense byte under 2^8 -- a bound, the dense level's
+//: floor holding each list's largest within 2^13 of it. -- see docs/internals/carry/fold.md#units
+__device__ __forceinline__ int dense_exp(int shift) { return 5 - shift; }
+
 //: A WINDOW'S UNITS, before the warp's steps: each list's exponent moves its book (lane group `j` list `j`); its state's
 //: rescale `f` (applied beside the list's first MMAs) and its c factor `2^(E - unit)` posted to the list's scale (the
 //: `kScale` tenant, read by the window's fold chunks). A side with no list level keeps its unit.
@@ -53,7 +58,7 @@ __device__ __forceinline__ void fold_units(uint8_t* smem, const Window& ww, int 
   const int j = lane / kLanes;
   const int16_t* exps =
       reinterpret_cast<const int16_t*>(smem + P::kWriteExp) + parity_of(w) * kBoxLists * 2;
-  const int k = ww.listed ? exps[2 * fold_list(warp, j) + 1] : kExpDead;
+  const int k = ww.listed ? exps[2 * fold_list(warp, j) + 1] : dense_exp(exps[1]);
   UnitBook* const book = reinterpret_cast<UnitBook*>(smem + P::kBook) + fold_list(warp, j);
   UnitBook b = *book;
   const float fl = next_unit(k, b);
@@ -162,10 +167,18 @@ __device__ __forceinline__ void fold_fill(const CarryParams& p, const uint8_t* s
   const volatile Addr& addr = *reinterpret_cast<const volatile Addr*>(smem + P::kAddr);
   fill<P::kFoldFactors, true>(addr.slices[kWrite], addr.values, static_cast<int>(p.values.st),
                               union_of<P>(p, smem, kWrite, w), ww, first, slots, buf);
-  if (ww.listed)
+  const ops::SmemAddr ents = buf + static_cast<uint32_t>(fold_ents<P>(slots));
+  if (ww.listed) {
     entries_fill<P>(p, p.write_lists, ww, c, w,
-                    chunk_runs<P>(p, smem, ww, kWrite, w, first, slots, total, lane),
-                    buf + static_cast<uint32_t>(fold_ents<P>(slots)), warp, lane);
+                    chunk_runs<P>(p, smem, ww, kWrite, w, first, slots, total, lane), ents, warp,
+                    lane);
+  } else {
+    //: a side with no list level: each slot's token's (F, m), 8 bytes, in the entries' place
+    const float2* const src = p.factors + static_cast<int64_t>(c.bh) * p.L + ww.t0 + first;
+#pragma unroll 1
+    for (int k = ops::opaque(static_cast<int>(threadIdx.x)); k < slots; k += kThreads)
+      ops::stage_run<8>(ents + 8u * static_cast<uint32_t>(k), src + k);
+  }
 }
 
 //: A FOLD CHUNK, a warp's: each of its lists' run of the chunk from the buffer's entries at `ents`, in 16-token steps
@@ -179,6 +192,12 @@ __device__ __forceinline__ void fold_chunk(const CarryParams& p, State<P>& st, b
                                            ops::SmemAddr ents, int warp, int lane) {
   const Run run = chunk_runs<P>(p, smem, ww, kWrite, w, first, slots, total, lane);
   const ops::SmemAddr pool = rows - static_cast<uint32_t>(first * P::kWriteRow);
+  //: a side with no list level: 2^(4 - E) of the window's exponent (`dense_exp`), the facts records' scale
+  const float p2 =
+      ww.listed ? 1.0f
+                : ldexpf(1.0f, 4
+                                   - dense_exp(reinterpret_cast<const int16_t*>(
+                                       smem + P::kWriteExp)[parity_of(w) * kBoxLists * 2 + 1]));
   static_for<P::kFoldLists>([&](auto J) {
     const int list = fold_list(warp, J);
     const ListScale sc = reinterpret_cast<const ListScale*>(smem + P::kScale)[list];
@@ -197,7 +216,8 @@ __device__ __forceinline__ void fold_chunk(const CarryParams& p, State<P>& st, b
         return e;
       });
     } else {
-      //: every slot of the chunk, c the list's digit of the row's coefficient slice (the row's second)
+      //: every slot of the chunk, c = f16(b F 2^(4 - E)) rounded once as the facts pass's records are: b the list's
+      //: digit of the row's coefficient slice (the row's second) on the byte scale, F the slot's factor at `ents`
       steps<P, J>(st, sc.cf, pool, first, 0, slots, lane, [&](int k) {
         const uint32_t row0 = rows + static_cast<uint32_t>(k) * P::kWriteRow
                               + 16u * chunk_at<P::kWriteRow>(static_cast<uint32_t>(k), 0);
@@ -206,7 +226,16 @@ __device__ __forceinline__ void fold_chunk(const CarryParams& p, State<P>& st, b
             "ld.shared.u16 %0, [%1];"
             : "=r"(cv)
             : "r"(chunk_addr<P::kWriteRow>(row0, (kSliceBytes + 2 * list) >> 4) + (2 * list & 15)));
-        return make_uint2(static_cast<uint32_t>(first + k), cv);
+        float f;
+        asm volatile("ld.shared.f32 %0, [%1];"
+                     : "=f"(f)
+                     : "r"(ents + 8u * static_cast<uint32_t>(k)));
+        const float b = __half2float(__ushort_as_half(static_cast<unsigned short>(cv)));
+        //: the packed conversion (F2FP, the ALU pipe; the scalar one runs on the conversion unit), the same rounding
+        const __half2 c =
+            __floats2half2_rn(__fmul_rn(__fmul_rn(__fmul_rn(b, 255.0f), f), p2), 0.0f);
+        return make_uint2(static_cast<uint32_t>(first + k),
+                          static_cast<uint32_t>(__half_as_ushort(__low2half(c))));
       });
     }
   });
@@ -230,7 +259,7 @@ __device__ __forceinline__ void fold_probe(const CarryParams& p, const State<P>&
   int64_t base = 0;
 #pragma unroll 1
   for (int l = 0; l < p.D; ++l) base += origin_of(p, l) * level_stride(p, l);
-  const int64_t list_stride = win.listed ? level_stride(p, p.write.list) : 0;
+  const int64_t list_stride = level_stride(p, win.listed ? p.write.list : p.write.operand[1]);
   const int64_t row_stride = level_stride(p, p.write.operand[0]);
   const int g = lane >> 2, tq = lane & 3;
   const UnitBook* book = reinterpret_cast<const UnitBook*>(smem + P::kBook);

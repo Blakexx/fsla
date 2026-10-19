@@ -129,12 +129,12 @@ SideLists lists_of(const std::vector<Tensor>& t, int64_t BH, int64_t windows, in
 }  // namespace
 
 void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows, Tensor values,
-                   std::vector<Tensor> write_lists, Tensor write_exp,
-                   std::vector<Tensor> read_lists, Tensor unit, Tensor num, Tensor check,
-                   std::vector<int64_t> widths, std::vector<int64_t> extents, int64_t channels,
-                   int64_t write_list, std::vector<int64_t> write_operand, int64_t read_list,
-                   std::vector<int64_t> read_operand, std::vector<int64_t> key, int64_t accumulate,
-                   int64_t forced, std::optional<Tensor> plans_out) {
+                   std::vector<Tensor> write_lists, Tensor write_exp, Tensor factors,
+                   Tensor factor_shift, std::vector<Tensor> read_lists, Tensor unit, Tensor num,
+                   Tensor check, std::vector<int64_t> widths, std::vector<int64_t> extents,
+                   int64_t channels, int64_t write_list, std::vector<int64_t> write_operand,
+                   int64_t read_list, std::vector<int64_t> read_operand, std::vector<int64_t> key,
+                   int64_t accumulate, int64_t forced, std::optional<Tensor> plans_out) {
   check_arch_table();
   const int D = (int)widths.size();
   STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels && (int)extents.size() == D, "the carve names ", D,
@@ -210,6 +210,21 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
         "exponents at the write list level, got ",
         shape(write_exp.sizes()));
     p.write_exp = write_exp.const_data_ptr<int16_t>();
+  } else {
+    STD_TORCH_CHECK(
+        factors.is_cuda() && factors.is_contiguous() && factors.scalar_type() == Dtype::Float
+            && factors.sizes() == Shape({BH, L, 2}),
+        "factors is the facts pass's contiguous CUDA fp32 [BH, L, 2] (F, m) a token, got ",
+        shape(factors.sizes()));
+    STD_TORCH_CHECK(
+        factor_shift.is_cuda() && factor_shift.is_contiguous()
+            && factor_shift.scalar_type() == Dtype::Short
+            && factor_shift.sizes() == Shape({BH, windows, 2}),
+        "factor_shift is the facts pass's contiguous CUDA int16 [BH, windows, 2] window "
+        "shifts of (m, F), got ",
+        shape(factor_shift.sizes()));
+    p.factors = reinterpret_cast<const float2*>(factors.const_data_ptr<float>());
+    p.factor_shift = factor_shift.const_data_ptr<int16_t>();
   }
   STD_TORCH_CHECK(
       unit.is_cuda() && unit.is_contiguous() && unit.scalar_type() == Dtype::Char

@@ -110,6 +110,23 @@ def next_units(k: np.ndarray, unit: np.ndarray, bound: np.ndarray):
     return nxt, (bound * f + WINDOW_ADD).astype(np.float32), f
 
 
+def gains_shift(top: np.ndarray) -> np.ndarray:
+    """The facts pass's window shift of a largest gain (docs/internals/facts/facts.md#gains): ``-4 - floor(log2 top)``,
+    the largest in [2^-4, 2^-3) after it, clamped to [-126, 127], 0 for a zero largest."""
+    _mant, e = np.frexp(top.astype(np.float64))
+    return np.where(top == 0, 0, np.clip(-4 - (e - 1), -126, 127)).astype(np.int64)
+
+
+def dense_exponents(m: torch.Tensor, F: torch.Tensor, window: int, w_r: int) -> np.ndarray:
+    """``[B, H, windows, w_r, 2]``: a write side with no list level's exponents (`fold.cuh` `dense_exp`), every list's
+    the window's bound ``5 - shift`` of its largest ``(m, F)`` -- a dense byte under 2^8, the factor under 2^(-3 - shift)."""
+    B, T, H = F.shape
+    windows = T // window
+    top = torch.stack((m, F), -1)[:, :windows * window].reshape(B, windows, window, H, 2).amax(2)  # [B, windows, H, 2]
+    e = 5 - gains_shift(top.permute(0, 2, 1, 3).cpu().numpy())
+    return np.broadcast_to(e[:, :, :, None, :], (B, H, windows, w_r, 2)).copy()
+
+
 def fold_state(routes, values, list_exp, level_s: int, window: int, at_window=None):
     """THE FOLD'S DECLARED ARITHMETIC over a call (one batch-head at a time): ``(state, env, mass, units)`` -- the
     absolute state ``[BH, B_S, B_R, C]`` and its envelope (``sum |A| |v|``, absolute), the absolute mass ``[BH, B_S,
@@ -131,7 +148,10 @@ def fold_state(routes, values, list_exp, level_s: int, window: int, at_window=No
     B, T, H, w_r = b_r.shape
     w_s, C = x.shape[-1], v.shape[-1]
     windows = T // window
-    k = list_exp.view(B, H, windows, -1, 2)[..., :w_r, :].cpu().numpy().astype(np.int64)
+    if list_exp.numel():
+        k = list_exp.view(B, H, windows, -1, 2)[..., :w_r, :].cpu().numpy().astype(np.int64)
+    else:
+        k = dense_exponents(m, F, window, w_r)
     dev = b_r.device
     state = torch.zeros(B, H, w_s, w_r, C, dtype=torch.float64, device=dev)
     env, mass = torch.zeros_like(state), torch.zeros(B, H, w_s, w_r, dtype=torch.float64, device=dev)

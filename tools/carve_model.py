@@ -157,7 +157,7 @@ def merged(s: CellStats, k: int) -> CellStats:
             reads.append(rd)
             writes.append(wr)
             c = cp.Counts(rd.union, _sums(rd) if rd.listed else (0,) * rd.segments.shape[1],
-                          wr.union, _sums(wr) if wr.listed else (0,) * wr.segments.shape[1])
+                          wr.union, _sums(wr) if wr.listed else (0,) * wr.segments.shape[1], wr.listed)
             rows = tuple(0 if (ring and side.listed) else row
                          for row, side, ring in ((s.read_row, rd, s.read_ring), (s.write_row, wr, s.fold_ring)))
             words.append(cp.win_of(c, -1, *rows, area).word)
@@ -199,7 +199,7 @@ def streamed(s: CellStats, read_stages: int = 0, fold: bool = False) -> CellStat
     words = []
     for rd, wr in zip(s.read, s.write):
         c = cp.Counts(rd.union, _sums(rd) if rd.listed else (0,) * rd.segments.shape[1],
-                      wr.union, _sums(wr) if wr.listed else (0,) * wr.segments.shape[1])
+                      wr.union, _sums(wr) if wr.listed else (0,) * wr.segments.shape[1], wr.listed)
         words.append(cp.win_of(c, -1, *rows, area).word)
     name = s.name + (f"+read{read_ring}" if read_ring else "") + ("+fold" if fold_ring else "")
     return CellStats(name, s.group, s.write, s.read, tuple(words), area, s.read_row, s.write_row, s.window, read_ring,

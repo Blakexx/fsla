@@ -80,7 +80,8 @@ def carry(routes, values, facts, carve: Carve, unit: torch.Tensor, accumulate: s
     check = torch.zeros(1, dtype=torch.float32, device=routes.device)
     extension().carry_forward(
         list(routes.amp_read), list(routes.amp_write), values.v, list(facts_ops.side_lists(facts, "write")),
-        facts.list_exp, list(facts_ops.side_lists(facts, "read")), unit, num, check, list(carve.widths),
+        facts.list_exp, facts.fm, facts.gains_exp, list(facts_ops.side_lists(facts, "read")), unit, num, check,
+        list(carve.widths),
         list(carve.extents), carve.channels, _list_level(carve.fold), list(carve.fold.operand),
         _list_level(carve.readout), list(carve.readout.operand), list(arm_key(carve)),
         _ACCUMULATE[accumulate or readout_accumulate(routes.device)], forced_word(forced), plans)

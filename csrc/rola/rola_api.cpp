@@ -107,7 +107,7 @@ STABLE_TORCH_LIBRARY(rola, m) {
   // ---- the CARRY LAUNCH SURFACE --------------------------------------------
   m.def(
       "carry_forward(Tensor[] read_rows, Tensor[] write_rows, Tensor values, Tensor[] write_lists, Tensor write_exp, "
-      "Tensor[] read_lists, "
+      "Tensor factors, Tensor factor_shift, Tensor[] read_lists, "
       "Tensor unit, Tensor(a!) num, Tensor(b!) check, int[] widths, int[] extents, int channels, int write_list, "
       "int[] write_operand, int read_list, int[] read_operand, int[] key, int accumulate, int forced, "
       "Tensor(c!)? plans_out) -> ()");
