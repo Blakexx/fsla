@@ -183,6 +183,9 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   const int64_t heads = read_rows[0].size(2) / H;
   STD_TORCH_CHECK(heads == 1 || read_list >= 0, "a grouped read side lists at a level: ", heads,
                   " query heads a write head read every window token of each with no list level");
+  STD_TORCH_CHECK(heads * L * (dv / 2) < (int64_t{1} << 32),
+                  "a write head's num rows index in 32-bit words (the drain's offsets): ", heads,
+                  " query heads x ", L, " tokens x ", dv / 2, " words");
   p.write =
       side_of(write_rows, write_list, write_operand, widths, extents, B, L, H, "the write side");
   p.read = side_of(read_rows, read_list, read_operand, widths, extents, B, L, H * heads,

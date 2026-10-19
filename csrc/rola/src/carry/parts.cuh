@@ -823,16 +823,17 @@ __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* 
     } while (__any_sync(0xffffffffu, (i += kStep) < hi));
 }
 
-//: A GLOBAL ADD of a nonzero word, predicated rather than branched; zero adds nothing.
-__device__ __forceinline__ void red_nonzero(uint32_t* at, uint32_t v) {
-  asm volatile(
-      "{\n .reg .pred p;\n setp.ne.u32 p, %1, 0;\n @p red.global.add.u32 [%0], %1;\n}\n" ::"l"(at),
-      "r"(v));
+//: A GLOBAL ADD, unpredicated: ptxas puts a predicated `red.global` in a branch and a convergence region (BSSY, BRA,
+//: BSYNC around each add).
+__device__ __forceinline__ void red_add(uint32_t* at, uint32_t v) {
+  asm volatile("red.global.add.u32 [%0], %1;" ::"l"(at), "r"(v) : "memory");
 }
 
 //: THE DRAIN: a chunk's panel words (at `panel`) to `num`, two tokens a request, packed s16 pairs at each token's unit
 //: added as u32; a thread keeps one word of every 16th slot (16 slots on, its panel cell 1 KB on), two slots a step
-//: loaded before their adds. -- see docs/internals/carry/parts.md#drain
+//: loaded before their adds, unguarded (the union and the panel lie in shared memory past the chunk's slots); a step's
+//: second slot past the chunk adds zero at the thread's first slot's row. A slot's row is a 32-bit word offset (the
+//: host holds a head's rows under 2^32 words). -- see docs/internals/carry/parts.md#drain
 template <class P>
 __device__ __forceinline__ void drain(const CarryParams& p, const uint8_t* smem, const Window& rw,
                                       const Place& c, int w, int first, int slots,
@@ -845,27 +846,31 @@ __device__ __forceinline__ void drain(const CarryParams& p, const uint8_t* smem,
   const int word = tid % kWords, s0 = tid / kWords;
   const ops::SmemAddr cell0 =
       panel + (panel_row(static_cast<uint32_t>(s0)) ^ ((32u * (word >> 3)) | (4u * (word & 7))));
-  const uint16_t* tok = union_of<P>(p, smem, kRead, w) + first;
-  const int pair = p.dv / 2;
+  const ops::SmemAddr tok0 = ops::smem_addr(union_of<P>(p, smem, kRead, w) + first + s0);
+  const uint32_t L = static_cast<uint32_t>(p.L), pair = static_cast<uint32_t>(p.dv / 2);
+  const bool listed = rw.listed;
   //: the write head's first query head's rows; a slot's row its query head `j` (`L` rows on) and token
   uint32_t* const out = p.num + ((int64_t)c.bh * p.tables.heads * p.L + rw.t0) * pair
                         + reinterpret_cast<const volatile Addr*>(smem + P::kAddr)->channel0 / 2
                         + word;
 #pragma unroll 1
   for (int i = 0; s0 + i * kStride < slots; i += kAhead) {
-    uint32_t v[kAhead];
-    int t[kAhead];
+    uint32_t v[kAhead], r[kAhead];
     static_for<kAhead>([&](auto k) {
-      const int s = s0 + (i + k) * kStride;
-      v[k] = 0u;
-      if (s < slots)
-        asm volatile("ld.shared.u32 %0, [%1];"
-                     : "=r"(v[k])
-                     : "r"(cell0 + static_cast<uint32_t>((i + k) * kCellStride)));
-      const int u = s < slots ? (rw.listed ? tok[s] : first + s) : 0;
-      t[k] = ((u >> 9) & 0x3f) * p.L + (u & (kWindow - 1));
+      asm volatile("ld.shared.u32 %0, [%1];"
+                   : "=r"(v[k])
+                   : "r"(cell0 + static_cast<uint32_t>((i + k) * kCellStride)));
+      uint32_t u;
+      asm volatile("ld.shared.u16 %0, [%1];"
+                   : "=r"(u)
+                   : "r"(tok0 + 2u * static_cast<uint32_t>((i + k) * kStride)));
+      u = listed ? u : static_cast<uint32_t>(first + s0 + (i + k) * kStride);
+      r[k] = ((u >> 9 & 0x3fu) * L + (u & (kWindow - 1))) * pair;
     });
-    static_for<kAhead>([&](auto k) { red_nonzero(out + static_cast<int64_t>(t[k]) * pair, v[k]); });
+    static_for<kAhead>([&](auto k) {
+      const bool live = k == 0 || s0 + (i + k) * kStride < slots;
+      red_add(out + (live ? r[k] : r[0]), live ? v[k] : 0u);
+    });
   }
 }
 

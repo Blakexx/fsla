@@ -169,13 +169,20 @@ the dummy rows, so it fits its 16 bits on every card; a lane XORs its half (`32 
 ## The drain
 
 A chunk's panel to `num`, once every warp has read the chunk: each slot's 16 words added as u32 atomics at its row's
-query head and token
-(two tokens a warp request, a slot pair's one line); the next fill zeroes the panel. A thread keeps one word of every
-16th slot -- 16 slots on, its panel cell is 1 KB on, the swizzle's bits unchanged, so its cells are one address and an
-add -- and takes two slots a step, loaded before their adds; an add is predicated on its word, so a gap slot's zero adds nothing and
-the step does not branch. CTAs join only here (R22: independent
-units, joined by atomics). The panel's word `8 m + g` pairs channels `(c, c + 2)`, `c = 8 (g >> 1) + 4 m + (g & 1)`
-([`#image`](#image)); the output's format follows it (`tests/oracle/readout_reference.py`'s `unpack_num`). At nl64k-alt-k4
-the drain is ~2.2K cycles a warp-window of its own, near the chip's global-atomic rate (~0.15 chip clocks a warp
-request, ~1.3K cycles a window when every SM drains at once); taken in slices between the fold's lists it serialized
-with them rather than overlapping (2026-10-13).
+query head and token (two tokens a warp request, a slot pair's one line); the next fill zeroes the panel. A thread
+keeps one word of every 16th slot -- 16 slots on, its panel cell is 1 KB on, the swizzle's bits unchanged, so its
+cells are one address and an add -- and takes two slots a step, their words and union tokens loaded unguarded (the
+union array and the panel lie in shared memory past the chunk's slots) before their adds. An add is never predicated:
+ptxas puts a predicated `red.global` in a branch and a convergence region (BSSY, BRA, BSYNC around each add), so a
+step's second slot past the chunk adds zero at the thread's first slot's row -- a row of the CTA's own, never one every
+CTA shares (lab [`drain`](../../lab/drain.md): a shared dummy line serialized every CTA 6x). A slot's row is a 32-bit
+word offset, one widening multiply-add from `num`'s base (the host holds a write head's rows under 2^32 words). CTAs
+join only here (R22: independent units, joined by atomics). The panel's word `8 m + g` pairs channels `(c, c + 2)`,
+`c = 8 (g >> 1) + 4 m + (g & 1)` ([`#image`](#image)); the output's format follows it
+(`tests/oracle/readout_reference.py`'s `unpack_num`).
+
+Its floor is the SM's global request path, ~5 cycles a line request with every SM draining (the lab). Measured
+2026-10-19 (sm_86 locked, a warp-window): nl64k-alt-k4 2,135 -> 1,389 cycles (216 requests, ~1.1K at the floor), g 4
+7,842 -> 5,175, the predicated form's 59 instructions a two-slot step (a guarded token load, 64-bit address
+arithmetic, a convergence region an add) against this one's; a call 3.0-4.4% faster on every listed cell. Taken in
+slices between the fold's lists it serialized with them rather than overlapping (2026-10-13).

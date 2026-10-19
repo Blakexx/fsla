@@ -451,7 +451,7 @@ DRIVERS = {
     "handoff": {"images": "store_batches list_scale", "one": "post_keys post_exps box_top ceil_exp pow2"},
     "fills": {"rows": "fill", "entry_trips": "entries_fill", "chunks": "read_fill fold_fill pre_at chunk_runs chunk_cols "
                                                                   "list_row Flow::slot_landed stage_bytes"},
-    "drain": {"drained": "drain red_nonzero"},
+    "drain": {"drained": "drain red_add"},
 }
 _DRIVER_OF = {fn: (phase, event) for phase, evs in DRIVERS.items() for event, fns in evs.items() for fn in fns.split()}
 #: THE WINDOW'S BOOKKEEPING: the plan's and the flow's reads, the staging, the places and the instruments ("?" a line
