@@ -331,7 +331,7 @@ __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* v
                                   + 16u
                                         * chunk_at<kRow>(static_cast<uint32_t>(s),
                                                          static_cast<uint32_t>(kChunks * i + r));
-        const uint8_t* const src = base[i] + t * st[i] + j * sh[i];
+        const uint8_t* const src = base[i] + static_cast<uint32_t>(t * st[i] + j * sh[i]);
         if constexpr (decltype(kNarrow)::value) {
           if (!active[i] && r == 0) stage_bytes(dst, src, bytes[i], live);
           if (active[i]) ops::stage_run_if<16>(dst, src, live);
@@ -345,7 +345,7 @@ __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* v
                 + 16u
                       * chunk_at<kRow>(static_cast<uint32_t>(s),
                                        static_cast<uint32_t>(kChunks * Factors + r)),
-            vbase + t * values_st, live);
+            vbase + static_cast<uint32_t>(t * values_st), live);
     }
   };
   if (narrow) {
@@ -376,27 +376,44 @@ __device__ __forceinline__ Run chunk_runs(const CarryParams& p, const uint8_t* s
   return Run{(b0 - a0) & 0xffff, ((b1 - a1) - (b0 - a0)) & 0xffff, (a1 - a0) & 0xffff};
 }
 
-//: A CHUNK'S ENTRIES, a warp's share: its own lists' runs (`warp + 8 j`) to their places at `dst`, 8 bytes a lane.
+//: A CHUNK'S ENTRIES, a warp's share: its own lists' runs (`warp + 8 j`) to their places at `dst`, 8 bytes a lane, the
+//: four runs one stream -- entry `e` in the last run whose first it passes, its source and place offsets from `e` --
+//: every full trip of 32 unpredicated, the stream's tail one branch a warp. -- see docs/internals/carry/parts.md#entries
 template <class P>
 __device__ __forceinline__ void entries_fill(const CarryParams& p, const SideLists& l,
                                              const Window& win, const Place& c, int w,
                                              const Run& run, ops::SmemAddr dst, int warp,
                                              int lane) {
+  constexpr int kRuns = kBoxLists / kWarps;
   //: the box's first list's row, once: a list's is `kListCap` entries a query head on (opaque, so the lists' sources
   //: are formed at each fill rather than held across the windows)
   const int cap = kListCap * ops::opaque(l.heads);
   const uint2* const lists =
       l.entries + list_row(l, c, p.windows, ops::opaque(w), win.digit0) * cap;
-  static_for<kBoxLists / kWarps>([&](auto J) {
+  int first[kRuns], src[kRuns], to[kRuns], total = 0;
+  static_for<kRuns>([&](auto J) {
     const int list = warp + kWarps * J;
     const int at = __shfl_sync(0xffffffffu, run.at, list),
               n = __shfl_sync(0xffffffffu, run.n, list),
-              to = __shfl_sync(0xffffffffu, run.to, list);
-    const uint2* const src = lists + list * cap + at + lane;
-    const ops::SmemAddr place = dst + 8u * static_cast<uint32_t>(to + lane);
-#pragma unroll 1
-    for (int k = 0; k < n; k += 32) ops::stage_run_lanes<8>(place + 8u * k, src + k, k + lane < n);
+              place = __shfl_sync(0xffffffffu, run.to, list);
+    first[J] = total;
+    src[J] = list * cap + at - total;
+    to[J] = place - total;
+    total += n;
   });
+  const auto copy = [&](int e) {
+    int s = src[0], d = to[0];
+    static_for<kRuns - 1>([&](auto J) {
+      const bool past = e >= first[J + 1];
+      s = past ? src[J + 1] : s;
+      d = past ? to[J + 1] : d;
+    });
+    ops::stage_run<8>(dst + 8u * static_cast<uint32_t>(d + e), lists + (s + e));
+  };
+  int k = 0;
+#pragma unroll 1
+  for (; k + 32 <= total; k += 32) copy(k + lane);
+  if (lane < total - k) copy(k + lane);
 }
 
 //: A CHUNK'S BUFFER, laid out at its own slots: a read buffer's rows, its dummy panel rows, its panel (a slot pair a

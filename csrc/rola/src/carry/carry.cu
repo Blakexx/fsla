@@ -84,10 +84,12 @@ Side side_of(const std::vector<Tensor>& rows, int64_t list, const std::vector<in
     STD_TORCH_CHECK(extents[l] * s.elem[i] >= 4 && extents[l] * s.elem[i] <= kSliceBytes, name,
                     " level ", l, "'s slice is ", extents[l] * s.elem[i],
                     " bytes; a slice is a 4-byte copy to ", kSliceBytes);
-    //: a window's token offsets are 32-bit (`fill`): a token's stride under 2^31 / the window
-    STD_TORCH_CHECK(s.rows[i].st > 0 && s.rows[i].st < (int64_t{1} << 31) / kWindow, name,
-                    " level ", l, "'s token stride is ", s.rows[i].st,
-                    " bytes; a window's offsets are 32-bit");
+    //: a window's row offsets are 32-bit (`fill`): its tokens' and query heads' strides under 2^31 together
+    STD_TORCH_CHECK(
+        s.rows[i].st > 0
+            && (kWindow - 1) * s.rows[i].st + (H - 1) * s.rows[i].sh < (int64_t{1} << 31),
+        name, " level ", l, "'s token stride ", s.rows[i].st, " and head stride ", s.rows[i].sh,
+        " bytes pass a window's 32-bit row offsets");
   }
   return s;
 }

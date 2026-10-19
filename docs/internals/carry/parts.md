@@ -54,7 +54,8 @@ A chunk's fill issues its copies; the caller arrives on the buffer's landed barr
 `fill` copies a range of union slots, each its token's row -- the side's operand slices at 64 bytes each, then on the
 write side its values at the box's channels -- swizzled, by `cp.async` over all 256 threads (a slice's 16-byte runs, 8
 or 4 under 16, `stage_bytes`). A read slot's row names its query head (`carry.md#sides`): its source is the slice at
-that head, a head stride on (`Slices::sh`). A GAP slot (`kGap`, [`carry.md`](carry.md#lists)) is zero-filled and reads
+that head, a head stride on (`Slices::sh`), as a 32-bit offset from the slice's base at the window's first token (the
+host holds a window's token and head strides under 2^31 together). A GAP slot (`kGap`, [`carry.md`](carry.md#lists)) is zero-filled and reads
 nothing. `read_fill` adds the read buffer's dummy panel rows and its panel's whole 128-byte lines, zero-filled (a zero
 quantum reads nothing), and the chunk's entries; `fold_fill` (`fold.md#chunk`) the write chunk's rows and entries. Each
 part sits at the chunk's own slots (`read_pads`, `read_ents`, `fold_ents`; `schedule.md#buffers`).
@@ -65,8 +66,13 @@ part sits at the chunk's own slots (`read_pads`, `read_ents`, `fold_ents`; `sche
 A buffer holds its chunk's entries as the group's lists' runs in list order: `chunk_runs` gives lane `l` list `l`'s
 first entry of the chunk, its count and its place (the group's lists' counts before it) by four loads of the prefix
 rows (`pre_at`), each a difference within the chunk modulo 2^16, the same in every warp; `entries_fill` copies a warp's
-own lists' runs (`warp + 8 j`), 8 bytes a lane. A consumer takes its list's place and count from its own loads, so no
-warp waits on another for them.
+own lists' runs (`warp + 8 j`), 8 bytes a lane, as ONE stream: entry `e` of the four runs in turn finds its run by
+three compares against the runs' firsts and takes that run's source and place as offsets from `e`, so every full trip
+of 32 copies unpredicated and only the stream's tail branches, once a warp-chunk. Copied run by run, each run paid its
+shuffles, a convergence region around its loop and its predicated copy and 64-bit address arithmetic -- ~40
+instructions a run, most runs one copy (2026-10-19: 2,559 -> 1,392 instructions a CTA-window at nl64k-alt-k4, the
+fill phase 5,401 -> 4,772 cycles a warp-window, a call 2.7% faster there and at g 4, cohort-k16's long runs unchanged).
+A consumer takes its list's place and count from its own loads, so no warp waits on another for them.
 
 <a id="maxima"></a>
 ## The digit maxima
