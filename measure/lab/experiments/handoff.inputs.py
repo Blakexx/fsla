@@ -13,6 +13,8 @@ Files (little-endian):
 - `state.bin`: f32 `[32 lists][32 digits][32 channels]`.
 - `units.bin`: int32 `[32 lists]`.
 - `image.bin`: the 64 KB image: 32 planes (a digit's), each 2 KB of 16-byte units, `unit_of(list, chunk, digit)`'s.
+- `image16.bin`: the same values in the 16-byte image: chunk `t` of a list holds channels `8 n + 2 t + b` at position
+  `2 n + b`, at `unit16_of(list, t, digit)`.
 - `exps.bin`: int32 `[32 digits]`.
 """
 from __future__ import annotations
@@ -39,6 +41,12 @@ def unit_of(lst: int, chunk: int, digit: int) -> int:
     return ((4 * lst + (chunk ^ ((lst >> 1) & 3))) ^ (digit & 7)) & (PLANE_BYTES // 16 - 1)
 
 
+def unit16_of(lst: int, chunk: int, digit: int) -> int:
+    """`handoff.cu`'s 16-byte image unit: the digit's low bit moved to bit 2 of its swizzle."""
+    swizzle = ((digit & 1) << 2) | ((digit >> 1) & 3)
+    return ((4 * lst + (chunk ^ ((lst >> 1) & 3))) ^ swizzle) & (PLANE_BYTES // 16 - 1)
+
+
 def write(directory: Path) -> list[str]:
     rng = np.random.default_rng(20261018)
     units = rng.integers(-40, 41, size=LISTS).astype(np.int32)
@@ -58,6 +66,7 @@ def write(directory: Path) -> list[str]:
             e = max(e, ceil_exp(float(np.abs(state[lst, d]).max())) + int(units[lst]))
         exps[d] = e
     image = np.zeros((DIGITS, PLANE_BYTES // 2), np.float16)
+    image16 = np.zeros((DIGITS, PLANE_BYTES // 2), np.float16)
     for d in range(DIGITS):
         for lst in range(LISTS):
             k = min(max(int(units[lst]) + IMAGE_TOP - int(exps[d]), -126), 127)
@@ -65,12 +74,16 @@ def write(directory: Path) -> list[str]:
             for chunk in range(4):
                 at = 8 * unit_of(lst, chunk, d)
                 image[d, at:at + 8] = vals[8 * chunk:8 * chunk + 8]
+                at16 = 8 * unit16_of(lst, chunk, d)
+                for n in range(4):
+                    image16[d, at16 + 2 * n:at16 + 2 * n + 2] = vals[8 * n + 2 * chunk:8 * n + 2 * chunk + 2]
     (directory / "state.bin").write_bytes(state.tobytes())
     (directory / "units.bin").write_bytes(units.tobytes())
     (directory / "image.bin").write_bytes(image.tobytes())
+    (directory / "image16.bin").write_bytes(image16.tobytes())
     (directory / "exps.bin").write_bytes(exps.tobytes())
     print(f"handoff: exponents {exps.min()} .. {exps.max()}, units {units[units > UNIT_NONE].min()} .. {units.max()}")
-    return ["state.bin", "units.bin", "image.bin", "exps.bin"]
+    return ["state.bin", "units.bin", "image.bin", "image16.bin", "exps.bin"]
 
 
 if __name__ == "__main__":

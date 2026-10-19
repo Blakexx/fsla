@@ -29,7 +29,8 @@ constexpr int kUnitNone = -1000;
 //: THE LAYOUT: the image, the lists' units, the carry's posts (a window's parity, a warp's 32 digits, int16), the
 //: digits' exponents, the lean form's keys (a window's parity, a lane's 4 digits at 4 g + 2 M + H)
 constexpr int kUnitsAt = kImageBytes, kPostsAt = kUnitsAt + 4 * kLists, kExpsAt = kPostsAt + 2 * kWarps * kDigits * 2;
-constexpr int kKeysAt = kExpsAt + 4 * kDigits, kBytes = kKeysAt + 2 * 4 * kDigits;
+//: and the 16-byte form's scale constants (2^23, 127 x 2^23), loaded so ptxas cannot fold them into a shift
+constexpr int kKeysAt = kExpsAt + 4 * kDigits, kConstAt = kKeysAt + 2 * 4 * kDigits, kBytes = kConstAt + 8;
 
 __device__ __forceinline__ float pow2(int e) { return __uint_as_float(static_cast<uint32_t>(e + 127) << 23); }
 
@@ -41,6 +42,22 @@ __device__ __forceinline__ int ceil_exp(float x) {
 
 __host__ __device__ __forceinline__ constexpr uint32_t unit_of(int l, int k, int d) {
   return static_cast<uint32_t>(((4 * l + (k ^ ((l >> 1) & 3))) ^ (d & 7)) & (kPlaneBytes / 16 - 1));
+}
+
+//: THE 16-BYTE IMAGE: a unit holds a writer lane's 8 channels (8 n + 2 t + b, position 2 n + b) for chunk `t`; the
+//: digit's swizzle moves its low bit to bit 2, so a quarter-warp's stores (two digits, four chunks) take eight bank
+//: groups and the readout's `ldmatrix.trans` (eight lists of one chunk) stays conflict-free
+__host__ __device__ __forceinline__ constexpr uint32_t swizzle16(int d) {
+  return static_cast<uint32_t>(((d & 1) << 2) | ((d >> 1) & 3));
+}
+
+__host__ __device__ __forceinline__ constexpr uint32_t unit16_of(int l, int k, int d) {
+  return ((4u * static_cast<uint32_t>(l) + static_cast<uint32_t>(k ^ ((l >> 1) & 3))) ^ swizzle16(d)) &
+         (kPlaneBytes / 16 - 1);
+}
+
+__device__ __forceinline__ void sts128(uint32_t at, uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
+  asm volatile("st.shared.v4.u32 [%0], {%1, %2, %3, %4};" ::"r"(at), "r"(a), "r"(b), "r"(c), "r"(d) : "memory");
 }
 
 __device__ __forceinline__ void sts32(uint32_t at, uint32_t v) {
@@ -60,6 +77,16 @@ __device__ __forceinline__ float row_max(const State& acc) {
   float x = 0.0f;
   rola::static_for<4>([&](auto N) {
     x = fmaxf(x, fmaxf(fabsf(acc[J][M][N][2 * H]), fabsf(acc[J][M][N][2 * H + 1])));
+  });
+  return x;
+}
+
+//: the same from its first pair: 7 maxima, not 8
+template <int J, int M, int H>
+__device__ __forceinline__ float row_max7(const State& acc) {
+  float x = fmaxf(fabsf(acc[J][M][0][2 * H]), fabsf(acc[J][M][0][2 * H + 1]));
+  rola::static_for<3>([&](auto N) {
+    x = fmaxf(x, fmaxf(fabsf(acc[J][M][N + 1][2 * H]), fabsf(acc[J][M][N + 1][2 * H + 1])));
   });
   return x;
 }
@@ -137,6 +164,7 @@ __device__ __forceinline__ Lean lean_units(const uint8_t* sm, int warp, int lane
   return l;
 }
 
+template <bool SEVEN>
 __device__ __forceinline__ void lean_maxima(const State& acc, uint8_t* sm, const Lean& l, int w, int lane) {
   int shift[4];
   rola::static_for<4>([&](auto J) { shift[J] = max(l.u[J] - l.top, -255) * (1 << 23); });
@@ -145,7 +173,7 @@ __device__ __forceinline__ void lean_maxima(const State& acc, uint8_t* sm, const
     rola::static_for<2>([&](auto H) {
       int k = INT_MIN;
       rola::static_for<4>([&](auto J) {
-        const int bits = __float_as_int(row_max<J, M, H>(acc));
+        const int bits = __float_as_int(SEVEN ? row_max7<J, M, H>(acc) : row_max<J, M, H>(acc));
         k = max(k, bits == 0 ? INT_MIN : bits + shift[J]);
       });
       k = max(k, __shfl_xor_sync(0xffffffffu, k, 1));
@@ -173,6 +201,57 @@ __device__ __forceinline__ int4 lean_exps(uint8_t* sm, const Lean& l, int w, int
   return make_int4(e(k.x), e(k.y), e(k.z), e(k.w));
 }
 
+//: the 16-byte form's exponents: `(key + 0x7fffff) >> 23` is the key's exponent field rounded up past a nonzero
+//: mantissa, so a digit's exponent is that plus the top unit less 127, at least `kImageTop - 127`
+__device__ __forceinline__ int4 lean16_exps(uint8_t* sm, const Lean& l, int w, int lane) {
+  int* const keys = reinterpret_cast<int*>(sm + kKeysAt);
+  int4 k;
+  asm volatile("ld.shared.v4.s32 {%0, %1, %2, %3}, [%4];"
+               : "=r"(k.x), "=r"(k.y), "=r"(k.z), "=r"(k.w)
+               : "r"(lab::smem(keys + (w & 1) * kDigits + 4 * (lane >> 2)))
+               : "memory");
+  keys[((w + 1) & 1) * kDigits + lane] = INT_MIN;
+  const int top = l.top - 127;
+  const auto e = [&](int key) { return max(((key + 0x7fffff) >> 23) + top, kImageTop - 127); };
+  return make_int4(e(k.x), e(k.y), e(k.z), e(k.w));
+}
+
+//: a list's scale for a digit, `2^(a - e)` held to a normal float's exponents: the difference and the float's bits each
+//: one integer multiply-add (the FMA pipe; the bits' multiplier `two23` and addend `bias` loaded, so ptxas cannot fold
+//: them into a shift on the ALU pipe), only the two clamps on the ALU pipe
+__device__ __forceinline__ float scale16(int a, int e, uint32_t two23, uint32_t bias) {
+  int x;
+  asm("mad.lo.s32 %0, %1, -1, %2;" : "=r"(x) : "r"(e), "r"(a));
+  x = min(max(x, -126), 127);
+  uint32_t bits;
+  asm("mad.lo.u32 %0, %1, %2, %3;" : "=r"(bits) : "r"(x), "r"(two23), "r"(bias));
+  return __uint_as_float(bits);
+}
+
+//: the 16-byte stores of m-tile rows `M_LO .. M_HI - 1`: a scale a (digit row, list), the lane's 8 values of the row
+//: scaled, packed and stored as one unit at the lane's held base plus a compile-time offset
+template <int M_LO, int M_HI>
+__device__ __forceinline__ void lean16_stores(const State& acc, const Lean& l, int4 ex, uint32_t at, uint32_t two23,
+                                              uint32_t bias) {
+  const int es[2][2] = {{ex.x, ex.y}, {ex.z, ex.w}};
+  int a[4];
+  rola::static_for<4>([&](auto J) { a[J] = l.u[J] + kImageTop; });
+  rola::static_for<2>([&](auto M) {
+    if constexpr (M >= M_LO && M < M_HI) {
+      rola::static_for<2>([&](auto H) {
+        rola::static_for<4>([&](auto J) {
+          const float scale = scale16(a[J], es[M][H], two23, bias);
+          uint32_t v[4];
+          rola::static_for<4>([&](auto N) {
+            v[N] = pack(acc[J][M][N][2 * H] * scale, acc[J][M][N][2 * H + 1] * scale);
+          });
+          sts128(at + static_cast<uint32_t>((16 * M + 8 * H) * kPlaneBytes + 512 * J), v[0], v[1], v[2], v[3]);
+        });
+      });
+    }
+  });
+}
+
 //: the lean stores of m-tile rows `M_LO .. M_HI - 1`: a scale a (digit row, list), each pair scaled, packed and stored
 //: at one of the lane's 4 held bases (a channel tile's) plus a compile-time offset
 template <int M_LO, int M_HI>
@@ -193,8 +272,8 @@ __device__ __forceinline__ void lean_stores(const State& acc, const Lean& l, int
   });
 }
 
-//: FORM 0 the carry's, 1 lean, 2 lean's maxima alone, 3 lean's stores alone (its exponents formed once); `HALVES` the
-//: stores in two halves of 16 digits with a CTA barrier between
+//: FORM 0 the carry's, 1 lean, 2 lean's maxima alone, 3 lean's stores alone (its exponents formed once), 4 lean into
+//: the 16-byte image (`unit16_of`); `HALVES` the stores in two halves of 16 digits with a CTA barrier between
 template <int FORM, int HALVES>
 __global__ void __launch_bounds__(kThreads, 1) handoff(const float* state, const int* units, uint8_t* image_out,
                                                        int* exps_out, long long* t) {
@@ -202,6 +281,7 @@ __global__ void __launch_bounds__(kThreads, 1) handoff(const float* state, const
   const int warp = lab::warp_id(), lane = lab::lane_id(), g = lane >> 2, t4 = lane & 3;
   if (threadIdx.x < kLists) reinterpret_cast<int*>(sm + kUnitsAt)[threadIdx.x] = units[threadIdx.x];
   if (threadIdx.x < 2 * kDigits) reinterpret_cast<int*>(sm + kKeysAt)[threadIdx.x] = INT_MIN;
+  if (threadIdx.x < 2) reinterpret_cast<uint32_t*>(sm + kConstAt)[threadIdx.x] = threadIdx.x ? 127u << 23 : 1u << 23;
   //: the warp's state: list warp + 8 J, digit 16 M + g + 8 (I >> 1), channel 8 N + 2 t + (I & 1)
   State acc;
   rola::static_for<4>([&](auto J) {
@@ -219,11 +299,16 @@ __global__ void __launch_bounds__(kThreads, 1) handoff(const float* state, const
   rola::static_for<4>([&](auto N) {
     at[N] = lab::held(lab::smem(sm) + 4u * t4 + 16u * unit_of(warp, N, g) + static_cast<uint32_t>(g) * kPlaneBytes);
   });
+  //: the 16-byte stores' base: the lane's unit for chunk t at its residue's digit, held
+  const uint32_t at16 =
+      lab::held(lab::smem(sm) + 16u * unit16_of(warp, t4, g) + static_cast<uint32_t>(g) * kPlaneBytes);
   __syncthreads();
+  const uint32_t two23 = reinterpret_cast<const volatile uint32_t*>(sm + kConstAt)[0],
+                 bias = reinterpret_cast<const volatile uint32_t*>(sm + kConstAt)[1];
   int4 ex0 = {};
   if constexpr (FORM == 3) {
     const Lean l = lean_units(sm, warp, lane);
-    lean_maxima(acc, sm, l, 0, lane);
+    lean_maxima<false>(acc, sm, l, 0, lane);
     __syncthreads();
     ex0 = lean_exps(sm, l, 0, lane);
     __syncthreads();
@@ -252,11 +337,24 @@ __global__ void __launch_bounds__(kThreads, 1) handoff(const float* state, const
       } else {
         carry_stores<0, 2>(acc, sm, dexp, warp, lane);
       }
+    } else if constexpr (FORM == 4) {
+      const Lean l = lean_units(sm, warp, lane);
+      lean_maxima<true>(acc, sm, l, w, lane);
+      __syncthreads();
+      const int4 ex = lean16_exps(sm, l, w, lane);
+      if constexpr (HALVES) {
+        lean16_stores<0, 1>(acc, l, ex, at16, two23, bias);
+        __syncthreads();
+        lean16_stores<1, 2>(acc, l, ex, at16, two23, bias);
+      } else {
+        lean16_stores<0, 2>(acc, l, ex, at16, two23, bias);
+      }
+      last = ex;
     } else {
       const Lean l = lean_units(sm, warp, lane);
       int4 ex = ex0;
       if constexpr (FORM != 3) {
-        lean_maxima(acc, sm, l, w, lane);
+        lean_maxima<false>(acc, sm, l, w, lane);
         __syncthreads();
         ex = lean_exps(sm, l, w, lane);
       }
@@ -292,7 +390,7 @@ __global__ void __launch_bounds__(kThreads, 1) handoff(const float* state, const
 struct Host {
   std::vector<float> state;
   std::vector<int> units, exps;
-  std::vector<uint8_t> image;
+  std::vector<uint8_t> image, image16;
 };
 
 template <class T>
@@ -311,7 +409,8 @@ template <int FORM, int HALVES>
 void run(const lab::Bench& b, const char* variant, const float* state, const int* units, uint8_t* image, int* exps,
          const Host& h) {
   const std::string name = lab::kernel("handoff", {FORM, HALVES});
-  if (FORM != 2) b.expect(name, "STS", ">=", 64);
+  if (FORM != 2 && FORM != 4) b.expect(name, "STS", ">=", 64);
+  if (FORM == 4) b.expect(name, "STS.128", ">=", 16);
   b.expect(name, "BAR", ">=", 1);
   if (FORM >= 1) b.expect(name, "ATOMS", FORM == 3 ? ">=" : ">=", 1);
   b.units(name, "a CTA-window", static_cast<long long>(kCtas) * kWindows);
@@ -329,6 +428,24 @@ void run(const lab::Bench& b, const char* variant, const float* state, const int
     b.budget(name, "select/compare", 8 * 60);
     b.budget(name, "control", 8 * 20);
   }
+  if (FORM == 4 && !HALVES) {
+    //: THE 16-BYTE BUDGET a CTA-window, a warp's: 112 FMNMX (7 a list's digit row) and 128 FMUL, 64 packs, 16
+    //: 16-byte stores and a key reset, the lean form's atomic, loads and shuffles; integer work 136 (60 IMNMX: 16
+    //: scales' two clamps, 12 + 8 key maxima, 4 shift and 4 exponent floors; 32 IMAD: 16 key adds, 16 scale bits; 20
+    //: scale differences; ~24 exponents and addresses -- the first budget's 118 priced the 16 scale-bit builds as
+    //: address forms the held base removes, wrongly), its selects (~36). Binding: the ALU pipe, 292 a warp at 2
+    //: cycles (112 FMNMX, 64 packs, 60 IMNMX, 35 key selects, ~21 adds and logic), ~1,170 cycles a window; issue
+    //: ~1,030; the shared pipe ~830 an SM.
+    b.budget(name, "float", 8 * 240 + 64);
+    b.budget(name, "pack", 8 * 64 + 16);
+    b.budget(name, "shared store", 8 * 17 + 8);
+    b.budget(name, "shared atomic", 8 * 1 + 1);
+    b.budget(name, "shared load", 8 * 6 + 8);
+    b.budget(name, "shuffle", 8 * 10 + 8);
+    b.budget(name, "integer/address", 8 * 136);
+    b.budget(name, "select/compare", 8 * 36);
+    b.budget(name, "control", 8 * 5);
+  }
   if (b.expect_only) return;
   LAB_CHECK(cudaFuncSetAttribute(handoff<FORM, HALVES>, cudaFuncAttributeMaxDynamicSharedMemorySize, kBytes));
   const lab::Samples s = b.variant(
@@ -342,7 +459,8 @@ void run(const lab::Bench& b, const char* variant, const float* state, const int
     LAB_CHECK(cudaMemcpy(got.data(), image, got.size(), cudaMemcpyDeviceToHost));
     LAB_CHECK(cudaMemcpy(ge.data(), exps, ge.size() * 4, cudaMemcpyDeviceToHost));
     size_t bad = 0, bad_e = 0;
-    for (size_t i = 0; i < got.size(); ++i) bad += got[i] != h.image[i];
+    const std::vector<uint8_t>& want = FORM == 4 ? h.image16 : h.image;
+    for (size_t i = 0; i < got.size(); ++i) bad += got[i] != want[i];
     for (int d = 0; d < kDigits; ++d) bad_e += ge[d] != h.exps[d];
     b.check(variant, bad == 0 && bad_e == 0,
             std::to_string(bad) + " of " + std::to_string(got.size()) + " image bytes and " + std::to_string(bad_e) +
@@ -372,6 +490,7 @@ int main(int argc, char** argv) {
     h.units = file<int>(dir + "/units.bin", kLists);
     h.exps = file<int>(dir + "/exps.bin", kDigits);
     h.image = file<uint8_t>(dir + "/image.bin", kImageBytes);
+    h.image16 = file<uint8_t>(dir + "/image16.bin", kImageBytes);
     LAB_CHECK(cudaMalloc(&state, h.state.size() * 4));
     LAB_CHECK(cudaMemcpy(state, h.state.data(), h.state.size() * 4, cudaMemcpyHostToDevice));
     LAB_CHECK(cudaMalloc(&units, kLists * 4));
@@ -385,4 +504,6 @@ int main(int argc, char** argv) {
   run<1, 1>(b, "lean, two halves", state, units, image, exps, h);
   run<2, 0>(b, "bound: lean, the maxima alone", state, units, image, exps, h);
   run<3, 0>(b, "bound: lean, the stores alone", state, units, image, exps, h);
+  run<4, 0>(b, "lean, 16-byte units, the image whole", state, units, image, exps, h);
+  run<4, 1>(b, "lean, 16-byte units, two halves", state, units, image, exps, h);
 }
