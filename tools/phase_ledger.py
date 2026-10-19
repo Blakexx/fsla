@@ -21,6 +21,7 @@ import argparse
 import json
 import math
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -68,7 +69,11 @@ def main() -> int:
     ap.add_argument("cell")
     ap.add_argument("--launches", type=int, default=3)
     ap.add_argument("--warmup", type=int, default=1,
-                    help="launches run before the ledger is bound (a fresh binary's first launch is not a reading)")
+                    help="the fewest launches run before the ledger is bound (a fresh binary's first launch is not a "
+                         "reading)")
+    ap.add_argument("--warmup-ms", type=float, default=500.0,
+                    help="warm-up launches continue until this long has passed: a GPU just locked reads ~11%% slow "
+                         "for its first launches")
     ap.add_argument("--per-warp", default="readout,fold",
                     help="the phases whose per-warp rows are printed: an imbalance is seen, not inferred")
     ap.add_argument("--json", type=Path, default=None, help="also write the reading here: every phase, every warp")
@@ -97,9 +102,11 @@ def main() -> int:
     windows = (spec.tokens + c.WINDOW - 1) // c.WINDOW
     with gpu_lock(mode="exclusive"):
         ledger = torch.zeros((n_ctas, warps, len(phases)), dtype=torch.int64, device="cuda")
-        for _ in range(a.warmup):
+        start, warmed = time.perf_counter(), 0
+        while warmed < a.warmup or time.perf_counter() - start < a.warmup_ms / 1e3:
             launch(*operands)
-        torch.cuda.synchronize()
+            torch.cuda.synchronize()
+            warmed += 1
         c.ledger_bind(ledger)
         for _ in range(a.launches):
             launch(*operands)
@@ -113,7 +120,8 @@ def main() -> int:
         i = phases.index(ph)
         print(f"  {ph:8s} a warp: " + " ".join(f"{by_warp[w][i]:6.0f}" for w in range(warps)))
     if a.json:
-        a.json.write_text(json.dumps({"cell": a.cell, "launches": a.launches, "warmup": a.warmup,
+        a.json.write_text(json.dumps({"cell": a.cell, "build_stamp": c.build_stamp(), "launches": a.launches,
+                                      "warmup": warmed,
                                       "cta_windows": n_ctas * windows,
                                       "per_phase": {n: round(x, 1) for n, x in zip(phases, per.tolist())},
                                       "total": round(float(per.sum()), 1),
