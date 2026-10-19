@@ -14,7 +14,8 @@ lists and one zero in all), made opaque each window so nothing is hoisted. A win
 exponents, the stores and a barrier; a sample is a CTA's span over 64 windows, 80 CTAs. Every form's image and
 exponents are checked byte for byte against the mirror's, which follows `csrc/rola/src/carry/parts.cuh`'s rules.
 
-- THE CARRY'S FORM (`parts.cuh`'s `post_maxima`, `digit_exp`, `store_batches`): a list's largest value a digit row as
+- THE CARRY'S FORM before the 16-byte image (`handoff.cu`'s `carry_maxima`, `carry_digit_exp`, `carry_stores`, its
+  mirror): a list's largest value a digit row as
   `ceil_exp` plus its unit, two shuffles a row, posted int16; after the barrier lane `d` the largest of the 8 warps'
   posts; a scale a (digit row, list) from its clamped exponent, each channel pair scaled, packed and stored 4 bytes at
   an address formed for it.

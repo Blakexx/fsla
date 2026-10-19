@@ -107,19 +107,16 @@ __device__ __forceinline__ int chunk_max(const Sums& S, int m, int total) {
 }
 
 //: THE LARGEST CHUNK of a side: the whole union where one buffer of it fits `room`; else the largest `64 m` slots
-//: below the union two of whose largest buffers fit (one lands while the other computes), else one.
-//: -- see docs/internals/carry/schedule.md#chunks
+//: below the union whose largest buffer fits -- the fewest chunks, each paying its fill and fixed work (and a halves
+//: image's re-store). -- see docs/internals/carry/schedule.md#chunks
 template <class Bytes>
 __device__ __forceinline__ int largest_chunk(int u, const Sums& S, int room, Bytes bytes) {
   if (bytes(u, S[S.cols - 1]) <= room) return u;
-  int two = 0, one = 1;
+  int one = 1;
 #pragma unroll 1
-  for (int m = 1; kListBound * m < u; ++m) {
-    const int b = bytes(kListBound * m, chunk_max(S, m, u));
-    if (2 * b <= room) two = m;
-    if (b <= room) one = m;
-  }
-  return kListBound * (two > 0 ? two : one);
+  for (int m = 1; kListBound * m < u; ++m)
+    if (bytes(kListBound * m, chunk_max(S, m, u)) <= room) one = m;
+  return kListBound * one;
 }
 
 //: A WINDOW'S COUNTS: each side's union and segment sums.
@@ -128,8 +125,8 @@ struct Counts {
   Sums rs, fs;
 };
 
-//: THE RULE'S PLAN: the read chunk sized beside the halves, the image whole where it fits beside the read buffers in
-//: flight (one, or with read chunks two, of the largest), else in halves; the fold's largest chunk in the area.
+//: THE RULE'S PLAN: the read chunk sized beside the halves, the image whole where it fits beside the largest read
+//: buffer, else in halves; the fold's largest chunk in the area.
 //: -- see docs/internals/carry/schedule.md#planner
 template <class P>
 __device__ __forceinline__ uint32_t rule_plan(const CarryParams& p, const Counts& c) {
@@ -142,7 +139,7 @@ __device__ __forceinline__ uint32_t rule_plan(const CarryParams& p, const Counts
       nr > 0 ? read_bytes<P>(min(rc, c.ru), rc < c.ru ? chunk_max(c.rs, rc / kListBound, c.ru)
                                                       : c.rs[c.rs.cols - 1])
              : 0;
-  const bool whole = nr > 0 && kImageWhole + (nr > 1 ? 2 : 1) * most <= area;
+  const bool whole = nr > 0 && kImageWhole + most <= area;
   const int fc =
       c.fu > 0 ? largest_chunk(c.fu, c.fs, area, [](int s, int e) { return fold_bytes<P>(s, e); })
                : 0;

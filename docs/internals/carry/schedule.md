@@ -77,15 +77,20 @@ chunk of `64 m` slots holds.
 <a id="chunks"></a>
 ## The chunks
 
-`largest_chunk`: the whole union where one buffer of it fits; else the largest `64 m` slots below the union two of
-whose largest buffers fit (chunk `t + 1` lands while `t` computes); else the largest one of which fits. A read chunk is
-sized beside the halves' 32 KB; a fold chunk in the whole area.
+`largest_chunk`: the whole union where one buffer of it fits; else the largest `64 m` slots below the union whose
+largest buffer fits -- the fewest chunks. A read chunk is sized beside the halves' 32 KB; a fold chunk in the whole
+area. Every chunk pays its fill, its landed wait and its fixed work, and on a halves image each read chunk re-stores
+both halves; a second buffer in flight (chunk `t + 1` landing while `t` computes, the rule until 2026-10-19) buys less
+than the chunks it adds. Measured (2026-10-19, sm_86 locked, forced forms against that rule): flagship-alt-k16 3 read
+chunks a window -> 2, 1,781 -> 1,520 us; flagship-cohort-k16 2.83 -> 1.88, 2,363 -> 1,983; nl64k-alt-k4-g4 7 -> 4,
+12,217 -> 8,522; nl64k-dense 4 read and 3 fold chunks -> 2 and 2, 31,051 -> 29,028; a whole image beside smaller
+chunks slower than halves beside fewer (alt-k16 whole at 128-slot chunks 1,778).
 
 <a id="planner"></a>
 ## The planner
 
-THE RULE'S PLAN (`rule_plan`): the image whole where it fits beside the read buffers in flight (64 KB and one, or with
-read chunks two, of the largest read buffer), else in halves; the fold's largest chunk. A FORCED FORM
+THE RULE'S PLAN (`rule_plan`): the image whole where it fits beside the largest read buffer (64 KB and one), else in
+halves; the fold's largest chunk. A FORCED FORM
 (`CarryParams::forced`, `rola.ops.carry.forced_word`: a mode, a read chunk and a fold chunk, each the rule's, the union
 or a multiple of 64) is reserved for the gates and the measurements; a window takes it where every chunk of it fits
 alone beside its image and a whole image has reads to serve (`forced_plan`), else the rule's.

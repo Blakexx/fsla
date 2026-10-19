@@ -72,17 +72,15 @@ def chunk_max(S, m: int, total: int) -> int:
 
 
 def largest_chunk(u: int, S, room: int, nbytes) -> int:
-    """The whole union where one buffer of it fits ``room``; else the largest ``64 m`` below it two of whose largest
-    buffers fit, else one (`largest_chunk`)."""
+    """The whole union where one buffer of it fits ``room``; else the largest ``64 m`` below it whose largest buffer
+    fits -- the fewest chunks (`largest_chunk`)."""
     if nbytes(u, _sum_at(S, len(S) - 1)) <= room:
         return u
-    two, one, m = 0, 1, 1
+    one, m = 1, 1
     while LIST_BOUND * m < u:
-        b = nbytes(LIST_BOUND * m, chunk_max(S, m, u))
-        two = m if 2 * b <= room else two
-        one = m if b <= room else one
+        one = m if nbytes(LIST_BOUND * m, chunk_max(S, m, u)) <= room else one
         m += 1
-    return LIST_BOUND * (two if two > 0 else one)
+    return LIST_BOUND * one
 
 
 def tables_bytes(heads: int) -> int:
@@ -116,15 +114,15 @@ def chunks(word: int) -> tuple[int, int, int, int, int]:
 
 
 def rule_plan(c: Counts, read_row: int, write_row: int, area: int) -> int:
-    """`rule_plan`: the read chunk beside the halves, the image whole where it fits beside the read buffers in flight,
-    the fold's largest chunk in the area."""
+    """`rule_plan`: the read chunk beside the halves, the image whole where it fits beside the largest read buffer, the
+    fold's largest chunk in the area."""
     rc = largest_chunk(c.ru, c.rs, area - IMAGE_RING, lambda s, e: read_bytes(s, e, read_row)) if c.ru > 0 else 0
     nr = chunks_of(c.ru, rc)
     most = 0
     if nr > 0:
         most = read_bytes(min(rc, c.ru), chunk_max(c.rs, rc // LIST_BOUND, c.ru) if rc < c.ru
                           else _sum_at(c.rs, len(c.rs) - 1), read_row)
-    whole = nr > 0 and IMAGE_WHOLE + (2 if nr > 1 else 1) * most <= area
+    whole = nr > 0 and IMAGE_WHOLE + most <= area
     fc = largest_chunk(c.fu, c.fs, area, lambda s, e: fold_bytes(s, e, write_row)) if c.fu > 0 else 0
     return plan_word(WHOLE if whole else HALVES, rc, fc, c.ru, c.fu)
 
