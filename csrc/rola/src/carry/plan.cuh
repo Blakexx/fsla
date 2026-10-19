@@ -22,9 +22,10 @@ struct Tenants {
   static constexpr int kWriteExp = kPreW + 2 * kPreRows * kListAt * 2;
   static constexpr int kBook = kWriteExp + 2 * kBoxLists * 4;
   static constexpr int kScale = kBook + kBoxLists * 8;
-  static constexpr int kMaxima = kScale + kBoxLists * 8;
-  static constexpr int kExps = kMaxima + 2 * kWarps * kBoxDigits * 2;
-  static constexpr int kClock = kExps + kBoxDigits * 4;
+  static constexpr int kKeys = align_of(kScale + kBoxLists * 8, 16);
+  static constexpr int kExps = kKeys + 2 * kBoxDigits * 4;
+  static constexpr int kBits = kExps + kBoxDigits * 4;
+  static constexpr int kClock = align_of(kBits + 8, 8);
   static constexpr int kBars = kClock + kWarps * (kCarryPhases + 1) * 8;
   static constexpr int kAddr = align_of(kBars + kBarCount * 8, 16);
   static constexpr int kAddrBytes = 256;

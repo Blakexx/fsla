@@ -5,8 +5,8 @@
   "fold": "fold_chunk",
   "units": "fold_units",
   "stores": "store_batches",
-  "maxima": "post_maxima",
-  "exponents": "digit_exp",
+  "maxima": "post_keys",
+  "exponents": "post_exps",
   "drain": "drain",
   "read_fill": "read_fill",
   "fold_fill": "fold_fill",
@@ -34,16 +34,16 @@
    "readout": 3072,
    "fold": 2368,
    "units": 240,
-   "stores": 3200,
-   "maxima": 1960,
-   "exponents": 128,
+   "stores": 2544,
+   "maxima": 1736,
+   "exponents": 112,
    "drain": 960,
    "read_fill": 1040,
    "fold_fill": 1024,
    "staging": 320,
    "barriers": 648,
    "glue": 1200,
-   "total": 16160,
+   "total": 15264,
    "trips": {
     "readout_tiles": 7,
     "read_digits": 4,
@@ -55,7 +55,8 @@
     "drain_words_a_thread": 13.5,
     "read_fill_copies_a_thread": 6.9,
     "fold_fill_copies_a_thread": 6.75,
-    "entry_runs_a_warp": 8
+    "entry_runs_a_warp": 8,
+    "store_calls": 2
    },
    "issue_floor_cycles": 4040
   }

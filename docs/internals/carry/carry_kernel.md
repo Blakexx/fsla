@@ -74,8 +74,9 @@ lists.
 | readout (`read_chunk`) | a tile ~40 (4 MMAs, 3 shared loads, 4 shuffles, 4 shared adds, ~12 float, ~10 address); a digit ~16; a chunk ~10 | 7 tiles, 4 digits, 4 chunks | 384 |
 | fold (`fold_chunk`) | an 8-token step ~30 (8 MMAs, 3 loads, 4 shuffles, 4 HMUL2); a list ~12 and its rescale 32 FMUL | 4 steps, 4 lists | 296 |
 | units (`fold_units`) | once a window | 1 | 30 |
-| stores (`store_batches`) | a batch: 4 lists x (4 x 5 for two values' scale, pack, store, address + 4) + 5 | 4 batches | 400 |
-| maxima (`post_maxima`) | a (list, half-tile): 8 FMNMX with abs, an exponent ~4, its max ~2; 16 of them + 20 | 1 | 245 |
+| stores (`store_batches`) | a batch: 4 lists x (a scale 4, 8 FMUL, 4 packs, one 16-byte store) + 2; a call ~20 | 4 batches, 2 calls | 318 |
+| maxima (`post_keys`) | a (list, digit row): 7 FMNMX with abs, its key ~4; 16 of them, the quad's joins 16, the units and top ~18, one atomic | 1 | 217 |
+| exponents (`post_exps`) | the lane's key to its exponent ~4, the two parities' addresses ~5, the reset, the record, the warp's sync | 1 | 14 |
 | drain | a panel word ~6 (load, token, address, predicated add); two slots' loop ~6 | 13.5 words a thread | 120 |
 | read fill (`read_fill`) | a 16-byte copy ~13; an entry run ~10 | 6.9 copies a thread, 4 runs | 130 |
 | fold fill (`fold_fill`) | the same | 6.75 copies a thread, 4 runs | 128 |
@@ -83,7 +84,7 @@ lists.
 | barriers (`Flow`) | an arrival ~3, a satisfied wait ~3 | ~27 | 81 |
 | glue (the kernel's body) | the plan's fields and the windows' statics read once, loop control | 1 | 150 |
 
-The design is ~2,020 instructions a warp-window: ~4.0K cycles of issue a window over 8 warps on 4 schedulers, ~0.55 ms a
+The design is ~1,920 instructions a warp-window: ~3.8K cycles of issue a window over 8 warps on 4 schedulers, ~0.52 ms a
 call at one head. Measured (2026-10-14, carry-k5 839dadb5) 3,884 (31,069 a CTA-window), every component over its line
 but the stores (1.09x): the fills 2.3-3.0x (each copy re-derives its token, its source and its swizzle; each run its
 list's row), the glue 2.6x and the barriers' own instructions 2.8x (fields re-read at each use), the drain 2.3x, the

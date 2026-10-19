@@ -5,6 +5,7 @@
 
 #include <cuda_fp16.h>
 
+#include <climits>
 #include <cstdint>
 #include <type_traits>
 
@@ -445,101 +446,156 @@ __device__ __forceinline__ void list_units(int (&u)[P::kFoldLists], const uint8_
   static_for<P::kFoldLists>([&](auto J) { u[J] = book[warp + kWarps * J].unit; });
 }
 
-//: THE DIGIT MAXIMA, the hand-off's first step: a warp's largest |state| a digit over its lists, each list's at its
-//: unit, as an exponent -- `ceil_exp` of the list's largest |accumulator| plus its unit, the largest over the lists --
-//: the four lanes of a digit row joined by two shuffles, posted for the CTA at window `w`'s parity.
-//: -- see docs/internals/carry/parts.md#maxima
+//: THE BOX'S TOP UNIT, its 32 lists' largest, one reduction a warp (the book read at its use).
 template <class P>
-__device__ __forceinline__ void post_maxima(const State<P>& st, uint8_t* smem, int w, int warp,
-                                            int lane) {
-  int16_t* const posts =
-      reinterpret_cast<int16_t*>(smem + P::kMaxima) + ((w & 1) * kWarps + warp) * kBoxDigits;
-  int u[P::kFoldLists];
-  list_units<P>(u, smem, warp);
-  static_for<P::kFoldMTiles>([&](auto M) {
-    static_for<2>([&](auto H) {
-      int e = 2 * kUnitNone;
-      static_for<P::kFoldLists>([&](auto J) {
-        float x = 0.0f;
-        static_for<4>([&](auto N) {
-          x = fmaxf(x, fmaxf(fabsf(st.acc[J][M][N][2 * H]), fabsf(st.acc[J][M][N][2 * H + 1])));
-        });
-        e = max(e, ceil_exp(x) + u[J]);
-      });
-      e = max(e, __shfl_xor_sync(0xffffffffu, e, 1));
-      e = max(e, __shfl_xor_sync(0xffffffffu, e, 2));
-      if ((lane & 3) == 0) posts[16 * M + 8 * H + (lane >> 2)] = static_cast<int16_t>(e);
-    });
-  });
+__device__ __forceinline__ int box_top(const uint8_t* smem, int lane) {
+  static_assert(kBoxLists == 32, "a lane a list");
+  const volatile UnitBook* const book = reinterpret_cast<const volatile UnitBook*>(smem + P::kBook);
+  return __reduce_max_sync(0xffffffffu, book[lane].unit);
 }
 
-//: A 16-BYTE UNIT of digit `d`'s image plane for list `l`, chunk `k` (8 channels): the fold's stores and the readout's
-//: `ldmatrix.trans` both conflict-free. -- see docs/internals/carry/parts.md#image
+//: THE KEYS' SPAN: a list more than this many units under the box's top keys as if this far (a live unit lies in
+//: `kUnitMin .. 128`, a span under it; a never-live list's state is zero).
+constexpr int kKeySpan = 255;
+
+//: THE DIGIT KEYS, the hand-off's first step: a list's largest |value| a digit row at its unit as an integer key --
+//: its fp32 bits plus (its unit less the box's top) x 2^23, a zero `INT_MIN` -- one integer max a list, the row's four
+//: lanes joined by two shuffles, one shared atomic max a lane, at window `w`'s parity in lane order (digit `16 M + 8 H
+//: + g` at `4 g + 2 M + H`); returns the box's top. -- see docs/internals/carry/parts.md#maxima
+template <class P>
+__device__ __forceinline__ int post_keys(const State<P>& st, uint8_t* smem, int w, int warp,
+                                         int lane) {
+  static_assert(P::kFoldMTiles * 2 == 4, "a lane's four digit rows, one a lane of its quad");
+  int u[P::kFoldLists];
+  list_units<P>(u, smem, warp);
+  const int top = box_top<P>(smem, lane);
+  int shift[P::kFoldLists];
+  static_for<P::kFoldLists>([&](auto J) { shift[J] = max(u[J] - top, -kKeySpan) * (1 << 23); });
+  int key[2][2];
+  static_for<2>([&](auto M) {
+    static_for<2>([&](auto H) {
+      int k = INT_MIN;
+      static_for<P::kFoldLists>([&](auto J) {
+        float x = fmaxf(fabsf(st.acc[J][M][0][2 * H]), fabsf(st.acc[J][M][0][2 * H + 1]));
+        static_for<3>([&](auto N) {
+          x = fmaxf(
+              x, fmaxf(fabsf(st.acc[J][M][N + 1][2 * H]), fabsf(st.acc[J][M][N + 1][2 * H + 1])));
+        });
+        const int bits = __float_as_int(x);
+        k = max(k, bits == 0 ? INT_MIN : bits + shift[J]);
+      });
+      k = max(k, __shfl_xor_sync(0xffffffffu, k, 1));
+      key[M][H] = max(k, __shfl_xor_sync(0xffffffffu, k, 2));
+    });
+  });
+  const int t = lane & 3;
+  const int mine = t & 2 ? (t & 1 ? key[1][1] : key[1][0]) : (t & 1 ? key[0][1] : key[0][0]);
+  atomicMax(reinterpret_cast<int*>(smem + P::kKeys) + (w & 1) * kBoxDigits + lane, mine);
+  return top;
+}
+
+//: A DIGIT'S SWIZZLE of its plane's units: its low bit moved to bit 2, so a quarter-warp's stores (two digits, four
+//: chunks) meet eight bank groups.
+__host__ __device__ __forceinline__ constexpr uint32_t digit_swizzle(int d) {
+  return static_cast<uint32_t>(((d & 1) << 2) | ((d >> 1) & 3));
+}
+
+//: A 16-BYTE UNIT of digit `d`'s image plane for list `l`, chunk `k`: channels `8 n + 2 k + b` at position `2 n + b`,
+//: a writer lane's (`k` its lane in the quad); the fold's 16-byte stores and the readout's `ldmatrix.trans` both
+//: conflict-free. -- see docs/internals/carry/parts.md#image
 __host__ __device__ __forceinline__ constexpr uint32_t unit_of(int l, int k, int d) {
-  return static_cast<uint32_t>(((4 * l + (k ^ ((l >> 1) & 3))) ^ (d & 7)) & (kPlaneBytes / 16 - 1));
+  return static_cast<uint32_t>(((4 * l + (k ^ ((l >> 1) & 3))) ^ digit_swizzle(d))
+                               & (kPlaneBytes / 16 - 1));
 }
 
 //: THE IMAGE'S TOP: a digit's largest value placed under 2^10, so a 32-list sum fits an fp16 accumulator.
 //: -- see docs/internals/carry/parts.md#maxima
 constexpr int kImageTop = 10;
 
-//: A DIGIT'S EXPONENT: the smallest `e` with the digit's largest |state| (its lists at their units) at most 2^e, over
-//: the 8 warps' posts at window `w`'s parity, at least `kImageTop - 127`.
+//: THE DIGITS' EXPONENTS from the keys at window `w`'s parity: lane `i`'s digit's (lane order), `(key + 0x7fffff) >>
+//: 23` the key's exponent field rounded up past a nonzero mantissa, plus the box's top less 127, at least `kImageTop -
+//: 127` -- the smallest `e` with the digit's largest |state| at most `2^e` -- recorded at `kExps` for the stores and
+//: the readers; the other parity's keys reset for the next window. -- see docs/internals/carry/parts.md#maxima
 template <class P>
-__device__ __forceinline__ int digit_exp(const uint8_t* smem, int w, int d) {
-  const int16_t* posts =
-      reinterpret_cast<const int16_t*>(smem + P::kMaxima) + (w & 1) * kWarps * kBoxDigits + d;
-  int e = kImageTop - 127;
-  static_for<kWarps>([&](auto W) { e = max(e, posts[W * kBoxDigits]); });
-  return e;
+__device__ __forceinline__ void post_exps(uint8_t* smem, int w, int top, int lane) {
+  int* const keys = reinterpret_cast<int*>(smem + P::kKeys);
+  const int key = keys[(w & 1) * kBoxDigits + lane];
+  keys[((w + 1) & 1) * kBoxDigits + lane] = INT_MIN;
+  reinterpret_cast<int*>(smem + P::kExps)[lane] =
+      max(((key + 0x7fffff) >> 23) + top - 127, kImageTop - 127);
+  __syncwarp();
+}
+
+//: digit `d`'s place in `kExps` (lane order: `16 M + 8 H + g` at `4 g + 2 M + H`)
+__host__ __device__ __forceinline__ constexpr int exp_slot(int d) { return 4 * (d & 7) + (d >> 3); }
+
+//: A LIST'S SCALE for a digit, `2^(a - e)` held to a normal float's exponents: the difference and the float's bits each
+//: one integer multiply-add (the FMA pipe; the bits' multiplier and bias `bits` loaded, so ptxas cannot fold them into
+//: an ALU shift), the two clamps on the ALU pipe.
+__device__ __forceinline__ float list_scale(int a, int e, uint2 bits) {
+  int x;
+  asm("mad.lo.s32 %0, %1, -1, %2;" : "=r"(x) : "r"(e), "r"(a));
+  x = min(max(x, -126), 127);
+  uint32_t f;
+  asm("mad.lo.u32 %0, %1, %2, %3;" : "=r"(f) : "r"(x), "r"(bits.x), "r"(bits.y));
+  return __uint_as_float(f);
 }
 
 //: A BATCH'S STORES, the hand-off: the warp's lists' rows of batches `lo .. hi - 1` (8 digits each) into the image at
-//: `image` (digit `d`'s plane `d & mask`), f16 at each digit's power of two, each list moved there from its unit
-//: (`2^(unit + kImageTop - e)`, held to a normal float's range: past it the f16 is zero or the list's value is not the
-//: digit's); `dexp` lane `d` digit `d`'s exponent (`digit_exp`). -- see docs/internals/carry/parts.md#store
+//: `image` (digit `d`'s plane `d & Mask`), f16 at each digit's power of two, each list moved there from its unit by
+//: `list_scale`; a lane's row of a list one 16-byte store at its held base and a compile-time offset.
+//: -- see docs/internals/carry/parts.md#store
 //: a lane's unit for list `w + 8 j` at residue `g` is its unit for list `w`, 32 units on: so a batch's stores take
-//: four bases a lane, a list an offset
+//: one base a lane, a list an offset
 constexpr bool units_step_by_list() {
   for (int w = 0; w < kWarps; ++w)
-    for (int g = 0; g < 8; ++g)
-      for (int j = 0; j < kBoxLists / kWarps; ++j)
-        if (unit_of(w + kWarps * j, 0, g) != unit_of(w, 0, g) + 32u * j) return false;
+    for (int k = 0; k < 4; ++k)
+      for (int g = 0; g < 8; ++g)
+        for (int j = 0; j < kBoxLists / kWarps; ++j)
+          if (unit_of(w + kWarps * j, k, g) != unit_of(w, k, g) + 32u * j) return false;
   return true;
 }
 
 static_assert(units_step_by_list(),
               "a list's image unit is its warp's first list's, 32 units a list on");
 
-template <class P>
+template <class P, uint32_t Mask>
 __device__ __forceinline__ void store_batches(const State<P>& st, uint8_t* smem,
-                                              ops::SmemAddr image, int lo, int hi, uint32_t mask,
-                                              int dexp, int warp, int lane) {
+                                              ops::SmemAddr image, int lo, int hi, int warp,
+                                              int lane) {
   const int g = lane >> 2, t = lane & 3;
-  //: the lane's unit base, opaque, so its terms are formed at each call rather than hoisted across the windows
-  uint32_t base;
-  asm volatile("mov.u32 %0, %1;" : "=r"(base) : "r"(unit_of(warp, 0, g)));
-  //: channel tile `n`'s chunk is the unit XORed by `n` (the image is 128-byte aligned, so that is its address's)
-  const uint32_t lane0 = image + 4u * t;
-  int u[P::kFoldLists];
-  list_units<P>(u, smem, warp);
-  static_for<P::kFoldMTiles>([&](auto M) {
+  //: the lane's base, opaque, so its terms are formed at each call rather than hoisted across the windows
+  uint32_t at;
+  asm volatile("mov.u32 %0, %1;"
+               : "=r"(at)
+               : "r"(image + 16u * unit_of(warp, t, g) + static_cast<uint32_t>(g) * kPlaneBytes));
+  int4 ex;
+  asm volatile("ld.shared.v4.s32 {%0, %1, %2, %3}, [%4];"
+               : "=r"(ex.x), "=r"(ex.y), "=r"(ex.z), "=r"(ex.w)
+               : "r"(ops::smem_addr(smem + P::kExps) + 16u * static_cast<uint32_t>(g))
+               : "memory");
+  const volatile uint32_t* const bp = reinterpret_cast<const volatile uint32_t*>(smem + P::kBits);
+  const uint2 bits = make_uint2(bp[0], bp[1]);
+  const int es[2][2] = {{ex.x, ex.y}, {ex.z, ex.w}};
+  int a[P::kFoldLists];
+  list_units<P>(a, smem, warp);
+  static_for<P::kFoldLists>([&](auto J) { a[J] += kImageTop; });
+  static_for<2>([&](auto M) {
     static_for<2>([&](auto H) {
       constexpr int b = 2 * M + H;
-      const int d = 16 * M + 8 * H + g;
-      const int e = __shfl_sync(0xffffffffu, dexp, d);
       if (b >= lo && b < hi) {
-        const uint32_t plane = (static_cast<uint32_t>(d) & mask) * kPlaneBytes;
         static_for<P::kFoldLists>([&](auto J) {
-          const float scale = pow2(min(max(u[J] + kImageTop - e, -126), 127));
+          const float scale = list_scale(a[J], es[M][H], bits);
+          uint32_t v[4];
           static_for<4>([&](auto N) {
             const __half2 h = __floats2half2_rn(st.acc[J][M][N][2 * H] * scale,
                                                 st.acc[J][M][N][2 * H + 1] * scale);
-            const uint32_t v = *reinterpret_cast<const uint32_t*>(&h);
-            const uint32_t at = lane0 + 16u * (base ^ static_cast<uint32_t>(N)) + plane
-                                + 512u * static_cast<uint32_t>(J);
-            asm volatile("st.shared.u32 [%0], %1;" ::"r"(at), "r"(v) : "memory");
+            v[N] = *reinterpret_cast<const uint32_t*>(&h);
           });
+          const uint32_t to = at + ((16u * M + 8u * H) & Mask) * kPlaneBytes + 512u * J;
+          asm volatile("st.shared.v4.u32 [%0], {%1, %2, %3, %4};" ::"r"(to), "r"(v[0]), "r"(v[1]),
+                       "r"(v[2]), "r"(v[3])
+                       : "memory");
         });
       }
     });
@@ -566,7 +622,7 @@ __device__ __forceinline__ ImageLane image_lane(int lane) {
 //: list half.
 __device__ __forceinline__ void state_in(uint32_t (&f)[16], ops::SmemAddr plane,
                                          const ImageLane& il, int d) {
-  const uint32_t x = 16u * (d & 7);
+  const uint32_t x = 16u * digit_swizzle(d);
 #pragma unroll
   for (int k = 0; k < 4; ++k) {
     uint32_t a[4];
@@ -716,7 +772,8 @@ __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* 
       uint32_t f[kStep][16];
       static_for<kStep>([&](auto Q) {
         d[Q] = warp + kWarps * (i + Q);
-        sx[Q] = reinterpret_cast<const int*>(smem + P::kExps)[d[Q]] - kImageTop - kCoefTop;
+        sx[Q] =
+            reinterpret_cast<const int*>(smem + P::kExps)[exp_slot(d[Q])] - kImageTop - kCoefTop;
         state_in(f[Q], image + (static_cast<uint32_t>(d[Q]) & mask) * kPlaneBytes, il, d[Q]);
       });
       if (rw.listed) {

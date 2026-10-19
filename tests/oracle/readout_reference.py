@@ -100,18 +100,20 @@ def readout(routes, values, list_exp, level_s: int, window: int, unit: torch.Ten
 
 
 def unpack_num(num: torch.Tensor, channels: int = 32) -> torch.Tensor:
-    """``[BH, T, C]`` int64: the carry's ``num`` (``[BH, T, C / 2]`` int32, a word a channel pair ``(c, c + 8)`` of
-    each 16-channel half of a box, ``hi x 2^16 + lo``) as each channel's integer."""
+    """``[BH, T, C]`` int64: the carry's ``num`` (``[BH, T, C / 2]`` int32, ``hi x 2^16 + lo``) as each channel's
+    integer. A box's word ``8 m + g`` pairs channels ``(c, c + 2)``, ``c = 8 (g >> 1) + 4 m + (g & 1)``: the image's
+    16-byte unit holds a writer lane's channels (``docs/internals/carry/parts.md#image``)."""
     BH, T, words = num.shape
     v = num.long()
     lo = ((v & 0xFFFF) ^ 0x8000) - 0x8000
     hi = (v - lo) >> 16
     k = np.arange(words)
     box, kk = k // (channels // 2), k % (channels // 2)
-    channel = channels * box + 16 * (kk // 8) + kk % 8
+    m, g = kk // 8, kk % 8
+    channel = channels * box + 8 * (g >> 1) + 4 * m + (g & 1)
     out = torch.zeros(BH, T, 2 * words, dtype=torch.int64, device=num.device)
     out[..., torch.as_tensor(channel, device=num.device)] = lo
-    out[..., torch.as_tensor(channel + 8, device=num.device)] = hi
+    out[..., torch.as_tensor(channel + 2, device=num.device)] = hi
     return out
 
 

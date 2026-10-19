@@ -73,36 +73,47 @@ warp waits on another for them.
 
 The hand-off's first step (the f16 image at a power of two a digit). A lane's registers hold four digits of each
 of its warp's lists, each list in its own running unit ([`fold.md#units`](fold.md#units)), so the lists meet on one
-scale by exponent: `post_maxima` takes, a digit, each list's largest |accumulator|'s `ceil_exp` plus the list's unit,
-the largest over the lists (exactly the exponent of the digit's largest |state| on one scale, whatever the units'
-spread), joins the digit row's four lanes by two shuffles and posts it at the window's parity, an int16 (128 FMNMX, 16
-exponent steps and 8 SHFL a lane a window): a warp that runs a window ahead posts into the other parity while a slower
-one still reads these. `digit_exp` is a digit's exponent over the 8 warps' posts: the smallest `e` with every value at
-most `2^e`,
-at least `kImageTop - 127`. The image holds a digit at `2^(kImageTop - e)`: its largest value at most 2^10, so a
-32-list sum of image times read row (each at most 1) stays within 2^15, inside an fp16 accumulator, and one placement
-serves the fp32- and fp16-accumulate readouts. Measured (2026-10-12, the image's quality model, per token against fp64
-on the flagship cells): the placement at 2^10 and at 2^15 give the same error, as does a block prescale; a leaf keeps 11
-bits down to 24 octaves under its digit's largest.
+scale through an integer KEY: `post_keys` takes, a digit row, each list's largest |accumulator| (seven FMNMX from the
+row's eight values), its fp32 bits plus (the list's unit less the box's top unit, `box_top`) x 2^23 -- the exponent
+field shifted, the mantissa kept, a zero `INT_MIN` -- so the largest over the lists is one integer max a list; the
+row's four lanes are joined by two shuffles and each lane posts one of its quad's four rows by one shared atomic max,
+at the window's parity in lane order (digit `16 M + 8 H + g` at `4 g + 2 M + H`). A key is exact while the live units
+span under `kKeySpan` (a live unit lies between `kUnitMin` and 128; a never-live list's state is zero). After the
+barrier `post_exps` turns lane `i`'s key into its digit's exponent: `(key + 0x7fffff) >> 23`, the exponent field
+rounded up past a nonzero mantissa, plus the top less 127 -- exactly `ceil_exp` of the digit's largest |state| on one
+scale -- at least `kImageTop - 127`, recorded at `kExps` in lane order (digit `d` at `exp_slot(d)`) for the stores and
+the readers, and the other parity's keys reset for the next window (a warp a window ahead posts into the other
+parity while a slower one still reads these). Every warp records the same values. The image holds a digit at
+`2^(kImageTop - e)`: its largest value at most 2^10, so a 32-list sum of image times read row (each at most 1) stays
+within 2^15, inside an fp16 accumulator, and one placement serves the fp32- and fp16-accumulate readouts. Measured
+(2026-10-12, the image's quality model, per token against fp64 on the flagship cells): the placement at 2^10 and at
+2^15 give the same error, as does a block prescale; a leaf keeps 11 bits down to 24 octaves under its digit's
+largest. The form was labbed first ([`docs/lab/handoff.md`](../../lab/handoff.md), form 4).
 
 <a id="image"></a>
 ## The image
 
 A digit's plane is its 32 lists x 32 channels at f16, 2 KB, its 16-byte units at `unit_of(l, k, d)`: the list's four
-chunks, the chunk XORed by the list's second and third bits, the unit XORed by the digit's residue. A part's planes
-hold a digit at plane `d & 31` (the whole image) or `d & 7` (a ring's batch). The fold's stores (a lane a list row's 4-byte word) and the readout's `ldmatrix.trans`
-(8 lists' 16-byte chunks) are both conflict-free on it.
+chunks, the chunk XORed by the list's second and third bits, the unit XORed by `digit_swizzle(d)` (the digit's low bit
+moved to bit 2). Chunk `k` holds a writer lane's channels, `8 n + 2 k + b` at position `2 n + b` -- the four channel
+tiles' pairs of the lane `k` of a fold quad -- so a lane's row of a list is one 16-byte store. A part's planes hold a
+digit at plane `d & 31` (the whole image) or `d & 15` (a half). The fold's stores (a quarter-warp two digits' four
+chunks: eight bank groups) and the readout's `ldmatrix.trans` (8 lists' 16-byte chunks) are both conflict-free on it.
+The readout's m-tile of chunks `2 m, 2 m + 1` then pairs channels `(c, c + 2)` in an output word, `c = 8 (g >> 1) + 4 m
++ (g & 1)` for its row `g` ([`#drain`](#drain)).
 
 <a id="store"></a>
 ## A batch's stores
 
-`store_batches<P>`: every warp stores its 4 lists' rows of the batches' digits (a batch half an m-tile of each list:
-8 digits), each value times `2^(u + kImageTop - e)` for its list's unit `u` and its digit's exponent `e`, packed f16
-(16 stores a lane a batch). A lane's unit for list `w + 8 j` is its unit for list `w`, 32 units on (`units_step_by_list`), and a channel
-tile's chunk its unit XORed by the tile (the image 128-byte aligned), so a lane's stores are four bases and a list
-offset; the factor is held to a normal float's range (below it the f16 is zero; above it the list's accumulators are
-under 2^-117 of its unit). Warp 0 records the batches' exponents for the readers (`kExps`). Each batch's code is
-compiled and selected by a uniform test: the state's registers are indexed by the batch.
+`store_batches<P, Mask>`: every warp stores its 4 lists' rows of the batches' digits (a batch half an m-tile of each
+list: 8 digits), each value times `2^(u + kImageTop - e)` for its list's unit `u` and its digit's exponent `e`, packed
+f16, a lane's row of a list one 16-byte store (4 a lane a batch). A lane's unit for list `w + 8 j` is its unit for list
+`w`, 32 units on (`units_step_by_list`), so a lane's stores are one held base and compile-time offsets (`Mask` picks
+the plane); its four exponents are one 16-byte load from `kExps`. The factor (`list_scale`) is two integer
+multiply-adds on the FMA pipe and two clamps, its multiplier and bias loaded (`kBits`) so ptxas cannot turn them into
+ALU shifts; it is held to a normal float's range (below it the f16 is zero; above it the list's accumulators are under
+2^-117 of its unit). Each batch's code is compiled and selected by a uniform test: the state's registers are indexed by
+the batch.
 
 <a id="pair"></a>
 ## The exact pair
@@ -123,7 +134,7 @@ slot within half its bound in fp32 (~4e-4 relative, the image's rounding) and a 
 arm's branch waits on its fold's reference (the fold, build order 5).
 
 `read_chunk`, a warp's: each of its digits in the batches, its state fragments from its image plane (the A operand: 32
-channels x 32 lists, four `ldmatrix.trans`) and its exponent, then its tiles over the chunk. A TILE is 8 tokens on N: their read
+channels x 32 lists, four `ldmatrix.trans`) and its exponent (`exp_slot`), then its tiles over the chunk. A TILE is 8 tokens on N: their read
 rows by one `ldmatrix.x4` (B: 32 lists x 8 tokens), four MMAs accumulating in the device's form (fp16 on GeForce, fp32
 where fp32 accumulate runs at full rate:
 [`carry_api.md#carry-readout-accumulate`](carry_api.md#carry-readout-accumulate); the fp16 accumulator converted to fp32
@@ -163,7 +174,8 @@ query head and token
 16th slot -- 16 slots on, its panel cell is 1 KB on, the swizzle's bits unchanged, so its cells are one address and an
 add -- and takes two slots a step, loaded before their adds; an add is predicated on its word, so a gap slot's zero adds nothing and
 the step does not branch. CTAs join only here (R22: independent
-units, joined by atomics). The panel's word pairs channels (c, c + 8); the output's format follows it. At nl64k-alt-k4
+units, joined by atomics). The panel's word `8 m + g` pairs channels `(c, c + 2)`, `c = 8 (g >> 1) + 4 m + (g & 1)`
+([`#image`](#image)); the output's format follows it (`tests/oracle/readout_reference.py`'s `unpack_num`). At nl64k-alt-k4
 the drain is ~2.2K cycles a warp-window of its own, near the chip's global-atomic rate (~0.15 chip clocks a warp
 request, ~1.3K cycles a window when every SM drains at once); taken in slices between the fold's lists it serialized
 with them rather than overlapping (2026-10-13).

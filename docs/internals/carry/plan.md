@@ -13,8 +13,8 @@ alignment:
 - both sides' counts; the write side's union tokens (1 KB) and its group's boundaries in prefix form (528 bytes), two
   windows' each by parity: a window's are copied while the window before it is still read;
 - the write lists' exponent pairs, by parity;
-- the unit book (a list's running unit, `fold.md#units`) and the window's scale a list (`fold.md#units`), the digit
-  maxima (each warp's per digit, by parity) and the digit exponents (`parts.md#maxima`);
+- the unit book (a list's running unit, `fold.md#units`) and the window's scale a list (`fold.md#units`), the
+  digit keys (by parity), the digit exponents in lane order and the scales' bits (`parts.md#maxima`);
 - the phase clock's rows; the barriers (`#barriers`);
 - the CTA's addresses (`Addr`, 256 bytes reserved: `parts.md#place`).
 

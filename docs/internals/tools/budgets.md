@@ -100,4 +100,5 @@ the entry's last column.
 | `color_union` serial (a box-window) | ~45 a token + 1.15K | ~64 a token + 2.6K | `REDUX` moves, uniform-index counters, `BRA.DIV`; the fixed part itemized |
 | `color_union` batched (a box-window) | 1.8K / 3.7K / 1.1K | 3.8K / 7.8K / 1.6K | the warp's longest lane, swizzled addresses, both-sided selects, conditional stores |
 | `handoff` 16-byte form, integer/address (a CTA-window) | 960 | 1,085 -> budget 1,088 | each scale's float bits are one instruction (16 a warp), priced first as address forms a held base removes |
+| the carry's hand-off at nl64k-alt-k4 (a CTA-window: keys, exponents, stores) | 4,360 | 4,431 | the exponents 10 -> 14 a warp: the two parities' addresses, the warp's sync |
 | the carry at nl64k-alt-k4 (a warp-window) | ~2,020 | 3,884 | open: every copy's token, source and swizzle re-derived; plan and window fields re-read at each use ([`carry_kernel.md#budget`](../carry/carry_kernel.md#budget)) |

@@ -96,6 +96,11 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     static_for<kBarCount>([&](auto b) { ops::mbar_init(flow.at(b), kThreads); });
   if (static_cast<int>(threadIdx.x) < kBoxLists)
     reinterpret_cast<UnitBook*>(smem + P::kBook)[threadIdx.x] = UnitBook{kUnitNone, 0.0f};
+  if (static_cast<int>(threadIdx.x) < 2 * kBoxDigits)
+    reinterpret_cast<int*>(smem + P::kKeys)[threadIdx.x] = INT_MIN;
+  //: the scales' bits' multiplier and bias (`list_scale`), loaded at each use
+  if (threadIdx.x == 0)
+    *reinterpret_cast<uint2*>(smem + P::kBits) = make_uint2(1u << 23, 127u << 23);
   if (threadIdx.x == 0) addr_in(*reinterpret_cast<Addr*>(smem + P::kAddr), p, place_of(p));
   ops::rendezvous();
 
@@ -138,8 +143,6 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       static_for<4>([&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] = 0.f; }); });
     });
   });
-  //: a lane's digit exponent, every warp's own record of the window's (the same values), read at each use
-  const auto dexp = [&] { return reinterpret_cast<const volatile int*>(smem + P::kExps)[lid()]; };
   stage_window<P>(p, here(), 0, smem);
   flow.staged();
   flow.wait_staged();
@@ -150,11 +153,13 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   for (int w = 0; w < p.windows; ++w) {
     if (w > 0) flow.wait_staged();
     clock.lap(kPhaseWait);
-    //: THE DIGIT MAXIMA of the state before the window's writes, every warp's posted, and each digit's exponent (lane
-    //: `d` digit `d`'s), recorded by every warp for its stores and the readers
-    post_maxima<P>(st, smem, w, wid(), lid());
-    ops::rendezvous();
-    reinterpret_cast<volatile int*>(smem + P::kExps)[lid()] = digit_exp<P>(smem, w, lid());
+    //: THE DIGIT MAXIMA of the state before the window's writes, every warp's keys posted, and each digit's exponent
+    //: recorded by every warp (the same values) for its stores and the readers
+    {
+      const int top = post_keys<P>(st, smem, w, wid(), lid());
+      ops::rendezvous();
+      post_exps<P>(smem, w, top, lid());
+    }
     clock.lap(kPhaseMaxima);
     //: THE STORE: the next window's inputs staged; a whole image stored
     if (w + 1 < p.windows) {
@@ -162,7 +167,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       flow.staged();
     }
     if (stream_of<P>(p, smem, w).image == kImageWhole)
-      store_batches<P>(st, smem, area, 0, kBatches, kBoxDigits - 1, dexp(), wid(), lid());
+      store_batches<P, kBoxDigits - 1>(st, smem, area, 0, kBatches, wid(), lid());
     clock.lap(kPhaseStore);
 
     //: THE WINDOW'S STEPS: one an entry, then one that only retires the last; a window of no entries fills the next
@@ -228,8 +233,8 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
 #pragma unroll 1
             for (int half = 0; half < 2; ++half) {
               if (half > 0) ops::rendezvous();
-              store_batches<P>(st, smem, area, 2 * half, 2 * half + 2, 2 * kBatchPlanes - 1, dexp(),
-                               wid(), lid());
+              store_batches<P, 2 * kBatchPlanes - 1>(st, smem, area, 2 * half, 2 * half + 2, wid(),
+                                                     lid());
               ops::rendezvous();
               clock.lap(kPhaseStore);
               if (half == 0) flow.wait_slot(flow.slot());
