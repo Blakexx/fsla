@@ -176,7 +176,8 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
 #pragma unroll 1
     do {
       //: THE STEP, by its word: entry `t`'s place and whether filled ahead, the next filled now, the retired read's
-      //: drain's rendezvous
+      //: drain's rendezvous; the window's stream read once for the step's head (its retired drain and its fills), the
+      //: work's own reads as before, so nothing of the head is held into the work
       const int t = flow.step();
       const Stream s = stream_of<P>(p, smem, w);
       const bool work = t < s.n, cross = t + 1 >= s.n && (work || t == 0);
@@ -189,7 +190,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       //: ENTRY `t - 1` RETIRED: every warp done with it; a read chunk's panel drained, and every warp done draining
       //: where a fill reuses its place
       if (drained) {
-        const Entry d = entry_at(stream_of<P>(p, smem, w), t - 1);
+        const Entry d = entry_at(s, t - 1);
         drain<P>(p, smem, rw(w), here(), w, d.first(), d.slots(),
                  area
                      + static_cast<uint32_t>(step_of<P>(p, smem, w, t - 1).at()
@@ -198,15 +199,16 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         if (sw.reuse()) ops::rendezvous();
         clock.lap(kPhaseWait);
       }
-      //: THE FILLS: entry `t` unless filled ahead, then the next where planned
+      //: THE FILLS: entry `t` unless filled ahead, then the next where planned (at the window's last entry the next
+      //: window's first, its stream read for it); one fill site, so its parts are inlined once
 #pragma unroll 1
       for (int f = 0; f < 2; ++f) {
-        const StepWord sf = step_of<P>(p, smem, w, t);
-        if (f == 0 ? work && !sf.ahead() : sf.next()) {
+        if (f == 0 ? work && !sw.ahead() : sw.next()) {
           const bool other = f == 1 && cross;
           const int fw = other ? w + 1 : w, ft = f == 0 ? t : other ? 0 : t + 1;
-          fill_entry(fw, entry_at(stream_of<P>(p, smem, fw), ft),
-                     flow.slot() ^ (f == 1 && work ? 1 : 0), step_of<P>(p, smem, fw, ft).at());
+          fill_entry(fw, entry_at(other ? stream_of<P>(p, smem, fw) : s, ft),
+                     flow.slot() ^ (f == 1 && work ? 1 : 0),
+                     f == 0 ? sw.at() : step_of<P>(p, smem, fw, ft).at());
         }
       }
       clock.lap(kPhaseFill);
