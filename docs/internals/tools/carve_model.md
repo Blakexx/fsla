@@ -127,5 +127,29 @@ carve and the 64-channel box were dropped on measured grounds (their fold shared
 warps each reloading the shared operand; the box's halved lists doubling the readout's partials), and pricing them here
 needs their readout and hand-off, which no lab has measured.
 
-OWED: the alternative carves' prices (each step's primitives by its warp tile, checked against the readout and fold
+<a id="cards"></a>
+## The forms on each card, the global path in (`rank-cards`)
+
+Every form at a cell at its floors on sm_86 and sm_80, a 512 tokens: `in turn` the phases' binding floors summed, the
+global path a floor beside them; `overlapped` the largest of the window's totals -- issue, shared wavefronts, the
+tensor pipe at the card's MMA rates, the SM's global path ([`pipes.md`](pipes.md): L2 lines and atomic requests at
+`common/hardware.json`'s prices, every SM busy). A form's global path: a resident side its union's rows once and its
+staged entries; a streamed listed side a row an entry (pads not copied) and its records (64 bytes an 8-entry read
+stage, 96 a fold step); the drain a request a slot. A streamed side's producer (20 warp instructions a read stage, 27
+a fold step: the staged labs) and every copy's write (0.5 shared-pipe cycles a 128 bytes) join the prices. sm_80's L2
+price is announced from sm_86, so it is ranked at that and at half (`L2_BRACKET`).
+
+At today's prices (2026-10-18; the carry 2-3x its instruction floor) issue binds every sparse form and the ranking
+stands: nl64k-alt-k4 a CTA-window streamed W 512 7,424 against resident 8,674 on both cards, the global path 4,165
+(430 lines, 216 atomics) and 3,527 (340 lines); flagship-alt-k16 streamed W 512 ring 4 global-bound at 14,187 (1,663
+lines against the resident form's 751) against resident 19,633 (issue); flagship-cohort-k4 streamed W 1024 5,744
+against resident 8,062; nl64k-dense tensor-bound on sm_86, issue on sm_80, alike in every form. The global path
+binds where the stream refetches most -- a token's row once for each digit or list that reads it (alt-k16's read side
+~2.7 a union token) -- and at the design floor (the staged labs' forms, the 16-byte hand-off, the drain's best form,
+a 231-instruction warp-window of glue: at alt-k4 issue ~3.3K, shared ~3.9K) it is the streamed form's largest pipe
+on both cards. Its levers: fewer bytes a union token -- groups of digits fetching a token's row once (the grouped
+readout's unified form fetched ~30% fewer L2 lines at m 2 and 4 than at m 1), the stream or the union staged chosen by
+the planner per side and window from exact counts -- and sm_80's own L2 rate.
+
+OWED: the alternative carves' prices, sm_80's L2 rate (the rental's first measurement), (each step's primitives by its warp tile, checked against the readout and fold
 labs), registers, sm_80's calibration (the A100), and labs for the prices it lacks.

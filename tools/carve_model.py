@@ -336,6 +336,10 @@ class Events:
     staged_entries: float = 0.0  #: entries staged into chunks (a resident listed side's)
     staged_chunks: float = 0.0   #: chunks whose rows or entries are staged (every side's but a streamed listed one's)
     drained: float = 0.0        #: panel slots drained
+    read_entries: float = 0.0   #: a listed side's entries (a streamed side fetches a row each)
+    fold_entries: float = 0.0
+    read_stages: float = 0.0    #: a listed read side's 8-entry stages, a digit's entries rounded up
+    fold_stages: float = 0.0    #: a listed fold side's steps (a 16- or 8-token step a stage)
     steps: float = 0.0          #: the window's steps (entries + 1)
     read_imbalance: float = 1.0  #: the slowest warp's readout tile-steps over the mean warp's, each window
     fold_imbalance: float = 1.0  #: the same for the fold's MMA pipe time
@@ -362,6 +366,9 @@ def events_today(s: CellStats) -> Events:
             n = rd.in_chunk(first, slots)
             ev.read_rows += 0 if (s.ring and rd.listed) else slots
             ev.staged_entries += n.sum() if (rd.listed and not s.ring) else 0
+            if rd.listed:
+                ev.read_entries += n.sum()
+                ev.read_stages += sum(-(-int(round(x)) // 8) for x in n)
             ev.drained += slots
             for w in range(8):
                 for pair in ((w, w + 8), (w + 16, w + 24)):
@@ -383,6 +390,8 @@ def events_today(s: CellStats) -> Events:
             n = wr.in_chunk(first, slots)
             ev.fold_rows += 0 if (s.ring and wr.listed) else slots
             ev.staged_entries += n.sum() if (wr.listed and not s.ring) else 0
+            if wr.listed:
+                ev.fold_entries += n.sum()
             for l in range(32):
                 a, b = _steps(int(n[l]))
                 ev.fold_lists += 1
@@ -390,6 +399,7 @@ def events_today(s: CellStats) -> Events:
                 ev.fold_steps8 += b
                 ev.fold_mmas16 += 8 * a
                 ev.fold_mmas8 += 8 * b
+                ev.fold_stages += (a + b) if wr.listed else 0
                 fwarp[l % 8] += 8 * a * PIPE["HMMA.16816.F32"] + 8 * b * PIPE["HMMA.1688.F32"]
         read_max += rwarp.max()
         read_mean += rwarp.mean()
@@ -599,6 +609,88 @@ class Model:
         return cyc
 
 
+#: THE CARDS the floors are priced on: each MMA's pipe cycles a scheduler (the readout fp16-accumulate, the fold fp32),
+#: and the SM's global path (`common/hardware.json`'s `global`: an L2 line, an atomic request, every SM busy; sm_80's
+#: announced from sm_86 -- `L2_BRACKET` prices its line at half as well, the A100's L2 serving more an SM)
+CARD_PIPE = {"sm_86": PIPE, "sm_80": {"HMMA.16816.F32": 8.0, "HMMA.16816.F16": 8.0, "HMMA.1688.F32": 4.0,
+                                      "HMMA.1688.F16": 4.0}}
+L2_BRACKET = 0.5
+#: a staged entry's bytes (a resident side's lists), a streamed side's record bytes a stage (read: 8 entry words of 8
+#: bytes; fold: a 16-row step's 96)
+ENTRY_BYTES, READ_RECORD, FOLD_RECORD = 4, 64, 96
+#: a streamed side's producer, warp instructions a stage (the staged labs: `read_stream`'s rest tile 20, `row_stream`'s
+#: 16-token step 27), and a copy's write into shared memory, shared-pipe cycles a 128 bytes (`smem_rates`)
+PRODUCER = {"readout": 20, "fold": 27}
+COPY_WRITE = 0.5
+
+
+def global_path(stats: CellStats, ev: Events) -> tuple[float, float]:
+    """A CTA-window's global path: (128-byte lines from L2, atomic requests). A resident side reads its union's rows
+    once and its staged entries; a streamed listed side a row an entry (a pad is not copied) and its stage records; the
+    drain a request a drained slot (a slot's half line at d_v 64)."""
+    lines = (ev.read_rows * stats.read_row + ev.fold_rows * stats.write_row + ev.staged_entries * ENTRY_BYTES) / 128
+    if stats.ring and stats.read[0].listed:
+        lines += (ev.read_entries * 64 + ev.read_stages * READ_RECORD) / 128
+    if stats.ring and stats.write[0].listed:
+        lines += (ev.fold_entries * 128 + ev.fold_stages * FOLD_RECORD) / 128
+    return lines, ev.drained
+
+
+def floors_on(model: Model, stats: CellStats, card: str, l2_scale: float = 1.0) -> dict[str, float]:
+    """A form's window at its floors on `card`, a CTA-window: `in_turn` the phases' binding floors summed (their
+    instructions and wavefronts from the calibration prices, their MMAs at the card's rates) with the global path a
+    floor beside them; `overlapped` the largest of the window's totals -- issue, shared wavefronts, the tensor pipe,
+    the global path -- every phase overlapped. A streamed side's producer (`PRODUCER` a stage) and every copy's write
+    (`COPY_WRITE`) are added to the prices; the streams' bytes are the global path."""
+    sys.path.insert(0, str(ROOT))
+    from measure import hardware
+
+    side = "listed" if stats.read[0].listed else "dense"
+    ev = events_today(stats)
+    pred = {k: list(v) for k, v in predict(model.prices[side], ev).items()}
+    streamed_read, streamed_fold = stats.ring and stats.read[0].listed, stats.ring and stats.write[0].listed
+    if streamed_read:
+        pred["readout"][0] += PRODUCER["readout"] * ev.read_stages
+        pred["readout"][1] += COPY_WRITE * (ev.read_entries * 64 + ev.read_stages * READ_RECORD) / 128
+    if streamed_fold:
+        pred["fold"][0] += PRODUCER["fold"] * ev.fold_stages
+        pred["fold"][1] += COPY_WRITE * (ev.fold_entries * 128 + ev.fold_stages * FOLD_RECORD) / 128
+    pred.setdefault("fills", [0.0, 0.0])[1] += COPY_WRITE * (ev.read_rows * stats.read_row
+                                                              + ev.fold_rows * stats.write_row) / 128
+    pipe = CARD_PIPE[card]
+    tensor = {"readout": ev.read_mmas * pipe["HMMA.16816.F16"],
+              "fold": ev.fold_mmas16 * pipe["HMMA.16816.F32"] + ev.fold_mmas8 * pipe["HMMA.1688.F32"]}
+    rates = hardware.resolve(arch=card, product="rtx3080ti" if card == "sm_86" else None)
+    lines, requests = global_path(stats, ev)
+    glob = lines * rates["global.l2_line"].cycles * l2_scale + requests * rates["global.red_request"].cycles
+    in_turn = sum(max(floors(i, w, tensor.get(p, 0.0)).values()) for p, (i, w) in pred.items())
+    totals = {"issue": sum(i for i, _ in pred.values()) / SCHEDULERS, "shared": sum(w for _, w in pred.values()),
+              "tensor": sum(tensor.values()) / SCHEDULERS, "global": glob}
+    return {"in_turn": max(in_turn, glob), "overlapped": max(totals.values()), "global": glob, "lines": lines,
+            "requests": requests, **{f"total_{k}": v for k, v in totals.items()}}
+
+
+def rank_cards(model: Model, base: CellStats) -> list[str]:
+    """THE FORMS RANKED WITH THE GLOBAL PATH, on each card at the floors: resident and streamed (each read ring), at
+    W 512 and 1024, a 512 tokens; each line its phases-in-turn floor, its overlapped floor (the binding total named)
+    and its global path."""
+    out = []
+    for card, scales in (("sm_86", (1.0,)), ("sm_80", (1.0, L2_BRACKET))):
+        for scale in scales:
+            rows = []
+            for form, stats in (("resident", base), *((f"streamed, ring {d}", streamed(base, d)) for d in READ_RING)):
+                for k in (1, 2):
+                    f = floors_on(model, merged(stats, k), card, scale)
+                    bind = max(("issue", "shared", "tensor", "global"), key=lambda x: f[f"total_{x}"])
+                    rows.append((f["overlapped"] / k, f"{base.name:20s} {card} L2 x{scale:.1f} {form:18s} W {WINDOW * k:4d}: "
+                                 f"in turn {f['in_turn'] / k:7,.0f}  overlapped {f['overlapped'] / k:7,.0f} ({bind})  "
+                                 f"global {f['global'] / k:6,.0f} ({f['lines'] / k:5,.0f} lines, "
+                                 f"{f['requests'] / k:4,.0f} atomics)  tensor {f['total_tensor'] / k:6,.0f}  "
+                                 f"shared {f['total_shared'] / k:6,.0f}  issue {f['total_issue'] / k:6,.0f}"))
+            out += [line for _, line in sorted(rows)]
+    return out
+
+
 def rank(model: Model, base: CellStats) -> list[str]:
     """THE FORMS RANKED on this card at a cell: each -- resident, or streamed at each read ring -- at W 512 and 1024,
     best first, its cycles a 512 tokens against today's at the calibration cells' efficiencies, and with every phase at
@@ -692,6 +784,9 @@ def main() -> int:
     p.add_argument("cells", nargs="+")
     p.add_argument("--k", type=int, nargs="+", default=[1, 2])
     p.add_argument("--ledgers", type=Path, required=True)
+    p = sub.add_parser("rank-cards", help="every form on cells at its floors on sm_86 and sm_80, the global path in")
+    p.add_argument("cells", nargs="+")
+    p.add_argument("--ledgers", type=Path, required=True)
     p = sub.add_parser("rank", help="every form on cells, best first: its cycles a 512 tokens at the calibration cells' "
                                     "efficiencies and with every phase at its floor")
     p.add_argument("cells", nargs="+")
@@ -734,6 +829,10 @@ def main() -> int:
                               if form_k.ring else "")
                     print(f"{name:20s} {form:24s} W {WINDOW * k:5d}: {tot:8.0f} a 512 tokens ({tot / ref:.2f}x)  "
                           + " ".join(f"{p} {v / k:.0f}" for p, v in sorted(cyc.items())) + beside)
+    elif a.cmd == "rank-cards":
+        model = Model(a.ledgers)
+        for name in a.cells:
+            print("\n".join(rank_cards(model, cell_stats(name))))
     elif a.cmd == "rank":
         model = Model(a.ledgers)
         for name in a.cells:
