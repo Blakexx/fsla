@@ -281,6 +281,50 @@ __device__ __forceinline__ int tokens_before(const uint32_t (&w)[2], int s, int 
   return n;
 }
 
+//: A FOLD RECORD'S PLACES in segment `seg`: stage `stage`'s coefficient `q` in its record, and its token `q` in the
+//: token run of the stage `kFoldRing` before (the ring's prologue for a first stage). -- see
+//: docs/internals/facts/facts.md#records
+__device__ __forceinline__ uint8_t* record_coef(uint8_t* seg, int stage, int q) {
+  return seg + carry::kSegRecords + stage * carry::kRecordBytes + carry::coef_at(q);
+}
+
+__device__ __forceinline__ void record_token(uint8_t* seg, int stage, int q, uint32_t token) {
+  uint8_t* const run =
+      stage >= carry::kFoldRing
+          ? seg + carry::kSegRecords + (stage - carry::kFoldRing) * carry::kRecordBytes + 32
+          : seg + carry::kSegHeader + stage * carry::kTokenRun;
+  *reinterpret_cast<uint32_t*>(run + carry::token_at(q)) = token;
+}
+
+//: THE WARP'S RECORDS, after its walk: each of its lists in turn, 32 entries a pass, entry `e` lane `e % 32`'s -- read
+//: back from the list's entries (the warp's own, written before the warp's sync) and stored at its stage's places, so
+//: a store meets a stage's run of coefficients and tokens; past the list's entries to its last stage's end, pads
+//: (coefficient 0, `kPadToken`). `entries` is list 0's, a list `8 kListCap` on.
+//: -- see docs/internals/facts/facts.md#records
+__device__ __forceinline__ void records_out(const Unit& x, uint8_t* seg, const uint2* entries,
+                                            int n, int before, int lane) {
+  const int window_base = kWindowTokens * x.window;
+#pragma unroll
+  for (int jj = 0; jj < 4; ++jj) {
+    const int nj = __shfl_sync(0xffffffffu, n, 8 * jj),
+              bj = __shfl_sync(0xffffffffu, before, 8 * jj);
+    const int k16 = carry::steps16(nj), end = 16 * carry::stages_of(nj);
+    const uint2* const ent = entries + static_cast<int64_t>(jj) * 8 * kListCap;
+#pragma unroll 1
+    for (int e0 = 0; e0 < end; e0 += 32) {
+      const int e = e0 + lane;
+      if (e < end) {
+        const bool live = e < nj, full = e < 16 * k16;
+        const uint2 v = live ? ent[e] : make_uint2(0u, 0u);
+        const int stage = bj + (full ? e >> 4 : k16), q = full ? e & 15 : e - 16 * k16;
+        *reinterpret_cast<uint16_t*>(record_coef(seg, stage, q)) =
+            static_cast<uint16_t>(live ? v.y & 0xffffu : 0u);
+        record_token(seg, stage, q, live ? window_base + (v.x >> 16) : carry::kPadToken);
+      }
+    }
+  }
+}
+
 //: THE LISTS of query head `j`'s rows, a warp's 4 lists `w + 8 j`, 8 lanes a list, lane `s` its words `2s`, `2s + 1`:
 //: each lane's tokens before each of the head's boundaries' bounds, summed over the list's lanes into its boundaries
 //: past `placed` (the list's entries in the heads before) and scanned into the lane's first place; on the write side a
@@ -370,6 +414,27 @@ __device__ __forceinline__ void lists_out(const FactsParams& p, const Unit& x, u
                          | static_cast<uint32_t>(static_cast<uint16_t>(kv)) << 16;
   }
 
+  //: the write side's segment: the list's stages by the fold's step rule, the warp's lists' stages before it and in
+  //: all (its header)
+  const int n = kWriteSide && listed ? head_total : 0, k16 = carry::steps16(n);
+  int before = 0;
+  uint8_t* seg = nullptr;
+  if constexpr (kWriteSide) {
+    int total = 0;
+#pragma unroll
+    for (int jj = 0; jj < 4; ++jj) {
+      const int sj = __shfl_sync(0xffffffffu, carry::stages_of(n), 8 * jj);
+      before += jj < dl ? sj : 0;
+      total += sj;
+    }
+    const int groups = (width + kGroupDigits - 1) / kGroupDigits;
+    seg = out.records
+          + (((static_cast<int64_t>(x.bh) * p.windows + x.window) * groups + x.group) * kFactsWarps
+             + warp)
+                * carry::kSegBytes;
+    if (lane == 0) *reinterpret_cast<int*>(seg) = total;
+  }
+
   //: the entries: the lane's `i`-th at its first place plus `i`
   const int row = p.read_row;
   int pos = first;
@@ -390,7 +455,7 @@ __device__ __forceinline__ void lists_out(const FactsParams& p, const Unit& x, u
             const float2 col = cols[t];
             const uint32_t cv = __half_as_ushort(__float2half_rn(b * col.y * sv));
             const uint32_t cm = __half_as_ushort(__float2half_rn(b * col.x * sm));
-            e = make_uint2(sl, cv | cm << 16);
+            e = make_uint2(sl | static_cast<uint32_t>(t) << 16, cv | cm << 16);
           } else {
             const uint32_t coef = __half_as_ushort(__float2half_rn(b * (1.0f / 256.0f)));
             e = make_uint2((sl * (row / 16) + carry::pool_chunk(row, sl, 0u))
@@ -401,6 +466,10 @@ __device__ __forceinline__ void lists_out(const FactsParams& p, const Unit& x, u
           ++pos;
         }
       } while (__any_sync(0xffffffffu, xw != 0u));
+  }
+  if constexpr (kWriteSide) {
+    __syncwarp();
+    records_out(x, seg, entries - static_cast<int64_t>(dl) * 8 * kListCap, n, before, lane);
   }
 }
 
@@ -706,12 +775,13 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   p.gains16 = static_cast<uint32_t*>(exact(gains16, Dtype::Half, {B * H, T, 2}, "gains16"));
   p.gains_exp =
       static_cast<int16_t*>(exact(gains_exp, Dtype::Short, {B * H, p.windows, 2}, "gains_exp"));
-  //: THE LISTS OUT, a side's at its list level: entries, boundaries, the union by slot, its extent
+  //: THE LISTS OUT, a side's at its list level: entries, boundaries, the union by slot, its extent, the write side's
+  //: stage records
   const std::vector<Tensor>* lists[kSides] = {&read_lists, &write_lists};
   for (int side = 0; side < kSides; ++side) {
-    STD_TORCH_CHECK(lists[side]->size() == 5, "side ", side,
-                    "'s lists are (entries, pre, totals, union, count), got ", lists[side]->size(),
-                    " tensors");
+    STD_TORCH_CHECK(lists[side]->size() == 6, "side ", side,
+                    "'s lists are (entries, pre, totals, union, count, records), got ",
+                    lists[side]->size(), " tensors");
     if (p.list_level[side] < 0) continue;
     const int64_t width = p.B[p.list_level[side]],
                   groups = (width + kGroupDigits - 1) / kGroupDigits,
@@ -729,6 +799,10 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
         l[3], Dtype::Short, {B * H, p.windows, groups, heads * kWindowTokens}, "a side's union"));
     o.union_count = static_cast<int32_t*>(
         exact(l[4], Dtype::Int, {B * H, p.windows, groups}, "a side's union extents"));
+    if (side == kWrite)
+      o.records = static_cast<uint8_t*>(
+          exact(l[5], Dtype::Byte, {B * H, p.windows, groups, kFactsWarps, carry::kSegBytes},
+                "the write side's fold stage records"));
   }
   detail::plan_units(p, dense);
   p.ledger = detail::g_ledger;

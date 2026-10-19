@@ -93,12 +93,12 @@ Side side_of(const std::vector<Tensor>& rows, int64_t list, const std::vector<in
 }
 
 //: ONE SIDE'S LISTS as the facts pass writes them in their final form: 8-byte entries, the boundaries' prefix rows,
-//: the groups' totals, the union's tokens and count; empty where the side has no list level.
-//: -- see docs/internals/carry/carry.md#lists
+//: the groups' totals, the union's tokens and count, the write side's stage records (read by the streamed fold);
+//: empty where the side has no list level. -- see docs/internals/carry/carry.md#lists
 SideLists lists_of(const std::vector<Tensor>& t, int64_t BH, int64_t windows, int64_t width,
                    int64_t heads, const char* name) {
-  STD_TORCH_CHECK(t.size() == 5, name, " is (entries, pre, totals, union, count), got ", t.size(),
-                  " tensors");
+  STD_TORCH_CHECK(t.size() == 6, name, " is (entries, pre, totals, union, count, records), got ",
+                  t.size(), " tensors");
   if (width == 0) return SideLists{nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 1};
   const int64_t groups = (width + 31) / 32;
   const std::vector<std::vector<int64_t>> want = {{BH, windows, width, kListCap * heads, 4},

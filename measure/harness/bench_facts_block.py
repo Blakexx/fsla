@@ -82,20 +82,26 @@ def outputs():
     fm = torch.empty((bh, TOKENS, 2), dtype=torch.float32, device="cuda")
     gains16 = torch.empty((bh, TOKENS, 2), dtype=torch.float16, device="cuda")
     gains_exp = torch.empty((bh, windows, 2), dtype=torch.int16, device="cuda")
-    wl, rl = (facts_ops._lists(bh, windows, WIDTH, "cuda") for _ in range(2))
+    wl, rl = facts_ops._lists(bh, windows, WIDTH, "cuda", records=True), facts_ops._lists(bh, windows, WIDTH, "cuda")
     return words, unions, list_exp, fm, gains16, gains_exp, wl, rl
 
 
 def required_bytes(outs) -> float:
     """The rows, the columns read, and every byte the pass writes: the words and tile unions, each list's entries,
-    boundaries, union and extent, the exponents, the factor products and gains."""
+    boundaries, totals, union and extent, the write side's stage records (a segment's header, its first stages'
+    tokens, a record a stage), the exponents, the factor products and gains."""
+    from rola.engine.facts import lists as list_model
+
     words, unions, list_exp, fm, gains16, gains_exp, wl, rl = outs
     rows = 4 * TOKENS * HEADS * WIDTH
     columns = 4 * TOKENS * HEADS * 4
-    entries = sum(int((l.at[..., -1].long() & 0xFFFF).sum()) for l in (wl, rl)) * 8
-    lists = sum(l.at.numel() * 2 + l.union.numel() * 2 + l.count.numel() * 4 for l in (wl, rl))
+    entries = sum(int(l.totals[..., -1].long().sum()) for l in (wl, rl)) * 8
+    lists = sum(l.pre.numel() * 2 + l.totals.numel() * 4 + l.union.numel() * 2 + l.count.numel() * 4 for l in (wl, rl))
+    stages = wl.records[..., :4].contiguous().view(torch.int32).long()
+    records = int((list_model.SEG_HEADER + list_model.TOKEN_RUN * stages.clamp(max=list_model.FOLD_RING)
+                   + list_model.RECORD_BYTES * stages).sum())
     rest = (words.numel() + unions.numel()) * 4 + list_exp.numel() * 2 + fm.numel() * 4 + gains16.numel() * 2
-    return rows + columns + entries + lists + rest + gains_exp.numel() * 2
+    return rows + columns + entries + lists + records + rest + gains_exp.numel() * 2
 
 
 def main() -> int:

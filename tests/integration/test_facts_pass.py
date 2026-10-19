@@ -17,6 +17,7 @@ Symbols: ``D`` routing depth; ``B_l`` the PADDED per-level width; ``b_l`` the LO
 """
 from __future__ import annotations
 
+import numpy as np
 import pytest
 import torch
 
@@ -138,9 +139,9 @@ def _layout(widths, L):
 
 def _outputs(BH, L, windows=1):
     """The outputs of a call that lists nothing, after ``list_exp``: the factor products, the gains planes, and each
-    side's five list tensors, empty."""
-    lists = [[torch.empty(0, dtype=torch.int32 if k in (2, 4) else torch.int16, device="cuda") for k in range(5)]
-             for _ in range(2)]
+    side's six list tensors, empty."""
+    dtypes = (torch.int16, torch.int16, torch.int32, torch.int16, torch.int32, torch.uint8)
+    lists = [[torch.empty(0, dtype=d, device="cuda") for d in dtypes] for _ in range(2)]
     return [torch.empty((BH, L, 2), dtype=torch.float32, device="cuda"),
             torch.empty((BH, L, 2), dtype=torch.float16, device="cuda"),
             torch.empty((BH, windows, 2), dtype=torch.int16, device="cuda"), *lists]
@@ -306,6 +307,12 @@ def _assert_lists(got: list_model.Lists, want: list_model.Lists):
     end = (torch.arange(got.entries.shape[3], device=pre.device) < lengths[..., None])[..., None]
     end = end.expand_as(got.entries)
     assert torch.equal(got.entries[end].cpu(), want.entries[end.cpu()])
+    if want.records.numel():
+        #: the write side's stage records: every defined byte the model's (built from the model's lists, which the lines
+        #: above hold the pass's to), gathered on the device
+        records, defined = list_model.fold_records(want, width)
+        mask = torch.from_numpy(defined).to(got.records.device)
+        assert np.array_equal(got.records[mask].cpu().numpy(), records[defined])
 
 
 #: GROUPED QUERIES: shapes whose merged read unions pass a window (every token live in a group at the draw's density),

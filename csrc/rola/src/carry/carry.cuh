@@ -46,6 +46,32 @@ __host__ __device__ __forceinline__ constexpr uint32_t pool_chunk(int row, uint3
   return row == 128 ? k ^ (s & 7u) : (k & ~3u) | ((k ^ (s >> 1)) & 3u);
 }
 
+//: THE FOLD'S STAGE RECORDS, the facts pass's to emit and the carry's to stream: a segment a warp a window.
+//: -- see docs/internals/carry/carry.md#fold-records
+constexpr int kFoldRing = 4, kStageRows = 16, kRecordBytes = 96, kSegHeader = 16, kTokenRun = 64;
+constexpr int kSegStages = kBoxLists / kWarps * (kWindow / kStageRows);
+constexpr int kSegRecords = kSegHeader + kFoldRing * kTokenRun;
+constexpr int kSegBytes = kSegRecords + kSegStages * kRecordBytes;
+constexpr uint32_t kPadToken = 0x80000000u;
+
+//: entry `q` of a stage: its coefficient's place in the record and its token's in a token run
+__host__ __device__ __forceinline__ constexpr int coef_at(int q) {
+  return 8 * ((q & 7) >> 1) + 2 * (q & 1) + 4 * (q >> 3);
+}
+
+__host__ __device__ __forceinline__ constexpr int token_at(int q) {
+  return 8 * (q & 7) + 4 * (q >> 3);
+}
+
+//: a list of `n` entries' 16-entry steps by the fold's rule, and its stages
+__host__ __device__ __forceinline__ constexpr int steps16(int n) {
+  return n > 8 ? (n + 7) >> 4 : 0;
+}
+
+__host__ __device__ __forceinline__ constexpr int stages_of(int n) {
+  return steps16(n) + (n > 16 * steps16(n) ? 1 : 0);
+}
+
 //: A PLANE where the bundle holds it: a token's row at `base + b sb + h sh + t st` bytes.
 struct Plane {
   const uint8_t* base;
