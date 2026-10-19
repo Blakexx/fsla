@@ -121,10 +121,10 @@ def truth_scale(routes, unit: torch.Tensor, level_s: int) -> torch.Tensor:
     """``[B, T, H]`` fp64: what a token's partials at its unit are multiplied by to be the recurrence's numerator, the
     per-token factor the epilogue cancels against ``den``: ``2^u(t)``, ``kappa`` and each read level's row scale, a u8
     level's stored value scaled to its digit over 255 (level S's coefficient is the byte over 256, level R's row the
-    byte). A read side with no list level states its partials elsewhere: refused by name."""
-    if level_s < 0 or not any(routes.sparse[0]):
-        raise NotImplementedError("a read side with no list level (the dense-dense plan) has no readout reference yet: "
-                                  "its partials' scale is stated with its fold's reference")
+    byte), an f16 level's the value itself -- a read side with no list level's two levels both (level S its
+    coefficient level, level R its row level: `carry_level_s`)."""
+    if level_s < 0:
+        raise NotImplementedError("the carry's level S is defined at depth two (`carry_level_s`)")
     level_r = 1 - level_s
     stored = {level_s: quant.AMP_LEVELS + 1, level_r: 1.0}
     factor = unit_scale(routes, level_s)

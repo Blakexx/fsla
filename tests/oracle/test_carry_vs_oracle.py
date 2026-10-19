@@ -8,9 +8,8 @@ the bundle's own dequantized operands, so a shared misreading of the math by a k
 nowhere to hide. ``num`` is compared in the recurrence's units (`readout_reference.num_in_truth`: the per-token factor
 the epilogue cancels against ``den``), against each slot's envelope (the same reference on ``|v|``).
 
-RED BY PLAN (ruling 2026-09-29): a cell whose carve the carry has no arm for, whose read side lists nothing (its
-readout reference is unwritten), whose length is off the window, or whose entry state the carry cannot yet take (the
-segment boundary is unbuilt) fails, by name. The carry's ``den`` and its state reach the oracle through the op
+RED BY PLAN (ruling 2026-09-29): a cell whose carve the carry has no arm for, whose depth is not two, whose length is
+off the window, or whose entry state the carry cannot yet take (the segment boundary is unbuilt) fails, by name. The carry's ``den`` and its state reach the oracle through the op
 (`test_prefill_vs_oracle.py`): the den pass and the state's hand-off write them.
 
 Symbols: ``W`` the window (`rola.ops.carry.WINDOW`), ``L`` tokens, ``C`` value channels, ``u(t)`` a token's unit byte.
@@ -71,12 +70,11 @@ def run(spec):
     """``(routes, values, unit, num)``: one carry launch over the cell, its units the den pass's (:func:`_units`, until
     the pass is built beside the carry)."""
     routes, values, facts, carve, zero = carry_operands(spec)
-    if routes.topology.D != 2 or not any(routes.sparse[0]):
+    if routes.topology.D != 2:
         #: the launch first, so the carry's own refusal or fault is what the cell reports where it has one
         carry_ops.carry(routes, values, facts, carve, zero)
         torch.cuda.synchronize()
-        raise NotImplementedError(f"{spec.name}: the readout reference states one read list level at depth two; "
-                                  "this carve's partials' scale is stated with its fold's reference")
+        raise NotImplementedError(f"{spec.name}: the carry's level S is defined at depth two (`carry_level_s`)")
     unit = _units(spec, routes, values)
     num, _ = carry_ops.carry(routes, values, facts, carve, unit)
     torch.cuda.synchronize()
