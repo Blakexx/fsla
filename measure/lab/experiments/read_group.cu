@@ -7,9 +7,12 @@
 // a group-tile loads its rows once, runs 4 MMAs a digit, and leaves its outputs in one exit -- 8 conversions, 4 packs,
 // 4 shared atomic adds; OPERAND scales the rows by each digit's coefficients (4 bf16x2 FMAs a digit) into one
 // accumulator, OUTPUT keeps an accumulator a digit and folds its coefficients into the exit's conversions (an FFMA a
-// digit an output). Its designed counts a group-tile: the consumer ~29 + 8 M (OPERAND) or ~29 + 12 M (OUTPUT), the
-// producer ~20. A sample is the CTA's span a window; each form's drained panel is checked word for word -- the same
-// panel at every M, since only the sums' grouping changes.
+// digit an output); UNIFIED (ruled 2026-10-18, one form for every M) is OUTPUT with each position's panel field and
+// unit and each lane's two tokens' M coefficients as f16 pairs in one load, a factor the coefficient times its
+// digit's held scale and its token's unit (the FMA pipe, so a zero coefficient stays zero). Its designed counts a
+// group-tile: the consumer ~29 + 8 M (OPERAND), ~29 + 12 M (OUTPUT), ~36 + 16 M (UNIFIED), the producer ~20. A
+// sample is the CTA's span a window; each form's drained panel is checked word for word -- the same panel at every
+// M, since only the sums' grouping changes.
 // see docs/lab/read_group.md
 #include <cstdlib>
 
@@ -28,14 +31,19 @@ using read_image::kWords;
 constexpr int kGroups = 8, kTiles = 2, kSliceGroups = 8, kRow = 64, kPasses = 2, kStaged = 8;
 constexpr int kRing = kPlanes * kPlaneBytes;
 
-//: A GROUP-TILE'S RECORD (`read_group.inputs.py`): its exit part (64 bytes), its coefficients (OUTPUT 8 (M - 1) words,
-//: OPERAND 8 M), then 8 tokens; a stage its 8 rows and the record; the layout past the ring
-template <int M, int OPERAND>
+//: THE SCALINGS: OUTPUT, OPERAND, UNIFIED
+enum Mode : int { kOutput = 0, kOperand = 1, kUnified = 2 };
+
+//: A GROUP-TILE'S RECORD (`read_group.inputs.py`): its exit part (64 bytes; UNIFIED 32), its coefficients (OUTPUT
+//: 8 (M - 1) words, OPERAND 8 M, UNIFIED 4 M), then 8 tokens; a stage its 8 rows and the record; the layout past the
+//: ring, the warps' digit scales (UNIFIED's, 4 floats a warp) last
+template <int M, int MODE>
 struct Rec {
-  static constexpr int kCoefWords = OPERAND ? 8 * M : 8 * (M - 1);
-  static constexpr int kEntries = 4 * (16 + kCoefWords), kBytes = kEntries + 32, kStage = 8 * kRow + kBytes;
+  static constexpr int kExitWords = MODE == kUnified ? 8 : 16;
+  static constexpr int kCoefWords = MODE == kOperand ? 8 * M : MODE == kOutput ? 8 * (M - 1) : 4 * M;
+  static constexpr int kEntries = 4 * (kExitWords + kCoefWords), kBytes = kEntries + 32, kStage = 8 * kRow + kBytes;
   static constexpr int kPads = kRing + kWarps * kStaged * kStage, kPanel = kPads + 128 + 8 * kPanelPitch * 4;
-  static constexpr int kSmem = kPanel + kSlots * kPanelPitch * 4;
+  static constexpr int kScales = kPanel + kSlots * kPanelPitch * 4, kSmem = kScales + 16 * kWarps;
   static_assert(kBytes % 16 == 0 && kBytes / 16 <= 32, "a record is copied 16 bytes a lane");
 };
 
@@ -144,12 +152,12 @@ __device__ __forceinline__ void coef_words(uint32_t (&c)[M], uint32_t at) {
 //: states (`f[FIRST .. FIRST + M - 1]`), each lane's two tokens' outputs summed over the digits and added at their
 //: panel rows once. OPERAND: the lane's B column (token g) scaled by each digit's coefficient, one accumulator; OUTPUT:
 //: an accumulator a digit, its coefficients in the exit's conversions (the first digit's in the exit part)
-template <int M, int OPERAND, int FIRST>
+template <int M, int MODE, int FIRST>
 __device__ __forceinline__ void group_tile(uint32_t slot, uint32_t row_q, uint32_t ent, uint32_t coef, uint32_t pad,
-                                           const uint32_t (&f)[4][16]) {
+                                           const uint32_t (&f)[4][16], const float (&sd)[4]) {
   uint32_t b[4];
   lab::ldsm(b, slot + row_q);
-  if constexpr (OPERAND) {
+  if constexpr (MODE == kOperand) {
     uint32_t cw[M];
     coef_words<M>(cw, slot + coef);
     float acc[2][4] = {};
@@ -187,17 +195,37 @@ __device__ __forceinline__ void group_tile(uint32_t slot, uint32_t row_q, uint32
                                  f[FIRST + d][(m * 2 + kb) * 4 + 2], f[FIRST + d][(m * 2 + kb) * 4 + 3]};
           lab::mma_bf16_f32(acc[d][m], a, b[2 * kb], b[2 * kb + 1]);
         }
-    const uint4 e = lds128(slot + ent);
     float c0[M], c1[M];
-    c0[0] = __uint_as_float(e.x);
-    c1[0] = __uint_as_float(e.z);
+    uint32_t p0, p1;
+    if constexpr (MODE == kUnified) {
+      //: each position's field and unit; each digit's f16 pair; a factor the coefficient, its digit's scale and
+      //: its token's 2^-unit
+      const uint2 e = read_image::lds64(slot + ent);
+      uint32_t cw[M];
+      coef_words<M>(cw, slot + coef);
+      const float u0 = __uint_as_float((127u - (e.x & 0xffu)) << 23);
+      const float u1 = __uint_as_float((127u - (e.y & 0xffu)) << 23);
 #pragma unroll
-    for (int d = 1; d < M; ++d) {
-      const uint2 v = read_image::lds64(slot + coef + 8 * (d - 1));
-      c0[d] = __uint_as_float(v.x);
-      c1[d] = __uint_as_float(v.y);
+      for (int d = 0; d < M; ++d) {
+        const float2 c = __half22float2(*reinterpret_cast<const __half2*>(&cw[d]));
+        c0[d] = c.x * (sd[FIRST + d] * u0);
+        c1[d] = c.y * (sd[FIRST + d] * u1);
+      }
+      p0 = pad + (e.x >> 16);
+      p1 = pad + (e.y >> 16);
+    } else {
+      const uint4 e = lds128(slot + ent);
+      c0[0] = __uint_as_float(e.x);
+      c1[0] = __uint_as_float(e.z);
+#pragma unroll
+      for (int d = 1; d < M; ++d) {
+        const uint2 v = read_image::lds64(slot + coef + 8 * (d - 1));
+        c0[d] = __uint_as_float(v.x);
+        c1[d] = __uint_as_float(v.y);
+      }
+      p0 = pad + e.y;
+      p1 = pad + e.w;
     }
-    const uint32_t p0 = pad + e.y, p1 = pad + e.w;
 #pragma unroll
     for (int m = 0; m < 2; ++m) {
       float l0 = fmaf(acc[0][m][0], c0[0], 12582912.0f), h0 = fmaf(acc[0][m][2], c0[0], 12563648.0f);
@@ -219,10 +247,10 @@ __device__ __forceinline__ void group_tile(uint32_t slot, uint32_t row_q, uint32
 //: (`staged_m{M}_{mode}.bin`), the producer reading a stage's tokens from the slot it refills and copying its rows and
 //: record in one burst; the consumer each pass's every group's first tile in one block (the warp's 4 digits' states
 //: loaded), then each group's rest, the panel drained a pass. `SET` names the dataset's instantiation
-template <int M, int OPERAND, int SET>
+template <int M, int MODE, int SET>
 __global__ void __launch_bounds__(kThreads, 1) grouped(In in, const uint8_t* records, int stream_records,
                                                        long long* t) {
-  using R = Rec<M, OPERAND>;
+  using R = Rec<M, MODE>;
   constexpr int G = 4 / M;
   extern __shared__ __align__(128) uint8_t smem[];
   const int warp = lab::warp_id(), lane = lab::lane_id(), W = in.windows, r = lane >> 2, c = lane & 3;
@@ -234,6 +262,9 @@ __global__ void __launch_bounds__(kThreads, 1) grouped(In in, const uint8_t* rec
     const uint32_t v = k < kRing / 16 ? 0x3d80bd80u : 0u;
     chunks[k] = make_uint4(v, v, v, v);
   }
+  //: the warps' digit scales, 2^sx with sx = (digit >> 3) & 1: a warp's digit slot i's (i & 1)
+  if (threadIdx.x < 4 * kWarps)
+    reinterpret_cast<float*>(smem + R::kScales)[threadIdx.x] = (threadIdx.x & 1) ? 2.0f : 1.0f;
   __syncthreads();
   const read_image::Lane lc = lane_of(sm, warp, lane, R::kPads);
   const uint32_t ring = lab::held(sm + kRing + warp * kStaged * R::kStage);
@@ -277,8 +308,10 @@ __global__ void __launch_bounds__(kThreads, 1) grouped(In in, const uint8_t* rec
   int ct0_next = tiles_of(1, 0), ct1_next = tiles_of(1, 1);
   uint32_t cs = 0;
   const uint32_t row_q = lab::held((lane & 7) * kRow + 16 * ((((lane & 7) >> 1) & 3) ^ (lane >> 3)));
-  const uint32_t ent = lab::held(8 * kRow + 16 * (lane & 3));
-  const uint32_t coef = lab::held(8 * kRow + 64 + (OPERAND ? 4 * M * (lane >> 2) : 8 * (M - 1) * (lane & 3)));
+  const uint32_t ent = lab::held(8 * kRow + (MODE == kUnified ? 8 : 16) * (lane & 3));
+  const uint32_t coef = lab::held(8 * kRow + (MODE == kOperand   ? 64 + 4 * M * (lane >> 2)
+                                              : MODE == kOutput ? 64 + 8 * (M - 1) * (lane & 3)
+                                                                : 32 + 4 * M * (lane & 3)));
   const uint32_t cell = lab::held(sm + R::kPanel + ((32 * warp + (lane >> 4)) * kPanelPitch + (lane & 15)) * 4);
   const auto drain = [&](int p) {
     uint32_t* target = in.panel_out + ((static_cast<size_t>(blockIdx.x) * kPasses + p) * kSlots + 32 * warp +
@@ -302,15 +335,24 @@ __global__ void __launch_bounds__(kThreads, 1) grouped(In in, const uint8_t* rec
       uint32_t f[4][16];
 #pragma unroll
       for (int i = 0; i < 4; ++i) read_image::state_in<1>(f[i], lc, read_image::plane_off(i));
+      //: the warp's digits' scales, loaded each pass as a window's exponents are
+      float sd[4];
+      {
+        const uint4 v = lds128(sm + R::kScales + 16 * warp);
+        sd[0] = __uint_as_float(v.x);
+        sd[1] = __uint_as_float(v.y);
+        sd[2] = __uint_as_float(v.z);
+        sd[3] = __uint_as_float(v.w);
+      }
 #pragma unroll
       for (int k = 0; k < G; ++k) {
-        if (k == 0) group_tile<M, OPERAND, 0>(slot_of(cs), row_q, ent, coef, lc.pad, f);
+        if (k == 0) group_tile<M, MODE, 0>(slot_of(cs), row_q, ent, coef, lc.pad, f, sd);
         if constexpr (G > 1) {
-          if (k == 1) group_tile<M, OPERAND, M>(slot_of(cs), row_q, ent, coef, lc.pad, f);
+          if (k == 1) group_tile<M, MODE, M>(slot_of(cs), row_q, ent, coef, lc.pad, f, sd);
         }
         if constexpr (G > 2) {
-          if (k == 2) group_tile<M, OPERAND, 2 * M>(slot_of(cs), row_q, ent, coef, lc.pad, f);
-          if (k == 3) group_tile<M, OPERAND, 3 * M>(slot_of(cs), row_q, ent, coef, lc.pad, f);
+          if (k == 2) group_tile<M, MODE, 2 * M>(slot_of(cs), row_q, ent, coef, lc.pad, f, sd);
+          if (k == 3) group_tile<M, MODE, 3 * M>(slot_of(cs), row_q, ent, coef, lc.pad, f, sd);
         }
         ++cs;
       }
@@ -325,13 +367,13 @@ __global__ void __launch_bounds__(kThreads, 1) grouped(In in, const uint8_t* rec
           issue();
           wait_groups<kStaged - 1>();
           __syncwarp();
-          if (k == 0) group_tile<M, OPERAND, 0>(slot_of(cs), row_q, ent, coef, lc.pad, f);
+          if (k == 0) group_tile<M, MODE, 0>(slot_of(cs), row_q, ent, coef, lc.pad, f, sd);
           if constexpr (G > 1) {
-            if (k == 1) group_tile<M, OPERAND, M>(slot_of(cs), row_q, ent, coef, lc.pad, f);
+            if (k == 1) group_tile<M, MODE, M>(slot_of(cs), row_q, ent, coef, lc.pad, f, sd);
           }
           if constexpr (G > 2) {
-            if (k == 2) group_tile<M, OPERAND, 2 * M>(slot_of(cs), row_q, ent, coef, lc.pad, f);
-            if (k == 3) group_tile<M, OPERAND, 3 * M>(slot_of(cs), row_q, ent, coef, lc.pad, f);
+            if (k == 2) group_tile<M, MODE, 2 * M>(slot_of(cs), row_q, ent, coef, lc.pad, f, sd);
+            if (k == 3) group_tile<M, MODE, 3 * M>(slot_of(cs), row_q, ent, coef, lc.pad, f, sd);
           }
           ++cs;
         }
@@ -358,9 +400,9 @@ __global__ void __launch_bounds__(kThreads, 1) grouped(In in, const uint8_t* rec
 //: a dataset's inputs
 struct Host {
   std::vector<uint16_t> passes, tiles[3];
-  std::vector<uint8_t> rows, staged[5];
+  std::vector<uint8_t> rows, staged[8];
   std::vector<uint32_t> panel;
-  int ctas = 0, windows = 0, stream_records[5] = {};
+  int ctas = 0, windows = 0, stream_records[8] = {};
 };
 
 std::vector<uint8_t> file(const std::string& path) {
@@ -381,7 +423,8 @@ std::vector<T> as(const std::vector<uint8_t>& b) {
 }
 
 //: the forms' order in `Host::staged` and their files
-const char* kForm[5] = {"m1_output", "m2_output", "m2_operand", "m4_output", "m4_operand"};
+const char* kForm[8] = {"m1_output", "m2_output", "m2_operand", "m4_output", "m4_operand",
+                        "m1_unified", "m2_unified", "m4_unified"};
 
 Host load(const std::string& dir) {
   Host h;
@@ -393,7 +436,7 @@ Host load(const std::string& dir) {
   h.panel = as<uint32_t>(file(dir + "/panel.bin"));
   const char* tiles[3] = {"/tiles_m1.bin", "/tiles_m2.bin", "/tiles_m4.bin"};
   for (int k = 0; k < 3; ++k) h.tiles[k] = as<uint16_t>(file(dir + tiles[k]));
-  for (int k = 0; k < 5; ++k) {
+  for (int k = 0; k < 8; ++k) {
     h.staged[k] = file(dir + "/staged_" + kForm[k] + ".bin");
     h.stream_records[k] = *reinterpret_cast<const int*>(h.staged[k].data());
     h.staged[k].erase(h.staged[k].begin(), h.staged[k].begin() + 4);
@@ -412,23 +455,23 @@ T* up(const std::vector<T>& v) {
 //: the device copies of a dataset: its inputs a form (the tiles by M) and each form's records
 struct Device {
   In in[3];
-  const uint8_t* staged[5];
+  const uint8_t* staged[8];
 };
 
-template <int M, int OPERAND, int SET>
+template <int M, int MODE, int SET>
 void run(const lab::Bench& b, const std::string& variant, const Device& dev, const Host& h, int form) {
-  using R = Rec<M, OPERAND>;
-  const std::string name = lab::kernel("read_group::grouped", {M, OPERAND, SET});
+  using R = Rec<M, MODE>;
+  const std::string name = lab::kernel("read_group::grouped", {M, MODE, SET});
   b.expect(name, "LDGSTS", ">=", 2);
   b.expect(name, "HMMA.16816.F32.BF16", ">=", 4 * M);
-  if (OPERAND) b.expect(name, "HFMA2.BF16", ">=", 4 * M);
+  if (MODE == kOperand) b.expect(name, "HFMA2.BF16", ">=", 4 * M);
   b.expect(name, "BSSY", ">=", 0);
   b.exempt(name, "a calibration of the grouped readout's cost for the carve model; its designed counts in the header");
   if (b.expect_only) return;
   const In& in = dev.in[M == 1 ? 0 : M == 2 ? 1 : 2];
-  LAB_CHECK(cudaFuncSetAttribute(grouped<M, OPERAND, SET>, cudaFuncAttributeMaxDynamicSharedMemorySize, R::kSmem));
+  LAB_CHECK(cudaFuncSetAttribute(grouped<M, MODE, SET>, cudaFuncAttributeMaxDynamicSharedMemorySize, R::kSmem));
   const auto launch = [&] {
-    grouped<M, OPERAND, SET><<<h.ctas, kThreads, R::kSmem>>>(in, dev.staged[form], h.stream_records[form], b.times);
+    grouped<M, MODE, SET><<<h.ctas, kThreads, R::kSmem>>>(in, dev.staged[form], h.stream_records[form], b.times);
   };
   LAB_CHECK(cudaMemset(in.panel_out, 0, h.panel.size() * 4));
   const lab::Samples s = b.variant(launch, [&] { return b.span(kWarps, h.ctas) / h.windows; });
@@ -452,6 +495,9 @@ void cell(const lab::Bench& b, const char* label, const Device& dev, const Host&
   run<2, 1, SET>(b, l + "M 2, operand scaling", dev, h, 2);
   run<4, 0, SET>(b, l + "M 4, output scaling", dev, h, 3);
   run<4, 1, SET>(b, l + "M 4, operand scaling", dev, h, 4);
+  run<1, 2, SET>(b, l + "unified, M 1", dev, h, 5);
+  run<2, 2, SET>(b, l + "unified, M 2", dev, h, 6);
+  run<4, 2, SET>(b, l + "unified, M 4", dev, h, 7);
 }
 
 }  // namespace read_group
@@ -481,7 +527,7 @@ int main(int argc, char** argv) {
       const uint16_t* passes = up(h[k].passes);
       const uint8_t* rows = up(h[k].rows);
       for (int m = 0; m < 3; ++m) dev[k].in[m] = In{passes, up(h[k].tiles[m]), rows, out, h[k].windows};
-      for (int f = 0; f < 5; ++f) dev[k].staged[f] = up(h[k].staged[f]);
+      for (int f = 0; f < 8; ++f) dev[k].staged[f] = up(h[k].staged[f]);
     }
   }
   cell<0>(b, "alt-k4: ", dev[0], h[0]);

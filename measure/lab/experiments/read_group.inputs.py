@@ -11,6 +11,11 @@ A group-tile's record, the staged stream's (`read_stream.inputs.py`'s `staged_re
 - COEFFICIENTS: OUTPUT, `8 (M - 1)` bytes a t: the coefficients of tokens 2t, 2t + 1 for digits 1 .. M - 1, fp32;
   OPERAND, `4 M` bytes a position g: each digit's coefficient as bf16x2 (both halves), the B fragment's column g.
 - TOKENS (32 bytes): the 8 tokens of the stage `STAGED_AHEAD` on, a pad `PAD`.
+THE UNIFIED FORM (ruled 2026-10-18: one form for every M, output scaling) has its own record: each position's panel
+field and its token's unit (`field << 16 | unit`, 32 bytes), then each t's two tokens' M coefficients as f16 pairs
+(`4 M` bytes a t: digit d's word `c(2t) | c(2t + 1) << 16`), then the tokens. A coefficient is stored as its target
+(256 or 512) times `2^(unit - sx)`, the token's unit `(slot >> 1) % 3` and the digit's exponent `sx = (digit >> 3) & 1`,
+so the kernel's factor `c x 2^sx x 2^-unit` is the target exactly.
 Files (little-endian), each dataset's directory as `read_stream.inputs.py`'s:
 - `head.bin`: int32 (magic 0x50524752, ctas, windows).
 - `passes.bin`: u16 `[windows][8 read groups]`.
@@ -43,7 +48,8 @@ base = _load("read_image.inputs")
 CTAS, SLOTS, PASSES, LISTS = stream.CTAS, stream.SLOTS, stream.PASSES, stream.LISTS
 STAGED_AHEAD, STAGED_TAIL, PAD = stream.STAGED_AHEAD, stream.STAGED_TAIL, stream.PAD
 #: the group sizes and, for M > 1, the two scalings (M = 1 is the readout as `read_stream` runs it: "output")
-FORMS = ((1, "output"), (2, "output"), (2, "operand"), (4, "output"), (4, "operand"))
+FORMS = ((1, "output"), (2, "output"), (2, "operand"), (4, "output"), (4, "operand"), (1, "unified"), (2, "unified"),
+         (4, "unified"))
 ONE = 0x3F800000
 
 
@@ -76,8 +82,25 @@ def group_tiles(spans: list[list[int]], digits: list[int], p: int) -> list[tuple
     return out
 
 
-def entries(tile: list[tuple[int, int, list[float]]], m: int, mode: str) -> list[int]:
+def unit_of(s: int) -> int:
+    """A live token's unit in the unified form (module docstring)."""
+    return (s >> 1) % 3
+
+
+def f16(x: float) -> int:
+    return int(np.array([x], np.float16).view(np.uint16)[0])
+
+
+def entries(tile: list[tuple[int, int, list[float]]], m: int, mode: str, digits: list[int]) -> list[int]:
     """A group-tile's record entries as u32 words: the exit part, then the coefficients (module docstring)."""
+    if mode == "unified":
+        units = [0 if s < 0 else unit_of(s) for s, _, _ in tile]
+        out = [field << 16 | u for (_, field, _), u in zip(tile, units, strict=True)]
+        for t in range(4):
+            for k, d in enumerate(digits):
+                c = [tile[e][2][k] * 2.0 ** (units[e] - ((d >> 3) & 1)) for e in (2 * t, 2 * t + 1)]
+                out.append(f16(c[0]) | f16(c[1]) << 16)
+        return out
     out = []
     for _, field, coefs in tile:
         out += [f32(coefs[0]) if mode == "output" else ONE, field]
@@ -129,11 +152,12 @@ def dataset(directory: Path, cell: str, windows: int) -> list[str]:
                         if mode == "output":
                             for k, t in enumerate(by_group):
                                 tiles[m][w, p, g, warp, k] = len(t) // 8
-                        ordered = [x for t in by_group for x in t[:8]] + [x for t in by_group for x in t[8:]]
-                        for k in range(0, len(ordered), 8):
-                            tile = ordered[k:k + 8]
+                        ordered = [(t[:8], ds) for t, ds in zip(by_group, sets, strict=True)]
+                        ordered += [(t[k:k + 8], ds) for t, ds in zip(by_group, sets, strict=True)
+                                    for k in range(8, len(t), 8)]
+                        for tile, ds in ordered:
                             plan.append(([PAD if s < 0 else 512 * w + token_of[s] for s, _, _ in tile],
-                                         entries(tile, m, mode)))
+                                         entries(tile, m, mode, ds)))
             live = [(s // SLOTS, s % SLOTS, 1 + ((s ^ d) & 1), 512 * w + token_of[s]) for d in range(32)
                     for s in spans[d]]
             if live:
@@ -169,7 +193,7 @@ def dataset(directory: Path, cell: str, windows: int) -> list[str]:
 def records(plans: dict, groups: int, m: int, mode: str) -> np.ndarray:
     """THE STAGED RECORDS: u32 `[groups][8 warps][STAGED_AHEAD + stages + STAGED_TAIL][words]`, one stream a warp in the
     consumer's order; record `r` stage `r - STAGED_AHEAD`'s entries then stage `r`'s 8 tokens (past the last, pads)."""
-    width = 16 + (8 * (m - 1) if mode == "output" else 8 * m)
+    width = {"output": 16 + 8 * (m - 1), "operand": 16 + 8 * m, "unified": 8 + 4 * m}[mode]
     stages = max(len(x) for x in plans.values())
     flat = np.zeros((groups, 8, STAGED_AHEAD + stages + STAGED_TAIL, width + 8), np.uint32)
     flat[..., width:] = PAD

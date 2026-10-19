@@ -17,6 +17,13 @@ each digit's state, and leaves its outputs once: 8 conversions, 4 packs, 4 share
 - OUTPUT: an accumulator a digit, each digit's coefficients folded into the exit's conversions (an FFMA a digit an
   output, the exact pair's 1.5 x 2^23 addend carried along the chain).
 
+- UNIFIED (ruled 2026-10-18: one form for every M, output scaling): OUTPUT with the record the production readout
+  can be fed -- each position's panel field and its token's unit (`field << 16 | unit`), each lane's two tokens' M
+  coefficients contiguous as f16 pairs (one load at every M) -- and each (token, digit) factor the coefficient times
+  the digit's scale (held, loaded each pass as a window's exponents are) and the token's `2^-unit`, multiplied on the
+  FMA pipe so a zero coefficient stays zero. The inputs give tokens units 0-2 and digits exponents 0-1, each f16
+  coefficient stored so its factor is the target exactly. M = 1 is its degenerate case.
+
 M = 2 pairs a warp's digits w, w + 8 and w + 16, w + 24; M = 4 takes all four. The inputs
 (`read_group.inputs.py`) are `read_stream`'s three cells, the same coloring, rows and panels; each union placed as a
 digit's span is (`place`). Every form's drained panel is checked word for word against the same panel: only the sums'
@@ -42,8 +49,12 @@ sm_86 (RTX 3080 Ti), SM clock locked at 1.665 GHz, cycles a CTA-window, every fo
 | M = 2, operand scaling | 5,021 | 13,752 | 21,669 |
 | M = 4, output scaling | 7,553 | 22,738 | 33,354 |
 | M = 4, operand scaling | 7,118 | 21,116 | 31,566 |
+| UNIFIED, M = 1 | 4,868 | 12,544 | 19,676 |
+| UNIFIED, M = 2 | 5,400 | 14,991 | 22,555 |
+| UNIFIED, M = 4 | 7,442 | 22,240 | 33,087 |
 
-(M = 1 here runs 6% over `read_stream`'s staged form, 4,549 at alt-k4: it loads the warp's four states before the
+(Three variants' samples hold one outlier near 2x, a foreign consumer's moment on the card; their medians match the
+first record's. M = 1 here runs 6% over `read_stream`'s staged form, 4,549 at alt-k4: it loads the warp's four states before the
 first tiles, where `read_stream` interleaves each with its digit's first tile.)
 
 Each form's pipes a CTA-window ([`tools/pipes.py`](../internals/tools/pipes.md), the binding one priced on each card):
@@ -57,6 +68,14 @@ Each form's pipes a CTA-window ([`tools/pipes.py`](../internals/tools/pipes.md),
 What the shared pipe holds a CTA-window at alt-k4, M = 1 (priced cycles): loads 1,191 -- the four digits' states
 reloaded each pass (512 wavefronts), the drain's panel loads (2 wavefronts each: below), the rows' `ldmatrix`, the
 records -- the drain's clearing stores 306, the exit's atomics 360, the copies 81. Bank conflicts: 271 wavefronts.
+
+THE UNIFIED FORM on each card. On sm_80 the shared pipe binds every form, and the unified form's record (f16
+coefficients, a 32-byte field part) is the smallest, so it prices lowest at every M: alt-k4 2,017 / 1,933 / 1,937
+cycles a CTA-window (M = 1 / 2 / 4) against the best other form's 2,025 / 1,973 / 1,946, cohort-k16 5,681 / 5,171 /
+5,013 against 5,740 / 5,345 / 5,064. On sm_86 it costs 1-3% over the idealized M = 1 (whose record carries each fp32
+factor ready), 6-11% over M = 2's output scaling and 4-5% over M = 4's operand scaling: ~14 instructions a tile more at
+M = 1 and ~32 at M = 4 -- the factor a (token, digit): the f16 pair decoded, the digit's scale times the token's
+`2^-unit`, and that times the coefficient (alt-k4 a tile 96 against 83 at M = 1, 152 against 120 at M = 4).
 
 Instructions a CTA-window: alt-k4 3,716 (M = 1), 3,627 / 3,792 (M = 2 output / operand), 4,347 / 4,182 (M = 4); a
 group-tile 83, 94 / 98, 125 / 120 with the window's fixed work spread over it. Stalls: M = 1 the shared queue 19%,
@@ -74,6 +93,9 @@ What it settles:
   M = 2 output scaling is 2% cheaper. Both exact here (coefficients exact in bf16); in the carry operand scaling puts
   each digit's exponent into bf16 operands (the range fp32's; 8 bits of mantissa a scaled row), output scaling stays
   fp32.
+- THE UNIFIED FORM holds at every M: exact, the cheapest on sm_80, 1-3% over the idealized form at sm_86's M = 1. Its
+  cost on sm_86 is the per-(token, digit) factor; folding the token's unit into the record's coefficient where the
+  record's producer knows it would take the token multiplies and the unit's extraction off the tile.
 - THE DRAIN'S OWN SHARED COST exceeds the exit's atomics at alt-k4: each lane's panel word load and clearing store
   pairs slots (s, s + 1), whose 16 words sit 20 words apart at the panel's pitch -- 4 banks shared, 2 wavefronts an
   access (the bank model; slots (s, s + 4) sit 80 words = 16 banks apart, 1 wavefront), and each clearing store is
