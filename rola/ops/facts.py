@@ -99,9 +99,9 @@ def _dense_bits(statics: SideStatics) -> int:
     return sum(1 << level for level, dense in enumerate(statics.dense_levels) if dense)
 
 
-def _lists(BH: int, windows: int, width: int, device, heads: int = 1, records: bool = False) -> list_model.Lists:
+def _lists(BH: int, windows: int, width: int, device, heads: int = 1) -> list_model.Lists:
     """A side's lists out at a level of ``width`` digits (0 for none), uninitialized; a grouped read side's over its
-    write head's ``heads`` query heads' rows; ``records`` the write side's fold stage records."""
+    write head's ``heads`` query heads' rows."""
     groups = -(-width // GROUP_DIGITS)
 
     def empty(*shape, dtype=torch.int16):
@@ -111,9 +111,7 @@ def _lists(BH: int, windows: int, width: int, device, heads: int = 1, records: b
         entries=empty(BH, windows, width, heads * list_model.LIST_CAP, 4),
         pre=empty(BH, windows, groups, list_model.PRE_ROWS, heads * list_model.LIST_AT),
         totals=empty(BH, windows, groups, heads * list_model.LIST_AT, dtype=torch.int32),
-        union=empty(BH, windows, groups, heads * WINDOW), count=empty(BH, windows, groups, dtype=torch.int32),
-        records=empty(*((BH, windows, groups, list_model.WARPS, list_model.SEG_BYTES) if records else (0,)),
-                      dtype=torch.uint8))
+        union=empty(BH, windows, groups, heads * WINDOW), count=empty(BH, windows, groups, dtype=torch.int32))
 
 
 def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, write_statics: SideStatics,
@@ -141,7 +139,7 @@ def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, wri
     fm = torch.empty((BH, layout.L, 2), dtype=torch.float32, device=device)
     gains16 = torch.empty((BH, layout.L, 2), dtype=torch.float16, device=device)
     gains_exp = torch.empty((BH, windows, 2), dtype=torch.int16, device=device)
-    write = _lists(BH, windows, layout.B[level] if level >= 0 else 0, device, records=True)
+    write = _lists(BH, windows, layout.B[level] if level >= 0 else 0, device)
     read = _lists(BH, windows, layout.B[read_level] if read_level >= 0 else 0, device, heads)
     count = mask_words(layout.rows)
     extension().rola_facts_forward(

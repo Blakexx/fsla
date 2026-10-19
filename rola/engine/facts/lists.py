@@ -17,7 +17,7 @@ An entry is four int16 words, its two 32-bit halves the carry's ``uint2``:
   place (the carry looks up the token's unit by it); the coefficient ``f16(byte / 256)``, the slot's panel row offset
   from the dummy rows. A chunk starting at a multiple of 64 finds its rows by subtracting its first slot's offsets:
   the swizzles depend on a slot's low bits only.
-- WRITE: the slot, its window place ``t``; ``c_v = f16(fp32(b m s) 2^(4 - E_v))``, ``c_m = f16(fp32(b m) 2^(4 - E_m))`` -- ``b`` the token's
+- WRITE: the slot, 0; ``c_v = f16(fp32(b m s) 2^(4 - E_v))``, ``c_m = f16(fp32(b m) 2^(4 - E_m))`` -- ``b`` the token's
   level byte, ``m`` and ``m s`` the facts pass's fp32 columns, ``E = max(K, -123)`` the list's exponent.
 
 The GAINS: each token's ``(m, m s)`` as f16 at its window's powers of two, ``2^s`` with ``s = -4 - floor(log2(max))``
@@ -30,7 +30,6 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
-import numpy as np
 import torch
 
 from rola.engine.facts import liveness as lv
@@ -50,30 +49,20 @@ STEP = 8
 GAP = -0x8000
 #: the carry's 8 dummy panel rows before the panel, 64 bytes each
 PAD_BYTES = 8 * 64
-#: THE FOLD'S STAGE RECORDS (the carry's `kFoldRing`, `kStageRows`, `kRecordBytes`, `kSegHeader`, `kTokenRun`,
-#: `kSegStages`, `kPadToken`: csrc/rola/src/carry/carry.cuh): a segment a (batch-head, window, group, warp)
-FOLD_RING, STAGE_ROWS, RECORD_BYTES, SEG_HEADER, TOKEN_RUN = 4, 16, 96, 16, 64
-SEG_STAGES = 4 * (WINDOW // STAGE_ROWS)
-SEG_RECORDS = SEG_HEADER + FOLD_RING * TOKEN_RUN
-SEG_BYTES = SEG_RECORDS + SEG_STAGES * RECORD_BYTES
-PAD_TOKEN = 0x80000000
-WARPS = 8
 
 
 class Lists(NamedTuple):
     """One side's lists in the final form: ``entries`` ``[BH, windows, B, LIST_CAP, 4]`` int16, ``pre``
     ``[BH, windows, groups, PRE_ROWS, LIST_AT]`` int16 the boundaries in prefix form modulo 2^16, ``totals``
     ``[BH, windows, groups, LIST_AT]`` int32 the group's exact, ``union`` ``[BH, windows, groups, WINDOW]`` (a slot's token, ``GAP`` in a gap) and
-    ``count`` ``[BH, windows, groups]`` the unions' extents, and on the write side ``records`` ``[BH, windows, groups,
-    WARPS, SEG_BYTES]`` u8 the fold's stage records (:func:`fold_records`; an empty tensor on the read side). Past a
-    list's end, a union's extent and a segment's stages nothing is defined."""
+    ``count`` ``[BH, windows, groups]`` the unions' extents. Past a list's end and a union's extent nothing is
+    defined."""
 
     entries: torch.Tensor
     pre: torch.Tensor
     totals: torch.Tensor
     union: torch.Tensor
     count: torch.Tensor
-    records: torch.Tensor
 
 
 def columns(routes, values) -> tuple[torch.Tensor, torch.Tensor]:
@@ -151,70 +140,7 @@ def final_lists(bits: torch.Tensor, layout: lv.LivenessLayout, level: int, *, ro
                                                          for k in range(columns_at)])
     zero = torch.zeros_like(bounds[..., :1, :])
     pre = torch.cat((zero, bounds.cumsum(3)), 3)
-    lists = Lists(entries, pre & 0xFFFF, pre[..., -1, :], union_out, count, torch.empty(0, dtype=torch.uint8))
-    if write:
-        lists = lists._replace(records=torch.from_numpy(fold_records(lists, B)[0]))
-    return lists
-
-
-def fold_stages(n: int) -> tuple[int, int]:
-    """A list of ``n`` entries' 16-entry steps by the fold's rule (16 while more than 8 remain) and its stages."""
-    k16 = (n + 7) >> 4 if n > 8 else 0
-    return k16, k16 + (1 if n > 16 * k16 else 0)
-
-
-def fold_records(lists: Lists, width: int) -> tuple[np.ndarray, np.ndarray]:
-    """THE FOLD'S STAGE RECORDS from a write side's lists (the carry's ``kFoldRing``.. format, docs/internals/carry/
-    carry.md#fold-records), and the mask of their defined bytes: segment ``(bh, w, g, warp)`` holds its stages (lists
-    ``32 g + warp + 8 j`` in order, each list's entries by the step rule) in a header, the first ``FOLD_RING`` stages'
-    tokens, then a record a stage -- its 16 coefficients (``c_v``) lane-ready and the tokens of the stage
-    ``FOLD_RING`` on; a token its place in the call (``512 w + t``), a pad ``PAD_TOKEN`` with coefficient 0."""
-    entries = lists.entries.cpu().numpy().astype(np.int64) & 0xFFFF
-    pre = lists.pre.cpu().numpy().astype(np.int64) & 0xFFFF
-    union = lists.union.cpu().numpy().astype(np.int64) & 0xFFFF
-    BH, windows, groups = pre.shape[:3]
-    out = np.zeros((BH, windows, groups, WARPS, SEG_BYTES), np.uint8)
-    defined = np.zeros_like(out, dtype=bool)
-
-    def coef_at(q: int) -> int:
-        return 8 * ((q & 7) >> 1) + 2 * (q & 1) + 4 * (q >> 3)
-
-    def token_at(q: int) -> int:
-        return 8 * (q & 7) + 4 * (q >> 3)
-
-    def put(seg: tuple, at: int, value: int, size: int) -> None:
-        out[seg][at:at + size] = np.frombuffer(int(value).to_bytes(size, "little"), np.uint8)
-        defined[seg][at:at + size] = True
-
-    for bh in range(BH):
-        for w in range(windows):
-            for g in range(groups):
-                lengths = (pre[bh, w, g, 1:, -1] - pre[bh, w, g, :-1, -1]) & 0xFFFF
-                for warp in range(WARPS):
-                    seg, stage0 = (bh, w, g, warp), 0
-                    plan = []
-                    for j in range(4):
-                        dd = warp + 8 * j
-                        n = int(lengths[dd]) if 32 * g + dd < width else 0
-                        plan.append((32 * g + dd, n, stage0))
-                        stage0 += fold_stages(n)[1]
-                    put(seg, 0, stage0, 4)
-                    for digit, n, first in plan:
-                        k16, stages = fold_stages(n)
-                        for e in range(16 * stages if n else 0):
-                            stage = first + (e >> 4 if e < 16 * k16 else k16)
-                            q = e & 15 if e < 16 * k16 else e - 16 * k16
-                            if q >= 16:
-                                continue
-                            live = e < n
-                            coef = int(entries[bh, w, digit, e, 2]) if live else 0
-                            token = 512 * w + (int(union[bh, w, g, entries[bh, w, digit, e, 0]]) & 0x1FF) \
-                                if live else PAD_TOKEN
-                            put(seg, SEG_RECORDS + RECORD_BYTES * stage + coef_at(q), coef, 2)
-                            run = SEG_RECORDS + RECORD_BYTES * (stage - FOLD_RING) + 32 if stage >= FOLD_RING \
-                                else SEG_HEADER + TOKEN_RUN * stage
-                            put(seg, run + token_at(q), token, 4)
-    return out, defined
+    return Lists(entries, pre & 0xFFFF, pre[..., -1, :], union_out, count)
 
 
 def _entry(s, row, write, row_bytes, rows, b, h, t0, digit, m, ms, list_exp):
@@ -231,7 +157,7 @@ def _entry(s, row, write, row_bytes, rows, b, h, t0, digit, m, ms, list_exp):
         e_v = max(int(list_exp[1]), UNIT_MIN)
         cm = _f16_bits((byte * float(m[b, t, h])) * 2.0 ** (COEF_TOP - e_m))
         cv = _f16_bits((byte * float(ms[b, t, h])) * 2.0 ** (COEF_TOP - e_v))
-        return [i16(s), token, cv, cm]
+        return [i16(s), 0, cv, cm]
     pool = s * row_bytes // 16 + chunk0(row_bytes, s)
     return [i16(pool), j * WINDOW + token, _f16_bits(byte / 256), i16((PAD_BYTES + panel_row(s)) & 0xFFFF)]
 

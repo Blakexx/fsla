@@ -22,13 +22,11 @@ caller allocates, a write head's each (`B·H_w`): `words` the contiguous int32 `
 its write side; [`liveness_contract.md`](liveness_contract.md#tile-unions)), `list_exp` the contiguous int16
 `[B·H_w, windows, B_list, 2]` ([`facts.md`](facts.md#lists); any tensor when the write side lists nothing), `fm` the
 contiguous fp32 `[B·H_w, T, 2]` factor products, `gains16` the f16 `[B·H_w, T, 2]` and `gains_exp` the int16
-`[B·H_w, windows, 2]` ([`facts.md`](facts.md#gains)), and each side's six lists at its list level, the read side's
+`[B·H_w, windows, 2]` ([`facts.md`](facts.md#gains)), and each side's five lists at its list level, the read side's
 over its write head's `h = g` query heads' rows (the write side's `h = 1`) -- entries `[B·H_w, windows, B, 512 h, 4]`
 int16, the boundaries' prefix rows `[B·H_w, windows, groups, 33, 8 h]` int16, the groups' totals
 `[B·H_w, windows, groups, 8 h]` int32, the union by slot `[B·H_w, windows, groups, 512 h]` int16 and the extents
-`[B·H_w, windows, groups]` int32 ([`facts.md`](facts.md#lists-out)), and the write side's fold stage records
-`[B·H_w, windows, groups, 8, kSegBytes]` u8 ([`facts.md`](facts.md#records); any tensor on the read side); any tensors
-for a side that lists nothing. The pass writes `fm` and the gains in
+`[B·H_w, windows, groups]` int32 ([`facts.md`](facts.md#lists-out)); any tensors for a side that lists nothing. The pass writes `fm` and the gains in
 full, `list_exp`, the prefix rows and totals, the unions by slot and the extents in full, each list's
 entries to its end, and of `words` and `unions`
 every sparse level's rows and groups; a dense level's are left as allocated (its words are the width mask, which a

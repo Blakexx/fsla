@@ -182,7 +182,7 @@ An entry is 8 bytes, the carry's `uint2`:
   past the dummy rows modulo 2^16 (`kPadBytes + panel_row(slot)`, past 16 bits where a grouped union passes ~1,000
   slots). A chunk starting at a multiple of 64 takes both offsets back by its first slot's, modulo 2^16: the swizzles
   and the panel's pairing depend on a slot's low bits only, and a chunk's own span is far inside 16 bits.
-- WRITE: the slot, its window place `t`; `c_v = f16(fp32(b F) 2^(4 - E_v))`, `c_m = f16(fp32(b m) 2^(4 - E_m))`, `E = max(K, -123)` the
+- WRITE: the slot, 0; `c_v = f16(fp32(b F) 2^(4 - E_v))`, `c_m = f16(fp32(b m) 2^(4 - E_m))`, `E = max(K, -123)` the
   list's exponent.
 
 THE LANES, every warp its 4 lists `w + 8 j`, 8 lanes a list, lane `s` the list's words `2s` and `2s + 1`. Each lane
@@ -195,20 +195,6 @@ head's entries through it fill every column past its eight), lane `c` column `k0
 its sum, the group's total (`bounds_out`). On the write side a walk over the lane's entries
 takes the list maxima, and their exponents. A walk then writes the lane's entries at consecutive places from its
 first, each's slot `pre + popc(union word & below)` from the lane's two union words and their ranks before.
-
-<a id="records"></a>
-
-## The fold's stage records
-
-On the write side each warp also writes its segment of the fold's stage records
-([`carry.md#fold-records`](../carry/carry.md#fold-records)): its lists' stages by the fold's step rule, their sum the
-segment's header. After its walk the warp syncs and `records_out` reads its lists' entries back (its own, just
-written; a write entry carries its token's window place for this) one list at a time, 32 entries a pass, entry `e` lane
-`e % 32`'s, and stores each entry's coefficient and token at its stage's places (`record_coef`, `record_token`), pads
-to its last stage's end. Written from the walk itself, a lane a run, one store met up to 32 lines and the records cost
-1.8x their bytes at k 16; read back, 32 consecutive entries meet one stage pair's runs. Measured (2026-10-18, sm_86
-locked, `measure/harness/bench_facts_block.py`): 443 / 505 us at k 4 / 16 without the records, 476 / 559 with them --
-1.12x the required bytes (the records' included) at both, under the 1.15x line.
 
 <a id="access-table"></a>
 

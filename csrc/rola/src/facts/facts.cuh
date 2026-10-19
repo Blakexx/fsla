@@ -92,8 +92,7 @@ static_assert(FactsSmem::kTile % 16 == 0 && FactsSmem::kCols % 16 == 0
                   && FactsSmem::kTable % 16 == 0,
               "each tenant on its access's alignment");
 
-//: A SIDE'S LISTS OUT at its list level: entries, prefix rows (mod 2^16), exact totals, the union by slot, its extent,
-//: the write side's stage records.
+//: A SIDE'S LISTS OUT at its list level: entries, prefix rows (mod 2^16), exact totals, the union by slot, its extent.
 //: -- see docs/internals/facts/facts_api.md#rola-facts-forward
 struct ListsOut {
   uint2* entries;
@@ -101,8 +100,6 @@ struct ListsOut {
   int32_t* totals;
   uint16_t* union_tok;
   int32_t* union_count;
-  uint8_t*
-      records;  // the write side's fold stage records, a segment a (batch-head, window, group, warp)
 };
 
 //: A level's rows by batch, token, head strides in BYTES and width in digits; an fp32 column by element strides.

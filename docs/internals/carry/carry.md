@@ -50,7 +50,7 @@ over `heads` query heads' rows (the read side's a write head's `g`, the write si
   offset in the union in 16-byte chunks with its swizzle folded in (the first word's low half), its token (its high
   half), the coefficient (f16, the second word's low half) and the panel row's offset from the dummy rows, its swizzle
   folded in (its high half): a chunk from a multiple of 64 takes its pool and panel back by its first slot's offsets
-  (`parts.md#readout`). A write entry is the slot and its window place, then `c_v` and `c_m`. A step's lanes past a chunk's entries are
+  (`parts.md#readout`). A write entry is the slot, then `c_v` and `c_m`. A step's lanes past a chunk's entries are
   masked by the carry (a read lane's coefficient 0 on a dummy panel row, a write lane's row 0 with c = 0).
 - `pre` (int16, the boundaries in prefix form modulo 2^16, `kPreRows` rows of `8 heads` columns) and `totals` (int32,
   the group's exact): `chunk_runs` turns a chunk's slots into each list's run and its place, `side_counts` reads the
@@ -63,21 +63,6 @@ The addresses both kernels compute live here, one copy: `kGap`, the panel's 64-b
 the segments its pair's residue bits XOR) and `pool_chunk` (a pool row's 16-byte chunk swizzled by the slot's residue,
 or its high bits within each four for a row of an odd number of 64-byte quarters); `parts.cuh`'s `chunk_at` is
 `pool_chunk` at a compiled row.
-
-<a id="fold-records"></a>
-## The fold's stage records
-
-The fold's input where its write side lists and streams (the streamed carry, B(b) step 2): a STAGE is one fold step
--- 16 entries of one list, or a tail's 8, by the fold's rule (`steps16`: 16 while more than 8 remain; `stages_of`) --
-and each warp's stages are its lists `w + 8 j` in order. The facts pass writes them a window at a time, a SEGMENT a
-(batch-head, window, 32-digit group, warp) of `kSegBytes`: a 16-byte header (`kSegHeader`: the warp's stages), the
-first `kFoldRing` stages' tokens (a `kTokenRun` of 64 bytes each, the ring's prologue), then a RECORD a stage
-(`kRecordBytes`): its 16 coefficients `c_v` lane-ready (`coef_at`: lane `t` reads `c(2t), c(2t + 1), c(2t + 8),
-c(2t + 9)` at `8 t`), then the tokens of the stage `kFoldRing` on (`token_at`: pairs `(q, q + 8)` at `8 q`), each its
-place in the call (`512 w + t`), a pad `kPadToken` with coefficient 0. A stage's record rides into its ring slot with
-its rows, so the producer finds the next stage for that slot's tokens where it refills it. The ring restarts each
-window, so no record reaches across windows. `kSegStages` (4 lists of 512 entries) bounds a segment; past its stages
-nothing is defined. Python's model: `rola/engine/facts/lists.py`'s `fold_records`.
 
 <a id="params"></a>
 ## The operand block
