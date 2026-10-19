@@ -73,13 +73,32 @@ RoLA layer runs beside it, a session that holds both is two levels measured in o
 
 Every reported carry number sits beside FlashAttention at the same point, measured in the
 same interleaved, clock-locked session: rola-bench's attention entry
-(`rola_bench/measure/attention.py`) on the group's QKV cell, causal, one head of
-width `dv`, `L` tokens, bf16, through torch's flash backend: Dao's FlashAttention-2 compiled
-into torch, or FA3 (Hopper) and FA4 (Blackwell) once `torch.nn.attention.activate_flash_attention_impl`
-registers them. The backend is forced, so torch refuses a call flash cannot take rather than
-timing its math or memory-efficient backend, and the entry records torch's version and the
-implementation. The capacity-fair point is `N = L`; a cell states its `L`. The layer
-comparison is the inter term plus the intra term against that one number.
+(`rola_bench/measure/attention.py`) on the group's QKV cell, causal, width `dv`, bf16, through torch's flash
+backend: Dao's FlashAttention-2 compiled into torch, or FA3 (Hopper) and FA4 (Blackwell) once
+`torch.nn.attention.activate_flash_attention_impl` registers them. The backend is forced, so torch refuses a call
+flash cannot take rather than timing its math or memory-efficient backend, and the entry records torch's version and
+the implementation.
+
+<a id="incremental"></a>
+THE INCREMENTAL CELL is the headline (Blake, 2026-10-18): the time to process `c` NEW tokens given `T` tokens already
+absorbed, for a model of state count `N`. FlashAttention's `c` queries attend over a KV cache of `T + c` keys,
+bottom-right causal (the entry's `context` parameter); RoLA's layer runs the `c` tokens' producer, facts pass, carry
+from its `N`-leaf state and intra. FlashAttention's cost grows with `T`; RoLA's does not once its state holds the
+history, so the comparison is a grid -- `T` in {0, 4K, 16K, 64K, 256K, 1M} by `c` in {1, 512, 4K, 16K}, the model's
+hidden width and heads stated -- never one number. Each side's per-call overhead is in its time: FlashAttention's KV
+read and launch; RoLA's state load and store (its HBM round trip, ~12.6 MB a head at `N` 64K), launch, partial last
+window and wave quantization.
+
+AT LAYER LEVEL, WITH BOTH SIDES' PROJECTIONS: FlashAttention's QKV projection of the `c` tokens (the entry's `hidden`:
+one cuBLAS GEMM for every head, the library's own form) against RoLA's producer (its routing, gain and values: 1,088
+columns a head against QKV's 192), so a number is what a user pays. The output projection is the same on both sides and
+is in neither.
+
+`N = L` -- `T = 0`, `c = L`, the whole sequence from zero tokens -- is the grid's whole-sequence case and the
+capacity-fair point a single-length cell states (`N = L`); it averages FlashAttention over contexts from 0 to `L` and
+holds one RoLA call's overheads, so it is never quoted alone. Until RoLA's carry starts from a stored state (the
+segment boundary), RoLA's side of the grid is projected from the labs, the producer's floor and the state's bytes, each
+number labelled projected.
 
 ## The stopwatch
 
