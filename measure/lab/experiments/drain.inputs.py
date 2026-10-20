@@ -12,6 +12,10 @@ the 8 slice groups' boxes and every read group whose union holds the token add i
 - `counts.bin`: u16 `[windows][8 read groups]`: a box-window's union.
 - `tokens.bin`: u16 `[windows][8 read groups][512]`: its tokens in rank order (a window's token index).
 - `num.bin`: u32 `[windows x 512][32]`: the head's `num` after one launch.
+- `numf.bin`: f32 `[windows x 512][64]`: the fp32 form's `num` -- channel `32 ct + l` the sum of word `l % 16`'s low
+  (l < 16) or high half as s16 (a pair is hi x 2^16 + lo, lo signed), at unit 1.
+- `num16.bin`: f32 `[windows x 512][32 words][2]`: the f16-pair form's `num` -- each word's low and high 5-bit halves
+  summed (its panel holds `pattern & 0x001f001f`), every sum an integer under 2048 so each f16 is exact.
 """
 from __future__ import annotations
 
@@ -57,21 +61,33 @@ def dataset(directory: Path, cell: str, windows: int) -> list[str]:
     _, _, count, union = base.lists(windows, with_tokens=True, cell=cell)
     groups = count.shape[1]
     num = np.zeros((windows * 512, 2 * WORDS), np.uint64)
+    numf = np.zeros((windows * 512, 64), np.float64)
+    num16 = np.zeros((windows * 512, 2 * WORDS, 2), np.float64)
     for w in range(windows):
         for b in range(CTAS):
             ct, g = b % 2, b // 16
             n = int(count[w, g])
             tokens = 512 * w + union[w, g, :n]
-            num[tokens, WORDS * ct:WORDS * ct + WORDS] += pattern(w, b, np.arange(n))
+            words = pattern(w, b, np.arange(n))
+            num[tokens, WORDS * ct:WORDS * ct + WORDS] += words
+            lo = (words & np.uint64(0xFFFF)).astype(np.uint16).view(np.int16).astype(np.int64)
+            hi = (((words - lo.astype(np.uint64)) >> np.uint64(16)) & np.uint64(0xFFFF)).astype(np.uint16).view(
+                np.int16).astype(np.int64)
+            np.add.at(numf, (tokens[:, None], 32 * ct + np.arange(32)[None, :]), np.concatenate([lo, hi], axis=1))
+            small = np.stack([words & np.uint64(0x1F), (words >> np.uint64(16)) & np.uint64(0x1F)], axis=-1)
+            np.add.at(num16, (tokens[:, None], WORDS * ct + np.arange(WORDS)[None, :]), small.astype(np.float64))
 
     (directory / "head.bin").write_bytes(struct.pack("<3i", 0x4E494152, CTAS, windows))
     (directory / "counts.bin").write_bytes(count.astype(np.uint16).tobytes())
     (directory / "tokens.bin").write_bytes(union.astype(np.uint16).tobytes())
     (directory / "num.bin").write_bytes((num & np.uint64(0xFFFFFFFF)).astype(np.uint32).tobytes())
+    (directory / "numf.bin").write_bytes(numf.astype(np.float32).tobytes())
+    assert num16.max() < 2048, "an f16 sum past 2048 is not an exact integer"
+    (directory / "num16.bin").write_bytes(num16.astype(np.float32).tobytes())
     lines = count.mean() * CTAS
     print(f"drain {cell}: a box-window's union {count.mean():.1f} tokens ({groups} read groups), "
           f"{lines:.0f} half-line requests a window over the head's {CTAS} boxes")
-    return ["head.bin", "counts.bin", "tokens.bin", "num.bin"]
+    return ["head.bin", "counts.bin", "tokens.bin", "num.bin", "numf.bin", "num16.bin"]
 
 
 if __name__ == "__main__":

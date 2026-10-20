@@ -53,7 +53,7 @@
         },
         "global": {
           "l2_line": {"cycles": 7.122, "announced": "the RTX 3080 Ti's (sm_86) measured value; unmeasured on sm_80"},
-          "red_request": {"cycles": 5.098, "announced": "the RTX 3080 Ti's (sm_86) measured value; unmeasured on sm_80"}
+          "red_request": {"cycles": 4.849, "announced": "the RTX 3080 Ti's (sm_86) measured value; unmeasured on sm_80"}
         },
         "pipe": {
           "alu": {"cycles": 2, "documented": "CUDA C++ Programming Guide, arithmetic instruction throughput, compute capability 8.0: 64 results a clock an SM for 32-bit integer add, compare, logic and shift -- 16 lanes a scheduler"},
@@ -89,7 +89,7 @@
         },
         "global": {
           "l2_line": {"cycles": 7.122, "measured": "smem_rates", "row": "cycles a 128 B from L2: cp.async.cg alone, every SM streaming", "on": "rtx3080ti"},
-          "red_request": {"cycles": 5.098, "measured": "drain", "row": "alt-k4: cycles a line request, every SM draining", "on": "rtx3080ti"}
+          "red_request": {"cycles": 4.849, "measured": "drain", "row": "alt-k4: cycles a line request, every SM draining", "on": "rtx3080ti"}
         },
         "pipe": {
           "alu": {"cycles": 2, "documented": "CUDA C++ Programming Guide, arithmetic instruction throughput, compute capability 8.6: 64 results a clock an SM for 32-bit integer add, compare, logic and shift -- 16 lanes a scheduler"},
