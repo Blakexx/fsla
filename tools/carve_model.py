@@ -441,13 +441,13 @@ def events_today(s: CellStats) -> Events:
 #: function inside an MMA loop keyed `name@L`); the window's bookkeeping, per step, is `GLUE`'s, and a function in
 #: neither is refused (`unmapped`)
 DRIVERS = {
-    "readout": {"read_tiles": "tile_in tile_mma tile_add s16_pair panel_red masked_entry tile read_chunk@L ?@L chunk_addr@L "
-                              "Entry::slots@L chunk_addr",
+    "readout": {"read_tiles": "tile_in tile_in_m tile_mma tile_add tile_add_m ld_u16 s16_pair panel_red masked_entry tile "
+                              "read_chunk@L ?@L chunk_addr@L Entry::slots@L chunk_addr",
                 "read_digits": "state_in image_lane",
                 "read_chunks": "read_chunk"},
     "fold": {"fold_steps16": "step16 step16@L", "fold_steps8": "step8",
              "fold_steps": "steps steps@L entry_of entry_of@L",
-             "fold_lists": "fold_chunk", "one": "fold_units next_unit pow2_half2 list_units"},
+             "fold_lists": "fold_chunk", "one": "fold_units next_unit pow2_half2 list_units dense_exp"},
     "handoff": {"images": "store_batches list_scale", "one": "post_keys post_exps box_top ceil_exp pow2"},
     "fills": {"rows": "fill", "entry_trips": "entries_fill", "chunks": "read_fill fold_fill pre_at chunk_runs chunk_cols "
                                                                   "list_row Flow::slot_landed stage_bytes"},
