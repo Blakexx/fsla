@@ -15,7 +15,7 @@ alignment:
 - the write lists' exponent pairs, by parity;
 - the unit book (a list's running unit, `fold.md#units`) and the window's scale a list (`fold.md#units`), the
   digit keys (by parity), the digit exponents in lane order and the scales' bits (`parts.md#maxima`);
-- the phase clock's rows; the barriers (`#barriers`);
+- the phase clock's rows;
 - the CTA's addresses (`Addr`, 256 bytes reserved: `parts.md#place`).
 
 The AREA starts where they end (`kAreaAt`, the same on every call) and ends where the read tables start.
@@ -35,10 +35,9 @@ and at 255 a thread they spilled.
 <a id="barriers"></a>
 ## The barriers
 
-`CarryBarrier`, every card's, the async copies' barriers, each counting all 256 threads (`carry_kernel.md#barriers`):
-the staging (a window's inputs landed) and a SLOT's landed (its entry's copies), one for each of the two slots
-(`schedule.md#rule`): a slot holds one entry at a time, so its barrier has one phase in flight. Every other rendezvous
-is the hardware barrier.
+None in shared memory since 2026-10-25: the async copies land on commit groups in a fixed order a window
+(`carry_kernel.md#staging`), and every rendezvous is the hardware barrier (`carry_kernel.md#barriers`). The mbarriers
+the step machine landed its two slots on, each counting all 256 threads, are retired with it.
 
 <a id="image"></a>
 ## The image

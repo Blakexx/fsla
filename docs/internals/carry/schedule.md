@@ -3,11 +3,11 @@
 Mirrors `csrc/rola/src/carry/schedule.cuh`: each window's PLAN, made by the plan pass before the carry runs from the
 facts pass's counts -- one word (its image mode, its read and fold chunks and their counts) and a 16-bit STEP word a
 step -- and the RULE it is made by. A window's ENTRIES are its read chunks, then its fold chunks; each sits in one of
-two SLOTS of the AREA (the shared memory past the tenants, `plan.md#plan`), and entry `t + 1` is filled while entry `t`
-computes wherever the two fit side by side. The carry runs a window step by step, a word a step
-(`carry_kernel.md#kernel`): shared memory holds what is active now and what lands next, sized by the window's actual
-counts, and a bigger card's area takes larger chunks with no other change (ruled 2026-10-14; the plan as (phase, chunk
-size) words and the two-slot rule, 2026-10-16). The plan's Python model is `tests/oracle/carry_plan.py`, which a gate
+two SLOTS of the AREA (the shared memory past the tenants, `plan.md#plan`), the rule placing entry `t + 1` beside
+entry `t` wherever the two fit side by side. The carry runs a window in one fixed order over the record's chunks
+(`carry_kernel.md#kernel`, 2026-10-25): shared memory holds what is active now and what lands next, sized by the
+window's actual counts, and a bigger card's area takes larger chunks with no other change (ruled 2026-10-14; the plan
+as (phase, chunk size) words and the two-slot rule, 2026-10-16). The plan's Python model is `tests/oracle/carry_plan.py`, which a gate
 holds the plan pass to word for word.
 
 Symbols: `U` a side's union slots in the window, `C` a chunk's slots (a multiple of 64 below the union, or the whole
@@ -32,12 +32,18 @@ consumer re-extracts its fields from; `step_of` step `t`'s word.
   at the bottom (`slot_place`).
 - THE IMAGE is whole (64 KB), stored at the window's store, or the halves (32 KB) each read chunk stores itself, at the
   bottom; it is live from the store to the last read chunk's readout.
-- AT STEP `t`: entry `t - 1` is retired -- every warp done with it, a read chunk's panel drained; entry `t` is filled if
-  it was not filled ahead; the NEXT entry -- `t + 1`, or at the window's last the next window's first -- is filled now
-  where it fits beside entry `t` and the live image (`fits_beside`); entry `t` computes. A fill that does not fit waits
-  for its own step: a pair that never fits runs serially and nothing else changes (R22, degrading smoothly).
-- THE RENDEZVOUS: before the retire where a drain or a fill follows; after a drain where a fill reuses the drained
-  place.
+- AT STEP `t` (the rule's model, which places the entries): entry `t - 1` is retired -- every warp done with it, a
+  read chunk's panel drained; entry `t` is filled if it was not filled ahead; the NEXT entry -- `t + 1`, or at the
+  window's last the next window's first -- is filled now where it fits beside entry `t` and the live image
+  (`fits_beside`); entry `t` computes. A fill that does not fit waits for its own step: a pair that never fits runs
+  serially and nothing else changes (R22, degrading smoothly).
+- HOW THE CARRY RUNS IT (2026-10-25, `carry_kernel.md#kernel`): the chunks in the record's order at the rule's places,
+  each read chunk's fill issued once the chunk before is drained (the first's at the window's top, under the maxima),
+  each fold chunk's once every warp is done with the chunk before; a rendezvous before the retire and before a fold
+  chunk's fill. The places are the rule's, so a fill never lands on anything live; the rule's ahead and next bits
+  describe fills the carry runs in sequence instead.
+- THE RENDEZVOUS: before the retire where a drain or a fill follows; before a fold chunk's fill, which may take the
+  drained place.
 - A FILL FOLLOWS THE DRAIN (measured 2026-10-16, nl64k-alt-k4 on sm_86): a fill clear of the drained place issued
   before the drain made the drain contend with its copies (the drain 1,890 to 3,934 cycles a warp-window); after it,
   the launch is 5.61M cycles against 5.65M.
@@ -52,8 +58,9 @@ memory holds two entries at a time whatever the call's length.
 
 `StepWord`: the entry's place / 128 | filled ahead << 11 | the next entry filled now << 12 | a rendezvous after the
 retired read's drain << 13. FILLED AHEAD: by the step before, or for a window's first by the window before (window 0's
-before the loop). The CTA reads the words it needs at each step: the next entry's place is the next step's word, or the
-next window's step 0 (staged by parity a window ahead); the drained read's place is the step before's.
+before the loop). The carry reads each entry's PLACE from its step word once a window (`carry_kernel.md#kernel`); the
+ahead, next and reuse bits are the rule's own and no longer read (the plan pass still writes them, and the gate holds
+them to the model word for word).
 
 <a id="buffers"></a>
 ## The buffers

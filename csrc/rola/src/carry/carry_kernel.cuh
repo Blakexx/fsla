@@ -1,7 +1,7 @@
-// csrc/rola/src/carry/carry_kernel.cuh -- THE CARRY KERNEL: one CTA a box, window by window: the maxima, the store,
-// then the window's entries (`schedule.cuh`) in order -- each read chunk's readout, drained as the next begins, each
-// fold chunk -- the fp32 state in registers throughout, entry t + 1 filled into the other slot while t computes where
-// the two fit. see docs/internals/carry/carry_kernel.md
+// csrc/rola/src/carry/carry_kernel.cuh -- THE CARRY KERNEL: one CTA a box, window by window in one fixed order: the
+// first read chunk's fill issued and the next window's inputs staged under the maxima, then each read chunk (its image
+// whole or in halves, its units, its tiles, its drain) and each fold chunk (its fill, the fold) from the window's plan
+// (`schedule.cuh`), the fp32 state in registers throughout. see docs/internals/carry/carry_kernel.md
 #pragma once
 
 #include "carry/fold.cuh"
@@ -30,52 +30,9 @@ __device__ __forceinline__ void stage_window(const CarryParams& p, const Place& 
   }
 }
 
-//: A THREAD'S FLOW WORD: a bit a barrier, flipped at each of its arrivals -- a slot's landed at bit `slot`, the
-//: staging's at bit 2 -- then the stream's cursor, its entry's slot at bit 3 and the window's step from bit 4 (the slot
-//: flips at each entry's step, so it alternates across windows too). Every thread arrives at every phase of a barrier, and a wait
-//: is for the phase of the thread's own last arrival, so a barrier's bit names its parity (one never arrived at passes:
-//: its phase before the first) -- one phase in flight a barrier. Every other rendezvous is the hardware barrier
-//: (`ops::rendezvous`). -- see docs/internals/carry/carry_kernel.md#barriers
-struct Flow {
-  static constexpr int kStagedBit = 2, kSlotBit = 3, kStepShift = 4;
-  ops::SmemAddr bars;
-  uint32_t v;
-
-  __device__ __forceinline__ ops::SmemAddr at(int b) const {
-    return bars + 8u * static_cast<uint32_t>(b);
-  }
-
-  __device__ __forceinline__ void staged() {
-    ops::mbar_arrive_when_landed(at(kBarStaged));
-    v ^= 1u << kStagedBit;
-  }
-
-  __device__ __forceinline__ void wait_staged() const {
-    ops::mbar_wait(at(kBarStaged), ((v >> kStagedBit) & 1u) ^ 1u);
-  }
-
-  __device__ __forceinline__ void slot_landed(int slot) {
-    ops::mbar_arrive_when_landed(at(kBarSlot + slot));
-    v ^= 1u << slot;
-  }
-
-  __device__ __forceinline__ void wait_slot(int slot) const {
-    ops::mbar_wait(at(kBarSlot + slot), ((v >> slot) & 1u) ^ 1u);
-  }
-
-  __device__ __forceinline__ int step() const { return static_cast<int>(v >> kStepShift); }
-
-  __device__ __forceinline__ int slot() const { return static_cast<int>((v >> kSlotBit) & 1u); }
-
-  __device__ __forceinline__ void step_on(bool entry) {
-    v = (v + (1u << kStepShift)) ^ (entry ? 1u << kSlotBit : 0u);
-  }
-
-  __device__ __forceinline__ void open() { v &= (1u << kStepShift) - 1u; }
-};
-
-//: THE KERNEL, a grid constant block in, one CTA an SM: grid `(boxes, batch-heads)`. A window: the maxima, the store,
-//: its entries step by step, its end. -- see docs/internals/carry/carry_kernel.md#kernel
+//: THE KERNEL, a grid constant block in, one CTA an SM: grid `(boxes, batch-heads)`. A window: its first read chunk's
+//: fill, the next window's staging, the maxima, its read chunks, its fold chunks -- a fixed order, the plan's chunks
+//: and places read once a window. -- see docs/internals/carry/carry_kernel.md#kernel
 template <class Arm>
 __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constant__ CarryParams p) {
   using P = Plan<Arm>;
@@ -91,9 +48,6 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   PhaseClock<kCarryPhases, true> clock(
       reinterpret_cast<long long*>(smem + P::kClock) + warp * PhaseClock<kCarryPhases, true>::kRow,
       lane, p.ledger != nullptr);
-  Flow flow{ops::smem_addr(smem + P::kBars), 0u};
-  if (threadIdx.x == 0)
-    static_for<kBarCount>([&](auto b) { ops::mbar_init(flow.at(b), kThreads); });
   if (static_cast<int>(threadIdx.x) < kBoxLists)
     reinterpret_cast<UnitBook*>(smem + P::kBook)[threadIdx.x] = UnitBook{kUnitNone, 0.0f};
   if (static_cast<int>(threadIdx.x) < 2 * kBoxDigits)
@@ -118,20 +72,30 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   const ops::SmemAddr area = ops::smem_addr(smem + P::kAreaAt);
   const auto rw = [&](int w) { return window_of<P>(p, smem, kRead, w); };
   const auto ww = [&](int w) { return window_of<P>(p, smem, kWrite, w); };
-  //: AN ENTRY'S FILL of window `w`: its copies issued into its place, arriving at its slot's landed barrier as they
-  //: land
-  const auto fill_entry = [&](int w, const Entry& e, int slot, int at) {
-    const ops::SmemAddr buf = area + static_cast<uint32_t>(at);
-    if (e.side() == kRead) {
-      read_fill<P>(p, smem, rw(w), here(), w, e.first(), e.slots(), e.total(), buf, wid(), lid());
-    } else {
-      fold_fill<P>(p, smem, ww(w), here(), w, e.first(), e.slots(), e.total(), buf, wid(), lid());
-    }
-    flow.slot_landed(slot);
+  //: A CHUNK'S PLACE in the area, the plan's (`schedule.md#steps`)
+  const auto place_at = [&](int w, int t) {
+    return area + static_cast<uint32_t>(step_of<P>(p, smem, w, t).at());
   };
-  //: A READ CHUNK'S UNITS, the CTA's own, before its first adds: a listed side's terms or a dense side's bounds (the
-  //: arm's read rows say which: one factor a listed side's row, two a dense side's row and coefficients), a barrier,
-  //: their bytes and the drain's factors; a barrier publishes them to the readout and the drain
+  //: A CHUNK'S COPIES issued into its place, one group
+  const auto fill_read = [&](int w, const Entry& e, ops::SmemAddr buf) {
+    read_fill<P>(p, smem, rw(w), here(), w, e.first(), e.slots(), e.total(), buf, wid(), lid());
+    ops::stage_commit();
+  };
+  const auto fill_fold = [&](int w, const Entry& e, ops::SmemAddr buf) {
+    fold_fill<P>(p, smem, ww(w), here(), w, e.first(), e.slots(), e.total(), buf, wid(), lid());
+    ops::stage_commit();
+  };
+  //: THE COPIES LANDED: every group but the staging's where that was committed after the chunk's, else every group
+  const auto landed = [&](bool staging_after) {
+    if (staging_after) {
+      ops::stage_wait<1>();
+    } else {
+      ops::stage_wait<0>();
+    }
+  };
+  //: A READ CHUNK'S UNITS, the CTA's own, before its first adds (the arm's read rows say which side: one factor a
+  //: listed side's row, two a dense side's row and coefficients): the terms or the bounds, a barrier, the bytes and the
+  //: drain's factors, a barrier
   const auto chunk_units = [&](int w, const Entry& e, ops::SmemAddr buf) {
     if constexpr (P::kReadFactors == 1) {
       units_listed_add<P>(p, smem, rw(w), w, e.first(), e.slots(), e.total(), buf,
@@ -143,18 +107,17 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     units_close<P>(p, smem, w, e.first(), e.slots());
     ops::rendezvous();
   };
-  //: A READ CHUNK'S TILES over batches `lo .. hi - 1` of the image at `image` (digit `d`'s plane `d & mask`)
-  const auto read_out = [&](auto pairs, int w, const Entry& e, ops::SmemAddr buf, int lo, int hi,
-                            ops::SmemAddr image, uint32_t mask) {
-    constexpr bool kPairs = decltype(pairs)::value;
+  //: A READ CHUNK'S TILES over batches `lo .. hi - 1` of the image at `area` (digit `d`'s plane `d & mask`)
+  const auto read_out = [&](int w, const Entry& e, ops::SmemAddr buf, int lo, int hi,
+                            uint32_t mask) {
     const ops::SmemAddr pads = buf + static_cast<uint32_t>(read_pads<P>(e.slots())),
                         ents = buf + static_cast<uint32_t>(read_ents<P>(e.slots()));
     if (p.readout_f16) {
-      read_chunk<P, true, kPairs>(p, smem, rw(w), w, e.first(), e.slots(), e.total(), lo, hi, image,
-                                  mask, buf, pads, ents, wid(), lid());
+      read_chunk<P, true, true>(p, smem, rw(w), w, e.first(), e.slots(), e.total(), lo, hi, area,
+                                mask, buf, pads, ents, wid(), lid());
     } else {
-      read_chunk<P, false, kPairs>(p, smem, rw(w), w, e.first(), e.slots(), e.total(), lo, hi,
-                                   image, mask, buf, pads, ents, wid(), lid());
+      read_chunk<P, false, true>(p, smem, rw(w), w, e.first(), e.slots(), e.total(), lo, hi, area,
+                                 mask, buf, pads, ents, wid(), lid());
     }
   };
 
@@ -165,130 +128,118 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     });
   });
   stage_window<P>(p, here(), 0, smem);
-  flow.staged();
-  flow.wait_staged();
-  if (stream_of<P>(p, smem, 0).n > 0)
-    fill_entry(0, entry_at(stream_of<P>(p, smem, 0), 0), kSlotTop, step_of<P>(p, smem, 0, 0).at());
+  ops::stage_commit();
+  ops::stage_wait<0>();
+  ops::rendezvous();
 
 #pragma unroll 1
   for (int w = 0; w < p.windows; ++w) {
-    if (w > 0) flow.wait_staged();
+    const Stream s = stream_of<P>(p, smem, w);
+    const bool more = w + 1 < p.windows;
+    //: every warp done with the window before (its fold's rows may be where this window's first chunk lands)
+    ops::rendezvous();
     clock.lap(kPhaseWait);
-    //: THE DIGIT MAXIMA of the state before the window's writes, every warp's keys posted, and each digit's exponent
-    //: recorded by every warp (the same values) for its stores and the readers
+    //: THE FIRST READ CHUNK'S FILL, under the maxima and the first store; the next window's inputs staged after it
+    const Entry e0 = entry_at(s, 0);
+    const ops::SmemAddr buf0 = place_at(w, 0);
+    if (s.nr > 0) fill_read(w, e0, buf0);
+    if (more) {
+      stage_window<P>(p, here(), w + 1, smem);
+      ops::stage_commit();
+    }
+    clock.lap(kPhaseFill);
+    //: THE DIGIT MAXIMA of the state before the window's writes and each leaf's exponent byte, every warp's keys
+    //: posted, each digit's exponent recorded by every warp (the same values), the leaves' scales, the counters reset
     {
       const int top = post_keys<P>(st, smem, w, wid(), lid());
+      clock.lap(kPhaseMaxima);
       ops::rendezvous();
+      clock.lap(kPhaseWait);
       post_exps<P>(smem, w, top, lid());
       leaf_scales<P>(smem);
       bounds_clear<P>(p, smem);
     }
     clock.lap(kPhaseMaxima);
-    //: THE STORE: the next window's inputs staged; a whole image stored
-    if (w + 1 < p.windows) {
-      stage_window<P>(p, here(), w + 1, smem);
-      flow.staged();
-    }
-    if (stream_of<P>(p, smem, w).image == kImageWhole)
-      store_batches<P, kBoxDigits - 1>(st, smem, area, 0, kBatches, wid(), lid());
-    clock.lap(kPhaseStore);
 
-    //: THE WINDOW'S STEPS: one an entry, then one that only retires the last; a window of no entries fills the next
-    //: window's first in its one step
-    flow.open();
+    //: THE READ CHUNKS in order: the chunk's fill (the first's issued above), its image -- whole, stored once before
+    //: the first chunk; or in halves, each chunk storing both -- its copies landed, its units before its first add,
+    //: its tiles, then every warp done and its panel drained (the next chunk may take its place)
 #pragma unroll 1
-    do {
-      //: THE STEP, by its word: entry `t`'s place and whether filled ahead, the next filled now, the retired read's
-      //: drain's rendezvous; the window's stream read once for the step's head (its retired drain and its fills), the
-      //: work's own reads as before, so nothing of the head is held into the work
-      const int t = flow.step();
-      const Stream s = stream_of<P>(p, smem, w);
-      const bool work = t < s.n, cross = t + 1 >= s.n && (work || t == 0);
-      const bool drained = t > 0 && t - 1 < s.nr;
-      const StepWord sw = step_of<P>(p, smem, w, t);
-      if (sw.next() && cross) flow.wait_staged();
-      if (drained || (t > 0 && ((work && !sw.ahead()) || sw.next()))) ops::rendezvous();
-      clock.lap(kPhaseWait);
-
-      //: ENTRY `t - 1` RETIRED: every warp done with it; a read chunk's panel drained, and every warp done draining
-      //: where a fill reuses its place
-      if (drained) {
-        const Entry d = entry_at(s, t - 1);
-        drain<P>(p, smem, rw(w), here(), w, d.first(), d.slots(),
-                 area
-                     + static_cast<uint32_t>(step_of<P>(p, smem, w, t - 1).at()
-                                             + read_pads<P>(d.slots()) + kPadBytes));
-        clock.lap(kPhaseDrain);
-        if (sw.reuse()) ops::rendezvous();
+    for (int i = 0; i < s.nr; ++i) {
+      const Entry e = i == 0 ? e0 : entry_at(s, i);
+      const ops::SmemAddr buf = i == 0 ? buf0 : place_at(w, i);
+      if (i > 0) {
+        fill_read(w, e, buf);
+        clock.lap(kPhaseFill);
+      }
+      // R9-CASES: ImageMode, the plan's image modes (schedule.cuh)
+      if (s.mode == kModeWhole) {
+        if (i == 0) store_batches<P, kBoxDigits - 1>(st, smem, area, 0, kBatches, wid(), lid());
+        clock.lap(kPhaseStore);
+        landed(i == 0 && more);
+        clock.lap(kPhaseLanded);
+        ops::rendezvous();
         clock.lap(kPhaseWait);
-      }
-      //: THE FILLS: entry `t` unless filled ahead, then the next where planned (at the window's last entry the next
-      //: window's first, its stream read for it); one fill site, so its parts are inlined once
-#pragma unroll 1
-      for (int f = 0; f < 2; ++f) {
-        if (f == 0 ? work && !sw.ahead() : sw.next()) {
-          const bool other = f == 1 && cross;
-          const int fw = other ? w + 1 : w, ft = f == 0 ? t : other ? 0 : t + 1;
-          fill_entry(fw, entry_at(other ? stream_of<P>(p, smem, fw) : s, ft),
-                     flow.slot() ^ (f == 1 && work ? 1 : 0),
-                     f == 0 ? sw.at() : step_of<P>(p, smem, fw, ft).at());
-        }
-      }
-      clock.lap(kPhaseFill);
-
-      //: THE UNITS, stepped at the window's first fold chunk, or at its end where it folds nothing
-      if (t == stream_of<P>(p, smem, w).nr) fold_units<P>(smem, ww(w), w, wid(), lid());
-
-      //: THE ENTRY'S WORK: a read chunk from the whole image, or from the halves it stores itself; a fold chunk
-      if (work) {
-        const ops::SmemAddr buf =
-            area + static_cast<uint32_t>(step_of<P>(p, smem, w, flow.step()).at());
-        const Stream sw2 = stream_of<P>(p, smem, w);
-        if (t < sw2.nr) {
-          // R9-CASES: ImageMode, the plan's image modes (schedule.cuh)
-          if (sw2.mode == kModeWhole) {
-            flow.wait_slot(flow.slot());
-            clock.lap(kPhaseLanded);
-            if (t == 0) ops::rendezvous();
+        chunk_units(w, e, buf);
+        clock.lap(kPhaseUnits);
+        read_out(w, e, buf, 0, kBatches, kBoxDigits - 1);
+        clock.lap(kPhaseReadout);
+      } else if (s.mode == kModeHalves) {
+        //: the two halves as one block each (no branch on the half): the second's store after a rendezvous, the
+        //: first's landing and units before its tiles
+        static_for<2>([&](auto H) {
+          constexpr int half = decltype(H)::value;
+          if constexpr (half > 0) {
+            ops::rendezvous();
             clock.lap(kPhaseWait);
-            chunk_units(w, entry_at(stream_of<P>(p, smem, w), flow.step()), buf);
-            clock.lap(kPhaseUnits);
-            read_out(std::true_type{}, w, entry_at(stream_of<P>(p, smem, w), flow.step()), buf, 0,
-                     kBatches, area, kBoxDigits - 1);
-            clock.lap(kPhaseReadout);
-          } else if (sw2.mode == kModeHalves) {
-#pragma unroll 1
-            for (int half = 0; half < 2; ++half) {
-              if (half > 0) ops::rendezvous();
-              store_batches<P, 2 * kBatchPlanes - 1>(st, smem, area, 2 * half, 2 * half + 2, wid(),
-                                                     lid());
-              ops::rendezvous();
-              clock.lap(kPhaseStore);
-              if (half == 0) {
-                flow.wait_slot(flow.slot());
-                clock.lap(kPhaseLanded);
-                chunk_units(w, entry_at(stream_of<P>(p, smem, w), flow.step()), buf);
-                clock.lap(kPhaseUnits);
-              }
-              read_out(std::true_type{}, w, entry_at(stream_of<P>(p, smem, w), flow.step()), buf,
-                       2 * half, 2 * half + 2, area, 2 * kBatchPlanes - 1);
-              clock.lap(kPhaseReadout);
-            }
-          } else {
-            __trap();
           }
-        } else {
-          flow.wait_slot(flow.slot());
-          clock.lap(kPhaseLanded);
-          const Entry e = entry_at(stream_of<P>(p, smem, w), flow.step());
-          fold_chunk<P>(p, st, flow.step() == stream_of<P>(p, smem, w).nr, smem, ww(w), w,
-                        e.first(), e.slots(), e.total(), buf,
-                        buf + static_cast<uint32_t>(fold_ents<P>(e.slots())), wid(), lid());
-          clock.lap(kPhaseFold);
-        }
+          store_batches<P, 2 * kBatchPlanes - 1>(st, smem, area, 2 * half, 2 * half + 2, wid(),
+                                                 lid());
+          clock.lap(kPhaseStore);
+          if constexpr (half == 0) {
+            landed(i == 0 && more);
+            clock.lap(kPhaseLanded);
+          }
+          ops::rendezvous();
+          clock.lap(kPhaseWait);
+          if constexpr (half == 0) {
+            chunk_units(w, e, buf);
+            clock.lap(kPhaseUnits);
+          }
+          read_out(w, e, buf, 2 * half, 2 * half + 2, 2 * kBatchPlanes - 1);
+          clock.lap(kPhaseReadout);
+        });
+      } else {
+        __trap();
       }
-      flow.step_on(flow.step() < stream_of<P>(p, smem, w).n);
-    } while (__any_sync(0xffffffffu, flow.step() <= stream_of<P>(p, smem, w).n));
+      ops::rendezvous();
+      clock.lap(kPhaseWait);
+      drain<P>(p, smem, rw(w), here(), w, e.first(), e.slots(),
+               buf + static_cast<uint32_t>(read_pads<P>(e.slots()) + kPadBytes));
+      clock.lap(kPhaseDrain);
+    }
+
+    //: THE FOLD CHUNKS in order: every warp done draining (a fill may take the drained place) or folding the chunk
+    //: before, the chunk's fill, its copies landed, the window's units at its first chunk, the fold; a window folding
+    //: nothing steps its units at its end
+    const int nf = s.n - s.nr;
+    if (nf == 0) fold_units<P>(smem, ww(w), w, wid(), lid());
+#pragma unroll 1
+    for (int j = 0; j < nf; ++j) {
+      const Entry e = entry_at(s, s.nr + j);
+      const ops::SmemAddr buf = place_at(w, s.nr + j);
+      ops::rendezvous();
+      fill_fold(w, e, buf);
+      clock.lap(kPhaseFill);
+      ops::stage_wait<0>();
+      clock.lap(kPhaseLanded);
+      ops::rendezvous();
+      clock.lap(kPhaseWait);
+      if (j == 0) fold_units<P>(smem, ww(w), w, wid(), lid());
+      fold_chunk<P>(p, st, j == 0, smem, ww(w), w, e.first(), e.slots(), e.total(), buf,
+                    buf + static_cast<uint32_t>(fold_ents<P>(e.slots())), wid(), lid());
+      clock.lap(kPhaseFold);
+    }
   }
 
   //: THE CHECK, a warp's sum added once a warp -- see docs/internals/carry/carry_kernel.md#check

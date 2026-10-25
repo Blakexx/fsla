@@ -1,9 +1,12 @@
 # `carry/carry_kernel.cuh` — the carry kernel
 
 Mirrors `csrc/rola/src/carry/carry_kernel.cuh`: the window loop over the components (`parts.md`, `fold.md`) under each
-window's plan record (`schedule.md`) for one arm's plan (`plan.md`). The form was ruled 2026-10-14: the carry is one planned
-pipeline -- shared memory holds what is active and what lands next, sized by each window's actual counts, the planner
-choosing chunk sizes the card's area holds.
+window's plan record (`schedule.md`) for one arm's plan (`plan.md`). The carry is one planned pipeline (ruled
+2026-10-14): shared memory holds what is active and what lands next, sized by each window's actual counts, the planner
+choosing chunk sizes the card's area holds. Its window runs in ONE FIXED ORDER (2026-10-25, from the window lab's
+form 5, `docs/lab/carry_window.md`): the step machine that ran the record word by word, re-reading the window's
+statics at each use, cost ~6.3K cycles a CTA-window at either density -- its per-step glue, its barriers and waits --
+and the same parts in a fixed order recovered it (0.73x production on alt-k4 and its 1/16-thinned twin).
 
 <a id="kernel"></a>
 ## The kernel
@@ -15,20 +18,28 @@ Every part in the window loop takes the warp and lane opaque (`wid`, `lid`: `ops
 each forms its lane addresses where it runs; held from before the loop, every phase's were live through every other
 (measured 2026-10-16 at nl64k-alt-k4, arm 0 on sm_86: the readout's peak 251 -> 239 live, ptxas's allocation 255 ->
 246, every other part 13-42 fewer; one launch 0.9-2.8% faster on the three nl64k cells, `num` bit-identical).
-Window 0's inputs and record are staged and its first entry filled before the loop. A window:
+Window 0's inputs and record are staged before the loop (one copy group, waited). A window, its plan record read once
+(`stream_of`: the mode, the chunks, the counts) and each chunk's place from its step word (`schedule.md#steps`):
 
-1. **The maxima**: each warp's digit maxima posted (`parts.md#maxima`) and each leaf's exponent byte kept
-   (`parts.md#leaves`), every warp's joined, each digit's exponent recorded by every warp (the same values) for its
-   stores and the readers, the leaves' scales and the bounds' counters reset.
-2. **The store**: the next window's inputs staged; the image stored whole where the window's mode is whole.
-3. **Its steps** (`schedule.md#rule`), each by its step word (`schedule.md#steps`): the rendezvous where the retire is
-   followed by a drain or a fill; the retired read chunk's panel drained to `num`, and the rendezvous where a fill
-   reuses its place; the fills -- entry `t` where it was not filled ahead, then the next entry where the word says (the
-   next window's first once that window's inputs have landed); the units stepped at the window's first fold chunk, or
-   at its last step where it folds nothing; then the work: a READ chunk's units -- the CTA's own, from its leaves'
-   maxima, before its first add (`parts.md#units`: the bounds, a rendezvous, the bytes, a rendezvous) -- then its
-   tiles over every digit from the whole image, or from the halves it stores itself (a rendezvous before each half's
-   reuse); a FOLD chunk's steps (`fold.md#chunk`).
+1. **The first read chunk's fill**, issued into its place (one copy group), then **the next window's inputs staged**
+   (a second group): both land under the maxima and the first store.
+2. **The maxima**: each warp's digit maxima posted (`parts.md#maxima`) and each leaf's exponent byte kept
+   (`parts.md#leaves`), a rendezvous, each digit's exponent recorded by every warp (the same values) for its stores
+   and the readers, the leaves' scales and the bounds' counters reset.
+3. **The read chunks**, each in order: its fill where it is not the first (issued after the chunk before is drained,
+   into its own place); its image -- whole, stored once before the first chunk, or in halves, each chunk storing both
+   -- its copies landed (`cp.async.wait_group`: every group but the staging's, which may still fly), a rendezvous,
+   the chunk's units -- the CTA's own, from its leaves' maxima, before its first add (`parts.md#units`: the bounds, a
+   rendezvous, the bytes, a rendezvous) -- its tiles over the image (a rendezvous before the second half's store), then
+   a rendezvous and its panel drained to `num`.
+4. **The fold chunks**, each in order: a rendezvous (the drained place or the chunk before's rows may be taken), its
+   fill, every group landed, a rendezvous, the window's units stepped at the first (`fold.md#units`), the fold
+   (`fold.md#chunk`); a window folding nothing steps its units at its end.
+
+Where a window has one chunk a side -- every alt-k4 window -- this is the lab's form 5 exactly: seven barriers a
+window, no step words, nothing re-read. Where it has several, the chunks run in sequence at the plan's places; the
+record's other bits (filled ahead, next, reuse) are the two-slot rule's and the carry no longer reads them
+(`schedule.md#steps`).
 
 The work is an exclusive chain over the entry's side and the image mode (R9's case marker, a trapping last arm), not
 `uniform_switch`: the primitive's independent tests made a body 14% slower at nl64k-alt-k4 (31.7K against 27.9K
@@ -36,32 +47,35 @@ cycles a warp-window, 2026-10-14). A warp moves on as soon as its own work is do
 stores (its registers are the state), so warps flow from their reads into their folds; only a rendezvous waits for the
 other warps.
 
-THE REGISTERS (255 a thread, the state 128 of them): what lives across a window's steps is the window, the flow word
-(`#barriers`) and the step's place; everything a step needs is re-read at its use -- the record's words, the counts, a
-side's statics (volatile), and the offsets formed from the window (`parts.md#window`: its first token and parity
-opaque, so a window-invariant address is formed at each use rather than hoisted and held across the readout, where the
-peak is).
+THE REGISTERS (255 a thread, the state 128 of them): what lives across a window is the window's stream (its mode,
+chunks and counts, eight integers) and the first chunk's entry and place; a side's statics (volatile) and the offsets
+formed from the window (`parts.md#window`: its first token and parity opaque) are read at each use, so a
+window-invariant address is formed where it is used rather than hoisted and held across the readout, where the peak
+is.
 
 <a id="staging"></a>
 ## The staging
 
-Every async copy lands on an mbarrier, none on a commit group: `cp.async.mbarrier.arrive.noinc` makes a barrier track
-all of a thread's earlier copies. A window's inputs (`stage_window`: both sides' lists, the facts and the window's plan
-record for the CTA's box class) are staged into the other parity at the window's store, after the maxima retire the
-window before, a window ahead.
+Every async copy lands on a COMMIT GROUP (`cp.async.commit_group` / `cp.async.wait_group`, `ops::stage_commit`,
+`ops::stage_wait<N>`), the carry's groups in a fixed order a window: the first read chunk's, the next window's inputs'
+(`stage_window`: both sides' lists, the facts and the window's plan record for the CTA's box class, into the other
+parity), then a group a further read chunk and a group a fold chunk. A read chunk's landing waits for every group but
+the staging's where that was committed after it (`wait_group 1`), else for every group; a fold chunk's for every
+group. The window lab measured the groups' form (`docs/lab/carry_window.md`); mbarriers, which the step machine landed
+its slots on (an arrive fences the warp's outstanding atomics, the waiters poll; ~2x a hardware barrier a round,
+`docs/lab/image_ring.md`), are gone from the carry.
 
 <a id="barriers"></a>
 ## The barriers
 
-Every CTA-wide rendezvous -- a retire, a drain's reuse, the maxima, the store before a whole image's first read, the
-halves' stores and reuses -- is the hardware barrier (`ops::rendezvous`): every warp runs the same steps, so a barrier
-where the consumer starts means every warp is done with what came before. On sm_80 and sm_86 an mbarrier is software
--- an arrive fences the warp's outstanding atomics, the waiters poll -- about twice the hardware barrier's cost a round
-(`docs/lab/image_ring.md`). mbarriers remain only where async copies land: the staging and each slot's landed
-(`plan.md#barriers`). `Flow` keeps a bit a barrier, flipped at each of the thread's arrivals; a wait is for the phase of
-the thread's own last arrival, so the bit names its parity (a barrier never arrived at passes: its phase before the
-first), which holds only while a barrier has one phase in flight -- a slot is refilled only after its entry has been
-waited for and retired. The same word carries the stream's cursor: the entry's slot and the window's step.
+Every CTA-wide rendezvous is the hardware barrier (`ops::rendezvous`): every warp runs the same order, so a barrier
+where the consumer starts means every warp is done with what came before. A window's: at its top (every warp done
+folding the window before, whose rows may be where the first chunk lands); after the maxima (the keys posted); after each read chunk's copies land (its rows and entries visible, its panel zeroed, the first half stored);
+before the second half's store (the first half read out); after the second half's store; after the chunk's tiles
+(its panel complete, drained next); before a fold chunk's fill (the drained place, or the chunk before's rows, free)
+and after its copies land. A warp moves on as soon as its own work is done: a FOLD needs only the warp's own stores
+(its registers are the state), so warps flow from their reads into their folds; only a rendezvous waits for the
+other warps.
 
 <a id="budget"></a>
 ## The budget

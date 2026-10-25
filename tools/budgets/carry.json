@@ -11,7 +11,6 @@
   "read_fill": "read_fill",
   "fold_fill": "fold_fill",
   "staging": "stage_window",
-  "barriers": "Flow",
   "glue": "carry_kernel"
  },
  "registers": {
@@ -25,7 +24,6 @@
   "read_fill": 193,
   "fold_fill": 195,
   "staging": 178,
-  "barriers": 174,
   "glue": 220
  },
  "registers_basis": "peak live registers a component, measured on arm 0 (2026-10-16, the warp and lane opaque a phase): a ratchet until the window's design states each phase's live set (KERNEL_STANDARDS section 32)",
@@ -41,7 +39,6 @@
    "read_fill": 1040,
    "fold_fill": 1024,
    "staging": 320,
-   "barriers": 648,
    "glue": 1200,
    "total": 15264,
    "trips": {

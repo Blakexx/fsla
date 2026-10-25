@@ -50,14 +50,16 @@ added. An entry carries the row's chunk-0 offset, so a lane addresses its chunk 
 <a id="fill"></a>
 ## The fill
 
-A chunk's fill issues its copies; the caller arrives on the buffer's landed barrier (`carry_kernel.md#barriers`).
+A chunk's fill issues its copies as one commit group; the caller waits the group (`carry_kernel.md#staging`).
 `fill` copies a range of union slots, each its token's row -- the side's operand slices at 64 bytes each, then on the
 write side its values at the box's channels -- swizzled, by `cp.async` over all 256 threads (a slice's 16-byte runs, 8
-or 4 under 16, `stage_bytes`). A read slot's row names its query head (`carry.md#sides`): its source is the slice at
+or 4 under 16, `stage_bytes`): a quad of lanes a slot, a thread's slots four at a time with their four tokens loaded
+before any copy (`copy16`, a predicated copy, so a step's slots past the chunk cost no branch) -- the window lab's
+form 5 took 0.25K cycles a warp-window off the fills by it (`docs/lab/carry_window.md`). A read slot's row names its query head (`carry.md#sides`): its source is the slice at
 that head, a head stride on (`Slices::sh`), as a 32-bit offset from the slice's base at the window's first token (the
 host holds a window's token and head strides under 2^31 together). A GAP slot (`kGap`, [`carry.md`](carry.md#lists)) is zero-filled and reads
-nothing. `read_fill` adds the read buffer's dummy panel rows and its panel's whole 128-byte lines, zero-filled (a zero
-quantum reads nothing), and the chunk's entries; `fold_fill` (`fold.md#chunk`) the write chunk's rows and entries, or on a side with no list level each slot's token's
+nothing. `read_fill` adds the read buffer's dummy panel rows and its panel's whole 128-byte lines, zeroed by stores (a
+quantum a thread, so the chunk's landing waits on its rows alone), and the chunk's entries; `fold_fill` (`fold.md#chunk`) the write chunk's rows and entries, or on a side with no list level each slot's token's
 `(F, m)` in the entries' place (8-byte copies from the facts pass's `fm`). Each
 part sits at the chunk's own slots (`read_pads`, `read_ents`, `fold_ents`; `schedule.md#buffers`).
 
