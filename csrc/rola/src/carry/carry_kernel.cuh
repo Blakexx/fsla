@@ -76,13 +76,18 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   const auto place_at = [&](int w, int t) {
     return area + static_cast<uint32_t>(step_of<P>(p, smem, w, t).at());
   };
+  //: A CHUNK'S RUNS, lane `l` list `l`'s, worked out once a chunk for its fill, its units and its tiles or fold
+  const auto runs_of = [&](int side, int w, const Entry& e) {
+    return chunk_runs<P>(p, smem, side == kRead ? rw(w) : ww(w), side, w, e.first(), e.slots(),
+                         e.total(), lid());
+  };
   //: A CHUNK'S COPIES issued into its place, one group
-  const auto fill_read = [&](int w, const Entry& e, ops::SmemAddr buf) {
-    read_fill<P>(p, smem, rw(w), here(), w, e.first(), e.slots(), e.total(), buf, wid(), lid());
+  const auto fill_read = [&](int w, const Entry& e, const Run& run, ops::SmemAddr buf) {
+    read_fill<P>(p, smem, rw(w), here(), w, run, e.first(), e.slots(), buf, wid(), lid());
     ops::stage_commit();
   };
-  const auto fill_fold = [&](int w, const Entry& e, ops::SmemAddr buf) {
-    fold_fill<P>(p, smem, ww(w), here(), w, e.first(), e.slots(), e.total(), buf, wid(), lid());
+  const auto fill_fold = [&](int w, const Entry& e, const Run& run, ops::SmemAddr buf) {
+    fold_fill<P>(p, smem, ww(w), here(), w, run, e.first(), e.slots(), buf, wid(), lid());
     ops::stage_commit();
   };
   //: THE COPIES LANDED: every group but the staging's where that was committed after the chunk's, else every group
@@ -96,9 +101,9 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   //: A READ CHUNK'S UNITS, the CTA's own, before its first adds (the arm's read rows say which side: one factor a
   //: listed side's row, two a dense side's row and coefficients): the terms or the bounds, a barrier, the bytes and the
   //: drain's factors, a barrier
-  const auto chunk_units = [&](int w, const Entry& e, ops::SmemAddr buf) {
+  const auto chunk_units = [&](int w, const Entry& e, const Run& run, ops::SmemAddr buf) {
     if constexpr (P::kReadFactors == 1) {
-      units_listed_add<P>(p, smem, rw(w), w, e.first(), e.slots(), e.total(), buf,
+      units_listed_add<P>(p, smem, run, e.first(), buf,
                           buf + static_cast<uint32_t>(read_ents<P>(e.slots())), wid(), lid());
     } else {
       units_dense<P>(p, smem, e.first(), e.slots(), buf, wid(), lid());
@@ -108,16 +113,16 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     ops::rendezvous();
   };
   //: A READ CHUNK'S TILES over batches `lo .. hi - 1` of the image at `area` (digit `d`'s plane `d & mask`)
-  const auto read_out = [&](int w, const Entry& e, ops::SmemAddr buf, int lo, int hi,
-                            uint32_t mask) {
+  const auto read_out = [&](int w, const Entry& e, const Run& run, ops::SmemAddr buf, int lo,
+                            int hi, uint32_t mask) {
     const ops::SmemAddr pads = buf + static_cast<uint32_t>(read_pads<P>(e.slots())),
                         ents = buf + static_cast<uint32_t>(read_ents<P>(e.slots()));
     if (p.readout_f16) {
-      read_chunk<P, true, true>(p, smem, rw(w), w, e.first(), e.slots(), e.total(), lo, hi, area,
-                                mask, buf, pads, ents, wid(), lid());
+      read_chunk<P, true, true>(p, smem, rw(w), run, e.first(), e.slots(), lo, hi, area, mask, buf,
+                                pads, ents, wid(), lid());
     } else {
-      read_chunk<P, false, true>(p, smem, rw(w), w, e.first(), e.slots(), e.total(), lo, hi, area,
-                                 mask, buf, pads, ents, wid(), lid());
+      read_chunk<P, false, true>(p, smem, rw(w), run, e.first(), e.slots(), lo, hi, area, mask, buf,
+                                 pads, ents, wid(), lid());
     }
   };
 
@@ -141,8 +146,9 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     clock.lap(kPhaseWait);
     //: THE FIRST READ CHUNK'S FILL, under the maxima and the first store; the next window's inputs staged after it
     const Entry e0 = entry_at(s, 0);
+    const Run run0 = runs_of(kRead, w, e0);
     const ops::SmemAddr buf0 = place_at(w, 0);
-    if (s.nr > 0) fill_read(w, e0, buf0);
+    if (s.nr > 0) fill_read(w, e0, run0, buf0);
     if (more) {
       stage_window<P>(p, here(), w + 1, smem);
       ops::stage_commit();
@@ -167,9 +173,10 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
 #pragma unroll 1
     for (int i = 0; i < s.nr; ++i) {
       const Entry e = i == 0 ? e0 : entry_at(s, i);
+      const Run run = i == 0 ? run0 : runs_of(kRead, w, e);
       const ops::SmemAddr buf = i == 0 ? buf0 : place_at(w, i);
       if (i > 0) {
-        fill_read(w, e, buf);
+        fill_read(w, e, run, buf);
         clock.lap(kPhaseFill);
       }
       // R9-CASES: ImageMode, the plan's image modes (schedule.cuh)
@@ -180,9 +187,9 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         clock.lap(kPhaseLanded);
         ops::rendezvous();
         clock.lap(kPhaseWait);
-        chunk_units(w, e, buf);
+        chunk_units(w, e, run, buf);
         clock.lap(kPhaseUnits);
-        read_out(w, e, buf, 0, kBatches, kBoxDigits - 1);
+        read_out(w, e, run, buf, 0, kBatches, kBoxDigits - 1);
         clock.lap(kPhaseReadout);
       } else if (s.mode == kModeHalves) {
         //: the two halves as one block each (no branch on the half): the second's store after a rendezvous, the
@@ -203,10 +210,10 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
           ops::rendezvous();
           clock.lap(kPhaseWait);
           if constexpr (half == 0) {
-            chunk_units(w, e, buf);
+            chunk_units(w, e, run, buf);
             clock.lap(kPhaseUnits);
           }
-          read_out(w, e, buf, 2 * half, 2 * half + 2, 2 * kBatchPlanes - 1);
+          read_out(w, e, run, buf, 2 * half, 2 * half + 2, 2 * kBatchPlanes - 1);
           clock.lap(kPhaseReadout);
         });
       } else {
@@ -227,16 +234,17 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
 #pragma unroll 1
     for (int j = 0; j < nf; ++j) {
       const Entry e = entry_at(s, s.nr + j);
+      const Run run = runs_of(kWrite, w, e);
       const ops::SmemAddr buf = place_at(w, s.nr + j);
       ops::rendezvous();
-      fill_fold(w, e, buf);
+      fill_fold(w, e, run, buf);
       clock.lap(kPhaseFill);
       ops::stage_wait<0>();
       clock.lap(kPhaseLanded);
       ops::rendezvous();
       clock.lap(kPhaseWait);
       if (j == 0) fold_units<P>(smem, ww(w), w, wid(), lid());
-      fold_chunk<P>(p, st, j == 0, smem, ww(w), w, e.first(), e.slots(), e.total(), buf,
+      fold_chunk<P>(st, j == 0, smem, ww(w), w, run, e.first(), e.slots(), buf,
                     buf + static_cast<uint32_t>(fold_ents<P>(e.slots())), wid(), lid());
       clock.lap(kPhaseFold);
     }

@@ -21,8 +21,9 @@ each forms its lane addresses where it runs; held from before the loop, every ph
 Window 0's inputs and record are staged before the loop (one copy group, waited). A window, its plan record read once
 (`stream_of`: the mode, the chunks, the counts) and each chunk's place from its step word (`schedule.md#steps`):
 
-1. **The first read chunk's fill**, issued into its place (one copy group), then **the next window's inputs staged**
-   (a second group): both land under the maxima and the first store.
+1. **The first read chunk's fill**, issued into its place (one copy group) with its runs worked out first
+   (`parts.md#entries`: a chunk's runs once, for its fill, its units and its tiles), then **the next window's inputs
+   staged** (a second group): both land under the maxima and the first store.
 2. **The maxima**: each warp's digit maxima posted (`parts.md#maxima`) and each leaf's exponent byte kept
    (`parts.md#leaves`), a rendezvous, each digit's exponent recorded by every warp (the same values) for its stores
    and the readers, the leaves' scales and the bounds' counters reset.
@@ -48,7 +49,7 @@ stores (its registers are the state), so warps flow from their reads into their 
 other warps.
 
 THE REGISTERS (255 a thread, the state 128 of them): what lives across a window is the window's stream (its mode,
-chunks and counts, eight integers) and the first chunk's entry and place; a side's statics (volatile) and the offsets
+chunks and counts, eight integers) and the first chunk's entry, runs and place; a side's statics (volatile) and the offsets
 formed from the window (`parts.md#window`: its first token and parity opaque) are read at each use, so a
 window-invariant address is formed where it is used rather than hoisted and held across the readout, where the peak
 is.

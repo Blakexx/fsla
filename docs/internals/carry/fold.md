@@ -57,7 +57,9 @@ second) and `E` the window's bound -- the facts records' arithmetic, rounded onc
 ALU pipe: the scalar one runs on the conversion unit, which a step may not hold). Until 2026-10-19 this branch took c
 as `b` alone, without F or the list's unit: the dense-dense carry's state was wrong from its second window, and no gate
 read it (the whole-call gate refused read sides with no list level; the probe wrote such a side's lists at one leaf).
-The list's rescale is applied before its first chunk's steps.
+The list's rescale is applied before its first chunk's steps, and only where its unit moved: a list whose unit stood
+(`f == 1`, the warp's one value) multiplies nothing -- the multiply is a one-trip loop on a warp vote, since 128
+multiplies a lane every window (1.0K warp instructions a CTA-window at alt-k4) bought nothing in the steady state.
 
 <a id="probe"></a>
 ## The probe

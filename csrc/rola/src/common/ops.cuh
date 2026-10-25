@@ -474,6 +474,16 @@ __device__ __forceinline__ void hmma_fresh(float (&d)[4], const uint32_t (&a)[4]
       : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1), "f"(0.0f));
 }
 
+//: THE fp16-ACCUMULATE ATOM INTO A FRESH FRAGMENT (C = 0). -- see docs/internals/common/ops.md#hmma
+__device__ __forceinline__ void hmma_f16_fresh(uint32_t (&d)[2], const uint32_t (&a)[4],
+                                               uint32_t b0, uint32_t b1) {
+  asm volatile(
+      "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
+      "{%0,%1}, {%2,%3,%4,%5}, {%6,%7}, {%8,%8};\n"
+      : "=r"(d[0]), "=r"(d[1])
+      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1), "r"(0u));
+}
+
 //: THE SAME AT K = 8: acc += A(16x8) . B(8x8), half the k16 atom's tensor work. -- see docs/internals/common/ops.md#hmma
 __device__ __forceinline__ void hmma_k8(float (&d)[4], uint32_t a0, uint32_t a1, uint32_t b) {
   asm volatile(

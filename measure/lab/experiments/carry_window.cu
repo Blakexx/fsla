@@ -226,9 +226,10 @@ __device__ __forceinline__ void read_fill(const rc::CarryParams& p, uint8_t* sme
                                           uint32_t area) {
   const Sized r = sized<rc::kRead>(p, smem, w);
   const int t = tid();
-  rc::read_fill<P>(p, smem, rc::window_of<P>(p, smem, rc::kRead, w),
-                   rc::Place{static_cast<int>(blockIdx.y), 0}, w, 0, r.slots, r.slots,
-                   area + top_of(r.bytes), t >> 5, t & 31);
+  const rc::Window rw = rc::window_of<P>(p, smem, rc::kRead, w);
+  rc::read_fill<P>(p, smem, rw, rc::Place{static_cast<int>(blockIdx.y), 0}, w,
+                   rc::chunk_runs<P>(p, smem, rw, rc::kRead, w, 0, r.slots, r.slots, t & 31), 0,
+                   r.slots, area + top_of(r.bytes), t >> 5, t & 31);
 }
 
 //: A CHUNK'S ENTRIES IN ONE PASS (parts.cuh's `entries_fill`): a warp's four lists' runs as one, each lane an entry --
@@ -547,11 +548,12 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
         const uint32_t rows = area + top_of(r.bytes), pads = rows + rc::read_pads<P>(r.slots),
                        ents = rows + rc::read_ents<P>(r.slots);
         const rc::Window rw = rc::window_of<P>(p, smem, rc::kRead, w);
+        const rc::Run run =
+            rc::chunk_runs<P>(p, smem, rw, rc::kRead, w, 0, r.slots, r.slots, t & 31);
         //: THE CHUNK'S UNITS, the CTA's own, before its first add (parts.cuh's, as the production window)
         if (half == 0) {
           if constexpr (P::kReadFactors == 1) {
-            rc::units_listed_add<P>(p, smem, rw, w, 0, r.slots, r.slots, rows, ents, t >> 5,
-                                    t & 31);
+            rc::units_listed_add<P>(p, smem, run, 0, rows, ents, t >> 5, t & 31);
           } else {
             rc::units_dense<P>(p, smem, 0, r.slots, rows, t >> 5, t & 31);
           }
@@ -561,13 +563,12 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
           lap<CLOCK>(p, laps, rc::kPhaseUnits);
         }
         if (p.readout_f16) {
-          rc::read_chunk<P, true, true>(p, smem, rw, w, 0, r.slots, r.slots, 2 * half, 2 * half + 2,
-                                        area, 2 * rc::kBatchPlanes - 1, rows, pads, ents, t >> 5,
-                                        t & 31);
+          rc::read_chunk<P, true, true>(p, smem, rw, run, 0, r.slots, 2 * half, 2 * half + 2, area,
+                                        2 * rc::kBatchPlanes - 1, rows, pads, ents, t >> 5, t & 31);
         } else {
-          rc::read_chunk<P, false, true>(p, smem, rw, w, 0, r.slots, r.slots, 2 * half,
-                                         2 * half + 2, area, 2 * rc::kBatchPlanes - 1, rows, pads,
-                                         ents, t >> 5, t & 31);
+          rc::read_chunk<P, false, true>(p, smem, rw, run, 0, r.slots, 2 * half, 2 * half + 2, area,
+                                         2 * rc::kBatchPlanes - 1, rows, pads, ents, t >> 5,
+                                         t & 31);
         }
       }
       lap<CLOCK>(p, laps, rc::kPhaseReadout);
@@ -582,9 +583,10 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
       if constexpr (FORM >= 5) {
         fold_fill_ahead(p, smem, w, area, f.slots);
       } else {
-        rc::fold_fill<P>(p, smem, rc::window_of<P>(p, smem, rc::kWrite, w),
-                         rc::Place{static_cast<int>(blockIdx.y), 0}, w, 0, f.slots, f.slots, area,
-                         t >> 5, t & 31);
+        const rc::Window ww = rc::window_of<P>(p, smem, rc::kWrite, w);
+        rc::fold_fill<P>(p, smem, ww, rc::Place{static_cast<int>(blockIdx.y), 0}, w,
+                         rc::chunk_runs<P>(p, smem, ww, rc::kWrite, w, 0, f.slots, f.slots, t & 31),
+                         0, f.slots, area, t >> 5, t & 31);
       }
     }
     ops::stage_commit();
@@ -630,8 +632,10 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
           const int t = tid();
           const rc::Window ww = rc::window_of<P>(p, smem, rc::kWrite, w);
           rc::fold_units<P>(smem, ww, w, t >> 5, t & 31);
-          rc::fold_chunk<P>(p, st, true, smem, ww, w, 0, f.slots, f.slots, area,
-                            area + rc::fold_ents<P>(f.slots), t >> 5, t & 31);
+          rc::fold_chunk<P>(
+              st, true, smem, ww, w,
+              rc::chunk_runs<P>(p, smem, ww, rc::kWrite, w, 0, f.slots, f.slots, t & 31), 0,
+              f.slots, area, area + rc::fold_ents<P>(f.slots), t >> 5, t & 31);
         }
       } else {
         //: THE NEXT WINDOW'S PANEL, zeroed by stores, and its entries

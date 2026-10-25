@@ -55,7 +55,9 @@ A chunk's fill issues its copies as one commit group; the caller waits the group
 write side its values at the box's channels -- swizzled, by `cp.async` over all 256 threads (a slice's 16-byte runs, 8
 or 4 under 16, `stage_bytes`): a quad of lanes a slot, a thread's slots four at a time with their four tokens loaded
 before any copy (`copy16`, a predicated copy, so a step's slots past the chunk cost no branch) -- the window lab's
-form 5 took 0.25K cycles a warp-window off the fills by it (`docs/lab/carry_window.md`). A read slot's row names its query head (`carry.md#sides`): its source is the slice at
+form 5 took 0.25K cycles a warp-window off the fills by it (`docs/lab/carry_window.md`). A listed side's four tokens are
+loaded under one test, each load clamped to the chunk, and a slot past the chunk then selects its gap: written as
+one conditional load a slot, the four compiled to four convergence regions a step (2026-10-25). A read slot's row names its query head (`carry.md#sides`): its source is the slice at
 that head, a head stride on (`Slices::sh`), as a 32-bit offset from the slice's base at the window's first token (the
 host holds a window's token and head strides under 2^31 together). A GAP slot (`kGap`, [`carry.md`](carry.md#lists)) is zero-filled and reads
 nothing. `read_fill` adds the read buffer's dummy panel rows and its panel's whole 128-byte lines, zeroed by stores (a
@@ -68,7 +70,10 @@ part sits at the chunk's own slots (`read_pads`, `read_ents`, `fold_ents`; `sche
 
 A buffer holds its chunk's entries as the group's lists' runs in list order: `chunk_runs` gives lane `l` list `l`'s
 first entry of the chunk, its count and its place (the group's lists' counts before it) by four loads of the prefix
-rows (`pre_at`), each a difference within the chunk modulo 2^16, the same in every warp; `entries_fill` copies a warp's
+rows (`pre_at`), each a difference within the chunk modulo 2^16, the same in every warp -- worked out once a chunk by
+the kernel (`carry_kernel.md#kernel`) and passed to the chunk's fill, its units and its tiles or fold, which until
+2026-10-25 each derived it again (~1.1K warp instructions a CTA-window at alt-k4, a shared round trip each);
+`entries_fill` copies a warp's
 own lists' runs (`warp + 8 j`), 8 bytes a lane, as ONE stream: entry `e` of the four runs in turn finds its run by
 three compares against the runs' firsts and takes that run's source and place as offsets from `e`, so every full trip
 of 32 copies unpredicated and only the stream's tail branches, once a warp-chunk. Copied run by run, each run paid its
@@ -237,8 +242,9 @@ leaf maxima +0.8K, the drain's conversion +0.8K cycles a warp-window), dense +5.
 A chunk's panel to `num`, once every warp has read the chunk, by the call's cross-CTA dtype
 ([`carry_api.md#carry-reduce`](carry_api.md#carry-reduce)): each slot's words at the CTA's unit ([`#units`](#units))
 converted by the token's factor and added into HBM where the CTAs holding the token's leaves meet; the next fill zeroes
-the panel. A word's two s16 halves come apart by `pair_magics` (offset magics: the low half biased by 2^15, its borrow
-taken from the high half). F16 PAIRS: the factor is `2^(u - s - 1)`, `s` the token's scale byte (the call's `scale`:
+the panel. A word's two s16 halves come apart by `pair_magics` (offset magics: one add of `0x80008000` biases the
+low half by 2^15, takes its borrow from the high half and flips the high half's top bit; one byte permute a half
+places its 16 bits under the magic's 2^23 + 2^22 -- three instructions where the masks and shift were five). F16 PAIRS: the factor is `2^(u - s - 1)`, `s` the token's scale byte (the call's `scale`:
 every CTA the same, so the pairs meet at one scale; a bound on |num(t)|, which f16 absorbs with slack to ~2^27), each
 half times it packed to f16 and added by `red.global.add.noftz.f16x2` -- the f16 value is bounded because the true
 partial is at most the token's bound, which the scale puts under 2^14; the factor itself may be 2. A thread

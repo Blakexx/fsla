@@ -158,20 +158,18 @@ __device__ __forceinline__ void steps(State<P>& st, uint32_t cf, ops::SmemAddr p
 }
 
 //: A FOLD CHUNK'S FILL, the copies issued: its rows (slices then values) at `buf`, its entries after them (a warp its
-//: own lists' runs). -- see docs/internals/carry/parts.md#fill
+//: own lists' runs, `run` the chunk's). -- see docs/internals/carry/parts.md#fill
 template <class P>
 __device__ __forceinline__ void fold_fill(const CarryParams& p, const uint8_t* smem,
-                                          const Window& ww, const Place& c, int w, int first,
-                                          int slots, int total, ops::SmemAddr buf, int warp,
+                                          const Window& ww, const Place& c, int w, const Run& run,
+                                          int first, int slots, ops::SmemAddr buf, int warp,
                                           int lane) {
   const volatile Addr& addr = *reinterpret_cast<const volatile Addr*>(smem + P::kAddr);
   fill<P::kFoldFactors, true>(addr.slices[kWrite], addr.values, static_cast<int>(p.values.st),
                               union_of<P>(p, smem, kWrite, w), ww, first, slots, buf);
   const ops::SmemAddr ents = buf + static_cast<uint32_t>(fold_ents<P>(slots));
   if (ww.listed) {
-    entries_fill<P>(p, p.write_lists, ww, c, w,
-                    chunk_runs<P>(p, smem, ww, kWrite, w, first, slots, total, lane), ents, warp,
-                    lane);
+    entries_fill<P>(p, p.write_lists, ww, c, w, run, ents, warp, lane);
   } else {
     //: a side with no list level: each slot's token's (F, m), 8 bytes, in the entries' place
     const float2* const src = p.factors + static_cast<int64_t>(c.bh) * p.L + ww.t0 + first;
@@ -181,16 +179,15 @@ __device__ __forceinline__ void fold_fill(const CarryParams& p, const uint8_t* s
   }
 }
 
-//: A FOLD CHUNK, a warp's: each of its lists' run of the chunk from the buffer's entries at `ents`, in 16-token steps
-//: and an 8-token tail over the rows at `rows`, the list's scale read from its tenant and its rescale applied before
-//: the window's first chunk (`rescale`); a side with no list level every slot of the chunk, c from the slot's row.
-//: -- see docs/internals/carry/fold.md#chunk
+//: A FOLD CHUNK, a warp's: each of its lists' run of the chunk (`run`, the chunk's) from the buffer's entries at
+//: `ents`, in 16-token steps and an 8-token tail over the rows at `rows`, the list's scale read from its tenant and its
+//: rescale applied before the window's first chunk (`rescale`) where its unit moved; a side with no list level every
+//: slot of the chunk, c from the slot's row. -- see docs/internals/carry/fold.md#chunk
 template <class P>
-__device__ __forceinline__ void fold_chunk(const CarryParams& p, State<P>& st, bool rescale,
-                                           const uint8_t* smem, const Window& ww, int w, int first,
-                                           int slots, int total, ops::SmemAddr rows,
-                                           ops::SmemAddr ents, int warp, int lane) {
-  const Run run = chunk_runs<P>(p, smem, ww, kWrite, w, first, slots, total, lane);
+__device__ __forceinline__ void fold_chunk(State<P>& st, bool rescale, const uint8_t* smem,
+                                           const Window& ww, int w, const Run& run, int first,
+                                           int slots, ops::SmemAddr rows, ops::SmemAddr ents,
+                                           int warp, int lane) {
   const ops::SmemAddr pool = rows - static_cast<uint32_t>(first * P::kWriteRow);
   //: a side with no list level: 2^(4 - E) of the window's exponent (`dense_exp`), the facts records' scale
   const float p2 =
@@ -202,9 +199,12 @@ __device__ __forceinline__ void fold_chunk(const CarryParams& p, State<P>& st, b
     const int list = fold_list(warp, J);
     const ListScale sc = reinterpret_cast<const ListScale*>(smem + P::kScale)[list];
     const float f = rescale ? sc.f : 1.0f;
-    static_for<P::kFoldMTiles>([&](auto M) {
-      static_for<4>([&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] *= f; }); });
-    });
+    //: a list whose unit stood multiplies nothing (one trip where it moved; `f` is the warp's)
+    for (int k = __any_sync(0xffffffffu, f != 1.0f) ? 1 : 0; k > 0; --k)
+      static_for<P::kFoldMTiles>([&](auto M) {
+        static_for<4>([&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] *= f; }); });
+      });
+
     if (ww.listed) {
       const int n = __shfl_sync(0xffffffffu, run.n, list),
                 to = __shfl_sync(0xffffffffu, run.to, list);

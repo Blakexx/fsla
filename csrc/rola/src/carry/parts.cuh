@@ -334,11 +334,14 @@ __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* v
   const auto rows = [&](auto kNarrow) {
 #pragma unroll 1
     for (int s0 = q; s0 < slots; s0 += kAhead * kQuads) {
+      //: an unlisted side's slot is its token; a listed side's four tokens are loaded under one test, each load clamped to
+      //: the chunk, so a slot past the chunk selects its gap rather than branching
       int u[kAhead];
-      static_for<kAhead>([&](auto k) {
-        const int s = s0 + kQuads * k;
-        u[k] = s < slots ? (win.listed ? tok[first + s] : first + s) : kGap;
-      });
+      static_for<kAhead>([&](auto k) { u[k] = first + s0 + kQuads * k; });
+      if (win.listed) {
+        static_for<kAhead>([&](auto k) { u[k] = tok[first + min(s0 + kQuads * k, slots - 1)]; });
+      }
+      static_for<kAhead>([&](auto k) { u[k] = s0 + kQuads * k < slots ? u[k] : kGap; });
       static_for<kAhead>([&](auto k) {
         //: a slot's row: its query head `j` (the read side's) and token `t`, bit 15 a gap
         const int s = s0 + kQuads * k, t = u[k] & (kWindow - 1),
@@ -453,11 +456,11 @@ __host__ __device__ constexpr int fold_ents(int slots) {
 }
 
 //: A READ CHUNK'S FILL, the copies issued: its rows at `buf`, its dummy panel rows and panel zeroed, its entries (a
-//: warp its own digits' runs). -- see docs/internals/carry/parts.md#fill
+//: warp its own digits' runs, `run` the chunk's). -- see docs/internals/carry/parts.md#fill
 template <class P>
 __device__ __forceinline__ void read_fill(const CarryParams& p, const uint8_t* smem,
-                                          const Window& rw, const Place& c, int w, int first,
-                                          int slots, int total, ops::SmemAddr buf, int warp,
+                                          const Window& rw, const Place& c, int w, const Run& run,
+                                          int first, int slots, ops::SmemAddr buf, int warp,
                                           int lane) {
   const volatile Addr& addr = *reinterpret_cast<const volatile Addr*>(smem + P::kAddr);
   fill<P::kReadFactors, false>(addr.slices[kRead], nullptr, 0, union_of<P>(p, smem, kRead, w), rw,
@@ -472,8 +475,7 @@ __device__ __forceinline__ void read_fill(const CarryParams& p, const uint8_t* s
         "r"(0)
         : "memory");
   if (rw.listed)
-    entries_fill<P>(p, p.read_lists, rw, c, w,
-                    chunk_runs<P>(p, smem, rw, kRead, w, first, slots, total, lane),
+    entries_fill<P>(p, p.read_lists, rw, c, w, run,
                     buf + static_cast<uint32_t>(read_ents<P>(slots)), warp, lane);
 }
 
@@ -781,21 +783,24 @@ __device__ __forceinline__ TileIn tile_in(ops::SmemAddr pool, ops::SmemAddr unit
 template <bool F16>
 __device__ __forceinline__ void tile_mma(float (&acc)[2][4], const uint32_t (&b)[4],
                                          const uint32_t (&f)[16]) {
-#pragma unroll
-  for (int m = 0; m < 2; ++m) {
-    uint32_t h[2] = {0u, 0u};
-#pragma unroll
-    for (int i = 0; i < 4; ++i) acc[m][i] = 0.0f;
-#pragma unroll
-    for (int kb = 0; kb < 2; ++kb) {
+  static_for<2>([&](auto M) {
+    constexpr int m = decltype(M)::value;
+    uint32_t h[2];
+    static_for<2>([&](auto KB) {
+      constexpr int kb = decltype(KB)::value;
       const uint32_t a[4] = {f[(m * 2 + kb) * 4], f[(m * 2 + kb) * 4 + 1], f[(m * 2 + kb) * 4 + 2],
                              f[(m * 2 + kb) * 4 + 3]};
-      if constexpr (F16) {
-        ops::hmma_f16(h, a, b[2 * kb], b[2 * kb + 1]);
+      //: the first list half into a fresh fragment, the second accumulating
+      if constexpr (F16 && kb == 0) {
+        ops::hmma_f16_fresh(h, a, b[0], b[1]);
+      } else if constexpr (F16) {
+        ops::hmma_f16(h, a, b[2], b[3]);
+      } else if constexpr (kb == 0) {
+        ops::hmma_fresh(acc[m], a, b[0], b[1]);
       } else {
-        ops::hmma(acc[m], a, b[2 * kb], b[2 * kb + 1]);
+        ops::hmma(acc[m], a, b[2], b[3]);
       }
-    }
+    });
     if constexpr (F16) {
       const float2 g0 = __half22float2(*reinterpret_cast<const __half2*>(&h[0])),
                    g8 = __half22float2(*reinterpret_cast<const __half2*>(&h[1]));
@@ -804,7 +809,7 @@ __device__ __forceinline__ void tile_mma(float (&acc)[2][4], const uint32_t (&b)
       acc[m][2] = g8.x;
       acc[m][3] = g8.y;
     }
-  }
+  });
 }
 
 __device__ __forceinline__ void tile_add(ops::SmemAddr pads, const TileIn& in,
@@ -876,21 +881,20 @@ __device__ __forceinline__ uint2 masked_entry(int first, uint32_t c) {
 }
 
 //: A CHUNK'S READOUT over batches `lo .. hi - 1`, a warp's: each of its digits `8 i + warp`, its state from its image
-//: plane (`d & mask` at `image`) and its exponent, its tiles over the chunk -- a listed side's run of the digit in the
-//: buffer's entries at `ents`, a lane past it masked; else every slot of the chunk, its entry implied. `Pairs`: the
-//: digits two at a time, their tiles stepped together (two independent chains, all loads before the MMAs, the adds
-//: after). The rows are at `rows`, the dummy panel rows at `pads`, the panel after them.
+//: plane (`d & mask` at `image`) and its exponent, its tiles over the chunk -- a listed side's run of the digit (`run`,
+//: the chunk's) in the buffer's entries at `ents`, a lane past it masked; else every slot of the chunk, its entry
+//: implied. `Pairs`: the digits two at a time, their tiles stepped together (two independent chains, all loads before
+//: the MMAs, the adds after). The rows are at `rows`, the dummy panel rows at `pads`, the panel after them.
 //: -- see docs/internals/carry/parts.md#readout
 template <class P, bool F16, bool Pairs>
 __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* smem,
-                                           const Window& rw, int w, int first, int slots, int total,
+                                           const Window& rw, const Run& run, int first, int slots,
                                            int lo, int hi, ops::SmemAddr image, uint32_t mask,
                                            ops::SmemAddr rows, ops::SmemAddr pads,
                                            ops::SmemAddr ents, int warp, int lane) {
   constexpr int kStep = Pairs ? 2 : 1;
   const ImageLane il = image_lane(lane);
   const ops::SmemAddr units = ops::smem_addr(smem + p.tables.units_at);
-  const Run run = chunk_runs<P>(p, smem, rw, kRead, w, first, slots, total, lane);
   //: the entries' row and panel offsets are the union's: the chunk's pool taken back by its first slot, and each
   //: entry's panel offset made the chunk's (modulo 2^16, as a grouped union's are written) before it is shuffled
   const ops::SmemAddr pool_u = rows - static_cast<uint32_t>(first * P::kReadRow);
@@ -1115,18 +1119,17 @@ __device__ __forceinline__ void units_dense(const CarryParams& p, const uint8_t*
 //: order, an entry's digit the last run starting at or before it: five shuffles): its row against its digit's scales
 //: (packed f16 products in two chains, raised by the f16 margin), times its coefficient and `2^(e_d - kCoefTop)`,
 //: quantized up at 2^-24 of the window's reference `2^(emax + 5)` and added into its token's counter by a shared add;
-//: `units_listed_close` turns the counters into bytes after a barrier. -- see docs/internals/carry/parts.md#units
+//: `units_close` turns the counters into bytes after a barrier. -- see docs/internals/carry/parts.md#units
 template <class P>
 __device__ __forceinline__ void units_listed_add(const CarryParams& p, const uint8_t* smem,
-                                                 const Window& rw, int w, int first, int slots,
-                                                 int total, ops::SmemAddr rows, ops::SmemAddr ents,
-                                                 int warp, int lane) {
-  const Run run = chunk_runs<P>(p, smem, rw, kRead, w, first, slots, total, lane);
+                                                 const Run& run, int first, ops::SmemAddr rows,
+                                                 ops::SmemAddr ents, int warp, int lane) {
   const int entries = __shfl_sync(0xffffffffu, run.to + run.n, kBoxDigits - 1);
   const ops::SmemAddr pool_u = rows - static_cast<uint32_t>(first * P::kReadRow);
   const ops::SmemAddr bounds = ops::smem_addr(smem + p.tables.bounds_at);
   const int emax = reinterpret_cast<const volatile int2*>(smem + P::kTops)->y;
   const int tid = 32 * warp + lane;
+
 #pragma unroll 1
   for (int base = 0; base < entries; base += kThreads) {
     const int i = base + tid;
@@ -1208,13 +1211,13 @@ __device__ __forceinline__ void red_add_f32(float* at, float v) {
   asm volatile("red.global.add.f32 [%0], %1;" ::"l"(at), "f"(v) : "memory");
 }
 
-//: A PAIR WORD's TWO HALVES as offset magics: `t = w + 0x8000` (the low half biased by 2^15, its borrow taken back
-//: from the high half), each half's 16 bits under 2^23 + 2^22 -- a half's value is its float less 12615680.
-//: -- see docs/internals/carry/parts.md#drain
+//: A PAIR WORD's TWO HALVES as offset magics: `t = w + 0x80008000` (the low half biased by 2^15, its borrow taken back
+//: from the high half by the high half's own 2^15, which flips its top bit), each half's 16 bits placed under 2^23 +
+//: 2^22 by one byte permute -- a half's value is its float less 12615680. -- see docs/internals/carry/parts.md#drain
 __device__ __forceinline__ float2 pair_magics(uint32_t w) {
-  const uint32_t t = w + 0x8000u;
-  return make_float2(__uint_as_float((t & 0xffffu) | 0x4B400000u),
-                     __uint_as_float(((t >> 16) ^ 0x8000u) | 0x4B400000u));
+  const uint32_t t = w + 0x80008000u, top = 0x4B400000u;
+  return make_float2(__uint_as_float(ops::prmt(t, top, 0x7610u)),
+                     __uint_as_float(ops::prmt(t, top, 0x7632u)));
 }
 
 //: THE DRAIN: a chunk's panel words (at `panel`) to `num` by the call's reduce dtype, each slot's at the CTA's unit
