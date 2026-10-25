@@ -70,9 +70,10 @@ or its high bits within each four for a row of an odd number of 64-byte quarters
 `CarryParams` reaches the kernel as a grid constant. The box is the carve's: `extents` a level, `channels`, and
 `stride`, a level's step in the box index (the channel groups innermost). Every pointer is the bundle's own memory:
 the rows and values at their strides (the row alignment law, `docs/internals/facts/facts.md`), the facts pass's
-lists, the den pass's units (`unit`, an exponent byte a query head's token, a window wide so a window's copy is
-aligned). The outputs are `num` (a query head's: packed s16 pairs at each token's unit, added as u32:
-`parts.md#drain`) and `check` (the final state's sum). `plans` are the plan pass's records (`schedule.md#pass`), a window's for each box class.
+lists, the cross-CTA sum's scale bytes (`scale`, an exponent byte a query head's token, a window wide so a window's
+copy is aligned: the den pass's bound on |num(t)|, read only where `reduce` is f16 pairs). The outputs are `num` (a
+query head's: f16 pairs at each token's scale, or fp32 channels, by `reduce` -- `carry_api.md#carry-reduce`,
+`parts.md#drain`; each CTA's partials at its own units, `parts.md#units`) and `check` (the final state's sum). `plans` are the plan pass's records (`schedule.md#pass`), a window's for each box class.
 `readout_f16` is the readout's accumulation (`carry_api.md#carry-readout-accumulate`); `forced` a plan form every
 window takes where it fits, -1 for none (`schedule.md#planner`). A bound capture copies the block and its grid out before the
 launch (`CarryCapture`, `carry_api.md#carry-capture-bind`).
@@ -87,8 +88,10 @@ launch (`CarryCapture`, `carry_api.md#carry-capture-bind`).
 - a side lists at most one level and forms its operand from all the others; a list level spans the box's 32 lists or
   digits; a side with no list level names exactly a row level and a coefficient level; an operand slice is a 4-byte
   copy at least and `kSliceBytes` at most.
-- every tensor's dtype, contiguity and exact shape (the lists' five, `unit` `[BH, windows x W]`); the arm key's channels
-  and factor counts agreeing with the carve; the readout's accumulation fp32 (0) or fp16 (1); a forced form -1 or a
+- every tensor's dtype, contiguity and exact shape (the lists' five, `scale` `[BH, windows x W]`, `num` int32 `[BH,
+  T, d_v / 2]` for f16 pairs or fp32 `[BH, T, d_v]`); the arm key's channels
+  and factor counts agreeing with the carve; the readout's accumulation fp32 (0) or fp16 (1); the cross-CTA sum f16
+  pairs (0) or fp32 (1); a forced form -1 or a
   mode (0 to 2) with two chunk fields in 14 bits; a window's token stride under 2^31 / `kWindow` (a window's offsets
   are 32-bit).
 

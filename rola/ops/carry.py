@@ -23,6 +23,7 @@ from rola.ops._ext import extension
 __all__ = [
     "LEDGER_PHASES",
     "LEDGER_WARPS",
+    "REDUCE_F16_MAX_CTAS",
     "WINDOW",
     "Form",
     "arm_key",
@@ -39,6 +40,8 @@ __all__ = [
     "plans_out",
     "probe_bind",
     "readout_accumulate",
+    "reduce_ctas",
+    "reduce_dtype_for",
     "sm_clock_ghz",
 ]
 
@@ -46,7 +49,7 @@ __all__ = [
 WINDOW = list_model.WINDOW
 
 #: THE PHASE LEDGER'S SHAPE: ``[ctas][warps][phases]``, the kernel's own `CarryPhase` order.
-LEDGER_PHASES = ("landed", "maxima", "store", "readout", "drain", "fill", "fold", "wait")
+LEDGER_PHASES = ("landed", "maxima", "store", "readout", "drain", "fill", "fold", "wait", "units")
 LEDGER_WARPS = 8
 
 
@@ -62,10 +65,37 @@ def _list_level(plan) -> int:
     return plan.lists[0] if plan.lists else -1
 
 
-def carry(routes, values, facts, carve: Carve, unit: torch.Tensor, accumulate: str | None = None,
-          forced: str | None = None, plans: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
-    """THE LAUNCH: ``(num, check)`` -- ``num`` the readout's packed partials at each token's unit, ``check`` the
-    skeleton's fp32 sum of the final state. ``facts`` is the facts pass's over this bundle, its read entries' offsets
+#: THE CROSS-CTA SUM's auto rule: f16 pairs while their error, ~0.012% x sqrt(n) a token for ``n`` CTAs adding into a
+#: slot, stays under the bf16 output store's 0.16% (docs/internals/carry/carry_api.md#carry-reduce)
+REDUCE_F16_MAX_CTAS = 177
+
+
+def reduce_ctas(carve: Carve) -> int:
+    """The most CTAs any output slot sums: the read side's boxes along every level (a listed level counted whole, a
+    bound until the declared cap reaches the carve)."""
+    n = 1
+    for width, extent in zip(carve.widths, carve.extents):
+        n *= width // extent
+    return n
+
+
+def reduce_dtype_for(carve: Carve, reduce_dtype: torch.dtype | None = None) -> torch.dtype:
+    """The call's cross-CTA sum dtype: ``reduce_dtype`` as given, else f16 pairs while :func:`reduce_ctas` stays within
+    :data:`REDUCE_F16_MAX_CTAS`, else fp32."""
+    if reduce_dtype is not None:
+        if reduce_dtype not in (torch.float16, torch.float32):
+            raise ValueError(f"reduce_dtype is torch.float16, torch.float32 or None (auto), got {reduce_dtype}")
+        return reduce_dtype
+    return torch.float16 if reduce_ctas(carve) <= REDUCE_F16_MAX_CTAS else torch.float32
+
+
+def carry(routes, values, facts, carve: Carve, scale: torch.Tensor, accumulate: str | None = None,
+          forced: str | None = None, plans: torch.Tensor | None = None,
+          reduce_dtype: torch.dtype | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    """THE LAUNCH: ``(num, check)`` -- ``num`` the readout's partials summed across CTAs, each CTA's at its own units:
+    int32 ``[BH, T, d_v / 2]`` f16 pairs at each token's den-pass ``scale`` byte (``reduce_dtype`` f16), or fp32
+    ``[BH, T, d_v]`` (fp32; :func:`reduce_dtype_for`'s rule where None) -- ``check`` the skeleton's fp32 sum of the
+    final state. ``facts`` is the facts pass's over this bundle, its read entries' offsets
     in this arm's read pool rows (:func:`form`). The readout accumulates in the device's form
     (:func:`readout_accumulate`); ``accumulate`` (``"fp32"`` or ``"fp16"``) is reserved: the gates' choice of form, so
     both forms are gated on any card (``tests/oracle/test_carry_readout.py``). Each window's plan is the planner rule's
@@ -73,18 +103,21 @@ def carry(routes, values, facts, carve: Carve, unit: torch.Tensor, accumulate: s
     measurements' choice of the plan a window takes where every chunk of it fits; ``plans`` (:func:`plans_out`) is
     reserved: the plan pass's output for a gate to read, else the call's own
     (docs/internals/carry/carry_api.md#carry). A grouped bundle's CTAs are its write heads', each reading its query
-    heads' rows; ``num`` and ``unit`` are a query head's."""
+    heads' rows; ``num`` and ``scale`` are a query head's."""
     BH = routes.batch * routes.heads
     d_v = values.v.shape[-1]
-    num = torch.zeros((BH, routes.tokens, d_v // 2), dtype=torch.int32, device=routes.device)
+    dtype = reduce_dtype_for(carve, reduce_dtype)
+    num = (torch.zeros((BH, routes.tokens, d_v // 2), dtype=torch.int32, device=routes.device)
+           if dtype == torch.float16 else
+           torch.zeros((BH, routes.tokens, d_v), dtype=torch.float32, device=routes.device))
     check = torch.zeros(1, dtype=torch.float32, device=routes.device)
     extension().carry_forward(
         list(routes.amp_read), list(routes.amp_write), values.v, list(facts_ops.side_lists(facts, "write")),
-        facts.list_exp, facts.fm, facts.gains_exp, list(facts_ops.side_lists(facts, "read")), unit, num, check,
+        facts.list_exp, facts.fm, facts.gains_exp, list(facts_ops.side_lists(facts, "read")), scale, num, check,
         list(carve.widths),
         list(carve.extents), carve.channels, _list_level(carve.fold), list(carve.fold.operand),
         _list_level(carve.readout), list(carve.readout.operand), list(arm_key(carve)),
-        _ACCUMULATE[accumulate or readout_accumulate(routes.device)], forced_word(forced), plans)
+        _ACCUMULATE[accumulate or readout_accumulate(routes.device)], _REDUCE[dtype], forced_word(forced), plans)
     return num, check
 
 
@@ -108,6 +141,7 @@ def plans_out(routes, carve: Carve) -> torch.Tensor:
 
 
 _ACCUMULATE = {"fp32": 0, "fp16": 1}
+_REDUCE = {torch.float16: 0, torch.float32: 1}
 _MODES = {"rule": 0, "whole": 1, "halves": 2}
 
 

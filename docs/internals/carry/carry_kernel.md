@@ -17,15 +17,18 @@ each forms its lane addresses where it runs; held from before the loop, every ph
 246, every other part 13-42 fewer; one launch 0.9-2.8% faster on the three nl64k cells, `num` bit-identical).
 Window 0's inputs and record are staged and its first entry filled before the loop. A window:
 
-1. **The maxima**: each warp's digit maxima posted (`parts.md#maxima`), every warp's joined, each digit's exponent,
-   recorded by every warp (the same values) for its stores and the readers.
+1. **The maxima**: each warp's digit maxima posted (`parts.md#maxima`) and each leaf's exponent byte kept
+   (`parts.md#leaves`), every warp's joined, each digit's exponent recorded by every warp (the same values) for its
+   stores and the readers, the leaves' scales and the bounds' counters reset.
 2. **The store**: the next window's inputs staged; the image stored whole where the window's mode is whole.
 3. **Its steps** (`schedule.md#rule`), each by its step word (`schedule.md#steps`): the rendezvous where the retire is
    followed by a drain or a fill; the retired read chunk's panel drained to `num`, and the rendezvous where a fill
    reuses its place; the fills -- entry `t` where it was not filled ahead, then the next entry where the word says (the
    next window's first once that window's inputs have landed); the units stepped at the window's first fold chunk, or
-   at its last step where it folds nothing; then the work: a READ chunk's tiles over every digit from the whole image,
-   or from the halves it stores itself (a rendezvous before each half's reuse); a FOLD chunk's steps (`fold.md#chunk`).
+   at its last step where it folds nothing; then the work: a READ chunk's units -- the CTA's own, from its leaves'
+   maxima, before its first add (`parts.md#units`: the bounds, a rendezvous, the bytes, a rendezvous) -- then its
+   tiles over every digit from the whole image, or from the halves it stores itself (a rendezvous before each half's
+   reuse); a FOLD chunk's steps (`fold.md#chunk`).
 
 The work is an exclusive chain over the entry's side and the image mode (R9's case marker, a trapping last arm), not
 `uniform_switch`: the primitive's independent tests made a body 14% slower at nl64k-alt-k4 (31.7K against 27.9K
@@ -103,8 +106,8 @@ serialized at its L2 slice for ~47 us a call on sm_86 (`docs/lab/carry_window.md
 ## The phase ledger's phases
 
 `CarryPhase` is the ledger's column order: `landed` (an entry's copies waited), `maxima`, `store`, `readout`, `drain`,
-`fill` (a fill's copies issued), `fold` (with the units) and `wait` (a step's rendezvous and the staging, every
-warp's). A lap books the cycles since the last into its phase, so the columns sum to the warp's whole run.
+`fill` (a fill's copies issued), `fold` (with the fold's units), `wait` (a step's rendezvous and the staging, every
+warp's) and `units` (a read chunk's bounds and unit bytes, `parts.md#units`). A lap books the cycles since the last into its phase, so the columns sum to the warp's whole run.
 `rola.ops.carry.LEDGER_PHASES` names the same order.
 
 <a id="phase-ledger"></a>

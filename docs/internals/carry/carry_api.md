@@ -9,9 +9,9 @@ ABI (`csrc/rola/rola_api.cpp`); the Python caller is `rola/ops/carry.py`.
 One launch over a call's windows. In: both sides' level rows and the values (the bundle, read where it lies), both
 sides' lists in the facts pass's final form (`(entries, pre, totals, union, count)` each, empty tensors for a side with no
 list level, `carry.md#lists`), the write list exponents, the facts pass's factors and their window shifts (`fm` and
-`gains_exp`: read only where the write side has no list level, `fold.md#units`), the den pass's unit bytes a window wide, and the carve flattened: widths, extents,
+`gains_exp`: read only where the write side has no list level, `fold.md#units`), the cross-CTA sum's scale bytes a window wide (`scale`, [`#carry-reduce`](#carry-reduce)), and the carve flattened: widths, extents,
 channels, each side's list level (-1 for none) and operand levels, the arm key, the readout's accumulation (0
-fp32, 1 fp16), the named form every window takes where it builds (-1 none, else one of the 60 in the plan pass's order,
+fp32, 1 fp16), the cross-CTA sum's dtype (`reduce`: 0 f16 pairs, 1 fp32), the named form every window takes where it builds (-1 none, else one of the 60 in the plan pass's order,
 `schedule.md#planner`), and optionally the caller's plans tensor (`[BH, windows, box classes, 240]` u8, else the call's
 own). Out: `num`, `check` and the plans. The refusals are `carry.md#refusals`.
 
@@ -25,11 +25,27 @@ accumulate runs at half its fp16 rate, a professional or datacenter part's at it
 forms' numerics differ, GeForce's the coarser; both are gated per slot (`tests/oracle/test_carry_readout.py`).
 
 
+<a id="carry-reduce"></a>
+## The cross-CTA sum: `reduce_dtype`
+
+The CTAs holding a token's read leaves add their partials into one `num` row. Inside a CTA the partials are exact
+integers at the CTA's own unit (`parts.md#units`); across CTAs the sum's dtype is declared (ruled 2026-10-19): F16
+PAIRS (`torch.float16`; `num` int32 `[BH, T, d_v / 2]`, two channels a word in the panel's channel order) at each
+token's `scale` byte -- a power of two bounding |num(t)|, every CTA's the same, which f16's exponent absorbs with
+slack to ~2^27, so a loose bound costs nothing (the den pass's B(t), or a bound from the facts alone: measured
+identical, 2026-10-20) -- or FP32 (`torch.float32`; `num` fp32 `[BH, T, d_v]`, no scale read), twice the drain's L2
+sectors. The error of the f16 sum grows as ~0.012% x sqrt(n) a token for `n` CTAs adding into a slot (0.095% at 64,
+0.41% at 1,024, a cliff past ~2,048: partials under half an ulp), fp32's ~1e-4% at any `n`. AUTO (`None`,
+`reduce_dtype_for`): f16 pairs while `reduce_ctas(carve)` -- the read side's boxes along every level -- stays within
+`REDUCE_F16_MAX_CTAS` = 177, where the f16 error sits under the bf16 output store's own 0.16% a token (y crosses into
+W_O in bf16, `rola/layer.py`); fp32 beyond. Both pass the per-slot gate on every modeled cell
+(`tests/oracle/test_carry_vs_oracle.py` runs both). The epilogue reads either (`readout_reference.py`'s `unpack_num`).
+
 <a id="carry"></a>
 ## `rola.ops.carry.carry`
 
-The Python call launches over the bundle's rows and values, the facts pass's lists and exponents and the den pass's
-units, its readout in the device's accumulation (`readout_accumulate`) or the one a gate names, each window's plan its
+The Python call launches over the bundle's rows and values, the facts pass's lists and exponents and the scale bytes
+(`scale`; read only for f16 pairs), its cross-CTA sum at `reduce_dtype` or the auto rule's, its readout in the device's accumulation (`readout_accumulate`) or the one a gate names, each window's plan its
 own unless a gate or a measurement forces a form (`forced`, as `forced_word` encodes it), the facts pass run with
 this arm's read pool row (`form`, read off the binary's census for the device's card). `plans_out` allocates the plan
 records a gate reads (`plan_words` a window, `tests/oracle/test_carry_plan.py`). `arm_key` is the compiled body

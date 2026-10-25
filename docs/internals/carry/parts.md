@@ -134,7 +134,8 @@ offsets, one LEA), exact under u32 adds while each final fits s16.
 THE OUTPUT: each token's partials at its unit, `P(t, c) x unit(t) = sum_{d, r} x(t, d) a(t, r) S(d, r, c) / kappa`
 over the CTA's box -- `S` the state before the token's window, `x` the read coefficient of the image's digit level as
 stored (a sparse level's byte / 256, a dense level's f16), `a` the read row of the list level as stored (f16), `kappa`
-the state's byte scale (`kByteScale`); `unit(t) = 2^u(t)`, `u` the den pass's unit byte. The read side's per-token
+the state's byte scale (`kByteScale`); `unit(t) = 2^u(t)`, `u` the token's unit byte IN THIS CTA ([`#units`](#units)):
+the power of two that holds the CTA's bound on the token's partial in 16 bits. The read side's per-token
 scales and `kappa` are common to `num` and `den` and cancel in the epilogue. Gated per slot against
 `tests/oracle/readout_reference.py` (`tests/oracle/test_carry_readout.py`): on the even box over four windows, every
 slot within half its bound in fp32 (~4e-4 relative, the image's rounding) and a fifth of it in fp16. The dense-dense
@@ -184,21 +185,76 @@ against 2.75 on a list's rank slots; the drain 1.00 a request either way. An ent
 the dummy rows, so it fits its 16 bits on every card; a lane XORs its half (`32 m`) and adds its word (`4 g`).
 
 
+<a id="leaves"></a>
+## The leaves' maxima
+
+Beside the digit keys, `post_keys` keeps each LEAF's own key -- a list's largest |value| over the CTA's 32 channels at
+a digit row -- by a quad reduce-scatter (lane `t` ends with list `t`'s leaf of each of its four rows: two shuffles
+across `xor 2`, one across `xor 1`) and stores it as an exponent byte (`leaf_byte`: the smallest `e` with the leaf's
+largest |value| at most `2^(e + top)`, -128 a zero leaf) at `kLeafExp`, digit-major. After the exponents,
+`leaf_scales` turns the bytes into each leaf's f16 scale `2^(e_leaf - e_digit)` at `kLeafScale` (a digit's 32 lists
+64 bytes; at least 2^-14, rounded up so still a bound; 0 for a zero leaf), a thread four leaves. Why leaves and not
+digits: a token's partial is bounded by the sum over its read leaves of weight x leaf maximum; a digit's maximum in
+their place fails the concentrated distributions at 16 bits (modeled 2026-10-19 and 2026-10-23: p99 3-7%), as do
+8-leaf groups and the box's top; a leaf's maximum rounded to a power of two reads the same as its exact value.
+
+<a id="units"></a>
+## The units
+
+Each CTA sets its OWN unit a token before its first panel add, from its leaves' maxima: the token's bound in the CTA,
+`B_cta(t) = sum_d x(t, d) sum_r a(t, r) M(d, r)` over the box, `M` the leaf scales, and `u(t)` the smallest byte with
+`1.02 B_cta(t) <= 2^(u + 15)` (`unit_byte`; `kUnitByteNone` where the token reads nothing). The 1.02 covers the
+readout MMA's own overshoot (at most 2^-10 with fp16 accumulate) and the pieces' rounding. The bound's arithmetic is
+raised by `kF16BoundMargin` (1 + 1/64): a listed bound's dot product runs as two packed f16 chains of `kBoundChain` = 8
+fused products, each product and partial rounded by at most 2^-11, and the assertion holds the margin to the chain's
+length. The units are written to `units_at` (a byte a query head's token) and the drain's factor beside them.
+
+A LISTED read side (`units_listed_add`, then `units_close` after a barrier): a thread an entry across the CTA -- the
+chunk's runs are contiguous in digit order, so an entry's digit is the last run starting at or before it (five
+shuffles); its row against its digit's 64-byte scale row (8 `ld.shared.v4`, 16 HFMA2 in two chains), times its
+coefficient and `2^(e_d - kCoefTop)`, quantized up at 2^-24 of the window's reference `2^(emax + 5)` and added into
+the token's counter by `red.shared.add.u32`; after the barrier each counter becomes its token's byte (counters in
+quanta of `2^(emax - 19)`: a token more than ~2^19 below the box's hottest digit rounds up to one quantum -- sound,
+coarse). A DENSE read side (`units_dense`): every token reads every leaf, so the bound is 4 f16-accumulate MMAs a
+tile of 8 tokens (A the leaf-scale table, 32 digits x 32 lists; B the tokens' rows as the readout loads them), each
+digit's result times its coefficient (from the row's coefficient slice at a lane-constant offset) and `2^(e_d -
+kCoefTop)`, summed over the digits by three shuffles, two tiles a warp in flight; a slot past the chunk stores to the
+dead word. `bounds_clear` resets the counters each window. The pass runs between the chunk's landing and its first
+tile, with its barriers; its cost is placement, not arithmetic (measured 2026-10-22: +2.0K cycles a warp-window at
+nl64k-alt-k4 as a per-entry chain, unchanged by three placements); the ruled line is +6-9% a listed call by the dense
+side's MMA form for listed sides (2026-10-24).
+
+Measured (2026-10-20, sm_86, per token against fp64): fp32 across CTAs 0.005-0.028%, f16 pairs 0.037-0.107%
+(corner-concentrated p99 0.33% / 0.36%), the per-slot gate passed on every runnable cell, worst 0.45 of its allowance;
+HEAD's one unit a token for every CTA read 0.13-0.34%. Cost at nl64k-alt-k4: +18.5% a call (the bound pass +2.0K, the
+leaf maxima +0.8K, the drain's conversion +0.8K cycles a warp-window), dense +5.5%.
+
 <a id="drain"></a>
 ## The drain
 
-A chunk's panel to `num`, once every warp has read the chunk: each slot's 16 words added as u32 atomics at its row's
-query head and token (two tokens a warp request, a slot pair's one line); the next fill zeroes the panel. A thread
+A chunk's panel to `num`, once every warp has read the chunk, by the call's cross-CTA dtype
+([`carry_api.md#carry-reduce`](carry_api.md#carry-reduce)): each slot's words at the CTA's unit ([`#units`](#units))
+converted by the token's factor and added into HBM where the CTAs holding the token's leaves meet; the next fill zeroes
+the panel. A word's two s16 halves come apart by `pair_magics` (offset magics: the low half biased by 2^15, its borrow
+taken from the high half). F16 PAIRS: the factor is `2^(u - s - 1)`, `s` the token's scale byte (the call's `scale`:
+every CTA the same, so the pairs meet at one scale; a bound on |num(t)|, which f16 absorbs with slack to ~2^27), each
+half times it packed to f16 and added by `red.global.add.noftz.f16x2` -- the f16 value is bounded because the true
+partial is at most the token's bound, which the scale puts under 2^14; the factor itself may be 2. A thread
 keeps one word of every 16th slot -- 16 slots on, its panel cell is 1 KB on, the swizzle's bits unchanged, so its
-cells are one address and an add -- and takes two slots a step, their words and union tokens loaded unguarded (the
-union array and the panel lie in shared memory past the chunk's slots) before their adds. An add is never predicated:
+cells are one address and an add -- and takes four slots a step, their words and union tokens loaded unguarded (the
+union array and the panel lie in shared memory past the chunk's slots) before their adds. FP32: the factor is `2^u`,
+a warp a slot in turn, four in flight, a lane a channel (a token's full line for the box's 32 channels), added by
+`red.global.add.f32`. A factor is exact over the float range (`pow2_wide`: a subnormal's bit below 2^-126, zero
+below 2^-149). An add is never predicated:
 ptxas puts a predicated `red.global` in a branch and a convergence region (BSSY, BRA, BSYNC around each add), so a
 step's second slot past the chunk adds zero at the thread's first slot's row -- a row of the CTA's own, never one every
 CTA shares (lab [`drain`](../../lab/drain.md): a shared dummy line serialized every CTA 6x). A slot's row is a 32-bit
 word offset, one widening multiply-add from `num`'s base (the host holds a write head's rows under 2^32 words). CTAs
 join only here (R22: independent units, joined by atomics). The panel's word `8 m + g` pairs channels `(c, c + 2)`,
-`c = 8 (g >> 1) + 4 m + (g & 1)` ([`#image`](#image)); the output's format follows it
-(`tests/oracle/readout_reference.py`'s `unpack_num`).
+`c = 8 (g >> 1) + 4 m + (g & 1)` ([`#image`](#image)); the f16 output's format follows it, the fp32 output is a
+channel a word (`tests/oracle/readout_reference.py`'s `unpack_num`, `num_in_truth`). Measured 2026-10-19 (lab
+[`drain`](../../lab/drain.md)): the f16 add alone runs at the integer drain's speed -- its +26-45% a drain is the
+conversion's latency; a 32-bit global (fp32 or s32) doubles the drain's L2 sectors.
 
 Its floor is the SM's global request path, ~5 cycles a line request with every SM draining (the lab). Measured
 2026-10-19 (sm_86 locked, a warp-window): nl64k-alt-k4 2,135 -> 1,389 cycles (216 requests, ~1.1K at the floor), g 4

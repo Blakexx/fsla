@@ -130,11 +130,12 @@ SideLists lists_of(const std::vector<Tensor>& t, int64_t BH, int64_t windows, in
 
 void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows, Tensor values,
                    std::vector<Tensor> write_lists, Tensor write_exp, Tensor factors,
-                   Tensor factor_shift, std::vector<Tensor> read_lists, Tensor unit, Tensor num,
+                   Tensor factor_shift, std::vector<Tensor> read_lists, Tensor scale, Tensor num,
                    Tensor check, std::vector<int64_t> widths, std::vector<int64_t> extents,
                    int64_t channels, int64_t write_list, std::vector<int64_t> write_operand,
                    int64_t read_list, std::vector<int64_t> read_operand, std::vector<int64_t> key,
-                   int64_t accumulate, int64_t forced, std::optional<Tensor> plans_out) {
+                   int64_t accumulate, int64_t reduce, int64_t forced,
+                   std::optional<Tensor> plans_out) {
   check_arch_table();
   const int D = (int)widths.size();
   STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels && (int)extents.size() == D, "the carve names ", D,
@@ -185,9 +186,11 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   const int64_t heads = read_rows[0].size(2) / H;
   STD_TORCH_CHECK(heads == 1 || read_list >= 0, "a grouped read side lists at a level: ", heads,
                   " query heads a write head read every window token of each with no list level");
-  STD_TORCH_CHECK(heads * L * (dv / 2) < (int64_t{1} << 32),
-                  "a write head's num rows index in 32-bit words (the drain's offsets): ", heads,
-                  " query heads x ", L, " tokens x ", dv / 2, " words");
+  STD_TORCH_CHECK(reduce == kReduceF16 || reduce == kReduceF32,
+                  "the cross-CTA sum is f16 pairs (0) or fp32 (1), got ", reduce);
+  STD_TORCH_CHECK(heads * L * dv < (int64_t{1} << 32),
+                  "a write head's num rows index in 32-bit values (the drain's offsets): ", heads,
+                  " query heads x ", L, " tokens x ", dv, " channels");
   p.write =
       side_of(write_rows, write_list, write_operand, widths, extents, B, L, H, "the write side");
   p.read = side_of(read_rows, read_list, read_operand, widths, extents, B, L, H * heads,
@@ -227,18 +230,27 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
     p.factor_shift = factor_shift.const_data_ptr<int16_t>();
   }
   STD_TORCH_CHECK(
-      unit.is_cuda() && unit.is_contiguous() && unit.scalar_type() == Dtype::Char
-          && unit.sizes() == Shape({BH * heads, windows * kWindow}),
-      "unit is the contiguous CUDA int8 [B H, windows x W] exponent bytes a query head, got ",
-      shape(unit.sizes()));
-  STD_TORCH_CHECK(
-      num.is_cuda() && num.is_contiguous() && num.scalar_type() == Dtype::Int
-          && num.sizes() == Shape({BH * heads, L, dv / 2}),
-      "num is the contiguous CUDA int32 [B H, L, d_v / 2] packed s16 pairs a query head, got ",
-      shape(num.sizes()));
+      scale.is_cuda() && scale.is_contiguous() && scale.scalar_type() == Dtype::Char
+          && scale.sizes() == Shape({BH * heads, windows * kWindow}),
+      "scale is the contiguous CUDA int8 [B H, windows x W] den-pass exponent bytes a query head, got ",
+      shape(scale.sizes()));
+  if (reduce == kReduceF16) {
+    STD_TORCH_CHECK(
+        num.is_cuda() && num.is_contiguous() && num.scalar_type() == Dtype::Int
+            && num.sizes() == Shape({BH * heads, L, dv / 2}),
+        "num at reduce f16 is the contiguous CUDA int32 [B H, L, d_v / 2] f16 pairs a query head, got ",
+        shape(num.sizes()));
+  } else {
+    STD_TORCH_CHECK(
+        num.is_cuda() && num.is_contiguous() && num.scalar_type() == Dtype::Float
+            && num.sizes() == Shape({BH * heads, L, dv}),
+        "num at reduce fp32 is the contiguous CUDA fp32 [B H, L, d_v] a query head, got ",
+        shape(num.sizes()));
+  }
   STD_TORCH_CHECK(check.is_cuda() && check.scalar_type() == Dtype::Float && check.numel() == 1,
                   "check is one CUDA fp32 value");
-  p.unit = unit.const_data_ptr<int8_t>();
+  p.scale = scale.const_data_ptr<int8_t>();
+  p.reduce = static_cast<int>(reduce);
   STD_TORCH_CHECK(accumulate == 0 || accumulate == 1,
                   "the readout accumulates in fp32 (0) or fp16 (1), got ", accumulate);
   p.readout_f16 = static_cast<int>(accumulate);
@@ -248,7 +260,7 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
       "the rule's, 1 whole, 2 halves), got ",
       forced);
   p.forced = static_cast<int>(forced);
-  p.num = reinterpret_cast<uint32_t*>(num.mutable_data_ptr<int32_t>());
+  p.num = static_cast<uint32_t*>(num.mutable_data_ptr());
   p.check = check.mutable_data_ptr<float>();
   p.probe = g_probe;
   if (p.probe != nullptr)

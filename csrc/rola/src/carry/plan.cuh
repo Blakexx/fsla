@@ -25,7 +25,13 @@ struct Tenants {
   static constexpr int kKeys = align_of(kScale + kBoxLists * 8, 16);
   static constexpr int kExps = kKeys + 2 * kBoxDigits * 4;
   static constexpr int kBits = kExps + kBoxDigits * 4;
-  static constexpr int kClock = align_of(kBits + 8, 8);
+  //: the window's box top and largest digit exponent, then a dummy byte a dead unit's store lands on; each leaf's
+  //: exponent byte; each leaf's f16 scale
+  static constexpr int kTops = kBits + 8;
+  static constexpr int kDeadUnit = kTops + 8;
+  static constexpr int kLeafExp = align_of(kDeadUnit + 8, 16);
+  static constexpr int kLeafScale = kLeafExp + kBoxDigits * kBoxLists;
+  static constexpr int kClock = align_of(kLeafScale + kBoxDigits * kBoxLists * 2, 8);
   static constexpr int kBars = kClock + kWarps * (kCarryPhases + 1) * 8;
   static constexpr int kAddr = align_of(kBars + kBarCount * 8, 16);
   static constexpr int kAddrBytes = 256;
@@ -36,13 +42,14 @@ struct Tenants {
 //: -- see docs/internals/carry/plan.md#read-tables
 __host__ __device__ constexpr ReadTables tables_of(int heads, int smem) {
   const int pre_bytes = align_of(2 * kPreRows * kListAt * heads * 2, 16);
-  const int bytes =
-      2 * heads * kWindow * 2 + pre_bytes + 2 * heads * kWindow + 2 * plan_words(heads) * 4;
+  const int bytes = 2 * heads * kWindow * 2 + pre_bytes + 2 * heads * kWindow + heads * kWindow
+                    + heads * kWindow * 4 + 2 * plan_words(heads) * 4;
   const int union_at = (smem - bytes) / 128 * 128, area_at = align_of(Tenants::kEnd, 128);
-  const int pre_at = union_at + 2 * heads * kWindow * 2, units_at = pre_at + pre_bytes;
-  return ReadTables{heads,   plan_words(heads), union_at,
-                    pre_at,  units_at,          units_at + 2 * heads * kWindow,
-                    area_at, union_at - area_at};
+  const int pre_at = union_at + 2 * heads * kWindow * 2, scale_at = pre_at + pre_bytes;
+  const int units_at = scale_at + 2 * heads * kWindow, bounds_at = units_at + heads * kWindow;
+  return ReadTables{heads,    plan_words(heads), union_at,  pre_at,
+                    scale_at, units_at,          bounds_at, bounds_at + heads * kWindow * 4,
+                    area_at,  union_at - area_at};
 }
 
 constexpr int kPlaneBytes = kBoxLists * kBoxChannels * 2;

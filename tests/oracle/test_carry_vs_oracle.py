@@ -6,13 +6,16 @@ THE GATE IS THE TRUTH, NOT A DECLARED ARITHMETIC. The components' gates (`test_c
 hold the kernel to references of its own rounding; this file holds it to `tests/oracle/reference.py`'s inter term on
 the bundle's own dequantized operands, so a shared misreading of the math by a kernel and its fidelity reference has
 nowhere to hide. ``num`` is compared in the recurrence's units (`readout_reference.num_in_truth`: the per-token factor
-the epilogue cancels against ``den``), against each slot's envelope (the same reference on ``|v|``).
+the epilogue cancels against ``den``), against each slot's envelope (the same reference on ``|v|``), at both of the
+cross-CTA sum's dtypes (`rola.ops.carry.reduce_dtype_for`): f16 pairs at the den pass's scale (``_units`` stands in
+for the pass: any bound on the token's output is a valid range) and fp32.
 
 RED BY PLAN (ruling 2026-09-29): a cell whose carve the carry has no arm for, whose depth is not two, whose length is
 off the window, or whose entry state the carry cannot yet take (the segment boundary is unbuilt) fails, by name. The carry's ``den`` and its state reach the oracle through the op
 (`test_prefill_vs_oracle.py`): the den pass and the state's hand-off write them.
 
-Symbols: ``W`` the window (`rola.ops.carry.WINDOW`), ``L`` tokens, ``C`` value channels, ``u(t)`` a token's unit byte.
+Symbols: ``W`` the window (`rola.ops.carry.WINDOW`), ``L`` tokens, ``C`` value channels, ``u(t)`` a token's unit byte
+(the f16 sum's scale).
 """
 from __future__ import annotations
 
@@ -66,9 +69,9 @@ def _units(spec, routes, values):
     return grid
 
 
-def run(spec):
-    """``(routes, values, unit, num)``: one carry launch over the cell, its units the den pass's (:func:`_units`, until
-    the pass is built beside the carry)."""
+def run(spec, reduce_dtype=None):
+    """``(routes, values, unit, num)``: one carry launch over the cell at ``reduce_dtype`` (None: the auto rule's), the
+    f16 sum's scale bytes the den pass's (:func:`_units`, until the pass is built beside the carry)."""
     routes, values, facts, carve, zero = carry_operands(spec)
     if routes.topology.D != 2:
         #: the launch first, so the carry's own refusal or fault is what the cell reports where it has one
@@ -76,7 +79,7 @@ def run(spec):
         torch.cuda.synchronize()
         raise NotImplementedError(f"{spec.name}: the carry's level S is defined at depth two (`carry_level_s`)")
     unit = _units(spec, routes, values)
-    num, _ = carry_ops.carry(routes, values, facts, carve, unit)
+    num, _ = carry_ops.carry(routes, values, facts, carve, unit, reduce_dtype=reduce_dtype)
     torch.cuda.synchronize()
     return routes, values, unit, num
 
@@ -101,11 +104,13 @@ def check(spec, routes, values, unit, num):
                        envelope=ref(spec, routes, values, magnitudes=True), what=f"{spec.name} num")
 
 
+@pytest.mark.parametrize("reduce_dtype", [torch.float16, torch.float32], ids=["f16", "fp32"])
 @pytest.mark.parametrize("spec", ORACLE_CELLS, ids=IDS)
-def test_the_inter_numerator_is_the_fp64_reference(spec):
+def test_the_inter_numerator_is_the_fp64_reference(spec, reduce_dtype):
     """Every token and channel of ``num`` over the whole call, in the recurrence's units, against the inter term's
-    numerator: the state before each window read by the window's tokens, nothing within the window."""
-    check(spec, *run(spec))
+    numerator: the state before each window read by the window's tokens, nothing within the window -- at each of the
+    cross-CTA sum's dtypes."""
+    check(spec, *run(spec, reduce_dtype))
 
 
 def test_the_rule_fails_planted_errors_on_the_kernels_own_output():

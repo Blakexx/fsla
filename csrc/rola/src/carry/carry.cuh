@@ -72,8 +72,11 @@ struct SideLists {
 //: THE CALL'S READ TABLES' offsets and its area. -- see docs/internals/carry/plan.md#read-tables
 struct ReadTables {
   int heads, plan_words;
-  int union_at, pre_at, units_at, plans_at, area_at, area;
+  int union_at, pre_at, scale_at, units_at, bounds_at, plans_at, area_at, area;
 };
+
+//: THE CROSS-CTA SUM's dtype. -- see docs/internals/carry/carry_api.md#carry-reduce
+enum Reduce : int { kReduceF16 = 0, kReduceF32 = 1 };
 
 //: THE OPERAND BLOCK, a grid constant. -- see docs/internals/carry/carry.md#params
 struct CarryParams {
@@ -86,7 +89,8 @@ struct CarryParams {
   //: a write side with no list level: each token's (F, m) and each window's shifts of them, the facts pass's
   const float2* factors;
   const int16_t* factor_shift;
-  const int8_t* unit;
+  const int8_t* scale;  // the f16 sum's scale bytes: carry_api.md#carry-reduce
+  int reduce;           // `Reduce`
   int readout_f16;  // the readout's MMAs accumulate in fp16 (1) or fp32 (0): carry_api.md#carry-readout-accumulate
   int forced;  // a forced plan form, -1 none: carry_api.md#carry-forward
   uint32_t* num;
@@ -114,6 +118,7 @@ enum CarryPhase : int {
   kPhaseFill,
   kPhaseFold,
   kPhaseWait,
+  kPhaseUnits,
   kCarryPhases
 };
 

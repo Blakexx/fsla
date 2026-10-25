@@ -71,47 +71,89 @@ def units(routes, values, list_exp, level_s: int, window: int) -> torch.Tensor:
     return u.clamp(-128, 127).to(torch.int8).permute(0, 2, 1).reshape(B * H, T).contiguous()
 
 
-def readout(routes, values, list_exp, level_s: int, window: int, unit: torch.Tensor, accumulate: str):
-    """``(P, bound)``: ``[BH, T, C]`` fp64 each token's partials at its unit (``unit`` ``[BH, T]`` the unit bytes) and
-    each slot's bound in units, for an MMA accumulating in ``accumulate`` (``"fp32"`` or ``"fp16"``)."""
+def _ceil_exp(x: torch.Tensor) -> torch.Tensor:
+    """The smallest ``e`` with ``x <= 2^e`` (``x > 0``), as the kernel takes it from a float's bits."""
+    m, e = torch.frexp(x)
+    return torch.where(m == 0.5, e - 1, e)
+
+
+def readout(routes, values, list_exp, level_s: int, window: int, scale: torch.Tensor, accumulate: str,
+            reduce_dtype: torch.dtype):
+    """``(P, bound)``: ``[BH, T, C]`` fp64 each slot's readout in the kernel's frame (the state over kappa) and its bound,
+    for an MMA accumulating in ``accumulate`` (``"fp32"`` or ``"fp16"``) and a cross-CTA sum in ``reduce_dtype``. THE
+    DECLARED ARITHMETIC: a CTA a box of 32 level-S digits x 32 level-R digits x 32 channels; its unit a token
+    ``ceil(log2(1.02 S)) - 15`` from ``S = sum_d x 2^(e_d - 4) sum_r a 2^max(e_leaf - e_d, -14)`` (``e_leaf`` a leaf's
+    largest |state| over the box's channels rounded up, ``e_d`` its digit's over the box's leaves, at least
+    ``IMAGE_TOP - 127``); each piece (a live digit through the box) rounded at it -- half a unit, taken at one unit over
+    the reference's (an exponent tie at a power of two may take the kernel's one higher); each CTA's sum into ``num``:
+    f16 pairs at ``2^(scale + 1)`` (each value and each add half an f16 ulp: ``(n + 1) 2^-11`` of the slot's
+    magnitudes for ``n`` CTAs, plus the subnormal floor) or fp32 (``(n + 1) 2^-24``)."""
+
     x, a = _read_rows(routes, level_s)
-    B, T, H, _ = x.shape
+    B, T, H, B_S = x.shape
     B_R = a.shape[-1]
     L = T
-    scale = torch.exp2(-unit.double()).reshape(B, H, T).permute(0, 2, 1)                   # [B, T, H]
     C = values.v.shape[-1]
+    KS, KR, KC = B_S // BOX_LISTS, B_R // BOX_LISTS, C // BOX_LISTS
     P = torch.zeros(B, T, H, C, dtype=torch.float64, device=x.device)
     bound = torch.zeros_like(P)
-    live = (x != 0).double()
-    adds = live.sum(-1) * (B_R // BOX_LISTS)                                                 # [B, T, H]
+    s_bytes = scale.double().reshape(B, H, T).permute(0, 2, 1)                                 # [B, T, H]
+    eps_sum = 2.0 ** -11 if reduce_dtype == torch.float16 else 2.0 ** -24
+
     for w, (state, env) in enumerate(_windows(routes, values, list_exp, level_s, window)):
         sl = slice(w * window, (w + 1) * window)
         xs, as_ = x[:, sl], a[:, sl]
+        t = xs.shape[1]
         P[:, sl] = torch.einsum("bthd,bthr,bhdrc->bthc", xs, as_, state)
         mag = torch.einsum("bthd,bthr,bhdrc->bthc", xs.abs(), as_.abs(), state.abs())
         fold = torch.einsum("bthd,bthr,bhdrc->bthc", xs.abs(), as_.abs(), env) * (L / 16 * 2.0 ** -23)
         #: the subnormal floor at each digit's power of two: its largest |S| over every list and channel, doubled
         top = state.abs().amax(dim=(-1, -2))                                                 # [B, H, B_S]
         floor = torch.einsum("bthd,bthr,bhd->bth", xs.abs(), as_.abs(), 2 * top) * 2.0 ** (-25 - IMAGE_TOP)
-        bound[:, sl] = (2.0 ** -11 + ACCUMULATE[accumulate]) * mag + fold + floor[..., None]
-    P = P * scale[..., None]
-    bound = bound * scale[..., None] + 0.5 * adds[..., None]
+        #: THE CTA UNITS: the boxes' leaves' maxima, their digits' exponents, each token's bound
+        box = state.reshape(B, H, KS, BOX_LISTS, KR, BOX_LISTS, KC, BOX_LISTS)
+        lm = box.abs().amax(-1)                                                              # [B, H, ks, d, kr, r, kc]
+        e_leaf = _ceil_exp(lm.clamp_min(1e-300)).double()
+        e_d = torch.where(lm > 0, e_leaf, torch.full_like(e_leaf, -1e9)).amax(dim=5).clamp_min(IMAGE_TOP - 127)
+        sc = torch.where(lm > 0, torch.exp2((e_leaf - e_d.unsqueeze(5)).clamp(-14, 0)), torch.zeros_like(lm))
+        xb = xs.reshape(B, t, H, KS, BOX_LISTS)
+        ab = as_.reshape(B, t, H, KR, BOX_LISTS)
+        S = torch.einsum("bthsd,bthkr,bhsdkrc,bhsdkc->bthskc", xb, ab, sc, torch.exp2(e_d - COEF_TOP))
+        u = torch.where(S > 0, _ceil_exp((1.02 * S).clamp_min(1e-300)).double() - UNIT_LEVELS,
+                        torch.zeros_like(S))
+        adds = (xb != 0).double().sum(-1)[:, :, :, :, None] * (ab != 0).any(-1).double()[:, :, :, None, :]
+        piece = (0.5 * adds[..., None] * torch.exp2(u + 1)).sum(dim=(3, 4))                  # [B, t, H, kc]
+        n = (adds > 0).double().sum(dim=(3, 4))                                               # [B, t, H]
+        subnormal = (n * 2.0 ** -24)[..., None] * torch.exp2(s_bytes[:, sl] + 1)[..., None] \
+            if reduce_dtype == torch.float16 else torch.zeros_like(n)[..., None]
+        bound[:, sl] = ((2.0 ** -11 + ACCUMULATE[accumulate]) * mag + fold + floor[..., None]
+                        + piece.repeat_interleave(BOX_LISTS, -1) + ((n + 1) * eps_sum)[..., None] * mag + subnormal)
+
     return P.permute(0, 2, 1, 3).reshape(B * H, T, C), bound.permute(0, 2, 1, 3).reshape(B * H, T, C)
 
 
+def num_absolute(num: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+    """``[BH, T, C]`` fp64: the carry's ``num`` in the kernel's frame -- fp32 as written, f16 pairs times ``2^(scale +
+    1)`` (``scale`` ``[BH, T]`` the den pass's bytes)."""
+    got = unpack_num(num).double()
+    return got if num.dtype == torch.float32 else got * torch.exp2(scale[:, :got.shape[1]].double() + 1)[..., None]
+
+
 def unpack_num(num: torch.Tensor, channels: int = 32) -> torch.Tensor:
-    """``[BH, T, C]`` int64: the carry's ``num`` (``[BH, T, C / 2]`` int32, ``hi x 2^16 + lo``) as each channel's
-    integer. A box's word ``8 m + g`` pairs channels ``(c, c + 2)``, ``c = 8 (g >> 1) + 4 m + (g & 1)``: the image's
-    16-byte unit holds a writer lane's channels (``docs/internals/carry/parts.md#image``)."""
+    """``[BH, T, C]``: the carry's ``num`` per channel -- fp32 ``[BH, T, C]`` as the drain wrote it (reduce fp32), or
+    int32 ``[BH, T, C / 2]`` words of f16 pairs (reduce f16) as fp32. A box's word ``8 m + g`` pairs channels ``(c, c +
+    2)``, ``c = 8 (g >> 1) + 4 m + (g & 1)``: the image's 16-byte unit holds a writer lane's channels
+    (``docs/internals/carry/parts.md#image``)."""
+    if num.dtype == torch.float32:
+        return num
     BH, T, words = num.shape
-    v = num.long()
-    lo = ((v & 0xFFFF) ^ 0x8000) - 0x8000
-    hi = (v - lo) >> 16
+    lo = (num & 0xFFFF).to(torch.int16).view(torch.float16).float()
+    hi = ((num >> 16) & 0xFFFF).to(torch.int16).view(torch.float16).float()
     k = np.arange(words)
     box, kk = k // (channels // 2), k % (channels // 2)
     m, g = kk // 8, kk % 8
     channel = channels * box + 8 * (g >> 1) + 4 * m + (g & 1)
-    out = torch.zeros(BH, T, 2 * words, dtype=torch.int64, device=num.device)
+    out = torch.zeros(BH, T, 2 * words, dtype=torch.float32, device=num.device)
     out[..., torch.as_tensor(channel, device=num.device)] = lo
     out[..., torch.as_tensor(channel + 2, device=num.device)] = hi
     return out
@@ -138,7 +180,10 @@ def truth_scale(routes, unit: torch.Tensor, level_s: int) -> torch.Tensor:
 
 def num_in_truth(num: torch.Tensor, routes, unit: torch.Tensor) -> torch.Tensor:
     """``[B, T, H, C]`` fp64: the carry's ``num`` (:func:`unpack_num`) times :func:`truth_scale` -- the inter term's
-    numerator, comparable with `tests.oracle.reference.inter_reference`'s."""
+    numerator, comparable with `tests.oracle.reference.inter_reference`'s. ``unit`` is the f16 sum's scale bytes (the
+    den pass's): f16 pairs hold ``num / 2^(scale + 1)`` (a bit of range, `parts.cuh` `drain`); an fp32 ``num`` carries
+    each CTA's unit already, so only the per-token factor remains."""
     B, T, H = routes.batch, routes.tokens, routes.heads
     got = unpack_num(num[:, :T]).double().reshape(B, H, T, -1).permute(0, 2, 1, 3)
+    unit = torch.zeros_like(unit) if num.dtype == torch.float32 else unit + 1
     return got * truth_scale(routes, unit, routes.level_s)[..., None]

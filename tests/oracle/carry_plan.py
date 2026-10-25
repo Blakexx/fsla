@@ -86,10 +86,10 @@ def largest_chunk(u: int, S, room: int, nbytes) -> int:
 
 
 def tables_bytes(heads: int) -> int:
-    """The read tables' bytes at ``heads`` query heads a write head (`tables_of`): the union, the prefix rows, the
-    units and the plan records, each two windows'."""
+    """The read tables' bytes at ``heads`` query heads a write head (`tables_of`): the union, the prefix rows, the den
+    pass's scale bytes and the plan records, each two windows'; the window's units and the listed bounds' counters."""
     return (2 * heads * WINDOW * 2 + -(-2 * 33 * LIST_AT * heads * 2 // 16) * 16 + 2 * heads * WINDOW
-            + 2 * carry_ops.plan_words(heads) * 4)
+            + heads * WINDOW + heads * WINDOW * 4 + 2 * carry_ops.plan_words(heads) * 4)
 
 
 def area_of(smem: int, area_one: int, heads: int) -> int:

@@ -17,7 +17,8 @@
 // as 10 into an s32 `num` by integer adds: the half sign-extended and shifted left by the slot's exponent; 12 as 8 (two
 // slots a request, a lane a word) into an f16-pair `num`: each word's halves converted exactly, scaled by the slot's
 // (scale, bias) pair, packed to f16 and added by `red.global.add.noftz.f16x2` (its panel filled with 5-bit halves, so
-// every f16 sum is an exact integer and the check stays word for word).
+// every f16 sum is an exact integer and the check stays word for word); 13 as 12 with no conversion (the raw word
+// added as an f16 pair: L2's float adds alone); 14 as 12's conversion added as an integer (the conversion alone).
 // Each draining form's `num` is checked word for word against the mirror's; a row prices a line request from form 8.
 // A sample is the CTA's span a window. see docs/lab/drain.md
 #include <algorithm>
@@ -262,6 +263,49 @@ __device__ __forceinline__ void drain_pass_h2(const In& in, uint32_t sm, int m, 
   }
 }
 
+//: FORMS 13 and 14 split FORM 12's cost: 13 adds each raw word as an f16 pair (L2's float adds, no conversion), 14
+//: converts as 12 and adds the packed bits as an integer (the conversion, integer adds)
+template <int FORM>
+__device__ __forceinline__ void drain_pass_split(const In& in, uint32_t sm, int m, int ct,
+                                                 uint32_t dummy, int warp, int lane) {
+  const int j = lane & 15, h = lane >> 4;
+  uint32_t* const row = in.num16 + ct * kWords + j;
+  const int groups = min(4, max(0, (m - 32 * warp + 7) / 8));
+#pragma unroll 1
+  for (int q = 0; q < groups; ++q) {
+    uint32_t v[4], tok[4];
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+      const int s = 32 * warp + 8 * q + i + 4 * h;
+      const uint32_t w = lds32(sm + kPanel + static_cast<uint32_t>((s * kPitch + j) * 4));
+      const uint32_t tk = lds32(sm + kTok + 4 * s);
+      uint32_t x = w;
+      if constexpr (FORM == 14) {
+        float2 sb;
+        asm volatile("ld.shared.v2.f32 {%0, %1}, [%2];"
+                     : "=f"(sb.x), "=f"(sb.y)
+                     : "r"(sm + kScale + 8 * s));
+        const float lo = fmaf(__uint_as_float(((w ^ 0x8000u) & 0xffffu) | 0x4B400000u), sb.x, sb.y);
+        const float hi =
+            fmaf(__uint_as_float(((((w + 0x8000u) >> 16) ^ 0x8000u) & 0xffffu) | 0x4B400000u), sb.x,
+                 sb.y);
+        const __half2 pair = __floats2half2_rn(lo, hi);
+        x = *reinterpret_cast<const uint32_t*>(&pair);
+      }
+      tok[i] = s < m ? tk : dummy;
+      v[i] = s < m ? x : 0u;
+    }
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+      if constexpr (FORM == 13) {
+        redh2(row + static_cast<size_t>(tok[i]) * (2 * kWords), v[i]);
+      } else {
+        red(row + static_cast<size_t>(tok[i]) * (2 * kWords), v[i]);
+      }
+    }
+  }
+}
+
 template <int FORM, int SET>
 __global__ void __launch_bounds__(kThreads, 1) drain(In in, long long* t) {
   extern __shared__ __align__(128) uint8_t smem[];
@@ -286,14 +330,14 @@ __global__ void __launch_bounds__(kThreads, 1) drain(In in, long long* t) {
       if (tid < m) {
         const int s = p * kSlots + tid;
         const uint32_t at = sm + kPanel + static_cast<uint32_t>(tid * kPitch * 4);
-        constexpr uint32_t keep = FORM == 12 ? 0x001f001fu : 0xffffffffu;
+        constexpr uint32_t keep = FORM >= 12 ? 0x001f001fu : 0xffffffffu;
 #pragma unroll
         for (int q = 0; q < 4; ++q)
           sts128(at + 16 * q, pattern(w, b, s, 4 * q) & keep, pattern(w, b, s, 4 * q + 1) & keep,
                  pattern(w, b, s, 4 * q + 2) & keep, pattern(w, b, s, 4 * q + 3) & keep);
         sts32(sm + kTok + 4 * tid, 512u * static_cast<uint32_t>(w) + toks[s]);
         if constexpr (FORM == 9 || FORM == 11) sts32(sm + kExp + 4 * tid, 0u);
-        if constexpr (FORM == 10 || FORM == 12) {
+        if constexpr (FORM == 10 || FORM == 12 || FORM == 14) {
           asm volatile("st.shared.v2.f32 [%0], {%1, %2};" ::"r"(sm + kScale + 8 * tid), "f"(1.0f),
                        "f"(-12615680.0f)
                        : "memory");
@@ -308,12 +352,14 @@ __global__ void __launch_bounds__(kThreads, 1) drain(In in, long long* t) {
         drain_pass_s32(in, sm, m, ct, dummy, warp, lane);
       } else if constexpr (FORM == 12) {
         drain_pass_h2(in, sm, m, ct, dummy, warp, lane);
+      } else if constexpr (FORM == 13 || FORM == 14) {
+        drain_pass_split<FORM>(in, sm, m, ct, dummy, warp, lane);
       } else if constexpr (FORM != 5) {
         drain_pass<FORM>(in, sm, m, ct, dummy, warp, lane, copies, table_lane, ring_lane);
       }
       __syncthreads();
       //: FORM 3's clear: a thread its slot's 16 words by four 16-byte stores
-      if constexpr (FORM == 3 || FORM == 8 || FORM == 9 || FORM == 10 || FORM == 11 || FORM == 12) {
+      if constexpr (FORM == 3 || FORM >= 8) {
         const uint32_t at = sm + kPanel + static_cast<uint32_t>(tid * kPitch * 4);
 #pragma unroll
         for (int q = 0; q < 4; ++q) sts128(at + 16 * q, 0u, 0u, 0u, 0u);
@@ -384,6 +430,9 @@ double run(const lab::Bench& b, const std::string& variant, const In& in, const 
   const lab::Samples s = b.variant(launch, [&] { return b.span(kWarps, h.ctas) / h.windows; });
   if (FORM == 5) {
     b.unchecked(variant, "a bound: the fill alone, nothing drained");
+  } else if (FORM == 13 || FORM == 14) {
+    b.unchecked(variant,
+                "a split of form 12's cost: its adds or its conversion, the sums meaningless");
   } else if (FORM == 12) {
     LAB_CHECK(cudaMemset(in.num16, 0, h.num16.size() * 2));
     launch();
@@ -471,6 +520,8 @@ void cell(const lab::Bench& b, const char* label, const In& in, const Host& h) {
   run<10, SET>(b, l + "fp32, the offset conversion and one FFMA a channel", in, h);
   run<11, SET>(b, l + "s32: a slot's 32 channels a request by integer adds", in, h);
   run<12, SET>(b, l + "f16 pairs: two slots a request, each word converted and packed", in, h);
+  run<13, SET>(b, l + "split: raw words added as f16 pairs (no conversion)", in, h);
+  run<14, SET>(b, l + "split: the conversion, added as integers", in, h);
 }
 
 }  // namespace drain_lab

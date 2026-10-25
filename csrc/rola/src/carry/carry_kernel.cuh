@@ -98,6 +98,13 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     reinterpret_cast<UnitBook*>(smem + P::kBook)[threadIdx.x] = UnitBook{kUnitNone, 0.0f};
   if (static_cast<int>(threadIdx.x) < 2 * kBoxDigits)
     reinterpret_cast<int*>(smem + P::kKeys)[threadIdx.x] = INT_MIN;
+  //: the listed bounds' counters, each cleared again by the chunk that reads it; the units defined before any read (a
+  //: masked lane reads index 0)
+#pragma unroll 1
+  for (int i = static_cast<int>(threadIdx.x); i < p.tables.heads * kWindow; i += kThreads) {
+    reinterpret_cast<uint32_t*>(smem + p.tables.bounds_at)[i] = 0u;
+    reinterpret_cast<int8_t*>(smem + p.tables.units_at)[i] = static_cast<int8_t>(kUnitByteNone);
+  }
   //: the scales' bits' multiplier and bias (`list_scale`), loaded at each use
   if (threadIdx.x == 0)
     *reinterpret_cast<uint2*>(smem + P::kBits) = make_uint2(1u << 23, 127u << 23);
@@ -121,6 +128,20 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       fold_fill<P>(p, smem, ww(w), here(), w, e.first(), e.slots(), e.total(), buf, wid(), lid());
     }
     flow.slot_landed(slot);
+  };
+  //: A READ CHUNK'S UNITS, the CTA's own, before its first adds: a listed side's terms or a dense side's bounds (the
+  //: arm's read rows say which: one factor a listed side's row, two a dense side's row and coefficients), a barrier,
+  //: their bytes and the drain's factors; a barrier publishes them to the readout and the drain
+  const auto chunk_units = [&](int w, const Entry& e, ops::SmemAddr buf) {
+    if constexpr (P::kReadFactors == 1) {
+      units_listed_add<P>(p, smem, rw(w), w, e.first(), e.slots(), e.total(), buf,
+                          buf + static_cast<uint32_t>(read_ents<P>(e.slots())), wid(), lid());
+    } else {
+      units_dense<P>(p, smem, e.first(), e.slots(), buf, wid(), lid());
+    }
+    ops::rendezvous();
+    units_close<P>(p, smem, w, e.first(), e.slots());
+    ops::rendezvous();
   };
   //: A READ CHUNK'S TILES over batches `lo .. hi - 1` of the image at `image` (digit `d`'s plane `d & mask`)
   const auto read_out = [&](auto pairs, int w, const Entry& e, ops::SmemAddr buf, int lo, int hi,
@@ -159,6 +180,8 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       const int top = post_keys<P>(st, smem, w, wid(), lid());
       ops::rendezvous();
       post_exps<P>(smem, w, top, lid());
+      leaf_scales<P>(smem);
+      bounds_clear<P>(p, smem);
     }
     clock.lap(kPhaseMaxima);
     //: THE STORE: the next window's inputs staged; a whole image stored
@@ -228,6 +251,8 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
             clock.lap(kPhaseLanded);
             if (t == 0) ops::rendezvous();
             clock.lap(kPhaseWait);
+            chunk_units(w, entry_at(stream_of<P>(p, smem, w), flow.step()), buf);
+            clock.lap(kPhaseUnits);
             read_out(std::true_type{}, w, entry_at(stream_of<P>(p, smem, w), flow.step()), buf, 0,
                      kBatches, area, kBoxDigits - 1);
             clock.lap(kPhaseReadout);
@@ -239,8 +264,12 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
                                                      lid());
               ops::rendezvous();
               clock.lap(kPhaseStore);
-              if (half == 0) flow.wait_slot(flow.slot());
-              clock.lap(kPhaseLanded);
+              if (half == 0) {
+                flow.wait_slot(flow.slot());
+                clock.lap(kPhaseLanded);
+                chunk_units(w, entry_at(stream_of<P>(p, smem, w), flow.step()), buf);
+                clock.lap(kPhaseUnits);
+              }
               read_out(std::true_type{}, w, entry_at(stream_of<P>(p, smem, w), flow.step()), buf,
                        2 * half, 2 * half + 2, area, 2 * kBatchPlanes - 1);
               clock.lap(kPhaseReadout);

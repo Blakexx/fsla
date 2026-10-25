@@ -13,11 +13,12 @@ namespace rola::carry {
 //: ONE LAUNCH over a call's windows. -- see docs/internals/carry/carry_api.md#carry-forward
 void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows, Tensor values,
                    std::vector<Tensor> write_lists, Tensor write_exp, Tensor factors,
-                   Tensor factor_shift, std::vector<Tensor> read_lists, Tensor unit, Tensor num,
+                   Tensor factor_shift, std::vector<Tensor> read_lists, Tensor scale, Tensor num,
                    Tensor check, std::vector<int64_t> widths, std::vector<int64_t> extents,
                    int64_t channels, int64_t write_list, std::vector<int64_t> write_operand,
                    int64_t read_list, std::vector<int64_t> read_operand, std::vector<int64_t> key,
-                   int64_t accumulate, int64_t forced, std::optional<Tensor> plans_out);
+                   int64_t accumulate, int64_t reduce, int64_t forced,
+                   std::optional<Tensor> plans_out);
 
 int64_t carry_readout_accumulate(int64_t device);  // carry_api.md#carry-readout-accumulate
 
