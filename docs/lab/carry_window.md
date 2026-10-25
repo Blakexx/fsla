@@ -29,30 +29,36 @@ The forms:
   stores), and the drain inside the fold, a warp's share before its list `(warp >> 1) & 3`.
 - 5, form 4 with its fills' loads ahead (a thread's four slots' tokens loaded before any copy) and each warp's entries
   copied in one pass over its four lists' runs.
-- 6, form 5 with each half's stores as independent chains (`store_half`: a lane's units and exponents read first, its
-  eight scales formed, then its 32 pairs scaled, packed and stored).
+- 6, form 5 with each half's stores as independent chains (`store_half`), WITHDRAWN from the runs 2026-10-24: its
+  stores predate the 16-byte image, which production's `store_batches` now writes in the lean form (2026-10-18), so it
+  no longer matches the call.
+
+Every form sets each read chunk's units as the production window does (`parts.md#units`: the CTA's own, from its
+leaves' maxima, before the chunk's first add) and initializes the tenants production's prologue does (the keys, the
+bounds' counters, the units, the scales' bits). The check against the captured call is per token since the cross-CTA
+sum went floating (`carry_api.md#carry-reduce`): the sum's order is the hardware's, so each value is held within 2^-5
+of the token's largest |channel| (or 2^-12 absolute); the production kernel's own replay reads within 0.4%.
 
 Each form is read twice: its launch timed with every clock off -- a lab form's warps stamping only their start and end,
 so its span in cycles is free of the SM's clock (which moves ~9% between processes here), the production kernel's
 ledger unbound -- and then with its clock on, for the phases. The clock costs ~11% of a lab form's time and ~16% of the
 production kernel's (a clock read is a point ptxas does not schedule across), so the phases attribute, the span times.
-sm_86 (RTX 3080 Ti), median of 7; the production kernel's clock-off cycles taken from its time at form 5's cycles a
-microsecond in the same run, every form with its check a warp's (below):
+sm_86 (RTX 3080 Ti), SM clock locked at 1.665 GHz, median of 7, carry-k5 e53bc28d (the per-leaf output form) on
+2026-10-24; the production kernel's clock-off cycles from its time at form 5's cycles a microsecond in the same run (the
+2026-10-14 table, at 790dfac6's parts: production 860 / 509 us, form 6 503 / 360):
 
-| | us, clock off | vs production | cycles a CTA-window, clock off | clocked | landed | maxima | store | readout | drain | fill | fold | wait |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| production, alt-k4 | 860 | 1.00 | ~25,809 | 25,631 | 3,678 | 1,753 | 4,033 | 3,543 | 1,878 | 3,961 | 3,868 | 2,905 |
-| form 1, alt-k4 | 614 | 0.71 | 15,820 | 17,875 | 662 | 1,910 | 2,113 | 3,168 | 1,406 | 3,687 | 3,100 | 1,812 |
-| form 3, alt-k4 | 628 | 0.73 | 16,176 | 18,385 | 2,600 | 6,508 | 4,667 | 5,185 | 1,487 | 3,161 | 8,762 | 2,699 |
-| form 4, alt-k4 | 617 | 0.72 | 15,944 | 17,789 | 200 | 1,893 | 2,156 | 3,237 | -- | 3,916 | 4,202 | 2,136 |
-| form 5, alt-k4 | 507 | 0.59 | 15,215 | 17,053 | 203 | 1,789 | 2,087 | 3,154 | -- | 3,590 | 4,098 | 2,107 |
-| form 6, alt-k4 | 503 | 0.58 | 15,086 | 17,049 | 205 | 1,788 | 1,919 | 3,142 | -- | 3,590 | 4,101 | 2,313 |
-| production, thinned | 509 | 1.00 | ~15,160 | 18,210 | 3,212 | 1,800 | 2,181 | 2,049 | 688 | 2,679 | 2,567 | 3,022 |
-| form 1, thinned | 377 | 0.74 | 11,246 | 13,235 | 787 | 1,916 | 2,114 | 2,035 | 382 | 2,394 | 1,819 | 1,770 |
-| form 3, thinned | 387 | 0.76 | 11,576 | 13,608 | 781 | 1,912 | 2,119 | 2,045 | 395 | 2,173 | 2,396 | 1,771 |
-| form 4, thinned | 374 | 0.73 | 11,152 | 12,984 | 214 | 1,860 | 2,154 | 2,086 | -- | 2,707 | 1,960 | 1,988 |
-| form 5, thinned | 362 | 0.71 | 10,828 | 12,577 | 216 | 1,716 | 2,098 | 2,039 | -- | 2,455 | 1,952 | 2,086 |
-| form 6, thinned | 360 | 0.71 | 10,737 | 12,505 | 213 | 1,716 | 1,922 | 2,030 | -- | 2,452 | 1,955 | 2,204 |
+| | us, clock off | vs production | cycles a CTA-window, clock off | clocked | landed | maxima | store | readout | drain | fill | fold | wait | units |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| production, alt-k4 | 895 | 1.00 | ~22,871 | 25,246 | 1,038 | 2,036 | 3,146 | 3,812 | 2,121 | 4,747 | 3,287 | 2,989 | 2,063 |
+| form 1, alt-k4 | 660 | 0.74 | 16,849 | 18,862 | 666 | 1,905 | 1,445 | 3,288 | 1,512 | 3,049 | 3,143 | 1,998 | 1,839 |
+| form 3, alt-k4 | 675 | 0.75 | 17,235 | 19,290 | 722 | 1,926 | 1,451 | 3,283 | 1,526 | 2,509 | 4,039 | 1,980 | 1,837 |
+| form 4, alt-k4 | 662 | 0.74 | 16,904 | 18,384 | 222 | 2,270 | 1,393 | 3,236 | -- | 3,246 | 4,069 | 2,223 | 1,717 |
+| form 5, alt-k4 | 650 | 0.73 | 16,617 | 18,151 | 217 | 1,843 | 1,480 | 3,212 | -- | 3,486 | 4,051 | 2,121 | 1,721 |
+| production, thinned | 652 | 1.00 | ~16,543 | 18,679 | 1,272 | 2,042 | 1,600 | 1,940 | 859 | 3,858 | 2,141 | 3,382 | 1,569 |
+| form 1, thinned | 476 | 0.73 | 12,049 | 14,012 | 740 | 1,908 | 1,444 | 2,178 | 566 | 2,083 | 1,891 | 1,880 | 1,301 |
+| form 3, thinned | 486 | 0.75 | 12,367 | 14,367 | 742 | 1,928 | 1,447 | 2,171 | 579 | 1,859 | 2,468 | 1,855 | 1,300 |
+| form 4, thinned | 485 | 0.74 | 12,310 | 13,869 | 231 | 2,273 | 1,395 | 2,164 | -- | 2,344 | 2,153 | 2,089 | 1,207 |
+| form 5, thinned | 470 | 0.72 | 11,926 | 13,572 | 227 | 1,772 | 1,480 | 2,145 | -- | 2,455 | 2,120 | 2,154 | 1,206 |
 
 A phase is the mean warp's cycles with the clock on; "wait" is the warps' time at the barriers that end the maxima, the
 stores and the readout's halves.
@@ -64,10 +70,10 @@ last wave's tail) and its slope a window's (two waves of CTAs at one head). us, 
 
 | | 1 window | 32 windows | fixed a call | a window |
 |---|---|---|---|---|
-| production, alt-k4 | 46.1 | 860.2 | 21.1 | 26.3 |
-| form 6, alt-k4 | 27.6 | 581.6 | 11.2 | 17.9 |
-| production, thinned | 32.8 | 510.0 | 17.2 | 15.4 |
-| form 6, thinned | 19.5 | 359.4 | 8.2 | 11.0 |
+| production, alt-k4 | 47.1 | 894.0 | 22.9 | 27.3 |
+| form 5, alt-k4 | 30.7 | 647.2 | 12.7 | 19.9 |
+| production, thinned | 38.9 | 653.2 | 19.7 | 19.8 |
+| form 5, thinned | 24.6 | 469.0 | 10.2 | 14.3 |
 
 Every form adds its check once a warp (`../internals/carry/carry_kernel.md#check`): added once a thread, its 32,768
 fp32 adds a call on one address serialized at their L2 slice for ~40-47 us -- most of a call's fixed cost (the
@@ -78,7 +84,17 @@ Live registers (`tools/life_ranges.py`): production peaks at 251 of 253 usable a
 peaks at 233 in the readout's tiles, its fold steps at most 188, its fills 184-210, its base ~157-165; form 5 is
 allocated 223. Static instructions: form 1 6,215 against 11,736.
 
-What it decides:
+What it decides (2026-10-24, the lab re-run at e53bc28d; the 2026-10-14 findings below stand):
+- The hand-written window still runs 0.73x the production kernel (form 5: 650 against 895 us at alt-k4, 470 against
+  652 thinned), with the units pass in both: the step machine and its statics re-read at each use cost ~6.3K cycles a
+  CTA-window clock off (~7.1K clocked) at either cell -- the largest single item of the window's fixed work.
+- The window is 73% fixed at this build: production thinned 652 / 895 us; form 5 thinned 470 / 650 (72%).
+- Production's phases against form 5's (alt-k4, a warp-window, clock on): landed 1.0K vs 0.2K, store 3.1K vs 1.5K
+  (production's image in halves with a rendezvous each: every alt-k4 window's whole image does not fit beside its read
+  chunk), fill 4.7K vs 3.5K, wait 3.0K vs 2.1K, drain 2.1K vs 0 (inside the fold: fold 3.3K vs 4.1K), readout 3.8K
+  vs 3.2K, maxima 2.0K vs 1.8K, units 2.1K vs 1.7K.
+
+What it decided (2026-10-14):
 - The item machine costs ~6K a CTA-window at alt-k4, clock off (its waits, its landed checks, its per-item glue); a
   window written by hand from the same parts recovers it (form 1: 0.71 of the production kernel's time, form 6 0.58)
   and holds ~40 fewer registers at every phase.

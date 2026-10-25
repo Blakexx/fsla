@@ -6,7 +6,9 @@
 // Forms: 0 the production kernel (its plan pass, then the carry). see docs/lab/carry_window.md
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -158,8 +160,8 @@ inline Reading read_ledger(const long long* ledger, int ctas, int windows) {
   return r;
 }
 
-const char* const kPhases[rc::kCarryPhases] = {"landed", "maxima", "store", "readout",
-                                               "drain",  "fill",   "fold",  "wait"};
+const char* const kPhases[rc::kCarryPhases] = {"landed", "maxima", "store", "readout", "drain",
+                                               "fill",   "fold",   "wait",  "units"};
 
 namespace ops = ::denseref::ops;
 
@@ -202,7 +204,7 @@ __device__ __forceinline__ Sized sized(const rc::CarryParams& p, const uint8_t* 
                                               rc::kListAt - 1, rc::kListAt)
                                  : 0;
   return Sized{slots, Side == rc::kRead ? rc::read_bytes<P>(slots, entries)
-                                        : rc::fold_bytes<P>(slots, entries)};
+                                        : rc::fold_bytes<P>(slots, entries, win.listed)};
 }
 
 //: a read buffer's place, at the area's top
@@ -383,7 +385,7 @@ __device__ __forceinline__ void store_half(const rc::State<P>& st, const uint8_t
   int u[P::kFoldLists], e[2];
   rola::static_for<P::kFoldLists>([&](auto J) { u[J] = book[warp + rc::kWarps * J].unit; });
   rola::static_for<2>(
-      [&](auto H) { e[H] = __shfl_sync(0xffffffffu, dexp, 16 * HALF + 8 * H + g); });
+      [&](auto H) { e[H] = __shfl_sync(0xffffffffu, dexp, rc::exp_slot(16 * HALF + 8 * H + g)); });
   uint32_t base;
   asm volatile("mov.u32 %0, %1;" : "=r"(base) : "r"(rc::unit_of(warp, 0, g)));
   float sc[P::kFoldLists][2];
@@ -412,9 +414,10 @@ __device__ __forceinline__ void store_half(const rc::State<P>& st, const uint8_t
 //: A FOLD over the whole union of a listed side, `hook(J)` run before list `J`'s steps (fold.cuh's `fold_chunk`, its
 //: rescale applied)
 template <class Hook>
-__device__ __forceinline__ void fold_lists(rc::State<P>& st, const uint8_t* smem,
-                                           const rc::Window& ww, int w, int slots, uint32_t rows,
-                                           int warp, int lane, Hook hook) {
+__device__ __forceinline__ void fold_lists(const rc::CarryParams& p, rc::State<P>& st,
+                                           const uint8_t* smem, const rc::Window& ww, int w,
+                                           int slots, uint32_t rows, int warp, int lane,
+                                           Hook hook) {
   const rc::Run run = rc::chunk_runs<P>(p, smem, ww, rc::kWrite, w, 0, slots, slots, lane);
   const uint32_t ents = rows + rc::fold_ents<P>(slots);
   rola::static_for<P::kFoldLists>([&](auto J) {
@@ -443,8 +446,9 @@ __device__ __forceinline__ void fold_lists(rc::State<P>& st, const uint8_t* smem
 //: the fold, its rows in four slices, one before each of the warp's lists' steps. FORM 4: the window's read buffer
 //: issued at its top (rows, panel by stores, entries), the drain a warp's share inside the fold before its list
 //: `(warp >> 1) & 3` (a scheduler's two warps at different lists). FORM 5: form 4, its fills' loads ahead. CLOCK: the
-//: phase trace compiled in (the attribution) or out (the timing). FORM 6: form 5 with each half's stores in
-//: independent chains (`store_half`).
+//: phase trace compiled in (the attribution) or out (the timing). FORM 6 (form 5 with each half's stores in
+//: independent chains, `store_half`) is withdrawn from the runs: its stores predate the 16-byte image, which
+//: production's `store_batches` now writes in the lean form (2026-10-18).
 template <int FORM, bool CLOCK>
 __global__ __launch_bounds__(rc::kThreads, 1) void window(
     const __grid_constant__ rc::CarryParams p) {
@@ -454,6 +458,14 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
     const int t = tid();
     if (t < rc::kBoxLists)
       reinterpret_cast<rc::UnitBook*>(smem + P::kBook)[t] = rc::UnitBook{rc::kUnitNone, 0.0f};
+    if (t < 2 * rc::kBoxDigits) reinterpret_cast<int*>(smem + P::kKeys)[t] = INT_MIN;
+    //: the bounds' counters and the units, as the production kernel's prologue; the scales' bits (`list_scale`)
+    for (int i = t; i < p.tables.heads * rc::kWindow; i += rc::kThreads) {
+      reinterpret_cast<uint32_t*>(smem + p.tables.bounds_at)[i] = 0u;
+      reinterpret_cast<int8_t*>(smem + p.tables.units_at)[i] =
+          static_cast<int8_t>(rc::kUnitByteNone);
+    }
+    if (t == 0) *reinterpret_cast<uint2*>(smem + P::kBits) = make_uint2(1u << 23, 127u << 23);
     if (t == 0) rc::addr_in(*reinterpret_cast<rc::Addr*>(smem + P::kAddr), p, rc::place_of(p));
   }
   ops::rendezvous();
@@ -492,12 +504,14 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
     //: THE DIGIT MAXIMA of the state before the window's writes
     {
       const int t = tid();
-      rc::post_maxima<P>(st, smem, w, t >> 5, t & 31);
+      const int top = rc::post_keys<P>(st, smem, w, t >> 5, t & 31);
       lap<CLOCK>(p, laps, rc::kPhaseMaxima);
       ops::rendezvous();
       lap<CLOCK>(p, laps, rc::kPhaseWait);
-      dexp = rc::digit_exp<P>(smem, w, tid() & 31);
-      if (tid() < 32) reinterpret_cast<int*>(smem + P::kExps)[tid()] = dexp;
+      rc::post_exps<P>(smem, w, top, t & 31);
+      rc::leaf_scales<P>(smem);
+      rc::bounds_clear<P>(p, smem);
+      dexp = reinterpret_cast<const int*>(smem + P::kExps)[t & 31];
     }
     lap<CLOCK>(p, laps, rc::kPhaseMaxima);
     //: THE HALVES: each stored into the image, then read out
@@ -518,8 +532,8 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
             store_half<1>(st, smem, area, dexp);
           }
         } else {
-          rc::store_batches<P>(st, smem, area, 2 * half, 2 * half + 2, 2 * rc::kBatchPlanes - 1,
-                               dexp, t >> 5, t & 31);
+          rc::store_batches<P, 2 * rc::kBatchPlanes - 1>(st, smem, area, 2 * half, 2 * half + 2,
+                                                         t >> 5, t & 31);
         }
       }
       if constexpr (FORM >= 4) {
@@ -533,6 +547,19 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
         const uint32_t rows = area + top_of(r.bytes), pads = rows + rc::read_pads<P>(r.slots),
                        ents = rows + rc::read_ents<P>(r.slots);
         const rc::Window rw = rc::window_of<P>(p, smem, rc::kRead, w);
+        //: THE CHUNK'S UNITS, the CTA's own, before its first add (parts.cuh's, as the production window)
+        if (half == 0) {
+          if constexpr (P::kReadFactors == 1) {
+            rc::units_listed_add<P>(p, smem, rw, w, 0, r.slots, r.slots, rows, ents, t >> 5,
+                                    t & 31);
+          } else {
+            rc::units_dense<P>(p, smem, 0, r.slots, rows, t >> 5, t & 31);
+          }
+          ops::rendezvous();
+          rc::units_close<P>(p, smem, w, 0, r.slots);
+          ops::rendezvous();
+          lap<CLOCK>(p, laps, rc::kPhaseUnits);
+        }
         if (p.readout_f16) {
           rc::read_chunk<P, true, true>(p, smem, rw, w, 0, r.slots, r.slots, 2 * half, 2 * half + 2,
                                         area, 2 * rc::kBatchPlanes - 1, rows, pads, ents, t >> 5,
@@ -572,7 +599,7 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
         const rc::Window ww = rc::window_of<P>(p, smem, rc::kWrite, w);
         if (!ww.listed) __trap();
         rc::fold_units<P>(smem, ww, w, t >> 5, t & 31);
-        fold_lists(st, smem, ww, w, f.slots, area, t >> 5, t & 31, [&](auto J) {
+        fold_lists(p, st, smem, ww, w, f.slots, area, t >> 5, t & 31, [&](auto J) {
           if (((tid() >> 6) & (P::kFoldLists - 1)) == decltype(J)::value)
             rc::drain<P>(p, smem, rc::window_of<P>(p, smem, rc::kRead, w),
                          rc::Place{static_cast<int>(blockIdx.y), 0}, w, 0, r.slots,
@@ -616,7 +643,7 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
           const rc::Window ww = rc::window_of<P>(p, smem, rc::kWrite, w);
           if (!ww.listed) __trap();
           rc::fold_units<P>(smem, ww, w, t >> 5, t & 31);
-          fold_lists(st, smem, ww, w, f.slots, area, t >> 5, t & 31, [&](auto J) {
+          fold_lists(p, st, smem, ww, w, f.slots, area, t >> 5, t & 31, [&](auto J) {
             if (next) {
               constexpr int j = decltype(J)::value;
               const int s0 = (n.slots * j / P::kFoldLists) & ~7,
@@ -681,20 +708,73 @@ void form(const lab::Bench& b, Call& c, const char* name, const char* cell, Laun
     LAB_CHECK(cudaMemset(c.num, 0, c.num_bytes));
     LAB_CHECK(cudaMemset(c.check, 0, 4));
   };
-  //: the readout's output against the call's: the words that differ, and by most in an s16 half
+  //: the readout's output against the call's: the words that differ, and by most x 2^-16 of the token's largest
   const auto compare = [&] {
     std::vector<uint32_t> got(c.want.size());
     LAB_CHECK(cudaMemcpy(got.data(), c.num, c.num_bytes, cudaMemcpyDeviceToHost));
+    //: the call's num is a floating sum across CTAs (f16 pairs, or fp32), its order the hardware's, so a form matches
+    //: it to the sum's own rounding: each value within 2^-6 of the larger magnitude, or under 2^-12 absolute
+    const auto half_to_float = [](uint32_t h) {
+      const uint32_t sign = (h >> 15) & 1u, exp = (h >> 10) & 31u, man = h & 1023u;
+      float v;
+      if (exp == 0) {
+        v = std::ldexp(static_cast<float>(man), -24);
+      } else if (exp == 31) {
+        v = man ? std::numeric_limits<float>::quiet_NaN() : std::numeric_limits<float>::infinity();
+      } else {
+        v = std::ldexp(static_cast<float>(man + 1024u), static_cast<int>(exp) - 25);
+      }
+      return sign ? -v : v;
+    };
+    //: a token's 32 channels are 16 words (f16 pairs) or 32 (fp32): each value within 2^-5 of the token's largest
+    //: (an f16 sum of up to 64 CTAs' partials rounds each add by 2^-11), or under 2^-12 absolute
+    const auto close = [](float a, float b, float tok) {
+      const float d = std::fabs(a - b);
+      return d <= tok * (1.0f / 32.0f) || d <= 1.0f / 4096.0f;
+    };
     size_t bad = got.empty() ? 1 : 0;
-    int worst = 0;
+    int shown = 0;
+    double worst = 0.0;
+    const bool f32 = c.cap.p.reduce == rc::kReduceF32;
+    const size_t per_tok = f32 ? 32 : 16;
+    std::vector<float> tok_max(got.size() / per_tok + 1, 0.0f);
     for (size_t i = 0; i < got.size(); ++i) {
-      bad += got[i] != c.want[i];
-      const int lo =
-          static_cast<int16_t>(got[i] & 0xffffu) - static_cast<int16_t>(c.want[i] & 0xffffu);
-      const int hi = static_cast<int16_t>(got[i] >> 16) - static_cast<int16_t>(c.want[i] >> 16);
-      worst = std::max(worst, std::max(std::abs(lo), std::abs(hi)));
+      float w0, w1 = 0.0f;
+      if (f32) {
+        std::memcpy(&w0, &c.want[i], 4);
+      } else {
+        w0 = half_to_float(c.want[i] & 0xffffu);
+        w1 = half_to_float(c.want[i] >> 16);
+      }
+      float& m = tok_max[i / per_tok];
+      m = std::max(m, std::max(std::fabs(w0), std::fabs(w1)));
     }
-    return std::make_pair(bad, worst);
+    for (size_t i = 0; i < got.size(); ++i) {
+      float a[2], w[2];
+      int n = f32 ? 1 : 2;
+      if (f32) {
+        std::memcpy(&a[0], &got[i], 4);
+        std::memcpy(&w[0], &c.want[i], 4);
+      } else {
+        a[0] = half_to_float(got[i] & 0xffffu);
+        a[1] = half_to_float(got[i] >> 16);
+        w[0] = half_to_float(c.want[i] & 0xffffu);
+        w[1] = half_to_float(c.want[i] >> 16);
+      }
+      bool ok = true;
+      for (int k = 0; k < n; ++k) {
+        ok = ok && close(a[k], w[k], tok_max[i / per_tok]);
+        const float m = tok_max[i / per_tok];
+        if (m > 0.0f) worst = std::max(worst, static_cast<double>(std::fabs(a[k] - w[k]) / m));
+      }
+      if (!ok && shown < 6) {
+        std::fprintf(stderr, "  differs word %zu: got %08x (%g %g) want %08x (%g %g)\n", i, got[i],
+                     a[0], f32 ? 0.0f : a[1], c.want[i], w[0], f32 ? 0.0f : w[1]);
+        ++shown;
+      }
+      bad += !ok;
+    }
+    return std::make_pair(bad, static_cast<int>(worst * 65536.0));
   };
   cudaEvent_t e0, e1;
   LAB_CHECK(cudaEventCreate(&e0));
@@ -747,7 +827,8 @@ void form(const lab::Bench& b, Call& c, const char* name, const char* cell, Laun
   b.check(label, off.first == 0 && on.first == 0,
           "clocks off " + std::to_string(off.first) + ", on " + std::to_string(on.first) + " of "
               + std::to_string(c.want.size()) + " num words differ from the call's, by at most "
-              + std::to_string(std::max(off.second, on.second)) + " in an s16 half");
+              + std::to_string(std::max(off.second, on.second))
+              + " x 2^-16 of the token's largest");
   c.cap.p.ledger = nullptr;
   LAB_CHECK(cudaEventDestroy(e0));
   LAB_CHECK(cudaEventDestroy(e1));
@@ -809,7 +890,7 @@ int main(int argc, char** argv) {
            "the production kernel, the baseline: its budget is tools/budgets/carry.json");
   //: each form's kernels, its clock in and out; the steps themselves are one block each, the spans the gate reads as
   //: steps besides them run from a shuffle's cold fallback, laid out past the epilogue, back into the window loop
-  for (int f : {1, 3, 4, 5, 6}) {
+  for (int f : {1, 3, 4, 5}) {
     const std::string k = "carry_window::window<\\(int\\)" + std::to_string(f) + ",";
     b.expect(k, "HMMA", ">=", 1);
     b.expect(k, "STEP_GLOBAL", ">=", 0);
@@ -838,9 +919,9 @@ int main(int argc, char** argv) {
         LAB_CHECK(rc::carry_launch<Arm>(p, static_cast<int>(c.cap.boxes),
                                         static_cast<int>(c.cap.bh), nullptr));
       });
-    if (only < 0 || only == 6)
-      sweep(b, c, "form 6, form 5 with the stores in chains", cell[1],
-            [&](const rc::CarryParams& p, bool on) { launch_either<6>(c, p, on); });
+    if (only < 0 || only == 5)
+      sweep(b, c, "form 5, form 4 with the fills' loads ahead", cell[1],
+            [&](const rc::CarryParams& p, bool on) { launch_either<5>(c, p, on); });
     if (only < 0 || only == 0)
       form(
           b, c, "the production kernel", cell[1],
@@ -858,9 +939,6 @@ int main(int argc, char** argv) {
     if (only < 0 || only == 4)
       form(b, c, "form 4, A with the read buffer at the top, the drain in the fold", cell[1],
            [&](const rc::CarryParams& p, bool on) { launch_either<4>(c, p, on); });
-    if (only < 0 || only == 6)
-      form(b, c, "form 6, form 5 with the stores in chains", cell[1],
-           [&](const rc::CarryParams& p, bool on) { launch_either<6>(c, p, on); });
     if (only < 0 || only == 5)
       form(b, c, "form 5, form 4 with the fills' loads ahead", cell[1],
            [&](const rc::CarryParams& p, bool on) { launch_either<5>(c, p, on); });
