@@ -3,10 +3,10 @@
  "obligations": {
   "oracle": "a test grading the kernel against a reference per slot (an fp64 oracle, or a bit-exact model of a discrete function)",
   "sanitizer": "a row of tools/sanitize_oracle.py's family table whose cell launches the kernel",
-  "budget": "a budget line under tools/budgets/ (KERNEL_STANDARDS §19)",
-  "phases": "a phase ledger the kernel books and a test or tool that reads it (KERNEL_STANDARDS §22)",
-  "ratified": "recorded by the committed manifests (\"manifest\", checked per arch), or owed until the next milestone ratify (KERNEL_STANDARDS §16)",
-  "overlap": "a row of tools/overlap_gate.py timing the kernel on a perf cell against the largest of its floors (KERNEL_STANDARDS §28)"
+  "budget": "a budget line under tools/budgets/ (KERNEL_STANDARDS \u00a719)",
+  "phases": "a phase ledger the kernel books and a test or tool that reads it (KERNEL_STANDARDS \u00a722)",
+  "ratified": "recorded by the committed manifests (\"manifest\", checked per arch), or owed until the next milestone ratify (KERNEL_STANDARDS \u00a716)",
+  "overlap": "a row of tools/overlap_gate.py timing the kernel on a perf cell against the largest of its floors (KERNEL_STANDARDS \u00a728)"
  },
  "kernels": {
   "carry_kernel": {
@@ -269,6 +269,20 @@
    },
    "overlap": {
     "exempt": "a small launch before the carry on its stream: its cost is the carry's row's"
+   }
+  },
+  "den_kernel": {
+   "oracle": "tests/oracle/test_den_vs_oracle.py::test_the_denominator_is_the_fp64_reference",
+   "sanitizer": {
+    "owed": "a den row of tools/sanitize_oracle.py's family table (the pass is new, 2026-10-25)"
+   },
+   "budget": "tools/budgets/den.json",
+   "phases": "tests/oracle/test_den_vs_oracle.py::test_a_bound_ledger_books_every_phase_and_changes_nothing",
+   "ratified": {
+    "owed": "a new kernel: the next milestone ratify records it"
+   },
+   "overlap": {
+    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
    }
   }
  }

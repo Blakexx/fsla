@@ -25,6 +25,7 @@
 #include "src/decode/decode_api.cuh"
 #include "src/entmax/entmax.cuh"
 #include "src/entmax/factor.cuh"
+#include "src/den/den_api.cuh"
 #include "src/facts/facts_api.cuh"
 #include "src/intra/intra_api.cuh"
 #include "src/paging/vmm_owner.cuh"
@@ -136,6 +137,13 @@ STABLE_TORCH_LIBRARY(rola, m) {
       "int read_row) -> ()");
   m.def("rola_facts_ledger_bind(Tensor? ledger) -> ()");
 
+  // ---- the den pass: each token's window-aligned den and readout bound beside the carry --
+  m.def(
+      "den_forward(Tensor[] read_rows, Tensor[] write_rows, Tensor[] read_lists, Tensor[] write_lists, "
+      "Tensor list_exp, Tensor gains16, Tensor gains_exp, Tensor(a!) den, Tensor(b!) num, int[] widths, "
+      "int level_s, int read_list, int write_list, int heads) -> ()");
+  m.def("den_ledger_bind(Tensor? ledger) -> ()");
+
   // ---- the producer: one launch from the tokens to the bundle -------------
   m.def(
       "rola_produce_forward(Tensor x, Tensor route_W, Tensor? route_bias, Tensor gain_bias, Tensor v_W, Tensor jobs, "
@@ -207,6 +215,8 @@ STABLE_TORCH_LIBRARY_IMPL(rola, CompositeExplicitAutograd, m) {
   m.impl("intra_build_stamp", TORCH_BOX(&rola::intra::intra_build_stamp));
   m.impl("intra_footprint", TORCH_BOX(&rola::intra::intra_footprint));
   m.impl("carry_forward", TORCH_BOX(&rola::carry::carry_forward));
+  m.impl("den_forward", TORCH_BOX(&rola::den::den_forward));
+  m.impl("den_ledger_bind", TORCH_BOX(&rola::den::den_ledger_bind));
   m.impl("carry_readout_accumulate", TORCH_BOX(&rola::carry::carry_readout_accumulate));
 
   m.impl("carry_ledger_bind", TORCH_BOX(&rola::carry::carry_ledger_bind));

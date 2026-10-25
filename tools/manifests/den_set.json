@@ -1,0 +1,13 @@
+{
+ "about": "THE DEN PASS'S ARMS, declared as data (tools/lint/unused_instantiations.py reads the row count): den_kernel<Dense>'s two bodies, the list form and the dense form (docs/internals/den/den_kernel.md).",
+ "shipped": [
+  {
+   "form": "lists",
+   "dense": false
+  },
+  {
+   "form": "dense",
+   "dense": true
+  }
+ ]
+}

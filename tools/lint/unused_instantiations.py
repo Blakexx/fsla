@@ -172,7 +172,7 @@ def self_test() -> int:
 #: THE FAMILIES WHOSE MEMBERSHIP IS DECLARED AS DATA, and the file that declares each.
 #: A `csrc/rola/src/<family>/` directory whose declaration names at least one arm HAS a
 #: shipped instantiation by construction, whatever the manifests currently record.
-DECLARATIONS = {"carry": MANIFEST_DIR / "shipped_set.json"}
+DECLARATIONS = {"carry": MANIFEST_DIR / "shipped_set.json", "den": MANIFEST_DIR / "den_set.json"}
 
 
 def declared_families() -> dict:

@@ -1,0 +1,38 @@
+{
+ "unit": "instructions per CTA-window (16 warps), the design's price x its trips on nl64k-alt-k4 (one query head, ~8 entries a list a window: a band's four lists ~32 read entries = 2 den tiles a warp; a warp's four write lists ~32 entries = 2 steps), re-stated when the pass's region ledger first runs",
+ "components": {
+  "publish": "publish",
+  "den_b": "den_b",
+  "den": "den_lists",
+  "den_dense": "den_dense",
+  "drain": "drain",
+  "writes": "writes_lists",
+  "writes_dense": "writes_dense",
+  "stage_dense": "stage_chunk",
+  "stage": "stage_lists",
+  "glue": "den_kernel"
+ },
+ "cells": {
+  "nl64k-alt-k4": {
+   "publish": 320,
+   "den_b": 640,
+   "den": 3200,
+   "den_dense": 0,
+   "drain": 640,
+   "writes": 3600,
+   "writes_dense": 0,
+   "stage_dense": 0,
+   "stage": 160,
+   "glue": 1200,
+   "total": 9760,
+   "trips": {
+    "den_tiles_a_warp": 2,
+    "den_rounds_a_warp": 1,
+    "write_steps_a_warp": 2,
+    "write_chunks_a_warp": 1,
+    "slab_copies_a_lane_a_tile": 4,
+    "drain_rows_a_thread": 2
+   }
+  }
+ }
+}
