@@ -24,6 +24,7 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`gang_ring`](gang_ring.md) | experiment |
 | [`smem_rates`](smem_rates.md) | experiment |
 | [`den_sweep`](den_sweep.md) | experiment |
+| [`warp_hiding`](warp_hiding.md) | experiment |
 | [`row_span`](row_span.md) | experiment |
 | [`vote_stash`](vote_stash.md) | experiment |
 | [`facts_pipeline`](facts_pipeline.md) | experiment |
