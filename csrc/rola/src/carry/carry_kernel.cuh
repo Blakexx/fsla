@@ -144,7 +144,10 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     //: every warp done with the window before (its fold's rows may be where this window's first chunk lands)
     ops::rendezvous();
     clock.lap(kPhaseWait);
-    //: THE FIRST READ CHUNK'S FILL, under the maxima and the first store; the next window's inputs staged after it
+    //: THE KEYS before any copy of the window is issued (their shared loads ahead of the copies), then THE FIRST
+    //: READ CHUNK'S FILL and the next window's staging under the keys' barrier, the exponents and the first store
+    const int top = post_keys<P>(st, smem, w, wid(), lid());
+    clock.lap(kPhaseMaxima);
     const Entry e0 = entry_at(s, 0);
     const Run run0 = runs_of(kRead, w, e0);
     const ops::SmemAddr buf0 = place_at(w, 0);
@@ -154,17 +157,11 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       ops::stage_commit();
     }
     clock.lap(kPhaseFill);
-    //: THE DIGIT MAXIMA of the state before the window's writes and each leaf's exponent byte, every warp's keys
-    //: posted, each digit's exponent recorded by every warp (the same values), the leaves' scales, the counters reset
-    {
-      const int top = post_keys<P>(st, smem, w, wid(), lid());
-      clock.lap(kPhaseMaxima);
-      ops::rendezvous();
-      clock.lap(kPhaseWait);
-      post_exps<P>(smem, w, top, lid());
-      leaf_scales<P>(smem);
-      bounds_clear<P>(p, smem);
-    }
+    ops::rendezvous();
+    clock.lap(kPhaseWait);
+    post_exps<P>(smem, w, top, lid());
+    leaf_scales<P>(smem);
+    bounds_clear<P>(p, smem);
     clock.lap(kPhaseMaxima);
 
     //: THE READ CHUNKS in order: the chunk's fill (the first's issued above), its image -- whole, stored once before
