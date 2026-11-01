@@ -19,6 +19,8 @@ Symbols: ``W`` the window (`rola.ops.carry.WINDOW`), ``L`` tokens, ``C`` value c
 """
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 import torch
 
@@ -116,7 +118,9 @@ def test_the_inter_numerator_is_the_fp64_reference(spec, reduce_dtype):
 def test_the_rule_fails_planted_errors_on_the_kernels_own_output():
     """THE RULE HAS TEETH on the carry's numerator: on a real cell the kernel's output passes, and a wiped median slot
     and the smallest slots moved past their allowance fail."""
-    spec = next(c for c in ORACLE_CELLS if c.name == "flagship-alt-k4")
+    #: two windows at least, at the card's W: a one-window call's inter term is identically zero, nothing to plant
+    base = next(c for c in ORACLE_CELLS if c.name == "flagship-alt-k4")
+    spec = dataclasses.replace(base, tokens=max(base.tokens, 2 * carry_ops.WINDOW))
     routes, values, unit, num = run(spec)
     assert_planted_errors_fail(num_in_truth(num, routes, unit), ref(spec, routes, values), output=CARRY_NUM,
                                envelope=ref(spec, routes, values, magnitudes=True), what=f"{spec.name} num")
