@@ -1,24 +1,24 @@
 // measure/lab/experiments/intra_stream.cu -- QUESTION: the fp16 intra moves ~5 B a cycle an SM (its whole sweep with
 // the Gram skipped ~6.8) where cp.async streams 18 (smem_rates): what does its stage ring deliver an SM beside a
-// Gram, and which form of issuing the refills keeps the copies under the MMAs? METHOD: one CTA an SM (90 KB of dynamic
-// shared memory), a sweep of 512 stages over L2-resident rows (4 MB: 4,096 tokens of 1 KB, the dense plane's), a
-// stage the tile's 64 rows' 128-byte slice (the intra's 8 KB stage), three buffers. Each compute warp waits for a
+// Gram, and which form of issuing the refills keeps the copies under the MMAs? METHOD: one CTA an SM (99 KB of dynamic
+// shared memory), a sweep of 600 stages over L2-resident rows (4 MB: 4,096 tokens of 1 KB, the dense plane's), a
+// stage the tile's 64 rows' 128-byte slice (the intra's 8 KB stage). Each compute warp waits for a
 // stage, runs `SLABS` slabs of the dense Gram on it -- a slab two k-steps, an `ldmatrix.x4` of a static 16-reader A
 // and two of the stage's B a k-step, 8 fp16-accumulate MMAs a slab (the 8-warp walk's 4 n-tiles a warp) -- and
 // releases it. ISSUE 0: the intra's -- a release count, the last warp to release a stage refills its buffer with the
 // stage three on, all 64 rows by its lanes; ISSUE 2: every warp, at a stage's start, awaits the previous stage's
 // `empty` mbarrier (every warp's release) and copies its share of the stage two on into that buffer; ISSUE 4: a ninth
 // warp copies every stage, awaiting each buffer's `empty`. A sample is the CTA's span over the bytes it moved and over
-// the MMAs it issued, the mean over SMs; ISSUE 9 the Gram alone on resident stages, and STRIDE 128 a stage's rows one
-// contiguous run. see docs/internals/tools/lab.md#intra-stream
+// the MMAs it issued, the mean over SMs; ISSUE 9 the Gram alone on resident stages, STRIDE 128 a stage's rows one
+// contiguous run, and `kB` the ring's depth (3, 6, 10 buffers). see docs/internals/tools/lab.md#intra-stream
 #include "lab.cuh"
 
 namespace intra_stream {
 
-constexpr int kRows = 64, kRowBytes = 1024, kTokens = 4096, kStages = 512, kSmem = 90 * 1024;
-constexpr int kStage = kRows * 128, kB = 3, kReaderAt = kB * kStage, kBarAt = kReaderAt + 16 * 1024;
+constexpr int kRows = 64, kRowBytes = 1024, kTokens = 4096, kStages = 600, kSmem = 99 * 1024;
+constexpr int kStage = kRows * 128, kMaxB = 10, kReaderAt = kMaxB * kStage, kBarAt = kReaderAt + 16 * 1024;
 
-template <int WARPS, int ISSUE, int SLABS, int STRIDE>
+template <int WARPS, int ISSUE, int SLABS, int STRIDE, int kB>
 __global__ void __launch_bounds__((WARPS + (ISSUE == 4)) * 32, 1)
     ring(const uint8_t* table, long long* t, int* out) {
   extern __shared__ __align__(128) uint8_t smem[];
@@ -118,20 +118,20 @@ __global__ void __launch_bounds__((WARPS + (ISSUE == 4)) * 32, 1)
   lab::sink(out, fold);
 }
 
-template <int WARPS, int ISSUE, int SLABS, int STRIDE = kRowBytes>
+template <int WARPS, int ISSUE, int SLABS, int STRIDE = kRowBytes, int kB = 3>
 void variant(const lab::Bench& b, const uint8_t* table) {
   constexpr int kWarpsAll = WARPS + (ISSUE == 4);
-  const std::string name = lab::kernel("ring", {WARPS, ISSUE, SLABS, STRIDE});
+  const std::string name = lab::kernel("ring", {WARPS, ISSUE, SLABS, STRIDE, kB});
   if (ISSUE != 9) b.expect(name, "LDGSTS", ">=", 1);
   if (SLABS > 0) {
     b.expect(name, "HMMA", ">=", 4);
     b.exempt(name, "a rate probe: its MMAs fold into a sink");
   }
   if (b.expect_only) return;
-  LAB_CHECK(cudaFuncSetAttribute(ring<WARPS, ISSUE, SLABS, STRIDE>, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmem));
+  LAB_CHECK(cudaFuncSetAttribute(ring<WARPS, ISSUE, SLABS, STRIDE, kB>, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmem));
   lab::Samples mmas;
   const lab::Samples rate = b.variant(
-      [&] { ring<WARPS, ISSUE, SLABS, STRIDE><<<b.sms, kWarpsAll * 32, kSmem>>>(table, b.times, b.sinks); },
+      [&] { ring<WARPS, ISSUE, SLABS, STRIDE, kB><<<b.sms, kWarpsAll * 32, kSmem>>>(table, b.times, b.sinks); },
       [&] {
         std::vector<long long> h(static_cast<size_t>(b.sms) * kWarpsAll * 2);
         LAB_CHECK(cudaMemcpy(h.data(), b.times, h.size() * sizeof(long long), cudaMemcpyDeviceToHost));
@@ -153,7 +153,8 @@ void variant(const lab::Bench& b, const uint8_t* table) {
                      : ISSUE == 4 ? "a producer warp"
                                   : "no copies (the Gram alone on resident stages)";
   const std::string row = std::string(form) + ", " + std::to_string(WARPS) + " compute warps, " + std::to_string(SLABS) +
-                          " Gram slabs a stage, rows " + std::to_string(STRIDE) + " B apart";
+                          " Gram slabs a stage, rows " + std::to_string(STRIDE) + " B apart, " +
+                          std::to_string(kB) + " buffers";
   b.unchecked(row, "a rate probe: its copies and MMAs fold into a sink");
   b.record(row, "bytes a cycle an SM", rate);
   b.record(row + ": cycles an MMA a scheduler", "cycles", mmas);
@@ -184,4 +185,11 @@ int main(int argc, char** argv) {
   //: a stage's rows one contiguous run instead of the dense plane's 1 KB token stride
   variant<8, 4, 0, 128>(b, table);
   variant<8, 4, 2, 128>(b, table);
+  //: a deeper ring: the bytes in flight
+  variant<8, 4, 0, kRowBytes, 6>(b, table);
+  variant<8, 4, 2, kRowBytes, 6>(b, table);
+  variant<8, 4, 0, kRowBytes, 10>(b, table);
+  variant<8, 4, 2, kRowBytes, 10>(b, table);
+  variant<8, 4, 4, kRowBytes, 10>(b, table);
+  variant<8, 0, 2, kRowBytes, 10>(b, table);
 }

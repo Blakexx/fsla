@@ -247,13 +247,15 @@ Measured (sm_86, one head, CUDA events at boost), fp16 / fp32 accumulation: `nl6
 peak, L2 hits 66%, the tensor pipe busy 28%), and a call whose 32 heads alias one head's rows, all of it L2-resident,
 runs exactly as fast as 32 distinct heads. With the Gram skipped the rest costs 422 of the 513 µs.
 
-What binds is the SM's copy rate against the MMAs a byte feeds. The region ledger (`tools/region_ledger.py` against
-`tools/budgets/intra.json`) and the lab's `intra_stream` probe ([`../../lab/intra_stream.md`](../../lab/intra_stream.md))
-agree: an SM copies 10-18 bytes a cycle with nothing beside it, but beside a Gram's `ldmatrix` and MMAs the stage ring
-delivers 6-8 (a producer warp the best of three issue forms, 7.9 against 6.4 for the last releaser), and an 8 KB f16
-stage feeds a 64-reader block only 128 HMMAs -- ~16 bytes a cycle at the tensor rate. The 64-reader block is the
-sm_86 area's at (256, 256) f16; halving the bytes an MMA takes 128 readers, which on sm_86 fits only with the readers'
-A fragments in registers.
+What binds is the SM's copy rate beside the MMAs against the bytes an MMA takes. The region ledger
+(`tools/region_ledger.py` against `tools/budgets/intra.json`) and the lab's `intra_stream` probe
+([`../../lab/intra_stream.md`](../../lab/intra_stream.md)) agree: the Gram alone on resident stages runs at the tensor
+rate, but an SM's copy path beside it delivers ~8 bytes a cycle on both cards whatever the ring's depth (3, 6 or 10
+stages measured the same) or who issues the refills, and an 8 KB f16 stage feeds a 64-reader block only 128 HMMAs --
+~16 bytes a cycle at the tensor rate. So the dense f16 Gram runs at about twice its floor by construction, a u8 writer
+level (half the bytes a digit) near it. Fewer bytes an MMA -- more readers a writer byte, or narrower rows -- is what
+lowers it; the readers' A fragments in registers, built to free the area for a deep ring, measured slower (683 against
+505 µs at `nl64k-dense`, its depth-two arms spilling at 255 registers).
 
 ## Other architectures
 

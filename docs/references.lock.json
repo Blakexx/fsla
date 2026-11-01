@@ -1749,7 +1749,6 @@
   {"doc": "docs/lab/image_ring.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/image_ring.cu"},
   {"doc": "docs/lab/image_ring.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "", "target": "measure/lab/results/image_ring/sm_86.json"},
   {"doc": "docs/lab/intra_stream.md", "pinned_at": "c9921843cb86", "reviewed": true, "sha256": "", "target": "docs/internals/intra/intra_kernel.md"},
-  {"doc": "docs/lab/intra_stream.md", "pinned_at": "c9921843cb86", "reviewed": true, "sha256": "ae02181c2bd89c19", "target": "docs/internals/intra/intra_kernel.md#where-the-time-goes"},
   {"doc": "docs/lab/intra_stream.md", "pinned_at": "c9921843cb86", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
   {"doc": "docs/lab/intra_stream.md", "pinned_at": "c9921843cb86", "reviewed": true, "sha256": "", "target": "docs/lab/smem_rates.md"},
   {"doc": "docs/lab/intra_stream.md", "pinned_at": "c9921843cb86", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/intra_stream.cu"},
