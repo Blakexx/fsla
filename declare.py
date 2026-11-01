@@ -62,7 +62,19 @@ INSTRUMENTS = {
                ["tools/budgets/carry.json", "csrc/rola/src/carry/carry_kernel.cuh"], 900),
     "timeline": ("tools/pipe_timeline.py", ["--cell", "{cell}"], True, {"gpu": "all"}, [], 900),
     "roofline": ("tools/roofline.py", ["--cells", "{cell}"], True, {"gpu": "all"}, [], 120),
+    #: the den pass and the intra under the same instruments (`tools/kernel_targets.py`), on the long cells
+    "phases-den": ("tools/phase_ledger.py", ["{cell}", "--launches", "1", "--kernel", "den"], True, {"gpu": "all"},
+                   [], 120),
+    "counters-den": ("tools/pipe_counters.py", ["{cell}", "--kernel", "den"], True, {"gpu": "all"}, [], 900),
+    "census-den": ("tools/stall_census.py", ["{cell}", "--kernel", "den"], True, {"gpu": "all"},
+                   ["tools/budgets/den.json", "csrc/rola/src/den/den_kernel.cuh"], 900),
+    "counters-intra": ("tools/pipe_counters.py", ["{cell}", "--kernel", "intra"], True, {"gpu": "all"}, [], 900),
+    "census-intra": ("tools/stall_census.py", ["{cell}", "--kernel", "intra"], True, {"gpu": "all"},
+                     ["tools/budgets/intra.json", "csrc/rola/src/intra/intra_kernel.cuh"], 900),
 }
+#: the instruments read only on the long cells (16K tokens and more): the den's and the intra's
+LONG_CELL_INSTRUMENTS = {"phases-den", "counters-den", "census-den", "counters-intra", "census-intra"}
+LONG_CELL_TOKENS = 16384
 CARRY_ARMS = ("carry_forward", "carry_intra", "den_pass", "prefill")
 LAYER_ARMS = ("entmax_solve", "decode_step")
 #: seconds an instrument may run on one cell
@@ -112,13 +124,15 @@ def declare(g, env: Env, *, timing=None, instruments=tuple(INSTRUMENTS)) -> dict
         "oracle-tier", executor=EXECUTORS + "pytest_tier", env=env, deps=facts, holds={"gpu": 1},
         params={"paths": ["tests/oracle"], "timeout": TIER_TIMEOUT_S},
         code={"files": ["tests/oracle", "tests/conftest.py", "rola", "measure"]})
+    long_cells = [c for c in carry if central().cell(c)["params"].get("tokens", 0) >= LONG_CELL_TOKENS]
     for name in instruments:
         tool, args, per_cell, holds, data, timeout = INSTRUMENTS[name]
-        if per_cell and not carry:
+        on = long_cells if name in LONG_CELL_INSTRUMENTS else carry
+        if per_cell and not on:
             continue
         out["instruments"][name] = g.node(
             name, executor=EXECUTORS + "run_tool", env=env, deps=facts,
-            inputs=cell_nodes(g, carry) if per_cell else (), holds=holds,
+            inputs=cell_nodes(g, on) if per_cell else (), holds=holds,
             params={"tool": tool, "args": args, "per_cell": per_cell, "timeout": timeout},
             cache=not per_cell, code=_code(tool, data))
     if timing is None:

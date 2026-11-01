@@ -78,6 +78,25 @@ def _den(spec):
     return d, ((routes, facts), d.tiles(routes) * routes.batch * routes.write_heads)
 
 
+def _intra(spec):
+    """The intra's module and ``(operands, 1)`` for a cell: its launch over the facts pass's output on the cell's bundle
+    into zeroed planes. Its ledger is ``[warps][phases]`` booked over every CTA, so its one row is the window's CTAs
+    summed."""
+    import torch
+
+    from measure.cells import realize
+    from measure.subjects import bundle_of, read_row_of
+    from rola.ops import facts as f
+    from rola.ops import intra as i
+
+    routes, values, layout, statics = bundle_of(spec, realize(spec))
+    facts = f.facts(routes, values, layout, *statics, read_row_of(spec))
+    bh = routes.batch * routes.heads
+    num = torch.zeros(bh, spec.tokens, i.VALUE_WIDTH, device="cuda")
+    den = torch.zeros(bh, spec.tokens, device="cuda")
+    return i, ((routes, values, facts, layout, *statics, num, den), 1)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cell")
@@ -88,8 +107,9 @@ def main() -> int:
     ap.add_argument("--warmup-ms", type=float, default=500.0,
                     help="warm-up launches continue until this long has passed: a GPU just locked reads ~11%% slow "
                          "for its first launches")
-    ap.add_argument("--kernel", choices=("carry", "den"), default="carry",
-                    help="the kernel launched: the carry over its operands, or the den pass over the facts pass's lists")
+    ap.add_argument("--kernel", choices=("carry", "den", "intra"), default="carry",
+                    help="the kernel launched: the carry over its operands, the den pass or the intra over the facts "
+                         "pass's output (the intra's row is every CTA of a window summed)")
     ap.add_argument("--per-warp", default=None,
                     help="the phases whose per-warp rows are printed (default the carry's readout and fold, the den's "
                          "den and writes): an imbalance is seen, not inferred")
@@ -115,6 +135,12 @@ def main() -> int:
 
         def launch(*ops):
             return c.den(*ops)
+    elif a.kernel == "intra":
+        c, (operands, n_ctas) = _intra(spec)
+        roles = {"all": (range(c.LEDGER_WARPS), c.LEDGER_PHASES)}
+
+        def launch(*ops):
+            return c.intra_forward(*ops)
     else:
         roles = {"all": (range(c.LEDGER_WARPS), c.LEDGER_PHASES)}
 
@@ -125,7 +151,7 @@ def main() -> int:
         n_ctas = ctas(a.cell)
     phases = c.LEDGER_PHASES
     warps = c.LEDGER_WARPS
-    per_warp = a.per_warp or ("den,writes" if a.kernel == "den" else "readout,fold")
+    per_warp = a.per_warp or {"den": "den,writes", "intra": "gram,wait"}.get(a.kernel, "readout,fold")
     windows = (spec.tokens + window_of() - 1) // window_of()
     with gpu_lock(mode="exclusive"):
         ledger = torch.zeros((n_ctas, warps, len(phases)), dtype=torch.int64, device="cuda")
@@ -134,7 +160,7 @@ def main() -> int:
             launch(*operands)
             torch.cuda.synchronize()
             warmed += 1
-        c.ledger_bind(ledger)
+        c.ledger_bind(ledger[0] if a.kernel == "intra" else ledger)
         for _ in range(a.launches):
             launch(*operands)
         torch.cuda.synchronize()

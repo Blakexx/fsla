@@ -36,6 +36,7 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 |---|---|---|---|
 | [`ratify.py`](ratify.md) | the spill manifest, the census, the SASS-body gate and the derivation | `setup.py` (post-build), a person at a milestone | `tools/manifests/` |
 | `sass.py` | THE DISASSEMBLER SEAM: the one `cuobjdump`/`nvdisasm` invocation and line grammar; a frame map is one function's (`section`: offsets restart in every function) | `ratify.py`, `sass_gate.py`, `region_ledger.py`, `life_ranges.py` | — |
+| `kernel_targets.py` | the instruments' kernel families: each one's profiler filter, provider arm, cubin member, sources, budget and unit (`kernel_targets.md`) | `stall_census.py`, `pipe_counters.py`, `phase_ledger.py` | — |
 | `sass_gate.py` | the ptxas signatures of KERNEL_STANDARDS §20, red on any of them; guarded convergence fallbacks counted | every iteration build; the `sass` instrument | `--json`, `--loops` (each step loop's reading and the lines its lints count) |
 | `sass_bodies.py` | per-instantiation SASS body hashes, the codegen-equivalence instrument | a person, comparing two builds | `--json` |
 | `sass_control.py` | the SASS control words (stall count, yield, scoreboards, reuse) and the loop a function compiles to; its `MACHINES` table is the static simulator's per-architecture model | `pipe_sim.py`, `burst_gate.py` | — |
