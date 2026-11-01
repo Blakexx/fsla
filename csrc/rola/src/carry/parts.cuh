@@ -94,7 +94,7 @@ struct Addr {
   int channel0;
 };
 
-static_assert(sizeof(Addr) <= Tenants::kAddrBytes, "the addresses fit their tenant");
+static_assert(sizeof(Addr) <= Tenants<512>::kAddrBytes, "the addresses fit their tenant");
 
 __device__ __forceinline__ void addr_in(Addr& out, const CarryParams& p, const Place& c) {
   //: the read side's rows at the write head's first query head, `h g`

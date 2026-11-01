@@ -6,15 +6,20 @@
 
 #include <cuda_runtime.h>
 
+#include "common/window.cuh"
+
 namespace rola::carry {
 
-//: THE CTA, THE WINDOW AND THE LISTS. -- see docs/internals/carry/carry.md#constants
+//: THE CTA AND THE LISTS; the window is the card's (`common/window.cuh`). -- see docs/internals/carry/carry.md#constants
 constexpr int kWarps = 8;
 constexpr int kThreads = kWarps * 32;
-constexpr int kWindow = 512;
-//: A LIST'S BOUNDARIES (every 64th union slot) in a group's prefix rows. -- see docs/internals/carry/carry.md#lists
+//: A LIST'S BOUNDARIES (every 64th union slot) in a group's prefix rows, `list_at(w)` a window's at W = `w`.
+//: -- see docs/internals/carry/carry.md#lists
 constexpr int kListBound = 64;
-constexpr int kListAt = kWindow / kListBound;
+
+__host__ __device__ constexpr int list_at(int w) { return w / kListBound; }
+
+constexpr int kListAt = list_at(kWindow);
 constexpr int kListCap = kWindow;
 constexpr int kMaxLevels = 4;
 //: THE BOX, every card's: 32 lists (the write side's list level) x 32 digits (the read side's) x 32 channels.
@@ -23,10 +28,12 @@ constexpr int kStateValues = kBoxLists * kBoxDigits * kBoxChannels;
 constexpr int kPreRows = kBoxLists + 1;
 
 //: A WINDOW'S PLAN RECORD at `heads` query heads a write head. -- see docs/internals/carry/schedule.md#plan
-__host__ __device__ constexpr int max_steps(int heads) { return kListAt * heads + kListAt + 1; }
+__host__ __device__ constexpr int max_steps(int heads, int w) {
+  return list_at(w) * heads + list_at(w) + 1;
+}
 
-__host__ __device__ constexpr int plan_words(int heads) {
-  return (1 + (max_steps(heads) + 1) / 2 + 3) / 4 * 4;
+__host__ __device__ constexpr int plan_words(int heads, int w) {
+  return (1 + (max_steps(heads, w) + 1) / 2 + 3) / 4 * 4;
 }
 
 //: A SLICE: a token's operand row over the box's 32 digits of one level, f16.

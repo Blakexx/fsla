@@ -14,11 +14,12 @@ constexpr int align_of(int x, int q) { return (x + q - 1) / q * q; }
 //: THE ASYNC COPIES' BARRIERS: the staging, each slot's landed. -- see docs/internals/carry/plan.md#barriers
 
 //: THE FIXED TENANTS' BYTES, every card's, arm's and call's. -- see docs/internals/carry/plan.md#tenants
+template <int W>
 struct Tenants {
   static constexpr int kCount = 0;
   static constexpr int kUnionW = kCount + 16;
-  static constexpr int kPreW = kUnionW + 2 * kWindow * 2;
-  static constexpr int kWriteExp = kPreW + 2 * kPreRows * kListAt * 2;
+  static constexpr int kPreW = kUnionW + 2 * W * 2;
+  static constexpr int kWriteExp = kPreW + 2 * kPreRows * list_at(W) * 2;
   static constexpr int kBook = kWriteExp + 2 * kBoxLists * 4;
   static constexpr int kScale = kBook + kBoxLists * 8;
   static constexpr int kKeys = align_of(kScale + kBoxLists * 8, 16);
@@ -38,16 +39,19 @@ struct Tenants {
 
 //: THE READ TABLES at `heads` query heads a write head, at the top of a CTA's `smem` bytes; the area below them.
 //: -- see docs/internals/carry/plan.md#read-tables
+template <int W>
 __host__ __device__ constexpr ReadTables tables_of(int heads, int smem) {
-  const int pre_bytes = align_of(2 * kPreRows * kListAt * heads * 2, 16);
-  const int bytes = 2 * heads * kWindow * 2 + pre_bytes + 2 * heads * kWindow + heads * kWindow
-                    + heads * kWindow * 4 + 2 * plan_words(heads) * 4;
-  const int union_at = (smem - bytes) / 128 * 128, area_at = align_of(Tenants::kEnd, 128);
-  const int pre_at = union_at + 2 * heads * kWindow * 2, scale_at = pre_at + pre_bytes;
-  const int units_at = scale_at + 2 * heads * kWindow, bounds_at = units_at + heads * kWindow;
-  return ReadTables{heads,    plan_words(heads), union_at,  pre_at,
-                    scale_at, units_at,          bounds_at, bounds_at + heads * kWindow * 4,
-                    area_at,  union_at - area_at};
+  const int pre_bytes = align_of(2 * kPreRows * list_at(W) * heads * 2, 16);
+  const int bytes = 2 * heads * W * 2 + pre_bytes + 2 * heads * W + heads * W + heads * W * 4
+                    + 2 * plan_words(heads, W) * 4;
+  const int union_at = (smem - bytes) / 128 * 128, area_at = align_of(Tenants<W>::kEnd, 128);
+  const int pre_at = union_at + 2 * heads * W * 2, scale_at = pre_at + pre_bytes;
+  const int units_at = scale_at + 2 * heads * W, bounds_at = units_at + heads * W;
+  return ReadTables{heads,     plan_words(heads, W),
+                    union_at,  pre_at,
+                    scale_at,  units_at,
+                    bounds_at, bounds_at + heads * W * 4,
+                    area_at,   union_at - area_at};
 }
 
 constexpr int kPlaneBytes = kBoxLists * kBoxChannels * 2;
@@ -58,8 +62,10 @@ constexpr int kImageWhole = kBoxDigits * kPlaneBytes, kImageRing = 2 * kBatchPla
 //: THE ARM'S PLAN on card `Cc`: the box's tiles, a side's pool row (its operand slices, then the write side's values),
 //: and the area the card's shared memory leaves past the tenants. -- see docs/internals/carry/plan.md#plan
 template <class Arm, int Cc = arch::kArch>
-struct Plan : Tenants {
+struct Plan : Tenants<window_for(Cc)> {
   static constexpr arch::Caps kCaps = arch::caps_of(Cc);
+  //: the card's window, and its list boundaries and cap
+  static constexpr int kWindow = window_for(Cc), kListAt = list_at(kWindow), kListCap = kWindow;
   static_assert(Arm::fold_rows == kBoxDigits && Arm::read_rows == kBoxLists
                     && Arm::channels == kBoxChannels,
                 "the arm is the box's: a fold list 32 digits, a read digit 32 lists, 32 channels");
@@ -76,8 +82,8 @@ struct Plan : Tenants {
                        kWriteRow = kValuesAt + kBoxChannels * 2;
 
   static constexpr int kSmemBytes = kCaps.smem_per_cta_max;
-  static constexpr int kAreaAt = tables_of(1, kSmemBytes).area_at;
-  static constexpr int kArea = tables_of(1, kSmemBytes).area;
+  static constexpr int kAreaAt = tables_of<kWindow>(1, kSmemBytes).area_at;
+  static constexpr int kArea = tables_of<kWindow>(1, kSmemBytes).area;
 };
 
 }  // namespace rola::carry

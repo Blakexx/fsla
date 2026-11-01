@@ -16,13 +16,19 @@ constexpr CarryForm form_of_plan() {
 
 //: THE PLAN'S FORM on the current device's card: the plan the device code was compiled with is the card's, and the
 //: kernel traps at entry on any other launched size. -- see docs/internals/carry/carry_arm.md#plan
-template <class Arm>
-inline CarryForm carry_form() {
+//: THE RUNNING DEVICE'S COMPUTE CAPABILITY (x10), the key every per-card choice is read at on the host.
+inline int current_cc() {
   int dev = 0, major = 0, minor = 0;
   cudaGetDevice(&dev);
   cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
   cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
-  switch (major * 100 + minor * 10) {
+  return major * 100 + minor * 10;
+}
+
+template <class Arm>
+inline CarryForm carry_form() {
+  // R9-CASES: the tabulated compute capabilities (common/hardware.cuh)
+  switch (current_cc()) {
     case 800:
       return form_of_plan<Plan<Arm, 800>>();
     case 860:
@@ -36,16 +42,14 @@ inline CarryForm carry_form() {
   }
 }
 
-//: THE GRIDS: the plan pass, a block a (box class, batch-head) and a thread a window of a tile; then the carry, one
-//: CTA a (box, batch-head), the CTA the SM. -- see docs/internals/carry/carry_arm.md#launch
-template <class Arm>
-inline cudaError_t carry_launch(const CarryParams& p0, int boxes, int bh, cudaStream_t stream) {
-  const int bytes = carry_form<Arm>().smem_bytes;
-  if (bytes == 0) return cudaErrorInvalidDevice;
+template <class Arm, int Cc>
+inline cudaError_t carry_launch_on(const CarryParams& p0, int boxes, int bh, cudaStream_t stream) {
+  using P = Plan<Arm, Cc>;
+  constexpr int bytes = P::kSmemBytes;
   //: the call's read tables on the device's card, and an area that holds the least plan
   CarryParams p = p0;
-  p.tables = tables_of(p0.tables.heads, bytes);
-  if (!least_plan_fits<Plan<Arm>>(p.tables.area)) return cudaErrorInvalidConfiguration;
+  p.tables = tables_of<P::kWindow>(p0.tables.heads, bytes);
+  if (!least_plan_fits<P>(p.tables.area)) return cudaErrorInvalidConfiguration;
   const int classes = (p.read_lists.groups > 0 ? p.read_lists.groups : 1)
                       * (p.write_lists.groups > 0 ? p.write_lists.groups : 1);
   window_plan_kernel<Arm>
@@ -60,6 +64,23 @@ inline cudaError_t carry_launch(const CarryParams& p0, int boxes, int bh, cudaSt
   }
   fn<<<dim3((unsigned)boxes, (unsigned)bh), (unsigned)kThreads, bytes, stream>>>(p);
   return cudaGetLastError();
+}
+
+template <class Arm>
+inline cudaError_t carry_launch(const CarryParams& p, int boxes, int bh, cudaStream_t stream) {
+  // R9-CASES: the tabulated compute capabilities (common/hardware.cuh)
+  switch (current_cc()) {
+    case 800:
+      return carry_launch_on<Arm, 800>(p, boxes, bh, stream);
+    case 860:
+      return carry_launch_on<Arm, 860>(p, boxes, bh, stream);
+    case 870:
+      return carry_launch_on<Arm, 870>(p, boxes, bh, stream);
+    case 890:
+      return carry_launch_on<Arm, 890>(p, boxes, bh, stream);
+    default:
+      return cudaErrorInvalidDevice;
+  }
 }
 
 template <class Arm>

@@ -13,12 +13,12 @@
 namespace rola::den {
 
 using carry::kGap;
-using carry::kListAt;
 using carry::kListBound;
-using carry::kListCap;
 using carry::kPreRows;
-using carry::kWindow;
+using carry::list_at;
 using carry::Plane;
+using carry::kListAt;
+using carry::kListCap;
 using carry::SideLists;
 
 //: THE CTA'S SHAPE and the passes' grains. -- see docs/internals/den/den.md#constants
@@ -52,8 +52,9 @@ struct DenParams {
   int L, windows, heads, write_heads, width_s, width_r, tiles_s, level_s;
 };
 
-//: THE SHARED TENANTS, byte offsets. -- see docs/internals/den/den.md#tenants
-struct Tenants {
+//: THE SHARED TENANTS, byte offsets, at window `W`; device code's at the compiling card's. -- see docs/internals/den/den.md#tenants
+template <int W>
+struct TenantsAt {
   static constexpr int kRegion = 0, kRegionBytes = kWarps * 2 * kSlabBytes;
   static constexpr int kMassBytes = kChannels * kRows * kSpan * 4;
   static constexpr int kChunkWs = kRegion + kMassBytes,
@@ -64,9 +65,8 @@ struct Tenants {
   static constexpr int kSlotCBytes = kWarps * kChannels * (kChunk + 16) * 4;
   static constexpr int kScratchBytes =
       kReadsBytes > kSlotTokenBytes + kSlotCBytes ? kReadsBytes : kSlotTokenBytes + kSlotCBytes;
-  static constexpr int kAcc = kScratch + kScratchBytes,
-                       kAccBytes = kChannels * kMaxHeads * kWindow * 4;
-  static constexpr int kUnion = kAcc + kAccBytes, kUnionBytes = 2 * (kSpan / 32) * kWindow * 2;
+  static constexpr int kAcc = kScratch + kScratchBytes, kAccBytes = kChannels * kMaxHeads * W * 4;
+  static constexpr int kUnion = kAcc + kAccBytes, kUnionBytes = 2 * (kSpan / 32) * W * 2;
   static constexpr int kExps = kUnion + kUnionBytes, kExpsBytes = 2 * kSpan * kChannels * 2;
   static constexpr int kGains = kExps + kExpsBytes, kGainsBytes = 2 * kChunk * kChannels * 2;
   static constexpr int kHeld = kGains + kGainsBytes, kHeldBytes = kSpan * kChannels * 2;
@@ -75,11 +75,13 @@ struct Tenants {
   static constexpr int kBytes = kClock + kClockBytes;
 };
 
-static_assert(Tenants::kMassBytes + kWarps * kSlabBytes <= Tenants::kRegionBytes,
+static_assert(TenantsAt<512>::kMassBytes + kWarps * kSlabBytes <= TenantsAt<512>::kRegionBytes,
               "the dense form's one slab a warp fits beside the mass");
-static_assert(Tenants::kChunkWr + 2 * kChunk * kSpan * 2
-                  <= Tenants::kRegion + Tenants::kRegionBytes,
+static_assert(TenantsAt<512>::kChunkWr + 2 * kChunk * kSpan * 2
+                  <= TenantsAt<512>::kRegion + TenantsAt<512>::kRegionBytes,
               "the dense form's chunk buffers fit the region past the mass");
-static_assert(Tenants::kBytes <= 101376, "the tenants fit sm_86's opt-in shared memory");
+static_assert(TenantsAt<512>::kBytes <= 101376, "the tenants fit sm_86's opt-in shared memory");
+
+using Tenants = TenantsAt<kWindow>;
 
 }  // namespace rola::den

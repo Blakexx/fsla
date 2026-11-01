@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "common/arch_runtime.cuh"
+#include "common/window.cuh"
 #include "intra/intra_api.cuh"
 #include "intra/intra_kernel.cuh"
 
@@ -142,6 +143,10 @@ void rola_intra_forward(std::vector<Tensor> read, std::vector<Tensor> write,
       D, " levels");
   STD_TORCH_CHECK(window == kWindow, "the intra's window is the carry's ", kWindow, " tokens, got ",
                   window);
+  int dev = 0;
+  ROLA_CUDA_CHECK(cudaGetDevice(&dev));
+  STD_TORCH_CHECK(device_window(dev) == kWindow, "the intra is built for W = ", kWindow,
+                  " tokens; this device's window is ", device_window(dev));
   STD_TORCH_CHECK(weight_digits == 1 || weight_digits == 2,
                   "the value product's weights are one or two u8 digits, got ", weight_digits);
   STD_TORCH_CHECK(read[0].dim() == 4, "a level's rows are [B, T, H, width]");

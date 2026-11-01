@@ -53,7 +53,7 @@ Plane plane_of(const Tensor& t, int64_t B, int64_t T, int64_t H, int64_t width, 
 //: level then its coefficient level; an operand slice at least a 4-byte copy. -- see docs/internals/carry/carry.md#refusals
 Side side_of(const std::vector<Tensor>& rows, int64_t list, const std::vector<int64_t>& operand,
              const std::vector<int64_t>& widths, const std::vector<int64_t>& extents, int64_t B,
-             int64_t T, int64_t H, const char* name) {
+             int64_t T, int64_t H, int W, const char* name) {
   const int D = (int)widths.size();
   Side s{};
   s.list = (int)list;
@@ -86,8 +86,7 @@ Side side_of(const std::vector<Tensor>& rows, int64_t list, const std::vector<in
                     " bytes; a slice is a 4-byte copy to ", kSliceBytes);
     //: a window's row offsets are 32-bit (`fill`): its tokens' and query heads' strides under 2^31 together
     STD_TORCH_CHECK(
-        s.rows[i].st > 0
-            && (kWindow - 1) * s.rows[i].st + (H - 1) * s.rows[i].sh < (int64_t{1} << 31),
+        s.rows[i].st > 0 && (W - 1) * s.rows[i].st + (H - 1) * s.rows[i].sh < (int64_t{1} << 31),
         name, " level ", l, "'s token stride ", s.rows[i].st, " and head stride ", s.rows[i].sh,
         " bytes pass a window's 32-bit row offsets");
   }
@@ -98,16 +97,17 @@ Side side_of(const std::vector<Tensor>& rows, int64_t list, const std::vector<in
 //: the groups' totals, the union's tokens and count; empty where the side has no list level.
 //: -- see docs/internals/carry/carry.md#lists
 SideLists lists_of(const std::vector<Tensor>& t, int64_t BH, int64_t windows, int64_t width,
-                   int64_t heads, const char* name) {
+                   int64_t heads, int W, const char* name) {
   STD_TORCH_CHECK(t.size() == 5, name, " is (entries, pre, totals, union, count), got ", t.size(),
                   " tensors");
   if (width == 0) return SideLists{nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 1};
   const int64_t groups = (width + 31) / 32;
-  const std::vector<std::vector<int64_t>> want = {{BH, windows, width, kListCap * heads, 4},
-                                                  {BH, windows, groups, kPreRows, kListAt * heads},
-                                                  {BH, windows, groups, kListAt * heads},
-                                                  {BH, windows, groups, kWindow * heads},
-                                                  {BH, windows, groups}};
+  const std::vector<std::vector<int64_t>> want = {
+      {BH, windows, width, W * heads, 4},
+      {BH, windows, groups, kPreRows, list_at(W) * heads},
+      {BH, windows, groups, list_at(W) * heads},
+      {BH, windows, groups, W * heads},
+      {BH, windows, groups}};
   for (int k = 0; k < 5; ++k) {
     const bool wide = k == 2 || k == 4;
     STD_TORCH_CHECK(t[k].is_cuda() && t[k].is_contiguous()
@@ -146,7 +146,11 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
                   "values is the CUDA f16 [B, T, H, d_v] plane, channels contiguous");
   const int64_t B = values.size(0), L = values.size(1), H = values.size(2), dv = values.size(3),
                 BH = B * H;
-  const int64_t windows = (L + kWindow - 1) / kWindow;
+  //: the device's window (`common/window.cuh`): its compiled kernels' W, never the host pass's
+  int dev = 0;
+  ROLA_CUDA_CHECK(cudaGetDevice(&dev));
+  const int W = device_window(dev);
+  const int64_t windows = (L + W - 1) / W;
   STD_TORCH_CHECK(L >= 1 && L * dv < 0x40000000, "the call's tokens and channels index in 32 bits");
   STD_TORCH_CHECK(channels == kBoxChannels && dv % channels == 0, "the box's channel extent is ",
                   kBoxChannels, " and divides d_v; the carve names ", channels, " of ", dv);
@@ -192,19 +196,21 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
                   "a write head's num rows index in 32-bit values (the drain's offsets): ", heads,
                   " query heads x ", L, " tokens x ", dv, " channels");
   p.write =
-      side_of(write_rows, write_list, write_operand, widths, extents, B, L, H, "the write side");
-  p.read = side_of(read_rows, read_list, read_operand, widths, extents, B, L, H * heads,
+      side_of(write_rows, write_list, write_operand, widths, extents, B, L, H, W, "the write side");
+  p.read = side_of(read_rows, read_list, read_operand, widths, extents, B, L, H * heads, W,
                    "the read side");
   p.values = Plane{static_cast<const uint8_t*>(values.const_data_ptr()), values.stride(0) * 2,
                    values.stride(1) * 2, values.stride(2) * 2};
-  STD_TORCH_CHECK(p.values.st > 0 && p.values.st < (int64_t{1} << 31) / kWindow,
+  STD_TORCH_CHECK(p.values.st > 0 && p.values.st < (int64_t{1} << 31) / W,
                   "values' token stride is ", p.values.st, " bytes; a window's offsets are 32-bit");
-  p.write_lists = lists_of(write_lists, BH, windows, write_list < 0 ? 0 : widths[write_list], 1,
+  p.write_lists = lists_of(write_lists, BH, windows, write_list < 0 ? 0 : widths[write_list], 1, W,
                            "the write lists");
-  p.read_lists = lists_of(read_lists, BH, windows, read_list < 0 ? 0 : widths[read_list], heads,
+  p.read_lists = lists_of(read_lists, BH, windows, read_list < 0 ? 0 : widths[read_list], heads, W,
                           "the read lists");
+  STD_TORCH_CHECK(heads <= window_heads(W), "a write head has at most ", window_heads(W),
+                  " query heads at W = ", W, " (the union slot's head field); got ", heads);
   p.tables.heads = static_cast<int>(heads);
-  p.tables.plan_words = plan_words(static_cast<int>(heads));
+  p.tables.plan_words = plan_words(static_cast<int>(heads), W);
   if (write_list >= 0) {
     STD_TORCH_CHECK(
         write_exp.is_cuda() && write_exp.is_contiguous() && write_exp.scalar_type() == Dtype::Short
@@ -231,7 +237,7 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   }
   STD_TORCH_CHECK(
       scale.is_cuda() && scale.is_contiguous() && scale.scalar_type() == Dtype::Char
-          && scale.sizes() == Shape({BH * heads, windows * kWindow}),
+          && scale.sizes() == Shape({BH * heads, windows * W}),
       "scale is the contiguous CUDA int8 [B H, windows x W] den-pass exponent bytes a query head, got ",
       shape(scale.sizes()));
   if (reduce == kReduceF16) {

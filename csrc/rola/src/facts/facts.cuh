@@ -61,13 +61,14 @@ constexpr float kListFloor = 1.17549435e-38f;
 //: THE LISTS OUT, the carry's final form (`carry/carry.cuh` owns its addresses), a write entry's coefficients at
 //: 2^(kCoefTop - E) with E floored at `kUnitMin`. -- see docs/internals/facts/facts.md#lists-out
 constexpr int kListCap = carry::kListCap;
-constexpr int kListAt = carry::kListAt;
 constexpr int kListBound = carry::kListBound;
+constexpr int kListAt = kWindowTokens / kListBound;
 constexpr int kCoefTop = 4;
 constexpr int kUnitMin = kCoefTop - 127;
-static_assert(kWindowTokens == carry::kWindow && kFactsWarps == carry::kWarps
-                  && kGroupDigits == carry::kBoxLists && kWindowTokens / kListBound == kListAt,
-              "the lists are the carry's: its window, its box lists, a boundary every 64 slots");
+static_assert(kFactsWarps == carry::kWarps && kGroupDigits == carry::kBoxLists,
+              "the lists are the carry's: its box lists, a boundary every 64 slots");
+static_assert(kWindowTokens == kWindow,
+              "the facts pass's window is the compiling card's (common/window.cuh)");
 
 //: THE STEP: a union's extent is its size in whole steps of the carry's 8 entries.
 constexpr int kStep = 8;

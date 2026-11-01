@@ -35,15 +35,16 @@ Plane plane_of(const Tensor& t, int64_t B, int64_t T, int64_t H, int64_t width, 
 
 //: ONE SIDE'S LISTS in the facts pass's final form (`carry.md#lists`), at `width` digits over `heads` query heads.
 SideLists lists_of(const std::vector<Tensor>& t, int64_t BH, int64_t windows, int64_t width,
-                   int64_t heads, const char* name) {
+                   int64_t heads, int W, const char* name) {
   STD_TORCH_CHECK(t.size() == 5, name, " is (entries, pre, totals, union, count), got ", t.size(),
                   " tensors");
   const int64_t groups = (width + 31) / 32;
-  const std::vector<std::vector<int64_t>> want = {{BH, windows, width, kListCap * heads, 4},
-                                                  {BH, windows, groups, kPreRows, kListAt * heads},
-                                                  {BH, windows, groups, kListAt * heads},
-                                                  {BH, windows, groups, kWindow * heads},
-                                                  {BH, windows, groups}};
+  const std::vector<std::vector<int64_t>> want = {
+      {BH, windows, width, W * heads, 4},
+      {BH, windows, groups, kPreRows, list_at(W) * heads},
+      {BH, windows, groups, list_at(W) * heads},
+      {BH, windows, groups, W * heads},
+      {BH, windows, groups}};
   for (int k = 0; k < 5; ++k) {
     const bool wide = k == 2 || k == 4;
     STD_TORCH_CHECK(t[k].is_cuda() && t[k].is_contiguous()
@@ -62,20 +63,23 @@ SideLists lists_of(const std::vector<Tensor>& t, int64_t BH, int64_t windows, in
                    static_cast<int>(heads)};
 }
 
+//: the tenants' bytes at the device's window
+int tenant_bytes(int W) { return W == 1024 ? TenantsAt<1024>::kBytes : TenantsAt<512>::kBytes; }
+
 template <bool Dense>
-void launch(const DenParams& p, int64_t tiles, int64_t bh, cudaStream_t stream) {
+void launch(const DenParams& p, int W, int64_t tiles, int64_t bh, cudaStream_t stream) {
+  const int bytes = tenant_bytes(W);
   static bool configured = false;
   if (!configured) {
     const int optin = current_device_properties().sharedMemPerBlockOptin;
-    STD_TORCH_CHECK(Tenants::kBytes <= optin, "the den pass's ", Tenants::kBytes,
-                    "-byte tenants exceed this device's ", optin, "-byte opt-in");
+    STD_TORCH_CHECK(bytes <= optin, "the den pass's ", bytes, "-byte tenants exceed this device's ",
+                    optin, "-byte opt-in");
     ROLA_CUDA_CHECK(cudaFuncSetAttribute(den_kernel<Dense>,
-                                         cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                         static_cast<int>(Tenants::kBytes)));
+                                         cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));
     configured = true;
   }
   const dim3 grid(static_cast<unsigned>(tiles), static_cast<unsigned>(bh));
-  den_kernel<Dense><<<grid, kThreads, static_cast<size_t>(Tenants::kBytes), stream>>>(p);
+  den_kernel<Dense><<<grid, kThreads, static_cast<size_t>(bytes), stream>>>(p);
   ROLA_CUDA_LAUNCH_CHECK();
 }
 
@@ -110,7 +114,13 @@ void den_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows,
                   " query heads a write head (the accumulator's rows), got ", heads);
   STD_TORCH_CHECK(L % kChunk == 0 && L > 0, "the call is a whole number of ", kChunk,
                   "-token chunks (a partial window is a window), got ", L);
-  const int64_t windows = (L + kWindow - 1) / kWindow;
+  //: the device's window (`common/window.cuh`), never the host pass's
+  int dev = 0;
+  ROLA_CUDA_CHECK(cudaGetDevice(&dev));
+  const int W = device_window(dev);
+  STD_TORCH_CHECK(heads <= window_heads(W), "a write head has at most ", window_heads(W),
+                  " query heads at W = ", W);
+  const int64_t windows = (L + W - 1) / W;
   STD_TORCH_CHECK(
       BH <= 65535 && heads * L < (int64_t{1} << 31),
       "the grid is (tiles, batch-heads) within the launch limits, a head's rows in 31 bits");
@@ -136,8 +146,9 @@ void den_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows,
     p.gains16 = static_cast<const __half*>(gains16.const_data_ptr());
     p.gains_exp = gains_exp.const_data_ptr<int16_t>();
   } else {
-    p.read_lists = detail::lists_of(read_lists, BH, windows, widths[ls], heads, "the read lists");
-    p.write_lists = detail::lists_of(write_lists, BH, windows, widths[lr], 1, "the write lists");
+    p.read_lists =
+        detail::lists_of(read_lists, BH, windows, widths[ls], heads, W, "the read lists");
+    p.write_lists = detail::lists_of(write_lists, BH, windows, widths[lr], 1, W, "the write lists");
     STD_TORCH_CHECK(list_exp.is_cuda() && list_exp.scalar_type() == Dtype::Short
                         && list_exp.is_contiguous() && list_exp.dim() == 4 && list_exp.size(0) == BH
                         && list_exp.size(1) == windows && list_exp.size(2) == widths[lr]
@@ -166,9 +177,9 @@ void den_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows,
   const DeviceGuard guard(wr0.get_device_index());
   const cudaStream_t stream = current_stream();
   if (dense) {
-    detail::launch<true>(p, tiles, BH, stream);
+    detail::launch<true>(p, W, tiles, BH, stream);
   } else {
-    detail::launch<false>(p, tiles, BH, stream);
+    detail::launch<false>(p, W, tiles, BH, stream);
   }
 }
 

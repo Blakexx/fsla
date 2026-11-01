@@ -13,6 +13,7 @@
 
 #include "common/arch_caps.cuh"
 #include "common/arch_runtime.cuh"
+#include "common/window.cuh"
 
 namespace rola {
 
@@ -89,6 +90,17 @@ const long long* mma_quanta(int device) {
   }
   resolved[device] = out;
   return out;
+}
+
+//: THE WINDOW of device `device`: its compute capability's. -- see docs/internals/common/window.md#window-for
+int device_window(int device) {
+  int major = 0, minor = 0;
+  ROLA_CUDA_CHECK(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device));
+  ROLA_CUDA_CHECK(cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, device));
+  const int w = window_for(major * 100 + minor * 10);
+  STD_TORCH_CHECK(w > 0, "compute capability ", major, ".", minor,
+                  " has no window: add its row to window_for");
+  return w;
 }
 
 }  // namespace rola

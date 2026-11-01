@@ -600,6 +600,11 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                   "each side holds one row set a level and the write side one scale a level: ", D);
   STD_TORCH_CHECK(window == kWindowTokens, "the facts pass's window is the carry's ", kWindowTokens,
                   " tokens, got ", window);
+  int dev = 0;
+  ROLA_CUDA_CHECK(cudaGetDevice(&dev));
+  STD_TORCH_CHECK(device_window(dev) == kWindowTokens,
+                  "the facts pass is built for W = ", kWindowTokens,
+                  " tokens; this device's window is ", device_window(dev));
   const Tensor& first = read[0];
   STD_TORCH_CHECK(first.dim() == 4 && write[0].dim() == 4,
                   "a level's rows are [B, T, H, width], got ", shape(first.sizes()));

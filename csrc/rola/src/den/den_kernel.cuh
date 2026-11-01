@@ -218,8 +218,8 @@ __device__ __forceinline__ void den_lists(const DenParams& p, uint8_t* smem, con
               inv_hi = __shfl_sync(0xffffffffu, bf.inv, 4 * (2 * tq + 1));
   const auto row_src = [&](uint32_t wd) {
     const int place = wd & 0x3fff;
-    return plane_row(p.read_r, b, hw * heads + (place >> 9), w * kWindow + (place & (kWindow - 1)),
-                     r0);
+    return plane_row(p.read_r, b, hw * heads + (place >> window_bits(kWindow)),
+                     w * kWindow + (place & (kWindow - 1)), r0);
   };
 
 #pragma unroll 1
@@ -284,7 +284,8 @@ __device__ __forceinline__ void den_dense(const DenParams& p, uint8_t* smem, con
   //: a tile's places: its head's `live` tokens then the next head's, each a whole number of tiles
   const auto place_of = [&](int e) { return (e / live) * kWindow + e % live; };
   const auto token_row = [&](int idx, const Plane& pl, int d0) {
-    return plane_row(pl, b, hw * heads + (idx >> 9), w * kWindow + (idx & (kWindow - 1)), d0);
+    return plane_row(pl, b, hw * heads + (idx >> window_bits(kWindow)),
+                     w * kWindow + (idx & (kWindow - 1)), d0);
   };
 #pragma unroll 1
   for (int i = 0; i < tiles; ++i) {
