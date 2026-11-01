@@ -345,7 +345,7 @@ __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* v
       static_for<kAhead>([&](auto k) {
         //: a slot's row: its query head `j` (the read side's) and token `t`, bit 15 a gap
         const int s = s0 + kQuads * k, t = u[k] & (kWindow - 1),
-                  j = Values ? 0 : (u[k] >> 9) & 0x3f;
+                  j = Values ? 0 : (u[k] >> window_bits(kWindow)) & (window_heads(kWindow) - 1);
         const bool issue = s < slots, live = (u[k] & 0x8000) == 0;
         const ops::SmemAddr row = pool + static_cast<uint32_t>(s * kRow);
         static_for<Factors>([&](auto i) {
@@ -1245,7 +1245,8 @@ __device__ __forceinline__ void drain(const CarryParams& p, const uint8_t* smem,
       u &= 0x7fffu;
     }
     idx = u;
-    row = (u >> 9 & 0x3fu) * L + (u & (kWindow - 1));
+    row = (u >> window_bits(kWindow) & static_cast<uint32_t>(window_heads(kWindow) - 1)) * L
+          + (u & (kWindow - 1));
   };
 
   const auto factor_of = [&](uint32_t idx) {
