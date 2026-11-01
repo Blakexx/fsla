@@ -14,21 +14,22 @@ against the state the call is handed. `rola.rola_op` validates the context in th
 | `nodes.topology` | `widths`, `d_v` | the level widths and the value width |
 | `nodes.classify_call` | `call_class` | the engagement bits: state in, state out, paged |
 | `rules.mask` | `mask` | the band: stateless or stateful |
-| `support_modes` | `modes` | per level, which sides can hold exact zeros, off the bundle's `sparse` flags (`docs/api.md` §2.1) |
-| `facts` | `liveness`, `unions`, `list_exp`, `layout`, `statics` | THE FACTS PASS over the bundle, one launch: both sides' class-1 words and their tile unions, the write lists' exponents and each side's lists in the form of the carry arm the carve selects, the layout the words are read in and the two sides' statics (`rola.ops.facts`) |
-| `activity` | `atom_bits` | the per-atom `WRITTEN | READ` byte, folded from the words (`rola.engine.facts.liveness.page_bits`) |
-| `box` | `bc` | the carry's box, the arena's allocation extent |
+| `facts` | `facts`, `carve`, `layout`, `statics` | THE FACTS PASS over the bundle, one launch: both sides' class-1 words and their tile unions, the write lists' exponents, each side's lists in the form of the carry arm the carve selects and the writers' factors, with the carve the planner picks, the layout the words are read in and the two sides' statics (`rola.ops.facts`) |
+| `activity` (stateful) | `atom_bits` | the per-atom `WRITTEN | READ` byte, folded from the words: the state's write set (`rola.engine.facts.liveness.page_bits`) |
+| `box` (stateful) | `bc` | the carry's box, the arena's allocation extent |
 | `residency` (stateful) | `state_in`, `arena` | the state's entry plane, this call's write atoms committed |
 | `nodes.join` (stateful) | | waits for the admission before anything reads the page table |
 | `nodes.backing` | `page_table`, `state_out` | the planes the launch is handed; a continuation's are one |
-| `launch` | `num`, `den` | the carry, then the intra into the same buffers (`rola.ops.prefill.prefill`) |
+| `launch` | `num`, `den` | the den pass, the carry at its scale bytes and the intra into the same planes, each over the reader factor (`rola.ops.prefill.prefill`, [`#the-seam`](#the-seam)) |
 | `post` | `y` | THE POST PASS, `y = num / (den + eps / r)`, `[B, T, H, d_v]` fp32 (`rola.ops.prefill.readout`; `r` the reader factor the kernels leave out) |
 
 ## The seam
 
-The DAG is seeded with the bundle itself. The facts pass and the intra read its u8 rows and f16 values where the
-producer stores them. The words feed the activity fold and the carry, the tile unions the intra's slab gate, and the
-write lists' exponents the carry's fold ([`carry/fold.md#units`](../carry/fold.md#units)). The `launch` node's carry
-leg, `rola.ops.prefill.prefill`, is not yet re-pointed at the rebuilt carry's launch surface (`rola.ops.carry.carry`,
-which reads the bundle's rows and the facts pass's lists), so a prefill does not yet run end to end
+The DAG is seeded with the bundle itself. The facts pass, the den pass, the carry and the intra read its rows and f16
+values where the producer stores them, grouped or not (`docs/api.md#grouped-queries`). The `launch` node is one
+composition (`rola.ops.prefill.prefill`): the den pass gives each token's earlier-window denominator and the bound its
+scale byte is cut from, the carry reduces its partials at those scale bytes, and the intra reduces its in-window pairs
+into the same two planes; each kernel's sums are brought to one unit, the recurrence's over the reader factor
+(`rola/ops/prefill.py`'s header). A stateless segment runs end to end. A stateful one is refused by the envelope until
+the carry reads and writes a segment boundary, and so is a cell no carry arm is built for
 ([`docs/open-work.md`](../../open-work.md)).

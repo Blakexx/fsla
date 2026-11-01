@@ -23,13 +23,6 @@ from rola.ops._ext import extension
 from rola.ops.carry import readout_accumulate
 from rola.ops.window import window_of
 
-#: THE PER-LEVEL MODE, two bits per level: bit 0 the READ side is value-sparse there, bit 1 the WRITE side. The carry's
-#: geometry block orders its carve by it.
-DENSE_BOTH = 0
-READ_SPARSE = 1
-WRITE_SPARSE = 2
-BOTH_SPARSE = 3
-
 #: The value width the kernel reads.
 VALUE_WIDTH = 64
 #: THE ROWS' LEVELS: the built arms serve depth <= 2, each level a whole number of 16-digit granules up to 256.
@@ -44,19 +37,8 @@ LEDGER_PHASES = ("reader", "gate", "wait", "gram", "epilogue", "value", "deposit
 LEDGER_WARPS = 8
 _ACCUMULATE = {"fp32": 0, "fp16": 1}
 
-__all__ = ["BOTH_SPARSE", "DENSE_BOTH", "FORM_F16_F16", "LEDGER_PHASES", "LEDGER_WARPS", "MAX_LEVELS",
-           "MAX_LEVEL_WIDTH", "READ_SPARSE", "VALUE_WIDTH", "WIDTH_GRANULE", "WRITE_SPARSE", "admits",
-           "block_rows", "build_stamp", "footprint", "intra_forward", "ledger_bind", "pack_modes", "reads"]
-
-
-def pack_modes(modes: tuple[int, ...]) -> int:
-    """Two bits per level, level 0 in the low pair."""
-    packed = 0
-    for level, mode in enumerate(modes):
-        if mode not in (DENSE_BOTH, READ_SPARSE, WRITE_SPARSE, BOTH_SPARSE):
-            raise ValueError(f"level {level}: unknown support mode {mode!r}")
-        packed |= mode << (2 * level)
-    return packed
+__all__ = ["FORM_F16_F16", "LEDGER_PHASES", "LEDGER_WARPS", "MAX_LEVELS", "MAX_LEVEL_WIDTH", "VALUE_WIDTH",
+           "WIDTH_GRANULE", "admits", "block_rows", "build_stamp", "footprint", "intra_forward", "ledger_bind", "reads"]
 
 
 def _dense_bits(statics: SideStatics) -> int:

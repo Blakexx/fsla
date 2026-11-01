@@ -152,12 +152,13 @@ def test_the_write_heads_must_divide_the_query_heads():
         _grouped(3, 2)
 
 
-def test_a_consumer_of_one_head_count_refuses_a_grouped_bundle_by_name():
-    """The kernels read one head count until each reads groups; each refuses a grouped bundle at its seam, the
-    prefill's before any fact is found."""
-    routes = _grouped(4, 2)
-    with pytest.raises(NotImplementedError, match="the prefill reads one head count"):
-        _validate(routes, torch.randn(2, 6, 2, 8))
+def test_the_prefill_reads_groups_and_a_consumer_of_one_head_count_refuses_them_by_name():
+    """The prefill's kernels read groups -- the values a write head's, the bundle's rows its query heads' -- so its
+    fast-fail admits a grouped bundle; a consumer that reads one head count (the decode step, the carried state)
+    refuses one at its seam."""
+    _admitted(_grouped(4, 2), torch.randn(2, 6, 2, 8, dtype=torch.float64))
+    with pytest.raises(NotImplementedError, match="a consumer reads one head count"):
+        _grouped(4, 2).refuse_grouped("a consumer")
     _grouped(2, 2).refuse_grouped("a consumer")
 
 
@@ -259,12 +260,12 @@ def test_the_bundle_carries_v_shape_disagreement_to_the_caller_not_to_the_kernel
 
     `d_v` is `v`'s own width -- the routing carries no value geometry -- so a
     different one is a different model, not a mismatch, and the op reads it. What
-    the bundle does pin is `[B, T, H]`, and a `v` that disagrees there is refused
-    with the expected prefix in the message rather than handed to a kernel.
+    the bundle does pin is `[B, T, H_w]` (the values are a write head's), and a `v` that
+    disagrees there is refused with the expected prefix in the message rather than handed to a kernel.
     """
     producer = _routes()
     factors = _factors(producer)
-    with pytest.raises(ValueError, match=r"\[B, T, H\]=\(2, 6, 2\)"):
+    with pytest.raises(ValueError, match=r"\[B, T, H_w\]=\(2, 6, 2\)"):
         _validate(factors, torch.randn(2, 5, 2, 8, dtype=torch.float64))
     #: the control: the same call at a width the bundle never declared is admitted.
     _admitted(factors, torch.randn(2, 6, 2, 9, dtype=torch.float64))

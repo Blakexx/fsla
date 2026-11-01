@@ -60,9 +60,9 @@ in a backward pass, and no parameter reads a pad column, so its gradient is exac
   is proof this binary already runs a width the carry floor would refuse. Padding
   levels here would import the carry's constraint into a kernel that does not have it.
 * **intra** (`rola.ops.intra.intra_forward`) pads nothing: it reads the bundle's rows
-  where the producer stores them, at their own widths, and its arm is one level width
-  for every level -- a bundle whose levels are not that width is refused
-  (`rola.ops.prefill.intra_admits`), never padded at the seam. The values are the
+  where the producer stores them, at their own widths, each level a whole number of
+  16-digit granules up to 256 -- a bundle outside that is refused by the prefill
+  envelope (`rola.ops.intra.admits`), never padded at the seam. The values are the
   format's 64 channels.
 
 ## Where the shipped sets come from
@@ -72,10 +72,13 @@ device's own declared matrix -- never a literal tuple, because a literal would d
 moment the binary's arm table changed and a call would silently pad to a width the loaded
 `.so` does not carry. The intra reads one value width, `rola.ops.intra.VALUE_WIDTH`.
 
-The prefill's carry leg reads `carry_ops.SHIPPED_DV`, which the rebuilt `rola.ops.carry`
-does not define: the rebuilt carry takes the value width as runtime addressing over the
-carve's channel extent ([`engine/rules.md#carve`](engine/rules.md#carve)), and the leg is
-not yet re-pointed at it ([`docs/open-work.md`](../open-work.md)).
+The prefill's carry leg pads nothing either: the rebuilt carry takes the value width as
+runtime addressing over the carve's channel extent
+([`engine/rules.md#carve`](engine/rules.md#carve)), and the envelope refuses a carve no
+built arm carries. The stateful band's `box` node still reads `carry_ops.SHIPPED_DV`, which
+the rebuilt `rola.ops.carry` does not define; the envelope refuses a stateful call before
+that node runs, and the node is re-pointed with the carry's state I/O
+([`docs/open-work.md`](../open-work.md) C-e).
 
 ## What this does not do
 

@@ -17,16 +17,18 @@ from rola.engine import rule
 
 
 @rule(gives=("prefill_envelope",),
-      needs=("widths", "d_v", "decay", "tokens", "window", "intra_reads", "intra_dv", "carry_dvs"))
+      needs=("widths", "d_v", "decay", "tokens", "window", "intra_reads", "intra_dv", "carry_arm", "den_refusal",
+             "stateful"))
 def prefill_envelope(widths: tuple[int, ...], d_v: int, decay: Any, tokens: int, window: int,
-                     intra_reads: bool, intra_dv: int, carry_dvs: tuple[int, ...]) -> str | None:
+                     intra_reads: bool, intra_dv: int, carry_arm: tuple[int, ...] | None, den_refusal: str | None,
+                     stateful: bool) -> str | None:
     """Why the prefill has no kernel for this segment, or None if it runs.
 
     ``intra_reads`` is whether the intra kernel reads these level widths (`rola.ops.intra.admits`) and ``intra_dv``
-    the value width it reads; ``carry_dvs`` the value widths the carry ships at this depth -- the binary's own
-    census, never the source tree's.
+    the value width it reads; ``carry_arm`` the arm key of the carve the planner picks when the binary's own census
+    carries it, else ``None``; ``den_refusal`` the den pass's (`rola.ops.den.serves`); ``stateful`` whether the call
+    hands a state in or out.
     """
-    depth = len(widths)
     if decay is not None:
         return ("decay is not implemented in the operator (the decay retirement; docs/internals/chunk/chunk.md); "
                 "use the reference arm")
@@ -35,8 +37,13 @@ def prefill_envelope(widths: tuple[int, ...], d_v: int, decay: Any, tokens: int,
                 f"to 256, within the device's shared memory")
     if d_v != intra_dv:
         return f"d_v={d_v}; the intra reads value width {intra_dv}"
-    if not any(dv >= d_v for dv in carry_dvs):
-        return f"d_v={d_v}; this build's carry at depth {depth} takes value widths {sorted(carry_dvs)}"
+    if carry_arm is None:
+        return f"widths={widths}, d_v={d_v}; this build carries no carry arm for the carve the planner picks"
+    if den_refusal is not None:
+        return f"the den pass does not serve this bundle: {den_refusal}"
+    if stateful:
+        return ("a state handed in or out: the carry takes no entry state yet (its segment boundary is not built); "
+                "call statelessly")
     if tokens % window:
         return f"T={tokens} is not a whole number of {window}-token windows"
     return None

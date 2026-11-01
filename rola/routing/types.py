@@ -262,7 +262,7 @@ class TiedRouting:
     generically); a field and a method cannot share one name on a ``slots=True``
     dataclass, and the accessor is the name the rest of the tree already dispatches on.
 
-    A tied SOFTMAX level is legal and is DENSE_BOTH: validation is a registry lookup
+    A tied SOFTMAX level is legal and dense on both sides: validation is a registry lookup
     (``activation_properties``), not a list of admissible activation names, so any row
     -- entmax or softmax -- is accepted the moment it exists in
     ``rola/routing/activations.py``.

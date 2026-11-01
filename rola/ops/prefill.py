@@ -1,129 +1,115 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The box-native PREFILL: the carry and the intra as one call.
+"""THE PREFILL COMPOSITION: one segment's kernels over the bundle and the epilogue that joins them.
 
-THE TWO KERNELS ARE ONE OPERATOR, and this module is the seam that says so. The
-window grid is GLOBAL and FIXED, identical for both: the carry computes every
-pair whose write fell in a STRICTLY EARLIER window than its read, and the intra
-computes every pair INSIDE one window. Together they are the whole recurrence,
-with no pair counted twice and none dropped — the study's exactness clause, which
-`tests/oracle/test_carry_vs_oracle.py::test_m2_decomposition_is_exact` states
-independently in fp64.
+THE KERNELS ARE ONE OPERATOR on one window grid (`rola.ops.window.window_of`, the device's): the carry computes every
+pair whose write fell in a strictly earlier window than its read, the intra every pair inside one window, and the den
+pass each token's denominator against the earlier windows' write mass. Together they are the whole recurrence, no pair
+counted twice and none dropped (`tests/oracle/test_carry_vs_oracle.py`'s decomposition test states it in fp64).
 
-THE INTRA READS THE BUNDLE (`rola.ops.intra`): its rows and values as the producer wrote
-them, and the facts pass's words for its gate. THE CARRY LEG IS `rola.ops.carry`, still on
-floating planes until its int8 port: this module dequantizes the bundle for it once a call
--- the read side at its unit rows, since the reader's per-token factor cancels in
-``num / den`` and the intra drops it too (the output contract) -- builds that surface's
-descriptor, geometry block and launch shape, takes the liveness words and activity bits
-from its caller, and calls `carry_forward`. The window is a kernel constant
-(`rola.ops.window.window_of`, the device's), not a parameter of this operator.
+THE UNITS. Every kernel leaves each token's READER FACTOR ``r`` (its read levels' scales) out of its sums, and the
+readout divides by it (:func:`readout`): ``y = num / (den + eps / r)`` is the defined readout exactly. The intra's
+``num`` and ``den`` are already in those units; the den pass's take its rows' storage factor (:func:`den_factor`),
+and the carry's ``num`` its state's unit and its read rows' (:func:`carry_factor`) times the f16 sum's scale ``2^(s +
+1)``, ``s`` each token's scale byte from the den pass's bound (:func:`scale_bytes`) -- every CTA's partials meet at it.
 
-Symbols, each at first use: ``D`` levels, ``W`` the window length in tokens (the carry's
-constant), ``d_v`` value channels, ``modes`` the per-level support-mode declaration the
-carry's carve order reads.
-
-WHY THE INTRA GOES SECOND AND REDUCES.  The intra kernel's write-back is a RED
-(``fan_in_add``), not a store, so it ADDS into whatever ``num``/``den`` already
-hold. The carry allocates and fills them; the intra then folds its term into the
-same buffers on the same stream.
-
-WHAT THIS OPERATOR REFUSES, and why each refusal is structural rather than a
-missing feature:
-
-* ``L % W != 0`` — the intra's windows are whole, its grid a window a column.
-* level widths or a value width the intra does not read (`rola.ops.intra.admits`).
+Symbols, each at first use: ``W`` the window, ``L`` tokens, ``BH`` batch x heads, ``d_v`` value channels, level ``S``
+the carry's (`rola.routing.factors.carry_level_s`) and ``R`` the other.
 """
 from __future__ import annotations
 
 import torch
 
-from rola._state import CANONICAL_ORDER, PAGE_RECTANGLE_BITS, SPLIT_PLANE_DTYPE, StateFormat
 from rola.ops import carry as carry_ops
+from rola.ops import den as den_ops
 from rola.ops import intra as intra_ops
-from rola.ops import padding as padding_ops
-from rola.ops.window import window_of
 from rola.routing import quant
 
+__all__ = ["UNIT_HEADROOM", "UNIT_LEVELS", "UNIT_NONE", "carry_factor", "den_factor", "prefill", "reader_factor",
+           "readout", "scale_bytes", "unpack_num"]
 
-def _padded_shape(widths, dv: int) -> padding_ops.PaddedShape:
-    """This call's `rola.ops.padding.PaddedShape` -- every level widened to
-    `padded_level_width` and `dv` widened to the smallest of `carry_ops.SHIPPED_DV`
-    that admits it (KERNEL_STANDARDS §the "two contracts": the carry surface's
-    kernel boundary refuses anything but its own strict shape, so this seam's
-    descriptor and operand packing pad BEFORE either helper builds anything the
-    boundary would see). A caller already at a shipped shape pays nothing here --
-    `PaddedShape.of` is a no-op past an already-padded width.
-    """
-    return padding_ops.PaddedShape.of(tuple(widths), int(dv), shipped_dv=carry_ops.SHIPPED_DV)
+#: THE f16 SUM's SCALE BYTE, the kernel's `unit_byte` rule (`csrc/rola/src/carry/parts.cuh`): the smallest ``s`` with
+#: ``1.02 P <= 2^(s + 15)`` for the token's bound ``P``, held to int8, `UNIT_NONE` where the token reads nothing
+UNIT_LEVELS, UNIT_HEADROOM, UNIT_NONE = 15, 1.02, -100
 
 
-def _descriptor(widths, dv: int, bh: int) -> StateFormat:
-    """The call's own state descriptor -- the same fields `rola._state._format_of`
-    derives for a routed call, built here from what this operator already has.
-    `widths`/`dv` are padded first (:func:`_padded_shape`), so the descriptor always
-    names a shape the carry surface's kernel boundary accepts -- a caller's logical
-    shape never reaches `StateFormat` directly."""
-    shape = _padded_shape(widths, dv)
-    n = 1
-    for width in shape.padded_widths:
-        n *= width
-    return StateFormat(D=len(shape.padded_widths), B=shape.padded_widths, order=CANONICAL_ORDER,
-                       page_bits=PAGE_RECTANGLE_BITS, DV=shape.DV, dtype=SPLIT_PLANE_DTYPE,
-                       ids=int(bh) * (n >> PAGE_RECTANGLE_BITS))
+def _u8(rows: torch.Tensor) -> bool:
+    return rows.dtype == quant.ROW_DTYPE
 
 
-def _conservative_activity(descriptor: StateFormat, bh: int, device) -> torch.Tensor:
-    """Every page READ and WRITTEN: the conservative statement this seam makes when
-    no facts-pass output is available for the call. It asserts nothing about the
-    draw and therefore skips nothing (`measure.cells.conservative_activity`
-    states the same fact for a cell)."""
-    pages = descriptor.N // carry_ops.PAGE_LEAVES
-    return torch.full((bh, pages), carry_ops.ACTIVITY_READ | carry_ops.ACTIVITY_WRITTEN,
-                      dtype=torch.uint8, device=device)
+def carry_factor(routes) -> float:
+    """What the carry's partials at a token's unit are multiplied by to be the recurrence's numerator over ``r``: the
+    state's byte scale (level S's write rows a byte over 256 or an f16, over 255) and the read rows' storage -- level
+    S's coefficient a byte over 256 (``256 / 255`` of its unit value), level R's row a byte (``1 / 255``)."""
+    ls = routes.level_s
+    lr = 1 - ls
+    kappa = (256.0 / quant.AMP_LEVELS if _u8(routes.amp_write[ls]) else 1.0) / quant.AMP_LEVELS
+    k_s = (quant.AMP_LEVELS + 1.0) / quant.AMP_LEVELS if _u8(routes.amp_read[ls]) else 1.0
+    k_r = 1.0 / quant.AMP_LEVELS if _u8(routes.amp_read[lr]) else 1.0
+    return kappa * k_s * k_r
 
 
-def _pack_operands(read_levels, write_levels, g_write, v):
-    """The carry's planes, packed ONCE: `(pread, pwrite, gwrite, v_bh)`, ``v_bh`` the carry
-    surface's `[BH, L, DV]`.
-
-    THE LEVELS AND ``v`` ARE PADDED FIRST (:func:`_padded_shape`, `rola.ops.padding`):
-    `pad_routes` widens each level's trailing dimension to its `PaddedShape.
-    padded_widths` entry with exact-zero columns before `carry_ops.pack_side` packs
-    it, and `pad_v` widens `v`'s value axis to `PaddedShape.DV` the same way -- a
-    logical `(31, 45)`/`d_v=48` call is packed at the padded shape the carry surface's
-    kernel boundary accepts, and an already-shipped call pays nothing (`pad_routes`/
-    `pad_v` are no-ops past an already-padded width).
-    """
-    widths = tuple(level.shape[-1] for level in read_levels)
-    shape = _padded_shape(widths, v.shape[-1])
-    pread = carry_ops.pack_side(padding_ops.pad_routes(read_levels, shape.padded_widths))
-    pwrite = carry_ops.pack_side(padding_ops.pad_routes(write_levels, shape.padded_widths))
-    gwrite = g_write.permute(0, 2, 1).contiguous().to(torch.bfloat16)
-    gwrite = gwrite.reshape(gwrite.shape[0] * gwrite.shape[1], -1)
-    v_bthd = padding_ops.pad_v(v.to(torch.bfloat16).contiguous(), shape.DV)
-    Bn, T, H, dv = v_bthd.shape
-    v_bh = v_bthd.permute(0, 2, 1, 3).contiguous().reshape(Bn * H, T, dv)
-    return pread, pwrite, gwrite, v_bh
+def den_factor(routes) -> float:
+    """What the den pass's sums are multiplied by to be the recurrence's over ``r``: level S's read coefficient a byte
+    over 256 and level R's write mass on the byte scale."""
+    ls = routes.level_s
+    lr = 1 - ls
+    k = 256.0 / quant.AMP_LEVELS if _u8(routes.amp_read[ls]) else 1.0
+    return k / quant.AMP_LEVELS if _u8(routes.amp_write[lr]) else k
 
 
-def intra_admits(widths, d_v: int) -> bool:
-    """Whether the intra reads these level widths and value width (`rola.ops.intra.admits`)."""
-    return intra_ops.admits(widths, d_v)
+def scale_bytes(routes, bound: torch.Tensor) -> torch.Tensor:
+    """``[BH, L]`` int8: each token's scale byte from the den pass's ``bound`` (its read product against the mass of
+    ``m s``, which bounds every channel of the carry's ``num``), in the carry's partials' units."""
+    p = bound * (den_factor(routes) / carry_factor(routes))
+    s = torch.ceil(torch.log2(UNIT_HEADROOM * p.clamp_min(1e-30))) - UNIT_LEVELS
+    return torch.where(p > 0, s, torch.full_like(s, UNIT_NONE)).clamp(-128, 127).to(torch.int8)
 
 
-def _carry_levels(routes, values):
-    """The carry leg's floating operands from the bundle, dequantized once: the read side at its unit rows (the
-    reader's factor cancels in ``num / den``, and the intra drops it), the write side and the values whole."""
-    read = tuple(quant.dequantize_rows(rows, torch.ones_like(scale) * (scale > 0), not sparse)
-                 for rows, scale, sparse in zip(routes.amp_read, routes.scale_read, routes.sparse[0], strict=True))
-    write = tuple(quant.dequantize_rows(rows, scale, not sparse)
-                  for rows, scale, sparse in zip(routes.amp_write, routes.scale_write, routes.sparse[1], strict=True))
-    return read, write, values.dequantized()
+def unpack_num(num: torch.Tensor, channels: int) -> torch.Tensor:
+    """``[BH, L, d_v]`` fp32 in channel order: the carry's ``num`` as the drain wrote it -- fp32, or int32 words of f16
+    pairs, a box's word ``8 m + g`` holding channels ``(c, c + 2)``, ``c = 8 (g >> 1) + 4 m + (g & 1)`` of its
+    ``channels`` (`docs/internals/carry/parts.md#image`)."""
+    if num.dtype == torch.float32:
+        return num
+    BH, L, words = num.shape
+    lo = (num & 0xFFFF).to(torch.int16).view(torch.float16).float()
+    hi = ((num >> 16) & 0xFFFF).to(torch.int16).view(torch.float16).float()
+    k = torch.arange(words, device=num.device)
+    box, kk = k // (channels // 2), k % (channels // 2)
+    m, g = kk // 8, kk % 8
+    channel = channels * box + 8 * (g >> 1) + 4 * m + (g & 1)
+    out = torch.empty(BH, L, 2 * words, dtype=torch.float32, device=num.device)
+    out[..., channel] = lo
+    out[..., channel + 2] = hi
+    return out
+
+
+def prefill(routes, values, facts, carve, layout, read_statics, write_statics, *, accumulate: str | None = None,
+            reduce_dtype: torch.dtype | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    """``(num, den)`` fp32 ``[BH, L, d_v]`` and ``[BH, L]`` over ``r`` (:func:`readout` divides by it): the den pass,
+    the carry at the den pass's scale bytes, and the intra reduced into the same planes. ``facts`` is the facts pass's
+    output over this bundle in ``layout`` with the carve's read row (`rola.ops.carry.form`) and these statics.
+    ``accumulate`` and ``reduce_dtype`` are reserved: the gates' choice of the MMAs' accumulation and the carry's
+    cross-CTA dtype, each the device's or the carve's rule by default."""
+    den_inter, bound = den_ops.den(routes, facts)
+    scale = scale_bytes(routes, bound)
+    num_c, _ = carry_ops.carry(routes, values, facts, carve, scale, accumulate=accumulate, reduce_dtype=reduce_dtype)
+    num = unpack_num(num_c, carve.channels)
+    unit = carry_factor(routes)
+    if num_c.dtype != torch.float32:
+        num = num * (torch.exp2(scale.float() + 1.0) * unit).unsqueeze(-1)
+    else:
+        num = num * unit
+    num = num.contiguous()
+    den = (den_inter * den_factor(routes)).contiguous()
+    intra_ops.intra_forward(routes, values, facts, layout, read_statics, write_statics, num, den,
+                            accumulate=accumulate)
+    return num, den
 
 
 def reader_factor(routes) -> torch.Tensor:
-    """``[BH, T]``: each token's read scales multiplied -- the per-token factor the kernels leave out of ``num`` and
+    """``[BH, L]``: each token's read scales multiplied -- the per-token factor the kernels leave out of ``num`` and
     ``den``."""
     r = routes.scale_read[0]
     for scale in routes.scale_read[1:]:
@@ -139,82 +125,3 @@ def readout(num: torch.Tensor, den: torch.Tensor, routes) -> torch.Tensor:
 
     y = num / (den + READOUT_EPS / reader_factor(routes)).unsqueeze(-1)
     return y.reshape(routes.batch, routes.heads, routes.tokens, -1).permute(0, 2, 1, 3)
-
-
-def prefill(routes, values, *, modes, liveness: carry_ops.LivenessWords, unions: torch.Tensor, layout, read_statics,
-            write_statics,
-            state_in: torch.Tensor | None = None,
-            state_out: torch.Tensor | None = None,
-            page_table: torch.Tensor | None = None,
-            atom_bits: torch.Tensor | None = None):
-    """The whole forward term, undivided: ``(num, den, state_out)``.
-
-    ``num`` is ``[BH, T, d_v]`` fp32, ``den`` is ``[BH, T]`` fp32 and
-    ``state_out`` is ``[BH, N/16, 16, d_v+1]`` fp32 in CANONICAL leaf order -- the
-    caller's own ``state_out`` plane, or ``None`` where the call stores no state.
-    The readout a caller wants is ``num / (den + READOUT_EPS)``; this operator
-    does not divide, because the state and the mass are what a chained call
-    needs and a ratio is not.
-
-    THE STATE PLANES ARE THE CALLER'S (`docs/internals/state.md` section 4).
-    THE FOUR SHAPES, the kernel's own, and this operator allocates no plane: neither
-    plane is the NULL-STATE call (nothing in, nothing out); ``state_in`` alone is
-    READ-ONLY (the readout against a frozen state, the folds never stored);
-    ``state_out`` alone is a FRESH sequence (a zero state in, no entry sweep, stored
-    out); both, the SAME tensor, ADVANCE it in place. A plane is the arena's, with its
-    ``page_table`` for the paged backing, or a dense one from
-    :func:`rola.ops.carry.state_plane`. ``page_table`` is the
-    ``[BH, N/16]`` int32 slot table, and ``None`` is the dense backing, where the slot
-    IS the atom. ``atom_bits`` is the per-atom ACTIVITY byte (bit 0 WRITTEN, bit 1
-    READ); a call that passes none states the conservative fact
-    (:func:`_conservative_activity`) rather than a derivation this seam does not own.
-
-    ``modes`` is one :mod:`rola.ops.intra` support mode per level. It is a
-    DECLARATION about the routing, not a switch: the intra's slab gate reads
-    all-ones for an undeclared side and therefore cannot move a number, so
-    ``DENSE_BOTH`` everywhere is always correct and only ever slower.
-
-    ``liveness`` is both sides' class-1 words in ``layout`` and ``unions`` their tile
-    unions, the facts pass's (:func:`rola.ops.facts.facts`) over this bundle with
-    ``read_statics`` and ``write_statics``.
-    """
-    widths = routes.topology.widths
-    D, d_v, length = len(widths), values.d_v, routes.tokens
-    if len(modes) != D:
-        raise ValueError(f"{D} levels want {D} support modes; got {len(modes)}")
-    if not intra_admits(widths, d_v):
-        raise ValueError(
-            f"the intra does not read level widths {tuple(widths)} at d_v {d_v} (one or two levels of "
-            f"{intra_ops.WIDTH_GRANULE}-digit granules up to {intra_ops.MAX_LEVEL_WIDTH}, d_v "
-            f"{intra_ops.VALUE_WIDTH}). A topology only the carry carries is an inter-only "
-            f"cell -- call rola.ops.carry.carry_forward directly.")
-    W = window_of(routes.device)
-    if length % W:
-        raise ValueError(f"L = {length} is not a whole number of {W}-token windows")
-
-    read_levels, write_levels, v = _carry_levels(routes, values)
-    pread, pwrite, gwrite, v_bh = _pack_operands(read_levels, write_levels, routes.g_write, v)
-    bh, dv = v_bh.shape[0], v_bh.shape[2]
-
-    descriptor = _descriptor(widths, dv, bh)
-    launch = carry_ops.LaunchShape()
-    geometry = carry_ops.geometry_block(descriptor, launch,
-                                        intra_ops.pack_modes(tuple(modes)))
-    activity = (atom_bits if atom_bits is not None
-               else _conservative_activity(descriptor, bh, v_bh.device))
-    #: THE STATE PLANES ARE THE CALLER'S, both of them, and this operator allocates none:
-    #: the kernel's four shapes pass through as the caller names them (state.md section 4).
-
-    planes = carry_ops.RoutePlanes(read=pread, write=pwrite, gain=gwrite)
-    num, den = carry_ops.carry_forward(
-        planes, v_bh, descriptor=descriptor, geometry=geometry, liveness=liveness,
-        activity=activity, launch=launch, state_in=state_in, state_out=state_out,
-        page_table=page_table)
-    #: SAME STREAM, SAME BUFFERS.  The intra REDs into `num`/`den`; the stream
-    #: order is the only synchronization either kernel needs.
-    intra_ops.intra_forward(routes, values, unions, layout, read_statics, write_statics, num, den)
-    return num, den, state_out
-
-
-__all__ = ["intra_admits", "prefill", "reader_factor", "readout"]
-

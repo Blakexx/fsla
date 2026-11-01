@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """The prefill family's DAG, read top to bottom, and the context it runs over.
 
-ONE SEGMENT in, its readout out: the facts pass over the segment's bundle, the carry and
-the intra, then the post pass ``y = num / (den + eps)``. The stateless and
+ONE SEGMENT in, its readout out: the facts pass over the segment's bundle, the den pass, the
+carry and the intra, then the post pass ``y = num / (den + eps / r)``. The stateless and
 stateful bands are one tuple, the stateless being the stateful with the residency band
 masked out. Segmentation is the LAYER's (docs/internals/engine/prefill_dag.md): this
 DAG runs whatever segment it is handed, against whatever state it is handed.
@@ -43,26 +43,12 @@ class PrefillContext:
     supplied: Mapping[str, Any] = field(default_factory=dict)
 
 
-@node(gives=("modes",), needs=("routes",))
-def support_modes(f):
-    """Per level, which sides the bundle flags ``sparse`` -- the intra's slab declaration (a declaration, never a
-    switch: ``DENSE_BOTH`` is always correct and only slower)."""
-    from rola.ops import intra as intra_ops
-
-    routes = f["routes"]
-    modes = []
-    for level in range(routes.topology.D):
-        read, write = routes.sparse[0][level], routes.sparse[1][level]
-        modes.append(intra_ops.BOTH_SPARSE if read and write else intra_ops.READ_SPARSE if read
-                     else intra_ops.WRITE_SPARSE if write else intra_ops.DENSE_BOTH)
-    return tuple(modes)
-
-
-@node(gives=("liveness", "unions", "list_exp", "layout", "statics"), needs=("routes", "values"), stream="main")
+@node(gives=("facts", "carve", "layout", "statics"), needs=("routes", "values"), stream="main")
 def facts(f):
     """THE FACTS PASS over the bundle, one launch: both sides' class-1 words and their tile unions, the write lists'
-    exponents and each side's lists in the form of the carry arm the carve selects, the layout the words are read in --
-    the topology's padded widths -- and the two sides' statics, their dense levels unread (`rola.ops.facts`)."""
+    exponents, each side's lists in the form of the carry arm the carve selects and the writers' factors, with the carve
+    the planner picks, the layout the words are read in -- the topology's padded widths -- and the two sides' statics,
+    their dense levels unread (`rola.ops.facts`)."""
     from rola.engine.carve import plan_carve
     from rola.ops import carry as carry_ops
     from rola.ops import facts as facts_ops
@@ -73,17 +59,17 @@ def facts(f):
     carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, f["values"].v.shape[-1])
     out = facts_ops.facts(routes, f["values"], layout, *statics,
                           carry_ops.form(carry_ops.arm_key(carve)).read_row)
-    return carry_ops.LivenessWords(words=out.words), out.unions, out.list_exp, layout, statics
+    return out, carve, layout, statics
 
 
-@node(gives=("atom_bits",), needs=("liveness", "layout", "statics"), stream="main")
+@node(gives=("atom_bits",), needs=("facts", "layout", "statics"), stream="main", masks=(Mask.M2,))
 def activity(f):
-    """The per-atom ACTIVITY byte, ``WRITTEN | READ``, folded from the words: residency's write set and the carry's
-    sweep gate are ONE fact (`rola.engine.facts.liveness.page_bits`)."""
-    return liveness.page_bits(f["liveness"].words, f["layout"], *f["statics"])
+    """The per-atom ACTIVITY byte, ``WRITTEN | READ``, folded from the words: the state's write set
+    (`rola.engine.facts.liveness.page_bits`)."""
+    return liveness.page_bits(f["facts"].words, f["layout"], *f["statics"])
 
 
-@node(gives=("bc",), needs=("d_v",))
+@node(gives=("bc",), needs=("d_v",), masks=(Mask.M2,))
 def box(f):
     """The carry's box, the arena's allocation extent: allocator policy, never an address."""
     from rola.ops import carry as carry_ops
@@ -104,21 +90,13 @@ def residency(f):
     return state._kernel_entry(f["routes"], f["atom_bits"], d_v=f["d_v"], paging=f["paging"], BC=f["bc"])
 
 
-@node(gives=("num", "den"),
-      needs=("routes", "values", "modes", "liveness", "unions", "layout", "statics", "state_in", "state_out",
-             "page_table", "atom_bits"),
-      stream="main")
+@node(gives=("num", "den"), needs=("routes", "values", "facts", "carve", "layout", "statics"), stream="main")
 def launch(f):
-    """The carry, then the intra into the same buffers: ``num [BH, T, d_v]`` and ``den [BH, T]``, fp32
-    (`rola.ops.prefill.prefill`)."""
+    """The den pass, the carry at its scale bytes and the intra into the same planes: ``num [BH, T, d_v]`` and
+    ``den [BH, T]``, fp32, each over the reader factor (`rola.ops.prefill.prefill`)."""
     from rola.ops import prefill as prefill_ops
 
-    read_statics, write_statics = f["statics"]
-    num, den, _ = prefill_ops.prefill(
-        f["routes"], f["values"], modes=f["modes"], liveness=f["liveness"], unions=f["unions"], layout=f["layout"],
-        read_statics=read_statics, write_statics=write_statics, state_in=f["state_in"], state_out=f["state_out"],
-        page_table=f["page_table"], atom_bits=f["atom_bits"])
-    return num, den
+    return prefill_ops.prefill(f["routes"], f["values"], f["facts"], f["carve"], f["layout"], *f["statics"])
 
 
 @node(gives=("y",), needs=("num", "den", "routes"), stream="main")
@@ -134,7 +112,6 @@ PREFILL_DAG = (
     nodes.topology,
     nodes.classify_call,
     rules.mask.node,
-    support_modes,
     facts,
     activity,
     box,
@@ -179,12 +156,11 @@ def validate_context(ctx: PrefillContext) -> None:
             "build one with Values.from_projection(v).")
     #: THE LAST DIM IS NOT CHECKED, IT IS READ. `d_v` is the value stream's own width
     #: and the routing carries no value geometry, so there is nothing to agree with;
-    #: what must match the bundle is the token addressing, `[B, T, H]`.
-    routes.refuse_grouped("the prefill")
-    expected = (routes.batch, routes.tokens, routes.heads)
+    #: what must match the bundle is the token addressing, `[B, T, H_w]`, a write head's.
+    expected = (routes.batch, routes.tokens, routes.write_heads)
     if (values.batch, values.tokens, values.heads) != expected:
         raise ValueError(
-            f"values must be [B, T, H, d_v] with [B, T, H]={expected} to match the routing "
+            f"values must be [B, T, H_w, d_v] with [B, T, H_w]={expected} (a write head's) to match the routing "
             f"bundle, got {tuple(values.v.shape)}")
     if values.device != routes.device:
         raise ValueError(f"values are on {values.device} but the routing bundle is on {routes.device}")
