@@ -323,7 +323,7 @@ def test_a_bound_ledger_books_every_phase_and_changes_nothing():
     route = [name for name in producer.LEDGER_PHASES if name != "values"]
     for index, job in enumerate(jobs):
         #: a softmax solve (the dense level's job, solve 0) has no threshold to find
-        names = ["job", "project", "barrier", "values"] if job[0] else [
+        names = ["job", "project", "values"] if job[0] else [
             name for name in route if name != "threshold" or job[3] != 0]
         for name in names:
             assert bool((ledger[index, :, phases[name]] > 0).all()), f"job {index}: a warp booked no `{name}`"

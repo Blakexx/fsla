@@ -188,7 +188,7 @@ def _job_tensor(plan: ProducerPlan, device: str) -> tuple[torch.Tensor, torch.Te
 #: the per-(token tile, head) arrival counters, zero between calls (the kernel's finisher resets its own), one buffer a
 #: device grown as a call needs
 _ARRIVALS: dict[str, torch.Tensor] = {}
-_TOKEN_TILE = 32
+_TOKEN_TILE = 64
 
 
 def _arrivals(device: torch.device, count: int) -> torch.Tensor:
@@ -199,12 +199,12 @@ def _arrivals(device: torch.device, count: int) -> torch.Tensor:
 
 
 #: THE PHASE LEDGER'S SHAPE: ``[jobs][warps][phases]``, the kernel's own `ProducePhase` order, booked over the tiles.
-LEDGER_PHASES = ("job", "project", "barrier", "row_load", "threshold", "levels", "bundle", "finish", "values")
-LEDGER_WARPS = 8
+LEDGER_PHASES = ("job", "project", "row_load", "threshold", "levels", "bundle", "finish", "values")
+LEDGER_WARPS = 4
 
 
 def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurement instrument (docs/internals/produce/produce.md#phase-ledger)
-    """Bind the phase ledger the next launches book into, ``[jobs, 8, 9]`` int64 cycles, or ``None``."""
+    """Bind the phase ledger the next launches book into, ``[jobs, 4, 8]`` int64 cycles, or ``None``."""
     from rola.ops._ext import extension
 
     extension().rola_produce_ledger_bind(ledger)

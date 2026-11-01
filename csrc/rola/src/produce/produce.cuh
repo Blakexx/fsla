@@ -11,21 +11,26 @@
 namespace rola {
 namespace produce {
 
-constexpr int kProduceThreads = 256;
+constexpr int kProduceThreads = 128;
 constexpr int kProduceWarps = kProduceThreads / 32;
-//: A block's tokens: four MMA token groups. -- see docs/internals/produce/produce.md#accumulate
-constexpr int kTokenTile = 32;
-constexpr int kTokenGroups = kTokenTile / 8;
-//: Four lanes' 16-byte chunks: two MMA k-steps.
-constexpr int kKBlock = 32;
+//: A block's tokens: a warp's sixteen, two MMA n-tiles. -- see docs/internals/produce/produce.md#accumulate
+constexpr int kTokenTiles = 2;
+constexpr int kWarpTokens = 8 * kTokenTiles;
+constexpr int kTokenTile = kProduceWarps * kWarpTokens;
+//: One MMA k-step of hidden a stage.
+constexpr int kKStep = 16;
 //: A solve row's widest; a job holds two (a union's) or a value job's heads.
 constexpr int kMaxWidth = 256;
 constexpr int kMaxColumns = 2 * kMaxWidth;
-//: Four words past the columns: an accumulator store's 32 lanes hit 32 banks.
-constexpr int kLogitStride = kMaxColumns + 4;
-constexpr int kLogitBytes = kTokenTile * kLogitStride * static_cast<int>(sizeof(float));
-//: Where a sliced projection's partials sit in each token row: past the columns a sliced job has (at most 64).
-constexpr int kPartialBase = 64;
+//: A warp's accumulators: 16 column tiles of its 16 tokens. -- see docs/internals/produce/produce.md#form
+constexpr int kAccTiles = 16;
+constexpr int kWarpColumns = kAccTiles * 16;
+//: A stage: at most 16 KB of weights and 8 KB of x rows, two in flight. -- see docs/internals/produce/produce.md#stage
+constexpr int kStageWeights = kMaxColumns * kKStep * 2;
+constexpr int kStageX = kTokenTile * 4 * kKStep * 2;
+constexpr int kStageSlot = kStageWeights + kStageX;
+constexpr int kStages = 2;
+constexpr int kProduceSmem = kStages * kStageSlot;
 //: The threshold's Newton steps at most: rows of every measured distribution settle in 8 or fewer.
 constexpr int kNewtonSteps = 16;
 
@@ -55,7 +60,6 @@ enum SolveKind : int { kSoftmax = 0, kEntmax15 = 1, kEntmax20 = 2, kUnion15 = 3,
 enum ProducePhase : int {
   kPhaseJob,
   kPhaseProject,
-  kPhaseBarrier,
   kPhaseRowLoad,
   kPhaseThreshold,
   kPhaseLevels,

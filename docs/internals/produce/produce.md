@@ -12,9 +12,12 @@ same call is the fp64 and host reference, and until the native backward the path
 
 The components land one at a time into the skeleton, each gated (KERNEL_STANDARDS §19); a component not yet landed
 has its real signature, tenant and edges and does the cheapest thing that keeps the composition's shape (zero digits
-and scales, unit gains). LANDED: every component -- the projection, the solve, the bundle, the values. `tests/integration/test_produce_kernel.py` holds the skeleton's
-claim (every element of every output is written, whatever the routing, and the arrival counters are back at zero
-after the call) and each landed component's gate.
+and scales, unit masses and gains). THE REGISTER-RESIDENT REBUILD: LANDED the projection into
+the accumulators; STUBS the solve, the bundle and the values (`stub_rows`, `stub_values`: zero rows and scales, unit
+masses), which R3 lands on the accumulators one at a time -- the section on a token's row below is the form being
+ported. `tests/integration/test_produce_kernel.py` holds the skeleton's claim (every element of every output is
+written, whatever the routing, and the arrival counters are back at zero after the call) and each landed component's
+gate.
 
 ## <a id="jobs"></a>The job table
 
@@ -30,48 +33,41 @@ A ROUTE job is one head's one solve: a union level's two logit rows (read and wr
 both planes, or one side of an independent level. A VALUE job is the heads whose channels fit one job (`256 / d_v`
 of them, at most `kMaxColumns` channels). A row is at most `kMaxWidth` leaves: the widest a warp solves.
 
-THE GRID is token tiles of `kTokenTile` tokens by jobs, the tiles fastest: the blocks resident together are one job's
-tiles, so at prefill its weights are read from DRAM once and served to the rest from L2.
+<a id="grid"></a>THE GRID is token tiles of `kTokenTile` (64) tokens by jobs, the tiles fastest: the blocks resident together
+are one job's tiles, so at prefill its weights are read from DRAM once and served to the rest from L2. A block is 4
+warps; two blocks an SM (`__launch_bounds__(128, 2)`, so up to 255 registers a thread: a warp's 128 accumulators and
+its working set without spilling; the carveout set to shared), so one block's solve runs beside the other's MMAs.
 
 ## <a id="accumulate"></a>The projection
 
-The job's columns for the tile's tokens, fp32 (+ the routing's bias), into the block's logit rows in dynamic shared
-memory -- `kTokenTile` rows of `kLogitStride` words, four past `kMaxColumns` so an accumulator store's 32 lanes land
-in 32 banks. For a route job the columns are the solve's logit rows (both of a union's, gathered from their two
-`route_W` spans); for a value job its heads' channels.
+The job's columns for the block's tokens, fp32, into REGISTERS: the MMA's M is the job's columns (16-column tiles) and
+its N a warp's 16 tokens in two n-tiles (`m16n8k16` bf16 with fp32 accumulate), so each weight fragment feeds two
+MMAs; a lane holds, a column tile and an n-tile, two columns (`g`, `g + 8`) for two tokens (`2t`, `2t + 1`), and a
+token's row lies across the 8 lanes sharing `lane & 3` -- 32 values a lane at 256 columns, four tokens a lane, a row
+reduction three shuffles. Nothing passes through shared memory but the operands.
 
-THE PRODUCT IS TRANSPOSED onto the tensor cores: the job's COLUMNS are the MMA's M (a 16-column tile) and the tile's
-TOKENS its N (four groups of eight), `m16n8k16` bf16 with fp32 accumulate. Both weights are read along the hidden
-axis, which the kernel takes contiguous (`route_W` through `rola.ops.produce.hidden_contiguous`; a linear's weight
-already is): a column's hidden run and a token's row of `x` are each loaded straight into registers in 16-byte chunks,
-four lanes a 64-byte run, and the chunks ARE the fragments. The MMA pairs k elements in a register in a fixed slot
-order; the chunk holds eight consecutive k, so the kernel permutes the MMA's k order to the chunk's -- slot pairs
-`(2q, 2q+1)` and `(2q+8, 2q+9)` take the chunk's elements 0-1 and 2-3 in the first k-step, 4-5 and 6-7 in the second
--- the same permutation on both operands, which leaves the sum unchanged. A k-block is 32 hidden elements (four
-lanes' chunks, two k-steps); two k-blocks are in flight a warp. A chunk past the hidden size (which the host requires
-to be a multiple of 8) loads nothing and contributes zeros, as does a column past the job's or a token past the call's.
+<a id="form"></a>A JOB'S FORM is its column count against one warp's 16 tiles (`kWarpColumns`, 256): a one-row job (a
+split, tied or independent side, a union whose two rows fit, a value job's heads) is every warp's whole row for its 16
+tokens, the tiles in the job's class (1, 2, 4, 8 or 16, chosen once a block by `common/structure_switch.cuh`'s `uniform_switch`), 64 tokens a block;
+a WIDE union (two rows past 256 columns) is a warp PAIR a token group -- warp `2j + h` columns `128 h ..` of both rows,
+eight tiles a row, so each warp holds both rows of the same columns and forms their midpoint and difference in its own
+registers -- in two 32-token passes, the threshold's row sums crossing the pair.
 
-THE K-LOOP IS A BURST (`common/burst.cuh`, KERNEL_STANDARDS §24): a k-block's chunks are one operand set, the next
-set's loads issue before the current set's MMAs, and nothing data-dependent sits inside. What varies is decided once
-a block, outside it, by `csrc/rola/src/common/structure_switch.cuh`'s `uniform_switch`: the warps' share (below) and the tile's LIVE TOKEN GROUPS (1, 2 or 4; three
-round up to four, which only a call's last tile can be) -- nine bodies. So tokens not present cost no MMA: at one
-decoded token the projection is the weight stream plus one group's MMAs; at prefill every group is live and each
-weight chunk feeds 32 dot products.
-
-<a id="tiling"></a>THE WARPS' SHARE (`tiling`) is a function of the job's column count alone: `per_warp` column tiles
-a warp (1, 2 or 4), `groups` warps across the columns, and, where the columns alone would leave warps idle (at most four groups), `slices` warps
-across the hidden axis. A sliced job's warps write their partials past the job's columns in each token row
-(`kPartialBase`), and one pass sums them in slice order -- the same logits on every run.
-
-The bias is read once per column a lane owns, by a predicated load: the element stores are predicated, never a branch
-around a load (measured at 2050 of 5300 cycles of one k-block's projection before).
-
-MEASURED (sm_86 RTX 3080 Ti, 816 GB/s copy; widths (256, 256) union, hidden 256, d_v 64, other components stubs, a
-CUDA graph of launches): one SM streams at most ~32 B/clk (a stand-alone probe: 8 rows x 64 B a warp load or 512
-contiguous bytes, the latter ~15 % faster), and 36 SMs at most ~700 GB/s (each SM's outstanding misses cap its share),
-so at one token the projection is the weight stream at the design's CTA count: H 16 16.0 us (8.9 MB), H 32 25.9 us;
-H 4 is one SM's stream of its 256 KB job, 9.9 us. At T = 4096 (H 16) 964 us, 38 TFLOP/s: the 32-token tile's MMAs
-against a 68 TFLOP/s peak, the stub epilogues included.
+<a id="stage"></a>THE STAGE is `S` k-steps (16 hidden each) of every column the job holds and of the tile's x rows, staged
+once a block and read by every warp (the weights' one read a block). Its depth is the job's class: two k-steps at 128
+or 256 columns, four at 64 or fewer, one for a wide union's 512 -- so a narrow job still runs eight or more MMAs a
+warp between barriers -- within 16 KB of weights and 8 KB of x rows. A row is 32 S bytes in 16-byte chunks, chunk `c`
+at `c` XOR the row's swizzle (`chunk_at<S>`: `(row >> 2) & 1`, `(row >> 1) & 3`, `row & 7` at one, two and four
+k-steps), so an `ldmatrix`'s eight rows at one chunk lie in eight bank groups at every depth -- A by `ldmatrix.x4` a
+column tile, B by `ldmatrix.x4` the warp's 16 tokens, one wavefront a matrix, the copies four wavefronts a warp
+(`tools/bank_model.py`). Each thread's copy sources are formed once a job as 32-bit element offsets (`Sources`, the
+host bounding x and the weights under 2^32 elements); a stage is one `cp.async` group of every thread (`stage_step`),
+a chunk past the hidden size zero-filled and a column past the job's never issued (only dead accumulators read it).
+Two stages (`kProduceSmem`, 48 KB a block, two blocks ~98 KB of sm_86's 100): at a stage's barrier its copy has
+landed and the other is released, and its refill issues there, a stage ahead of its MMAs (`k_loop`,
+KERNEL_STANDARDS 4's sm_80 form). The routing bias SEEDS the accumulators before the loop (`seed_bias`, a predicated
+load a column, while no accumulator is live); the logit probe is written from them after it (`probe_logits`).
+A warp whose tokens are past the call's multiplies zeros: at prefill only a call's last tile has such warps.
 
 ## <a id="route-row"></a>A token's row
 
@@ -132,14 +128,9 @@ cycles an instruction there, ncu's no-instruction stall the top one); the sorted
 sorted order) does not carry over -- these sum in lane order, deterministic run to run; the gate is per slot against
 fp64.
 
-<a id="phase-ledger"></a>THE PHASE LEDGER (`rola.ops.produce.ledger_bind`, `[jobs, 8 warps, 9 phases]` int64 cycles,
-booked over the tiles): job, project, barrier, row load, threshold, levels, bundle, finish, values -- a warp's cycles
-between the kernel's laps (`common/phase_clock.cuh`). MEASURED (the same card, one launch, widths (256, 256), a route
-job's warp 0 a tile): at one token H 16, project 27.7K (the weight stream under 36 CTAs), row load 3.6K, threshold
-2.7K, levels 5.9K, bundle 2.4K (the skeleton's stores), finish 1.3K; at T = 4096, a tile of 32 rows, project 24.2K,
-row load 3.9K, threshold 4.3K, levels 10.4K, bundle 5.3K. The row load and the levels are straight-line code (cold
-at one token), and at prefill the solve's special-function and latency chains sit beside the projection without
-overlapping it (one CTA an SM): the next levers, priced when the bundle's form lands.
+<a id="phase-ledger"></a>THE PHASE LEDGER (`rola.ops.produce.ledger_bind`, `[jobs, 4 warps, 8 phases]` int64 cycles,
+booked over the tiles): job, project, row load, threshold, levels, bundle, finish, values -- a warp's cycles
+between the kernel's laps (`common/phase_clock.cuh`).
 
 ## <a id="finish"></a>The head's finish
 
