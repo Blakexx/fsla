@@ -41,8 +41,14 @@ def _windows(cell) -> int:
     return -(-cell.tokens // window_of())
 
 
+def _heads(cell) -> int:
+    """The query heads a call reads: the write heads times each one's group."""
+    return cell.heads * max(cell.group, 1)
+
+
 def units(target: Target, cell) -> int:
-    """The launch's count of the budget's unit on a cell (one batch row, one write head, as the central cells draw)."""
+    """The launch's count of the budget's unit on a cell: one batch row, the cell's write heads (each read by its
+    group's query heads)."""
     import phase_ledger
 
     if target.family == "carry":
@@ -50,7 +56,7 @@ def units(target: Target, cell) -> int:
     if target.family == "den":
         from rola.ops import den as den_ops
 
-        return math.prod(cell.widths) // (den_ops.ROWS * den_ops.SPAN) * _windows(cell) * max(cell.group, 1)
+        return math.prod(cell.widths) // (den_ops.ROWS * den_ops.SPAN) * _windows(cell) * _heads(cell)
     if target.family == "intra":
         from rola.ops import intra as intra_ops
         from rola.ops.window import window_of
@@ -60,8 +66,8 @@ def units(target: Target, cell) -> int:
         cols = intra_ops.block_rows(0) // 2
         groups = window_of() // 16
         pairs = sum(r // 4 + 1 for r in range(groups)) * (64 // cols)
-        return pairs * _windows(cell) * max(cell.group, 1)
-    return _windows(cell)
+        return pairs * _windows(cell) * _heads(cell)
+    return _windows(cell) * cell.heads
 
 
 def function(target: Target, cell) -> str:

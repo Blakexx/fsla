@@ -48,13 +48,13 @@ def judge(cell: str, per_phase: dict[str, float], budget: Path) -> bool:
 
 
 def ctas(cell: str) -> int:
-    """The launch's CTAs: the carve's boxes (one batch-head: a registry cell draws one)."""
+    """The launch's CTAs: the carve's boxes a write head, times the heads the cell draws (one batch row)."""
     from measure.cells import by_name
     from measure.subjects import cell_carve
 
     spec = by_name(cell)
     carve = cell_carve(spec)
-    return (spec.dv // carve.channels) * math.prod(w // e for w, e in zip(carve.widths, carve.extents))
+    return (spec.dv // carve.channels) * math.prod(w // e for w, e in zip(carve.widths, carve.extents)) * spec.heads
 
 
 def cta_windows(cell: str) -> int:

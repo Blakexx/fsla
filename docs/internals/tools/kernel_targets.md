@@ -13,8 +13,8 @@ and the budget's unit.
 | `intra` | `intra_forward` | warp tile pairs (a warp's 16 readers against a writer tile at or before theirs) |
 | `facts` | `facts_pass` | windows |
 
-`units(target, cell)` is the launch's count of the unit from the cell's record alone (one batch row and write head, as
-the central cells draw); `function(target, cell)` the instantiation the cell launches, as the region ledger's regex
+`units(target, cell)` is the launch's count of the unit from the cell's record alone (one batch row, the cell's write
+heads, each read by its group's query heads); `function(target, cell)` the instantiation the cell launches, as the region ledger's regex
 over the cubin's mangled names: the den's form by the cell's declared sparsity, the intra's depth and the card's
 accumulation (`rola.ops.carry.readout_accumulate`).
 
