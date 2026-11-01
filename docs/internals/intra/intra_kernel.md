@@ -181,8 +181,11 @@ in the straight-line form slab by slab, in the slab loop two slabs a trip with t
 * **a u8 side:** `ldmatrix` gives a lane four consecutive digits of a row, `4t .. 4t + 3`, which no `ldmatrix` pattern
   gives an f16 fragment. The u8 fragment's order is the level's: slots `2t, 2t + 1` take digits `4t, 4t + 1`, slots
   `2t + 8, 2t + 9` take `4t + 2, 4t + 3`, and the f16 side is read in it -- a writer's by one 64-bit read an n-tile
-  (both B words in one load), a reader's by four 32-bit reads a k-step (each into the A register it fills: two 64-bit
-  reads would land the fragment's words out of register order and cost a move each).
+  (both B words in one load), a reader's by two 64-bit reads a k-step, rows `g` and `g + 8` (words `0, 2` and `1, 3`
+  of the fragment). Each is a half-warp's pair read, one wavefront a phase (the swizzle). Four 32-bit reads cost two
+  each: a read's 32 lanes take the words at bytes `0` and `8` (or `4` and `12`) of a chunk, the sixteen even (or odd)
+  banks, so eight rows hold each bank twice under any swizzle. The pair read lands the fragment's middle words
+  swapped; the floor trick's rescale writes the A registers in order.
 
 The level's Gram accumulates in fp16 pairs or fp32 by the arm, zeroed before the level's stages and folded after
 (`fold_level`): the first level lifted to digit units by an exact power of two, each later one multiplied in.
@@ -202,10 +205,11 @@ Each level's Gram is the MMA its form's operands want (ruled 2026-11-01):
   digits become two f16 pairs, exactly, in registers as they are used -- never in shared memory, which would double a
   u8 level's rows. At fp32 accumulation a digit enters as the f16 subnormal `d · 2^-24` -- the byte alone under a zero
   byte, one `prmt` a pair -- and the products are exact in the fp32 sums (the tensor cores keep f16 subnormal inputs).
-  At fp16 accumulation an f16 READER against a u8 WRITER (the u8 side widened every MMA) takes THE FLOOR TRICK: the
-  writer's digits the same free subnormals and the reader's f16 times 2^15 once a k-step (`hmul2`), so a product is
-  `a d 2^-9` -- within `[2^-22, 2^-1]` by the floor, under 128 summed over a 256-digit level, its weakest products
-  subnormal but at least 2^-13 below their row's strongest. A u8 READER against an f16 writer widens only A, once a
+  An f16 READER against a u8 WRITER (the u8 side widened every MMA) takes THE FLOOR TRICK at either accumulation: the
+  writer's digits the same free subnormals and the reader's f16 times 2^15 once a k-step (`hmul2`, exact), so a
+  product is `a d 2^-9` -- within `[2^-22, 2^-1]` by the floor, under 128 summed over a 256-digit level, its weakest
+  products subnormal but at least 2^-13 below their row's strongest. The rescale also writes the A registers in
+  order from the pair reads; at fp32 without it ptxas rebuilt each fragment by moves, ~two an MMA. A u8 READER against an f16 writer widens only A, once a
   k-step, and keeps `d / 16` (`prmt` under `0x54`, one `hfma2` less 64, exact): the scale under which a level's Gram
   stays within f16 at any support (`256 · 255 / 16 < 65,504`).
 * **f16 x f16:** the natural MMA, no widening.

@@ -241,6 +241,7 @@ timing session:
 | `counters` | [`tools/pipe_counters.py`](internals/tools/pipe_counters.md) | the profiler's pipe and resource counters |
 | `census` | [`tools/stall_census.py`](internals/tools/stall_census.md) | every warp-stall sample, by source line |
 | `timeline` | [`tools/pipe_timeline.py`](internals/tools/pipe_timeline.md) | the pipes' activity over a launch |
+| `phases-den`, `counters-den`, `census-den`, `counters-intra`, `census-intra` | the same tools' `--kernel` ([`tools/kernel_targets.py`](internals/tools/kernel_targets.md)) | the den pass's and the intra's launches, on the cells of 16K tokens and more |
 | `roofline` | `tools/roofline.py` | the intra's time beside the device's u8 IMMA ceiling |
 | `oracle-tier` | the oracle battery | the counts, the failed cases, the margins |
 

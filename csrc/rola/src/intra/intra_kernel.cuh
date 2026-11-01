@@ -205,8 +205,8 @@ struct SlabFrags {
 };
 
 //: A SLAB'S LOADS, each landing in the registers its MMA reads: ldmatrix for a u8 operand and for both of a natural
-//: level; for the f16 reader of a u8 writer four 32-bit reads a k-step, for the f16 writer of a u8 reader a 64-bit read
-//: an n-tile
+//: level; for the f16 reader of a u8 writer a 64-bit read a row (g, g + 8) a k-step, for the f16 writer of a u8 reader
+//: one an n-tile -- a half-warp's pair reads one wavefront. -- see docs/internals/intra/intra_kernel.md#gram
 template <int F>
 __device__ __forceinline__ void load_slab(const Lanes& ln, int rc, uint32_t buf, SlabFrags<F>& fr,
                                           int S) {
@@ -224,10 +224,10 @@ __device__ __forceinline__ void load_slab(const Lanes& ln, int rc, uint32_t buf,
     for (int k = 0; k < 2; ++k) {
       const uint32_t at =
           static_cast<uint32_t>(((rc + 2 * (2 * S + k) + ln.f_h) ^ ln.f_swz) << 4) + ln.f_off;
-      fr.a[4 * k] = ops::load_shared_u32(ln.f_row + at);
-      fr.a[4 * k + 1] = ops::load_shared_u32(ln.f_row8 + at);
-      fr.a[4 * k + 2] = ops::load_shared_u32(ln.f_row + at + 4);
-      fr.a[4 * k + 3] = ops::load_shared_u32(ln.f_row8 + at + 4);
+      const uint2 lo = ops::load_shared_u64(ln.f_row + at),
+                  hi = ops::load_shared_u64(ln.f_row8 + at);
+      fr.a[4 * k] = lo.x, fr.a[4 * k + 2] = lo.y;
+      fr.a[4 * k + 1] = hi.x, fr.a[4 * k + 3] = hi.y;
     }
   }
 
@@ -270,9 +270,9 @@ __device__ __forceinline__ void mma_slab(const SlabFrags<F>& fr, Acc<kF16>& acc)
     return;
   }
 
-  //: THE FLOOR TRICK, an f16 reader against a u8 writer at fp16 accumulate: the writer's digits the free subnormals
-  //: `d 2^-24`, the reader's floored f16 (>= 2^-13 of its row's max) times 2^15, so a product is `a d 2^-9`
-  constexpr bool kFloored = kF16 && F == kFormF16U8;
+  //: THE FLOOR TRICK, an f16 reader against a u8 writer: the writer's digits the free subnormals `d 2^-24`, the
+  //: reader's floored f16 (>= 2^-13 of its row's max) times 2^15 into the A registers in order, a product `a d 2^-9`
+  constexpr bool kFloored = F == kFormF16U8;
   constexpr uint32_t kTwo15 = 0x78007800u;
   uint32_t a[2][4];
   if constexpr (!form_read_f16(F)) {
