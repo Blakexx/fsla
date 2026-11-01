@@ -143,17 +143,18 @@ def _resolver(lines: list[tuple[int, str, str, str]], labels: dict[str, int]):
 
 def mma_loops(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> list[tuple[int, int]]:
     """The innermost loops that issue MMAs, as (first line, backward branch): a loop a backward branch, its body the
-    lines from its target to it, innermost when no other backward branch lies inside. Targets resolve as
-    `convergence_calls`' do."""
+    lines from its target to it, innermost when no other loop that issues MMAs lies inside. A loop inside it that
+    issues none -- a compare-and-swap spin (sm_80/86's shared fp32 add), a one-trip guard -- is part of its body, read
+    once. Targets resolve as `convergence_calls`' do."""
     resolve = _resolver(lines, labels)
     back = []
     for k, (_, opcode, operands, predicate) in enumerate(lines):
         target = resolve(operands) if opcode == "BRA" and predicate != _NEVER else None
         if target is not None and target <= k:
             back.append((target, k))
-    return [(target, k) for target, k in back
-            if not any(target <= t and kk < k for t, kk in back if (t, kk) != (target, k))
-            and any(_MMA.match(x[1]) for x in lines[target:k + 1])]
+    mma = [(t, k) for t, k in back if any(_MMA.match(x[1]) for x in lines[t:k + 1])]
+    return [(target, k) for target, k in mma
+            if not any(target <= t and kk < k for t, kk in mma if (t, kk) != (target, k))]
 
 
 def mma_gap(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> tuple[int, int]:

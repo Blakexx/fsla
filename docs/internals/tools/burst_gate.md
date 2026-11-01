@@ -46,7 +46,10 @@ in 1,170 of pipe time and is pipe-bound anyway.
 
 This is a READING of the loops `--loop FILE:FUNCTION` names. The gate on the same model is the SASS gate's STEP
 COVER (KERNEL_STANDARDS §32): every innermost MMA loop of every kernel, found by its backward branch rather than by
-name, held at a line and its debts at their floors (`tools/budgets/step_floors.json`). The floors this gate kept
+name -- innermost among the loops that issue MMAs: a loop inside it that issues none (a shared fp32 add's
+compare-and-swap spin on sm_80/86, an mbarrier wait, a one-trip guard) is part of its body, read once -- held at a
+line and its debts at their floors (`tools/budgets/step_floors.json`). Until 2026-11-01 any backward branch inside
+hid a loop: the den's and the fp16 intra's steps were never read. The floors this gate kept
 named two loops (`frag_mma`, `readout_tile`) the carry's rebuild deleted; nothing failed, and they were removed
 2026-10-16 with the rule that a target the tree no longer has is red.
 

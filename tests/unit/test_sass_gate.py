@@ -137,6 +137,20 @@ def test_the_classifier_reds_an_unguarded_call_and_counts_a_guarded_one():
     assert sass_gate.convergence_calls(reached, {}) == (1, 0)
 
 
+def test_a_loop_without_mmas_inside_an_mma_loop_is_its_body_and_hides_nothing():
+    """The step cover's loops: an MMA loop holding a compare-and-swap spin (sm_80/86's shared fp32 add) is still the
+    innermost MMA loop, the spin read as one trip of its body; a loop holding an inner MMA loop is not one. Until
+    2026-11-01 any backward branch inside hid the loop, and the den's and the intra's steps were never read."""
+    spin = [(0x0, "LDS", "R4, [R2]", ""), (0x10, "HMMA.16816.F32", "R8, R4, R6, R8", ""),
+            (0x20, "LDS", "R9, [R3]", ""), (0x30, "FADD", "R10, R9, R8", ""),
+            (0x40, "ATOMS.CAST.SPIN", "R10, [R3], R9, R10", ""), (0x50, "ISETP.EQ.U32.AND", "P3, PT, R10, 0x1, PT", ""),
+            (0x60, "BRA", "0x20", "@!P3"), (0x70, "BRA", "0x0", "@P1"), (0x80, "EXIT", "", "")]
+    assert sass_gate.mma_loops(spin, {}) == [(0, 7)]
+    nested = [(0x0, "MOV", "R1, R2", ""), (0x10, "HMMA.16816.F32", "R8, R4, R6, R8", ""),
+              (0x20, "BRA", "0x10", "@P1"), (0x30, "BRA", "0x0", "@P2"), (0x40, "EXIT", "", "")]
+    assert sass_gate.mma_loops(nested, {}) == [(1, 2)]
+
+
 def test_a_branch_inside_an_mma_step_is_counted_and_one_outside_it_is_not():
     """KERNEL_STANDARDS 27 on the lines: a loop (a backward branch) holding an HMMA counts its convergence barriers and
     forward conditional branches; an outer loop's branches around an inner MMA loop do not count, nor a loop with no
