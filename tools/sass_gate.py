@@ -258,14 +258,19 @@ def step_cover(cubin: Path, name: str, lines: list[tuple[int, str, str, str]], l
     grain = -(-registers // 8) * 8
     warps = max(1, _PARTITION_REGISTERS // (grain * 32)) if registers else 1
     worst = None
+    each = []
     for target, k in loops:
         body = [(a, *encoded[a]) for a, _, _, _ in lines[target:k + 1] if a in encoded]
         c = burst_gate.coverage(body, mach, arch)
         c["cover"] = round(min(100.0, c["occupancy"] * warps), 1)
         c["warps"] = warps
+        each.append({"first": lines[target][0], "last": lines[k][0], "instr": k - target + 1,
+                     "hmma": sum(1 for x in lines[target:k + 1] if _MMA.match(x[1])),
+                     **{key: c[key] for key in ("cover", "period", "pipe", "exposed", "worst")}})
         if worst is None or c["cover"] < worst["cover"]:
             worst = c
     worst["loops"] = len(loops)
+    worst["each"] = each
     worst["key"] = f"{arch} {name}"
     return worst
 
@@ -346,7 +351,8 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
                        "mma_loop_branches": branches, "mma_gap": gap, "mma_gap_around": around,
                        "step_xu": xu, "step_global": memory, "registers": registers,
                        "step_cover": None if cover is None else {k: cover[k] for k in (
-                           "cover", "occupancy", "warps", "period", "pipe", "exposed", "worst", "loops", "key")},
+                           "cover", "occupancy", "warps", "period", "pipe", "exposed", "worst", "loops", "key",
+                           "each")},
                        "reds": reds}
         short = name[:70]
         report.append(f"{'RED ' if reds else 'ok  '} {short}: instr {n} hmma {hmma} per-hmma {per:.1f} "
@@ -355,7 +361,32 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
                       + ("" if cover is None else f" step-cover {cover['cover']}% (alone {cover['occupancy']}% x "
                                                   f"{cover['warps']} warps, exposed {cover['exposed']})")
                       + (" :: " + "; ".join(reds) if reds else ""))
+        if LOOPS:
+            report.extend(loop_report(whole[name], labels[name], cover))
     return ok, "\n".join(report)
+
+
+#: `--loops`: each function's report is followed by each innermost MMA loop's reading and the lines its lints count
+LOOPS = False
+
+
+def loop_report(lines: list[tuple[int, str, str, str]], labels: dict[str, int], cover: dict | None) -> list[str]:
+    """Each innermost MMA loop of a function: its span, its instructions and MMAs, its step cover alone and the
+    stalls the model exposes, then each line inside it that a step lint counts -- a branch or convergence barrier, the
+    conversion unit, global memory other than `cp.async`."""
+    resolve = _resolver(lines, labels)
+    out = []
+    for (target, k), c in zip(mma_loops(lines, labels), (cover or {}).get("each", [])):
+        out.append(f"     loop {c['first']:#x}-{c['last']:#x}: {c['instr']} instr, {c['hmma']} MMA, cover {c['cover']}% "
+                   f"(period {c['period']}, pipe {c['pipe']}, exposed {c['exposed']}) {c['worst']}")
+        for j in range(target, k + 1):
+            addr, op, ops, pred = lines[j]
+            forward = resolve(ops) if op == "BRA" and pred and pred != _NEVER else None
+            kind = sass.opcode_class(op)
+            if op == "BSSY" or (forward is not None and forward > j) or kind == "conversion unit" or (
+                    kind == "global" and not op.startswith("LDGSTS")):
+                out.append(f"       {addr:#06x} {pred + ' ' if pred else ''}{op} {ops}")
+    return out
 
 
 def missing_kernels(seen: set[str]) -> list[str]:
@@ -372,10 +403,14 @@ def main() -> int:
     ap.add_argument("--member", default=None, help="narrow to the cubins whose name holds this (a measurement)")
     ap.add_argument("--max-per-hmma", type=float, default=None)
     ap.add_argument("--json", type=Path, default=None, help="also write every function's signature here, by cubin")
+    ap.add_argument("--loops", action="store_true",
+                    help="after each function, each innermost MMA loop's reading and the lines its step lints count")
     ap.add_argument("--write-floors", action="store_true",
                     help="record each step-cover debt's worst reading as its floor (a ratchet: a later build may not "
                          "read lower)")
     a = ap.parse_args()
+    global LOOPS
+    LOOPS = a.loops
     allok = True
     doc = {}
     seen: set[str] = set()
