@@ -159,6 +159,10 @@ Every operation is defined by WHAT THE ALGORITHM NEEDS. A helper with no caller 
   zero register so the accumulator is not live before a sum's first step. On sm_86 one issues every 16 cycles a
   scheduler (8 on sm_80),
   four times the bf16 fp32-accumulate rate (probe of 2026-09-28).
+- <a id="sqrt-approx"></a>`sqrt_approx`: `sqrt.approx.f32`, one special-function instruction. The IEEE root (`sqrtf`)
+  compiles to a range check and a call to a slow-path subroutine, whose calling convention spills a body that holds
+  its registers full (the producer's register-resident threshold, at 252 live); the approximate root sits in the same
+  error class as the `__fdividef` beside it.
 - <a id="prmt"></a>`prmt`, `pack_byte4`: `prmt.b32` picks four of two words' eight bytes by a selector nibble each;
   `pack_byte4` takes the same byte of four words with three of them (pair selectors `0x0040`, `0x0051`, `0x0062`, then
   `0x5410`), which is how an int8 operand row is formed from four gathered words without shifts or masks.

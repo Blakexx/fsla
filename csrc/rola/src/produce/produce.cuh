@@ -60,7 +60,6 @@ enum SolveKind : int { kSoftmax = 0, kEntmax15 = 1, kEntmax20 = 2, kUnion15 = 3,
 enum ProducePhase : int {
   kPhaseJob,
   kPhaseProject,
-  kPhaseRowLoad,
   kPhaseThreshold,
   kPhaseLevels,
   kPhaseBundle,
@@ -72,7 +71,7 @@ enum ProducePhase : int {
 //: A JOB, its table row and its shape word decoded. -- see docs/internals/produce/produce.md#jobs
 struct Job {
   int kind, solve, rows, reads, writes, head, heads, width, in0, in1, out_read, out_write, level,
-      fold_read, fold_write;
+      fold_read, fold_write, tiles, pair;
 };
 
 //: THE OPERANDS, as addresses: every tensor the host entry validated, with the strides it read off them.

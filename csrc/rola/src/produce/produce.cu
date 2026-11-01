@@ -40,7 +40,8 @@ __device__ __forceinline__ Job load_job(const ProduceParams& p, int index) {
   return Job{(shape >> 5) & 1, shape & 7,        (shape >> 3) & 3,   (shape >> 6) & 1,
              (shape >> 7) & 1, row[kFieldHead],  row[kFieldHeads],   row[kFieldWidth],
              row[kFieldIn0],   row[kFieldIn1],   row[kFieldOutRead], row[kFieldOutWrite],
-             row[kFieldLevel], (shape >> 8) & 1, (shape >> 9) & 1};
+             row[kFieldLevel], (shape >> 8) & 1, (shape >> 9) & 1,   (shape >> 10) & 7,
+             (shape >> 13) & 1};
 }
 
 //: A job's projection columns: a route job's row (both rows of a union's), or a value job's heads' channels.
@@ -80,9 +81,7 @@ __device__ __forceinline__ uint32_t chunk_at(int row, int c) {
 
 //: A JOB'S FORM: its columns in one warp's accumulators (a one-row job, a narrow union's both rows, a value job's
 //: heads), or a wide union's halves across a warp pair. -- see docs/internals/produce/produce.md#form
-__device__ __forceinline__ bool pair_form(const ProduceParams& p, const Job& job) {
-  return job_columns(p, job) > kWarpColumns;
-}
+__device__ __forceinline__ bool pair_form(const Job& job) { return job.pair != 0; }
 
 //: THE JOB'S WEIGHT BASE, uniform a block: its head's routing columns or its heads' value channels.
 __device__ __forceinline__ const __nv_bfloat16* weight_base(const ProduceParams& p,
@@ -252,128 +251,186 @@ __device__ __forceinline__ float warp_all(float v, Op op) {
   return v;
 }
 
-//: SOFTMAX over a row's members; returns the row's max, the top element's own quotient.
-template <int IPT>
-__device__ __forceinline__ float softmax_row(const float (&z)[IPT], uint32_t members,
-                                             float (&p)[IPT]) {
-  float m = -INFINITY;
+//: A ROW'S VALUE REDUCED over the 8 lanes holding it (those sharing `lane & 3`): three shuffles, every lane the same
+//: bits. -- see docs/internals/produce/produce.md#solve
+template <class Op>
+__device__ __forceinline__ float row_all(float v, Op op) {
 #pragma unroll
-  for (int i = 0; i < IPT; ++i) m = (members >> i) & 1u ? fmaxf(m, z[i]) : m;
-  m = warp_all(m, [](float a, float b) { return fmaxf(a, b); });
-  float sum = 0.0f;
-#pragma unroll
-  for (int i = 0; i < IPT; ++i) {
-    p[i] = (members >> i) & 1u ? __expf(z[i] - m) : 0.0f;
-    sum += p[i];
-  }
-  sum = warp_all(sum, [](float a, float b) { return a + b; });
-#pragma unroll
-  for (int i = 0; i < IPT; ++i) p[i] = __fdividef(p[i], sum);
-  return __fdividef(1.0f, sum);
+  for (int offset = 4; offset < 32; offset <<= 1)
+    v = op(v, __shfl_xor_sync(0xffffffffu, v, offset));
+  return v;
 }
 
-//: THE ALPHA-ENTMAX THRESHOLD BY NEWTON FROM THE LEFT (alpha 1.5 or 2): `z` shifted by the row max in place.
-//: `f(tau) = sum g(z - tau) - 1` is convex and decreasing, so Newton from `tau = -2` (alpha 2: `-1`), where `f >= 0`,
-//: never passes the root; the closed form on the support `{z > lo}` is the root once no member lies below it (the
-//: formula the sorted solve evaluates at its chosen rank). A vote ends the loop. -- see docs/internals/produce/produce.md#threshold
-template <int IPT, bool ALPHA15>
-__device__ __forceinline__ float newton_threshold(float (&z)[IPT], uint32_t members) {
-  float m = -INFINITY;
-#pragma unroll
-  for (int i = 0; i < IPT; ++i) m = (members >> i) & 1u ? fmaxf(m, z[i]) : m;
-  m = warp_all(m, [](float a, float b) { return fmaxf(a, b); });
-#pragma unroll
-  for (int i = 0; i < IPT; ++i) z[i] = (members >> i) & 1u ? z[i] - m : 0.0f;
-  float lo = ALPHA15 ? -2.0f : -1.0f, tau = 0.0f;
+//: A LANE'S FOUR TOKEN ROWS: slot `S` the n-tile `S >> 1`'s token `S & 1`, value `V` the column tile `V >> 1`'s row half
+//: `V & 1` -- an accumulator, named. -- see docs/internals/produce/produce.md#solve
+template <int S, int V>
+__device__ __forceinline__ float& row_value(float (&acc)[kAccTiles][kTokenTiles][4]) {
+  return acc[V >> 1][S >> 1][2 * (V & 1) + (S & 1)];
+}
+
+template <int S, int V>
+__device__ __forceinline__ float row_value(const float (&acc)[kAccTiles][kTokenTiles][4]) {
+  return acc[V >> 1][S >> 1][2 * (V & 1) + (S & 1)];
+}
+
+//: A lane's member columns, bit `v` its value `v`'s column `8 v + g` under `width`: the same for its four rows.
+__device__ __forceinline__ uint32_t row_members(int width, int lane) {
+  const int n = min(max((width - (lane >> 2) + 7) / 8, 0), 2 * kAccTiles);
+  return n == 32 ? 0xffffffffu : (1u << n) - 1u;
+}
+
+//: SOFTMAX on a lane's four rows of `M` column tiles, in place; `top` each row's largest level, its own quotient.
+template <int M>
+__device__ __forceinline__ void softmax_rows(float (&acc)[kAccTiles][kTokenTiles][4],
+                                             uint32_t members, float (&top)[4]) {
+  rola::static_for<4>([&](auto Sl) {
+    constexpr int s = decltype(Sl)::value;
+    float m = -INFINITY;
+    rola::static_for<2 * M>([&](auto V) {
+      constexpr int v = decltype(V)::value;
+      m = (members >> v) & 1u ? fmaxf(m, row_value<s, v>(acc)) : m;
+    });
+    m = row_all(m, [](float a, float b) { return fmaxf(a, b); });
+    float sum = 0.0f;
+    rola::static_for<2 * M>([&](auto V) {
+      constexpr int v = decltype(V)::value;
+      const float e = (members >> v) & 1u ? __expf(row_value<s, v>(acc) - m) : 0.0f;
+      row_value<s, v>(acc) = e;
+      sum += e;
+    });
+    sum = row_all(sum, [](float a, float b) { return a + b; });
+    rola::static_for<2 * M>([&](auto V) {
+      constexpr int v = decltype(V)::value;
+      row_value<s, v>(acc) = __fdividef(row_value<s, v>(acc), sum);
+    });
+    top[s] = __fdividef(1.0f, sum);
+  });
+}
+
+//: THE ALPHA-ENTMAX LEVELS (alpha 1.5 where `a15`, else 2: uniform, the shape word's) on a lane's four rows, in place, by Newton from the left: each row
+//: shifted by its max; `f(tau) = sum g(z - tau) - 1` convex and decreasing from `tau = -2` (alpha 2: `-1`), so a step
+//: never passes the root and the closed form on the support `{z > lo}` is the root once no member lies below it. One
+//: vote over the warp's 16 rows ends the loop (a settled row's further steps keep its threshold). `top` each row's
+//: largest level. -- see docs/internals/produce/produce.md#threshold
+template <int M>
+__device__ __forceinline__ void entmax_rows(float (&acc)[kAccTiles][kTokenTiles][4],
+                                            uint32_t members, bool a15, float (&top)[4],
+                                            Clock& clock) {
+  float lo[4], tau[4];
+  rola::static_for<4>([&](auto Sl) {
+    constexpr int s = decltype(Sl)::value;
+    float m = -INFINITY;
+    rola::static_for<2 * M>([&](auto V) {
+      constexpr int v = decltype(V)::value;
+      m = (members >> v) & 1u ? fmaxf(m, row_value<s, v>(acc)) : m;
+    });
+    m = row_all(m, [](float a, float b) { return fmaxf(a, b); });
+    rola::static_for<2 * M>([&](auto V) {
+      constexpr int v = decltype(V)::value;
+      row_value<s, v>(acc) = (members >> v) & 1u ? row_value<s, v>(acc) - m : 0.0f;
+    });
+    lo[s] = a15 ? -2.0f : -1.0f;
+    tau[s] = 0.0f;
+  });
+
 #pragma unroll 1
   for (int step = 0; step < kNewtonSteps; ++step) {
-    float k = 0.0f, P = 0.0f, Q = 0.0f;
-#pragma unroll
-    for (int i = 0; i < IPT; ++i) {
-      const bool in = ((members >> i) & 1u) && z[i] > lo;
-      k += in ? 1.0f : 0.0f;
-      P += in ? z[i] : 0.0f;
-      Q += in ? z[i] * z[i] : 0.0f;
-    }
-    k = warp_all(k, [](float a, float b) { return a + b; });
-    P = warp_all(P, [](float a, float b) { return a + b; });
-    Q = warp_all(Q, [](float a, float b) { return a + b; });
-    tau = ALPHA15 ? __fdividef(P - sqrtf(fmaxf(P * P - k * (Q - 4.0f), 0.0f)), k)
-                  : __fdividef(P - 1.0f, k);
+    //: settled: no member in (lo, tau) -- where tau > lo, the members at or past tau are all the support counted
     bool settled = true;
-#pragma unroll
-    for (int i = 0; i < IPT; ++i)
-      settled = settled && !(((members >> i) & 1u) && z[i] > lo && z[i] < tau);
+    rola::static_for<4>([&](auto Sl) {
+      constexpr int s = decltype(Sl)::value;
+      float k = 0.0f, P = 0.0f, Q = 0.0f;
+      rola::static_for<2 * M>([&](auto V) {
+        constexpr int v = decltype(V)::value;
+        const float z = row_value<s, v>(acc);
+        //: the square through the step's own member value, so no product of the step-invariant `z` is hoisted
+        const bool in = ((members >> v) & 1u) && z > lo[s];
+        const float zi = in ? z : 0.0f;
+        k += in ? 1.0f : 0.0f;
+        P += zi;
+        Q = fmaf(zi, z, Q);
+      });
+      const float here = k;
+      k = row_all(k, [](float a, float b) { return a + b; });
+      P = row_all(P, [](float a, float b) { return a + b; });
+      Q = row_all(Q, [](float a, float b) { return a + b; });
+      tau[s] = a15 ? __fdividef(P - ops::sqrt_approx(fmaxf(P * P - k * (Q - 4.0f), 0.0f)), k)
+                   : __fdividef(P - 1.0f, k);
+      float past = 0.0f;
+      rola::static_for<2 * M>([&](auto V) {
+        constexpr int v = decltype(V)::value;
+        past += ((members >> v) & 1u) && row_value<s, v>(acc) >= tau[s] ? 1.0f : 0.0f;
+      });
+      settled = settled && (tau[s] <= lo[s] || past == here);
+      lo[s] = a15 ? lo[s]
+                        + __fdividef((Q - 2.0f * P * lo[s] + k * lo[s] * lo[s]) * 0.25f - 1.0f,
+                                     0.5f * (P - k * lo[s]))
+                  : tau[s];
+    });
     if (__all_sync(0xffffffffu, settled)) break;
-    lo =
-        ALPHA15
-            ? lo + __fdividef((Q - 2.0f * P * lo + k * lo * lo) * 0.25f - 1.0f, 0.5f * (P - k * lo))
-            : tau;
   }
-  return tau;
-}
-
-//: THE SOLVE of one token's row, element `lane + 32 i` a lane's `i`th: the job's levels, fp32 (a one-sided solve fills
-//: both sides with its one level); a row past the live tokens solves zeros. Compact code on the special-function
-//: unit: the fp32 levels feed u8 digits. `top` is a one-activation row's max, its top element's own value
-//: (a union's sides are reduced). -- see docs/internals/produce/produce.md#solve
-template <int IPT>
-__device__ __forceinline__ void solve_row(const Job& job, float* row, bool live, int lane,
-                                          float (&read)[IPT], float (&write)[IPT], float& top,
-                                          Clock& clock) {
-  const int width = job.width;
-  const bool is_union = job.solve >= kUnion15;
-  float z[IPT], delta[IPT];
-  uint32_t members = 0u;
-#pragma unroll
-  for (int i = 0; i < IPT; ++i) {
-    const int col = lane + 32 * i;
-    const bool member = col < width;
-    members |= (member ? 1u : 0u) << i;
-    const float r = member && live ? row[col] : 0.0f;
-    const float w = member && live && is_union ? row[width + col] : 0.0f;
-    z[i] = is_union ? 0.5f * r + 0.5f * w : r;
-    delta[i] = is_union ? row_solve::overflow_free_delta(r, w, nullptr) : 0.0f;
-  }
-  __syncwarp();
-  clock.lap(kPhaseRowLoad);
-
-  if (job.solve == kSoftmax) {
-    top = softmax_row<IPT>(z, members, read);
-#pragma unroll
-    for (int i = 0; i < IPT; ++i) write[i] = read[i];
-    clock.lap(kPhaseLevels);
-    return;
-  }
-  const bool alpha15 = job.solve == kEntmax15 || job.solve == kUnion15;
-  const float tau =
-      alpha15 ? newton_threshold<IPT, true>(z, members) : newton_threshold<IPT, false>(z, members);
   clock.lap(kPhaseThreshold);
 
-  float values[IPT];
-  uint32_t support = 0u;
-#pragma unroll
-  for (int i = 0; i < IPT; ++i) {
-    const bool sup = ((members >> i) & 1u) && z[i] > tau;
-    support |= (sup ? 1u : 0u) << i;
-    float base = (alpha15 ? 0.5f : 1.0f) * (z[i] - tau);
-    base = sup ? fmaxf(base, 0.0f) : 0.0f;
-    values[i] = alpha15 ? base * base : base;
-    read[i] = is_union ? __fdividef(values[i], 1.0f + __expf(-delta[i])) : values[i];
-  }
-  if (!is_union) {
-    const float peak = fmaxf((alpha15 ? 0.5f : 1.0f) * (0.0f - tau), 0.0f);
-    top = alpha15 ? peak * peak : peak;
-#pragma unroll
-    for (int i = 0; i < IPT; ++i) write[i] = values[i];
-    clock.lap(kPhaseLevels);
-    return;
-  }
+  rola::static_for<4>([&](auto Sl) {
+    constexpr int s = decltype(Sl)::value;
+    rola::static_for<2 * M>([&](auto V) {
+      constexpr int v = decltype(V)::value;
+      const float z = row_value<s, v>(acc);
+      const bool sup = ((members >> v) & 1u) && z > tau[s];
+      const float base = sup ? fmaxf((a15 ? 0.5f : 1.0f) * (z - tau[s]), 0.0f) : 0.0f;
+      row_value<s, v>(acc) = a15 ? base * base : base;
+    });
+    const float peak = fmaxf((a15 ? 0.5f : 1.0f) * (0.0f - tau[s]), 0.0f);
+    top[s] = a15 ? peak * peak : peak;
+  });
+}
 
-  row_solve::union_write<32, IPT, true>(values, delta, support, 0xffffffffu);
-#pragma unroll
-  for (int i = 0; i < IPT; ++i) write[i] = delta[i];
+//: THE JOB'S SOLVED LEVELS from the accumulators, for its gate: a one-activation row is both sides' level (read at
+//: `[0, w)`, write at `[w, 2w)`) -- written only when the probe is asked for.
+template <class Token>
+__device__ __forceinline__ void probe_levels(const ProduceParams& p, int job_index, int width,
+                                             int lane, Token token,
+                                             const float (&acc)[kAccTiles][kTokenTiles][4]) {
+  if (p.level_probe == nullptr) return;
+  float* out = p.level_probe + static_cast<int64_t>(job_index) * p.BT * kMaxColumns;
+  rola::static_for<4>([&](auto Sl) {
+    constexpr int s = decltype(Sl)::value;
+    const int tk = token(s >> 1, s & 1);
+    rola::static_for<2 * kAccTiles>([&](auto V) {
+      constexpr int v = decltype(V)::value;
+      const int j = 16 * (v >> 1) + (lane >> 2) + 8 * (v & 1);
+      if (j < width && tk < p.BT) {
+        out[static_cast<int64_t>(tk) * kMaxColumns + j] = row_value<s, v>(acc);
+        out[static_cast<int64_t>(tk) * kMaxColumns + width + j] = row_value<s, v>(acc);
+      }
+    });
+  });
+}
+
+//: THE SOLVE of a one-row route job's rows on the accumulators: its activation, in its class of `M` column tiles; a
+//: union's split lands next (its levels zero meanwhile). -- see docs/internals/produce/produce.md#solve
+__device__ __forceinline__ void solve_one_row(const ProduceParams& p, const Job& job, int job_index,
+                                              int token0, int warp, int lane,
+                                              float (&acc)[kAccTiles][kTokenTiles][4],
+                                              Clock& clock) {
+  //: the row's class and the activation are the shape word's (warp-uniform to ptxas); a union's split lands next
+  if (job.solve >= kUnion15) return;
+  const uint32_t members = row_members(job.width, lane);
+  float top[4];
+  rola::uniform_switch<4>(job.rows, [&](auto R) {
+    constexpr int M = 2 << decltype(R)::value;
+    if (job.solve == kSoftmax)
+      softmax_rows<M>(acc, members, top);
+    else
+      entmax_rows<M>(acc, members, job.solve == kEntmax15, top, clock);
+  });
   clock.lap(kPhaseLevels);
+  {
+    auto token = [&](int n, int e) {
+      return token0 + kWarpTokens * warp + 8 * n + 2 * (lane & 3) + e;
+    };
+    probe_levels(p, job_index, job.width, lane, token, acc);
+  }
 }
 
 //: A COEFFICIENT IN ITS STORED FORM against the row's max `unit`: a u8 digit at 255, or a dense level's f16 at 1
@@ -389,92 +446,6 @@ __device__ __forceinline__ void store_coef(__half* at, float level, float unit, 
 __device__ __forceinline__ void store_zero(uint8_t* at) { *at = uint8_t{0}; }
 
 __device__ __forceinline__ void store_zero(__half* at) { *at = __float2half_rn(0.0f); }
-
-//: ONE SIDE OF A ROW IN THE BUNDLE'S FORM: its coefficients against its max (`Out`: u8, or f16 for a dense level,
-//: the floor taken in a live row), the max as its scale, and the level's mass for the finisher where
-//: the fold applies (1 elsewhere). The write side's fold is APPLIED -- its scale is over its mass, the stored level on
-//: the simplex -- and the read side's is carried. A side reduces only what the solve did not already give: its max
-//: when `top` is not it (a union's sides), its mass where the fold applies.
-//: -- see docs/internals/produce/produce.md#bundle
-template <int IPT, class Out>
-__device__ __forceinline__ void write_side(const float (&level)[IPT], int width, bool live,
-                                           int lane, Out* plane, int64_t first, float* scale,
-                                           float* mass, int64_t at, bool reduce_max, float top,
-                                           bool fold, bool applied, bool floored) {
-  float m = top, sum = 1.0f;
-  if (reduce_max) {
-    m = 0.0f;
-#pragma unroll
-    for (int i = 0; i < IPT; ++i) m = fmaxf(m, lane + 32 * i < width ? level[i] : 0.0f);
-    m = warp_all(m, [](float a, float b) { return fmaxf(a, b); });
-  }
-  if (fold) {
-    sum = 0.0f;
-#pragma unroll
-    for (int i = 0; i < IPT; ++i) sum += lane + 32 * i < width ? level[i] : 0.0f;
-    sum = warp_all(sum, [](float a, float b) { return a + b; });
-  }
-  const float unit = fmaxf(m, 1e-30f);
-  const float floor = floored && m > 0.0f ? facts::kDenseFloor : 0.0f;
-  //: the level's slot runs to its bytes rounded up to the row alignment law's 32, the tail zeros
-  constexpr int kGrain = 32 / static_cast<int>(sizeof(Out));
-  const int slot = (width + kGrain - 1) / kGrain * kGrain;
-#pragma unroll
-  for (int i = 0; i < IPT; ++i) {
-    const int col = lane + 32 * i;
-    if (live && col < slot) {
-      if (col < width)
-        store_coef(plane + first + col, level[i], unit, floor);
-      else
-        store_zero(plane + first + col);
-    }
-  }
-  if (live && lane == 0) {
-    scale[at] = applied && fold && sum > 0.0f ? m / sum : m;
-    mass[at] = sum;
-  }
-}
-
-//: ONE TOKEN'S ROW, solved and written as the bundle holds it: each side the job writes, its digits, scale and
-//: mass. A row past the live tokens reduces zeros and stores nothing. -- see docs/internals/produce/produce.md#route-row
-template <int IPT>
-__device__ void route_row(const ProduceParams& p, const Job& job, int job_index, int token,
-                          bool live, float* row, int lane, Clock& clock) {
-  float read[IPT], write[IPT], top = 0.0f;
-  solve_row<IPT>(job, row, live, lane, read, write, top, clock);
-  const bool reduce_max = job.solve >= kUnion15;
-  if (p.level_probe != nullptr) {
-    float* out = p.level_probe + (static_cast<int64_t>(job_index) * p.BT + token) * kMaxColumns;
-#pragma unroll
-    for (int i = 0; i < IPT; ++i) {
-      const int col = lane + 32 * i;
-      if (live && col < job.width) {
-        out[col] = read[i];
-        out[job.width + col] = write[i];
-      }
-    }
-  }
-  const int64_t slot = slot_of(p, token, job.head);
-  const int64_t at = slot * p.D + job.level;
-  if (job.reads && ((p.dense_mask[0] >> job.level) & 1)) {
-    write_side<IPT>(read, job.width, live, lane, p.dense[0], slot * p.dense_rows[0] + job.out_read,
-                    p.scale_read, p.mass_read, at, reduce_max, top, job.fold_read != 0, false,
-                    true);
-  } else if (job.reads) {
-    write_side<IPT>(read, job.width, live, lane, p.amp_read, slot * p.rows_read + job.out_read,
-                    p.scale_read, p.mass_read, at, reduce_max, top, job.fold_read != 0, false,
-                    false);
-  }
-  if (job.writes && ((p.dense_mask[1] >> job.level) & 1)) {
-    write_side<IPT>(write, job.width, live, lane, p.dense[1],
-                    slot * p.dense_rows[1] + job.out_write, p.scale_write, p.mass_write, at,
-                    reduce_max, top, job.fold_write != 0, true, true);
-  } else if (job.writes) {
-    write_side<IPT>(write, job.width, live, lane, p.amp_write, slot * p.rows_write + job.out_write,
-                    p.scale_write, p.mass_write, at, reduce_max, top, job.fold_write != 0, true,
-                    false);
-  }
-}
 
 //: One lane's 16-byte chunk of a hidden run, or zeros past the run's end (and no load).
 __device__ __forceinline__ uint4 chunk(const __nv_bfloat16* run, int k, bool live) {
@@ -590,17 +561,17 @@ __device__ void stub_values(const ProduceParams& p, const Job& job, int token0, 
 
 //: A ONE-ROW JOB'S PROJECTION: every warp the job's columns for its 16 tokens, in the job's class of `M` column tiles
 //: and `S` k-steps a stage (the stage's bytes held near level). -- see docs/internals/produce/produce.md#form
-__device__ void project_one_row(const ProduceParams& p, int job_index, int token0, uint32_t stages,
-                                int warp, int lane, float (&acc)[kAccTiles][kTokenTiles][4]) {
+__device__ __forceinline__ void project_one_row(const ProduceParams& p, int job_index, int token0,
+                                                uint32_t stages, int warp, int lane,
+                                                float (&acc)[kAccTiles][kTokenTiles][4]) {
   const int g = lane >> 2;
   auto col = [&](int i, int h) { return 16 * i + g + 8 * h; };
   {
     const Job job = load_job(p, job_index);
-    const int columns = job_columns(p, job), tiles = (columns + 15) / 16;
-    const int form = tiles <= 1 ? 0 : tiles <= 2 ? 1 : tiles <= 4 ? 2 : tiles <= 8 ? 3 : 4;
+    const int columns = job_columns(p, job);
     seed_bias(p, job, columns, col, acc);
     const __nv_bfloat16* base = weight_base(p, job);
-    rola::uniform_switch<5>(form, [&](auto F) {
+    rola::uniform_switch<5>(job.tiles, [&](auto F) {
       constexpr int M = 1 << decltype(F)::value, S = M <= 4 ? 4 : 2;
       constexpr int QW =
           16 * M * 2 * S / kProduceThreads > 0 ? 16 * M * 2 * S / kProduceThreads : 1;
@@ -620,8 +591,9 @@ __device__ void project_one_row(const ProduceParams& p, int job_index, int token
 
 //: A WIDE UNION'S PROJECTION, one 32-token pass: a warp pair a token group, warp `2j + h` columns `128 h ..` of
 //: both rows, eight tiles a row, one k-step a stage (its 512 columns fill it). -- see docs/internals/produce/produce.md#form
-__device__ void project_pair(const ProduceParams& p, int job_index, int token0, uint32_t stages,
-                             int warp, int lane, float (&acc)[kAccTiles][kTokenTiles][4]) {
+__device__ __forceinline__ void project_pair(const ProduceParams& p, int job_index, int token0,
+                                             uint32_t stages, int warp, int lane,
+                                             float (&acc)[kAccTiles][kTokenTiles][4]) {
   const int pair = warp >> 1, half = warp & 1, g = lane >> 2;
   auto col = [&](int i, int h, int width) {
     const int c = 128 * half + 16 * (i & 7) + g + 8 * h;
@@ -659,7 +631,7 @@ __global__ __launch_bounds__(kProduceThreads, 2) void produce_kernel(ProducePara
   Clock clock(&s_clock[warp][0], lane, p.ledger != nullptr);
   clock.lap(kPhaseJob);
   const int live = min(kTokenTile, p.BT - token0);
-  if (pair_form(p, load_job(p, job_index))) {
+  if (pair_form(load_job(p, job_index))) {
     //: a pass's 32 tokens a k-loop; the barrier between passes releases the stages the last step read
     const int passes = (live + kTokenTile / 2 - 1) / (kTokenTile / 2);
 #pragma unroll 1
@@ -668,11 +640,14 @@ __global__ __launch_bounds__(kProduceThreads, 2) void produce_kernel(ProducePara
       project_pair(p, job_index, token0 + pass * (kTokenTile / 2), stages, warp, lane, acc);
       __syncthreads();
     }
+    clock.lap(kPhaseProject);
   } else {
     float acc[kAccTiles][kTokenTiles][4];
     project_one_row(p, job_index, token0, stages, warp, lane, acc);
+    clock.lap(kPhaseProject);
+    const Job job = load_job(p, job_index);
+    if (job.kind == kJobRoute) solve_one_row(p, job, job_index, token0, warp, lane, acc, clock);
   }
-  clock.lap(kPhaseProject);
   const Job job = load_job(p, job_index);
   if (job.kind == kJobRoute) {
     stub_rows(p, job, token0, live, warp, lane);

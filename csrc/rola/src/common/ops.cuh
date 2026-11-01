@@ -432,6 +432,14 @@ __device__ __forceinline__ void imma_u8s8_k32_fresh(int32_t (&d)[4], const uint3
       : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1), "r"(0));
 }
 
+//: THE SQUARE ROOT ON THE SPECIAL-FUNCTION UNIT (`sqrt.approx.f32`, one `MUFU`): never the IEEE root's slow-path call,
+//: whose register convention spills a body holding its registers full. -- see docs/internals/common/ops.md#sqrt-approx
+__device__ __forceinline__ float sqrt_approx(float x) {
+  float d;
+  asm("sqrt.approx.f32 %0, %1;" : "=f"(d) : "f"(x));
+  return d;
+}
+
 //: FOUR BYTES CHOSEN FROM EIGHT by a selector word: the byte gathers of an int8 operand. -- see docs/internals/common/ops.md#prmt
 __device__ __forceinline__ uint32_t prmt(uint32_t lo, uint32_t hi, uint32_t sel) {
   uint32_t d;

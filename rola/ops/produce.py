@@ -165,15 +165,25 @@ def job_table(plan: ProducerPlan) -> tuple[list[tuple[int, ...]], int]:
     return jobs, len(per_head)
 
 
-def _shape(job: tuple[int, ...]) -> int:
-    """A job's control as the kernel reads it, one int16 word in the launch's parameters:
-    ``fold_write << 9 | fold_read << 8 | writes << 7 | reads << 6 | kind << 5 | rows << 3 | solve``, ``rows`` a solve
-    row's elements a lane as a power of two's exponent, ``reads``/``writes`` the sides a route job writes and
-    ``fold_read``/``fold_write`` whose fold applies (produce.cuh `Job`)."""
-    kind, _head, _heads, solve, width, _in0, _in1, out_read, out_write, _level, fold_read, fold_write = job
+#: a warp's accumulator columns: 16 column tiles of 16 (produce.cuh `kWarpColumns`)
+_WARP_COLUMNS = 256
+
+
+def _shape(job: tuple[int, ...], d_v: int) -> int:
+    """A job's control as the kernel reads it, one int16 word in the launch's parameters, so every branch on it is
+    warp-uniform to ptxas: ``pair << 13 | tiles << 10 | fold_write << 9 | fold_read << 8 | writes << 7 | reads << 6 |
+    kind << 5 | rows << 3 | solve`` -- ``rows`` the solve row's class (widths to 32, 64, 128, 256), ``tiles`` the
+    projection's column tiles as a power of two's exponent, ``pair`` a wide union's warp-pair form,
+    ``reads``/``writes`` the sides a route job writes and ``fold_read``/``fold_write`` whose fold applies (produce.cuh
+    `Job`)."""
+    kind, _head, heads, solve, width, _in0, in1, out_read, out_write, _level, fold_read, fold_write = job
     rows = 0 if width <= 32 else 1 if width <= 64 else 2 if width <= 128 else 3
-    return (fold_write << 9 | fold_read << 8 | int(out_write >= 0) << 7 | int(out_read >= 0) << 6 | kind << 5
-            | rows << 3 | solve)
+    columns = heads * d_v if kind == _VALUE else 2 * width if in1 >= 0 else width
+    pair = columns > _WARP_COLUMNS
+    count = 16 if pair else -(-columns // 16)
+    tiles = next(c for c in range(5) if count <= 1 << c)
+    return (int(pair) << 13 | tiles << 10 | fold_write << 9 | fold_read << 8 | int(out_write >= 0) << 7
+            | int(out_read >= 0) << 6 | kind << 5 | rows << 3 | solve)
 
 
 @lru_cache(maxsize=64)
@@ -182,7 +192,7 @@ def _job_tensor(plan: ProducerPlan, device: str) -> tuple[torch.Tensor, torch.Te
     width, the columns in and out, the level) and its control words on the host."""
     jobs, per_head = job_table(plan)
     table = torch.tensor([job[1:3] + job[4:10] for job in jobs], dtype=torch.int32, device=device)
-    return table, torch.tensor([_shape(job) for job in jobs], dtype=torch.int16), per_head
+    return table, torch.tensor([_shape(job, plan.d_v) for job in jobs], dtype=torch.int16), per_head
 
 
 #: the per-(token tile, head) arrival counters, zero between calls (the kernel's finisher resets its own), one buffer a
@@ -199,12 +209,12 @@ def _arrivals(device: torch.device, count: int) -> torch.Tensor:
 
 
 #: THE PHASE LEDGER'S SHAPE: ``[jobs][warps][phases]``, the kernel's own `ProducePhase` order, booked over the tiles.
-LEDGER_PHASES = ("job", "project", "row_load", "threshold", "levels", "bundle", "finish", "values")
+LEDGER_PHASES = ("job", "project", "threshold", "levels", "bundle", "finish", "values")
 LEDGER_WARPS = 4
 
 
 def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurement instrument (docs/internals/produce/produce.md#phase-ledger)
-    """Bind the phase ledger the next launches book into, ``[jobs, 4, 8]`` int64 cycles, or ``None``."""
+    """Bind the phase ledger the next launches book into, ``[jobs, 4, 7]`` int64 cycles, or ``None``."""
     from rola.ops._ext import extension
 
     extension().rola_produce_ledger_bind(ledger)

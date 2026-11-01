@@ -24,7 +24,8 @@ gate.
 One int32 row per job (`JobField`), its ADDRESSING: the head (the first of a value job's heads, and their count), the
 level's width, the `route_W` columns of its one or two logit rows, the packed-plane columns its rows land at on each
 side (`-1` for a side it does not write), the level, and whether each side's fold applies. Its CONTROL -- the kind, the
-solve (`SolveKind`), the solve row's elements a lane, the sides it writes and whose fold applies -- is one SHAPE WORD
+solve (`SolveKind`), the solve row's width class, the projection's column-tile class and whether it is a wide
+union's pair form, the sides it writes and whose fold applies -- is one SHAPE WORD
 (int16) a job in the launch's parameters
 (`ProduceParams::shapes`, `rola.ops.produce._shape`), read by block index: a value ptxas knows is warp-uniform, so a
 branch on it compiles its collectives inline alone, where a branch on a loaded job field gave each a guarded fallback
@@ -48,7 +49,7 @@ reduction three shuffles. Nothing passes through shared memory but the operands.
 
 <a id="form"></a>A JOB'S FORM is its column count against one warp's 16 tiles (`kWarpColumns`, 256): a one-row job (a
 split, tied or independent side, a union whose two rows fit, a value job's heads) is every warp's whole row for its 16
-tokens, the tiles in the job's class (1, 2, 4, 8 or 16, chosen once a block by `common/structure_switch.cuh`'s `uniform_switch`), 64 tokens a block;
+tokens, the tiles in the job's class (1, 2, 4, 8 or 16: the shape word's, chosen once a block by `common/structure_switch.cuh`'s `uniform_switch`), 64 tokens a block;
 a WIDE union (two rows past 256 columns) is a warp PAIR a token group -- warp `2j + h` columns `128 h ..` of both rows,
 eight tiles a row, so each warp holds both rows of the same columns and forms their midpoint and difference in its own
 registers -- in two 32-token passes, the threshold's row sums crossing the pair.
@@ -75,7 +76,8 @@ One warp a token row: the solve on the row, then the bundle's form of it. Every 
 tile's rows (a count of its live tokens, uniform), a row past them solving and reducing zeros with its stores off, so
 no collective sits under a branch ptxas cannot prove warp-uniform.
 
-<a id="bundle"></a>THE BUNDLE'S FORM (`write_side`), for each side the job writes (a shape bit each): the row against
+<a id="bundle"></a>THE BUNDLE'S FORM (the form being ported onto the accumulators; `stub_rows` meanwhile), for each side the
+job writes (a shape bit each): the row against
 its max as u8 digits (round to nearest even of `unit x 255`) -- or, for a dense level, f16 at 1 with the floor
 taken in a live row (`max(level / max, 2^-13)`, an IEEE divide rounded to nearest, the torch quantizer's own
 rounding) -- the max clamped at `1e-30` as `quantize_unit_max_rows` clamps it; the max as the side's scale; and the level's mass for the finisher
@@ -101,23 +103,26 @@ head's token rows are contiguous, and every prefill reader walks one head's toke
 us a head at `(256, 256)`, `L = 64K`, `H = 16` on token-major rows (an 8 KB token stride, DRAM at 360 GB/s) against
 113 us head-major (676 GB/s), the rate of a single head (`docs/internals/facts/facts.md#the-grid`).
 
-<a id="solve"></a>THE SOLVE (`solve_row`) holds the row striped, element `lane + 32 i` in a lane's `i`th register,
-`IPT` = the width's power-of-two class over 32 (one of four bodies, chosen once a job by its shape word). A union row
-is the midpoint of its read and write logits (entmax on it) and their overflow-free difference (the split); a tied or
-independent row is its one logit row. Softmax, entmax 1.5 and 2 and both unions are the closed registry's kerneled
-activations, with the reference `rola/routing/entmax/production.py`'s `_torch_union_split` and `_torch_activation`.
-The union's split reuses the entmax family's `union_write` (`docs/internals/entmax/entmax.md#union-write`) with its
-fast policy, and the read side is the value times the sigmoid, both on the special-function unit: the fp32 levels
-feed u8 digits, a thousand times coarser than those units' error. Gate: every route job's sides against the
-fp64 reference solve on the kernel's own logits, per slot within `(width + 16) 2^-23` (measured at most 0.37 of it,
-the 1.5-union's write side).
+<a id="solve"></a>THE SOLVE runs on the accumulators (`solve_one_row`): a lane holds four token rows (`row_value`: its
+two n-tiles' two tokens), 32 values each at 256 columns, its member columns one mask the four share (`row_members`),
+and a row's reductions are three shuffles over the 8 lanes sharing `lane & 3` (`row_all`), the four rows' together.
+The row's class (2, 4, 8 or 16 column tiles, its width's) and its activation are the shape word's, so every
+branch over them, and every shuffle and vote under it, is warp-uniform to ptxas; no value past the class's tiles is
+touched. A tied or independent row is its one logit row: softmax (`softmax_rows`) or entmax 1.5 or 2
+(`entmax_rows`), the closed registry's kerneled activations, with the reference `rola/routing/entmax/production.py`'s
+`_torch_activation`. A UNION's split -- entmax on the midpoint of its read and write logits, the read side the value
+times the sigmoid of their overflow-free difference, the write side the entmax family's `union_write`
+(`docs/internals/entmax/entmax.md#union-write`), reference `_torch_union_split` -- lands next on the same registers,
+its levels zero meanwhile. Gate: every route job's sides (`probe_levels`) against the fp64 reference solve on the
+kernel's own logits, per slot within `(width + 16) 2^-23`.
 
-<a id="threshold"></a>THE THRESHOLD IS NEWTON FROM THE LEFT (`newton_threshold`), not a sort. With the row shifted by
+<a id="threshold"></a>THE THRESHOLD IS NEWTON FROM THE LEFT (`entmax_rows`), not a sort. With the row shifted by
 its max, `f(tau) = sum_i g(z_i - tau) - 1` (`g(d) = max(d, 0)^2 / 4` at alpha 1.5, `max(d, 0)` at 2) is convex and
 decreasing, and `f(-2) >= 0` (`f(-1)` at alpha 2): Newton from there never passes the root, and each step needs only
 the count, sum and sum of squares of the support `{z > lo}`. The closed form on that support -- the formula the sorted
-solve evaluates at its chosen rank -- IS the root once no member lies below it, which a vote decides (a vote is
-warp-uniform to ptxas, so the loop's exit outlines nothing). At alpha 2 the steps are Michelot's iteration. Measured
+solve evaluates at its chosen rank -- IS the root once no member lies below it, which one vote over the warp's 16
+rows decides (a vote is warp-uniform to ptxas, so the loop's exit outlines nothing; a settled row's further steps
+keep its threshold, the closed form on an unchanged support). At alpha 2 the steps are Michelot's iteration. Measured
 in fp32 over Gaussian, uniform, tied and Cauchy rows of widths 16 to 256 at scales 0.3 to 30: at most 8 steps, 1 to 5
 typically, within 2.2e-6 of the fp64 sorted threshold (8e-8 at alpha 2); `kNewtonSteps` caps it at 16, and a capped
 result is still the closed form on a support whose extra members lie within the last step of the root. WHY NOT THE
@@ -128,8 +133,8 @@ cycles an instruction there, ncu's no-instruction stall the top one); the sorted
 sorted order) does not carry over -- these sum in lane order, deterministic run to run; the gate is per slot against
 fp64.
 
-<a id="phase-ledger"></a>THE PHASE LEDGER (`rola.ops.produce.ledger_bind`, `[jobs, 4 warps, 8 phases]` int64 cycles,
-booked over the tiles): job, project, row load, threshold, levels, bundle, finish, values -- a warp's cycles
+<a id="phase-ledger"></a>THE PHASE LEDGER (`rola.ops.produce.ledger_bind`, `[jobs, 4 warps, 7 phases]` int64 cycles,
+booked over the tiles): job, project, threshold, levels, bundle, finish, values -- a warp's cycles
 between the kernel's laps (`common/phase_clock.cuh`).
 
 ## <a id="finish"></a>The head's finish
