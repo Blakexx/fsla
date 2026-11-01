@@ -131,7 +131,10 @@ in a step: a per-lane spin compiles to a convergence barrier, and an mbarrier ad
 prove uniform to a loop over distinct values (both measured on sm_80 the same day), and the SASS gate reds both.
 THE READER ROWS land once, a stage's part in the copy group of the piece's first tile's same stage: the first two with
 the first two stages before the loop, the rest with the ring's refills in the first tile (`tile_stages<..., true>`),
-so the first Gram waits for one part, not the block's rows, and the later tiles' steps carry no reader code. A stage's
+so the first Gram waits for one part, not the block's rows, and the later tiles' steps carry no reader code. A step
+carries the part two stages on only where it is its own level's (`reader_part<D, F>`: its chunks a row known, every copy
+live); each level's first two parts, which a step of the level before would carry, ride the first two groups instead
+(`reader_part_any`), so a step's reader copies are never shaped at run time. A stage's
 slabs and the tile's gate come from the stage words (`build_words`), read a step ahead. The tile's values keep their
 own mbarrier, outside the steps: the last warp to release them copies the next tile's.
 

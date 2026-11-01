@@ -519,8 +519,8 @@ __device__ __forceinline__ void stage_share(const Smem& sm, const Bases& at, con
 //: where `issue` (a stage the call has) and the part has its chunk, its digits past the level's width zero-filled.
 //: -- see docs/internals/intra/intra_kernel.md#pipeline
 template <int D>
-__device__ __forceinline__ void reader_part(Smem& sm, const IntraParams& p, const Bases& at, int s,
-                                            bool issue, int tid) {
+__device__ __forceinline__ void reader_part_any(Smem& sm, const IntraParams& p, const Bases& at,
+                                                int s, bool issue, int tid) {
   constexpr int kMaxChunks = 16, kPass = kThreads / kMaxChunks, kRowsEach = kBlockRows / kPass;
   static_assert(kBlockRows % kPass == 0, "a widest part is whole passes of the block's threads");
   const int4 word = sm.words[s];
@@ -541,6 +541,37 @@ __device__ __forceinline__ void reader_part(Smem& sm, const IntraParams& p, cons
 #pragma unroll
   for (int i = 0; i < kRowsEach; ++i) {
     ops::stage_tile_when(dst, src, has, live);
+    src += src_step;
+    dst += dst_step;
+  }
+}
+
+//: A READER PART OF FORM `F`, its chunks a row known: a thread's chunk `tid % chunks` of rows `tid / chunks + (kThreads /
+//: chunks) i`, every copy live where `issue` -- the first tile's steps, whose part is always their own level's.
+//: -- see docs/internals/intra/intra_kernel.md#pipeline
+template <int D, int F>
+__device__ __forceinline__ void reader_part(Smem& sm, const IntraParams& p, const Bases& at, int s,
+                                            bool issue, int tid) {
+  constexpr int kChunks = form_stage_digits(F) * (form_read_f16(F) ? 2 : 1) / kChunk,
+                kPass = kThreads / kChunks;
+  constexpr int kRowsEach = kBlockRows / kPass;
+  static_assert(kPass % 8 == 0 && kBlockRows % kPass == 0,
+                "a part's rows share a swizzle, whole passes a thread");
+  const int4 word = sm.words[s];
+  const int level = D == 1 ? 0 : word.y & 0xff, chunk = (word.y >> 8) & 0xff;
+  const int k = tid % kChunks, r0 = tid / kChunks;
+  const int byte = (word.w & 0xffff) + k * kChunk;
+  const bool live = byte < (word.w >> 16);
+  const int64_t st = level == 0 ? at.read_st[0] : at.read_st[kMaxLevels - 1];
+  const uint8_t* src =
+      (level == 0 ? at.read[0] : at.read[kMaxLevels - 1]) + rows_of(r0, st) + (live ? byte : 0);
+  const uint64_t src_step = rows_of(kPass, st);
+  uint32_t dst =
+      ops::smem_addr(reader_rows(sm) + r0 * p.pitch + (((chunk + k) ^ swizzle(r0)) << 4));
+  const uint32_t dst_step = static_cast<uint32_t>(kPass * p.pitch);
+#pragma unroll
+  for (int i = 0; i < kRowsEach; ++i) {
+    ops::stage_tile_when(dst, src, issue, live);
     src += src_step;
     dst += dst_step;
   }
@@ -648,7 +679,7 @@ __device__ __forceinline__ void deposit(Smem& sm, const IntraParams& p, int bh, 
 //: THE RING'S PLACE: the stage's buffer and the buffer before it (the refill's), and the stage the refill copies --
 //: `kStageBuffers - 1` past the current, as a (tile, stage) and as the piece's stage index -- stepped once a stage.
 struct Ring {
-  int buf = 0, prev = kStageBuffers - 1, tile, s, at = kStageBuffers - 1;
+  int buf = 0, prev = kStageBuffers - 1, tile, s;
   //: the refill's stage word and its tile's gate word, read a step ahead of the refill that uses them
   int4 word;
   uint32_t gate;
@@ -666,7 +697,6 @@ struct Ring {
     const bool next = s + 1 == p.stages;
     s = next ? 0 : s + 1;
     tile = next ? tile + 1 : tile;
-    ++at;
     read(sm);
   }
 };
@@ -690,13 +720,13 @@ enum StageGram : int { kGramNone, kGramDense, kGramSlabs };
 template <int D, int F, bool kF16, int Gram, bool kReader>
 __device__ __forceinline__ void tile_stage(Smem& sm, const IntraParams& p, const Lanes& ln,
                                            const Bases& at, const int4& word, uint32_t mine, int t1,
-                                           int tid, Ring& ring, Acc<kF16>& acc) {
+                                           int tid, Ring& ring, Acc<kF16>& acc, int rs,
+                                           bool rissue) {
   ops::stage_wait<kStageBuffers - 2>();
   __syncthreads();
   stage_share<D>(sm, at, ring.word, ring.prev, min(ring.tile, kWindowTiles - 1),
                  (ring.tile < t1) & (word_slabs(ring.word, ring.gate) != 0u), tid);
-  if constexpr (kReader)
-    reader_part<D>(sm, p, at, min(ring.at, p.stages - 1), ring.at < p.stages, tid);
+  if constexpr (kReader) reader_part<D, F>(sm, p, at, rs, rissue, tid);
   ops::stage_commit();
   if constexpr (Gram != kGramNone) {
     const int chunk = (word.y >> 8) & 0xff;
@@ -710,21 +740,15 @@ __device__ __forceinline__ void tile_stage(Smem& sm, const IntraParams& p, const
   ring.step(sm, p);
 }
 
-//: A TILE'S STAGES: for a live pair each level's stages under its form -- one uniform switch a level, its Gram opened
-//: before them and folded after, straight-line where the warp reads every slab of the level and by its slabs where
-//: not, chosen once a level -- and for a dead one every stage awaited and released.
+//: A TILE'S STAGES, level by level under each level's form -- one uniform switch a level, its Gram opened before them
+//: and folded after -- straight-line where the warp reads every slab of the level, by its slabs where it reads some,
+//: none for a dead pair, chosen once a level. The first tile's steps carry the reader part two stages on where it is
+//: the level's own (its first two parts ride the prologue's groups). -- see docs/internals/intra/intra_kernel.md#pipeline
 template <int D, bool kF16, bool kReader>
 __device__ __forceinline__ void tile_stages(Smem& sm, const IntraParams& p, const Lanes& ln,
                                             const Bases& at, int tile, int t1, int row_tile,
                                             int tid, Ring& ring, Acc<kF16>& acc) {
   const uint32_t mine = sm.gate[tile][row_tile % kRowTiles];
-  if (mine == 0u) {
-#pragma unroll 1
-    for (int s = 0; s < p.stages; ++s)
-      tile_stage<D, kFormU8U8, kF16, kGramNone, kReader>(sm, p, ln, at, ring.word, mine, t1, tid,
-                                                         ring, acc);
-    return;
-  }
   rola::static_for<D>([&](auto Level) {
     constexpr int kL = decltype(Level)::value;
     zero_gram(acc);
@@ -732,23 +756,22 @@ __device__ __forceinline__ void tile_stages(Smem& sm, const IntraParams& p, cons
       constexpr int kF = decltype(F)::value, kSlabs = form_stage_digits(kF) / kSlabDigits;
       const uint32_t level = p.level_slabs[kL];
       const int s0 = p.level_stage0[kL], s1 = s0 + p.level_stages[kL];
-      int4 word = sm.words[s0];
-      if ((mine & level) == level && __popc(level) == p.level_stages[kL] * kSlabs) {
+      const auto stages = [&](auto Gram) {
+        int4 word = sm.words[s0];
 #pragma unroll 1
         for (int s = s0; s < s1; ++s) {
           const int4 now = word;
           word = sm.words[min(s + 1, s1 - 1)];
-          tile_stage<D, kF, kF16, kGramDense, kReader>(sm, p, ln, at, now, mine, t1, tid, ring,
-                                                       acc);
+          tile_stage<D, kF, kF16, decltype(Gram)::value, kReader>(
+              sm, p, ln, at, now, mine, t1, tid, ring, acc, min(s + 2, s1 - 1), s + 2 < s1);
         }
+      };
+      if (mine == 0u) {
+        stages(std::integral_constant<int, kGramNone>{});
+      } else if ((mine & level) == level && __popc(level) == p.level_stages[kL] * kSlabs) {
+        stages(std::integral_constant<int, kGramDense>{});
       } else {
-#pragma unroll 1
-        for (int s = s0; s < s1; ++s) {
-          const int4 now = word;
-          word = sm.words[min(s + 1, s1 - 1)];
-          tile_stage<D, kF, kF16, kGramSlabs, kReader>(sm, p, ln, at, now, mine, t1, tid, ring,
-                                                       acc);
-        }
+        stages(std::integral_constant<int, kGramSlabs>{});
       }
     });
     fold_level(acc, kL == 0, p.lift);
@@ -834,7 +857,15 @@ __global__ __launch_bounds__(kThreads, 1) void intra_kernel(const __grid_constan
     const int2 first = stage_after(p, piece.t0, 0, i);
     stage_share<D>(sm, at, sm.words[first.y], i, min(first.x, kWindowTiles - 1), first.x < piece.t1,
                    tid);
-    reader_part<D>(sm, p, at, min(i, p.stages - 1), i < p.stages, tid);
+    //: the reader parts no step carries -- each level's first two -- in the first two groups, a part `s` in group
+    //: min(s, 1)
+#pragma unroll 1
+    for (int s = 0; s < p.stages; ++s) {
+      const bool front = s - p.level_stage0[sm.words[s].y & 0xff] < 2;
+#pragma unroll 1
+      for (int k = ops::once(front && min(s, kStageBuffers - 2) == i); k > 0; --k)
+        reader_part_any<D>(sm, p, at, s, true, tid);
+    }
     ops::stage_commit();
   }
   if (warp == 0) copy.values(sm, p, piece.t0, true);
