@@ -1,72 +1,61 @@
-// csrc/rola/src/intra/intra.cuh -- THE INTRA's constants and operand block: the within-window pairs, the Gram over the
-// bundle's u8 rows, the value product over its s8 values, reduced into the output planes.
+// csrc/rola/src/intra/intra.cuh -- THE INTRA's constants and operand block: the within-window pairs, each level's Gram
+// as f16 MMAs over the bundle's rows as stored (u8 digits widened in registers, dense f16 rows as they are), the value
+// product over the f16 values, reduced into the output planes.
 // see docs/internals/intra/intra.md
 #pragma once
 
 #include <cstdint>
 
+#include "common/window.cuh"
+
 namespace rola::intra {
 
-//: THE WINDOW IS THE CARRY'S, so the two kernels run one grid; a window is eight 64-token tiles, walked in blocks of
-//: two row tiles. -- see docs/internals/intra/intra.md#constants
-constexpr int kWindow = 512;
+//: THE WALK: tiles, a warp's 16 readers, a piece's tiles. -- see docs/internals/intra/intra.md#constants
 constexpr int kTile = 64;
-constexpr int kWindowTiles = kWindow / kTile;
-constexpr int kRowTiles = 2;
-constexpr int kBlockRows = kRowTiles * kTile;
-constexpr int kBlocks = kWindowTiles / kRowTiles;
 constexpr int kWarpRows = 16;
-//: A PIECE: at most `kPieceTiles` of a block's writer tiles, one CTA's sweep, so no CTA carries a block's whole
-//: diagonal; a block's pieces reduce their partial sums into the same rows. -- see docs/internals/intra/intra.md#pieces
 constexpr int kPieceTiles = 4;
+constexpr int kValueWidth = 64;
+constexpr int kValueBytes = 2 * kValueWidth;
 
-struct Piece {
-  int block, t0, t1;
-};
-
-//: A WINDOW'S PIECES, longest first and the heavier block first among equals, so the long sweeps start first.
-constexpr int piece_count() {
-  int n = 0;
-  for (int b = 0; b < kBlocks; ++b) n += ((b + 1) * kRowTiles + kPieceTiles - 1) / kPieceTiles;
-  return n;
+//: A CARD'S BLOCK: the reader rows a CTA holds resident. -- see docs/internals/intra/intra.md#block
+__host__ __device__ constexpr int block_rows_for(int cc) {
+  return cc == 800 || cc == 870 ? 128 : cc == 860 || cc == 890 ? 64 : 0;
 }
 
-struct Pieces {
-  Piece table[piece_count()]{};
+//: A CARD'S WARP TILE: a warp's writers of a tile's 64. -- see docs/internals/intra/intra.md#block
+__host__ __device__ constexpr int warp_cols_for(int cc) {
+  return cc == 800 || cc == 870 ? 64 : cc == 860 || cc == 890 ? 32 : 0;
+}
 
-  static constexpr int count() { return piece_count(); }
+__host__ __device__ constexpr int warps_for(int cc) {
+  return block_rows_for(cc) / 16 * (64 / warp_cols_for(cc));
+}
 
-  constexpr Pieces() {
-    int n = 0;
-    for (int len = kPieceTiles; len > 0; --len)
-      for (int b = kBlocks - 1; b >= 0; --b)
-        for (int t0 = 0; t0 < (b + 1) * kRowTiles; t0 += kPieceTiles) {
-          const int t1 =
-              t0 + kPieceTiles < (b + 1) * kRowTiles ? t0 + kPieceTiles : (b + 1) * kRowTiles;
-          if (t1 - t0 == len) table[n++] = Piece{b, t0, t1};
-        }
-  }
-};
-
-constexpr int kWarps = kBlockRows / kWarpRows;
-constexpr int kThreads = kWarps * 32;
-constexpr int kValueWidth = 64;
-
-//: THE ROWS' LEVELS: the built arms serve depth <= 2, each level 16 to 256 digits in whole copy granules.
 constexpr int kMaxLevels = 2;
 constexpr int kMaxLevelWidth = 256;
+constexpr int kDigitGranule = 16;
 
-//: A COPY GRANULE, a STAGE (at most 128 digits of one level) and a SLAB (32 digits, one IMMA k-step).
+//: A COPY CHUNK, a STAGE (128 bytes of a tile's rows: 128 u8 or 64 f16 digits) and a SLAB (32 digits, the gate's grain).
 //: -- see docs/internals/intra/intra.md#constants
 constexpr int kChunk = 16;
-constexpr int kStageDigits = 128;
+constexpr int kStageBytes = 128;
 constexpr int kSlabDigits = 32;
-constexpr int kSlabsPerStage = kStageDigits / kSlabDigits;
 constexpr int kStageBuffers = 3;
-constexpr int kLevelStages = kMaxLevelWidth / kStageDigits;
+constexpr int kLevelStages = 2 * kMaxLevelWidth / kStageBytes;
 constexpr int kMaxStages = kMaxLevels * kLevelStages;
-constexpr int kMinPitchStages = 3;
-constexpr int kColumns = 2 + kMaxLevels;
+//: the deposit stages a warp's 16 rows of 64 sums at a 72-float pitch in the dead reader rows
+constexpr int kStagingBytes = 16 * 72 * 4;
+
+//: A LEVEL'S FORM: bit 0 its read rows f16, bit 1 its write rows f16 (u8 where clear).
+enum LevelForm : int { kFormU8U8, kFormF16U8, kFormU8F16, kFormF16F16, kForms };
+
+__host__ __device__ constexpr bool form_read_f16(int form) { return (form & 1) != 0; }
+
+__host__ __device__ constexpr bool form_write_f16(int form) { return (form & 2) != 0; }
+
+__host__ __device__ constexpr int form_stage_digits(int form) {
+  return form_write_f16(form) ? 64 : 128;
+}
 
 enum IntraPhase : int {
   kPhaseReader,
@@ -79,41 +68,72 @@ enum IntraPhase : int {
   kIntraPhases
 };
 
-//: One level's rows or a value plane where the bundle holds them: the batch, token and head strides in elements.
+//: the ledger's rows: the most warps a card's CTA has
+constexpr int kLedgerWarps = 8;
+
+struct Piece {
+  int block, t0, t1;
+};
+
+//: A WINDOW'S PIECES at (W, block rows): each block's writer tiles in sweeps of at most `kPieceTiles`, longest first and
+//: the heavier block first among equals. -- see docs/internals/intra/intra.md#pieces
+template <int W, int Rows>
+struct PiecesAt {
+  static constexpr int kWindowTiles = W / kTile, kRowTiles = Rows / kTile;
+  static constexpr int kBlocks = kWindowTiles / kRowTiles;
+
+  static constexpr int count() {
+    int n = 0;
+    for (int b = 0; b < kBlocks; ++b) n += ((b + 1) * kRowTiles + kPieceTiles - 1) / kPieceTiles;
+    return n;
+  }
+
+  Piece table[count()]{};
+
+  constexpr PiecesAt() {
+    int n = 0;
+    for (int len = kPieceTiles; len > 0; --len)
+      for (int b = kBlocks - 1; b >= 0; --b)
+        for (int t0 = 0; t0 < (b + 1) * kRowTiles; t0 += kPieceTiles) {
+          const int end = (b + 1) * kRowTiles;
+          const int t1 = t0 + kPieceTiles < end ? t0 + kPieceTiles : end;
+          if (t1 - t0 == len) table[n++] = Piece{b, t0, t1};
+        }
+  }
+};
+
+//: One level's rows or the value plane where the bundle holds them: the batch, token and head strides in bytes.
 struct RowView {
   const void* base;
   int64_t sb, st, sh;
 };
 
-struct ColumnView {
-  const float* base;
-  int64_t sb, st, sh;
-};
-
-//: A LEVEL'S STAGE: its reader slot and copy order (`index`), its slabs the gate bits `mask << slab0`.
-//: -- see docs/internals/intra/intra.md#stages
+//: A STAGE: a level's 128-byte slice of the writer rows, its gate bits `mask << slab0` and its reader slot's first
+//: chunk. -- see docs/internals/intra/intra.md#stages
 struct Stage {
-  int index, slab0;
+  int index, level, digit0, slab0;
   uint32_t mask;
+  int reader_chunk;
 };
 
-//: THE OPERAND BLOCK, a grid constant: the views, the call's widths and the stage table they give.
+//: THE OPERAND BLOCK, a grid constant: the views, the call's widths and forms and the stage table they give.
 //: -- see docs/internals/intra/intra.md#intraparams
 struct IntraParams {
   RowView read[kMaxLevels];
   RowView write[kMaxLevels];
-  ColumnView scale_write[kMaxLevels];
-  ColumnView g_write, v_scale;
-  RowView v_hat, v_lo;
+  RowView values;
+  const float2* fm;
   const uint32_t* unions;
   float* num;
   float* den;
   long long* ledger;
-  Stage stage[kMaxLevels][kLevelStages];
-  int width[kMaxLevels], slab0[kMaxLevels], group0[kMaxLevels], level_stages[kMaxLevels];
+  Stage stage[kMaxStages];
+  int width[kMaxLevels], form[kMaxLevels], slab0[kMaxLevels], group0[kMaxLevels];
+  int level_stage0[kMaxLevels], level_stages[kMaxLevels];
   uint32_t level_slabs[kMaxLevels];
   int stages, slabs, groups, pitch;
-  int H, L, windows, weight_digits;
+  int H, group, L, windows;
+  float lift, unit;
   uint32_t dense[2];
 };
 

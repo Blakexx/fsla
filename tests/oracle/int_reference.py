@@ -228,12 +228,6 @@ def fold_zeta(g_write, s_t, m_w, window):
     return cols.reshape(B, windows, window, H, 2).amax(2).permute(0, 2, 1, 3).clamp_min(TINY)
 
 
-#: The intra's column tile: the value product's A is scaled a (reader row, column tile).
-INTRA_TILE = 64
-#: The weights' levels at one or two u8 digits.
-WEIGHT_LEVELS = {1: 255.0, 2: 65535.0}
-
-
 def unit_rows(rows, scales, sparse) -> tuple[torch.Tensor, ...]:
     """A bundle side's rows as fp64 unit values: a u8 digit over 255 (a dense write level's f16 coefficient as it is),
     a dense level's zeros in a live row at the floor (docs/internals/facts/liveness_contract.md#floor)."""
@@ -251,34 +245,31 @@ def value_units(values) -> torch.Tensor:
     return values.v.double()
 
 
-def intra_bundle_reference(routes, values, window, *, weight_digits: int = 2, exact: bool = False,
-                           telemetry: dict | None = None):
-    """``(num, den)``, fp64 ``[B, T, H, dv]`` and ``[B, T, H]``: the INTRA's declared arithmetic on the bundle.
+def intra_bundle_reference(routes, values, window):
+    """``(num, den)``, fp64 ``[B, T, H, dv]`` and ``[B, T, H]``: the INTRA on the bundle as stored, nothing rounded.
 
     Per window, reader ``t`` and writer ``t' <= t`` in it: ``G_l[t, t'] = sum_d r_l[t, d] w_l[t', d]`` over the
     rows' unit values (:func:`unit_rows`); ``A[t, t'] = f(t') prod_l G_l[t, t']`` with the writer factor
     ``f(t') = g(t') prod_l sw_l(t')`` (the write gain times the write levels' scales). The reader's factor
     ``prod_l sr_l(t)`` is not applied: it is per token and cancels in ``num / den`` (the output contract, carry
-    and intra alike). ``den[t] = sum_t' A`` exactly. THE VALUE PRODUCT: ``P = A s(t')`` (the value scale folded
-    into the columns), ``sigma(t, c)`` = the largest ``P`` over column tile ``c`` (``INTRA_TILE`` tokens from the
-    window's start), ``a = round(P / sigma LW)`` with ``LW`` = 255 at one weight digit, 65535 at two, and
-    ``num[t] = sum_c sigma / LW sum_{t' in c} a q(t')`` over the value's f16 units (:func:`value_units`).
-    ``exact`` skips the rounding of ``a``: ``num = sum A s q``, the unquantized product on the bundle's values.
-    ``telemetry`` receives ``bound``, the per-slot bound the rounding implies: a weight moves by at most half its unit,
-    ``sum_c sigma / (2 LW) sum_{t' in c} |q|``.
+    and intra alike). ``den[t] = sum_t' A`` and ``num[t] = sum_t' A s(t') q(t')`` over the value's f16 units
+    (:func:`value_units`) and scale ``s``. A grouped call's write side, values and factors are its write heads',
+    each read by ``H / H_w`` consecutive query heads.
     """
+    group = routes.group
+
+    def heads(x):
+        return x.repeat_interleave(group, dim=2)
+
     reads = unit_rows(routes.amp_read, routes.scale_read, routes.sparse[0])
-    writes = unit_rows(routes.amp_write, routes.scale_write, routes.sparse[1])
+    writes = tuple(heads(w) for w in unit_rows(routes.amp_write, routes.scale_write, routes.sparse[1]))
     f = routes.g_write.double()
     for scale in routes.scale_write:
         f = f * scale.double()
-    q = value_units(values)
-    s = values.scale.double()
+    f, s, q = heads(f), heads(values.scale.double()), heads(value_units(values))
     Bn, T, H, dv = q.shape
-    LW = WEIGHT_LEVELS[weight_digits]
     num = torch.zeros(Bn, T, H, dv, device=q.device, dtype=torch.float64)
     den = torch.zeros(Bn, T, H, device=q.device, dtype=torch.float64)
-    bound = torch.zeros_like(num)
     for t0 in range(0, T, window):
         sl = slice(t0, min(t0 + window, T))
         n = sl.stop - sl.start
@@ -288,22 +279,7 @@ def intra_bundle_reference(routes, values, window, *, weight_digits: int = 2, ex
         A = A * torch.tril(torch.ones(n, n, device=q.device, dtype=torch.float64))
         den[:, sl] = A.sum(-1).permute(0, 2, 1)
         P = A * s[:, sl].permute(0, 2, 1)[:, :, None, :]
-        qw = q[:, sl].permute(0, 2, 1, 3)                                                # [B,H,n,dv]
-        if exact:
-            num[:, sl] = (P @ qw).permute(0, 2, 1, 3)
-            continue
-        out = torch.zeros(Bn, H, n, dv, device=q.device, dtype=torch.float64)
-        half = torch.zeros_like(out)
-        for c0 in range(0, n, INTRA_TILE):
-            cut = slice(c0, min(c0 + INTRA_TILE, n))
-            sigma = P[..., cut].amax(-1, keepdim=True)                                  # [B,H,n,1]
-            a = torch.round(P[..., cut] / sigma.clamp_min(TINY) * LW)
-            out += sigma / LW * (a @ qw[:, :, cut])
-            half += sigma / (2.0 * LW) * qw[:, :, cut].abs().sum(2, keepdim=True)
-        num[:, sl] = out.permute(0, 2, 1, 3)
-        bound[:, sl] = half.permute(0, 2, 1, 3)
-    if telemetry is not None:
-        telemetry["bound"] = bound
+        num[:, sl] = (P @ q[:, sl].permute(0, 2, 1, 3)).permute(0, 2, 1, 3)
     return num, den
 
 

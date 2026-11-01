@@ -10,16 +10,17 @@
 
 namespace rola::intra {
 
-void rola_intra_forward(std::vector<Tensor> read, std::vector<Tensor> write,
-                        std::vector<Tensor> scale_write, Tensor g_write, Tensor v_hat,
-                        std::optional<Tensor> v_lo, Tensor v_scale, Tensor unions, Tensor num,
-                        Tensor den, std::vector<int64_t> widths, int64_t dense_read,
-                        int64_t dense_write, int64_t weight_digits,
-                        int64_t window);  // intra_api.md#rola-intra-forward
+void rola_intra_forward(std::vector<Tensor> read, std::vector<Tensor> write, Tensor values,
+                        Tensor fm, Tensor unions, Tensor num, Tensor den,
+                        std::vector<int64_t> widths, int64_t dense_read, int64_t dense_write,
+                        int64_t accumulate, int64_t window);  // intra_api.md#rola-intra-forward
 
 void rola_intra_ledger_bind(std::optional<Tensor> ledger);  // intra_api.md#rola-intra-ledger-bind
 
-int64_t intra_footprint(std::vector<int64_t> widths);  // intra_api.md#intra-footprint
+int64_t intra_footprint(std::vector<int64_t> widths, std::vector<int64_t> forms,
+                        int64_t device);  // intra_api.md#intra-footprint
+
+int64_t intra_block_rows(int64_t device);  // intra_api.md#intra-block-rows
 
 int64_t intra_build_stamp();  // intra_api.md#intra-build-stamp
 

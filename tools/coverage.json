@@ -126,7 +126,7 @@
    "overlap": "facts-alt-k4"
   },
   "intra_kernel": {
-   "oracle": "tests/integration/test_intra_kernel.py::test_the_intra_is_the_declared_arithmetic_per_slot",
+   "oracle": "tests/integration/test_intra_kernel.py::test_the_intra_is_the_bundle_arithmetic_per_slot",
    "sanitizer": "intra",
    "budget": "tools/budgets/intra.json",
    "phases": "tests/integration/test_intra_kernel.py::test_a_bound_ledger_books_every_phase_and_changes_nothing",

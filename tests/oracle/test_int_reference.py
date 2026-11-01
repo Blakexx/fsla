@@ -153,7 +153,7 @@ def test_the_intra_reference_is_the_intra_on_the_bundle_when_nothing_is_rounded(
     """Unrounded, the declared intra times the reader's factor IS the fp64 intra of the bundle's own dequantized
     levels and values: the structure (the Grams, the writer factor, the causal window) before any rounding."""
     cell, routes, values = _bundle(name)
-    num, den = iref.intra_bundle_reference(routes, values, carry_ops.WINDOW, exact=True)
+    num, den = iref.intra_bundle_reference(routes, values, carry_ops.WINDOW)
     read, write = routes.dequantized()
     want_num, want_den = reference.intra_reference(read, write, routes.g_write, values.dequantized(), cell.widths,
                                                    carry_ops.WINDOW)
@@ -167,15 +167,3 @@ def test_the_intra_reference_is_the_intra_on_the_bundle_when_nothing_is_rounded(
     assert ((den * reader - want_den).abs() <= 2.0 ** -20 * want_den).all()
 
 
-@pytest.mark.parametrize("name", INTRA_CELLS)
-@pytest.mark.parametrize("digits", (1, 2))
-def test_the_intra_weights_round_within_half_a_unit_a_term(name, digits):
-    """The value product's one rounding, bounded per slot: a weight moves by at most half its unit ``sigma / LW``,
-    so a slot's error is at most ``sum_c sigma / (2 LW) sum_{t' in c} |q|``; and it moves at all."""
-    _, routes, values = _bundle(name)
-    exact, _ = iref.intra_bundle_reference(routes, values, carry_ops.WINDOW, exact=True)
-    seen: dict = {}
-    got, _ = iref.intra_bundle_reference(routes, values, carry_ops.WINDOW, weight_digits=digits, telemetry=seen)
-    err = (got - exact).abs()
-    assert (err <= seen["bound"] * (1 + 1e-9)).all(), (err - seen["bound"]).max()
-    assert err.max() > 0

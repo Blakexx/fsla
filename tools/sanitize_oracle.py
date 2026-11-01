@@ -105,11 +105,11 @@ _FAMILIES = {
         test="tests/oracle/test_carry_vs_oracle.py::"
              "test_the_inter_numerator_is_the_fp64_reference[flagship-cohort-k4-L4096]",
         kernel="rola::carry::carry_forward", present=True),
-    #: THE INTRA KERNEL alone on the bundle: the stage buffers' full/empty barriers, the reader's parts, the value
-    #: tile's hand-off and the deposit's staging, at both digit counts -- one launch.
+    #: THE INTRA KERNEL alone on the bundle: the stage buffers' full barriers and release counts, the reader's parts,
+    #: the value tile's hand-off and the deposit's staging, every level form at fp16 accumulation -- one launch each.
     "intra": Family(
         test="tests/integration/test_intra_kernel.py::"
-             "test_every_digit_count_is_the_declared_arithmetic[2-2]",
+             "test_every_level_form_is_the_bundle_arithmetic[write_dense0-read_dense0-fp16]",
         kernel="rola::intra::rola_intra_forward", present=True,
         racecheck_driver=("tools/sanitize_cell.py", "--kernel", "intra", "--cell", "flagship-alt-k4")),
     #: THE DECODE STEP on the whole resident grid: the work queue's visits, claims and head switches.

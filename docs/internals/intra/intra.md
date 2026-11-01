@@ -1,82 +1,87 @@
 # `csrc/rola/src/intra/intra.cuh` / `intra.cu` — the intra's constants, operand block and translation unit
 
-Mirror doc for the header every intra source includes and for the one translation unit that
-derives a call's geometry from its widths and builds the two arms, one a depth. The kernel is [`intra_kernel.md`](intra_kernel.md); the host entries this unit
-defines, with their refusals, are [`intra_api.md`](intra_api.md).
+Mirror doc for the header every intra source includes and for the one translation unit that derives a call's geometry
+from its widths and forms on the device's card and builds the arms. The kernel is
+[`intra_kernel.md`](intra_kernel.md); the host entries this unit defines, with their refusals, are
+[`intra_api.md`](intra_api.md).
 
 <a id="constants"></a>
 
 ## The constants
 
-The shape of the walk, all fixed: `kWindow` 512 tokens — the carry's window, because the two
-kernels run one grid — cut into `kTile` = 64-token tiles, `kWindowTiles` = 8; a block is
-`kRowTiles` = 2 tiles, `kBlockRows` = 128 readers, and a window `kBlocks` = 4 of them; a warp
-owns `kWarpRows` = 16 readers, so a CTA is `kWarps` = 8 warps. The values are `kValueWidth` = 64
-channels. The rows are u8, which serve depth at most `kMaxLevels` = 2, each level at most
-`kMaxLevelWidth` = 256 digits. A copy moves `kChunk` = 16 bytes (an `ldmatrix` row, and the
-granule a level's width is a whole number of); a stage is at most `kStageDigits` = 128 digits of
-one level, so a level has one or two (`kLevelStages`) and a call at most `kMaxStages` = 4; a slab
-is `kSlabDigits` = 32 digits, one IMMA k-step and the gate's grain. `kStageBuffers` = 3 stage
-buffers, a stage copied one ahead of its use, which leaves two stages of slack between the warps
-([`intra_kernel.md`](intra_kernel.md#pipeline)). `kMinPitchStages` = 3: a reader row is at least
-three 128-byte stage slots, so a warp's 16 rows hold its deposit's staging tile (16 rows of 68
-floats). `kColumns` = 2 + `kMaxLevels` writer columns. `IntraPhase` is the phase ledger's
-column order.
+A window is the device's W ([`../common/window.md`](../common/window.md)) cut into `kTile` = 64-token tiles; a warp owns
+`kWarpRows` = 16 readers; the values are `kValueWidth` = 64 f16 channels (`kValueBytes` = 128 a token). The rows serve
+depth at most `kMaxLevels` = 2, each level `kDigitGranule` = 16 to `kMaxLevelWidth` = 256 digits, u8 or f16 on either
+side. A copy moves `kChunk` = 16 bytes; a stage is `kStageBytes` = 128 bytes of a writer tile's rows -- 128 u8 or 64
+f16 digits of one level (`form_stage_digits`), so the three buffers hold any level -- a level at most `kLevelStages` = 4
+of them and a call `kMaxStages` = 8; a slab is `kSlabDigits` = 32 digits, the gate's grain. `kStageBuffers` = 3 stage
+buffers. `kStagingBytes` is a warp's deposit staging tile (16 rows of 72 floats). A `LevelForm` names a level's
+storage, bit 0 its read rows f16 and bit 1 its write rows f16. `IntraPhase` is the phase ledger's column order and
+`kLedgerWarps` = 8 its rows.
+
+<a id="block"></a>
+
+## A card's walk
+
+`block_rows_for(cc)`, `warp_cols_for(cc)` and `warps_for(cc)` are per-card configuration (ruled 2026-10-31: W and the
+structural constants are a card's), read by the device at its compiling card and by the host at the device's compute
+capability (`Card`, `card_of`), the same tables both ways. The BLOCK -- the readers a CTA holds resident -- is the most
+the card's area holds at the widest rows, (256, 256) f16 on both sides (1 KB a reader): 128 on sm_80 and sm_87 (164 KB),
+64 on sm_86 and sm_89 (99 KB). A warp's WRITER COLUMNS are 64 where the block is 128 readers (8 warps of one reader
+group each) and 32 where it is 64 (two warps a reader group, 8 warps), so every card's CTA is 8 warps, two a scheduler.
+A block of 64 re-reads a window's writer tiles twice as often as one of 128: the area's price, fixed per card, with no
+threshold inside one.
 
 <a id="pieces"></a>
 
 ## The pieces
 
-`kPieceTiles` = 4 caps a CTA's sweep: block `b`'s tiles `0 .. 2b + 1` cut into pieces of at most
-four, so the diagonal pair lands in the block's last piece. `Pieces` builds the window's table
-at compile time, longest first and the heavier block first among equals — `(3, 0..3)`,
-`(3, 4..7)`, `(2, 0..3)`, `(1, 0..3)`, `(2, 4..5)`, `(0, 0..1)` — and the kernel reads its entry from
-constant memory by `blockIdx.x` modulo six. Why four is [`intra_kernel.md`](intra_kernel.md#the-grid).
+`kPieceTiles` = 4 caps a CTA's sweep: block `b`'s tiles `0 .. (b + 1) R - 1` (`R` the block's row tiles) cut into
+pieces of at most four, so the diagonal pair lands in the block's last piece. `PiecesAt<W, Rows>` builds the window's
+table at compile time, longest first and the heavier block first among equals, and the kernel reads its entry from
+constant memory by `blockIdx.x` modulo the count (6 at W = 512 with 128-reader blocks, 12 with 64). Why four is
+[`intra_kernel.md`](intra_kernel.md#the-grid).
 
 <a id="stages"></a>
 
-## The stages: a call's geometry from its widths
+## The stages: a call's geometry from its widths and forms
 
-Each level is read at its rows' own width `w`, a whole number of 16-digit granules from 16 to
-256, padded only to the 32-digit slab in shared memory: a level has `ceil(w / 32)` slabs, numbered
-across the levels in order (the gate word's bits, `slab0` a level's first), and its slabs fall
-into stages of four, the last stage of a level holding the rest. A `Stage` is a level's stage:
-its `index` -- its slot in the reader row, its reader part and its place in the copy order --
-its `slab0` and its slab `mask`. A 16-digit tail (a width of 16 modulo 32) is a slab's second
-chunk, which the copies zero-fill rather than read; a stage's empty slots past its slabs are
-filled the same way and never read. `geometry()` derives all of it and the footprint,
-`sizeof(Smem)` plus 128 reader rows of `pitch` = `max(stages, kMinPitchStages)` slots of 128
-bytes; the same function answers `intra_footprint`. The footprint grows with the stages, largest
-at (256, 256).
+Each level is read at its rows' own width `w`, a whole number of 16-digit granules from 16 to 256: a level has
+`ceil(w / 32)` slabs, numbered across the levels in order (the gate word's bits, `slab0` a level's first), and its
+stages are its writer rows' 128-byte slices, `form_stage_digits` digits each, the last holding the rest. A `Stage` is
+one: its `index` (its reader part and its place in the copy order), `level`, first digit, first slab, slab `mask`, and
+`reader_chunk`, its reader slot's first 16-byte chunk in a reader row -- the stage's digits in the reader's own
+storage (64, 128 or 256 bytes). A level's stages are contiguous (`level_stage0`, `level_stages`), so the kernel walks a
+level's under its form. A 16-digit tail is a slab's second half, which the copies zero-fill; a stage's slots past its
+slabs are filled the same way and never read. `geometry()` derives all of it and the footprint -- the card's
+`sizeof(SmemAt<W, Rows, Warps>)` plus its block of reader rows at `pitch`, the slots rounded up to 128 bytes, at least
+three stages and every warp's staging tile -- and the same function answers `intra_footprint`.
 
-The facts pass's union table is laid out by its own widths, the topology's padded ones, which
-are never narrower than the rows: a level's union groups start at the layout's `group_base`
-(`group0`), and its slabs read the first `ceil(w / 32)` of them.
+The facts pass's union table is laid out by its own widths, the topology's padded ones, which are never narrower than
+the rows: a level's union groups start at the layout's `group_base` (`group0`), and its slabs read the first
+`ceil(w / 32)` of them.
 
 <a id="intraparams"></a>
 
 ## `IntraParams` — the operand block, a grid constant
 
-Per level a `RowView` of each side's rows (base, and the batch, token and head strides in
-bytes), a `ColumnView` of the write scale, its width, first slab, first union group, stage
-count and slab mask, and its stages; the gain and the value scale; the value planes; the tile
-unions; the output planes; the ledger; the stage and slab counts, the union table's group
-count and the reader row's pitch; `H`, `L`, the window count, the weight digit count and each
-side's dense-level bitmask. It is a `__grid_constant__` kernel parameter of under a kilobyte, so
-a launch allocates nothing to learn its shape and a level's fields are read where they lie.
+Per level a `RowView` of each side's rows (base, and the batch, token and head strides in bytes), its width, form,
+first slab, first union group, first stage, stage count and slab mask; the stage table; the values' view, the facts
+pass's `fm` and tile unions; the output planes; the ledger; the stage and slab counts, the union table's group count
+and the reader row's pitch; `H`, the query heads a write head (`group`), `L`, the window count; level 0's lift and the
+digits' `unit` ([`intra_kernel.md`](intra_kernel.md#widening)); and each side's dense-level bitmask. It is a
+`__grid_constant__` kernel parameter of under a kilobyte, so a launch allocates nothing to learn its shape.
 
 <a id="the-unit"></a>
 
 ## The translation unit
 
-The arms are the depth, `intra_kernel<1>` and `intra_kernel<2>`; the widths are the call's.
-The host entry derives the geometry from the rows' widths, turns each tensor into a view after
-checking it (`row_view`, `column_view`: dtype, shape, 16-byte starts and strides), fills the
-block and launches the depth's arm on a `(windows × 6, B·H)` grid of 256 threads with the
-call's footprint. A footprint past the 48 KB a kernel gets unasked is checked against the
-device's opt-in and the arm's attribute raised to it, once a size: only a call wider than any
-before it pays the attribute call.
+The arms are the depth and the accumulation, `intra_kernel<D, kF16>` at `D` = 1, 2: four. The host entry reads the
+device's card, derives the geometry from the rows' widths and dtypes, turns each tensor into a view after checking it
+(`row_view`: shape, 16-byte starts and strides), fills the block and launches the arm on a `(windows × pieces, B·H)`
+grid of the card's threads with the call's footprint. A footprint past the 48 KB a kernel gets unasked is checked
+against the device's opt-in and the arm's attribute raised to it, once a size: only a call wider than any before it
+pays the attribute call.
 
-The build stamp's kernel lives in a NAMED namespace, `stampdet`: nvcc hashes the build path
-into an anonymous namespace's kernel names, and a manifest ratified in one worktree would
-refuse the identical kernel built in another.
+The build stamp's kernel lives in a NAMED namespace, `stampdet`: nvcc hashes the build path into an anonymous
+namespace's kernel names, and a manifest ratified in one worktree would refuse the identical kernel built in another.

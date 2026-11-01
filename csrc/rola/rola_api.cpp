@@ -98,12 +98,12 @@ std::tuple<int64_t, bool, int64_t, std::string> vmm_probe(int64_t device) {
 STABLE_TORCH_LIBRARY(rola, m) {
   // ---- the intra: the within-window pairs over the bundle -------------------
   m.def(
-      "rola_intra_forward(Tensor[] read, Tensor[] write, Tensor[] scale_write, Tensor g_write, Tensor v_hat, "
-      "Tensor? v_lo, Tensor v_scale, Tensor unions, Tensor(a!) num, Tensor(b!) den, int[] widths, int dense_read, "
-      "int dense_write, int weight_digits, int window) -> ()");
+      "rola_intra_forward(Tensor[] read, Tensor[] write, Tensor values, Tensor fm, Tensor unions, Tensor(a!) num, "
+      "Tensor(b!) den, int[] widths, int dense_read, int dense_write, int accumulate, int window) -> ()");
   m.def("rola_intra_ledger_bind(Tensor? ledger) -> ()");
   m.def("intra_build_stamp() -> int");
-  m.def("intra_footprint(int[] widths) -> int");
+  m.def("intra_footprint(int[] widths, int[] forms, int device) -> int");
+  m.def("intra_block_rows(int device) -> int");
 
   // ---- the CARRY LAUNCH SURFACE --------------------------------------------
   m.def(
@@ -214,6 +214,7 @@ STABLE_TORCH_LIBRARY_IMPL(rola, CompositeExplicitAutograd, m) {
   m.impl("rola_intra_ledger_bind", TORCH_BOX(&rola::intra::rola_intra_ledger_bind));
   m.impl("intra_build_stamp", TORCH_BOX(&rola::intra::intra_build_stamp));
   m.impl("intra_footprint", TORCH_BOX(&rola::intra::intra_footprint));
+  m.impl("intra_block_rows", TORCH_BOX(&rola::intra::intra_block_rows));
   m.impl("carry_forward", TORCH_BOX(&rola::carry::carry_forward));
   m.impl("den_forward", TORCH_BOX(&rola::den::den_forward));
   m.impl("den_ledger_bind", TORCH_BOX(&rola::den::den_ledger_bind));
