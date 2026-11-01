@@ -1068,7 +1068,7 @@
   {"doc": "docs/internals/facts/facts.md", "pinned_at": "48c245ff647c", "reviewed": true, "sha256": "21a906df5e18be3f", "target": "csrc/rola/src/facts/facts.cu::ring_row"},
   {"doc": "docs/internals/facts/facts.md", "pinned_at": "ea9b9dce7552", "reviewed": true, "sha256": "4dc2134e69804060", "target": "csrc/rola/src/facts/facts.cu::rola_facts_ledger_bind"},
   {"doc": "docs/internals/facts/facts.md", "pinned_at": "ea9b9dce7552", "reviewed": true, "sha256": "", "target": "csrc/rola/src/facts/facts.cuh"},
-  {"doc": "docs/internals/facts/facts.md", "pinned_at": "48c245ff647c", "reviewed": true, "sha256": "a539f9b66e34e29d", "target": "csrc/rola/src/facts/facts.cuh::tile_at"},
+  {"doc": "docs/internals/facts/facts.md", "pinned_at": "c68e2a082d20", "reviewed": true, "sha256": "686c0e4ff9d6e470", "target": "csrc/rola/src/facts/facts.cuh::tile_at"},
   {"doc": "docs/internals/facts/facts.md", "pinned_at": "220e8154eb62", "reviewed": true, "sha256": "1fc52ab229c8b346", "target": "csrc/rola/src/facts/facts.cuh::unit_code"},
   {"doc": "docs/internals/facts/facts.md", "pinned_at": "ea9b9dce7552", "reviewed": true, "sha256": "", "target": "docs/api.md"},
   {"doc": "docs/internals/facts/facts.md", "pinned_at": "6f5da2f37dc5", "reviewed": true, "sha256": "96b01b0bdecc168f", "target": "docs/api.md#grouped-queries"},

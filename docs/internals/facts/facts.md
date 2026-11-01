@@ -91,14 +91,26 @@ byte transpose across the token blocks (two `shfl_xor` exchanges) leaves lane `(
 bits, masked by the digit's width-mask bit (`digit_in`). Warp `w` votes the window's words `2w` and `2w + 1`, and ORs
 each over the warp (one warp reduction) into the union's word.
 
+<a id="window"></a>
+
+## The window
+
+The pass builds each window's lists at the card's W (`common/window.cuh`): `kWindowTokens` tokens, `kWindowWords` words
+of 32 tokens, and the stages map onto that window by four counts derived from it -- a warp's 32-token blocks
+(`kWarpBlocks`), a thread's tokens (`kThreadTokens`), a list lane's words (`kLaneWords`, eight lanes a list) and
+boundaries (`kLaneBounds`) -- so a stage's loop runs over its count and at W = 512 every count is the 512-token pass's
+own. The shared tenants are `FactsSmemAt<W>`; the host takes the device's W and launches the device's tenants. A read
+entry's pool offset is 16 bits, so a write head's read side merges at most `max_group(W) = 8192 / W` query heads (16 at
+512, 8 at 1,024); `kMaxGroup` stays the parameter block's bound, the same in both compile passes.
+
 <a id="tiles"></a>
 
 ## The tiles and the bits out
 
-A unit's words go into a shared TILE (`tile_at`: digit `d` word `j` at `16 d + (j ^ (d / 2 % 16))`, so a warp's
-column writes, a digit a lane, and its row reads, a row a half-warp, each meet 32 banks); after the barrier each
-digit's window of words goes out as one 64-byte run (a half-warp a digit) and each 64-token tile's union, a digit a
-lane, as one ballot (warp `w` tile `w`).
+A unit's words go into a shared TILE (`tile_at`: digit `d` word `j` at `w d + (j ^ x(d))` for the window's `w`
+words, `x(d) = d / 2 % 16` at 16 words and `d % 32` at 32, so a warp's column writes, a digit a lane, and its row
+reads each meet 32 banks); after the barrier each digit's window of words goes out as one run of `4 w` bytes and each
+64-token tile's union, a digit a lane, as one ballot (warp `w` its `kWindowTiles / 8` tiles).
 
 <a id="columns"></a>
 <a id="factor-products"></a>

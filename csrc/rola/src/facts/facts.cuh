@@ -18,16 +18,23 @@ constexpr int kFactsCtasMin = 4;
 //: THE ROW ALIGNMENT LAW's grain (`rola.routing.quant.ROW_ALIGN`). -- see docs/internals/facts/liveness_contract.md#alignment
 constexpr int kRowAlign = 32;
 
-//: THE WINDOW, the carry's 512 tokens and the lists' grain.
-constexpr int kWindowWords = 16;
-constexpr int kWindowTokens = kWindowWords * kTokBits;
+//: THE WINDOW, the compiling card's (common/window.cuh; host code takes its device's), and the counts the stages map
+//: onto it: a warp's 32-token blocks, a thread's tokens, a list lane's words. -- see docs/internals/facts/facts.md#window
+constexpr int kWindowTokens = kWindow;
+constexpr int kWindowWords = kWindowTokens / kTokBits;
 constexpr int kWindowTiles = kWindowTokens / kTileTokens;
+constexpr int kWarpBlocks = kWindowWords / kFactsWarps;
+constexpr int kThreadTokens = kWindowTokens / kFactsThreads;
+constexpr int kLaneWords = kWindowWords / 8;
 
 constexpr int kMaxWidth = 256;
 constexpr int kMaxGroups = kMaxWidth / kGroupDigits;
 constexpr int kMaxMaskWords = kMaxLevels * kMaxWidth / 32;
-//: THE QUERY HEADS a write head's read side merges, at most (a window's rows of every head at a 16-bit pool offset)
+//: THE QUERY HEADS a write head's read side merges: the parameter block's bound, and a window's at W (every head's rows
+//: at a 16-bit pool offset). -- see docs/internals/facts/facts.md#window
 constexpr int kMaxGroup = 16;
+
+__host__ __device__ constexpr int max_group(int w) { return 8192 / w; }
 
 //: A UNIT, coded (kind, side, level, group, head in the group). -- see docs/internals/facts/facts.md#the-plan
 enum UnitKind : int { kUnitVote = 0, kUnitList = 1, kUnitColumns = 2 };
@@ -52,7 +59,7 @@ __host__ __device__ constexpr int unit_head(uint32_t c) { return (c >> 8) & 15; 
 //: A BIT TILE: the group's 32 digits x the window's 16 words, row `d` word `j` at `16 d + (j ^ (d / 2 % 16))`.
 //: -- see docs/internals/facts/facts.md#tiles
 __host__ __device__ constexpr int tile_at(int d, int j) {
-  return kWindowWords * d + (j ^ ((d >> 1) & 15));
+  return kWindowWords * d + (j ^ (kWindowWords >= 32 ? (d & 31) : ((d >> 1) & 15)));
 }
 
 //: THE LIST EXPONENTS' FLOOR, the smallest normal fp32. -- see docs/internals/facts/facts.md#lists
@@ -63,6 +70,7 @@ constexpr float kListFloor = 1.17549435e-38f;
 constexpr int kListCap = kWindowTokens;
 constexpr int kListBound = carry::kListBound;
 constexpr int kListAt = kWindowTokens / kListBound;
+constexpr int kLaneBounds = kListAt / 8;
 constexpr int kCoefTop = 4;
 constexpr int kUnitMin = kCoefTop - 127;
 static_assert(kFactsWarps == carry::kWarps && kGroupDigits == carry::kBoxLists,
@@ -77,20 +85,28 @@ enum FactsPhase : int { kPhaseLoad, kPhaseVote, kPhaseRanks, kPhaseLists, kFacts
 
 //: THE CTA'S SHARED MEMORY, by offset: the window, the bit tile, the columns, the union's words, each boundary's first
 //: token, the warps' maxima, a head's lists' boundaries. -- see docs/internals/facts/facts.md#shared-memory
-struct FactsSmem {
+template <int W>
+struct FactsSmemAt {
   static constexpr int kWin = 0;
-  static constexpr int kTile = kWin + kWindowTokens * kGroupDigits;
-  static constexpr int kCols = kTile + kGroupDigits * kWindowWords * 4;
-  static constexpr int kUword = kCols + kWindowTokens * 8;
-  static constexpr int kBound = kUword + kWindowWords * 4;
-  static constexpr int kWmax = kBound + kListAt * 4;
+  static constexpr int kTile = kWin + W * kGroupDigits;
+  static constexpr int kCols = kTile + kGroupDigits * (W / kTokBits) * 4;
+  static constexpr int kUword = kCols + W * 8;
+  static constexpr int kBound = kUword + (W / kTokBits) * 4;
+  static constexpr int kWmax = kBound + (W / kListBound) * 4;
   static constexpr int kTable = kWmax + kFactsWarps * 8;
-  static constexpr int kBytes = kTable + kGroupDigits * (kListAt + 1) * 2;
+  static constexpr int kBytes = kTable + kGroupDigits * (W / kListBound + 1) * 2;
 };
 
-static_assert(FactsSmem::kTile % 16 == 0 && FactsSmem::kCols % 16 == 0
-                  && FactsSmem::kUword % 16 == 0 && FactsSmem::kWmax % 8 == 0
-                  && FactsSmem::kTable % 16 == 0,
+using FactsSmem = FactsSmemAt<kWindowTokens>;
+
+template <int W>
+constexpr bool tenants_aligned() {
+  using S = FactsSmemAt<W>;
+  return S::kTile % 16 == 0 && S::kCols % 16 == 0 && S::kUword % 16 == 0 && S::kWmax % 8 == 0
+         && S::kTable % 16 == 0;
+}
+
+static_assert(tenants_aligned<512>() && tenants_aligned<1024>(),
               "each tenant on its access's alignment");
 
 //: A SIDE'S LISTS OUT at its list level: entries, prefix rows (mod 2^16), exact totals, the union by slot, its extent.
