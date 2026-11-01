@@ -60,7 +60,7 @@ constexpr float kListFloor = 1.17549435e-38f;
 
 //: THE LISTS OUT, the carry's final form (`carry/carry.cuh` owns its addresses), a write entry's coefficients at
 //: 2^(kCoefTop - E) with E floored at `kUnitMin`. -- see docs/internals/facts/facts.md#lists-out
-constexpr int kListCap = carry::kListCap;
+constexpr int kListCap = kWindowTokens;
 constexpr int kListBound = carry::kListBound;
 constexpr int kListAt = kWindowTokens / kListBound;
 constexpr int kCoefTop = 4;
