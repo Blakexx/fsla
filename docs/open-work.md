@@ -29,7 +29,7 @@ sanitizer row, a budget line, a phase ledger, a ratified manifest entry, an over
 
 | # | Open | Where |
 |---|---|---|
-| **M-a** | **An op-level prefill subject and a layer subject.** The timed subjects are kernel-level and decode's op-level step (`measure/subjects.py`); the prefill runs end to end statelessly and has no subject yet. | [`measurement.md`](measurement.md) |
+| **M-a** | **A layer subject.** The timed subjects are kernel-level and the two op-level paths, the stateless `prefill` and decode's step (`measure/subjects.py`); a layer segments a sequence into stateful calls, which wait on C-e. | [`measurement.md`](measurement.md) |
 | **M-b** | **Decode bench cells.** Decode's step is timed as a subject; no latency-regression rows exist for it. | [`internals/decode/decode.md`](internals/decode/decode.md) |
 | **M-c** | **Skip-induced wave drift.** Boxes that skip windows race ahead of busy ones and de-phase the CTAs' shared working set in L2; measure on the rebuilt carry before designing a fix (a grid-wide window edge, a shared liveness scan, or a skip that keeps its stream position). | [`internals/carry/carry_kernel.md`](internals/carry/carry_kernel.md) |
 | **M-d** | **The class-drift check.** No gate asserts that a two-branches-agree class's declared members still cover the code's branches. | [`testing.md`](testing.md) |
