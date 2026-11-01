@@ -7,9 +7,6 @@
 
 namespace rola::carry {
 
-//: W -- see docs/internals/common/constants.md#window
-constexpr int kWindow = 512;
-
 //: THE SEGMENT -- see docs/internals/common/constants.md#segment
 constexpr int kSegmentTokens = 16;
 

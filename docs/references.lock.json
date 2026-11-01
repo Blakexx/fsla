@@ -535,7 +535,6 @@
   {"doc": "docs/internals/common/constants.md", "pinned_at": "d3d24b1ea3ba", "reviewed": true, "sha256": "", "target": "docs/ARCHITECTURE.md"},
   {"doc": "docs/internals/common/constants.md", "pinned_at": "d3d24b1ea3ba", "reviewed": true, "sha256": "43a4c36604c6afa0", "target": "docs/internals/common/geom.md#cluster"},
   {"doc": "docs/internals/common/constants.md", "pinned_at": "d3d24b1ea3ba", "reviewed": true, "sha256": "", "target": "rola/engine/constants.py"},
-  {"doc": "docs/internals/common/constants.md", "pinned_at": "d3d24b1ea3ba", "reviewed": true, "sha256": "", "target": "rola/ops/carry.py"},
   {"doc": "docs/internals/common/constants.md", "pinned_at": "d3d24b1ea3ba", "reviewed": true, "sha256": "", "target": "tests/unit/test_carry_constants.py"},
   {"doc": "docs/internals/common/constants.md", "pinned_at": "578bf154f46f", "reviewed": true, "sha256": "", "target": "tests/unit/test_carry_geometry.py"},
   {"doc": "docs/internals/common/cost.md", "pinned_at": "a089f4a7c16e", "reviewed": true, "sha256": "", "target": "csrc/rola/src/common/cost.cuh"},

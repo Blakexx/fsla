@@ -837,12 +837,6 @@
   },
   {
    "path": "docs/internals/common/constants.md",
-   "message": "names the work code 'C2e'",
-   "line_sha256": "eccc19bb15befb45",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/constants.md",
    "message": "names the work code 'C3'",
    "line_sha256": "0c588860b8442890",
    "count": 1

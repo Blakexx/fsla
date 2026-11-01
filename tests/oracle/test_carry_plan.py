@@ -16,6 +16,7 @@ import torch
 from rola.engine.carve import plan_carve
 from rola.ops import carry as carry_ops
 from rola.ops import facts as facts_ops
+from rola.ops.window import window_of
 from tests.oracle import carry_plan as cp
 from tests.oracle.carry_fixtures import FORM_CELLS, alternating_bundle
 
@@ -88,10 +89,11 @@ def test_grouped_plans_are_the_model():
 def _sides(rng: random.Random):
     """A random window's counts: each side's union (none, small or full) and segment sums of up to 32 lists a slot."""
     def side():
-        u = rng.choice((0, rng.randrange(8, 128, 8), rng.randrange(128, 512, 8), 512))
+        W = window_of()
+        u = rng.choice((0, rng.randrange(8, 128, 8), rng.randrange(128, W, 8), W))
         density = rng.choice((1, 4, 16, 32))
         totals, run = [], 0
-        for j in range(cp.LIST_AT):
+        for j in range(cp.list_at()):
             slots = max(0, min(u, cp.LIST_BOUND * (j + 1)) - cp.LIST_BOUND * j)
             run += rng.randint(0, density * slots)
             totals.append(run)

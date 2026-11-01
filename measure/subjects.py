@@ -341,9 +341,9 @@ SUBJECTS = {
 
 
 def _shared_window() -> int:
-    from rola.ops import carry as carry_ops
+    from rola.ops.window import window_of
 
-    return carry_ops.WINDOW
+    return window_of()
 
 
 def _splits(tokens: int, calls: int) -> bool:

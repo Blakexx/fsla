@@ -59,9 +59,9 @@ def ctas(cell: str) -> int:
 def cta_windows(cell: str) -> int:
     """The launch's CTA-windows, CTAs times windows: the one divisor that turns a launch total into a unit."""
     from measure.cells import by_name
-    from rola.ops import carry as c
+    from rola.ops.window import window_of
 
-    return ctas(cell) * ((by_name(cell).tokens + c.WINDOW - 1) // c.WINDOW)
+    return ctas(cell) * ((by_name(cell).tokens + window_of() - 1) // window_of())
 
 
 def main() -> int:
@@ -89,6 +89,7 @@ def main() -> int:
     from measure.cells import by_name
     from measure.subjects import carry_operands
     from rola.ops import carry as c
+    from rola.ops.window import window_of
 
     spec = by_name(a.cell)
 
@@ -99,7 +100,7 @@ def main() -> int:
     phases = c.LEDGER_PHASES
     warps = c.LEDGER_WARPS
     n_ctas = ctas(a.cell)
-    windows = (spec.tokens + c.WINDOW - 1) // c.WINDOW
+    windows = (spec.tokens + window_of() - 1) // window_of()
     with gpu_lock(mode="exclusive"):
         ledger = torch.zeros((n_ctas, warps, len(phases)), dtype=torch.int64, device="cuda")
         start, warmed = time.perf_counter(), 0

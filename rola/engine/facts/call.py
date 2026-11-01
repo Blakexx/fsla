@@ -30,10 +30,11 @@ def prefill_clauses(routes, decay: Any = None, *, d_v: int) -> tuple:
     whether the intra reads its widths and the binary's own census of the carry arms at its depth."""
     from rola.ops import carry as carry_ops
     from rola.ops import intra as intra_ops
+    from rola.ops.window import window_of
 
     widths = widths_of(routes)
     depth = len(widths)
-    return (widths, d_v, decay, routes.tokens, carry_ops.WINDOW,
+    return (widths, d_v, decay, routes.tokens, window_of(routes.device),
             intra_ops.admits(widths, intra_ops.VALUE_WIDTH, routes.device), intra_ops.VALUE_WIDTH,
             tuple(dv for (d, dv, _warps) in carry_ops.arms() if d == depth))
 

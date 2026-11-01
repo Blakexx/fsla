@@ -3,7 +3,7 @@
 """The carry family's file constants, launch table and S-from-SMEM rule: the Python
 mirror of ``csrc/rola/src/common/constants.cuh``.
 
-The two modules declare the SAME numbers -- ``WINDOW``, ``SEGMENT_TOKENS``, the
+The two modules declare the SAME numbers -- ``SEGMENT_TOKENS``, the
 ``warps_per_cta`` set, the per-arch launch table and the S-from-SMEM rule -- because a
 caller building a launch on the host and a kernel reading its own prologue must agree
 on all of them without either reading the other's source. ``tests/unit/
@@ -32,7 +32,6 @@ __all__ = [
     "WARPS_PER_CTA_DIAGNOSTIC",
     "WARPS_PER_CTA_SHIPPED",
     "WARPS_PER_SM",
-    "WINDOW",
     "LaunchRow",
     "box_leaves",
     "channel_groups",
@@ -46,8 +45,6 @@ __all__ = [
 #: The kernel's window, in tokens: a short sequence runs a partial window inside the
 #: kernel rather than taking a different value here. The inter/intra decomposition is
 #: defined on this grid, so the fp64 reference mirrors the same number.
-WINDOW = 512
-
 #: The stream's buffering grain, in tokens: the slice a producer fills, seals and hands
 #: to the consumers, and the k step one deposit MMA contracts. Mirrors
 #: ``common/constants.cuh``'s ``kSegmentTokens``.

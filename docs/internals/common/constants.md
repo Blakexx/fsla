@@ -16,17 +16,6 @@ derivation, consumed here, never forked). `warps_per_sm = 8` the register law
 (`common/geom.cuh`). `warps_per_cta` the launch shape's one free field. `BC` the CTA's
 box, `leaves_per_warp * warps_per_cta`. `S` a side's stream count.
 
-<a id="window"></a>
-## `kWindow` = 512
-
-The axis law: `W` is a kernel-internal CONSTANT, never an argument. The inter/intra
-decomposition (`docs/ARCHITECTURE.md` §6) is defined on this grid, so the fp64
-reference has to mirror the same number or the two terms are not one recurrence. A
-sequence shorter than a window runs a partial window inside the kernel; a caller never
-selects a different `W`. `rola/ops/carry.py`'s own `WINDOW` constant is this same
-value; a follow-on consolidation stage (`C_CLEAN_SLATE.md`'s C2e) is where that site
-is repointed to import this module rather than restate the literal.
-
 <a id="warps-per-cta"></a>
 ## `warps_per_cta` ∈ {8, 4} — K50 "the 2×4 issue"
 

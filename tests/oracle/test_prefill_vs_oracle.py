@@ -21,8 +21,7 @@ import rola
 from measure.cells import by_name, carry_cells, realize
 from measure.subjects import bundle_of
 from rola.interface import rola_op
-from rola.ops import carry as carry_ops
-from rola.ops import facts as facts_ops
+from rola.ops.window import window_of
 from tests.oracle import reference
 from tests.oracle.fixtures import assert_slots_close, oracle_run
 from tests.oracle.tolerances import PREFILL_READOUT, PREFILL_STATE
@@ -104,16 +103,11 @@ def test_the_intra_term_is_actually_present():
     read, write = routes.dequantized()
     num, den, _ = reference.inter_reference(tuple(x.double() for x in read), tuple(x.double() for x in write),
                                             routes.g_write.double(), values.dequantized().double(),
-                                            routes.topology.widths, carry_ops.WINDOW)
+                                            routes.topology.widths, window_of())
     want = oracle(routes, values)
     with pytest.raises(AssertionError, match="off the oracle"):
         assert_slots_close(num / (den[..., None] + 1e-5), want.y, output=PREFILL_READOUT, envelope=want.y_envelope,
                            what="inter alone")
-
-
-def test_the_two_kernels_run_one_window_grid():
-    """``W`` IS ONE CONSTANT: the carry's window and the facts pass's, the grid the intra's pieces tile."""
-    assert carry_ops.WINDOW == facts_ops.WINDOW == 512
 
 
 def test_the_op_refuses_what_it_has_no_kernel_for():

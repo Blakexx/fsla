@@ -3,7 +3,7 @@ readout's declared arithmetic (`tests/oracle/readout_reference.py`: a CTA's unit
 rounded at them, the CTAs summed in the call's reduce dtype) within its bound, at both orders of the even box's levels,
 over four windows, at both reduce dtypes (docs/internals/carry/parts.md#readout).
 
-Symbols: ``W`` the window (512 tokens), ``L`` tokens, ``B_l`` level ``l``'s width, ``d_v`` the value width.
+Symbols: ``W`` the window (the device's), ``L`` tokens, ``B_l`` level ``l``'s width, ``d_v`` the value width.
 """
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import torch
 from rola.engine.carve import plan_carve
 from rola.ops import carry as carry_ops
 from rola.ops import facts as facts_ops
+from rola.ops.window import window_of
 from tests.oracle import carry_plan
 from tests.oracle.carry_fixtures import FORM_CELLS, alternating_bundle
 from tests.oracle.readout_reference import num_absolute, readout, units
@@ -21,8 +22,8 @@ from tests.oracle.readout_reference import num_absolute, readout, units
 def _readout_ratio(widths, L, write_sparse, growth, accumulate, *, live=4, forced=None, reduce_dtype=torch.float16):
     """``(ratio, plans)``: the call's largest slot distance from the reference over its bound, and its boxes' plans."""
     routes, values = alternating_bundle(widths, L, write_sparse, live=live)
-    window = torch.arange(L, device="cuda") // carry_ops.WINDOW
-    routes.g_write.mul_(torch.exp2(growth * window.float())[None, :, None])
+    at = torch.arange(L, device="cuda") // window_of()
+    routes.g_write.mul_(torch.exp2(growth * at.float())[None, :, None])
     carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, values.v.shape[-1])
     key = carry_ops.arm_key(carve)
     assert key == (32, 1, 32, 1, 32, 0)
@@ -30,15 +31,15 @@ def _readout_ratio(widths, L, write_sparse, growth, accumulate, *, live=4, force
     facts = facts_ops.facts(routes, values, layout, *facts_ops.call_statics(routes, layout),
                             carry_ops.form(key).read_row)
     level_s = 1 - write_sparse
-    scale = units(routes, values, facts.list_exp, level_s, carry_ops.WINDOW)
+    scale = units(routes, values, facts.list_exp, level_s, window_of())
     num, _ = carry_ops.carry(routes, values, facts, carve, scale, accumulate=accumulate, forced=forced,
                              reduce_dtype=reduce_dtype)
     torch.cuda.synchronize()
-    want, bound = readout(routes, values, facts.list_exp, level_s, carry_ops.WINDOW, scale, accumulate, reduce_dtype)
+    want, bound = readout(routes, values, facts.list_exp, level_s, window_of(), scale, accumulate, reduce_dtype)
     got = num_absolute(num, scale)
-    later = slice(carry_ops.WINDOW, L)
+    later = slice(window_of(), L)
     assert (want[:, later].abs() > 0).float().mean() > 0.5, "most later slots read nothing: the cell is vacuous"
-    assert torch.equal(got[:, :carry_ops.WINDOW], torch.zeros_like(got[:, :carry_ops.WINDOW])), (
+    assert torch.equal(got[:, :window_of()], torch.zeros_like(got[:, :window_of()])), (
         "the first window read a state before any write")
     return ((got - want).abs() / bound).max().item(), carry_plan.plans(routes, facts, carve, forced)
 

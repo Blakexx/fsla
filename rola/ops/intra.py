@@ -20,7 +20,8 @@ import torch
 
 from rola.engine.facts.liveness import LivenessLayout, SideStatics
 from rola.ops._ext import extension
-from rola.ops.carry import WINDOW, readout_accumulate
+from rola.ops.carry import readout_accumulate
+from rola.ops.window import window_of
 
 #: THE PER-LEVEL MODE, two bits per level: bit 0 the READ side is value-sparse there, bit 1 the WRITE side. The carry's
 #: geometry block orders its carve by it.
@@ -44,7 +45,7 @@ LEDGER_WARPS = 8
 _ACCUMULATE = {"fp32": 0, "fp16": 1}
 
 __all__ = ["BOTH_SPARSE", "DENSE_BOTH", "FORM_F16_F16", "LEDGER_PHASES", "LEDGER_WARPS", "MAX_LEVELS",
-           "MAX_LEVEL_WIDTH", "READ_SPARSE", "VALUE_WIDTH", "WIDTH_GRANULE", "WINDOW", "WRITE_SPARSE", "admits",
+           "MAX_LEVEL_WIDTH", "READ_SPARSE", "VALUE_WIDTH", "WIDTH_GRANULE", "WRITE_SPARSE", "admits",
            "block_rows", "build_stamp", "footprint", "intra_forward", "ledger_bind", "pack_modes", "reads"]
 
 
@@ -70,13 +71,13 @@ def intra_forward(routes, values, facts, layout: LivenessLayout, read_statics: S
 
     ``facts`` is the facts pass's output over this bundle in ``layout`` (its tile unions and writer factors), the
     statics the ones it was made with. Each level's rows are read at their own width (:func:`reads`), at most
-    ``layout``'s, in their stored dtype, and the call is a whole number of `WINDOW`-token windows. ``accumulate``
+    ``layout``'s, in their stored dtype, and the call is a whole number of the device's windows. ``accumulate``
     (``"fp32"`` or ``"fp16"``) is reserved: the gates' choice of form, the device's rule by default.
     """
     form = _ACCUMULATE[accumulate or readout_accumulate(routes.device)]
     extension().rola_intra_forward(
         list(routes.amp_read), list(routes.amp_write), values.v, facts.fm, facts.unions, num, den, list(layout.B),
-        _dense_bits(read_statics), _dense_bits(write_statics), form, WINDOW)
+        _dense_bits(read_statics), _dense_bits(write_statics), form, window_of(routes.device))
 
 
 def _device_index(device) -> int:

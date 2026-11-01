@@ -22,6 +22,7 @@ import torch
 from rola.engine.facts import liveness as lv
 from rola.ops import facts as facts_ops
 from rola.ops import intra as intra_ops
+from rola.ops.window import window_of
 from rola.routing.factors import RouteFactors
 from rola.routing.types import OpaqueRouting, Topology
 from rola.values import Values
@@ -32,7 +33,6 @@ _READ_ROW = 64
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="the intra is a CUDA kernel")
 
-WINDOW = intra_ops.WINDOW
 #: f16's and fp32's unit roundoff
 U16, U32 = 2.0 ** -11, 2.0 ** -24
 #: the value product's k-steps over a tile's 64 writers
@@ -71,7 +71,7 @@ def _clustered(L, H, seed=0):
     slab ``j`` and a writer only in slabs ``j`` and ``j + 1``, so a tile pair meets on the diagonal and one below it,
     the second on one slab of eight; level 1 is dense on both sides."""
     routes, values = _bundle(L, H, 0.3, read_dense=(False, True), write_dense=(False, True), seed=seed)
-    tile = (torch.arange(L, device="cuda") % WINDOW) // 64
+    tile = (torch.arange(L, device="cuda") % window_of()) // 64
     slab = torch.arange(256, device="cuda") // 32
 
     def keep(rows, slabs):
@@ -113,7 +113,7 @@ def _flat(x, routes):
 def _bounds(routes, accumulate):
     """``(num, den)``: each plane's relative bound against its envelope (docs/internals/intra/intra_kernel.md#numerics)."""
     steps = sum(2 * math.ceil(w / 32) for w in routes.topology.widths)
-    tiles = WINDOW // 64
+    tiles = window_of() // 64
     fp32 = (tiles + 64) * U32
     if accumulate == "fp16":
         return (steps + 1 + VALUE_STEPS) * U16 + fp32, steps * U16 + fp32
@@ -122,9 +122,9 @@ def _bounds(routes, accumulate):
 
 def _check(routes, values, accumulate="fp32"):
     num, den = _run(routes, values, accumulate=accumulate)
-    want_num, want_den = iref.intra_bundle_reference(routes, values, WINDOW)
-    envelope, _ = iref.intra_bundle_reference(routes, Values(v=values.v.abs(), scale=values.scale), WINDOW)
-    mass, _ = iref.intra_bundle_reference(routes, Values(v=torch.ones_like(values.v), scale=values.scale), WINDOW)
+    want_num, want_den = iref.intra_bundle_reference(routes, values, window_of())
+    envelope, _ = iref.intra_bundle_reference(routes, Values(v=values.v.abs(), scale=values.scale), window_of())
+    mass, _ = iref.intra_bundle_reference(routes, Values(v=torch.ones_like(values.v), scale=values.scale), window_of())
     want_num, want_den = _flat(want_num, routes), _flat(want_den, routes)
     envelope, mass = _flat(envelope, routes), _flat(mass, routes)
     num_bound, den_bound = _bounds(routes, accumulate)
@@ -254,7 +254,7 @@ def test_the_seam_refuses_what_it_does_not_read():
                          scale_read=tuple(s[:, :1000] for s in routes.scale_read),
                          scale_write=tuple(s[:, :1000] for s in routes.scale_write), g_write=routes.g_write[:, :1000],
                          sparse=routes.sparse)
-    with pytest.raises(RuntimeError, match=f"whole number of {WINDOW}"):
+    with pytest.raises(RuntimeError, match=f"whole number of {window_of()}"):
         intra_ops.intra_forward(short, values, facts, layout, *statics, num, den)
     with pytest.raises(RuntimeError, match="past the layout's 32"):
         narrow = lv.LivenessLayout(D=2, B=(32, 256), L=1024)

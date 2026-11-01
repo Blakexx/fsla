@@ -14,11 +14,9 @@ __host__ __device__ constexpr int window_bits(int w) { return w == 1024 ? 10 : w
 
 __host__ __device__ constexpr int window_heads(int w) { return 1 << (15 - window_bits(w)); }
 
-//: the compiling card's W (the pinned card's in the host pass), and a device's for host code
+//: the compiling card's W (the pinned card's in the host pass): host code reads `device_window` (`arch_runtime.cuh`)
 constexpr int kWindow = window_for(::denseref::arch::kArch);
 static_assert(kWindow > 0,
               "an untabulated compute capability has no window: add its row to window_for");
-
-int device_window(int device);
 
 }  // namespace rola

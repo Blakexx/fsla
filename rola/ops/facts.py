@@ -20,12 +20,11 @@ import torch
 from rola.engine.facts import lists as list_model
 from rola.engine.facts.liveness import GROUP_DIGITS, LivenessLayout, SideStatics, mask_words, side_statics
 from rola.ops._ext import extension
+from rola.ops.window import window_of
 
-__all__ = ["COMPOSITE", "LEDGER_PHASES", "LEDGER_WARPS", "WINDOW", "Facts", "call_layout", "call_statics", "facts",
+__all__ = ["COMPOSITE", "LEDGER_PHASES", "LEDGER_WARPS", "Facts", "call_layout", "call_statics", "facts",
            "ledger_bind", "list_level", "side_lists"]
 
-#: THE WINDOW the lists are built over, the carry's and the intra's.
-WINDOW = list_model.WINDOW
 
 #: THE PHASE LEDGER'S SHAPE: ``[warps][phases]``, the kernel's own `FactsPhase` order, booked over every CTA.
 LEDGER_PHASES = ("load", "vote", "ranks", "lists")
@@ -99,7 +98,7 @@ def _dense_bits(statics: SideStatics) -> int:
     return sum(1 << level for level, dense in enumerate(statics.dense_levels) if dense)
 
 
-def _lists(BH: int, windows: int, width: int, device, heads: int = 1) -> list_model.Lists:
+def _lists(BH: int, windows: int, width: int, w: int, device, heads: int = 1) -> list_model.Lists:
     """A side's lists out at a level of ``width`` digits (0 for none), uninitialized; a grouped read side's over its
     write head's ``heads`` query heads' rows."""
     groups = -(-width // GROUP_DIGITS)
@@ -108,10 +107,10 @@ def _lists(BH: int, windows: int, width: int, device, heads: int = 1) -> list_mo
         return torch.empty(shape, dtype=dtype, device=device)
 
     return list_model.Lists(
-        entries=empty(BH, windows, width, heads * list_model.LIST_CAP, 4),
-        pre=empty(BH, windows, groups, list_model.PRE_ROWS, heads * list_model.LIST_AT),
-        totals=empty(BH, windows, groups, heads * list_model.LIST_AT, dtype=torch.int32),
-        union=empty(BH, windows, groups, heads * WINDOW), count=empty(BH, windows, groups, dtype=torch.int32))
+        entries=empty(BH, windows, width, heads * w, 4),
+        pre=empty(BH, windows, groups, list_model.PRE_ROWS, heads * list_model.list_at(w)),
+        totals=empty(BH, windows, groups, heads * list_model.list_at(w), dtype=torch.int32),
+        union=empty(BH, windows, groups, heads * w), count=empty(BH, windows, groups, dtype=torch.int32))
 
 
 def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, write_statics: SideStatics,
@@ -130,8 +129,9 @@ def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, wri
     the write lists -- and its read lists one union a (window, group) over its g query heads' rows.
     """
     BH, heads = routes.batch * routes.write_heads, routes.group
-    windows = -(-layout.L // WINDOW)
     device = routes.device
+    w = window_of(device)
+    windows = -(-layout.L // w)
     words = torch.empty((BH, heads + 1, layout.rows, layout.words), dtype=torch.int32, device=device)
     unions = torch.empty((BH, heads + 1, layout.groups, layout.tiles), dtype=torch.int32, device=device)
     level, read_level = list_level(write_statics), list_level(read_statics)
@@ -139,15 +139,15 @@ def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, wri
     fm = torch.empty((BH, layout.L, 2), dtype=torch.float32, device=device)
     gains16 = torch.empty((BH, layout.L, 2), dtype=torch.float16, device=device)
     gains_exp = torch.empty((BH, windows, 2), dtype=torch.int16, device=device)
-    write = _lists(BH, windows, layout.B[level] if level >= 0 else 0, device)
-    read = _lists(BH, windows, layout.B[read_level] if read_level >= 0 else 0, device, heads)
+    write = _lists(BH, windows, layout.B[level] if level >= 0 else 0, w, device)
+    read = _lists(BH, windows, layout.B[read_level] if read_level >= 0 else 0, w, device, heads)
     count = mask_words(layout.rows)
     extension().rola_facts_forward(
         list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
         words, unions, list_exp, fm, gains16, gains_exp, list(write), list(read), list(layout.B),
         _dense_bits(read_statics), [read_statics.mask_word(i) for i in range(count)],
         _dense_bits(write_statics), [write_statics.mask_word(i) for i in range(count)], max(level, -1),
-        max(read_level, -1), WINDOW, read_row)
+        max(read_level, -1), w, read_row)
     return Facts(words=words, unions=unions, list_exp=list_exp, fm=fm, write=None if level == COMPOSITE else write,
                  read=None if read_level == COMPOSITE else read, gains16=gains16, gains_exp=gains_exp)
 

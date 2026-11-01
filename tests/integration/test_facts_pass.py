@@ -24,6 +24,7 @@ from rola.engine.facts import lists as list_model
 from rola.engine.facts import liveness as lv
 from rola.engine.facts.planes import ATOM_READ, ATOM_WRITTEN
 from rola.ops import facts as facts_ops
+from rola.ops.window import window_of
 from rola.routing import quant
 from rola.routing.factors import RouteFactors
 from rola.routing.topology import padded_level_width
@@ -230,7 +231,7 @@ def test_a_dense_level_is_neither_read_nor_written():
     masks = [statics.mask_word(i) for i in range(lv.mask_words(layout.rows))]
     facts_ops.extension().rola_facts_forward(
         list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
-        words, unions, list_exp, *_outputs(BH, L), list(layout.B), 1, masks, 1, masks, -1, -1, facts_ops.WINDOW,
+        words, unions, list_exp, *_outputs(BH, L), list(layout.B), 1, masks, 1, masks, -1, -1, window_of(),
         _READ_ROW)
     _assert_written(facts_ops.Facts(words, unions, list_exp, *([None] * 5)), want, layout, read_statics,
                     write_statics)
@@ -285,10 +286,11 @@ def _lists_want(routes, values, layout, read_statics, write_statics, got, read_r
     write = read = None
     if wl >= 0:
         write = list_model.final_lists(bits[:, -1], layout, wl, row_bytes=read_row, rows=routes.amp_write[wl],
-                                       cols=list_model.columns(routes, values), list_exp=got.list_exp.cpu())
+                                       cols=list_model.columns(routes, values), list_exp=got.list_exp.cpu(),
+                                       window=window_of())
     if rl >= 0:
         read = list_model.final_lists(bits[:, :-1], layout, rl, row_bytes=read_row, rows=routes.amp_read[rl],
-                                      cols=None, list_exp=None)
+                                      cols=None, list_exp=None, window=window_of())
     return write, read
 
 
@@ -326,7 +328,7 @@ def test_grouped_reads_are_one_union_a_window_bit_for_bit(widths, L, group):
     got = _facts(routes, values, layout, read_statics, write_statics)
     _assert_written(got, _model(routes, layout, read_statics, write_statics), layout, read_statics, write_statics)
     write, read = _lists_want(routes, values, layout, read_statics, write_statics, got)
-    assert read.count.max() > min(L, list_model.WINDOW), "no merged union passes one head's rows: the cell is vacuous"
+    assert read.count.max() > min(L, window_of()), "no merged union passes one head's rows: the cell is vacuous"
     _assert_lists(got.write, write)
     _assert_lists(got.read, read)
 
@@ -382,7 +384,7 @@ def test_the_gains_are_the_model_bit_for_bit(widths, L):
     read_statics, write_statics = _sides(layout, "alternating", widths)
     routes, values = _bundle(widths, L, (read_statics, write_statics))
     got = _facts(routes, values, layout, read_statics, write_statics)
-    want16, want_exp = list_model.gains(routes, values, L)
+    want16, want_exp = list_model.gains(routes, values, L, window_of())
     assert torch.equal(got.gains_exp.cpu().long(), want_exp.long())
     assert torch.equal(got.gains16.cpu().view(torch.int16), want16.view(torch.int16))
 
@@ -394,7 +396,7 @@ def _list_exp(routes, values, layout, read_statics, write_statics):
     """``(got, lo, hi)`` as ``[BH, windows, B_list, 2]`` int64: the pass's exponents and the reference's bounds."""
     got = _facts(routes, values, layout, read_statics, write_statics).list_exp.long()
     level = facts_ops.list_level(write_statics)
-    lo, hi = exponent_bounds(routes, values, level, facts_ops.WINDOW, layout.B[level], _LIST_RTOL)
+    lo, hi = exponent_bounds(routes, values, level, window_of(), layout.B[level], _LIST_RTOL)
     return got, lo.reshape(got.shape), hi.reshape(got.shape)
 
 
@@ -413,7 +415,7 @@ def test_the_list_exponents_are_the_reference_per_window(widths, L, dense):
         return
     got, lo, hi = _list_exp(routes, values, layout, read_statics, write_statics)
     assert ((got >= lo) & (got <= hi)).all(), (got - lo).abs().max()
-    want = list_exponents(routes, values, level, facts_ops.WINDOW, layout.B[level]).reshape(got.shape)
+    want = list_exponents(routes, values, level, window_of(), layout.B[level]).reshape(got.shape)
     away = lo == hi
     assert torch.equal(got[away], want[away]), "an exponent off a power of two's rounding band differs"
     assert (got > -126).any(), "every list dead: the cell is vacuous"
@@ -495,7 +497,7 @@ def test_the_seam_refuses_rows_that_are_not_the_format():
             torch.empty((2, 2, 32, 1), dtype=torch.int32, device="cuda"),
             torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"),
             torch.empty((2, 1, 16, 2), dtype=torch.int16, device="cuda"), *_outputs(2, L), list(layout.B), 0,
-            [read_statics.mask_word(0)], 0, [write_statics.mask_word(0)], 1, -1, facts_ops.WINDOW,
+            [read_statics.mask_word(0)], 0, [write_statics.mask_word(0)], 1, -1, window_of(),
             _READ_ROW)
 
 
@@ -514,7 +516,7 @@ def test_the_seam_refuses_another_window():
     layout = _layout(widths, L)
     read_statics, write_statics = _sides(layout, "alternating", widths)
     routes, values = _bundle(widths, L, (read_statics, write_statics))
-    with pytest.raises(RuntimeError, match=f"window is the device's {facts_ops.WINDOW}"):
+    with pytest.raises(RuntimeError, match=f"window is the device's {window_of()}"):
         facts_ops.extension().rola_facts_forward(
             list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
             torch.empty((2, 2, 32, 1), dtype=torch.int32, device="cuda"),

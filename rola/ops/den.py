@@ -4,7 +4,7 @@
 the facts pass's lists, each token's window-aligned denominator and readout bound (docs/internals/den/den_api.md).
 
 Symbols, each at first use: ``B`` batch, ``L`` tokens, ``H_w`` write heads, ``g`` query heads a write head,
-``BH = B H_w``, ``W`` the window (the carry's :data:`rola.ops.carry.WINDOW`), level ``S`` the read side's list level
+``BH = B H_w``, ``W`` the window (the device's, :func:`rola.ops.window.window_of`), level ``S`` the read side's list level
 (:func:`rola.routing.factors.carry_level_s`), level ``R`` the other. ``den`` ``[BH g, L]`` fp32 is each query head's
 token's read leaf product against the write mass of the windows before -- the inter term's denominator in the kernels'
 units (the reader's per-token factor left out, as the carry's ``num`` leaves it; `tests/oracle/test_den_vs_oracle.py`
@@ -17,7 +17,7 @@ import torch
 
 from rola.ops import facts as facts_ops
 from rola.ops._ext import extension
-from rola.ops.carry import WINDOW
+from rola.ops.window import window_of
 
 __all__ = ["LEDGER_PHASES", "LEDGER_WARPS", "MAX_HEADS", "ROWS", "SPAN", "den", "ledger_bind", "serves", "tiles"]
 
@@ -48,6 +48,9 @@ def serves(routes) -> str | None:
         return f"sparse {routes.sparse}: the read side listing level S with the write side listing level R, or both dense"
     if routes.group > MAX_HEADS:
         return f"{routes.group} query heads a write head: the accumulator holds {MAX_HEADS}"
+    if routes.group * window_of(routes.device) > 1 << PLACE_BITS:
+        return (f"{routes.group} query heads a write head at a window of {window_of(routes.device)}: a slot's place "
+                f"takes {PLACE_BITS} bits")
     return None
 
 
@@ -86,4 +89,5 @@ def ledger_bind(ledger: torch.Tensor | None) -> None:
     extension().den_ledger_bind(ledger)
 
 
-assert MAX_HEADS * WINDOW <= 1 << 14, "a slot's place (query head x token) is the den pass's 14-bit field"
+#: a slot's place (query head x token) is the den pass's 14-bit field: at W = 1,024 four query heads fit
+PLACE_BITS = 14

@@ -14,7 +14,7 @@ RED BY PLAN (ruling 2026-09-29): a cell whose carve the carry has no arm for, wh
 off the window, or whose entry state the carry cannot yet take (the segment boundary is unbuilt) fails, by name. The carry's ``den`` and its state reach the oracle through the op
 (`test_prefill_vs_oracle.py`): the den pass and the state's hand-off write them.
 
-Symbols: ``W`` the window (`rola.ops.carry.WINDOW`), ``L`` tokens, ``C`` value channels, ``u(t)`` a token's unit byte
+Symbols: ``W`` the window (`rola.ops.window.window_of`, the device's), ``L`` tokens, ``C`` value channels, ``u(t)`` a token's unit byte
 (the f16 sum's scale).
 """
 from __future__ import annotations
@@ -27,6 +27,7 @@ import torch
 from measure.cells import carry_cells, realize
 from measure.subjects import carry_operands
 from rola.ops import carry as carry_ops
+from rola.ops.window import window_of
 from tests.oracle import reference
 from tests.oracle.fixtures import assert_planted_errors_fail, assert_slots_close, relative
 from tests.oracle.fold_reference import unit_scale
@@ -53,7 +54,7 @@ def _units(spec, routes, values):
     read, write = routes.dequantized()
     state = reference.inter_reference(tuple(r.double() for r in read), tuple(w.double() for w in write),
                                       routes.g_write.double(), values.dequantized().double(), routes.topology.widths,
-                                      carry_ops.WINDOW, state_in=_entry(spec, routes), states=True)
+                                      window_of(), state_in=_entry(spec, routes), states=True)
     B, T, H, _ = x.shape
     widths, kappa = routes.topology.widths, unit_scale(routes, level_s)
     num = torch.zeros(B, T, H, dtype=torch.float64, device=x.device)
@@ -61,12 +62,12 @@ def _units(spec, routes, values):
         before = before.repeat_interleave(routes.group, 1)                         # a query head its write head's
         top = before[..., :-1].abs().amax(-1).reshape(B, H, *widths) / kappa
         top = top if level_s == 0 else top.transpose(-1, -2)                          # [B, H, B_S, B_R]
-        sl = slice(w * carry_ops.WINDOW, (w + 1) * carry_ops.WINDOW)
+        sl = slice(w * window_of(), (w + 1) * window_of())
         num[:, sl] = torch.einsum("bthd,bthr,bhdr->bth", x[:, sl], a[:, sl], top)
     u = torch.where(num > 0, torch.ceil(torch.log2(UNIT_HEADROOM * num.clamp_min(1e-300))) - UNIT_LEVELS,
                     torch.full_like(num, UNIT_NONE))
     #: the den pass writes the window grid whole: a partial window's tail reads nothing
-    grid = torch.full((B * H, len(state) * carry_ops.WINDOW), UNIT_NONE, dtype=torch.int8, device=x.device)
+    grid = torch.full((B * H, len(state) * window_of()), UNIT_NONE, dtype=torch.int8, device=x.device)
     grid[:, :T] = u.clamp(-128, 127).to(torch.int8).permute(0, 2, 1).reshape(B * H, T)
     return grid
 
@@ -96,7 +97,7 @@ def ref(spec, routes, values, magnitudes=False):
         v, state = v.abs(), None if state is None else state.abs()
     num, _den, _state = reference.inter_reference(tuple(x.double() for x in read), tuple(x.double() for x in write),
                                                   routes.g_write.double(), v, routes.topology.widths,
-                                                  carry_ops.WINDOW, state_in=state)
+                                                  window_of(), state_in=state)
     return num
 
 
@@ -120,7 +121,7 @@ def test_the_rule_fails_planted_errors_on_the_kernels_own_output():
     and the smallest slots moved past their allowance fail."""
     #: two windows at least, at the card's W: a one-window call's inter term is identically zero, nothing to plant
     base = next(c for c in ORACLE_CELLS if c.name == "flagship-alt-k4")
-    spec = dataclasses.replace(base, tokens=max(base.tokens, 2 * carry_ops.WINDOW))
+    spec = dataclasses.replace(base, tokens=max(base.tokens, 2 * window_of()))
     routes, values, unit, num = run(spec)
     assert_planted_errors_fail(num_in_truth(num, routes, unit), ref(spec, routes, values), output=CARRY_NUM,
                                envelope=ref(spec, routes, values, magnitudes=True), what=f"{spec.name} num")

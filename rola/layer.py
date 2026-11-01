@@ -221,17 +221,18 @@ class RoLA(nn.Module):
         """THE SEGMENT LENGTH, derived from the declared ``memory_budget``: the largest whole number of
         windows whose working set fits beside the state, capped at ``length``. No budget: one segment. A
         budget below one window beside the state is refused."""
-        from rola.ops.carry import WINDOW
+        from rola.ops.window import window_of
 
         if self.memory_budget is None:
             return length
-        per_window = WINDOW * batch * self.segment_bytes_per_token()
+        W = window_of()
+        per_window = W * batch * self.segment_bytes_per_token()
         windows = (self.memory_budget - self.state_bytes(batch)) // per_window
         if windows < 1:
             raise ValueError(
-                f"memory_budget={self.memory_budget} bytes cannot hold one {WINDOW}-token window "
+                f"memory_budget={self.memory_budget} bytes cannot hold one {W}-token window "
                 f"({per_window} bytes at batch {batch}) beside the state ({self.state_bytes(batch)} bytes)")
-        return min(length, int(windows) * WINDOW)
+        return min(length, int(windows) * W)
 
     def validate_decode_envelope(self, *operation_inputs) -> None:
         """THE DECODE ARM'S OWN CLAUSE: it is forward-only and has no node.

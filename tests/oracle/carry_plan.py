@@ -5,7 +5,7 @@ pass writes from the facts pass's counts -- the plan word (the forced form's whe
 word a step by the rule -- word for word, so a gate asserts the kernel's records and the forms its cell exercises
 (docs/internals/carry/schedule.md#planner).
 
-Symbols: ``W`` the window (the carry's, :data:`rola.ops.carry.WINDOW`), ``U`` a side's union slots in a window, ``S[j]`` a side's box lists' entries
+Symbols: ``W`` the window (the device's, :func:`rola.ops.window.window_of`), ``U`` a side's union slots in a window, ``S[j]`` a side's box lists' entries
 before union slot ``64 (j + 1)``, ``B`` the area's bytes, ``n`` a window's entries (its read chunks, then its fold
 chunks), ``t`` a step (``n`` the step that only retires the last entry).
 """
@@ -17,9 +17,16 @@ import numpy as np
 
 from rola.ops import carry as carry_ops
 from rola.ops import facts as facts_ops
+from rola.ops.window import window_of
 
-WINDOW, LIST_BOUND = carry_ops.WINDOW, 64
-LIST_AT = WINDOW // LIST_BOUND
+LIST_BOUND = 64
+
+
+def list_at() -> int:
+    """The device window's list boundaries, one every `LIST_BOUND` union slots."""
+    return window_of() // LIST_BOUND
+
+
 PAD_BYTES, PANEL_ROW, BOX = 512, 64, 32
 IMAGE_WHOLE, IMAGE_RING = 32 * 2048, 16 * 2048
 WHOLE, HALVES = 0, 1
@@ -89,8 +96,9 @@ def largest_chunk(u: int, S, room: int, nbytes) -> int:
 def tables_bytes(heads: int) -> int:
     """The read tables' bytes at ``heads`` query heads a write head (`tables_of`): the union, the prefix rows, the den
     pass's scale bytes and the plan records, each two windows'; the window's units and the listed bounds' counters."""
-    return (2 * heads * WINDOW * 2 + -(-2 * 33 * LIST_AT * heads * 2 // 16) * 16 + 2 * heads * WINDOW
-            + heads * WINDOW + heads * WINDOW * 4 + 2 * carry_ops.plan_words(heads) * 4)
+    W = window_of()
+    return (2 * heads * W * 2 + -(-2 * 33 * list_at() * heads * 2 // 16) * 16 + 2 * heads * W
+            + heads * W + heads * W * 4 + 2 * carry_ops.plan_words(heads, W) * 4)
 
 
 def area_of(smem: int, area_one: int, heads: int) -> int:
@@ -256,7 +264,7 @@ def _side(lists, carve_plan, routes, w: int, bh: int, group: int):
     """``(U, S)``: a side's union slots and segment sums in window ``w`` at a box whose list level's group is
     ``group``; every window token and no entries for a side with no list level."""
     if not carve_plan.lists:
-        return min(WINDOW, routes.tokens - w * WINDOW), (0,) * LIST_AT
+        return min(window_of(), routes.tokens - w * window_of()), (0,) * list_at()
     totals = lists.totals[bh, w, group].long().cpu().numpy()
     return int(lists.count[bh, w, group]), tuple(int(v) for v in np.asarray(totals))
 
@@ -269,7 +277,7 @@ def plans(routes, facts, carve, forced: str | None = None) -> list[list[Record]]
     row = next(r for r in carry_ops.census() if tuple(r[1:7]) == tuple(key))
     area, read_row, write_row = area_of(row[9], row[12], routes.group), row[13], row[14]
     word = carry_ops.forced_word(forced)
-    windows = -(-routes.tokens // WINDOW)
+    windows = -(-routes.tokens // window_of())
     write = facts_ops.side_lists(facts, "write") if carve.fold.lists else None
     read = facts_ops.side_lists(facts, "read") if carve.readout.lists else None
     groups = lambda p: max(1, carve.widths[p.lists[0]] // BOX) if p.lists else 1  # noqa: E731

@@ -20,10 +20,9 @@ import torch
 
 from measure.cells import carry_cells, realize
 from measure.subjects import bundle_of, read_row_of
-from rola.ops import carry as carry_ops
 from rola.ops import den as den_ops
 from rola.ops import facts as facts_ops
-from rola.ops.carry import WINDOW
+from rola.ops.window import window_of
 from tests.oracle import reference
 from tests.oracle.fixtures import assert_planted_errors_fail, assert_slots_close
 from tests.oracle.tolerances import CARRY_DEN
@@ -65,7 +64,7 @@ def refs(routes, values) -> tuple[torch.Tensor, torch.Tensor]:
     read, write = routes.dequantized()
     num, den, _ = reference.inter_reference(tuple(x.double() for x in read), tuple(x.double() for x in write),
                                             routes.g_write.double(), values.scale.double().unsqueeze(-1),
-                                            routes.topology.widths, WINDOW)
+                                            routes.topology.widths, window_of())
     return den, num[..., 0]
 
 
@@ -91,7 +90,7 @@ def test_the_rule_fails_planted_errors_on_the_kernels_own_output():
     smallest slots moved past their allowance fail."""
     #: two windows at least, at the card's W: a one-window call's inter term is identically zero, nothing to plant
     base = next(c for c in ORACLE_CELLS if c.name == "flagship-alt-k4")
-    spec = dataclasses.replace(base, tokens=max(base.tokens, 2 * carry_ops.WINDOW))
+    spec = dataclasses.replace(base, tokens=max(base.tokens, 2 * window_of()))
     routes, values, den, _num = run(spec)
     den_ref, _ = refs(routes, values)
     assert_planted_errors_fail(in_truth(den, routes), den_ref, output=CARRY_DEN, envelope=den_ref,

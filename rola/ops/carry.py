@@ -4,7 +4,7 @@
 pass's lists, the den pass's units and the carve (docs/internals/carry/carry_api.md).
 
 Symbols, each at first use: ``B`` batch, ``T`` = ``L`` tokens, ``H`` heads, ``BH`` = ``B H``, ``d_v`` the value
-width, ``W`` the window (:data:`WINDOW`). The carve (:class:`rola.engine.types.Carve`) names the box -- an extent a
+width, ``W`` the window (:func:`rola.ops.window.window_of`, the device's). The carve (:class:`rola.engine.types.Carve`) names the box -- an extent a
 level and the channel extent -- and each side's list levels and operand levels; its arm key
 (:func:`arm_key`) selects the compiled body, and the box's extents are runtime addressing. The readout adds packed
 s16 pairs at each token's unit (``unit``, the den pass's exponent bytes) into ``num`` ``[BH, L, d_v / 2]`` int32.
@@ -19,12 +19,12 @@ from rola.engine.facts import lists as list_model
 from rola.engine.types import Carve
 from rola.ops import facts as facts_ops
 from rola.ops._ext import extension
+from rola.ops.window import window_of
 
 __all__ = [
     "LEDGER_PHASES",
     "LEDGER_WARPS",
     "REDUCE_F16_MAX_CTAS",
-    "WINDOW",
     "Form",
     "arm_key",
     "arms",
@@ -45,8 +45,6 @@ __all__ = [
     "sm_clock_ghz",
 ]
 
-#: THE KERNEL'S WINDOW, in tokens: a kernel constant the intra and the facts pass share, never an argument.
-WINDOW = list_model.WINDOW
 
 #: THE PHASE LEDGER'S SHAPE: ``[ctas][warps][phases]``, the kernel's own `CarryPhase` order.
 LEDGER_PHASES = ("landed", "maxima", "store", "readout", "drain", "fill", "fold", "wait", "units")
@@ -121,11 +119,11 @@ def carry(routes, values, facts, carve: Carve, scale: torch.Tensor, accumulate: 
     return num, check
 
 
-def plan_words(heads: int = 1) -> int:
-    """A window's plan record's 32-bit words at ``heads`` query heads a write head (`carry.cuh` `plan_words`): its plan
-    word, then a 16-bit step word a step -- its read chunks (8 a head), its fold chunks (8), the retiring step -- in
-    whole 16-byte copies."""
-    steps = list_model.LIST_AT * heads + list_model.LIST_AT + 1
+def plan_words(heads: int, w: int) -> int:
+    """A window's plan record's 32-bit words at ``heads`` query heads a write head and a window of ``w`` tokens
+    (`carry.cuh` `plan_words`): its plan word, then a 16-bit step word a step -- its read chunks (W / 64 a head), its
+    fold chunks (W / 64), the retiring step -- in whole 16-byte copies."""
+    steps = list_model.list_at(w) * heads + list_model.list_at(w) + 1
     return (1 + (steps + 1) // 2 + 3) // 4 * 4
 
 
@@ -135,8 +133,9 @@ def plans_out(routes, carve: Carve) -> torch.Tensor:
     groups = 1
     for plan in (carve.readout, carve.fold):
         groups *= max(1, -(-carve.widths[plan.lists[0]] // 32)) if plan.lists else 1
-    windows = -(-routes.tokens // WINDOW)
-    return torch.empty((routes.batch * routes.write_heads, windows, groups, plan_words(routes.group)),
+    w = window_of(routes.device)
+    windows = -(-routes.tokens // w)
+    return torch.empty((routes.batch * routes.write_heads, windows, groups, plan_words(routes.group, w)),
                        dtype=torch.int32, device=routes.device)
 
 

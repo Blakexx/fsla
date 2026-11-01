@@ -17,7 +17,7 @@ floating planes until its int8 port: this module dequantizes the bundle for it o
 ``num / den`` and the intra drops it too (the output contract) -- builds that surface's
 descriptor, geometry block and launch shape, takes the liveness words and activity bits
 from its caller, and calls `carry_forward`. The window is a kernel constant
-(`carry_ops.WINDOW`), not a parameter of this operator.
+(`rola.ops.window.window_of`, the device's), not a parameter of this operator.
 
 Symbols, each at first use: ``D`` levels, ``W`` the window length in tokens (the carry's
 constant), ``d_v`` value channels, ``modes`` the per-level support-mode declaration the
@@ -42,12 +42,8 @@ from rola._state import CANONICAL_ORDER, PAGE_RECTANGLE_BITS, SPLIT_PLANE_DTYPE,
 from rola.ops import carry as carry_ops
 from rola.ops import intra as intra_ops
 from rola.ops import padding as padding_ops
+from rola.ops.window import window_of
 from rola.routing import quant
-
-#: THE WINDOW, restated so a caller has one import. It is the CARRY KERNEL's constant
-#: (the axis law), and the intra family must carry an arm at the same number, because
-#: the two kernels run ONE window grid.
-WINDOW = carry_ops.WINDOW
 
 
 def _padded_shape(widths, dv: int) -> padding_ops.PaddedShape:
@@ -147,7 +143,6 @@ def readout(num: torch.Tensor, den: torch.Tensor, routes) -> torch.Tensor:
 
 def prefill(routes, values, *, modes, liveness: carry_ops.LivenessWords, unions: torch.Tensor, layout, read_statics,
             write_statics,
-            weight_digits: int = intra_ops.DEFAULT_WEIGHT_DIGITS,
             state_in: torch.Tensor | None = None,
             state_out: torch.Tensor | None = None,
             page_table: torch.Tensor | None = None,
@@ -181,8 +176,7 @@ def prefill(routes, values, *, modes, liveness: carry_ops.LivenessWords, unions:
 
     ``liveness`` is both sides' class-1 words in ``layout`` and ``unions`` their tile
     unions, the facts pass's (:func:`rola.ops.facts.facts`) over this bundle with
-    ``read_statics`` and ``write_statics``. ``weight_digits`` is the intra value
-    product's declared digit count.
+    ``read_statics`` and ``write_statics``.
     """
     widths = routes.topology.widths
     D, d_v, length = len(widths), values.d_v, routes.tokens
@@ -194,8 +188,9 @@ def prefill(routes, values, *, modes, liveness: carry_ops.LivenessWords, unions:
             f"{intra_ops.WIDTH_GRANULE}-digit granules up to {intra_ops.MAX_LEVEL_WIDTH}, d_v "
             f"{intra_ops.VALUE_WIDTH}). A topology only the carry carries is an inter-only "
             f"cell -- call rola.ops.carry.carry_forward directly.")
-    if length % WINDOW:
-        raise ValueError(f"L = {length} is not a whole number of {WINDOW}-token windows")
+    W = window_of(routes.device)
+    if length % W:
+        raise ValueError(f"L = {length} is not a whole number of {W}-token windows")
 
     read_levels, write_levels, v = _carry_levels(routes, values)
     pread, pwrite, gwrite, v_bh = _pack_operands(read_levels, write_levels, routes.g_write, v)
@@ -217,10 +212,9 @@ def prefill(routes, values, *, modes, liveness: carry_ops.LivenessWords, unions:
         page_table=page_table)
     #: SAME STREAM, SAME BUFFERS.  The intra REDs into `num`/`den`; the stream
     #: order is the only synchronization either kernel needs.
-    intra_ops.intra_forward(routes, values, unions, layout, read_statics, write_statics, num, den,
-                            weight_digits=weight_digits)
+    intra_ops.intra_forward(routes, values, unions, layout, read_statics, write_statics, num, den)
     return num, den, state_out
 
 
-__all__ = ["WINDOW", "intra_admits", "prefill", "reader_factor", "readout"]
+__all__ = ["intra_admits", "prefill", "reader_factor", "readout"]
 

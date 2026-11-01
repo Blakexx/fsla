@@ -53,10 +53,6 @@ def _launch_table_rows() -> list[tuple[int, int, str]]:
 # --------------------------------------------------------------------------- agreement
 
 
-def test_the_window_agrees():
-    assert _constexpr_int("kWindow") == py.WINDOW
-
-
 def test_the_segment_agrees():
     assert _constexpr_int("kSegmentTokens") == py.SEGMENT_TOKENS
 

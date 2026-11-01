@@ -2,7 +2,7 @@
 fp64 reference of the fold's declared arithmetic (`tests/oracle/fold_reference.py`, `fold_state`) per slot, at both
 orders of the even box's levels (docs/internals/carry/fold.md).
 
-Symbols: ``W`` the window (512 tokens), ``L`` tokens, ``B_l`` level ``l``'s width, ``d_v`` the value width.
+Symbols: ``W`` the window (the device's), ``L`` tokens, ``B_l`` level ``l``'s width, ``d_v`` the value width.
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import torch
 from rola.engine.carve import plan_carve
 from rola.ops import carry as carry_ops
 from rola.ops import facts as facts_ops
+from rola.ops.window import window_of
 from tests.oracle import carry_plan
 from tests.oracle.carry_fixtures import FORM_CELLS, alternating_bundle
 from tests.oracle.fold_reference import fold_state
@@ -26,8 +27,8 @@ def _rtol(L: int) -> float:
 def _fold_ratio(widths, L, write_sparse, growth, *, live=4, forced=None):
     """``(ratio, plans)``: the call's largest slot distance from the reference over its bound, and its boxes' plans."""
     routes, values = alternating_bundle(widths, L, write_sparse, live=live)
-    window = torch.arange(L, device="cuda") // carry_ops.WINDOW
-    routes.g_write.mul_(torch.exp2(growth * window.float())[None, :, None])
+    at = torch.arange(L, device="cuda") // window_of()
+    routes.g_write.mul_(torch.exp2(growth * at.float())[None, :, None])
     carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, values.v.shape[-1])
     assert carry_ops.arm_key(carve) == (32, 1, 32, 1, 32, 0)
     layout = facts_ops.call_layout(routes)
@@ -43,7 +44,7 @@ def _fold_ratio(widths, L, write_sparse, growth, *, live=4, forced=None):
     finally:
         carry_ops.probe_bind(None)
     level_s = 1 - write_sparse
-    state, env, _, _ = fold_state(routes, values, facts.list_exp, level_s, carry_ops.WINDOW)
+    state, env, _, _ = fold_state(routes, values, facts.list_exp, level_s, window_of())
     if level_s == 1:
         state, env = state.permute(0, 2, 1, 3), env.permute(0, 2, 1, 3)
     want, env = state.reshape(BH, N, d_v), env.reshape(BH, N, d_v)
@@ -76,7 +77,7 @@ def test_a_write_side_with_no_list_level_folds_to_the_reference(name):
     finally:
         carry_ops.probe_bind(None)
     level_s = routes.level_s
-    state, env, _, _ = fold_state(routes, values, facts.list_exp, level_s, carry_ops.WINDOW)
+    state, env, _, _ = fold_state(routes, values, facts.list_exp, level_s, window_of())
     if level_s == 1:
         state, env = state.permute(0, 2, 1, 3), env.permute(0, 2, 1, 3)
     want, env = state.reshape(BH, N, d_v), env.reshape(BH, N, d_v)

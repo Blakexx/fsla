@@ -1,10 +1,10 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE INTRA KERNEL'S ROOFLINE: wall time beside the device's own int8 mma.sync ceiling.
+"""THE INTRA KERNEL'S ROOFLINE: wall time beside the device's own f16 mma.sync ceiling.
 
 The other benches answer "how long"; this one answers "how much of the machine". It
 reports, per cell, the wall time, the tile-pairs per millisecond, and the achieved
-fraction of the u8 IMMA ceiling (s32 accumulate) -- the number that says whether a window's
+fraction of the f16 HMMA ceiling (fp16 accumulate) -- the number that says whether a window's
 cost is the arithmetic or everything around it.
 
 THE CELLS AND THE STEP ARE THE REGISTRY'S. This file defines neither: the cells are
@@ -13,7 +13,7 @@ bench, so a number here is commensurable with the same cell's number from a timi
 session of `declare.py`. What is added is arithmetic ON TOP of that
 measurement -- the issued MAC count of a dense cell is EXACT (the window's lower-triangular
 tile grid is `n(n+1)/2` of its `n = W/64` squared tiles, a pair's Gram over every level's
-digits and its value product in the weight digits times the value digits), so the fraction
+digits and its value product over the value channels), so the fraction
 is a fraction and not an estimate; a sparse cell's gate skips pairs, and its fraction is of
 the dense count.
 
@@ -34,9 +34,9 @@ from pathlib import Path
 import torch
 
 TILE = 64
-#: sm_86 issues 1024 u8 MACs per clock per SM into an s32 accumulator (measured 2026-09-28, four times the bf16
-#: fp32-accumulate rate) -- the ceiling this kernel's fraction is quoted against.
-MACS_PER_CLOCK_PER_SM = 1024
+#: f16 MACs per clock per SM at fp16 accumulation (`common/hardware.json`'s `hmma_f16_f16`: an m16n8k16 a scheduler
+#: every 16 cycles on sm_86, every 8 on sm_80) -- the ceiling this kernel's fraction is quoted against
+MACS_PER_CLOCK_PER_SM = {(8, 0): 1024, (8, 6): 512}
 
 
 def peak_flops():
@@ -45,10 +45,11 @@ def peak_flops():
     THE CURRENT DEVICE, and no dial for another one: a roofline is a fraction of the machine this launch ran on, so a
     ceiling read off a second device would be a fraction of something else."""
     properties = torch.cuda.get_device_properties(torch.cuda.current_device())
+    rate = MACS_PER_CLOCK_PER_SM[(properties.major, properties.minor)]
     clock = float(subprocess.run(["nvidia-smi", "--query-gpu=clocks.max.sm",
                                   "--format=csv,noheader,nounits"],
                                  capture_output=True, text=True).stdout.split()[0]) * 1e6
-    return 2.0 * MACS_PER_CLOCK_PER_SM * properties.multi_processor_count * clock, clock
+    return 2.0 * rate * properties.multi_processor_count * clock, clock
 
 
 def tile_pairs(window: int) -> int:
@@ -56,8 +57,8 @@ def tile_pairs(window: int) -> int:
     return tiles * (tiles + 1) // 2
 
 
-def macs(bh: int, length: int, widths, window: int, dv: int, weight_digits: int) -> int:
-    per_tile = TILE * TILE * (sum(widths) + weight_digits * dv)
+def macs(bh: int, length: int, widths, window: int, dv: int) -> int:
+    per_tile = TILE * TILE * (sum(widths) + dv)
     return bh * (length // window) * tile_pairs(window) * per_tile
 
 
@@ -79,8 +80,9 @@ def main() -> int:
     sys.path.insert(0, str(root))
     from measure.cells import by_name, carry_cells
     from measure.subjects import SUBJECTS, applicable
-    from rola.ops.carry import WINDOW
-    from rola.ops.intra import DEFAULT_WEIGHT_DIGITS
+    from rola.ops.window import window_of
+
+    WINDOW = window_of()
 
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -100,7 +102,7 @@ def main() -> int:
 
     flops, clock = peak_flops()
     print(f"device {torch.cuda.get_device_name()}  clock {clock / 1e9:.3f} GHz  "
-          f"u8 IMMA ceiling {flops / 1e12:.1f} TOP/s  window {WINDOW}")
+          f"f16 HMMA ceiling {flops / 1e12:.1f} TFLOP/s  window {WINDOW}")
     print(f"{'cell':<28}{'ms':>9}{'tiles/ms':>12}{'TOP/s':>10}{'peak':>8}")
     rows = []
     for spec in specs:
@@ -113,7 +115,7 @@ def main() -> int:
         ms = median_ms(arm.call, args.repeats)
         windows = spec.tokens // WINDOW
         tiles = windows * tile_pairs(WINDOW)
-        achieved = 2.0 * macs(1, spec.tokens, spec.widths, WINDOW, spec.dv, DEFAULT_WEIGHT_DIGITS) / (ms * 1e-3)
+        achieved = 2.0 * macs(1, spec.tokens, spec.widths, WINDOW, spec.dv) / (ms * 1e-3)
         print(f"{spec.name:<28}{ms:>9.3f}{tiles / ms:>12.0f}{achieved / 1e12:>10.2f}"
               f"{achieved / flops * 100:>7.1f}%")
         rows.append({"cell": spec.name, "ms": ms, "tiles_per_ms": tiles / ms, "top_per_s": achieved,

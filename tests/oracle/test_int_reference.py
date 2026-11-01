@@ -17,7 +17,7 @@ import pytest
 import torch
 
 from measure.cells import by_name, realize
-from rola.ops import carry as carry_ops
+from rola.ops.window import window_of
 from tests.oracle import int_reference as iref
 from tests.oracle import reference
 
@@ -40,9 +40,9 @@ def test_the_hadamard_is_orthogonal_and_commutes_with_the_op():
     cell = by_name("flat-small-alt-k4")
     drawn = realize(cell, device=dev)
     read, write, gain, v = drawn.doubles()
-    num, den, state = reference.inter_reference(read, write, gain, v, cell.widths, carry_ops.WINDOW)
+    num, den, state = reference.inter_reference(read, write, gain, v, cell.widths, window_of())
     num_r, den_r, state_r = reference.inter_reference(read, write, gain, iref.rotate(v, h), cell.widths,
-                                                      carry_ops.WINDOW)
+                                                      window_of())
     assert torch.allclose(iref.unrotate(num_r, h), num, rtol=1e-12, atol=1e-12 * num.abs().max())
     assert torch.allclose(den_r, den)
     assert torch.allclose(iref.unrotate(state_r[..., :-1], h), state[..., :-1], rtol=1e-12,
@@ -54,8 +54,8 @@ def test_the_declared_recurrence_is_the_op_when_nothing_is_rounded(name):
     cell = by_name(name)
     drawn = realize(cell, device="cuda")
     read, write, gain, v = drawn.doubles()
-    want = reference.inter_reference(read, write, gain, v, cell.widths, carry_ops.WINDOW)
-    got = iref.int_reference(read, write, gain, v, cell.widths, _sparsity(cell), carry_ops.WINDOW, exact=True)
+    want = reference.inter_reference(read, write, gain, v, cell.widths, window_of())
+    got = iref.int_reference(read, write, gain, v, cell.widths, _sparsity(cell), window_of(), exact=True)
     for a, b, what in zip(got, want, ("num", "den", "state")):
         scale = b.abs().max().clamp_min(1e-300)
         assert torch.allclose(a, b, rtol=1e-11, atol=1e-11 * float(scale)), f"{name}: {what} is not the op's"
@@ -71,7 +71,7 @@ def test_the_quantization_report(name, capsys):
     drawn = realize(cell, device="cuda")
     lines = [f"{name}: widths={cell.widths} tokens={cell.tokens} draw={cell.draw} k={cell.k_tok}"]
     for basis, rot in (("rotated-basis-read", False), ("real-basis-after-unrotate", True)):
-        rows = iref.quantization_report(drawn, _sparsity(cell), carry_ops.WINDOW, rotate_values=rot)
+        rows = iref.quantization_report(drawn, _sparsity(cell), window_of(), rotate_values=rot)
         for r in rows:
             lines.append(f"  {basis:26s} eps={r['readout_eps']:<8.3g} flagged {100*r['flag_rate']:5.1f}%: "
                          f"num per-slot err / (2^-8 env): max {r['slot_max']:8.2f}, frac>1 {100*r['slot_frac_over']:5.1f}% | "
@@ -80,7 +80,7 @@ def test_the_quantization_report(name, capsys):
                          f"den rel {r['den_max_rel']:.1e} | panel peak {r['panel_peak']:.0f}")
             assert r["panel_peak"] < iref.PANEL_LEVELS, "the packed panel's running sum left its s16 half"
     #: the readout's own monotonicity, read with the panel step off so its rounding does not mask the digits
-    one, two = iref.quantization_report(drawn, _sparsity(cell), carry_ops.WINDOW, knobs=(1.0, 0.0),
+    one, two = iref.quantization_report(drawn, _sparsity(cell), window_of(), knobs=(1.0, 0.0),
                                         panel=False)
     lines.append(f"  s32 panel: one readout digit mean {one['token_mean']:.2e} -> two {two['token_mean']:.2e}")
     assert two["token_mean"] <= one["token_mean"] * 1.0001, "two readout digits lost to one on the same draw"
@@ -98,8 +98,8 @@ def test_the_prepass_reference_is_the_op_when_nothing_is_rounded(name):
     cell = by_name(name)
     drawn = realize(cell, device="cuda")
     read, write, gain, v = drawn.doubles()
-    _, want_den, _ = reference.inter_reference(read, write, gain, v, cell.widths, carry_ops.WINDOW)
-    den, _ = iref.prepass_reference(read, write, gain, v, cell.widths, _sparsity(cell), carry_ops.WINDOW, exact=True)
+    _, want_den, _ = reference.inter_reference(read, write, gain, v, cell.widths, window_of())
+    den, _ = iref.prepass_reference(read, write, gain, v, cell.widths, _sparsity(cell), window_of(), exact=True)
     assert torch.allclose(den, want_den, rtol=1e-11, atol=1e-11 * float(want_den.abs().max()))
 
 
@@ -114,9 +114,9 @@ def test_the_prepass_den_is_within_its_digits_and_its_scale_is_a_bound(name, cap
     drawn = realize(cell, device="cuda")
     read, write, gain, v = drawn.doubles()
     sp = _sparsity(cell)
-    _, want_den, _ = reference.inter_reference(read, write, gain, v, cell.widths, carry_ops.WINDOW)
-    env_num, _, _ = reference.inter_reference(read, write, gain, v.abs(), cell.widths, carry_ops.WINDOW)
-    den, scale = iref.prepass_reference(read, write, gain, v, cell.widths, sp, carry_ops.WINDOW)
+    _, want_den, _ = reference.inter_reference(read, write, gain, v, cell.widths, window_of())
+    env_num, _, _ = reference.inter_reference(read, write, gain, v.abs(), cell.widths, window_of())
+    den, scale = iref.prepass_reference(read, write, gain, v, cell.widths, sp, window_of())
     live = want_den > 0
     rel = ((den - want_den).abs() / want_den.clamp_min(1e-300))[live]
     assert float(rel.max()) <= 2.0 ** -8, f"den left the amplitude row's precision: max rel {float(rel.max()):.2e}"
@@ -153,12 +153,12 @@ def test_the_intra_reference_is_the_intra_on_the_bundle_when_nothing_is_rounded(
     """Unrounded, the declared intra times the reader's factor IS the fp64 intra of the bundle's own dequantized
     levels and values: the structure (the Grams, the writer factor, the causal window) before any rounding."""
     cell, routes, values = _bundle(name)
-    num, den = iref.intra_bundle_reference(routes, values, carry_ops.WINDOW)
+    num, den = iref.intra_bundle_reference(routes, values, window_of())
     read, write = routes.dequantized()
     want_num, want_den = reference.intra_reference(read, write, routes.g_write, values.dequantized(), cell.widths,
-                                                   carry_ops.WINDOW)
+                                                   window_of())
     envelope, _ = reference.intra_reference(read, write, routes.g_write, values.dequantized().abs(), cell.widths,
-                                            carry_ops.WINDOW)
+                                            window_of())
     reader = torch.ones_like(den)
     for scale in routes.scale_read:
         reader = reader * scale.double()
