@@ -1,5 +1,5 @@
 {
- "unit": "instructions per CTA-window (16 warps), the design's price x its trips on nl64k-alt-k4 (one query head, ~8 entries a list a window: a band's four lists ~32 read entries = 2 den tiles a warp; a warp's four write lists ~32 entries = 2 steps), re-stated when the pass's region ledger first runs",
+ "unit": "instructions per CTA-window (8 write warps + 8 den warps), the warp-role split's price x its trips on nl64k-alt-k4 (one query head, ~8 entries a list a window: a band's eight lists ~64 read entries = 4 den tiles a den warp; a write warp's eight lists ~64 entries = 4 steps), the design of 2026-11-01, re-stated when the pass's region ledger first runs",
  "components": {
   "publish": "publish",
   "den_b": "den_b",
@@ -14,24 +14,24 @@
  },
  "cells": {
   "nl64k-alt-k4": {
-   "publish": 320,
-   "den_b": 640,
-   "den": 3200,
+   "publish": 400,
+   "den_b": 800,
+   "den": 2300,
    "den_dense": 0,
-   "drain": 640,
-   "writes": 3600,
+   "drain": 500,
+   "writes": 2000,
    "writes_dense": 0,
    "stage_dense": 0,
-   "stage": 160,
-   "glue": 1200,
-   "total": 9760,
+   "stage": 120,
+   "glue": 1000,
+   "total": 7120,
    "trips": {
-    "den_tiles_a_warp": 2,
-    "den_rounds_a_warp": 1,
-    "write_steps_a_warp": 2,
-    "write_chunks_a_warp": 1,
+    "den_tiles_a_den_warp": 4,
+    "den_rounds_a_den_warp": 1,
+    "write_steps_a_write_warp": 4,
+    "write_chunks_a_write_warp": 1,
     "slab_copies_a_lane_a_tile": 4,
-    "drain_rows_a_thread": 2
+    "drain_rows_a_den_thread": 4
    }
   }
  }

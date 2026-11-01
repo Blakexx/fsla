@@ -61,7 +61,9 @@ Every operation is defined by WHAT THE ALGORITHM NEEDS. A helper with no caller 
 - `rendezvous()`: every thread of the CTA arrives and all prior shared accesses are ordered before all subsequent
   ones; also the WAR fence that lets a ring slot be overwritten. <a id="rendezvous-group"></a>`rendezvous_group(id, n)`
   is the same restricted to `n` warp-aligned threads at named barrier `id` (id 0 is the CTA's and is not offered;
-  sm_80/86/90 provide sixteen).
+  sm_80/86/90 provide sixteen). `rendezvous_arrive(id, n)` arrives there without waiting: a producer's stores before
+  it are visible to every thread past the barrier's `rendezvous_group` (PTX: an arrive synchronizes with the sync on
+  the same barrier), so a role hands its output to another and runs on.
 - <a id="mbarrier"></a>`mbar_init`, `mbar_arrive_when_landed`, `mbar_arrive`, `mbar_wait`: an `mbarrier` (sm_80+)
   completes a phase at `count` arrivals and flips its parity. A thread's `cp.async` copies arrive when they LAND
   (`cp.async.mbarrier.arrive.noinc`: the arrival is one of the counted ones); a thread's own arrive releases its
@@ -96,6 +98,9 @@ Every operation is defined by WHAT THE ALGORITHM NEEDS. A helper with no caller 
   dynamically indexed address is not an affine function of an index, and `dst[k++]` through a typed pointer
   re-derives a widening multiply every iteration (measured: a loop of one `STS.U16` a live bit ran as `IMAD:114,
   IADD3:69` with no `STS` in its top opcodes); a 32-bit shared address advanced by the element size costs one add.
+  <a id="store-shared-f32-if"></a>`store_shared_f32_if` is the fp32 store predicated in the instruction (`@p STS`):
+  an `if (live) x[i] = v` inside a step compiles to a branch and a convergence barrier around the store (the den's
+  result store on sm_80, 2026-11-01), which the SASS gate reds.
   The pair and quad forms are aligned single accesses (`st.shared.v2.f32`, `ld.shared.v4.u32`); a quad every lane
   reads at one address is a broadcast. (`store_shared_u16`, `store_shared_u32`, `load_shared_u16`,
   `store_shared_f32x2`, `load_shared_v4` and `load_shared_f32`: no shipped caller)

@@ -19,11 +19,16 @@ from rola.ops import facts as facts_ops
 from rola.ops._ext import extension
 from rola.ops.window import window_of
 
-__all__ = ["LEDGER_PHASES", "LEDGER_WARPS", "MAX_HEADS", "ROWS", "SPAN", "den", "ledger_bind", "serves", "tiles"]
+__all__ = ["LEDGER_PHASES", "LEDGER_ROLES", "LEDGER_WARPS", "MAX_HEADS", "ROWS", "SPAN", "den", "ledger_bind", "serves",
+           "tiles"]
 
 #: THE PHASE LEDGER'S SHAPE: ``[ctas][warps][phases]``, the kernel's own `DenPhase` order.
 LEDGER_PHASES = ("stage", "publish", "den", "drain", "writes", "wait")
 LEDGER_WARPS = 16
+#: THE ROLES' ROWS of the ledger: the write warps and the den warps, and the phases each books
+#: (docs/internals/den/den_kernel.md#phases).
+LEDGER_ROLES = {"write": (range(0, 8), ("stage", "wait", "publish", "writes")),
+                "den": (range(8, 16), ("wait", "publish", "den", "drain"))}
 #: A CTA'S TILE: level-S rows x level-R digits; the query heads a write head the accumulator holds.
 ROWS, SPAN, MAX_HEADS = 64, 64, 4
 
@@ -89,5 +94,5 @@ def ledger_bind(ledger: torch.Tensor | None) -> None:
     extension().den_ledger_bind(ledger)
 
 
-#: a slot's place (query head x token) is the den pass's 14-bit field: at W = 1,024 four query heads fit
-PLACE_BITS = 14
+#: a slot's place (query head x token) is the den pass's 13-bit word field: at W = 1,024 four query heads fit
+PLACE_BITS = 13

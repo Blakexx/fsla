@@ -8,6 +8,11 @@ the CTAs and warps, then the readout's and the fold's cycles per warp so an owne
 The operands are `measure.subjects.carry_operands`, the same the timing session's `carry_forward` entry times. The
 ledger has one row a CTA, a CTA a box of the cell's carve (`ctas(cell)`).
 
+`--kernel den` runs the den pass instead (`rola.ops.den.ledger_bind`; `docs/internals/den/den_kernel.md#phases`) over
+the facts pass's output on the cell's bundle, a CTA a tile of the head: each ROLE's phases printed on their own line
+(`rola.ops.den.LEDGER_ROLES`: the write warps' and the den warps', each booking only its own phases), the per-warp rows
+of the den's and the writes' phases by default.
+
 Measured work: the GPU lock exclusive (`rola_devtools.locks.gpu`). Under `ncu` it is the one launch to
 profile with `--launches 1`.
 

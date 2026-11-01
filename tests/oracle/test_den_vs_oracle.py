@@ -98,7 +98,8 @@ def test_the_rule_fails_planted_errors_on_the_kernels_own_output():
 
 
 def test_a_bound_ledger_books_every_phase_and_changes_nothing():
-    """The phase ledger, bound, books cycles in every phase of every warp and leaves the outputs as they were."""
+    """The phase ledger, bound, books cycles in every phase of each warp's role, none in the other role's, and leaves
+    the outputs as they were."""
     spec = next(c for c in ORACLE_CELLS if c.name == "flagship-alt-k4")
     routes, values, den, num = run(spec)
     ctas = den_ops.tiles(routes) * routes.batch * routes.write_heads
@@ -110,4 +111,7 @@ def test_a_bound_ledger_books_every_phase_and_changes_nothing():
         den_ops.ledger_bind(None)
     torch.testing.assert_close(den2, den, rtol=1e-5, atol=0.0)
     torch.testing.assert_close(num2, num, rtol=1e-5, atol=0.0)
-    assert (ledger > 0).all(), ledger
+    for warps, phases in den_ops.LEDGER_ROLES.values():
+        for k, phase in enumerate(den_ops.LEDGER_PHASES):
+            booked = ledger[:, warps.start:warps.stop, k]
+            assert ((booked > 0) if phase in phases else (booked == 0)).all(), (phase, booked)

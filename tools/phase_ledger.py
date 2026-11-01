@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE PHASE LEDGER RUN: one carry launch on a cell with the kernel's phase clock bound, printed
-as cycles a warp a window per phase, averaged over the CTAs and warps; and per warp, so an
+"""THE PHASE LEDGER RUN: one carry or den launch on a cell with the kernel's phase clock bound, printed
+as cycles a warp a window per phase, averaged over the CTAs and warps (the den's by role); and per warp, so an
 owner imbalance shows. KERNEL_STANDARDS §19's per-phase instrument for the composed kernel.
 
     python tools/phase_ledger.py flagship-alt-k4 [--launches 3]
     python tools/phase_ledger.py nl64k-alt-k4 --budget tools/budgets/carry.json   # against the predicted phases
+    python tools/phase_ledger.py nl64k-alt-k4 --kernel den                         # the den pass, each role's phases
 
 With `--budget`, each phase against the cycles the design predicted for it (the cell's `phase_cycles`): red where a
 phase takes more than `MISS` times its prediction, or has none (KERNEL_STANDARDS section 32: a miss stops work until
@@ -64,6 +65,19 @@ def cta_windows(cell: str) -> int:
     return ctas(cell) * ((by_name(cell).tokens + window_of() - 1) // window_of())
 
 
+def _den(spec):
+    """The den pass's module and ``((routes, facts), CTAs)`` for a cell: the facts pass's output over the cell's
+    bundle in its carry form, the launch's CTAs its tiles a write head."""
+    from measure.cells import realize
+    from measure.subjects import bundle_of, read_row_of
+    from rola.ops import den as d
+    from rola.ops import facts as f
+
+    routes, values, layout, statics = bundle_of(spec, realize(spec))
+    facts = f.facts(routes, values, layout, *statics, read_row_of(spec))
+    return d, ((routes, facts), d.tiles(routes) * routes.batch * routes.write_heads)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cell")
@@ -74,8 +88,11 @@ def main() -> int:
     ap.add_argument("--warmup-ms", type=float, default=500.0,
                     help="warm-up launches continue until this long has passed: a GPU just locked reads ~11%% slow "
                          "for its first launches")
-    ap.add_argument("--per-warp", default="readout,fold",
-                    help="the phases whose per-warp rows are printed: an imbalance is seen, not inferred")
+    ap.add_argument("--kernel", choices=("carry", "den"), default="carry",
+                    help="the kernel launched: the carry over its operands, or the den pass over the facts pass's lists")
+    ap.add_argument("--per-warp", default=None,
+                    help="the phases whose per-warp rows are printed (default the carry's readout and fold, the den's "
+                         "den and writes): an imbalance is seen, not inferred")
     ap.add_argument("--json", type=Path, default=None, help="also write the reading here: every phase, every warp")
     ap.add_argument("--budget", type=Path, default=None,
                     help="a budget whose cell names `phase_cycles`, each phase's predicted cycles a warp a window")
@@ -92,14 +109,23 @@ def main() -> int:
     from rola.ops.window import window_of
 
     spec = by_name(a.cell)
+    if a.kernel == "den":
+        c, (operands, n_ctas) = _den(spec)
+        roles = c.LEDGER_ROLES
 
-    def launch(*ops):
-        return c.carry(*ops, forced=a.forced)
+        def launch(*ops):
+            return c.den(*ops)
+    else:
+        roles = {"all": (range(c.LEDGER_WARPS), c.LEDGER_PHASES)}
 
-    operands = carry_operands(spec)
+        def launch(*ops):
+            return c.carry(*ops, forced=a.forced)
+
+        operands = carry_operands(spec)
+        n_ctas = ctas(a.cell)
     phases = c.LEDGER_PHASES
     warps = c.LEDGER_WARPS
-    n_ctas = ctas(a.cell)
+    per_warp = a.per_warp or ("den,writes" if a.kernel == "den" else "readout,fold")
     windows = (spec.tokens + window_of() - 1) // window_of()
     with gpu_lock(mode="exclusive"):
         ledger = torch.zeros((n_ctas, warps, len(phases)), dtype=torch.int64, device="cuda")
@@ -113,15 +139,19 @@ def main() -> int:
             launch(*operands)
         torch.cuda.synchronize()
         c.ledger_bind(None)
+    for role, (rows, booked) in roles.items():
+        part = ledger[:, rows.start:rows.stop].double().mean(dim=(0, 1)).cpu() / a.launches / windows
+        print(f"{a.cell} {a.kernel}" + (f" {role} warps" if len(roles) > 1 else "")
+              + ": cycles a warp a window (mean over CTAs, warps): "
+              + ", ".join(f"{n} {x:.0f}" for n, x in zip(phases, part.tolist()) if n in booked)
+              + f"  total {part.sum():.0f}")
     per = ledger.double().mean(dim=(0, 1)).cpu() / a.launches / windows
-    print(f"{a.cell}: cycles a warp a window (mean over CTAs, warps): "
-          + ", ".join(f"{n} {x:.0f}" for n, x in zip(phases, per.tolist())) + f"  total {per.sum():.0f}")
     by_warp = ledger.double().mean(dim=0).cpu() / a.launches / windows
-    for ph in a.per_warp.split(","):
+    for ph in per_warp.split(","):
         i = phases.index(ph)
         print(f"  {ph:8s} a warp: " + " ".join(f"{by_warp[w][i]:6.0f}" for w in range(warps)))
     if a.json:
-        a.json.write_text(json.dumps({"cell": a.cell, "build_stamp": c.build_stamp(), "launches": a.launches,
+        a.json.write_text(json.dumps({"cell": a.cell, "kernel": a.kernel, "launches": a.launches,
                                       "warmup": warmed,
                                       "cta_windows": n_ctas * windows,
                                       "per_phase": {n: round(x, 1) for n, x in zip(phases, per.tolist())},

@@ -156,6 +156,12 @@ void den_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows,
                     "list_exp is the facts pass's contiguous int16 [BH, windows, width_R, 2]");
     p.list_exp = list_exp.const_data_ptr<int16_t>();
   }
+  //: a window's rows of a write head index in 32 bits (`den_kernel.md#rows`)
+  for (const Plane* pl : {&p.read_r, &p.write_s, &p.read_s, &p.write_r}) {
+    STD_TORCH_CHECK(pl->base == nullptr || W * pl->st + heads * pl->sh < (int64_t{1} << 32),
+                    "a window's rows of a write head span under 2^32 bytes: token stride ", pl->st,
+                    ", head stride ", pl->sh, " at W = ", W);
+  }
   for (Tensor* out : {&den, &num}) {
     STD_TORCH_CHECK(out->is_cuda() && out->scalar_type() == Dtype::Float && out->is_contiguous()
                         && out->dim() == 2 && out->size(0) == BH * heads && out->size(1) == L,

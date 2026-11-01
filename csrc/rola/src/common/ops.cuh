@@ -263,6 +263,12 @@ __device__ __forceinline__ void rendezvous_group(int id, int n) {
   asm volatile("bar.sync %0, %1;\n" ::"r"(id), "r"(n) : "memory");
 }
 
+//: `rendezvous_arrive(id, n)` -- arrive at named barrier `id` of `n` threads without waiting: a producer's release to
+//: the threads that `rendezvous_group` there. -- see docs/internals/common/ops.md#rendezvous-group
+__device__ __forceinline__ void rendezvous_arrive(int id, int n) {
+  asm volatile("bar.arrive %0, %1;\n" ::"r"(id), "r"(n) : "memory");
+}
+
 //: THE LOCKSTEP UNIT'S WIDTH, and it is deliberately not `kMmaUnitThreads`. -- see docs/internals/common/ops.md#kballotlanes
 constexpr int kBallotLanes = 32;
 
@@ -667,6 +673,13 @@ __device__ __forceinline__ void store_shared_u32(SmemAddr a, uint32_t v) {
 
 __device__ __forceinline__ void store_shared_f32(SmemAddr a, float v) {
   asm volatile("st.shared.f32 [%0], %1;" ::"r"(a), "f"(v) : "memory");
+}
+
+//: THE SAME STORE PREDICATED on `live`: one `@p STS`, never a branch around it. -- see docs/internals/common/ops.md#store-shared-f32-if
+__device__ __forceinline__ void store_shared_f32_if(SmemAddr a, float v, bool live) {
+  asm volatile("{\n.reg .pred p;\nsetp.ne.b32 p, %2, 0;\n@p st.shared.f32 [%0], %1;\n}\n" ::"r"(a),
+               "f"(v), "r"(static_cast<int>(live))
+               : "memory");
 }
 
 //: TWO fp32 AT ONCE, an 8-byte aligned pair. -- see docs/internals/common/ops.md#store-shared-f32x2
