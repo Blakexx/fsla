@@ -54,6 +54,8 @@ _NEVER = "@!PT"
 _TERMINATOR = re.compile(r"^(BRA|EXIT|RET|JMP|BRX|JMX)$|^(EXIT|RET)\.")
 #: a convergence subroutine's length at most: its operand moves, `WARPSYNC`, the collective (`RET` not counted)
 _SUBROUTINE = 8
+#: the longest divergence fallback stub read before its return branch
+_FALLBACK = 32
 
 
 def cubins_of(path: Path, member: str | None) -> list[Path]:
@@ -145,11 +147,19 @@ def mma_loops(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) ->
     """The innermost loops that issue MMAs, as (first line, backward branch): a loop a backward branch, its body the
     lines from its target to it, innermost when no other loop that issues MMAs lies inside. A loop inside it that
     issues none -- a compare-and-swap spin (sm_80/86's shared fp32 add), a one-trip guard -- is part of its body, read
-    once. Targets resolve as `convergence_calls`' do."""
+    once. A divergence fallback's return (the cold stub a `BRA.DIV` enters, its unconditional branch back into the
+    code it left) is no loop. Targets resolve as `convergence_calls`' do."""
     resolve = _resolver(lines, labels)
+    cold = set()
+    for _, opcode, operands, predicate in lines:
+        stub = resolve(operands.split(",")[-1].strip()) if opcode.startswith("BRA.DIV") else None
+        for j in range(stub, min(stub + _FALLBACK, len(lines))) if stub is not None else ():
+            cold.add(j)
+            if lines[j][3] == "" and _TERMINATOR.match(lines[j][1]):
+                break
     back = []
     for k, (_, opcode, operands, predicate) in enumerate(lines):
-        target = resolve(operands) if opcode == "BRA" and predicate != _NEVER else None
+        target = resolve(operands) if opcode == "BRA" and predicate != _NEVER and k not in cold else None
         if target is not None and target <= k:
             back.append((target, k))
     mma = [(t, k) for t, k in back if any(_MMA.match(x[1]) for x in lines[t:k + 1])]

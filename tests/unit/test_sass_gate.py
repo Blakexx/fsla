@@ -149,6 +149,11 @@ def test_a_loop_without_mmas_inside_an_mma_loop_is_its_body_and_hides_nothing():
     nested = [(0x0, "MOV", "R1, R2", ""), (0x10, "HMMA.16816.F32", "R8, R4, R6, R8", ""),
               (0x20, "BRA", "0x10", "@P1"), (0x30, "BRA", "0x0", "@P2"), (0x40, "EXIT", "", "")]
     assert sass_gate.mma_loops(nested, {}) == [(1, 2)]
+    #: a shuffle's divergence fallback, a cold stub past the exit that branches back into the step it left
+    stub = [(0x0, "HMMA.16816.F32", "R8, R4, R6, R8", ""), (0x10, "BRA.DIV", "~URZ, 0x60", ""),
+            (0x20, "SHFL.BFLY", "PT, R1, R2, 0x1, 0x1f", ""), (0x30, "BRA", "0x0", "@P1"), (0x40, "STG.E", "[R2.64], R1", ""),
+            (0x50, "EXIT", "", ""), (0x60, "MOV", "R1, R2", ""), (0x70, "BRA", "0x20", "")]
+    assert sass_gate.mma_loops(stub, {}) == [(0, 3)]
 
 
 def test_a_branch_inside_an_mma_step_is_counted_and_one_outside_it_is_not():
