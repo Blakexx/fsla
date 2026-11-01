@@ -16,7 +16,8 @@ union), `E` entries, `B` the area's bytes, `n` a window's entries, `t` a step (`
 <a id="plan"></a>
 ## The plan
 
-`PlanWord`: mode | read chunk / 64 << 1 | fold chunk / 64 << 9 | read chunks << 13 | fold chunks << 21 (`plan_word`).
+`PlanWord`: mode | read chunk / 64 << 1 | fold chunk / 64 << 9 | read chunks << 14 | fold chunks << 22 (`plan_word`):
+5-bit fold fields, so a write union of a whole 1,024-token window is one word.
 A window's RECORD is `plan_words(g)` words at `g` query heads a write head: the plan word, then the step words in
 pairs (`max_steps(g)` = 8 `g` read chunks + 8 fold chunks + the retiring step; 12 words at one head). The CTA stages it with the window's inputs, by parity, and
 reads it at each use: `stream_of` gives the window's mode, chunks, unions (its staged counts), entries and image;

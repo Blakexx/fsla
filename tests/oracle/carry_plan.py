@@ -104,15 +104,15 @@ def chunks_of(u: int, chunk: int) -> int:
 
 
 def plan_word(mode: int, rc: int, fc: int, ru: int, fu: int) -> int:
-    """`plan_word`: mode | read chunk / 64 << 1 | fold chunk / 64 << 9 | read chunks << 13 | fold chunks << 21."""
-    return (mode | -(-rc // LIST_BOUND) << 1 | -(-fc // LIST_BOUND) << 9 | chunks_of(ru, rc) << 13
-            | chunks_of(fu, fc) << 21)
+    """`plan_word`: mode | read chunk / 64 << 1 | fold chunk / 64 << 9 | read chunks << 14 | fold chunks << 22."""
+    return (mode | -(-rc // LIST_BOUND) << 1 | -(-fc // LIST_BOUND) << 9 | chunks_of(ru, rc) << 14
+            | chunks_of(fu, fc) << 22)
 
 
 def chunks(word: int) -> tuple[int, int, int, int, int]:
     """``(mode, read chunk, fold chunk, read chunks, fold chunks)`` of a plan word."""
-    return (word & 1, LIST_BOUND * (word >> 1 & 0xFF), LIST_BOUND * (word >> 9 & 0xF), word >> 13 & 0xFF,
-            word >> 21 & 0xF)
+    return (word & 1, LIST_BOUND * (word >> 1 & 0xFF), LIST_BOUND * (word >> 9 & 0x1F), word >> 14 & 0xFF,
+            word >> 22 & 0x1F)
 
 
 def rule_plan(c: Counts, read_row: int, write_row: int, area: int) -> int:

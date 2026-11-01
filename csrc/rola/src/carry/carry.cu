@@ -207,8 +207,12 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
                            "the write lists");
   p.read_lists = lists_of(read_lists, BH, windows, read_list < 0 ? 0 : widths[read_list], heads, W,
                           "the read lists");
-  STD_TORCH_CHECK(heads <= window_heads(W), "a write head has at most ", window_heads(W),
-                  " query heads at W = ", W, " (the union slot's head field); got ", heads);
+  STD_TORCH_CHECK(
+      heads <= window_heads(W) && heads * W <= 255 * kListBound, "a write head has at most ",
+      window_heads(W), " query heads at W = ", W,
+      " (the union slot's head field), its read union at most 255 boundaries (the plan's chunk"
+      " fields); got ",
+      heads);
   p.tables.heads = static_cast<int>(heads);
   p.tables.plan_words = plan_words(static_cast<int>(heads), W);
   if (write_list >= 0) {

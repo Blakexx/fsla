@@ -16,7 +16,7 @@ __host__ __device__ __forceinline__ constexpr int image_bytes(uint32_t mode) {
   return mode == kModeWhole ? kImageWhole : kImageRing;
 }
 
-//: A WINDOW'S PLAN, a word: mode | read chunk / 64 << 1 | fold chunk / 64 << 9 | read chunks << 13 | fold chunks << 21,
+//: A WINDOW'S PLAN, a word: mode | read chunk / 64 << 1 | fold chunk / 64 << 9 | read chunks << 14 | fold chunks << 22,
 //: a chunk 0 where its side has no slots and past its union the union. -- see docs/internals/carry/schedule.md#plan
 struct PlanWord {
   uint32_t v;
@@ -28,15 +28,15 @@ struct PlanWord {
   }
 
   __host__ __device__ __forceinline__ int fold_chunk() const {
-    return kListBound * static_cast<int>((v >> 9) & 0xfu);
+    return kListBound * static_cast<int>((v >> 9) & 0x1fu);
   }
 
   __host__ __device__ __forceinline__ int reads() const {
-    return static_cast<int>((v >> 13) & 0xffu);
+    return static_cast<int>((v >> 14) & 0xffu);
   }
 
   __host__ __device__ __forceinline__ int folds() const {
-    return static_cast<int>((v >> 21) & 0xfu);
+    return static_cast<int>((v >> 22) & 0x1fu);
   }
 };
 
@@ -48,8 +48,8 @@ __host__ __device__ __forceinline__ constexpr uint32_t plan_word(uint32_t mode, 
                                                                  int ru, int fu) {
   return mode | static_cast<uint32_t>((rc + kListBound - 1) / kListBound) << 1
          | static_cast<uint32_t>((fc + kListBound - 1) / kListBound) << 9
-         | static_cast<uint32_t>(chunks_of(ru, rc)) << 13
-         | static_cast<uint32_t>(chunks_of(fu, fc)) << 21;
+         | static_cast<uint32_t>(chunks_of(ru, rc)) << 14
+         | static_cast<uint32_t>(chunks_of(fu, fc)) << 22;
 }
 
 //: A READ BUFFER'S BYTES and a FOLD BUFFER'S, at a chunk's slots and entries (`read_ents`, `fold_ents`).
