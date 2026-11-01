@@ -77,7 +77,8 @@ at the end, partial over its columns where two warps share its rows, and both re
 | `fm` | 512 | the writer tile's `(m s, m)` |
 | `den` | `warps · 64` | a warp's 16 partial row sums, added across tiles |
 | `gate` | `(W / 64) · R · 4` | the slab gate's table |
-| barriers, counters, clock | ~0.6 KB | full a stage buffer, one a reader stage, the values' full; the release counters |
+| `words` | 128 | each stage's word: the write and read side's first byte and limit, its level, reader chunk, reader part's width and slab bits (`build_words`) |
+| barriers, counters, clock | ~0.5 KB | the values' full mbarrier and release counters, the phase clock |
 
 The reader rows follow the fixed tenants (`reader_rows`), so the launch's dynamic shared memory is
 `sizeof(Smem) + rows · pitch`. The reader region is dead after the sweep and holds the deposit's staging tiles; its
@@ -100,35 +101,45 @@ swap of a pair's halves on rows 4-7 is the one move inside a pair that keeps a s
 
 ## The copies
 
-Every copy is `cp.async.cg` of one 16-byte chunk, arriving on its buffer's mbarrier with
-`cp.async.mbarrier.arrive.noinc` when it lands. ONE WARP issues a whole stage or a tile's values and factors -- a
-lane's place fixed (row `lane / 8 + 4 i`, chunk `lane % 8`), so each instruction reads four rows' 128 contiguous bytes
--- so a buffer's `full` barrier counts that warp's 32 lanes. A stage row `j + 4 i`'s swizzled chunk is
-`k ^ 2 j ^ (i & 1)`, one address bit flipped between even and odd `i`. A chunk past its level's bytes (a 16-digit
-tail's second half, a short stage's empty slots) is copied with a zero source size, so it lands as zeros and reads
-nothing. The rows are read where the bundle holds them, by their byte strides on 16-byte boundaries; the producer's
-rows are head-major, so a CTA's tokens are one contiguous run a row.
+Every copy is `cp.async.cg` of one 16-byte chunk. THE STAGES AND THE READER ROWS are copied by every thread, its
+share of the copy group of its stage: a stage's 64 writer rows of 128 bytes are two copies a thread (rows `tid / 8`
+and `+ 32` at chunk `tid % 8`, `stage_share`), a reader part a thread's chunk `tid % 16` of rows `tid / 16 + 16 i`
+(`reader_part`, its 4, 8 or 16 chunks a row the stage's digits at the read side's width). A thread's rows are formed
+from bases made once (`Bases`: each level's write rows at the window's first token, read rows at the block's first
+reader, and their strides), a copy their base plus one 32 x 32 -> 64 product of its token and the stride, and its
+reader copies step by fixed strides. A copy is predicated, never branched around: a chunk past its level's bytes (a
+16-digit tail's second half, a short stage's empty slots) has a zero source size, so it lands as zeros and reads
+nothing; a stage no warp reads, or past the piece, the same; a reader chunk a part does not have is not issued
+(`stage_tile_when`), since its destination is another part's. THE VALUES AND FACTORS are one warp's, a lane's place
+fixed (row `lane / 8 + 4 i`, chunk `lane % 8`), arriving on the values' mbarrier with `cp.async.mbarrier.arrive.noinc`
+when they land; a stage row `j + 4 i`'s swizzled chunk is `k ^ 2 j ^ (i & 1)`. The rows are read where the bundle
+holds them, by their byte strides on 16-byte boundaries; the producer's rows are head-major, so a CTA's tokens are one
+contiguous run a row.
 
 <a id="stages"></a>
 <a id="pipeline"></a>
 
 ## The pipeline
 
-The reader rows land once, a stage's slot at a time, each on its own mbarrier, the piece's first three stages beside
-the first: the first Gram waits for one slot and one stage, not the block's rows. The writer side streams a tile's
-stages, level by level, through three buffers. **The last warp to release a stage refills its buffer** with the stage
-three on (a release count a buffer, cumulative over its uses), which leaves the refill two stages to land and no warp
-waiting on a buffer's release. The tile's values move the same way: the last warp to release them copies the next
-tile's. **Every warp waits for every stage and every tile's values, read or not**, so no warp's release counts toward a
-buffer's next use before that use has landed: an mbarrier wait tests one phase bit, sound only for a waiter within a
-phase, and the cumulative counts are exact only while no release runs a use ahead. A stage no warp reads was not
-copied, and its wait is immediate.
+KERNEL_STANDARDS section 4's sm_80 form (ruled 2026-11-01 with the corrected SASS gate, which reads the step): the
+writer side streams the piece's stages, level by level and tile by tile, through three buffers, each stage ONE COPY
+GROUP of every thread. A step (`tile_stage`): `cp.async.wait_group 1` -- the thread's copies of this stage landed --
+and one CTA barrier, which carries both facts: every thread's copies of the stage landed, and every warp done with
+the stage before; then the refill, the stage two on into the buffer just released (`Ring`: the refill's stage, its
+word and its tile's gate word are read a step ahead), committed as the next group; then the stage's Gram. No mbarrier
+in a step: a per-lane spin compiles to a convergence barrier, and an mbarrier address from a ring index ptxas cannot
+prove uniform to a loop over distinct values (both measured on sm_80 the same day), and the SASS gate reds both.
+THE READER ROWS land once, a stage's part in the copy group of the piece's first tile's same stage: the first two with
+the first two stages before the loop, the rest with the ring's refills in the first tile (`tile_stages<..., true>`),
+so the first Gram waits for one part, not the block's rows, and the later tiles' steps carry no reader code. A stage's
+slabs and the tile's gate come from the stage words (`build_words`), read a step ahead. The tile's values keep their
+own mbarrier, outside the steps: the last warp to release them copies the next tile's.
 
-The protocol's measured shape (`nl64k-dense`, one head, sm_86, CUDA events at boost): a per-stage runtime loop with
-the form tested a stage, 676 µs; level-major with the form a level, ring counters for the divide by three and the
-Gram's zeroing and fold out of the stage loop, 501 µs; the refill by the last releaser three on in place of the first
-warp's claim one on, 513 µs (no gain: the copies are not where its waits are, [below](#where-the-time-goes)); five
-buffers in place of three on `nl64k-alt-k4`, 471 against 457 µs; an L2 prefetch of the stage six on, 652 µs.
+The protocol's measured shape (`nl64k-dense`, one head, sm_86, CUDA events at boost), before the step form: a per-stage
+runtime loop with the form tested a stage, 676 µs; level-major with the form a level, ring counters for the divide by
+three and the Gram's zeroing and fold out of the stage loop, 501 µs; the refill by the last releaser three on in place
+of the first warp's claim one on, 513 µs; five buffers in place of three on `nl64k-alt-k4`, 471 against 457 µs; an L2
+prefetch of the stage six on, 652 µs.
 
 <a id="slab-gate"></a>
 
@@ -146,8 +157,10 @@ answers all-ones and is not read.
 
 The table drives everything else, uniformly across the CTA: a stage is copied only when a row tile reads one of its
 slabs, the tile's values only when a row tile's pair is live (the piece's first stages, copied before the table
-exists, always); a warp computes the tile only when its pair is live and multiplies only the slabs it reads -- a stage
-with every slab live as one straight-line block, otherwise a branch a slab. A skipped slab's products are all zero and
+exists, always); a warp computes the tile only when its pair is live and multiplies only the slabs it reads, the
+form chosen once a level outside the steps: a level whose every slab the warp reads, its stages each one straight-line
+block (`gram_dense`), otherwise a loop over each stage's live slabs whose body is one slab's loads and MMAs
+(`gram_slabs`, the step, branch-free). A skipped slab's products are all zero and
 a skipped pair adds exact zeros: `test_the_slab_gate_is_an_exact_certificate` holds the gated run to the ungated
 run's sums.
 
@@ -231,7 +244,8 @@ the carry reduces into the same planes on the same stream, and the caller owns z
 
 `rola_intra_ledger_bind` binds a `[8][7]` int64 buffer (warp × `reader`, `gate`, `wait`, `gram`, `epilogue`, `value`,
 `deposit`) every CTA's warps add their cycles into (`rola.ops.intra.ledger_bind`); a bound ledger moves no output. A
-phase is booked at the lap that ends it, so a refill's copy lands in the next stage's `wait`.
+phase is booked at the lap that ends it; no lap sits inside a step (a gated lap is a branch), so a tile's stages,
+their waits and copies included, book `gram`, and `wait` is the tile's values' wait.
 
 <a id="where-the-time-goes"></a>
 <a id="region-ledger"></a>

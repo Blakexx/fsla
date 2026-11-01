@@ -126,7 +126,6 @@ def convergence_calls(lines: list[tuple[int, str, str, str]], labels: dict[str, 
 _MMA = re.compile(r"^(HMMA|IMMA)")
 #: KERNEL_STANDARDS 27's debts: the kernels built before the rule whose steps still branch, each with what replaces it
 _STEP_BRANCH_DEBT = {
-    "intra_kernel": "the intra's port onto the fp16 family rebuilds its step",
     "readout_part": "the readout component's rebuild replaces the skeleton's",
     "calib_kernel": "a calibration probe, not a production step",
 }
@@ -182,7 +181,6 @@ def mma_gap(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> t
 
 #: KERNEL_STANDARDS section 29's debts: the kernels built before the step lints whose steps still do it
 _STEP_XU_DEBT = {
-    "intra_kernel": "its epilogue's F2I (160 in its steps); the intra's port onto the fp16 family converts on the FMA pipe",
 }
 _STEP_GLOBAL_DEBT = {
     "carry_kernel": "the fold's steps past a list's 16th entry read records from global memory; the readout-first "
@@ -232,7 +230,6 @@ _STEP_COVER_DEBT = {
     "carry_kernel": "the read side's software pipeline (the readout's next tile loaded under its MMAs, the image's "
                     "batches stored while read) and the fold chain's",
     "produce_kernel": "its operands staged by cp.async a step ahead (with section 29's global-memory debt)",
-    "intra_kernel": "the intra's port onto the fp16 family rebuilds its step",
     "readout_part": "the readout component's rebuild replaces the skeleton's",
     "calib_kernel": "a calibration probe, not a production step",
 }

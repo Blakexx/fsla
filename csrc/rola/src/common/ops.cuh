@@ -91,6 +91,17 @@ __device__ __forceinline__ void stage_tile_if(SmemAddr dst, const void* src, boo
                "r"(live ? kStageBytes : 0));
 }
 
+//: THE COPY ISSUED ONLY WHEN `issue`, and zero-filled past its source where not `live`: a guard predicate on the
+//: instruction (`@p LDGSTS`), never a branch, for a copy whose dead form must write nothing.
+//: -- see docs/internals/common/ops.md#stage-tile-when
+__device__ __forceinline__ void stage_tile_when(SmemAddr dst, const void* src, bool issue,
+                                                bool live) {
+  asm volatile(
+      "{\n.reg .pred p;\nsetp.ne.b32 p, %3, 0;\n@p cp.async.cg.shared.global [%0], [%1], 16, %2;\n}\n" ::
+          "r"(dst),
+      "l"(src), "r"(live ? kStageBytes : 0), "r"(static_cast<int>(issue)));
+}
+
 //: THE SAME COPY OF A RUN'S FIRST `bytes` (0 to 16), the rest zero-filled. -- see docs/internals/common/ops.md#stage-tile-n
 __device__ __forceinline__ void stage_tile_n(SmemAddr dst, const void* src, uint32_t bytes) {
   asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" ::"r"(dst), "l"(src), "r"(bytes));

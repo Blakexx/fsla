@@ -41,7 +41,9 @@ Every operation is defined by WHAT THE ALGORITHM NEEDS. A helper with no caller 
   form would take one descriptor issue a tile and is not built (announced, below).
 - <a id="stage-tile-if"></a>`stage_tile_if`: the copy with its source predicated -- a dead quantum ZERO-FILLS its
   destination and reads nothing, so a partial tile is the same code as a full one and never reads past an operand's
-  end.
+  end. <a id="stage-tile-when"></a>`stage_tile_when`
+  guards the copy itself (`@p LDGSTS`): a copy that must write nothing when dead -- a part a call has none of, whose
+  destination another part owns -- where `stage_tile_if`'s zero-fill would land.
 - <a id="stage-tile-n"></a>`stage_tile_n`: the copy of a run's first `bytes` (0 to 16), the rest zero-filled and
   nothing past them read, so a row that ends inside a quantum (a level whose width is not a multiple of sixteen) never
   reads the next level's digits (the facts pass's rows, `docs/internals/facts/facts.md#load`).
