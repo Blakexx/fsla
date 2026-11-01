@@ -150,7 +150,8 @@ RowView row_view(const Tensor& t, int64_t B, int64_t T, int64_t H, int64_t width
   return RowView{t.const_data_ptr(), t.stride(0) * bytes, t.stride(1) * bytes, t.stride(2) * bytes};
 }
 
-//: THE DIGIT UNITS: a u8 digit enters an MMA as `d / 16` (fp16 accumulate) or `d 2^-24` (fp32), its unit value `d / 255`;
+//: THE DIGIT UNITS: a u8 digit enters an MMA as `d / 16` (fp16 accumulate), `d 2^-24` (fp32, and the floor trick's
+//: writer at fp16) or itself (a u8 x u8 level's IMMA), its unit value `d / 255`;
 //: level 0's Gram is lifted to digit units, and the rest of every level's scale rides `unit`.
 //: -- see docs/internals/intra/intra_kernel.md#widening
 void units(const std::vector<int64_t>& forms, bool f16, float& lift, float& unit) {
@@ -159,7 +160,12 @@ void units(const std::vector<int64_t>& forms, bool f16, float& lift, float& unit
   for (size_t l = 0; l < forms.size(); ++l) {
     const int u8_sides =
         !form_read_f16(static_cast<int>(forms[l])) + !form_write_f16(static_cast<int>(forms[l]));
-    const double level_lift = std::pow(digit, u8_sides);
+    //: a u8 x u8 level's IMMA Gram is the digits' own integers; the floor trick's (an f16 reader, a u8 writer at fp16)
+    //: carries `2^-24` from the digit and `2^15` from the reader; every other u8 side its widening's `digit`
+    const int form = static_cast<int>(forms[l]);
+    const double level_lift = form == kFormU8U8           ? 1.0
+                              : f16 && form == kFormF16U8 ? 16777216.0 / 32768.0
+                                                          : std::pow(digit, u8_sides);
     if (l == 0)
       lift = static_cast<float>(level_lift);
     else

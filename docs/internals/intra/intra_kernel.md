@@ -171,8 +171,10 @@ run's sums.
 
 ## The Gram
 
-A slab is two k-steps of the warp's 16 readers against its `kWarpCols` writers: `load_slab` then `mma_slab`, each
-slab's loads issued before the slab ahead of it multiplies. The K order is the level's form's:
+A slab is two k-steps of the warp's 16 readers against its `kWarpCols` writers (one `IMMA` k-step at a u8 x u8 level,
+[below](#widening)): `load_slab` then `mma_slab`, each slab's loads issued before the slab ahead of it multiplies --
+in the straight-line form slab by slab, in the slab loop two slabs a trip with the odd one peeled after
+(KERNEL_STANDARDS §27.5). The K order is the level's form's:
 
 * **f16 on both sides (natural):** the MMA's own order, `ldmatrix.x4` for both operands (A a k-step, B two n-tiles a
   k-step).
@@ -187,17 +189,33 @@ The level's Gram accumulates in fp16 pairs or fp32 by the arm, zeroed before the
 
 <a id="widening"></a>
 
-## The widening
+## The Gram by form, and the widening
 
-A u8 word's four digits become two f16 pairs, exactly, in registers as they are used -- never in shared memory, which
-would double a u8 level's rows. At fp16 accumulation a digit enters as `d / 16`: `prmt` puts each byte under `0x54`
-(`64 + d / 16`) and one `hfma2` subtracts 64 (Sterbenz: exact). A level's Gram then stays within f16's range at any
-width the kernel reads (`256 · (255 / 16)² = 65,025 < 65,504`). At fp32 a digit enters as the f16 subnormal
-`d · 2^-24` -- the byte alone under a zero byte, one `prmt` a pair -- and the products `d d' 2^-48` are exact in the
-fp32 sums (the tensor cores keep f16 subnormal inputs: the gate passes at fp32 on every form). The host (`intra.cu`'s
-`units`) carries the scales: level 0's Gram is lifted by `16^n` or `2^(24 n)` (`n` its u8 sides), and the rest of every level's digit
-scale and `255^-n` ride `unit`. Widening costs ~5 ALU instructions an MMA where B is u8 (a word to two pairs an MMA, A
-once a k-step), measured 6.9 instructions an HMMA in the u8 Gram blocks against 2.6 in the natural one.
+Each level's Gram is the MMA its form's operands want (ruled 2026-11-01):
+
+* **u8 x u8 (a level sparse on both sides, a tied level):** `IMMA` m16n8k32 u8 x u8 into s32, one an n-tile a slab
+  (the slab's 32 digits its K) -- exact, no widening: the u8 fragments' K order (a lane's four consecutive digits) is
+  the int8 MMA's own. The s32 Gram shares the f16/fp32 Gram's registers (`Acc`'s union) and becomes fp32 once a level
+  in the fold (`gram_values`, outside the steps); its digit scale is 1. `Σ d d'` stays under 2^31 at any width the
+  kernel reads (`256 · 255² < 2^24`).
+* **a mixed level (one side u8, the other dense f16, floored at 2^-13 of its row's max):** f16 MMAs. A u8 word's four
+  digits become two f16 pairs, exactly, in registers as they are used -- never in shared memory, which would double a
+  u8 level's rows. At fp32 accumulation a digit enters as the f16 subnormal `d · 2^-24` -- the byte alone under a zero
+  byte, one `prmt` a pair -- and the products are exact in the fp32 sums (the tensor cores keep f16 subnormal inputs).
+  At fp16 accumulation an f16 READER against a u8 WRITER (the u8 side widened every MMA) takes THE FLOOR TRICK: the
+  writer's digits the same free subnormals and the reader's f16 times 2^15 once a k-step (`hmul2`), so a product is
+  `a d 2^-9` -- within `[2^-22, 2^-1]` by the floor, under 128 summed over a 256-digit level, its weakest products
+  subnormal but at least 2^-13 below their row's strongest. A u8 READER against an f16 writer widens only A, once a
+  k-step, and keeps `d / 16` (`prmt` under `0x54`, one `hfma2` less 64, exact): the scale under which a level's Gram
+  stays within f16 at any support (`256 · 255 / 16 < 65,504`).
+* **f16 x f16:** the natural MMA, no widening.
+
+The host (`intra.cu`'s `units`) carries the scales: level 0's Gram is lifted by its form's digit scale (`16^n` or
+`2^(24 n)` for `n` widened u8 sides, `2^9` for the floor trick, 1 for `IMMA`), and the rest of every level's digit scale
+and `255^-n` ride `unit`. The fp16 widening of a u8 writer cost ~4 ALU instructions an MMA, which on sm_80's 8-cycle
+MMA held the slab loop at 73-82% of the step line; the floor trick and `IMMA` take it to one `prmt` a pair or none.
+`tests/integration/test_intra_kernel.py` holds every form at both accumulations per slot, its margins in the oracle
+margins file (`--oracle-margins`, rows `intra num` / `intra den`).
 
 <a id="epilogue"></a>
 

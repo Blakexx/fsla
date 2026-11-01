@@ -96,20 +96,29 @@ __device__ __forceinline__ void widen(uint32_t x, uint32_t& lo, uint32_t& hi) {
   }
 }
 
-//: THE WARP'S STATE ACROSS A PIECE: a level's Gram (f16 pairs or fp32), the running level product and the output
+//: THE WARP'S STATE ACROSS A PIECE: a level's Gram (f16 pairs or fp32; s32 at a u8 x u8 level, in the same registers),
+//: the running level product and the output
 template <bool kF16>
 struct Acc;
 
 template <>
 struct Acc<true> {
-  uint32_t gram[kNT][2];
+  union {
+    uint32_t gram[kNT][2];
+    int32_t igram[kNT][4];
+  };
+
   float product[kNT][4];
   float out[8][4];
 };
 
 template <>
 struct Acc<false> {
-  float gram[kNT][4];
+  union {
+    float gram[kNT][4];
+    int32_t igram[kNT][4];
+  };
+
   float product[kNT][4];
   float out[8][4];
 };
@@ -123,10 +132,13 @@ __device__ __forceinline__ void gram_mma(Acc<kF16>& acc, int n, const uint32_t (
     ops::hmma(acc.gram[n], a, b0, b1);
 }
 
-//: an n-tile's Gram as fp32, rows g (0, 1) and g + 8 (2, 3)
-template <bool kF16>
+//: an n-tile's Gram as fp32, rows g (0, 1) and g + 8 (2, 3), from the level form `F`'s accumulator
+template <int F, bool kF16>
 __device__ __forceinline__ void gram_values(const Acc<kF16>& acc, int n, float (&v)[4]) {
-  if constexpr (kF16) {
+  if constexpr (F == kFormU8U8) {
+#pragma unroll
+    for (int i = 0; i < 4; ++i) v[i] = __int2float_rn(acc.igram[n][i]);
+  } else if constexpr (kF16) {
     const float2 lo = __half22float2(*reinterpret_cast<const __half2*>(&acc.gram[n][0]));
     const float2 hi = __half22float2(*reinterpret_cast<const __half2*>(&acc.gram[n][1]));
     v[0] = lo.x, v[1] = lo.y, v[2] = hi.x, v[3] = hi.y;
@@ -136,13 +148,20 @@ __device__ __forceinline__ void gram_values(const Acc<kF16>& acc, int n, float (
   }
 }
 
-template <bool kF16>
+template <int F, bool kF16>
 __device__ __forceinline__ void zero_gram(Acc<kF16>& acc) {
-  constexpr int kWords = kF16 ? 2 : 4;
+  if constexpr (F == kFormU8U8) {
 #pragma unroll
-  for (int n = 0; n < kNT; ++n)
+    for (int n = 0; n < kNT; ++n)
 #pragma unroll
-    for (int i = 0; i < kWords; ++i) acc.gram[n][i] = 0;
+      for (int i = 0; i < 4; ++i) acc.igram[n][i] = 0;
+  } else {
+    constexpr int kWords = kF16 ? 2 : 4;
+#pragma unroll
+    for (int n = 0; n < kNT; ++n)
+#pragma unroll
+      for (int i = 0; i < kWords; ++i) acc.gram[n][i] = 0;
+  }
 }
 
 //: A LANE'S FIXED PLACES in the operand loads: its reader rows and the writer tokens it addresses, with their swizzles.
@@ -237,9 +256,24 @@ __device__ __forceinline__ void load_slab(const Lanes& ln, int rc, uint32_t buf,
   }
 }
 
-//: A SLAB'S 16 MMAs, a k-step's eight n-tiles apart before the next k-step's, u8 words widened as they are used
+//: A SLAB'S MMAs: an IMMA an n-tile at a u8 x u8 level; otherwise 16, a k-step's eight n-tiles apart before the next
+//: k-step's, u8 words widened as they are used
 template <int F, bool kF16>
 __device__ __forceinline__ void mma_slab(const SlabFrags<F>& fr, Acc<kF16>& acc) {
+  //: A u8 x u8 LEVEL: one IMMA an n-tile, the slab's 32 digits its K, exact into s32 -- no widening
+  if constexpr (F == kFormU8U8) {
+#pragma unroll
+    for (int n = 0; n < kNT; ++n) {
+      const int w = 4 * (n >> 1) + 2 * (n & 1);
+      ops::imma_u8_k32(acc.igram[n], fr.a, fr.b[w], fr.b[w + 1]);
+    }
+    return;
+  }
+
+  //: THE FLOOR TRICK, an f16 reader against a u8 writer at fp16 accumulate: the writer's digits the free subnormals
+  //: `d 2^-24`, the reader's floored f16 (>= 2^-13 of its row's max) times 2^15, so a product is `a d 2^-9`
+  constexpr bool kFloored = kF16 && F == kFormF16U8;
+  constexpr uint32_t kTwo15 = 0x78007800u;
   uint32_t a[2][4];
   if constexpr (!form_read_f16(F)) {
     widen<kF16>(fr.a[0], a[0][0], a[0][2]);
@@ -250,7 +284,8 @@ __device__ __forceinline__ void mma_slab(const SlabFrags<F>& fr, Acc<kF16>& acc)
 #pragma unroll
     for (int k = 0; k < 2; ++k)
 #pragma unroll
-      for (int i = 0; i < 4; ++i) a[k][i] = fr.a[4 * k + i];
+      for (int i = 0; i < 4; ++i)
+        a[k][i] = kFloored ? ops::hmul2(fr.a[4 * k + i], kTwo15) : fr.a[4 * k + i];
   }
 #pragma unroll
   for (int k = 0; k < 2; ++k)
@@ -258,7 +293,7 @@ __device__ __forceinline__ void mma_slab(const SlabFrags<F>& fr, Acc<kF16>& acc)
     for (int n = 0; n < kNT; ++n) {
       if constexpr (!form_write_f16(F)) {
         uint32_t lo, hi;
-        widen<kF16>(fr.b[4 * (n >> 1) + 2 * (n & 1) + k], lo, hi);
+        widen<kF16 && !kFloored>(fr.b[4 * (n >> 1) + 2 * (n & 1) + k], lo, hi);
         gram_mma(acc, n, a[k], lo, hi);
       } else if constexpr (kNatural<F>) {
         //: ldmatrix's quads: an n-tile pair's (k 0-7, k 8-15) words for its first then its second n-tile
@@ -284,28 +319,41 @@ __device__ __forceinline__ void gram_dense(const Lanes& ln, int rc, uint32_t buf
   });
 }
 
-//: THE GRAM OF ONE STAGE under the warp's slab bits: a loop over the live slabs, its body one slab's loads and MMAs
-//: (the step, branch-free). -- see docs/internals/intra/intra_kernel.md#gram
+//: THE GRAM OF ONE STAGE under the warp's slab bits: a loop over its live slabs two at a time -- each slab's loads and
+//: widening under the other's MMAs, the step branch-free -- and the odd slab peeled after it (KERNEL_STANDARDS
+//: section 27.5). -- see docs/internals/intra/intra_kernel.md#gram
 template <int F, bool kF16>
 __device__ __forceinline__ void gram_slabs(const Lanes& ln, int rc, uint32_t buf, uint32_t slabs,
                                            Acc<kF16>& acc) {
+  uint32_t m = slabs;
 #pragma unroll 1
-  for (uint32_t m = slabs; m != 0u; m &= m - 1u) {
-    SlabFrags<F> fr;
-    load_slab<F>(ln, rc, buf, fr, __ffs(m) - 1);
-    mma_slab<F, kF16>(fr, acc);
+  for (int n = __popc(slabs) >> 1; n > 0; --n) {
+    const int a = __ffs(m) - 1;
+    m &= m - 1u;
+    const int b = __ffs(m) - 1;
+    m &= m - 1u;
+    SlabFrags<F> fa, fb;
+    load_slab<F>(ln, rc, buf, fa, a);
+    load_slab<F>(ln, rc, buf, fb, b);
+    mma_slab<F, kF16>(fa, acc);
+    mma_slab<F, kF16>(fb, acc);
+  }
+  if (m != 0u) {
+    SlabFrags<F> fa;
+    load_slab<F>(ln, rc, buf, fa, __ffs(m) - 1);
+    mma_slab<F, kF16>(fa, acc);
   }
 }
 
 //: A LEVEL'S GRAM INTO THE RUNNING PRODUCT: the first level lifted to digit units (an exact power of two), each later
 //: one multiplied in.
-template <bool kF16>
+template <int F, bool kF16>
 __device__ __forceinline__ void fold_level(Acc<kF16>& acc, bool first, float lift) {
   if (first) {
 #pragma unroll
     for (int n = 0; n < kNT; ++n) {
       float v[4];
-      gram_values(acc, n, v);
+      gram_values<F, kF16>(acc, n, v);
 #pragma unroll
       for (int i = 0; i < 4; ++i) acc.product[n][i] = v[i] * lift;
     }
@@ -313,7 +361,7 @@ __device__ __forceinline__ void fold_level(Acc<kF16>& acc, bool first, float lif
 #pragma unroll
     for (int n = 0; n < kNT; ++n) {
       float v[4];
-      gram_values(acc, n, v);
+      gram_values<F, kF16>(acc, n, v);
 #pragma unroll
       for (int i = 0; i < 4; ++i) acc.product[n][i] *= v[i];
     }
@@ -751,9 +799,9 @@ __device__ __forceinline__ void tile_stages(Smem& sm, const IntraParams& p, cons
   const uint32_t mine = sm.gate[tile][row_tile % kRowTiles];
   rola::static_for<D>([&](auto Level) {
     constexpr int kL = decltype(Level)::value;
-    zero_gram(acc);
     rola::uniform_switch<kForms>(p.form[kL], [&](auto F) {
       constexpr int kF = decltype(F)::value, kSlabs = form_stage_digits(kF) / kSlabDigits;
+      zero_gram<kF, kF16>(acc);
       const uint32_t level = p.level_slabs[kL];
       const int s0 = p.level_stage0[kL], s1 = s0 + p.level_stages[kL];
       const auto stages = [&](auto Gram) {
@@ -773,8 +821,8 @@ __device__ __forceinline__ void tile_stages(Smem& sm, const IntraParams& p, cons
       } else {
         stages(std::integral_constant<int, kGramSlabs>{});
       }
+      fold_level<kF, kF16>(acc, kL == 0, p.lift);
     });
-    fold_level(acc, kL == 0, p.lift);
   });
 }
 

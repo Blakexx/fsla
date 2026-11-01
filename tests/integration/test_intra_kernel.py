@@ -14,6 +14,7 @@ Symbols: ``L`` tokens, ``H`` query heads, ``H_w`` write heads, ``BH`` batch x qu
 """
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
@@ -27,6 +28,7 @@ from rola.routing.factors import RouteFactors
 from rola.routing.types import OpaqueRouting, Topology
 from rola.values import Values
 from tests.oracle import int_reference as iref
+from tests.oracle import tolerances
 
 #: the lists' form the facts pass is called in (sm_86's even carry arm); this file reads its unions and factors only
 _READ_ROW = 64
@@ -120,6 +122,19 @@ def _bounds(routes, accumulate):
     return U16 + steps * 64 * U32 + fp32, steps * 64 * U32 + fp32
 
 
+def _record(routes, accumulate, plane, ratio):
+    """``pytest --oracle-margins=<file>``: one JSON line a plane -- the worst error over its allowance, read beside the
+    oracle comparisons' (`tests/oracle/fixtures.py`'s rows)."""
+    if not tolerances.MARGINS_FILE:
+        return
+    forms = [f"{'f16' if r.dtype == torch.float16 else 'u8'}x{'f16' if w.dtype == torch.float16 else 'u8'}"
+             for r, w in zip(routes.amp_read, routes.amp_write)]
+    row = {"output": f"intra {plane}", "what": f"{accumulate} widths {list(routes.topology.widths)} forms {forms}",
+           "slots": ratio.numel(), "failed": int((ratio > 1).sum()), "worst": float(ratio.max())}
+    with open(tolerances.MARGINS_FILE, "a") as f:
+        f.write(json.dumps(row) + "\n")
+
+
 def _check(routes, values, accumulate="fp32"):
     num, den = _run(routes, values, accumulate=accumulate)
     want_num, want_den = iref.intra_bundle_reference(routes, values, window_of())
@@ -133,10 +148,12 @@ def _check(routes, values, accumulate="fp32"):
     floor = 64.0 * U32 * mass
     num_err = (num.double() - want_num).abs()
     allowed = num_bound * envelope + floor + 1e-30
+    _record(routes, accumulate, "num", num_err / allowed)
     assert (num_err <= allowed).all(), (
         f"{int((num_err > allowed).sum())} num slots off; worst {(num_err / allowed).max().item():.3g} of the allowance")
     den_err = (den.double() - want_den).abs()
     allowed = den_bound * want_den + 1e-30
+    _record(routes, accumulate, "den", den_err / allowed)
     assert (den_err <= allowed).all(), f"den off by {(den_err / allowed).max().item():.3g} of the allowance"
     return num, den
 
