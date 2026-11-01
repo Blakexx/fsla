@@ -10,10 +10,11 @@
 
 namespace rola::facts {
 
-//: THE CTA: eight warps a UNIT, four CTAs an SM. -- see docs/internals/facts/facts.md#the-grid
+//: THE CTA: eight warps a UNIT, four CTAs an SM at W = 512 and two at 1,024 (a list lane's twice the words and
+//: boundaries in registers). -- see docs/internals/facts/facts.md#the-grid
 constexpr int kFactsWarps = 8;
 constexpr int kFactsThreads = kFactsWarps * 32;
-constexpr int kFactsCtasMin = 4;
+constexpr int kFactsCtasMin = kWindow >= 1024 ? 2 : 4;
 
 //: THE ROW ALIGNMENT LAW's grain (`rola.routing.quant.ROW_ALIGN`). -- see docs/internals/facts/liveness_contract.md#alignment
 constexpr int kRowAlign = 32;

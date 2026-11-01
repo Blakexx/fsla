@@ -514,7 +514,7 @@ def test_the_seam_refuses_another_window():
     layout = _layout(widths, L)
     read_statics, write_statics = _sides(layout, "alternating", widths)
     routes, values = _bundle(widths, L, (read_statics, write_statics))
-    with pytest.raises(RuntimeError, match="window is the device's 512"):
+    with pytest.raises(RuntimeError, match=f"window is the device's {facts_ops.WINDOW}"):
         facts_ops.extension().rola_facts_forward(
             list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
             torch.empty((2, 2, 32, 1), dtype=torch.int32, device="cuda"),

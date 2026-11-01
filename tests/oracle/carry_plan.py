@@ -5,7 +5,7 @@ pass writes from the facts pass's counts -- the plan word (the forced form's whe
 word a step by the rule -- word for word, so a gate asserts the kernel's records and the forms its cell exercises
 (docs/internals/carry/schedule.md#planner).
 
-Symbols: ``W`` the window (512 tokens), ``U`` a side's union slots in a window, ``S[j]`` a side's box lists' entries
+Symbols: ``W`` the window (the carry's, :data:`rola.ops.carry.WINDOW`), ``U`` a side's union slots in a window, ``S[j]`` a side's box lists' entries
 before union slot ``64 (j + 1)``, ``B`` the area's bytes, ``n`` a window's entries (its read chunks, then its fold
 chunks), ``t`` a step (``n`` the step that only retires the last entry).
 """
@@ -18,7 +18,8 @@ import numpy as np
 from rola.ops import carry as carry_ops
 from rola.ops import facts as facts_ops
 
-WINDOW, LIST_BOUND, LIST_AT = 512, 64, 8
+WINDOW, LIST_BOUND = carry_ops.WINDOW, 64
+LIST_AT = WINDOW // LIST_BOUND
 PAD_BYTES, PANEL_ROW, BOX = 512, 64, 32
 IMAGE_WHOLE, IMAGE_RING = 32 * 2048, 16 * 2048
 WHOLE, HALVES = 0, 1
