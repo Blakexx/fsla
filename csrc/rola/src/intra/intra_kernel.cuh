@@ -14,6 +14,7 @@
 
 #include "common/ops.cuh"
 #include "common/phase_clock.cuh"
+#include "common/static_for.cuh"
 #include "common/structure_switch.cuh"
 #include "facts/liveness_contract.cuh"
 #include "intra/intra.cuh"

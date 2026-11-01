@@ -157,6 +157,8 @@ def job_table(plan: ProducerPlan) -> tuple[list[tuple[int, ...]], int]:
             per_head.append((_ROUTE, 0, 1, _solve(spec.write), width, write_col, -1, -1, out_w[level], level,
                              0, fold_write))
     jobs = [(job[0], head, *job[2:]) for head in range(plan.num_heads) for job in per_head]
+    if plan.d_v not in (32, 64, 128, 256):
+        raise ValueError(f"the producer's value job reads heads of 32, 64, 128 or 256 channels, not d_v={plan.d_v}")
     if plan.d_v > _MAX_COLUMNS:
         raise ValueError(f"a value job holds at most {_MAX_COLUMNS} channels, one head's d_v={plan.d_v} does not fit")
     heads_per = max(1, _MAX_COLUMNS // 2 // plan.d_v)
@@ -169,15 +171,19 @@ def job_table(plan: ProducerPlan) -> tuple[list[tuple[int, ...]], int]:
 _WARP_COLUMNS = 256
 
 
-def _shape(job: tuple[int, ...], d_v: int) -> int:
+def _shape(job: tuple[int, ...], plan: ProducerPlan) -> int:
     """A job's control as the kernel reads it, one int16 word in the launch's parameters, so every branch on it is
-    warp-uniform to ptxas: ``pair << 13 | tiles << 10 | fold_write << 9 | fold_read << 8 | writes << 7 | reads << 6 |
-    kind << 5 | rows << 3 | solve`` -- ``rows`` the solve row's class (widths to 32, 64, 128, 256), ``tiles`` the
-    projection's column tiles as a power of two's exponent, ``pair`` a wide union's warp-pair form,
+    warp-uniform to ptxas: ``dense_write << 15 | dense_read << 14 | pair << 13 | tiles << 10 | fold_write << 9 |
+    fold_read << 8 | writes << 7 | reads << 6 | kind << 5 | rows << 3 | solve`` -- ``rows`` the solve row's class
+    (widths to 32, 64, 128, 256), ``tiles`` the projection's column tiles as a power of two's exponent, ``pair`` a wide
+    union's warp-pair form, ``dense_read``/``dense_write`` whether the side's level is dense (an f16 row),
     ``reads``/``writes`` the sides a route job writes and ``fold_read``/``fold_write`` whose fold applies (produce.cuh
     `Job`)."""
-    kind, _head, heads, solve, width, _in0, in1, out_read, out_write, _level, fold_read, fold_write = job
-    rows = 0 if width <= 32 else 1 if width <= 64 else 2 if width <= 128 else 3
+    kind, _head, heads, solve, width, _in0, in1, out_read, out_write, level, fold_read, fold_write = job
+    d_v = plan.d_v
+    #: a value job's `rows` is its head's channel class, `d_v = 32 << rows`: a lane's value's head is then an immediate
+    rows = ({32: 0, 64: 1, 128: 2, 256: 3}[d_v] if kind == _VALUE
+            else 0 if width <= 32 else 1 if width <= 64 else 2 if width <= 128 else 3)
     union = kind != _VALUE and in1 >= 0
     #: a narrow union's write row at its width class's tile offset (32 << rows columns), so a column's two logits share
     #: a lane; a wider one is a warp pair's
@@ -185,8 +191,11 @@ def _shape(job: tuple[int, ...], d_v: int) -> int:
     pair = columns > _WARP_COLUMNS
     count = 16 if pair else -(-columns // 16)
     tiles = next(c for c in range(5) if count <= 1 << c)
-    return (int(pair) << 13 | tiles << 10 | fold_write << 9 | fold_read << 8 | int(out_write >= 0) << 7
-            | int(out_read >= 0) << 6 | kind << 5 | rows << 3 | solve)
+    dense = [kind != _VALUE and level in dense_levels(plan, side) for side in ("read", "write")]
+    word = (int(dense[1]) << 15 | int(dense[0]) << 14 | int(pair) << 13 | tiles << 10 | fold_write << 9
+            | fold_read << 8 | int(out_write >= 0) << 7 | int(out_read >= 0) << 6 | kind << 5 | rows << 3 | solve)
+    #: the int16 the kernel reads, bit 15 its sign
+    return word - (1 << 16) if word >= 1 << 15 else word
 
 
 @lru_cache(maxsize=64)
@@ -195,7 +204,7 @@ def _job_tensor(plan: ProducerPlan, device: str) -> tuple[torch.Tensor, torch.Te
     width, the columns in and out, the level) and its control words on the host."""
     jobs, per_head = job_table(plan)
     table = torch.tensor([job[1:3] + job[4:10] for job in jobs], dtype=torch.int32, device=device)
-    return table, torch.tensor([_shape(job, plan.d_v) for job in jobs], dtype=torch.int16), per_head
+    return table, torch.tensor([_shape(job, plan) for job in jobs], dtype=torch.int16), per_head
 
 
 #: the per-(token tile, head) arrival counters, zero between calls (the kernel's finisher resets its own), one buffer a

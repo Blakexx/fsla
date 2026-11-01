@@ -31,13 +31,18 @@ every `a < NA` and executes exactly the one whose index equals `value`. The inst
 is what makes the member's spans and shifts immediates; the branch is uniform, so no lane
 diverges and nothing is predicated.
 
+THE DISPATCH IS INLINE BY CONSTRUCTION: a chain of force-inlined frames (`detail::uniform_switch_from`), one a
+member, with no lambda of its own, and a body large enough to pass the inliner's threshold carries
+`__attribute__((always_inline))` on its lambda. A lambda's call operator is not force-inlined, so a large one is
+outlined into a call -- its references in memory, and in an outlined body ptxas proves no shuffle or vote converged,
+so each one falls back to a convergence subroutine (the producer's solve: 400-1,000 calls, a 500-byte frame).
+
 `value` must be a launch-derived structural index — a field of the addressing block, an
 arm axis — and never a per-lane or data-dependent quantity. That is R9 itself, and the
 primitive cannot check it; a reviewer reads the call site.
 
-The compile-time loop is `common/static_for.cuh`'s `static_for`, a foundation header of its
-own that neither this primitive nor the carry body owns — so the two walk their sets with
-one loop rather than each carrying a copy.
+The set is walked by recursion, not by `common/static_for.cuh`'s `static_for`: a loop over a lambda is the lambda this
+primitive must not have.
 
 ## Placement is a cost, and it is the caller's
 
@@ -50,11 +55,10 @@ left to habit.
 
 ## Users
 
-- `produce/produce.cu`'s projection: two nested switches, `uniform_switch<3>` over a
-  warp's column share and over the live token groups, each `1 << index`, outside the
-  projection's loops, so a share's and a group count's tile shapes are immediates.
-- `produce/produce.cu`'s bundle: `uniform_switch<4>` over a solve row's elements a lane
-  (`1 << index`, the job's `rows` field), enclosing that job's pass loop.
+- `produce/produce.cu`'s projection: `uniform_switch<5>` over a one-row job's column-tile class (the shape word's,
+  `1 << index` tiles), outside the k-loop, so a class's tile count and stage depth are immediates.
+- `produce/produce.cu`'s solve: `uniform_switch<4>` over the row's width class (`2 << index` tiles), around one
+  n-tile's activation, probe and bundle -- the large body, its lambda `always_inline`.
 - `intra/intra_kernel.cuh`'s value step: `uniform_switch<kValueWidth / 16>` over the
   channel group inside a `#pragma unroll 1` loop, one member an iteration, so a group's
   swizzled address is an immediate and its loads are not hoisted over the others'.

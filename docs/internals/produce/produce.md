@@ -13,9 +13,8 @@ same call is the fp64 and host reference, and until the native backward the path
 The components land one at a time into the skeleton, each gated (KERNEL_STANDARDS §19); a component not yet landed
 has its real signature, tenant and edges and does the cheapest thing that keeps the composition's shape (zero digits
 and scales, unit masses and gains). THE REGISTER-RESIDENT REBUILD: LANDED the projection into
-the accumulators; STUBS the solve, the bundle and the values (`stub_rows`, `stub_values`: zero rows and scales, unit
-masses), which R3 lands on the accumulators one at a time -- the section on a token's row below is the form being
-ported. `tests/integration/test_produce_kernel.py` holds the skeleton's claim (every element of every output is
+the accumulators, and on them every one-row job's solve, bundle and values; a UNION's split is the step left
+(`stub_rows` writes its rows meanwhile: zero rows and scales, unit masses). `tests/integration/test_produce_kernel.py` holds the skeleton's claim (every element of every output is
 written, whatever the routing, and the arrival counters are back at zero after the call) and each landed component's
 gate.
 
@@ -79,8 +78,14 @@ One warp a token row: the solve on the row, then the bundle's form of it. Every 
 tile's rows (a count of its live tokens, uniform), a row past them solving and reducing zeros with its stores off, so
 no collective sits under a branch ptxas cannot prove warp-uniform.
 
-<a id="bundle"></a>THE BUNDLE'S FORM (the form being ported onto the accumulators; `stub_rows` meanwhile), for each side the
-job writes (a shape bit each): the row against
+<a id="bundle"></a>THE BUNDLE'S FORM (`bundle_rows`, `bundle_side`), one n-tile at a time: after the projection a warp
+PARKS its second n-tile's accumulators in the released stages (`kParkedWarpBytes`, 16 bytes a lane, lane-major) and
+solves and bundles each n-tile on 64 live accumulators, so the solve never sits at the register cap. A side's rows are
+staged one token slot at a time -- a lane quad's 4 rows, `kStagedRowBytes` a row, the widest slot plus 16 bytes so the
+four rows' bytes lie in distinct banks (`tools/bank_model.py`: a byte store one wavefront, the read-back four) -- and
+stored 16 bytes a lane; a coefficient is the level times its row's reciprocal max (one quotient a row, within an fp32
+unit of the IEEE quotient, never its slow-path call). For each side the job writes (the shape word's bits: whether it
+writes it and whether its level is dense): the row against
 its max as u8 digits (round to nearest even of `unit x 255`) -- or, for a dense level, f16 at 1 with the floor
 taken in a live row (`max(level / max, 2^-13)`, an IEEE divide rounded to nearest, the torch quantizer's own
 rounding) -- the max clamped at `1e-30` as `quantize_unit_max_rows` clamps it; the max as the side's scale; and the level's mass for the finisher
@@ -106,7 +111,7 @@ head's token rows are contiguous, and every prefill reader walks one head's toke
 us a head at `(256, 256)`, `L = 64K`, `H = 16` on token-major rows (an 8 KB token stride, DRAM at 360 GB/s) against
 113 us head-major (676 GB/s), the rate of a single head (`docs/internals/facts/facts.md#the-grid`).
 
-<a id="solve"></a>THE SOLVE runs on the accumulators (`solve_one_row`): a lane holds four token rows (`row_value`: its
+<a id="solve"></a>THE SOLVE runs on the accumulators (`solve_tile`, a row class's body `solve_class`): a lane holds four token rows (`row_value`: its
 two n-tiles' two tokens), 32 values each at 256 columns, its member columns one mask the four share (`row_members`),
 and a row's reductions are three shuffles over the 8 lanes sharing `lane & 3` (`row_all`), the four rows' together.
 The row's class (2, 4, 8 or 16 column tiles, its width's) and its activation are the shape word's, so every
@@ -152,8 +157,10 @@ the token's row, a warp's lanes over the hidden axis in 16-byte chunks, plus the
 
 ## <a id="value-rows"></a>The values
 
-A warp a (token, head), its lanes over the channels: the channel max |v| (clamped at `1e-30`) as the scale, and each
-channel divided by it (round to nearest) and rounded to f16 -- `rola.routing.quant.quantize_values`, on the fp32
+On the accumulators (`value_tile`, `value_class`), a value job's heads `d_v / 8` of a lane's values each (the head size
+the shape word's class, `d_v = 32 << rows`: 32, 64, 128 or 256 channels, so a value's head is an immediate): per
+(token, head) the channel max |v| (clamped at `1e-30`) over the 8 lanes holding the head as the scale, and each channel
+times its reciprocal rounded to f16 -- `rola.routing.quant.quantize_values`, on the fp32
 projection rather than the bf16 the composition's linear rounds it to. Gate: every value within one f16 unit in the
 last place plus the projection's fp32 error (the channel's and the scale's, over the scale), every scale within that
 error, against the fp64 composition.
