@@ -45,6 +45,11 @@ CONSTRUCTIONS = {c.name: c for c in (
     _c("chunk-decode-w16", (16, 16), 1.5, 1.0, "layer-B2-T128-H2-h128-dv64-fp32-s4-dec8", "prefill + 8 carried steps"),
     _c("chunk-decode-la-w256", (256,), None, 1.0, "layer-B2-T128-H2-h128-dv64-fp32-s10-dec8",
        "D = 1 flat dense: the LA control for the routed decode"),
+    #: THE CAPACITY-FAIR LONG LAYER: T = N = 65,536 a head, four heads, the alternating split, at rising logit gains --
+    #: the weights realize the support (`tools/realized_support.py`), so a layer reading spans it
+    *(_c("nl64k-alt-h4" + ("" if gain == 1.0 else f"-g{gain:g}"), (256, 256), 1.5, gain,
+         "layer-B1-T65536-H4-h256-dv64-bf16-s11", f"the capacity-fair long layer at logit gain {gain:g}")
+      for gain in (1.0, 4.0, 16.0)),
     #: THE PRODUCER SWEEP: one entmax constructor at rising logit gains; the realized density must fall across it
     *(_c(f"producer-sweep-g{gain:g}", (64, 64), 1.5, gain, "layer-B1-T128-H4-h64-dv64-fp32-s201",
          "the producer sweep: the logit gain moves the realized density") for gain in (0.25, 1.0, 4.0, 16.0)),

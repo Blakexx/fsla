@@ -15,8 +15,10 @@ machine facts, every run), the instruments of `INSTRUMENTS` (SASS and the regist
 pipe counters, stall census, timeline and the intra roofline on every carry cell, and the den's and the intra's own
 (`phases-den`, `counters-den`, `census-den`, `counters-intra`, `census-intra`) on the cells of `LONG_CELL_TOKENS` and
 more, every run, holding the GPU), and with
-a timing server the timing registrations: `carry_forward`, `carry_intra`, `intra_forward`, `den_pass` and `prefill` on the carry cells, `entmax_solve@layer=C`
-and `decode_step@layer=C` for each RoLA construction on the layer cells declared for it, and the clock reader. Every
+a timing server the timing registrations: `carry_forward`, `carry_intra`, `intra_forward`, `den_pass` and `prefill` on
+the carry cells, `entmax_solve@layer=C`, `produce@layer=C`, `layer_prefill@layer=C` and `decode_step@layer=C` for each
+RoLA construction on the layer cells declared for it (a decode step on the cells that take steps), and the clock
+reader. Every
 target depends on the binary and the environment, whose outputs reach its key. Every cell is a NODE (`rola_devtools.cells.declare`) whose output is its record and the digest of the code that drew it;
 a target that runs on cells takes those nodes as its data inputs, so nothing here or in the build system resolves a cell
 by name at run time. This file imports nothing of rola's: it reads the constructions from `measure/cells/layer.py` by
@@ -70,6 +72,8 @@ INSTRUMENTS = {
     "counters-den": ("tools/pipe_counters.py", ["{cell}", "--kernel", "den"], True, {"gpu": "all"}, [], 900),
     "census-den": ("tools/stall_census.py", ["{cell}", "--kernel", "den"], True, {"gpu": "all"},
                    ["tools/budgets/den.json", "csrc/rola/src/den/den_kernel.cuh"], 900),
+    #: what each layer construction's weights route on its cells (the layer readings' regime), once a binary
+    "support": ("tools/realized_support.py", [], False, {"gpu": 1}, ["measure/cells", "rola"], 1800),
     "counters-intra": ("tools/pipe_counters.py", ["{cell}", "--kernel", "intra"], True, {"gpu": "all"}, [], 900),
     "census-intra": ("tools/stall_census.py", ["{cell}", "--kernel", "intra"], True, {"gpu": "all"},
                      ["tools/budgets/intra.json", "csrc/rola/src/intra/intra_kernel.cuh"], 900),
@@ -78,7 +82,7 @@ INSTRUMENTS = {
 LONG_CELL_INSTRUMENTS = {"phases-den", "counters-den", "census-den", "counters-intra", "census-intra"}
 LONG_CELL_TOKENS = 16384
 CARRY_ARMS = ("carry_forward", "carry_intra", "intra_forward", "den_pass", "prefill")
-LAYER_ARMS = ("entmax_solve", "decode_step")
+LAYER_ARMS = ("entmax_solve", "produce", "layer_prefill", "decode_step")
 #: seconds an instrument may run on one cell
 #: EACH INSTRUMENT'S TIMEOUT IS PER CELL AND SIZED TO THE INSTRUMENT: a phase-clock launch is seconds on the largest
 #: cell (37 cells in 1.1 minutes, measured 2026-09-16), an ncu replay minutes. A hang then costs one timeout and lands

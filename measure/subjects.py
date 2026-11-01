@@ -41,9 +41,9 @@ class Launch:
     outside_allocator: Callable[[], int] | None = None
 
 
-#: THE LEVELS A SUBJECT MAY PRICE, and what each owes (`Subject.level`). rola has no `layer` subject on this line: the
-#: layer segments a sequence into stateful calls, and the prefill refuses a state until the carry's segment boundary is
-#: built (`docs/open-work.md` C-e). The op-level paths are the stateless prefill and decode's step.
+#: THE LEVELS A SUBJECT MAY PRICE, and what each owes (`Subject.level`). The layer subject is one stateless segment: a
+#: call the layer splits into segments carries a state between them, which the prefill refuses until the carry's segment
+#: boundary is built (`docs/open-work.md` C-e). The op-level paths are the stateless prefill and decode's step.
 LEVELS = ("kernel", "op", "layer")
 
 
@@ -304,6 +304,35 @@ def entmax_solve(fx) -> Launch:
     return Launch(name=f"entmax_solve|{spec.name}|{fx['construction'].name}", call=run)
 
 
+def produce(fx) -> Launch:
+    """THE PRODUCER'S LAUNCH: the cell's prefill tokens to the bundle -- the routing projection, every level's solve, the
+    mass fold, the write gain, the quantization and the value digits -- as the layer calls it."""
+    spec, layer = fx["cell"], fx["layer"]
+    x = fx["x"][:, :spec.tokens].contiguous()
+
+    def run():
+        with torch.no_grad():
+            return layer._produce(x)
+
+    return Launch(name=f"produce|{spec.name}|{fx['construction'].name}", call=run)
+
+
+def layer_prefill(fx) -> Launch:
+    """THE LAYER'S STATELESS PREFILL, one segment: the hidden states to the op's output -- the producer (every
+    projection in) and the op. The output projection is the same GEMM as attention's and is outside both entries."""
+    spec, layer = fx["cell"], fx["layer"]
+    x = fx["x"][:, :spec.tokens].contiguous()
+    if layer.segment_tokens(spec.B, spec.tokens) < spec.tokens:
+        raise ValueError(f"{spec.name}: the layer splits {spec.tokens} tokens into segments, and a segment boundary "
+                         "carries a state the prefill does not take yet")
+
+    def run():
+        with torch.no_grad():
+            return layer._prefill(x, None, None)[0]
+
+    return Launch(name=f"layer_prefill|{spec.name}|{fx['construction'].name}", call=run)
+
+
 def decode_step(fx) -> Launch:
     """ONE carried single-token step, on a state the seeding call populated.
 
@@ -384,6 +413,13 @@ SUBJECTS = {
                             "the producer's batched multi-level solve",
                             level="kernel", symbol="(union|factor|softmax)_forward_kernel",
                             stamp="csrc_build_stamp"),
+    "produce": Subject("produce", "layer", produce,
+                       "the producer's one launch: the projection, every level's solve, the gain, the digits",
+                       level="kernel", symbol="produce_kernel", stamp="csrc_build_stamp"),
+    "layer_prefill": Subject("layer_prefill", "layer", layer_prefill,
+                             "the layer's stateless prefill, one segment: the producer and the op, the output "
+                             "projection outside it as it is outside attention's",
+                             level="layer", symbol="carry_kernel", stamp="carry_build_stamp"),
     "decode_step": Subject("decode_step", "layer", decode_step,
                            "one carried single-token step through the engine: the facts pass, the pages it commits "
                            "and the kernels, as the op runs them",
