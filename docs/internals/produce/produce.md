@@ -25,11 +25,12 @@ One int32 row per job (`JobField`), its ADDRESSING: the head (the first of a val
 level's width, the `route_W` columns of its one or two logit rows, the packed-plane columns its rows land at on each
 side (`-1` for a side it does not write), the level, and whether each side's fold applies. Its CONTROL -- the kind, the
 solve (`SolveKind`), the solve row's width class, the projection's column-tile class and whether it is a wide
-union's pair form, the sides it writes and whose fold applies -- is one SHAPE WORD
-(int16) a job in the launch's parameters
-(`ProduceParams::shapes`, `rola.ops.produce._shape`), read by block index: a value ptxas knows is warp-uniform, so a
-branch on it compiles its collectives inline alone, where a branch on a loaded job field gave each a guarded fallback
-subroutine as well (692 of them: cold code, KERNEL_STANDARDS §20). At most `kMaxJobs` jobs a launch.
+union's pair form, the sides it writes and whose fold applies -- is one SHAPE WORD (int16) a job in the launch's
+parameters (`ProduceParams::shapes`, `rola.ops.produce._shape`), read once by block index: a value ptxas knows is
+warp-uniform, so a branch on it compiles its collectives inline alone, where a branch on a loaded job field gave each
+a guarded fallback subroutine as well (692 of them: cold code, KERNEL_STANDARDS §20). The parameters are
+`__grid_constant__`, so the body's lambdas may hold their address without copying them to local memory (a copy made
+every shape word a local load, and every branch on one a fallback). At most `kMaxJobs` jobs a launch.
 A ROUTE job is one head's one solve: a union level's two logit rows (read and write), a tied level's one row filling
 both planes, or one side of an independent level. A VALUE job is the heads whose channels fit one job (`256 / d_v`
 of them, at most `kMaxColumns` channels). A row is at most `kMaxWidth` leaves: the widest a warp solves.
@@ -48,7 +49,9 @@ token's row lies across the 8 lanes sharing `lane & 3` -- 32 values a lane at 25
 reduction three shuffles. Nothing passes through shared memory but the operands.
 
 <a id="form"></a>A JOB'S FORM is its column count against one warp's 16 tiles (`kWarpColumns`, 256): a one-row job (a
-split, tied or independent side, a union whose two rows fit, a value job's heads) is every warp's whole row for its 16
+split, tied or independent side, a union of width at most 128 -- its write row at its width class's tile offset,
+`32 << rows` columns (`job_column`), so a column's two logits share a lane -- a value job's heads) is every warp's whole
+row for its 16
 tokens, the tiles in the job's class (1, 2, 4, 8 or 16: the shape word's, chosen once a block by `common/structure_switch.cuh`'s `uniform_switch`), 64 tokens a block;
 a WIDE union (two rows past 256 columns) is a warp PAIR a token group -- warp `2j + h` columns `128 h ..` of both rows,
 eight tiles a row, so each warp holds both rows of the same columns and forms their midpoint and difference in its own

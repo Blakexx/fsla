@@ -178,7 +178,10 @@ def _shape(job: tuple[int, ...], d_v: int) -> int:
     `Job`)."""
     kind, _head, heads, solve, width, _in0, in1, out_read, out_write, _level, fold_read, fold_write = job
     rows = 0 if width <= 32 else 1 if width <= 64 else 2 if width <= 128 else 3
-    columns = heads * d_v if kind == _VALUE else 2 * width if in1 >= 0 else width
+    union = kind != _VALUE and in1 >= 0
+    #: a narrow union's write row at its width class's tile offset (32 << rows columns), so a column's two logits share
+    #: a lane; a wider one is a warp pair's
+    columns = heads * d_v if kind == _VALUE else 2 * (32 << rows) if union else width
     pair = columns > _WARP_COLUMNS
     count = 16 if pair else -(-columns // 16)
     tiles = next(c for c in range(5) if count <= 1 << c)

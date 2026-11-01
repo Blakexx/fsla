@@ -32,10 +32,9 @@ __device__ __forceinline__ int64_t slot_of(const ProduceParams& p, int token, in
   return (static_cast<int64_t>(b) * p.H + head) * p.T + (token - b * p.T);
 }
 
-//: THE BLOCK'S JOB: its control from the parameters' shape word (uniform, so a branch on it is a warp-uniform branch
-//: ptxas can prove), its addressing from the table.
-__device__ __forceinline__ Job load_job(const ProduceParams& p, int index) {
-  const int shape = p.shapes[index];
+//: THE BLOCK'S JOB: its control from its shape word (the parameters', read at the block's index: uniform to ptxas), its
+//: addressing from the table. -- see docs/internals/produce/produce.md#jobs
+__device__ __forceinline__ Job load_job(const ProduceParams& p, int index, int shape) {
   const int32_t* row = p.jobs + static_cast<int64_t>(index) * kJobFields;
   return Job{(shape >> 5) & 1, shape & 7,        (shape >> 3) & 3,   (shape >> 6) & 1,
              (shape >> 7) & 1, row[kFieldHead],  row[kFieldHeads],   row[kFieldWidth],
@@ -48,6 +47,20 @@ __device__ __forceinline__ Job load_job(const ProduceParams& p, int index) {
 __device__ __forceinline__ int job_columns(const ProduceParams& p, const Job& job) {
   if (job.kind == kJobValue) return job.heads * p.d_v;
   return job.in1 >= 0 ? 2 * job.width : job.width;
+}
+
+//: A ONE-ROW JOB'S ACCUMULATOR COLUMN `a` AS ITS JOB COLUMN, or -1 (`columns` the job's, `job_columns`): a narrow
+//: union's write row starts at its width class's tile offset (`32 << rows`), so a column's two logits share a lane.
+//: It reads no parameter: a lambda holding the parameters' address would copy them to local memory.
+//: -- see docs/internals/produce/produce.md#form
+__device__ __forceinline__ int job_column(const Job& job, int columns, int a) {
+  if (job.kind == kJobRoute && job.in1 >= 0) {
+    const int offset = 32 << job.rows;
+    return a < job.width                           ? a
+           : a >= offset && a < offset + job.width ? job.width + (a - offset)
+                                                   : -1;
+  }
+  return a < columns ? a : -1;
 }
 
 __device__ __forceinline__ int route_column(const Job& job, int j) {
@@ -100,17 +113,17 @@ struct Sources {
   uint32_t mask;
 };
 
-template <int S, int QW, int QX>
+template <int S, int QW, int QX, class Column>
 __device__ __forceinline__ Sources<QW, QX> sources(const ProduceParams& p, const Job& job,
-                                                   int columns, int token0, int x_rows) {
+                                                   Column column, int token0, int x_rows) {
   constexpr int kChunks = 2 * S;
   const int t = static_cast<int>(threadIdx.x);
   Sources<QW, QX> s;
   s.mask = 0u;
   rola::static_for<QW>([&](auto I) {
     constexpr int q = decltype(I)::value;
-    const int u = t + q * kProduceThreads, col = u / kChunks;
-    const bool issue = col < columns;
+    const int u = t + q * kProduceThreads, col = column(u / kChunks);
+    const bool issue = col >= 0;
     const int64_t run = !issue ? 0
                         : job.kind == kJobValue
                             ? static_cast<int64_t>(col) * p.v_row
@@ -315,7 +328,7 @@ __device__ __forceinline__ void softmax_rows(float (&acc)[kAccTiles][kTokenTiles
 template <int M>
 __device__ __forceinline__ void entmax_rows(float (&acc)[kAccTiles][kTokenTiles][4],
                                             uint32_t members, bool a15, float (&top)[4],
-                                            Clock& clock) {
+                                            uint32_t (&support)[4], Clock& clock) {
   float lo[4], tau[4];
   rola::static_for<4>([&](auto Sl) {
     constexpr int s = decltype(Sl)::value;
@@ -373,10 +386,12 @@ __device__ __forceinline__ void entmax_rows(float (&acc)[kAccTiles][kTokenTiles]
 
   rola::static_for<4>([&](auto Sl) {
     constexpr int s = decltype(Sl)::value;
+    support[s] = 0u;
     rola::static_for<2 * M>([&](auto V) {
       constexpr int v = decltype(V)::value;
       const float z = row_value<s, v>(acc);
       const bool sup = ((members >> v) & 1u) && z > tau[s];
+      support[s] |= (sup ? 1u : 0u) << v;
       const float base = sup ? fmaxf((a15 ? 0.5f : 1.0f) * (z - tau[s]), 0.0f) : 0.0f;
       row_value<s, v>(acc) = a15 ? base * base : base;
     });
@@ -385,9 +400,10 @@ __device__ __forceinline__ void entmax_rows(float (&acc)[kAccTiles][kTokenTiles]
   });
 }
 
-//: THE JOB'S SOLVED LEVELS from the accumulators, for its gate: a one-activation row is both sides' level (read at
-//: `[0, w)`, write at `[w, 2w)`) -- written only when the probe is asked for.
-template <class Token>
+//: THE JOB'S SOLVED LEVELS from the accumulators, for its gate: the read side at `[0, w)` from values `v`, the write
+//: side at `[w, 2w)` from values `v + W` (a one-activation row's `W` 0, its one level both sides') -- written only
+//: when the probe is asked for.
+template <int W, class Token>
 __device__ __forceinline__ void probe_levels(const ProduceParams& p, int job_index, int width,
                                              int lane, Token token,
                                              const float (&acc)[kAccTiles][kTokenTiles][4]) {
@@ -396,41 +412,41 @@ __device__ __forceinline__ void probe_levels(const ProduceParams& p, int job_ind
   rola::static_for<4>([&](auto Sl) {
     constexpr int s = decltype(Sl)::value;
     const int tk = token(s >> 1, s & 1);
-    rola::static_for<2 * kAccTiles>([&](auto V) {
+    rola::static_for<2 * kAccTiles - W>([&](auto V) {
       constexpr int v = decltype(V)::value;
-      const int j = 16 * (v >> 1) + (lane >> 2) + 8 * (v & 1);
+      const int j = 8 * v + (lane >> 2);
       if (j < width && tk < p.BT) {
         out[static_cast<int64_t>(tk) * kMaxColumns + j] = row_value<s, v>(acc);
-        out[static_cast<int64_t>(tk) * kMaxColumns + width + j] = row_value<s, v>(acc);
+        out[static_cast<int64_t>(tk) * kMaxColumns + width + j] = row_value<s, v + W>(acc);
       }
     });
   });
 }
 
-//: THE SOLVE of a one-row route job's rows on the accumulators: its activation, in its class of `M` column tiles; a
-//: union's split lands next (its levels zero meanwhile). -- see docs/internals/produce/produce.md#solve
+//: THE SOLVE of a one-row route job's rows on the accumulators: its activation, in its row class of `M` column tiles.
+//: -- see docs/internals/produce/produce.md#solve
 __device__ __forceinline__ void solve_one_row(const ProduceParams& p, const Job& job, int job_index,
                                               int token0, int warp, int lane,
                                               float (&acc)[kAccTiles][kTokenTiles][4],
                                               Clock& clock) {
-  //: the row's class and the activation are the shape word's (warp-uniform to ptxas); a union's split lands next
-  if (job.solve >= kUnion15) return;
+  //: the row's class and the activation are the shape word's (warp-uniform to ptxas)
   const uint32_t members = row_members(job.width, lane);
-  float top[4];
+  auto token = [&](int n, int e) {
+    return token0 + kWarpTokens * warp + 8 * n + 2 * (lane & 3) + e;
+  };
+  //: a union's split is its own step (its levels unwritten meanwhile)
+  if (job.solve >= kUnion15) return;
   rola::uniform_switch<4>(job.rows, [&](auto R) {
     constexpr int M = 2 << decltype(R)::value;
+    float top[4];
+    uint32_t support[4];
     if (job.solve == kSoftmax)
       softmax_rows<M>(acc, members, top);
     else
-      entmax_rows<M>(acc, members, job.solve == kEntmax15, top, clock);
+      entmax_rows<M>(acc, members, job.solve == kEntmax15, top, support, clock);
+    clock.lap(kPhaseLevels);
+    probe_levels<0>(p, job_index, job.width, lane, token, acc);
   });
-  clock.lap(kPhaseLevels);
-  {
-    auto token = [&](int n, int e) {
-      return token0 + kWarpTokens * warp + 8 * n + 2 * (lane & 3) + e;
-    };
-    probe_levels(p, job_index, job.width, lane, token, acc);
-  }
 }
 
 //: A COEFFICIENT IN ITS STORED FORM against the row's max `unit`: a u8 digit at 255, or a dense level's f16 at 1
@@ -561,38 +577,42 @@ __device__ void stub_values(const ProduceParams& p, const Job& job, int token0, 
 
 //: A ONE-ROW JOB'S PROJECTION: every warp the job's columns for its 16 tokens, in the job's class of `M` column tiles
 //: and `S` k-steps a stage (the stage's bytes held near level). -- see docs/internals/produce/produce.md#form
-__device__ __forceinline__ void project_one_row(const ProduceParams& p, int job_index, int token0,
-                                                uint32_t stages, int warp, int lane,
+__device__ __forceinline__ void project_one_row(const ProduceParams& p, int job_index, int shape,
+                                                int token0, uint32_t stages, int warp, int lane,
                                                 float (&acc)[kAccTiles][kTokenTiles][4]) {
   const int g = lane >> 2;
-  auto col = [&](int i, int h) { return 16 * i + g + 8 * h; };
   {
-    const Job job = load_job(p, job_index);
+    const Job job = load_job(p, job_index, shape);
     const int columns = job_columns(p, job);
-    seed_bias(p, job, columns, col, acc);
+    seed_bias(
+        p, job, columns, [&](int i, int h) { return job_column(job, columns, 16 * i + g + 8 * h); },
+        acc);
     const __nv_bfloat16* base = weight_base(p, job);
     rola::uniform_switch<5>(job.tiles, [&](auto F) {
       constexpr int M = 1 << decltype(F)::value, S = M <= 4 ? 4 : 2;
       constexpr int QW =
           16 * M * 2 * S / kProduceThreads > 0 ? 16 * M * 2 * S / kProduceThreads : 1;
       constexpr int QX = kTokenTile * 2 * S / kProduceThreads;
-      const Sources<QW, QX> s = sources<S, QW, QX>(p, job, columns, token0, kTokenTile);
+      const Sources<QW, QX> s = sources<S, QW, QX>(
+          p, job, [&](int a) { return job_column(job, columns, a); }, token0, kTokenTile);
       k_loop<M, S>(p, base, s, stages, kWarpTokens * warp, [](int i) { return 16 * i; }, acc);
     });
   }
   //: the job's fields read again past the k-loop, never held across it
-  const Job job = load_job(p, job_index);
+  const Job job = load_job(p, job_index, shape);
   const int columns = job_columns(p, job);
   auto token = [&](int n, int e) {
     return token0 + kWarpTokens * warp + 8 * n + 2 * (lane & 3) + e;
   };
-  probe_logits(p, job_index, columns, col, token, acc);
+  probe_logits(
+      p, job_index, columns,
+      [&](int i, int h) { return job_column(job, columns, 16 * i + g + 8 * h); }, token, acc);
 }
 
 //: A WIDE UNION'S PROJECTION, one 32-token pass: a warp pair a token group, warp `2j + h` columns `128 h ..` of
 //: both rows, eight tiles a row, one k-step a stage (its 512 columns fill it). -- see docs/internals/produce/produce.md#form
-__device__ __forceinline__ void project_pair(const ProduceParams& p, int job_index, int token0,
-                                             uint32_t stages, int warp, int lane,
+__device__ __forceinline__ void project_pair(const ProduceParams& p, int job_index, int shape,
+                                             int token0, uint32_t stages, int warp, int lane,
                                              float (&acc)[kAccTiles][kTokenTiles][4]) {
   const int pair = warp >> 1, half = warp & 1, g = lane >> 2;
   auto col = [&](int i, int h, int width) {
@@ -600,18 +620,19 @@ __device__ __forceinline__ void project_pair(const ProduceParams& p, int job_ind
     return c < width ? (i < 8 ? c : width + c) : -1;
   };
   {
-    const Job job = load_job(p, job_index);
+    const Job job = load_job(p, job_index, shape);
     const int columns = job_columns(p, job), width = job.width;
     seed_bias(p, job, columns, [&](int i, int h) { return col(i, h, width); }, acc);
     const __nv_bfloat16* base = weight_base(p, job);
     constexpr int QW = kMaxColumns * 2 / kProduceThreads, QX = 1;
-    const Sources<QW, QX> s = sources<1, QW, QX>(p, job, columns, token0, kTokenTile / 2);
+    const Sources<QW, QX> s = sources<1, QW, QX>(
+        p, job, [&](int c) { return c < columns ? c : -1; }, token0, kTokenTile / 2);
     k_loop<kAccTiles, 1>(
         p, base, s, stages, kWarpTokens * pair,
         [&](int i) { return (i < 8 ? 0 : width) + 128 * half + 16 * (i & 7); }, acc);
   }
   //: the job's fields read again past the k-loop, never held across it
-  const Job job = load_job(p, job_index);
+  const Job job = load_job(p, job_index, shape);
   const int columns = job_columns(p, job), width = job.width;
   auto token = [&](int n, int e) {
     return token0 + kWarpTokens * pair + 8 * n + 2 * (lane & 3) + e;
@@ -620,9 +641,12 @@ __device__ __forceinline__ void project_pair(const ProduceParams& p, int job_ind
 }
 
 //: THE GRID: token tiles fastest, so the blocks resident together share one job's weights in L2; two blocks an SM, so
-//: one's solve runs beside the other's MMAs. -- see docs/internals/produce/produce.md#grid
-__global__ __launch_bounds__(kProduceThreads, 2) void produce_kernel(ProduceParams p) {
+//: one's solve runs beside the other's MMAs. The parameters are `__grid_constant__`: a body's lambdas hold their
+//: address, which otherwise copies them whole to local memory. -- see docs/internals/produce/produce.md#grid
+__global__ __launch_bounds__(kProduceThreads, 2) void produce_kernel(
+    const __grid_constant__ ProduceParams p) {
   const int job_index = static_cast<int>(blockIdx.y), tile = static_cast<int>(blockIdx.x);
+  const int shape = p.shapes[job_index];
   const int token0 = tile * kTokenTile;
   extern __shared__ __align__(128) uint8_t stage_bytes[];
   const uint32_t stages = ops::smem_addr(stage_bytes);
@@ -631,24 +655,24 @@ __global__ __launch_bounds__(kProduceThreads, 2) void produce_kernel(ProducePara
   Clock clock(&s_clock[warp][0], lane, p.ledger != nullptr);
   clock.lap(kPhaseJob);
   const int live = min(kTokenTile, p.BT - token0);
-  if (pair_form(load_job(p, job_index))) {
+  if (pair_form(load_job(p, job_index, shape))) {
     //: a pass's 32 tokens a k-loop; the barrier between passes releases the stages the last step read
     const int passes = (live + kTokenTile / 2 - 1) / (kTokenTile / 2);
 #pragma unroll 1
     for (int pass = 0; pass < passes; ++pass) {
       float acc[kAccTiles][kTokenTiles][4];
-      project_pair(p, job_index, token0 + pass * (kTokenTile / 2), stages, warp, lane, acc);
+      project_pair(p, job_index, shape, token0 + pass * (kTokenTile / 2), stages, warp, lane, acc);
       __syncthreads();
     }
     clock.lap(kPhaseProject);
   } else {
     float acc[kAccTiles][kTokenTiles][4];
-    project_one_row(p, job_index, token0, stages, warp, lane, acc);
+    project_one_row(p, job_index, shape, token0, stages, warp, lane, acc);
     clock.lap(kPhaseProject);
-    const Job job = load_job(p, job_index);
+    const Job job = load_job(p, job_index, shape);
     if (job.kind == kJobRoute) solve_one_row(p, job, job_index, token0, warp, lane, acc, clock);
   }
-  const Job job = load_job(p, job_index);
+  const Job job = load_job(p, job_index, shape);
   if (job.kind == kJobRoute) {
     stub_rows(p, job, token0, live, warp, lane);
     clock.lap(kPhaseBundle);
@@ -784,11 +808,11 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   STD_TORCH_CHECK(arrivals.scalar_type() == Dtype::Int && arrivals.is_contiguous()
                       && arrivals.numel() >= tiles * H,
                   "arrivals holds a counter a (token tile, head): ", tiles * H);
-  STD_TORCH_CHECK(jobs.size(0) <= kMaxJobs, "a launch runs at most ", kMaxJobs, " jobs, got ",
-                  jobs.size(0));
   STD_TORCH_CHECK(!shapes.is_cuda() && shapes.scalar_type() == Dtype::Short
                       && shapes.is_contiguous() && shapes.numel() == jobs.size(0),
                   "shapes is the plan's host int16 shape word a job");
+  STD_TORCH_CHECK(jobs.size(0) <= kMaxJobs, "a launch runs at most ", kMaxJobs, " jobs, got ",
+                  jobs.size(0));
   for (auto [t, name] : {std::pair{&logit_probe, "logit_probe"}, {&level_probe, "level_probe"}}) {
     if (t->has_value()) detail::check_f32(**t, name, jobs.size(0) * BT * kMaxColumns);
   }
@@ -823,11 +847,11 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   p.arrivals = arrivals.mutable_data_ptr<int32_t>();
   p.logit_probe = logit_probe.has_value() ? logit_probe->mutable_data_ptr<float>() : nullptr;
   p.level_probe = level_probe.has_value() ? level_probe->mutable_data_ptr<float>() : nullptr;
-  std::memcpy(p.shapes, shapes.const_data_ptr(),
-              static_cast<size_t>(shapes.numel()) * sizeof(int16_t));
   STD_TORCH_CHECK(detail::g_ledger == nullptr || detail::g_ledger_jobs >= jobs.size(0),
                   "the bound phase ledger holds ", detail::g_ledger_jobs,
                   " jobs; this launch runs ", jobs.size(0));
+  std::memcpy(p.shapes, shapes.const_data_ptr(),
+              static_cast<size_t>(shapes.numel()) * sizeof(int16_t));
   p.ledger = detail::g_ledger;
   p.BT = static_cast<int>(BT);
   p.T = static_cast<int>(amp_read.size(2));
