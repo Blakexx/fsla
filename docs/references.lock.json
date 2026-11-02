@@ -1792,6 +1792,7 @@
   {"doc": "docs/lab/facts_two.md", "pinned_at": "83d7b4df5928", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/facts_two.cu"},
   {"doc": "docs/lab/facts_two.md", "pinned_at": "83d7b4df5928", "reviewed": true, "sha256": "", "target": "measure/lab/results/facts_two/sm_86.json"},
   {"doc": "docs/lab/fold_alone.md", "pinned_at": "a9bb40d98821", "reviewed": true, "sha256": "0cbb2d684fc21233", "target": "docs/internals/carry/fold.md#chunk"},
+  {"doc": "docs/lab/fold_alone.md", "pinned_at": "1a21d8e3d6dd", "reviewed": true, "sha256": "74abe2614925cb1c", "target": "docs/internals/facts/facts.md#ranks"},
   {"doc": "docs/lab/fold_alone.md", "pinned_at": "a9bb40d98821", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
   {"doc": "docs/lab/fold_alone.md", "pinned_at": "a9bb40d98821", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/fold_alone.cu"},
   {"doc": "docs/lab/fold_alone.md", "pinned_at": "a9bb40d98821", "reviewed": true, "sha256": "", "target": "measure/lab/results/fold_alone/sm_86.json"},

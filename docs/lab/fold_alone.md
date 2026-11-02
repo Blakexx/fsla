@@ -25,6 +25,13 @@ THE MEASUREMENT (sm_86, carry-k5, cycles a warp-window, median of 7, spread unde
 | no list rescaled | 2,422 | 1.69x |
 | the composed kernel's fold phase (`phase_ledger.py`, nl64k-alt-k4) | 2,859 | 1.99x |
 
+| on conflict-free slots (each list's entry `e` on a slot of residue `e mod 8`), as the carry runs it | 2,411 | 1.68x |
+| on conflict-free slots, back to back | 1,916 | 1.34x |
+
+Conflict-free slots take the bank conflicts from 2.09M to 1.02M a launch (the shared wavefronts 1,215 to 1,005 a
+CTA-window) and the fold only ~45 cycles: the facts pass's coloring would not pay here either
+([`facts.md`](../internals/facts/facts.md#ranks)).
+
 The traced run (2,665: ~20 cycles a lap) splits it: every list's scale, count and first step's lanes 607; each list's
 rescale guard ~62; each list's steps 541 / 432 / 411 / 409 against the two warps' pipe time of ~358 a list.
 

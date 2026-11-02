@@ -49,7 +49,8 @@ struct Trace {
 
 //: MODE 0 as the carry runs it (a rendezvous before each window's fold); 1 the windows back to back; 2 no list
 //: rescaled; 3 MODE 0 with the fold's laps traced (its own reading: a clock read is a point ptxas does not schedule
-//: across)
+//: across); 4 MODE 0 on conflict-free slots (entry `e` of a list on a slot of residue `e mod 8`, the coloring's best
+//: case); 5 MODE 4 back to back
 template <int MODE>
 __global__ __launch_bounds__(rc::kThreads, 1) void fold(long long* t, int* out, long long* marks) {
   extern __shared__ __align__(128) uint8_t smem[];
@@ -87,8 +88,10 @@ __global__ __launch_bounds__(rc::kThreads, 1) void fold(long long* t, int* out, 
                 tl = __shfl_sync(0xffffffffu, run.to, list);
       for (int e = lane; e < nl; e += 32) {
         const uint32_t h = mix(draw(blockIdx.x, w, list) + 977u * static_cast<uint32_t>(e));
+        const uint32_t slot =
+            MODE >= 4 ? 8u * (h % (kSlots / 8)) + static_cast<uint32_t>(e & 7) : h % kSlots;
         reinterpret_cast<uint2*>(smem + (ents - ops::smem_addr(smem)))[tl + e] =
-            make_uint2(h % kSlots, 0x3c00u ^ ((h >> 20) & 0xffu));
+            make_uint2(slot, 0x3c00u ^ ((h >> 20) & 0xffu));
       }
       if (lane == 0) {
         const bool moved =
@@ -98,7 +101,7 @@ __global__ __launch_bounds__(rc::kThreads, 1) void fold(long long* t, int* out, 
       }
     });
     __syncwarp();
-    if constexpr (MODE != 1) ops::rendezvous();
+    if constexpr (MODE != 1 && MODE != 5) ops::rendezvous();
     const long long t0 = clock64();
     if constexpr (MODE == 3) {
       last = t0;
@@ -193,6 +196,8 @@ int main(int argc, char** argv) {
   fold_alone::variant<1>(b, "windows back to back");
   fold_alone::variant<2>(b, "no list rescaled");
   fold_alone::variant<3>(b, "composed, traced");
+  fold_alone::variant<4>(b, "composed, conflict-free slots");
+  fold_alone::variant<5>(b, "back to back, conflict-free slots");
   if (!b.expect_only) {
     const Floor f = floor_of(b.sms);
     b.unchecked("tensor floor (mean scheduler)", "computed on the host from the same draw");
