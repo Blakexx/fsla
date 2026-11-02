@@ -454,15 +454,18 @@ __device__ __forceinline__ void probe_levels(const ProduceParams& p, int job_ind
   });
 }
 
-//: A COEFFICIENT IN ITS STORED FORM against the row's max, by its reciprocal `inv` (one a row): a u8 digit at 255, or a
-//: dense level's f16 at 1 with `floor` taken (0 for a dead row) -- within an fp32 unit of the quotient, never the
-//: IEEE divide's slow-path call (a call a coefficient, cold, whose convention costs the body its registers).
-__device__ __forceinline__ void store_coef(uint8_t* at, float level, float inv, float) {
-  *at = static_cast<uint8_t>(__float2uint_rn(level * inv * 255.0f));
+//: A COEFFICIENT IN ITS STORED FORM against the row's max, by `unit` (the row's reciprocal max at the plane's full
+//: scale, one quotient a row; never the IEEE divide's slow-path call): a u8 digit is ONE FFMA -- `level unit + 1.5
+//: 2^23` holds the nearest-even integer in its low mantissa bits, the byte the store keeps -- where `F2I` is a
+//: conversion-pipe instruction; a dense level's f16 at 1 with `floor` taken. -- see docs/internals/produce/produce.md#bundle
+constexpr float kDigitRound = 12582912.0f;
+
+__device__ __forceinline__ void store_coef(uint8_t* at, float level, float unit, float) {
+  *at = static_cast<uint8_t>(__float_as_uint(fmaf(level, unit, kDigitRound)));
 }
 
-__device__ __forceinline__ void store_coef(__half* at, float level, float inv, float floor) {
-  *at = __float2half_rn(fmaxf(level * inv, floor));
+__device__ __forceinline__ void store_coef(__half* at, float level, float unit, float floor) {
+  *at = __float2half_rn(fmaxf(level * unit, floor));
 }
 
 __device__ __forceinline__ void store_zero(uint8_t* at) { *at = uint8_t{0}; }
@@ -500,16 +503,24 @@ __device__ __forceinline__ void bundle_side(const ProduceParams& p, const Job& j
     if (fold) {
       sum = row_all(row_tree<s, 0, 2 * M>(acc, AddOp{}), AddOp{});
     }
-    const float m = top[s], inv = __fdividef(1.0f, fmaxf(m, 1e-30f));
+    constexpr float kFull = sizeof(Out) == 1 ? 255.0f : 1.0f;
+    const float m = top[s], unit = __fdividef(kFull, fmaxf(m, 1e-30f));
     const float floor = floored && m > 0.0f ? facts::kDenseFloor : 0.0f;
+    //: every value staged, a dead column's too: its level is 0 (a 0 digit), and a staged column past the slot is
+    //: never stored
     rola::static_for<2 * M>([&](auto V) {
       constexpr int v = decltype(V)::value;
-      const int c = 8 * v + g;
-      if (c < width)
-        store_coef(rows + c, row_value<s, v>(acc), inv, floor);
-      else if (c < slot)
-        store_zero(rows + c);
+      store_coef(rows + 8 * v + g, row_value<s, v>(acc), unit, floor);
     });
+    //: an f16 row's floor lands on its dead columns too: the slot's tail past the width zeroed (under 16 a row)
+    if constexpr (sizeof(Out) == 2) {
+      if (slot > width) {
+        __syncwarp();
+        Out* tail = reinterpret_cast<Out*>(staged) + (lane >> 3) * kRowElems;
+#pragma unroll 1
+        for (int c = width + (lane & 7); c < slot; c += 8) store_zero(tail + c);
+      }
+    }
     const int token = tile0 + 2 * (lane & 3) + s;
     if (g == 0 && token < p.BT) {
       const int64_t at = slot_of(p, token, job.head) * p.D + job.level;
@@ -642,7 +653,8 @@ __device__ __forceinline__ float gain_logit(const ProduceParams& p, const Job& j
   const __nv_bfloat16* w = p.route_W + job.head * p.w_head + static_cast<int64_t>(column) * p.w_col;
   const __nv_bfloat16* xr = p.x + static_cast<int64_t>(live ? token : 0) * p.hidden;
   float dot = 0.0f;
-#pragma unroll 1
+  //: eight chunk pairs in flight (256 hidden a trip), where one at a time waited out each pair's load
+#pragma unroll 8
   for (int k0 = 0; k0 < p.hidden; k0 += 32) {
     const int k = k0 + 8 * quad;
     const uint4 wc = chunk(w, k, live && k < p.hidden);
@@ -815,10 +827,10 @@ __global__ __launch_bounds__(kProduceThreads, 2) void produce_kernel(
   const int live = min(kTokenTile, p.BT - token0);
 
   if (pair_form(load_job(p, job_index))) {
-    //: a pass's 32 tokens a k-loop; the barrier between passes releases the stages the last step read
-    const int passes = (live + kTokenTile / 2 - 1) / (kTokenTile / 2);
+    //: a pass's 32 tokens a k-loop; the barrier between passes releases the stages the last step read. The bound is
+    //: tested against the parameters' token count, so no pass count is held across the k-loop.
 #pragma unroll 1
-    for (int pass = 0; pass < passes; ++pass) {
+    for (int pass = 0; pass < 2 && token0 + pass * (kTokenTile / 2) < p.BT; ++pass) {
       float acc[kAccTiles][kTokenTiles][4];
       project_pair(p, job_index, token0 + pass * (kTokenTile / 2), stages, warp, lane, acc);
       __syncthreads();

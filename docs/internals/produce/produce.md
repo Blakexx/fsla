@@ -87,10 +87,15 @@ one `#pragma unroll 1` loop, the side's operands selected at run time, so a clas
 (the f16 plane and the u8 plane), not one a side and plane: the kernel went from 58K instructions to 40.6K. A side's rows are
 staged one token slot at a time -- a lane quad's 4 rows, `kStagedRowBytes` a row, the widest slot plus 16 bytes so the
 four rows' bytes lie in distinct banks (`tools/bank_model.py`: a byte store one wavefront, the read-back four) -- and
-stored 16 bytes a lane; a coefficient is the level times its row's reciprocal max (one quotient a row, within an fp32
-unit of the IEEE quotient, never its slow-path call). For each side the job writes (the shape word's bits: whether it
+stored 16 bytes a lane; a coefficient is the level times `unit`, its row's reciprocal max at the plane's full scale
+(one quotient a row, within an fp32 unit of the IEEE quotient, never its slow-path call). A u8 digit is ONE FFMA,
+`level unit + 1.5 2^23`: the sum's low mantissa bits hold the nearest-even integer of the exact product, and the
+byte store keeps that byte (`F2I` is a conversion-pipe instruction, and the old form two multiplies before it).
+Every value of the class is staged, a dead column's too (its level 0, a 0 digit); a staged column past the slot is
+never stored. A dense row's floor lands on its dead columns as well, so an f16 side whose width is not a multiple
+of 16 zeroes its slot's tail (under 16 a row) after the values. For each side the job writes (the shape word's bits: whether it
 writes it and whether its level is dense): the row against
-its max as u8 digits (round to nearest even of `unit x 255`) -- or, for a dense level, f16 at 1 with the floor
+its max as u8 digits (round to nearest even of `level x unit`) -- or, for a dense level, f16 at 1 with the floor
 taken in a live row (`max(level / max, 2^-13)`, an IEEE divide rounded to nearest, the torch quantizer's own
 rounding) -- the max clamped at `1e-30` as `quantize_unit_max_rows` clamps it; the max as the side's scale; and the level's mass for the finisher
 where the fold applies (1 elsewhere, so the finisher multiplies every level without the plan's flags). A side reduces
@@ -164,7 +169,9 @@ unit against the budget's 17.5K -- entmax 14.8K, the k-loop 7.9K (its 2,048 HMMA
 softmax 3.9K, the kernel's own body 3.2K, the gain 1.5K (long scoreboard 53%: its chunk loads one pair at a time). With
 the solve on the values alone ([#solve](#solve), [#threshold](#threshold)): 29.5K -- entmax 8.4K, softmax 1.05K, the
 stall samples down 21%; the phase ledger's route job 84.3K cycles a warp-tile to 57.5K (threshold 14.0K to 5.1K,
-levels 7.1K to 2.1K, the projection 40.1K to 30.9K beside the other block's shorter solve).
+levels 7.1K to 2.1K, the projection 40.1K to 30.9K beside the other block's shorter solve). The bundle's one-FFMA digit
+([#bundle](#bundle)) and the gain's eight chunk pairs in flight: 27.0K (the bundle 5.7K to 3.55K), the samples down
+12% more; the route job 49.6K cycles (the bundle 12.0K to 4.9K, the finish 7.4K to 4.5K).
 
 <a id="phase-ledger"></a>THE PHASE LEDGER (`rola.ops.produce.ledger_bind`, `[jobs, 4 warps, 7 phases]` int64 cycles,
 booked over the tiles): job, project, threshold, levels, bundle, finish, values -- a warp's cycles
