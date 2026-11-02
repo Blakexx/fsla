@@ -47,10 +47,20 @@ struct Trace {
   }
 };
 
+//: THE TIMELINE (MODE 6): each lap's absolute clock, block 0's warps, windows `kTimelineFrom ..` (after a warm-up)
+constexpr int kTimelineFrom = 8, kTimelineWindows = 8;
+
+struct Stamps {
+  long long (&at)[kMarks];
+
+  __device__ __forceinline__ void operator()(int m) const { at[m] = clock64(); }
+};
+
 //: MODE 0 as the carry runs it (a rendezvous before each window's fold); 1 the windows back to back; 2 no list
 //: rescaled; 3 MODE 0 with the fold's laps traced (its own reading: a clock read is a point ptxas does not schedule
 //: across); 4 MODE 0 on conflict-free slots (entry `e` of a list on a slot of residue `e mod 8`, the coloring's best
-//: case); 5 MODE 4 back to back
+//: case); 5 MODE 4 back to back; 6 MODE 0 with each lap's clock stamped (the timeline); 7 MODE 0 timed from one
+//: fold's end to the next's, so work moved out of the fold's own span still shows
 template <int MODE>
 __global__ __launch_bounds__(rc::kThreads, 1) void fold(long long* t, int* out, long long* marks) {
   extern __shared__ __align__(128) uint8_t smem[];
@@ -67,7 +77,7 @@ __global__ __launch_bounds__(rc::kThreads, 1) void fold(long long* t, int* out, 
   for (int k = 0; k < P::kStateRegs; ++k) (&st.acc[0][0][0][0])[k] = 0.0f;
   __syncthreads();
 
-  long long busy = 0;
+  long long busy = 0, whole = 0, end = 0;
   //: the trace's sums, registers (constant marks, every call inlined)
   long long sums[kMarks] = {}, last = 0;
 #pragma unroll 1
@@ -103,16 +113,29 @@ __global__ __launch_bounds__(rc::kThreads, 1) void fold(long long* t, int* out, 
     __syncwarp();
     if constexpr (MODE != 1 && MODE != 5) ops::rendezvous();
     const long long t0 = clock64();
-    if constexpr (MODE == 3) {
+    if constexpr (MODE == 6) {
+      long long at[kMarks];
+      rc::fold_chunk<P>(st, true, smem, ww, w, run, 0, kSlots, rows, ents, warp, lane, Stamps{at});
+      const int k = w - kTimelineFrom;
+      if (blockIdx.x == 0 && lane == 0 && k >= 0 && k < kTimelineWindows) {
+        long long* row = marks + (k * rc::kWarps + warp) * (kMarks + 1);
+        row[0] = t0;
+#pragma unroll
+        for (int m = 0; m < kMarks; ++m) row[1 + m] = at[m];
+      }
+    } else if constexpr (MODE == 3) {
       last = t0;
       rc::fold_chunk<P>(st, true, smem, ww, w, run, 0, kSlots, rows, ents, warp, lane,
                         Trace{sums, last});
     } else {
       rc::fold_chunk<P>(st, true, smem, ww, w, run, 0, kSlots, rows, ents, warp, lane);
     }
-    busy += clock64() - t0;
+    const long long t1 = clock64();
+    busy += t1 - t0;
+    if (w > 0) whole += t1 - end;
+    end = t1;
   }
-  if (lane == 0) t[blockIdx.x * rc::kWarps + warp] = busy;
+  if (lane == 0) t[blockIdx.x * rc::kWarps + warp] = MODE == 7 ? whole : busy;
   if (MODE == 3 && lane == 0)
 #pragma unroll
     for (int m = 0; m < kMarks; ++m) marks[(blockIdx.x * rc::kWarps + warp) * kMarks + m] = sums[m];
@@ -166,6 +189,45 @@ void variant(const lab::Bench& b, const char* label) {
       [&] { return lab::Bench::mean(b.cycles(rc::kWarps), rc::kWarps, 0, rc::kWarps) / kWindows; });
   b.unchecked(label, "a timing isolation; the fold's arithmetic is the oracle's (test_carry_fold)");
   b.record(label, "cycles a warp-window", s);
+  if constexpr (MODE == 6) {
+    //: per scheduler (warps s, s + 4), each list's steps' span from the rendezvous's release (the earlier warp's start),
+    //: averaged over the windows; and how much of the two warps' step spans overlap
+    std::vector<long long> h(static_cast<size_t>(kTimelineWindows) * rc::kWarps * (kMarks + 1));
+    LAB_CHECK(cudaMemcpy(h.data(), g_marks, h.size() * sizeof(long long), cudaMemcpyDeviceToHost));
+    const auto at = [&](int k, int warp, int m) {
+      return h[(k * rc::kWarps + warp) * (kMarks + 1) + m];
+    };
+    for (int sch = 0; sch < 4; ++sch) {
+      double span[2][kMarks + 1] = {}, overlap = 0, busy = 0;
+      for (int k = 0; k < kTimelineWindows; ++k) {
+        const long long rel = std::min(at(k, sch, 0), at(k, sch + 4, 0));
+        for (int x = 0; x < 2; ++x)
+          for (int m = 0; m <= kMarks; ++m)
+            span[x][m] += double(at(k, sch + 4 * x, m) - rel) / kTimelineWindows;
+        for (int j = 0; j < P::kFoldLists; ++j)
+          for (int jj = 0; jj < P::kFoldLists; ++jj) {
+            const long long a0 = at(k, sch, 2 + 2 * j), a1 = at(k, sch, 3 + 2 * j);
+            const long long b0 = at(k, sch + 4, 2 + 2 * jj), b1 = at(k, sch + 4, 3 + 2 * jj);
+            overlap +=
+                double(std::max(0LL, std::min(a1, b1) - std::max(a0, b0))) / kTimelineWindows;
+          }
+        for (int x = 0; x < 2; ++x)
+          for (int j = 0; j < P::kFoldLists; ++j)
+            busy += double(at(k, sch + 4 * x, 3 + 2 * j) - at(k, sch + 4 * x, 2 + 2 * j))
+                    / kTimelineWindows;
+      }
+      std::printf(
+          "{\"lab\": \"note\", \"text\": \"scheduler %d (warps %d, %d), cycles from the release: ",
+          sch, sch, sch + 4);
+      for (int x = 0; x < 2; ++x) {
+        std::printf("warp %d: start %.0f, lanes %.0f", sch + 4 * x, span[x][0], span[x][1]);
+        for (int j = 0; j < P::kFoldLists; ++j)
+          std::printf(", list %d %.0f-%.0f", j, span[x][2 + 2 * j], span[x][3 + 2 * j]);
+        std::printf("; ");
+      }
+      std::printf("the two warps' step spans overlap %.0f of %.0f\"}\n", overlap, busy / 2);
+    }
+  }
   if constexpr (MODE == 3) {
     std::vector<long long> h(static_cast<size_t>(b.sms) * rc::kWarps * kMarks);
     LAB_CHECK(cudaMemcpy(h.data(), g_marks, h.size() * sizeof(long long), cudaMemcpyDeviceToHost));
@@ -198,6 +260,9 @@ int main(int argc, char** argv) {
   fold_alone::variant<3>(b, "composed, traced");
   fold_alone::variant<4>(b, "composed, conflict-free slots");
   fold_alone::variant<5>(b, "back to back, conflict-free slots");
+  fold_alone::variant<6>(b, "composed, timeline");
+  fold_alone::variant<7>(b,
+                         "composed, the whole window (the harness's writes and the wait included)");
   if (!b.expect_only) {
     const Floor f = floor_of(b.sms);
     b.unchecked("tensor floor (mean scheduler)", "computed on the host from the same draw");

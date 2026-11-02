@@ -35,6 +35,18 @@ CTA-window) and the fold only ~45 cycles: the facts pass's coloring would not pa
 The traced run (2,665: ~20 cycles a lap) splits it: every list's scale, count and first step's lanes 607; each list's
 rescale guard ~62; each list's steps 541 / 432 / 411 / 409 against the two warps' pipe time of ~358 a list.
 
+THE TIMELINE (mode 6: each lap's clock for block 0's warps, windows 8-15, cycles from the rendezvous's release):
+scheduler 0's warps leave the rendezvous within ~70 cycles of each other, finish every list's first-step lanes at ~650,
+then run lists 0-3's steps at ~720-1140, ~1200-1600, ~1660-2050, ~2110-2570 -- the two warps' step spans overlap
+~80% (1,323 of 1,644 cycles): they run in lockstep, and the ~580 cycles of first-step lanes are spent with both warps
+off the tensor pipe. That block is five dependent shared-memory stages (the counts' shuffles, the entries' loads, the
+c pairs' shuffles, the step's lane shuffles, the rows' `ldmatrix`), each one queued by all eight warps at once.
+
+THE WHOLE WINDOW (mode 7, one fold's end to the next's, the harness's own writes and the rendezvous's wait included):
+4,239. A form that moves work out of the fold's own span (before its rendezvous) shows here and in the composed
+kernel, not in mode 0: the warp's own first lanes moved before the rendezvous read 2,152 in mode 0 and cost the
+composed kernel ~330 cycles a warp-window (the slowest warp carries the moved work to the barrier).
+
 WHAT IT SETTLES.
 - The fold is not at its floor alone: 1.74x in the carry's shape. Composition adds only ~0.37K a warp-window on top.
 - The rendezvous before each window's fold costs ~0.55K: the scheduler's two warps start together, their operand
