@@ -10,16 +10,34 @@ once, with every amendment folded in; the numbers are permanent, so a citation n
 - CORRECTNESS INSTRUMENTS: the fp64 oracle is the truth, and bit-identity is the refactor instrument
   (`docs/testing.md`).
 - EFFICIENCY IS CORRECTNESS: a design is built in its best form, never correct first and fast later.
+- THE PERFORMANCE TARGETS (Blake, 2026-09-30): "at dense we are at the tensor floor, at sparse we are significantly
+  below FA, down to basically the overhead floor which is ideally small"; decode the same, "such that our latency
+  nearly falls exactly with sparsity"; the intra may be a constant cost at every density, as long as it is low. Every
+  kernel is priced against these floors, never against FlashAttention parity.
+- PARITY IS A FAILING GRADE (Blake, 2026-08-20): matching FlashAttention at sparse `N = L` while doing many times less
+  useful work is a failure, never a result; it is reported as an unexplained loss with a ledger -- each resource's
+  floor against its measurement, each loss classified geometry, algorithm or implementation and reconciled to the
+  gap. Newer cards' asynchronous machinery is no explanation; the cause is named from receipts.
 - LEAN ON EVERY AXIS, ON EVERY CARD: one kernel runs on every card, so nothing is wasted because this card does not bind
   on it -- instructions, each pipe, shared-memory wavefronts and bytes are each kept at what the design needs; a trade
   between them is made only when forced, and priced on every card.
 - CLOSED WORLD: only measured binaries run (`docs/ratification.md`).
 - ONE FORM PER MECHANISM: no fallbacks, no dead code.
+- ONE STRATEGY, APPLIED UNIFORMLY (Blake, 2026-06-26: "we shouldnt be making any 'branching' to avoid edge cases. if we
+  have a strategy, we should do it uniformly"): nothing branches the algorithm to dodge one configuration's cost; that
+  cost is the configuration's own property, reported so the user can choose another (a cost flat routing pays is why a
+  tree or square one exists).
+- INTERFACE FIRST: a subsystem's whole interface and primitives land first and every caller moves onto them at once;
+  a part not yet built raises a named error, never a silent fallback; no parallel old path is kept beside the new.
 - NO WORKAROUNDS: a problem the kernel can solve is solved in the kernel, at its root -- never a band-aid, a capability
   shim, a padding hack or "for now" residue.
 - SPARSITY IS THE ACTIVATION'S: a skip is an exact zero the routing activation (entmax, sparsemax) produced, never a
   threshold, an epsilon floor or a straight-through operator.
 - BUILD THE WHOLE DESIGN, OR STOP AND NAME THE GAP.
+- FOUNDATION, THEN A NEW BODY (Blake, 2026-08-29: "build a generic foundation, then a kernel body"): a new foundation is
+  never grafted onto a body that needs replacing; its contracts, derivations and primitives land first, then the body
+  is built bottom-up in its final form -- final mechanisms, the pipelined structure from the skeleton -- never as a
+  prototype to be fixed later.
 - THE ANCESTRAL-CODE STANDARD: code and docs are written for the reader a decade out.
 - PORTABILITY: the repository references only itself (`docs/KERNEL_STANDARDS.md#s17`).
 - ONE ATOMIC PRODUCT: the repository in published form is one self-contained kernel product, gated holistically at its
