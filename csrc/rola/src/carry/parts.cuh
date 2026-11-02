@@ -726,31 +726,36 @@ __device__ __forceinline__ void store_batches(const State<P>& st, uint8_t* smem,
   });
 }
 
-//: A LANE'S IMAGE ADDRESSES for a digit's state fragments (the A operand: 32 channels x 32 lists, `ldmatrix.trans`):
-//: its units at digit 0, each XORed with a digit's.
-struct ImageLane {
-  uint32_t u[4];
-};
-
-__device__ __forceinline__ ImageLane image_lane(int lane) {
-  ImageLane out;
-#pragma unroll
-  for (int k = 0; k < 4; ++k)
-    out.u[k] =
-        16u
-        * unit_of(8 * (lane >> 4) + (lane & 7) + 16 * (k & 1), 2 * (k >> 1) + ((lane >> 3) & 1), 0);
-  return out;
+//: A LANE'S IMAGE UNIT for a warp's digits' state fragments (the A operand: 32 channels x 32 lists, `ldmatrix.trans`),
+//: in bytes: its first, at the warp's swizzle -- a warp reads digits `warp + kWarps i`, one swizzle -- its four this,
+//: `+ 1024` and `^ 32` (`image_units_step`). -- see docs/internals/carry/parts.md#image
+__host__ __device__ __forceinline__ constexpr uint32_t image_lane(int lane, int warp) {
+  return 16u * unit_of(8 * (lane >> 4) + (lane & 7), (lane >> 3) & 1, warp);
 }
 
+constexpr bool image_units_step() {
+  for (int lane = 0; lane < 32; ++lane)
+    for (int d = 0; d < kBoxDigits; ++d)
+      for (int k = 0; k < 4; ++k)
+        if (16u
+                * unit_of(8 * (lane >> 4) + (lane & 7) + 16 * (k & 1),
+                          2 * (k >> 1) + ((lane >> 3) & 1), d)
+            != ((image_lane(lane, d % kWarps) ^ (32u * (k >> 1))) + 1024u * (k & 1)))
+          return false;
+  return true;
+}
+
+static_assert(image_units_step(),
+              "a lane's four image units one base, + 1024 and ^ 32, a warp's digits one swizzle");
+
 //: A DIGIT'S STATE FRAGMENTS from its image plane at `plane`: `(m * 2 + kb) * 4 + i`, m the channel tile, kb the
-//: list half.
-__device__ __forceinline__ void state_in(uint32_t (&f)[16], ops::SmemAddr plane,
-                                         const ImageLane& il, int d) {
-  const uint32_t x = 16u * digit_swizzle(d);
+//: list half; `at` the lane's unit (`image_lane`).
+__device__ __forceinline__ void state_in(uint32_t (&f)[16], ops::SmemAddr plane, uint32_t at) {
+  const ops::SmemAddr b0 = plane + at, b2 = plane + (at ^ 32u);
 #pragma unroll
   for (int k = 0; k < 4; ++k) {
     uint32_t a[4];
-    ops::load_frag_t(a, plane + (il.u[k] ^ x));
+    ops::load_frag_t(a, (k >> 1 ? b2 : b0) + 1024u * (k & 1));
 #pragma unroll
     for (int i = 0; i < 4; ++i) f[k * 4 + i] = a[i];
   }
@@ -927,7 +932,7 @@ __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* 
                                            ops::SmemAddr rows, ops::SmemAddr pads,
                                            ops::SmemAddr ents, int warp, int lane) {
   constexpr int kStep = Pairs ? 2 : 1;
-  const ImageLane il = image_lane(lane);
+  const uint32_t at = image_lane(lane, warp);
   const ops::SmemAddr units = ops::smem_addr(smem + p.tables.units_at);
   //: the entries' row and panel offsets are the union's: the chunk's pool taken back by its first slot, and each
   //: entry's panel offset made the chunk's (modulo 2^16, as a grouped union's are written) before it is shuffled
@@ -957,15 +962,16 @@ __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* 
         d[Q] = warp + kWarps * (i + Q);
         sx[Q] =
             reinterpret_cast<const int*>(smem + P::kExps)[exp_slot(d[Q])] - kImageTop - kCoefTop;
-        state_in(f[Q], image + (static_cast<uint32_t>(d[Q]) & mask) * kPlaneBytes, il, d[Q]);
+        state_in(f[Q], image + (static_cast<uint32_t>(d[Q]) & mask) * kPlaneBytes, at);
       });
       if (rw.listed) {
-        int n[kStep], to[kStep], tiles = 0;
+        int n[kStep], to[kStep], most = 0;
         static_for<kStep>([&](auto Q) {
           n[Q] = __shfl_sync(0xffffffffu, run.n, d[Q]);
           to[Q] = __shfl_sync(0xffffffffu, run.to, d[Q]);
-          tiles = max(tiles, (n[Q] + 7) >> 3);
+          most = max(most, n[Q]);
         });
+        const int tiles = (most + 7) >> 3;
         int s = 0;
         for (int any = __any_sync(0xffffffffu, s < tiles) ? 1 : 0; any > 0; --any)
 #pragma unroll 1

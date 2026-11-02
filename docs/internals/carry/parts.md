@@ -124,7 +124,11 @@ tiles' pairs of the lane `k` of a fold quad -- so a lane's row of a list is one 
 digit at plane `d & 31` (the whole image) or `d & 15` (a half). The fold's stores (a quarter-warp two digits' four
 chunks: eight bank groups) and the readout's `ldmatrix.trans` (8 lists' 16-byte chunks) are both conflict-free on it.
 The readout's m-tile of chunks `2 m, 2 m + 1` then pairs channels `(c, c + 2)` in an output word, `c = 8 (g >> 1) + 4 m
-+ (g & 1)` for its row `g` ([`#drain`](#drain)).
++ (g & 1)` for its row `g` ([`#drain`](#drain)). A warp reads digits `warp + 8 i`, whose swizzle depends on `d & 7`
+only, so a lane's four `ldmatrix.trans` units of every digit it reads are one base (`image_lane(lane, warp)`, formed
+once a chunk), the base `+ 1024` and both `^ 32` -- the base lies under 1024, so the add never carries
+(`image_units_step` asserts it over every lane, digit and unit): two adds a digit where the units were four XORs and
+four adds, and the lane's units were four `unit_of`s a chunk.
 
 <a id="store"></a>
 ## A batch's stores
