@@ -10,6 +10,9 @@ once, with every amendment folded in; the numbers are permanent, so a citation n
 - CORRECTNESS INSTRUMENTS: the fp64 oracle is the truth, and bit-identity is the refactor instrument
   (`docs/testing.md`).
 - EFFICIENCY IS CORRECTNESS: a design is built in its best form, never correct first and fast later.
+- LEAN ON EVERY AXIS, ON EVERY CARD: one kernel runs on every card, so nothing is wasted because this card does not bind
+  on it -- instructions, each pipe, shared-memory wavefronts and bytes are each kept at what the design needs; a trade
+  between them is made only when forced, and priced on every card.
 - CLOSED WORLD: only measured binaries run (`docs/ratification.md`).
 - ONE FORM PER MECHANISM: no fallbacks, no dead code.
 - NO WORKAROUNDS: a problem the kernel can solve is solved in the kernel, at its root -- never a band-aid, a capability
