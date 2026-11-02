@@ -14,13 +14,8 @@ once, with every amendment folded in; the numbers are permanent, so a citation n
 - ONE FORM PER MECHANISM: no fallbacks, no dead code.
 - NO WORKAROUNDS: a problem the kernel can solve is solved in the kernel, at its root -- never a band-aid, a capability
   shim, a padding hack or "for now" residue.
-- THE KERNEL COUPLES TO ITS ROUTING, NEVER TO THE QKV PROJECTIONS: it may assume a routing strategy's structure; it
-  never assumes how the layer forms its queries, keys and values.
-- SPARSITY IS THE ACTIVATION'S: a skip is an exact zero the routing activation produced, never a threshold, an epsilon
-  floor or a balancer; density (soft blending) matters as much as sparsity, and the method is not a mixture of experts
-  (no top-k selection, no load balancing).
-- THE MATH IS THE MATH: a configuration the math makes unwise is refused at validation (`docs/api.md`), never patched in
-  a kernel; a kernel branches on structure for efficiency, never to dodge a case.
+- SPARSITY IS THE ACTIVATION'S: a skip is an exact zero the routing activation (entmax, sparsemax) produced, never a
+  threshold, an epsilon floor or a straight-through operator.
 - BUILD THE WHOLE DESIGN, OR STOP AND NAME THE GAP.
 - THE ANCESTRAL-CODE STANDARD: code and docs are written for the reader a decade out.
 - PORTABILITY: the repository references only itself (`docs/KERNEL_STANDARDS.md#s17`).

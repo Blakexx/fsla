@@ -88,7 +88,6 @@
   {"doc": "docs/CONSTITUTION.md", "pinned_at": "1522787068fb", "reviewed": true, "sha256": "", "target": "csrc"},
   {"doc": "docs/CONSTITUTION.md", "pinned_at": "1522787068fb", "reviewed": true, "sha256": "", "target": "docs/KERNEL_STANDARDS.md"},
   {"doc": "docs/CONSTITUTION.md", "pinned_at": "1522787068fb", "reviewed": true, "sha256": "2666837609e4ebef", "target": "docs/KERNEL_STANDARDS.md#s17"},
-  {"doc": "docs/CONSTITUTION.md", "pinned_at": "c4ec4d1c76e2", "reviewed": true, "sha256": "", "target": "docs/api.md"},
   {"doc": "docs/CONSTITUTION.md", "pinned_at": "1522787068fb", "reviewed": true, "sha256": "", "target": "docs/architecture/precision.md"},
   {"doc": "docs/CONSTITUTION.md", "pinned_at": "1522787068fb", "reviewed": true, "sha256": "", "target": "docs/internals"},
   {"doc": "docs/CONSTITUTION.md", "pinned_at": "1522787068fb", "reviewed": true, "sha256": "", "target": "docs/internals/DELETIONS.md"},
