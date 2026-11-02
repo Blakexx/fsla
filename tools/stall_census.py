@@ -44,10 +44,11 @@ def measure(cell: str, out: Path, keep_csv: Path | None, family: str = "carry") 
     t = kernel_targets.target(family)
     launch_cell, arm = kernel_targets.launch(t, cell)
     if family == "produce":
-        fn, per = t.symbol, kernel_targets.produce_units(cell)
+        fn, per, mem = t.symbol, kernel_targets.produce_units(cell), t.member
     else:
         spec = by_name(cell)
         fn, per = kernel_targets.function(t, spec), kernel_targets.units(t, spec)
+        mem = kernel_targets.member(t, spec)
     with tempfile.TemporaryDirectory(prefix="stall_census_", dir=dev_config.scratch("stall_census")) as tmp:
         rep = Path(tmp) / "rep"
         done = process.run([ncu, "--target-processes", "all", "-k", f"regex:{t.symbol}", "-c", "1", "--section",
@@ -65,7 +66,7 @@ def measure(cell: str, out: Path, keep_csv: Path | None, family: str = "carry") 
         so = toolchains.built_extension(ROOT)
         budget = ["--budget", t.budget] if t.budget else []
         ledger = subprocess.run([PY, "tools/region_ledger.py", "--csv", str(csv), "--so", str(so), "--member",
-                                 t.member, "--kernel", fn, "--source", *t.sources, *budget, "--cell", cell,
+                                 mem, "--kernel", fn, "--source", *t.sources, *budget, "--cell", cell,
                                  "--per", str(per), "--json", str(out)],
                                 cwd=ROOT, capture_output=True, text=True, timeout=1800)
     if not out.exists():

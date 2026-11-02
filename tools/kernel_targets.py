@@ -70,6 +70,24 @@ def units(target: Target, cell) -> int:
     return _windows(cell) * cell.heads
 
 
+def member(target: Target, cell) -> str:
+    """The ELF image an instrument reads for ``cell``: the family's member, or -- for the carry, whose arms are one
+    image each (or a shared one, `gen_shards.carry_tu_of`) -- the image of the arm the cell's carve selects, its name
+    ended so `carry_arm_1` never matches `carry_arm_10`."""
+    if target.family != "carry":
+        return target.member
+    import gen_shards
+
+    from measure.subjects import cell_carve
+    from rola.ops.carry import arm_key
+
+    key = tuple(arm_key(cell_carve(cell)))
+    rows = [i for i, row in enumerate(gen_shards.CARRY_ARMS) if tuple(row) == key]
+    if len(rows) != 1:
+        raise SystemExit(f"{cell.name}: its carve's arm {key} is {len(rows)} rows of the declared arm list")
+    return f"carry_arm_{gen_shards.carry_tu_of()[rows[0]]}."
+
+
 def launch(target: Target, name: str) -> tuple[str, str]:
     """``(cell, arm)`` an instrument launches for ``name``: a central cell and the family's provider arm, or -- for the
     producer, whose arms are a layer construction's -- the construction ``name`` on its first cell."""
