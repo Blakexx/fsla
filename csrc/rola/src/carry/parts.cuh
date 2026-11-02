@@ -532,43 +532,41 @@ __device__ __forceinline__ int leaf_byte(int key) {
 }
 
 //: THE DIGIT KEYS, the hand-off's first step: a list's largest |value| a digit row at its unit as an integer key --
-//: its fp32 bits plus (its unit less the box's top) x 2^23, a zero `INT_MIN` -- its row's four lanes joined by two
-//: shuffles, so each leaf's key stands alone (its exponent byte at `kLeafExp`, digit-major, a quad's lane `t` storing
-//: its list `J = t`); a digit's key their max, one shared atomic max a lane, at window `w`'s parity in lane order
-//: (digit `16 M + 8 H + g` at `4 g + 2 M + H`); returns the box's top. -- see docs/internals/carry/parts.md#maxima
+//: its fp32 bits plus (its unit less the box's top) x 2^23, a zero `INT_MIN` -- the bits joined across the row's four
+//: lanes first (a list's lanes share its unit), lane `t` keying its list `t`'s leaf (its exponent byte at `kLeafExp`,
+//: digit-major); a digit's key their max, one shared atomic max a lane, at window `w`'s parity in lane order (digit
+//: `16 M + 8 H + g` at `4 g + 2 M + H`); returns the box's top. -- see docs/internals/carry/parts.md#maxima
 template <class P>
 __device__ __forceinline__ int post_keys(const State<P>& st, uint8_t* smem, int w, int warp,
                                          int lane) {
   static_assert(P::kFoldMTiles * 2 == 4, "a lane's four digit rows, one a lane of its quad");
-  int u[P::kFoldLists];
-  list_units<P>(u, smem, warp);
-  const int top = box_top<P>(smem, lane);
-  int shift[P::kFoldLists];
-  static_for<P::kFoldLists>([&](auto J) { shift[J] = max(u[J] - top, -kKeySpan) * (1 << 23); });
-  static_assert(P::kFoldLists == 4, "a quad's lane `t` stores its list `t`'s leaves");
+  static_assert(P::kFoldLists == 4, "a quad's lane `t` keys its list `t`'s leaves");
   const int t = lane & 3, g = lane >> 2;
+  const int top = box_top<P>(smem, lane);
+  const volatile UnitBook* const book = reinterpret_cast<const volatile UnitBook*>(smem + P::kBook);
+  const int shift = max(book[warp + kWarps * t].unit - top, -kKeySpan) * (1 << 23);
   int8_t* const leaves = reinterpret_cast<int8_t*>(smem + P::kLeafExp);
   int key[2][2];
   static_for<2>([&](auto M) {
     static_for<2>([&](auto H) {
-      int leaf[P::kFoldLists];
+      int bits[P::kFoldLists];
       static_for<P::kFoldLists>([&](auto J) {
         float x = fmaxf(fabsf(st.acc[J][M][0][2 * H]), fabsf(st.acc[J][M][0][2 * H + 1]));
         static_for<3>([&](auto N) {
           x = fmaxf(
               x, fmaxf(fabsf(st.acc[J][M][N + 1][2 * H]), fabsf(st.acc[J][M][N + 1][2 * H + 1])));
         });
-        const int bits = __float_as_int(x);
-        leaf[J] = bits == 0 ? INT_MIN : bits + shift[J];
+        bits[J] = __float_as_int(x);
       });
-      //: the quad's reduce-scatter: lane `t` ends with list `t`'s leaf key (lists `2 b + 0, 1` kept across `xor 2`,
-      //: then one of them across `xor 1`), the digit's key their max across the quad
+      //: the quad's reduce-scatter of the bits: lane `t` ends with list `t`'s (lists `2 b + 0, 1` kept across `xor 2`,
+      //: then one of them across `xor 1`), keyed; the digit's key their max across the quad
       const bool hi = t & 2, odd = t & 1;
-      int keep0 = hi ? leaf[2] : leaf[0], keep1 = hi ? leaf[3] : leaf[1];
-      keep0 = max(keep0, __shfl_xor_sync(0xffffffffu, hi ? leaf[0] : leaf[2], 2));
-      keep1 = max(keep1, __shfl_xor_sync(0xffffffffu, hi ? leaf[1] : leaf[3], 2));
-      const int mine_leaf =
+      int keep0 = hi ? bits[2] : bits[0], keep1 = hi ? bits[3] : bits[1];
+      keep0 = max(keep0, __shfl_xor_sync(0xffffffffu, hi ? bits[0] : bits[2], 2));
+      keep1 = max(keep1, __shfl_xor_sync(0xffffffffu, hi ? bits[1] : bits[3], 2));
+      const int mine_bits =
           max(odd ? keep1 : keep0, __shfl_xor_sync(0xffffffffu, odd ? keep0 : keep1, 1));
+      const int mine_leaf = mine_bits == 0 ? INT_MIN : mine_bits + shift;
       int k = max(mine_leaf, __shfl_xor_sync(0xffffffffu, mine_leaf, 1));
       key[M][H] = max(k, __shfl_xor_sync(0xffffffffu, k, 2));
       leaves[(16 * M + 8 * H + g) * kBoxLists + warp + kWarps * t] =
@@ -605,9 +603,11 @@ constexpr int kImageTop = 10;
 //: keys reset for the next window. -- see docs/internals/carry/parts.md#maxima
 template <class P>
 __device__ __forceinline__ void post_exps(uint8_t* smem, int w, int top, int lane) {
+  static_assert(kBoxDigits == 32, "lane `i` digit `i`, a parity's keys one bit apart");
   int* const keys = reinterpret_cast<int*>(smem + P::kKeys);
-  const int key = keys[(w & 1) * kBoxDigits + lane];
-  keys[((w + 1) & 1) * kBoxDigits + lane] = INT_MIN;
+  const int at = (w & 1) * kBoxDigits + lane;
+  const int key = keys[at];
+  keys[at ^ kBoxDigits] = INT_MIN;
   const int e = max(((key + 0x7fffff) >> 23) + top - 127, kImageTop - 127);
   reinterpret_cast<int*>(smem + P::kExps)[lane] = e;
   const int emax = __reduce_max_sync(0xffffffffu, e);
@@ -636,13 +636,16 @@ __device__ __forceinline__ void leaf_scales(uint8_t* smem) {
       make_uint2(h[0] | h[1] << 16, h[2] | h[3] << 16);
 }
 
-//: THE BOUNDS TABLE cleared for a window's counts (its last window's drain factors read): a thread its share.
+//: THE BOUNDS TABLE cleared for a window's counts (its last window's drain factors read): a thread its share, 16
+//: bytes a store.
 template <class P>
 __device__ __forceinline__ void bounds_clear(const CarryParams& p, uint8_t* smem) {
+  static_assert(P::kWindow % 16 == 0,
+                "the table 16-byte aligned and whole 16-byte units (tables_of)");
 #pragma unroll 1
-  for (int i = ops::opaque(static_cast<int>(threadIdx.x)); i < p.tables.heads * kWindow;
+  for (int i = ops::opaque(static_cast<int>(threadIdx.x)); i < p.tables.heads * (P::kWindow / 4);
        i += kThreads)
-    reinterpret_cast<uint32_t*>(smem + p.tables.bounds_at)[i] = 0u;
+    reinterpret_cast<uint4*>(smem + p.tables.bounds_at)[i] = make_uint4(0u, 0u, 0u, 0u);
 }
 
 //: A LIST'S SCALE for a digit, `2^(a - e)` held to a normal float's exponents: the difference and the float's bits each

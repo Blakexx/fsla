@@ -94,11 +94,14 @@ list's place and count from its own loads, so no warp waits on another for them.
 
 The hand-off's first step (the f16 image at a power of two a digit). A lane's registers hold four digits of each
 of its warp's lists, each list in its own running unit ([`fold.md#units`](fold.md#units)), so the lists meet on one
-scale through an integer KEY: `post_keys` takes, a digit row, each list's largest |accumulator| (seven FMNMX from the
-row's eight values), its fp32 bits plus (the list's unit less the box's top unit, `box_top`) x 2^23 -- the exponent
-field shifted, the mantissa kept, a zero `INT_MIN` -- so the largest over the lists is one integer max a list; the
-row's four lanes are joined by two shuffles and each lane posts one of its quad's four rows by one shared atomic max,
-at the window's parity in lane order (digit `16 M + 8 H + g` at `4 g + 2 M + H`). A key is exact while the live units
+scale through an integer KEY: a list's largest |accumulator| at a digit row, its fp32 bits plus (the list's unit
+less the box's top unit, `box_top`) x 2^23 -- the exponent field shifted, the mantissa kept, a zero `INT_MIN` -- so
+the largest over the lists is one integer max a list. `post_keys` takes, a digit row, each list's largest over the
+lane's eight values (seven FMNMX), joins those bits across the row's four lanes by the leaves' reduce-scatter
+([below](#leaves)) -- a list's lanes share its unit, so the max commutes with the shift and a zero stays zero, and
+the zero test and the shift run once a lane a row, on its own list, not once a list -- and the four lists' keys by
+two more shuffles; each lane posts one of its quad's four rows by one shared atomic max, at the window's parity in
+lane order (digit `16 M + 8 H + g` at `4 g + 2 M + H`). A key is exact while the live units
 span under `kKeySpan` (a live unit lies between `kUnitMin` and 128; a never-live list's state is zero). After the
 barrier `post_exps` turns lane `i`'s key into its digit's exponent: `(key + 0x7fffff) >> 23`, the exponent field
 rounded up past a nonzero mantissa, plus the top less 127 -- exactly `ceil_exp` of the digit's largest |state| on one
@@ -209,8 +212,8 @@ the dummy rows, so it fits its 16 bits on every card; a lane XORs its half (`32 
 ## The leaves' maxima
 
 Beside the digit keys, `post_keys` keeps each LEAF's own key -- a list's largest |value| over the CTA's 32 channels at
-a digit row -- by a quad reduce-scatter (lane `t` ends with list `t`'s leaf of each of its four rows: two shuffles
-across `xor 2`, one across `xor 1`) and stores it as an exponent byte (`leaf_byte`: the smallest `e` with the leaf's
+a digit row -- by a quad reduce-scatter of the bits (lane `t` ends with list `t`'s leaf of each of its four rows: two
+shuffles across `xor 2`, one across `xor 1`), keyed at the lane's list's unit, and stores it as an exponent byte (`leaf_byte`: the smallest `e` with the leaf's
 largest |value| at most `2^(e + top)`, -128 a zero leaf) at `kLeafExp`, digit-major. After the exponents,
 `leaf_scales` turns the bytes into each leaf's f16 scale `2^(e_leaf - e_digit)` at `kLeafScale` (a digit's 32 lists
 64 bytes; at least 2^-14, rounded up so still a bound; 0 for a zero leaf), a thread four leaves. Why leaves and not
