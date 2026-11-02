@@ -95,6 +95,13 @@ owner index is a bit-field extract and never a division chain
 **Widths have a floor.** Every level is at least 16 wide (`B_l` a power of two ≥ 16), so no narrow-level case exists
 in any kernel's addressing.
 
+**Routing is per head, and its shapes are one family.** Every routing weight, kernel and reference carries the head
+axis (the user, 2026-06-24: "there is no form of RoLA without per-head routing -- the whole point is it's a per-head
+mechanism"); a variant checked against a reference that shares its assumption proves nothing. A routing is a tree of
+`D` levels: flat (`D = 1`, width `N`), square (`D = 2`, width `sqrt(N)`) and deeper trees are one family. The capacity
+`N` is invariant across the shapes; what the shape tunes is the routing projection's cost, the sum of the widths a side
+-- factoring makes the routing cheap, not the state, which is still `N` leaves.
+
 ---
 
 ## 3. The state
@@ -179,7 +186,11 @@ carried in, so a continuation's exit plane IS its entry plane.
 [`internals/engine/carve.md`](internals/engine/carve.md)):
 a BOX — an extent a level and a channel extent — and each side's OPERATION PLAN. A side's sparse levels are its LISTS
 (the facts pass lists their live digits a window) and its dense levels are its OPERAND (their slices form the MMA
-operand, in level order); every side has a dense level, so every side has an operand. A warp's tile is a side's lists
+operand, in level order); every side has a dense level, so every side has an operand. The dense level is SUPPORT
+SYMMETRY by construction: the read-write overlap factorizes over levels (`Σ_n R[t,n] Wt[s,n]` is the product over `l`
+of the levels' inner products), and a full-support factor at every level makes each factor strictly positive, so every
+read overlaps every write -- an exact-zero pair, with its exact-zero gradient, cannot occur, while each level keeps the
+hard sparsity the kernels compact. A warp's tile is a side's lists
 by its operand rows, and the publish stays in registers when both sides' warps own the same leaves. Every kernel that
 depends on the geometry takes the carve — the facts pass groups its unions and lists by the box's list levels, the
 carry addresses by it — and validates the one it is handed; none decides a carve. The rule derives it from
@@ -231,6 +242,12 @@ consumer; the carry and the intra compute the two halves of the recurrence into 
 `T = 1` step. They share the window grid, the descriptor and the atom, and no code path that could make a wrong
 convention agree with itself.
 
+A buffer is judged by its LIFETIME before its size (Blake, 2026-10-15: two structures -- lifetimes pay for the
+primitives, which stay purposeful): the bundle, the facts and the lists are working memory, one layer at a time and
+bounded by the segment and the heads in flight, where attention's KV cache is permanent. That pays for per-token bytes
+an attention layer does not have; it does not license waste, so a primitive's bytes are cut only where its purpose
+survives.
+
 ### 6.1 The producer
 
 ONE launch from a stretch of tokens to the bundle: every routing level's projection, its exact entmax or softmax
@@ -249,6 +266,15 @@ WIDTHS, never of `N`, and the digit grain is what makes the pass carve-independe
 digits a level and ANDs the levels. Liveness therefore stays a VALUE test, and a pad digit, whose amplitude is exactly
 zero, is never live ([`internals/facts/facts.md`](internals/facts/facts.md),
 [`internals/facts/liveness_contract.md`](internals/facts/liveness_contract.md)).
+
+WHAT BELONGS IN IT (Blake, 2026-09-28 and 2026-09-29): a fact the raw produced values determine -- a list word, a
+per-window aggregate, a per-token factor -- is computed here once rather than rescanned by every warp or CTA that needs
+it, but only where computing it once, plus writing and reading its bytes, beats the recomputations ("if doing so doesn't
+pay, just don't do it"); and there is no pre-pass kernel beside it, whose own per-window frame would roughly double the
+sparse fixed work. Precomputing into HBM is admissible while it adds no `O(L N)` term (Blake, 2026-10-03: "as long as
+it doesn't significantly impact hbm asymptotically or in practice"): per-token factors `O(L)`, per (window, list)
+prescales `O(L/W · N_s)` and list entries `O(L k)` pass; anything per (window, leaf) or per (token, leaf) does not,
+and per (token, sparse digit) planes pass the asymptotic test but are priced against the bundle itself.
 
 ### 6.3 The carry — the inter-window term
 
