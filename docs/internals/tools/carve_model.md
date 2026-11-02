@@ -56,7 +56,7 @@ Instructions and wavefronts a CTA-window, predicted from the calibration cells' 
 | nl64k-alt-k4-g4 | -4.4% | -21% |
 
 By phase: the readout within 2%, the drain 4%, the fold 5%, the fills 2% (cohort-k4 +10%), the hand-off 3% (alt-k16
--8%, g 4 -11%), the bookkeeping -8 to -18%. The g 4 wavefront miss is its `pre_at` reads (bank conflicts in the grouped
+-8%, g 4 -11%), the bookkeeping -8 to -18%. The g 4 wavefront miss is its prefix-row reads (bank conflicts in the grouped
 prefix rows, a defect) and tables that grow with the query heads, which the events do not carry.
 
 What it shows of today's carry at nl64k-alt-k4 (a CTA-window): 33.1K warp instructions, 74% outside the fold and the

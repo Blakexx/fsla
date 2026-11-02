@@ -53,34 +53,41 @@ added. An entry carries the row's chunk-0 offset, so a lane addresses its chunk 
 A chunk's fill issues its copies as one commit group; the caller waits the group (`carry_kernel.md#staging`).
 `fill` copies a range of union slots, each its token's row -- the side's operand slices at 64 bytes each, then on the
 write side its values at the box's channels -- swizzled, by `cp.async` over all 256 threads (a slice's 16-byte runs, 8
-or 4 under 16, `stage_bytes`): a quad of lanes a slot, a thread's slots four at a time with their four tokens loaded
-before any copy (`copy16`, a predicated copy, so a step's slots past the chunk cost no branch) -- the window lab's
-form 5 took 0.25K cycles a warp-window off the fills by it (`docs/lab/carry_window.md`). A listed side's four tokens are
-loaded under one test, each load clamped to the chunk, and a slot past the chunk then selects its gap: written as
-one conditional load a slot, the four compiled to four convergence regions a step (2026-10-25). A read slot's row names its query head (`carry.md#sides`): its source is the slice at
-that head, a head stride on (`Slices::sh`), as a 32-bit offset from the slice's base at the window's first token (the
-host holds a window's token and head strides under 2^31 together). A GAP slot (`kGap`, [`carry.md`](carry.md#lists)) is zero-filled and reads
-nothing. `read_fill` adds the read buffer's dummy panel rows and its panel's whole 128-byte lines, zeroed by stores (a
-quantum a thread, so the chunk's landing waits on its rows alone), and the chunk's entries; `fold_fill` (`fold.md#chunk`) the write chunk's rows and entries, or on a side with no list level each slot's token's
-`(F, m)` in the entries' place (8-byte copies from the facts pass's `fm`). Each
+or 4 under 16, `stage_bytes`): a quad of lanes a slot, thread `4 q + r` slots `q + 64 k` of each 256. A trip of 256
+slots is one block with no branch: its four tokens loaded on either side and selected (an unlisted side's slot is its
+token), then every source (`row_at`: the slice's base plus the token's and the head's products, each one wide
+multiply-add), then the copies (`copy16`, issued where the slot is under the trip's room in rows' bytes, its size zero
+for a gap), so no copy's address register is rewritten while an earlier copy may still read it. A token load past the
+chunk is not clamped: it reads the tenant after the union (the prefix rows), in bounds, and its copy is not issued. A
+row's swizzle is its slot's low bits (`chunk_at`), the same at every `k` and every trip, so a thread's places are one
+base and immediates. The first trip is straight-line; a chunk over 256 slots loops the rest. A read slot's row names
+its query head (`carry.md#sides`): its source is the slice at that head, a head stride on (`Slices::sh`), as a 32-bit
+offset from the slice's base at the window's first token (the host holds a window's token and head strides under 2^31
+together). A GAP slot (`kGap`, [`carry.md`](carry.md#lists)) -- its token negative as 16 bits -- is zero-filled and
+reads nothing. `read_fill` adds the read buffer's dummy panel rows and its panel's whole 128-byte lines, zeroed by
+stores four a thread (each predicated on the quanta left, the first four straight-line, so the chunk's landing waits on
+its rows alone), and the chunk's entries; `fold_fill` (`fold.md#chunk`) the write chunk's rows and entries, or on a side
+with no list level each slot's token's `(F, m)` in the entries' place (8-byte copies from the facts pass's `fm`). Each
 part sits at the chunk's own slots (`read_pads`, `read_ents`, `fold_ents`; `schedule.md#buffers`).
+
+THE FILL'S FLOOR is its bytes through the SM's global path, not its instructions: a CTA-window at nl64k-alt-k4 copies
+~51 KB (the read rows 13.8 KB, the fold rows 27.6 KB, the entries 4 KB, the staging ~5 KB), and a `cp.async.cg` stream
+of L2 hits runs at ~18 bytes a cycle an SM ([`smem_rates`](../../lab/smem_rates.md), `common/hardware.json`'s line
+price) -- ~2.85K cycles a window. The limit is the SM's, not the L2's: the grid's second wave (48 SMs busy) fills in the
+first's cycles (80). The copies' issue backs up into the MIO queue (the copy's samples are half MIO throttle).
 
 <a id="entries"></a>
 ## The entries
 
 A buffer holds its chunk's entries as the group's lists' runs in list order: `chunk_runs` gives lane `l` list `l`'s
-first entry of the chunk, its count and its place (the group's lists' counts before it) by four loads of the prefix
-rows (`pre_at`), each a difference within the chunk modulo 2^16, the same in every warp -- worked out once a chunk by
-the kernel (`carry_kernel.md#kernel`) and passed to the chunk's fill, its units and its tiles or fold, which until
-2026-10-25 each derived it again (~1.1K warp instructions a CTA-window at alt-k4, a shared round trip each);
-`entries_fill` copies a warp's
-own lists' runs (`warp + 8 j`), 8 bytes a lane, as ONE stream: entry `e` of the four runs in turn finds its run by
-three compares against the runs' firsts and takes that run's source and place as offsets from `e`, so every full trip
-of 32 copies unpredicated and only the stream's tail branches, once a warp-chunk. Copied run by run, each run paid its
-shuffles, a convergence region around its loop and its predicated copy and 64-bit address arithmetic -- ~40
-instructions a run, most runs one copy (2026-10-19: 2,559 -> 1,392 instructions a CTA-window at nl64k-alt-k4, the
-fill phase 5,401 -> 4,772 cycles a warp-window, a call 2.7% faster there and at g 4, cohort-k16's long runs unchanged).
-A consumer takes its list's place and count from its own loads, so no warp waits on another for them.
+first entry of the chunk, its count and its place (the group's lists' counts before it) from its two prefix rows (list
+`l` and `l + 1`): the chunk's end in both, its start where the chunk is not the first, each a difference within the
+chunk modulo 2^16, the same in every warp -- worked out once a chunk by the kernel (`carry_kernel.md#kernel`) and
+passed to the chunk's fill, its units and its tiles or fold. `entries_fill` copies a warp's own lists' runs (`warp + 8
+j`), eight lanes a run: lane `l` takes run `l >> 3`'s first, count and place by one shuffle each from `run` and copies
+its entries `l & 7`, `+ 8`, ..., 8 bytes a lane (`ops::stage_run_lanes`: a lane past its run issues nothing), two a
+trip, the trips the warp's longest run's (`__reduce_max_sync`), the first two straight-line. A consumer takes its
+list's place and count from its own loads, so no warp waits on another for them.
 
 <a id="maxima"></a>
 ## The digit maxima

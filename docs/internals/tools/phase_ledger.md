@@ -36,6 +36,11 @@ reads ~11% slow for its first launches (nl64k-alt-k4 25,460 cycles a warp-window
 (the cell's `phase_cycles` in the budget, KERNEL_STANDARDS §32.2): red over `MISS` = 1.3 times its prediction, or with
 none. The carry's predictions are owed by the window's design, so its check is red until they exist.
 
+`--per-cta` also prints the phases of the grid's first wave of CTAs (one an SM, the first `SMs` in launch order) and
+of the rest apart: a phase bound by a resource the SMs share (the L2) runs faster in a partial last wave, one bound
+inside the SM does not (the carry's fill, 2026-11-01: 3,302 cycles a warp-window with 48 SMs busy against 3,340 with
+80).
+
 `--json PATH` also writes the reading: the cell, launches, warm-up, the launch's CTA-windows, every phase's cycles a
 warp a window and the total, and every phase's per-warp row. `cta_windows(cell)` (CTAs times windows) is the one divisor
 every per-unit number in the instruments uses (`tools/pipe_counters.py`, `tools/stall_census.py`).

@@ -146,6 +146,8 @@ def main() -> int:
                     help="the phases whose per-warp rows are printed (default the carry's readout and fold, the den's "
                          "den and writes): an imbalance is seen, not inferred")
     ap.add_argument("--json", type=Path, default=None, help="also write the reading here: every phase, every warp")
+    ap.add_argument("--per-cta", action="store_true",
+                    help="also print the phases of the grid's first wave of CTAs (one an SM) and of the rest apart")
     ap.add_argument("--budget", type=Path, default=None,
                     help="a budget whose cell names `phase_cycles`, each phase's predicted cycles a warp a window")
     ap.add_argument("--forced", default=None,
@@ -227,6 +229,15 @@ def main() -> int:
     for ph in per_warp.split(","):
         i = phases.index(ph)
         print(f"  {ph:8s} a warp: " + " ".join(f"{by_warp[w][i]:6.0f}" for w in range(warps)))
+    if a.per_cta:
+        #: each CTA's phases (mean over its warps), CTAs in launch order: the first `SMs` CTAs are the grid's first wave
+        cta = ledger.double().mean(dim=1).cpu() / a.launches / windows
+        sms = torch.cuda.get_device_properties(0).multi_processor_count
+        for lo, hi in ((0, min(sms, n_ctas)), (min(sms, n_ctas), n_ctas)):
+            if hi > lo:
+                part = cta[lo:hi].mean(dim=0)
+                print(f"  CTAs {lo}-{hi - 1}: " + ", ".join(f"{n} {x:.0f}" for n, x in zip(phases, part.tolist()))
+                      + f"  total {part.sum():.0f}")
     if a.json:
         a.json.write_text(json.dumps({"cell": a.cell, "kernel": a.kernel, "launches": a.launches,
                                       "warmup": warmed,

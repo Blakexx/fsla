@@ -191,11 +191,6 @@ __device__ __forceinline__ int2 chunk_cols(int first, int slots, int total, int 
                    first + slots >= total ? cols - 1 : (first + slots) / kListBound - 1);
 }
 
-//: the prefix rows' value at row `l`, column `c` (column -1 none) of a row's `cols`, modulo 2^16
-__device__ __forceinline__ int pre_at(const uint16_t* pre, int l, int c, int cols) {
-  return c < 0 ? 0 : static_cast<int>(pre[l * cols + c]);
-}
-
 //: a side's slots in window `w`: its union's count, or every token where the side has no list level
 template <class P>
 __device__ __forceinline__ int slots_of(const uint8_t* smem, const Window& win, int side, int w) {
@@ -293,20 +288,37 @@ __device__ __forceinline__ void stage_bytes(ops::SmemAddr dst, const void* src, 
   }
 }
 
-//: AN ASYNC 16-BYTE COPY issued where `issue`, zero-filled where not `live`: predicated, so a step's slots past the
-//: chunk cost no branch.
-__device__ __forceinline__ void copy16(ops::SmemAddr dst, const void* src, bool issue, bool live) {
+//: AN ASYNC 16-BYTE COPY at `dst + At`, issued where `At` is under `room`, its first `size` bytes read.
+template <uint32_t At>
+__device__ __forceinline__ void copy16(ops::SmemAddr dst, const void* src, int room, int size) {
   asm volatile(
-      "{\n.reg .pred p;\nsetp.ne.b32 p, %2, 0;\n@p cp.async.cg.shared.global [%0], [%1], 16, %3;\n}\n" ::
+      "{\n.reg .pred p;\nsetp.gt.s32 p, %2, %4;\n@p cp.async.cg.shared.global [%0+%4], [%1], 16, %3;\n}\n" ::
           "r"(dst),
-      "l"(src), "r"(static_cast<int>(issue)), "r"(live ? ops::kStageBytes : 0));
+      "l"(src), "r"(room), "r"(size), "n"(At));
 }
 
-//: A CHUNK'S ROWS: `slots` union slots from `first`, each its token's row -- its side's operand slices at 64 bytes
-//: each, then (`Values`) its values at the box's channels -- swizzled, by `cp.async`: a quad of lanes a slot, lane `r`
-//: of the quad chunk `r` of each slice and of the values; a thread's slots four at a time, their tokens loaded before
-//: any copy, so a slot's copies wait on no other slot's load; a narrow slice (8 or 4 bytes) its quad's first lane's; a
-//: gap slot's row zero-filled. -- see docs/internals/carry/parts.md#fill
+//: A 16-BYTE ZERO at `dst + 16 At`, stored where `At` is under `room`.
+template <int At>
+__device__ __forceinline__ void zero16(ops::SmemAddr dst, int room) {
+  asm volatile(
+      "{\n.reg .pred p;\nsetp.gt.s32 p, %1, %2;\n@p st.shared.v4.u32 [%0+%3], {%4, %4, %4, %4};\n}\n" ::
+          "r"(dst),
+      "r"(room), "n"(At), "n"(16 * At), "r"(0)
+      : "memory");
+}
+
+//: A ROW'S SOURCE: `base` plus two products, each one wide multiply-add (the operands unsigned, under 2^32).
+__device__ __forceinline__ const uint8_t* row_at(const uint8_t* base, int a, int b, int c, int d) {
+  const uint64_t x = reinterpret_cast<uint64_t>(base)
+                     + static_cast<uint64_t>(static_cast<uint32_t>(a)) * static_cast<uint32_t>(b);
+  return reinterpret_cast<const uint8_t*>(
+      x + static_cast<uint64_t>(static_cast<uint32_t>(c)) * static_cast<uint32_t>(d));
+}
+
+//: A CHUNK'S ROWS: `slots` union slots from `first`, each its token's row (its slices, then `Values` its values),
+//: swizzled, by `cp.async`: thread `4 q + r` chunk `r` of slots `q + 64 k` of each 256, a trip one block -- its tokens
+//: (unclamped), every source, then the copies on the trip's room; a gap slot zero-filled. -- see
+//: docs/internals/carry/parts.md#fill
 template <int Factors, bool Values>
 __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* values,
                                      int values_st, const uint16_t* tok, const Window& win,
@@ -316,7 +328,7 @@ __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* v
   //: the thread opaque, so its quad lane and first slot are formed at each fill, never held across the windows
   const int tid = ops::opaque(static_cast<int>(threadIdx.x)), r = tid & 3, q = tid >> 2;
   const uint8_t* base[Factors];
-  int st[Factors], sh[Factors], bytes[Factors];
+  int st[Factors], sh[Factors], bytes[Factors], size[Factors];
   bool active[Factors], narrow = false;
   static_for<Factors>([&](auto i) {
     bytes[i] = sl.bytes[i];
@@ -324,51 +336,66 @@ __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* v
     sh[i] = Values ? 0 : sl.sh[i];
     base[i] = sl.at[i] + static_cast<int64_t>(win.t0) * st[i] + ops::kStageBytes * r;
     active[i] = ops::kStageBytes * r < bytes[i];
+    size[i] = active[i] ? ops::kStageBytes : 0;
     narrow |= bytes[i] < ops::kStageBytes;
   });
-
   const uint8_t* const vbase =
       Values ? values + static_cast<int64_t>(win.t0) * values_st + ops::kStageBytes * r : nullptr;
-  //: a slice narrower than a chunk (8 or 4 bytes) its quad's first lane's whole run; else each lane its chunk, a chunk
-  //: past a slice's bytes zero-filled into the slice's unused space
+
+  const bool listed = win.listed;
+  const int16_t* const toks = reinterpret_cast<const int16_t*>(tok) + first + q;
+  //: the thread's rows' places at slot `q`: each slice's chunk and the values' (`chunk_at`)
+  const ops::SmemAddr row = pool + static_cast<uint32_t>(q * kRow);
+  uint32_t at[Factors + 1];
+  static_for<Factors + 1>([&](auto i) {
+    at[i] =
+        row
+        + 16u * chunk_at<kRow>(static_cast<uint32_t>(q), static_cast<uint32_t>(kChunks * i + r));
+  });
+
+  //: a narrow slice (8 or 4 bytes) its quad's first lane's whole run; a trip of 256 slots, the first straight-line
   const auto rows = [&](auto kNarrow) {
-#pragma unroll 1
-    for (int s0 = q; s0 < slots; s0 += kAhead * kQuads) {
-      //: an unlisted side's slot is its token; a listed side's four tokens are loaded under one test, each load clamped to
-      //: the chunk, so a slot past the chunk selects its gap rather than branching
+    const auto trip_at = [&](int s0) {
+      //: the trip's four tokens, loaded on either side and selected (an unlisted side's slot is its token)
       int u[kAhead];
-      static_for<kAhead>([&](auto k) { u[k] = first + s0 + kQuads * k; });
-      if (win.listed) {
-        static_for<kAhead>([&](auto k) { u[k] = tok[first + min(s0 + kQuads * k, slots - 1)]; });
-      }
-      static_for<kAhead>([&](auto k) { u[k] = s0 + kQuads * k < slots ? u[k] : kGap; });
       static_for<kAhead>([&](auto k) {
-        //: a slot's row: its query head `j` (the read side's) and token `t`, bit 15 a gap
-        const int s = s0 + kQuads * k, t = u[k] & (kWindow - 1),
+        const int v = toks[s0 + kQuads * k];
+        u[k] = listed ? v : first + q + s0 + kQuads * k;
+      });
+      const int room = (slots - q - s0) * kRow;
+      const uint32_t trip = static_cast<uint32_t>(s0 * kRow);
+
+      //: every source first: a slot's query head `j` (the read side's) and token `t`, its gap mask
+      const uint8_t* src[kAhead][Factors + 1];
+      int gap[kAhead];
+      static_for<kAhead>([&](auto k) {
+        const int t = u[k] & (kWindow - 1),
                   j = Values ? 0 : (u[k] >> window_bits(kWindow)) & (window_heads(kWindow) - 1);
-        const bool issue = s < slots, live = (u[k] & 0x8000) == 0;
-        const ops::SmemAddr row = pool + static_cast<uint32_t>(s * kRow);
+        gap[k] = u[k] >> 31;
+        static_for<Factors>([&](auto i) { src[k][i] = row_at(base[i], t, st[i], j, sh[i]); });
+        if constexpr (Values) src[k][Factors] = row_at(vbase, t, values_st, 0, 0);
+      });
+
+      static_for<kAhead>([&](auto k) {
+        constexpr uint32_t kAt = static_cast<uint32_t>(decltype(k)::value * kQuads * kRow);
         static_for<Factors>([&](auto i) {
-          const ops::SmemAddr dst = row
-                                    + 16u
-                                          * chunk_at<kRow>(static_cast<uint32_t>(s),
-                                                           static_cast<uint32_t>(kChunks * i + r));
-          const uint8_t* const src = base[i] + static_cast<uint32_t>(t * st[i] + j * sh[i]);
           if constexpr (decltype(kNarrow)::value) {
-            if (issue && !active[i] && r == 0) stage_bytes(dst, src, bytes[i], live);
-            if (issue && active[i]) ops::stage_run_if<16>(dst, src, live);
+            const ops::SmemAddr dst = at[i] + trip + kAt;
+            const bool issue = static_cast<int>(kAt) < room, live = gap[k] == 0;
+            if (issue && !active[i] && r == 0) stage_bytes(dst, src[k][i], bytes[i], live);
+            if (issue && active[i]) ops::stage_run_if<16>(dst, src[k][i], live);
           } else {
-            copy16(dst, src, issue, live && active[i]);
+            copy16<kAt>(at[i] + trip, src[k][i], room, size[i] & ~gap[k]);
           }
         });
         if constexpr (Values)
-          copy16(row
-                     + 16u
-                           * chunk_at<kRow>(static_cast<uint32_t>(s),
-                                            static_cast<uint32_t>(kChunks * Factors + r)),
-                 vbase + static_cast<uint32_t>(t * values_st), issue, live);
+          copy16<kAt>(at[Factors] + trip, src[k][Factors], room, ops::kStageBytes & ~gap[k]);
       });
-    }
+    };
+
+    trip_at(0);
+#pragma unroll 1
+    for (int s0 = kAhead * kQuads; s0 < slots - q; s0 += kAhead * kQuads) trip_at(s0);
   };
   if (narrow) {
     rows(std::true_type{});
@@ -378,8 +405,7 @@ __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* v
 }
 
 //: A CHUNK'S RUNS, lane `l` list `l`'s: its first entry of the chunk, its count, and its place in a buffer's entries
-//: (the lists' runs in list order), four loads from the prefix rows, each a difference within the chunk modulo 2^16.
-//: -- see docs/internals/carry/parts.md#entries
+//: (the lists' runs in list order), from its two prefix rows modulo 2^16. -- see docs/internals/carry/parts.md#entries
 struct Run {
   int at, n, to;
 };
@@ -389,53 +415,48 @@ __device__ __forceinline__ Run chunk_runs(const CarryParams& p, const uint8_t* s
                                           const Window& win, int side, int w, int first, int slots,
                                           int total, int lane) {
   if (!win.listed || lane >= win.lists) return Run{0, 0, 0};
-  const uint16_t* pre = pre_of<P>(p, smem, side, w);
   const int cols = cols_of(p, side);
   const int2 col = chunk_cols(first, slots, total, cols);
-  const int l = (win.digit0 & (kBoxLists - 1)) + lane;
-  const int a0 = pre_at(pre, l, col.x, cols), a1 = pre_at(pre, l, col.y, cols);
-  const int b0 = pre_at(pre, l + 1, col.x, cols), b1 = pre_at(pre, l + 1, col.y, cols);
+  //: the lane's two rows (lists `l`, `l + 1`): the chunk's end in both, its start where it is not the first
+  const uint16_t* const row =
+      pre_of<P>(p, smem, side, w) + ((win.digit0 & (kBoxLists - 1)) + lane) * cols;
+  const int a1 = row[col.y], b1 = row[cols + col.y];
+  const bool start = col.x >= 0;
+  const int a0 = start ? row[max(col.x, 0)] : 0, b0 = start ? row[cols + max(col.x, 0)] : 0;
   return Run{(b0 - a0) & 0xffff, ((b1 - a1) - (b0 - a0)) & 0xffff, (a1 - a0) & 0xffff};
 }
 
-//: A CHUNK'S ENTRIES, a warp's share: its own lists' runs (`warp + 8 j`) to their places at `dst`, 8 bytes a lane, the
-//: four runs one stream -- entry `e` in the last run whose first it passes, its source and place offsets from `e` --
-//: every full trip of 32 unpredicated, the stream's tail one branch a warp. -- see docs/internals/carry/parts.md#entries
+//: A CHUNK'S ENTRIES, a warp's share: its own lists' runs (`warp + 8 j`) to their places at `dst`, eight lanes a run,
+//: two copies a trip, the trips the warp's longest run's. -- see docs/internals/carry/parts.md#entries
 template <class P>
 __device__ __forceinline__ void entries_fill(const CarryParams& p, const SideLists& l,
                                              const Window& win, const Place& c, int w,
                                              const Run& run, ops::SmemAddr dst, int warp,
                                              int lane) {
-  constexpr int kRuns = kBoxLists / kWarps;
-  //: the box's first list's row, once: a list's is `kListCap` entries a query head on (opaque, so the lists' sources
-  //: are formed at each fill rather than held across the windows)
+  static_assert(kBoxLists == 4 * kWarps, "a warp's four lists, eight lanes each");
+  constexpr int kLanes = 8;
+  //: a list's row `kListCap` entries a query head on (opaque: formed at each fill, never held across windows)
   const int cap = kListCap * ops::opaque(l.heads);
-  const uint2* const lists =
-      l.entries + list_row(l, c, p.windows, ops::opaque(w), win.digit0) * cap;
-  int first[kRuns], src[kRuns], to[kRuns], total = 0;
-  static_for<kRuns>([&](auto J) {
-    const int list = warp + kWarps * J;
-    const int at = __shfl_sync(0xffffffffu, run.at, list),
-              n = __shfl_sync(0xffffffffu, run.n, list),
-              place = __shfl_sync(0xffffffffu, run.to, list);
-    first[J] = total;
-    src[J] = list * cap + at - total;
-    to[J] = place - total;
-    total += n;
-  });
-  const auto copy = [&](int e) {
-    int s = src[0], d = to[0];
-    static_for<kRuns - 1>([&](auto J) {
-      const bool past = e >= first[J + 1];
-      s = past ? src[J + 1] : s;
-      d = past ? to[J + 1] : d;
-    });
-    ops::stage_run<8>(dst + 8u * static_cast<uint32_t>(d + e), lists + (s + e));
+  const int list = warp + kWarps * (lane / kLanes), i = lane % kLanes;
+  const int at = __shfl_sync(0xffffffffu, run.at, list), n = __shfl_sync(0xffffffffu, run.n, list),
+            to = __shfl_sync(0xffffffffu, run.to, list);
+  const int trips =
+      (static_cast<int>(__reduce_max_sync(0xffffffffu, static_cast<unsigned>(n))) + kLanes - 1)
+      / kLanes;
+  const uint2* src = l.entries + list_row(l, c, p.windows, ops::opaque(w), win.digit0) * cap
+                     + (list * cap + at + i);
+  ops::SmemAddr d = dst + 8u * static_cast<uint32_t>(to + i);
+  const int left = n - i;
+  //: the first two trips straight-line, any more in a loop
+  const auto two = [&](int t) {
+    ops::stage_run_lanes<8>(d, src, kLanes * t < left);
+    ops::stage_run_lanes<8>(d + 8u * kLanes, src + kLanes, kLanes * (t + 1) < left);
+    src += 2 * kLanes;
+    d += 16u * kLanes;
   };
-  int k = 0;
+  two(0);
 #pragma unroll 1
-  for (; k + 32 <= total; k += 32) copy(k + lane);
-  if (lane < total - k) copy(k + lane);
+  for (int t = 2; t < trips; t += 2) two(t);
 }
 
 //: A CHUNK'S BUFFER, laid out at its own slots: a read buffer's rows, its dummy panel rows, its panel (a slot pair a
@@ -466,14 +487,19 @@ __device__ __forceinline__ void read_fill(const CarryParams& p, const uint8_t* s
   fill<P::kReadFactors, false>(addr.slices[kRead], nullptr, 0, union_of<P>(p, smem, kRead, w), rw,
                                first, slots, buf);
   const ops::SmemAddr pads = buf + static_cast<uint32_t>(read_pads<P>(slots));
-  //: the dummy panel rows and the panel zeroed by stores, a quantum a thread, so the chunk's landing waits on rows alone
-#pragma unroll 4
-  for (int k = ops::opaque(static_cast<int>(threadIdx.x));
-       k < (read_ents<P>(slots) - read_pads<P>(slots)) / 16; k += kThreads)
-    asm volatile(
-        "st.shared.v4.u32 [%0], {%1, %1, %1, %1};" ::"r"(pads + 16u * static_cast<uint32_t>(k)),
-        "r"(0)
-        : "memory");
+  //: the dummy panel rows and the panel zeroed by stores, four a thread a trip, the first straight-line
+  constexpr int kAhead = 4;
+  const int tid = ops::opaque(static_cast<int>(threadIdx.x));
+  const int quanta = (read_ents<P>(slots) - read_pads<P>(slots)) / 16 - tid;
+  const ops::SmemAddr zero = pads + 16u * static_cast<uint32_t>(tid);
+  const auto four = [&](int k) {
+    const ops::SmemAddr at = zero + 16u * static_cast<uint32_t>(k);
+    static_for<kAhead>([&](auto j) { zero16<decltype(j)::value * kThreads>(at, quanta - k); });
+  };
+
+  four(0);
+#pragma unroll 1
+  for (int k = kAhead * kThreads; k < quanta; k += kAhead * kThreads) four(k);
   if (rw.listed)
     entries_fill<P>(p, p.read_lists, rw, c, w, run,
                     buf + static_cast<uint32_t>(read_ents<P>(slots)), warp, lane);

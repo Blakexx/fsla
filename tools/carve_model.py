@@ -449,7 +449,7 @@ DRIVERS = {
              "fold_steps": "steps steps@L entry_of entry_of@L",
              "fold_lists": "fold_chunk", "one": "fold_units next_unit pow2_half2 list_units dense_exp"},
     "handoff": {"images": "store_batches list_scale", "one": "post_keys post_exps box_top ceil_exp pow2"},
-    "fills": {"rows": "fill", "entry_trips": "entries_fill", "chunks": "read_fill fold_fill pre_at chunk_runs chunk_cols "
+    "fills": {"rows": "fill", "entry_trips": "entries_fill", "chunks": "read_fill fold_fill chunk_runs chunk_cols "
                                                                   "list_row Flow::slot_landed stage_bytes"},
     "drain": {"drained": "drain red_add"},
 }
