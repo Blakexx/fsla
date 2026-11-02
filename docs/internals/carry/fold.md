@@ -85,14 +85,24 @@ the coefficient on the routing weight, the product order the reference declares)
 (`den_pair_of`: a write record's high half, `f16(b m 2^(4 - Km))` -- the facts pass's, `Km` the list's mass exponent;
 a side with no list level forms it beside c from the slot's `m`, `2^(4 - dense_exp(shift_m))`). Two more MMAs a
 16-token step (one an 8-token tail), into a `DenColumn` held only through the list's steps: then `den_add` adds each
-row's value times `2^(K - 4)` into the DEN STATE (`kDenState`, fp32 `[32 lists][32 digits]`, zero at the call's
-start), the warp's own lists, so the state is in `b m` units across windows with no unit book.
+row's value times `2^(K - 4)` into the DEN STATE (`kDenState`, fp32 `[32 lists][32 digits]`, a list's digit at its
+index XOR `4 (list >> 1)` -- `den_state_word`, so a list's 8 consecutive digits lie in 8 banks for the fold's adds and
+the den tables' four lists of a digit a lane in 32 banks a warp; zero at the call's start), the warp's own lists, so
+the state is in `b m` units across windows with no unit book. B's every column is the c_m pair (no column-0 select),
+so every lane holds its quad's four rows, and `den_add` takes row `g + 8 t` a lane: one load, add and store, and one
+`red.shared.max.u32` of the new word's bits into its digit's largest (`kDenMax`, the readout's tables' scale; a
+non-negative float's bits order as integers), unpredicated -- a predicated shared atomic is a branch and a convergence
+region each in ptxas, and four predicated load-add-stores in turn waited four times (0.37K cycles a warp-window at
+nl64k-alt-k4).
 
 A box carries the den of a warp's list `j` where `j boxes / 4` is its box (`den_lists`, `boxes = dv / 32`): each of
-two boxes lists 0-15 or 16-31, of four a quarter -- every list once, the cost shared. The branch is the
-declaration's, warp-uniform (a one-trip loop each way). MEASURED (`fold_alone`, sm_86, nl64k-alt-k4's draw, cycles a
-warp-window, the carry's shape): no den 2,471, half the lists 2,747 (+276), every list 3,039 (+568); the composed
-kernel's registers unchanged (241; sm_80 239).
+two boxes lists 0-15 or 16-31, of four a quarter -- every list once, the cost shared. The branch is the CTA's, an
+`if` on the box's mask (uniform: formed from the block's place and the call's `dv`); the one-trip loop each way it
+replaced cost ~12 instructions a list a chunk at nl64k-alt-k4 (the region ledger's 12.6M a launch). MEASURED
+(`fold_alone`, sm_86, nl64k-alt-k4's draw, cycles a warp-window, the carry's shape, the first form): no den 2,471, half
+the lists 2,747 (+276), every list 3,039 (+568). MEASURED composed (phase ledger, nl64k-alt-k4, sm_86): the fold 3.57K
+with its den, 2.86K with the box's den lists forced off in the same build (+0.71K: the den MMAs' fp32 tensor work on a
+tensor-bound step, the adds, and the instruction cache's misses on the den steps' second copy).
 
 <a id="probe"></a>
 ## The probe

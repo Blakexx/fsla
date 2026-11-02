@@ -66,7 +66,7 @@ def _cell(directory: Path, keep: float) -> list[str]:
     capture = torch.zeros(c.capture_bytes(), dtype=torch.uint8)
     c.capture_bind(capture)
     try:
-        num, check = c.carry(routes, values, facts, carve, unit, plans=plans)
+        num, _den, check = c.carry(routes, values, facts, carve, unit, plans=plans)
         torch.cuda.synchronize()
     finally:
         c.capture_bind(None)

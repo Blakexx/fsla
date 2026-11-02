@@ -89,11 +89,11 @@ def reduce_dtype_for(carve: Carve, reduce_dtype: torch.dtype | None = None) -> t
 
 def carry(routes, values, facts, carve: Carve, scale: torch.Tensor, accumulate: str | None = None,
           forced: str | None = None, plans: torch.Tensor | None = None,
-          reduce_dtype: torch.dtype | None = None) -> tuple[torch.Tensor, torch.Tensor]:
-    """THE LAUNCH: ``(num, check)`` -- ``num`` the readout's partials summed across CTAs, each CTA's at its own units:
-    int32 ``[BH, T, d_v / 2]`` f16 pairs at each token's den-pass ``scale`` byte (``reduce_dtype`` f16), or fp32
-    ``[BH, T, d_v]`` (fp32; :func:`reduce_dtype_for`'s rule where None) -- ``check`` the skeleton's fp32 sum of the
-    final state. ``facts`` is the facts pass's over this bundle, its read entries' offsets
+          reduce_dtype: torch.dtype | None = None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """THE LAUNCH: ``(num, den, check)`` -- ``num`` the readout's partials summed across CTAs, each CTA's at its own
+    units: int32 ``[BH, T, d_v / 2]`` f16 pairs at each token's ``scale`` byte (``reduce_dtype`` f16), or fp32
+    ``[BH, T, d_v]`` (fp32; :func:`reduce_dtype_for`'s rule where None) -- ``den`` each token's den, fp32 ``[BH, T]``,
+    the v+1 channel (`parts.md#den`) -- ``check`` the skeleton's fp32 sum of the final state. ``facts`` is the facts pass's over this bundle, its read entries' offsets
     in this arm's read pool rows (:func:`form`). The readout accumulates in the device's form
     (:func:`readout_accumulate`); ``accumulate`` (``"fp32"`` or ``"fp16"``) is reserved: the gates' choice of form, so
     both forms are gated on any card (``tests/oracle/test_carry_readout.py``). Each window's plan is the planner rule's
@@ -108,15 +108,16 @@ def carry(routes, values, facts, carve: Carve, scale: torch.Tensor, accumulate: 
     num = (torch.zeros((BH, routes.tokens, d_v // 2), dtype=torch.int32, device=routes.device)
            if dtype == torch.float16 else
            torch.zeros((BH, routes.tokens, d_v), dtype=torch.float32, device=routes.device))
+    den = torch.zeros((BH, routes.tokens), dtype=torch.float32, device=routes.device)
     check = torch.zeros(1, dtype=torch.float32, device=routes.device)
     extension().carry_forward(
         list(routes.amp_read), list(routes.amp_write), values.v, list(facts_ops.side_lists(facts, "write")),
-        facts.list_exp, facts.fm, facts.gains_exp, list(facts_ops.side_lists(facts, "read")), scale, num, check,
+        facts.list_exp, facts.fm, facts.gains_exp, list(facts_ops.side_lists(facts, "read")), scale, num, den, check,
         list(carve.widths),
         list(carve.extents), carve.channels, _list_level(carve.fold), list(carve.fold.operand),
         _list_level(carve.readout), list(carve.readout.operand), list(arm_key(carve)),
         _ACCUMULATE[accumulate or readout_accumulate(routes.device)], _REDUCE[dtype], forced_word(forced), plans)
-    return num, check
+    return num, den, check
 
 
 def plan_words(heads: int, w: int) -> int:

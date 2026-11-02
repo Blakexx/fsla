@@ -44,7 +44,8 @@ W_O in bf16, `rola/layer.py`); fp32 beyond. Both pass the per-slot gate on every
 <a id="carry"></a>
 ## `rola.ops.carry.carry`
 
-The Python call launches over the bundle's rows and values, the facts pass's lists and exponents and the scale bytes
+The Python call returns `(num, den, check)` -- `den` each query head's token's den, fp32 `[BH, T]`, the v+1 channel
+(`parts.md#den`). It launches over the bundle's rows and values, the facts pass's lists and exponents and the scale bytes
 (`scale`; read only for f16 pairs), its cross-CTA sum at `reduce_dtype` or the auto rule's, its readout in the device's accumulation (`readout_accumulate`) or the one a gate names, each window's plan its
 own unless a gate or a measurement forces a form (`forced`, as `forced_word` encodes it), the facts pass run with
 this arm's read pool row (`form`, read off the binary's census for the device's card). `plans_out` allocates the plan

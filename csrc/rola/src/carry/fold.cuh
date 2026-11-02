@@ -90,13 +90,14 @@ __device__ __forceinline__ uint32_t den_pair_of(uint2 rec, bool live) {
   return mine | (__shfl_xor_sync(0xffffffffu, mine, 1) << 16);
 }
 
-//: A LIST'S DEN COLUMN over its steps: two m-tiles of one live column. -- see docs/internals/carry/fold.md#den
+//: A LIST'S DEN COLUMN over its steps: two m-tiles, the column in every one of B's (each lane its quad's rows).
+//: -- see docs/internals/carry/fold.md#den
 template <class P>
 using DenColumn = float[P::kFoldMTiles][4];
 
 //: A 16-TOKEN STEP into list `J`'s accumulators: its slots' dense slices (A, `ldmatrix.trans`, times c) and values
 //: (B), eight fp32-accumulate MMAs; where the list carries the den (`Den`), its column's two more on the raw slices
-//: (B the entries' c_m at column 0). Lanes `0..15` hold its entries. -- see docs/internals/carry/fold.md#step
+//: (B the entries' c_m, every column). Lanes `0..15` hold its entries. -- see docs/internals/carry/fold.md#step
 //: @burst
 template <class P, int J, bool Den>
 __device__ __forceinline__ void step16(State<P>& st, ops::SmemAddr pool, uint32_t off,
@@ -127,11 +128,9 @@ __device__ __forceinline__ void step16(State<P>& st, ops::SmemAddr pool, uint32_
     static_for<4>([&](auto N) { ops::hmma(st.acc[J][M][N], a[M], b[N][0], b[N][1]); });
   });
   if constexpr (Den) {
-    const bool col0 = (lane >> 2) == 0;
     const uint32_t d01 = __shfl_sync(0xffffffffu, dpair, 2 * t),
                    d89 = __shfl_sync(0xffffffffu, dpair, 2 * t + 8);
-    static_for<P::kFoldMTiles>(
-        [&](auto M) { ops::hmma(den[M], raw[M], col0 ? d01 : 0u, col0 ? d89 : 0u); });
+    static_for<P::kFoldMTiles>([&](auto M) { ops::hmma(den[M], raw[M], d01, d89); });
   }
 }
 
@@ -153,9 +152,8 @@ __device__ __forceinline__ void step8(State<P>& st, ops::SmemAddr pool, uint32_t
   });
   if constexpr (Den) {
     const uint32_t d01 = __shfl_sync(0xffffffffu, dpair, 2 * t);
-    const uint32_t bd = (lane >> 2) == 0 ? d01 : 0u;
     static_for<P::kFoldMTiles>(
-        [&](auto M) { ops::hmma_k8(den[M], raw[2 * M], raw[2 * M + 1], bd); });
+        [&](auto M) { ops::hmma_k8(den[M], raw[2 * M], raw[2 * M + 1], d01); });
   }
 }
 
@@ -223,23 +221,27 @@ __device__ __forceinline__ uint32_t den_lists(int channel0, int dv) {
   return mask;
 }
 
-//: A LIST'S DEN COLUMN INTO THE DEN STATE (`kDenState`), each row's value times `2^(K - kCoefTop)`.
-//: -- see docs/internals/carry/fold.md#den
+//: A LIST'S DEN COLUMN INTO THE DEN STATE (`kDenState`), each row's value times `2^(K - kCoefTop)`: lane `4 g + t`
+//: row `g + 8 t` (every lane holds its quad's four rows: the column is B's every column), one add and one integer max
+//: into the digit's largest (`kDenMax`, a non-negative float's bits) a lane. -- see docs/internals/carry/fold.md#den
 template <class P>
 __device__ __forceinline__ void den_add(const uint8_t* smem, int list, const DenColumn<P>& den,
                                         int k, int lane) {
-  const float f = pow2(k - kCoefTop);
-  const ops::SmemAddr at = ops::smem_addr(smem + P::kDenState) + 128u * static_cast<uint32_t>(list)
-                           + 4u * static_cast<uint32_t>(lane >> 2);
-  const bool col0 = (lane & 3) == 0;
-  static_for<P::kFoldMTiles>([&](auto M) {
-    static_for<2>([&](auto H) {
-      const uint32_t a = at + 4u * (16u * M + 8u * H);
-      float v;
-      asm volatile("ld.shared.f32 %0, [%1];" : "=f"(v) : "r"(a));
-      ops::store_shared_f32_if(a, fmaf(den[M][2 * H], f, v), col0);
-    });
-  });
+  static_assert(P::kFoldMTiles == 2, "a quad's lane `t` takes its row `g + 8 t`");
+  const int t = lane & 3, digit = (lane >> 2) + 8 * t;
+  const bool odd = (t & 1) != 0, high = (t & 2) != 0;
+  const float x0 = odd ? den[0][2] : den[0][0], x1 = odd ? den[1][2] : den[1][0];
+  const float x = high ? x1 : x0;
+  const ops::SmemAddr a =
+      ops::smem_addr(smem + P::kDenState) + 4u * static_cast<uint32_t>(den_state_word(list, digit));
+  float v;
+  asm volatile("ld.shared.f32 %0, [%1];" : "=f"(v) : "r"(a));
+  v = fmaf(x, pow2(k - kCoefTop), v);
+  ops::store_shared_f32(a, v);
+  asm volatile("red.shared.max.u32 [%0], %1;" ::"r"(ops::smem_addr(smem + P::kDenMax)
+                                                    + 4u * static_cast<uint32_t>(digit)),
+               "r"(__float_as_uint(v))
+               : "memory");
 }
 
 template <class P, class Laps = NoLaps>
@@ -279,19 +281,20 @@ __device__ __forceinline__ void fold_chunk(State<P>& st, bool rescale, const uin
           static_for<4>([&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] *= f; }); });
         });
       laps(1 + 2 * J);
-      //: a list whose den the box carries (warp-uniform, the declaration's): its column, then into the den state
+      //: a list whose den the box carries (the CTA's, a uniform branch): its column, then into the den state
       const auto list_fetch = [&](int k) { return fetch(base[J], k); };
-      DenColumn<P> den{};
-      for (int k = ops::once((dens >> J) & 1u); k > 0; --k) {
+      if (((dens >> J) & 1u) != 0u) {
+        DenColumn<P> den{};
         steps<P, J, true>(st, sc[J].cf, pool, first, n[J], lane, off[J], cpair[J], dpair[J], den,
                           list_fetch);
         const int km = ww.listed ? max(static_cast<int>(exps[2 * fold_list(warp, J)]), kUnitMin)
                                  : dense_exp(exps[0]);
         den_add<P>(smem, fold_list(warp, J), den, km, lane);
-      }
-      for (int k = ops::once(((dens >> J) & 1u) == 0u); k > 0; --k)
-        steps<P, J, false>(st, sc[J].cf, pool, first, n[J], lane, off[J], cpair[J], 0u, den,
+      } else {
+        DenColumn<P> none;
+        steps<P, J, false>(st, sc[J].cf, pool, first, n[J], lane, off[J], cpair[J], 0u, none,
                            list_fetch);
+      }
       laps(2 + 2 * J);
     });
   };
@@ -385,7 +388,7 @@ __device__ __forceinline__ void fold_probe(const CarryParams& p, const State<P>&
         //: the den state, by the box carrying the list (`den_lists`), the row's lane `tq` 0
         if (p.probe_den != nullptr && tq == 0 && ((den_lists(c.channel0, p.dv) >> J) & 1u))
           p.probe_den[static_cast<int64_t>(c.bh) * step + leaf] =
-              reinterpret_cast<const float*>(smem + P::kDenState)[list * kBoxDigits + row]
+              reinterpret_cast<const float*>(smem + P::kDenState)[den_state_word(list, row)]
               * kByteScale;
       });
     });

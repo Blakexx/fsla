@@ -96,7 +96,8 @@ def prefill(routes, values, facts, carve, layout, read_statics, write_statics, *
     cross-CTA dtype, each the device's or the carve's rule by default."""
     den_inter, bound = den_ops.den(routes, facts)
     scale = scale_bytes(routes, bound)
-    num_c, _ = carry_ops.carry(routes, values, facts, carve, scale, accumulate=accumulate, reduce_dtype=reduce_dtype)
+    num_c, _den_c, _ = carry_ops.carry(routes, values, facts, carve, scale, accumulate=accumulate,
+                                       reduce_dtype=reduce_dtype)
     unit = carry_factor(routes)
     #: the f16 sum's tokens at ``2^(s + 1)`` times the unit, an fp32 sum's at the unit: one pass with the unpack
     factor = torch.exp2(scale.float() + 1.0) * unit if num_c.dtype != torch.float32 else unit

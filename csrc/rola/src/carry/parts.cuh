@@ -36,6 +36,11 @@ __device__ __forceinline__ float pow2(int e) {
   return __uint_as_float(static_cast<uint32_t>(e + 127) << 23);
 }
 
+//: A POWER OF TWO over the whole float range: normal from 2^-126, a subnormal's bit down to 2^-149, zero below.
+__device__ __forceinline__ float pow2_wide(int e) {
+  return e >= -126 ? pow2(min(e, 127)) : e >= -149 ? __uint_as_float(1u << (e + 149)) : 0.0f;
+}
+
 //: the smallest `e` with `x <= 2^e`, `kUnitNone` for zero
 __device__ __forceinline__ int ceil_exp(float x) {
   const uint32_t bits = __float_as_uint(x);
@@ -470,9 +475,17 @@ __host__ __device__ constexpr int read_pads(int slots) {
   return align_of(slots * P::kReadRow, 128);
 }
 
+//: a read buffer's den rows: each warp's fp32 word a slot pair's row, past the dummy rows' 8 (`den_word`)
+template <class P>
+__host__ __device__ constexpr int read_dens(int slots) {
+  return read_pads<P>(slots) + kPadBytes + align_of(slots * kPanelRow, 128);
+}
+
+__host__ __device__ constexpr int den_row_words(int slots) { return 8 + align_of(slots, 2); }
+
 template <class P>
 __host__ __device__ constexpr int read_ents(int slots) {
-  return read_pads<P>(slots) + kPadBytes + align_of(slots * kPanelRow, 128);
+  return read_dens<P>(slots) + align_of(kWarps * den_row_words(slots) * 4, 128);
 }
 
 template <class P>
@@ -490,21 +503,23 @@ __device__ __forceinline__ void read_fill(const CarryParams& p, const uint8_t* s
   const volatile Addr& addr = *reinterpret_cast<const volatile Addr*>(smem + P::kAddr);
   fill<P::kReadFactors, false>(addr.slices[kRead], nullptr, 0, union_of<P>(p, smem, kRead, w), rw,
                                first, slots, buf);
-  const ops::SmemAddr pads = buf + static_cast<uint32_t>(read_pads<P>(slots));
-  //: the dummy panel rows and the panel cleared by stores, four a thread a trip, the first straight-line
+  //: the dummy panel rows and the panel cleared by stores (`kPanelClear`), then the den rows zeroed, four a thread a
+  //: trip, the first straight-line
   constexpr int kAhead = 4;
   const int tid = ops::opaque(static_cast<int>(threadIdx.x));
-  const int quanta = (read_ents<P>(slots) - read_pads<P>(slots)) / 16 - tid;
-  const ops::SmemAddr zero = pads + 16u * static_cast<uint32_t>(tid);
-  const auto four = [&](int k) {
-    const ops::SmemAddr at = zero + 16u * static_cast<uint32_t>(k);
-    static_for<kAhead>(
-        [&](auto j) { fill16<decltype(j)::value * kThreads>(at, quanta - k, kPanelClear); });
-  };
-
-  four(0);
+  const auto clear = [&](int from, int to, uint32_t v) {
+    const int quanta = (to - from) / 16 - tid;
+    const ops::SmemAddr zero = buf + static_cast<uint32_t>(from) + 16u * static_cast<uint32_t>(tid);
+    const auto four = [&](int k) {
+      const ops::SmemAddr at = zero + 16u * static_cast<uint32_t>(k);
+      static_for<kAhead>([&](auto j) { fill16<decltype(j)::value * kThreads>(at, quanta - k, v); });
+    };
+    four(0);
 #pragma unroll 1
-  for (int k = kAhead * kThreads; k < quanta; k += kAhead * kThreads) four(k);
+    for (int k = kAhead * kThreads; k < quanta; k += kAhead * kThreads) four(k);
+  };
+  clear(read_pads<P>(slots), read_dens<P>(slots), kPanelClear);
+  clear(read_dens<P>(slots), read_ents<P>(slots), 0u);
   if (rw.listed)
     entries_fill<P>(p, p.read_lists, rw, c, w, run,
                     buf + static_cast<uint32_t>(read_ents<P>(slots)), warp, lane);
@@ -639,6 +654,40 @@ __device__ __forceinline__ void leaf_scales(uint8_t* smem) {
   });
   reinterpret_cast<uint2*>(smem + P::kLeafScale)[tid] =
       make_uint2(h[0] | h[1] << 16, h[2] | h[3] << 16);
+}
+
+//: THE DEN'S TABLES, once a window past the barrier after the leaves' scales: each digit's factor `2^(dE - e +
+//: kCoefTop)` (`dE` its largest den's power of two, `e` its channels' exponent) and its den row at `2^(kImageTop - dE)`
+//: as f16 B words, thread `8 d + q` lane `q`'s at `8 tid`; the loads (`den_tables_in`) before the units' work, the
+//: stores (`den_tables_out`) after. -- see docs/internals/carry/parts.md#den
+struct DenTablesIn {
+  float v[4], top;
+  int e;
+};
+
+template <class P>
+__device__ __forceinline__ DenTablesIn den_tables_in(const uint8_t* smem) {
+  const int tid = ops::opaque(static_cast<int>(threadIdx.x)), d = tid >> 3, q = tid & 7;
+  const int l0 = 8 * (q >> 2) + 2 * (q & 3);
+  const float* const st = reinterpret_cast<const float*>(smem + P::kDenState);
+  DenTablesIn in;
+  static_for<4>([&](auto I) { in.v[I] = st[den_state_word(l0 + (I & 1) + 16 * (I >> 1), d)]; });
+  in.top = reinterpret_cast<const float*>(smem + P::kDenMax)[d];
+  in.e = reinterpret_cast<const int*>(smem + P::kExps)[exp_slot(d)];
+  return in;
+}
+
+template <class P>
+__device__ __forceinline__ void den_tables_out(uint8_t* smem, const DenTablesIn& in) {
+  const int tid = ops::opaque(static_cast<int>(threadIdx.x)), d = tid >> 3, q = tid & 7;
+  const int de = in.top > 0.0f ? ceil_exp(in.top) : kImageTop - 127;
+  const float scale = pow2(kImageTop - de);
+  const __half2 w0 = __floats2half2_rn(in.v[0] * scale, in.v[1] * scale),
+                w1 = __floats2half2_rn(in.v[2] * scale, in.v[3] * scale);
+  reinterpret_cast<uint2*>(smem + P::kDenRows)[tid] =
+      make_uint2(*reinterpret_cast<const uint32_t*>(&w0), *reinterpret_cast<const uint32_t*>(&w1));
+  ops::store_shared_f32_if(ops::smem_addr(smem + P::kDenFactor) + 4u * static_cast<uint32_t>(d),
+                           pow2_wide(de - in.e + kCoefTop), q == 0);
 }
 
 //: THE BOUNDS TABLE cleared for a window's counts (its last window's drain factors read): a thread its share, 16
@@ -787,8 +836,8 @@ __device__ __forceinline__ void panel_red(uint32_t at, uint32_t v) {
 //: (`tile_add`: each lane's two tokens' outputs as exact pairs at their panel rows).
 //: -- see docs/internals/carry/parts.md#readout
 struct TileIn {
-  uint32_t b[4], e0, e1;
-  float c0, c1;
+  uint32_t b[4], e0, e1, es;
+  float c0, c1, cs;
 };
 
 //: A COEFFICIENT (an f16 value, exponent field 103..142) times 2^shift by its exponent field, the shift held to
@@ -813,6 +862,8 @@ __device__ __forceinline__ TileIn tile_in(ops::SmemAddr pool, ops::SmemAddr unit
   in.e1 = __shfl_sync(0xffffffffu, e.y, 2 * t + 1);
   in.c0 = __shfl_sync(0xffffffffu, cu, 2 * t);
   in.c1 = __shfl_sync(0xffffffffu, cu, 2 * t + 1);
+  in.es = e.y;
+  in.cs = cu;
   ops::load_frag(in.b, chunk_addr<P::kReadRow>(pool + 16u * (e.x & 0xffffu),
                                                static_cast<uint32_t>(lane >> 3)));
   return in;
@@ -870,8 +921,8 @@ __device__ __forceinline__ void tile_add(ops::SmemAddr lane_pads, const TileIn& 
 //: products leave that range (their s16 bound is the final sum's). -- see docs/internals/carry/parts.md#readout
 template <int M>
 struct TileInM {
-  uint32_t b[4], e0, e1;
-  float c0[M], c1[M];
+  uint32_t b[4], e0, e1, es;
+  float c0[M], c1[M], cs[M];
 };
 
 template <class P, int M>
@@ -884,11 +935,13 @@ __device__ __forceinline__ TileInM<M> tile_in_m(ops::SmemAddr row0, ops::SmemAdd
   asm volatile("ld.shared.s8 %0, [%1];" : "=r"(u) : "r"(units + (e.x >> 16)));
   in.e0 = __shfl_sync(0xffffffffu, e.y, 2 * t);
   in.e1 = __shfl_sync(0xffffffffu, e.y, 2 * t + 1);
+  in.es = e.y;
   static_for<M>([&](auto Q) {
     const float c = __half2float(__ushort_as_half(static_cast<unsigned short>(coef[Q])));
     const float cu = coef_at_unit(c, sx[Q] - u);
     in.c0[Q] = __shfl_sync(0xffffffffu, cu, 2 * t);
     in.c1[Q] = __shfl_sync(0xffffffffu, cu, 2 * t + 1);
+    in.cs[Q] = cu;
   });
   ops::load_frag(in.b, chunk_addr<P::kReadRow>(row0, static_cast<uint32_t>(lane >> 3)));
   return in;
@@ -930,6 +983,49 @@ __device__ __forceinline__ uint2 masked_entry(int first, uint32_t c) {
   return make_uint2(row, (64u * static_cast<uint32_t>(first) + panel_row(c)) << 16);
 }
 
+//: A TOKEN'S DEN WORD's byte offset in a den row: its panel offset (`e`'s high half) over 64 (`den_word_of` a slot's).
+__device__ __forceinline__ uint32_t den_word(uint32_t e) { return (e >> 22) << 2; }
+
+__host__ __device__ constexpr uint32_t den_word_of(uint32_t s) {
+  return (kPadBytes + panel_row(s)) >> 6;
+}
+
+//: A DIGIT'S DEN B WORDS for a tile, the lane's two (`row` its own, 8 bytes on by `lane & 7`).
+__device__ __forceinline__ uint2 den_b(ops::SmemAddr row) {
+  uint2 w;
+  asm volatile("ld.shared.v2.u32 {%0, %1}, [%2];" : "=r"(w.x), "=r"(w.y) : "r"(row));
+  return w;
+}
+
+//: THE DEN'S PRODUCTS a tile at the channels' accumulation: the tile's read rows as A against the den row as B's
+//: columns 0 and 1, two m16n8k8 MMAs; token `r`'s den `D[r][0] + D[r + 8][1]`, each lane its own entry's.
+//: -- see docs/internals/carry/parts.md#den
+template <bool F16>
+__device__ __forceinline__ float den_mma(const uint32_t (&b)[4], uint2 w, int lane) {
+  float x;
+  if constexpr (F16) {
+    uint32_t h[2] = {0u, 0u};
+    ops::hmma_k8_f16(h, b[0], b[1], w.x);
+    ops::hmma_k8_f16(h, b[2], b[3], w.y);
+    x = __half2float(__low2half(*reinterpret_cast<const __half2*>(&h[0])))
+        + __half2float(__high2half(*reinterpret_cast<const __half2*>(&h[1])));
+  } else {
+    float c[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    ops::hmma_k8(c, b[0], b[1], w.x);
+    ops::hmma_k8(c, b[2], b[3], w.y);
+    x = c[0] + c[3];
+  }
+  return __shfl_sync(0xffffffffu, x, 4 * (lane & 7));
+}
+
+//: A TOKEN'S DEN into the warp's den row at its word: every lane its own entry's, four lanes an entry alike.
+__device__ __forceinline__ void den_add_token(ops::SmemAddr row, uint32_t e, float v) {
+  const ops::SmemAddr at = row + den_word(e);
+  float x;
+  asm volatile("ld.shared.f32 %0, [%1];" : "=f"(x) : "r"(at));
+  ops::store_shared_f32(at, x + v);
+}
+
 //: A CHUNK'S READOUT over batches `lo .. hi - 1`, a warp's: each of its digits `8 i + warp`, its state from its image
 //: plane (`d & mask` at `image`) and its exponent, its tiles over the chunk -- a listed side's run of the digit (`run`,
 //: the chunk's) in the buffer's entries at `ents`, a lane past it masked; else every slot of the chunk, its entry
@@ -944,6 +1040,11 @@ __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* 
                                            ops::SmemAddr ents, int warp, int lane) {
   constexpr int kStep = Pairs ? 2 : 1;
   const uint32_t at = image_lane(lane, warp);
+  //: the warp's den row in the buffer; the lane's B words of a digit's den row
+  const ops::SmemAddr den_row = rows + static_cast<uint32_t>(read_dens<P>(slots))
+                                + 4u * static_cast<uint32_t>(warp * den_row_words(slots));
+  const ops::SmemAddr den_rows =
+      ops::smem_addr(smem + P::kDenRows) + 8u * static_cast<uint32_t>(lane & 7);
   const ops::SmemAddr units = ops::smem_addr(smem + p.tables.units_at);
   //: the entries' row and panel offsets are the union's: the chunk's pool taken back by its first slot, and each
   //: entry's panel offset made the chunk's (modulo 2^16, as a grouped union's are written) before it is shuffled
@@ -969,11 +1070,13 @@ __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* 
     do {
       int d[kStep], sx[kStep];
       uint32_t f[kStep][16];
+      float fac[kStep];
       static_for<kStep>([&](auto Q) {
         d[Q] = warp + kWarps * (i + Q);
         sx[Q] =
             reinterpret_cast<const int*>(smem + P::kExps)[exp_slot(d[Q])] - kImageTop - kCoefTop;
         state_in(f[Q], image + (static_cast<uint32_t>(d[Q]) & mask) * kPlaneBytes, at);
+        fac[Q] = reinterpret_cast<const float*>(smem + P::kDenFactor)[d[Q]];
       });
       if (rw.listed) {
         int n[kStep], to[kStep], most = 0;
@@ -988,13 +1091,22 @@ __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* 
 #pragma unroll 1
           do {
             TileIn in[kStep];
-            float acc[kStep][2][4];
+            uint2 dw[kStep];
+            float acc[kStep][2][4], dn[kStep];
             static_for<kStep>([&](auto Q) {
               in[Q] =
                   tile_in<P>(pool_u, units, sx[Q], entry_at(8 * s + (lane & 7), n[Q], to[Q]), lane);
+              dw[Q] = den_b(den_rows + 64u * static_cast<uint32_t>(d[Q]));
             });
             static_for<kStep>([&](auto Q) { tile_mma<F16>(acc[Q], in[Q].b, f[Q]); });
+            static_for<kStep>([&](auto Q) { dn[Q] = den_mma<F16>(in[Q].b, dw[Q], lane); });
             static_for<kStep>([&](auto Q) { tile_add(lane_pads, in[Q], acc[Q]); });
+            //: THE DEN (`#den`): each digit's entries at their units times the digit's factor into the warp's den row,
+            //: the second digit's after the first's are seen (a token may be in both runs)
+            static_for<kStep>([&](auto Q) {
+              if constexpr (decltype(Q)::value > 0) ops::warp_sync();
+              den_add_token(den_row, in[Q].es, dn[Q] * (in[Q].cs * fac[Q]));
+            });
           } while (__any_sync(0xffffffffu, ++s < tiles));
       } else {
         //: every slot of the chunk, its entry implied: its row and token, each digit's coefficient, its panel row (a slot
@@ -1026,9 +1138,17 @@ __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* 
             const TileInM<kStep> in = tile_in_m<P, kStep>(
                 row, units, sx, make_uint2(tok, static_cast<int>(slot) < slots ? live : dummy),
                 coef, lane);
+            uint2 dw[kStep];
+            static_for<kStep>(
+                [&](auto Q) { dw[Q] = den_b(den_rows + 64u * static_cast<uint32_t>(d[Q])); });
             float acc[kStep][2][4];
             static_for<kStep>([&](auto Q) { tile_mma<F16>(acc[Q], in.b, f[Q]); });
+            //: THE DEN: the step's digits' products summed before one add an entry (every token every digit's)
+            float dn = 0.0f;
+            static_for<kStep>(
+                [&](auto Q) { dn = fmaf(den_mma<F16>(in.b, dw[Q], lane), in.cs[Q] * fac[Q], dn); });
             tile_add_m(lane_pads, in, acc);
+            den_add_token(den_row, in.es, dn);
             slot += 8u;
             row += 8u * P::kReadRow;
             live += 512u << 16;
@@ -1047,11 +1167,6 @@ __device__ __forceinline__ int unit_byte(float s, int shift) {
   const int e = static_cast<int>(bits >> 23) - 127 + ((bits & 0x7fffffu) != 0u ? 1 : 0);
   const int u = min(max(e + shift - 15, -128), 127);
   return s > 0.0f ? u : kUnitByteNone;
-}
-
-//: A POWER OF TWO over the whole float range: normal from 2^-126, a subnormal's bit down to 2^-149, zero below.
-__device__ __forceinline__ float pow2_wide(int e) {
-  return e >= -126 ? pow2(min(e, 127)) : e >= -149 ? __uint_as_float(1u << (e + 149)) : 0.0f;
 }
 
 //: THE DRAIN'S FACTOR a token, written beside its unit byte into the bounds table (free once its counts are read): f16
@@ -1334,6 +1449,32 @@ __device__ __forceinline__ void drain(const CarryParams& p, const uint8_t* smem,
     asm volatile("ld.shared.f32 %0, [%1];" : "=f"(f) : "r"(factor_at + 4u * idx));
     return f;
   };
+
+  //: THE DEN (`#den`): a thread a slot, its warps' words (`den_word_of`) summed (each at the token's unit) and added
+  //: into `den`
+  {
+    const ops::SmemAddr dens = panel + static_cast<uint32_t>(align_of(slots * kPanelRow, 128));
+    const ops::SmemAddr units = ops::smem_addr(smem + p.tables.units_at);
+    const uint32_t stride = 4u * static_cast<uint32_t>(den_row_words(slots));
+#pragma unroll 1
+    for (int s = ops::opaque(static_cast<int>(threadIdx.x)); s < slots; s += kThreads) {
+      float sum = 0.0f;
+      static_for<kWarps>([&](auto K) {
+        float x;
+        asm volatile("ld.shared.f32 %0, [%1];"
+                     : "=f"(x)
+                     : "r"(dens + K * stride + 4u * den_word_of(static_cast<uint32_t>(s))));
+        sum += x;
+      });
+      uint32_t idx, row;
+      place(s, idx, row);
+      int u;
+      asm volatile("ld.shared.s8 %0, [%1];" : "=r"(u) : "r"(units + idx));
+      asm volatile("red.global.add.f32 [%0], %1;" ::"l"(p.den + head0 + row),
+                   "f"(sum * pow2_wide(u))
+                   : "memory");
+    }
+  }
 
   if (p.reduce == kReduceF32) {
     constexpr int kAhead = 4, kBatch = 32;

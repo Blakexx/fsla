@@ -526,6 +526,16 @@ __device__ __forceinline__ void hmma_k8(float (&d)[4], uint32_t a0, uint32_t a1,
       : "r"(a0), "r"(a1), "r"(b));
 }
 
+//: THE SAME AT K = 8 INTO AN fp16 ACCUMULATOR, two f16 pairs a lane. -- see docs/internals/common/ops.md#hmma
+__device__ __forceinline__ void hmma_k8_f16(uint32_t (&d)[2], uint32_t a0, uint32_t a1,
+                                            uint32_t b) {
+  asm volatile(
+      "mma.sync.aligned.m16n8k8.row.col.f16.f16.f16.f16 "
+      "{%0,%1}, {%2,%3}, {%4}, {%0,%1};\n"
+      : "+r"(d[0]), "+r"(d[1])
+      : "r"(a0), "r"(a1), "r"(b));
+}
+
 //: TWO f16 PRODUCTS, each rounded once to nearest (`HMUL2`).
 __device__ __forceinline__ uint32_t hmul2(uint32_t a, uint32_t b) {
   uint32_t d;

@@ -133,11 +133,11 @@ SideLists lists_of(const std::vector<Tensor>& t, int64_t BH, int64_t windows, in
 void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows, Tensor values,
                    std::vector<Tensor> write_lists, Tensor write_exp, Tensor factors,
                    Tensor factor_shift, std::vector<Tensor> read_lists, Tensor scale, Tensor num,
-                   Tensor check, std::vector<int64_t> widths, std::vector<int64_t> extents,
-                   int64_t channels, int64_t write_list, std::vector<int64_t> write_operand,
-                   int64_t read_list, std::vector<int64_t> read_operand, std::vector<int64_t> key,
-                   int64_t accumulate, int64_t reduce, int64_t forced,
-                   std::optional<Tensor> plans_out) {
+                   Tensor den, Tensor check, std::vector<int64_t> widths,
+                   std::vector<int64_t> extents, int64_t channels, int64_t write_list,
+                   std::vector<int64_t> write_operand, int64_t read_list,
+                   std::vector<int64_t> read_operand, std::vector<int64_t> key, int64_t accumulate,
+                   int64_t reduce, int64_t forced, std::optional<Tensor> plans_out) {
   check_arch_table();
   const int D = (int)widths.size();
   STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels && (int)extents.size() == D, "the carve names ", D,
@@ -259,6 +259,10 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
         "num at reduce fp32 is the contiguous CUDA fp32 [B H, L, d_v] a query head, got ",
         shape(num.sizes()));
   }
+  STD_TORCH_CHECK(den.is_cuda() && den.is_contiguous() && den.scalar_type() == Dtype::Float
+                      && den.sizes() == Shape({BH * heads, L}),
+                  "den is the contiguous CUDA fp32 [B H, L] a query head the caller zeroed, got ",
+                  shape(den.sizes()));
   STD_TORCH_CHECK(check.is_cuda() && check.scalar_type() == Dtype::Float && check.numel() == 1,
                   "check is one CUDA fp32 value");
   p.scale = scale.const_data_ptr<int8_t>();
@@ -273,6 +277,7 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
       forced);
   p.forced = static_cast<int>(forced);
   p.num = static_cast<uint32_t*>(num.mutable_data_ptr());
+  p.den = den.mutable_data_ptr<float>();
   p.check = check.mutable_data_ptr<float>();
   p.probe = g_probe;
   p.probe_den = g_probe_den;

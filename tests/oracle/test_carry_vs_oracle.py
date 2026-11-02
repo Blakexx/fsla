@@ -31,8 +31,8 @@ from rola.ops.window import window_of
 from tests.oracle import reference
 from tests.oracle.fixtures import assert_planted_errors_fail, assert_slots_close, relative
 from tests.oracle.fold_reference import unit_scale
-from tests.oracle.readout_reference import UNIT_HEADROOM, UNIT_LEVELS, UNIT_NONE, _read_rows, num_in_truth
-from tests.oracle.tolerances import CARRY_NUM
+from tests.oracle.readout_reference import UNIT_HEADROOM, UNIT_LEVELS, UNIT_NONE, _read_rows, num_in_truth, truth_scale
+from tests.oracle.tolerances import CARRY_DEN, CARRY_NUM
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
 
@@ -72,9 +72,9 @@ def _units(spec, routes, values):
     return grid
 
 
-def run(spec, reduce_dtype=None):
-    """``(routes, values, unit, num)``: one carry launch over the cell at ``reduce_dtype`` (None: the auto rule's), the
-    f16 sum's scale bytes the den pass's (:func:`_units`, until the pass is built beside the carry)."""
+def run(spec, reduce_dtype=None, with_den=False):
+    """``(routes, values, unit, num)`` (and ``den`` where asked): one carry launch over the cell at ``reduce_dtype``
+    (None: the auto rule's), the f16 sum's scale bytes a bound from the true state (:func:`_units`)."""
     routes, values, facts, carve, zero = carry_operands(spec)
     if routes.topology.D != 2:
         #: the launch first, so the carry's own refusal or fault is what the cell reports where it has one
@@ -82,9 +82,17 @@ def run(spec, reduce_dtype=None):
         torch.cuda.synchronize()
         raise NotImplementedError(f"{spec.name}: the carry's level S is defined at depth two (`carry_level_s`)")
     unit = _units(spec, routes, values)
-    num, _ = carry_ops.carry(routes, values, facts, carve, unit, reduce_dtype=reduce_dtype)
+    num, den, _ = carry_ops.carry(routes, values, facts, carve, unit, reduce_dtype=reduce_dtype)
     torch.cuda.synchronize()
-    return routes, values, unit, num
+    return (routes, values, unit, num, den) if with_den else (routes, values, unit, num)
+
+
+def den_in_truth(den: torch.Tensor, routes) -> torch.Tensor:
+    """``[B, T, H]`` fp64: the carry's ``den`` (each CTA's at its tokens' units already) times the per-token factor
+    the epilogue cancels against ``num`` (`readout_reference.truth_scale` at unit 0)."""
+    B, T, H = routes.batch, routes.tokens, routes.heads
+    got = den[:, :T].double().reshape(B, H, T).permute(0, 2, 1)
+    return got * truth_scale(routes, torch.zeros((B * H, T), dtype=torch.int8, device=den.device), routes.level_s)
 
 
 def ref(spec, routes, values, magnitudes=False):
@@ -114,6 +122,17 @@ def test_the_inter_numerator_is_the_fp64_reference(spec, reduce_dtype):
     numerator: the state before each window read by the window's tokens, nothing within the window -- at each of the
     cross-CTA sum's dtypes."""
     check(spec, *run(spec, reduce_dtype))
+
+
+@pytest.mark.parametrize("spec", ORACLE_CELLS, ids=IDS)
+def test_the_inter_denominator_is_the_fp64_reference(spec):
+    """Every token's ``den`` over the whole call -- the v+1 channel the carry reads out beside ``num``
+    (`docs/internals/carry/parts.md#den`) -- in the recurrence's units, against the inter term's denominator."""
+    from tests.oracle.test_den_vs_oracle import refs
+
+    routes, values, _unit, _num, den = run(spec, with_den=True)
+    den_ref, _ = refs(routes, values)
+    assert_slots_close(den_in_truth(den, routes), den_ref, output=CARRY_DEN, envelope=den_ref, what=f"{spec.name} den")
 
 
 def test_the_rule_fails_planted_errors_on_the_kernels_own_output():

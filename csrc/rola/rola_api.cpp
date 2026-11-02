@@ -112,9 +112,9 @@ STABLE_TORCH_LIBRARY(rola, m) {
   m.def(
       "carry_forward(Tensor[] read_rows, Tensor[] write_rows, Tensor values, Tensor[] write_lists, Tensor write_exp, "
       "Tensor factors, Tensor factor_shift, Tensor[] read_lists, "
-      "Tensor scale, Tensor(a!) num, Tensor(b!) check, int[] widths, int[] extents, int channels, int write_list, "
-      "int[] write_operand, int read_list, int[] read_operand, int[] key, int accumulate, int reduce, int forced, "
-      "Tensor(c!)? plans_out) -> ()");
+      "Tensor scale, Tensor(a!) num, Tensor(d!) den, Tensor(b!) check, int[] widths, int[] extents, int channels, "
+      "int write_list, int[] write_operand, int read_list, int[] read_operand, int[] key, int accumulate, int reduce, "
+      "int forced, Tensor(c!)? plans_out) -> ()");
   m.def("carry_readout_accumulate(int device) -> int");
   m.def("device_window(int device) -> int");
   m.def("carry_ledger_bind(Tensor? ledger) -> ()");

@@ -63,6 +63,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
 #pragma unroll 1
   for (int i = static_cast<int>(threadIdx.x); i < kBoxLists * kBoxDigits; i += kThreads)
     reinterpret_cast<float*>(smem + P::kDenState)[i] = 0.0f;
+  if (threadIdx.x < kBoxDigits) reinterpret_cast<uint32_t*>(smem + P::kDenMax)[threadIdx.x] = 0u;
   //: the scales' bits' multiplier and bias (`list_scale`), loaded at each use
   if (threadIdx.x == 0)
     *reinterpret_cast<uint2*>(smem + P::kBits) = make_uint2(1u << 23, 127u << 23);
@@ -104,14 +105,18 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   };
   //: A READ CHUNK'S UNITS, the CTA's own, before its first adds (the arm's read rows say which side: one factor a
   //: listed side's row, two a dense side's row and coefficients): the terms or the bounds, a barrier, the bytes and the
-  //: drain's factors, a barrier
-  const auto chunk_units = [&](int w, const Entry& e, const Run& run, ops::SmemAddr buf) {
+  //: drain's factors, a barrier; the window's first chunk's the den's tables beside the terms (past a barrier after the
+  //: leaves' scales, whose exponent bytes they overwrite): their loads first, their stores after
+  const auto chunk_units = [&](int w, const Entry& e, const Run& run, ops::SmemAddr buf,
+                               bool first) {
+    const DenTablesIn den = den_tables_in<P>(smem);
     if constexpr (P::kReadFactors == 1) {
       units_listed_add<P>(p, smem, run, e.first(), buf,
                           buf + static_cast<uint32_t>(read_ents<P>(e.slots())), wid(), lid());
     } else {
       units_dense<P>(p, smem, e.first(), e.slots(), buf, wid(), lid());
     }
+    if (first) den_tables_out<P>(smem, den);
     ops::rendezvous();
     units_close<P>(p, smem, w, e.first(), e.slots());
     ops::rendezvous();
@@ -188,7 +193,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         clock.lap(kPhaseLanded);
         ops::rendezvous();
         clock.lap(kPhaseWait);
-        chunk_units(w, e, run, buf);
+        chunk_units(w, e, run, buf, i == 0);
         clock.lap(kPhaseUnits);
         read_out(w, e, run, buf, 0, kBatches, kBoxDigits - 1);
         clock.lap(kPhaseReadout);
@@ -211,7 +216,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
           ops::rendezvous();
           clock.lap(kPhaseWait);
           if constexpr (half == 0) {
-            chunk_units(w, e, run, buf);
+            chunk_units(w, e, run, buf, i == 0);
             clock.lap(kPhaseUnits);
           }
           read_out(w, e, run, buf, 2 * half, 2 * half + 2, 2 * kBatchPlanes - 1);

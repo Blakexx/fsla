@@ -115,7 +115,7 @@ def reading(name: str) -> dict:
     live = exact > 0
 
     def num_at(scale):
-        num, _ = carry_ops.carry(routes, values, facts, carve, scale, reduce_dtype=torch.float16)
+        num, _den, _ = carry_ops.carry(routes, values, facts, carve, scale, reduce_dtype=torch.float16)
         return unpack_num(num, 32).double() * torch.exp2(scale.double() + 1)[..., None]
 
     def spread(got, ref):

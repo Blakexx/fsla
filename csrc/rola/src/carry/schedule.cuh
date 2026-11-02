@@ -68,7 +68,8 @@ __host__ __device__ constexpr int fold_bytes(int slots, int entries, bool listed
 //: fold buffer.
 template <class P>
 __host__ __device__ constexpr bool least_plan_fits(int area) {
-  return kImageRing + read_bytes<P>(kListBound, kListBound * kBoxDigits) <= area
+  return kImageRing + read_bytes<P>(kListBound, P::kReadFactors == 1 ? kListBound * kBoxDigits : 0)
+             <= area
          && fold_bytes<P>(kListBound, kListBound * kBoxLists, true) <= area;
 }
 

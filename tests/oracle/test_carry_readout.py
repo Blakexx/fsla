@@ -32,7 +32,7 @@ def _readout_ratio(widths, L, write_sparse, growth, accumulate, *, live=4, force
                             carry_ops.form(key).read_row)
     level_s = 1 - write_sparse
     scale = units(routes, values, facts.list_exp, level_s, window_of())
-    num, _ = carry_ops.carry(routes, values, facts, carve, scale, accumulate=accumulate, forced=forced,
+    num, _den, _ = carry_ops.carry(routes, values, facts, carve, scale, accumulate=accumulate, forced=forced,
                              reduce_dtype=reduce_dtype)
     torch.cuda.synchronize()
     want, bound = readout(routes, values, facts.list_exp, level_s, window_of(), scale, accumulate, reduce_dtype)
