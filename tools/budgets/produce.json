@@ -1,5 +1,5 @@
 {
- "unit": "instructions per job tile (one job's 64 tokens, the block's 4 warps), the mean over nl64k-alt-h4-g4's 17 jobs a token tile: 16 one-row route jobs of 256 columns (8 softmax, 8 entmax at the measured ~3.7 Newton steps a row) and one value job (4 heads x 64 channels); the design of 2026-11-02 by its operation counts (docs/internals/produce/produce.md#budget)",
+ "unit": "instructions per job tile (one job's 64 tokens, the block's 4 warps), the mean over nl64k-alt-h4-g4's 17 jobs a token tile: 16 one-row route jobs of 256 columns (8 softmax, 8 entmax at the measured ~3.7 Newton steps a row) and one value job (4 heads x 64 channels); the design's operation counts, stated 2026-11-01 after the code (the first attribution's) (docs/internals/produce/produce.md#budget)",
  "components": {
   "project": "k_loop",
   "seed": "seed_bias",

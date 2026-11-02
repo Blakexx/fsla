@@ -811,7 +811,11 @@ method is a procedure with a gate, not a memory.
    no convergence barrier (BSSY/BSYNC, WARPSYNC, BRA.DIV) around the collectives it guards; a loop whose trip count is
    data is bottom-tested on a vote, its entry test outside it; a prefetch is issued unconditionally into a pad past
    the last window, never under a guard; a lane-predicated copy in a loop becomes a branch, so data a few lanes need
-   travels inside what every lane copies. What remains is named in the budget: three never-executed `LDS` before
+   travels inside what every lane copies. Inside any loop (a block's item or pass loop) no loop sits inside a
+   lane-divergent region and no exit tests a value read from shared memory without a vote: ptxas then cannot prove the
+   warp converged at the enclosing loop's back-edge, and every collective of the body compiles guarded (2026-11-01, the
+   producer: 345 guarded sites from one mass loop under a lane test; 45 from a Newton exit on the partner warp's
+   vote read back). What remains is named in the budget: three never-executed `LDS` before
    every `LDGSTS`, a loop's exit `CALL`, alignment NOPs, `UIADD3` fillers between dependent MMAs.
 10. A FREE-RUNNING CTA IS TIMED BY ITS SPAN (`WarpSpan`) against the free floor, the busiest scheduler over all
    windows. The mean warp's cycles undercount it, and a per-window floor overstates what it must take.

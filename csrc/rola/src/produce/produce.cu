@@ -300,6 +300,47 @@ __device__ __forceinline__ float row_all(float v, Op op) {
   return v;
 }
 
+//: A WIDE UNION'S ROW SPANS A WARP PAIR (the pair form: warp `2 j + h` holds columns `128 h ..` of both its rows), so a
+//: row's reductions combine the pair's halves: each warp's row values through an exchange in shared memory, one pair
+//: barrier a round, its two buffers alternating so no barrier guards a buffer's reuse. `on` false for every other
+//: job, whose reductions are the warp's own. -- see docs/internals/produce/produce.md#wide-union
+constexpr int kPairBarrier = 1;
+constexpr int kExchangeValues = 4;
+constexpr int kExchangeRound = 2 * 4 * kExchangeValues;
+constexpr int kExchangeBytes = kProduceWarps / 2 * 2 * kExchangeRound * 4;
+
+struct Pair {
+  float* slots;  // the pair's [2 rounds][2 halves][4 rows][kExchangeValues]
+  int half, bar, round;
+  bool on;
+
+  //: each value `v[j]` (already reduced over the warp's half) combined with the partner warp's, both warps the same
+  //: bits (the ops commute)
+  template <int N, class Op>
+  __device__ __forceinline__ void combine(float (&v)[N], int lane, Op op) {
+    static_assert(N <= kExchangeValues, "an exchange's values fit its slot");
+    if (!on) return;
+    float* const buf = slots + (round & 1) * kExchangeRound;
+    float* const mine = buf + (half * 4 + (lane & 3)) * kExchangeValues;
+    const float* const theirs = buf + ((1 - half) * 4 + (lane & 3)) * kExchangeValues;
+    if ((lane >> 2) == 0) {
+      rola::static_for<N>([&](auto J) { mine[decltype(J)::value] = v[decltype(J)::value]; });
+    }
+    ops::rendezvous_group(bar, 64);
+    rola::static_for<N>([&](auto J) {
+      v[decltype(J)::value] = op(v[decltype(J)::value], theirs[decltype(J)::value]);
+    });
+    ++round;
+  }
+
+  template <class Op>
+  __device__ __forceinline__ float combine1(float v, int lane, Op op) {
+    float a[1] = {v};
+    combine<1>(a, lane, op);
+    return a[0];
+  }
+};
+
 //: A LANE'S TWO TOKEN ROWS of one n-tile: slot `S` its token `2 t + S`, value `V` the column tile `V >> 1`'s row half
 //: `V & 1` -- an accumulator, named. -- see docs/internals/produce/produce.md#solve
 template <int S, int V>
@@ -329,6 +370,10 @@ struct MaxOp {
 
 struct AddOp {
   __device__ __forceinline__ float operator()(float a, float b) const { return a + b; }
+};
+
+struct MinOp {
+  __device__ __forceinline__ float operator()(float a, float b) const { return fminf(a, b); }
 };
 
 //: A VALUE'S SUMS PAST `lo`: where `z > lo`, its count, value and square added -- one compare and three predicated
@@ -377,11 +422,13 @@ __device__ __forceinline__ void softmax_rows(float (&acc)[kAccTiles][4], float (
 //: -- see docs/internals/produce/produce.md#threshold
 template <int M>
 __device__ __forceinline__ void entmax_rows(float (&acc)[kAccTiles][4], bool a15,
-                                            float (&top)[kSlots], Clock& clock) {
+                                            float (&top)[kSlots], Pair& pr, int lane,
+                                            Clock& clock) {
   float lo[kSlots], tau[kSlots];
   rola::static_for<kSlots>([&](auto Sl) {
     constexpr int s = decltype(Sl)::value;
-    const float m = row_all(row_tree<s, 0, 2 * M>(acc, MaxOp{}), MaxOp{});
+    const float m =
+        pr.combine1(row_all(row_tree<s, 0, 2 * M>(acc, MaxOp{}), MaxOp{}), lane, MaxOp{});
     rola::static_for<2 * M>([&](auto V) { row_value<s, decltype(V)::value>(acc) -= m; });
     lo[s] = a15 ? -2.0f : -1.0f;
     tau[s] = 0.0f;
@@ -397,9 +444,9 @@ __device__ __forceinline__ void entmax_rows(float (&acc)[kAccTiles][4], bool a15
       rola::static_for<2 * M>(
           [&](auto V) { sums_past(row_value<s, decltype(V)::value>(acc), lo[s], k, P, Q); });
       const float here = k;
-      k = row_all(k, AddOp{});
-      P = row_all(P, AddOp{});
-      Q = row_all(Q, AddOp{});
+      float kpq[3] = {row_all(k, AddOp{}), row_all(P, AddOp{}), row_all(Q, AddOp{})};
+      pr.combine<3>(kpq, lane, AddOp{});
+      k = kpq[0], P = kpq[1], Q = kpq[2];
       tau[s] = a15 ? __fdividef(P - ops::sqrt_approx(fmaxf(P * P - k * (Q - 4.0f), 0.0f)), k)
                    : __fdividef(P - 1.0f, k);
       float past = 0.0f;
@@ -411,7 +458,11 @@ __device__ __forceinline__ void entmax_rows(float (&acc)[kAccTiles][4], bool a15
                                      0.5f * (P - k * lo[s]))
                   : tau[s];
     });
-    if (__all_sync(0xffffffffu, settled)) break;
+    //: the pair's two votes one, so both warps leave the loop together -- voted again, so ptxas sees the exit
+    //: warp-uniform (a value read from shared memory is not provably so)
+    const bool warp_settled = __all_sync(0xffffffffu, settled);
+    const float pair_settled = pr.combine1(warp_settled ? 1.0f : 0.0f, lane, MinOp{});
+    if (__all_sync(0xffffffffu, pair_settled > 0.5f)) break;
   }
   clock.lap(kPhaseThreshold);
 
@@ -456,7 +507,7 @@ __device__ __forceinline__ void union_midpoints(float (&acc)[kAccTiles][4]) {
 
 template <int M>
 __device__ __forceinline__ void union_sides(float (&acc)[kAccTiles][4], float (&top_read)[kSlots],
-                                            float (&top_write)[kSlots]) {
+                                            float (&top_write)[kSlots], Pair& pr, int lane) {
   rola::static_for<kSlots>([&](auto Sl) {
     constexpr int s = decltype(Sl)::value;
     //: the write's log weights over the support (a supported level is positive), the read side in place; the
@@ -468,17 +519,19 @@ __device__ __forceinline__ void union_sides(float (&acc)[kAccTiles][4], float (&
       row_value<s, v + 2 * M>(acc) = level > 0.0f ? __logf(level) + gate : -INFINITY;
       row_value<s, v>(acc) = __fdividef(level, 1.0f + __expf(-d));
     });
-    const float m = row_all(row_tree<s, 2 * M, 2 * M>(acc, MaxOp{}), MaxOp{});
+    const float m =
+        pr.combine1(row_all(row_tree<s, 2 * M, 2 * M>(acc, MaxOp{}), MaxOp{}), lane, MaxOp{});
     const float shift = m > -INFINITY ? m : 0.0f;
     rola::static_for<2 * M>([&](auto V) {
       constexpr int v = decltype(V)::value;
       row_value<s, v + 2 * M>(acc) = __expf(row_value<s, v + 2 * M>(acc) - shift);
     });
-    const float den = row_all(row_tree<s, 2 * M, 2 * M>(acc, AddOp{}), AddOp{});
+    const float den =
+        pr.combine1(row_all(row_tree<s, 2 * M, 2 * M>(acc, AddOp{}), AddOp{}), lane, AddOp{});
     const float inv = den > 0.0f ? __fdividef(1.0f, den) : 0.0f;
     rola::static_for<2 * M>([&](auto V) { row_value<s, decltype(V)::value + 2 * M>(acc) *= inv; });
     top_write[s] = inv;
-    top_read[s] = row_all(row_tree<s, 0, 2 * M>(acc, MaxOp{}), MaxOp{});
+    top_read[s] = pr.combine1(row_all(row_tree<s, 0, 2 * M>(acc, MaxOp{}), MaxOp{}), lane, MaxOp{});
   });
 }
 
@@ -487,7 +540,7 @@ __device__ __forceinline__ void union_sides(float (&acc)[kAccTiles][4], float (&
 //: when the probe is asked for.
 template <int W, class Token>
 __device__ __forceinline__ void probe_levels(const ProduceParams& p, int job_index, int width,
-                                             int lane, Token token,
+                                             int col0, int lane, Token token,
                                              const float (&acc)[kAccTiles][4]) {
   if (p.level_probe == nullptr) return;
   float* out = p.level_probe + static_cast<int64_t>(job_index) * p.BT * kMaxColumns;
@@ -496,7 +549,7 @@ __device__ __forceinline__ void probe_levels(const ProduceParams& p, int job_ind
     const int tk = token(s);
     rola::static_for<2 * kAccTiles - W>([&](auto V) {
       constexpr int v = decltype(V)::value;
-      const int j = 8 * v + (lane >> 2);
+      const int j = col0 + 8 * v + (lane >> 2);
       if (j < width && tk < p.BT) {
         out[static_cast<int64_t>(tk) * kMaxColumns + j] = row_value<s, v>(acc);
         out[static_cast<int64_t>(tk) * kMaxColumns + width + j] = row_value<s, v + W>(acc);
@@ -530,8 +583,9 @@ constexpr int kStagedRowBytes = kMaxWidth * 2 + 16;
 constexpr int kStagedWarpBytes = 4 * kStagedRowBytes;
 //: A WARP'S PARKED N-TILE: its second n-tile's accumulators, 16 bytes a lane a column tile, lane-major.
 constexpr int kParkedWarpBytes = kAccTiles * 32 * 16;
-static_assert(kProduceWarps * (kParkedWarpBytes + kStagedWarpBytes) <= kProduceSmem,
-              "the parked n-tiles and the staged rows fit the stages");
+static_assert(kProduceWarps * (kParkedWarpBytes + kStagedWarpBytes) + kExchangeBytes
+                  <= kProduceSmem,
+              "the parked n-tiles, the staged rows and the pairs' exchange fit the stages");
 
 //: ONE SIDE OF A WARP'S ROWS IN THE BUNDLE'S FORM, one token slot at a time (`Out`: u8, or f16 for a dense level, its
 //: floor taken in a live row): each row's coefficients against its max `top` and its slot's tail zeros staged, the max
@@ -542,17 +596,21 @@ __device__ __forceinline__ void bundle_side(const ProduceParams& p, const Job& j
                                             int lane, const float (&acc)[kAccTiles][4],
                                             const float (&top)[kSlots], Out* plane, int plane_row,
                                             int out_col, float* scale, float* mass, bool fold,
-                                            bool applied, bool floored, uint8_t* staged) {
+                                            bool applied, bool floored, uint8_t* staged, Pair& pr,
+                                            int col0) {
   constexpr int kGrain = 32 / static_cast<int>(sizeof(Out));
   constexpr int kRowElems = kStagedRowBytes / static_cast<int>(sizeof(Out));
-  const int width = job.width, slot = (width + kGrain - 1) / kGrain * kGrain, g = lane >> 2;
+  //: the warp's columns of the row, `col0 ..` (a wide union's half; the whole row at 0), and of its slot
+  const int row_slot = (job.width + kGrain - 1) / kGrain * kGrain, g = lane >> 2;
+  const int width = min(max(job.width - col0, 0), 16 * M),
+            slot = min(max(row_slot - col0, 0), 16 * M);
   const int chunks = slot * static_cast<int>(sizeof(Out)) / 16;
   Out* rows = reinterpret_cast<Out*>(staged) + (lane & 3) * kRowElems;
   rola::static_for<kSlots>([&](auto Sl) {
     constexpr int s = decltype(Sl)::value;
     float sum = 1.0f;
     if (fold) {
-      sum = row_all(row_tree<s, 0, 2 * M>(acc, AddOp{}), AddOp{});
+      sum = pr.combine1(row_all(row_tree<s, 0, 2 * M>(acc, AddOp{}), AddOp{}), lane, AddOp{});
     }
     constexpr float kFull = sizeof(Out) == 1 ? 255.0f : 1.0f;
     const float m = top[s], unit = __fdividef(kFull, fmaxf(m, 1e-30f));
@@ -573,7 +631,7 @@ __device__ __forceinline__ void bundle_side(const ProduceParams& p, const Job& j
       }
     }
     const int token = tile0 + 2 * (lane & 3) + s;
-    if (g == 0 && token < p.BT) {
+    if (g == 0 && token < p.BT && pr.half == 0) {
       const int64_t at = slot_of(p, token, job.head) * p.D + job.level;
       scale[at] = applied && fold && sum > 0.0f ? __fdividef(m, sum) : m;
       mass[at] = sum;
@@ -585,7 +643,7 @@ __device__ __forceinline__ void bundle_side(const ProduceParams& p, const Job& j
       const int r = lane >> 3, tk = tile0 + 2 * r + s;
       if (tk < p.BT) {
         uint8_t* row = reinterpret_cast<uint8_t*>(
-            plane + slot_of(p, tk, job.head) * static_cast<int64_t>(plane_row) + out_col);
+            plane + slot_of(p, tk, job.head) * static_cast<int64_t>(plane_row) + out_col + col0);
 #pragma unroll 1
         for (int chunk = lane & 7; chunk < chunks; chunk += 8)
           *reinterpret_cast<uint4*>(row + 16 * chunk) =
@@ -604,7 +662,8 @@ template <int M>
 __device__ __forceinline__ void bundle_rows(const ProduceParams& p, const Job& job, int tile0,
                                             int lane, float (&acc)[kAccTiles][4],
                                             const float (&top_read)[kSlots],
-                                            const float (&top_write)[kSlots], uint8_t* staged) {
+                                            const float (&top_write)[kSlots], uint8_t* staged,
+                                            Pair& pr, int col0) {
 #pragma unroll 1
   for (int side = 0; side < 2; ++side) {
     if (!(side == 0 ? job.reads : job.writes)) continue;
@@ -631,11 +690,11 @@ __device__ __forceinline__ void bundle_rows(const ProduceParams& p, const Job& j
     const bool fold = (side == 0 ? job.fold_read : job.fold_write) != 0, applied = side == 1;
     if (side == 0 ? job.dense_read : job.dense_write)
       bundle_side<M>(p, job, tile0, lane, acc, top, p.dense[side], p.dense_rows[side], out_col,
-                     scale, mass, fold, applied, true, staged);
+                     scale, mass, fold, applied, true, staged, pr, col0);
     else
       bundle_side<M>(p, job, tile0, lane, acc, top, side == 0 ? p.amp_read : p.amp_write,
                      side == 0 ? p.rows_read : p.rows_write, out_col, scale, mass, fold, applied,
-                     false, staged);
+                     false, staged, pr, col0);
   }
 }
 
@@ -644,7 +703,7 @@ __device__ __forceinline__ void bundle_rows(const ProduceParams& p, const Job& j
 template <int M>
 __device__ __forceinline__ void solve_class(const ProduceParams& p, const Job& job, int job_index,
                                             int tile0, int lane, float (&acc)[kAccTiles][4],
-                                            uint8_t* staged, Clock& clock) {
+                                            uint8_t* staged, Pair& pr, int col0, Clock& clock) {
   float top[kSlots], top_write[kSlots];
   auto token = [&](int s) { return tile0 + 2 * (lane & 3) + s; };
   //: a narrow union is its midpoints' entmax, split (a wide one, 256 columns a row, is the pair form's)
@@ -656,18 +715,18 @@ __device__ __forceinline__ void solve_class(const ProduceParams& p, const Job& j
   if (job.solve == kSoftmax)
     softmax_rows<M>(acc, top);
   else
-    entmax_rows<M>(acc, job.solve == kEntmax15 || job.solve == kUnion15, top, clock);
+    entmax_rows<M>(acc, job.solve == kEntmax15 || job.solve == kUnion15, top, pr, lane, clock);
   rola::static_for<kSlots>(
       [&](auto Sl) { top_write[decltype(Sl)::value] = top[decltype(Sl)::value]; });
   if constexpr (kNarrow) {
-    if (split) union_sides<M>(acc, top, top_write);
+    if (split) union_sides<M>(acc, top, top_write, pr, lane);
   }
   clock.lap(kPhaseLevels);
   if (split)
-    probe_levels<kNarrow ? 2 * M : 0>(p, job_index, job.width, lane, token, acc);
+    probe_levels<kNarrow ? 2 * M : 0>(p, job_index, job.width, col0, lane, token, acc);
   else
-    probe_levels<0>(p, job_index, job.width, lane, token, acc);
-  bundle_rows<M>(p, job, tile0, lane, acc, top, top_write, staged);
+    probe_levels<0>(p, job_index, job.width, col0, lane, token, acc);
+  bundle_rows<M>(p, job, tile0, lane, acc, top, top_write, staged, pr, col0);
   clock.lap(kPhaseBundle);
 }
 
@@ -678,7 +737,9 @@ __device__ __forceinline__ void solve_tile(const ProduceParams& p, const Job& jo
                                            int tile0, int lane, float (&acc)[kAccTiles][4],
                                            uint8_t* staged, Clock& clock) {
   rola::uniform_switch<4>(job.rows, [&](auto R) __attribute__((always_inline)) {
-    solve_class<2 << decltype(R)::value>(p, job, job_index, tile0, lane, acc, staged, clock);
+    Pair alone{nullptr, 0, 0, 0, false};
+    solve_class<2 << decltype(R)::value>(p, job, job_index, tile0, lane, acc, staged, alone, 0,
+                                         clock);
   });
 }
 
@@ -795,40 +856,6 @@ __device__ void finish_head(const ProduceParams& p, const Job& job, int tile, in
   if (lane == 0) *counter = 0;
 }
 
-//: THE SKELETON'S ROWS (R3 lands the solve, the split and the bundle on the accumulators): each side the job writes,
-//: its row slot zero, its scale zero and its mass one, for the tile's live tokens.
-template <class Out>
-__device__ __forceinline__ void zero_side(Out* plane, int64_t first, int width, int lane) {
-  constexpr int kGrain = 32 / static_cast<int>(sizeof(Out));
-  const int slot = (width + kGrain - 1) / kGrain * kGrain;
-#pragma unroll 1
-  for (int col = lane; col < slot; col += 32) store_zero(plane + first + col);
-}
-
-__device__ void stub_rows(const ProduceParams& p, const Job& job, int token0, int live, int warp,
-                          int lane) {
-  //: the warp's own 16 tokens, the slice its finish counts
-#pragma unroll 1
-  for (int r = kWarpTokens * warp; r < min(kWarpTokens * (warp + 1), live); ++r) {
-    const int64_t slot = slot_of(p, token0 + r, job.head);
-    const int64_t at = slot * p.D + job.level;
-    if (job.reads) {
-      if ((p.dense_mask[0] >> job.level) & 1)
-        zero_side(p.dense[0], slot * p.dense_rows[0] + job.out_read, job.width, lane);
-      else
-        zero_side(p.amp_read, slot * p.rows_read + job.out_read, job.width, lane);
-      if (lane == 0) p.scale_read[at] = 0.0f, p.mass_read[at] = 1.0f;
-    }
-    if (job.writes) {
-      if ((p.dense_mask[1] >> job.level) & 1)
-        zero_side(p.dense[1], slot * p.dense_rows[1] + job.out_write, job.width, lane);
-      else
-        zero_side(p.amp_write, slot * p.rows_write + job.out_write, job.width, lane);
-      if (lane == 0) p.scale_write[at] = 0.0f, p.mass_write[at] = 1.0f;
-    }
-  }
-}
-
 //: A ONE-ROW JOB'S PROJECTION: every warp the job's columns for its 16 tokens, in the job's class of `M` column tiles
 //: and `S` k-steps a stage (the stage's bytes held near level). -- see docs/internals/produce/produce.md#form
 __device__ __forceinline__ void project_one_row(const ProduceParams& p, int job_index, int token0,
@@ -912,18 +939,52 @@ __global__ __launch_bounds__(kProduceThreads, 2) void produce_kernel(
   const int warp = ops::uniform_warp<kProduceWarps>(), lane = static_cast<int>(threadIdx.x) & 31;
   Clock clock(&s_clock[warp][0], lane, p.ledger != nullptr);
   clock.lap(kPhaseJob);
-  const int live = min(kTokenTile, p.BT - token0);
-
   if (pair_form(load_job(p, job_index))) {
     //: a pass's 32 tokens a k-loop; the barrier between passes releases the stages the last step read. The bound is
     //: tested against the parameters' token count, so no pass count is held across the k-loop.
+    //: each pass solved on its accumulators before the next projects: the warp pair's halves of each row, its
+    //: reductions through the pair's exchange (past the parked and staged rows)
+    const int pair = warp >> 1, half = warp & 1;
+    Pair pr{reinterpret_cast<float*>(stage_bytes
+                                     + kProduceWarps * (kParkedWarpBytes + kStagedWarpBytes))
+                + pair * 2 * kExchangeRound,
+            half, kPairBarrier + pair, 0, true};
 #pragma unroll 1
     for (int pass = 0; pass < 2 && token0 + pass * (kTokenTile / 2) < p.BT; ++pass) {
       float acc[kAccTiles][kTokenTiles][4];
       project_pair(p, job_index, token0 + pass * (kTokenTile / 2), stages, warp, lane, acc);
+      //: every warp past its last stage before any parks or stages there
+      __syncthreads();
+      clock.lap(kPhaseProject);
+      const Job job = load_job(p, job_index);
+      uint8_t* parked = stage_bytes + warp * kParkedWarpBytes;
+      uint8_t* staged = stage_bytes + kProduceWarps * kParkedWarpBytes + warp * kStagedWarpBytes;
+      float tile_acc[kAccTiles][4];
+      rola::static_for<kAccTiles>([&](auto I) {
+        constexpr int i = decltype(I)::value;
+        *reinterpret_cast<float4*>(parked + (i * 32 + lane) * 16) =
+            make_float4(acc[i][1][0], acc[i][1][1], acc[i][1][2], acc[i][1][3]);
+        rola::static_for<4>(
+            [&](auto E) { tile_acc[i][decltype(E)::value] = acc[i][0][decltype(E)::value]; });
+      });
+#pragma unroll 1
+      for (int n = 0; n < kTokenTiles; ++n) {
+        if (n > 0) {
+          rola::static_for<kAccTiles>([&](auto I) {
+            constexpr int i = decltype(I)::value;
+            const float4 v = *reinterpret_cast<const float4*>(parked + (i * 32 + lane) * 16);
+            tile_acc[i][0] = v.x, tile_acc[i][1] = v.y, tile_acc[i][2] = v.z, tile_acc[i][3] = v.w;
+          });
+        }
+        solve_class<kAccTiles / 2>(p, job, job_index,
+                                   token0 + pass * (kTokenTile / 2) + kWarpTokens * pair + 8 * n,
+                                   lane, tile_acc, staged, pr, 128 * half, clock);
+      }
+      //: the next pass's stages overwrite the parked and staged rows; the passes' masses fenced before the finish,
+      //: whose slices the half-0 warps wrote
+      __threadfence();
       __syncthreads();
     }
-    clock.lap(kPhaseProject);
   } else {
     float acc[kAccTiles][kTokenTiles][4];
     project_one_row(p, job_index, token0, stages, warp, lane, acc);
@@ -965,11 +1026,6 @@ __global__ __launch_bounds__(kProduceThreads, 2) void produce_kernel(
 
   const Job job = load_job(p, job_index);
   if (job.kind == kJobRoute) {
-    //: a wide union's rows are its split's step (the stub's meanwhile); every other route job bundled in its solve
-    if (pair_form(job)) {
-      stub_rows(p, job, token0, live, warp, lane);
-      clock.lap(kPhaseBundle);
-    }
     finish_head(p, job, tile, token0, warp, lane);
     clock.lap(kPhaseFinish);
   } else {

@@ -13,8 +13,8 @@ same call is the fp64 and host reference, and until the native backward the path
 The components land one at a time into the skeleton, each gated (KERNEL_STANDARDS §19); a component not yet landed
 has its real signature, tenant and edges and does the cheapest thing that keeps the composition's shape (zero digits
 and scales, unit masses and gains). THE REGISTER-RESIDENT REBUILD: LANDED the projection into
-the accumulators, and on them every one-row job's solve, bundle and values; a UNION's split is the step left
-(`stub_rows` writes its rows meanwhile: zero rows and scales, unit masses). `tests/integration/test_produce_kernel.py` holds the skeleton's claim (every element of every output is
+the accumulators, and on them every job's solve, bundle and values: one-row jobs, narrow unions in one warp, wide
+unions across a warp pair. `tests/integration/test_produce_kernel.py` holds the skeleton's claim (every element of every output is
 written, whatever the routing, and the arrival counters are back at zero after the call) and each landed component's
 gate.
 
@@ -138,8 +138,7 @@ touched. A tied or independent row is its one logit row: softmax (`softmax_rows`
 `_torch_activation`. A UNION's split -- entmax on the midpoint of its read and write logits, the read side the value
 times the sigmoid of their overflow-free difference, the write side the entmax family's `union_write`
 (`docs/internals/entmax/entmax.md#union-write`), reference `_torch_union_split` -- runs on the same registers for a
-NARROW union ([#union](#union)); a wide one's (past 128 columns, the pair form) is still the stub's zeros, its gate's
-cell (`wide-union`) red until it lands. Gate: every route job's sides (`probe_levels`) against the fp64 reference solve on the
+NARROW union ([#union](#union)) and, across a warp pair, for a WIDE one ([#wide-union](#wide-union)). Gate: every route job's sides (`probe_levels`) against the fp64 reference solve on the
 kernel's own logits, per slot within `(width + 16) 2^-23`.
 
 <a id="union"></a>A NARROW UNION (at most 128 columns a row, both rows in a warp's 16 tiles: the read row at values
@@ -154,6 +153,16 @@ the special-function unit's (`__logf`, `__expf`, `__fdividef`: within ~1e-6 at t
 `(width + 16) 2^-23`), so the split is ~4.5K instructions of the kernel, not the ~9K of the IEEE forms. The bundle's
 side loop moves the write row down to `v` once the read side is stored, so a union's sides share the one-row
 `bundle_side`.
+
+<a id="wide-union"></a>A WIDE UNION (past 128 columns, the pair form: warp `2 j + h` holds columns `128 h ..` of both
+rows for the pair's 16 tokens) is solved pass by pass on its accumulators with the narrow union's value layout (the
+read half at `v`, the write half at `v + 16`), each warp its 128 columns: every row reduction -- the max, the Newton
+sums, the union's write max and normalizer, the read side's max, a folded side's mass -- combines the pair's halves
+through `Pair`'s exchange past the parked and staged rows (one 64-thread named barrier a round, two buffers
+alternating), the two warps forming the same bits (the ops commute), and the Newton exit is the pair's vote voted
+again, so ptxas sees it uniform (a value read from shared memory is not: unvoted it guarded every collective). Each
+warp bundles its half row (`col0`); the half-0 warp stores the scale and mass. Its warps write no 16-token slice of
+their own, so the pair form fences and barriers before the head's finish.
 
 <a id="threshold"></a>THE THRESHOLD IS NEWTON FROM THE LEFT (`entmax_rows`), not a sort. With the row shifted by
 its max, `f(tau) = sum_i g(z_i - tau) - 1` (`g(d) = max(d, 0)^2 / 4` at alpha 1.5, `max(d, 0)` at 2) is convex and
