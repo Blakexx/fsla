@@ -100,6 +100,33 @@ holds one RoLA call's overheads, so it is never quoted alone. Until RoLA's carry
 segment boundary), RoLA's side of the grid is projected from the labs, the producer's floor and the state's bytes, each
 number labelled projected.
 
+<a id="quoting"></a>
+## Quoting a comparison
+
+- THE BASELINE is attention over its KV cache (and wide monolith layers), whose state grows with the context -- not
+  single-state linear attention: the method's case is a bounded state against a growing cache, and at `N`
+  proportional to `L` the state stays under the cache while its key width is small, so that regime's problem is
+  compute, which the activation's sparsity decouples (the user's framing, 2026-07-01).
+- CAPACITY-FAIR POINTS (Blake, 2026-08-01): a gap is never quoted from a cell where RoLA holds `N` states while
+  FlashAttention attends over `L < N` tokens -- attention is quadratic in `L` and RoLA flat in it at fixed `N`, so the
+  cell charges RoLA capacity rent at short-context prices. Headline figures put measured points at capacity-fair
+  `(N, L)`, FlashAttention run at `L = N`, and share one x-axis, addressing capacity; an `L < N` cell extrapolates
+  per-token latency only.
+- EVERY RATIO CARRIES ITS LABELS (Blake, 2026-10-24): the card, the level (op or layer), the depth and the sparsity.
+  The headline is end-to-end layer time with the op-level number beside it, at a head at scale, depths 1-4 shown; a
+  GeForce op-level ratio is never the headline.
+- THE OPERATING POINT `N ~ sqrt(L)` is quoted beside `N = L`, never instead (Blake, 2026-10-31: "sqrt(L) is context,
+  not the bar"); `N = L` stays a target the kernel must do well at.
+- AT SCALE (Blake, 2026-07-30: "we should be testing the large regime too"): every performance-bearing change is timed
+  on at least one at-scale cell (`N >= 65536`, the largest `L` that fits) at both ends of density
+  (`KERNEL_STANDARDS.md#s21`). The small cell is the SMOKE cell, never "flagship"; a conclusion drawn on toy cells
+  alone is labelled cell-bound. A small state is a depth-1 cell (Blake, 2026-09-14: "If you want small, just use depth
+  1"), never a sub-floor depth-2 rung.
+- RECORDS FOLLOW THE DECLARATION: when a refactor changes what a record means, the change is re-baselined and the old
+  records deleted rather than kept readable through compatibility code (Blake, 2026-09-15: "its ok to just delete old
+  records if its too much work to maintain compatability"); what was deleted is said, and anything large is archived
+  outside the store first.
+
 ## The stopwatch
 
 There is one, it is named, and its name travels with every number.
