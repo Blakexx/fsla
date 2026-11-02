@@ -179,11 +179,17 @@ __device__ __forceinline__ void fold_fill(const CarryParams& p, const uint8_t* s
 //: `ents`, in 16-token steps and an 8-token tail over the rows at `rows`, the list's scale read from its tenant and its
 //: rescale applied before the window's first chunk (`rescale`) where its unit moved; a side with no list level every
 //: slot of the chunk, c from the slot's row. -- see docs/internals/carry/fold.md#chunk
-template <class P>
+//: THE FOLD'S LAPS, an instrument: `laps(m)` at the chunk's marks (0 its lists' first steps' lanes read, `1 + 2 J` list
+//: `J`'s rescale guarded, `2 + 2 J` its steps done); the kernel's are none. -- see docs/internals/carry/fold.md#laps
+struct NoLaps {
+  __device__ __forceinline__ void operator()(int) const {}
+};
+
+template <class P, class Laps = NoLaps>
 __device__ __forceinline__ void fold_chunk(State<P>& st, bool rescale, const uint8_t* smem,
                                            const Window& ww, int w, const Run& run, int first,
                                            int slots, ops::SmemAddr rows, ops::SmemAddr ents,
-                                           int warp, int lane) {
+                                           int warp, int lane, Laps laps = {}) {
   const ops::SmemAddr pool = rows - static_cast<uint32_t>(first * P::kWriteRow);
   //: a side with no list level: 2^(4 - E) of the window's exponent (`dense_exp`), the facts records' scale
   const float p2 =
@@ -207,6 +213,7 @@ __device__ __forceinline__ void fold_chunk(State<P>& st, bool rescale, const uin
                   cpair[J]);
     });
 
+    laps(0);
     static_for<kLists>([&](auto J) {
       const float f = rescale ? sc[J].f : 1.0f;
       //: a list whose unit stood multiplies nothing (one trip where it moved; `f` is the warp's)
@@ -214,8 +221,10 @@ __device__ __forceinline__ void fold_chunk(State<P>& st, bool rescale, const uin
         static_for<P::kFoldMTiles>([&](auto M) {
           static_for<4>([&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] *= f; }); });
         });
+      laps(1 + 2 * J);
       steps<P, J>(st, sc[J].cf, pool, first, n[J], lane, off[J], cpair[J],
                   [&](int k) { return fetch(base[J], k); });
+      laps(2 + 2 * J);
     });
   };
 

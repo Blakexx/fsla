@@ -66,6 +66,14 @@ The list's rescale is applied before its first chunk's steps, and only where its
 (`f == 1`, the warp's one value) multiplies nothing -- the multiply is a one-trip loop on a warp vote, since 128
 multiplies a lane every window (1.0K warp instructions a CTA-window at alt-k4) bought nothing in the steady state.
 
+<a id="laps"></a>
+## The laps
+
+An instrument: `fold_chunk`'s `Laps` (default `NoLaps`, whose call is empty) is called at the chunk's marks -- 0 once
+every list's scale, count and first step's lanes are read, `1 + 2 J` once list `J`'s rescale is guarded, `2 + 2 J` once
+its steps are done. The kernel passes none and its SASS is identical with the hook; the lab's
+[`fold_alone`](../../lab/fold_alone.md) passes a recorder.
+
 <a id="probe"></a>
 ## The probe
 
