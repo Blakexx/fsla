@@ -64,6 +64,10 @@ inline Call load(const std::string& dir) {
   }
   std::istringstream lines(std::string(slurp(dir + "/buffers.txt").data()));
   uint64_t* words = reinterpret_cast<uint64_t*>(&c.cap.p);
+  //: each word matched against the capture's addresses once: a moved pointer may land in a later buffer's old range
+  constexpr size_t kWords = sizeof(rc::CarryParams) / 8;
+  std::vector<uint64_t> was(words, words + kWords);
+  std::vector<bool> moved(kWords, false);
   int k;
   std::string role;
   uint64_t base, bytes;
@@ -72,9 +76,10 @@ inline Call load(const std::string& dir) {
     char* dev = nullptr;
     LAB_CHECK(cudaMalloc(&dev, bytes));
     LAB_CHECK(cudaMemcpy(dev, data.data(), bytes, cudaMemcpyHostToDevice));
-    for (size_t i = 0; i < sizeof(rc::CarryParams) / 8; ++i)
-      if (words[i] >= base && words[i] < base + bytes) {
-        words[i] = reinterpret_cast<uint64_t>(dev) + (words[i] - base);
+    for (size_t i = 0; i < kWords; ++i)
+      if (!moved[i] && was[i] >= base && was[i] < base + bytes) {
+        words[i] = reinterpret_cast<uint64_t>(dev) + (was[i] - base);
+        moved[i] = true;
         ++c.moved;
       }
     if (role == "num") {
@@ -91,7 +96,7 @@ inline Call load(const std::string& dir) {
     std::exit(1);
   }
   //: the read tables on this card, as the production launch lays them out (the capture precedes that)
-  c.cap.p.tables = rc::tables_of(c.cap.p.tables.heads, P::kSmemBytes);
+  c.cap.p.tables = rc::tables_of<P::kWindow>(c.cap.p.tables.heads, P::kSmemBytes);
   return c;
 }
 
@@ -200,9 +205,10 @@ template <int Side>
 __device__ __forceinline__ Sized sized(const rc::CarryParams& p, const uint8_t* smem, int w) {
   const rc::Window win = rc::window_of<P>(p, smem, Side, w);
   const int slots = rc::slots_of<P>(smem, win, Side, w);
-  const int entries = win.listed ? rc::pre_at(rc::pre_of<P>(p, smem, Side, w), rc::kBoxLists,
-                                              rc::kListAt - 1, rc::kListAt)
-                                 : 0;
+  const int entries = win.listed
+                          ? static_cast<int>(rc::pre_of<P>(
+                                p, smem, Side, w)[rc::kBoxLists * rc::kListAt + rc::kListAt - 1])
+                          : 0;
   return Sized{slots, Side == rc::kRead ? rc::read_bytes<P>(slots, entries)
                                         : rc::fold_bytes<P>(slots, entries, win.listed)};
 }
@@ -323,7 +329,7 @@ __device__ __forceinline__ void fill_ahead(const volatile rc::Slices& sl, const 
       u[j] = s < slots ? (win.listed ? tok[first + s] : first + s) : rc::kGap;
     });
     rola::static_for<kAhead>([&](auto j) {
-      const int s = s0 + kQuads * j, t = u[j] & (rc::kWindow - 1);
+      const int s = s0 + kQuads * j, t = u[j] & (P::kWindow - 1);
       const bool issue = s < slots, live = u[j] == t;
       const uint32_t row = pool + static_cast<uint32_t>(s * kRow);
       rola::static_for<Factors>([&](auto i) {
@@ -431,13 +437,17 @@ __device__ __forceinline__ void fold_lists(const rc::CarryParams& p, rc::State<P
     });
     const int n = __shfl_sync(0xffffffffu, run.n, list),
               to = __shfl_sync(0xffffffffu, run.to, list);
-    rc::steps<P, J>(st, sc.cf, rows, 0, 0, n, lane, [&](int k) {
+    const auto fetch = [&](int k) {
       uint2 e;
       asm volatile("ld.shared.v2.u32 {%0, %1}, [%2];"
                    : "=r"(e.x), "=r"(e.y)
                    : "r"(ents + 8u * static_cast<uint32_t>(to + k)));
       return e;
-    });
+    };
+    uint32_t off, cpair;
+    const int e = lane & 15;
+    rc::entry_of<P>(fetch(max(min(e, n - 1), 0)), e < n, 0, sc.cf, off, cpair);
+    rc::steps<P, J>(st, sc.cf, rows, 0, n, lane, off, cpair, fetch);
   });
 }
 
@@ -461,7 +471,7 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
       reinterpret_cast<rc::UnitBook*>(smem + P::kBook)[t] = rc::UnitBook{rc::kUnitNone, 0.0f};
     if (t < 2 * rc::kBoxDigits) reinterpret_cast<int*>(smem + P::kKeys)[t] = INT_MIN;
     //: the bounds' counters and the units, as the production kernel's prologue; the scales' bits (`list_scale`)
-    for (int i = t; i < p.tables.heads * rc::kWindow; i += rc::kThreads) {
+    for (int i = t; i < p.tables.heads * P::kWindow; i += rc::kThreads) {
       reinterpret_cast<uint32_t*>(smem + p.tables.bounds_at)[i] = 0u;
       reinterpret_cast<int8_t*>(smem + p.tables.units_at)[i] =
           static_cast<int8_t>(rc::kUnitByteNone);

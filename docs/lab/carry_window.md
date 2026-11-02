@@ -47,6 +47,20 @@ sm_86 (RTX 3080 Ti), SM clock locked at 1.665 GHz, median of 7, carry-k5 e53bc28
 2026-10-24; the production kernel's clock-off cycles from its time at form 5's cycles a microsecond in the same run (the
 2026-10-14 table, at 790dfac6's parts: production 860 / 509 us, form 6 503 / 360):
 
+RE-RUN 2026-11-01 (carry-k5 at the lean fill and the fold's packed lists, the lab ported to today's plan and its
+captures' pointers each moved once), us a launch with every clock off, median of 7:
+
+| | alt-k4 | thinned 1/16 |
+|---|---|---|
+| production | 683 | 487 |
+| form 1 | 625 | 468 |
+| form 3 | 679 | 515 |
+| form 4 | 643 | 486 |
+| form 5 | 644 | 468 |
+
+The production kernel now runs 1.06x form 5 and 1.09x form 1 at alt-k4 (0.73x of production on 2026-10-24): the
+hand-written window no longer holds most of the gap. The 2026-10-24 table follows.
+
 | | us, clock off | vs production | cycles a CTA-window, clock off | clocked | landed | maxima | store | readout | drain | fill | fold | wait | units |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | production, alt-k4 | 895 | 1.00 | ~22,871 | 25,246 | 1,038 | 2,036 | 3,146 | 3,812 | 2,121 | 4,747 | 3,287 | 2,989 | 2,063 |
