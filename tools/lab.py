@@ -503,8 +503,10 @@ def ncu_counters(binary: Path, metrics: list[str], extra: list[str]) -> dict[str
     start = next(i for i, line in enumerate(lines) if line.startswith('"ID"'))
     seen: dict[str, dict[str, list[float]]] = {}
     for row in csv.DictReader(lines[start:]):
-        value = float(row["Metric Value"].replace(",", ""))
-        seen.setdefault(row["Kernel Name"], {}).setdefault(row["Metric Name"], []).append(value)
+        raw = row["Metric Value"].replace(",", "")
+        if raw == "n/a":  # a metric this card or this ncu does not collect: left out, so its absence shows
+            continue
+        seen.setdefault(row["Kernel Name"], {}).setdefault(row["Metric Name"], []).append(float(raw))
     return {k: {m: statistics.median(v) for m, v in ms.items()} for k, ms in seen.items()}
 
 
