@@ -180,7 +180,12 @@ slot's (`first x row` bytes) and each entry's panel offset made the chunk's by s
 modulo 2^16 as a grouped union's offsets are written, and a lane past the run holds `masked_entry` -- its place's row, coefficient 0, a dummy panel row --
 so its products add an exact zero. A side with no list level takes every slot of the chunk, its entry implied -- the
 slot's row, its token (the chunk's first plus the slot), its panel row (a slot past the chunk's end its place's dummy
-row), its coefficient the digit's f16 in the row's coefficient slice (its second). Each source is its own loop, so each
+row), its coefficient the digit's f16 in the row's coefficient slice (its second) -- each stepped by a constant a tile
+(a slot 8 on: its row 8 rows on, both swizzles keeping `s & 7` and `(s >> 1) & 3`; its panel row 512 bytes on;
+`slot_step_is_tile_rows` asserts both), so a tile's addressing is four adds and a select, not the row and panel
+functions again. The dense readout is bound by its math pipes (the tensor pipe and the FMA pipe's conversions, pair
+FFMAs and IMADs, near equal) and issue, so its time moves with ptxas's interleaving: work taken off a tile shows at
+dense (-8% of its readout, -3.6% of the carry at 64K x 4 heads). Each source is its own loop, so each
 step is one block (KERNEL_STANDARDS §27), guarded by a vote and closed by one. Where a warp reads two digits a batch
 (the image whole or in halves) a listed side steps them together: a step is both digits' tiles, their operands
 (`tile_in`), then their MMAs (`tile_mma`), then their adds (`tile_add`) -- two independent chains in one block, each

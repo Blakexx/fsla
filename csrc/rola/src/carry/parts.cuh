@@ -910,6 +910,17 @@ __device__ __forceinline__ void tile_add_m(ops::SmemAddr lane_pads, const TileIn
   }
 }
 
+//: a slot 8 on in a chunk: its row 8 rows on (both swizzles keep `s & 7` and `(s >> 1) & 3`) and its panel row 512 bytes
+//: on -- the dense readout's tiles step by these
+template <int Row>
+__host__ __device__ constexpr bool slot_step_is_tile_rows() {
+  for (uint32_t s = 0; s < 1024; ++s)
+    if (pool_chunk(Row, s + 8, 0) != pool_chunk(Row, s, 0)
+        || panel_row(s + 8) != panel_row(s) + 512u)
+      return false;
+  return true;
+}
+
 //: A MASKED LANE'S ENTRY in a chunk's last step: its place `c`'s row of the chunk, coefficient 0, a dummy panel row, so
 //: its products add nothing -- the pool and panel offsets by the chunk's first slot `first`, as the entries' are.
 template <class P>
@@ -989,30 +1000,39 @@ __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* 
         //: every slot of the chunk, its entry implied: its row and token, each digit's coefficient, its panel row (a slot
         //: past the chunk's end its place's dummy row); the step's digits summed into one exit a tile (every token is in
         //: every digit's list, so their union is each digit's own)
+        //: the lane's slot `8 s + (lane & 7)`, stepped by 8 a tile: its row 8 rows on (the swizzle keeps `s & 7`
+        //: and `(s >> 1) & 3`), its panel row 512 bytes on (`panel_row`), its token 8 on; past the chunk its place's
+        //: dummy row (`slot_step_is_tile_rows`)
+        static_assert(slot_step_is_tile_rows<P::kReadRow>(),
+                      "a slot 8 on: its row 8 rows on, its panel 512");
+        const uint32_t l7 = static_cast<uint32_t>(lane & 7);
+        uint32_t slot = l7,
+                 row = rows + 16u * (l7 * (P::kReadRow / 16) + chunk_at<P::kReadRow>(l7, 0)),
+                 live = (kPadBytes + panel_row(l7)) << 16, tok = (first + l7) << 16;
+        const uint32_t dummy = panel_row(l7) << 16;
         int s = 0;
         for (int any = __any_sync(0xffffffffu, slots > 0) ? 1 : 0; any > 0; --any)
 #pragma unroll 1
           do {
-            const uint32_t slot = 8u * s + (lane & 7);
-            const uint32_t panel =
-                static_cast<int>(slot) < slots ? kPadBytes + panel_row(slot) : panel_row(slot & 7);
-            const uint32_t row = slot * (P::kReadRow / 16) + chunk_at<P::kReadRow>(slot, 0);
             uint32_t coef[kStep];
             static_for<kStep>([&](auto Q) {
               if constexpr (P::kReadFactors > 1) {
-                coef[Q] =
-                    ld_u16(chunk_addr<P::kReadRow>(rows + 16u * row, (kSliceBytes + 2 * d[Q]) >> 4)
-                           + (2 * d[Q] & 15));
+                coef[Q] = ld_u16(chunk_addr<P::kReadRow>(row, (kSliceBytes + 2 * d[Q]) >> 4)
+                                 + (2 * d[Q] & 15));
               } else {
                 coef[Q] = 0x3c00u;
               }
             });
-            const TileInM<kStep> in =
-                tile_in_m<P, kStep>(rows + 16u * row, units, sx,
-                                    make_uint2((first + slot) << 16, panel << 16), coef, lane);
+            const TileInM<kStep> in = tile_in_m<P, kStep>(
+                row, units, sx, make_uint2(tok, static_cast<int>(slot) < slots ? live : dummy),
+                coef, lane);
             float acc[kStep][2][4];
             static_for<kStep>([&](auto Q) { tile_mma<F16>(acc[Q], in.b, f[Q]); });
             tile_add_m(lane_pads, in, acc);
+            slot += 8u;
+            row += 8u * P::kReadRow;
+            live += 512u << 16;
+            tok += 8u << 16;
           } while (__any_sync(0xffffffffu, ++s < (slots + 7) >> 3));
       }
     } while (__any_sync(0xffffffffu, (i += kStep) < hi));
