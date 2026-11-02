@@ -8,6 +8,7 @@ owner imbalance shows. KERNEL_STANDARDS §19's per-phase instrument for the comp
     python tools/phase_ledger.py flagship-alt-k4 [--launches 3]
     python tools/phase_ledger.py nl64k-alt-k4 --budget tools/budgets/carry.json   # against the predicted phases
     python tools/phase_ledger.py nl64k-alt-k4 --kernel den                         # the den pass, each role's phases
+    python tools/phase_ledger.py nl64k-alt-h4-g4 --kernel produce                  # the producer on a construction's cell
 
 With `--budget`, each phase against the cycles the design predicted for it (the cell's `phase_cycles`): red where a
 phase takes more than `MISS` times its prediction, or has none (KERNEL_STANDARDS section 32: a miss stops work until
@@ -97,6 +98,37 @@ def _intra(spec):
     return i, ((routes, values, facts, layout, *statics, num, den), 1)
 
 
+def _produce(construction: str, launches: int, warmup: int, warmup_ms: float) -> tuple[list, int, list]:
+    """The producer's ledger on a layer construction's first cell: ``(jobs, tiles, ledger rows)`` -- its launch as the
+    layer calls it (`measure.subjects.produce`), the ledger `[jobs, warps, phases]` booked over the token tiles."""
+    import torch
+    from rola_devtools.locks.gpu import gpu_lock
+
+    from measure.cells import by_name
+    from measure.cells.layer import CONSTRUCTIONS, build
+    from rola.ops import produce as pr
+
+    c = CONSTRUCTIONS[construction]
+    fx = build(by_name(c.cells[0]), c)
+    spec, layer = fx["cell"], fx["layer"]
+    x = fx["x"][:, :spec.tokens].contiguous()
+    jobs = pr.job_table(layer.plan)[0]
+    tiles = -(-(spec.B * spec.tokens) // 64)
+    with gpu_lock(mode="exclusive"), torch.no_grad():
+        ledger = torch.zeros((len(jobs), pr.LEDGER_WARPS, len(pr.LEDGER_PHASES)), dtype=torch.int64, device="cuda")
+        start, warmed = time.perf_counter(), 0
+        while warmed < warmup or time.perf_counter() - start < warmup_ms / 1e3:
+            layer._produce(x)
+            torch.cuda.synchronize()
+            warmed += 1
+        pr.ledger_bind(ledger)
+        for _ in range(launches):
+            layer._produce(x)
+        torch.cuda.synchronize()
+        pr.ledger_bind(None)
+    return jobs, tiles, (ledger.double() / launches / tiles).cpu()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cell")
@@ -107,7 +139,7 @@ def main() -> int:
     ap.add_argument("--warmup-ms", type=float, default=500.0,
                     help="warm-up launches continue until this long has passed: a GPU just locked reads ~11%% slow "
                          "for its first launches")
-    ap.add_argument("--kernel", choices=("carry", "den", "intra"), default="carry",
+    ap.add_argument("--kernel", choices=("carry", "den", "intra", "produce"), default="carry",
                     help="the kernel launched: the carry over its operands, the den pass or the intra over the facts "
                          "pass's output (the intra's row is every CTA of a window summed)")
     ap.add_argument("--per-warp", default=None,
@@ -119,6 +151,25 @@ def main() -> int:
     ap.add_argument("--forced", default=None,
                     help="the plan form each window takes where it fits (`rola.ops.carry.forced_word`)")
     a = ap.parse_args()
+
+    if a.kernel == "produce":
+        from rola.ops import produce as pr
+
+        jobs, tiles, per = _produce(a.cell, a.launches, a.warmup, a.warmup_ms)
+        out = {}
+        for kind, name in ((0, "route"), (1, "value")):
+            rows = [i for i, job in enumerate(jobs) if job[0] == kind]
+            if not rows:
+                continue
+            mean = per[rows].mean(dim=(0, 1))
+            out[name] = {n: round(float(x), 1) for n, x in zip(pr.LEDGER_PHASES, mean.tolist())}
+            print(f"{a.cell} produce {name} jobs ({len(rows)}): cycles a warp a tile (mean over jobs, warps): "
+                  + ", ".join(f"{n} {x:.0f}" for n, x in zip(pr.LEDGER_PHASES, mean.tolist()) if x)
+                  + f"  total {float(mean.sum()):.0f}")
+        if a.json:
+            a.json.write_text(json.dumps({"cell": a.cell, "kernel": "produce", "launches": a.launches, "tiles": tiles,
+                                          "per_phase": out}) + "\n")
+        return 0
 
     import torch
     from rola_devtools.locks.gpu import gpu_lock
