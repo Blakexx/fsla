@@ -146,7 +146,10 @@ performance-only under drifting realized routing.
    holds the rule itself. `tests/oracle/tolerances.py` records the measured margins.
 3. **A kernel whose arithmetic is declared is graded against a reference that mirrors it** (the fold's
    `tests/oracle/fold_reference.py`, the intra's `int_reference.py`, the state's `state_rounded`), so the tolerance
-   charges only accumulation order, never a rounding the reference skipped.
+   charges only accumulation order, never a rounding the reference skipped. Where a third party's arithmetic is opaque
+   (a cuBLAS reduction order), the gate sits at the seam: the production intermediate is fed to the reference. A fused
+   kernel is gated through a shipped probe composed of its own device components (the carry's `fold_probe`), so the
+   agreement is a fact of the call graph and the gate runs the shipped binary.
 4. **Every tolerance is either DECLARED with its derivation in a module comment or DERIVED in code.** A number with
    neither is a defect.
 5. **Loosening a tolerance is a semantic change**: changelog entry, derivation, reviewer sign-off. Tightening needs none
