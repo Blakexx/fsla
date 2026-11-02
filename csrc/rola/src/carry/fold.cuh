@@ -230,9 +230,12 @@ __device__ __forceinline__ void fold_chunk(State<P>& st, bool rescale, const uin
 
   int n[P::kFoldLists], base[P::kFoldLists];
   if (ww.listed) {
+    //: a list's count and place, each under 2^16, one shuffle
+    const uint32_t packed = static_cast<uint32_t>(run.n) << 16 | static_cast<uint32_t>(run.to);
     static_for<P::kFoldLists>([&](auto J) {
-      n[J] = __shfl_sync(0xffffffffu, run.n, fold_list(warp, J));
-      base[J] = __shfl_sync(0xffffffffu, run.to, fold_list(warp, J));
+      const uint32_t v = __shfl_sync(0xffffffffu, packed, fold_list(warp, J));
+      n[J] = static_cast<int>(v >> 16);
+      base[J] = static_cast<int>(v & 0xffffu);
     });
     lists(n, base, [&](int to, int k) {
       uint2 e;
