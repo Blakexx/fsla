@@ -21,18 +21,14 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`list_fold`](list_fold.md) | experiment |
 | [`read_step`](read_step.md) | experiment |
 | [`publish_rounds`](publish_rounds.md) | experiment |
-| [`gang_ring`](gang_ring.md) | experiment |
 | [`smem_rates`](smem_rates.md) | experiment |
 | [`den_sweep`](den_sweep.md) | experiment |
 | [`warp_hiding`](warp_hiding.md) | experiment |
 | [`row_span`](row_span.md) | experiment |
 | [`vote_stash`](vote_stash.md) | experiment |
-| [`facts_pipeline`](facts_pipeline.md) | experiment |
 | [`facts_block`](facts_block.md) | experiment |
 | [`facts_two`](facts_two.md) | experiment |
-| [`fold_part`](fold_part.md) | part harness |
 | [`fold_alone`](fold_alone.md) | part harness |
-| [`fold_mchan`](fold_mchan.md) | part harness |
 | [`read_image`](read_image.md) | part harness |
 | [`read_w1024`](read_w1024.md) | part harness |
 | [`image_ring`](image_ring.md) | part harness |
