@@ -388,7 +388,7 @@
   {"doc": "docs/internals/carry/carry_kernel.md", "pinned_at": "578bf154f46f", "reviewed": true, "sha256": "", "target": "docs/internals/common/phase_clock.md"},
   {"doc": "docs/internals/carry/carry_kernel.md", "pinned_at": "da8bf350aec9", "reviewed": true, "sha256": "", "target": "docs/lab/carry_window.md"},
   {"doc": "docs/internals/carry/carry_kernel.md", "pinned_at": "ad2d26db5e60", "reviewed": true, "sha256": "", "target": "docs/lab/image_ring.md"},
-  {"doc": "docs/internals/carry/carry_kernel.md", "pinned_at": "06823dec58e6", "reviewed": true, "sha256": "c22acf8a3f4f0751", "target": "rola/ops/carry.py::LEDGER_PHASES"},
+  {"doc": "docs/internals/carry/carry_kernel.md", "pinned_at": "248973de0c4b", "reviewed": true, "sha256": "78705b884c4e8a54", "target": "rola/ops/carry.py::LEDGER_PHASES"},
   {"doc": "docs/internals/carry/carry_kernel.md", "pinned_at": "839dadb57d1f", "reviewed": true, "sha256": "", "target": "tests/oracle/carry_plan.py"},
   {"doc": "docs/internals/carry/carry_kernel.md", "pinned_at": "839dadb57d1f", "reviewed": true, "sha256": "", "target": "tools/budgets/carry.json"},
   {"doc": "docs/internals/carry/fold.md", "pinned_at": "1f1945e3bce8", "reviewed": true, "sha256": "", "target": "csrc/rola/src/carry/fold.cuh"},

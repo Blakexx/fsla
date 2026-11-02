@@ -8,6 +8,12 @@ form 5, `docs/lab/carry_window.md`): the step machine that ran the record word b
 statics at each use, cost ~6.3K cycles a CTA-window at either density -- its per-step glue, its barriers and waits --
 and the same parts in a fixed order recovered it (0.73x production on alt-k4 and its 1/16-thinned twin).
 
+THE STATE WORK IS A FIXED WINDOW TERM. The hand-off's image stores, the digit maxima and their barriers run on every
+list every window: a window's union touches nearly every list at any density short of extreme (Blake, 2026-10-14:
+"every list is going to be touched at least once unless sparsity is extreme"), so sizing them by the lists touched buys
+nothing. They are made cheap, hidden under the neighbouring phase, and measured exposed on the sparsest cell, where
+their share caps the `N = L` ratio.
+
 <a id="kernel"></a>
 ## The kernel
 

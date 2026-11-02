@@ -53,6 +53,26 @@ becomes an I-cache stall class, and hoisting the switch to the phase merges the 
 live ranges and spills — so the placement is stated and MEASURED per user rather than
 left to habit.
 
+<a id="checklist"></a>
+## A new in-kernel switch answers seven questions
+
+Blake, 2026-08-29: "let's get this done the right way and pay the cost we need to pay, and remember these lessons for
+the future as we build more in-kernel switches." Each failed switch was shape misfiled as addressing, or a switch put
+in the wrong place; a switch is justified by coverage at additive cost, not by speed or compile time.
+1. Is the quantity SHAPE (which register holds which element in an unrolled loop) or ADDRESSING? Shape is compile-time
+   or a `uniform_switch` over a generated set, never a runtime operand (a runtime shape doubled the instructions).
+2. The set is enumerated from the inputs (`constexpr`), deduplicated, count- and exhaustiveness-asserted; never a
+   hand-written table.
+3. The switch sits OUTSIDE the hot loop, one specialized body a member: inside it, the members' live ranges merge
+   (900 B of spills at `D >= 3`) and their code interleaves (5.9x the I-cache footprint).
+4. One source -- a template and inlined helpers -- compiled to N bodies; the duplication is accepted (only the
+   selected body is hot), and no `__noinline__` helper sits in a hot loop.
+5. A per-side or per-phase choice is device-side and additive; a whole-kernel choice is a template axis
+   (`arm_switch`); the two are never multiplied.
+6. A switch that changes an ownership partition states a SELECTIVITY line and a BANK-BEHAVIOUR line beside its
+   instruction floor (a form met every per-instruction floor and lost 40%; another ran 2.7x the conflicts).
+7. The compile is budgeted: members x phases an arm, the long-pole arm, a TU a member as the lever.
+
 ## Users
 
 - `produce/produce.cu`'s projection: `uniform_switch<5>` over a one-row job's column-tile class (the shape word's,
