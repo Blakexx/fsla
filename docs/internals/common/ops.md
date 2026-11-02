@@ -224,7 +224,10 @@ Every operation is defined by WHAT THE ALGORITHM NEEDS. A helper with no caller 
   held across the window.
 - <a id="once"></a>`once(cond)`: `for (int n = ops::once(cond); n > 0; --n)` is a real branch where `if (cond)` on a
   warp-uniform value would be if-converted and every warp would issue the body predicated off (KERNEL_STANDARDS §20).
-  The bound is hidden from ptxas by an empty `asm volatile`, so the loop cannot be flattened as 0-or-1 trips.
+  The bound is hidden from ptxas by an empty `asm volatile`, so the loop cannot be flattened as 0-or-1 trips. Never
+  around a step loop: there the guard is the plain vote -- `for (k = __any_sync(full, s < n) ? 1 : 0; k > 0; --k) do
+  { step } while (__any_sync(full, ++s < n));` -- since `once`'s opaque bound hides the loop's trip structure from
+  ptxas (measured on the carry's skeleton: branches inside the step, extra MMA sites, spills; the plain vote clean).
 - <a id="cycles"></a>`cycles()`: `%clock64` by `mov`, for the phase ledgers; the `clock64` intrinsic is not declared
   in every host-pass compilation of a header both a launch and a harness include.
   <a id="cycles-after"></a>`cycles_after(after)` takes `after` as an input it does not use, so the read cannot issue

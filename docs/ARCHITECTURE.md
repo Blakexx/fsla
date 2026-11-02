@@ -6,8 +6,8 @@ addressed at runtime, what each kernel does, and how each structural mechanism m
 repository ships for. It states what is in the tree; what is knowingly unfinished is
 [`open-work.md`](open-work.md).
 
-**Authority.** `docs/KERNEL_STANDARDS.md` is the constitution and the laws; this document is the architecture those
-laws describe; `docs/internals/` is the per-source-file mirror beneath it, and `docs/architecture/` holds the
+**Authority.** `docs/CONSTITUTION.md` holds the standing rulings and `docs/KERNEL_STANDARDS.md` the laws; this
+document is the architecture they describe; `docs/internals/` is the per-source-file mirror beneath it, and `docs/architecture/` holds the
 individual decisions (the self-masking theorem, the affine recurrence, the factored representation, fp32
 accumulation, closed-world codegen) whose arguments this document assumes rather than repeats. Where they disagree,
 the constitution wins, then this document, then the mirror. Nothing outside the repository is an authority for
