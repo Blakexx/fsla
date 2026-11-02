@@ -269,6 +269,7 @@
   {"doc": "docs/bringup.md", "pinned_at": "a089f4a7c16e", "reviewed": true, "sha256": "", "target": "csrc/rola/src/common/hardware.json"},
   {"doc": "docs/bringup.md", "pinned_at": "a089f4a7c16e", "reviewed": true, "sha256": "", "target": "docs/internals/common/hardware.md"},
   {"doc": "docs/build.md", "pinned_at": "990647f58ef3", "reviewed": true, "sha256": "", "target": ".github/workflows/lint.yml"},
+  {"doc": "docs/build.md", "pinned_at": "400f5ffad92f", "reviewed": true, "sha256": "", "target": "csrc"},
   {"doc": "docs/build.md", "pinned_at": "3360bacd82eb", "reviewed": true, "sha256": "", "target": "csrc/rola/src/carry/carry_arm_abi.cuh"},
   {"doc": "docs/build.md", "pinned_at": "990647f58ef3", "reviewed": true, "sha256": "", "target": "csrc/rola/src/common/torch_seam.cuh"},
   {"doc": "docs/build.md", "pinned_at": "990647f58ef3", "reviewed": true, "sha256": "", "target": "csrc/rola/src/decode/decode.cu"},

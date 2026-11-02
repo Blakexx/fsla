@@ -821,11 +821,12 @@ def csrc_stamp_header(digest: str | None = None) -> str:
 
 
 def write_csrc_stamp(digest: str | None = None) -> Path:
-    """Write `build/generated/csrc_stamp.inc` for this tree, unconditionally."""
+    """Write `build/generated/csrc_stamp.inc` for this tree on every call (its file replaced only when its text
+    differs: `gen_shards.write_if_changed`)."""
     gen_shards.GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     path = gen_shards.GENERATED_DIR / CSRC_STAMP_INC
     with host.file_lock("csrc_stamp_header"):
-        path.write_text(csrc_stamp_header(digest))
+        gen_shards.write_if_changed(path, csrc_stamp_header(digest))
     return path
 
 
@@ -866,7 +867,7 @@ def _ninja_cuda_template() -> tuple[str, str, str] | None:
     #:
     #: The generated selection header removes the trap rather than detecting it.  The arm selection is no longer a
     #: `-D` on any TU's argv at all -- it is a generated header (`_write_carry_selection`
-    #: below), unconditionally overwritten for THIS run's scope before anything that
+    #: below), written for THIS run's scope (replaced when its text differs) before anything that
     #: includes it compiles.  So the reused `build.ninja` argv has nothing arm-set-
     #: specific left in it to strip; the stripping-and-resubstituting dance
     #: (`_without_carry_arms`) is dead code and deleted with it.
@@ -1171,7 +1172,7 @@ def measure_units(arches, objdir: str, sources: list[Path], arms=None,
     identical compile, and the thing that decides identity is the same content hash the
     freshness trigger uses, applied per unit instead of per tree.
     """
-    #: WRITE THIS RUN'S SELECTION HEADER, UNCONDITIONALLY, BEFORE COMPILING ANYTHING
+    #: WRITE THIS RUN'S SELECTION HEADER, ON EVERY RUN, BEFORE COMPILING ANYTHING
     #:. This replaces the old `-D`-substitution dance
     #: (`_ninja_cuda_template`'s `_without_carry_arms`, now gone) with the header
     #: equivalent, and it is not optional: docs/build.md records the exact trap
@@ -1187,10 +1188,10 @@ def measure_units(arches, objdir: str, sources: list[Path], arms=None,
     #: invocations racing this write must not interleave -- one must finish
     #: writing the header before the other starts compiling against it.
     with host.file_lock("carry_selection_header"):
-        (gen_shards.GENERATED_DIR / gen_shards.CARRY_SELECTION_INC).write_text(
-            gen_shards.carry_selection_header(want_arms))
-        (gen_shards.GENERATED_DIR / gen_shards.CARRY_PARTS_INC).write_text(
-            gen_shards.carry_parts_header(gen_shards.CARRY_PARTS, ()))
+        gen_shards.write_if_changed(gen_shards.GENERATED_DIR / gen_shards.CARRY_SELECTION_INC,
+                                    gen_shards.carry_selection_header(want_arms))
+        gen_shards.write_if_changed(gen_shards.GENERATED_DIR / gen_shards.CARRY_PARTS_INC,
+                                    gen_shards.carry_parts_header(gen_shards.CARRY_PARTS, ()))
     #: AND THE CSRC STAMP, for the same reason and from the same function `setup.py`
     #: calls: the stamp sites include it, so a gate that did not write it would
     #: measure a tree nobody builds.

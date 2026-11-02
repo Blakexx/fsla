@@ -201,7 +201,7 @@ def _write_carry_selection() -> None:
     """
     gen_shards.GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     text = gen_shards.carry_selection_header(_carry_arms())
-    (gen_shards.GENERATED_DIR / gen_shards.CARRY_SELECTION_INC).write_text(text)
+    gen_shards.write_if_changed(gen_shards.GENERATED_DIR / gen_shards.CARRY_SELECTION_INC, text)
 
 
 #: THE COVERAGE SWEEP'S PROBE, run in its own interpreter against the freshly built
@@ -288,8 +288,8 @@ def _write_carry_parts() -> None:
     """Write `build/generated/carry_parts.inc` on EVERY build, so a stubbed mask never
     outlives the build that asked for it."""
     gen_shards.GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-    (gen_shards.GENERATED_DIR / gen_shards.CARRY_PARTS_INC).write_text(
-        gen_shards.carry_parts_header(*_carry_parts_spec()))
+    gen_shards.write_if_changed(gen_shards.GENERATED_DIR / gen_shards.CARRY_PARTS_INC,
+                                gen_shards.carry_parts_header(*_carry_parts_spec()))
 
 
 def _write_csrc_stamp() -> None:

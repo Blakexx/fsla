@@ -90,6 +90,11 @@ python -m pip install -e . --no-build-isolation
    `tools/gen_shards.py` produces. Generated sources are committed so that what is
    reviewed is what compiles; a stale one fails here rather than shipping a matrix
    nobody wrote.
+<a id="generated-headers"></a>Before the compile the build writes its GENERATED HEADERS (`build/generated/`: the carry
+   selection, the carry parts, the csrc stamp) through `gen_shards.write_if_changed`: a header's file is replaced
+   only when its text differs, because a rewrite of the same text moves its mtime and ninja recompiles every unit
+   that includes it (an edit to one kernel file rebuilt both carry arms and the carry dispatch unit, 2026-11-01).
+   The csrc stamp's text changes with every `csrc/` edit, and only `common/build_stamp.cu` includes it.
 5. **Compile.** `ninja`. The carry family's instantiation matrix is generated
    translation units under `csrc/rola/src/instantiations/` — **one translation unit
    per carry arm**, so the arms parallelize across `MAX_JOBS` processes instead

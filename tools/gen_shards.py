@@ -63,11 +63,25 @@ SHIPPED_SET_JSON = ROOT / "tools" / "manifests" / "shipped_set.json"
 
 #: THE GENERATED (NEVER CHECKED IN) SELECTION HEADER .  `setup.py` and
 #: `tools/ratify.py` each write `GENERATED_DIR / CARRY_SELECTION_INC` for their own
-#: run's arm scope, unconditionally overwriting whatever is there, before compiling
-#: any translation unit that includes it.  See `carry_selection_header`.
+#: run's arm scope on every run, before compiling any translation unit that includes it
+#: (`write_if_changed`: the file is replaced only when its text differs).  See
+#: `carry_selection_header`.
 GENERATED_DIR = ROOT / "build" / "generated"
 CARRY_SELECTION_INC = "carry_selection.inc"
 CARRY_PARTS_INC = "carry_parts.inc"
+
+
+def write_if_changed(path: Path, text: str) -> bool:
+    """Write a generated header's ``text`` to ``path`` only when it differs from what is there.
+
+    Every build writes its generated headers, but a rewrite of the same text still moves the file's mtime, and
+    ninja then recompiles every translation unit that includes it: an edit to one kernel file rebuilt both carry
+    arms and the carry dispatch TU (2026-11-01, docs/build.md#generated-headers). Returns whether it wrote."""
+    if path.exists() and path.read_text() == text:
+        return False
+    path.write_text(text)
+    return True
+
 
 #: THE CARRY KERNEL'S PARTS (the composer's switches, KERNEL_STANDARDS §22 (9)): each names a
 #: part of an MMA phase that a measurement build may replace by a STUB -- the part's HMMAs kept
@@ -293,8 +307,8 @@ def carry_selection_header(arms) -> str:
     Renders `#define ROLA_CARRY_BUILT 1` plus one `#define ROLA_CARRY_BUILD_<i> 1`
     per index in `sorted(set(arms))`. Written by `setup.py` (from `ROLA_CARRY_ARMS`)
     and by `tools/ratify.py` (from the shipped set or a `--carry-arms`/`--arm` scope)
-    to `GENERATED_DIR / CARRY_SELECTION_INC` on every run, UNCONDITIONALLY
-    OVERWRITING whatever is there -- never accumulated across runs. Included ONLY by
+    to `GENERATED_DIR / CARRY_SELECTION_INC` on every run, REPLACING whatever is there
+    (`write_if_changed`: the file only when its text differs) -- never accumulated across runs. Included ONLY by
     the carry family's checked-in arm include (the per-arm TUs and the carry dispatch
     TU reach it through that one file), never by anything else, so no other translation
     unit's argv or included content depends on the selection.
