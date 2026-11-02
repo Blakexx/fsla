@@ -16,9 +16,9 @@ pipe counters, stall census, timeline and the intra roofline on every carry cell
 (`phases-den`, `counters-den`, `census-den`, `counters-intra`, `census-intra`) on the cells of `LONG_CELL_TOKENS` and
 more, every run, holding the GPU), and with
 a timing server the timing registrations: `carry_forward`, `carry_intra`, `intra_forward`, `den_pass` and `prefill` on
-the carry cells, `entmax_solve@layer=C`, `produce@layer=C`, `layer_prefill@layer=C` and `decode_step@layer=C` for each
-RoLA construction on the layer cells declared for it (a decode step on the cells that take steps), and the clock
-reader. Every
+the carry cells, `entmax_solve@layer=C`, `produce@layer=C`, `layer_prefill@layer=C`, `decode_step@layer=C` and the op's
+stages on the layer's own bundle (`layer_facts`, `layer_den`, `layer_carry`, `layer_intra`, `layer_op`) for each RoLA
+construction on the layer cells declared for it (a decode step on the cells that take steps), and the clock reader. Every
 target depends on the binary and the environment, whose outputs reach its key. Every cell is a NODE (`rola_devtools.cells.declare`) whose output is its record and the digest of the code that drew it;
 a target that runs on cells takes those nodes as its data inputs, so nothing here or in the build system resolves a cell
 by name at run time. This file imports nothing of rola's: it reads the constructions from `measure/cells/layer.py` by
@@ -82,7 +82,8 @@ INSTRUMENTS = {
 LONG_CELL_INSTRUMENTS = {"phases-den", "counters-den", "census-den", "counters-intra", "census-intra"}
 LONG_CELL_TOKENS = 16384
 CARRY_ARMS = ("carry_forward", "carry_intra", "intra_forward", "den_pass", "prefill")
-LAYER_ARMS = ("entmax_solve", "produce", "layer_prefill", "decode_step")
+LAYER_ARMS = ("entmax_solve", "produce", "layer_prefill", "decode_step", "layer_facts", "layer_den", "layer_carry",
+              "layer_intra", "layer_op")
 #: seconds an instrument may run on one cell
 #: EACH INSTRUMENT'S TIMEOUT IS PER CELL AND SIZED TO THE INSTRUMENT: a phase-clock launch is seconds on the largest
 #: cell (37 cells in 1.1 minutes, measured 2026-09-16), an ncu replay minutes. A hang then costs one timeout and lands
