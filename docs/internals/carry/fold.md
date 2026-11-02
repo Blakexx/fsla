@@ -42,16 +42,21 @@ lane's row offset (its swizzle folded in, `parts.md#swizzle`) and its c paired w
 a pad past the list's count is row 0 with c = 0. `step16`: A is the slots' dense slices by `ldmatrix.trans` (two
 m-tiles of the box's 32 digits) times c by HMUL2, B the values (four n-tiles of 32 channels), eight fp32-accumulate
 MMAs. `step8`: the same over 8 tokens, one `ldmatrix.trans` each. There are no mass MMAs: the den pass owns the mass.
-Each loop's step is one block (KERNEL_STANDARDS §27), guarded by a vote and closed by one.
+Each loop's step is one block (KERNEL_STANDARDS §27), guarded by a vote and closed by one. A list's first step's lanes
+(`off`, `cpair` for entry `lane & 15`, which serve a tail's lanes 0-7 as well) arrive computed, and each 16-token
+step fetches the next step's entries in its own block, after its MMAs in program order, so their loads issue under
+them.
 
 <a id="chunk"></a>
 ## The chunk
 
 A CHUNK is a range of the write union the window's plan sets (`schedule.md#chunks`): the whole union where its buffer
 fits the area, else the largest `64 m` slots two of whose buffers fit, and the rest. `fold_fill` copies its rows and
-its lists' runs into its buffer (`parts.md#entries`); `fold_chunk` takes each of the warp's lists in turn, its run from the buffer, a step's lanes past
-it masked (the chunk's first row, c = 0), the rows taken back by the chunk's first slot so an entry's union slot is its
-row. A side with no list level steps every slot of the chunk: its buffer holds each slot's token's `(F, m)` in the
+its lists' runs into its buffer (`parts.md#entries`); `fold_chunk` reads every one of the warp's lists' scale, count,
+base and first step's entries before any list's MMAs -- four independent chains where they had run one after the other
+behind each list's burst (nl64k-alt-k4, sm_86: the fold phase 3.26K -> 2.86K cycles a warp-window, 2026-11-01) -- then
+takes each list in turn, its run from the buffer, a step's lanes past it masked (the chunk's first row, c = 0), the
+rows taken back by the chunk's first slot so an entry's union slot is its row. A side with no list level steps every slot of the chunk: its buffer holds each slot's token's `(F, m)` in the
 entries' place, and c = `f16(fp32(b 255 F) 2^(4 - E))` with `b` the list's digit of the row's coefficient slice (its
 second) and `E` the window's bound -- the facts records' arithmetic, rounded once, by the packed conversion (`F2FP`, the
 ALU pipe: the scalar one runs on the conversion unit, which a step may not hold). Until 2026-10-19 this branch took c
