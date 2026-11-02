@@ -326,9 +326,20 @@ def _is_iteration_build() -> bool:
     shipped rows (the battery's `all`) is an iteration build too. The manifest ratifies
     the shipped set; a binary carrying arms it does not ratify is not the thing that
     ships, whichever direction it differs in.
+
+    A build whose ARCHITECTURES are not the toolchain's ratified set is one too (the
+    single-arch iteration build, `ROLA_CUDA_ARCHS=86`): it cannot ship either, so it
+    takes no exclusive budget draw and re-runs no ratify, whose only possible outcome
+    there is a warning (2026-11-01, docs/build.md#iteration).
     """
     return (set(_carry_arms()) != set(range(len(gen_shards.CARRY_ARMS))) or _decode_arm_subset_active()
-            or set(_carry_parts()) != set(gen_shards.CARRY_PARTS) or _carry_parts_spec()[1])
+            or set(_carry_parts()) != set(gen_shards.CARRY_PARTS) or _carry_parts_spec()[1]
+            or _arch_subset_active())
+
+
+def _arch_subset_active() -> bool:
+    """This build's architectures differ from the toolchain's ratified set."""
+    return set(ROLA_CUDA_ARCHS) != set(TOOLCHAIN.archs())
 
 
 #: THE ITERATION ARM SUBSET FOR DECODE (KERNEL_STANDARDS section 7, D1b). Same
@@ -717,8 +728,11 @@ def build_parts_extension():
 
 
 def desired_jobs() -> int:
-    """The ninja jobs a build asks the host budget for: `host.build_jobs`, else derived from `host.nvcc_threads`."""
-    return dev_config.get("host.build_jobs") or build_flags.default_max_jobs(dev_config.get("host.nvcc_threads"))
+    """The ninja jobs a build asks the host budget for: `host.build_jobs`, else derived from the `cicc` a job runs --
+    one an architecture up to `host.nvcc_threads` (`_ninja_jobs`' per-process factor), so a single-arch build asks for
+    the jobs a single-arch compile can run."""
+    per_process = min(dev_config.get("host.nvcc_threads"), max(1, len(ROLA_CUDA_ARCHS)))
+    return dev_config.get("host.build_jobs") or build_flags.default_max_jobs(per_process)
 
 
 def build_extension():
@@ -823,6 +837,12 @@ class RoLABuildExtension(BuildExtension):
                   f"{sorted(set(gen_shards.CARRY_PARTS) - set(_carry_parts()))} of the carry kernel "
                   "(a composer measurement build: the stubbed parts keep their HMMAs and drop "
                   "their other work). Build with ROLA_CARRY_PARTS unset to get the kernel.")
+        if _arch_subset_active():
+            print("ITERATION BUILD -- NOT SHIPPABLE.  This build compiles architectures "
+                  f"{sorted(ROLA_CUDA_ARCHS)}, not the toolchain's ratified set "
+                  f"{sorted(TOOLCHAIN.archs())}, so the post-build ratify is skipped (the SASS "
+                  "gate, the arm table and the device stamp still run). Build with "
+                  "ROLA_CUDA_ARCHS unset to get a gateable binary.")
         if _decode_arm_subset_active():
             print("ITERATION BUILD -- NOT SHIPPABLE.  ROLA_DECODE_ARMS is set, so this "
                   "fatbin carries a SUBSET of the decode arms, so the shippability "

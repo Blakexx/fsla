@@ -49,6 +49,10 @@ does it write `clock.json`.
   `schtasks /run` returns before the task runs, so a proof read raced the lock, and a driver's refusal read as success.
 - **On Linux:** it writes `sudo -n nvidia-smi -lgc` commands and prints the sudoers rule they need.
 
+**`build [--python PY] [--archs 86] [--carry-arms all]`** is the iteration build (`docs/build.md#iteration`):
+`setup.py build_ext --inplace` by the checkout's venv interpreter, after its first editable install. It refuses when
+that interpreter's `rola` is not this checkout's.
+
 **`worktree <name> <sha>`** creates the worktree in `workspace.worktrees` and wires its commit gate before
 anything is built. It makes a seeded pointer venv beside it with two `.pth` files: this worktree's root
 (`aa_`), then the base venv's site-packages (`zz_`). Then it installs the package editable with `--no-deps`.

@@ -576,6 +576,25 @@ def cmd_worktree(a) -> int:
     return 0
 
 
+def cmd_build(a) -> int:
+    """THE ITERATION BUILD: the extension rebuilt in place (`setup.py build_ext --inplace`) by `--python` (this
+    checkout's venv), after its first editable install -- the same compile, gates and device-stamped library as
+    `pip install -e .`, without pip's metadata, wheel and reinstall. Refuses when that interpreter's `rola` is not this
+    checkout's (the editable finder's trap). `--archs` and `--carry-arms` set `ROLA_CUDA_ARCHS` / `ROLA_CARRY_ARMS`.
+    -- see docs/build.md#iteration"""
+    probe = subprocess.run([a.python, "-c", "import rola, pathlib; print(pathlib.Path(rola.__file__).resolve())"],
+                           cwd="/", capture_output=True, text=True)
+    if probe.returncode or not Path(probe.stdout.strip()).is_relative_to(ROOT / "rola"):
+        raise SystemExit(f"refusing: {a.python}'s rola is {probe.stdout.strip() or probe.stderr.strip()!r}, not "
+                         f"{ROOT / 'rola'}; install this checkout first (`pip install -e . --no-build-isolation`)")
+    env = dict(os.environ)
+    if a.archs:
+        env["ROLA_CUDA_ARCHS"] = a.archs
+    if a.carry_arms:
+        env["ROLA_CARRY_ARMS"] = a.carry_arms
+    return subprocess.run([a.python, "setup.py", "build_ext", "--inplace"], cwd=ROOT, env=env).returncode
+
+
 def _mounts() -> list[str]:
     """The host paths the container shares, onto `IMAGE_LAYOUT`, as `source:target[:ro]`: the checkout, the lock
     directories, the store, the worktrees folder, the suite, the devtools, and under WSL the driver's libraries at the
@@ -740,6 +759,11 @@ def main() -> int:
     p.add_argument("sha")
     p.add_argument("--build", action="store_true", help="build the extension even when the main checkout's can be copied")
     p.set_defaults(fn=cmd_worktree)
+    p = sub.add_parser("build", help="the iteration build: the extension rebuilt in place, gated and stamped")
+    p.add_argument("--python", default=sys.executable, help="the checkout's venv interpreter (default: this one)")
+    p.add_argument("--archs", default=None, help="ROLA_CUDA_ARCHS for this build, e.g. 86")
+    p.add_argument("--carry-arms", default=None, help="ROLA_CARRY_ARMS for this build, e.g. all")
+    p.set_defaults(fn=cmd_build)
     p = sub.add_parser("store", help="the measurements store: commit new records")
     p.add_argument("action", choices=("commit",))
     p.add_argument("-m", "--message", default="records", help="commit: the message")

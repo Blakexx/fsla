@@ -62,9 +62,9 @@ once a block and read by every warp (the weights' one read a block). Its depth i
 at `M` column tiles, at most four (two at 256 columns, four at 128 and at 64), so a one-row job's weights are 16 KB a
 stage (8 KB at 64 columns) and its x rows follow them (to 8 KB), and one for a wide union's 512 columns (16 KB) -- 64
 MMAs a warp between barriers at 128 and 256 columns, with each tile's A fragment loaded a tile ahead of its MMAs
-(`mma_stage`). At one k-step a stage (`16 / M`) the 256-column class barriered every 32 MMAs and its warp issued its
-17 `ldmatrix` in one burst ahead of them; two halve the barriers and the bursts: the route job's tile 49.0K -> 44.1K
-cycles a warp, the projection 32.9K -> 29.3K (nl64k-alt-h4-g4). A row is 32 S bytes in 16-byte chunks, chunk `c`
+(`mma_stage`). Two k-steps a stage, not one, because a warp issues in order: at one the 256-column class barriered
+every 32 MMAs and issued its 17 `ldmatrix` in one burst ahead of them
+(event:2026-11-01-p90-the-producer-at-2-88-ms-two-k-steps-a-stage-at-2). A row is 32 S bytes in 16-byte chunks, chunk `c`
 at `c` XOR the row's swizzle (`chunk_at<S>`: `(row >> 2) & 1`, `(row >> 1) & 3`, `row & 7` at one, two and four
 k-steps), so an `ldmatrix`'s eight rows at one chunk lie in eight bank groups at every depth -- A by `ldmatrix.x4` a
 column tile, B by `ldmatrix.x4` the warp's 16 tokens, one wavefront a matrix, the copies four wavefronts a warp
@@ -87,7 +87,7 @@ no collective sits under a branch ptxas cannot prove warp-uniform.
 PARKS its second n-tile's accumulators in the released stages (`kParkedWarpBytes`, 16 bytes a lane, lane-major) and
 solves and bundles each n-tile on 64 live accumulators, so the solve never sits at the register cap. The two sides are
 one `#pragma unroll 1` loop, the side's operands selected at run time, so a class carries two `bundle_side` copies
-(the f16 plane and the u8 plane), not one a side and plane: the kernel went from 58K instructions to 40.6K. A side's rows are
+(the f16 plane and the u8 plane), not one a side and plane. A side's rows are
 staged one token slot at a time -- a lane quad's 4 rows, `kStagedRowBytes` a row, the widest slot plus 16 bytes so the
 four rows' bytes lie in distinct banks (`tools/bank_model.py`: a byte store one wavefront, the read-back four) -- and
 stored 16 bytes a lane; a coefficient is the level times `unit`, its row's reciprocal max at the plane's full scale
@@ -129,8 +129,7 @@ values (`row_tree`: log2 of the count dependent steps, where a running fold is t
 8 lanes sharing `lane & 3` (`row_all`). A route job's DEAD columns (past its width) seed at -inf (`seed_bias`; their
 weight rows, never copied, are zeroed in both stages once a block by `k_loop`, so they stay there), so no pass tests membership: the max ignores them, the softmax's `2^-inf` is 0,
 every threshold lies above them, and every level of one is 0. The two n-tiles are one rolled loop (the second parked,
-[#bundle](#bundle)), so the solve and the bundle are one copy each in the kernel: with the dead columns this took it
-from 40.6K instructions to 23.0K. The softmax is `2^(z log2 e - m log2 e)` (one FFMA and `ops::exp2_approx`).
+[#bundle](#bundle)), so the solve and the bundle are one copy each in the kernel. The softmax is `2^(z log2 e - m log2 e)` (one FFMA and `ops::exp2_approx`).
 The row's class (2, 4, 8 or 16 column tiles, its width's) and its activation are the shape word's, so every
 branch over them, and every shuffle and vote under it, is warp-uniform to ptxas; no value past the class's tiles is
 touched. A tied or independent row is its one logit row: softmax (`softmax_rows`) or entmax 1.5 or 2
@@ -190,14 +189,9 @@ tokens, the block's 4 warps) by component, at nl64k-alt-h4-g4 (16 one-row route 
 softmax and 8 entmax, ~3.7 Newton steps a row; one value job). The design's counts a warp: the k-loop 16 k-steps x (32
 HMMAs, 17 `ldmatrix`, 5 copies, ~12 address and edge) ~1.1K; entmax a n-tile max and shift 128, 3.7 steps x (64 x 6 +
 40), levels 192 ~1.85K; softmax ~400 a n-tile; a u8 or f16 bundle side ~180 / ~310 a n-tile; the gain a quad a token,
-8 chunk pairs and their products. First attribution (b4b7086b, `tools/stall_census.py --kernel produce`): 39.1K a
-unit against the budget's 17.5K -- entmax 14.8K, the k-loop 7.9K (its 2,048 HMMAs and 5.9K besides), the bundle 5.9K,
-softmax 3.9K, the kernel's own body 3.2K, the gain 1.5K (long scoreboard 53%: its chunk loads one pair at a time). With
-the solve on the values alone ([#solve](#solve), [#threshold](#threshold)): 29.5K -- entmax 8.4K, softmax 1.05K, the
-stall samples down 21%; the phase ledger's route job 84.3K cycles a warp-tile to 57.5K (threshold 14.0K to 5.1K,
-levels 7.1K to 2.1K, the projection 40.1K to 30.9K beside the other block's shorter solve). The bundle's one-FFMA digit
-([#bundle](#bundle)) and the gain's eight chunk pairs in flight: 27.0K (the bundle 5.7K to 3.55K), the samples down
-12% more; the route job 49.6K cycles (the bundle 12.0K to 4.9K, the finish 7.4K to 4.5K).
+8 chunk pairs and their products. The measured attributions against it (`tools/stall_census.py --kernel produce`) are the events'
+(event:2026-11-01-p90-the-producer-at-3-28-ms-the-solve-on-values-alon,
+event:2026-11-01-p90-the-producer-at-2-88-ms-two-k-steps-a-stage-at-2).
 
 <a id="phase-ledger"></a>THE PHASE LEDGER (`rola.ops.produce.ledger_bind`, `[jobs, 4 warps, 7 phases]` int64 cycles,
 booked over the tiles): job, project, threshold, levels, bundle, finish, values -- a warp's cycles

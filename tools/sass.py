@@ -21,6 +21,7 @@ the encoding lines too (a body hash covers them) matches `ENCODING`.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import os
 import re
@@ -159,8 +160,16 @@ def sass_lines(obj: str | Path) -> Iterator[Iterator[str]]:
 
 
 def disassemble(cubin_path: Path, *flags: str) -> str:
-    """`nvdisasm [flags] cubin`, as text. `--print-line-info-inline -gi` is what the ledgers pass for the frame chain."""
-    return subprocess.run([dev_config.cuda_bin("nvdisasm"), *flags, str(cubin_path)],
+    """`nvdisasm [flags] cubin`, as text. `--print-line-info-inline -gi` is what the ledgers pass for the frame chain.
+    Read once a process for each version of the file (its path, size and mtime) and flag set: the gate asked for the
+    same disassembly once a function. -- see docs/internals/tools/sass_gate.md#cost"""
+    st = Path(cubin_path).stat()
+    return _disassemble(str(cubin_path), st.st_size, st.st_mtime_ns, flags)
+
+
+@functools.lru_cache(maxsize=64)
+def _disassemble(path: str, _size: int, _mtime_ns: int, flags: tuple[str, ...]) -> str:
+    return subprocess.run([dev_config.cuda_bin("nvdisasm"), *flags, path],
                           capture_output=True, text=True, check=True).stdout
 
 

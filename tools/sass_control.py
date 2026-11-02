@@ -12,6 +12,7 @@ disassembly's `.reuse` operands. Docs: docs/internals/tools/burst_gate.md#contro
 """
 from __future__ import annotations
 
+import functools
 import re
 import subprocess
 import sys
@@ -21,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "lint"))
 
 import burst_tier  # noqa: E402
+import dev_config  # noqa: E402
 import sass  # noqa: E402
 
 #: THE MACHINE, an architecture: the cycles an HMMA holds the tensor pipe a scheduler (sm_86: bf16 with
@@ -91,19 +93,27 @@ def control(high: int) -> dict:
 
 def encoded(cubin: Path, kernel: str | None = None) -> dict[int, tuple[str, dict]]:
     """address -> (instruction text, control bits), over the one function `kernel` names (`sass.one_kernel`: offsets
-    restart in every function)."""
-    text = subprocess.run(["cuobjdump", "-sass", str(cubin)], capture_output=True, text=True, check=True).stdout
-    want = sass.one_kernel([m.group(1) for line in text.splitlines() if (m := sass.FUNCTION.match(line))], kernel,
-                           cubin.name)
-    out: dict[int, list] = {}
+    restart in every function). The cubin's `cuobjdump -sass` is read and parsed once a process for each version of the
+    file (`_encoded_all`), where the gate read it once a function. -- see docs/internals/tools/sass_gate.md#cost"""
+    st = Path(cubin).stat()
+    every = _encoded_all(str(cubin), st.st_size, st.st_mtime_ns)
+    want = sass.one_kernel(list(every), kernel, Path(cubin).name)
+    return every[want]
+
+
+@functools.lru_cache(maxsize=16)
+def _encoded_all(path: str, _size: int, _mtime_ns: int) -> dict[str, dict[int, tuple[str, dict]]]:
+    text = subprocess.run([dev_config.cuda_bin("cuobjdump"), "-sass", path], capture_output=True, text=True,
+                          check=True).stdout
+    every: dict[str, dict[int, list]] = {}
+    out: dict[int, list] | None = None
     addr = None
-    inside = False
     for line in text.splitlines():
         f = sass.FUNCTION.match(line)
         if f:
-            inside, addr = f.group(1) == want, None
+            out, addr = every.setdefault(f.group(1), {}), None
             continue
-        if not inside:
+        if out is None:
             continue
         m = ENC.match(line)
         if m:
@@ -113,7 +123,7 @@ def encoded(cubin: Path, kernel: str | None = None) -> dict[int, tuple[str, dict
         m = ENC_HIGH.match(line)
         if m and addr is not None and out[addr][1] is None:
             out[addr][1] = control(int(m.group(1), 16))
-    return {a: (t, c) for a, (t, c) in out.items() if c is not None}
+    return {name: {a: (t, c) for a, (t, c) in fn.items() if c is not None} for name, fn in every.items()}
 
 
 #: THE MMA OPCODES the tensor pipe takes, and the cycles one holds it a scheduler: an HMMA `hmma_pipe`, an IMMA

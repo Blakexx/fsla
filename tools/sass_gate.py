@@ -30,7 +30,9 @@ spills, so a clean run is a line of zeros and a red names the signature.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -142,12 +144,26 @@ def _resolver(lines: list[tuple[int, str, str, str]], labels: dict[str, int]):
     return resolve
 
 
+#: `mma_loops` once a function: four lints ask for it; the entry holds its `lines` so the id is never reused while
+#: cached. -- see docs/internals/tools/sass_gate.md#cost
+_LOOPS: dict[int, tuple[list, list[tuple[int, int]]]] = {}
+
+
 def mma_loops(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> list[tuple[int, int]]:
     """The innermost loops that issue MMAs, as (first line, backward branch): a loop a backward branch, its body the
     lines from its target to it, innermost when no other loop that issues MMAs lies inside. A loop inside it that
     issues none -- a compare-and-swap spin (sm_80/86's shared fp32 add), a one-trip guard -- is part of its body, read
     once. A divergence fallback's return (the cold stub a `BRA.DIV` enters, its unconditional branch back into the
     code it left) is no loop. Targets resolve as `convergence_calls`' do."""
+    hit = _LOOPS.get(id(lines))
+    if hit is not None and hit[0] is lines:
+        return hit[1]
+    loops = _mma_loops(lines, labels)
+    _LOOPS[id(lines)] = (lines, loops)
+    return loops
+
+
+def _mma_loops(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> list[tuple[int, int]]:
     resolve = _resolver(lines, labels)
     cold = set()
     for _, opcode, operands, predicate in lines:
@@ -273,6 +289,7 @@ def step_cover(cubin: Path, name: str, lines: list[tuple[int, str, str, str]], l
 
 
 def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[bool, str]:
+    _LOOPS.clear()
     funcs: dict[str, list[str]] = {}
     whole: dict[str, list[tuple[int, str, str]]] = {}
     labels: dict[str, dict[str, int]] = {}
@@ -352,7 +369,7 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
                            "each")},
                        "reds": reds}
         short = name[:70]
-        report.append(f"{'RED ' if reds else 'ok  '} {short}: instr {n} hmma {hmma} per-hmma {per:.1f} "
+        report.append(f"{'RED ' if reds else 'ok  '} {short}: regs {registers} instr {n} hmma {hmma} per-hmma {per:.1f} "
                       f"ldl {ldl} stack {stack} calls {calls} guarded {guarded} predHMMA {phmma} "
                       f"mma-loop-branches {branches} mma-gap {gap} around {around} step-xu {xu} step-global {memory}"
                       + ("" if cover is None else f" step-cover {cover['cover']}% (alone {cover['occupancy']}% x "
@@ -393,6 +410,53 @@ def missing_kernels(seen: set[str]) -> list[str]:
             if k.name not in names]
 
 
+#: THE VERDICT CACHE: a cubin's verdict, report and statistics under the key of everything that decides them -- the
+#: cubin's bytes, the gate's own source closure (every module of `tools/` it has loaded), the step floors, the
+#: disassemblers' identity and the arguments -- so an unchanged cubin's verdict is the reading of identical bytes under
+#: an identical gate, replayed (ratify's per-unit cache makes the same argument). `--no-cache` reads every cubin.
+#: -- see docs/internals/tools/sass_gate.md#cache
+_CLOSURE: str | None = None
+
+
+def _closure() -> str:
+    """The gate's source and toolchain identity, once a process: every loaded module under `tools/`, the step floors,
+    `nvdisasm` and `cuobjdump` by their version lines."""
+    global _CLOSURE
+    if _CLOSURE is None:
+        import burst_gate  # noqa: F401 -- `step_cover` imports it lazily; its source belongs in the key
+
+        tools = Path(__file__).resolve().parent
+        h = hashlib.sha256()
+        for path in sorted({Path(m.__file__).resolve() for m in list(sys.modules.values())
+                            if getattr(m, "__file__", None) and Path(m.__file__).resolve().is_relative_to(tools)}):
+            h.update(str(path.relative_to(tools)).encode() + b"\0" + path.read_bytes())
+        h.update(STEP_FLOORS.read_bytes() if STEP_FLOORS.exists() else b"")
+        for tool in ("nvdisasm", "cuobjdump"):
+            h.update(subprocess.run([dev_config.cuda_bin(tool), "--version"], capture_output=True, text=True,
+                                    check=True).stdout.encode())
+        _CLOSURE = h.hexdigest()
+    return _CLOSURE
+
+
+def cached_gate(cubin: Path, kernel: str | None, max_per_hmma: float | None, use: bool) -> tuple[bool, str]:
+    """`gate`, replayed from the cache when the key matches; a miss reads the cubin and records the verdict."""
+    if not use:
+        return gate(cubin, kernel, max_per_hmma)
+    key = hashlib.sha256(json.dumps([_closure(), hashlib.sha256(cubin.read_bytes()).hexdigest(), kernel,
+                                     max_per_hmma, LOOPS]).encode()).hexdigest()
+    entry = dev_config.scratch("sass_gate_verdicts") / f"{key}.json"
+    if entry.exists():
+        doc = json.loads(entry.read_text())
+        STATS.clear()
+        STATS.update(doc["stats"])
+        return doc["ok"], doc["report"]
+    ok, report = gate(cubin, kernel, max_per_hmma)
+    tmp = entry.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps({"ok": ok, "report": report, "stats": STATS}, sort_keys=True))
+    tmp.replace(entry)
+    return ok, report
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("binary", type=Path)
@@ -402,6 +466,9 @@ def main() -> int:
     ap.add_argument("--json", type=Path, default=None, help="also write every function's signature here, by cubin")
     ap.add_argument("--loops", action="store_true",
                     help="after each function, each innermost MMA loop's reading and the lines its step lints count")
+    ap.add_argument("--no-cache", action="store_true",
+                    help="read every cubin, the verdict cache neither replayed nor written (docs/internals/tools/"
+                         "sass_gate.md#cache)")
     ap.add_argument("--write-floors", action="store_true",
                     help="record each step-cover debt's worst reading as its floor (a ratchet: a later build may not "
                          "read lower)")
@@ -413,7 +480,7 @@ def main() -> int:
     seen: set[str] = set()
     guarded = 0
     for cub in cubins_of(a.binary, a.member if a.binary.suffix != ".cubin" else None):
-        ok, rep = gate(cub, a.kernel, a.max_per_hmma)
+        ok, rep = cached_gate(cub, a.kernel, a.max_per_hmma, not a.no_cache)
         guarded += sum(st["guarded"] for st in STATS.values())
         if rep:
             print(f"== {cub.name}\n{rep}")
