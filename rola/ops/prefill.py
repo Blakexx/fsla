@@ -66,23 +66,25 @@ def scale_bytes(routes, bound: torch.Tensor) -> torch.Tensor:
     return torch.where(p > 0, s, torch.full_like(s, UNIT_NONE)).clamp(-128, 127).to(torch.int8)
 
 
-def unpack_num(num: torch.Tensor, channels: int) -> torch.Tensor:
-    """``[BH, L, d_v]`` fp32 in channel order: the carry's ``num`` as the drain wrote it -- fp32, or int32 words of f16
-    pairs, a box's word ``8 m + g`` holding channels ``(c, c + 2)``, ``c = 8 (g >> 1) + 4 m + (g & 1)`` of its
-    ``channels`` (`docs/internals/carry/parts.md#image`)."""
+def unpack_num(num: torch.Tensor, channels: int, factor: torch.Tensor | float = 1.0) -> torch.Tensor:
+    """``[BH, L, d_v]`` fp32 in channel order, times ``factor`` (``[BH, L]`` a token's, or one float): the carry's
+    ``num`` as the drain wrote it -- fp32, or int32 words of f16 pairs, a box's word ``8 m + g`` holding channels ``(c,
+    c + 2)``, ``c = 8 (g >> 1) + 4 m + (g & 1)`` of its ``channels`` (`docs/internals/carry/parts.md#image`). The pairs
+    are a fixed bit pattern -- word ``8 m + 2 a + b``'s halves ``h`` are channel ``8 a + 4 m + 2 h + b`` -- so the words
+    read as f16 elements ``[m][a][b][h]`` a box and ONE permuted multiply writes them scaled in channel order
+    ``[a][m][h][b]``: one pass over the planes."""
+    tokenwise = isinstance(factor, torch.Tensor)
     if num.dtype == torch.float32:
-        return num
+        return num * (factor.unsqueeze(-1) if tokenwise else factor)
+    if channels != 32:
+        raise ValueError(f"the drain's f16 pairs are a 32-channel box's, got a box of {channels} channels")
     BH, L, words = num.shape
-    lo = (num & 0xFFFF).to(torch.int16).view(torch.float16).float()
-    hi = ((num >> 16) & 0xFFFF).to(torch.int16).view(torch.float16).float()
-    k = torch.arange(words, device=num.device)
-    box, kk = k // (channels // 2), k % (channels // 2)
-    m, g = kk // 8, kk % 8
-    channel = channels * box + 8 * (g >> 1) + 4 * m + (g & 1)
-    out = torch.empty(BH, L, 2 * words, dtype=torch.float32, device=num.device)
-    out[..., channel] = lo
-    out[..., channel + 2] = hi
-    return out
+    boxes = words // 16
+    pairs = num.view(torch.float16).view(BH, L, boxes, 2, 4, 2, 2)
+    out = torch.empty(BH, L, boxes, 4, 2, 2, 2, dtype=torch.float32, device=num.device)
+    scale = factor.view(BH, L, 1, 1, 1, 1, 1) if tokenwise else factor
+    torch.mul(pairs.permute(0, 1, 2, 4, 3, 6, 5), scale, out=out)
+    return out.view(BH, L, 2 * words)
 
 
 def prefill(routes, values, facts, carve, layout, read_statics, write_statics, *, accumulate: str | None = None,
@@ -95,13 +97,10 @@ def prefill(routes, values, facts, carve, layout, read_statics, write_statics, *
     den_inter, bound = den_ops.den(routes, facts)
     scale = scale_bytes(routes, bound)
     num_c, _ = carry_ops.carry(routes, values, facts, carve, scale, accumulate=accumulate, reduce_dtype=reduce_dtype)
-    num = unpack_num(num_c, carve.channels)
     unit = carry_factor(routes)
-    if num_c.dtype != torch.float32:
-        num = num * (torch.exp2(scale.float() + 1.0) * unit).unsqueeze(-1)
-    else:
-        num = num * unit
-    num = num.contiguous()
+    #: the f16 sum's tokens at ``2^(s + 1)`` times the unit, an fp32 sum's at the unit: one pass with the unpack
+    factor = torch.exp2(scale.float() + 1.0) * unit if num_c.dtype != torch.float32 else unit
+    num = unpack_num(num_c, carve.channels, factor)
     den = (den_inter * den_factor(routes)).contiguous()
     intra_ops.intra_forward(routes, values, facts, layout, read_statics, write_statics, num, den,
                             accumulate=accumulate)
