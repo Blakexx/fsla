@@ -214,6 +214,16 @@ __device__ __forceinline__ void k_loop(const ProduceParams& p, const __nv_bfloat
                                        Row0 row0, float (&acc)[kAccTiles][kTokenTiles][4]) {
   const int lane = static_cast<int>(threadIdx.x) & 31;
   const int steps = (p.hidden + kKStep * S - 1) / (kKStep * S);
+  //: a column past the job's is never copied: its rows zeroed in both stages once, so its accumulators keep their seed
+  rola::static_for<QW>([&](auto I) {
+    constexpr int q = decltype(I)::value;
+    const int u = static_cast<int>(threadIdx.x) + q * kProduceThreads;
+    const uint32_t at = chunk_at<S>(u / (2 * S), u % (2 * S));
+    if (!((s.mask >> q) & 1u)) {
+      ops::store_shared_vec16(stages + at, uint4{0u, 0u, 0u, 0u});
+      ops::store_shared_vec16(stages + kStageSlot + at, uint4{0u, 0u, 0u, 0u});
+    }
+  });
   stage_step<S, XOff>(p, base, s, 0, stages, true);
 #pragma unroll 1
   for (int step = 0; step < steps; ++step) {
@@ -228,17 +238,21 @@ __device__ __forceinline__ void k_loop(const ProduceParams& p, const __nv_bfloat
 }
 
 //: THE ACCUMULATORS SEEDED with the routing bias, a lane's columns `col(i, h)` of tile `i`'s rows `g` and `g + 8` (0
-//: where none or dead): a predicated load a column, before the k-loop, where no accumulator is live yet.
+//: where none): a predicated load a column, before the k-loop, where no accumulator is live yet. A route job's dead
+//: columns seed at -inf and stay there (their weights are zeros), so no pass of the solve tests membership.
+//: -- see docs/internals/produce/produce.md#solve
 template <class Col>
 __device__ __forceinline__ void seed_bias(const ProduceParams& p, const Job& job, int columns,
                                           Col col, float (&acc)[kAccTiles][kTokenTiles][4]) {
   const float* bias = job.kind == kJobRoute ? bias_row(p, job) : nullptr;
+  const float dead = job.kind == kJobRoute ? -INFINITY : 0.0f;
   rola::static_for<kAccTiles>([&](auto I) {
     constexpr int i = decltype(I)::value;
     rola::static_for<2>([&](auto H) {
       constexpr int h = decltype(H)::value;
       const int j = col(i, h);
-      const float b = column_bias(bias, job, j, j >= 0 && j < columns);
+      const bool live = j >= 0 && j < columns;
+      const float b = live ? column_bias(bias, job, j, true) : dead;
       rola::static_for<kTokenTiles>([&](auto N) {
         constexpr int n = decltype(N)::value;
         acc[i][n][2 * h] = b;
@@ -298,64 +312,77 @@ __device__ __forceinline__ float row_value(const float (&acc)[kAccTiles][4]) {
   return acc[V >> 1][2 * (V & 1) + S];
 }
 
-//: A lane's member columns, bit `v` its value `v`'s column `8 v + g` under `width`: the same for all its rows.
 constexpr int kSlots = 2;
 
-__device__ __forceinline__ uint32_t row_members(int width, int lane) {
-  const int n = min(max((width - (lane >> 2) + 7) / 8, 0), 2 * kAccTiles);
-  return n == 32 ? 0xffffffffu : (1u << n) - 1u;
+//: A LANE'S `N` VALUES `B ..` OF SLOT `S` REDUCED PAIRWISE: log2 N dependent steps, where a running fold is N.
+template <int S, int B, int N, class Op>
+__device__ __forceinline__ float row_tree(const float (&acc)[kAccTiles][4], Op op) {
+  if constexpr (N == 1)
+    return row_value<S, B>(acc);
+  else
+    return op(row_tree<S, B, N / 2>(acc, op), row_tree<S, B + N / 2, N - N / 2>(acc, op));
 }
 
-//: SOFTMAX on a lane's two rows of `M` column tiles, in place; `top` each row's largest level, its own quotient.
+struct MaxOp {
+  __device__ __forceinline__ float operator()(float a, float b) const { return fmaxf(a, b); }
+};
+
+struct AddOp {
+  __device__ __forceinline__ float operator()(float a, float b) const { return a + b; }
+};
+
+//: A VALUE'S SUMS PAST `lo`: where `z > lo`, its count, value and square added -- one compare and three predicated
+//: adds, never a select (an ALU-pipe instruction, at half the FP32 rate). -- see docs/internals/produce/produce.md#threshold
+__device__ __forceinline__ void sums_past(float z, float lo, float& k, float& P, float& Q) {
+  asm("{\n .reg .pred p;\n setp.gt.f32 p, %3, %4;\n @p add.rn.f32 %0, %0, 0f3F800000;\n"
+      " @p add.rn.f32 %1, %1, %3;\n @p fma.rn.f32 %2, %3, %3, %2;\n}"
+      : "+f"(k), "+f"(P), "+f"(Q)
+      : "f"(z), "f"(lo));
+}
+
+//: One where `z >= tau`: one compare, one predicated add.
+__device__ __forceinline__ void count_at(float z, float tau, float& n) {
+  asm("{\n .reg .pred p;\n setp.ge.f32 p, %1, %2;\n @p add.rn.f32 %0, %0, 0f3F800000;\n}"
+      : "+f"(n)
+      : "f"(z), "f"(tau));
+}
+
+//: SOFTMAX on a lane's two rows of `M` column tiles, in place (a dead column at -inf, its level 0); `top` each row's
+//: largest level, its own quotient. -- see docs/internals/produce/produce.md#solve
 template <int M>
-__device__ __forceinline__ void softmax_rows(float (&acc)[kAccTiles][4], uint32_t members,
-                                             float (&top)[kSlots]) {
+__device__ __forceinline__ void softmax_rows(float (&acc)[kAccTiles][4], float (&top)[kSlots]) {
+  constexpr float kLog2e = 1.4426950408889634f;
   rola::static_for<kSlots>([&](auto Sl) {
     constexpr int s = decltype(Sl)::value;
-    float m = -INFINITY;
+    const float m = row_all(row_tree<s, 0, 2 * M>(acc, MaxOp{}), MaxOp{}), ml = m * kLog2e;
     rola::static_for<2 * M>([&](auto V) {
       constexpr int v = decltype(V)::value;
-      m = (members >> v) & 1u ? fmaxf(m, row_value<s, v>(acc)) : m;
+      row_value<s, v>(acc) = ops::exp2_approx(fmaf(row_value<s, v>(acc), kLog2e, -ml));
     });
-    m = row_all(m, [](float a, float b) { return fmaxf(a, b); });
-    float sum = 0.0f;
+    const float sum = row_all(row_tree<s, 0, 2 * M>(acc, AddOp{}), AddOp{});
+    const float inv = __fdividef(1.0f, sum);
     rola::static_for<2 * M>([&](auto V) {
       constexpr int v = decltype(V)::value;
-      const float e = (members >> v) & 1u ? __expf(row_value<s, v>(acc) - m) : 0.0f;
-      row_value<s, v>(acc) = e;
-      sum += e;
+      row_value<s, v>(acc) *= inv;
     });
-    sum = row_all(sum, [](float a, float b) { return a + b; });
-    rola::static_for<2 * M>([&](auto V) {
-      constexpr int v = decltype(V)::value;
-      row_value<s, v>(acc) = __fdividef(row_value<s, v>(acc), sum);
-    });
-    top[s] = __fdividef(1.0f, sum);
+    top[s] = inv;
   });
 }
 
-//: THE ALPHA-ENTMAX LEVELS (alpha 1.5 where `a15`, else 2: uniform, the shape word's) on a lane's two rows, in place, by Newton from the left: each row
-//: shifted by its max; `f(tau) = sum g(z - tau) - 1` convex and decreasing from `tau = -2` (alpha 2: `-1`), so a step
-//: never passes the root and the closed form on the support `{z > lo}` is the root once no member lies below it. One
-//: vote over the warp's 8 rows ends the loop (a settled row's further steps keep its threshold). `top` each row's
-//: largest level. -- see docs/internals/produce/produce.md#threshold
+//: THE ALPHA-ENTMAX LEVELS (alpha 1.5 where `a15`, else 2: uniform, the shape word's) on a lane's two rows, in place,
+//: by Newton from the left: each row shifted by its max (a dead column stays -inf, below every threshold); `f(tau) = sum
+//: g(z - tau) - 1` convex and decreasing from `tau = -2` (alpha 2: `-1`), so a step never passes the root and the closed
+//: form on the support `{z > lo}` is the root once no member lies below it. One vote over the warp's 8 rows ends the
+//: loop (a settled row's further steps keep its threshold). `top` each row's largest level.
+//: -- see docs/internals/produce/produce.md#threshold
 template <int M>
-__device__ __forceinline__ void entmax_rows(float (&acc)[kAccTiles][4], uint32_t members, bool a15,
-                                            float (&top)[kSlots], uint32_t (&support)[kSlots],
-                                            Clock& clock) {
+__device__ __forceinline__ void entmax_rows(float (&acc)[kAccTiles][4], bool a15,
+                                            float (&top)[kSlots], Clock& clock) {
   float lo[kSlots], tau[kSlots];
   rola::static_for<kSlots>([&](auto Sl) {
     constexpr int s = decltype(Sl)::value;
-    float m = -INFINITY;
-    rola::static_for<2 * M>([&](auto V) {
-      constexpr int v = decltype(V)::value;
-      m = (members >> v) & 1u ? fmaxf(m, row_value<s, v>(acc)) : m;
-    });
-    m = row_all(m, [](float a, float b) { return fmaxf(a, b); });
-    rola::static_for<2 * M>([&](auto V) {
-      constexpr int v = decltype(V)::value;
-      row_value<s, v>(acc) = (members >> v) & 1u ? row_value<s, v>(acc) - m : 0.0f;
-    });
+    const float m = row_all(row_tree<s, 0, 2 * M>(acc, MaxOp{}), MaxOp{});
+    rola::static_for<2 * M>([&](auto V) { row_value<s, decltype(V)::value>(acc) -= m; });
     lo[s] = a15 ? -2.0f : -1.0f;
     tau[s] = 0.0f;
   });
@@ -367,27 +394,17 @@ __device__ __forceinline__ void entmax_rows(float (&acc)[kAccTiles][4], uint32_t
     rola::static_for<kSlots>([&](auto Sl) {
       constexpr int s = decltype(Sl)::value;
       float k = 0.0f, P = 0.0f, Q = 0.0f;
-      rola::static_for<2 * M>([&](auto V) {
-        constexpr int v = decltype(V)::value;
-        const float z = row_value<s, v>(acc);
-        //: the square through the step's own member value, so no product of the step-invariant `z` is hoisted
-        const bool in = ((members >> v) & 1u) && z > lo[s];
-        const float zi = in ? z : 0.0f;
-        k += in ? 1.0f : 0.0f;
-        P += zi;
-        Q = fmaf(zi, z, Q);
-      });
+      rola::static_for<2 * M>(
+          [&](auto V) { sums_past(row_value<s, decltype(V)::value>(acc), lo[s], k, P, Q); });
       const float here = k;
-      k = row_all(k, [](float a, float b) { return a + b; });
-      P = row_all(P, [](float a, float b) { return a + b; });
-      Q = row_all(Q, [](float a, float b) { return a + b; });
+      k = row_all(k, AddOp{});
+      P = row_all(P, AddOp{});
+      Q = row_all(Q, AddOp{});
       tau[s] = a15 ? __fdividef(P - ops::sqrt_approx(fmaxf(P * P - k * (Q - 4.0f), 0.0f)), k)
                    : __fdividef(P - 1.0f, k);
       float past = 0.0f;
-      rola::static_for<2 * M>([&](auto V) {
-        constexpr int v = decltype(V)::value;
-        past += ((members >> v) & 1u) && row_value<s, v>(acc) >= tau[s] ? 1.0f : 0.0f;
-      });
+      rola::static_for<2 * M>(
+          [&](auto V) { count_at(row_value<s, decltype(V)::value>(acc), tau[s], past); });
       settled = settled && (tau[s] <= lo[s] || past == here);
       lo[s] = a15 ? lo[s]
                         + __fdividef((Q - 2.0f * P * lo[s] + k * lo[s] * lo[s]) * 0.25f - 1.0f,
@@ -398,19 +415,19 @@ __device__ __forceinline__ void entmax_rows(float (&acc)[kAccTiles][4], uint32_t
   }
   clock.lap(kPhaseThreshold);
 
+  //: the level `relu(h (z - tau))`, squared at alpha 1.5: `base * fma(base, w1, w0)` is `base^2` at (1, 0) and `base`
+  //: at (0, 1), both exactly, so no select a value
+  const float h = a15 ? 0.5f : 1.0f, w1 = a15 ? 1.0f : 0.0f, w0 = a15 ? 0.0f : 1.0f;
   rola::static_for<kSlots>([&](auto Sl) {
     constexpr int s = decltype(Sl)::value;
-    support[s] = 0u;
+    const float ht = h * tau[s];
     rola::static_for<2 * M>([&](auto V) {
       constexpr int v = decltype(V)::value;
-      const float z = row_value<s, v>(acc);
-      const bool sup = ((members >> v) & 1u) && z > tau[s];
-      support[s] |= (sup ? 1u : 0u) << v;
-      const float base = sup ? fmaxf((a15 ? 0.5f : 1.0f) * (z - tau[s]), 0.0f) : 0.0f;
-      row_value<s, v>(acc) = a15 ? base * base : base;
+      const float base = fmaxf(fmaf(h, row_value<s, v>(acc), -ht), 0.0f);
+      row_value<s, v>(acc) = base * fmaf(base, w1, w0);
     });
-    const float peak = fmaxf((a15 ? 0.5f : 1.0f) * (0.0f - tau[s]), 0.0f);
-    top[s] = a15 ? peak * peak : peak;
+    const float peak = fmaxf(-ht, 0.0f);
+    top[s] = peak * fmaf(peak, w1, w0);
   });
 }
 
@@ -469,10 +486,9 @@ static_assert(kProduceWarps * (kParkedWarpBytes + kStagedWarpBytes) <= kProduceS
 template <int M, class Out>
 __device__ __forceinline__ void bundle_side(const ProduceParams& p, const Job& job, int tile0,
                                             int lane, const float (&acc)[kAccTiles][4],
-                                            const float (&top)[kSlots], uint32_t members,
-                                            Out* plane, int plane_row, int out_col, float* scale,
-                                            float* mass, bool fold, bool applied, bool floored,
-                                            uint8_t* staged) {
+                                            const float (&top)[kSlots], Out* plane, int plane_row,
+                                            int out_col, float* scale, float* mass, bool fold,
+                                            bool applied, bool floored, uint8_t* staged) {
   constexpr int kGrain = 32 / static_cast<int>(sizeof(Out));
   constexpr int kRowElems = kStagedRowBytes / static_cast<int>(sizeof(Out));
   const int width = job.width, slot = (width + kGrain - 1) / kGrain * kGrain, g = lane >> 2;
@@ -482,12 +498,7 @@ __device__ __forceinline__ void bundle_side(const ProduceParams& p, const Job& j
     constexpr int s = decltype(Sl)::value;
     float sum = 1.0f;
     if (fold) {
-      sum = 0.0f;
-      rola::static_for<2 * M>([&](auto V) {
-        constexpr int v = decltype(V)::value;
-        sum += (members >> v) & 1u ? row_value<s, v>(acc) : 0.0f;
-      });
-      sum = row_all(sum, [](float a, float b) { return a + b; });
+      sum = row_all(row_tree<s, 0, 2 * M>(acc, AddOp{}), AddOp{});
     }
     const float m = top[s], inv = __fdividef(1.0f, fmaxf(m, 1e-30f));
     const float floor = floored && m > 0.0f ? facts::kDenseFloor : 0.0f;
@@ -530,8 +541,7 @@ __device__ __forceinline__ void bundle_side(const ProduceParams& p, const Job& j
 template <int M>
 __device__ __forceinline__ void bundle_rows(const ProduceParams& p, const Job& job, int tile0,
                                             int lane, const float (&acc)[kAccTiles][4],
-                                            const float (&top)[kSlots], uint32_t members,
-                                            uint8_t* staged) {
+                                            const float (&top)[kSlots], uint8_t* staged) {
 #pragma unroll 1
   for (int side = 0; side < 2; ++side) {
     if (!(side == 0 ? job.reads : job.writes)) continue;
@@ -540,10 +550,10 @@ __device__ __forceinline__ void bundle_rows(const ProduceParams& p, const Job& j
     float* mass = side == 0 ? p.mass_read : p.mass_write;
     const bool fold = (side == 0 ? job.fold_read : job.fold_write) != 0, applied = side == 1;
     if (side == 0 ? job.dense_read : job.dense_write)
-      bundle_side<M>(p, job, tile0, lane, acc, top, members, p.dense[side], p.dense_rows[side],
-                     out_col, scale, mass, fold, applied, true, staged);
+      bundle_side<M>(p, job, tile0, lane, acc, top, p.dense[side], p.dense_rows[side], out_col,
+                     scale, mass, fold, applied, true, staged);
     else
-      bundle_side<M>(p, job, tile0, lane, acc, top, members, side == 0 ? p.amp_read : p.amp_write,
+      bundle_side<M>(p, job, tile0, lane, acc, top, side == 0 ? p.amp_read : p.amp_write,
                      side == 0 ? p.rows_read : p.rows_write, out_col, scale, mass, fold, applied,
                      false, staged);
   }
@@ -554,17 +564,16 @@ __device__ __forceinline__ void bundle_rows(const ProduceParams& p, const Job& j
 template <int M>
 __device__ __forceinline__ void solve_class(const ProduceParams& p, const Job& job, int job_index,
                                             int tile0, int lane, float (&acc)[kAccTiles][4],
-                                            uint32_t members, uint8_t* staged, Clock& clock) {
+                                            uint8_t* staged, Clock& clock) {
   float top[kSlots];
-  uint32_t support[kSlots];
   if (job.solve == kSoftmax)
-    softmax_rows<M>(acc, members, top);
+    softmax_rows<M>(acc, top);
   else
-    entmax_rows<M>(acc, members, job.solve == kEntmax15, top, support, clock);
+    entmax_rows<M>(acc, job.solve == kEntmax15, top, clock);
   clock.lap(kPhaseLevels);
   probe_levels<0>(
       p, job_index, job.width, lane, [&](int s) { return tile0 + 2 * (lane & 3) + s; }, acc);
-  bundle_rows<M>(p, job, tile0, lane, acc, top, members, staged);
+  bundle_rows<M>(p, job, tile0, lane, acc, top, staged);
   clock.lap(kPhaseBundle);
 }
 
@@ -574,10 +583,8 @@ __device__ __forceinline__ void solve_class(const ProduceParams& p, const Job& j
 __device__ __forceinline__ void solve_tile(const ProduceParams& p, const Job& job, int job_index,
                                            int tile0, int lane, float (&acc)[kAccTiles][4],
                                            uint8_t* staged, Clock& clock) {
-  const uint32_t members = row_members(job.width, lane);
   rola::uniform_switch<4>(job.rows, [&](auto R) __attribute__((always_inline)) {
-    solve_class<2 << decltype(R)::value>(p, job, job_index, tile0, lane, acc, members, staged,
-                                         clock);
+    solve_class<2 << decltype(R)::value>(p, job, job_index, tile0, lane, acc, staged, clock);
   });
 }
 
@@ -837,19 +844,22 @@ __global__ __launch_bounds__(kProduceThreads, 2) void produce_kernel(
         rola::static_for<4>(
             [&](auto E) { tile[i][decltype(E)::value] = acc[i][0][decltype(E)::value]; });
       });
-      if (job.kind == kJobRoute)
-        solve_tile(p, job, job_index, token0 + kWarpTokens * warp, lane, tile, staged, clock);
-      else
-        value_tile(p, job, token0 + kWarpTokens * warp, lane, tile);
-      rola::static_for<kAccTiles>([&](auto I) {
-        constexpr int i = decltype(I)::value;
-        const float4 v = *reinterpret_cast<const float4*>(parked + (i * 32 + lane) * 16);
-        tile[i][0] = v.x, tile[i][1] = v.y, tile[i][2] = v.z, tile[i][3] = v.w;
-      });
-      if (job.kind == kJobRoute)
-        solve_tile(p, job, job_index, token0 + kWarpTokens * warp + 8, lane, tile, staged, clock);
-      else
-        value_tile(p, job, token0 + kWarpTokens * warp + 8, lane, tile);
+      //: the n-tiles one rolled loop, so the solve's and the bundle's bodies are one copy, not one an n-tile
+#pragma unroll 1
+      for (int n = 0; n < kTokenTiles; ++n) {
+        if (n > 0) {
+          rola::static_for<kAccTiles>([&](auto I) {
+            constexpr int i = decltype(I)::value;
+            const float4 v = *reinterpret_cast<const float4*>(parked + (i * 32 + lane) * 16);
+            tile[i][0] = v.x, tile[i][1] = v.y, tile[i][2] = v.z, tile[i][3] = v.w;
+          });
+        }
+        const int tile0 = token0 + kWarpTokens * warp + 8 * n;
+        if (job.kind == kJobRoute)
+          solve_tile(p, job, job_index, tile0, lane, tile, staged, clock);
+        else
+          value_tile(p, job, tile0, lane, tile);
+      }
     }
   }
 

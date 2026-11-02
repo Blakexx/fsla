@@ -116,8 +116,13 @@ us a head at `(256, 256)`, `L = 64K`, `H = 16` on token-major rows (an 8 KB toke
 113 us head-major (676 GB/s), the rate of a single head (`docs/internals/facts/facts.md#the-grid`).
 
 <a id="solve"></a>THE SOLVE runs on the accumulators (`solve_tile`, a row class's body `solve_class`): a lane holds four token rows (`row_value`: its
-two n-tiles' two tokens), 32 values each at 256 columns, its member columns one mask the four share (`row_members`),
-and a row's reductions are three shuffles over the 8 lanes sharing `lane & 3` (`row_all`), the four rows' together.
+two n-tiles' two tokens), 32 values each at 256 columns, and a row's reductions are a pairwise tree over the lane's
+values (`row_tree`: log2 of the count dependent steps, where a running fold is the count) and three shuffles over the
+8 lanes sharing `lane & 3` (`row_all`). A route job's DEAD columns (past its width) seed at -inf (`seed_bias`; their
+weight rows, never copied, are zeroed in both stages once a block by `k_loop`, so they stay there), so no pass tests membership: the max ignores them, the softmax's `2^-inf` is 0,
+every threshold lies above them, and every level of one is 0. The two n-tiles are one rolled loop (the second parked,
+[#bundle](#bundle)), so the solve and the bundle are one copy each in the kernel: with the dead columns this took it
+from 40.6K instructions to 23.0K. The softmax is `2^(z log2 e - m log2 e)` (one FFMA and `ops::exp2_approx`).
 The row's class (2, 4, 8 or 16 column tiles, its width's) and its activation are the shape word's, so every
 branch over them, and every shuffle and vote under it, is warp-uniform to ptxas; no value past the class's tiles is
 touched. A tied or independent row is its one logit row: softmax (`softmax_rows`) or entmax 1.5 or 2
@@ -131,7 +136,11 @@ kernel's own logits, per slot within `(width + 16) 2^-23`.
 <a id="threshold"></a>THE THRESHOLD IS NEWTON FROM THE LEFT (`entmax_rows`), not a sort. With the row shifted by
 its max, `f(tau) = sum_i g(z_i - tau) - 1` (`g(d) = max(d, 0)^2 / 4` at alpha 1.5, `max(d, 0)` at 2) is convex and
 decreasing, and `f(-2) >= 0` (`f(-1)` at alpha 2): Newton from there never passes the root, and each step needs only
-the count, sum and sum of squares of the support `{z > lo}`. The closed form on that support -- the formula the sorted
+the count, sum and sum of squares of the support `{z > lo}` -- one compare and three predicated adds a value
+(`sums_past`), and the settled test's count one compare and one predicated add (`count_at`), never a select: a select
+and a compare are each an ALU-pipe instruction at half the FP32 rate, and the masked form issued 6.6 of them a value a
+step (812 instructions a step at 256 columns, now 513). The levels are `relu(h (z - tau))` times `fma(base, w1, w0)`
+-- `base^2` at alpha 1.5's `(1, 0)`, `base` at 2's `(0, 1)`, both exactly -- so the activation is no select a value. The closed form on that support -- the formula the sorted
 solve evaluates at its chosen rank -- IS the root once no member lies below it, which one vote over the warp's 16
 rows decides (a vote is warp-uniform to ptxas, so the loop's exit outlines nothing; a settled row's further steps
 keep its threshold, the closed form on an unchanged support). At alpha 2 the steps are Michelot's iteration. Measured
@@ -144,6 +153,18 @@ cycles an instruction there, ncu's no-instruction stall the top one); the sorted
 256-wide row, twelve-round multisection 10K, Newton 2.7K. The sort's bitwise tie-order independence (its sums run in
 sorted order) does not carry over -- these sum in lane order, deterministic run to run; the gate is per slot against
 fp64.
+
+<a id="budget"></a>THE BUDGET (`tools/budgets/produce.json`, KERNEL_STANDARDS §19): instructions a job tile (one job's 64
+tokens, the block's 4 warps) by component, at nl64k-alt-h4-g4 (16 one-row route jobs of 256 columns a token tile, 8
+softmax and 8 entmax, ~3.7 Newton steps a row; one value job). The design's counts a warp: the k-loop 16 k-steps x (32
+HMMAs, 17 `ldmatrix`, 5 copies, ~12 address and edge) ~1.1K; entmax a n-tile max and shift 128, 3.7 steps x (64 x 6 +
+40), levels 192 ~1.85K; softmax ~400 a n-tile; a u8 or f16 bundle side ~180 / ~310 a n-tile; the gain a quad a token,
+8 chunk pairs and their products. First attribution (b4b7086b, `tools/stall_census.py --kernel produce`): 39.1K a
+unit against the budget's 17.5K -- entmax 14.8K, the k-loop 7.9K (its 2,048 HMMAs and 5.9K besides), the bundle 5.9K,
+softmax 3.9K, the kernel's own body 3.2K, the gain 1.5K (long scoreboard 53%: its chunk loads one pair at a time). With
+the solve on the values alone ([#solve](#solve), [#threshold](#threshold)): 29.5K -- entmax 8.4K, softmax 1.05K, the
+stall samples down 21%; the phase ledger's route job 84.3K cycles a warp-tile to 57.5K (threshold 14.0K to 5.1K,
+levels 7.1K to 2.1K, the projection 40.1K to 30.9K beside the other block's shorter solve).
 
 <a id="phase-ledger"></a>THE PHASE LEDGER (`rola.ops.produce.ledger_bind`, `[jobs, 4 warps, 7 phases]` int64 cycles,
 booked over the tiles): job, project, threshold, levels, bundle, finish, values -- a warp's cycles

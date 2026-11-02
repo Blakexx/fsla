@@ -440,6 +440,14 @@ __device__ __forceinline__ float sqrt_approx(float x) {
   return d;
 }
 
+//: TWO TO THE POWER `x` ON THE SPECIAL-FUNCTION UNIT (`ex2.approx.ftz.f32`, one `MUFU`): -inf gives 0.
+//: -- see docs/internals/common/ops.md#exp2-approx
+__device__ __forceinline__ float exp2_approx(float x) {
+  float d;
+  asm("ex2.approx.ftz.f32 %0, %1;" : "=f"(d) : "f"(x));
+  return d;
+}
+
 //: FOUR BYTES CHOSEN FROM EIGHT by a selector word: the byte gathers of an int8 operand. -- see docs/internals/common/ops.md#prmt
 __device__ __forceinline__ uint32_t prmt(uint32_t lo, uint32_t hi, uint32_t sel) {
   uint32_t d;

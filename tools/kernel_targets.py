@@ -118,8 +118,8 @@ TARGETS = {
                     "tools/budgets/intra.json", "warp tile pairs"),
     "facts": Target("facts", "facts_pass", "facts_pass", "facts", ("csrc/rola/src/facts/facts.cu",), None,
                     "windows"),
-    "produce": Target("produce", "produce_kernel", "produce", "produce", ("csrc/rola/src/produce/produce.cu",), None,
-                      "job tiles"),
+    "produce": Target("produce", "produce_kernel", "produce", "produce", ("csrc/rola/src/produce/produce.cu",),
+                      "tools/budgets/produce.json", "job tiles"),
 }
 
 

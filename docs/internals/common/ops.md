@@ -163,6 +163,9 @@ Every operation is defined by WHAT THE ALGORITHM NEEDS. A helper with no caller 
   compiles to a range check and a call to a slow-path subroutine, whose calling convention spills a body that holds
   its registers full (the producer's register-resident threshold, at 252 live); the approximate root sits in the same
   error class as the `__fdividef` beside it.
+- <a id="exp2-approx"></a>`exp2_approx`: `ex2.approx.ftz.f32`, one special-function instruction: `2^x` within two
+  units in the last place, a denormal result flushed to zero, `2^-inf = 0` (the softmax's dead columns,
+  [produce.md#solve](../produce/produce.md#solve)).
 - <a id="prmt"></a>`prmt`, `pack_byte4`: `prmt.b32` picks four of two words' eight bytes by a selector nibble each;
   `pack_byte4` takes the same byte of four words with three of them (pair selectors `0x0040`, `0x0051`, `0x0062`, then
   `0x5410`), which is how an int8 operand row is formed from four gathered words without shifts or masks.
