@@ -25,8 +25,8 @@ level's width, the `route_W` columns of its one or two logit rows, the packed-pl
 side (`-1` for a side it does not write), the level, and whether each side's fold applies. Its CONTROL -- the kind, the
 solve (`SolveKind`), the solve row's width class, the projection's column-tile class and whether it is a wide
 union's pair form, the sides it writes and whose fold applies -- is one SHAPE WORD (int16) a job in the launch's
-parameters (`ProduceParams::shapes`, `rola.ops.produce._shape`), read once by block index: a value ptxas knows is
-warp-uniform, so a branch on it compiles its collectives inline alone, where a branch on a loaded job field gave each
+parameters (`ProduceParams::shapes`, `rola.ops.produce._shape`), read by block index at each `load_job` (made opaque,
+so no k-loop holds it: on sm_80 the held word was the kernel's one spill): a value ptxas knows is warp-uniform, so a branch on it compiles its collectives inline alone, where a branch on a loaded job field gave each
 a guarded fallback subroutine as well (692 of them: cold code, KERNEL_STANDARDS §20). The parameters are
 `__grid_constant__`, so the body's lambdas may hold their address without copying them to local memory (a copy made
 every shape word a local load, and every branch on one a fallback). At most `kMaxJobs` jobs a launch.
@@ -82,7 +82,9 @@ no collective sits under a branch ptxas cannot prove warp-uniform.
 
 <a id="bundle"></a>THE BUNDLE'S FORM (`bundle_rows`, `bundle_side`), one n-tile at a time: after the projection a warp
 PARKS its second n-tile's accumulators in the released stages (`kParkedWarpBytes`, 16 bytes a lane, lane-major) and
-solves and bundles each n-tile on 64 live accumulators, so the solve never sits at the register cap. A side's rows are
+solves and bundles each n-tile on 64 live accumulators, so the solve never sits at the register cap. The two sides are
+one `#pragma unroll 1` loop, the side's operands selected at run time, so a class carries two `bundle_side` copies
+(the f16 plane and the u8 plane), not one a side and plane: the kernel went from 58K instructions to 40.6K. A side's rows are
 staged one token slot at a time -- a lane quad's 4 rows, `kStagedRowBytes` a row, the widest slot plus 16 bytes so the
 four rows' bytes lie in distinct banks (`tools/bank_model.py`: a byte store one wavefront, the read-back four) -- and
 stored 16 bytes a lane; a coefficient is the level times its row's reciprocal max (one quotient a row, within an fp32

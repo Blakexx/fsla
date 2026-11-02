@@ -36,8 +36,9 @@ __device__ __forceinline__ int64_t slot_of(const ProduceParams& p, int token, in
 
 //: THE BLOCK'S JOB: its control from its shape word (the parameters', read at the block's index: uniform to ptxas), its
 //: addressing from the table. -- see docs/internals/produce/produce.md#jobs
-__device__ __forceinline__ Job load_job(const ProduceParams& p, int index, int signed_shape) {
-  const int shape = signed_shape & 0xffff;
+__device__ __forceinline__ Job load_job(const ProduceParams& p, int index) {
+  //: the word read fresh at each call (`opaque`), so no k-loop holds it
+  const int shape = p.shapes[ops::opaque(index)] & 0xffff;
   const int32_t* row = p.jobs + static_cast<int64_t>(index) * kJobFields;
   return Job{(shape >> 5) & 1,  shape & 7,         (shape >> 3) & 3,   (shape >> 6) & 1,
              (shape >> 7) & 1,  row[kFieldHead],   row[kFieldHeads],   row[kFieldWidth],
@@ -524,30 +525,27 @@ __device__ __forceinline__ void bundle_side(const ProduceParams& p, const Job& j
 }
 
 //: A ONE-ROW JOB'S ROWS IN THE BUNDLE: each side it writes, its plane the side's dense f16 or sparse u8 (the shape
-//: word's bits). The read side's fold is carried (its scale the max); the write side's applied.
+//: word's bits). The read side's fold is carried (its scale the max); the write side's applied. The sides are a rolled
+//: loop over runtime operands, so the bundle's body is two copies (a u8 and an f16 one), never four.
 template <int M>
 __device__ __forceinline__ void bundle_rows(const ProduceParams& p, const Job& job, int tile0,
                                             int lane, const float (&acc)[kAccTiles][4],
                                             const float (&top)[kSlots], uint32_t members,
                                             uint8_t* staged) {
-  if (job.reads) {
-    if (job.dense_read)
-      bundle_side<M>(p, job, tile0, lane, acc, top, members, p.dense[0], p.dense_rows[0],
-                     job.out_read, p.scale_read, p.mass_read, job.fold_read != 0, false, true,
-                     staged);
+#pragma unroll 1
+  for (int side = 0; side < 2; ++side) {
+    if (!(side == 0 ? job.reads : job.writes)) continue;
+    const int out_col = side == 0 ? job.out_read : job.out_write;
+    float* scale = side == 0 ? p.scale_read : p.scale_write;
+    float* mass = side == 0 ? p.mass_read : p.mass_write;
+    const bool fold = (side == 0 ? job.fold_read : job.fold_write) != 0, applied = side == 1;
+    if (side == 0 ? job.dense_read : job.dense_write)
+      bundle_side<M>(p, job, tile0, lane, acc, top, members, p.dense[side], p.dense_rows[side],
+                     out_col, scale, mass, fold, applied, true, staged);
     else
-      bundle_side<M>(p, job, tile0, lane, acc, top, members, p.amp_read, p.rows_read, job.out_read,
-                     p.scale_read, p.mass_read, job.fold_read != 0, false, false, staged);
-  }
-  if (job.writes) {
-    if (job.dense_write)
-      bundle_side<M>(p, job, tile0, lane, acc, top, members, p.dense[1], p.dense_rows[1],
-                     job.out_write, p.scale_write, p.mass_write, job.fold_write != 0, true, true,
-                     staged);
-    else
-      bundle_side<M>(p, job, tile0, lane, acc, top, members, p.amp_write, p.rows_write,
-                     job.out_write, p.scale_write, p.mass_write, job.fold_write != 0, true, false,
-                     staged);
+      bundle_side<M>(p, job, tile0, lane, acc, top, members, side == 0 ? p.amp_read : p.amp_write,
+                     side == 0 ? p.rows_read : p.rows_write, out_col, scale, mass, fold, applied,
+                     false, staged);
   }
 }
 
@@ -728,12 +726,12 @@ __device__ void stub_rows(const ProduceParams& p, const Job& job, int token0, in
 
 //: A ONE-ROW JOB'S PROJECTION: every warp the job's columns for its 16 tokens, in the job's class of `M` column tiles
 //: and `S` k-steps a stage (the stage's bytes held near level). -- see docs/internals/produce/produce.md#form
-__device__ __forceinline__ void project_one_row(const ProduceParams& p, int job_index, int shape,
-                                                int token0, uint32_t stages, int warp, int lane,
+__device__ __forceinline__ void project_one_row(const ProduceParams& p, int job_index, int token0,
+                                                uint32_t stages, int warp, int lane,
                                                 float (&acc)[kAccTiles][kTokenTiles][4]) {
   const int g = lane >> 2;
   {
-    const Job job = load_job(p, job_index, shape);
+    const Job job = load_job(p, job_index);
     const int columns = job_columns(p, job);
     seed_bias(
         p, job, columns, [&](int i, int h) { return job_column(job, columns, 16 * i + g + 8 * h); },
@@ -751,7 +749,7 @@ __device__ __forceinline__ void project_one_row(const ProduceParams& p, int job_
     });
   }
   //: the job's fields read again past the k-loop, never held across it
-  const Job job = load_job(p, job_index, shape);
+  const Job job = load_job(p, job_index);
   const int columns = job_columns(p, job);
   auto token = [&](int n, int e) {
     return token0 + kWarpTokens * warp + 8 * n + 2 * (lane & 3) + e;
@@ -763,8 +761,8 @@ __device__ __forceinline__ void project_one_row(const ProduceParams& p, int job_
 
 //: A WIDE UNION'S PROJECTION, one 32-token pass: a warp pair a token group, warp `2j + h` columns `128 h ..` of
 //: both rows, eight tiles a row, one k-step a stage (its 512 columns fill it). -- see docs/internals/produce/produce.md#form
-__device__ __forceinline__ void project_pair(const ProduceParams& p, int job_index, int shape,
-                                             int token0, uint32_t stages, int warp, int lane,
+__device__ __forceinline__ void project_pair(const ProduceParams& p, int job_index, int token0,
+                                             uint32_t stages, int warp, int lane,
                                              float (&acc)[kAccTiles][kTokenTiles][4]) {
   const int pair = warp >> 1, half = warp & 1, g = lane >> 2;
   auto col = [&](int i, int h, int width) {
@@ -772,7 +770,7 @@ __device__ __forceinline__ void project_pair(const ProduceParams& p, int job_ind
     return c < width ? (i < 8 ? c : width + c) : -1;
   };
   {
-    const Job job = load_job(p, job_index, shape);
+    const Job job = load_job(p, job_index);
     const int columns = job_columns(p, job), width = job.width;
     seed_bias(p, job, columns, [&](int i, int h) { return col(i, h, width); }, acc);
     const __nv_bfloat16* base = weight_base(p, job);
@@ -784,7 +782,7 @@ __device__ __forceinline__ void project_pair(const ProduceParams& p, int job_ind
         [&](int i) { return (i < 8 ? 0 : width) + 128 * half + 16 * (i & 7); }, acc);
   }
   //: the job's fields read again past the k-loop, never held across it
-  const Job job = load_job(p, job_index, shape);
+  const Job job = load_job(p, job_index);
   const int columns = job_columns(p, job), width = job.width;
   auto token = [&](int n, int e) {
     return token0 + kWarpTokens * pair + 8 * n + 2 * (lane & 3) + e;
@@ -798,7 +796,6 @@ __device__ __forceinline__ void project_pair(const ProduceParams& p, int job_ind
 __global__ __launch_bounds__(kProduceThreads, 2) void produce_kernel(
     const __grid_constant__ ProduceParams p) {
   const int job_index = static_cast<int>(blockIdx.y), tile = static_cast<int>(blockIdx.x);
-  const int shape = p.shapes[job_index];
   const int token0 = tile * kTokenTile;
   extern __shared__ __align__(128) uint8_t stage_bytes[];
   const uint32_t stages = ops::smem_addr(stage_bytes);
@@ -810,23 +807,23 @@ __global__ __launch_bounds__(kProduceThreads, 2) void produce_kernel(
   clock.lap(kPhaseJob);
   const int live = min(kTokenTile, p.BT - token0);
 
-  if (pair_form(load_job(p, job_index, shape))) {
+  if (pair_form(load_job(p, job_index))) {
     //: a pass's 32 tokens a k-loop; the barrier between passes releases the stages the last step read
     const int passes = (live + kTokenTile / 2 - 1) / (kTokenTile / 2);
 #pragma unroll 1
     for (int pass = 0; pass < passes; ++pass) {
       float acc[kAccTiles][kTokenTiles][4];
-      project_pair(p, job_index, shape, token0 + pass * (kTokenTile / 2), stages, warp, lane, acc);
+      project_pair(p, job_index, token0 + pass * (kTokenTile / 2), stages, warp, lane, acc);
       __syncthreads();
     }
     clock.lap(kPhaseProject);
   } else {
     float acc[kAccTiles][kTokenTiles][4];
-    project_one_row(p, job_index, shape, token0, stages, warp, lane, acc);
+    project_one_row(p, job_index, token0, stages, warp, lane, acc);
     //: every warp past its last stage before any parks or stages there
     __syncthreads();
     clock.lap(kPhaseProject);
-    const Job job = load_job(p, job_index, shape);
+    const Job job = load_job(p, job_index);
 
     if (job.kind == kJobValue || job.solve < kUnion15) {
       //: the second n-tile parked, so the solve or the values hold one n-tile's 64 accumulators
@@ -856,7 +853,7 @@ __global__ __launch_bounds__(kProduceThreads, 2) void produce_kernel(
     }
   }
 
-  const Job job = load_job(p, job_index, shape);
+  const Job job = load_job(p, job_index);
   if (job.kind == kJobRoute) {
     //: a union's rows are its split's step (the stub's meanwhile); every other route job bundled in its solve
     if (job.solve >= kUnion15) {
