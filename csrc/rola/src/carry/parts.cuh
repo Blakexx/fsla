@@ -838,14 +838,15 @@ __device__ __forceinline__ void tile_mma(float (&acc)[2][4], const uint32_t (&b)
   });
 }
 
-__device__ __forceinline__ void tile_add(ops::SmemAddr pads, const TileIn& in,
-                                         const float (&acc)[2][4], int lane) {
-  const int g = lane >> 2;
-  const uint32_t b0 = pads + (in.e0 >> 16), b1 = pads + (in.e1 >> 16);
+//: `lane_pads` is the dummy panel rows' address plus the lane's word, `4 (lane >> 2)`: a panel row is 32-byte aligned and
+//: the word under 32, so the second channel half's row is the first's XOR 32 with the word kept.
+__device__ __forceinline__ void tile_add(ops::SmemAddr lane_pads, const TileIn& in,
+                                         const float (&acc)[2][4]) {
+  const uint32_t b0 = lane_pads + (in.e0 >> 16), b1 = lane_pads + (in.e1 >> 16);
 #pragma unroll
   for (int m = 0; m < 2; ++m) {
-    panel_red((b0 ^ (32u * m)) + 4u * g, s16_pair(acc[m][0], acc[m][2], in.c0));
-    panel_red((b1 ^ (32u * m)) + 4u * g, s16_pair(acc[m][1], acc[m][3], in.c1));
+    panel_red(b0 ^ (32u * m), s16_pair(acc[m][0], acc[m][2], in.c0));
+    panel_red(b1 ^ (32u * m), s16_pair(acc[m][1], acc[m][3], in.c1));
   }
 }
 
@@ -881,10 +882,9 @@ __device__ __forceinline__ TileInM<M> tile_in_m(ops::SmemAddr row0, ops::SmemAdd
 }
 
 template <int M>
-__device__ __forceinline__ void tile_add_m(ops::SmemAddr pads, const TileInM<M>& in,
-                                           const float (&acc)[M][2][4], int lane) {
-  const int g = lane >> 2;
-  const uint32_t b0 = pads + (in.e0 >> 16), b1 = pads + (in.e1 >> 16);
+__device__ __forceinline__ void tile_add_m(ops::SmemAddr lane_pads, const TileInM<M>& in,
+                                           const float (&acc)[M][2][4]) {
+  const uint32_t b0 = lane_pads + (in.e0 >> 16), b1 = lane_pads + (in.e1 >> 16);
 #pragma unroll
   for (int m = 0; m < 2; ++m) {
     uint32_t w0 = 0u, w1 = 0u;
@@ -892,8 +892,8 @@ __device__ __forceinline__ void tile_add_m(ops::SmemAddr pads, const TileInM<M>&
       w0 += s16_pair(acc[Q][m][0], acc[Q][m][2], in.c0[Q]);
       w1 += s16_pair(acc[Q][m][1], acc[Q][m][3], in.c1[Q]);
     });
-    panel_red((b0 ^ (32u * m)) + 4u * g, w0);
-    panel_red((b1 ^ (32u * m)) + 4u * g, w1);
+    panel_red(b0 ^ (32u * m), w0);
+    panel_red(b1 ^ (32u * m), w1);
   }
 }
 
@@ -926,12 +926,15 @@ __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* 
   const ops::SmemAddr pool_u = rows - static_cast<uint32_t>(first * P::kReadRow);
   const uint32_t panel_back = static_cast<uint32_t>(64 * first) << 16;
   const uint2 masked = masked_entry<P>(first, static_cast<uint32_t>(lane & 7));
-  //: a lane's entry `e` of a run (`n` at `to`): loaded at a clamped place, the masked entry past the run
+  const ops::SmemAddr lane_pads = pads + 4u * static_cast<uint32_t>(lane >> 2);
+  //: a lane's entry `e` of a run (`n` at `to`), the masked entry past the run: loaded unclamped (a place past the run
+  //: is the next run's or the shared memory after the buffer, and is not used), its panel offset made the chunk's
+  //: modulo 2^16
   const auto entry_at = [&](int e, int n, int to) {
     uint2 v;
     asm volatile("ld.shared.v2.u32 {%0, %1}, [%2];"
                  : "=r"(v.x), "=r"(v.y)
-                 : "r"(ents + 8u * static_cast<uint32_t>(n > 0 ? to + min(e, n - 1) : 0)));
+                 : "r"(ents + 8u * static_cast<uint32_t>(to + e)));
     v = e < n ? v : masked;
     v.y -= panel_back;
     return v;
@@ -966,7 +969,7 @@ __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* 
                   tile_in<P>(pool_u, units, sx[Q], entry_at(8 * s + (lane & 7), n[Q], to[Q]), lane);
             });
             static_for<kStep>([&](auto Q) { tile_mma<F16>(acc[Q], in[Q].b, f[Q]); });
-            static_for<kStep>([&](auto Q) { tile_add(pads, in[Q], acc[Q], lane); });
+            static_for<kStep>([&](auto Q) { tile_add(lane_pads, in[Q], acc[Q]); });
           } while (__any_sync(0xffffffffu, ++s < tiles));
       } else {
         //: every slot of the chunk, its entry implied: its row and token, each digit's coefficient, its panel row (a slot
@@ -995,7 +998,7 @@ __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* 
                                     make_uint2((first + slot) << 16, panel << 16), coef, lane);
             float acc[kStep][2][4];
             static_for<kStep>([&](auto Q) { tile_mma<F16>(acc[Q], in.b, f[Q]); });
-            tile_add_m(pads, in, acc, lane);
+            tile_add_m(lane_pads, in, acc);
           } while (__any_sync(0xffffffffu, ++s < (slots + 7) >> 3));
       }
     } while (__any_sync(0xffffffffu, (i += kStep) < hi));
