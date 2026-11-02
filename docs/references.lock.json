@@ -1527,7 +1527,7 @@
   {"doc": "docs/internals/tools/kernel_targets.md", "pinned_at": "e7ec7d31c47a", "reviewed": true, "sha256": "9e8e45e1449e4bbc", "target": "measure/provider.py::oneshot_argv"},
   {"doc": "docs/internals/tools/kernel_targets.md", "pinned_at": "e7ec7d31c47a", "reviewed": true, "sha256": "d124d361a9f6fdc2", "target": "rola/ops/carry.py::readout_accumulate"},
   {"doc": "docs/internals/tools/kernel_targets.md", "pinned_at": "e7ec7d31c47a", "reviewed": true, "sha256": "", "target": "tools/kernel_targets.py"},
-  {"doc": "docs/internals/tools/kernel_targets.md", "pinned_at": "e7ec7d31c47a", "reviewed": true, "sha256": "10105d522112fc7e", "target": "tools/kernel_targets.py::TARGETS"},
+  {"doc": "docs/internals/tools/kernel_targets.md", "pinned_at": "a17e2e654983", "reviewed": true, "sha256": "1dd00b8820258b21", "target": "tools/kernel_targets.py::TARGETS"},
   {"doc": "docs/internals/tools/kernel_targets.md", "pinned_at": "e7ec7d31c47a", "reviewed": true, "sha256": "", "target": "tools/phase_ledger.py"},
   {"doc": "docs/internals/tools/kernel_targets.md", "pinned_at": "e7ec7d31c47a", "reviewed": true, "sha256": "", "target": "tools/pipe_counters.py"},
   {"doc": "docs/internals/tools/kernel_targets.md", "pinned_at": "e7ec7d31c47a", "reviewed": true, "sha256": "", "target": "tools/stall_census.py"},

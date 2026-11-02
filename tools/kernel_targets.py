@@ -70,6 +70,29 @@ def units(target: Target, cell) -> int:
     return _windows(cell) * cell.heads
 
 
+def launch(target: Target, name: str) -> tuple[str, str]:
+    """``(cell, arm)`` an instrument launches for ``name``: a central cell and the family's provider arm, or -- for the
+    producer, whose arms are a layer construction's -- the construction ``name`` on its first cell."""
+    from measure.provider import arm_name
+
+    if target.family == "produce":
+        from measure.cells.layer import CONSTRUCTIONS
+
+        return CONSTRUCTIONS[name].cells[0], f"{target.arm}@layer={name}"
+    return name, arm_name(target.arm)
+
+
+def produce_units(name: str) -> int:
+    """The producer's launch in its unit: its token tiles times its jobs, for the construction ``name``."""
+    from measure.cells import by_name
+    from measure.cells.layer import CONSTRUCTIONS, build
+    from rola.ops import produce as pr
+
+    c = CONSTRUCTIONS[name]
+    fx = build(by_name(c.cells[0]), c)
+    return -(-(fx["cell"].B * fx["cell"].tokens) // 64) * len(pr.job_table(fx["layer"].plan)[0])
+
+
 def function(target: Target, cell) -> str:
     """The instantiation a cell launches, as a regex over the cubin's mangled names (the region ledger's; the
     profiler's filter is the family's `symbol`, which it matches against the plain function name): the den's form by
@@ -95,6 +118,8 @@ TARGETS = {
                     "tools/budgets/intra.json", "warp tile pairs"),
     "facts": Target("facts", "facts_pass", "facts_pass", "facts", ("csrc/rola/src/facts/facts.cu",), None,
                     "windows"),
+    "produce": Target("produce", "produce_kernel", "produce", "produce", ("csrc/rola/src/produce/produce.cu",), None,
+                      "job tiles"),
 }
 
 
@@ -112,6 +137,8 @@ def main() -> int:
 
     cell = by_name(a.cell)
     for t in TARGETS.values():
+        if t.family == "produce":
+            continue
         print(f"{t.family:6s} arm {t.arm:14s} kernel {function(t, cell):26s} {units(t, cell):8d} {t.unit}")
     return 0
 

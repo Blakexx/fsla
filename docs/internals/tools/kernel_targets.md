@@ -12,11 +12,15 @@ and the budget's unit.
 | `den` | `den_pass` | CTA-windows (the tiles x windows) |
 | `intra` | `intra_forward` | warp tile pairs (a warp's 16 readers against a writer tile at or before theirs) |
 | `facts` | `facts_pass` | windows |
+| `produce` | `produce@layer=C` | job tiles (the token tiles times the jobs) |
 
 `units(target, cell)` is the launch's count of the unit from the cell's record alone (one batch row, the cell's write
 heads, each read by its group's query heads); `function(target, cell)` the instantiation the cell launches, as the region ledger's regex
 over the cubin's mangled names: the den's form by the cell's declared sparsity, the intra's depth and the card's
 accumulation (`rola.ops.carry.readout_accumulate`).
+
+The producer's arms are a layer construction's: its instruments take the construction `C` for the cell argument, and
+`launch(target, name)` gives the cell (the construction's first) and the arm; `produce_units(C)` its unit count.
 
 `tools/stall_census.py`, `tools/pipe_counters.py` and `tools/phase_ledger.py` take `--kernel FAMILY` from this table,
 the carry by default; `declare.py` declares the den's and the intra's on the cells of 16K tokens and more

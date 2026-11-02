@@ -31,7 +31,7 @@ import toolchains  # noqa: E402
 from rola_devtools import process  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "measure"))
-from measure.provider import arm_name, oneshot_argv  # noqa: E402
+from measure.provider import oneshot_argv  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 PY = sys.executable
@@ -42,13 +42,17 @@ def measure(cell: str, out: Path, keep_csv: Path | None, family: str = "carry") 
 
     ncu = dev_config.get("toolchain.ncu")
     t = kernel_targets.target(family)
-    spec = by_name(cell)
-    fn = kernel_targets.function(t, spec)
+    launch_cell, arm = kernel_targets.launch(t, cell)
+    if family == "produce":
+        fn, per = t.symbol, kernel_targets.produce_units(cell)
+    else:
+        spec = by_name(cell)
+        fn, per = kernel_targets.function(t, spec), kernel_targets.units(t, spec)
     with tempfile.TemporaryDirectory(prefix="stall_census_", dir=dev_config.scratch("stall_census")) as tmp:
         rep = Path(tmp) / "rep"
         done = process.run([ncu, "--target-processes", "all", "-k", f"regex:{t.symbol}", "-c", "1", "--section",
                             "SourceCounters", "--metrics", "group:smsp__pcsamp_warp_stall_reasons", "--import-source",
-                            "yes", "-f", "-o", str(rep), *oneshot_argv(cell, arm_name(t.arm))],
+                            "yes", "-f", "-o", str(rep), *oneshot_argv(launch_cell, arm)],
                            cwd=ROOT, timeout=3600)
         exported = process.run([ncu, "--import", f"{rep}.ncu-rep", "--page", "source", "--print-source", "sass", "--csv"],
                                cwd=ROOT, timeout=1800)
@@ -62,7 +66,7 @@ def measure(cell: str, out: Path, keep_csv: Path | None, family: str = "carry") 
         budget = ["--budget", t.budget] if t.budget else []
         ledger = subprocess.run([PY, "tools/region_ledger.py", "--csv", str(csv), "--so", str(so), "--member",
                                  t.member, "--kernel", fn, "--source", *t.sources, *budget, "--cell", cell,
-                                 "--per", str(kernel_targets.units(t, spec)), "--json", str(out)],
+                                 "--per", str(per), "--json", str(out)],
                                 cwd=ROOT, capture_output=True, text=True, timeout=1800)
     if not out.exists():
         raise SystemExit(f"stall_census: region_ledger wrote nothing (rc {ledger.returncode}):\n"
