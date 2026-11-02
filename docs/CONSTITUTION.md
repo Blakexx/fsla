@@ -51,7 +51,11 @@ native instruction existed all along.)
 
 No dispatch, launch policy or in-kernel path keys on a measured statistic (sparsity fraction, density, live count,
 "small L"). Branch on STRUCTURE the declaration fixes (tile counts, modes, plan axes); the kernel itself handles any
-data distribution. A deterministic cost model per architecture choosing among exact forms is structure.
+data distribution. A deterministic cost model per architecture choosing among exact forms is structure -- each form
+gated by forcing it; a tuned cutoff that changes results is not. So is a bound the USER declares and the kernel
+certifies (a declared precision met per block on published values, the reference modelling the same rule): Blake, "it's
+still branching on a threshold either way, in the kind that we allow, which is a user-supplied threshold". A
+data-dependent path whose criterion cannot be restated as such a bound stays out.
 
 A structure branch fails loud at every layer, through one primitive: every CTA-uniform structure branch in device code
 is a `uniform_switch<Set>(value, body)` (`common/structure_switch.cuh`), whose contract is the four layers -- a
@@ -165,7 +169,10 @@ determinism".
 1. NO THRESHOLD CLIFFS. A kernel's cost rises along a curve with density, width, depth and N. A design that changes
    path or falls off a cliff when the data crosses a capacity (a shared-memory buffer sized for the sparse case, a held
    window that only fits narrow levels) needs a stated strong reason in its design block. A capacity the PLAN fixes (a
-   box, a stage, a token block) is structure, not a threshold; a capacity the DATA can overrun is a threshold.
+   box, a stage, a token block) is structure, not a threshold; a capacity the DATA can overrun is a threshold. Shared
+   memory sets how many of a window's phases are co-active: as the area shrinks, fewer phases run at once (a fill
+   overlapping only what has freed), then the phases' chunks shrink -- a continuum, never a form that fits or falls
+   back (Blake: "as smem decreases, it just means less coactive and eventually smaller individual phases").
 2. DESIGN FOR THE SCALING, NOT A POINT. Every mechanism states how its cost grows with N, D, density and the
    architecture; a cache that may or may not hold a working set is priced as if it does not, so the cache is upside,
    never a cliff in the model or the gate.

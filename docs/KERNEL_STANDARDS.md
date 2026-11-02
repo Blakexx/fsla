@@ -316,6 +316,12 @@ ever compared. From here the floor is a GATE, per component, before composition:
   outside the form it will live in.
 - A design verdict is never drawn from a build whose components have not passed their gates
   ("slop numbers get misread as design verdicts" is now a gate, not a memory).
+- EVERY PHASE AT ITS FLOOR BEFORE COMPOSITION (Blake, 2026-11-01: "we should of course ensure our individual phases
+  are lean / at their floor / individually understood, analyzed, optimized, before we start composing them"): a
+  cross-phase lever (an overlap, a reorder around a barrier, a parallel form) is taken only after every phase it
+  composes passes its gate at the cell's own step count, sparse and dense; what remains above the phases' floors is
+  then the composition's to win, stated as such. A parallel form (more warps, a split, a scan) is reached for only
+  after the core is at its floor.
 
 ## <a id="s20"></a>§20 — ptxas SIGNATURES (law, 2026-09-09): what the SASS gate reads, and the rule behind each
 `tools/sass_gate.py` runs after every build (`setup.py`'s post-build gate, iteration builds included), on
@@ -341,6 +347,16 @@ carries; each was re-learned by trial this week and costs a rebuild when missed.
   and reds only an UNGUARDED call, a converged warp's. The rule's reason is now code size: control a
   branch around collectives reads belongs in the uniform datapath (kernel parameters indexed by block
   index, constants), which keeps the fallbacks out; a data-dependent loop exits on a vote.
+  ADDENDUM (2026-11-01/02): two causes found since. (1) An OUTLINED LAMBDA: a lambda's operator is not
+  force-inlined; past the inliner's threshold NVVM outlines it, its by-reference captures go to memory and
+  every collective inside becomes a call -- so where the gate shows fallbacks or a stack frame with no spills,
+  first read the `CALL.REL.NOINC` targets' names (an outlined lambda shows by its mangled name); a large body
+  dispatches through force-inlined frames (`uniform_switch`), and a kernel parameter captured by reference is
+  `const __grid_constant__`. (2) A LOOP BOUNDED BY A PER-THREAD VALUE (`threadIdx`-derived, or a value ptxas
+  cannot see is uniform) with shuffles inside: ptxas loses convergence for everything after it in the
+  enclosing loop -- the drain's first facts form cost 84 more guarded collectives and a fold MMA step
+  duplicated into a fallback; its bound taken from lane 0 by a shuffle restored the 9 the kernel had
+  (`docs/internals/common/ops.md#uniform-warp`).
 - `@P HMMA` or a pair body whose non-tensor instruction count equals its `if`-guarded block's:
   IF-CONVERSION. A warp-uniform `if` (dealt work, a runtime flag) is predicated, not branched, and runs
   predicated-off on every other warp. Rule: a one-trip `for` (`#pragma unroll 1`) forces the branch;
@@ -366,6 +382,13 @@ beside the time (idle SMs and tail waves are reported, not inferred), the GPU qu
 profiler child alive: a timed-out `compute-sanitizer` leaves its python child on the device), and the
 probe's clock rows accepted. "Issue active at X%" is a ratio over active cycles and says nothing about
 the instruction count; the count is read, never inferred from the ratio.
+A change to a shared body is TIMED AT BOTH ENDS AT SCALE before it is called a win: the sparse and the dense cell,
+in the measurement suite's at-scale sessions (2026-11-02: four commits each faster at sparse cost the dense carry
++3% at 64K x 4 heads, one of them +3.7% on an identical address; the local dense ledger swings ~2% between runs of
+one binary and could not see it, the sessions repeat within ~0.3%). A design comparison quotes sm_80 and sm_86 from
+the same counts priced at each card's rates (`tools/pipes.py`); a form that wins on one card and loses on the other
+is flagged and taken only with the trade written down (Blake, 2026-10-11: sm_80 a core target; the constitution's
+LEAN ON EVERY AXIS, ON EVERY CARD).
 
 ## <a id="s22"></a>§22 — THE MEASUREMENT SUITE, AND HOW A MEASUREMENT IS READ (law, 2026-09-12, after a week in which a register cap, a "spin", a pipe metric and a schedule default were each misattributed)
 WHAT IS MEASURED, on every build, before any component is judged, as one report diffed against the
@@ -549,6 +572,13 @@ only measurement there is; the sub-core instruction buffer is three deep, the me
    is the placement in its SASS, which the row's reading states; a row whose placement differs from the kernel's
    measures a different thing.
 
+9. A STUB PRICES ONLY ITS OWN ACCESS PATTERN (2026-09-22, four negative builds on the fold and readout bodies): a
+   drain stub that writes coalesced lines cannot price a drain that writes the accumulator's scatter -- the stage
+   that turns the layout into lines earns its round trip. Before a part switch's trivial form is read as a win, what
+   it actually writes is read. Likewise compaction: splitting tokens into compacted lists removes dead rows but pads
+   every list to a whole fragment, so at a short chunk the padding equals what it removed; it is priced against its
+   padding first and pays only on long lists.
+
 ## §25 — EVERY GATE COVERS EVERY KERNEL (law, 2026-09-29, from Blake's "expand our gates and standard to cover all our kernels and source generically")
 An inventory found the kernel gates had each narrowed to the kernels their author had in mind: the SASS gate read one
 cubin, the device clang-tidy one unit, ratify a hand-written list that had lost three shipped kernels, and the budgets,
@@ -649,7 +679,11 @@ probe that replaced it measured instructions ptxas had folded or turned into cal
    q. A DRAIN'S COST IS ITS L2 REQUESTS, AND SPREADING IT DOES NOT HIDE IT (`read_step`): a global reduction request
       costs per line it touches, so a token's row is drained aligned to its lines with den carried in it, not as its
       own request (2.3K -> 1.0K cycles a 128-slot pass); spread through the next pass's steps under a double panel the
-      drain cost 0.4-1K more than a burst at the pass's end.
+      drain cost 0.4-1K more than a burst at the pass's end. Its corollaries (`drain`, 2026-10-18; 2026-11-02): the
+      requests are the drain's floor (~5 SM cycles a line request with every SM draining), so a request past what the
+      union holds is not issued (a group past it by a warp-uniform branch, never a predicated `red.global`, which
+      ptxas wraps in a convergence region a request); a dead lane inside an issued request adds an exact zero at a row
+      of its CTA's own, never at one row every CTA shares (a shared dummy line serialized every CTA ~6x).
    r. A PUBLISH IN ROUNDS COSTS ITS HANDSHAKES (`publish_rounds`): four 16 KB rounds of the even carve's 64 KB
       transpose cost 0.4-0.6K cycles a window over publishing it whole when double buffered, 1.0-1.1K single.
    s. A STEP'S BODY IS ONE BASIC BLOCK (`read_step` modes 6-8, its ncu counters): ptxas schedules within a block and
