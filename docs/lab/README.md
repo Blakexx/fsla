@@ -29,6 +29,7 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`facts_block`](facts_block.md) | experiment |
 | [`facts_two`](facts_two.md) | experiment |
 | [`fold_alone`](fold_alone.md) | part harness |
+| [`readout_alone`](readout_alone.md) | part harness |
 | [`read_image`](read_image.md) | part harness |
 | [`read_w1024`](read_w1024.md) | part harness |
 | [`image_ring`](image_ring.md) | part harness |
