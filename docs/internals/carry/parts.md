@@ -177,8 +177,11 @@ row), its coefficient the digit's f16 in the row's coefficient slice (its second
 step is one block (KERNEL_STANDARDS §27), guarded by a vote and closed by one. Where a warp reads two digits a batch
 (the image whole or in halves) a listed side steps them together: a step is both digits' tiles, their operands
 (`tile_in`), then their MMAs (`tile_mma`), then their adds (`tile_add`) -- two independent chains in one block, each
-entry loaded at a clamped place (`masked_entry` past its run), so nothing branches. Measured at nl64k-alt-k4: the
-readout 4.0K to 3.6K cycles a warp-window.
+entry loaded unclamped (a place past the digit's run is the next run's, or the shared memory above the buffer: the read
+tables) and replaced past its run by `masked_entry`, so nothing branches; `tile_add` takes the dummy rows' address with
+the lane's word added once a call, a panel row's second channel half the first's XOR 32 (rows 32-byte aligned, the word
+under 32). The readout is bound by the shared-memory pipe, not the tensor pipe (lab
+[`readout_alone`](../../lab/readout_alone.md)).
 
 A SIDE WITH NO LIST LEVEL reads its two digits as ONE GROUP (the unified readout's output scaling at m = 2, by
 structure: every token is in every digit's list, so the group's union is each digit's own and grouping adds no MMAs): a
