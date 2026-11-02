@@ -10,10 +10,11 @@ device function (or struct method) each SASS instruction inlines from -- against
         --budget tools/budgets/carry.json --per <cta-windows in the launch>
 
 The csv is `ncu --section SourceCounters --page source --print-source sass --csv` of ONE launch
-(rola-ledger skill). Attribution: the outermost frame in the kernel's sources (the kernel's file first, then the
-files of its components) whose function is a budget component, else the outermost frame's function
-(`nvdisasm --print-line-info-inline`), the function by the nearest preceding definition -- `__device__` functions,
-`__global__` kernels, `struct` blocks and their methods.
+(rola-ledger skill). Attribution (`Attribution`): the innermost frame in the kernel's sources (the kernel's file
+first, then the files of its components) whose function is a budget component, walked outward no further than the
+kernel's own body (`nvdisasm --print-line-info-inline`); a frame's function is the nearest preceding definition --
+every `__device__` / `__host__` / `constexpr` function whatever its return type, `__global__` kernels, `struct`
+blocks and their methods (`DEF`).
 """
 from __future__ import annotations
 
@@ -28,8 +29,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sass  # noqa: E402
 
-DEF = [re.compile(r"^__device__ __forceinline__ \S+ (\w+)\("), re.compile(r"^__global__ .* void (\w+)\("),
-       re.compile(r"^(?:template <[^>]*>\s*)?struct (\w+)"), re.compile(r"^  __device__ __forceinline__ (?:\w+ )?(\w+)\(")]
+#: A DEFINITION's first line, by kind: a function at column 0 (any qualifiers, any return type: a `__host__ __device__
+#: constexpr` helper missed here books its lines to the definition before it), a kernel, a struct, a struct's method
+#: (two spaces in, `__device__` required so a body's local `constexpr` is never one)
+_QUAL = r"(?:__host__|__device__|__forceinline__|__noinline__|constexpr|static|inline)"
+_RET = r"(?:[\w:<>,*&]+\s+)*?[*&]*"
+_NAME = r"(\w+|operator\S*?)"
+DEF = [re.compile(rf"^(?:{_QUAL}\s+)+{_RET}{_NAME}\("), re.compile(r"^__global__ .* void (\w+)\("),
+       re.compile(r"^(?:template <[^>]*>\s*)?struct (\w+)"),
+       re.compile(rf"^  (?:__host__\s+)?__device__\s+(?:{_QUAL}\s+)*{_RET}{_NAME}\(")]
 
 
 def function_map(src_lines: list[str]) -> list[tuple[int, str]]:
