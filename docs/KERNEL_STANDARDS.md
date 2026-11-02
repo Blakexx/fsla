@@ -72,6 +72,12 @@ sm_90 by mbarrier. No pipeline state is implicit in loop parity without a commen
 RULE: on sm_80 there is no register redistribution, so a fetcher warp burns a full slice and folds nothing —
 form (b) (role-alternating) everywhere; specialization is the sm_90+ mapping and only where the
 accumulator binds.
+THE IDEAL REGIME IS FEW WARPS WITH FILLED REGISTERS (Blake, restated 2026-08-08: "If that doesn't work it means
+something is wrong with the kernel in another way we need to fix. not intentionally avoid the ideal regime"). Warp
+count and the register budget are one knob, swept jointly as a surface and never marginally; occupancy is an output,
+not a constraint. A loss in the ideal regime at a correctly sized budget is a defect to locate (a spill, a
+serialization, a missed overlap), never a reason to leave the regime: a "fewer warps is worse" reading taken with the
+budget sized for more warps measured spill, not the regime.
 
 ## 6. Unroll discipline
 - CuTe pairs `CUTE_UNROLL` with `CUTE_NO_UNROLL` (`cutlass/include/cute/config.hpp:51-55`): saying "do not
