@@ -26,8 +26,8 @@ shape on every cell measured (nl64k alt-k4, dense, g4; flagship alt-k4, alt-k16,
 
 One launch's `ncu --section SourceCounters` dump: each SASS line's executed instructions and shared wavefronts,
 attributed to the innermost MMA loop holding it (or none) and its innermost carry function (the extension's line
-information), a CTA-window's worth. Attributing by component (the region ledger's outermost frame) split the fold's and
-the readout's instructions wrongly where their code is the same; by innermost function it does not.
+information), a CTA-window's worth. Attributing by innermost function (the region ledger's rule, `owner_of`) keeps the fold's and the
+readout's instructions apart where their code is the same.
 
 <a id="prices"></a>
 ## The prices

@@ -11,9 +11,9 @@ concerns, never ptxas's allocation.
 
 <a id="budget"></a>
 THE REGISTER BUDGET (`--budget tools/budgets/<kernel>.json`, KERNEL_STANDARDS §32.3): each budget component's peak live
-registers against its `registers` line, an instruction attributed as the region ledger attributes it -- the outermost
-inline frame in the `--source` files (repeat the flag: the kernel's file first, then its components') whose function is
-one of the budget's `components`, else the kernel's own body (its glue). Red where a component passes its line or has
+registers against its `registers` line, an instruction attributed as the region ledger attributes it
+(`region_ledger.owner_of`) -- the innermost inline frame in the `--source` files (repeat the flag: the kernel's file
+first, then its components') whose function is one of the budget's `components`, else the kernel's own body (its glue). Red where a component passes its line or has
 none. The carry at 87240898 (arm 0, sm_86): every component peaks at 204-252 live, the readout at 252 -- about 200
 registers stay live through every phase, the room a phase has for a second stage's operands is ~50; its lines are
 those readings, a ratchet until the window's design states each phase's (`registers_basis` in the budget). The shipped carry (sm_86, arm 0) is allocated 255 registers; it peaks at 251 live in

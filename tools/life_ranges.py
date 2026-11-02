@@ -31,7 +31,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dev_config  # noqa: E402
 import sass  # noqa: E402
-from region_ledger import component_of, fn_of, function_map  # noqa: E402
+from region_ledger import fn_of, function_map, owner_of  # noqa: E402
 
 
 def compile_arm(arm: int, arch: str) -> Path:
@@ -52,20 +52,17 @@ def compile_arm(arm: int, arch: str) -> Path:
 def component_peaks(cubin: Path, kernel: str | None, rows: list[tuple[int, str, int]], sources: list[Path],
                     components: dict[str, str]) -> dict[str, int]:
     """THE REGISTER BUDGET's reading (KERNEL_STANDARDS section 32): each budget component's peak live registers, an
-    instruction attributed as `tools/region_ledger.py` attributes it -- the outermost inline frame in `sources` whose
-    function is a component's (the kernel's own body, the last frame of every chain, its `glue`)."""
+    instruction attributed as `tools/region_ledger.py` attributes it (`owner_of`: the innermost inline frame in
+    `sources` whose function is a component's, else the kernel's own body, its `glue`)."""
     frames = sass.frames(sass.section(sass.disassemble(cubin, "--print-line-info-inline", "-gi"), kernel, cubin.name))
     fmaps = {p.name: function_map(p.read_text().splitlines()) for p in sources}
     by_function = {fn: name for name, fn in components.items()}
     glue = next((name for name, fn in components.items() if fn.endswith("_kernel")), None)
     peaks: dict[str, int] = collections.defaultdict(int)
+    glue_fn = components.get(glue) if glue is not None else None
     for offset, _ins, live in rows:
-        owner = glue
-        for f, ln in frames.get(offset, []):
-            if f in fmaps:
-                c = component_of(fn_of(fmaps[f], ln), set(by_function))
-                if c is not None and by_function[c] != glue:
-                    owner = by_function[c]
+        c = owner_of(frames.get(offset, []), fmaps, set(by_function), glue_fn)
+        owner = by_function[c] if c is not None else glue
         if owner is not None:
             peaks[owner] = max(peaks[owner], live)
     return dict(peaks)

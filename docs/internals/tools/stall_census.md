@@ -3,8 +3,11 @@
 KERNEL_STANDARDS §22 (7) and (8). One untimed launch of a cell through the probe worker, under
 `ncu --section SourceCounters` with the warp stall-reason group and the kernel's source imported. The capture is
 exported per SASS line, then attributed by `tools/region_ledger.py` against the installed extension and the family's
-budget's components, over the family's files (the kernel's, then its components'): an instruction is its outermost
-component's, the kernel's own body (`glue`) only where none is. `--kernel FAMILY` names the family
+budget's components, over the family's files (the kernel's, then its components'): an instruction is its innermost
+component's (`region_ledger.owner_of`: the line table's inline chain is not always a call chain -- through `static_for`
+it can splice another site's frames in, and an outermost rule booked readout work to the store), the kernel's own body
+(`glue`) only where none is. `region_ledger.py --component NAME` lists one component's instructions by their innermost
+frame in any file, its helpers' and the headers' included. `--kernel FAMILY` names the family
 (`tools/kernel_targets.py`: the carry by default, the den, the intra, the facts pass); the units a total is divided by
 are the family's.
 

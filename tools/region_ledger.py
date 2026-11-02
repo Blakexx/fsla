@@ -63,6 +63,18 @@ def component_of(fn: str, components: set[str] | None) -> str | None:
     return head if head in components else None
 
 
+def owner_of(chain: list[tuple[str, int]], fmaps: dict, components: set[str], glue: str | None) -> str | None:
+    """The component owning an instruction of inline chain `chain` (innermost frame first): the innermost frame in
+    `fmaps`' files whose function is one of `components` other than `glue`, else None (the glue's). Innermost, because
+    the line table's chain is not always a call chain (`Attribution`); no component calls another."""
+    for f, ln in chain:
+        if f in fmaps:
+            c = component_of(fn_of(fmaps[f], ln), components)
+            if c is not None and c != glue:
+                return c
+    return None
+
+
 def fn_of(fmap: list[tuple[int, str]], ln: int) -> str:
     name = "?"
     for start, n in fmap:
@@ -80,10 +92,13 @@ def frames_map(so: Path, member: str, arch: str, kernel: str | None) -> dict[int
 
 
 class Attribution:
-    """Which COMPONENT an instruction belongs to -- the outermost frame in the kernel's source
-    (the component function the call chain inlines into) -- and whether it is a barrier SPIN
-    (an innermost frame inside `mbar_wait`). A spin is the wait for another agent's work and
-    is reported apart from the component's own instructions."""
+    """Which COMPONENT an instruction belongs to -- the INNERMOST frame in the kernel's sources whose function is a
+    component (the component the instruction's helpers inline into) -- and whether it is a barrier SPIN (an innermost
+    frame inside `mbar_wait`). A spin is the wait for another agent's work and is reported apart from the component's
+    own instructions. Innermost, because the inline chain is not always a call chain: through `static_for` the line
+    table can splice another site's frames between a component and the kernel (a readout instruction's chain reading
+    `read_chunk <- the kernel <- store_batches' static_for <- the kernel`), and an outermost rule books it to the wrong
+    component. No component calls another, so the innermost one is the instruction's owner."""
 
     def __init__(self, so: Path, member: str, arch: str, sources: list[Path], ops: Path, kernel: str | None = None):
         self.fmaps = {p.name: function_map(p.read_text().splitlines()) for p in sources}
@@ -94,16 +109,13 @@ class Attribution:
         self.frames = frames_map(so, member, arch, kernel)
 
     def of(self, offset: int, components: set[str] | None = None, glue: str | None = None) -> tuple[str, bool]:
-        """The component: the OUTERMOST frame in the kernel's sources whose function is one of
-        `components` (the budget's names) other than `glue` (the kernel's own body, every chain's last frame), else the
-        outermost frame's function -- the kernel itself, its glue."""
+        """The component: the INNERMOST frame in the kernel's sources whose function is one of `components` (the
+        budget's names) other than `glue` (the kernel's own body, every chain's last frame), else the outermost frame's
+        function -- the kernel itself, its glue (with no budget, always the outermost frame's function)."""
         chain = self.frames.get(offset, [])
         comp = "?"
-        for f, ln in chain:
-            if f in self.fmaps:
-                c = component_of(fn_of(self.fmaps[f], ln), components)
-                if c is not None and c != glue:
-                    comp = c
+        if components is not None:
+            comp = owner_of(chain, self.fmaps, components, glue) or "?"
         if comp == "?":
             for f, ln in chain:
                 if f in self.fmaps:
@@ -183,6 +195,9 @@ def main() -> int:
                     help="also write the components, the phase census and the wavefront census here")
     ap.add_argument("--lines", default=None, metavar="LO-HI",
                     help="also print the source lines in this range: instructions a unit, samples, opcodes, stall reasons")
+    ap.add_argument("--component", default=None,
+                    help="also print one component's instructions by their innermost frame in ANY file (its helpers', "
+                         "the headers'): instructions a unit, samples, opcodes, stall reasons")
     a = ap.parse_args()
     attr = Attribution(a.so, a.member, a.arch or sass.device_arch(), a.source, a.ops, a.kernel)
     kernel_source = a.source[0]
@@ -221,6 +236,8 @@ def main() -> int:
     if a.lines:
         lo, hi = (int(x) for x in a.lines.split("-"))
         print_lines(rows, attr, detail, kernel_source, lo, hi, a.per)
+    if a.component:
+        print_component(rows, attr, detail, components, glue, a.component, [*a.source, a.ops], a.per)
     doc = census(rows, attr, components, a.per, detail, kernel_source, a.top, glue)
     if a.json:
         doc["per"] = a.per
@@ -258,6 +275,35 @@ def print_lines(rows, attr: Attribution, detail: dict, source: Path, lo: int, hi
         opstr = " ".join(f"{k}:{v / per:.0f}" for k, v in ops.most_common(4))
         stall = " ".join(f"{k}:{100 * v / max(1, sm):.0f}%" for k, v in st.most_common(3))
         print(f"  {ln:5d} {n / per:8.0f} {sm:8d}  {opstr:50s} {stall:36s} | {src[ln - 1].strip()[:56]}")
+
+
+def print_component(rows, attr: Attribution, detail: dict, components: set[str] | None, glue: str | None, name: str,
+                    sources: list[Path], per: float) -> None:
+    """THE COMPONENT VIEW: one component's instructions grouped by their INNERMOST frame in any file -- so the work its
+    helpers and the headers inline into it shows where it is written, which the line view of one file cannot."""
+    base = rows[0][0]
+    text = {p.name: p.read_text().splitlines() for p in sources}
+    frames: dict[tuple[str, int], list] = collections.defaultdict(
+        lambda: [0, 0, collections.Counter(), collections.Counter()])
+    here = 0
+    for addr, n, sm, st in rows:
+        if attr.of(addr - base, components, glue)[0] != name:
+            continue
+        chain = attr.frames.get(addr - base, [])
+        e = frames[chain[0] if chain else ("?", 0)]
+        e[0] += n
+        e[1] += sm
+        e[2].update(st)
+        e[3][detail.get(addr, ("?", 0, 0))[0]] += n
+        here += n
+    print(f"component {name}: {here / per:.0f} instructions a unit, by innermost frame")
+    for (f, ln), (n, sm, st, ops) in sorted(frames.items(), key=lambda x: -x[1][0]):
+        if n == 0:
+            continue
+        opstr = " ".join(f"{k}:{v / per:.0f}" for k, v in ops.most_common(4))
+        stall = " ".join(f"{k}:{100 * v / max(1, sm):.0f}%" for k, v in st.most_common(3))
+        src = text[f][ln - 1].strip()[:48] if f in text and 0 < ln <= len(text[f]) else ""
+        print(f"  {f}:{ln:<5d} {n / per:8.0f} {sm:7d}  {opstr:46s} {stall:34s} | {src}")
 
 
 def census(rows, attr: Attribution, components: set[str] | None, per: float,
