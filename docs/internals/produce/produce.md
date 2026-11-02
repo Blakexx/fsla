@@ -58,10 +58,13 @@ eight tiles a row, so each warp holds both rows of the same columns and forms th
 registers -- in two 32-token passes, the threshold's row sums crossing the pair.
 
 <a id="stage"></a>THE STAGE is `S` k-steps (16 hidden each) of every column the job holds and of the tile's x rows, staged
-once a block and read by every warp (the weights' one read a block). Its depth is the job's class: `16 / M` k-steps at
-`M` column tiles (one at 256 columns, two at 128, four at 64), so a one-row job's weights are 8 KB at every class and
-its x rows follow them (to 8 KB), and one for a wide union's 512 columns (16 KB) -- 32 MMAs a warp between barriers
-at every class, with each tile's A fragment loaded a tile ahead of its MMAs (`mma_stage`). A row is 32 S bytes in 16-byte chunks, chunk `c`
+once a block and read by every warp (the weights' one read a block). Its depth is the job's class: `32 / M` k-steps
+at `M` column tiles, at most four (two at 256 columns, four at 128 and at 64), so a one-row job's weights are 16 KB a
+stage (8 KB at 64 columns) and its x rows follow them (to 8 KB), and one for a wide union's 512 columns (16 KB) -- 64
+MMAs a warp between barriers at 128 and 256 columns, with each tile's A fragment loaded a tile ahead of its MMAs
+(`mma_stage`). At one k-step a stage (`16 / M`) the 256-column class barriered every 32 MMAs and its warp issued its
+17 `ldmatrix` in one burst ahead of them; two halve the barriers and the bursts: the route job's tile 49.0K -> 44.1K
+cycles a warp, the projection 32.9K -> 29.3K (nl64k-alt-h4-g4). A row is 32 S bytes in 16-byte chunks, chunk `c`
 at `c` XOR the row's swizzle (`chunk_at<S>`: `(row >> 2) & 1`, `(row >> 1) & 3`, `row & 7` at one, two and four
 k-steps), so an `ldmatrix`'s eight rows at one chunk lie in eight bank groups at every depth -- A by `ldmatrix.x4` a
 column tile, B by `ldmatrix.x4` the warp's 16 tokens, one wavefront a matrix, the copies four wavefronts a warp

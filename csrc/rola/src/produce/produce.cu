@@ -760,8 +760,10 @@ __device__ __forceinline__ void project_one_row(const ProduceParams& p, int job_
         acc);
     const __nv_bfloat16* base = weight_base(p, job);
     rola::uniform_switch<3>(job.tiles - 2, [&](auto F) {
-      //: the class's stage: `16 / M` k-steps, so its weights are 8 KB at every class and its x rows follow them
-      constexpr int M = 4 << decltype(F)::value, S = kAccTiles / M, kXOff = 16 * M * 32 * S;
+      //: the class's stage: `32 / M` k-steps, at most four, so its weights are 16 KB (8 KB at 64 columns), 64 MMAs a
+      //: warp between barriers at 128 and 256 columns, and its x rows follow them
+      constexpr int M = 4 << decltype(F)::value, S = 2 * kAccTiles / M < 4 ? 2 * kAccTiles / M : 4,
+                    kXOff = 16 * M * 32 * S;
       constexpr int QW = 16 * M * 2 * S / kProduceThreads,
                     QX = kTokenTile * 2 * S / kProduceThreads;
       const Sources<QW, QX> s = sources<S, QW, QX>(
