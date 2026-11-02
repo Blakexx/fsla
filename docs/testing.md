@@ -22,7 +22,12 @@ fraction ~0.96 → ~0.09 in training), so fixed fixtures answer their question a
 cells make the covered regimes named and the uncovered ones visible.
 
 An integration test never re-grades arithmetic. It checks wiring, dispatch and state flow, taking the op's correctness
-as established by the oracle tier.
+as established by the oracle tier. Wherever the layer selects a kernel by shape, length or cache, the LAYER is gated
+forward and backward across every threshold (lengths spanning each switch), asserting finite, non-`None` gradients
+on the input and every parameter for every form -- a forward-only branch under a grad-requiring call is a silent graph
+break, not an error. A gate over a defaulted mode tests only the default, so a crown gate is parametrized over every
+declaration the tree ships a body for, each cell asserts the kernel body it exercised (never default dispatch), and new
+coverage is proved by a negative control (a known-broken variant must fail).
 
 ## The oracle tier — semantics
 
@@ -54,6 +59,23 @@ Three promises a caller can rely on:
 **Grouped queries are the ungrouped layer with each write head's side repeated** for its query heads (`docs/api.md`
 [grouped queries](api.md#grouped-queries)): THE IDENTITY GATE, `tests/oracle/test_oracle_grouped.py`, holds the oracle
 to it per slot and fails on the other head assignment; a grouped kernel's gate is the oracle at its own heads.
+
+**An op's gate proves the math; the layer's measures quality** (Blake, 2026-09-26: "the layer oracle should measure
+the end-to-end numerical quality, but each op oracle should just measure that we're actually implementing the math
+correctly"). An op's gate compares the kernel with the fp64 op on the SAME quantized inputs, per slot, at its
+arithmetic's own tolerance, and vetoes; its error against unquantized inputs is reported per slot and per token, never
+gated, since for declared low-precision arithmetic a relative check against the unquantized op fails small channels
+by construction. Quality thresholds and the precision knobs are the layer oracle's, per layer.
+
+**Entmax gradients are graded only against the analytic VJP.** The feature map's gradient is non-smooth: a finite
+difference is a chord across a kink, and autograd through the bisection flips branches near convergence, so neither
+is an oracle. The reference is the hand-written implicit-function VJP composed through the canonical oracle, evaluated
+at kink-free interior points (the support stable under the perturbation); a gap claimed to be fp32 noise is shown by
+running the production gradient in fp64 against the fp64 oracle, where it collapses to ~1e-6.
+
+**A derivation feeding kernel arithmetic is checked symbolically before its gates are trusted**: exact rationals on
+small adversarial instances, chunk boundaries included (2026-08-15: a dropped term that manifested only across a chunk
+boundary passed every seed-level gate and was caught by the exact pass).
 
 **The oracle has no outside anchor** (Blake, 2026-09-15): no default-off cross-check against another library's loop is
 kept, because a default-off gate reports a skip where it should report a failure. The recurrence's claim to BE the gated
