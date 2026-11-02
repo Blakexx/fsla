@@ -137,9 +137,23 @@ touched. A tied or independent row is its one logit row: softmax (`softmax_rows`
 (`entmax_rows`), the closed registry's kerneled activations, with the reference `rola/routing/entmax/production.py`'s
 `_torch_activation`. A UNION's split -- entmax on the midpoint of its read and write logits, the read side the value
 times the sigmoid of their overflow-free difference, the write side the entmax family's `union_write`
-(`docs/internals/entmax/entmax.md#union-write`), reference `_torch_union_split` -- lands next on the same registers,
-its levels zero meanwhile. Gate: every route job's sides (`probe_levels`) against the fp64 reference solve on the
+(`docs/internals/entmax/entmax.md#union-write`), reference `_torch_union_split` -- runs on the same registers for a
+NARROW union ([#union](#union)); a wide one's (past 128 columns, the pair form) is still the stub's zeros, its gate's
+cell (`wide-union`) red until it lands. Gate: every route job's sides (`probe_levels`) against the fp64 reference solve on the
 kernel's own logits, per slot within `(width + 16) 2^-23`.
+
+<a id="union"></a>A NARROW UNION (at most 128 columns a row, both rows in a warp's 16 tiles: the read row at values
+`v`, the write row at `v + 2 M`, the class's tile offset) is two halves around the row's one entmax, so the class
+carries one entmax copy: `union_midpoints` leaves each column's midpoint `(r + w) / 2` at `v` and the logits'
+overflow-free difference (`row_solve::overflow_free_delta`; a dead column's, both logits -inf, is 0) at `v + 2 M`;
+the entmax solves the midpoints; `union_sides` forms the read side `level / (1 + e^-d)` in place and the write side in
+the log domain over the support (a supported level is positive -- the reference's `z > tau` support differs only where
+a level underflows to 0, whose write weight is 0 either way): `log level + log sigmoid(-d)`, its max subtracted,
+exponentiated, normalized, so `top_write` is the argmax's own quotient `1 / den`; `top_read` is reduced. The forms are
+the special-function unit's (`__logf`, `__expf`, `__fdividef`: within ~1e-6 at these ranges, under the solve's
+`(width + 16) 2^-23`), so the split is ~4.5K instructions of the kernel, not the ~9K of the IEEE forms. The bundle's
+side loop moves the write row down to `v` once the read side is stored, so a union's sides share the one-row
+`bundle_side`.
 
 <a id="threshold"></a>THE THRESHOLD IS NEWTON FROM THE LEFT (`entmax_rows`), not a sort. With the row shifted by
 its max, `f(tau) = sum_i g(z_i - tau) - 1` (`g(d) = max(d, 0)^2 / 4` at alpha 1.5, `max(d, 0)` at 2) is convex and

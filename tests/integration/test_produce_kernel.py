@@ -39,6 +39,8 @@ _ROUTINGS = {
     "split": [rola.split_routing(64, sparse_duty="write"), rola.split_routing(64, sparse_duty="read")],
     "tied-deep": [rola.tied_routing(16), rola.dense_routing(32), rola.union_routing(16)],
     "wide": [rola.split_routing(256, sparse_duty="write"), rola.split_routing(200, sparse_duty="read")],
+    #: unions past 128 columns: the pair form's rows, a warp pair a token group
+    "wide-union": [rola.dense_routing(16), rola.union_routing(256), rola.union_routing(160)],
     "sparsemax": [rola.dense_routing(16), rola.union_routing(64, 2.0), rola.tied_routing(32, rola.entmax(2.0))],
 }
 _MAX_COLUMNS = 512
@@ -190,7 +192,7 @@ def _conditioning(row, solve, width):
 
 
 @pytest.mark.parametrize(("name", "B", "T"), [("union", 2, 5), ("split", 1, 40), ("tied-deep", 3, 7),
-                                              ("wide", 1, 33), ("sparsemax", 2, 9)])
+                                              ("wide", 1, 33), ("sparsemax", 2, 9), ("wide-union", 1, 33)])
 def test_the_solve_matches_the_fp64_reference_on_the_kernels_logits(name, B, T):
     plan, x, route_W, route_bias, gain_bias, v_W = _operands(name, B=B, T=T, hidden=64)
     _, _, (logits, levels) = _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill=0, probe=True)
@@ -226,6 +228,7 @@ _MASS_RTOL = 2.0 ** -12
 @pytest.mark.parametrize(("name", "B", "T", "bias", "gain"), [
     ("union", 2, 5, True, True), ("split", 1, 40, True, True), ("tied-deep", 3, 7, False, True),
     ("wide", 1, 33, True, True), ("sparsemax", 2, 9, True, False),   # no gain column: the gain is 1
+    ("wide-union", 1, 33, True, True),
 ])
 def test_the_bundle_matches_the_reference_on_the_kernels_logits(name, B, T, bias, gain):
     plan, x, route_W, route_bias, gain_bias, v_W = _operands(name, B=B, T=T, hidden=64, bias=bias, gain=gain)
