@@ -64,15 +64,33 @@ def component_of(fn: str, components: set[str] | None) -> str | None:
 
 
 def owner_of(chain: list[tuple[str, int]], fmaps: dict, components: set[str], glue: str | None) -> str | None:
-    """The component owning an instruction of inline chain `chain` (innermost frame first): the innermost frame in
-    `fmaps`' files whose function is one of `components` other than `glue`, else None (the glue's). Innermost, because
-    the line table's chain is not always a call chain (`Attribution`); no component calls another."""
+    """The component owning an instruction of inline chain `chain` (innermost frame first): walking outward to the
+    first frame in the kernel's own body (`glue`'s function), the first frame in `fmaps`' files whose function is one
+    of `components`, else None (the glue's). The walk stops at the kernel's body because the line table's chain is a
+    call chain only up to there: beyond it the table can splice another call site's frames (`Attribution`). No
+    component calls another, and every component is called from the kernel's body."""
     for f, ln in chain:
         if f in fmaps:
-            c = component_of(fn_of(fmaps[f], ln), components)
-            if c is not None and c != glue:
+            fn = fn_of(fmaps[f], ln)
+            if fn == glue:
+                return None
+            c = component_of(fn, components)
+            if c is not None:
                 return c
     return None
+
+
+def helper_of(chain: list[tuple[str, int]], fmaps: dict, glue: str | None) -> str | None:
+    """The outermost function below the kernel's body in `chain` (the work no component owns, named where it is
+    written), else None."""
+    out = None
+    for f, ln in chain:
+        if f in fmaps:
+            fn = fn_of(fmaps[f], ln)
+            if fn == glue:
+                break
+            out = fn
+    return out
 
 
 def fn_of(fmap: list[tuple[int, str]], ln: int) -> str:
@@ -92,13 +110,14 @@ def frames_map(so: Path, member: str, arch: str, kernel: str | None) -> dict[int
 
 
 class Attribution:
-    """Which COMPONENT an instruction belongs to -- the INNERMOST frame in the kernel's sources whose function is a
-    component (the component the instruction's helpers inline into) -- and whether it is a barrier SPIN (an innermost
-    frame inside `mbar_wait`). A spin is the wait for another agent's work and is reported apart from the component's
-    own instructions. Innermost, because the inline chain is not always a call chain: through `static_for` the line
-    table can splice another site's frames between a component and the kernel (a readout instruction's chain reading
-    `read_chunk <- the kernel <- store_batches' static_for <- the kernel`), and an outermost rule books it to the wrong
-    component. No component calls another, so the innermost one is the instruction's owner."""
+    """Which COMPONENT an instruction belongs to -- `owner_of`: the innermost frame in the kernel's sources whose
+    function is a component, walking outward no further than the kernel's own body; work no component owns under its
+    own function's name (`helper_of`); the kernel's body itself its glue -- and whether it is a barrier SPIN (an
+    innermost frame inside `mbar_wait`), the wait for another agent's work, reported apart from the component's own
+    instructions. The walk stops at the kernel's body because the line table's chain is a call chain only up to there:
+    beyond it the table splices other call sites' frames in (a readout instruction read `read_chunk <- the kernel <-
+    store_batches' static_for <- the kernel`, a read unit's `units_listed_add <- the kernel <- read_chunk <- the
+    kernel`), and an outermost rule booked each to the wrong component."""
 
     def __init__(self, so: Path, member: str, arch: str, sources: list[Path], ops: Path, kernel: str | None = None):
         self.fmaps = {p.name: function_map(p.read_text().splitlines()) for p in sources}
@@ -115,7 +134,7 @@ class Attribution:
         chain = self.frames.get(offset, [])
         comp = "?"
         if components is not None:
-            comp = owner_of(chain, self.fmaps, components, glue) or "?"
+            comp = owner_of(chain, self.fmaps, components, glue) or helper_of(chain, self.fmaps, glue) or "?"
         if comp == "?":
             for f, ln in chain:
                 if f in self.fmaps:

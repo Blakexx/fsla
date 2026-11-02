@@ -53,7 +53,8 @@ def component_peaks(cubin: Path, kernel: str | None, rows: list[tuple[int, str, 
                     components: dict[str, str]) -> dict[str, int]:
     """THE REGISTER BUDGET's reading (KERNEL_STANDARDS section 32): each budget component's peak live registers, an
     instruction attributed as `tools/region_ledger.py` attributes it (`owner_of`: the innermost inline frame in
-    `sources` whose function is a component's, else the kernel's own body, its `glue`)."""
+    `sources` whose function is a component's, walking outward no further than the kernel's own body, else that body,
+    its `glue`)."""
     frames = sass.frames(sass.section(sass.disassemble(cubin, "--print-line-info-inline", "-gi"), kernel, cubin.name))
     fmaps = {p.name: function_map(p.read_text().splitlines()) for p in sources}
     by_function = {fn: name for name, fn in components.items()}
