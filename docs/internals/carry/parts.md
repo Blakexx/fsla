@@ -153,7 +153,10 @@ channels x 32 lists, four `ldmatrix.trans`) and its exponent (`exp_slot`), then 
 rows by one `ldmatrix.x4` (B: 32 lists x 8 tokens), four MMAs accumulating in the device's form (fp16 on GeForce, fp32
 where fp32 accumulate runs at full rate:
 [`carry_api.md#carry-readout-accumulate`](carry_api.md#carry-readout-accumulate); the fp16 accumulator converted to fp32
-for the pairs), each lane's two tokens' outputs as exact pairs added by `red.shared` at their panel words. Lane `l`
+for the pairs), each lane's two tokens' outputs as exact pairs added by `red.shared` at their panel words. The panel
+is FIXED POINT because shared memory's native atomic add is 32-bit integer on sm_80/86 -- a float add there compiles
+to a compare-and-swap loop -- which is what each token's unit (below) and the units pass exist for; a float shared
+panel is not a design option (event:2026-11-01-p87-no-floating-point-atomics-in-shared-memory-the-r). Lane `l`
 holds entry `l & 7` (its token's row, so the B load needs no shuffle) and scales its coefficient to the token's unit: `c
 2^(e - kImageTop - kCoefTop - u)`, the exponent added to the fp32 coefficient's bits (`e` the digit's exponent, `u` the
 token's unit byte, looked up by the row the entry carries -- its query head's units, `carry.md#sides`); each lane
