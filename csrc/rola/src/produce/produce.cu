@@ -145,7 +145,7 @@ __device__ __forceinline__ Sources<QW, QX> sources(const ProduceParams& p, const
 
 //: ONE STAGE OF `S` K-STEPS: the job's columns' 16 S hidden and the stage's x rows', one copy group of every thread; a
 //: chunk past the hidden size zero-fills. `issue` false copies nothing (the loop's last stage).
-template <int S, int QW, int QX>
+template <int S, int XOff, int QW, int QX>
 __device__ __forceinline__ void stage_step(const ProduceParams& p, const __nv_bfloat16* base,
                                            const Sources<QW, QX>& s, int k, uint32_t stage,
                                            bool issue) {
@@ -163,7 +163,7 @@ __device__ __forceinline__ void stage_step(const ProduceParams& p, const __nv_bf
     constexpr int q = decltype(I)::value;
     const int u = t + q * kProduceThreads, c = u % kChunks;
     const bool live = k + 8 * c < p.hidden && ((s.mask >> (QW + QX + q)) & 1u);
-    ops::stage_tile_when(stage + kStageWeights + chunk_at<S>(u / kChunks, c),
+    ops::stage_tile_when(stage + XOff + chunk_at<S>(u / kChunks, c),
                          p.x + (s.x[q] + (live ? static_cast<uint32_t>(k) : 0u)),
                          issue && ((s.mask >> (QW + q)) & 1u), live);
   });
@@ -174,45 +174,53 @@ __device__ __forceinline__ void stage_step(const ProduceParams& p, const __nv_bf
 //: k halves), then each of its `M` column tiles' A (`ldmatrix.x4`) into both n-tiles' MMAs, the tile's stage rows from
 //: `row0(i)`. -- see docs/internals/produce/produce.md#accumulate
 //: @burst
-template <int M, int S, class Row0>
+template <int M, int S, int XOff, class Row0>
 __device__ __forceinline__ void mma_stage(uint32_t stage, int token_row, int lane, Row0 row0,
                                           float (&acc)[kAccTiles][kTokenTiles][4]) {
-  rola::static_for<S>([&](auto K) {
-    constexpr int ks = decltype(K)::value;
-    uint32_t b[4];
-    ops::load_frag(
-        b, stage + kStageWeights
-               + chunk_at<S>(token_row + (lane & 7) + 8 * (lane >> 4), 2 * ks + ((lane >> 3) & 1)));
-    rola::static_for<M>([&](auto I) {
-      constexpr int i = decltype(I)::value;
-      uint32_t a[4];
-      ops::load_frag(
-          a,
-          stage + chunk_at<S>(row0(i) + (lane & 7) + 8 * ((lane >> 3) & 1), 2 * ks + (lane >> 4)));
-      ops::mma(acc[i][0], a, b);
-      ops::mma(acc[i][1], a, b + 2);
-    });
+  //: the stage's (k-step, column tile) pairs in order, each one's fragments loaded a pair ahead of its MMAs
+  constexpr int kPairs = S * M;
+  auto b_at = [&](int ks) {
+    return stage + XOff
+           + chunk_at<S>(token_row + (lane & 7) + 8 * (lane >> 4), 2 * ks + ((lane >> 3) & 1));
+  };
+  auto a_at = [&](int j) {
+    return stage
+           + chunk_at<S>(row0(j % M) + (lane & 7) + 8 * ((lane >> 3) & 1),
+                         2 * (j / M) + (lane >> 4));
+  };
+  uint32_t a[2][4], b[2][4];
+  ops::load_frag(b[0], b_at(0));
+  ops::load_frag(a[0], a_at(0));
+  rola::static_for<kPairs>([&](auto J) {
+    constexpr int j = decltype(J)::value, ks = j / M, i = j % M;
+    if constexpr (j + 1 < kPairs) {
+      if constexpr ((j + 1) % M == 0) ops::load_frag(b[((j + 1) / M) & 1], b_at((j + 1) / M));
+      ops::load_frag(a[(j + 1) & 1], a_at(j + 1));
+    }
+    ops::mma(acc[i][0], a[j & 1], b[ks & 1]);
+    ops::mma(acc[i][1], a[j & 1], b[ks & 1] + 2);
   });
 }
 
 //: THE K-LOOP: two stages, one copy group and one CTA barrier a stage (KERNEL_STANDARDS 4's sm_80 form) -- the stage
 //: landed and the other released at the barrier, its refill issued then, a stage ahead of its MMAs.
 //: -- see docs/internals/produce/produce.md#accumulate
-template <int M, int S, int QW, int QX, class Row0>
+template <int M, int S, int XOff, int QW, int QX, class Row0>
 __device__ __forceinline__ void k_loop(const ProduceParams& p, const __nv_bfloat16* base,
                                        const Sources<QW, QX>& s, uint32_t stages, int token_row,
                                        Row0 row0, float (&acc)[kAccTiles][kTokenTiles][4]) {
   const int lane = static_cast<int>(threadIdx.x) & 31;
   const int steps = (p.hidden + kKStep * S - 1) / (kKStep * S);
-  stage_step<S>(p, base, s, 0, stages, true);
+  stage_step<S, XOff>(p, base, s, 0, stages, true);
 #pragma unroll 1
   for (int step = 0; step < steps; ++step) {
     ops::stage_wait<0>();
     __syncthreads();
     const uint32_t here = stages + static_cast<uint32_t>((step & 1) * kStageSlot);
-    stage_step<S>(p, base, s, (step + 1) * kKStep * S,
-                  stages + static_cast<uint32_t>(((step + 1) & 1) * kStageSlot), step + 1 < steps);
-    mma_stage<M, S>(here, token_row, lane, row0, acc);
+    stage_step<S, XOff>(p, base, s, (step + 1) * kKStep * S,
+                        stages + static_cast<uint32_t>(((step + 1) & 1) * kStageSlot),
+                        step + 1 < steps);
+    mma_stage<M, S, XOff>(here, token_row, lane, row0, acc);
   }
 }
 
@@ -601,8 +609,8 @@ __device__ __forceinline__ void value_class(const ProduceParams& p, const Job& j
 //: ONE N-TILE OF A VALUE JOB'S ROWS, its column class and head size the shape word's (warp-uniform to ptxas).
 __device__ __forceinline__ void value_tile(const ProduceParams& p, const Job& job, int tile0,
                                            int lane, const float (&acc)[kAccTiles][4]) {
-  rola::uniform_switch<5>(job.tiles, [&](auto F) __attribute__((always_inline)) {
-    constexpr int M = 1 << decltype(F)::value;
+  rola::uniform_switch<3>(job.tiles - 2, [&](auto F) __attribute__((always_inline)) {
+    constexpr int M = 4 << decltype(F)::value;
     rola::uniform_switch<4>(job.rows, [&](auto R) __attribute__((always_inline)) {
       constexpr int C = 4 << decltype(R)::value;
       if constexpr (2 * M >= C) value_class<M, C>(p, job, tile0, lane, acc);
@@ -722,14 +730,15 @@ __device__ __forceinline__ void project_one_row(const ProduceParams& p, int job_
         p, job, columns, [&](int i, int h) { return job_column(job, columns, 16 * i + g + 8 * h); },
         acc);
     const __nv_bfloat16* base = weight_base(p, job);
-    rola::uniform_switch<5>(job.tiles, [&](auto F) {
-      constexpr int M = 1 << decltype(F)::value, S = M <= 4 ? 4 : 2;
-      constexpr int QW =
-          16 * M * 2 * S / kProduceThreads > 0 ? 16 * M * 2 * S / kProduceThreads : 1;
-      constexpr int QX = kTokenTile * 2 * S / kProduceThreads;
+    rola::uniform_switch<3>(job.tiles - 2, [&](auto F) {
+      //: the class's stage: `16 / M` k-steps, so its weights are 8 KB at every class and its x rows follow them
+      constexpr int M = 4 << decltype(F)::value, S = kAccTiles / M, kXOff = 16 * M * 32 * S;
+      constexpr int QW = 16 * M * 2 * S / kProduceThreads,
+                    QX = kTokenTile * 2 * S / kProduceThreads;
       const Sources<QW, QX> s = sources<S, QW, QX>(
           p, job, [&](int a) { return job_column(job, columns, a); }, token0, kTokenTile);
-      k_loop<M, S>(p, base, s, stages, kWarpTokens * warp, [](int i) { return 16 * i; }, acc);
+      k_loop<M, S, kXOff>(
+          p, base, s, stages, kWarpTokens * warp, [](int i) { return 16 * i; }, acc);
     });
   }
   //: the job's fields read again past the k-loop, never held across it
@@ -761,7 +770,7 @@ __device__ __forceinline__ void project_pair(const ProduceParams& p, int job_ind
     constexpr int QW = kMaxColumns * 2 / kProduceThreads, QX = 1;
     const Sources<QW, QX> s = sources<1, QW, QX>(
         p, job, [&](int c) { return c < columns ? c : -1; }, token0, kTokenTile / 2);
-    k_loop<kAccTiles, 1>(
+    k_loop<kAccTiles, 1, kMaxColumns * 32>(
         p, base, s, stages, kWarpTokens * pair,
         [&](int i) { return (i < 8 ? 0 : width) + 128 * half + 16 * (i & 7); }, acc);
   }
@@ -785,7 +794,9 @@ __global__ __launch_bounds__(kProduceThreads, 2) void produce_kernel(
   extern __shared__ __align__(128) uint8_t stage_bytes[];
   const uint32_t stages = ops::smem_addr(stage_bytes);
   __shared__ long long s_clock[kProduceWarps][Clock::kRow];
-  const int warp = static_cast<int>(threadIdx.x) >> 5, lane = static_cast<int>(threadIdx.x) & 31;
+  //: the warp's index as ptxas knows it uniform (`uniform_warp`): a uniform value held across the k-loop at the register
+  //: cap can live outside the vector registers
+  const int warp = ops::uniform_warp<kProduceWarps>(), lane = static_cast<int>(threadIdx.x) & 31;
   Clock clock(&s_clock[warp][0], lane, p.ledger != nullptr);
   clock.lap(kPhaseJob);
   const int live = min(kTokenTile, p.BT - token0);

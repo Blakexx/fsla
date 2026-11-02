@@ -190,7 +190,9 @@ def _shape(job: tuple[int, ...], plan: ProducerPlan) -> int:
     columns = heads * d_v if kind == _VALUE else 2 * (32 << rows) if union else width
     pair = columns > _WARP_COLUMNS
     count = 16 if pair else -(-columns // 16)
-    tiles = next(c for c in range(5) if count <= 1 << c)
+    #: the projection's classes are 4 to 16 column tiles: a narrower job's stage is its x rows' copies, under the
+    #: MMAs' rate on sm_80, until narrow rows are packed into one job
+    tiles = next(c for c in range(2, 5) if count <= 1 << c)
     dense = [kind != _VALUE and level in dense_levels(plan, side) for side in ("read", "write")]
     word = (int(dense[1]) << 15 | int(dense[0]) << 14 | int(pair) << 13 | tiles << 10 | fold_write << 9
             | fold_read << 8 | int(out_write >= 0) << 7 | int(out_read >= 0) << 6 | kind << 5 | rows << 3 | solve)

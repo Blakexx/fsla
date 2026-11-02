@@ -51,15 +51,17 @@ reduction three shuffles. Nothing passes through shared memory but the operands.
 split, tied or independent side, a union of width at most 128 -- its write row at its width class's tile offset,
 `32 << rows` columns (`job_column`), so a column's two logits share a lane -- a value job's heads) is every warp's whole
 row for its 16
-tokens, the tiles in the job's class (1, 2, 4, 8 or 16: the shape word's, chosen once a block by `common/structure_switch.cuh`'s `uniform_switch`), 64 tokens a block;
+tokens, the tiles in the job's class (4, 8 or 16: the shape word's -- a narrower job runs at 4 tiles until narrow
+rows are packed into one job, its stage otherwise its x rows' copies under sm_80's MMA rate -- chosen once a block by `common/structure_switch.cuh`'s `uniform_switch`), 64 tokens a block;
 a WIDE union (two rows past 256 columns) is a warp PAIR a token group -- warp `2j + h` columns `128 h ..` of both rows,
 eight tiles a row, so each warp holds both rows of the same columns and forms their midpoint and difference in its own
 registers -- in two 32-token passes, the threshold's row sums crossing the pair.
 
 <a id="stage"></a>THE STAGE is `S` k-steps (16 hidden each) of every column the job holds and of the tile's x rows, staged
-once a block and read by every warp (the weights' one read a block). Its depth is the job's class: two k-steps at 128
-or 256 columns, four at 64 or fewer, one for a wide union's 512 -- so a narrow job still runs eight or more MMAs a
-warp between barriers -- within 16 KB of weights and 8 KB of x rows. A row is 32 S bytes in 16-byte chunks, chunk `c`
+once a block and read by every warp (the weights' one read a block). Its depth is the job's class: `16 / M` k-steps at
+`M` column tiles (one at 256 columns, two at 128, four at 64), so a one-row job's weights are 8 KB at every class and
+its x rows follow them (to 8 KB), and one for a wide union's 512 columns (16 KB) -- 32 MMAs a warp between barriers
+at every class, with each tile's A fragment loaded a tile ahead of its MMAs (`mma_stage`). A row is 32 S bytes in 16-byte chunks, chunk `c`
 at `c` XOR the row's swizzle (`chunk_at<S>`: `(row >> 2) & 1`, `(row >> 1) & 3`, `row & 7` at one, two and four
 k-steps), so an `ldmatrix`'s eight rows at one chunk lie in eight bank groups at every depth -- A by `ldmatrix.x4` a
 column tile, B by `ldmatrix.x4` the warp's 16 tokens, one wavefront a matrix, the copies four wavefronts a warp
