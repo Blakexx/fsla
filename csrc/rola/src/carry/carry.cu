@@ -27,6 +27,8 @@ int64_t g_ledger_ctas = 0;
 //: unbound in production. -- see docs/internals/carry/fold.md#probe
 float* g_probe = nullptr;
 int64_t g_probe_values = 0;
+float* g_probe_den = nullptr;
+int64_t g_probe_den_values = 0;
 //: THE CAPTURE BINDING: a host u8 tensor of `sizeof(CarryCapture)` bytes the next launch copies its operand block and
 //: grid into; unbound in production. -- see docs/internals/carry/carry_api.md#carry-capture-bind
 uint8_t* g_capture = nullptr;
@@ -273,10 +275,15 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   p.num = static_cast<uint32_t*>(num.mutable_data_ptr());
   p.check = check.mutable_data_ptr<float>();
   p.probe = g_probe;
+  p.probe_den = g_probe_den;
   if (p.probe != nullptr)
     STD_TORCH_CHECK(g_probe_values == BH * leaves * boxes / (dv / channels) * dv,
                     "the bound probe holds ", g_probe_values, " values, the call's state ",
                     BH * leaves * boxes / (dv / channels) * dv);
+  if (p.probe_den != nullptr)
+    STD_TORCH_CHECK(g_probe_den_values == BH * leaves * boxes / (dv / channels),
+                    "the bound den probe holds ", g_probe_den_values,
+                    " values, the call's den state ", BH * leaves * boxes / (dv / channels));
   //: THE PLANS, a window's a (batch-head, box class), the plan pass's to write and the carry's to stage
   const int64_t classes = (p.read_lists.groups > 0 ? p.read_lists.groups : 1)
                           * (p.write_lists.groups > 0 ? p.write_lists.groups : 1);
@@ -343,17 +350,24 @@ void carry_ledger_bind(const std::optional<Tensor>& ledger) {
   g_ledger_ctas = ledger->size(0);
 }
 
-void carry_probe_bind(const std::optional<Tensor>& probe) {
-  if (!probe) {
-    g_probe = nullptr;
-    g_probe_values = 0;
-    return;
+void carry_probe_bind(const std::optional<Tensor>& probe, const std::optional<Tensor>& den) {
+  g_probe = nullptr;
+  g_probe_values = 0;
+  g_probe_den = nullptr;
+  g_probe_den_values = 0;
+  if (probe) {
+    STD_TORCH_CHECK(
+        probe->is_cuda() && probe->scalar_type() == Dtype::Float && probe->is_contiguous(),
+        "the probe is a contiguous CUDA fp32 tensor [BH, N, d_v]");
+    g_probe = probe->mutable_data_ptr<float>();
+    g_probe_values = probe->numel();
   }
-  STD_TORCH_CHECK(
-      probe->is_cuda() && probe->scalar_type() == Dtype::Float && probe->is_contiguous(),
-      "the probe is a contiguous CUDA fp32 tensor [BH, N, d_v]");
-  g_probe = probe->mutable_data_ptr<float>();
-  g_probe_values = probe->numel();
+  if (den) {
+    STD_TORCH_CHECK(den->is_cuda() && den->scalar_type() == Dtype::Float && den->is_contiguous(),
+                    "the den probe is a contiguous CUDA fp32 tensor [BH, N]");
+    g_probe_den = den->mutable_data_ptr<float>();
+    g_probe_den_values = den->numel();
+  }
 }
 
 void carry_capture_bind(const std::optional<Tensor>& out) {

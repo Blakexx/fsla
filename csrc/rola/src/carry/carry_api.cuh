@@ -23,7 +23,7 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
 int64_t carry_readout_accumulate(int64_t device);  // carry_api.md#carry-readout-accumulate
 
 void carry_ledger_bind(const std::optional<Tensor>& ledger);
-void carry_probe_bind(const std::optional<Tensor>& probe);
+void carry_probe_bind(const std::optional<Tensor>& probe, const std::optional<Tensor>& den);
 void carry_capture_bind(const std::optional<Tensor>& out);  // carry_api.md#carry-capture-bind
 int64_t carry_capture_bytes();
 int64_t carry_build_stamp();

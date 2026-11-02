@@ -106,6 +106,7 @@ struct CarryParams {
   ReadTables tables;  // the read tables' offsets and the area, the launch's: plan.md#read-tables
   float* check;
   float* probe;
+  float* probe_den;
   long long* ledger;
 };
 

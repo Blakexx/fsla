@@ -223,10 +223,10 @@ def capture_bytes() -> int:
     return int(extension().carry_capture_bytes())
 
 
-def probe_bind(probe: torch.Tensor | None) -> None:  #: reserved: the fold's oracle instrument (docs/internals/carry/fold.md#probe)
-    """Bind the probe the next launches write their final state into, absolute fp32 ``[BH, N, d_v]`` by global leaf
-    in level order, or ``None``."""
-    extension().carry_probe_bind(probe)
+def probe_bind(probe: torch.Tensor | None, den: torch.Tensor | None = None) -> None:  #: reserved: the fold's oracle instrument (docs/internals/carry/fold.md#probe)
+    """Bind the probes the next launches write their final state into, absolute fp32 ``[BH, N, d_v]`` and the den state
+    ``[BH, N]`` by global leaf in level order, or ``None``."""
+    extension().carry_probe_bind(probe, den)
 
 
 def sm_clock_ghz() -> float | None:

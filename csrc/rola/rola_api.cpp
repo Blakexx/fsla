@@ -118,7 +118,7 @@ STABLE_TORCH_LIBRARY(rola, m) {
   m.def("carry_readout_accumulate(int device) -> int");
   m.def("device_window(int device) -> int");
   m.def("carry_ledger_bind(Tensor? ledger) -> ()");
-  m.def("carry_probe_bind(Tensor? probe) -> ()");
+  m.def("carry_probe_bind(Tensor? probe, Tensor? den) -> ()");
   m.def("carry_capture_bind(Tensor? out) -> ()");
   m.def("carry_capture_bytes() -> int");
   m.def("carry_build_stamp() -> int");

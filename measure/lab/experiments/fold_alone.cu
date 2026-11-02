@@ -60,7 +60,8 @@ struct Stamps {
 //: rescaled; 3 MODE 0 with the fold's laps traced (its own reading: a clock read is a point ptxas does not schedule
 //: across); 4 MODE 0 on conflict-free slots (entry `e` of a list on a slot of residue `e mod 8`, the coloring's best
 //: case); 5 MODE 4 back to back; 6 MODE 0 with each lap's clock stamped (the timeline); 7 MODE 0 timed from one
-//: fold's end to the next's, so work moved out of the fold's own span still shows
+//: fold's end to the next's, so work moved out of the fold's own span still shows -- each with the den column on every
+//: list (a one-box carry's); 8 MODE 0 with it on half the lists (each of two boxes'); 9 MODE 0 with none
 template <int MODE>
 __global__ __launch_bounds__(rc::kThreads, 1) void fold(long long* t, int* out, long long* marks) {
   extern __shared__ __align__(128) uint8_t smem[];
@@ -101,7 +102,7 @@ __global__ __launch_bounds__(rc::kThreads, 1) void fold(long long* t, int* out, 
         const uint32_t slot =
             MODE >= 4 ? 8u * (h % (kSlots / 8)) + static_cast<uint32_t>(e & 7) : h % kSlots;
         reinterpret_cast<uint2*>(smem + (ents - ops::smem_addr(smem)))[tl + e] =
-            make_uint2(slot, 0x3c00u ^ ((h >> 20) & 0xffu));
+            make_uint2(slot, (0x3c00u ^ ((h >> 20) & 0xffu)) * 0x10001u);
       }
       if (lane == 0) {
         const bool moved =
@@ -112,10 +113,12 @@ __global__ __launch_bounds__(rc::kThreads, 1) void fold(long long* t, int* out, 
     });
     __syncwarp();
     if constexpr (MODE != 1 && MODE != 5) ops::rendezvous();
+    const uint32_t dens = MODE == 8 ? 0x3u : MODE == 9 ? 0u : 0xfu;
     const long long t0 = clock64();
     if constexpr (MODE == 6) {
       long long at[kMarks];
-      rc::fold_chunk<P>(st, true, smem, ww, w, run, 0, kSlots, rows, ents, warp, lane, Stamps{at});
+      rc::fold_chunk<P>(st, true, smem, ww, w, run, 0, kSlots, rows, ents, warp, lane, dens,
+                        Stamps{at});
       const int k = w - kTimelineFrom;
       if (blockIdx.x == 0 && lane == 0 && k >= 0 && k < kTimelineWindows) {
         long long* row = marks + (k * rc::kWarps + warp) * (kMarks + 1);
@@ -125,10 +128,10 @@ __global__ __launch_bounds__(rc::kThreads, 1) void fold(long long* t, int* out, 
       }
     } else if constexpr (MODE == 3) {
       last = t0;
-      rc::fold_chunk<P>(st, true, smem, ww, w, run, 0, kSlots, rows, ents, warp, lane,
+      rc::fold_chunk<P>(st, true, smem, ww, w, run, 0, kSlots, rows, ents, warp, lane, dens,
                         Trace{sums, last});
     } else {
-      rc::fold_chunk<P>(st, true, smem, ww, w, run, 0, kSlots, rows, ents, warp, lane);
+      rc::fold_chunk<P>(st, true, smem, ww, w, run, 0, kSlots, rows, ents, warp, lane, dens);
     }
     const long long t1 = clock64();
     busy += t1 - t0;
@@ -263,6 +266,8 @@ int main(int argc, char** argv) {
   fold_alone::variant<6>(b, "composed, timeline");
   fold_alone::variant<7>(b,
                          "composed, the whole window (the harness's writes and the wait included)");
+  fold_alone::variant<8>(b, "composed, the den column on half the lists (two channel boxes)");
+  fold_alone::variant<9>(b, "composed, no den column (a box carrying none)");
   if (!b.expect_only) {
     const Floor f = floor_of(b.sms);
     b.unchecked("tensor floor (mean scheduler)", "computed on the host from the same draw");

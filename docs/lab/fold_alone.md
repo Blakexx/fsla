@@ -56,4 +56,10 @@ WHAT IT SETTLES.
 - Moving each list's step shuffles up front with the entries leaves the composed shape where it was (2,502) and takes
   the back-to-back one to 1,879: shorter chains help warps that are out of phase, not warps in lockstep.
 
+THE DEN COLUMN (2026-11-02, the den in the carry, [`fold.md#den`](../internals/carry/fold.md#den)): every variant
+above now carries it on every list, a one-box carry's; two more variants carry it on half the lists (each of two
+channel boxes) or none. Composed, cycles a warp-window: none 2,471 (the table's 2,461 before), half 2,747, every list
+3,039; back to back with every list 2,460. Priced first with the coefficient moved onto B (+739, then dropped: the
+value tiles keep `f16(x c)`, the den runs on the raw slices).
+
 Record: `measure/lab/results/fold_alone/sm_86.json`.

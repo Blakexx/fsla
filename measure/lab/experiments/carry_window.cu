@@ -646,7 +646,8 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
           rc::fold_chunk<P>(
               st, true, smem, ww, w,
               rc::chunk_runs<P>(p, smem, ww, rc::kWrite, w, 0, f.slots, f.slots, t & 31), 0,
-              f.slots, area, area + rc::fold_ents<P>(f.slots), t >> 5, t & 31);
+              f.slots, area, area + rc::fold_ents<P>(f.slots), t >> 5, t & 31,
+              rc::den_lists(rc::place_of(p).channel0, p.dv));
         }
       } else {
         //: THE NEXT WINDOW'S PANEL, zeroed by stores, and its entries

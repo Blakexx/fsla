@@ -26,12 +26,13 @@ struct Tenants {
   static constexpr int kExps = kKeys + 2 * kBoxDigits * 4;
   static constexpr int kBits = kExps + kBoxDigits * 4;
   //: the window's box top and largest digit exponent, then a dummy byte a dead unit's store lands on; each leaf's
-  //: exponent byte; each leaf's f16 scale
+  //: exponent byte; each leaf's f16 scale; the den state (`fold.md#den`)
   static constexpr int kTops = kBits + 8;
   static constexpr int kDeadUnit = kTops + 8;
   static constexpr int kLeafExp = align_of(kDeadUnit + 8, 16);
   static constexpr int kLeafScale = kLeafExp + kBoxDigits * kBoxLists;
-  static constexpr int kClock = align_of(kLeafScale + kBoxDigits * kBoxLists * 2, 8);
+  static constexpr int kDenState = align_of(kLeafScale + kBoxDigits * kBoxLists * 2, 16);
+  static constexpr int kClock = align_of(kDenState + kBoxLists * kBoxDigits * 4, 8);
   static constexpr int kAddr = align_of(kClock + kWarps * (kCarryPhases + 1) * 8, 16);
   static constexpr int kAddrBytes = 256;
   static constexpr int kEnd = align_of(kAddr + kAddrBytes, 16);

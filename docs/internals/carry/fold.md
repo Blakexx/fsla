@@ -41,7 +41,8 @@ than 8 remain, then an 8-token tail of m16n8k8 MMAs, half a step's tensor work. 
 lane's row offset (its swizzle folded in, `parts.md#swizzle`) and its c paired with the next lane's, moved to the unit;
 a pad past the list's count is row 0 with c = 0. `step16`: A is the slots' dense slices by `ldmatrix.trans` (two
 m-tiles of the box's 32 digits) times c by HMUL2, B the values (four n-tiles of 32 channels), eight fp32-accumulate
-MMAs. `step8`: the same over 8 tokens, one `ldmatrix.trans` each. There are no mass MMAs: the den pass owns the mass.
+MMAs. `step8`: the same over 8 tokens, one `ldmatrix.trans` each. A list whose den the box carries takes its den
+column's MMAs beside them ([`#den`](#den)).
 Each loop's step is one block (KERNEL_STANDARDS §27), guarded by a vote and closed by one. A list's first step's lanes
 (`off`, `cpair` for entry `lane & 15`, which serve a tail's lanes 0-7 as well) arrive computed, and each 16-token
 step fetches the next step's entries in its own block, after its MMAs in program order, so their loads issue under
@@ -74,9 +75,29 @@ every list's scale, count and first step's lanes are read, `1 + 2 J` once list `
 its steps are done. The kernel passes none and its SASS is identical with the hook; the lab's
 [`fold_alone`](../../lab/fold_alone.md) passes a recorder.
 
+<a id="den"></a>
+## The den column
+
+The den is the v+1 channel -- each token's value 1 at its gain `m` -- so its state is the MASS `sum_t x b m` a leaf
+(ruled 2026-11-02, the den in the carry). A box's 32 channels fill the MMAs' tiles, so the den takes one of its own: a
+fifth n-tile of one live column (column 0, lanes `0..3`), its A the step's RAW slices (the value tiles' A is `f16(x c)`,
+the coefficient on the routing weight, the product order the reference declares), its B the entries' `c_m` pairs
+(`den_pair_of`: a write record's high half, `f16(b m 2^(4 - Km))` -- the facts pass's, `Km` the list's mass exponent;
+a side with no list level forms it beside c from the slot's `m`, `2^(4 - dense_exp(shift_m))`). Two more MMAs a
+16-token step (one an 8-token tail), into a `DenColumn` held only through the list's steps: then `den_add` adds each
+row's value times `2^(K - 4)` into the DEN STATE (`kDenState`, fp32 `[32 lists][32 digits]`, zero at the call's
+start), the warp's own lists, so the state is in `b m` units across windows with no unit book.
+
+A box carries the den of a warp's list `j` where `j boxes / 4` is its box (`den_lists`, `boxes = dv / 32`): each of
+two boxes lists 0-15 or 16-31, of four a quarter -- every list once, the cost shared. The branch is the
+declaration's, warp-uniform (a one-trip loop each way). MEASURED (`fold_alone`, sm_86, nl64k-alt-k4's draw, cycles a
+warp-window, the carry's shape): no den 2,471, half the lists 2,747 (+276), every list 3,039 (+568); the composed
+kernel's registers unchanged (241; sm_80 239).
+
 <a id="probe"></a>
 ## The probe
 
 An instrument (`carry_probe_bind`, `rola.ops.carry.probe_bind`). When bound, the final state is written absolute,
 fp32 `[BH, N, d_v]` by global leaf in level order: each accumulator times `2^(u - 4) / 255` (c on the byte scale, the
-dense operand at 1/255 of it). Unbound, nothing is written. The fold's oracle gate reads it.
+dense operand at 1/255 of it); and the den state `[BH, N]` by the box carrying each list, times `1 / 255`. Unbound,
+nothing is written. The fold's oracle gate reads both (the den against the reference's mass, `fold_state`).

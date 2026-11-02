@@ -7,14 +7,15 @@ chunks and buffers -- the window's plan places in the area at run time (`schedul
 <a id="tenants"></a>
 ## The persistent tenants
 
-`Tenants` holds what lives across the window and is the same on every card, arm and call, 6,016 bytes with the area's
-alignment:
+`Tenants` holds what lives across the window and is the same on every card, arm and call: 12,368 bytes at W = 512,
+the area from 12,416:
 
 - both sides' counts; the write side's union tokens (1 KB) and its group's boundaries in prefix form (528 bytes), two
   windows' each by parity: a window's are copied while the window before it is still read;
 - the write lists' exponent pairs, by parity;
 - the unit book (a list's running unit, `fold.md#units`) and the window's scale a list (`fold.md#units`), the
   digit keys (by parity), the digit exponents in lane order and the scales' bits (`parts.md#maxima`);
+- the den state, fp32 `[32 lists][32 digits]` across the call (4 KB, `fold.md#den`);
 - the phase clock's rows;
 - the CTA's addresses (`Addr`, 256 bytes reserved: `parts.md#place`).
 

@@ -59,6 +59,10 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     reinterpret_cast<uint32_t*>(smem + p.tables.bounds_at)[i] = 0u;
     reinterpret_cast<int8_t*>(smem + p.tables.units_at)[i] = static_cast<int8_t>(kUnitByteNone);
   }
+  //: the den state zero at the call's start (a fresh call's: the entry state is not taken yet)
+#pragma unroll 1
+  for (int i = static_cast<int>(threadIdx.x); i < kBoxLists * kBoxDigits; i += kThreads)
+    reinterpret_cast<float*>(smem + P::kDenState)[i] = 0.0f;
   //: the scales' bits' multiplier and bias (`list_scale`), loaded at each use
   if (threadIdx.x == 0)
     *reinterpret_cast<uint2*>(smem + P::kBits) = make_uint2(1u << 23, 127u << 23);
@@ -243,7 +247,8 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       clock.lap(kPhaseWait);
       if (j == 0) fold_units<P>(smem, ww(w), w, wid(), lid());
       fold_chunk<P>(st, j == 0, smem, ww(w), w, run, e.first(), e.slots(), buf,
-                    buf + static_cast<uint32_t>(fold_ents<P>(e.slots())), wid(), lid());
+                    buf + static_cast<uint32_t>(fold_ents<P>(e.slots())), wid(), lid(),
+                    den_lists(place_of(p).channel0, p.dv));
       clock.lap(kPhaseFold);
     }
   }
