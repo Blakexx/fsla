@@ -179,11 +179,14 @@ between the kernel's laps (`common/phase_clock.cuh`).
 
 ## <a id="finish"></a>The head's finish
 
-The route jobs of one (token tile, head) each write their masses, fence, and add one to the pair's arrival counter;
-the last to arrive -- a vote on the count ends the others, so the collectives past it are warp-uniform -- reads the
-masses coherently (`__ldcg`) and forms the head's `read_mass`, the product of its levels' read masses, and `g_write`,
-the write gain's softplus (`softplus` as torch's, linear past 20) times the write masses; then it resets the counter,
-so no launch zeroes it between calls. The gain's logit (`gain_logit`) is the routing's trailing gain column against
+The finish is a WARP's: every job's warp `w` writes the same 16 tokens of its tile (its two n-tiles; the union stub
+too), so the route jobs of one (token tile, head) arrive per warp slice -- each warp fences its own stores, syncs, and
+its lane 0 adds one to the slice's counter (`arrivals`, `[tiles, H, 4]`); the last to arrive -- its lane 0's count
+broadcast, so the collectives past it are warp-uniform -- reads the masses coherently (`__ldcg`) and forms the head's
+`read_mass`, the product of its levels' read masses, and `g_write`, the write gain's softplus (`softplus` as torch's,
+linear past 20) times the write masses, for its 16 tokens; then it resets the counter, so no launch zeroes it between
+calls. No block barrier: the block-wide form (a fence, two barriers and one count a job) held every warp to the
+slowest one's Newton steps. The gain's logit (`gain_logit`) is the routing's trailing gain column against
 the token's row, a warp's lanes over the hidden axis in 16-byte chunks, plus the column's routing bias and
 `gain_bias`; a routing without a gain column has a gain of 1.
 

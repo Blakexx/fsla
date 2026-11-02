@@ -1326,7 +1326,7 @@
   {"doc": "docs/internals/produce/produce.md", "pinned_at": "b4b7086bcfad", "reviewed": true, "sha256": "aa970c3583688e4a", "target": "csrc/rola/src/produce/produce.cu::solve_class"},
   {"doc": "docs/internals/produce/produce.md", "pinned_at": "b4b7086bcfad", "reviewed": true, "sha256": "73ad60a8be894153", "target": "csrc/rola/src/produce/produce.cu::solve_tile"},
   {"doc": "docs/internals/produce/produce.md", "pinned_at": "338b7f4ff16d", "reviewed": true, "sha256": "bc054518c6a020b7", "target": "csrc/rola/src/produce/produce.cu::stage_step"},
-  {"doc": "docs/internals/produce/produce.md", "pinned_at": "9a8e90b6aef8", "reviewed": true, "sha256": "bedd35b2e1bc3b6c", "target": "csrc/rola/src/produce/produce.cu::stub_rows"},
+  {"doc": "docs/internals/produce/produce.md", "pinned_at": "350ab770cc36", "reviewed": true, "sha256": "45e322bbcc313be3", "target": "csrc/rola/src/produce/produce.cu::stub_rows"},
   {"doc": "docs/internals/produce/produce.md", "pinned_at": "b4b7086bcfad", "reviewed": true, "sha256": "aff48e96b3d01931", "target": "csrc/rola/src/produce/produce.cu::sums_past"},
   {"doc": "docs/internals/produce/produce.md", "pinned_at": "d3c6c8152217", "reviewed": true, "sha256": "13cb16ff1ba945b7", "target": "csrc/rola/src/produce/produce.cu::value_class"},
   {"doc": "docs/internals/produce/produce.md", "pinned_at": "338b7f4ff16d", "reviewed": true, "sha256": "40813ccaaa0e0186", "target": "csrc/rola/src/produce/produce.cu::value_tile"},

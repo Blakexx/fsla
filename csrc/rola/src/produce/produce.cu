@@ -672,42 +672,44 @@ __device__ __forceinline__ float gain_logit(const ProduceParams& p, const Job& j
   return dot + bias + p.gain_bias[job.head * p.G];
 }
 
-//: THE HEAD'S FINISH, by the last of its route jobs in the tile to arrive: `read_mass`, the product of the levels'
-//: read masses, and `g_write`, the gain's softplus times the write masses -- the other jobs' masses read past the
-//: fence, coherently. -- see docs/internals/produce/produce.md#finish
-__device__ void finish_head(const ProduceParams& p, const Job& job, int tile, int token0) {
-  __shared__ int s_last;
+//: THE HEAD'S FINISH OF A WARP'S 16 TOKENS, by the last of its route jobs to arrive at the slice (a counter a token
+//: tile, head and warp: every job's warp `w` writes the same 16 tokens' masses): `read_mass`, the product of the
+//: levels' read masses, and `g_write`, the gain's softplus times the write masses -- the other jobs' masses read past
+//: the fence, coherently. No block barrier: a warp waits on no other warp. -- see docs/internals/produce/produce.md#finish
+__device__ void finish_head(const ProduceParams& p, const Job& job, int tile, int token0, int warp,
+                            int lane) {
+  int32_t* const counter =
+      p.arrivals + (static_cast<int64_t>(tile) * p.H + job.head) * kProduceWarps + warp;
+  //: the warp's own stores before its arrival: each lane's fence, the warp's barrier, then lane 0's count
   __threadfence();
-  __syncthreads();
-  if (threadIdx.x == 0) {
-    s_last = atomicAdd(&p.arrivals[tile * p.H + job.head], 1) + 1 == p.route_jobs_per_head ? 1 : 0;
-  }
-  __syncthreads();
-  if (!__any_sync(0xffffffffu, s_last != 0)) return;
+  __syncwarp();
+  int last = 0;
+  if (lane == 0) last = atomicAdd(counter, 1) + 1 == p.route_jobs_per_head ? 1 : 0;
+  if (!__shfl_sync(0xffffffffu, last, 0)) return;
   __threadfence();
-  //: a lane quad a token, the block's 32 tokens a pass
-  constexpr int kPassTokens = kProduceThreads / 4;
-  const int quad = static_cast<int>(threadIdx.x) & 3, row = static_cast<int>(threadIdx.x) >> 2;
-  const int live = min(kTokenTile, p.BT - token0);
+  //: a lane quad a token, the warp's 8 tokens a pass
+  const int quad = lane & 3, row = lane >> 2;
+  const int first = token0 + kWarpTokens * warp;
 #pragma unroll 1
-  for (int pass = 0; pass < (live + kPassTokens - 1) / kPassTokens; ++pass) {
-    const int t = pass * kPassTokens + row;
-    const bool here = t < live;
-    const float gain = p.G > 0 ? gain_logit(p, job, token0 + t, here, quad) : 0.0f;
+  for (int pass = 0; pass < kWarpTokens / 8; ++pass) {
+    const int token = first + 8 * pass + row;
+    const bool here = token < p.BT;
+    const float gain = p.G > 0 ? gain_logit(p, job, token, here, quad) : 0.0f;
+    //: the levels' masses read by every lane (a dead token's as 1), outside the lane-divergent store below
+    const int64_t at = slot_of(p, here ? token : 0, job.head);
+    float read_mass = 1.0f, write_mass = 1.0f;
+#pragma unroll 1
+    for (int l = 0; l < p.D; ++l) {
+      read_mass *= here ? __ldcg(p.mass_read + at * p.D + l) : 1.0f;
+      write_mass *= here ? __ldcg(p.mass_write + at * p.D + l) : 1.0f;
+    }
     if (here && quad == 0) {
-      const int64_t at = slot_of(p, token0 + t, job.head);
-      float read_mass = 1.0f, write_mass = 1.0f;
-#pragma unroll 1
-      for (int l = 0; l < p.D; ++l) {
-        read_mass *= __ldcg(p.mass_read + at * p.D + l);
-        write_mass *= __ldcg(p.mass_write + at * p.D + l);
-      }
       const float softplus = gain > 20.0f ? gain : log1pf(expf(gain));
       p.read_mass[at] = read_mass;
       p.g_write[at] = (p.G > 0 ? softplus : 1.0f) * write_mass;
     }
   }
-  if (threadIdx.x == 0) p.arrivals[tile * p.H + job.head] = 0;
+  if (lane == 0) *counter = 0;
 }
 
 //: THE SKELETON'S ROWS (R3 lands the solve, the split and the bundle on the accumulators): each side the job writes,
@@ -722,8 +724,9 @@ __device__ __forceinline__ void zero_side(Out* plane, int64_t first, int width, 
 
 __device__ void stub_rows(const ProduceParams& p, const Job& job, int token0, int live, int warp,
                           int lane) {
+  //: the warp's own 16 tokens, the slice its finish counts
 #pragma unroll 1
-  for (int r = warp; r < live; r += kProduceWarps) {
+  for (int r = kWarpTokens * warp; r < min(kWarpTokens * (warp + 1), live); ++r) {
     const int64_t slot = slot_of(p, token0 + r, job.head);
     const int64_t at = slot * p.D + job.level;
     if (job.reads) {
@@ -882,7 +885,7 @@ __global__ __launch_bounds__(kProduceThreads, 2) void produce_kernel(
       stub_rows(p, job, token0, live, warp, lane);
       clock.lap(kPhaseBundle);
     }
-    finish_head(p, job, tile, token0);
+    finish_head(p, job, tile, token0, warp, lane);
     clock.lap(kPhaseFinish);
   } else {
     clock.lap(kPhaseValues);
@@ -1010,9 +1013,10 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   STD_TORCH_CHECK(v.scalar_type() == Dtype::Half && v.is_contiguous() && v.numel() == BT * H * d_v,
                   "v is [BT, H, d_v] f16");
   const int64_t tiles = (BT + kTokenTile - 1) / kTokenTile;
-  STD_TORCH_CHECK(arrivals.scalar_type() == Dtype::Int && arrivals.is_contiguous()
-                      && arrivals.numel() >= tiles * H,
-                  "arrivals holds a counter a (token tile, head): ", tiles * H);
+  STD_TORCH_CHECK(
+      arrivals.scalar_type() == Dtype::Int && arrivals.is_contiguous()
+          && arrivals.numel() >= tiles * H * kProduceWarps,
+      "arrivals holds a counter a (token tile, head, warp): ", tiles * H * kProduceWarps);
   STD_TORCH_CHECK(!shapes.is_cuda() && shapes.scalar_type() == Dtype::Short
                       && shapes.is_contiguous() && shapes.numel() == jobs.size(0),
                   "shapes is the plan's host int16 shape word a job");

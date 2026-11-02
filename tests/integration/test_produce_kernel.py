@@ -16,6 +16,7 @@ import torch
 
 import rola
 from rola.ops.produce import (
+    _TILE_WARPS,
     _TOKEN_TILE,
     ProducerPlan,
     ProducerWeights,
@@ -82,7 +83,7 @@ def _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill: int, probe: bool
            "scale_read": poisoned(D), "scale_write": poisoned(D), "mass_read": poisoned(D), "mass_write": poisoned(D),
            "read_mass": poisoned(), "g_write": poisoned(), "v": poisoned(d_v, dtype=torch.float16), "v_scale": poisoned()}
     jobs, shapes, per_head = _job_tensor(plan, "cuda:0")
-    arrivals = torch.zeros(-(-(B * T) // _TOKEN_TILE) * H, dtype=torch.int32, device="cuda")
+    arrivals = torch.zeros(-(-(B * T) // _TOKEN_TILE) * H * _TILE_WARPS, dtype=torch.int32, device="cuda")
     probes = [torch.full((jobs.shape[0], B * T, _MAX_COLUMNS), float("nan"), device="cuda") if probe else None
               for _ in range(2)]
     extension().rola_produce_forward(

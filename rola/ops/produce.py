@@ -209,10 +209,12 @@ def _job_tensor(plan: ProducerPlan, device: str) -> tuple[torch.Tensor, torch.Te
     return table, torch.tensor([_shape(job, plan) for job in jobs], dtype=torch.int16), per_head
 
 
-#: the per-(token tile, head) arrival counters, zero between calls (the kernel's finisher resets its own), one buffer a
-#: device grown as a call needs
+#: the per-(token tile, head, warp) arrival counters, zero between calls (the kernel's finisher resets its own), one
+#: buffer a device grown as a call needs
 _ARRIVALS: dict[str, torch.Tensor] = {}
 _TOKEN_TILE = 64
+#: a token tile's warps, each its own 16 tokens' finish (docs/internals/produce/produce.md#finish)
+_TILE_WARPS = 4
 
 
 def _arrivals(device: torch.device, count: int) -> torch.Tensor:
@@ -266,7 +268,7 @@ def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) ->
         weights.gain_bias.float().contiguous(), weights.v_W, jobs,
         *(out[name] for name in ("amp_read", "amp_write", "dense_read", "dense_write", "scale_read", "scale_write",
                                  "mass_read", "mass_write", "read_mass", "g_write", "v", "v_scale")),
-        _arrivals(device, tiles * H), None, None, shapes, D, per_head,
+        _arrivals(device, tiles * H * _TILE_WARPS), None, None, shapes, D, per_head,
         *(sum(1 << level for level in dense[side]) for side in ("read", "write")))
     return {name: None if t is None else t.transpose(1, 2) for name, t in out.items()}
 
