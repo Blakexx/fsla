@@ -234,6 +234,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       const Run run = runs_of(kWrite, w, e);
       const ops::SmemAddr buf = place_at(w, s.nr + j);
       ops::rendezvous();
+      clock.lap(kPhaseWait);
       fill_fold(w, e, run, buf);
       clock.lap(kPhaseFill);
       ops::stage_wait<0>();
