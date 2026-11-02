@@ -105,6 +105,9 @@ struct ProduceParams {
   int16_t shapes[kMaxJobs];  // a job's shape word (produce.md#jobs), by block index
 
   int BT, T, hidden, H, C, G, rows_read, rows_write, D, d_v, route_jobs_per_head;
+  //: T's fast division (`slot_of`): a token's sequence `umulhi(token, t_mul) >> t_shift`, below 2^31
+  uint32_t t_mul;
+  int t_shift;
   int dense_rows[2];
   int dense_mask
       [2];  // a side's dense levels (read 0, write 1), a bit a level: their rows go to `dense[side]`

@@ -28,7 +28,9 @@ using Clock = PhaseClock<kProducePhases>;
 
 //: A (token, head)'s slot in the head-major outputs `[B, H, T]`: the flat token split into its batch and step.
 __device__ __forceinline__ int64_t slot_of(const ProduceParams& p, int token, int head) {
-  const int b = token / p.T;
+  const int b =
+      p.T == 1 ? token
+               : static_cast<int>(__umulhi(static_cast<uint32_t>(token), p.t_mul) >> p.t_shift);
   return (static_cast<int64_t>(b) * p.H + head) * p.T + (token - b * p.T);
 }
 
@@ -503,14 +505,17 @@ __device__ __forceinline__ void bundle_side(const ProduceParams& p, const Job& j
       mass[at] = sum;
     }
     __syncwarp();
-#pragma unroll 1
-    for (int i = lane; i < 4 * chunks; i += 32) {
-      const int r = i / chunks, chunk = i - r * chunks, tk = tile0 + 2 * r + s;
+
+    //: 8 lanes a row, a lane's chunks every eighth: one slot address a row
+    {
+      const int r = lane >> 3, tk = tile0 + 2 * r + s;
       if (tk < p.BT) {
         uint8_t* row = reinterpret_cast<uint8_t*>(
             plane + slot_of(p, tk, job.head) * static_cast<int64_t>(plane_row) + out_col);
-        *reinterpret_cast<uint4*>(row + 16 * chunk) =
-            *reinterpret_cast<const uint4*>(staged + r * kStagedRowBytes + 16 * chunk);
+#pragma unroll 1
+        for (int chunk = lane & 7; chunk < chunks; chunk += 8)
+          *reinterpret_cast<uint4*>(row + 16 * chunk) =
+              *reinterpret_cast<const uint4*>(staged + r * kStagedRowBytes + 16 * chunk);
       }
     }
     //: the next slot's staging overwrites these rows
@@ -623,17 +628,18 @@ __device__ __forceinline__ uint4 chunk(const __nv_bfloat16* run, int k, bool liv
   return live ? __ldg(reinterpret_cast<const uint4*>(run + k)) : make_uint4(0u, 0u, 0u, 0u);
 }
 
-//: THE WRITE GAIN'S LOGIT of one token: the gain column's dot product with the token's row, a warp's lanes over the
-//: hidden axis in 16-byte chunks, plus both biases.
+//: THE WRITE GAIN'S LOGIT of one token, a lane quad its row: each lane every fourth 16-byte chunk of the gain column
+//: and the token's row (the loop uniform, a chunk past the hidden size zero), the quad's sum by two shuffles, plus both
+//: biases.
 __device__ __forceinline__ float gain_logit(const ProduceParams& p, const Job& job, int token,
-                                            bool live, int lane) {
+                                            bool live, int quad) {
   const int column = p.C - p.G;
   const __nv_bfloat16* w = p.route_W + job.head * p.w_head + static_cast<int64_t>(column) * p.w_col;
   const __nv_bfloat16* xr = p.x + static_cast<int64_t>(live ? token : 0) * p.hidden;
   float dot = 0.0f;
 #pragma unroll 1
-  for (int k0 = 0; k0 < p.hidden; k0 += 256) {
-    const int k = k0 + 8 * lane;
+  for (int k0 = 0; k0 < p.hidden; k0 += 32) {
+    const int k = k0 + 8 * quad;
     const uint4 wc = chunk(w, k, live && k < p.hidden);
     const uint4 xc = chunk(xr, k, live && k < p.hidden);
     const uint32_t wv[4] = {wc.x, wc.y, wc.z, wc.w};
@@ -643,7 +649,8 @@ __device__ __forceinline__ float gain_logit(const ProduceParams& p, const Job& j
       dot += ops::pair_lo(wv[j]) * ops::pair_lo(xv[j]) + ops::pair_hi(wv[j]) * ops::pair_hi(xv[j]);
     }
   }
-  dot = warp_all(dot, [](float a, float b) { return a + b; });
+  dot += __shfl_xor_sync(0xffffffffu, dot, 1);
+  dot += __shfl_xor_sync(0xffffffffu, dot, 2);
   const float bias = p.route_bias != nullptr ? p.route_bias[job.head * p.C + column] : 0.0f;
   return dot + bias + p.gain_bias[job.head * p.G];
 }
@@ -661,14 +668,16 @@ __device__ void finish_head(const ProduceParams& p, const Job& job, int tile, in
   __syncthreads();
   if (!__any_sync(0xffffffffu, s_last != 0)) return;
   __threadfence();
-  const int warp = static_cast<int>(threadIdx.x) >> 5, lane = static_cast<int>(threadIdx.x) & 31;
+  //: a lane quad a token, the block's 32 tokens a pass
+  constexpr int kPassTokens = kProduceThreads / 4;
+  const int quad = static_cast<int>(threadIdx.x) & 3, row = static_cast<int>(threadIdx.x) >> 2;
   const int live = min(kTokenTile, p.BT - token0);
 #pragma unroll 1
-  for (int pass = 0; pass < (live + kProduceWarps - 1) / kProduceWarps; ++pass) {
-    const int t = pass * kProduceWarps + warp;
+  for (int pass = 0; pass < (live + kPassTokens - 1) / kPassTokens; ++pass) {
+    const int t = pass * kPassTokens + row;
     const bool here = t < live;
-    const float gain = p.G > 0 ? gain_logit(p, job, token0 + t, here, lane) : 0.0f;
-    if (here && lane == 0) {
+    const float gain = p.G > 0 ? gain_logit(p, job, token0 + t, here, quad) : 0.0f;
+    if (here && quad == 0) {
       const int64_t at = slot_of(p, token0 + t, job.head);
       float read_mass = 1.0f, write_mass = 1.0f;
 #pragma unroll 1
@@ -1032,6 +1041,14 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   p.ledger = detail::g_ledger;
   p.BT = static_cast<int>(BT);
   p.T = static_cast<int>(amp_read.size(2));
+  //: T's fast division (CUTLASS's FastDivmod form): with l = ceil(log2 T), mul = ceil(2^(31 + l) / T) < 2^32 and a
+  //: token's sequence umulhi(token, mul) >> (l - 1), exact below 2^31
+  if (p.T > 1) {
+    int l = 0;
+    while ((int64_t{1} << l) < p.T) ++l;
+    p.t_mul = static_cast<uint32_t>(((uint64_t{1} << (31 + l)) + p.T - 1) / p.T);
+    p.t_shift = l - 1;
+  }
   p.hidden = static_cast<int>(hidden);
   p.H = static_cast<int>(H);
   p.C = static_cast<int>(C);
