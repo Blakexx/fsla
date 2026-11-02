@@ -297,15 +297,19 @@ __device__ __forceinline__ void copy16(ops::SmemAddr dst, const void* src, int r
       "l"(src), "r"(room), "r"(size), "n"(At));
 }
 
-//: A 16-BYTE ZERO at `dst + 16 At`, stored where `At` is under `room`.
+//: A 16-BYTE FILL of word `v` at `dst + 16 At`, stored where `At` is under `room`.
 template <int At>
-__device__ __forceinline__ void zero16(ops::SmemAddr dst, int room) {
+__device__ __forceinline__ void fill16(ops::SmemAddr dst, int room, uint32_t v) {
   asm volatile(
       "{\n.reg .pred p;\nsetp.gt.s32 p, %1, %2;\n@p st.shared.v4.u32 [%0+%3], {%4, %4, %4, %4};\n}\n" ::
           "r"(dst),
-      "r"(room), "n"(At), "n"(16 * At), "r"(0)
+      "r"(room), "n"(At), "n"(16 * At), "r"(v)
       : "memory");
 }
+
+//: A CLEARED PANEL WORD: its two s16 halves zero, offset by 2^15 each (the drain's `pair_magics` reads a word as is).
+//: -- see docs/internals/carry/parts.md#drain
+constexpr uint32_t kPanelClear = 0x80008000u;
 
 //: A ROW'S SOURCE: `base` plus two products, each one wide multiply-add (the operands unsigned, under 2^32).
 __device__ __forceinline__ const uint8_t* row_at(const uint8_t* base, int a, int b, int c, int d) {
@@ -476,7 +480,7 @@ __host__ __device__ constexpr int fold_ents(int slots) {
   return align_of(slots * P::kWriteRow, 128);
 }
 
-//: A READ CHUNK'S FILL, the copies issued: its rows at `buf`, its dummy panel rows and panel zeroed, its entries (a
+//: A READ CHUNK'S FILL, the copies issued: its rows at `buf`, its dummy panel rows and panel cleared, its entries (a
 //: warp its own digits' runs, `run` the chunk's). -- see docs/internals/carry/parts.md#fill
 template <class P>
 __device__ __forceinline__ void read_fill(const CarryParams& p, const uint8_t* smem,
@@ -487,14 +491,15 @@ __device__ __forceinline__ void read_fill(const CarryParams& p, const uint8_t* s
   fill<P::kReadFactors, false>(addr.slices[kRead], nullptr, 0, union_of<P>(p, smem, kRead, w), rw,
                                first, slots, buf);
   const ops::SmemAddr pads = buf + static_cast<uint32_t>(read_pads<P>(slots));
-  //: the dummy panel rows and the panel zeroed by stores, four a thread a trip, the first straight-line
+  //: the dummy panel rows and the panel cleared by stores, four a thread a trip, the first straight-line
   constexpr int kAhead = 4;
   const int tid = ops::opaque(static_cast<int>(threadIdx.x));
   const int quanta = (read_ents<P>(slots) - read_pads<P>(slots)) / 16 - tid;
   const ops::SmemAddr zero = pads + 16u * static_cast<uint32_t>(tid);
   const auto four = [&](int k) {
     const ops::SmemAddr at = zero + 16u * static_cast<uint32_t>(k);
-    static_for<kAhead>([&](auto j) { zero16<decltype(j)::value * kThreads>(at, quanta - k); });
+    static_for<kAhead>(
+        [&](auto j) { fill16<decltype(j)::value * kThreads>(at, quanta - k, kPanelClear); });
   };
 
   four(0);
@@ -1243,20 +1248,37 @@ __device__ __forceinline__ void red_add_f32(float* at, float v) {
   asm volatile("red.global.add.f32 [%0], %1;" ::"l"(at), "f"(v) : "memory");
 }
 
-//: A PAIR WORD's TWO HALVES as offset magics: `t = w + 0x80008000` (the low half biased by 2^15, its borrow taken back
-//: from the high half by the high half's own 2^15, which flips its top bit), each half's 16 bits placed under 2^23 +
-//: 2^22 by one byte permute -- a half's value is its float less 12615680. -- see docs/internals/carry/parts.md#drain
-__device__ __forceinline__ float2 pair_magics(uint32_t w) {
-  const uint32_t t = w + 0x80008000u, top = 0x4B400000u;
+//: A WORD `off` words past `base` (`off` under 2^32), its own add: never re-associated into the base's sum.
+template <class T>
+__device__ __forceinline__ T* word_at(T* base, uint32_t off) {
+  static_assert(sizeof(T) == 4, "a 32-bit word");
+  uint64_t a;
+  asm("mad.wide.u32 %0, %1, 4, %2;" : "=l"(a) : "r"(off), "l"(reinterpret_cast<uint64_t>(base)));
+  return reinterpret_cast<T*>(a);
+}
+
+//: A PANEL WORD's TWO HALVES as offset magics: the word accumulated from `kPanelClear` (each half biased by 2^15, the
+//: low half's borrow taken back from the high half's bias), each half's 16 bits placed under 2^23 + 2^22 by one byte
+//: permute -- a half's value is its float less 12615680. -- see docs/internals/carry/parts.md#drain
+__device__ __forceinline__ float2 pair_magics(uint32_t t) {
+  constexpr uint32_t top = 0x4B400000u;
   return make_float2(__uint_as_float(ops::prmt(t, top, 0x7610u)),
                      __uint_as_float(ops::prmt(t, top, 0x7632u)));
 }
 
+//: a warp's fp32 slots `w + kWarps j` lie 512 panel bytes apart, `panel_row(w)`'s swizzle bits kept
+constexpr bool slot_step_is_panel_lines() {
+  for (uint32_t w = 0; w < static_cast<uint32_t>(kWarps); ++w)
+    for (uint32_t j = 0; j < 64; ++j)
+      if (panel_row(w + static_cast<uint32_t>(kWarps) * j) != panel_row(w) + 512u * j) return false;
+  return true;
+}
+
 //: THE DRAIN: a chunk's panel words (at `panel`) to `num` by the call's reduce dtype, each slot's at the CTA's unit
-//: converted by its token's factor; a gap slot adds zero at row 0. F16 PAIRS: a thread one word of every 16th slot,
-//: four slots a step loaded unguarded before their adds, a step's slot past the chunk adding zero at the thread's first
-//: slot's row. FP32: a warp a slot in turn, four in flight, a lane a channel. A slot's row is a 32-bit offset.
-//: -- see docs/internals/carry/parts.md#drain
+//: converted by its token's factor; a gap slot adds zero at row 0. A slot's facts (its row, a 32-bit offset, and its
+//: factor) formed once a slot by a lane and shuffled to its slot's lanes; four slots a step, a step past the warp's last
+//: not issued. F16 PAIRS: a thread one word of every 16th slot, a slot past the chunk in a live step adding zero at the
+//: warp's first slot's row. FP32: a warp a slot in turn, a lane a channel. -- see docs/internals/carry/parts.md#drain
 template <class P>
 __device__ __forceinline__ void drain(const CarryParams& p, const uint8_t* smem, const Window& rw,
                                       const Place& c, int w, int first, int slots,
@@ -1288,8 +1310,13 @@ __device__ __forceinline__ void drain(const CarryParams& p, const uint8_t* smem,
   };
 
   if (p.reduce == kReduceF32) {
-    const int warp = ops::opaque(static_cast<int>(threadIdx.x)) / 32,
-              lane = static_cast<int>(threadIdx.x) % 32;
+    constexpr int kAhead = 4, kBatch = 32;
+    static_assert(slot_step_is_panel_lines(),
+                  "a warp's next slot 512 panel bytes on, its swizzle bits kept");
+    //: the thread, opaque (as below); the warp's slots `w0 + kWarps j`
+    const uint32_t ut = static_cast<uint32_t>(ops::opaque(static_cast<int>(threadIdx.x)));
+    const int lane = static_cast<int>(ut % 32u);
+    const uint32_t w0 = ut / 32u;
 
     //: lane `l` word `8 m + g` (m = l >> 4, g = l & 7) of a slot, its half `(l >> 3) & 1`: channel `c` or `c + 2`, `c = 8
     //: (g >> 1) + 4 m + (g & 1)` (the image's unit, `unpack_num`) -- a permutation of the box's 32 channels
@@ -1297,70 +1324,112 @@ __device__ __forceinline__ void drain(const CarryParams& p, const uint8_t* smem,
     const bool high = (lane >> 3) & 1;
     float* const out = reinterpret_cast<float*>(p.num) + head0 * p.dv + channel0 + 8 * (g >> 1)
                        + 4 * m + (g & 1) + 2 * static_cast<int>(high);
-    const uint32_t cell = (32u * static_cast<uint32_t>(m)) | (4u * static_cast<uint32_t>(g));
-
-    constexpr int kSlotsInFlight = 4;
+    const ops::SmemAddr cell0 =
+        panel
+        + (panel_row(w0) ^ ((32u * static_cast<uint32_t>(m)) | (4u * static_cast<uint32_t>(g))));
+    //: the lane's half's bytes under the magic's (`pair_magics`' permute for the one half)
+    const uint32_t half = high ? 0x7632u : 0x7610u, dv = static_cast<uint32_t>(p.dv);
+    //: the warp's slots in the chunk, from lane 0 (warp-uniform, as below)
+    const int steps = __shfl_sync(
+        0xffffffffu, static_cast<int>((static_cast<uint32_t>(slots) + kWarps - 1u - w0) / kWarps),
+        0);
 #pragma unroll 1
-    for (int s = warp; s < slots; s += kSlotsInFlight * kWarps) {
-      uint32_t row[kSlotsInFlight], v[kSlotsInFlight];
-      float sc[kSlotsInFlight];
-      static_for<kSlotsInFlight>([&](auto k) {
-        const int sk = s + kWarps * k;
-        uint32_t idx;
-        place(sk, idx, row[k]);
-        asm volatile("ld.shared.u32 %0, [%1];"
-                     : "=r"(v[k])
-                     : "r"(panel + (panel_row(static_cast<uint32_t>(sk)) ^ cell)));
-        sc[k] = factor_of(idx);
-      });
-
-      static_for<kSlotsInFlight>([&](auto k) {
-        const bool live = k == 0 || s + kWarps * k < slots;
-        const float2 x = pair_magics(v[k]);
-        //: the magic off before the scale: an fp32 factor reaches 2^127
-        red_add_f32(out + static_cast<size_t>(live ? row[k] : row[0]) * p.dv,
-                    live ? ((high ? x.y : x.x) - 12615680.0f) * sc[k] : 0.0f);
-      });
+    for (int b = 0; b < steps; b += kBatch) {
+      //: THE SLOTS' FACTS once a slot: lane `j` holds step `b + j`'s -- its row offset in `num` and its factor (a slot
+      //: past the chunk formed at the warp's first, never used)
+      const int sf = static_cast<int>(w0) + (b + lane) * kWarps;
+      uint32_t idx, row;
+      place(sf < slots ? sf : static_cast<int>(w0), idx, row);
+      const uint32_t rp = row * dv;
+      const float fs = factor_of(idx);
+      const int end = min(steps - b, kBatch);
+      //: A GROUP of four slots from `i`, as below
+      const auto group = [&](int i, auto tail) {
+        uint32_t v[kAhead], r[kAhead];
+        float sc[kAhead];
+        static_for<kAhead>([&](auto k) {
+          asm volatile("ld.shared.u32 %0, [%1];"
+                       : "=r"(v[k])
+                       : "r"(cell0 + 512u * static_cast<uint32_t>(b + i + k)));
+          r[k] = __shfl_sync(0xffffffffu, rp, i + k);
+          sc[k] = __shfl_sync(0xffffffffu, fs, i + k);
+        });
+        static_for<kAhead>([&](auto k) {
+          if (!decltype(tail)::value || decltype(k)::value == 0 || i + decltype(k)::value < end) {
+            //: the magic off before the scale: an fp32 factor reaches 2^127
+            const float x = __uint_as_float(ops::prmt(v[k], 0x4B400000u, half));
+            red_add_f32(word_at(out, r[k]), (x - 12615680.0f) * sc[k]);
+          }
+        });
+      };
+      int i = 0;
+#pragma unroll 1
+      for (; i + kAhead <= end; i += kAhead) group(i, std::false_type{});
+      if (i < end) group(i, std::true_type{});
     }
     return;
   }
 
   constexpr int kWords = kPanelRow / 4, kStride = kThreads / kWords, kAhead = 4;
+  constexpr int kBatch = kWords;
   constexpr uint32_t kCellStride = kStride * kPanelRow;
   static_assert(kStride % 8 == 0, "a stride of slots keeps a cell's swizzle bits");
+  static_assert(2 * kWords == 32 && kBatch % kAhead == 0,
+                "a warp two slots a step, a half's facts its 16 lanes, a batch whole groups");
+  static_assert(2 * (kWarps - 1) < kStride,
+                "a warp's first slot under a stride: its step count from a positive");
 
-  //: the thread, opaque, so its cell is formed at each drain rather than hoisted across the windows
-  const int tid = ops::opaque(static_cast<int>(threadIdx.x));
-  const int word = tid % kWords, s0 = tid / kWords;
+  //: the thread, opaque, so its cell is formed at each drain rather than hoisted across the windows; the warp's slots
+  //: its halves' `w0 + h + kStride i`
+  const uint32_t ut = static_cast<uint32_t>(ops::opaque(static_cast<int>(threadIdx.x)));
+  const int lane = static_cast<int>(ut % 32u), word = static_cast<int>(ut % kWords);
+  const uint32_t s0 = ut / kWords, w0 = ut / 32u * 2u;
   const ops::SmemAddr cell0 =
-      panel + (panel_row(static_cast<uint32_t>(s0)) ^ ((32u * (word >> 3)) | (4u * (word & 7))));
+      panel + (panel_row(s0) ^ ((32u * static_cast<uint32_t>(word >> 3)) | (4u * (word & 7))));
   const uint32_t pair = static_cast<uint32_t>(p.dv / 2);
 
   //: the write head's first query head's rows; a slot's row its query head `j` (`L` rows on) and token
-  uint32_t* const out = p.num + head0 * pair + channel0 / 2 + word;
+  uint32_t* const out = p.num + head0 * pair + static_cast<uint32_t>(channel0) / 2u + word;
+  //: the warp's steps (its first half's), from lane 0: warp-uniform to ptxas -- see docs/internals/carry/parts.md#drain
+  const int steps = __shfl_sync(
+      0xffffffffu, static_cast<int>((static_cast<uint32_t>(slots) + kStride - 1u - w0) / kStride),
+      0);
 #pragma unroll 1
-  for (int i = 0; s0 + i * kStride < slots; i += kAhead) {
-    uint32_t v[kAhead], r[kAhead];
-    float sc[kAhead];
-    static_for<kAhead>([&](auto k) {
-      const int s = s0 + (i + k) * kStride;
-      asm volatile("ld.shared.u32 %0, [%1];"
-                   : "=r"(v[k])
-                   : "r"(cell0 + static_cast<uint32_t>((i + k) * kCellStride)));
-      uint32_t idx;
-      place(s, idx, r[k]);
-      sc[k] = factor_of(idx);
-    });
-
-    static_for<kAhead>([&](auto k) {
-      const bool live = k == 0 || s0 + (i + k) * kStride < slots;
-      //: the f16 factor is at most 1, so the scaled magic is finite and one FFMA a half exact
-      const float2 x = pair_magics(v[k]);
-      const float bias = -12615680.0f * sc[k];
-      const __half2 h = __floats2half2_rn(fmaf(x.x, sc[k], bias), fmaf(x.y, sc[k], bias));
-      red_add_h2(out + (live ? r[k] : r[0]) * pair,
-                 live ? *reinterpret_cast<const uint32_t*>(&h) : 0u);
-    });
+  for (int b = 0; b < steps; b += kBatch) {
+    //: THE SLOTS' FACTS once a slot: lane `16 h + j` holds half `h`'s step `b + j` -- its word offset in `num` and its
+    //: factor; a slot past the chunk the warp's first slot's row at factor 0, so it adds exact zeros
+    const int sf = static_cast<int>(w0) + lane / kBatch + (b + lane % kBatch) * kStride;
+    uint32_t idx, row;
+    place(sf < slots ? sf : static_cast<int>(w0), idx, row);
+    const uint32_t rp = row * pair;
+    const float f = factor_of(idx), fs = sf < slots ? f : 0.0f;
+    const int end = min(steps - b, kBatch);
+    //: A GROUP of four steps from `i`: their words and facts, then their adds; in a chunk's last group (`tail`) a step
+    //: past the warp's last is not issued (a warp-uniform branch: the requests are the drain's floor)
+    const auto group = [&](int i, auto tail) {
+      uint32_t v[kAhead], r[kAhead];
+      float sc[kAhead];
+      static_for<kAhead>([&](auto k) {
+        asm volatile("ld.shared.u32 %0, [%1];"
+                     : "=r"(v[k])
+                     : "r"(cell0 + static_cast<uint32_t>((b + i + k) * kCellStride)));
+        r[k] = __shfl_sync(0xffffffffu, rp, i + k, kBatch);
+        sc[k] = __shfl_sync(0xffffffffu, fs, i + k, kBatch);
+      });
+      static_for<kAhead>([&](auto k) {
+        if (!decltype(tail)::value || decltype(k)::value == 0 || i + decltype(k)::value < end) {
+          //: the f16 factor is at most 1, so the scaled magic is finite and one FFMA a half exact
+          const float2 x = pair_magics(v[k]);
+          const float bias = -12615680.0f * sc[k];
+          const __half2 h = __floats2half2_rn(fmaf(x.x, sc[k], bias), fmaf(x.y, sc[k], bias));
+          red_add_h2(word_at(out, r[k]), *reinterpret_cast<const uint32_t*>(&h));
+        }
+      });
+    };
+    int i = 0;
+#pragma unroll 1
+    for (; i + kAhead <= end; i += kAhead) group(i, std::false_type{});
+    if (i < end) group(i, std::true_type{});
   }
 }
 

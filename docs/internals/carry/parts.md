@@ -257,22 +257,32 @@ leaf maxima +0.8K, the drain's conversion +0.8K cycles a warp-window), dense +5.
 
 A chunk's panel to `num`, once every warp has read the chunk, by the call's cross-CTA dtype
 ([`carry_api.md#carry-reduce`](carry_api.md#carry-reduce)): each slot's words at the CTA's unit ([`#units`](#units))
-converted by the token's factor and added into HBM where the CTAs holding the token's leaves meet; the next fill zeroes
-the panel. A word's two s16 halves come apart by `pair_magics` (offset magics: one add of `0x80008000` biases the
-low half by 2^15, takes its borrow from the high half and flips the high half's top bit; one byte permute a half
-places its 16 bits under the magic's 2^23 + 2^22 -- three instructions where the masks and shift were five). F16 PAIRS: the factor is `2^(u - s - 1)`, `s` the token's scale byte (the call's `scale`:
+converted by the token's factor and added into HBM where the CTAs holding the token's leaves meet; the next fill clears
+the panel. A word's two s16 halves come apart by `pair_magics` (offset magics: the fill clears a word to
+`kPanelClear` = `0x80008000`, each half's zero biased by 2^15, so a word accumulated from it holds the low half biased,
+its borrow taken from the high half's bias, the high half's top bit flipped; one byte permute a half places its 16 bits
+under the magic's 2^23 + 2^22 -- two instructions where the masks and shift were five, and the bias's add at every
+drained word is gone). F16 PAIRS: the factor is `2^(u - s - 1)`, `s` the token's scale byte (the call's `scale`:
 every CTA the same, so the pairs meet at one scale; a bound on |num(t)|, which f16 absorbs with slack to ~2^27), each
 half times it packed to f16 and added by `red.global.add.noftz.f16x2` -- the f16 value is bounded because the true
 partial is at most the token's bound, which the scale puts under 2^14; the factor itself may be 2. A thread
 keeps one word of every 16th slot -- 16 slots on, its panel cell is 1 KB on, the swizzle's bits unchanged, so its
-cells are one address and an add -- and takes four slots a step, their words and union tokens loaded unguarded (the
-union array and the panel lie in shared memory past the chunk's slots) before their adds. FP32: the factor is `2^u`,
-a warp a slot in turn, four in flight, a lane a channel (a token's full line for the box's 32 channels), added by
+cells are one address and an add -- and takes four slots a step, their words loaded unguarded (the panel lies in
+shared memory past the chunk's slots) before their adds. A slot's FACTS -- its word offset in `num` and its factor
+-- are formed once a slot, not once a word: a warp's two halves hold two slots a step, and lane `16 h + j` forms half
+`h`'s slot of step `j` of a batch of 16 steps (its union token, row and factor), handed to the half's 16 lanes by two
+width-16 shuffles a step (the source index the step's, warp-uniform); the step count is shuffled from lane 0, so
+ptxas sees the loops warp-uniform ([`ops.md#uniform-warp`](../common/ops.md#uniform-warp): a loop it cannot prove so
+fences and outlines every shuffle after it -- here 84 more guarded collectives, a fold step duplicated into a fallback).
+In a chunk's last group of four steps a step past the warp's last is not issued (a warp-uniform branch; the requests
+are the drain's floor, [lab `drain`](../../lab/drain.md)). FP32: the factor is `2^u`, a warp a slot in turn, four in
+flight, a lane a channel (a token's full line for the box's 32 channels), the slot's facts formed by lane `j` for the
+warp's step `j` of 32 and broadcast by two shuffles a slot, the lane's half one byte permute, added by
 `red.global.add.f32`. A factor is exact over the float range (`pow2_wide`: a subnormal's bit below 2^-126, zero
 below 2^-149). An add is never predicated:
 ptxas puts a predicated `red.global` in a branch and a convergence region (BSSY, BRA, BSYNC around each add), so a
-step's second slot past the chunk adds zero at the thread's first slot's row -- a row of the CTA's own, never one every
-CTA shares (lab [`drain`](../../lab/drain.md): a shared dummy line serialized every CTA 6x). A slot's row is a 32-bit
+slot past the chunk takes the warp's first slot's row at factor 0 and adds exact zeros (a finite magic times 0) -- a
+row of the CTA's own, never one every CTA shares (lab [`drain`](../../lab/drain.md): a shared dummy line serialized every CTA 6x). A slot's row is a 32-bit
 word offset, one widening multiply-add from `num`'s base (the host holds a write head's rows under 2^32 words). CTAs
 join only here (R22: independent units, joined by atomics). The panel's word `8 m + g` pairs channels `(c, c + 2)`,
 `c = 8 (g >> 1) + 4 m + (g & 1)` ([`#image`](#image)); the f16 output's format follows it, the fp32 output is a

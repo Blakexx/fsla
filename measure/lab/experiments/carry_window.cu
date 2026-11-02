@@ -269,7 +269,7 @@ __device__ __forceinline__ void entries_ahead(const rc::CarryParams& p, const rc
   }
 }
 
-//: A READ BUFFER'S PANEL AND DUMMY ROWS zeroed by stores, and its entries copied (a warp its own digits' runs);
+//: A READ BUFFER'S PANEL AND DUMMY ROWS cleared by stores, and its entries copied (a warp its own digits' runs);
 //: `Ahead` the entries in one pass
 template <bool Ahead = false>
 __device__ __forceinline__ void panel_entries(const rc::CarryParams& p, uint8_t* smem, int w,
@@ -279,7 +279,8 @@ __device__ __forceinline__ void panel_entries(const rc::CarryParams& p, uint8_t*
   const int quanta = (rc::read_ents<P>(slots) - rc::read_pads<P>(slots)) / 16;
 #pragma unroll 4
   for (int k = t; k < quanta; k += rc::kThreads)
-    asm volatile("st.shared.v4.u32 [%0], {%1, %1, %1, %1};" ::"r"(pads + 16u * k), "r"(0)
+    asm volatile("st.shared.v4.u32 [%0], {%1, %1, %1, %1};" ::"r"(pads + 16u * k),
+                 "r"(rc::kPanelClear)
                  : "memory");
   const rc::Window rw = rc::window_of<P>(p, smem, rc::kRead, w);
   if (!rw.listed) return;
