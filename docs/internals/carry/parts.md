@@ -280,8 +280,12 @@ the token's counter by `red.shared.add.u32`; after the barrier each counter beco
 quanta of `2^(emax - 19)`: a token more than ~2^19 below the box's hottest digit rounds up to one quantum -- sound,
 coarse). A DENSE read side (`units_dense`): every token reads every leaf, so the bound is 4 f16-accumulate MMAs a
 tile of 8 tokens (A the leaf-scale table, 32 digits x 32 lists; B the tokens' rows as the readout loads them), each
-digit's result times its coefficient (from the row's coefficient slice at a lane-constant offset) and `2^(e_d -
-kCoefTop)`, summed over the digits by three shuffles, two tiles a warp in flight; a slot past the chunk stores to the
+digit's result times its coefficient (the tile's coefficient chunks by one `ldmatrix.trans`, register `2 M + H` holding
+tokens `2 t, 2 t + 1`'s of digit `16 M + 8 H + g`: the census read the per-value loads, 8 a lane a tile, at 1.0 shared cycle an MMA) and `2^(e_d -
+kCoefTop)`, summed over the digits by a reduce-scatter (the first of three rounds keeps one of a lane's two tokens and sends
+the other: the full butterfly's tree at half its shuffles: across `g`'s low bit a lane keeps token `2 t + c`, `c` that bit;
+each token's total in four lanes, the den taking token `r` from lane `(r & 1) << 2 | r >> 1`), two tiles a warp in
+flight; a slot past the chunk stores to the
 dead word. The same pass reads the dense side's den, 4 more MMAs a tile against the den rows ([`#den`](#den)). `bounds_clear` resets the counters each window. The pass runs between the chunk's landing and its first
 tile, with its barriers; its cost is placement, not arithmetic (measured 2026-10-22: +2.0K cycles a warp-window at
 nl64k-alt-k4 as a per-entry chain, unchanged by three placements); the ruled line is +6-9% a listed call by the dense

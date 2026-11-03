@@ -1326,23 +1326,9 @@ constexpr float kF16BoundMargin = 1.0f + 1.0f / 64.0f;
 static_assert((1.0 - 2.0 * kBoundChain / 2048.0) * kF16BoundMargin >= 1.0,
               "the f16 margin covers the bound chain's roundings");
 
-//: A DENSE TILE'S COEFFICIENT OFFSETS from its first row, a lane's: token `2 t + C`'s of digit `16 M + 8 H + g` -- the
-//: slot's row (128 bytes), its coefficient chunk `4 + 2 M + H` swizzled by the slot's low bits, the digit's two bytes.
-__device__ __forceinline__ void dense_coefs_at(int g, int t, uint32_t (&coff)[2][2][2]) {
-  static_for<2>([&](auto C) {
-    static_for<2>([&](auto M) {
-      static_for<2>([&](auto H) {
-        const uint32_t lo = 2u * static_cast<uint32_t>(t) + C;
-        coff[C][M][H] = 128u * lo + 16u * (lo ^ (4u + 2u * M + H)) + 2u * static_cast<uint32_t>(g);
-      });
-    });
-  });
-}
-
-//: THE CTA'S UNITS AND DEN for a read chunk with no list level: each token's rows (B) against the leaves' scales and the
-//: den rows (A, 4 + 4 MMAs a tile), each group times its coefficient and its scale or den factor, summed over the groups;
-//: the bound into the bounds table, the den one global add a token (between 4-tile segments). Two tiles in flight.
-//: -- see docs/internals/carry/parts.md#units
+//: THE CTA'S UNITS AND DEN for a read chunk with no list level: each token's rows against the leaves' scales and den
+//: rows, times each group's coefficient and factor, summed; the bound into the bounds table, the den one global add a
+//: token a CTA. -- see docs/internals/carry/parts.md#units
 template <class P>
 __device__ __forceinline__ void units_dense(const CarryParams& p, const uint8_t* smem, int first,
                                             int slots, ops::SmemAddr rows, int t0, int warp,
@@ -1380,9 +1366,6 @@ __device__ __forceinline__ void units_dense(const CarryParams& p, const uint8_t*
     });
   });
 
-  uint32_t coff[2][2][2];
-  dense_coefs_at(g, t, coff);
-
   const int tiles = (slots + 7) >> 3;
   constexpr int kInFlight = 2, kSegment = 4;
   int s = warp;
@@ -1395,12 +1378,14 @@ __device__ __forceinline__ void units_dense(const CarryParams& p, const uint8_t*
     do {
 #pragma unroll 1
       do {
-        uint32_t b[kInFlight][4], h[kInFlight][2][2];
+        uint32_t b[kInFlight][4], cw[kInFlight][4], h[kInFlight][2][2];
         float hd[kInFlight][2][4];
         static_for<kInFlight>([&](auto F) {
           const uint32_t slot = 8u * (s + kWarps * F) + (lane & 7);
-          ops::load_frag(b[F], chunk_addr<P::kReadRow>(rows + 128u * slot + 16u * (slot & 7u),
-                                                       static_cast<uint32_t>(lane >> 3)));
+          const uint32_t row = rows + 128u * slot + 16u * (slot & 7u);
+          ops::load_frag(b[F], chunk_addr<P::kReadRow>(row, static_cast<uint32_t>(lane >> 3)));
+          ops::load_frag_t(cw[F],
+                           chunk_addr<P::kReadRow>(row, 4u + static_cast<uint32_t>(lane >> 3)));
         });
 
         static_for<kInFlight>([&](auto F) {
@@ -1415,15 +1400,15 @@ __device__ __forceinline__ void units_dense(const CarryParams& p, const uint8_t*
         float sum[kInFlight][2], dn[kInFlight][2];
 
         static_for<kInFlight>([&](auto F) {
-          const ops::SmemAddr base = rows + 1024u * static_cast<uint32_t>(s + kWarps * F);
           sum[F][0] = sum[F][1] = dn[F][0] = dn[F][1] = 0.0f;
           static_for<2>([&](auto M) {
             static_for<2>([&](auto H) {
               const float2 v = __half22float2(*reinterpret_cast<const __half2*>(&h[F][M][H]));
-              const float x[2] = {v.x, v.y};
+              const float2 cc =
+                  __half22float2(*reinterpret_cast<const __half2*>(&cw[F][2 * M + H]));
+              const float x[2] = {v.x, v.y}, cs[2] = {cc.x, cc.y};
               static_for<2>([&](auto C) {
-                const float c = __half2float(
-                    __ushort_as_half(static_cast<unsigned short>(ld_u16(base + coff[C][M][H]))));
+                const float c = cs[C];
                 sum[F][C] = fmaf(c * sc[M][H], x[C], sum[F][C]);
                 dn[F][C] = fmaf(c * fac[M][H], hd[F][M][2 * H + C], dn[F][C]);
               });
@@ -1431,30 +1416,28 @@ __device__ __forceinline__ void units_dense(const CarryParams& p, const uint8_t*
           });
         });
 
+        //: THE SUMS over a tile's digits by a reduce-scatter, a lane keeping token `2 t + c` (`c` its `g`'s low bit)
+        const int c = (lane >> 2) & 1;
+        float bound[kInFlight], den[kInFlight];
         static_for<kInFlight>([&](auto F) {
-          static_for<2>([&](auto C) {
-            static_for<3>([&](auto S) {
-              sum[F][C] += __shfl_xor_sync(0xffffffffu, sum[F][C], 4 << S);
-              dn[F][C] += __shfl_xor_sync(0xffffffffu, dn[F][C], 4 << S);
-            });
+          bound[F] = (c ? sum[F][1] : sum[F][0])
+                     + __shfl_xor_sync(0xffffffffu, c ? sum[F][0] : sum[F][1], 4);
+          den[F] =
+              (c ? dn[F][1] : dn[F][0]) + __shfl_xor_sync(0xffffffffu, c ? dn[F][0] : dn[F][1], 4);
+          static_for<2>([&](auto S) {
+            bound[F] += __shfl_xor_sync(0xffffffffu, bound[F], 8 << S);
+            den[F] += __shfl_xor_sync(0xffffffffu, den[F], 8 << S);
           });
         });
 
         static_for<kInFlight>([&](auto F) {
-          const uint32_t s0 = 8u * (s + kWarps * F) + 2u * t;
-          static_for<2>([&](auto C) {
-            const bool in = static_cast<int>(s0) + C < slots;
-            const uint32_t at = in ? bound_at + 4u * (first + s0 + C) : dead;
-            const float v = sum[F][C];
-            asm volatile("st.shared.f32 [%0], %1;" ::"r"(at), "f"(v) : "memory");
-          });
-          //: the den's lane `8 (k + F) + r` takes token `r` of this tile, from lane `r >> 1`'s pair
-          const int r = lane & 7, from = r >> 1;
-          const float d0 = __shfl_sync(0xffffffffu, dn[F][0], from),
-                      d1 = __shfl_sync(0xffffffffu, dn[F][1], from);
+          const uint32_t tok = 8u * (s + kWarps * F) + 2u * t + static_cast<uint32_t>(c);
+          const uint32_t at = static_cast<int>(tok) < slots ? bound_at + 4u * (first + tok) : dead;
+          asm volatile("st.shared.f32 [%0], %1;" ::"r"(at), "f"(bound[F]) : "memory");
+          const int r = lane & 7;
+          const float d = __shfl_sync(0xffffffffu, den[F], ((r & 1) << 2) | (r >> 1));
           const int slot = 8 * (s + kWarps * F) + r;
-          dadd.take((lane >> 3) == k + F && slot < slots, r & 1 ? d1 : d0,
-                    static_cast<uint32_t>(first + slot));
+          dadd.take((lane >> 3) == k + F && slot < slots, d, static_cast<uint32_t>(first + slot));
         });
         k += kInFlight;
       } while (__any_sync(0xffffffffu, ((s += kInFlight * kWarps) < tiles) & (k < kSegment)));
