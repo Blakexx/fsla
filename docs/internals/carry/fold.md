@@ -60,22 +60,42 @@ its lists' runs into its buffer (`parts.md#entries`); `fold_chunk` reads every o
 base and first step's entries before any list's MMAs -- four independent chains where they had run one after the other
 behind each list's burst (nl64k-alt-k4, sm_86: the fold phase 3.26K -> 2.86K cycles a warp-window, 2026-11-01) -- then
 takes each list in turn, its run from the buffer, a step's lanes past it masked (the chunk's first row, c = 0), the
-rows taken back by the chunk's first slot so an entry's union slot is its row. A side with no list level steps every slot of the chunk: its buffer holds each slot's token's `(F, m)` in the
-entries' place, and c = `f16(fp32(b 255 F) 2^(4 - E))` with `b` the list's digit of the row's coefficient slice (its
-second) and `E` the window's bound -- the facts records' arithmetic, rounded once, by the packed conversion (`F2FP`, the
-ALU pipe: the scalar one runs on the conversion unit, which a step may not hold). Until 2026-10-19 this branch took c
+rows taken back by the chunk's first slot so an entry's union slot is its row. A side with no list level steps every
+slot of the chunk once for all the warp's lists ([`#dense`](#dense)): its buffer holds each slot's token's `(F, m)` in
+the entries' place, and c = `f16(fp32(b 255 F) 2^(4 - E))` with `b` the list's digit of the row's coefficient slice
+(its second) and `E` the window's bound -- the facts records' arithmetic, rounded once, by the packed conversion
+(`F2FP`, the ALU pipe: the scalar one runs on the conversion unit, which a step may not hold). The arm's fold side is
+listed or dense at compile time (`kFoldFactors` 1 or 2), each arm compiling only its own; a window whose plan says
+otherwise traps. Until 2026-10-19 this branch took c
 as `b` alone, without F or the list's unit: the dense-dense carry's state was wrong from its second window, and no gate
 read it (the whole-call gate refused read sides with no list level; the probe wrote such a side's lists at one leaf).
 The list's rescale is applied before its first chunk's steps, and only where its unit moved: a list whose unit stood
 (`f == 1`, the warp's one value) multiplies nothing -- the multiply is a one-trip loop on a warp vote, since 128
 multiplies a lane every window (1.0K warp instructions a CTA-window at alt-k4) bought nothing in the steady state.
 
+<a id="dense"></a>
+## A dense side's steps
+
+`steps_dense`, the ruled form for a side with no list level ("a declared-dense side merges maximally by structure",
+2026-10-18; lab `list_fold`, 2026-10-05: merged 1.08x its tensor floor, per list reloading 1.37x the merged time): every
+slot of the chunk once for all four of the warp's lists. A 16-slot step loads its slices (two `ldmatrix.trans`) and
+values (two) once, and each list multiplies the slices by its c (four HMUL2 a list a digit tile) for its eight MMAs --
+32 a step. Lanes `0..15` hold the step's slots: each its token's four lists' c from the row's coefficient slice and the
+slot's F, two lists a packed conversion, paired with the next lane's by one shuffle a word and times each list's unit.
+An 8-slot tail of m16n8k8 MMAs follows. Every accumulator takes the same MMAs in the same order as the per-list form
+it replaces (which stepped each list over every slot, the four reloading the same rows), so the state is the same bit
+for bit. BUDGET (predicted before the build, KERNEL_STANDARDS 32.2): a step 32 MMAs, 4 operand loads (16 wavefronts,
+the per-list form's 64), 4 + 1 coefficient loads a lane, ~100 instructions; on sm_80 its memory ~22 cycles over 256
+pipe cycles (the census read the per-list form at 2.66 cycles an MMA: ~0.7 now) and its step cover at the line; on
+sm_86, tensor-bound either way, the dense fold 71.8K -> ~67-69K cycles a warp-window against its tensor 66.6K.
+
 <a id="laps"></a>
 ## The laps
 
 An instrument: `fold_chunk`'s `Laps` (default `NoLaps`, whose call is empty) is called at the chunk's marks -- 0 once
 every list's scale, count and first step's lanes are read, `1 + 2 J` once list `J`'s rescale is guarded, `2 + 2 J` once
-its steps are done. The kernel passes none and its SASS is identical with the hook; the lab's
+its steps are done; a dense side's (`#dense`) 0 before its rescales, 1 after them, 2 to `2 lists` once its steps are
+done. The kernel passes none and its SASS is identical with the hook; the lab's
 [`fold_alone`](../../lab/fold_alone.md) passes a recorder.
 
 <a id="den"></a>

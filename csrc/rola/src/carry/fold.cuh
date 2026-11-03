@@ -339,6 +339,115 @@ __device__ __forceinline__ void fold_den_dense(State<P>& st, const uint8_t* smem
   });
 }
 
+//: A DENSE SIDE'S STEPS (no list level): every slot of the chunk ONCE for all the warp's lists -- a 16-slot step's
+//: slices and values loaded once, each list's A the slices times its c (HMUL2), four lists' eight MMAs; an 8-slot tail
+//: after. c = f16(fp32(b 255 F) 2^(4 - E)) as the facts records round it, two lists a packed conversion; lanes `0..15`
+//: hold the step's slots, a pad the chunk's first row with c = 0. -- see docs/internals/carry/fold.md#dense
+template <class P, class Laps>
+__device__ __forceinline__ void steps_dense(State<P>& st, bool rescale, const uint8_t* smem,
+                                            ops::SmemAddr pool, ops::SmemAddr rows,
+                                            ops::SmemAddr ents, int first, int slots, float p2,
+                                            int warp, int lane, Laps laps) {
+  constexpr int kLists = P::kFoldLists, kTiles = P::kFoldMTiles;
+  static_assert(kLists == 4, "two lists' c a packed word, two words a slot");
+  ListScale sc[kLists];
+  static_for<kLists>([&](auto J) {
+    sc[J] = reinterpret_cast<const ListScale*>(smem + P::kScale)[fold_list(warp, J)];
+  });
+  //: slot `s + (lane & 15)`'s row offset and its c paired with the next lane's, a list each
+  const auto entry = [&](int s, uint32_t& off, uint32_t(&cp)[kLists]) {
+    const int e = s + (lane & 15);
+    const bool live = e < slots;
+    const uint32_t k = static_cast<uint32_t>(max(min(e, slots - 1), 0));
+    const uint32_t row0 = rows + k * P::kWriteRow + 16u * chunk_at<P::kWriteRow>(k, 0);
+    float c[kLists];
+    float fk;
+    asm volatile("ld.shared.f32 %0, [%1];" : "=f"(fk) : "r"(ents + 8u * k));
+    static_for<kLists>([&](auto J) {
+      const uint32_t list = static_cast<uint32_t>(fold_list(warp, J));
+      uint32_t bv;
+      asm volatile("ld.shared.u16 %0, [%1];"
+                   : "=r"(bv)
+                   : "r"(chunk_addr<P::kWriteRow>(row0, (kSliceBytes + 2u * list) >> 4)
+                         + (2u * list & 15u)));
+      const float b = __half2float(__ushort_as_half(static_cast<unsigned short>(bv)));
+      c[J] = __fmul_rn(__fmul_rn(__fmul_rn(b, 255.0f), fk), p2);
+    });
+    const __half2 h01 = __floats2half2_rn(c[0], c[1]), h23 = __floats2half2_rn(c[2], c[3]);
+    const uint32_t w01 = live ? *reinterpret_cast<const uint32_t*>(&h01) : 0u,
+                   w23 = live ? *reinterpret_cast<const uint32_t*>(&h23) : 0u;
+    const uint32_t n01 = __shfl_xor_sync(0xffffffffu, w01, 1),
+                   n23 = __shfl_xor_sync(0xffffffffu, w23, 1);
+    cp[0] = ops::hmul2(__byte_perm(w01, n01, 0x5410), sc[0].cf);
+    cp[1] = ops::hmul2(__byte_perm(w01, n01, 0x7632), sc[1].cf);
+    cp[2] = ops::hmul2(__byte_perm(w23, n23, 0x5410), sc[2].cf);
+    cp[3] = ops::hmul2(__byte_perm(w23, n23, 0x7632), sc[3].cf);
+    const uint32_t u = live ? static_cast<uint32_t>(first) + k : static_cast<uint32_t>(first);
+    off = u * P::kWriteRow + 16u * chunk_at<P::kWriteRow>(u, 0);
+  };
+
+  laps(0);
+  static_for<kLists>([&](auto J) {
+    const float f = rescale ? sc[J].f : 1.0f;
+    //: a list whose unit stood multiplies nothing (one trip where it moved; `f` is the warp's)
+    for (int k = __any_sync(0xffffffffu, f != 1.0f) ? 1 : 0; k > 0; --k)
+      static_for<kTiles>([&](auto M) {
+        static_for<4>([&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] *= f; }); });
+      });
+  });
+  laps(1);
+
+  const int r = lane & 7, q = lane >> 3, t = lane & 3;
+  uint32_t off, cp[kLists];
+  entry(0, off, cp);
+  int s = 0;
+  for (int k = __any_sync(0xffffffffu, slots > 8) ? 1 : 0; k > 0; --k)
+#pragma unroll 1
+    do {
+      const uint32_t oa = __shfl_sync(0xffffffffu, off, 8 * (q >> 1) + r);
+      const uint32_t ob = __shfl_sync(0xffffffffu, off, 8 * (q & 1) + r);
+      uint32_t raw[kTiles][4], b[4][2];
+      static_for<kTiles>([&](auto M) {
+        ops::load_frag_t(raw[M], chunk_addr<P::kWriteRow>(pool + oa, 2 * M + (q & 1)));
+      });
+      static_for<2>([&](auto H) {
+        uint32_t x[4];
+        ops::load_frag_t(x,
+                         chunk_addr<P::kWriteRow>(pool + ob, P::kValuesAt / 16 + 2 * H + (q >> 1)));
+        b[2 * H][0] = x[0];
+        b[2 * H][1] = x[1];
+        b[2 * H + 1][0] = x[2];
+        b[2 * H + 1][1] = x[3];
+      });
+      static_for<kLists>([&](auto J) {
+        const uint32_t c01 = __shfl_sync(0xffffffffu, cp[J], 2 * t),
+                       c89 = __shfl_sync(0xffffffffu, cp[J], 2 * t + 8);
+        static_for<kTiles>([&](auto M) {
+          const uint32_t a[4] = {ops::hmul2(raw[M][0], c01), ops::hmul2(raw[M][1], c01),
+                                 ops::hmul2(raw[M][2], c89), ops::hmul2(raw[M][3], c89)};
+          static_for<4>([&](auto N) { ops::hmma(st.acc[J][M][N], a, b[N][0], b[N][1]); });
+        });
+      });
+      s += 16;
+      entry(s, off, cp);
+    } while (__any_sync(0xffffffffu, slots - s > 8));
+  for (int tail = __any_sync(0xffffffffu, slots - s > 0) ? 1 : 0; tail > 0; --tail) {
+    const uint32_t o = __shfl_sync(0xffffffffu, off, r);
+    uint32_t raw[4], b[4];
+    ops::load_frag_t(raw, chunk_addr<P::kWriteRow>(pool + o, q));
+    ops::load_frag_t(b, chunk_addr<P::kWriteRow>(pool + o, P::kValuesAt / 16 + q));
+    static_for<kLists>([&](auto J) {
+      const uint32_t c01 = __shfl_sync(0xffffffffu, cp[J], 2 * t);
+      uint32_t a[4];
+      static_for<4>([&](auto K) { a[K] = ops::hmul2(raw[K], c01); });
+      static_for<kTiles>([&](auto M) {
+        static_for<4>([&](auto N) { ops::hmma_k8(st.acc[J][M][N], a[2 * M], a[2 * M + 1], b[N]); });
+      });
+    });
+  }
+  static_for<2 * kLists - 1>([&](auto L) { laps(2 + L); });
+}
+
 template <class P, class Laps = NoLaps>
 __device__ __forceinline__ void fold_chunk(State<P>& st, bool rescale, const uint8_t* smem,
                                            const Window& ww, int w, const Run& run, int first,
@@ -350,8 +459,8 @@ __device__ __forceinline__ void fold_chunk(State<P>& st, bool rescale, const uin
       reinterpret_cast<const int16_t*>(smem + P::kWriteExp) + parity_of(w) * kBoxLists * 2;
   const float p2 = ww.listed ? 1.0f : ldexpf(1.0f, 4 - dense_exp(exps[1])),
               p2m = ww.listed ? 1.0f : ldexpf(1.0f, 4 - dense_exp(exps[0]));
-  //: a dense fold's den is its own pass (`fold_den_dense`), its lists' steps carry none
-  const uint32_t list_dens = P::kFoldFactors == 2 ? 0u : dens;
+  //: a listed side's lists carry the den in their steps; a dense side's is its own pass (`fold_den_dense`)
+  const uint32_t list_dens = dens;
   //: THE WARP'S LISTS: every list's scale, count, base and first step's lanes before any list's MMAs (four independent
   //: chains), then each list's rescale and steps (the den's column in them); `fetch(base, k)` a list's entry `k`
   const auto lists = [&](const int(&n)[P::kFoldLists], const int(&base)[P::kFoldLists],
@@ -396,8 +505,10 @@ __device__ __forceinline__ void fold_chunk(State<P>& st, bool rescale, const uin
     });
   };
 
-  int n[P::kFoldLists], base[P::kFoldLists];
-  if (ww.listed) {
+  //: the arm's fold side is listed (one dense level) or dense (two), and the window's plan agrees
+  if (ww.listed != (P::kFoldFactors == 1)) __trap();
+  if constexpr (P::kFoldFactors == 1) {
+    int n[P::kFoldLists], base[P::kFoldLists];
     //: a list's count and place, each under 2^16, one shuffle
     const uint32_t packed = static_cast<uint32_t>(run.n) << 16 | static_cast<uint32_t>(run.to);
     static_for<P::kFoldLists>([&](auto J) {
@@ -413,37 +524,8 @@ __device__ __forceinline__ void fold_chunk(State<P>& st, bool rescale, const uin
       return e;
     });
   } else {
-    //: every slot of the chunk, c = f16(b F 2^(4 - E)) rounded once as the facts pass's records are: b the list's
-    //: digit of the row's coefficient slice (the row's second) on the byte scale, F the slot's factor at `ents`
-    static_for<P::kFoldLists>([&](auto J) {
-      n[J] = slots;
-      base[J] = fold_list(warp, J);
-    });
-    lists(n, base, [&](int list, int k) {
-      const uint32_t row0 = rows + static_cast<uint32_t>(k) * P::kWriteRow
-                            + 16u * chunk_at<P::kWriteRow>(static_cast<uint32_t>(k), 0);
-      uint32_t cv;
-      asm volatile(
-          "ld.shared.u16 %0, [%1];"
-          : "=r"(cv)
-          : "r"(chunk_addr<P::kWriteRow>(row0, (kSliceBytes + 2 * list) >> 4) + (2 * list & 15)));
-      float fk, mk;
-      asm volatile("ld.shared.v2.f32 {%0, %1}, [%2];"
-                   : "=f"(fk), "=f"(mk)
-                   : "r"(ents + 8u * static_cast<uint32_t>(k)));
-      const float b = __half2float(__ushort_as_half(static_cast<unsigned short>(cv)));
-      //: the packed conversion (F2FP, the ALU pipe; the scalar one runs on the conversion unit), the same rounding:
-      //: c and the den's c_m, a record's two halves as the facts pass writes a listed side's
-      const float b255 = __fmul_rn(b, 255.0f);
-      const __half2 c = __floats2half2_rn(__fmul_rn(__fmul_rn(b255, fk), p2),
-                                          __fmul_rn(__fmul_rn(b255, mk), p2m));
-      return make_uint2(static_cast<uint32_t>(first + k),
-                        static_cast<uint32_t>(__half_as_ushort(__low2half(c)))
-                            | static_cast<uint32_t>(__half_as_ushort(__high2half(c))) << 16);
-    });
-    if constexpr (P::kFoldFactors == 2) {
-      fold_den_dense<P>(st, smem, rows, ents, slots, p2m, dense_exp(exps[0]), dens, warp, lane);
-    }
+    steps_dense<P>(st, rescale, smem, pool, rows, ents, first, slots, p2, warp, lane, laps);
+    fold_den_dense<P>(st, smem, rows, ents, slots, p2m, dense_exp(exps[0]), dens, warp, lane);
   }
 }
 
