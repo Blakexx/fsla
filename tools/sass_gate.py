@@ -283,8 +283,11 @@ def step_cover(cubin: Path, name: str, lines: list[tuple[int, str, str, str]], l
         c["together"] = round(100 * together["occupancy"], 1)
         c["cover"] = round(min(100.0, c["occupancy"] * warps, c["together"]), 1)
         c["warps"] = warps
+        #: the loop's memory-pipe cycles an iteration (`sass_control.mem_cost`): with the pipe cycles, the caps --
+        #: issue `pipe / instr`, memory `pipe / (schedulers memory)` -- name what binds
+        memory = sum(sass_control.mem_cost(sass_control.opcode(text), text, mach) for _, text, _ in body)
         each.append({"first": lines[target][0], "last": lines[k][0], "instr": k - target + 1,
-                     "hmma": sum(1 for x in lines[target:k + 1] if _MMA.match(x[1])),
+                     "hmma": sum(1 for x in lines[target:k + 1] if _MMA.match(x[1])), "memory": round(memory, 1),
                      **{key: c[key] for key in ("cover", "together", "period", "pipe", "exposed", "worst")}})
         if worst is None or c["cover"] < worst["cover"]:
             worst = c
