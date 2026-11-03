@@ -16,8 +16,8 @@ the area from 13,696:
 - the unit book (a list's running unit, `fold.md#units`) and the window's scale a list (`fold.md#units`), the
   digit keys (by parity), the digit exponents in lane order and the scales' bits (`parts.md#maxima`);
 - each leaf's exponent byte (1 KB, dead from the window's leaf scales to its next keys) under the window's den rows
-  (2 KB, `parts.md#den`), each leaf's f16 scale, and each digit's den factor and largest den (the den state is the
-  call's global workspace, `fold.md#den`);
+  (2 KB, `parts.md#den`), each leaf's f16 scale, and each digit's den factor and largest den (the den state is
+  registers, `fold.md#state`);
 - the phase clock's rows;
 - the CTA's addresses (`Addr`, 256 bytes reserved: `parts.md#place`).
 
@@ -31,8 +31,7 @@ call (`tables_of`, into `CarryParams::tables`) at the top of shared memory, each
 (`g` KB), its group's boundaries in prefix form (`528 g` bytes: 33 rows of `8 g` columns), each query head's token
 units (`512 g` bytes) and the plan records (`plan_words(g)` words, `schedule.md#plan`). One arm serves every `g`; the
 area is what the tables leave, 91,136 bytes at one head on sm_86, and the launch refuses a `g` whose area does not hold
-the least plan (`least_plan_fits`: the image's half ring and a 64-slot read buffer -- its entries' worst case where the
-read side lists, none where its rows are a dense side's -- and a 64-slot fold buffer). At the top, not after the tenants, because a lane's address in the area folds the
+the least plan (`least_plan_fits`). At the top, not after the tenants, because a lane's address in the area folds the
 area's base into its instruction as an immediate: from a base read at run time each such address held a register,
 and at 255 a thread they spilled.
 

@@ -59,11 +59,6 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     reinterpret_cast<uint32_t*>(smem + p.tables.bounds_at)[i] = 0u;
     reinterpret_cast<int8_t*>(smem + p.tables.units_at)[i] = static_cast<int8_t>(kUnitByteNone);
   }
-  //: the CTA's den state zero at the call's start (a fresh call's: the entry state is not taken yet)
-  static_assert(kBoxLists * kBoxDigits == 4 * kThreads,
-                "a thread a 16-byte quarter of a list's digits");
-  float* const den_base = den_state_of(p);
-  reinterpret_cast<float4*>(den_base)[threadIdx.x] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
   //: the scales' bits' multiplier and bias (`list_scale`), loaded at each use
   if (threadIdx.x == 0)
     *reinterpret_cast<uint2*>(smem + P::kBits) = make_uint2(1u << 23, 127u << 23);
@@ -103,31 +98,36 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       ops::stage_wait<0>();
     }
   };
+  //: THE STATE, zero at the call's start (a fresh call's: the entry state is not taken yet), the den's with it
+  State<P> st;
+  static_for<P::kFoldLists>([&](auto J) {
+    static_for<P::kFoldMTiles>([&](auto M) {
+      static_for<4>([&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] = 0.f; }); });
+    });
+  });
+  static_for<4>([&](auto I) { st.den[I] = 0.f; });
+
   //: A READ CHUNK'S UNITS, the CTA's own, before its first adds (the arm's read rows say which side: one factor a
   //: listed side's row, two a dense side's row and coefficients): the terms or the bounds, a barrier, the bytes and the
   //: drain's factors, a barrier; the window's first chunk's den tables after the terms (past a barrier after the
-  //: leaves' scales, whose exponent bytes they overwrite; their state loaded at the window's top)
-  DenTablesIn den_in;
+  //: leaves' scales, whose exponent bytes they overwrite), from the den's registers
   const auto chunk_units = [&](int w, const Entry& e, const Run& run, ops::SmemAddr buf,
                                bool first) {
     if constexpr (P::kReadFactors == 1) {
       units_listed_add<P>(p, smem, run, e.first(), buf,
-                          buf + static_cast<uint32_t>(read_ents<P>(e.slots(), true)), wid(), lid());
+                          buf + static_cast<uint32_t>(read_ents<P>(e.slots())), wid(), lid());
     } else {
       units_dense<P>(p, smem, e.first(), e.slots(), buf, wid(), lid());
     }
-    if (first) den_tables_out<P>(smem, den_in, wid(), lid());
+    if (first) den_tables_out<P>(smem, st, ww(w).listed, wid(), lid());
     ops::rendezvous();
     units_close<P>(p, smem, w, e.first(), e.slots());
     //: a side with no list level's den, its tiles against every digit's den row (`parts.md#den`)
     if constexpr (P::kReadFactors == 2) {
-      if (!rw(w).listed) {
-        const ops::SmemAddr dens = buf + static_cast<uint32_t>(read_dens<P>(e.slots()));
-        if (p.readout_f16) {
-          den_dense<P, true>(smem, e.slots(), buf, dens, wid(), lid());
-        } else {
-          den_dense<P, false>(smem, e.slots(), buf, dens, wid(), lid());
-        }
+      if (p.readout_f16) {
+        den_dense<P, true>(p, smem, rw(w), e.first(), e.slots(), buf, wid(), lid());
+      } else {
+        den_dense<P, false>(p, smem, rw(w), e.first(), e.slots(), buf, wid(), lid());
       }
     }
     ops::rendezvous();
@@ -136,7 +136,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   const auto read_out = [&](int w, const Entry& e, const Run& run, ops::SmemAddr buf, int lo,
                             int hi, uint32_t mask) {
     const ops::SmemAddr pads = buf + static_cast<uint32_t>(read_pads<P>(e.slots())),
-                        ents = buf + static_cast<uint32_t>(read_ents<P>(e.slots(), rw(w).listed));
+                        ents = buf + static_cast<uint32_t>(read_ents<P>(e.slots()));
     if (p.readout_f16) {
       read_chunk<P, true, true>(p, smem, rw(w), run, e.first(), e.slots(), lo, hi, area, mask, buf,
                                 pads, ents, wid(), lid());
@@ -146,12 +146,6 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     }
   };
 
-  State<P> st;
-  static_for<P::kFoldLists>([&](auto J) {
-    static_for<P::kFoldMTiles>([&](auto M) {
-      static_for<4>([&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] = 0.f; }); });
-    });
-  });
   stage_window<P>(p, here(), 0, smem);
   ops::stage_commit();
   ops::stage_wait<0>();
@@ -161,12 +155,10 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   for (int w = 0; w < p.windows; ++w) {
     const Stream s = stream_of<P>(p, smem, w);
     const bool more = w + 1 < p.windows;
-    //: every warp done with the window before (its fold's rows may be where this window's first chunk lands; its den
-    //: adds in the state the tables load); each digit's largest den cleared before it, its last readers long done
+    //: every warp done with the window before (its fold's rows may be where this one's first chunk lands); the den maxima cleared
     if (threadIdx.x < kBoxDigits) reinterpret_cast<uint32_t*>(smem + P::kDenMax)[threadIdx.x] = 0u;
     ops::rendezvous();
     clock.lap(kPhaseWait);
-    den_in = den_tables_in(den_base, wid(), lid());
     //: THE KEYS before any copy of the window is issued (their shared loads ahead of the copies), then THE FIRST
     //: READ CHUNK'S FILL and the next window's staging under the keys' barrier, the exponents and the first store
     const int top = post_keys<P>(st, smem, w, wid(), lid());
@@ -184,7 +176,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     clock.lap(kPhaseWait);
     post_exps<P>(smem, w, top, lid());
     leaf_scales<P>(smem);
-    den_tables_max<P>(smem, den_in, lid());
+    den_tables_max<P>(smem, st, ww(w).listed, wid(), lid());
     bounds_clear<P>(p, smem);
     clock.lap(kPhaseMaxima);
 
@@ -268,7 +260,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       if (j == 0) fold_units<P>(smem, ww(w), w, wid(), lid());
       fold_chunk<P>(st, j == 0, smem, ww(w), w, run, e.first(), e.slots(), buf,
                     buf + static_cast<uint32_t>(fold_ents<P>(e.slots())), wid(), lid(),
-                    den_lists(place_of(p).channel0, p.dv), den_base);
+                    den_lists(place_of(p).channel0, p.dv));
       clock.lap(kPhaseFold);
     }
   }
@@ -278,8 +270,6 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   static_for<P::kStateRegs>([&](auto k) { sum += st.template at<k>(); });
   static_for<5>([&](auto o) { sum += __shfl_xor_sync(0xffffffffu, sum, 16 >> o); });
   if (lane == 0) atomicAdd(p.check, sum);
-  //: the probe's den state whole first: a side with no list level's den pass writes other warps' lists
-  if (p.probe_den != nullptr) ops::rendezvous();
   fold_probe<P>(p, st, smem, window_of<P>(p, smem, kWrite, 0), place_of(p), warp, lane);
   clock.publish(p.ledger, (long)blockIdx.y * gridDim.x + blockIdx.x, kWarps, warp);
 }

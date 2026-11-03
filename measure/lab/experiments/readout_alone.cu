@@ -43,19 +43,21 @@ __global__ __launch_bounds__(rc::kThreads, 1) void readout(
   const ops::SmemAddr image = ops::smem_addr(smem + P::kAreaAt);
   const ops::SmemAddr buf = image + static_cast<uint32_t>(16 * rc::kPlaneBytes);
   const ops::SmemAddr pads = buf + static_cast<uint32_t>(rc::read_pads<P>(kSlots));
-  const ops::SmemAddr ents = buf + static_cast<uint32_t>(rc::read_ents<P>(kSlots, true));
+  const ops::SmemAddr ents = buf + static_cast<uint32_t>(rc::read_ents<P>(kSlots));
   uint32_t* const words = reinterpret_cast<uint32_t*>(smem + P::kAreaAt);
   //: the image and the rows: small f16 values; the panel zero; the units 0; each digit's exponent at the image's top
   for (int i = tid; i < (16 * rc::kPlaneBytes + rc::read_pads<P>(kSlots)) / 4; i += rc::kThreads)
     words[i] = 0x24002400u ^ (mix(static_cast<uint32_t>(i)) & 0x03ff03ffu);
-  for (int i = tid; i < (rc::read_ents<P>(kSlots, true) - rc::read_pads<P>(kSlots)) / 4;
+  for (int i = tid; i < (rc::read_ents<P>(kSlots) - rc::read_pads<P>(kSlots)) / 4;
        i += rc::kThreads)
     reinterpret_cast<uint32_t*>(smem + (pads - ops::smem_addr(smem)))[i] = 0u;
   for (int i = tid; i < p.tables.heads * P::kWindow; i += rc::kThreads)
     reinterpret_cast<int8_t*>(smem + p.tables.units_at)[i] = 0;
   if (tid < rc::kBoxDigits)
     reinterpret_cast<int*>(smem + P::kExps)[tid] = rc::kImageTop + rc::kCoefTop;
-  const rc::Window rw{P::kWindow, 0, 0, 0, rc::kBoxLists, true};
+  //: the window at the CTA's own tokens of `den` (the den's adds land on no other CTA's lines)
+  const rc::Window rw{P::kWindow, static_cast<int>(blockIdx.x) * P::kWindow, 0, 0, rc::kBoxLists,
+                      true};
   __syncthreads();
 
   //: the fold's state, live across the readout as the carry holds it (empty asm uses: registers, no instructions)
@@ -164,6 +166,10 @@ int main(int argc, char** argv) {
   lab::Bench b(argc, argv);
   rc::CarryParams p{};
   p.tables = rc::tables_of<P::kWindow>(1, P::kSmemBytes);
+  //: the den's out: a window of tokens a CTA
+  p.L = b.sms * P::kWindow;
+  LAB_CHECK(cudaMalloc(&p.den, sizeof(float) * p.L));
+  LAB_CHECK(cudaMemset(p.den, 0, sizeof(float) * p.L));
   readout_alone::variant<0>(b, p, "composed: a rendezvous a half");
   readout_alone::variant<1>(b, p, "back to back");
   if (!b.expect_only) {

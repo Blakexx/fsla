@@ -66,8 +66,7 @@ def _cell(directory: Path, keep: float) -> list[str]:
     capture = torch.zeros(c.capture_bytes(), dtype=torch.uint8)
     c.capture_bind(capture)
     try:
-        den_state = c.den_state_for(values, carve)
-        num, den, check = c.carry(routes, values, facts, carve, unit, plans=plans, den_state=den_state)
+        num, _den, check = c.carry(routes, values, facts, carve, unit, plans=plans)
         torch.cuda.synchronize()
     finally:
         c.capture_bind(None)
@@ -76,7 +75,7 @@ def _cell(directory: Path, keep: float) -> list[str]:
     found: list = []
     _tensors((routes, values, facts, unit, plans), found)
     storages = {}
-    for t in found + [num, den, den_state, check]:
+    for t in found + [num, check]:
         if t.is_cuda:
             s = t.untyped_storage()
             storages.setdefault(s.data_ptr(), s)

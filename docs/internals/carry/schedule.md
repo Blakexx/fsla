@@ -66,11 +66,9 @@ them to the model word for word).
 <a id="buffers"></a>
 ## The buffers
 
-A chunk's buffer is laid out at its OWN slots (`parts.cuh`'s `read_pads`, `read_dens`, `read_ents`, `fold_ents`): a
-read buffer's rows (`C x row`), the dummy panel rows (`kPadBytes`), the panel (`C x 64`, 128-byte aligned: a slot pair
-shares a 128-byte line and a slot's row may sit in its line's upper half, so the whole line is zeroed), the warps' den
-rows (`8 (8 + C') x 4` a listed side's, `(8 + C') x 4` a dense side's, `C'` the slots rounded to a pair,
-`parts.md#den`), its entries (`E x 8`);
+A chunk's buffer is laid out at its OWN slots (`parts.cuh`'s `read_pads`, `read_ents`, `fold_ents`): a read buffer's
+rows (`C x row`), the dummy panel rows (`kPadBytes`), the panel (`C x 64`, 128-byte aligned: a slot pair shares a
+128-byte line and a slot's row may sit in its line's upper half, so the whole line is zeroed), its entries (`E x 8`);
 a fold buffer's rows (slices then values) and entries (a side with no list level: each slot's `(F, m)`, 8 bytes a slot,
 in their place). `read_bytes` and `fold_bytes` are their sizes, so a chunk's
 footprint is its actual count, never the window's largest chunk; every size is a multiple of 128, so a place is too.

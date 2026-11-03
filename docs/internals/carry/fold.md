@@ -9,7 +9,12 @@ declared arithmetic (`tests/oracle/fold_reference.py`, `fold_state`), gated per 
 
 `State` (in `parts.cuh`) is a warp's accumulators: per fold list (`fold_list`: the box's list `w + 8 j`), its digits'
 two m-tiles by the channels' four n-tiles, fp32, each list in its own UNIT (below): 4 x 2 x 4 x 4 = 128 registers a
-lane. They are the MMAs' C fragments for the whole call.
+lane. They are the MMAs' C fragments for the whole call. Beside them the DEN'S, the v+1 channel's mass (`#den`), 4
+registers a lane, absolute, the box's 32 lists by 32 digits once across the CTA (ruled 2026-11-02: the den as one more
+channel of the state, register-resident). A word's place (`den_place`) is the write side's form's, fixed for the call: a
+listed side's by the list's owner (lane `4 g + t`'s word `i` list `w + 8 (2 (t & 1) + (i & 1))`, digit `g + 8 (i >> 1) +
+16 (t >> 1)`: where `den_add` lands), a side with no list level's a tile's C fragment (list `8 (w >> 1) + 2 t + (i &
+1)`, digit `16 (w & 1) + g + 8 (i >> 1)`: where `fold_den_dense` lands).
 
 <a id="units"></a>
 ## The units
@@ -85,14 +90,13 @@ the coefficient on the routing weight, the product order the reference declares)
 (`entry_of`'s `dpair`: a write record's high half, `f16(b m 2^(4 - Km))` -- the facts pass's, `Km` the list's mass
 exponent; one shuffle of the record's word pairs c and c_m both). Two more MMAs a
 16-token step (one an 8-token tail), into a `DenColumn` held only through the list's steps: then `den_add` adds each
-row's value times `2^(K - 4)` into the DEN STATE -- fp32 `[32 lists][32 digits]` a CTA in the call's GLOBAL workspace
-(`CarryParams::den_state`, `rola.ops.carry.den_state_for`; ruled 2026-11-02: the den fire-and-forget), zeroed by its
-CTA at the call's start -- so the state is in `b m` units across windows with no unit book. B's every column is the
-c_m pair (no column-0 select), so every lane holds its quad's four rows, and `den_add` takes row `g + 8 t` a lane: one
-`red.global.add.f32`, the list's 32 digits one 128-byte line, after the list's steps (KERNEL_STANDARDS §29 item 7: a
-reduction to global memory never in a step). The window-top barrier orders a window's adds before the next window's
-tables load the state (`parts.md#den`). In shared memory the state cost 4 KB of the area: nl64k-dense's read chunk
-192 slots, three a window, where 256 and two fit without it.
+row's value times `2^(K - 4)` into the DEN'S REGISTERS (`State::den`, `#state`; zero at the call's start), so the
+state is in `b m` units across windows with no unit book. B's every column is the c_m pair (no column-0 select), so
+every lane holds its quad's four rows: list `J` lies in the lanes `t & 1 == J >> 1`, each adding its two digits (two
+selects, no branch) at words `J & 1` and `2 + (J & 1)`. The state left shared memory (4 KB of the area: nl64k-dense's read chunk 192 slots, three a
+window, where 256 and two fit without it) and then the call's global workspace (a line of adds a list, a load a
+window: 2026-11-02, 8c83835e) -- in registers it costs neither, and the window's tables read it there
+(`parts.md#den`: a window's read chunks run before its fold chunks, so they see the state before its writes).
 
 A box carries the den of a warp's list `j` where `j boxes / 4` is its box (`den_lists`, `boxes = dv / 32`): each of
 two boxes lists 0-15 or 16-31, of four a quarter -- every list once, the cost shared. The branch is the CTA's, an
@@ -105,26 +109,28 @@ with its den, 2.86K with the box's den lists forced off in the same build (+0.71
 tensor-bound step, the adds, and the instruction cache's misses on the den steps' second copy).
 
 A SIDE WITH NO LIST LEVEL (ruled 2026-11-02: a dense side's den on the dense machinery) writes every list from every
-slot, so its den is one pass a chunk over every list at once, `fold_den_dense`: `Den[lists][digits] += Cm^T S` over
-the chunk's slots, 16 a step, a warp an m-tile of the box's den lists (a contiguous run, `8 j0 .. 8 j1`) by two
-n-tiles of digits -- A the rows' coefficient slices by `ldmatrix.trans`, each made `c_m` exactly as the list steps'
-records are (`f16(b 255 m 2^(4 - Em))`, the reference's rounding), B the slices, fp32 MMAs; then each row of the
-box's lists into the den state by `red.global.add.f32` after its steps (a row outside the box's lists an exact zero).
-Its trips are shuffled (`__any_sync`): a loop ptxas cannot
+slot, so its den is one pass a chunk over every list at once, `fold_den_dense`: `Den^T[digits][lists] += S^T Cm` over
+the chunk's slots, 16 a step, a warp a TILE -- digits `16 (w & 1) ..` by the list group `8 (w >> 1) ..` (a group `j`
+is lists `8 j .. 8 j + 7`, so a box carries all of a tile's lists or none, `dens`; a tile it does not carry takes no
+trip): A the rows' slices by `ldmatrix.trans`, B the group's `c_m` (four 16-bit loads a lane a step, each made exactly
+as the list steps' records are, `f16(b 255 m 2^(4 - Em))`, the reference's rounding), one fp32 MMA a step, every
+product live; its C fragment is the warp's den words. At two boxes a box's 4 tiles are 4 warps on the 4 schedulers.
+REPLACED (measured 2026-11-02, phase ledger, nl64k-dense, sm_86): the den on its lists' owners (A the slices over
+both m-tiles, B the warp's 4 lists, half of them dead at two boxes): 8 warps each 2 MMAs a step, the fold 80.4K a warp
+against 77.4K on the first form's two den warps -- the den's tensor work four times over. Its trips are
+shuffled (`__any_sync`): a loop ptxas cannot
 prove warp-uniform fences every collective after it (a plain `for` on a shuffled count did, here: 196 guarded
 collectives and the dense readout 43% slower a step). Its full 16-slot steps take their rows unclamped, every address
 the first step's plus `16 kWriteRow` a step (a multiple of 1024 bytes: the rows' swizzle, period 8 slots, and its XOR on
 bytes' bits 4-5 carry over), only the chunk's partial step holds them to the chunk and zeroes `m` past it -- the exact
 `c_m` makes the step ALU-bound, and each step's swizzled addresses, recomputed, put sm_80's step cover under its floor
-(19.8% against 20.6%, measured 2026-11-02 by the SASS gate). A warp's den pass writes other warps'
-lists, so the probe waits on a barrier before it reads the den state (the call's next read, the window's tables, is
-past the window's own). MEASURED (phase ledger, nl64k-dense, sm_86): the fold 73.2K
-against 72.0K with no den (the per-list den columns of the first form: 85.8K).
+(19.8% against 20.6%, measured 2026-11-02 by the SASS gate). MEASURED (phase ledger, nl64k-dense, sm_86, the first
+form into the shared state): the fold 73.2K against 72.0K with no den (the per-list den columns: 85.8K).
 
 <a id="probe"></a>
 ## The probe
 
 An instrument (`carry_probe_bind`, `rola.ops.carry.probe_bind`). When bound, the final state is written absolute,
 fp32 `[BH, N, d_v]` by global leaf in level order: each accumulator times `2^(u - 4) / 255` (c on the byte scale, the
-dense operand at 1/255 of it); and the den state `[BH, N]` by the box carrying each list, times `1 / 255`. Unbound,
+dense operand at 1/255 of it); and the den's registers `[BH, N]` by the box carrying each list, times `1 / 255`. Unbound,
 nothing is written. The fold's oracle gate reads both (the den against the reference's mass, `fold_state`).

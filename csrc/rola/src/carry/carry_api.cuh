@@ -14,7 +14,7 @@ namespace rola::carry {
 void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows, Tensor values,
                    std::vector<Tensor> write_lists, Tensor write_exp, Tensor factors,
                    Tensor factor_shift, std::vector<Tensor> read_lists, Tensor scale, Tensor num,
-                   Tensor den, Tensor den_state, Tensor check, std::vector<int64_t> widths,
+                   Tensor den, Tensor check, std::vector<int64_t> widths,
                    std::vector<int64_t> extents, int64_t channels, int64_t write_list,
                    std::vector<int64_t> write_operand, int64_t read_list,
                    std::vector<int64_t> read_operand, std::vector<int64_t> key, int64_t accumulate,

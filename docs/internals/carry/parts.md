@@ -266,67 +266,71 @@ leaf maxima +0.8K, the drain's conversion +0.8K cycles a warp-window), dense +5.
 
 The den -- each token's read product against the MASS of the windows before, the v+1 channel ([`fold.md#den`](fold.md#den))
 -- is read out beside the channels, in the readout's own tiles (ruled 2026-11-02: inline, not a pass; rebuilt to its
-work the same day). THE DEN'S TABLES, a window's: past the window's top barrier (which orders the last window's fold
-adds) each thread loads four words of the global den state (`den_tables_in`, `ld.global.cg`: lane `l` digit `l` of
-the warp's lists `4 w ..`, one line a load), held in registers; after the leaves' scales each digit's largest into
-`kDenMax` by an integer max (`den_tables_max`, a non-negative float's bits order as integers; cleared before the
-window's top barrier); and at the first read chunk's units, past the barrier after the leaves' scales (the rows lie over
-their exponent bytes, dead until the next window's keys), each digit's FACTOR `2^(dE - kImageTop)` (`kDenFactor`;
-`pow2_wide`) and its DEN ROW at `2^(kImageTop - dE)` as f16 B words (`kDenRows`, 64 bytes a digit, a list pair `p` at
-word `2 (p & 7) + (p >> 3)`; `den_tables_out`). A tile's den is then one
-8-byte load (`den_b`: the lane's two words, 8 bytes on by `lane & 7`) and two m16n8k8 MMAs at the channels'
+work the same day). THE DEN'S TABLES, a window's, from the den's registers (`State::den`, `fold.md#state`; ruled
+2026-11-02: the den as one more channel of the state): a window's read chunks run before its fold chunks, so the
+registers hold the state before the window's writes, each word at its place (`den_place`, the write side's form's,
+`fold.md#state`). After the leaves' scales each digit's largest into `kDenMax` by an integer max (`den_tables_max`: a
+lane's four words at their digits; a non-negative float's bits order as integers; cleared before the window's top
+barrier); and at the first read chunk's units, past the barrier after the leaves'
+scales (the rows lie over their exponent bytes, dead until the next window's keys), each digit's FACTOR `2^(dE -
+kImageTop)` (`kDenFactor`; `pow2_wide`) and its DEN ROW at `2^(kImageTop - dE)` as f16 B words (`kDenRows`, 64 bytes a
+digit, a list pair `p` at word `2 (p & 7) + (p >> 3)`; `den_tables_out`, four 16-bit stores a lane). A tile's den is
+then one 8-byte load (`den_b`: the lane's two words, 8 bytes on by `lane & 7`) and two m16n8k8 MMAs at the channels'
 accumulation (`den_mma`; fp16 on the f16 arm, `hmma_k8_f16`): the tile's own read rows, already loaded as the
 channels' B, are A -- lists `0..7` its rows, `8..15` its rows 8 on, then `16..` and `24..` -- against the den row as
 B's columns 0 and 1, so token `r`'s den is `D[r][0] + D[r + 8][1]` on lane `4 r`; one shuffle gives each lane its own
 entry's (`lane & 7`). Times the entry's coefficient at its unit (the lane's own, before the tile's shuffles) and the
-digit's factor it is the token's den at its unit; `den_add_token` adds it into the WARP's den row at the entry's word
--- its panel offset over 64 (`den_word`: a slot pair's two rows' words, a dummy row's below 8; `den_word_of` the
-slot's), so nothing inverts the panel's layout. A warp's words are its own, so no atomic; four lanes an entry store the
-same value. With digit pairs the second digit's add follows a warp sync (a token may be in both runs). A side with no
-list level sums its step's digits first (their tokens are the same). The drain sums a slot's 8 warps' words, times
-`2^u`, and adds the one fp32 word into `den` (`[BH heads, L]`, the call's); the next fill zeroes the den rows. Gated
-per token against the inter term's denominator (`test_carry_vs_oracle.py`, the den gate's tolerance).
+digit's factor it is the token's den term.
 
-Every den word is ABSOLUTE: a listed entry's term is its raw coefficient times the digit's factor `2^(dE - kImageTop)`
-times its row's products, so the drain adds the word as it is (a term formed at the token's unit through the channels'
-exponent `e` overflowed where a digit's state was zero and its den was not). A SIDE WITH NO LIST LEVEL (ruled
-2026-11-02: a dense side's den on the dense machinery) reads every digit for every token, so its den is
-`units_dense`'s product with the den rows for the leaves' scales: `den_dense`, past the units' barrier (the tables
-visible), a warp 8-token tiles in turn, the tile's rows (B) against every digit's den row (A from the table: a list
-pair `p` at word `2 (p & 7) + (p >> 3)`), 4 MMAs at the channels' accumulation, each digit row times its coefficient
-(`dense_coefs_at`, `units_dense`'s offsets) and factor, summed over the digits by three shuffles; one store a token
-into the chunk's single den row (`den_rows_of`: a listed side's buffer 8 rows, a side with no list level's 1), the
-readout's dense tiles carry no den. The drain's den loop takes its trips from lane 0 (a loop ptxas cannot prove
-warp-uniform fences every collective after it: the first form's thread-strided loop guarded 230 collectives, the
-readout's dense tiles 43% slower a step). MEASURED (phase ledger, sm_86, cycles a warp-window): nl64k-dense the carry
-160.7K, readout 46.3K, units 11.2K, against 145.8K, 45.2K and 5.1K with no den; nl64k-alt-k4 21.1K against 18.8K.
+THE DEN'S ADDS go straight to `den` (`[BH heads, L]`, the call's), fire and forget (ruled 2026-11-02: fp32 atomics
+for the den alone -- its size against a token's unit varies with the writers' value scales, so it cannot ride the
+panel's fixed point, and a float atomic in shared memory is a compare-and-swap loop): `DenAdd`, a lane one term of a
+GROUP -- `32 / (8 kStep)` tiles of a digit pair's run, lane `8 q + r` the term of tile `q / kStep`'s entry `r` in digit
+`q % kStep` (two selects a tile, no branch) -- so the group's 32 terms are 32 distinct entries and go as ONE
+unpredicated `red.global.add.f32` (`token_row`: the entry's units index, its first word's high half, as the head's
+row and the window's token). A run's tiles run in SEGMENTS that end where the group fills; the add is between
+segments, outside the steps (KERNEL_STANDARDS §29 item 7), on trips taken from a vote (`__any_sync`, so ptxas fences
+no collective after it). A group spans the chunk's digits; its last terms go at the readout's end, and a lane holding
+none adds an exact zero at the window's token `lane` (held to the call: a predicated reduction is a branch and a
+convergence region in ptxas, PTX-level predication included -- checked 2026-11-02). Every den term is ABSOLUTE: its
+raw coefficient times the digit's factor `2^(dE - kImageTop)` times its row's products (a term formed at the token's
+unit through the channels' exponent `e` overflowed where a digit's state was zero and its den was not). Gated per
+token against the inter term's denominator (`test_carry_vs_oracle.py`, the den gate's tolerance).
+
+A SIDE WITH NO LIST LEVEL (ruled 2026-11-02: a dense side's den on the dense machinery) reads every digit for every
+token, so its den is `units_dense`'s product with the den rows for the leaves' scales: `den_dense`, past the units'
+barrier (the tables visible), a warp 8-token tiles in turn, the tile's rows (B) against every digit's den row (A from
+the table: a list pair `p` at word `2 (p & 7) + (p >> 3)`), 4 MMAs at the channels' accumulation, each digit row times
+its coefficient (`dense_coefs_at`, `units_dense`'s offsets) and factor, then summed over the digits by a
+reduce-scatter -- lane bit 2 keeps its token `2 t + (g & 1)`, its partner's other sum added, then `g`'s two high bits
+(three shuffles; the all-reduce and a gather it replaced took eight and put sm_86's step cover under its floor) -- a
+lane its token of a group of 4 of the warp's tiles, added as the listed side's are; the readout's dense tiles carry no
+den.
 
 THE BUDGET, a tile and digit on a listed side: the row's load, two MMAs, an add and a shuffle, the factor's multiply,
-the word's address (two), the add's load, FFMA and store -- 11 instructions and a quarter of the channels' tensor
-work. The first build's form took ~30 and two m16n8k16: the row as row 0 of an A whose other rows four selects zeroed,
-lanes `0..3` two tokens each, each word's slot by inverting `panel_row`, and each digit pair's rows converted into the
-warp's own from a den state whose 32 lists of a digit lay in one bank (a 32-way conflict: 1.2K cycles a warp-window
-at nl64k-alt-k4). MEASURED (phase ledger, nl64k-alt-k4, sm_86, cycles a warp-window): the readout 3.62K, the units
-1.86K, the carry 20.86K, against 3.00K, 1.62K and 18.76K with no den (the first build's 5.82K, 1.82K and 25.0K).
-THE ACCESS TABLE (§30.1):
+two selects, and a 32nd of the group's address and add -- ~8 instructions and a quarter of the channels' tensor work.
+The first build's form took ~30 and two m16n8k16 (the row as row 0 of an A whose other rows four selects zeroed, lanes
+`0..3` two tokens each, each word's slot by inverting `panel_row`, a den state whose 32 lists of a digit lay in one
+bank). MEASURED (phase ledger, nl64k-alt-k4, sm_86, cycles a warp-window, the per-warp shared rows' form): the readout
+3.62K, the units 1.86K, the carry 20.86K, against 3.00K, 1.62K and 18.76K with no den (the first build's 5.82K, 1.82K
+and 25.0K). THE ACCESS TABLE (§30.1):
 
 | buffer | written by | read by | shape | banks |
 |---|---|---|---|---|
-| `kDenMax` u32 `[32]` | `den_tables_max`: lane `l` digit `l`, every warp, `red.shared.max` | `den_tables_out`: lane `l` digit `l` | scalar | 32 banks; 8 warps an address in turn |
-| `kDenRows` f16, 64 bytes a digit | `den_tables_out`: lane `l` digit `l`, two words | the tiles: 8 bytes at `64 d + 8 (lane & 7)`; `den_dense`'s A | 32-/64-bit | the stores 16-way (rows 64 bytes apart, once a window); the loads 8 addresses broadcast to 4 lanes each: one wavefront |
-| a read buffer's den rows, fp32 `8 x (8 + C')` (a side with no list level's `1 x`) | `den_add_token`: a tile's 8 entries' words, four lanes each; `den_dense`: a tile's 8 tokens' | the drain: a thread a slot, its rows' words | scalar | the tokens' words by the data: at most 8-way, the chunk's 8 random slots |
+| `kDenMax` u32 `[32]` | `den_tables_max`: a lane its four words' digits, every warp, `red.shared.max` | `den_tables_out`: a lane its words' digits, lane `l` digit `l`'s factor | scalar | a tile's 8 digits 4 lanes each, a listed side's 16 two each (once a window) |
+| `kDenRows` f16, 64 bytes a digit | `den_tables_out`: a lane its four words, 16-bit | the tiles: 8 bytes at `64 d + 8 (lane & 7)`; `den_dense`'s A | 16-/64-bit | the stores up to 8-way (rows 64 bytes apart, once a window); the loads 8 addresses broadcast to 4 lanes each: one wavefront |
 
 THE DEN'S TENANTS (`plan.md#tenants`): each digit's factor and largest (256 bytes); its rows (2 KB) over the leaves'
-exponent bytes (1 KB) and 1 KB past them; a read buffer's den rows `8 (8 + C') x 4` bytes a listed side's, `(8 + C') x
-4` a dense side's (`C'` the slots rounded to a pair) -- the readout's den stays in shared memory: a term a read entry
-added straight to `den` would be a global reduction in the readout's steps (KERNEL_STANDARDS §29 item 7; 2026-10-14,
-per-entry global adds ran 4.5x the panel). The den state is the call's global workspace (`fold.md#den`).
+exponent bytes (1 KB) and 1 KB past them. Nothing else: the state is registers (`fold.md#den`), the sum is `den`'s.
+The forms it replaced: a 4 KB shared den state, then the call's global workspace (one line of adds a list, a load a
+window); a read buffer's per-warp fp32 den rows (`8 (8 + C') x 4` bytes, ~8.4 KB at 256 slots, a whole-image cell to
+halves) and the drain's sum of them.
 
 <a id="drain"></a>
 ## The drain
 
-A chunk's den words to `den` first ([`#den`](#den)), then its panel to `num`, once every warp has read the chunk, by
-the call's cross-CTA dtype
+A chunk's panel to `num` (the den went to `den` from the readout, [`#den`](#den)), once every warp has read the
+chunk, by the call's cross-CTA dtype
 ([`carry_api.md#carry-reduce`](carry_api.md#carry-reduce)): each slot's words at the CTA's unit ([`#units`](#units))
 converted by the token's factor and added into HBM where the CTAs holding the token's leaves meet; the next fill clears
 the panel. A word's two s16 halves come apart by `pair_magics` (offset magics: the fill clears a word to
