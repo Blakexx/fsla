@@ -153,6 +153,13 @@ channels `8 (r >> 1) + 2 b + (r & 1)` -- the panel's words and the f16 `num` pai
 ([`#drain`](#drain), `rola.ops.prefill.unpack_num`) -- then each 8x8 transposed where it lies (`transpose_frag_b16`).
 The fragments are indexed at compile time (the groups a `static_for` of the warp's lists), as the state is.
 
+THE ARMS: the dense box `[32, 2, 32, 2, 32, 1]` and the mixed boxes -- `[32, 2, 32, 1, 32, 1]` (`[SD, DD]`: the fold
+dense, the readout listed at the level the fold takes its coefficients from) and `[32, 1, 32, 2, 32, 1]` (`[DS, DD]`:
+the fold listed, the readout dense, its coefficients the fold's list level). Each side runs its own form unchanged: a
+listed readout's runs are its groups' (the read list level's values, the fold's lists), a dense readout's groups its
+coefficient level's values; the same split changes only where the state comes from. The tied box (`[SS, DD]`, both
+sides listed at one level) splits alike too and has no arm (ruled 2026-11-02).
+
 <a id="store"></a>
 ## A batch's stores
 
