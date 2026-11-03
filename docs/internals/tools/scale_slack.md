@@ -16,6 +16,7 @@ read row, `w` a write row, `g` the write gain, `s` a writing token's value scale
 | exact | `sum_a x_S(t, a) sum_r x_R(t, r) M(a, r)`, `M(a, r) = sum w_S(a) w_R(r) g s` | the den pass's own product |
 | write | `(sum_r x_R(t, r)) sum_a x_S(t, a) G(a)`, `G(a) = sum w_S(a) max_r w_R(r) g s` | level S's read coefficients and level R's row sum: no level-R read row |
 | facts | `(sum_a x_S(t, a)) (sum_r x_R(t, r)) sum max_a w_S(a) max_r w_R(r) g s` | each read row's sum and one sum a window |
+| window | `(sum_a x_S(t, a)) (sum_r x_R(t, r)) max_a G(a)` | each read row's sum and `G`'s largest a window: no read coefficients |
 
 Each is taken into the den pass's units (`den_units`: the reader's per-token row scales left out, as
 `test_den_vs_oracle.py`'s `in_truth` puts them back) and through `rola.ops.prefill.scale_bytes`.

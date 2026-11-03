@@ -15,6 +15,7 @@ scale, each sum over the writing tokens of the windows before t's), in the recur
   exact  sum_a x_S(t, a) sum_r x_R(t, r) M(a, r),  M(a, r) = sum w_S(a) w_R(r) g s   (the den pass's num)
   write  (sum_r x_R(t, r)) sum_a x_S(t, a) G(a),     G(a) = sum w_S(a) max_r w_R(r) g s
   facts  (sum_a x_S(t, a)) (sum_r x_R(t, r)) sum max_a w_S(a) max_r w_R(r) g s
+  window (sum_a x_S(t, a)) (sum_r x_R(t, r)) max_a G(a)                          (a window's one write mass)
 the scale bytes take each in the den pass's units: the reader's per-token row scales left out (`den_units`).
 
 Docs: docs/internals/tools/scale_slack.md.
@@ -43,7 +44,8 @@ def bounds(routes, values) -> dict:
     gs = routes.g_write.double() * values.scale.double()                          # [B, T, Hw]
     B, T, H, _ = x_s.shape
     g = routes.group
-    out = {k: torch.zeros(B, T, H, dtype=torch.float64, device=x_s.device) for k in ("exact", "write", "facts")}
+    out = {k: torch.zeros(B, T, H, dtype=torch.float64, device=x_s.device)
+           for k in ("exact", "write", "facts", "window")}
     M = torch.zeros(B, w_s.shape[2], w_s.shape[-1], w_r.shape[-1], dtype=torch.float64, device=x_s.device)
     G = torch.zeros(M.shape[:-1], dtype=torch.float64, device=x_s.device)
     F = torch.zeros(M.shape[:2], dtype=torch.float64, device=x_s.device)
@@ -58,6 +60,7 @@ def bounds(routes, values) -> dict:
         out["exact"][:, sl] = torch.einsum("btha,bthr,bhar->bth", xs, xr, heads(M))
         out["write"][:, sl] = xr.sum(-1) * torch.einsum("btha,bha->bth", xs, heads(G))
         out["facts"][:, sl] = xs.sum(-1) * xr.sum(-1) * heads(F)[:, None]
+        out["window"][:, sl] = xs.sum(-1) * xr.sum(-1) * heads(G).amax(-1)[:, None]
         ws, wr, f = w_s[:, sl], w_r[:, sl], gs[:, sl]
         M += torch.einsum("btha,bthr,bth->bhar", ws, wr, f)
         G += torch.einsum("btha,bth->bha", ws, wr.amax(-1) * f)
@@ -133,7 +136,7 @@ def reading(name: str) -> dict:
     ref = num_at(ref_scale)
     out = {"cell": name, "tokens": int(live.sum()), "den_pass": slack(bound.double() * unit),
            "run_to_run": spread(num_at(ref_scale), ref), "candidates": {}}
-    for key in ("write", "facts"):
+    for key in ("write", "facts", "window"):
         got = num_at(scale_bytes(routes, (true[key] / unit).float()))
         out["candidates"][key] = {"slack": slack(true[key]), "spread": spread(got, ref),
                                   "below_exact": int((true[key][live] < exact[live] * (1 - 1e-9)).sum())}
