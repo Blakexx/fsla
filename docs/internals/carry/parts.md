@@ -266,13 +266,14 @@ leaf maxima +0.8K, the drain's conversion +0.8K cycles a warp-window), dense +5.
 
 The den -- each token's read product against the MASS of the windows before, the v+1 channel ([`fold.md#den`](fold.md#den))
 -- is read out beside the channels, in the readout's own tiles (ruled 2026-11-02: inline, not a pass; rebuilt to its
-work the same day). Once a window, at its first read chunk's units (past the barrier after the leaves' scales: its
-rows lie over their exponent bytes, dead until the next window's keys), the DEN'S TABLES take each digit's power of two
-`dE` over its largest den (`kDenMax`, kept by the fold's adds), post its FACTOR `2^(dE - e + kCoefTop)` against its
-channels' exponent `e` (`kDenFactor`; `pow2_wide`, exact over the float range), and write its DEN ROW at
-`2^(kImageTop - dE)` as f16 B words (`kDenRows`, 64 bytes a digit): thread `8 d + q`, `q = 4 j + t`, lists `8 j + 2 t,
-+1` and `16 + 8 j + 2 t, +1`, one 8-byte store at `8 tid`. Their loads (`den_tables_in`) issue before the units' terms
-and their stores (`den_tables_out`) after them, so the loads' wait lies under that work. A tile's den is then one
+work the same day). THE DEN'S TABLES, a window's: past the window's top barrier (which orders the last window's fold
+adds) each thread loads four words of the global den state (`den_tables_in`, `ld.global.cg`: lane `l` digit `l` of
+the warp's lists `4 w ..`, one line a load), held in registers; after the leaves' scales each digit's largest into
+`kDenMax` by an integer max (`den_tables_max`, a non-negative float's bits order as integers; cleared before the
+window's top barrier); and at the first read chunk's units, past the barrier after the leaves' scales (the rows lie over
+their exponent bytes, dead until the next window's keys), each digit's FACTOR `2^(dE - kImageTop)` (`kDenFactor`;
+`pow2_wide`) and its DEN ROW at `2^(kImageTop - dE)` as f16 B words (`kDenRows`, 64 bytes a digit, a list pair `p` at
+word `2 (p & 7) + (p >> 3)`; `den_tables_out`). A tile's den is then one
 8-byte load (`den_b`: the lane's two words, 8 bytes on by `lane & 7`) and two m16n8k8 MMAs at the channels'
 accumulation (`den_mma`; fp16 on the f16 arm, `hmma_k8_f16`): the tile's own read rows, already loaded as the
 channels' B, are A -- lists `0..7` its rows, `8..15` its rows 8 on, then `16..` and `24..` -- against the den row as
@@ -311,15 +312,15 @@ THE ACCESS TABLE (§30.1):
 
 | buffer | written by | read by | shape | banks |
 |---|---|---|---|---|
-| `kDenState` fp32 `[32][32]`, a list's digit at `d ^ 4 (list >> 1)` | `den_add` (the fold): 32 lanes, one list's 32 digits | the tables: a lane digit `d` of 4, lists `8 j + 2 t (+1, +16)` | scalar | 32 digits in 32 banks; `d ^ (16 j + 4 t)` covers 32 a warp |
-| `kDenMax` u32 `[32]` | `den_add`: 32 lanes, 32 digits, `red.shared.max` | the tables: 8 lanes a digit | scalar | 32 banks; a broadcast |
-| `kDenRows` f16, 64 bytes a digit | the tables: 8 bytes a thread at `8 tid` | the tiles: 8 bytes at `64 d + 8 (lane & 7)` | 64-bit | stores contiguous; loads 8 addresses broadcast to 4 lanes each: one wavefront |
+| `kDenMax` u32 `[32]` | `den_tables_max`: lane `l` digit `l`, every warp, `red.shared.max` | `den_tables_out`: lane `l` digit `l` | scalar | 32 banks; 8 warps an address in turn |
+| `kDenRows` f16, 64 bytes a digit | `den_tables_out`: lane `l` digit `l`, two words | the tiles: 8 bytes at `64 d + 8 (lane & 7)`; `den_dense`'s A | 32-/64-bit | the stores 16-way (rows 64 bytes apart, once a window); the loads 8 addresses broadcast to 4 lanes each: one wavefront |
 | a read buffer's den rows, fp32 `8 x (8 + C')` (a side with no list level's `1 x`) | `den_add_token`: a tile's 8 entries' words, four lanes each; `den_dense`: a tile's 8 tokens' | the drain: a thread a slot, its rows' words | scalar | the tokens' words by the data: at most 8-way, the chunk's 8 random slots |
 
-THE DEN'S TENANTS (`plan.md#tenants`): the den state (4 KB), each digit's factor and largest (256 bytes); its rows (2
-KB) over the leaves' exponent bytes (1 KB) and 1 KB past them -- a tenant of its own would cost the area 1 KB, which
-the plan's forms test showed taking a cell's whole image to halves; a read buffer's den rows `8 (8 + C') x 4` bytes
-(`C'` the slots rounded to a pair).
+THE DEN'S TENANTS (`plan.md#tenants`): each digit's factor and largest (256 bytes); its rows (2 KB) over the leaves'
+exponent bytes (1 KB) and 1 KB past them; a read buffer's den rows `8 (8 + C') x 4` bytes a listed side's, `(8 + C') x
+4` a dense side's (`C'` the slots rounded to a pair) -- the readout's den stays in shared memory: a term a read entry
+added straight to `den` would be a global reduction in the readout's steps (KERNEL_STANDARDS §29 item 7; 2026-10-14,
+per-entry global adds ran 4.5x the panel). The den state is the call's global workspace (`fold.md#den`).
 
 <a id="drain"></a>
 ## The drain

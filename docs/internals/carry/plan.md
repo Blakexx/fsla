@@ -16,8 +16,8 @@ the area from 13,696:
 - the unit book (a list's running unit, `fold.md#units`) and the window's scale a list (`fold.md#units`), the
   digit keys (by parity), the digit exponents in lane order and the scales' bits (`parts.md#maxima`);
 - each leaf's exponent byte (1 KB, dead from the window's leaf scales to its next keys) under the window's den rows
-  (2 KB, `parts.md#den`), each leaf's f16 scale, the den state, fp32 `[32 lists][32 digits]` across the call, swizzled
-  (4 KB, `fold.md#den`), and each digit's den factor and largest den;
+  (2 KB, `parts.md#den`), each leaf's f16 scale, and each digit's den factor and largest den (the den state is the
+  call's global workspace, `fold.md#den`);
 - the phase clock's rows;
 - the CTA's addresses (`Addr`, 256 bytes reserved: `parts.md#place`).
 

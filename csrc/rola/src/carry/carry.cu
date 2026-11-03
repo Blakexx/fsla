@@ -133,7 +133,7 @@ SideLists lists_of(const std::vector<Tensor>& t, int64_t BH, int64_t windows, in
 void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows, Tensor values,
                    std::vector<Tensor> write_lists, Tensor write_exp, Tensor factors,
                    Tensor factor_shift, std::vector<Tensor> read_lists, Tensor scale, Tensor num,
-                   Tensor den, Tensor check, std::vector<int64_t> widths,
+                   Tensor den, Tensor den_state, Tensor check, std::vector<int64_t> widths,
                    std::vector<int64_t> extents, int64_t channels, int64_t write_list,
                    std::vector<int64_t> write_operand, int64_t read_list,
                    std::vector<int64_t> read_operand, std::vector<int64_t> key, int64_t accumulate,
@@ -278,6 +278,12 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   p.forced = static_cast<int>(forced);
   p.num = static_cast<uint32_t*>(num.mutable_data_ptr());
   p.den = den.mutable_data_ptr<float>();
+  STD_TORCH_CHECK(den_state.is_cuda() && den_state.is_contiguous()
+                      && den_state.scalar_type() == Dtype::Float
+                      && den_state.numel() == BH * boxes * kBoxLists * kBoxDigits,
+                  "den_state is the contiguous CUDA fp32 workspace of ", kBoxLists * kBoxDigits,
+                  " words a CTA, ", BH * boxes, " CTAs");
+  p.den_state = den_state.mutable_data_ptr<float>();
   p.check = check.mutable_data_ptr<float>();
   p.probe = g_probe;
   p.probe_den = g_probe_den;

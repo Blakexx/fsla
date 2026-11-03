@@ -13,11 +13,6 @@ constexpr int align_of(int x, int q) { return (x + q - 1) / q * q; }
 
 //: THE ASYNC COPIES' BARRIERS: the staging, each slot's landed. -- see docs/internals/carry/plan.md#barriers
 
-//: THE DEN STATE'S WORD of a list's digit: its digit XOR `4 (list >> 1)`. -- see docs/internals/carry/fold.md#den
-__host__ __device__ constexpr int den_state_word(int list, int digit) {
-  return kBoxDigits * list + (digit ^ ((4 * (list >> 1)) & (kBoxDigits - 4)));
-}
-
 //: THE FIXED TENANTS' BYTES, every card's, arm's and call's. -- see docs/internals/carry/plan.md#tenants
 template <int W>
 struct Tenants {
@@ -31,14 +26,13 @@ struct Tenants {
   static constexpr int kExps = kKeys + 2 * kBoxDigits * 4;
   static constexpr int kBits = kExps + kBoxDigits * 4;
   //: the box top and largest digit exponent, a dead unit's dummy byte; each leaf's exponent byte under the den rows
-  //: (`parts.md#den`); each leaf's f16 scale; the den state (`fold.md#den`), each digit's den factor and largest
+  //: (`parts.md#den`); each leaf's f16 scale; each digit's den factor and largest (the den state is global)
   static constexpr int kTops = kBits + 8;
   static constexpr int kDeadUnit = kTops + 8;
   static constexpr int kLeafExp = align_of(kDeadUnit + 8, 16);
   static constexpr int kDenRows = kLeafExp;
   static constexpr int kLeafScale = kDenRows + kBoxDigits * kBoxLists * 2;
-  static constexpr int kDenState = align_of(kLeafScale + kBoxDigits * kBoxLists * 2, 16);
-  static constexpr int kDenFactor = kDenState + kBoxLists * kBoxDigits * 4;
+  static constexpr int kDenFactor = align_of(kLeafScale + kBoxDigits * kBoxLists * 2, 16);
   static constexpr int kDenMax = kDenFactor + kBoxDigits * 4;
   static constexpr int kClock = align_of(kDenMax + kBoxDigits * 4, 8);
   static constexpr int kAddr = align_of(kClock + kWarps * (kCarryPhases + 1) * 8, 16);

@@ -89,7 +89,7 @@ launch (`CarryCapture`, `carry_api.md#carry-capture-bind`).
   digits; a side with no list level names exactly a row level and a coefficient level; an operand slice is a 4-byte
   copy at least and `kSliceBytes` at most.
 - every tensor's dtype, contiguity and exact shape (the lists' five, `scale` `[BH, windows x W]`, `num` int32 `[BH,
-  T, d_v / 2]` for f16 pairs or fp32 `[BH, T, d_v]`); the arm key's channels
+  T, d_v / 2]` for f16 pairs or fp32 `[BH, T, d_v]`, `den_state` fp32 a CTA's 32 x 32 words); the arm key's channels
   and factor counts agreeing with the carve; the readout's accumulation fp32 (0) or fp16 (1); the cross-CTA sum f16
   pairs (0) or fp32 (1); a forced form -1 or a
   mode (0 to 2) with two chunk fields in 14 bits; a window's token stride under 2^31 / `kWindow` (a window's offsets

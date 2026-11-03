@@ -51,7 +51,9 @@ own unless a gate or a measurement forces a form (`forced`, as `forced_word` enc
 this arm's read pool row (`form`, read off the binary's census for the device's card). `plans_out` allocates the plan
 records a gate reads (`plan_words` a window, `tests/oracle/test_carry_plan.py`). `arm_key` is the compiled body
 a carve selects: each side's dense rows a warp and its operand's level count, the channel extent and the publish
-field.
+field. `den_state` is the call's den workspace, fp32 `[CTAs, 32 x 32]` (`den_state_for`; each CTA zeroes its own at
+the call's start, `fold.md#den`): a caller's own is read back by the fold's probe or a lab; left `None`, the call
+allocates one.
 
 `carry_ledger_bind`, `carry_build_stamp`, `carry_census` and `carry_arms` are the instruments: the phase ledger
 (`carry_kernel.md#phases`), the device stamp, and the binary's own arm list and census.

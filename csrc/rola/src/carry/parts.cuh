@@ -659,12 +659,19 @@ __device__ __forceinline__ void leaf_scales(uint8_t* smem) {
       make_uint2(h[0] | h[1] << 16, h[2] | h[3] << 16);
 }
 
-//: THE DEN'S TABLES, once a window past the barrier after the leaves' scales: each digit's factor `2^(dE -
-//: kImageTop)` (`dE` its largest den's power of two: a den row's products times it are absolute) and its den row at
-//: `2^(kImageTop - dE)` as f16 B words, thread `8 d + q` lane `q`'s at `8 tid`; the loads (`den_tables_in`) before the
-//: units' work, the stores (`den_tables_out`) after. -- see docs/internals/carry/parts.md#den
+//: THE CTA'S DEN STATE, `[list][digit]` fp32 in the call's workspace (`fold.md#den`).
+__device__ __forceinline__ float* den_state_of(const CarryParams& p) {
+  return p.den_state
+         + static_cast<int64_t>(blockIdx.y * gridDim.x + blockIdx.x) * (kBoxLists * kBoxDigits);
+}
+
+//: THE DEN'S TABLES, a window's: the state loaded past the window's top barrier (`den_tables_in`, lane `l` digit `l`
+//: of the warp's lists `4 w ..`, one line a load), each digit's largest by an integer max after the leaves' scales
+//: (`den_tables_max`), and past the barrier after them (the rows lie over the leaves' exponent bytes) each digit's
+//: factor `2^(dE - kImageTop)` and its den row at `2^(kImageTop - dE)` as f16 B words (`den_tables_out`, a list pair
+//: `p` at word `2 (p & 7) + (p >> 3)`). -- see docs/internals/carry/parts.md#den
 struct DenTablesIn {
-  float v[4], top;
+  float v[4];
 };
 
 //: A DIGIT'S DEN EXPONENT `dE` from its largest den (`kDenMax`), `kImageTop - 127` where it has none.
@@ -672,28 +679,37 @@ __device__ __forceinline__ int den_exp(float top) {
   return top > 0.0f ? ceil_exp(top) : kImageTop - 127;
 }
 
-template <class P>
-__device__ __forceinline__ DenTablesIn den_tables_in(const uint8_t* smem) {
-  const int tid = ops::opaque(static_cast<int>(threadIdx.x)), d = tid >> 3, q = tid & 7;
-  const int l0 = 8 * (q >> 2) + 2 * (q & 3);
-  const float* const st = reinterpret_cast<const float*>(smem + P::kDenState);
+__device__ __forceinline__ DenTablesIn den_tables_in(const float* den_state, int warp, int lane) {
   DenTablesIn in;
-  static_for<4>([&](auto I) { in.v[I] = st[den_state_word(l0 + (I & 1) + 16 * (I >> 1), d)]; });
-  in.top = reinterpret_cast<const float*>(smem + P::kDenMax)[d];
+  static_for<4>([&](auto I) {
+    in.v[I] = __ldcg(den_state + kBoxDigits * (4 * warp + decltype(I)::value) + lane);
+  });
   return in;
 }
 
 template <class P>
-__device__ __forceinline__ void den_tables_out(uint8_t* smem, const DenTablesIn& in) {
-  const int tid = ops::opaque(static_cast<int>(threadIdx.x)), d = tid >> 3, q = tid & 7;
-  const int de = den_exp(in.top);
+__device__ __forceinline__ void den_tables_max(uint8_t* smem, const DenTablesIn& in, int lane) {
+  const float top = fmaxf(fmaxf(in.v[0], in.v[1]), fmaxf(in.v[2], in.v[3]));
+  asm volatile("red.shared.max.u32 [%0], %1;" ::"r"(ops::smem_addr(smem + P::kDenMax)
+                                                    + 4u * static_cast<uint32_t>(lane)),
+               "r"(__float_as_uint(top))
+               : "memory");
+}
+
+template <class P>
+__device__ __forceinline__ void den_tables_out(uint8_t* smem, const DenTablesIn& in, int warp,
+                                               int lane) {
+  const int de = den_exp(reinterpret_cast<const float*>(smem + P::kDenMax)[lane]);
   const float scale = pow2(kImageTop - de);
-  const __half2 w0 = __floats2half2_rn(in.v[0] * scale, in.v[1] * scale),
-                w1 = __floats2half2_rn(in.v[2] * scale, in.v[3] * scale);
-  reinterpret_cast<uint2*>(smem + P::kDenRows)[tid] =
-      make_uint2(*reinterpret_cast<const uint32_t*>(&w0), *reinterpret_cast<const uint32_t*>(&w1));
-  ops::store_shared_f32_if(ops::smem_addr(smem + P::kDenFactor) + 4u * static_cast<uint32_t>(d),
-                           pow2_wide(de - kImageTop), q == 0);
+  uint8_t* const row = smem + P::kDenRows + 64 * lane;
+  static_for<2>([&](auto H) {
+    constexpr int h = decltype(H)::value;
+    const int pair = 2 * warp + h;
+    *reinterpret_cast<__half2*>(row + 4 * (2 * (pair & 7) + (pair >> 3))) =
+        __floats2half2_rn(in.v[2 * h] * scale, in.v[2 * h + 1] * scale);
+  });
+  ops::store_shared_f32_if(ops::smem_addr(smem + P::kDenFactor) + 4u * static_cast<uint32_t>(lane),
+                           pow2_wide(de - kImageTop), warp == 0);
 }
 
 //: THE BOUNDS TABLE cleared for a window's counts (its last window's drain factors read): a thread its share, 16

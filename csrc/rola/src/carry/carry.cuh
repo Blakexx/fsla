@@ -107,8 +107,9 @@ struct CarryParams {
   float* check;
   float* probe;
   float* probe_den;
-  //: each query head's token's den, fp32 `[BH heads, L]`, added into by every CTA holding its leaves (`parts.md#den`)
+  //: each token's den, fp32 `[BH, L]`; each CTA's den state `[list][digit]`, zeroed by its CTA (`fold.md#den`)
   float* den;
+  float* den_state;
   long long* ledger;
 };
 

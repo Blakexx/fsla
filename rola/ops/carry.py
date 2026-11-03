@@ -33,6 +33,7 @@ __all__ = [
     "capture_bytes",
     "carry",
     "census",
+    "den_state_for",
     "forced_word",
     "form",
     "ledger_bind",
@@ -67,6 +68,10 @@ def _list_level(plan) -> int:
 #: slot, stays under the bf16 output store's 0.16% (docs/internals/carry/carry_api.md#carry-reduce)
 REDUCE_F16_MAX_CTAS = 177
 
+#: A CTA'S DEN STATE, fp32 words: its box's 32 lists by 32 digits, in the call's workspace the CTA zeroes
+#: (docs/internals/carry/fold.md#den)
+DEN_STATE_WORDS = 32 * 32
+
 
 def reduce_ctas(carve: Carve) -> int:
     """The most CTAs any output slot sums: the read side's boxes along every level (a listed level counted whole, a
@@ -87,9 +92,19 @@ def reduce_dtype_for(carve: Carve, reduce_dtype: torch.dtype | None = None) -> t
     return torch.float16 if reduce_ctas(carve) <= REDUCE_F16_MAX_CTAS else torch.float32
 
 
+def den_state_for(values, carve: Carve) -> torch.Tensor:
+    """The call's den-state workspace: each CTA's :data:`DEN_STATE_WORDS` -- a CTA a box of a write head's (the grid's
+    batch-heads are the values' heads) -- which the CTA zeroes at its start (docs/internals/carry/fold.md#den); a caller
+    holding the launch past the call (the lab's capture) keeps its own."""
+    v = values.v
+    ctas = v.shape[0] * v.shape[2] * (v.shape[-1] // carve.channels) * reduce_ctas(carve)
+    return torch.empty((ctas, DEN_STATE_WORDS), dtype=torch.float32, device=v.device)
+
+
 def carry(routes, values, facts, carve: Carve, scale: torch.Tensor, accumulate: str | None = None,
           forced: str | None = None, plans: torch.Tensor | None = None,
-          reduce_dtype: torch.dtype | None = None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+          reduce_dtype: torch.dtype | None = None,
+          den_state: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """THE LAUNCH: ``(num, den, check)`` -- ``num`` the readout's partials summed across CTAs, each CTA's at its own
     units: int32 ``[BH, T, d_v / 2]`` f16 pairs at each token's ``scale`` byte (``reduce_dtype`` f16), or fp32
     ``[BH, T, d_v]`` (fp32; :func:`reduce_dtype_for`'s rule where None) -- ``den`` each token's den, fp32 ``[BH, T]``,
@@ -109,10 +124,12 @@ def carry(routes, values, facts, carve: Carve, scale: torch.Tensor, accumulate: 
            if dtype == torch.float16 else
            torch.zeros((BH, routes.tokens, d_v), dtype=torch.float32, device=routes.device))
     den = torch.zeros((BH, routes.tokens), dtype=torch.float32, device=routes.device)
+    if den_state is None:
+        den_state = den_state_for(values, carve)
     check = torch.zeros(1, dtype=torch.float32, device=routes.device)
     extension().carry_forward(
         list(routes.amp_read), list(routes.amp_write), values.v, list(facts_ops.side_lists(facts, "write")),
-        facts.list_exp, facts.fm, facts.gains_exp, list(facts_ops.side_lists(facts, "read")), scale, num, den, check,
+        facts.list_exp, facts.fm, facts.gains_exp, list(facts_ops.side_lists(facts, "read")), scale, num, den, den_state, check,
         list(carve.widths),
         list(carve.extents), carve.channels, _list_level(carve.fold), list(carve.fold.operand),
         _list_level(carve.readout), list(carve.readout.operand), list(arm_key(carve)),

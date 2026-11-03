@@ -63,7 +63,8 @@ struct Stamps {
 //: fold's end to the next's, so work moved out of the fold's own span still shows -- each with the den column on every
 //: list (a one-box carry's); 8 MODE 0 with it on half the lists (each of two boxes'); 9 MODE 0 with none
 template <int MODE>
-__global__ __launch_bounds__(rc::kThreads, 1) void fold(long long* t, int* out, long long* marks) {
+__global__ __launch_bounds__(rc::kThreads, 1) void fold(long long* t, int* out, long long* marks,
+                                                        float* den_state) {
   extern __shared__ __align__(128) uint8_t smem[];
   const int tid = static_cast<int>(threadIdx.x), warp = tid / 32, lane = tid % 32;
   const ops::SmemAddr rows = ops::smem_addr(smem + P::kAreaAt);
@@ -118,7 +119,7 @@ __global__ __launch_bounds__(rc::kThreads, 1) void fold(long long* t, int* out, 
     if constexpr (MODE == 6) {
       long long at[kMarks];
       rc::fold_chunk<P>(st, true, smem, ww, w, run, 0, kSlots, rows, ents, warp, lane, dens,
-                        Stamps{at});
+                        den_state + blockIdx.x * rc::kBoxLists * rc::kBoxDigits, Stamps{at});
       const int k = w - kTimelineFrom;
       if (blockIdx.x == 0 && lane == 0 && k >= 0 && k < kTimelineWindows) {
         long long* row = marks + (k * rc::kWarps + warp) * (kMarks + 1);
@@ -129,9 +130,10 @@ __global__ __launch_bounds__(rc::kThreads, 1) void fold(long long* t, int* out, 
     } else if constexpr (MODE == 3) {
       last = t0;
       rc::fold_chunk<P>(st, true, smem, ww, w, run, 0, kSlots, rows, ents, warp, lane, dens,
-                        Trace{sums, last});
+                        den_state + blockIdx.x * rc::kBoxLists * rc::kBoxDigits, Trace{sums, last});
     } else {
-      rc::fold_chunk<P>(st, true, smem, ww, w, run, 0, kSlots, rows, ents, warp, lane, dens);
+      rc::fold_chunk<P>(st, true, smem, ww, w, run, 0, kSlots, rows, ents, warp, lane, dens,
+                        den_state + blockIdx.x * rc::kBoxLists * rc::kBoxDigits);
     }
     const long long t1 = clock64();
     busy += t1 - t0;
@@ -177,6 +179,8 @@ Floor floor_of(int blocks) {
 }
 
 long long* g_marks = nullptr;
+//: the CTAs' den states, the fold's den adds' target (`fold.md#den`)
+float* g_den_state = nullptr;
 
 template <int MODE>
 void variant(const lab::Bench& b, const char* label) {
@@ -188,7 +192,9 @@ void variant(const lab::Bench& b, const char* label) {
   LAB_CHECK(
       cudaFuncSetAttribute(fold<MODE>, cudaFuncAttributeMaxDynamicSharedMemorySize, P::kSmemBytes));
   const lab::Samples s = b.variant(
-      [&] { fold<MODE><<<b.sms, rc::kThreads, P::kSmemBytes>>>(b.times, b.sinks, g_marks); },
+      [&] {
+        fold<MODE><<<b.sms, rc::kThreads, P::kSmemBytes>>>(b.times, b.sinks, g_marks, g_den_state);
+      },
       [&] { return lab::Bench::mean(b.cycles(rc::kWarps), rc::kWarps, 0, rc::kWarps) / kWindows; });
   b.unchecked(label, "a timing isolation; the fold's arithmetic is the oracle's (test_carry_fold)");
   b.record(label, "cycles a warp-window", s);
@@ -257,6 +263,8 @@ int main(int argc, char** argv) {
   lab::Bench b(argc, argv);
   if (!b.expect_only)
     LAB_CHECK(cudaMalloc(&g_marks, sizeof(long long) * b.sms * rc::kWarps * kMarks));
+  LAB_CHECK(cudaMalloc(&g_den_state, sizeof(float) * b.sms * rc::kBoxLists * rc::kBoxDigits));
+  LAB_CHECK(cudaMemset(g_den_state, 0, sizeof(float) * b.sms * rc::kBoxLists * rc::kBoxDigits));
   fold_alone::variant<0>(b, "composed: a rendezvous a window");
   fold_alone::variant<1>(b, "windows back to back");
   fold_alone::variant<2>(b, "no list rescaled");

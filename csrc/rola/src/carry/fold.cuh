@@ -217,27 +217,16 @@ __device__ __forceinline__ uint32_t den_lists(int channel0, int dv) {
   return mask;
 }
 
-//: A LIST'S DEN COLUMN INTO THE DEN STATE (`kDenState`), each row's value times `2^(K - kCoefTop)`: lane `4 g + t`
-//: row `g + 8 t` (every lane holds its quad's four rows: the column is B's every column), one add and one integer max
-//: into the digit's largest (`kDenMax`, a non-negative float's bits) a lane. -- see docs/internals/carry/fold.md#den
-template <class P>
-__device__ __forceinline__ void den_add(const uint8_t* smem, int list, const DenColumn<P>& den,
-                                        int k, int lane) {
-  static_assert(P::kFoldMTiles == 2, "a quad's lane `t` takes its row `g + 8 t`");
+//: A LIST'S DEN COLUMN INTO THE DEN STATE (the CTA's, global `[list][digit]`), each row's value times `2^(K -
+//: kCoefTop)`: lane `4 g + t` row `g + 8 t` (every lane holds its quad's four rows: the column is B's every column),
+//: one `red.global.add.f32` a lane, the list's 32 digits one line. -- see docs/internals/carry/fold.md#den
+__device__ __forceinline__ void den_add(float* den_state, int list, const float (&den)[2][4], int k,
+                                        int lane) {
   const int t = lane & 3, digit = (lane >> 2) + 8 * t;
   const bool odd = (t & 1) != 0, high = (t & 2) != 0;
   const float x0 = odd ? den[0][2] : den[0][0], x1 = odd ? den[1][2] : den[1][0];
   const float x = high ? x1 : x0;
-  const ops::SmemAddr a =
-      ops::smem_addr(smem + P::kDenState) + 4u * static_cast<uint32_t>(den_state_word(list, digit));
-  float v;
-  asm volatile("ld.shared.f32 %0, [%1];" : "=f"(v) : "r"(a));
-  v = fmaf(x, pow2(k - kCoefTop), v);
-  ops::store_shared_f32(a, v);
-  asm volatile("red.shared.max.u32 [%0], %1;" ::"r"(ops::smem_addr(smem + P::kDenMax)
-                                                    + 4u * static_cast<uint32_t>(digit)),
-               "r"(__float_as_uint(v))
-               : "memory");
+  red_add_f32(den_state + kBoxDigits * list + digit, x * pow2(k - kCoefTop));
 }
 
 //: A DENSE WRITE SIDE'S DEN a chunk: the box's den lists (`dens`, a contiguous run of a warp's lists `j`, so lists `8
@@ -245,7 +234,7 @@ __device__ __forceinline__ void den_add(const uint8_t* smem, int list, const Den
 //: over the chunk's slots, 16 a step: A the rows' coefficient slices (`ldmatrix.trans`) each made `c_m` as the facts
 //: records are, B the slices; then into the den state and each digit's largest. -- see docs/internals/carry/fold.md#den
 template <class P>
-__device__ __forceinline__ void fold_den_dense(const uint8_t* smem, ops::SmemAddr rows,
+__device__ __forceinline__ void fold_den_dense(float* den_state, ops::SmemAddr rows,
                                                ops::SmemAddr ents, int slots, uint32_t dens,
                                                float p2m, int km, int warp, int lane) {
   const int j0 = __ffs(static_cast<int>(dens)) - 1, j1 = 32 - __clz(static_cast<int>(dens));
@@ -258,15 +247,21 @@ __device__ __forceinline__ void fold_den_dense(const uint8_t* smem, ops::SmemAdd
     return rows + s * P::kWriteRow + 16u * chunk_at<P::kWriteRow>(s, 0);
   };
 
-  //: a token pair's `m` (its entries' second word), 0 past the chunk where `last`
-  const auto m_pair = [&](int k, bool last) {
+  //: a token pair's `m` (its entries' second word) at `at`
+  const auto m_pair = [&](uint32_t at) {
     float4 v;
-    asm volatile(
-        "ld.shared.v4.f32 {%0, %1, %2, %3}, [%4];"
-        : "=f"(v.x), "=f"(v.y), "=f"(v.z), "=f"(v.w)
-        : "r"(ents + 8u * static_cast<uint32_t>(last ? min(k, slots - 2 + (slots & 1)) : k)));
-    return last ? make_float2(k < slots ? v.y : 0.0f, k + 1 < slots ? v.w : 0.0f)
-                : make_float2(v.y, v.w);
+    asm volatile("ld.shared.v4.f32 {%0, %1, %2, %3}, [%4];"
+                 : "=f"(v.x), "=f"(v.y), "=f"(v.z), "=f"(v.w)
+                 : "r"(at));
+    return make_float2(v.y, v.w);
+  };
+  //: a lane's A and B fragment addresses and its token pairs' entries at step `kk`
+  const auto a_at = [&](int kk, bool last) {
+    return chunk_addr<P::kWriteRow>(row_of(kk + r + 8 * (q >> 1), last),
+                                    kSliceBytes / 16 + 2 * m + (q & 1));
+  };
+  const auto b_at = [&](int kk, bool last) {
+    return chunk_addr<P::kWriteRow>(row_of(kk + r + 8 * (q & 1), last), n0 + (q >> 1));
   };
 
   //: the warp's tile, where the box carries den lists and the warp's m-tile is among theirs (warp-uniform: shuffled
@@ -274,15 +269,12 @@ __device__ __forceinline__ void fold_den_dense(const uint8_t* smem, ops::SmemAdd
   for (int live = __any_sync(0xffffffffu, dens != 0u && m < ((j1 + 1) >> 1)) ? 1 : 0; live > 0;
        --live) {
     float acc[2][4] = {};
-    //: A STEP of 16 slots from `kk`: its rows' A (each made `c_m`) and B, two MMAs; `last` the chunk's partial step
-    //: (its rows held to the chunk, a slot past it `m` 0), else every slot live and the addresses `16 kWriteRow` on
-    const auto step = [&](int kk, bool last) {
+    //: A STEP of 16 slots from its addresses: its rows' A (each made `c_m`) and B, two MMAs, `mk` its token pairs' `m`
+    const auto step = [&](uint32_t at_a, uint32_t at_b, float2 m0, float2 m1) {
       uint32_t a[4], b[4];
-      ops::load_frag_t(a, chunk_addr<P::kWriteRow>(row_of(kk + r + 8 * (q >> 1), last),
-                                                   kSliceBytes / 16 + 2 * m + (q & 1)));
-      ops::load_frag_t(b,
-                       chunk_addr<P::kWriteRow>(row_of(kk + r + 8 * (q & 1), last), n0 + (q >> 1)));
-      const float2 mk[2] = {m_pair(kk + 2 * t, last), m_pair(kk + 8 + 2 * t, last)};
+      ops::load_frag_t(a, at_a);
+      ops::load_frag_t(b, at_b);
+      const float2 mk[2] = {m0, m1};
       static_for<4>([&](auto R) {
         const float2 bb = __half22float2(*reinterpret_cast<const __half2*>(&a[R]));
         const float2 mm = mk[R >> 1];
@@ -295,15 +287,28 @@ __device__ __forceinline__ void fold_den_dense(const uint8_t* smem, ops::SmemAdd
       ops::hmma(acc[1], a, b[2], b[3]);
     };
 
+    //: the full steps: the first step's addresses, `16 kWriteRow` (`16 x 8` an entry) on a step -- a multiple of 1024
+    //: bytes, so the rows' swizzle (period 8) and its XOR carry over
     const int full = 16 * (slots >> 4);
     int kk = 0;
+    const uint32_t a0 = a_at(0, false), b0 = b_at(0, false);
+    const uint32_t e0 = ents + 16u * static_cast<uint32_t>(t);
     for (int go = __any_sync(0xffffffffu, kk < full) ? 1 : 0; go > 0; --go)
 #pragma unroll 1
       do {
-        step(kk, false);
+        const uint32_t on = static_cast<uint32_t>(kk);
+        step(a0 + on * P::kWriteRow, b0 + on * P::kWriteRow, m_pair(e0 + 8u * on),
+             m_pair(e0 + 8u * on + 64u));
         kk += 16;
       } while (__any_sync(0xffffffffu, kk < full));
-    for (int tail = __any_sync(0xffffffffu, kk < slots) ? 1 : 0; tail > 0; --tail) step(kk, true);
+    //: the partial step: its rows held to the chunk, a slot past it `m` 0
+    for (int tail = __any_sync(0xffffffffu, kk < slots) ? 1 : 0; tail > 0; --tail) {
+      const auto m_last = [&](int k) {
+        const float2 v = m_pair(ents + 8u * static_cast<uint32_t>(min(k, slots - 2 + (slots & 1))));
+        return make_float2(k < slots ? v.x : 0.0f, k + 1 < slots ? v.y : 0.0f);
+      };
+      step(a_at(kk, true), b_at(kk, true), m_last(kk + 2 * t), m_last(kk + 8 + 2 * t));
+    }
 
     //: rows `16 m + g` (and `+ 8`) in the box's lists, digits `8 n + 2 t` (and `+ 1`)
     const float f = pow2(km - kCoefTop);
@@ -311,16 +316,7 @@ __device__ __forceinline__ void fold_den_dense(const uint8_t* smem, ops::SmemAdd
       static_for<4>([&](auto I) {
         const int list = 16 * m + g + 8 * (I >> 1), digit = 8 * (n0 + N) + 2 * t + (I & 1);
         const bool mine = list >= 8 * j0 && list < 8 * j1;
-        const ops::SmemAddr at = ops::smem_addr(smem + P::kDenState)
-                                 + 4u * static_cast<uint32_t>(den_state_word(list, digit));
-        float v;
-        asm volatile("ld.shared.f32 %0, [%1];" : "=f"(v) : "r"(at));
-        v = fmaf(acc[N][I], f, v);
-        ops::store_shared_f32_if(at, v, mine);
-        asm volatile("red.shared.max.u32 [%0], %1;" ::"r"(ops::smem_addr(smem + P::kDenMax)
-                                                          + 4u * static_cast<uint32_t>(digit)),
-                     "r"(mine ? __float_as_uint(v) : 0u)
-                     : "memory");
+        red_add_f32(den_state + kBoxDigits * list + digit, mine ? acc[N][I] * f : 0.0f);
       });
     });
   }
@@ -330,7 +326,8 @@ template <class P, class Laps = NoLaps>
 __device__ __forceinline__ void fold_chunk(State<P>& st, bool rescale, const uint8_t* smem,
                                            const Window& ww, int w, const Run& run, int first,
                                            int slots, ops::SmemAddr rows, ops::SmemAddr ents,
-                                           int warp, int lane, uint32_t dens, Laps laps = {}) {
+                                           int warp, int lane, uint32_t dens, float* den_state,
+                                           Laps laps = {}) {
   const ops::SmemAddr pool = rows - static_cast<uint32_t>(first * P::kWriteRow);
   //: a side with no list level: 2^(4 - E) of the window's exponents of F and m (`dense_exp`), the facts records' scale
   const int16_t* const exps =
@@ -371,8 +368,8 @@ __device__ __forceinline__ void fold_chunk(State<P>& st, bool rescale, const uin
           DenColumn<P> den{};
           steps<P, J, true>(st, sc[J].cf, pool, first, n[J], lane, off[J], cpair[J], dpair[J], den,
                             list_fetch);
-          den_add<P>(smem, fold_list(warp, J), den,
-                     max(static_cast<int>(exps[2 * fold_list(warp, J)]), kUnitMin), lane);
+          den_add(den_state, fold_list(warp, J), den,
+                  max(static_cast<int>(exps[2 * fold_list(warp, J)]), kUnitMin), lane);
         } else {
           DenColumn<P> none;
           steps<P, J, false>(st, sc[J].cf, pool, first, n[J], lane, off[J], cpair[J], 0u, none,
@@ -438,7 +435,7 @@ __device__ __forceinline__ void fold_chunk(State<P>& st, bool rescale, const uin
                                 | static_cast<uint32_t>(__half_as_ushort(__high2half(c))) << 16);
         },
         std::false_type{});
-    fold_den_dense<P>(smem, rows, ents, slots, dens, p2m, dense_exp(exps[0]), warp, lane);
+    fold_den_dense<P>(den_state, rows, ents, slots, dens, p2m, dense_exp(exps[0]), warp, lane);
   }
 }
 
@@ -483,8 +480,7 @@ __device__ __forceinline__ void fold_probe(const CarryParams& p, const State<P>&
         //: the den state, by the box carrying the list (`den_lists`), the row's lane `tq` 0
         if (p.probe_den != nullptr && tq == 0 && ((den_lists(c.channel0, p.dv) >> J) & 1u))
           p.probe_den[static_cast<int64_t>(c.bh) * step + leaf] =
-              reinterpret_cast<const float*>(smem + P::kDenState)[den_state_word(list, row)]
-              * kByteScale;
+              __ldcg(den_state_of(p) + kBoxDigits * list + row) * kByteScale;
       });
     });
   });
