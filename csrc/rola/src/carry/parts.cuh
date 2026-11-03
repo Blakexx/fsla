@@ -678,19 +678,23 @@ __device__ __forceinline__ int den_exp(float top) {
   return top > 0.0f ? ceil_exp(top) : kImageTop - 127;
 }
 
-//: A LANE'S DEN WORDS' PLACES, the list owner's on both side forms (`den_add`): word `i`'s list `w + 8 (2 (t & 1) + (i &
-//: 1))`, its digit `g + 8 (i >> 1) + 16 (t >> 1)`; each of the box's 32 x 32 once across the CTA.
+//: A LANE'S DEN WORDS' PLACES, each of the box's 32 x 32 once across the CTA: a listed fold's the list owner's (`den_add`:
+//: word `i`'s list `w + 8 (2 (t & 1) + (i & 1))`, digit `g + 8 (i >> 1) + 16 (t >> 1)`), a dense fold's its warp's tile's
+//: (`fold_den_dense`: digits `16 (w >> 2) ..`, lists `8 (w & 3) ..` as an MMA's rows and columns).
 struct DenPlace {
-  int list0, digit0;
+  int list0, digit0, list_step;
 
-  __device__ __forceinline__ int list(int i) const { return list0 + kWarps * (i & 1); }
+  __device__ __forceinline__ int list(int i) const { return list0 + list_step * (i & 1); }
 
   __device__ __forceinline__ int digit(int i) const { return digit0 + 8 * (i >> 1); }
 };
 
+template <class P>
 __device__ __forceinline__ DenPlace den_place(int warp, int lane) {
   const int g = lane >> 2, t = lane & 3;
-  return DenPlace{warp + 16 * (t & 1), g + 16 * (t >> 1)};
+  if constexpr (P::kFoldFactors == 2)
+    return DenPlace{8 * (warp & 3) + 2 * t, 16 * (warp >> 2) + g, 1};
+  return DenPlace{warp + 16 * (t & 1), g + 16 * (t >> 1), kWarps};
 }
 
 //: AN INTEGER MAX INTO A SHARED WORD, fire and forget (a non-negative float's bits order as integers).
@@ -712,7 +716,7 @@ __device__ __forceinline__ int den_k(const DenPlace& at, int i) {
 template <class P>
 __device__ __forceinline__ void den_tables_max(uint8_t* smem, const State<P>& st, int warp,
                                                int lane) {
-  const DenPlace at = den_place(warp, lane);
+  const DenPlace at = den_place<P>(warp, lane);
   const ops::SmemAddr tops = ops::smem_addr(smem + P::kDenMax);
   static_for<4>([&](auto I) {
     red_max_u32(tops + 4u * static_cast<uint32_t>(den_group<P>(at, I)), __float_as_uint(st.den[I]));
@@ -722,7 +726,7 @@ __device__ __forceinline__ void den_tables_max(uint8_t* smem, const State<P>& st
 template <class P>
 __device__ __forceinline__ void den_tables_out(uint8_t* smem, const State<P>& st, int warp,
                                                int lane) {
-  const DenPlace at = den_place(warp, lane);
+  const DenPlace at = den_place<P>(warp, lane);
   const float* const tops = reinterpret_cast<const float*>(smem + P::kDenMax);
   //: a word's row (its group's) at the group's scale, its place a pair `p` at word `2 (p & 7) + (p >> 3)`; a lane's
   //: four words in two groups (`I >> 1` a digit's, `I & 1` a same-split arm's list's)

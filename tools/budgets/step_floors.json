@@ -6,7 +6,7 @@
  "sm_80 _ZN4rola7produce6detail14produce_kernelENS0_13ProduceParamsE": 11.0,
  "sm_86 _ZN4rola5carry12carry_kernelINS_3ArmILi0ELi32ELi1ELi32ELi1ELi32ELi0EEEEEvNS0_11CarryParamsE": 86.6,
  "sm_86 _ZN4rola5carry12carry_kernelINS_3ArmILi1ELi32ELi1ELi32ELi2ELi32ELi1EEEEEvNS0_11CarryParamsE": 95.4,
- "sm_86 _ZN4rola5carry12carry_kernelINS_3ArmILi2ELi32ELi2ELi32ELi1ELi32ELi1EEEEEvNS0_11CarryParamsE": 86.6,
- "sm_86 _ZN4rola5carry12carry_kernelINS_3ArmILi3ELi32ELi2ELi32ELi2ELi32ELi1EEEEEvNS0_11CarryParamsE": 95.4,
+ "sm_86 _ZN4rola5carry12carry_kernelINS_3ArmILi2ELi32ELi2ELi32ELi1ELi32ELi1EEEEEvNS0_11CarryParamsE": 91.4,
+ "sm_86 _ZN4rola5carry12carry_kernelINS_3ArmILi3ELi32ELi2ELi32ELi2ELi32ELi1EEEEEvNS0_11CarryParamsE": 96.8,
  "sm_86 _ZN4rola7produce6detail14produce_kernelENS0_13ProduceParamsE": 44.0
 }

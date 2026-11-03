@@ -106,13 +106,20 @@ the lists 2,747 (+276), every list 3,039 (+568). MEASURED composed (phase ledger
 with its den, 2.86K with the box's den lists forced off in the same build (+0.71K: the den MMAs' fp32 tensor work on a
 tensor-bound step, the adds, and the instruction cache's misses on the den steps' second copy).
 
-A SIDE WITH NO LIST LEVEL carries the den the same way (ruled 2026-11-02: the foundation's UNIFORM den, the den riding
-every component alike at listed and dense, the better den forms measured against it after): every list's steps over
-every slot take its column, `c_m` the dense fetch's record half (`f16(b 255 m 2^(4 - Em))`, the facts records'
-rounding), the den's exponent the window's `m` (`dense_exp`). MEASURED (c04b2bf2, the same form into the shared
-state): the dense fold 85.0K against 71.8K with no den at nl64k-dense -- the den's one live column of an 8-wide n-tile
-on every step of every list, eight times the den's own tensor work. The dense forms it stands in for, kept as candidates:
-a tile a warp (digits by a list group, one live MMA a step: the fold 73.3K a warp, balanced; den-as-channel 91c6110c).
+A SIDE WITH NO LIST LEVEL carries its den in ONE PASS a chunk (`fold_den_dense`; the ruled dense form, 2026-11-02,
+measured against the foundation's uniform den, which took the column on every list's steps): every slot writes every
+list, so the den state's tile is one product over the chunk, `Den^T[digits][lists] += raw c_m` -- a warp its m16 x n8
+tile (digits `16 (w >> 2) ..`, lists `8 (w & 3) ..`), A the slots' raw dense slices by the step's `ldmatrix.trans`, B
+the coefficient slice by `ldmatrix.trans` with each element made `c_m = f16(b 255 m 2^(4 - Em))` from two fp32 products
+and one rounding (the facts records' and the reference's: the fold gate's fp32 bound holds it), four k-steps a block of
+64 slots at constant-step places (64 slots on keep a slot's swizzle bits), weights a 16-byte load of two slots'
+`(F, m)`, a last partial block clamped with m 0 past the chunk. The den state takes the tile's layout on a dense fold's
+arm (`den_place<P>`: lists `8 (w & 3) + 2 t + (i & 1)`, digits `16 (w >> 2) + g + 8 (i >> 1)`), into the registers at
+`2^(Em - 4)`, the box's lists alone; the lists' steps carry no column. A first form's B, `f16(b) x f16(255 m')`, rounded
+twice: the end-to-end den gate held it, the fold gate's fp32 bound did not (5.9-8.6x). MEASURED (phase ledger, sm_86,
+cycles a warp-window, against the readout's token-carved den at 7b4a482e): nl64k-dense 150.3K twice (155.0 / 158.7K),
+the fold 75.6K (80.0-81.8K; no den 71.8-72.0K); nl64k-read-k4 96.0K (102.0K), its fold 75.0K (80.4K); the dense arms'
+step cover 91.4% / 96.8%.
 
 <a id="probe"></a>
 ## The probe

@@ -399,6 +399,7 @@
   {"doc": "docs/internals/carry/fold.md", "pinned_at": "8a2c566ec5d4", "reviewed": true, "sha256": "472b5646ddc35b1a", "target": "csrc/rola/src/carry/fold.cuh::dense_exp"},
   {"doc": "docs/internals/carry/fold.md", "pinned_at": "c04b2bf2d0ee", "reviewed": true, "sha256": "b2f8459af5a6c55a", "target": "csrc/rola/src/carry/fold.cuh::entry_of"},
   {"doc": "docs/internals/carry/fold.md", "pinned_at": "8c83835ea878", "reviewed": true, "sha256": "379bbd8566fbba57", "target": "csrc/rola/src/carry/fold.cuh::fold_chunk"},
+  {"doc": "docs/internals/carry/fold.md", "pinned_at": "7b4a482ef805", "reviewed": true, "sha256": "6b5ff3a7dd70f90e", "target": "csrc/rola/src/carry/fold.cuh::fold_den_dense"},
   {"doc": "docs/internals/carry/fold.md", "pinned_at": "81a50017ae26", "reviewed": true, "sha256": "c09f274f40bf2f4b", "target": "csrc/rola/src/carry/fold.cuh::fold_fill"},
   {"doc": "docs/internals/carry/fold.md", "pinned_at": "3360bacd82eb", "reviewed": true, "sha256": "3c2c00037d1fb95e", "target": "csrc/rola/src/carry/fold.cuh::fold_list"},
   {"doc": "docs/internals/carry/fold.md", "pinned_at": "8a2c566ec5d4", "reviewed": true, "sha256": "aae055da32aafdc8", "target": "csrc/rola/src/carry/fold.cuh::fold_units"},
