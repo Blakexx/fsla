@@ -1,6 +1,6 @@
 {
  "cases_sha256": "24097a771a5c3618043e2d7e4b3d73c2f4f530a89b22eb34d5178451d8005476",
- "date": "2026-09-29",
+ "date": "2026-11-02",
  "golden": {
   "d1_dv64_w4": "ok: 592 bytes, sha256 5c10ef9f9530389e998c4f9de631218838efc34168bbb4ca4ad74b465c3082ba",
   "d1_dv64_w8": "ok: 592 bytes, sha256 a373fef550b7510fefb019574880cd02bbf3db59e0c30a8404b66181afb6c55b",
@@ -41,6 +41,6 @@
  "harness_sha256": "7928241b30ee83bdb329af6096b36a4fbdb32f4ccdd127c6a3337cd64f517d22",
  "schema": 1,
  "sources": {
-  "common/geom.cuh": "64519746cbcceb0da38eaa7748f44ebcc1a5d60c52dba27dcc5f2688f5c1bf15"
+  "common/geom.cuh": "373fab0da48680ff70e060a5a990901c8022607987ec7631a53649ed29003cdd"
  }
 }
