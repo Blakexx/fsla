@@ -177,6 +177,18 @@ def read_source_counters(csv_path: Path) -> list[tuple[int, int, int, dict]]:
     return rows
 
 
+#: a shared-memory instruction's kind for the census: a load, a write (a store or an atomic: the pipe twice a 32-bit
+#: wavefront), an asynchronous copy (its column the global lines it touched, `read_source_detail`), the rest
+def _wave_kind(op: str) -> str:
+    if op.startswith(("LDS", "LDSM")):
+        return "loads"
+    if op.startswith(("STS", "ATOMS", "REDS")):
+        return "writes"
+    if op.startswith("LDGSTS"):
+        return "copies"
+    return "other"
+
+
 def _num(x: str) -> int:
     return int(x.replace(",", "")) if x not in ("", "-") else 0
 
@@ -338,10 +350,13 @@ def census(rows, attr: Attribution, components: set[str] | None, per: float,
     """THE PHASE CENSUS (§22): per component, the HMMAs a unit COUNTED from the dump, the
     other instructions, and the stall samples split between the HMMA instructions and the
     rest -- the build ledger turns these into tensor utilization a phase and a warp's time
-    at HMMA against its other work. Then THE WAVEFRONT CENSUS: shared-memory wavefronts above
-    the ideal (bank conflicts) a unit, by source line."""
+    at HMMA against its other work; beside them each component's shared-memory wavefronts a unit by kind (`_WAVE_KIND`:
+    loads, writes -- stores and atomics, which hold the pipe twice a 32-bit wavefront, lab `smem_rates` -- and the rest)
+    and its MMAs as m16n8k16 equivalents (an m16n8k8 a half), so a phase's shared traffic an MMA reads off the census.
+    Then THE WAVEFRONT CENSUS: shared-memory wavefronts above the ideal (bank conflicts) a unit, by source line."""
     base = rows[0][0]
     cen: dict[str, list] = collections.defaultdict(lambda: [0, 0, 0, 0])
+    kinds: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
     waves: dict[int | None, list] = collections.defaultdict(lambda: [0, 0, 0])
     lm = line_map(attr.so, attr.member, attr.arch, source.name, attr.kernel)
     for addr, n, sm, _st in rows:
@@ -353,18 +368,26 @@ def census(rows, attr: Attribution, components: set[str] | None, per: float,
         if op.startswith("HMMA"):
             e[0] += n
             e[2] += sm
+            kinds[fn]["mma_k16"] += n * (0.5 if ".1688" in op else 1.0)
         else:
             e[1] += n
             e[3] += sm
+        kinds[fn][_wave_kind(op)] += wf
         if wf > ideal:
             w = waves[lm.get(addr - base)]
             w[0] += wf
             w[1] += ideal
             w[2] += n
 
-    print("census (a unit): component hmma other samples_at_hmma samples_at_other")
+    print("census (a unit): component hmma other samples_at_hmma samples_at_other | shared wavefronts a unit "
+          "loads writes copies other, per m16n8k16-equivalent")
     for fn, (h, o, sh, so_) in sorted(cen.items(), key=lambda x: -(x[1][0] + x[1][1])):
-        print(f"  census {fn} {h / per:.1f} {o / per:.1f} {sh} {so_}")
+        k = kinds[fn]
+        waves_txt = " ".join(f"{w}:{k[w] / per:.0f}" for w in ("loads", "writes", "copies", "other"))
+        mma = k["mma_k16"]
+        each = (f" ({(k['loads'] + k['writes'] + k['other']) / mma:.2f} an MMA, writes {k['writes'] / mma:.2f})"
+                if mma else "")
+        print(f"  census {fn} {h / per:.1f} {o / per:.1f} {sh} {so_} | {waves_txt}{each}")
     tot = sum(w[0] - w[1] for w in waves.values())
     print(f"wavefronts above ideal (a unit): {tot / per:.0f}")
     src = source.read_text().splitlines()
@@ -376,7 +399,10 @@ def census(rows, attr: Attribution, components: set[str] | None, per: float,
     for w in lines[:top]:
         print(f"  wave {w['line']} {w['excess_per_unit']:.0f} {w['per_instr']:.1f}/instr {w['text']}")
     return {"census": {fn: {"hmma_per_unit": round(h / per, 1), "other_per_unit": round(o / per, 1), "samples_at_hmma": sh,
-                            "samples_at_other": so_} for fn, (h, o, sh, so_) in cen.items()},
+                            "samples_at_other": so_, "mma_k16_per_unit": round(kinds[fn]["mma_k16"] / per, 1),
+                            "waves_per_unit": {w: round(kinds[fn][w] / per, 1)
+                                               for w in ("loads", "writes", "copies", "other")}}
+                       for fn, (h, o, sh, so_) in cen.items()},
             "wavefronts": {"excess_per_unit": round(tot / per, 1), "lines": lines}}
 
 
