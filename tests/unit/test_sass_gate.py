@@ -154,6 +154,13 @@ def test_a_loop_without_mmas_inside_an_mma_loop_is_its_body_and_hides_nothing():
             (0x20, "SHFL.BFLY", "PT, R1, R2, 0x1, 0x1f", ""), (0x30, "BRA", "0x0", "@P1"), (0x40, "STG.E", "[R2.64], R1", ""),
             (0x50, "EXIT", "", ""), (0x60, "MOV", "R1, R2", ""), (0x70, "BRA", "0x20", "")]
     assert sass_gate.mma_loops(stub, {}) == [(0, 3)]
+    #: a long one -- ptxas copies the rest of the step into the fallback -- is cold to its return branch, which lands
+    #: before the step's second MMA (until 2026-11-02 a stub past 32 lines read as a loop from there to its end)
+    step = [(0x0, "HMMA.16816.F32", "R8, R4, R6, R8", ""), (0x10, "BRA.DIV", "~URZ, 0x70", ""),
+            (0x20, "SHFL.BFLY", "PT, R1, R2, 0x1, 0x1f", ""), (0x30, "HMMA.16816.F32", "R8, R4, R1, R8", ""),
+            (0x40, "BRA", "0x0", "@P1"), (0x50, "STG.E", "[R2.64], R1", ""), (0x60, "EXIT", "", "")]
+    long_stub = step + [(0x70 + 0x10 * i, "MOV", "R1, R2", "") for i in range(64)] + [(0x470, "BRA", "0x20", "")]
+    assert sass_gate.mma_loops(long_stub, {}) == [(0, 4)]
 
 
 def test_a_branch_inside_an_mma_step_is_counted_and_one_outside_it_is_not():

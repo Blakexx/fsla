@@ -112,20 +112,31 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     const DenTablesIn den = den_tables_in<P>(smem);
     if constexpr (P::kReadFactors == 1) {
       units_listed_add<P>(p, smem, run, e.first(), buf,
-                          buf + static_cast<uint32_t>(read_ents<P>(e.slots())), wid(), lid());
+                          buf + static_cast<uint32_t>(read_ents<P>(e.slots(), true)), wid(), lid());
     } else {
       units_dense<P>(p, smem, e.first(), e.slots(), buf, wid(), lid());
     }
     if (first) den_tables_out<P>(smem, den);
     ops::rendezvous();
     units_close<P>(p, smem, w, e.first(), e.slots());
+    //: a side with no list level's den, its tiles against every digit's den row (`parts.md#den`)
+    if constexpr (P::kReadFactors == 2) {
+      if (!rw(w).listed) {
+        const ops::SmemAddr dens = buf + static_cast<uint32_t>(read_dens<P>(e.slots()));
+        if (p.readout_f16) {
+          den_dense<P, true>(smem, e.slots(), buf, dens, wid(), lid());
+        } else {
+          den_dense<P, false>(smem, e.slots(), buf, dens, wid(), lid());
+        }
+      }
+    }
     ops::rendezvous();
   };
   //: A READ CHUNK'S TILES over batches `lo .. hi - 1` of the image at `area` (digit `d`'s plane `d & mask`)
   const auto read_out = [&](int w, const Entry& e, const Run& run, ops::SmemAddr buf, int lo,
                             int hi, uint32_t mask) {
     const ops::SmemAddr pads = buf + static_cast<uint32_t>(read_pads<P>(e.slots())),
-                        ents = buf + static_cast<uint32_t>(read_ents<P>(e.slots()));
+                        ents = buf + static_cast<uint32_t>(read_ents<P>(e.slots(), rw(w).listed));
     if (p.readout_f16) {
       read_chunk<P, true, true>(p, smem, rw(w), run, e.first(), e.slots(), lo, hi, area, mask, buf,
                                 pads, ents, wid(), lid());
@@ -263,6 +274,8 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   static_for<P::kStateRegs>([&](auto k) { sum += st.template at<k>(); });
   static_for<5>([&](auto o) { sum += __shfl_xor_sync(0xffffffffu, sum, 16 >> o); });
   if (lane == 0) atomicAdd(p.check, sum);
+  //: the probe's den state whole first: a side with no list level's den pass writes other warps' lists
+  if (p.probe_den != nullptr) ops::rendezvous();
   fold_probe<P>(p, st, smem, window_of<P>(p, smem, kWrite, 0), place_of(p), warp, lane);
   clock.publish(p.ledger, (long)blockIdx.y * gridDim.x + blockIdx.x, kWarps, warp);
 }

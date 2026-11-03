@@ -51,7 +51,7 @@ def alternating_bundle(widths, L, write_sparse, *, live=4, d_v=64, seed=0):
 FORM_CELLS = (
     ((64, 64), 4, None, {"halves", "halves-chunks", "ahead", "deferred", "reuse"}),
     ((64, 64), 16, None, {"fold-chunks", "next"}),
-    ((256, 256), 2, None, {"whole", "next"}),
+    ((256, 256), 1, None, {"whole", "next"}),
     ((256, 256), 4, "whole/64/rule", {"whole-chunks"}),
     ((256, 256), 2, "halves/128/128", {"halves-chunks", "fold-chunks"}),
 )

@@ -43,12 +43,12 @@ __global__ __launch_bounds__(rc::kThreads, 1) void readout(
   const ops::SmemAddr image = ops::smem_addr(smem + P::kAreaAt);
   const ops::SmemAddr buf = image + static_cast<uint32_t>(16 * rc::kPlaneBytes);
   const ops::SmemAddr pads = buf + static_cast<uint32_t>(rc::read_pads<P>(kSlots));
-  const ops::SmemAddr ents = buf + static_cast<uint32_t>(rc::read_ents<P>(kSlots));
+  const ops::SmemAddr ents = buf + static_cast<uint32_t>(rc::read_ents<P>(kSlots, true));
   uint32_t* const words = reinterpret_cast<uint32_t*>(smem + P::kAreaAt);
   //: the image and the rows: small f16 values; the panel zero; the units 0; each digit's exponent at the image's top
   for (int i = tid; i < (16 * rc::kPlaneBytes + rc::read_pads<P>(kSlots)) / 4; i += rc::kThreads)
     words[i] = 0x24002400u ^ (mix(static_cast<uint32_t>(i)) & 0x03ff03ffu);
-  for (int i = tid; i < (rc::read_ents<P>(kSlots) - rc::read_pads<P>(kSlots)) / 4;
+  for (int i = tid; i < (rc::read_ents<P>(kSlots, true) - rc::read_pads<P>(kSlots)) / 4;
        i += rc::kThreads)
     reinterpret_cast<uint32_t*>(smem + (pads - ops::smem_addr(smem)))[i] = 0u;
   for (int i = tid; i < p.tables.heads * P::kWindow; i += rc::kThreads)

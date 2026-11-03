@@ -286,6 +286,20 @@ list level sums its step's digits first (their tokens are the same). The drain s
 `2^u`, and adds the one fp32 word into `den` (`[BH heads, L]`, the call's); the next fill zeroes the den rows. Gated
 per token against the inter term's denominator (`test_carry_vs_oracle.py`, the den gate's tolerance).
 
+Every den word is ABSOLUTE: a listed entry's term is its raw coefficient times the digit's factor `2^(dE - kImageTop)`
+times its row's products, so the drain adds the word as it is (a term formed at the token's unit through the channels'
+exponent `e` overflowed where a digit's state was zero and its den was not). A SIDE WITH NO LIST LEVEL (ruled
+2026-11-02: a dense side's den on the dense machinery) reads every digit for every token, so its den is
+`units_dense`'s product with the den rows for the leaves' scales: `den_dense`, past the units' barrier (the tables
+visible), a warp 8-token tiles in turn, the tile's rows (B) against every digit's den row (A from the table: a list
+pair `p` at word `2 (p & 7) + (p >> 3)`), 4 MMAs at the channels' accumulation, each digit row times its coefficient
+(`dense_coefs_at`, `units_dense`'s offsets) and factor, summed over the digits by three shuffles; one store a token
+into the chunk's single den row (`den_rows_of`: a listed side's buffer 8 rows, a side with no list level's 1), the
+readout's dense tiles carry no den. The drain's den loop takes its trips from lane 0 (a loop ptxas cannot prove
+warp-uniform fences every collective after it: the first form's thread-strided loop guarded 230 collectives, the
+readout's dense tiles 43% slower a step). MEASURED (phase ledger, sm_86, cycles a warp-window): nl64k-dense the carry
+160.7K, readout 46.3K, units 11.2K, against 145.8K, 45.2K and 5.1K with no den; nl64k-alt-k4 21.1K against 18.8K.
+
 THE BUDGET, a tile and digit on a listed side: the row's load, two MMAs, an add and a shuffle, the factor's multiply,
 the word's address (two), the add's load, FFMA and store -- 11 instructions and a quarter of the channels' tensor
 work. The first build's form took ~30 and two m16n8k16: the row as row 0 of an A whose other rows four selects zeroed,
@@ -300,7 +314,7 @@ THE ACCESS TABLE (§30.1):
 | `kDenState` fp32 `[32][32]`, a list's digit at `d ^ 4 (list >> 1)` | `den_add` (the fold): 32 lanes, one list's 32 digits | the tables: a lane digit `d` of 4, lists `8 j + 2 t (+1, +16)` | scalar | 32 digits in 32 banks; `d ^ (16 j + 4 t)` covers 32 a warp |
 | `kDenMax` u32 `[32]` | `den_add`: 32 lanes, 32 digits, `red.shared.max` | the tables: 8 lanes a digit | scalar | 32 banks; a broadcast |
 | `kDenRows` f16, 64 bytes a digit | the tables: 8 bytes a thread at `8 tid` | the tiles: 8 bytes at `64 d + 8 (lane & 7)` | 64-bit | stores contiguous; loads 8 addresses broadcast to 4 lanes each: one wavefront |
-| a read buffer's den rows, fp32 `8 x (8 + C')` | `den_add_token`: a tile's 8 entries' words, four lanes each | the drain: a thread a slot, its 8 warps' words | scalar | the tokens' words by the data: at most 8-way, the chunk's 8 random slots |
+| a read buffer's den rows, fp32 `8 x (8 + C')` (a side with no list level's `1 x`) | `den_add_token`: a tile's 8 entries' words, four lanes each; `den_dense`: a tile's 8 tokens' | the drain: a thread a slot, its rows' words | scalar | the tokens' words by the data: at most 8-way, the chunk's 8 random slots |
 
 THE DEN'S TENANTS (`plan.md#tenants`): the den state (4 KB), each digit's factor and largest (256 bytes); its rows (2
 KB) over the leaves' exponent bytes (1 KB) and 1 KB past them -- a tenant of its own would cost the area 1 KB, which

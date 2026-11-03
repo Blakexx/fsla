@@ -3,7 +3,9 @@
 The gate reads every function of every cubin a binary carries and is red on any of KERNEL_STANDARDS
 [§20](../../KERNEL_STANDARDS.md#s20)'s ptxas signatures (local memory, a stack frame, convergence calls a converged
 warp executes, predicated HMMAs, branches and gaps in an MMA step, step cover under its floor); guarded convergence
-fallbacks are counted, cold code, not red. Every build runs it after the link (`setup.py`'s post-build gate); by hand,
+fallbacks are counted, cold code, not red. A step loop leaves out a fallback's return: the stub a `BRA.DIV` enters is
+read to its unconditional branch back, however long (ptxas copies a step's remaining work into it: stubs of 49-101
+lines in the carry's fold steps read as 3,000-instruction MMA loops under the old 32-line read). Every build runs it after the link (`setup.py`'s post-build gate); by hand,
 `python tools/sass_gate.py <.so | .cubin> [--kernel RE] [--member S] [--loops] [--json PATH]`. Each function's line
 carries its registers (`regs`, off `cuobjdump -res-usage`), so an iteration build that skips the ratify still shows a
 register change.

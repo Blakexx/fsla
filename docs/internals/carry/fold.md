@@ -82,8 +82,8 @@ The den is the v+1 channel -- each token's value 1 at its gain `m` -- so its sta
 (ruled 2026-11-02, the den in the carry). A box's 32 channels fill the MMAs' tiles, so the den takes one of its own: a
 fifth n-tile of one live column (column 0, lanes `0..3`), its A the step's RAW slices (the value tiles' A is `f16(x c)`,
 the coefficient on the routing weight, the product order the reference declares), its B the entries' `c_m` pairs
-(`den_pair_of`: a write record's high half, `f16(b m 2^(4 - Km))` -- the facts pass's, `Km` the list's mass exponent;
-a side with no list level forms it beside c from the slot's `m`, `2^(4 - dense_exp(shift_m))`). Two more MMAs a
+(`entry_of`'s `dpair`: a write record's high half, `f16(b m 2^(4 - Km))` -- the facts pass's, `Km` the list's mass
+exponent; one shuffle of the record's word pairs c and c_m both). Two more MMAs a
 16-token step (one an 8-token tail), into a `DenColumn` held only through the list's steps: then `den_add` adds each
 row's value times `2^(K - 4)` into the DEN STATE (`kDenState`, fp32 `[32 lists][32 digits]`, a list's digit at its
 index XOR `4 (list >> 1)` -- `den_state_word`, so a list's 8 consecutive digits lie in 8 banks for the fold's adds and
@@ -98,11 +98,26 @@ nl64k-alt-k4).
 A box carries the den of a warp's list `j` where `j boxes / 4` is its box (`den_lists`, `boxes = dv / 32`): each of
 two boxes lists 0-15 or 16-31, of four a quarter -- every list once, the cost shared. The branch is the CTA's, an
 `if` on the box's mask (uniform: formed from the block's place and the call's `dv`); the one-trip loop each way it
-replaced cost ~12 instructions a list a chunk at nl64k-alt-k4 (the region ledger's 12.6M a launch). MEASURED
+replaced cost ~12 instructions a list a chunk at nl64k-alt-k4 (the region ledger's 12.6M a launch); `lists` takes the
+side's form at compile time, so a side with no list level compiles its lists' steps without the den. MEASURED
 (`fold_alone`, sm_86, nl64k-alt-k4's draw, cycles a warp-window, the carry's shape, the first form): no den 2,471, half
 the lists 2,747 (+276), every list 3,039 (+568). MEASURED composed (phase ledger, nl64k-alt-k4, sm_86): the fold 3.57K
 with its den, 2.86K with the box's den lists forced off in the same build (+0.71K: the den MMAs' fp32 tensor work on a
 tensor-bound step, the adds, and the instruction cache's misses on the den steps' second copy).
+
+A SIDE WITH NO LIST LEVEL (ruled 2026-11-02: a dense side's den on the dense machinery) writes every list from every
+slot, so its den is one pass a chunk over every list at once, `fold_den_dense`: `Den[lists][digits] += Cm^T S` over
+the chunk's slots, 16 a step, a warp an m-tile of the box's den lists (a contiguous run, `8 j0 .. 8 j1`) by two
+n-tiles of digits -- A the rows' coefficient slices by `ldmatrix.trans`, each made `c_m` exactly as the list steps'
+records are (`f16(b 255 m 2^(4 - Em))`, the reference's rounding), B the slices, fp32 MMAs; then each row of the
+box's lists into the den state and each digit's largest. Its trips are shuffled (`__any_sync`): a loop ptxas cannot
+prove warp-uniform fences every collective after it (a plain `for` on a shuffled count did, here: 196 guarded
+collectives and the dense readout 43% slower a step). Its full 16-slot steps take their rows unclamped (16 slots on
+keeps a row's swizzle), only the chunk's partial step holds them to the chunk and zeroes `m` past it -- the exact
+`c_m` makes the step ALU-bound, sm_80's step cover under its floor before. A warp's den pass writes other warps'
+lists, so the probe waits on a barrier before it reads the den state (the call's next read, the window's tables, is
+past the window's own). MEASURED (phase ledger, nl64k-dense, sm_86): the fold 73.2K
+against 72.0K with no den (the per-list den columns of the first form: 85.8K).
 
 <a id="probe"></a>
 ## The probe

@@ -209,7 +209,7 @@ __device__ __forceinline__ Sized sized(const rc::CarryParams& p, const uint8_t* 
                           ? static_cast<int>(rc::pre_of<P>(
                                 p, smem, Side, w)[rc::kBoxLists * rc::kListAt + rc::kListAt - 1])
                           : 0;
-  return Sized{slots, Side == rc::kRead ? rc::read_bytes<P>(slots, entries)
+  return Sized{slots, Side == rc::kRead ? rc::read_bytes<P>(slots, entries, true)
                                         : rc::fold_bytes<P>(slots, entries, win.listed)};
 }
 
@@ -276,7 +276,7 @@ __device__ __forceinline__ void panel_entries(const rc::CarryParams& p, uint8_t*
                                               uint32_t buf, int slots) {
   const int t = tid();
   const uint32_t pads = buf + rc::read_pads<P>(slots);
-  const int quanta = (rc::read_ents<P>(slots) - rc::read_pads<P>(slots)) / 16;
+  const int quanta = (rc::read_ents<P>(slots, true) - rc::read_pads<P>(slots)) / 16;
 #pragma unroll 4
   for (int k = t; k < quanta; k += rc::kThreads)
     asm volatile("st.shared.v4.u32 [%0], {%1, %1, %1, %1};" ::"r"(pads + 16u * k),
@@ -286,10 +286,11 @@ __device__ __forceinline__ void panel_entries(const rc::CarryParams& p, uint8_t*
   if (!rw.listed) return;
   const rc::Run run = rc::chunk_runs<P>(p, smem, rw, rc::kRead, w, 0, slots, slots, t & 31);
   if constexpr (Ahead) {
-    entries_ahead<P>(p, p.read_lists, rw, w, run, buf + rc::read_ents<P>(slots), t >> 5, t & 31);
+    entries_ahead<P>(p, p.read_lists, rw, w, run, buf + rc::read_ents<P>(slots, true), t >> 5,
+                     t & 31);
   } else {
     rc::entries_fill<P>(p, p.read_lists, rw, rc::Place{static_cast<int>(blockIdx.y), 0}, w, run,
-                        buf + rc::read_ents<P>(slots), t >> 5, t & 31);
+                        buf + rc::read_ents<P>(slots, true), t >> 5, t & 31);
   }
 }
 
@@ -445,10 +446,11 @@ __device__ __forceinline__ void fold_lists(const rc::CarryParams& p, rc::State<P
                    : "r"(ents + 8u * static_cast<uint32_t>(to + k)));
       return e;
     };
-    uint32_t off, cpair;
+    uint32_t off, cpair, dpair = 0u;
     const int e = lane & 15;
-    rc::entry_of<P>(fetch(max(min(e, n - 1), 0)), e < n, 0, sc.cf, off, cpair);
-    rc::steps<P, J>(st, sc.cf, rows, 0, n, lane, off, cpair, fetch);
+    rc::entry_of<P, false>(fetch(max(min(e, n - 1), 0)), e < n, 0, sc.cf, off, cpair, dpair);
+    rc::DenColumn<P> none;
+    rc::steps<P, J, false>(st, sc.cf, rows, 0, n, lane, off, cpair, 0u, none, fetch);
   });
 }
 
@@ -557,7 +559,7 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
       {
         const int t = tid();
         const uint32_t rows = area + top_of(r.bytes), pads = rows + rc::read_pads<P>(r.slots),
-                       ents = rows + rc::read_ents<P>(r.slots);
+                       ents = rows + rc::read_ents<P>(r.slots, true);
         const rc::Window rw = rc::window_of<P>(p, smem, rc::kRead, w);
         const rc::Run run =
             rc::chunk_runs<P>(p, smem, rw, rc::kRead, w, 0, r.slots, r.slots, t & 31);
