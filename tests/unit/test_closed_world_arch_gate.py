@@ -86,7 +86,6 @@ _LAUNCHLESS = {
     "rola_produce_ledger_bind": "binds the device buffer the next producer launch books into; issues no launch",
     "rola_facts_ledger_bind": "binds the device buffer the next facts pass books into; issues no launch",
     "rola_intra_ledger_bind": "binds the device buffer the next intra launch books into; issues no launch",
-    "den_ledger_bind": "binds the device buffer the next den launch books into; issues no launch",
     "device_window": "reads the device's compute capability attributes for its window; no device work",
     "intra_block_rows": "the device's card row (a host table by compute capability); no device work",
 }

@@ -19,11 +19,9 @@ import dataclasses
 import pytest
 import torch
 
-from measure.cells import carry_cells, realize
-from measure.subjects import bundle_of, carry_operands, read_row_of
+from measure.cells import carry_cells
+from measure.subjects import carry_operands
 from rola.ops import carry as carry_ops
-from rola.ops import den as den_ops
-from rola.ops import facts as facts_ops
 from rola.ops import scale as scale_ops
 from rola.ops.prefill import carry_factor, reader_factor
 from rola.ops.window import window_of
@@ -100,29 +98,3 @@ def test_the_rule_fails_planted_errors_on_the_kernels_own_output():
     den_ref, _ = refs(routes, values)
     assert_planted_errors_fail(in_truth(den, routes), den_ref, output=CARRY_DEN, envelope=den_ref,
                                what=f"{spec.name} den")
-
-
-def test_a_bound_ledger_books_every_phase_and_changes_nothing():
-    """The phase ledger, bound, books cycles in every phase of each warp's role, none in the other role's, and leaves
-    the outputs as they were."""
-    spec = next(c for c in ORACLE_CELLS if c.name == "flagship-alt-k4")
-
-    def run(spec):
-        routes, values, layout, statics = bundle_of(spec, realize(spec))
-        den, num = den_ops.den(routes, facts_ops.facts(routes, values, layout, *statics, read_row_of(spec)))
-        return routes, values, den, num
-
-    routes, values, den, num = run(spec)
-    ctas = den_ops.tiles(routes) * routes.batch * routes.write_heads
-    ledger = torch.zeros((ctas, den_ops.LEDGER_WARPS, len(den_ops.LEDGER_PHASES)), dtype=torch.int64, device="cuda")
-    den_ops.ledger_bind(ledger)
-    try:
-        _, _, den2, num2 = run(spec)
-    finally:
-        den_ops.ledger_bind(None)
-    torch.testing.assert_close(den2, den, rtol=1e-5, atol=0.0)
-    torch.testing.assert_close(num2, num, rtol=1e-5, atol=0.0)
-    for warps, phases in den_ops.LEDGER_ROLES.values():
-        for k, phase in enumerate(den_ops.LEDGER_PHASES):
-            booked = ledger[:, warps.start:warps.stop, k]
-            assert ((booked > 0) if phase in phases else (booked == 0)).all(), (phase, booked)

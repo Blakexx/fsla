@@ -271,20 +271,6 @@
     "exempt": "a small launch before the carry on its stream: its cost is the carry's row's"
    }
   },
-  "den_kernel": {
-   "oracle": "tests/oracle/test_den_vs_oracle.py::test_the_denominator_is_the_fp64_reference",
-   "sanitizer": {
-    "owed": "a den row of tools/sanitize_oracle.py's family table (the pass is new, 2026-10-25)"
-   },
-   "budget": "tools/budgets/den.json",
-   "phases": "tests/oracle/test_den_vs_oracle.py::test_a_bound_ledger_books_every_phase_and_changes_nothing",
-   "ratified": {
-    "owed": "a new kernel: the next milestone ratify records it"
-   },
-   "overlap": {
-    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
-   }
-  },
   "scale_writes": {
    "oracle": "tests/oracle/test_scale_vs_oracle.py::test_every_byte_is_the_rules_on_the_fp64_bound",
    "sanitizer": {

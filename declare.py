@@ -12,8 +12,8 @@ one session and one memory pass over the cells, every result stored.
 
 Per checkout: `binary` (the gated build, held on every host slot, cached while its binary stands), `environment` (the
 machine facts, every run), the instruments of `INSTRUMENTS` (SASS and the register walk once, cached; the phase clock,
-pipe counters, stall census, timeline and the intra roofline on every carry cell, and the den's and the intra's own
-(`phases-den`, `counters-den`, `census-den`, `counters-intra`, `census-intra`) on the cells of `LONG_CELL_TOKENS` and
+pipe counters, stall census, timeline and the intra roofline on every carry cell, and the intra's own
+(`counters-intra`, `census-intra`) on the cells of `LONG_CELL_TOKENS` and
 more, every run, holding the GPU), and with
 a timing server the timing registrations: `carry_forward`, `carry_intra`, `intra_forward`, `scale_pass` and `prefill` on
 the carry cells, `entmax_solve@layer=C`, `produce@layer=C`, `layer_prefill@layer=C`, `decode_step@layer=C` and the op's
@@ -66,20 +66,14 @@ INSTRUMENTS = {
                ["tools/budgets/carry.json", "csrc/rola/src/carry/carry_kernel.cuh"], 900),
     "timeline": ("tools/pipe_timeline.py", ["--cell", "{cell}"], True, {"gpu": "all"}, [], 900),
     "roofline": ("tools/roofline.py", ["--cells", "{cell}"], True, {"gpu": "all"}, [], 120),
-    #: the den pass and the intra under the same instruments (`tools/kernel_targets.py`), on the long cells
-    "phases-den": ("tools/phase_ledger.py", ["{cell}", "--launches", "1", "--kernel", "den"], True, {"gpu": "all"},
-                   [], 120),
-    "counters-den": ("tools/pipe_counters.py", ["{cell}", "--kernel", "den"], True, {"gpu": "all"}, [], 900),
-    "census-den": ("tools/stall_census.py", ["{cell}", "--kernel", "den"], True, {"gpu": "all"},
-                   ["tools/budgets/den.json", "csrc/rola/src/den/den_kernel.cuh"], 900),
     #: what each layer construction's weights route on its cells (the layer readings' regime), once a binary
     "support": ("tools/realized_support.py", [], False, {"gpu": 1}, ["measure/cells", "rola"], 1800),
     "counters-intra": ("tools/pipe_counters.py", ["{cell}", "--kernel", "intra"], True, {"gpu": "all"}, [], 900),
     "census-intra": ("tools/stall_census.py", ["{cell}", "--kernel", "intra"], True, {"gpu": "all"},
                      ["tools/budgets/intra.json", "csrc/rola/src/intra/intra_kernel.cuh"], 900),
 }
-#: the instruments read only on the long cells (16K tokens and more): the den's and the intra's
-LONG_CELL_INSTRUMENTS = {"phases-den", "counters-den", "census-den", "counters-intra", "census-intra"}
+#: the instruments read only on the long cells (16K tokens and more): the intra's
+LONG_CELL_INSTRUMENTS = {"counters-intra", "census-intra"}
 LONG_CELL_TOKENS = 16384
 CARRY_ARMS = ("carry_forward", "carry_intra", "intra_forward", "scale_pass", "prefill")
 LAYER_ARMS = ("entmax_solve", "produce", "layer_prefill", "decode_step", "layer_facts", "layer_scale", "layer_carry",

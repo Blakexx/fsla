@@ -13,7 +13,6 @@ attributes against, the budget, and the launch's units (the divisor that turns a
 from __future__ import annotations
 
 import argparse
-import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,10 +52,6 @@ def units(target: Target, cell) -> int:
 
     if target.family == "carry":
         return phase_ledger.cta_windows(cell.name)
-    if target.family == "den":
-        from rola.ops import den as den_ops
-
-        return math.prod(cell.widths) // (den_ops.ROWS * den_ops.SPAN) * _windows(cell) * _heads(cell)
     if target.family == "intra":
         from rola.ops import intra as intra_ops
         from rola.ops.window import window_of
@@ -113,11 +108,8 @@ def produce_units(name: str) -> int:
 
 def function(target: Target, cell) -> str:
     """The instantiation a cell launches, as a regex over the cubin's mangled names (the region ledger's; the
-    profiler's filter is the family's `symbol`, which it matches against the plain function name): the den's form by
-    the cell's declared sparsity, the intra's depth and the card's accumulation (`rola.ops.carry.readout_accumulate`)."""
-    if target.family == "den":
-        dense = not any(side for level in cell.declared_sparsity() for side in level)
-        return f"den_kernelILb{int(dense)}E"
+    profiler's filter is the family's `symbol`, which it matches against the plain function name): the intra's depth
+    and the card's accumulation (`rola.ops.carry.readout_accumulate`)."""
     if target.family == "intra":
         from rola.ops.carry import readout_accumulate
 
@@ -130,8 +122,6 @@ TARGETS = {
                     tuple(f"csrc/rola/src/carry/{f}" for f in ("carry_kernel.cuh", "parts.cuh", "fold.cuh",
                                                                 "schedule.cuh")),
                     "tools/budgets/carry.json", "CTA-windows"),
-    "den": Target("den", "den_kernel", "den_pass", "den", ("csrc/rola/src/den/den_kernel.cuh",),
-                  "tools/budgets/den.json", "CTA-windows"),
     "intra": Target("intra", "intra_kernel", "intra_forward", "intra", ("csrc/rola/src/intra/intra_kernel.cuh",),
                     "tools/budgets/intra.json", "warp tile pairs"),
     "facts": Target("facts", "facts_pass", "facts_pass", "facts", ("csrc/rola/src/facts/facts.cu",), None,

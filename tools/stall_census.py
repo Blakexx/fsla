@@ -6,7 +6,7 @@ cell (the carry by default), by source line's component and stall reason; the ph
 raw counts.
 
     python tools/stall_census.py flagship-dense --json census.json
-    python tools/stall_census.py nl64k-alt-k4 --kernel den --json census.json   # any family of tools/kernel_targets.py
+    python tools/stall_census.py nl64k-alt-k4 --kernel intra --json census.json   # any family of tools/kernel_targets.py
 
 One oneshot launch through the probe worker under `ncu --section SourceCounters` with the stall-reason group and the
 kernel's source imported, exported per SASS line, then attributed by `tools/region_ledger.py` against the installed
