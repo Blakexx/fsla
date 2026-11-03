@@ -31,11 +31,16 @@ Each side's plan follows from the box (`_side`). A side with a sparse level list
 forms its operand from its dense levels, both in level order; a warp owns `box leaves / 8`
 leaves, its operand rows whole while they fit (`tile_rows`), the rest in lists
 (`tile_lists`). A side with no sparse level and two dense levels names one as its rows and
-the other as its coefficients, in that order: the fold's rows its last dense level, the
-readout's its first, so at the box each side is 32 rows a warp in 4 lists, as at the
-alternating carve, and the carry's one box serves both (`docs/internals/carry/carry.md#sides`).
-`publish_in_registers` compares the two sides' partitions of the box's leaves among the
-warps.
+the other as its coefficients, in that order: its coefficients the other side's list level
+where the other side lists exactly one level and it is one of this side's, else its first
+dense level -- both sides of a dense-dense declaration alike, the readout of `[SD, DD]`
+grouped by the fold's list level -- so at the box each side is 32 rows a warp in 4 groups,
+as at the alternating carve, and the carry's one box serves both
+(`docs/internals/carry/carry.md#sides`). `publish_in_registers` compares the two sides'
+partitions of the box's leaves among the warps (a warp's groups -- its list levels' values,
+or a side with no list level's coefficient values -- by its rows): equal partitions mean a
+warp's fold state is its readout's, and the hand-off stays in its registers
+(`docs/internals/carry/parts.md#same-split`).
 
 ## <a id="check"></a>The check
 

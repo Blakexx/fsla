@@ -112,7 +112,8 @@ parity while a slower one still reads these). Every warp records the same values
 within 2^15, inside an fp16 accumulator, and one placement serves the fp32- and fp16-accumulate readouts. Measured
 (2026-10-12, the image's quality model, per token against fp64 on the flagship cells): the placement at 2^10 and at
 2^15 give the same error, as does a block prescale; a leaf keeps 11 bits down to 24 octaves under its digit's
-largest. The form was labbed first ([`docs/lab/handoff.md`](../../lab/handoff.md), form 4).
+largest. The form was labbed first ([`docs/lab/handoff.md`](../../lab/handoff.md), form 4). A same-split arm keys a
+list, not a digit, by a plain store ([`#same-split`](#same-split)).
 
 <a id="image"></a>
 ## The image
@@ -129,6 +130,28 @@ only, so a lane's four `ldmatrix.trans` units of every digit it reads are one ba
 once a chunk), the base `+ 1024` and both `^ 32` -- the base lies under 1024, so the add never carries
 (`image_units_step` asserts it over every lane, digit and unit): two adds a digit where the units were four XORs and
 four adds, and the lane's units were four `unit_of`s a chunk.
+
+<a id="same-split"></a>
+## The same split
+
+Where both sides' warps own the same leaves (the carve's `publish_in_registers`, the arm key's `publish_regs`,
+`Plan::kPublishRegs`; [`engine/carve.md#sides`](../engine/carve.md#sides)), a warp's readout groups ARE its fold lists
+`w + 8 j` and the readout's K its digits, so the readout takes its A operand from the fold's accumulators and there is
+no image: no planes in the area (`image_bytes` 0, [`schedule.md#planner`](schedule.md#planner)), no window store,
+every read chunk from registers. The hand-off's other steps follow the group. THE KEYS are a list's, not a digit's:
+each lane's four leaf keys ([`#leaves`](#leaves)) maxed and joined over the warp's eight row groups by three shuffles,
+posted by a plain store at the list (`keys[w + 8 t]`, one writer a list, no atomic), its exponent at slot `d`
+(`group_slot`), so a group's state is placed at `2^(kImageTop - e)` against its list's largest as an image digit is
+against its digit's. THE LEAVES' bytes and scales are list-major (`leaf_at`: list `l`'s digit `d` at `32 l + d`), so a
+group's 64-byte scale row is its list's for the units' dot products. THE DEN's tables are by group (`den_group`,
+`den_k`: the list its row, the digit its word).
+
+`state_from` forms a list's 16 A words: each digit block's four n-tile pairs packed f16 at the list's factor
+(`list_scale` of its unit and its group's exponent, as a store's), transposed across the quad (two butterfly rounds,
+`xor 2` then `xor 1`: four shuffles and twelve selects a digit block) so that A block `b`'s rows are the image's
+channels `8 (r >> 1) + 2 b + (r & 1)` -- the panel's words and the f16 `num` pairs keep ONE channel order on every arm
+([`#drain`](#drain), `rola.ops.prefill.unpack_num`) -- then each 8x8 transposed where it lies (`transpose_frag_b16`).
+The fragments are indexed at compile time (the groups a `static_for` of the warp's lists), as the state is.
 
 <a id="store"></a>
 ## A batch's stores
@@ -223,7 +246,8 @@ the dummy rows, so it fits its 16 bits on every card; a lane XORs its half (`32 
 Beside the digit keys, `post_keys` keeps each LEAF's own key -- a list's largest |value| over the CTA's 32 channels at
 a digit row -- by a quad reduce-scatter of the bits (lane `t` ends with list `t`'s leaf of each of its four rows: two
 shuffles across `xor 2`, one across `xor 1`), keyed at the lane's list's unit, and stores it as an exponent byte (`leaf_byte`: the smallest `e` with the leaf's
-largest |value| at most `2^(e + top)`, -128 a zero leaf) at `kLeafExp`, digit-major. After the exponents,
+largest |value| at most `2^(e + top)`, -128 a zero leaf) at `kLeafExp`, digit-major (list-major on a same-split
+arm: its groups are lists, [`#same-split`](#same-split)). After the exponents,
 `leaf_scales` turns the bytes into each leaf's f16 scale `2^(e_leaf - e_digit)` at `kLeafScale` (a digit's 32 lists
 64 bytes; at least 2^-14, rounded up so still a bound; 0 for a zero leaf), a thread four leaves. Why leaves and not
 digits: a token's partial is bounded by the sum over its read leaves of weight x leaf maximum; a digit's maximum in
@@ -294,7 +318,8 @@ none adds an exact zero at the window's token `lane` (held to the call: a predic
 convergence region in ptxas, PTX-level predication included -- checked 2026-11-02). Every den term is ABSOLUTE: its
 raw coefficient times the digit's factor `2^(dE - kImageTop)` times its row's products (a term formed at the token's
 unit through the channels' exponent `e` overflowed where a digit's state was zero and its den was not). Gated per
-token against the inter term's denominator (`test_carry_vs_oracle.py`, the den gate's tolerance).
+token against the inter term's denominator (`test_carry_vs_oracle.py`, the den gate's tolerance). On a same-split arm
+the tables are by the readout's group, a list, its row's words the digits (`den_group`, `den_k`; [`#same-split`](#same-split)).
 
 A SIDE WITH NO LIST LEVEL reads its den the same way (ruled 2026-11-02: the foundation's UNIFORM den): every tile of
 every digit pair takes its two m16n8k8 against the digit's den row, each digit's term times the slot's coefficient (the

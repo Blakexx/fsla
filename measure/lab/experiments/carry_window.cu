@@ -286,8 +286,7 @@ __device__ __forceinline__ void panel_entries(const rc::CarryParams& p, uint8_t*
   if (!rw.listed) return;
   const rc::Run run = rc::chunk_runs<P>(p, smem, rw, rc::kRead, w, 0, slots, slots, t & 31);
   if constexpr (Ahead) {
-    entries_ahead<P>(p, p.read_lists, rw, w, run, buf + rc::read_ents<P>(slots), t >> 5,
-                     t & 31);
+    entries_ahead<P>(p, p.read_lists, rw, w, run, buf + rc::read_ents<P>(slots), t >> 5, t & 31);
   } else {
     rc::entries_fill<P>(p, p.read_lists, rw, rc::Place{static_cast<int>(blockIdx.y), 0}, w, run,
                         buf + rc::read_ents<P>(slots), t >> 5, t & 31);
@@ -576,11 +575,12 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
           lap<CLOCK>(p, laps, rc::kPhaseUnits);
         }
         if (p.readout_f16) {
-          rc::read_chunk<P, true, true>(p, smem, rw, run, 0, r.slots, 2 * half, 2 * half + 2, area,
-                                        2 * rc::kBatchPlanes - 1, rows, pads, ents, t >> 5, t & 31);
+          rc::read_chunk<P, true, true>(p, smem, st, rw, run, 0, r.slots, 2 * half, 2 * half + 2,
+                                        area, 2 * rc::kBatchPlanes - 1, rows, pads, ents, t >> 5,
+                                        t & 31);
         } else {
-          rc::read_chunk<P, false, true>(p, smem, rw, run, 0, r.slots, 2 * half, 2 * half + 2, area,
-                                         2 * rc::kBatchPlanes - 1, rows, pads, ents, t >> 5,
+          rc::read_chunk<P, false, true>(p, smem, st, rw, run, 0, r.slots, 2 * half, 2 * half + 2,
+                                         area, 2 * rc::kBatchPlanes - 1, rows, pads, ents, t >> 5,
                                          t & 31);
         }
       }

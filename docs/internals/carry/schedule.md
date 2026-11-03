@@ -102,7 +102,8 @@ THE RULE'S PLAN (`rule_plan`): the image whole where it fits beside the largest 
 halves; the fold's largest chunk. A FORCED FORM
 (`CarryParams::forced`, `rola.ops.carry.forced_word`: a mode, a read chunk and a fold chunk, each the rule's, the union
 or a multiple of 64) is reserved for the gates and the measurements; a window takes it where every chunk of it fits
-alone beside its image and a whole image has reads to serve (`forced_plan`), else the rule's.
+alone beside its image and a whole image has reads to serve (`forced_plan`), else the rule's. An arm publishing in
+registers (`parts.md#same-split`) has no image: `image_bytes` is 0, its plans whole, the area all chunks.
 
 Why a rule, not a search (measured 2026-10-14, nl64k-alt-k4 on sm_86, every named form timed warm): the rule's form is
 the fastest. Each extra fold chunk costs ~500 us there -- it splits every list's run into two partial steps, and the

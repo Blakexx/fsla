@@ -130,11 +130,11 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     const ops::SmemAddr pads = buf + static_cast<uint32_t>(read_pads<P>(e.slots())),
                         ents = buf + static_cast<uint32_t>(read_ents<P>(e.slots()));
     if (p.readout_f16) {
-      read_chunk<P, true, true>(p, smem, rw(w), run, e.first(), e.slots(), lo, hi, area, mask, buf,
-                                pads, ents, wid(), lid());
+      read_chunk<P, true, true>(p, smem, st, rw(w), run, e.first(), e.slots(), lo, hi, area, mask,
+                                buf, pads, ents, wid(), lid());
     } else {
-      read_chunk<P, false, true>(p, smem, rw(w), run, e.first(), e.slots(), lo, hi, area, mask, buf,
-                                 pads, ents, wid(), lid());
+      read_chunk<P, false, true>(p, smem, st, rw(w), run, e.first(), e.slots(), lo, hi, area, mask,
+                                 buf, pads, ents, wid(), lid());
     }
   };
 
@@ -185,8 +185,10 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         clock.lap(kPhaseFill);
       }
       // R9-CASES: ImageMode, the plan's image modes (schedule.cuh)
-      if (s.mode == kModeWhole) {
-        if (i == 0) store_batches<P, kBoxDigits - 1>(st, smem, area, 0, kBatches, wid(), lid());
+      if (P::kPublishRegs || s.mode == kModeWhole) {
+        if constexpr (!P::kPublishRegs) {
+          if (i == 0) store_batches<P, kBoxDigits - 1>(st, smem, area, 0, kBatches, wid(), lid());
+        }
         clock.lap(kPhaseStore);
         landed(i == 0 && more);
         clock.lap(kPhaseLanded);

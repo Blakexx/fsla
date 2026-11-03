@@ -46,7 +46,8 @@ the step machine landed its two slots on, each counting all 256 threads, are ret
 ## The image
 
 `kPlaneBytes` a digit (32 lists x 32 channels, f16), the whole image `kImageWhole` (64 KB) or `kImageRing` (32 KB):
-one half of two, stored and read by each read chunk (`schedule.md#buffers`). `kBatchPlanes` = 8 digits a batch, so a warp stores 8
+one half of two, stored and read by each read chunk (`schedule.md#buffers`); none on an arm publishing in registers
+(`kPublishRegs`, `parts.md#same-split`). `kBatchPlanes` = 8 digits a batch, so a warp stores 8
 digits of its 4 lists (half an m-tile of each) and reads one digit a batch (`kBatches` = 4).
 
 <a id="plan"></a>

@@ -34,14 +34,21 @@ TOP = 0
 
 
 class Counts(NamedTuple):
-    """A window's counts: each side's union and segment sums, and whether the write side lists (a side with no list
-    level's fold buffer holds each slot's factors in its entries' place)."""
+    """A window's counts: each side's union and segment sums, whether the write side lists (a side with no list
+    level's fold buffer holds each slot's factors in its entries' place) and whether the arm publishes in registers
+    (no image)."""
 
     ru: int
     rs: tuple
     fu: int
     fs: tuple
     wl: bool = True
+    pr: bool = False
+
+
+def image_bytes(mode: int, pr: bool) -> int:
+    """`image_bytes`: the image's bytes at a mode, none where the arm publishes in registers."""
+    return 0 if pr else IMAGE_WHOLE if mode == WHOLE else IMAGE_RING
 
 
 class Win(NamedTuple):
@@ -127,13 +134,14 @@ def chunks(word: int) -> tuple[int, int, int, int, int]:
 def rule_plan(c: Counts, read_row: int, write_row: int, area: int) -> int:
     """`rule_plan`: the read chunk beside the halves, the image whole where it fits beside the largest read buffer, the
     fold's largest chunk in the area."""
-    rc = largest_chunk(c.ru, c.rs, area - IMAGE_RING, lambda s, e: read_bytes(s, e, read_row)) if c.ru > 0 else 0
+    rc = (largest_chunk(c.ru, c.rs, area - image_bytes(HALVES, c.pr), lambda s, e: read_bytes(s, e, read_row))
+          if c.ru > 0 else 0)
     nr = chunks_of(c.ru, rc)
     most = 0
     if nr > 0:
         most = read_bytes(min(rc, c.ru), chunk_max(c.rs, rc // LIST_BOUND, c.ru) if rc < c.ru
                           else _sum_at(c.rs, len(c.rs) - 1), read_row)
-    whole = nr > 0 and IMAGE_WHOLE + most <= area
+    whole = nr > 0 and image_bytes(WHOLE, c.pr) + most <= area
     fc = largest_chunk(c.fu, c.fs, area, lambda s, e: fold_bytes(s, e, write_row, c.wl)) if c.fu > 0 else 0
     return plan_word(WHOLE if whole else HALVES, rc, fc, c.ru, c.fu)
 
@@ -148,7 +156,7 @@ def forced_plan(forced: int, c: Counts, rule: int, read_row: int, write_row: int
     mode = r_mode if fm == 0 else fm - 1
     rc = 0 if c.ru == 0 else r_rc if fr == 0 else c.ru if fr == 0xFF else LIST_BOUND * fr
     fc = 0 if c.fu == 0 else r_fc if ff == 0 else c.fu if ff == 0xF else LIST_BOUND * ff
-    image = IMAGE_WHOLE if mode == WHOLE else IMAGE_RING
+    image = image_bytes(mode, c.pr)
     fits = mode == HALVES or c.ru > 0
     for first in range(0, c.ru, rc or 1):
         s = min(rc, c.ru - first)
@@ -163,7 +171,7 @@ def win_of(c: Counts, forced: int, read_row: int, write_row: int, area: int) -> 
     """`win_of`: a window's plan word and what the rule reads off it."""
     word = forced_plan(forced, c, rule_plan(c, read_row, write_row, area), read_row, write_row, area)
     mode, _, _, nr, nf = chunks(word)
-    return Win(c, word, nr + nf, nr, (IMAGE_WHOLE if mode == WHOLE else IMAGE_RING) if nr > 0 else 0)
+    return Win(c, word, nr + nf, nr, image_bytes(mode, c.pr) if nr > 0 else 0)
 
 
 def entry_bytes(x: Win, t: int, read_row: int, write_row: int) -> int:
@@ -289,8 +297,8 @@ def plans(routes, facts, carve, forced: str | None = None) -> list[list[Record]]
                 for w in range(windows):
                     ru, rs = _side(read, carve.readout, routes, w, bh, gr)
                     fu, fs = _side(write, carve.fold, routes, w, bh, gw)
-                    wins.append(win_of(Counts(ru, rs, fu, fs, bool(carve.fold.lists)), word, read_row,
-                                       write_row, area))
+                    wins.append(win_of(Counts(ru, rs, fu, fs, bool(carve.fold.lists), carve.publish_in_registers),
+                                       word, read_row, write_row, area))
                 out.append(records(wins, read_row, write_row, area))
     return out
 

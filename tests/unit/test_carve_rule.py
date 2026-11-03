@@ -51,6 +51,23 @@ def test_dense_dense_box_publishes_in_registers():
     assert c.publish_in_registers
 
 
+@pytest.mark.parametrize("level_tags, fold, readout, same", [
+    (("DD", "DD"), ((), (1, 0)), ((), (1, 0)), True),
+    (("SD", "DD"), ((), (1, 0)), ((0,), (1,)), True),
+    (("DS", "DD"), ((0,), (1,)), ((), (1, 0)), True),
+    (("SD", "DS"), ((1,), (0,)), ((0,), (1,)), False),
+])
+def test_a_dense_side_groups_by_the_other_sides_list(level_tags, fold, readout, same):
+    """A side with no list level takes its coefficients from the other side's list level (else its first level), so
+    the two sides' warps split alike and the publish stays in registers wherever they do (`carve.md#sides`)."""
+    read, write = _flags(level_tags)
+    c = plan_carve((256, 256), read, write, 64)
+    assert c.extents == (32, 32)
+    assert ((c.fold.lists, c.fold.operand), (c.readout.lists, c.readout.operand)) == (fold, readout)
+    assert all((s.tile_lists, s.tile_rows) == (4, 32) for s in (c.fold, c.readout))
+    assert c.publish_in_registers == same
+
+
 def test_refusals():
     with pytest.raises(ValueError, match="every level sparse"):
         plan_carve((256, 256), (True, True), (True, False), 64)

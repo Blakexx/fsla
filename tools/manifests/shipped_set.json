@@ -52,8 +52,8 @@
    32,
    2,
    32,
-   0
+   1
   ]
  ],
- "note": "THE DECLARED SHIPPED SET of the carry family, as DATA. A row is the carve's operation-plan pair (docs/internals/engine/rules.md#carve): the fold's dense rows a warp and the number of dense levels its operand names, the readout's the same, the box's channel extent, and the publish field (0: the image hand-off is every carve's). The box is 32 lists x 32 digits x 32 channels on every card; per-level extents, the depth and the widths are runtime addressing. [32, 1, 32, 1, 32, 0] is the alternating D = 2 box (each side lists its sparse level, its rows the other); [32, 2, 32, 2, 32, 0] the dense D = 2 box (each side names a row level and a coefficient level). Rows are canonical-sorted and the generator refuses any other spelling, so an arm's INDEX is a property of the declaration."
+ "note": "THE DECLARED SHIPPED SET of the carry family, as DATA. A row is the carve's operation-plan pair (docs/internals/engine/rules.md#carve): the fold's dense rows a warp and the number of dense levels its operand names, the readout's the same, the box's channel extent, and the publish field (0: the image hand-off; 1: the readout reads the fold's state where it lies, where the carve's two sides' warps own the same leaves). The box is 32 lists x 32 digits x 32 channels on every card; per-level extents, the depth and the widths are runtime addressing. [32, 1, 32, 1, 32, 0] is the alternating D = 2 box (each side lists its sparse level, its rows the other); [32, 2, 32, 2, 32, 1] the dense D = 2 box (each side names a row level and a coefficient level, the same two: its readout reads the fold's state in registers). Rows are canonical-sorted and the generator refuses any other spelling, so an arm's INDEX is a property of the declaration."
 }

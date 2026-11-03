@@ -68,14 +68,16 @@ def _allocate(widths, level_tags, total: int, cap: int) -> list[int] | None:
     return bits if left == 0 else None
 
 
-def _side(lists, operand, extents, leaves: int, rows_last: bool) -> SidePlan:
+def _side(lists, operand, extents, leaves: int, coef=None) -> SidePlan:
     """A side's plan. A side with a sparse level lists it and forms its rows from the dense ones; a side with none
-    takes one dense level as its rows and the other as its coefficients, named in that order -- the fold's rows its
-    last dense level, the readout's its first (docs/internals/engine/carve.md#sides)."""
+    takes one dense level as its rows and the other as its coefficients, named in that order -- its coefficients the
+    other side's list level where that side lists one of its levels (so the two sides' warps split alike), else its
+    first dense level (both sides of a dense-dense declaration alike) (docs/internals/engine/carve.md#sides)."""
     if not lists and len(operand) == 2:
-        operand = operand[::-1] if rows_last else operand
-        tile_rows = extents[operand[0]]
-        return SidePlan(lists=(), operand=tuple(operand), tile_lists=leaves // WARPS // tile_rows, tile_rows=tile_rows)
+        c = coef if coef in operand else operand[0]
+        rows = operand[1] if c == operand[0] else operand[0]
+        tile_rows = extents[rows]
+        return SidePlan(lists=(), operand=(rows, c), tile_lists=leaves // WARPS // tile_rows, tile_rows=tile_rows)
     rows = 1
     for lv in operand:
         rows *= extents[lv]
@@ -85,16 +87,18 @@ def _side(lists, operand, extents, leaves: int, rows_last: bool) -> SidePlan:
 
 
 def _warps_of(plan: SidePlan, extents) -> frozenset:
-    """The box's leaves as each warp of this side owns them, one frozen set a warp."""
+    """The box's leaves as each warp of this side owns them, one frozen set a warp: a warp's groups (its list levels'
+    values, or a side with no list level's coefficient values) by its rows."""
+    groups, row_levels = (plan.lists, plan.operand) if plan.lists else (plan.operand[1:], plan.operand[:1])
     rows = 1
-    for lv in plan.operand:
+    for lv in row_levels:
         rows *= extents[lv]
     owned: dict[int, list] = {}
     for leaf in product(*(range(e) for e in extents)):
         li = ri = 0
-        for lv in plan.lists:
+        for lv in groups:
             li = li * extents[lv] + leaf[lv]
-        for lv in plan.operand:
+        for lv in row_levels:
             ri = ri * extents[lv] + leaf[lv]
         warp = (li // plan.tile_lists) * (rows // plan.tile_rows) + ri // plan.tile_rows
         owned.setdefault(warp, []).append(leaf)
@@ -106,10 +110,12 @@ def _build(widths, read_sparse, write_sparse, extents, channels: int) -> Carve:
     leaves = 1
     for e in extents:
         leaves *= e
-    fold = _side([lv for lv in range(D) if write_sparse[lv]], [lv for lv in range(D) if not write_sparse[lv]],
-                 extents, leaves, rows_last=True)
-    readout = _side([lv for lv in range(D) if read_sparse[lv]], [lv for lv in range(D) if not read_sparse[lv]],
-                    extents, leaves, rows_last=False)
+    write_lists = [lv for lv in range(D) if write_sparse[lv]]
+    read_lists = [lv for lv in range(D) if read_sparse[lv]]
+    fold = _side(write_lists, [lv for lv in range(D) if not write_sparse[lv]], extents, leaves,
+                 coef=read_lists[0] if len(read_lists) == 1 else None)
+    readout = _side(read_lists, [lv for lv in range(D) if not read_sparse[lv]], extents, leaves,
+                    coef=write_lists[0] if len(write_lists) == 1 else None)
     return Carve(widths=tuple(widths), extents=tuple(extents), channels=channels, fold=fold, readout=readout,
                  publish_in_registers=_warps_of(fold, extents) == _warps_of(readout, extents))
 

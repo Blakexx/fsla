@@ -84,6 +84,9 @@ struct Plan : Tenants<window_for(Cc)> {
   static constexpr int kValuesAt = kSliceBytes * kFoldFactors,
                        kWriteRow = kValuesAt + kBoxChannels * 2;
 
+  //: the publish in registers (`Arm::publish_regs`): the readout reads the fold's state where it lies -- no image
+  static constexpr bool kPublishRegs = Arm::publish_regs != 0;
+
   static constexpr int kSmemBytes = kCaps.smem_per_cta_max;
   static constexpr int kAreaAt = tables_of<kWindow>(1, kSmemBytes).area_at;
   static constexpr int kArea = tables_of<kWindow>(1, kSmemBytes).area;

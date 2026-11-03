@@ -8,7 +8,8 @@ plan `plan.md`.
 The carry is the inter-window term: each CTA owns a BOX of leaves (the carve's, `docs/internals/engine/rules.md#carve`,
 `docs/internals/engine/carve.md`) and walks a call's windows in order. Every window it reads the state before the
 window's writes out to the window's readers (the readout), then folds the window's writers into it (the fold). The
-state never leaves the registers inside a call; the readout reads an f16 image of it.
+state never leaves the registers inside a call; the readout reads an f16 image of it, or, where both sides' warps own
+the same leaves, the registers themselves (`parts.md#same-split`).
 
 <a id="constants"></a>
 ## The constants

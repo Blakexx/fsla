@@ -97,7 +97,7 @@ __global__ __launch_bounds__(rc::kThreads, 1) void readout(
     for (int half = 0; half < 2; ++half) {
       if constexpr (MODE == 0) ops::rendezvous();
       const long long t0 = clock64();
-      rc::read_chunk<P, true, true>(p, smem, rw, run, 0, kSlots, 2 * half, 2 * half + 2, image,
+      rc::read_chunk<P, true, true>(p, smem, st, rw, run, 0, kSlots, 2 * half, 2 * half + 2, image,
                                     2 * rc::kBatchPlanes - 1, buf, pads, ents, warp, lane);
       busy += clock64() - t0;
     }

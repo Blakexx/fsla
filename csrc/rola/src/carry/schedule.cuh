@@ -9,11 +9,13 @@
 
 namespace rola::carry {
 
-//: A WINDOW'S IMAGE MODE: whole, or stored and read 16 digits at a time by each read chunk.
+//: A WINDOW'S IMAGE MODE: whole, or stored and read 16 digits at a time by each read chunk; an arm publishing in
+//: registers has none (its plans whole at no bytes).
 enum ImageMode : uint32_t { kModeWhole, kModeHalves };
 
+template <class P>
 __host__ __device__ __forceinline__ constexpr int image_bytes(uint32_t mode) {
-  return mode == kModeWhole ? kImageWhole : kImageRing;
+  return P::kPublishRegs ? 0 : mode == kModeWhole ? kImageWhole : kImageRing;
 }
 
 //: A WINDOW'S PLAN, a word: mode | read chunk / 64 << 1 | fold chunk / 64 << 9 | read chunks << 14 | fold chunks << 22,
@@ -68,7 +70,7 @@ __host__ __device__ constexpr int fold_bytes(int slots, int entries, bool listed
 //: fold buffer.
 template <class P>
 __host__ __device__ constexpr bool least_plan_fits(int area) {
-  return kImageRing + read_bytes<P>(kListBound, kListBound * kBoxDigits) <= area
+  return image_bytes<P>(kModeHalves) + read_bytes<P>(kListBound, kListBound * kBoxDigits) <= area
          && fold_bytes<P>(kListBound, kListBound * kBoxLists, true) <= area;
 }
 
@@ -132,7 +134,7 @@ struct Counts {
 template <class P>
 __device__ __forceinline__ uint32_t rule_plan(const CarryParams& p, const Counts& c) {
   const int area = p.tables.area;
-  const int rc = c.ru > 0 ? largest_chunk(c.ru, c.rs, area - kImageRing,
+  const int rc = c.ru > 0 ? largest_chunk(c.ru, c.rs, area - image_bytes<P>(kModeHalves),
                                           [](int s, int e) { return read_bytes<P>(s, e); })
                           : 0;
   const int nr = c.ru > 0 ? (c.ru + rc - 1) / rc : 0;
@@ -140,7 +142,7 @@ __device__ __forceinline__ uint32_t rule_plan(const CarryParams& p, const Counts
       nr > 0 ? read_bytes<P>(min(rc, c.ru), rc < c.ru ? chunk_max(c.rs, rc / kListBound, c.ru)
                                                       : c.rs[c.rs.cols - 1])
              : 0;
-  const bool whole = nr > 0 && kImageWhole + most <= area;
+  const bool whole = nr > 0 && image_bytes<P>(kModeWhole) + most <= area;
   const bool wl = p.write.list >= 0;
   const int fc = c.fu > 0 ? largest_chunk(c.fu, c.fs, area,
                                           [wl](int s, int e) { return fold_bytes<P>(s, e, wl); })
@@ -165,7 +167,8 @@ __device__ __forceinline__ uint32_t forced_plan(const CarryParams& p, const Coun
 #pragma unroll 1
   for (int first = 0; first < c.ru; first += rc) {
     const int s = min(rc, c.ru - first);
-    fits = fits && image_bytes(mode) + read_bytes<P>(s, entries_of(c.rs, first, s, c.ru)) <= area;
+    fits =
+        fits && image_bytes<P>(mode) + read_bytes<P>(s, entries_of(c.rs, first, s, c.ru)) <= area;
   }
 #pragma unroll 1
   for (int first = 0; first < c.fu; first += fc) {
@@ -228,7 +231,7 @@ __device__ __forceinline__ Win win_of(const CarryParams& p, int bh, int w, int c
   const PlanWord pw{x.word};
   x.nr = pw.reads();
   x.n = x.nr + pw.folds();
-  x.image = x.nr > 0 ? image_bytes(pw.mode()) : 0;
+  x.image = x.nr > 0 ? image_bytes<P>(pw.mode()) : 0;
   x.wl = p.write.list >= 0;
   return x;
 }
@@ -397,7 +400,7 @@ __device__ __forceinline__ Stream stream_of(const CarryParams& p, const uint8_t*
   s.fu = p.write.list >= 0 ? fu : tokens;
   s.nr = word.reads();
   s.n = s.nr + word.folds();
-  s.image = s.nr > 0 ? image_bytes(s.mode) : 0;
+  s.image = s.nr > 0 ? image_bytes<P>(s.mode) : 0;
   return s;
 }
 
