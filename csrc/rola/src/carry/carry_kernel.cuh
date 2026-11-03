@@ -116,10 +116,15 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     if constexpr (P::kReadFactors == 1) {
       units_listed_add<P>(p, smem, run, e.first(), buf,
                           buf + static_cast<uint32_t>(read_ents<P>(e.slots())), wid(), lid());
+      if (first) den_tables_out<P>(smem, st, wid(), lid());
     } else {
-      units_dense<P>(p, smem, e.first(), e.slots(), buf, wid(), lid());
+      //: a dense side reads its den here, against the tables the window's first chunk writes first
+      for (int once = ops::once(first); once > 0; --once) {
+        den_tables_out<P>(smem, st, wid(), lid());
+        ops::rendezvous();
+      }
+      units_dense<P>(p, smem, e.first(), e.slots(), buf, rw(w).t0, wid(), lid());
     }
-    if (first) den_tables_out<P>(smem, st, wid(), lid());
     ops::rendezvous();
     units_close<P>(p, smem, w, e.first(), e.slots());
     ops::rendezvous();

@@ -1264,49 +1264,28 @@ __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* 
       const uint32_t dummy = panel_row(l7) << 16;
       const int tiles = (slots + 7) >> 3;
 
-      //: THE DEN'S GROUP (`DenAdd`), the pass's: 4 tiles' tokens, a lane one (tile `lane >> 3`), `k` tiles in
-      DenAdd dadd;
-      int k = 0, s = 0;
+      int s = 0;
 
-      //: the tiles in segments ending where the den's group fills, its adds between them (§29 item 7)
+      //: the tiles, one block a step (the den is the bound pass's: `units_dense`)
       for (int any = __any_sync(0xffffffffu, slots > 0) ? 1 : 0; any > 0; --any)
 #pragma unroll 1
         do {
-#pragma unroll 1
-          do {
-            uint32_t coef[kStep];
-            uint2 dw[kStep];
-            static_for<kStep>([&](auto Q) {
-              coef[Q] = ld_u16(chunk_addr<P::kReadRow>(row, (kSliceBytes + 2 * d[Q]) >> 4)
-                               + (2 * d[Q] & 15));
-              dw[Q] = den_b(den_rows + 64u * static_cast<uint32_t>(d[Q]));
-            });
-            const TileInM<kStep> in = tile_in_m<P, kStep>(
-                row, units, sx, make_uint2(tok, static_cast<int>(slot) < slots ? live : dummy),
-                coef, lane);
-            float acc[kStep][2][4];
-            static_for<kStep>([&](auto Q) { tile_mma<F16>(acc[Q], in.b, f[Q]); });
-            //: THE DEN (`#den`): the step's digits' terms of the lane's token (`lane & 7`), absolute, summed
-            float dn = 0.0f;
-            static_for<kStep>([&](auto Q) {
-              const float c = __half2float(__ushort_as_half(static_cast<unsigned short>(coef[Q])));
-              dn += den_mma<F16>(in.b, dw[Q], lane) * (c * fac[Q]);
-            });
-            tile_add_m(lane_pads, in, acc);
-            dadd.take((lane >> 3) == k && static_cast<int>(slot) < slots, dn, tok >> 16);
-            ++k;
-            slot += 8u;
-            row += 8u * P::kReadRow;
-            live += 512u << 16;
-            tok += 8u << 16;
-          } while (__any_sync(0xffffffffu, (++s < tiles) & (k < 4)));
-          for (int full = __any_sync(0xffffffffu, k == 4) ? 1 : 0; full > 0; --full) {
-            dadd.add(p, rw.t0, lane);
-            k = 0;
-          }
-        } while (__any_sync(0xffffffffu, s < tiles));
-      for (int rest = __any_sync(0xffffffffu, k > 0) ? 1 : 0; rest > 0; --rest)
-        dadd.add(p, rw.t0, lane);
+          uint32_t coef[kStep];
+          static_for<kStep>([&](auto Q) {
+            coef[Q] = ld_u16(chunk_addr<P::kReadRow>(row, (kSliceBytes + 2 * d[Q]) >> 4)
+                             + (2 * d[Q] & 15));
+          });
+          const TileInM<kStep> in = tile_in_m<P, kStep>(
+              row, units, sx, make_uint2(tok, static_cast<int>(slot) < slots ? live : dummy), coef,
+              lane);
+          float acc[kStep][2][4];
+          static_for<kStep>([&](auto Q) { tile_mma<F16>(acc[Q], in.b, f[Q]); });
+          tile_add_m(lane_pads, in, acc);
+          slot += 8u;
+          row += 8u * P::kReadRow;
+          live += 512u << 16;
+          tok += 8u << 16;
+        } while (__any_sync(0xffffffffu, ++s < tiles));
     }
   };
   if constexpr (P::kPublishRegs) {
@@ -1356,37 +1335,44 @@ __device__ __forceinline__ void dense_coefs_at(int g, int t, uint32_t (&coff)[2]
   });
 }
 
-//: THE CTA'S UNITS for a read chunk with no list level, slots `first ..`: each token's bound, its rows (as the readout's
-//: B) against the leaves' scales (A: 32 digit rows x 32 lists, 4 f16-accumulate MMAs a tile), each digit row times its
-//: coefficient (from the token's coefficient slice at a lane-constant offset: the pool's swizzle a slot's low bits) and
-//: `2^(e_d - kCoefTop)`, summed over the digits by three shuffles; two tiles of 8 tokens a warp in flight (a step: one
-//: block, every lane storing its column's bound, a slot past the chunk at the dead word), each token's bound into the
-//: bounds table for `units_close`. -- see docs/internals/carry/parts.md#units
+//: THE CTA'S UNITS AND DEN for a read chunk with no list level: each token's rows (B) against the leaves' scales and the
+//: den rows (A, 4 + 4 MMAs a tile), each group times its coefficient and its scale or den factor, summed over the groups;
+//: the bound into the bounds table, the den one global add a token (between 4-tile segments). Two tiles in flight.
+//: -- see docs/internals/carry/parts.md#units
 template <class P>
 __device__ __forceinline__ void units_dense(const CarryParams& p, const uint8_t* smem, int first,
-                                            int slots, ops::SmemAddr rows, int warp, int lane) {
+                                            int slots, ops::SmemAddr rows, int t0, int warp,
+                                            int lane) {
   static_assert(P::kReadRow == 128 && P::kReadFactors == 2,
                 "a dense read row: its list slice, then its coefficients");
   const int g = lane >> 2, t = lane & 3;
   const ops::SmemAddr dead = ops::smem_addr(smem + P::kDeadUnit),
                       bound_at = ops::smem_addr(smem + p.tables.bounds_at);
   const uint32_t* const tab = reinterpret_cast<const uint32_t*>(smem + P::kLeafScale);
-  uint32_t a[2][2][4];
-  float sc[2][2];
+  const uint32_t* const dtab = reinterpret_cast<const uint32_t*>(smem + P::kDenRows);
+  const float* const dfac = reinterpret_cast<const float*>(smem + P::kDenFactor);
+  uint32_t a[2][2][4], da[2][2][4];
+  float sc[2][2], fac[2][2];
 
+  //: the bound's A in the table's natural pairs; the den's from the den rows' B words (pair `q` at `2 (q & 7) + (q >> 3)`)
   static_for<2>([&](auto M) {
     static_for<2>([&](auto K) {
-      const int r0 = (16 * M + g) * 16, r1 = r0 + 8 * 16, c = 8 * K + t;
+      const int r0 = (16 * M + g) * 16, r1 = r0 + 8 * 16, c = 8 * K + t, w = 2 * t + K;
       a[M][K][0] = tab[r0 + c];
       a[M][K][1] = tab[r1 + c];
       a[M][K][2] = tab[r0 + c + 4];
       a[M][K][3] = tab[r1 + c + 4];
+      da[M][K][0] = dtab[r0 + w];
+      da[M][K][1] = dtab[r1 + w];
+      da[M][K][2] = dtab[r0 + w + 8];
+      da[M][K][3] = dtab[r1 + w + 8];
     });
     static_for<2>([&](auto H) {
       sc[M][H] =
           kF16BoundMargin
           * pow2(reinterpret_cast<const int*>(smem + P::kExps)[group_slot<P>(16 * M + 8 * H + g)]
                  - kCoefTop);
+      fac[M][H] = dfac[16 * M + 8 * H + g];
     });
   });
 
@@ -1394,62 +1380,86 @@ __device__ __forceinline__ void units_dense(const CarryParams& p, const uint8_t*
   dense_coefs_at(g, t, coff);
 
   const int tiles = (slots + 7) >> 3;
-  constexpr int kInFlight = 2;
+  constexpr int kInFlight = 2, kSegment = 4;
   int s = warp;
+  //: THE DEN'S GROUP (`DenAdd`): lane `l` the token `l & 7` of the segment's tile `l >> 3`
+  DenAdd dadd;
+  int k = 0;
 
-  for (int go = __any_sync(0xffffffffu, s < tiles) ? 1 : 0; go > 0; --go)
+  for (int any = __any_sync(0xffffffffu, s < tiles) ? 1 : 0; any > 0; --any)
 #pragma unroll 1
     do {
-      uint32_t b[kInFlight][4], h[kInFlight][2][2];
-      static_for<kInFlight>([&](auto F) {
-        const uint32_t slot = 8u * (s + kWarps * F) + (lane & 7);
-        ops::load_frag(b[F], chunk_addr<P::kReadRow>(rows + 128u * slot + 16u * (slot & 7u),
-                                                     static_cast<uint32_t>(lane >> 3)));
-      });
-
-      static_for<kInFlight>([&](auto F) {
-        static_for<2>([&](auto M) {
-          h[F][M][0] = h[F][M][1] = 0u;
-          static_for<2>(
-              [&](auto K) { ops::hmma_f16(h[F][M], a[M][K], b[F][2 * K], b[F][2 * K + 1]); });
+#pragma unroll 1
+      do {
+        uint32_t b[kInFlight][4], h[kInFlight][2][2];
+        float hd[kInFlight][2][4];
+        static_for<kInFlight>([&](auto F) {
+          const uint32_t slot = 8u * (s + kWarps * F) + (lane & 7);
+          ops::load_frag(b[F], chunk_addr<P::kReadRow>(rows + 128u * slot + 16u * (slot & 7u),
+                                                       static_cast<uint32_t>(lane >> 3)));
         });
-      });
-      float sum[kInFlight][2];
 
-      static_for<kInFlight>([&](auto F) {
-        const ops::SmemAddr base = rows + 1024u * static_cast<uint32_t>(s + kWarps * F);
-        sum[F][0] = sum[F][1] = 0.0f;
-        static_for<2>([&](auto M) {
-          static_for<2>([&](auto H) {
-            const float2 v = __half22float2(*reinterpret_cast<const __half2*>(&h[F][M][H]));
-            const float x[2] = {v.x, v.y};
-            static_for<2>([&](auto C) {
-              const float c = __half2float(
-                  __ushort_as_half(static_cast<unsigned short>(ld_u16(base + coff[C][M][H]))));
-              sum[F][C] = fmaf(c * sc[M][H], x[C], sum[F][C]);
+        static_for<kInFlight>([&](auto F) {
+          static_for<2>([&](auto M) {
+            h[F][M][0] = h[F][M][1] = 0u;
+            static_for<2>(
+                [&](auto K) { ops::hmma_f16(h[F][M], a[M][K], b[F][2 * K], b[F][2 * K + 1]); });
+            ops::hmma_fresh(hd[F][M], da[M][0], b[F][0], b[F][1]);
+            ops::hmma(hd[F][M], da[M][1], b[F][2], b[F][3]);
+          });
+        });
+        float sum[kInFlight][2], dn[kInFlight][2];
+
+        static_for<kInFlight>([&](auto F) {
+          const ops::SmemAddr base = rows + 1024u * static_cast<uint32_t>(s + kWarps * F);
+          sum[F][0] = sum[F][1] = dn[F][0] = dn[F][1] = 0.0f;
+          static_for<2>([&](auto M) {
+            static_for<2>([&](auto H) {
+              const float2 v = __half22float2(*reinterpret_cast<const __half2*>(&h[F][M][H]));
+              const float x[2] = {v.x, v.y};
+              static_for<2>([&](auto C) {
+                const float c = __half2float(
+                    __ushort_as_half(static_cast<unsigned short>(ld_u16(base + coff[C][M][H]))));
+                sum[F][C] = fmaf(c * sc[M][H], x[C], sum[F][C]);
+                dn[F][C] = fmaf(c * fac[M][H], hd[F][M][2 * H + C], dn[F][C]);
+              });
             });
           });
         });
-      });
 
-      static_for<kInFlight>([&](auto F) {
-        static_for<2>([&](auto C) {
-          sum[F][C] += __shfl_xor_sync(0xffffffffu, sum[F][C], 4);
-          sum[F][C] += __shfl_xor_sync(0xffffffffu, sum[F][C], 8);
-          sum[F][C] += __shfl_xor_sync(0xffffffffu, sum[F][C], 16);
+        static_for<kInFlight>([&](auto F) {
+          static_for<2>([&](auto C) {
+            static_for<3>([&](auto S) {
+              sum[F][C] += __shfl_xor_sync(0xffffffffu, sum[F][C], 4 << S);
+              dn[F][C] += __shfl_xor_sync(0xffffffffu, dn[F][C], 4 << S);
+            });
+          });
         });
-      });
 
-      static_for<kInFlight>([&](auto F) {
-        const uint32_t s0 = 8u * (s + kWarps * F) + 2u * t;
-        static_for<2>([&](auto C) {
-          const bool in = static_cast<int>(s0) + C < slots;
-          const uint32_t at = in ? bound_at + 4u * (first + s0 + C) : dead;
-          const float v = sum[F][C];
-          asm volatile("st.shared.f32 [%0], %1;" ::"r"(at), "f"(v) : "memory");
+        static_for<kInFlight>([&](auto F) {
+          const uint32_t s0 = 8u * (s + kWarps * F) + 2u * t;
+          static_for<2>([&](auto C) {
+            const bool in = static_cast<int>(s0) + C < slots;
+            const uint32_t at = in ? bound_at + 4u * (first + s0 + C) : dead;
+            const float v = sum[F][C];
+            asm volatile("st.shared.f32 [%0], %1;" ::"r"(at), "f"(v) : "memory");
+          });
+          //: the den's lane `8 (k + F) + r` takes token `r` of this tile, from lane `r >> 1`'s pair
+          const int r = lane & 7, from = r >> 1;
+          const float d0 = __shfl_sync(0xffffffffu, dn[F][0], from),
+                      d1 = __shfl_sync(0xffffffffu, dn[F][1], from);
+          const int slot = 8 * (s + kWarps * F) + r;
+          dadd.take((lane >> 3) == k + F && slot < slots, r & 1 ? d1 : d0,
+                    static_cast<uint32_t>(first + slot));
         });
-      });
-    } while (__any_sync(0xffffffffu, (s += kInFlight * kWarps) < tiles));
+        k += kInFlight;
+      } while (__any_sync(0xffffffffu, ((s += kInFlight * kWarps) < tiles) & (k < kSegment)));
+      for (int full = __any_sync(0xffffffffu, k == kSegment) ? 1 : 0; full > 0; --full) {
+        dadd.add(p, t0, lane);
+        k = 0;
+      }
+    } while (__any_sync(0xffffffffu, s < tiles));
+  for (int rest = __any_sync(0xffffffffu, k > 0) ? 1 : 0; rest > 0; --rest) dadd.add(p, t0, lane);
 }
 
 //: THE LISTED BOUNDS' TERMS for a read chunk, a thread an entry across the CTA (the chunk's runs contiguous in digit

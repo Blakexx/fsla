@@ -567,7 +567,7 @@ __global__ __launch_bounds__(rc::kThreads, 1) void window(
           if constexpr (P::kReadFactors == 1) {
             rc::units_listed_add<P>(p, smem, run, 0, rows, ents, t >> 5, t & 31);
           } else {
-            rc::units_dense<P>(p, smem, 0, r.slots, rows, t >> 5, t & 31);
+            rc::units_dense<P>(p, smem, 0, r.slots, rows, 0, t >> 5, t & 31);
           }
           ops::rendezvous();
           rc::units_close<P>(p, smem, w, 0, r.slots);

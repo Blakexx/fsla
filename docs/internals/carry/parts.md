@@ -282,7 +282,7 @@ coarse). A DENSE read side (`units_dense`): every token reads every leaf, so the
 tile of 8 tokens (A the leaf-scale table, 32 digits x 32 lists; B the tokens' rows as the readout loads them), each
 digit's result times its coefficient (from the row's coefficient slice at a lane-constant offset) and `2^(e_d -
 kCoefTop)`, summed over the digits by three shuffles, two tiles a warp in flight; a slot past the chunk stores to the
-dead word. `bounds_clear` resets the counters each window. The pass runs between the chunk's landing and its first
+dead word. The same pass reads the dense side's den, 4 more MMAs a tile against the den rows ([`#den`](#den)). `bounds_clear` resets the counters each window. The pass runs between the chunk's landing and its first
 tile, with its barriers; its cost is placement, not arithmetic (measured 2026-10-22: +2.0K cycles a warp-window at
 nl64k-alt-k4 as a per-entry chain, unchanged by three placements); the ruled line is +6-9% a listed call by the dense
 side's MMA form for listed sides (2026-10-24).
@@ -328,12 +328,17 @@ unit through the channels' exponent `e` overflowed where a digit's state was zer
 token against the inter term's denominator (`test_carry_vs_oracle.py`, the den gate's tolerance). On a same-split arm
 the tables are by the readout's group, a list, its row's words the digits (`den_group`, `den_k`; [`#same-split`](#same-split)).
 
-A SIDE WITH NO LIST LEVEL reads its den the same way (ruled 2026-11-02: the foundation's UNIFORM den): every tile of
-every digit pair takes its two m16n8k8 against the digit's den row, each digit's term times the slot's coefficient (the
-row's coefficient slice) and the digit's factor, the step's two digits summed in the lane, a lane its token of a group
-of 4 tiles added as the listed side's are -- 16 adds a token a block (8 warps, two image halves). The token-carved
-form it stands in for, a candidate: a warp's 8-token tiles against all 32 digits' den rows held in 16 registers, 4 MMAs
-a tile, one add a token a block (MEASURED +4K in the units at nl64k-dense, den-as-channel 91c6110c).
+A SIDE WITH NO LIST LEVEL reads its den TOKEN-CARVED, in the bound pass (`units_dense`, [`#units`](#units); a
+candidate against the foundation's uniform den, which took two m16n8k8 a tile and group in the readout and 16 adds a
+token a block): every token is in every group, so a warp's 8-token tile holds the whole den -- the tile's rows (the
+bound's B) against all 32 groups' den rows as a second A (16 registers: the den rows' B words read as A pairs, pair `q`
+at word `2 (q & 7) + (q >> 3)`), 4 fp32-accumulate MMAs a tile, each group's term times the slot's coefficient and the
+group's factor, summed over the groups by the bound's three shuffles; lane `l` takes token `l & 7` of the segment's tile
+`l >> 3` (two shuffles from its pair's lane), and the segment's 32 tokens go as one `red.global.add.f32` between 4-tile
+segments -- ONE add a token a CTA. The den tables are written first in a window's first chunk (a barrier before the
+bound pass), and the dense readout's tiles carry no den. MEASURED (phase ledger, sm_86, cycles a warp-window, against
+the uniform den at foundation b33fc82a): nl64k-dense 155.0K / 158.7K (170.6-175.5K) -- the readout 47.6K (64.8-66.6K),
+the units 9.2K (5.5K); nl64k-write-k4 74.9K twice (89.5 / 92.4K); the dense step loop's cover 56.8% -> 95.4%.
 
 THE BUDGET, a tile and digit on a listed side: the row's load, two MMAs, an add and a shuffle, the factor's multiply,
 two selects, and a 32nd of the group's address and add -- ~8 instructions and a quarter of the channels' tensor work.
