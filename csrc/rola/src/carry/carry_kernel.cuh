@@ -119,17 +119,9 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     } else {
       units_dense<P>(p, smem, e.first(), e.slots(), buf, wid(), lid());
     }
-    if (first) den_tables_out<P>(smem, st, ww(w).listed, wid(), lid());
+    if (first) den_tables_out<P>(smem, st, wid(), lid());
     ops::rendezvous();
     units_close<P>(p, smem, w, e.first(), e.slots());
-    //: a side with no list level's den, its tiles against every digit's den row (`parts.md#den`)
-    if constexpr (P::kReadFactors == 2) {
-      if (p.readout_f16) {
-        den_dense<P, true>(p, smem, rw(w), e.first(), e.slots(), buf, wid(), lid());
-      } else {
-        den_dense<P, false>(p, smem, rw(w), e.first(), e.slots(), buf, wid(), lid());
-      }
-    }
     ops::rendezvous();
   };
   //: A READ CHUNK'S TILES over batches `lo .. hi - 1` of the image at `area` (digit `d`'s plane `d & mask`)
@@ -176,7 +168,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     clock.lap(kPhaseWait);
     post_exps<P>(smem, w, top, lid());
     leaf_scales<P>(smem);
-    den_tables_max<P>(smem, st, ww(w).listed, wid(), lid());
+    den_tables_max<P>(smem, st, wid(), lid());
     bounds_clear<P>(p, smem);
     clock.lap(kPhaseMaxima);
 

@@ -11,10 +11,8 @@ declared arithmetic (`tests/oracle/fold_reference.py`, `fold_state`), gated per 
 two m-tiles by the channels' four n-tiles, fp32, each list in its own UNIT (below): 4 x 2 x 4 x 4 = 128 registers a
 lane. They are the MMAs' C fragments for the whole call. Beside them the DEN'S, the v+1 channel's mass (`#den`), 4
 registers a lane, absolute, the box's 32 lists by 32 digits once across the CTA (ruled 2026-11-02: the den as one more
-channel of the state, register-resident). A word's place (`den_place`) is the write side's form's, fixed for the call: a
-listed side's by the list's owner (lane `4 g + t`'s word `i` list `w + 8 (2 (t & 1) + (i & 1))`, digit `g + 8 (i >> 1) +
-16 (t >> 1)`: where `den_add` lands), a side with no list level's a tile's C fragment (list `8 (w >> 1) + 2 t + (i &
-1)`, digit `16 (w & 1) + g + 8 (i >> 1)`: where `fold_den_dense` lands).
+channel of the state, register-resident). A word's place (`den_place`) is the list's owner's on both side forms: lane `4
+g + t`'s word `i` list `w + 8 (2 (t & 1) + (i & 1))`, digit `g + 8 (i >> 1) + 16 (t >> 1)`, where `den_add` lands.
 
 <a id="units"></a>
 ## The units
@@ -108,24 +106,13 @@ the lists 2,747 (+276), every list 3,039 (+568). MEASURED composed (phase ledger
 with its den, 2.86K with the box's den lists forced off in the same build (+0.71K: the den MMAs' fp32 tensor work on a
 tensor-bound step, the adds, and the instruction cache's misses on the den steps' second copy).
 
-A SIDE WITH NO LIST LEVEL (ruled 2026-11-02: a dense side's den on the dense machinery) writes every list from every
-slot, so its den is one pass a chunk over every list at once, `fold_den_dense`: `Den^T[digits][lists] += S^T Cm` over
-the chunk's slots, 16 a step, a warp a TILE -- digits `16 (w & 1) ..` by the list group `8 (w >> 1) ..` (a group `j`
-is lists `8 j .. 8 j + 7`, so a box carries all of a tile's lists or none, `dens`; a tile it does not carry takes no
-trip): A the rows' slices by `ldmatrix.trans`, B the group's `c_m` (four 16-bit loads a lane a step, each made exactly
-as the list steps' records are, `f16(b 255 m 2^(4 - Em))`, the reference's rounding), one fp32 MMA a step, every
-product live; its C fragment is the warp's den words. At two boxes a box's 4 tiles are 4 warps on the 4 schedulers.
-REPLACED (measured 2026-11-02, phase ledger, nl64k-dense, sm_86): the den on its lists' owners (A the slices over
-both m-tiles, B the warp's 4 lists, half of them dead at two boxes): 8 warps each 2 MMAs a step, the fold 80.4K a warp
-against 77.4K on the first form's two den warps -- the den's tensor work four times over. Its trips are
-shuffled (`__any_sync`): a loop ptxas cannot
-prove warp-uniform fences every collective after it (a plain `for` on a shuffled count did, here: 196 guarded
-collectives and the dense readout 43% slower a step). Its full 16-slot steps take their rows unclamped, every address
-the first step's plus `16 kWriteRow` a step (a multiple of 1024 bytes: the rows' swizzle, period 8 slots, and its XOR on
-bytes' bits 4-5 carry over), only the chunk's partial step holds them to the chunk and zeroes `m` past it -- the exact
-`c_m` makes the step ALU-bound, and each step's swizzled addresses, recomputed, put sm_80's step cover under its floor
-(19.8% against 20.6%, measured 2026-11-02 by the SASS gate). MEASURED (phase ledger, nl64k-dense, sm_86, the first
-form into the shared state): the fold 73.2K against 72.0K with no den (the per-list den columns: 85.8K).
+A SIDE WITH NO LIST LEVEL carries the den the same way (ruled 2026-11-02: the foundation's UNIFORM den, the den riding
+every component alike at listed and dense, the better den forms measured against it after): every list's steps over
+every slot take its column, `c_m` the dense fetch's record half (`f16(b 255 m 2^(4 - Em))`, the facts records'
+rounding), the den's exponent the window's `m` (`dense_exp`). MEASURED (c04b2bf2, the same form into the shared
+state): the dense fold 85.0K against 71.8K with no den at nl64k-dense -- the den's one live column of an 8-wide n-tile
+on every step of every list, eight times the den's own tensor work. The dense forms it stands in for, kept as candidates:
+a tile a warp (digits by a list group, one live MMA a step: the fold 73.3K a warp, balanced; den-as-channel 91c6110c).
 
 <a id="probe"></a>
 ## The probe

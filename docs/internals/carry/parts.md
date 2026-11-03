@@ -268,8 +268,7 @@ The den -- each token's read product against the MASS of the windows before, the
 -- is read out beside the channels, in the readout's own tiles (ruled 2026-11-02: inline, not a pass; rebuilt to its
 work the same day). THE DEN'S TABLES, a window's, from the den's registers (`State::den`, `fold.md#state`; ruled
 2026-11-02: the den as one more channel of the state): a window's read chunks run before its fold chunks, so the
-registers hold the state before the window's writes, each word at its place (`den_place`, the write side's form's,
-`fold.md#state`). After the leaves' scales each digit's largest into `kDenMax` by an integer max (`den_tables_max`: a
+registers hold the state before the window's writes, each word at its place (`den_place`, `fold.md#state`). After the leaves' scales each digit's largest into `kDenMax` by an integer max (`den_tables_max`: a
 lane's four words at their digits; a non-negative float's bits order as integers; cleared before the window's top
 barrier); and at the first read chunk's units, past the barrier after the leaves'
 scales (the rows lie over their exponent bytes, dead until the next window's keys), each digit's FACTOR `2^(dE -
@@ -297,15 +296,12 @@ raw coefficient times the digit's factor `2^(dE - kImageTop)` times its row's pr
 unit through the channels' exponent `e` overflowed where a digit's state was zero and its den was not). Gated per
 token against the inter term's denominator (`test_carry_vs_oracle.py`, the den gate's tolerance).
 
-A SIDE WITH NO LIST LEVEL (ruled 2026-11-02: a dense side's den on the dense machinery) reads every digit for every
-token, so its den is `units_dense`'s product with the den rows for the leaves' scales: `den_dense`, past the units'
-barrier (the tables visible), a warp 8-token tiles in turn, the tile's rows (B) against every digit's den row (A from
-the table: a list pair `p` at word `2 (p & 7) + (p >> 3)`), 4 MMAs at the channels' accumulation, each digit row times
-its coefficient (`dense_coefs_at`, `units_dense`'s offsets) and factor, then summed over the digits by a
-reduce-scatter -- lane bit 2 keeps its token `2 t + (g & 1)`, its partner's other sum added, then `g`'s two high bits
-(three shuffles; the all-reduce and a gather it replaced took eight and put sm_86's step cover under its floor) -- a
-lane its token of a group of 4 of the warp's tiles, added as the listed side's are; the readout's dense tiles carry no
-den.
+A SIDE WITH NO LIST LEVEL reads its den the same way (ruled 2026-11-02: the foundation's UNIFORM den): every tile of
+every digit pair takes its two m16n8k8 against the digit's den row, each digit's term times the slot's coefficient (the
+row's coefficient slice) and the digit's factor, the step's two digits summed in the lane, a lane its token of a group
+of 4 tiles added as the listed side's are -- 16 adds a token a block (8 warps, two image halves). The token-carved
+form it stands in for, a candidate: a warp's 8-token tiles against all 32 digits' den rows held in 16 registers, 4 MMAs
+a tile, one add a token a block (MEASURED +4K in the units at nl64k-dense, den-as-channel 91c6110c).
 
 THE BUDGET, a tile and digit on a listed side: the row's load, two MMAs, an add and a shuffle, the factor's multiply,
 two selects, and a 32nd of the group's address and add -- ~8 instructions and a quarter of the channels' tensor work.
@@ -317,8 +313,8 @@ and 25.0K). THE ACCESS TABLE (§30.1):
 
 | buffer | written by | read by | shape | banks |
 |---|---|---|---|---|
-| `kDenMax` u32 `[32]` | `den_tables_max`: a lane its four words' digits, every warp, `red.shared.max` | `den_tables_out`: a lane its words' digits, lane `l` digit `l`'s factor | scalar | a tile's 8 digits 4 lanes each, a listed side's 16 two each (once a window) |
-| `kDenRows` f16, 64 bytes a digit | `den_tables_out`: a lane its four words, 16-bit | the tiles: 8 bytes at `64 d + 8 (lane & 7)`; `den_dense`'s A | 16-/64-bit | the stores up to 8-way (rows 64 bytes apart, once a window); the loads 8 addresses broadcast to 4 lanes each: one wavefront |
+| `kDenMax` u32 `[32]` | `den_tables_max`: a lane its four words' digits, every warp, `red.shared.max` | `den_tables_out`: a lane its words' digits, lane `l` digit `l`'s factor | scalar | 16 digits two lanes each (once a window) |
+| `kDenRows` f16, 64 bytes a digit | `den_tables_out`: a lane its four words, 16-bit | the tiles: 8 bytes at `64 d + 8 (lane & 7)` | 16-/64-bit | the stores up to 8-way (rows 64 bytes apart, once a window); the loads 8 addresses broadcast to 4 lanes each: one wavefront |
 
 THE DEN'S TENANTS (`plan.md#tenants`): each digit's factor and largest (256 bytes); its rows (2 KB) over the leaves'
 exponent bytes (1 KB) and 1 KB past them. Nothing else: the state is registers (`fold.md#den`), the sum is `den`'s.
