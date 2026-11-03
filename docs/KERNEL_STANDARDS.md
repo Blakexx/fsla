@@ -995,15 +995,20 @@ gated, and an instrument's missing target is a red.
    carry's open ledger miss (3,884 instructions a warp-window against ~2,020) is mostly tokens, sources and swizzles
    re-derived at each use and priced nowhere.
 4. EVERY STEP LOOP COVERS ITS PIPE: `tools/sass_gate.py` simulates every innermost MMA loop of every function, on every
-   build, for one warp from ptxas's control words (`tools/pipe_sim.py`; MMA costs by shape and latencies from labs
-   `tensor_tax`, `mma_queue`, `mma_k8`, `issue_latency`), and reds a loop whose COVER -- its pipe share alone times the
-   warps a scheduler its registers admit, at most 100% -- is under 1/1.15 (§28's line): a warp never runs faster beside
-   another than alone, so a loop under it cannot be covered by the warps the design has. The kernels under it are
-   named debts with what replaces them, each function held at its floor (`tools/budgets/step_floors.json`, by
-   architecture), and the list only shrinks. The cover is a model's reading: a floor is lowered (`--write-floors`) only
-   in a commit whose locked comparison shows the kernel no slower on its cells, the numbers in the commit (2026-10-16:
-   the carry's warp and lane made opaque per phase read 42.2% against 44.2% and ran 0.9-2.8% faster). An
-   architecture the host cannot run is lowered on the local card's comparison, marked owed to its own rented run.
+   build, from ptxas's control words (`tools/pipe_sim.py`; MMA costs by shape and latencies from labs `tensor_tax`,
+   `mma_queue`, `mma_k8`, `issue_latency`, shared writes from `smem_rates`), and reds a loop whose COVER -- its pipe
+   share with the warps a scheduler its registers admit running it together, sharing the scheduler's issue port and
+   the SM's memory pipe, at most its share alone times those warps and 100% -- is under 1/1.15 (§28's line): a loop
+   under it cannot be covered by the warps the design has. The kernels under it are named debts with what replaces
+   them, each function held at its floor (`tools/budgets/step_floors.json`, by architecture), and the list only
+   shrinks; the floors are the debt's ratchet, never its target -- a kernel is clean only at the line on every
+   architecture (Blake, 2026-11-03). The cover is a model's reading: a floor is lowered (`--write-floors`) only in a
+   commit whose locked comparison shows the kernel no slower on its cells, the numbers in the commit (2026-10-16: the
+   carry's warp and lane made opaque per phase read 42.2% against 44.2% and ran 0.9-2.8% faster), or in the commit
+   that corrects the model, every floor re-read on an unchanged kernel (2026-11-03: the cover read one warp alone
+   times its warps, blind to the shared issue port -- the old arm-2 sm_80 readout 52.8% where 80 pipe cycles over 169
+   instructions allow 47.3%). An architecture the host cannot run is lowered on the local card's comparison, marked
+   owed to its own rented run.
 5. A TARGET THAT DISAPPEARS IS RED: a floor, budget line or gate row naming a function, loop or cell the tree no longer
    has fails; it never reads as nothing.
 6. ONE PRIMITIVE A JOB: before writing a helper, the common headers (`common/ops.cuh`, `common/*.cuh`) are read for

@@ -60,18 +60,26 @@ MACHINES = {
 }
 
 
+#: a warp's shared write by its width in words, cycles of the memory pipe (lab `smem_rates`, sm_86: `st.shared.u32`
+#: and a lane-a-bank `red.shared.add` 2.003 a wavefront, `st.shared.v2` 1.064 of two, `st.shared.v4` 1.143 of four)
+SHARED_WRITE = {1: 2.0, 2: 2.13, 4: 4.57}
+
+
 def mem_cost(op: str, text: str, mach: dict) -> float:
     """The cycles an instruction holds the SM's memory pipe: a 128-byte shared wavefront a cycle (`mem_wavefront`:
-    the SM's shared-memory bandwidth, calibration.md's `matrix_load` rows), a global sector `mem_sector`. The
-    counts are the instruction's own: an `ldmatrix` of `k` matrices `k` wavefronts, a 128-bit shared access four,
-    a coalesced global access its width's sectors -- a divergent one is not read off the text."""
+    the SM's shared-memory bandwidth, calibration.md's `matrix_load` rows), a shared write or atomic its measured
+    `SHARED_WRITE`, a global sector `mem_sector`. The counts are the instruction's own: an `ldmatrix` of `k`
+    matrices `k` wavefronts, a 128-bit shared load four, a coalesced global access its width's sectors -- a bank
+    conflict or a divergent access is not read off the text."""
     if op == "LDSM":
         m = re.search(r"\.(\d)\s", text + " ")
         return (int(m.group(1)) if m else 4) * mach["mem_wavefront"]
-    if op in ("LDS", "STS", "LDGSTS"):
-        width = 4 if ".128" in text else 2 if ".64" in text else 1
+    width = 4 if ".128" in text else 2 if ".64" in text else 1
+    if op in ("STS", "ATOMS"):
+        return SHARED_WRITE[width] * mach["mem_wavefront"]
+    if op in ("LDS", "LDGSTS"):
         return width * mach["mem_wavefront"]
-    if op in ("SHFL", "ATOMS"):
+    if op == "SHFL":
         return mach["mem_wavefront"]
     if op in ("LDG", "STG"):
         return (4 if ".128" in text else 2 if ".64" in text else 1) * mach["mem_sector"]

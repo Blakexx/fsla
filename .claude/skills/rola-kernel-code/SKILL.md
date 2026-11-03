@@ -23,7 +23,8 @@ description: Load before writing or changing CUDA in this repo (csrc/ or measure
    page (`docs/KERNEL_STANDARDS.md#comment-density`).
 6. Read the SASS before anything runs: `python tools/lab.py sass <experiment>` in the lab,
    `python tools/sass_gate.py <.so>` on an extension build (it runs inside every build too); its step cover reads
-   every MMA loop's pipe share (`docs/KERNEL_STANDARDS.md#s32` item 4).
+   every MMA loop's pipe share with its warps together, and the target is the line -- a debt's floor is only its
+   ratchet (`docs/KERNEL_STANDARDS.md#s32` item 4).
 7. Run new device code first under `timeout -s KILL` (`docs/KERNEL_STANDARDS.md#first-run`).
 8. Prove it: correctness with `rola-test`; cost with `rola-lab` (an experiment), `rola-instruments` (a shipped
    kernel's attribution) or `rola-bench` (the declared measurement). Commit with `rola-commit`.

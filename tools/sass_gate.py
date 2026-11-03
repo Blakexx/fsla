@@ -20,9 +20,10 @@ What it reads, per function of every cubin (every kernel and every outlined devi
                   forms (a magic-constant FFMA, a PRMT) run at 64 (KERNEL_STANDARDS section 29)
   global memory in a step -- LDG/STG/RED/ATOMG inside an MMA loop: a step's operands are staged ahead by `cp.async`
                   (LDGSTS, allowed), and a reduction to global memory belongs to a drain outside the steps
-  the step cover -- each innermost MMA loop simulated for one warp from ptxas's control words (`pipe_sim`), its pipe
-                  share alone times the warps a scheduler its registers admit, under `STEP_LINE` (KERNEL_STANDARDS
-                  section 32); a debt kernel held at its floor (`--write-floors` records them)
+  the step cover -- each innermost MMA loop simulated from ptxas's control words (`pipe_sim`) with the warps a
+                  scheduler its registers admit sharing its issue port and the SM's memory pipe, its pipe share
+                  under `STEP_LINE` (KERNEL_STANDARDS section 32); a debt kernel held at its floor (`--write-floors`
+                  records them)
 On a whole extension it also reds every kernel the source defines (`tools/kernels.py`) that no cubin carries: a gate
 that cannot see a kernel has not gated it. It prints the counts it reads, the same way `ratify` prints registers and
 spills, so a clean run is a line of zeros and a red names the signature.
@@ -244,6 +245,9 @@ _STEP_COVER_DEBT = {
     "carry_kernel": "the read side's software pipeline (the readout's next tile loaded under its MMAs, the image's "
                     "batches stored while read) and the fold chain's",
     "produce_kernel": "its operands staged by cp.async a step ahead (with section 29's global-memory debt)",
+    "intra_kernel": "its writer rows' bytes: the stage ring's copies beside the Gram run near 8 bytes a cycle an SM, "
+                    "under the f16 dense rows' need (the u8 dense levels' format, proposed); read under the line once "
+                    "the cover read its warps together",
     "readout_part": "the readout component's rebuild replaces the skeleton's",
     "calib_kernel": "a calibration probe, not a production step",
 }
@@ -255,13 +259,15 @@ def step_cover(cubin: Path, name: str, lines: list[tuple[int, str, str, str]], l
                registers: int) -> dict | None:
     """KERNEL_STANDARDS section 32 on the SASS: each innermost MMA loop's period for one warp alone, simulated from
     ptxas's control words with the tensor pipe as a resource (`pipe_sim`, the model `burst_gate` reads), its pipe
-    time's share of it (the occupancy), and the COVER: that share times the warps a scheduler the registers admit,
-    at most 100 -- the most the loop's warps together can keep the pipe busy, since a warp sharing its scheduler
-    never runs faster than alone. The worst loop's reading, or None without an MMA loop."""
+    time's share of it (the occupancy), and the COVER: the pipe's share with the warps a scheduler the registers admit
+    running the loop together -- one issue port a scheduler, one memory pipe the SM's every warp shares -- at most
+    the share alone times those warps (a warp sharing its scheduler never runs faster than alone) and 100. The worst
+    loop's reading, or None without an MMA loop."""
     loops = mma_loops(lines, labels)
     if not loops:
         return None
     import burst_gate
+    import pipe_sim
 
     arch = sass_control.machine(cubin)
     mach = sass_control.MACHINES[arch]
@@ -273,11 +279,13 @@ def step_cover(cubin: Path, name: str, lines: list[tuple[int, str, str, str]], l
     for target, k in loops:
         body = [(a, *encoded[a]) for a, _, _, _ in lines[target:k + 1] if a in encoded]
         c = burst_gate.coverage(body, mach, arch)
-        c["cover"] = round(min(100.0, c["occupancy"] * warps), 1)
+        together = pipe_sim.simulate(body, warps, 6, False, sm_warps=pipe_sim.MACHINE["schedulers"] * warps)
+        c["together"] = round(100 * together["occupancy"], 1)
+        c["cover"] = round(min(100.0, c["occupancy"] * warps, c["together"]), 1)
         c["warps"] = warps
         each.append({"first": lines[target][0], "last": lines[k][0], "instr": k - target + 1,
                      "hmma": sum(1 for x in lines[target:k + 1] if _MMA.match(x[1])),
-                     **{key: c[key] for key in ("cover", "period", "pipe", "exposed", "worst")}})
+                     **{key: c[key] for key in ("cover", "together", "period", "pipe", "exposed", "worst")}})
         if worst is None or c["cover"] < worst["cover"]:
             worst = c
     worst["loops"] = len(loops)

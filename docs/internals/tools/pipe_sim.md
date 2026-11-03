@@ -25,8 +25,10 @@ plus the latency for a memory instruction); and, for an HMMA, the tensor pipe's 
 Each scheduler has an issue port (one instruction a cycle, a global access `issue` cycles) and a
 tensor pipe (one HMMA every `hmma_pipe` cycles, NO queue: a warp waits at an HMMA until the pipe
 is free -- the chain row refuted the two-deep queue the first model assumed). The SM has ONE
-memory pipe: every shared access holds it a cycle a 128-byte wavefront (`sass_control.mem_cost`:
-an `ldmatrix` of k matrices k cycles, a 128-bit access four), a global access `mem_sector` cycles
+memory pipe: every shared load holds it a cycle a 128-byte wavefront (`sass_control.mem_cost`:
+an `ldmatrix` of k matrices k cycles, a 128-bit load four), a shared write or atomic its measured
+`SHARED_WRITE` (lab `smem_rates`: a 32-bit store or lane-a-bank reduction 2 cycles, a 64-bit store
+2.13, a 128-bit 4.57), a global access `mem_sector` cycles
 a sector; it takes instructions in issue order behind a queue of `mem_queue` cycles, and a memory
 instruction does not issue while the queue is longer (the profiler's `mio_throttle`). Every warp
 starts at once. Occupancy = HMMAs x hmma_pipe x warps a scheduler over the steady-state period.
