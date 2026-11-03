@@ -151,7 +151,7 @@ lane's largest over its entries, joined over the digit's eight lanes; [the lists
 
 ## The ranks: one slot map a (window, side, group)
 
-Every slot-addressed consumer -- the readout's pool and panel rows, the fold's pool rows, the den pass's staged rows --
+Every slot-addressed consumer -- the readout's pool and panel rows, the fold's pool rows --
 reads one slot map a union (ruled 2026-10-12). A union token's SLOT is its RANK, its place among the union's tokens in
 token order (ruled 2026-10-13). After the vote's barrier every warp scans the 16 union words' counts (a 16-lane shuffle
 scan), and its two words' tokens go out to `union_tok` at their slots -- a word's tokens at consecutive slots, so the

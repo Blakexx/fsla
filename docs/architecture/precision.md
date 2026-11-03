@@ -7,7 +7,7 @@ The distinction is the whole document, so state it first.
 
 | | What it means | Rule |
 |---|---|---|
-| **ACCUMULATION** | the format a value is *added into* across steps and carried: the fold's state, the mass, the den pass's sums, the readout's partials across lists and CTAs | fp32 or exact integer, closed. Not a default, not a knob. |
+| **ACCUMULATION** | the format a value is *added into* across steps and carried: the fold's state, the mass (the state's v+1 channel), the scale pass's write masses, the readout's partials across lists and CTAs | fp32 or exact integer, closed. Not a default, not a knob. |
 | **STORAGE and OPERANDS** | the format a value is *held in* and read, without being accumulated into: routing rows, values, the stored state between calls, the readout's image, the output | declared per component, each with its quality measured against fp64. |
 
 A read-only value that is 1 ULP wrong contributes an error bounded by its own magnitude, once. An accumulator that is
@@ -24,7 +24,7 @@ nothing bounds what accumulation embeds.
 | the stored state | s24 a leaf-channel (an s16 hi plane and a u8 lo plane) at an s8 power-of-two exponent a (leaf, 32-channel group); the mass fp32 | -- |
 | the fold | A the slots' dense slices f16 times c (f16 at `2^(E - unit)`), B the values f16 | fp32 on every card, each list in its running unit |
 | the readout | the state's f16 image at a power of two a digit, the digit's largest value under 2^10; read rows f16; the coefficient f16 | fp32 where fp32 accumulate is full rate (A100, A6000, A40), fp16 on GeForce, chosen per product from `hardware.json`; the partials exact s16 pairs at each token's unit, summed as u32 |
-| the den pass | the read rows f16, the write mass and `F` | fp32 |
+| the scale pass | the rows as stored (a u8 digit over 255, a dense f16), `F` | fp32, the byte by the carry's rule |
 | decode | the bundle's token, the stored state | each written element updated in fp32 and rounded to its group's unit (2^-23 of the group's largest) |
 | the output | `y = P x unit / den`, bf16 | -- |
 

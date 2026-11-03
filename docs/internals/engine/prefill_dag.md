@@ -20,15 +20,16 @@ against the state the call is handed. `rola.rola_op` validates the context in th
 | `residency` (stateful) | `state_in`, `arena` | the state's entry plane, this call's write atoms committed |
 | `nodes.join` (stateful) | | waits for the admission before anything reads the page table |
 | `nodes.backing` | `page_table`, `state_out` | the planes the launch is handed; a continuation's are one |
-| `launch` | `num`, `den` | the den pass, the carry at its scale bytes and the intra into the same planes, each over the reader factor (`rola.ops.prefill.prefill`, [`#the-seam`](#the-seam)) |
+| `launch` | `num`, `den` | the scale pass, the carry at its bytes (`num` and the v+1 channel `den`) and the intra into the same planes, each over the reader factor (`rola.ops.prefill.prefill`, [`#the-seam`](#the-seam)) |
 | `post` | `y` | THE POST PASS, `y = num / (den + eps / r)`, `[B, T, H, d_v]` fp32 (`rola.ops.prefill.readout`; `r` the reader factor the kernels leave out) |
 
 ## The seam
 
-The DAG is seeded with the bundle itself. The facts pass, the den pass, the carry and the intra read its rows and f16
+The DAG is seeded with the bundle itself. The facts pass, the scale pass, the carry and the intra read its rows and f16
 values where the producer stores them, grouped or not (`docs/api.md#grouped-queries`). The `launch` node is one
-composition (`rola.ops.prefill.prefill`): the den pass gives each token's earlier-window denominator and the bound its
-scale byte is cut from, the carry reduces its partials at those scale bytes, and the intra reduces its in-window pairs
+composition (`rola.ops.prefill.prefill`): the scale pass gives each token's scale byte (the write-aligned bound,
+`docs/internals/scale/scale.md`), the carry reduces its partials at those bytes and reads each token's earlier-window
+denominator out as its v+1 channel, and the intra reduces its in-window pairs
 into the same two planes; each kernel's sums are brought to one unit, the recurrence's over the reader factor
 (`rola/ops/prefill.py`'s header). A stateless segment runs end to end. A stateful one is refused by the envelope until
 the carry reads and writes a segment boundary, and so is a cell no carry arm is built for

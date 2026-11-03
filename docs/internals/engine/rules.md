@@ -118,7 +118,7 @@ The carry's CTA owns a BOX of leaves -- an extent a level, and a channel extent 
 two operations on it: the fold over the write side's lists and the readout over the read
 side's. The box and both sides' operation plans are one value, `Carve` (`types.py`), and
 every kernel that depends on the geometry takes it: the facts pass groups its unions and
-lists by the box's list levels, the den pass and the carry address by it. A kernel
+lists by the box's list levels, and the carry addresses by it. A kernel
 validates the carve it is handed and refuses one it was not built for; it never decides
 a carve. So the planner can change -- a cost model in place of fixed rules -- and every
 kernel keeps working for whatever it returns.

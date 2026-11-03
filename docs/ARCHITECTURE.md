@@ -284,8 +284,9 @@ units in; the PUBLISH of the state to the readout's f16 operand (through shared 
 different leaves); the READOUT passes, each slot's read operand against the f16 state into a panel DRAINED to `num`
 as packed s16 pairs at the token's unit, added by u32 atomics (CTAs join only there, R22); then the FOLD, the
 window's write slots in units of passes ringing two shared slots, each a burst of fp32-accumulate MMAs into the state.
-The mass is not the carry's: it is the den pass's, which also gives each token's readout unit; the carry takes the
-units as an input, and the den pass is not yet built ([`open-work.md`](open-work.md),
+The mass is the carry's own v+1 channel, read out beside `num` as each token's `den` (ruled 2026-11-02); the f16 sum's
+scale bytes come from the scale pass, the write-aligned bound ([`internals/scale/scale.md`](internals/scale/scale.md),
+[`open-work.md`](open-work.md),
 [`internals/carry/carry.md`](internals/carry/carry.md),
 [`internals/carry/carry_kernel.md`](internals/carry/carry_kernel.md)).
 

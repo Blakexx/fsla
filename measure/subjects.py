@@ -17,8 +17,8 @@ the sequence enters with, which is what the carry family's oracle and probe run 
 (`measure.cells.layer`): a producer, a routing template and a gain, from which the amplitudes are PRODUCED -- the
 only way to price the producer's own solve or a decode step through the layer.
 
-**EVERYTHING OUTSIDE THE LAUNCH IS BUILT ONCE, HERE.** The bundle, the facts pass's lists, the carve, the den pass's
-units: all of it happens before the callable is returned, so a timed span wraps the launch and nothing else.
+**EVERYTHING OUTSIDE THE LAUNCH IS BUILT ONCE, HERE.** The bundle, the facts pass's lists, the carve, the scale pass's
+bytes: all of it happens before the callable is returned, so a timed span wraps the launch and nothing else.
 """
 from __future__ import annotations
 
@@ -100,7 +100,7 @@ def read_row_of(spec):
 
 def carry_operands(spec):
     """``(routes, values, facts, carve, unit)``: what the carry launch takes for a cell, from the bundle's rows and
-    values, the facts pass's lists, the carve the planner picks and the den pass's units (zeros: the launch reads them,
+    values, the facts pass's lists, the carve the planner picks and the scale bytes (zeros: the launch reads them,
     the pass that writes them is not timed)."""
     from measure.cells import realize
     from rola.ops import facts as facts_ops
@@ -114,7 +114,7 @@ def carry_operands(spec):
 
 def _zero_scale(routes) -> torch.Tensor:
     """The carry's scale bytes at zero, ``[B H, windows x W]`` int8: the plane covers whole windows of the device's ``W``
-    (the den pass's output, which these subjects do not time)."""
+    (the scale pass's output, which these subjects do not time)."""
     from rola.ops.window import window_of
 
     W = window_of(routes.device)
@@ -138,7 +138,7 @@ def carry_intra(fx) -> Launch:
     """THE TWO KERNELS AS ONE OPERATOR: the carry and the intra over one cell's bundle, facts the caller built.
 
     A KERNEL-LEVEL SUBJECT, not the op (Blake, 2026-09-15): the facts pass runs once here, untimed, as the prefill's
-    contract says it is the caller's; producing the bundle, the den pass, the epilogue and the pages are not timed. At
+    contract says it is the caller's; producing the bundle, the scale pass, the epilogue and the pages are not timed. At
     ``calls`` above one the sequence runs as that many calls over whole windows, the state carried between them: what a
     chunked prefill pays. A chain refuses until the carry's segment boundary carries a state between calls.
     """
@@ -171,29 +171,31 @@ def carry_intra(fx) -> Launch:
     return Launch(name=f"carry_intra|{spec.name}", call=run, reset=reset)
 
 
-def den_pass(fx) -> Launch:
-    """Each token's denominator against the earlier windows' write mass and its scale byte's bound, from the facts
-    pass's lists (built once, here): the pass the prefill runs before the carry."""
+def scale_pass(fx) -> Launch:
+    """Each token's scale byte for the carry's f16 sum, the write-aligned bound from the bundle's rows and the facts
+    pass's ``(F, m)`` (built once, here): the pass the prefill runs before the carry."""
     from measure.cells import realize
-    from rola.ops import den as den_ops
     from rola.ops import facts as facts_ops
+    from rola.ops import scale as scale_ops
+    from rola.ops.prefill import carry_factor
 
     spec = fx["cell"]
     routes, values, layout, statics = bundle_of(spec, realize(spec))
-    refusal = den_ops.serves(routes)
+    refusal = scale_ops.serves(routes)
     if refusal is not None:
         raise LookupError(f"{spec.name}: {refusal}")
     facts = facts_ops.facts(routes, values, layout, *statics, read_row_of(spec))
+    factor = carry_factor(routes)
 
     def run():
-        return den_ops.den(routes, facts)
+        return scale_ops.scale(routes, facts, factor)
 
-    return Launch(name=f"den_pass|{spec.name}", call=run)
+    return Launch(name=f"scale_pass|{spec.name}", call=run)
 
 
 def prefill_op(fx) -> Launch:
     """THE PREFILL AS THE OP RUNS IT: `rola.interface.rola_op` over the cell's bundle, stateless -- the validation, the
-    facts pass, the den pass, the carry, the intra, the glue between them and the readout. A cell the envelope refuses
+    facts pass, the scale pass, the carry, the intra, the glue between them and the readout. A cell the envelope refuses
     raises its refusing clause at the first call."""
     from measure.cells import realize
     from rola.interface import rola_op
@@ -376,29 +378,31 @@ def layer_facts(fx) -> Launch:
     return Launch(name=f"layer_facts|{spec.name}|{fx['construction'].name}", call=run)
 
 
-def layer_den(fx) -> Launch:
-    """THE OP'S DEN PASS on the layer's own bundle and facts (both built once, untimed)."""
-    from rola.ops import den as den_ops
+def layer_scale(fx) -> Launch:
+    """THE OP'S SCALE PASS on the layer's own bundle and facts (both built once, untimed)."""
+    from rola.ops import scale as scale_ops
+    from rola.ops.prefill import carry_factor
 
     spec = fx["cell"]
     routes, _values, _layout, _statics, _carve, facts = _layer_facts(fx)
+    factor = carry_factor(routes)
 
     def run():
-        return den_ops.den(routes, facts)
+        return scale_ops.scale(routes, facts, factor)
 
-    return Launch(name=f"layer_den|{spec.name}|{fx['construction'].name}", call=run)
+    return Launch(name=f"layer_scale|{spec.name}|{fx['construction'].name}", call=run)
 
 
 def layer_carry(fx) -> Launch:
-    """THE OP'S CARRY on the layer's own bundle, at the scale bytes the op derives from the den pass's bound (the
-    producer, the facts pass and the den pass run once, untimed)."""
+    """THE OP'S CARRY on the layer's own bundle, at the scale pass's bytes (the producer, the facts pass and the scale
+    pass run once, untimed)."""
     from rola.ops import carry as carry_ops
-    from rola.ops import den as den_ops
-    from rola.ops import prefill as prefill_ops
+    from rola.ops import scale as scale_ops
+    from rola.ops.prefill import carry_factor
 
     spec = fx["cell"]
     routes, values, _layout, _statics, carve, facts = _layer_facts(fx)
-    scale = prefill_ops.scale_bytes(routes, den_ops.den(routes, facts)[1])
+    scale = scale_ops.scale(routes, facts, carry_factor(routes))
 
     def run():
         return carry_ops.carry(routes, values, facts, carve, scale)
@@ -428,7 +432,7 @@ def layer_intra(fx) -> Launch:
 
 def layer_op(fx) -> Launch:
     """THE OP ALONE on the layer's own bundle (the producer run once, untimed): `rola.interface.rola_op`, stateless --
-    the facts pass, the den pass, the carry, the intra, the glue and the readout. Beside `layer_prefill` it splits the
+    the facts pass, the scale pass, the carry, the intra, the glue and the readout. Beside `layer_prefill` it splits the
     layer into the producer and the op; beside the stage subjects, the op into its launches and its glue."""
     from rola.interface import rola_op
 
@@ -506,16 +510,16 @@ SUBJECTS = {
                              level="kernel", symbol="carry_kernel", stamp="carry_build_stamp"),
     "carry_intra": Subject("carry_intra", "carry", carry_intra,
                            "the carry and the intra as one operator, over facts the caller built: the two kernels, "
-                           "never the op's facts, den pass, epilogue or paging",
+                           "never the op's facts, scale pass, epilogue or paging",
                            level="kernel", symbol="carry_kernel", stamp="carry_build_stamp", calls=(1, 4)),
     "intra_forward": Subject("intra_forward", "carry", intra_forward,
                              "the within-window term at the shared window",
                              level="kernel", symbol="intra_kernel", stamp="intra_build_stamp"),
-    "den_pass": Subject("den_pass", "carry", den_pass,
-                        "each token's earlier-window denominator and scale bound, from the facts pass's lists",
-                        level="kernel", symbol="den_kernel", stamp="csrc_build_stamp"),
+    "scale_pass": Subject("scale_pass", "carry", scale_pass,
+                          "each token's scale byte for the carry's f16 sum, from the rows and the facts pass's (F, m)",
+                          level="kernel", symbol="scale_(writes|scan|reads)", stamp="csrc_build_stamp"),
     "prefill": Subject("prefill", "carry", prefill_op,
-                       "the stateless prefill as rola_op runs it: facts, den, carry, intra, glue and readout",
+                       "the stateless prefill as rola_op runs it: facts, scale, carry, intra, glue and readout",
                        level="op", symbol="carry_kernel", stamp="carry_build_stamp"),
     "facts_pass": Subject("facts_pass", "carry", facts_pass,
                           "both sides' class-1 liveness words and the fold's window scales, from the bundle",
@@ -534,11 +538,11 @@ SUBJECTS = {
     "layer_facts": Subject("layer_facts", "layer", layer_facts,
                            "the op's facts pass on the layer's own bundle",
                            level="kernel", symbol="facts_pass", stamp="csrc_build_stamp"),
-    "layer_den": Subject("layer_den", "layer", layer_den,
-                         "the op's den pass on the layer's own bundle and facts",
-                         level="kernel", symbol="den_kernel", stamp="csrc_build_stamp"),
+    "layer_scale": Subject("layer_scale", "layer", layer_scale,
+                           "the op's scale pass on the layer's own bundle and facts",
+                           level="kernel", symbol="scale_(writes|scan|reads)", stamp="csrc_build_stamp"),
     "layer_carry": Subject("layer_carry", "layer", layer_carry,
-                           "the op's carry on the layer's own bundle, at the den pass's scale bytes",
+                           "the op's carry on the layer's own bundle, at the scale pass's bytes",
                            level="kernel", symbol="carry_kernel", stamp="carry_build_stamp"),
     "layer_intra": Subject("layer_intra", "layer", layer_intra,
                            "the op's within-window term on the layer's own bundle and facts",

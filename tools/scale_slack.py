@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE SCALE'S SLACK: whether a bound cheaper than the den pass's can stand as the scale of the carry's f16 sum across
-CTAs. The carry runs on one bundle at the den pass's scale bytes twice and once at each candidate's, its f16-pair
-``num`` taken back by each token's power of two; the sum's order across CTAs is the atomics' arrival, so two runs at
-one scale differ by f16's rounding already -- a candidate is harmless where its spread from the den-pass run is that
-run-to-run spread. Beside it, each token's slack: log2 of the bound over the exact read product.
+"""THE SCALE'S SLACK: whether a bound looser than the exact read product can stand as the scale of the carry's f16 sum
+across CTAs. The carry runs on one bundle at the exact bound's scale bytes twice and once at each candidate's -- the
+scale pass's own bytes among them -- its f16-pair ``num`` taken back by each token's power of two; the sum's order
+across CTAs is the atomics' arrival, so two runs at one scale differ by f16's rounding already -- a candidate is
+harmless where its spread from the exact-bound run is that run-to-run spread. Beside it, each token's slack: log2 of
+the bound over the exact read product.
 
     python tools/scale_slack.py nl64k-alt-k4 flagship-cohort-k16-L16384 [--json slack.json]   # carry cells
     python tools/scale_slack.py nl64k-alt-h4 nl64k-alt-h4-g16                                 # layer constructions
 
 THE BOUNDS on ``|num(t)|`` (``x`` a read row, ``w`` a write row, ``g`` the write gain, ``s`` a writing token's value
 scale, each sum over the writing tokens of the windows before t's), in the recurrence's units:
-  exact  sum_a x_S(t, a) sum_r x_R(t, r) M(a, r),  M(a, r) = sum w_S(a) w_R(r) g s   (the den pass's num)
+  exact  sum_a x_S(t, a) sum_r x_R(t, r) M(a, r),  M(a, r) = sum w_S(a) w_R(r) g s
   write  (sum_r x_R(t, r)) sum_a x_S(t, a) G(a),     G(a) = sum w_S(a) max_r w_R(r) g s
   facts  (sum_a x_S(t, a)) (sum_r x_R(t, r)) sum max_a w_S(a) max_r w_R(r) g s
   window (sum_a x_S(t, a)) (sum_r x_R(t, r)) max_a G(a)                          (a window's one write mass)
-the scale bytes take each in the den pass's units: the reader's per-token row scales left out (`den_units`).
+the scale bytes take each over the reader's per-token row scales and the carry's factor (`p_of`), by the byte rule.
 
 Docs: docs/internals/tools/scale_slack.md.
 """
@@ -68,18 +69,28 @@ def bounds(routes, values) -> dict:
     return {k: v.permute(0, 2, 1).reshape(B * H, T).contiguous() for k, v in out.items()}
 
 
-def den_units(routes):
-    """``[B H, T]`` fp64: what the den pass's sums are multiplied by to be the recurrence's (`test_den_vs_oracle`'s
-    ``in_truth``): each read level's per-token row scale, a byte level S's coefficient over 256, a byte write level R's
-    mass on the byte scale."""
-    ls, lr = routes.level_s, 1 - routes.level_s
-    f = routes.scale_read[ls].double() * routes.scale_read[lr].double()          # [B, T, H]
-    if routes.sparse[0][ls]:
-        f = f * (256.0 / 255.0)
-    if routes.sparse[1][lr]:
-        f = f / 255.0
-    B, T, H = f.shape
-    return f.permute(0, 2, 1).reshape(B * H, T)
+def p_of(routes, bound):
+    """``[B H, T]`` fp64: a bound in the recurrence's units over the reader's factor and the carry's (the byte rule's
+    ``P``)."""
+    from rola.ops.prefill import carry_factor, reader_factor
+
+    return bound / (reader_factor(routes).double() * carry_factor(routes))
+
+
+def bytes_of(p):
+    """``[B H, windows W]`` int8: the byte rule on ``P`` over the window grid (`csrc/rola/src/carry/carry.cuh`'s
+    `unit_byte`), a partial window's tail reading nothing."""
+    import torch
+
+    from rola.ops.prefill import UNIT_HEADROOM, UNIT_LEVELS, UNIT_NONE
+    from rola.ops.window import window_of
+
+    s = torch.ceil(torch.log2(UNIT_HEADROOM * p.clamp_min(1e-300))) - UNIT_LEVELS
+    s = torch.where(p > 0, s, torch.full_like(s, UNIT_NONE)).clamp(-128, 127).to(torch.int8)
+    W = window_of(p.device)
+    grid = torch.full((p.shape[0], -(-p.shape[1] // W) * W), UNIT_NONE, dtype=torch.int8, device=p.device)
+    grid[:, :p.shape[1]] = s
+    return grid
 
 
 def operands(name: str):
@@ -102,24 +113,23 @@ def operands(name: str):
 
 
 def reading(name: str) -> dict:
-    """One cell: the den pass's bound against the exact product, each candidate's slack, and each candidate's spread
-    from the den-pass run against two den-pass runs' own."""
+    """One cell: the scale pass's bytes against the write bound's, each candidate's slack, and each candidate's spread
+    -- the pass's own bytes among them -- from the exact-bound run against two exact-bound runs' own."""
     import torch
 
     from rola.ops import carry as carry_ops
-    from rola.ops import den as den_ops
-    from rola.ops.prefill import scale_bytes, unpack_num
+    from rola.ops import scale as scale_ops
+    from rola.ops.prefill import carry_factor, unpack_num
 
     routes, values, facts, carve = operands(name)
-    _den, bound = den_ops.den(routes, facts)
     true = bounds(routes, values)
-    unit = den_units(routes)
     exact = true["exact"]
     live = exact > 0
 
     def num_at(scale):
         num, _den, _ = carry_ops.carry(routes, values, facts, carve, scale, reduce_dtype=torch.float16)
-        return unpack_num(num, 32).double() * torch.exp2(scale.double() + 1)[..., None]
+        got = unpack_num(num, 32).double()
+        return got * torch.exp2(scale[:, :got.shape[1]].double() + 1)[..., None]
 
     def spread(got, ref):
         r = ((got - ref).abs().amax(-1) / ref.abs().amax(-1).clamp_min(1e-300))[live]
@@ -132,14 +142,19 @@ def reading(name: str) -> dict:
         return {"min": round(float(r.min()), 3), "median": round(float(q[0]), 2), "p99": round(float(q[1]), 2),
                 "max": round(float(r.max()), 2)}
 
-    ref_scale = scale_bytes(routes, bound)
+    ref_scale = bytes_of(p_of(routes, exact))
     ref = num_at(ref_scale)
-    out = {"cell": name, "tokens": int(live.sum()), "den_pass": slack(bound.double() * unit),
+    pass_scale = scale_ops.scale(routes, facts, carry_factor(routes))
+    T = exact.shape[1]
+    out = {"cell": name, "tokens": int(live.sum()),
+           "pass_vs_write": int((pass_scale[:, :T] != bytes_of(p_of(routes, true["write"]))[:, :T]).sum()),
            "run_to_run": spread(num_at(ref_scale), ref), "candidates": {}}
     for key in ("write", "facts", "window"):
-        got = num_at(scale_bytes(routes, (true[key] / unit).float()))
+        got = num_at(bytes_of(p_of(routes, true[key])))
         out["candidates"][key] = {"slack": slack(true[key]), "spread": spread(got, ref),
                                   "below_exact": int((true[key][live] < exact[live] * (1 - 1e-9)).sum())}
+    out["candidates"]["pass"] = {"slack": out["candidates"]["write"]["slack"], "spread": spread(num_at(pass_scale), ref),
+                                 "below_exact": out["candidates"]["write"]["below_exact"]}
     return out
 
 
@@ -152,8 +167,8 @@ def main() -> int:
     for c in a.cells:
         r = reading(c)
         rows.append(r)
-        d, rr = r["den_pass"], r["run_to_run"]
-        print(f"{r['cell']}: {r['tokens']} tokens; den pass / exact log2 {d['min']} .. {d['max']};"
+        rr = r["run_to_run"]
+        print(f"{r['cell']}: {r['tokens']} tokens; the scale pass's bytes off the write bound's: {r['pass_vs_write']};"
               f" run to run median {rr['median']:.2e} max {rr['max']:.2e}")
         for key, c_ in r["candidates"].items():
             s, sp = c_["slack"], c_["spread"]

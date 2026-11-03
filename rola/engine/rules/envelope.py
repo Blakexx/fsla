@@ -17,16 +17,16 @@ from rola.engine import rule
 
 
 @rule(gives=("prefill_envelope",),
-      needs=("widths", "d_v", "decay", "tokens", "window", "intra_reads", "intra_dv", "carry_arm", "den_refusal",
+      needs=("widths", "d_v", "decay", "tokens", "window", "intra_reads", "intra_dv", "carry_arm", "scale_refusal",
              "stateful"))
 def prefill_envelope(widths: tuple[int, ...], d_v: int, decay: Any, tokens: int, window: int,
-                     intra_reads: bool, intra_dv: int, carry_arm: tuple[int, ...] | None, den_refusal: str | None,
+                     intra_reads: bool, intra_dv: int, carry_arm: tuple[int, ...] | None, scale_refusal: str | None,
                      stateful: bool) -> str | None:
     """Why the prefill has no kernel for this segment, or None if it runs.
 
     ``intra_reads`` is whether the intra kernel reads these level widths (`rola.ops.intra.admits`) and ``intra_dv``
     the value width it reads; ``carry_arm`` the arm key of the carve the planner picks when the binary's own census
-    carries it, else ``None``; ``den_refusal`` the den pass's (`rola.ops.den.serves`); ``stateful`` whether the call
+    carries it, else ``None``; ``scale_refusal`` the scale pass's (`rola.ops.scale.serves`); ``stateful`` whether the call
     hands a state in or out.
     """
     if decay is not None:
@@ -39,8 +39,8 @@ def prefill_envelope(widths: tuple[int, ...], d_v: int, decay: Any, tokens: int,
         return f"d_v={d_v}; the intra reads value width {intra_dv}"
     if carry_arm is None:
         return f"widths={widths}, d_v={d_v}; this build carries no carry arm for the carve the planner picks"
-    if den_refusal is not None:
-        return f"the den pass does not serve this bundle: {den_refusal}"
+    if scale_refusal is not None:
+        return f"the scale pass does not serve this bundle: {scale_refusal}"
     if stateful:
         return ("a state handed in or out: the carry takes no entry state yet (its segment boundary is not built); "
                 "call statelessly")

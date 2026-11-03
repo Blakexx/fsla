@@ -26,6 +26,7 @@
 #include "src/entmax/entmax.cuh"
 #include "src/entmax/factor.cuh"
 #include "src/den/den_api.cuh"
+#include "src/scale/scale_api.cuh"
 #include "src/facts/facts_api.cuh"
 #include "src/intra/intra_api.cuh"
 #include "src/paging/vmm_owner.cuh"
@@ -148,6 +149,11 @@ STABLE_TORCH_LIBRARY(rola, m) {
       "int level_s, int read_list, int write_list, int heads) -> ()");
   m.def("den_ledger_bind(Tensor? ledger) -> ()");
 
+  // ---- the scale pass: each token's scale byte for the carry's f16 sum, the write-aligned bound --
+  m.def(
+      "scale_forward(Tensor[] read_rows, Tensor[] write_rows, Tensor fm, Tensor(a!) mass, Tensor(b!) bytes, "
+      "int[] widths, int level_s, int heads, float inv_factor) -> ()");
+
   // ---- the producer: one launch from the tokens to the bundle -------------
   m.def(
       "rola_produce_forward(Tensor x, Tensor route_W, Tensor? route_bias, Tensor gain_bias, Tensor v_W, Tensor jobs, "
@@ -222,6 +228,7 @@ STABLE_TORCH_LIBRARY_IMPL(rola, CompositeExplicitAutograd, m) {
   m.impl("carry_forward", TORCH_BOX(&rola::carry::carry_forward));
   m.impl("den_forward", TORCH_BOX(&rola::den::den_forward));
   m.impl("den_ledger_bind", TORCH_BOX(&rola::den::den_ledger_bind));
+  m.impl("scale_forward", TORCH_BOX(&rola::scale::scale_forward));
   m.impl("carry_readout_accumulate", TORCH_BOX(&rola::carry::carry_readout_accumulate));
   m.impl("device_window", TORCH_BOX(&device_window_op));
 

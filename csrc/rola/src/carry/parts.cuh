@@ -1323,17 +1323,6 @@ __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* 
   }
 }
 
-//: A UNIT BYTE from a bound `S` in the digits' exponent frame times `2^shift`: the smallest `u` with `1.02 S <= 2^(u +
-//: 15)`, held to int8; `kUnitByteNone` where nothing is read. -- see docs/internals/carry/parts.md#units
-constexpr int kUnitByteNone = -100;
-
-__device__ __forceinline__ int unit_byte(float s, int shift) {
-  const uint32_t bits = __float_as_uint(1.02f * s);
-  const int e = static_cast<int>(bits >> 23) - 127 + ((bits & 0x7fffffu) != 0u ? 1 : 0);
-  const int u = min(max(e + shift - 15, -128), 127);
-  return s > 0.0f ? u : kUnitByteNone;
-}
-
 //: THE DRAIN'S FACTOR a token, written beside its unit byte into the bounds table (free once its counts are read): f16
 //: pairs `2^(unit - scale - 1)` (the den pass's scale byte), fp32 `2^unit`; exact over the float range.
 //: -- see docs/internals/carry/parts.md#drain

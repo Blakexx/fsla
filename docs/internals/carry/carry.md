@@ -72,7 +72,7 @@ or its high bits within each four for a row of an odd number of 64-byte quarters
 `stride`, a level's step in the box index (the channel groups innermost). Every pointer is the bundle's own memory:
 the rows and values at their strides (the row alignment law, `docs/internals/facts/facts.md`), the facts pass's
 lists, the cross-CTA sum's scale bytes (`scale`, an exponent byte a query head's token, a window wide so a window's
-copy is aligned: the den pass's bound on |num(t)|, read only where `reduce` is f16 pairs). The outputs are `num` (a
+copy is aligned: the scale pass's bound on |num(t)|, `scale/scale.md`, read only where `reduce` is f16 pairs). The outputs are `den` (each token's v+1 channel, `parts.md#den`), `num` (a
 query head's: f16 pairs at each token's scale, or fp32 channels, by `reduce` -- `carry_api.md#carry-reduce`,
 `parts.md#drain`; each CTA's partials at its own units, `parts.md#units`) and `check` (the final state's sum). `plans` are the plan pass's records (`schedule.md#pass`), a window's for each box class.
 `readout_f16` is the readout's accumulation (`carry_api.md#carry-readout-accumulate`); `forced` a plan form every

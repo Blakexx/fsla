@@ -284,6 +284,56 @@
    "overlap": {
     "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
    }
+  },
+  "scale_writes": {
+   "oracle": "tests/oracle/test_scale_vs_oracle.py::test_every_byte_is_the_rules_on_the_fp64_bound",
+   "sanitizer": {
+    "owed": "a scale row of tools/sanitize_oracle.py's family table (the pass is new, 2026-11-02)"
+   },
+   "budget": {
+    "owed": "the line is met and measured at docs/internals/scale/scale_kernel.md#writes (tools/overlap_gate.py's rows); tools/budgets/scale.json lands with an instrument row that runs the pass's region ledger (none is declared yet)"
+   },
+   "phases": {
+    "exempt": "one phase a kernel (the window write masses): the pass is three streaming launches, each timed whole"
+   },
+   "ratified": {
+    "owed": "a new kernel: the next milestone ratify records it"
+   },
+   "overlap": "scale-writes-alt-k4"
+  },
+  "scale_scan": {
+   "oracle": "tests/oracle/test_scale_vs_oracle.py::test_every_byte_is_the_rules_on_the_fp64_bound",
+   "sanitizer": {
+    "owed": "a scale row of tools/sanitize_oracle.py's family table (the pass is new, 2026-11-02)"
+   },
+   "budget": {
+    "exempt": "a scan of windows x width_S x 8 bytes a head: no floor beyond its launch"
+   },
+   "phases": {
+    "exempt": "one phase a kernel (the windows' prefix): the pass is three streaming launches, each timed whole"
+   },
+   "ratified": {
+    "owed": "a new kernel: the next milestone ratify records it"
+   },
+   "overlap": {
+    "exempt": "a scan of windows x width_S x 8 bytes a head: its time is its launch's, under a microsecond of DRAM"
+   }
+  },
+  "scale_reads": {
+   "oracle": "tests/oracle/test_scale_vs_oracle.py::test_every_byte_is_the_rules_on_the_fp64_bound",
+   "sanitizer": {
+    "owed": "a scale row of tools/sanitize_oracle.py's family table (the pass is new, 2026-11-02)"
+   },
+   "budget": {
+    "owed": "the line is met and measured at docs/internals/scale/scale_kernel.md#writes (tools/overlap_gate.py's rows); tools/budgets/scale.json lands with an instrument row that runs the pass's region ledger (none is declared yet)"
+   },
+   "phases": {
+    "exempt": "one phase a kernel (the bytes): the pass is three streaming launches, each timed whole"
+   },
+   "ratified": {
+    "owed": "a new kernel: the next milestone ratify records it"
+   },
+   "overlap": "scale-reads-alt-k4"
   }
  }
 }

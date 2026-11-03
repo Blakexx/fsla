@@ -53,6 +53,16 @@ __host__ __device__ __forceinline__ constexpr uint32_t pool_chunk(int row, uint3
   return row == 128 ? k ^ (s & 7u) : (k & ~3u) | ((k ^ (s >> 1)) & 3u);
 }
 
+//: A UNIT BYTE: the least `u` with `1.02 S 2^shift <= 2^(u + 15)`, int8. -- see docs/internals/carry/parts.md#units
+constexpr int kUnitByteNone = -100;
+
+__device__ __forceinline__ int unit_byte(float s, int shift) {
+  const uint32_t bits = __float_as_uint(1.02f * s);
+  const int e = static_cast<int>(bits >> 23) - 127 + ((bits & 0x7fffffu) != 0u ? 1 : 0);
+  const int u = min(max(e + shift - 15, -128), 127);
+  return s > 0.0f ? u : kUnitByteNone;
+}
+
 //: A PLANE where the bundle holds it: a token's row at `base + b sb + h sh + t st` bytes.
 struct Plane {
   const uint8_t* base;

@@ -32,8 +32,8 @@ The CTAs holding a token's read leaves add their partials into one `num` row. In
 integers at the CTA's own unit (`parts.md#units`); across CTAs the sum's dtype is declared (ruled 2026-10-19): F16
 PAIRS (`torch.float16`; `num` int32 `[BH, T, d_v / 2]`, two channels a word in the panel's channel order) at each
 token's `scale` byte -- a power of two bounding |num(t)|, every CTA's the same, which f16's exponent absorbs with
-slack to ~2^27, so a loose bound costs nothing (the den pass's B(t), or a bound from the facts alone: measured
-identical, 2026-10-20) -- or FP32 (`torch.float32`; `num` fp32 `[BH, T, d_v]`, no scale read), twice the drain's L2
+slack to ~2^27, so a loose bound costs nothing (the scale pass's write-aligned bound, `scale/scale.md`: its slack
+2^14 at the layer's gain 16, measured 2026-11-02) -- or FP32 (`torch.float32`; `num` fp32 `[BH, T, d_v]`, no scale read), twice the drain's L2
 sectors. The error of the f16 sum grows as ~0.012% x sqrt(n) a token for `n` CTAs adding into a slot (0.095% at 64,
 0.41% at 1,024, a cliff past ~2,048: partials under half an ulp), fp32's ~1e-4% at any `n`. AUTO (`None`,
 `reduce_dtype_for`): f16 pairs while `reduce_ctas(carve)` -- the read side's boxes along every level -- stays within

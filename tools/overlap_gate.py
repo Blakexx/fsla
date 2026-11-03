@@ -60,6 +60,10 @@ ROWS = {
     "carry-alt-k4": Row(kernel="carry_kernel", launch="carry", cell="nl64k-alt-k4", heads=1, mma="shapes"),
     "carry-dense": Row(kernel="carry_kernel", launch="carry", cell="nl64k-dense", heads=1, mma="shapes"),
     "carry-alt-k4-g4": Row(kernel="carry_kernel", launch="carry", cell="nl64k-alt-k4-g4", heads=1, mma="shapes"),
+    "scale-writes-alt-k4": Row(kernel="scale_writes", launch="scale", cell="nl64k-alt-k4", heads=4),
+    "scale-reads-alt-k4": Row(kernel="scale_reads", launch="scale", cell="nl64k-alt-k4", heads=4),
+    "scale-writes-dense": Row(kernel="scale_writes", launch="scale", cell="nl64k-dense", heads=4),
+    "scale-reads-dense": Row(kernel="scale_reads", launch="scale", cell="nl64k-dense", heads=4),
 }
 #: THE PROBE ROWS: the instrument's own check, a kernel known to run at one floor (`--probe`)
 PROBES = {
@@ -95,6 +99,24 @@ def _launch_carry(cell: str, heads: int, repeat: int) -> None:
     torch.cuda.synchronize()
 
 
+def _launch_scale(cell: str, heads: int, repeat: int) -> None:
+    import torch
+
+    from measure.cells import by_name, realize
+    from measure.subjects import bundle_of, read_row_of
+    from rola.ops import facts as facts_ops
+    from rola.ops import scale as scale_ops
+    from rola.ops.prefill import carry_factor
+
+    spec = by_name(cell)
+    routes, values, layout, statics = bundle_of(spec, realize(spec, H=heads))
+    facts = facts_ops.facts(routes, values, layout, *statics, read_row_of(spec))
+    factor = carry_factor(routes)
+    for _ in range(repeat):
+        scale_ops.scale(routes, facts, factor)
+    torch.cuda.synchronize()
+
+
 def _launch_gemm(cell: str, heads: int, repeat: int) -> None:
     import torch
 
@@ -105,7 +127,7 @@ def _launch_gemm(cell: str, heads: int, repeat: int) -> None:
     torch.cuda.synchronize()
 
 
-LAUNCHES = {"facts": _launch_facts, "carry": _launch_carry, "gemm": _launch_gemm}
+LAUNCHES = {"facts": _launch_facts, "carry": _launch_carry, "scale": _launch_scale, "gemm": _launch_gemm}
 
 
 def _mma_cycles(opcode: str, rates: dict) -> float:

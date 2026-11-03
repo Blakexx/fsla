@@ -4,7 +4,7 @@ Mirrors `csrc/rola/src/common/window.cuh`.
 
 A call's token axis is cut into windows of W tokens, global to every box and every kernel: the carry reads each
 window's state out to the window's readers and folds its writes, the intra takes the pairs inside one window, the facts
-pass emits each window's lists, the den pass each window's denominators. W is not a data size. A window's resident rows
+pass emits each window's lists, the scale pass each window's write masses. W is not a data size. A window's resident rows
 follow its read and write unions (the plan's chunks, multiples of 64 union slots); W sets how many tokens share one
 window's fixed work -- the hand-off of the state into the image, the staging of the next window's inputs, the barriers.
 A card with more shared memory amortizes that work over more tokens (ruled 2026-10-31: W and the other structural
@@ -20,7 +20,7 @@ device it would be the pinned card's -- and takes its device's through `device_w
 (`common/arch_runtime.cu`), the same table at the device's compute capability. A host shape or check built from the
 pinned value would refuse the device's tensors at the call, and the carry's device stamp reports the device's own W, so
 a binary and its host cannot disagree unseen. Sizes that both sides compute -- the carry's tenants and read tables
-(`carry/plan.cuh`), the den pass's tenants -- take W as a template parameter, and the host instantiates them inside its
+(`carry/plan.cuh`) -- take W as a template parameter, and the host instantiates them inside its
 per-card switch.
 
 Every card is 512 until the A100's W = 1,024 is built through every kernel and measured; the table is then the only

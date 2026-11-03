@@ -33,5 +33,10 @@ issue 11,797, shared 9,514); `carry-alt-k4-g4` 16,512 us, 3.15x its shared floor
 812). Red, as they stay until the carry's steady state is rebuilt (KERNEL_STANDARDS §32): at alt-k4 the kernel issues
 3.6 times its tensor time, so even a perfect overlap would be issue-bound.
 
+THE SCALE PASS'S ROWS (2026-11-02, foundation, four heads): `scale-writes-alt-k4` 262.1 us, 1.14x its DRAM floor
+(230.3; issue 67.1), `scale-reads-alt-k4` 241.6 us, 1.06x (228.2); `scale-writes-dense` 338.0 us, 1.11x (305.9),
+`scale-reads-dense` 320.3 us, 1.05x (303.8). The write masses' first form, two passes across a barrier, read 1.27x and
+1.21x (`scale/scale_kernel.md#writes`).
+
 `tools/lint/coverage.py` reads `ROWS` by AST: every kernel's `overlap` obligation in `tools/coverage.json` names a row
 gating it, or is exempt or owed with its reason.

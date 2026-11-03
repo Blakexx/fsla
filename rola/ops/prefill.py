@@ -3,15 +3,16 @@
 """THE PREFILL COMPOSITION: one segment's kernels over the bundle and the epilogue that joins them.
 
 THE KERNELS ARE ONE OPERATOR on one window grid (`rola.ops.window.window_of`, the device's): the carry computes every
-pair whose write fell in a strictly earlier window than its read, the intra every pair inside one window, and the den
-pass each token's denominator against the earlier windows' write mass. Together they are the whole recurrence, no pair
-counted twice and none dropped (`tests/oracle/test_carry_vs_oracle.py`'s decomposition test states it in fp64).
+pair whose write fell in a strictly earlier window than its read -- its ``num`` and, as the v+1 channel, its ``den`` --
+and the intra every pair inside one window. Together they are the whole recurrence, no pair counted twice and none
+dropped (`tests/oracle/test_carry_vs_oracle.py`'s decomposition test states it in fp64). The scale pass gives the
+carry's f16 sum across CTAs each token's scale byte (`rola.ops.scale`) before the carry runs.
 
 THE UNITS. Every kernel leaves each token's READER FACTOR ``r`` (its read levels' scales) out of its sums, and the
 readout divides by it (:func:`readout`): ``y = num / (den + eps / r)`` is the defined readout exactly. The intra's
-``num`` and ``den`` are already in those units; the den pass's take its rows' storage factor (:func:`den_factor`),
-and the carry's ``num`` its state's unit and its read rows' (:func:`carry_factor`) times the f16 sum's scale ``2^(s +
-1)``, ``s`` each token's scale byte from the den pass's bound (:func:`scale_bytes`) -- every CTA's partials meet at it.
+``num`` and ``den`` are already in those units; the carry's take its state's unit and its read rows'
+(:func:`carry_factor`), ``num`` times the f16 sum's scale ``2^(s + 1)`` where it is summed as f16 pairs, ``s`` each
+token's scale byte -- every CTA's partials meet at it.
 
 Symbols, each at first use: ``W`` the window, ``L`` tokens, ``BH`` batch x heads, ``d_v`` value channels, level ``S``
 the carry's (`rola.routing.factors.carry_level_s`) and ``R`` the other.
@@ -21,14 +22,14 @@ from __future__ import annotations
 import torch
 
 from rola.ops import carry as carry_ops
-from rola.ops import den as den_ops
 from rola.ops import intra as intra_ops
+from rola.ops import scale as scale_ops
 from rola.routing import quant
 
-__all__ = ["UNIT_HEADROOM", "UNIT_LEVELS", "UNIT_NONE", "carry_factor", "den_factor", "prefill", "reader_factor",
-           "readout", "scale_bytes", "unpack_num"]
+__all__ = ["UNIT_HEADROOM", "UNIT_LEVELS", "UNIT_NONE", "carry_factor", "prefill", "reader_factor", "readout",
+           "unpack_num"]
 
-#: THE f16 SUM's SCALE BYTE, the kernel's `unit_byte` rule (`csrc/rola/src/carry/parts.cuh`): the smallest ``s`` with
+#: THE f16 SUM's SCALE BYTE, the kernels' `unit_byte` rule (`csrc/rola/src/carry/carry.cuh`): the smallest ``s`` with
 #: ``1.02 P <= 2^(s + 15)`` for the token's bound ``P``, held to int8, `UNIT_NONE` where the token reads nothing
 UNIT_LEVELS, UNIT_HEADROOM, UNIT_NONE = 15, 1.02, -100
 
@@ -47,23 +48,6 @@ def carry_factor(routes) -> float:
     k_s = (quant.AMP_LEVELS + 1.0) / quant.AMP_LEVELS if _u8(routes.amp_read[ls]) else 1.0
     k_r = 1.0 / quant.AMP_LEVELS if _u8(routes.amp_read[lr]) else 1.0
     return kappa * k_s * k_r
-
-
-def den_factor(routes) -> float:
-    """What the den pass's sums are multiplied by to be the recurrence's over ``r``: level S's read coefficient a byte
-    over 256 and level R's write mass on the byte scale."""
-    ls = routes.level_s
-    lr = 1 - ls
-    k = 256.0 / quant.AMP_LEVELS if _u8(routes.amp_read[ls]) else 1.0
-    return k / quant.AMP_LEVELS if _u8(routes.amp_write[lr]) else k
-
-
-def scale_bytes(routes, bound: torch.Tensor) -> torch.Tensor:
-    """``[BH, L]`` int8: each token's scale byte from the den pass's ``bound`` (its read product against the mass of
-    ``m s``, which bounds every channel of the carry's ``num``), in the carry's partials' units."""
-    p = bound * (den_factor(routes) / carry_factor(routes))
-    s = torch.ceil(torch.log2(UNIT_HEADROOM * p.clamp_min(1e-30))) - UNIT_LEVELS
-    return torch.where(p > 0, s, torch.full_like(s, UNIT_NONE)).clamp(-128, 127).to(torch.int8)
 
 
 def unpack_num(num: torch.Tensor, channels: int, factor: torch.Tensor | float = 1.0) -> torch.Tensor:
@@ -89,20 +73,19 @@ def unpack_num(num: torch.Tensor, channels: int, factor: torch.Tensor | float = 
 
 def prefill(routes, values, facts, carve, layout, read_statics, write_statics, *, accumulate: str | None = None,
             reduce_dtype: torch.dtype | None = None) -> tuple[torch.Tensor, torch.Tensor]:
-    """``(num, den)`` fp32 ``[BH, L, d_v]`` and ``[BH, L]`` over ``r`` (:func:`readout` divides by it): the den pass,
-    the carry at the den pass's scale bytes, and the intra reduced into the same planes. ``facts`` is the facts pass's
-    output over this bundle in ``layout`` with the carve's read row (`rola.ops.carry.form`) and these statics.
-    ``accumulate`` and ``reduce_dtype`` are reserved: the gates' choice of the MMAs' accumulation and the carry's
-    cross-CTA dtype, each the device's or the carve's rule by default."""
-    den_inter, bound = den_ops.den(routes, facts)
-    scale = scale_bytes(routes, bound)
-    num_c, _den_c, _ = carry_ops.carry(routes, values, facts, carve, scale, accumulate=accumulate,
-                                       reduce_dtype=reduce_dtype)
+    """``(num, den)`` fp32 ``[BH, L, d_v]`` and ``[BH, L]`` over ``r`` (:func:`readout` divides by it): the scale pass,
+    the carry at its bytes (its ``num`` and its ``den``), and the intra reduced into the same planes. ``facts`` is the
+    facts pass's output over this bundle in ``layout`` with the carve's read row (`rola.ops.carry.form`) and these
+    statics. ``accumulate`` and ``reduce_dtype`` are reserved: the gates' choice of the MMAs' accumulation and the
+    carry's cross-CTA dtype, each the device's or the carve's rule by default."""
     unit = carry_factor(routes)
+    scale = scale_ops.scale(routes, facts, unit)
+    num_c, den_c, _ = carry_ops.carry(routes, values, facts, carve, scale, accumulate=accumulate,
+                                      reduce_dtype=reduce_dtype)
     #: the f16 sum's tokens at ``2^(s + 1)`` times the unit, an fp32 sum's at the unit: one pass with the unpack
     factor = torch.exp2(scale.float() + 1.0) * unit if num_c.dtype != torch.float32 else unit
     num = unpack_num(num_c, carve.channels, factor)
-    den = (den_inter * den_factor(routes)).contiguous()
+    den = (den_c * unit).contiguous()
     intra_ops.intra_forward(routes, values, facts, layout, read_statics, write_statics, num, den,
                             accumulate=accumulate)
     return num, den
