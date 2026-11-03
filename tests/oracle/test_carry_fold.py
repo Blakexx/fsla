@@ -24,10 +24,17 @@ def _rtol(L: int) -> float:
     return L / 16 * 2.0 ** -23
 
 
-def _den_ratio(den: torch.Tensor, mass: torch.Tensor, L: int) -> float:
+#: A DENSE FOLD'S DEN WEIGHT is rounded twice (`fold_den_dense`: the slot's `f16(255 m 2^(4 - E))`, then the coefficient
+#: times it by one HMUL2) where the reference's c_m rounds once: three f16 unit roundoffs a term at most, every term
+#: positive (docs/internals/carry/fold.md#den; ruled 2026-11-03)
+DENSE_DEN_WEIGHT = 3 * 2.0 ** -11
+
+
+def _den_ratio(den: torch.Tensor, mass: torch.Tensor, L: int, weight: float = 0.0) -> float:
     """The den state's largest leaf distance from the reference's mass over its bound: the steps' fp32 accumulation as
-    the state's and one fp32 add a window into the den state (every term positive: the mass is its own envelope)."""
-    bound = mass * (_rtol(L) + (L / window_of() + 1) * 2.0 ** -23)
+    the state's and one fp32 add a window into the den state, and the form's own rounding of each term's weight
+    (``weight``, relative; every term positive: the mass is its own envelope)."""
+    bound = mass * (_rtol(L) + (L / window_of() + 1) * 2.0 ** -23 + weight)
     return ((den.double() - mass).abs() / bound.clamp_min(1e-300)).max().item()
 
 
@@ -95,7 +102,7 @@ def test_a_write_side_with_no_list_level_folds_to_the_reference(name):
     assert (env > 0).float().mean() > 0.5, "most slots unwritten: the cell is vacuous"
     ratio = ((probe.double() - want).abs() / (env * _rtol(L)).clamp_min(1e-300)).max().item()
     assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"
-    den_ratio = _den_ratio(den, mass, L)
+    den_ratio = _den_ratio(den, mass, L, DENSE_DEN_WEIGHT)
     assert den_ratio <= 1.0, f"a leaf's den is {den_ratio:.3g}x its bound"
 
 
