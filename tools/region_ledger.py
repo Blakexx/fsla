@@ -129,6 +129,7 @@ class Attribution:
 
     def __init__(self, so: Path, member: str, arch: str, sources: list[Path], ops: Path, kernel: str | None = None):
         self.fmaps = {p.name: function_map(p.read_text().splitlines()) for p in sources}
+        self.texts = {p.name: p.read_text().splitlines() for p in sources}
         self.omap = function_map(ops.read_text().splitlines())
         self.ops = ops.name
         self.so, self.member, self.kernel = so, member, kernel
@@ -352,11 +353,14 @@ def census(rows, attr: Attribution, components: set[str] | None, per: float,
     rest -- the build ledger turns these into tensor utilization a phase and a warp's time
     at HMMA against its other work; beside them each component's shared-memory wavefronts a unit by kind (`_WAVE_KIND`:
     loads, writes -- stores and atomics, which hold the pipe twice a 32-bit wavefront, lab `smem_rates` -- and the rest)
-    and its MMAs as m16n8k16 equivalents (an m16n8k8 a half), so a phase's shared traffic an MMA reads off the census.
+    and its MMAs as m16n8k16 equivalents (an m16n8k8 a half), so a phase's shared traffic an MMA reads off the census;
+    and each component's loads and writes by SITE, the innermost frame in the kernel's sources (its top 16).
     Then THE WAVEFRONT CENSUS: shared-memory wavefronts above the ideal (bank conflicts) a unit, by source line."""
     base = rows[0][0]
     cen: dict[str, list] = collections.defaultdict(lambda: [0, 0, 0, 0])
     kinds: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
+    #: a component's shared traffic by its innermost frame in the kernel's sources: (file, line) -> [loads, writes, n]
+    sites: dict[str, dict] = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0, 0]))
     waves: dict[int | None, list] = collections.defaultdict(lambda: [0, 0, 0])
     lm = line_map(attr.so, attr.member, attr.arch, source.name, attr.kernel)
     for addr, n, sm, _st in rows:
@@ -372,7 +376,14 @@ def census(rows, attr: Attribution, components: set[str] | None, per: float,
         else:
             e[1] += n
             e[3] += sm
-        kinds[fn][_wave_kind(op)] += wf
+        kind = _wave_kind(op)
+        kinds[fn][kind] += wf
+        if kind in ("loads", "writes") and wf:
+            chain = attr.frames.get(addr - base, [])
+            site = next(((f, ln) for f, ln in chain if f in attr.fmaps), chain[0] if chain else ("?", 0))
+            s = sites[fn][site]
+            s[0 if kind == "loads" else 1] += wf
+            s[2] += n
         if wf > ideal:
             w = waves[lm.get(addr - base)]
             w[0] += wf
@@ -398,7 +409,24 @@ def census(rows, attr: Attribution, components: set[str] | None, per: float,
                       "text": text})
     for w in lines[:top]:
         print(f"  wave {w['line']} {w['excess_per_unit']:.0f} {w['per_instr']:.1f}/instr {w['text']}")
-    return {"census": {fn: {"hmma_per_unit": round(h / per, 1), "other_per_unit": round(o / per, 1), "samples_at_hmma": sh,
+    traffic = {}
+    for fn, by in sites.items():
+        top = sorted(by.items(), key=lambda x: -(x[1][0] + 2 * x[1][1]))[:16]
+        rows_ = []
+        for (f, ln), (ld, wr, n) in top:
+            text = attr.texts.get(f, [])
+            src_line = text[ln - 1].strip()[:70] if 0 < ln <= len(text) else ""
+            rows_.append({"file": f, "line": ln, "loads": round(ld / per, 1), "writes": round(wr / per, 1),
+                          "instr": round(n / per, 1), "text": src_line})
+        traffic[fn] = rows_
+    for fn in sorted(traffic, key=lambda f: -kinds[f]["mma_k16"]):
+        if not kinds[fn]["mma_k16"]:
+            continue
+        print(f"shared traffic by site, {fn} (a unit; cycles = loads + 2 writes):")
+        for r in traffic[fn][:10]:
+            print(f"  {r['file']}:{r['line']:<5d} ld {r['loads']:7.1f} wr {r['writes']:6.1f} n {r['instr']:7.1f} | {r['text']}")
+    return {"traffic_sites": traffic,
+            "census": {fn: {"hmma_per_unit": round(h / per, 1), "other_per_unit": round(o / per, 1), "samples_at_hmma": sh,
                             "samples_at_other": so_, "mma_k16_per_unit": round(kinds[fn]["mma_k16"] / per, 1),
                             "waves_per_unit": {w: round(kinds[fn][w] / per, 1)
                                                for w in ("loads", "writes", "copies", "other")}}
