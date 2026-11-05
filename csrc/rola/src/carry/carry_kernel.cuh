@@ -236,11 +236,13 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       drain<P>(p, smem, rw(w), here(), w, e.first(), e.slots(),
                buf + static_cast<uint32_t>(read_pads<P>(e.slots()) + kPadBytes));
       clock.lap(kPhaseDrain);
+      //: every warp done draining where the next read chunk's fill takes this panel's bytes (`reuse`)
+      ops::rendezvous_if(i + 1 < s.nr && step_of<P>(p, smem, w, i + 1).reuse());
+      clock.lap(kPhaseWait);
     }
 
-    //: THE FOLD CHUNKS in order: every warp done draining (a fill may take the drained place) or folding the chunk
-    //: before, the chunk's fill, its copies landed, the window's units at its first chunk, the fold; a window folding
-    //: nothing steps its units at its end
+    //: THE FOLD CHUNKS in order: every warp done with the chunk before (`reuse` at the first), its fill, its copies
+    //: landed, the window's units at its first chunk, the fold; a window folding nothing steps its units at its end
     const int nf = s.n - s.nr;
     if (nf == 0) fold_units<P>(smem, ww(w), w, wid(), lid());
 #pragma unroll 1
@@ -248,7 +250,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       const Entry e = entry_at(s, s.nr + j);
       const Run run = runs_of(kWrite, w, e);
       const ops::SmemAddr buf = place_at(w, s.nr + j);
-      ops::rendezvous();
+      ops::rendezvous_if(j > 0 || step_of<P>(p, smem, w, s.nr).reuse());
       clock.lap(kPhaseWait);
       fill_fold(w, e, run, buf);
       clock.lap(kPhaseFill);

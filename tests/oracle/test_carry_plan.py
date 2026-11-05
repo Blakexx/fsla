@@ -107,7 +107,9 @@ def test_the_rule_never_fills_over_what_is_live(seed):
     """THE RULE'S SAFETY on random windows of this card's arm: every entry inside the area and every read above its
     image; at each step the entry computing, the entry filled ahead beside it and the live image pairwise clear; a
     deferred fill clear of the image where it is live; the next window's first clear of the last entry and above its own
-    image. A fill the rule cannot fit beside the live entry waits for its own step -- never a byte shared."""
+    image. A fill the rule cannot fit beside the live entry waits for its own step -- never a byte shared. And as the
+    carry runs it (every entry filled at its own step, a warp's fill right after its own drain): a fill that meets the
+    panel of the read before it -- the bytes slower warps may still be draining -- is marked for the rendezvous."""
     key = (32, 1, 32, 1, 32, 0)
     row = next(r for r in carry_ops.census() if tuple(r[1:7]) == key)
     area, read_row, write_row = row[12], row[13], row[14]
@@ -135,3 +137,9 @@ def test_the_rule_never_fills_over_what_is_live(seed):
                     assert nat >= x.image, (w, t, "a fill over the live image")
             if ahead and t > 0:
                 assert rec.steps[t - 1][2] == 1, (w, t, "filled ahead by a step that did not fill it")
+            if 0 < t <= x.nr:
+                _, rc, _, _, _ = cp.chunks(x.word)
+                slots = min(rc, x.c.ru - (t - 1) * rc)
+                panel = rec.steps[t - 1][0] + -(-slots * read_row // 128) * 128 + cp.PAD_BYTES
+                if not cp.disjoint(at, b, panel, -(-slots * cp.PANEL_ROW // 128) * 128):
+                    assert rec.steps[t][3] == 1, (w, t, "a fill over the panel being drained, unmarked")

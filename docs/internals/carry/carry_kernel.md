@@ -38,19 +38,22 @@ Window 0's inputs and record are staged before the loop (one copy group, waited)
    rendezvous, each digit's exponent recorded by every warp (the same values) for its stores and the readers, the
    leaves' scales and the bounds' counters reset.
 3. **The read chunks**, each in order: its fill where it is not the first (issued after the chunk before is drained,
-   into its own place); its image -- whole, stored once before the first chunk, or in halves, each chunk storing both
+   into its own place; where that place takes the panel still being drained -- the step word's `reuse` -- the chunk
+   before ends with a rendezvous after its drain, predicated: `ops.md#rendezvous-if`); its image -- whole, stored
+   once before the first chunk, or in halves, each chunk storing both
    -- its copies landed (`cp.async.wait_group`: every group but the staging's, which may still fly), a rendezvous,
    the chunk's units -- the CTA's own, from its leaves' maxima, before its first add (`parts.md#units`: the bounds, a
    rendezvous, the bytes, a rendezvous) -- its tiles over the image (a rendezvous before the second half's store), then
    a rendezvous and its panel drained to `num`.
-4. **The fold chunks**, each in order: a rendezvous (the drained place or the chunk before's rows may be taken), its
-   fill, every group landed, a rendezvous, the window's units stepped at the first (`fold.md#units`), the fold
+4. **The fold chunks**, each in order: a rendezvous where the chunk before's rows or the drained panel may be taken
+   (every chunk after the first; the first where its step word's `reuse` says, predicated: `ops.md#rendezvous-if`),
+   its fill, every group landed, a rendezvous, the window's units stepped at the first (`fold.md#units`), the fold
    (`fold.md#chunk`); a window folding nothing steps its units at its end.
 
-Where a window has one chunk a side -- every alt-k4 window -- this is the lab's form 5 exactly: seven barriers a
-window, no step words, nothing re-read. Where it has several, the chunks run in sequence at the plan's places; the
-record's other bits (filled ahead, next, reuse) are the two-slot rule's and the carry no longer reads them
-(`schedule.md#steps`).
+Where a window has one chunk a side -- every alt-k4 window -- this is the lab's form 5 with its fold's rendezvous
+where the plan says the fill takes the drained panel. Where it has several, the chunks run in sequence at the plan's
+places; of the record's other bits the carry reads `reuse` (a fill on the panel being drained waits for the drain),
+not filled ahead or next (`schedule.md#steps`).
 
 The work is an exclusive chain over the entry's side and the image mode (R9's case marker, a trapping last arm), not
 `uniform_switch`: the primitive's independent tests made a body 14% slower at nl64k-alt-k4 (31.7K against 27.9K
@@ -83,8 +86,10 @@ Every CTA-wide rendezvous is the hardware barrier (`ops::rendezvous`): every war
 where the consumer starts means every warp is done with what came before. A window's: at its top (every warp done
 folding the window before, whose rows may be where the first chunk lands); after the maxima (the keys posted); after each read chunk's copies land (its rows and entries visible, its panel zeroed, the first half stored);
 before the second half's store (the first half read out); after the second half's store; after the chunk's tiles
-(its panel complete, drained next); before a fold chunk's fill (the drained place, or the chunk before's rows, free)
-and after its copies land. A warp moves on as soon as its own work is done: a FOLD needs only the warp's own stores
+(its panel complete, drained next); after a read chunk's drain where the next read's fill takes its panel's bytes,
+and before the first fold chunk's fill where it does (`reuse`); before every fold chunk's after the first (the chunk
+before's rows free); after a fold chunk's copies land. A warp moves on as soon as its own work is done: a FOLD needs
+only the warp's own stores
 (its registers are the state), so warps flow from their reads into their folds; only a rendezvous waits for the
 other warps.
 

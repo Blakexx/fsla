@@ -230,6 +230,14 @@ __device__ __forceinline__ void stage_wait() {
 
 __device__ __forceinline__ void rendezvous() { __syncthreads(); }
 
+//: A RENDEZVOUS WHERE `cond`, CTA-uniform: the CTA's barrier predicated, so no branch splits the block around it.
+//: -- see docs/internals/common/ops.md#rendezvous-if
+__device__ __forceinline__ void rendezvous_if(bool cond) {
+  asm volatile("{\n .reg .pred p;\n setp.ne.u32 p, %0, 0;\n @p bar.sync 0;\n}\n" ::"r"(
+                   static_cast<uint32_t>(cond))
+               : "memory");
+}
+
 //: A ONE-TRIP LOOP BOUND ptxas cannot see through: `for (int n = once(cond); n > 0; --n)`
 //: is a real branch where an `if (cond)` on a warp-uniform value would be if-converted
 //: and issued predicated off by every warp. -- see docs/internals/common/ops.md#once

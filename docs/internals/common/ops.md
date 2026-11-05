@@ -65,7 +65,10 @@ Every operation is defined by WHAT THE ALGORITHM NEEDS. A helper with no caller 
   is the same restricted to `n` warp-aligned threads at named barrier `id` (id 0 is the CTA's and is not offered;
   sm_80/86/90 provide sixteen). `rendezvous_arrive(id, n)` arrives there without waiting: a producer's stores before
   it are visible to every thread past the barrier's `rendezvous_group` (PTX: an arrive synchronizes with the sync on
-  the same barrier), so a role hands its output to another and runs on.
+  the same barrier), so a role hands its output to another and runs on. <a id="rendezvous-if"></a>`rendezvous_if(cond)`
+  is `rendezvous()` predicated on a CTA-uniform `cond` (PTX allows a predicated `bar.sync` where every thread
+  evaluates the condition alike): one instruction, so where a barrier is needed only sometimes no branch splits the
+  block (the carry's rendezvous on its step words' `reuse`, `carry_kernel.md#kernel`).
 - <a id="mbarrier"></a>`mbar_init`, `mbar_arrive_when_landed`, `mbar_arrive`, `mbar_wait`: an `mbarrier` (sm_80+)
   completes a phase at `count` arrivals and flips its parity. A thread's `cp.async` copies arrive when they LAND
   (`cp.async.mbarrier.arrive.noinc`: the arrival is one of the counted ones); a thread's own arrive releases its

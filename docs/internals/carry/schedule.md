@@ -40,11 +40,14 @@ consumer re-extracts its fields from; `step_of` step `t`'s word.
   serially and nothing else changes (R22, degrading smoothly).
 - HOW THE CARRY RUNS IT (2026-10-25, `carry_kernel.md#kernel`): the chunks in the record's order at the rule's places,
   each read chunk's fill issued once the chunk before is drained (the first's at the window's top, under the maxima),
-  each fold chunk's once every warp is done with the chunk before; a rendezvous before the retire and before a fold
-  chunk's fill. The places are the rule's, so a fill never lands on anything live; the rule's ahead and next bits
+  each fold chunk's once every warp is done with the chunk before; a rendezvous before the retire, before a fold chunk's
+  fill after the first, and before a fill that takes the drained panel's bytes (`reuse`). The places are the rule's,
+  so a fill lands on nothing live but a panel still being drained, which `reuse` marks; the rule's ahead and next bits
   describe fills the carry runs in sequence instead.
-- THE RENDEZVOUS: before the retire where a drain or a fill follows; before a fold chunk's fill, which may take the
-  drained place.
+- THE RENDEZVOUS: before the retire where a drain or a fill follows; before a fold chunk's fill after the first; and
+  where the step word says a fill takes the bytes of the panel being drained (`reuse`, predicated:
+  `ops.md#rendezvous-if`). Only the panel: past the readout's rendezvous a read chunk's rows and entries are dead,
+  and its drain reads its panel, the union's tokens and the factors.
 - A FILL FOLLOWS THE DRAIN (measured 2026-10-16, nl64k-alt-k4 on sm_86): a fill clear of the drained place issued
   before the drain made the drain contend with its copies (the drain 1,890 to 3,934 cycles a warp-window); after it,
   the launch is 5.61M cycles against 5.65M.
@@ -59,9 +62,11 @@ memory holds two entries at a time whatever the call's length.
 
 `StepWord`: the entry's place / 128 | filled ahead << 11 | the next entry filled now << 12 | a rendezvous after the
 retired read's drain << 13. FILLED AHEAD: by the step before, or for a window's first by the window before (window 0's
-before the loop). The carry reads each entry's PLACE from its step word once a window (`carry_kernel.md#kernel`); the
-ahead, next and reuse bits are the rule's own and no longer read (the plan pass still writes them, and the gate holds
-them to the model word for word).
+before the loop). REUSE: the step's own fill meets the panel of the read entry the step retires (`drained_of`: its
+offset past the rows and dummy rows, its bytes) -- the carry fills every entry at its own step, so a fill the rule
+would issue ahead is not what waits on a drain. The carry reads each entry's PLACE from its step word once a window and
+its REUSE where a fill follows a drain (`carry_kernel.md#kernel`); the ahead and next bits are the rule's own and not
+read (the plan pass writes them, and the gate holds every bit to the model word for word).
 
 <a id="buffers"></a>
 ## The buffers

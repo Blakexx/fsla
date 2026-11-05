@@ -236,6 +236,14 @@ __device__ __forceinline__ Win win_of(const CarryParams& p, int bh, int w, int c
   return x;
 }
 
+//: READ ENTRY `t`'S PANEL in its buffer, what its drain reads: its offset and bytes
+template <class P>
+__device__ __forceinline__ int2 drained_of(const Win& x, int t) {
+  const PlanWord pw{x.word};
+  const int slots = min(pw.read_chunk(), x.c.ru - t * pw.read_chunk());
+  return make_int2(read_pads<P>(slots) + kPadBytes, align_of(slots * kPanelRow, 128));
+}
+
 template <class P>
 __device__ __forceinline__ int entry_bytes_of(const Win& x, int t) {
   const PlanWord pw{x.word};
@@ -247,8 +255,8 @@ __device__ __forceinline__ int entry_bytes_of(const Win& x, int t) {
 }
 
 //: A STEP WORD, 16 bits a step of a window (its entries, then one that only retires the last): the entry's place / 128
-//: | filled ahead << 11 | the next entry filled now << 12 | a rendezvous between the retired read's drain and a fill
-//: that reuses its place << 13. -- see docs/internals/carry/schedule.md#steps
+//: | filled ahead << 11 | the next entry filled now << 12 | a rendezvous between the retired read's drain and the
+//: step's own fill, which takes its panel's bytes << 13. -- see docs/internals/carry/schedule.md#steps
 struct StepWord {
   uint32_t v;
 
@@ -330,8 +338,8 @@ __global__ __launch_bounds__(kPlanThreads) void window_plan_kernel(
     }
     //: THE STEPS: entry `t`'s place (where filled ahead, the place it took then; else above the image where a read and
     //: at the bottom where a fold); the next entry, the window's or at its last the next window's first, in the other slot, filled
-    //: now where it fits beside entry `t` and the live image; the rendezvous between the retired read's drain and a
-    //: fill that reuses its place
+    //: now where it fits beside entry `t` and the live image; the rendezvous between the retired read's drain and the
+    //: step's own fill where it meets the drained panel
     const Win nx = win_of<P>(p, bh, w + 1 < p.windows ? w + 1 : w, cls);
     uint32_t* const out =
         p.plans
@@ -356,9 +364,8 @@ __global__ __launch_bounds__(kPlanThreads) void window_plan_kernel(
         next = fits_beside(nat, nb, work ? at : 0, b, work && read ? x.image : 0, B);
       }
       const bool drained = t > 0 && t - 1 < x.nr;
-      const bool reuse = drained
-                         && ((work && !ahead && !disjoint(at, b, gone, gone_b))
-                             || (next && !disjoint(nat, nb, gone, gone_b)));
+      //: the carry fills each entry at its own step: the rendezvous where that fill meets the drained panel
+      const bool reuse = drained && work && !disjoint(at, b, gone, gone_b);
       const uint32_t word = static_cast<uint32_t>(work ? at / 128 : 0) | (ahead ? 1u : 0u) << 11
                             | (next ? 1u : 0u) << 12 | (reuse ? 1u : 0u) << 13;
       if (t & 1) {
@@ -367,8 +374,10 @@ __global__ __launch_bounds__(kPlanThreads) void window_plan_kernel(
         pair = word;
         if (t == x.n) out[1 + t / 2] = pair;
       }
-      gone = at;
-      gone_b = b;
+      //: what a drain reads of a read entry: its panel
+      const int2 pn = work && read ? drained_of<P>(x, t) : make_int2(0, b);
+      gone = at + pn.x;
+      gone_b = pn.y;
       ahead = next;
       at = nat;
     }

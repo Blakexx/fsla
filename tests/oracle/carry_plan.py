@@ -174,6 +174,13 @@ def win_of(c: Counts, forced: int, read_row: int, write_row: int, area: int) -> 
     return Win(c, word, nr + nf, nr, image_bytes(mode, c.pr) if nr > 0 else 0)
 
 
+def drained_bytes(x: Win, t: int, read_row: int) -> tuple[int, int]:
+    """Read entry ``t``'s PANEL in its buffer, what its drain reads (`drained_of`): its offset and bytes."""
+    _, rc, _, _, _ = chunks(x.word)
+    slots = min(rc, x.c.ru - t * rc)
+    return _a128(slots * read_row) + PAD_BYTES, _a128(slots * PANEL_ROW)
+
+
 def entry_bytes(x: Win, t: int, read_row: int, write_row: int) -> int:
     """Entry ``t``'s buffer bytes (`entry_bytes_of`): its chunk's slots and entries from the exact totals."""
     _, rc, fc, _, _ = chunks(x.word)
@@ -201,7 +208,7 @@ def fits_beside(at: int, nbytes: int, live_at: int, live_bytes: int, image: int,
 class Record(NamedTuple):
     """One window's record as the plan pass writes it: its plan word and its steps, each ``(at, ahead, next, reuse)``
     -- the entry's place, filled ahead, the next entry filled now, the rendezvous between the retired read's drain and
-    a fill that reuses its place."""
+    the step's own fill where it takes the drained panel's bytes."""
 
     word: int
     steps: tuple
@@ -259,10 +266,12 @@ def records(wins: list[Win], read_row: int, write_row: int, area: int) -> list[R
                 nat = slot_place(slot ^ 1 if work else slot, nb, nx.image, B)
                 nxt = fits_beside(nat, nb, at if work else 0, b, x.image if work and read else 0, B)
             drained = t > 0 and t - 1 < x.nr
-            reuse = drained and ((work and not ahead and not disjoint(at, b, gone, gone_b))
-                                 or (nxt and not disjoint(nat, nb, gone, gone_b)))
+            #: the carry fills each entry at its own step: the rendezvous where that fill meets the drained panel
+            reuse = drained and work and not disjoint(at, b, gone, gone_b)
             steps.append((at if work else 0, int(ahead), int(nxt), int(reuse)))
-            gone, gone_b, ahead, at = at, b, nxt, nat
+            #: what a drain reads of a read entry: its panel
+            pn = drained_bytes(x, t, read_row) if work and read else (0, b)
+            gone, gone_b, ahead, at = at + pn[0], pn[1], nxt, nat
         out.append(Record(x.word, tuple(steps)))
         par ^= x.n & 1
     return out
