@@ -126,27 +126,25 @@ the lists 2,747 (+276), every list 3,039 (+568). MEASURED composed (phase ledger
 with its den, 2.86K with the box's den lists forced off in the same build (+0.71K: the den MMAs' fp32 tensor work on a
 tensor-bound step, the adds, and the instruction cache's misses on the den steps' second copy).
 
-A SIDE WITH NO LIST LEVEL carries its den in ONE PASS a chunk (`fold_den_dense`; the ruled dense form, 2026-11-02,
-measured against the foundation's uniform den, which took the column on every list's steps): every slot writes every
-list, so the den state's tile is one product over the chunk, `Den^T[digits][lists] += raw c_m` -- a warp PAIR (`w`,
-`w ^ 4`) an n8 list tile (lists `8 (w & 3) ..`), each warp both digit tiles over alternate 64-slot blocks so one weight
-computation feeds two MMAs, then the pair's halves swapped through shared memory (4 KB over the den rows and the leaf
-scales, free while folding; a barrier) so each holds its own m16 tile (digits `16 (w >> 2) ..`) -- A the slots' raw
-dense slices by the step's `ldmatrix.trans`, B
-the coefficient slice by `ldmatrix.trans` times each slot's weight `f16(255 m 2^(4 - Em))` by one HMUL2 -- the weight
-rounded twice, as the num's terms are f16 products (ruled 2026-11-03: an exact `c_m`, two fp32 products and one rounding
-a term, met the fold gate's fp32-tight bound written for the den column but bound the loop on sm_80's fast MMAs; the
-gate states the form's three f16 roundoffs a positive term, `DENSE_DEN_WEIGHT`), four k-steps a block of
-64 slots at constant-step places (64 slots on keep a slot's swizzle bits), weights a 16-byte load of two slots'
-`(F, m)`, a last partial block clamped with m 0 past the chunk. The den state takes the tile's layout on a dense fold's
-arm (`den_place<P>`: lists `8 (w & 3) + 2 t + (i & 1)`, digits `16 (w >> 2) + g + 8 (i >> 1)`), into the registers at
-`2^(Em - 4)`, the box's lists alone; the lists' steps carry no column. Its step cover on sm_80 (read with the warps
-together, KERNEL_STANDARDS 32.4): a warp alone a tile with the exact `c_m` (one MMA a weight computation) 21.2%, this
-form 29.7% (arm [SD,DD]; 28.3% dense) -- bound by the memory pipe, 56 cycles over a block's 64 pipe cycles: each slot's
-weights loaded a 128-bit word a step half, and the A slices loaded by all four of a half's warps. MEASURED (phase ledger, sm_86,
-cycles a warp-window, against the readout's token-carved den at 7b4a482e): nl64k-dense 150.3K twice (155.0 / 158.7K),
-the fold 75.6K (80.0-81.8K; no den 71.8-72.0K); nl64k-read-k4 96.0K (102.0K), its fold 75.0K (80.4K); the dense arms'
-step cover 91.4% / 96.8%.
+A SIDE WITH NO LIST LEVEL is one list, the den with it (Blake, 2026-11-03: "dense just uses one list covering
+everything essentially, for readout and fold. And of course it would apply to den too"; amends the 2026-11-02 form's
+one pass a chunk): the den state's tile `Den^T[digits][lists] += raw c_m` rides the merged steps ([`#dense`](#dense)).
+Every warp of a dense side steps every slot and any list's coefficient is in each slot's row, so a pair (`w`, `w + 4`,
+one scheduler and its tensor pipe) puts its eight lists in one n8 tile and its lower warp takes it: two more MMAs a
+16-slot step in warp `w` on the raw slices it holds, none in `w + 4` (whose den registers sit idle) -- the separate
+pass's MMA count, every column used. B is each slot's `c_m = f16(b f16(255 m 2^(4 - Em)))` (the weight rounded twice
+as ruled: the fold gate's `DENSE_DEN_WEIGHT`), lanes `0..15` the warp's lists' and `16..31` its partner's (those lanes'
+copies of the step's slots, their coefficient loads its partner's lists), four shuffles a B word. At the chunk's end
+(`den_pairs`) the tile goes into the den's registers in the list owner's layout (`den_place<P>`, one layout on either
+side: lane `(g, t)`'s word `i` is element `i` of digit tile `t >> 1` in lane `(g, t & 1)` for warp `w`'s lists, `(g, 2 +
+(t & 1))` for its partner's), its own by a shuffle, its partner's through shared memory (2 KB over the den rows, free
+while folding; one barrier), at `2^(Em - 4)`, the box's lists alone. A first form, each warp its own four lists in half
+an n8 tile, ran twice the separate pass's den MMAs and read +0.8-1.5% on sm_86's tensor-bound dense fold.
+A box whose lists' den it does
+not carry takes the steps without it (`Den` false: a uniform choice a chunk). The separate pass it replaces
+(2c8be890 / 82f9ce00, deleted here: a warp pair an n8 list tile over alternate 64-slot blocks, swapped through
+shared memory) reloaded every slot's slices and read 28-30% step cover on sm_80, bound by the memory pipe (56 cycles
+over a block's 64 pipe cycles), and ran in every channel box whether it carried the den or not.
 
 <a id="probe"></a>
 ## The probe

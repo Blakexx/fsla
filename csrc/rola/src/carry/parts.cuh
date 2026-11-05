@@ -678,9 +678,8 @@ __device__ __forceinline__ int den_exp(float top) {
   return top > 0.0f ? ceil_exp(top) : kImageTop - 127;
 }
 
-//: A LANE'S DEN WORDS' PLACES, each of the box's 32 x 32 once across the CTA: a listed fold's the list owner's (`den_add`:
-//: word `i`'s list `w + 8 (2 (t & 1) + (i & 1))`, digit `g + 8 (i >> 1) + 16 (t >> 1)`), a dense fold's its warp's tile's
-//: (`fold_den_dense`: digits `16 (w >> 2) ..`, lists `8 (w & 3) ..` as an MMA's rows and columns).
+//: A LANE'S DEN WORDS' PLACES, each of the box's 32 x 32 once across the CTA, the list owner's on either side (word `i`'s
+//: list `w + 8 (2 (t & 1) + (i & 1))`, digit `g + 8 (i >> 1) + 16 (t >> 1)`).
 struct DenPlace {
   int list0, digit0, list_step;
 
@@ -692,8 +691,6 @@ struct DenPlace {
 template <class P>
 __device__ __forceinline__ DenPlace den_place(int warp, int lane) {
   const int g = lane >> 2, t = lane & 3;
-  if constexpr (P::kFoldFactors == 2)
-    return DenPlace{8 * (warp & 3) + 2 * t, 16 * (warp >> 2) + g, 1};
   return DenPlace{warp + 16 * (t & 1), g + 16 * (t >> 1), kWarps};
 }
 
