@@ -766,7 +766,7 @@
   {"doc": "docs/internals/common/torch_seam.md", "pinned_at": "8b3c6e3ede2f", "reviewed": true, "sha256": "1ae8ab6ea4fe9182", "target": "tools/build_flags.py::TORCH_MIN"},
   {"doc": "docs/internals/common/window.md", "pinned_at": "3088e2d03d08", "reviewed": true, "sha256": "", "target": "csrc/rola/src/common/arch_caps.cuh::kArch"},
   {"doc": "docs/internals/common/window.md", "pinned_at": "3088e2d03d08", "reviewed": true, "sha256": "", "target": "csrc/rola/src/common/window.cuh"},
-  {"doc": "docs/internals/common/window.md", "pinned_at": "3088e2d03d08", "reviewed": true, "sha256": "6c82a9c5ed7281a4", "target": "csrc/rola/src/common/window.cuh::window_for"},
+  {"doc": "docs/internals/common/window.md", "pinned_at": "ef231c28ae0d", "reviewed": true, "sha256": "2fd123900c4ca0d8", "target": "csrc/rola/src/common/window.cuh::window_for"},
   {"doc": "docs/internals/decode/decode.md", "pinned_at": "51d9824a97dc", "reviewed": true, "sha256": "9804f3f6a5f3e7b2", "target": "csrc/rola/src/common/state_page.cuh::mantissa8"},
   {"doc": "docs/internals/decode/decode.md", "pinned_at": "d5250af8065c", "reviewed": true, "sha256": "", "target": "csrc/rola/src/decode/decode.cu"},
   {"doc": "docs/internals/decode/decode.md", "pinned_at": "d5250af8065c", "reviewed": true, "sha256": "f2d73f83b04f62a9", "target": "csrc/rola/src/decode/decode.cu::D"},

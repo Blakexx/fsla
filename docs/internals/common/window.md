@@ -23,8 +23,11 @@ a binary and its host cannot disagree unseen. Sizes that both sides compute -- t
 (`carry/plan.cuh`) -- take W as a template parameter, and the host instantiates them inside its
 per-card switch.
 
-Every card is 512 until the A100's W = 1,024 is built through every kernel and measured; the table is then the only
-line that changes.
+The A100 (sm_80) is 1,024, every other card 512 (2026-11-04: interleaved on one A100 against 512, L 65,536 x 4 heads --
+the sparse carry -35%, the op's sparse prefill -17.5% (0.72x FlashAttention), the layer at g 16 / 4 -21% / -16%; the
+near-dense layer at g 1 +5.4% and the dense op +0.8%, the intra's work a token doubling with W). A call is a whole
+number of the device's windows (the intra's check), so the A100 takes multiples of 1,024 tokens where sm_86 takes
+multiples of 512, until the intra takes a partial last window.
 
 <a id="token-field"></a>
 ## `window_bits(w)`, `window_heads(w)`
