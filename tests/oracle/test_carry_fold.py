@@ -82,17 +82,35 @@ def _fold_ratio(widths, L, write_sparse, growth, *, live=4, forced=None):
 
 
 #: fresh cells whose write side has no list level (every level dense)
-DENSE_CELLS = ("flagship-dense", "flat-small-multiwindow", "corner-window-flip")
+#: the dense cells, each at its own length or (`tokens`) at another: a partial last window whatever the device's W
+#: (1,792 tokens: three and a half windows of 512; flat-small-dense's 256 one partial window)
+DENSE_CELLS = (("flagship-dense", None), ("flat-small-multiwindow", None), ("corner-window-flip", None),
+               ("flagship-dense", 1792), ("flat-small-dense", None))
 
 
-@pytest.mark.parametrize("name", DENSE_CELLS)
-def test_a_write_side_with_no_list_level_folds_to_the_reference(name):
-    """A dense write side's final state per slot within the bound of the reference's: each token's factor F in its
-    coefficient, every list at its window's bound (`dense_exponents`)."""
+def _cell_at(name: str, tokens: int | None):
+    """The oracle cell ``name``, at ``tokens`` when given (its declared tail recomputed against the cells' window)."""
+    import dataclasses
+
+    from rola_devtools.cells.carry import WINDOW
+
     from measure.cells import carry_cells
-    from measure.subjects import carry_operands
 
     spec = next(c for c in carry_cells(tier="oracle") if c.name == name)
+    if tokens is None:
+        return spec
+    tail = "ragged" if tokens % WINDOW else "divisible"
+    regime = tuple((k, tail if k == "tail" else v) for k, v in spec.regime)
+    return dataclasses.replace(spec, tokens=tokens, regime=regime)
+
+
+@pytest.mark.parametrize("name,tokens", DENSE_CELLS, ids=[f"{n}-L{t}" if t else n for n, t in DENSE_CELLS])
+def test_a_write_side_with_no_list_level_folds_to_the_reference(name, tokens):
+    """A dense write side's final state per slot within the bound of the reference's: each token's factor F in its
+    coefficient, every list at its window's bound (`dense_exponents`), a partial last window folded with the rest."""
+    from measure.subjects import carry_operands
+
+    spec = _cell_at(name, tokens)
     routes, values, facts, carve, unit = carry_operands(spec)
     assert not carve.fold.lists, f"{name}'s write side lists"
     widths, L = routes.topology.widths, routes.tokens

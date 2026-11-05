@@ -121,8 +121,10 @@ def dense_exponents(m: torch.Tensor, F: torch.Tensor, window: int, w_r: int) -> 
     """``[B, H, windows, w_r, 2]``: a write side with no list level's exponents (`fold.cuh` `dense_exp`), every list's
     the window's bound ``5 - shift`` of its largest ``(m, F)`` -- a dense byte under 2^8, the factor under 2^(-3 - shift)."""
     B, T, H = F.shape
-    windows = T // window
-    top = torch.stack((m, F), -1)[:, :windows * window].reshape(B, windows, window, H, 2).amax(2)  # [B, windows, H, 2]
+    windows = -(-T // window)
+    #: a partial last window's bound over the tokens it holds (the pad's zeros under every largest)
+    mf = torch.nn.functional.pad(torch.stack((m, F), -1), (0, 0, 0, 0, 0, windows * window - T))
+    top = mf.reshape(B, windows, window, H, 2).amax(2)  # [B, windows, H, 2]
     e = 5 - gains_shift(top.permute(0, 2, 1, 3).cpu().numpy())
     return np.broadcast_to(e[:, :, :, None, :], (B, H, windows, w_r, 2)).copy()
 
@@ -147,7 +149,8 @@ def fold_state(routes, values, list_exp, level_s: int, window: int, at_window=No
     scale = unit_scale(routes, level_s)
     B, T, H, w_r = b_r.shape
     w_s, C = x.shape[-1], v.shape[-1]
-    windows = T // window
+    #: every window the call touches, a partial last one included (its slice ends at the call's end)
+    windows = -(-T // window)
     if list_exp.numel():
         k = list_exp.view(B, H, windows, -1, 2)[..., :w_r, :].cpu().numpy().astype(np.int64)
     else:
