@@ -26,7 +26,16 @@ THE RECORD: `measure/lab/results/read_red/sm_86.json` (RTX 3080 Ti), cycles a ti
 | f16 pairs straight to `num`, the fragment's order | 573 | 574 |
 | fp32 straight to `num` | 1,112 | 1,115 |
 | **f16 pairs through the warp's staging tile, 64 bytes a token a request** | **412** | 412 |
+| f16 pairs relaid out in registers (four `shfl.sync` and a select a request) | 459 | 448 |
+| a 64-channel box, staged, a token's 128 bytes a request (a tile 8 MMAs: twice the work) | 685 | 686 |
 | f16 pairs straight, the fragment's order, one CTA a head (no shared rows) | 890 | -- |
+
+The A100 (SXM4 40 GB, rented 2026-11-06; counters closed, the rows printed before the ncu pass), cycles a tile a
+warp at 4 / 16 tiles a pass: tiles alone 138 / 130; panel and drain 395 / 233; the fragment's order 472 / 474; fp32
+894 / 894; **staged 350 / 350**; shuffles 363 / 362; the 64-channel box staged 601 / 601 (~300 a 32-channel tile).
+Its MMAs take half sm_86's cycles and its exits about as many (~5.5 cycles a line request), so the exit is most of a
+sparse tile there: staged 11% under the panel at 4 tiles a pass, the 64-channel box 24% under, and the panel 33%
+under the staged form at 16.
 
 WHAT IT SETTLES (sm_86): the direct exit's cost is the SM's global request path -- about 5 cycles a line request (the
 `drain` lab's floor) -- so its address order decides it. In the MMA fragment's order every request touches four
@@ -34,6 +43,18 @@ tokens' rows (four lines), twice the drain's two, and it runs 9% over the panel 
 through the warp's own staging tile each request is two tokens' 64 bytes and it runs 21% under them (412 against
 525). Its cost is a constant a tile, where the panel's drain is shared by every tile that touched a token in the
 pass: past about 8 tiles a warp a pass the panel is cheaper (16 tiles: 334 against 412), so a denser window wants a
-token's tiles combined before its request. fp32 adds take twice f16's requests. Spreading the rows over more heads (no
+token's tiles combined before its request. fp32 adds take twice f16's requests.
+
+WHY THE FRAGMENT'S ORDER SCATTERS (Blake asked whether the results could be made batchable natively): an MMA
+accumulator register spans an 8 x 8 block across the warp -- rows `g` (8 lanes' worth) by column pairs `2t, 2t + 1`
+(4) -- so with channels on M and tokens on N one register, packed as the pair `(g, g + 8)`, is 16 channels of each of
+4 tokens: 4 rows of 32 bytes, 4 lines a request. Tokens on M is worse (8 tokens' 16 bytes). No fragment holds 1-2
+token rows in one register; a relayout across the 8 x 8 blocks is what batches it, and `movmatrix` (an in-register 8 x
+8 transpose) only transposes within a block. The shared staging tile is the cheaper relayout on sm_86 (4 stores and 4
+loads a lane a tile against 16 shuffles); a wider box makes each request a full line: the 64-channel box's exit costs
+~165 cycles a tile over its MMAs (~2 x 260) for 64 channels against the 32-channel box's ~152 for 32 -- half a
+channel's requests, ~343 a 32-channel tile, under the panel even at 16 tiles a pass (334). On sm_90 the relayout is
+native: `stmatrix` stores fragments by rows and the bulk reduction (`cp.reduce.async.bulk`) adds a staged tile into
+global memory in one instruction. Spreading the rows over more heads (no
 two CTAs on a row) runs slower, not faster: L2 serves the shared rows' atomics. The A100's rates are owed (the next
 rented session).

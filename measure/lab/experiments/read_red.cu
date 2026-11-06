@@ -11,7 +11,8 @@
 // added into `num` at the token's row (`red.global.add.noftz.f16x2`, 4 a lane a tile), nothing after the pass; FORM 2
 // the same as fp32 adds (`red.global.add.f32`, 8 a lane a tile); FORM 3 as 1 through the warp's own staging tile in
 // shared memory (plain stores, no atomics, no barrier: a `__syncwarp`), each request then two tokens' 64 contiguous
-// bytes (lanes 0-15 one token's 16 words, 16-31 the next's) -- half the line requests of 1's fragment order; FORM 9 no
+// bytes (lanes 0-15 one token's 16 words, 16-31 the next's) -- half the line requests of 1's fragment order; FORM 4 the same relayout in registers (four `shfl.sync` and a select a request, no shared
+// memory); FORM 5 a 64-channel box (4 m-tiles, 8 MMAs a tile) staged as 3, a token's 128 bytes a full line a request; FORM 9 no
 // exit (the tiles alone, folded into a sink).
 // A sample is the CTA's span over its passes: cycles a pass, and a tile a warp. A rate probe: its sums fold into
 // `num` and a sink, unchecked. see docs/lab/read_red.md
@@ -25,7 +26,7 @@ constexpr int kWarps = 8, kThreads = kWarps * 32, kTokens = 1024, kSlots = 256, 
               kPasses = 256;
 //: the read rows a tile reads (64 tiles' 512 bytes, cycled), the panel (a slot a token's 16 words) after them, then
 //: each warp's staging tile (8 tokens' 16 words)
-constexpr int kRows = 64 * 512, kPanelBytes = kSlots * kWords * 4, kStaging = 8 * kWords * 4;
+constexpr int kRows = 64 * 512, kPanelBytes = kSlots * kWords * 4, kStaging = 8 * 32 * 4;
 constexpr int kSmem = kRows + kPanelBytes + kWarps * kStaging;
 
 __device__ __forceinline__ void red_h2(__half2* at, uint32_t v) {
@@ -63,9 +64,10 @@ __global__ void __launch_bounds__(kThreads, 1) exits(__half2* num, float* num32,
     reinterpret_cast<uint32_t*>(smem)[k] = k < kRows / 4 ? 0x3C803C80u : 0u;
   __syncthreads();
   const uint32_t sm = lab::smem(smem), pad = sm + kRows;
-  uint32_t f[16];
+  constexpr int kM = FORM == 5 ? 4 : 2;
+  uint32_t f[kM * 8];
 #pragma unroll
-  for (int i = 0; i < 16; ++i) f[i] = lab::held(0x3F803F80u + static_cast<uint32_t>(i & 1));
+  for (int i = 0; i < kM * 8; ++i) f[i] = lab::held(0x3F803F80u + static_cast<uint32_t>(i & 1));
   const float c0 = __uint_as_float(lab::held(0x3F800000u)),
               c1 = __uint_as_float(lab::held(0x3F7FFFFFu));
   __half2* const hrow = num + static_cast<size_t>(head) * kTokens * 32 + half * 16;
@@ -81,9 +83,9 @@ __global__ void __launch_bounds__(kThreads, 1) exits(__half2* num, float* num32,
       const int t0 = ((b * 131 + warp * 37 + n * 61) * 8) & (kTokens - 1);
       uint32_t bb[4];
       lab::ldsm(bb, sm + ((n * kWarps + warp) & 63) * 512 + (static_cast<uint32_t>(lane) << 4));
-      float acc[2][4] = {};
+      float acc[kM][4] = {};
 #pragma unroll
-      for (int m = 0; m < 2; ++m)
+      for (int m = 0; m < kM; ++m)
 #pragma unroll
         for (int kb = 0; kb < 2; ++kb) {
           const uint32_t a[4] = {f[(m * 2 + kb) * 4], f[(m * 2 + kb) * 4 + 1],
@@ -129,6 +131,47 @@ __global__ void __launch_bounds__(kThreads, 1) exits(__half2* num, float* num32,
           red_h2(hrow + static_cast<size_t>(t0 + tok) * 32 + word, v);
         }
         __syncwarp();
+      } else if constexpr (FORM == 4) {
+        //: lane L's word of request k: token 2k + (L >> 4), pair (m, g') = ((L >> 3) & 1, L & 7), held by lane 4 g' + k as
+        //: its (m, token parity) word
+        const uint32_t w00 = f16_pair(acc[0][0] * c0, acc[0][2] * c0),
+                       w01 = f16_pair(acc[0][1] * c1, acc[0][3] * c1);
+        const uint32_t w10 = f16_pair(acc[1][0] * c0, acc[1][2] * c0),
+                       w11 = f16_pair(acc[1][1] * c1, acc[1][3] * c1);
+        const int mm = (lane >> 3) & 1, jj = lane >> 4, word = lane & 15;
+#pragma unroll
+        for (int k = 0; k < 4; ++k) {
+          const int src = 4 * (lane & 7) + k;
+          const uint32_t a00 = __shfl_sync(0xffffffffu, w00, src),
+                         a01 = __shfl_sync(0xffffffffu, w01, src);
+          const uint32_t a10 = __shfl_sync(0xffffffffu, w10, src),
+                         a11 = __shfl_sync(0xffffffffu, w11, src);
+          const uint32_t v = mm ? (jj ? a11 : a10) : (jj ? a01 : a00);
+          red_h2(hrow + static_cast<size_t>(t0 + 2 * k + jj) * 32 + word, v);
+        }
+      } else if constexpr (FORM == 5) {
+        //: the 64-channel box: a token's 32 words (128 bytes) a request, staged through the warp's tile
+        const uint32_t st = pad + kPanelBytes + static_cast<uint32_t>(warp * kStaging);
+        __half2* const row64 = num + static_cast<size_t>(head) * kTokens * 32;
+#pragma unroll
+        for (int m = 0; m < kM; ++m) {
+          asm volatile("st.shared.u32 [%0], %1;" ::"r"(
+                           st + static_cast<uint32_t>(((2 * tq) * 32 + 8 * m + g) * 4)),
+                       "r"(f16_pair(acc[m][0] * c0, acc[m][2] * c0)));
+          asm volatile("st.shared.u32 [%0], %1;" ::"r"(
+                           st + static_cast<uint32_t>(((2 * tq + 1) * 32 + 8 * m + g) * 4)),
+                       "r"(f16_pair(acc[m][1] * c1, acc[m][3] * c1)));
+        }
+        __syncwarp();
+#pragma unroll
+        for (int k = 0; k < 8; ++k) {
+          uint32_t v;
+          asm volatile("ld.shared.u32 %0, [%1];"
+                       : "=r"(v)
+                       : "r"(st + static_cast<uint32_t>((k * 32 + lane) * 4)));
+          red_h2(row64 + static_cast<size_t>(t0 + k) * 32 + lane, v);
+        }
+        __syncwarp();
       } else if constexpr (FORM == 2) {
 #pragma unroll
         for (int m = 0; m < 2; ++m) {
@@ -141,7 +184,7 @@ __global__ void __launch_bounds__(kThreads, 1) exits(__half2* num, float* num32,
         }
       } else {
 #pragma unroll
-        for (int m = 0; m < 2; ++m)
+        for (int m = 0; m < kM; ++m)
 #pragma unroll
           for (int k = 0; k < 4; ++k) fold ^= __float_as_uint(acc[m][k]);
       }
@@ -170,7 +213,7 @@ template <int FORM, int TILES, int G>
 void variant(const lab::Bench& b, __half2* num, float* num32) {
   const std::string name = lab::kernel("exits", {FORM, TILES, G});
   b.expect(name, "HMMA", ">=", 4);
-  if (FORM == 1 || FORM == 2 || FORM == 3) {
+  if (FORM >= 1 && FORM <= 5) {
     b.expect(name, "RED", ">=", 1);
     //: the exits' global reductions inside the tile's step: the form under test
     b.expect(name, "STEP_GLOBAL", ">=", 0);
@@ -205,6 +248,8 @@ void variant(const lab::Bench& b, __half2* num, float* num32) {
       : FORM == 1 ? "f16 pairs straight to num (red.global.add.noftz.f16x2)"
       : FORM == 2 ? "fp32 straight to num (red.global.add.f32)"
       : FORM == 3 ? "f16 pairs to num through the warp's staging tile, 64 bytes a token a request"
+      : FORM == 4 ? "f16 pairs to num relaid out by shuffles, 64 bytes a token a request"
+      : FORM == 5 ? "a 64-channel box, staged, a token's 128 bytes (a line) a request"
                   : "no exit (the tiles alone)";
   const std::string row = std::string(form) + ", " + std::to_string(TILES)
                           + " tiles a warp a pass, " + std::to_string(G) + " CTAs a head";
@@ -233,10 +278,14 @@ int main(int argc, char** argv) {
   variant<1, 4, 16>(b, num, num32);
   variant<2, 4, 16>(b, num, num32);
   variant<3, 4, 16>(b, num, num32);
+  variant<4, 4, 16>(b, num, num32);
+  variant<5, 4, 16>(b, num, num32);
   variant<1, 4, 1>(b, num, num32);
   variant<9, 16, 16>(b, num, num32);
   variant<0, 16, 16>(b, num, num32);
   variant<1, 16, 16>(b, num, num32);
   variant<2, 16, 16>(b, num, num32);
   variant<3, 16, 16>(b, num, num32);
+  variant<4, 16, 16>(b, num, num32);
+  variant<5, 16, 16>(b, num, num32);
 }
