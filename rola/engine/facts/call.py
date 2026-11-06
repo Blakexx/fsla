@@ -33,7 +33,6 @@ def prefill_clauses(routes, decay: Any = None, *, d_v: int, stateful: bool = Fal
     from rola.ops import carry as carry_ops
     from rola.ops import intra as intra_ops
     from rola.ops import scale as scale_ops
-    from rola.ops.window import window_of
 
     widths = widths_of(routes)
     key = None
@@ -43,9 +42,8 @@ def prefill_clauses(routes, decay: Any = None, *, d_v: int, stateful: bool = Fal
         except ValueError:
             key = None
         key = key if key is not None and tuple(key) in {tuple(arm) for arm in carry_ops.arms()} else None
-    return (widths, d_v, decay, routes.tokens, window_of(routes.device),
-            intra_ops.admits(widths, intra_ops.VALUE_WIDTH, routes.device), intra_ops.VALUE_WIDTH, key,
-            scale_ops.serves(routes), stateful)
+    return (widths, d_v, decay, intra_ops.admits(widths, intra_ops.VALUE_WIDTH, routes.device),
+            intra_ops.VALUE_WIDTH, key, scale_ops.serves(routes), stateful)
 
 
 def arm_refusal(routes, decay: Any = None, *, d_v: int, stateful: bool = False) -> str | None:

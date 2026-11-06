@@ -82,8 +82,10 @@ def prefill(routes, values, facts, carve, layout, read_statics, write_statics, *
     scale = scale_ops.scale(routes, facts, unit)
     num_c, den_c, _ = carry_ops.carry(routes, values, facts, carve, scale, accumulate=accumulate,
                                       reduce_dtype=reduce_dtype)
-    #: the f16 sum's tokens at ``2^(s + 1)`` times the unit, an fp32 sum's at the unit: one pass with the unpack
-    factor = torch.exp2(scale.float() + 1.0) * unit if num_c.dtype != torch.float32 else unit
+    #: the f16 sum's tokens at ``2^(s + 1)`` times the unit, an fp32 sum's at the unit: one pass with the unpack; the
+    #: scale bytes lie on the whole window grid, the call's tokens first
+    factor = (torch.exp2(scale[:, :routes.tokens].float() + 1.0) * unit if num_c.dtype != torch.float32
+              else unit)
     num = unpack_num(num_c, carve.channels, factor)
     den = (den_c * unit).contiguous()
     intra_ops.intra_forward(routes, values, facts, layout, read_statics, write_statics, num, den,

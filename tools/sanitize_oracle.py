@@ -112,6 +112,12 @@ _FAMILIES = {
              "test_every_level_form_is_the_bundle_arithmetic[write_dense0-read_dense0-fp16]",
         kernel="rola::intra::rola_intra_forward", present=True,
         racecheck_driver=("tools/sanitize_cell.py", "--kernel", "intra", "--cell", "flagship-alt-k4")),
+    #: THE INTRA ON A PARTIAL CALL: its last window ending inside a tile, every row past the end bounded -- the
+    #: zero-filled copies read nothing past the call's rows, the deposit writes none.
+    "intra-partial": Family(
+        test="tests/integration/test_intra_kernel.py::"
+             "test_a_partial_last_window_is_the_bundle_arithmetic[a partial tile-fp16]",
+        kernel="rola::intra::rola_intra_forward", present=True),
     #: THE DECODE STEP on the whole resident grid: the work queue's visits, claims and head switches.
     "decode": Family(
         test="tests/oracle/test_decode_vs_oracle.py::"

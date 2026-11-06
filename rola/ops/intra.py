@@ -53,7 +53,7 @@ def intra_forward(routes, values, facts, layout: LivenessLayout, read_statics: S
 
     ``facts`` is the facts pass's output over this bundle in ``layout`` (its tile unions and writer factors), the
     statics the ones it was made with. Each level's rows are read at their own width (:func:`reads`), at most
-    ``layout``'s, in their stored dtype, and the call is a whole number of the device's windows. ``accumulate``
+    ``layout``'s, in their stored dtype; a partial last window reduces its pairs up to the call's end. ``accumulate``
     (``"fp32"`` or ``"fp16"``) is reserved: the gates' choice of form, the device's rule by default.
     """
     form = _ACCUMULATE[accumulate or readout_accumulate(routes.device)]

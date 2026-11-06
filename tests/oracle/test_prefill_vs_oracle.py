@@ -8,7 +8,7 @@ the intra and the epilogue run as one call and the whole answer is compared agai
 window-grid disagreement, a double-counted diagonal or a dropped tile pair has nowhere to hide.
 
 RED BY PLAN (ruling 2026-09-29): a cell outside the built envelope fails by its refusing clause -- a carve no carry
-arm carries, a partial window, depth three or four, a value width other than 64, a carried state. The rule's own teeth
+arm carries, depth three or four, a value width other than 64, a carried state. The rule's own teeth
 and the decomposition's non-vacuity run no kernel.
 
 Symbols: ``W`` the window, ``L`` tokens, ``y`` the op's output ``[B, T, H, d_v]``.

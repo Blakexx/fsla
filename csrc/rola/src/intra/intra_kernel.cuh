@@ -2,7 +2,8 @@
 // the block's reader rows resident in shared memory, the writer tiles streamed through three stage buffers, each refilled
 // by its last reader, under the slab gate the facts pass's unions give; each level's Gram as f16 MMAs on the rows as
 // stored (a u8 digit widened in registers), the epilogue into the value product's f16 weights, the value product on the
-// f16 values, and the block's rows reduced into the output planes at the end.
+// f16 values, and the block's rows reduced into the output planes at the end; a call that is not a whole number of
+// windows runs the arms with every row past its end bounded (`kEven` false).
 // see docs/internals/intra/intra_kernel.md
 #pragma once
 
@@ -479,14 +480,23 @@ __device__ __forceinline__ void value_product(const Smem& sm, float unit, int co
 struct Copier {
   static constexpr int kRowsPerCopy = 4, kCopies = kTile / kRowsPerCopy;
   uint32_t dst;
-  int j, k, lane, b, h, bhw, t_window;
+  int j, k, lane, b, h, bhw, t_window, lw;
 
-  __device__ __forceinline__ Copier(int b_, int h_, int bhw_, int t_window_, int lane_)
-      : j(lane_ >> 3), k(lane_ & 7), lane(lane_), b(b_), h(h_), bhw(bhw_), t_window(t_window_) {
+  __device__ __forceinline__ Copier(int b_, int h_, int bhw_, int t_window_, int lw_, int lane_)
+      : j(lane_ >> 3),
+        k(lane_ & 7),
+        lane(lane_),
+        b(b_),
+        h(h_),
+        bhw(bhw_),
+        t_window(t_window_),
+        lw(lw_) {
     dst = static_cast<uint32_t>(j * kStageBytes + ((k ^ (j << 1)) << 4));
   }
 
-  //: tile `tile`'s values and writer factors, or immediate arrivals when no warp's pair with it is live
+  //: tile `tile`'s values and writer factors, or immediate arrivals when no warp's pair with it is live; a partial
+  //: call's (`!kEven`) tile the call ends inside, or any tile of an odd-length call, bounded
+  template <bool kEven>
   __device__ __forceinline__ void values(const Smem& sm, const IntraParams& p, int tile,
                                          bool issue) const {
     if (!issue) {
@@ -495,12 +505,29 @@ struct Copier {
     }
     const uint8_t* const row = row_at(p.values, b, t_window + tile * kTile + j, h) + k * kChunk;
     const uint32_t base = ops::smem_addr(&sm.values[0][0]) + dst;
+    if constexpr (kEven) {
 #pragma unroll
-    for (int i = 0; i < kCopies; ++i)
-      ops::stage_tile((base + i * kRowsPerCopy * kValueBytes) ^ ((i & 1) << 4),
-                      row + rows_of(i * kRowsPerCopy, p.values.st));
-    ops::stage_tile(ops::smem_addr(&sm.fm[2 * lane]),
-                    p.fm + static_cast<int64_t>(bhw) * p.L + t_window + tile * kTile + 2 * lane);
+      for (int i = 0; i < kCopies; ++i)
+        ops::stage_tile((base + i * kRowsPerCopy * kValueBytes) ^ ((i & 1) << 4),
+                        row + rows_of(i * kRowsPerCopy, p.values.st));
+      ops::stage_tile(ops::smem_addr(&sm.fm[2 * lane]),
+                      p.fm + static_cast<int64_t>(bhw) * p.L + t_window + tile * kTile + 2 * lane);
+    } else {
+      //: a row past the call's last token zero-fills (finite, its pairs above the diagonal); a writer's factors a run
+      //: of their own (a head's row of them starts on 8 bytes where the call's length is odd)
+      const int left = lw - tile * kTile;
+      const float2* const fm =
+          p.fm + static_cast<int64_t>(bhw) * p.L + t_window + tile * kTile + 2 * lane;
+#pragma unroll
+      for (int i = 0; i < kCopies; ++i)
+        ops::stage_tile_if((base + i * kRowsPerCopy * kValueBytes) ^ ((i & 1) << 4),
+                           row + rows_of(i * kRowsPerCopy, p.values.st),
+                           j + i * kRowsPerCopy < left);
+#pragma unroll
+      for (int e = 0; e < 2; ++e)
+        ops::stage_run_if<sizeof(float2)>(ops::smem_addr(&sm.fm[2 * lane + e]), fm + e,
+                                          2 * lane + e < left);
+    }
     ops::mbar_arrive_when_landed(ops::smem_addr(&sm.values_full));
   }
 };
@@ -512,11 +539,18 @@ struct Bases {
   const uint8_t* write[kMaxLevels];
   const uint8_t* read[kMaxLevels];
   int64_t write_st[kMaxLevels], read_st[kMaxLevels];
+  //: a partial call's bounds: the window's tokens and the block's readers before its end (a row past them zero-fills,
+  //: read from nowhere), and whether the call ends inside the block
+  int lw, lr;
+  bool whole;
 };
 
 __device__ __forceinline__ Bases bases_of(const IntraParams& p, int b, int hw, int h, int t_window,
                                           int t_block) {
   Bases out;
+  out.lw = min(kWindow, p.L - t_window);
+  out.lr = min(kBlockRows, p.L - t_block);
+  out.whole = out.lr == kBlockRows;
 #pragma unroll
   for (int l = 0; l < kMaxLevels; ++l) {
     out.write[l] = row_at(p.write[l], b, t_window, hw);
@@ -549,7 +583,7 @@ __device__ __forceinline__ void build_words(Smem& sm, const IntraParams& p, int 
 //: and 1; `kHalves` the ones copied) at chunk `tid % 8` (swizzled by the row), predicated on `issue` -- a stage no
 //: warp reads, or past the piece, reads nothing and zero-fills a buffer every warp has released.
 //: -- see docs/internals/intra/intra_kernel.md#pipeline
-template <int D, int kHalf0 = 0, int kHalves = 2>
+template <int D, bool kEven, int kHalf0 = 0, int kHalves = 2>
 __device__ __forceinline__ void stage_share(const Smem& sm, const Bases& at, const int4& word,
                                             int buf, int tile, bool issue, int tid) {
   static_assert(kTile * 8 == 2 * kThreads, "a stage's rows are two copies a thread");
@@ -564,8 +598,15 @@ __device__ __forceinline__ void stage_share(const Smem& sm, const Bases& at, con
 #pragma unroll
   for (int i = kHalf0; i < kHalfEnd; ++i) {
     const int row = (tid >> 3) + 32 * i;
-    ops::stage_tile_if(rows + static_cast<uint32_t>(row * kStageBytes + ((k ^ swizzle(row)) << 4)),
-                       base + rows_of(tile * kTile + row, st), live);
+    if constexpr (kEven) {
+      ops::stage_tile_if(
+          rows + static_cast<uint32_t>(row * kStageBytes + ((k ^ swizzle(row)) << 4)),
+          base + rows_of(tile * kTile + row, st), live);
+    } else {
+      ops::stage_tile_if(
+          rows + static_cast<uint32_t>(row * kStageBytes + ((k ^ swizzle(row)) << 4)),
+          base + rows_of(tile * kTile + row, st), live & (tile * kTile + row < at.lw));
+    }
   }
 }
 
@@ -574,7 +615,7 @@ __device__ __forceinline__ void stage_share(const Smem& sm, const Bases& at, con
 //: piece's first tile's stage `s`, so the first Gram waits for one part, not the block's rows; each copy issued only
 //: where `issue` (a stage the call has) and the part has its chunk, its digits past the level's width zero-filled.
 //: -- see docs/internals/intra/intra_kernel.md#pipeline
-template <int D>
+template <int D, bool kEven>
 __device__ __forceinline__ void reader_part_any(Smem& sm, const IntraParams& p, const Bases& at,
                                                 int s, bool issue, int tid) {
   constexpr int kMaxChunks = 16, kPass = kThreads / kMaxChunks, kRowsEach = kBlockRows / kPass;
@@ -596,7 +637,11 @@ __device__ __forceinline__ void reader_part_any(Smem& sm, const IntraParams& p, 
   const uint32_t dst_step = static_cast<uint32_t>(kPass * p.pitch);
 #pragma unroll
   for (int i = 0; i < kRowsEach; ++i) {
-    ops::stage_tile_when(dst, src, has, live);
+    if constexpr (kEven) {
+      ops::stage_tile_when(dst, src, has, live);
+    } else {
+      ops::stage_tile_when(dst, src, has, live & (r0 + kPass * i < at.lr));
+    }
     src += src_step;
     dst += dst_step;
   }
@@ -635,19 +680,23 @@ __device__ __forceinline__ void reader_part(Smem& sm, const IntraParams& p, cons
 
 //: A TILE UNION's address in the facts pass's grouped table: a write head's `group + 1` slots, its query heads' read
 //: sides then its write side.
+template <bool kEven>
 __device__ __forceinline__ const uint32_t* union_at(const IntraParams& p, int bhw, int slot,
                                                     int group, int tile) {
-  const int tiles = p.L / kTile;
+  //: the facts pass's tiles a row, the last one partial where a partial call ends inside it
+  const int tiles = kEven ? p.L / kTile : (p.L + kTile - 1) / kTile;
   return p.unions + ((static_cast<int64_t>(bhw) * (p.group + 1) + slot) * p.groups + group) * tiles
          + tile;
 }
 
 //: THE GATE TABLE: per (window tile, row tile) the slabs whose reader and writer tile unions meet, a lane a slab,
 //: cleared whole when a level has none (the pair's product is exactly zero) or the pair lies above the diagonal; a
-//: dense level answers all-ones unread. One warp. -- see docs/internals/intra/intra_kernel.md#slab-gate
-template <int D>
+//: dense level answers all-ones unread; a partial call's (`!kEven`) pairs with a tile past its last (`tiles` the
+//: window's before it) cleared, the union table read only before it. One warp.
+//: -- see docs/internals/intra/intra_kernel.md#slab-gate
+template <int D, bool kEven>
 __device__ __forceinline__ void gate_table(Smem& sm, const IntraParams& p, int bhw, int slot,
-                                           int window, int block, int lane) {
+                                           int window, int block, int tiles, int lane) {
   int level = 0;
 #pragma unroll
   for (int l = 1; l < D; ++l)
@@ -663,17 +712,24 @@ __device__ __forceinline__ void gate_table(Smem& sm, const IntraParams& p, int b
 #pragma unroll
   for (int t = 0; t < kWindowTiles; ++t) columns[t] = all;
   if (slab && !facts::level_is_dense(p.dense[facts::kRead], level)) {
-    const uint32_t* const r = union_at(p, bhw, slot, group, tile0 + block * kRowTiles);
+    const uint32_t* const r = union_at<kEven>(p, bhw, slot, group, tile0 + block * kRowTiles);
 #pragma unroll
-    for (int rt = 0; rt < kRowTiles; ++rt) rows[rt] = r[rt];
+    for (int rt = 0; rt < kRowTiles; ++rt)
+      rows[rt] = kEven || block * kRowTiles + rt < tiles ? r[rt] : 0u;
   }
   if (slab && !facts::level_is_dense(p.dense[facts::kWrite], level)) {
-    const uint32_t* const w = union_at(p, bhw, p.group, group, tile0);
+    const uint32_t* const w = union_at<kEven>(p, bhw, p.group, group, tile0);
+    if constexpr (kEven) {
 #pragma unroll
-    for (int q = 0; q < kWindowQuads; ++q) {
-      const uint4 x = ops::load_vec16(w + 4 * q);
-      columns[4 * q] = x.x, columns[4 * q + 1] = x.y, columns[4 * q + 2] = x.z,
-                  columns[4 * q + 3] = x.w;
+      for (int q = 0; q < kWindowQuads; ++q) {
+        const uint4 x = ops::load_vec16(w + 4 * q);
+        columns[4 * q] = x.x, columns[4 * q + 1] = x.y, columns[4 * q + 2] = x.z,
+                    columns[4 * q + 3] = x.w;
+      }
+    } else {
+      //: a word a tile: a head's row of unions need not start on 16 bytes
+#pragma unroll
+      for (int t = 0; t < kWindowTiles; ++t) columns[t] = t < tiles ? w[t] : 0u;
     }
   }
   uint32_t level_slabs[D];
@@ -687,7 +743,9 @@ __device__ __forceinline__ void gate_table(Smem& sm, const IntraParams& p, int b
 #pragma unroll
       for (int l = 0; l < D; ++l)
         if ((mask & level_slabs[l]) == 0u) mask = 0u;
-      if (lane == 0) sm.gate[t][rt] = t <= block * kRowTiles + rt ? mask : 0u;
+      if (lane == 0)
+        sm.gate[t][rt] =
+            t <= block * kRowTiles + rt && (kEven || block * kRowTiles + rt < tiles) ? mask : 0u;
     }
 }
 
@@ -707,6 +765,7 @@ __device__ __forceinline__ uint32_t tile_gate(const Smem& sm, int tile) {
 //: THE DEPOSIT: the warp's 16 rows of partial sums -- its writer columns' -- reduced into the output planes through a
 //: staging tile of its own in the dead reader rows, a row's channels two lines of consecutive reductions; its rows'
 //: partial sums into `den`. -- see docs/internals/intra/intra_kernel.md#deposit
+template <bool kEven>
 __device__ __forceinline__ void deposit(Smem& sm, const IntraParams& p, int bh, int t_row, int warp,
                                         int lane, const float (&out)[8][4]) {
   constexpr int kPitch = kValueWidth + 8;
@@ -723,12 +782,16 @@ __device__ __forceinline__ void deposit(Smem& sm, const IntraParams& p, int bh, 
                               out[n][2 * r], out[n][2 * r + 1]);
   __syncwarp();
   float* const num = p.num + (static_cast<int64_t>(bh) * p.L + t_row) * kValueWidth;
+  //: a partial call's rows past its end are never written
+  const int rows = kEven ? kWarpRows : min(kWarpRows, p.L - t_row);
 #pragma unroll
   for (int r = 0; r < kWarpRows; ++r) {
-    ops::fan_in_add(num + r * kValueWidth + lane, staging[r * kPitch + lane]);
-    ops::fan_in_add(num + r * kValueWidth + 32 + lane, staging[r * kPitch + 32 + lane]);
+    if (kEven || r < rows) {
+      ops::fan_in_add(num + r * kValueWidth + lane, staging[r * kPitch + lane]);
+      ops::fan_in_add(num + r * kValueWidth + 32 + lane, staging[r * kPitch + 32 + lane]);
+    }
   }
-  if (lane < kWarpRows)
+  if (lane < rows)
     ops::fan_in_add(p.den + static_cast<int64_t>(bh) * p.L + t_row + lane, sm.den[warp][lane]);
 }
 
@@ -774,7 +837,7 @@ enum StageGram : int { kGramNone, kGramDense, kGramSlabs };
 //: on into the buffer just released, a half after each half of a straight-line Gram's slabs, after the Gram
 //: otherwise), the reader part of that stage after it while the piece's first tile is read.
 //: -- see docs/internals/intra/intra_kernel.md#pipeline
-template <int D, int F, bool kF16, int Gram, bool kReader>
+template <int D, int F, bool kF16, int Gram, bool kReader, bool kEven>
 __device__ __forceinline__ void tile_stage(Smem& sm, const IntraParams& p, const Lanes& ln,
                                            const Bases& at, const int4& word, uint32_t mine, int t1,
                                            int tid, Ring& ring, Acc<kF16>& acc, int rs,
@@ -784,8 +847,8 @@ __device__ __forceinline__ void tile_stage(Smem& sm, const IntraParams& p, const
   const int refill_tile = min(ring.tile, kWindowTiles - 1);
   const bool refill_live = (ring.tile < t1) & (word_slabs(ring.word, ring.gate) != 0u);
   const auto refill = [&](auto Half) {
-    stage_share<D, decltype(Half)::value, 1>(sm, at, ring.word, ring.prev, refill_tile, refill_live,
-                                             tid);
+    stage_share<D, kEven, decltype(Half)::value, 1>(sm, at, ring.word, ring.prev, refill_tile,
+                                                    refill_live, tid);
   };
   const int chunk = (word.y >> 8) & 0xff;
   const uint32_t rows = ops::smem_addr(&sm.stage[ring.buf][0][0]);
@@ -794,7 +857,7 @@ __device__ __forceinline__ void tile_stage(Smem& sm, const IntraParams& p, const
   } else {
     if constexpr (Gram == kGramSlabs)
       gram_slabs<F, kF16>(ln, chunk, rows, word_slabs(word, mine), acc);
-    stage_share<D>(sm, at, ring.word, ring.prev, refill_tile, refill_live, tid);
+    stage_share<D, kEven>(sm, at, ring.word, ring.prev, refill_tile, refill_live, tid);
   }
   if constexpr (kReader) reader_part<D, F>(sm, p, at, rs, rissue, tid);
   ops::stage_commit();
@@ -804,8 +867,9 @@ __device__ __forceinline__ void tile_stage(Smem& sm, const IntraParams& p, const
 //: A TILE'S STAGES, level by level under each level's form -- one uniform switch a level, its Gram opened before them
 //: and folded after -- straight-line where the warp reads every slab of the level, by its slabs where it reads some,
 //: none for a dead pair, chosen once a level. The first tile's steps carry the reader part two stages on where it is
-//: the level's own (its first two parts ride the prologue's groups). -- see docs/internals/intra/intra_kernel.md#pipeline
-template <int D, bool kF16, bool kReader>
+//: the level's own (its first two parts ride the prologue's groups; a block a partial call ends inside lands every
+//: part there). -- see docs/internals/intra/intra_kernel.md#pipeline
+template <int D, bool kF16, bool kReader, bool kEven>
 __device__ __forceinline__ void tile_stages(Smem& sm, const IntraParams& p, const Lanes& ln,
                                             const Bases& at, int tile, int t1, int row_tile,
                                             int tid, Ring& ring, Acc<kF16>& acc) {
@@ -823,8 +887,9 @@ __device__ __forceinline__ void tile_stages(Smem& sm, const IntraParams& p, cons
         for (int s = s0; s < s1; ++s) {
           const int4 now = word;
           word = sm.words[min(s + 1, s1 - 1)];
-          tile_stage<D, kF, kF16, decltype(Gram)::value, kReader>(
-              sm, p, ln, at, now, mine, t1, tid, ring, acc, min(s + 2, s1 - 1), s + 2 < s1);
+          tile_stage<D, kF, kF16, decltype(Gram)::value, kReader, kEven>(
+              sm, p, ln, at, now, mine, t1, tid, ring, acc, min(s + 2, s1 - 1),
+              kEven ? s + 2 < s1 : (s + 2 < s1) & at.whole);
         }
       };
       if (mine == 0u) {
@@ -841,7 +906,7 @@ __device__ __forceinline__ void tile_stages(Smem& sm, const IntraParams& p, cons
 
 //: A TILE'S VALUES: awaited after its last stage; the epilogue and the value product for a live pair, the values
 //: released and the next tile's copied by the last warp to release them.
-template <bool kF16>
+template <bool kF16, bool kEven>
 __device__ __forceinline__ void tile_values(Smem& sm, const IntraParams& p, const Copier& copy,
                                             int tile, int t0, int t1, int row_tile, int warp,
                                             int group, int col0, int lane, Acc<kF16>& acc,
@@ -867,15 +932,17 @@ __device__ __forceinline__ void tile_values(Smem& sm, const IntraParams& p, cons
   }
   if (__shfl_sync(0xffffffffu, last, 0) && tile + 1 < t1) {
     __threadfence_block();
-    copy.values(sm, p, tile + 1, tile_gate(sm, tile + 1) != 0u);
+    copy.values<kEven>(sm, p, tile + 1, tile_gate(sm, tile + 1) != 0u);
   }
 }
 
 //: THE GRID: a CTA a (window, piece) along x -- a window's longest piece first -- and a query head along y, an arm a
 //: depth `D` and an accumulation. The block's readers land once, a part a stage, tile 0's first stage beside the first
-//: part; the piece's writer tiles stream through the stage buffers; its partial sums reduce into the output planes.
+//: part; the piece's writer tiles stream through the stage buffers; its partial sums reduce into the output planes. An
+//: arm `kEven` false serves a call whose last window is partial: a piece runs its tiles before the call's end, one with
+//: none exits, every row past the end bounded; those arms compile in `intra_partial.cu`.
 //: -- see docs/internals/intra/intra_kernel.md#the-grid
-template <int D, bool kF16>
+template <int D, bool kF16, bool kEven>
 __global__ __launch_bounds__(kThreads, 1) void intra_kernel(const __grid_constant__ IntraParams p) {
   extern __shared__ __align__(128) unsigned char raw[];
   Smem& sm = *reinterpret_cast<Smem*>(raw);
@@ -883,8 +950,15 @@ __global__ __launch_bounds__(kThreads, 1) void intra_kernel(const __grid_constan
   const int tid = static_cast<int>(threadIdx.x), warp = tid >> 5, lane = tid & 31;
   const int bh = static_cast<int>(blockIdx.y);
   const int window = static_cast<int>(blockIdx.x) / Pieces::count();
-  const Piece piece = kPieceTable.table[static_cast<int>(blockIdx.x) % Pieces::count()];
+  const Piece entry = kPieceTable.table[static_cast<int>(blockIdx.x) % Pieces::count()];
+  //: a partial call's window tiles before its end: a piece whose readers or writers all lie past them has nothing to do
+  const int tiles =
+      kEven ? kWindowTiles : (min(kWindow, p.L - window * kWindow) + kTile - 1) / kTile;
+  const Piece piece = kEven ? entry : Piece{entry.block, entry.t0, min(entry.t1, tiles)};
   const int block = piece.block;
+  if constexpr (!kEven) {
+    if (piece.t0 >= piece.t1 || block * kRowTiles >= tiles) return;
+  }
   const int b = bh / p.H, h = bh - b * p.H;
   const int hw = h / p.group, slot = h - hw * p.group;
   const int bhw = b * (p.H / p.group) + hw;
@@ -908,7 +982,7 @@ __global__ __launch_bounds__(kThreads, 1) void intra_kernel(const __grid_constan
     for (int i = 0; i < 4; ++i) acc.out[n][i] = 0.0f;
   if (lane < kWarpRows) sm.den[warp][lane] = 0.0f;
 
-  const Copier copy(b, hw, bhw, t_window, lane);
+  const Copier copy(b, hw, bhw, t_window, min(kWindow, p.L - t_window), lane);
   const Lanes ln(sm, p, group, col0, lane);
   //: the piece's first `kStageBuffers - 1` stages, each a copy group with its reader part, copied before the gate
   //: exists; the reader parts after them ride the ring's refills (`tile_stage`)
@@ -916,22 +990,22 @@ __global__ __launch_bounds__(kThreads, 1) void intra_kernel(const __grid_constan
 #pragma unroll 1
   for (int i = 0; i + 1 < kStageBuffers; ++i) {
     const int2 first = stage_after(p, piece.t0, 0, i);
-    stage_share<D>(sm, at, sm.words[first.y], i, min(first.x, kWindowTiles - 1), first.x < piece.t1,
-                   tid);
-    //: the reader parts no step carries -- each level's first two -- in the first two groups, a part `s` in group
-    //: min(s, 1)
+    stage_share<D, kEven>(sm, at, sm.words[first.y], i, min(first.x, kWindowTiles - 1),
+                          first.x < piece.t1, tid);
+    //: the reader parts no step carries -- each level's first two, every part of a block a partial call ends
+    //: inside -- in the first two groups, a part `s` in group min(s, 1)
 #pragma unroll 1
     for (int s = 0; s < p.stages; ++s) {
-      const bool front = s - p.level_stage0[sm.words[s].y & 0xff] < 2;
+      const bool front = s - p.level_stage0[sm.words[s].y & 0xff] < 2 || (!kEven && !at.whole);
 #pragma unroll 1
       for (int k = ops::once(front && min(s, kStageBuffers - 2) == i); k > 0; --k)
-        reader_part_any<D>(sm, p, at, s, true, tid);
+        reader_part_any<D, kEven>(sm, p, at, s, true, tid);
     }
     ops::stage_commit();
   }
-  if (warp == 0) copy.values(sm, p, piece.t0, true);
+  if (warp == 0) copy.values<kEven>(sm, p, piece.t0, true);
   clock.lap(kPhaseReader);
-  if (warp == 0) gate_table<D>(sm, p, bhw, slot, window, block, lane);
+  if (warp == 0) gate_table<D, kEven>(sm, p, bhw, slot, window, block, tiles, lane);
   __syncthreads();
   clock.lap(kPhaseGate);
 
@@ -939,18 +1013,18 @@ __global__ __launch_bounds__(kThreads, 1) void intra_kernel(const __grid_constan
   Ring ring(refill.x, refill.y);
   ring.read(sm);
   //: the piece's first tile carries the reader parts the ring's first refills did not
-  tile_stages<D, kF16, true>(sm, p, ln, at, piece.t0, piece.t1, row_tile, tid, ring, acc);
+  tile_stages<D, kF16, true, kEven>(sm, p, ln, at, piece.t0, piece.t1, row_tile, tid, ring, acc);
   clock.lap(kPhaseGram);
-  tile_values(sm, p, copy, piece.t0, piece.t0, piece.t1, row_tile, warp, group, col0, lane, acc,
-              clock);
+  tile_values<kF16, kEven>(sm, p, copy, piece.t0, piece.t0, piece.t1, row_tile, warp, group, col0,
+                           lane, acc, clock);
 #pragma unroll 1
   for (int tile = piece.t0 + 1; tile < piece.t1; ++tile) {
-    tile_stages<D, kF16, false>(sm, p, ln, at, tile, piece.t1, row_tile, tid, ring, acc);
+    tile_stages<D, kF16, false, kEven>(sm, p, ln, at, tile, piece.t1, row_tile, tid, ring, acc);
     clock.lap(kPhaseGram);
-    tile_values(sm, p, copy, tile, piece.t0, piece.t1, row_tile, warp, group, col0, lane, acc,
-                clock);
+    tile_values<kF16, kEven>(sm, p, copy, tile, piece.t0, piece.t1, row_tile, warp, group, col0,
+                             lane, acc, clock);
   }
-  deposit(sm, p, bh, t_block + group * kWarpRows, warp, lane, acc.out);
+  deposit<kEven>(sm, p, bh, t_block + group * kWarpRows, warp, lane, acc.out);
   clock.lap(kPhaseDeposit);
   clock.publish(p.ledger, 0, kWarps, warp);
 }

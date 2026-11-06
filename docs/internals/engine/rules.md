@@ -21,7 +21,7 @@ C++ — cannot be read as a set with the others, and cannot be exercised without
 | rule | reads | decides |
 |---|---|---|
 | `mask` | `CallClass` | which subgraph — M1 or M2 |
-| `prefill_envelope` | `widths`, `d_v`, decay, `T`, the window, whether the intra reads the widths, the carry census | the prefill's refusal, or None |
+| `prefill_envelope` | `widths`, `d_v`, decay, whether the intra reads the widths, the carry census | the prefill's refusal, or None |
 | `envelope` | unratified activations, device | the operand-side refusal, or None |
 | `run_table` | the three state ARGUMENTS' presence | the `uint32` skip table (in no DAG: kept for the carry port) |
 | `paging_preference` | the expert overrides | dense or paged backing |

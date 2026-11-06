@@ -13,6 +13,7 @@
 #include "common/window.cuh"
 #include "intra/intra_api.cuh"
 #include "intra/intra_kernel.cuh"
+#include "intra/intra_partial.cuh"
 
 namespace rola::intra {
 
@@ -175,22 +176,33 @@ void units(const std::vector<int64_t>& forms, bool f16, float& lift, float& unit
   unit = static_cast<float>(u);
 }
 
+//: a call of whole windows on the arm `kEven`, one whose last window is partial on the arm `!kEven`
 template <int D, bool kF16>
-void launch(const IntraParams& p, const Card& card, int64_t smem, int64_t bh, cudaStream_t stream) {
-  //: the attribute call is host time on the launch path: raised only when a call's footprint passes the last one set
-  static int64_t configured = 0;
-  if (smem > configured) {
+void launch(const IntraParams& p, const Card& card, int64_t smem, int64_t bh, bool even,
+            cudaStream_t stream) {
+  //: the attribute call is host time on the launch path: raised only when a call's footprint passes the last one set,
+  //: each kernel's own
+  static int64_t configured[2] = {0, 0};
+  if (smem > configured[even]) {
     const int optin = current_device_properties().sharedMemPerBlockOptin;
     STD_TORCH_CHECK(smem <= optin, "the intra's ", smem,
                     "-byte footprint at these widths exceeds this device's ", optin,
                     "-byte opt-in");
-    ROLA_CUDA_CHECK(cudaFuncSetAttribute(intra_kernel<D, kF16>,
+  }
+  if (!even) {
+    const cudaError_t e = launch_partial<D, kF16>(p, card.pieces, card.threads, smem, bh, stream);
+    ROLA_CUDA_CHECK(e);
+    configured[0] = smem > configured[0] ? smem : configured[0];
+    return;
+  }
+  if (smem > configured[1]) {
+    ROLA_CUDA_CHECK(cudaFuncSetAttribute(intra_kernel<D, kF16, true>,
                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
                                          static_cast<int>(smem)));
-    configured = smem;
+    configured[1] = smem;
   }
   const dim3 grid(static_cast<unsigned>(p.windows * card.pieces), static_cast<unsigned>(bh));
-  intra_kernel<D, kF16>
+  intra_kernel<D, kF16, true>
       <<<grid, static_cast<unsigned>(card.threads), static_cast<size_t>(smem), stream>>>(p);
   ROLA_CUDA_LAUNCH_CHECK();
 }
@@ -237,8 +249,7 @@ void rola_intra_forward(std::vector<Tensor> read, std::vector<Tensor> write, Ten
   STD_TORCH_CHECK(write[0].dim() == 4, "a level's write rows are [B, T, H_w, width]");
   const int64_t Hw = write[0].size(2);
   STD_TORCH_CHECK(Hw >= 1 && H % Hw == 0, "the write heads ", Hw, " divide the query heads ", H);
-  STD_TORCH_CHECK(T % card.window == 0, "the call is a whole number of ", card.window,
-                  "-token windows, got ", T);
+  STD_TORCH_CHECK(T >= 1, "a call carries at least one token");
   std::vector<int64_t> row_widths(D), forms(D);
   for (int l = 0; l < D; ++l) {
     row_widths[l] = read[l].dim() == 4 ? read[l].size(3) : 0;
@@ -278,7 +289,8 @@ void rola_intra_forward(std::vector<Tensor> read, std::vector<Tensor> write, Ten
   p.H = static_cast<int>(H);
   p.group = static_cast<int>(H / Hw);
   p.L = static_cast<int>(T);
-  p.windows = static_cast<int>(T / card.window);
+  //: a partial last window runs its tiles before the call's end
+  p.windows = static_cast<int>((T + card.window - 1) / card.window);
   detail::units(forms, accumulate == 1, p.lift, p.unit);
   STD_TORCH_CHECK(
       dense_read >= 0 && dense_read < (1 << D) && dense_write >= 0 && dense_write < (1 << D),
@@ -303,12 +315,13 @@ void rola_intra_forward(std::vector<Tensor> read, std::vector<Tensor> write, Ten
   p.ledger = detail::g_ledger;
 
   const cudaStream_t stream = current_stream();
+  const bool even = T % card.window == 0;
   if (D == 1)
-    accumulate ? detail::launch<1, true>(p, card, g.smem, B * H, stream)
-               : detail::launch<1, false>(p, card, g.smem, B * H, stream);
+    accumulate ? detail::launch<1, true>(p, card, g.smem, B * H, even, stream)
+               : detail::launch<1, false>(p, card, g.smem, B * H, even, stream);
   else
-    accumulate ? detail::launch<2, true>(p, card, g.smem, B * H, stream)
-               : detail::launch<2, false>(p, card, g.smem, B * H, stream);
+    accumulate ? detail::launch<2, true>(p, card, g.smem, B * H, even, stream)
+               : detail::launch<2, false>(p, card, g.smem, B * H, even, stream);
 }
 
 //: -- see docs/internals/intra/intra_api.md#intra-footprint

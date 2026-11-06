@@ -76,10 +76,12 @@ digits' `unit` ([`intra_kernel.md`](intra_kernel.md#widening)); and each side's 
 
 ## The translation unit
 
-The arms are the depth and the accumulation, `intra_kernel<D, kF16>` at `D` = 1, 2: four. The host entry reads the
-device's card, derives the geometry from the rows' widths and dtypes, turns each tensor into a view after checking it
-(`row_view`: shape, 16-byte starts and strides), fills the block and launches the arm on a `(windows × pieces, B·H)`
-grid of the card's threads with the call's footprint. A footprint past the 48 KB a kernel gets unasked is checked
+The arms are the depth and the accumulation, `intra_kernel<D, kF16>` at `D` = 1, 2: four; a call whose last window
+is partial runs the four arms `kEven` false, `intra_kernel<D, kF16, false>`, compiled in `intra_partial.cu`
+([`intra_kernel.md`](intra_kernel.md#partial-window)). The host entry reads the device's card, derives the geometry
+from the rows' widths and dtypes, turns each tensor into a view after checking it (`row_view`: shape, 16-byte starts
+and strides), fills the block and launches the arm on a `(windows × pieces, B·H)` grid of the card's threads with the
+call's footprint, `windows` the call's tokens over W rounded up. A footprint past the 48 KB a kernel gets unasked is checked
 against the device's opt-in and the arm's attribute raised to it, once a size: only a call wider than any before it
 pays the attribute call.
 

@@ -28,7 +28,8 @@ which side is f16 -- is read from its rows' dtypes.
 The refusals (KERNEL_STANDARDS §18: a seam refuses rather than guesses):
 
 * each side a row set a level, as many as the layout's levels, u8 or f16 each, and the values f16;
-* `window` is the device's W (`common/window.cuh`) and `T` a whole number of windows;
+* `window` is the device's W (`common/window.cuh`) and `T` at least one token (a partial last window runs its
+  tiles before the call's end: [`intra_kernel.md`](intra_kernel.md#partial-window));
 * the write heads divide the query heads;
 * the accumulation is fp32 or fp16;
 * one or two levels (the built arms serve depth two), each a whole number of 16-digit granules

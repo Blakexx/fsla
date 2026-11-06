@@ -165,6 +165,21 @@ def test_the_intra_is_the_bundle_arithmetic_per_slot(L, H, keep, accumulate):
 
 
 @pytest.mark.parametrize("accumulate", ACCUMULATE)
+@pytest.mark.parametrize("tail", ["a partial tile alone", "whole tiles", "a partial tile", "a token short"])
+def test_a_partial_last_window_is_the_bundle_arithmetic(tail, accumulate):
+    """A call whose last window is partial: its pairs up to the call's end, every row past it neither read nor
+    written -- under a tile, whole tiles past a window, a partial tile past one, one token short of two windows."""
+    W = window_of()
+    L = {"a partial tile alone": 37, "whole tiles": W + 64, "a partial tile": W + 100, "a token short": 2 * W - 1}[tail]
+    _check(*_bundle(L, 2, 0.3, seed=23), accumulate)
+
+
+def test_a_partial_last_window_reads_its_write_head():
+    """Grouped queries over a partial last window, the union table's last tile partial."""
+    _check(*_bundle(window_of() + 161, 4, 0.3, Hw=2, seed=29), "fp16")
+
+
+@pytest.mark.parametrize("accumulate", ACCUMULATE)
 @pytest.mark.parametrize("read_dense", SIDE_PATTERNS)
 @pytest.mark.parametrize("write_dense", SIDE_PATTERNS)
 def test_every_level_form_is_the_bundle_arithmetic(read_dense, write_dense, accumulate):
@@ -271,7 +286,8 @@ def test_the_seam_refuses_what_it_does_not_read():
                          scale_read=tuple(s[:, :1000] for s in routes.scale_read),
                          scale_write=tuple(s[:, :1000] for s in routes.scale_write), g_write=routes.g_write[:, :1000],
                          sparse=routes.sparse)
-    with pytest.raises(RuntimeError, match=f"whole number of {window_of()}"):
+    #: any token count is served (a partial last window included); operands that disagree on it are not
+    with pytest.raises(RuntimeError, match="values is"):
         intra_ops.intra_forward(short, values, facts, layout, *statics, num, den)
     with pytest.raises(RuntimeError, match="past the layout's 32"):
         narrow = lv.LivenessLayout(D=2, B=(32, 256), L=1024)

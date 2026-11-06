@@ -17,11 +17,9 @@ from rola.engine import rule
 
 
 @rule(gives=("prefill_envelope",),
-      needs=("widths", "d_v", "decay", "tokens", "window", "intra_reads", "intra_dv", "carry_arm", "scale_refusal",
-             "stateful"))
-def prefill_envelope(widths: tuple[int, ...], d_v: int, decay: Any, tokens: int, window: int,
-                     intra_reads: bool, intra_dv: int, carry_arm: tuple[int, ...] | None, scale_refusal: str | None,
-                     stateful: bool) -> str | None:
+      needs=("widths", "d_v", "decay", "intra_reads", "intra_dv", "carry_arm", "scale_refusal", "stateful"))
+def prefill_envelope(widths: tuple[int, ...], d_v: int, decay: Any, intra_reads: bool, intra_dv: int,
+                     carry_arm: tuple[int, ...] | None, scale_refusal: str | None, stateful: bool) -> str | None:
     """Why the prefill has no kernel for this segment, or None if it runs.
 
     ``intra_reads`` is whether the intra kernel reads these level widths (`rola.ops.intra.admits`) and ``intra_dv``
@@ -44,8 +42,6 @@ def prefill_envelope(widths: tuple[int, ...], d_v: int, decay: Any, tokens: int,
     if stateful:
         return ("a state handed in or out: the carry takes no entry state yet (its segment boundary is not built); "
                 "call statelessly")
-    if tokens % window:
-        return f"T={tokens} is not a whole number of {window}-token windows"
     return None
 
 

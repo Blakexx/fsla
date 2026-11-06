@@ -37,9 +37,11 @@ write head's, read by `H / H_w` consecutive query heads.
 
 ## The arms, the forms and the widths
 
-The arm is the depth and the accumulation, `intra_kernel<D, kF16>`: `D` = 1 or 2 fixes the gate's level loop; `kF16`
-the MMAs' accumulator, fp16 (1) where the device's fp32-accumulate rate is half its fp16 one, fp32 (0) elsewhere --
-the carry readout's rule ([`../carry/carry_api.md#carry-readout-accumulate`](../carry/carry_api.md#carry-readout-accumulate)).
+The arm is the depth, the accumulation and the call's evenness, `intra_kernel<D, kF16, kEven>`: `D` = 1 or 2 fixes the
+gate's level loop; `kF16` the MMAs' accumulator, fp16 (1) where the device's fp32-accumulate rate is half its fp16 one,
+fp32 (0) elsewhere -- the carry readout's rule
+([`../carry/carry_api.md#carry-readout-accumulate`](../carry/carry_api.md#carry-readout-accumulate)); `kEven` whether
+the call is a whole number of windows ([`#partial-window`](#partial-window)).
 A level's form is runtime, one of four: the tile's stages are walked LEVEL-MAJOR (`tile_stages`), each level's under
 one `rola::uniform_switch` on its form, so a stage's Gram knows its form at compile time and the four forms are four
 straight-line bodies, not a test a k-step. The widths are the call's ([`intra.md`](intra.md#stages)): a level's stages
@@ -57,6 +59,28 @@ piece stages its block's readers and reduces its partial sums into the output pl
 from each of its block's pieces. Measured on the int8 form (ncu, base clock): pieces of 4 tiles took `flagship-dense`
 from 71 to 42 µs for 9% at `L = 64K`; on this kernel at `nl64k-dense` a piece of a whole 64-reader block (up to 8
 tiles) runs 14% slower than pieces of 4.
+
+<a id="partial-window"></a>
+
+A call whose `L` is not a whole number of W -- its PARTIAL LAST WINDOW -- runs the arms `kEven` false of the one body
+(`intra_kernel<D, kF16, kEven>`), compiled in their own translation unit (`intra_partial.cu`,
+[`intra_partial.md`](intra_partial.md)) -- the way FlashAttention compiles its uneven lengths as arms of a template
+flag. In it `tiles` = a window's tiles before the call's end
+(the last one partial where `L` ends inside it), a piece's writer tiles are clipped to them, and a piece whose
+readers or writers all lie past them exits before its first barrier. Every copy of a row past the call's last token
+-- a writer row of a stage, a reader row of a part, a value row, a writer's factors -- zero-fills and reads nothing
+(`Bases::lw`, `lr`; `Copier::lw`); a block the call ends inside lands every reader part in the prologue's groups, so
+the first tile's steps carry no bound; the gate clears every pair with a tile past them and reads the union table a
+word a tile (a head's row of unions need not start on 16 bytes), a writer's factors a run of 8 bytes for the same
+reason; the deposit writes only the rows before the end. A writer past the end pairs only with readers before it,
+above the diagonal, so the epilogue's mask takes it out; zero-filled, its factors and values are finite and the
+masked products exactly zero.
+
+Why arms, not a runtime test: the bounds compiled into every call cost the whole-window calls 2-4% on sm_86 at every
+form tried (each copy predicated, the writer rows clamped, the reader parts moved to the prologue), ptxas
+re-scheduling the Gram's steps around them; the arms `kEven` true are the body as it was, their SASS the same
+instructions (one compare scheduled earlier outside the steps), their phase ledger the same at `nl64k-dense` (406.1K
+against 406.4K cycles a warp a window). A partial call pays its bounds on every window, measured on no cell yet.
 
 <a id="warps"></a>
 

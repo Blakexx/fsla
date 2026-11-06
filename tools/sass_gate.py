@@ -245,9 +245,9 @@ _STEP_COVER_DEBT = {
     "carry_kernel": "the read side's software pipeline (the readout's next tile loaded under its MMAs, the image's "
                     "batches stored while read) and the fold chain's",
     "produce_kernel": "its operands staged by cp.async a step ahead (with section 29's global-memory debt)",
-    "intra_kernel": "its writer rows' bytes: the stage ring's copies beside the Gram run near 8 bytes a cycle an SM, "
-                    "under the f16 dense rows' need (the u8 dense levels' format, proposed); read under the line once "
-                    "the cover read its warps together",
+    "intra_kernel": "its writer rows' bytes: the dense Gram ~24 cycles an MMA against its 16.9 with the refill under "
+                    "the slabs (0e0163e0), bytes an MMA the lever (the per-call reader block, the u8 dense levels' "
+                    "format, proposed); read under the line once the cover read its warps together",
     "readout_part": "the readout component's rebuild replaces the skeleton's",
     "calib_kernel": "a calibration probe, not a production step",
 }
