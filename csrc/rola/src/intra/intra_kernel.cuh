@@ -307,9 +307,11 @@ __device__ __forceinline__ void mma_slab(const SlabFrags<F>& fr, Acc<kF16>& acc)
 }
 
 //: THE GRAM OF ONE STAGE, every slab of it live: one straight-line block, each slab's loads issued before the slab
-//: ahead of it multiplies. -- see docs/internals/intra/intra_kernel.md#gram
-template <int F, bool kF16>
-__device__ __forceinline__ void gram_dense(const Lanes& ln, int rc, uint32_t buf, Acc<kF16>& acc) {
+//: ahead of it multiplies, the ring's refill a half after each half of the slabs (`refill(half)`).
+//: -- see docs/internals/intra/intra_kernel.md#gram
+template <int F, bool kF16, typename Refill>
+__device__ __forceinline__ void gram_dense(const Lanes& ln, int rc, uint32_t buf, Acc<kF16>& acc,
+                                           const Refill& refill) {
   constexpr int kSlabs = form_stage_digits(F) / kSlabDigits;
   SlabFrags<F> fr[2];
   load_slab<F>(ln, rc, buf, fr[0], 0);
@@ -317,6 +319,9 @@ __device__ __forceinline__ void gram_dense(const Lanes& ln, int rc, uint32_t buf
     constexpr int kS = decltype(S)::value;
     if constexpr (kS + 1 < kSlabs) load_slab<F>(ln, rc, buf, fr[(kS + 1) & 1], kS + 1);
     mma_slab<F, kF16>(fr[kS & 1], acc);
+    constexpr int kHalf = kSlabs / 2;
+    if constexpr ((kS + 1) % kHalf == 0)
+      refill(std::integral_constant<int, (kS + 1) / kHalf - 1>{});
   });
 }
 
@@ -540,10 +545,11 @@ __device__ __forceinline__ void build_words(Smem& sm, const IntraParams& p, int 
   }
 }
 
-//: A THREAD'S SHARE OF A STAGE: tile `tile`'s stage `s` into buffer `buf`, its two rows `tid / 8` and `+ 32` at chunk
-//: `tid % 8` (swizzled by the row), predicated on `issue` -- a stage no warp reads, or past the piece, reads nothing and
-//: zero-fills a buffer every warp has released. -- see docs/internals/intra/intra_kernel.md#pipeline
-template <int D>
+//: A THREAD'S SHARE OF A STAGE: tile `tile`'s stage `s` into buffer `buf`, its two rows `tid / 8` and `+ 32` (halves 0
+//: and 1; `kHalves` the ones copied) at chunk `tid % 8` (swizzled by the row), predicated on `issue` -- a stage no
+//: warp reads, or past the piece, reads nothing and zero-fills a buffer every warp has released.
+//: -- see docs/internals/intra/intra_kernel.md#pipeline
+template <int D, int kHalf0 = 0, int kHalves = 2>
 __device__ __forceinline__ void stage_share(const Smem& sm, const Bases& at, const int4& word,
                                             int buf, int tile, bool issue, int tid) {
   static_assert(kTile * 8 == 2 * kThreads, "a stage's rows are two copies a thread");
@@ -554,8 +560,9 @@ __device__ __forceinline__ void stage_share(const Smem& sm, const Bases& at, con
       (level == 0 ? at.write[0] : at.write[kMaxLevels - 1]) + (live ? byte : 0);
   const int64_t st = level == 0 ? at.write_st[0] : at.write_st[kMaxLevels - 1];
   const uint32_t rows = ops::smem_addr(&sm.stage[buf][0][0]);
+  constexpr int kHalfEnd = kHalf0 + kHalves;
 #pragma unroll
-  for (int i = 0; i < 2; ++i) {
+  for (int i = kHalf0; i < kHalfEnd; ++i) {
     const int row = (tid >> 3) + 32 * i;
     ops::stage_tile_if(rows + static_cast<uint32_t>(row * kStageBytes + ((k ^ swizzle(row)) << 4)),
                        base + rows_of(tile * kTile + row, st), live);
@@ -763,8 +770,9 @@ enum StageGram : int { kGramNone, kGramDense, kGramSlabs };
 
 //: ONE STAGE OF A TILE, the same block for every warp (KERNEL_STANDARDS section 4's form on sm_80): the thread's copy
 //: group of the stage landed, one CTA barrier -- every thread's copies landed and every warp done with the stage
-//: before -- then the refill (the stage `kStageBuffers - 1` on into the buffer just released, with the reader part of
-//: that stage while the piece's first tile is read), and the stage's Gram under the level's form `F`.
+//: before -- then the stage's Gram under the level's form `F` with the refill under it (the stage `kStageBuffers - 1`
+//: on into the buffer just released, a half after each half of a straight-line Gram's slabs, after the Gram
+//: otherwise), the reader part of that stage after it while the piece's first tile is read.
 //: -- see docs/internals/intra/intra_kernel.md#pipeline
 template <int D, int F, bool kF16, int Gram, bool kReader>
 __device__ __forceinline__ void tile_stage(Smem& sm, const IntraParams& p, const Lanes& ln,
@@ -773,19 +781,23 @@ __device__ __forceinline__ void tile_stage(Smem& sm, const IntraParams& p, const
                                            bool rissue) {
   ops::stage_wait<kStageBuffers - 2>();
   __syncthreads();
-  stage_share<D>(sm, at, ring.word, ring.prev, min(ring.tile, kWindowTiles - 1),
-                 (ring.tile < t1) & (word_slabs(ring.word, ring.gate) != 0u), tid);
+  const int refill_tile = min(ring.tile, kWindowTiles - 1);
+  const bool refill_live = (ring.tile < t1) & (word_slabs(ring.word, ring.gate) != 0u);
+  const auto refill = [&](auto Half) {
+    stage_share<D, decltype(Half)::value, 1>(sm, at, ring.word, ring.prev, refill_tile, refill_live,
+                                             tid);
+  };
+  const int chunk = (word.y >> 8) & 0xff;
+  const uint32_t rows = ops::smem_addr(&sm.stage[ring.buf][0][0]);
+  if constexpr (Gram == kGramDense) {
+    gram_dense<F, kF16>(ln, chunk, rows, acc, refill);
+  } else {
+    if constexpr (Gram == kGramSlabs)
+      gram_slabs<F, kF16>(ln, chunk, rows, word_slabs(word, mine), acc);
+    stage_share<D>(sm, at, ring.word, ring.prev, refill_tile, refill_live, tid);
+  }
   if constexpr (kReader) reader_part<D, F>(sm, p, at, rs, rissue, tid);
   ops::stage_commit();
-  if constexpr (Gram != kGramNone) {
-    const int chunk = (word.y >> 8) & 0xff;
-    const uint32_t rows = ops::smem_addr(&sm.stage[ring.buf][0][0]);
-    if constexpr (Gram == kGramDense) {
-      gram_dense<F, kF16>(ln, chunk, rows, acc);
-    } else {
-      gram_slabs<F, kF16>(ln, chunk, rows, word_slabs(word, mine), acc);
-    }
-  }
   ring.step(sm, p);
 }
 

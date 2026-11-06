@@ -5,10 +5,19 @@
 // stage the tile's 64 rows' 128-byte slice (the intra's 8 KB stage). Each compute warp waits for a
 // stage, runs `SLABS` slabs of the dense Gram on it -- a slab two k-steps, an `ldmatrix.x4` of a static 16-reader A
 // and two of the stage's B a k-step, 8 fp16-accumulate MMAs a slab (the 8-warp walk's 4 n-tiles a warp) -- and
-// releases it. ISSUE 0: the intra's -- a release count, the last warp to release a stage refills its buffer with the
-// stage three on, all 64 rows by its lanes; ISSUE 2: every warp, at a stage's start, awaits the previous stage's
+// releases it. ISSUE 0: the intra's first form -- a release count, the last warp to release a stage refills its buffer
+// with the stage three on, all 64 rows by its lanes; ISSUE 2: every warp, at a stage's start, awaits the previous stage's
 // `empty` mbarrier (every warp's release) and copies its share of the stage two on into that buffer; ISSUE 4: a ninth
-// warp copies every stage, awaiting each buffer's `empty`. A sample is the CTA's span over the bytes it moved and over
+// warp copies every stage, awaiting each buffer's `empty`; ISSUE 6: the Gram on resident stages while every warp streams
+// its share of a stage's copies into spare buffers after each slab, no ring between them (`cp.async.wait_group` bounds
+// a warp's groups in flight): what the SM copies under the MMAs with nothing waiting on the copies; ISSUE 7 and 8 the
+// ring itself so streamed: every warp copies its share of stage `i + d` a piece after each slab of stage `i`, awaiting
+// that buffer's `empty` at the first piece -- `d = kB - 1` (ISSUE 7: a warp at most a stage past the slowest) or
+// `d = 2` (ISSUE 8: `kB - 2` stages of slack); ISSUE 10 the sm80 multistage pipeline: a commit group a stage, each
+// thread awaiting its own copies of stage `i` (`cp.async.wait_group kB - 2`) and one `bar.sync` a stage (every share
+// landed, every warp done with the buffer stage `i + kB - 1` refills), that stage's copies a piece after each slab;
+// ISSUE 11 the same ring with the refill whole at the stage's start, after the barrier (the production intra's form);
+// ISSUE 12 the refill whole after the stage's MMAs. A sample is the CTA's span over the bytes it moved and over
 // the MMAs it issued, the mean over SMs; ISSUE 9 the Gram alone on resident stages, STRIDE 128 a stage's rows one
 // contiguous run, and `kB` the ring's depth (3, 6, 10 buffers). see docs/internals/tools/lab.md#intra-stream
 #include "lab.cuh"
@@ -26,7 +35,11 @@ __global__ void __launch_bounds__((WARPS + (ISSUE == 4)) * 32, 1)
   uint64_t* const empty = full + kB;
   int* const released = reinterpret_cast<int*>(empty + kB);
   const int lane = lab::lane_id(), warp = lab::warp_id(), tid = static_cast<int>(threadIdx.x);
-  constexpr int kCopiers = ISSUE == 2 ? WARPS * 32 : 32;
+  constexpr bool kMultistage = ISSUE == 10 || ISSUE == 11 || ISSUE == 12;
+  constexpr bool kBurst = ISSUE == 11, kAfter = ISSUE == 12;
+  constexpr bool kStream = ISSUE == 7 || ISSUE == 8 || kMultistage;
+  constexpr int kAhead = ISSUE == 8 ? 2 : kB - 1;
+  constexpr int kCopiers = ISSUE == 2 || kStream ? WARPS * 32 : 32;
   if (tid == 0) {
     for (int i = 0; i < kB; ++i) {
       lab::mbar_init(lab::smem(&full[i]), kCopiers);
@@ -55,6 +68,24 @@ __global__ void __launch_bounds__((WARPS + (ISSUE == 4)) * 32, 1)
     }
     lab::mbar_arrive_when_landed(lab::smem(&full[slot]));
   };
+  //: ISSUE 6's piece: slab `s` of stage `i`, the warp's `kRows * 8 / (WARPS * SLABS)` chunks of it a lane at a time, into
+  //: a spare buffer; a warp keeps at most 4 such groups in flight
+  const auto spread = [&](int i, int s, int w, int ln) {
+    const int tile = i / 8, slice = i % 8;
+    const uint8_t* const src =
+        table + static_cast<size_t>((base_token + tile * kRows) % kTokens) * kRowBytes + slice * 128;
+    const uint32_t dst = lab::smem(smem + (kStream ? i % kB : 3 + i % (kB > 3 ? kB - 3 : 1)) * kStage);
+    constexpr int kPiece = kRows * 8 / (WARPS * (SLABS > 0 ? SLABS : 1));
+#pragma unroll
+    for (int c0 = 0; c0 < kPiece; c0 += 32) {
+      const int c = (w * (SLABS > 0 ? SLABS : 1) + s) * kPiece + c0 + ln, row = c >> 3, ch = c & 7;
+      if (kPiece >= 32 || ln < kPiece)
+        asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(dst + row * 128 + ((ch ^ (row & 7)) << 4)),
+                     "l"(src + row * STRIDE + ch * 16)
+                     : "memory");
+    }
+    if constexpr (!kStream) asm volatile("cp.async.commit_group;\ncp.async.wait_group 4;" ::: "memory");
+  };
   lab::WarpSpan clock;
   clock.start();
   uint32_t fold = 0;
@@ -69,6 +100,13 @@ __global__ void __launch_bounds__((WARPS + (ISSUE == 4)) * 32, 1)
       for (int i = 0; i < kB; ++i) copy(i, lane, 32);
     if (ISSUE == 2)
       for (int i = 0; i < kB - 1; ++i) copy(i, tid, WARPS * 32);
+    if (kStream && !kMultistage)
+      for (int i = 0; i < kAhead; ++i) copy(i, tid, WARPS * 32);
+    if (kMultistage)
+      for (int i = 0; i < kAhead; ++i) {
+        for (int s = 0; s < (SLABS > 0 ? SLABS : 1); ++s) spread(i, s, warp, lane);
+        asm volatile("cp.async.commit_group;" ::: "memory");
+      }
     uint32_t acc[4][2] = {};
     const uint32_t a_row = lab::smem(smem + kReaderAt) + (warp & 3) * 4096 + (lane & 15) * 256;
     const int brow = (lane & 7) + ((lane >> 4) << 3) + 32 * (warp & 1);
@@ -80,8 +118,17 @@ __global__ void __launch_bounds__((WARPS + (ISSUE == 4)) * 32, 1)
         copy(i - 1 + kB, tid, WARPS * 32);
       }
       if (ISSUE == 2 && i == 0) copy(kB - 1, tid, WARPS * 32);
-      if (ISSUE != 9) lab::mbar_wait(lab::smem(&full[slot]), use & 1);
-      const uint32_t buf = lab::smem(smem + slot * kStage);
+      if (kMultistage) {
+        asm volatile("cp.async.wait_group %0;\nbar.sync 0;" ::"n"(kB - 2) : "memory");
+        if constexpr (kBurst) {
+          if (i + kAhead < kStages)
+            for (int s = 0; s < (SLABS > 0 ? SLABS : 1); ++s) spread(i + kAhead, s, warp, lane);
+          asm volatile("cp.async.commit_group;" ::: "memory");
+        }
+      } else if (ISSUE != 9 && ISSUE != 6) {
+        lab::mbar_wait(lab::smem(&full[slot]), use & 1);
+      }
+      const uint32_t buf = lab::smem(smem + (ISSUE == 6 ? i % 3 : slot) * kStage);
 #pragma unroll
       for (int s = 0; s < SLABS; ++s)
 #pragma unroll
@@ -95,9 +142,26 @@ __global__ void __launch_bounds__((WARPS + (ISSUE == 4)) * 32, 1)
           lab::mma_f16_f16(acc[1], a, b0[2], b0[3]);
           lab::mma_f16_f16(acc[2], a, b1[0], b1[1]);
           lab::mma_f16_f16(acc[3], a, b1[2], b1[3]);
+          if constexpr (ISSUE == 6) {
+            if (k == 1) spread(i, s, warp, lane);
+          }
+          if constexpr (kStream && !kBurst && !kAfter) {
+            const int j = i + kAhead;
+            if (k == 1 && j < kStages) {
+              if (!kMultistage && s == 0 && j >= kB) lab::mbar_wait(lab::smem(&empty[j % kB]), (j / kB - 1) & 1);
+              spread(j, s, warp, lane);
+              if (!kMultistage && s == SLABS - 1) lab::mbar_arrive_when_landed(lab::smem(&full[j % kB]));
+            }
+            if (kMultistage && k == 1 && s == SLABS - 1) asm volatile("cp.async.commit_group;" ::: "memory");
+          }
         }
+      if constexpr (kAfter) {
+        if (i + kAhead < kStages)
+          for (int s = 0; s < (SLABS > 0 ? SLABS : 1); ++s) spread(i + kAhead, s, warp, lane);
+        asm volatile("cp.async.commit_group;" ::: "memory");
+      }
       __syncwarp();
-      if (ISSUE == 9) {
+      if (ISSUE == 9 || ISSUE == 6 || kMultistage) {
       } else if (ISSUE == 0) {
         int last = 0;
         if (lane == 0) {
@@ -112,6 +176,7 @@ __global__ void __launch_bounds__((WARPS + (ISSUE == 4)) * 32, 1)
         lab::mbar_arrive(lab::smem(&empty[slot]));
       }
     }
+    if constexpr (ISSUE == 6 || kMultistage) asm volatile("cp.async.wait_all;" ::: "memory");
     for (int n = 0; n < 4; ++n) fold ^= acc[n][0] ^ acc[n][1];
   }
   clock.stop(t);
@@ -125,6 +190,8 @@ void variant(const lab::Bench& b, const uint8_t* table) {
   if (ISSUE != 9) b.expect(name, "LDGSTS", ">=", 1);
   if (SLABS > 0) {
     b.expect(name, "HMMA", ">=", 4);
+    //: the ring's waits and refills sit between one stage's MMAs and the next's: the forms under test, declared
+    if (ISSUE != 9) b.expect(name, "BSSY", ">=", 0);
     b.exempt(name, "a rate probe: its MMAs fold into a sink");
   }
   if (b.expect_only) return;
@@ -151,6 +218,12 @@ void variant(const lab::Bench& b, const uint8_t* table) {
   const char* form = ISSUE == 0   ? "last releaser refills"
                      : ISSUE == 2 ? "every warp a share two on"
                      : ISSUE == 4 ? "a producer warp"
+                     : ISSUE == 6 ? "every warp streams its share after each slab, nothing waits on it"
+                     : ISSUE == 7 ? "the ring streamed: every warp a piece after each slab, kB - 1 stages ahead"
+                     : ISSUE == 8 ? "the ring streamed: every warp a piece after each slab, 2 stages ahead"
+                     : ISSUE == 10 ? "the sm80 multistage ring: wait_group, a bar.sync a stage, a piece after each slab"
+                     : ISSUE == 11 ? "the sm80 multistage ring, the refill whole at the stage's start (the intra's)"
+                     : ISSUE == 12 ? "the sm80 multistage ring, the refill whole after the stage's MMAs"
                                   : "no copies (the Gram alone on resident stages)";
   const std::string row = std::string(form) + ", " + std::to_string(WARPS) + " compute warps, " + std::to_string(SLABS) +
                           " Gram slabs a stage, rows " + std::to_string(STRIDE) + " B apart, " +
@@ -192,4 +265,29 @@ int main(int argc, char** argv) {
   variant<8, 4, 2, kRowBytes, 10>(b, table);
   variant<8, 4, 4, kRowBytes, 10>(b, table);
   variant<8, 0, 2, kRowBytes, 10>(b, table);
+  //: every warp's share at deeper rings, and the copies streamed under resident Grams with nothing waiting on them
+  variant<8, 2, 2, kRowBytes, 6>(b, table);
+  variant<8, 2, 2, kRowBytes, 10>(b, table);
+  variant<8, 6, 2, kRowBytes, 10>(b, table);
+  variant<8, 6, 4, kRowBytes, 10>(b, table);
+  //: the ring streamed: the distance ahead and the slack between warps, at the intra's three buffers and deeper
+  variant<8, 7, 2, kRowBytes, 3>(b, table);
+  variant<8, 7, 4, kRowBytes, 3>(b, table);
+  variant<8, 7, 2, kRowBytes, 6>(b, table);
+  variant<8, 7, 2, kRowBytes, 10>(b, table);
+  variant<8, 8, 2, kRowBytes, 4>(b, table);
+  variant<8, 8, 2, kRowBytes, 6>(b, table);
+  variant<8, 8, 2, kRowBytes, 10>(b, table);
+  variant<8, 8, 4, kRowBytes, 6>(b, table);
+  //: the sm80 multistage ring (CUTLASS's mainloop): a hardware barrier a stage in place of the mbarriers
+  variant<8, 10, 2, kRowBytes, 3>(b, table);
+  variant<8, 10, 4, kRowBytes, 3>(b, table);
+  variant<8, 10, 2, kRowBytes, 4>(b, table);
+  variant<8, 10, 2, kRowBytes, 6>(b, table);
+  variant<8, 10, 4, kRowBytes, 6>(b, table);
+  variant<8, 11, 2, kRowBytes, 3>(b, table);
+  variant<8, 11, 4, kRowBytes, 3>(b, table);
+  variant<8, 11, 2, kRowBytes, 6>(b, table);
+  variant<8, 12, 2, kRowBytes, 3>(b, table);
+  variant<8, 12, 4, kRowBytes, 3>(b, table);
 }

@@ -125,8 +125,15 @@ KERNEL_STANDARDS section 4's sm_80 form (ruled 2026-11-01 with the corrected SAS
 writer side streams the piece's stages, level by level and tile by tile, through three buffers, each stage ONE COPY
 GROUP of every thread. A step (`tile_stage`): `cp.async.wait_group 1` -- the thread's copies of this stage landed --
 and one CTA barrier, which carries both facts: every thread's copies of the stage landed, and every warp done with
-the stage before; then the refill, the stage two on into the buffer just released (`Ring`: the refill's stage, its
-word and its tile's gate word are read a step ahead), committed as the next group; then the stage's Gram. No mbarrier
+the stage before; then the stage's Gram with the refill under it -- the stage two on into the buffer just released
+(`Ring`: the refill's stage, its word and its tile's gate word are read a step ahead), a thread's two rows a half after
+each half of a straight-line Gram's slabs (`gram_dense`'s `refill`), whole after a gated or dead stage's -- committed as
+the next group. The refill sits under the MMAs, not before them, because every warp's copies issued at the stage's
+start delay the Gram that opens it: the lab's ring runs the dense Gram at 28.0 cycles an MMA with the refill first,
+24.0 with it whole after the MMAs and 23.8 a piece after each slab, the u8 Gram 23.4, 22.9 and 20.0
+([`intra_stream`](../../lab/intra_stream.md)); in the kernel (sm_86) the halves took the Gram from 304.6K to 266.3K
+cycles a warp a window at `nl64k-dense` (the intra -8.9%), 276.7K to 259.4K at `nl64k-alt-k4` (-4.2%), the refill
+whole after the MMAs a percent behind on every cell. No mbarrier
 in a step: a per-lane spin compiles to a convergence barrier, and an mbarrier address from a ring index ptxas cannot
 prove uniform to a loop over distinct values (both measured on sm_80 the same day), and the SASS gate reds both.
 THE READER ROWS land once, a stage's part in the copy group of the piece's first tile's same stage: the first two with
