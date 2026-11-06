@@ -105,7 +105,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
 
   //: A READ CHUNK'S READOUT over digits `lo .. hi - 1` of the image at `area` (digit `d`'s plane `d & mask`), into
   //: its panel at the call's reduce dtype
-  const auto read_out = [&](const Entry& e, const Run& run, ops::SmemAddr buf, int lo, int hi,
+  const auto read_out = [&](const Entry& e, uint32_t run, ops::SmemAddr buf, int lo, int hi,
                             uint32_t mask) {
     const ops::SmemAddr panel = buf + static_cast<uint32_t>(read_panel<P>(e.slots())),
                         dens = buf + static_cast<uint32_t>(read_dens<P>(e.slots(), p.reduce)),
@@ -194,6 +194,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       //: call site for both: the second pass's store after a rendezvous, the first's landing and entry factors before
       //: its readout
       const bool whole = s.mode == kModeWhole;
+      const uint32_t lane_run = read_run(run, wid(), lid());
 #pragma unroll 1
       for (int h = 0; h < (whole ? 1 : 2); ++h) {
         if (h > 0) {
@@ -216,7 +217,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         clock.lap(kPhaseLanded);
         ops::rendezvous();
         clock.lap(kPhaseWait);
-        read_out(e, run, buf, whole ? 0 : 2 * kBatchPlanes * h,
+        read_out(e, lane_run, buf, whole ? 0 : 2 * kBatchPlanes * h,
                  whole ? kBoxDigits : 2 * kBatchPlanes * (h + 1),
                  whole ? kBoxDigits - 1 : 2 * kBatchPlanes - 1);
         clock.lap(kPhaseReadout);

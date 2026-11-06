@@ -219,11 +219,16 @@ def step_classes(lines: list[tuple[int, str, str, str]], labels: dict[str, int])
     return xu, memory
 
 
+#: a register copy: what ptxas puts between a loop's exit test and its back-edge for a carried value it did not coalesce
+_COPY = re.compile(r"^(MOV|IMAD\.MOV(\.U32)?)$")
+
+
 def mma_loop_branches(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> int:
     """KERNEL_STANDARDS 27: the branches inside a step -- a convergence barrier (BSSY) or a forward conditional BRA in an
     innermost MMA loop (`mma_loops`; the BRA.DIV / BRA.CONV guards of a collective's cold fallback not counted). Each
-    one ends ptxas's scheduling block inside the step. The loop's own exit laid out as its LATCH -- the line before an
-    unconditional back-edge, out of the loop -- ends the block at the step's end, not inside it: not counted.
+    one ends ptxas's scheduling block inside the step. The loop's own exit laid out as its LATCH -- out of the loop,
+    followed by nothing but register copies (the loop's carried values' moves on the back path) and an unconditional
+    back-edge -- ends the block at the step's end, not inside it: not counted.
     -- see docs/internals/tools/sass_gate.md#step-branches"""
     resolve = _resolver(lines, labels)
     found = set()
@@ -234,7 +239,8 @@ def mma_loop_branches(lines: list[tuple[int, str, str, str]], labels: dict[str, 
             if pred == _NEVER:
                 continue
             forward = resolve(ops) if op == "BRA" and pred else None
-            if forward is not None and latch and j == k - 1 and forward > k:
+            copies = all(_COPY.match(lines[i][1]) and lines[i][3] == "" for i in range(j + 1, k))
+            if forward is not None and latch and forward > k and copies:
                 continue
             if op == "BSSY" or (forward is not None and forward > j):
                 found.add(j)

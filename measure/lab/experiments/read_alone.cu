@@ -2,7 +2,8 @@
 // production's `read_chunk` over a read chunk drawn as nl64k-alt-k4's is, nothing else in the window -- against its
 // tensor and shared-memory floors and against the composed kernel's readout phase? METHOD: one CTA an SM, the arm-0
 // plan's tenants; each window a 216-slot union whose 32 digits hold ~8 entries each (slot `s` in digit `d`'s list with
-// probability 10 / 256), the image in halves as sm_86 runs it, both halves read with a rendezvous between.
+// probability 10 / 256; at alt-k16's density 18 / 256 -- 2.2 reads a token -- and a DENSE 40 / 256 past it), the image in
+// halves as sm_86 runs it, both halves read with a rendezvous between.
 // see docs/lab/read_alone.md
 #include <cstdio>
 #include <vector>
@@ -16,7 +17,7 @@ namespace rc = rola::carry;
 namespace ops = ::denseref::ops;
 using Arm = rola::Arm<0, 32, 1, 32, 1, 32, 0>;
 using P = rc::Plan<Arm>;
-constexpr int kWindows = 64, kSlots = 216, kLiveOf256 = 10;
+constexpr int kWindows = 64, kSlots = 216, kLiveOf256 = 10, kK16Of256 = 18, kDenseOf256 = 40;
 
 __host__ __device__ __forceinline__ uint32_t mix(uint32_t x) {
   x ^= x >> 16;
@@ -43,8 +44,8 @@ __host__ __device__ __forceinline__ int popc16(uint32_t x) {
 #endif
 }
 
-__host__ __device__ __forceinline__ bool live(int b, int w, int d, int s, bool colored) {
-  if (!colored) return (key(b, w, d, s) & 0xffu) < kLiveOf256;
+__host__ __device__ __forceinline__ bool live(int b, int w, int d, int s, bool colored, int of256) {
+  if (!colored) return (key(b, w, d, s) & 0xffu) < static_cast<uint32_t>(of256);
   const int n = popc16(key(b, w, d, -1)), u = s / 8, k0 = s % 8;
   for (int k = k0; k < n; k += 8)
     if (27 * k / n == u) return true;
@@ -55,10 +56,12 @@ __host__ __device__ __forceinline__ bool live(int b, int w, int d, int s, bool c
 //: 2 an fp32 panel, fp32 accumulate; 3-5 the same on colored slots
 template <int MODE>
 __global__ __launch_bounds__(rc::kThreads, 1) void read(long long* t, int* out) {
-  //: MODE 10 and 11 the sections, in sm_86's form on random slots
+  //: MODE 10 and 11 the sections, in sm_86's form on random slots; 12 and 13 sm_86's form on dense lists and at
+  //: alt-k16's density
   constexpr bool kF32 = MODE < 10 && MODE % 3 == 2, kF16 = MODE >= 10 || MODE % 3 == 0,
                  kColored = MODE < 10 && MODE % 6 >= 3, kEmpty = MODE >= 6 && MODE < 10,
-                 kFirst = MODE != 10, kSecond = MODE < 10;
+                 kFirst = MODE != 10, kSecond = MODE != 10 && MODE != 11;
+  constexpr int kOf256 = MODE == 12 ? kDenseOf256 : MODE == 13 ? kK16Of256 : kLiveOf256;
   extern __shared__ __align__(128) uint8_t smem[];
   const int tid = static_cast<int>(threadIdx.x), warp = tid / 32, lane = tid % 32;
   rc::CarryParams p{};
@@ -92,7 +95,7 @@ __global__ __launch_bounds__(rc::kThreads, 1) void read(long long* t, int* out) 
     //: counts before it), as `chunk_runs` gives them; warp 0 writes every run's entries
     int n = 0, n0 = 0;
     for (int s = 0; s < kSlots; ++s)
-      if (live(blockIdx.x, w, lane, s, kColored)) {
+      if (live(blockIdx.x, w, lane, s, kColored, kOf256)) {
         ++n;
         n0 += s < split;
       }
@@ -114,7 +117,7 @@ __global__ __launch_bounds__(rc::kThreads, 1) void read(long long* t, int* out) 
     if (warp == 0) {
       int k = to - n;
       for (int s = 0; s < kSlots; ++s)
-        if (live(blockIdx.x, w, lane, s, kColored)) {
+        if (live(blockIdx.x, w, lane, s, kColored, kOf256)) {
           const uint32_t sl = static_cast<uint32_t>(s);
           reinterpret_cast<uint2*>(smem + (ents - ops::smem_addr(smem)))[k++] =
               make_uint2((sl * (P::kReadRow / 16) + rc::pool_chunk(P::kReadRow, sl, 0u)) | sl << 16,
@@ -134,12 +137,12 @@ __global__ __launch_bounds__(rc::kThreads, 1) void read(long long* t, int* out) 
     if constexpr (!kEmpty) rc::read_factors<P>(p, smem, run, w, 0, ents, warp, lane);
     ops::rendezvous();
     if constexpr (!kEmpty && kFirst)
-      rc::read_chunk<P, kF32, kF16>(smem, run, 0, 16, image, 15u, rows, panel, dens, ents, warp,
-                                    lane);
+      rc::read_chunk<P, kF32, kF16>(smem, rc::read_run(run, warp, lane), 0, 16, image, 15u, rows,
+                                    panel, dens, ents, warp, lane);
     ops::rendezvous();
     if constexpr (!kEmpty && kSecond)
-      rc::read_chunk<P, kF32, kF16>(smem, run, 16, 32, image, 15u, rows, panel, dens, ents, warp,
-                                    lane);
+      rc::read_chunk<P, kF32, kF16>(smem, rc::read_run(run, warp, lane), 16, 32, image, 15u, rows,
+                                    panel, dens, ents, warp, lane);
     const long long t1 = clock64();
     busy += t1 - t0;
     //: the sink read between barriers: every warp's den words written before it, none cleared until after it
@@ -159,7 +162,7 @@ struct Floor {
   double tensor = 0, shared = 0;
 };
 
-Floor floor_of(int blocks, double mma, double tile_shared, bool colored) {
+Floor floor_of(int blocks, double mma, double tile_shared, bool colored, int of256) {
   Floor f;
   const int split = rc::group_split(kSlots);
   for (int b = 0; b < blocks; ++b)
@@ -168,7 +171,7 @@ Floor floor_of(int blocks, double mma, double tile_shared, bool colored) {
       for (int d = 0; d < rc::kBoxDigits; ++d) {
         int n0 = 0, n1 = 0;
         for (int s = 0; s < kSlots; ++s)
-          if (live(b, w, d, s, colored)) (s < split ? n0 : n1)++;
+          if (live(b, w, d, s, colored, of256)) (s < split ? n0 : n1)++;
         tiles += (n0 + 15) / 16 + (n1 + 15) / 16;
         digits += 2;
       }
@@ -183,8 +186,8 @@ Floor floor_of(int blocks, double mma, double tile_shared, bool colored) {
 template <int MODE>
 void variant(const lab::Bench& b, const char* label) {
   const std::string name = lab::kernel("read", {MODE});
-  if constexpr (MODE < 6 || MODE == 11)
-    b.expect(name, MODE % 3 == 0 || MODE == 11 ? "HMMA.16816.F16" : "HMMA.16816.F32", ">=", 4);
+  if constexpr (MODE < 6 || MODE >= 11)
+    b.expect(name, MODE % 3 == 0 || MODE >= 11 ? "HMMA.16816.F16" : "HMMA.16816.F32", ">=", 4);
   b.exempt(name,
            "an isolation of the production readout; its budget is tools/budgets/carry.json's");
   if (b.expect_only) return;
@@ -197,13 +200,18 @@ void variant(const lab::Bench& b, const char* label) {
               "a timing isolation; the readout's arithmetic is the oracle's (test_carry_readout)");
   b.record(label, "cycles a warp-window", s);
   //: the floors are the whole readout's: the controls and the sections have none
-  if constexpr (MODE >= 6) return;
+  if constexpr (MODE >= 6 && MODE < 12) return;
   //: sm_86's m16n8k16 at fp32 accumulate is half rate (32 cycles a scheduler), at fp16 16; sm_80's 8 either way
   cudaDeviceProp prop{};
   LAB_CHECK(cudaGetDeviceProperties(&prop, 0));
   const bool geforce = prop.major == 8 && prop.minor == 6;
-  const Floor f = floor_of(b.sms, geforce ? (MODE % 3 == 0 ? 16.0 : 32.0) : 8.0,
-                           MODE % 3 == 2 ? 26.0 : 22.0, MODE >= 3);
+  //: the dtypes as `read`'s: MODE 12 and 13 sm_86's form
+  constexpr bool kF16 = MODE >= 10 || MODE % 3 == 0, kF32 = MODE < 10 && MODE % 3 == 2;
+  const Floor f = floor_of(b.sms, geforce ? (kF16 ? 16.0 : 32.0) : 8.0, kF32 ? 26.0 : 22.0,
+                           MODE >= 3 && MODE < 6,
+                           MODE == 12   ? kDenseOf256
+                           : MODE == 13 ? kK16Of256
+                                        : kLiveOf256);
   for (const auto& [what, v] :
        {std::pair<const char*, double>{"tensor floor", f.tensor}, {"shared floor", f.shared}}) {
     const std::string nm = std::string(label) + ": " + what;
@@ -228,5 +236,7 @@ int main(int argc, char** argv) {
   read_alone::variant<9>(b, "control: the timed span without the readout, colored slots");
   read_alone::variant<10>(b, "section: the factors and their rendezvous alone (sm_86's form)");
   read_alone::variant<11>(b, "section: the factors and the first half (sm_86's form)");
+  read_alone::variant<13>(b, "alt-k16's density (18 / 256): f16 panel, fp16 accumulate");
+  read_alone::variant<12>(b, "dense lists (40 / 256): f16 panel, fp16 accumulate");
   return 0;
 }

@@ -33,15 +33,15 @@ read the same digit's slices at the same time, so the image is read by the CTA a
 
 `read_factors`, once a chunk: after the chunk's copies land (a warp's own wait) and before the rendezvous that opens
 its readout, each warp rewrites the entries of its own digits `warp + 8 j` -- the runs its fill copied
-(`parts.md#entries`), so no other warp's copies are read and no barrier is added -- in place: its ROW KEY in the chunk
-(its row offset in 16-byte units taken back by the chunk's first slot, modulo 2^16: `4 s + ((s >> 1) & 3)` for slot
-`s` at the 64-byte pool row, the f16 panel row's base too, `panel.md#words`) and its coefficient (f16, the high half,
-the den's) in the first word, its NUM FACTOR in the second, fp32: `c 2^(e_d -
-kImageTop - kCoefTop)` (the image holds digit `d` at `2^(kImageTop - e_d)` of the fold's state, itself `2^kCoefTop` the
-state: `handoff.md#maxima`), on the f16 panel times the token's scale `2^(-s - 1)` (`token_scale`, its exponent
-field built directly). The same products in the same order as at a tile, once a chunk where they were once a channel
-group: the four channel groups of a token group read every entry, and the token's scale byte, the exponent build and
-the coefficient's conversion were a quarter of a tile's instructions.
+(`parts.md#entries`), so no other warp's copies are read and no barrier is added -- in place: its ROW'S BYTE OFFSET in
+the chunk's pool (its row offset in 16-byte units taken back by the chunk's first slot, times 16: `64 s + 16 ((s >> 1) &
+3)` for slot `s` at the 64-byte row, under 2^16 since a chunk holds at most a window's 1,024 slots; the f16 panel row's
+base too, `panel.md#words`) and its coefficient (f16, the high half, the den's) in the first word, its NUM FACTOR in the
+second, fp32: `c 2^(e_d - kImageTop - kCoefTop)` (the image holds digit `d` at `2^(kImageTop - e_d)` of the fold's
+state, itself `2^kCoefTop` the state: `handoff.md#maxima`), on the f16 panel times the token's scale `2^(-s - 1)`
+(`token_scale`, its exponent field built directly). The same products in the same order as at a tile, once a chunk
+where they were once a channel group: the four channel groups of a token group read every entry, and the token's scale
+byte, the exponent build and the coefficient's conversion were a quarter of a tile's instructions.
 
 <a id="chunk"></a>
 ## A chunk
@@ -49,32 +49,36 @@ the coefficient's conversion were a quarter of a tile's instructions.
 `read_chunk<P, F32, F16>` reads a chunk's slots over digits `lo .. hi - 1` (the whole box, or a half where the image is
 stored in halves, `schedule.md#planner`; the kernel's one call site, its passes a loop), `F32` the panel's dtype (the
 call's reduce dtype), `F16` the MMAs' accumulate form (fp16 where the card's fp32 accumulate runs at half rate,
-[`carry_api.md#carry-readout-accumulate`](carry_api.md#carry-readout-accumulate)). It runs two PASSES (`read_pass`),
-each digit with entries in the warp's token group in one of them: the digits the warp's channel group names (`d mod
-4`) with their den, a tile's num and den MMAs on the same rows, then the others with the num alone -- the den's MMAs
-only where they are kept, a quarter of the num's (a warp-uniform `if` around a tile's den MMAs is if-converted to
-predicated HMMAs, which the ptxas gate refuses, `../../KERNEL_STANDARDS.md#s20`; two loops are not).
+[`carry_api.md#carry-readout-accumulate`](carry_api.md#carry-readout-accumulate)). Each lane holds its digit's RUN WORD
+in the warp's token group (`read_run`, once a chunk: the digit, its entries' place << 5, its count << 21), so a shuffle
+from it takes its source lane from the low bits. It runs two PASSES (`read_pass`), each digit with entries in the token
+group in one of them: the digits the warp's channel group names (`d mod 4`) with their den, then the others with the num
+alone -- the den's MMAs only where they are kept (a warp-uniform `if` around them is if-converted to predicated HMMAs,
+which the ptxas gate refuses, `../../KERNEL_STANDARDS.md#s20`; two loops are not).
 
-A PASS walks its tiles in digit order: a TILE is the first 16 entries of what remains of a digit's run in the token
-group, tokens on M, its run word (`cs`: place, count << 16) advanced by 16 for the digit's next tile, so a tile carries
-no offset. Lane `d` holds digit `d`'s run and, once a pass, the next digit above `d` that the pass's mask holds
-(`lowest_bit`, 32 where none) and that digit's run, so a tile's successor is two shuffles side by side from lane `d`.
-`tile_in` loads a tile's operands -- lane `l`'s entry `l & 15` (a lane past the run loads the tile's first and adds
-nothing), its rows from the pool by two `ldmatrix.x4` (`chunk_addr` at the entry's row key: 16 tokens x 32 lists), the
-digit's slice (the 32 lists x 8 channels of the warp's channel group, one `ldmatrix.x4.trans`, `slice_row`), and on
-the den's pass the den image's block (`den_row`) and the digit's den factor -- a TILE AHEAD: each trip of the pass is
-two tiles, each's loads issued before the other's MMAs and adds, so no operand moves between registers and the trip's
-one exit is at its end (no branch among its MMAs; the second tile's adds predicated off where it is past the pass's
-last; the exit's flag shuffled from lane 0, so ptxas sees it warp-uniform). The entries of the lane's two tokens (rows
-`g`, `g + 8`, `tile_tokens`) are loaded just before the next tile's operands, not a tile ahead: held across the other
-tile's adds they were the registers ptxas copied on the composed kernel's back-edges (its fold state is 128 registers
-a lane). `tile_out`: the MMAs (`tile_mma`), then each of the lane's two tokens -- its row key,
-the panel's word one XOR of it (`panel.md#words`) -- both tokens' loads, then both adds, then both stores, so the
-read-modify-writes overlap: the num's pair at its factor into the panel's word, the den's column of the digit (`d & 1`
-of the lane's pair, a select) at its coefficient times the digit's den factor into the slot's den word `cg`, by the
-lanes holding the column (`tq == (d & 7) >> 1`). Every load whose store is predicated off is predicated too
-(`ops::load_shared_u32_if`), so a dead lane reads no word a live lane writes; a warp sync a tile orders one tile's adds
-before the next's, whose tokens may be the same in other lanes.
+A PASS walks HALVES in digit order -- up to 8 entries of what remains of a digit's run, one word like the run's -- two a
+TILE, tokens on M: rows 0-7 the first half's entries and rows 8-15 the second's, of any digits. At alt-k4's ~4 entries
+a (digit, token group) a tile of one digit held a quarter of its rows; two halves a tile halve the row loads, the entry
+loads and the panel's adds a run, at the same MMAs a run: each half's digit's slice against all 16 rows (two m16n8k16
+each, `tile_mma`), its own 8 rows kept. Lane `d` holds, once a pass, the run of the next digit the pass names above `d`
+(none, a count of 0, past the last), so a half's successor is its run advanced by 8, else one shuffle from lane `d`.
+`tile_in` loads a tile's rows a TILE AHEAD -- lane `l`'s entry (half `l & 8`, entry `l & 7`; a lane past its half's
+count loads the half's first and adds nothing), the rows by two `ldmatrix.x4` (`chunk_addr` at the entry's row offset):
+each trip of the pass is two tiles, each's row loads issued before the other's MMAs and adds, so no operand moves
+between registers and the trip's one exit is at its end (no branch among its MMAs; the second tile's adds predicated
+off where it is past the pass's last; the exit's flag shuffled from lane 0, so ptxas sees it warp-uniform). `tile_late`
+loads the rest just before the next tile's rows: each half's digit's slice (the 32 lists x 8 channels of the warp's
+channel group, one `ldmatrix.x4.trans` at `slice_at`: the lane's row and the digit's plane and swizzle bits apart, one
+product, a mask and an XOR), its den factor, and the lane's two tokens' entries (row `g` the first half's, row `g + 8`
+the second's) -- held a tile ahead they were the values ptxas copied on the composed kernel's back-edges, whose fold
+state is 128 registers a lane. The den pass's den block is the warp's channel group's (`handoff.md#den`: the 8 digits it
+owns), loaded once a pass, so one den MMA pair a tile serves both halves (rows 0-7 the first digit's column, rows 8-15
+the second's). `tile_out`: the MMAs, then each half's token in turn -- its panel word one XOR of its row offset
+(`panel.md#words`), its load, its add, its store; the den's column of its digit (`den_col`'s low bit picks in the lane's
+pair) at its coefficient times the digit's den factor into the slot's den word `cg`, by the lanes holding the column
+(`tq == den_col(d) >> 1`) -- with a warp sync between the halves: a token may be in both. Every load whose store is
+predicated off is predicated too (`ops::load_shared_u32_if`), so a dead lane reads no word a live lane writes; a warp
+sync a tile orders one tile's adds before the next's, whose tokens may be the same in other lanes.
 
 THE f16 PANEL AT THE TOKEN'S SCALE BYTE: the scale pass's byte bounds the token's `num` under `2^(s + 15)` with 2%
 headroom ([`scale.md`](../scale/scale.md)), so every piece and every partial sum of the token's panel word lies within f16's range at
@@ -86,9 +90,13 @@ MEASURED (the part harness [`read_alone`](../../lab/read_alone.md), sm_86, cycle
 draw, the f16 panel at fp16 accumulate): 23.9K as first built (the den on every warp, each token's factor a channel
 group, one tile at a time); the den on its own channel group 21.4K; the factors once a chunk and the tiles a tile ahead
 14.5K; the two tokens' adds overlapped 13.5K; the next digit a lane's, the den in its digits' num tiles, the panel's word
-one XOR of the row key and a tile its run's remainder (no offset carried) 10.7K -- against its floors there (tensor
-4.0K, shared 8.1K at the first form's traffic). In the composed kernel (`tools/phase_ledger.py`, the readout's one call
-site) the readout phase 11.0K of a 29.2K window, from 13.1K of 31.6K and 24.9K of 41.8K. THE SASS GATE holds its step loops at their floor (`tools/budgets/step_floors.json`,
+one XOR of the row key and a tile its run's remainder (no offset carried) 10.7K; two halves a tile, the den block a
+channel group's 8.2K -- against its floors there (tensor 4.0K, shared 8.1K at the first form's traffic). The halves'
+form against the one-digit tile at denser lists: alt-k16's density (18 / 256) 11.6K -> 11.1K, 40 / 256 17.9K -> 18.8K
+(+5%: a run of 16 or more a tile of two halves of one digit, its MMAs and slices twice). A table of the pass's halves
+(tile `k` lanes `2 k`, `2 k + 1`, no successor chain) measured 9.6K: its ~340-cycle build four times a window, every
+scheduler's two warps in it together. In the composed kernel (`tools/phase_ledger.py`, the readout's one call site)
+the readout phase 11.0K of a 29.2K window at the one-digit tile, from 13.1K of 31.6K and 24.9K of 41.8K. THE SASS GATE holds its step loops at their floor (`tools/budgets/step_floors.json`,
 `tools/sass_gate.py`'s `_STEP_COVER_DEBT`); what replaces the debt is composition with the fold (each scheduler's two
 warps in different phases) and sm_90's `wgmma` (a warpgroup's operand read once).
 

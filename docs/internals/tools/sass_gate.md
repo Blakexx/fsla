@@ -15,12 +15,14 @@ register change.
 `mma_loop_branches` counts, in each innermost MMA loop (`mma_loops`: a backward branch and the lines from its target),
 the convergence barriers (BSSY) and the forward conditional branches: each ends ptxas's scheduling block inside the step
 ([§20](../../KERNEL_STANDARDS.md#s20), §27). One shape is not counted, the loop's exit laid out as its LATCH: a forward
-conditional branch out of the loop on the line just before an UNCONDITIONAL back-edge. ptxas lays a loop out so when its
-exit is not the fall-through -- the carry's readout passes, one copy a reduce dtype and accumulate form, three of the
-four jumping to the copies' join (2026-11-06) -- and the block it ends is the whole step: no step instruction follows it
-in the loop. It costs one issued branch a trip against the folded form (`@P BRA` back, the exit falling through). Any
-line between the exit and the back-edge (a register copy ptxas adds there), a branch back into the loop, or a
-conditional back-edge still counts (`tests/unit/test_sass_gate.py`).
+conditional branch out of the loop followed by nothing but unpredicated register copies (`MOV`, `IMAD.MOV`) and an
+UNCONDITIONAL back-edge. ptxas lays a loop out so when its exit is not the fall-through -- the carry's readout passes,
+one copy a reduce dtype and accumulate form, three of the four jumping to the copies' join (2026-11-06) -- and the block
+it ends is the whole step: no step instruction follows it in the loop. The copies are the loop's carried values that
+ptxas did not coalesce, moved on the back path only; a register's pressure is the spill check's (`ldl`) and the
+register budget's (`tools/life_ranges.py`), not this lint's. The shape costs one issued branch a trip, and a copy each,
+against the folded form (`@P BRA` back, the exit falling through). Other work between the exit and the back-edge, a
+predicated copy, a branch back into the loop, or a conditional back-edge still counts (`tests/unit/test_sass_gate.py`).
 
 ## <a id="cost"></a>What a read costs
 

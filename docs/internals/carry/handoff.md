@@ -50,9 +50,11 @@ one digit, their `l ^ (d & 7)` distinct -- 32 banks. A part's planes hold a digi
 the readout's MMA output pairs a token's channels `(c, c + 1)` in natural order, the panel's and `num`'s
 (`panel.md#words`).
 
-THE DEN IMAGE (`kDenImage`, 2 KB): the den state at its digit's scale, digit `d` at half-word `2 (d & 7)` of block `d >>
-3`'s list rows (`den_row`: 32 lists x 8 digits f16, list `l`'s row 16 bytes), so a readout's one `ldmatrix.x4.trans`
-of the block gives the digit's column beside its block's (`readout.md#chunk`).
+THE DEN IMAGE (`kDenImage`, 2 KB): the den state at its digit's scale, a block a readout channel group -- the 8 digits
+whose den it reads (`d mod 4`) -- digit `d` at byte `2 (d >> 2)` (`den_col`) of block `d & 3`'s list rows (`den_row`: 32
+lists x 8 digits f16, list `l`'s row 16 bytes). So a warp's den block is the same for every tile of its den pass,
+loaded once a pass by one `ldmatrix.x4.trans`, and one den MMA pair a tile gives both halves' digits' columns
+(`readout.md#chunk`); as a block of 8 consecutive digits it took a load and a pair a half.
 
 <a id="same-split"></a>
 ## The same split

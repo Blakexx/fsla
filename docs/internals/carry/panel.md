@@ -16,9 +16,8 @@ channels, one 8-byte load and store a lane. The row's words are ROTATED by the s
 pair's two slots to its halves and four pairs to distinct words of them -- fp32 `(128 s + 16 (s & 7)) ^ 4 w`, a slot a
 line. So 8 slots of distinct residues (a dense chunk's consecutive slots) meet 32 banks an add on either dtype; a list's
 rank slots meet them where their ranks run consecutively, as the pool rows do (`parts.md#swizzle`). The f16 row's base
-`64 s + 16 ((s >> 1) & 3)` is the slot's 64-byte pool row's key in 16-byte units times 16 (`readout.md#factors`), so
-a readout add's word is one XOR of the key it already holds; the XOR leaves bits 0-3 alone, so an fp32 lane's two
-channels stay adjacent.
+`64 s + 16 ((s >> 1) & 3)` is the slot's 64-byte pool row's byte offset (`readout.md#factors`), so a readout add's word
+is one XOR of the offset its entry holds; the XOR leaves bits 0-3 alone, so an fp32 lane's two channels stay adjacent.
 
 THE DEN WORDS are `kDenWords` fp32 a slot, one a readout channel group (the group that reads digit `d` out adds its den
 at word `d mod 4`), 16 bytes: no two warps add into one word, so the den needs no atomics either; the drain sums them.

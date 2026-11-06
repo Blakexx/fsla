@@ -119,11 +119,14 @@ __host__ __device__ __forceinline__ constexpr uint32_t slice_row(int cg, int l, 
   return static_cast<uint32_t>(cg * kSliceBlock + 16 * (l ^ (d & 7)));
 }
 
-//: THE DEN IMAGE: digit `d`'s 8-digit block, 32 lists x 8 digits f16, list `l`'s row 16 bytes; the digit at `2 (d & 7)`
-//: in it. -- see docs/internals/carry/handoff.md#den
+//: THE DEN IMAGE: a block a readout channel group, the 8 digits it reads the den of (`d mod 4`), 32 lists x 8 digits
+//: f16, list `l`'s row 16 bytes; digit `d` in block `d & 3` at column `d >> 2` (`den_col`).
+//: -- see docs/internals/carry/handoff.md#den
 __host__ __device__ __forceinline__ constexpr uint32_t den_row(int l, int d) {
-  return static_cast<uint32_t>((d >> 3) * kSliceBlock + 16 * l);
+  return static_cast<uint32_t>((d & 3) * kSliceBlock + 16 * l);
 }
+
+__host__ __device__ __forceinline__ constexpr int den_col(int d) { return d >> 2; }
 
 //: THE DIGITS' EXPONENTS from the keys at window `w`'s parity, lane `i` digit `i`'s (`exp_slot`): the smallest `e`
 //: with its largest |state| at most `2^e`, in the warp's own row of `kExps` (`exps_of`); warp 0 resets the other
@@ -200,7 +203,7 @@ __device__ __forceinline__ void den_tables_out(uint8_t* smem, const State<P>& st
   static_for<4>([&](auto I) {
     constexpr int i = decltype(I)::value;
     const int d = den_digit<P, i>(at);
-    *reinterpret_cast<__half*>(smem + P::kDenImage + den_row(den_k<P, i>(at), d) + 2 * (d & 7)) =
+    *reinterpret_cast<__half*>(smem + P::kDenImage + den_row(den_k<P, i>(at), d) + 2 * den_col(d)) =
         __float2half_rn(st.den[I] * scale[den_word_scale<P>(I)]);
   });
   ops::store_shared_f32_if(ops::smem_addr(smem + P::kDenFactor) + 4u * static_cast<uint32_t>(lane),

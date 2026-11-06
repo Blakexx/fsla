@@ -371,8 +371,8 @@ carries; each was re-learned by trial this week and costs a rebuild when missed.
   straight-line block when all items are live (ptxas schedules across items) and a jump table (BRX)
   when one is. Both, selected by a uniform test, never one for all.
 - A convergence barrier or a forward conditional branch inside the innermost loop that issues MMAs: A BRANCH
-  INSIDE A STEP (`mma_loop_branches`, red since 2026-10-06; §27). The loop's own exit on the line just before an
-  unconditional back-edge is its latch, the step's end, not inside it (2026-11-06,
+  INSIDE A STEP (`mma_loop_branches`, red since 2026-10-06; §27). The loop's own exit followed only by register
+  copies and an unconditional back-edge is its latch, the step's end, not inside it (2026-11-06,
   `docs/internals/tools/sass_gate.md#step-branches`). The gate names the kernels built before the
   rule (`_STEP_BRANCH_DEBT`, each with what replaces it); a lab form that keeps its branches declares them (an
   expectation on BSSY), or its number is refused.
