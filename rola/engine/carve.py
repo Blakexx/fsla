@@ -1,7 +1,8 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """THE CARVE PLANNER -- producer v1 and the check every carve passes: the carry's box and each side's operation
-plan, from the declaration.
+plan, from the declaration: the fold a state carve (its warps own lists), the readout a value carve (its warps own
+channels over every leaf).
 
 The planner is a pure fold over the declaration (the shipped widths, each level's two sparse flags, ``d_v``), so a
 better planner replaces this one without touching a kernel: every kernel that depends on the geometry takes the
@@ -10,7 +11,6 @@ better planner replaces this one without touching a kernel: every kernel that de
 from __future__ import annotations
 
 from functools import cache
-from itertools import product
 
 from rola.engine.types import Carve, SidePlan
 
@@ -18,7 +18,11 @@ from rola.engine.types import Carve, SidePlan
 #: leaves are the state over the channel extent, and no level's extent exceeds the square root of 1,024 leaves.
 WARPS = 8
 BOX_VALUES = WARPS * 32 * 128
+#: THE CHANNEL EXTENT: the readout's channel groups are 8 channels (an MMA's N), at most a warp each, so a box holds
+#: 32 (4 groups, two token groups) to 128 (8 groups of 16)
 CHANNELS = 32
+MAX_CHANNELS = 128
+GROUP_CHANNELS = 8
 CAP = 32
 #: A SIDE'S DENSE EXTENT is an MMA tile of rows at least.
 MIN_DENSE = 16
@@ -37,7 +41,8 @@ def tags(read_sparse, write_sparse) -> tuple[str, ...]:
 
 def _allocate(widths, level_tags, total: int, cap: int) -> list[int] | None:
     """Producer v1's extents as exponents, or None when the box cannot be filled under the cap: DD levels as much as
-    fits, spread evenly; SD and DS by turns, SD first, each concentrated on its widest level; SS last."""
+    fits, spread evenly; DS and SD by turns, DS first (the readout's dense level, its K, before its list level), each
+    concentrated on its widest level; SS last."""
     room = [min(_log2(w), _log2(cap)) for w in widths]
     bits = [0] * len(widths)
     left = total
@@ -59,7 +64,7 @@ def _allocate(widths, level_tags, total: int, cap: int) -> list[int] | None:
         pass
     while left:
         moved = False
-        for tag in ("SD", "DS"):
+        for tag in ("DS", "SD"):
             lv = widest(tag)
             moved |= lv is not None and give(lv)
         if not moved:
@@ -69,56 +74,70 @@ def _allocate(widths, level_tags, total: int, cap: int) -> list[int] | None:
     return bits if left == 0 else None
 
 
-def _side(lists, operand, extents, leaves: int, coef=None) -> SidePlan:
-    """A side's plan. A side with a sparse level lists it and forms its rows from the dense ones; a side with none
-    takes one dense level as its rows and the other as its coefficients, named in that order -- its coefficients the
-    other side's list level where that side lists one of its levels (so the two sides' warps split alike), else its
-    first dense level (both sides of a dense-dense declaration alike) (docs/internals/engine/carve.md#sides)."""
+def _operand(lists, operand, coef=None) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """A side's ``(lists, operand)``: a side with a sparse level lists it and forms its operand from the dense ones; a
+    side with none takes one dense level as its rows and the other as its coefficients, named in that order -- its
+    coefficients the other side's list level where that side lists one of its levels, else its first dense level
+    (docs/internals/engine/carve.md#sides)."""
     if not lists and len(operand) == 2:
         c = coef if coef in operand else operand[0]
-        rows = operand[1] if c == operand[0] else operand[0]
-        tile_rows = extents[rows]
-        return SidePlan(lists=(), operand=(rows, c), tile_lists=leaves // WARPS // tile_rows, tile_rows=tile_rows)
-    rows = 1
-    for lv in operand:
-        rows *= extents[lv]
+        return (), (operand[1] if c == operand[0] else operand[0], c)
+    return tuple(lists), tuple(operand)
+
+
+def _product(levels, extents) -> int:
+    n = 1
+    for lv in levels:
+        n *= extents[lv]
+    return n
+
+
+def _fold(lists, operand, extents, leaves: int) -> SidePlan:
+    """THE FOLD'S STATE CARVE: a warp owns ``leaves / 8`` leaves, its dense rows whole while they fit (``tile_rows``),
+    the rest in lists (``tile_lists``)."""
+    rows = _product(operand if lists else operand[:1], extents)
     tile_rows = min(rows, leaves // WARPS)
-    return SidePlan(lists=tuple(lists), operand=tuple(operand), tile_lists=leaves // WARPS // tile_rows,
-                    tile_rows=tile_rows)
+    return SidePlan(lists=lists, operand=operand, tile_lists=leaves // WARPS // tile_rows, tile_rows=tile_rows)
 
 
-def _warps_of(plan: SidePlan, extents) -> frozenset:
-    """The box's leaves as each warp of this side owns them, one frozen set a warp: a warp's groups (its list levels'
-    values, or a side with no list level's coefficient values) by its rows."""
-    groups, row_levels = (plan.lists, plan.operand) if plan.lists else (plan.operand[1:], plan.operand[:1])
-    rows = 1
-    for lv in row_levels:
-        rows *= extents[lv]
-    owned: dict[int, list] = {}
-    for leaf in product(*(range(e) for e in extents)):
-        li = ri = 0
-        for lv in groups:
-            li = li * extents[lv] + leaf[lv]
-        for lv in row_levels:
-            ri = ri * extents[lv] + leaf[lv]
-        warp = (li // plan.tile_lists) * (rows // plan.tile_rows) + ri // plan.tile_rows
-        owned.setdefault(warp, []).append(leaf)
-    return frozenset(frozenset(v) for v in owned.values())
+def _readout(lists, operand, extents) -> SidePlan:
+    """THE READOUT'S VALUE CARVE: every warp holds every leaf of the box for its channels -- ``tile_rows`` the
+    operand's rows (the MMA's K: a listed side's dense levels, a dense side's row level) by ``tile_lists`` digits (a
+    listed side's list levels' values, a dense side's coefficient level's)."""
+    rows, digits = (operand, lists) if lists else (operand[:1], operand[1:])
+    return SidePlan(lists=lists, operand=operand, tile_lists=_product(digits, extents),
+                    tile_rows=_product(rows, extents))
+
+
+def channel_groups(carve: Carve) -> int:
+    """The readout's channel groups: 8 channels a group, at most a warp each."""
+    return min(WARPS, carve.channels // GROUP_CHANNELS)
+
+
+def token_groups(carve: Carve) -> int:
+    """The readout's token groups: the warps left over the channel groups, each its own tokens' panel and pool share."""
+    return WARPS // channel_groups(carve)
 
 
 def _build(widths, read_sparse, write_sparse, extents, channels: int) -> Carve:
     D = len(widths)
-    leaves = 1
-    for e in extents:
-        leaves *= e
+    leaves = _product(range(D), extents)
     write_lists = [lv for lv in range(D) if write_sparse[lv]]
     read_lists = [lv for lv in range(D) if read_sparse[lv]]
-    fold = _side(write_lists, [lv for lv in range(D) if not write_sparse[lv]], extents, leaves,
-                 coef=read_lists[0] if len(read_lists) == 1 else None)
-    readout = _side(read_lists, [lv for lv in range(D) if not read_sparse[lv]], extents, leaves,
-                    coef=write_lists[0] if len(write_lists) == 1 else None)
-    return Carve(widths=tuple(widths), extents=tuple(extents), channels=channels, fold=fold, readout=readout,
-                 publish_in_registers=_warps_of(fold, extents) == _warps_of(readout, extents))
+    fold = _operand(write_lists, [lv for lv in range(D) if not write_sparse[lv]],
+                    coef=read_lists[0] if len(read_lists) == 1 else None)
+    readout = _operand(read_lists, [lv for lv in range(D) if not read_sparse[lv]],
+                       coef=write_lists[0] if len(write_lists) == 1 else None)
+    return Carve(widths=tuple(widths), extents=tuple(extents), channels=channels,
+                 fold=_fold(*fold, extents, leaves), readout=_readout(*readout, extents))
+
+
+def _channels(d_v: int) -> int:
+    """The channel extent toward ``d_v``: the largest power of two dividing it, at most `MAX_CHANNELS`."""
+    c = MAX_CHANNELS
+    while d_v % c:
+        c //= 2
+    return c
 
 
 def _declared(widths, read_sparse, write_sparse, d_v: int) -> None:
@@ -136,29 +155,23 @@ def _declared(widths, read_sparse, write_sparse, d_v: int) -> None:
 
 
 def plan_carve(widths, read_sparse, write_sparse, d_v: int) -> Carve:
-    """Producer v1: the box from the tags under the per-level cap; when the box cannot be filled under it, the box's
-    leaves halve and its channel extent doubles (the same state) before the cap lifts to the widths. A pure function
-    of the declaration, planned once a declaration (the `Carve` is frozen): every call of a shape after its first
-    costs no host time (docs/internals/engine/carve.md#planned-once)."""
+    """Producer v1: the channel extent toward ``d_v`` (`_channels`), the box's leaves from the tags under the per-level
+    cap, the cap lifted to the widths when the box cannot be filled under it. A pure function of the declaration,
+    planned once a declaration (the `Carve` is frozen): every call of a shape after its first costs no host time
+    (docs/internals/engine/carve.md#planned-once)."""
     return _planned(tuple(widths), tuple(read_sparse), tuple(write_sparse), int(d_v))
 
 
 @cache
 def _planned(widths, read_sparse, write_sparse, d_v: int) -> Carve:
     _declared(widths, read_sparse, write_sparse, d_v)
-    level_tags = tags(read_sparse, write_sparse)
-    channels = CHANNELS
-    while channels <= d_v and d_v % channels == 0:
-        bits = _allocate(widths, level_tags, _log2(BOX_VALUES // channels), CAP)
-        if bits is not None:
-            carve_ = _build(widths, read_sparse, write_sparse, [1 << b for b in bits], channels)
-            check_carve(carve_, widths, read_sparse, write_sparse, d_v)
-            return carve_
-        channels *= 2
-    channels //= 2
-    bits = [_log2(w) for w in widths]
-    while sum(bits) > _log2(BOX_VALUES // channels):
-        bits[max(range(len(bits)), key=lambda lv: (bits[lv], lv))] -= 1
+    channels = _channels(d_v)
+    total = _log2(BOX_VALUES // channels)
+    bits = _allocate(widths, tags(read_sparse, write_sparse), total, CAP)
+    if bits is None:
+        bits = [_log2(w) for w in widths]
+        while sum(bits) > total:
+            bits[max(range(len(bits)), key=lambda lv: (bits[lv], lv))] -= 1
     carve_ = _build(widths, read_sparse, write_sparse, [1 << b for b in bits], channels)
     check_carve(carve_, widths, read_sparse, write_sparse, d_v)
     return carve_
@@ -172,8 +185,10 @@ def check_carve(carve: Carve, widths, read_sparse, write_sparse, d_v: int) -> No
     for w, e in zip(widths, carve.extents):
         if e < 1 or e & (e - 1) or w % e:
             raise ValueError(f"an extent is a power of two dividing its level's width: {carve.extents} of {widths}")
-    if carve.channels < CHANNELS or carve.channels & (carve.channels - 1) or d_v % carve.channels:
-        raise ValueError(f"the channel extent is a power of two dividing d_v {d_v}, got {carve.channels}")
+    if (carve.channels < CHANNELS or carve.channels > MAX_CHANNELS or carve.channels & (carve.channels - 1)
+            or d_v % carve.channels):
+        raise ValueError(f"the channel extent is a power of two from {CHANNELS} to {MAX_CHANNELS} dividing d_v {d_v}, "
+                         f"got {carve.channels}")
     if carve.leaves * carve.channels > BOX_VALUES:
         raise ValueError(f"the box holds {carve.leaves} x {carve.channels} values, over the state's {BOX_VALUES}")
     want = _build(widths, read_sparse, write_sparse, carve.extents, carve.channels)
@@ -182,5 +197,3 @@ def check_carve(carve: Carve, widths, read_sparse, write_sparse, d_v: int) -> No
             raise ValueError(f"the {side}'s plan {plan} is not the box's {getattr(want, side)}")
         if plan.tile_rows < MIN_DENSE:
             raise ValueError(f"the {side}'s warps own {plan.tile_rows} dense rows, under an MMA tile of {MIN_DENSE}")
-    if carve.publish_in_registers != want.publish_in_registers:
-        raise ValueError("the carve's publish route disagrees with its warps' ownership")

@@ -141,19 +141,21 @@ read-dense ones. Every side has a dense level, so every side has an operand.
 
 * `DD` levels take as much of the box as fits, spread evenly: their rows' bytes ADD while
   their extent MULTIPLIES, so a token's row feeds the most dense leaves per byte.
-* `SD` and `DS` levels share what is left by turns: each is one side's lists and the other
-  side's operand, so they trade against each other (an alternating `[SD, DS]` declaration is
-  the even 32 x 32 box). Within its tag the extent goes to the widest level, whole, so a
-  token's live digits there arrive in one copy.
+* `DS` and `SD` levels share what is left by turns, `DS` first: each is one side's lists and
+  the other side's operand, so they trade against each other, and the readout's operand (its
+  K) goes first because the readout is the costlier phase (an alternating `[SD, DS]`
+  declaration at 64 channels is 32 lists x 16 digits). Within its tag the extent goes to the
+  widest level, whole, so a token's live digits there arrive in one copy.
 * `SS` levels take only what nothing else can.
 * No level takes more than the cap, 32 -- the square root of the box's 1,024 leaves. When the
-  box cannot be filled under it, the box halves its leaves and doubles its channels (the
-  same state) before the cap lifts to the widths.
+  box cannot be filled under it, the cap lifts to the widths.
+* The channel extent is chosen first, toward `d_v` (at most 128): a token's output then
+  leaves a CTA as whole lines, and each readout warp owns its channels.
 
-**A warp's tile** is a side's lists x its operand rows, `box leaves / 8` leaves a warp: the
-rows whole while they fit, else split across warps (the readout then joins its partial
-sums). **The publish is in registers** when both sides' warps own the same leaves, and
-through shared memory otherwise.
+**The fold's warp tile** is its lists x its operand rows, `box leaves / 8` leaves a warp, the
+rows whole while they fit. **The readout's warps** each hold every leaf for their channels --
+8-channel groups by token groups (`carve.md#sides`) -- so the state reaches the readout
+through the image, never in place.
 
 ## <a id="run-table"></a>The run table: the skip predicate is a host decision
 

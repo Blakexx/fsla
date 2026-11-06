@@ -8,47 +8,54 @@ the check refuses one; the code is the authoritative statement of each step.
 
 The box's state is the CTA's fp32 accumulators: `WARPS` (8) warps x 32 lanes x 128
 registers a lane, `BOX_VALUES` = 32,768. Its leaves are that over its channel extent: 1,024
-at `CHANNELS` (32). `CAP` (32) bounds any one level's extent, and `MIN_DENSE` (16) is a
-warp's least operand rows, one MMA tile.
+at `CHANNELS` (32), 512 at 64, 256 at `MAX_CHANNELS` (128). `CAP` (32) bounds any one level's
+extent, and `MIN_DENSE` (16) is a warp's least operand rows, one MMA tile.
 
 ## <a id="producer-v1"></a>Producer v1
 
-The extents are allocated as powers of two, one bit at a time, under the cap and each
-level's width:
+The channel extent comes first: the largest power of two dividing `d_v`, at most
+`MAX_CHANNELS` (`_channels`) -- 64 at the headline's `d_v` 64 -- so a token's output is a
+whole box's channels (a 128-byte line of `num` at 64) and the readout's warps each own their
+channels. The leaves are what the state holds over it, allocated as powers of two, one bit
+at a time, under the cap and each level's width:
 
 1. `DD` levels, round robin, as long as one has room.
-2. `SD` then `DS`, by turns, each to its tag's widest level with room.
+2. `DS` then `SD`, by turns, each to its tag's widest level with room: the readout's dense
+   level (its K) before its list level, since the readout is the costlier phase (Blake,
+   2026-11-06) -- the alternating box at 64 channels is 32 lists x 16 digits.
 3. `SS` levels, the widest first.
 
-When the bits run out before the box is full, the channel extent doubles (the leaves
-halve) and the allocation runs again, up to `d_v`. When even that cannot fill the box, the
-cap lifts and the box takes the widest levels whole, smaller than the budget if the levels
-are narrow (a depth-one declaration is its own whole box).
+When the bits run out before the box is full, the cap lifts and the box takes the widest
+levels whole, smaller than the budget if the levels are narrow (a depth-one declaration is
+its own whole box).
 
 ## <a id="sides"></a>Each side's plan
 
-Each side's plan follows from the box (`_side`). A side with a sparse level lists it and
-forms its operand from its dense levels, both in level order; a warp owns `box leaves / 8`
-leaves, its operand rows whole while they fit (`tile_rows`), the rest in lists
-(`tile_lists`). A side with no sparse level and two dense levels names one as its rows and
-the other as its coefficients, in that order: its coefficients the other side's list level
-where the other side lists exactly one level and it is one of this side's, else its first
-dense level -- both sides of a dense-dense declaration alike, the readout of `[SD, DD]`
-grouped by the fold's list level -- so at the box each side is 32 rows a warp in 4 groups,
-as at the alternating carve, and the carry's one box serves both
-(`docs/internals/carry/carry.md#sides`). `publish_in_registers` compares the two sides'
-partitions of the box's leaves among the warps (a warp's groups -- its list levels' values,
-or a side with no list level's coefficient values -- by its rows): equal partitions mean a
-warp's fold state is its readout's, and the hand-off stays in its registers
-(`docs/internals/carry/parts.md#same-split`).
+Each side's plan follows from the box. A side with a sparse level lists it and forms its
+operand from its dense levels, both in level order (`_operand`). A side with no sparse level
+and two dense levels names one as its rows and the other as its coefficients, in that order:
+its coefficients the other side's list level where the other side lists exactly one level and
+it is one of this side's, else its first dense level.
+
+- THE FOLD is a state carve (`_fold`): a warp owns `box leaves / 8` leaves -- every channel of
+  them, in registers -- its operand rows whole while they fit (`tile_rows`), the rest in lists
+  (`tile_lists`).
+- THE READOUT is a value carve (`_readout`): every warp holds every leaf of the box for its
+  channels, `tile_rows` the operand's rows (the MMA's K: a listed side's dense levels, a dense
+  side's row level) by `tile_lists` digits (a listed side's list values, a dense side's
+  coefficient values). Its warps are `channel_groups` of 8 channels (at most 8) by
+  `token_groups` (the warps left over: 2 at 32 channels, 1 at 64 and 128).
+
+The two sides never own the same leaves a warp, so the state always reaches the readout
+through the image.
 
 ## <a id="check"></a>The check
 
 `check_carve` refuses, naming the reason: a declaration with a side of only sparse levels,
 a width that is not a shipped power of two, an extent that does not divide its width, a
-channel extent that does not divide `d_v`, a box over the state budget, a side's plan that
-is not the box's, a warp with fewer operand rows than an MMA tile, and a publish route that
-disagrees with the warps' ownership. The planner's own carves pass through it.
+channel extent outside 32 to 128 or not dividing `d_v`, a box over the state budget, a side's
+plan that is not the box's, and a warp with fewer operand rows than an MMA tile. The
+planner's own carves pass through it.
 
 ## <a id="planned-once"></a>Planned once a declaration
 

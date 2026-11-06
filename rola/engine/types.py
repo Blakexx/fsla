@@ -71,7 +71,8 @@ class CallClass:
 class SidePlan:
     """One side's operation plan in the carry's box: the side's SPARSE levels index its lists and
     its DENSE levels its operand rows (formed in level order, the canonical product), and a warp
-    owns ``tile_lists`` lists x ``tile_rows`` rows of the box (docs/internals/engine/rules.md#carve).
+    covers ``tile_lists`` lists x ``tile_rows`` rows of the box -- the fold's warps a share of its
+    leaves, the readout's every leaf for their channels (docs/internals/engine/rules.md#carve).
     """
 
     lists: tuple[int, ...]
@@ -84,8 +85,8 @@ class SidePlan:
 class Carve:
     """The carry's carve: a CTA's box (an extent a level of the shipped ``widths``, and a channel
     extent) and each side's operation plan -- the fold the write side's, the readout the read
-    side's -- with ``publish_in_registers`` when both sides' warps own the same leaves. Every
-    kernel that depends on the geometry takes this one descriptor (docs/internals/engine/rules.md#carve).
+    side's. Every kernel that depends on the geometry takes this one descriptor
+    (docs/internals/engine/rules.md#carve).
     """
 
     widths: tuple[int, ...]
@@ -93,7 +94,6 @@ class Carve:
     channels: int
     fold: SidePlan
     readout: SidePlan
-    publish_in_registers: bool
 
     @property
     def leaves(self) -> int:

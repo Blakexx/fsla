@@ -1,7 +1,8 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The carve rule: producer v1's boxes for the layouts its rules were chosen on, each side's warp tile and publish
-route, the pinned plan's check, and the refusals (docs/internals/engine/rules.md#carve)."""
+"""The carve rule: producer v1's boxes for the layouts its rules were chosen on, each side's plan -- the fold's state
+carve, the readout's value carve and its token and channel groups -- the pinned plan's check, and the refusals
+(docs/internals/engine/rules.md#carve)."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -10,7 +11,7 @@ import pytest
 import torch
 
 from rola.engine import Carve, PlanOverrides
-from rola.engine.carve import check_carve, plan_carve
+from rola.engine.carve import channel_groups, check_carve, plan_carve, token_groups
 from rola.engine.rules.carve import carve as carve_rule
 
 
@@ -19,12 +20,12 @@ def _flags(level_tags):
 
 
 @pytest.mark.parametrize("widths, level_tags, extents, channels", [
-    ((256, 256), ("SD", "DS"), (32, 32), 32),
-    ((32, 32, 32, 32), ("DS", "SD", "DS", "SD"), (32, 32, 1, 1), 32),
-    ((32, 32, 32, 32), ("SS", "SS", "DD", "DD"), (1, 1, 32, 32), 32),
-    ((32, 32, 32, 32), ("SD", "DS", "DD", "SS"), (8, 4, 32, 1), 32),
-    ((256, 256), ("SS", "DD"), (32, 32), 32),
-    ((64, 64, 256), ("SD", "DS", "DD"), (8, 4, 32), 32),
+    ((256, 256), ("SD", "DS"), (16, 32), 64),
+    ((32, 32, 32, 32), ("DS", "SD", "DS", "SD"), (32, 16, 1, 1), 64),
+    ((32, 32, 32, 32), ("SS", "SS", "DD", "DD"), (1, 1, 32, 16), 64),
+    ((32, 32, 32, 32), ("SD", "DS", "DD", "SS"), (4, 4, 32, 1), 64),
+    ((256, 256), ("SS", "DD"), (16, 32), 64),
+    ((64, 64, 256), ("SD", "DS", "DD"), (4, 4, 32), 64),
     ((16, 256), ("SD", "DS"), (16, 32), 64),
     ((256,), ("DD",), (256,), 64),
 ])
@@ -36,36 +37,48 @@ def test_producer_v1_boxes(widths, level_tags, extents, channels):
     check_carve(c, widths, read, write, 64)
 
 
-def test_even_box_tiles_and_route():
-    c = plan_carve((256, 256), (False, True), (True, False), 64)
-    assert (c.fold.lists, c.fold.operand, c.fold.tile_lists, c.fold.tile_rows) == ((0,), (1,), 4, 32)
-    assert (c.readout.lists, c.readout.operand, c.readout.tile_lists, c.readout.tile_rows) == ((1,), (0,), 4, 32)
-    assert not c.publish_in_registers
-    assert c.ctas(64) == 8 * 8 * 2
-
-
-def test_dense_dense_box_publishes_in_registers():
-    c = plan_carve((32, 32, 32, 32), (True, True, False, False), (True, True, False, False), 64)
-    assert (c.fold.tile_lists, c.fold.tile_rows) == (1, 128)
-    assert (c.readout.tile_lists, c.readout.tile_rows) == (1, 128)
-    assert c.publish_in_registers
-
-
-@pytest.mark.parametrize("level_tags, fold, readout, same", [
-    (("DD", "DD"), ((), (1, 0)), ((), (1, 0)), True),
-    (("SD", "DD"), ((), (1, 0)), ((0,), (1,)), True),
-    (("DS", "DD"), ((0,), (1,)), ((), (1, 0)), True),
-    (("SD", "DS"), ((1,), (0,)), ((0,), (1,)), False),
+@pytest.mark.parametrize("d_v, extents, channels, groups", [
+    (32, (32, 32), 32, (2, 4)),
+    (64, (32, 16), 64, (1, 8)),
+    (128, (16, 16), 128, (1, 8)),
+    (256, (16, 16), 128, (1, 8)),
 ])
-def test_a_dense_side_groups_by_the_other_sides_list(level_tags, fold, readout, same):
-    """A side with no list level takes its coefficients from the other side's list level (else its first level), so
-    the two sides' warps split alike and the publish stays in registers wherever they do (`carve.md#sides`)."""
+def test_channels_toward_d_v(d_v, extents, channels, groups):
+    """The channel extent is the largest power of two dividing d_v, at most 128; the readout's dense level (DS) takes
+    the larger share of the leaves; the readout's warps are token groups x 8-channel groups."""
+    c = plan_carve((256, 256), (False, True), (True, False), d_v)
+    assert (c.extents, c.channels, (token_groups(c), channel_groups(c))) == (extents, channels, groups)
+
+
+def test_alternating_box_plans():
+    c = plan_carve((256, 256), (False, True), (True, False), 64)
+    assert (c.fold.lists, c.fold.operand, c.fold.tile_lists, c.fold.tile_rows) == ((0,), (1,), 4, 16)
+    assert (c.readout.lists, c.readout.operand, c.readout.tile_lists, c.readout.tile_rows) == ((1,), (0,), 16, 32)
+    assert c.readout.tile_lists * c.readout.tile_rows == c.leaves
+    assert c.fold.tile_lists * c.fold.tile_rows * 8 == c.leaves
+    assert c.ctas(64) == 8 * 16
+
+
+def test_dense_dense_box_plans():
+    c = plan_carve((32, 32, 32, 32), (True, True, False, False), (True, True, False, False), 64)
+    assert (c.fold.tile_lists, c.fold.tile_rows) == (1, 64)
+    assert (c.readout.tile_lists, c.readout.tile_rows) == (1, 512)
+
+
+@pytest.mark.parametrize("level_tags, fold, readout", [
+    (("DD", "DD"), ((), (1, 0)), ((), (1, 0))),
+    (("SD", "DD"), ((), (1, 0)), ((0,), (1,))),
+    (("DS", "DD"), ((0,), (1,)), ((), (1, 0))),
+    (("SD", "DS"), ((1,), (0,)), ((0,), (1,))),
+])
+def test_a_dense_side_groups_by_the_other_sides_list(level_tags, fold, readout):
+    """A side with no list level takes its coefficients from the other side's list level (else its first level)
+    (`carve.md#sides`); the readout's warps cover every leaf, the fold's an eighth."""
     read, write = _flags(level_tags)
     c = plan_carve((256, 256), read, write, 64)
-    assert c.extents == (32, 32)
     assert ((c.fold.lists, c.fold.operand), (c.readout.lists, c.readout.operand)) == (fold, readout)
-    assert all((s.tile_lists, s.tile_rows) == (4, 32) for s in (c.fold, c.readout))
-    assert c.publish_in_registers == same
+    assert c.readout.tile_lists * c.readout.tile_rows == c.leaves
+    assert c.fold.tile_lists * c.fold.tile_rows * 8 == c.leaves
 
 
 def test_refusals():
@@ -75,11 +88,14 @@ def test_refusals():
         plan_carve((256, 200), (False, True), (True, False), 64)
     good = plan_carve((256, 256), (False, True), (True, False), 64)
     with pytest.raises(ValueError, match="plan"):
-        check_carve(Carve(good.widths, good.extents, good.channels, good.readout, good.fold, False),
+        check_carve(Carve(good.widths, good.extents, good.channels, good.readout, good.fold),
                     (256, 256), (False, True), (True, False), 64)
     with pytest.raises(ValueError, match="divid"):
-        check_carve(Carve(good.widths, (32, 48), 32, good.fold, good.readout, False),
+        check_carve(Carve(good.widths, (32, 48), 64, good.fold, good.readout),
                     (256, 256), (False, True), (True, False), 64)
+    with pytest.raises(ValueError, match="channel extent"):
+        check_carve(Carve(good.widths, (32, 4), 256, good.fold, good.readout),
+                    (256, 256), (False, True), (True, False), 256)
 
 
 def test_rule_reads_shapes_and_takes_a_checked_pin():
@@ -88,6 +104,6 @@ def test_rule_reads_shapes_and_takes_a_checked_pin():
     assert carve_rule(routes, 64, None) == plan_carve((256, 256), (False, True), (True, False), 64)
     pinned = plan_carve((256, 256), (False, True), (True, False), 64)
     assert carve_rule(routes, 64, PlanOverrides(carve=pinned)) is pinned
-    bad = Carve(pinned.widths, pinned.extents, pinned.channels, pinned.fold, pinned.readout, True)
-    with pytest.raises(ValueError, match="publish"):
+    bad = Carve(pinned.widths, pinned.extents, pinned.channels, pinned.readout, pinned.fold)
+    with pytest.raises(ValueError, match="plan"):
         carve_rule(routes, 64, PlanOverrides(carve=bad))
