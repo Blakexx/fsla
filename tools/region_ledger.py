@@ -124,8 +124,7 @@ class Attribution:
     innermost frame inside `mbar_wait`), the wait for another agent's work, reported apart from the component's own
     instructions. The walk stops at the kernel's body because the line table's chain is a call chain only up to there:
     beyond it the table splices other call sites' frames in (a readout instruction read `read_chunk <- the kernel <-
-    store_batches' static_for <- the kernel`, a read unit's `units_listed_add <- the kernel <- read_chunk <- the
-    kernel`), and an outermost rule booked each to the wrong component."""
+    store_batches' static_for <- the kernel`), and an outermost rule booked each to the wrong component."""
 
     def __init__(self, so: Path, member: str, arch: str, sources: list[Path], ops: Path, kernel: str | None = None):
         self.fmaps = {p.name: function_map(p.read_text().splitlines()) for p in sources}

@@ -18,7 +18,7 @@ from rola.ops import carry as carry_ops
 from rola.ops import facts as facts_ops
 from rola.ops.window import window_of
 from tests.oracle import carry_plan as cp
-from tests.oracle.carry_fixtures import FORM_CELLS, alternating_bundle
+from tests.oracle.carry_fixtures import FORM_CELLS, listed_bundle
 
 #: the forced forms gated: none, then each image mode and each chunk choice at least once
 FORCED = (None, "whole/union/union", "halves/64/128", "halves/union/64", "whole/128/192", "rule/64/rule",
@@ -31,7 +31,7 @@ def test_the_plans_are_the_model(widths, live, forced):
     """Each window's plan word (its mode, chunks and their counts) and every step word (the entry's place, filled ahead,
     the next filled now, the drain's rendezvous) as the model plans them -- so the forms the carry's gates assert by
     are the kernel's."""
-    routes, values = alternating_bundle(widths, 2048, 0, live=live)
+    routes, values = listed_bundle(widths, 2048, 0, live=live)
     layout = facts_ops.call_layout(routes)
     _assert_plans_are_the_model(routes, values, layout, facts_ops.call_statics(routes, layout), forced)
 
@@ -110,9 +110,8 @@ def test_the_rule_never_fills_over_what_is_live(seed):
     image. A fill the rule cannot fit beside the live entry waits for its own step -- never a byte shared. And as the
     carry runs it (every entry filled at its own step, a warp's fill right after its own drain): a fill that meets the
     panel of the read before it -- the bytes slower warps may still be draining -- is marked for the rendezvous."""
-    key = (32, 1, 32, 1, 32, 0)
-    row = next(r for r in carry_ops.census() if tuple(r[1:7]) == key)
-    area, read_row, write_row = row[12], row[13], row[14]
+    f = carry_ops.form((32, 1, 32, 1, 32, 0))
+    area, read_row, write_row = f.area, f.read_row, f.write_row
     rng = random.Random(seed)
     wins = [cp.win_of(_sides(rng), -1, read_row, write_row, area) for _ in range(64)]
     recs = cp.records(wins, read_row, write_row, area)
@@ -138,8 +137,6 @@ def test_the_rule_never_fills_over_what_is_live(seed):
             if ahead and t > 0:
                 assert rec.steps[t - 1][2] == 1, (w, t, "filled ahead by a step that did not fill it")
             if 0 < t <= x.nr:
-                _, rc, _, _, _ = cp.chunks(x.word)
-                slots = min(rc, x.c.ru - (t - 1) * rc)
-                panel = rec.steps[t - 1][0] + -(-slots * read_row // 128) * 128 + cp.PAD_BYTES
-                if not cp.disjoint(at, b, panel, -(-slots * cp.PANEL_ROW // 128) * 128):
+                off, nbytes = cp.drained_bytes(x, t - 1, read_row)
+                if not cp.disjoint(at, b, rec.steps[t - 1][0] + off, nbytes):
                     assert rec.steps[t][3] == 1, (w, t, "a fill over the panel being drained, unmarked")

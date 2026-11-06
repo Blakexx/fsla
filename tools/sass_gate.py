@@ -242,8 +242,11 @@ STEP_LINE = 100 / 1.15
 #: the kernels whose step loops are under the line, each with what replaces them; each function held at its floor
 #: (`STEP_FLOORS`, by architecture and mangled name: a ratchet), and the list only shrinks
 _STEP_COVER_DEBT = {
-    "carry_kernel": "the read side's software pipeline (the readout's next tile loaded under its MMAs, the image's "
-                    "batches stored while read) and the fold chain's",
+    "carry_kernel": "the value-carve readout is shared-bound by design (~10 shared cycles an MMA, lab read_value): "
+                    "its tile loop's cover is held under the line by that pipe; the next tile's rows and entries "
+                    "loaded under its MMAs (read_value: -8-12%), the readout composed with the fold on each "
+                    "scheduler's two warps, and sm_90's wgmma (a warpgroup's operand read once) replace it; and the "
+                    "fold chain's",
     "produce_kernel": "its operands staged by cp.async a step ahead (with section 29's global-memory debt)",
     "intra_kernel": "its writer rows' bytes: the dense Gram ~24 cycles an MMA against its 16.9 with the refill under "
                     "the slabs (0e0163e0), bytes an MMA the lever (the per-call reader block, the u8 dense levels' "

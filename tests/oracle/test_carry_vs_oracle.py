@@ -31,7 +31,15 @@ from rola.ops.window import window_of
 from tests.oracle import reference
 from tests.oracle.fixtures import assert_planted_errors_fail, assert_slots_close, relative
 from tests.oracle.fold_reference import unit_scale
-from tests.oracle.readout_reference import UNIT_HEADROOM, UNIT_LEVELS, UNIT_NONE, _read_rows, num_in_truth, truth_scale
+from tests.oracle.readout_reference import (
+    UNIT_HEADROOM,
+    UNIT_LEVELS,
+    UNIT_NONE,
+    _read_rows,
+    fold_level,
+    num_in_truth,
+    truth_scale,
+)
 from tests.oracle.tolerances import CARRY_DEN, CARRY_NUM
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
@@ -56,7 +64,7 @@ def _units(spec, routes, values):
                                       routes.g_write.double(), values.dequantized().double(), routes.topology.widths,
                                       window_of(), state_in=_entry(spec, routes), states=True)
     B, T, H, _ = x.shape
-    widths, kappa = routes.topology.widths, unit_scale(routes, level_s)
+    widths, kappa = routes.topology.widths, unit_scale(routes, fold_level(routes, level_s))
     num = torch.zeros(B, T, H, dtype=torch.float64, device=x.device)
     for w, before in enumerate(state):
         before = before.repeat_interleave(routes.group, 1)                         # a query head its write head's

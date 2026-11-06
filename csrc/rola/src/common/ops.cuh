@@ -732,6 +732,20 @@ __device__ __forceinline__ void store_shared_f32x2(SmemAddr a, float x, float y)
   asm volatile("st.shared.v2.f32 [%0], {%1,%2};" ::"r"(a), "f"(x), "f"(y) : "memory");
 }
 
+//: THE WORD AND THE PAIR PREDICATED on `live`, as `store_shared_f32_if`. -- see docs/internals/common/ops.md#store-shared-f32-if
+__device__ __forceinline__ void store_shared_u32_if(SmemAddr a, uint32_t v, bool live) {
+  asm volatile("{\n.reg .pred p;\nsetp.ne.b32 p, %2, 0;\n@p st.shared.u32 [%0], %1;\n}\n" ::"r"(a),
+               "r"(v), "r"(static_cast<int>(live))
+               : "memory");
+}
+
+__device__ __forceinline__ void store_shared_f32x2_if(SmemAddr a, float x, float y, bool live) {
+  asm volatile(
+      "{\n.reg .pred p;\nsetp.ne.b32 p, %3, 0;\n@p st.shared.v2.f32 [%0], {%1,%2};\n}\n" ::"r"(a),
+      "f"(x), "f"(y), "r"(static_cast<int>(live))
+      : "memory");
+}
+
 //: ONE 8-BYTE WORD PAIR from shared memory. -- see docs/internals/common/ops.md#load-shared-v4
 __device__ __forceinline__ uint2 load_shared_u64(SmemAddr a) {
   uint2 v;

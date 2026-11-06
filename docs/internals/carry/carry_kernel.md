@@ -4,7 +4,7 @@ Mirrors `csrc/rola/src/carry/carry_kernel.cuh`: the window loop over the compone
 window's plan record (`schedule.md`) for one arm's plan (`plan.md`). The carry is one planned pipeline (ruled
 2026-10-14): shared memory holds what is active and what lands next, sized by each window's actual counts, the planner
 choosing chunk sizes the card's area holds. Its window runs in ONE FIXED ORDER (2026-10-25, from the window lab's
-form 5, `docs/lab/carry_window.md`): the step machine that ran the record word by word, re-reading the window's
+form 5, its record `measure/lab/results/carry_window`): the step machine that ran the record word by word, re-reading the window's
 statics at each use, cost ~6.3K cycles a CTA-window at either density -- its per-step glue, its barriers and waits --
 and the same parts in a fixed order recovered it (0.73x production on alt-k4 and its 1/16-thinned twin).
 
@@ -27,24 +27,23 @@ each forms its lane addresses where it runs; held from before the loop, every ph
 Window 0's inputs and record are staged before the loop (one copy group, waited). A window, its plan record read once
 (`stream_of`: the mode, the chunks, the counts) and each chunk's place from its step word (`schedule.md#steps`):
 
-1. **The maxima's keys**: each warp's digit maxima posted (`parts.md#maxima`) and each leaf's exponent byte kept
-   (`parts.md#leaves`), before any copy of the window is issued -- the keys' shared loads and shuffles would otherwise
+1. **The maxima's keys**: each warp's digit maxima posted (`parts.md#maxima`) and each digit's largest den
+   (`parts.md#den`), before any copy of the window is issued -- the keys' shared loads and shuffles would otherwise
    queue behind the copies in the shared pipe (measured 2026-10-25 at nl64k-alt-k4: the maxima 1,952 -> 1,708 cycles a
    warp-window, the call 2.9% faster; issued after the keys' barrier instead, the copies land late and the dense cells
    run 13-15% slower).
 2. **The first read chunk's fill**, issued into its place (one copy group) with its runs worked out first
-   (`parts.md#entries`: a chunk's runs once, for its fill, its units and its tiles), then **the next window's inputs
+   (`parts.md#entries`: a chunk's runs once, for its fill and its readout), then **the next window's inputs
    staged** (a second group): both land under the keys' rendezvous, the exponents and the first store. Then the
-   rendezvous, each digit's exponent recorded by every warp (the same values) for its stores and the readers, the
-   leaves' scales and the bounds' counters reset.
+   rendezvous, each digit's exponent recorded by every warp (the same values) for its stores and the readout, and the
+   den's factors and image (`parts.md#den`).
 3. **The read chunks**, each in order: its fill where it is not the first (issued after the chunk before is drained,
    into its own place; where that place takes the panel still being drained -- the step word's `reuse` -- the chunk
    before ends with a rendezvous after its drain, predicated: `ops.md#rendezvous-if`); its image -- whole, stored
    once before the first chunk, or in halves, each chunk storing both
    -- its copies landed (`cp.async.wait_group`: every group but the staging's, which may still fly), a rendezvous,
-   the chunk's units -- the CTA's own, from its leaves' maxima, before its first add (`parts.md#units`: the bounds, a
-   rendezvous, the bytes, a rendezvous) -- its tiles over the image (a rendezvous before the second half's store), then
-   a rendezvous and its panel drained to `num`.
+   its readout over the image (`readout.md`, at the call's reduce dtype and the card's accumulate form; a rendezvous
+   before the second half's store), then a rendezvous and its panel drained to `num` and `den` (`panel.md#drain`).
 4. **The fold chunks**, each in order: a rendezvous where the chunk before's rows or the drained panel may be taken
    (every chunk after the first; the first where its step word's `reuse` says, predicated: `ops.md#rendezvous-if`),
    its fill, every group landed, a rendezvous, the window's units stepped at the first (`fold.md#units`), the fold
@@ -75,7 +74,7 @@ Every async copy lands on a COMMIT GROUP (`cp.async.commit_group` / `cp.async.wa
 (`stage_window`: both sides' lists, the facts and the window's plan record for the CTA's box class, into the other
 parity), then a group a further read chunk and a group a fold chunk. A read chunk's landing waits for every group but
 the staging's where that was committed after it (`wait_group 1`), else for every group; a fold chunk's for every
-group. The window lab measured the groups' form (`docs/lab/carry_window.md`); mbarriers, which the step machine landed
+group. The window lab measured the groups' form (its record `measure/lab/results/carry_window`); mbarriers, which the step machine landed
 its slots on (an arrive fences the warp's outstanding atomics, the waiters poll; ~2x a hardware barrier a round,
 `docs/lab/image_ring.md`), are gone from the carry.
 
@@ -104,40 +103,40 @@ lists.
 
 | component | a trip's price (sm_86 SASS) | trips a warp-window | design a warp-window |
 |---|---|---|---|
-| readout (`read_chunk`) | a tile ~40 (4 MMAs, 3 shared loads, 4 shuffles, 4 shared adds, ~12 float, ~10 address); a digit ~16; a chunk ~10 | 7 tiles, 4 digits, 4 chunks | 384 |
+| readout (`read_chunk`) | the value carve's (`tools/design_floor.py`): a tile 23 (16 entries a warp: rows, 2 MMAs, the panel's adds), a live digit 8, the den's tile 9 | every digit a warp, the token group's entries in 16s | 1,045 |
 | fold (`fold_chunk`) | an 8-token step ~30 (8 MMAs, 3 loads, 4 shuffles, 4 HMUL2); a list ~12 and its rescale 32 FMUL | 4 steps, 4 lists | 296 |
 | units (`fold_units`) | once a window | 1 | 30 |
 | stores (`store_batches`) | a batch: 4 lists x (a scale 4, 8 FMUL, 4 packs, one 16-byte store) + 2; a call ~20 | 4 batches, 2 calls | 318 |
 | maxima (`post_keys`) | a (list, digit row): 7 FMNMX with abs, its key ~4; 16 of them, the quad's joins 16, the units and top ~18, one atomic | 1 | 217 |
 | exponents (`post_exps`) | the lane's key to its exponent ~4, the two parities' addresses ~5, the reset, the record, the warp's sync | 1 | 14 |
-| drain | a panel word ~6 (load, token, address, predicated add); two slots' loop ~6 | 13.5 words a thread | 120 |
+| drain (`drain`) | the value carve's (`tools/design_floor.py`): a full line of `num` a request, a den request a 16 tokens | the chunk's slots | 63 |
 | read fill (`read_fill`) | a 16-byte copy ~13; an entry run ~10 | 6.9 copies a thread, 4 runs | 130 |
 | fold fill (`fold_fill`) | the same | 6.75 copies a thread, 4 runs | 128 |
 | staging (`stage_window`) | its ~240 copies over 256 threads, and its tests | 1 | 40 |
 | barriers (`Flow`) | an arrival ~3, a satisfied wait ~3 | ~27 | 81 |
 | glue (the kernel's body) | the plan's fields and the windows' statics read once, loop control | 1 | 150 |
 
-The design is ~1,920 instructions a warp-window: ~3.8K cycles of issue a window over 8 warps on 4 schedulers, ~0.52 ms a
-call at one head. Measured (2026-10-14, carry-k5 839dadb5) 3,884 (31,069 a CTA-window), every component over its line
-but the stores (1.09x): the fills 2.3-3.0x (each copy re-derives its token, its source and its swizzle; each run its
-list's row), the glue 2.6x and the barriers' own instructions 2.8x (fields re-read at each use), the drain 2.3x, the
-readout 1.7x, the fold 1.4x, the maxima 1.3x -- each class (b), the mechanism right and its form above its floor.
-Beside them the barriers' spinning (~280 a warp-window, the waits for other warps) and ~24.4K cycles a warp-window
-against the instructions' ~7.8K: the warps' latency-bound chains.
+The design is ~2,540 instructions a warp-window (`tools/budgets/carry.json`: 20,328 a CTA-window), ~5.1K cycles of issue
+a window over 8 warps on 4 schedulers; the value carve's readout and drain are priced by `tools/design_floor.py`, the
+other components by their 2026-10-14 trip prices. Measured (2026-10-14, carry-k5 839dadb5) for those components: the
+fills 2.3-3.0x their lines (each copy re-derives its token, its source and its swizzle; each run its list's row), the
+glue 2.6x and the barriers' own instructions 2.8x (fields re-read at each use), the fold 1.4x, the maxima 1.3x, the
+stores 1.09x -- each class (b), the mechanism right and its form above its floor.
 
 <a id="check"></a>
 ## The check
 
 The state's fp32 sum, the skeleton's `check` (`carry_api.md#carry-forward`): each lane's sum of its state, the warp's
 lanes' joined by five shuffles, one atomic add a warp. One add a thread put 32,768 adds a call on one address; they
-serialized at its L2 slice for ~47 us a call on sm_86 (`docs/lab/carry_window.md`), most of the call's fixed cost.
+serialized at its L2 slice for ~47 us a call on sm_86 (the window lab's record, `measure/lab/results/carry_window`),
+most of the call's fixed cost.
 
 <a id="phases"></a>
 ## The phase ledger's phases
 
 `CarryPhase` is the ledger's column order: `landed` (an entry's copies waited), `maxima`, `store`, `readout`, `drain`,
 `fill` (a fill's copies issued), `fold` (with the fold's units), `wait` (a step's rendezvous and the staging, every
-warp's) and `units` (a read chunk's bounds and unit bytes, `parts.md#units`). A lap books the cycles since the last into its phase, so the columns sum to the warp's whole run.
+warp's). A lap books the cycles since the last into its phase, so the columns sum to the warp's whole run.
 `rola.ops.carry.LEDGER_PHASES` names the same order.
 
 <a id="phase-ledger"></a>

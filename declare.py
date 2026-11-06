@@ -53,7 +53,8 @@ BUILD_DATA = ["csrc", "pyproject.toml", "tools/manifests", "tools/toolchains", "
 INSTRUMENTS = {
     "sass": ("tools/sass_gate.py", ["{binary}"], False, {"host_cpu": 1}, [], 600),
     "registers": ("tools/life_ranges.py", ["--arm", "0", "--kernel", "carry_kernel",
-                                           *(a for f in ("carry_kernel", "parts", "fold", "schedule", "plan")
+                                           *(a for f in ("carry_kernel", "parts", "readout", "panel", "fold", "schedule",
+                                                                      "plan")
                                              for a in ("--source", f"csrc/rola/src/carry/{f}.cuh")),
                                            "--budget", "tools/budgets/carry.json"], False,
                   {"host_cpu": 1}, ["csrc/rola/src"], 600),

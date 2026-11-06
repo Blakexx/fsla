@@ -63,7 +63,7 @@ memory holds two entries at a time whatever the call's length.
 `StepWord`: the entry's place / 128 | filled ahead << 11 | the next entry filled now << 12 | a rendezvous after the
 retired read's drain << 13. FILLED AHEAD: by the step before, or for a window's first by the window before (window 0's
 before the loop). REUSE: the step's own fill meets the panel of the read entry the step retires (`drained_of`: its
-offset past the rows and dummy rows, its bytes) -- the carry fills every entry at its own step, so a fill the rule
+offset past the rows, its bytes -- the num panel and the den words) -- the carry fills every entry at its own step, so a fill the rule
 would issue ahead is not what waits on a drain. The carry reads each entry's PLACE from its step word once a window and
 its REUSE where a fill follows a drain (`carry_kernel.md#kernel`); the ahead and next bits are the rule's own and not
 read (the plan pass writes them, and the gate holds every bit to the model word for word).
@@ -71,14 +71,14 @@ read (the plan pass writes them, and the gate holds every bit to the model word 
 <a id="buffers"></a>
 ## The buffers
 
-A chunk's buffer is laid out at its OWN slots (`parts.cuh`'s `read_pads`, `read_ents`, `fold_ents`): a read buffer's
-rows (`C x row`), the dummy panel rows (`kPadBytes`), the panel (`C x 64`, 128-byte aligned: a slot pair shares a
-128-byte line and a slot's row may sit in its line's upper half, so the whole line is zeroed), its entries (`E x 8`);
-a fold buffer's rows (slices then values) and entries (a side with no list level: each slot's `(F, m)`, 8 bytes a slot,
-in their place). `read_bytes` and `fold_bytes` are their sizes, so a chunk's
-footprint is its actual count, never the window's largest chunk; every size is a multiple of 128, so a place is too.
-The IMAGE (`ImageMode`) is whole (32 planes, 64 KB) or a 16-plane half (32 KB). An entry's row and panel offsets are
-the union's, so a chunk from a multiple of 64 takes its pool and panel back by its first slot (`carry.md#lists`).
+A chunk's buffer is laid out at its OWN slots (`parts.cuh`'s `read_panel`, `read_dens`, `read_ents`, `fold_ents`): a
+read buffer's rows (`C x row`), its num panel (`C x 64` at f16 pairs, `C x 128` at fp32: the call's reduce dtype,
+`panel.md#words`), its den words (`C x 16`), its entries (`E x 8`), each part 128-byte aligned; a fold buffer's rows
+(slices then values) and entries (a side with no list level: each slot's `(F, m)`, 8 bytes a slot, in their place).
+`read_bytes` (at the call's `reduce`) and `fold_bytes` are their sizes, so a chunk's footprint is its actual count,
+never the window's largest chunk; every size is a multiple of 128, so a place is too. The IMAGE (`ImageMode`) is whole
+(32 planes, 64 KB) or a 16-plane half (32 KB). An entry's row offset is the union's, so a chunk from a multiple of 64
+takes its pool back by its first slot, and its slot from the row (`carry.md#lists`).
 
 <a id="totals"></a>
 ## The segment sums
@@ -107,19 +107,19 @@ THE RULE'S PLAN (`rule_plan`): the image whole where it fits beside the largest 
 halves; the fold's largest chunk. A FORCED FORM
 (`CarryParams::forced`, `rola.ops.carry.forced_word`: a mode, a read chunk and a fold chunk, each the rule's, the union
 or a multiple of 64) is reserved for the gates and the measurements; a window takes it where every chunk of it fits
-alone beside its image and a whole image has reads to serve (`forced_plan`), else the rule's. An arm publishing in
-registers (`parts.md#same-split`) has no image: `image_bytes` is 0, its plans whole, the area all chunks.
+alone beside its image and a whole image has reads to serve (`forced_plan`), else the rule's. Every arm hands its
+state off through the image (`parts.md#same-split`). THE LEAST PLAN (`least_plan_fits`, at the call's reduce dtype, the
+launch's refusal): the halves beside one 64-slot read buffer of lists full on every token, and one such fold buffer.
 
 Why a rule, not a search (measured 2026-10-14, nl64k-alt-k4 on sm_86, every named form timed warm): the rule's form is
 the fastest. Each extra fold chunk costs ~500 us there -- it splits every list's run into two partial steps, and the
 fold's steps are latency-bound list by list. A search over the named forms by a per-item cost model ranked them
 inverted on unmeasured prices and cost 661 us a call.
 
-Worked, on the even box (64-byte read rows, 128-byte write rows; the area 91,136 bytes on sm_86, 156,672 on sm_80 and
-sm_87): a nl64k-alt-k4 window of ~216-slot unions and ~260 entries a side takes the halves, one read chunk (30.3 KB)
-and the whole union's fold chunk (29.8 KB), which misses fitting beside the read chunk and the halves by ~2.1 KB: it is
-filled at its own step at the bottom, once the read is drained, and the next window's read chunk is filled at the top
-beside it. On sm_80 the image is whole and the fold chunk lands beside the readout.
+Worked, on the even box (64-byte read rows, 128-byte write rows; the area 88,832 bytes on sm_86): a nl64k-alt-k4 window of ~216-slot unions and ~260 entries a side takes the halves, one read chunk (33.3 KB at
+f16 pairs) and the whole union's fold chunk (29.8 KB), which misses fitting beside the read chunk and the halves by
+~6.9 KB: it is filled at its own step at the bottom, once the read is drained, and the next window's read chunk is
+filled at the top beside it. On sm_80 the image is whole and the fold chunk lands beside the readout.
 
 <a id="pass"></a>
 ## The plan pass

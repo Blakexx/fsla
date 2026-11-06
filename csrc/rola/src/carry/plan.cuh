@@ -24,15 +24,10 @@ struct Tenants {
   static constexpr int kScale = kBook + kBoxLists * 8;
   static constexpr int kKeys = align_of(kScale + kBoxLists * 8, 16);
   static constexpr int kExps = kKeys + 2 * kBoxDigits * 4;
-  static constexpr int kBits = kExps + kBoxDigits * 4;
-  //: the box top and largest digit exponent, a dead unit's dummy byte; each leaf's exponent byte under the den rows
-  //: (`parts.md#den`); each leaf's f16 scale; each digit's den factor and largest (the den state is global)
-  static constexpr int kTops = kBits + 8;
-  static constexpr int kDeadUnit = kTops + 8;
-  static constexpr int kLeafExp = align_of(kDeadUnit + 8, 16);
-  static constexpr int kDenRows = kLeafExp;
-  static constexpr int kLeafScale = kDenRows + kBoxDigits * kBoxLists * 2;
-  static constexpr int kDenFactor = align_of(kLeafScale + kBoxDigits * kBoxLists * 2, 16);
+  static constexpr int kBits = kExps + kWarps * kBoxDigits * 4;
+  //: the den image (the dense fold's scratch while it folds, `fold.md#dense`); each digit's den factor and largest
+  static constexpr int kDenImage = align_of(kBits + 8, 16);
+  static constexpr int kDenFactor = align_of(kDenImage + kBoxDigits * kBoxLists * 2, 16);
   static constexpr int kDenMax = kDenFactor + kBoxDigits * 4;
   static constexpr int kClock = align_of(kDenMax + kBoxDigits * 4, 8);
   static constexpr int kAddr = align_of(kClock + kWarps * (kCarryPhases + 1) * 8, 16);
@@ -40,21 +35,15 @@ struct Tenants {
   static constexpr int kEnd = align_of(kAddr + kAddrBytes, 16);
 };
 
-//: THE READ TABLES at `heads` query heads a write head, at the top of a CTA's `smem` bytes; the area below them.
-//: -- see docs/internals/carry/plan.md#read-tables
+//: THE READ TABLES at `heads` query heads, at the top of `smem` bytes. -- see docs/internals/carry/plan.md#read-tables
 template <int W>
 __host__ __device__ constexpr ReadTables tables_of(int heads, int smem) {
   const int pre_bytes = align_of(2 * kPreRows * list_at(W) * heads * 2, 16);
-  const int bytes = 2 * heads * W * 2 + pre_bytes + 2 * heads * W + heads * W + heads * W * 4
-                    + 2 * plan_words(heads, W) * 4;
+  const int bytes = 2 * heads * W * 2 + pre_bytes + 2 * heads * W + 2 * plan_words(heads, W) * 4;
   const int union_at = (smem - bytes) / 128 * 128, area_at = align_of(Tenants<W>::kEnd, 128);
   const int pre_at = union_at + 2 * heads * W * 2, scale_at = pre_at + pre_bytes;
-  const int units_at = scale_at + 2 * heads * W, bounds_at = units_at + heads * W;
-  return ReadTables{heads,     plan_words(heads, W),
-                    union_at,  pre_at,
-                    scale_at,  units_at,
-                    bounds_at, bounds_at + heads * W * 4,
-                    area_at,   union_at - area_at};
+  return ReadTables{heads,    plan_words(heads, W),     union_at, pre_at,
+                    scale_at, scale_at + 2 * heads * W, area_at,  union_at - area_at};
 }
 
 constexpr int kPlaneBytes = kBoxLists * kBoxChannels * 2;
@@ -72,20 +61,21 @@ struct Plan : Tenants<window_for(Cc)> {
   static_assert(Arm::fold_rows == kBoxDigits && Arm::read_rows == kBoxLists
                     && Arm::channels == kBoxChannels,
                 "the arm is the box's: a fold list 32 digits, a read digit 32 lists, 32 channels");
+  static_assert(Arm::read_factors == 1, "the value-carve readout serves a listed read side");
   static constexpr int kFoldFactors = Arm::fold_factors, kReadFactors = Arm::read_factors;
-  //: a warp's tiles: lists `w + 8 j` to fold, digits `w + 8 i` to read out
-  static constexpr int kFoldLists = kBoxLists / kWarps, kReadDigits = kBoxDigits / kWarps;
+  //: THE HAND-OFF'S FORM: the fold's lists the readout's digits (both sides list one level) or its K
+  static constexpr bool kSameSplit = Arm::same_split != 0;
+  //: a warp's fold tile: lists `w + 8 j`, each the box's 32 rows in m-tiles of 16
+  static constexpr int kFoldLists = kBoxLists / kWarps;
   static constexpr int kFoldMTiles = kBoxDigits / 16;
   static constexpr int kStateRegs = kFoldLists * kBoxDigits * kBoxChannels / 32;
-  static_assert(kFoldMTiles * 2 == kBatches && kReadDigits == kBatches,
-                "a batch is half an m-tile of every fold list and one digit of every reader");
+  static_assert(
+      kFoldMTiles * 2 == kBatches && kFoldLists == kBatches,
+      "a batch (8 digits) is half an m-tile of every fold list, or one list of every warp's");
 
   static constexpr int kReadRow = kSliceBytes * kReadFactors;
   static constexpr int kValuesAt = kSliceBytes * kFoldFactors,
                        kWriteRow = kValuesAt + kBoxChannels * 2;
-
-  //: the publish in registers (`Arm::publish_regs`): the readout reads the fold's state where it lies -- no image
-  static constexpr bool kPublishRegs = Arm::publish_regs != 0;
 
   static constexpr int kSmemBytes = kCaps.smem_per_cta_max;
   static constexpr int kAreaAt = tables_of<kWindow>(1, kSmemBytes).area_at;

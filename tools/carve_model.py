@@ -121,9 +121,9 @@ def cell_stats(name: str, forced: str | None = None) -> CellStats:
     from rola.ops import carry as carry_ops
 
     key = carry_ops.arm_key(carve)
-    row = next(r for r in carry_ops.census() if tuple(r[1:7]) == tuple(key))
-    return CellStats(name, routes.group, tuple(ws), tuple(rs), words, cp.area_of(row[9], row[12], routes.group),
-                     row[13], row[14])
+    f = carry_ops.form(key)
+    return CellStats(name, routes.group, tuple(ws), tuple(rs), words, cp.area_of(f.smem, f.area, routes.group),
+                     f.read_row, f.write_row)
 
 
 def _sums(side: Side) -> tuple:
@@ -441,23 +441,25 @@ def events_today(s: CellStats) -> Events:
 #: function inside an MMA loop keyed `name@L`); the window's bookkeeping, per step, is `GLUE`'s, and a function in
 #: neither is refused (`unmapped`)
 DRIVERS = {
-    "readout": {"read_tiles": "tile_in tile_in_m tile_mma tile_add tile_add_m ld_u16 s16_pair panel_red masked_entry tile "
-                              "read_chunk@L ?@L chunk_addr@L Entry::slots@L chunk_addr",
-                "read_digits": "state_in image_lane",
+    "readout": {"read_tiles": "tile_mma slot_of coef_of token_scale add_h2 panel_word read_chunk@L ?@L chunk_addr@L "
+                              "Entry::slots@L chunk_addr",
+                "read_digits": "slice_row den_row exp_slot pow2_wide",
                 "read_chunks": "read_chunk"},
     "fold": {"fold_steps16": "step16 step16@L", "fold_steps8": "step8",
              "fold_steps": "steps steps@L entry_of entry_of@L",
              "fold_lists": "fold_chunk", "one": "fold_units next_unit pow2_half2 list_units dense_exp"},
-    "handoff": {"images": "store_batches list_scale", "one": "post_keys post_exps box_top ceil_exp pow2"},
+    "handoff": {"images": "store_batches store_row_batches store_list_batches store_frame list_scale",
+                "one": "post_keys post_row_keys post_list_keys post_exps box_top ceil_exp pow2 den_tables_max "
+                       "den_tables_out den_exp red_max_u32"},
     "fills": {"rows": "fill", "entry_trips": "entries_fill", "chunks": "read_fill fold_fill chunk_runs chunk_cols "
                                                                   "list_row Flow::slot_landed stage_bytes"},
-    "drain": {"drained": "drain red_add"},
+    "drain": {"drained": "drain red_add_h2 red_add_f32 token_row word_at"},
 }
 _DRIVER_OF = {fn: (phase, event) for phase, evs in DRIVERS.items() for event, fns in evs.items() for fn in fns.split()}
 #: THE WINDOW'S BOOKKEEPING: the plan's and the flow's reads, the staging, the places and the instruments ("?" a line
 #: with no frame)
 GLUE = frozenset(("carry_kernel", "stream_of", "entry_at", "step_of", "window_of", "parity_of", "lists_in", "facts_in",
-                  "stage_window", "cols_of", "union_of", "pre_of", "slots_of", "origin_of", "addr_in", "place_of",
+                  "stage_window", "cols_of", "union_of", "pre_of", "origin_of", "addr_in", "place_of",
                   "box_classes", "level_stride", "fold_probe", "?"))
 GLUE_KINDS = ("Flow", "StepWord", "PlanWord", "Entry")
 #: the most of a launch's instructions the model may book to functions it does not know

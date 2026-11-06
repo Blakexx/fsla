@@ -415,7 +415,7 @@ __device__ __forceinline__ void lists_out(const FactsParams& p, const Unit& x, u
             const uint32_t coef = __half_as_ushort(__float2half_rn(b * (1.0f / 256.0f)));
             e = make_uint2((sl * (row / 16) + carry::pool_chunk(row, sl, 0u))
                                | static_cast<uint32_t>(kWindowTokens * j + t) << 16,
-                           coef | ((carry::kPadBytes + carry::panel_row(sl)) & 0xffffu) << 16);
+                           coef);
           }
           if (listed) entries[pos] = e;
           ++pos;

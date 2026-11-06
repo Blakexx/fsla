@@ -185,7 +185,7 @@ per-unit incremental, keyed on the argv and the content of every input the compi
 ## <a id="carry-arm-lists"></a>The carry arm list
 
 `tools/manifests/shipped_set.json` declares the carry family's arms and `tools/gen_shards.py` reads it. An arm is the
-carve's operation-plan pair, keyed `fold_rows, fold_factors, read_rows, read_factors, channels, publish_regs`
+carve's operation-plan pair, keyed `fold_rows, fold_factors, read_rows, read_factors, channels, same_split`
 ([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve)); the box's per-level extents, the depth and the
 widths are runtime addressing. The declaration has one `shipped` list: every declared row is built by a default build,
 ratified in the manifests and shipped. Each row is one generated `carry_arm_<i>.cu`, `i` its index in the

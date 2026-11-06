@@ -311,6 +311,15 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
                       && k.read_factors == p.read.operands,
                   "the arm key's channels and factors are the carve's: ", channels, ", ",
                   p.write.operands, ", ", p.read.operands);
+  //: the hand-off's form is the sides' levels: the fold's lists (a dense fold's coefficients) the readout's digits
+  const int64_t fold_outer = write_list >= 0 ? write_list
+                                             : (write_operand.size() > 1 ? write_operand[1] : -1),
+                read_outer =
+                    read_list >= 0 ? read_list : (read_operand.size() > 1 ? read_operand[1] : -1);
+  STD_TORCH_CHECK(k.same_split == (fold_outer == read_outer ? 1 : 0),
+                  "the arm key's hand-off form (same_split ", k.same_split,
+                  ") is not the carve's: the fold's lists at level ", fold_outer,
+                  ", the readout's digits at level ", read_outer);
   if (g_capture != nullptr) {
     const CarryCapture c{(int64_t)sizeof(CarryCapture), boxes, BH, p};
     std::memcpy(g_capture, &c, sizeof c);
@@ -320,7 +329,7 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   bool launched = false;
   arm_switch<CarryArmSet>(k, [&](auto A) {
     using Arm = decltype(A);
-#define ROLA_CARRY_ARM_CALL(I_, FR_, FF_, RR_, RF_, CH_, PR_)                   \
+#define ROLA_CARRY_ARM_CALL(I_, FR_, FF_, RR_, RF_, CH_, SS_)                   \
   if (Arm::index == (I_)) {                                                     \
     launched = true;                                                            \
     status = carry_arm_forward_##I_(p, (int)boxes, (int)BH, stream);            \
@@ -413,10 +422,10 @@ int64_t carry_build_stamp() {
 
 std::vector<std::vector<int64_t>> carry_census() {
   std::vector<std::vector<int64_t>> out;
-#define ROLA_CARRY_ARM_CENSUS(I_, FR_, FF_, RR_, RF_, CH_, PR_)                                       \
+#define ROLA_CARRY_ARM_CENSUS(I_, FR_, FF_, RR_, RF_, CH_, SS_)                                  \
   {                                                                                                   \
     const ArmCensus c = carry_arm_census_##I_();                                                      \
-    out.push_back({(int64_t)(I_), FR_, FF_, RR_, RF_, CH_, PR_, c.regs, c.local_bytes,              \
+    out.push_back({(int64_t)(I_), FR_, FF_, RR_, RF_, CH_, SS_, c.regs, c.local_bytes,         \
                    c.form.smem_bytes, c.max_threads, c.binary_version, c.form.area,                   \
                    c.form.read_row, c.form.write_row});                                               \
   }
@@ -427,7 +436,7 @@ std::vector<std::vector<int64_t>> carry_census() {
 
 std::vector<std::vector<int64_t>> carry_arms() {
   std::vector<std::vector<int64_t>> out;
-#define ROLA_CARRY_ARM_ROW(I_, FR_, FF_, RR_, RF_, CH_, PR_) out.push_back({FR_, FF_, RR_, RF_, CH_, PR_});
+#define ROLA_CARRY_ARM_ROW(I_, FR_, FF_, RR_, RF_, CH_, SS_) out.push_back({FR_, FF_, RR_, RF_, CH_, SS_});
   ROLA_CARRY_ARM_SET_X(ROLA_CARRY_ARM_ROW)
 #undef ROLA_CARRY_ARM_ROW
   return out;

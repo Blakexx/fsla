@@ -56,8 +56,8 @@ accumulation is fp32 or exact integer ([`architecture/precision.md`](architectur
 | kernel | operands | accumulation |
 |---|---|---|
 | the carry's fold | the write operand f16 (a dense slice times the record's coefficient), the values f16 | fp32 state in registers ([`carry/fold.md`](internals/carry/fold.md)) |
-| the carry's publish | the fp32 state rounded to an f16 operand | — |
-| the carry's readout | the f16 state against the read operand | partials packed as s16 pairs at each token's unit, added as u32 ([`carry/parts.md#drain`](internals/carry/parts.md#drain)) |
+| the carry's hand-off | the fp32 state rounded to an f16 image at a power of two a digit | — |
+| the carry's readout | the f16 image against the read rows | fp32 MMAs (fp16 where fp32 accumulate is half rate), each piece into the panel as f16 pairs at the token's scale byte or fp32, added across CTAs in that dtype ([`carry/panel.md#drain`](internals/carry/panel.md#drain)) |
 | the intra | the rows' u8 digits and the values' digit planes, int8 tensor ops | each level's Gram exact in s32, the levels multiplied in fp32 ([`intra/intra_kernel.md`](internals/intra/intra_kernel.md)) |
 | decode | the stored state's s24 (a written leaf) or its s16 hi plane (a read-only leaf), the staged amplitudes | fp32 |
 | the stored state, between calls | s24 mantissas at a power-of-two exponent a 32-channel group, fp32 mass | — ([§3](#3-the-state)) |
@@ -190,8 +190,8 @@ operand, in level order); every side has a dense level, so every side has an ope
 SYMMETRY by construction: the read-write overlap factorizes over levels (`Σ_n R[t,n] Wt[s,n]` is the product over `l`
 of the levels' inner products), and a full-support factor at every level makes each factor strictly positive, so every
 read overlaps every write -- an exact-zero pair, with its exact-zero gradient, cannot occur, while each level keeps the
-hard sparsity the kernels compact. A warp's tile is a side's lists
-by its operand rows, and the publish stays in registers when both sides' warps own the same leaves. Every kernel that
+hard sparsity the kernels compact. A fold warp's tile is its side's lists by its operand rows; a readout warp holds
+every leaf for its channels, so the state reaches the readout through an image. Every kernel that
 depends on the geometry takes the carve — the facts pass groups its unions and lists by the box's list levels, the
 carry addresses by it — and validates the one it is handed; none decides a carve. The rule derives it from
 launch-static facts (the rows' shapes and the bundle's declared flags), never from a routing statistic, so the
@@ -218,7 +218,7 @@ The compiled key is the family's own:
 
 | family | compiled key | runtime addressing |
 |---|---|---|
-| carry | the carve's operation-plan pair: `fold_rows, fold_factors, read_rows, read_factors, channels, publish_regs` (`tools/manifests/shipped_set.json`, [`build.md#carry-arm-lists`](build.md#carry-arm-lists)) | the box's per-level extents, the depth, the widths |
+| carry | the carve's operation-plan pair: `fold_rows, fold_factors, read_rows, read_factors, channels, same_split` (`tools/manifests/shipped_set.json`, [`build.md#carry-arm-lists`](build.md#carry-arm-lists)) | the box's per-level extents, the depth, the widths |
 | decode | `DV × D × decay` (`decode/decode.cu`'s `DECODE_ARM_<i>`) | the `(k, m)` lattice, the widths, the operand storage types |
 | intra | the depth, one or two levels | each level's width in 16-digit granules |
 | producer, facts pass | none: one instantiation each | every width, kind and offset, from the plan's job table or the layout |

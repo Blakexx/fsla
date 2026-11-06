@@ -8,8 +8,8 @@ plan `plan.md`.
 The carry is the inter-window term: each CTA owns a BOX of leaves (the carve's, `docs/internals/engine/rules.md#carve`,
 `docs/internals/engine/carve.md`) and walks a call's windows in order. Every window it reads the state before the
 window's writes out to the window's readers (the readout), then folds the window's writers into it (the fold). The
-state never leaves the registers inside a call; the readout reads an f16 image of it, or, where both sides' warps own
-the same leaves, the registers themselves (`parts.md#same-split`).
+state never leaves the registers inside a call; the readout reads an f16 image of it (`parts.md#image`), each warp every
+leaf of the box for its channels (`readout.md`).
 
 <a id="constants"></a>
 ## The constants
@@ -49,21 +49,19 @@ over `heads` query heads' rows (the read side's a write head's `g`, the write si
 
 - `entries`: a list's 8-byte entries in slot order, `kListCap` a query head, no pads. A read entry is its slot's pool row
   offset in the union in 16-byte chunks with its swizzle folded in (the first word's low half), its token (its high
-  half), the coefficient (f16, the second word's low half) and the panel row's offset from the dummy rows, its swizzle
-  folded in (its high half): a chunk from a multiple of 64 takes its pool and panel back by its first slot's offsets
-  (`parts.md#readout`). A write entry is the slot, then `c_v` and `c_m`. A step's lanes past a chunk's entries are
-  masked by the carry (a read lane's coefficient 0 on a dummy panel row, a write lane's row 0 with c = 0).
+  half: its query head's row, `j 512 + t`, its place in the scale bytes) and the coefficient (f16, the second word's low
+  half): a chunk from a multiple of 64 takes its pool back by its first slot's offset and its slot from the row
+  (`readout.md#chunk`). A write entry is the slot, then `c_v` and `c_m`. A step's lanes past a chunk's entries are
+  masked by the carry (a read lane's stores predicated off, a write lane's row 0 with c = 0).
 - `pre` (int16, the boundaries in prefix form modulo 2^16, `kPreRows` rows of `8 heads` columns) and `totals` (int32,
   the group's exact): `chunk_runs` turns a chunk's slots into each list's run and its place, `side_counts` reads the
   totals.
 - `union_tok` and `union_count` (int32): per 32-digit group each slot's row (its query head and window-relative token,
   `#sides`), and the slots' extent; a GAP slot holds `kGap` (bit 15 set), and a fill zero-fills its row.
 
-The addresses both kernels compute live here, one copy: `kGap`, the panel's 64-byte row `kPanelRow` past 8 dummy rows
-(`kPadBytes`, a pad's adds landing on its place's), `panel_row` (a slot pair a 128-byte line, each slot's halves at
-the segments its pair's residue bits XOR) and `pool_chunk` (a pool row's 16-byte chunk swizzled by the slot's residue,
-or its high bits within each four for a row of an odd number of 64-byte quarters); `parts.cuh`'s `chunk_at` is
-`pool_chunk` at a compiled row.
+The addresses both kernels compute live here, one copy: `kGap` and `pool_chunk` (a pool row's 16-byte chunk swizzled by
+the slot's residue, or its high bits within each four for a row of an odd number of 64-byte quarters); `parts.cuh`'s
+`chunk_at` is `pool_chunk` at a compiled row.
 
 <a id="params"></a>
 ## The operand block
@@ -72,9 +70,10 @@ or its high bits within each four for a row of an odd number of 64-byte quarters
 `stride`, a level's step in the box index (the channel groups innermost). Every pointer is the bundle's own memory:
 the rows and values at their strides (the row alignment law, `docs/internals/facts/facts.md`), the facts pass's
 lists, the cross-CTA sum's scale bytes (`scale`, an exponent byte a query head's token, a window wide so a window's
-copy is aligned: the scale pass's bound on |num(t)|, `scale/scale.md`, read only where `reduce` is f16 pairs). The outputs are `den` (each token's v+1 channel, `parts.md#den`), `num` (a
-query head's: f16 pairs at each token's scale, or fp32 channels, by `reduce` -- `carry_api.md#carry-reduce`,
-`parts.md#drain`; each CTA's partials at its own units, `parts.md#units`) and `check` (the final state's sum). `plans` are the plan pass's records (`schedule.md#pass`), a window's for each box class.
+copy is aligned: the scale pass's bound on |num(t)|, `scale/scale.md`, read only where `reduce` is f16 pairs). The
+outputs are `den` (each token's v+1 channel, `parts.md#den`), `num` (a query head's: f16 pairs at each token's scale, or
+fp32 channels, by `reduce` -- `carry_api.md#carry-reduce`, `panel.md#drain`) and `check` (the final state's sum).
+`plans` are the plan pass's records (`schedule.md#pass`), a window's for each box class.
 `readout_f16` is the readout's accumulation (`carry_api.md#carry-readout-accumulate`); `forced` a plan form every
 window takes where it fits, -1 for none (`schedule.md#planner`). A bound capture copies the block and its grid out before the
 launch (`CarryCapture`, `carry_api.md#carry-capture-bind`).
@@ -90,8 +89,9 @@ launch (`CarryCapture`, `carry_api.md#carry-capture-bind`).
   digits; a side with no list level names exactly a row level and a coefficient level; an operand slice is a 4-byte
   copy at least and `kSliceBytes` at most.
 - every tensor's dtype, contiguity and exact shape (the lists' five, `scale` `[BH, windows x W]`, `num` int32 `[BH,
-  T, d_v / 2]` for f16 pairs or fp32 `[BH, T, d_v]`); the arm key's channels
-  and factor counts agreeing with the carve; the readout's accumulation fp32 (0) or fp16 (1); the cross-CTA sum f16
+  T, d_v / 2]` for f16 pairs or fp32 `[BH, T, d_v]`); the arm key's channels and factor counts agreeing with the
+  carve, and its hand-off form (`same_split`) with the levels the sides list (`parts.md#same-split`); a write head's
+  `num` rows under 2^32 values (the drain's offsets); the readout's accumulation fp32 (0) or fp16 (1); the cross-CTA sum f16
   pairs (0) or fp32 (1); a forced form -1 or a
   mode (0 to 2) with two chunk fields in 14 bits; a window's token stride under 2^31 / `kWindow` (a window's offsets
   are 32-bit).

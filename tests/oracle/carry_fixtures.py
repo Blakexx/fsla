@@ -26,12 +26,13 @@ def levels(widths, L, live, *, B=1, H=2, seed=0):
     return out
 
 
-def alternating_bundle(widths, L, write_sparse, *, live=4, d_v=64, seed=0):
-    """An alternating bundle: the write side sparse at ``write_sparse`` (``live`` digits a token), the read side sparse
-    at the other level, each side dense elsewhere."""
+def listed_bundle(widths, L, write_sparse, *, same=False, live=4, d_v=64, seed=0):
+    """A bundle each side listing one level, ``live`` digits a token: the write side sparse at ``write_sparse``, the read
+    side at the other level (the alternating box) or, ``same``, at the same one (the same split); each side dense
+    elsewhere."""
     D = len(widths)
     write_flags = tuple(level == write_sparse for level in range(D))
-    read_flags = tuple(not flag for flag in write_flags)
+    read_flags = write_flags if same else tuple(not flag for flag in write_flags)
     live_w = [live if flag else width for flag, width in zip(write_flags, widths)]
     live_r = [live if flag else width for flag, width in zip(read_flags, widths)]
     gen = torch.Generator().manual_seed(seed + 1)

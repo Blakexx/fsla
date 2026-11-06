@@ -63,5 +63,5 @@ Binds a host u8 tensor of `carry_capture_bytes()` bytes; the next launch copies 
 count, the grid's boxes and batch-heads, then the operand block as the launch built it -- before it launches. A lab
 experiment runs a window form on a real call's inputs from it: the caller saves each tensor the call read or wrote
 beside the capture, and the experiment moves every pointer word of the block that falls in a saved tensor to its own
-copy (`measure/lab/experiments/carry_window.inputs.py`). Unbound (`None`) in production; `rola.ops.carry.capture_bind`
+copy. Unbound (`None`) in production; `rola.ops.carry.capture_bind`
 and `capture_bytes` are the Python calls.

@@ -137,8 +137,8 @@ as ruled: the fold gate's `DENSE_DEN_WEIGHT`), lanes `0..15` the warp's lists' a
 copies of the step's slots, their coefficient loads its partner's lists), four shuffles a B word. At the chunk's end
 (`den_pairs`) the tile goes into the den's registers in the list owner's layout (`den_place<P>`, one layout on either
 side: lane `(g, t)`'s word `i` is element `i` of digit tile `t >> 1` in lane `(g, t & 1)` for warp `w`'s lists, `(g, 2 +
-(t & 1))` for its partner's), its own by a shuffle, its partner's through shared memory (2 KB over the den rows, free
-while folding; one barrier), at `2^(Em - 4)`, the box's lists alone. A first form, each warp its own four lists in half
+(t & 1))` for its partner's), its own by a shuffle, its partner's through shared memory (2 KB over the den image, free
+while folding, `parts.md#den`; one barrier), at `2^(Em - 4)`, the box's lists alone. A first form, each warp its own four lists in half
 an n8 tile, ran twice the separate pass's den MMAs and read +0.8-1.5% on sm_86's tensor-bound dense fold.
 A box whose lists' den it does
 not carry takes the steps without it (`Den` false: a uniform choice a chunk). The separate pass it replaces

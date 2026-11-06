@@ -14,7 +14,7 @@ from rola.ops import carry as carry_ops
 from rola.ops import facts as facts_ops
 from rola.ops.window import window_of
 from tests.oracle import carry_plan
-from tests.oracle.carry_fixtures import FORM_CELLS, alternating_bundle
+from tests.oracle.carry_fixtures import FORM_CELLS, listed_bundle
 from tests.oracle.fold_reference import fold_state
 
 
@@ -63,7 +63,7 @@ def _reference(routes, values, facts, level_s, BH, N, d_v):
 
 def _fold_ratio(widths, L, write_sparse, growth, *, live=4, forced=None):
     """``(ratio, plans)``: the call's largest slot distance from the reference over its bound, and its boxes' plans."""
-    routes, values = alternating_bundle(widths, L, write_sparse, live=live)
+    routes, values = listed_bundle(widths, L, write_sparse, live=live)
     at = torch.arange(L, device="cuda") // window_of()
     routes.g_write.mul_(torch.exp2(growth * at.float())[None, :, None])
     carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, values.v.shape[-1])

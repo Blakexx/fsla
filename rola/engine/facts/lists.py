@@ -13,9 +13,9 @@ the group's exact TOTALS (``totals[j]``, for the carry's planner): any chunk of 
 holds fewer than 2^16 entries), and no chunk size of the carry's reaches this pass.
 
 An entry is four int16 words, its two 32-bit halves the carry's ``uint2``:
-- READ: the slot's pool row offset in the union in 16-byte chunks, the row's swizzle folded in; its token's window
-  place (the carry looks up the token's unit by it); the coefficient ``f16(byte / 256)``, the slot's panel row offset
-  from the dummy rows. A chunk starting at a multiple of 64 finds its rows by subtracting its first slot's offsets:
+- READ: the slot's pool row offset in the union in 16-byte chunks, the row's swizzle folded in (the carry takes the
+  slot back from it); its token's window place (the carry looks up the token's scale byte by it); the coefficient
+  ``f16(byte / 256)``, 0. A chunk starting at a multiple of 64 finds its rows by subtracting its first slot's offsets:
   the swizzles depend on a slot's low bits only.
 - WRITE: the slot, 0; ``c_v = f16(fp32(b m s) 2^(4 - E_v))``, ``c_m = f16(fp32(b m) 2^(4 - E_m))`` -- ``b`` the token's
   level byte, ``m`` and ``m s`` the facts pass's fp32 columns, ``E = max(K, -123)`` the list's exponent.
@@ -24,7 +24,7 @@ The GAINS: each token's ``(m, m s)`` as f16 at its window's powers of two, ``2^s
 (the largest of each in ``[2^-4, 2^-3)``; a zero largest ``s = 0``).
 
 Mirrors ``csrc/rola/src/facts/facts.cuh`` (``kListCap``, ``kListAt``, ``kCoefTop``, ``kUnitMin``, ``kStep``) and the lists'
-addresses in ``csrc/rola/src/carry/carry.cuh`` (``kListBound``, ``kGap``, ``kPadBytes``, ``panel_row``, ``pool_chunk``).
+addresses in ``csrc/rola/src/carry/carry.cuh`` (``kListBound``, ``kGap``, ``pool_chunk``).
 """
 from __future__ import annotations
 
@@ -44,8 +44,6 @@ UNIT_MIN = COEF_TOP - 127
 STEP = 8
 #: a gap slot's token: token 0 flagged (``0x8000`` as int16), so a row fetch masked to the window stays inside it
 GAP = -0x8000
-#: the carry's 8 dummy panel rows before the panel, 64 bytes each
-PAD_BYTES = 8 * 64
 
 
 def list_at(window: int) -> int:
@@ -83,12 +81,6 @@ def chunk0(row_bytes: int, slot: int) -> int:
     return slot & 7 if row_bytes == 128 else (slot >> 1) & 3
 
 
-def panel_row(slot: int) -> int:
-    """A slot's panel row (the carry's ``panel_row``): a slot pair a 128-byte line, each slot's halves at the segments
-    the pair's residue bits XOR."""
-    return 128 * (slot >> 1) + 32 * ((2 * (slot & 1)) ^ ((slot >> 1) & 3))
-
-
 def _f16_bits(x: float) -> int:
     return int(torch.tensor(x, dtype=torch.float32).half().view(torch.int16))
 
@@ -103,7 +95,7 @@ def final_lists(bits: torch.Tensor, layout: lv.LivenessLayout, level: int, *, ro
     GROUPED READS: ``bits`` ``[B H_w, g, rows, L]``, a write head's g query heads' read slots, are one union a (window,
     group) over the window's g W rows, head-major (row ``j W + i``, its head's tokens in order then the next head's):
     a list's entries in row order, the entry's token field its row, boundaries every 64 slots of the merged union
-    (``g LIST_AT`` of them), a read entry's panel offset modulo 2^16 (the carry takes it back by its chunk's first)."""
+    (``g LIST_AT`` of them), a read entry's row offset modulo 2^16 (the carry takes it back by its chunk's first)."""
     if bits.dim() == 3:
         bits = bits.unsqueeze(1)
     BH, heads, L, B = bits.shape[0], bits.shape[1], layout.L, layout.B[level]
@@ -162,7 +154,7 @@ def _entry(s, row, write, row_bytes, rows, b, h, t0, digit, m, ms, list_exp, win
         cv = _f16_bits((byte * float(ms[b, t, h])) * 2.0 ** (COEF_TOP - e_v))
         return [i16(s), 0, cv, cm]
     pool = s * row_bytes // 16 + chunk0(row_bytes, s)
-    return [i16(pool), j * window + token, _f16_bits(byte / 256), i16((PAD_BYTES + panel_row(s)) & 0xFFFF)]
+    return [i16(pool), j * window + token, _f16_bits(byte / 256), 0]
 
 
 def gains_shift(top: torch.Tensor) -> torch.Tensor:

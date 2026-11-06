@@ -105,7 +105,8 @@ Every operation is defined by WHAT THE ALGORITHM NEEDS. A helper with no caller 
   IADD3:69` with no `STS` in its top opcodes); a 32-bit shared address advanced by the element size costs one add.
   <a id="store-shared-f32-if"></a>`store_shared_f32_if` is the fp32 store predicated in the instruction (`@p STS`):
   an `if (live) x[i] = v` inside a step compiles to a branch and a convergence barrier around the store (the den's
-  result store on sm_80, 2026-11-01), which the SASS gate reds.
+  result store on sm_80, 2026-11-01), which the SASS gate reds. `store_shared_u32_if` and `store_shared_f32x2_if` are
+  the word and the pair the same way (the value-carve readout's panel adds past a tile's run).
   The pair and quad forms are aligned single accesses (`st.shared.v2.f32`, `ld.shared.v4.u32`); a quad every lane
   reads at one address is a broadcast. (`store_shared_u16`, `store_shared_u32`, `load_shared_u16`,
   `store_shared_f32x2`, `load_shared_v4` and `load_shared_f32`: no shipped caller)

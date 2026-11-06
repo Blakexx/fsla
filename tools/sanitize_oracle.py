@@ -103,7 +103,7 @@ _FAMILIES = {
     #: gathers where the lists cluster -- the cell the oracle's whole-call gate runs (`test_carry_vs_oracle.py`).
     "carry_call": Family(
         test="tests/oracle/test_carry_vs_oracle.py::"
-             "test_the_inter_numerator_is_the_fp64_reference[flagship-cohort-k4-L4096]",
+             "test_the_inter_numerator_is_the_fp64_reference[flagship-cohort-k4-L4096-f16]",
         kernel="rola::carry::carry_forward", present=True),
     #: THE INTRA KERNEL alone on the bundle: the stage buffers' full barriers and release counts, the reader's parts,
     #: the value tile's hand-off and the deposit's staging, every level form at fp16 accumulation -- one launch each.

@@ -18,7 +18,7 @@ struct ArmCensus {
   CarryForm form;
 };
 
-#define ROLA_CARRY_ARM_DECLARE(I_, FR_, FF_, RR_, RF_, CH_, PR_)                                       \
+#define ROLA_CARRY_ARM_DECLARE(I_, FR_, FF_, RR_, RF_, CH_, SS_)                                  \
   cudaError_t carry_arm_forward_##I_(const CarryParams& p, int boxes, int bh, cudaStream_t stream); \
   ArmCensus carry_arm_census_##I_();
 

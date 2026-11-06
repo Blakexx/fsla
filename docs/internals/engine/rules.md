@@ -150,12 +150,15 @@ read-dense ones. Every side has a dense level, so every side has an operand.
   box cannot be filled under it, the cap lifts to the widths.
 * The channel extent is chosen first, toward `d_v` (at most 128): a token's output then
   leaves a CTA as whole lines, and each readout warp owns its channels -- halved until every
-  listed level spans the facts pass's 32-digit group (`carve.md#producer-v1`).
+  listed level spans the facts pass's 32-digit group and each side's rows fill an MMA tile
+  (`carve.md#producer-v1`).
 
 **The fold's warp tile** is its lists x its operand rows, `box leaves / 8` leaves a warp, the
 rows whole while they fit. **The readout's warps** each hold every leaf for their channels --
 8-channel groups by token groups (`carve.md#sides`) -- so the state reaches the readout
-through the image, never in place.
+through the image, never in place. Whether the fold's lists are the readout's digits (both
+sides list the same level) or its K fixes how the hand-off reads the state into the image:
+the arm key's `same_split` (`../carry/parts.md#same-split`).
 
 ## <a id="run-table"></a>The run table: the skip predicate is a host decision
 

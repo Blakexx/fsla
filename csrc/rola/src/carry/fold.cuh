@@ -376,7 +376,8 @@ __device__ __forceinline__ void steps_dense(State<P>& st, bool rescale, const ui
 
 //: A DENSE FOLD'S DEN TILES INTO THE DEN'S REGISTERS (`den_place`, the list owner's), at `2^(kden - kCoefTop)` where the
 //: box carries the list: warp `w < 4`'s own columns by a shuffle, its partner `w + 4`'s through shared memory (2 KB over
-//: the den rows, free while folding; a barrier). -- see docs/internals/carry/fold.md#dense
+//: the den image, free while folding: its readers done at the window's last drain; a barrier).
+//: -- see docs/internals/carry/fold.md#dense
 template <class P>
 __device__ __forceinline__ void den_pairs(State<P>& st, const uint8_t* smem,
                                           const float (&den)[P::kFoldMTiles][4], int kden,
@@ -385,7 +386,9 @@ __device__ __forceinline__ void den_pairs(State<P>& st, const uint8_t* smem,
   const bool doer = warp < kWarps / 2;
   const DenPlace at = den_place<P>(warp, lane);
   const float f = pow2(kden - kCoefTop);
-  const ops::SmemAddr ex = ops::smem_addr(smem + P::kDenRows);
+  static_assert(kBoxDigits * kBoxLists * 2 >= 128 * 16,
+                "the exchange's 128 16-byte slots fit the den image");
+  const ops::SmemAddr ex = ops::smem_addr(smem + P::kDenImage);
   //: word `i` of lane `(g, t)` is element `i` of digit tile `t >> 1` in lane `(g, t & 1)` (own) or `(g, 2 + (t & 1))`
   //: (the partner's)
   const auto slot = [&](int pair, int half, int tile) {

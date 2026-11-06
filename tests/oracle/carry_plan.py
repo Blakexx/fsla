@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import NamedTuple
 
 import numpy as np
+import torch
 
 from rola.ops import carry as carry_ops
 from rola.ops import facts as facts_ops
@@ -27,7 +28,8 @@ def list_at() -> int:
     return window_of() // LIST_BOUND
 
 
-PAD_BYTES, PANEL_ROW, BOX = 512, 64, 32
+#: a read slot's num panel row at the reduce dtype (f16 pairs, fp32) and its den words; the box's lists
+PANEL_ROW, DEN_ROW, BOX = {0: 64, 1: 128}, 16, 32
 IMAGE_WHOLE, IMAGE_RING = 32 * 2048, 16 * 2048
 WHOLE, HALVES = 0, 1
 TOP = 0
@@ -35,20 +37,20 @@ TOP = 0
 
 class Counts(NamedTuple):
     """A window's counts: each side's union and segment sums, whether the write side lists (a side with no list
-    level's fold buffer holds each slot's factors in its entries' place) and whether the arm publishes in registers
-    (no image)."""
+    level's fold buffer holds each slot's factors in its entries' place) and the call's reduce dtype (0 f16 pairs, 1
+    fp32: a read slot's panel row)."""
 
     ru: int
     rs: tuple
     fu: int
     fs: tuple
     wl: bool = True
-    pr: bool = False
+    reduce: int = 0
 
 
-def image_bytes(mode: int, pr: bool) -> int:
-    """`image_bytes`: the image's bytes at a mode, none where the arm publishes in registers."""
-    return 0 if pr else IMAGE_WHOLE if mode == WHOLE else IMAGE_RING
+def image_bytes(mode: int) -> int:
+    """`image_bytes`: the image's bytes at a mode."""
+    return IMAGE_WHOLE if mode == WHOLE else IMAGE_RING
 
 
 class Win(NamedTuple):
@@ -65,8 +67,8 @@ def _a128(x: int) -> int:
     return (x + 127) // 128 * 128
 
 
-def read_bytes(slots: int, entries: int, read_row: int) -> int:
-    return _a128(slots * read_row) + PAD_BYTES + _a128(slots * PANEL_ROW) + _a128(entries * 8)
+def read_bytes(slots: int, entries: int, read_row: int, reduce: int = 0) -> int:
+    return _a128(slots * read_row) + _a128(slots * PANEL_ROW[reduce]) + _a128(slots * DEN_ROW) + _a128(entries * 8)
 
 
 def fold_bytes(slots: int, entries: int, write_row: int, listed: bool = True) -> int:
@@ -101,11 +103,11 @@ def largest_chunk(u: int, S, room: int, nbytes) -> int:
 
 
 def tables_bytes(heads: int) -> int:
-    """The read tables' bytes at ``heads`` query heads a write head (`tables_of`): the union, the prefix rows, the den
-    pass's scale bytes and the plan records, each two windows'; the window's units and the listed bounds' counters."""
+    """The read tables' bytes at ``heads`` query heads a write head (`tables_of`): the union, the prefix rows, the scale
+    pass's bytes and the plan records, each two windows'."""
     W = window_of()
     return (2 * heads * W * 2 + -(-2 * 33 * list_at() * heads * 2 // 16) * 16 + 2 * heads * W
-            + heads * W + heads * W * 4 + 2 * carry_ops.plan_words(heads, W) * 4)
+            + 2 * carry_ops.plan_words(heads, W) * 4)
 
 
 def area_of(smem: int, area_one: int, heads: int) -> int:
@@ -134,14 +136,14 @@ def chunks(word: int) -> tuple[int, int, int, int, int]:
 def rule_plan(c: Counts, read_row: int, write_row: int, area: int) -> int:
     """`rule_plan`: the read chunk beside the halves, the image whole where it fits beside the largest read buffer, the
     fold's largest chunk in the area."""
-    rc = (largest_chunk(c.ru, c.rs, area - image_bytes(HALVES, c.pr), lambda s, e: read_bytes(s, e, read_row))
+    rc = (largest_chunk(c.ru, c.rs, area - image_bytes(HALVES), lambda s, e: read_bytes(s, e, read_row, c.reduce))
           if c.ru > 0 else 0)
     nr = chunks_of(c.ru, rc)
     most = 0
     if nr > 0:
         most = read_bytes(min(rc, c.ru), chunk_max(c.rs, rc // LIST_BOUND, c.ru) if rc < c.ru
                           else _sum_at(c.rs, len(c.rs) - 1), read_row)
-    whole = nr > 0 and image_bytes(WHOLE, c.pr) + most <= area
+    whole = nr > 0 and image_bytes(WHOLE) + most <= area
     fc = largest_chunk(c.fu, c.fs, area, lambda s, e: fold_bytes(s, e, write_row, c.wl)) if c.fu > 0 else 0
     return plan_word(WHOLE if whole else HALVES, rc, fc, c.ru, c.fu)
 
@@ -156,11 +158,11 @@ def forced_plan(forced: int, c: Counts, rule: int, read_row: int, write_row: int
     mode = r_mode if fm == 0 else fm - 1
     rc = 0 if c.ru == 0 else r_rc if fr == 0 else c.ru if fr == 0xFF else LIST_BOUND * fr
     fc = 0 if c.fu == 0 else r_fc if ff == 0 else c.fu if ff == 0xF else LIST_BOUND * ff
-    image = image_bytes(mode, c.pr)
+    image = image_bytes(mode)
     fits = mode == HALVES or c.ru > 0
     for first in range(0, c.ru, rc or 1):
         s = min(rc, c.ru - first)
-        fits = fits and image + read_bytes(s, entries_of(c.rs, first, s, c.ru), read_row) <= area
+        fits = fits and image + read_bytes(s, entries_of(c.rs, first, s, c.ru), read_row, c.reduce) <= area
     for first in range(0, c.fu, fc or 1):
         s = min(fc, c.fu - first)
         fits = fits and fold_bytes(s, entries_of(c.fs, first, s, c.fu), write_row, c.wl) <= area
@@ -171,14 +173,15 @@ def win_of(c: Counts, forced: int, read_row: int, write_row: int, area: int) -> 
     """`win_of`: a window's plan word and what the rule reads off it."""
     word = forced_plan(forced, c, rule_plan(c, read_row, write_row, area), read_row, write_row, area)
     mode, _, _, nr, nf = chunks(word)
-    return Win(c, word, nr + nf, nr, image_bytes(mode, c.pr) if nr > 0 else 0)
+    return Win(c, word, nr + nf, nr, image_bytes(mode) if nr > 0 else 0)
 
 
 def drained_bytes(x: Win, t: int, read_row: int) -> tuple[int, int]:
-    """Read entry ``t``'s PANEL in its buffer, what its drain reads (`drained_of`): its offset and bytes."""
+    """Read entry ``t``'s PANEL in its buffer, what its drain reads (`drained_of`): its offset and bytes, the num panel
+    and the den words."""
     _, rc, _, _, _ = chunks(x.word)
     slots = min(rc, x.c.ru - t * rc)
-    return _a128(slots * read_row) + PAD_BYTES, _a128(slots * PANEL_ROW)
+    return _a128(slots * read_row), _a128(slots * PANEL_ROW[x.c.reduce]) + _a128(slots * DEN_ROW)
 
 
 def entry_bytes(x: Win, t: int, read_row: int, write_row: int) -> int:
@@ -189,7 +192,7 @@ def entry_bytes(x: Win, t: int, read_row: int, write_row: int) -> int:
     first = (t if read else t - x.nr) * chunk
     slots = min(chunk, total - first)
     if read:
-        return read_bytes(slots, entries_of(x.c.rs, first, slots, total), read_row)
+        return read_bytes(slots, entries_of(x.c.rs, first, slots, total), read_row, x.c.reduce)
     return fold_bytes(slots, entries_of(x.c.fs, first, slots, total), write_row, x.c.wl)
 
 
@@ -290,9 +293,9 @@ def plans(routes, facts, carve, forced: str | None = None) -> list[list[Record]]
     """Every box class's records over the call's windows (a class per pair of the two list levels' groups, each
     batch and write head, in the plan tensor's order), as the plan pass on this card writes them (its area and pool rows from
     the arm's census)."""
-    key = carry_ops.arm_key(carve)
-    row = next(r for r in carry_ops.census() if tuple(r[1:7]) == tuple(key))
-    area, read_row, write_row = area_of(row[9], row[12], routes.group), row[13], row[14]
+    f = carry_ops.form(carry_ops.arm_key(carve))
+    area, read_row, write_row = area_of(f.smem, f.area, routes.group), f.read_row, f.write_row
+    reduce = int(carry_ops.reduce_dtype_for(carve) == torch.float32)
     word = carry_ops.forced_word(forced)
     windows = -(-routes.tokens // window_of())
     write = facts_ops.side_lists(facts, "write") if carve.fold.lists else None
@@ -306,7 +309,7 @@ def plans(routes, facts, carve, forced: str | None = None) -> list[list[Record]]
                 for w in range(windows):
                     ru, rs = _side(read, carve.readout, routes, w, bh, gr)
                     fu, fs = _side(write, carve.fold, routes, w, bh, gw)
-                    wins.append(win_of(Counts(ru, rs, fu, fs, bool(carve.fold.lists), carve.publish_in_registers),
+                    wins.append(win_of(Counts(ru, rs, fu, fs, bool(carve.fold.lists), reduce),
                                        word, read_row, write_row, area))
                 out.append(records(wins, read_row, write_row, area))
     return out

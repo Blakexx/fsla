@@ -13,8 +13,7 @@ namespace rola::carry {
 //: THE CTA AND THE LISTS; the window is the card's (`common/window.cuh`). -- see docs/internals/carry/carry.md#constants
 constexpr int kWarps = 8;
 constexpr int kThreads = kWarps * 32;
-//: A LIST'S BOUNDARIES (every 64th union slot) in a group's prefix rows, `list_at(w)` a window's at W = `w`.
-//: -- see docs/internals/carry/carry.md#lists
+//: A LIST'S BOUNDARIES, every 64th union slot (`list_at`). -- see docs/internals/carry/carry.md#lists
 constexpr int kListBound = 64;
 
 __host__ __device__ constexpr int list_at(int w) { return w / kListBound; }
@@ -39,21 +38,15 @@ __host__ __device__ constexpr int plan_words(int heads, int w) {
 //: A SLICE: a token's operand row over the box's 32 digits of one level, f16.
 constexpr int kSliceBytes = 64;
 
-//: THE LISTS' ADDRESSES, the facts pass's to emit and the carry's to read: a gap slot's token, the panel's rows past
-//: their dummy rows, a pool row's swizzled chunk. -- see docs/internals/carry/carry.md#lists
+//: THE LISTS' ADDRESSES, the facts pass's to emit and the carry's to read: a gap slot's token, a pool row's swizzled
+//: chunk. -- see docs/internals/carry/carry.md#lists
 constexpr uint16_t kGap = 0x8000;
-constexpr int kPanelRow = kBoxChannels * 2;
-constexpr int kPadBytes = 8 * kPanelRow;
-
-__host__ __device__ __forceinline__ constexpr uint32_t panel_row(uint32_t s) {
-  return 128u * (s >> 1) + 32u * ((2u * (s & 1u)) ^ ((s >> 1) & 3u));
-}
 
 __host__ __device__ __forceinline__ constexpr uint32_t pool_chunk(int row, uint32_t s, uint32_t k) {
   return row == 128 ? k ^ (s & 7u) : (k & ~3u) | ((k ^ (s >> 1)) & 3u);
 }
 
-//: A UNIT BYTE: the least `u` with `1.02 S 2^shift <= 2^(u + 15)`, int8. -- see docs/internals/carry/parts.md#units
+//: A UNIT BYTE: the least `u` with `1.02 S 2^shift <= 2^(u + 15)`, int8. -- see docs/internals/scale/scale.md
 constexpr int kUnitByteNone = -100;
 
 __device__ __forceinline__ int unit_byte(float s, int shift) {
@@ -89,7 +82,7 @@ struct SideLists {
 //: THE CALL'S READ TABLES' offsets and its area. -- see docs/internals/carry/plan.md#read-tables
 struct ReadTables {
   int heads, plan_words;
-  int union_at, pre_at, scale_at, units_at, bounds_at, plans_at, area_at, area;
+  int union_at, pre_at, scale_at, plans_at, area_at, area;
 };
 
 //: THE CROSS-CTA SUM's dtype. -- see docs/internals/carry/carry_api.md#carry-reduce
@@ -138,7 +131,6 @@ enum CarryPhase : int {
   kPhaseFill,
   kPhaseFold,
   kPhaseWait,
-  kPhaseUnits,
   kCarryPhases
 };
 

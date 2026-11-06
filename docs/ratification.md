@@ -30,7 +30,7 @@ or a reordering.
 
 The carry family's arms are a **declaration**, not a literal in a code module:
 `tools/manifests/shipped_set.json` names the rows. An arm IS a carve's operation-plan
-pair, keyed `fold_rows, fold_factors, read_rows, read_factors, channels, publish_regs`
+pair, keyed `fold_rows, fold_factors, read_rows, read_factors, channels, same_split`
 ([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve)); the box's
 per-level extents, the depth and the widths are runtime addressing, so they never
 multiply the arm set.

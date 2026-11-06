@@ -192,10 +192,10 @@ An entry is 8 bytes, the carry's `uint2`:
 - READ: the slot's pool row offset in the union in 16-byte chunks, the row's swizzle folded in
   (`slot × row / 16 + chunk0`, `chunk0` the carry's `pool_chunk` of chunk 0: an 8-chunk row XORs by the residue, a row
   of an odd number of 64-byte quarters by the residue's high bits), its ROW (`512 j + t`, the token's window place `t`
-  ungrouped: the readout looks up the row's unit by it); the coefficient `f16(byte / 256)`, the slot's panel row offset
-  past the dummy rows modulo 2^16 (`kPadBytes + panel_row(slot)`, past 16 bits where a grouped union passes ~1,000
-  slots). A chunk starting at a multiple of 64 takes both offsets back by its first slot's, modulo 2^16: the swizzles
-  and the panel's pairing depend on a slot's low bits only, and a chunk's own span is far inside 16 bits.
+  ungrouped: the readout looks up the token's scale byte by it); the coefficient `f16(byte / 256)`, 0. A chunk starting
+  at a multiple of 64 takes the offset back by its first slot's, modulo 2^16, and its slot from the row
+  (`docs/internals/carry/readout.md#chunk`): the swizzle depends on a slot's low bits only, and a chunk's own span is
+  far inside 16 bits.
 - WRITE: the slot, 0; `c_v = f16(fp32(b F) 2^(4 - E_v))`, `c_m = f16(fp32(b m) 2^(4 - E_m))`, `E = max(K, -123)` the
   list's exponent.
 

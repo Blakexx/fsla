@@ -1,25 +1,24 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The fp64 reference of the carry's READOUT (docs/internals/carry/parts.md#readout): each token's partials at its
-unit, from the fold's declared state before its window (`fold_reference.fold_state`).
+"""The fp64 reference of the carry's READOUT (docs/internals/carry/readout.md): each token's readout, from the fold's
+declared state before its window (`fold_reference.fold_state`), and the bound of the value-carve readout's arithmetic.
 
-THE OUTPUT: ``P(t, c) x unit(t) = sum_{d, r} x(t, d) a(t, r) S(d, r, c) / kappa`` -- ``S`` the absolute state before
-``t``'s window (level S's digit ``d``, level R's list ``r``), ``x`` level S's read coefficient as stored (a sparse
+THE OUTPUT: ``P(t, c) = sum_{d, r} x(t, d) a(t, r) S(d, r, c) / kappa`` over every box -- ``S`` the absolute state
+before ``t``'s window (level S's digit ``d``, level R's list ``r``), ``x`` level S's read coefficient as stored (a sparse
 level's byte / 256, a dense level's f16), ``a`` level R's read row as stored (f16), ``kappa`` the state's byte scale
-(``unit_scale``). The read side's per-token scales and ``kappa`` are common to ``num`` and ``den`` and cancel in the
-epilogue. ``unit(t) = 2^u(t)``, ``u`` the token's unit byte (the den pass's; here :func:`units` from the same sum's
-bound).
+(``unit_scale`` at the fold's operand level, :func:`fold_level`). The read side's per-token scales and ``kappa`` are common to ``num`` and ``den`` and cancel in the
+epilogue.
 
-THE BOUND, a slot's distance from the kernel in units (:func:`readout`): each add rounds once (half a unit; a token
-takes one add a live digit of level S a box along level R), the image holds 11 bits a value and its subnormals 2^-25 at
-the digit's power of two, the fold's state is within ``(L / 16) 2^-23`` of its envelope, and the MMA accumulates in
-fp32 or (GeForce) fp16.
+THE BOUND, a slot's distance from the kernel (:func:`readout`): the image holds 11 bits a value at its digit's power of
+two and its subnormals 2^-25 there; the MMA accumulates in fp32 or (GeForce) fp16; the fold's state is within
+``(L / 16) 2^-23`` of its envelope; each (token, digit) piece of a box is rounded once into the panel's dtype and each
+add into the panel once more (f16 pairs at the token's scale byte, or fp32); the CTAs' sums are added in the reduce
+dtype.
 
 Symbols: ``W`` the window, ``L`` tokens, ``B_l`` level ``l``'s padded width, ``C`` the value channels.
 """
 from __future__ import annotations
 
-import numpy as np
 import torch
 
 from rola.routing import quant
@@ -46,13 +45,22 @@ def _read_rows(routes, level_s: int):
     return x, routes.amp_read[level_r].double()
 
 
+def fold_level(routes, level_s: int) -> int:
+    """The level whose write rows are the fold's operand, a dense level: level S where the sides list different levels
+    (or the write side none), level R where both list level S (the same split, its state taken back to the readout's
+    levels) -- kappa is its byte scale (``unit_scale``)."""
+    return 1 - level_s if routes.sparse[1][level_s] else level_s
+
+
 def _windows(routes, values, list_exp, level_s: int, window: int):
-    """Each window's absolute state over kappa and the fold's envelope, ``[B, H, B_S, B_R, C]`` fp64 each, before its
-    writes."""
-    kappa = unit_scale(routes, level_s)
+    """Each window's absolute state over kappa and the fold's envelope, ``[B, H, B_S, B_R, C]`` fp64 each (the
+    readout's digit, its list), before its writes."""
+    fold_s = fold_level(routes, level_s)
+    kappa = unit_scale(routes, fold_s)
+    turn = (lambda t: t.transpose(2, 3)) if fold_s != level_s else (lambda t: t)
     out = []
-    fold_state(routes, values, list_exp, level_s, window,
-               at_window=lambda w, state, env: out.append((state / kappa, env / kappa)))
+    fold_state(routes, values, list_exp, fold_s, window,
+               at_window=lambda w, state, env: out.append((turn(state) / kappa, turn(env) / kappa)))
     return out
 
 
@@ -80,25 +88,26 @@ def _ceil_exp(x: torch.Tensor) -> torch.Tensor:
 def readout(routes, values, list_exp, level_s: int, window: int, scale: torch.Tensor, accumulate: str,
             reduce_dtype: torch.dtype):
     """``(P, bound)``: ``[BH, T, C]`` fp64 each slot's readout in the kernel's frame (the state over kappa) and its bound,
-    for an MMA accumulating in ``accumulate`` (``"fp32"`` or ``"fp16"``) and a cross-CTA sum in ``reduce_dtype``. THE
-    DECLARED ARITHMETIC: a CTA a box of 32 level-S digits x 32 level-R digits x 32 channels; its unit a token
-    ``ceil(log2(1.02 S)) - 15`` from ``S = sum_d x 2^(e_d - 4) sum_r a 2^max(e_leaf - e_d, -14)`` (``e_leaf`` a leaf's
-    largest |state| over the box's channels rounded up, ``e_d`` its digit's over the box's leaves, at least
-    ``IMAGE_TOP - 127``); each piece (a live digit through the box) rounded at it -- half a unit, taken at one unit over
-    the reference's (an exponent tie at a power of two may take the kernel's one higher); each CTA's sum into ``num``:
-    f16 pairs at ``2^(scale + 1)`` (each value and each add half an f16 ulp: ``(n + 1) 2^-11`` of the slot's
-    magnitudes for ``n`` CTAs, plus the subnormal floor) or fp32 (``(n + 1) 2^-24``)."""
+    for an MMA accumulating in ``accumulate`` (``"fp32"`` or ``"fp16"``) and the panel and cross-CTA sum in
+    ``reduce_dtype``. THE DECLARED ARITHMETIC: a CTA a box of 32 level-S digits x 32 level-R lists x 32 channels; its
+    image a digit at the power of two over its largest |state| in the box (rounded to 11 bits, subnormals at 2^-25
+    there); a (token, digit)'s piece the MMA's sum over the box's lists times the coefficient, rounded once into the
+    panel's dtype -- f16 at the token's scale byte ``2^(scale + 1)``, or fp32 -- and added into the token's panel word,
+    a rounding an add; the CTAs' panels added into ``num`` in the reduce dtype, each add half an ulp of the slot's
+    magnitude ``(n + 1) 2^-11`` for ``n`` CTAs (f16) or ``2^-24`` (fp32), and the f16 subnormal floor a piece, an add and
+    a CTA."""
 
     x, a = _read_rows(routes, level_s)
     B, T, H, B_S = x.shape
     B_R = a.shape[-1]
     L = T
     C = values.v.shape[-1]
-    KS, KR, KC = B_S // BOX_LISTS, B_R // BOX_LISTS, C // BOX_LISTS
+    KS, KR = B_S // BOX_LISTS, B_R // BOX_LISTS
     P = torch.zeros(B, T, H, C, dtype=torch.float64, device=x.device)
     bound = torch.zeros_like(P)
     s_bytes = scale.double().reshape(B, H, T).permute(0, 2, 1)                                 # [B, T, H]
-    eps_sum = 2.0 ** -11 if reduce_dtype == torch.float16 else 2.0 ** -24
+    f16 = reduce_dtype == torch.float16
+    eps = 2.0 ** -11 if f16 else 2.0 ** -24
 
     for w, (state, env) in enumerate(_windows(routes, values, list_exp, level_s, window)):
         sl = slice(w * window, (w + 1) * window)
@@ -107,27 +116,20 @@ def readout(routes, values, list_exp, level_s: int, window: int, scale: torch.Te
         P[:, sl] = torch.einsum("bthd,bthr,bhdrc->bthc", xs, as_, state)
         mag = torch.einsum("bthd,bthr,bhdrc->bthc", xs.abs(), as_.abs(), state.abs())
         fold = torch.einsum("bthd,bthr,bhdrc->bthc", xs.abs(), as_.abs(), env) * (L / 16 * 2.0 ** -23)
-        #: the subnormal floor at each digit's power of two: its largest |S| over every list and channel, doubled
+        #: the image's subnormal floor at each digit's power of two: its largest |S| over every list and channel, doubled
         top = state.abs().amax(dim=(-1, -2))                                                 # [B, H, B_S]
         floor = torch.einsum("bthd,bthr,bhd->bth", xs.abs(), as_.abs(), 2 * top) * 2.0 ** (-25 - IMAGE_TOP)
-        #: THE CTA UNITS: the boxes' leaves' maxima, their digits' exponents, each token's bound
-        box = state.reshape(B, H, KS, BOX_LISTS, KR, BOX_LISTS, KC, BOX_LISTS)
-        lm = box.abs().amax(-1)                                                              # [B, H, ks, d, kr, r, kc]
-        e_leaf = _ceil_exp(lm.clamp_min(1e-300)).double()
-        e_d = torch.where(lm > 0, e_leaf, torch.full_like(e_leaf, -1e9)).amax(dim=5).clamp_min(IMAGE_TOP - 127)
-        sc = torch.where(lm > 0, torch.exp2((e_leaf - e_d.unsqueeze(5)).clamp(-14, 0)), torch.zeros_like(lm))
-        xb = xs.reshape(B, t, H, KS, BOX_LISTS)
-        ab = as_.reshape(B, t, H, KR, BOX_LISTS)
-        S = torch.einsum("bthsd,bthkr,bhsdkrc,bhsdkc->bthskc", xb, ab, sc, torch.exp2(e_d - COEF_TOP))
-        u = torch.where(S > 0, _ceil_exp((1.02 * S).clamp_min(1e-300)).double() - UNIT_LEVELS,
-                        torch.zeros_like(S))
+        #: THE PANEL: each box's pieces and adds, one rounding each a digit the token reads there
+        xb, ab = xs.reshape(B, t, H, KS, BOX_LISTS), as_.reshape(B, t, H, KR, BOX_LISTS)
+        Sb = state.reshape(B, H, KS, BOX_LISTS, KR, BOX_LISTS, C)
+        mag_box = torch.einsum("bthsd,bthkr,bhsdkrc->bthskc", xb.abs(), ab.abs(), Sb.abs())
         adds = (xb != 0).double().sum(-1)[:, :, :, :, None] * (ab != 0).any(-1).double()[:, :, :, None, :]
-        piece = (0.5 * adds[..., None] * torch.exp2(u + 1)).sum(dim=(3, 4))                  # [B, t, H, kc]
+        panel = (eps * (1 + adds)[..., None] * mag_box).sum(dim=(3, 4))                       # [B, t, H, C]
         n = (adds > 0).double().sum(dim=(3, 4))                                               # [B, t, H]
-        subnormal = (n * 2.0 ** -24)[..., None] * torch.exp2(s_bytes[:, sl] + 1)[..., None] \
-            if reduce_dtype == torch.float16 else torch.zeros_like(n)[..., None]
-        bound[:, sl] = ((2.0 ** -11 + ACCUMULATE[accumulate]) * mag + fold + floor[..., None]
-                        + piece.repeat_interleave(BOX_LISTS, -1) + ((n + 1) * eps_sum)[..., None] * mag + subnormal)
+        frame = torch.exp2(s_bytes[:, sl] + 1)
+        subnormal = (((1 + adds) * (adds > 0)).sum(dim=(3, 4)) + n) * 2.0 ** -24 * frame if f16 else torch.zeros_like(n)
+        bound[:, sl] = ((2.0 ** -11 + ACCUMULATE[accumulate]) * mag + fold + floor[..., None] + panel
+                        + ((n + 1) * eps)[..., None] * mag + subnormal[..., None])
 
     return P.permute(0, 2, 1, 3).reshape(B * H, T, C), bound.permute(0, 2, 1, 3).reshape(B * H, T, C)
 
@@ -139,24 +141,14 @@ def num_absolute(num: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return got if num.dtype == torch.float32 else got * torch.exp2(scale[:, :got.shape[1]].double() + 1)[..., None]
 
 
-def unpack_num(num: torch.Tensor, channels: int = 32) -> torch.Tensor:
+def unpack_num(num: torch.Tensor) -> torch.Tensor:
     """``[BH, T, C]``: the carry's ``num`` per channel -- fp32 ``[BH, T, C]`` as the drain wrote it (reduce fp32), or
-    int32 ``[BH, T, C / 2]`` words of f16 pairs (reduce f16) as fp32. A box's word ``8 m + g`` pairs channels ``(c, c +
-    2)``, ``c = 8 (g >> 1) + 4 m + (g & 1)``: the image's 16-byte unit holds a writer lane's channels
-    (``docs/internals/carry/parts.md#image``)."""
+    int32 ``[BH, T, C / 2]`` words of f16 pairs (reduce f16), word ``k`` channels ``2 k`` and ``2 k + 1``, as fp32."""
     if num.dtype == torch.float32:
         return num
-    BH, T, words = num.shape
     lo = (num & 0xFFFF).to(torch.int16).view(torch.float16).float()
     hi = ((num >> 16) & 0xFFFF).to(torch.int16).view(torch.float16).float()
-    k = np.arange(words)
-    box, kk = k // (channels // 2), k % (channels // 2)
-    m, g = kk // 8, kk % 8
-    channel = channels * box + 8 * (g >> 1) + 4 * m + (g & 1)
-    out = torch.zeros(BH, T, 2 * words, dtype=torch.float32, device=num.device)
-    out[..., torch.as_tensor(channel, device=num.device)] = lo
-    out[..., torch.as_tensor(channel + 2, device=num.device)] = hi
-    return out
+    return torch.stack([lo, hi], -1).flatten(-2)
 
 
 def truth_scale(routes, unit: torch.Tensor, level_s: int) -> torch.Tensor:
@@ -169,7 +161,7 @@ def truth_scale(routes, unit: torch.Tensor, level_s: int) -> torch.Tensor:
         raise NotImplementedError("the carry's level S is defined at depth two (`carry_level_s`)")
     level_r = 1 - level_s
     stored = {level_s: quant.AMP_LEVELS + 1, level_r: 1.0}
-    factor = unit_scale(routes, level_s)
+    factor = unit_scale(routes, fold_level(routes, level_s))
     for level in (level_s, level_r):
         rows = routes.amp_read[level]
         k = 1.0 if rows.dtype == torch.float16 else stored[level] / quant.AMP_LEVELS

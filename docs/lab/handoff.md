@@ -84,7 +84,7 @@ What it settles:
   rate on GeForce; a bf16 image would need no exponent and no maxima but only accumulates in fp32 -- the same on
   sm_80, the readout's tensor time doubled on sm_86.
 - The hand-off alone in the carry's form runs 3.06K cycles, against 3.7K for the maxima and the stores in the composed
-  window ([`carry_window`](carry_window.md)'s form 6): the rest is the maxima's barrier waiting on the slowest fold warp
+  window (the window lab's form 6, its record `measure/lab/results/carry_window`): the rest is the maxima's barrier waiting on the slowest fold warp
   and the next window's staging, which the store phase holds.
 
 Record: `measure/lab/results/handoff/sm_86.json`.

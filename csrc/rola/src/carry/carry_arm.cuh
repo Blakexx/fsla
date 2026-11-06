@@ -49,7 +49,7 @@ inline cudaError_t carry_launch_on(const CarryParams& p0, int boxes, int bh, cud
   //: the call's read tables on the device's card, and an area that holds the least plan
   CarryParams p = p0;
   p.tables = tables_of<P::kWindow>(p0.tables.heads, bytes);
-  if (!least_plan_fits<P>(p.tables.area)) return cudaErrorInvalidConfiguration;
+  if (!least_plan_fits<P>(p.tables.area, p.reduce)) return cudaErrorInvalidConfiguration;
   const int classes = (p.read_lists.groups > 0 ? p.read_lists.groups : 1)
                       * (p.write_lists.groups > 0 ? p.write_lists.groups : 1);
   window_plan_kernel<Arm>
@@ -91,10 +91,10 @@ inline ArmCensus carry_census() {
                    (int)a.binaryVersion, carry_form<Arm>()};
 }
 
-#define ROLA_CARRY_ARM_DEFINE(I_, FR_, FF_, RR_, RF_, CH_, PR_)                                      \
+#define ROLA_CARRY_ARM_DEFINE(I_, FR_, FF_, RR_, RF_, CH_, SS_)                                      \
   cudaError_t carry_arm_forward_##I_(const CarryParams& p, int boxes, int bh, cudaStream_t stream) { \
-    return carry_launch<::rola::Arm<I_, FR_, FF_, RR_, RF_, CH_, PR_>>(p, boxes, bh, stream);        \
+    return carry_launch<::rola::Arm<I_, FR_, FF_, RR_, RF_, CH_, SS_>>(p, boxes, bh, stream);        \
   }                                                                                                  \
-  ArmCensus carry_arm_census_##I_() { return carry_census<::rola::Arm<I_, FR_, FF_, RR_, RF_, CH_, PR_>>(); }
+  ArmCensus carry_arm_census_##I_() { return carry_census<::rola::Arm<I_, FR_, FF_, RR_, RF_, CH_, SS_>>(); }
 
 }  // namespace rola::carry

@@ -119,8 +119,8 @@ def function(target: Target, cell) -> str:
 
 TARGETS = {
     "carry": Target("carry", "carry_kernel", "carry_forward", "carry_arm",
-                    tuple(f"csrc/rola/src/carry/{f}" for f in ("carry_kernel.cuh", "parts.cuh", "fold.cuh",
-                                                                "schedule.cuh")),
+                    tuple(f"csrc/rola/src/carry/{f}" for f in ("carry_kernel.cuh", "parts.cuh", "readout.cuh",
+                                                                "panel.cuh", "fold.cuh", "schedule.cuh")),
                     "tools/budgets/carry.json", "CTA-windows"),
     "intra": Target("intra", "intra_kernel", "intra_forward", "intra", ("csrc/rola/src/intra/intra_kernel.cuh",),
                     "tools/budgets/intra.json", "warp tile pairs"),

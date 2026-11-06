@@ -58,6 +58,15 @@ def test_listed_levels_span_the_facts_group(d_v):
     assert (c.extents, c.channels, (token_groups(c), channel_groups(c))) == ((32, 32), 32, (2, 4))
 
 
+@pytest.mark.parametrize("widths", [(16, 16, 16), (16, 16, 16, 16)])
+def test_a_dense_sides_row_level_takes_a_tile_first(widths):
+    """Spread evenly over three or four dense levels of 16, 64 channels' 512 leaves would leave the sides' row level
+    (level 0) 8 deep, under an MMA tile: it takes its 16 first, the other levels the rest."""
+    c = plan_carve(widths, (False,) * len(widths), (False,) * len(widths), 64)
+    assert c.channels == 64 and c.extents[0] == 16 and c.leaves == 512
+    assert c.fold.tile_rows == c.readout.tile_rows == 16
+
+
 def test_alternating_box_plans():
     c = plan_carve((256, 256), (False, True), (True, False), 64)
     assert (c.fold.lists, c.fold.operand, c.fold.tile_lists, c.fold.tile_rows) == ((0,), (1,), 4, 32)

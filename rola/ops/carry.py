@@ -6,8 +6,9 @@ pass's lists, the den pass's units and the carve (docs/internals/carry/carry_api
 Symbols, each at first use: ``B`` batch, ``T`` = ``L`` tokens, ``H`` heads, ``BH`` = ``B H``, ``d_v`` the value
 width, ``W`` the window (:func:`rola.ops.window.window_of`, the device's). The carve (:class:`rola.engine.types.Carve`) names the box -- an extent a
 level and the channel extent -- and each side's list levels and operand levels; its arm key
-(:func:`arm_key`) selects the compiled body, and the box's extents are runtime addressing. The readout adds packed
-s16 pairs at each token's unit (``unit``, the den pass's exponent bytes) into ``num`` ``[BH, L, d_v / 2]`` int32.
+(:func:`arm_key`) selects the compiled body, and the box's extents are runtime addressing. The readout (a value carve:
+each warp its channels over every leaf of the box) adds each CTA's partials at each token's scale byte (``scale``, the
+scale pass's) into ``num`` ``[BH, L, d_v / 2]`` int32 f16 pairs in channel order, or fp32 ``[BH, L, d_v]``.
 """
 from __future__ import annotations
 
@@ -42,21 +43,40 @@ __all__ = [
     "readout_accumulate",
     "reduce_ctas",
     "reduce_dtype_for",
+    "same_split",
     "sm_clock_ghz",
 ]
 
 
 #: THE PHASE LEDGER'S SHAPE: ``[ctas][warps][phases]``, the kernel's own `CarryPhase` order.
-LEDGER_PHASES = ("landed", "maxima", "store", "readout", "drain", "fill", "fold", "wait", "units")
+LEDGER_PHASES = ("landed", "maxima", "store", "readout", "drain", "fill", "fold", "wait")
 LEDGER_WARPS = 8
+
+
+def _outer(plan) -> set[int]:
+    """A side's levels outside its dense rows: its lists, or a side with none its coefficient levels."""
+    return set(plan.lists if plan.lists else plan.operand[1:])
+
+
+def same_split(carve: Carve) -> int:
+    """Whether the fold's lists are the readout's digits (1: both sides list the same levels) or its K (0) -- the
+    hand-off's form (docs/internals/carry/parts.md#store); a box whose sides share part of a level set has none."""
+    read = carve.readout
+    fold, read_rows = _outer(carve.fold), set(read.operand if read.lists else read.operand[:1])
+    if fold == _outer(read):
+        return 1
+    if fold == read_rows:
+        return 0
+    raise ValueError(f"the fold's lists {sorted(fold)} are neither the readout's digits nor its K "
+                     f"{sorted(read_rows)}: no hand-off form carries them")
 
 
 def arm_key(carve: Carve) -> tuple[int, ...]:
     """The compiled body a carve selects: ``(fold_rows, fold_factors, read_rows, read_factors, channels,
-    publish_regs)`` -- each side's warp tile of dense rows and its operand's level count, the channel extent and
-    the publish route (``tools/gen_shards.py``'s ``ARM_KEY``)."""
+    same_split)`` -- each side's dense rows (the fold's warp tile, the readout's K) and its operand's level count, the
+    channel extent and the hand-off's form (:func:`same_split`; ``tools/gen_shards.py``'s ``ARM_KEY``)."""
     return (carve.fold.tile_rows, len(carve.fold.operand), carve.readout.tile_rows, len(carve.readout.operand),
-            carve.channels, int(carve.publish_in_registers))
+            carve.channels, same_split(carve))
 
 
 def _list_level(plan) -> int:
@@ -90,8 +110,8 @@ def reduce_dtype_for(carve: Carve, reduce_dtype: torch.dtype | None = None) -> t
 def carry(routes, values, facts, carve: Carve, scale: torch.Tensor, accumulate: str | None = None,
           forced: str | None = None, plans: torch.Tensor | None = None,
           reduce_dtype: torch.dtype | None = None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """THE LAUNCH: ``(num, den, check)`` -- ``num`` the readout's partials summed across CTAs, each CTA's at its own
-    units: int32 ``[BH, T, d_v / 2]`` f16 pairs at each token's ``scale`` byte (``reduce_dtype`` f16), or fp32
+    """THE LAUNCH: ``(num, den, check)`` -- ``num`` the readout's partials summed across CTAs: int32
+    ``[BH, T, d_v / 2]`` f16 pairs in channel order at each token's ``scale`` byte (``reduce_dtype`` f16), or fp32
     ``[BH, T, d_v]`` (fp32; :func:`reduce_dtype_for`'s rule where None) -- ``den`` each token's den, fp32 ``[BH, T]``,
     the v+1 channel (`parts.md#den`) -- ``check`` the skeleton's fp32 sum of the final state. ``facts`` is the facts pass's over this bundle, its read entries' offsets
     in this arm's read pool rows (:func:`form`). The readout accumulates in the device's form
@@ -184,19 +204,26 @@ def census() -> list[tuple[int, ...]]:
 
 
 class Form(NamedTuple):
-    """An arm's pool rows on the current card (docs/internals/carry/plan.md#plan): a read and a write row's bytes --
-    what the facts pass addresses the read entries' rows in."""
+    """An arm's form on the current card (docs/internals/carry/plan.md#plan): its shared memory and the area its plans
+    place buffers in (one head's tables below the top), then a read and a write pool row's bytes -- what the facts pass
+    addresses the read entries' rows in."""
 
+    smem: int
+    area: int
     read_row: int
     write_row: int
 
 
+#: a census row's fields: the index, the key's six, then registers, local bytes, shared bytes, the thread limit, the
+#: binary version, the area, the two pool rows
+_KEY = slice(1, 7)
+
+
 def form(key: tuple[int, ...]) -> Form:
-    """The pool rows of the built arm ``key`` (:func:`arm_key`) on the current card, refusing a key no built arm
-    carries."""
+    """The form of the built arm ``key`` (:func:`arm_key`) on the current card, refusing a key no built arm carries."""
     for row in census():
-        if tuple(row[1:7]) == tuple(key):
-            return Form(*row[13:15])
+        if tuple(row[_KEY]) == tuple(key):
+            return Form(row[9], row[12], row[13], row[14])
     raise ValueError(f"no built carry arm has the key {tuple(key)}; this binary carries {arms()}")
 
 

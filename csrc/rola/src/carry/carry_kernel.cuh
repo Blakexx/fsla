@@ -5,6 +5,8 @@
 #pragma once
 
 #include "carry/fold.cuh"
+#include "carry/panel.cuh"
+#include "carry/readout.cuh"
 #include "carry/schedule.cuh"
 #include "common/phase_clock.cuh"
 
@@ -52,13 +54,6 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     reinterpret_cast<UnitBook*>(smem + P::kBook)[threadIdx.x] = UnitBook{kUnitNone, 0.0f};
   if (static_cast<int>(threadIdx.x) < 2 * kBoxDigits)
     reinterpret_cast<int*>(smem + P::kKeys)[threadIdx.x] = INT_MIN;
-  //: the listed bounds' counters, each cleared again by the chunk that reads it; the units defined before any read (a
-  //: masked lane reads index 0)
-#pragma unroll 1
-  for (int i = static_cast<int>(threadIdx.x); i < p.tables.heads * kWindow; i += kThreads) {
-    reinterpret_cast<uint32_t*>(smem + p.tables.bounds_at)[i] = 0u;
-    reinterpret_cast<int8_t*>(smem + p.tables.units_at)[i] = static_cast<int8_t>(kUnitByteNone);
-  }
   //: the scales' bits' multiplier and bias (`list_scale`), loaded at each use
   if (threadIdx.x == 0)
     *reinterpret_cast<uint2*>(smem + P::kBits) = make_uint2(1u << 23, 127u << 23);
@@ -107,39 +102,40 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   });
   static_for<4>([&](auto I) { st.den[I] = 0.f; });
 
-  //: A READ CHUNK'S UNITS, the CTA's own, before its first adds (the arm's read rows say which side: one factor a
-  //: listed side's row, two a dense side's row and coefficients): the terms or the bounds, a barrier, the bytes and the
-  //: drain's factors, a barrier; the window's first chunk's den tables after the terms (past a barrier after the
-  //: leaves' scales, whose exponent bytes they overwrite), from the den's registers
-  const auto chunk_units = [&](int w, const Entry& e, const Run& run, ops::SmemAddr buf,
-                               bool first) {
-    if constexpr (P::kReadFactors == 1) {
-      units_listed_add<P>(p, smem, run, e.first(), buf,
-                          buf + static_cast<uint32_t>(read_ents<P>(e.slots())), wid(), lid());
-      if (first) den_tables_out<P>(smem, st, wid(), lid());
-    } else {
-      //: a dense side reads its den here, against the tables the window's first chunk writes first
-      for (int once = ops::once(first); once > 0; --once) {
-        den_tables_out<P>(smem, st, wid(), lid());
-        ops::rendezvous();
-      }
-      units_dense<P>(p, smem, e.first(), e.slots(), buf, rw(w).t0, wid(), lid());
-    }
-    ops::rendezvous();
-    units_close<P>(p, smem, w, e.first(), e.slots());
-    ops::rendezvous();
-  };
-  //: A READ CHUNK'S TILES over batches `lo .. hi - 1` of the image at `area` (digit `d`'s plane `d & mask`)
+  //: A READ CHUNK'S READOUT over digits `lo .. hi - 1` of the image at `area` (digit `d`'s plane `d & mask`), into
+  //: its panel at the call's reduce dtype
   const auto read_out = [&](int w, const Entry& e, const Run& run, ops::SmemAddr buf, int lo,
                             int hi, uint32_t mask) {
-    const ops::SmemAddr pads = buf + static_cast<uint32_t>(read_pads<P>(e.slots())),
-                        ents = buf + static_cast<uint32_t>(read_ents<P>(e.slots()));
-    if (p.readout_f16) {
-      read_chunk<P, true, true>(p, smem, st, rw(w), run, e.first(), e.slots(), lo, hi, area, mask,
-                                buf, pads, ents, wid(), lid());
+    const ops::SmemAddr panel = buf + static_cast<uint32_t>(read_panel<P>(e.slots())),
+                        dens = buf + static_cast<uint32_t>(read_dens<P>(e.slots(), p.reduce)),
+                        ents = buf + static_cast<uint32_t>(read_ents<P>(e.slots(), p.reduce));
+    const auto go = [&](auto F32, auto F16) {
+      read_chunk<P, decltype(F32)::value, decltype(F16)::value>(
+          p, smem, run, w, e.first(), lo, hi, area, mask, buf, panel, dens, ents, wid(), lid());
+    };
+    if (p.reduce == kReduceF32) {
+      if (p.readout_f16)
+        go(std::true_type{}, std::true_type{});
+      else
+        go(std::true_type{}, std::false_type{});
     } else {
-      read_chunk<P, false, true>(p, smem, st, rw(w), run, e.first(), e.slots(), lo, hi, area, mask,
-                                 buf, pads, ents, wid(), lid());
+      if (p.readout_f16)
+        go(std::false_type{}, std::true_type{});
+      else
+        go(std::false_type{}, std::false_type{});
+    }
+  };
+  //: A READ CHUNK'S DRAIN: its panel to `num`, its den words to `den`
+  const auto drain_out = [&](int w, const Entry& e, ops::SmemAddr buf) {
+    const ops::SmemAddr panel = buf + static_cast<uint32_t>(read_panel<P>(e.slots())),
+                        dens = buf + static_cast<uint32_t>(read_dens<P>(e.slots(), p.reduce));
+    const int64_t head0 = static_cast<int64_t>(here().bh) * p.tables.heads * p.L + rw(w).t0;
+    const int channel0 = reinterpret_cast<const volatile Addr*>(smem + P::kAddr)->channel0;
+    const uint16_t* const tok = union_of<P>(p, smem, kRead, w);
+    if (p.reduce == kReduceF32) {
+      drain<P, true>(p, tok, e.first(), e.slots(), panel, dens, head0, channel0, wid(), lid());
+    } else {
+      drain<P, false>(p, tok, e.first(), e.slots(), panel, dens, head0, channel0, wid(), lid());
     }
   };
 
@@ -159,6 +155,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     //: THE KEYS before any copy of the window is issued (their shared loads ahead of the copies), then THE FIRST
     //: READ CHUNK'S FILL and the next window's staging under the keys' barrier, the exponents and the first store
     const int top = post_keys<P>(st, smem, w, wid(), lid());
+    den_tables_max<P>(smem, st, wid(), lid());
     clock.lap(kPhaseMaxima);
     const Entry e0 = entry_at(s, 0);
     const Run run0 = runs_of(kRead, w, e0);
@@ -171,15 +168,13 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     clock.lap(kPhaseFill);
     ops::rendezvous();
     clock.lap(kPhaseWait);
-    post_exps<P>(smem, w, top, lid());
-    leaf_scales<P>(smem);
-    den_tables_max<P>(smem, st, wid(), lid());
-    bounds_clear<P>(p, smem);
+    post_exps<P>(smem, w, top, wid(), lid());
+    den_tables_out<P>(smem, st, wid(), lid());
     clock.lap(kPhaseMaxima);
 
     //: THE READ CHUNKS in order: the chunk's fill (the first's issued above), its image -- whole, stored once before
-    //: the first chunk; or in halves, each chunk storing both -- its copies landed, its units before its first add,
-    //: its tiles, then every warp done and its panel drained (the next chunk may take its place)
+    //: the first chunk; or in halves, each chunk storing both -- its copies landed, its readout, then every warp done
+    //: and its panel drained (the next chunk may take its place)
 #pragma unroll 1
     for (int i = 0; i < s.nr; ++i) {
       const Entry e = i == 0 ? e0 : entry_at(s, i);
@@ -190,22 +185,18 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         clock.lap(kPhaseFill);
       }
       // R9-CASES: ImageMode, the plan's image modes (schedule.cuh)
-      if (P::kPublishRegs || s.mode == kModeWhole) {
-        if constexpr (!P::kPublishRegs) {
-          if (i == 0) store_batches<P, kBoxDigits - 1>(st, smem, area, 0, kBatches, wid(), lid());
-        }
+      if (s.mode == kModeWhole) {
+        if (i == 0) store_batches<P, kBoxDigits - 1>(st, smem, area, 0, kBatches, wid(), lid());
         clock.lap(kPhaseStore);
         landed(i == 0 && more);
         clock.lap(kPhaseLanded);
         ops::rendezvous();
         clock.lap(kPhaseWait);
-        chunk_units(w, e, run, buf, i == 0);
-        clock.lap(kPhaseUnits);
-        read_out(w, e, run, buf, 0, kBatches, kBoxDigits - 1);
+        read_out(w, e, run, buf, 0, kBoxDigits, kBoxDigits - 1);
         clock.lap(kPhaseReadout);
       } else if (s.mode == kModeHalves) {
         //: the two halves as one block each (no branch on the half): the second's store after a rendezvous, the
-        //: first's landing and units before its tiles
+        //: first's landing before its readout
         static_for<2>([&](auto H) {
           constexpr int half = decltype(H)::value;
           if constexpr (half > 0) {
@@ -221,11 +212,8 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
           }
           ops::rendezvous();
           clock.lap(kPhaseWait);
-          if constexpr (half == 0) {
-            chunk_units(w, e, run, buf, i == 0);
-            clock.lap(kPhaseUnits);
-          }
-          read_out(w, e, run, buf, 2 * half, 2 * half + 2, 2 * kBatchPlanes - 1);
+          read_out(w, e, run, buf, 2 * kBatchPlanes * half, 2 * kBatchPlanes * (half + 1),
+                   2 * kBatchPlanes - 1);
           clock.lap(kPhaseReadout);
         });
       } else {
@@ -233,8 +221,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       }
       ops::rendezvous();
       clock.lap(kPhaseWait);
-      drain<P>(p, smem, rw(w), here(), w, e.first(), e.slots(),
-               buf + static_cast<uint32_t>(read_pads<P>(e.slots()) + kPadBytes));
+      drain_out(w, e, buf);
       clock.lap(kPhaseDrain);
       //: every warp done draining where the next read chunk's fill takes this panel's bytes (`reuse`)
       ops::rendezvous_if(i + 1 < s.nr && step_of<P>(p, smem, w, i + 1).reuse());

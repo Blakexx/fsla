@@ -15,13 +15,17 @@ extent, and `MIN_DENSE` (16) is a warp's least operand rows, one MMA tile.
 
 The channel extent comes first: the largest power of two dividing `d_v`, at most
 `MAX_CHANNELS` (`_channels`), so a token's output is a whole box's channels and the
-readout's warps each own theirs -- halved until every listed level spans the facts pass's
-group (`LIST_GROUP`, 32 digits, or the level's whole width: `_lists_span_groups`), since the
-lists come ranked in groups of 32 and a box over part of a group would read and drain tokens
-it never touches. So a dense-dense declaration at `d_v` 64 takes 64 channels and the
-alternating one 32 (two channel boxes). The leaves are what the state holds over it,
+readout's warps each own theirs -- halved until the box is one the kernels take
+(`_admitted`): every listed level spans the facts pass's group (`LIST_GROUP`, 32 digits, or
+the level's whole width), since the lists come ranked in groups of 32 and a box over part of
+a group would read and drain tokens it never touches; and each side's warps own an MMA tile
+of dense rows (`MIN_DENSE`). So a dense-dense declaration at `d_v` 64 takes 64 channels and
+the alternating one 32 (two channel boxes). The leaves are what the state holds over it,
 allocated as powers of two, one bit at a time, under the cap and each level's width:
 
+0. Each side with no list level, its row level (its operand's first: `_row_levels`) to an
+   MMA tile, `MIN_DENSE` -- spread evenly, three dense levels of 16 at 64 channels would be
+   8 x 8 x 8, a row level under a tile; first, they are 16 x 8 x 4.
 1. `DD` levels, round robin, as long as one has room.
 2. `DS` then `SD`, by turns, each to its tag's widest level with room: the readout's dense
    level (its K) before its list level, since the readout is the costlier phase (Blake,

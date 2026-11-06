@@ -67,10 +67,8 @@ from both ([pipes.md](pipes.md)).
 | a shared-atomic claim on a digit, withdrawn on failure | ~10 per digit per pass (claim, compare, withdrawal, full mark) | `color_union` |
 | ptxas's additions around `cp.async`: three never-executed `LDS` before each `LDGSTS`, the loop's exit `CALL`, alignment `NOP`s, `UIADD3` fillers between dependent MMAs | as counted | `read_image` |
 | a 4-lane reduce-scatter of 4 values (lane `t` ends with value `t`'s max over its quad) | 12: 3 `SHFL` + 6 `SEL` (which value each lane keeps and sends) + 3 `IMNMX` | `post_keys` (production, 2026-11-01) |
-| an fp32 key's exponent byte (`leaf_byte`: zero test, round up, clamp) | 6 | `post_keys` (production, 2026-11-01) |
 | a per-slot fact handed to the slot's lanes (a lane forms it, a step reads it) | 1 `SHFL` a fact a step + 1 `IADD3` (the step's source lane) | `drain` (production, 2026-11-02) |
 | a 64-bit address from a 32-bit word offset (`word_at`) | 2: `LEA` + `LEA.HI.X` (ptxas turns `mad.wide` by an immediate 4 into the shift-adds) | `drain` (production, 2026-11-02) |
-| an s16 pair word to a scaled f16 pair (`pair_magics`, a cleared panel at `0x80008000`) | 6: 2 `PRMT`, `FMUL` (the bias), 2 `FFMA`, `F2FP` | `drain` (production, 2026-11-02) |
 
 <a id="forms"></a>
 ## Forms

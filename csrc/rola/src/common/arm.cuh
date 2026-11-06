@@ -6,11 +6,11 @@ namespace rola {
 
 //: A CARRY ARM'S KEY: the carve's operation-plan pair (tools/gen_shards.py's `ARM_KEY`, in its order).
 struct CarryKey {
-  int fold_rows, fold_factors, read_rows, read_factors, channels, publish_regs;
+  int fold_rows, fold_factors, read_rows, read_factors, channels, same_split;
 };
 
 template <int INDEX, int FOLD_ROWS, int FOLD_FACTORS, int READ_ROWS, int READ_FACTORS, int CHANNELS,
-          int PUBLISH_REGS>
+          int SAME_SPLIT>
 struct Arm {
   static constexpr int index = INDEX;
   static constexpr int fold_rows = FOLD_ROWS;
@@ -18,7 +18,7 @@ struct Arm {
   static constexpr int read_rows = READ_ROWS;
   static constexpr int read_factors = READ_FACTORS;
   static constexpr int channels = CHANNELS;
-  static constexpr int publish_regs = PUBLISH_REGS;
+  static constexpr int same_split = SAME_SPLIT;
 };
 
 }  // namespace rola

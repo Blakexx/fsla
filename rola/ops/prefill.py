@@ -40,35 +40,25 @@ def _u8(rows: torch.Tensor) -> bool:
 
 def carry_factor(routes) -> float:
     """What the carry's partials at a token's unit are multiplied by to be the recurrence's numerator over ``r``: the
-    state's byte scale (level S's write rows a byte over 256 or an f16, over 255) and the read rows' storage -- level
-    S's coefficient a byte over 256 (``256 / 255`` of its unit value), level R's row a byte (``1 / 255``)."""
+    state's byte scale (the fold's operand a dense write level's f16, its coefficient on the byte scale: ``1 / 255``,
+    `fold.cuh` `kByteScale`) and the read rows' storage -- level S's coefficient a byte over 256 (``256 / 255`` of its
+    unit value), level R's row a byte (``1 / 255``)."""
     ls = routes.level_s
     lr = 1 - ls
-    kappa = (256.0 / quant.AMP_LEVELS if _u8(routes.amp_write[ls]) else 1.0) / quant.AMP_LEVELS
+    kappa = 1.0 / quant.AMP_LEVELS
     k_s = (quant.AMP_LEVELS + 1.0) / quant.AMP_LEVELS if _u8(routes.amp_read[ls]) else 1.0
     k_r = 1.0 / quant.AMP_LEVELS if _u8(routes.amp_read[lr]) else 1.0
     return kappa * k_s * k_r
 
 
-def unpack_num(num: torch.Tensor, channels: int, factor: torch.Tensor | float = 1.0) -> torch.Tensor:
+def unpack_num(num: torch.Tensor, factor: torch.Tensor | float = 1.0) -> torch.Tensor:
     """``[BH, L, d_v]`` fp32 in channel order, times ``factor`` (``[BH, L]`` a token's, or one float): the carry's
-    ``num`` as the drain wrote it -- fp32, or int32 words of f16 pairs, a box's word ``8 m + g`` holding channels ``(c,
-    c + 2)``, ``c = 8 (g >> 1) + 4 m + (g & 1)`` of its ``channels`` (`docs/internals/carry/parts.md#image`). The pairs
-    are a fixed bit pattern -- word ``8 m + 2 a + b``'s halves ``h`` are channel ``8 a + 4 m + 2 h + b`` -- so the words
-    read as f16 elements ``[m][a][b][h]`` a box and ONE permuted multiply writes them scaled in channel order
-    ``[a][m][h][b]``: one pass over the planes."""
-    tokenwise = isinstance(factor, torch.Tensor)
-    if num.dtype == torch.float32:
-        return num * (factor.unsqueeze(-1) if tokenwise else factor)
-    if channels != 32:
-        raise ValueError(f"the drain's f16 pairs are a 32-channel box's, got a box of {channels} channels")
-    BH, L, words = num.shape
-    boxes = words // 16
-    pairs = num.view(torch.float16).view(BH, L, boxes, 2, 4, 2, 2)
-    out = torch.empty(BH, L, boxes, 4, 2, 2, 2, dtype=torch.float32, device=num.device)
-    scale = factor.view(BH, L, 1, 1, 1, 1, 1) if tokenwise else factor
-    torch.mul(pairs.permute(0, 1, 2, 4, 3, 6, 5), scale, out=out)
-    return out.view(BH, L, 2 * words)
+    ``num`` as the drain wrote it -- fp32, or int32 words of f16 pairs, word ``k`` channels ``2 k`` (its low half) and
+    ``2 k + 1`` (`docs/internals/carry/panel.md#drain`) -- read as its f16 halves and scaled in one fp32 multiply."""
+    halves = num if num.dtype == torch.float32 else num.view(torch.float16)
+    scale = (factor.unsqueeze(-1) if isinstance(factor, torch.Tensor)
+             else torch.full((1,), float(factor), device=num.device))
+    return halves * scale
 
 
 def prefill(routes, values, facts, carve, layout, read_statics, write_statics, *, accumulate: str | None = None,
@@ -86,7 +76,7 @@ def prefill(routes, values, facts, carve, layout, read_statics, write_statics, *
     #: scale bytes lie on the whole window grid, the call's tokens first
     factor = (torch.exp2(scale[:, :routes.tokens].float() + 1.0) * unit if num_c.dtype != torch.float32
               else unit)
-    num = unpack_num(num_c, carve.channels, factor)
+    num = unpack_num(num_c, factor)
     den = (den_c * unit).contiguous()
     intra_ops.intra_forward(routes, values, facts, layout, read_statics, write_statics, num, den,
                             accumulate=accumulate)

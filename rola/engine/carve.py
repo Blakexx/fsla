@@ -42,10 +42,10 @@ def tags(read_sparse, write_sparse) -> tuple[str, ...]:
     return tuple(("S" if r else "D") + ("S" if w else "D") for r, w in zip(read_sparse, write_sparse))
 
 
-def _allocate(widths, level_tags, total: int, cap: int) -> list[int] | None:
-    """Producer v1's extents as exponents, or None when the box cannot be filled under the cap: DD levels as much as
-    fits, spread evenly; DS and SD by turns, DS first (the readout's dense level, its K, before its list level), each
-    concentrated on its widest level; SS last."""
+def _allocate(widths, level_tags, total: int, cap: int, rows) -> list[int] | None:
+    """Producer v1's extents as exponents, or None when the box cannot be filled under the cap: each dense side's row
+    level (``rows``) an MMA tile first; DD levels as much as fits, spread evenly; DS and SD by turns, DS first (the
+    readout's dense level, its K, before its list level), each concentrated on its widest level; SS last."""
     room = [min(_log2(w), _log2(cap)) for w in widths]
     bits = [0] * len(widths)
     left = total
@@ -62,6 +62,9 @@ def _allocate(widths, level_tags, total: int, cap: int) -> list[int] | None:
         open_ = [lv for lv, t in enumerate(level_tags) if t == tag and bits[lv] < room[lv]]
         return max(open_, key=lambda lv: (room[lv], -lv)) if open_ else None
 
+    for lv in rows:
+        while bits[lv] < _log2(MIN_DENSE) and give(lv):
+            pass
     dd = [lv for lv, t in enumerate(level_tags) if t == "DD"]
     while left and any(give(lv) for lv in sorted(dd, key=lambda lv: bits[lv])):
         pass
@@ -122,15 +125,27 @@ def token_groups(carve: Carve) -> int:
     return WARPS // channel_groups(carve)
 
 
-def _build(widths, read_sparse, write_sparse, extents, channels: int) -> Carve:
-    D = len(widths)
-    leaves = _product(range(D), extents)
+def _sides(read_sparse, write_sparse):
+    """The fold's and the readout's ``(lists, operand)`` (`_operand`), each side's coefficients the other's one list
+    level where it has one."""
+    D = len(read_sparse)
     write_lists = [lv for lv in range(D) if write_sparse[lv]]
     read_lists = [lv for lv in range(D) if read_sparse[lv]]
     fold = _operand(write_lists, [lv for lv in range(D) if not write_sparse[lv]],
                     coef=read_lists[0] if len(read_lists) == 1 else None)
     readout = _operand(read_lists, [lv for lv in range(D) if not read_sparse[lv]],
                        coef=write_lists[0] if len(write_lists) == 1 else None)
+    return fold, readout
+
+
+def _row_levels(read_sparse, write_sparse) -> list[int]:
+    """Each side's row level where it lists none (its operand's first): the levels `_allocate` gives a tile first."""
+    return sorted({operand[0] for lists, operand in _sides(read_sparse, write_sparse) if not lists})
+
+
+def _build(widths, read_sparse, write_sparse, extents, channels: int) -> Carve:
+    leaves = _product(range(len(widths)), extents)
+    fold, readout = _sides(read_sparse, write_sparse)
     return Carve(widths=tuple(widths), extents=tuple(extents), channels=channels,
                  fold=_fold(*fold, extents, leaves), readout=_readout(*readout, extents))
 
@@ -143,10 +158,12 @@ def _channels(d_v: int) -> int:
     return c
 
 
-def _lists_span_groups(widths, read_sparse, write_sparse, bits) -> bool:
-    """Whether every listed level spans the facts pass's group in the box (`LIST_GROUP`, or its whole width)."""
-    return all(1 << b == min(LIST_GROUP, w)
-               for w, r, wr, b in zip(widths, read_sparse, write_sparse, bits) if r or wr)
+def _admitted(carve_: Carve, read_sparse, write_sparse) -> bool:
+    """Whether the box is one the kernels take: every listed level spans the facts pass's group (`LIST_GROUP`, or its
+    whole width) and each side's warps own a tile of dense rows (`MIN_DENSE`)."""
+    spans = all(e == min(LIST_GROUP, w)
+                for w, r, wr, e in zip(carve_.widths, read_sparse, write_sparse, carve_.extents) if r or wr)
+    return spans and min(carve_.fold.tile_rows, carve_.readout.tile_rows) >= MIN_DENSE
 
 
 def _declared(widths, read_sparse, write_sparse, d_v: int) -> None:
@@ -164,9 +181,10 @@ def _declared(widths, read_sparse, write_sparse, d_v: int) -> None:
 
 
 def plan_carve(widths, read_sparse, write_sparse, d_v: int) -> Carve:
-    """Producer v1: the channel extent toward ``d_v`` (`_channels`), halved until every listed level spans the facts
-    pass's group (`LIST_GROUP`); the box's leaves from the tags under the per-level cap, the cap lifted to the widths
-    when the box cannot be filled under it. A pure function of the declaration,
+    """Producer v1: the channel extent toward ``d_v`` (`_channels`), halved until the box is one the kernels take
+    (`_admitted`: every listed level spans the facts pass's group, each side's dense rows an MMA tile); the box's
+    leaves from the tags under the per-level cap, the cap lifted to the widths when the box cannot be filled under it.
+    A pure function of the declaration,
     planned once a declaration (the `Carve` is frozen): every call of a shape after its first costs no host time
     (docs/internals/engine/carve.md#planned-once)."""
     return _planned(tuple(widths), tuple(read_sparse), tuple(write_sparse), int(d_v))
@@ -178,15 +196,15 @@ def _planned(widths, read_sparse, write_sparse, d_v: int) -> Carve:
     channels = _channels(d_v)
     while True:
         total = _log2(BOX_VALUES // channels)
-        bits = _allocate(widths, tags(read_sparse, write_sparse), total, CAP)
+        bits = _allocate(widths, tags(read_sparse, write_sparse), total, CAP, _row_levels(read_sparse, write_sparse))
         if bits is None:
             bits = [_log2(w) for w in widths]
             while sum(bits) > total:
                 bits[max(range(len(bits)), key=lambda lv: (bits[lv], lv))] -= 1
-        if channels == CHANNELS or _lists_span_groups(widths, read_sparse, write_sparse, bits):
+        carve_ = _build(widths, read_sparse, write_sparse, [1 << b for b in bits], channels)
+        if channels == CHANNELS or _admitted(carve_, read_sparse, write_sparse):
             break
         channels //= 2
-    carve_ = _build(widths, read_sparse, write_sparse, [1 << b for b in bits], channels)
     check_carve(carve_, widths, read_sparse, write_sparse, d_v)
     return carve_
 

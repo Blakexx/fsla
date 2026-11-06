@@ -20,7 +20,7 @@ apart.
 by up to ~5% run to run; time is the probe's.
 
 The clock is not free: bound, the carry runs ~16% longer (nl64k-alt-k4's first 32 windows on sm_86: 902 us against
-1,045, `docs/lab/carry_window.md`), since each lap's clock read is a point ptxas does not schedule across. The ledger
+1,045, the window lab's record `measure/lab/results/carry_window`), since each lap's clock read is a point ptxas does not schedule across. The ledger
 attributes a launch's time to phases; the time itself is read with it unbound. Launches run before the ledger is bound, at least `--warmup` (default 1)
 and for at least `--warmup-ms` (default 500): a fresh binary's first launch is never a reading, and a GPU just locked
 reads ~11% slow for its first launches (nl64k-alt-k4 25,460 cycles a warp-window against 22,657, 2026-10-19). `--forced` names the plan's form each window takes where it fits
