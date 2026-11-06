@@ -48,8 +48,8 @@ def test_a_cells_arms_are_the_subjects_it_takes(binary):
     names = set(provider.arms(by_name("flagship-alt-k4")))
     assert {"carry_forward", "facts_pass", "intra_forward"} <= names
     assert all(name.split("@")[0] in SUBJECTS for name in names)
-    #: a partial window has no intra grid: the intra is not offered
-    assert not any(name.startswith("intra_forward") for name in provider.arms(by_name("flat-small-alt-k16")))
+    #: a call shorter than a window runs the intra's partial-window arms: the intra is offered
+    assert any(name.startswith("intra_forward") for name in provider.arms(by_name("flat-small-alt-k16")))
 
 
 def test_a_layer_cells_arms_are_its_declared_constructions(binary):

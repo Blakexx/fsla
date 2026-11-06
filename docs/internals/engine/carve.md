@@ -50,6 +50,16 @@ channel extent that does not divide `d_v`, a box over the state budget, a side's
 is not the box's, a warp with fewer operand rows than an MMA tile, and a publish route that
 disagrees with the warps' ownership. The planner's own carves pass through it.
 
+## <a id="planned-once"></a>Planned once a declaration
+
+`plan_carve` is a pure function of the declaration (the widths, each side's per-level flags and `d_v`) and its
+`Carve` is frozen, so it plans once a declaration (`functools.cache` on `_planned`) and every later call of the
+shape returns the same object. Planning in Python -- the build, the check's rebuild, each side's warp ownership over
+the box's 1,024 leaves -- ran twice a prefill call (the envelope's clauses and the facts node) before the first
+kernel launched: ~2.7 ms of the GPU idle a call on sm_86 at `nl64k-alt-k4-h4` (`tools/op_timeline.py`: the sparse
+prefill 15.04 -> 12.35 ms a call, the idle 3.75 -> 1.13 ms). A refused declaration raises every time (an exception is
+not cached).
+
 ## <a id="open"></a>Open
 
 A single `DD` level's share is the cap's, not density's: at very low density a larger

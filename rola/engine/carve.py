@@ -9,6 +9,7 @@ better planner replaces this one without touching a kernel: every kernel that de
 """
 from __future__ import annotations
 
+from functools import cache
 from itertools import product
 
 from rola.engine.types import Carve, SidePlan
@@ -136,7 +137,14 @@ def _declared(widths, read_sparse, write_sparse, d_v: int) -> None:
 
 def plan_carve(widths, read_sparse, write_sparse, d_v: int) -> Carve:
     """Producer v1: the box from the tags under the per-level cap; when the box cannot be filled under it, the box's
-    leaves halve and its channel extent doubles (the same state) before the cap lifts to the widths."""
+    leaves halve and its channel extent doubles (the same state) before the cap lifts to the widths. A pure function
+    of the declaration, planned once a declaration (the `Carve` is frozen): every call of a shape after its first
+    costs no host time (docs/internals/engine/carve.md#planned-once)."""
+    return _planned(tuple(widths), tuple(read_sparse), tuple(write_sparse), int(d_v))
+
+
+@cache
+def _planned(widths, read_sparse, write_sparse, d_v: int) -> Carve:
     _declared(widths, read_sparse, write_sparse, d_v)
     level_tags = tags(read_sparse, write_sparse)
     channels = CHANNELS

@@ -220,9 +220,9 @@ def plan_carve_of(routes, values):
 def intra_forward(fx) -> Launch:
     """The within-window term on the cell's bundle, at the window the two kernels share, over the facts pass's unions.
 
-    THE WINDOW IS THE CARRY'S CONSTANT: the two kernels run ONE grid, so a cell whose L is not a whole number of it has
-    no grid for this subject and is not applicable to it. The bundle and the facts pass's output are built once, here;
-    the planes the launch reduces into are zeroed untimed before every call.
+    THE WINDOW IS THE CARRY'S CONSTANT: the two kernels run ONE grid, a call's partial last window included (the intra's
+    `kEven` false arms). The bundle and the facts pass's output are built once, here; the planes the launch reduces
+    into are zeroed untimed before every call.
     """
     from measure.cells import realize
     from rola.ops import facts as facts_ops
@@ -584,8 +584,8 @@ def applicable(spec, kind: str, calls: int = 1) -> list[str]:
             continue
         if name == "decode_step" and getattr(spec, "decode_steps", 0) == 0:
             continue
-        #: the intra runs its tile grid (whole windows) at widths it reads
-        if name in ("intra_forward", "carry_intra", "prefill") and (spec.tokens % _shared_window() or not _intra_reads(spec.widths)):
+        #: the intra runs at widths it reads (any length: a partial last window has its own arms)
+        if name in ("intra_forward", "carry_intra", "prefill") and not _intra_reads(spec.widths):
             continue
         out.append(name)
     return out
