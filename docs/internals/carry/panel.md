@@ -25,18 +25,23 @@ at word `d mod 4`), 16 bytes: no two warps add into one word, so the den needs n
 <a id="drain"></a>
 ## The drain
 
-`drain<P, F32>`, after every warp's adds (the caller's rendezvous): warp `w` takes slots `w + 8 i`. F16 PAIRS: two
-slots a step, a lane a word (its half of the warp a slot), each added by `red.global.add.noftz.f16x2` at the slot's row
-of `num` (`token_row`: the slot's query head and window token) -- the word's channels in their natural order, so
-`num`'s f16 pairs read as its f16 values (`rola.ops.prefill.unpack_num`). FP32: a slot a step, a lane a channel,
-`red.global.add.f32`. Then THE DEN: a thread a slot, its four words summed, one `red.global.add.f32` into `den`. Each
-address is a 32-bit word offset from the head's base (`word_at`, one widening multiply-add; the host holds a write
-head's rows under 2^32 words). A GAP slot (the union's tail past its tokens, its token's bit 15) adds nothing. The
-CTAs join only here (R22: independent units, joined by atomics): the cross-CTA adds (`red_add_h2`, `red_add_f32`) are
-unpredicated, each one `red.global` instruction. The f16 pairs meet across CTAs at one scale, the
-token's byte, which every CTA reads the same.
+`drain<P, F32>`, after every warp's adds (the caller's rendezvous): warp `w` takes slots `w + 8 i`, two steps a trip so
+their loads overlap. F16 PAIRS: two slots a step, a lane a word (its half of the warp a slot), each added by
+`red.global.add.noftz.f16x2` at the slot's row of `num` (`token_row`: the slot's query head and window token) -- the
+word's channels in their natural order, so `num`'s f16 pairs read as its f16 values (`rola.ops.prefill.unpack_num`).
+FP32: a slot a step, a lane a channel, `red.global.add.f32`. Then THE DEN: a thread a slot, its four words summed, one
+`red.global.add.f32` into `den`. Each address is a 32-bit word offset from the head's base (`word_at`, one widening
+multiply-add; the host holds a write head's rows under 2^32 words). The CTAs join only here (R22: independent units,
+joined by atomics): the cross-CTA adds (`red_add_h2`, `red_add_f32`) are unpredicated, each one `red.global`.
 
-ITS FORM AGAINST ITS FLOOR: the gap test is a branch around each add (ptxas wraps a predicated `red.global` in a
-convergence region: the SASS gate counts them, cold, as guarded), a lane re-derives its slot's row, and the den's adds
-are a slot a thread. The drain's floor is the SM's global request path, ~5 cycles a line request with every SM draining
-(lab [`drain`](../../lab/drain.md)); its own budget, full-line requests and the clears in the fill, is open.
+NO BRANCH AROUND AN ADD (lab [`drain`](../../lab/drain.md): a predicated `red.global` is a convergence region around
+each add). A GAP slot (the union's tail, `kGap`) holds no token; the union is padded to whole 8-token steps
+(`facts.cu`), so its gaps lie in its last step and a chunk's in its last 8 slots: one load a lane, a ballot and a
+popcount give the chunk's token count `n`, a warp-uniform bound. A step past `n` (the warp's last trip) adds zero at the
+trip's first slot's row -- a token's own, never one row every CTA's dead lanes would share (the lab's serialized
+dummy row). The f16 pairs meet across CTAs at one scale, the token's byte, which every CTA reads the same.
+
+MEASURED (sm_86, `tools/phase_ledger.py`): the branch-free form 2,758 -> 1,623 cycles a warp-window at nl64k-alt-k4 (its
+floor ~1.1K: ~215 line requests at ~5 cycles, every SM draining), 5,811 -> 3,456 at flagship-alt-k16. Its loop is ~23
+instructions an add (a slot's select, its panel word, its row); the budget's ~4 (`tools/design_floor.py`) is a
+token's row precomputed, which the union does not carry.
