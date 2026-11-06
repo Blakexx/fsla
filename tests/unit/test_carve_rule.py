@@ -20,12 +20,12 @@ def _flags(level_tags):
 
 
 @pytest.mark.parametrize("widths, level_tags, extents, channels", [
-    ((256, 256), ("SD", "DS"), (16, 32), 64),
-    ((32, 32, 32, 32), ("DS", "SD", "DS", "SD"), (32, 16, 1, 1), 64),
-    ((32, 32, 32, 32), ("SS", "SS", "DD", "DD"), (1, 1, 32, 16), 64),
-    ((32, 32, 32, 32), ("SD", "DS", "DD", "SS"), (4, 4, 32, 1), 64),
-    ((256, 256), ("SS", "DD"), (16, 32), 64),
-    ((64, 64, 256), ("SD", "DS", "DD"), (4, 4, 32), 64),
+    ((256, 256), ("SD", "DS"), (32, 32), 32),
+    ((32, 32, 32, 32), ("DS", "SD", "DS", "SD"), (32, 32, 1, 1), 32),
+    ((32, 32, 32, 32), ("SS", "SS", "DD", "DD"), (1, 1, 32, 32), 32),
+    ((32, 32, 32, 32), ("SD", "DS", "DD", "SS"), (4, 8, 32, 1), 32),
+    ((256, 256), ("SS", "DD"), (32, 32), 32),
+    ((64, 64, 256), ("SD", "DS", "DD"), (4, 8, 32), 32),
     ((16, 256), ("SD", "DS"), (16, 32), 64),
     ((256,), ("DD",), (256,), 64),
 ])
@@ -44,25 +44,33 @@ def test_producer_v1_boxes(widths, level_tags, extents, channels):
     (256, (16, 16), 128, (1, 8)),
 ])
 def test_channels_toward_d_v(d_v, extents, channels, groups):
-    """The channel extent is the largest power of two dividing d_v, at most 128; the readout's dense level (DS) takes
-    the larger share of the leaves; the readout's warps are token groups x 8-channel groups."""
-    c = plan_carve((256, 256), (False, True), (True, False), d_v)
+    """With no listed level the channel extent is the largest power of two dividing d_v, at most 128; the readout's
+    warps are token groups x 8-channel groups."""
+    c = plan_carve((256, 256), (False, False), (False, False), d_v)
     assert (c.extents, c.channels, (token_groups(c), channel_groups(c))) == (extents, channels, groups)
+
+
+@pytest.mark.parametrize("d_v", [32, 64, 128])
+def test_listed_levels_span_the_facts_group(d_v):
+    """A listed level spans the facts pass's 32-digit group, so the alternating box stays 32 x 32 x 32 at any d_v
+    (two token groups x four channel groups) until the facts pass groups at the box's extent."""
+    c = plan_carve((256, 256), (False, True), (True, False), d_v)
+    assert (c.extents, c.channels, (token_groups(c), channel_groups(c))) == ((32, 32), 32, (2, 4))
 
 
 def test_alternating_box_plans():
     c = plan_carve((256, 256), (False, True), (True, False), 64)
-    assert (c.fold.lists, c.fold.operand, c.fold.tile_lists, c.fold.tile_rows) == ((0,), (1,), 4, 16)
-    assert (c.readout.lists, c.readout.operand, c.readout.tile_lists, c.readout.tile_rows) == ((1,), (0,), 16, 32)
+    assert (c.fold.lists, c.fold.operand, c.fold.tile_lists, c.fold.tile_rows) == ((0,), (1,), 4, 32)
+    assert (c.readout.lists, c.readout.operand, c.readout.tile_lists, c.readout.tile_rows) == ((1,), (0,), 32, 32)
     assert c.readout.tile_lists * c.readout.tile_rows == c.leaves
     assert c.fold.tile_lists * c.fold.tile_rows * 8 == c.leaves
-    assert c.ctas(64) == 8 * 16
+    assert c.ctas(64) == 8 * 8 * 2
 
 
 def test_dense_dense_box_plans():
     c = plan_carve((32, 32, 32, 32), (True, True, False, False), (True, True, False, False), 64)
-    assert (c.fold.tile_lists, c.fold.tile_rows) == (1, 64)
-    assert (c.readout.tile_lists, c.readout.tile_rows) == (1, 512)
+    assert (c.fold.tile_lists, c.fold.tile_rows) == (1, 128)
+    assert (c.readout.tile_lists, c.readout.tile_rows) == (1, 1024)
 
 
 @pytest.mark.parametrize("level_tags, fold, readout", [

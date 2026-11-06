@@ -14,15 +14,18 @@ extent, and `MIN_DENSE` (16) is a warp's least operand rows, one MMA tile.
 ## <a id="producer-v1"></a>Producer v1
 
 The channel extent comes first: the largest power of two dividing `d_v`, at most
-`MAX_CHANNELS` (`_channels`) -- 64 at the headline's `d_v` 64 -- so a token's output is a
-whole box's channels (a 128-byte line of `num` at 64) and the readout's warps each own their
-channels. The leaves are what the state holds over it, allocated as powers of two, one bit
-at a time, under the cap and each level's width:
+`MAX_CHANNELS` (`_channels`), so a token's output is a whole box's channels and the
+readout's warps each own theirs -- halved until every listed level spans the facts pass's
+group (`LIST_GROUP`, 32 digits, or the level's whole width: `_lists_span_groups`), since the
+lists come ranked in groups of 32 and a box over part of a group would read and drain tokens
+it never touches. So a dense-dense declaration at `d_v` 64 takes 64 channels and the
+alternating one 32 (two channel boxes). The leaves are what the state holds over it,
+allocated as powers of two, one bit at a time, under the cap and each level's width:
 
 1. `DD` levels, round robin, as long as one has room.
 2. `DS` then `SD`, by turns, each to its tag's widest level with room: the readout's dense
    level (its K) before its list level, since the readout is the costlier phase (Blake,
-   2026-11-06) -- the alternating box at 64 channels is 32 lists x 16 digits.
+   2026-11-06).
 3. `SS` levels, the widest first.
 
 When the bits run out before the box is full, the cap lifts and the box takes the widest

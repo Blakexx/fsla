@@ -24,6 +24,9 @@ CHANNELS = 32
 MAX_CHANNELS = 128
 GROUP_CHANNELS = 8
 CAP = 32
+#: THE LISTS' GROUP: the facts pass ranks a side's lists in groups of 32 digits (`rola.engine.facts.liveness.
+#: GROUP_DIGITS`), so a listed level spans the group (or its whole width) in the box
+LIST_GROUP = 32
 #: A SIDE'S DENSE EXTENT is an MMA tile of rows at least.
 MIN_DENSE = 16
 
@@ -140,6 +143,12 @@ def _channels(d_v: int) -> int:
     return c
 
 
+def _lists_span_groups(widths, read_sparse, write_sparse, bits) -> bool:
+    """Whether every listed level spans the facts pass's group in the box (`LIST_GROUP`, or its whole width)."""
+    return all(1 << b == min(LIST_GROUP, w)
+               for w, r, wr, b in zip(widths, read_sparse, write_sparse, bits) if r or wr)
+
+
 def _declared(widths, read_sparse, write_sparse, d_v: int) -> None:
     if len(read_sparse) != len(widths) or len(write_sparse) != len(widths):
         raise ValueError(f"a carve needs both sides' flags a level: widths {widths}, read {read_sparse}, "
@@ -155,8 +164,9 @@ def _declared(widths, read_sparse, write_sparse, d_v: int) -> None:
 
 
 def plan_carve(widths, read_sparse, write_sparse, d_v: int) -> Carve:
-    """Producer v1: the channel extent toward ``d_v`` (`_channels`), the box's leaves from the tags under the per-level
-    cap, the cap lifted to the widths when the box cannot be filled under it. A pure function of the declaration,
+    """Producer v1: the channel extent toward ``d_v`` (`_channels`), halved until every listed level spans the facts
+    pass's group (`LIST_GROUP`); the box's leaves from the tags under the per-level cap, the cap lifted to the widths
+    when the box cannot be filled under it. A pure function of the declaration,
     planned once a declaration (the `Carve` is frozen): every call of a shape after its first costs no host time
     (docs/internals/engine/carve.md#planned-once)."""
     return _planned(tuple(widths), tuple(read_sparse), tuple(write_sparse), int(d_v))
@@ -166,12 +176,16 @@ def plan_carve(widths, read_sparse, write_sparse, d_v: int) -> Carve:
 def _planned(widths, read_sparse, write_sparse, d_v: int) -> Carve:
     _declared(widths, read_sparse, write_sparse, d_v)
     channels = _channels(d_v)
-    total = _log2(BOX_VALUES // channels)
-    bits = _allocate(widths, tags(read_sparse, write_sparse), total, CAP)
-    if bits is None:
-        bits = [_log2(w) for w in widths]
-        while sum(bits) > total:
-            bits[max(range(len(bits)), key=lambda lv: (bits[lv], lv))] -= 1
+    while True:
+        total = _log2(BOX_VALUES // channels)
+        bits = _allocate(widths, tags(read_sparse, write_sparse), total, CAP)
+        if bits is None:
+            bits = [_log2(w) for w in widths]
+            while sum(bits) > total:
+                bits[max(range(len(bits)), key=lambda lv: (bits[lv], lv))] -= 1
+        if channels == CHANNELS or _lists_span_groups(widths, read_sparse, write_sparse, bits):
+            break
+        channels //= 2
     carve_ = _build(widths, read_sparse, write_sparse, [1 << b for b in bits], channels)
     check_carve(carve_, widths, read_sparse, write_sparse, d_v)
     return carve_
