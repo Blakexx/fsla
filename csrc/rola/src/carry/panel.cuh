@@ -34,11 +34,11 @@ __device__ __forceinline__ T* word_at(T* base, uint32_t off) {
   return reinterpret_cast<T*>(a);
 }
 
-//: SLOT `s`'s NUM WORD `w` in the panel, bytes, rotated by the slot. -- see docs/internals/carry/panel.md#words
+//: SLOT `s`'s NUM WORD `w` in the panel, bytes, rotated by the slot (an XOR). -- see docs/internals/carry/panel.md#words
 template <bool F32>
 __host__ __device__ __forceinline__ constexpr uint32_t panel_word(uint32_t s, uint32_t w) {
-  return F32 ? 128u * s + 4u * ((w + 4u * (s & 7u)) & 31u)
-             : 64u * s + 4u * ((w + 4u * ((s >> 1) & 3u)) & 15u);
+  return F32 ? (128u * s + 16u * (s & 7u)) ^ (4u * w)
+             : (64u * s + 16u * ((s >> 1) & 3u)) ^ (4u * w);
 }
 
 //: THE DRAIN: a chunk's panel to `num` and its den words to `den`, after every warp's adds; warp `w` slots `w + 8 i`, a

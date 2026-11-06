@@ -10,6 +10,18 @@ lines in the carry's fold steps read as 3,000-instruction MMA loops under the ol
 carries its registers (`regs`, off `cuobjdump -res-usage`), so an iteration build that skips the ratify still shows a
 register change.
 
+## <a id="step-branches"></a>A branch inside a step
+
+`mma_loop_branches` counts, in each innermost MMA loop (`mma_loops`: a backward branch and the lines from its target),
+the convergence barriers (BSSY) and the forward conditional branches: each ends ptxas's scheduling block inside the step
+([§20](../../KERNEL_STANDARDS.md#s20), §27). One shape is not counted, the loop's exit laid out as its LATCH: a forward
+conditional branch out of the loop on the line just before an UNCONDITIONAL back-edge. ptxas lays a loop out so when its
+exit is not the fall-through -- the carry's readout passes, one copy a reduce dtype and accumulate form, three of the
+four jumping to the copies' join (2026-11-06) -- and the block it ends is the whole step: no step instruction follows it
+in the loop. It costs one issued branch a trip against the folded form (`@P BRA` back, the exit falling through). Any
+line between the exit and the back-edge (a register copy ptxas adds there), a branch back into the loop, or a
+conditional back-edge still counts (`tests/unit/test_sass_gate.py`).
+
 ## <a id="cost"></a>What a read costs
 
 Every lint of a function reads the same two disassemblies of its cubin and the same MMA loops, so each is formed once:

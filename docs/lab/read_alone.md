@@ -25,6 +25,7 @@ THE MEASUREMENT (sm_86, cycles a warp-window, median of 7, the f16 panel at fp16
 | the den on its own channel group | 21,412 | 22,002 |
 | the entries' factors once a chunk, the tiles a tile ahead | 14,478 | 13,890 |
 | the two tokens' adds overlapped | 13,482 | 13,157 |
+| a pass's next digit a lane's, the den in its digits' num tiles, the panel's word one XOR of the row key, a tile its run's remainder | 10,746 | 10,387 |
 | the empty span (the harness's zero) | 38 | 38 |
 
 Floors at the first form's traffic: tensor 4,023, shared 8,091. Bank conflicts are not what binds: the colored draw
@@ -33,4 +34,4 @@ variant: 0 hazards.
 
 WHAT IT DECIDES. The readout's own form was 3x its shared floor from instructions and its tile's dependent chain, not
 from conflicts; each change above was taken into the kernel and gated (the per-slot oracle, the SASS gate), the
-composed readout phase following it (24.9K -> 13.1K at nl64k-alt-k4).
+composed readout phase following it (24.9K -> 13.1K -> 11.0K at nl64k-alt-k4).

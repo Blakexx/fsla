@@ -763,6 +763,14 @@ __device__ __forceinline__ void store_shared_u32_if(SmemAddr a, uint32_t v, bool
                : "memory");
 }
 
+__device__ __forceinline__ void store_shared_u64_if(SmemAddr a, uint32_t lo, uint32_t hi,
+                                                    bool live) {
+  asm volatile(
+      "{\n.reg .pred p;\nsetp.ne.b32 p, %3, 0;\n@p st.shared.v2.u32 [%0], {%1, %2};\n}\n" ::"r"(a),
+      "r"(lo), "r"(hi), "r"(static_cast<int>(live))
+      : "memory");
+}
+
 __device__ __forceinline__ void store_shared_f32x2_if(SmemAddr a, float x, float y, bool live) {
   asm volatile(
       "{\n.reg .pred p;\nsetp.ne.b32 p, %3, 0;\n@p st.shared.v2.f32 [%0], {%1,%2};\n}\n" ::"r"(a),

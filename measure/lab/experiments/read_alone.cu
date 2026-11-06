@@ -55,8 +55,10 @@ __host__ __device__ __forceinline__ bool live(int b, int w, int d, int s, bool c
 //: 2 an fp32 panel, fp32 accumulate; 3-5 the same on colored slots
 template <int MODE>
 __global__ __launch_bounds__(rc::kThreads, 1) void read(long long* t, int* out) {
-  constexpr bool kF32 = MODE % 3 == 2, kF16 = MODE % 3 == 0, kColored = MODE % 6 >= 3,
-                 kEmpty = MODE >= 6;
+  //: MODE 10 and 11 the sections, in sm_86's form on random slots
+  constexpr bool kF32 = MODE < 10 && MODE % 3 == 2, kF16 = MODE >= 10 || MODE % 3 == 0,
+                 kColored = MODE < 10 && MODE % 6 >= 3, kEmpty = MODE >= 6 && MODE < 10,
+                 kFirst = MODE != 10, kSecond = MODE < 10;
   extern __shared__ __align__(128) uint8_t smem[];
   const int tid = static_cast<int>(threadIdx.x), warp = tid / 32, lane = tid % 32;
   rc::CarryParams p{};
@@ -129,14 +131,14 @@ __global__ __launch_bounds__(rc::kThreads, 1) void read(long long* t, int* out) 
     __syncthreads();
     const long long t0 = clock64();
     const rc::Run run{0, drawn[lane], drawn[32 + lane], drawn[64 + lane]};
-    if constexpr (!kEmpty) rc::read_factors<P>(p, smem, run, w, ents, warp, lane);
+    if constexpr (!kEmpty) rc::read_factors<P>(p, smem, run, w, 0, ents, warp, lane);
     ops::rendezvous();
-    if constexpr (!kEmpty)
-      rc::read_chunk<P, kF32, kF16>(smem, run, 0, 0, 16, image, 15u, rows, panel, dens, ents, warp,
+    if constexpr (!kEmpty && kFirst)
+      rc::read_chunk<P, kF32, kF16>(smem, run, 0, 16, image, 15u, rows, panel, dens, ents, warp,
                                     lane);
     ops::rendezvous();
-    if constexpr (!kEmpty)
-      rc::read_chunk<P, kF32, kF16>(smem, run, 0, 16, 32, image, 15u, rows, panel, dens, ents, warp,
+    if constexpr (!kEmpty && kSecond)
+      rc::read_chunk<P, kF32, kF16>(smem, run, 16, 32, image, 15u, rows, panel, dens, ents, warp,
                                     lane);
     const long long t1 = clock64();
     busy += t1 - t0;
@@ -181,8 +183,8 @@ Floor floor_of(int blocks, double mma, double tile_shared, bool colored) {
 template <int MODE>
 void variant(const lab::Bench& b, const char* label) {
   const std::string name = lab::kernel("read", {MODE});
-  if constexpr (MODE < 6)
-    b.expect(name, MODE % 3 == 0 ? "HMMA.16816.F16" : "HMMA.16816.F32", ">=", 4);
+  if constexpr (MODE < 6 || MODE == 11)
+    b.expect(name, MODE % 3 == 0 || MODE == 11 ? "HMMA.16816.F16" : "HMMA.16816.F32", ">=", 4);
   b.exempt(name,
            "an isolation of the production readout; its budget is tools/budgets/carry.json's");
   if (b.expect_only) return;
@@ -194,6 +196,8 @@ void variant(const lab::Bench& b, const char* label) {
   b.unchecked(label,
               "a timing isolation; the readout's arithmetic is the oracle's (test_carry_readout)");
   b.record(label, "cycles a warp-window", s);
+  //: the floors are the whole readout's: the controls and the sections have none
+  if constexpr (MODE >= 6) return;
   //: sm_86's m16n8k16 at fp32 accumulate is half rate (32 cycles a scheduler), at fp16 16; sm_80's 8 either way
   cudaDeviceProp prop{};
   LAB_CHECK(cudaGetDeviceProperties(&prop, 0));
@@ -222,5 +226,7 @@ int main(int argc, char** argv) {
   read_alone::variant<5>(b, "colored slots: fp32 panel, fp32 accumulate");
   read_alone::variant<6>(b, "control: the timed span without the readout");
   read_alone::variant<9>(b, "control: the timed span without the readout, colored slots");
+  read_alone::variant<10>(b, "section: the factors and their rendezvous alone (sm_86's form)");
+  read_alone::variant<11>(b, "section: the factors and the first half (sm_86's form)");
   return 0;
 }

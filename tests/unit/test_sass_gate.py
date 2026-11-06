@@ -181,3 +181,22 @@ def test_a_branch_inside_an_mma_step_is_counted_and_one_outside_it_is_not():
     no_mma = [(0x0, "BSSY", "0x30", ""), (0x10, "BRA", "0x30", "@!P0"), (0x20, "LDS", "R4, [R2]", ""),
               (0x30, "BRA", "0x0", "@P1"), (0x40, "EXIT", "", "")]
     assert sass_gate.mma_loop_branches(no_mma, {}) == 0
+
+
+def test_a_loops_exit_laid_out_as_its_latch_is_the_steps_end():
+    """The loop's exit test the line before an unconditional back-edge, out of the loop (ptxas's layout where the exit
+    is not the fall-through, the readout's dtype copies before their join) ends the step's block at its end: not
+    counted. An exit with a line between it and the back-edge, a back into the loop, or a conditional back-edge's
+    line before it still count."""
+    latch = [(0x0, "LDS", "R4, [R2]", ""), (0x10, "HMMA.16816.F16", "R8, R4, R6, R8", ""),
+             (0x20, "STS", "[R3], R8", ""), (0x30, "BRA", "0x60", "@!P1"), (0x40, "BRA", "0x0", ""),
+             (0x50, "EXIT", "", ""), (0x60, "EXIT", "", "")]
+    assert sass_gate.mma_loops(latch, {}) == [(0, 4)]
+    assert sass_gate.mma_loop_branches(latch, {}) == 0
+    moved = latch[:4] + [(0x38, "MOV", "R4, R5", "")] + latch[4:]
+    assert sass_gate.mma_loop_branches(moved, {}) == 1
+    inside = [(0x0, "LDS", "R4, [R2]", ""), (0x10, "HMMA.16816.F16", "R8, R4, R6, R8", ""),
+              (0x20, "BRA", "0x30", "@!P1"), (0x30, "BRA", "0x0", "")]
+    assert sass_gate.mma_loop_branches(inside, {}) == 1
+    conditional = latch[:4] + [(0x40, "BRA", "0x0", "@P2")] + latch[5:]
+    assert sass_gate.mma_loop_branches(conditional, {}) == 1

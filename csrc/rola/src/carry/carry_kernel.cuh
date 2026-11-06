@@ -111,8 +111,8 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
                         dens = buf + static_cast<uint32_t>(read_dens<P>(e.slots(), p.reduce)),
                         ents = buf + static_cast<uint32_t>(read_ents<P>(e.slots(), p.reduce));
     const auto go = [&](auto F32, auto F16) {
-      read_chunk<P, decltype(F32)::value, decltype(F16)::value>(
-          smem, run, e.first(), lo, hi, area, mask, buf, panel, dens, ents, wid(), lid());
+      read_chunk<P, decltype(F32)::value, decltype(F16)::value>(smem, run, lo, hi, area, mask, buf,
+                                                                panel, dens, ents, wid(), lid());
     };
     if (p.reduce == kReduceF32) {
       if (p.readout_f16)
@@ -128,8 +128,8 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   };
   //: A READ CHUNK'S ENTRY FACTORS, after its copies land (each warp its own digits' runs) and before the rendezvous
   const auto factors_out = [&](int w, const Entry& e, const Run& run, ops::SmemAddr buf) {
-    read_factors<P>(p, smem, run, w, buf + static_cast<uint32_t>(read_ents<P>(e.slots(), p.reduce)),
-                    wid(), lid());
+    read_factors<P>(p, smem, run, w, e.first(),
+                    buf + static_cast<uint32_t>(read_ents<P>(e.slots(), p.reduce)), wid(), lid());
   };
   //: A READ CHUNK'S DRAIN: its panel to `num`, its den words to `den`
   const auto drain_out = [&](int w, const Entry& e, ops::SmemAddr buf) {
