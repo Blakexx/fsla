@@ -1217,6 +1217,12 @@ __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* 
       const int dq = (lane >> 3) % kStep, dk = (lane >> 3) / kStep;
       DenAdd dadd;
       int k = 0, s = 0;
+      //: an image arm's chains load their next tile's entry a tile ahead (the last tile's next past the run: masked,
+      //: unused); a same-split arm's registers, holding its lists' state, re-schedule worse for it (`#readout`)
+      constexpr bool kAhead = !P::kPublishRegs;
+      uint2 ahead[kStep];
+      if constexpr (kAhead)
+        static_for<kStep>([&](auto Q) { ahead[Q] = entry_at(lane & 7, n[Q], to[Q]); });
 
       //: the run's tiles in segments ending where the den's group fills, its adds between them (§29 item 7)
       for (int any = __any_sync(0xffffffffu, s < tiles) ? 1 : 0; any > 0; --any)
@@ -1228,8 +1234,14 @@ __device__ __forceinline__ void read_chunk(const CarryParams& p, const uint8_t* 
             uint2 dw[kStep];
             float acc[kStep][2][4], dn[kStep];
             static_for<kStep>([&](auto Q) {
-              in[Q] =
-                  tile_in<P>(pool_u, units, sx[Q], entry_at(8 * s + (lane & 7), n[Q], to[Q]), lane);
+              uint2 e;
+              if constexpr (kAhead) {
+                e = ahead[Q];
+                ahead[Q] = entry_at(8 * s + 8 + (lane & 7), n[Q], to[Q]);
+              } else {
+                e = entry_at(8 * s + (lane & 7), n[Q], to[Q]);
+              }
+              in[Q] = tile_in<P>(pool_u, units, sx[Q], e, lane);
               dw[Q] = den_b(den_rows + 64u * static_cast<uint32_t>(d[Q]));
             });
             static_for<kStep>([&](auto Q) { tile_mma<F16>(acc[Q], in[Q].b, f[Q]); });

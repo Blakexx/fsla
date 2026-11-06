@@ -225,6 +225,14 @@ the lane's word added once a call, a panel row's second channel half the first's
 under 32). The readout is bound by the shared-memory pipe, not the tensor pipe (lab
 [`readout_alone`](../../lab/readout_alone.md)).
 
+AN IMAGE ARM'S ENTRIES A TILE AHEAD: each chain loads its next tile's entry (and its mask) while the current tile
+computes, so a step opens on an entry already in registers rather than on its load and the select after it (the gate's
+largest exposed stall, 16 cycles of the step). Two registers a chain; a same-split arm, whose registers hold its lists'
+state, re-schedules worse for them and loads each entry at its own tile. Measured (sm_86, 2026-11-05, against carry-k5
+0ae0dd35, only arm 0's body changed): arm 0's worst readout loop 74.3% -> 77.0%; a warp-window alt-k4 21.39K ->
+21.22K, alt-k16 ~55.8K -> ~55.6K, cohort-k16 58.4K -> 56.9-57.0K; on arm 2 the same prefetch read 68.1% -> 64.1% and
+read-k4's readout +3%.
+
 A SIDE WITH NO LIST LEVEL reads its two digits as ONE GROUP (the unified readout's output scaling at m = 2, by
 structure: every token is in every digit's list, so the group's union is each digit's own and grouping adds no MMAs): a
 tile loads its 8 rows once (`tile_in_m`), takes each digit's coefficient from the row and scales it to the token's unit,
