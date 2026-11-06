@@ -114,7 +114,7 @@ every lane holds its quad's four rows: list `J` lies in the lanes `t & 1 == J >>
 selects, no branch) at words `J & 1` and `2 + (J & 1)`. The state left shared memory (4 KB of the area: nl64k-dense's read chunk 192 slots, three a
 window, where 256 and two fit without it) and then the call's global workspace (a line of adds a list, a load a
 window: 2026-11-02, 8c83835e) -- in registers it costs neither, and the window's tables read it there
-(`parts.md#den`: a window's read chunks run before its fold chunks, so they see the state before its writes).
+(`handoff.md#den`: a window's read chunks run before its fold chunks, so they see the state before its writes).
 
 A box carries the den of a warp's list `j` where `j boxes / 4` is its box (`den_lists`, `boxes = dv / 32`): each of
 two boxes lists 0-15 or 16-31, of four a quarter -- every list once, the cost shared. The branch is the CTA's, an
@@ -138,7 +138,7 @@ copies of the step's slots, their coefficient loads its partner's lists), four s
 (`den_pairs`) the tile goes into the den's registers in the list owner's layout (`den_place<P>`, one layout on either
 side: lane `(g, t)`'s word `i` is element `i` of digit tile `t >> 1` in lane `(g, t & 1)` for warp `w`'s lists, `(g, 2 +
 (t & 1))` for its partner's), its own by a shuffle, its partner's through shared memory (2 KB over the den image, free
-while folding, `parts.md#den`; one barrier), at `2^(Em - 4)`, the box's lists alone. A first form, each warp its own four lists in half
+while folding, `handoff.md#den`; one barrier), at `2^(Em - 4)`, the box's lists alone. A first form, each warp its own four lists in half
 an n8 tile, ran twice the separate pass's den MMAs and read +0.8-1.5% on sm_86's tensor-bound dense fold.
 A box whose lists' den it does
 not carry takes the steps without it (`Den` false: a uniform choice a chunk). The separate pass it replaces

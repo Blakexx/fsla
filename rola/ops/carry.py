@@ -60,7 +60,7 @@ def _outer(plan) -> set[int]:
 
 def same_split(carve: Carve) -> int:
     """Whether the fold's lists are the readout's digits (1: both sides list the same levels) or its K (0) -- the
-    hand-off's form (docs/internals/carry/parts.md#store); a box whose sides share part of a level set has none."""
+    hand-off's form (docs/internals/carry/handoff.md#store); a box whose sides share part of a level set has none."""
     read = carve.readout
     fold, read_rows = _outer(carve.fold), set(read.operand if read.lists else read.operand[:1])
     if fold == _outer(read):
@@ -113,7 +113,7 @@ def carry(routes, values, facts, carve: Carve, scale: torch.Tensor, accumulate: 
     """THE LAUNCH: ``(num, den, check)`` -- ``num`` the readout's partials summed across CTAs: int32
     ``[BH, T, d_v / 2]`` f16 pairs in channel order at each token's ``scale`` byte (``reduce_dtype`` f16), or fp32
     ``[BH, T, d_v]`` (fp32; :func:`reduce_dtype_for`'s rule where None) -- ``den`` each token's den, fp32 ``[BH, T]``,
-    the v+1 channel (`parts.md#den`) -- ``check`` the skeleton's fp32 sum of the final state. ``facts`` is the facts pass's over this bundle, its read entries' offsets
+    the v+1 channel (`handoff.md#den`) -- ``check`` the skeleton's fp32 sum of the final state. ``facts`` is the facts pass's over this bundle, its read entries' offsets
     in this arm's read pool rows (:func:`form`). The readout accumulates in the device's form
     (:func:`readout_accumulate`); ``accumulate`` (``"fp32"`` or ``"fp16"``) is reserved: the gates' choice of form, so
     both forms are gated on any card (``tests/oracle/test_carry_readout.py``). Each window's plan is the planner rule's

@@ -5,6 +5,7 @@
 #pragma once
 
 #include "carry/fold.cuh"
+#include "carry/handoff.cuh"
 #include "carry/panel.cuh"
 #include "carry/readout.cuh"
 #include "carry/schedule.cuh"

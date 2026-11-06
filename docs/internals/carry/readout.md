@@ -2,7 +2,7 @@
 
 Mirrors `csrc/rola/src/carry/readout.cuh`. The readout of a LISTED read side, a VALUE CARVE: every warp reads every
 digit of the box and every leaf of it, for its own channels and its own tokens -- where the fold is a state carve (its
-warps own lists, `fold.md`). The fold hands its state over through the image (`parts.md#image`); the readout's
+warps own lists, `fold.md`). The fold hands its state over through the image (`handoff.md#image`); the readout's
 output goes to the panel and from there to `num` and `den` (`panel.md`). A side with no list level (the dense
 readout: its nest of accumulator groups, operand scaling) is the next component, and `Plan` refuses an arm whose
 `read_factors` is not 1.
@@ -39,7 +39,7 @@ form (fp16 where the card's fp32 accumulate runs at half rate,
 A DIGIT `d`: its run in the warp's token group (count and place by three shuffles from lane `d`, `chunk_runs`), its
 slice -- the 32 lists x 8 channels of the warp's channel group, one `ldmatrix.x4.trans` (`slice_row`) -- the den
 image's slice for the digit's block (`den_row`), the digit's exponent as `2^(e_d - kImageTop - kCoefTop)` (the image
-holds the digit at `2^(kImageTop - e_d)` of the fold's state, itself `2^kCoefTop` the state: `parts.md#maxima`) and its
+holds the digit at `2^(kImageTop - e_d)` of the fold's state, itself `2^kCoefTop` the state: `handoff.md#maxima`) and its
 den factor. A TILE is 16 of the run's entries, tokens on M: lane `l`'s entry `l & 15` (a lane past the run loads the
 tile's first and adds nothing), its row from the pool by two `ldmatrix.x4` (`chunk_addr`: 16 tokens x 32 lists), two
 m16n8k16 MMAs against the slice and two against the den slice (`tile_mma`). Then each of the lane's two tokens (rows

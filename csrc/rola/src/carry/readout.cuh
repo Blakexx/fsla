@@ -2,8 +2,8 @@
 // slots and its channel group's 8 channels over every digit of the box. see docs/internals/carry/readout.md
 #pragma once
 
+#include "carry/handoff.cuh"
 #include "carry/panel.cuh"
-#include "carry/parts.cuh"
 
 namespace rola::carry {
 

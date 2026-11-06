@@ -110,7 +110,7 @@ struct CarryParams {
   float* check;
   float* probe;
   float* probe_den;
-  //: each query head's token's den, fp32 `[BH heads, L]`, added into by every CTA holding its leaves (`parts.md#den`)
+  //: each query head's token's den, fp32 `[BH heads, L]`, added into by every CTA holding its leaves (`handoff.md#den`)
   float* den;
   long long* ledger;
 };

@@ -27,8 +27,8 @@ each forms its lane addresses where it runs; held from before the loop, every ph
 Window 0's inputs and record are staged before the loop (one copy group, waited). A window, its plan record read once
 (`stream_of`: the mode, the chunks, the counts) and each chunk's place from its step word (`schedule.md#steps`):
 
-1. **The maxima's keys**: each warp's digit maxima posted (`parts.md#maxima`) and each digit's largest den
-   (`parts.md#den`), before any copy of the window is issued -- the keys' shared loads and shuffles would otherwise
+1. **The maxima's keys**: each warp's digit maxima posted (`handoff.md#maxima`) and each digit's largest den
+   (`handoff.md#den`), before any copy of the window is issued -- the keys' shared loads and shuffles would otherwise
    queue behind the copies in the shared pipe (measured 2026-10-25 at nl64k-alt-k4: the maxima 1,952 -> 1,708 cycles a
    warp-window, the call 2.9% faster; issued after the keys' barrier instead, the copies land late and the dense cells
    run 13-15% slower).
@@ -36,7 +36,7 @@ Window 0's inputs and record are staged before the loop (one copy group, waited)
    (`parts.md#entries`: a chunk's runs once, for its fill and its readout), then **the next window's inputs
    staged** (a second group): both land under the keys' rendezvous, the exponents and the first store. Then the
    rendezvous, each digit's exponent recorded by every warp (the same values) for its stores and the readout, and the
-   den's factors and image (`parts.md#den`).
+   den's factors and image (`handoff.md#den`).
 3. **The read chunks**, each in order: its fill where it is not the first (issued after the chunk before is drained,
    into its own place; where that place takes the panel still being drained -- the step word's `reuse` -- the chunk
    before ends with a rendezvous after its drain, predicated: `ops.md#rendezvous-if`); its image -- whole, stored

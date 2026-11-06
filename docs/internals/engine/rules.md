@@ -158,7 +158,7 @@ rows whole while they fit. **The readout's warps** each hold every leaf for thei
 8-channel groups by token groups (`carve.md#sides`) -- so the state reaches the readout
 through the image, never in place. Whether the fold's lists are the readout's digits (both
 sides list the same level) or its K fixes how the hand-off reads the state into the image:
-the arm key's `same_split` (`../carry/parts.md#same-split`).
+the arm key's `same_split` (`../carry/handoff.md#same-split`).
 
 ## <a id="run-table"></a>The run table: the skip predicate is a host decision
 

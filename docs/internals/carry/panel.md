@@ -30,7 +30,8 @@ of `num` (`token_row`: the slot's query head and window token) -- the word's cha
 `red.global.add.f32`. Then THE DEN: a thread a slot, its four words summed, one `red.global.add.f32` into `den`. Each
 address is a 32-bit word offset from the head's base (`word_at`, one widening multiply-add; the host holds a write
 head's rows under 2^32 words). A GAP slot (the union's tail past its tokens, its token's bit 15) adds nothing. The
-CTAs join only here (R22: independent units, joined by atomics). The f16 pairs meet across CTAs at one scale, the
+CTAs join only here (R22: independent units, joined by atomics): the cross-CTA adds (`red_add_h2`, `red_add_f32`) are
+unpredicated, each one `red.global` instruction. The f16 pairs meet across CTAs at one scale, the
 token's byte, which every CTA reads the same.
 
 ITS FORM AGAINST ITS FLOOR: the gap test is a branch around each add (ptxas wraps a predicated `red.global` in a

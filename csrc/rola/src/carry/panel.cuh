@@ -1,4 +1,5 @@
-// csrc/rola/src/carry/panel.cuh -- THE PANEL, a read chunk's num and den words, and THE DRAIN of both to HBM.
+// csrc/rola/src/carry/panel.cuh -- THE PANEL, a read chunk's num and den words, and THE DRAIN of both to HBM by the
+// cross-CTA adds.
 // see docs/internals/carry/panel.md
 #pragma once
 
@@ -7,6 +8,31 @@
 namespace rola::carry {
 
 namespace ops = ::denseref::ops;
+
+//: THE CROSS-CTA ADDS, unpredicated: f16 pairs (no flush to zero), one fp32.
+__device__ __forceinline__ void red_add_h2(uint32_t* at, uint32_t v) {
+  asm volatile("red.global.add.noftz.f16x2 [%0], %1;" ::"l"(at), "r"(v) : "memory");
+}
+
+__device__ __forceinline__ void red_add_f32(float* at, float v) {
+  asm volatile("red.global.add.f32 [%0], %1;" ::"l"(at), "f"(v) : "memory");
+}
+
+//: A TOKEN'S ROW in `den` (and in `num`, in units of `dv`): its units index `u` (a query head's token in the window)
+//: as the head's row and the window's token.
+__device__ __forceinline__ uint32_t token_row(uint32_t u, uint32_t L) {
+  return (u >> window_bits(kWindow) & static_cast<uint32_t>(window_heads(kWindow) - 1)) * L
+         + (u & (kWindow - 1));
+}
+
+//: A WORD `off` words past `base` (`off` under 2^32), its own add: never re-associated into the base's sum.
+template <class T>
+__device__ __forceinline__ T* word_at(T* base, uint32_t off) {
+  static_assert(sizeof(T) == 4, "a 32-bit word");
+  uint64_t a;
+  asm("mad.wide.u32 %0, %1, 4, %2;" : "=l"(a) : "r"(off), "l"(reinterpret_cast<uint64_t>(base)));
+  return reinterpret_cast<T*>(a);
+}
 
 //: SLOT `s`'s NUM WORD `w` in the panel, bytes, rotated by the slot. -- see docs/internals/carry/panel.md#words
 template <bool F32>

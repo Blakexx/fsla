@@ -14,8 +14,8 @@ the area from 8,320:
   windows' each by parity: a window's are copied while the window before it is still read;
 - the write lists' exponent pairs, by parity;
 - the unit book (a list's running unit, `fold.md#units`) and the window's scale a list (`fold.md#units`), the
-  digit keys (by parity), the digit exponents in lane order a row a warp and the scales' bits (`parts.md#maxima`);
-- the den image (2 KB, `parts.md#den`; a dense fold's exchange while it folds, `fold.md#dense`) and each digit's den
+  digit keys (by parity), the digit exponents in lane order a row a warp and the scales' bits (`handoff.md#maxima`);
+- the den image (2 KB, `handoff.md#den`; a dense fold's exchange while it folds, `fold.md#dense`) and each digit's den
   factor and largest den (the den state is registers, `fold.md#state`);
 - the phase clock's rows;
 - the CTA's addresses (`Addr`, 256 bytes reserved: `parts.md#place`).
@@ -47,15 +47,15 @@ the step machine landed its two slots on, each counting all 256 threads, are ret
 
 `kPlaneBytes` a digit (32 lists x 32 channels, f16), the whole image `kImageWhole` (64 KB) or `kImageRing` (32 KB):
 one half of two, stored and read by each read chunk (`schedule.md#buffers`), a digit's plane its four channel groups'
-slices (`parts.md#image`). `kBatchPlanes` = 8 digits a batch (`kBatches` = 4): half an m-tile of each of a warp's 4
-lists in the alternating form, one of its lists in the same split (`parts.md#store`).
+slices (`handoff.md#image`). `kBatchPlanes` = 8 digits a batch (`kBatches` = 4): half an m-tile of each of a warp's 4
+lists in the alternating form, one of its lists in the same split (`handoff.md#store`).
 
 <a id="plan"></a>
 ## The plan
 
 `Plan<Arm, Cc>` is an arm's key (`tools/gen_shards.py`'s `ARM_KEY`) on card `Cc`, the compiling one by default
 (`arch::kArch`). The key fixes each side's dense rows a warp and its operand's level count, and the hand-off's form
-(`kSameSplit`, `parts.md#same-split`); the plan asserts the box's 32 rows a side and 32 channels and a listed read side
+(`kSameSplit`, `handoff.md#same-split`); the plan asserts the box's 32 rows a side and 32 channels and a listed read side
 (the dense readout is the next component), and derives:
 
 - the fold's tiles: a warp folds lists `w + 8 j` (4); the readout's warps are its token and channel groups

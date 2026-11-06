@@ -108,7 +108,7 @@ halves; the fold's largest chunk. A FORCED FORM
 (`CarryParams::forced`, `rola.ops.carry.forced_word`: a mode, a read chunk and a fold chunk, each the rule's, the union
 or a multiple of 64) is reserved for the gates and the measurements; a window takes it where every chunk of it fits
 alone beside its image and a whole image has reads to serve (`forced_plan`), else the rule's. Every arm hands its
-state off through the image (`parts.md#same-split`). THE LEAST PLAN (`least_plan_fits`, at the call's reduce dtype, the
+state off through the image (`handoff.md#same-split`). THE LEAST PLAN (`least_plan_fits`, at the call's reduce dtype, the
 launch's refusal): the halves beside one 64-slot read buffer of lists full on every token, and one such fold buffer.
 
 Why a rule, not a search (measured 2026-10-14, nl64k-alt-k4 on sm_86, every named form timed warm): the rule's form is

@@ -40,7 +40,7 @@ The fp32 accumulator of one GEMM becomes the A operand of the next by reinterpre
 and narrowing the type — no store, no shuffle.
 - FA2: `flash_fwd_kernel.h:378-380` (`make_tensor(rP.data(), convert_layout_acc_Aregs<TiledMma>(rP.layout()))` → `gemm_rs`); the layout math `utils.h:199-211`.
 - FA3: `hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp:1156-1160` (same, plus an explicit register permute for fp8, and a documented fallback through SMEM when the register-sourced GMMA is unavailable, `:1161-1162`).
-RoLA: the hand-off converts the fold's fp32 state to the readout's f16 image (`docs/internals/carry/parts.md#store`);
+RoLA: the hand-off converts the fold's fp32 state to the readout's f16 image (`docs/internals/carry/handoff.md#store`);
 a phase change that moves state is the transfer the design names, never an ad-hoc copy.
 
 ## 3. Shared memory: copy atoms, swizzles by composition, transposition as a layout operation

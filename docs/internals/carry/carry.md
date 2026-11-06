@@ -8,7 +8,7 @@ plan `plan.md`.
 The carry is the inter-window term: each CTA owns a BOX of leaves (the carve's, `docs/internals/engine/rules.md#carve`,
 `docs/internals/engine/carve.md`) and walks a call's windows in order. Every window it reads the state before the
 window's writes out to the window's readers (the readout), then folds the window's writers into it (the fold). The
-state never leaves the registers inside a call; the readout reads an f16 image of it (`parts.md#image`), each warp every
+state never leaves the registers inside a call; the readout reads an f16 image of it (`handoff.md#image`), each warp every
 leaf of the box for its channels (`readout.md`).
 
 <a id="constants"></a>
@@ -71,7 +71,7 @@ the slot's residue, or its high bits within each four for a row of an odd number
 the rows and values at their strides (the row alignment law, `docs/internals/facts/facts.md`), the facts pass's
 lists, the cross-CTA sum's scale bytes (`scale`, an exponent byte a query head's token, a window wide so a window's
 copy is aligned: the scale pass's bound on |num(t)|, `scale/scale.md`, read only where `reduce` is f16 pairs). The
-outputs are `den` (each token's v+1 channel, `parts.md#den`), `num` (a query head's: f16 pairs at each token's scale, or
+outputs are `den` (each token's v+1 channel, `handoff.md#den`), `num` (a query head's: f16 pairs at each token's scale, or
 fp32 channels, by `reduce` -- `carry_api.md#carry-reduce`, `panel.md#drain`) and `check` (the final state's sum).
 `plans` are the plan pass's records (`schedule.md#pass`), a window's for each box class.
 `readout_f16` is the readout's accumulation (`carry_api.md#carry-readout-accumulate`); `forced` a plan form every
@@ -90,7 +90,7 @@ launch (`CarryCapture`, `carry_api.md#carry-capture-bind`).
   copy at least and `kSliceBytes` at most.
 - every tensor's dtype, contiguity and exact shape (the lists' five, `scale` `[BH, windows x W]`, `num` int32 `[BH,
   T, d_v / 2]` for f16 pairs or fp32 `[BH, T, d_v]`); the arm key's channels and factor counts agreeing with the
-  carve, and its hand-off form (`same_split`) with the levels the sides list (`parts.md#same-split`); a write head's
+  carve, and its hand-off form (`same_split`) with the levels the sides list (`handoff.md#same-split`); a write head's
   `num` rows under 2^32 values (the drain's offsets); the readout's accumulation fp32 (0) or fp16 (1); the cross-CTA sum f16
   pairs (0) or fp32 (1); a forced form -1 or a
   mode (0 to 2) with two chunk fields in 14 bits; a window's token stride under 2^31 / `kWindow` (a window's offsets
