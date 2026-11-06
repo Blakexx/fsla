@@ -255,7 +255,7 @@ struct Samples {
 class Bench {
  public:
   static constexpr int kMaxWarps = 32;
-  int sms = 0, reps = 7;
+  int sms = 0, reps = 7, blocks = 0;
   bool expect_only = false;
   long long* times = nullptr;
   int* sinks = nullptr;
@@ -264,9 +264,12 @@ class Bench {
     for (int i = 1; i < argc; ++i) {
       if (!std::strcmp(argv[i], "--expect")) expect_only = true;
       if (!std::strcmp(argv[i], "--reps") && i + 1 < argc) reps = std::atoi(argv[++i]);
+      if (!std::strcmp(argv[i], "--blocks") && i + 1 < argc) blocks = std::atoi(argv[++i]);
     }
     if (expect_only) return;
     LAB_CHECK(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, 0));
+    //: `--blocks N`: the grid an experiment launches over `sms` held to N CTAs (a sanitizer's run at one CTA)
+    if (blocks > 0 && blocks < sms) sms = blocks;
     LAB_CHECK(cudaMalloc(&times, sizeof(long long) * sms * kMaxWarps));
     LAB_CHECK(cudaMalloc(&sinks, sizeof(int) * sms * kMaxWarps * 32));
     cudaDeviceProp prop{};

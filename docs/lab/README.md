@@ -42,6 +42,7 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`read_stream`](read_stream.md) | experiment |
 | [`read_red`](read_red.md) | experiment |
 | [`read_value`](read_value.md) | experiment |
+| [`read_alone`](read_alone.md) | part harness |
 | [`read_group`](read_group.md) | experiment |
 | [`drain`](drain.md) | experiment |
 | [`handoff`](handoff.md) | experiment |

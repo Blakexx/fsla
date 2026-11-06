@@ -111,6 +111,11 @@ Every operation is defined by WHAT THE ALGORITHM NEEDS. A helper with no caller 
   reads at one address is a broadcast. (`store_shared_u16`, `store_shared_u32`, `load_shared_u16`,
   `store_shared_f32x2`, `load_shared_v4` and `load_shared_f32`: no shipped caller)
 
+<a id="load-shared-if"></a>`load_shared_u32_if`, `load_shared_u64_if` and `load_shared_f32_if` are the loads predicated
+the same way (`@p LDS`, 0 where `live` is false). A read-modify-write whose store is predicated off predicates its
+load too, so a dead lane reads no word a live lane of its warp writes (the carry's panel adds: a tile's rows past its
+run alias its first row's slot).
+
 #### Votes and lanes
 
 - <a id="kballotlanes"></a>`kBallotLanes`: the lockstep unit's width, deliberately not `kMmaUnitThreads`: a warpgroup

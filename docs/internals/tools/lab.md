@@ -56,7 +56,9 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
   `mma_u8s8`.
 * `lab::Bench` — the host runner: `expect(kernel, op, cmp, count)` declares SASS (printed under `--expect`, run by the
   driver before anything is timed), `variant(launch, measure)` warms up and repeats a launch, `record(name, unit,
-  samples)` prints a result, `cycles(warps)` and `mean(...)` read the warps' clocks.
+  samples)` prints a result, `cycles(warps)` and `mean(...)` read the warps' clocks. `--blocks N` holds the grid an experiment launches over `Bench::sms` to N CTAs, so a sanitizer
+  can run an experiment at one CTA (racecheck's host memory grows with the CTAs it tracks: the carry's readout part
+  harness, `read_alone`, at one CTA).
 * `Bench::budget(kernel, class, max)` — KERNEL_STANDARDS §29's instruction budget, per MMA, gated on ncu's executed
   counts by `run`; `Bench::units(kernel, unit, n)` makes a kernel with no MMAs budgeted per unit, its first launch
   doing `n` of them (`color_union`: a box-window colored).

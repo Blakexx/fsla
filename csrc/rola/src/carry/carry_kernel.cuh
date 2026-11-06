@@ -105,14 +105,14 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
 
   //: A READ CHUNK'S READOUT over digits `lo .. hi - 1` of the image at `area` (digit `d`'s plane `d & mask`), into
   //: its panel at the call's reduce dtype
-  const auto read_out = [&](int w, const Entry& e, const Run& run, ops::SmemAddr buf, int lo,
-                            int hi, uint32_t mask) {
+  const auto read_out = [&](const Entry& e, const Run& run, ops::SmemAddr buf, int lo, int hi,
+                            uint32_t mask) {
     const ops::SmemAddr panel = buf + static_cast<uint32_t>(read_panel<P>(e.slots())),
                         dens = buf + static_cast<uint32_t>(read_dens<P>(e.slots(), p.reduce)),
                         ents = buf + static_cast<uint32_t>(read_ents<P>(e.slots(), p.reduce));
     const auto go = [&](auto F32, auto F16) {
       read_chunk<P, decltype(F32)::value, decltype(F16)::value>(
-          p, smem, run, w, e.first(), lo, hi, area, mask, buf, panel, dens, ents, wid(), lid());
+          smem, run, e.first(), lo, hi, area, mask, buf, panel, dens, ents, wid(), lid());
     };
     if (p.reduce == kReduceF32) {
       if (p.readout_f16)
@@ -125,6 +125,11 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       else
         go(std::false_type{}, std::false_type{});
     }
+  };
+  //: A READ CHUNK'S ENTRY FACTORS, after its copies land (each warp its own digits' runs) and before the rendezvous
+  const auto factors_out = [&](int w, const Entry& e, const Run& run, ops::SmemAddr buf) {
+    read_factors<P>(p, smem, run, w, buf + static_cast<uint32_t>(read_ents<P>(e.slots(), p.reduce)),
+                    wid(), lid());
   };
   //: A READ CHUNK'S DRAIN: its panel to `num`, its den words to `den`
   const auto drain_out = [&](int w, const Entry& e, ops::SmemAddr buf) {
@@ -185,40 +190,36 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         fill_read(w, e, run, buf);
         clock.lap(kPhaseFill);
       }
-      // R9-CASES: ImageMode, the plan's image modes (schedule.cuh)
-      if (s.mode == kModeWhole) {
-        if (i == 0) store_batches<P, kBoxDigits - 1>(st, smem, area, 0, kBatches, wid(), lid());
+      //: THE IMAGE'S PASSES: one over the whole image, or two over its halves (each chunk storing both), one readout
+      //: call site for both: the second pass's store after a rendezvous, the first's landing and entry factors before
+      //: its readout
+      const bool whole = s.mode == kModeWhole;
+#pragma unroll 1
+      for (int h = 0; h < (whole ? 1 : 2); ++h) {
+        if (h > 0) {
+          ops::rendezvous();
+          clock.lap(kPhaseWait);
+        }
+        // R9-CASES: ImageMode, the plan's image modes (schedule.cuh)
+        if (s.mode == kModeWhole) {
+          if (i == 0) store_batches<P, kBoxDigits - 1>(st, smem, area, 0, kBatches, wid(), lid());
+        } else if (s.mode == kModeHalves) {
+          store_batches<P, 2 * kBatchPlanes - 1>(st, smem, area, 2 * h, 2 * h + 2, wid(), lid());
+        } else {
+          __trap();
+        }
         clock.lap(kPhaseStore);
-        landed(i == 0 && more);
+        for (int once = ops::once(h == 0); once > 0; --once) {
+          landed(i == 0 && more);
+          factors_out(w, e, run, buf);
+        }
         clock.lap(kPhaseLanded);
         ops::rendezvous();
         clock.lap(kPhaseWait);
-        read_out(w, e, run, buf, 0, kBoxDigits, kBoxDigits - 1);
+        read_out(e, run, buf, whole ? 0 : 2 * kBatchPlanes * h,
+                 whole ? kBoxDigits : 2 * kBatchPlanes * (h + 1),
+                 whole ? kBoxDigits - 1 : 2 * kBatchPlanes - 1);
         clock.lap(kPhaseReadout);
-      } else if (s.mode == kModeHalves) {
-        //: the two halves as one block each (no branch on the half): the second's store after a rendezvous, the
-        //: first's landing before its readout
-        static_for<2>([&](auto H) {
-          constexpr int half = decltype(H)::value;
-          if constexpr (half > 0) {
-            ops::rendezvous();
-            clock.lap(kPhaseWait);
-          }
-          store_batches<P, 2 * kBatchPlanes - 1>(st, smem, area, 2 * half, 2 * half + 2, wid(),
-                                                 lid());
-          clock.lap(kPhaseStore);
-          if constexpr (half == 0) {
-            landed(i == 0 && more);
-            clock.lap(kPhaseLanded);
-          }
-          ops::rendezvous();
-          clock.lap(kPhaseWait);
-          read_out(w, e, run, buf, 2 * kBatchPlanes * half, 2 * kBatchPlanes * (half + 1),
-                   2 * kBatchPlanes - 1);
-          clock.lap(kPhaseReadout);
-        });
-      } else {
-        __trap();
       }
       ops::rendezvous();
       clock.lap(kPhaseWait);

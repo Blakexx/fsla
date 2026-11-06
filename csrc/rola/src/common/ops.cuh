@@ -727,6 +727,30 @@ __device__ __forceinline__ void store_shared_f32_if(SmemAddr a, float v, bool li
                : "memory");
 }
 
+//: A WORD, A PAIR AND AN fp32 LOADED where `live`, 0 elsewhere: one `@p LDS`, never a branch around it, so a lane
+//: whose store is predicated off reads no word another lane writes. -- see docs/internals/common/ops.md#load-shared-if
+__device__ __forceinline__ uint32_t load_shared_u32_if(SmemAddr a, bool live) {
+  uint32_t v = 0u;
+  asm volatile("{\n.reg .pred p;\nsetp.ne.b32 p, %2, 0;\n@p ld.shared.u32 %0, [%1];\n}\n"
+               : "+r"(v)
+               : "r"(a), "r"(static_cast<int>(live))
+               : "memory");
+  return v;
+}
+
+__device__ __forceinline__ uint2 load_shared_u64_if(SmemAddr a, bool live) {
+  uint2 v = make_uint2(0u, 0u);
+  asm volatile("{\n.reg .pred p;\nsetp.ne.b32 p, %3, 0;\n@p ld.shared.v2.u32 {%0, %1}, [%2];\n}\n"
+               : "+r"(v.x), "+r"(v.y)
+               : "r"(a), "r"(static_cast<int>(live))
+               : "memory");
+  return v;
+}
+
+__device__ __forceinline__ float load_shared_f32_if(SmemAddr a, bool live) {
+  return __uint_as_float(load_shared_u32_if(a, live));
+}
+
 //: TWO fp32 AT ONCE, an 8-byte aligned pair. -- see docs/internals/common/ops.md#store-shared-f32x2
 __device__ __forceinline__ void store_shared_f32x2(SmemAddr a, float x, float y) {
   asm volatile("st.shared.v2.f32 [%0], {%1,%2};" ::"r"(a), "f"(x), "f"(y) : "memory");
