@@ -138,5 +138,6 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="issue-latency"></a>[`issue_latency`](../../lab/issue_latency.md)
 - <a id="row-stream"></a>[`row_stream`](../../lab/row_stream.md)
 - <a id="read-stream"></a>[`read_stream`](../../lab/read_stream.md)
+- <a id="read-red"></a>[`read_red`](../../lab/read_red.md)
 - <a id="read-group"></a>[`read_group`](../../lab/read_group.md)
 - <a id="drain"></a>[`drain`](../../lab/drain.md)
