@@ -1348,12 +1348,14 @@ __device__ __forceinline__ void units_dense(const CarryParams& p, const uint8_t*
   const ops::SmemAddr dead = ops::smem_addr(smem + P::kDeadUnit),
                       bound_at = ops::smem_addr(smem + p.tables.bounds_at);
   const uint32_t* const tab = reinterpret_cast<const uint32_t*>(smem + P::kLeafScale);
-  const uint32_t* const dtab = reinterpret_cast<const uint32_t*>(smem + P::kDenRows);
+  const volatile uint32_t* const dtab =
+      reinterpret_cast<const volatile uint32_t*>(smem + P::kDenRows);
   const float* const dfac = reinterpret_cast<const float*>(smem + P::kDenFactor);
   uint32_t a[2][2][4], da[2][2][4];
   float sc[2][2], fac[2][2];
 
-  //: the bound's A in the table's natural pairs; the den's from the den rows' B words (pair `q` at `2 (q & 7) + (q >> 3)`)
+  //: the bound's A in the table's natural pairs; the den's from the den rows' B words (pair `q` at `2 (q & 7) + (q >> 3)`),
+  //: a word a load, so no two K halves fuse into one load's register pair and each MMA's quad stays put (`#units`)
   static_for<2>([&](auto M) {
     static_for<2>([&](auto K) {
       const int r0 = (16 * M + g) * 16, r1 = r0 + 8 * 16, c = 8 * K + t, w = 2 * t + K;

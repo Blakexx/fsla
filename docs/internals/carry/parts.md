@@ -294,7 +294,10 @@ kCoefTop)`, summed over the digits by a reduce-scatter (the first of three round
 the other: the full butterfly's tree at half its shuffles: across `g`'s low bit a lane keeps token `2 t + c`, `c` that bit;
 each token's total in four lanes, the den taking token `r` from lane `(r & 1) << 2 | r >> 1`), two tiles a warp in
 flight; a slot past the chunk stores to the
-dead word. The same pass reads the dense side's den, 4 more MMAs a tile against the den rows ([`#den`](#den)). `bounds_clear` resets the counters each window. The pass runs between the chunk's landing and its first
+dead word. The same pass reads the dense side's den, 4 more MMAs a tile against the den rows ([`#den`](#den)), their A
+words loaded a word a load before the loop: read as plain loads the two K halves of a word pair fused into one 64-bit
+load, and every step re-copied 16 registers into each MMA's aligned quad (28 moves a step; the step 238 -> 207
+instructions without them, sm_80's arm 1 47.2% -> 49.9%). `bounds_clear` resets the counters each window. The pass runs between the chunk's landing and its first
 tile, with its barriers; its cost is placement, not arithmetic (measured 2026-10-22: +2.0K cycles a warp-window at
 nl64k-alt-k4 as a per-entry chain, unchanged by three placements); the ruled line is +6-9% a listed call by the dense
 side's MMA form for listed sides (2026-10-24).
