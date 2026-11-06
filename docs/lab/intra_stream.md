@@ -52,6 +52,18 @@ counters are closed, so the driver's ncu pass cannot run there) is the same bina
 | multistage, the refill whole after the stage's MMAs, 3 buffers | 10.7, 24.0 | 5.6, 22.9 |
 | multistage, the refill a piece after each slab: 3 / 4 / 6 buffers | **10.8, 23.8** / 10.9, 23.6 / 11.1, 23.1 | **6.4, 20.0** (3) / 6.1, 21.0 (6) |
 
+2026-11-06, the A100 (SXM4 40 GB, rented; counters closed, the rows the driver prints before its ncu pass), 5
+repetitions:
+
+| form | 2 slabs (dense f16) | 4 slabs (u8) |
+|---|---|---|
+| the Gram alone (no copies) | --, 13.0 | --, 12.1 |
+| every warp streams into spare buffers, nothing waits on the copies (10 buffers) | 16.6, 15.4 | 8.3, 15.4 |
+| a producer warp, 3 buffers | 7.8, 32.6 | -- |
+| multistage, the refill at the stage's start (the intra's), 3 buffers | 12.3, 20.9 | 7.1, 18.1 |
+| multistage, the refill whole after the stage's MMAs, 3 buffers | 12.6, 20.3 | 7.0, 18.3 |
+| multistage, the refill a piece after each slab: 3 / 6 buffers | **13.4, 19.1** / 13.6, 18.8 | **8.0, 16.0** (3) / 7.8, 16.4 (6) |
+
 WHAT IT SETTLES: the Gram's code runs at the tensor rate (16.9 cycles an MMA against sm_86's 16), the token stride costs
 nothing, and the bytes in flight do not bind: a ring of 3, 6 or 10 stages delivers the same rate. The ~8 bytes a cycle
 the first forms reached beside a Gram is the forms', not the SM's (corrected 2026-11-05): with nothing waiting on the
