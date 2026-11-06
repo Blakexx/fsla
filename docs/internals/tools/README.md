@@ -58,6 +58,7 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 | [`pipes.py`](pipes.md) | one counter set for any launch and its pricing per card: each pipe's cycles, the binding one | `lab.py`, `pipe_counters.py` | -- (a module) |
 | [`carve_model.py`](carve_model.md) | the carry's mechanics for any carve on any card, over a real cell's lists (KERNEL_STANDARDS §32.2) | -- (in build: the carve study) | prints |
 | [`design_floor.py`](design_floor.md) | the value-carve carry's counts and floors a CTA-window over a cell's real lists, any box, any card (ESTIMATED: no kernel yet) | a person (the carry's design) | prints |
+| [`readout_scaling.py`](readout_scaling.md) | the readout's output and operand scaling against the fp64 oracle on a cell's real state (the dense side's accumulator form) | a person (the carry's design) | prints |
 | [`overlap_gate.py`](overlap_gate.md) | each kernel's perf rows against the largest of their floors (§28) | -- | exit 1 when red |
 | [`stall_census.py`](stall_census.md) | every warp-stall sample of one launch, by source line | the `census` target | `--json` |
 | [`pipe_timeline.py`](pipe_timeline.md) | the pipes' activity over one launch, measured on silicon | the `timeline` target | `--json`; a `pipe_timeline.scale` record under `--calibrate`, which it reads back as later runs' scale |
