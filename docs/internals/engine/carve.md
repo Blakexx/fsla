@@ -56,9 +56,9 @@ disagrees with the warps' ownership. The planner's own carves pass through it.
 `Carve` is frozen, so it plans once a declaration (`functools.cache` on `_planned`) and every later call of the
 shape returns the same object. Planning in Python -- the build, the check's rebuild, each side's warp ownership over
 the box's 1,024 leaves -- ran twice a prefill call (the envelope's clauses and the facts node) before the first
-kernel launched: ~2.7 ms of the GPU idle a call on sm_86 at `nl64k-alt-k4-h4` (`tools/op_timeline.py`: the sparse
-prefill 15.04 -> 12.35 ms a call, the idle 3.75 -> 1.13 ms). A refused declaration raises every time (an exception is
-not cached).
+kernel launched, the GPU idle meanwhile (`tools/op_timeline.py` found it). Planned once: the A100's sparse prefill at
+`nl64k-alt-k4-h4` 10.50 -> 8.03 ms and layer g16 11.27 -> 8.72 ms, interleaved in one bench run against the tree
+before (2026-11-06). A refused declaration raises every time (an exception is not cached).
 
 ## <a id="open"></a>Open
 

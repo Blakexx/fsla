@@ -14,8 +14,7 @@ under `torch.profiler` (CPU and CUDA activity), each call synchronized before an
 - the host ops by their own time.
 
 `--python` profiles one more call's host Python with `cProfile` (by cumulative and by own time), which names the
-Python behind a gap the profiler's ops only frame (`_PrefillNode`). The first reading (sm_86, `nl64k-alt-k4-h4`): one
-~3.3 ms gap a call before the facts pass, the carve planner run twice in Python
+Python behind a gap the profiler's ops only frame (`_PrefillNode`) -- how the carve planner's cost was found
 ([`../engine/carve.md#planned-once`](../engine/carve.md#planned-once)).
 
 A synchronized call exposes all of its host time; back to back, a call's host work overlaps the previous call's
