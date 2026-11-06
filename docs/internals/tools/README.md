@@ -29,6 +29,8 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 | `build/dag_to_dot.py` | a DAG tuple (`rola.engine.dags.*`) as Graphviz DOT and SVG | a person, after a DAG change | the `.svg` beside its page |
 | `build/ninjatracing.py` | `.ninja_log` as a Chrome/Perfetto trace, the compile ledger's visual form | a person | the trace |
 | `git-hooks/pre-commit` | THE COMMIT GATE, run from the checkout's venv against `.pre-commit-config.yaml` | git, every commit | — |
+| `git-hooks/post-commit` | THE ADVISORY REVIEW: `review_gate.py` on HEAD in the background (`review_gate.md`) | git, every commit | — |
+| [`review_gate.py`](review_gate.md) | a commit, range or staged diff reviewed by an LLM against CONSTITUTION and KERNEL_STANDARDS, each finding citing a rule and a line; advisory | the post-commit hook, a person | `rola-review/` in the git common dir |
 
 ## Ratification and the assembled code
 

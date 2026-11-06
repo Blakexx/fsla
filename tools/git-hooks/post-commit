@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Copyright 2026 Blake Bottum
+# SPDX-License-Identifier: Apache-2.0
+#
+# THE ADVISORY REVIEW, after every commit (Blake, 2026-11-06): tools/review_gate.py reviews HEAD against the
+# CONSTITUTION and KERNEL_STANDARDS in the background, its report in the git common dir's rola-review/
+# (`python tools/review_gate.py --show 1`). It never slows or refuses a commit: skipped mid-rebase, without the
+# `claude` CLI, or with ROLA_REVIEW=off. docs/internals/tools/review_gate.md
+[ "${ROLA_REVIEW:-on}" = off ] && exit 0
+command -v claude >/dev/null 2>&1 || exit 0
+git_dir="$(git rev-parse --git-dir)"
+{ [ -d "$git_dir/rebase-merge" ] || [ -d "$git_dir/rebase-apply" ]; } && exit 0
+venv="$(git config --get rola.venv || true)"
+py=python3
+[ -n "$venv" ] && [ -x "$venv/bin/python" ] && py="$venv/bin/python"
+"$py" tools/review_gate.py HEAD --background >/dev/null 2>&1 || true
+exit 0
