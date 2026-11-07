@@ -120,10 +120,11 @@ __host__ __device__ __forceinline__ constexpr uint32_t slice_row(int cg, int l, 
 }
 
 //: THE DEN IMAGE: a block a readout channel group, the 8 digits it reads the den of (`d mod 4`), 32 lists x 8 digits
-//: f16, list `l`'s row 16 bytes; digit `d` in block `d & 3` at column `d >> 2` (`den_col`).
+//: f16, list `l`'s 16-byte row at `l` XOR its block and its bit 4 inside its 8-row group (the writer's 32 lanes on 16
+//: banks, the reader's rows a 128-byte group); digit `d` in block `d & 3` at column `d >> 2` (`den_col`).
 //: -- see docs/internals/carry/handoff.md#den
 __host__ __device__ __forceinline__ constexpr uint32_t den_row(int l, int d) {
-  return static_cast<uint32_t>((d & 3) * kSliceBlock + 16 * l);
+  return static_cast<uint32_t>((d & 3) * kSliceBlock + 16 * (l ^ (((l >> 4) & 1) << 2 | (d & 3))));
 }
 
 __host__ __device__ __forceinline__ constexpr int den_col(int d) { return d >> 2; }

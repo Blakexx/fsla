@@ -210,11 +210,13 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
           __trap();
         }
         clock.lap(kPhaseStore);
+        //: the chunk's copies landed, then its entry factors, the readout's own work (booked as readout)
         for (int once = ops::once(h == 0); once > 0; --once) {
           landed(i == 0 && more);
+          clock.lap(kPhaseLanded);
           factors_out(w, e, run, buf);
         }
-        clock.lap(kPhaseLanded);
+        clock.lap(kPhaseReadout);
         ops::rendezvous();
         clock.lap(kPhaseWait);
         read_out(e, lane_run, buf, whole ? 0 : 2 * kBatchPlanes * h,

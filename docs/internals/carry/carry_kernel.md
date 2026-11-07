@@ -134,7 +134,8 @@ most of the call's fixed cost.
 <a id="phases"></a>
 ## The phase ledger's phases
 
-`CarryPhase` is the ledger's column order: `landed` (an entry's copies waited), `maxima`, `store`, `readout`, `drain`,
+`CarryPhase` is the ledger's column order: `landed` (an entry's copies waited), `maxima`, `store`, `readout` (with a
+read chunk's entry factors, `readout.md#factors`), `drain`,
 `fill` (a fill's copies issued), `fold` (with the fold's units), `wait` (a step's rendezvous and the staging, every
 warp's). A lap books the cycles since the last into its phase, so the columns sum to the warp's whole run.
 `rola.ops.carry.LEDGER_PHASES` names the same order.
