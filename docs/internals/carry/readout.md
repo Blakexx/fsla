@@ -30,7 +30,7 @@ read the same digit's slices at the same time, so the image is read by the CTA a
 
 At the 64-channel box (32 lists x 16 digits x 64 channels) the warps are 1 token group x 8 channel groups: every warp
 takes all of a digit's run (`read_run`'s whole count; no split, so no 64-slot imbalance between groups) for its 8
-channels, its own digits `d mod 8` with their den. The tile, its K of 32 lists and its two MMAs are the 32-channel
+channels, the den of its group's `n_d` contiguous digits (`handoff.md#den`). The tile, its K of 32 lists and its two MMAs are the 32-channel
 box's.
 
 <a id="factors"></a>
@@ -59,7 +59,8 @@ call's reduce dtype), `F16` the MMAs' accumulate form (fp16 where the card's fp3
 [`carry_api.md#carry-readout-accumulate`](carry_api.md#carry-readout-accumulate)). Each lane holds its digit's RUN WORD
 in the warp's token group (`read_run`, once a chunk: the digit, its entries' place << 5, its count << 21), so a shuffle
 from it takes its source lane from the low bits. It runs two PASSES (`read_pass`), each digit with entries in the token
-group in one of them: the digits the warp's channel group names (`d mod cg`) with their den, then the others with the num
+group in one of them: the digits whose den the warp's channel group reads (`d mod 4` at 32 channels, its group's
+contiguous `n_d` at 64: `handoff.md#den`) with their den, then the others with the num
 alone -- the den's MMAs only where they are kept (a warp-uniform `if` around them is if-converted to predicated HMMAs,
 which the ptxas gate refuses, `../../KERNEL_STANDARDS.md#s20`; two loops are not).
 
@@ -103,7 +104,11 @@ form against the one-digit tile at denser lists: alt-k16's density (18 / 256) 11
 (+5%: a run of 16 or more a tile of two halves of one digit, its MMAs and slices twice). A table of the pass's halves
 (tile `k` lanes `2 k`, `2 k + 1`, no successor chain) measured 9.6K: its ~340-cycle build four times a window, every
 scheduler's two warps in it together. In the composed kernel (`tools/phase_ledger.py`, the readout's one call site)
-the readout phase 11.0K of a 29.2K window at the one-digit tile, from 13.1K of 31.6K and 24.9K of 41.8K. THE SASS GATE holds its step loops at their floor (`tools/budgets/step_floors.json`,
+the readout phase 11.0K of a 29.2K window at the one-digit tile, from 13.1K of 31.6K and 24.9K of 41.8K. AT THE 32 x 16
+x 64 BOX (the planner's at nl64k-alt-k4 and flagship-alt-k16; the harness at the cell's chunk): the den digits a
+group's two contiguous, one den pass a chunk, took the harness 7.5K -> 6.3K (flagship-alt-k16's chunk 11.2K -> 10.6K)
+and the composed readout 8.35K -> 7.09K of a 24.19K -> 23.34K window (flagship-alt-k16 22.3K -> 20.8K of 56.1K ->
+55.4K); the rest went to the half's rendezvous, where the warps without a den wait. THE SASS GATE holds its step loops at their floor (`tools/budgets/step_floors.json`,
 `tools/sass_gate.py`'s `_STEP_COVER_DEBT`); what replaces the debt is composition with the fold (each scheduler's two
 warps in different phases) and sm_90's `wgmma` (a warpgroup's operand read once).
 

@@ -126,10 +126,10 @@ __host__ __device__ __forceinline__ constexpr uint32_t slice_row(int cg, int l, 
   return static_cast<uint32_t>(cg * P::kSliceBlock + 16 * (l ^ (d & 7)));
 }
 
-//: THE DEN IMAGE: blocks of 8 digit columns (the den MMA's N), K rows x 8 digits f16, digit `d` the group `d mod cg`'s
-//: (`cg` channel groups, each reading its own digits' den): block `den_block`, column `den_col`; K row `l`'s 16 bytes at
-//: `l` XOR a constant of its 8-row group and the block (the reader's rows a 128-byte group; the writer's lanes on 16
-//: banks at 4 groups, 32 at 8). -- see docs/internals/carry/handoff.md#den
+//: THE DEN IMAGE: blocks of 8 digit columns (the den MMA's N), K rows x 8 digits f16, digit `d` the den of channel group
+//: `d mod 4` at 4 groups, of `d / kDenGroupDigits` at 8 (a group's digits one image half's): block `den_block`, column
+//: `den_col`; K row `l`'s 16 bytes at `l` XOR a constant of its 8-row group and the block (the reader's rows a 128-byte
+//: group; the writer's lanes on 16 banks). -- see docs/internals/carry/handoff.md#den
 template <class P>
 constexpr int kDenGroupDigits = P::kDigits / P::kChannelGroups;
 
@@ -141,7 +141,7 @@ __host__ __device__ __forceinline__ constexpr int den_block(int d) {
   if constexpr (P::kChannelGroups == 4)
     return d & 3;
   else
-    return (d & (P::kChannelGroups - 1)) / kDenBlockGroups<P>;
+    return d >> 3;
 }
 
 template <class P>
@@ -149,8 +149,7 @@ __host__ __device__ __forceinline__ constexpr int den_col(int d) {
   if constexpr (P::kChannelGroups == 4)
     return d >> 2;
   else
-    return (d & (kDenBlockGroups<P> - 1)) * kDenGroupDigits<P>
-           + (d >> (P::kChannelGroups == 8 ? 3 : 0));
+    return d & 7;
 }
 
 template <class P>

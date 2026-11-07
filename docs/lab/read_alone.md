@@ -8,12 +8,15 @@ THE QUESTION. What does the value-carve readout cost a warp-window alone -- prod
 shared-memory floors and against the composed kernel's readout phase? The readout component's instrument for the
 iteration Blake ruled 2026-11-06 (the readout to its floor without changing the ruled design).
 
-THE METHOD. One CTA an SM with arm 0's plan tenants; each of 64 windows a 216-slot union whose 32 digits hold ~8
-entries each (slot `s` in digit `d`'s list with probability 10 / 256; or COLORED, the coloring's best case, a list's
-entry `k` on residue `k mod 8`; two denser draws, 18 / 256 -- alt-k16's density, 2.2 reads a token -- and 40 / 256
-past it, the listed regime's other end), the image in halves as sm_86 runs it: the factors, a rendezvous, both halves'
-readouts
-with a rendezvous between. The draw is stored to shared memory before two barriers and read inside the span: after one
+THE METHOD. One CTA an SM with a box's plan tenants. At the 32 x 32 x 32 box each of 64 windows a 216-slot union whose
+32 digits hold ~8 entries each (slot `s` in digit `d`'s list with probability 10 / 256; or COLORED, the coloring's best
+case, a list's entry `k` on residue `k mod 8`; two denser draws, 18 / 256 -- alt-k16's density, 2.2 reads a token --
+and 40 / 256 past it, the listed regime's other end). At the 32 x 16 x 64 box (one token group by eight channel
+groups; the planner's box at nl64k-alt-k4 and flagship-alt-k16) a read chunk as the cell's: nl64k-alt-k4's 120 slots,
+each slot one digit's and any other's at 1 / 256 (the cell: a 117-slot union a box-window, ~8 entries a digit, 1.09
+reads a token), flagship-alt-k16's 192 at 9 / 256 (its chunk of a 333-slot union, 1.5 reads a token). The image in
+halves as sm_86 runs it (the planner's rule at both cells): the factors, a rendezvous, both halves' readouts with a
+rendezvous between. The draw is stored to shared memory before two barriers and read inside the span: after one
 barrier the empty span read 19.4K cycles a window (the warps not lined up by it, measured), after two 38. The floors are
 computed on the host from the same draw: TENSOR each scheduler's two warps' MMAs (4 a tile at the first form's den on
 every warp, 16 cycles at fp16 accumulate on sm_86, 32 at fp32, 8 on sm_80), SHARED the CTA's wavefront-cycles at the
@@ -37,6 +40,20 @@ halves in place of the successor shuffle: 9,614 / 8,510 / 20,478 at 10 / 256 ran
 serial build). Floors at the first form's traffic: tensor 4,023, shared 8,091. Bank conflicts are not what binds: the colored draw
 has none (104K conflicted wavefronts against 6.4M random, ncu) and costs the same. RACECHECK at one CTA over every
 variant: 0 hazards.
+
+THE 32 x 16 x 64 BOX (sm_86, cycles a warp-window, median of 7; floors as above, a channel group's tiles 16 rows of a
+digit):
+
+| form | alt-k4's chunk, sm_86's form | the A100's form | fp32 panel | flagship-alt-k16's chunk |
+|---|---|---|---|---|
+| the den digits `d mod 8` (each image half one of a warp's two) | 7,513 | 7,981 | 8,014 | 11,160 |
+| the den digits a group's two contiguous (one half's, one den pass a chunk) | 6,343 | 6,418 | 6,649 | 10,594 |
+| floors (tensor / shared) | 2,052 / 4,102 | 4,104 / 4,102 | 4,104 / 4,615 | 3,408 / 5,966 |
+
+At `d mod 8` the box's work fell (the slots a warp-window's tiles 16 -> ~11) but not its time: every pass runs whole
+two-tile trips, and a den pass of one digit a half is a 269-instruction trip for about half a tile (the census at
+nl64k-alt-k4: 124 tiles a CTA-window against ~92 the runs need). The ALU pipe binds (the lab's pipes: ~32-38 ALU
+cycles an MMA against 9-10 shared and 4 tensor).
 
 WHAT IT DECIDES. The readout's own form was 3x its shared floor from instructions and its tile's dependent chain, not
 from conflicts; each change above was taken into the kernel and gated (the per-slot oracle, the SASS gate), the

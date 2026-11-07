@@ -332,8 +332,11 @@ __device__ __forceinline__ void read_chunk(const uint8_t* smem, uint32_t run, in
       lane >> 2,
       tq};
   const uint32_t live = __ballot_sync(0xffffffffu, half_count(run) > 0 && lane >= lo && lane < hi);
-  //: the digits the warp's channel group names (`d mod cg`) with their den, then the others: each digit once
-  const uint32_t own = live & ((kNarrow ? 0x11111111u : 0x01010101u) << cg);
+  //: the digits whose den the warp's channel group reads (`d mod 4` at 32 channels; at 64 its `kDenGroupDigits`
+  //: contiguous ones, `den_block`) with their den, then the others: each digit once
+  constexpr int kGroup = kDenGroupDigits<P>;
+  constexpr uint32_t kOwn = kNarrow ? 0x11111111u : (1u << kGroup) - 1u;
+  const uint32_t own = live & (kOwn << (kNarrow ? cg : kGroup * cg));
   read_pass<P, F32, F16, true>(r, own);
   read_pass<P, F32, F16, false>(r, live & ~own);
 }

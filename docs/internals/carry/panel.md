@@ -26,8 +26,8 @@ so an entry's key is no longer the panel's base: it holds the base in 16-byte un
 `(panel + 8 tq) + 32 (key ^ cg)`, the lane's word `4 cg + tq` (f16) or `8 cg + 2 tq` (fp32) of the rotation above. 8
 slots of distinct residues meet 32 banks on either dtype, as at 32 channels.
 
-THE DEN WORDS are `kDenWords` fp32 a slot, one a readout channel group (the group that reads digit `d` out adds its den
-at word `d mod cg`, `cg` the box's channel groups), 16 bytes at 32 channels and 32 at 64: no two warps add into one
+THE DEN WORDS are `kDenWords` fp32 a slot, one a readout channel group (the group that reads a digit's den adds it at
+its own word `cg`, `cg` the box's channel groups; `handoff.md#den`), 16 bytes at 32 channels and 32 at 64: no two warps add into one
 word, so the den needs no atomics either; the drain sums them.
 
 <a id="drain"></a>
