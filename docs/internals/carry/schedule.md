@@ -73,7 +73,8 @@ read (the plan pass writes them, and the gate holds every bit to the model word 
 
 A chunk's buffer is laid out at its OWN slots (`parts.cuh`'s `read_panel`, `read_dens`, `read_ents`, `fold_ents`): a
 read buffer's rows (`C x row`), its num panel (`C x 64` at f16 pairs, `C x 128` at fp32: the call's reduce dtype,
-`panel.md#words`), its den words (`C x 16`), its entries (`E x 8`), each part 128-byte aligned; a fold buffer's rows
+`panel.md#words`), its den words (`C x 16`), its entries (`E x 8`; a dense read side's two exit words a slot in their
+place, `readout_dense.md#row`), each part 128-byte aligned; a fold buffer's rows
 (slices then values) and entries (a side with no list level: each slot's `(F, m)`, 8 bytes a slot, in their place).
 `read_bytes` (at the call's `reduce`) and `fold_bytes` are their sizes, so a chunk's footprint is its actual count,
 never the window's largest chunk; every size is a multiple of 128, so a place is too. The IMAGE (`ImageMode`) is whole

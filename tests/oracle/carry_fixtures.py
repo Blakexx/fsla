@@ -62,6 +62,20 @@ def read_listed_bundle(widths, L, read_sparse, *, live=4, d_v=64, seed=0):
     return routes, values
 
 
+def dense_bundle(widths, L, *, d_v=64, seed=0):
+    """A bundle dense on both sides at every level (every digit live): the box both sides' dense levels, the readout's
+    digits its coefficients' level (readout_dense.md)."""
+    D = len(widths)
+    gen = torch.Generator().manual_seed(seed + 1)
+    topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in widths))
+    routes = RouteFactors.from_levels(topology, levels(widths, L, list(widths), seed=seed),
+                                      levels(widths, L, list(widths), seed=seed + 7),
+                                      (torch.rand((1, L, 2), generator=gen) + 0.5).cuda(),
+                                      sparse=((False,) * D, (False,) * D))
+    values = Values.from_projection(torch.randn((1, L, 2, d_v), generator=gen).cuda())
+    return routes, values
+
+
 #: THE DENSE WRITE SIDE'S 64-CHANNEL BOX: 16 lists (the read side's list level, its digits) x 32 rows x 64 channels, two
 #: lists a warp
 def box64_dense(read_sparse: int) -> tuple[tuple[int, int], int]:

@@ -8,6 +8,7 @@
 #include "carry/handoff.cuh"
 #include "carry/panel.cuh"
 #include "carry/readout.cuh"
+#include "carry/readout_dense.cuh"
 #include "carry/schedule.cuh"
 #include "common/phase_clock.cuh"
 
@@ -111,26 +112,42 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     const ops::SmemAddr panel = buf + static_cast<uint32_t>(read_panel<P>(e.slots())),
                         dens = buf + static_cast<uint32_t>(read_dens<P>(e.slots(), p.reduce)),
                         ents = buf + static_cast<uint32_t>(read_ents<P>(e.slots(), p.reduce));
-    const auto go = [&](auto F32, auto F16) {
-      read_chunk<P, decltype(F32)::value, decltype(F16)::value>(smem, run, lo, hi, area, mask, buf,
-                                                                panel, dens, ents, wid(), lid());
-    };
-    if (p.reduce == kReduceF32) {
-      if (p.readout_f16)
-        go(std::true_type{}, std::true_type{});
-      else
-        go(std::true_type{}, std::false_type{});
+    if constexpr (P::kReadFactors == 2) {
+      //: a dense read side: its den once a chunk (the den image whole), then the call's digits, fp32 accumulate
+      for (int once = ops::once(lo == 0); once > 0; --once)
+        dense_den<P>(smem, e.slots(), buf, dens, ents, wid(), lid());
+      if (p.reduce == kReduceF32) {
+        read_dense<P, true>(e.slots(), lo, hi, area, mask, buf, panel, ents, wid(), lid());
+      } else {
+        read_dense<P, false>(e.slots(), lo, hi, area, mask, buf, panel, ents, wid(), lid());
+      }
     } else {
-      if (p.readout_f16)
-        go(std::false_type{}, std::true_type{});
-      else
-        go(std::false_type{}, std::false_type{});
+      const auto go = [&](auto F32, auto F16) {
+        read_chunk<P, decltype(F32)::value, decltype(F16)::value>(
+            smem, run, lo, hi, area, mask, buf, panel, dens, ents, wid(), lid());
+      };
+      if (p.reduce == kReduceF32) {
+        if (p.readout_f16)
+          go(std::true_type{}, std::true_type{});
+        else
+          go(std::true_type{}, std::false_type{});
+      } else {
+        if (p.readout_f16)
+          go(std::false_type{}, std::true_type{});
+        else
+          go(std::false_type{}, std::false_type{});
+      }
     }
   };
-  //: A READ CHUNK'S ENTRY FACTORS, after its copies land (each warp its own digits' runs) and before the rendezvous
+  //: A READ CHUNK'S ENTRY FACTORS, after its copies land (each warp its own digits' runs) and before the rendezvous; a
+  //: dense side's tokens' coefficients and exit words
   const auto factors_out = [&](int w, const Entry& e, const Run& run, ops::SmemAddr buf) {
-    read_factors<P>(p, smem, run, w, e.first(),
-                    buf + static_cast<uint32_t>(read_ents<P>(e.slots(), p.reduce)), wid(), lid());
+    const ops::SmemAddr ents = buf + static_cast<uint32_t>(read_ents<P>(e.slots(), p.reduce));
+    if constexpr (P::kReadFactors == 2) {
+      dense_factors<P>(p, smem, w, e.first(), e.slots(), buf, ents, wid(), lid());
+    } else {
+      read_factors<P>(p, smem, run, w, e.first(), ents, wid(), lid());
+    }
   };
   //: A READ CHUNK'S DRAIN: its panel to `num`, its den words to `den`
   const auto drain_out = [&](int w, const Entry& e, ops::SmemAddr buf) {

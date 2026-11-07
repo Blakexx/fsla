@@ -54,10 +54,11 @@ __host__ __device__ __forceinline__ constexpr uint32_t plan_word(uint32_t mode, 
 }
 
 //: A READ BUFFER'S BYTES at the call's reduce dtype and a FOLD BUFFER'S, at a chunk's slots and entries (`read_ents`,
-//: `fold_ents`).
+//: `fold_ents`; a dense read side's a slot's two exit words where a listed side's entries are).
 template <class P>
 __host__ __device__ constexpr int read_bytes(int slots, int entries, int reduce) {
-  return read_ents<P>(slots, reduce) + align_of(entries * 8, 128);
+  return read_ents<P>(slots, reduce)
+         + (P::kReadFactors == 2 ? align_of(slots * 8, 128) : align_of(entries * 8, 128));
 }
 
 //: (a fold buffer of a write side with no list level holds each slot's (F, m) in its entries' place)

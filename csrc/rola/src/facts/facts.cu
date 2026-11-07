@@ -768,11 +768,13 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                     " digits, got ", list_groups[side]);
     p.list_group[side] = static_cast<int>(list_groups[side]);
   }
+  //: a listed read side's entries hold their rows' places (a dense side has none: its row is the carry's alone)
   STD_TORCH_CHECK(
-      read_row >= 64 && read_row % 64 == 0 && (read_row == 128 || read_row / 64 % 2 == 1)
-          && p.g * W * read_row / 16 <= 65536,
-      "the read pool row is 128 bytes or an odd number of 64, a window's g heads' pool inside a "
-      "16-bit offset of 16-byte chunks; got ",
+      read_list_level < 0
+          || (read_row >= 64 && read_row % 64 == 0 && (read_row == 128 || read_row / 64 % 2 == 1)
+              && p.g * W * read_row / 16 <= 65536),
+      "a listed read side's pool row is 128 bytes or an odd number of 64, a window's g heads' pool "
+      "inside a 16-bit offset of 16-byte chunks; got ",
       read_row, " bytes at g ", p.g);
   p.read_row = static_cast<int>(read_row);
   for (int level = 0; level < D; ++level)

@@ -45,7 +45,8 @@ joined by atomics): the cross-CTA adds (`red_add_h2`, `red_add_f32`) are unpredi
 
 NO BRANCH AROUND AN ADD (lab [`drain`](../../lab/drain.md): a predicated `red.global` is a convergence region around
 each add). A GAP slot (the union's tail, `kGap`) holds no token; the union is padded to whole 8-token steps
-(`facts.cu`), so its gaps lie in its last step and a chunk's in its last 8 slots: one load a lane, a ballot and a
+(`facts.cu`), so its gaps lie in its last step and a chunk's in its last 8 slots (a dense read side stages no union:
+its slots are the window's tokens, a slot its token, no gap -- the fill's unlisted case): one load a lane, a ballot and a
 popcount give the chunk's token count `n`, a warp-uniform bound. A step past `n` (the warp's last trip) adds zero at the
 trip's first slot's row -- a token's own, never one row every CTA's dead lanes would share (the lab's serialized
 dummy row). The f16 pairs meet across CTAs at one scale, the token's byte, which every CTA reads the same.

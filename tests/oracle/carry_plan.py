@@ -49,7 +49,8 @@ TOP = 0
 class Counts(NamedTuple):
     """A window's counts: each side's union and segment sums, whether the write side lists (a side with no list
     level's fold buffer holds each slot's factors in its entries' place), the call's reduce dtype (0 f16 pairs, 1
-    fp32: a read slot's panel row) and the box's channels (32 the shipped 32 x 32 x 32 box's)."""
+    fp32: a read slot's panel row), the box's channels (32 the shipped 32 x 32 x 32 box's) and whether the read side
+    is dense (its buffer a slot's exit words where a listed side's entries are)."""
 
     ru: int
     rs: tuple
@@ -58,6 +59,7 @@ class Counts(NamedTuple):
     wl: bool = True
     reduce: int = 0
     channels: int = 32
+    read_dense: bool = False
 
 
 def image_bytes(mode: int) -> int:
@@ -79,9 +81,10 @@ def _a128(x: int) -> int:
     return (x + 127) // 128 * 128
 
 
-def read_bytes(slots: int, entries: int, read_row: int, reduce: int = 0, channels: int = 32) -> int:
+def read_bytes(slots: int, entries: int, read_row: int, reduce: int = 0, channels: int = 32,
+               read_dense: bool = False) -> int:
     return (_a128(slots * read_row) + _a128(slots * panel_row(channels, reduce)) + _a128(slots * den_row(channels))
-            + _a128(entries * 8))
+            + _a128((slots if read_dense else entries) * 8))
 
 
 def fold_bytes(slots: int, entries: int, write_row: int, listed: bool = True) -> int:
@@ -150,7 +153,7 @@ def rule_plan(c: Counts, read_row: int, write_row: int, area: int) -> int:
     """`rule_plan`: the read chunk beside the halves, the image whole where it fits beside the largest read buffer, the
     fold's largest chunk in the area."""
     def nbytes(s, e):
-        return read_bytes(s, e, read_row, c.reduce, c.channels)
+        return read_bytes(s, e, read_row, c.reduce, c.channels, c.read_dense)
 
     rc = largest_chunk(c.ru, c.rs, area - image_bytes(HALVES), nbytes) if c.ru > 0 else 0
     nr = chunks_of(c.ru, rc)
@@ -177,7 +180,8 @@ def forced_plan(forced: int, c: Counts, rule: int, read_row: int, write_row: int
     fits = mode == HALVES or c.ru > 0
     for first in range(0, c.ru, rc or 1):
         s = min(rc, c.ru - first)
-        fits = fits and image + read_bytes(s, entries_of(c.rs, first, s, c.ru), read_row, c.reduce, c.channels) <= area
+        fits = fits and image + read_bytes(s, entries_of(c.rs, first, s, c.ru), read_row, c.reduce, c.channels,
+                                           c.read_dense) <= area
     for first in range(0, c.fu, fc or 1):
         s = min(fc, c.fu - first)
         fits = fits and fold_bytes(s, entries_of(c.fs, first, s, c.fu), write_row, c.wl) <= area
@@ -208,7 +212,8 @@ def entry_bytes(x: Win, t: int, read_row: int, write_row: int) -> int:
     first = (t if read else t - x.nr) * chunk
     slots = min(chunk, total - first)
     if read:
-        return read_bytes(slots, entries_of(x.c.rs, first, slots, total), read_row, x.c.reduce, x.c.channels)
+        return read_bytes(slots, entries_of(x.c.rs, first, slots, total), read_row, x.c.reduce, x.c.channels,
+                          x.c.read_dense)
     return fold_bytes(slots, entries_of(x.c.fs, first, slots, total), write_row, x.c.wl)
 
 
@@ -327,7 +332,8 @@ def plans(routes, facts, carve, forced: str | None = None) -> list[list[Record]]
                 for w in range(windows):
                     ru, rs = _side(read, carve.readout, routes, w, bh, gr)
                     fu, fs = _side(write, carve.fold, routes, w, bh, gw)
-                    wins.append(win_of(Counts(ru, rs, fu, fs, bool(carve.fold.lists), reduce, carve.channels),
+                    wins.append(win_of(Counts(ru, rs, fu, fs, bool(carve.fold.lists), reduce, carve.channels,
+                                              not carve.readout.lists),
                                        word, read_row, write_row, area))
                 out.append(records(wins, read_row, write_row, area))
     return out

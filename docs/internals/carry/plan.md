@@ -91,8 +91,10 @@ the next component), and derives:
 - the fold's tiles: a warp folds lists `w + 8 j` (4); the readout's warps are its token and channel groups
   (`readout.md#warps`);
 - the registers: `kStateRegs` = 128 fp32 a lane;
-- the pool rows: a read row is the read side's operand slices (`kReadRow`: 64 bytes, or 128 with a coefficient level),
-  a write row the write side's slices then the values (`kWriteRow`: 128 or 192);
+- the pool rows: a read row is the read side's operand slices (`kReadRow`: 64 bytes, or 128 with a coefficient level;
+  a dense read side's K rows then its digits' coefficients, 96 at `[16, 2, 16, 2, 64, 1]`: `readout_dense.md#row` --
+  a dense read side only where its digits are the fold's lists, the same split), a write row the write side's slices
+  then the values (`kWriteRow`: 128 to 224);
 - the shared memory: `kSmemBytes`, the card's whole opt-in maximum a CTA, `kAreaAt` where the area starts, and
   `kArea`, what the tenants and one head's read tables leave (the census's) -- 88,832 bytes on sm_86.
 

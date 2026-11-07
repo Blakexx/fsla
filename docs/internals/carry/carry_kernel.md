@@ -42,8 +42,10 @@ Window 0's inputs and record are staged before the loop (one copy group, waited)
    before ends with a rendezvous after its drain, predicated: `ops.md#rendezvous-if`); its image -- whole, stored
    once before the first chunk, or in halves, each chunk storing both
    -- its copies landed (`cp.async.wait_group`: every group but the staging's, which may still fly), a rendezvous,
-   its readout over the image (`readout.md`, at the call's reduce dtype and the card's accumulate form; a rendezvous
-   before the second half's store), then a rendezvous and its panel drained to `num` and `den` (`panel.md#drain`).
+   its readout over the image (`readout.md`, at the call's reduce dtype and the card's accumulate form; a dense read
+   side's `readout_dense.md`: its factors where a listed side's entry factors are, its den once a chunk, fp32
+   accumulate; a rendezvous before the second half's store), then a rendezvous and its panel drained to `num` and
+   `den` (`panel.md#drain`).
 4. **The fold chunks**, each in order: a rendezvous where the chunk before's rows or the drained panel may be taken
    (every chunk after the first; the first where its step word's `reuse` says, predicated: `ops.md#rendezvous-if`),
    its fill, every group landed, a rendezvous, the window's units stepped at the first (`fold.md#units`), the fold

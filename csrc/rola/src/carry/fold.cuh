@@ -497,12 +497,54 @@ __device__ __forceinline__ void den_pairs4(State<P>& st, const uint8_t* smem,
   }
 }
 
+//: THE ONE-M-TILE FORM (four lists a warp of one m-tile, a lane's list `w + 8 t` at rows `g`, `g + 8`): column `c` of
+//: the tile is lane `(g, c >> 1)`'s elements `c & 1` and `2 + (c & 1)` -- a doer `w < 4` its own column `t` by a quad
+//: shuffle, its partner `w + 4`'s columns `4 + t` through shared memory (1 KB over the den image; a barrier).
+template <class P>
+__device__ __forceinline__ void den_pairs1(State<P>& st, const uint8_t* smem,
+                                           const float (&den)[P::kFoldMTiles][4], int kden,
+                                           uint32_t dens, int warp, int lane) {
+  static_assert(P::kFoldLists == 4 && P::kFoldMTiles == 1 && P::kDenRegs == 2,
+                "four lists a warp of one m-tile, two den words a lane");
+  const int g = lane >> 2, t = lane & 3;
+  const bool doer = warp < kWarps / 2, odd = (t & 1) != 0;
+  const DenPlace<P> at = den_place<P>(warp, lane);
+  const float f = pow2(kden - kCoefTop);
+  const ops::SmemAddr ex = ops::smem_addr(smem + P::kDenImage);
+  //: a doer lane `(g, 2 + h)`'s tile at `(doer, g, h)`: 4 doers x 8 rows x 2 x 16 bytes
+  const auto slot = [&](int d, int h) {
+    return ex + 16u * static_cast<uint32_t>((d * 8 + g) * 2 + h);
+  };
+  float own[4];
+  static_for<4>([&](auto I) { own[I] = __shfl_sync(0xffffffffu, den[0][I], 4 * g + (t >> 1)); });
+  const auto add = [&](float x0, float x1) {
+    static_for<2>([&](auto I) {
+      const bool carried = ((dens >> (at.list(I) >> 3)) & 1u) != 0u;
+      st.den[I] += carried ? (decltype(I)::value == 0 ? x0 : x1) * f : 0.0f;
+    });
+  };
+  if (doer) {
+    add(odd ? own[1] : own[0], odd ? own[3] : own[2]);
+    if (t & 2)
+      ops::store_shared_vec16(slot(warp, t - 2),
+                              make_uint4(__float_as_uint(den[0][0]), __float_as_uint(den[0][1]),
+                                         __float_as_uint(den[0][2]), __float_as_uint(den[0][3])));
+  }
+  ops::rendezvous();
+  if (!doer) {
+    const uint4 v = ops::load_shared_vec16(slot(warp - kWarps / 2, t >> 1));
+    add(__uint_as_float(odd ? v.y : v.x), __uint_as_float(odd ? v.w : v.z));
+  }
+}
+
 template <class P>
 __device__ __forceinline__ void den_pairs(State<P>& st, const uint8_t* smem,
                                           const float (&den)[P::kFoldMTiles][4], int kden,
                                           uint32_t dens, int warp, int lane) {
   if constexpr (P::kFoldLists == 2)
     den_quads<P>(st, smem, den, kden, dens, warp, lane);
+  else if constexpr (P::kFoldMTiles == 1)
+    den_pairs1<P>(st, smem, den, kden, dens, warp, lane);
   else
     den_pairs4<P>(st, smem, den, kden, dens, warp, lane);
 }

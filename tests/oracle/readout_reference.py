@@ -97,7 +97,10 @@ def readout(routes, values, list_exp, level_s: int, window: int, scale: torch.Te
     panel's dtype -- f16 at the token's scale byte ``2^(scale + 1)``, or fp32 -- and added into the token's panel word,
     a rounding an add; the CTAs' panels added into ``num`` in the reduce dtype, each add half an ulp of the slot's
     magnitude ``(n + 1) 2^-11`` for ``n`` CTAs (f16) or ``2^-24`` (fp32), and the f16 subnormal floor a piece, an add and
-    a CTA."""
+    a CTA. A DENSE READ SIDE (readout_dense.md): each (token, digit)'s coefficient rewritten at the token's exponent
+    ``e_t`` over the box's digits and its rows scaled by it, both rounded to f16 (``2^-11`` each, their subnormal floors
+    ``2^(e_t - e_d - 25)`` of the state there), one fp32 accumulator a box, its exit at most two panel roundings (an
+    image half's store and the other's add)."""
 
     x, a = _read_rows(routes, level_s)
     B, T, H, B_S = x.shape
@@ -111,6 +114,8 @@ def readout(routes, values, list_exp, level_s: int, window: int, scale: torch.Te
     s_bytes = scale.double().reshape(B, H, T).permute(0, 2, 1)                                 # [B, T, H]
     f16 = reduce_dtype == torch.float16
     eps = 2.0 ** -11 if f16 else 2.0 ** -24
+    dense = not any(routes.sparse[0])
+    acc = ACCUMULATE["fp32" if dense else accumulate]
 
     for w, (state, env) in enumerate(_windows(routes, values, list_exp, level_s, window)):
         sl = slice(w * window, (w + 1) * window)
@@ -127,11 +132,24 @@ def readout(routes, values, list_exp, level_s: int, window: int, scale: torch.Te
         Sb = state.reshape(B, H, KS, ES, KR, ER, C)
         mag_box = torch.einsum("bthsd,bthkr,bhsdkrc->bthskc", xb.abs(), ab.abs(), Sb.abs())
         adds = (xb != 0).double().sum(-1)[:, :, :, :, None] * (ab != 0).any(-1).double()[:, :, :, None, :]
+        scaling = torch.zeros_like(mag)
+        if dense:
+            #: one exit a box (at most two panel roundings); OPERAND SCALING: c and the scaled rows at f16 and their floors
+            adds = (adds > 0).double()
+            top_b = Sb.abs().amax(dim=(5, 6))                                                  # [B, H, KS, ES, KR]
+            ed = torch.where(top_b > 0, _ceil_exp(top_b.clamp_min(1e-300)).double(), -torch.inf)
+            ex = torch.where(xb != 0, _ceil_exp(xb.abs().clamp_min(1e-300)).double(), -torch.inf)  # [B, t, H, KS, ES]
+            et = (ed[:, None] + ex[..., None]).amax(dim=4)                                     # [B, t, H, KS, KR]
+            sc = torch.exp2(et[:, :, :, :, None, :] - ed[:, None] - 25)                        # [B, t, H, KS, ES, KR]
+            sc = torch.where(torch.isfinite(sc), sc, 0.0)
+            scaling = (2 * 2.0 ** -11 * mag
+                       + torch.einsum("bthsdk,bthkr,bhsdkrc->bthc", sc, ab.abs(), Sb.abs())
+                       + torch.einsum("bthsdk,bthkr,bhsdkrc->bthc", sc, (ab != 0).double(), Sb.abs()))
         panel = (eps * (1 + adds)[..., None] * mag_box).sum(dim=(3, 4))                       # [B, t, H, C]
         n = (adds > 0).double().sum(dim=(3, 4))                                               # [B, t, H]
         frame = torch.exp2(s_bytes[:, sl] + 1)
         subnormal = (((1 + adds) * (adds > 0)).sum(dim=(3, 4)) + n) * 2.0 ** -24 * frame if f16 else torch.zeros_like(n)
-        bound[:, sl] = ((2.0 ** -11 + ACCUMULATE[accumulate]) * mag + fold + floor[..., None] + panel
+        bound[:, sl] = ((2.0 ** -11 + acc) * mag + fold + floor[..., None] + panel + scaling
                         + ((n + 1) * eps)[..., None] * mag + subnormal[..., None])
 
     return P.permute(0, 2, 1, 3).reshape(B * H, T, C), bound.permute(0, 2, 1, 3).reshape(B * H, T, C)

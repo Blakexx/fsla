@@ -54,12 +54,17 @@ __device__ __forceinline__ void drain(const CarryParams& p, const uint16_t* unio
                                       int slots, ops::SmemAddr panel, ops::SmemAddr dens,
                                       int64_t head0, int channel0, int warp, int lane) {
   const uint32_t L = static_cast<uint32_t>(p.L), dv = static_cast<uint32_t>(p.dv);
-  //: the chunk's slots that hold a token: the union's gaps are its tail inside its last step, so the chunk's last 8
-  const bool gap = lane < 8 && lane < slots && (union_tok[first + slots - 1 - lane] & kGap) != 0u;
+  //: the chunk's slots that hold a token: the union's gaps are its tail inside its last step, so the chunk's last 8 (a
+  //: dense read side's union is its window's slots, no gap: a slot its token, the fill's)
+  constexpr bool kDense = P::kReadFactors == 2;
+  const bool gap =
+      !kDense && lane < 8 && lane < slots && (union_tok[first + slots - 1 - lane] & kGap) != 0u;
   const int n = slots - __popc(__ballot_sync(0xffffffffu, gap));
 
   //: a slot's row (`token_row`: a word offset under 2^32, the host's bound)
-  const auto row_of = [&](int s) { return token_row(union_tok[first + s], L); };
+  const auto row_of = [&](int s) {
+    return token_row(kDense ? static_cast<uint16_t>(first + s) : union_tok[first + s], L);
+  };
   //: a slot past `n` adds zero at the trip's first slot's row: a token's, never one row every CTA shares
   constexpr int kWords = P::kChannels / (F32 ? 1 : 2), kRowBytes = 4 * kWords;
   if constexpr (F32 || kWords == 32) {

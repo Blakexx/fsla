@@ -24,6 +24,7 @@ from tests.oracle.carry_fixtures import (
     box64,
     box64_dense,
     box64_same,
+    dense_bundle,
     listed_bundle,
     read_listed_bundle,
 )
@@ -63,6 +64,16 @@ def test_a_dense_write_sides_64_channel_box_plans_are_the_model(read_sparse, for
     layout = facts_ops.call_layout(routes)
     _assert_plans_are_the_model(routes, values, layout, facts_ops.call_statics(routes, layout), forced,
                                 box=box64_dense(read_sparse))
+
+
+@pytest.mark.parametrize("forced", FORCED)
+@pytest.mark.parametrize("widths", [(64, 64), (128, 32)])
+def test_a_dense_read_sides_plans_are_the_model(widths, forced):
+    """Both sides dense (the 32-digit x K 16 x 64-channel box: a read slot's exit words where a listed side's entries
+    are): every record the model's word for word."""
+    routes, values = dense_bundle(widths, 2048)
+    layout = facts_ops.call_layout(routes)
+    _assert_plans_are_the_model(routes, values, layout, facts_ops.call_statics(routes, layout), forced)
 
 
 @pytest.mark.parametrize("forced", FORCED)

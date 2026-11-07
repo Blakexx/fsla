@@ -149,7 +149,10 @@ copies of the step's slots, their coefficient loads its partner's lists), four s
 (`den_pairs`) the tile goes into the den's registers in the list owner's layout (`den_place<P>`, one layout on either
 side: lane `(g, t)`'s word `i` is element `i` of digit tile `t >> 1` in lane `(g, t & 1)` for warp `w`'s lists, `(g, 2 +
 (t & 1))` for its partner's), its own by a shuffle, its partner's through shared memory (2 KB over the den image, free
-while folding, `handoff.md#den`; one barrier), at `2^(Em - 4)`, the box's lists alone. At two lists a warp the n8 tile is a QUAD of warps' lists (`w`, `w + 2` in
+while folding, `handoff.md#den`; one barrier), at `2^(Em - 4)`, the box's lists alone. At one m-tile (four lists a
+warp of 16 rows, `[16, 2, 16, 2, 64, 1]`; `den_pairs1`) a lane's den words are its list `w + 8 t` at rows `g`, `g + 8`:
+column `c` of the tile is lane `(g, c >> 1)`'s elements `c & 1` and `2 + (c & 1)`, a doer's own by a quad shuffle,
+its partner's through shared memory (1 KB; one barrier). At two lists a warp the n8 tile is a QUAD of warps' lists (`w`, `w + 2` in
 lanes `0..15`, `w + 4`, `w + 6` in `16..31`, each lane's four coefficient loads two owners' two lists), warps `w < 2` its
 doers, and every doer lane's tile goes through shared memory (`den_quads`: 2 doers x 2 m-tiles x 32 lanes x 16 bytes,
 the den image's 2 KB; one barrier), each owner lane taking its list's column of its m-tile's two rows. A first form, each warp its own four lists in half

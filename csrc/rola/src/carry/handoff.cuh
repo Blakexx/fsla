@@ -154,9 +154,10 @@ __host__ __device__ __forceinline__ constexpr int den_col(int d) {
 
 template <class P>
 __host__ __device__ __forceinline__ constexpr uint32_t den_row(int l, int block) {
-  static_assert(P::kK == 32 && kDenGroupDigits<P> * kDenBlockGroups<P> == 8
+  static_assert((P::kK == 32 || (P::kK == 16 && P::kChannelGroups == 8))
+                    && kDenGroupDigits<P> * kDenBlockGroups<P> == 8
                     && (P::kChannelGroups == 4 || P::kChannelGroups == 8),
-                "32 K rows, a block 8 digit columns, 4 or 8 channel groups");
+                "32 K rows (16 at 8 groups), a block 8 digit columns, 4 or 8 channel groups");
   if constexpr (P::kChannelGroups == 4)
     return static_cast<uint32_t>((block & 3) * P::kSliceBlock
                                  + 16 * (l ^ (((l >> 4) & 1) << 2 | (block & 3))));

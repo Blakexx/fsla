@@ -47,8 +47,8 @@ The refusals (KERNEL_STANDARDS §18: a seam refuses rather than guesses):
   fold to hand it to;
 * a side's list level is a sparse level of the depth, or -1, and its list group 16 or 32 digits;
 * a side's pass is a power of two from 128 to 512 slots: a list's passes and its end must fit its 8 starts;
-* the read pool row is 128 bytes or an odd number of 64 (the swizzles the carry folds in), a window's g heads' pool
-  inside a 16-bit offset;
+* a listed read side's pool row is 128 bytes or an odd number of 64 (the swizzles the carry folds in), a window's g
+  heads' pool inside a 16-bit offset (a dense read side has no entries to place: its row is the carry's alone);
 * the read side's heads are a whole number, at most 16, of the write side's;
 * a sparse level's rows are u8 `[B, T, H, width]` with the first level's `B, T, H`, digits contiguous, under the row
   alignment law ([`liveness_contract.md`](liveness_contract.md#alignment));

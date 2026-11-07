@@ -114,6 +114,11 @@ _FAMILIES = {
     "carry64-same": Family(
         test="tests/oracle/test_carry_readout.py::test_one_box_of_the_same_split_reads_out[f16]",
         kernel="rola::carry::carry_forward", present=True),
+    #: THE CARRY AT A DENSE READ SIDE'S BOX, one box a batch-head over two windows: the dense factors' four lanes a token,
+    #: the nest's transit groups, the den's tiles over the warps, the 96-byte read rows and their exit words.
+    "carry-dense": Family(
+        test="tests/oracle/test_carry_readout.py::test_one_box_of_a_dense_read_side_reads_out[f16]",
+        kernel="rola::carry::carry_forward", present=True),
     #: THE CARRY OVER A WHOLE CALL on cohort routing, eight windows: the plan's chunked unions and the readout's
     #: gathers where the lists cluster -- the cell the oracle's whole-call gate runs (`test_carry_vs_oracle.py`).
     "carry_call": Family(
