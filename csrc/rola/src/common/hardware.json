@@ -36,6 +36,7 @@
   },
   "arch": {
     "sm_80": {
+      "build": {"family": "ampere", "window": 1024},
       "caps": {"async_copy": true, "tile_load": true, "mma_bf16_f32": true, "bf16_cvt_packed": true, "reg_transpose_b16": true, "mma_a_from_regs": true, "mma_b_from_regs": true, "accum_in_tmem": false, "mma_a_from_tmem": false, "bf16_simd_arith": false, "bf16_simd_fma": true, "async_bulk_copy": false, "warpgroup_mma": false, "dyn_reg_realloc": false, "mma_unit_threads": 32, "smem_per_sm": 167936, "smem_per_cta_max": 166912, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 2048, "max_ctas_per_sm": 32, "driver_smem_reserve": 1024},
       "rates": {
         "schedulers": {"cycles": 4, "documented": "CUDA C++ Programming Guide, compute capability 8.x: four warp schedulers an SM"},
@@ -71,6 +72,7 @@
       }
     },
     "sm_86": {
+      "build": {"family": "ampere", "window": 512},
       "note": "local dev (GA102)",
       "caps": {"async_copy": true, "tile_load": true, "mma_bf16_f32": true, "bf16_cvt_packed": true, "reg_transpose_b16": true, "mma_a_from_regs": true, "mma_b_from_regs": true, "accum_in_tmem": false, "mma_a_from_tmem": false, "bf16_simd_arith": false, "bf16_simd_fma": true, "async_bulk_copy": false, "warpgroup_mma": false, "dyn_reg_realloc": false, "mma_unit_threads": 32, "smem_per_sm": 102400, "smem_per_cta_max": 101376, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 1536, "max_ctas_per_sm": 16, "driver_smem_reserve": 1024},
       "rates": {
@@ -113,17 +115,25 @@
       }
     },
     "sm_87": {
+      "build": {"family": "ampere", "window": 512},
       "caps": {"async_copy": true, "tile_load": true, "mma_bf16_f32": true, "bf16_cvt_packed": true, "reg_transpose_b16": true, "mma_a_from_regs": true, "mma_b_from_regs": true, "accum_in_tmem": false, "mma_a_from_tmem": false, "bf16_simd_arith": false, "bf16_simd_fma": true, "async_bulk_copy": false, "warpgroup_mma": false, "dyn_reg_realloc": false, "mma_unit_threads": 32, "smem_per_sm": 167936, "smem_per_cta_max": 166912, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 1536, "max_ctas_per_sm": 16, "driver_smem_reserve": 1024}
     },
     "sm_89": {
+      "build": {"family": "ampere", "window": 512},
       "caps": {"async_copy": true, "tile_load": true, "mma_bf16_f32": true, "bf16_cvt_packed": true, "reg_transpose_b16": true, "mma_a_from_regs": true, "mma_b_from_regs": true, "accum_in_tmem": false, "mma_a_from_tmem": false, "bf16_simd_arith": false, "bf16_simd_fma": true, "async_bulk_copy": false, "warpgroup_mma": false, "dyn_reg_realloc": false, "mma_unit_threads": 32, "smem_per_sm": 102400, "smem_per_cta_max": 101376, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 1536, "max_ctas_per_sm": 24, "driver_smem_reserve": 1024}
     },
     "sm_90": {
+      "build": {"family": "hopper"},
       "note": "TABULATED, NOT BUILT; see docs/internals/common/arch_caps.md#caps-of-note-l147",
       "caps": {"async_copy": true, "tile_load": true, "mma_bf16_f32": true, "bf16_cvt_packed": true, "reg_transpose_b16": true, "mma_a_from_regs": true, "mma_b_from_regs": false, "accum_in_tmem": false, "mma_a_from_tmem": false, "bf16_simd_arith": true, "bf16_simd_fma": true, "async_bulk_copy": true, "warpgroup_mma": true, "dyn_reg_realloc": true, "mma_unit_threads": 128, "smem_per_sm": 233472, "smem_per_cta_max": 232448, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 2048, "max_ctas_per_sm": 32, "driver_smem_reserve": 1024}
     }
   },
   "product": {
+    "a100": {
+      "arch": "sm_80",
+      "device": "NVIDIA A100-SXM4-80GB",
+      "note": "the rented A100; every A100 memory and interconnect variant is this product (the slug cuts at the first -)"
+    },
     "rtx3080ti": {
       "arch": "sm_86",
       "device": "NVIDIA GeForce RTX 3080 Ti",

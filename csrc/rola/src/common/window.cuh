@@ -5,9 +5,9 @@
 
 namespace rola {
 
-//: W by compute capability; a union slot's token bits and query heads at W. -- see docs/internals/common/window.md
+//: W by compute capability (its own build's), a slot's token bits and query heads at W. -- see docs/internals/common/window.md
 __host__ __device__ constexpr int window_for(int cc) {
-  return cc == 800 ? 1024 : cc == 860 ? 512 : cc == 870 ? 512 : cc == 890 ? 512 : 0;
+  return ::denseref::arch::traits_of(::denseref::arch::Build{cc, 0}).window;
 }
 
 __host__ __device__ constexpr int window_bits(int w) { return w == 1024 ? 10 : w == 512 ? 9 : 0; }

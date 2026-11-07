@@ -25,14 +25,37 @@ A product's rates are its architecture's under its overrides (`hardware.resolve(
 architecture's alone are `hardware.resolve(arch)`. A device with no product row runs on its architecture's
 defaults, which are what the SM design does.
 
+<a id="families"></a>
+
+## Families, builds and products
+
+Every architecture row names its FAMILY in its `build` block -- `ampere` (sm_80 to sm_89), `hopper` (sm_90),
+`blackwell` (reserved) -- the name a kernel's schedule is selected by (`Family`; the constitution's R8). Instruction
+differences stay at the atom, read at the compiling architecture.
+
+<a id="builds"></a>
+A BUILD is the key a kernel compiles at: `Build{cc, variant}`. Variant 0 is the architecture's own `build` block; a
+product whose `build` block overrides a trait (`hardware.BUILD_TRAITS`) runs the next variant, and products whose
+overrides agree share one (`hardware.builds()`), so a kernel is compiled once a distinct set of traits, never once a
+product.
+
+<a id="traits"></a>
+`traits_of(Build)` is what a kernel's plan reads: the family, the window W ([`window.md`](window.md): a card's,
+chosen per architecture) and the architecture's `Caps`. A tabulated architecture that is not built may leave its
+window unchosen (sm_90, 0 until the hopper carry's design picks it); a built one must choose it (the check).
+
+<a id="products"></a>
+`kProducts` names each product row's slug, architecture and variant: the host finds a device's product by the slug
+of its name and runs the product's variant, or its architecture's variant 0 when it has no row.
+
 <a id="consumers"></a>
 
 ## Two consumers
 
-- COMPILE TIME reads capabilities only, and only an architecture's: a binary is built per compute capability and
-  cannot know the product it will meet. `hardware.cuh` carries every tabulated architecture's `Caps` row,
-  `tabulated(cc)` and `caps_of(cc)`; [`arch_caps.cuh`](arch_caps.md) includes it and derives residency, staging
-  depth and the register budget, and [`arch_runtime.cu`](arch_runtime.md) checks the row against the driver.
+- COMPILE TIME reads a BUILD's traits (below): its architecture's capabilities and the build choices. `hardware.cuh`
+  carries every tabulated architecture's `Caps` row, `tabulated(cc)` and `caps_of(cc)`, and every build's
+  `traits_of(Build)`; [`arch_caps.cuh`](arch_caps.md) includes it and derives residency, staging depth and the
+  register budget, and [`arch_runtime.cu`](arch_runtime.md) checks the row against the driver.
 - RUN TIME reads rates: a choice among exact forms (the readout's accumulation, a sparse side's digit groups) prices
   them with the device's resolved rates -- the binary carries every architecture's and product's MMA rates
   (`kMmaRows`), found by the device's name ([`arch_runtime.md#mma-quanta`](arch_runtime.md#mma-quanta)) -- which reach

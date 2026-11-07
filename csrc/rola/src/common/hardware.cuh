@@ -86,6 +86,50 @@ constexpr Caps caps_of(int cc) {
   return Caps{};
 }
 
+//: THE ARCHITECTURE FAMILIES -- see docs/internals/common/hardware.md#families
+enum class Family : int { kAmpere, kHopper, kBlackwell };
+
+//: A BUILD: the key a kernel compiles at -- its image's compute capability and its variant (products equal
+//: in build traits share one). see docs/internals/common/hardware.md#builds
+struct Build {
+  int cc;
+  int variant;
+};
+
+//: A BUILD'S TRAITS: what a kernel's plan reads. see docs/internals/common/hardware.md#traits
+struct Traits {
+  Family family;
+  int window;  // W, a card's: docs/internals/common/window.md
+  Caps caps;
+};
+
+constexpr Traits traits_of(Build b) {
+  if (b.cc == 800 && b.variant == 0)
+    return Traits{Family::kAmpere, 1024, caps_of(800)};
+  if (b.cc == 860 && b.variant == 0)
+    return Traits{Family::kAmpere, 512, caps_of(860)};
+  if (b.cc == 870 && b.variant == 0)
+    return Traits{Family::kAmpere, 512, caps_of(870)};
+  if (b.cc == 890 && b.variant == 0)
+    return Traits{Family::kAmpere, 512, caps_of(890)};
+  if (b.cc == 900 && b.variant == 0)
+    return Traits{Family::kHopper, 0, caps_of(900)};
+  return Traits{};
+}
+
+//: THE PRODUCTS: a device's product by its name's slug, and the build variant it runs -- see
+//: docs/internals/common/hardware.md#products
+struct ProductRow {
+  int cc;
+  const char* slug;
+  int variant;
+};
+
+inline constexpr ProductRow kProducts[] = {
+  {800, "a100", 0},
+  {860, "rtx3080ti", 0},
+};
+
 //: the MMA kinds, in the order a product's quanta carry their rates (`common/cost.cuh`)
 enum Mma : int { kHmmaF16F32, kHmmaF16F16, kHmmaBf16F32, kImmaU8S8K32, kMmaKinds };
 
@@ -99,6 +143,7 @@ struct MmaRow {
 inline constexpr MmaRow kMmaRows[] = {
   {800, nullptr, {2048, 2048, 2048, 2048}},
   {860, nullptr, {4096, 4096, 4096, 4096}},
+  {800, "NVIDIA A100-SXM4-80GB", {2048, 2048, 2048, 2048}},
   {860, "NVIDIA GeForce RTX 3080 Ti", {8226, 4130, 8226, 4130}},
 };
 

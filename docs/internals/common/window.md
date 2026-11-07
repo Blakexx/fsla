@@ -13,7 +13,8 @@ constants are per-card configuration).
 <a id="window-for"></a>
 ## `window_for(cc)`
 
-A card's W by its compute capability (x10), the one table every kernel and the host read. Device code reads the
+A card's W by its compute capability (x10): its architecture's own build's window, chosen in `hardware.json`'s
+`build` block ([`hardware.md#traits`](hardware.md#traits)) -- the one table every kernel and the host read. Device code reads the
 compiling card's through `kWindow`, which is `window_for` at `arch_caps.cuh`'s `kArch`: the compiling card in the
 device pass and, as for every cap, the pinned card in the host pass. So host code never reads `kWindow` -- on another
 device it would be the pinned card's -- and takes its device's through `device_window(device)`

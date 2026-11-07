@@ -42,3 +42,27 @@ def test_the_python_cost_is_the_headers_on_its_parity_cases():
         assert q == hardware.Quanta(tuple(int(x) for x in mma_q.split(",")), int(wave_q), int(atom_q),
                                     int(atom_wave_q))
         assert hardware.cost(q, [int(x) for x in mma.split(",")], int(waves), int(atoms), int(atom_waves)) == int(want)
+
+
+def test_every_architecture_names_its_family_and_each_built_one_its_window():
+    cfg = hardware.load()
+    assert {a: r["build"]["family"] for a, r in cfg["arch"].items()} == {
+        "sm_80": "ampere", "sm_86": "ampere", "sm_87": "ampere", "sm_89": "ampere", "sm_90": "hopper"}
+    cfg["arch"]["sm_86"]["build"].pop("window")
+    assert any("sm_86 is built but its build chooses no window" in f for f in hardware.check(cfg))
+
+
+def test_products_equal_in_build_traits_share_a_variant_and_an_override_is_the_next():
+    cfg = hardware.load()
+    assert {p: hardware.variant_of(p, cfg) for p in cfg["product"]} == {"a100": 0, "rtx3080ti": 0}
+    cfg["product"]["rtx3080ti"]["build"] = {"window": 1024}
+    cfg["product"]["other86"] = {"arch": "sm_86", "device": "NVIDIA other86", "build": {"window": 1024}}
+    assert hardware.variant_of("rtx3080ti", cfg) == hardware.variant_of("other86", cfg) == 1
+    assert [(a, v) for a, v, _ in hardware.builds(cfg) if a == "sm_86"] == [("sm_86", 0), ("sm_86", 1)]
+    assert "if (b.cc == 860 && b.variant == 1)" in hardware.header(cfg)
+
+
+def test_a_product_build_override_outside_the_traits_is_a_finding():
+    cfg = hardware.load()
+    cfg["product"]["rtx3080ti"]["build"] = {"family": "hopper"}
+    assert any("overrides a trait outside window" in f for f in hardware.check(cfg))

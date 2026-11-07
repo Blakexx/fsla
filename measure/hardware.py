@@ -31,6 +31,10 @@ CHOICE = ("schedulers", "issue", "wavefront", "atomic", "atomic_wavefront")
 SOURCES = ("measured", "documented", "announced")
 #: a measured rate may differ from its record's median by its own rounding and no more
 TOLERANCE = 0.002
+#: the architecture families, in the order `Family` numbers them (docs/internals/common/hardware.md#families)
+FAMILIES = ("ampere", "hopper", "blackwell")
+#: the build traits a product may override (each distinct set is a build variant)
+BUILD_TRAITS = ("window",)
 
 
 def load() -> dict:
@@ -93,8 +97,9 @@ def header(cfg: dict | None = None) -> str:
         out += [f"                {text}" for text in lines[1:]]
         out[-1] += "};"
     kinds = cfg["schema"]["mma"]
-    out += ["  return Caps{};", "}", "",
-            "//: the MMA kinds, in the order a product's quanta carry their rates (`common/cost.cuh`)",
+    out += ["  return Caps{};", "}", ""]
+    out += _build_lines(cfg)
+    out += ["//: the MMA kinds, in the order a product's quanta carry their rates (`common/cost.cuh`)",
             "enum Mma : int { " + ", ".join(_camel(k) for k in kinds) + ", kMmaKinds };", "",
             "//: THE MMA RATES a scheduler in quanta, read at run time -- see docs/internals/common/hardware.md#consumers",
             "struct MmaRow {", "  int cc;", "  const char* device;", "  long long mma[kMmaKinds];", "};", "",
@@ -110,6 +115,57 @@ def header(cfg: dict | None = None) -> str:
                                                             for k in kinds) + "}},")
     out += ["};", "", "}  // namespace arch", "}  // namespace denseref", "", "// clang-format on", ""]
     return "\n".join(out)
+
+
+def builds(cfg: dict | None = None) -> list[tuple[str, int, dict]]:
+    """Every build: (architecture, variant, traits). Variant 0 is the architecture's own row; each distinct product
+    override set over it is the next variant, so products equal in build traits share one."""
+    cfg = cfg or load()
+    out = []
+    for arch in tabulated(cfg):
+        base = {"window": 0, **cfg["arch"][arch]["build"]}
+        out.append((arch, 0, base))
+        seen = [base]
+        for slug in sorted(cfg["product"]):
+            row = cfg["product"][slug]
+            traits = {**base, **row.get("build", {})}
+            if row["arch"] == arch and traits not in seen:
+                seen.append(traits)
+                out.append((arch, len(seen) - 1, traits))
+    return out
+
+
+def variant_of(product: str, cfg: dict | None = None) -> int:
+    """The build variant a product runs: the one whose traits are its architecture's under its own overrides."""
+    cfg = cfg or load()
+    row = cfg["product"][product]
+    traits = {"window": 0, **cfg["arch"][row["arch"]]["build"], **row.get("build", {})}
+    return next(v for a, v, t in builds(cfg) if a == row["arch"] and t == traits)
+
+
+def _build_lines(cfg: dict) -> list[str]:
+    """The families, the build key, each build's traits and the product table, as `hardware.cuh` carries them."""
+    out = ["//: THE ARCHITECTURE FAMILIES -- see docs/internals/common/hardware.md#families",
+           "enum class Family : int { " + ", ".join(_camel(f) for f in FAMILIES) + " };", "",
+           "//: A BUILD: the key a kernel compiles at -- its image's compute capability and its variant (products equal",
+           "//: in build traits share one). see docs/internals/common/hardware.md#builds",
+           "struct Build {", "  int cc;", "  int variant;", "};", "",
+           "//: A BUILD'S TRAITS: what a kernel's plan reads. see docs/internals/common/hardware.md#traits",
+           "struct Traits {", "  Family family;", "  int window;  // W, a card's: docs/internals/common/window.md",
+           "  Caps caps;", "};", "",
+           "constexpr Traits traits_of(Build b) {"]
+    for arch, variant, traits in builds(cfg):
+        out.append(f"  if (b.cc == {cc_of(arch)} && b.variant == {variant})")
+        out.append(f"    return Traits{{Family::{_camel(traits['family'])}, {traits['window']}, "
+                   f"caps_of({cc_of(arch)})}};")
+    out += ["  return Traits{};", "}", "",
+            "//: THE PRODUCTS: a device's product by its name's slug, and the build variant it runs -- see",
+            "//: docs/internals/common/hardware.md#products",
+            "struct ProductRow {", "  int cc;", "  const char* slug;", "  int variant;", "};", "",
+            "inline constexpr ProductRow kProducts[] = {"]
+    for slug in sorted(cfg["product"]):
+        out.append(f'  {{{cc_of(cfg["product"][slug]["arch"])}, "{slug}", {variant_of(slug, cfg)}}},')
+    return out + ["};", ""]
 
 
 @dataclass(frozen=True)
@@ -218,6 +274,10 @@ def check(cfg: dict | None = None, header_text: str | None = None) -> list[str]:
     for arch, row in cfg["arch"].items():
         if sorted(row["caps"]) != sorted(names):
             findings.append(f"{arch}: its capabilities are not the schema's")
+        if row.get("build", {}).get("family") not in FAMILIES:
+            findings.append(f"{arch}: its build names no family of {', '.join(FAMILIES)}")
+        if not set(row.get("build", {})) <= {"family", *BUILD_TRAITS}:
+            findings.append(f"{arch}: its build holds a trait outside family, {', '.join(BUILD_TRAITS)}")
     built = sorted({f"sm_{p.stem.removeprefix('sm_')}" for p in MANIFESTS.glob("*/sm_*.json")}, key=cc_of)
     for arch in built:
         if arch not in cfg["arch"]:
@@ -227,9 +287,14 @@ def check(cfg: dict | None = None, header_text: str | None = None) -> list[str]:
         missing = [f for f in (*CHOICE, *(f"mma.{k}" for k in kinds)) if f not in rates]
         if missing:
             findings.append(f"{arch} is built but its defaults lack {', '.join(missing)}")
+        if cfg["arch"][arch].get("build", {}).get("window", 0) <= 0:
+            findings.append(f"{arch} is built but its build chooses no window")
     for product, row in cfg["product"].items():
         if row["arch"] not in cfg["arch"]:
             findings.append(f"product {product} names {row['arch']}, which has no row")
+            continue
+        if not set(row.get("build", {})) <= set(BUILD_TRAITS):
+            findings.append(f"product {product}: its build overrides a trait outside {', '.join(BUILD_TRAITS)}")
         if slugify_gpu(row.get("device", "")) != product:
             findings.append(f"product {product}: its device `{row.get('device')}` is not that product")
 
