@@ -17,13 +17,12 @@ namespace rola::carry {
 
 namespace ops = ::denseref::ops;
 
-//: THE UNITS' CONSTANTS: c's top 2^4, a state held under 2^100 of its unit, the lowest unit, a list never live, a
-//: window's largest add in units, the facts pass's dead exponent. -- see docs/internals/carry/fold.md#units
+//: THE UNITS' CONSTANTS: c's top 2^4, a state held under 2^100 of its unit, the lowest unit, a list never live,
+//: the facts pass's dead exponent. -- see docs/internals/carry/fold.md#units
 constexpr int kCoefTop = 4;
 constexpr int kUnitHeadroom = 100;
 constexpr int kUnitMin = kCoefTop - 127;
 constexpr int kUnitNone = -1000;
-constexpr float kWindowAdd = kWindow * 16.0f;
 constexpr int kExpDead = -126;
 
 //: A LIST'S UNIT ACROSS WINDOWS, in shared memory: its exponent and its state's bound in units.
@@ -154,8 +153,8 @@ __device__ __forceinline__ Window window_of(const CarryParams& p, const uint8_t*
   //: read at each use (volatile): held live across the window loop they would cost the state registers
   const volatile Statics& s = reinterpret_cast<const volatile Addr*>(smem + P::kAddr)->side[side];
   Window out;
-  out.t0 = ops::opaque(w) * kWindow;
-  out.tokens = min(kWindow, p.L - out.t0);
+  out.t0 = ops::opaque(w) * P::kWindow;
+  out.tokens = min(P::kWindow, p.L - out.t0);
   out.listed = s.listed != 0;
   out.digit0 = s.digit0;
   out.group = s.group;
@@ -174,8 +173,9 @@ enum SideIndex : int { kRead = 0, kWrite = 1 };
 //: A SIDE'S TENANTS for window `w` (two windows' a side, by parity): its union tokens and its group's boundaries in
 //: prefix form -- the read side's in the call's read tables, a row of them its query heads' -- and its columns a row.
 //: -- see docs/internals/carry/plan.md#tenants
+template <class P>
 __device__ __forceinline__ int cols_of(const CarryParams& p, int side) {
-  return kListAt * (side == kRead ? p.tables.heads : 1);
+  return P::kListAt * (side == kRead ? p.tables.heads : 1);
 }
 
 template <class P>
@@ -183,15 +183,15 @@ __device__ __forceinline__ const uint16_t* union_of(const CarryParams& p, const 
                                                     int side, int w) {
   return side == kRead
              ? reinterpret_cast<const uint16_t*>(smem + p.tables.union_at)
-                   + parity_of(w) * p.tables.heads * kWindow
-             : reinterpret_cast<const uint16_t*>(smem + P::kUnionW) + parity_of(w) * kWindow;
+                   + parity_of(w) * p.tables.heads * P::kWindow
+             : reinterpret_cast<const uint16_t*>(smem + P::kUnionW) + parity_of(w) * P::kWindow;
 }
 
 template <class P>
 __device__ __forceinline__ const uint16_t* pre_of(const CarryParams& p, const uint8_t* smem,
                                                   int side, int w) {
   return reinterpret_cast<const uint16_t*>(smem + (side == kRead ? p.tables.pre_at : P::kPreW))
-         + parity_of(w) * kPreRows * cols_of(p, side);
+         + parity_of(w) * kPreRows * cols_of<P>(p, side);
 }
 
 //: A CHUNK'S COLUMNS in the boundaries, union slots `first .. first + slots - 1` (`first` a multiple of 64, the end a
@@ -209,7 +209,7 @@ __device__ __forceinline__ void lists_in(const CarryParams& p, const SideLists& 
                                          const Window& win, const Place& c, int w, uint8_t* smem,
                                          int side) {
   if (!win.listed) return;
-  const int cols = cols_of(p, side), slots = kWindow * l.heads,
+  const int cols = cols_of<P>(p, side), slots = P::kWindow * l.heads,
             rows = (side == kRead ? P::kReadListGroup : P::kWriteListGroup) + 1;
   const int64_t group = ((int64_t)c.bh * p.windows + w) * l.groups + win.group;
   const int union_copies = slots * 2 / ops::kStageBytes, row_copies = cols * 2 / ops::kStageBytes;
@@ -237,18 +237,19 @@ template <class P>
 __device__ __forceinline__ void facts_in(const CarryParams& p, const Window& ww, const Place& c,
                                          int w, uint8_t* smem) {
   //: the box's lists' exponent pairs, 4 bytes a list (never past its row: a 16-list box's level may end there)
-  constexpr int kUnitCopies = kWindow / ops::kStageBytes,
+  constexpr int kUnitCopies = P::kWindow / ops::kStageBytes,
                 kExpCopies = P::kLists * 4 / ops::kStageBytes;
   const int heads = p.tables.heads;
-  const ops::SmemAddr scale = ops::smem_addr(smem + p.tables.scale_at) + (w & 1) * heads * kWindow;
+  const ops::SmemAddr scale =
+      ops::smem_addr(smem + p.tables.scale_at) + (w & 1) * heads * P::kWindow;
 #pragma unroll 1
   for (int k = ops::opaque(static_cast<int>(threadIdx.x)); k < heads * kUnitCopies + kExpCopies;
        k += kThreads) {
     if (k < heads * kUnitCopies) {
       const int j = k / kUnitCopies;
-      ops::stage_tile(scale + 16 * k, p.scale
-                                          + ((int64_t)(c.bh * heads + j) * p.windows + w) * kWindow
-                                          + 16 * (k - j * kUnitCopies));
+      ops::stage_tile(scale + 16 * k,
+                      p.scale + ((int64_t)(c.bh * heads + j) * p.windows + w) * P::kWindow
+                          + 16 * (k - j * kUnitCopies));
     } else if (ww.listed) {
       const int e = k - heads * kUnitCopies;
       ops::stage_tile(
@@ -388,8 +389,9 @@ __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* v
       const uint8_t* src[kAhead][Factors + 1];
       int gap[kAhead];
       static_for<kAhead>([&](auto k) {
-        const int t = u[k] & (kWindow - 1),
-                  j = Values ? 0 : (u[k] >> window_bits(kWindow)) & (window_heads(kWindow) - 1);
+        const int t = u[k] & (P::kWindow - 1),
+                  j = Values ? 0
+                             : (u[k] >> window_bits(P::kWindow)) & (window_heads(P::kWindow) - 1);
         gap[k] = u[k] >> 31;
         static_for<Factors>([&](auto i) { src[k][i] = row_at(base[i], t, st[i], j, sh[i]); });
         if constexpr (Values) src[k][Factors] = row_at(vbase, t, values_st, 0, 0);
@@ -452,7 +454,7 @@ __device__ __forceinline__ Run chunk_runs(const CarryParams& p, const uint8_t* s
                                           const Window& win, int side, int w, int first, int slots,
                                           int total, int lane) {
   if (!win.listed || lane >= win.lists) return Run{0, 0, 0, 0};
-  const int cols = cols_of(p, side);
+  const int cols = cols_of<P>(p, side);
   const int2 col = chunk_cols(first, slots, total, cols);
   //: the lane's two rows (lists `l`, `l + 1`): the chunk's end in both, its start where it is not the first, the split
   //: where it falls inside the chunk
@@ -479,7 +481,7 @@ __device__ __forceinline__ void entries_fill(const CarryParams& p, const SideLis
   static_assert(Lists == 4 * kWarps || Lists == 2 * kWarps, "a warp's four lists or two");
   constexpr int kLanes = 32 * kWarps / Lists;
   //: a list's row `kListCap` entries a query head on (opaque: formed at each fill, never held across windows)
-  const int cap = kListCap * ops::opaque(l.heads);
+  const int cap = P::kListCap * ops::opaque(l.heads);
   const int list = warp + kWarps * (lane / kLanes), i = lane % kLanes;
   const int at = __shfl_sync(0xffffffffu, run.at, list), n = __shfl_sync(0xffffffffu, run.n, list),
             to = __shfl_sync(0xffffffffu, run.to, list);

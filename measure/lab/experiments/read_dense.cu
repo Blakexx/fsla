@@ -8,7 +8,8 @@
 #include <cstdio>
 #include <vector>
 
-#include "carry/carry_arm.cuh"
+#include "carry/carry_kernel.cuh"
+#include "common/arm.cuh"
 #include "carry/readout_dense.cuh"
 #include "lab.cuh"
 
@@ -17,13 +18,10 @@ namespace read_dense {
 namespace rc = rola::carry;
 namespace ops = ::denseref::ops;
 using A = rola::Arm<0, 16, 2, 16, 2, 64, 1>;
-using P = rc::Plan<A>;
+using P = rc::Plan<A, lab::kLabBuild>;
 
-//: THE LAUNCH'S SHARED BYTES, the running card's plan (the host's `P` is sm_86's: its `kArch` default)
-inline int smem_of(const cudaDeviceProp& prop) {
-  return prop.major == 8 && prop.minor == 0 ? rc::Plan<A, 800>::kSmemBytes
-                                            : rc::Plan<A, 860>::kSmemBytes;
-}
+//: THE LAUNCH'S SHARED BYTES, the lab build's plan
+inline int smem_of(const cudaDeviceProp&) { return P::kSmemBytes; }
 
 constexpr int kWindows = 64, kSlots = 128;
 

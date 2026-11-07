@@ -130,13 +130,13 @@ def read_map(path: str) -> dict[str, str]:
 #: THE SOURCE STAMP's body is the csrc content hash (docs/ratification.md#the-device-stamp): it moves with every
 #: source edit by design, so a comparison reports it and never fails on it.
 STAMP_KERNELS = ("rola::stampdet::csrc_stamp_kernel(long*)",)
-#: A BUILD ARGUMENT (docs/internals/common/hardware.md#builds): `Build{cc, variant}` as c++filt prints it, a zero
-#: variant omitted as the ABI omits trailing zero members
-_BUILD_ARG = re.compile(r"denseref::arch::Build\{(\d+)(?:, (\d+))?\}(, )?")
+#: A BUILD ARGUMENT (docs/internals/common/hardware.md#build-tag): `BuildTag<Build{cc, variant}>` as c++filt
+#: prints it (a zero variant may be omitted, as the ABI allows for trailing zero members)
+_BUILD_ARG = re.compile(r"denseref::arch::BuildTag<denseref::arch::Build\{(\d+)(?:, (\d+))?\}>(, )?")
 
 
 def by_signature(bodies_by_key: dict[str, str], drop_builds: bool) -> dict[str, str]:
-    """The map keyed `sm_XX:<demangled signature>`, a kernel's `Build{cc, v}` argument dropped when `drop_builds` --
+    """The map keyed `sm_XX:<demangled signature>`, a kernel's `BuildTag<Build{cc, v}>` argument dropped when `drop_builds` --
     the rename rule of a kernel templated on its build: the dropped argument must be its own image's (cc == XX),
     since a build's kernels are compiled in its image alone (docs/internals/common/hardware.md#builds-renamed)."""
     keys = sorted(bodies_by_key)

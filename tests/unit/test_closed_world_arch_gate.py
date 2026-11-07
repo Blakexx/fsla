@@ -86,7 +86,7 @@ _LAUNCHLESS = {
     "rola_produce_ledger_bind": "binds the device buffer the next producer launch books into; issues no launch",
     "rola_facts_ledger_bind": "binds the device buffer the next facts pass books into; issues no launch",
     "rola_intra_ledger_bind": "binds the device buffer the next intra launch books into; issues no launch",
-    "device_window": "reads the device's compute capability attributes for its window; no device work",
+    "device_card": "admits the device's card (the closed-world checks, common/select.cu) and reads it; no device work",
     "intra_block_rows": "the device's card row (a host table by compute capability); no device work",
 }
 
@@ -123,16 +123,20 @@ def _check_arch_table_definitions() -> list[pathlib.Path]:
 
 
 def test_the_runtime_half_refuses_an_untabulated_architecture():
-    """``check_arch_table()`` keys on ``tabulated`` and on the driver's own numbers."""
+    """``check_arch_table()`` admits the device's card, and the admission (``common/select.cu``'s ``admit``) keys on
+    ``tabulated``, on the driver's own numbers and on the builds the binary carries."""
     defs = _check_arch_table_definitions()
     assert len(defs) == 1, (
         f"check_arch_table has {len(defs)} definitions "
         f"({[str(p.relative_to(REPO)) for p in defs]}); it needs exactly one -- a second "
         f"copy is a second thing that can drift from the capability table it checks, and "
         f"none at all is the runtime half of the closed-world arch rule missing")
-    text = defs[0].read_text()
-    body = text[text.index("void check_arch_table() {"):]
+    assert "void check_arch_table() { (void)current_card(); }" in defs[0].read_text(), (
+        "the runtime half is the card's admission, one definition of it")
+    text = (REPO / "csrc" / "rola" / "src" / "common" / "select.cu").read_text()
+    body = text[text.index("Card admit(int device) {"):]
     body = body[:body.index("\n}\n") + 3]
+    assert "carried(build)" in body, "the admission refuses a device whose build the binary does not carry"
     assert "arch::tabulated(cc)" in body, (
         "the runtime half must refuse an arch the TABLE does not carry -- an unbuilt "
         "ARM and an untabulated ARCHITECTURE are different refusals")

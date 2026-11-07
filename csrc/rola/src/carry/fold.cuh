@@ -28,7 +28,9 @@ __device__ __forceinline__ uint32_t pow2_half2(int e) {
 
 //: A UNIT'S NEXT WINDOW: a live list's exponent, held within the bound's headroom; the state's rescale returned and
 //: the bound moved (`next_units` in tests/oracle/fold_reference.py). -- see docs/internals/carry/fold.md#units
+template <class P>
 __device__ __forceinline__ float next_unit(int k, UnitBook& book) {
+  constexpr float kWindowAdd = P::kWindow * 16.0f;
   const int held = book.unit + ceil_exp(book.bound) - kUnitHeadroom;
   const int next = max(k <= kExpDead ? book.unit : max(k, held), kUnitMin);
   const int d = book.unit - next;
@@ -62,7 +64,7 @@ __device__ __forceinline__ void fold_units(uint8_t* smem, const Window& ww, int 
   const int k = ww.listed ? exps[2 * fold_list(warp, j) + 1] : dense_exp(exps[1]);
   UnitBook* const book = reinterpret_cast<UnitBook*>(smem + P::kBook) + fold_list(warp, j);
   UnitBook b = *book;
-  const float fl = next_unit(k, b);
+  const float fl = next_unit<P>(k, b);
   const int cexp = max(k, kUnitMin) - b.unit;
   __syncwarp();
   if (lane % kLanes == 0) {

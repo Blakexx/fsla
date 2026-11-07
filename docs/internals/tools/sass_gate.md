@@ -8,7 +8,9 @@ read to its unconditional branch back, however long (ptxas copies a step's remai
 lines in the carry's fold steps read as 3,000-instruction MMA loops under the old 32-line read). Every build runs it after the link (`setup.py`'s post-build gate); by hand,
 `python tools/sass_gate.py <.so | .cubin> [--kernel RE] [--member S] [--loops] [--json PATH]`. Each function's line
 carries its registers (`regs`, off `cuobjdump -res-usage`), so an iteration build that skips the ratify still shows a
-register change.
+register change. A step-cover floor is keyed by architecture and mangled name; a kernel renamed by the build rule
+([`../common/hardware.md#builds-renamed`](../common/hardware.md#builds-renamed)) keeps its floor through
+`--rekey-floors <.so>`, which moves each key to the binary's entry point of the same signature, values unchanged.
 
 ## <a id="step-branches"></a>A branch inside a step
 

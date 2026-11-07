@@ -117,6 +117,14 @@ constexpr Traits traits_of(Build b) {
   return Traits{};
 }
 
+//: A BUILD AS A TYPE, the form a kernel takes it in (a kernel's class-type template argument must be a
+//: type's: docs/internals/common/hardware.md#build-tag)
+template <Build B>
+struct BuildTag {
+  static constexpr Build build = B;
+  static constexpr Traits traits = traits_of(B);
+};
+
 //: THE PRODUCTS: a device's product by its name's slug, and the build variant it runs -- see
 //: docs/internals/common/hardware.md#products
 struct ProductRow {

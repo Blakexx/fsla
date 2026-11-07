@@ -799,6 +799,7 @@ class RoLABuildExtension(BuildExtension):
         _gate_shards()
         _write_carry_selection()
         _write_carry_parts()
+        gen_shards.write_builds(ROLA_CUDA_ARCHS)
         _write_csrc_stamp()
         sccache = _gate_sccache()
         #: THE MACHINE-WIDE CICC BUDGET (KERNEL_STANDARDS §14 addendum 2, Blake

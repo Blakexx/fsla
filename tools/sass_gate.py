@@ -480,6 +480,29 @@ def cached_gate(cubin: Path, kernel: str | None, max_per_hmma: float | None, use
     return ok, report
 
 
+def rekey_floors(binary: Path) -> int:
+    """THE RENAME RULE ON THE FLOORS: each `sm_XX mangled` key moved to the binary's entry point of the same
+    signature once its `BuildTag` argument is dropped (`sass_bodies.by_signature`), its value unchanged -- a kernel
+    templated on its build keeps its ratchet. A floor with no such entry point is refused, never dropped."""
+    import sass_bodies
+
+    floors = json.loads(STEP_FLOORS.read_text())
+    by_sig = {}
+    for key in sass_bodies.bodies(binary):
+        (sig,) = sass_bodies.by_signature({key: ""}, True)
+        by_sig[sig] = key
+    out = {}
+    for key, value in floors.items():
+        arch, name = key.split(" ", 1)
+        (sig,) = sass_bodies.by_signature({f"{arch}:{name}": ""}, True)
+        if sig not in by_sig:
+            raise SystemExit(f"{key}: no entry point of its signature in {binary}")
+        out[by_sig[sig].replace(":", " ", 1)] = value
+    STEP_FLOORS.write_text(json.dumps(dict(sorted(out.items())), indent=1) + "\n")
+    print(f"{len(out)} floors rekeyed in {STEP_FLOORS}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("binary", type=Path)
@@ -495,7 +518,12 @@ def main() -> int:
     ap.add_argument("--write-floors", action="store_true",
                     help="record each step-cover debt's worst reading as its floor (a ratchet: a later build may not "
                          "read lower)")
+    ap.add_argument("--rekey-floors", action="store_true",
+                    help="move each floor to the binary's function of the same signature, a Build argument dropped "
+                         "(the rename rule, docs/internals/common/hardware.md#builds-renamed); values unchanged")
     a = ap.parse_args()
+    if a.rekey_floors:
+        return rekey_floors(a.binary)
     global LOOPS
     LOOPS = a.loops
     allok = True

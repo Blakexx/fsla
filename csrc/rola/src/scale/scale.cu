@@ -6,6 +6,7 @@
 #include "common/torch_seam.cuh"
 
 #include "common/arch_runtime.cuh"
+#include "common/select.cuh"
 #include "scale/scale_kernel.cuh"
 
 namespace rola::scale {
@@ -67,7 +68,7 @@ void scale_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
                   heads, " and ", L);
   int dev = 0;
   ROLA_CUDA_CHECK(cudaGetDevice(&dev));
-  const int W = device_window(dev);
+  const int W = card_of(dev).traits.window;
   STD_TORCH_CHECK(W <= 1024 && W % kGroup == 0, "the window is at most 1,024 tokens, ", kGroup,
                   " a group; got ", W);
   const int64_t windows = (L + W - 1) / W;

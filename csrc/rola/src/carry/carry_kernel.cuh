@@ -37,9 +37,9 @@ __device__ __forceinline__ void stage_window(const CarryParams& p, const Place& 
 //: THE KERNEL, a grid constant block in, one CTA an SM: grid `(boxes, batch-heads)`. A window: its first read chunk's
 //: fill, the next window's staging, the maxima, its read chunks, its fold chunks -- a fixed order, the plan's chunks
 //: and places read once a window. -- see docs/internals/carry/carry_kernel.md#kernel
-template <class Arm>
+template <class Bt, class Arm>
 __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constant__ CarryParams p) {
-  using P = Plan<Arm>;
+  using P = Plan<Arm, Bt::build>;
   extern __shared__ __align__(128) uint8_t smem[];
   //: the launch sized for this card's plan, or nothing runs (`carry_arm.md#plan`)
   uint32_t launched;

@@ -83,8 +83,9 @@ warp's lists in the alternating form, one of its lists in the same split (`hando
 <a id="plan"></a>
 ## The plan
 
-`Plan<Arm, Cc>` is an arm's key (`tools/gen_shards.py`'s `ARM_KEY`) on card `Cc`, the compiling one by default
-(`arch::kArch`). The key fixes each side's dense rows a warp and its operand's level count, and the hand-off's form
+`Plan<Arm, B>` is an arm's key (`tools/gen_shards.py`'s `ARM_KEY`) at build `B`
+([`../common/hardware.md#builds`](../common/hardware.md#builds)): its window, list boundaries and caps are the build's
+traits, so the host and the device read one plan. The key fixes each side's dense rows a warp and its operand's level count, and the hand-off's form
 (`kSameSplit`, `handoff.md#same-split`) and the box (`#box`); the plan asserts a listed read side (the dense readout is
 the next component), and derives:
 

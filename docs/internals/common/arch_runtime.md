@@ -23,15 +23,12 @@ readout chooses its accumulation from it
 <a id="check-arch-table"></a>
 ## `check_arch_table()`
 
-Keyed on `denseref::arch::tabulated(cc)` and `denseref::arch::caps_of(cc)`, the same
-rows `common/hardware.cuh` generates from `common/hardware.json` — there is no second table to drift from
-the first.
-The check runs once per device per process: a `std::mutex`-guarded `std::set<int>`
-of admitted device ordinals turns every call after the first into a lock and a
-set lookup, so the entries that call it on every invocation do not pay a device
-query per call.
+The current device's card admitted: `(void)current_card()` ([`select.md#card-of`](select.md#card-of)). The admission
+is keyed on `denseref::arch::tabulated(cc)` and `denseref::arch::caps_of(cc)`, the same rows `common/hardware.cuh`
+generates from `common/hardware.json` -- there is no second table to drift from the first -- and runs once a device a
+process (the card is kept).
 
-Three things are asserted, in order:
+Four things are asserted, in order:
 
 1. `tabulated(cc)` — the table carries a row for this compute capability at all.
 2. `supported(caps_of(cc))` — the row's REQUIRED capability clauses are all true
@@ -44,6 +41,8 @@ Three things are asserted, in order:
    derived from the table's numbers, so a disagreement means those shapes are wrong
    for the card that is about to run them, independent of whether the compute
    capability itself is tabulated.
+4. The binary carries the card's build (its product's variant on its architecture): a tabulated architecture this
+   binary was not built for is refused by name, never run on another architecture's image.
 
 ## Where it is called
 

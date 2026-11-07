@@ -6,6 +6,7 @@
 #include "carry/carry_arm_abi.cuh"
 #include "carry/carry_kernel.cuh"
 #include "common/arm.cuh"
+#include "common/select.cuh"
 
 namespace rola::carry {
 
@@ -15,81 +16,60 @@ constexpr CarryForm form_of_plan() {
                    P::kWriteRow,  P::kReadListGroup, P::kWriteListGroup};
 }
 
-//: THE PLAN'S FORM on the current device's card: the plan the device code was compiled with is the card's, and the
-//: kernel traps at entry on any other launched size. -- see docs/internals/carry/carry_arm.md#plan
-//: THE RUNNING DEVICE'S COMPUTE CAPABILITY (x10), the key every per-card choice is read at on the host.
-inline int current_cc() {
-  int dev = 0, major = 0, minor = 0;
-  cudaGetDevice(&dev);
-  cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
-  cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
-  return major * 100 + minor * 10;
-}
-
-template <class Arm>
-inline CarryForm carry_form() {
-  // R9-CASES: the tabulated compute capabilities (common/hardware.cuh)
-  switch (current_cc()) {
-    case 800:
-      return form_of_plan<Plan<Arm, 800>>();
-    case 860:
-      return form_of_plan<Plan<Arm, 860>>();
-    case 870:
-      return form_of_plan<Plan<Arm, 870>>();
-    case 890:
-      return form_of_plan<Plan<Arm, 890>>();
-    default:
-      return CarryForm{};
-  }
-}
-
-template <class Arm, int Cc>
+//: THE ARM'S LAUNCH at build `B`: the call's read tables at its plan, the plan pass, the kernel at the plan's shared
+//: bytes. Its kernels exist in `B`'s image alone (`in_image`). -- see docs/internals/carry/carry_arm.md#plan
+template <arch::Build B, class Arm>
 inline cudaError_t carry_launch_on(const CarryParams& p0, int boxes, int bh, cudaStream_t stream) {
-  using P = Plan<Arm, Cc>;
-  constexpr int bytes = P::kSmemBytes;
-  //: the call's read tables on the device's card, and an area that holds the least plan
-  CarryParams p = p0;
-  p.tables = tables_of<P::kWindow>(p0.tables.heads, bytes);
-  if (!least_plan_fits<P>(p.tables.area, p.reduce)) return cudaErrorInvalidConfiguration;
-  const int classes = (p.read_lists.groups > 0 ? p.read_lists.groups : 1)
-                      * (p.write_lists.groups > 0 ? p.write_lists.groups : 1);
-  window_plan_kernel<Arm>
-      <<<dim3((unsigned)classes, (unsigned)bh), (unsigned)kPlanThreads, 0, stream>>>(p);
-  const auto fn = carry_kernel<Arm>;
-  static bool configured = false;
-  if (!configured) {
-    const cudaError_t e =
-        cudaFuncSetAttribute(fn, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes);
-    if (e != cudaSuccess) return e;
-    configured = true;
+  if constexpr (in_image(B)) {
+    using P = Plan<Arm, B>;
+    constexpr int bytes = P::kSmemBytes;
+    //: the call's read tables on the device's card, and an area that holds the least plan
+    CarryParams p = p0;
+    p.tables = tables_of<P::kWindow>(p0.tables.heads, bytes);
+    if (!least_plan_fits<P>(p.tables.area, p.reduce)) return cudaErrorInvalidConfiguration;
+    const int classes = (p.read_lists.groups > 0 ? p.read_lists.groups : 1)
+                        * (p.write_lists.groups > 0 ? p.write_lists.groups : 1);
+    window_plan_kernel<arch::BuildTag<B>, Arm>
+        <<<dim3((unsigned)classes, (unsigned)bh), (unsigned)kPlanThreads, 0, stream>>>(p);
+    const auto fn = carry_kernel<arch::BuildTag<B>, Arm>;
+    static bool configured = false;
+    if (!configured) {
+      const cudaError_t e =
+          cudaFuncSetAttribute(fn, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes);
+      if (e != cudaSuccess) return e;
+      configured = true;
+    }
+    fn<<<dim3((unsigned)boxes, (unsigned)bh), (unsigned)kThreads, bytes, stream>>>(p);
+    return cudaGetLastError();
+  } else {
+    return cudaErrorInvalidDeviceFunction;
   }
-  fn<<<dim3((unsigned)boxes, (unsigned)bh), (unsigned)kThreads, bytes, stream>>>(p);
-  return cudaGetLastError();
 }
 
+//: THE ARM'S LAUNCH on the current device's card (`common/select.cuh`).
 template <class Arm>
 inline cudaError_t carry_launch(const CarryParams& p, int boxes, int bh, cudaStream_t stream) {
-  // R9-CASES: the tabulated compute capabilities (common/hardware.cuh)
-  switch (current_cc()) {
-    case 800:
-      return carry_launch_on<Arm, 800>(p, boxes, bh, stream);
-    case 860:
-      return carry_launch_on<Arm, 860>(p, boxes, bh, stream);
-    case 870:
-      return carry_launch_on<Arm, 870>(p, boxes, bh, stream);
-    case 890:
-      return carry_launch_on<Arm, 890>(p, boxes, bh, stream);
-    default:
-      return cudaErrorInvalidDevice;
-  }
+  cudaError_t status = cudaErrorInvalidDevice;
+  build_switch(current_card(), [&](auto b) {
+    status = carry_launch_on<decltype(b)::build, Arm>(p, boxes, bh, stream);
+  });
+  return status;
 }
 
+//: THE ARM'S CENSUS on the current device's card: its kernel's attributes and its plan's form.
 template <class Arm>
 inline ArmCensus carry_census() {
-  cudaFuncAttributes a{};
-  cudaFuncGetAttributes(&a, carry_kernel<Arm>);
-  return ArmCensus{(int)a.numRegs, (int)a.localSizeBytes, (int)a.maxThreadsPerBlock,
-                   (int)a.binaryVersion, carry_form<Arm>()};
+  ArmCensus out{};
+  build_switch(current_card(), [&](auto b) {
+    constexpr arch::Build kB = decltype(b)::build;
+    if constexpr (in_image(kB)) {
+      cudaFuncAttributes a{};
+      cudaFuncGetAttributes(&a, carry_kernel<arch::BuildTag<kB>, Arm>);
+      out = ArmCensus{(int)a.numRegs, (int)a.localSizeBytes, (int)a.maxThreadsPerBlock,
+                      (int)a.binaryVersion, form_of_plan<Plan<Arm, kB>>()};
+    }
+  });
+  return out;
 }
 
 #define ROLA_CARRY_ARM_DEFINE(I_, FR_, FF_, RR_, RF_, CH_, SS_)                                      \

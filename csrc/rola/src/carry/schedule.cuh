@@ -89,10 +89,11 @@ struct Sums {
 };
 
 //: A SIDE'S COUNTS: its union's slots (every window token where it has no list level) and its segment sums.
+template <class P>
 __device__ __forceinline__ int side_counts(const SideLists& l, bool listed, int tokens,
                                            int64_t group, Sums& S) {
-  S = Sums{listed ? l.totals + group * kListAt * l.heads : nullptr,
-           kListAt * (listed ? l.heads : 1)};
+  S = Sums{listed ? l.totals + group * P::kListAt * l.heads : nullptr,
+           P::kListAt * (listed ? l.heads : 1)};
   return listed ? l.union_count[group] : tokens;
 }
 
@@ -189,15 +190,16 @@ __device__ __forceinline__ int box_classes(const CarryParams& p) {
 }
 
 //: A WINDOW'S COUNTS for a box class, the read and the write side's.
+template <class P>
 __device__ __forceinline__ void window_counts(const CarryParams& p, int bh, int w, int cls,
                                               Counts& c) {
   const int groups_w = max(1, p.write_lists.groups);
-  const int tokens = min(kWindow, p.L - w * kWindow);
+  const int tokens = min(P::kWindow, p.L - w * P::kWindow);
   const int64_t win = static_cast<int64_t>(bh) * p.windows + w;
-  c.ru = side_counts(p.read_lists, p.read.list >= 0, tokens,
-                     win * max(1, p.read_lists.groups) + cls / groups_w, c.rs);
-  c.fu =
-      side_counts(p.write_lists, p.write.list >= 0, tokens, win * groups_w + cls % groups_w, c.fs);
+  c.ru = side_counts<P>(p.read_lists, p.read.list >= 0, tokens,
+                        win * max(1, p.read_lists.groups) + cls / groups_w, c.rs);
+  c.fu = side_counts<P>(p.write_lists, p.write.list >= 0, tokens, win * groups_w + cls % groups_w,
+                        c.fs);
 }
 
 //: THE TWO SLOTS, alternating down the CTA's stream across windows: the top slot's entry ends at the area's top, the
@@ -231,7 +233,7 @@ struct Win {
 template <class P>
 __device__ __forceinline__ Win win_of(const CarryParams& p, int bh, int w, int cls) {
   Win x;
-  window_counts(p, bh, w, cls, x.c);
+  window_counts<P>(p, bh, w, cls, x.c);
   x.word = forced_plan<P>(p, x.c, rule_plan<P>(p, x.c));
   const PlanWord pw{x.word};
   x.nr = pw.reads();
@@ -281,11 +283,11 @@ struct StepWord {
 //: leaves it room. -- see docs/internals/carry/schedule.md#pass
 constexpr int kPlanThreads = 128, kPlanWarps = kPlanThreads / 32;
 
-template <class Arm>
+template <class Bt, class Arm>
 __global__ __launch_bounds__(kPlanThreads) void window_plan_kernel(
     const __grid_constant__ CarryParams p) {
-  using P = Plan<Arm>;
-  const int B = p.tables.area;
+  using P = Plan<Arm, Bt::build>;
+  const int area = p.tables.area;
   __shared__ uint32_t parities[kPlanWarps];
   const int cls = static_cast<int>(blockIdx.x), bh = static_cast<int>(blockIdx.y);
   const int lane = static_cast<int>(threadIdx.x) % 32, warp = static_cast<int>(threadIdx.x) / 32;
@@ -320,7 +322,7 @@ __global__ __launch_bounds__(kPlanThreads) void window_plan_kernel(
     int at = 0;
     if (x.n > 0) {
       const int b0 = entry_bytes_of<P>(x, 0);
-      at = slot_place(par, b0, x.image, B);
+      at = slot_place(par, b0, x.image, area);
       ahead = true;
       if (w > 0) {
         const Win pv = win_of<P>(p, bh, w - 1, cls);
@@ -331,14 +333,14 @@ __global__ __launch_bounds__(kPlanThreads) void window_plan_kernel(
           int lbase = lread ? pv.image : 0;
           if (!lread && lt == pv.nr && pv.nr > 0) {
             const int rb = entry_bytes_of<P>(pv, pv.nr - 1);
-            const int rat = slot_place(ppar ^ ((pv.nr - 1) & 1), rb, pv.image, B);
-            lbase =
-                fits_beside(slot_place(ppar ^ (lt & 1), lb, pv.image, B), lb, rat, rb, pv.image, B)
-                    ? pv.image
-                    : 0;
+            const int rat = slot_place(ppar ^ ((pv.nr - 1) & 1), rb, pv.image, area);
+            lbase = fits_beside(slot_place(ppar ^ (lt & 1), lb, pv.image, area), lb, rat, rb,
+                                pv.image, area)
+                        ? pv.image
+                        : 0;
           }
-          ahead = fits_beside(at, b0, slot_place(ppar ^ (lt & 1), lb, lbase, B), lb,
-                              lread ? pv.image : 0, B);
+          ahead = fits_beside(at, b0, slot_place(ppar ^ (lt & 1), lb, lbase, area), lb,
+                              lread ? pv.image : 0, area);
         }
       }
     }
@@ -357,17 +359,17 @@ __global__ __launch_bounds__(kPlanThreads) void window_plan_kernel(
       const bool work = t < x.n, read = t < x.nr, cross = t + 1 >= x.n && (work || t == 0);
       const int slot = par ^ (t & 1);
       const int b = work ? entry_bytes_of<P>(x, t) : 0;
-      if (work && !ahead) at = slot_place(slot, b, read ? x.image : 0, B);
+      if (work && !ahead) at = slot_place(slot, b, read ? x.image : 0, area);
       bool next = false;
       int nat = 0, nb = 0;
       if (!cross && work) {
         nb = entry_bytes_of<P>(x, t + 1);
-        nat = slot_place(slot ^ 1, nb, t + 1 < x.nr || read ? x.image : 0, B);
-        next = fits_beside(nat, nb, at, b, read ? x.image : 0, B);
+        nat = slot_place(slot ^ 1, nb, t + 1 < x.nr || read ? x.image : 0, area);
+        next = fits_beside(nat, nb, at, b, read ? x.image : 0, area);
       } else if (cross && w + 1 < p.windows && nx.n > 0) {
         nb = entry_bytes_of<P>(nx, 0);
-        nat = slot_place(work ? slot ^ 1 : slot, nb, nx.image, B);
-        next = fits_beside(nat, nb, work ? at : 0, b, work && read ? x.image : 0, B);
+        nat = slot_place(work ? slot ^ 1 : slot, nb, nx.image, area);
+        next = fits_beside(nat, nb, work ? at : 0, b, work && read ? x.image : 0, area);
       }
       const bool drained = t > 0 && t - 1 < x.nr;
       //: the carry fills each entry at its own step: the rendezvous where that fill meets the drained panel
@@ -405,7 +407,7 @@ __device__ __forceinline__ Stream stream_of(const CarryParams& p, const uint8_t*
   const PlanWord word{*reinterpret_cast<const volatile uint32_t*>(
       smem + p.tables.plans_at + 4 * p.tables.plan_words * parity)};
   const volatile int* const count = reinterpret_cast<const volatile int*>(smem + P::kCount);
-  const int tokens = min(kWindow, p.L - w * kWindow);
+  const int tokens = min(P::kWindow, p.L - w * P::kWindow);
   const int ru = count[2 * kRead + parity], fu = count[2 * kWrite + parity];
   Stream s;
   s.mode = word.mode();

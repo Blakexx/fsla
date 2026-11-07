@@ -49,13 +49,15 @@ __host__ __device__ constexpr ReadTables tables_of(int heads, int smem) {
 //: A BATCH of the image's stores: 8 digits' planes. -- see docs/internals/carry/plan.md#image
 constexpr int kBatchPlanes = 8;
 
-//: THE ARM'S PLAN on card `Cc`: the box's tiles, a side's pool row (its operand slices, then the write side's values),
+//: THE ARM'S PLAN at build `B`: the box's tiles, a side's pool row (its operand slices, then the write side's values),
 //: and the area the card's shared memory leaves past the tenants. -- see docs/internals/carry/plan.md#plan
-template <class Arm, int Cc = arch::kArch>
-struct Plan : Tenants<window_for(Cc)> {
-  static constexpr arch::Caps kCaps = arch::caps_of(Cc);
+template <class Arm, arch::Build B>
+struct Plan : Tenants<arch::traits_of(B).window> {
+  static constexpr arch::Build kBuild = B;
+  static constexpr arch::Caps kCaps = arch::traits_of(B).caps;
   //: the card's window, and its list boundaries and cap
-  static constexpr int kWindow = window_for(Cc), kListAt = list_at(kWindow), kListCap = kWindow;
+  static constexpr int kWindow = arch::traits_of(B).window, kListAt = list_at(kWindow),
+                       kListCap = kWindow;
   static constexpr int kFoldFactors = Arm::fold_factors, kReadFactors = Arm::read_factors;
   //: THE HAND-OFF'S FORM: the fold's lists the readout's digits (both sides list one level) or its K
   static constexpr bool kSameSplit = Arm::same_split != 0;

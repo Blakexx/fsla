@@ -70,6 +70,7 @@ SHIPPED_SET_JSON = ROOT / "tools" / "manifests" / "shipped_set.json"
 GENERATED_DIR = ROOT / "build" / "generated"
 CARRY_SELECTION_INC = "carry_selection.inc"
 CARRY_PARTS_INC = "carry_parts.inc"
+BUILDS_INC = "builds.inc"
 
 
 def write_if_changed(path: Path, text: str) -> bool:
@@ -279,6 +280,18 @@ def shard_manifest_block() -> dict:
             "members_sha256": hashlib.sha256(blob).hexdigest(),
             "count": len(members)}
     return out
+
+
+def write_builds(archs) -> None:
+    """Write `build/generated/builds.inc` for these architectures: the builds the binary carries
+    (`measure/hardware.py`'s `builds_header`; docs/internals/common/select.md#carried)."""
+    import sys
+
+    sys.path.insert(0, str(ROOT))
+    from measure import hardware
+
+    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+    write_if_changed(GENERATED_DIR / BUILDS_INC, hardware.builds_header([str(a) for a in archs]))
 
 
 def carry_parts_header(parts, trivial) -> str:

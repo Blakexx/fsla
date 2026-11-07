@@ -7,6 +7,7 @@
 
 #include "carry/carry_arm_abi.cuh"
 #include "common/arch_runtime.cuh"
+#include "common/select.cuh"
 #include "common/hardware.cuh"
 #include "common/arm_switch.cuh"
 #include "common/design.cuh"
@@ -151,7 +152,7 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   //: the device's window (`common/window.cuh`): its compiled kernels' W, never the host pass's
   int dev = 0;
   ROLA_CUDA_CHECK(cudaGetDevice(&dev));
-  const int W = device_window(dev);
+  const int W = card_of(dev).traits.window;
   const int64_t windows = (L + W - 1) / W;
   STD_TORCH_CHECK(L >= 1 && L * dv < 0x40000000, "the call's tokens and channels index in 32 bits");
   STD_TORCH_CHECK(

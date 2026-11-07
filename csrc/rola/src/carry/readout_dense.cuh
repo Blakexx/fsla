@@ -41,8 +41,9 @@ __device__ __forceinline__ void dense_factors(const CarryParams& p, const uint8_
                                               int first, int slots, ops::SmemAddr rows,
                                               ops::SmemAddr exits, int warp, int lane) {
   static_assert(P::kReadFactors == 2 && P::kDigits == 32, "a dense read side, four lanes a token");
-  const ops::SmemAddr scale = ops::smem_addr(smem + p.tables.scale_at)
-                              + static_cast<uint32_t>((w & 1) * p.tables.heads * kWindow + first);
+  const ops::SmemAddr scale =
+      ops::smem_addr(smem + p.tables.scale_at)
+      + static_cast<uint32_t>((w & 1) * p.tables.heads * P::kWindow + first);
   const ops::SmemAddr exps = exps_of<P>(smem, warp);
   const bool f32 = p.reduce == kReduceF32;
 

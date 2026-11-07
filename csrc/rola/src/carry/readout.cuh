@@ -78,7 +78,7 @@ __device__ __forceinline__ void read_factors(const CarryParams& p, const uint8_t
   const uint32_t back = 4u * static_cast<uint32_t>(first);
   __syncwarp();
   const ops::SmemAddr scale = ops::smem_addr(smem + p.tables.scale_at)
-                              + static_cast<uint32_t>((w & 1) * p.tables.heads * kWindow);
+                              + static_cast<uint32_t>((w & 1) * p.tables.heads * P::kWindow);
   const ops::SmemAddr exps = exps_of<P>(smem, warp);
   const bool f32 = p.reduce == kReduceF32;
 

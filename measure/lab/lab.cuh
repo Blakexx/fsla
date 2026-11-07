@@ -15,7 +15,13 @@
 #include <string>
 #include <vector>
 
+#include "common/hardware.cuh"
+
 namespace lab {
+
+//: THE BUILD an experiment compiles at: its one architecture's own, the same in both passes (`tools/lab.py` passes
+//: `ROLA_LAB_CC`; docs/internals/tools/lab.md#build)
+constexpr denseref::arch::Build kLabBuild{ROLA_LAB_CC, 0};
 
 // ------------------------------------------------------------------------------------------------- device
 

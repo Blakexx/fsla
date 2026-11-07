@@ -41,10 +41,15 @@ product.
 
 <a id="builds-renamed"></a>
 A kernel templated on its build is the same code under a new name, so a refactor compares by signature:
-`tools/sass_bodies.py --compare A B --drop-builds` keys both maps by the demangled signature with each kernel's `Build`
-argument dropped -- refused where the argument is not its own image's, since a build's kernels compile in its image
+`tools/sass_bodies.py --compare A B --drop-builds` keys both maps by the demangled signature with each kernel's
+`BuildTag<Build{...}>` argument dropped -- refused where the argument is not its own image's, since a build's kernels compile in its image
 alone -- and reports the source stamp (`csrc_stamp_kernel`, which moves with every source edit) apart, never as a
 verdict.
+
+<a id="build-tag"></a>
+A kernel takes its build as a TYPE, `BuildTag<B>` (its `build` and `traits` as constants): nvcc 13.0's host stub
+cannot name a kernel's class-type template argument whose type sits in a namespace (it prints the type's mangled name),
+while a class template carrying it compiles -- so host templates and plans take `Build` itself, kernels its tag.
 
 <a id="traits"></a>
 `traits_of(Build)` is what a kernel's plan reads: the family, the window W ([`window.md`](window.md): a card's,

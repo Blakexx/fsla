@@ -13,9 +13,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 import sass_bodies  # noqa: E402
 
-#: `rola::k<Arm<3>>(int)` and `rola::k<Build{860, 0}, Arm<3>>(int)`, as nvcc 13 mangles them
+#: `rola::k<Arm<3>>(int)` and `rola::k<BuildTag<Build{860, 0}>, Arm<3>>(int)`, as nvcc 13.0 mangles them
 OLD = "sm_86:_ZN4rola1kINS_3ArmILi3EEEEEvi"
-NEW = "sm_86:_ZN4rola1kIXtlN8denseref4arch5BuildELi860EEENS_3ArmILi3EEEEEvi"
+NEW = "sm_86:_ZN4rola1kIN8denseref4arch8BuildTagIXtlNS2_5BuildELi860ELi0EEEEENS_3ArmILi3EEEEEvi"
 STAMP = "sm_86:_ZN4rola8stampdet17csrc_stamp_kernelEPl"
 
 

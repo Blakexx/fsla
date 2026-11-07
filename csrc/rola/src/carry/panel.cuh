@@ -20,9 +20,10 @@ __device__ __forceinline__ void red_add_f32(float* at, float v) {
 
 //: A TOKEN'S ROW in `den` (and in `num`, in units of `dv`): its units index `u` (a query head's token in the window)
 //: as the head's row and the window's token.
+template <class P>
 __device__ __forceinline__ uint32_t token_row(uint32_t u, uint32_t L) {
-  return (u >> window_bits(kWindow) & static_cast<uint32_t>(window_heads(kWindow) - 1)) * L
-         + (u & (kWindow - 1));
+  return (u >> window_bits(P::kWindow) & static_cast<uint32_t>(window_heads(P::kWindow) - 1)) * L
+         + (u & (P::kWindow - 1));
 }
 
 //: A WORD `off` words past `base` (`off` under 2^32), its own add: never re-associated into the base's sum.
@@ -63,7 +64,7 @@ __device__ __forceinline__ void drain(const CarryParams& p, const uint16_t* unio
 
   //: a slot's row (`token_row`: a word offset under 2^32, the host's bound)
   const auto row_of = [&](int s) {
-    return token_row(kDense ? static_cast<uint16_t>(first + s) : union_tok[first + s], L);
+    return token_row<P>(kDense ? static_cast<uint16_t>(first + s) : union_tok[first + s], L);
   };
   //: a slot past `n` adds zero at the trip's first slot's row: a token's, never one row every CTA shares
   constexpr int kWords = P::kChannels / (F32 ? 1 : 2), kRowBytes = 4 * kWords;

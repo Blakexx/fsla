@@ -6,17 +6,19 @@ Mirrors `csrc/rola/src/carry/carry_arm.cuh`, included only by the generated per-
 <a id="plan"></a>
 ## The plan's size
 
-`carry_form<Arm>` is the plan's form on the current device's card (`plan.md#plan`, `carry_arm_abi.md#form`), the
-host's own instance of the plan for that card. The kernel compiled for a card holds that card's plan, and traps at entry when the
-launched dynamic size is not its plan's (`%dynamic_smem_size`): code compiled for another card, or a host sized for
-one, never runs.
+An arm's kernels are templated on the BUILD (`Plan<Arm, B>`, `plan.md#plan`), and the host reaches the current
+device's build through the selection layer (`build_switch` over the builds the binary carries:
+[`../common/select.md`](../common/select.md)): the host and the device read one plan, and a build's kernels exist in
+its image alone (`in_image`). The kernel still traps at entry when the launched dynamic size is not its plan's
+(`%dynamic_smem_size`): a host sized for another build never runs it.
 
 <a id="launch"></a>
 ## The launch
 
-`carry_launch<Arm>` launches the plan pass (`window_plan_kernel<Arm>`, a thread a box class and window, 64 a block, a
-batch-head a grid row: `schedule.md#pass`) and then `carry_kernel<Arm>` on `(boxes, batch-heads)` with 256 threads and the plan's
+`carry_launch<Arm>` takes the current card's build and launches, at it (`carry_launch_on<B, Arm>`), the plan pass
+(`window_plan_kernel<BuildTag<B>, Arm>`, a thread a box class and window, 64 a block, a batch-head a grid row: `schedule.md#pass`)
+and then `carry_kernel<BuildTag<B>, Arm>` on `(boxes, batch-heads)` with 256 threads and the plan's
 dynamic shared memory, opting in once an arm behind a function-local flag. The launch bound is `(256, 1)`: one CTA an
-SM on every architecture. `carry_census<Arm>` reads the function's attributes back (registers, local bytes, its
-maximum block) beside the plan's shared bytes. `ROLA_CARRY_ARM_DEFINE` stamps both for one row of the shipped
+SM on every architecture. `carry_census<Arm>` reads the current build's function attributes back (registers, local bytes,
+its maximum block) beside its plan's form (`carry_arm_abi.md#form`). `ROLA_CARRY_ARM_DEFINE` stamps both for one row of the shipped
 set, keyed by its six fields.

@@ -18,8 +18,6 @@ constexpr int kListBound = 64;
 
 __host__ __device__ constexpr int list_at(int w) { return w / kListBound; }
 
-constexpr int kListAt = list_at(kWindow);
-constexpr int kListCap = kWindow;
 constexpr int kMaxLevels = 4;
 //: THE BOX'S CAPS (an arm's own box is its plan's). -- see docs/internals/carry/plan.md#box
 constexpr int kMaxExtent = 32, kStateValues = 32768;

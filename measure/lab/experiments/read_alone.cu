@@ -9,7 +9,8 @@
 #include <cstdio>
 #include <vector>
 
-#include "carry/carry_arm.cuh"
+#include "carry/carry_kernel.cuh"
+#include "common/arm.cuh"
 #include "lab.cuh"
 
 namespace read_alone {
@@ -25,13 +26,13 @@ struct Box;
 template <>
 struct Box<0> {
   using A = rola::Arm<0, 32, 1, 32, 1, 32, 0>;
-  using P = rc::Plan<A>;
+  using P = rc::Plan<A, lab::kLabBuild>;
 };
 
 template <>
 struct Box<1> {
   using A = rola::Arm<0, 16, 1, 32, 1, 64, 0>;
-  using P = rc::Plan<A>;
+  using P = rc::Plan<A, lab::kLabBuild>;
 };
 
 //: a variant's draw: its union's slots, and at the 32 x 16 x 64 box each slot's other digits a 256th
@@ -233,12 +234,9 @@ void variant(const lab::Bench& b, const char* label) {
   b.exempt(name,
            "an isolation of the production readout; its budget is tools/budgets/carry.json's");
   if (b.expect_only) return;
-  cudaDeviceProp dev{};
-  LAB_CHECK(cudaGetDeviceProperties(&dev, 0));
   using A = typename Box<BOX>::A;
-  //: the launch's shared bytes, the running card's plan (the host's `P` is sm_86's: its `kArch` default)
-  const int smem = dev.major == 8 && dev.minor == 0 ? rc::Plan<A, 800>::kSmemBytes
-                                                    : rc::Plan<A, 860>::kSmemBytes;
+  //: the launch's shared bytes, the lab build's plan
+  const int smem = rc::Plan<A, lab::kLabBuild>::kSmemBytes;
   LAB_CHECK(
       cudaFuncSetAttribute(read<BOX, MODE>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem));
   const lab::Samples s = b.variant(

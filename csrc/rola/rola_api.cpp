@@ -19,6 +19,7 @@
 
 #include "common/arch_runtime.cuh"
 #include "common/build_stamp.cuh"
+#include "common/select.cuh"
 #include "common/torch_seam.cuh"
 #include "src/carry/carry_api.cuh"
 #include "src/common/geom_api.cuh"
@@ -94,7 +95,11 @@ std::tuple<int64_t, bool, int64_t, std::string> vmm_probe(int64_t device) {
 }
 
 //: THE DEVICE'S WINDOW, the binary's table at its compute capability (`common/window.cuh`)
-int64_t device_window_op(int64_t device) { return rola::device_window(static_cast<int>(device)); }
+//: A DEVICE'S CARD (`common/select.cuh`): its compute capability, product row (-1: none), build variant, family and W
+std::vector<int64_t> device_card_op(int64_t device) {
+  const rola::Card& c = rola::card_of(static_cast<int>(device));
+  return {c.cc, c.product, c.build.variant, static_cast<int64_t>(c.traits.family), c.traits.window};
+}
 
 }  // namespace
 
@@ -116,7 +121,7 @@ STABLE_TORCH_LIBRARY(rola, m) {
       "int write_list, int[] write_operand, int read_list, int[] read_operand, int[] key, int accumulate, int reduce, "
       "int forced, Tensor(c!)? plans_out) -> ()");
   m.def("carry_readout_accumulate(int device) -> int");
-  m.def("device_window(int device) -> int");
+  m.def("device_card(int device) -> int[]");
   m.def("carry_ledger_bind(Tensor? ledger) -> ()");
   m.def("carry_probe_bind(Tensor? probe, Tensor? den) -> ()");
   m.def("carry_capture_bind(Tensor? out) -> ()");
@@ -220,7 +225,7 @@ STABLE_TORCH_LIBRARY_IMPL(rola, CompositeExplicitAutograd, m) {
   m.impl("carry_forward", TORCH_BOX(&rola::carry::carry_forward));
   m.impl("scale_forward", TORCH_BOX(&rola::scale::scale_forward));
   m.impl("carry_readout_accumulate", TORCH_BOX(&rola::carry::carry_readout_accumulate));
-  m.impl("device_window", TORCH_BOX(&device_window_op));
+  m.impl("device_card", TORCH_BOX(&device_card_op));
 
   m.impl("carry_ledger_bind", TORCH_BOX(&rola::carry::carry_ledger_bind));
   m.impl("carry_probe_bind", TORCH_BOX(&rola::carry::carry_probe_bind));

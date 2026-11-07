@@ -68,6 +68,12 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
 
 Every item below cost a wrong number before the lab existed; each is now a guard or a habit.
 
+* <a id="build"></a>**A launch sized at the host pass's card.** The host pass compiles at the pinned card, so a
+  harness that sized its launch from a plan at the compiling architecture launched the A100 with sm_86's shared bytes
+  (2026-11-07, `read_alone`, `read_dense`). An experiment compiles for one architecture (`tools/lab.py`'s `build`:
+  `-arch=sm_XX`, C++20 as the extension) and `-DROLA_LAB_CC` names it to both passes, so `lab::kLabBuild` -- that
+  architecture's own build ([`common/hardware.md#builds`](../common/hardware.md#builds)) -- is the one plan a harness
+  reads on the device and on the host.
 * **Dead work.** ptxas deletes an instruction whose result is dead — including a result only tested against a value it
   can fold (a probe's MMAs vanished behind `acc == x && m == y` with `m` constant). Guard: `lab::sink` stores
   unconditionally, and the expectations refuse a kernel missing what it means to time.

@@ -14,15 +14,13 @@ constants are per-card configuration).
 ## `window_for(cc)`
 
 A card's W by its compute capability (x10): its architecture's own build's window, chosen in `hardware.json`'s
-`build` block ([`hardware.md#traits`](hardware.md#traits)) -- the one table every kernel and the host read. Device code reads the
-compiling card's through `kWindow`, which is `window_for` at `arch_caps.cuh`'s `kArch`: the compiling card in the
-device pass and, as for every cap, the pinned card in the host pass. So host code never reads `kWindow` -- on another
-device it would be the pinned card's -- and takes its device's through `device_window(device)`
-(`common/arch_runtime.cu`), the same table at the device's compute capability. A host shape or check built from the
-pinned value would refuse the device's tensors at the call, and the carry's device stamp reports the device's own W, so
-a binary and its host cannot disagree unseen. Sizes that both sides compute -- the carry's tenants and read tables
-(`carry/plan.cuh`) -- take W as a template parameter, and the host instantiates them inside its
-per-card switch.
+`build` block ([`hardware.md#traits`](hardware.md#traits)) -- the one table every kernel and the host read. A kernel templated on its build reads its build's W through its plan (`Plan<Arm, B>::kWindow`, the carry's); the
+others' device code still reads the compiling card's through `kWindow`, which is `window_for` at `arch_caps.cuh`'s
+`kArch`: the compiling card in the device pass and, as for every cap, the pinned card in the host pass. So host code
+never reads `kWindow` -- on another device it would be the pinned card's -- and takes its device's from the device's
+card (`card_of(device).traits.window`, [`select.md`](select.md)). A host shape or check built from the pinned value
+would refuse the device's tensors at the call, and the carry's device stamp reports the device's own W, so a binary and
+its host cannot disagree unseen.
 
 The A100 (sm_80) is 1,024, every other card 512 (2026-11-04: interleaved on one A100 against 512, L 65,536 x 4 heads --
 the sparse carry -35%, the op's sparse prefill -17.5% (0.72x FlashAttention), the layer at g 16 / 4 -21% / -16%; the

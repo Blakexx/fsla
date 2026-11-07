@@ -8,7 +8,8 @@
 #include <climits>
 #include <cstdio>
 
-#include "carry/carry_arm.cuh"
+#include "carry/carry_kernel.cuh"
+#include "common/arm.cuh"
 #include "lab.cuh"
 
 namespace handoff_alone {
@@ -16,7 +17,7 @@ namespace handoff_alone {
 namespace rc = rola::carry;
 namespace ops = ::denseref::ops;
 using Arm = rola::Arm<0, 32, 1, 32, 1, 32, 0>;
-using P = rc::Plan<Arm>;
+using P = rc::Plan<Arm, lab::kLabBuild>;
 constexpr int kWindows = 64;
 
 __host__ __device__ __forceinline__ uint32_t mix(uint32_t x) {

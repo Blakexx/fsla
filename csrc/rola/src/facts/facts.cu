@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "common/arch_runtime.cuh"
+#include "common/select.cuh"
 #include "common/ops.cuh"
 #include "common/phase_clock.cuh"
 #include "facts/facts.cuh"
@@ -700,7 +701,7 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   //: the device's window (`common/window.cuh`), never the host pass's
   int dev = 0;
   ROLA_CUDA_CHECK(cudaGetDevice(&dev));
-  const int W = device_window(dev);
+  const int W = card_of(dev).traits.window;
   STD_TORCH_CHECK(window == W, "the facts pass's window is the device's ", W, " tokens, got ",
                   window);
   const Tensor& first = read[0];
