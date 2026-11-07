@@ -47,18 +47,20 @@ __device__ __forceinline__ int ceil_exp(float x) {
   return bits == 0u ? kUnitNone : static_cast<int>(bits >> 23) - 127 + ((bits & 0x7fffffu) != 0u);
 }
 
-//: A WARP'S STATE, the fold's accumulators: per list, its digits' m-tiles by the channels' four n-tiles, fp32 in the
-//: list's unit; and the den's, the v+1 channel absolute, four words a lane (`den_place`). -- see
+//: A WARP'S STATE, the fold's accumulators: per list, its digits' m-tiles by the channels' n-tiles, fp32 in the list's
+//: unit; and the den's, the v+1 channel absolute, `kDenRegs` words a lane (`den_place`). -- see
 //: docs/internals/carry/fold.md#state
 template <class P>
 struct State {
-  float acc[P::kFoldLists][P::kFoldMTiles][4][4];
-  float den[4];
+  float acc[P::kFoldLists][P::kFoldMTiles][P::kFoldNTiles][4];
+  float den[P::kDenRegs];
 
   //: the state's `k`-th register, `k` compile-time
   template <int K>
   __device__ __forceinline__ float at() const {
-    return acc[K / (P::kFoldMTiles * 16)][K / 16 % P::kFoldMTiles][K / 4 % 4][K % 4];
+    constexpr int kTile = 4 * P::kFoldNTiles;
+    return acc[K / (P::kFoldMTiles * kTile)][K / kTile % P::kFoldMTiles][K / 4 % P::kFoldNTiles]
+              [K % 4];
   }
 };
 
@@ -532,20 +534,23 @@ __device__ __forceinline__ void read_fill(const CarryParams& p, const uint8_t* s
                     buf + static_cast<uint32_t>(read_ents<P>(slots, p.reduce)), warp, lane);
 }
 
-//: A LANE'S DEN WORDS' PLACES, each of the box's 32 x 32 once across the CTA, the list owner's on either side (word `i`'s
-//: fold list `w + 8 (2 (t & 1) + (i & 1))`, its fold row `digit` `g + 8 (i >> 1) + 16 (t >> 1)`).
+//: A LANE'S DEN WORDS' PLACES, each of the box's lists x rows once across the CTA, the list owner's on either side: lane
+//: `(g, t)` its quad's (m-tile, list) pairs `kDenLists t ..` (in m-tile-major order), word `i` pair `i % kDenLists` at
+//: row `g + 8 (i / kDenLists)` of it.
+template <class P>
 struct DenPlace {
-  int list0, digit0, list_step;
+  int list0, digit0;
 
-  __device__ __forceinline__ int list(int i) const { return list0 + list_step * (i & 1); }
+  __device__ __forceinline__ int list(int i) const { return list0 + kWarps * (i % P::kDenLists); }
 
-  __device__ __forceinline__ int digit(int i) const { return digit0 + 8 * (i >> 1); }
+  __device__ __forceinline__ int digit(int i) const { return digit0 + 8 * (i / P::kDenLists); }
 };
 
 template <class P>
-__device__ __forceinline__ DenPlace den_place(int warp, int lane) {
+__device__ __forceinline__ DenPlace<P> den_place(int warp, int lane) {
+  constexpr int kRun = P::kFoldLists / P::kDenLists;  // a lane run sharing an m-tile
   const int g = lane >> 2, t = lane & 3;
-  return DenPlace{warp + 16 * (t & 1), g + 16 * (t >> 1), kWarps};
+  return DenPlace<P>{warp + kWarps * P::kDenLists * (t % kRun), g + 16 * (t / kRun)};
 }
 
 }  // namespace rola::carry

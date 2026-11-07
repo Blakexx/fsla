@@ -95,8 +95,8 @@ list's place and count from its own loads, so no warp waits on another for them.
 <a id="den-place"></a>
 ## The den's register places
 
-`den_place` is where a lane's four den words sit in the fold's registers (`State::den`, `fold.md#state`): each of the
-box's 32 x 32 leaves once across the CTA, the list owner's on either side, word `i` at fold list `w + 8 (2 (t & 1) + (i
-& 1))` and fold row `g + 8 (i >> 1) + 16 (t >> 1)`. The fold adds into them and the hand-off reads them
-(`handoff.md#den`).
+`den_place` is where a lane's `kDenRegs` den words sit in the fold's registers (`State::den`, `fold.md#state`): each of
+the box's lists x rows once across the CTA, the list owner's on either side, a lane its quad's (m-tile, list) pairs in
+order, two rows each (at 32 x 32 word `i` at fold list `w + 8 (2 (t & 1) + (i & 1))` and fold row `g + 8 (i >> 1) + 16
+(t >> 1)`). The fold adds into them and the hand-off reads them (`handoff.md#den`).
 

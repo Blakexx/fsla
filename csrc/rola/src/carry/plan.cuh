@@ -72,10 +72,11 @@ struct Plan : Tenants<window_for(Cc)> {
   static constexpr int kFoldLists = kLists / kWarps;
   static constexpr int kFoldMTiles = kRows / 16, kFoldNTiles = kChannels / 8;
   static constexpr int kStateRegs = kFoldLists * kRows * kChannels / 32;
+  //: THE DEN'S REGISTERS: a lane's (m-tile, list) pairs, two rows each. -- see docs/internals/carry/fold.md#state
+  static constexpr int kDenLists = kFoldLists * kFoldMTiles / 4, kDenRegs = 2 * kDenLists;
   static constexpr int kChannelGroups = kChannels / 8, kTokenGroups = kWarps / kChannelGroups;
   static constexpr int kDenWords = kChannelGroups, kDenRowBytes = kDenWords * 4;
-  //: A SIDE'S LIST GROUP: the facts pass's digits a union and its prefix rows span, as this arm reads its lists (a
-  //: group's `kPreRows` rows). -- see docs/internals/carry/plan.md#list-groups
+  //: A SIDE'S LIST GROUP, as this arm reads its lists. -- see docs/internals/carry/plan.md#list-groups
   static constexpr int kReadListGroup = kMaxExtent, kWriteListGroup = kMaxExtent;
   static_assert(kPreRows == kReadListGroup + 1 && kPreRows == kWriteListGroup + 1,
                 "the carry reads a list group's prefix rows, one a list and its totals");

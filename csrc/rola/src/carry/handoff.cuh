@@ -47,7 +47,7 @@ __device__ __forceinline__ void post_row_keys(const State<P>& st, uint8_t* smem,
       int bits[P::kFoldLists];
       static_for<P::kFoldLists>([&](auto J) {
         float x = fmaxf(fabsf(st.acc[J][M][0][2 * H]), fabsf(st.acc[J][M][0][2 * H + 1]));
-        static_for<3>([&](auto N) {
+        static_for<P::kFoldNTiles - 1>([&](auto N) {
           x = fmaxf(
               x, fmaxf(fabsf(st.acc[J][M][N + 1][2 * H]), fabsf(st.acc[J][M][N + 1][2 * H + 1])));
         });
@@ -82,7 +82,7 @@ __device__ __forceinline__ void post_list_keys(const State<P>& st, uint8_t* smem
   static_for<P::kFoldLists>([&](auto J) {
     float x = 0.0f;
     static_for<P::kFoldMTiles>([&](auto M) {
-      static_for<4>(
+      static_for<P::kFoldNTiles>(
           [&](auto N) { static_for<4>([&](auto E) { x = fmaxf(x, fabsf(st.acc[J][M][N][E])); }); });
     });
     const int bits = __reduce_max_sync(0xffffffffu, __float_as_int(x));
@@ -163,18 +163,22 @@ __device__ __forceinline__ int den_exp(float top) {
 //: A DEN WORD'S READOUT DIGIT and its K, `I` compile-time: its fold row and list (the alternating form), its list and
 //: row (the same split); `den_word_scale` the one of the lane's two digits word `I` is at.
 template <class P, int I>
-__device__ __forceinline__ int den_digit(const DenPlace& at) {
+__device__ __forceinline__ int den_digit(const DenPlace<P>& at) {
   return P::kSameSplit ? at.list(I) : at.digit(I);
 }
 
 template <class P, int I>
-__device__ __forceinline__ int den_k(const DenPlace& at) {
+__device__ __forceinline__ int den_k(const DenPlace<P>& at) {
   return P::kSameSplit ? at.digit(I) : at.list(I);
 }
 
+//: a lane's den digits: its pairs' lists (the same split) or its two rows, word `i`'s the `den_word_scale`-th
+template <class P>
+constexpr int kDenDigits = P::kSameSplit ? P::kDenLists : 2;
+
 template <class P>
 __host__ __device__ constexpr int den_word_scale(int i) {
-  return P::kSameSplit ? (i & 1) : (i >> 1);
+  return P::kSameSplit ? i % P::kDenLists : i / P::kDenLists;
 }
 
 //: AN INTEGER MAX INTO A SHARED WORD, fire and forget (a non-negative float's bits order as integers).
@@ -185,9 +189,9 @@ __device__ __forceinline__ void red_max_u32(ops::SmemAddr at, uint32_t v) {
 template <class P>
 __device__ __forceinline__ void den_tables_max(uint8_t* smem, const State<P>& st, int warp,
                                                int lane) {
-  const DenPlace at = den_place<P>(warp, lane);
+  const DenPlace<P> at = den_place<P>(warp, lane);
   const ops::SmemAddr tops = ops::smem_addr(smem + P::kDenMax);
-  static_for<4>([&](auto I) {
+  static_for<P::kDenRegs>([&](auto I) {
     red_max_u32(tops + 4u * static_cast<uint32_t>(den_digit<P, decltype(I)::value>(at)),
                 __float_as_uint(st.den[I]));
   });
@@ -196,15 +200,15 @@ __device__ __forceinline__ void den_tables_max(uint8_t* smem, const State<P>& st
 template <class P>
 __device__ __forceinline__ void den_tables_out(uint8_t* smem, const State<P>& st, int warp,
                                                int lane) {
-  const DenPlace at = den_place<P>(warp, lane);
+  const DenPlace<P> at = den_place<P>(warp, lane);
   const float* const tops = reinterpret_cast<const float*>(smem + P::kDenMax);
-  //: a word at its digit's scale, at its place in the den image (`den_row`); a lane's four words two digits'
-  float scale[2];
-  static_for<2>([&](auto B) {
-    constexpr int I = P::kSameSplit ? decltype(B)::value : 2 * decltype(B)::value;
+  //: a word at its digit's scale, at its place in the den image (`den_row`)
+  float scale[kDenDigits<P>];
+  static_for<kDenDigits<P>>([&](auto B) {
+    constexpr int I = P::kSameSplit ? decltype(B)::value : P::kDenLists * decltype(B)::value;
     scale[B] = pow2(kImageTop - den_exp(tops[den_digit<P, I>(at)]));
   });
-  static_for<4>([&](auto I) {
+  static_for<P::kDenRegs>([&](auto I) {
     constexpr int i = decltype(I)::value;
     const int d = den_digit<P, i>(at);
     *reinterpret_cast<__half*>(smem + P::kDenImage + den_row<P>(den_k<P, i>(at), d)
@@ -269,13 +273,13 @@ __device__ __forceinline__ void store_row_batches(const State<P>& st, uint8_t* s
   const uint32_t at = fr.at;
   const uint2 bits = fr.bits;
   const int es[2][2] = {{fr.ex.x, fr.ex.y}, {fr.ex.z, fr.ex.w}};
-  static_for<2>([&](auto M) {
+  static_for<P::kFoldMTiles>([&](auto M) {
     static_for<2>([&](auto H) {
       constexpr int b = 2 * M + H;
       if (b >= lo && b < hi) {
         static_for<P::kFoldLists>([&](auto J) {
           const float scale = list_scale(a[J], es[M][H], bits);
-          static_for<4>([&](auto N) {
+          static_for<P::kFoldNTiles>([&](auto N) {
             const __half2 h = __floats2half2_rn(st.acc[J][M][N][2 * H] * scale,
                                                 st.acc[J][M][N][2 * H + 1] * scale);
             const uint32_t to =
@@ -307,7 +311,7 @@ __device__ __forceinline__ void store_list_batches(const State<P>& st, uint8_t* 
       const float scale = list_scale(a[J], es[J], fr.bits);
       static_for<P::kFoldMTiles>([&](auto M) {
         static_for<2>([&](auto H) {
-          static_for<4>([&](auto N) {
+          static_for<P::kFoldNTiles>([&](auto N) {
             const __half2 h = __floats2half2_rn(st.acc[J][M][N][2 * H] * scale,
                                                 st.acc[J][M][N][2 * H + 1] * scale);
             const uint32_t to = fr.at + ((8u * J) & Mask) * P::kPlaneBytes + P::kSliceBlock * N

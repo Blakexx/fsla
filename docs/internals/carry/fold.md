@@ -7,12 +7,15 @@ declared arithmetic (`tests/oracle/fold_reference.py`, `fold_state`), gated per 
 <a id="state"></a>
 ## The state
 
-`State` (in `parts.cuh`) is a warp's accumulators: per fold list (`fold_list`: the box's list `w + 8 j`), its digits'
-two m-tiles by the channels' four n-tiles, fp32, each list in its own UNIT (below): 4 x 2 x 4 x 4 = 128 registers a
-lane. They are the MMAs' C fragments for the whole call. Beside them the DEN'S, the v+1 channel's mass (`#den`), 4
-registers a lane, absolute, the box's 32 lists by 32 digits once across the CTA (ruled 2026-11-02: the den as one more
-channel of the state, register-resident). A word's place (`den_place`) is the list's owner's on both side forms: lane `4
-g + t`'s word `i` list `w + 8 (2 (t & 1) + (i & 1))`, digit `g + 8 (i >> 1) + 16 (t >> 1)`, where `den_add` lands.
+`State` (in `parts.cuh`) is a warp's accumulators: per fold list (`fold_list`: the box's list `w + 8 j`), its rows'
+m-tiles (`kFoldMTiles` = rows / 16) by the channels' n-tiles (`kFoldNTiles` = channels / 8), fp32, each list in its own
+UNIT (below): at 32 x 32 x 32 4 x 2 x 4 x 4 = 128 registers a lane, at every box `kStateValues / 256`. They are the
+MMAs' C fragments for the whole call. Beside them the DEN'S, the v+1 channel's mass (`#den`), `kDenRegs` registers a
+lane (the box's lists by rows once across the CTA: 4 at 32 rows, 2 at 16), absolute (ruled 2026-11-02: the den as one
+more channel of the state, register-resident). A word's place (`den_place`) is the list's owner's on both side forms:
+lane `4 g + t` takes its quad's (m-tile, list) pairs `kDenLists t ..` in m-tile-major order, a run of `kFoldLists /
+kDenLists` lanes sharing an m-tile; word `i` is pair `i % kDenLists` at row `g + 8 (i / kDenLists)` -- at 32 x 32 list
+`w + 8 (2 (t & 1) + (i & 1))`, digit `g + 8 (i >> 1) + 16 (t >> 1)` -- where `den_add` lands.
 
 <a id="units"></a>
 ## The units
@@ -110,8 +113,9 @@ exponent; one shuffle of the record's word pairs c and c_m both). Two more MMAs 
 16-token step (one an 8-token tail), into a `DenColumn` held only through the list's steps: then `den_add` adds each
 row's value times `2^(K - 4)` into the DEN'S REGISTERS (`State::den`, `#state`; zero at the call's start), so the
 state is in `b m` units across windows with no unit book. B's every column is the c_m pair (no column-0 select), so
-every lane holds its quad's four rows: list `J` lies in the lanes `t & 1 == J >> 1`, each adding its two digits (two
-selects, no branch) at words `J & 1` and `2 + (J & 1)`. The state left shared memory (4 KB of the area: nl64k-dense's read chunk 192 slots, three a
+every lane holds its quad's rows: list `J` lies in the lanes whose pairs hold it (`t % run == J / kDenLists`; at 32 x 32
+`t & 1 == J >> 1`), each adding its two rows (two selects, no branch) at words `J % kDenLists` and `kDenLists + J %
+kDenLists`. The state left shared memory (4 KB of the area: nl64k-dense's read chunk 192 slots, three a
 window, where 256 and two fit without it) and then the call's global workspace (a line of adds a list, a load a
 window: 2026-11-02, 8c83835e) -- in registers it costs neither, and the window's tables read it there
 (`handoff.md#den`: a window's read chunks run before its fold chunks, so they see the state before its writes).

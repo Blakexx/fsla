@@ -98,10 +98,11 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   State<P> st;
   static_for<P::kFoldLists>([&](auto J) {
     static_for<P::kFoldMTiles>([&](auto M) {
-      static_for<4>([&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] = 0.f; }); });
+      static_for<P::kFoldNTiles>(
+          [&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] = 0.f; }); });
     });
   });
-  static_for<4>([&](auto I) { st.den[I] = 0.f; });
+  static_for<P::kDenRegs>([&](auto I) { st.den[I] = 0.f; });
 
   //: A READ CHUNK'S READOUT over digits `lo .. hi - 1` of the image at `area` (digit `d`'s plane `d & mask`), into
   //: its panel at the call's reduce dtype

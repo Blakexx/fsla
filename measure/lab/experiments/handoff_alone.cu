@@ -60,7 +60,7 @@ __global__ __launch_bounds__(rc::kThreads, 1) void handoff(long long* t, int* ou
   rc::State<P> st;
   rola::static_for<P::kFoldLists>([&](auto J) {
     rola::static_for<P::kFoldMTiles>([&](auto M) {
-      rola::static_for<4>([&](auto N) {
+      rola::static_for<P::kFoldNTiles>([&](auto N) {
         rola::static_for<4>([&](auto I) {
           st.acc[J][M][N][I] =
               value(warp + rc::kWarps * J, 16 * M + g + 8 * (I >> 1), 8 * N + 2 * t4 + (I & 1));
@@ -68,7 +68,7 @@ __global__ __launch_bounds__(rc::kThreads, 1) void handoff(long long* t, int* ou
       });
     });
   });
-  rola::static_for<4>([&](auto I) {
+  rola::static_for<P::kDenRegs>([&](auto I) {
     st.den[I] = 1.0f + static_cast<float>(mix(static_cast<uint32_t>(tid * 4 + I)) & 0xffu);
   });
   const ops::SmemAddr image = ops::smem_addr(smem + P::kAreaAt);
@@ -90,12 +90,12 @@ __global__ __launch_bounds__(rc::kThreads, 1) void handoff(long long* t, int* ou
     //: the state opaque, so nothing of it is hoisted out of the window
     rola::static_for<P::kFoldLists>([&](auto J) {
       rola::static_for<P::kFoldMTiles>([&](auto M) {
-        rola::static_for<4>([&](auto N) {
+        rola::static_for<P::kFoldNTiles>([&](auto N) {
           rola::static_for<4>([&](auto I) { asm volatile("" : "+f"(st.acc[J][M][N][I])); });
         });
       });
     });
-    rola::static_for<4>([&](auto I) { asm volatile("" : "+f"(st.den[I])); });
+    rola::static_for<P::kDenRegs>([&](auto I) { asm volatile("" : "+f"(st.den[I])); });
     //: the den's maxima cleared, as the kernel's window does
     if (tid < rc::kMaxExtent) reinterpret_cast<uint32_t*>(smem + P::kDenMax)[tid] = 0u;
     //: two barriers before the clock (`read_alone`: after one, the warps are not lined up)

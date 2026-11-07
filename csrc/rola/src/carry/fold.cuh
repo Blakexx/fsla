@@ -105,7 +105,7 @@ __device__ __forceinline__ void step16(State<P>& st, ops::SmemAddr pool, uint32_
   const uint32_t ob = __shfl_sync(0xffffffffu, off, 8 * (q & 1) + r);
   const uint32_t c01 = __shfl_sync(0xffffffffu, cpair, 2 * t),
                  c89 = __shfl_sync(0xffffffffu, cpair, 2 * t + 8);
-  uint32_t raw[P::kFoldMTiles][4], a[P::kFoldMTiles][4], b[4][2];
+  uint32_t raw[P::kFoldMTiles][4], a[P::kFoldMTiles][4], b[P::kFoldNTiles][2];
   static_for<P::kFoldMTiles>([&](auto M) {
     ops::load_frag_t(raw[M], chunk_addr<P::kWriteRow>(pool + oa, 2 * M + (q & 1)));
     a[M][0] = ops::hmul2(raw[M][0], c01);
@@ -113,7 +113,7 @@ __device__ __forceinline__ void step16(State<P>& st, ops::SmemAddr pool, uint32_
     a[M][2] = ops::hmul2(raw[M][2], c89);
     a[M][3] = ops::hmul2(raw[M][3], c89);
   });
-  static_for<2>([&](auto H) {
+  static_for<P::kFoldNTiles / 2>([&](auto H) {
     uint32_t x[4];
     ops::load_frag_t(x, chunk_addr<P::kWriteRow>(pool + ob, P::kValuesAt / 16 + 2 * H + (q >> 1)));
     b[2 * H][0] = x[0];
@@ -122,7 +122,7 @@ __device__ __forceinline__ void step16(State<P>& st, ops::SmemAddr pool, uint32_
     b[2 * H + 1][1] = x[3];
   });
   static_for<P::kFoldMTiles>([&](auto M) {
-    static_for<4>([&](auto N) { ops::hmma(st.acc[J][M][N], a[M], b[N][0], b[N][1]); });
+    static_for<P::kFoldNTiles>([&](auto N) { ops::hmma(st.acc[J][M][N], a[M], b[N][0], b[N][1]); });
   });
   if constexpr (Den) {
     const uint32_t d01 = __shfl_sync(0xffffffffu, dpair, 2 * t),
@@ -139,13 +139,18 @@ __device__ __forceinline__ void step8(State<P>& st, ops::SmemAddr pool, uint32_t
                                       uint32_t cpair, uint32_t dpair, DenColumn<P>& den, int lane) {
   const int r = lane & 7, q = lane >> 3, t = lane & 3;
   const uint32_t o = __shfl_sync(0xffffffffu, off, r), c01 = __shfl_sync(0xffffffffu, cpair, 2 * t);
-  uint32_t raw[4], a[4], b[4];
+  uint32_t raw[4], a[4], b[P::kFoldNTiles];
   ops::load_frag_t(raw, chunk_addr<P::kWriteRow>(pool + o, q));
-  ops::load_frag_t(b, chunk_addr<P::kWriteRow>(pool + o, P::kValuesAt / 16 + q));
+  static_for<P::kFoldNTiles / 4>([&](auto Q) {
+    uint32_t x[4];
+    ops::load_frag_t(x, chunk_addr<P::kWriteRow>(pool + o, P::kValuesAt / 16 + 4 * Q + q));
+    static_for<4>([&](auto k) { b[4 * Q + k] = x[k]; });
+  });
 #pragma unroll
   for (int k = 0; k < 4; ++k) a[k] = ops::hmul2(raw[k], c01);
   static_for<P::kFoldMTiles>([&](auto M) {
-    static_for<4>([&](auto N) { ops::hmma_k8(st.acc[J][M][N], a[2 * M], a[2 * M + 1], b[N]); });
+    static_for<P::kFoldNTiles>(
+        [&](auto N) { ops::hmma_k8(st.acc[J][M][N], a[2 * M], a[2 * M + 1], b[N]); });
   });
   if constexpr (Den) {
     const uint32_t d01 = __shfl_sync(0xffffffffu, dpair, 2 * t);
@@ -219,15 +224,19 @@ __device__ __forceinline__ uint32_t den_lists(int channel0, int dv) {
 }
 
 //: A LIST'S DEN COLUMN INTO THE DEN'S REGISTERS (`State::den`, `den_place`), each row times `2^(K - kCoefTop)`: list `J`
-//: in the lanes `t & 1 == J >> 1` (every lane holds its quad's rows). -- see docs/internals/carry/fold.md#den
+//: in the lanes whose pairs hold it, from their m-tile's column (every lane holds its quad's rows).
+//: -- see docs/internals/carry/fold.md#den
 template <int J, class P>
-__device__ __forceinline__ void den_add(State<P>& st, const float (&den)[2][4], int k, int lane) {
+__device__ __forceinline__ void den_add(State<P>& st, const DenColumn<P>& den, int k, int lane) {
+  static_assert(P::kFoldMTiles <= 2,
+                "one or two m-tiles: a lane run's m-tile its index's `kRun` bit");
+  constexpr int kPairs = P::kDenLists, kRun = P::kFoldLists / kPairs;
   const int t = lane & 3;
-  const bool mine = (t & 1) == (J >> 1), high = (t & 2) != 0;
+  const bool mine = t % kRun == J / kPairs, high = P::kFoldMTiles == 2 && (t & kRun) != 0;
   const float f = pow2(k - kCoefTop);
   static_for<2>([&](auto B) {
-    const float x = high ? den[1][2 * B] : den[0][2 * B];
-    st.den[(J & 1) + 2 * B] += mine ? x * f : 0.0f;
+    const float x = high ? den[P::kFoldMTiles - 1][2 * B] : den[0][2 * B];
+    st.den[J % kPairs + kPairs * B] += mine ? x * f : 0.0f;
   });
 }
 
@@ -311,7 +320,8 @@ __device__ __forceinline__ void steps_dense(State<P>& st, bool rescale, const ui
     //: a list whose unit stood multiplies nothing (one trip where it moved; `f` is the warp's)
     for (int k = __any_sync(0xffffffffu, f != 1.0f) ? 1 : 0; k > 0; --k)
       static_for<kTiles>([&](auto M) {
-        static_for<4>([&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] *= f; }); });
+        static_for<P::kFoldNTiles>(
+            [&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] *= f; }); });
       });
   });
   laps(1);
@@ -325,11 +335,11 @@ __device__ __forceinline__ void steps_dense(State<P>& st, bool rescale, const ui
     do {
       const uint32_t oa = __shfl_sync(0xffffffffu, off, 8 * (q >> 1) + r);
       const uint32_t ob = __shfl_sync(0xffffffffu, off, 8 * (q & 1) + r);
-      uint32_t raw[kTiles][4], b[4][2];
+      uint32_t raw[kTiles][4], b[P::kFoldNTiles][2];
       static_for<kTiles>([&](auto M) {
         ops::load_frag_t(raw[M], chunk_addr<P::kWriteRow>(pool + oa, 2 * M + (q & 1)));
       });
-      static_for<2>([&](auto H) {
+      static_for<P::kFoldNTiles / 2>([&](auto H) {
         uint32_t x[4];
         ops::load_frag_t(x,
                          chunk_addr<P::kWriteRow>(pool + ob, P::kValuesAt / 16 + 2 * H + (q >> 1)));
@@ -344,7 +354,8 @@ __device__ __forceinline__ void steps_dense(State<P>& st, bool rescale, const ui
         static_for<kTiles>([&](auto M) {
           const uint32_t a[4] = {ops::hmul2(raw[M][0], c01), ops::hmul2(raw[M][1], c01),
                                  ops::hmul2(raw[M][2], c89), ops::hmul2(raw[M][3], c89)};
-          static_for<4>([&](auto N) { ops::hmma(st.acc[J][M][N], a, b[N][0], b[N][1]); });
+          static_for<P::kFoldNTiles>(
+              [&](auto N) { ops::hmma(st.acc[J][M][N], a, b[N][0], b[N][1]); });
         });
       });
       if constexpr (Den) {
@@ -356,15 +367,20 @@ __device__ __forceinline__ void steps_dense(State<P>& st, bool rescale, const ui
     } while (__any_sync(0xffffffffu, slots - s > 8));
   for (int tail = __any_sync(0xffffffffu, slots - s > 0) ? 1 : 0; tail > 0; --tail) {
     const uint32_t o = __shfl_sync(0xffffffffu, off, r);
-    uint32_t raw[4], b[4];
+    uint32_t raw[4], b[P::kFoldNTiles];
     ops::load_frag_t(raw, chunk_addr<P::kWriteRow>(pool + o, q));
-    ops::load_frag_t(b, chunk_addr<P::kWriteRow>(pool + o, P::kValuesAt / 16 + q));
+    static_for<P::kFoldNTiles / 4>([&](auto Q) {
+      uint32_t x[4];
+      ops::load_frag_t(x, chunk_addr<P::kWriteRow>(pool + o, P::kValuesAt / 16 + 4 * Q + q));
+      static_for<4>([&](auto k) { b[4 * Q + k] = x[k]; });
+    });
     static_for<kLists>([&](auto J) {
       const uint32_t c01 = __shfl_sync(0xffffffffu, cp[J], 2 * t);
       uint32_t a[4];
       static_for<4>([&](auto K) { a[K] = ops::hmul2(raw[K], c01); });
       static_for<kTiles>([&](auto M) {
-        static_for<4>([&](auto N) { ops::hmma_k8(st.acc[J][M][N], a[2 * M], a[2 * M + 1], b[N]); });
+        static_for<P::kFoldNTiles>(
+            [&](auto N) { ops::hmma_k8(st.acc[J][M][N], a[2 * M], a[2 * M + 1], b[N]); });
       });
     });
     if constexpr (Den) {
@@ -385,7 +401,9 @@ __device__ __forceinline__ void den_pairs(State<P>& st, const uint8_t* smem,
                                           uint32_t dens, int warp, int lane) {
   const int g = lane >> 2, t = lane & 3;
   const bool doer = warp < kWarps / 2;
-  const DenPlace at = den_place<P>(warp, lane);
+  static_assert(P::kFoldMTiles == 2 && P::kDenRegs == 4,
+                "the exchange serves four lists a warp of two m-tiles, four den words a lane");
+  const DenPlace<P> at = den_place<P>(warp, lane);
   const float f = pow2(kden - kCoefTop);
   static_assert(kMaxExtent * kMaxExtent * 2 >= 128 * 16,
                 "the exchange's 128 16-byte slots fit the den image");
@@ -457,7 +475,8 @@ __device__ __forceinline__ void fold_chunk(State<P>& st, bool rescale, const uin
       //: a list whose unit stood multiplies nothing (one trip where it moved; `f` is the warp's)
       for (int k = __any_sync(0xffffffffu, f != 1.0f) ? 1 : 0; k > 0; --k)
         static_for<P::kFoldMTiles>([&](auto M) {
-          static_for<4>([&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] *= f; }); });
+          static_for<P::kFoldNTiles>(
+              [&](auto N) { static_for<4>([&](auto I) { st.acc[J][M][N][I] *= f; }); });
         });
       laps(1 + 2 * J);
       //: a list whose den the box carries (a uniform branch): its column, then into the den's registers at its exponent
@@ -546,7 +565,7 @@ __device__ __forceinline__ void fold_probe(const CarryParams& p, const State<P>&
         if (p.probe != nullptr) {
           float* const out =
               p.probe + (static_cast<int64_t>(c.bh) * step + leaf) * p.dv + c.channel0;
-          static_for<4>([&](auto N) {
+          static_for<P::kFoldNTiles>([&](auto N) {
             *reinterpret_cast<float2*>(out + 8 * N + 2 * tq) =
                 make_float2(st.acc[J][M][N][2 * Hi] * scale, st.acc[J][M][N][2 * Hi + 1] * scale);
           });
@@ -556,8 +575,8 @@ __device__ __forceinline__ void fold_probe(const CarryParams& p, const State<P>&
   });
   //: the den's words at their places (`den_place`), by the box carrying the list (`den_lists`: its group `list >> 3`)
   if (p.probe_den == nullptr) return;
-  const DenPlace at = den_place<P>(warp, lane);
-  static_for<4>([&](auto I) {
+  const DenPlace<P> at = den_place<P>(warp, lane);
+  static_for<P::kDenRegs>([&](auto I) {
     if (((den_lists<P>(c.channel0, p.dv) >> (at.list(I) >> 3)) & 1u) != 0u)
       p.probe_den[static_cast<int64_t>(c.bh) * step + base + at.list(I) * list_stride
                   + at.digit(I) * row_stride] = st.den[I] * kByteScale;
