@@ -14,7 +14,14 @@ from rola.ops import carry as carry_ops
 from rola.ops import facts as facts_ops
 from rola.ops.window import window_of
 from tests.oracle import carry_plan
-from tests.oracle.carry_fixtures import FORM_CELLS, FORM_CELLS64, assert_box64_arm, box64, listed_bundle
+from tests.oracle.carry_fixtures import (
+    FORM_CELLS,
+    FORM_CELLS64,
+    box64,
+    box64_dense,
+    listed_bundle,
+    read_listed_bundle,
+)
 from tests.oracle.fold_reference import fold_state
 
 
@@ -61,10 +68,14 @@ def _reference(routes, values, facts, level_s, BH, N, d_v):
     return state.reshape(BH, N, d_v), env.reshape(BH, N, d_v), mass.reshape(BH, N)
 
 
-def _fold_ratio(widths, L, write_sparse, growth, *, live=4, forced=None, box=None):
+def _fold_ratio(widths, L, write_sparse, growth, *, live=4, forced=None, box=None, dense_write=False):
     """``(ratio, plans)``: the call's largest slot distance from the reference over its bound, and its boxes' plans; at
-    the planner's box, or at ``box`` (extents a level, channels)."""
-    routes, values = listed_bundle(widths, L, write_sparse, live=live)
+    the planner's box, or at ``box`` (extents a level, channels); ``dense_write`` a write side dense at every level and
+    the read side listing level ``write_sparse``."""
+    if dense_write:
+        routes, values = read_listed_bundle(widths, L, write_sparse, live=live)
+    else:
+        routes, values = listed_bundle(widths, L, write_sparse, live=live)
     at = torch.arange(L, device="cuda") // window_of()
     routes.g_write.mul_(torch.exp2(growth * at.float())[None, :, None])
     padded, d_v = tuple(routes.topology.padded_widths), values.v.shape[-1]
@@ -73,17 +84,20 @@ def _fold_ratio(widths, L, write_sparse, growth, *, live=4, forced=None, box=Non
         assert carry_ops.arm_key(carve) == (32, 1, 32, 1, 32, 0)
     else:
         carve = carve_at(padded, *routes.sparse, *box, d_v)
-        assert_box64_arm(carve)
+        assert carry_ops.arm_key(carve) in carry_ops.arms(), carry_ops.arm_key(carve)
     layout = facts_ops.call_layout(routes)
     facts = facts_ops.facts(routes, values, layout, *facts_ops.call_statics(routes, layout),
                             carry_ops.lists_form(carry_ops.arm_key(carve)))
     BH, N, d_v = routes.batch * routes.heads, widths[0] * widths[1], values.v.shape[-1]
     unit = torch.zeros((BH, L), dtype=torch.int8, device="cuda")
     probe, den = _probed(routes, values, facts, carve, unit, forced)
+    #: the reference's level S is the fold's rows: the other level on either side form (the alternating box's read list
+    #: level, the same split's dense row level)
     want, env, mass = _reference(routes, values, facts, 1 - write_sparse, BH, N, d_v)
     err = (probe.double() - want).abs()
     assert (env > 0).float().mean() > 0.5, "most slots unwritten: the cell is vacuous"
-    ratio = max((err / (env * _rtol(L)).clamp_min(1e-300)).max().item(), _den_ratio(den, mass, L))
+    weight = DENSE_DEN_WEIGHT if dense_write else 0.0
+    ratio = max((err / (env * _rtol(L)).clamp_min(1e-300)).max().item(), _den_ratio(den, mass, L, weight))
     return ratio, carry_plan.plans(routes, facts, carve, forced)
 
 
@@ -146,6 +160,17 @@ def test_the_64_channel_box_folds_to_the_reference(write_sparse, growth):
     """The 64-channel box (one m-tile of 16 rows by eight n-tiles, two den words a lane): every leaf and channel of the
     final state and every leaf's den within its bound of the reference's, the units steady, climbing or held."""
     ratio, _ = _fold_ratio((64, 64), 2048, write_sparse, growth, box=box64(write_sparse))
+    assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"
+
+
+@pytest.mark.parametrize("box", [((32, 32), 32), "box64"], ids=["32", "64"])
+@pytest.mark.parametrize("read_sparse", [0, 1])
+@pytest.mark.parametrize("growth", [0, 8, -8])
+def test_a_dense_write_side_folds_to_the_reference(read_sparse, growth, box):
+    """A dense write side (its fold's coefficients the read side's list level, the same split) at the 32-channel box
+    and the 64-channel one (two fold lists a warp, the den's quads): every leaf's state and den within its bound."""
+    box = box64_dense(read_sparse) if box == "box64" else box
+    ratio, _ = _fold_ratio((64, 64), 2048, read_sparse, growth, box=box, dense_write=True)
     assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"
 
 

@@ -11,7 +11,8 @@ places are `parts.md`'s.
 The hand-off's first step (the f16 image at a power of two a digit). A lane's registers hold its warp's lists' state,
 each list in its own running unit ([`fold.md#units`](fold.md#units)), so the lists meet on one scale through an integer
 KEY: a largest |accumulator| at its list's unit as its fp32 bits plus (the list's unit less the box's top unit,
-`box_top`) x 2^23 -- the exponent field shifted, the mantissa kept, a zero `INT_MIN` -- so the largest over the lists is
+`box_top`: a lane a list, a lane past a 16-list box's lists a never-live unit) x 2^23 -- the exponent field shifted, the
+mantissa kept, a zero `INT_MIN` -- so the largest over the lists is
 one integer max. A key is exact while the live units span under `kKeySpan` (a live unit lies between `kUnitMin` and
 128; a never-live list's state is zero). `post_keys` posts each digit's key at the window's parity, at the digit's
 place in lane order (`exp_slot`: digit `16 M + 8 H + g` at `4 g + 2 M + H`), in the hand-off's form (`#same-split`):

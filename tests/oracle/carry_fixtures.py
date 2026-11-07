@@ -45,6 +45,30 @@ def listed_bundle(widths, L, write_sparse, *, same=False, live=4, d_v=64, seed=0
     return routes, values
 
 
+def read_listed_bundle(widths, L, read_sparse, *, live=4, d_v=64, seed=0):
+    """A bundle whose read side lists level ``read_sparse`` (``live`` digits a token) and whose write side is dense at
+    every level (every digit live): a dense write side's box, its fold's coefficients the read side's list level."""
+    D = len(widths)
+    read_flags = tuple(level == read_sparse for level in range(D))
+    write_flags = (False,) * D
+    live_r = [live if flag else width for flag, width in zip(read_flags, widths)]
+    gen = torch.Generator().manual_seed(seed + 1)
+    topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in widths))
+    routes = RouteFactors.from_levels(topology, levels(widths, L, live_r, seed=seed),
+                                      levels(widths, L, list(widths), seed=seed + 7),
+                                      (torch.rand((1, L, 2), generator=gen) + 0.5).cuda(),
+                                      sparse=(read_flags, write_flags))
+    values = Values.from_projection(torch.randn((1, L, 2, d_v), generator=gen).cuda())
+    return routes, values
+
+
+#: THE DENSE WRITE SIDE'S 64-CHANNEL BOX: 16 lists (the read side's list level, its digits) x 32 rows x 64 channels, two
+#: lists a warp
+def box64_dense(read_sparse: int) -> tuple[tuple[int, int], int]:
+    """``(extents, channels)`` of the dense write side's 64-channel box over a bundle listing level ``read_sparse``."""
+    return tuple(16 if level == read_sparse else 32 for level in range(2)), 64
+
+
 #: THE 64-CHANNEL BOX (docs/internals/carry/plan.md#box): the alternating box of 32 write lists x 16 read digits x 64
 #: channels at depth two, its extents a level by the write side's sparse level
 def box64(write_sparse: int) -> tuple[tuple[int, int], int]:
@@ -53,11 +77,11 @@ def box64(write_sparse: int) -> tuple[tuple[int, int], int]:
 
 
 def assert_box64_arm(carve) -> None:
-    """The carve is the 64-channel box's: its arm a built one at 16 fold rows and 64 channels."""
+    """The carve is a 64-channel box's: its arm a built one at 64 channels."""
     from rola.ops import carry as carry_ops
 
     key = carry_ops.arm_key(carve)
-    assert key in carry_ops.arms() and key[0] == 16 and key[4] == 64, key
+    assert key in carry_ops.arms() and key[4] == 64, key
 
 
 #: THE PLAN'S FORMS, each exercised by a cell -- its widths, live digits a token, the form it forces (None: the rule's)

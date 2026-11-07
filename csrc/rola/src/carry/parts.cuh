@@ -265,10 +265,11 @@ __device__ __forceinline__ void facts_in(const CarryParams& p, const Window& ww,
 //: -- see docs/internals/carry/parts.md#swizzle
 template <int Row>
 __device__ __forceinline__ constexpr uint32_t chunk_at(uint32_t s, uint32_t k) {
-  static_assert(Row == 160 || (Row % 64 == 0 && (Row == 128 || (Row / 64) % 2 == 1)),
-                "a row of 128 bytes, an odd number of 64, or 160 (five 32-byte pairs)");
-  //: a 160-byte row: slots `s`, `s + 4` a 128-byte line apart, the chunk's low bit flipped by `(s >> 2) & 1`
-  if constexpr (Row == 160)
+  static_assert(Row % 64 == 32 || (Row % 64 == 0 && (Row == 128 || (Row / 64) % 2 == 1)),
+                "a row of 128 bytes, an odd number of 64, or an odd number of 32");
+  //: an odd number of 32 bytes (160, 224): slots `s`, `s + 4` a 128-byte line apart, the chunk's low bit flipped by
+  //: `(s >> 2) & 1`
+  if constexpr (Row % 64 == 32)
     return k ^ ((s >> 2) & 1u);
   else
     return pool_chunk(Row, s, k);
@@ -279,7 +280,7 @@ __device__ __forceinline__ constexpr uint32_t chunk_at(uint32_t s, uint32_t k) {
 template <int Row>
 __device__ __forceinline__ uint32_t chunk_addr(uint32_t row0, uint32_t k) {
   if constexpr (Row == 128) return row0 ^ (16u * k);
-  if constexpr (Row == 160) return (row0 ^ (16u * (k & 1u))) + 16u * (k & ~1u);
+  if constexpr (Row % 64 == 32) return (row0 ^ (16u * (k & 1u))) + 16u * (k & ~1u);
   return (row0 ^ (16u * (k & 3u))) + 16u * (k & ~3u);
 }
 

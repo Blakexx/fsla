@@ -48,10 +48,10 @@ residue's high bits (`chunk_at`). Either way eight slots of distinct residues me
 dense pass's step is 8 consecutive slots; a list's step is its next 8 rank slots, distinct residues only where they run
 consecutively (the facts pass's [ranks](../facts/facts.md#ranks)). `chunk_addr` is a logical
 chunk's address from a row's chunk 0 with the swizzle folded in: an XOR inside the swizzle's group, the group's offset
-added. An entry carries the row's chunk-0 offset, so a lane addresses its chunk with one XOR. A 160-byte row (the
-64-channel box's write row: a 32-byte slice of 16 rows, then 128 bytes of values) is five 32-byte pairs: slots `s` and
-`s + 4` sit a 128-byte line apart at the same offset, so its chunk's low bit flips by `(s >> 2) & 1`, and eight slots of
-distinct residues again meet eight bank groups.
+added. An entry carries the row's chunk-0 offset, so a lane addresses its chunk with one XOR. A row of an odd
+number of 32 bytes (the 64-channel boxes' write rows: 160 bytes, a 32-byte slice of 16 rows then 128 bytes of values;
+224, a dense write side's 64 + 32 + 128) puts slots `s` and `s + 4` a 128-byte line apart at the same offset, so its
+chunk's low bit flips by `(s >> 2) & 1`, and eight slots of distinct residues again meet eight bank groups.
 
 <a id="fill"></a>
 ## The fill

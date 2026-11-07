@@ -15,12 +15,16 @@ __device__ __forceinline__ void list_units(int (&u)[P::kFoldLists], const uint8_
   static_for<P::kFoldLists>([&](auto J) { u[J] = book[warp + kWarps * J].unit; });
 }
 
-//: THE BOX'S TOP UNIT, its 32 lists' largest, one reduction a warp (the book read at its use).
+//: THE BOX'S TOP UNIT, its lists' largest, one reduction a warp (the book read at its use; a lane past the box's
+//: lists a never-live unit).
 template <class P>
 __device__ __forceinline__ int box_top(const uint8_t* smem, int lane) {
-  static_assert(P::kLists == 32, "a lane a list");
+  static_assert(P::kLists <= 32, "a lane a list");
   const volatile UnitBook* const book = reinterpret_cast<const volatile UnitBook*>(smem + P::kBook);
-  return __reduce_max_sync(0xffffffffu, book[lane].unit);
+  if constexpr (P::kLists == 32)
+    return __reduce_max_sync(0xffffffffu, book[lane].unit);
+  else
+    return __reduce_max_sync(0xffffffffu, lane < P::kLists ? book[lane].unit : kUnitNone);
 }
 
 //: THE KEYS' SPAN: a list more than this many units under the box's top keys as if this far (a live unit lies in

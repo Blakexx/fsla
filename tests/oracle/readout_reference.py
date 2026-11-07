@@ -44,10 +44,13 @@ def _read_rows(routes, level_s: int):
 
 
 def fold_level(routes, level_s: int) -> int:
-    """The level whose write rows are the fold's operand, a dense level: level S where the sides list different levels
-    (or the write side none), level R where both list level S (the same split, its state taken back to the readout's
-    levels) -- kappa is its byte scale (``unit_scale``)."""
-    return 1 - level_s if routes.sparse[1][level_s] else level_s
+    """The level whose write rows are the fold's operand, a dense level: level S where the sides list different levels,
+    level R where the write side's coefficients are level S -- both sides listing it (the same split), or a write side
+    listing none against a read side listing it (its coefficients the read side's list level: `rola.engine.carve`'s
+    `_sides`) -- its state taken back to the readout's levels; kappa is its byte scale (``unit_scale``)."""
+    write, read = routes.sparse[1], routes.sparse[0]
+    coefficients_s = write[level_s] or (not any(write) and read[level_s])
+    return 1 - level_s if coefficients_s else level_s
 
 
 def _windows(routes, values, list_exp, level_s: int, window: int):

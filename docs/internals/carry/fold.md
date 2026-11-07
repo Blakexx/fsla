@@ -93,6 +93,12 @@ the per-list form's 64), 4 + 1 coefficient loads a lane, ~100 instructions; on s
 pipe cycles (the census read the per-list form at 2.66 cycles an MMA: ~0.7 now) and its step cover at the line; on
 sm_86, tensor-bound either way, the dense fold 71.8K -> ~67-69K cycles a warp-window against its tensor 66.6K.
 
+THE TWO-LIST FORM (a dense write side's 64-channel box, 16 lists x 32 rows x 64 channels: two lists a warp): the same
+step over every slot once, each list's c a lane's one packed word (two lists, one conversion and one shuffle), eight
+n-tiles of values a list -- 2 lists x 2 m-tiles x 8 n-tiles = 32 MMAs a step, the four-list form's count -- its write
+row 224 bytes (64 of rows, 32 of the lists' coefficients, 128 of values: an odd number of 32-byte pairs,
+`parts.md#swizzle`).
+
 <a id="laps"></a>
 ## The laps
 
@@ -143,7 +149,10 @@ copies of the step's slots, their coefficient loads its partner's lists), four s
 (`den_pairs`) the tile goes into the den's registers in the list owner's layout (`den_place<P>`, one layout on either
 side: lane `(g, t)`'s word `i` is element `i` of digit tile `t >> 1` in lane `(g, t & 1)` for warp `w`'s lists, `(g, 2 +
 (t & 1))` for its partner's), its own by a shuffle, its partner's through shared memory (2 KB over the den image, free
-while folding, `handoff.md#den`; one barrier), at `2^(Em - 4)`, the box's lists alone. A first form, each warp its own four lists in half
+while folding, `handoff.md#den`; one barrier), at `2^(Em - 4)`, the box's lists alone. At two lists a warp the n8 tile is a QUAD of warps' lists (`w`, `w + 2` in
+lanes `0..15`, `w + 4`, `w + 6` in `16..31`, each lane's four coefficient loads two owners' two lists), warps `w < 2` its
+doers, and every doer lane's tile goes through shared memory (`den_quads`: 2 doers x 2 m-tiles x 32 lanes x 16 bytes,
+the den image's 2 KB; one barrier), each owner lane taking its list's column of its m-tile's two rows. A first form, each warp its own four lists in half
 an n8 tile, ran twice the separate pass's den MMAs and read +0.8-1.5% on sm_86's tensor-bound dense fold.
 A box whose lists' den it does
 not carry takes the steps without it (`Den` false: a uniform choice a chunk). The separate pass it replaces

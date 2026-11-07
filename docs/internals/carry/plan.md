@@ -53,8 +53,8 @@ fold's tile (`kFoldLists` = `kLists / 8` a warp, `kFoldMTiles` = `kRows / 16`, `
 readout's warps (`kChannelGroups` = `kChannels / 8`, `kTokenGroups` the warps left over, `kDenWords` one a channel
 group), the image below and the pool rows. The fixed tenants are sized at the caps (`kMaxExtent`, `carry.md`), so an
 arm's box never moves them. Each component asserts the extents it serves, and the plan the boxes they serve together:
-16 or 32 lists and rows, 32 or 64 channels -- the shipped 32 x 32 x 32 boxes and the alternating 32 x 16 x 64 (one token
-group of eight channel groups); a batch is half an m-tile of every fold list (the alternating form) or a list of every
+16 or 32 lists and rows, 32 or 64 channels -- the shipped 32 x 32 x 32 boxes, the alternating 32 x 16 x 64 (one token
+group of eight channel groups) and a dense write side's 16 x 32 x 64 (two fold lists a warp, `fold.md#dense`); a batch is half an m-tile of every fold list (the alternating form) or a list of every
 warp's (the same split).
 A pool row: the read side's slice over the readout's K, the write side's over the fold's rows (a dense write side's
 second over its lists), then the write side's values.

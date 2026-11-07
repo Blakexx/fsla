@@ -223,8 +223,9 @@ template <class P>
 __device__ __forceinline__ uint32_t den_lists(int channel0, int dv) {
   const int box = channel0 / P::kChannels, boxes = dv / P::kChannels;
   uint32_t mask = 0;
+  constexpr int kLists = P::kFoldLists;
 #pragma unroll
-  for (int j = 0; j < 4; ++j) mask |= (j * boxes / 4 == box ? 1u : 0u) << j;
+  for (int j = 0; j < kLists; ++j) mask |= (j * boxes / kLists == box ? 1u : 0u) << j;
   return mask;
 }
 
@@ -256,7 +257,10 @@ __device__ __forceinline__ void steps_dense(State<P>& st, bool rescale, const ui
                                             float p2m, float (&den)[P::kFoldMTiles][4], int warp,
                                             int lane, Laps laps) {
   constexpr int kLists = P::kFoldLists, kTiles = P::kFoldMTiles;
-  static_assert(kLists == 4, "two lists' c a packed word, two words a slot");
+  static_assert(kLists == 4 || kLists == 2, "two lists' c a packed word, one or two words a slot");
+  //: THE DEN TILE'S COLUMNS, four a lane half (the MMA's N, 8): a pair of warps' lists at four a warp, at two a quad's
+  //: (`w`, `w + 2` in a half, `w + 4`, `w + 6` in the other); `kLoads` coefficients a lane
+  constexpr int kCols = 4, kLoads = Den ? kCols : kLists;
   ListScale sc[kLists];
   static_for<kLists>([&](auto J) {
     sc[J] = reinterpret_cast<const ListScale*>(smem + P::kScale)[fold_list(warp, J)];
@@ -267,33 +271,47 @@ __device__ __forceinline__ void steps_dense(State<P>& st, bool rescale, const ui
   //: slot `s + (lane & 15)`'s row offset, its c paired with the next lane's a list each (lanes `0..15`), and (`Den`) its
   //: c_m pairs a list, lanes `0..15` the warp's lists and `16..31` its partner's (`w + 4`)
   const int owner = Den && lane >= 16 ? warp + kWarps / 2 : warp;
-  const auto entry = [&](int s, uint32_t& off, uint32_t(&cp)[kLists], uint32_t(&cm)[kLists]) {
+  const auto list_of = [&](int j) {
+    return kLists == 4 ? fold_list(owner, j) : fold_list(owner + 2 * (j >> 1), j & 1);
+  };
+  const auto entry = [&](int s, uint32_t& off, uint32_t(&cp)[kLists], uint32_t(&cm)[kCols]) {
     const int e = s + (lane & 15);
     const bool live = e < slots;
     const uint32_t k = static_cast<uint32_t>(max(min(e, slots - 1), 0));
     const uint32_t row0 = rows + k * P::kWriteRow + 16u * chunk_at<P::kWriteRow>(k, 0);
     float c[kLists];
-    uint32_t bh[kLists];
+    uint32_t bh[kLoads];
     float fk, mk;
     asm volatile("ld.shared.v2.f32 {%0, %1}, [%2];" : "=f"(fk), "=f"(mk) : "r"(ents + 8u * k));
-    static_for<kLists>([&](auto J) {
-      const uint32_t list = static_cast<uint32_t>(fold_list(owner, J));
+    static_for<kLoads>([&](auto J) {
+      const uint32_t list = static_cast<uint32_t>(list_of(J));
       asm volatile("ld.shared.u16 %0, [%1];"
                    : "=r"(bh[J])
                    : "r"(chunk_addr<P::kWriteRow>(row0, (2u * P::kRows + 2u * list) >> 4)
                          + (2u * list & 15u)));
-      const float b = __half2float(__ushort_as_half(static_cast<unsigned short>(bh[J])));
-      c[J] = __fmul_rn(__fmul_rn(__fmul_rn(b, 255.0f), fk), p2);
+      constexpr int kJ = decltype(J)::value;
+      if constexpr (kJ < kLists) {
+        const float b = __half2float(__ushort_as_half(static_cast<unsigned short>(bh[J])));
+        c[J] = __fmul_rn(__fmul_rn(__fmul_rn(b, 255.0f), fk), p2);
+      }
     });
-    const __half2 h01 = __floats2half2_rn(c[0], c[1]), h23 = __floats2half2_rn(c[2], c[3]);
-    const uint32_t w01 = live ? *reinterpret_cast<const uint32_t*>(&h01) : 0u,
-                   w23 = live ? *reinterpret_cast<const uint32_t*>(&h23) : 0u;
-    const uint32_t n01 = __shfl_xor_sync(0xffffffffu, w01, 1),
-                   n23 = __shfl_xor_sync(0xffffffffu, w23, 1);
-    cp[0] = ops::hmul2(__byte_perm(w01, n01, 0x5410), sc[0].cf);
-    cp[1] = ops::hmul2(__byte_perm(w01, n01, 0x7632), sc[1].cf);
-    cp[2] = ops::hmul2(__byte_perm(w23, n23, 0x5410), sc[2].cf);
-    cp[3] = ops::hmul2(__byte_perm(w23, n23, 0x7632), sc[3].cf);
+    if constexpr (kLists == 4) {
+      const __half2 h01 = __floats2half2_rn(c[0], c[1]), h23 = __floats2half2_rn(c[2], c[3]);
+      const uint32_t w01 = live ? *reinterpret_cast<const uint32_t*>(&h01) : 0u,
+                     w23 = live ? *reinterpret_cast<const uint32_t*>(&h23) : 0u;
+      const uint32_t n01 = __shfl_xor_sync(0xffffffffu, w01, 1),
+                     n23 = __shfl_xor_sync(0xffffffffu, w23, 1);
+      cp[0] = ops::hmul2(__byte_perm(w01, n01, 0x5410), sc[0].cf);
+      cp[1] = ops::hmul2(__byte_perm(w01, n01, 0x7632), sc[1].cf);
+      cp[2] = ops::hmul2(__byte_perm(w23, n23, 0x5410), sc[2].cf);
+      cp[3] = ops::hmul2(__byte_perm(w23, n23, 0x7632), sc[3].cf);
+    } else {
+      const __half2 h01 = __floats2half2_rn(c[0], c[1]);
+      const uint32_t w01 = live ? *reinterpret_cast<const uint32_t*>(&h01) : 0u;
+      const uint32_t n01 = __shfl_xor_sync(0xffffffffu, w01, 1);
+      cp[0] = ops::hmul2(__byte_perm(w01, n01, 0x5410), sc[0].cf);
+      cp[1] = ops::hmul2(__byte_perm(w01, n01, 0x7632), sc[1].cf);
+    }
     if constexpr (Den) {
       const __half2 wm = __float2half2_rn(live ? mk * w255 : 0.0f);
       const uint32_t w2 = *reinterpret_cast<const uint32_t*>(&wm);
@@ -311,10 +329,10 @@ __device__ __forceinline__ void steps_dense(State<P>& st, bool rescale, const ui
   };
   //: THE DEN'S B (`Den`): lane `(g, t)` column `g`'s c_m at the slot pair from `from` -- the warp's list `g` (`g < 4`),
   //: else its partner's list `g - 4`
-  const auto den_b = [&](const uint32_t(&cm)[kLists], int from) {
+  const auto den_b = [&](const uint32_t(&cm)[kCols], int from) {
     const int g = lane >> 2, src = from + 16 * (g >> 2);
-    uint32_t x[kLists];
-    static_for<kLists>([&](auto J) { x[J] = __shfl_sync(0xffffffffu, cm[J], src); });
+    uint32_t x[kCols];
+    static_for<kCols>([&](auto J) { x[J] = __shfl_sync(0xffffffffu, cm[J], src); });
     const int j = g & 3;
     return j == 0 ? x[0] : j == 1 ? x[1] : j == 2 ? x[2] : x[3];
   };
@@ -332,7 +350,7 @@ __device__ __forceinline__ void steps_dense(State<P>& st, bool rescale, const ui
   laps(1);
 
   const int r = lane & 7, q = lane >> 3, t = lane & 3;
-  uint32_t off, cp[kLists], cm[kLists];
+  uint32_t off, cp[kLists], cm[kCols];
   entry(0, off, cp, cm);
   int s = 0;
   for (int k = __any_sync(0xffffffffu, slots > 8) ? 1 : 0; k > 0; --k)
@@ -400,10 +418,44 @@ __device__ __forceinline__ void steps_dense(State<P>& st, bool rescale, const ui
 //: box carries the list: warp `w < 4`'s own columns by a shuffle, its partner `w + 4`'s through shared memory (2 KB over
 //: the den image, free while folding: its readers done at the window's last drain; a barrier).
 //: -- see docs/internals/carry/fold.md#dense
+//: THE TWO-LIST FORM: a doer `w < 2` holds a quad's tile (warps `w`, `w + 2`, `w + 4`, `w + 6`); every doer lane's tile
+//: goes through shared memory (its own columns too), each owner lane takes its two words.
 template <class P>
-__device__ __forceinline__ void den_pairs(State<P>& st, const uint8_t* smem,
+__device__ __forceinline__ void den_quads(State<P>& st, const uint8_t* smem,
                                           const float (&den)[P::kFoldMTiles][4], int kden,
                                           uint32_t dens, int warp, int lane) {
+  static_assert(P::kFoldLists == 2 && P::kFoldMTiles == 2 && P::kDenRegs == 2,
+                "two lists a warp of two m-tiles, two den words a lane");
+  const int g = lane >> 2, t = lane & 3;
+  const DenPlace<P> at = den_place<P>(warp, lane);
+  const float f = pow2(kden - kCoefTop);
+  const ops::SmemAddr ex = ops::smem_addr(smem + P::kDenImage);
+  //: a doer lane's m-tile `M` at `(doer, M, g, t)` -- 2 doers x 2 m-tiles x 32 lanes x 16 bytes
+  const auto slot = [&](int doer, int M, int tq) {
+    return ex + 16u * static_cast<uint32_t>(((doer * 2 + M) * 8 + g) * 4 + tq);
+  };
+  if (warp < 2) {
+    static_for<2>([&](auto M) {
+      ops::store_shared_vec16(slot(warp, M, t),
+                              make_uint4(__float_as_uint(den[M][0]), __float_as_uint(den[M][1]),
+                                         __float_as_uint(den[M][2]), __float_as_uint(den[M][3])));
+    });
+  }
+  ops::rendezvous();
+  //: owner `w`'s columns are its doer's (`w & 1`) lane `w >> 1` of the quad: its list `t & 1` an element of each row
+  const uint4 v = ops::load_shared_vec16(slot(warp & 1, t >> 1, warp >> 1));
+  const bool odd = (t & 1) != 0;
+  const float x[2] = {__uint_as_float(odd ? v.y : v.x), __uint_as_float(odd ? v.w : v.z)};
+  static_for<2>([&](auto I) {
+    const bool carried = ((dens >> (at.list(I) >> 3)) & 1u) != 0u;
+    st.den[I] += carried ? x[I] * f : 0.0f;
+  });
+}
+
+template <class P>
+__device__ __forceinline__ void den_pairs4(State<P>& st, const uint8_t* smem,
+                                           const float (&den)[P::kFoldMTiles][4], int kden,
+                                           uint32_t dens, int warp, int lane) {
   const int g = lane >> 2, t = lane & 3;
   const bool doer = warp < kWarps / 2;
   static_assert(P::kFoldMTiles == 2 && P::kDenRegs == 4,
@@ -443,6 +495,16 @@ __device__ __forceinline__ void den_pairs(State<P>& st, const uint8_t* smem,
       st.den[I] += carried ? x[I] * f : 0.0f;
     });
   }
+}
+
+template <class P>
+__device__ __forceinline__ void den_pairs(State<P>& st, const uint8_t* smem,
+                                          const float (&den)[P::kFoldMTiles][4], int kden,
+                                          uint32_t dens, int warp, int lane) {
+  if constexpr (P::kFoldLists == 2)
+    den_quads<P>(st, smem, den, kden, dens, warp, lane);
+  else
+    den_pairs4<P>(st, smem, den, kden, dens, warp, lane);
 }
 
 template <class P, class Laps = NoLaps>
@@ -525,7 +587,7 @@ __device__ __forceinline__ void fold_chunk(State<P>& st, bool rescale, const uin
     //: the den's MMAs only where the box carries its lists', a pair's in its lower warp: two instantiations
     float den[P::kFoldMTiles][4] = {};
     //: a vote, so ptxas sees a warp-uniform choice (a branch on the warp's index guards every collective under it)
-    if (__any_sync(0xffffffffu, dens != 0u && warp < kWarps / 2)) {
+    if (__any_sync(0xffffffffu, dens != 0u && warp < kWarps * P::kFoldLists / 8)) {
       steps_dense<P, true>(st, rescale, smem, pool, rows, ents, first, slots, p2, p2m, den, warp,
                            lane, laps);
     } else {

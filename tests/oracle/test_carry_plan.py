@@ -18,7 +18,14 @@ from rola.ops import carry as carry_ops
 from rola.ops import facts as facts_ops
 from rola.ops.window import window_of
 from tests.oracle import carry_plan as cp
-from tests.oracle.carry_fixtures import FORM_CELLS, assert_box64_arm, box64, listed_bundle
+from tests.oracle.carry_fixtures import (
+    FORM_CELLS,
+    assert_box64_arm,
+    box64,
+    box64_dense,
+    listed_bundle,
+    read_listed_bundle,
+)
 
 #: the forced forms gated: none, then each image mode and each chunk choice at least once
 FORCED = (None, "whole/union/union", "halves/64/128", "halves/union/64", "whole/128/192", "rule/64/rule",
@@ -44,6 +51,17 @@ def test_the_64_channel_box_plans_are_the_model(widths, live, forced):
     routes, values = listed_bundle(widths, 2048, 0, live=live)
     layout = facts_ops.call_layout(routes)
     _assert_plans_are_the_model(routes, values, layout, facts_ops.call_statics(routes, layout), forced, box=box64(0))
+
+
+@pytest.mark.parametrize("forced", FORCED)
+@pytest.mark.parametrize("read_sparse", [0, 1])
+def test_a_dense_write_sides_64_channel_box_plans_are_the_model(read_sparse, forced):
+    """The dense write side's 64-channel box (16 lists x 32 rows: 224-byte write rows): every record the model's word
+    for word."""
+    routes, values = read_listed_bundle((64, 64), 2048, read_sparse)
+    layout = facts_ops.call_layout(routes)
+    _assert_plans_are_the_model(routes, values, layout, facts_ops.call_statics(routes, layout), forced,
+                                box=box64_dense(read_sparse))
 
 
 def _assert_plans_are_the_model(routes, values, layout, statics, forced=None, box=None):
