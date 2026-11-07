@@ -23,6 +23,7 @@ from tests.oracle.carry_fixtures import (
     assert_box64_arm,
     box64,
     box64_dense,
+    box64_same,
     listed_bundle,
     read_listed_bundle,
 )
@@ -62,6 +63,17 @@ def test_a_dense_write_sides_64_channel_box_plans_are_the_model(read_sparse, for
     layout = facts_ops.call_layout(routes)
     _assert_plans_are_the_model(routes, values, layout, facts_ops.call_statics(routes, layout), forced,
                                 box=box64_dense(read_sparse))
+
+
+@pytest.mark.parametrize("forced", FORCED)
+@pytest.mark.parametrize("level", [0, 1])
+def test_the_same_splits_64_channel_box_plans_are_the_model(level, forced):
+    """Both sides listing one level at the 64-channel box (16-digit list groups on both sides): every record the
+    model's word for word."""
+    routes, values = listed_bundle((64, 64), 2048, level, same=True)
+    layout = facts_ops.call_layout(routes)
+    _assert_plans_are_the_model(routes, values, layout, facts_ops.call_statics(routes, layout), forced,
+                                box=box64_same(level))
 
 
 def _assert_plans_are_the_model(routes, values, layout, statics, forced=None, box=None):

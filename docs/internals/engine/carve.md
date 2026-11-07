@@ -16,11 +16,14 @@ extent, and `MIN_DENSE` (16) is a warp's least operand rows, one MMA tile.
 The channel extent comes first: the largest power of two dividing `d_v`, at most
 `MAX_CHANNELS` (`_channels`), so a token's output is a whole box's channels and the
 readout's warps each own theirs -- halved until the box is one the kernels take
-(`_admitted`): every listed level spans the facts pass's group (`LIST_GROUP`, 32 digits, or
-the level's whole width), since the lists come ranked in groups of 32 and a box over part of
-a group would read and drain tokens it never touches; and each side's warps own an MMA tile
-of dense rows (`MIN_DENSE`). So a dense-dense declaration at `d_v` 64 takes 64 channels and
-the alternating one 32 (two channel boxes). The leaves are what the state holds over it,
+(`_admitted`): every listed level spans a list group the facts pass ranks (`LIST_GROUPS`, 16
+or 32 digits, or the level's whole width), each side its own -- the lists come ranked in
+groups, and a box over part of a group would read and drain tokens it never touches; a box
+with a listed side holds at most `LISTED_CHANNELS` (64: a 128-channel box needs the fold's k8
+and m8 forms); and each side's warps own an MMA tile of dense rows (`MIN_DENSE`). So at `d_v`
+64 a dense-dense declaration takes 64 channels, and so does the alternating one: 32 write
+lists x 16 read digits x 64 channels, its read side ranked in 16-digit groups, its write side
+in 32 (`../carry/plan.md#list-groups`); at `d_v` 32 it is 32 x 32 x 32. The leaves are what the state holds over it,
 allocated as powers of two, one bit at a time, under the cap and each level's width:
 
 0. Each side with no list level, its row level (its operand's first: `_row_levels`) to an

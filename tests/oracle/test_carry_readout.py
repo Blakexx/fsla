@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.engine.carve import carve_at, plan_carve
+from rola.engine.carve import carve_at
 from rola.ops import carry as carry_ops
 from rola.ops import facts as facts_ops
 from rola.ops.window import window_of
@@ -22,10 +22,14 @@ from tests.oracle.carry_fixtures import (
     assert_box64_arm,
     box64,
     box64_dense,
+    box64_same,
     listed_bundle,
     read_listed_bundle,
 )
 from tests.oracle.readout_reference import num_absolute, readout, units
+
+#: THE EVEN BOX, 32 x 32 x 32 (two channel boxes at d_v 64)
+EVEN_BOX = ((32, 32), 32)
 
 
 def _readout_ratio(widths, L, write_sparse, growth, accumulate, *, same=False, live=4, forced=None,
@@ -40,12 +44,9 @@ def _readout_ratio(widths, L, write_sparse, growth, accumulate, *, same=False, l
     at = torch.arange(L, device="cuda") // window_of()
     routes.g_write.mul_(torch.exp2(growth * at.float())[None, :, None])
     widths, d_v = tuple(routes.topology.padded_widths), values.v.shape[-1]
-    if box is None:
-        carve = plan_carve(widths, *routes.sparse, d_v)
-        assert carry_ops.arm_key(carve) == (32, 1, 32, 1, 32, int(same))
-    else:
-        carve = carve_at(widths, *routes.sparse, *box, d_v)
-        assert carry_ops.arm_key(carve) in carry_ops.arms(), carry_ops.arm_key(carve)
+    #: the 32-channel box unless named (at d_v 64 the planner's is the 64-channel one, gated by its own tests)
+    carve = carve_at(widths, *routes.sparse, *(box or EVEN_BOX), d_v)
+    assert carry_ops.arm_key(carve) in carry_ops.arms(), carry_ops.arm_key(carve)
     key = carry_ops.arm_key(carve)
     layout = facts_ops.call_layout(routes)
     facts = facts_ops.facts(routes, values, layout, *facts_ops.call_statics(routes, layout),
@@ -145,6 +146,15 @@ def test_one_box_of_a_dense_write_side_reads_out(reduce_dtype):
 
 
 @pytest.mark.parametrize("reduce_dtype", [torch.float16, torch.float32], ids=["f16", "fp32"])
+def test_one_box_of_the_same_split_reads_out(reduce_dtype):
+    """One same-split 64-channel box a batch-head (both sides listing a level of 16, 32 rows), two windows: every slot
+    within its bound -- the sanitizer lane's one-CTA cell for that box."""
+    ratio, _ = _readout_ratio((16, 32), 2 * window_of(), 0, 8, carry_ops.readout_accumulate(), same=True,
+                              reduce_dtype=reduce_dtype, box=box64_same(0))
+    assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"
+
+
+@pytest.mark.parametrize("reduce_dtype", [torch.float16, torch.float32], ids=["f16", "fp32"])
 def test_one_box_reads_out_at_the_64_channel_box(reduce_dtype):
     """One box a batch-head (each list level exactly the box's extent: 32 write lists, 16 read digits a facts list
     group): every slot within its bound over two windows -- the sanitizer lane's one-CTA cell for this box."""
@@ -159,6 +169,17 @@ def test_every_plan_form_reads_out_at_the_64_channel_box(widths, live, forced, f
     ratio, plans = _readout_ratio(widths, 2048, 0, 8, carry_ops.readout_accumulate(), live=live, forced=forced,
                                   box=box64(0))
     assert forms <= carry_plan.forms(plans), f"the cell takes {sorted(carry_plan.forms(plans))}, not {sorted(forms)}"
+    assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"
+
+
+@pytest.mark.parametrize("reduce_dtype", [torch.float16, torch.float32], ids=["f16", "fp32"])
+@pytest.mark.parametrize("accumulate", ["fp32", "fp16"])
+@pytest.mark.parametrize("level", [0, 1])
+def test_the_same_splits_64_channel_box_reads_out(level, accumulate, reduce_dtype):
+    """Both sides listing one level at the 64-channel box (16 of its digits, two fold lists a warp, 32 rows): every
+    slot within its bound, the units climbing 2^8 a window."""
+    ratio, _ = _readout_ratio((64, 64), 2048, level, 8, accumulate, same=True, reduce_dtype=reduce_dtype,
+                              box=box64_same(level))
     assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"
 
 

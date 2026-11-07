@@ -20,11 +20,11 @@ def _flags(level_tags):
 
 
 @pytest.mark.parametrize("widths, level_tags, extents, channels", [
-    ((256, 256), ("SD", "DS"), (32, 32), 32),
+    ((256, 256), ("SD", "DS"), (16, 32), 64),
     ((32, 32, 32, 32), ("DS", "SD", "DS", "SD"), (32, 32, 1, 1), 32),
     ((32, 32, 32, 32), ("SS", "SS", "DD", "DD"), (1, 1, 32, 32), 32),
     ((32, 32, 32, 32), ("SD", "DS", "DD", "SS"), (4, 8, 32, 1), 32),
-    ((256, 256), ("SS", "DD"), (32, 32), 32),
+    ((256, 256), ("SS", "DD"), (16, 32), 64),
     ((64, 64, 256), ("SD", "DS", "DD"), (4, 8, 32), 32),
     ((16, 256), ("SD", "DS"), (16, 32), 64),
     ((256,), ("DD",), (256,), 64),
@@ -50,12 +50,17 @@ def test_channels_toward_d_v(d_v, extents, channels, groups):
     assert (c.extents, c.channels, (token_groups(c), channel_groups(c))) == (extents, channels, groups)
 
 
-@pytest.mark.parametrize("d_v", [32, 64, 128])
-def test_listed_levels_span_the_facts_group(d_v):
-    """A listed level spans the facts pass's 32-digit group, so the alternating box stays 32 x 32 x 32 at any d_v
-    (two token groups x four channel groups) until the facts pass groups at the box's extent."""
+@pytest.mark.parametrize("d_v, extents, channels, groups", [
+    (32, (32, 32), 32, (2, 4)),
+    (64, (32, 16), 64, (1, 8)),
+    (128, (32, 16), 64, (1, 8)),
+])
+def test_listed_levels_span_a_facts_list_group(d_v, extents, channels, groups):
+    """Each listed level spans a list group the facts pass ranks (16 or 32 digits), each side its own, and a box with a
+    listed side holds at most 64 channels: the alternating box is 32 x 32 x 32 at d_v 32 (two token groups x four
+    channel groups) and 32 x 16 x 64 from d_v 64 (one token group x eight)."""
     c = plan_carve((256, 256), (False, True), (True, False), d_v)
-    assert (c.extents, c.channels, (token_groups(c), channel_groups(c))) == ((32, 32), 32, (2, 4))
+    assert (c.extents, c.channels, (token_groups(c), channel_groups(c))) == (extents, channels, groups)
 
 
 @pytest.mark.parametrize("widths", [(16, 16, 16), (16, 16, 16, 16)])
@@ -69,11 +74,11 @@ def test_a_dense_sides_row_level_takes_a_tile_first(widths):
 
 def test_alternating_box_plans():
     c = plan_carve((256, 256), (False, True), (True, False), 64)
-    assert (c.fold.lists, c.fold.operand, c.fold.tile_lists, c.fold.tile_rows) == ((0,), (1,), 4, 32)
-    assert (c.readout.lists, c.readout.operand, c.readout.tile_lists, c.readout.tile_rows) == ((1,), (0,), 32, 32)
+    assert (c.fold.lists, c.fold.operand, c.fold.tile_lists, c.fold.tile_rows) == ((0,), (1,), 4, 16)
+    assert (c.readout.lists, c.readout.operand, c.readout.tile_lists, c.readout.tile_rows) == ((1,), (0,), 16, 32)
     assert c.readout.tile_lists * c.readout.tile_rows == c.leaves
     assert c.fold.tile_lists * c.fold.tile_rows * 8 == c.leaves
-    assert c.ctas(64) == 8 * 8 * 2
+    assert c.ctas(64) == 8 * 16
 
 
 def test_dense_dense_box_plans():

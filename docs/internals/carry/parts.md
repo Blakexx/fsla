@@ -34,7 +34,7 @@ A window ahead (`carry_kernel.md#staging`), into the window's parity of the tena
 read tables (`plan.md#read-tables`): a side's union tokens whole (512 slots a query head, 1 KB), its group's boundaries
 in prefix form (the arm's list group plus one rows of `cols_of` columns, 8 a query head: `plan.md#list-groups`) and its
 count (one 4-byte copy), its copies over the CTA's
-threads; the planner alone reads the exact totals. `facts_in` copies the write lists' exponent pairs (128 bytes) and
+threads; the planner alone reads the exact totals. `facts_in` copies the box's write lists' exponent pairs (4 bytes a list, never past the box's row) and
 each query head's token units (512 bytes a head; head `j` of write head `bh` is the call's `bh g + j`). `union_of`,
 `pre_of` reads a window's tenants back (`union_of` its tokens; `pre_of` forms its parity at each use, `#window`);
 `chunk_cols` names a chunk's columns in the boundaries.

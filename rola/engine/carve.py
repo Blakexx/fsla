@@ -24,10 +24,13 @@ CHANNELS = 32
 MAX_CHANNELS = 128
 GROUP_CHANNELS = 8
 CAP = 32
-#: THE LISTS' GROUP: the facts pass ranks a side's lists in its list group (`rola.engine.facts.lists.LIST_GROUPS`) and
-#: every built carry arm reads 32 (docs/internals/carry/plan.md#list-groups), so a listed level spans 32 (or its whole
-#: width) in the box
-LIST_GROUP = 32
+#: THE LISTS' GROUPS: the facts pass ranks a side's lists in a group of 16 or 32 digits
+#: (`rola.engine.facts.lists.LIST_GROUPS`), the arm reading its own (docs/internals/carry/plan.md#list-groups), so a
+#: listed level spans one of them (or its whole width) in the box, each side its own
+LIST_GROUPS = (16, 32)
+#: THE LISTED BOXES' CHANNELS: the components serve 32 or 64 channels where a side lists (a 128-channel box needs the
+#: fold's k8 and m8 forms and a readout warp of two channel groups)
+LISTED_CHANNELS = 64
 #: A SIDE'S DENSE EXTENT is an MMA tile of rows at least.
 MIN_DENSE = 16
 
@@ -160,11 +163,13 @@ def _channels(d_v: int) -> int:
 
 
 def _admitted(carve_: Carve, read_sparse, write_sparse) -> bool:
-    """Whether the box is one the kernels take: every listed level spans the facts pass's group (`LIST_GROUP`, or its
-    whole width) and each side's warps own a tile of dense rows (`MIN_DENSE`)."""
-    spans = all(e == min(LIST_GROUP, w)
-                for w, r, wr, e in zip(carve_.widths, read_sparse, write_sparse, carve_.extents) if r or wr)
-    return spans and min(carve_.fold.tile_rows, carve_.readout.tile_rows) >= MIN_DENSE
+    """Whether the box is one the kernels take: every listed level spans a list group the facts pass ranks
+    (`LIST_GROUPS`, or its whole width), each side its own; a box with a listed side at most `LISTED_CHANNELS`; and each
+    side's warps own a tile of dense rows (`MIN_DENSE`)."""
+    listed = [(w, e) for w, r, wr, e in zip(carve_.widths, read_sparse, write_sparse, carve_.extents) if r or wr]
+    spans = all(any(e == min(g, w) for g in LIST_GROUPS) for w, e in listed)
+    channels = not listed or carve_.channels <= LISTED_CHANNELS
+    return spans and channels and min(carve_.fold.tile_rows, carve_.readout.tile_rows) >= MIN_DENSE
 
 
 def _declared(widths, read_sparse, write_sparse, d_v: int) -> None:
@@ -183,7 +188,7 @@ def _declared(widths, read_sparse, write_sparse, d_v: int) -> None:
 
 def plan_carve(widths, read_sparse, write_sparse, d_v: int) -> Carve:
     """Producer v1: the channel extent toward ``d_v`` (`_channels`), halved until the box is one the kernels take
-    (`_admitted`: every listed level spans the facts pass's group, each side's dense rows an MMA tile); the box's
+    (`_admitted`: every listed level spans a facts list group, each side's dense rows an MMA tile); the box's
     leaves from the tags under the per-level cap, the cap lifted to the widths when the box cannot be filled under it.
     A pure function of the declaration,
     planned once a declaration (the `Carve` is frozen): every call of a shape after its first costs no host time

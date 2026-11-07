@@ -69,6 +69,13 @@ def box64_dense(read_sparse: int) -> tuple[tuple[int, int], int]:
     return tuple(16 if level == read_sparse else 32 for level in range(2)), 64
 
 
+#: THE SAME SPLIT'S 64-CHANNEL BOX: both sides listing ``level``, 16 of its digits (the fold's lists, the readout's) x 32
+#: rows x 64 channels
+def box64_same(level: int) -> tuple[tuple[int, int], int]:
+    """``(extents, channels)`` of the same split's 64-channel box over a bundle whose sides both list ``level``."""
+    return tuple(16 if lv == level else 32 for lv in range(2)), 64
+
+
 #: THE 64-CHANNEL BOX (docs/internals/carry/plan.md#box): the alternating box of 32 write lists x 16 read digits x 64
 #: channels at depth two, its extents a level by the write side's sparse level
 def box64(write_sparse: int) -> tuple[tuple[int, int], int]:

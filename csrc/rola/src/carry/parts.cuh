@@ -236,8 +236,9 @@ __device__ __forceinline__ void lists_in(const CarryParams& p, const SideLists& 
 template <class P>
 __device__ __forceinline__ void facts_in(const CarryParams& p, const Window& ww, const Place& c,
                                          int w, uint8_t* smem) {
+  //: the box's lists' exponent pairs, 4 bytes a list (never past its row: a 16-list box's level may end there)
   constexpr int kUnitCopies = kWindow / ops::kStageBytes,
-                kExpCopies = kMaxExtent * 4 / ops::kStageBytes;
+                kExpCopies = P::kLists * 4 / ops::kStageBytes;
   const int heads = p.tables.heads;
   const ops::SmemAddr scale = ops::smem_addr(smem + p.tables.scale_at) + (w & 1) * heads * kWindow;
 #pragma unroll 1

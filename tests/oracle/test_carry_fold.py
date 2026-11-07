@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.engine.carve import carve_at, plan_carve
+from rola.engine.carve import carve_at
 from rola.ops import carry as carry_ops
 from rola.ops import facts as facts_ops
 from rola.ops.window import window_of
@@ -19,6 +19,7 @@ from tests.oracle.carry_fixtures import (
     FORM_CELLS64,
     box64,
     box64_dense,
+    box64_same,
     listed_bundle,
     read_listed_bundle,
 )
@@ -68,23 +69,24 @@ def _reference(routes, values, facts, level_s, BH, N, d_v):
     return state.reshape(BH, N, d_v), env.reshape(BH, N, d_v), mass.reshape(BH, N)
 
 
-def _fold_ratio(widths, L, write_sparse, growth, *, live=4, forced=None, box=None, dense_write=False):
+#: THE EVEN BOX, 32 x 32 x 32 (two channel boxes at d_v 64)
+EVEN_BOX = ((32, 32), 32)
+
+
+def _fold_ratio(widths, L, write_sparse, growth, *, live=4, forced=None, box=None, dense_write=False, same=False):
     """``(ratio, plans)``: the call's largest slot distance from the reference over its bound, and its boxes' plans; at
     the planner's box, or at ``box`` (extents a level, channels); ``dense_write`` a write side dense at every level and
     the read side listing level ``write_sparse``."""
     if dense_write:
         routes, values = read_listed_bundle(widths, L, write_sparse, live=live)
     else:
-        routes, values = listed_bundle(widths, L, write_sparse, live=live)
+        routes, values = listed_bundle(widths, L, write_sparse, live=live, same=same)
     at = torch.arange(L, device="cuda") // window_of()
     routes.g_write.mul_(torch.exp2(growth * at.float())[None, :, None])
     padded, d_v = tuple(routes.topology.padded_widths), values.v.shape[-1]
-    if box is None:
-        carve = plan_carve(padded, *routes.sparse, d_v)
-        assert carry_ops.arm_key(carve) == (32, 1, 32, 1, 32, 0)
-    else:
-        carve = carve_at(padded, *routes.sparse, *box, d_v)
-        assert carry_ops.arm_key(carve) in carry_ops.arms(), carry_ops.arm_key(carve)
+    #: the 32-channel box unless named (at d_v 64 the planner's is the 64-channel one, gated by its own tests)
+    carve = carve_at(padded, *routes.sparse, *(box or EVEN_BOX), d_v)
+    assert carry_ops.arm_key(carve) in carry_ops.arms(), carry_ops.arm_key(carve)
     layout = facts_ops.call_layout(routes)
     facts = facts_ops.facts(routes, values, layout, *facts_ops.call_statics(routes, layout),
                             carry_ops.lists_form(carry_ops.arm_key(carve)))
@@ -171,6 +173,17 @@ def test_a_dense_write_side_folds_to_the_reference(read_sparse, growth, box):
     and the 64-channel one (two fold lists a warp, the den's quads): every leaf's state and den within its bound."""
     box = box64_dense(read_sparse) if box == "box64" else box
     ratio, _ = _fold_ratio((64, 64), 2048, read_sparse, growth, box=box, dense_write=True)
+    assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"
+
+
+@pytest.mark.parametrize("box", [((32, 32), 32), "box64"], ids=["32", "64"])
+@pytest.mark.parametrize("level", [0, 1])
+@pytest.mark.parametrize("growth", [0, 8, -8])
+def test_the_same_split_folds_to_the_reference(level, growth, box):
+    """Both sides listing one level (the fold's lists the readout's digits) at the 32-channel box and the 64-channel one
+    (two fold lists a warp): every leaf's state and den within its bound."""
+    box = box64_same(level) if box == "box64" else box
+    ratio, _ = _fold_ratio((64, 64), 2048, level, growth, box=box, same=True)
     assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"
 
 
