@@ -16,7 +16,15 @@ namespace read_dense {
 
 namespace rc = rola::carry;
 namespace ops = ::denseref::ops;
-using P = rc::Plan<rola::Arm<0, 16, 2, 16, 2, 64, 1>>;
+using A = rola::Arm<0, 16, 2, 16, 2, 64, 1>;
+using P = rc::Plan<A>;
+
+//: THE LAUNCH'S SHARED BYTES, the running card's plan (the host's `P` is sm_86's: its `kArch` default)
+inline int smem_of(const cudaDeviceProp& prop) {
+  return prop.major == 8 && prop.minor == 0 ? rc::Plan<A, 800>::kSmemBytes
+                                            : rc::Plan<A, 860>::kSmemBytes;
+}
+
 constexpr int kWindows = 64, kSlots = 128;
 
 __host__ __device__ __forceinline__ uint32_t mix(uint32_t x) {
@@ -104,10 +112,12 @@ void variant(const lab::Bench& b, const char* label) {
   b.exempt(name,
            "an isolation of the production readout; its budget is tools/budgets/carry.json's");
   if (b.expect_only) return;
-  LAB_CHECK(
-      cudaFuncSetAttribute(read<MODE>, cudaFuncAttributeMaxDynamicSharedMemorySize, P::kSmemBytes));
+  cudaDeviceProp dev{};
+  LAB_CHECK(cudaGetDeviceProperties(&dev, 0));
+  const int smem = smem_of(dev);
+  LAB_CHECK(cudaFuncSetAttribute(read<MODE>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem));
   const lab::Samples s = b.variant(
-      [&] { read<MODE><<<b.sms, rc::kThreads, P::kSmemBytes>>>(b.times, b.sinks); },
+      [&] { read<MODE><<<b.sms, rc::kThreads, smem>>>(b.times, b.sinks); },
       [&] { return lab::Bench::mean(b.cycles(rc::kWarps), rc::kWarps, 0, rc::kWarps) / kWindows; });
   b.unchecked(label,
               "a timing isolation; the readout's arithmetic is the oracle's (test_carry_readout)");

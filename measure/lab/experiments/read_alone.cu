@@ -21,13 +21,17 @@ constexpr int kWindows = 64, kLiveOf256 = 10, kK16Of256 = 18, kDenseOf256 = 40;
 //: THE BOXES: 0 the 32 x 32 x 32 box (two token groups by four channel groups), 1 the 32 x 16 x 64 box (one by eight)
 template <int BOX>
 struct Box;
+
 template <>
 struct Box<0> {
-  using P = rc::Plan<rola::Arm<0, 32, 1, 32, 1, 32, 0>>;
+  using A = rola::Arm<0, 32, 1, 32, 1, 32, 0>;
+  using P = rc::Plan<A>;
 };
+
 template <>
 struct Box<1> {
-  using P = rc::Plan<rola::Arm<0, 16, 1, 32, 1, 64, 0>>;
+  using A = rola::Arm<0, 16, 1, 32, 1, 64, 0>;
+  using P = rc::Plan<A>;
 };
 
 //: a variant's draw: its union's slots, and at the 32 x 16 x 64 box each slot's other digits a 256th
@@ -198,7 +202,8 @@ struct Floor {
 template <int BOX, int MODE>
 Floor floor_of(int blocks, double mma, double tile_shared, bool colored) {
   using P = typename Box<BOX>::P;
-  constexpr int kSlots = slots_of<BOX, MODE>(), kOf256 = of256<BOX, MODE>(), kCg = P::kChannelGroups;
+  constexpr int kSlots = slots_of<BOX, MODE>(), kOf256 = of256<BOX, MODE>(),
+                kCg = P::kChannelGroups;
   Floor f;
   const int split = rc::group_split(kSlots);
   for (int b = 0; b < blocks; ++b)
@@ -228,10 +233,16 @@ void variant(const lab::Bench& b, const char* label) {
   b.exempt(name,
            "an isolation of the production readout; its budget is tools/budgets/carry.json's");
   if (b.expect_only) return;
-  LAB_CHECK(cudaFuncSetAttribute(read<BOX, MODE>, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                 P::kSmemBytes));
+  cudaDeviceProp dev{};
+  LAB_CHECK(cudaGetDeviceProperties(&dev, 0));
+  using A = typename Box<BOX>::A;
+  //: the launch's shared bytes, the running card's plan (the host's `P` is sm_86's: its `kArch` default)
+  const int smem = dev.major == 8 && dev.minor == 0 ? rc::Plan<A, 800>::kSmemBytes
+                                                    : rc::Plan<A, 860>::kSmemBytes;
+  LAB_CHECK(
+      cudaFuncSetAttribute(read<BOX, MODE>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem));
   const lab::Samples s = b.variant(
-      [&] { read<BOX, MODE><<<b.sms, rc::kThreads, P::kSmemBytes>>>(b.times, b.sinks); },
+      [&] { read<BOX, MODE><<<b.sms, rc::kThreads, smem>>>(b.times, b.sinks); },
       [&] { return lab::Bench::mean(b.cycles(rc::kWarps), rc::kWarps, 0, rc::kWarps) / kWindows; });
   b.unchecked(label,
               "a timing isolation; the readout's arithmetic is the oracle's (test_carry_readout)");
@@ -244,8 +255,8 @@ void variant(const lab::Bench& b, const char* label) {
   const bool geforce = prop.major == 8 && prop.minor == 6;
   //: the dtypes as `read`'s: MODE 12 and 13 sm_86's form
   constexpr bool kF16 = MODE >= 10 || MODE % 3 == 0, kF32 = MODE < 10 && MODE % 3 == 2;
-  const Floor f = floor_of<BOX, MODE>(b.sms, geforce ? (kF16 ? 16.0 : 32.0) : 8.0, kF32 ? 26.0 : 22.0,
-                                      MODE >= 3 && MODE < 6);
+  const Floor f = floor_of<BOX, MODE>(b.sms, geforce ? (kF16 ? 16.0 : 32.0) : 8.0,
+                                      kF32 ? 26.0 : 22.0, MODE >= 3 && MODE < 6);
   for (const auto& [what, v] :
        {std::pair<const char*, double>{"tensor floor", f.tensor}, {"shared floor", f.shared}}) {
     const std::string nm = std::string(label) + ": " + what;
@@ -272,12 +283,18 @@ int main(int argc, char** argv) {
   read_alone::variant<0, 11>(b, "section: the factors and the first half (sm_86's form)");
   read_alone::variant<0, 13>(b, "alt-k16's density (18 / 256): f16 panel, fp16 accumulate");
   read_alone::variant<0, 12>(b, "dense lists (40 / 256): f16 panel, fp16 accumulate");
-  read_alone::variant<1, 0>(b, "32 x 16 x 64 box, nl64k-alt-k4's chunk: f16 panel, fp16 accumulate (sm_86's form)");
-  read_alone::variant<1, 1>(b, "32 x 16 x 64 box, nl64k-alt-k4's chunk: f16 panel, fp32 accumulate (the A100's form)");
-  read_alone::variant<1, 2>(b, "32 x 16 x 64 box, nl64k-alt-k4's chunk: fp32 panel, fp32 accumulate");
+  read_alone::variant<1, 0>(
+      b, "32 x 16 x 64 box, nl64k-alt-k4's chunk: f16 panel, fp16 accumulate (sm_86's form)");
+  read_alone::variant<1, 1>(
+      b, "32 x 16 x 64 box, nl64k-alt-k4's chunk: f16 panel, fp32 accumulate (the A100's form)");
+  read_alone::variant<1, 2>(b,
+                            "32 x 16 x 64 box, nl64k-alt-k4's chunk: fp32 panel, fp32 accumulate");
   read_alone::variant<1, 6>(b, "32 x 16 x 64 box: control, the timed span without the readout");
-  read_alone::variant<1, 10>(b, "32 x 16 x 64 box, nl64k-alt-k4's chunk: section, the factors alone");
-  read_alone::variant<1, 11>(b, "32 x 16 x 64 box, nl64k-alt-k4's chunk: section, the factors and the first half");
-  read_alone::variant<1, 13>(b, "32 x 16 x 64 box, flagship-alt-k16's chunk: f16 panel, fp16 accumulate");
+  read_alone::variant<1, 10>(b,
+                             "32 x 16 x 64 box, nl64k-alt-k4's chunk: section, the factors alone");
+  read_alone::variant<1, 11>(
+      b, "32 x 16 x 64 box, nl64k-alt-k4's chunk: section, the factors and the first half");
+  read_alone::variant<1, 13>(
+      b, "32 x 16 x 64 box, flagship-alt-k16's chunk: f16 panel, fp16 accumulate");
   return 0;
 }
