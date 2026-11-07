@@ -42,21 +42,37 @@ None in shared memory since 2026-10-25: the async copies land on commit groups i
 (`carry_kernel.md#staging`), and every rendezvous is the hardware barrier (`carry_kernel.md#barriers`). The mbarriers
 the step machine landed its two slots on, each counting all 256 threads, are retired with it.
 
+<a id="box"></a>
+## The box
+
+An arm's box is its plan's, from its key: the fold's rows `kRows` (`fold_rows`) and the channels `kChannels`
+(`channels`), the fold's lists `kLists` the state's rest (`kStateValues / (kRows kChannels)`). The readout's digits
+`kDigits` and its K `kK` are the fold's rows and lists in the alternating form, its lists and rows in the same split
+(`kSameSplit`: the fold's lists are the readout's digits); the key's `read_rows` is asserted the K. From them: the
+fold's tile (`kFoldLists` = `kLists / 8` a warp, `kFoldMTiles` = `kRows / 16`, `kFoldNTiles` = `kChannels / 8`), the
+readout's warps (`kChannelGroups` = `kChannels / 8`, `kTokenGroups` the warps left over, `kDenWords` one a channel
+group), the image below and the pool rows. The fixed tenants are sized at the caps (`kMaxExtent`, `carry.md`), so an
+arm's box never moves them. Each component asserts the extents it serves; today every one serves 32 x 32 x 32, which
+the plan asserts too, until the generic box's design (the coordinator's design journal, 2026-11-06) builds the others.
+A pool row: the read side's slice over the readout's K, the write side's over the fold's rows (a dense write side's
+second over its lists), then the write side's values.
+
 <a id="image"></a>
 ## The image
 
-`kPlaneBytes` a digit (32 lists x 32 channels, f16), the whole image `kImageWhole` (64 KB) or `kImageRing` (32 KB):
-one half of two, stored and read by each read chunk (`schedule.md#buffers`), a digit's plane its four channel groups'
-slices (`handoff.md#image`). `kBatchPlanes` = 8 digits a batch (`kBatches` = 4): half an m-tile of each of a warp's 4
-lists in the alternating form, one of its lists in the same split (`handoff.md#store`).
+`kPlaneBytes` a readout digit (its `kK` lists x `kChannels` channels, f16; 2 KB at 32 x 32), the whole image
+`kImageWhole` (`kDigits` planes, 64 KB) or `kImageRing` (`kHalfPlanes` = half of them, 32 KB): one half of two, stored
+and read by each read chunk (`schedule.md#buffers`), a plane its channel groups' slices (`kSliceBlock` bytes each,
+`handoff.md#image`). `kBatchPlanes` = 8 digits a batch (`kBatches` = `kDigits / 8`): half an m-tile of each of a
+warp's lists in the alternating form, one of its lists in the same split (`handoff.md#store`).
 
 <a id="plan"></a>
 ## The plan
 
 `Plan<Arm, Cc>` is an arm's key (`tools/gen_shards.py`'s `ARM_KEY`) on card `Cc`, the compiling one by default
 (`arch::kArch`). The key fixes each side's dense rows a warp and its operand's level count, and the hand-off's form
-(`kSameSplit`, `handoff.md#same-split`); the plan asserts the box's 32 rows a side and 32 channels and a listed read side
-(the dense readout is the next component), and derives:
+(`kSameSplit`, `handoff.md#same-split`) and the box (`#box`); the plan asserts a listed read side (the dense readout is
+the next component), and derives:
 
 - the fold's tiles: a warp folds lists `w + 8 j` (4); the readout's warps are its token and channel groups
   (`readout.md#warps`);

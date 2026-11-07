@@ -74,7 +74,7 @@ constexpr int kListAt = kWindowTokens / kListBound;
 constexpr int kLaneBounds = kListAt / 8;
 constexpr int kCoefTop = 4;
 constexpr int kUnitMin = kCoefTop - 127;
-static_assert(kFactsWarps == carry::kWarps && kGroupDigits == carry::kBoxLists,
+static_assert(kFactsWarps == carry::kWarps && kGroupDigits == carry::kMaxExtent,
               "the lists are the carry's: its box lists, a boundary every 64 slots");
 static_assert(kWindowTokens == kWindow,
               "the facts pass's window is the compiling card's (common/window.cuh)");

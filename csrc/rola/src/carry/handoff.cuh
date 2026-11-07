@@ -18,7 +18,7 @@ __device__ __forceinline__ void list_units(int (&u)[P::kFoldLists], const uint8_
 //: THE BOX'S TOP UNIT, its 32 lists' largest, one reduction a warp (the book read at its use).
 template <class P>
 __device__ __forceinline__ int box_top(const uint8_t* smem, int lane) {
-  static_assert(kBoxLists == 32, "a lane a list");
+  static_assert(P::kLists == 32, "a lane a list");
   const volatile UnitBook* const book = reinterpret_cast<const volatile UnitBook*>(smem + P::kBook);
   return __reduce_max_sync(0xffffffffu, book[lane].unit);
 }
@@ -67,7 +67,7 @@ __device__ __forceinline__ void post_row_keys(const State<P>& st, uint8_t* smem,
     });
   });
 
-  int* const keys = reinterpret_cast<int*>(smem + P::kKeys) + (w & 1) * kBoxDigits;
+  int* const keys = reinterpret_cast<int*>(smem + P::kKeys) + (w & 1) * kMaxExtent;
   const int mine = t & 2 ? (t & 1 ? key[1][1] : key[1][0]) : (t & 1 ? key[0][1] : key[0][0]);
   atomicMax(keys + lane, mine);
 }
@@ -90,7 +90,7 @@ __device__ __forceinline__ void post_list_keys(const State<P>& st, uint8_t* smem
     mine = lane == J ? (bits == 0 ? INT_MIN : bits + shift) : mine;
   });
   const ops::SmemAddr keys =
-      ops::smem_addr(smem + P::kKeys) + 4u * static_cast<uint32_t>((w & 1) * kBoxDigits);
+      ops::smem_addr(smem + P::kKeys) + 4u * static_cast<uint32_t>((w & 1) * kMaxExtent);
   ops::store_shared_u32_if(keys + 4u * static_cast<uint32_t>(exp_slot(warp + kWarps * (lane & 3))),
                            static_cast<uint32_t>(mine), lane < P::kFoldLists);
 }
@@ -113,18 +113,21 @@ constexpr int kImageTop = 10;
 //: THE IMAGE, the value-carve readout's: digit `d`'s plane a slice a readout channel group `cg` -- 32 lists x 8 channels
 //: f16, list `l`'s row 16 bytes at `l ^ (d & 7)`, so the hand-off's 4-byte stores and the readout's `ldmatrix.trans`
 //: both meet 32 banks. -- see docs/internals/carry/handoff.md#image
-constexpr int kSliceBlock = kBoxLists * 16;
-
+template <class P>
 __host__ __device__ __forceinline__ constexpr uint32_t slice_row(int cg, int l, int d) {
-  return static_cast<uint32_t>(cg * kSliceBlock + 16 * (l ^ (d & 7)));
+  return static_cast<uint32_t>(cg * P::kSliceBlock + 16 * (l ^ (d & 7)));
 }
 
 //: THE DEN IMAGE: a block a readout channel group, the 8 digits it reads the den of (`d mod 4`), 32 lists x 8 digits
 //: f16, list `l`'s 16-byte row at `l` XOR its block and its bit 4 inside its 8-row group (the writer's 32 lanes on 16
 //: banks, the reader's rows a 128-byte group); digit `d` in block `d & 3` at column `d >> 2` (`den_col`).
 //: -- see docs/internals/carry/handoff.md#den
+template <class P>
 __host__ __device__ __forceinline__ constexpr uint32_t den_row(int l, int d) {
-  return static_cast<uint32_t>((d & 3) * kSliceBlock + 16 * (l ^ (((l >> 4) & 1) << 2 | (d & 3))));
+  static_assert(P::kChannelGroups == 4 && P::kK == 32,
+                "a block a channel group of four, 32 list rows");
+  return static_cast<uint32_t>((d & 3) * P::kSliceBlock
+                               + 16 * (l ^ (((l >> 4) & 1) << 2 | (d & 3))));
 }
 
 __host__ __device__ __forceinline__ constexpr int den_col(int d) { return d >> 2; }
@@ -134,17 +137,17 @@ __host__ __device__ __forceinline__ constexpr int den_col(int d) { return d >> 2
 //: parity's keys. -- see docs/internals/carry/handoff.md#maxima
 template <class P>
 __device__ __forceinline__ ops::SmemAddr exps_of(const uint8_t* smem, int warp) {
-  return ops::smem_addr(smem + P::kExps) + 4u * static_cast<uint32_t>(kBoxDigits * warp);
+  return ops::smem_addr(smem + P::kExps) + 4u * static_cast<uint32_t>(kMaxExtent * warp);
 }
 
 template <class P>
 __device__ __forceinline__ void post_exps(uint8_t* smem, int w, int top, int warp, int lane) {
-  static_assert(kBoxDigits == 32, "lane `i` digit `i`, a parity's keys one bit apart");
+  static_assert(P::kDigits == 32, "lane `i` digit `i`, a parity's keys one bit apart");
   int* const keys = reinterpret_cast<int*>(smem + P::kKeys);
-  const int at = (w & 1) * kBoxDigits + lane;
+  const int at = (w & 1) * kMaxExtent + lane;
   const int key = keys[at];
-  if (warp == 0) keys[at ^ kBoxDigits] = INT_MIN;
-  reinterpret_cast<int*>(smem + P::kExps)[kBoxDigits * warp + lane] =
+  if (warp == 0) keys[at ^ kMaxExtent] = INT_MIN;
+  reinterpret_cast<int*>(smem + P::kExps)[kMaxExtent * warp + lane] =
       max(((key + 0x7fffff) >> 23) + top - 127, kImageTop - 127);
   __syncwarp();
 }
@@ -204,7 +207,8 @@ __device__ __forceinline__ void den_tables_out(uint8_t* smem, const State<P>& st
   static_for<4>([&](auto I) {
     constexpr int i = decltype(I)::value;
     const int d = den_digit<P, i>(at);
-    *reinterpret_cast<__half*>(smem + P::kDenImage + den_row(den_k<P, i>(at), d) + 2 * den_col(d)) =
+    *reinterpret_cast<__half*>(smem + P::kDenImage + den_row<P>(den_k<P, i>(at), d)
+                               + 2 * den_col(d)) =
         __float2half_rn(st.den[I] * scale[den_word_scale<P>(I)]);
   });
   ops::store_shared_f32_if(ops::smem_addr(smem + P::kDenFactor) + 4u * static_cast<uint32_t>(lane),
@@ -257,10 +261,11 @@ __device__ __forceinline__ void store_row_batches(const State<P>& st, uint8_t* s
                                                   int lane) {
   const int g = lane >> 2, t = lane & 3;
   int a[P::kFoldLists];
-  const StoreFrame fr = store_frame<P>(smem,
-                                       image + static_cast<uint32_t>(g) * kPlaneBytes
-                                           + slice_row(0, warp, g) + 4u * static_cast<uint32_t>(t),
-                                       g, a, warp);
+  const StoreFrame fr =
+      store_frame<P>(smem,
+                     image + static_cast<uint32_t>(g) * P::kPlaneBytes + slice_row<P>(0, warp, g)
+                         + 4u * static_cast<uint32_t>(t),
+                     g, a, warp);
   const uint32_t at = fr.at;
   const uint2 bits = fr.bits;
   const int es[2][2] = {{fr.ex.x, fr.ex.y}, {fr.ex.z, fr.ex.w}};
@@ -274,7 +279,7 @@ __device__ __forceinline__ void store_row_batches(const State<P>& st, uint8_t* s
             const __half2 h = __floats2half2_rn(st.acc[J][M][N][2 * H] * scale,
                                                 st.acc[J][M][N][2 * H + 1] * scale);
             const uint32_t to =
-                at + ((16u * M + 8u * H) & Mask) * kPlaneBytes + kSliceBlock * N + 128u * J;
+                at + ((16u * M + 8u * H) & Mask) * P::kPlaneBytes + P::kSliceBlock * N + 128u * J;
             ops::store_shared_u32(to, *reinterpret_cast<const uint32_t*>(&h));
           });
         });
@@ -291,10 +296,11 @@ __device__ __forceinline__ void store_list_batches(const State<P>& st, uint8_t* 
                                                    int lane) {
   const int g = lane >> 2, t = lane & 3;
   int a[P::kFoldLists];
-  const StoreFrame fr = store_frame<P>(smem,
-                                       image + static_cast<uint32_t>(warp) * kPlaneBytes
-                                           + slice_row(0, g, warp) + 4u * static_cast<uint32_t>(t),
-                                       warp, a, warp);
+  const StoreFrame fr =
+      store_frame<P>(smem,
+                     image + static_cast<uint32_t>(warp) * P::kPlaneBytes + slice_row<P>(0, g, warp)
+                         + 4u * static_cast<uint32_t>(t),
+                     warp, a, warp);
   const int es[4] = {fr.ex.x, fr.ex.y, fr.ex.z, fr.ex.w};
   static_for<P::kFoldLists>([&](auto J) {
     if (J >= lo && J < hi) {
@@ -304,7 +310,7 @@ __device__ __forceinline__ void store_list_batches(const State<P>& st, uint8_t* 
           static_for<4>([&](auto N) {
             const __half2 h = __floats2half2_rn(st.acc[J][M][N][2 * H] * scale,
                                                 st.acc[J][M][N][2 * H + 1] * scale);
-            const uint32_t to = fr.at + ((8u * J) & Mask) * kPlaneBytes + kSliceBlock * N
+            const uint32_t to = fr.at + ((8u * J) & Mask) * P::kPlaneBytes + P::kSliceBlock * N
                                 + 16u * (16u * M + 8u * H);
             ops::store_shared_u32(to, *reinterpret_cast<const uint32_t*>(&h));
           });

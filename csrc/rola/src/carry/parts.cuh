@@ -113,7 +113,7 @@ __device__ __forceinline__ void addr_in(Addr& out, const CarryParams& p, const P
     st.listed = s.list >= 0;
     st.digit0 = st.listed ? origin_of(p, s.list) : 0;
     st.group = st.digit0 / 32;
-    st.lists = st.listed ? p.extents[s.list] : kBoxLists;
+    st.lists = st.listed ? p.extents[s.list] : kMaxExtent;
 #pragma unroll 1
     for (int i = 0; i < s.operands; ++i) {
       const int level = s.operand[i];
@@ -232,7 +232,7 @@ template <class P>
 __device__ __forceinline__ void facts_in(const CarryParams& p, const Window& ww, const Place& c,
                                          int w, uint8_t* smem) {
   constexpr int kUnitCopies = kWindow / ops::kStageBytes,
-                kExpCopies = kBoxLists * 4 / ops::kStageBytes;
+                kExpCopies = kMaxExtent * 4 / ops::kStageBytes;
   const int heads = p.tables.heads;
   const ops::SmemAddr scale = ops::smem_addr(smem + p.tables.scale_at) + (w & 1) * heads * kWindow;
 #pragma unroll 1
@@ -246,11 +246,11 @@ __device__ __forceinline__ void facts_in(const CarryParams& p, const Window& ww,
     } else if (ww.listed) {
       const int e = k - heads * kUnitCopies;
       ops::stage_tile(
-          ops::smem_addr(smem + P::kWriteExp) + (w & 1) * kBoxLists * 4 + 16 * e,
+          ops::smem_addr(smem + P::kWriteExp) + (w & 1) * kMaxExtent * 4 + 16 * e,
           p.write_exp + list_row(p.write_lists, c, p.windows, w, ww.digit0) * 2 + 8 * e);
     } else if (k == heads * kUnitCopies) {
       //: a write side with no list level: the window's shifts of (m, F), in the exponents' place
-      ops::stage_run<4>(ops::smem_addr(smem + P::kWriteExp) + (w & 1) * kBoxLists * 4,
+      ops::stage_run<4>(ops::smem_addr(smem + P::kWriteExp) + (w & 1) * kMaxExtent * 4,
                         p.factor_shift + (static_cast<int64_t>(c.bh) * p.windows + w) * 2);
     }
   }
@@ -319,11 +319,13 @@ __device__ __forceinline__ const uint8_t* row_at(const uint8_t* base, int a, int
 //: swizzled, by `cp.async`: thread `4 q + r` chunk `r` of slots `q + 64 k` of each 256, a trip one block -- its tokens
 //: (unclamped), every source, then the copies on the trip's room; a gap slot zero-filled. -- see
 //: docs/internals/carry/parts.md#fill
-template <int Factors, bool Values>
+template <class P, int Factors, bool Values>
 __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* values,
                                      int values_st, const uint16_t* tok, const Window& win,
                                      int first, int slots, ops::SmemAddr pool) {
-  constexpr int kRow = kSliceBytes * Factors + (Values ? kBoxChannels * 2 : 0);
+  static_assert(P::kRows == kMaxExtent && P::kK == kMaxExtent,
+                "a fill's quad copies a slice as four 16-byte chunks: a 32-digit level");
+  constexpr int kRow = kSliceBytes * Factors + (Values ? P::kChannels * 2 : 0);
   constexpr int kQuads = kThreads / 4, kChunks = kSliceBytes / ops::kStageBytes, kAhead = 4;
   //: the thread opaque, so its quad lane and first slot are formed at each fill, never held across the windows
   const int tid = ops::opaque(static_cast<int>(threadIdx.x)), r = tid & 3, q = tid >> 2;
@@ -428,7 +430,7 @@ __device__ __forceinline__ Run chunk_runs(const CarryParams& p, const uint8_t* s
   //: the lane's two rows (lists `l`, `l + 1`): the chunk's end in both, its start where it is not the first, the split
   //: where it falls inside the chunk
   const uint16_t* const row =
-      pre_of<P>(p, smem, side, w) + ((win.digit0 & (kBoxLists - 1)) + lane) * cols;
+      pre_of<P>(p, smem, side, w) + ((win.digit0 & (kMaxExtent - 1)) + lane) * cols;
   const int a1 = row[col.y], b1 = row[cols + col.y];
   const bool start = col.x >= 0;
   const int a0 = start ? row[max(col.x, 0)] : 0, b0 = start ? row[cols + max(col.x, 0)] : 0;
@@ -445,7 +447,8 @@ __device__ __forceinline__ void entries_fill(const CarryParams& p, const SideLis
                                              const Window& win, const Place& c, int w,
                                              const Run& run, ops::SmemAddr dst, int warp,
                                              int lane) {
-  static_assert(kBoxLists == 4 * kWarps, "a warp's four lists, eight lanes each");
+  static_assert(P::kDigits == 4 * kWarps && P::kLists == 4 * kWarps,
+                "a warp's four lists, eight lanes each, on either side");
   constexpr int kLanes = 8;
   //: a list's row `kListCap` entries a query head on (opaque: formed at each fill, never held across windows)
   const int cap = kListCap * ops::opaque(l.heads);
@@ -474,11 +477,10 @@ __device__ __forceinline__ void entries_fill(const CarryParams& p, const SideLis
 //: A CHUNK'S BUFFER, laid out at its own slots: a read buffer's rows, its num panel (a slot's channels at the reduce
 //: dtype: `panel_row_bytes`), its den words (`kDenWords` fp32 a slot, one a readout channel group), its entries; a fold
 //: buffer's rows, its entries. -- see docs/internals/carry/schedule.md#buffers
+template <class P>
 __host__ __device__ __forceinline__ constexpr int panel_row_bytes(int reduce) {
-  return reduce == kReduceF32 ? kBoxChannels * 4 : kBoxChannels * 2;
+  return reduce == kReduceF32 ? P::kChannels * 4 : P::kChannels * 2;
 }
-
-constexpr int kDenWords = kBoxChannels / 8, kDenRowBytes = kDenWords * 4;
 
 template <class P>
 __host__ __device__ constexpr int read_panel(int slots) {
@@ -487,12 +489,12 @@ __host__ __device__ constexpr int read_panel(int slots) {
 
 template <class P>
 __host__ __device__ constexpr int read_dens(int slots, int reduce) {
-  return read_panel<P>(slots) + align_of(slots * panel_row_bytes(reduce), 128);
+  return read_panel<P>(slots) + align_of(slots * panel_row_bytes<P>(reduce), 128);
 }
 
 template <class P>
 __host__ __device__ constexpr int read_ents(int slots, int reduce) {
-  return read_dens<P>(slots, reduce) + align_of(slots * kDenRowBytes, 128);
+  return read_dens<P>(slots, reduce) + align_of(slots * P::kDenRowBytes, 128);
 }
 
 template <class P>
@@ -508,8 +510,8 @@ __device__ __forceinline__ void read_fill(const CarryParams& p, const uint8_t* s
                                           int first, int slots, ops::SmemAddr buf, int warp,
                                           int lane) {
   const volatile Addr& addr = *reinterpret_cast<const volatile Addr*>(smem + P::kAddr);
-  fill<P::kReadFactors, false>(addr.slices[kRead], nullptr, 0, union_of<P>(p, smem, kRead, w), rw,
-                               first, slots, buf);
+  fill<P, P::kReadFactors, false>(addr.slices[kRead], nullptr, 0, union_of<P>(p, smem, kRead, w),
+                                  rw, first, slots, buf);
   //: the panel and the den words cleared by stores, four a thread a trip, the first straight-line
   constexpr int kAhead = 4;
   const int tid = ops::opaque(static_cast<int>(threadIdx.x));

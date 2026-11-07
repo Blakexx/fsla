@@ -14,7 +14,7 @@ enum ImageMode : uint32_t { kModeWhole, kModeHalves };
 
 template <class P>
 __host__ __device__ __forceinline__ constexpr int image_bytes(uint32_t mode) {
-  return mode == kModeWhole ? kImageWhole : kImageRing;
+  return mode == kModeWhole ? P::kImageWhole : P::kImageRing;
 }
 
 //: A WINDOW'S PLAN, a word: mode | read chunk / 64 << 1 | fold chunk / 64 << 9 | read chunks << 14 | fold chunks << 22,
@@ -70,9 +70,9 @@ __host__ __device__ constexpr int fold_bytes(int slots, int entries, bool listed
 //: fold buffer.
 template <class P>
 __host__ __device__ constexpr bool least_plan_fits(int area, int reduce) {
-  return image_bytes<P>(kModeHalves) + read_bytes<P>(kListBound, kListBound * kBoxDigits, reduce)
+  return image_bytes<P>(kModeHalves) + read_bytes<P>(kListBound, kListBound * P::kDigits, reduce)
              <= area
-         && fold_bytes<P>(kListBound, kListBound * kBoxLists, true) <= area;
+         && fold_bytes<P>(kListBound, kListBound * P::kLists, true) <= area;
 }
 
 //: A SIDE'S SEGMENT SUMS in a window: `S[j]`, its group's lists' entries before union slot `64 (j + 1)`, `cols` of them

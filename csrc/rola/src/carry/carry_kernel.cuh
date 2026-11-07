@@ -51,9 +51,9 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   PhaseClock<kCarryPhases, true> clock(
       reinterpret_cast<long long*>(smem + P::kClock) + warp * PhaseClock<kCarryPhases, true>::kRow,
       lane, p.ledger != nullptr);
-  if (static_cast<int>(threadIdx.x) < kBoxLists)
+  if (static_cast<int>(threadIdx.x) < kMaxExtent)
     reinterpret_cast<UnitBook*>(smem + P::kBook)[threadIdx.x] = UnitBook{kUnitNone, 0.0f};
-  if (static_cast<int>(threadIdx.x) < 2 * kBoxDigits)
+  if (static_cast<int>(threadIdx.x) < 2 * kMaxExtent)
     reinterpret_cast<int*>(smem + P::kKeys)[threadIdx.x] = INT_MIN;
   //: the scales' bits' multiplier and bias (`list_scale`), loaded at each use
   if (threadIdx.x == 0)
@@ -155,7 +155,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     const Stream s = stream_of<P>(p, smem, w);
     const bool more = w + 1 < p.windows;
     //: every warp done with the window before (its fold's rows may be where this one's first chunk lands); the den maxima cleared
-    if (threadIdx.x < kBoxDigits) reinterpret_cast<uint32_t*>(smem + P::kDenMax)[threadIdx.x] = 0u;
+    if (threadIdx.x < kMaxExtent) reinterpret_cast<uint32_t*>(smem + P::kDenMax)[threadIdx.x] = 0u;
     ops::rendezvous();
     clock.lap(kPhaseWait);
     //: THE KEYS before any copy of the window is issued (their shared loads ahead of the copies), then THE FIRST
@@ -194,7 +194,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       //: call site for both: the second pass's store after a rendezvous, the first's landing and entry factors before
       //: its readout
       const bool whole = s.mode == kModeWhole;
-      const uint32_t lane_run = read_run(run, wid(), lid());
+      const uint32_t lane_run = read_run<P>(run, wid(), lid());
 #pragma unroll 1
       for (int h = 0; h < (whole ? 1 : 2); ++h) {
         if (h > 0) {
@@ -203,9 +203,11 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         }
         // R9-CASES: ImageMode, the plan's image modes (schedule.cuh)
         if (s.mode == kModeWhole) {
-          if (i == 0) store_batches<P, kBoxDigits - 1>(st, smem, area, 0, kBatches, wid(), lid());
+          if (i == 0)
+            store_batches<P, P::kDigits - 1>(st, smem, area, 0, P::kBatches, wid(), lid());
         } else if (s.mode == kModeHalves) {
-          store_batches<P, 2 * kBatchPlanes - 1>(st, smem, area, 2 * h, 2 * h + 2, wid(), lid());
+          store_batches<P, P::kHalfPlanes - 1>(st, smem, area, P::kBatches / 2 * h,
+                                               P::kBatches / 2 * h + P::kBatches / 2, wid(), lid());
         } else {
           __trap();
         }
@@ -219,9 +221,9 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
         clock.lap(kPhaseReadout);
         ops::rendezvous();
         clock.lap(kPhaseWait);
-        read_out(e, lane_run, buf, whole ? 0 : 2 * kBatchPlanes * h,
-                 whole ? kBoxDigits : 2 * kBatchPlanes * (h + 1),
-                 whole ? kBoxDigits - 1 : 2 * kBatchPlanes - 1);
+        read_out(e, lane_run, buf, whole ? 0 : P::kHalfPlanes * h,
+                 whole ? P::kDigits : P::kHalfPlanes * h + P::kHalfPlanes,
+                 whole ? P::kDigits - 1 : P::kHalfPlanes - 1);
         clock.lap(kPhaseReadout);
       }
       ops::rendezvous();
@@ -253,7 +255,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
       if (j == 0) fold_units<P>(smem, ww(w), w, wid(), lid());
       fold_chunk<P>(st, j == 0, smem, ww(w), w, run, e.first(), e.slots(), buf,
                     buf + static_cast<uint32_t>(fold_ents<P>(e.slots())), wid(), lid(),
-                    den_lists(place_of(p).channel0, p.dv));
+                    den_lists<P>(place_of(p).channel0, p.dv));
       clock.lap(kPhaseFold);
     }
   }

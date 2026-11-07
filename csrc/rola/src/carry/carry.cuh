@@ -21,10 +21,9 @@ __host__ __device__ constexpr int list_at(int w) { return w / kListBound; }
 constexpr int kListAt = list_at(kWindow);
 constexpr int kListCap = kWindow;
 constexpr int kMaxLevels = 4;
-//: THE BOX, every card's: 32 lists (the write side's list level) x 32 digits (the read side's) x 32 channels.
-constexpr int kBoxLists = 32, kBoxDigits = 32, kBoxChannels = 32;
-constexpr int kStateValues = kBoxLists * kBoxDigits * kBoxChannels;
-constexpr int kPreRows = kBoxLists + 1;
+//: THE BOX'S CAPS (an arm's own box is its plan's). -- see docs/internals/carry/plan.md#box
+constexpr int kMaxExtent = 32, kStateValues = 32768;
+constexpr int kPreRows = kMaxExtent + 1;
 
 //: A WINDOW'S PLAN RECORD at `heads` query heads a write head. -- see docs/internals/carry/schedule.md#plan
 __host__ __device__ constexpr int max_steps(int heads, int w) {
@@ -35,8 +34,8 @@ __host__ __device__ constexpr int plan_words(int heads, int w) {
   return (1 + (max_steps(heads, w) + 1) / 2 + 3) / 4 * 4;
 }
 
-//: A SLICE: a token's operand row over the box's 32 digits of one level, f16.
-constexpr int kSliceBytes = 64;
+//: A SLICE's most bytes: a token's operand row over one level, f16.
+constexpr int kSliceBytes = 2 * kMaxExtent;
 
 //: THE LISTS' ADDRESSES, the facts pass's to emit and the carry's to read: a gap slot's token, a pool row's swizzled
 //: chunk. -- see docs/internals/carry/carry.md#lists

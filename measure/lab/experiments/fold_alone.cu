@@ -72,7 +72,7 @@ __global__ __launch_bounds__(rc::kThreads, 1) void fold(long long* t, int* out, 
   for (int i = tid; i < kSlots * P::kWriteRow / 4; i += rc::kThreads)
     reinterpret_cast<uint32_t*>(smem + P::kAreaAt)[i] =
         0x24002400u ^ (mix(static_cast<uint32_t>(i)) & 0x03ff03ffu);
-  const rc::Window ww{P::kWindow, 0, 0, 0, rc::kBoxLists, true};
+  const rc::Window ww{P::kWindow, 0, 0, 0, P::kLists, true};
   rc::State<P> st;
 #pragma unroll
   for (int k = 0; k < P::kStateRegs; ++k) (&st.acc[0][0][0][0])[k] = 0.0f;

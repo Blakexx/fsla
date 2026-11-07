@@ -86,7 +86,7 @@ __device__ __forceinline__ void drain(const CarryParams& p, const uint16_t* unio
   //: THE DEN: a thread a slot, its four words summed into one add
 #pragma unroll 1
   for (int s = warp * 32 + lane; s < n; s += kThreads) {
-    const uint4 d = ops::load_shared_vec16(dens + kDenRowBytes * static_cast<uint32_t>(s));
+    const uint4 d = ops::load_shared_vec16(dens + P::kDenRowBytes * static_cast<uint32_t>(s));
     red_add_f32(word_at(p.den + head0, row_of(s)),
                 (__uint_as_float(d.x) + __uint_as_float(d.y))
                     + (__uint_as_float(d.z) + __uint_as_float(d.w)));

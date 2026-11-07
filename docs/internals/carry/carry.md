@@ -16,8 +16,9 @@ leaf of the box for its channels (`readout.md`).
 
 - `kWarps = 8`, `kThreads = 256`: one CTA an SM, its register file holding the box's state.
 - `kWindow = 512`: the window the intra and the facts pass share, so the inter/intra split is one recurrence.
-- THE BOX, every card's: `kBoxLists = 32` lists (the write side's list level) x `kBoxDigits = 32` digits (the read
-  side's) x `kBoxChannels = 32` channels, `kStateValues` = 32,768 values = 256 lanes x 128 fp32 registers.
+- THE BOX'S CAPS, every arm's: `kMaxExtent = 32` (a level's extent at most: the facts pass's group of digits, a lane
+  a list), `kStateValues` = 32,768 values = 256 lanes x 128 fp32 registers. An arm's own box is its plan's
+  (`plan.md#box`): its fold's lists and rows and its channels, their product the state.
 - `kListBound = 64`, `kListAt = 8`: a list's boundaries, its entries before every 64th union slot (the last its
   length), so the carry chunks a union at any multiple of 64 the facts pass never sees, out in prefix form over the
   group's lists modulo 2^16 (`kPreRows = 33`: a row a list, then the group's) beside the group's exact totals;

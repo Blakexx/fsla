@@ -69,21 +69,21 @@ __global__ __launch_bounds__(rc::kThreads, 1) void read(long long* t, int* out) 
   p.reduce = kF32 ? rc::kReduceF32 : rc::kReduceF16;
   const int split = rc::group_split(kSlots);
   const ops::SmemAddr image = ops::smem_addr(smem + P::kAreaAt);
-  const ops::SmemAddr rows = image + static_cast<uint32_t>(rc::kImageRing);
+  const ops::SmemAddr rows = image + static_cast<uint32_t>(P::kImageRing);
   const ops::SmemAddr panel = rows + static_cast<uint32_t>(rc::read_panel<P>(kSlots)),
                       dens = rows + static_cast<uint32_t>(rc::read_dens<P>(kSlots, p.reduce)),
                       ents = rows + static_cast<uint32_t>(rc::read_ents<P>(kSlots, p.reduce));
   //: the image half, the union's rows and the den image small f16 values; each digit's exponent and den factor; every
   //: token's scale byte
-  for (int i = tid; i < (rc::kImageRing + kSlots * P::kReadRow) / 4; i += rc::kThreads)
+  for (int i = tid; i < (P::kImageRing + kSlots * P::kReadRow) / 4; i += rc::kThreads)
     reinterpret_cast<uint32_t*>(smem + P::kAreaAt)[i] =
         0x24002400u ^ (mix(static_cast<uint32_t>(i)) & 0x03ff03ffu);
-  for (int i = tid; i < rc::kBoxDigits * rc::kBoxLists / 2; i += rc::kThreads)
+  for (int i = tid; i < rc::kMaxExtent * rc::kMaxExtent / 2; i += rc::kThreads)
     reinterpret_cast<uint32_t*>(smem + P::kDenImage)[i] =
         0x24002400u ^ (mix(~static_cast<uint32_t>(i)) & 0x03ff03ffu);
-  for (int i = tid; i < rc::kWarps * rc::kBoxDigits; i += rc::kThreads)
+  for (int i = tid; i < rc::kWarps * rc::kMaxExtent; i += rc::kThreads)
     reinterpret_cast<int*>(smem + P::kExps)[i] = 4;
-  if (tid < rc::kBoxDigits) reinterpret_cast<float*>(smem + P::kDenFactor)[tid] = 1.0f;
+  if (tid < rc::kMaxExtent) reinterpret_cast<float*>(smem + P::kDenFactor)[tid] = 1.0f;
   for (int i = tid; i < 2 * P::kWindow; i += rc::kThreads) (smem + p.tables.scale_at)[i] = 2;
   __syncthreads();
 
@@ -137,12 +137,12 @@ __global__ __launch_bounds__(rc::kThreads, 1) void read(long long* t, int* out) 
     if constexpr (!kEmpty) rc::read_factors<P>(p, smem, run, w, 0, ents, warp, lane);
     ops::rendezvous();
     if constexpr (!kEmpty && kFirst)
-      rc::read_chunk<P, kF32, kF16>(smem, rc::read_run(run, warp, lane), 0, 16, image, 15u, rows,
+      rc::read_chunk<P, kF32, kF16>(smem, rc::read_run<P>(run, warp, lane), 0, 16, image, 15u, rows,
                                     panel, dens, ents, warp, lane);
     ops::rendezvous();
     if constexpr (!kEmpty && kSecond)
-      rc::read_chunk<P, kF32, kF16>(smem, rc::read_run(run, warp, lane), 16, 32, image, 15u, rows,
-                                    panel, dens, ents, warp, lane);
+      rc::read_chunk<P, kF32, kF16>(smem, rc::read_run<P>(run, warp, lane), 16, 32, image, 15u,
+                                    rows, panel, dens, ents, warp, lane);
     const long long t1 = clock64();
     busy += t1 - t0;
     //: the sink read between barriers: every warp's den words written before it, none cleared until after it
@@ -168,7 +168,7 @@ Floor floor_of(int blocks, double mma, double tile_shared, bool colored, int of2
   for (int b = 0; b < blocks; ++b)
     for (int w = 0; w < kWindows; ++w) {
       double tiles = 0, digits = 0;
-      for (int d = 0; d < rc::kBoxDigits; ++d) {
+      for (int d = 0; d < P::kDigits; ++d) {
         int n0 = 0, n1 = 0;
         for (int s = 0; s < kSlots; ++s)
           if (live(b, w, d, s, colored, of256)) (s < split ? n0 : n1)++;

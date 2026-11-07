@@ -8,11 +8,15 @@
 namespace rola::carry {
 
 //: A WARP'S PLACE IN THE READOUT: its token group (a chunk's half of the slots, `group_split`) and its channel group
-//: (8 channels). -- see docs/internals/carry/readout.md#warps
-constexpr int kChannelGroups = kBoxChannels / 8, kTokenGroups = kWarps / kChannelGroups;
-static_assert(
-    kChannelGroups * kTokenGroups == kWarps && kTokenGroups == 2 && kDenWords == kChannelGroups,
-    "the 32-channel box: two token groups of four channel groups, a den word a channel group");
+//: (8 channels), the plan's (`P::kTokenGroups`, `P::kChannelGroups`). -- see docs/internals/carry/readout.md#warps
+template <class P>
+constexpr bool readout_box() {
+  static_assert(
+      P::kChannelGroups * P::kTokenGroups == kWarps && P::kTokenGroups == 2
+          && P::kDenWords == P::kChannelGroups,
+      "the 32-channel box: two token groups of four channel groups, a den word a channel group");
+  return true;
+}
 
 //: AN f16 PAIR ADDED INTO A WORD, round to nearest.
 __device__ __forceinline__ uint32_t add_h2(uint32_t a, uint32_t b) {
@@ -56,7 +60,7 @@ template <class P>
 __device__ __forceinline__ void read_factors(const CarryParams& p, const uint8_t* smem,
                                              const Run& run, int w, int first, ops::SmemAddr ents,
                                              int warp, int lane) {
-  constexpr int kMine = kBoxDigits / kWarps;
+  constexpr int kMine = P::kDigits / kWarps;
   static_assert(
       P::kReadRow == 64 && P::kWindow * P::kReadRow <= 65536,
       "a 64-byte pool row, its offset the f16 panel row's base (`panel_word`), under 2^16");
@@ -130,11 +134,13 @@ struct ReadLanes {
 };
 
 //: DIGIT `d`'s SLICE ROW for the lane: one product, a mask and an XOR. -- see docs/internals/carry/readout.md#chunk
+template <class P>
 __device__ __forceinline__ uint32_t slice_at(const ReadLanes& r, int d) {
-  static_assert(kPlaneBytes == kChannelGroups * kSliceBlock
-                    && (kPlaneBytes & (kPlaneBytes - 1)) == 0 && 16 * kBoxDigits <= kPlaneBytes,
+  static_assert(P::kPlaneBytes == P::kChannelGroups * P::kSliceBlock
+                    && (P::kPlaneBytes & (P::kPlaneBytes - 1)) == 0
+                    && 16 * P::kDigits <= P::kPlaneBytes,
                 "a plane a power of two above the lane rows and the swizzle's bits");
-  return r.image + (r.slice ^ ((static_cast<uint32_t>(d) * (kPlaneBytes + 16u)) & r.dbits));
+  return r.image + (r.slice ^ ((static_cast<uint32_t>(d) * (P::kPlaneBytes + 16u)) & r.dbits));
 }
 
 //: AN ENTRY of a half, the `i`-th (the half's first where past its count: read, never added).
@@ -154,11 +160,11 @@ __device__ __forceinline__ void tile_in(Tile& t, const ReadLanes& r, uint32_t h0
 
 //: A TILE'S LATE OPERANDS, each half's slice (`Den`: den factor) and token entry, before the next tile's rows (not a tile
 //: ahead: registers). -- see docs/internals/carry/readout.md#chunk
-template <bool Den>
+template <class P, bool Den>
 __device__ __forceinline__ void tile_late(Tile& t, const ReadLanes& r) {
   const int d0 = half_digit(t.h[0]), d1 = half_digit(t.h[1]);
-  ops::load_frag_t(t.b[0], slice_at(r, d0));
-  ops::load_frag_t(t.b[1], slice_at(r, d1));
+  ops::load_frag_t(t.b[0], slice_at<P>(r, d0));
+  ops::load_frag_t(t.b[1], slice_at<P>(r, d1));
 #pragma unroll
   for (int j = 0; j < 2; ++j) {
     if constexpr (Den)
@@ -240,18 +246,18 @@ __device__ __forceinline__ void read_pass(const ReadLanes& r, uint32_t live) {
   };
   //: the warp's den block, every own digit's (`den_row`), once a pass
   uint32_t bd[4];
-  if constexpr (Den) ops::load_frag_t(bd, r.den_image + den_row(r.lane, r.cg));
+  if constexpr (Den) ops::load_frag_t(bd, r.den_image + den_row<P>(r.lane, r.cg));
   Tile a, b;
   const uint32_t h0 = __shfl_sync(0xffffffffu, r.run, __ffs(live) - 1);
   tile_in<P, Den>(a, r, h0, succ(h0));
   bool go = true;
 #pragma unroll 1
   while (go) {
-    tile_late<Den>(a, r);
+    tile_late<P, Den>(a, r);
     const bool go_b = next(a, b);
     tile_out<P, F32, F16, Den>(a, r, bd, true);
     __syncwarp();
-    tile_late<Den>(b, r);
+    tile_late<P, Den>(b, r);
     const bool go_a = next(b, a);
     tile_out<P, F32, F16, Den>(b, r, bd, go_b);
     __syncwarp();
@@ -262,8 +268,9 @@ __device__ __forceinline__ void read_pass(const ReadLanes& r, uint32_t live) {
 
 //: A WARP'S RUN WORD for digit `lane`, its token group's part as a half's word, once a chunk.
 //: -- see docs/internals/carry/readout.md#chunk
+template <class P>
 __device__ __forceinline__ uint32_t read_run(const Run& run, int warp, int lane) {
-  const int tg = warp / kChannelGroups;
+  const int tg = warp / P::kChannelGroups;
   const int count = tg ? run.n - run.n0 : run.n0, start = run.to + (tg ? run.n0 : 0);
   return static_cast<uint32_t>(lane) | static_cast<uint32_t>(start) << kHalfAt
          | static_cast<uint32_t>(count) << kHalfCount;
@@ -278,9 +285,10 @@ __device__ __forceinline__ void read_chunk(const uint8_t* smem, uint32_t run, in
                                            ops::SmemAddr ents, int warp, int lane) {
   static_assert(P::kReadFactors == 1, "the value-carve readout of a listed read side");
   static_assert(P::kWindow < (1 << (32 - kHalfCount))
-                    && kBoxDigits * P::kWindow <= (1 << (kHalfCount - kHalfAt)),
+                    && P::kDigits * P::kWindow <= (1 << (kHalfCount - kHalfAt)),
                 "a half's count and place in its word");
-  const int cg = warp % kChannelGroups, tq = lane & 3;
+  static_assert(readout_box<P>());
+  const int cg = warp % P::kChannelGroups, tq = lane & 3;
   const ReadLanes r{rows,
                     ents,
                     image,
@@ -288,8 +296,8 @@ __device__ __forceinline__ void read_chunk(const uint8_t* smem, uint32_t run, in
                     ops::smem_addr(smem + P::kDenFactor),
                     panel,
                     dens,
-                    slice_row(cg, lane, 0),
-                    mask * kPlaneBytes | 0x70u,
+                    slice_row<P>(cg, lane, 0),
+                    mask * P::kPlaneBytes | 0x70u,
                     static_cast<uint32_t>(4 * (4 * cg + tq)),
                     static_cast<uint32_t>(4 * (8 * cg + 2 * tq)),
                     run,

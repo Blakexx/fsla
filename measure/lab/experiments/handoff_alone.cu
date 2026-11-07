@@ -50,11 +50,11 @@ __global__ __launch_bounds__(rc::kThreads, 1) void handoff(long long* t, int* ou
   const int tid = static_cast<int>(threadIdx.x), warp = tid / 32, lane = tid % 32, g = lane >> 2,
             t4 = lane & 3;
   //: the tenants as the kernel sets them: a list's unit (list 5 never live), the keys cleared, the scales' bits
-  if (tid < rc::kBoxLists)
+  if (tid < rc::kMaxExtent)
     reinterpret_cast<rc::UnitBook*>(smem + P::kBook)[tid] = rc::UnitBook{
         tid == 5 ? rc::kUnitNone : static_cast<int>(mix(static_cast<uint32_t>(tid)) % 13u) - 6,
         0.0f};
-  if (tid < 2 * rc::kBoxDigits) reinterpret_cast<int*>(smem + P::kKeys)[tid] = INT_MIN;
+  if (tid < 2 * rc::kMaxExtent) reinterpret_cast<int*>(smem + P::kKeys)[tid] = INT_MIN;
   if (tid == 0) *reinterpret_cast<uint2*>(smem + P::kBits) = make_uint2(1u << 23, 127u << 23);
   //: the warp's state: list `warp + 8 J`, digit `16 M + g + 8 (I >> 1)`, channel `8 N + 2 t + (I & 1)`; its den words
   rc::State<P> st;
@@ -72,7 +72,7 @@ __global__ __launch_bounds__(rc::kThreads, 1) void handoff(long long* t, int* ou
     st.den[I] = 1.0f + static_cast<float>(mix(static_cast<uint32_t>(tid * 4 + I)) & 0xffu);
   });
   const ops::SmemAddr image = ops::smem_addr(smem + P::kAreaAt);
-  if (tid < rc::kBoxDigits) reinterpret_cast<uint32_t*>(smem + P::kDenMax)[tid] = 0u;
+  if (tid < rc::kMaxExtent) reinterpret_cast<uint32_t*>(smem + P::kDenMax)[tid] = 0u;
   __syncthreads();
   //: the stores alone take the exponents of window 0, formed before the clock
   if constexpr (!kKeys) {
@@ -97,7 +97,7 @@ __global__ __launch_bounds__(rc::kThreads, 1) void handoff(long long* t, int* ou
     });
     rola::static_for<4>([&](auto I) { asm volatile("" : "+f"(st.den[I])); });
     //: the den's maxima cleared, as the kernel's window does
-    if (tid < rc::kBoxDigits) reinterpret_cast<uint32_t*>(smem + P::kDenMax)[tid] = 0u;
+    if (tid < rc::kMaxExtent) reinterpret_cast<uint32_t*>(smem + P::kDenMax)[tid] = 0u;
     //: two barriers before the clock (`read_alone`: after one, the warps are not lined up)
     __syncthreads();
     __syncthreads();
@@ -113,16 +113,15 @@ __global__ __launch_bounds__(rc::kThreads, 1) void handoff(long long* t, int* ou
       rc::den_tables_out<P>(smem, st, warp, lane);
     }
     if constexpr (kStores) {
-      rc::store_batches<P, 2 * rc::kBatchPlanes - 1>(st, smem, image, 0, 2, warp, lane);
+      rc::store_batches<P, P::kHalfPlanes - 1>(st, smem, image, 0, 2, warp, lane);
       ops::rendezvous();
-      rc::store_batches<P, 2 * rc::kBatchPlanes - 1>(st, smem, image, 2, 4, warp, lane);
+      rc::store_batches<P, P::kHalfPlanes - 1>(st, smem, image, 2, 4, warp, lane);
     }
     if constexpr (kCall) {
 #pragma unroll 1
       for (int h = 0; h < ops::opaque(2); ++h) {
         if (h > 0) ops::rendezvous();
-        rc::store_batches<P, 2 * rc::kBatchPlanes - 1>(st, smem, image, 2 * h, 2 * h + 2, warp,
-                                                       lane);
+        rc::store_batches<P, P::kHalfPlanes - 1>(st, smem, image, 2 * h, 2 * h + 2, warp, lane);
       }
     }
     const long long t1 = clock64();

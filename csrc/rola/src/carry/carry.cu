@@ -63,9 +63,10 @@ Side side_of(const std::vector<Tensor>& rows, int64_t list, const std::vector<in
   STD_TORCH_CHECK((int)rows.size() == D, name, " holds ", rows.size(),
                   " levels' rows; the carve has ", D);
   STD_TORCH_CHECK(list >= -1 && list < D, name, "'s list level is -1 or a level, got ", list);
-  STD_TORCH_CHECK(list < 0 || extents[list] == kBoxLists, name, "'s list level spans ",
+  STD_TORCH_CHECK(list < 0 || extents[list] == kMaxExtent, name, "'s list level spans ",
                   list < 0 ? 0 : extents[list],
-                  " digits of the box; the box's lists and digits are ", kBoxLists);
+                  " digits of the box; a listed level spans the facts pass's group of ",
+                  kMaxExtent);
   STD_TORCH_CHECK(
       s.operands >= 1 && (int)operand.size() + (list >= 0 ? 1 : 0) == D
           && (list >= 0 || s.operands == 2),
@@ -154,8 +155,10 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   const int W = device_window(dev);
   const int64_t windows = (L + W - 1) / W;
   STD_TORCH_CHECK(L >= 1 && L * dv < 0x40000000, "the call's tokens and channels index in 32 bits");
-  STD_TORCH_CHECK(channels == kBoxChannels && dv % channels == 0, "the box's channel extent is ",
-                  kBoxChannels, " and divides d_v; the carve names ", channels, " of ", dv);
+  STD_TORCH_CHECK(
+      pow2(channels) && channels >= 32 && channels <= 128 && dv % channels == 0,
+      "the box's channel extent is a power of two from 32 to 128 dividing d_v; the carve names ",
+      channels, " of ", dv);
   int64_t leaves = 1, boxes = dv / channels;
   int stride[kMaxLevels] = {};
   for (int l = D - 1; l >= 0; --l) {

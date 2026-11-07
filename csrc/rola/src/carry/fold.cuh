@@ -58,7 +58,7 @@ __device__ __forceinline__ void fold_units(uint8_t* smem, const Window& ww, int 
   constexpr int kLanes = 32 / P::kFoldLists;
   const int j = lane / kLanes;
   const int16_t* exps =
-      reinterpret_cast<const int16_t*>(smem + P::kWriteExp) + parity_of(w) * kBoxLists * 2;
+      reinterpret_cast<const int16_t*>(smem + P::kWriteExp) + parity_of(w) * kMaxExtent * 2;
   const int k = ww.listed ? exps[2 * fold_list(warp, j) + 1] : dense_exp(exps[1]);
   UnitBook* const book = reinterpret_cast<UnitBook*>(smem + P::kBook) + fold_list(warp, j);
   UnitBook b = *book;
@@ -183,8 +183,8 @@ __device__ __forceinline__ void fold_fill(const CarryParams& p, const uint8_t* s
                                           int first, int slots, ops::SmemAddr buf, int warp,
                                           int lane) {
   const volatile Addr& addr = *reinterpret_cast<const volatile Addr*>(smem + P::kAddr);
-  fill<P::kFoldFactors, true>(addr.slices[kWrite], addr.values, static_cast<int>(p.values.st),
-                              union_of<P>(p, smem, kWrite, w), ww, first, slots, buf);
+  fill<P, P::kFoldFactors, true>(addr.slices[kWrite], addr.values, static_cast<int>(p.values.st),
+                                 union_of<P>(p, smem, kWrite, w), ww, first, slots, buf);
   const ops::SmemAddr ents = buf + static_cast<uint32_t>(fold_ents<P>(slots));
   if (ww.listed) {
     entries_fill<P>(p, p.write_lists, ww, c, w, run, ents, warp, lane);
@@ -209,8 +209,9 @@ struct NoLaps {
 
 //: THE DEN LISTS a channel box carries, a mask over a warp's lists `j`: where `j boxes / 4` is the box.
 //: -- see docs/internals/carry/fold.md#den
+template <class P>
 __device__ __forceinline__ uint32_t den_lists(int channel0, int dv) {
-  const int box = channel0 / kBoxChannels, boxes = dv / kBoxChannels;
+  const int box = channel0 / P::kChannels, boxes = dv / P::kChannels;
   uint32_t mask = 0;
 #pragma unroll
   for (int j = 0; j < 4; ++j) mask |= (j * boxes / 4 == box ? 1u : 0u) << j;
@@ -386,7 +387,7 @@ __device__ __forceinline__ void den_pairs(State<P>& st, const uint8_t* smem,
   const bool doer = warp < kWarps / 2;
   const DenPlace at = den_place<P>(warp, lane);
   const float f = pow2(kden - kCoefTop);
-  static_assert(kBoxDigits * kBoxLists * 2 >= 128 * 16,
+  static_assert(kMaxExtent * kMaxExtent * 2 >= 128 * 16,
                 "the exchange's 128 16-byte slots fit the den image");
   const ops::SmemAddr ex = ops::smem_addr(smem + P::kDenImage);
   //: word `i` of lane `(g, t)` is element `i` of digit tile `t >> 1` in lane `(g, t & 1)` (own) or `(g, 2 + (t & 1))`
@@ -429,7 +430,7 @@ __device__ __forceinline__ void fold_chunk(State<P>& st, bool rescale, const uin
   const ops::SmemAddr pool = rows - static_cast<uint32_t>(first * P::kWriteRow);
   //: a side with no list level: 2^(4 - E) of the window's exponents of F and m (`dense_exp`), the facts records' scale
   const int16_t* const exps =
-      reinterpret_cast<const int16_t*>(smem + P::kWriteExp) + parity_of(w) * kBoxLists * 2;
+      reinterpret_cast<const int16_t*>(smem + P::kWriteExp) + parity_of(w) * kMaxExtent * 2;
   const float p2 = ww.listed ? 1.0f : ldexpf(1.0f, 4 - dense_exp(exps[1])),
               p2m = ww.listed ? 1.0f : ldexpf(1.0f, 4 - dense_exp(exps[0]));
   //: a listed side's lists carry the den in their steps; a dense side's rides its one list's (`steps_dense`)
@@ -557,7 +558,7 @@ __device__ __forceinline__ void fold_probe(const CarryParams& p, const State<P>&
   if (p.probe_den == nullptr) return;
   const DenPlace at = den_place<P>(warp, lane);
   static_for<4>([&](auto I) {
-    if (((den_lists(c.channel0, p.dv) >> (at.list(I) >> 3)) & 1u) != 0u)
+    if (((den_lists<P>(c.channel0, p.dv) >> (at.list(I) >> 3)) & 1u) != 0u)
       p.probe_den[static_cast<int64_t>(c.bh) * step + base + at.list(I) * list_stride
                   + at.digit(I) * row_stride] = st.den[I] * kByteScale;
   });
