@@ -59,6 +59,17 @@ Every mechanism states its sm_80 / sm_90 / sm_100 form at design time (wgmma and
 operands, TMA box loads, clusters and distributed shared memory, vector RED); a mechanism that exists on one
 architecture only is a workaround, not a design.
 
+THE FORM IS NAMED PER FAMILY. The architectures fall into families -- `ampere` (sm_80 to sm_89), `hopper` (sm_90),
+`blackwell` (sm_100) -- and a mechanism's form is named per family: an ATOM where only the instruction differs, the
+family's SCHEDULE where the structure does (which warps do what, the pipeline's stages and barriers, the tiling). The
+semantics, what the oracle defines, are one: every family's schedule shares them and is gated against the same
+reference.
+
+EVERY KERNEL ADAPTS TO ITS CARD. Every kernel is selected per product, compile-time specialized to it, and takes every
+constant the product or the declaration decides from its plan; no kernel hard-codes one. A literal stays only where the
+hardware fixes it (an MMA shape, the warp size), as the declaration's closed-world bound (refused by name past it), or
+as an encoding.
+
 NO FALLBACKS AT THE ATOM. A primitive may select different native instructions per architecture; it never selects a
 wider-type emulation on a target architecture. An operation an architecture lacks is a declared design fact with its
 cost on the card, never an `#if` branch. (An fp32 emulation of a bf16 multiply lived behind a passing oracle while the

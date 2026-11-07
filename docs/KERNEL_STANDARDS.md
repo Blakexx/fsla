@@ -109,6 +109,15 @@ Feature selection lives where the primitive is defined (`kernel_traits.h:40-44`'
 never as `#if` at call sites. RoLA adds: every structural decision states its sm_80/90/100 mapping on the
 card (§4 of the architecture); only measured binaries run (pinned ptxas, per-arch ratified manifests, device stamp).
 
+TWO LEVELS, ONE HOME EACH (2026-11-07, the family foundation; constitution R8). An INSTRUCTION difference is an atom:
+one name, its body selected per family where it is defined, in `common/atoms/`. A STRUCTURE difference is a schedule in
+`<kernel>/<family>/`, which holds only what differs in structure -- anything differing by an instruction alone moves to
+an atom. A kernel's semantics live in `<kernel>/`, shared by its schedules. THE SELECTION is one layer every kernel
+plugs into: the cards are data (hardware.json's arch and product rows, generated), a kernel's sizes come from its plan
+alone (`Plan<build, arm>`: the card's build traits and the declaration's arm), and one host call selects the card and
+the arm, refusing an unlisted product or an unbuilt arm by name. Products equal in their build traits share their
+kernels.
+
 ## 9. The backstop (checks that should catch nothing)
 `ratify` records per arm and arch: registers, stack, spills, residency (existing) + compile wall time,
 cicc peak RSS, and the body count of each named `static_for` nest as a function of the arm (new). A budget
