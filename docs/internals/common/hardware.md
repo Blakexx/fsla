@@ -39,6 +39,13 @@ product whose `build` block overrides a trait (`hardware.BUILD_TRAITS`) runs the
 overrides agree share one (`hardware.builds()`), so a kernel is compiled once a distinct set of traits, never once a
 product.
 
+<a id="builds-renamed"></a>
+A kernel templated on its build is the same code under a new name, so a refactor compares by signature:
+`tools/sass_bodies.py --compare A B --drop-builds` keys both maps by the demangled signature with each kernel's `Build`
+argument dropped -- refused where the argument is not its own image's, since a build's kernels compile in its image
+alone -- and reports the source stamp (`csrc_stamp_kernel`, which moves with every source edit) apart, never as a
+verdict.
+
 <a id="traits"></a>
 `traits_of(Build)` is what a kernel's plan reads: the family, the window W ([`window.md`](window.md): a card's,
 chosen per architecture) and the architecture's `Caps`. A tabulated architecture that is not built may leave its
