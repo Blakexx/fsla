@@ -82,32 +82,42 @@ static_assert(kWindowTokens == kWindow,
 //: THE STEP: a union's extent is its size in whole steps of the carry's 8 entries.
 constexpr int kStep = 8;
 
+//: A SIDE'S LIST GROUP: a union's digits, a unit's group or each half. -- see docs/internals/facts/facts.md#list-groups
+constexpr int kListGroupMin = 16;
+constexpr int kUnitGroups = kGroupDigits / kListGroupMin;
+static_assert(kUnitGroups == 2, "a list unit's groups are its liveness group or each half");
+static_assert(
+    max_group(kWindowTokens) * kWindowTokens < 65536,
+    "a list group's slots a window, every head's, fit the 16-bit half its count rides in");
+
 enum FactsPhase : int { kPhaseLoad, kPhaseVote, kPhaseRanks, kPhaseLists, kFactsPhases };
 
-//: THE CTA'S SHARED MEMORY, by offset: the window, the bit tile, the columns, the union's words, each boundary's first
-//: token, the warps' maxima, a head's lists' boundaries. -- see docs/internals/facts/facts.md#shared-memory
-template <int W>
+//: THE CTA'S SHARED MEMORY, by offset, a pass of `G` list groups a unit: the window, the bit tile, the columns, each
+//: group's union words and bounds, the warps' maxima, a head's boundaries. -- see docs/internals/facts/facts.md#shared-memory
+template <int W, int G>
 struct FactsSmemAt {
   static constexpr int kWin = 0;
   static constexpr int kTile = kWin + W * kGroupDigits;
   static constexpr int kCols = kTile + kGroupDigits * (W / kTokBits) * 4;
   static constexpr int kUword = kCols + W * 8;
-  static constexpr int kBound = kUword + (W / kTokBits) * 4;
-  static constexpr int kWmax = kBound + (W / kListBound) * 4;
+  static constexpr int kBound = kUword + G * (W / kTokBits) * 4;
+  static constexpr int kWmax = kBound + G * (W / kListBound) * 4;
   static constexpr int kTable = kWmax + kFactsWarps * 8;
   static constexpr int kBytes = kTable + kGroupDigits * (W / kListBound + 1) * 2;
 };
 
-using FactsSmem = FactsSmemAt<kWindowTokens>;
+template <int G>
+using FactsSmem = FactsSmemAt<kWindowTokens, G>;
 
-template <int W>
+template <int W, int G>
 constexpr bool tenants_aligned() {
-  using S = FactsSmemAt<W>;
+  using S = FactsSmemAt<W, G>;
   return S::kTile % 16 == 0 && S::kCols % 16 == 0 && S::kUword % 16 == 0 && S::kWmax % 8 == 0
          && S::kTable % 16 == 0;
 }
 
-static_assert(tenants_aligned<512>() && tenants_aligned<1024>(),
+static_assert(tenants_aligned<512, 1>() && tenants_aligned<1024, 1>() && tenants_aligned<512, 2>()
+                  && tenants_aligned<1024, 2>(),
               "each tenant on its access's alignment");
 
 //: A SIDE'S LISTS OUT at its list level: entries, prefix rows (mod 2^16), exact totals, the union by slot, its extent.
@@ -151,6 +161,7 @@ struct FactsParams {
   int row_base[kMaxLevels];
   int group_base[kMaxLevels];
   int list_level[kSides];
+  int list_group[kSides];
   uint32_t unit[kMaxUnits];
   uint32_t mask[kSides][kMaxMaskWords];
 };

@@ -90,12 +90,12 @@ def cell_carve(spec):
     return plan_carve(tuple(spec.widths), *(tuple(level[side] for level in declared) for side in (0, 1)), spec.dv)
 
 
-def read_row_of(spec):
-    """The read pool row a cell's lists address: the carry arm its carve selects, on the device's card
-    (`rola.ops.carry.form`)."""
+def lists_form_of(spec):
+    """What a cell's lists are built for: the carry arm its carve selects, on the device's card
+    (`rola.ops.carry.lists_form`)."""
     from rola.ops import carry as carry_ops
 
-    return carry_ops.form(carry_ops.arm_key(cell_carve(spec))).read_row
+    return carry_ops.lists_form(carry_ops.arm_key(cell_carve(spec)))
 
 
 def carry_operands(spec):
@@ -107,7 +107,7 @@ def carry_operands(spec):
 
     routes, values, layout, statics = bundle_of(spec, realize(spec))
     carve = plan_carve_of(routes, values)
-    facts = facts_ops.facts(routes, values, layout, *statics, read_row_of(spec))
+    facts = facts_ops.facts(routes, values, layout, *statics, lists_form_of(spec))
     unit = _zero_scale(routes)
     return routes, values, facts, carve, unit
 
@@ -154,7 +154,7 @@ def carry_intra(fx) -> Launch:
                                   "carries no state between its calls")
     routes, values, layout, statics = bundle_of(spec, realize(spec))
     carve = plan_carve_of(routes, values)
-    facts = facts_ops.facts(routes, values, layout, *statics, read_row_of(spec))
+    facts = facts_ops.facts(routes, values, layout, *statics, lists_form_of(spec))
     unit = _zero_scale(routes)
     bh = routes.batch * routes.heads
     num = torch.zeros(bh, spec.tokens, intra_ops.VALUE_WIDTH, device="cuda")
@@ -184,7 +184,7 @@ def scale_pass(fx) -> Launch:
     refusal = scale_ops.serves(routes)
     if refusal is not None:
         raise LookupError(f"{spec.name}: {refusal}")
-    facts = facts_ops.facts(routes, values, layout, *statics, read_row_of(spec))
+    facts = facts_ops.facts(routes, values, layout, *statics, lists_form_of(spec))
     factor = carry_factor(routes)
 
     def run():
@@ -230,7 +230,7 @@ def intra_forward(fx) -> Launch:
 
     spec = fx["cell"]
     routes, values, layout, statics = bundle_of(spec, realize(spec))
-    facts = facts_ops.facts(routes, values, layout, *statics, read_row_of(spec))
+    facts = facts_ops.facts(routes, values, layout, *statics, lists_form_of(spec))
     bh = routes.batch * routes.heads
     num = torch.zeros(bh, spec.tokens, intra_ops.VALUE_WIDTH, device="cuda")
     den = torch.zeros(bh, spec.tokens, device="cuda")
@@ -275,10 +275,10 @@ def facts_pass(fx) -> Launch:
 
     spec = fx["cell"]
     routes, values, layout, statics = bundle_of(spec, realize(spec))
-    read_row = read_row_of(spec)
+    form = lists_form_of(spec)
 
     def run():
-        return facts_ops.facts(routes, values, layout, *statics, read_row)
+        return facts_ops.facts(routes, values, layout, *statics, form)
 
     return Launch(name=f"facts_pass|{spec.name}", call=run)
 
@@ -340,9 +340,9 @@ def _one_segment(spec, layer) -> None:
 
 
 def _layer_bundle(fx):
-    """``(routes, values, layout, statics, carve, read_row)``: the layer's producer run once on the cell's prefill
+    """``(routes, values, layout, statics, carve, form)``: the layer's producer run once on the cell's prefill
     tokens, untimed, and what the op builds from its bundle before the facts pass, as the prefill DAG's facts node does
-    -- the layout, both sides' statics, the planner's carve and its carry arm's read row."""
+    -- the layout, both sides' statics, the planner's carve and its carry arm's lists form."""
     from rola.engine.carve import plan_carve
     from rola.ops import carry as carry_ops
     from rola.ops import facts as facts_ops
@@ -354,15 +354,15 @@ def _layer_bundle(fx):
     layout = facts_ops.call_layout(routes)
     statics = facts_ops.call_statics(routes, layout)
     carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, values.v.shape[-1])
-    return routes, values, layout, statics, carve, carry_ops.form(carry_ops.arm_key(carve)).read_row
+    return routes, values, layout, statics, carve, carry_ops.lists_form(carry_ops.arm_key(carve))
 
 
 def _layer_facts(fx):
     """`_layer_bundle` and the facts pass over it, built once."""
     from rola.ops import facts as facts_ops
 
-    routes, values, layout, statics, carve, read_row = _layer_bundle(fx)
-    return routes, values, layout, statics, carve, facts_ops.facts(routes, values, layout, *statics, read_row)
+    routes, values, layout, statics, carve, form = _layer_bundle(fx)
+    return routes, values, layout, statics, carve, facts_ops.facts(routes, values, layout, *statics, form)
 
 
 def layer_facts(fx) -> Launch:
@@ -370,10 +370,10 @@ def layer_facts(fx) -> Launch:
     from rola.ops import facts as facts_ops
 
     spec = fx["cell"]
-    routes, values, layout, statics, _carve, read_row = _layer_bundle(fx)
+    routes, values, layout, statics, _carve, form = _layer_bundle(fx)
 
     def run():
-        return facts_ops.facts(routes, values, layout, *statics, read_row)
+        return facts_ops.facts(routes, values, layout, *statics, form)
 
     return Launch(name=f"layer_facts|{spec.name}|{fx['construction'].name}", call=run)
 
@@ -472,7 +472,7 @@ def decode_step(fx) -> Launch:
     layout = facts_ops.call_layout(routes)
     statics = facts_ops.call_statics(routes, layout)
     words = facts_ops.facts(routes, rola.Values.from_projection(fx["v_prefill"]), layout, *statics,
-                            read_row_of(spec)).words
+                            lists_form_of(spec)).words
     bits = lv.page_bits(words, layout, *statics)
     seeded: dict = {}
 

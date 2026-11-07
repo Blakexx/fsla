@@ -11,7 +11,8 @@ namespace rola::carry {
 
 template <class P>
 constexpr CarryForm form_of_plan() {
-  return CarryForm{P::kSmemBytes, P::kArea, P::kReadRow, P::kWriteRow};
+  return CarryForm{P::kSmemBytes, P::kArea,          P::kReadRow,
+                   P::kWriteRow,  P::kReadListGroup, P::kWriteListGroup};
 }
 
 //: THE PLAN'S FORM on the current device's card: the plan the device code was compiled with is the card's, and the

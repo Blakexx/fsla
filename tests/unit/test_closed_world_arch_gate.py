@@ -198,5 +198,6 @@ def test_this_device_is_tabulated_and_the_gate_admits_it():
                                       levels, torch.ones(1, L, 1, device="cuda"), sparse=((False, True), (True, False)))
     layout = facts_ops.call_layout(routes)
     words = facts_ops.facts(routes, Values.from_projection(torch.ones(1, L, 1, 8, device="cuda")), layout,
-                            *facts_ops.call_statics(routes, layout), 64).words
+                            *facts_ops.call_statics(routes, layout),
+                            facts_ops.ListsForm(read_row=64, read_list_group=32, write_list_group=32)).words
     assert words.shape[0] == 1

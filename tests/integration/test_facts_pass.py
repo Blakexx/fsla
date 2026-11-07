@@ -52,9 +52,14 @@ _LIST_RTOL = 2.0 ** -20
 _READ_ROWS = (64, 128, 192)
 _READ_ROW = _READ_ROWS[0]
 
+#: EACH SIDE'S LIST GROUP, (read, write) (docs/internals/facts/facts.md#list-groups): a unit's whole liveness group,
+#: each side's halves alone, and both halves
+_LIST_GROUPS = ((32, 32), (16, 32), (32, 16), (16, 16))
 
-def _facts(routes, values, layout, read_statics, write_statics, read_row=_READ_ROW):
-    return facts_ops.facts(routes, values, layout, read_statics, write_statics, read_row)
+
+def _facts(routes, values, layout, read_statics, write_statics, read_row=_READ_ROW, list_groups=(32, 32)):
+    return facts_ops.facts(routes, values, layout, read_statics, write_statics,
+                           facts_ops.ListsForm(read_row, *list_groups))
 
 
 def _flags(D, mode):
@@ -232,7 +237,7 @@ def test_a_dense_level_is_neither_read_nor_written():
     facts_ops.extension().rola_facts_forward(
         list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
         words, unions, list_exp, *_outputs(BH, L), list(layout.B), 1, masks, 1, masks, -1, -1, window_of(),
-        _READ_ROW)
+        _READ_ROW, 32, 32)
     _assert_written(facts_ops.Facts(words, unions, list_exp, *([None] * 5)), want, layout, read_statics,
                     write_statics)
     assert (words[:, :, :layout.B[0]] == poison).all() and (unions[:, :, :layout.group_base(1)] == poison).all()
@@ -277,20 +282,20 @@ def test_the_factor_products_are_the_declared_fp32_ones(widths, L):
 # --------------------------------------------------------------- the lists and gains are the model
 
 
-def _lists_want(routes, values, layout, read_statics, write_statics, got, read_row=_READ_ROW):
-    """``(write, read)``: each side's lists from the model at its list level, the read entries in pool rows of
-    ``read_row`` bytes, ``None`` for a side with no sparse level; the write side's coefficient pairs from the pass's own exponents (gated against the reference
-    above)."""
+def _lists_want(routes, values, layout, read_statics, write_statics, got, read_row=_READ_ROW, list_groups=(32, 32)):
+    """``(write, read)``: each side's lists from the model at its list level and its list group (``list_groups``,
+    read then write), the read entries in pool rows of ``read_row`` bytes, ``None`` for a side with no sparse level;
+    the write side's coefficient pairs from the pass's own exponents (gated against the reference above)."""
     bits = lv.unpack(_model(routes, layout, read_statics, write_statics), layout)
     wl, rl = facts_ops.list_level(write_statics), facts_ops.list_level(read_statics)
     write = read = None
     if wl >= 0:
         write = list_model.final_lists(bits[:, -1], layout, wl, row_bytes=read_row, rows=routes.amp_write[wl],
                                        cols=list_model.columns(routes, values), list_exp=got.list_exp.cpu(),
-                                       window=window_of())
+                                       window=window_of(), list_group=list_groups[1])
     if rl >= 0:
         read = list_model.final_lists(bits[:, :-1], layout, rl, row_bytes=read_row, rows=routes.amp_read[rl],
-                                      cols=None, list_exp=None, window=window_of())
+                                      cols=None, list_exp=None, window=window_of(), list_group=list_groups[0])
     return write, read
 
 
@@ -317,17 +322,19 @@ _GROUPED = (((16, 16), 64), ((64, 64), 1100), ((256, 256), 1100))
 
 @pytest.mark.parametrize(("widths", "L"), _GROUPED)
 @pytest.mark.parametrize("group", (2, 4))
-def test_grouped_reads_are_one_union_a_window_bit_for_bit(widths, L, group):
+@pytest.mark.parametrize("list_groups", ((32, 32), (16, 16)))
+def test_grouped_reads_are_one_union_a_window_bit_for_bit(widths, L, group, list_groups):
     """GROUPED QUERIES (docs/internals/facts/facts.md#lists-out): ``H`` write heads each read by ``group`` query
     heads. The words and unions are each slot's -- every query head's read side, then the write side -- and the read
-    side's lists one union a (window, group) over the query heads' rows, head-major, the write side's a write head's:
-    the model's, bit for bit, the boundaries every 64 slots of the merged union."""
+    side's lists one union a (window, list group) over the query heads' rows, head-major, the write side's a write
+    head's: the model's, bit for bit, the boundaries every 64 slots of the merged union, each list group's slots past
+    its own heads before."""
     layout = _layout(widths, L)
     read_statics, write_statics = _sides(layout, "alternating", widths)
     routes, values = _bundle(widths, L, (read_statics, write_statics), group=group)
-    got = _facts(routes, values, layout, read_statics, write_statics)
+    got = _facts(routes, values, layout, read_statics, write_statics, list_groups=list_groups)
     _assert_written(got, _model(routes, layout, read_statics, write_statics), layout, read_statics, write_statics)
-    write, read = _lists_want(routes, values, layout, read_statics, write_statics, got)
+    write, read = _lists_want(routes, values, layout, read_statics, write_statics, got, list_groups=list_groups)
     assert read.count.max() > min(L, window_of()), "no merged union passes one head's rows: the cell is vacuous"
     _assert_lists(got.write, write)
     _assert_lists(got.read, read)
@@ -335,15 +342,16 @@ def test_grouped_reads_are_one_union_a_window_bit_for_bit(widths, L, group):
 
 @pytest.mark.parametrize(("widths", "L"), [shape for shape in _SHAPES if len(shape[0]) <= 2])
 @pytest.mark.parametrize("dense", _MODES)
-def test_the_lists_are_the_model_bit_for_bit(widths, L, dense):
-    """Each side's lists at its list level (docs/internals/facts/facts.md#lists-out): the union by rank and its extent,
-    each digit's entries in token order, the groups' boundaries in prefix form, and the write entries' coefficient pairs
-    -- bit for bit, at every window."""
+@pytest.mark.parametrize("list_groups", _LIST_GROUPS)
+def test_the_lists_are_the_model_bit_for_bit(widths, L, dense, list_groups):
+    """Each side's lists at its list level and list group (docs/internals/facts/facts.md#lists-out, #list-groups): the
+    union by rank and its extent, each digit's entries in token order, the groups' boundaries in prefix form, and the
+    write entries' coefficient pairs -- bit for bit, at every window."""
     layout = _layout(widths, L)
     read_statics, write_statics = _sides(layout, dense, widths)
     routes, values = _bundle(widths, L, (read_statics, write_statics))
-    got = _facts(routes, values, layout, read_statics, write_statics)
-    write, read = _lists_want(routes, values, layout, read_statics, write_statics, got)
+    got = _facts(routes, values, layout, read_statics, write_statics, list_groups=list_groups)
+    write, read = _lists_want(routes, values, layout, read_statics, write_statics, got, list_groups=list_groups)
     for side, want in ((got.write, write), (got.read, read)):
         if want is None:
             assert side.entries.shape[2] == 0
@@ -364,14 +372,15 @@ def test_the_read_entries_follow_the_pool_row(read_row):
     _assert_lists(got.read, read)
 
 
-def test_the_boundaries_cover_a_whole_window():
+@pytest.mark.parametrize("list_groups", _LIST_GROUPS)
+def test_the_boundaries_cover_a_whole_window(list_groups):
     """A window whose groups' unions pass the last boundary: every boundary of a list counted, none past its end."""
     widths, L = (64, 64), 1024
     layout = _layout(widths, L)
     read_statics, write_statics = _sides(layout, "alternating", widths)
     routes, values = _bundle(widths, L, (read_statics, write_statics))
-    got = _facts(routes, values, layout, read_statics, write_statics)
-    write, read = _lists_want(routes, values, layout, read_statics, write_statics, got)
+    got = _facts(routes, values, layout, read_statics, write_statics, list_groups=list_groups)
+    write, read = _lists_want(routes, values, layout, read_statics, write_statics, got, list_groups=list_groups)
     assert (write.count > 7 * list_model.LIST_BOUND).any(), "no union passes the last boundary: the cell is vacuous"
     _assert_lists(got.write, write)
     _assert_lists(got.read, read)
@@ -432,15 +441,16 @@ def test_a_dead_window_keeps_the_floor():
     assert torch.equal(list_exp, torch.full_like(list_exp, -126))
 
 
-def test_a_deeper_call_lists_each_sides_one_sparse_level():
+@pytest.mark.parametrize("list_groups", ((32, 32), (16, 16)))
+def test_a_deeper_call_lists_each_sides_one_sparse_level(list_groups):
     """Past depth two a side with one sparse level lists it, the same lists as the model's."""
     widths, L = (16, 32, 16), 96
     layout = _layout(widths, L)
     read_statics = _statics(layout, (0, 2), widths)
     write_statics = _statics(layout, (1, 2), widths)
     routes, values = _bundle(widths, L, (read_statics, write_statics))
-    got = _facts(routes, values, layout, read_statics, write_statics)
-    write, read = _lists_want(routes, values, layout, read_statics, write_statics, got)
+    got = _facts(routes, values, layout, read_statics, write_statics, list_groups=list_groups)
+    write, read = _lists_want(routes, values, layout, read_statics, write_statics, got, list_groups=list_groups)
     assert facts_ops.list_level(write_statics) == 0 and facts_ops.list_level(read_statics) == 1
     _assert_lists(got.write, write)
     _assert_lists(got.read, read)
@@ -498,7 +508,19 @@ def test_the_seam_refuses_rows_that_are_not_the_format():
             torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"),
             torch.empty((2, 1, 16, 2), dtype=torch.int16, device="cuda"), *_outputs(2, L), list(layout.B), 0,
             [read_statics.mask_word(0)], 0, [write_statics.mask_word(0)], 1, -1, window_of(),
-            _READ_ROW)
+            _READ_ROW, 32, 32)
+
+
+@pytest.mark.parametrize("list_groups", ((24, 32), (32, 8)))
+def test_the_seam_refuses_a_list_group_it_does_not_rank(list_groups):
+    """A side's list group is a liveness group or its half (docs/internals/facts/facts.md#list-groups): any other
+    refused by name."""
+    widths, L = (32, 32), 64
+    layout = _layout(widths, L)
+    read_statics, write_statics = _sides(layout, "alternating", widths)
+    routes, values = _bundle(widths, L, (read_statics, write_statics))
+    with pytest.raises((RuntimeError, ValueError), match="list group is"):
+        _facts(routes, values, layout, read_statics, write_statics, list_groups=list_groups)
 
 
 def test_the_seam_refuses_a_mask_past_the_rows():
@@ -523,7 +545,7 @@ def test_the_seam_refuses_another_window():
             torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"),
             torch.empty((2, 1, 16, 2), dtype=torch.int16, device="cuda"), *_outputs(2, L), list(layout.B), 0,
             [read_statics.mask_word(0)], 0, [write_statics.mask_word(0)], 1, -1, 256,
-            _READ_ROW)
+            _READ_ROW, 32, 32)
 
 
 # --------------------------------------------------------------- the producer's bundle, end to end

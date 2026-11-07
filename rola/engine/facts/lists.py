@@ -3,11 +3,12 @@
 """THE LISTS' MODEL: the facts pass's per-(window, digit) lists in the final form the carry reads, and the window's
 gains pairs -- the pure-torch spec the kernel is graded against (docs/internals/facts/facts.md#lists-out, #gains).
 
-A side's LIST LEVEL (its one sparse level) gets, per window and 32-digit group, a UNION -- the tokens live in any of
-the group's digits -- RANKED: ``union[slot]`` is the token of union rank ``slot`` (``GAP`` past the union), ``count``
+A side's LIST LEVEL (its one sparse level) gets, per window and LIST GROUP -- ``G`` consecutive digits, the side's
+``list_group`` (16 or 32: the carry arm's box extent at the level, `LIST_GROUPS`) -- a UNION -- the tokens live in any
+of the group's digits -- RANKED: ``union[slot]`` is the token of union rank ``slot`` (``GAP`` past the union), ``count``
 the union's EXTENT, its size in whole steps of 8. Per digit, its LIST: its tokens in token order (slot order), no pads.
 Its BOUNDARIES are its entries before union slot ``64 (j + 1)``, ``j < 8`` (the last its length), out in PREFIX FORM
-over the group's lists modulo 2^16 (``pre[l][j]`` the boundaries of lists ``< l`` summed, row 32 the group's), beside
+over the group's lists modulo 2^16 (``pre[l][j]`` the boundaries of lists ``< l`` summed, row ``G`` the group's), beside
 the group's exact TOTALS (``totals[j]``, for the carry's planner): any chunk of the union whose bounds are multiples of
 64 finds each list's run and its place among the lists' runs by four loads, each a difference within the chunk (which
 holds fewer than 2^16 entries), and no chunk size of the carry's reaches this pass.
@@ -36,8 +37,8 @@ from rola.engine.facts import liveness as lv
 
 #: a list's boundaries: one every 64 union slots, the last its length; a window of W slots holds W / 64 (`list_at`)
 LIST_BOUND = 64
-#: a group's prefix rows: one a list, then its totals
-PRE_ROWS = lv.GROUP_DIGITS + 1
+#: A SIDE'S LIST GROUP: the digits one union and its prefix rows span, a liveness group (`lv.GROUP_DIGITS`) or its half
+LIST_GROUPS = (16, 32)
 COEF_TOP = 4
 UNIT_MIN = COEF_TOP - 127
 #: the carry's step: a union's extent is its size in whole steps
@@ -51,9 +52,15 @@ def list_at(window: int) -> int:
     return window // LIST_BOUND
 
 
+def pre_rows(list_group: int) -> int:
+    """A list group's prefix rows: one a list, then its totals."""
+    return list_group + 1
+
+
 class Lists(NamedTuple):
-    """One side's lists in the final form at a window of ``W`` tokens: ``entries`` ``[BH, windows, B, W, 4]`` int16
-    (a list holds at most a window's slots), ``pre`` ``[BH, windows, groups, PRE_ROWS, W / 64]`` int16 the boundaries
+    """One side's lists in the final form at a window of ``W`` tokens and list group ``G``: ``entries``
+    ``[BH, windows, B, W, 4]`` int16 (a list holds at most a window's slots), ``groups = ceil(B / G)``, ``pre``
+    ``[BH, windows, groups, G + 1, W / 64]`` int16 the boundaries
     in prefix form modulo 2^16, ``totals`` ``[BH, windows, groups, W / 64]`` int32 the group's exact, ``union``
     ``[BH, windows, groups, W]`` (a slot's token, ``GAP`` in a gap) and
     ``count`` ``[BH, windows, groups]`` the unions' extents. Past a list's end and a union's extent nothing is
@@ -86,9 +93,10 @@ def _f16_bits(x: float) -> int:
 
 
 def final_lists(bits: torch.Tensor, layout: lv.LivenessLayout, level: int, *, row_bytes: int, rows, cols,
-                list_exp, window: int) -> Lists:
+                list_exp, window: int, list_group: int) -> Lists:
     """One side's lists at ``level`` from its unpacked words ``bits`` ``[BH, rows, L]`` (:func:`lv.unpack`'s side slice),
-    the read side's pool rows of ``row_bytes``, at a window of ``window`` tokens. Both sides' coefficients read the level's ``rows`` ``[B, T, H, width]``
+    the read side's pool rows of ``row_bytes``, at a window of ``window`` tokens and a list group of ``list_group``
+    digits (`LIST_GROUPS`). Both sides' coefficients read the level's ``rows`` ``[B, T, H, width]``
     u8; the WRITE side (``cols`` given) also takes ``cols`` (:func:`columns`) and the pass's ``list_exp``
     ``[BH, windows, B, 2]``; the READ side passes both as ``None``.
 
@@ -98,13 +106,15 @@ def final_lists(bits: torch.Tensor, layout: lv.LivenessLayout, level: int, *, ro
     (``g LIST_AT`` of them), a read entry's row offset modulo 2^16 (the carry takes it back by its chunk's first)."""
     if bits.dim() == 3:
         bits = bits.unsqueeze(1)
-    BH, heads, L, B = bits.shape[0], bits.shape[1], layout.L, layout.B[level]
-    windows, groups = -(-L // window), -(-B // lv.GROUP_DIGITS)
+    if list_group not in LIST_GROUPS:
+        raise ValueError(f"a side's list group is one of {LIST_GROUPS} digits, got {list_group}")
+    BH, heads, L, B, G = bits.shape[0], bits.shape[1], layout.L, layout.B[level], list_group
+    windows, groups = -(-L // window), -(-B // G)
     columns_at = heads * list_at(window)
     base = layout.row_base(level)
     write = cols is not None
     entries = torch.zeros((BH, windows, B, heads * window, 4), dtype=torch.int16)
-    bounds = torch.zeros((BH, windows, groups, lv.GROUP_DIGITS, columns_at), dtype=torch.int64)
+    bounds = torch.zeros((BH, windows, groups, G, columns_at), dtype=torch.int64)
     union_out = torch.full((BH, windows, groups, heads * window), GAP, dtype=torch.int64)
     count = torch.zeros((BH, windows, groups), dtype=torch.int64)
     rows = rows.cpu()
@@ -117,13 +127,13 @@ def final_lists(bits: torch.Tensor, layout: lv.LivenessLayout, level: int, *, ro
         for w in range(windows):
             t0, t1 = w * window, min(L, (w + 1) * window)
             for g in range(groups):
-                lo, hi = base + g * 32, base + min(B, g * 32 + 32)
+                lo, hi = base + g * G, base + min(B, g * G + G)
                 union = [(j, t) for j in range(heads) for t in bits[bh, j, lo:hi, t0:t1].any(0).nonzero().flatten().tolist()]
                 slot_of = {row: s for s, row in enumerate(union)}
                 count[bh, w, g] = -(-len(union) // STEP) * STEP
                 union_out[bh, w, g, :len(union)] = torch.tensor([j * window + t for j, t in union], dtype=torch.int64)
                 for dd in range(hi - lo):
-                    digit = g * 32 + dd
+                    digit = g * G + dd
                     slots = [slot_of[(j, t)] for j in range(heads)
                              for t in bits[bh, j, lo + dd, t0:t1].nonzero().flatten().tolist()]
                     words = [_entry(s, union[s], write, row_bytes, rows, b, h * heads + union[s][0], t0, digit,

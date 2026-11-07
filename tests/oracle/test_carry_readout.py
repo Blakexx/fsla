@@ -31,7 +31,7 @@ def _readout_ratio(widths, L, write_sparse, growth, accumulate, *, same=False, l
     assert key == (32, 1, 32, 1, 32, int(same))
     layout = facts_ops.call_layout(routes)
     facts = facts_ops.facts(routes, values, layout, *facts_ops.call_statics(routes, layout),
-                            carry_ops.form(key).read_row)
+                            carry_ops.lists_form(key))
     level_s = write_sparse if same else 1 - write_sparse
     scale = units(routes, values, facts.list_exp, level_s, window_of())
     num, _den, _ = carry_ops.carry(routes, values, facts, carve, scale, accumulate=accumulate, forced=forced,

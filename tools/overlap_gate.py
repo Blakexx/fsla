@@ -75,14 +75,14 @@ def _launch_facts(cell: str, heads: int, repeat: int) -> None:
     import torch
 
     from measure.cells import by_name, realize
-    from measure.subjects import bundle_of, read_row_of
+    from measure.subjects import bundle_of, lists_form_of
     from rola.ops import facts as facts_ops
 
     spec = by_name(cell)
     routes, values, layout, statics = bundle_of(spec, realize(spec, H=heads))
-    read_row = read_row_of(spec)
+    form = lists_form_of(spec)
     for _ in range(repeat):
-        facts_ops.facts(routes, values, layout, *statics, read_row)
+        facts_ops.facts(routes, values, layout, *statics, form)
     torch.cuda.synchronize()
 
 
@@ -103,14 +103,14 @@ def _launch_scale(cell: str, heads: int, repeat: int) -> None:
     import torch
 
     from measure.cells import by_name, realize
-    from measure.subjects import bundle_of, read_row_of
+    from measure.subjects import bundle_of, lists_form_of
     from rola.ops import facts as facts_ops
     from rola.ops import scale as scale_ops
     from rola.ops.prefill import carry_factor
 
     spec = by_name(cell)
     routes, values, layout, statics = bundle_of(spec, realize(spec, H=heads))
-    facts = facts_ops.facts(routes, values, layout, *statics, read_row_of(spec))
+    facts = facts_ops.facts(routes, values, layout, *statics, lists_form_of(spec))
     factor = carry_factor(routes)
     for _ in range(repeat):
         scale_ops.scale(routes, facts, factor)

@@ -43,7 +43,7 @@ def cell_bundle(name: str, heads: int = 1, thin: bool = False):
     zeroes level R's write rows in every third window and all but every eighth token in the next, so the box windows
     hold no pass and one pass -- what no cell declares."""
     from measure.cells import by_name, realize
-    from measure.subjects import bundle_of, read_row_of
+    from measure.subjects import bundle_of, lists_form_of
     from rola.ops import facts as facts_ops
 
     spec = by_name(name)
@@ -57,7 +57,7 @@ def cell_bundle(name: str, heads: int = 1, thin: bool = False):
             elif win % 3 == 2:
                 keep = torch.arange(WINDOW, device=rows.device) % 8 == 0
                 span[:, ~keep] = 0
-    out = facts_ops.facts(routes, values, layout, *statics, read_row_of(spec))
+    out = facts_ops.facts(routes, values, layout, *statics, lists_form_of(spec))
     #: the floating draw is gone; at many heads its cached blocks would push the bundle out of device memory
     torch.cuda.empty_cache()
     declared = spec.declared_sparsity()

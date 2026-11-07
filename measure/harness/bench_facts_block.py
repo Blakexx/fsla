@@ -4,10 +4,11 @@
 level-sides `[65,536 tokens, 4 heads, 256 digits]` u8 (268 MB) -- each side's plane head-major, its two levels' slots
 side by side, as the producer writes them -- each token-head live in `k` random digits of each level-side; the write
 side lists level 0 and the read side level 1, the other level of each voted (the lab cell's two listed and two voted
-level-sides). One launch of the production kernel in the sm_86 even arm's form, timed by CUDA events; the required
-bytes (the rows, every output the pass writes, the columns it reads) priced at the lab's recorded flat read.
+level-sides). One launch of the production kernel in the sm_86 even arm's form (the read side's list group 32 or 16,
+docs/internals/facts/facts.md#list-groups), timed by CUDA events; the required bytes (the rows, every output the pass
+writes, the columns it reads) priced at the lab's recorded flat read.
 
-    python measure/harness/bench_facts_block.py [--k 4 16] [--reps 20] [--ledger]
+    python measure/harness/bench_facts_block.py [--k 4 16] [--reps 20] [--read-list-group 32 16] [--ledger]
 """
 from __future__ import annotations
 
@@ -60,7 +61,7 @@ def cell(k: int):
     return sides[0], sides[1], [column(), column()], column(), column()
 
 
-def launch(read, write, scales, g, vs, read_row, outs):
+def launch(read, write, scales, g, vs, form, outs):
     from rola.engine.facts import liveness as lv
     from rola.ops import facts as facts_ops
 
@@ -68,11 +69,11 @@ def launch(read, write, scales, g, vs, read_row, outs):
     masks = [0xFFFFFFFF] * lv.mask_words(2 * WIDTH)
     facts_ops.extension().rola_facts_forward(
         read, write, scales, g, vs, words, unions, list_exp, fm, gains16, gains_exp, list(wl), list(rl),
-        [WIDTH, WIDTH], 0, masks, 0, masks, 0, 1, WINDOW, read_row)
+        [WIDTH, WIDTH], 0, masks, 0, masks, 0, 1, WINDOW, *form)
 
 
-def outputs():
-    """The pass's outputs at the cell, allocated once."""
+def outputs(form):
+    """The pass's outputs at the cell in the lists' ``form``, allocated once."""
     from rola.ops import facts as facts_ops
 
     windows, bh = TOKENS // WINDOW, HEADS
@@ -82,7 +83,8 @@ def outputs():
     fm = torch.empty((bh, TOKENS, 2), dtype=torch.float32, device="cuda")
     gains16 = torch.empty((bh, TOKENS, 2), dtype=torch.float16, device="cuda")
     gains_exp = torch.empty((bh, windows, 2), dtype=torch.int16, device="cuda")
-    wl, rl = (facts_ops._lists(bh, windows, WIDTH, "cuda") for _ in range(2))
+    wl = facts_ops._lists(bh, windows, WIDTH, WINDOW, "cuda", form.write_list_group)
+    rl = facts_ops._lists(bh, windows, WIDTH, WINDOW, "cuda", form.read_list_group)
     return words, unions, list_exp, fm, gains16, gains_exp, wl, rl
 
 
@@ -102,45 +104,58 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--k", type=int, nargs="+", default=[4, 16])
     ap.add_argument("--reps", type=int, default=20)
+    ap.add_argument("--read-list-group", type=int, nargs="+", choices=(16, 32), default=[32],
+                    help="the read side's list groups (the write side's 32), timed interleaved launch by launch")
     ap.add_argument("--ledger", action="store_true", help="also book the phase ledger (a separate, untimed run)")
     args = ap.parse_args()
     from rola_devtools.locks.gpu import gpu_lock
 
     from rola.ops import facts as facts_ops
-    read_row = 64
+    forms = [facts_ops.ListsForm(read_row=64, read_list_group=group, write_list_group=32)
+             for group in args.read_list_group]
     rate = flat_rate()
     with gpu_lock():
         for k in args.k:
             read, write, scales, g, vs = cell(k)
-            outs = outputs()
+            outs = [outputs(form) for form in forms]
             for _ in range(3):
-                launch(read, write, scales, g, vs, read_row, outs)
+                for form, out in zip(forms, outs):
+                    launch(read, write, scales, g, vs, form, out)
             torch.cuda.synchronize()
-            times = []
+            times = [[] for _ in forms]
             for _ in range(args.reps):
-                a, b = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
-                a.record()
-                launch(read, write, scales, g, vs, read_row, outs)
-                b.record()
-                b.synchronize()
-                times.append(1000.0 * a.elapsed_time(b))
-            us = statistics.median(times)
-            floor = required_bytes(outs) / rate
-            line = LINE_US.get(k)
-            print(f"k {k}: {us:.1f} us (min {min(times):.1f}), required-bytes floor {floor:.1f} us at "
-                  f"{rate / 1000:.0f} GB/s: {us / floor:.3f}x" + (f"; the line {line:.0f} us" if line else ""))
+                for form, out, booked in zip(forms, outs, times):
+                    a, b = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+                    a.record()
+                    launch(read, write, scales, g, vs, form, out)
+                    b.record()
+                    b.synchronize()
+                    booked.append(1000.0 * a.elapsed_time(b))
+            first = statistics.median(times[0])
+            for form, out, booked in zip(forms, outs, times):
+                us = statistics.median(booked)
+                floor = required_bytes(out) / rate
+                line = LINE_US.get(k)
+                ratio = statistics.median(x / y for x, y in zip(booked, times[0]))
+                print(f"k {k} read list group {form.read_list_group}: {us:.1f} us (min {min(booked):.1f}), "
+                      f"required-bytes floor {floor:.1f} us at {rate / 1000:.0f} GB/s: {us / floor:.3f}x"
+                      + (f"; the line {line:.0f} us" if line else "")
+                      + (f"; {ratio:.3f}x the first group's {first:.1f} us, launch by launch" if booked is not times[0]
+                         else ""))
             if args.ledger:
-                ledger = torch.zeros((facts_ops.LEDGER_WARPS, len(facts_ops.LEDGER_PHASES)), dtype=torch.int64,
-                                     device="cuda")
-                facts_ops.ledger_bind(ledger)
-                try:
-                    launch(read, write, scales, g, vs, read_row, outs)
-                    torch.cuda.synchronize()
-                finally:
-                    facts_ops.ledger_bind(None)
-                total = ledger.sum(0).double()
-                print("  phase share (cycles summed over warps): " + ", ".join(
-                    f"{name} {v / total.sum():.2f}" for name, v in zip(facts_ops.LEDGER_PHASES, total.tolist())))
+                for form, out in zip(forms, outs):
+                    ledger = torch.zeros((facts_ops.LEDGER_WARPS, len(facts_ops.LEDGER_PHASES)), dtype=torch.int64,
+                                         device="cuda")
+                    facts_ops.ledger_bind(ledger)
+                    try:
+                        launch(read, write, scales, g, vs, form, out)
+                        torch.cuda.synchronize()
+                    finally:
+                        facts_ops.ledger_bind(None)
+                    total = ledger.sum(0).double()
+                    print(f"  read list group {form.read_list_group}, phase share (cycles summed over warps): "
+                          + ", ".join(f"{name} {v / total.sum():.2f}"
+                                      for name, v in zip(facts_ops.LEDGER_PHASES, total.tolist())))
             del read, write, outs
             torch.cuda.empty_cache()
     return 0

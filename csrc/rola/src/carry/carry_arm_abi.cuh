@@ -9,7 +9,7 @@ namespace rola::carry {
 
 //: ONE ARM'S FORM on the current device's card. -- see docs/internals/carry/carry_arm_abi.md#form
 struct CarryForm {
-  int smem_bytes, area, read_row, write_row;
+  int smem_bytes, area, read_row, write_row, read_list_group, write_list_group;
 };
 
 //: ONE ARM'S CENSUS, as the device build reports it. -- see docs/internals/carry/carry_arm_abi.md#census

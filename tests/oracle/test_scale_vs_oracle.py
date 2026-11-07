@@ -15,7 +15,7 @@ import pytest
 import torch
 
 from measure.cells import carry_cells, realize
-from measure.subjects import bundle_of, read_row_of
+from measure.subjects import bundle_of, lists_form_of
 from rola.ops import facts as facts_ops
 from rola.ops import scale as scale_ops
 from rola.ops.prefill import carry_factor, reader_factor
@@ -32,7 +32,7 @@ IDS = [cell.name for cell in ORACLE_CELLS]
 def operands(spec):
     """``(routes, values, facts)`` over the cell."""
     routes, values, layout, statics = bundle_of(spec, realize(spec))
-    facts = facts_ops.facts(routes, values, layout, *statics, read_row_of(spec))
+    facts = facts_ops.facts(routes, values, layout, *statics, lists_form_of(spec))
     return routes, values, facts
 
 

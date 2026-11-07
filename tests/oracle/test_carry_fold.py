@@ -70,7 +70,7 @@ def _fold_ratio(widths, L, write_sparse, growth, *, live=4, forced=None):
     assert carry_ops.arm_key(carve) == (32, 1, 32, 1, 32, 0)
     layout = facts_ops.call_layout(routes)
     facts = facts_ops.facts(routes, values, layout, *facts_ops.call_statics(routes, layout),
-                            carry_ops.form(carry_ops.arm_key(carve)).read_row)
+                            carry_ops.lists_form(carry_ops.arm_key(carve)))
     BH, N, d_v = routes.batch * routes.heads, widths[0] * widths[1], values.v.shape[-1]
     unit = torch.zeros((BH, L), dtype=torch.int8, device="cuda")
     probe, den = _probed(routes, values, facts, carve, unit, forced)

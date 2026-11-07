@@ -72,12 +72,12 @@ def _intra(spec):
     import torch
 
     from measure.cells import realize
-    from measure.subjects import bundle_of, read_row_of
+    from measure.subjects import bundle_of, lists_form_of
     from rola.ops import facts as f
     from rola.ops import intra as i
 
     routes, values, layout, statics = bundle_of(spec, realize(spec))
-    facts = f.facts(routes, values, layout, *statics, read_row_of(spec))
+    facts = f.facts(routes, values, layout, *statics, lists_form_of(spec))
     bh = routes.batch * routes.heads
     num = torch.zeros(bh, spec.tokens, i.VALUE_WIDTH, device="cuda")
     den = torch.zeros(bh, spec.tokens, device="cuda")

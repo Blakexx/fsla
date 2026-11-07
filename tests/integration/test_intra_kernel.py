@@ -31,7 +31,7 @@ from tests.oracle import int_reference as iref
 from tests.oracle import tolerances
 
 #: the lists' form the facts pass is called in (sm_86's even carry arm); this file reads its unions and factors only
-_READ_ROW = 64
+_LISTS = facts_ops.ListsForm(read_row=64, read_list_group=32, write_list_group=32)
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="the intra is a CUDA kernel")
 
@@ -90,7 +90,7 @@ def _run(routes, values, *, accumulate="fp32", num=None, den=None, gated=True):
     and gates nothing."""
     layout = facts_ops.call_layout(routes)
     statics = facts_ops.call_statics(routes, layout)
-    facts = facts_ops.facts(routes, values, layout, *statics, _READ_ROW)
+    facts = facts_ops.facts(routes, values, layout, *statics, _LISTS)
     if not gated:
         statics = tuple(lv.side_statics(layout, (True,) * layout.D, routes.topology.widths) for _ in range(2))
     BH, L = routes.batch * routes.heads, routes.tokens
@@ -277,7 +277,7 @@ def test_the_seam_refuses_what_it_does_not_read():
     routes, values = _bundle(1024, 1, 0.3)
     layout = facts_ops.call_layout(routes)
     statics = facts_ops.call_statics(routes, layout)
-    facts = facts_ops.facts(routes, values, layout, *statics, _READ_ROW)
+    facts = facts_ops.facts(routes, values, layout, *statics, _LISTS)
     num, den = torch.zeros(1, 1024, 64, device="cuda"), torch.zeros(1, 1024, device="cuda")
     with pytest.raises(KeyError):
         intra_ops.intra_forward(routes, values, facts, layout, *statics, num, den, accumulate="bf16")

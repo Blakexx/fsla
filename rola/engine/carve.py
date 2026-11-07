@@ -24,8 +24,9 @@ CHANNELS = 32
 MAX_CHANNELS = 128
 GROUP_CHANNELS = 8
 CAP = 32
-#: THE LISTS' GROUP: the facts pass ranks a side's lists in groups of 32 digits (`rola.engine.facts.liveness.
-#: GROUP_DIGITS`), so a listed level spans the group (or its whole width) in the box
+#: THE LISTS' GROUP: the facts pass ranks a side's lists in its list group (`rola.engine.facts.lists.LIST_GROUPS`) and
+#: every built carry arm reads 32 (docs/internals/carry/plan.md#list-groups), so a listed level spans 32 (or its whole
+#: width) in the box
 LIST_GROUP = 32
 #: A SIDE'S DENSE EXTENT is an MMA tile of rows at least.
 MIN_DENSE = 16

@@ -57,8 +57,7 @@ def facts(f):
     layout = facts_ops.call_layout(routes)
     statics = facts_ops.call_statics(routes, layout)
     carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, f["values"].v.shape[-1])
-    out = facts_ops.facts(routes, f["values"], layout, *statics,
-                          carry_ops.form(carry_ops.arm_key(carve)).read_row)
+    out = facts_ops.facts(routes, f["values"], layout, *statics, carry_ops.lists_form(carry_ops.arm_key(carve)))
     return out, carve, layout, statics
 
 

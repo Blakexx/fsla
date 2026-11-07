@@ -109,12 +109,13 @@ def membership(lists, union_of_slots: bool, windows: int, merge: int):
     import torch
 
     pre = lists.pre.long() & 0xFFFF
-    lengths = ((pre[:, :, :, 1:33, -1] - pre[:, :, :, :32, -1]) & 0xFFFF).flatten(2)  #: [BH, windows, digits]
     BH, nw, digits, W = lists.entries.shape[0], lists.entries.shape[1], lists.entries.shape[2], lists.entries.shape[3]
+    list_group = pre.shape[3] - 1  #: a list group's prefix rows: one a list, then its totals
+    lengths = ((pre[..., 1:, -1] - pre[..., :-1, -1]) & 0xFFFF).flatten(2)[..., :digits]  #: [BH, windows, digits]
     ent = lists.entries.long()
     if union_of_slots:
         slots = ent[..., 0] & 0xFFFF
-        group = torch.arange(digits, device=ent.device) // 32
+        group = torch.arange(digits, device=ent.device) // list_group
         un = lists.union.long()  #: [BH, windows, groups, W]
         idx = group.view(1, 1, digits, 1).expand(BH, nw, digits, W)
         tokens = torch.gather(un, 2, idx.clamp(max=un.shape[2] - 1)).gather(3, slots.clamp(max=W - 1))

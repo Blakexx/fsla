@@ -57,6 +57,15 @@ the plan asserts too, until the generic box's design (the coordinator's design j
 A pool row: the read side's slice over the readout's K, the write side's over the fold's rows (a dense write side's
 second over its lists), then the write side's values.
 
+<a id="list-groups"></a>
+## The list groups
+
+A side's LIST GROUP is the digits of its list level one union of the facts pass spans, with its prefix rows
+(`../facts/facts.md#list-groups`): `kReadListGroup`, `kWriteListGroup`, what the arm reads its lists in, so the
+facts pass is called in them (`rola.ops.carry.lists_form`). Every built arm reads 32, a group's `kPreRows` prefix
+rows, which the plan asserts; a box holding 16 digits of a list level reads 16 when its components are built (the
+generic box's step 3, the coordinator's design journal, 2026-11-06).
+
 <a id="image"></a>
 ## The image
 

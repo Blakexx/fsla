@@ -56,13 +56,13 @@ def lists(windows: int, with_tokens: bool = False, cell: str = CELL) -> tuple:
     import numpy as np
 
     from measure.cells import by_name, realize
-    from measure.subjects import bundle_of, read_row_of
+    from measure.subjects import bundle_of, lists_form_of
     from rola.engine.facts import liveness as lv
     from rola.ops import facts as facts_ops
 
     spec = by_name(cell)
     routes, values, layout, statics = bundle_of(spec, realize(spec), slice(0, 512 * windows))
-    words = facts_ops.facts(routes, values, layout, *statics, read_row_of(spec)).words
+    words = facts_ops.facts(routes, values, layout, *statics, lists_form_of(spec)).words
     level = facts_ops.list_level(statics[0])
     base, width = layout.row_base(level), layout.B[level]
     bits = lv.unpack(words, layout)[0, lv.READ, base:base + width].cpu().numpy()

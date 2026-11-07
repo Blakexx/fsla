@@ -12,7 +12,8 @@ lists', `list_exponents` in `tests/oracle/fold_reference.py` the exponents' defi
 Vocabulary, defined here and used unqualified below: `D` = routing depth; `B_l` = level `l`'s PADDED width; `b_l` =
 its LOGICAL width, the rows' own; `L` = tokens in the call; `BH` = batch × heads; `rows = Σ_l B_l`; **word** = 32
 consecutive tokens of one row; **window** = the carry's 512 tokens, 16 words; **group** = 32 consecutive digits of a
-level; **unit** = one (side, level, group) of a window, the work of one CTA.
+level; **unit** = one (side, level, group) of a window, the work of one CTA; **list group** = the `G` consecutive
+digits (16 or 32, the side's) one union and its prefix rows span ([below](#list-groups)).
 
 ## What it reads, and what it does not
 
@@ -56,20 +57,47 @@ its bits out at its slot, ranked and listed past the heads before it, the CTA's 
 side with two or more sparse levels gets its words and no lists: they would be COMPOSITE, keyed by a digit of each
 level, which this pass does not build.
 
+<a id="list-groups"></a>
+
+## The list groups: a unit's whole group or each half
+
+A side's LIST GROUP `G` (`FactsParams::list_group`, the call's: the digits of the side's list level that one box of
+the carry arm reads, `rola.ops.carry.lists_form`, [`plan.md`](../carry/plan.md#list-groups)) is the digits one union
+and its prefix rows span: 32, a unit's whole group, or 16, each half (`kListGroupMin`; `kUnitGroups` = 2 at most a
+unit); the host refuses any other. The unit stays a 32-digit group -- its load, vote, words and tile unions are the
+liveness contract's at every `G` -- and at 16 it ranks two unions, list group `q` its digits `16q .. 16q + 15`, each
+with its own slots, bounds, prefix rows (`G + 1`), totals, gap tail and extent, at its index among the side's
+`ceil(B / G)` groups of the window (`list_group_index`); a half past the level's width is none (`list_group_in`). The
+vote ORs a block's words into both halves' union words (a half's words zero at 32); the ranks scan both halves' counts
+as the 16-bit halves of one word, so one shuffle scan serves both, and a unit keeps both halves' slots before a head the
+same way (`half_of`; a group's slots a window, every head's, are at most 8,192) -- at W = 1,024 the pass sits at its
+128-register cap, and a pair of counts a half held apart spilled; a list lane takes its own digit's half; warp `q`
+writes half `q`'s prefix rows.
+
+Why a half: the carry's 64-channel box at `d_v` 64 holds 16 digits of the read list level; a union over 32 would stage
+the other box's tokens as its own, a step of entries the box never reads.
+
+THE TWO PASSES: the kernel is compiled for a unit of one list group (`facts_pass<1>`, every side at 32: the halves'
+work compiled out, the code before them) and of two (`facts_pass<2>`), and the host launches the one the call's groups
+need, each at its own tenants (`FactsSmemAt<W, G>`). A split call pays two warp reductions a block, a second gap
+tail and a second union's bytes, the same at every density ([measured](#budget)); sm_80, sm_90 and sm_100 run the
+same passes (the window's words double at W = 1,024, the halves' scan with them).
+
 <a id="shared-memory"></a>
 
 ## The CTA's shared memory
 
-`FactsSmem` by offset, dynamic, 22.6 KB:
+`FactsSmemAt<W, G>` by offset, dynamic, at W = 512 22.7 KB a pass of one list group a unit and 22.8 KB of two:
 
 | tenant | bytes | live |
 |---|---|---|
 | the window: 512 tokens × the group's 32 bytes | 16,384 | the load to the lists' last coefficient |
 | the bit tile (`tile_at`) | 2,048 | the vote to the end |
 | the columns `(m, F)` (float2) | 4,096 | a write unit's load to the end |
-| the union's words | 64 | the vote to the ranks |
-| each pass's bound (its first token) | 16 | the ranks to the end |
+| each list group's union words | 64 a group | the vote to the ranks |
+| each list group's bounds (a boundary's first token) | 32 a group | the ranks to the lists |
 | the warps' maxima | 64 | the load |
+| a head's lists' boundaries (`kTable`, u16) | 576 | the lists to the boundaries out |
 
 <a id="load"></a>
 
@@ -90,7 +118,8 @@ Lane `(tk, dq)` = `(lane / 8, lane % 8)` reads token `8 tk + i`'s digits `4 dq .
 by `7 - i` it lands at bit `i`, so byte `k` of the lane's register holds digit `4 dq + k`'s 8 token bits, and a 4 × 4
 byte transpose across the token blocks (two `shfl_xor` exchanges) leaves lane `(tk, dq)` digit `4 dq + tk`'s 32 token
 bits, masked by the digit's width-mask bit (`digit_in`). Warp `w` votes the window's words `2w` and `2w + 1`, and ORs
-each over the warp (one warp reduction) into the union's word.
+each over the warp into each list group's union word (two warp reductions: the digits below the side's list group, and
+the rest).
 
 <a id="window"></a>
 
@@ -149,23 +178,24 @@ lane's largest over its entries, joined over the digit's eight lanes; [the lists
 
 <a id="ranks"></a>
 
-## The ranks: one slot map a (window, side, group)
+## The ranks: one slot map a (window, side, list group)
 
 Every slot-addressed consumer -- the readout's pool and panel rows, the fold's pool rows --
 reads one slot map a union (ruled 2026-10-12). A union token's SLOT is its RANK, its place among the union's tokens in
-token order (ruled 2026-10-13). After the vote's barrier every warp scans the 16 union words' counts (a 16-lane shuffle
-scan), and its two words' tokens go out to `union_tok` at their slots -- a word's tokens at consecutive slots, so the
+token order (ruled 2026-10-13). After the vote's barrier every warp scans the 16 union words' counts, both list
+groups' as the 16-bit halves of one word (a 16-lane shuffle scan), and its two words' tokens go out to each group's
+`union_tok` at their slots -- a word's tokens at consecutive slots, so the
 stores coalesce -- every slot past the union `kGap` (`carry/carry.cuh`: token 0 with bit 15 set, so a row fetch masked
 to the window stays inside it). The union's EXTENT (`union_count`, int32) is its size in whole steps of `kStep` = 8:
 the carry stages the extent's slots and zero-fills a gap's row. The token at every 64th slot is a BOUND, posted in
 shared memory (`kWindowTokens` past the union): a list's tokens before bound `k` are its entries before slot `64 k`,
 which the lists count without walking.
 
-A GROUPED read side ranks its write head's query heads' rows as one union, head-major: head `j`'s union tokens take
-the slots past the heads before it (`at`), each slot's ROW `512 j + t` its `union_tok` (the carry's fills and drains
-decode a row by a shift and a mask). A head's bounds are the tokens at the merged union's 64th slots that fall in its
-rows -- at most eight, from boundary `k0 = at / 64` -- the rest `kWindowTokens`; the gaps and the extent are written
-after the last head.
+A GROUPED read side ranks its write head's query heads' rows as one union a list group, head-major: head `j`'s union
+tokens take the slots past the heads before it (`at`, a list group's own), each slot's ROW `512 j + t` its `union_tok`
+(the carry's fills and drains decode a row by a shift and a mask). A head's bounds are the tokens at the merged union's
+64th slots that fall in its rows -- at most eight, from boundary `k0 = at / 64` -- the rest `kWindowTokens`; the gaps
+and the extent are written after the last head.
 
 The slots are not colored. A coloring that put each step's 8 tokens on distinct residues mod 8 (the bank groups of
 every slot-indexed row) made the carry's gathers conflict-free, but it padded each list's passes to its most-used
@@ -178,15 +208,15 @@ composed carry first.
 
 ## The lists out
 
-Per list (a digit of the list level), its tokens in token order -- slot order, the slots being ranks -- with no pads,
-at most 512 a head. Its BOUNDARIES (`kListAt` = 8 a head) are its entries before slot `64 (j + 1)`, the last its
-length, out in PREFIX FORM over the group's lists (`pre`, a row of 8 a list and a row of the group's after them: row
-`l` the boundaries of lists `< l` summed) modulo 2^16, beside the group's exact TOTALS (`totals`, int32, the planner's
-counts). Any chunk of the union whose bounds are multiples of 64 finds each list's run and its place among the lists'
-runs by four loads, each a difference of two columns: a chunk's entries fit in shared memory, fewer than 2^16, so the
-differences are exact although a union of grouped queries' rows passes 16 bits. A scan of the runs per chunk instead
-cost the window 4% (2026-10-16); no chunk size of the carry's reaches this pass (`carry/carry.cuh` `kListBound`; the carry
-plans its chunks per window, `docs/internals/carry/carry.md#lists`).
+Per list (a digit of the list level), its tokens in token order -- slot order, the slots being ranks -- with no pads, at
+most 512 a head. Its BOUNDARIES (`kListAt` = 8 a head) are its entries before slot `64 (j + 1)`, the last its length,
+out in PREFIX FORM over the list group's lists (`pre`, `G + 1` rows: a row of 8 a list and a row of the group's after
+them, row `l` the boundaries of lists `< l` summed) modulo 2^16, beside the group's exact TOTALS (`totals`, int32, the
+planner's counts). Any chunk of the union whose bounds are multiples of 64 finds each list's run and its place among the
+lists' runs by four loads, each a difference of two columns: a chunk's entries fit in shared memory, fewer than 2^16, so
+the differences are exact although a union of grouped queries' rows passes 16 bits. A scan of the runs per chunk instead
+cost the window 4% (2026-10-16); no chunk size of the carry's reaches this pass (`carry/carry.cuh` `kListBound`; the
+carry plans its chunks per window, `docs/internals/carry/carry.md#lists`).
 
 An entry is 8 bytes, the carry's `uint2`:
 - READ: the slot's pool row offset in the union in 16-byte chunks, the row's swizzle folded in
@@ -203,8 +233,8 @@ THE LANES, every warp its 4 lists `w + 8 j`, 8 lanes a list, lane `s` the list's
 counts its tokens before the head's eight bounds and its total (a popcount of each word under a mask); a segmented
 scan of those counts (nine u16 fields in five registers) gives, at the list's last lane, the list's boundaries --
 lane `s` posts boundary `s` to the CTA's table past the list's entries in the heads before, lane 7 also its entries
-through the head -- and each lane's tokens before its own, its first place. After the walks a barrier, and warp 0
-writes the head's columns `k0 ..` (a later head's own columns overwrite the ones past this head's rows; the last
+through the head -- and each lane's tokens before its own, its first place. After the walks a barrier, and warp `q`
+writes list group `q`'s columns `k0 ..` (a later head's own columns overwrite the ones past this head's rows; the last
 head's entries through it fill every column past its eight), lane `c` column `k0 + c` in prefix form down the lists and
 its sum, the group's total (`bounds_out`). On the write side a walk over the lane's entries
 takes the list maxima, and their exponents. A walk then writes the lane's entries at consecutive places from its
@@ -218,9 +248,9 @@ first, each's slot `pre + popc(union word & below)` from the lane's two union wo
 |---|---|---|---|
 | window | `cp.async` 16-byte quanta, a lane pair a token | the vote: lane `(tk, dq)` row `4 i + tk` word `dq`; the walks: a byte at (token, digit) | the vote 1.0 a load (32 banks by `ring_row`); a walk's byte loads land on random banks, ~1.5; the copies' cost is their global pattern (`ldgsts-copy-ranking`) |
 | tile | the vote: a digit a lane, one word | the bits out: a half-warp a digit row; the lists: a lane a list's two words | 1.0 except the lists' loads: their 4 lists share a bank half, 4.0 against 2.0 ideal, two loads a lane a unit |
-| union words | the vote: lane 0, a word | the ranks: lane `i` word `i % 16` | 1.0 (a broadcast pair) |
+| union words | the vote: lane 0, a word a list group | the ranks: lane `i` word `i % 16` of each | 1.0 (a broadcast pair) |
 | bounds | the ranks: the lane holding a 64th slot | the lists: every lane, seven words | broadcast, 1.0 |
-| table, prefix | the lists: a lane a list's boundary (u16); warp 0's sums (u16) | warp 0: a lane a column; the rows out: a lane a row | 1.0 / the column walk's u16 at 16-byte stride, 2-way |
+| table, prefix | the lists: a lane a list's boundary (u16); warp `q`'s sums (u16) | warp `q`: a lane a column of its list group's rows | 1.0 / the column walk's u16 at 16-byte stride, 2-way |
 | columns | a lane a token | the walks: a float2 at a token | random, ~1.5 |
 
 <a id="phase-ledger"></a>
@@ -236,8 +266,8 @@ moves no output (`tests/integration/test_facts_pass.py`).
 ## `FactsParams` — the operand block, by value
 
 Per side and level a `RowView`, per write level and for the gain and value scale a `ColumnView`, the outputs (a
-`ListsOut` a side), the depth, the padded widths, row and group bases, each side's list level, the read pool row's
-bytes, the window's unit codes, per side the digit mask's words. Under a kilobyte and a half. No logical
+`ListsOut` a side), the depth, the padded widths, row and group bases, each side's list level and list group, the read
+pool row's bytes, the window's unit codes, per side the digit mask's words. Under a kilobyte and a half. No logical
 width is in it: `b_l` reaches the mask at the seam and bounds nothing else — the host entry refuses a mask that names a
 digit past a level's rows.
 
@@ -262,6 +292,12 @@ MEASURED (`measure/harness/bench_facts_block.py`, RTX 3080 Ti at its boost clock
 
 Everything but the lists is fixed a unit; the lists' walks run each warp's longest lane (a write unit walks twice, its
 maxima then its entries).
+
+MEASURED, the list groups (sm_86, 2026-11-06; `bench_facts_block.py --read-list-group 32 16`, the two timed launch by
+launch): the read side at 32 runs 442.3 / 502.7 µs (k 4 / k 16, 1.11x / 1.10x), at 16 445.3 / 504.7 µs (1.10x of its
+own floor, which its second union's bytes raise ~5 µs) -- 1.007x / 1.005x. A call whose sides are all whole groups runs
+the one-group pass (`facts_pass<1>`), the code before the halves: the layer's facts sessions at nl64k-alt-h4, -g4 and
+-g16 read 0.998, 0.997 and 0.993 of that build's time, and one `ncu` launch at nl64k-alt-k4 375 µs against its 376.
 
 Per architecture: sm_80 runs the same form at five CTAs an SM (registers); on sm_90 the window fills by TMA (a
 `[512 tokens × 32 bytes]` box of the head's plane in one instruction) under an mbarrier, the rest unchanged. Scaling:

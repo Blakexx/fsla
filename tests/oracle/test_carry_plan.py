@@ -40,7 +40,7 @@ def _assert_plans_are_the_model(routes, values, layout, statics, forced=None):
     """The plan pass's written words for every (batch-head, box class, window) against the model's; returns the model's
     records."""
     carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, values.v.shape[-1])
-    facts = facts_ops.facts(routes, values, layout, *statics, carry_ops.form(carry_ops.arm_key(carve)).read_row)
+    facts = facts_ops.facts(routes, values, layout, *statics, carry_ops.lists_form(carry_ops.arm_key(carve)))
     plans = carry_ops.plans_out(routes, carve)
     unit = torch.zeros((routes.batch * routes.heads, routes.tokens), dtype=torch.int8, device="cuda")
     carry_ops.carry(routes, values, facts, carve, unit, forced=forced, plans=plans)

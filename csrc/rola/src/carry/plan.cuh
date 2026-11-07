@@ -74,6 +74,11 @@ struct Plan : Tenants<window_for(Cc)> {
   static constexpr int kStateRegs = kFoldLists * kRows * kChannels / 32;
   static constexpr int kChannelGroups = kChannels / 8, kTokenGroups = kWarps / kChannelGroups;
   static constexpr int kDenWords = kChannelGroups, kDenRowBytes = kDenWords * 4;
+  //: A SIDE'S LIST GROUP: the facts pass's digits a union and its prefix rows span, as this arm reads its lists (a
+  //: group's `kPreRows` rows). -- see docs/internals/carry/plan.md#list-groups
+  static constexpr int kReadListGroup = kMaxExtent, kWriteListGroup = kMaxExtent;
+  static_assert(kPreRows == kReadListGroup + 1 && kPreRows == kWriteListGroup + 1,
+                "the carry reads a list group's prefix rows, one a list and its totals");
   //: THE IMAGE: a digit's plane, its slices, batches and halves. -- see docs/internals/carry/plan.md#image
   static constexpr int kPlaneBytes = kK * kChannels * 2, kSliceBlock = kK * 16;
   static constexpr int kBatches = kDigits / kBatchPlanes, kHalfPlanes = kDigits / 2;

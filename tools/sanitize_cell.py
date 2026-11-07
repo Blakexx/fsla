@@ -64,13 +64,13 @@ def _intra(cell: str) -> int:
     import torch
 
     from measure.cells import by_name, realize
-    from measure.subjects import bundle_of, read_row_of
+    from measure.subjects import bundle_of, lists_form_of
     from rola.ops import facts as facts_ops
     from rola.ops import intra as intra_ops
 
     spec = by_name(cell)
     routes, values, layout, statics = bundle_of(spec, realize(spec))
-    unions = facts_ops.facts(routes, values, layout, *statics, read_row_of(spec)).unions
+    unions = facts_ops.facts(routes, values, layout, *statics, lists_form_of(spec)).unions
     bh = routes.batch * routes.heads
     num = torch.zeros(bh, routes.tokens, intra_ops.VALUE_WIDTH, device="cuda")
     den = torch.zeros(bh, routes.tokens, device="cuda")

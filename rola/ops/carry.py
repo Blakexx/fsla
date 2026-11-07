@@ -206,16 +206,19 @@ def census() -> list[tuple[int, ...]]:
 class Form(NamedTuple):
     """An arm's form on the current card (docs/internals/carry/plan.md#plan): its shared memory and the area its plans
     place buffers in (one head's tables below the top), then a read and a write pool row's bytes -- what the facts pass
-    addresses the read entries' rows in."""
+    addresses the read entries' rows in -- and each side's list group, the digits a union of the lists it reads spans
+    (plan.md#list-groups)."""
 
     smem: int
     area: int
     read_row: int
     write_row: int
+    read_list_group: int
+    write_list_group: int
 
 
 #: a census row's fields: the index, the key's six, then registers, local bytes, shared bytes, the thread limit, the
-#: binary version, the area, the two pool rows
+#: binary version, the area, the two pool rows, the two list groups
 _KEY = slice(1, 7)
 
 
@@ -223,8 +226,14 @@ def form(key: tuple[int, ...]) -> Form:
     """The form of the built arm ``key`` (:func:`arm_key`) on the current card, refusing a key no built arm carries."""
     for row in census():
         if tuple(row[_KEY]) == tuple(key):
-            return Form(row[9], row[12], row[13], row[14])
+            return Form(row[9], row[12], row[13], row[14], row[15], row[16])
     raise ValueError(f"no built carry arm has the key {tuple(key)}; this binary carries {arms()}")
+
+
+def lists_form(key: tuple[int, ...]) -> facts_ops.ListsForm:
+    """The lists the built arm ``key`` reads, the facts pass's call: its read pool row and each side's list group."""
+    f = form(key)
+    return facts_ops.ListsForm(f.read_row, f.read_list_group, f.write_list_group)
 
 
 def build_stamp() -> int:

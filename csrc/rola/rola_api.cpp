@@ -138,7 +138,7 @@ STABLE_TORCH_LIBRARY(rola, m) {
       "Tensor(a!) words, Tensor(b!) unions, Tensor(c!) list_exp, Tensor(d!) fm, Tensor(e!) gains16, "
       "Tensor(f!) gains_exp, Tensor(g!)[] write_lists, Tensor(h!)[] read_lists, int[] widths, int dense_read, "
       "int[] mask_read, int dense_write, int[] mask_write, int write_list_level, int read_list_level, int window, "
-      "int read_row) -> ()");
+      "int read_row, int read_list_group, int write_list_group) -> ()");
   m.def("rola_facts_ledger_bind(Tensor? ledger) -> ()");
 
   // ---- the scale pass: each token's scale byte for the carry's f16 sum, the write-aligned bound --

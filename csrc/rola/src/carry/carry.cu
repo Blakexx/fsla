@@ -430,7 +430,8 @@ std::vector<std::vector<int64_t>> carry_census() {
     const ArmCensus c = carry_arm_census_##I_();                                                      \
     out.push_back({(int64_t)(I_), FR_, FF_, RR_, RF_, CH_, SS_, c.regs, c.local_bytes,         \
                    c.form.smem_bytes, c.max_threads, c.binary_version, c.form.area,                   \
-                   c.form.read_row, c.form.write_row});                                               \
+                   c.form.read_row, c.form.write_row, c.form.read_list_group,                         \
+                   c.form.write_list_group});                                                         \
   }
   ROLA_CARRY_ARM_SET_X(ROLA_CARRY_ARM_CENSUS)
 #undef ROLA_CARRY_ARM_CENSUS
