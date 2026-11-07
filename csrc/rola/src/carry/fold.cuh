@@ -139,15 +139,20 @@ __device__ __forceinline__ void step8(State<P>& st, ops::SmemAddr pool, uint32_t
                                       uint32_t cpair, uint32_t dpair, DenColumn<P>& den, int lane) {
   const int r = lane & 7, q = lane >> 3, t = lane & 3;
   const uint32_t o = __shfl_sync(0xffffffffu, off, r), c01 = __shfl_sync(0xffffffffu, cpair, 2 * t);
-  uint32_t raw[4], a[4], b[P::kFoldNTiles];
-  ops::load_frag_t(raw, chunk_addr<P::kWriteRow>(pool + o, q));
+  //: the slice's rows a matrix each (`ldmatrix.x4` at two m-tiles, `.x2` at one)
+  uint32_t raw[2 * P::kFoldMTiles], a[2 * P::kFoldMTiles], b[P::kFoldNTiles];
+  if constexpr (P::kFoldMTiles == 2)
+    ops::load_frag_t(raw, chunk_addr<P::kWriteRow>(pool + o, q));
+  else
+    ops::load_frag_t2(raw, chunk_addr<P::kWriteRow>(pool + o, q & 1));
   static_for<P::kFoldNTiles / 4>([&](auto Q) {
     uint32_t x[4];
     ops::load_frag_t(x, chunk_addr<P::kWriteRow>(pool + o, P::kValuesAt / 16 + 4 * Q + q));
     static_for<4>([&](auto k) { b[4 * Q + k] = x[k]; });
   });
+  constexpr int kRaw = 2 * P::kFoldMTiles;
 #pragma unroll
-  for (int k = 0; k < 4; ++k) a[k] = ops::hmul2(raw[k], c01);
+  for (int k = 0; k < kRaw; ++k) a[k] = ops::hmul2(raw[k], c01);
   static_for<P::kFoldMTiles>([&](auto M) {
     static_for<P::kFoldNTiles>(
         [&](auto N) { ops::hmma_k8(st.acc[J][M][N], a[2 * M], a[2 * M + 1], b[N]); });
@@ -192,7 +197,7 @@ __device__ __forceinline__ void fold_fill(const CarryParams& p, const uint8_t* s
                                  union_of<P>(p, smem, kWrite, w), ww, first, slots, buf);
   const ops::SmemAddr ents = buf + static_cast<uint32_t>(fold_ents<P>(slots));
   if (ww.listed) {
-    entries_fill<P>(p, p.write_lists, ww, c, w, run, ents, warp, lane);
+    entries_fill<P, P::kLists>(p, p.write_lists, ww, c, w, run, ents, warp, lane);
   } else {
     //: a side with no list level: each slot's token's (F, m), 8 bytes, in the entries' place
     const float2* const src = p.factors + static_cast<int64_t>(c.bh) * p.L + ww.t0 + first;
@@ -275,7 +280,7 @@ __device__ __forceinline__ void steps_dense(State<P>& st, bool rescale, const ui
       const uint32_t list = static_cast<uint32_t>(fold_list(owner, J));
       asm volatile("ld.shared.u16 %0, [%1];"
                    : "=r"(bh[J])
-                   : "r"(chunk_addr<P::kWriteRow>(row0, (kSliceBytes + 2u * list) >> 4)
+                   : "r"(chunk_addr<P::kWriteRow>(row0, (2u * P::kRows + 2u * list) >> 4)
                          + (2u * list & 15u)));
       const float b = __half2float(__ushort_as_half(static_cast<unsigned short>(bh[J])));
       c[J] = __fmul_rn(__fmul_rn(__fmul_rn(b, 255.0f), fk), p2);

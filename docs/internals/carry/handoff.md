@@ -50,10 +50,15 @@ one digit, their `l ^ (d & 7)` distinct -- 32 banks. A part's planes hold a digi
 the readout's MMA output pairs a token's channels `(c, c + 1)` in natural order, the panel's and `num`'s
 (`panel.md#words`).
 
-THE DEN IMAGE (`kDenImage`, 2 KB): the den state at its digit's scale, a block a readout channel group -- the 8 digits
-whose den it reads (`d mod 4`) -- digit `d` at byte `2 (d >> 2)` (`den_col`) of block `d & 3`'s list rows (`den_row`: 32
-lists x 8 digits f16, list `l`'s 16-byte row at position `l ^ (4 ((l >> 4) & 1) | (d & 3))`, a permutation inside each
-8-row group). The XOR is for the writer (`den_tables_out`): a store's 32 lanes hold two lists 16 apart and 16 digits
+THE DEN IMAGE (`kDenImage`, 2 KB): the den state at its digit's scale in blocks of 8 digit columns (the den MMA's N),
+digit `d` the group `d mod cg`'s (`cg` the readout's channel groups, each reading its own digits' den): `n_d = D / cg`
+digits a group, `8 / n_d` groups a block, digit `d` in block `den_block` = `(d mod cg) / (8 / n_d)` at column `den_col`
+= `((d mod cg) mod (8 / n_d)) n_d + d / cg`. At 4 groups (32 x 32 x 32) a block is a group's 8 digits, block `d & 3`
+column `d >> 2`, list `l`'s 16-byte row at position `l ^ (4 ((l >> 4) & 1) | (d & 3))` (`den_row`), a permutation inside
+each 8-row group. At 8 groups (the 64-channel box, 16 digits) a block holds 4 groups' 2 digits (block `(d >> 2) & 1`,
+column `2 (d & 3) + (d >> 3)`, 1 KB), row `l` at `l ^ (4 ((l >> 4) & 1) | 2 ((l >> 3) & 1) | block)`: the hand-off's 32
+lanes of a store (lists `w + 8 t`, block `(g >> 2) & 1`, column `2 (g & 3) + i`) meet 32 banks, and inside an 8-row group
+the XOR is one constant, so the reader's `ldmatrix` stays one wavefront a matrix. The XOR is for the writer (`den_tables_out`): a store's 32 lanes hold two lists 16 apart and 16 digits
 across the four blocks, which on unpermuted rows met 4 banks (8 wavefronts a store, 2026-11-06 census); permuted they
 meet 16, two lanes a word, one wavefront. The reader's `ldmatrix` rows stay inside their 128-byte groups, so it stays
 conflict-free. So a warp's den block is the same for every tile of its den pass,

@@ -34,11 +34,17 @@ __device__ __forceinline__ T* word_at(T* base, uint32_t off) {
   return reinterpret_cast<T*>(a);
 }
 
-//: SLOT `s`'s NUM WORD `w` in the panel, bytes, rotated by the slot (an XOR). -- see docs/internals/carry/panel.md#words
-template <bool F32>
+//: SLOT `s`'s NUM WORD `w` in the panel, bytes, rotated by the slot (an XOR): a 64-byte row's (32 f16 channels) by the
+//: pool row's swizzle, a 128-byte row's by `16 (s & 7)`, a 256-byte row's by `32 (s & 7)`.
+//: -- see docs/internals/carry/panel.md#words
+template <int RowBytes>
 __host__ __device__ __forceinline__ constexpr uint32_t panel_word(uint32_t s, uint32_t w) {
-  return F32 ? (128u * s + 16u * (s & 7u)) ^ (4u * w)
-             : (64u * s + 16u * ((s >> 1) & 3u)) ^ (4u * w);
+  static_assert(RowBytes == 64 || RowBytes == 128 || RowBytes == 256,
+                "a 64-, 128- or 256-byte row");
+  if constexpr (RowBytes == 64)
+    return (64u * s + 16u * ((s >> 1) & 3u)) ^ (4u * w);
+  else
+    return (RowBytes * s + RowBytes / 8 * (s & 7u)) ^ (4u * w);
 }
 
 //: THE DRAIN: a chunk's panel to `num` and its den words to `den`, after every warp's adds; warp `w` slots `w + 8 i`, two
@@ -55,12 +61,26 @@ __device__ __forceinline__ void drain(const CarryParams& p, const uint16_t* unio
   //: a slot's row (`token_row`: a word offset under 2^32, the host's bound)
   const auto row_of = [&](int s) { return token_row(union_tok[first + s], L); };
   //: a slot past `n` adds zero at the trip's first slot's row: a token's, never one row every CTA shares
-  if constexpr (F32) {
-    float* const out = reinterpret_cast<float*>(p.num) + head0 * p.dv + channel0 + lane;
+  constexpr int kWords = P::kChannels / (F32 ? 1 : 2), kRowBytes = 4 * kWords;
+  if constexpr (F32 || kWords == 32) {
+    //: a warp a slot, a lane its word (and the word 32 past it at 64 fp32 channels)
+    using T = std::conditional_t<F32, float, uint32_t>;
+    T* const out = reinterpret_cast<T*>(p.num) + head0 * (p.dv / (F32 ? 1 : 2))
+                   + channel0 / (F32 ? 1 : 2) + lane;
+    const uint32_t row = static_cast<uint32_t>(p.dv / (F32 ? 1 : 2));
     const auto add = [&](int at, bool live) {
-      const float v =
-          ops::load_shared_f32(panel + panel_word<true>(static_cast<uint32_t>(at), lane));
-      red_add_f32(word_at(out, row_of(at) * dv), live ? v : 0.0f);
+      static_for<kWords / 32>([&](auto k) {
+        constexpr uint32_t kW = 32u * decltype(k)::value;
+        if constexpr (F32) {
+          const float v = ops::load_shared_f32(
+              panel + panel_word<kRowBytes>(static_cast<uint32_t>(at), lane + kW));
+          red_add_f32(word_at(out + kW, row_of(at) * row), live ? v : 0.0f);
+        } else {
+          const uint32_t v = ops::load_shared_u32(
+              panel + panel_word<kRowBytes>(static_cast<uint32_t>(at), lane + kW));
+          red_add_h2(word_at(out + kW, row_of(at) * row), live ? v : 0u);
+        }
+      });
     };
 #pragma unroll 1
     for (int s = warp; s < n; s += 2 * kWarps) {
@@ -72,7 +92,7 @@ __device__ __forceinline__ void drain(const CarryParams& p, const uint16_t* unio
     uint32_t* const out = p.num + head0 * (p.dv / 2) + channel0 / 2 + word;
     const auto add = [&](int at, bool live) {
       const uint32_t v =
-          ops::load_shared_u32(panel + panel_word<false>(static_cast<uint32_t>(at), word));
+          ops::load_shared_u32(panel + panel_word<64>(static_cast<uint32_t>(at), word));
       red_add_h2(word_at(out, row_of(at) * (dv / 2)), live ? v : 0u);
     };
 #pragma unroll 1
@@ -83,13 +103,19 @@ __device__ __forceinline__ void drain(const CarryParams& p, const uint16_t* unio
     }
   }
 
-  //: THE DEN: a thread a slot, its four words summed into one add
+  //: THE DEN: a thread a slot, its words (a channel group's each) summed into one add
 #pragma unroll 1
   for (int s = warp * 32 + lane; s < n; s += kThreads) {
-    const uint4 d = ops::load_shared_vec16(dens + P::kDenRowBytes * static_cast<uint32_t>(s));
-    red_add_f32(word_at(p.den + head0, row_of(s)),
-                (__uint_as_float(d.x) + __uint_as_float(d.y))
-                    + (__uint_as_float(d.z) + __uint_as_float(d.w)));
+    float sum[P::kDenWords / 4];
+    static_for<P::kDenWords / 4>([&](auto k) {
+      const uint4 d = ops::load_shared_vec16(dens + P::kDenRowBytes * static_cast<uint32_t>(s)
+                                             + 16u * decltype(k)::value);
+      sum[k] = (__uint_as_float(d.x) + __uint_as_float(d.y))
+               + (__uint_as_float(d.z) + __uint_as_float(d.w));
+    });
+    float total = sum[0];
+    static_for<P::kDenWords / 4 - 1>([&](auto k) { total += sum[k + 1]; });
+    red_add_f32(word_at(p.den + head0, row_of(s)), total);
   }
 }
 

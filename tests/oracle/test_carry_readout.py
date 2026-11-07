@@ -11,24 +11,30 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.engine.carve import plan_carve
+from rola.engine.carve import carve_at, plan_carve
 from rola.ops import carry as carry_ops
 from rola.ops import facts as facts_ops
 from rola.ops.window import window_of
 from tests.oracle import carry_plan
-from tests.oracle.carry_fixtures import FORM_CELLS, listed_bundle
+from tests.oracle.carry_fixtures import FORM_CELLS, FORM_CELLS64, assert_box64_arm, box64, listed_bundle
 from tests.oracle.readout_reference import num_absolute, readout, units
 
 
 def _readout_ratio(widths, L, write_sparse, growth, accumulate, *, same=False, live=4, forced=None,
-                   reduce_dtype=torch.float16):
-    """``(ratio, plans)``: the call's largest slot distance from the reference over its bound, and its boxes' plans."""
+                   reduce_dtype=torch.float16, box=None):
+    """``(ratio, plans)``: the call's largest slot distance from the reference over its bound, and its boxes' plans; at
+    the planner's box, or at ``box`` (extents a level, channels)."""
     routes, values = listed_bundle(widths, L, write_sparse, same=same, live=live)
     at = torch.arange(L, device="cuda") // window_of()
     routes.g_write.mul_(torch.exp2(growth * at.float())[None, :, None])
-    carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, values.v.shape[-1])
+    widths, d_v = tuple(routes.topology.padded_widths), values.v.shape[-1]
+    if box is None:
+        carve = plan_carve(widths, *routes.sparse, d_v)
+        assert carry_ops.arm_key(carve) == (32, 1, 32, 1, 32, int(same))
+    else:
+        carve = carve_at(widths, *routes.sparse, *box, d_v)
+        assert_box64_arm(carve)
     key = carry_ops.arm_key(carve)
-    assert key == (32, 1, 32, 1, 32, int(same))
     layout = facts_ops.call_layout(routes)
     facts = facts_ops.facts(routes, values, layout, *facts_ops.call_statics(routes, layout),
                             carry_ops.lists_form(key))
@@ -37,7 +43,8 @@ def _readout_ratio(widths, L, write_sparse, growth, accumulate, *, same=False, l
     num, _den, _ = carry_ops.carry(routes, values, facts, carve, scale, accumulate=accumulate, forced=forced,
                              reduce_dtype=reduce_dtype)
     torch.cuda.synchronize()
-    want, bound = readout(routes, values, facts.list_exp, level_s, window_of(), scale, accumulate, reduce_dtype)
+    want, bound = readout(routes, values, facts.list_exp, level_s, window_of(), scale, accumulate, reduce_dtype,
+                          box=(carve.extents[level_s], carve.extents[1 - level_s]))
     got = num_absolute(num, scale)
     later = slice(window_of(), L)
     assert (want[:, later].abs() > 0).float().mean() > 0.5, "most later slots read nothing: the cell is vacuous"
@@ -62,6 +69,19 @@ def test_the_readout_is_the_reference_per_slot(write_sparse, growth, accumulate,
 
 @pytest.mark.parametrize("reduce_dtype", [torch.float16, torch.float32], ids=["f16", "fp32"])
 @pytest.mark.parametrize("accumulate", ["fp32", "fp16"])
+@pytest.mark.parametrize("write_sparse", [0, 1])
+@pytest.mark.parametrize("growth", [0, 8])
+def test_the_64_channel_box_reads_out_to_the_reference(write_sparse, growth, accumulate, reduce_dtype):
+    """The 64-channel box (one token group of eight channel groups, 16 read digits a box at the facts pass's 16-digit
+    list group): every slot of ``num`` within the bound of the reference's readout, both accumulate forms, both reduce
+    dtypes, the units steady or climbing."""
+    ratio, _ = _readout_ratio((64, 64), 2048, write_sparse, growth, accumulate, reduce_dtype=reduce_dtype,
+                              box=box64(write_sparse))
+    assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"
+
+
+@pytest.mark.parametrize("reduce_dtype", [torch.float16, torch.float32], ids=["f16", "fp32"])
+@pytest.mark.parametrize("accumulate", ["fp32", "fp16"])
 @pytest.mark.parametrize("level", [0, 1])
 @pytest.mark.parametrize(("widths", "live", "image"), [((64, 64), 4, "halves"), ((256, 256), 2, "whole")])
 def test_the_same_split_reads_out_to_the_reference(widths, live, image, level, accumulate, reduce_dtype):
@@ -69,6 +89,24 @@ def test_the_same_split_reads_out_to_the_reference(widths, live, image, level, a
     readout's digits, in each image mode, every slot within its bound, the units climbing 2^8 a window."""
     ratio, plans = _readout_ratio(widths, 2048, level, 8, accumulate, same=True, live=live, reduce_dtype=reduce_dtype)
     assert image in carry_plan.forms(plans), f"the cell takes {sorted(carry_plan.forms(plans))}, not {image}"
+    assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"
+
+
+@pytest.mark.parametrize("reduce_dtype", [torch.float16, torch.float32], ids=["f16", "fp32"])
+def test_one_box_reads_out_at_the_64_channel_box(reduce_dtype):
+    """One box a batch-head (each list level exactly the box's extent: 32 write lists, 16 read digits a facts list
+    group): every slot within its bound over two windows -- the sanitizer lane's one-CTA cell for this box."""
+    ratio, _ = _readout_ratio((32, 16), 2 * window_of(), 0, 8, carry_ops.readout_accumulate(), reduce_dtype=reduce_dtype,
+                              box=box64(0))
+    assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"
+
+
+@pytest.mark.parametrize(("widths", "live", "forced", "forms"), FORM_CELLS64)
+def test_every_plan_form_reads_out_at_the_64_channel_box(widths, live, forced, forms):
+    """Each of the plan's forms at the 64-channel box: every slot of ``num`` within its bound."""
+    ratio, plans = _readout_ratio(widths, 2048, 0, 8, carry_ops.readout_accumulate(), live=live, forced=forced,
+                                  box=box64(0))
+    assert forms <= carry_plan.forms(plans), f"the cell takes {sorted(carry_plan.forms(plans))}, not {sorted(forms)}"
     assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"
 
 

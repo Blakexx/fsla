@@ -11,8 +11,8 @@ section and in `carry_kernel.md#kernel`. The fold is `fold.md`'s, the hand-off `
 
 `place_of` is the CTA's batch and write head (`blockIdx.y`) and its channel group (the box index's innermost digit);
 `origin_of` a level's first box digit. Before the windows, thread 0 works out every address that is the same each
-window into the `Addr` tenant (`addr_in`): each side's STATICS (its union group, the 32-digit group holding the box's
-list digits; the box's first list digit; its lists; whether it lists) and its operand SLICES (each level's plane at
+window into the `Addr` tenant (`addr_in`): each side's STATICS (its union group, the arm's list group holding the box's
+list digits, `plan.md#list-groups`; the box's first list digit; its lists; whether it lists) and its operand SLICES (each level's plane at
 the CTA's batch and head, displaced to the box's first digit, its token stride and bytes), the values at the box's
 channels, the channel group. The divisions run once: at nl64k-alt-k4 the per-fill address arithmetic they replaced was
 a sixth of the carry's samples, and the carry ran 16% faster without it. The window loop reads the tenant at each use
@@ -32,7 +32,8 @@ the kernel passes each part its warp and lane opaque (`carry_kernel.md#kernel`).
 
 A window ahead (`carry_kernel.md#staging`), into the window's parity of the tenants -- the read side's in the call's
 read tables (`plan.md#read-tables`): a side's union tokens whole (512 slots a query head, 1 KB), its group's boundaries
-in prefix form (33 rows of `cols_of` columns, 8 a query head) and its count (one 4-byte copy), its copies over the CTA's
+in prefix form (the arm's list group plus one rows of `cols_of` columns, 8 a query head: `plan.md#list-groups`) and its
+count (one 4-byte copy), its copies over the CTA's
 threads; the planner alone reads the exact totals. `facts_in` copies the write lists' exponent pairs (128 bytes) and
 each query head's token units (512 bytes a head; head `j` of write head `bh` is the call's `bh g + j`). `union_of`,
 `pre_of` reads a window's tenants back (`union_of` its tokens; `pre_of` forms its parity at each use, `#window`);
@@ -47,14 +48,18 @@ residue's high bits (`chunk_at`). Either way eight slots of distinct residues me
 dense pass's step is 8 consecutive slots; a list's step is its next 8 rank slots, distinct residues only where they run
 consecutively (the facts pass's [ranks](../facts/facts.md#ranks)). `chunk_addr` is a logical
 chunk's address from a row's chunk 0 with the swizzle folded in: an XOR inside the swizzle's group, the group's offset
-added. An entry carries the row's chunk-0 offset, so a lane addresses its chunk with one XOR.
+added. An entry carries the row's chunk-0 offset, so a lane addresses its chunk with one XOR. A 160-byte row (the
+64-channel box's write row: a 32-byte slice of 16 rows, then 128 bytes of values) is five 32-byte pairs: slots `s` and
+`s + 4` sit a 128-byte line apart at the same offset, so its chunk's low bit flips by `(s >> 2) & 1`, and eight slots of
+distinct residues again meet eight bank groups.
 
 <a id="fill"></a>
 ## The fill
 
 A chunk's fill issues its copies as one commit group; the caller waits the group (`carry_kernel.md#staging`).
-`fill` copies a range of union slots, each its token's row -- the side's operand slices at 64 bytes each, then on the
-write side its values at the box's channels -- swizzled, by `cp.async` over all 256 threads (a slice's 16-byte runs, 8
+`fill` copies a range of union slots, each its token's row -- the side's operand slices (two bytes a digit of the box's
+extent: 64 bytes at 32, 32 at 16, a quad's lanes past the slice idle), then on the write side its values at the box's
+channels (a lane's 16-byte chunk at 32 channels, two 64 bytes apart at 64) -- swizzled, by `cp.async` over all 256 threads (a slice's 16-byte runs, 8
 or 4 under 16, `stage_bytes`): a quad of lanes a slot, thread `4 q + r` slots `q + 64 k` of each 256. A trip of 256
 slots is one block with no branch: its four tokens loaded on either side and selected (an unlisted side's slot is its
 token), then every source (`row_at`: the slice's base plus the token's and the head's products, each one wide
@@ -86,9 +91,11 @@ first entry of the chunk, its count, its count below the readout's token-group s
 [`readout.md#warps`](readout.md#warps): the prefix rows' count at the split's column) and its place (the group's lists'
 counts before it) from its two prefix rows (list `l` and `l + 1`): the chunk's end in both, its start where the chunk
 is not the first, each a difference within the chunk modulo 2^16, the same in every warp -- worked out once a chunk by
-the kernel (`carry_kernel.md#kernel`) and passed to the chunk's fill and its readout or fold. `entries_fill` copies a warp's own lists' runs (`warp + 8
-j`), eight lanes a run: lane `l` takes run `l >> 3`'s first, count and place by one shuffle each from `run` and copies
-its entries `l & 7`, `+ 8`, ..., 8 bytes a lane (`ops::stage_run_lanes`: a lane past its run issues nothing), two a
+the kernel (`carry_kernel.md#kernel`) and passed to the chunk's fill and its readout or fold; a list's two rows are the
+box's first list's place in its list group plus `l` (`digit0 mod G`). `entries_fill` copies a warp's own lists' runs
+(`warp + 8 j`, of the side's box lists: 32 at four a warp, 16 at two), eight lanes a run at four (sixteen at two): lane
+`l` takes run `l / lanes`'s first, count and place by one shuffle each from `run` and copies its entries `l mod
+lanes`, `+ lanes`, ..., 8 bytes a lane (`ops::stage_run_lanes`: a lane past its run issues nothing), two a
 trip, the trips the warp's longest run's (`__reduce_max_sync`), the first two straight-line. A consumer takes its
 list's place and count from its own loads, so no warp waits on another for them.
 

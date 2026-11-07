@@ -19,8 +19,16 @@ rank slots meet them where their ranks run consecutively, as the pool rows do (`
 `64 s + 16 ((s >> 1) & 3)` is the slot's 64-byte pool row's byte offset (`readout.md#factors`), so a readout add's word
 is one XOR of the offset its entry holds; the XOR leaves bits 0-3 alone, so an fp32 lane's two channels stay adjacent.
 
+AT 64 CHANNELS the rows double: f16 32 words (128 bytes) rotated as the 32-channel fp32 row, `(128 s + 16 (s & 7)) ^ 4
+w`; fp32 64 words (256 bytes), `(256 s + 32 (s & 7)) ^ 4 w`. The read row stays 64 bytes (the readout's K is 32 lists),
+so an entry's key is no longer the panel's base: it holds the base in 16-byte units, `8 s + (s & 7)`
+(`readout.md#factors`), and an add's address is two operations from it -- f16 `(panel + 4 tq) + 16 (key ^ cg)`, fp32
+`(panel + 8 tq) + 32 (key ^ cg)`, the lane's word `4 cg + tq` (f16) or `8 cg + 2 tq` (fp32) of the rotation above. 8
+slots of distinct residues meet 32 banks on either dtype, as at 32 channels.
+
 THE DEN WORDS are `kDenWords` fp32 a slot, one a readout channel group (the group that reads digit `d` out adds its den
-at word `d mod 4`), 16 bytes: no two warps add into one word, so the den needs no atomics either; the drain sums them.
+at word `d mod cg`, `cg` the box's channel groups), 16 bytes at 32 channels and 32 at 64: no two warps add into one
+word, so the den needs no atomics either; the drain sums them.
 
 <a id="drain"></a>
 ## The drain
@@ -29,8 +37,9 @@ at word `d mod 4`), 16 bytes: no two warps add into one word, so the den needs n
 their loads overlap. F16 PAIRS: two slots a step, a lane a word (its half of the warp a slot), each added by
 `red.global.add.noftz.f16x2` at the slot's row of `num` (`token_row`: the slot's query head and window token) -- the
 word's channels in their natural order, so `num`'s f16 pairs read as its f16 values (`rola.ops.prefill.unpack_num`).
-FP32: a slot a step, a lane a channel, `red.global.add.f32`. Then THE DEN: a thread a slot, its four words summed, one
-`red.global.add.f32` into `den`. Each address is a 32-bit word offset from the head's base (`word_at`, one widening
+FP32: a slot a step, a lane a channel, `red.global.add.f32`. At 64 channels both dtypes take a warp a slot, a lane its
+word (f16) or its two words 32 apart (fp32). Then THE DEN: a thread a slot, its words summed (four, or eight at 64
+channels: two 16-byte loads), one `red.global.add.f32` into `den`. Each address is a 32-bit word offset from the head's base (`word_at`, one widening
 multiply-add; the host holds a write head's rows under 2^32 words). The CTAs join only here (R22: independent units,
 joined by atomics): the cross-CTA adds (`red_add_h2`, `red_add_f32`) are unpredicated, each one `red.global`.
 

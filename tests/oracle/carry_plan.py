@@ -28,17 +28,28 @@ def list_at() -> int:
     return window_of() // LIST_BOUND
 
 
-#: a read slot's num panel row at the reduce dtype (f16 pairs, fp32) and its den words; the box's lists
-PANEL_ROW, DEN_ROW, BOX = {0: 64, 1: 128}, 16, 32
+#: the image's bytes whole and a half's: a box's digits x K x channels f16, the state's 32,768 values at every box
 IMAGE_WHOLE, IMAGE_RING = 32 * 2048, 16 * 2048
+
+
+def panel_row(channels: int, reduce: int) -> int:
+    """A read slot's num panel row at the reduce dtype (0 f16 pairs, 1 fp32)."""
+    return channels * (4 if reduce else 2)
+
+
+def den_row(channels: int) -> int:
+    """A read slot's den words, one fp32 a readout channel group of 8."""
+    return channels // 2
+
+
 WHOLE, HALVES = 0, 1
 TOP = 0
 
 
 class Counts(NamedTuple):
     """A window's counts: each side's union and segment sums, whether the write side lists (a side with no list
-    level's fold buffer holds each slot's factors in its entries' place) and the call's reduce dtype (0 f16 pairs, 1
-    fp32: a read slot's panel row)."""
+    level's fold buffer holds each slot's factors in its entries' place), the call's reduce dtype (0 f16 pairs, 1
+    fp32: a read slot's panel row) and the box's channels (32 the shipped 32 x 32 x 32 box's)."""
 
     ru: int
     rs: tuple
@@ -46,6 +57,7 @@ class Counts(NamedTuple):
     fs: tuple
     wl: bool = True
     reduce: int = 0
+    channels: int = 32
 
 
 def image_bytes(mode: int) -> int:
@@ -67,8 +79,9 @@ def _a128(x: int) -> int:
     return (x + 127) // 128 * 128
 
 
-def read_bytes(slots: int, entries: int, read_row: int, reduce: int = 0) -> int:
-    return _a128(slots * read_row) + _a128(slots * PANEL_ROW[reduce]) + _a128(slots * DEN_ROW) + _a128(entries * 8)
+def read_bytes(slots: int, entries: int, read_row: int, reduce: int = 0, channels: int = 32) -> int:
+    return (_a128(slots * read_row) + _a128(slots * panel_row(channels, reduce)) + _a128(slots * den_row(channels))
+            + _a128(entries * 8))
 
 
 def fold_bytes(slots: int, entries: int, write_row: int, listed: bool = True) -> int:
@@ -136,13 +149,15 @@ def chunks(word: int) -> tuple[int, int, int, int, int]:
 def rule_plan(c: Counts, read_row: int, write_row: int, area: int) -> int:
     """`rule_plan`: the read chunk beside the halves, the image whole where it fits beside the largest read buffer, the
     fold's largest chunk in the area."""
-    rc = (largest_chunk(c.ru, c.rs, area - image_bytes(HALVES), lambda s, e: read_bytes(s, e, read_row, c.reduce))
-          if c.ru > 0 else 0)
+    def nbytes(s, e):
+        return read_bytes(s, e, read_row, c.reduce, c.channels)
+
+    rc = largest_chunk(c.ru, c.rs, area - image_bytes(HALVES), nbytes) if c.ru > 0 else 0
     nr = chunks_of(c.ru, rc)
     most = 0
     if nr > 0:
-        most = read_bytes(min(rc, c.ru), chunk_max(c.rs, rc // LIST_BOUND, c.ru) if rc < c.ru
-                          else _sum_at(c.rs, len(c.rs) - 1), read_row)
+        most = nbytes(min(rc, c.ru), chunk_max(c.rs, rc // LIST_BOUND, c.ru) if rc < c.ru
+                      else _sum_at(c.rs, len(c.rs) - 1))
     whole = nr > 0 and image_bytes(WHOLE) + most <= area
     fc = largest_chunk(c.fu, c.fs, area, lambda s, e: fold_bytes(s, e, write_row, c.wl)) if c.fu > 0 else 0
     return plan_word(WHOLE if whole else HALVES, rc, fc, c.ru, c.fu)
@@ -162,7 +177,7 @@ def forced_plan(forced: int, c: Counts, rule: int, read_row: int, write_row: int
     fits = mode == HALVES or c.ru > 0
     for first in range(0, c.ru, rc or 1):
         s = min(rc, c.ru - first)
-        fits = fits and image + read_bytes(s, entries_of(c.rs, first, s, c.ru), read_row, c.reduce) <= area
+        fits = fits and image + read_bytes(s, entries_of(c.rs, first, s, c.ru), read_row, c.reduce, c.channels) <= area
     for first in range(0, c.fu, fc or 1):
         s = min(fc, c.fu - first)
         fits = fits and fold_bytes(s, entries_of(c.fs, first, s, c.fu), write_row, c.wl) <= area
@@ -181,7 +196,8 @@ def drained_bytes(x: Win, t: int, read_row: int) -> tuple[int, int]:
     and the den words."""
     _, rc, _, _, _ = chunks(x.word)
     slots = min(rc, x.c.ru - t * rc)
-    return _a128(slots * read_row), _a128(slots * PANEL_ROW[x.c.reduce]) + _a128(slots * DEN_ROW)
+    return (_a128(slots * read_row),
+            _a128(slots * panel_row(x.c.channels, x.c.reduce)) + _a128(slots * den_row(x.c.channels)))
 
 
 def entry_bytes(x: Win, t: int, read_row: int, write_row: int) -> int:
@@ -192,7 +208,7 @@ def entry_bytes(x: Win, t: int, read_row: int, write_row: int) -> int:
     first = (t if read else t - x.nr) * chunk
     slots = min(chunk, total - first)
     if read:
-        return read_bytes(slots, entries_of(x.c.rs, first, slots, total), read_row, x.c.reduce)
+        return read_bytes(slots, entries_of(x.c.rs, first, slots, total), read_row, x.c.reduce, x.c.channels)
     return fold_bytes(slots, entries_of(x.c.fs, first, slots, total), write_row, x.c.wl)
 
 
@@ -300,7 +316,9 @@ def plans(routes, facts, carve, forced: str | None = None) -> list[list[Record]]
     windows = -(-routes.tokens // window_of())
     write = facts_ops.side_lists(facts, "write") if carve.fold.lists else None
     read = facts_ops.side_lists(facts, "read") if carve.readout.lists else None
-    groups = lambda p: max(1, carve.widths[p.lists[0]] // BOX) if p.lists else 1  # noqa: E731
+    #: a side's groups at its list level, the arm's list group a union (`plan.md#list-groups`)
+    group = {id(carve.readout): f.read_list_group, id(carve.fold): f.write_list_group}
+    groups = lambda p: max(1, carve.widths[p.lists[0]] // group[id(p)]) if p.lists else 1  # noqa: E731
     out = []
     for bh in range(routes.batch * routes.write_heads):
         for gr in range(groups(carve.readout)):
@@ -309,7 +327,7 @@ def plans(routes, facts, carve, forced: str | None = None) -> list[list[Record]]
                 for w in range(windows):
                     ru, rs = _side(read, carve.readout, routes, w, bh, gr)
                     fu, fs = _side(write, carve.fold, routes, w, bh, gw)
-                    wins.append(win_of(Counts(ru, rs, fu, fs, bool(carve.fold.lists), reduce),
+                    wins.append(win_of(Counts(ru, rs, fu, fs, bool(carve.fold.lists), reduce, carve.channels),
                                        word, read_row, write_row, area))
                 out.append(records(wins, read_row, write_row, area))
     return out

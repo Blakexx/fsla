@@ -11,10 +11,10 @@ namespace rola::carry {
 //: (8 channels), the plan's (`P::kTokenGroups`, `P::kChannelGroups`). -- see docs/internals/carry/readout.md#warps
 template <class P>
 constexpr bool readout_box() {
-  static_assert(
-      P::kChannelGroups * P::kTokenGroups == kWarps && P::kTokenGroups == 2
-          && P::kDenWords == P::kChannelGroups,
-      "the 32-channel box: two token groups of four channel groups, a den word a channel group");
+  static_assert(P::kChannelGroups * P::kTokenGroups == kWarps
+                    && (P::kChannelGroups == 4 || P::kChannelGroups == 8)
+                    && P::kDenWords == P::kChannelGroups,
+                "4 channel groups by 2 token groups or 8 by 1, a den word a channel group");
   return true;
 }
 
@@ -52,6 +52,17 @@ __device__ __forceinline__ float coef_of(uint32_t ey) {
 //: A TOKEN'S SCALE `2^(-scale - 1)` from its byte, its exponent field built directly (no branch in the step).
 __device__ __forceinline__ float token_scale(int sb) {
   return __uint_as_float(static_cast<uint32_t>(min(max(-sb - 1, -126), 127) + 127) << 23);
+}
+
+//: AN ENTRY'S KEY from its pool row's 16-byte chunk `c` (`4 s` and the row's swizzle): at 32 channels the row's byte
+//: offset, the f16 panel row's base; at 64 the slot's f16 panel base in 16-byte units, `8 s + (s & 7)`.
+//: -- see docs/internals/carry/readout.md#factors
+template <class P>
+__device__ __forceinline__ uint32_t entry_key(uint32_t c) {
+  if constexpr (P::kChannels == 32)
+    return c << 4;
+  else
+    return (c & ~3u) << 1 | ((c >> 2) & 7u);
 }
 
 //: A READ CHUNK'S ENTRY FACTORS, once a chunk: the warp's own digits' entries rewritten in place to their rows' byte
@@ -99,7 +110,8 @@ __device__ __forceinline__ void read_factors(const CarryParams& p, const uint8_t
       const float ts =
           token_scale(static_cast<int8_t>(ops::load_shared_u8(scale + (e[J].x >> 16))));
       const float f = f32 ? c * dpow[J] : c * dpow[J] * ts;
-      ops::store_shared_u64_if(at[J], ((e[J].x - back) & 0xfffu) << 4 | (e[J].y & 0xffffu) << 16,
+      ops::store_shared_u64_if(at[J],
+                               entry_key<P>((e[J].x - back) & 0xfffu) | (e[J].y & 0xffffu) << 16,
                                __float_as_uint(f), live[J]);
     });
   }
@@ -153,7 +165,7 @@ __device__ __forceinline__ void tile_in(Tile& t, const ReadLanes& r, uint32_t h0
   t.h[0] = h0;
   t.h[1] = h1;
   const uint32_t x = ops::load_shared_u32(half_entry(r, (r.lane & 8) ? h1 : h0, r.lane & 7));
-  const ops::SmemAddr row0 = r.rows + (x & 0xffffu);
+  const ops::SmemAddr row0 = r.rows + (P::kChannels == 32 ? x & 0xffffu : (x << 3) & 0xfff0u);
   ops::load_frag(t.a0, chunk_addr<P::kReadRow>(row0, static_cast<uint32_t>(r.lane >> 4)));
   ops::load_frag(t.a1, chunk_addr<P::kReadRow>(row0, 2u + static_cast<uint32_t>(r.lane >> 4)));
 }
@@ -190,21 +202,27 @@ __device__ __forceinline__ void tile_out(const Tile& t, const ReadLanes& r, cons
     const int d = half_digit(t.h[j]);
     const bool live = valid && r.g < half_count(t.h[j]);
     //: the den column the digit's (`den_col`; its low bit picks in the lane's pair), kept by the lanes holding it
-    const bool mine = Den && live && r.tq == (den_col(d) >> 1);
+    const bool mine = Den && live && r.tq == (den_col<P>(d) >> 1);
     ops::SmemAddr at, dat = 0u;
     uint2 old64 = {0u, 0u};
     uint32_t old32 = 0u;
     float dold = 0.0f;
+    //: at 64 channels `word4` and `chan4` are the group (the panel's base past the lane's pair)
     if constexpr (F32) {
-      const uint32_t sl = key >> 6;
-      at = r.panel + ((128u * sl + 16u * (sl & 7u)) ^ r.chan4);
+      if constexpr (P::kChannels == 32) {
+        const uint32_t sl = key >> 6;
+        at = r.panel + ((128u * sl + 16u * (sl & 7u)) ^ r.chan4);
+      } else {
+        at = r.panel + 32u * (key ^ r.chan4);
+      }
       old64 = ops::load_shared_u64_if(at, live);
     } else {
-      at = r.panel + (key ^ r.word4);
+      at = P::kChannels == 32 ? r.panel + (key ^ r.word4) : r.panel + 16u * (key ^ r.word4);
       old32 = ops::load_shared_u32_if(at, live);
     }
     if constexpr (Den) {
-      dat = r.dens + ((key >> 2) & ~15u) + 4u * static_cast<uint32_t>(r.cg);
+      dat = r.dens + (P::kChannels == 32 ? (key >> 2) & ~15u : (key << 2) & ~31u)
+            + 4u * static_cast<uint32_t>(r.cg);
       dold = ops::load_shared_f32_if(dat, mine);
     }
 
@@ -216,7 +234,7 @@ __device__ __forceinline__ void tile_out(const Tile& t, const ReadLanes& r, cons
       ops::store_shared_u32_if(at, add_h2(old32, *reinterpret_cast<const uint32_t*>(&v)), live);
     }
     if constexpr (Den) {
-      const float dn = (den_col(d) & 1) ? dacc[2 * j + 1] : dacc[2 * j];
+      const float dn = (den_col<P>(d) & 1) ? dacc[2 * j + 1] : dacc[2 * j];
       ops::store_shared_f32_if(dat, dold + dn * (coef_of(t.t[j].x >> 16) * t.k[j]), mine);
     }
     //: the first half's adds before the second's loads: their tokens may be one slot
@@ -246,7 +264,8 @@ __device__ __forceinline__ void read_pass(const ReadLanes& r, uint32_t live) {
   };
   //: the warp's den block, every own digit's (`den_row`), once a pass
   uint32_t bd[4];
-  if constexpr (Den) ops::load_frag_t(bd, r.den_image + den_row<P>(r.lane, r.cg));
+  if constexpr (Den)
+    ops::load_frag_t(bd, r.den_image + den_row<P>(r.lane, r.cg / kDenBlockGroups<P>));
   Tile a, b;
   const uint32_t h0 = __shfl_sync(0xffffffffu, r.run, __ffs(live) - 1);
   tile_in<P, Den>(a, r, h0, succ(h0));
@@ -270,8 +289,11 @@ __device__ __forceinline__ void read_pass(const ReadLanes& r, uint32_t live) {
 //: -- see docs/internals/carry/readout.md#chunk
 template <class P>
 __device__ __forceinline__ uint32_t read_run(const Run& run, int warp, int lane) {
-  const int tg = warp / P::kChannelGroups;
-  const int count = tg ? run.n - run.n0 : run.n0, start = run.to + (tg ? run.n0 : 0);
+  const int tg = P::kTokenGroups == 1 ? 0 : warp / P::kChannelGroups;
+  const int count = P::kTokenGroups == 1 ? run.n
+                    : tg                 ? run.n - run.n0
+                                         : run.n0,
+            start = run.to + (tg ? run.n0 : 0);
   return static_cast<uint32_t>(lane) | static_cast<uint32_t>(start) << kHalfAt
          | static_cast<uint32_t>(count) << kHalfCount;
 }
@@ -289,25 +311,29 @@ __device__ __forceinline__ void read_chunk(const uint8_t* smem, uint32_t run, in
                 "a half's count and place in its word");
   static_assert(readout_box<P>());
   const int cg = warp % P::kChannelGroups, tq = lane & 3;
-  const ReadLanes r{rows,
-                    ents,
-                    image,
-                    ops::smem_addr(smem + P::kDenImage),
-                    ops::smem_addr(smem + P::kDenFactor),
-                    panel,
-                    dens,
-                    slice_row<P>(cg, lane, 0),
-                    mask * P::kPlaneBytes | 0x70u,
-                    static_cast<uint32_t>(4 * (4 * cg + tq)),
-                    static_cast<uint32_t>(4 * (8 * cg + 2 * tq)),
-                    run,
-                    cg,
-                    lane,
-                    lane >> 2,
-                    tq};
+  constexpr bool kNarrow = P::kChannels == 32;
+  //: at 64 channels the lane's pair past the panel's base, the group its key's XOR
+  const ops::SmemAddr base = kNarrow ? panel : panel + static_cast<uint32_t>((F32 ? 8 : 4) * tq);
+  const ReadLanes r{
+      rows,
+      ents,
+      image,
+      ops::smem_addr(smem + P::kDenImage),
+      ops::smem_addr(smem + P::kDenFactor),
+      base,
+      dens,
+      slice_row<P>(cg, lane, 0),
+      mask * P::kPlaneBytes | 0x70u,
+      kNarrow ? static_cast<uint32_t>(4 * (4 * cg + tq)) : static_cast<uint32_t>(cg),
+      kNarrow ? static_cast<uint32_t>(4 * (8 * cg + 2 * tq)) : static_cast<uint32_t>(cg),
+      run,
+      cg,
+      lane,
+      lane >> 2,
+      tq};
   const uint32_t live = __ballot_sync(0xffffffffu, half_count(run) > 0 && lane >= lo && lane < hi);
-  //: the digits the warp's channel group names (`d mod 4`) with their den, then the others: each digit once
-  const uint32_t own = live & (0x11111111u << cg);
+  //: the digits the warp's channel group names (`d mod cg`) with their den, then the others: each digit once
+  const uint32_t own = live & ((kNarrow ? 0x11111111u : 0x01010101u) << cg);
   read_pass<P, F32, F16, true>(r, own);
   read_pass<P, F32, F16, false>(r, live & ~own);
 }

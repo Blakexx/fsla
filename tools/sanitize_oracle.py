@@ -99,6 +99,11 @@ _FAMILIES = {
     "carry": Family(
         test="tests/oracle/test_carry_fold.py::test_the_fold_is_the_reference_per_slot[0-0]",
         kernel="rola::carry::carry_forward", present=True),
+    #: THE CARRY AT THE 64-CHANNEL BOX, one box a batch-head over two windows: one token group of eight channel groups,
+    #: the den image's 8-group layout, the 128-byte panel rows, the 160-byte write rows and the 16-digit list group.
+    "carry64": Family(
+        test="tests/oracle/test_carry_readout.py::test_one_box_reads_out_at_the_64_channel_box[f16]",
+        kernel="rola::carry::carry_forward", present=True),
     #: THE CARRY OVER A WHOLE CALL on cohort routing, eight windows: the plan's chunked unions and the readout's
     #: gathers where the lists cluster -- the cell the oracle's whole-call gate runs (`test_carry_vs_oracle.py`).
     "carry_call": Family(

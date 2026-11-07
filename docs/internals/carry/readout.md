@@ -28,15 +28,22 @@ is token group 0's alone. The groups' slots are disjoint, so each group has its 
 two warps add into one word: the panel needs no atomics (sm_80/86's shared atomic add is integer only). All 8 warps
 read the same digit's slices at the same time, so the image is read by the CTA as one stream, a digit at a time.
 
+At the 64-channel box (32 lists x 16 digits x 64 channels) the warps are 1 token group x 8 channel groups: every warp
+takes all of a digit's run (`read_run`'s whole count; no split, so no 64-slot imbalance between groups) for its 8
+channels, its own digits `d mod 8` with their den. The tile, its K of 32 lists and its two MMAs are the 32-channel
+box's.
+
 <a id="factors"></a>
 ## The entries' factors
 
 `read_factors`, once a chunk: after the chunk's copies land (a warp's own wait) and before the rendezvous that opens
 its readout, each warp rewrites the entries of its own digits `warp + 8 j` -- the runs its fill copied
-(`parts.md#entries`), so no other warp's copies are read and no barrier is added -- in place: its ROW'S BYTE OFFSET in
-the chunk's pool (its row offset in 16-byte units taken back by the chunk's first slot, times 16: `64 s + 16 ((s >> 1) &
-3)` for slot `s` at the 64-byte row, under 2^16 since a chunk holds at most a window's 1,024 slots; the f16 panel row's
-base too, `panel.md#words`) and its coefficient (f16, the high half, the den's) in the first word, its NUM FACTOR in the
+(`parts.md#entries`), so no other warp's copies are read and no barrier is added -- in place: its KEY (`entry_key`), at
+32 channels the row's byte offset in the chunk's pool (its row offset in 16-byte units taken back by the chunk's first
+slot, times 16: `64 s + 16 ((s >> 1) & 3)` for slot `s` at the 64-byte row, under 2^16 since a chunk holds at most a
+window's 1,024 slots; the f16 panel row's base too, `panel.md#words`), at 64 channels the slot's f16 panel base in
+16-byte units, `8 s + (s & 7)` (13 bits at W = 1,024, where a byte offset would pass 16; the pool row
+`(key << 3) & ~15` and the den row `(key << 2) & ~31` one shift and mask from it) and its coefficient (f16, the high half, the den's) in the first word, its NUM FACTOR in the
 second, fp32: `c 2^(e_d - kImageTop - kCoefTop)` (the image holds digit `d` at `2^(kImageTop - e_d)` of the fold's
 state, itself `2^kCoefTop` the state: `handoff.md#maxima`), on the f16 panel times the token's scale `2^(-s - 1)`
 (`token_scale`, its exponent field built directly). The same products in the same order as at a tile, once a chunk
@@ -52,7 +59,7 @@ call's reduce dtype), `F16` the MMAs' accumulate form (fp16 where the card's fp3
 [`carry_api.md#carry-readout-accumulate`](carry_api.md#carry-readout-accumulate)). Each lane holds its digit's RUN WORD
 in the warp's token group (`read_run`, once a chunk: the digit, its entries' place << 5, its count << 21), so a shuffle
 from it takes its source lane from the low bits. It runs two PASSES (`read_pass`), each digit with entries in the token
-group in one of them: the digits the warp's channel group names (`d mod 4`) with their den, then the others with the num
+group in one of them: the digits the warp's channel group names (`d mod cg`) with their den, then the others with the num
 alone -- the den's MMAs only where they are kept (a warp-uniform `if` around them is if-converted to predicated HMMAs,
 which the ptxas gate refuses, `../../KERNEL_STANDARDS.md#s20`; two loops are not).
 

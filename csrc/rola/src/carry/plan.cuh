@@ -66,9 +66,9 @@ struct Plan : Tenants<window_for(Cc)> {
   static constexpr int kDigits = kSameSplit ? kLists : kRows, kK = kSameSplit ? kRows : kLists;
   static_assert(kLists * kRows * kChannels == kStateValues && Arm::read_rows == kK,
                 "the arm's box holds the state, its read rows the readout's K");
-  static_assert(
-      kLists == 32 && kRows == 32 && kChannels == 32,
-      "the carry's components serve the 32 x 32 x 32 box (plans: the generic box, step 1)");
+  static_assert((kLists == 16 || kLists == 32) && (kRows == 16 || kRows == 32)
+                    && (kChannels == 32 || kChannels == 64),
+                "the boxes the components serve: 16 or 32 lists and rows, 32 or 64 channels");
   static constexpr int kFoldLists = kLists / kWarps;
   static constexpr int kFoldMTiles = kRows / 16, kFoldNTiles = kChannels / 8;
   static constexpr int kStateRegs = kFoldLists * kRows * kChannels / 32;
@@ -77,15 +77,15 @@ struct Plan : Tenants<window_for(Cc)> {
   static constexpr int kChannelGroups = kChannels / 8, kTokenGroups = kWarps / kChannelGroups;
   static constexpr int kDenWords = kChannelGroups, kDenRowBytes = kDenWords * 4;
   //: A SIDE'S LIST GROUP, as this arm reads its lists. -- see docs/internals/carry/plan.md#list-groups
-  static constexpr int kReadListGroup = kMaxExtent, kWriteListGroup = kMaxExtent;
-  static_assert(kPreRows == kReadListGroup + 1 && kPreRows == kWriteListGroup + 1,
-                "the carry reads a list group's prefix rows, one a list and its totals");
+  static constexpr int kReadListGroup = kDigits, kWriteListGroup = kLists;
+  static_assert(kReadListGroup + 1 <= kPreRows && kWriteListGroup + 1 <= kPreRows,
+                "a list group's prefix rows, one a list and its totals, inside the tenants' cap");
   //: THE IMAGE: a digit's plane, its slices, batches and halves. -- see docs/internals/carry/plan.md#image
   static constexpr int kPlaneBytes = kK * kChannels * 2, kSliceBlock = kK * 16;
   static constexpr int kBatches = kDigits / kBatchPlanes, kHalfPlanes = kDigits / 2;
   static constexpr int kImageWhole = kDigits * kPlaneBytes, kImageRing = kHalfPlanes * kPlaneBytes;
   static_assert(
-      kFoldMTiles * 2 == kBatches && kFoldLists == kBatches,
+      kSameSplit ? kFoldLists == kBatches : kFoldMTiles * 2 == kBatches,
       "a batch (8 digits) is half an m-tile of every fold list, or one list of every warp's");
 
   static_assert(kFoldFactors == 1 || kFoldFactors == 2,

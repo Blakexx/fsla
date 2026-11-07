@@ -150,10 +150,12 @@ def plan_words(heads: int, w: int) -> int:
 
 def plans_out(routes, carve: Carve) -> torch.Tensor:
     """An uninitialized ``[BH, windows, box classes, plan_words(g)]`` int32 tensor for :func:`carry`'s plan records: a
-    box class a pair of the two list levels' 32-digit groups (docs/internals/carry/schedule.md#pass)."""
+    box class a pair of the two list levels' groups, each side's at its arm's list group
+    (docs/internals/carry/schedule.md#pass, plan.md#list-groups)."""
+    f = form(arm_key(carve))
     groups = 1
-    for plan in (carve.readout, carve.fold):
-        groups *= max(1, -(-carve.widths[plan.lists[0]] // 32)) if plan.lists else 1
+    for plan, group in ((carve.readout, f.read_list_group), (carve.fold, f.write_list_group)):
+        groups *= max(1, -(-carve.widths[plan.lists[0]] // group)) if plan.lists else 1
     w = window_of(routes.device)
     windows = -(-routes.tokens // w)
     return torch.empty((routes.batch * routes.write_heads, windows, groups, plan_words(routes.group, w)),

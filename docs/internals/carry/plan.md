@@ -52,8 +52,10 @@ An arm's box is its plan's, from its key: the fold's rows `kRows` (`fold_rows`) 
 fold's tile (`kFoldLists` = `kLists / 8` a warp, `kFoldMTiles` = `kRows / 16`, `kFoldNTiles` = `kChannels / 8`), the
 readout's warps (`kChannelGroups` = `kChannels / 8`, `kTokenGroups` the warps left over, `kDenWords` one a channel
 group), the image below and the pool rows. The fixed tenants are sized at the caps (`kMaxExtent`, `carry.md`), so an
-arm's box never moves them. Each component asserts the extents it serves; today every one serves 32 x 32 x 32, which
-the plan asserts too, until the generic box's design (the coordinator's design journal, 2026-11-06) builds the others.
+arm's box never moves them. Each component asserts the extents it serves, and the plan the boxes they serve together:
+16 or 32 lists and rows, 32 or 64 channels -- the shipped 32 x 32 x 32 boxes and the alternating 32 x 16 x 64 (one token
+group of eight channel groups); a batch is half an m-tile of every fold list (the alternating form) or a list of every
+warp's (the same split).
 A pool row: the read side's slice over the readout's K, the write side's over the fold's rows (a dense write side's
 second over its lists), then the write side's values.
 
@@ -62,9 +64,10 @@ second over its lists), then the write side's values.
 
 A side's LIST GROUP is the digits of its list level one union of the facts pass spans, with its prefix rows
 (`../facts/facts.md#list-groups`): `kReadListGroup`, `kWriteListGroup`, what the arm reads its lists in, so the
-facts pass is called in them (`rola.ops.carry.lists_form`). Every built arm reads 32, a group's `kPreRows` prefix
-rows, which the plan asserts; a box holding 16 digits of a list level reads 16 when its components are built (the
-generic box's step 3, the coordinator's design journal, 2026-11-06).
+facts pass is called in them (`rola.ops.carry.lists_form`): the readout's digits and the fold's lists, 32 at the
+32 x 32 x 32 boxes and the read side's 16 at 32 x 16 x 64 -- a union of exactly the box's own lists, its prefix rows
+`G + 1` inside the tenants' `kPreRows` cap. The host checks the lists' shapes and a listed level's extent against the
+arm's groups (`carry.md#refusals`).
 
 <a id="image"></a>
 ## The image

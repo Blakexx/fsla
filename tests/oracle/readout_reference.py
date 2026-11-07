@@ -31,8 +31,6 @@ COEF_TOP = 4
 UNIT_LEVELS = 15
 UNIT_HEADROOM = 1.02
 UNIT_NONE = -100
-#: the boxes along level R: 32 lists a CTA
-BOX_LISTS = 32
 #: the MMA's accumulation, relative to the sum of its products' magnitudes
 ACCUMULATE = {"fp32": 2.0 ** -18, "fp16": 2.0 ** -9}
 
@@ -86,10 +84,11 @@ def _ceil_exp(x: torch.Tensor) -> torch.Tensor:
 
 
 def readout(routes, values, list_exp, level_s: int, window: int, scale: torch.Tensor, accumulate: str,
-            reduce_dtype: torch.dtype):
+            reduce_dtype: torch.dtype, *, box: tuple[int, int]):
     """``(P, bound)``: ``[BH, T, C]`` fp64 each slot's readout in the kernel's frame (the state over kappa) and its bound,
     for an MMA accumulating in ``accumulate`` (``"fp32"`` or ``"fp16"``) and the panel and cross-CTA sum in
-    ``reduce_dtype``. THE DECLARED ARITHMETIC: a CTA a box of 32 level-S digits x 32 level-R lists x 32 channels; its
+    ``reduce_dtype``. THE DECLARED ARITHMETIC: a CTA a box of ``box`` = (level-S digits, level-R lists) -- the carve's
+    extents at the two levels -- x its channels; its
     image a digit at the power of two over its largest |state| in the box (rounded to 11 bits, subnormals at 2^-25
     there); a (token, digit)'s piece the MMA's sum over the box's lists times the coefficient, rounded once into the
     panel's dtype -- f16 at the token's scale byte ``2^(scale + 1)``, or fp32 -- and added into the token's panel word,
@@ -102,7 +101,8 @@ def readout(routes, values, list_exp, level_s: int, window: int, scale: torch.Te
     B_R = a.shape[-1]
     L = T
     C = values.v.shape[-1]
-    KS, KR = B_S // BOX_LISTS, B_R // BOX_LISTS
+    ES, ER = box
+    KS, KR = B_S // ES, B_R // ER
     P = torch.zeros(B, T, H, C, dtype=torch.float64, device=x.device)
     bound = torch.zeros_like(P)
     s_bytes = scale.double().reshape(B, H, T).permute(0, 2, 1)                                 # [B, T, H]
@@ -120,8 +120,8 @@ def readout(routes, values, list_exp, level_s: int, window: int, scale: torch.Te
         top = state.abs().amax(dim=(-1, -2))                                                 # [B, H, B_S]
         floor = torch.einsum("bthd,bthr,bhd->bth", xs.abs(), as_.abs(), 2 * top) * 2.0 ** (-25 - IMAGE_TOP)
         #: THE PANEL: each box's pieces and adds, one rounding each a digit the token reads there
-        xb, ab = xs.reshape(B, t, H, KS, BOX_LISTS), as_.reshape(B, t, H, KR, BOX_LISTS)
-        Sb = state.reshape(B, H, KS, BOX_LISTS, KR, BOX_LISTS, C)
+        xb, ab = xs.reshape(B, t, H, KS, ES), as_.reshape(B, t, H, KR, ER)
+        Sb = state.reshape(B, H, KS, ES, KR, ER, C)
         mag_box = torch.einsum("bthsd,bthkr,bhsdkrc->bthskc", xb.abs(), ab.abs(), Sb.abs())
         adds = (xb != 0).double().sum(-1)[:, :, :, :, None] * (ab != 0).any(-1).double()[:, :, :, None, :]
         panel = (eps * (1 + adds)[..., None] * mag_box).sum(dim=(3, 4))                       # [B, t, H, C]

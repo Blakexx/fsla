@@ -51,11 +51,11 @@ Plane plane_of(const Tensor& t, int64_t B, int64_t T, int64_t H, int64_t width, 
 }
 
 //: ONE SIDE OF THE CARVE: its list level and operand levels cover every level; a listed side's list level spans the
-//: box's 32 lists or digits, its operand levels in level order; a side with no list level names two levels, its row
+//: arm's list group (`group`: the box's lists or digits), its operand levels in level order; a side with no list level names two levels, its row
 //: level then its coefficient level; an operand slice at least a 4-byte copy. -- see docs/internals/carry/carry.md#refusals
 Side side_of(const std::vector<Tensor>& rows, int64_t list, const std::vector<int64_t>& operand,
              const std::vector<int64_t>& widths, const std::vector<int64_t>& extents, int64_t B,
-             int64_t T, int64_t H, int W, const char* name) {
+             int64_t T, int64_t H, int W, int64_t group, const char* name) {
   const int D = (int)widths.size();
   Side s{};
   s.list = (int)list;
@@ -63,10 +63,9 @@ Side side_of(const std::vector<Tensor>& rows, int64_t list, const std::vector<in
   STD_TORCH_CHECK((int)rows.size() == D, name, " holds ", rows.size(),
                   " levels' rows; the carve has ", D);
   STD_TORCH_CHECK(list >= -1 && list < D, name, "'s list level is -1 or a level, got ", list);
-  STD_TORCH_CHECK(list < 0 || extents[list] == kMaxExtent, name, "'s list level spans ",
+  STD_TORCH_CHECK(list < 0 || extents[list] == group, name, "'s list level spans ",
                   list < 0 ? 0 : extents[list],
-                  " digits of the box; a listed level spans the facts pass's group of ",
-                  kMaxExtent);
+                  " digits of the box; a listed level spans the arm's list group of ", group);
   STD_TORCH_CHECK(
       s.operands >= 1 && (int)operand.size() + (list >= 0 ? 1 : 0) == D
           && (list >= 0 || s.operands == 2),
@@ -100,14 +99,14 @@ Side side_of(const std::vector<Tensor>& rows, int64_t list, const std::vector<in
 //: the groups' totals, the union's tokens and count; empty where the side has no list level.
 //: -- see docs/internals/carry/carry.md#lists
 SideLists lists_of(const std::vector<Tensor>& t, int64_t BH, int64_t windows, int64_t width,
-                   int64_t heads, int W, const char* name) {
+                   int64_t heads, int W, int64_t group, const char* name) {
   STD_TORCH_CHECK(t.size() == 5, name, " is (entries, pre, totals, union, count), got ", t.size(),
                   " tensors");
   if (width == 0) return SideLists{nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 1};
-  const int64_t groups = (width + 31) / 32;
+  const int64_t groups = (width + group - 1) / group;
   const std::vector<std::vector<int64_t>> want = {
       {BH, windows, width, W * heads, 4},
-      {BH, windows, groups, kPreRows, list_at(W) * heads},
+      {BH, windows, groups, group + 1, list_at(W) * heads},
       {BH, windows, groups, list_at(W) * heads},
       {BH, windows, groups, W * heads},
       {BH, windows, groups}};
@@ -200,18 +199,25 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   STD_TORCH_CHECK(heads * L * dv < (int64_t{1} << 32),
                   "a write head's num rows index in 32-bit values (the drain's offsets): ", heads,
                   " query heads x ", L, " tokens x ", dv, " channels");
-  p.write =
-      side_of(write_rows, write_list, write_operand, widths, extents, B, L, H, W, "the write side");
+  //: THE ARM'S LIST GROUPS, its plan's (`plan.md#list-groups`): the readout's digits a read union, the fold's lists a
+  //: write union, the facts pass's groups the lists were ranked in
+  STD_TORCH_CHECK(key.size() == 6 && key[0] >= 16 && key[4] >= 32, "the arm key is ",
+                  CarryArmSet::key, ", its rows from 16 and channels from 32; got ", key.size(),
+                  " fields");
+  const int64_t arm_lists = kStateValues / (key[0] * key[4]),
+                read_group = key[5] ? arm_lists : key[0], write_group = arm_lists;
+  p.write = side_of(write_rows, write_list, write_operand, widths, extents, B, L, H, W, write_group,
+                    "the write side");
   p.read = side_of(read_rows, read_list, read_operand, widths, extents, B, L, H * heads, W,
-                   "the read side");
+                   read_group, "the read side");
   p.values = Plane{static_cast<const uint8_t*>(values.const_data_ptr()), values.stride(0) * 2,
                    values.stride(1) * 2, values.stride(2) * 2};
   STD_TORCH_CHECK(p.values.st > 0 && p.values.st < (int64_t{1} << 31) / W,
                   "values' token stride is ", p.values.st, " bytes; a window's offsets are 32-bit");
   p.write_lists = lists_of(write_lists, BH, windows, write_list < 0 ? 0 : widths[write_list], 1, W,
-                           "the write lists");
+                           write_group, "the write lists");
   p.read_lists = lists_of(read_lists, BH, windows, read_list < 0 ? 0 : widths[read_list], heads, W,
-                          "the read lists");
+                          read_group, "the read lists");
   STD_TORCH_CHECK(
       heads <= window_heads(W) && heads * W <= 255 * kListBound, "a write head has at most ",
       window_heads(W), " query heads at W = ", W,
@@ -307,8 +313,6 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
     STD_TORCH_CHECK(g_ledger_ctas >= boxes * BH, "the bound phase ledger covers ", g_ledger_ctas,
                     " CTAs, the launch needs ", boxes * BH);
 
-  STD_TORCH_CHECK(key.size() == 6, "the arm key is ", CarryArmSet::key, ", got ", key.size(),
-                  " fields");
   const CarryKey k{(int)key[0], (int)key[1], (int)key[2], (int)key[3], (int)key[4], (int)key[5]};
   STD_TORCH_CHECK(k.channels == channels && k.fold_factors == p.write.operands
                       && k.read_factors == p.read.operands,

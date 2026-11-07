@@ -36,13 +36,12 @@ __host__ __device__ __forceinline__ constexpr int exp_slot(int d) { return 4 * (
 template <class P>
 __device__ __forceinline__ void post_row_keys(const State<P>& st, uint8_t* smem, int w, int top,
                                               int warp, int lane) {
-  static_assert(P::kFoldMTiles * 2 == 4, "a lane's four digit rows, one a lane of its quad");
   static_assert(P::kFoldLists == 4, "a quad's lane `t` keys its list `t`'s leaves");
   const int t = lane & 3;
   const volatile UnitBook* const book = reinterpret_cast<const volatile UnitBook*>(smem + P::kBook);
   const int shift = max(book[warp + kWarps * t].unit - top, -kKeySpan) * (1 << 23);
-  int key[2][2];
-  static_for<2>([&](auto M) {
+  int key[P::kFoldMTiles][2];
+  static_for<P::kFoldMTiles>([&](auto M) {
     static_for<2>([&](auto H) {
       int bits[P::kFoldLists];
       static_for<P::kFoldLists>([&](auto J) {
@@ -67,9 +66,14 @@ __device__ __forceinline__ void post_row_keys(const State<P>& st, uint8_t* smem,
     });
   });
 
+  //: lane `t` its row `2 M + H = t` (`exp_slot`: `4 g + t`), a lane's rows two a m-tile
   int* const keys = reinterpret_cast<int*>(smem + P::kKeys) + (w & 1) * kMaxExtent;
-  const int mine = t & 2 ? (t & 1 ? key[1][1] : key[1][0]) : (t & 1 ? key[0][1] : key[0][0]);
-  atomicMax(keys + lane, mine);
+  if constexpr (P::kFoldMTiles == 2) {
+    const int mine = t & 2 ? (t & 1 ? key[1][1] : key[1][0]) : (t & 1 ? key[0][1] : key[0][0]);
+    atomicMax(keys + lane, mine);
+  } else {
+    if (t < 2) atomicMax(keys + lane, t & 1 ? key[0][1] : key[0][0]);
+  }
 }
 
 //: THE SAME SPLIT'S KEYS: a digit is a fold list, every row of it this warp's -- its key the list's largest |value|
@@ -118,19 +122,46 @@ __host__ __device__ __forceinline__ constexpr uint32_t slice_row(int cg, int l, 
   return static_cast<uint32_t>(cg * P::kSliceBlock + 16 * (l ^ (d & 7)));
 }
 
-//: THE DEN IMAGE: a block a readout channel group, the 8 digits it reads the den of (`d mod 4`), 32 lists x 8 digits
-//: f16, list `l`'s 16-byte row at `l` XOR its block and its bit 4 inside its 8-row group (the writer's 32 lanes on 16
-//: banks, the reader's rows a 128-byte group); digit `d` in block `d & 3` at column `d >> 2` (`den_col`).
-//: -- see docs/internals/carry/handoff.md#den
+//: THE DEN IMAGE: blocks of 8 digit columns (the den MMA's N), K rows x 8 digits f16, digit `d` the group `d mod cg`'s
+//: (`cg` channel groups, each reading its own digits' den): block `den_block`, column `den_col`; K row `l`'s 16 bytes at
+//: `l` XOR a constant of its 8-row group and the block (the reader's rows a 128-byte group; the writer's lanes on 16
+//: banks at 4 groups, 32 at 8). -- see docs/internals/carry/handoff.md#den
 template <class P>
-__host__ __device__ __forceinline__ constexpr uint32_t den_row(int l, int d) {
-  static_assert(P::kChannelGroups == 4 && P::kK == 32,
-                "a block a channel group of four, 32 list rows");
-  return static_cast<uint32_t>((d & 3) * P::kSliceBlock
-                               + 16 * (l ^ (((l >> 4) & 1) << 2 | (d & 3))));
+constexpr int kDenGroupDigits = P::kDigits / P::kChannelGroups;
+
+template <class P>
+constexpr int kDenBlockGroups = 8 / kDenGroupDigits<P>;
+
+template <class P>
+__host__ __device__ __forceinline__ constexpr int den_block(int d) {
+  if constexpr (P::kChannelGroups == 4)
+    return d & 3;
+  else
+    return (d & (P::kChannelGroups - 1)) / kDenBlockGroups<P>;
 }
 
-__host__ __device__ __forceinline__ constexpr int den_col(int d) { return d >> 2; }
+template <class P>
+__host__ __device__ __forceinline__ constexpr int den_col(int d) {
+  if constexpr (P::kChannelGroups == 4)
+    return d >> 2;
+  else
+    return (d & (kDenBlockGroups<P> - 1)) * kDenGroupDigits<P>
+           + (d >> (P::kChannelGroups == 8 ? 3 : 0));
+}
+
+template <class P>
+__host__ __device__ __forceinline__ constexpr uint32_t den_row(int l, int block) {
+  static_assert(P::kK == 32 && kDenGroupDigits<P> * kDenBlockGroups<P> == 8
+                    && (P::kChannelGroups == 4 || P::kChannelGroups == 8),
+                "32 K rows, a block 8 digit columns, 4 or 8 channel groups");
+  if constexpr (P::kChannelGroups == 4)
+    return static_cast<uint32_t>((block & 3) * P::kSliceBlock
+                                 + 16 * (l ^ (((l >> 4) & 1) << 2 | (block & 3))));
+  else
+    return static_cast<uint32_t>(
+        block * P::kSliceBlock
+        + 16 * (l ^ (((l >> 4) & 1) << 2 | ((l >> 3) & 1) << 1 | (block & 1))));
+}
 
 //: THE DIGITS' EXPONENTS from the keys at window `w`'s parity, lane `i` digit `i`'s (`exp_slot`): the smallest `e`
 //: with its largest |state| at most `2^e`, in the warp's own row of `kExps` (`exps_of`); warp 0 resets the other
@@ -142,7 +173,8 @@ __device__ __forceinline__ ops::SmemAddr exps_of(const uint8_t* smem, int warp) 
 
 template <class P>
 __device__ __forceinline__ void post_exps(uint8_t* smem, int w, int top, int warp, int lane) {
-  static_assert(P::kDigits == 32, "lane `i` digit `i`, a parity's keys one bit apart");
+  static_assert(P::kDigits <= kMaxExtent,
+                "lane `i` slot `i` (past the digits unwritten), a parity's keys one bit apart");
   int* const keys = reinterpret_cast<int*>(smem + P::kKeys);
   const int at = (w & 1) * kMaxExtent + lane;
   const int key = keys[at];
@@ -211,8 +243,8 @@ __device__ __forceinline__ void den_tables_out(uint8_t* smem, const State<P>& st
   static_for<P::kDenRegs>([&](auto I) {
     constexpr int i = decltype(I)::value;
     const int d = den_digit<P, i>(at);
-    *reinterpret_cast<__half*>(smem + P::kDenImage + den_row<P>(den_k<P, i>(at), d)
-                               + 2 * den_col(d)) =
+    *reinterpret_cast<__half*>(smem + P::kDenImage + den_row<P>(den_k<P, i>(at), den_block<P>(d))
+                               + 2 * den_col<P>(d)) =
         __float2half_rn(st.den[I] * scale[den_word_scale<P>(I)]);
   });
   ops::store_shared_f32_if(ops::smem_addr(smem + P::kDenFactor) + 4u * static_cast<uint32_t>(lane),

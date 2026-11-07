@@ -45,6 +45,21 @@ def listed_bundle(widths, L, write_sparse, *, same=False, live=4, d_v=64, seed=0
     return routes, values
 
 
+#: THE 64-CHANNEL BOX (docs/internals/carry/plan.md#box): the alternating box of 32 write lists x 16 read digits x 64
+#: channels at depth two, its extents a level by the write side's sparse level
+def box64(write_sparse: int) -> tuple[tuple[int, int], int]:
+    """``(extents, channels)`` of the 64-channel box over a bundle whose write side lists level ``write_sparse``."""
+    return tuple(32 if level == write_sparse else 16 for level in range(2)), 64
+
+
+def assert_box64_arm(carve) -> None:
+    """The carve is the 64-channel box's: its arm a built one at 16 fold rows and 64 channels."""
+    from rola.ops import carry as carry_ops
+
+    key = carry_ops.arm_key(carve)
+    assert key in carry_ops.arms() and key[0] == 16 and key[4] == 64, key
+
+
 #: THE PLAN'S FORMS, each exercised by a cell -- its widths, live digits a token, the form it forces (None: the rule's)
 #: -- and named as `tests/oracle/carry_plan.forms` names them: each image mode, alone and over read chunks, the fold in
 #: chunks, an entry filled ahead and one filled at its own step, a window's first filled by the window before, and a
@@ -56,3 +71,6 @@ FORM_CELLS = (
     ((256, 256), 4, "whole/64/rule", {"whole-chunks"}),
     ((256, 256), 2, "halves/128/128", {"halves-chunks", "fold-chunks"}),
 )
+#: the forms at the 64-channel box: its read slots twice the panel's bytes, a forced 128-slot read chunk does not fit
+#: beside the halves there (the rule's plan stands), so the halves' chunks at 64 slots
+FORM_CELLS64 = FORM_CELLS[:4] + (((256, 256), 2, "halves/64/128", {"halves-chunks", "fold-chunks"}),)

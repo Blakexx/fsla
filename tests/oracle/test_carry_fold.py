@@ -9,12 +9,12 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.engine.carve import plan_carve
+from rola.engine.carve import carve_at, plan_carve
 from rola.ops import carry as carry_ops
 from rola.ops import facts as facts_ops
 from rola.ops.window import window_of
 from tests.oracle import carry_plan
-from tests.oracle.carry_fixtures import FORM_CELLS, listed_bundle
+from tests.oracle.carry_fixtures import FORM_CELLS, FORM_CELLS64, assert_box64_arm, box64, listed_bundle
 from tests.oracle.fold_reference import fold_state
 
 
@@ -61,13 +61,19 @@ def _reference(routes, values, facts, level_s, BH, N, d_v):
     return state.reshape(BH, N, d_v), env.reshape(BH, N, d_v), mass.reshape(BH, N)
 
 
-def _fold_ratio(widths, L, write_sparse, growth, *, live=4, forced=None):
-    """``(ratio, plans)``: the call's largest slot distance from the reference over its bound, and its boxes' plans."""
+def _fold_ratio(widths, L, write_sparse, growth, *, live=4, forced=None, box=None):
+    """``(ratio, plans)``: the call's largest slot distance from the reference over its bound, and its boxes' plans; at
+    the planner's box, or at ``box`` (extents a level, channels)."""
     routes, values = listed_bundle(widths, L, write_sparse, live=live)
     at = torch.arange(L, device="cuda") // window_of()
     routes.g_write.mul_(torch.exp2(growth * at.float())[None, :, None])
-    carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, values.v.shape[-1])
-    assert carry_ops.arm_key(carve) == (32, 1, 32, 1, 32, 0)
+    padded, d_v = tuple(routes.topology.padded_widths), values.v.shape[-1]
+    if box is None:
+        carve = plan_carve(padded, *routes.sparse, d_v)
+        assert carry_ops.arm_key(carve) == (32, 1, 32, 1, 32, 0)
+    else:
+        carve = carve_at(padded, *routes.sparse, *box, d_v)
+        assert_box64_arm(carve)
     layout = facts_ops.call_layout(routes)
     facts = facts_ops.facts(routes, values, layout, *facts_ops.call_statics(routes, layout),
                             carry_ops.lists_form(carry_ops.arm_key(carve)))
@@ -131,6 +137,23 @@ def test_the_fold_is_the_reference_per_slot(write_sparse, growth):
     of the reference's over four windows -- the write gain steady, or scaled 2^growth a window, so the units climb
     and rescale the state, or are held under the bound's headroom."""
     ratio, _ = _fold_ratio((64, 64), 2048, write_sparse, growth)
+    assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"
+
+
+@pytest.mark.parametrize("write_sparse", [0, 1])
+@pytest.mark.parametrize("growth", [0, 8, -8])
+def test_the_64_channel_box_folds_to_the_reference(write_sparse, growth):
+    """The 64-channel box (one m-tile of 16 rows by eight n-tiles, two den words a lane): every leaf and channel of the
+    final state and every leaf's den within its bound of the reference's, the units steady, climbing or held."""
+    ratio, _ = _fold_ratio((64, 64), 2048, write_sparse, growth, box=box64(write_sparse))
+    assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"
+
+
+@pytest.mark.parametrize(("widths", "live", "forced", "forms"), FORM_CELLS64)
+def test_every_plan_form_folds_at_the_64_channel_box(widths, live, forced, forms):
+    """Each of the plan's forms at the 64-channel box: the final state within its bound per slot."""
+    ratio, plans = _fold_ratio(widths, 2048, 0, 8, live=live, forced=forced, box=box64(0))
+    assert forms <= carry_plan.forms(plans), f"the cell takes {sorted(carry_plan.forms(plans))}, not {sorted(forms)}"
     assert ratio <= 1.0, f"a slot is {ratio:.3g}x its bound"
 
 

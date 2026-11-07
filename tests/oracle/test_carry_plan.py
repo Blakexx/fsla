@@ -13,12 +13,12 @@ import random
 import pytest
 import torch
 
-from rola.engine.carve import plan_carve
+from rola.engine.carve import carve_at, plan_carve
 from rola.ops import carry as carry_ops
 from rola.ops import facts as facts_ops
 from rola.ops.window import window_of
 from tests.oracle import carry_plan as cp
-from tests.oracle.carry_fixtures import FORM_CELLS, listed_bundle
+from tests.oracle.carry_fixtures import FORM_CELLS, assert_box64_arm, box64, listed_bundle
 
 #: the forced forms gated: none, then each image mode and each chunk choice at least once
 FORCED = (None, "whole/union/union", "halves/64/128", "halves/union/64", "whole/128/192", "rule/64/rule",
@@ -36,10 +36,23 @@ def test_the_plans_are_the_model(widths, live, forced):
     _assert_plans_are_the_model(routes, values, layout, facts_ops.call_statics(routes, layout), forced)
 
 
-def _assert_plans_are_the_model(routes, values, layout, statics, forced=None):
-    """The plan pass's written words for every (batch-head, box class, window) against the model's; returns the model's
-    records."""
-    carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, values.v.shape[-1])
+@pytest.mark.parametrize("forced", FORCED)
+@pytest.mark.parametrize(("widths", "live"), sorted({(cell[0], cell[1]) for cell in FORM_CELLS}))
+def test_the_64_channel_box_plans_are_the_model(widths, live, forced):
+    """The 64-channel box: a read slot's panel and den words twice the 32-channel box's and the read side's box classes
+    its 16-digit list groups -- every record the model's word for word."""
+    routes, values = listed_bundle(widths, 2048, 0, live=live)
+    layout = facts_ops.call_layout(routes)
+    _assert_plans_are_the_model(routes, values, layout, facts_ops.call_statics(routes, layout), forced, box=box64(0))
+
+
+def _assert_plans_are_the_model(routes, values, layout, statics, forced=None, box=None):
+    """The plan pass's written words for every (batch-head, box class, window) against the model's, at the planner's
+    box or at ``box`` (extents a level, channels); returns the model's records."""
+    padded, d_v = tuple(routes.topology.padded_widths), values.v.shape[-1]
+    carve = plan_carve(padded, *routes.sparse, d_v) if box is None else carve_at(padded, *routes.sparse, *box, d_v)
+    if box is not None:
+        assert_box64_arm(carve)
     facts = facts_ops.facts(routes, values, layout, *statics, carry_ops.lists_form(carry_ops.arm_key(carve)))
     plans = carry_ops.plans_out(routes, carve)
     unit = torch.zeros((routes.batch * routes.heads, routes.tokens), dtype=torch.int8, device="cuda")

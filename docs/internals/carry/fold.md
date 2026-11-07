@@ -45,9 +45,10 @@ the window's fold chunks read, the first applying the rescale: so no register ho
 16 TOKENS WITH AN 8-TOKEN TAIL (ruled 2026-10-12): `steps` takes a list's entries in 16-token steps while more
 than 8 remain, then an 8-token tail of m16n8k8 MMAs, half a step's tensor work. `entry_of` turns an entry into a
 lane's row offset (its swizzle folded in, `parts.md#swizzle`) and its c paired with the next lane's, moved to the unit;
-a pad past the list's count is row 0 with c = 0. `step16`: A is the slots' dense slices by `ldmatrix.trans` (two
-m-tiles of the box's 32 digits) times c by HMUL2, B the values (four n-tiles of 32 channels), eight fp32-accumulate
-MMAs. `step8`: the same over 8 tokens, one `ldmatrix.trans` each. A list whose den the box carries takes its den
+a pad past the list's count is row 0 with c = 0. `step16`: A is the slots' dense slices by `ldmatrix.trans` (the
+box's rows' m-tiles: two at 32 rows, one at 16) times c by HMUL2, B the values (an n-tile a channel group: four at 32
+channels, eight at 64), `kFoldMTiles x kFoldNTiles` = eight fp32-accumulate MMAs at either box. `step8`: the same over
+8 tokens, the slice by one `ldmatrix.x4.trans` at two m-tiles and `.x2` at one, the values a `.x4` each four n-tiles. A list whose den the box carries takes its den
 column's MMAs beside them ([`#den`](#den)).
 Each loop's step is one block (KERNEL_STANDARDS §27), guarded by a vote and closed by one. A list's first step's lanes
 (`off`, `cpair` for entry `lane & 15`, which serve a tail's lanes 0-7 as well) arrive computed, and each 16-token

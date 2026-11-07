@@ -58,7 +58,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
   //: the scales' bits' multiplier and bias (`list_scale`), loaded at each use
   if (threadIdx.x == 0)
     *reinterpret_cast<uint2*>(smem + P::kBits) = make_uint2(1u << 23, 127u << 23);
-  if (threadIdx.x == 0) addr_in(*reinterpret_cast<Addr*>(smem + P::kAddr), p, place_of(p));
+  if (threadIdx.x == 0) addr_in<P>(*reinterpret_cast<Addr*>(smem + P::kAddr), p, place_of(p));
   ops::rendezvous();
 
   //: the warp and the lane, opaque at each use, so each phase forms its own addresses where it runs rather than

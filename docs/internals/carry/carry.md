@@ -21,7 +21,8 @@ leaf of the box for its channels (`readout.md`).
   (`plan.md#box`): its fold's lists and rows and its channels, their product the state.
 - `kListBound = 64`, `kListAt = 8`: a list's boundaries, its entries before every 64th union slot (the last its
   length), so the carry chunks a union at any multiple of 64 the facts pass never sees, out in prefix form over the
-  group's lists modulo 2^16 (`kPreRows = 33`: a row a list, then the group's) beside the group's exact totals;
+  list group's lists modulo 2^16 (`G + 1` rows, a row a list, then the group's, at most `kPreRows = 33`:
+  `plan.md#list-groups`) beside the group's exact totals;
   `kListCap = kWindow` entries a list.
 - `max_steps(g)`, `plan_words(g)`: a window's plan record for a box class at `g` query heads a write head, its plan
   word and a 16-bit step word a step (`schedule.md#plan`).
@@ -54,10 +55,11 @@ over `heads` query heads' rows (the read side's a write head's `g`, the write si
   half): a chunk from a multiple of 64 takes its pool back by its first slot's offset and its slot from the row
   (`readout.md#chunk`). A write entry is the slot, then `c_v` and `c_m`. A step's lanes past a chunk's entries are
   masked by the carry (a read lane's stores predicated off, a write lane's row 0 with c = 0).
-- `pre` (int16, the boundaries in prefix form modulo 2^16, `kPreRows` rows of `8 heads` columns) and `totals` (int32,
+- `pre` (int16, the boundaries in prefix form modulo 2^16, the arm's list group plus one rows of `8 heads` columns) and
+  `totals` (int32,
   the group's exact): `chunk_runs` turns a chunk's slots into each list's run and its place, `side_counts` reads the
   totals.
-- `union_tok` and `union_count` (int32): per 32-digit group each slot's row (its query head and window-relative token,
+- `union_tok` and `union_count` (int32): per list group each slot's row (its query head and window-relative token,
   `#sides`), and the slots' extent; a GAP slot holds `kGap` (bit 15 set), and a fill zero-fills its row.
 
 The addresses both kernels compute live here, one copy: `kGap` and `pool_chunk` (a pool row's 16-byte chunk swizzled by
@@ -85,9 +87,10 @@ launch (`CarryCapture`, `carry_api.md#carry-capture-bind`).
 `carry_forward` takes the strict form and refuses everything else, naming the field:
 
 - depth 1 to 4; every width a power of two from 16, every extent a power of two dividing it; the box's leaves times
-  its channels exactly a CTA's state; the channel extent 32, dividing `d_v`.
-- a side lists at most one level and forms its operand from all the others; a list level spans the box's 32 lists or
-  digits; a side with no list level names exactly a row level and a coefficient level; an operand slice is a 4-byte
+  its channels exactly a CTA's state; the channel extent a power of two from 32 to 128, dividing `d_v` (the built
+  arms 32 and 64); the arm key's rows from 16 and channels from 32.
+- a side lists at most one level and forms its operand from all the others; a list level spans the arm's list group
+  (the box's lists or digits, `plan.md#list-groups`), and the side's lists are shaped at it; a side with no list level names exactly a row level and a coefficient level; an operand slice is a 4-byte
   copy at least and `kSliceBytes` at most.
 - every tensor's dtype, contiguity and exact shape (the lists' five, `scale` `[BH, windows x W]`, `num` int32 `[BH,
   T, d_v / 2]` for f16 pairs or fp32 `[BH, T, d_v]`); the arm key's channels and factor counts agreeing with the

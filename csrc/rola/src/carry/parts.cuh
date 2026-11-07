@@ -105,6 +105,7 @@ struct Addr {
 
 static_assert(sizeof(Addr) <= Tenants<512>::kAddrBytes, "the addresses fit their tenant");
 
+template <class P>
 __device__ __forceinline__ void addr_in(Addr& out, const CarryParams& p, const Place& c) {
   //: the read side's rows at the write head's first query head, `h g`
   const int b = c.bh / p.H, h = c.bh - b * p.H;
@@ -114,7 +115,8 @@ __device__ __forceinline__ void addr_in(Addr& out, const CarryParams& p, const P
     Statics& st = out.side[k];
     st.listed = s.list >= 0;
     st.digit0 = st.listed ? origin_of(p, s.list) : 0;
-    st.group = st.digit0 / 32;
+    //: the facts pass's list group holding the box's digits (`plan.md#list-groups`)
+    st.group = st.digit0 / (k == 0 ? P::kReadListGroup : P::kWriteListGroup);
     st.lists = st.listed ? p.extents[s.list] : kMaxExtent;
 #pragma unroll 1
     for (int i = 0; i < s.operands; ++i) {
@@ -207,20 +209,21 @@ __device__ __forceinline__ void lists_in(const CarryParams& p, const SideLists& 
                                          const Window& win, const Place& c, int w, uint8_t* smem,
                                          int side) {
   if (!win.listed) return;
-  const int cols = cols_of(p, side), slots = kWindow * l.heads;
+  const int cols = cols_of(p, side), slots = kWindow * l.heads,
+            rows = (side == kRead ? P::kReadListGroup : P::kWriteListGroup) + 1;
   const int64_t group = ((int64_t)c.bh * p.windows + w) * l.groups + win.group;
   const int union_copies = slots * 2 / ops::kStageBytes, row_copies = cols * 2 / ops::kStageBytes;
   const ops::SmemAddr unions = ops::smem_addr(union_of<P>(p, smem, side, w)),
                       pres = ops::smem_addr(pre_of<P>(p, smem, side, w));
   //: the thread opaque, so the copies' sources are formed at each staging, never held across the windows
 #pragma unroll 1
-  for (int k = ops::opaque(static_cast<int>(threadIdx.x)); k < union_copies + kPreRows * row_copies;
+  for (int k = ops::opaque(static_cast<int>(threadIdx.x)); k < union_copies + rows * row_copies;
        k += kThreads) {
     if (k < union_copies) {
       ops::stage_tile(unions + 16 * k, l.union_tok + group * slots + 8 * k);
     } else {
       const int r = k - union_copies;
-      ops::stage_tile(pres + 16 * r, l.pre + group * kPreRows * cols + 8 * r);
+      ops::stage_tile(pres + 16 * r, l.pre + group * rows * cols + 8 * r);
     }
   }
   if (threadIdx.x == kThreads - 1)
@@ -262,9 +265,13 @@ __device__ __forceinline__ void facts_in(const CarryParams& p, const Window& ww,
 //: -- see docs/internals/carry/parts.md#swizzle
 template <int Row>
 __device__ __forceinline__ constexpr uint32_t chunk_at(uint32_t s, uint32_t k) {
-  static_assert(Row % 64 == 0 && (Row == 128 || (Row / 64) % 2 == 1),
-                "a row of 128 bytes or an odd number of 64");
-  return pool_chunk(Row, s, k);
+  static_assert(Row == 160 || (Row % 64 == 0 && (Row == 128 || (Row / 64) % 2 == 1)),
+                "a row of 128 bytes, an odd number of 64, or 160 (five 32-byte pairs)");
+  //: a 160-byte row: slots `s`, `s + 4` a 128-byte line apart, the chunk's low bit flipped by `(s >> 2) & 1`
+  if constexpr (Row == 160)
+    return k ^ ((s >> 2) & 1u);
+  else
+    return pool_chunk(Row, s, k);
 }
 
 //: LOGICAL CHUNK `k`'s ADDRESS in a row whose chunk 0 sits at `row0` (its swizzle folded in): an XOR inside the
@@ -272,6 +279,7 @@ __device__ __forceinline__ constexpr uint32_t chunk_at(uint32_t s, uint32_t k) {
 template <int Row>
 __device__ __forceinline__ uint32_t chunk_addr(uint32_t row0, uint32_t k) {
   if constexpr (Row == 128) return row0 ^ (16u * k);
+  if constexpr (Row == 160) return (row0 ^ (16u * (k & 1u))) + 16u * (k & ~1u);
   return (row0 ^ (16u * (k & 3u))) + 16u * (k & ~3u);
 }
 
@@ -325,10 +333,15 @@ template <class P, int Factors, bool Values>
 __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* values,
                                      int values_st, const uint16_t* tok, const Window& win,
                                      int first, int slots, ops::SmemAddr pool) {
-  static_assert(P::kRows == kMaxExtent && P::kK == kMaxExtent,
-                "a fill's quad copies a slice as four 16-byte chunks: a 32-digit level");
-  constexpr int kRow = kSliceBytes * Factors + (Values ? P::kChannels * 2 : 0);
-  constexpr int kQuads = kThreads / 4, kChunks = kSliceBytes / ops::kStageBytes, kAhead = 4;
+  static_assert(2 * P::kRows <= 4 * ops::kStageBytes && 2 * P::kK <= 4 * ops::kStageBytes
+                    && 2 * P::kLists <= 4 * ops::kStageBytes,
+                "a fill's quad copies a slice, a 16-byte chunk a lane");
+  constexpr int kRow = Values ? P::kWriteRow : P::kReadRow;
+  //: a slice's first chunk in the row (the write side's rows, then a dense side's lists) and a lane's value chunks
+  constexpr int kSlice1 = 2 * P::kRows / ops::kStageBytes,
+                kValues = P::kValuesAt / ops::kStageBytes;
+  constexpr int kValueCopies = Values ? 2 * P::kChannels / (4 * ops::kStageBytes) : 0;
+  constexpr int kQuads = kThreads / 4, kAhead = 4;
   //: the thread opaque, so its quad lane and first slot are formed at each fill, never held across the windows
   const int tid = ops::opaque(static_cast<int>(threadIdx.x)), r = tid & 3, q = tid >> 2;
   const uint8_t* base[Factors];
@@ -350,11 +363,11 @@ __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* v
   const int16_t* const toks = reinterpret_cast<const int16_t*>(tok) + first + q;
   //: the thread's rows' places at slot `q`: each slice's chunk and the values' (`chunk_at`)
   const ops::SmemAddr row = pool + static_cast<uint32_t>(q * kRow);
-  uint32_t at[Factors + 1];
-  static_for<Factors + 1>([&](auto i) {
-    at[i] =
-        row
-        + 16u * chunk_at<kRow>(static_cast<uint32_t>(q), static_cast<uint32_t>(kChunks * i + r));
+  uint32_t at[Factors + kValueCopies];
+  static_for<Factors + kValueCopies>([&](auto i) {
+    constexpr int I = decltype(i)::value;
+    constexpr int k0 = I < Factors ? (I == 0 ? 0 : kSlice1) : kValues + 4 * (I - Factors);
+    at[i] = row + 16u * chunk_at<kRow>(static_cast<uint32_t>(q), static_cast<uint32_t>(k0 + r));
   });
 
   //: a narrow slice (8 or 4 bytes) its quad's first lane's whole run; a trip of 256 slots, the first straight-line
@@ -389,11 +402,21 @@ __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* v
             if (issue && !active[i] && r == 0) stage_bytes(dst, src[k][i], bytes[i], live);
             if (issue && active[i]) ops::stage_run_if<16>(dst, src[k][i], live);
           } else {
-            copy16<kAt>(at[i] + trip, src[k][i], room, size[i] & ~gap[k]);
+            //: a slice's chunks in the box's row: a lane past them issues nothing (a zero-fill would land on the
+            //: next part of the row)
+            constexpr int kIn =
+                (decltype(i)::value == 0 ? (Values ? 2 * P::kRows : 2 * P::kK) : 2 * P::kLists)
+                / ops::kStageBytes;
+            if constexpr (kIn >= 4)
+              copy16<kAt>(at[i] + trip, src[k][i], room, size[i] & ~gap[k]);
+            else
+              copy16<kAt>(at[i] + trip, src[k][i], r < kIn ? room : 0, size[i] & ~gap[k]);
           }
         });
-        if constexpr (Values)
-          copy16<kAt>(at[Factors] + trip, src[k][Factors], room, ops::kStageBytes & ~gap[k]);
+        static_for<kValueCopies>([&](auto v) {
+          copy16<kAt>(at[Factors + v] + trip, src[k][Factors] + 4 * ops::kStageBytes * v, room,
+                      ops::kStageBytes & ~gap[k]);
+        });
       });
     };
 
@@ -431,8 +454,9 @@ __device__ __forceinline__ Run chunk_runs(const CarryParams& p, const uint8_t* s
   const int2 col = chunk_cols(first, slots, total, cols);
   //: the lane's two rows (lists `l`, `l + 1`): the chunk's end in both, its start where it is not the first, the split
   //: where it falls inside the chunk
+  const int group = side == kRead ? P::kReadListGroup : P::kWriteListGroup;
   const uint16_t* const row =
-      pre_of<P>(p, smem, side, w) + ((win.digit0 & (kMaxExtent - 1)) + lane) * cols;
+      pre_of<P>(p, smem, side, w) + ((win.digit0 & (group - 1)) + lane) * cols;
   const int a1 = row[col.y], b1 = row[cols + col.y];
   const bool start = col.x >= 0;
   const int a0 = start ? row[max(col.x, 0)] : 0, b0 = start ? row[cols + max(col.x, 0)] : 0;
@@ -442,16 +466,16 @@ __device__ __forceinline__ Run chunk_runs(const CarryParams& p, const uint8_t* s
   return Run{(b0 - a0) & 0xffff, n, n0, (a1 - a0) & 0xffff};
 }
 
-//: A CHUNK'S ENTRIES, a warp's share: its own lists' runs (`warp + 8 j`) to their places at `dst`, eight lanes a run,
-//: two copies a trip, the trips the warp's longest run's. -- see docs/internals/carry/parts.md#entries
-template <class P>
+//: A CHUNK'S ENTRIES, a warp's share: its own lists' runs (`warp + 8 j`, of the side's `Lists`) to their places at
+//: `dst`, 8 lanes a run at 4 lists a warp or 16 at 2, two copies a trip, the trips the warp's longest run's.
+//: -- see docs/internals/carry/parts.md#entries
+template <class P, int Lists>
 __device__ __forceinline__ void entries_fill(const CarryParams& p, const SideLists& l,
                                              const Window& win, const Place& c, int w,
                                              const Run& run, ops::SmemAddr dst, int warp,
                                              int lane) {
-  static_assert(P::kDigits == 4 * kWarps && P::kLists == 4 * kWarps,
-                "a warp's four lists, eight lanes each, on either side");
-  constexpr int kLanes = 8;
+  static_assert(Lists == 4 * kWarps || Lists == 2 * kWarps, "a warp's four lists or two");
+  constexpr int kLanes = 32 * kWarps / Lists;
   //: a list's row `kListCap` entries a query head on (opaque: formed at each fill, never held across windows)
   const int cap = kListCap * ops::opaque(l.heads);
   const int list = warp + kWarps * (lane / kLanes), i = lane % kLanes;
@@ -530,8 +554,9 @@ __device__ __forceinline__ void read_fill(const CarryParams& p, const uint8_t* s
   };
   clear(read_panel<P>(slots), read_ents<P>(slots, p.reduce), 0u);
   if (rw.listed)
-    entries_fill<P>(p, p.read_lists, rw, c, w, run,
-                    buf + static_cast<uint32_t>(read_ents<P>(slots, p.reduce)), warp, lane);
+    entries_fill<P, P::kDigits>(p, p.read_lists, rw, c, w, run,
+                                buf + static_cast<uint32_t>(read_ents<P>(slots, p.reduce)), warp,
+                                lane);
 }
 
 //: A LANE'S DEN WORDS' PLACES, each of the box's lists x rows once across the CTA, the list owner's on either side: lane
