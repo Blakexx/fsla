@@ -9,7 +9,7 @@
 
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "string_list_flag")
 load("@rola_env//:flags.bzl", "CXX11_ABI", "RATIFIED_ARCHS", "TOOLCHAIN", "TORCH", "TORCH_CUDA")
-load("//bazel:defs.bzl", "compile_database", "ratify_census", "ratify_run", "ratify_test", "rola_extension", "tree_part")
+load("//bazel:defs.bzl", "compile_database", "dev_run", "ratify_census", "ratify_run", "ratify_test", "rola_extension", "tree_part")
 load("@rola_tree//:tree.bzl", "TRACKED")
 
 exports_files([
@@ -69,6 +69,18 @@ rola_extension(
         "//csrc/rola:stamp_unit",
         "//csrc/rola:units",
     ],
+)
+
+#: THE CHECKOUT'S VENV over the graph's environment, which its commit hooks then run from (docs/build-graph.md#use)
+dev_run(
+    name = "dev_env",
+    checkout = True,
+    command = ["dev-env"],
+    env = True,
+    tools = {
+        "@rola_env//:python": "--python",
+        "@rola_env//:uv": "--uv",
+    },
 )
 
 #: RATIFY ON THE BUILD: its census is the units' own compiles (docs/build-graph.md#ratify). The verdict is its own test,

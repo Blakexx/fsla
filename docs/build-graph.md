@@ -228,6 +228,7 @@ names one).
 ## <a id="use"></a>Using it
 
     python tools/dev.py init        # installs the pinned bazelisk and links `bazel` to it (toolchain.bazel)
+    bazel run //:dev_env                                            # this checkout's venv, which its hooks run from
     bazel test //:gate                                              # every check the graph holds
     bazel run //:compile_commands                                   # the editor's compile_commands.json
     bazel test //:lane                                              # every test tier

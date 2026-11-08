@@ -9,7 +9,8 @@ settings it writes and reads are the dev config ([dev_config.md](dev_config.md))
     python tools/dev.py show
     python tools/dev.py get <section.key>
     python tools/dev.py clock --mhz 1665
-    python tools/dev.py worktree <name> <sha> [--build]
+    python tools/dev.py worktree <name> <sha>
+    python tools/dev.py dev-env --checkout C --env E --python P --uv U   # bazel run //:dev_env's implementation
     python tools/dev.py container compose|build|check|gate
     python tools/dev.py store commit -m <msg>
 
@@ -31,7 +32,7 @@ under `host.tools_dir`, because the layout
 is part of the tool: `-fuse-ld=mold` selects the `ld.mold` next to `mold`. sccache and mold are recorded in the
 machine's `toolchain.json`; bazelisk is found by its pin (`bazelisk_path`: under `host.tools_dir`, by its release's
 name), never recorded there -- every checkout loads the machine's files, and an older loader refuses a key it does not
-declare. `init` links `toolchain.bazel` (`~/.local/bin/bazel`) to the pinned bazelisk -- a link it made to another pinned release is replaced, anything else at the path refused -- then wires this checkout's commit gate (the git-config keys `core.hooksPath` per worktree, whose pre-commit hook runs `bazel test //:gate`, and rola.venv naming the base venv the post-commit review runs from) in every worktree of the repository that carries the tracked hook, turns the repository's shared hook into a refusal (a checkout reaches it only unwired), names the same venv in the suite's and the store's checkouts, whose hooks read it too, installs the agent skill router where Claude Code keeps a user configuration (KERNEL_STANDARDS §31: the repo's `.claude/hooks/skill_router_bootstrap.py` copied to the user's `~/.claude/hooks/skill_router.py` where it differs, and its PreToolUse entry added to the user's `~/.claude/settings.json` where absent, every other setting kept; the image has no `~/.claude` and gets neither), and runs `check`, whose row says whether the router is installed and current. The
+declare. `init` links `toolchain.bazel` (`~/.local/bin/bazel`) to the pinned bazelisk -- a link it made to another pinned release is replaced, anything else at the path refused -- then wires this checkout's commit gate (the git-config keys `core.hooksPath` per worktree, whose pre-commit hook runs `bazel test //:gate`, and rola.venv naming the venv the post-commit review runs from: the checkout's own `bazel run //:dev_env` venv when it has one, else the base venv) in every worktree of the repository that carries the tracked hook, turns the repository's shared hook into a refusal (a checkout reaches it only unwired), names the same venv in the suite's and the store's checkouts, whose hooks read it too, installs the agent skill router where Claude Code keeps a user configuration (KERNEL_STANDARDS §31: the repo's `.claude/hooks/skill_router_bootstrap.py` copied to the user's `~/.claude/hooks/skill_router.py` where it differs, and its PreToolUse entry added to the user's `~/.claude/settings.json` where absent, every other setting kept; the image has no `~/.claude` and gets neither), and runs `check`, whose row says whether the router is installed and current. The
 clock is not set by `init`, because locking it asks for administrator consent once.
 
 **`check`** prints one row per dependency and exits 1 on any red:
@@ -44,7 +45,7 @@ clock is not set by `init`, because locking it asks for administrator consent on
 - The lock directory, scratch directory and GPU lock directory are writable.
 - The clock is set, or the host is marked unlocked.
 - The base venv and the worktrees folder exist; `store.root` is a rola-results checkout, and `rola_results` imports
-  from it in the base venv.
+  from it in the venv this checkout's hooks run from.
 
 **`clock --mhz N`** locks the SM clock, reads the driver's clock under the lock, and releases it: the round trip
 the harness makes (`rola_devtools.locks.clock`, [sm_clock.md](../common/sm_clock.md)). Only after the lock is proven
@@ -59,12 +60,18 @@ does it write `clock.json`.
 `setup.py build_ext --inplace` by the checkout's venv interpreter, after its first editable install. It refuses when
 that interpreter's `rola` is not this checkout's.
 
-**`worktree <name> <sha>`** creates the worktree in `workspace.worktrees` and wires its commit gate before
-anything is built. It makes a seeded pointer venv beside it with two `.pth` files: this worktree's root
-(`aa_`), then the base venv's site-packages (`zz_`). Then it installs the package editable with `--no-deps`.
-The extension is copied from the main checkout when that checkout is at the same commit and built; `--build`
-builds it anyway. It refuses unless the editable finder maps `rola` to the new worktree, and it imports `rola`
-from inside the worktree. The three footguns this avoids are in `docs/setup.md` §3c.
+**`dev-env`** is `bazel run //:dev_env`'s implementation, which passes the checkout and the graph's environment
+(its store venv, interpreter and uv). It writes the checkout's venv, `venv-<checkout>` beside it, on the environment's
+interpreter. Its site holds four `.pth` files, read in name order: the checkout's root (`aa_rola_<name>.pth`), the
+co-developed sibling checkouts (`rola_devtools.pth`, `rola_results.pth`, `LINKED`), the environment's site-packages
+(`zz_rola_env.pth`, the venv's marker) and the bytecode prefix (`zz_rola_pycache.pth`: `sys.pycache_prefix` under
+`host.build_cache`, so no `__pycache__` lands in the checkout). It replaces only a venv it wrote, wires the checkout's
+commit gate to run from it, and refuses unless `rola`, `rola_devtools`, `rola_results` and `torch` each import from
+where those files say.
+
+**`worktree <name> <sha>`** creates the worktree in `workspace.worktrees`, then runs `bazel run //:dev_env` and
+`bazel run //:library` in it: its venv and commit gate, then its extension, which the graph serves from its shared
+cache when any checkout built that commit's library. It imports `rola` and the extension from inside the worktree.
 
 **The base venv** is part of the machine: `check` compares `workspace.base_venv` against `requirements.lock`, where a
 pin the venv lacks or carries at another version is drift and extras the lock does not name are not. `init` installs
@@ -90,9 +97,9 @@ path and bytes each, is the ENVIRONMENT KEY.
   refuses the commit without a passing sample for that key.
 
 **`store`** keeps the measurements store (`store.root`, a rola-results checkout): `init` links `rola_results` into
-every interpreter that measures here -- the base venv, each worktree's pointer venv (it borrows the base as a plain
-path, which reads none of the base's `.pth` files), and in the image the base venv at the store's
-mount point -- by a one-line `rola_results.pth`, and `worktree` links each new venv; `commit -m` commits the records (`python -m
+every interpreter that measures here -- the base venv, each worktree's venv (it names the base's or the
+environment's site-packages as a plain path, which reads none of their `.pth` files), and in the image the base venv
+at the store's mount point -- by a one-line `rola_results.pth`, and `dev-env` links each venv it writes; `commit -m` commits the records (`python -m
 rola_results commit`).
 
 `init`, `check`, `show`, `get` and `clock` run from whichever python starts them; every other command re-executes itself under `workspace.base_venv`, because the store and the container read `rola_results` and the host's own python carries nothing of this project.

@@ -440,6 +440,45 @@ def checkout_test(name, cmd, **kwargs):
     checkout, outside the sandbox, never cached, since its input is the repository's state and not a file set."""
     _checkout_test(name = name, cmd = cmd, tags = ["external", "local"], **kwargs)
 
+_DEV_RUN = """\
+#!/bin/bash
+# a tools/dev.py command as a run target (bazel/defs.bzl's dev_run): in the checkout, on the environment's interpreter,
+# the environment's tools named by their resolved paths (the runfiles' links do not outlive the run)
+set -euo pipefail
+{resolve}cd "${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
+exec {venv}/bin/python3 tools/dev.py {command} "$@"
+"""
+
+def _dev_run_impl(ctx):
+    resolve, words = [], [shell.quote(w) for w in ctx.attr.command]
+    if ctx.attr.checkout:
+        words += ["--checkout", '"$BUILD_WORKSPACE_DIRECTORY"']
+    if ctx.attr.env:
+        words += ["--env", shell.quote(VENV)]
+    tools = []
+    for i, (target, flag) in enumerate(ctx.attr.tools.items()):
+        found = target[DefaultInfo].files.to_list()
+        if len(found) != 1:
+            fail("%s: %s names %d files, not one" % (ctx.label, target.label, len(found)))
+        tools += found
+        resolve.append('tool%d="$(readlink -f %s)"\n' % (i, shell.quote(found[0].short_path)))
+        words += [flag, '"$tool%d"' % i]
+    script = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(script, _DEV_RUN.format(resolve = "".join(resolve), venv = shell.quote(VENV), command = " ".join(words)), is_executable = True)
+    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = tools))]
+
+dev_run = rule(
+    implementation = _dev_run_impl,
+    executable = True,
+    attrs = {
+        "command": attr.string_list(mandatory = True, doc = "the dev.py command and its fixed arguments"),
+        "checkout": attr.bool(doc = "pass the checkout (`--checkout`, $BUILD_WORKSPACE_DIRECTORY)"),
+        "env": attr.bool(doc = "pass the graph's environment, its store venv (`--env`)"),
+        "tools": attr.label_keyed_string_dict(allow_files = True, doc = "each tool and the flag that names its path"),
+    },
+    doc = "A tools/dev.py command run by `bazel run` in the checkout (docs/build-graph.md#use): its arguments follow `--`.",
+)
+
 def tree_part(parts = {}):
     """This package's part of the tree (`git ls-files`, @rola_tree): `tracked`, every tracked file it holds;
     `tracked_python`, its Python files; and each of `parts` (name -> a directory prefix), the tracked files under it --

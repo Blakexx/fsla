@@ -196,7 +196,7 @@ def link_packages(image: bool) -> list[Path]:
     sites = [site_packages(Path(dev_config.get("workspace.base_venv")))]
     if not image:
         sites += [site_packages(v) for v in sorted(Path(dev_config.get("workspace.worktrees")).glob("venv-*"))
-                  if (site_packages(v) / "zz_rola_base.pth").exists()]
+                  if any((site_packages(v) / marker).exists() for marker in ("zz_rola_base.pth", ENV_PTH))]
     for site in sites:
         site.mkdir(parents=True, exist_ok=True)
         for pth, key in LINKED.items():
@@ -210,12 +210,26 @@ GATED_CONSUMERS = ("workspace.suite", "store.root", "workspace.devtools")
 
 def wire_hooks(checkout: Path) -> None:
     """The commit gate as a property of the checkout: `core.hooksPath` set per worktree to the tracked hooks (the gate
-    is `bazel test //:gate`), and `rola.venv` naming the venv the post-commit review runs from, so no hook reaches the
-    host's python."""
+    is `bazel test //:gate`), and `rola.venv` naming the venv the post-commit review runs from (`checkout_venv`), so no
+    hook reaches the host's python."""
     subprocess.run(["git", "-C", str(checkout), "config", "extensions.worktreeConfig", "true"], check=True)
     subprocess.run(["git", "-C", str(checkout), "config", "--worktree", "core.hooksPath", "tools/git-hooks"], check=True)
-    subprocess.run(["git", "-C", str(checkout), "config", "--worktree", "rola.venv", dev_config.get("workspace.base_venv")],
-                   check=True)
+    subprocess.run(["git", "-C", str(checkout), "config", "--worktree", "rola.venv", checkout_venv(checkout)], check=True)
+
+
+#: the marker of a venv `dev-env` wrote: its `.pth` naming the graph's environment
+ENV_PTH = "zz_rola_env.pth"
+
+
+def dev_venv(checkout: Path) -> Path:
+    """The venv `dev-env` writes for a checkout: `venv-<checkout>` beside it."""
+    return checkout.parent / f"venv-{checkout.name}"
+
+
+def checkout_venv(checkout: Path) -> str:
+    """The venv a checkout's hooks run from: its own (`dev-env`'s) when it has one, else `workspace.base_venv`."""
+    own = dev_venv(Path(checkout))
+    return str(own) if list(own.glob(f"lib/python*/site-packages/{ENV_PTH}")) else dev_config.get("workspace.base_venv")
 
 
 #: THE AGENT SKILL ROUTER (KERNEL_STANDARDS section 31): the user-level bootstrap that runs the touched checkout's
@@ -456,9 +470,9 @@ def cmd_check(a) -> int:
         return _report(rows)
     readable = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--git-dir"], capture_output=True).returncode == 0
     hooks = subprocess.run(["git", "-C", str(ROOT), "config", "--get", "core.hooksPath"], capture_output=True, text=True)
-    base = dev_config.get("workspace.base_venv")
-    row(not readable or (hooks.stdout.strip() == "tools/git-hooks" and gate_venv(ROOT) == base),
-        f"commit gate wired in {ROOT.name} (`bazel test //:gate`), its review run from {base}" if readable else
+    own = checkout_venv(ROOT)
+    row(not readable or (hooks.stdout.strip() == "tools/git-hooks" and gate_venv(ROOT) == own),
+        f"commit gate wired in {ROOT.name} (`bazel test //:gate`), its review run from {own}" if readable else
         f"{ROOT}: no git repository visible here; commits are made where it is", "python tools/dev.py init")
     current, wired = router_state()
     if (Path.home() / ".claude").is_dir():
@@ -485,6 +499,8 @@ def cmd_check(a) -> int:
     root = Path(dev_config.get("store.root"))
     row((root / "rola_results" / "store.py").is_file(), f"store.root is a rola-results checkout: {root}",
         "clone rola-results to store.root, or point store.root at a checkout")
+    #: the co-developed checkouts import in the venv this checkout's hooks run from
+    python = Path(own if readable else base) / "bin" / "python"
     found = subprocess.run([str(python), "-c", "import rola_results; print(rola_results.ROOT)"], capture_output=True,
                            text=True)
     row(found.stdout.strip() == str(root / "records"), f"rola_results imports from store.root in {python}",
@@ -593,48 +609,58 @@ def cmd_clock(a) -> int:
     return 0
 
 
+def cmd_dev_env(a) -> int:
+    """THIS CHECKOUT'S VENV OVER THE GRAPH'S ENVIRONMENT (`bazel run //:dev_env`): `venv-<checkout>` beside the checkout
+    on the environment's interpreter. Its site names the checkout, the sibling checkouts this machine co-develops
+    (`LINKED`) and the environment's packages, in that order, and moves bytecode out of the checkout
+    (`sys.pycache_prefix`); the checkout's commit hooks then run from it."""
+    checkout = Path(a.checkout).resolve()
+    venv = dev_venv(checkout)
+    if venv.exists():
+        if not list(venv.glob("lib/python*/site-packages/zz_rola_*.pth")):
+            raise SystemExit(f"refusing: {venv} exists and is not a venv this tool wrote")
+        shutil.rmtree(venv)
+    subprocess.run([a.uv, "venv", "--no-config", "--python", a.python, str(venv)], check=True)
+    site = site_packages(venv)
+    (site / f"aa_rola_{checkout.name}.pth").write_text(f"{checkout}\n")
+    for pth, key in LINKED.items():
+        (site / pth).write_text(f"{dev_config.get(key)}\n")
+    (site / ENV_PTH).write_text(f"{site_packages(Path(a.env))}\n")
+    prefix = Path(dev_config.get("host.build_cache")) / "pycache"
+    (site / "zz_rola_pycache.pth").write_text(f"import sys; sys.pycache_prefix = {str(prefix)!r}\n")
+    wire_hooks(checkout)
+    found = subprocess.run([str(venv / "bin" / "python"), "-c", "import json, rola, rola_devtools, rola_results, torch; "
+                            "print(json.dumps({m.__name__: m.__file__ for m in (rola, rola_devtools, rola_results, torch)}))"],
+                           capture_output=True, text=True, cwd=venv.parent)
+    if found.returncode:
+        raise SystemExit(f"{venv}: its interpreter cannot import the tree's packages:\n{found.stderr[-2000:]}")
+    origins = json.loads(found.stdout)
+    want = {"rola": checkout, "rola_devtools": Path(dev_config.get("workspace.devtools")),
+            "rola_results": Path(dev_config.get("store.root")), "torch": site_packages(Path(a.env))}
+    wrong = [f"{name} from {origins[name]}, not {root}" for name, root in want.items()
+             if not Path(origins[name]).resolve().is_relative_to(root.resolve())]
+    if wrong:
+        raise SystemExit(f"{venv}: " + "; ".join(wrong))
+    print(f"venv {venv}: rola from {checkout}, the environment {a.env}; the commit hooks run from it")
+    return 0
+
+
 def cmd_worktree(a) -> int:
-    """A worktree in `workspace.worktrees`, its commit gate wired before anything builds, a pointer venv over
-    `workspace.base_venv`, and its extension: copied from the main checkout when that checkout is the same commit and
-    built, else built in place under the host budget (`--build` always builds)."""
-    base = dev_config.get("workspace.base_venv")
-    py = f"python{sys.version_info.major}.{sys.version_info.minor}"
-    if not base or not (Path(base) / "lib" / py / "site-packages").is_dir():
-        raise SystemExit(f"workspace.base_venv {base!r} has no lib/{py}/site-packages; python tools/dev.py init")
+    """A worktree in `workspace.worktrees` at `sha`, then its venv and commit gate (`bazel run //:dev_env`) and its
+    extension (`bazel run //:library`) from the graph, which serves a commit's library from its cache when any
+    checkout built it."""
     main = Path(subprocess.run(["git", "-C", str(ROOT), "worktree", "list", "--porcelain"], capture_output=True,
                                text=True, check=True).stdout.split("\n", 1)[0].split(" ", 1)[1])
     worktree = Path(dev_config.get("workspace.worktrees")) / a.name
-    venv = worktree.parent / f"venv-{a.name}"
-    for p in (worktree, venv):
+    for p in (worktree, dev_venv(worktree)):
         if p.exists():
             raise SystemExit(f"refusing: {p} already exists")
     subprocess.run(["git", "-C", str(main), "worktree", "add", str(worktree), a.sha], check=True)
     if not os.access(worktree / "tools" / "git-hooks" / "pre-commit", os.X_OK):
         raise SystemExit(f"refusing: {worktree}/tools/git-hooks/pre-commit is missing or not executable")
-    wire_hooks(worktree)
-
-    subprocess.run(["uv", "venv", "--python", py.removeprefix("python"), "--seed", str(venv)], check=True)
-    site = site_packages(venv)
-    (site / f"aa_rola_{a.name}.pth").write_text(f"{worktree}\n")
-    (site / "zz_rola_base.pth").write_text(f"{site_packages(Path(base))}\n")
-    for pth, key in LINKED.items():
-        (site / pth).write_text(f"{dev_config.get(key)}\n")
-    try:
-        main_so = toolchains.built_extension(main)
-    except FileNotFoundError:
-        main_so = None
-    same = subprocess.run(["git", "-C", str(main), "rev-parse", "HEAD"], capture_output=True, text=True).stdout == \
-        subprocess.run(["git", "-C", str(worktree), "rev-parse", "HEAD"], capture_output=True, text=True).stdout
-    install = [str(venv / "bin" / "python"), "-m", "pip", "install", "-e", ".", "--no-deps", "--no-build-isolation"]
-    if main_so and same and not a.build:
-        subprocess.run(install, cwd=worktree, env={**os.environ, "ROLA_NO_EXTENSION": "1"}, check=True)
-        for built in (main_so, main_so.parent / "_build_config.py"):
-            shutil.copy(built, worktree / main_so.parent.name)
-    else:
-        subprocess.run(install, cwd=worktree, check=True)
-    finder = site / "__editable___rola_0_1_0_dev0_finder.py"
-    if not finder.exists() or f"'rola': '{worktree}/rola'" not in finder.read_text():
-        raise SystemExit(f"refusing: the editable finder {finder} does not map rola to {worktree}/rola")
+    for target in ("//:dev_env", "//:library"):
+        subprocess.run(["bazel", "run", target], cwd=worktree, check=True)
+    venv = dev_venv(worktree)
     subprocess.run([str(venv / "bin" / "python"), "-c", "import importlib, rola; from rola.ops._ext import PLUGIN, extension; "
                     "extension(); print('rola:', rola.__file__, 'archs:', "
                     "importlib.import_module(PLUGIN + '._build_config').BUILD_CONFIG['archs'])"], cwd=worktree, check=True)
@@ -854,11 +880,18 @@ def main() -> int:
     p = sub.add_parser("clock", help="lock this host's SM clock once and record it")
     p.add_argument("--mhz", type=int, required=True, help="a clock the card holds under the kernel's power")
     p.set_defaults(fn=cmd_clock)
-    p = sub.add_parser("worktree", help="a worktree with its pointer venv, commit gate and extension")
+
+    p = sub.add_parser("dev-env", help="this checkout's venv over the graph's environment (`bazel run //:dev_env`)")
+    p.add_argument("--checkout", required=True, help="the checkout ($BUILD_WORKSPACE_DIRECTORY)")
+    p.add_argument("--env", required=True, help="the graph's environment, its store venv")
+    p.add_argument("--python", required=True, help="the environment's interpreter")
+    p.add_argument("--uv", required=True, help="the environment's uv")
+    p.set_defaults(fn=cmd_dev_env)
+    p = sub.add_parser("worktree", help="a worktree with its venv, commit gate and extension, from the graph")
     p.add_argument("name")
     p.add_argument("sha")
-    p.add_argument("--build", action="store_true", help="build the extension even when the main checkout's can be copied")
     p.set_defaults(fn=cmd_worktree)
+
     p = sub.add_parser("build", help="the iteration build: the extension rebuilt in place, gated and stamped")
     p.add_argument("--python", default=sys.executable, help="the checkout's venv interpreter (default: this one)")
     p.add_argument("--archs", default=None, help="ROLA_CUDA_ARCHS for this build, e.g. 86")
@@ -879,7 +912,7 @@ def main() -> int:
 
 
 #: the commands that make or read the environment itself, and so run from whichever python starts them
-BOOTSTRAP = ("init", "check", "show", "get", "clock")
+BOOTSTRAP = ("init", "check", "show", "get", "clock", "dev-env", "worktree")
 
 
 def _from_base_venv() -> None:

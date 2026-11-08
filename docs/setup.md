@@ -31,7 +31,7 @@ the checkout into every venv here, so nothing after it needs the path.
 python tools/dev.py init          # detect, install pinned tools, wire the commit gate and agent router, check
 python tools/dev.py clock --mhz 1665   # once per host: lock the SM clock (one administrator prompt under WSL)
 python tools/dev.py check         # every dependency, one row each; exit 1 on a red
-python tools/dev.py worktree <name> <sha>   # a worktree, its pointer venv, its gate, its extension
+python tools/dev.py worktree <name> <sha>   # a worktree, its venv and gate (bazel run //:dev_env), its extension
 ```
 
 ## 1. Host prerequisites
@@ -132,23 +132,24 @@ release (`bin/mold` beside `bin/ld.mold`, which `-fuse-ld=mold` selects) under
 `host.tools_dir`, and records it as `toolchain.mold`. The container and the host
 link with the byte-identical binary.
 
-## 3c. The pointer venv: many worktrees on one bare host
+## 3c. The checkout's venv: many worktrees on one environment
 
-Each worktree needs its OWN editable `rola` (its own compiled `.so`, matching its own commit), but reinstalling the
-whole `requirements.lock` for every worktree is minutes of identical bytes. A POINTER VENV borrows a shared base venv
-(`workspace.base_venv`, built once with the full `requirements.lock`) and adds only this checkout's root and its own
-editable extension. `python tools/dev.py worktree <name> <sha>` builds one
-([`internals/tools/dev.md`](internals/tools/dev.md)),
-and holds the three invariants that make it safe:
+Each checkout needs its OWN `rola` (its own library, matching its own commit), but installing the whole
+`requirements.lock` for every worktree is minutes of identical bytes. The graph builds the environment once into the
+shared store, keyed by the lock (docs/build-graph.md#environment), and `bazel run //:dev_env` writes each checkout a
+venv over it, `venv-<checkout>` beside the checkout ([`internals/tools/dev.md`](internals/tools/dev.md)). It holds the
+invariants that make it safe:
 
-- **The venv is seeded** (`uv venv --seed`), so a bare `pip` inside it never resolves to another python's.
-- **The `.pth` order puts the worktree first**: `site.py` reads `.pth` files in filename order, so the worktree's root
-  and its editable install resolve before the base venv's copy of anything with the same name.
-- **The editable build is `--no-deps`**: the base venv's `torch` is the dependency resolution, and a second `torch`
-  pulled into the pointer venv would compile the extension against one ABI and import it under another.
+- **It is the environment's interpreter**: the venv is made on the store's Python, so the packages it names are the
+  ones that interpreter's ABI built.
+- **The `.pth` order puts the checkout first**: `site.py` reads `.pth` files in filename order, so the checkout's
+  `rola` and the co-developed sibling checkouts resolve before the environment's copy of anything with the same name.
+- **Nothing is installed into it**: its packages are the environment's; the checkout's library is the one
+  `bazel run //:library` copies into it.
 
-It verifies from inside the new worktree, by the device-side stamp: `python -c` puts its own working directory first
-on `sys.path`, so a check launched from another worktree imports that worktree's `rola`.
+`python tools/dev.py worktree <name> <sha>` adds the worktree and runs both targets in it. It verifies from inside the
+new worktree: `python -c` puts its own working directory first on `sys.path`, so a check launched from another worktree
+imports that worktree's `rola`.
 
 ## 4. First build of the SHIPPED set
 

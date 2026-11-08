@@ -8,9 +8,9 @@ The law: `docs/KERNEL_STANDARDS.md#s23`. The command: `docs/internals/tools/dev.
 `docs/setup.md`.
 
 1. `python tools/dev.py check` first; every red names its fix. A tool that cannot import `rola_devtools` runs outside
-   the checkout's venv (`docs/setup.md`, the pointer venv).
-2. A new worktree: `python tools/dev.py worktree <name> <sha>` -- the pointer venv, the commit gate and the extension
-   in one step; never a bare `git worktree add`.
+   the checkout's venv (`docs/setup.md`, the checkout's venv): `bazel run //:dev_env` writes it.
+2. A new worktree: `python tools/dev.py worktree <name> <sha>` -- its venv and commit gate (`bazel run //:dev_env`) and
+   its extension (`bazel run //:library`) in one step; never a bare `git worktree add`.
 3. A fresh machine or container: `python tools/dev.py init`, `clock --mhz` once, then `check`; the container is
    proven by `container check` (`docs/setup.md`). A change to the environment's inputs carries a passing container
    check before it commits (`docs/KERNEL_STANDARDS.md#s23`).

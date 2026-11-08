@@ -13,6 +13,9 @@ package(default_visibility = ["//visibility:public"])
 #: library), standard library only
 filegroup(name = "python", srcs = ["bin/python3"])
 
+#: the pinned uv the environment was built with, for the run targets that write venvs over it (`//:dev_env`)
+filegroup(name = "uv", srcs = ["uv/uv"])
+
 cc_library(
     name = "torch_headers",
     hdrs = glob(["site-packages/torch/include/**"]),

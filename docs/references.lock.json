@@ -1643,6 +1643,7 @@
   {"doc": "docs/internals/tools/dev.md", "pinned_at": "9edbb7b546c4", "reviewed": true, "sha256": "f704f915212fd43a", "target": "tools/dev.py::CONTAINER_PROOFS"},
   {"doc": "docs/internals/tools/dev.md", "pinned_at": "bac2818f15af", "reviewed": true, "sha256": "1861d1d04246d2bf", "target": "tools/dev.py::ENV_INPUTS"},
   {"doc": "docs/internals/tools/dev.md", "pinned_at": "bac2818f15af", "reviewed": true, "sha256": "8facfcf9a4073005", "target": "tools/dev.py::KEPT_IMAGES"},
+  {"doc": "docs/internals/tools/dev.md", "pinned_at": "95fbafe2088b", "reviewed": true, "sha256": "059de68c96a9195b", "target": "tools/dev.py::LINKED"},
   {"doc": "docs/internals/tools/dev.md", "pinned_at": "f352b58b8cb7", "reviewed": true, "sha256": "cf71b938ad9917fe", "target": "tools/dev.py::bazelisk_path"},
   {"doc": "docs/internals/tools/dev.md", "pinned_at": "9edbb7b546c4", "reviewed": true, "sha256": "", "target": "tools/mold_pin.json"},
   {"doc": "docs/internals/tools/dev.md", "pinned_at": "9edbb7b546c4", "reviewed": true, "sha256": "", "target": "tools/sccache_pin.json"},
