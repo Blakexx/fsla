@@ -15,7 +15,8 @@ is one function here, `rule1`, both builds' (docs/build-graph.md#gates).
 | `readers` | `cuobjdump` and `nvdisasm`, each its whole `--version` output: the disassemblers the binary gates read with, which rule 1 compares the same way (`rule1`'s `readers`) |
 | `cuda_major` | the CUDA major torch must be built for; torch's extension builder only refuses another major once it compiles, the build refuses before |
 | `torch_index` | the PyTorch wheel index serving torch for that major |
-| `container` | the dev container that carries this assembler: `base_image` (an `nvidia/cuda` devel tag pinned by its digest, `name:tag@sha256:...`: a tag can be re-pushed, the digest is the image) and `packages`, the exact apt `name=version` pins that put the record's `ptxas` in it (`tools/dev.py container build` passes both, and the image refuses a `ptxas` that is not the record's) |
+| `sanitizer` | compute-sanitizer's whole `--version` text: the sanitizer lane (`tools/sanitize_oracle.py`) refuses another release's, so a binary is read with the toolkit that built it |
+| `container` | the dev container that carries this assembler: `base_image` (an `nvidia/cuda` devel tag pinned by its digest, `name:tag@sha256:...`: a tag can be re-pushed, the digest is the image) and `packages`, the exact apt `name=version` pins that put the record's `ptxas` and readers in it (`tools/dev.py container build` passes both, and the image refuses a `ptxas` or a reader that is not the record's) |
 
 Two records naming one assembler are refused: one assembler is one toolchain. The record's name is the manifest
 directory: `tools/manifests/<name>/sm_XX.json`, one file per architecture

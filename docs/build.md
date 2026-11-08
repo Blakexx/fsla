@@ -94,8 +94,10 @@ python -m pip install -e . --no-build-isolation
 3. **R1 — toolchain.** The configured toolkit's `ptxas --version` selects the
    toolchain: the record in `tools/toolchains/` that names it, whitespace-normalized
    ([`internals/tools/toolchains.md`](internals/tools/toolchains.md)). A toolkit no
-   record names refuses; that toolchain's manifests must pin the same string; torch
-   must be built for the toolchain's CUDA major. The whole output, not a parsed release
+   record names refuses; that toolchain's manifests must pin the same string; the
+   disassemblers the gates read with (`cuobjdump`, `nvdisasm`) must report the record's
+   `readers` byte for byte; torch must be built for the toolchain's CUDA major
+   (`tools/toolchains.py`'s `rule1`). The whole output, not a parsed release
    number: the build string distinguishes two shipments of one nominal release, and
    it is exactly those that can move an allocation while the version says nothing
    changed. In the same pass, R5: the vendored subtree under `csrc/third_party/` must hash

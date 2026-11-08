@@ -18,7 +18,7 @@ semaphores, which Bazel cannot do for an action.
 |---|---|---|
 | the host's NVIDIA driver and GPU | the host | -- |
 | the machine (base OS libraries, git, `python3`, the host C++ compiler nvcc drives) | the host, or the Docker image | the image |
-| bazelisk, Bazel's launcher | `tools/bazelisk_pin.json`, installed by `python tools/dev.py init` (`toolchain.bazelisk`), which links `bazel` on PATH to it (`toolchain.bazel`; `check` has the row) | `host.tools_dir` |
+| bazelisk, Bazel's launcher | `tools/bazelisk_pin.json`, installed by `python tools/dev.py init` under `host.tools_dir` by its pin (never a machine key), which links `bazel` on PATH to it (`toolchain.bazel`; `check` has the row) | `host.tools_dir` |
 | Bazel | `.bazelversion`, verified against `.bazeliskrc`'s digest | bazelisk's cache |
 | the graph's CUDA toolkit | NVIDIA's redistributable components at release 13.0.0 (`MODULE.bazel`'s `cuda.redist_json`: nvcc 13.0.48), only the compiler's (~75 MB of the 4.7 GB set) | the shared repository cache |
 | the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (`tools/uv_pin.json`) into the pinned CPython (3.11.13), and rola-devtools at `tools/devtools.txt`'s commit, by `bazel/environment.bzl`'s `@rola_env` (`bazel/make_env.py`) | `host.build_cache/bazel/store`, one environment a key (the lock, the devtools commit, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages; `@rola_env//:flags.bzl`'s `VENV` names it, so a command naming it is keyed by the environment |
@@ -30,8 +30,8 @@ semaphores, which Bazel cannot do for an action.
 
 ## <a id="front-door"></a>The front door
 
-bazelisk runs `bazel/bazel` (`bazel/front_door.py`; the wrapper directory `.bazeliskrc` names, `tools/` by
-bazelisk's default) in place of the Bazel it downloaded, so every Bazel command
+bazelisk runs `bazel/bazel` (`bazel/front_door.py`; the wrapper directory `.bazeliskrc` names, in place of
+bazelisk's default `tools/`) in place of the Bazel it downloaded, so every Bazel command
 in a checkout -- typed, or run by a tool -- goes through it. It runs under the machine's `python3` before any venv
 exists, reading the dev config through the rola-devtools checkout `tools/bootstrap.py` finds.
 

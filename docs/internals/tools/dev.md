@@ -22,14 +22,16 @@ settings it writes and reads are the dev config ([dev_config.md](dev_config.md))
 
 A key already in a file is kept unless `--force`. A pinned tool that is missing, or does not report its pin's
 version, is downloaded from the pin's release URL (`tools/sccache_pin.json`, `tools/mold_pin.json`,
-`tools/clang_tidy_pin.json`, `tools/bazelisk_pin.json`), asked again after a server error or a dropped connection, and
+`tools/bazelisk_pin.json`), asked again after a server error or a dropped connection, and
 then from its `mirror_urls` (the same asset through GitHub's API: github.com's release downloads returned gateway
 timeouts from its own edge for hours on 2026-11-08 while the API served the same assets). Its release sha256 is
 verified, and so is its binary
 sha256 where the pin has one. The whole release -- a tarball, a wheel unpacked under its own name, or a bare binary --
 lands under `host.tools_dir`, because the layout
-is part of the tool: `-fuse-ld=mold` selects the `ld.mold` next to `mold`, and clang-tidy reads its resource headers
-beside its binary. `init` links `toolchain.bazel` (`~/.local/bin/bazel`) to the pinned bazelisk -- a link it made to another pinned release is replaced, anything else at the path refused -- then wires this checkout's commit gate (the git-config keys `core.hooksPath` per worktree, and rola.venv naming the base venv the tracked hook runs from, where the lock pins every gate tool) in every worktree of the repository that carries the tracked hook, turns the repository's shared hook into a refusal (a checkout reaches it only unwired), names the same venv in the suite's and the store's checkouts, whose hooks read it too, installs the agent skill router where Claude Code keeps a user configuration (KERNEL_STANDARDS §31: the repo's `.claude/hooks/skill_router_bootstrap.py` copied to the user's `~/.claude/hooks/skill_router.py` where it differs, and its PreToolUse entry added to the user's `~/.claude/settings.json` where absent, every other setting kept; the image has no `~/.claude` and gets neither), and runs `check`, whose row says whether the router is installed and current. The
+is part of the tool: `-fuse-ld=mold` selects the `ld.mold` next to `mold`. sccache and mold are recorded in the
+machine's `toolchain.json`; bazelisk is found by its pin (`bazelisk_path`: under `host.tools_dir`, by its release's
+name), never recorded there -- every checkout loads the machine's files, and an older loader refuses a key it does not
+declare. `init` links `toolchain.bazel` (`~/.local/bin/bazel`) to the pinned bazelisk -- a link it made to another pinned release is replaced, anything else at the path refused -- then wires this checkout's commit gate (the git-config keys `core.hooksPath` per worktree, whose pre-commit hook runs `bazel test //:gate`, and rola.venv naming the base venv the post-commit review runs from) in every worktree of the repository that carries the tracked hook, turns the repository's shared hook into a refusal (a checkout reaches it only unwired), names the same venv in the suite's and the store's checkouts, whose hooks read it too, installs the agent skill router where Claude Code keeps a user configuration (KERNEL_STANDARDS §31: the repo's `.claude/hooks/skill_router_bootstrap.py` copied to the user's `~/.claude/hooks/skill_router.py` where it differs, and its PreToolUse entry added to the user's `~/.claude/settings.json` where absent, every other setting kept; the image has no `~/.claude` and gets neither), and runs `check`, whose row says whether the router is installed and current. The
 clock is not set by `init`, because locking it asks for administrator consent once.
 
 **`check`** prints one row per dependency and exits 1 on any red:

@@ -88,7 +88,7 @@ def main(argv: list[str]) -> int:
     real = os.environ.get("BAZEL_REAL")
     if not real:
         raise SystemExit("bazel/bazel is the graph's front door, which bazelisk runs in Bazel's place: run `bazel`, the "
-                         "pinned bazelisk (toolchain.bazelisk; python tools/dev.py init)")
+                         "pinned bazelisk (python tools/dev.py init links it)")
     startup, command, rest = _split(argv)
     if command == "coverage":
         raise SystemExit("bazel coverage is refused: its instrumented build differs from the budgeted one and would run "

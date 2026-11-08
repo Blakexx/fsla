@@ -349,7 +349,8 @@ publication read before its join, an inner join standing in for an outer one, a 
 ### The sanitizer lane
 
 `bazel test //tests:sanitizer` runs `tools/sanitize_oracle.py`, passing it the toolkit's own `compute-sanitizer`
-(`@cuda_tools`, the release the library is built by; the script takes no other from PATH) over ONE named oracle cell per family (the facts pass, the
+(`@cuda_tools`, the release the library is built by; the script refuses any whose `--version` is not the toolchain
+record's `sanitizer`, and takes none from PATH) over ONE named oracle cell per family (the facts pass, the
 carry's fold and a whole call, the intra, decode, the producer and the entmax solves), each pair in its own process
 with a timeout, under the GPU lock; `--test_arg=--tool --test_arg=racecheck` or `--family` narrows or widens it. It is
 `manual`: no suite holds it.

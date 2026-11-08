@@ -364,12 +364,9 @@ def _gate_toolchain(manifest: dict) -> str:
     is the toolchain's CUDA major."""
     import torch
 
-    def version(tool: str) -> str:
-        return subprocess.run([cuda_bin(tool), "--version"], capture_output=True, text=True, check=True).stdout
-
     #: the disassemblers the post-build SASS gate reads with are the record's too
     here = toolchains.rule1(TOOLCHAIN, ratify.ptxas_version(), manifest, torch.version.cuda,
-                            {tool: version(tool) for tool in ("cuobjdump", "nvdisasm")})
+                            {tool: toolchains.version_text(cuda_bin(tool)) for tool in toolchains.READERS})
     print(f"rule 1 OK  toolchain {TOOLCHAIN.name}, torch CUDA {torch.version.cuda}, ptxas: {here}")
     return here
 

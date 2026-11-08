@@ -6,7 +6,7 @@
     python tools/dev.py init [--force]          # write this machine's dev config, install the pinned tools, wire hooks
     python tools/dev.py check                   # every value, tool, pin and lock this tree depends on; exit 1 on a red
     python tools/dev.py show                    # every resolved setting and the file it came from
-    python tools/dev.py get <section.key>       # one value, for a shell caller (cuda-home resolves the toolkit)
+    python tools/dev.py get <section.key>       # one value, for a person or a shell
     python tools/dev.py clock --mhz 1665        # lock this host's SM clock once, prove the round trip, record it
     python tools/dev.py worktree <name> <sha> [--build]   # a worktree, its pointer venv, its gate, its extension
     python tools/dev.py container compose|build|check|gate # the dev container: mounts, image, proof, commit gate
@@ -42,7 +42,10 @@ import toolchains  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 PINS = {"sccache": ROOT / "tools" / "sccache_pin.json", "mold": ROOT / "tools" / "mold_pin.json",
-        "clang_tidy": ROOT / "tools" / "clang_tidy_pin.json", "bazelisk": ROOT / "tools" / "bazelisk_pin.json"}
+        "bazelisk": ROOT / "tools" / "bazelisk_pin.json"}
+#: the pins init records in the machine's toolchain file; bazelisk is found by its pin instead (`bazelisk_path`), since
+#: every checkout loads that file and an older loader refuses a key it does not declare
+RECORDED = ("sccache", "mold")
 #: THE ENVIRONMENT'S INPUTS: what the dev image is built from and how it is run. Their hash is the environment key; a
 #: commit changing any of them carries a passing container check for its key (KERNEL_STANDARDS §23 (3)).
 ENV_INPUTS = ("Dockerfile", ".devcontainer/devcontainer.json", ".devcontainer/compose.yaml", "requirements.lock",
@@ -57,12 +60,6 @@ RESULTS_ENVIRONMENT = "environment"
 IMAGE_LAYOUT, WSL_LIB_IN_IMAGE = dev_config.IMAGE_LAYOUT, dev_config.WSL_LIB_IN_IMAGE
 
 
-def _clang_tidy_version(path: str) -> str:
-    """`LLVM version X.Y.Z`, the line of `clang-tidy --version` that names the release."""
-    out = subprocess.run([path, "--version"], capture_output=True, text=True, check=True).stdout
-    return next(line.strip() for line in out.splitlines() if line.strip().startswith("LLVM version"))
-
-
 def _bazelisk_version(path: str) -> str:
     """The pin's version string when the binary is the pinned release, by its digest (it prints no version alone)."""
     pin = json.loads(PINS["bazelisk"].read_text())
@@ -72,7 +69,13 @@ def _bazelisk_version(path: str) -> str:
 
 #: each pinned tool's own version reader, the one its build gate compares against the pin
 VERSION_OF = {"sccache": sccache_toolchain.sccache_version, "mold": mold_toolchain.mold_version,
-              "clang_tidy": _clang_tidy_version, "bazelisk": _bazelisk_version}
+              "bazelisk": _bazelisk_version}
+
+
+def bazelisk_path() -> Path:
+    """Where init installs the pinned bazelisk: under `host.tools_dir`, by its release's name (`install_pinned`)."""
+    pin = json.loads(PINS["bazelisk"].read_text())
+    return Path(dev_config.get("host.tools_dir")) / f"bazelisk-{pin['version']}" / pin["binary"]
 
 
 def _write_section(section: str, values: dict, force: bool) -> None:
@@ -116,7 +119,7 @@ def link_bazel() -> None:
     """`toolchain.bazel` linked to the pinned bazelisk: `bazel` is the command the docs name, and only the pinned
     launcher reads `.bazeliskrc` and runs the graph's front door. A link init made to another pinned release (under
     `host.tools_dir`) is replaced; anything else at the path is refused, named, never overwritten."""
-    link, bazelisk = Path(dev_config.get("toolchain.bazel")), Path(dev_config.get("toolchain.bazelisk"))
+    link, bazelisk = Path(dev_config.get("toolchain.bazel")), bazelisk_path()
     if link.is_symlink() and link.resolve() == bazelisk.resolve():
         return
     tools = Path(dev_config.get("host.tools_dir")).resolve()
@@ -212,8 +215,9 @@ GATED_CONSUMERS = ("workspace.suite", "store.root", "workspace.devtools")
 
 
 def wire_hooks(checkout: Path) -> None:
-    """The commit gate as a property of the checkout: `core.hooksPath` set per worktree to the tracked hooks, and
-    `rola.venv` naming the venv they run from (the lock pins every gate tool), so no hook reaches the host's python."""
+    """The commit gate as a property of the checkout: `core.hooksPath` set per worktree to the tracked hooks (the gate
+    is `bazel test //:gate`), and `rola.venv` naming the venv the post-commit review runs from, so no hook reaches the
+    host's python."""
     subprocess.run(["git", "-C", str(checkout), "config", "extensions.worktreeConfig", "true"], check=True)
     subprocess.run(["git", "-C", str(checkout), "config", "--worktree", "core.hooksPath", "tools/git-hooks"], check=True)
     subprocess.run(["git", "-C", str(checkout), "config", "--worktree", "rola.venv", dev_config.get("workspace.base_venv")],
@@ -348,10 +352,12 @@ def cmd_init(a) -> int:
 
     tools_dir = Path(dev_config.get("host.tools_dir"))
     for name in PINS:
-        current = dev_config.get(f"toolchain.{name}")
+        current = dev_config.get(f"toolchain.{name}") if name in RECORDED else str(bazelisk_path())
         pin = json.loads(PINS[name].read_text())
         if current is None or _pinned_version(name, current) != pin["version_string"]:
-            _write_section("toolchain", {name: install_pinned(name, tools_dir)}, force=True)
+            installed = install_pinned(name, tools_dir)
+            if name in RECORDED:
+                _write_section("toolchain", {name: installed}, force=True)
     link_bazel()
     base = dev_config.get("workspace.base_venv")
     drift = venv_drift(str(Path(base) / "bin" / "python")) if base else []
@@ -438,12 +444,11 @@ def cmd_check(a) -> int:
             row(True, f"toolchain {name}: {dev_config.get(f'toolchain.{name}')} matches its pin")
         except RuntimeError as ex:
             row(False, f"toolchain {name}: {str(ex).splitlines()[0][:140]}", "python tools/dev.py init")
-    bazelisk = dev_config.get("toolchain.bazelisk")
+    bazelisk = bazelisk_path()
     pin = json.loads(PINS["bazelisk"].read_text())["version_string"]
-    row(bool(bazelisk) and _pinned_version("bazelisk", bazelisk) == pin, f"toolchain bazelisk: {bazelisk} is {pin}",
-        "python tools/dev.py init")
+    row(_pinned_version("bazelisk", str(bazelisk)) == pin, f"bazelisk: {bazelisk} is {pin}", "python tools/dev.py init")
     on_path = shutil.which("bazel")
-    row(bool(bazelisk) and on_path is not None and Path(on_path).resolve() == Path(bazelisk).resolve(),
+    row(on_path is not None and Path(on_path).resolve() == bazelisk.resolve(),
         f"`bazel` on PATH is the pinned bazelisk: {on_path}",
         f"python tools/dev.py init (links toolchain.bazel, {dev_config.get('toolchain.bazel')}); its directory on PATH")
     base = dev_config.get("workspace.base_venv")
@@ -459,8 +464,8 @@ def cmd_check(a) -> int:
     hooks = subprocess.run(["git", "-C", str(ROOT), "config", "--get", "core.hooksPath"], capture_output=True, text=True)
     base = dev_config.get("workspace.base_venv")
     row(not readable or (hooks.stdout.strip() == "tools/git-hooks" and gate_venv(ROOT) == base),
-        f"commit gate wired in {ROOT.name}, run from {base}" if readable else f"{ROOT}: no git repository visible here; "
-        "commits are made where it is", "python tools/dev.py init")
+        f"commit gate wired in {ROOT.name} (`bazel test //:gate`), its review run from {base}" if readable else
+        f"{ROOT}: no git repository visible here; commits are made where it is", "python tools/dev.py init")
     current, wired = router_state()
     if (Path.home() / ".claude").is_dir():
         row(current and wired, "agent skill router: " + ("installed and current" if current else "missing or stale")
@@ -516,7 +521,7 @@ def cmd_show(_a) -> int:
 
 
 def cmd_get(a) -> int:
-    print(dev_config.cuda_home() if a.key == "cuda-home" else json.dumps(dev_config.get(a.key)).strip('"'))
+    print(json.dumps(dev_config.get(a.key)).strip('"'))
     return 0
 
 
@@ -815,7 +820,7 @@ def main() -> int:
     p.add_argument("--image", action="store_true", help="inside an image build: the toolchain, pins and venv only")
     p.set_defaults(fn=cmd_check)
     sub.add_parser("show", help="every resolved setting and its source").set_defaults(fn=cmd_show)
-    p = sub.add_parser("get", help="print one value: <section.key>, or cuda-home")
+    p = sub.add_parser("get", help="print one value: <section.key>")
     p.add_argument("key")
     p.set_defaults(fn=cmd_get)
     p = sub.add_parser("clock", help="lock this host's SM clock once and record it")

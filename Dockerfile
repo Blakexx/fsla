@@ -11,7 +11,7 @@
 # `container.packages` (CUDA_PACKAGES), its `torch_index` (TORCH_INDEX) and its name (ROLA_TOOLCHAIN). A base tag's own
 # nvcc is not trusted: the packages are installed at their pinned versions whatever the tag ships (a tag can carry a
 # newer patch -- measured for 12.4, whose every tag shipped V12.4.131 against a V12.4.99 pin), and the build fails
-# unless `ptxas --version` is the record's string byte for byte, the same comparison setup.py's rule 1 makes.
+# unless ptxas, cuobjdump and nvdisasm report the record's strings byte for byte, the comparison rule 1 makes.
 # ubuntu22.04 for the apt package surface the rest of this file needs (deadsnakes, clangd-14, ...).
 #
 # sccache, mold, clang-tidy and bazelisk are installed by `tools/dev.py init --image` from the repo's own pins
@@ -86,14 +86,17 @@ ARG CUDA_PACKAGES
 RUN apt-get update && apt-get install -y --allow-downgrades ${CUDA_PACKAGES} \
         nsight-compute-2025.3.0=2025.3.0.19-1 \
     && rm -rf /var/lib/apt/lists/*
-#: FAILS THE BUILD, LOUDLY, IF THE ASSEMBLER IS NOT THE RECORD'S: a build that appears to succeed while carrying the
-#: wrong assembler is exactly the silent-drift shape the closed-world design refuses.
+#: FAILS THE BUILD, LOUDLY, IF THE ASSEMBLER OR A READER IS NOT THE RECORD'S (ptxas, cuobjdump, nvdisasm, each its
+#: whole `--version` text, rule 1's comparison): a build that appears to succeed while carrying the wrong toolkit is
+#: exactly the silent-drift shape the closed-world design refuses.
 ARG ROLA_TOOLCHAIN
 COPY tools/toolchains/ /opt/rola/bootstrap/tools/toolchains/
 RUN python3.11 -c "import json, subprocess, sys; \
-want = ' '.join(json.load(open('/opt/rola/bootstrap/tools/toolchains/${ROLA_TOOLCHAIN}.json'))['ptxas'].split()); \
-have = ' '.join(subprocess.run(['ptxas', '--version'], capture_output=True, text=True).stdout.split()); \
-sys.exit(0 if have == want else 'FATAL: ptxas is not toolchain ${ROLA_TOOLCHAIN}: ' + have)"
+record = json.load(open('/opt/rola/bootstrap/tools/toolchains/${ROLA_TOOLCHAIN}.json')); \
+norm = lambda text: ' '.join(text.split()); \
+want = {'ptxas': record['ptxas'], **record['readers']}; \
+bad = [t for t, w in want.items() if norm(subprocess.run([t, '--version'], capture_output=True, text=True).stdout) != norm(w)]; \
+sys.exit('FATAL: not toolchain ${ROLA_TOOLCHAIN}: ' + ', '.join(bad) if bad else 0)"
 
 # --------------------------------------------------------------------------
 # uv -- the Python resolver/installer this repo's ONE lock file
@@ -140,8 +143,6 @@ RUN curl -sSL -o /tmp/difft.tar.gz \
 # --------------------------------------------------------------------------
 # pipx tools -- ast-grep-cli, py-spy: real PyPI packages, so pipx is the
 # actual right tool for them (difftastic is not one, see above).
-# pre-commit is also installed here (a dev tool, not a repo runtime
-# dependency) so it is present even before the Python lock's venv exists.
 #
 # clang-format==19.1.7 IS PINNED, NOT A FREE CHOICE: `.clang-format`'s own
 # header states "Pinned tool: clang-format 19.1.7 (pip package
@@ -159,7 +160,6 @@ RUN curl -sSL -o /tmp/difft.tar.gz \
 # failure shape as a real drift. pipx installs the exact pinned PyPI package.
 RUN pipx install ast-grep-cli \
     && pipx install py-spy \
-    && pipx install pre-commit \
     && pipx install clang-format==19.1.7
 
 # --------------------------------------------------------------------------

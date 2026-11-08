@@ -11,7 +11,6 @@ Docs: docs/build-graph.md#gates.
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 from pathlib import Path
 
@@ -21,10 +20,6 @@ sys.path.insert(0, str(ROOT / "tools"))
 import build_record  # noqa: E402
 import gen_shards  # noqa: E402
 import toolchains  # noqa: E402
-
-
-def _version(binary: str) -> str:
-    return subprocess.run([binary, "--version"], capture_output=True, text=True, check=True).stdout
 
 
 def main() -> int:
@@ -48,8 +43,9 @@ def main() -> int:
     manifest = build_record.ratified_manifest(archs, toolchain.manifest_dir)
 
     #: the binary gates' disassemblers are the record's too: MODULE.bazel names the toolkit's manifest twice
-    ptxas = toolchains.rule1(toolchain, _version(a.ptxas), manifest, a.torch_cuda,
-                             {"cuobjdump": _version(a.cuobjdump), "nvdisasm": _version(a.nvdisasm)})
+    ptxas = toolchains.rule1(toolchain, toolchains.version_text(a.ptxas), manifest, a.torch_cuda,
+                             {"cuobjdump": toolchains.version_text(a.cuobjdump),
+                              "nvdisasm": toolchains.version_text(a.nvdisasm)})
     print(f"rule 1 OK  toolchain {toolchain.name}, torch CUDA {a.torch_cuda}, ptxas: {ptxas}")
     carry = gen_shards.family_arms(gen_shards.CARRY, a.carry_arms, "--//:carry_arms")
     decode = gen_shards.family_arms(gen_shards.DECODE, a.decode_arms, "--//:decode_arms")

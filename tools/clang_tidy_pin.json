@@ -1,6 +1,6 @@
 {
     "name": "clang-tidy",
-    "role": "the analyzer of both clang-tidy profiles (host: tools/lint/run_clang_tidy.sh; device: tools/lint/run_clang_tidy_device.sh), on every translation unit the build compiles. Pinned because the analysis is only as good as the parse: clang 14 (the distro's) cannot parse a torch-bearing CUDA unit against this toolkit's headers, and the failed parse reported used parameters as unused (measured 2026-09-29); this release parses every unit with zero errors and finds a planted unused parameter and dead store at the end of decode.cu.",
+    "role": "the analyzer of both clang-tidy profiles: the build graph fetches it (`@clang_tidy`) for the unit lints (tools/lint/unit_lints.py) on every unit the library links. Pinned because the analysis is only as good as the parse: clang 14 (the distro's) cannot parse a torch-bearing CUDA unit against this toolkit's headers, and the failed parse reported used parameters as unused (measured 2026-09-29); this release parses every unit with zero errors and finds a planted unused parameter and dead store at the end of decode.cu.",
     "upstream": "https://github.com/ssciwr/clang-tidy-wheel (LLVM's clang-tidy, built as a wheel with its resource headers, including the CUDA wrappers)",
     "version": "22.1.8",
     "version_string": "LLVM version 22.1.8",

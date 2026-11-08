@@ -47,6 +47,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import toolchains
 from rola_devtools.locks import host
 from rola_devtools.locks.gpu import gpu_lock
 
@@ -347,6 +348,12 @@ def main() -> int:
     if not (sanitizer.is_absolute() and sanitizer.is_file() and os.access(sanitizer, os.X_OK)):
         ap.error(f"--sanitizer {args.sanitizer}: an absolute path to an executable, never a name PATH resolves -- the "
                  "lane passes the toolkit's own: bazel test //tests:sanitizer")
+    #: the release the toolchain record pins, byte for byte (normalized), as rule 1 pins the assembler and the readers
+    record = toolchains.named(toolchains.built_extension(ROOT).parent.name.removeprefix("rola_"))
+    here = toolchains.normalize(toolchains.version_text(str(sanitizer)))
+    if here != record.sanitizer:
+        ap.error(f"--sanitizer {sanitizer} is not toolchain {record.name}'s compute-sanitizer:\n  record: "
+                 f"{record.sanitizer}\n  here  : {here}")
 
     tools = args.tool or list(_DEFAULT_TOOLS)
     families = args.family or list(_FAMILY_TESTS)

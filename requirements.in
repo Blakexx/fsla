@@ -36,8 +36,8 @@ entmax==1.3
 pytest-xdist==3.8.0
 
 # --- [dev] extra: the lints' tools, at the versions CI pins, so a lint runs from this environment and never from a
-# tool the host happens to have (pre-commit among them runs nothing since the commit gate is the graph's: it leaves
-# with the lock's next regeneration, which a container check gates) ---
+# tool the host happens to have; pre-commit runs the sibling repositories' commit gates from it (rola's own is the
+# build graph's) ---
 ruff==0.14.10
 pre-commit==4.6.2
 vulture==2.16

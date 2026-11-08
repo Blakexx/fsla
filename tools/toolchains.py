@@ -17,9 +17,9 @@ ROOT = Path(__file__).absolute().parents[1]
 RECORDS = ROOT / "tools" / "toolchains"
 MANIFESTS = ROOT / "tools" / "manifests"
 
-_FIELDS = {"ptxas": str, "readers": dict, "cuda_major": int, "torch_index": str, "container": dict}
+_FIELDS = {"ptxas": str, "readers": dict, "sanitizer": str, "cuda_major": int, "torch_index": str, "container": dict}
 #: the disassemblers the binary gates read with, each pinned by its whole `--version` text as the assembler is
-_READERS = ("cuobjdump", "nvdisasm")
+READERS = ("cuobjdump", "nvdisasm")
 _CONTAINER = {"base_image": str, "packages": list}
 
 
@@ -32,6 +32,8 @@ class Toolchain:
     name: str
     ptxas: str
     readers: tuple[tuple[str, str], ...]
+    #: compute-sanitizer's whole `--version` text: the sanitizer lane reads a binary with the toolkit that built it
+    sanitizer: str
     cuda_major: int
     torch_index: str
     base_image: str
@@ -76,13 +78,14 @@ def records() -> dict[str, Toolchain]:
         if set(container) != set(_CONTAINER) or any(type(container[k]) is not v for k, v in _CONTAINER.items()) \
                 or not all(type(p) is str and "=" in p for p in container["packages"]):
             raise ToolchainError(f"{path}: `container` must be {{base_image: str, packages: [\"name=version\", ...]}}")
-        if set(blob["readers"]) != set(_READERS) or not all(type(v) is str for v in blob["readers"].values()):
-            raise ToolchainError(f"{path}: `readers` must name {list(_READERS)}, each its `--version` text")
+        if set(blob["readers"]) != set(READERS) or not all(type(v) is str for v in blob["readers"].values()):
+            raise ToolchainError(f"{path}: `readers` must name {list(READERS)}, each its `--version` text")
         if not re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", container["base_image"]):
             raise ToolchainError(f"{path}: `container.base_image` must pin its digest (name:tag@sha256:...), got "
                                  f"{container['base_image']!r}: a tag is re-pushed, a digest is the image")
         toolchain = Toolchain(name=path.stem, ptxas=normalize(blob["ptxas"]),
                               readers=tuple(sorted((k, normalize(v)) for k, v in blob["readers"].items())),
+                              sanitizer=normalize(blob["sanitizer"]),
                               cuda_major=blob["cuda_major"],
                               torch_index=blob["torch_index"], base_image=container["base_image"],
                               packages=tuple(container["packages"]))
@@ -112,8 +115,27 @@ def for_ptxas(version: str) -> Toolchain:
         "Point toolchain.cuda_home at a declared toolkit, or bring up the toolchain (docs/bringup.md).")
 
 
-def rule1(toolchain: Toolchain, ptxas: str, manifest: dict, torch_cuda: str | None,
-          readers: dict[str, str] | None = None) -> str:
+def version_text(binary: str) -> str:
+    """A toolkit binary's whole `--version` output, the text a record pins (normalize it to compare)."""
+    import subprocess
+
+    return subprocess.run([binary, "--version"], capture_output=True, text=True, check=True).stdout
+
+
+def check_readers(toolchain: Toolchain, readers: dict[str, str]) -> None:
+    """Each disassembler a gate reads with (name -> its `--version` text) is the record's byte for byte, every one the
+    record names: a binary is read with the toolkit it was ratified under."""
+    pinned = dict(toolchain.readers)
+    if set(readers) != set(pinned):
+        raise ToolchainError(f"CLOSED-WORLD RULE 1: the readers checked are {sorted(readers)}, the record names "
+                             f"{sorted(pinned)}")
+    for name, text in readers.items():
+        if normalize(text) != pinned[name]:
+            raise ToolchainError(f"CLOSED-WORLD RULE 1: {name} is not toolchain {toolchain.name}'s.\n  record: "
+                                 f"{pinned[name]}\n  here  : {normalize(text)}")
+
+
+def rule1(toolchain: Toolchain, ptxas: str, manifest: dict, torch_cuda: str | None, readers: dict[str, str]) -> str:
     """CLOSED-WORLD RULE 1: `ptxas` (a `--version` text) is the toolchain record's and the ratified manifests' assembler
     byte for byte; the torch the extension builds against is the toolchain's CUDA major; and each of `readers` (the
     disassemblers the binary gates read with: name -> `--version` text) is the record's byte for byte, so the gates read
@@ -124,11 +146,7 @@ def rule1(toolchain: Toolchain, ptxas: str, manifest: dict, torch_cuda: str | No
                              f"assembler.\n  record  : {toolchain.ptxas}\n  manifest: {pinned}\n  here    : {here}\n"
                              "Re-ratify (`python tools/ratify.py --write`) and record the new numbers -- do not "
                              "hand-edit the manifest.")
-    pinned_readers = dict(toolchain.readers)
-    for name, text in (readers or {}).items():
-        if normalize(text) != pinned_readers[name]:
-            raise ToolchainError(f"CLOSED-WORLD RULE 1: {name} is not toolchain {toolchain.name}'s.\n  record: "
-                                 f"{pinned_readers[name]}\n  here  : {normalize(text)}")
+    check_readers(toolchain, readers)
     torch_pairing(toolchain, torch_cuda)
     return here
 

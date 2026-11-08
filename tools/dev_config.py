@@ -53,13 +53,12 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "sccache": Key("path?", None, "the pinned sccache (tools/sccache_pin.json); null means none installed"),
         "sccache_enabled": Key("bool", True, "false builds uncached, the one deliberate opt-out of the sccache gate"),
         "mold": Key("path?", None, "the pinned mold (tools/mold_pin.json), the only linker; null means none installed"),
-        "clang_tidy": Key("path?", None, "the pinned clang-tidy (tools/clang_tidy_pin.json), both clang-tidy profiles' "
-                          "analyzer; null means none installed"),
-        "bazelisk": Key("path?", None, "the pinned bazelisk (tools/bazelisk_pin.json), Bazel's launcher: it runs the "
-                        "version .bazelversion names through the graph's front door (bazel/bazel); null means none "
-                        "installed"),
+        "clang_tidy": Key("path?", None, "the host's pinned clang-tidy, which checkouts before the build graph's unit "
+                          "lints install and whose commit hooks read it; this tree's unit lints run the graph's "
+                          "(@clang_tidy) and it reads none of it -- declared so their machine files load"),
         "bazel": Key("path", "~/.local/bin/bazel", "where init links `bazel`, the command the docs name, to the pinned "
-                     "bazelisk: a path in a directory on PATH"),
+                     "bazelisk (under host.tools_dir by its pin, never a machine key: every checkout loads this "
+                     "machine's files, and an older loader refuses a key it does not declare): a path on PATH"),
     },
     **MACHINE,
     "store": {
