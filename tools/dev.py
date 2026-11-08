@@ -719,22 +719,33 @@ def _only_toolchain() -> toolchains.Toolchain:
     return next(iter(declared.values()))
 
 
-def _keep_newest_images() -> None:
-    """Every `rola-dev` image but the `KEPT_IMAGES` built most recently loses its tags, and with them its layers no
-    image shares: Docker's disk holds the images a build made until something removes them."""
-    listed = subprocess.run(["docker", "images", IMAGE_REPO, "--format", "{{.ID}}\t{{.CreatedAt}}\t{{.Repository}}:{{.Tag}}"],
+def _keep_newest_images(built: str) -> None:
+    """Every `rola-dev` image but the `KEPT_IMAGES` tagged most recently loses its tags, and with them its layers no
+    image shares; `built`, the image a build just made, is always among those kept. An image's tag time is when a build
+    last made it (a build that hits the cache at every step keeps the image's creation time and tags it again)."""
+    listed = subprocess.run(["docker", "images", IMAGE_REPO, "--format", "{{.ID}}\t{{.Repository}}:{{.Tag}}"],
                             capture_output=True, text=True, check=True).stdout.splitlines()
     tags: dict[str, list[str]] = {}
-    created: dict[str, str] = {}
     for line in listed:
-        image, when, name = line.split("\t")
+        image, name = line.split("\t")
         tags.setdefault(image, []).append(name)
-        created[image] = when
-    old = sorted(tags, key=created.get, reverse=True)[KEPT_IMAGES:]
-    for image in old:
-        subprocess.run(["docker", "rmi", *tags[image]], capture_output=True)
-    if old:
-        print(f"kept the {KEPT_IMAGES} newest {IMAGE_REPO} images; removed {len(old)} older")
+    tagged = {image: subprocess.run(["docker", "image", "inspect", "--format", "{{.Metadata.LastTagTime}}", image],
+                                    capture_output=True, text=True, check=True).stdout.strip() for image in tags}
+    newest = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", built], capture_output=True, text=True,
+                            check=True).stdout.strip().removeprefix("sha256:")[:12]
+    kept = [newest] + [image for image in sorted(tags, key=tagged.get, reverse=True) if image != newest]
+    removed, refused = 0, []
+    for image in kept[KEPT_IMAGES:]:
+        done = subprocess.run(["docker", "rmi", *tags[image]], capture_output=True, text=True)
+        if done.returncode == 0:
+            removed += 1
+        else:
+            said = done.stderr.strip().splitlines()
+            refused.append(f"{' '.join(tags[image])}: {said[-1] if said else f'exit {done.returncode}'}")
+    if removed:
+        print(f"kept the {KEPT_IMAGES} newest {IMAGE_REPO} images; removed {removed} older")
+    for line in refused:
+        print(f"kept, Docker refused its removal: {line}")
 
 
 def cmd_container(a) -> int:
@@ -760,11 +771,14 @@ def cmd_container(a) -> int:
             built = subprocess.run(["docker", "build", *build_args, "-t", tag, "-t", f"{IMAGE_REPO}:latest",
                                     context]).returncode
         if built == 0:
-            _keep_newest_images()
+            _keep_newest_images(tag)
         return built
     if a.action == "gate":
         return _container_gate()
 
+    #: a build keeps only the newest images (`KEPT_IMAGES`): an older environment's image may be gone
+    if subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode:
+        raise SystemExit(f"no image {tag} for this environment: python3 tools/dev.py container build")
     lock = Path(dev_config.get("host.lock_dir")) / "rola_container_probe.lock"
     holder = subprocess.Popen([sys.executable, "-c", "import fcntl, sys; f = open(sys.argv[1], 'w'); "
                                "fcntl.flock(f, fcntl.LOCK_EX); print('held', flush=True); sys.stdin.read()", str(lock)],

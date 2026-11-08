@@ -78,9 +78,11 @@ path and bytes each, is the ENVIRONMENT KEY.
 - `build` copies only those inputs into a context and builds `rola-dev:<key[:12]>` for a toolchain record
   (`--toolchain`, default the one declared), passing its base image, apt pins, torch index and name as build arguments. The image's last step is
   `init --image`, which writes the fixed layout `IMAGE_LAYOUT`, installs the pins and runs `check --image`. A red row
-  fails the build.
+  fails the build. A build that succeeds keeps the `KEPT_IMAGES` (3) `rola-dev` images tagged most recently, the one it
+  built always among them, and removes the rest, naming any Docker refuses; `compose` and `check` refuse by name an
+  environment whose image is gone.
 - `compose` writes `.devcontainer/compose.local.yaml`, binding the host's checkout, lock directories, store and
-  worktrees onto that layout, and refuses without an image for the key.
+  worktrees onto that layout, and refuses without an image for the key; so does `check`.
 - `check` runs `CONTAINER_PROOFS` inside the image with those mounts: `dev.py check`, the GPU with a call through
   torch's flash backend, a lock held by a host process seen as held, and an iteration build of a copy of the checkout. It
   stores the result through `rola_results` at `environment`, one record per key, every check a sample.
