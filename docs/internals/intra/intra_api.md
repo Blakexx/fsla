@@ -28,7 +28,7 @@ which side is f16 -- is read from its rows' dtypes.
 The refusals (KERNEL_STANDARDS §18: a seam refuses rather than guesses):
 
 * each side a row set a level, as many as the layout's levels, u8 or f16 each, and the values f16;
-* `window` is the device's W (`common/window.cuh`) and `T` at least one token (a partial last window runs its
+* `window` is the device's W (its card's build's) and `T` at least one token (a partial last window runs its
   tiles before the call's end: [`ampere/intra_kernel.md`](ampere/intra_kernel.md#partial-window));
 * the write heads divide the query heads;
 * the accumulation is fp32 or fp16;
@@ -76,7 +76,7 @@ The readers a CTA holds resident on `device`'s card ([`intra.md`](intra.md#block
 ## `intra_build_stamp`
 
 A fact only the loaded binary can produce: a one-thread kernel returns `(rows · 1000003 + sizeof(Smem)) · 1000003 +
-sizeof(IntraParams)` -- the compiled image's own build's (variant 0) walk: its block rows, its fixed tenants and the
+sizeof(IntraParams)` -- the current device's build's walk: its block rows, its fixed tenants and the
 operand block -- so the value moves
 when any of them does. A path or hash check cannot catch a stale extension;
 `test_the_loaded_binary_states_the_footprint_it_carries` reads it against `intra_footprint`'s law

@@ -310,9 +310,8 @@ def check(cfg: dict | None = None, header_text: str | None = None) -> list[str]:
         if not set(row.get("build", {})) <= set(BUILD_TRAITS):
             findings.append(f"product {product}: its build overrides a trait outside {', '.join(BUILD_TRAITS)}")
         if row.get("build"):
-            findings.append(f"product {product}: a build variant is not built yet -- the carry and the intra compile at "
-                            f"a build, the other kernels still read their architecture's window "
-                            f"(docs/internals/common/hardware.md#builds)")
+            findings.append(f"product {product}: a build variant is not gated yet -- the oracle set and the SASS gate "
+                            f"run one build an architecture (docs/internals/common/hardware.md#builds)")
         if slugify_gpu(row.get("device", "")) != product:
             findings.append(f"product {product}: its device `{row.get('device')}` is not that product")
 

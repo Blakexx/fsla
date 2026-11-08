@@ -149,7 +149,7 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
                   "values is the CUDA f16 [B, T, H, d_v] plane, channels contiguous");
   const int64_t B = values.size(0), L = values.size(1), H = values.size(2), dv = values.size(3),
                 BH = B * H;
-  //: the device's window (`common/window.cuh`): its compiled kernels' W, never the host pass's
+  //: the device's window, its card's build's
   int dev = 0;
   ROLA_CUDA_CHECK(cudaGetDevice(&dev));
   const int W = card_of(dev).traits.window;
@@ -407,9 +407,10 @@ int64_t carry_capture_bytes() { return (int64_t)sizeof(CarryCapture); }
 
 namespace stamp {
 
-//: THE DEVICE-SIDE FACT: the only answer a stale binary cannot produce.
+//: THE DEVICE-SIDE FACT at build `Bt::build`: the only answer a stale binary cannot produce.
+template <class Bt>
 __global__ void carry_stamp_kernel(int* out) {
-  out[0] = ::denseref::arch::traits_of(::denseref::arch::Build{::denseref::arch::kArch, 0}).window;
+  out[0] = Bt::traits.window;
   out[1] = denseref::arch::kCapsDigest;
   out[2] = kStateValues;
   out[3] = kListBound;
@@ -420,7 +421,12 @@ __global__ void carry_stamp_kernel(int* out) {
 int64_t carry_build_stamp() {
   check_arch_table();
   auto buf = empty_cuda({4}, Dtype::Int);
-  stamp::carry_stamp_kernel<<<1, 1, 0, current_stream()>>>(buf.mutable_data_ptr<int32_t>());
+  build_switch(current_card(), [&](auto b) {
+    constexpr ::denseref::arch::Build kB = decltype(b)::build;
+    if constexpr (in_image(kB))
+      stamp::carry_stamp_kernel<::denseref::arch::BuildTag<kB>>
+          <<<1, 1, 0, current_stream()>>>(buf.mutable_data_ptr<int32_t>());
+  });
   STD_TORCH_CHECK(cudaGetLastError() == cudaSuccess, "the carry build stamp did not run");
   const auto host = to_cpu(buf);
   const int32_t* f = host.const_data_ptr<int32_t>();

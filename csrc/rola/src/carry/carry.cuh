@@ -10,7 +10,7 @@
 
 namespace rola::carry {
 
-//: THE CTA AND THE LISTS; the window is the card's (`common/window.cuh`). -- see docs/internals/carry/carry.md#constants
+//: THE CTA AND THE LISTS; the window is the build's (its plan's). -- see docs/internals/carry/carry.md#constants
 constexpr int kWarps = 8;
 constexpr int kThreads = kWarps * 32;
 //: A LIST'S BOUNDARIES, every 64th union slot (`list_at`). -- see docs/internals/carry/carry.md#lists

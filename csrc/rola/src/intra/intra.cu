@@ -21,10 +21,11 @@ namespace rola::intra {
 //: NOT an anonymous namespace: a kernel's mangled name must not carry the build path.
 namespace stampdet {
 
-//: THE BUILT KERNEL's block rows and fixed tenants and the operand block's size, read back by a test as the
-//: device-side build fact.
+//: THE BUILT KERNEL's block rows and fixed tenants and the operand block's size at build `Bt::build`, read back by a
+//: test as the device-side build fact.
+template <class Bt>
 __global__ void stamp_kernel(int64_t* out) {
-  using Wk = detail::Walk<::denseref::arch::Build{::denseref::arch::kArch, 0}>;
+  using Wk = detail::Walk<Bt::build>;
   *out = (static_cast<int64_t>(Wk::kBlockRows) * 1000003
           + static_cast<int64_t>(sizeof(typename Wk::Smem)))
              * 1000003
@@ -322,7 +323,12 @@ int64_t intra_block_rows(int64_t device) { return detail::shape_of(static_cast<i
 //: -- see docs/internals/intra/intra_api.md#intra-build-stamp
 int64_t intra_build_stamp() {
   auto out = empty_cuda({1}, Dtype::Long);
-  stampdet::stamp_kernel<<<1, 1, 0, current_stream()>>>(out.mutable_data_ptr<int64_t>());
+  build_switch(current_card(), [&](auto b) {
+    constexpr ::denseref::arch::Build kB = decltype(b)::build;
+    if constexpr (in_image(kB))
+      stampdet::stamp_kernel<::denseref::arch::BuildTag<kB>>
+          <<<1, 1, 0, current_stream()>>>(out.mutable_data_ptr<int64_t>());
+  });
   ROLA_CUDA_LAUNCH_CHECK();
   return item<int64_t>(out);
 }

@@ -15,7 +15,8 @@ leaf of the box for its channels (`ampere/readout.md`).
 ## The constants
 
 - `kWarps = 8`, `kThreads = 256`: one CTA an SM, its register file holding the box's state.
-- `kWindow = 512`: the window the intra and the facts pass share, so the inter/intra split is one recurrence.
+- The window W is the build's (`Plan<Arm, B>::kWindow`, [`../common/window.md`](../common/window.md)): the facts
+  pass, the scale pass and the intra read the same trait, so the inter/intra split is one recurrence.
 - THE BOX'S CAPS, every arm's: `kMaxExtent = 32` (a level's extent at most: the facts pass's group of digits, a lane
   a list), `kStateValues` = 32,768 values = 256 lanes x 128 fp32 registers. An arm's own box is its plan's
   (`ampere/plan.md#box`): its fold's lists and rows and its channels, their product the state.
@@ -107,5 +108,5 @@ The closed-world arch refusal (`check_arch_table`) is the first statement of eve
 The key is `rola.ops.carry.arm_key(carve)`; `arm_switch<CarryArmSet>` resolves it to the generated arm's launch or
 refuses naming the field no built arm carries (`docs/internals/common/arm_switch.md`). The grid is
 `(boxes, batch-heads)`. The phase ledger, when bound by `carry_ledger_bind`, must cover the grid.
-`carry_build_stamp` reads four facts back off a kernel this binary compiled (`kWindow`, the capability digest,
-`kStateValues`, `kListBound`), the device-side check a stale binary cannot pass.
+`carry_build_stamp` reads four facts back off a kernel this binary compiled at the current device's build (its window,
+the capability digest, `kStateValues`, `kListBound`), the device-side check a stale binary cannot pass.

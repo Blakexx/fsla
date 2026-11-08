@@ -37,9 +37,9 @@ differences stay at the atom, read at the compiling architecture.
 A BUILD is the key a kernel compiles at: `Build{cc, variant}`. Variant 0 is the architecture's own `build` block; a
 product whose `build` block overrides a trait (`hardware.BUILD_TRAITS`) runs the next variant, and products whose
 overrides agree share one (`hardware.builds()`), so a kernel is compiled once a distinct set of traits, never once a
-product. A variant is NOT BUILT yet: the carry and the intra compile at a build, the other kernels still read their
-architecture's window (`common/window.cuh`'s `kWindow`), so the check refuses a product override until every kernel
-reads its build -- an override would otherwise reach some kernels and not others.
+product. Every kernel that reads a build trait compiles at each carried build, and an image carries every variant of
+its architecture. A variant is NOT GATED yet: the oracle set and the SASS gate run one build an architecture, so the
+check refuses a product override until the first product that needs one brings its variant under both.
 
 <a id="builds-renamed"></a>
 A kernel templated on its build is the same code under a new name, so a refactor compares by signature:
