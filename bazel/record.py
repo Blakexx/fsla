@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE GRAPH LIBRARY'S BUILD GATES AND RECORD: rule 1 (the graph's ptxas is the toolchain record's and the manifests'
-byte for byte -- the tie between that record and `MODULE.bazel`'s toolkit pin -- and the environment's torch is the
-toolchain's CUDA major), rule 3 (every architecture ratified), rule 5 (the vendored tree is its pin's) and the shards
+"""THE GRAPH LIBRARY'S BUILD GATES AND RECORD: rule 1 (`tools/toolchains.py`'s `rule1`: the graph's ptxas, cuobjdump and
+nvdisasm are the toolchain record's byte for byte, the ptxas the manifests' too -- the ties between that record and
+`MODULE.bazel`'s two mentions of the toolkit's manifest -- and the environment's torch is the toolchain's CUDA major), rule 3 (every architecture ratified), rule 5 (the vendored tree is its pin's) and the shards
 (the checked-in generated units are the arm list's), then `rola_cu13/_build_config.py` for one build's parameters
 (`tools/build_record.py`, the writer `setup.py` uses). Run by `bazel/defs.bzl`'s `rola_extension`.
 Docs: docs/build-graph.md#gates.
@@ -47,7 +47,7 @@ def main() -> int:
     archs = [x for x in a.archs.split(",") if x]
     manifest = build_record.ratified_manifest(archs, toolchain.manifest_dir)
 
-    #: the binary gates' disassemblers are of the compiler's release: MODULE.bazel names the toolkit's manifest twice
+    #: the binary gates' disassemblers are the record's too: MODULE.bazel names the toolkit's manifest twice
     ptxas = toolchains.rule1(toolchain, _version(a.ptxas), manifest, a.torch_cuda,
                              {"cuobjdump": _version(a.cuobjdump), "nvdisasm": _version(a.nvdisasm)})
     print(f"rule 1 OK  toolchain {toolchain.name}, torch CUDA {a.torch_cuda}, ptxas: {ptxas}")

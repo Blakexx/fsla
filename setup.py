@@ -335,19 +335,6 @@ def assert_no_ptx(flags: list[str]) -> None:
 cuda_bin = dev_config.cuda_bin
 
 
-def ptxas_version() -> str:
-    """The WHOLE ``ptxas --version`` output, whitespace-normalized -- the same
-    normalization ``tools/ratify.py`` records, so the two strings are comparable
-    byte for byte. The build string distinguishes two shipments of one nominal
-    release, and it is exactly those that can move an allocation."""
-    proc = subprocess.run([cuda_bin("ptxas"), "--version"],
-                          capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"cannot ask `{cuda_bin('ptxas')} --version`; a closed-world "
-                           f"build cannot proceed without identifying its assembler")
-    return " ".join(proc.stdout.split())
-
-
 def manifest_path(arch: str) -> Path:
     """ONE FILE PER ARCH (§3.7), so rule 3 is a FILE-EXISTENCE question.
 
@@ -377,7 +364,12 @@ def _gate_toolchain(manifest: dict) -> str:
     is the toolchain's CUDA major."""
     import torch
 
-    here = toolchains.rule1(TOOLCHAIN, ptxas_version(), manifest, torch.version.cuda)
+    def version(tool: str) -> str:
+        return subprocess.run([cuda_bin(tool), "--version"], capture_output=True, text=True, check=True).stdout
+
+    #: the disassemblers the post-build SASS gate reads with are the record's too
+    here = toolchains.rule1(TOOLCHAIN, ratify.ptxas_version(), manifest, torch.version.cuda,
+                            {tool: version(tool) for tool in ("cuobjdump", "nvdisasm")})
     print(f"rule 1 OK  toolchain {TOOLCHAIN.name}, torch CUDA {torch.version.cuda}, ptxas: {here}")
     return here
 

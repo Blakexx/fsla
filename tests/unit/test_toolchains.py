@@ -35,7 +35,8 @@ def declared(tmp_path, monkeypatch):
 
 
 def _record(ptxas, major=13):
-    return {"ptxas": ptxas, "cuda_major": major, "torch_index": f"https://download.pytorch.org/whl/cu{major}0",
+    return {"ptxas": ptxas, "readers": {"cuobjdump": f"cuobjdump {major}", "nvdisasm": f"nvdisasm {major}"},
+            "cuda_major": major, "torch_index": f"https://download.pytorch.org/whl/cu{major}0",
             "container": {"base_image": f"nvidia/cuda:{major}.0.0-devel-ubuntu22.04@sha256:{'a' * 64}",
                           "packages": [f"cuda-nvcc-{major}-0={major}.0.1-1"]}}
 

@@ -7,11 +7,12 @@ is one function here, `rule1`, both builds' (docs/build-graph.md#gates).
 
 ## The record
 
-`tools/toolchains/<name>.json`, exactly four fields:
+`tools/toolchains/<name>.json`, exactly five fields:
 
 | field | meaning |
 |---|---|
 | `ptxas` | the whole `ptxas --version` output, whitespace-normalized: the string closed-world rule 1 compares |
+| `readers` | `cuobjdump` and `nvdisasm`, each its whole `--version` output: the disassemblers the binary gates read with, which rule 1 compares the same way (`rule1`'s `readers`) |
 | `cuda_major` | the CUDA major torch must be built for; torch's extension builder only refuses another major once it compiles, the build refuses before |
 | `torch_index` | the PyTorch wheel index serving torch for that major |
 | `container` | the dev container that carries this assembler: `base_image` (an `nvidia/cuda` devel tag pinned by its digest, `name:tag@sha256:...`: a tag can be re-pushed, the digest is the image) and `packages`, the exact apt `name=version` pins that put the record's `ptxas` in it (`tools/dev.py container build` passes both, and the image refuses a `ptxas` that is not the record's) |

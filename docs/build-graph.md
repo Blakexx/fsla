@@ -84,7 +84,7 @@ post-build recompile is not among them: setup.py's build runs it (a warning betw
 
 - THE BUILD GATES AND THE RECORD (`bazel/record.py`): rule 1 (`tools/toolchains.py`'s `rule1`, setup.py's too) -- the
   graph's ptxas is the toolchain record's and the manifests' byte for byte (the tie between that record and
-  `MODULE.bazel`'s toolkit pin), its cuobjdump and nvdisasm are of ptxas's toolkit release (the tie between the
+  `MODULE.bazel`'s toolkit pin), its cuobjdump and nvdisasm are the record's byte for byte too (the tie between the
   manifest's two mentions there), and the environment's torch is the toolchain's CUDA major --; rule 3, every architecture ratified; rule 5, the vendored
   tree its `PIN.json`'s (`tools/build_record.py`'s `vendored_pin`); the shards, the checked-in generated units the arm
   list's (`tools/gen_shards.py`'s `check_generated`); then the record, `tools/build_record.py`'s writer, setup.py's.

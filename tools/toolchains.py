@@ -17,7 +17,9 @@ ROOT = Path(__file__).absolute().parents[1]
 RECORDS = ROOT / "tools" / "toolchains"
 MANIFESTS = ROOT / "tools" / "manifests"
 
-_FIELDS = {"ptxas": str, "cuda_major": int, "torch_index": str, "container": dict}
+_FIELDS = {"ptxas": str, "readers": dict, "cuda_major": int, "torch_index": str, "container": dict}
+#: the disassemblers the binary gates read with, each pinned by its whole `--version` text as the assembler is
+_READERS = ("cuobjdump", "nvdisasm")
 _CONTAINER = {"base_image": str, "packages": list}
 
 
@@ -29,6 +31,7 @@ class ToolchainError(RuntimeError):
 class Toolchain:
     name: str
     ptxas: str
+    readers: tuple[tuple[str, str], ...]
     cuda_major: int
     torch_index: str
     base_image: str
@@ -73,10 +76,14 @@ def records() -> dict[str, Toolchain]:
         if set(container) != set(_CONTAINER) or any(type(container[k]) is not v for k, v in _CONTAINER.items()) \
                 or not all(type(p) is str and "=" in p for p in container["packages"]):
             raise ToolchainError(f"{path}: `container` must be {{base_image: str, packages: [\"name=version\", ...]}}")
+        if set(blob["readers"]) != set(_READERS) or not all(type(v) is str for v in blob["readers"].values()):
+            raise ToolchainError(f"{path}: `readers` must name {list(_READERS)}, each its `--version` text")
         if not re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", container["base_image"]):
             raise ToolchainError(f"{path}: `container.base_image` must pin its digest (name:tag@sha256:...), got "
                                  f"{container['base_image']!r}: a tag is re-pushed, a digest is the image")
-        toolchain = Toolchain(name=path.stem, ptxas=normalize(blob["ptxas"]), cuda_major=blob["cuda_major"],
+        toolchain = Toolchain(name=path.stem, ptxas=normalize(blob["ptxas"]),
+                              readers=tuple(sorted((k, normalize(v)) for k, v in blob["readers"].items())),
+                              cuda_major=blob["cuda_major"],
                               torch_index=blob["torch_index"], base_image=container["base_image"],
                               packages=tuple(container["packages"]))
         twin = next((t for t in out.values() if t.ptxas == toolchain.ptxas), None)
@@ -105,28 +112,23 @@ def for_ptxas(version: str) -> Toolchain:
         "Point toolchain.cuda_home at a declared toolkit, or bring up the toolchain (docs/bringup.md).")
 
 
-#: `release 13.0` -- the toolkit release a binary's `--version` names (its patch is its own: ptxas V13.0.48, cuobjdump V13.0.39)
-_RELEASE = re.compile(r"release (\d+\.\d+)")
-
-
 def rule1(toolchain: Toolchain, ptxas: str, manifest: dict, torch_cuda: str | None,
           readers: dict[str, str] | None = None) -> str:
     """CLOSED-WORLD RULE 1: `ptxas` (a `--version` text) is the toolchain record's and the ratified manifests' assembler
     byte for byte; the torch the extension builds against is the toolchain's CUDA major; and each of `readers` (the
-    disassemblers the binary gates read with: name -> `--version` text) is of the assembler's toolkit release, so a
-    toolkit bump that moves one pin and not the other is refused. The normalized assembler string, on success."""
+    disassemblers the binary gates read with: name -> `--version` text) is the record's byte for byte, so the gates read
+    a binary with the toolkit it was ratified under. The normalized assembler string, on success."""
     here, pinned = normalize(ptxas), normalize(manifest["toolchain"]["ptxas"])
     if here != toolchain.ptxas or here != pinned:
         raise ToolchainError(f"CLOSED-WORLD RULE 1: toolchain {toolchain.name}'s manifests were ratified under a different "
                              f"assembler.\n  record  : {toolchain.ptxas}\n  manifest: {pinned}\n  here    : {here}\n"
                              "Re-ratify (`python tools/ratify.py --write`) and record the new numbers -- do not "
                              "hand-edit the manifest.")
-    release = _RELEASE.search(here)
+    pinned_readers = dict(toolchain.readers)
     for name, text in (readers or {}).items():
-        found = _RELEASE.search(text)
-        if release is None or found is None or found.group(1) != release.group(1):
-            raise ToolchainError(f"CLOSED-WORLD RULE 1: {name} is not of the assembler's toolkit release "
-                                 f"({release.group(1) if release else '?'}): {normalize(text)}")
+        if normalize(text) != pinned_readers[name]:
+            raise ToolchainError(f"CLOSED-WORLD RULE 1: {name} is not toolchain {toolchain.name}'s.\n  record: "
+                                 f"{pinned_readers[name]}\n  here  : {normalize(text)}")
     torch_pairing(toolchain, torch_cuda)
     return here
 
