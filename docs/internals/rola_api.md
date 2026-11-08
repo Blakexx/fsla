@@ -49,7 +49,7 @@ reaches into the module itself.
 | the within-window term | `rola_intra_forward`, `rola_intra_ledger_bind`, `intra_footprint`, `intra_build_stamp` |
 | the producer | `rola_produce_forward`, `rola_produce_ledger_bind` |
 | the producer's solves | `entmax_union_forward`, `entmax_union_backward`, `entmax_factor_forward`, `entmax_factor_backward`, `routing_softmax_forward`, `routing_softmax_backward` |
-| the T=1 decode path | `rola_decode_forward`, `rola_decode_ctas`, `rola_decode_build_stamp`, `rola_decode_arms`, `rola_decode_ledger_bind`, `rola_decode_capacity`, `rola_decode_producer_width_mirror` |
+| the T=1 decode path | `rola_decode_forward`, `rola_decode_build_stamp`, `rola_decode_arms`, `rola_decode_ledger_bind`, `rola_decode_capacity`, `rola_decode_producer_width_mirror` |
 | the VMM owner, by handle | `vmm_probe`, `vmm_create`, `vmm_release`, `vmm_base`, `vmm_grow`, `vmm_rollback_to`, `vmm_reset`, `vmm_close`, `vmm_facts` |
 
 Every operator that launches a kernel opens with `check_arch_table()`, the closed-world refusal of an architecture the

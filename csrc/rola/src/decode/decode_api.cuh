@@ -14,9 +14,6 @@ namespace decode {
 int64_t rola_decode_capacity();  // the bound surface; see decode_api.md#rola-decode-capacity
 int64_t rola_decode_producer_width_mirror();
 
-int64_t rola_decode_ctas(int64_t unit_ceiling, int64_t bh,
-                         int64_t device);  // see decode_api.md#ctas
-
 int64_t
 rola_decode_build_stamp();  // device-side build fact; see decode_api.md#roladecodebuildstamp
 

@@ -36,10 +36,10 @@ import torch
 
 from rola._state import CANONICAL_ORDER, PAGE_RECTANGLE_BITS, SPLIT_PLANE_DTYPE, StateFormat
 from rola.engine.plan import DecodeGeometry, DecodePlan
-from rola.ops._ext import device_index, extension
+from rola.ops._ext import extension
 from rola.ops.constants import READOUT_EPS
 from rola.ops.decay import leaf_rate_dials
-from rola.ops.lattice import box_shape, derive_lattice, permutation
+from rola.ops.lattice import derive_lattice, permutation
 from rola.ops.padding import pad_v, padded_value_width, slice_y
 from rola.ops.paging import MMA_K_QUANTUM, page_layout
 from rola.routing import quant
@@ -48,7 +48,6 @@ from rola.routing.types import Topology
 __all__ = [
     "DecodeScratch",
     "arms",
-    "derive_ctas",
     "derive_decode_geometry",
     "leaf_rate_dials_for",
     "step",
@@ -135,8 +134,9 @@ def derive_decode_geometry(
     the caller holds them -- past :func:`_admit`'s floor, which REFUSES rather than
     pads (R13: the kernel never pads or masks).
 
-    ``ctas`` is FROZEN here and never selected per step: the grid is launched before the step's
-    work is known, and the work queue balances it inside the launch (:func:`derive_ctas`).
+    ``ctas`` is ``None``: the step sizes its grid itself from the card, the same every step (one wave of the
+    declared residency, at most the heads' unit supply; docs/internals/decode/decode.md#the-split-policy), and the work
+    queue balances it inside the launch; a gate forces a count by replacing it.
     """
     widths = tuple(topology.widths)
     _admit(widths)
@@ -149,38 +149,13 @@ def derive_decode_geometry(
         row_offset.append(acc)
         acc += w
 
-    ctas = derive_ctas(widths, k, m, BH=BH, device=device)
     #: the bundle's flag where the caller has one (the step's graph); a caller holding a topology alone takes the
     #: production rule
     if write_dense is None:
         write_dense = not topology.activation_properties(D - 1, "write").exact_zeros
     return DecodeGeometry(
         D=D, widths=widths, level_row_offset=tuple(row_offset), lattice_k=k, lattice_m=m,
-        d_v=int(d_v), has_decay=decay, eps=eps, ctas=int(ctas), write_dense=write_dense)
-
-
-def derive_ctas(widths, lattice_k: int, lattice_m: int, *, BH: int, device) -> int:
-    """The step's resident grid: ONE WAVE of the declared residency, work permitting.
-
-    The CTAs stay resident and claim positions from every batch-head's queue, so the grid is
-    not split per batch-head: a head with more live work simply takes more claims
-    (docs/internals/decode/decode.md#queue). One wave is the ceiling because a CTA that
-    waited for a second wave would pay a head's prologue for work the resident CTAs could
-    claim; the supply bound keeps a small topology from launching CTAs with nothing to claim.
-
-    The binary answers (`rola_decode_ctas`, docs/internals/decode/decode_api.md#ctas): the card's SMs
-    times the residency the kernel's ``__launch_bounds__`` are built from, and the supply bound,
-    so no hardware fact and no launch bound is read or mirrored here.
-    """
-    #: THE UNIT CEILING, from the box's spans: a walk unit's leaves are the innermost
-    #: level's run, so ``N / s_{D-1}`` is the unit count exactly wherever the atom
-    #: rectangle is one level and an OVER-count where it spans more.
-    _, spans, _, _, _ = box_shape(widths, lattice_k, lattice_m)
-    unit_ceiling = math.prod(widths) // spans[-1]
-    dev = torch.device(device)
-    if dev.type != "cuda":
-        return 1
-    return int(extension().rola_decode_ctas(int(unit_ceiling), int(BH), device_index(dev)))
+        d_v=int(d_v), has_decay=decay, eps=eps, ctas=None, write_dense=write_dense)
 
 
 @dataclass(slots=True)
@@ -385,7 +360,7 @@ def step(plan: DecodePlan) -> torch.Tensor:
         lattice_k=config.lattice_k,
         lattice_m=config.lattice_m,
         write_dense=config.write_dense,
-        ctas=config.ctas,
+        ctas=-1 if config.ctas is None else config.ctas,
         eps=config.eps,
         page_table=plan.page_table,
         pool_slots=None if pool is None else pool.pool_slots,

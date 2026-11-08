@@ -194,7 +194,6 @@ STABLE_TORCH_LIBRARY(rola, m) {
       "Tensor(f!) growth_ctr, Tensor(g!) done, Tensor(h!) atom_bits, int[] level_widths, int[] level_row_offsets, "
       "int lattice_k, int lattice_m, bool write_dense, int ctas, float eps, Tensor(i!)? page_table=None, "
       "Tensor? pool_slots=None, Tensor(j!)? pool_cursor=None) -> Tensor");
-  m.def("rola_decode_ctas(int unit_ceiling, int bh, int device) -> int");
   m.def("rola_decode_build_stamp() -> int");
   m.def("rola_decode_arms() -> int[][]");
   m.def("rola_decode_ledger_bind(Tensor? ledger) -> ()");
@@ -249,7 +248,6 @@ STABLE_TORCH_LIBRARY_IMPL(rola, CompositeExplicitAutograd, m) {
   m.impl("routing_softmax_forward", TORCH_BOX(&rola::entmax::softmax_forward));
   m.impl("routing_softmax_backward", TORCH_BOX(&rola::entmax::softmax_backward));
   m.impl("rola_decode_forward", TORCH_BOX(&rola::decode::rola_decode_forward));
-  m.impl("rola_decode_ctas", TORCH_BOX(&rola::decode::rola_decode_ctas));
   m.impl("rola_decode_ledger_bind", TORCH_BOX(&rola::decode::rola_decode_ledger_bind));
   m.impl("rola_decode_build_stamp", TORCH_BOX(&rola::decode::rola_decode_build_stamp));
   m.impl("rola_decode_arms", TORCH_BOX(&rola::decode::rola_decode_arms));

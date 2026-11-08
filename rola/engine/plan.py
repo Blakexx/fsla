@@ -40,9 +40,10 @@ class DecodeGeometry:
     d_v: int
     has_decay: bool
     eps: float
-    #: THE RESIDENT GRID: the step's CTAs, which claim work from every batch-head's queue
-    #: (docs/internals/decode/decode.md#queue).
-    ctas: int
+    #: THE RESIDENT GRID: ``None`` for the step's own (the binary sizes it from the card,
+    #: docs/internals/decode/decode.md#the-split-policy), or a gate's forced CTA count; the CTAs claim work from every
+    #: batch-head's queue (docs/internals/decode/decode.md#queue).
+    ctas: int | None
     #: THE INNERMOST LEVEL'S WRITE SIDE IS DENSE BY DECLARATION (its activation has no exact zeros), so every write
     #: unit is a whole atom and the step walks it as one (docs/internals/decode/decode.md#whole-atoms).
     write_dense: bool

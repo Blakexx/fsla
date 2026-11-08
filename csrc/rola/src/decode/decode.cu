@@ -747,6 +747,15 @@ int ilog2_exact(int64_t x, const char* what) {
 }
 
 //: THE (k, m) BOX, FILLED AND REFUSED HERE. The derivation is `rola/ops/lattice.py`'s -- see docs/internals/decode/decode.md#fill-lattice
+//: THE STEP'S RESIDENT GRID on `card`: one wave of the declared residency, at most `bh` heads' unit supply.
+//: -- see docs/internals/decode/decode.md#the-split-policy
+int grid_of(const Card& card, int64_t unit_ceiling, int64_t bh) {
+  const int64_t supply =
+      std::max<int64_t>(1, (unit_ceiling + kDecodeUnitsPerCta - 1) / kDecodeUnitsPerCta);
+  return static_cast<int>(
+      std::max<int64_t>(1, std::min<int64_t>(int64_t{card.sms} * kDecodeBlocksPerSm, bh * supply)));
+}
+
 void fill_lattice(DecodeParams& p, int64_t k, int64_t m, int64_t N) {
   const int kappa = ilog2_exact(k, "the lattice span k");
   const int j = ilog2_exact(m, "the lattice capacity m");
@@ -859,16 +868,6 @@ int64_t rola_decode_capacity() { return kDecodeMaxLevelWidth; }
 
 //: The MIRRORED copy of the producer's `MAX_BRANCH_WIDTH`, bound separately -- see docs/internals/decode/decode.md#rola-decode-producer-width-mirror
 int64_t rola_decode_producer_width_mirror() { return kProducerMaxBranchWidth; }
-
-//: THE STEP'S RESIDENT GRID on `device`'s card: one wave of the declared residency, at most `bh` heads' unit supply.
-//: -- see docs/internals/decode/decode_api.md#ctas
-int64_t rola_decode_ctas(int64_t unit_ceiling, int64_t bh, int64_t device) {
-  const Card& card = card_of(static_cast<int>(device));
-  const int64_t supply =
-      std::max<int64_t>(1, (unit_ceiling + kDecodeUnitsPerCta - 1) / kDecodeUnitsPerCta);
-  return std::max<int64_t>(1,
-                           std::min<int64_t>(int64_t{card.sms} * kDecodeBlocksPerSm, bh * supply));
-}
 
 //: THE BUILD STAMP: a path or hash check cannot catch a stale `.so` at the right path, -- see docs/internals/decode/decode.md#roladecodebuildstamp
 int64_t rola_decode_build_stamp() {
@@ -984,7 +983,9 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   detail::check_f32_span(v_scale, "v_scale");
   p.v_scale = detail::scalar_span_of(v_scale, B, H, "v_scale");
 
-  STD_TORCH_CHECK(ctas >= 1, "ctas must be >= 1, got ", ctas);
+  STD_TORCH_CHECK(ctas == -1 || ctas >= 1,
+                  "ctas is -1 (the card's grid) or a gate's forced count of at least 1, got ",
+                  ctas);
   STD_TORCH_CHECK(yacc.dim() == 2 && yacc.size(0) == BH && yacc.size(1) == cols,
                   "yacc must be [BH, cols]");
   STD_TORCH_CHECK(queue.dim() == 1 && queue.size(0) == 4 * static_cast<int64_t>(BH) + 2,
@@ -1057,7 +1058,9 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   p.N = N;
   p.BH = BH;
   p.H = H;
-  p.ctas = static_cast<int>(ctas);
+  //: the step's grid: the card's (a unit a run of the innermost level's span), or a gate's forced count
+  p.ctas = ctas < 0 ? detail::grid_of(card_of(v.get_device_index()), N / p.lat_s[D - 1], BH)
+                    : static_cast<int>(ctas);
   p.total_rows = total_rows;
   p.eps = static_cast<float>(eps);
   p.ledger = g_phase_ledger;
