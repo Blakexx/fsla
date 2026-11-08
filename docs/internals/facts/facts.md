@@ -77,8 +77,8 @@ writes half `q`'s prefix rows.
 Why a half: the carry's 64-channel box at `d_v` 64 holds 16 digits of the read list level; a union over 32 would stage
 the other box's tokens as its own, a step of entries the box never reads.
 
-THE TWO PASSES: the kernel is compiled for a unit of one list group (`facts_pass<1>`, every side at 32: the halves'
-work compiled out, the code before them) and of two (`facts_pass<2>`), and the host launches the one the call's groups
+THE TWO PASSES: the kernel is compiled, at each build, for a unit of one list group (`facts_pass<BuildTag<B>, 1>`, every side at 32: the halves'
+work compiled out, the code before them) and of two (`facts_pass<BuildTag<B>, 2>`), and the host launches the one the call's groups
 need, each at its own tenants (`FactsSmemAt<W, G>`). A split call pays two warp reductions a block, a second gap
 tail and a second union's bytes, the same at every density ([measured](#budget)); sm_80, sm_90 and sm_100 run the
 same passes (the window's words double at W = 1,024, the halves' scan with them).
@@ -125,11 +125,12 @@ the rest).
 
 ## The window
 
-The pass builds each window's lists at the card's W (`common/window.cuh`): `kWindowTokens` tokens, `kWindowWords` words
+The pass builds each window's lists at its build's W (`FactsPlan<B>`, its plan: [`../../architecture/families.md`](../../architecture/families.md)): `kWindowTokens` tokens, `kWindowWords` words
 of 32 tokens, and the stages map onto that window by four counts derived from it -- a warp's 32-token blocks
 (`kWarpBlocks`), a thread's tokens (`kThreadTokens`), a list lane's words (`kLaneWords`, eight lanes a list) and
 boundaries (`kLaneBounds`) -- so a stage's loop runs over its count and at W = 512 every count is the 512-token pass's
-own. The shared tenants are `FactsSmemAt<W>`; the host takes the device's W and launches the device's tenants. A read
+own. The shared tenants are `FactsSmemAt<W>`; the device code is `FactsAt<FactsPlan<B>>` and the host launches the
+card's build (`build_switch`) at that plan's tenants. A read
 entry's pool offset is 16 bits, so a write head's read side merges at most `max_group(W) = 8192 / W` query heads (16 at
 512, 8 at 1,024); `kMaxGroup` stays the parameter block's bound, the same in both compile passes.
 

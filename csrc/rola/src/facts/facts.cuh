@@ -6,27 +6,17 @@
 #include <cstdint>
 
 #include "carry/carry.cuh"
+#include "common/hardware.cuh"
 #include "facts/liveness_contract.cuh"
 
 namespace rola::facts {
 
-//: THE CTA: eight warps a UNIT, four CTAs an SM at W = 512 and two at 1,024 (a list lane's twice the words and
-//: boundaries in registers). -- see docs/internals/facts/facts.md#the-grid
+//: THE CTA: eight warps a UNIT. -- see docs/internals/facts/facts.md#the-grid
 constexpr int kFactsWarps = 8;
 constexpr int kFactsThreads = kFactsWarps * 32;
-constexpr int kFactsCtasMin = kWindow >= 1024 ? 2 : 4;
 
 //: THE ROW ALIGNMENT LAW's grain (`rola.routing.quant.ROW_ALIGN`). -- see docs/internals/facts/liveness_contract.md#alignment
 constexpr int kRowAlign = 32;
-
-//: THE WINDOW, the compiling card's (common/window.cuh; host code takes its device's), and the counts the stages map
-//: onto it: a warp's 32-token blocks, a thread's tokens, a list lane's words. -- see docs/internals/facts/facts.md#window
-constexpr int kWindowTokens = kWindow;
-constexpr int kWindowWords = kWindowTokens / kTokBits;
-constexpr int kWindowTiles = kWindowTokens / kTileTokens;
-constexpr int kWarpBlocks = kWindowWords / kFactsWarps;
-constexpr int kThreadTokens = kWindowTokens / kFactsThreads;
-constexpr int kLaneWords = kWindowWords / 8;
 
 constexpr int kMaxWidth = 256;
 constexpr int kMaxGroups = kMaxWidth / kGroupDigits;
@@ -57,27 +47,16 @@ __host__ __device__ constexpr int unit_group(uint32_t c) { return (c >> 5) & 7; 
 
 __host__ __device__ constexpr int unit_head(uint32_t c) { return (c >> 8) & 15; }
 
-//: A BIT TILE: the group's 32 digits x the window's 16 words, row `d` word `j` at `16 d + (j ^ (d / 2 % 16))`.
-//: -- see docs/internals/facts/facts.md#tiles
-__host__ __device__ constexpr int tile_at(int d, int j) {
-  return kWindowWords * d + (j ^ (kWindowWords >= 32 ? (d & 31) : ((d >> 1) & 15)));
-}
-
 //: THE LIST EXPONENTS' FLOOR, the smallest normal fp32. -- see docs/internals/facts/facts.md#lists
 constexpr float kListFloor = 1.17549435e-38f;
 
 //: THE LISTS OUT, the carry's final form (`carry/carry.cuh` owns its addresses), a write entry's coefficients at
 //: 2^(kCoefTop - E) with E floored at `kUnitMin`. -- see docs/internals/facts/facts.md#lists-out
-constexpr int kListCap = kWindowTokens;
 constexpr int kListBound = carry::kListBound;
-constexpr int kListAt = kWindowTokens / kListBound;
-constexpr int kLaneBounds = kListAt / 8;
 constexpr int kCoefTop = 4;
 constexpr int kUnitMin = kCoefTop - 127;
 static_assert(kFactsWarps == carry::kWarps && kGroupDigits == carry::kMaxExtent,
               "the lists are the carry's: its box lists, a boundary every 64 slots");
-static_assert(kWindowTokens == kWindow,
-              "the facts pass's window is the compiling card's (common/window.cuh)");
 
 //: THE STEP: a union's extent is its size in whole steps of the carry's 8 entries.
 constexpr int kStep = 8;
@@ -86,9 +65,6 @@ constexpr int kStep = 8;
 constexpr int kListGroupMin = 16;
 constexpr int kUnitGroups = kGroupDigits / kListGroupMin;
 static_assert(kUnitGroups == 2, "a list unit's groups are its liveness group or each half");
-static_assert(
-    max_group(kWindowTokens) * kWindowTokens < 65536,
-    "a list group's slots a window, every head's, fit the 16-bit half its count rides in");
 
 enum FactsPhase : int { kPhaseLoad, kPhaseVote, kPhaseRanks, kPhaseLists, kFactsPhases };
 
@@ -106,9 +82,6 @@ struct FactsSmemAt {
   static constexpr int kBytes = kTable + kGroupDigits * (W / kListBound + 1) * 2;
 };
 
-template <int G>
-using FactsSmem = FactsSmemAt<kWindowTokens, G>;
-
 template <int W, int G>
 constexpr bool tenants_aligned() {
   using S = FactsSmemAt<W, G>;
@@ -119,6 +92,36 @@ constexpr bool tenants_aligned() {
 static_assert(tenants_aligned<512, 1>() && tenants_aligned<1024, 1>() && tenants_aligned<512, 2>()
                   && tenants_aligned<1024, 2>(),
               "each tenant on its access's alignment");
+
+//: THE PASS'S PLAN at build `B`: its window and the counts the stages map onto it (a warp's 32-token blocks, a
+//: thread's tokens, a list lane's words and boundaries), its residency and its tenants.
+//: -- see docs/internals/facts/facts.md#window
+template <::denseref::arch::Build B>
+struct FactsPlan {
+  static constexpr int kWindowTokens = ::denseref::arch::traits_of(B).window;
+  //: four CTAs an SM, two at a window of 1,024 (a list lane's twice the words and boundaries in registers)
+  static constexpr int kFactsCtasMin = kWindowTokens >= 1024 ? 2 : 4;
+  static constexpr int kWindowWords = kWindowTokens / kTokBits;
+  static constexpr int kWindowTiles = kWindowTokens / kTileTokens;
+  static constexpr int kWarpBlocks = kWindowWords / kFactsWarps;
+  static constexpr int kThreadTokens = kWindowTokens / kFactsThreads;
+  static constexpr int kLaneWords = kWindowWords / 8;
+  static constexpr int kListCap = kWindowTokens;
+  static constexpr int kListAt = kWindowTokens / kListBound;
+  static constexpr int kLaneBounds = kListAt / 8;
+  template <int G>
+  using FactsSmem = FactsSmemAt<kWindowTokens, G>;
+
+  //: A BIT TILE: the group's 32 digits x the window's 16 words, row `d` word `j` at `16 d + (j ^ (d / 2 % 16))`.
+  //: -- see docs/internals/facts/facts.md#tiles
+  static __host__ __device__ constexpr int tile_at(int d, int j) {
+    return kWindowWords * d + (j ^ (kWindowWords >= 32 ? (d & 31) : ((d >> 1) & 15)));
+  }
+
+  static_assert(
+      max_group(kWindowTokens) * kWindowTokens < 65536,
+      "a list group's slots a window, every head's, fit the 16-bit half its count rides in");
+};
 
 //: A SIDE'S LISTS OUT at its list level: entries, prefix rows (mod 2^16), exact totals, the union by slot, its extent.
 //: -- see docs/internals/facts/facts_api.md#rola-facts-forward
