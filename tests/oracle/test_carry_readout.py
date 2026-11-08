@@ -45,7 +45,7 @@ def _readout_ratio(widths, L, write_sparse, growth, accumulate, *, same=False, l
     else:
         routes, values = listed_bundle(widths, L, write_sparse, same=same, live=live)
     at = torch.arange(L, device="cuda") // window_of()
-    routes.g_write.mul_(torch.exp2(growth * at.float())[None, :, None])
+    routes.scale_write[0].mul_(torch.exp2(growth * at.float())[None, :, None])
     widths, d_v = tuple(routes.topology.padded_widths), values.v.shape[-1]
     #: the 32-channel box unless named (at d_v 64 the planner's is the 64-channel one, gated by its own tests); a dense
     #: read side's the planner's

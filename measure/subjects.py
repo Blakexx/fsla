@@ -256,8 +256,10 @@ def bundle_of(spec, drawn, tokens: slice = slice(None)):
 
     declared = spec.declared_sparsity()
     topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in spec.widths))
-    routes = RouteFactors.from_levels(topology, [x[:, tokens] for x in drawn.read],
-                                      [x[:, tokens] for x in drawn.write], drawn.gain[:, tokens].float(),
+    #: the cell's drawn write gain folded into write level 0, as a producer folds its own (docs/CONSTITUTION.md#r23)
+    write = [x[:, tokens] for x in drawn.write]
+    write[0] = write[0] * drawn.gain[:, tokens, :, None].float()
+    routes = RouteFactors.from_levels(topology, [x[:, tokens] for x in drawn.read], write,
                                       sparse=tuple(tuple(sparse[side] for sparse in declared) for side in (0, 1)))
     values = Values.from_projection(drawn.v[:, tokens])
     layout = facts_ops.call_layout(routes)
@@ -308,7 +310,7 @@ def entmax_solve(fx) -> Launch:
 
 def produce(fx) -> Launch:
     """THE PRODUCER'S LAUNCH: the cell's prefill tokens to the bundle -- the routing projection, every level's solve, the
-    mass fold, the write gain, the quantization and the value digits -- as the layer calls it."""
+    write gain, the quantization and the value digits -- as the layer calls it."""
     spec, layer = fx["cell"], fx["layer"]
     x = fx["x"][:, :spec.tokens].contiguous()
 

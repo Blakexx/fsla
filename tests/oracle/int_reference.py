@@ -6,7 +6,7 @@ THE OP ORACLE MEASURES THAT THE MATH IS IMPLEMENTED; THE LAYER ORACLE MEASURES Q
 2026-09-26). This module is the first half's reference for the int8 form: the same windowed
 recurrence as :func:`tests.oracle.reference.inter_reference`, run in fp64 on the OPERANDS THE
 KERNEL DECLARES. The FOLD: per-token unit-max f16 values (the producer's), and per leaf an A row in u8 -- the token's dense write amplitude times its sparse
-amplitude, scale and gain, against the leaf's biggest writer that window -- into an s32-exact
+amplitude and scale (a producer's gain in them), against the leaf's biggest writer that window -- into an s32-exact
 state. The READOUT (ruled 2026-09-27): the state is read per BLOCK, one read-sparse digit times
 32 read-dense digits, quantized against the block's max |S| at 127 levels, or at 32767 when the
 block's spread (max over smallest live leaf max) exceeds ``R = round(254 * readout_eps)``; A is
@@ -25,7 +25,7 @@ error in the rotated and the real basis.
 
 Symbols, each at first use: ``D`` levels, ``B_l`` widths, ``N = prod B_l`` leaves, ``dv`` value
 channels, ``W`` the window, ``s_t`` a token's value scale (its max |channel|), ``a`` an amplitude,
-``g`` the write gain, ``c`` a leaf coefficient (the product of its digits' amplitudes).
+``c`` a leaf coefficient (the product of its digits' amplitudes).
 """
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ import math
 import torch
 
 from rola.routing import quant
+from tests.oracle.fixtures import with_gain
 from tests.oracle.reference import inter_reference, leaf_product, radix_strides
 
 TINY = 1e-300
@@ -117,7 +118,7 @@ def group_product(levels_all, widths, levels, sl, u8=None):
     return (ones if x is None else x), (ones if scale is None else scale)
 
 
-def int_reference(read_levels, write_levels, g_write, v, widths, sparsity, window, *,
+def int_reference(read_levels, write_levels, v, widths, sparsity, window, *,
                   readout_eps: float = 0.0, exact: bool = False, state_in=None,
                   panel: bool = True, telemetry: dict | None = None):
     """``(num, den, state)`` in fp64 under the DECLARED int arithmetic; ``sparsity[l] = (read sparse, write sparse)``.
@@ -198,7 +199,7 @@ def int_reference(read_levels, write_levels, g_write, v, widths, sparsity, windo
         # --- fold ------------------------------------------------------------------------------------------------
         a_wd, m_wd = group_product(write_levels, widths, w_dn, sl, u8)    # [B,t,H,n_wd] unit-max u8, its row scale
         a_ws, _ = group_product(write_levels, widths, w_sp, sl)            # [B,t,H,n_ws]
-        scal = a_ws * (g_write[:, sl].double() * s_t[:, sl, :, 0]).unsqueeze(-1) * m_wd   # [B,t,H,n_ws]
+        scal = a_ws * s_t[:, sl, :, 0].unsqueeze(-1) * m_wd                                # [B,t,H,n_ws]
         vh = v_hat[:, sl]                                                  # [B,t,H,dv] one f16 row a token
         for s in range(n_ws):
             leaves = torch.nonzero(idx_ws == s, as_tuple=False).flatten()
@@ -207,7 +208,7 @@ def int_reference(read_levels, write_levels, g_write, v, widths, sparsity, windo
             a_q = a_full if exact else quantize_u8_unit(a_full / sigma) * sigma
             state[:, :, leaves] += torch.einsum("bthd,bthc->bhdc", a_q, vh)
             bound[:, :, leaves] += a_q.sum(1)
-        w_fp = g_write[:, sl].double()[..., None] * leaf_product(write_levels, widths, sl)
+        w_fp = leaf_product(write_levels, widths, sl)
         mass += w_fp.sum(1)
         del a_wd, a_ws, scal, w_fp
     if telemetry is not None:
@@ -216,11 +217,11 @@ def int_reference(read_levels, write_levels, g_write, v, widths, sparsity, windo
     return num, den, full
 
 
-def fold_zeta(g_write, s_t, m_w, window):
+def fold_zeta(s_t, m_w, window):
     """``[B, H, windows, 2]`` fp64: the fold's per-window fixed-point scales -- over each window's tokens the largest
-    ``g m_w`` and ``g s_t m_w`` (``g`` the write gain, ``s_t`` the value scale, ``m_w`` the write levels' maxima
-    multiplied, ``m_ws m_wd``), at least ``TINY``. The facts pass writes them (docs/internals/facts/facts.md#zeta)."""
-    col = g_write.double() * m_w.double()
+    ``m_w`` and ``s_t m_w`` (``s_t`` the value scale, ``m_w`` the write levels' maxima multiplied, ``m_ws m_wd``: the
+    write side's shared scale), at least ``TINY``. The facts pass writes them (docs/internals/facts/facts.md#zeta)."""
+    col = m_w.double()
     cols = torch.stack((col, col * s_t.double()), -1)                                          # [B, T, H, 2]
     B, T, H, _ = cols.shape
     windows = -(-T // window)
@@ -250,7 +251,7 @@ def intra_bundle_reference(routes, values, window):
 
     Per window, reader ``t`` and writer ``t' <= t`` in it: ``G_l[t, t'] = sum_d r_l[t, d] w_l[t', d]`` over the
     rows' unit values (:func:`unit_rows`); ``A[t, t'] = f(t') prod_l G_l[t, t']`` with the writer factor
-    ``f(t') = g(t') prod_l sw_l(t')`` (the write gain times the write levels' scales). The reader's factor
+    ``f(t') = prod_l sw_l(t')`` (the write levels' scales: the write side's shared scale). The reader's factor
     ``prod_l sr_l(t)`` is not applied: it is per token and cancels in ``num / den`` (the output contract, carry
     and intra alike). ``den[t] = sum_t' A`` and ``num[t] = sum_t' A s(t') q(t')`` over the value's f16 units
     (:func:`value_units`) and scale ``s``. A grouped call's write side, values and factors are its write heads',
@@ -263,8 +264,8 @@ def intra_bundle_reference(routes, values, window):
 
     reads = unit_rows(routes.amp_read, routes.scale_read, routes.sparse[0])
     writes = tuple(heads(w) for w in unit_rows(routes.amp_write, routes.scale_write, routes.sparse[1]))
-    f = routes.g_write.double()
-    for scale in routes.scale_write:
+    f = routes.scale_write[0].double()
+    for scale in routes.scale_write[1:]:
         f = f * scale.double()
     f, s, q = heads(f), heads(values.scale.double()), heads(value_units(values))
     Bn, T, H, dv = q.shape
@@ -283,10 +284,10 @@ def intra_bundle_reference(routes, values, window):
     return num, den
 
 
-def prepass_reference(read_levels, write_levels, g_write, v, widths, sparsity, window, *, exact: bool = False,
+def prepass_reference(read_levels, write_levels, v, widths, sparsity, window, *, exact: bool = False,
                       state_in=None, telemetry: dict | None = None):
     """``(den, scale)`` per token, ``[B, T, H]`` fp64, under the PRE-PASS's DECLARED arithmetic: the carry's
-    skeleton at two columns a leaf. FOLD, per window and write-sparse digit ``s``, column ``m`` in {g, g s_t}:
+    skeleton at two columns a leaf. FOLD, per window and write-sparse digit ``s``, column ``m`` in {1, s_t}:
     ``zeta_m`` = the window's largest ``col_m(t) m_ws(t) m_wd(t)`` (the two write levels' per-token maxima,
     :func:`fold_zeta`);
     ``P_m(t) = rint(2^23 col_m m_ws m_wd / (255 zeta_m))``; ``V_m(t, d) = (P_m(t) a_wd[t, d] + 128) >> 8`` (a
@@ -343,10 +344,10 @@ def prepass_reference(read_levels, write_levels, g_write, v, widths, sparsity, w
         # --- fold: the two digit rows against the write-dense u8 row, one 15-bit digit a (token, list) ----------
         a_wd, m_wd = group_product(write_levels, widths, w_dn, sl, u8)                          # [B,t,H,n_wd]
         a_ws, m_ws = group_product(write_levels, widths, w_sp, sl, u8)                          # [B,t,H,n_ws]
-        g = g_write[:, sl].double()                                                              # [B,t,H]
-        gs = g * s_t[:, sl, :, 0]
+        gs = s_t[:, sl, :, 0]                                                                    # [B,t,H]
+        g = torch.ones_like(gs)
         f = (m_ws * m_wd)[..., 0]
-        zetas = fold_zeta(g, s_t[:, sl, :, 0], f, window)[:, :, 0]                              # [B,H,2]
+        zetas = fold_zeta(gs, f, window)[:, :, 0]                                               # [B,H,2]
         a_ws_digit = a_ws if exact else torch.round(a_ws * 255.0)                                  # the u8 bytes
         for m, (col, target) in enumerate(((g, mass), (gs, bound))):
             zeta = zetas[..., m].unsqueeze(1)                                                    # [B,1,H]
@@ -386,12 +387,12 @@ def quantization_report(drawn, sparsity, window, knobs=REPORT_KNOBS, rotate_valu
     widths = drawn.cell.widths
     h = hadamard(v.shape[-1], v.device) if rotate_values else None
     v_in = rotate(v, h) if rotate_values else v
-    true_num, true_den, true_state = inter_reference(read, write, gain, v, widths, window)
-    env_num, _, env_state = inter_reference(read, write, gain, v.abs(), widths, window)
+    true_num, true_den, true_state = inter_reference(read, with_gain(write, gain), v, widths, window)
+    env_num, _, env_state = inter_reference(read, with_gain(write, gain), v.abs(), widths, window)
     rows = []
     for eps in knobs:
         tele = {}
-        num, den, state = int_reference(read, write, gain, v_in, widths, sparsity, window,
+        num, den, state = int_reference(read, with_gain(write, gain), v_in, widths, sparsity, window,
                                         readout_eps=eps, panel=panel, telemetry=tele)
         if rotate_values:
             num, state = unrotate(num, h), torch.cat((unrotate(state[..., :-1], h), state[..., -1:]), -1)

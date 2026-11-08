@@ -36,6 +36,7 @@ import rola
 from rola import LayerContinuation
 from rola.expert import PlanOverrides
 from rola.interface import BackwardNotImplemented
+from tests.oracle.fixtures import with_gain
 
 #: `[16, 16]` at `d_v = 64`: a BUILT chunk arm, so the rows that must reach the
 #: PREFILL kernel can. Decode itself is indifferent (it is BC-blind and general in the
@@ -236,7 +237,7 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     levels = tuple(torch.rand(1, 1, 1, w, device=device, requires_grad=True) for w in widths)
     g_write = torch.rand(1, 1, 1, device=device)
     v = torch.randn(1, 1, 1, d_v, device=device)
-    routes, values = step_bundles(v, levels, levels, g_write, topology)
+    routes, values = step_bundles(v, levels, with_gain(levels, g_write), topology)
     state = torch.zeros(1, config.N // 16, page_layout(config.d_v).bytes, dtype=torch.uint8, device=device)
     with pytest.raises(RuntimeError, match="forward-only"):
         _decode_step(routes, values, config, state)

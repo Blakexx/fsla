@@ -29,6 +29,7 @@ from rola.routing.types import OpaqueRouting, Topology
 from rola.values import Values
 from tests.oracle import int_reference as iref
 from tests.oracle import tolerances
+from tests.oracle.fixtures import with_gain
 
 #: the lists' form the facts pass is called in (sm_86's even carry arm); this file reads its unions and factors only
 _LISTS = facts_ops.ListsForm(read_row=64, read_list_group=32, write_list_group=32)
@@ -63,7 +64,7 @@ def _bundle(L, H, keep, *, widths=(256, 256), read_dense=(False, True), write_de
     topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in widths))
     gain = torch.rand((B, L, Hw), device="cuda", generator=gen) + 0.1
     sparse = (tuple(not d for d in read_dense), tuple(not d for d in write_dense))
-    routes = RouteFactors.from_levels(topology, levels(H, read_dense), levels(Hw, write_dense), gain, sparse=sparse)
+    routes = RouteFactors.from_levels(topology, levels(H, read_dense), with_gain(levels(Hw, write_dense), gain), sparse=sparse)
     values = Values.from_projection(torch.randn((B, L, Hw, 64), device="cuda", generator=gen))
     return routes, values
 
@@ -82,7 +83,7 @@ def _clustered(L, H, seed=0):
     read = (keep(routes.amp_read[0], [tile[:, None]]), routes.amp_read[1])
     write = (keep(routes.amp_write[0], [tile[:, None], tile[:, None] + 1]), routes.amp_write[1])
     return RouteFactors(topology=routes.topology, amp_read=read, amp_write=write, scale_read=routes.scale_read,
-                        scale_write=routes.scale_write, g_write=routes.g_write, sparse=routes.sparse), values
+                        scale_write=routes.scale_write, sparse=routes.sparse), values
 
 
 def _run(routes, values, *, accumulate="fp32", num=None, den=None, gated=True):
@@ -284,7 +285,7 @@ def test_the_seam_refuses_what_it_does_not_read():
     short = RouteFactors(topology=routes.topology, amp_read=tuple(r[:, :1000] for r in routes.amp_read),
                          amp_write=tuple(r[:, :1000] for r in routes.amp_write),
                          scale_read=tuple(s[:, :1000] for s in routes.scale_read),
-                         scale_write=tuple(s[:, :1000] for s in routes.scale_write), g_write=routes.g_write[:, :1000],
+                         scale_write=tuple(s[:, :1000] for s in routes.scale_write),
                          sparse=routes.sparse)
     #: any token count is served (a partial last window included); operands that disagree on it are not
     with pytest.raises(RuntimeError, match="values is"):

@@ -38,36 +38,37 @@ nothing and *changes* nothing, down to the last bit.
 The normative reference implementation is `rola/ops/naive.py`
 (`naive_rola`, fp64, the eternal spec). Three lines carry the theorem.
 
-**(a) The clock is the write product, not a time counter.** The docstring at
-`rola/ops/naive.py:137` states the spec's definition:
+**(a) The clock is the write levels' shares, not a time counter.** The docstring at
+`rola/ops/naive.py:138` states the spec's definition:
 
 ```
-clock reads (spec §2: ``c[t,s] = stop_gradient(prod_l p_write_stored[...])``);
+``c[t,s] = stop_gradient(prod_l k_l[d_l(s)] / sum_d k_l[d])``
 ```
 
-and the implementation is `:207`:
+and the implementation is `:197`, over each level's share (its row over its own sum,
+0 where the row sums to 0):
 
 ```python
-c = _leaf_product(stored64, strides, N).detach()   # [B,T,H,N]
+c = _leaf_product(shares, strides, N).detach()                # [B,T,H_w,N]
 ```
 
-`c[t,s]` is the same product of per-level write factors that forms `W[t,s]`
-(`:197`, `W = g_write64[..., None] * _leaf_product(write64, strides, N)`), with
-gradient detached. **Therefore `W[t,s] = 0` and `c[t,s] = 0` have the same
-cause** — some level's factor at `s` is an exact zero.
+`W[t,s]` is the product of the same per-level write factors (`:184`,
+`W = _leaf_product(write64, strides, N)`), and a share is zero exactly where its level
+is. **Therefore `W[t,s] = 0` and `c[t,s] = 0` have the same cause** — some level's
+factor at `s` is an exact zero.
 
-**(b) A zero clock is an exact identity survival factor.** `:208`:
+**(b) A zero clock is an exact identity survival factor.** `:198`:
 
 ```python
 keep = torch.pow(1.0 - rate, c)                    # [B,T,H,N]
 ```
 
 `x ** 0 == 1.0` exactly in IEEE arithmetic for every finite `x`, including
-`x = 0`. No rounding, no tolerance. And when `decay is None`, `:203` sets `keep`
+`x = 0`. No rounding, no tolerance. And when `decay is None`, `:190` sets `keep`
 to exact ones unconditionally, so the no-decay path is the same statement
 trivially.
 
-**(c) The update is therefore the identity.** `:219`:
+**(c) The update is therefore the identity.** `:210`:
 
 ```python
 state = keep[:, t, ..., None] * state + W[:, t, ..., None] * deposit_value[:, t, :, None, :]

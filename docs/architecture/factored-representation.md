@@ -23,10 +23,9 @@ strides, and every per-leaf quantity in the model is a product over levels of a
 per-digit quantity:
 
 ```
-W[t,s] = g_write[t] · Π_l  p_write[l][t, d_l(s)]
-R[t,s] =              Π_l  p_read [l][t, d_l(s)]   # no read-side gain: the ratio
-                                                     # readout fixes it to 1
-rate[s] =             Π_l  delta_l[d_l(s)]
+W[t,s] =  Π_l  k[l][t, d_l(s)]     # a producer's write gain is a factor of k[0]
+R[t,s] =  Π_l  q[l][t, d_l(s)]     # (docs/CONSTITUTION.md#r23)
+rate[s] = Π_l  delta_l[d_l(s)]
 ```
 
 (`rola/ops/naive.py`, `_leaf_product`.) A product over levels is a rank-1 object

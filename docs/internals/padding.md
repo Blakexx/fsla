@@ -68,7 +68,7 @@ in a backward pass, and no parameter reads a pad column, so its gradient is exac
 ## Where the shipped sets come from
 
 Decode's shipped value widths are read off `rola.ops.decode.arms()` at call time -- the
-device's own declared matrix -- never a literal tuple, because a literal would drift the
+binary's own declared arm set -- never a literal tuple, because a literal would drift the
 moment the binary's arm table changed and a call would silently pad to a width the loaded
 `.so` does not carry. The intra reads one value width, `rola.ops.intra.VALUE_WIDTH`.
 

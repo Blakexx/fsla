@@ -15,10 +15,6 @@
 namespace rola {
 namespace decode {
 
-__device__ __forceinline__ float widen(float x) { return x; }
-
-__device__ __forceinline__ float widen(const __nv_bfloat16& x) { return __bfloat162float(x); }
-
 template <typename T>
 __device__ __forceinline__ const T* row_of(const Span& s, int b, int h) {
   return static_cast<const T*>(s.base) + b * s.sb + h * s.sh;
@@ -76,22 +72,20 @@ __device__ __forceinline__ void fold_digits(const DecodeParams& p, int b, int h,
     const float raw = floored ? fmaxf(x[j], facts::kDenseFloorDigit) : x[j];
     const uint32_t live = __ballot_sync(0xffffffffu, raw != 0.0f);
     if (lane == 0) (write_side ? mask_w : mask_r)[word] = live;
-    if (digit < p.level_width[l]) {
-      //: a level the fold normalizes stays RAW until its sum is known (`normalize_rows`).
-      const bool normalized = !write_side && p.normalize[l] != 0;
-      const float unit = normalized ? 1.0f : scale[j] / facts::kRowMaxDigit;
-      (write_side ? sa_w : sa_r)[p.level_amp_offset[l] + digit] = raw * unit;
-    }
+    if (digit < p.level_width[l])
+      (write_side ? sa_w : sa_r)[p.level_amp_offset[l] + digit] =
+          raw * (scale[j] / facts::kRowMaxDigit);
   }
 }
 
-//: THE DECLARED SUM of a normalized level's raw digits, from their staging. Warp `first + l` owns level `l` -- see docs/internals/decode/decode_fold.md#row-sum
-__device__ __forceinline__ void sum_staged_rows(const DecodeParams& p, const float* sa_r,
+//: A WRITE LEVEL'S ROW SUM, from its staging: the decay's share divides by their product. Warp `first + l` owns level
+//: `l`. -- see docs/internals/decode/decode_fold.md#row-sum
+__device__ __forceinline__ void sum_staged_rows(const DecodeParams& p, const float* sa_w,
                                                 float* s_sum, int first) {
   const int lane = threadIdx.x & 31;
   const int l = (threadIdx.x >> 5) - first;
-  if (l >= 0 && l < p.D && p.normalize[l] != 0) {
-    const float* row = sa_r + p.level_amp_offset[l];
+  if (l >= 0 && l < p.D) {
+    const float* row = sa_w + p.level_amp_offset[l];
     float acc = 0.0f;
 #pragma unroll 1
     for (int k = lane; k < p.level_width[l]; k += 32) acc += row[k];
@@ -101,17 +95,13 @@ __device__ __forceinline__ void sum_staged_rows(const DecodeParams& p, const flo
   }
 }
 
-//: A NORMALIZED LEVEL'S AMPLITUDES, `raw / sum`, in place over its staging. -- see docs/internals/decode/decode_fold.md#normalize-rows
-__device__ __forceinline__ void normalize_rows(const DecodeParams& p, float* sa_r,
-                                               const float* s_sum) {
+//: THE DECAY'S SHARE SCALE: `1 / prod_l sum_l` over the write levels' row sums, 0 for a token that writes nothing (its
+//: clock still). -- see docs/internals/decode/decode_fold.md#row-sum
+__device__ __forceinline__ float share_scale(const DecodeParams& p, const float* s_sum) {
+  float total = 1.0f;
 #pragma unroll 1
-  for (int l = 0; l < p.D; ++l) {
-    if (p.normalize[l] == 0) continue;
-    float* row = sa_r + p.level_amp_offset[l];
-    const float total = s_sum[l];
-#pragma unroll 1
-    for (int g = threadIdx.x; g < p.level_width[l]; g += kDecodeThreads) row[g] = row[g] / total;
-  }
+  for (int l = 0; l < p.D; ++l) total *= s_sum[l];
+  return total > 0.0f ? 1.0f / total : 0.0f;
 }
 
 //: Channel `c` of the token's value, LOADED: its f16 unit and the token's scale, the product left for after the digit pass. -- see docs/internals/decode/decode_fold.md#fold-value
@@ -127,12 +117,6 @@ __device__ __forceinline__ ValueUnit load_value(const DecodeParams& p, int b, in
 //: The channel's value, `unit * scale`.
 __device__ __forceinline__ float value_of(const ValueUnit& d) {
   return __half2float(d.unit) * d.scale;
-}
-
-//: The write gain, a per-token scalar every thread of the CTA reads.
-template <typename T>
-__device__ __forceinline__ float fold_gain(const DecodeParams& p, int b, int h) {
-  return widen(*row_of<T>(p.g_write, b, h));
 }
 
 }  // namespace decode

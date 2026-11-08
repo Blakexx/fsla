@@ -29,7 +29,7 @@ def bound(routes, values, window: int, level_s: int) -> torch.Tensor:
     ls, lr = level_s, 1 - level_s
     xs, xr = (_units(routes.amp_read[lv], routes.sparse[0][lv]) for lv in (ls, lr))     # [B, T, H g, w]
     ws, wr = (_units(routes.amp_write[lv], routes.sparse[1][lv]) for lv in (ls, lr))   # [B, T, H, w]
-    F = routes.g_write.double() * values.scale.double()
+    F = values.scale.double()
     for scale in routes.scale_write:
         F = F * scale.double()
     c = wr.amax(-1) * F                                                                # [B, T, H]

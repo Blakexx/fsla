@@ -201,8 +201,7 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
     const int h = bh - b * p.H;
 
     // ---- THE PROLOGUE: three phases, three barriers ------------------------------
-    //: PHASE A, EVERY OPERAND'S LOAD AT ONCE: the gain, a value channel, the dials and the digits of both sides -- see docs/internals/decode/decode.md#prologue
-    const float sw = p.g_bf16 ? fold_gain<__nv_bfloat16>(p, b, h) : fold_gain<float>(p, b, h);
+    //: PHASE A, EVERY OPERAND'S LOAD AT ONCE: a value channel, the dials and the digits of both sides -- see docs/internals/decode/decode.md#prologue
     const ValueUnit v_c = tid < DV ? load_value(p, b, h, tid) : ValueUnit{__float2half(0.0f), 0.0f};
     if (DECAY) {
 #pragma unroll 1
@@ -221,12 +220,12 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
     __syncthreads();
     clock.lap(kPhFold);
 
-    //: PHASE B, FROM THE DIGIT MASKS, one warp a job: the owner and digit lists with their counts, and a -- see docs/internals/decode/decode.md#prologue
+    //: PHASE B, FROM THE DIGIT MASKS, one warp a job: the owner and digit lists with their counts, and a decay step's write row sums -- see docs/internals/decode/decode.md#prologue
     build_lists<D>(p, mask_r, mask_w, olist, dlist, s_n_o, s_n_d);
-    sum_staged_rows(p, sa_r, s_sum, 2 * D - 1);
+    if (DECAY) sum_staged_rows(p, sa_w, s_sum, 2 * D - 1);
     __syncthreads();
-    //: PHASE C: the normalized amplitudes and the term layout (whose barrier ends it).
-    normalize_rows(p, sa_r, s_sum);
+    //: PHASE C: the decay's share scale and the term layout (whose barrier ends it).
+    const float share = DECAY ? share_scale(p, s_sum) : 0.0f;
     publish_term_layout<D>(p, s_n_o, s_n_d, s_fld, s_units);
     clock.lap(kPhFactor);
 
@@ -436,8 +435,8 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
             if (deposit) {
               const float aw = mine ? u.aw * sa_w[u.dlast + t] : 0.0f;
               const float rate = (DECAY && mine) ? u.rate * sd[u.dlast + t] : 0.0f;
-              deposit_leaf<DECAY>(slice[k], addr[k], ar, aw, rate, sw, v_tok, ch0, mine, row_lead,
-                                  exp_lead, acc, acc_m);
+              deposit_leaf<DECAY>(slice[k], addr[k], ar, aw, rate, share, v_tok, ch0, mine,
+                                  row_lead, exp_lead, acc, acc_m);
             } else {
               read_full(slice[k], ar, row_lead, acc, acc_m);
             }
@@ -495,7 +494,7 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
           //: UPDATE FIRST, THEN READ THE STORED ROW -- AND THAT ORDER IS THE SEMANTICS, -- see docs/internals/decode/decode.md#decode-step-kernel-note-l532
           const float aw = present ? u.aw * sa_w[off_last] : 0.0f;
           const float rate = DECAY ? u.rate * sd[off_last] : 0.0f;
-          deposit_leaf<DECAY>(slice, addr, ar, aw, rate, sw, v_tok, ch0, present, row_lead,
+          deposit_leaf<DECAY>(slice, addr, ar, aw, rate, share, v_tok, ch0, present, row_lead,
                               exp_lead, acc, acc_m);
         }
       }
@@ -710,13 +709,6 @@ void check_i32(const Tensor& t, const char* name) {
   STD_TORCH_CHECK(t.is_contiguous(), name, " must be contiguous");
 }
 
-//: ONE FLOATING AXIS OVER THE CLOSED SET THE PRODUCER AND THE VALUE PROJECTION EMIT: an -- see docs/internals/decode/decode.md#isbf16
-int is_bf16(Dtype dtype, const char* what) {
-  STD_TORCH_CHECK(dtype == Dtype::Float || dtype == Dtype::BFloat16, what,
-                  " must be float32 or bfloat16, got ", dtype);
-  return dtype == Dtype::BFloat16 ? 1 : 0;
-}
-
 //: The `[B, 1, H, W] -> [B * H, W]` fold as an ADDRESS. `T != 1` is refused -- the fold -- see docs/internals/decode/decode.md#spanof
 Span span_of(const Tensor& t, int64_t B, int64_t H, int64_t width, const char* name) {
   STD_TORCH_CHECK(t.is_cuda(), name, " must be a CUDA tensor");
@@ -880,11 +872,10 @@ int64_t rola_decode_build_stamp() {
 
 Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                            std::vector<Tensor> read_scale, std::vector<Tensor> write_scale,
-                           std::vector<int64_t> normalize, int64_t floor_read, int64_t floor_write,
-                           std::optional<Tensor> dials, Tensor g_write, Tensor v, Tensor v_scale,
-                           Tensor state, Tensor yacc, Tensor queue, Tensor growth,
-                           Tensor growth_any, Tensor growth_ctr, Tensor done, Tensor atom_bits,
-                           std::vector<int64_t> level_widths,
+                           int64_t floor_read, int64_t floor_write, std::optional<Tensor> dials,
+                           Tensor v, Tensor v_scale, Tensor state, Tensor yacc, Tensor queue,
+                           Tensor growth, Tensor growth_any, Tensor growth_ctr, Tensor done,
+                           Tensor atom_bits, std::vector<int64_t> level_widths,
                            std::vector<int64_t> level_row_offsets, int64_t lattice_k,
                            int64_t lattice_m, bool write_dense, int64_t ctas, double eps,
                            std::optional<Tensor> page_table, std::optional<Tensor> pool_slots,
@@ -892,11 +883,9 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   check_arch_table();
   const int D = static_cast<int>(read.size());
   STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels, "D must be in [1, 4], got ", D);
-  STD_TORCH_CHECK(static_cast<int>(write.size()) == D && static_cast<int>(normalize.size()) == D
-                      && static_cast<int>(level_widths.size()) == D
+  STD_TORCH_CHECK(static_cast<int>(write.size()) == D && static_cast<int>(level_widths.size()) == D
                       && static_cast<int>(level_row_offsets.size()) == D,
-                  "read, write, normalize and the two per-level integer vectors must each "
-                  "have D entries");
+                  "read, write and the two per-level integer vectors must each have D entries");
 
   STD_TORCH_CHECK(v.dim() == 4 && v.size(1) == 1, "v must be [B, 1, H, d_v], got ",
                   shape(v.sizes()));
@@ -965,7 +954,6 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
     detail::check_f32_span(write_scale[l], "write_scale[l]");
     p.read_scale[l] = detail::scalar_span_of(read_scale[l], B, H, "read_scale[l]");
     p.write_scale[l] = detail::scalar_span_of(write_scale[l], B, H, "write_scale[l]");
-    p.normalize[l] = normalize[l] != 0 ? 1 : 0;
     p.level_row_offset[l] = static_cast<int>(level_row_offsets[l]);
   }
   //: whole atoms need the innermost run to cover one: a span of at least an atom (decode.md#whole-atoms).
@@ -975,8 +963,6 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
       "the floor bitmasks name levels inside the depth ", D, ": ", floor_read, ", ", floor_write);
   p.floor_read = static_cast<uint32_t>(floor_read);
   p.floor_write = static_cast<uint32_t>(floor_write);
-  p.g_write = detail::scalar_span_of(g_write, B, H, "g_write");
-  p.g_bf16 = detail::is_bf16(g_write.scalar_type(), "g_write");
   //: THE VALUE: f16 against the token's largest channel, the fp32 token scale.
   STD_TORCH_CHECK(v.scalar_type() == Dtype::Half, "v is f16, got ", v.scalar_type());
   p.v = detail::span_of(v, B, H, d_v, "v");

@@ -44,7 +44,7 @@ walk needs answered is asked off the write map that same kernel builds for itsel
 same launch ([`decode.md#absorbed-verdict`](../decode/decode.md#absorbed-verdict)). So a
 decode step is ALWAYS one launch, dense or paged, growing or steady, and neither backing
 has a stage whose only output is a widened copy of an input or a residency answer for a
-launch still to come. The detached clock is the write allocation itself
+launch still to come. The detached clock is the write rows' own shares
 ([`decode.md#detached-clock`](../decode/decode.md#detached-clock)), so it is not a stream
 of its own either.
 

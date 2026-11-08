@@ -279,10 +279,7 @@ def _sequence():
         _s_in, arena = state._kernel_entry(routes, bits, d_v=_DV, paging=True,
                                            BC=64)
         arena.wait()
-        _y_ref, oracle_state = naive_rola(
-            v[:, :_T], routes.read_simplex(), routes.dequantized()[1],
-            routes.g_write, routes.topology, None,
-            output_final_state=True)
+        _y_ref, oracle_state = naive_rola(v[:, :_T], routes.dequantized()[0], routes.dequantized()[1], routes.topology, None, output_final_state=True)
         lattice = to_lattice(oracle_state.float(), _WIDTHS, config.lattice_k,
                              config.lattice_m)
         #: THE ARENA HOLDS THE STORED FORM (the int8 state pages).

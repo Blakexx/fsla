@@ -350,12 +350,12 @@ def fuse_gain_columns(route_W, gain_W):
 
 
 def raw_side_gain(x, route_W, gain_W, gain_bias, resolved):
-    """`g_write` BEFORE the mass fold, through the library's own two pieces.
+    """The producer's write gain ``[B, T, H]``, through the library's own two pieces.
 
     Not a second implementation: the projection is `_packed_router_logits`' gain span
     and the nonlinearity is `softplus_side_gain`, which is exactly what the producer
-    composes -- what the producer does NOT expose is the value between them, which is
-    what a fold gate has to see.
+    composes -- what the producer does NOT expose is the gain apart from write level 0's
+    scale (docs/CONSTITUTION.md#r23), which is what a gate on that fold has to see.
     """
     from rola.routing.projection import _packed_router_logits
     from rola.routing.side_gain import WRITE_GAIN, softplus_side_gain
@@ -365,18 +365,18 @@ def raw_side_gain(x, route_W, gain_W, gain_bias, resolved):
         x, fuse_gain_columns(route_W, gain_W), resolved, route_bias=None,
         projection_dtype=x.dtype, gain_columns=columns)
     if not columns:
-        return {"g_write": torch.ones(x.shape[0], x.shape[1], gain_W.shape[0], dtype=x.dtype, device=x.device)}
+        return torch.ones(x.shape[0], x.shape[1], gain_W.shape[0], dtype=x.dtype, device=x.device)
     biased = gain_logits + gain_bias.to(gain_logits.dtype)[None, None, :, :]
-    return {"g_write": softplus_side_gain(biased[..., WRITE_GAIN]).to(x.dtype)}
+    return softplus_side_gain(biased[..., WRITE_GAIN]).to(x.dtype)
 
 
 def produce_routing(x, v, route_W, route_bias, gain_W, gain_bias, topology):
     """The producer, run over bare parameter tensors -> a plain namespace.
 
     ``v`` sizes the value half the producer also computes (from a zero weight: these gates read the routing) and is
-    the callers' input to the oracle afterwards. The return carries the field names those gates read
-    (`read_levels`/`write_levels`/`g_write`). There is no read-side gain: the readout is a ratio, which fixes it to 1
-    identically.
+    the callers' input to the oracle afterwards. The return carries the levels those gates read, dequantized
+    (`read_levels`/`write_levels`): as the solve produced them, the write gain in write level 0
+    (docs/CONSTITUTION.md#r23).
     """
     from types import SimpleNamespace
 
@@ -395,6 +395,5 @@ def produce_routing(x, v, route_W, route_bias, gain_W, gain_bias, topology):
                               route_bias=bias, gain_bias=gain_bias,
                               v_W=torch.zeros(H * d_v, hidden_size, dtype=torch.bfloat16, device=x.device))
     routes, _values = produce(x, plan, weights)
-    return SimpleNamespace(
-        read_levels=routes.read_simplex(), write_levels=routes.dequantized()[1],
-        g_write=routes.g_write)
+    read_levels, write_levels = routes.dequantized()
+    return SimpleNamespace(read_levels=read_levels, write_levels=write_levels)

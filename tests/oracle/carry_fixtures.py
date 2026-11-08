@@ -11,6 +11,7 @@ import torch
 from rola.routing.factors import RouteFactors
 from rola.routing.types import OpaqueRouting, Topology
 from rola.values import Values
+from tests.oracle.fixtures import with_gain
 
 
 def levels(widths, L, live, *, B=1, H=2, seed=0):
@@ -37,10 +38,7 @@ def listed_bundle(widths, L, write_sparse, *, same=False, live=4, d_v=64, seed=0
     live_r = [live if flag else width for flag, width in zip(read_flags, widths)]
     gen = torch.Generator().manual_seed(seed + 1)
     topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in widths))
-    routes = RouteFactors.from_levels(topology, levels(widths, L, live_r, seed=seed),
-                                      levels(widths, L, live_w, seed=seed + 7),
-                                      (torch.rand((1, L, 2), generator=gen) + 0.5).cuda(),
-                                      sparse=(read_flags, write_flags))
+    routes = RouteFactors.from_levels(topology, levels(widths, L, live_r, seed=seed), with_gain(levels(widths, L, live_w, seed=seed + 7), (torch.rand((1, L, 2), generator=gen) + 0.5).cuda()), sparse=(read_flags, write_flags))
     values = Values.from_projection(torch.randn((1, L, 2, d_v), generator=gen).cuda())
     return routes, values
 
@@ -54,10 +52,7 @@ def read_listed_bundle(widths, L, read_sparse, *, live=4, d_v=64, seed=0):
     live_r = [live if flag else width for flag, width in zip(read_flags, widths)]
     gen = torch.Generator().manual_seed(seed + 1)
     topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in widths))
-    routes = RouteFactors.from_levels(topology, levels(widths, L, live_r, seed=seed),
-                                      levels(widths, L, list(widths), seed=seed + 7),
-                                      (torch.rand((1, L, 2), generator=gen) + 0.5).cuda(),
-                                      sparse=(read_flags, write_flags))
+    routes = RouteFactors.from_levels(topology, levels(widths, L, live_r, seed=seed), with_gain(levels(widths, L, list(widths), seed=seed + 7), (torch.rand((1, L, 2), generator=gen) + 0.5).cuda()), sparse=(read_flags, write_flags))
     values = Values.from_projection(torch.randn((1, L, 2, d_v), generator=gen).cuda())
     return routes, values
 
@@ -68,10 +63,7 @@ def dense_bundle(widths, L, *, d_v=64, seed=0):
     D = len(widths)
     gen = torch.Generator().manual_seed(seed + 1)
     topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in widths))
-    routes = RouteFactors.from_levels(topology, levels(widths, L, list(widths), seed=seed),
-                                      levels(widths, L, list(widths), seed=seed + 7),
-                                      (torch.rand((1, L, 2), generator=gen) + 0.5).cuda(),
-                                      sparse=((False,) * D, (False,) * D))
+    routes = RouteFactors.from_levels(topology, levels(widths, L, list(widths), seed=seed), with_gain(levels(widths, L, list(widths), seed=seed + 7), (torch.rand((1, L, 2), generator=gen) + 0.5).cuda()), sparse=((False,) * D, (False,) * D))
     values = Values.from_projection(torch.randn((1, L, 2, d_v), generator=gen).cuda())
     return routes, values
 

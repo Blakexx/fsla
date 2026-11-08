@@ -71,6 +71,7 @@ from tests.oracle.fixtures import (
     state_quantum,
     state_rounded,
     step_bundles,
+    with_gain,
 )
 from tests.oracle.oracle_fixtures import _decay_dials, _simplex, _topology
 from tests.oracle.tolerances import DECODE_STATE, DECODE_Y
@@ -170,7 +171,7 @@ def _kernel_realized_support(routes, side, widths, B, H, device, d_v=64):
     #: a dense level is f16 at the floor on either side: the rows move to the write side in their own form
     empty = tuple(quant.aligned_rows(*r.shape, r.device, quant.ROW_DTYPE if sparse else quant.DENSE_DTYPE)
                   for r, sparse in zip(rows, read_flags))
-    routes = RouteFactors.from_rows(topology, empty, rows, (ones,) * len(widths), (ones,) * len(widths), ones,
+    routes = RouteFactors.from_rows(topology, empty, rows, (ones,) * len(widths), (ones,) * len(widths),
                                     sparse=(read_flags, flags))
     values = Values.from_projection(torch.ones(B, 1, H, d_v, **f32))
     state = state_pages(torch.zeros(B, H, N, config.cols, **f32))
@@ -197,7 +198,7 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
         g_write = torch.rand(B, 1, H, device=device, dtype=torch.float64, generator=generator) + 0.5
         v = torch.randn(B, 1, H, d_v, device=device, dtype=torch.float64, generator=generator)
         #: ONE representation, and it is the STORED one: the kernel reads the bundle and the oracle its values.
-        bundles.append(step_bundles(v, read, write, g_write, topology))
+        bundles.append(step_bundles(v, read, with_gain(write, g_write), topology))
 
     initial_state = None
     if nonzero_m0:
@@ -319,20 +320,13 @@ def test_the_rule_fails_planted_errors_on_the_kernels_own_output():
 def test_the_empty_support_corner_is_inert_rather_than_undefined():
     """``M = 0``: no leaf is touched, ``y`` is zero, and the state is byte-unchanged.
 
-    **This is a ROBUSTNESS row, not a semantics row, and the distinction is itself a
-    finding.** ``M = 0`` requires some level to have no live digit on EITHER side, and
-    every routing level is a SIMPLEX — it sums to 1, so it always has one. The canonical
-    oracle enforces exactly that (``_oracle_contract.validate_simplex`` refuses an all-zero level),
-    which means the corner is UNREACHABLE from a valid producer and cannot be gated
-    against the oracle at all: there is no reference answer because there is no legal
-    input. Asserting against the oracle here would have meant weakening the oracle.
-
-    It is still worth pinning, because the empty UNIT RANGE it exercises is very much
-    reachable — a head whose support is empty still owes a ``y``, so its one position is
-    claimed and walks nothing — and the degenerate forms of the queue and
-    the split-K combine live on that path. So the assertion is against the arithmetic
-    identity (a sum over no terms is zero, and ``0 / (0 + eps)`` is zero), not against a
-    reference.
+    ``M = 0`` is some level with no live digit on EITHER side -- an all-zero level, a legal
+    input since no level need sum to 1 (docs/CONSTITUTION.md#r23). The oracle's answer is
+    exact arithmetic: no write deposits, so the state is the entry's, and the readout is a
+    sum over no terms, ``0 / (0 + eps) = 0``. Those identities are what this asserts, bit
+    for bit. The empty UNIT RANGE it exercises is the path a head whose support is empty
+    takes -- its one position is claimed and walks nothing -- and the degenerate forms of
+    the queue and the split-K combine live on it.
     """
     device = "cuda"
     widths, d_v, B, H = (64, 64), 64, 1, 2
@@ -343,7 +337,7 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
     config = derive_decode_geometry(topology, d_v=d_v, decay=False)
     m0 = state_pages(0.1 * torch.randn(B, H, config.N, config.cols, device=device, dtype=torch.float32))
     state = m0.clone()
-    routes, values = step_bundles(v, zeros, zeros, g_write, topology)
+    routes, values = step_bundles(v, zeros, with_gain(zeros, g_write), topology)
     y, state, _workspace = _decode_step(routes, values, config, state)
     assert not _leaf_support(routes.live("write"), widths, B, H, device).any(), (
         "the fixture did not produce M = 0")
@@ -514,10 +508,10 @@ def _oracle_prefill(widths, d_v, B, T, H, generator, device):
     read_levels = tuple(_simplex((B, T, H, w), 0.5, generator, device) for w in widths)
     write_levels = tuple(_simplex((B, T, H, w), 0.4, generator, device) for w in widths)
     g_write = torch.rand(B, T, H, device=device, dtype=torch.float64, generator=generator) + 0.5
+    write_levels = with_gain(write_levels, g_write)
     v = torch.randn(B, T, H, d_v, device=device, dtype=torch.float64, generator=generator)
-    ref = oracle_run(v, read_levels, write_levels, g_write, topology)
-    return dict(topology=topology, read_levels=read_levels, write_levels=write_levels,
-                g_write=g_write, v=v, y=ref.y,
+    ref = oracle_run(v, read_levels, write_levels, topology)
+    return dict(topology=topology, read_levels=read_levels, write_levels=write_levels, v=v, y=ref.y,
                 state=ref.state.float())
 
 
@@ -555,19 +549,17 @@ def test_g7_prefill_decode_seam(widths):
     #: THE SEAM ITSELF: the entry state is the oracle's, so it crosses into lattice order
     #: here and its answer crosses back.
     entry = state_pages(to_lattice(pre["state"], widths, config.lattice_k, config.lattice_m))
-    routes, values = step_bundles(step_v, step_read, step_write, step_gw, pre["topology"])
+    routes, values = step_bundles(step_v, step_read, with_gain(step_write, step_gw), pre["topology"])
     y_dec, state_dec, _ = _decode_step(routes, values, config, entry)
-    step_v, step_read, step_write, step_gw = bundle_operands(routes, values)
+    step_v, step_read, step_write = bundle_operands(routes, values)
     state_dec = to_canonical(logical_state(state_dec, d_v).reshape(B, H, config.N, d_v + 1), widths,
                              config.lattice_k, config.lattice_m)
 
     #: THE WHOLE SEQUENCE, on the oracle: prefill and step concatenated, so the
     #: reference sees exactly what the two kernel legs together saw.
     cat = lambda a, b: tuple(torch.cat([x, s], dim=1) for x, s in zip(a, b))  # noqa: E731
-    ref = oracle_run(
-        torch.cat([pre["v"], step_v], dim=1),
-        cat(pre["read_levels"], step_read), cat(pre["write_levels"], step_write),
-        torch.cat([pre["g_write"], step_gw], dim=1), pre["topology"])
+    ref = oracle_run(torch.cat([pre["v"], step_v], dim=1), cat(pre["read_levels"], step_read),
+                     cat(pre["write_levels"], step_write), pre["topology"])
 
     assert_slots_close(y_dec, ref.y[:, L:L + 1], output=DECODE_Y, envelope=ref.y_envelope[:, L:L + 1], what="y across the seam")
     #: the entry state crossed the seam as a stored one (half a quantum), and the step stored it again.

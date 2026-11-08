@@ -61,7 +61,14 @@ def assert_reordered_close(got, want, what: str) -> None:
     assert reordered_close(got, want), f"{what}: off by up to {worst:.3g} beyond summation reordering"
 
 
-def step_bundles(v, read, write, g_write, topology, *, read_mass=None):
+def with_gain(write, g_write):
+    """A fixture's write levels with its drawn gain folded into level 0, as a producer folds its own
+    (docs/CONSTITUTION.md#r23): ``W = g prod_l k_l`` either way, and each level's share is unchanged."""
+    write = tuple(write)
+    return (write[0] * g_write[..., None].to(write[0].dtype), *write[1:])
+
+
+def step_bundles(v, read, write, topology):
     """Floating step operands in the internal format: ``(RouteFactors, Values)`` as the framework's epilogue writes
     them (u8 rows, f16 values). A drawn level with exact zeros is declared SPARSE, as a production whose activation
     has exact zeros is, so its zeros stay exact rather than reading as the dense floor
@@ -74,16 +81,15 @@ def step_bundles(v, read, write, g_write, topology, *, read_mass=None):
     sparse = tuple(flags if not all(flags) else tuple(i != dense for i in range(depth))
                    for flags, dense in zip(sparse, (0, 1 % depth)))
     routes = RouteFactors.from_levels(topology, tuple(t.float() for t in read), tuple(t.float() for t in write),
-                                      g_write.float(), read_mass=read_mass, sparse=sparse)
+                                      sparse=sparse)
     return routes, Values.from_projection(v.float())
 
 
 def bundle_operands(routes, values):
-    """What the kernel is handed, in fp64 -- the op oracle's inputs: ``(v, read, write, g_write)``, the read levels
-    on the simplex: the op's oracle takes the bundle itself (docs/api.md section 2.1)."""
-    _, write = routes.dequantized()
-    return (values.dequantized().double(), tuple(r.double() for r in routes.read_simplex()),
-            tuple(w.double() for w in write), routes.g_write.double())
+    """What the kernel is handed, in fp64 -- the op oracle's inputs: ``(v, read, write)``, the bundle's levels as
+    stored (docs/api.md section 2.1)."""
+    read, write = routes.dequantized()
+    return values.dequantized().double(), tuple(r.double() for r in read), tuple(w.double() for w in write)
 
 
 def state_pages(logical):
@@ -198,7 +204,7 @@ class OracleRun(NamedTuple):
     state_envelope: torch.Tensor
 
 
-def oracle_run(v, read_levels, write_levels, g_write, topology, decay=None, entry=None) -> OracleRun:
+def oracle_run(v, read_levels, write_levels, topology, decay=None, entry=None) -> OracleRun:
     """`rola.ops.naive.naive_rola`, with the same recurrence run on ``|v|`` beside it: every weight is non-negative, so
     that run's slots are the sums of the term sizes. ``entry`` is None (a fresh state), a state of the caller's own
     (its envelope is ``|entry|``) or a previous `OracleRun`, whose state and envelope a chain continues. A readout
@@ -207,9 +213,8 @@ def oracle_run(v, read_levels, write_levels, g_write, topology, decay=None, entr
         state, envelope = entry.state, entry.state_envelope
     else:
         state, envelope = entry, None if entry is None else entry.double().abs()
-    y, out = naive_rola(v, read_levels, write_levels, g_write, topology, decay, initial_state=state,
-                        output_final_state=True)
-    y_magnitudes, out_envelope = naive_rola(v.abs(), read_levels, write_levels, g_write, topology, decay,
+    y, out = naive_rola(v, read_levels, write_levels, topology, decay, initial_state=state, output_final_state=True)
+    y_magnitudes, out_envelope = naive_rola(v.abs(), read_levels, write_levels, topology, decay,
                                             initial_state=envelope, output_final_state=True)
     return OracleRun(y, out, y_magnitudes + y.abs(), out_envelope)
 

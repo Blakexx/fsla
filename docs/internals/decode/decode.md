@@ -406,17 +406,17 @@ spills, and a visit's prologue is issued by 16 warps
 ## <a id="params-amps"></a>9. `DecodeParams` — the operands, as addresses
 
 `read[l]` / `write[l]` (the coefficient rows), `read_scale[l]` / `write_scale[l]` (their fp32
-maxima), `g_write`, `v` (the f16 values) and `v_scale` are `Span`s: a base pointer
+maxima; a producer's write gain is a factor of write level 0's), `v` (the f16 values) and `v_scale` are `Span`s: a
+base pointer
 and the `(b, h, w)` strides of the CALLER'S OWN `[B, 1, H, *]` view. There is no `[BH, b_l]` plane between the
 producer and the walk — the step folds these into shared memory itself
 ([`decode_fold.md`](decode_fold.md)), so the `[B, 1, H, W] -> [BH, W]` fold is an ADDRESS
 the kernel computes rather than a pass that ran.
 
-`normalize[l]` says whether read level `l` still carries its own mass, so the fold divides
-it by its row sum. `floor_read` and `floor_write` name each side's dense levels, a bit a level:
+No level is normalized, on either side: the fold reads each as stored ([`docs/CONSTITUTION.md`
+R23](../../CONSTITUTION.md#r23)). `floor_read` and `floor_write` name each side's dense levels, a bit a level:
 their rows are f16 with the floor stored, and a zero, in a live row, reads as the floor
 ([`../facts/liveness_contract.md#floor`](../facts/liveness_contract.md#floor)).
-`g_bf16` names the gain's storage type; the fold branches on it once a step, never per element ([`decode_fold.md#the-dtype-arms`](decode_fold.md#the-dtype-arms)).
 
 `level_amp_offset[l]` is where level `l`'s staged amplitude row starts inside the flat
 `sum_l b_l` SMEM arrays. It is host-computed and carried rather than recomputed, because
@@ -439,10 +439,11 @@ every decode entry validates the same way and reports `total_rows`.
 
 ## <a id="detached-clock"></a><a id="log1pf"></a>10. The detached clock, and why there is no sweep
 
-The clock is the STORED WRITE ALLOCATION ITSELF — `c[t, s] = prod_l p_write[t, d_l(s)]`,
-carrying no side gain, because `g_write` scales the deposit and not the clock. It is
-therefore not a stream of its own: the step reads the same staged write rows the deposit
-reads, and a second fold of one fact would be a second derivation of it.
+The clock is each leaf's SHARE of the token's write — `c[t, s] = prod_l k_l[d_l(s)] / sum_d k_l[d]`, the write
+amplitude times `1 / prod_l sum_l` ([`decode_fold.md#row-sum`](decode_fold.md#row-sum)) — scale-free, so a magnitude a
+level carries (a producer's write gain among them) scales the deposit and not the clock. It is therefore not a stream
+of its own: the step reads the same staged write rows the deposit reads, and a second fold of one fact would be a
+second derivation of it.
 
 Its `stored != 0 => live != 0` guarantee is what makes §2.4's no-sweep claim EXACT: a leaf
 outside `supp(W)` has a zero factor at some level, so its clock is `0`, so `keep^0 == 1`
@@ -632,12 +633,13 @@ function of ITS OWN SUPPORT and exists only on the device, once the factor table
 head. So nothing is sized per head: a head with more live positions takes more claims, and a
 CTA that runs out of its heads steals one ([the next head](#queue-next)).
 
-## <a id="row-scales"></a><a id="sr"></a>22. `sr` and `sw` — the two per-token row scales
+## <a id="row-scales"></a><a id="sr"></a>22. No per-token row scale
 
 At `T = 1` there is no owner rectangle to hoist per-level factors over, so they stay in
-the per-LEAF product, and what `sr`/`sw` hold is exactly the per-TOKEN part: the side
-gains. There is no read-side gain at all: the ratio
-readout fixes it to 1 identically, in every arm.
+the per-LEAF product: each level's scale rides its staged amplitudes (`raw * scale / 255`),
+and there is no per-token factor beside them. A producer's write gain is a factor of write
+level 0's scale ([`docs/CONSTITUTION.md` R23](../../CONSTITUTION.md#r23)), and a read side has
+no gain of its own: the ratio readout cancels any per-token read factor but in the floor.
 
 <a id="t"></a>
 ## <a id="aligned-subranges"></a>26. The unit's leaves are walked in ascending order, over the innermost run's set bits
@@ -757,8 +759,8 @@ on every arm — one lane-0 statement, never a second path.
 After its last claim a visit folds its warps' partials in shared memory and adds them into the
 head's sums once: one set of atomics a visit, never one a warp
 ([the finish](#queue-finish)). There is no read-side row scale left to apply: the fold stages
-normalized amplitudes ([`decode_fold.md`](decode_fold.md)), and the ratio readout fixes the
-read-side gain to 1 ([§22](#row-scales)).
+each digit's amplitude at its row's scale ([`decode_fold.md`](decode_fold.md)), and the ratio
+readout leaves a read side no gain of its own ([§22](#row-scales)).
 
 ## <a id="declared-residency"></a><a id="kdecoderesidentthreads"></a>30. The residency is DECLARED
 
@@ -775,9 +777,9 @@ deepest arm to trade for live state.
 `DV(2) x D(4) x DECAY(2) = 16`. Note what is **not** an axis: no `BT` (one token), no `BC`
 (no owner-blocked amortization — [§3](#bc-absent)), no precision axis (there is no MMA),
 no `GLOBAL` (raw normalization is dead; the mass column is unconditional
-— [§20](#template-axes)), no OPERAND STORAGE TYPE (the fold reads the rows' type, the gain's
-and the value's digit count as runtime flags selecting a typed loop instead — a template axis
-there would multiply the matrix for a few hundred bytes of gather,
+— [§20](#template-axes)), no OPERAND STORAGE TYPE (the fold reads each level's row type as a
+runtime dense bit selecting a typed load instead — a template axis there would multiply the
+matrix for a few hundred bytes of gather,
 [`decode_fold.md#the-dtype-arms`](decode_fold.md#the-dtype-arms)), and no ADDRESS-SPACE arm: the factor tables are
 shared memory unconditionally, at
 every shipped topology, so there is no second arm for a template parameter to select
@@ -908,7 +910,6 @@ Each declaration below is documented by the page that owns its mechanism.
 - <a id="note-l1083"></a>the two backings' validation: [`decode_api.md#paged-state`](decode_api.md#paged-state)
 - <a id="note-l1131"></a>the admission buffers: [`decode_api.md#the-step`](decode_api.md#the-step)
 - <a id="launch"></a>the one launch site: [`dispatch_switch.md#one-launch`](../dispatch_switch.md#one-launch)
-- <a id="isbf16"></a>the gain's dtype arm: [`decode_fold.md#the-dtype-arms`](decode_fold.md#the-dtype-arms)
 - <a id="rowsf16"></a>the rows' storage type: [`decode_fold.md#the-dtype-arms`](decode_fold.md#the-dtype-arms)
 - <a id="spanof"></a>`span_of`, the fold as an address: [`decode_fold.md#the-identity`](decode_fold.md#the-identity)
 - <a id="span"></a>`Span`: [`decode_fold.md#the-identity`](decode_fold.md#the-identity)
@@ -973,16 +974,15 @@ holding the warp's sum and the first group deposits it into the CTA's fold
 Every visit derives its head's tables itself before it walks
 ([`#per-cta-prologue`](#per-cta-prologue)), in three phases:
 
-- **Phase A -- every operand's load at once.** The gain, a value channel's digits and scale
+- **Phase A -- every operand's load at once.** A value channel's digits and scale
   (the arithmetic deferred past the digit pass, so its load does not queue ahead of the
   digits'), the decay dials, and the digit pass: a warp a mask word, each lane loading its
-  digit and its row's scale together, staging `raw * scale / full_scale` (or the raw digit,
-  for a level the fold normalizes) and balloting the word
+  digit and its row's scale together, staging `raw * scale / full_scale` and balloting the word
   ([`decode_fold.md#fold-digits`](decode_fold.md#fold-digits)).
 - **Phase B -- one warp a job.** Warp `l` the level's owner lists, warp `D + l` its write
-  digit list, warp `2 D - 1 + l` a normalized level's declared sum
-  ([`decode_lattice.md#build-lists`](decode_lattice.md#build-lists)).
-- **Phase C.** A normalized level's amplitudes and the term layout, whose barrier ends it.
+  digit list ([`decode_lattice.md#build-lists`](decode_lattice.md#build-lists)), and at a
+  `DECAY` step warp `2 D - 1 + l` write level `l`'s row sum ([`decode_fold.md#row-sum`](decode_fold.md#row-sum)).
+- **Phase C.** The decay's share scale and the term layout, whose barrier ends it.
 
 The visit then lays out the head's positions and takes its admission
 ([the admission](#queue-admission)).

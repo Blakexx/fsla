@@ -51,7 +51,7 @@ def deposit_value(v):
                      dim=-1)
 
 
-def inter_reference(read_levels, write_levels, g_write, v, widths, window,
+def inter_reference(read_levels, write_levels, v, widths, window,
                     state_in=None, states=False):
     """``(num, den, state_out)`` in fp64, canonical leaf order.
 
@@ -60,7 +60,7 @@ def inter_reference(read_levels, write_levels, g_write, v, widths, window,
     NO within-window pair -- that is the whole content of the inter/intra split.
     With ``states``, the list of each window's state before its writes instead.
     GROUPED (``H = g H_w``): query head ``h`` reads write head ``h // g``'s state;
-    ``v``, the write levels and the gain are the write heads'.
+    ``v`` and the write levels are the write heads'.
     """
     Bn, T, Hw, d_v = v.shape
     g = read_levels[0].shape[2] // Hw
@@ -79,13 +79,13 @@ def inter_reference(read_levels, write_levels, g_write, v, widths, window,
         num[:, sl] = out[..., :d_v]
         den[:, sl] = out[..., d_v]
         del R, out
-        Wm = g_write[:, sl].double()[..., None] * leaf_product(write_levels, widths, sl)
+        Wm = leaf_product(write_levels, widths, sl)
         state = state + torch.einsum("bthn,bthc->bhnc", Wm, vt[:, sl])
         del Wm
     return before if states else (num, den, state)
 
 
-def intra_reference(read_levels, write_levels, g_write, v, widths, window):
+def intra_reference(read_levels, write_levels, v, widths, window):
     """The WITHIN-window pairs, staircase-masked (inclusive read-after-write).
 
     Materializes the ``[w, w]`` similarity per window, which is exactly what the
@@ -100,7 +100,7 @@ def intra_reference(read_levels, write_levels, g_write, v, widths, window):
         sl = slice(t0, min(t0 + window, T))
         n = sl.stop - sl.start
         R = leaf_product(read_levels, widths, sl)
-        Wm = (g_write[:, sl].double()[..., None] * leaf_product(write_levels, widths, sl)).repeat_interleave(g, 2)
+        Wm = leaf_product(write_levels, widths, sl).repeat_interleave(g, 2)
         A = torch.einsum("brhn,bchn->bhrc", R, Wm)
         mask = torch.tril(torch.ones(n, n, device=v.device, dtype=torch.float64))
         A = A * mask

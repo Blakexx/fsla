@@ -29,7 +29,7 @@ from measure.subjects import carry_operands
 from rola.ops import carry as carry_ops
 from rola.ops.window import window_of
 from tests.oracle import reference
-from tests.oracle.fixtures import assert_planted_errors_fail, assert_slots_close, relative
+from tests.oracle.fixtures import assert_planted_errors_fail, assert_slots_close, relative, with_gain
 from tests.oracle.fold_reference import unit_scale
 from tests.oracle.readout_reference import (
     UNIT_HEADROOM,
@@ -60,9 +60,7 @@ def _units(spec, routes, values):
     level_s = routes.level_s
     x, a = _read_rows(routes, level_s)
     read, write = routes.dequantized()
-    state = reference.inter_reference(tuple(r.double() for r in read), tuple(w.double() for w in write),
-                                      routes.g_write.double(), values.dequantized().double(), routes.topology.widths,
-                                      window_of(), state_in=_entry(spec, routes), states=True)
+    state = reference.inter_reference(tuple(r.double() for r in read), tuple(w.double() for w in write), values.dequantized().double(), routes.topology.widths, window_of(), state_in=_entry(spec, routes), states=True)
     B, T, H, _ = x.shape
     widths, kappa = routes.topology.widths, unit_scale(routes, fold_level(routes, level_s))
     num = torch.zeros(B, T, H, dtype=torch.float64, device=x.device)
@@ -111,9 +109,7 @@ def ref(spec, routes, values, magnitudes=False):
     state = _entry(spec, routes)
     if magnitudes:
         v, state = v.abs(), None if state is None else state.abs()
-    num, _den, _state = reference.inter_reference(tuple(x.double() for x in read), tuple(x.double() for x in write),
-                                                  routes.g_write.double(), v, routes.topology.widths,
-                                                  window_of(), state_in=state)
+    num, _den, _state = reference.inter_reference(tuple(x.double() for x in read), tuple(x.double() for x in write), v, routes.topology.widths, window_of(), state_in=state)
     return num
 
 
@@ -165,8 +161,8 @@ def test_the_decomposition_is_exact():
     read, write, gain, v = realize(spec).doubles()
     tot = None
     for W in (1, 8, 64):
-        ni, di, _ = reference.inter_reference(read, write, gain, v, spec.widths, W)
-        na, da = reference.intra_reference(read, write, gain, v, spec.widths, W)
+        ni, di, _ = reference.inter_reference(read, with_gain(write, gain), v, spec.widths, W)
+        na, da = reference.intra_reference(read, with_gain(write, gain), v, spec.widths, W)
         cur = (ni + na, di + da)
         if tot is None:
             tot = cur
@@ -175,5 +171,5 @@ def test_the_decomposition_is_exact():
             assert relative(cur[1], tot[1]) < 1e-12
     routing = IndependentRouting(width=1, read=SoftmaxActivation(), write=SoftmaxActivation())
     topology = Topology(levels=tuple(routing.at(w) for w in spec.widths))
-    y, _ = naive_rola(v, read, write, gain, topology, None, output_final_state=False)
+    y, _ = naive_rola(v, read, with_gain(write, gain), topology, None, output_final_state=False)
     assert relative(tot[0] / (tot[1][..., None] + READOUT_EPS), y) < 1e-10

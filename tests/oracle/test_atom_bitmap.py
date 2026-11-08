@@ -58,6 +58,7 @@ from rola.routing.types import (
     Topology,
 )
 from rola.values import Values
+from tests.oracle.fixtures import with_gain
 
 #: the lists' form the facts pass is called in (sm_86's even carry arm); this file reads its words and unions only
 _LISTS = facts_ops.ListsForm(read_row=64, read_list_group=32, write_list_group=32)
@@ -114,7 +115,7 @@ def _bundle(write, sparse=None):
     topology = Topology(levels=tuple(OpaqueRouting(width=level.shape[-1]) for level in write))
     ones = torch.ones((B, T, H), device=write[0].device)
     sparse = _alternating_sparse(len(write)) if sparse is None else sparse
-    return (RouteFactors.from_levels(topology, write, write, ones, sparse=sparse),
+    return (RouteFactors.from_levels(topology, write, with_gain(write, ones), sparse=sparse),
             Values.from_projection(torch.ones((B, T, H, 8), device=write[0].device)))
 
 
@@ -141,8 +142,7 @@ def _fixture(widths, p_nonzero, seed):
     g = torch.Generator(device="cuda").manual_seed(seed)
     read = tuple(_simplex((_B, _T, _H, w), p_nonzero, g) for w in widths)
     write = tuple(_simplex((_B, _T, _H, w), p_nonzero, g) for w in widths)
-    g_write = torch.rand((_B, _T, _H), device="cuda", generator=g)
-    return read, write, g_write
+    return read, write
 
 
 @pytest.mark.parametrize("support", list(_SUPPORTS), ids=list(_SUPPORTS))
@@ -151,7 +151,7 @@ def test_atom_bitmap_is_exact(arm, support):
     """Exact tensor equality against the independent reference, on every built arm."""
     D, B = arm
     widths = (B,) * D
-    _read, write, _g_write = _fixture(widths, _SUPPORTS[support], seed=D * 1000 + B)
+    _read, write = _fixture(widths, _SUPPORTS[support], seed=D * 1000 + B)
     routes, values = _bundle(write)
     bits = _kernel_bitmap(routes, values)
     oracle = _oracle_bitmap(routes.dequantized()[1], widths)

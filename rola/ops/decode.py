@@ -79,10 +79,10 @@ def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurem
 def _shipped_decode_dv(D: int, decay: bool) -> tuple[int, ...]:
     """The ``DV`` values this binary's decode arms ship at this ``(D, decay)``.
 
-    Read off :func:`arms` (the device's own declared matrix) rather than a literal
+    Read off :func:`arms` (the binary's own declared arm set) rather than a literal
     set: decode's shipped ``d_v`` axis is wider than carry's single ``D_V`` (a full
     build carries ``d_v x D x decay``), and a literal tuple here would drift from
-    whatever the binary actually carries the moment either side changed.
+    whatever the binary carries.
     """
     dv_at_shape = tuple(sorted({dv for dv, d, dec in arms() if d == D and dec == decay}))
     if not dv_at_shape:
@@ -338,11 +338,9 @@ def step(plan: DecodePlan) -> torch.Tensor:
         write=list(plan.write),
         read_scale=list(plan.read_scale),
         write_scale=list(plan.write_scale),
-        normalize=[int(bool(flag)) for flag in plan.normalize],
         floor_read=plan.floor[0],
         floor_write=plan.floor[1],
         dials=plan.dials,
-        g_write=plan.g_write,
         v=plan.v,
         v_scale=plan.v_scale,
         state=plan.state_plane,
@@ -406,9 +404,7 @@ def _decode_step(
 
     ``routes`` is a one-token :class:`~rola.routing.factors.RouteFactors` and ``values`` a one-token
     :class:`~rola.values.Values`; the kernel reads their rows, scales and values as they are. ``state`` is the dense
-    ``[BH, N / 16, page_bytes]`` plane, or the arena's ``[slots, page_bytes]`` one under ``page_table``. The read
-    levels a bundle declares off the simplex are normalized in the fold
-    (:meth:`~rola.routing.factors.RouteFactors.read_needs_normalization`).
+    ``[BH, N / 16, page_bytes]`` plane, or the arena's ``[slots, page_bytes]`` one under ``page_table``.
 
     Returns ``(y, state, workspace)`` with ``y`` shaped ``[B, 1, H, d_v]`` fp32.
 
@@ -432,8 +428,6 @@ def _decode_step(
     y = step(DecodePlan(
         config=config, heads=values.heads, read=routes.amp_read, write=routes.amp_write,
         read_scale=routes.scale_read, write_scale=routes.scale_write,
-        normalize=tuple(routes.read_needs_normalization()), floor=routes.floor_bits(),
-        dials=leaf_rate_dials_for(decay, config, v.device),
-        g_write=routes.g_write, v=v, v_scale=values.scale,
+        floor=routes.floor_bits(), dials=leaf_rate_dials_for(decay, config, v.device), v=v, v_scale=values.scale,
         state_plane=plane, page_table=page_table, scratch=workspace, pool=pool))
     return slice_y(y, logical_d_v), state, workspace

@@ -51,6 +51,7 @@ from tests.oracle.fixtures import (
     state_quantum,
     state_rounded,
     step_bundles,
+    with_gain,
 )
 from tests.oracle.oracle_fixtures import _decay_dials, _simplex, _topology
 from tests.oracle.tolerances import DECODE_STATE, DECODE_Y
@@ -117,7 +118,7 @@ def _f32(d):
 
 def _bundles(step, topology):
     """A drawn step in the internal format: what the kernel reads, and whose values the oracle takes."""
-    return step_bundles(step["v"], step["read"], step["write"], step["g_write"], topology)
+    return step_bundles(step["v"], step["read"], with_gain(step["write"], step["g_write"]), topology)
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +148,7 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
     pre = _draw(gen, device, T, 0.5, 0.4,
                 write_live=_WIDTHS[0] // 2)
     f = _f32(pre)
-    bundle = RouteFactors.from_levels(topology, f["read"], f["write"], f["g_write"])
+    bundle = RouteFactors.from_levels(topology, f["read"], with_gain(f["write"], f["g_write"]))
     if decay_on:
         # The decay retirement: decay is not a feature of the operator. The
         # kernel arm names the refusal and the dispatch routes such a call to
@@ -155,12 +156,10 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
         # conditions, and the oracle below keeps the handoff semantics alive.
         reason = arm_refusal(bundle, decay, d_v=_DV)
         assert reason is not None and "decay" in reason, reason
-        naive_rola(pre["v"], pre["read"], pre["write"],
-                   pre["g_write"], topology, decay,
-                   output_final_state=True)
+        naive_rola(pre["v"], pre["read"], with_gain(pre["write"], pre["g_write"]), topology, decay, output_final_state=True)
         return
     assert arm_refusal(bundle, decay, d_v=_DV) is None, "the prefill fixture left the envelope"
-    ref = oracle_run(pre["v"], pre["read"], pre["write"], pre["g_write"], topology, decay)
+    ref = oracle_run(pre["v"], pre["read"], with_gain(pre["write"], pre["g_write"]), topology, decay)
     #: the hand-off state is a STORED one: both sides continue from the int8 format's values.
     ref = ref._replace(state=state_rounded(ref.state))
 

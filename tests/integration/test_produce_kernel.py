@@ -16,15 +16,15 @@ import torch
 
 import rola
 from rola.ops.produce import (
-    _TILE_WARPS,
-    _TOKEN_TILE,
     ProducerPlan,
     ProducerWeights,
     _job_tensor,
+    _write_gain,
     dense_levels,
     hidden_contiguous,
     job_table,
     produce,
+    route_logits,
     row_layout,
 )
 from rola.routing import quant
@@ -66,7 +66,7 @@ def _operands(name: str, *, B=2, T=5, hidden=48, H=3, d_v=64, bias=True, gain=Tr
 
 
 def _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill: int, probe: bool = False):
-    """One launch into buffers poisoned with ``fill``; the outputs, the arrival counters and the probes after it."""
+    """One launch into buffers poisoned with ``fill``; the outputs and the probes after it."""
     from rola.ops._ext import extension
 
     B, T, hidden = x.shape
@@ -82,18 +82,17 @@ def _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill: int, probe: bool
            "amp_write": poisoned(row_layout(plan, "write")[1], dtype=torch.uint8),
            **{f"dense_{side}": poisoned(row_layout(plan, side, dense=True)[1], dtype=quant.DENSE_DTYPE)
               if dense[side] else None for side in ("read", "write")},
-           "scale_read": poisoned(D), "scale_write": poisoned(D), "mass_read": poisoned(D), "mass_write": poisoned(D),
-           "read_mass": poisoned(), "g_write": poisoned(), "v": poisoned(d_v, dtype=torch.float16), "v_scale": poisoned()}
-    jobs, shapes, per_head = _job_tensor(plan, "cuda:0")
-    arrivals = torch.zeros(-(-(B * T) // _TOKEN_TILE) * H * _TILE_WARPS, dtype=torch.int32, device="cuda")
+           "scale_read": poisoned(D), "scale_write": poisoned(D), "v": poisoned(d_v, dtype=torch.float16),
+           "v_scale": poisoned()}
+    jobs, shapes, _per_head = _job_tensor(plan, "cuda:0")
     probes = [torch.full((jobs.shape[0], B * T, _MAX_COLUMNS), float("nan"), device="cuda") if probe else None
               for _ in range(2)]
     extension().rola_produce_forward(
         x.reshape(B * T, hidden).contiguous(), route_W, route_bias, gain_bias, v_W, jobs,
-        *out.values(), arrivals, *probes, shapes, D, per_head,
+        *out.values(), *probes, shapes, D,
         *(sum(1 << level for level in dense[side]) for side in ("read", "write")))
     torch.cuda.synchronize()
-    return {key: None if t is None else t.transpose(1, 2) for key, t in out.items()}, arrivals, probes
+    return {key: None if t is None else t.transpose(1, 2) for key, t in out.items()}, probes
 
 
 def _expected_logits(plan, x, route_W, route_bias, v_W):
@@ -114,14 +113,13 @@ def _expected_logits(plan, x, route_W, route_bias, v_W):
 
 
 @pytest.mark.parametrize("name", list(_ROUTINGS))
-def test_every_output_is_written_and_the_arrivals_reset(name):
+def test_every_output_is_written(name):
     operands = _operands(name)
-    first, arrivals, _ = _launch(*operands, fill=0x55)
-    second, _, _ = _launch(*operands, fill=0xAA)
+    first, _ = _launch(*operands, fill=0x55)
+    second, _ = _launch(*operands, fill=0xAA)
     for key in (key for key in first if first[key] is not None):
         assert torch.equal(first[key].contiguous().view(torch.uint8), second[key].contiguous().view(torch.uint8)), (
             f"{name}: `{key}` holds a byte the kernel did not write")
-    assert not arrivals.any(), f"{name}: an arrival counter was left standing"
 
 
 @pytest.mark.parametrize(("name", "B", "T", "hidden", "bias"), [
@@ -133,7 +131,7 @@ def test_every_output_is_written_and_the_arrivals_reset(name):
 ])
 def test_the_projection_matches_the_fp32_product(name, B, T, hidden, bias):
     plan, x, route_W, route_bias, gain_bias, v_W = _operands(name, B=B, T=T, hidden=hidden, bias=bias)
-    _, _, (logits, _) = _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill=0, probe=True)
+    _, (logits, _) = _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill=0, probe=True)
     for index, (product, envelope) in enumerate(_expected_logits(plan, x, route_W, route_bias, v_W)):
         got = logits[index, :, :product.shape[1]].double()
         excess = (got - product).abs() - _projection_rtol(hidden) * envelope
@@ -169,13 +167,11 @@ def _conditioning(row, solve, width):
     one fp64 central difference a logit, and ``eps_c = 2^-24 |logit_c|`` the half-ulp of the fp32 logit; the term is
     ``sum_c |J_c| eps_c`` a row. A union split's threshold couples the duties, so a row of three live members amplifies a
     rounding by 20 to 130 (a well-conditioned row has a term under 1e-7). Returns ``{side: (entries, peak)}`` of
-    ``[tokens, width]`` and ``[tokens]``, fp64, and ``"read_mass"``, the same term for the read level's sum RELATIVE to the
-    sum (a product of such sums is the read mass, whose relative terms add)."""
+    ``[tokens, width]`` and ``[tokens]``, fp64."""
     columns = 2 * width if solve in _UNION_ALPHA else width
     step = 1e-5
     entry = [torch.zeros_like(row[:, :width]) for _ in range(2)]
     peak = [torch.zeros_like(row[:, 0]) for _ in range(2)]
-    mass = torch.zeros_like(row[:, 0])
     for column in range(columns):
         rounding = row[:, column].abs() * 2.0 ** -24
         sides = []
@@ -186,16 +182,14 @@ def _conditioning(row, solve, width):
         for side in range(2):
             entry[side] += ((sides[0][side] - sides[1][side]).abs() / (2 * step)) * rounding[:, None]
             peak[side] += ((sides[0][side].amax(-1) - sides[1][side].amax(-1)).abs() / (2 * step)) * rounding
-        mass += ((sides[0][0].sum(-1) - sides[1][0].sum(-1)).abs() / (2 * step)) * rounding / _solved(
-            row[:, :columns], solve, width)[0].sum(-1)
-    return {"read": (entry[0], peak[0]), "write": (entry[1], peak[1]), "read_mass": mass}
+    return {"read": (entry[0], peak[0]), "write": (entry[1], peak[1])}
 
 
 @pytest.mark.parametrize(("name", "B", "T"), [("union", 2, 5), ("split", 1, 40), ("tied-deep", 3, 7),
                                               ("wide", 1, 33), ("sparsemax", 2, 9), ("wide-union", 1, 33)])
 def test_the_solve_matches_the_fp64_reference_on_the_kernels_logits(name, B, T):
     plan, x, route_W, route_bias, gain_bias, v_W = _operands(name, B=B, T=T, hidden=64)
-    _, _, (logits, levels) = _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill=0, probe=True)
+    _, (logits, levels) = _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill=0, probe=True)
     for index, (kind, _head, _heads, solve, width, _in0, in1, out_read, out_write, *_rest) in enumerate(
             job_table(plan)[0]):
         if kind != 0:
@@ -219,10 +213,10 @@ def test_the_solve_matches_the_fp64_reference_on_the_kernels_logits(name, B, T):
 #: KERNEL'S OWN logits, as the row-level solve test does, because the logits differ from the fp64 product by the fp32
 #: accumulation (the projection test bounds that) and a union split amplifies a logit difference by its conditioning
 #: (measured: 19 on a row of three live members, a 3.9e-6 logit difference moving a level by 5.7e-5). A u8 digit is a
-#: level within the solve's bound of the reference's, rounded: the same digit or its neighbour. A scale is a row's max
-#: (every level here is a simplex, its mass 1): twice the solve's bound. The read mass and the write gain are graded
-#: against the fp64 composition: measured at most 4.8e-5 and 2.7e-6 relative over these cells.
-_MASS_RTOL = 2.0 ** -12
+#: level within the solve's bound of the reference's, rounded: the same digit or its neighbour. A scale is a row's max:
+#: twice the solve's bound. Write level 0's scale carries the write gain (docs/CONSTITUTION.md#r23), the gain its own
+#: projection, graded against the fp64 composition's within `_GAIN_RTOL` relative.
+_GAIN_RTOL = 2.0 ** -12
 
 
 @pytest.mark.parametrize(("name", "B", "T", "bias", "gain"), [
@@ -233,20 +227,20 @@ _MASS_RTOL = 2.0 ** -12
 def test_the_bundle_matches_the_reference_on_the_kernels_logits(name, B, T, bias, gain):
     plan, x, route_W, route_bias, gain_bias, v_W = _operands(name, B=B, T=T, hidden=64, bias=bias, gain=gain)
     gain_bias = torch.randn_like(gain_bias)
-    out, _, (logits, _) = _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill=0x55, probe=True)
+    out, (logits, _) = _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill=0x55, probe=True)
     dense = {side: dense_levels(plan, side) for side in ("read", "write")}
+    reference = ProducerWeights(route_W=route_W.double(), gain_bias=gain_bias.double(), v_W=v_W.double(),
+                                route_bias=None if route_bias is None else route_bias.double())
+    #: THE fp64 COMPOSITION'S WRITE GAIN, through its own pieces (the gain logit, then `softplus`)
+    gain = _write_gain(route_logits(x.double(), plan, reference)[2], reference.gain_bias, B=B, T=T, H=plan.num_heads,
+                       dtype=torch.float64, device=x.device)
 
-    mass = torch.ones(B, plan.num_heads, T, dtype=torch.float64, device="cuda").transpose(1, 2).contiguous()
-    mass_term = torch.zeros_like(mass)
-    for index, (kind, head, _heads, solve, width, _in0, _in1, out_read, out_write, level, fold_read,
-                _fold_write) in enumerate(job_table(plan)[0]):
+    for index, (kind, head, _heads, solve, width, _in0, _in1, out_read, out_write, level) in enumerate(
+            job_table(plan)[0]):
         if kind != 0:
             continue
         levels = dict(zip(("read", "write"), _solved(logits[index].double(), solve, width), strict=True))
         conditioning = _conditioning(logits[index].double(), solve, width)
-        if fold_read:
-            mass[:, :, head] *= levels["read"].sum(-1).reshape(B, T)
-            mass_term[:, :, head] += conditioning["read_mass"].reshape(B, T)
         for side, written in (("read", out_read), ("write", out_write)):
             if written < 0:
                 continue
@@ -256,7 +250,12 @@ def test_the_bundle_matches_the_reference_on_the_kernels_logits(name, B, T, bias
             scale = out[f"scale_{side}"][:, :, head, level].double().reshape(-1, 1)
             #: twice the solve's bound plus the conditioning term of the level's max (`_conditioning`, 2026-10-10)
             bound = (width + 16) * 2.0 ** -22 + conditioning[side][1][:, None]
-            assert bool(((scale - peak).abs() <= bound).all()), f"{name}: level {level} {side} scale"
+            if side == "write" and level == 0:
+                #: the gain folded in: `g` times the max's bound, plus the max times the gain's own
+                g = gain[:, :, head].reshape(-1, 1)
+                peak, bound = g * peak, g * bound + g * peak * _GAIN_RTOL
+            assert bool(((scale - peak).abs() <= bound).all()), (
+                f"{name}: level {level} {side} scale off by {float((scale - peak).abs().max()):.3g}")
             if level in dense[side]:
                 #: a dense level's f16 rows: one u8 digit's worth (the solves' fp32 against fp64), the floor exact
                 start = row_layout(plan, side, dense=True)[0][level]
@@ -271,16 +270,6 @@ def test_the_bundle_matches_the_reference_on_the_kernels_logits(name, B, T, bias
                 digit = int((got.int() - torch.round(unit * quant.AMP_LEVELS).int()).abs().max())
                 assert digit <= 1, f"{name}: level {level} {side} digits off by {digit}"
 
-    reference = ProducerWeights(route_W=route_W.double(), gain_bias=gain_bias.double(), v_W=v_W.double(),
-                                route_bias=None if route_bias is None else route_bias.double())
-    routes, _ = produce(x.double(), plan, reference)
-    #: the read mass is graded at the seam, from the reference levels of the kernel's own logits (the product of the folded
-    #: levels' sums) within `_MASS_RTOL` plus the relative conditioning term of those sums (`_conditioning`: a sum of
-    #: values near 1e-7 is ill-conditioned); the gain is its own projection, graded against the fp64 composition
-    for key, expected, term in (("read_mass", mass, mass_term), ("g_write", routes.g_write, 0.0)):
-        error = (out[key].double() - expected.double()).abs() / expected.double().abs()
-        assert bool((error <= _MASS_RTOL + term).all()), f"{name}: {key} off by {float(error.max()):.3g} relative"
-
 
 @pytest.mark.parametrize(("name", "B", "T"), [("union", 2, 5), ("wide", 1, 33), ("split", 1, 40)])
 def test_the_values_match_the_fp64_composition(name, B, T):
@@ -288,7 +277,7 @@ def test_the_values_match_the_fp64_composition(name, B, T):
     ``(hidden + 1) 2^-23`` of the envelope sum |x| |W|, the channel's and the scale's, over the token's scale."""
     hidden, H, d_v = 64, 3, 64
     plan, x, route_W, route_bias, gain_bias, v_W = _operands(name, B=B, T=T, hidden=hidden, H=H, d_v=d_v)
-    out, _, _ = _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill=0x55)
+    out, _ = _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill=0x55)
     reference = ProducerWeights(route_W=route_W.double(), gain_bias=gain_bias.double(), v_W=v_W.double(),
                                 route_bias=None if route_bias is None else route_bias.double())
     _, values = produce(x.double(), plan, reference)
@@ -311,13 +300,13 @@ def test_a_bound_ledger_books_every_phase_and_changes_nothing():
     from rola.ops import produce as producer
 
     operands = _operands("union", B=2, T=40, hidden=64)
-    plain, _, _ = _launch(*operands, fill=0x55)
+    plain, _ = _launch(*operands, fill=0x55)
     jobs = job_table(operands[0])[0]
     ledger = torch.zeros(len(jobs), producer.LEDGER_WARPS, len(producer.LEDGER_PHASES), dtype=torch.int64,
                          device="cuda")
     producer.ledger_bind(ledger)
     try:
-        booked, _, _ = _launch(*operands, fill=0x55)
+        booked, _ = _launch(*operands, fill=0x55)
     finally:
         producer.ledger_bind(None)
     for key in (key for key in plain if plain[key] is not None):

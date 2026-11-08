@@ -73,12 +73,12 @@ __device__ __forceinline__ void read_full(const LeafSlice& s, float ar, bool row
 //: THE DEPOSIT, UPDATE FIRST THEN READ THE STORED VALUE: fp32 update, the group's exponent over its four lanes -- see docs/internals/decode/decode_leaf.md#deposit
 template <bool DECAY>
 __device__ __forceinline__ void deposit_leaf(const LeafSlice& s, const LeafAddr& a, float ar,
-                                             float aw, float rate, float sw, const float* v_tok,
+                                             float aw, float rate, float share, const float* v_tok,
                                              int ch0, bool present, bool row_lead, bool exp_lead,
                                              float (&acc)[8], float& acc_m) {
   float keep = 1.0f;
-  if (DECAY) keep = expf(fminf(aw * log1pf(-rate), kDecodeMaxExponent));
-  const float wv = aw * sw;
+  if (DECAY) keep = expf(fminf(aw * share * log1pf(-rate), kDecodeMaxExponent));
+  const float wv = aw;
   const float kept = keep * state_page::pow2(s.e);
   const float4 v0 = *reinterpret_cast<const float4*>(v_tok + ch0);
   const float4 v1 = *reinterpret_cast<const float4*>(v_tok + ch0 + 4);

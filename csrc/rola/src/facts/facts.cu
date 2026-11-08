@@ -130,12 +130,12 @@ struct FactsAt {
            + ((kGroupDigits * x.group) >> lg);
   }
 
-  //: THE WINDOW'S COLUMN of token `i`: `m` = the gain times the write scales in level order and `F = m s`, a token past
-  //: `L` zero. -- see docs/internals/facts/facts.md#columns
+  //: THE WINDOW'S COLUMN of token `i`: `m` = the write scales' product in level order (the write side's shared scale)
+  //: and `F = m s`, a token past `L` zero. -- see docs/internals/facts/facts.md#columns
   static __device__ __forceinline__ float2 load_column(const FactsParams& p, const Unit& x, int i) {
     const int t = x.window * kWindowTokens + i;
     if (t >= p.L) return make_float2(0.0f, 0.0f);
-    float m = __ldg(p.g_write.base + x.b * p.g_write.sb + x.h * p.g_write.sh + t * p.g_write.st);
+    float m = 1.0f;
 #pragma unroll
     for (int l = 0; l < kMaxLevels; ++l)
       if (l < p.D)
@@ -728,13 +728,12 @@ void rola_facts_ledger_bind(std::optional<Tensor> ledger) {
 
 //: -- see docs/internals/facts/facts_api.md#rola-facts-forward
 std::vector<Tensor> rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
-                                       std::vector<Tensor> scale_write, Tensor g_write,
-                                       Tensor v_scale, std::vector<int64_t> widths,
-                                       int64_t dense_read, std::vector<int64_t> mask_read,
-                                       int64_t dense_write, std::vector<int64_t> mask_write,
-                                       int64_t write_list_level, int64_t read_list_level,
-                                       int64_t read_row, int64_t read_list_group,
-                                       int64_t write_list_group) {
+                                       std::vector<Tensor> scale_write, Tensor v_scale,
+                                       std::vector<int64_t> widths, int64_t dense_read,
+                                       std::vector<int64_t> mask_read, int64_t dense_write,
+                                       std::vector<int64_t> mask_write, int64_t write_list_level,
+                                       int64_t read_list_level, int64_t read_row,
+                                       int64_t read_list_group, int64_t write_list_group) {
   check_arch_table();
   const int D = static_cast<int>(widths.size());
   STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels, "the routing depth is one to four levels, got ", D);
@@ -821,7 +820,6 @@ std::vector<Tensor> rola_facts_forward(std::vector<Tensor> read, std::vector<Ten
   p.read_row = static_cast<int>(read_row);
   for (int level = 0; level < D; ++level)
     p.scale_write[level] = detail::column_view(scale_write[level], B, T, H, "scale_write[l]");
-  p.g_write = detail::column_view(g_write, B, T, H, "g_write");
   p.v_scale = detail::column_view(v_scale, B, T, H, "v_scale");
   LivenessLayout layout{D, {}, p.L};
   for (int level = 0; level < D; ++level) layout.B[level] = p.B[level];

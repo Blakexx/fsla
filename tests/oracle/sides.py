@@ -37,6 +37,8 @@ from rola_devtools.cells import build as build_cell
 from rola_devtools.cells import carry as carry_cells
 from rola_devtools.cells import producer as producer_cells
 
+from tests.oracle.fixtures import with_gain
+
 #: "this input received NO gradient", as a tensor: an EMPTY one, never a zero one, because `None` and `0.0` are
 #: different answers and a shape mismatch is how the comparison reports the difference
 NO_GRAD = torch.zeros(0, dtype=torch.float64)
@@ -108,8 +110,9 @@ def oracle(record: dict, *, batch: int = 1, heads: int = 2, **_params) -> dict:
     operands = _flatten(v=v, g_write=g_write, read=read, write=write,
                         dials=None if decay is None else decay.dials)
     #: a CARRIED cell enters with its own state, which is the cell's claim and not this comparison's
-    entry = None if drawn.entry is None else drawn.entry.double()
-    y, state = naive_rola(v, read, write, g_write, topology, decay, initial_state=entry, output_final_state=True)
+    #: the draw's entry is `[B H, N, cols]`, the oracle's `[B, H, N, cols]` (`bh = b H + h`)
+    entry = None if drawn.entry is None else drawn.entry.double().reshape(batch, heads, *drawn.entry.shape[1:])
+    y, state = naive_rola(v, read, with_gain(write, g_write), topology, decay, initial_state=entry, output_final_state=True)
     out = {"y": y.detach(), "state": state.detach()}
     dy = torch.linspace(-1.0, 1.0, y.numel(), dtype=torch.float64).reshape(y.shape)
     dstate = torch.linspace(0.25, -0.75, state.numel(), dtype=torch.float64).reshape(state.shape)

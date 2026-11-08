@@ -49,21 +49,21 @@ IMPORT_ROOTS = ["tools", "."]
 #: what the extension is built from, besides the files `setup.py` imports
 BUILD_DATA = ["csrc", "pyproject.toml", "tools/manifests", "tools/toolchains", "tools/sccache_pin.json",
               "tools/mold_pin.json", "tools/devtools.txt"]
+#: the carry's schedule files, its kernel's own first (`tools/kernel_targets.py`'s one derivation)
+CARRY_SOURCES = load(HERE / "tools" / "kernel_targets.py")["schedule_sources"]("carry")
 #: name -> (tool, arguments, runs per carry cell, holds, data files its result depends on)
 INSTRUMENTS = {
     "sass": ("tools/sass_gate.py", ["{binary}"], False, {"host_cpu": 1}, [], 600),
     "registers": ("tools/life_ranges.py", ["--arm", "0", "--kernel", "carry_kernel",
-                                           *(a for f in load(HERE / "tools" / "kernel_targets.py")["schedule_sources"]("carry")
-                                             for a in ("--source", f)),
+                                           *(a for f in CARRY_SOURCES for a in ("--source", f)),
                                            "--budget", "tools/budgets/carry.json"], False,
                   {"host_cpu": 1}, ["csrc/rola/src"], 600),
-    "burst": ("tools/burst_gate.py", ["--arm", "0", "--kernel", "carry_kernel", "--source",
-                                     "csrc/rola/src/carry/ampere/carry_kernel.cuh"], False,
+    "burst": ("tools/burst_gate.py", ["--arm", "0", "--kernel", "carry_kernel", "--source", CARRY_SOURCES[0]], False,
               {"host_cpu": 1}, ["csrc/rola/src"], 600),
     "phases": ("tools/phase_ledger.py", ["{cell}", "--launches", "1"], True, {"gpu": "all"}, [], 120),
     "counters": ("tools/pipe_counters.py", ["{cell}"], True, {"gpu": "all"}, [], 900),
     "census": ("tools/stall_census.py", ["{cell}"], True, {"gpu": "all"},
-               ["tools/budgets/carry.json", "csrc/rola/src/carry/ampere/carry_kernel.cuh"], 900),
+               ["tools/budgets/carry.json", CARRY_SOURCES[0]], 900),
     "timeline": ("tools/pipe_timeline.py", ["--cell", "{cell}"], True, {"gpu": "all"}, [], 900),
     "roofline": ("tools/roofline.py", ["--cells", "{cell}"], True, {"gpu": "all"}, [], 120),
     #: what each layer construction's weights route on its cells (the layer readings' regime), once a binary

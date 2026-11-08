@@ -21,7 +21,7 @@ y, _ = layer(hidden_states)                     # stateless: (y, None)
 or, without the layer, from levels you computed yourself -- the format's own utilities build the bundles:
 
 ```python
-factors = rola.RouteFactors.from_levels(topology, read_levels, write_levels, g_write)
+factors = rola.RouteFactors.from_levels(topology, read_levels, write_levels)
 y, _ = rola.rola_op(factors, rola.Values.from_projection(v), decay())
 ```
 
@@ -162,11 +162,10 @@ launch surface (`rola.ops.carry.carry`), so a prefill does not yet run end to en
 ### 2.1 The bundle IS the contract, and it is THE INTERNAL FORMAT
 
 ```python
-RouteFactors(topology, amp_read, amp_write, scale_read, scale_write, g_write, read_mass=None, source=None,
-             sparse=None)
-RouteFactors.from_levels(topology, read, write, g_write, read_mass=None, *, sparse=None)   # the framework's epilogue
-RouteFactors.from_rows(topology, amp_read, amp_write, scale_read, scale_write, g_write, read_mass=None,
-                       source=None, *, sparse=None)                                    # rows already in the format
+RouteFactors(topology, amp_read, amp_write, scale_read, scale_write, source=None, sparse=None)
+RouteFactors.from_levels(topology, read, write, *, sparse=None)        # the framework's epilogue
+RouteFactors.from_rows(topology, amp_read, amp_write, scale_read, scale_write, source=None, *,
+                       sparse=None)                                    # rows already in the format
 ```
 
 **The stored form is the internal quantized format** (ruled 2026-09-26). Each level's rows are
@@ -187,7 +186,7 @@ EVERY SIDE HAS A DENSE LEVEL: a `sparse` that flags every level of a side is ref
 the carry's operand on that side and carry the floor (`docs/internals/engine/rules.md#carve`).
 <a id="grouped-queries"></a>
 GROUPED QUERIES: the read side is the `H` query heads' (`heads`), the write side the `H_w` write heads' (`write_heads`):
-its rows, scales and `g_write` (`[B, T, H_w]`), and with it the values, the decay dials and the state. `H_w` divides
+its rows and scales (`[B, T, H_w]`), and with it the values, the decay dials and the state. `H_w` divides
 `H`, and query head `h` reads write head `h // group` (`group = H / H_w`, consecutive: PyTorch SDPA's `enable_gqa`
 order); `H_w = H` is the ungrouped layer. The oracle reads grouped bundles (`tests/oracle/test_oracle_grouped.py`: a
 grouped run is the ungrouped run with each write head's side repeated for its query heads). The facts pass reads them,
@@ -195,8 +194,8 @@ a write head's read side one union a window over its query heads' rows (`docs/in
 the carry reads them: a CTA a write head, its query heads' rows with it (`docs/internals/carry/carry.md#sides`), as do
 the scale pass and the intra, so the prefill reads them. The decode step and the carried state read one head count
 today, and each refuses a grouped bundle by name (`RouteFactors.refuse_grouped`).
-`RouteFactors.rows(level, side)` is a level's rows. A read level's scale carries the read mass; a
-write level's scale is the normalized simplex's max and its mass rides `g_write`. This is what
+`RouteFactors.rows(level, side)` is a level's rows, and its scale the row's max: the level as its producer handed it
+over, whatever its sum ([§2.2](#22-the-scaled-block-and-the-gain)). This is what
 the int carry, the intra and the decode kernels read, and it is written by the framework's producer
 alone: the fused kernel's epilogue, and the reference's (`rola/routing/quant.py`, `RouteFactors.from_levels`),
 gated against each other (`tests/integration/test_produce_kernel.py`). The fp64
@@ -212,20 +211,14 @@ through the rounding to (`quant.straight_through`); an inference bundle holds th
 else.
 
 **The bundle is a record of tensors, and it is constructible.** Its fields are the
-stored levels, the side gains, the read mass and the topology they are shaped by —
-nothing else, and in particular no declaration a caller could pair with tensors that do
-not describe it. `RouteFactors.__post_init__` therefore checks the STRUCTURE rather than
-the provenance: one level per topology level at that level's width, one `sparse` flag a level a
-side, one shared
-`[B, T, H]` prefix, one device, one dtype,
-`g_write` and (when present) `read_mass` shaped `[B, T, H]`. There is no `g_read`
-field at all — the ratio readout fixes the read-side gain to 1 identically, so there
-is nothing for a column to override. A test that plants a
-specific routing pattern builds one directly and is held to exactly those invariants.
-Unit-sum-ness is deliberately not among them: it is a device reduction per level per
-call, it is the shipped producer's own output guarantee, and conformance fixtures plant
-non-canonical amplitudes on purpose. The op still type-gates on the class, so handing it
-bare tensors is still a clean refusal.
+stored levels, their scales and the topology they are shaped by — nothing else, and in
+particular no declaration a caller could pair with tensors that do not describe it.
+`RouteFactors.__post_init__` therefore checks the STRUCTURE rather than the provenance: one
+level per topology level at that level's width, one `sparse` flag a level a side, one shared
+prefix a side, one device, one dtype, each scale fp32 at its side's prefix. A test that plants
+a specific routing pattern builds one directly and is held to exactly those invariants.
+Unit-sum-ness is not among them: no level need sum to 1 ([§2.2](#22-the-scaled-block-and-the-gain)).
+The op still type-gates on the class, so handing it bare tensors is still a clean refusal.
 
 A producer also owns the topology (`routes.topology`, `routes.widths`), because that is
 a fact about the map rather than about the layer
@@ -239,60 +232,46 @@ first, the gain's span last. One parameter, one cast of the source stream, one
 projection. `gain=False` removes the column rather than pinning it, so a disabled gain
 is a narrower parameter and not a parameter with an identically zero gradient.
 
-**The side gain is routing's, and it rides the bundle.** Two things put it there
-rather than on the layer. There is no read-side gain at all — the ratio readout fixes
-it to 1 identically — so the write side carries the only gain column there is, and
-a layer-owned gain producer would have to be told that in order to know its own
-columns, which is the coupling running backwards. And the gain is where the
-per-level mass product lands: the producer folds
-each level's mass into it, so the gain and the routing mass are the same number by the
-time any consumer sees either. It rides the bundle rather than arriving as a third op
-argument because `RouteFactors.tensors()` is the autograd-reachability enumeration, and
-an operand outside that flat list is invisible to autograd — the exact failure the
-single autograd boundary exists to make impossible.
+**The write gain is the producer's, and it rides write level 0's scale.** There is no
+read-side gain at all — the ratio readout cancels a per-token read factor but in the floor —
+so the write side carries the only gain column there is, and a layer-owned gain producer would
+have to be told that in order to know its own columns, which is the coupling running
+backwards. The producer folds the gain into write level 0's scale, in the job that writes that
+level, so the format has no gain field and no consumer reads one; it rides the bundle's own
+tensors, which `RouteFactors.tensors()` enumerates for autograd.
 
-### 2.2 The mass fold, and what each duty does with it
+### 2.2 The scaled block, and the gain
 
-Levels need not be unit-sum: each is factored into `(mass, simplex)`. The two sides then
-take the mass differently, because the two duties use their levels differently. The
-WRITE side APPLIES it — the stored level is the simplex and the magnitude folds into
-`g_write`, which is where a per-level magnitude belongs, and the decay clock is defined
-on the stored level. The READ side CARRIES it — the readout is a ratio, so a per-token
-scale common to every leaf is homogeneous of degree zero through it, and
-the read rows' scales carry the mass while `RouteFactors.read_mass`
-holds the per-token product (`None` when there is none). `RouteFactors.read_simplex()`
-divides it back out for every consumer defined on the simplex instead: the fp64 oracle
-and its input contract, the reference recurrence. The decode arm is defined on the
-simplex too, and divides INSIDE its operand fold off the same predicate --
-`RouteFactors.read_needs_normalization()`, which `read_simplex` reads as well -- because
-a decode step's whole budget is launches
-([`internals/decode/decode_fold.md`](internals/decode/decode_fold.md)).
+A level is numbers in a representation, not a distribution (ruled 2026-11-07,
+[`CONSTITUTION.md` R23](CONSTITUTION.md#r23)). `q` (read), `k` (write) and `v` are each a
+SCALED BLOCK: unit-max rows in a FORM that states its storage type, its signedness and its
+floor -- u8 nonnegative at 255 (a sparse routing level, a zero dead), f16 nonnegative at 1
+with the dense floor taken (a dense routing level), f16 signed in `[-1, 1]` (the values) --
+with the row's max as its fp32 scale. A side's shared scale is the product of its levels'
+scales, STORED FACTORED: each level's scale is written by the producer job that quantizes that
+level and multiplied by the reader as it loads them, so no job waits on another. The op every
+consumer computes, and the fp64 oracle with them:
 
-**The read mass reaches the readout as a scaled floor.** The one term that does not
-scale with a ratio is its floor, so it is handed over pre-scaled: the consumer computes
-`m·num / (m·den + READOUT_EPS·m)`, which is `num / (den + READOUT_EPS)` exactly — the
-same function, not a differently conditioned one. The alternative — dropping the mass
-and leaving the floor alone — is an *effective* floor of `READOUT_EPS / m`, and the
-union read mass runs as low as 7e-4 across the gain sweep, so it is a change to the
-definition rather than to its conditioning. `READOUT_EPS` is a DEFINITION constant
-(`rola/ops/constants.py`); the scaled floor is what keeps it one.
+    W(t, s) = prod_l k_l(t, d_l(s))          R(t, s) = prod_l q_l(t, d_l(s))
+    S_t(s)  = S_{t-1}(s) + W(t, s) v(t)      den_t(s) likewise with v = 1
+    y(t)    = sum_s R(t, s) S_t(s) / (sum_s R(t, s) den_t(s) + eps)
 
-**The mass is only COMPUTED where it is not declared to be 1, and only there.** Each
-`(level, duty)` cell answers `simplex_output` — "does this cell's own output already
-land on the simplex?" — and where it answers yes, the mass is 1, so its `sum` is
-omitted, it contributes nothing to the product, and the write side's `div` goes with it.
-The answer is a declaration read off the activation registry
-(`rola/routing/activations.py`) through the level's routing form, never a runtime test
-of the tensor: a `sum(...) == 1` check is the very reduction the skip exists to delete,
-and it would make the bundle's arithmetic depend on its data rather than on its
-configuration. It is asked per *duty* and not per *activation*, because a routing form
-may hand one duty a share of a solve rather than the whole of it — union routing's read
-half is exactly that, so it answers `False` while the entmax it names answers `True`.
-A FOREIGN producer folds its own mass, because it returns the finished bundle: the
-opaque row's `simplex_output = False` is what keeps `normalized` from being read
-circularly for a cell nobody vouched for, and it reaches the shipped fold only through
-a topology a foreign producer declared. Measured across the shipped census (`D` in 1..4, fp32 and fp64), every cell answering
-`True` has `max |sum − 1| ≤ 2.4e-7` in fp32 and `≤ 4.4e-16` in fp64.
+No level is required to sum to 1, on either side, and no flag says whether one does. A
+producer's magnitude is its own: ours, the write gain `softplus(gain logit + bias)`, is folded
+into write level 0's scale (§2.1); a caller's own levels carry whatever magnitude they have into
+their scales, `RouteFactors.from_levels` quantizing each against its own max and nothing else.
+
+**The read scales are kept, for the floor.** A per-token read factor common to every leaf
+cancels in the ratio everywhere but the floor, so the read scales' product `r` is read only
+there: the prefill readout is `num' / (den' + eps / r)` (`rola/ops/prefill.py`'s `readout`),
+which is the formula above exactly, and it is what makes `eps` mean the same thing on every
+routing. `READOUT_EPS` is a DEFINITION constant (`rola/ops/constants.py`). Decode computes the
+same `y`: neither normalizes a read level.
+
+**The decay computes its own shares** ([§3](#3-the-decay-source-slot)): its clock is each leaf's
+SHARE of the token's write, `c = prod_l k_l(d_l(s)) / sum_d k_l(d)`, a row sum a level and
+scale-free, so no stored level need be a simplex and a gain folded into a scale is invisible to
+it.
 
 **The producer owns packing.** The solve emits `[BH, T, width]`, which is already what
 the kernel's view wants, and the public `[B, T, H, width_l]` layout is a permute of it —
@@ -313,7 +292,7 @@ RULED 2026-09-29: the producer is a DECLARED CONFIGURATION. A `Routing` is data 
 the projection bias -- and the layer compiles it once into its producer plan and owns every weight it implies: the
 packed per-head routing projection `route_W`, its bias, the write gain's bias, `v_proj` and `o_proj`. One producer
 call (`rola.ops.produce.produce`) turns a stretch of tokens into the bundle -- the projection, the exact
-entmax/softmax solves, the fold, the gain, the unit-max rows and the f16 values -- and on CUDA with no gradient
+entmax/softmax solves, the write gain, the unit-max rows and the f16 values -- and on CUDA with no gradient
 that call is ONE LAUNCH of the fused producer kernel (`docs/internals/produce/produce.md`), the bundle's rows and
 scales views of the planes it writes. The torch composition behind the same call is the reference: fp64, the host,
 and -- until the native backward -- the path a gradient takes. Construction validates the whole declaration --
@@ -394,10 +373,10 @@ nothing else.
 
 ### 2.5 The one modelling consequence to know
 
-The decay clock is defined on the STORED (normalized) level. A level whose write-side
-mass differs from 1 has therefore moved magnitude out of the clock and into `g_write`.
-That is the defined semantics rather than a defect, but it is a choice a level's author
-is making, so it is stated here rather than buried.
+The decay clock is each leaf's SHARE of the token's write ([§2.2](#22-the-scaled-block-and-the-gain)),
+scale-free: a magnitude a write level carries -- a producer's gain, a level summing past one --
+scales the deposit and not the clock. That is the defined semantics rather than a defect, but it
+is a choice a level's author is making, so it is stated here rather than buried.
 
 ## 3. The decay-source slot
 
@@ -415,7 +394,8 @@ validated against the topology at layer construction. Duck-typed like a producer
 declare `widths` and `num_heads`, return a `LeafMassDecay`.
 
 `state` and `global` are the two IDENTIFIABLE resolutions: under `keep = (1 - prod_l
-delta_l)**c` (one write-conditioned clock per leaf), a rate only ever enters the
+delta_l)**c` (one write-conditioned clock per leaf, `c` the leaf's share of the token's write:
+[§2.2](#22-the-scaled-block-and-the-gain)), a rate only ever enters the
 recurrence through that per-leaf product, so per-digit and per-head are the two degrees
 of freedom the product structure lets the recurrence actually distinguish.
 

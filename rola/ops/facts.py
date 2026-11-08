@@ -127,7 +127,7 @@ def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, wri
     level, read_level = list_level(write_statics), list_level(read_statics)
     count = mask_words(layout.rows)
     words, unions, list_exp, fm, gains16, gains_exp, *lists = extension().rola_facts_forward(
-        list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
+        list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), values.scale,
         list(layout.B), _dense_bits(read_statics), [read_statics.mask_word(i) for i in range(count)],
         _dense_bits(write_statics), [write_statics.mask_word(i) for i in range(count)], max(level, -1),
         max(read_level, -1), form.read_row, form.read_list_group, form.write_list_group)

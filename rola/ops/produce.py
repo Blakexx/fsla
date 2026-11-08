@@ -6,8 +6,8 @@
 
 The layer declares WHAT it routes (:class:`rola.routing.producer.Routing`), owns the weights, and compiles a
 :class:`ProducerPlan` once; this is the one primitive that computes the bundle from them. It is the whole job --
-the projection, every level's solve, the mass fold, the write gain, the quantization into unit-max rows and the
-value digits -- because every step reads the same declaration, and it is one call so that one fused kernel stands
+the projection, every level's solve, the write gain (folded into write level 0's scale), the quantization into
+unit-max rows and the value digits -- because every step reads the same declaration, and it is one call so that one fused kernel stands
 behind it (docs/api.md section 2): on CUDA with no gradient, the producer kernel's one launch
 (docs/internals/produce/produce.md). The torch composition is the reference -- fp64, the host -- and, until the
 native backward has the kernel write the levels a gradient reads, the path a gradient takes. The bundles it
@@ -16,7 +16,7 @@ returns are the ones the ops take; a caller with its own levels builds them with
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import lru_cache
 
 import torch
@@ -46,21 +46,12 @@ class ProducerPlan:
     num_heads: int
     hidden_size: int
     d_v: int
-    #: per level, whether a side's fold is an identity -- the topology's DECLARED simplex outputs, never a runtime
-    #: `sum == 1` test, which would be the reduction the skip exists to delete (docs/api.md section 2.2)
-    read_skip: tuple[bool, ...] = field(init=False)
-    write_skip: tuple[bool, ...] = field(init=False)
 
     def __post_init__(self) -> None:
         for name in ("num_heads", "hidden_size", "d_v"):
             value = getattr(self, name)
             if type(value) is not int or value < 1:
                 raise ValueError(f"{name} must be a positive exact int, got {value!r}")
-        topology = self.routing.topology
-        object.__setattr__(self, "read_skip", tuple(topology.duty_simplex_output(level, "read")
-                                                    for level in range(topology.D)))
-        object.__setattr__(self, "write_skip", tuple(topology.duty_simplex_output(level, "write")
-                                                     for level in range(topology.D)))
 
 
 @dataclass(frozen=True)
@@ -144,18 +135,14 @@ def job_table(plan: ProducerPlan) -> tuple[list[tuple[int, ...]], int]:
         if width > _MAX_WIDTH:
             raise ValueError(f"the producer solves rows of at most {_MAX_WIDTH} leaves; level {level} is {width} wide")
         write_col, read_col = slots[level], slots[read_slot[level]]
-        fold_read, fold_write = int(not plan.read_skip[level]), int(not plan.write_skip[level])
         if isinstance(spec, UnionRouting):
             per_head.append((_ROUTE, 0, 1, _SOLVES[("union", spec.alpha)], width, read_col, write_col, out[level],
-                             out_w[level], level, fold_read, fold_write))
+                             out_w[level], level))
         elif isinstance(spec, TiedRouting):
-            per_head.append((_ROUTE, 0, 1, _solve(spec.op), width, write_col, -1, out[level], out_w[level], level,
-                             fold_read, fold_write))
+            per_head.append((_ROUTE, 0, 1, _solve(spec.op), width, write_col, -1, out[level], out_w[level], level))
         elif isinstance(spec, IndependentRouting):
-            per_head.append((_ROUTE, 0, 1, _solve(spec.read), width, read_col, -1, out[level], -1, level,
-                             fold_read, 0))
-            per_head.append((_ROUTE, 0, 1, _solve(spec.write), width, write_col, -1, -1, out_w[level], level,
-                             0, fold_write))
+            per_head.append((_ROUTE, 0, 1, _solve(spec.read), width, read_col, -1, out[level], -1, level))
+            per_head.append((_ROUTE, 0, 1, _solve(spec.write), width, write_col, -1, -1, out_w[level], level))
     jobs = [(job[0], head, *job[2:]) for head in range(plan.num_heads) for job in per_head]
     if plan.d_v not in (32, 64, 128, 256):
         raise ValueError(f"the producer's value job reads heads of 32, 64, 128 or 256 channels, not d_v={plan.d_v}")
@@ -163,7 +150,7 @@ def job_table(plan: ProducerPlan) -> tuple[list[tuple[int, ...]], int]:
         raise ValueError(f"a value job holds at most {_MAX_COLUMNS} channels, one head's d_v={plan.d_v} does not fit")
     heads_per = max(1, _MAX_COLUMNS // 2 // plan.d_v)
     for head in range(0, plan.num_heads, heads_per):
-        jobs.append((_VALUE, head, min(heads_per, plan.num_heads - head), 0, 0, -1, -1, -1, -1, 0, 0, 0))
+        jobs.append((_VALUE, head, min(heads_per, plan.num_heads - head), 0, 0, -1, -1, -1, -1, 0))
     return jobs, len(per_head)
 
 
@@ -173,13 +160,12 @@ _WARP_COLUMNS = 256
 
 def _shape(job: tuple[int, ...], plan: ProducerPlan) -> int:
     """A job's control as the kernel reads it, one int16 word in the launch's parameters, so every branch on it is
-    warp-uniform to ptxas: ``dense_write << 15 | dense_read << 14 | pair << 13 | tiles << 10 | fold_write << 9 |
-    fold_read << 8 | writes << 7 | reads << 6 | kind << 5 | rows << 3 | solve`` -- ``rows`` the solve row's class
+    warp-uniform to ptxas: ``dense_write << 13 | dense_read << 12 | pair << 11 | tiles << 8 | writes << 7 |
+    reads << 6 | kind << 5 | rows << 3 | solve`` -- ``rows`` the solve row's class
     (widths to 32, 64, 128, 256), ``tiles`` the projection's column tiles as a power of two's exponent, ``pair`` a wide
     union's warp-pair form, ``dense_read``/``dense_write`` whether the side's level is dense (an f16 row),
-    ``reads``/``writes`` the sides a route job writes and ``fold_read``/``fold_write`` whose fold applies (produce.cuh
-    `Job`)."""
-    kind, _head, heads, solve, width, _in0, in1, out_read, out_write, level, fold_read, fold_write = job
+    ``reads``/``writes`` the sides a route job writes (produce.cuh `Job`)."""
+    kind, _head, heads, solve, width, _in0, in1, out_read, out_write, level = job
     d_v = plan.d_v
     #: a value job's `rows` is its head's channel class, `d_v = 32 << rows`: a lane's value's head is then an immediate
     rows = ({32: 0, 64: 1, 128: 2, 256: 3}[d_v] if kind == _VALUE
@@ -194,10 +180,8 @@ def _shape(job: tuple[int, ...], plan: ProducerPlan) -> int:
     #: MMAs' rate on sm_80, until narrow rows are packed into one job
     tiles = next(c for c in range(2, 5) if count <= 1 << c)
     dense = [kind != _VALUE and level in dense_levels(plan, side) for side in ("read", "write")]
-    word = (int(dense[1]) << 15 | int(dense[0]) << 14 | int(pair) << 13 | tiles << 10 | fold_write << 9
-            | fold_read << 8 | int(out_write >= 0) << 7 | int(out_read >= 0) << 6 | kind << 5 | rows << 3 | solve)
-    #: the int16 the kernel reads, bit 15 its sign
-    return word - (1 << 16) if word >= 1 << 15 else word
+    return (int(dense[1]) << 13 | int(dense[0]) << 12 | int(pair) << 11 | tiles << 8 | int(out_write >= 0) << 7
+            | int(out_read >= 0) << 6 | kind << 5 | rows << 3 | solve)
 
 
 @lru_cache(maxsize=64)
@@ -209,28 +193,13 @@ def _job_tensor(plan: ProducerPlan, device: str) -> tuple[torch.Tensor, torch.Te
     return table, torch.tensor([_shape(job, plan) for job in jobs], dtype=torch.int16), per_head
 
 
-#: the per-(token tile, head, warp) arrival counters, zero between calls (the kernel's finisher resets its own), one
-#: buffer a device grown as a call needs
-_ARRIVALS: dict[str, torch.Tensor] = {}
-_TOKEN_TILE = 64
-#: a token tile's warps, each its own 16 tokens' finish (docs/internals/produce/ampere/produce_kernel.md#finish)
-_TILE_WARPS = 4
-
-
-def _arrivals(device: torch.device, count: int) -> torch.Tensor:
-    key = str(device)
-    if key not in _ARRIVALS or _ARRIVALS[key].numel() < count:
-        _ARRIVALS[key] = torch.zeros(count, dtype=torch.int32, device=device)
-    return _ARRIVALS[key]
-
-
 #: THE PHASE LEDGER'S SHAPE: ``[jobs][warps][phases]``, the kernel's own `ProducePhase` order, booked over the tiles.
-LEDGER_PHASES = ("job", "project", "threshold", "levels", "bundle", "finish", "values")
+LEDGER_PHASES = ("job", "project", "threshold", "levels", "bundle", "values")
 LEDGER_WARPS = 4
 
 
 def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurement instrument (docs/internals/produce/ampere/produce_kernel.md#phase-ledger)
-    """Bind the phase ledger the next launches book into, ``[jobs, 4, 7]`` int64 cycles, or ``None``."""
+    """Bind the phase ledger the next launches book into, ``[jobs, 4, 6]`` int64 cycles, or ``None``."""
     from rola.ops._ext import extension
 
     extension().rola_produce_ledger_bind(ledger)
@@ -257,18 +226,16 @@ def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) ->
     out = {"amp_read": empty(rows_read, dtype=torch.uint8), "amp_write": empty(rows_write, dtype=torch.uint8),
            **{f"dense_{side}": empty(row_layout(plan, side, dense=True)[1], dtype=quant.DENSE_DTYPE)
               if dense[side] else None for side in ("read", "write")},
-           "scale_read": empty(D), "scale_write": empty(D), "mass_read": empty(D), "mass_write": empty(D),
-           "read_mass": empty(), "g_write": empty(), "v": empty(plan.d_v, dtype=torch.float16),
+           "scale_read": empty(D), "scale_write": empty(D), "v": empty(plan.d_v, dtype=torch.float16),
            "v_scale": empty()}
-    jobs, shapes, per_head = _job_tensor(plan, str(device))
-    tiles = -(-(B * T) // _TOKEN_TILE)
+    jobs, shapes, _per_head = _job_tensor(plan, str(device))
     route_bias = None if weights.route_bias is None else weights.route_bias.float().contiguous()
     extension().rola_produce_forward(
         x.reshape(B * T, hidden).to(torch.bfloat16).contiguous(), weights.route_W, route_bias,
         weights.gain_bias.float().contiguous(), weights.v_W, jobs,
         *(out[name] for name in ("amp_read", "amp_write", "dense_read", "dense_write", "scale_read", "scale_write",
-                                 "mass_read", "mass_write", "read_mass", "g_write", "v", "v_scale")),
-        _arrivals(device, tiles * H * _TILE_WARPS), None, None, shapes, D, per_head,
+                                 "v", "v_scale")),
+        None, None, shapes, D,
         *(sum(1 << level for level in dense[side]) for side in ("read", "write")))
     return {name: None if t is None else t.transpose(1, 2) for name, t in out.items()}
 
@@ -286,7 +253,7 @@ def produce(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tu
 
 def _kernel_bundle(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tuple[RouteFactors, Values]:
     """The kernel's outputs as the bundle: each level's rows and scale a view of the packed planes the kernel
-    writes (the ops read them by address), and the read mass only where a read level folds."""
+    writes (the ops read them by address), the write gain in write level 0's scale."""
     out = run_kernel(x, plan, weights)
     resolved, D = plan.routing.resolved, plan.routing.topology.D
 
@@ -302,8 +269,7 @@ def _kernel_bundle(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights
 
     routes = RouteFactors(topology=plan.routing.topology, amp_read=rows(out["amp_read"], "read"),
                           amp_write=rows(out["amp_write"], "write"), scale_read=scales(out["scale_read"]),
-                          scale_write=scales(out["scale_write"]), g_write=out["g_write"],
-                          read_mass=None if all(plan.read_skip) else out["read_mass"], sparse=_sparse_flags(plan))
+                          scale_write=scales(out["scale_write"]), sparse=_sparse_flags(plan))
     return routes, Values(v=out["v"], scale=out["v_scale"])
 
 
@@ -322,16 +288,13 @@ def _composition(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) 
     read_logits, write_logits, gain_logits = route_logits(x, plan, weights)
     read_bh, write_bh = production_routing_factor_levels(read_logits, write_logits, routing.resolved)
 
-    #: THE READ MASS IS CARRIED, NOT APPLIED: the readout is a ratio, so a per-token scale common to every leaf
-    #: cancels between numerator and denominator. The WRITE mass is APPLIED, because the decay clock is defined on
-    #: the stored level; it rides the write gain.
-    read_levels, read_mass = _fold(read_bh, B=B, H=H, skip=plan.read_skip, carry_mass=True)
-    write_levels, write_mass = _fold(write_bh, B=B, H=H, skip=plan.write_skip, carry_mass=False)
+    #: THE LEVELS AS THEY ARE: no level need sum to 1 (docs/CONSTITUTION.md#r23). The producer's write gain is its
+    #: own, folded into write level 0, so its scale carries it as the kernel's level-0 job stores it.
+    read_levels, write_levels = _public(read_bh, B=B, H=H), _public(write_bh, B=B, H=H)
     g_write = _write_gain(gain_logits, weights.gain_bias, B=B, T=T, H=H, dtype=read_levels[0].dtype,
                           device=x.device)
-    routes = RouteFactors.from_levels(routing.topology, read_levels, write_levels,
-                                      g_write if write_mass is None else g_write * write_mass,
-                                      read_mass=read_mass)
+    write_levels = (write_levels[0] * g_write.unsqueeze(-1), *write_levels[1:])
+    routes = RouteFactors.from_levels(routing.topology, read_levels, write_levels)
 
     #: `v` FLOWS bf16 into the format (docs/api.md section 4.1); the fp64 reference computes it in fp64
     v_dtype = torch.float64 if x.dtype == torch.float64 else torch.bfloat16
@@ -361,26 +324,6 @@ def _write_gain(gain_logits, gain_bias, *, B, T, H, dtype, device) -> torch.Tens
     return softplus_side_gain(biased[..., WRITE_GAIN]).to(dtype)
 
 
-def _fold(levels: tuple[torch.Tensor, ...], *, B: int, H: int, skip: tuple[bool, ...], carry_mass: bool):
-    """Factor every level into ``(simplex, mass)`` and return the mass product, or ``None``.
-
-    ``skip[l]`` is the topology's DECLARED ``simplex_output`` for that cell. ``carry_mass`` leaves the mass ON the
-    levels and returns the product for the caller to apply -- legal only where the consumer's use of the levels is
-    homogeneous of degree zero (docs/api.md section 2.2). The divide runs in the solve's ``[BH, T, width]`` domain,
-    because the public ``[B, T, H, width]`` layout is a permute of it.
-    """
-    normalized: list[torch.Tensor] = []
-    mass_product: torch.Tensor | None = None
-    for folded, unit_sum in zip(levels, skip, strict=True):
-        if not unit_sum:
-            #: THE SUM IS AT LEAST fp32, whatever the level is stored in: a width-256 sum of bf16 addends in bf16
-            #: loses three digits of the mass the readout's floor is scaled by
-            mass = folded.sum(dim=-1, dtype=torch.promote_types(folded.dtype, torch.float32))
-            if not carry_mass:
-                folded = folded / mass.unsqueeze(-1).to(folded.dtype)
-            mass_product = mass if mass_product is None else mass_product * mass
-        width = folded.shape[-1]
-        normalized.append(folded.reshape(B, H, -1, width).permute(0, 2, 1, 3))
-    if mass_product is None:
-        return tuple(normalized), None
-    return tuple(normalized), mass_product.reshape(B, H, -1).permute(0, 2, 1)
+def _public(levels: tuple[torch.Tensor, ...], *, B: int, H: int) -> tuple[torch.Tensor, ...]:
+    """Each level from the solve's ``[BH, T, width]`` to the public ``[B, T, H, width]`` (a permute of it)."""
+    return tuple(level.reshape(B, H, -1, level.shape[-1]).permute(0, 2, 1, 3) for level in levels)

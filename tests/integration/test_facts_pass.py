@@ -133,7 +133,7 @@ def _bundle(widths, L, statics, *, B=1, H=2, seed=0, packed=False, group=1):
     routes = RouteFactors(topology=Topology(levels=tuple(OpaqueRouting(width=w) for w in widths)),
                           amp_read=rows[0], amp_write=rows[1],
                           scale_read=tuple(column(write_heads * group) for _ in range(D)),
-                          scale_write=tuple(column() for _ in range(D)), g_write=column(),
+                          scale_write=tuple(column() for _ in range(D)),
                           sparse=tuple(tuple(not dense for dense in side.dense_levels) for side in statics))
     values = Values(v=torch.zeros((B, L, write_heads, 8), dtype=torch.float16, device="cuda"), scale=column())
     return routes, values
@@ -228,7 +228,7 @@ def test_a_dense_level_is_neither_read_nor_written():
     torch.utils.deterministic.fill_uninitialized_memory = True
     try:
         words, unions, list_exp, *_ = facts_ops.extension().rola_facts_forward(
-            list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
+            list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), values.scale,
             list(layout.B), 1, masks, 1, masks, -1, -1, _READ_ROW, 32, 32)
     finally:
         torch.use_deterministic_algorithms(deterministic)
@@ -260,13 +260,13 @@ def test_a_token_past_the_end_votes_dead():
 
 @pytest.mark.parametrize(("widths", "L"), [((32, 64), 600), ((16,), 1100)])
 def test_the_factor_products_are_the_declared_fp32_ones(widths, L):
-    """``fm`` holds each token's ``(F, m)`` = ``(((g sw_0) sw_1) vs, (g sw_0) sw_1)``, multiplied in fp32 in that order,
-    bit for bit, at every token of every window (docs/internals/facts/facts.md#factor-products)."""
+    """``fm`` holds each token's ``(F, m)`` = ``((sw_0 sw_1) vs, sw_0 sw_1)``, multiplied in fp32 in that order, bit for
+    bit, at every token of every window (docs/internals/facts/facts.md#factor-products)."""
     layout = _layout(widths, L)
     read_statics, write_statics = _sides(layout, "alternating", widths)
     routes, values = _bundle(widths, L, (read_statics, write_statics))
     got = _facts(routes, values, layout, read_statics, write_statics).fm
-    m = routes.g_write.float()
+    m = torch.ones_like(routes.scale_write[0].float())
     for scale in routes.scale_write:
         m = m * scale.float()
     F = m * values.scale.float()
@@ -426,12 +426,13 @@ def test_the_list_exponents_are_the_reference_per_window(widths, L, dense):
 
 
 def test_a_dead_window_keeps_the_floor():
-    """A window whose every token carries a zero gain writes nothing: every list's exponent is the floor, -126."""
+    """A window whose every token carries a zero write scale writes nothing: every list's exponent is the floor,
+    -126."""
     widths, L = (16, 16), 64
     layout = _layout(widths, L)
     read_statics, write_statics = _sides(layout, "alternating", widths)
     routes, values = _bundle(widths, L, (read_statics, write_statics))
-    routes.g_write.zero_()
+    routes.scale_write[0].zero_()
     list_exp = _facts(routes, values, layout, read_statics, write_statics).list_exp
     assert torch.equal(list_exp, torch.full_like(list_exp, -126))
 
@@ -498,7 +499,7 @@ def test_the_seam_refuses_rows_that_are_not_the_format():
     wide = [rows.float() for rows in routes.amp_read]
     with pytest.raises(RuntimeError, match="a CUDA u8 tensor"):
         facts_ops.extension().rola_facts_forward(
-            wide, wide, list(routes.scale_write), routes.g_write, values.scale, list(layout.B), 0,
+            wide, wide, list(routes.scale_write), values.scale, list(layout.B), 0,
             [read_statics.mask_word(0)], 0, [write_statics.mask_word(0)], 1, -1, _READ_ROW, 32, 32)
 
 

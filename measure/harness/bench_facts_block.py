@@ -45,9 +45,9 @@ SEED = 0
 
 
 def cell(k: int):
-    """``(read, write, scales, g, vs)``: each side's two levels as ``[1, T, H, 256]`` views of its head-major plane,
-    each token-head live in ``k`` random digits of each (u8 1..255); the write levels' scales, the write gain and the
-    value scale ``[1, T, H]`` fp32."""
+    """``(read, write, scales, vs)``: each side's two levels as ``[1, T, H, 256]`` views of its head-major plane,
+    each token-head live in ``k`` random digits of each (u8 1..255); the write levels' scales, a drawn write gain folded
+    into level 0's as a producer folds its own (docs/CONSTITUTION.md#r23), and the value scale ``[1, T, H]`` fp32."""
     gen = torch.Generator(device="cuda").manual_seed(SEED)
     sides = []
     for _ in range(2):
@@ -61,10 +61,12 @@ def cell(k: int):
     def column():
         return (torch.rand((1, HEADS, TOKENS), device="cuda", generator=gen) + 0.1).transpose(1, 2)
 
-    return sides[0], sides[1], [column(), column()], column(), column()
+    scales = [column(), column()]
+    scales[0] = scales[0] * column()
+    return sides[0], sides[1], scales, column()
 
 
-def launch(read, write, scales, g, vs, form):
+def launch(read, write, scales, vs, form):
     """One launch in the lists' ``form``; its outputs, each side's lists a ``Lists``."""
     from rola.engine.facts import liveness as lv
     from rola.engine.facts.lists import Lists
@@ -72,7 +74,7 @@ def launch(read, write, scales, g, vs, form):
 
     masks = [0xFFFFFFFF] * lv.mask_words(2 * WIDTH)
     outs = facts_ops.extension().rola_facts_forward(
-        read, write, scales, g, vs, [WIDTH, WIDTH], 0, masks, 0, masks, 0, 1, *form)
+        read, write, scales, vs, [WIDTH, WIDTH], 0, masks, 0, masks, 0, 1, *form)
     return (*outs[:6], Lists(*outs[6:11]), Lists(*outs[11:]))
 
 
@@ -104,9 +106,9 @@ def main() -> int:
     rate = flat_rate()
     with gpu_lock():
         for k in args.k:
-            read, write, scales, g, vs = cell(k)
+            read, write, scales, vs = cell(k)
             for _ in range(3):
-                outs = [launch(read, write, scales, g, vs, form) for form in forms]
+                outs = [launch(read, write, scales, vs, form) for form in forms]
             torch.cuda.synchronize()
             times = [[] for _ in forms]
             for _ in range(args.reps):
@@ -114,7 +116,7 @@ def main() -> int:
                     a, b = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
                     torch.cuda._sleep(SPIN_CYCLES)
                     a.record()
-                    launch(read, write, scales, g, vs, form)
+                    launch(read, write, scales, vs, form)
                     b.record()
                     b.synchronize()
                     booked.append(1000.0 * a.elapsed_time(b))
@@ -135,7 +137,7 @@ def main() -> int:
                                          device="cuda")
                     facts_ops.ledger_bind(ledger)
                     try:
-                        launch(read, write, scales, g, vs, form)
+                        launch(read, write, scales, vs, form)
                         torch.cuda.synchronize()
                     finally:
                         facts_ops.ledger_bind(None)

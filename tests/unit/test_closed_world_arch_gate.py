@@ -39,6 +39,8 @@ import re
 import pytest
 import torch
 
+from tests.oracle.fixtures import with_gain
+
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SRC = REPO / "csrc" / "rola" / "src"
 ARCH_CAPS = SRC / "common" / "arch_caps.cuh"
@@ -199,8 +201,7 @@ def test_this_device_is_tabulated_and_the_gate_admits_it():
         "the one that must be added")
     widths, L = (16, 16), 32
     levels = tuple(torch.ones(1, L, 1, width, device="cuda") for width in widths)
-    routes = RouteFactors.from_levels(Topology(levels=tuple(OpaqueRouting(width=w) for w in widths)), levels,
-                                      levels, torch.ones(1, L, 1, device="cuda"), sparse=((False, True), (True, False)))
+    routes = RouteFactors.from_levels(Topology(levels=tuple(OpaqueRouting(width=w) for w in widths)), levels, with_gain(levels, torch.ones(1, L, 1, device="cuda")), sparse=((False, True), (True, False)))
     layout = facts_ops.call_layout(routes)
     words = facts_ops.facts(routes, Values.from_projection(torch.ones(1, L, 1, 8, device="cuda")), layout,
                             *facts_ops.call_statics(routes, layout),

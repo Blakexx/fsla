@@ -52,10 +52,8 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
                           Tensor gain_bias, Tensor v_W, Tensor jobs, Tensor amp_read,
                           Tensor amp_write, std::optional<Tensor> dense_read,
                           std::optional<Tensor> dense_write, Tensor scale_read, Tensor scale_write,
-                          Tensor mass_read, Tensor mass_write, Tensor read_mass, Tensor g_write,
-                          Tensor v, Tensor v_scale, Tensor arrivals,
-                          std::optional<Tensor> logit_probe, std::optional<Tensor> level_probe,
-                          Tensor shapes, int64_t levels, int64_t route_jobs_per_head,
+                          Tensor v, Tensor v_scale, std::optional<Tensor> logit_probe,
+                          std::optional<Tensor> level_probe, Tensor shapes, int64_t levels,
                           int64_t dense_read_mask, int64_t dense_write_mask) {
   check_arch_table();
   detail::check_bf16(x, "x");
@@ -122,22 +120,13 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
                       "tokens");
     }
   }
-  for (auto [t, name] : {std::pair{&scale_read, "scale_read"},
-                         {&scale_write, "scale_write"},
-                         {&mass_read, "mass_read"},
-                         {&mass_write, "mass_write"}}) {
+  for (auto [t, name] : {std::pair{&scale_read, "scale_read"}, {&scale_write, "scale_write"}}) {
     detail::check_f32(*t, name, BT * H * levels);
   }
-  detail::check_f32(read_mass, "read_mass", BT * H);
-  detail::check_f32(g_write, "g_write", BT * H);
   detail::check_f32(v_scale, "v_scale", BT * H);
   STD_TORCH_CHECK(v.scalar_type() == Dtype::Half && v.is_contiguous() && v.numel() == BT * H * d_v,
                   "v is [BT, H, d_v] f16");
   const int64_t tiles = (BT + kTokenTile - 1) / kTokenTile;
-  STD_TORCH_CHECK(
-      arrivals.scalar_type() == Dtype::Int && arrivals.is_contiguous()
-          && arrivals.numel() >= tiles * H * kProduceWarps,
-      "arrivals holds a counter a (token tile, head, warp): ", tiles * H * kProduceWarps);
   STD_TORCH_CHECK(!shapes.is_cuda() && shapes.scalar_type() == Dtype::Short
                       && shapes.is_contiguous() && shapes.numel() == jobs.size(0),
                   "shapes is the plan's host int16 shape word a job");
@@ -168,13 +157,8 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   }
   p.scale_read = scale_read.mutable_data_ptr<float>();
   p.scale_write = scale_write.mutable_data_ptr<float>();
-  p.mass_read = mass_read.mutable_data_ptr<float>();
-  p.mass_write = mass_write.mutable_data_ptr<float>();
-  p.read_mass = read_mass.mutable_data_ptr<float>();
-  p.g_write = g_write.mutable_data_ptr<float>();
   p.v = reinterpret_cast<__half*>(v.mutable_data_ptr());
   p.v_scale = v_scale.mutable_data_ptr<float>();
-  p.arrivals = arrivals.mutable_data_ptr<int32_t>();
   p.logit_probe = logit_probe.has_value() ? logit_probe->mutable_data_ptr<float>() : nullptr;
   p.level_probe = level_probe.has_value() ? level_probe->mutable_data_ptr<float>() : nullptr;
   STD_TORCH_CHECK(detail::g_ledger == nullptr || detail::g_ledger_jobs >= jobs.size(0),
@@ -201,7 +185,6 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   p.rows_write = static_cast<int>(amp_write.size(3));
   p.D = static_cast<int>(levels);
   p.d_v = static_cast<int>(d_v);
-  p.route_jobs_per_head = static_cast<int>(route_jobs_per_head);
 
   const DeviceGuard guard(x.get_device_index());
   //: ONCE: the attribute call is host time on the launch path; the carveout to shared, so two blocks' stages fit an SM

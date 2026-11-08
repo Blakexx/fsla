@@ -20,6 +20,7 @@ from measure.cells import by_name, realize
 from rola.ops.window import window_of
 from tests.oracle import int_reference as iref
 from tests.oracle import reference
+from tests.oracle.fixtures import with_gain
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
 
@@ -40,9 +41,8 @@ def test_the_hadamard_is_orthogonal_and_commutes_with_the_op():
     cell = by_name("flat-small-alt-k4")
     drawn = realize(cell, device=dev)
     read, write, gain, v = drawn.doubles()
-    num, den, state = reference.inter_reference(read, write, gain, v, cell.widths, window_of())
-    num_r, den_r, state_r = reference.inter_reference(read, write, gain, iref.rotate(v, h), cell.widths,
-                                                      window_of())
+    num, den, state = reference.inter_reference(read, with_gain(write, gain), v, cell.widths, window_of())
+    num_r, den_r, state_r = reference.inter_reference(read, with_gain(write, gain), iref.rotate(v, h), cell.widths, window_of())
     assert torch.allclose(iref.unrotate(num_r, h), num, rtol=1e-12, atol=1e-12 * num.abs().max())
     assert torch.allclose(den_r, den)
     assert torch.allclose(iref.unrotate(state_r[..., :-1], h), state[..., :-1], rtol=1e-12,
@@ -54,8 +54,8 @@ def test_the_declared_recurrence_is_the_op_when_nothing_is_rounded(name):
     cell = by_name(name)
     drawn = realize(cell, device="cuda")
     read, write, gain, v = drawn.doubles()
-    want = reference.inter_reference(read, write, gain, v, cell.widths, window_of())
-    got = iref.int_reference(read, write, gain, v, cell.widths, _sparsity(cell), window_of(), exact=True)
+    want = reference.inter_reference(read, with_gain(write, gain), v, cell.widths, window_of())
+    got = iref.int_reference(read, with_gain(write, gain), v, cell.widths, _sparsity(cell), window_of(), exact=True)
     for a, b, what in zip(got, want, ("num", "den", "state")):
         scale = b.abs().max().clamp_min(1e-300)
         assert torch.allclose(a, b, rtol=1e-11, atol=1e-11 * float(scale)), f"{name}: {what} is not the op's"
@@ -98,8 +98,8 @@ def test_the_prepass_reference_is_the_op_when_nothing_is_rounded(name):
     cell = by_name(name)
     drawn = realize(cell, device="cuda")
     read, write, gain, v = drawn.doubles()
-    _, want_den, _ = reference.inter_reference(read, write, gain, v, cell.widths, window_of())
-    den, _ = iref.prepass_reference(read, write, gain, v, cell.widths, _sparsity(cell), window_of(), exact=True)
+    _, want_den, _ = reference.inter_reference(read, with_gain(write, gain), v, cell.widths, window_of())
+    den, _ = iref.prepass_reference(read, with_gain(write, gain), v, cell.widths, _sparsity(cell), window_of(), exact=True)
     assert torch.allclose(den, want_den, rtol=1e-11, atol=1e-11 * float(want_den.abs().max()))
 
 
@@ -114,9 +114,9 @@ def test_the_prepass_den_is_within_its_digits_and_its_scale_is_a_bound(name, cap
     drawn = realize(cell, device="cuda")
     read, write, gain, v = drawn.doubles()
     sp = _sparsity(cell)
-    _, want_den, _ = reference.inter_reference(read, write, gain, v, cell.widths, window_of())
-    env_num, _, _ = reference.inter_reference(read, write, gain, v.abs(), cell.widths, window_of())
-    den, scale = iref.prepass_reference(read, write, gain, v, cell.widths, sp, window_of())
+    _, want_den, _ = reference.inter_reference(read, with_gain(write, gain), v, cell.widths, window_of())
+    env_num, _, _ = reference.inter_reference(read, with_gain(write, gain), v.abs(), cell.widths, window_of())
+    den, scale = iref.prepass_reference(read, with_gain(write, gain), v, cell.widths, sp, window_of())
     live = want_den > 0
     rel = ((den - want_den).abs() / want_den.clamp_min(1e-300))[live]
     assert float(rel.max()) <= 2.0 ** -8, f"den left the amplitude row's precision: max rel {float(rel.max()):.2e}"
@@ -144,7 +144,7 @@ def _bundle(name):
     drawn = realize(cell)
     topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in cell.widths))
     sparse = tuple(tuple(level[side] for level in cell.declared_sparsity()) for side in (0, 1))
-    routes = RouteFactors.from_levels(topology, drawn.read, drawn.write, drawn.gain.float(), sparse=sparse)
+    routes = RouteFactors.from_levels(topology, drawn.read, with_gain(drawn.write, drawn.gain.float()), sparse=sparse)
     return cell, routes, Values.from_projection(drawn.v)
 
 
@@ -155,10 +155,8 @@ def test_the_intra_reference_is_the_intra_on_the_bundle_when_nothing_is_rounded(
     cell, routes, values = _bundle(name)
     num, den = iref.intra_bundle_reference(routes, values, window_of())
     read, write = routes.dequantized()
-    want_num, want_den = reference.intra_reference(read, write, routes.g_write, values.dequantized(), cell.widths,
-                                                   window_of())
-    envelope, _ = reference.intra_reference(read, write, routes.g_write, values.dequantized().abs(), cell.widths,
-                                            window_of())
+    want_num, want_den = reference.intra_reference(read, write, values.dequantized(), cell.widths, window_of())
+    envelope, _ = reference.intra_reference(read, write, values.dequantized().abs(), cell.widths, window_of())
     reader = torch.ones_like(den)
     for scale in routes.scale_read:
         reader = reader * scale.double()

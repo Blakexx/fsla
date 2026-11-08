@@ -20,7 +20,7 @@ digits (16 or 32, the side's) one union and its prefix rows span ([below](#list-
 The bundle as the producer wrote it (`docs/api.md` §2.1): each level's rows `[B, T, H, b_l]`, u8 digits, read where
 they lie — a view of the producer's packed plane or a tensor of its own, by its strides, under the ROW ALIGNMENT LAW
 ([`liveness_contract.md`](liveness_contract.md#alignment)): every level's rows start on 32 bytes and step batch, token
-and head by multiples of 32. It also reads the write levels' scales, the write gain and the value scale for the
+and head by multiples of 32. It also reads the write levels' scales and the value scale for the
 columns — a few words a token.
 
 A DENSE level (the bundle's `sparse` flag unset; `rola.ops.facts.call_statics`) is neither read nor written: its words
@@ -148,7 +148,7 @@ reads each meet 32 banks); after the barrier each digit's window of words goes o
 
 ## The window's columns
 
-    m(t) = g_write(t) × Π_l scale_write_l(t)      (the gain first, then the levels in order)      F(t) = m(t) × s(t)
+    m(t) = Π_l scale_write_l(t)      (the levels in order: the write side's shared scale)      F(t) = m(t) × s(t)
 
 `s` the value scale, a token past `L` zero. Every write list unit loads them (the coefficients and the list maxima
 read them); the unit of group 0 of the write list level — or the window's `kUnitColumns` unit when the write side lists

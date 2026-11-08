@@ -37,7 +37,7 @@ import torch
 from rola.engine.plan import DecodeGeometry
 from rola.ops.decode import _decode_step, derive_decode_geometry
 from rola.ops.paging import bytes_equal
-from tests.oracle.fixtures import assert_reordered_close, state_pages, step_bundles
+from tests.oracle.fixtures import assert_reordered_close, state_pages, step_bundles, with_gain
 from tests.oracle.oracle_fixtures import _simplex, _topology
 
 pytestmark = [
@@ -82,19 +82,16 @@ def test_decode_is_blind_to_prefill_bc(widths):
     m0[..., d_v] = m0[..., d_v].abs()
     #: THE STATE IS HANDED TO THE KERNEL IN ITS STORED FORM (the int8 state pages).
     m0 = state_pages(m0)
-    routes, values = step_bundles(v, read_levels, write_levels, g_write, topology)
+    routes, values = step_bundles(v, read_levels, with_gain(write_levels, g_write), topology)
 
     results = []
     configs = []
     for BC in _BCS:
-        # `BC` is here to be IGNORED. The prefill's `BC` used to be a
-        # host-chosen `Plan` field constructed at each value and deliberately not
-        # handed to decode; on the chunk arm it belongs to the built arm and is
-        # not host-selectable at all, so the loop now varies the number a prefill
-        # COULD have run at and asserts, as before, that there is no channel
-        # through which it could reach the frozen carrier. `derive_decode_geometry`
-        # is called inside the loop for exactly that reason: it must be a pure
-        # function of the topology, `d_v` and `decay`.
+        # `BC` is here to be IGNORED: it belongs to a prefill's built arm and is
+        # not host-selectable, so the loop varies the number a prefill COULD have
+        # run at and asserts there is no channel through which it could reach the
+        # frozen carrier. `derive_decode_geometry` is called inside the loop because
+        # it must be a pure function of the topology, `d_v` and `decay`.
         assert BC in _BCS
         config = derive_decode_geometry(topology, d_v=d_v, decay=False)
         configs.append(config)

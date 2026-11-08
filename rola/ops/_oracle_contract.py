@@ -3,19 +3,11 @@
 """The oracle's input contract: everything `naive_rola` refuses, and why.
 
 The oracle is read, not just run. It is the definition every Tier 1 gate is
-anchored to, so the literal-clarity standard says the file should read like the
-mathematics -- and it did not: 69 lines of shape and domain checking stood
-between the reader and 40 lines of recurrence. None of it is
-math. All of it is a boundary.
-
-So the boundary lives here and `rola/ops/naive.py` calls it in one line. Nothing
-is weakened by the move: every check below is the one that was there, and the
-one semantic slack among them -- the simplex tolerance -- is now a named
-constant with its derivation attached rather than a keyword default nobody had
-to justify.
-
-`ROLA_V3_SPEC.md` section references are the contract's authority; each check
-cites the clause it enforces.
+anchored to, so `rola/ops/naive.py` reads like the mathematics and its shape and
+domain checks -- none of them math, all of them a boundary -- live here, called
+in one line. The domain is nonnegative, finite levels: no level need sum to 1
+(docs/CONSTITUTION.md#r23), and the op is defined on their products
+(docs/api.md section 2.2).
 """
 
 from __future__ import annotations
@@ -24,40 +16,26 @@ import torch
 
 from rola.routing.types import DecayConfig, LeafMassDecay, Topology
 
-#: How far a routing level's mass may sit from 1 and still be accepted as a
-#: simplex: THE FORMAT'S ROUNDING, per digit. The oracle is fed the STORED form
-#: (ruled 2026-09-26): u8 rows against the row max, so each digit of a width-w
-#: simplex row sits within `row_max / 510 <= 1 / 510` of its value and the row's
-#: sum within `w / 510` of one (`rola.routing.quant`, `docs/api.md` section 2.1).
-#: An input that is genuinely unnormalized (a missing softmax, a level summing
-#: to its width) misses that by orders of magnitude.
-SIMPLEX_DIGIT_ATOL = 1.0 / 510.0
 
-
-def validate_simplex(name: str, levels: tuple[torch.Tensor, ...]) -> None:
-    """Each level is nonnegative and sums to 1 over its width (spec section 4.1), to the format's rounding."""
+def validate_levels(name: str, levels: tuple[torch.Tensor, ...]) -> None:
+    """Each level is nonnegative and finite: the op is defined on the levels' products alone, and no level need sum to 1
+    (docs/CONSTITUTION.md#r23)."""
     for level, factors in enumerate(levels):
-        if torch.any(factors < -SIMPLEX_DIGIT_ATOL):
-            raise ValueError(f"{name}[{level}] must be nonnegative (p >= 0)")
-        mass = factors.sum(dim=-1)
-        atol = factors.shape[-1] * SIMPLEX_DIGIT_ATOL
-        if not torch.allclose(mass, torch.ones_like(mass), atol=atol):
-            raise ValueError(
-                f"{name}[{level}] must sum to 1 over its width (sum_d p = 1) within the "
-                f"format's rounding {atol:.3g}; max deviation {float((mass - 1).abs().max())}"
-            )
+        if torch.any(factors < 0):
+            raise ValueError(f"{name}[{level}] must be nonnegative")
+        if not torch.isfinite(factors).all():
+            raise ValueError(f"{name}[{level}] must be finite")
 
 
 def validate_inputs(
     v: torch.Tensor,
     read_levels: tuple[torch.Tensor, ...],
     write_levels: tuple[torch.Tensor, ...],
-    g_write: torch.Tensor,
     topology: Topology,
     decay: DecayConfig,
 ) -> tuple[int, int, int, int, int]:
     """Shapes and domains. Returns `(B, T, H, H_w, d_v)`: `H` the query heads (the read side's), `H_w` the write
-    heads (the write side's, the values', the gain's and the decay's), `H_w` dividing `H`."""
+    heads (the write side's, the values' and the decay's), `H_w` dividing `H`."""
     if v.ndim != 4:
         raise ValueError(f"v must have shape [B,T,H_w,d_v], got {tuple(v.shape)}")
     B, T, H_w, d_v = v.shape
@@ -79,10 +57,6 @@ def validate_inputs(
                     f"{name}[{level}] must have shape [B,T,heads,width_l]=({B},{T},{heads},{width}), "
                     f"got {tuple(factors.shape)}"
                 )
-    if tuple(g_write.shape) != (B, T, H_w):
-        raise ValueError(f"g_write must have shape [B,T,H_w]={(B, T, H_w)}, got {tuple(g_write.shape)}")
-    if torch.any(g_write <= 0):
-        raise ValueError("g_write must be strictly positive: g_write[t] > 0")
     if decay is not None:
         if not isinstance(decay, LeafMassDecay):
             raise TypeError(f"decay must be None or LeafMassDecay, got {type(decay).__name__}")
@@ -108,4 +82,4 @@ def initial_cache(
     return initial_state.to(device=device, dtype=torch.float64)
 
 
-__all__ = ["SIMPLEX_DIGIT_ATOL", "initial_cache", "validate_inputs", "validate_simplex"]
+__all__ = ["initial_cache", "validate_inputs", "validate_levels"]

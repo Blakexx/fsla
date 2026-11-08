@@ -31,11 +31,11 @@ __device__ __forceinline__ Job load_job(const ProduceParams& p, int index) {
   //: the word read fresh at each call (`opaque`), so no k-loop holds it
   const int shape = p.shapes[ops::opaque(index)] & 0xffff;
   const int32_t* row = p.jobs + static_cast<int64_t>(index) * kJobFields;
-  return Job{(shape >> 5) & 1,  shape & 7,         (shape >> 3) & 3,   (shape >> 6) & 1,
-             (shape >> 7) & 1,  row[kFieldHead],   row[kFieldHeads],   row[kFieldWidth],
-             row[kFieldIn0],    row[kFieldIn1],    row[kFieldOutRead], row[kFieldOutWrite],
-             row[kFieldLevel],  (shape >> 8) & 1,  (shape >> 9) & 1,   (shape >> 10) & 7,
-             (shape >> 13) & 1, (shape >> 14) & 1, (shape >> 15) & 1};
+  return Job{(shape >> 5) & 1, shape & 7,        (shape >> 3) & 3,   (shape >> 6) & 1,
+             (shape >> 7) & 1, row[kFieldHead],  row[kFieldHeads],   row[kFieldWidth],
+             row[kFieldIn0],   row[kFieldIn1],   row[kFieldOutRead], row[kFieldOutWrite],
+             row[kFieldLevel], (shape >> 8) & 7, (shape >> 11) & 1,  (shape >> 12) & 1,
+             (shape >> 13) & 1};
 }
 
 //: A job's projection columns: a route job's row (both rows of a union's), or a value job's heads' channels.
@@ -578,17 +578,66 @@ static_assert(kProduceWarps * (kParkedWarpBytes + kStagedWarpBytes) + kExchangeB
                   <= kProduceSmem,
               "the parked n-tiles, the staged rows and the pairs' exchange fit the stages");
 
+__device__ __forceinline__ uint4 chunk(const __nv_bfloat16* run, int k, bool live) {
+  return live ? __ldg(reinterpret_cast<const uint4*>(run + k)) : make_uint4(0u, 0u, 0u, 0u);
+}
+
+//: THE WRITE GAIN'S LOGIT of one token, a lane quad its row: each lane every fourth 16-byte chunk of the gain column
+//: and the token's row (the loop uniform, a chunk past the hidden size zero), the quad's sum by two shuffles, plus both
+//: biases.
+__device__ __forceinline__ float gain_logit(const ProduceParams& p, const Job& job, int token,
+                                            bool live, int quad) {
+  const int column = p.C - p.G;
+  const __nv_bfloat16* w = p.route_W + job.head * p.w_head + static_cast<int64_t>(column) * p.w_col;
+  const __nv_bfloat16* xr = p.x + static_cast<int64_t>(live ? token : 0) * p.hidden;
+  float dot = 0.0f;
+  //: eight chunk pairs in flight (256 hidden a trip), where one at a time waited out each pair's load
+#pragma unroll 8
+  for (int k0 = 0; k0 < p.hidden; k0 += 32) {
+    const int k = k0 + 8 * quad;
+    const uint4 wc = chunk(w, k, live && k < p.hidden);
+    const uint4 xc = chunk(xr, k, live && k < p.hidden);
+    const uint32_t wv[4] = {wc.x, wc.y, wc.z, wc.w};
+    const uint32_t xv[4] = {xc.x, xc.y, xc.z, xc.w};
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+      dot += ops::pair_lo(wv[j]) * ops::pair_lo(xv[j]) + ops::pair_hi(wv[j]) * ops::pair_hi(xv[j]);
+    }
+  }
+  dot += __shfl_xor_sync(0xffffffffu, dot, 1);
+  dot += __shfl_xor_sync(0xffffffffu, dot, 2);
+  const float bias = p.route_bias != nullptr ? p.route_bias[job.head * p.C + column] : 0.0f;
+  return dot + bias + p.gain_bias[job.head * p.G];
+}
+
+//: THE WRITE GAIN INTO WRITE LEVEL 0'S SCALE over a warp's 16 tokens from `first`: the scales this warp's bundle
+//: stored, each times its token's `softplus(logit + bias)` -- a lane quad a token, 8 a pass -- run past the tile loop,
+//: whose accumulators are dead by then. The gain is the producer's, folded into a scale; no job waits on another.
+//: -- see docs/internals/produce/ampere/produce_kernel.md#gain
+__device__ void apply_gain(const ProduceParams& p, const Job& job, int first, int lane) {
+  __syncwarp();
+  const int quad = lane & 3, row = lane >> 2;
+#pragma unroll 1
+  for (int pass = 0; pass < kWarpTokens / 8; ++pass) {
+    const int token = first + 8 * pass + row;
+    const bool here = token < p.BT;
+    const float logit = gain_logit(p, job, token, here, quad);
+    if (here && quad == 0)
+      p.scale_write[slot_of(p, token, job.head) * p.D] *=
+          logit > 20.0f ? logit : log1pf(expf(logit));
+  }
+}
+
 //: ONE SIDE OF A WARP'S ROWS IN THE BUNDLE'S FORM, one token slot at a time (`Out`: u8, or f16 for a dense level, its
 //: floor taken in a live row): each row's coefficients against its max `top` and its slot's tail zeros staged, the max
-//: as the side's scale (over the mass where the write fold applies) and the level's mass for the finisher, then the
-//: rows' slots stored 16 bytes a lane. `tile0` the n-tile's first token. -- see docs/internals/produce/ampere/produce_kernel.md#bundle
+//: as the level's scale, then the rows' slots stored 16 bytes a lane. `tile0` the n-tile's first token.
+//: -- see docs/internals/produce/ampere/produce_kernel.md#bundle
 template <int M, class Out>
 __device__ __forceinline__ void bundle_side(const ProduceParams& p, const Job& job, int tile0,
                                             int lane, const float (&acc)[kAccTiles][4],
                                             const float (&top)[kSlots], Out* plane, int plane_row,
-                                            int out_col, float* scale, float* mass, bool fold,
-                                            bool applied, bool floored, uint8_t* staged, Pair& pr,
-                                            int col0) {
+                                            int out_col, float* scale, bool floored,
+                                            uint8_t* staged, Pair& pr, int col0) {
   constexpr int kGrain = 32 / static_cast<int>(sizeof(Out));
   constexpr int kRowElems = kStagedRowBytes / static_cast<int>(sizeof(Out));
   //: the warp's columns of the row, `col0 ..` (a wide union's half; the whole row at 0), and of its slot
@@ -599,10 +648,6 @@ __device__ __forceinline__ void bundle_side(const ProduceParams& p, const Job& j
   Out* rows = reinterpret_cast<Out*>(staged) + (lane & 3) * kRowElems;
   rola::static_for<kSlots>([&](auto Sl) {
     constexpr int s = decltype(Sl)::value;
-    float sum = 1.0f;
-    if (fold) {
-      sum = pr.combine1(row_all(row_tree<s, 0, 2 * M>(acc, AddOp{}), AddOp{}), lane, AddOp{});
-    }
     constexpr float kFull = sizeof(Out) == 1 ? 255.0f : 1.0f;
     const float m = top[s], unit = __fdividef(kFull, fmaxf(m, 1e-30f));
     const float floor = floored && m > 0.0f ? facts::kDenseFloor : 0.0f;
@@ -624,8 +669,7 @@ __device__ __forceinline__ void bundle_side(const ProduceParams& p, const Job& j
     const int token = tile0 + 2 * (lane & 3) + s;
     if (g == 0 && token < p.BT && pr.half == 0) {
       const int64_t at = slot_of(p, token, job.head) * p.D + job.level;
-      scale[at] = applied && fold && sum > 0.0f ? __fdividef(m, sum) : m;
-      mass[at] = sum;
+      scale[at] = m;
     }
     __syncwarp();
 
@@ -677,15 +721,13 @@ __device__ __forceinline__ void bundle_rows(const ProduceParams& p, const Job& j
     });
     const int out_col = side == 0 ? job.out_read : job.out_write;
     float* scale = side == 0 ? p.scale_read : p.scale_write;
-    float* mass = side == 0 ? p.mass_read : p.mass_write;
-    const bool fold = (side == 0 ? job.fold_read : job.fold_write) != 0, applied = side == 1;
     if (side == 0 ? job.dense_read : job.dense_write)
       bundle_side<M>(p, job, tile0, lane, acc, top, p.dense[side], p.dense_rows[side], out_col,
-                     scale, mass, fold, applied, true, staged, pr, col0);
+                     scale, true, staged, pr, col0);
     else
       bundle_side<M>(p, job, tile0, lane, acc, top, side == 0 ? p.amp_read : p.amp_write,
-                     side == 0 ? p.rows_read : p.rows_write, out_col, scale, mass, fold, applied,
-                     false, staged, pr, col0);
+                     side == 0 ? p.rows_read : p.rows_write, out_col, scale, false, staged, pr,
+                     col0);
   }
 }
 
@@ -775,78 +817,6 @@ __device__ __forceinline__ void value_tile(const ProduceParams& p, const Job& jo
 }
 
 //: One lane's 16-byte chunk of a hidden run, or zeros past the run's end (and no load).
-__device__ __forceinline__ uint4 chunk(const __nv_bfloat16* run, int k, bool live) {
-  return live ? __ldg(reinterpret_cast<const uint4*>(run + k)) : make_uint4(0u, 0u, 0u, 0u);
-}
-
-//: THE WRITE GAIN'S LOGIT of one token, a lane quad its row: each lane every fourth 16-byte chunk of the gain column
-//: and the token's row (the loop uniform, a chunk past the hidden size zero), the quad's sum by two shuffles, plus both
-//: biases.
-__device__ __forceinline__ float gain_logit(const ProduceParams& p, const Job& job, int token,
-                                            bool live, int quad) {
-  const int column = p.C - p.G;
-  const __nv_bfloat16* w = p.route_W + job.head * p.w_head + static_cast<int64_t>(column) * p.w_col;
-  const __nv_bfloat16* xr = p.x + static_cast<int64_t>(live ? token : 0) * p.hidden;
-  float dot = 0.0f;
-  //: eight chunk pairs in flight (256 hidden a trip), where one at a time waited out each pair's load
-#pragma unroll 8
-  for (int k0 = 0; k0 < p.hidden; k0 += 32) {
-    const int k = k0 + 8 * quad;
-    const uint4 wc = chunk(w, k, live && k < p.hidden);
-    const uint4 xc = chunk(xr, k, live && k < p.hidden);
-    const uint32_t wv[4] = {wc.x, wc.y, wc.z, wc.w};
-    const uint32_t xv[4] = {xc.x, xc.y, xc.z, xc.w};
-#pragma unroll
-    for (int j = 0; j < 4; ++j) {
-      dot += ops::pair_lo(wv[j]) * ops::pair_lo(xv[j]) + ops::pair_hi(wv[j]) * ops::pair_hi(xv[j]);
-    }
-  }
-  dot += __shfl_xor_sync(0xffffffffu, dot, 1);
-  dot += __shfl_xor_sync(0xffffffffu, dot, 2);
-  const float bias = p.route_bias != nullptr ? p.route_bias[job.head * p.C + column] : 0.0f;
-  return dot + bias + p.gain_bias[job.head * p.G];
-}
-
-//: THE HEAD'S FINISH OF A WARP'S 16 TOKENS, by the last of its route jobs to arrive at the slice (a counter a token
-//: tile, head and warp: every job's warp `w` writes the same 16 tokens' masses): `read_mass`, the product of the
-//: levels' read masses, and `g_write`, the gain's softplus times the write masses -- the other jobs' masses read past
-//: the fence, coherently. No block barrier: a warp waits on no other warp. -- see docs/internals/produce/ampere/produce_kernel.md#finish
-__device__ void finish_head(const ProduceParams& p, const Job& job, int tile, int token0, int warp,
-                            int lane) {
-  int32_t* const counter =
-      p.arrivals + (static_cast<int64_t>(tile) * p.H + job.head) * kProduceWarps + warp;
-  //: the warp's own stores before its arrival: each lane's fence, the warp's barrier, then lane 0's count
-  __threadfence();
-  __syncwarp();
-  int last = 0;
-  if (lane == 0) last = atomicAdd(counter, 1) + 1 == p.route_jobs_per_head ? 1 : 0;
-  if (!__shfl_sync(0xffffffffu, last, 0)) return;
-  __threadfence();
-  //: a lane quad a token, the warp's 8 tokens a pass
-  const int quad = lane & 3, row = lane >> 2;
-  const int first = token0 + kWarpTokens * warp;
-#pragma unroll 1
-  for (int pass = 0; pass < kWarpTokens / 8; ++pass) {
-    const int token = first + 8 * pass + row;
-    const bool here = token < p.BT;
-    const float gain = p.G > 0 ? gain_logit(p, job, token, here, quad) : 0.0f;
-    //: the levels' masses read by every lane (a dead token's as 1), outside the lane-divergent store below
-    const int64_t at = slot_of(p, here ? token : 0, job.head);
-    float read_mass = 1.0f, write_mass = 1.0f;
-#pragma unroll 1
-    for (int l = 0; l < p.D; ++l) {
-      read_mass *= here ? __ldcg(p.mass_read + at * p.D + l) : 1.0f;
-      write_mass *= here ? __ldcg(p.mass_write + at * p.D + l) : 1.0f;
-    }
-    if (here && quad == 0) {
-      const float softplus = gain > 20.0f ? gain : log1pf(expf(gain));
-      p.read_mass[at] = read_mass;
-      p.g_write[at] = (p.G > 0 ? softplus : 1.0f) * write_mass;
-    }
-  }
-  if (lane == 0) *counter = 0;
-}
-
 //: A ONE-ROW JOB'S PROJECTION: every warp the job's columns for its 16 tokens, in the job's class of `M` column tiles
 //: and `S` k-steps a stage (the stage's bytes held near level). -- see docs/internals/produce/ampere/produce_kernel.md#form
 __device__ __forceinline__ void project_one_row(const ProduceParams& p, int job_index, int token0,
@@ -971,10 +941,14 @@ __global__ __launch_bounds__(kProduceThreads, 2) void produce_kernel(
                                    token0 + pass * (kTokenTile / 2) + kWarpTokens * pair + 8 * n,
                                    lane, tile_acc, staged, pr, 128 * half, clock);
       }
-      //: the next pass's stages overwrite the parked and staged rows; the passes' masses fenced before the finish,
-      //: whose slices the half-0 warps wrote
-      __threadfence();
+      //: the next pass's stages overwrite the parked and staged rows
       __syncthreads();
+    }
+    const Job job = load_job(p, job_index);
+    if (half == 0 && job.kind == kJobRoute && job.writes && job.level == 0 && p.G > 0) {
+#pragma unroll 1
+      for (int pass = 0; pass < 2 && token0 + pass * (kTokenTile / 2) < p.BT; ++pass)
+        apply_gain(p, job, token0 + pass * (kTokenTile / 2) + kWarpTokens * pair, lane);
     }
   } else {
     float acc[kAccTiles][kTokenTiles][4];
@@ -1012,16 +986,13 @@ __global__ __launch_bounds__(kProduceThreads, 2) void produce_kernel(
         else
           value_tile(p, job, tile0, lane, tile);
       }
+      if (job.kind == kJobRoute && job.writes && job.level == 0 && p.G > 0)
+        apply_gain(p, job, token0 + kWarpTokens * warp, lane);
     }
   }
 
-  const Job job = load_job(p, job_index);
-  if (job.kind == kJobRoute) {
-    finish_head(p, job, tile, token0, warp, lane);
-    clock.lap(kPhaseFinish);
-  } else {
-    clock.lap(kPhaseValues);
-  }
+  //: a route job's gain pass is its bundle's
+  clock.lap(load_job(p, job_index).kind == kJobRoute ? kPhaseBundle : kPhaseValues);
   clock.publish(p.ledger, job_index, kProduceWarps, warp);
 }
 

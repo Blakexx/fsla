@@ -36,6 +36,17 @@ def _layer(*, gain: bool, **kwargs) -> RoLA:
 def _factors(layer: RoLA, x: torch.Tensor):
     return layer._produce(x)[0]
 
+
+def _gain(layer: RoLA, x: torch.Tensor):
+    """``(gain, with, without)``: the layer's bundle, its gain-free twin's (the same routing columns, the gain column
+    removed) and the write gain between them -- write level 0's scale over the twin's, since the producer folds its
+    gain into that scale and nowhere else (docs/CONSTITUTION.md#r23)."""
+    twin = _layer(gain=False)
+    with torch.no_grad():
+        twin.route_W.copy_(layer.route_W[..., :twin.route_W.shape[-1]])
+    with_gain, without = _factors(layer, x), _factors(twin, x)
+    return with_gain.scale_write[0] / without.scale_write[0], with_gain, without
+
 # --- the public flag ---------------------------------------------------------
 
 
@@ -70,18 +81,21 @@ def test_the_public_flag_rejects_a_non_bool_rather_than_coercing_it():
 
 # --- what the engine actually receives ---------------------------------------
 
-@pytest.mark.parametrize("gain,write_is_one", [(True, False), (False, True)])
-def test_a_missing_column_becomes_the_constant_one_and_there_is_never_a_read_gain(
-        gain, write_is_one):
-    """The engine's contract does not change shape when the gain is ablated: an absent
-    write gain is the CONSTANT 1, and there is no read-gain column at all in either
-    case -- the ratio readout fixes it to 1 identically."""
+def test_the_gain_is_write_level_0s_scale_and_there_is_never_a_read_gain():
+    """The engine's contract has no gain field: the producer's write gain is a factor of write level 0's scale, and
+    every other scale, every read scale and every level's rows are the gain-free layer's -- the ratio readout fixes a
+    read gain to 1 identically, so there is none."""
     torch.manual_seed(5)
-    factors = _factors(_layer(gain=gain), torch.randn(2, 6, _HIDDEN, dtype=torch.float64))
-    assert not hasattr(factors, "g_read")
-    assert factors.g_write.shape == (2, 6, _H)
-    assert torch.equal(
-        factors.g_write, torch.ones_like(factors.g_write)) is write_is_one
+    x = torch.randn(2, 6, _HIDDEN, dtype=torch.float64)
+    layer = _layer(gain=True)
+    gain, with_gain, without = _gain(layer, x)
+    assert not hasattr(with_gain, "g_write") and not hasattr(with_gain, "g_read")
+    assert gain.shape == (2, 6, _H) and bool((gain > 0).all()) and float((gain - 1).abs().max()) > 1e-2
+    for name in ("amp_read", "amp_write", "scale_read"):
+        for level, (a, b) in enumerate(zip(getattr(with_gain, name), getattr(without, name))):
+            assert torch.equal(a, b), f"the gain reached {name}[{level}]"
+    for level in range(1, len(with_gain.scale_write)):
+        assert torch.equal(with_gain.scale_write[level], without.scale_write[level]), f"the gain reached level {level}"
 
 
 def test_the_disabled_gain_removes_the_column_rather_than_pinning_it():
@@ -108,12 +122,12 @@ def test_the_gain_rides_the_router_gemm_and_is_not_a_second_projection():
     with torch.no_grad():
         layer.route_W[:, :, -1] += 1.0
     after = _factors(layer, x)
-    assert not torch.allclose(before.g_write, after.g_write), (
+    assert not torch.allclose(before.scale_write[0], after.scale_write[0]), (
         "the trailing column does not reach the gain")
-    for side, b_levels, a_levels in zip(("read", "write"), before.dequantized(), after.dequantized()):
-        for level, (b, a) in enumerate(zip(b_levels, a_levels)):
-            torch.testing.assert_close(b, a, rtol=0, atol=0,
-                                       msg=f"the gain column moved {side} level {level}")
+    for name in ("amp_read", "amp_write", "scale_read", "scale_write"):
+        for level, (b, a) in enumerate(zip(getattr(before, name), getattr(after, name))):
+            if (name, level) != ("scale_write", 0):
+                assert torch.equal(b, a), f"the gain column moved {name}[{level}]"
 
 
 def test_the_side_gain_bias_init_places_the_zero_logit_gain():
@@ -123,5 +137,5 @@ def test_the_side_gain_bias_init_places_the_zero_logit_gain():
     assert layer.routing.gain_layout.layout == ("write",) and layer.gain_bias.shape == (_H, 1)
     with torch.no_grad():
         layer.route_W.zero_()
-    factors = _factors(layer, torch.randn(1, 3, _HIDDEN, dtype=torch.float64))
-    torch.testing.assert_close(factors.g_write.float(), torch.ones(1, 3, _H), rtol=1e-6, atol=1e-6)
+    gain, _, _ = _gain(layer, torch.randn(1, 3, _HIDDEN, dtype=torch.float64))
+    torch.testing.assert_close(gain, torch.ones(1, 3, _H), rtol=1e-6, atol=1e-6)

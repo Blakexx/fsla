@@ -24,8 +24,8 @@ EXPONENT_FLOOR = -126
 
 def list_columns(routes, values) -> torch.Tensor:
     """``[B, T, H, 2]`` fp64: each token's ``m`` and ``m s``."""
-    m = routes.g_write.double()
-    for scale in routes.scale_write:
+    m = routes.scale_write[0].double()
+    for scale in routes.scale_write[1:]:
         m = m * scale.double()
     return torch.stack((m, m * values.scale.double()), -1)
 
@@ -141,7 +141,7 @@ def fold_state(routes, values, list_exp, level_s: int, window: int, at_window=No
     f16(x c)``; the state gains ``sum_t A v`` in its list's unit (exact here), the mass ``sum_t x c_m``; each window
     first rescales both to the units `next_units` gives. A dense level's floor is in its stored rows."""
     level_r = 1 - level_s
-    m = routes.g_write.float() * routes.scale_write[0].float() * routes.scale_write[1].float()
+    m = routes.scale_write[0].float() * routes.scale_write[1].float()
     F = m * values.scale.float()
     b_r = write_bytes(routes, level_r)
     x = routes.amp_write[level_s] if is_half(routes, level_s) else (routes.amp_write[level_s].float() / 256).half()

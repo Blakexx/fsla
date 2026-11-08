@@ -42,7 +42,7 @@ def bounds(routes, values) -> dict:
     read, write = routes.dequantized()
     x_s, x_r = read[ls].double(), read[lr].double()                               # [B, T, H, w]
     w_s, w_r = write[ls].double(), write[lr].double()                             # [B, T, Hw, w]
-    gs = routes.g_write.double() * values.scale.double()                          # [B, T, Hw]
+    s = values.scale.double()                                                     # [B, T, Hw]: a producer's gain is in the write levels
     B, T, H, _ = x_s.shape
     g = routes.group
     out = {k: torch.zeros(B, T, H, dtype=torch.float64, device=x_s.device)
@@ -62,7 +62,7 @@ def bounds(routes, values) -> dict:
         out["write"][:, sl] = xr.sum(-1) * torch.einsum("btha,bha->bth", xs, heads(G))
         out["facts"][:, sl] = xs.sum(-1) * xr.sum(-1) * heads(F)[:, None]
         out["window"][:, sl] = xs.sum(-1) * xr.sum(-1) * heads(G).amax(-1)[:, None]
-        ws, wr, f = w_s[:, sl], w_r[:, sl], gs[:, sl]
+        ws, wr, f = w_s[:, sl], w_r[:, sl], s[:, sl]
         M += torch.einsum("btha,bthr,bth->bhar", ws, wr, f)
         G += torch.einsum("btha,bth->bha", ws, wr.amax(-1) * f)
         F += (ws.amax(-1) * wr.amax(-1) * f).sum(1)

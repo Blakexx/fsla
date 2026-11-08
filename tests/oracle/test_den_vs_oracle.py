@@ -59,9 +59,7 @@ def refs(routes, values) -> tuple[torch.Tensor, torch.Tensor]:
     """``(den, num)`` ``[B, T, H]`` fp64: the inter term's denominator and the same recurrence with each token's value
     scale as its one value channel."""
     read, write = routes.dequantized()
-    num, den, _ = reference.inter_reference(tuple(x.double() for x in read), tuple(x.double() for x in write),
-                                            routes.g_write.double(), values.scale.double().unsqueeze(-1),
-                                            routes.topology.widths, window_of())
+    num, den, _ = reference.inter_reference(tuple(x.double() for x in read), tuple(x.double() for x in write), values.scale.double().unsqueeze(-1), routes.topology.widths, window_of())
     return den, num[..., 0]
 
 

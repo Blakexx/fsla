@@ -82,7 +82,7 @@ def _fold_ratio(widths, L, write_sparse, growth, *, live=4, forced=None, box=Non
     else:
         routes, values = listed_bundle(widths, L, write_sparse, live=live, same=same)
     at = torch.arange(L, device="cuda") // window_of()
-    routes.g_write.mul_(torch.exp2(growth * at.float())[None, :, None])
+    routes.scale_write[0].mul_(torch.exp2(growth * at.float())[None, :, None])
     padded, d_v = tuple(routes.topology.padded_widths), values.v.shape[-1]
     #: the 32-channel box unless named (at d_v 64 the planner's is the 64-channel one, gated by its own tests)
     carve = carve_at(padded, *routes.sparse, *(box or EVEN_BOX), d_v)

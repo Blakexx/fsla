@@ -66,8 +66,7 @@ def test_the_op_matches_the_fp64_oracle_per_slot():
         y, state = rola.rola_op(routes, values)
     assert state is None and tuple(y.shape) == (1, 2 * window_of(), 2, 64)
     _, write = routes.dequantized()
-    ref = oracle_run(values.dequantized().double(), tuple(r.double() for r in routes.read_simplex()),
-                     tuple(w.double() for w in write), routes.g_write.double(), routes.topology)
+    ref = oracle_run(values.dequantized().double(), tuple(r.double() for r in routes.dequantized()[0]), tuple(w.double() for w in write), routes.topology)
     assert_slots_close(y.double(), ref.y, output=PREFILL_READOUT, envelope=ref.y_envelope, what="rola_op readout")
 
 

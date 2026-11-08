@@ -140,7 +140,7 @@ STABLE_TORCH_LIBRARY(rola, m) {
 
   // ---- the facts pass: the bundle's rows to the class-1 words and the lists --
   m.def(
-      "rola_facts_forward(Tensor[] read, Tensor[] write, Tensor[] scale_write, Tensor g_write, Tensor v_scale, "
+      "rola_facts_forward(Tensor[] read, Tensor[] write, Tensor[] scale_write, Tensor v_scale, "
       "int[] widths, int dense_read, int[] mask_read, int dense_write, int[] mask_write, int write_list_level, "
       "int read_list_level, int read_row, int read_list_group, int write_list_group) -> Tensor[]");
   m.def("rola_facts_ledger_bind(Tensor? ledger) -> ()");
@@ -154,9 +154,8 @@ STABLE_TORCH_LIBRARY(rola, m) {
   m.def(
       "rola_produce_forward(Tensor x, Tensor route_W, Tensor? route_bias, Tensor gain_bias, Tensor v_W, Tensor jobs, "
       "Tensor(a!) amp_read, Tensor(b!) amp_write, Tensor(o!)? dense_read, Tensor(n!)? dense_write, Tensor(c!) scale_read, "
-      "Tensor(d!) scale_write, Tensor(e!) mass_read, Tensor(f!) mass_write, Tensor(g!) read_mass, Tensor(h!) g_write, "
-      "Tensor(i!) v, Tensor(j!) v_scale, Tensor(k!) arrivals, Tensor(l!)? logit_probe, Tensor(m!)? level_probe, "
-      "Tensor shapes, int levels, int route_jobs_per_head, int dense_read_mask, int dense_write_mask) -> ()");
+      "Tensor(d!) scale_write, Tensor(i!) v, Tensor(j!) v_scale, Tensor(l!)? logit_probe, Tensor(m!)? level_probe, "
+      "Tensor shapes, int levels, int dense_read_mask, int dense_write_mask) -> ()");
 
   m.def("rola_produce_ledger_bind(Tensor? ledger) -> ()");
 
@@ -188,8 +187,8 @@ STABLE_TORCH_LIBRARY(rola, m) {
 
   // ---- the T=1 decode path -------------------------------------------------
   m.def(
-      "rola_decode_forward(Tensor[] read, Tensor[] write, Tensor[] read_scale, Tensor[] write_scale, int[] normalize, "
-      "int floor_read, int floor_write, Tensor? dials, Tensor g_write, Tensor v, Tensor v_scale, "
+      "rola_decode_forward(Tensor[] read, Tensor[] write, Tensor[] read_scale, Tensor[] write_scale, "
+      "int floor_read, int floor_write, Tensor? dials, Tensor v, Tensor v_scale, "
       "Tensor(a!) state, Tensor(b!) yacc, Tensor(c!) queue, Tensor(d!) growth, Tensor(e!) growth_any, "
       "Tensor(f!) growth_ctr, Tensor(g!) done, Tensor(h!) atom_bits, int[] level_widths, int[] level_row_offsets, "
       "int lattice_k, int lattice_m, bool write_dense, int ctas, float eps, Tensor(i!)? page_table=None, "

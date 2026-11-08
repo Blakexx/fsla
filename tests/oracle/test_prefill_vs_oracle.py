@@ -43,8 +43,7 @@ def operands(spec, tokens: slice = slice(None)):
 def oracle(routes, values, entry=None):
     """`tests.oracle.fixtures.oracle_run` on the bundle's own operands, chained from ``entry``."""
     read, write = routes.dequantized()
-    return oracle_run(values.dequantized().double(), tuple(x.double() for x in read),
-                      tuple(x.double() for x in write), routes.g_write.double(), routes.topology, entry=entry)
+    return oracle_run(values.dequantized().double(), tuple(x.double() for x in read), tuple(x.double() for x in write), routes.topology, entry=entry)
 
 
 @pytest.mark.parametrize("spec", CELLS, ids=IDS)
@@ -102,9 +101,7 @@ def test_the_intra_term_is_actually_present():
     (or the carry) could not pass. Runs no kernel."""
     routes, values = operands(by_name("flagship-alt-k4"))
     read, write = routes.dequantized()
-    num, den, _ = reference.inter_reference(tuple(x.double() for x in read), tuple(x.double() for x in write),
-                                            routes.g_write.double(), values.dequantized().double(),
-                                            routes.topology.widths, window_of())
+    num, den, _ = reference.inter_reference(tuple(x.double() for x in read), tuple(x.double() for x in write), values.dequantized().double(), routes.topology.widths, window_of())
     want = oracle(routes, values)
     with pytest.raises(AssertionError, match="off the oracle"):
         assert_slots_close(num / (den[..., None] + 1e-5), want.y, output=PREFILL_READOUT, envelope=want.y_envelope,

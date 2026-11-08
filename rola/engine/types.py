@@ -29,7 +29,7 @@ class Mask(IntEnum):
 
     Specialization is per CALL CLASS so the built set stays fixed and small; a bool
     per fact would be `2^n` of them, and intra-mask variation is a runtime-null
-    output skip instead (`read_mass is None`, `state_in is None`).
+    output skip instead (`state_in is None`).
     """
 
     M1 = 1
@@ -161,4 +161,4 @@ class PlanOverrides:
 #: Everything downstream of that boundary is one canonical, un-overridable
 #: implementation, gated once, so supplying one of those facts RAISES rather than
 #: forking fact production.
-SUPPLIABLE = frozenset({"routes", "read_plane", "write_plane", "g_write", "read_mass"})
+SUPPLIABLE = frozenset({"routes", "read_plane", "write_plane"})

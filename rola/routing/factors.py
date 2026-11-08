@@ -54,7 +54,7 @@ def _requires_grad(levels) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class RouteFactors:
-    """The feature-mapped routing sides in THE INTERNAL FORMAT, and their side gain. Tensors, and nothing else.
+    """The feature-mapped routing sides in THE INTERNAL FORMAT: q and k as scaled blocks. Tensors, and nothing else.
 
     ``amp_read``/``amp_write``: one row set per level, ``[B, T, H, width_l]`` read and ``[B, T, H_w, width_l]``
     write (``H_w`` write heads, each read by ``H / H_w`` consecutive query heads), each row UNIT-MAX -- u8 with its
@@ -62,10 +62,9 @@ class RouteFactors:
     never zero). An all-zero row is a dead token at that level. ``sparse``: ``(read, write)``, a bool a level -- the
     levels whose support the facts pass words (they may hold exact zeros worth skipping); set at production, read
     by every consumer, never derived from the activations. All dense by default. ``scale_read``/``scale_write``: the rows' maxima,
-    fp32 per level at its side's prefix -- a read level's scale carries the read mass, a write level's the normalized
-    simplex's max (its mass rides ``g_write``). ``g_write``: ``[B, T, H_w]`` write-side gain (there is no read
-    gain: the readout is a ratio). ``read_mass``: the ``[B, T, H]`` per-token read scale the read levels carry,
-    or ``None``. ``source``: the producer's floating ``(read, write)`` levels, held ONLY when they require a
+    fp32 per level at its side's prefix -- whatever magnitude a level carries, a producer's gain included, is in its
+    scale; no level need sum to 1 (docs/CONSTITUTION.md#r23). A side's shared scale is the product of its levels'.
+    ``source``: the producer's floating ``(read, write)`` levels, held ONLY when they require a
     gradient -- the straight-through gradient's anchor for :meth:`dequantized`; ``None`` otherwise, so an
     inference bundle holds the rows and nothing else.
 
@@ -79,8 +78,6 @@ class RouteFactors:
     amp_write: tuple[torch.Tensor, ...]
     scale_read: tuple[torch.Tensor, ...]
     scale_write: tuple[torch.Tensor, ...]
-    g_write: torch.Tensor
-    read_mass: torch.Tensor | None = None
     source: tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]] | None = None
     sparse: tuple[tuple[bool, ...], tuple[bool, ...]] | None = None
 
@@ -112,13 +109,6 @@ class RouteFactors:
                     raise ValueError(f"RouteFactors.{name}[{level}] is the rows' maxima, fp32 {label}={prefix}; "
                                      f"got {getattr(scale, 'dtype', type(scale).__name__)} "
                                      f"{tuple(getattr(scale, 'shape', ()))}")
-        for name, side in (("g_write", "write"), ("read_mass", "read")):
-            column, prefix, label = getattr(self, name), prefixes[side], labels[side]
-            if column is None and name == "read_mass":
-                continue
-            if not isinstance(column, torch.Tensor) or tuple(column.shape) != prefix:
-                shape = getattr(column, "shape", type(column).__name__)
-                raise ValueError(f"RouteFactors.{name} must be a {label}={prefix} tensor, got {shape}")
         if self.source is not None:
             for side, levels, rows in (("read", self.source[0], self.amp_read),
                                        ("write", self.source[1], self.amp_write)):
@@ -167,10 +157,10 @@ class RouteFactors:
         return prefixes
 
     @classmethod
-    def from_levels(cls, topology: Topology, read, write, g_write, read_mass=None, *, sparse=None) -> RouteFactors:
-        """THE FRAMEWORK'S EPILOGUE as a function: floating levels in, the format out -- each row against its own
-        max (`rola.routing.quant`): u8 digits, a dense level's rows f16 with the floor taken -- and the ``sparse``
-        flags (:meth:`from_rows`)."""
+    def from_levels(cls, topology: Topology, read, write, *, sparse=None) -> RouteFactors:
+        """THE FACTORY: any nonnegative floating levels in, the format out -- each row against its own max
+        (`rola.routing.quant`): u8 digits, a dense level's rows f16 with the floor taken -- and the ``sparse`` flags
+        (:meth:`from_rows`). Whatever magnitude a level carries lands in its scale; there is nothing else to pass."""
         read, write = tuple(read), tuple(write)
         sparse = _default_sparse(topology) if sparse is None else tuple(tuple(map(bool, f)) for f in sparse)
 
@@ -181,19 +171,18 @@ class RouteFactors:
 
         (amp_read, scale_read), (amp_write, scale_write) = rows(read, sparse[0]), rows(write, sparse[1])
         source = (read, write) if _requires_grad(read + write) else None
-        return cls.from_rows(topology, amp_read, amp_write, scale_read, scale_write, g_write, read_mass=read_mass,
-                             source=source, sparse=sparse)
+        return cls.from_rows(topology, amp_read, amp_write, scale_read, scale_write, source=source, sparse=sparse)
 
     @classmethod
-    def from_rows(cls, topology: Topology, amp_read, amp_write, scale_read, scale_write, g_write, read_mass=None,
-                  source=None, *, sparse=None) -> RouteFactors:
+    def from_rows(cls, topology: Topology, amp_read, amp_write, scale_read, scale_write, source=None, *,
+                  sparse=None) -> RouteFactors:
         """The bundle over rows already in the format (unit-max u8, ``[B, T, H, width_l]`` a level a side).
         ``sparse`` is ``(read, write)``, a bool a level; by default the production's own rule, a side whose
         activation has exact zeros (an opaque level, which may have zeros, included)."""
         if sparse is None:
             sparse = _default_sparse(topology)
         return cls(topology=topology, amp_read=amp_read, amp_write=amp_write, scale_read=scale_read,
-                   scale_write=scale_write, g_write=g_write, read_mass=read_mass, source=source, sparse=sparse)
+                   scale_write=scale_write, source=source, sparse=sparse)
 
     @property
     def level_s(self) -> int:
@@ -285,32 +274,10 @@ class RouteFactors:
         read as the floor (docs/internals/facts/liveness_contract.md#floor)."""
         return tuple(sum(1 << level for level, sparse in enumerate(flags) if not sparse) for flags in self.sparse)
 
-    def read_needs_normalization(self) -> tuple[bool, ...]:
-        """Per read level: is it still off the simplex? THE PREDICATE, stated once.
-
-        :meth:`read_simplex` divides exactly these levels and the decode fold normalizes
-        exactly these levels inside its kernel; two sites folding one question from the
-        same facts is one divergence waiting to happen.
-        """
-        if self.read_mass is None:
-            return (False,) * self.topology.D
-        return tuple(not self.topology.duty_simplex_output(index, "read")
-                     for index in range(self.topology.D))
-
-    def read_simplex(self) -> tuple[torch.Tensor, ...]:
-        """The dequantized read levels on the simplex -- :attr:`read_mass` divided out PER LEVEL (a simplex is a
-        per-level claim; the levels the topology already declares on it are returned untouched)."""
-        read, _ = self.dequantized()
-        if self.read_mass is None:
-            return read
-        return tuple(level / level.sum(dim=-1, keepdim=True) if needs else level
-                     for level, needs in zip(read, self.read_needs_normalization(), strict=True))
-
     def tensors(self) -> tuple[torch.Tensor, ...]:
         """Every tensor the OPERATION consumes, for the gradient-reachability predicate."""
-        mass = () if self.read_mass is None else (self.read_mass,)
         source = () if self.source is None else (*self.source[0], *self.source[1])
-        return (*self.amp_read, *self.amp_write, *self.scale_read, *self.scale_write, self.g_write, *mass, *source)
+        return (*self.amp_read, *self.amp_write, *self.scale_read, *self.scale_write, *source)
 
 
 def _default_sparse(topology: Topology) -> tuple[tuple[bool, ...], tuple[bool, ...]]:

@@ -12,19 +12,18 @@ same call is the fp64 and host reference, and until the native backward the path
 
 The components land one at a time into the skeleton, each gated (KERNEL_STANDARDS §19); a component not yet landed
 has its real signature, tenant and edges and does the cheapest thing that keeps the composition's shape (zero digits
-and scales, unit masses and gains). THE REGISTER-RESIDENT REBUILD: LANDED the projection into
+and scales). THE REGISTER-RESIDENT REBUILD: LANDED the projection into
 the accumulators, and on them every job's solve, bundle and values: one-row jobs, narrow unions in one warp, wide
 unions across a warp pair. `tests/integration/test_produce_kernel.py` holds the skeleton's claim (every element of every output is
-written, whatever the routing, and the arrival counters are back at zero after the call) and each landed component's
-gate.
+written, whatever the routing) and each landed component's gate.
 
 ## <a id="jobs"></a>The job table
 
 One int32 row per job (`JobField`), its ADDRESSING: the head (the first of a value job's heads, and their count), the
 level's width, the `route_W` columns of its one or two logit rows, the packed-plane columns its rows land at on each
-side (`-1` for a side it does not write), the level, and whether each side's fold applies. Its CONTROL -- the kind, the
-solve (`SolveKind`), the solve row's width class, the projection's column-tile class and whether it is a wide
-union's pair form, the sides it writes and whose fold applies -- is one SHAPE WORD (int16) a job in the launch's
+side (`-1` for a side it does not write) and the level. Its CONTROL -- the kind, the solve (`SolveKind`), the solve
+row's width class, the projection's column-tile class and whether it is a wide union's pair form, the sides it writes
+and which of them is dense -- is one SHAPE WORD (int16) a job in the launch's
 parameters (`ProduceParams::shapes`, `rola.ops.produce._shape`), read by block index at each `load_job` (made opaque,
 so no k-loop holds it: on sm_80 the held word was the kernel's one spill): a value ptxas knows is warp-uniform, so a branch on it compiles its collectives inline alone, where a branch on a loaded job field gave each
 a guarded fallback subroutine as well (692 of them: cold code, KERNEL_STANDARDS §20). The parameters are
@@ -99,16 +98,13 @@ of 16 zeroes its slot's tail (under 16 a row) after the values. For each side th
 writes it and whether its level is dense): the row against
 its max as u8 digits (round to nearest even of `level x unit`) -- or, for a dense level, f16 at 1 with the floor
 taken in a live row (`max(level / max, 2^-13)`, an IEEE divide rounded to nearest, the torch quantizer's own
-rounding) -- the max clamped at `1e-30` as `quantize_unit_max_rows` clamps it; the max as the side's scale; and the level's mass for the finisher
-where the fold applies (1 elsewhere, so the finisher multiplies every level without the plan's flags). A side reduces
-only what the solve did not give: a one-activation row's max is its top element's own value (`top`: `(-tau/2)^2`,
-`-tau` or `1 / sum`, the same expressions the elements are), so only a union's sides reduce their max, and only a
-folded side its mass -- the fold bits ride the job's shape word, so the choice is warp-uniform. The WRITE fold
-is applied -- its scale is the max over the mass, the stored level on the simplex -- and the READ fold is carried:
-its scale stays the max and its mass rides `read_mass`, as the composition's `_fold` does. Gate: every row's digits
-(within one), f16 units (within one unit in the last place at 1), scales (within twice the solve's bound), the read
-mass and the write gain (within 2^-12 relative, measured 4.8e-5 and 2.7e-6) against the fp64 composition on the same
-bf16 operands, with and without a gain column or a routing bias; a dense level's f16 rows within one digit's worth
+rounding) -- the max clamped at `1e-30` as `quantize_unit_max_rows` clamps it; and the max as the side's scale: the
+level as its solve produced it, whatever its sum ([`docs/CONSTITUTION.md` R23](../../../CONSTITUTION.md#r23)). A side
+reduces only what the solve did not give: a one-activation row's max is its top element's own value (`top`:
+`(-tau/2)^2`, `-tau` or `1 / sum`, the same expressions the elements are), so only a union's sides reduce their max.
+Gate: every row's digits (within one), f16 units (within one unit in the last place at 1), scales (within twice the
+solve's bound; write level 0's, the gain folded in ([#gain](#gain)), within the gain times that plus 2^-12 of it)
+against the fp64 composition on the same bf16 operands, with and without a gain column or a routing bias; a dense level's f16 rows within one digit's worth
 (1/255) of it, every live coefficient at or above the floor.
 
 <a id="dense"></a>A SIDE'S TWO PLANES: its sparse levels in a u8 plane (`amp_read`, `amp_write`) and its dense levels
@@ -155,12 +151,12 @@ side loop moves the write row down to `v` once the read side is stored, so a uni
 <a id="wide-union"></a>A WIDE UNION (past 128 columns, the pair form: warp `2 j + h` holds columns `128 h ..` of both
 rows for the pair's 16 tokens) is solved pass by pass on its accumulators with the narrow union's value layout (the
 read half at `v`, the write half at `v + 16`), each warp its 128 columns: every row reduction -- the max, the Newton
-sums, the union's write max and normalizer, the read side's max, a folded side's mass -- combines the pair's halves
+sums, the union's write max and normalizer, the read side's max -- combines the pair's halves
 through `Pair`'s exchange past the parked and staged rows (one 64-thread named barrier a round, two buffers
 alternating), the two warps forming the same bits (the ops commute), and the Newton exit is the pair's vote voted
 again, so ptxas sees it uniform (a value read from shared memory is not: unvoted it guarded every collective). Each
-warp bundles its half row (`col0`); the half-0 warp stores the scale and mass. Its warps write no 16-token slice of
-their own, so the pair form fences and barriers before the head's finish.
+warp bundles its half row (`col0`); the half-0 warp stores the scale, and after the passes folds the write gain into
+write level 0's ([#gain](#gain)).
 
 <a id="threshold"></a>THE THRESHOLD IS NEWTON FROM THE LEFT (`entmax_rows`), not a sort. With the row shifted by
 its max, `f(tau) = sum_i g(z_i - tau) - 1` (`g(d) = max(d, 0)^2 / 4` at alpha 1.5, `max(d, 0)` at 2) is convex and
@@ -188,24 +184,25 @@ tokens, the block's 4 warps) by component, at nl64k-alt-h4-g4 (16 one-row route 
 softmax and 8 entmax, ~3.7 Newton steps a row; one value job). The design's counts a warp: the k-loop 16 k-steps x (32
 HMMAs, 17 `ldmatrix`, 5 copies, ~12 address and edge) ~1.1K; entmax a n-tile max and shift 128, 3.7 steps x (64 x 6 +
 40), levels 192 ~1.85K; softmax ~400 a n-tile; a u8 or f16 bundle side ~180 / ~310 a n-tile; the gain a quad a token,
-8 chunk pairs and their products. It is checked by attribution (`tools/stall_census.py --kernel produce`).
+8 chunk pairs and their products; the gain pass two passes x ~45 a warp (the softplus, the scale's address, its load
+and store) in the cell's 4 write level 0 jobs of 17, ~90 a job tile. It is checked by attribution (`tools/stall_census.py --kernel produce`).
 
-<a id="phase-ledger"></a>THE PHASE LEDGER (`rola.ops.produce.ledger_bind`, `[jobs, 4 warps, 7 phases]` int64 cycles,
-booked over the tiles): job, project, threshold, levels, bundle, finish, values -- a warp's cycles
-between the kernel's laps (`common/phase_clock.cuh`).
+<a id="phase-ledger"></a>THE PHASE LEDGER (`rola.ops.produce.ledger_bind`, `[jobs, 4 warps, 6 phases]` int64 cycles,
+booked over the tiles): job, project, threshold, levels, bundle (a write level 0 job's gain pass with it), values -- a
+warp's cycles between the kernel's laps (`common/phase_clock.cuh`).
 
-## <a id="finish"></a>The head's finish
+## <a id="gain"></a>The write gain
 
-The finish is a WARP's: every job's warp `w` writes the same 16 tokens of its tile (its two n-tiles; the union stub
-too), so the route jobs of one (token tile, head) arrive per warp slice -- each warp fences its own stores, syncs, and
-its lane 0 adds one to the slice's counter (`arrivals`, `[tiles, H, 4]`); the last to arrive -- its lane 0's count
-broadcast, so the collectives past it are warp-uniform -- reads the masses coherently (`__ldcg`) and forms the head's
-`read_mass`, the product of its levels' read masses, and `g_write`, the write gain's softplus (`softplus` as torch's,
-linear past 20) times the write masses, for its 16 tokens; then it resets the counter, so no launch zeroes it between
-calls. No block barrier: the block-wide form (a fence, two barriers and one count a job) held every warp to the
-slowest one's Newton steps. The gain's logit (`gain_logit`) is the routing's trailing gain column against
-the token's row, a warp's lanes over the hidden axis in 16-byte chunks, plus the column's routing bias and
-`gain_bias`; a routing without a gain column has a gain of 1.
+The producer's write gain, `softplus(logit + bias)` (as torch's, linear past 20), is folded into write level 0's scale
+by the job that writes that level ([`docs/CONSTITUTION.md` R23](../../../CONSTITUTION.md#r23)), so no job waits on
+another: each level's scale is its own job's, and a reader multiplies a side's scales as it loads them. The pass
+(`apply_gain`) runs after the job's tile loop, its accumulators dead by then -- the kernel holds its 255-register cap, so
+the gain cannot ride the bundle step without spilling: each warp multiplies the 16 scales its bundle stored by their
+tokens' gains, a lane quad a token, 8 tokens a pass (in the pair form, the half-0 warp, which stored them). The gain's
+logit (`gain_logit`) is the routing's trailing gain column against the token's row, a quad's lanes over the hidden
+axis in 16-byte chunks, plus the column's routing bias and `gain_bias`; a routing without a gain column has a gain of
+1 and runs no pass. Gate: write level 0's scale against the fp64 composition's level max times its gain
+([#bundle](#bundle)).
 
 ## <a id="value-rows"></a>The values
 

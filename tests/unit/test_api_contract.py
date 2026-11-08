@@ -63,7 +63,7 @@ def _oracle(routes, v):
     from rola.ops.naive import naive_rola
 
     _, write = routes.dequantized()
-    y, _ = naive_rola(v, routes.read_simplex(), write, routes.g_write, routes.topology, None)
+    y, _ = naive_rola(v, routes.dequantized()[0], write, routes.topology, None)
     return y
 
 
@@ -84,7 +84,7 @@ def test_a_well_formed_hand_built_bundle_is_legal():
     """
     producer = _routes()
     factors = _factors(producer)
-    hand_built = RouteFactors.from_levels(factors.topology, *factors.dequantized(), factors.g_write)
+    hand_built = RouteFactors.from_levels(factors.topology, *factors.dequantized())
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
     _admitted(hand_built, v)
     assert torch.isfinite(_oracle(hand_built, v)).all()
@@ -95,24 +95,21 @@ def test_a_well_formed_hand_built_bundle_is_legal():
     ("levels", "one tensor per routing level"),
     ("prefix", "a side's routing levels share one prefix"),
     ("dtype", "is stored as"),
-    ("gain_shape", r"g_write must be a \[B, T, H_w\]"),
+    ("scale_shape", r"scale_write\[0\] is the rows' maxima"),
 ])
 def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, message):
     """Unsealing removed the ORIGIN check, not the invariants. Each row plants one
     structural violation the derivation code could never have produced, and the
     refusal is the observation.
 
-    Deliberately NOT among them: unit-sum-ness. It is a device reduction per level per
-    call, it is the producer's own output contract, and conformance fixtures plant
-    non-canonical amplitudes on purpose. Also not among them any more: a planted
-    read-gain column -- there is no `g_read` field left to plant one on, so a caller
-    supplying `g_read=` gets the honest `TypeError` for an unknown keyword instead of
-    a plantable structural violation.
+    Deliberately NOT among them: unit-sum-ness. No level is required to sum to one
+    (docs/CONSTITUTION.md#r23), and conformance fixtures plant amplitudes of any
+    magnitude on purpose.
     """
     producer = _routes()
     f = _factors(producer)
     fields = dict(topology=f.topology, amp_read=list(f.amp_read), amp_write=list(f.amp_write),
-                  scale_read=f.scale_read, scale_write=f.scale_write, g_write=f.g_write)
+                  scale_read=f.scale_read, scale_write=list(f.scale_write))
     if break_it == "width":
         fields["amp_read"][0] = fields["amp_read"][0][..., :2]
     elif break_it == "levels":
@@ -123,8 +120,8 @@ def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, mes
         #: each level's rows have one stored type (f16 for a dense write level, u8 otherwise): plant the other
         rows = fields["amp_write"][0]
         fields["amp_write"][0] = rows.to(torch.uint8 if rows.dtype is torch.float16 else torch.float16)
-    elif break_it == "gain_shape":
-        fields["g_write"] = fields["g_write"][..., :1]
+    elif break_it == "scale_shape":
+        fields["scale_write"][0] = fields["scale_write"][0][..., :1]
     with pytest.raises((ValueError, TypeError), match=message):
         RouteFactors(**fields)
 
@@ -136,7 +133,7 @@ def _grouped(heads, write_heads, *, B=2, T=6):
     def side(h):
         return tuple(torch.rand((B, T, h, w), generator=gen).softmax(-1) for w in topology.widths)
 
-    return RouteFactors.from_levels(topology, side(heads), side(write_heads), torch.ones(B, T, write_heads))
+    return RouteFactors.from_levels(topology, side(heads), side(write_heads))
 
 
 def test_a_grouped_bundle_names_its_query_heads_write_heads_and_group():
@@ -144,7 +141,7 @@ def test_a_grouped_bundle_names_its_query_heads_write_heads_and_group():
     each write head read by H / H_w consecutive query heads."""
     routes = _grouped(4, 2)
     assert (routes.heads, routes.write_heads, routes.group) == (4, 2, 2)
-    assert routes.g_write.shape == (2, 6, 2) and routes.scale_read[0].shape == (2, 6, 4)
+    assert routes.scale_write[0].shape == (2, 6, 2) and routes.scale_read[0].shape == (2, 6, 4)
 
 
 def test_the_write_heads_must_divide_the_query_heads():
@@ -195,12 +192,11 @@ def test_rows_are_u8_at_every_depth():
     deep = Topology(levels=tuple(OpaqueRouting(width=4) for _ in range(3)))
     level = torch.rand(1, 2, 1, 4, dtype=torch.float64) + 0.1
     sparse = ((False, True, True), (False, True, True))
-    bundle = RouteFactors.from_levels(deep, (level,) * 3, (level,) * 3, torch.ones(1, 2, 1), sparse=sparse)
+    bundle = RouteFactors.from_levels(deep, (level,) * 3, (level,) * 3, sparse=sparse)
     assert all(row.dtype is torch.uint8 for row in bundle.amp_read[1:] + bundle.amp_write[1:])
     assert bundle.amp_read[0].dtype is torch.float16 and bundle.amp_write[0].dtype is torch.float16
     with pytest.raises(ValueError, match="every read level sparse"):
-        RouteFactors.from_levels(deep, (level,) * 3, (level,) * 3, torch.ones(1, 2, 1),
-                                 sparse=((True,) * 3, (False, True, True)))
+        RouteFactors.from_levels(deep, (level,) * 3, (level,) * 3, sparse=((True,) * 3, (False, True, True)))
     for got in bundle.dequantized()[0]:
         top = level.amax(-1, keepdim=True)
         assert ((got.double() - level).abs() <= top / 510 * (1 + 2 ** -20)).all()
@@ -210,7 +206,7 @@ def test_rows_are_u8_at_every_depth():
     wrong[1] = quant.quantize_unit_max_rows(level, quant.DENSE_DTYPE)[0]
     with pytest.raises(TypeError, match="stored as torch.uint8"):
         RouteFactors(topology=deep, amp_read=wrong, amp_write=bundle.amp_write, scale_read=bundle.scale_read,
-                     scale_write=bundle.scale_write, g_write=bundle.g_write, sparse=sparse)
+                     scale_write=bundle.scale_write, sparse=sparse)
 
 
 def test_the_op_refuses_anything_that_is_not_a_bundle():
@@ -308,8 +304,7 @@ def test_a_producer_outside_the_framework_still_emits_the_format_or_nothing():
         def forward(self, stream):
             B, T = stream.shape[0], stream.shape[1]
             level = torch.full((B, T, 2, 4), 0.25, dtype=stream.dtype)
-            return RouteFactors.from_levels(self.topology, (level,), (level.clone(),),
-                                            torch.ones(B, T, 2, dtype=stream.dtype), sparse=((False,), (False,)))
+            return RouteFactors.from_levels(self.topology, (level,), (level.clone(),), sparse=((False,), (False,)))
 
     producer = Uniform()
     factors = producer(_x(producer))
@@ -321,8 +316,8 @@ def test_a_producer_outside_the_framework_still_emits_the_format_or_nothing():
     with pytest.raises(TypeError, match="declared routing"):
         rola.RoLA(producer, hidden_size=32, num_heads=2, d_v=8)
     with pytest.raises(TypeError):
-        RouteFactors(topology=producer.topology, amp_read=factors.amp_read, amp_write=factors.amp_write,
-                     g_write=factors.g_write)  # the format's fields are not optional
+        RouteFactors(topology=producer.topology, amp_read=factors.amp_read,
+                     amp_write=factors.amp_write)  # the format's fields are not optional
 
 
 def test_a_layer_without_a_declared_routing_is_refused_at_construction():

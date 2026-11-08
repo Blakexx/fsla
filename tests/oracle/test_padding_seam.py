@@ -36,12 +36,7 @@ from rola.ops.naive import naive_rola
 from rola.ops.padding import pad_routes, pad_v
 from rola.ops.paging import bytes_equal
 from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
-from tests.oracle.fixtures import (
-    assert_reordered_close,
-    logical_state,
-    state_pages,
-    step_bundles,
-)
+from tests.oracle.fixtures import assert_reordered_close, logical_state, state_pages, step_bundles, with_gain
 from tests.oracle.oracle_fixtures import _simplex
 
 # ---------------------------------------------------------------------------
@@ -68,13 +63,12 @@ def _padded_case(widths, d_v, *, B=2, T=5, H=2, seed=0):
     g_write = torch.rand(B, T, H, dtype=torch.float64, generator=generator) + 0.5
     v = torch.randn(B, T, H, d_v, dtype=torch.float64, generator=generator)
 
-    y_logical, _ = naive_rola(v, read_levels, write_levels, g_write, topology, decay=None)
+    y_logical, _ = naive_rola(v, read_levels, with_gain(write_levels, g_write), topology, decay=None)
 
     padded_topology = topology.padded()
     padded_read = pad_routes(read_levels, padded_topology.widths)
     padded_write = pad_routes(write_levels, padded_topology.widths)
-    y_padded, _ = naive_rola(pad_v(v, d_v), padded_read, padded_write, g_write,
-                             padded_topology, decay=None)
+    y_padded, _ = naive_rola(pad_v(v, d_v), padded_read, with_gain(padded_write, g_write), padded_topology, decay=None)
     return y_logical, y_padded
 
 
@@ -165,7 +159,7 @@ def test_decode_padded_d_v_matches_the_shipped_dv_with_a_zero_tail():
         state = state_pages(
             to_lattice(torch.zeros(B, H, N, cols, device=device, dtype=torch.float32),
                       widths, config.lattice_k, config.lattice_m))
-        routes, values = step_bundles(v, read_levels, write_levels, g_write, topology)
+        routes, values = step_bundles(v, read_levels, with_gain(write_levels, g_write), topology)
         y, state, _ = _decode_step(routes, values, config, state, decay=None)
         logical = logical_state(state, config.d_v).reshape(B, H, N, cols)
         return y, to_canonical(logical, widths, config.lattice_k, config.lattice_m)

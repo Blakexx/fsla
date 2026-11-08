@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import pytest
 import torch
-from conftest import fuse_gain_columns, produce_routing, resolved_routing_from_topology
+from conftest import fuse_gain_columns, produce_routing, raw_side_gain, resolved_routing_from_topology
 
 import rola.ops.produce as production_path
 from rola.ops.produce import ProducerPlan, ProducerWeights, route_logits
@@ -580,8 +580,9 @@ def _producer_topology(alpha: float) -> Topology:
     )
 
 
-#: the fixtures' value width; the topology carries none, so these gates state theirs.
-_D_V = 5
+#: the fixtures' value width; the topology carries none, so these gates state theirs -- one the producer kernel's value
+#: job takes (32, 64, 128 or 256 channels a head), since these gates run it.
+_D_V = 32
 
 
 def _producer_params(topology: Topology, *, dtype, device, sides, B=2, L=48, H=2, dm=16,
@@ -751,26 +752,32 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha, ca
     #: amplitude envelope is `2*dz` on top of the stored form's own tolerance --
     #: ON ROWS WHOSE SUPPORT SET DID NOT MOVE.
     #:
-    #: A row whose support DID move is excluded from the envelope and counted instead,
-    #: and that is not a dodge: `read_simplex()` divides by the row's own mass, so a
-    #: member entering at a raw amplitude of ~0 can normalize to any fraction at all when
-    #: the whole row's mass is comparably small. The bound on such a row is a bound on
-    #: the FLIPPED MASS, which is what the accounting below reports.
+    #: A row whose support DID move is excluded from the envelope and counted instead:
+    #: the bound on such a row is a bound on the FLIPPED MASS, which is what the
+    #: accounting below reports.
     envelope = 2.0 * _logit_floor(production_params, read_logits.double(),
                                   write_logits.double())
+    #: WRITE LEVEL 0 CARRIES THE GAIN (docs/CONSTITUTION.md#r23), so both arms' level 0 is read in units of the
+    #: oracle's own gain `g` (the library's pieces, `raw_side_gain`): the stored tolerance then holds on the
+    #: amplitudes' scale, and the gain's own envelope joins theirs -- `softplus` is 1-Lipschitz and the gain logit
+    #: a column of the SAME projection, so it is off by `dz`, `dz / g` in those units, on an amplitude <= 1.
+    gain = raw_side_gain(oracle_params["x"], oracle_params["route_W"], oracle_params["gain_W"],
+                         oracle_params["gain_bias"], resolved)[..., None].float()
 
     flips = elements = 0
     flipped_mass = 0.0
     for level in range(topology.D):
-        for got, want, zeroable in (
+        level_0_write = (production.write_levels[level] / gain, oracle.write_levels[level] / gain,
+                         resolved.write_level_can_zero[level], envelope + envelope / (2.0 * gain))
+        for got, want, zeroable, extra in (
             (production.read_levels[level], oracle.read_levels[level],
-             resolved.read_level_can_zero[level]),
-            (production.write_levels[level], oracle.write_levels[level],
-             resolved.write_level_can_zero[level]),
+             resolved.read_level_can_zero[level], torch.full_like(gain, envelope)),
+            level_0_write if level == 0 else (production.write_levels[level], oracle.write_levels[level],
+                                              resolved.write_level_can_zero[level], torch.full_like(gain, envelope)),
         ):
-            want = want.to(got.dtype)
+            want, extra = want.to(got.dtype), extra.expand_as(got)
             if not zeroable:
-                _assert_levels_match(got, want, stored=True, extra_atol=envelope)
+                _assert_levels_match(got, want, stored=True, extra_atol=extra)
                 continue
             moved = (got != 0) != (want != 0)
             flips += int(moved.sum())
@@ -779,12 +786,8 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha, ca
                                float((want * moved).abs().max()))
             settled = ~moved.any(dim=-1, keepdim=True).expand_as(got)
             _assert_levels_match(got[settled], want[settled], stored=True,
-                                 extra_atol=envelope)
+                                 extra_atol=extra[settled])
 
-    #: `softplus` is 1-Lipschitz and the gain logit is a column of the SAME projection,
-    #: so the gain's envelope is `dz` exactly -- half the amplitudes'.
-    _assert_levels_match(production.g_write, oracle.g_write, extra_atol=envelope / 2.0)
-    assert not hasattr(production, "g_read") and not hasattr(oracle, "g_read")
     with capsys.disabled():
         print(f"\n  FLIP ACCOUNTING alpha={alpha}: {flips} support flips in {elements} "
               f"zero-capable elements ({flips / max(elements, 1):.3e}), greatest flipped "

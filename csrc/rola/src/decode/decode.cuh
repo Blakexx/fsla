@@ -70,14 +70,11 @@ struct DecodeParams {     // every pointer/extent one decode step needs; see dec
   Span write[kMaxLevels];
   Span read_scale[kMaxLevels];  // fp32 row maxima, [B, 1, H]
   Span write_scale[kMaxLevels];
-  Span g_write;
-  Span v;                     // the value, f16 against the token's largest channel
-  Span v_scale;               // the token's fp32 value scale
-  int normalize[kMaxLevels];  // per READ level: still carries its own mass?; decode.md#near-line-98
-  uint32_t floor_read;        // the dense levels, a bit each: their zero digits read as the floor
+  Span v;               // the value, f16 against the token's largest channel
+  Span v_scale;         // the token's fp32 value scale
+  uint32_t floor_read;  // the dense levels, a bit each: their zero digits read as the floor
   uint32_t floor_write;
   int write_atoms;  // the write term walks whole atoms; decode.md#whole-atoms
-  int g_bf16;
 
   int level_width[kMaxLevels];       // B_l
   int level_amp_offset[kMaxLevels];  // into the flat [sum_l b_l] SMEM staging

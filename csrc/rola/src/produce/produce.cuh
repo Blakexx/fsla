@@ -63,7 +63,6 @@ enum ProducePhase : int {
   kPhaseThreshold,
   kPhaseLevels,
   kPhaseBundle,
-  kPhaseFinish,
   kPhaseValues,
   kProducePhases
 };
@@ -71,7 +70,7 @@ enum ProducePhase : int {
 //: A JOB, its table row and its shape word decoded. -- see docs/internals/produce/ampere/produce_kernel.md#jobs
 struct Job {
   int kind, solve, rows, reads, writes, head, heads, width, in0, in1, out_read, out_write, level,
-      fold_read, fold_write, tiles, pair, dense_read, dense_write;
+      tiles, pair, dense_read, dense_write;
 };
 
 //: THE OPERANDS, as addresses: every tensor the host entry validated, with the strides it read off them.
@@ -92,19 +91,14 @@ struct ProduceParams {
       [2];  // [B, H, T, dense_rows[side]], f16: a side's dense levels, floored, or null (produce.md#dense)
   float* scale_read;  // [B, H, T, D]
   float* scale_write;
-  float* mass_read;  // [B, H, T, D], the finisher's operands
-  float* mass_write;
-  float* read_mass;    // [B, H, T]
-  float* g_write;      // [B, H, T]
   __half* v;           // [B, H, T, d_v], f16 against the token's largest channel
   float* v_scale;      // [B, H, T]
-  int32_t* arrivals;   // [tiles, H], zero between calls: the finisher resets its own
   float* logit_probe;  // [jobs, BT, kMaxColumns] or null: every job's projection, for its gate
   float* level_probe;  // the same, a route job's solved levels: read at [0, w), write at [w, 2w)
   long long* ledger;   // [jobs, warps, phases] or null
   int16_t shapes[kMaxJobs];  // a job's shape word (produce.md#jobs), by block index
 
-  int BT, T, hidden, H, C, G, rows_read, rows_write, D, d_v, route_jobs_per_head;
+  int BT, T, hidden, H, C, G, rows_read, rows_write, D, d_v;
   //: T's fast division (`slot_of`): a token's sequence `umulhi(token, t_mul) >> t_shift`, below 2^31
   uint32_t t_mul;
   int t_shift;

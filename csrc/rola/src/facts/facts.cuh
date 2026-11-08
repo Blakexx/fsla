@@ -148,7 +148,7 @@ struct ColumnView {
 struct FactsParams {
   RowView rows[kSides][kMaxLevels];
   ColumnView scale_write[kMaxLevels];
-  ColumnView g_write, v_scale;
+  ColumnView v_scale;
   uint32_t* words;
   uint32_t* unions;
   uint32_t* list_exp;  // [BH, windows, B_list], a digit's (K_m, K_v) int16 pair

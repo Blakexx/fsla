@@ -85,6 +85,7 @@ from tests.oracle.fixtures import (  # noqa: E402
     state_quantum,
     state_rounded,
     step_bundles,
+    with_gain,
 )
 from tests.oracle.oracle_fixtures import (  # noqa: E402
     _topology as _build_topology,
@@ -146,8 +147,7 @@ def _bundles(fixture):
     oracle takes. Built once a fixture, so every reader sees the same rows."""
     if "bundles" not in fixture:
         widths = tuple(level.shape[-1] for level in fixture["read"])
-        fixture["bundles"] = step_bundles(fixture["v"], fixture["read"], fixture["write"], fixture["g_write"],
-                                          _topology(widths))
+        fixture["bundles"] = step_bundles(fixture["v"], fixture["read"], with_gain(fixture["write"], fixture["g_write"]), _topology(widths))
     return fixture["bundles"]
 
 

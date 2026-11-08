@@ -11,14 +11,15 @@ comes back.
 
 ## `rola_facts_forward`
 
-    rola_facts_forward(read[], write[], scale_write[], g_write, v_scale, widths, dense_read, mask_read, dense_write,
+    rola_facts_forward(read[], write[], scale_write[], v_scale, widths, dense_read, mask_read, dense_write,
                        mask_write, write_list_level, read_list_level, read_row, read_list_group,
                        write_list_group) -> (words, unions, list_exp, fm, gains16, gains_exp, write_lists[5],
                                              read_lists[5])
 
 Each side's rows a level (read `[B, T, H, b_l]`, write `[B, T, H_w, b_l]` u8, `H_w` dividing `H` and `g = H / H_w`
 at most 16 -- grouped queries, [`api.md`](../../api.md#grouped-queries); a dense level's are not read, so not checked),
-the write levels' scales, the write gain and the value scale (`[B, T, H_w]` fp32, any strides). The entry finds its
+the write levels' scales (their product the write side's shared scale) and the value scale (`[B, T, H_w]` fp32, any
+strides). The entry finds its
 card from the rows' device and ALLOCATES its outputs there at the card's window W (the pass's plan,
 [`facts.md`](facts.md#window)), so no caller holds a window. They come back as one flat list, a write head's each
 (`B·H_w`): `words` the contiguous int32 `[B·H_w, g + 1, rows, ceil(T/32)]`,

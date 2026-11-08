@@ -33,11 +33,12 @@ Per token `t` and leaf `n`:
     r[t,:]    = Σ_n R[t,n] · S[t,n,:]                        the readout, read-after-write
     y[t,:]    = r[t, 0:DV] / (r[t, DV] + eps)                the ratio
 
-`R[t,n] = Π_l p_read[t,l,d_l(n)]` and `Wt[t,n] = g_write[t] · Π_l p_write[t,l,d_l(n)]` are the per-leaf products of
-the per-level routing allocations — each level's allocation is a normalized simplex over that level's `B_l` digits,
-and `d_l(n)` is leaf `n`'s digit at level `l`. `rate` is the per-leaf decay built the same way out of per-level dials;
-the clock `c` is the write product, detached. There is no query, no key and no feature map: the routing IS the
-addressing.
+`R[t,n] = Π_l q[t,l,d_l(n)]` and `Wt[t,n] = Π_l k[t,l,d_l(n)]` are the per-leaf products of the per-level routing
+levels — each level a nonnegative row over its `B_l` digits, of any magnitude: no level need sum to 1, and a
+producer's write gain is a factor of write level 0 ([`CONSTITUTION.md` R23](CONSTITUTION.md#r23)) — and `d_l(n)` is
+leaf `n`'s digit at level `l`. `rate` is the per-leaf decay built the same way out of per-level dials; the clock `c`
+is the product of the write levels' SHARES (each level's row over its own sum), detached. There is no query, no key
+and no feature map: the routing IS the addressing.
 
 **The mass rides the state.** `v~` is the value row with a column of ones appended, so the denominator of the ratio is
 the same recurrence run on ones — one state, one recurrence, one readout, `cols = DV + 1` logical columns. The ratio

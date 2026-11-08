@@ -69,10 +69,10 @@ class Lists(NamedTuple):
 
 
 def columns(routes, values) -> tuple[torch.Tensor, torch.Tensor]:
-    """``(m, m s)`` ``[B, T, H]`` fp32, multiplied as the facts pass does: the gain, then each write level's scale in
-    order, then the value scale."""
-    m = routes.g_write.float()
-    for scale in routes.scale_write:
+    """``(m, m s)`` ``[B, T, H]`` fp32, multiplied as the facts pass does: each write level's scale in order (the
+    write side's shared scale), then the value scale."""
+    m = routes.scale_write[0].float()
+    for scale in routes.scale_write[1:]:
         m = m * scale.float()
     return m, m * values.scale.float()
 

@@ -60,9 +60,7 @@ def test_the_bound_covers_the_inter_numerator(spec):
     largest a channel's numerator can be -- at every token (no kernel: the bound's own claim)."""
     routes, values, layout, statics = bundle_of(spec, realize(spec))
     read, write = routes.dequantized()
-    num, _den, _ = reference.inter_reference(tuple(x.double() for x in read), tuple(x.double() for x in write),
-                                             routes.g_write.double(), values.scale.double().unsqueeze(-1),
-                                             routes.topology.widths, window_of())
+    num, _den, _ = reference.inter_reference(tuple(x.double() for x in read), tuple(x.double() for x in write), values.scale.double().unsqueeze(-1), routes.topology.widths, window_of())
     B, T, H = num.shape[:3]
     exact = num[..., 0].permute(0, 2, 1).reshape(B * H, T)
     r = reader_factor(routes).double()
