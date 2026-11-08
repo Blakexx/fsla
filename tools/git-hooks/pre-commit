@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # THE COMMIT GATE, IN THE TREE. `core.hooksPath` points every checkout and every
-# linked worktree here (`python tools/dev.py worktree` and `init` wire it), so the gate is a
+# linked worktree here (`bazel run //:dev_env` wires it), so the gate is a
 # property of the tree rather than of one `.git` directory: a worktree cannot be
 # created without it, and there is no configuration left for a caller to supply.
 #
@@ -18,7 +18,7 @@
 set -euo pipefail
 
 if ! command -v bazel >/dev/null 2>&1; then
-  echo "pre-commit hook: refusing -- no \`bazel\` on PATH: \`python3 tools/dev.py init\` links the pinned bazelisk" >&2
+  echo "pre-commit hook: refusing -- no \`bazel\` on PATH: \`python3 tools/bootstrap.py\` links the pinned bazelisk" >&2
   exit 1
 fi
 

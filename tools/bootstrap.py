@@ -1,7 +1,10 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """WHAT A TOOL KNOWS BEFORE THE DEV CONFIG'S READER IS IMPORTABLE: where the sibling checkouts are, and the
-rola-devtools checkout the reader comes from.
+rola-devtools checkout the reader comes from. Run, it is the machine's one step outside the graph:
+
+    python3 tools/bootstrap.py      # the pinned bazelisk installed and `bazel` linked to it; then `bazel run //:init`
+
 
 The reader (`rola_devtools.config`) and the host budget (`rola_devtools.locks.host`) are standard-library Python in the
 rola-devtools checkout. The graph's front door (`bazel/front_door.py`) runs before any venv exists, under the
@@ -12,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,3 +34,18 @@ def devtools() -> Path:
     section = (Path(pointer).expanduser() if pointer else Path.home() / ".config" / "rola") / "workspace.json"
     value = json.loads(section.read_text()).get("devtools") if section.is_file() else None
     return Path(value).expanduser() if value else DEVTOOLS
+
+
+def main() -> int:
+    """The pinned bazelisk and its `bazel` link (`tools/dev.py`'s `install_bazelisk`), by the machine's own python3 with
+    the reader imported from the devtools checkout, as the front door imports it."""
+    sys.path[:0] = [str(devtools()), str(ROOT / "tools")]
+    import dev
+
+    dev.install_bazelisk()
+    print("bootstrap: `bazel` is the pinned bazelisk; next, bazel run //:init")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

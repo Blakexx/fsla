@@ -4,15 +4,19 @@ KERNEL_STANDARDS §23. One command sets up a host or a container for this tree, 
 replaced tools/build/new_worktree.sh, tools/setup_clock_lock.py and tools/build/build_lock.sh. The
 settings it writes and reads are the dev config ([dev_config.md](dev_config.md)).
 
-    python tools/dev.py init [--force]
-    python tools/dev.py check
-    python tools/dev.py show
-    python tools/dev.py get <section.key>
-    python tools/dev.py clock --mhz 1665
-    python tools/dev.py worktree <name> <sha>
-    python tools/dev.py dev-env --checkout C --env E --python P --uv U   # bazel run //:dev_env's implementation
+    python3 tools/bootstrap.py               # the pinned bazelisk and `bazel` (install_bazelisk), before any target
+    bazel run //:init [-- --force]
+    bazel run //:check
+    bazel run //:show
+    bazel run //:get -- <section.key>
+    bazel run //:clock -- --mhz 1665
+    bazel run //:dev_env                     # dev-env, given the checkout and the graph's environment
+    bazel run //:worktree -- <name> <sha>
+    bazel run //:store -- commit -m <msg>
     python tools/dev.py container compose|build|check|gate
-    python tools/dev.py store commit -m <msg>
+
+Each target is this file's command of the same name (`bazel/defs.bzl`'s `dev_run`): run in the checkout on the
+graph's environment interpreter, its arguments after `--`.
 
 **`init`** writes this machine's config:
 - The CUDA toolkit on `PATH`, or torch's.
@@ -23,8 +27,8 @@ settings it writes and reads are the dev config ([dev_config.md](dev_config.md))
   `host.build_cache`.
 
 A key already in a file is kept unless `--force`. A pinned tool that is missing, or does not report its pin's
-version, is downloaded from the pin's release URL (`tools/sccache_pin.json`, `tools/mold_pin.json`,
-`tools/bazelisk_pin.json`), asked again after a server error or a dropped connection, and
+version, is downloaded from the pin's release URL (`tools/sccache_pin.json` and `tools/mold_pin.json` by init,
+`tools/bazelisk_pin.json` by `install_bazelisk`: the bootstrap on a host, `init --image` in the image), asked again after a server error or a dropped connection, and
 then from its `mirror_urls` (the same asset through GitHub's API: github.com's release downloads returned gateway
 timeouts from its own edge for hours on 2026-11-08 while the API served the same assets). Its release sha256 is
 verified, and so is its binary
@@ -33,7 +37,7 @@ under `host.tools_dir`, because the layout
 is part of the tool: `-fuse-ld=mold` selects the `ld.mold` next to `mold`. sccache and mold are recorded in the
 machine's `toolchain.json`; bazelisk is found by its pin (`bazelisk_path`: under `host.tools_dir`, by its release's
 name), never recorded there -- every checkout loads the machine's files, and an older loader refuses a key it does not
-declare. `init` links `toolchain.bazel` (`~/.local/bin/bazel`) to the pinned bazelisk -- a link it made to another pinned release is replaced, anything else at the path refused -- then wires this checkout's commit gate (the git-config keys `core.hooksPath` per worktree, whose pre-commit hook runs `bazel test //:gate`, and rola.venv naming the checkout's own `bazel run //:dev_env` venv, which the post-commit review runs from; a checkout with no venv of its own is named and left as it is) in every worktree of the repository that carries the tracked hook, turns the repository's shared hook into a refusal (a checkout reaches it only unwired), names the same venv in the suite's and the store's checkouts, whose hooks read it too, installs the agent skill router where Claude Code keeps a user configuration (KERNEL_STANDARDS §31: the repo's `.claude/hooks/skill_router_bootstrap.py` copied to the user's `~/.claude/hooks/skill_router.py` where it differs, and its PreToolUse entry added to the user's `~/.claude/settings.json` where absent, every other setting kept; the image has no `~/.claude` and gets neither), and runs `check`, whose row says whether the router is installed and current. The
+declare. `install_bazelisk` links `toolchain.bazel` (`~/.local/bin/bazel`) to the pinned bazelisk -- a link it made to another pinned release is replaced, anything else at the path refused. `init` wires this checkout's commit gate (the git-config keys `core.hooksPath` per worktree, whose pre-commit hook runs `bazel test //:gate`, and rola.venv naming the checkout's own `bazel run //:dev_env` venv, which the post-commit review runs from; a checkout with no venv of its own is named and left as it is) in every worktree of the repository that carries the tracked hook, turns the repository's shared hook into a refusal (a checkout reaches it only unwired), names the base venv in the suite's, the store's and the devtools checkouts, whose hooks read it too, installs the agent skill router where Claude Code keeps a user configuration (KERNEL_STANDARDS §31: the repo's `.claude/hooks/skill_router_bootstrap.py` copied to the user's `~/.claude/hooks/skill_router.py` where it differs, and its PreToolUse entry added to the user's `~/.claude/settings.json` where absent, every other setting kept; the image has no `~/.claude` and gets neither), and runs `check`, whose row says whether the router is installed and current. The
 clock is not set by `init`, because locking it asks for administrator consent once.
 
 **`check`** prints one row per dependency and exits 1 on any red:
@@ -45,8 +49,8 @@ clock is not set by `init`, because locking it asks for administrator consent on
 - The commit gate is wired.
 - The lock directory, scratch directory and GPU lock directory are writable.
 - The clock is set, or the host is marked unlocked.
-- The base venv and the worktrees folder exist; `store.root` is a rola-results checkout, and `rola_results` imports
-  from it in the venv this checkout's hooks run from.
+- The base venv and the worktrees folder exist; `store.root` is a rola-results checkout, and `rola_results` and
+  `rola_devtools` import from `store.root` and `workspace.devtools` in the base venv and in the checkout's own venv.
 
 **`clock --mhz N`** locks the SM clock, reads the driver's clock under the lock, and releases it: the round trip
 the harness makes (`rola_devtools.locks.clock`, [sm_clock.md](../common/sm_clock.md)). Only after the lock is proven
@@ -58,8 +62,8 @@ does it write `clock.json`.
 - **On Linux:** it writes `sudo -n nvidia-smi -lgc` commands and prints the sudoers rule they need.
 
 **`build [--python PY] [--archs 86] [--carry-arms all]`** is the iteration build (`docs/build.md#iteration`):
-`setup.py build_ext --inplace` by the checkout's venv interpreter (`bazel run //:dev_env`). It refuses when that
-interpreter's `rola` is not this checkout's.
+`setup.py build_ext --inplace` by the checkout's own venv interpreter (`bazel run //:dev_env`), or `--python`. It
+refuses when the checkout has no venv of its own, or when that interpreter's `rola` is not this checkout's.
 
 **`dev-env`** is `bazel run //:dev_env`'s implementation, which passes the checkout and the graph's environment
 (its store venv, interpreter and uv). It writes the checkout's venv, `venv-<checkout>` beside it, on the environment's
@@ -103,7 +107,7 @@ site-packages as a plain path, which reads none of its `.pth` files), and in the
 mount point -- by a one-line `rola_results.pth`, and `dev-env` links each venv it writes; `commit -m` commits the records (`python -m
 rola_results commit`).
 
-`init`, `check`, `show`, `get`, `clock`, `dev-env` and `worktree` run from whichever python starts them (`dev-env`'s is the environment's, through its run target); `build`, `store` and `container` re-execute themselves under `workspace.base_venv`, because the store and the container read `rola_results` and the host's own python carries nothing of this project.
+`init`, `check`, `show`, `get`, `clock`, `dev-env`, `worktree` and `build` run from whichever python starts them (`dev-env`'s is the environment's, through its run target; `build` compiles with the checkout's own venv); `store` and `container` re-execute themselves under `workspace.base_venv`, because the store and the container read `rola_results` and the host's own python carries nothing of this project.
 
 **`get`** prints one value, for a person or a shell (the `rola-dev` skill's way to read one setting).
 

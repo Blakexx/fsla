@@ -25,6 +25,6 @@ load the skill an action names before taking it (§31).
   clock-locked interleaved timing session on the cells, `docs/measurement.md`); attribution:
   `tools/region_ledger.py --csv <ncu SourceCounters> --so <.so> --source <kernel.cuh> --budget tools/budgets/<k>.json`.
 - Correctness: `tests/oracle/` (scoped runs only; never a bare `tests/`).
-- Build: `python -m pip install -e . --no-build-isolation` with `ROLA_CUDA_ARCHS`; the machine is `tools/dev.py check`
+- Build: `python -m pip install -e . --no-build-isolation` with `ROLA_CUDA_ARCHS`; the machine is `bazel run //:check`
   (`docs/build.md`); the device stamp proves the binary is the source.
 - The map of the documents: `docs/README.md`; of the mechanisms: `docs/ARCHITECTURE.md` §10.

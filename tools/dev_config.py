@@ -5,13 +5,13 @@
 The directory is `~/.config/rola/`, or the directory `ROLA_DEV_CONFIG` names (a container, a test). It holds one JSON
 file a section; every file and every key is declared in `SCHEMA` below with its type, default and meaning, and
 anything undeclared is refused, so a typo fails loudly instead of silently taking a default. A missing file or key
-takes the declared default. `python tools/dev.py init` writes the files for this machine, `python tools/dev.py show`
+takes the declared default. `bazel run //:init` writes the files for this machine, `bazel run //:show`
 prints every resolved value with the file it came from.
 
 The reader and the machine's own sections -- `host` (the locks, the compute budget, scratch) and `clock` -- are
 rola-devtools' (`rola_devtools.config`), shared with the locks (`rola_devtools.locks`) and every repository on the
 host; the sections below them are rola's. rola-devtools is a development dependency: `pip install -r
-tools/devtools.txt` installs the commit this tree is tested with, and `python tools/dev.py init` links the checkout at
+tools/devtools.txt` installs the commit this tree is tested with, and `bazel run //:init` links the checkout at
 `workspace.devtools` into every venv here.
 
 A setting is never read from the process environment. The environment variables the tree still uses are listed in
@@ -105,9 +105,11 @@ HANDOFFS = {
     "MAX_JOBS": "torch's ninja job count, set by setup.py from the slots it holds",
     "PYTORCH_NVCC": "torch's compiler, set by setup.py to the sccache wrapper",
     "PYTEST_XDIST_WORKER": "pytest-xdist's worker id",
-    "USER": "the login name printed into the sudoers rule `tools/dev.py clock` suggests",
+    "USER": "the login name printed into the sudoers rule `bazel run //:clock` suggests",
     "ROLA_SCRATCH": "the agent harness's campaign directory (.claude/settings.json), outside the repository",
     "BAZEL_REAL": "the Bazel release bazelisk hands the graph's front door (bazel/front_door.py)",
+    "PATH": "the search path bazelisk hands what it runs, the front door's directory first (`check` finds the user's "
+            "`bazel` past it)",
     "ROLA_GRAPH_STORE": "the shared store the front door hands the graph's environment (bazel/environment.bzl)",
     "ROLA_NVCC_THREADS": "host.nvcc_threads, which the front door hands the graph's compile flags (bazel/flags.py)",
 }
@@ -151,7 +153,7 @@ def cuda_home() -> str:
         except ImportError:
             home = None
     if not home:
-        raise SystemExit("no CUDA toolkit: set toolchain.cuda_home (python tools/dev.py init)")
+        raise SystemExit("no CUDA toolkit: set toolchain.cuda_home (bazel run //:init)")
     return home
 
 
@@ -180,7 +182,7 @@ def ncu_candidates() -> list[Path]:
 
 
 def detect() -> dict[str, dict[str, Any]]:
-    """This machine's values where they differ from the declared defaults: what `tools/dev.py init` writes."""
+    """This machine's values where they differ from the declared defaults: what `bazel run //:init` writes."""
     found: dict[str, dict[str, Any]] = {"toolchain": {}, "host": {}, "workspace": {}, "environment": {}}
     nvcc = shutil.which("nvcc")
     if nvcc:

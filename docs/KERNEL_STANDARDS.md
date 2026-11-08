@@ -486,9 +486,11 @@ manual steps, and the dev container had drifted for two weeks unnoticed.
    listed HANDOFFS (a parent process passing a resolved value to a child) and BUILD_PARAMETERS (what one build is).
    `tools/lint/lint_standards.py` refuses any other read and any CUDA or Windows path spelled in tools, benchmarks or
    setup.py. A replaced variable is deleted, never kept as a fallback (§18).
-2. ONE INIT. `python tools/dev.py` is the only thing that sets up a host or a container (config, pinned tools, commit
-   gate, clock, worktrees) and the only thing that checks one (`check`: every dependency a row, exit 1 on a red, the
-   build's own gates reused). A new machine-dependent value lands as a schema key with its `init` detection and its
+2. ONE INIT. `tools/dev.py`'s commands, run as the graph's targets of the same name (`bazel run //:init`, `//:check`,
+   `//:clock`, `//:dev_env`, `//:worktree`), are the only thing that sets up a host (config, pinned tools, commit gate,
+   clock, each checkout's venv, worktrees) and the only thing that checks one (`check`: every dependency a row, exit 1 on
+   a red, the build's own gates reused); outside the graph is only `python3 tools/bootstrap.py`, the pinned bazelisk the
+   targets run under. The image runs the same `init` as its last step. A new machine-dependent value lands as a schema key with its `init` detection and its
    `check` row in the same commit.
 3. THE CONTAINER IS KEPT CURRENT BY A KEYED GATE. The dev image is a supported environment, not a document. It is
    built by `python tools/dev.py container build` from the environment's inputs (`ENV_INPUTS`: the Dockerfile, the
@@ -976,7 +978,7 @@ loaded only in sessions started inside it, and their text had rotted: dead paths
    in the acting agent's context the first time the agent takes the action there. Any number of worktrees on any
    branches route from any session, subagents included, and nothing is registered globally. A session started inside
    the repo is routed by the repo's own hook entry; one started elsewhere by the user-level bootstrap the repo ships
-   (`.claude/hooks/skill_router_bootstrap.py`), which `tools/dev.py init` installs and `check` verifies. `CLAUDE.md`
+   (`.claude/hooks/skill_router_bootstrap.py`), which `bazel run //:init` installs and `bazel run //:check` verifies. `CLAUDE.md`
    shows the table. Skills make the right path the easy one; lints and gates make the wrong one fail.
 
 ## <a id="s32"></a>§32 — THE STEADY STATE IS DESIGNED FIRST, AND EVERY GATE SEES IT (law, 2026-10-16, from Blake's "why we keep failing to properly overlap and write good kernels. What about our standards are causing failure and can be codified into our docs, skills, lints" and "we should be software pipelining rather than relying on more warps")

@@ -68,7 +68,7 @@ def pin() -> dict:
 
 
 def resolve_sccache() -> str | None:
-    """`toolchain.sccache` in the dev config -- no search path; `tools/dev.py init` finds it once."""
+    """`toolchain.sccache` in the dev config -- no search path; `bazel run //:init` finds it once."""
     return dev_config.get("toolchain.sccache")
 
 
@@ -112,7 +112,7 @@ def gate() -> dict | None:
         raise RuntimeError(
             f"CLOSED-WORLD RULE 1 (sccache wrapper pin): toolchain.sccache is not set in the "
             f"dev config. Pinned build is {p['version_string']} "
-            f"({p['release_asset']}, {p['release_url']}). `python tools/dev.py init` installs it, "
+            f"({p['release_asset']}, {p['release_url']}). `bazel run //:init` installs it, "
             f"or set toolchain.sccache_enabled false to build uncached DELIBERATELY -- a build must "
             f"not silently differ by whether a compiler cache happened to be "
             f"installed.")

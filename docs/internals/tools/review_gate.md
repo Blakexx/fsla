@@ -29,7 +29,8 @@ standards, the message, the diff -- and kept in the git common dir's `rola-revie
 `--show N` prints the last N.
 
 ADVISORY: `tools/git-hooks/post-commit` starts a review of `HEAD` detached after every commit, so a commit is neither
-slowed nor refused; it is skipped mid-rebase, without the `claude` CLI, or with `ROLA_REVIEW=off`. The first review
+slowed nor refused; it is skipped mid-rebase, without the `claude` CLI, or with `ROLA_REVIEW=off`, and it runs from
+the checkout's own venv (git's rola.venv), saying so and skipping when that names none (`bazel run //:dev_env`). The first review
 (Opus, the carve planner's commit 4fbcf920) took 236 s and $1.65 and named two fair warnings. Blocking, when the
 advisory period's false positives are known, moves the review to the commit-msg stage and refuses only on a cited
 `block` finding, overridable by a `Review-Override:` trailer naming the rule and the reason -- so `--no-verify` is never

@@ -22,16 +22,19 @@ directory of JSON files, the dev config (`~/.config/rola/`,
 `docs/internals/tools/dev_config.md`, KERNEL_STANDARDS §23). One command sets a
 machine up and checks it (`docs/internals/tools/dev.md`):
 
-`tools/dev.py` reads the dev config through rola-devtools (`rola_devtools.config`, which also holds the machine's
-locks), so a new machine's first `init` runs with a rola-devtools checkout on the path: clone it beside this tree, where
-`workspace.devtools` points by default, and run `PYTHONPATH=../rola-devtools python tools/dev.py init`. Init links
-the checkout into every venv here, so nothing after it needs the path.
+Every command is a `bazel run` target but one: `python3 tools/bootstrap.py`, by the machine's own python3, installs the
+pinned bazelisk and links `bazel` to it, since nothing can `bazel run` before `bazel` exists. It, and every target, reads
+the dev config through rola-devtools (`rola_devtools.config`, which also holds the machine's locks), imported from the
+rola-devtools checkout beside this tree, where `workspace.devtools` points by default: clone it there first. A fresh
+machine runs on the reader's defaults until `init` writes its config.
 
 ```bash
-python tools/dev.py init          # detect, install pinned tools, wire the commit gate and agent router, check
-python tools/dev.py clock --mhz 1665   # once per host: lock the SM clock (one administrator prompt under WSL)
-python tools/dev.py check         # every dependency, one row each; exit 1 on a red
-python tools/dev.py worktree <name> <sha>   # a worktree, its venv and gate (bazel run //:dev_env), its extension
+python3 tools/bootstrap.py              # the one step outside the graph: the pinned bazelisk, `bazel` linked to it
+bazel run //:init                       # detect, install pinned tools, wire the commit gate and agent router, check
+bazel run //:clock -- --mhz 1665        # once per host: lock the SM clock (one administrator prompt under WSL)
+bazel run //:check                      # every dependency, one row each; exit 1 on a red
+bazel run //:dev_env                    # this checkout's venv, which its commit gate runs from
+bazel run //:worktree -- <name> <sha>   # a worktree, its venv and gate, its extension
 ```
 
 ## 1. Host prerequisites
@@ -112,7 +115,7 @@ alone: that `libcuda` is a loader that opens the driver store beside it.
 
 **Without an editor:** `docker compose -f .devcontainer/compose.yaml -f .devcontainer/compose.local.yaml run --rm rola bash`.
 
-Inside, the SM clock is not locked: the lock is a host act (`tools/dev.py clock`), and rows measured in the container
+Inside, the SM clock is not locked: the lock is a host act (`bazel run //:clock`), and rows measured in the container
 record `clock_locked = false`.
 
 The history this replaced, kept because it was measured: the first devcontainer (2026-08-29) mounted worktrees through
@@ -126,7 +129,7 @@ were never visible inside. Generating the mounts from the dev config removes the
 -- `setup.py` refuses to build without it, no fallback to `ld.bfd`/`ld.gold`
 (`tools/mold_toolchain.py`, `tools/mold_pin.json`). On a bare host with no root
 and no apt package for it (this repo's dev box: `apt-cache policy mold` has no
-candidate on Ubuntu 22.04), `python tools/dev.py init` downloads the pinned
+candidate on Ubuntu 22.04), `bazel run //:init` downloads the pinned
 release, verifies its sha256 against `tools/mold_pin.json`, unpacks the whole
 release (`bin/mold` beside `bin/ld.mold`, which `-fuse-ld=mold` selects) under
 `host.tools_dir`, and records it as `toolchain.mold`. The container and the host
@@ -147,7 +150,7 @@ invariants that make it safe:
 - **Nothing is installed into it**: its packages are the environment's; the checkout's library is the one
   `bazel run //:library` copies into it.
 
-`python tools/dev.py worktree <name> <sha>` adds the worktree and runs both targets in it. It verifies from inside the
+`bazel run //:worktree -- <name> <sha>` adds the worktree and runs both targets in it. It verifies from inside the
 new worktree: `python -c` puts its own working directory first on `sys.path`, so a check launched from another worktree
 imports that worktree's `rola`.
 

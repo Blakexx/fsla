@@ -280,7 +280,7 @@ A question about the machine itself, rather than a shipped kernel, is a lab expe
 
 Every measuring tool stores what it measured through one library, `rola_results`, in the rola-results repository:
 `store.root` in the dev config (default `rola-results` beside the checkouts; the container mounts it at
-`/workspace/store`), importable from every interpreter `tools/dev.py init` provisions. A result measured in any
+`/workspace/store`), importable from every interpreter `bazel run //:init` provisions. A result measured in any
 worktree, host or container lands in that one repository, visible to every other at once.
 
 A tool opens a store at its OWN LOCATION and hands it the SEMANTICS of what it measured -- the inputs its numbers
@@ -311,8 +311,8 @@ long form (run, cell, dotted metric, value), `diff_cells` every stored diff's ve
 A tool run by another tool stores nothing (`--no-record`): the caller keeps the output in its own record. `python -m
 rola_results sql "..."` queries every location through a derived SQLite index beside the records (`history` and
 `latest` for one location; views flatten the stored outputs, and the rola-results README lists them with the last,
-history, compare and baseline questions as SQL); `python -m rola_results verdict` is the regression judgement above; `python
-tools/dev.py store commit -m <message>` commits the records
+history, compare and baseline questions as SQL); `python -m rola_results verdict` is the regression judgement above; `bazel run
+//:store -- commit -m <message>` commits the records
 (`python -m rola_results commit`), after the repository's own check that every key recomputes from its semantics and
 every output exists. Pushing is the owner's act. The record kept before the library -- the per-run JSONL, the perf
 ledger, the ledger and composer reports -- left the store for the owner's archive (`docs/internals/DELETIONS.md`).

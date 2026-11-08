@@ -18,7 +18,7 @@ semaphores, which Bazel cannot do for an action.
 |---|---|---|
 | the host's NVIDIA driver and GPU | the host | -- |
 | the machine (base OS libraries, git, `python3`, the host C++ compiler nvcc drives) | the host, or the Docker image | the image |
-| bazelisk, Bazel's launcher | `tools/bazelisk_pin.json`, installed by `python tools/dev.py init` under `host.tools_dir` by its pin (never a machine key), which links `bazel` on PATH to it (`toolchain.bazel`; `check` has the row) | `host.tools_dir` |
+| bazelisk, Bazel's launcher | `tools/bazelisk_pin.json`, installed by `python3 tools/bootstrap.py` under `host.tools_dir` by its pin (never a machine key), which links `bazel` on PATH to it (`toolchain.bazel`; `check` has the row) | `host.tools_dir` |
 | Bazel | `.bazelversion`, verified against `.bazeliskrc`'s digest | bazelisk's cache |
 | the graph's CUDA toolkit | NVIDIA's redistributable components at release 13.0.0 (`MODULE.bazel`'s `cuda.redist_json`: nvcc 13.0.48), only the compiler's (~75 MB of the 4.7 GB set) | the shared repository cache |
 | the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (`tools/uv_pin.json`) into the pinned CPython (3.11.13), and rola-devtools at `tools/devtools.txt`'s commit, by `bazel/environment.bzl`'s `@rola_env` (`bazel/make_env.py`) | `host.build_cache/bazel/store`, one environment a key (the lock, the devtools commit, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages; `@rola_env//:flags.bzl`'s `VENV` names it, so a command naming it is keyed by the environment |
@@ -227,7 +227,8 @@ names one).
 
 ## <a id="use"></a>Using it
 
-    python tools/dev.py init        # installs the pinned bazelisk and links `bazel` to it (toolchain.bazel)
+    python3 tools/bootstrap.py                                      # the pinned bazelisk, `bazel` linked to it
+    bazel run //:init                                               # the machine's dev config, hooks and router
     bazel run //:dev_env                                            # this checkout's venv, which its hooks run from
     bazel test //:gate                                              # every check the graph holds
     bazel run //:compile_commands                                   # the editor's compile_commands.json

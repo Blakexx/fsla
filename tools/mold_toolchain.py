@@ -38,7 +38,7 @@ def pin() -> dict:
 
 
 def resolve_mold() -> str | None:
-    """`toolchain.mold` in the dev config -- no search path; `tools/dev.py init` finds it once."""
+    """`toolchain.mold` in the dev config -- no search path; `bazel run //:init` finds it once."""
     return dev_config.get("toolchain.mold")
 
 
@@ -67,7 +67,7 @@ def link_flags() -> list[str]:
     if path is None or not Path(path).exists():
         raise RuntimeError(
             f"THE LINKER PIN (tools/mold_pin.json): no `mold` binary found (checked "
-            f"toolchain.mold in the dev config; `python tools/dev.py init` installs it). Pinned build is {p['version_string']} "
+            f"toolchain.mold in the dev config; `bazel run //:init` installs it). Pinned build is {p['version_string']} "
             f"({p['release_asset']}, {p['release_url']}). mold is the extension's "
             f"linker unconditionally -- there is no fallback to the default linker; "
             f"install the pinned release (docs/setup.md names the host-local "

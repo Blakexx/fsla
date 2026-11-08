@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE DEV ENVIRONMENT (KERNEL_STANDARDS §23): the one command that sets up, checks and describes a host or container.
+"""THE DEV ENVIRONMENT (KERNEL_STANDARDS §23): the commands that set up, check and describe a host or container, each
+run as the graph's target of the same name (`bazel/defs.bzl`'s `dev_run`), its arguments after `--`:
 
-    python tools/dev.py init [--force]          # write this machine's dev config, install the pinned tools, wire hooks
-    python tools/dev.py check                   # every value, tool, pin and lock this tree depends on; exit 1 on a red
-    python tools/dev.py show                    # every resolved setting and the file it came from
-    python tools/dev.py get <section.key>       # one value, for a person or a shell
-    python tools/dev.py clock --mhz 1665        # lock this host's SM clock once, prove the round trip, record it
-    python tools/dev.py worktree <name> <sha>   # a worktree, its venv and gate (//:dev_env), its extension (//:library)
-    python tools/dev.py dev-env ...             # bazel run //:dev_env's implementation: this checkout's venv
+    python3 tools/bootstrap.py                   # the one step outside the graph: the pinned bazelisk and `bazel`
+    bazel run //:init [-- --force]               # write this machine's dev config, install the pinned tools, wire hooks
+    bazel run //:check                           # every value, tool, pin and lock this tree depends on; exit 1 on a red
+    bazel run //:show                            # every resolved setting and the file it came from
+    bazel run //:get -- <section.key>            # one value, for a person or a shell
+    bazel run //:clock -- --mhz 1665             # lock this host's SM clock once, prove the round trip, record it
+    bazel run //:dev_env                         # this checkout's venv over the graph's environment, its hooks' venv
+    bazel run //:worktree -- <name> <sha>        # a worktree, its venv and gate, its extension (//:library)
+    bazel run //:store -- commit -m <msg>        # the measurements store (a rola-results checkout)
     python tools/dev.py container compose|build|check|gate # the dev container: mounts, image, proof, commit gate
-    python tools/dev.py store commit -m <msg>   # the measurements store (a rola-results checkout)
 
 The settings live in the dev config directory (`tools/dev_config.py`). Docs: docs/internals/tools/dev.md.
 """
@@ -118,6 +120,15 @@ def _download(urls: list[str], to: Path) -> None:
     raise SystemExit(f"none of {urls} answered in {DOWNLOAD_ATTEMPTS} attempts")
 
 
+def install_bazelisk() -> None:
+    """The pinned bazelisk under `host.tools_dir` and `bazel` linked to it: the machine's one step outside the graph
+    (`tools/bootstrap.py` on a host, `init --image` in the image), since every other command is a `bazel run`."""
+    pin = json.loads(PINS["bazelisk"].read_text())
+    if _pinned_version("bazelisk", str(bazelisk_path())) != pin["version_string"]:
+        install_pinned("bazelisk", Path(dev_config.get("host.tools_dir")))
+    link_bazel()
+
+
 def link_bazel() -> None:
     """`toolchain.bazel` linked to the pinned bazelisk: `bazel` is the command the docs name, and only the pinned
     launcher reads `.bazeliskrc` and runs the graph's front door. A link init made to another pinned release (under
@@ -129,7 +140,7 @@ def link_bazel() -> None:
     if link.exists() or link.is_symlink():
         if not (link.is_symlink() and link.resolve().is_relative_to(tools)):
             raise SystemExit(f"{link} is not init's link to a pinned bazelisk ({link.resolve()}): move it, or set "
-                             f"toolchain.bazel to a free path on PATH, then python tools/dev.py init")
+                             f"toolchain.bazel to a free path on PATH, then python3 tools/bootstrap.py")
         link.unlink()
     link.parent.mkdir(parents=True, exist_ok=True)
     link.symlink_to(bazelisk)
@@ -194,7 +205,8 @@ def link_packages(image: bool) -> list[Path]:
     the base venv (the image's at its build, naming the mount points), and on a host each checkout's own venv
     (`checkout_venv`: it names the environment as a plain path, which reads none of its .pth files). Never the host's
     own python: nothing here runs from it."""
-    sites = [site_packages(Path(dev_config.get("workspace.base_venv")))]
+    base = dev_config.get("workspace.base_venv")
+    sites = [site_packages(Path(base))] if base else []
     if not image:
         sites += [site_packages(v) for v in (checkout_venv(c) for c in _worktrees()) if v is not None]
     for site in sites:
@@ -302,7 +314,7 @@ def _refuse_unwired() -> None:
     hook.parent.mkdir(parents=True, exist_ok=True)
     hook.write_text("#!/usr/bin/env bash\n# Written by rola's tools/dev.py init: a checkout reaches this hook only when "
                     "its own commit gate\n# (core.hooksPath -> tools/git-hooks) is not wired, so it refuses.\n"
-                    'echo "pre-commit: refusing -- this checkout\'s commit gate is not wired: python3 tools/dev.py init" >&2\n'
+                    'echo "pre-commit: refusing -- this checkout\'s commit gate is not wired: bazel run //:dev_env" >&2\n'
                     "exit 1\n")
     hook.chmod(0o755)
 
@@ -362,14 +374,14 @@ def cmd_init(a) -> int:
         _write_section("workspace", {"base_venv": base}, a.force)
 
     tools_dir = Path(dev_config.get("host.tools_dir"))
-    for name in PINS:
-        current = dev_config.get(f"toolchain.{name}") if name in RECORDED else str(bazelisk_path())
+    for name in RECORDED:
+        current = dev_config.get(f"toolchain.{name}")
         pin = json.loads(PINS[name].read_text())
         if current is None or _pinned_version(name, current) != pin["version_string"]:
-            installed = install_pinned(name, tools_dir)
-            if name in RECORDED:
-                _write_section("toolchain", {name: installed}, force=True)
-    link_bazel()
+            _write_section("toolchain", {name: install_pinned(name, tools_dir)}, force=True)
+    #: on a host the bootstrap installed bazelisk before `bazel run //:init` could run; the image's init is its bootstrap
+    if a.image:
+        install_bazelisk()
     base = dev_config.get("workspace.base_venv")
     drift = venv_drift(str(Path(base) / "bin" / "python")) if base else []
     if drift:
@@ -390,12 +402,12 @@ def cmd_init(a) -> int:
                 wire_hooks(checkout)
         _refuse_unwired()
         install_router()
-        for key in GATED_CONSUMERS:
+        for key in GATED_CONSUMERS if base else ():
             if (Path(dev_config.get(key)) / ".git").exists():
                 subprocess.run(["git", "-C", dev_config.get(key), "config", "rola.venv", dev_config.get("workspace.base_venv")],
                                check=True)
         if dev_config.get("clock.ghz") is None:
-            print("clock: unset -- this host measures UNLOCKED until `python tools/dev.py clock --mhz <MHz>` runs")
+            print("clock: unset -- this host measures UNLOCKED until `bazel run //:clock -- --mhz <MHz>` runs")
     return cmd_check(a)
 
 
@@ -449,7 +461,7 @@ def cmd_check(a) -> int:
             path = Path(home) / "bin" / tool
             row(path.exists(), f"toolchain {tool}: {path}", "set toolchain.cuda_home to a CUDA toolkit with it")
     except SystemExit as ex:
-        row(False, f"toolchain: {ex}", "python tools/dev.py init")
+        row(False, f"toolchain: {ex}", "bazel run //:init")
     ncu = dev_config.get("toolchain.ncu")
     row(_ncu_version(ncu) >= (2025, 3), f"toolchain ncu {'.'.join(map(str, _ncu_version(ncu))) or 'missing'}: {ncu}",
         "install Nsight Compute 2025.3+ and set toolchain.ncu")
@@ -458,21 +470,25 @@ def cmd_check(a) -> int:
             gate()
             row(True, f"toolchain {name}: {dev_config.get(f'toolchain.{name}')} matches its pin")
         except RuntimeError as ex:
-            row(False, f"toolchain {name}: {str(ex).splitlines()[0][:140]}", "python tools/dev.py init")
+            row(False, f"toolchain {name}: {str(ex).splitlines()[0][:140]}", "bazel run //:init")
     bazelisk = bazelisk_path()
     pin = json.loads(PINS["bazelisk"].read_text())["version_string"]
-    row(_pinned_version("bazelisk", str(bazelisk)) == pin, f"bazelisk: {bazelisk} is {pin}", "python tools/dev.py init")
-    on_path = shutil.which("bazel")
+    row(_pinned_version("bazelisk", str(bazelisk)) == pin, f"bazelisk: {bazelisk} is {pin}", "python3 tools/bootstrap.py")
+    #: bazelisk puts the front door's directory first on PATH for what it runs (`bazel run //:check`): the user's `bazel`
+    #: is the first one past it
+    front_door = (ROOT / "bazel").resolve()
+    on_path = shutil.which("bazel", path=os.pathsep.join(d for d in os.environ.get("PATH", "").split(os.pathsep)
+                                                         if d and Path(d).resolve() != front_door))
     row(on_path is not None and Path(on_path).resolve() == bazelisk.resolve(),
         f"`bazel` on PATH is the pinned bazelisk: {on_path}",
-        f"python tools/dev.py init (links toolchain.bazel, {dev_config.get('toolchain.bazel')}); its directory on PATH")
+        f"python3 tools/bootstrap.py (links toolchain.bazel, {dev_config.get('toolchain.bazel')}); its directory on PATH")
     base = dev_config.get("workspace.base_venv")
     python = Path(base or "") / "bin" / "python"
-    row(bool(base) and python.exists(), f"workspace.base_venv: {base}", "python tools/dev.py init")
+    row(bool(base) and python.exists(), f"workspace.base_venv: {base}", "bazel run //:init")
     if base and python.exists():
         drift = venv_drift(str(python))
         row(not drift, f"base venv carries requirements.lock{': drift ' + ' '.join(drift) if drift else ''}",
-            "python tools/dev.py init")
+            "bazel run //:init")
     if image:
         return _report(rows)
     readable = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--git-dir"], capture_output=True).returncode == 0
@@ -482,17 +498,17 @@ def cmd_check(a) -> int:
         (f"commit gate wired in {ROOT.name} (`bazel test //:gate`), its review run from {own}" if own else
          f"{ROOT.name} has no venv of its own for its commit gate") if readable else
         f"{ROOT}: no git repository visible here; commits are made where it is",
-        "bazel run //:dev_env" if readable and own is None else "python tools/dev.py init")
+        "bazel run //:dev_env" if readable and own is None else "bazel run //:init")
     current, wired = router_state()
     if (Path.home() / ".claude").is_dir():
         row(current and wired, "agent skill router: " + ("installed and current" if current else "missing or stale")
-            + ("" if wired else ", not in the user's settings"), "python tools/dev.py init")
+            + ("" if wired else ", not in the user's settings"), "bazel run //:init")
     else:
         row(True, "agent skill router: no Claude Code configuration here")
     #: commits are made on the host (the image sees no repository), so the consumers' gates are the host's to check
     for key in GATED_CONSUMERS if readable else ():
         if (Path(dev_config.get(key)) / ".git").exists():
-            row(gate_venv(dev_config.get(key)) == base, f"{key}'s commit gate runs from {base}", "python tools/dev.py init")
+            row(gate_venv(dev_config.get(key)) == base, f"{key}'s commit gate runs from {base}", "bazel run //:init")
     for key in ("host.lock_dir", "host.scratch"):
         path = Path(dev_config.get(key))
         path.mkdir(parents=True, exist_ok=True)
@@ -513,15 +529,15 @@ def cmd_check(a) -> int:
         "clone rola-devtools to workspace.devtools, or point workspace.devtools at a checkout")
     #: the co-developed checkouts import in each venv that runs here: the base venv (`store`, `container`, the sibling
     #: repositories' hooks) and this checkout's own (its hooks)
-    for venv in [Path(base or "")] + ([own] if readable and own is not None else []):
+    for venv in ([Path(base)] if base else []) + ([own] if readable and own is not None else []):
         python = venv / "bin" / "python"
         found = subprocess.run([str(python), "-c", "import rola_results, rola_devtools; "
                                 "print(rola_results.ROOT); print(rola_devtools.__file__)"], capture_output=True, text=True)
         lines = found.stdout.split()
         row(lines[:1] == [str(root / "records")], f"rola_results imports from store.root in {python}",
-            "python tools/dev.py init")
+            "bazel run //:init")
         row(lines[1:2] == [str(devtools / "rola_devtools" / "__init__.py")],
-            f"rola_devtools imports from workspace.devtools in {python}", "python tools/dev.py init")
+            f"rola_devtools imports from workspace.devtools in {python}", "bazel run //:init")
     return _report(rows)
 
 
@@ -548,7 +564,7 @@ def cmd_get(a) -> int:
 def _windows(rel: str) -> Path:
     tool = dev_config.windows_tool(rel)
     if tool is None or not tool.exists():
-        raise SystemExit(f"host.windows_system32 does not hold {rel}; python tools/dev.py init detects it under WSL")
+        raise SystemExit(f"host.windows_system32 does not hold {rel}; bazel run //:init detects it under WSL")
     return tool
 
 
@@ -684,17 +700,21 @@ def cmd_build(a) -> int:
     .`, without pip's metadata, wheel and reinstall. Refuses when that interpreter's `rola` is not this checkout's (a
     venv imports the checkout it names). `--archs` and `--carry-arms` set `ROLA_CUDA_ARCHS` / `ROLA_CARRY_ARMS`.
     -- see docs/build.md#iteration"""
-    probe = subprocess.run([a.python, "-c", "import rola, pathlib; print(pathlib.Path(rola.__file__).resolve())"],
+    own = checkout_venv(ROOT)
+    if a.python is None and own is None:
+        raise SystemExit(f"refusing: {ROOT.name} has no venv of its own to build with: bazel run //:dev_env")
+    python = a.python or str(own / "bin" / "python")
+    probe = subprocess.run([python, "-c", "import rola, pathlib; print(pathlib.Path(rola.__file__).resolve())"],
                            cwd="/", capture_output=True, text=True)
     if probe.returncode or not Path(probe.stdout.strip()).is_relative_to(ROOT / "rola"):
-        raise SystemExit(f"refusing: {a.python}'s rola is {probe.stdout.strip() or probe.stderr.strip()!r}, not "
-                         f"{ROOT / 'rola'}; install this checkout first (`pip install -e . --no-build-isolation`)")
+        raise SystemExit(f"refusing: {python}'s rola is {probe.stdout.strip() or probe.stderr.strip()!r}, not "
+                         f"{ROOT / 'rola'}; build with this checkout's venv (`bazel run //:dev_env` writes it)")
     env = dict(os.environ)
     if a.archs:
         env["ROLA_CUDA_ARCHS"] = a.archs
     if a.carry_arms:
         env["ROLA_CARRY_ARMS"] = a.carry_arms
-    return subprocess.run([a.python, "setup.py", "build_ext", "--inplace"], cwd=ROOT, env=env).returncode
+    return subprocess.run([python, "setup.py", "build_ext", "--inplace"], cwd=ROOT, env=env).returncode
 
 
 def _mounts() -> list[str]:
@@ -903,7 +923,7 @@ def main() -> int:
     p.set_defaults(fn=cmd_worktree)
 
     p = sub.add_parser("build", help="the iteration build: the extension rebuilt in place, gated and stamped")
-    p.add_argument("--python", default=sys.executable, help="the checkout's venv interpreter (default: this one)")
+    p.add_argument("--python", default=None, help="the interpreter (default: this checkout's own venv's)")
     p.add_argument("--archs", default=None, help="ROLA_CUDA_ARCHS for this build, e.g. 86")
     p.add_argument("--carry-arms", default=None, help="ROLA_CARRY_ARMS for this build, e.g. all")
     p.set_defaults(fn=cmd_build)
@@ -922,7 +942,7 @@ def main() -> int:
 
 
 #: the commands that make or read the environment itself, and so run from whichever python starts them
-BOOTSTRAP = ("init", "check", "show", "get", "clock", "dev-env", "worktree")
+BOOTSTRAP = ("init", "check", "show", "get", "clock", "dev-env", "worktree", "build")
 
 
 def _from_base_venv() -> None:
@@ -931,7 +951,7 @@ def _from_base_venv() -> None:
     base = dev_config.get("workspace.base_venv")
     python = Path(base or "") / "bin" / "python"
     if not base or not python.is_file():
-        raise SystemExit(f"no base venv at workspace.base_venv ({base!r}): python3 tools/dev.py init")
+        raise SystemExit(f"no base venv at workspace.base_venv ({base!r}): bazel run //:init")
     if Path(sys.prefix).resolve() != Path(base).resolve():
         os.execv(str(python), [str(python), str(Path(__file__).resolve()), *sys.argv[1:]])
 

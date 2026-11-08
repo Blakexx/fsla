@@ -19,7 +19,7 @@ The build and its parameters: `docs/build.md#building`. What a stage owes and wh
    (`docs/measurement.md#preconditions-which-the-targets-acquire`,
    `docs/ratification.md#the-device-stamp-keys-on-the-csrc-content-hash`); then `python tools/sass_gate.py <.so>`
    (`docs/KERNEL_STANDARDS.md#s20`).
-5. A build that fails to start: `python tools/dev.py check` first (`rola-dev`).
+5. A build that fails to start: `bazel run //:check` first (`rola-dev`).
 6. The build graph (`docs/build-graph.md`): `bazel` is the pinned bazelisk (`toolchain.bazel` links it), which runs the
    front door `bazel/bazel`; it takes the host budget for every build phase and sets the jobs, so never pass `--jobs`
    or a cache path (`docs/build-graph.md#front-door`).

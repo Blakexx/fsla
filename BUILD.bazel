@@ -71,6 +71,20 @@ rola_extension(
     ],
 )
 
+#: THE MACHINE'S SETUP AS RUN TARGETS: each a tools/dev.py command, its arguments after `--` (docs/build-graph.md#use)
+[dev_run(
+    name = name,
+    command = [command],
+) for name, command in [
+    ("init", "init"),
+    ("check", "check"),
+    ("clock", "clock"),
+    ("show", "show"),
+    ("get", "get"),
+    ("worktree", "worktree"),
+    ("store", "store"),
+]]
+
 #: THE CHECKOUT'S VENV over the graph's environment, which its commit hooks then run from (docs/build-graph.md#use)
 dev_run(
     name = "dev_env",

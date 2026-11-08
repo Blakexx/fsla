@@ -13,7 +13,7 @@ or key is refused, so a typo fails instead of silently taking the default.
 locks (`rola_devtools.locks`) read them, for every repository and container on the host. This loader declares rola's
 own sections beside them and, owning the directory, refuses a file no section declares. rola-devtools is a development
 dependency: `pip install -r tools/devtools.txt` installs the commit this tree is tested with (CI, the dev image's
-bootstrap), and `python tools/dev.py init` links the `workspace.devtools` checkout into every venv on a host.
+bootstrap), and `bazel run //:init` links the `workspace.devtools` checkout into every venv on a host.
 
 | file | keys |
 |---|---|
@@ -30,7 +30,7 @@ under the machine's `python3`, before any venv exists. `tools/bootstrap.py` read
 the reader and the host budget from that checkout. The sibling checkouts' location (`SIBLINGS`, the default of
 `store.root`, `workspace.suite` and `workspace.devtools`) is defined there once, for both.
 
-Each key's type, default and meaning are declared in `SCHEMA`. `python tools/dev.py show` prints every
+Each key's type, default and meaning are declared in `SCHEMA`. `bazel run //:show` prints every
 resolved value and the file it came from ([dev.md](dev.md)).
 
 **The API.**
@@ -53,7 +53,7 @@ f-string prefixes resolved) and shell expansions.
   - The inputs `setup.py` sets for torch (`CUDA_HOME`, `MAX_JOBS`, `PYTORCH_NVCC`).
   - pytest-xdist's worker id.
   - The agent harness's campaign directory.
-  - The login name printed into the sudoers rule `tools/dev.py clock` suggests (`USER`).
+  - The login name printed into the sudoers rule `bazel run //:clock` suggests (`USER`).
   - The Bazel release bazelisk hands the graph's front door (`BAZEL_REAL`).
   - The shared store and `host.nvcc_threads`, which the front door hands the graph's environment (`ROLA_GRAPH_STORE`,
     `ROLA_NVCC_THREADS`).

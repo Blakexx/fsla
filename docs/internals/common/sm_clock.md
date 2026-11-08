@@ -44,7 +44,7 @@ locks at start, proves the lock with the device read, unlocks on every exit path
 REFUSES a row whose measured clock is off the lock by more than 1%. Without a clock the
 run is UNLOCKED: rows carry their measured clock, print `UNLOCKED`, and the ledger keeps
 `clock_locked = false`, as it keeps `dirty`. The harness names no operating
-system; `python tools/dev.py clock --mhz N` is the one-time host setup that does: under WSL
+system; `bazel run //:clock -- --mhz N` is the one-time host setup that does: under WSL
 it registers the two elevated tasks with hidden launchers (one administrator prompt) and
 proves the round trip, on Linux it writes the `sudo -n nvidia-smi` commands and prints the
 sudoers line, elsewhere it says the host cannot lock.
