@@ -18,10 +18,10 @@ semaphores, which Bazel cannot do for an action.
 |---|---|---|
 | the host's NVIDIA driver and GPU | the host | -- |
 | the machine (base OS libraries, git, `python3`, the host C++ compiler nvcc drives) | the host, or the Docker image | the image |
-| bazelisk, Bazel's launcher | `tools/bazelisk_pin.json`, installed by `python3 tools/bootstrap.py` under `host.tools_dir` by its pin (never a machine key), which links `bazel` on PATH to it (`toolchain.bazel`; `check` has the row) | `host.tools_dir` |
+| bazelisk, Bazel's launcher | `tools/bazelisk_pin.json`, installed by `python3 tools/bootstrap.py` under `host.tools_dir` by its pin (never a machine key), which links `bazel` on PATH to it (`toolchain.bazel`; `check` has the row); the devbox image's copy is the graph's `@bazelisk`, from the same pin | `host.tools_dir`; the repository cache |
 | Bazel | `.bazelversion`, verified against `.bazeliskrc`'s digest | bazelisk's cache |
 | the graph's CUDA toolkit | NVIDIA's redistributable components at release 13.0.0 (`MODULE.bazel`'s `cuda.redist_json`: nvcc 13.0.48), only the compiler's (~75 MB of the 4.7 GB set) | the shared repository cache |
-| the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (`tools/uv_pin.json`) into the pinned CPython (3.11.13), and rola-devtools at `tools/devtools.txt`'s commit, by `bazel/environment.bzl`'s `@rola_env` (`bazel/make_env.py`) | `host.build_cache/bazel/store`, one environment a key (the lock, the devtools commit, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages; `@rola_env//:flags.bzl`'s `VENV` names it, so a command naming it is keyed by the environment |
+| the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (`tools/uv_pin.json`, the graph's `@uv`, which `//:dev_env` writes venvs with too) into the pinned CPython (3.11.13), and rola-devtools at `tools/devtools.txt`'s commit, by `bazel/environment.bzl`'s `@rola_env` (`bazel/make_env.py`) | `host.build_cache/bazel/store`, one environment a key (the lock, the devtools commit, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages; `@rola_env//:flags.bzl`'s `VENV` names it, so a command naming it is keyed by the environment |
 | the linker | mold at `tools/mold_pin.json`'s release (`@mold`) | the shared repository cache |
 | the lints' analyzer | clang-tidy at `tools/clang_tidy_pin.json`'s wheel, its binary's digest checked (`@clang_tidy`) | the shared repository cache |
 | the toolkit's parts beside the compiler | the disassemblers the SASS gate reads with (cuobjdump, nvdisasm), cuRAND's headers (clang's CUDA front end includes one) and compute-sanitizer (the sanitizer lane's), from the toolkit's manifest by its digests (`@cuda_tools`) | the shared repository cache |
@@ -235,6 +235,7 @@ names one).
     bazel test //:lane                                              # every test tier
     bazel run //:library                                            # the shipped build, into rola_cu13/
     bazel run //:library --//:archs=86 --//:carry_arms=3            # an iteration build
+    bazel run //:image_load                                         # the devbox image, into Docker (docs/setup.md)
 
 Never pass `--jobs` or a cache path: the front door sets both. Nothing the graph builds lands in the checkout but what a
 run target writes there -- the library `bazel run //:library` copies in, with the build's generated headers into

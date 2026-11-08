@@ -41,6 +41,9 @@ resolved value and the file it came from ([dev.md](dev.md)).
   them, so the ptxas a gate reads is the one the build ran.
 - `scratch(name)` returns a tool's scratch directory.
 - `windows_tool(rel)` returns a Windows tool under WSL.
+- `pinned(name)` returns where a pin's binary is installed (`tools/<name>_pin.json`: its folder under `host.tools_dir`,
+  the binary in it), the one lookup dev.py and the measurement tools use; `ncu()` returns the pinned Nsight Compute,
+  refusing until init installed it.
 - `detect()` returns what `init` writes.
 - `reload()` rereads the files, here and in the locks' reader, for a test that points `ROLA_DEV_CONFIG` at a
   temporary directory.

@@ -88,7 +88,7 @@ def install_dev_tools() -> None:
     for name in DEV_TOOLS:
         pin = json.loads(PINS[name].read_text())
         if _pinned_version(name, str(dev_config.pinned(name))) != pin["version_string"]:
-            install_pinned(name, Path(dev_config.get("host.tools_dir")))
+            install_pinned(name)
 
 
 def _write_section(section: str, values: dict, force: bool) -> None:
@@ -133,7 +133,7 @@ def install_bazelisk() -> None:
     (`tools/bootstrap.py` on a host, `init --image` in the image), since every other command is a `bazel run`."""
     pin = json.loads(PINS["bazelisk"].read_text())
     if _pinned_version("bazelisk", str(dev_config.pinned("bazelisk"))) != pin["version_string"]:
-        install_pinned("bazelisk", Path(dev_config.get("host.tools_dir")))
+        install_pinned("bazelisk")
     link_bazel()
 
 
@@ -155,12 +155,13 @@ def link_bazel() -> None:
     print(f"linked {link} -> {bazelisk}")
 
 
-def install_pinned(name: str, dest: Path) -> str:
+def install_pinned(name: str) -> str:
     """Download the pinned release, verify its sha256 (and the binary's, where the pin has one), and unpack the whole
     release under `dest` -- its layout is part of the tool (mold selects `ld.mold` beside itself). A release is a tarball,
     or a bare binary (`asset_kind`) installed under its release's name."""
     pin = json.loads(PINS[name].read_text())
     root, rel = pin["archive_root"], pin["binary_path"]
+    dest, binary = Path(dev_config.get("host.tools_dir")), dev_config.pinned(name)
     with tempfile.TemporaryDirectory(prefix=f"rola_{name}_") as tmp:
         asset = Path(tmp) / pin["release_asset"]
         _download([pin["release_url"], *pin.get("mirror_urls", [])], asset)
@@ -168,7 +169,6 @@ def install_pinned(name: str, dest: Path) -> str:
         if got != pin["asset_sha256"]:
             raise SystemExit(f"{name}: release sha256 {got} is not the pin's {pin['asset_sha256']}")
         dest.mkdir(parents=True, exist_ok=True)
-        binary = dest / root / rel
         if pin.get("asset_kind") == "binary":
             #: a bare binary: installed in its pin's folder, as an archive's tree is
             binary.parent.mkdir(parents=True, exist_ok=True)
@@ -369,12 +369,11 @@ def cmd_init(a) -> int:
     if dev_config.get("toolchain.cuda_home") is None:
         _write_section("toolchain", {"cuda_home": dev_config.cuda_home()}, a.force)
 
-    tools_dir = Path(dev_config.get("host.tools_dir"))
     for name in RECORDED:
         current = dev_config.get(f"toolchain.{name}")
         pin = json.loads(PINS[name].read_text())
         if current is None or _pinned_version(name, current) != pin["version_string"]:
-            _write_section("toolchain", {name: install_pinned(name, tools_dir)}, force=True)
+            _write_section("toolchain", {name: install_pinned(name)}, force=True)
     #: on a host the bootstrap installed bazelisk before `bazel run //:init` could run; the image's init is its bootstrap
     if a.image:
         install_bazelisk()

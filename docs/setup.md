@@ -218,9 +218,22 @@ the image's venv's bin, first on its PATH, and on a host each checkout's venv li
 them first on PATH and the system's own tools are untouched. The environment's developer commands come with
 `requirements.lock`, on the same venv's bin. The tree's own code reaches a pinned tool by its pin or recorded path; a
 check finds the environment's commands (ast-grep, ruff) on the PATH the graph or the venv sets, which is the
-environment's own. THE GAP: the rows sourced from apt are not pinned -- the image installs them unversioned from
-Ubuntu's archive, and on a host they are the host OS's own, which init does not install; `tools/build/dag_to_dot.py`'s
-optional `--svg` runs that graphviz's `dot` from PATH.
+environment's own. THE GAP: the rows sourced from apt are not pinned in the Dockerfile's image -- it installs them
+unversioned from Ubuntu's archive -- and on a host they are the host OS's own, which init does not install;
+`tools/build/dag_to_dot.py`'s optional `--svg` runs that graphviz's `dot` from PATH.
+
+<a id="the-graphs-image"></a>**The graph's image** (`//:image`, `bazel run //:image_load` hands it to Docker as
+`rola-devbox:latest`) is the devbox as a thin wrapper around the bootstrap: what a host supplies itself before the
+graph, and nothing the graph installs. rules_oci writes it as files in the standard image format, so Docker only runs
+it. Its base is `buildpack-deps:jammy` by digest (MODULE.bazel's `devbox_base`: a Docker Official Image, Ubuntu 22.04
+with git, gcc, python3 and curl); on it, the OS packages above that the base lacks (vim, less, jq, fd, ctags,
+graphviz, sqlite3, clang-query), pinned: rules_distroless resolves them against Ubuntu's archive snapshot of the base
+image's day, its indexes' digests recorded in MODULE.bazel.lock and every package by the digest they list; then the
+pinned bazelisk linked as `bazel`, and the packages' commands under the names their alternatives give them. A package
+layer carries its whole closure, the base's core packages among them, so `bazel test //:devbox_packages` holds that
+every package the base already has is at the base's version (2026-11-08: 182 packages, 130 of them the base's, none
+at another version). Inside it the host's loop runs (`python3 tools/bootstrap.py` is its bazelisk already, then
+`bazel run //:init`, `//:dev_env`), its installs on the container's own volumes. 1.4 GB.
 
 | Tool | Source | Role |
 |---|---|---|

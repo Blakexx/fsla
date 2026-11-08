@@ -13,8 +13,6 @@ package(default_visibility = ["//visibility:public"])
 #: library), standard library only
 filegroup(name = "python", srcs = ["bin/python3"])
 
-#: the pinned uv the environment was built with, for the run targets that write venvs over it (`//:dev_env`)
-filegroup(name = "uv", srcs = ["uv/{uv}"])
 
 cc_library(
     name = "torch_headers",
@@ -43,7 +41,6 @@ def _store(rctx):
 
 def _env_impl(rctx):
     pin = json.decode(rctx.read(rctx.attr.uv_pin))
-    rctx.download_and_extract(url = pin["release_url"], sha256 = pin["asset_sha256"], type = "zip", output = "uv", stripPrefix = pin["archive_root"])
     record = json.decode(rctx.read(rctx.attr.toolchain))
     #: the environment's inputs: a change to any of them is a new environment (the lock and the devtools pin by content)
     for source in (rctx.attr.lock, rctx.attr.devtools, rctx.attr.make_env, rctx.attr.flags, rctx.attr.build_flags):
@@ -55,7 +52,7 @@ def _env_impl(rctx):
         "--store",
         _store(rctx),
         "--uv",
-        str(rctx.path("uv/" + pin["binary_path"])),
+        str(rctx.path(rctx.attr.uv)),
         "--python",
         pin["python"],
         "--lock",
@@ -87,7 +84,7 @@ def _env_impl(rctx):
     #: the environment's own interpreter and tools by their store path: the path carries the environment's key, so a
     #: command naming it is keyed by the environment
     rctx.file("flags.bzl", flags.stdout + "VENV = %s\n" % json.encode(paths["venv"]))
-    rctx.file("BUILD.bazel", _ENV_BUILD.replace("{uv}", pin["binary_path"]))
+    rctx.file("BUILD.bazel", _ENV_BUILD)
 
 _env_repo = repository_rule(
     implementation = _env_impl,
@@ -95,6 +92,7 @@ _env_repo = repository_rule(
         "lock": attr.label(default = "//:requirements.lock"),
         "devtools": attr.label(default = "//tools:devtools.txt"),
         "uv_pin": attr.label(default = "//tools:uv_pin.json"),
+        "uv": attr.label(default = "@uv//:uv", allow_single_file = True, doc = "the pinned uv the store is built with"),
         "toolchain": attr.label(default = "//tools:toolchains/cu13.json"),
         "manifests": attr.label(default = "//tools:manifests/cu13/sm_86.json"),
         "make_env": attr.label(default = "//bazel:make_env.py"),
@@ -104,7 +102,7 @@ _env_repo = repository_rule(
     doc = "The Python environment: requirements.lock built once into the shared store, and the graph's flags from it.",
 )
 
-_MOLD_BUILD = 'filegroup(name = "linker", srcs = ["bin/ld.mold", "bin/mold"], visibility = ["//visibility:public"])\n'
+_MOLD_BUILD = 'filegroup(name = "linker", srcs = ["bin/ld.mold", "{binary}"], visibility = ["//visibility:public"])\n'
 
 _CLANG_TIDY_BUILD = """\
 package(default_visibility = ["//visibility:public"])
@@ -279,6 +277,8 @@ _tree_repo = repository_rule(
 )
 
 def _environment_impl(mctx):
+    #: the pinned uv the environment's store is built with, and the run targets that write venvs over it (`//:dev_env`)
+    _pinned_repo(name = "uv", pin = "//tools:uv_pin.json", build = 'exports_files(["{binary}"], visibility = ["//visibility:public"])\n')
     _env_repo(name = "rola_env")
     _pinned_repo(name = "mold", pin = "//tools:mold_pin.json", build = _MOLD_BUILD)
     #: the devbox image's bootstrap: the one tool a host installs before the graph (tools/bootstrap.py)

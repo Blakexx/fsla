@@ -411,6 +411,37 @@ tree_test = rule(
     doc = "A check over the tree's tracked files, the environment's tools on PATH: one test, cached on what it reads.",
 )
 
+_TOOL_TEST = """\
+#!/bin/bash
+# a tree tool as a test (bazel/defs.bzl's tool_test): run on the environment's base interpreter, standard library
+# only, with its arguments' paths in the runfiles
+set -euo pipefail
+exec {python} {tool} {args}
+"""
+
+def _tool_test_impl(ctx):
+    script = ctx.actions.declare_file(ctx.label.name + ".sh")
+    args = [ctx.expand_location(a, ctx.attr.data) for a in ctx.attr.args_]
+    ctx.actions.write(script, _TOOL_TEST.format(
+        python = shell.quote(ctx.file._python.short_path),
+        tool = shell.quote(ctx.file.tool.short_path),
+        args = " ".join(args),
+    ), is_executable = True)
+    runfiles = ctx.runfiles(files = ctx.files.data + [ctx.file.tool, ctx.file._python])
+    return [DefaultInfo(executable = script, runfiles = runfiles)]
+
+tool_test = rule(
+    implementation = _tool_test_impl,
+    test = True,
+    attrs = {
+        "tool": attr.label(mandatory = True, allow_single_file = [".py"], doc = "the tree's tool, standard library only"),
+        "args_": attr.string_list(doc = "its arguments, `$(rootpath ...)` and `$(rootpaths ...)` of `data` expanded"),
+        "data": attr.label_list(allow_files = True, doc = "what its arguments name"),
+        "_python": attr.label(default = "@rola_env//:python", allow_single_file = True, cfg = "exec"),
+    },
+    doc = "A check that is one run of a tree tool over files the graph names.",
+)
+
 _CHECKOUT_TEST = """\
 #!/bin/bash
 # a check of the commit, run in the checkout it is made from (bazel/defs.bzl's checkout_test): never cached; the
