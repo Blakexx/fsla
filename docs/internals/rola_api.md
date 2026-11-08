@@ -42,11 +42,12 @@ reaches into the module itself.
 
 | group | operators |
 |---|---|
-| the carry launch surface | `carry_forward`, `carry_ledger_bind`, `carry_build_stamp`, `carry_census`, `carry_arms` |
+| the carry launch surface | `carry_forward`, `carry_readout_accumulate`, `carry_ledger_bind`, `carry_probe_bind`, `carry_capture_bind`, `carry_capture_bytes`, `carry_build_stamp`, `carry_census`, `carry_arms` |
 | build, card and clock facts | `csrc_build_stamp`, `device_card`, `segment_tokens`, `sm_clock_ghz` |
 | the addressing block | `carry_geometry`, `carry_sub_boxes` |
 | the facts pass | `rola_facts_forward`, `rola_facts_ledger_bind` |
-| the within-window term | `rola_intra_forward`, `rola_intra_ledger_bind`, `intra_footprint`, `intra_build_stamp` |
+| the within-window term | `rola_intra_forward`, `rola_intra_ledger_bind`, `intra_footprint`, `intra_block_rows`, `intra_build_stamp` |
+| the scale pass | `scale_forward` |
 | the producer | `rola_produce_forward`, `rola_produce_ledger_bind` |
 | the producer's solves | `entmax_union_forward`, `entmax_union_backward`, `entmax_factor_forward`, `entmax_factor_backward`, `routing_softmax_forward`, `routing_softmax_backward` |
 | the T=1 decode path | `rola_decode_forward`, `rola_decode_build_stamp`, `rola_decode_arms`, `rola_decode_ledger_bind`, `rola_decode_capacity`, `rola_decode_producer_width_mirror` |

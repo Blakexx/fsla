@@ -164,9 +164,9 @@ inherits nothing through a cache (`docs/internals/state.md` §9.1).
 raises on any attribute read, so the property is proven per node rather than declared.
 
 A PRIMITIVE whose answer is a function of the loaded binary rather than of any fact is
-not a node and no node memo reaches it: the binary's arm census (`rola.ops.carry.arms`)
-and the intra's admitted widths are read by the envelope adapter in `facts/call.py` at
-each call.
+not a node and no node memo reaches it: the binary's arm census (`rola.ops.carry.arms`) is
+read by the envelope adapter in `facts/call.py` at each call. The intra's admitted widths are not one: they are a law
+over the widths and the value width (`rola.ops.intra.admits`).
 
 ## <a id="refusals"></a>8. Refusals are one call at the head
 

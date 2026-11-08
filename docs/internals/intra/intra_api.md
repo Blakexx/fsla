@@ -43,8 +43,8 @@ The refusals (KERNEL_STANDARDS §18: a seam refuses rather than guesses):
   depth.
 
 The footprint is the call's ([`intra_footprint`](#intra-footprint)); one past the 48 KB a kernel
-gets unasked is checked against the device's opt-in and the arm raised to it, once a
-size; the grid is `(windows × pieces, B·H)`, a CTA a piece, the device's card's block and pieces
+gets unasked raises the arm's attribute to it, once a size (every footprint fits the card's: the walk is sized for the
+widest rows); the grid is `(windows × pieces, B·H)`, a CTA a piece, the device's card's block and pieces
 ([`intra.md`](intra.md#block)).
 
 <a id="rola-intra-ledger-bind"></a>

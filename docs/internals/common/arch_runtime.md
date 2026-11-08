@@ -64,8 +64,8 @@ routing forward/backward families, and the T=1 decode step —
 calls `check_arch_table()` as the first statement of its body.
 `tests/unit/test_closed_world_arch_gate.py` scans the registration translation unit's own
 operator list and asserts this for every entry that is not named as launch-less (an arm
-census, a build stamp, a host-only derivation over the descriptor, a ledger binding, or a
-VMM driver operation).
+census, a build stamp, a host-only derivation over the descriptor, a host query of the card it is asked about -- whose
+`card_of` admits that card -- a ledger binding, or a VMM driver operation).
 
 ## Why its own translation unit
 

@@ -32,7 +32,7 @@ def prefill_envelope(widths: tuple[int, ...], d_v: int, decay: Any, intra_reads:
                 "use the reference arm")
     if not intra_reads:
         return (f"widths={widths}; the intra reads one or two levels, each a whole number of 16-digit granules up "
-                f"to 256, within the device's shared memory")
+                f"to 256")
     if d_v != intra_dv:
         return f"d_v={d_v}; the intra reads value width {intra_dv}"
     if carry_arm is None:

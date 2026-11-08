@@ -165,12 +165,6 @@ void launch(const IntraParams& p, const Shape& card, int64_t smem, int64_t bh, b
   //: the attribute call is host time on the launch path: raised only when a call's footprint passes the last one set,
   //: each kernel's own
   static int64_t configured[2] = {0, 0};
-  if (smem > configured[even]) {
-    constexpr int optin = arch::traits_of(B).caps.smem_per_cta_max;
-    STD_TORCH_CHECK(smem <= optin, "the intra's ", smem,
-                    "-byte footprint at these widths exceeds this device's ", optin,
-                    "-byte opt-in");
-  }
   if (!even) {
     const cudaError_t e =
         launch_partial<B, D, kF16>(p, card.pieces, card.threads, smem, bh, stream);

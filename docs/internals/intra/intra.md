@@ -83,9 +83,9 @@ is partial runs the four arms `kEven` false, `intra_kernel<D, kF16, false>`, com
 ([`ampere/intra_kernel.md`](ampere/intra_kernel.md#partial-window)). The host entry reads the device's card, derives the geometry
 from the rows' widths and dtypes, turns each tensor into a view after checking it (`row_view`: shape, 16-byte starts
 and strides), fills the block and launches the arm on a `(windows × pieces, B·H)` grid of the card's threads with the
-call's footprint, `windows` the call's tokens over W rounded up. A footprint past the 48 KB a kernel gets unasked is checked
-against the device's opt-in and the arm's attribute raised to it, once a size: only a call wider than any before it
-pays the attribute call.
+call's footprint, `windows` the call's tokens over W rounded up. A footprint past the 48 KB a kernel gets unasked raises
+the arm's attribute to it, once a size: only a call wider than any before it pays the attribute call. Every footprint
+fits the card: the walk is sized for the widest rows ([`#block`](#block), asserted at compile time).
 
 The build stamp's kernel lives in a NAMED namespace, `stampdet`: nvcc hashes the build path into an anonymous
 namespace's kernel names, and a manifest ratified in one worktree would refuse the identical kernel built in another.
