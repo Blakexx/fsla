@@ -8,12 +8,6 @@
    "count": 1
   },
   {
-   "path": "csrc/rola/src/common/ops.cuh",
-   "message": "a comment describing a past state ('the old'): //: A SHARED COUNTER'S TAKE: the old value, the counter advanced by `v`; explici",
-   "line_sha256": "4e177c690d29a821",
-   "count": 1
-  },
-  {
    "path": "csrc/rola/src/decode/decode_lattice.cuh",
    "message": "a device switch on 'kind' that is not a uniform_switch<Set>",
    "line_sha256": "6e3e44e259f5b70b",

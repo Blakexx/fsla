@@ -20,7 +20,7 @@ a sixth of the carry's samples, and the carry ran 16% faster without it. The win
 window index, its statics from the tenant.
 
 <a id="window"></a>
-`ops::opaque` (`../common/ops.md#opaque`) and `parity_of` pass the window index (and a thread's) through an opaque
+`ops::opaque` (`../common/atoms/warp.md#opaque`) and `parity_of` pass the window index (and a thread's) through an opaque
 move, so a window-invariant offset --
 a window's first token, a list's row base, a tenant by parity, the drain's cell -- is formed at each use: computed once
 before a window's steps, the compiler holds it in a register across the readout, the kernel's register peak, and at

@@ -104,7 +104,7 @@ same passes (the window's words double at W = 1,024, the halves' scan with them)
 ## The load
 
 A unit's window is 512 tokens × 32 bytes, the group's digits of each token's row: two `cp.async` 16-byte quanta a
-token, a lane pair a token (one L2 sector request: [`ops.md`](../common/ops.md#stage-tile-n)), token `t` at region
+token, a lane pair a token (one L2 sector request: [`ops.md`](../common/atoms/copy.md#stage-tile-n)), token `t` at region
 `t / 32` (1 KB each) row `ring_row(t % 32)` = `4 (t % 8) + t / 8` of 32 bytes, so the vote's lanes meet 32 banks.
 Bytes past the rows' width or a token past `L` are zero-filled (`ops::stage_tile_n`), never read. A write list unit
 loads its window's columns beside it into registers (two tokens a thread), so their latency hides under the window's.

@@ -12,7 +12,7 @@ EXECUTED, as operations with contracts.  Every entry is defined by WHAT THE
 ALGORITHM NEEDS, never by what an instruction does: "stage this tile and tell
 me when it is visible", not "issue a cp.async".  Get that level wrong and the
 abstraction leaks on the first new architecture -- TMA cannot implement "issue
-a cp.async", but it can implement `stage_tile`.
+a cp.async", but it can implement "stage this tile" ([`atoms/copy.md`](atoms/copy.md)).
 
 A kernel above this header names no architecture. It reads layer 2a for its design and calls this file to execute
 it.
@@ -29,252 +29,19 @@ the gap is ANNOUNCED rather than taken silently.
 Every operation is defined by WHAT THE ALGORITHM NEEDS. A helper with no caller in a shipped kernel is marked
 (no shipped caller); it is kept or removed with the code.
 
-#### Staging
+### The atoms
 
-- `smem_addr(p)`: the CTA-local address of a shared object, the address type every shared operation consumes.
-- `stage_tile(dst, src)`: copy <a id="kstagebytes"></a>`kStageBytes` (16) bytes global -> shared without occupying
-  the issuing thread. `kStageBytes` is a fact of the operation, the widest single asynchronous copy the staging
-  issues, and staging loops are shaped from it. A group is every `stage_tile` since the last `stage_commit()`;
-  `stage_wait<n>()` means all but the newest `n` groups have landed FOR THE ISSUING THREAD, and CTA-wide visibility
-  needs a following `rendezvous()` -- a property of the contract that TMA/mbarrier satisfies the same way.
-  <a id="kstagingisbulk"></a>`kStagingIsBulk` states that the built form moves `kStageBytes` an issue; a bulk (TMA)
-  form would take one descriptor issue a tile and is not built (announced, below).
-- <a id="stage-tile-if"></a>`stage_tile_if`: the copy with its source predicated -- a dead quantum ZERO-FILLS its
-  destination and reads nothing, so a partial tile is the same code as a full one and never reads past an operand's
-  end. <a id="stage-tile-when"></a>`stage_tile_when`
-  guards the copy itself (`@p LDGSTS`): a copy that must write nothing when dead -- a part a call has none of, whose
-  destination another part owns -- where `stage_tile_if`'s zero-fill would land.
-- <a id="stage-tile-n"></a>`stage_tile_n`: the copy of a run's first `bytes` (0 to 16), the rest zero-filled and
-  nothing past them read, so a row that ends inside a quantum (a level whose width is not a multiple of sixteen) never
-  reads the next level's digits (the facts pass's rows, `docs/internals/facts/facts.md#load`).
-- <a id="stage-run"></a>`stage_run`: the same copy at a narrower quantum. A run shorter than 16 bytes is still ONE
-  asynchronous access, never a padded 16-byte one that would read a neighbour's bytes. The 4- and 8-byte forms are
-  the cache-all variant, because the 16-byte bypass has no narrower member; source and destination are naturally
-  aligned, the caller's contract, so no size is ever split here.
-- <a id="stage-run-if"></a>`stage_run_if`: `stage_run`'s predicated form -- a dead run reads nothing and zero-fills,
-  which makes a partial window arithmetic rather than a tail case (a token past the window lands zero amplitudes).
-- <a id="stage-run-lanes"></a>`stage_run_lanes`: `stage_run`'s LANE-predicated form; a dead lane issues nothing and
-  its destination keeps what it holds. Measured: dead lanes landing zero-size cost the memory pipe nothing on
-  16-byte copies and ~60 cycles a copy on the 4-byte `.ca` ones (no shipped caller).
-- <a id="load-vec16"></a>`load_vec16` / `store_vec16` and <a id="storesharedvec16"></a>`store_shared_vec16`: the
-  16-byte quantum moved synchronously, the same width as every staged copy, so one bank analysis covers a buffer
-  whether its rows were staged or computed. `copy_shared_to_global_16b` composes the two into one coalesced 128-bit
-  store.
-- `rendezvous()`: every thread of the CTA arrives and all prior shared accesses are ordered before all subsequent
-  ones; also the WAR fence that lets a ring slot be overwritten. <a id="rendezvous-group"></a>`rendezvous_group(id, n)`
-  is the same restricted to `n` warp-aligned threads at named barrier `id` (id 0 is the CTA's and is not offered;
-  sm_80/86/90 provide sixteen). `rendezvous_arrive(id, n)` arrives there without waiting: a producer's stores before
-  it are visible to every thread past the barrier's `rendezvous_group` (PTX: an arrive synchronizes with the sync on
-  the same barrier), so a role hands its output to another and runs on. <a id="rendezvous-if"></a>`rendezvous_if(cond)`
-  is `rendezvous()` predicated on a CTA-uniform `cond` (PTX allows a predicated `bar.sync` where every thread
-  evaluates the condition alike): one instruction, so where a barrier is needed only sometimes no branch splits the
-  block (the carry's rendezvous on its step words' `reuse`, `carry_kernel.md#kernel`).
-- <a id="mbarrier"></a>`mbar_init`, `mbar_arrive_when_landed`, `mbar_arrive`, `mbar_wait`: an `mbarrier` (sm_80+)
-  completes a phase at `count` arrivals and flips its parity. A thread's `cp.async` copies arrive when they LAND
-  (`cp.async.mbarrier.arrive.noinc`: the arrival is one of the counted ones); a thread's own arrive releases its
-  prior shared stores; a wait acquires. `mbar_wait` is a `test_wait` spin, cheap when the phase is already complete,
-  which is the case a design arranges. `mbar_test` asks once, for a loop that does other work while copies have not
-  landed (its answer voted over the warp before it steers a branch). `mbar_wait_sleep` polls with a 64 ns
-  `__nanosleep`: on sm_80/86 a wait is a polled shared word, and a tight poll takes the issue slots of the warps doing
-  the work it waits on.
+Each concern of the operations is an atom header under `common/atoms/`, its body chosen per family where it is defined (`docs/KERNEL_STANDARDS.md` section 8); `ops.cuh` includes them all and holds the consistency below.
 
-#### Addressing
-
-- <a id="gather-ptr"></a>`gather_ptr(base, off)`: a gathered row's address, a 64-bit base formed once plus a 32-bit
-  BYTE displacement ZERO-EXTENDED rather than multiplied out. The arithmetic is the contract: at element type the
-  compiler re-derives `base + index` as a widening multiply per access (measured 30x `IMAD.WIDE` in a loop this form
-  emits none for). The caller owns the 32-bit bound. The base is asserted GLOBAL, because a generic pointer turns a
-  reduction into an atomic read-modify-write and every gathered load into a generic one. (no shipped caller)
-- <a id="t"></a>`pin_address(p)`: a base the compiler must keep rather than re-derive. Under register pressure a
-  compiler drops a live base and recomputes it in the loop -- the widening multiply moved rather than removed; the
-  value becomes the result of an operation ptxas cannot see through, at the cost of the two registers it occupies.
-- <a id="page-slot"></a>`page_slot`: the state plane's one base translation, `slot = page_tbl ? page_tbl[atom] :
-  atom` ([`paging/paging.md`](../paging/paging.md)). A negative slot is skipped at both ends of the state I/O, and
-  the predicate is CTA-uniform because an atom belongs to exactly one box, which is what licenses skipping the
-  barriers inside a sweep with the traffic. (no shipped caller)
-- <a id="atom-activity"></a>`atom_activity`: the facts' two orthogonal per-atom bits, `kAtomWritten` and
-  `kAtomRead`, never pre-ORed by the producer (the read-only distinction is what the touched-atom census is about, and
-  ORing saves nothing). LOAD an atom iff it is resident and `(read | written)`; STORE it iff `written` -- identical
-  under both backings, which is what makes the paging gate's `torch.equal` a certificate of the skip logic. A null
-  `atom_bits` is the universal fact: every resident atom is read and written. (no shipped caller)
-- <a id="store-shared-u16"></a>`store_shared_u16`, <a id="storesharedu32"></a>`store_shared_u32`,
-  <a id="loadsharedu16"></a>`load_shared_u16`, `load_shared_f32`, <a id="store-shared-f32x2"></a>`store_shared_f32x2`,
-  <a id="load-shared-v4"></a>`load_shared_v4`: shared accesses ADDRESSED rather than indexed. A swizzled or
-  dynamically indexed address is not an affine function of an index, and `dst[k++]` through a typed pointer
-  re-derives a widening multiply every iteration (measured: a loop of one `STS.U16` a live bit ran as `IMAD:114,
-  IADD3:69` with no `STS` in its top opcodes); a 32-bit shared address advanced by the element size costs one add.
-  <a id="store-shared-f32-if"></a>`store_shared_f32_if` is the fp32 store predicated in the instruction (`@p STS`):
-  an `if (live) x[i] = v` inside a step compiles to a branch and a convergence barrier around the store (the den's
-  result store on sm_80, 2026-11-01), which the SASS gate reds. `store_shared_u32_if`, `store_shared_u64_if` and `store_shared_f32x2_if` are
-  the word and the pair the same way (the value-carve readout's panel adds past a tile's run).
-  The pair and quad forms are aligned single accesses (`st.shared.v2.f32`, `ld.shared.v4.u32`); a quad every lane
-  reads at one address is a broadcast. (`store_shared_u16`, `store_shared_u32`, `load_shared_u16`,
-  `store_shared_f32x2`, `load_shared_v4` and `load_shared_f32`: no shipped caller)
-
-<a id="load-shared-if"></a>`load_shared_u32_if`, `load_shared_u64_if` and `load_shared_f32_if` are the loads predicated
-the same way (`@p LDS`, 0 where `live` is false). A read-modify-write whose store is predicated off predicates its
-load too, so a dead lane reads no word a live lane of its warp writes (the carry's panel adds: a tile's rows past its
-run alias its first row's slot).
-
-#### Votes and lanes
-
-- <a id="kballotlanes"></a>`kBallotLanes`: the lockstep unit's width, deliberately not `kMmaUnitThreads`: a warpgroup
-  issues one MMA across 128 threads and still votes in lanes of 32, and conflating them reads a quarter of a vote.
-- <a id="lane-ballot"></a>`lane_ballot(pred)`: one bit per lane, in lane order -- the unit's own agreement about its
-  lanes' data, with no memory round trip and nothing ordered. Written as the intrinsic: the promise is the bit vector.
-- <a id="bit-count"></a>`bit_count`, <a id="firstset"></a>`first_set`, <a id="lastset"></a>`last_set`: the readings
-  of a vote that turn agreement into POSITIONS -- how many, and where first or last. An empty vector gives
-  `kBallotLanes` for `first_set` and `-1` for `last_set`, so "nowhere" compares past every lane with no separate case.
-- <a id="lane-prefix-incl"></a>`lane_prefix_incl<N>`: the unit's running total; `N` a power of two no wider than the
-  unit, lanes at or above it the caller's to mask. Every lane executes every step, so the unit is converged at each
-  `__shfl_up_sync`.
-- <a id="nth-set-bit"></a>`nth_set_bit`: the n-th set bit of a word by a branch-free binary search on popcounts,
-  about thirty instructions, against the intrinsic `__fns`, a software loop (no shipped caller).
-- <a id="uniform-warp"></a>`uniform_warp`: the warp's index as a value ptxas knows to be warp-uniform (three ballots
-  on the thread index's bits); `threadIdx.x >> 5` is per-thread to its analysis, and a loop bounded by it is divergent,
-  after which every shuffle is fenced and outlined.
-- <a id="warp-sync"></a>`warp_sync()`: `bar.warp.sync 0xffffffff`. `__syncwarp()` at a site the compiler cannot prove
-  convergent lowers to a CALL into `__cuda_sm70_warpsync`; the instruction keeps the edge a single WARPSYNC (no
-  shipped caller).
-
-#### The MMA atoms and their operands
-
-- <a id="kmmaunitthreads"></a>`kMmaUnitThreads`: the threads that jointly issue one MMA and own its accumulator --
-  a property of the built `mma`, not of an architecture; the consistency section is where it and the capability row
-  must agree.
-- <a id="load-frag"></a>`load_frag` / `load_frag_t`: four 8x8 b16 tiles from shared memory in the register order the
-  MMA consumes; `_t` transposes each 8x8 so one shared tile serves either handedness. THE `memory` CLOBBER IS PART OF
-  THE CONTRACT: `ldmatrix` reads shared memory, and without the clobber the compiler may move it across a barrier, so
-  a warp could pull rows another warp has not published.
-- <a id="mma"></a>`mma(acc, a, b)`: acc += A(16x16) . B(16x8), bf16 operands, fp32 accumulator private to the issuing
-  unit, both operands from its registers. The atom is chosen by SHAPE FAMILY: `kMmaM/N/K` is the shape every fragment
-  index is written in, and an architecture whose register-source family is shaped differently (Hopper's `_RS` atoms,
-  64 x {8..256} x 16, K-major A) substitutes its own member. <a id="kmmaacceptsregistera"></a>`kMmaAcceptsRegisterA`
-  states the operand sources the built `mma` accepts; a kernel whose accumulator must land on a particular side
-  asserts against them at its own site.
-- <a id="hmma"></a>`hmma`, `hmma_fresh`, `hmma_k8`, `hmma_k8_f16`, `hmma_f16`, `hmma_f16_fresh`, `hmul2`, `hfma2`,
-  `pack_half2`: the fp16 family -- `m16n8k16` f16 into fp32 (`hmma_fresh` into a fresh fragment, C = 0; `hmma_k8` the
-  `m16n8k8` atom, half the tensor work, the fold's 8-token tail, `hmma_k8_f16` the same into an fp16 accumulator, the
-  readout's den; `hmma_f16` into an fp16 accumulator, two f16 pairs a lane --
-  `hmma_f16_fresh` the same into a fresh fragment -- rows `lane / 4` and `+ 8`,
-  columns `2 (lane % 4)` and `+ 1` -- at twice GeForce's fp32-accumulate rate), two f16 products or fused products each
-  rounded once to nearest, two fp32 to an f16 pair rounded to nearest (`cvt.rn.f16x2.f32`, `lo` in the low half). Every
-  rounding is explicit so `tests/oracle/fold_reference.py` can mirror it.
-
-- <a id="imma-u8"></a>`imma_u8_k32`, `imma_u8_k32_fresh`, `imma_u8s8_k32`: `mma.sync.m16n8k32` over u8 and s8 into
-  s32, 4096 multiply-adds. A is four registers a lane (rows `lane / 4` and `+ 8`, four consecutive k a register at
-  `4 (lane % 4)` and `+ 16`), B two (column `lane / 4`), the accumulator four s32 -- exactly the register image
-  `ldmatrix` gives of two 16-byte rows a lane, so a token-major row of digits is an operand with no shuffle. `u8.u8`
-  is digits against digits, `u8.s8` unsigned weights against signed values; `imma_u8_k32_fresh` takes C from the
-  zero register so the accumulator is not live before a sum's first step. On sm_86 one issues every 16 cycles a
-  scheduler (8 on sm_80),
-  four times the bf16 fp32-accumulate rate (probe of 2026-09-28).
-- <a id="sqrt-approx"></a>`sqrt_approx`: `sqrt.approx.f32`, one special-function instruction. The IEEE root (`sqrtf`)
-  compiles to a range check and a call to a slow-path subroutine, whose calling convention spills a body that holds
-  its registers full (the producer's register-resident threshold, at 252 live); the approximate root sits in the same
-  error class as the `__fdividef` beside it.
-- <a id="exp2-approx"></a>`exp2_approx`: `ex2.approx.ftz.f32`, one special-function instruction: `2^x` within two
-  units in the last place, a denormal result flushed to zero, `2^-inf = 0` (the softmax's dead columns,
-  [produce.md#solve](../produce/produce.md#solve)).
-- <a id="prmt"></a>`prmt`, `pack_byte4`: `prmt.b32` picks four of two words' eight bytes by a selector nibble each;
-  `pack_byte4` takes the same byte of four words with three of them (pair selectors `0x0040`, `0x0051`, `0x0062`, then
-  `0x5410`), which is how an int8 operand row is formed from four gathered words without shifts or masks.
-- <a id="transpose-frag-b16"></a>`transpose_frag_b16`: an 8x8 b16 tile transposed where it lies
-  ([below](#reg-transpose)).
-
-#### The bf16 pair helpers (no shipped caller)
-
-- <a id="hi-bf16"></a>`hi_bf16`, `hi_bf16x2`: an fp32's top half IS its bf16 truncation, so a register pair becomes an
-  operand with one `prmt.b32` (selector `0x7632`) against `pack_bf16x2`'s conversion. It TRUNCATES where
-  `pack_bf16x2` rounds to nearest even: one bf16 ulp, biased toward zero, a declared rounding an oracle mirror must
-  carry. <a id="lo-bf16x2"></a>`lo_bf16x2` packs the two LOW halves (`prmt` 0x5410), and
-  <a id="pack-lo"></a>`pack_lo` / `join_hi_lo` split a word into hi and lo and rejoin it bit for bit.
-- <a id="splat-bf16x2"></a>`splat_bf16x2` puts one bf16 in both halves so a scalar is an operand of `mul_bf16x2`;
-  <a id="splat-bf16x2-bits"></a>`splat_bf16x2_bits` does it from a raw bit pattern, because a register array must
-  never be address-taken (one `&run[i]` puts the whole run in local memory).
-- <a id="mul-bf16x2"></a>`mul_bf16x2`: the elementwise product of two packed bf16 pairs, rounded to nearest even. The
-  PTX ISA gates `mul.rn.bf16x2` at sm_90 and `fma.rn.bf16x2` at sm_80, so on Ampere the product is one HFMA2 with a
-  <a id="knegzeropair"></a>`kNegZeroPair` addend: `a*b + (-0.0)` rounds the exact product once and keeps a signed
-  zero, where a `+0.0` addend would turn every `-0` into `+0`. There is no fp32 route: every tabulated row carries
-  `bf16_simd_fma`, and an untabulated architecture fails the build.
-- <a id="store-bf16"></a>`store_bf16`: one fp32 to one bf16, rounded as `pack_bf16x2` rounds each half, for a
-  transposed accumulator whose adjacent pair is adjacent in TOKEN and so in different rows of a [token][d_v] buffer.
-- <a id="or-run"></a>`or_run<N>` with <a id="kbf16magnitudemask"></a>`kBf16MagnitudeMask` and
-  <a id="koctets"></a>`kOctets`: the OR of a contiguous, naturally aligned run at the widest access that covers it;
-  the run is entirely zero exactly when the OR has no magnitude bit set, since bf16's only zeros are +0 and -0 and OR
-  cannot clear a set bit. `kOctets` names `N / 8` for the unroll-discipline lint.
-
-#### Reductions
-
-- <a id="fan-in-add"></a>`fan_in_add(p, x)`: ONE contribution into an accumulator other units also contribute to,
-  fire and forget. Nothing is returned, and that is the substance: a returning atomic keeps the issuing thread
-  waiting, and the point of a reduction is that nothing waits. No order across contributors is defined, so a caller
-  that needs a reproducible summation order needs another operation. Stated as `red.global.add.f32`, because an
-  `atomicAdd` with an unused result is only sometimes lowered to a reduction; the SASS gate checks the non-returning
-  form. <a id="storef32"></a>`store_f32` stores a summand at fp32, unrounded, for a buffer whose consumer is a fan-in.
-- <a id="red-global"></a>`red_global_add_f32`: the same with the address converted to the global window first. A
-  generic `atomicAdd` on a pinned base lowers to an address-space probe, a shared-memory CAS spin and a local fallback
-  beside a RETURNING atomic, whose round trip the next branch waits on (measured: 30% of a dense window's stall
-  samples on those branches).
-- <a id="or-shared-u32"></a>`or_shared_u32`: one contribution into a shared bitset, fire and forget -- the fan-in's
-  contract over the bitwise monoid (no shipped caller). <a id="redsharedaddu32"></a>`red_shared_add_u32`: the same
-  over the counting monoid, an arrival count whose incrementer never learns the total; `red_shared_add_f32` over fp32.
-- <a id="atom-shared-add"></a>`atom_shared_add_u32`: `atom.shared.add.u32` with the old value returned -- a shared
-  counter's take. Stated shared, so ptxas emits no address-space probe.
-- <a id="publish-fence"></a>`publish_fence()`: the order between a unit's shared writes and the flag that publishes
-  them, at BLOCK scope: producers and consumers that are warps of one CTA need no device-scope fence, which would
-  order traffic no participant can observe (no shipped caller).
-
-#### Scheduling controls
-
-- <a id="opaque"></a>`opaque(v)`: a value made opaque at this use (a `mov` in an `asm volatile`), so nothing
-  derived from it is computed before it or shared with another use. A value hoisted out of a window loop is held live
-  across the MMA bursts, where registers are scarce (KERNEL_STANDARDS §32): a thread's index, a window's index or its
-  parity passed through it makes each offset formed where it is used, a few instructions there, instead of a register
-  held across the window.
-- <a id="once"></a>`once(cond)`: `for (int n = ops::once(cond); n > 0; --n)` is a real branch where `if (cond)` on a
-  warp-uniform value would be if-converted and every warp would issue the body predicated off (KERNEL_STANDARDS §20).
-  The bound is hidden from ptxas by an empty `asm volatile`, so the loop cannot be flattened as 0-or-1 trips. Never
-  around a step loop: there the guard is the plain vote -- `for (k = __any_sync(full, s < n) ? 1 : 0; k > 0; --k) do
-  { step } while (__any_sync(full, ++s < n));` -- since `once`'s opaque bound hides the loop's trip structure from
-  ptxas (measured on the carry's skeleton: branches inside the step, extra MMA sites, spills; the plain vote clean).
-- <a id="cycles"></a>`cycles()`: `%clock64` by `mov`, for the phase ledgers; the `clock64` intrinsic is not declared
-  in every host-pass compilation of a header both a launch and a harness include.
-  <a id="cycles-after"></a>`cycles_after(after)` takes `after` as an input it does not use, so the read cannot issue
-  before `after` arrives: ptxas deletes a clock read whose value is unused, so a dependency is the only way to order
-  one.
-
-### <a id="reg-transpose"></a>The register transpose
-
-`transpose_frag_b16(x)` transposes an 8x8 b16 tile where it already lies, across
-the issuing unit's own registers, for a contraction whose `k` axis is the axis an
-accumulator carries on its `m` side (no shipped caller). The contract is about MAPS,
-not about data.
-
-For `m16n8k16`, the accumulator spreads its two axes over the lanes as
-`(m = t/4 [+8], n = (t%4)*2 + {0,1})` and a `B` operand spreads its two as
-`(k = (t%4)*2 + {0,1} [+8], n = t/4)`. The two are the same matrix through a
-transposed lane map, so an accumulator can be an operand of a contraction over its
-own `m` axis only through this operation.
-
-**MEASURED, not read off the ISA.** A standalone probe loaded a known 16x8 matrix
-into a thread's registers using the accumulator map, fed it as `B` against
-`A = I16`, and read the mma's own output back:
-
-| candidate | verdict |
-|---|---|
-| the accumulator map already IS the `B` map | REFUTED: 112 of 128 elements differ, and the difference is exactly the transpose |
-| `movmatrix.sync.aligned.m8n8.trans.b16` | 0 of 128 differ. Two instructions per (16 `d_v` x 8 slot) tile |
-| a shared-memory round trip through the padded buffers | not needed, not built |
-
-The capability is a REQUIRED clause of the baseline (`arch_caps.cuh`) rather than a
-selecting one, because the alternative is not a slower implementation of the same
-operation — it is a different algorithm, with a `BCg x d_v` staging buffer that
-does not fit beside the ring.
-
-The SASS gate needs no carve-out for it: `MOVM` is not one of the signatures
-`tools/sass_gate.py` reds on (local memory, convergence subroutines, predicated
-HMMA, instructions-per-HMMA).
+- [`atoms/address.cuh`](atoms/address.md): shared addresses, gathered and pinned bases, the state plane's page translation and the facts' per-atom bits.
+- [`atoms/copy.cuh`](atoms/copy.md): global to shared without the issuing thread, their groups and waits, and the 16-byte quantum moved synchronously.
+- [`atoms/barrier.cuh`](atoms/barrier.md): the CTA's and named rendezvous, the mbarrier's phases, the warp's edge and the publish fence.
+- [`atoms/warp.cuh`](atoms/warp.md): lane votes and their readings, the warp-uniform index, the lane prefix and broadcast, and the controls ptxas cannot see through.
+- [`atoms/clock.cuh`](atoms/clock.md): the SM's cycle counter for the phase ledgers.
+- [`atoms/mma.cuh`](atoms/mma.md): the MMA's shape and unit, its fragment loads and the register transpose, and the bf16, f16 and int8 atoms.
+- [`atoms/math.cuh`](atoms/math.md): the special-function unit's roots and powers, byte and halfword selects and packs, the f16 and bf16 pair arithmetic.
+- [`atoms/reduce.cuh`](atoms/reduce.md): contributions into an accumulator others also add into, in global or shared memory.
+- [`atoms/memory.cuh`](atoms/memory.md): shared and global accesses addressed rather than indexed, plain and predicated in the instruction.
 
 ### Operations that are not here
 
@@ -291,7 +58,7 @@ unfalsifiable.  It is a free axis, and `design.cuh` says why it stays one.
 ## <a id="consistency"></a>The consistency between layers 2a and 2b
 
 <a id="static-assert"></a>`design.cuh` claims REGISTERS is a residency this baseline builds: it is built by an `mma`
-that reads an operand from the issuing unit's own registers and by `pack_bf16x2`, the accumulator-to-operand
+that reads an operand from the issuing unit's own registers and by the packed bf16 pair (`atoms/math.cuh`), the accumulator-to-operand
 conversion that keeps the state out of shared memory. If either went away the claim would be false, and the first
 assertion is where that is caught.
 
@@ -301,6 +68,6 @@ shaped atom. It is a consistency clause between the design's carve and the opera
 reads NOT BUILT rather than UNSUPPORTED.
 
 <a id="note-l562"></a>THE ANNOUNCEMENT SITES are where the capability row records a better implementation of a
-baseline operation than the one built: `stage_tile` on a part with bulk asynchronous copy, where TMA satisfies the same
+baseline operation than the one built: the staged copy on a part with bulk asynchronous copy, where TMA satisfies the same
 contract with one descriptor issue instead of one a 16 bytes. None is an error -- the built path is correct everywhere
 it compiles -- and what is forbidden is taking the slower path silently.

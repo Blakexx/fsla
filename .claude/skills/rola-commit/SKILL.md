@@ -16,3 +16,6 @@ description: Load before committing or pushing in this repo: the gate a commit r
 4. A lint finding is fixed at its site; a ratchet's baseline only shrinks (`--shrink`, same commit)
    (`docs/internals/tools/lint.md#ratchets`). A changed dev environment needs the container check (`rola-dev`).
 5. The subject states what the commit makes true, in words, never a work code.
+6. After the commit, its review lands detached (`tools/git-hooks/post-commit`; `python tools/review_gate.py --show 1`,
+   `docs/internals/tools/review_gate.md`): read it before the next commit, and fix a BLOCK finding or say in words why
+   it is wrong.

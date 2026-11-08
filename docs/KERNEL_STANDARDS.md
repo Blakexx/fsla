@@ -55,7 +55,8 @@ a phase change that moves state is the transfer the design names, never an ad-ho
 RULE: every SMEM tile has a named layout with its swizzle derived from its access pattern (writer's and
 reader's), and a ROUND-TRIP test proving bit-exactness and conflict-freedom (the existing plane gate).
 Changing an access pattern (e.g. 2-byte scattered stores) re-derives the swizzle and re-runs the gate.
-Primitives (`ldmatrix`, `cp.async`, `mma`, `red`) are wrapped ONCE (`csrc/rola/src/common/ops.cuh`); call sites use the wrapper.
+Primitives (`ldmatrix`, `cp.async`, `mma`, `red`) are wrapped ONCE, in their concern's atom (`csrc/rola/src/common/atoms/`,
+all included by `common/ops.cuh`); call sites use the wrapper.
 
 ## 4. Pipelines: explicit stage state, release immediately after consumption, two stages in flight
 - FA3's producer acquires a stage before issuing, the consumer waits, issues the GEMM, waits for it, and
@@ -371,7 +372,7 @@ carries; each was re-learned by trial this week and costs a rebuild when missed.
   cannot see is uniform) with shuffles inside: ptxas loses convergence for everything after it in the
   enclosing loop -- the drain's first facts form cost 84 more guarded collectives and a fold MMA step
   duplicated into a fallback; its bound taken from lane 0 by a shuffle restored the 9 the kernel had
-  (`docs/internals/common/ops.md#uniform-warp`).
+  (`docs/internals/common/atoms/warp.md#uniform-warp`).
 - `@P HMMA` or a pair body whose non-tensor instruction count equals its `if`-guarded block's:
   IF-CONVERSION. A warp-uniform `if` (dealt work, a runtime flag) is predicated, not branched, and runs
   predicated-off on every other warp. Rule: a one-trip `for` (`#pragma unroll 1`) forces the branch;
@@ -1000,7 +1001,7 @@ gated, and an instrument's missing target is a red.
 3. REGISTERS ARE BUDGETED PER PHASE: the budget's `registers` line states each component's peak live registers, under
    the allocation of the warps a scheduler the design wants; `tools/life_ranges.py --budget` reds a component past
    its line or without one. §29.2's hoisting stops at the line: a value whose hoisting would pass it is re-derived at
-   its use (`ops::opaque`, docs/internals/common/ops.md#opaque), a few instructions there instead of a register held
+   its use (`ops::opaque`, docs/internals/common/atoms/warp.md#opaque), a few instructions there instead of a register held
    across the window. A spill is never the signal (§20 reds it); the line is. A RE-DERIVATION IS A PRICED LINE ITEM
    (amended 2026-10-18): its instructions at its trips (§29.11), in the budget beside the register it saves -- the
    carry's open ledger miss (3,884 instructions a warp-window against ~2,020) is mostly tokens, sources and swizzles
@@ -1022,7 +1023,7 @@ gated, and an instrument's missing target is a red.
    owed to its own rented run.
 5. A TARGET THAT DISAPPEARS IS RED: a floor, budget line or gate row naming a function, loop or cell the tree no longer
    has fails; it never reads as nothing.
-6. ONE PRIMITIVE A JOB: before writing a helper, the common headers (`common/ops.cuh`, `common/*.cuh`) are read for
+6. ONE PRIMITIVE A JOB: before writing a helper, the common headers (`common/atoms/*.cuh`, `common/*.cuh`) are read for
    it; a kernel-local copy of a common primitive is a defect, and an unused common primitive is dead code.
 7. A/B IS THE DECLARED SUITE: two builds are compared only in one interleaved, clock-locked session -- rola-bench's
    suite with the baseline as a reference checkout, pruned to the sessions (`rola-bench`) -- or by ncu's cycles of one

@@ -914,12 +914,6 @@
    "count": 1
   },
   {
-   "path": "docs/internals/common/ops.md",
-   "message": "names the work code 'I16'",
-   "line_sha256": "2db587b3173c1176",
-   "count": 1
-  },
-  {
    "path": "docs/internals/decode/decode.md",
    "message": "names the work code 'S4b'",
    "line_sha256": "11547c870405df36",
