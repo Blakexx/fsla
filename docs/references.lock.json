@@ -1631,7 +1631,7 @@
   {"doc": "docs/internals/tools/dev.md", "pinned_at": "7b2f6a09882f", "reviewed": true, "sha256": "", "target": "tools/clang_tidy_pin.json"},
   {"doc": "docs/internals/tools/dev.md", "pinned_at": "9edbb7b546c4", "reviewed": true, "sha256": "", "target": "tools/dev.py"},
   {"doc": "docs/internals/tools/dev.md", "pinned_at": "9edbb7b546c4", "reviewed": true, "sha256": "f704f915212fd43a", "target": "tools/dev.py::CONTAINER_PROOFS"},
-  {"doc": "docs/internals/tools/dev.md", "pinned_at": "8d5d62ec4f80", "reviewed": true, "sha256": "f98b932fe3652082", "target": "tools/dev.py::ENV_INPUTS"},
+  {"doc": "docs/internals/tools/dev.md", "pinned_at": "57b75476b51d", "reviewed": true, "sha256": "1861d1d04246d2bf", "target": "tools/dev.py::ENV_INPUTS"},
   {"doc": "docs/internals/tools/dev.md", "pinned_at": "9edbb7b546c4", "reviewed": true, "sha256": "", "target": "tools/mold_pin.json"},
   {"doc": "docs/internals/tools/dev.md", "pinned_at": "9edbb7b546c4", "reviewed": true, "sha256": "", "target": "tools/sccache_pin.json"},
   {"doc": "docs/internals/tools/dev_config.md", "pinned_at": "1ec38c498250", "reviewed": true, "sha256": "", "target": "bazel"},

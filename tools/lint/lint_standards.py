@@ -1404,20 +1404,8 @@ def check_settings_come_from_the_dev_config() -> list[str]:
 
 
 def main() -> int:
-    #: THESE THIRTEEN are wired as a BLOCKING commit/CI gate
-    #: (`//tools:lint_standards`, .github/workflows/lint.yml) -- a nonzero exit
-    #: here fails every commit and every CI run, repo-wide. The entmax pin's
-    #: check is a test (tests/unit/test_entmax_pin.py), not one of these: it
-    #: executes real code (`pin.gate()`, monkeypatched refusal shapes) -- a
-    #: lint reads files; it never imports the library under test.
-    #:
-    #: S5c (2026-08-29): `check_comment_density`/`check_no_long_comment_blocks`
-    #: MOVE FROM ADVISORY TO GATING here. K39's reason for parking them advisory
-    #: (csrc/ ~40 files over the mandate's 15% line, "not to be fixed by you")
-    #: is resolved: S5b + S5c moved every remaining `//:` block and file header
-    #: to docs/internals/, and every csrc file is under the threshold as of this
-    #: commit -- a gate that is green on the tip it lands on is a gate a future
-    #: contributor can actually satisfy, not a standing debt notice.
+    #: EVERY CHECK BELOW GATES (`//tools:lint_standards` in the commit gate, and CI's lint job): a finding fails
+    #: the commit and the CI run, repo-wide. Each reads files; none imports the library under test.
     gating_findings: list[str] = []
     gating_findings += check_unroll_discipline()
     gating_findings += check_no_torch_in_arm_tus()

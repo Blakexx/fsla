@@ -201,7 +201,7 @@ tree_test(
 #: THE UNIT LINTS, each unit's own compile linted for each ratified architecture (docs/build-graph.md#checks)
 unit_lint_test(
     name = "clang_tidy_device",
-    size = "large",
+    size = "small",
     lint = "device",
     units = ["//:library"],
 )

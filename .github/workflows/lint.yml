@@ -51,16 +51,17 @@ jobs:
         run: python3 tools/lint/ast_grep_gate.py --test-fixtures
       - name: lint_standards.py (unroll discipline, arm-TU torch include, barrier-free regions, the docs mirror, no work codes in a mirror page)
         run: python3 tools/lint/lint_standards.py
-      # THE READABILITY AND DEAD-CODE GATES that need no build, run here directly; the commit gate's list is the
-      # build graph's (`bazel test //:gate`, docs/build-graph.md#checks), which this job's follows until it runs the
-      # graph. The unit lints (clang-tidy's two profiles, the host warnings) read the graph's compile actions and
-      # run in the graph alone.
+      # THE READABILITY AND DEAD-CODE GATES: the commit gate's (`bazel test //:gate`, docs/build-graph.md#checks)
+      # lints and self-tests that need no build, run here directly. The unit lints (clang-tidy's two profiles, the
+      # host warnings) read the graph's compile actions and run in the graph alone.
       - name: unused __global__ instantiation check
         run: python3 tools/lint/unused_instantiations.py
       - name: ruff E30x (blank-line spacing, preview)
         run: tools/lint/run_ruff_e3.sh
       - name: readability spacing (long zero-blank bodies, csrc blank runs)
         run: python3 tools/lint/readability_spacing.py
+      - name: the agent files name no machine's path
+        run: python3 tools/lint/portable_claude.py
       - name: every tracked path is declared for the public mirror
         run: |
           python3 -m rola_devtools.mirror --check
@@ -76,11 +77,13 @@ jobs:
           python3 tools/lint/ratchet.py coverage
       - name: every doc reference is pinned (tools/docrefs.py)
         run: python3 tools/docrefs.py
-      - name: every ratchet lint's fixtures still fire
+      - name: every lint's fixtures still fire (the unit lints' are the graph's)
         run: |
           python3 tools/lint/drift_guards.py --test-fixtures
           python3 tools/lint/constant_parameters.py --test-fixtures
           python3 tools/lint/r9_enforcement.py --test-fixtures
+          python3 tools/lint/readability_spacing.py --test-fixtures
+          python3 tools/lint/unused_instantiations.py --test-fixtures
           tools/lint/run_vulture.sh --test-fixtures
 
   cpu-gates:
