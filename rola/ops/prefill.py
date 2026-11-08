@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE PREFILL COMPOSITION: one segment's kernels over the bundle and the epilogue that joins them.
 
-THE KERNELS ARE ONE OPERATOR on one window grid (`rola.ops.window.window_of`, the device's): the carry computes every
+THE KERNELS ARE ONE OPERATOR on one window grid (the device's card's, which each entry reads): the carry computes every
 pair whose write fell in a strictly earlier window than its read -- its ``num`` and, as the v+1 channel, its ``den`` --
 and the intra every pair inside one window. Together they are the whole recurrence, no pair counted twice and none
 dropped (`tests/oracle/test_carry_vs_oracle.py`'s decomposition test states it in fp64). The scale pass gives the

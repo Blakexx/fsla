@@ -4,7 +4,7 @@
 pass's lists, the den pass's units and the carve (docs/internals/carry/carry_api.md).
 
 Symbols, each at first use: ``B`` batch, ``T`` = ``L`` tokens, ``H`` heads, ``BH`` = ``B H``, ``d_v`` the value
-width, ``W`` the window (:func:`rola.ops.window.window_of`, the device's). The carve (:class:`rola.engine.types.Carve`) names the box -- an extent a
+width, ``W`` the window (the device's card's, which the entry reads). The carve (:class:`rola.engine.types.Carve`) names the box -- an extent a
 level and the channel extent -- and each side's list levels and operand levels; its arm key
 (:func:`arm_key`) selects the compiled body, and the box's extents are runtime addressing. The readout (a value carve:
 each warp its channels over every leaf of the box) adds each CTA's partials at each token's scale byte (``scale``, the

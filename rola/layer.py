@@ -200,18 +200,27 @@ class RoLA(nn.Module):
     def segment_bytes_per_token(self) -> int:
         """AN UPPER BOUND on a prefill segment's working set per batch-token, in bytes: every per-token tensor
         a segment allocates, summed as if all were alive at once. Gated against the measured peak
-        (tests/integration/test_layer_segments.py); a kernel port that drops a tensor drops its term here.
+        (tests/integration/test_layer_segments.py); a kernel port that adds or drops a tensor changes its term here.
 
-        Per head, the routing's ``W`` digits of both sides: the stored rows (1), the carry leg's fp32 levels (4)
-        with one level's dequantizing temporary beside them (1), its bf16 planes (2), and the facts pass's class-1
-        words (an eighth); the ``d_v`` value channels: the two stored digit planes (2), the carry leg's fp32 values
-        (4), its two bf16 layouts (4), ``num`` (4) and ``y`` (4); and the per-token scalars (gains, scales, masses,
-        den: 64). Per token, the hidden stream's two bf16 casts (the value and the router projections' inputs, 4).
-        The fused producer holds nothing but the bundle it writes.
+        A head's, both sides: its rows (a byte a digit at a sparse level, two at a dense one); the levels' scales and
+        the producer's level masses (four bytes each a level); the facts pass's words (a bit a row, the read and the
+        write slot), its tile unions, factor products, gains and list exponents; each side's lists at its one sparse
+        level -- a window's slots a digit, four int16 an entry, with the union by slot at the finest list group and
+        the boundaries and totals under a sixteenth of the width; the values (f16) and their scale and the gain; the
+        scale pass's byte and its masses; the carry's ``num`` (fp32 at most) and den; the readout's unpacked ``num``,
+        den, factor and reader factor, ``y`` and its bf16 copy for the output projection. A token's: the hidden
+        stream's two bf16 casts and the output, fp32 at most.
         """
-        W = 2 * sum(self.topology.widths)
-        per_head = W * (1 + 4 + 1 + 2) + W // 8 + self.d_v * (2 + 4 + 4 + 4 + 4) + 64
-        return self.num_heads * per_head + 4 * self.hidden_size
+        widths = self.topology.padded_widths
+        D, total = len(widths), sum(widths)
+        per_head = 16 * D + total // 4 + total // 64 + 16 * self.d_v + 49
+        for side in ("read", "write"):
+            sparse = [self.topology.activation_properties(level, side).exact_zeros for level in range(D)]
+            per_head += sum(width if flag else 2 * width for flag, width in zip(sparse, widths))
+            if sparse.count(True) == 1:
+                width = widths[sparse.index(True)]
+                per_head += 8 * width + width // 8 + width // 16
+        return self.num_heads * per_head + 8 * self.hidden_size
 
     def state_bytes(self, batch: int) -> int:
         """The carried state at full residency, in bytes: the fixed part of a segmented call's footprint."""
@@ -220,19 +229,20 @@ class RoLA(nn.Module):
     def segment_tokens(self, batch: int, length: int) -> int:
         """THE SEGMENT LENGTH, derived from the declared ``memory_budget``: the largest whole number of
         windows whose working set fits beside the state, capped at ``length``. No budget: one segment. A
-        budget below one window beside the state is refused."""
-        from rola.ops.window import window_of
+        budget below one window beside the state is refused. The window is the device's card's: the binary answers
+        (docs/internals/common/arch_runtime.md#segment-tokens)."""
+        from rola.ops._ext import extension
 
         if self.memory_budget is None:
             return length
-        W = window_of()
-        per_window = W * batch * self.segment_bytes_per_token()
-        windows = (self.memory_budget - self.state_bytes(batch)) // per_window
-        if windows < 1:
+        per_token = self.segment_bytes_per_token()
+        tokens = int(extension().segment_tokens(self.memory_budget, self.state_bytes(batch), per_token, batch, length,
+                                                torch.cuda.current_device()))
+        if tokens < 1:
             raise ValueError(
-                f"memory_budget={self.memory_budget} bytes cannot hold one {W}-token window "
-                f"({per_window} bytes at batch {batch}) beside the state ({self.state_bytes(batch)} bytes)")
-        return min(length, int(windows) * W)
+                f"memory_budget={self.memory_budget} bytes cannot hold one window of {per_token} bytes a batch-token "
+                f"at batch {batch} beside the state ({self.state_bytes(batch)} bytes)")
+        return tokens
 
     def validate_decode_envelope(self, *operation_inputs) -> None:
         """THE DECODE ARM'S OWN CLAUSE: it is forward-only and has no node.

@@ -27,6 +27,15 @@ rather than in either kernel because both must choose alike for one call (the in
 entry applies it when its caller passes no form, and `carry_readout_accumulate` reports it
 ([`../carry/carry_api.md#carry-readout-accumulate`](../carry/carry_api.md#carry-readout-accumulate)).
 
+<a id="segment-tokens"></a>
+## `segment_tokens(budget, state, per_token, batch, length, device)`
+
+THE LAYER'S SEGMENT LENGTH on `device`'s card: the most whole windows whose working set (`per_token` bytes a
+batch-token at `batch`) fits in `budget` beside `state`, at most the call's `length`; 0 where not one window fits,
+which the layer refuses by name. Segments are whole windows because the window grid is global: a boundary on a window
+boundary moves no pair. The window is the card's, so the length is the binary's answer rather than a Python
+computation over a hardware fact; the working-set model and the budget are the layer's (`docs/api.md` section 4.2).
+
 <a id="check-arch-table"></a>
 ## `check_arch_table()`
 

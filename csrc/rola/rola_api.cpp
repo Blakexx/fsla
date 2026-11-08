@@ -122,6 +122,8 @@ STABLE_TORCH_LIBRARY(rola, m) {
       "int forced) -> Tensor");
   m.def("carry_readout_accumulate(int device) -> int");
   m.def("device_card(int device) -> int[]");
+  m.def(
+      "segment_tokens(int budget, int state, int per_token, int batch, int length, int device) -> int");
   m.def("carry_ledger_bind(Tensor? ledger) -> ()");
   m.def("carry_probe_bind(Tensor? probe, Tensor? den) -> ()");
   m.def("carry_capture_bind(Tensor? out) -> ()");
@@ -225,6 +227,7 @@ STABLE_TORCH_LIBRARY_IMPL(rola, CompositeExplicitAutograd, m) {
   m.impl("scale_forward", TORCH_BOX(&rola::scale::scale_forward));
   m.impl("carry_readout_accumulate", TORCH_BOX(&rola::carry::carry_readout_accumulate));
   m.impl("device_card", TORCH_BOX(&device_card_op));
+  m.impl("segment_tokens", TORCH_BOX(&rola::segment_tokens));
 
   m.impl("carry_ledger_bind", TORCH_BOX(&rola::carry::carry_ledger_bind));
   m.impl("carry_probe_bind", TORCH_BOX(&rola::carry::carry_probe_bind));

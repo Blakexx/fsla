@@ -1,11 +1,9 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE WINDOW W, a card's: the device's card as the binary selects it (``csrc/rola/src/common/select.cuh``) -- its
-compute capability, product, build variant, family and W.
-
-Every kernel of a call shares the window -- the facts pass builds each window's lists, the carry reads each window's
-state out and folds its writes, the den pass and the intra each window's pairs -- and W is per-card configuration
-(ruled 2026-10-31), so a host shape or check is built from the device's W, never a module constant.
+"""THE DEVICE'S CARD as the binary selects it (``csrc/rola/src/common/select.cuh``) -- its compute capability,
+product, build variant, family and window W -- for the readers that need a hardware fact the kernel path cannot serve:
+the fp64 oracle building its reference windows, the gates and the measurement tools. No kernel call is shaped by it:
+every entry reads its own card (docs/architecture/families.md#the-entry-and-the-card).
 """
 from __future__ import annotations
 

@@ -14,9 +14,11 @@ constants are per-card configuration).
 ## Where W comes from
 
 W is a build's trait, chosen in `hardware.json`'s `build` block ([`hardware.md#traits`](hardware.md#traits)): each
-kernel's plan reads its build's (`Plan<Arm, B>::kWindow`, `Walk<B>::kWindow`, `FactsPlan<B>::kWindowTokens`), and the
-host reads the device's card's (`card_of(device).traits.window`, [`select.md`](select.md)) -- one value both ways, so a
-host shape and the kernel it launches cannot disagree.
+kernel's plan reads its build's (`Plan<Arm, B>::kWindow`, `Walk<B>::kWindow`, `FactsPlan<B>::kWindowTokens`,
+`ScalePlan<B>::kWindow`), and each entry sizes its outputs and grid from its card's (`card_of(device).traits.window`,
+[`select.md`](select.md)) -- one value both ways, so a host shape and the kernel it launches cannot disagree. Python
+reads no window to shape a call: the layer's segment length is the binary's answer too
+([`arch_runtime.md#segment-tokens`](arch_runtime.md#segment-tokens)).
 
 The A100 (sm_80) is 1,024, every other card 512 (2026-11-04: interleaved on one A100 against 512, L 65,536 x 4 heads --
 the sparse carry -35%, the op's sparse prefill -17.5% (0.72x FlashAttention), the layer at g 16 / 4 -21% / -16%; the

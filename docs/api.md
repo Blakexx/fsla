@@ -498,7 +498,7 @@ are bounded along with the op -- which an op-level split cannot do once the whol
 The op runs one segment and knows nothing of segmentation.
 
 `T` is DERIVED, never a knob: the caller declares `memory_budget` (bytes); the layer takes the largest
-whole number of 512-token windows whose working set (`RoLA.segment_bytes_per_token`, an upper bound on
+whole number of the device's windows whose working set (`RoLA.segment_bytes_per_token`, an upper bound on
 every per-token tensor a segment allocates, gated against the measured peak) fits beside the state
 (`RoLA.state_bytes`, full residency), and REFUSES a budget below one window beside the state.
 `memory_budget=None` is one segment. The window grid is global, so a boundary on a window boundary moves
