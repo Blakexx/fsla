@@ -339,7 +339,7 @@ lowers it; the readers' A fragments in registers, built to free the area for a d
 
 On sm_80 the block is 128 readers (8 warps of 64 writers), the stage feeds twice the MMAs a byte, and the tensor floor
 is half sm_86's. On sm_90 the writer stages move by TMA boxes and the Gram and value product are `wgmma` from shared
-memory, the producer a warpgroup with its registers given back (`setmaxnreg`); the gate and the forms' K orders carry
+memory, the producer a warpgroup that gives its registers back to the consumers; the gate and the forms' K orders carry
 over unchanged. sm_100's `tcgen05` takes the same shared-memory operands with the accumulator in tensor memory.
 
 ## Where the mechanism came from

@@ -8,21 +8,10 @@
     "taxed": ["fp32", "half2", "hmax2", "add_xor", "imad", "lop3", "prmt", "fmnmx", "lds", "cvt_f32_f16x2", "cvt_u32_f32", "cvt_f16_f32"],
     "caps": [
       {"name": "cc", "type": "int", "kind": "IDENTITY", "doc": "compute capability x10, e.g. 860"},
-      {"name": "async_copy", "type": "bool", "kind": "REQUIRED", "doc": "global->shared staging whose completion is a signal"},
-      {"name": "tile_load", "type": "bool", "kind": "REQUIRED", "doc": "8x8 b16 quads landed directly in MMA register order"},
-      {"name": "mma_bf16_f32", "type": "bool", "kind": "REQUIRED", "doc": "tensor MAC, bf16 operands, fp32 accumulator"},
-      {"name": "bf16_cvt_packed", "type": "bool", "kind": "REQUIRED", "doc": "two fp32 -> one b32 of two bf16, one instruction"},
-      {"name": "reg_transpose_b16", "type": "bool", "kind": "REQUIRED", "doc": "an 8x8 b16 tile spread across the MMA unit's own registers is transposed IN PLACE. see docs/internals/common/arch_caps.md#reg-transpose-b16"},
-      {"name": "mma_a_from_regs", "type": "bool", "kind": "RESIDENCY", "doc": "the A operand may be supplied from the issuing unit's OWN registers. see docs/internals/common/arch_caps.md#mma-a-from-regs"},
-      {"name": "mma_b_from_regs", "type": "bool", "kind": "RESIDENCY", "doc": "the same for B. A warpgroup MMA sources B ONLY from a shared-memory descriptor. see docs/internals/common/arch_caps.md#mma-b-from-regs"},
-      {"name": "accum_in_tmem", "type": "bool", "kind": "RESIDENCY", "doc": "the MMA's accumulator lives in a dedicated tensor memory rather than in the unit's register ... see docs/internals/common/arch_caps.md#accum-in-tmem"},
-      {"name": "mma_a_from_tmem", "type": "bool", "kind": "RESIDENCY", "doc": "the A operand may be sourced from that same tensor memory, which is what lets the invariant ... see docs/internals/common/arch_caps.md#mma-a-from-tmem"},
-      {"name": "bf16_simd_arith", "type": "bool", "kind": "SELECTING", "doc": "elementwise bf16 arithmetic on a packed pair (`mul.rn.bf16x2`). see docs/internals/common/arch_caps.md#bf16-simd-arith"},
-      {"name": "bf16_simd_fma", "type": "bool", "kind": "SELECTING", "doc": "FUSED elementwise bf16 arithmetic on a packed pair (`fma.rn.bf16x2`). see docs/internals/common/arch_caps.md#bf16-simd-fma"},
-      {"name": "async_bulk_copy", "type": "bool", "kind": "SELECTING", "doc": "TMA. Would implement `stage_tile`'s contract with one descriptor issue instead of one per ... see docs/internals/common/arch_caps.md#async-bulk-copy"},
-      {"name": "warpgroup_mma", "type": "bool", "kind": "SELECTING", "doc": "`wgmma`. Present on sm_90 and the reason `mma_b_from_regs` is false there. see docs/internals/common/arch_caps.md#warpgroup-mma"},
-      {"name": "dyn_reg_realloc", "type": "bool", "kind": "SELECTING", "doc": "`setmaxnreg`: a warpgroup may GIVE UP or CLAIM registers at run time, so two groups of the ... see docs/internals/common/arch_caps.md#dyn-reg-realloc"},
-      {"name": "mma_unit_threads", "type": "int", "kind": "FACT", "doc": "threads that jointly issue one MMA and jointly own its accumulator. 32 (warp) or 128 ... see docs/internals/common/arch_caps.md#mma-unit-threads"},
+      {"name": "bf16_cvt_packed", "type": "bool", "kind": "INSTRUCTION", "doc": "two fp32 -> one b32 of two bf16, one instruction"},
+      {"name": "reg_transpose_b16", "type": "bool", "kind": "INSTRUCTION", "doc": "an 8x8 b16 tile spread across the MMA unit's own registers is transposed IN PLACE. see docs/internals/common/arch_caps.md#reg-transpose-b16"},
+      {"name": "bf16_simd_arith", "type": "bool", "kind": "INSTRUCTION", "doc": "elementwise bf16 arithmetic on a packed pair (`mul.rn.bf16x2`). see docs/internals/common/arch_caps.md#bf16-simd-arith"},
+      {"name": "bf16_simd_fma", "type": "bool", "kind": "INSTRUCTION", "doc": "FUSED elementwise bf16 arithmetic on a packed pair (`fma.rn.bf16x2`). see docs/internals/common/arch_caps.md#bf16-simd-fma"},
       {"name": "smem_per_sm", "type": "int", "kind": "FACT", "doc": "`cudaDevAttrMaxSharedMemoryPerMultiprocessor`"},
       {"name": "smem_per_cta_max", "type": "int", "kind": "FACT", "doc": "opt-in dynamic maximum, one CTA"},
       {"name": "smem_granularity", "type": "int", "kind": "FACT", "doc": "shared-memory allocation quantum, bytes"},
@@ -37,7 +26,7 @@
   "arch": {
     "sm_80": {
       "build": {"family": "ampere", "window": 1024},
-      "caps": {"async_copy": true, "tile_load": true, "mma_bf16_f32": true, "bf16_cvt_packed": true, "reg_transpose_b16": true, "mma_a_from_regs": true, "mma_b_from_regs": true, "accum_in_tmem": false, "mma_a_from_tmem": false, "bf16_simd_arith": false, "bf16_simd_fma": true, "async_bulk_copy": false, "warpgroup_mma": false, "dyn_reg_realloc": false, "mma_unit_threads": 32, "smem_per_sm": 167936, "smem_per_cta_max": 166912, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 2048, "max_ctas_per_sm": 32, "driver_smem_reserve": 1024},
+      "caps": {"bf16_cvt_packed": true, "reg_transpose_b16": true, "bf16_simd_arith": false, "bf16_simd_fma": true, "smem_per_sm": 167936, "smem_per_cta_max": 166912, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 2048, "max_ctas_per_sm": 32, "driver_smem_reserve": 1024},
       "rates": {
         "schedulers": {"cycles": 4, "documented": "CUDA C++ Programming Guide, compute capability 8.x: four warp schedulers an SM"},
         "issue": {"cycles": 1, "documented": "CUDA C++ Programming Guide, compute capability 8.x: a scheduler issues one instruction a clock"},
@@ -74,7 +63,7 @@
     "sm_86": {
       "build": {"family": "ampere", "window": 512},
       "note": "local dev (GA102)",
-      "caps": {"async_copy": true, "tile_load": true, "mma_bf16_f32": true, "bf16_cvt_packed": true, "reg_transpose_b16": true, "mma_a_from_regs": true, "mma_b_from_regs": true, "accum_in_tmem": false, "mma_a_from_tmem": false, "bf16_simd_arith": false, "bf16_simd_fma": true, "async_bulk_copy": false, "warpgroup_mma": false, "dyn_reg_realloc": false, "mma_unit_threads": 32, "smem_per_sm": 102400, "smem_per_cta_max": 101376, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 1536, "max_ctas_per_sm": 16, "driver_smem_reserve": 1024},
+      "caps": {"bf16_cvt_packed": true, "reg_transpose_b16": true, "bf16_simd_arith": false, "bf16_simd_fma": true, "smem_per_sm": 102400, "smem_per_cta_max": 101376, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 1536, "max_ctas_per_sm": 16, "driver_smem_reserve": 1024},
       "rates": {
         "schedulers": {"cycles": 4, "documented": "CUDA C++ Programming Guide, compute capability 8.x: four warp schedulers an SM"},
         "issue": {"cycles": 1, "documented": "CUDA C++ Programming Guide, compute capability 8.x: a scheduler issues one instruction a clock"},
@@ -116,16 +105,16 @@
     },
     "sm_87": {
       "build": {"family": "ampere", "window": 512},
-      "caps": {"async_copy": true, "tile_load": true, "mma_bf16_f32": true, "bf16_cvt_packed": true, "reg_transpose_b16": true, "mma_a_from_regs": true, "mma_b_from_regs": true, "accum_in_tmem": false, "mma_a_from_tmem": false, "bf16_simd_arith": false, "bf16_simd_fma": true, "async_bulk_copy": false, "warpgroup_mma": false, "dyn_reg_realloc": false, "mma_unit_threads": 32, "smem_per_sm": 167936, "smem_per_cta_max": 166912, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 1536, "max_ctas_per_sm": 16, "driver_smem_reserve": 1024}
+      "caps": {"bf16_cvt_packed": true, "reg_transpose_b16": true, "bf16_simd_arith": false, "bf16_simd_fma": true, "smem_per_sm": 167936, "smem_per_cta_max": 166912, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 1536, "max_ctas_per_sm": 16, "driver_smem_reserve": 1024}
     },
     "sm_89": {
       "build": {"family": "ampere", "window": 512},
-      "caps": {"async_copy": true, "tile_load": true, "mma_bf16_f32": true, "bf16_cvt_packed": true, "reg_transpose_b16": true, "mma_a_from_regs": true, "mma_b_from_regs": true, "accum_in_tmem": false, "mma_a_from_tmem": false, "bf16_simd_arith": false, "bf16_simd_fma": true, "async_bulk_copy": false, "warpgroup_mma": false, "dyn_reg_realloc": false, "mma_unit_threads": 32, "smem_per_sm": 102400, "smem_per_cta_max": 101376, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 1536, "max_ctas_per_sm": 24, "driver_smem_reserve": 1024}
+      "caps": {"bf16_cvt_packed": true, "reg_transpose_b16": true, "bf16_simd_arith": false, "bf16_simd_fma": true, "smem_per_sm": 102400, "smem_per_cta_max": 101376, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 1536, "max_ctas_per_sm": 24, "driver_smem_reserve": 1024}
     },
     "sm_90": {
       "build": {"family": "hopper"},
       "note": "TABULATED, NOT BUILT; see docs/internals/common/arch_caps.md#caps-of-note-l147",
-      "caps": {"async_copy": true, "tile_load": true, "mma_bf16_f32": true, "bf16_cvt_packed": true, "reg_transpose_b16": true, "mma_a_from_regs": true, "mma_b_from_regs": false, "accum_in_tmem": false, "mma_a_from_tmem": false, "bf16_simd_arith": true, "bf16_simd_fma": true, "async_bulk_copy": true, "warpgroup_mma": true, "dyn_reg_realloc": true, "mma_unit_threads": 128, "smem_per_sm": 233472, "smem_per_cta_max": 232448, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 2048, "max_ctas_per_sm": 32, "driver_smem_reserve": 1024}
+      "caps": {"bf16_cvt_packed": true, "reg_transpose_b16": true, "bf16_simd_arith": true, "bf16_simd_fma": true, "smem_per_sm": 233472, "smem_per_cta_max": 232448, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 2048, "max_ctas_per_sm": 32, "driver_smem_reserve": 1024}
     }
   },
   "product": {

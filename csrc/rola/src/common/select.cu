@@ -57,11 +57,6 @@ Card admit(int device) {
       "; add it to hardware.json rather than letting an operation guess which implementation it has. "
       "This binary is closed-world: it runs the architectures it was measured on and refuses the rest.");
   const denseref::arch::Caps want = denseref::arch::caps_of(cc);
-  STD_TORCH_CHECK(
-      denseref::arch::supported(want), "UNSUPPORTED ARCHITECTURE at compute capability ",
-      prop.major, ".", prop.minor,
-      ": a REQUIRED capability clause of the ratified baseline is false in its own row. There is no "
-      "partial support and no slower route to take.");
 
   int smem_per_sm = 0, smem_per_cta_max = 0;
   ROLA_CUDA_CHECK(

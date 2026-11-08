@@ -185,8 +185,7 @@ consumes the block.
 the batch tile to the warps (`kWarps * kMmaN == C`), so eight warps means `C = 64`, and
 `panel_bytes = 2 * kWarps * C * LdS * 2` is therefore QUADRATIC in the warp count:
 81,920 B at `(1, 8)` against 20,480 B at `(2, 4)`. With the readout block and two V slots
-the arm asks **117,760 B against sm_86's 99,328 B per-CTA maximum** and the body's own
-`static_assert(design::smem_fits(bytes))` refuses it at compile time. It fits sm_90's
+the arm asks **117,760 B against sm_86's 99,328 B per-CTA maximum**, which no plan of the card admits. It fits sm_90's
 227 KB, so `(1, 8)` is the design target the panel law has to be re-shaped for, not a row
 that can simply be added to the arm table.
 

@@ -15,17 +15,6 @@
 namespace denseref {
 namespace ops {
 
-//: The MMA's shape, in the units the carve is expressed in.
-constexpr int kMmaM = 16, kMmaN = 8, kMmaK = 16;
-
-//: THE BUILT `mma`'s UNIT: the threads that jointly issue one MMA and jointly -- see docs/internals/common/atoms/mma.md#kmmaunitthreads
-constexpr int kMmaUnitThreads = 32;
-
-//: The operand sources the built `mma` accepts.  A kernel whose accumulator -- see docs/internals/common/atoms/mma.md#kmmaacceptsregistera
-constexpr bool kMmaAcceptsRegisterA = true;
-constexpr bool kMmaAcceptsRegisterB = true;
-constexpr bool kMmaAcceptsTmemA = false;
-
 using Frag = uint32_t[4];
 
 //: THE `memory` CLOBBER IS PART OF THE CONTRACT. -- see docs/internals/common/atoms/mma.md#load-frag

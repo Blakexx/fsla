@@ -18,9 +18,6 @@ namespace ops {
 //: Bytes moved by one `stage_tile`.  A FACT OF THE OPERATION, not of the -- see docs/internals/common/atoms/copy.md#kstagebytes
 constexpr int kStageBytes = 16;
 
-//: The built `stage_tile` moves `kStageBytes` per issue.  A bulk (TMA) form -- see docs/internals/common/atoms/copy.md#kstagingisbulk
-constexpr bool kStagingIsBulk = false;
-
 __device__ __forceinline__ void stage_tile(SmemAddr dst, const void* src) {
   asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(dst), "l"(src));
 }

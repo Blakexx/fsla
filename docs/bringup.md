@@ -11,9 +11,8 @@ to open a pull request.
 ## 1. Tabulate the architecture's resources
 
 `csrc/rola/src/common/hardware.json` carries, per architecture, one `caps` row -- the
-REQUIRED/RESIDENCY/SELECTING capability flags plus the FACT fields the launch-bound formula
-needs (`mma_unit_threads`, `smem_per_sm`, `smem_per_cta_max`, `smem_granularity`, `regs_per_sm`,
-`regs_per_lane_max`, `reg_alloc_unit`, `max_threads_per_sm`, `max_ctas_per_sm`,
+INSTRUCTION flags its atoms read plus the FACT fields its plans read (`smem_per_sm`, `smem_per_cta_max`,
+`smem_granularity`, `regs_per_sm`, `regs_per_lane_max`, `reg_alloc_unit`, `max_threads_per_sm`, `max_ctas_per_sm`,
 `driver_smem_reserve`) -- and its rates; `python -m measure.hardware --write` generates
 `common/hardware.cuh`'s `Caps`, `tabulated(cc)` and `caps_of(cc)` from it
 ([`hardware.md`](internals/common/hardware.md)).

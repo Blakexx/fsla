@@ -28,20 +28,16 @@ is keyed on `denseref::arch::tabulated(cc)` and `denseref::arch::caps_of(cc)`, t
 generates from `common/hardware.json` -- there is no second table to drift from the first -- and runs once a device a
 process (the card is kept).
 
-Four things are asserted, in order:
+Three things are asserted, in order:
 
 1. `tabulated(cc)` — the table carries a row for this compute capability at all.
-2. `supported(caps_of(cc))` — the row's REQUIRED capability clauses are all true
-   (an untabulated arch and an unsupported one are different refusals: the first
-   means "measure it and add the row", the second means "this architecture cannot
-   run the baseline no matter what row is added").
-3. The row's `smem_per_sm`, `smem_per_cta_max`, `regs_per_sm` and
+2. The row's `smem_per_sm`, `smem_per_cta_max`, `regs_per_sm` and
    `max_threads_per_sm` equal what `cudaGetDeviceProperties`/`cudaDeviceGetAttribute`
    read off the actual device — every launch shape compiled into the binary was
    derived from the table's numbers, so a disagreement means those shapes are wrong
    for the card that is about to run them, independent of whether the compute
    capability itself is tabulated.
-4. The binary carries the card's build (its product's variant on its architecture): a tabulated architecture this
+3. The binary carries the card's build (its product's variant on its architecture): a tabulated architecture this
    binary was not built for is refused by name, never run on another architecture's image.
 
 ## Where it is called

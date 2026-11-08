@@ -10,7 +10,7 @@
 #include "common/select.cuh"
 #include "common/hardware.cuh"
 #include "common/arm_switch.cuh"
-#include "common/design.cuh"
+#include "common/arch_caps.cuh"
 
 #include <cstring>
 
@@ -410,7 +410,7 @@ namespace stamp {
 //: THE DEVICE-SIDE FACT: the only answer a stale binary cannot produce.
 __global__ void carry_stamp_kernel(int* out) {
   out[0] = kWindow;
-  out[1] = denseref::design::kCapsDigest;
+  out[1] = denseref::arch::kCapsDigest;
   out[2] = kStateValues;
   out[3] = kListBound;
 }

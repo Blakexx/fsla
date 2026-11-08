@@ -2,21 +2,15 @@
 
 Mirrors `csrc/rola/src/common/atoms/mma.cuh`, a concern of the baseline operations ([`../ops.md`](../ops.md)): the MMA's shape and unit, its fragment loads and the register transpose, and the bf16, f16 and int8 atoms.
 
-- <a id="kmmaunitthreads"></a>`kMmaUnitThreads`: the threads that jointly issue one MMA and own its accumulator --
-  a property of the built `mma`, not of an architecture; the consistency section is where it and the capability row
-  must agree.
-
 - <a id="load-frag"></a>`load_frag` / `load_frag_t`: four 8x8 b16 tiles from shared memory in the register order the
   MMA consumes; `_t` transposes each 8x8 so one shared tile serves either handedness. THE `memory` CLOBBER IS PART OF
   THE CONTRACT: `ldmatrix` reads shared memory, and without the clobber the compiler may move it across a barrier, so
   a warp could pull rows another warp has not published.
 
 - <a id="mma"></a>`mma(acc, a, b)`: acc += A(16x16) . B(16x8), bf16 operands, fp32 accumulator private to the issuing
-  unit, both operands from its registers. The atom is chosen by SHAPE FAMILY: `kMmaM/N/K` is the shape every fragment
-  index is written in, and an architecture whose register-source family is shaped differently (Hopper's `_RS` atoms,
-  64 x {8..256} x 16, K-major A) substitutes its own member. <a id="kmmaacceptsregistera"></a>`kMmaAcceptsRegisterA`
-  states the operand sources the built `mma` accepts; a kernel whose accumulator must land on a particular side
-  asserts against them at its own site.
+  unit, both operands from its registers -- the ampere family's atom, a warp of 32 its unit, `m16n8k16` the shape
+  every fragment index is written in; the hopper family's warpgroup atoms (64 x {8..256} x 16) are its own members of
+  this header, chosen per family where they are defined (`docs/KERNEL_STANDARDS.md` section 8).
 
 - <a id="hmma"></a>`hmma`, `hmma_fresh`, `hmma_k8`, `hmma_k8_f16`, `hmma_f16`, `hmma_f16_fresh`: the fp16 family -- `m16n8k16` f16 into fp32 (`hmma_fresh` into a fresh fragment, C = 0; `hmma_k8` the
   `m16n8k8` atom, half the tensor work, the fold's 8-token tail, `hmma_k8_f16` the same into an fp16 accumulator, the

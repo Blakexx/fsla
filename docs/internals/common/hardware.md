@@ -71,8 +71,8 @@ of its name and runs the product's variant, or its architecture's variant 0 when
 
 - COMPILE TIME reads a BUILD's traits (below): its architecture's capabilities and the build choices. `hardware.cuh`
   carries every tabulated architecture's `Caps` row, `tabulated(cc)` and `caps_of(cc)`, and every build's
-  `traits_of(Build)`; [`arch_caps.cuh`](arch_caps.md) includes it and derives residency, staging depth and the
-  register budget, and [`arch_runtime.cu`](arch_runtime.md) checks the row against the driver.
+  `traits_of(Build)`; [`arch_caps.cuh`](arch_caps.md) includes it and names the compiling target's row, and
+  [`arch_runtime.cu`](arch_runtime.md) checks the row against the driver.
 - RUN TIME reads rates: a choice among exact forms (the readout's accumulation, a sparse side's digit groups) prices
   them with the device's resolved rates -- the binary carries every architecture's and product's MMA rates
   (`kMmaRows`), found by the device's name ([`arch_runtime.md#mma-quanta`](arch_runtime.md#mma-quanta)) -- which reach

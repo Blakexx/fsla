@@ -6,9 +6,8 @@ Mirrors `csrc/rola/src/common/atoms/copy.cuh`, a concern of the baseline operati
   the issuing thread. `kStageBytes` is a fact of the operation, the widest single asynchronous copy the staging
   issues, and staging loops are shaped from it. A group is every `stage_tile` since the last `stage_commit()`;
   `stage_wait<n>()` means all but the newest `n` groups have landed FOR THE ISSUING THREAD, and CTA-wide visibility
-  needs a following `rendezvous()` -- a property of the contract that TMA/mbarrier satisfies the same way.
-  <a id="kstagingisbulk"></a>`kStagingIsBulk` states that the built form moves `kStageBytes` an issue; a bulk (TMA)
-  form would take one descriptor issue a tile and is not built (announced: [`../ops.md#note-l562`](../ops.md#note-l562)).
+  needs a following `rendezvous()` -- a property of the contract that TMA/mbarrier satisfies the same way; the hopper
+  family's bulk (TMA) form, one descriptor issue a tile, is its own body of this contract.
 
 - <a id="stage-tile-if"></a>`stage_tile_if`: the copy with its source predicated -- a dead quantum ZERO-FILLS its
   destination and reads nothing, so a partial tile is the same code as a full one and never reads past an operand's
