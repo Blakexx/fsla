@@ -345,7 +345,7 @@
   {"doc": "docs/build.md", "pinned_at": "990647f58ef3", "reviewed": true, "sha256": "", "target": "docs/internals/tools/wheels.md"},
   {"doc": "docs/build.md", "pinned_at": "990647f58ef3", "reviewed": true, "sha256": "", "target": "docs/ratification.md"},
   {"doc": "docs/build.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "2cdab0d33b32afc1", "target": "docs/ratification.md#arm-switch"},
-  {"doc": "docs/build.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "f6f841fb7bc5d671", "target": "docs/ratification.md#the-four-closed-world-rules"},
+  {"doc": "docs/build.md", "pinned_at": "3cfffcf42c86", "reviewed": true, "sha256": "ab0574a04efea949", "target": "docs/ratification.md#the-four-closed-world-rules"},
   {"doc": "docs/build.md", "pinned_at": "578bf154f46f", "reviewed": true, "sha256": "", "target": "measure/harness/bench_carry_calib.py"},
   {"doc": "docs/build.md", "pinned_at": "990647f58ef3", "reviewed": true, "sha256": "", "target": "rola/ops/_ext.py"},
   {"doc": "docs/build.md", "pinned_at": "578bf154f46f", "reviewed": true, "sha256": "c09513b807bf48fc", "target": "rola/ops/carry.py::arms"},

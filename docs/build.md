@@ -342,6 +342,7 @@ or `fla` dependency.
 ## Standards lint
 
 `KERNEL_STANDARDS.md` is enforced by the lint family under `tools/lint/` — the ast-grep rules, `lint_standards.py`,
-the two pinned clang-tidy profiles and the ratchets — run by the commit gate and mirrored in
-`.github/workflows/lint.yml`. Its roster, how each gates, the compile database the clang-tidy profiles read and how to
-run them by hand are [`internals/tools/lint.md`](internals/tools/lint.md).
+the two pinned clang-tidy profiles and the ratchets — run by the commit gate (`bazel test //:gate`); CI's
+`.github/workflows/lint.yml` runs the ones that need no build directly. Its roster, how each gates, how the clang-tidy
+profiles read each unit's own compile and how to run them by hand are
+[`internals/tools/lint.md`](internals/tools/lint.md).

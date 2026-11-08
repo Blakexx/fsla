@@ -115,9 +115,9 @@ code carries `#pragma unroll 1`, scoped to `__global__`/`__device__` bodies by b
 text belt to the ast-grep rule, a CTA or grid barrier inside a declared barrier-free region (`__syncwarp` is intra-warp
 and excluded), a committed doc, skill or script wrapping a command in an external `flock` on the GPU lock path (scoped
 to `docs/`, `.claude/skills/`, `measure/`, `tools/`, `CLAUDE.md` and `README.md`; `docs/KERNEL_STANDARDS.md` is exempted
-by name for its `cuda-gdb` recipe and its statement of `flock`'s semantics), the file-reading checks that were once
-tests (`check_supported_table`, `check_shard_partition`, `check_arch_coverage`, `check_vendored_pin`,
-`check_entmax_pin`, which import `rola` and `entmax` and so run from the worktree's own venv), and
+by name for its `cuda-gdb` recipe and its statement of `flock`'s semantics), the file-reading checks
+(`check_supported_table`, `check_shard_partition`, `check_arch_coverage`, `check_vendored_pin`, each a function of the
+tree's files, never of an imported `rola`), and
 `check_repo_portability` (§17): every tracked file scanned for an absolute home-directory path, a citation of an
 out-of-repo journal by path, a real worktree path or a session's scratch path, with no allowlist (its own source is
 excluded by name, because its patterns spell what they catch). Every finding prints its section, `file:line` and the

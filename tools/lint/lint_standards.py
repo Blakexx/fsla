@@ -1406,11 +1406,10 @@ def check_settings_come_from_the_dev_config() -> list[str]:
 def main() -> int:
     #: THESE THIRTEEN are wired as a BLOCKING commit/CI gate
     #: (`//tools:lint_standards`, .github/workflows/lint.yml) -- a nonzero exit
-    #: here fails every commit and every CI run, repo-wide. `check_entmax_pin`
-    #: is NOT here (S5c ITEM 0): it executes real code (`pin.gate()`,
-    #: monkeypatched refusal shapes) rather than reading files, so it is
-    #: restored to tests/unit/test_entmax_pin.py -- a lint reads files; it
-    #: never imports the library under test.
+    #: here fails every commit and every CI run, repo-wide. The entmax pin's
+    #: check is a test (tests/unit/test_entmax_pin.py), not one of these: it
+    #: executes real code (`pin.gate()`, monkeypatched refusal shapes) -- a
+    #: lint reads files; it never imports the library under test.
     #:
     #: S5c (2026-08-29): `check_comment_density`/`check_no_long_comment_blocks`
     #: MOVE FROM ADVISORY TO GATING here. K39's reason for parking them advisory

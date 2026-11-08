@@ -40,9 +40,11 @@ _SANDBOX = re.compile(r"/\S*?/execroot/_main/")
 #: the host warnings' flags: they select the diagnostics of the same compile, and are never a build's
 HOST_WARNING_FLAGS = ("-Wall", "-Wextra", "-Wunused")
 #: each profile's clang-tidy arguments past its config: the device profile's dead-store analysis stays inside a function
-#: (`ipa=none`), and its findings in its own package's headers count
+#: (`ipa=none`), and its findings in its own package's headers count (`{package}`); the host profile reads its main
+#: file alone (`.clang-tidy`'s `HeaderFilterRegex`)
 PROFILES = {
-    "device": ("--extra-arg=-Xclang", "--extra-arg=-analyzer-config", "--extra-arg=-Xclang", "--extra-arg=ipa=none"),
+    "device": ("--header-filter={package}/.*", "--extra-arg=-Xclang", "--extra-arg=-analyzer-config",
+               "--extra-arg=-Xclang", "--extra-arg=ipa=none"),
     "host": (),
 }
 
@@ -103,8 +105,9 @@ def _verdict(lint: str, command: dict, package: str, started: float, output: str
 def tidy(command: dict, clang_tidy: str, config: str, package: str) -> dict:
     started = time.monotonic()
     profile = command["profile"]
-    run = subprocess.run([clang_tidy, command["file"], f"--config-file={config}", f"--header-filter={package}/.*",
-                          *PROFILES[profile], "--", *command["flags"], "-ferror-limit=0"], capture_output=True, text=True)
+    arguments = [word.format(package=package) for word in PROFILES[profile]]
+    run = subprocess.run([clang_tidy, command["file"], f"--config-file={config}", *arguments, "--", *command["flags"],
+                          "-ferror-limit=0"], capture_output=True, text=True)
     return _verdict(f"clang-tidy {profile}", command, package, started, run.stdout + run.stderr, run.returncode)
 
 

@@ -457,7 +457,7 @@ def _unit_lints_impl(target, ctx):
                 progress_message = "The host warnings of %s (sm_%s)" % (unit, arch),
             )
             found["warnings"].append(depset([warnings]))
-    #: what carries units: a filegroup's sources, the carry arm set's units
+    #: what carries units: the library's and a unit's deps, the carry arm set's units
     for name in _CARRIERS:
         for dep in getattr(ctx.rule.attr, name, []):
             if UnitLintInfo in dep:

@@ -1412,18 +1412,6 @@
    "count": 1
   },
   {
-   "path": "tests/unit/test_entmax_pin.py",
-   "message": "names the work code 'K46'",
-   "line_sha256": "95df5460f40152a0",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_entmax_pin.py",
-   "message": "names the work code 'S5c'",
-   "line_sha256": "8b3ac9d8ddf4db61",
-   "count": 1
-  },
-  {
    "path": "tests/unit/test_entmax_production.py",
    "message": "names the work code 'P73'",
    "line_sha256": "4eaa295cedd6f8c1",
@@ -1667,12 +1655,6 @@
    "path": "tools/lint/lint_standards.py",
    "message": "names the work code 'S5c'",
    "line_sha256": "d7f38f0fc2b10b8a",
-   "count": 1
-  },
-  {
-   "path": "tools/lint/lint_standards.py",
-   "message": "names the work code 'S5c'",
-   "line_sha256": "e99ae6588b9cdb4c",
    "count": 1
   },
   {
