@@ -17,7 +17,9 @@ WHAT IT LOOKS FOR beyond a rule broken at a changed line: what the change makes 
 replaced, what else in the tree does that job or fed the old one (a parallel path, a field whose consumers were
 replaced, a decision computed that nothing acts on, an unreachable guard, a doc stating the old form): the semantic
 case of dead code, still read or compiling, that no lint sees (2026-11-07: the capability rows' structure flags, read
-only by a residency selection no kernel consumed, outlived the families that replaced them).
+only by a residency selection no kernel consumed, outlived the families that replaced them). And the docs' ALTITUDE: a
+changed passage says why a piece exists and how it connects, not what the code does step by step, and points nothing
+outside the repo.
 
 THE REVIEWER: `claude -p` in the checkout, Opus by default (`--model`), its tools read-only (Read, Grep, Glob) so it
 checks the touched files, their mirror pages and anything else before asserting, its output a fixed JSON schema (a

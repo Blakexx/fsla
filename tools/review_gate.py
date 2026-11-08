@@ -34,7 +34,7 @@ EXCLUDED = ("measure/lab/results", "docs/references.lock.json", "tools/manifests
 #: the most diff a prompt carries inline; past it the reviewer reads the files the stat names
 DIFF_LIMIT = 200_000
 #: bump when the instructions change, so no cached report outlives them
-PROMPT_VERSION = 2
+PROMPT_VERSION = 3
 SCHEMA = {
     "type": "object",
     "properties": {
@@ -75,6 +75,11 @@ option or table whose consumers the change removed or replaced, or whose only re
 decision still computed that nothing acts on; a guard or refusal made unreachable; docs, comments, skills or tests
 still stating the replaced form. A name with no reader at all is the lints' to catch; this is the semantic case: code
 still read, or still compiling, that the change made unneeded. Cite the rule and the changed line that obsoletes it.
+
+THE DOCS' ALTITUDE (the CONSTITUTION's SELF-DOCUMENTING CODE and THE REPO IS ONE ATOMIC DESIGN): a doc passage the change
+adds or edits states why a piece exists and how it connects to the rest; one that restates what the code does, step by
+step, belongs to the code and is a warn. A passage that points outside the repo for a rule, a design or a fact (a log,
+a plan, a tracker) is a block; another project's design cited as the reason ours differs is not.
 """
 
 
