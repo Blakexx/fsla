@@ -836,30 +836,6 @@
    "count": 1
   },
   {
-   "path": "docs/internals/common/constants.md",
-   "message": "names the work code 'C3'",
-   "line_sha256": "0c588860b8442890",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/constants.md",
-   "message": "names the work code 'K3'",
-   "line_sha256": "e1019d4d0b621e29",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/constants.md",
-   "message": "names the work code 'K50'",
-   "line_sha256": "5c0772538308ed57",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/constants.md",
-   "message": "names the work code 'K50'",
-   "line_sha256": "8eb71ece7e4e8eac",
-   "count": 1
-  },
-  {
    "path": "docs/internals/common/geom.md",
    "message": "names the work code 'G2'",
    "line_sha256": "5de8f34ad63783c6",
@@ -1379,12 +1355,6 @@
    "path": "tests/unit/test_api_contract.py",
    "message": "names the work code 'P67'",
    "line_sha256": "d04cf8da58f5e6ea",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_carry_constants.py",
-   "message": "names the work code 'C3'",
-   "line_sha256": "0d4f6acef7d52d71",
    "count": 1
   },
   {
