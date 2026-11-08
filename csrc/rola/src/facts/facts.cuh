@@ -89,10 +89,6 @@ constexpr bool tenants_aligned() {
          && S::kTable % 16 == 0;
 }
 
-static_assert(tenants_aligned<512, 1>() && tenants_aligned<1024, 1>() && tenants_aligned<512, 2>()
-                  && tenants_aligned<1024, 2>(),
-              "each tenant on its access's alignment");
-
 //: THE PASS'S PLAN at build `B`: its window and the counts the stages map onto it (a warp's 32-token blocks, a
 //: thread's tokens, a list lane's words and boundaries), its residency and its tenants.
 //: -- see docs/internals/facts/facts.md#window
@@ -121,6 +117,9 @@ struct FactsPlan {
   static_assert(
       max_group(kWindowTokens) * kWindowTokens < 65536,
       "a list group's slots a window, every head's, fit the 16-bit half its count rides in");
+  static_assert(tenants_aligned<kWindowTokens, 1>()
+                    && tenants_aligned<kWindowTokens, kUnitGroups>(),
+                "each tenant on its access's alignment");
 };
 
 //: A SIDE'S LISTS OUT at its list level: entries, prefix rows (mod 2^16), exact totals, the union by slot, its extent.

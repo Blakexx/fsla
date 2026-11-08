@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import pytest
 import torch
+import torch.utils.deterministic
 
 from rola.engine.facts import lists as list_model
 from rola.engine.facts import liveness as lv
@@ -142,16 +143,6 @@ def _layout(widths, L):
     return lv.LivenessLayout(D=len(widths), B=tuple(padded_level_width(w) for w in widths), L=L)
 
 
-def _outputs(BH, L, windows=1):
-    """The outputs of a call that lists nothing, after ``list_exp``: the factor products, the gains planes, and each
-    side's five list tensors, empty."""
-    lists = [[torch.empty(0, dtype=torch.int32 if k in (2, 4) else torch.int16, device="cuda") for k in range(5)]
-             for _ in range(2)]
-    return [torch.empty((BH, L, 2), dtype=torch.float32, device="cuda"),
-            torch.empty((BH, L, 2), dtype=torch.float16, device="cuda"),
-            torch.empty((BH, windows, 2), dtype=torch.int16, device="cuda"), *lists]
-
-
 def _model(routes, layout, read_statics, write_statics):
     return lv.liveness_words(tuple(r.cpu() for r in routes.amp_read), tuple(r.cpu() for r in routes.amp_write),
                              layout, read_statics, write_statics)
@@ -218,9 +209,10 @@ def test_a_padded_topology_is_the_model_and_its_pad_digits_are_dead(widths, L, d
 
 
 def test_a_dense_level_is_neither_read_nor_written():
-    """BLIND the dense level's rows and POISON the outputs: a pass that read the level would vote it dead and one that
-    wrote it would clear the poison, while the sparse level is the model's all the same. The call lists nothing: a list
-    level is a side's one sparse level, never a dense one (`facts_ops.list_level`)."""
+    """BLIND the dense level's rows and POISON the outputs (torch's deterministic fill of new memory, the integer
+    maximum): a pass that read the level would vote it dead and one that wrote it would clear the poison, while the
+    sparse level is the model's all the same. The call lists nothing: a list level is a side's one sparse level, never
+    a dense one (`facts_ops.list_level`)."""
     widths, L = (32, 16), 64
     layout = _layout(widths, L)
     statics = _statics(layout, (0,), (20, 16))
@@ -229,15 +221,18 @@ def test_a_dense_level_is_neither_read_nor_written():
     want = _model(routes, layout, read_statics, write_statics)
     for side in (routes.amp_read, routes.amp_write):
         side[0].zero_()
-    BH, poison = routes.batch * routes.heads, 0x5A5A5A5A
-    words = torch.full((BH, lv.SIDES, layout.rows, layout.words), poison, dtype=torch.int32, device="cuda")
-    unions = torch.full((BH, lv.SIDES, layout.groups, layout.tiles), poison, dtype=torch.int32, device="cuda")
-    list_exp = torch.empty((BH, 1, 0, 2), dtype=torch.int16, device="cuda")
+    poison = torch.iinfo(torch.int32).max
     masks = [statics.mask_word(i) for i in range(lv.mask_words(layout.rows))]
-    facts_ops.extension().rola_facts_forward(
-        list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
-        words, unions, list_exp, *_outputs(BH, L), list(layout.B), 1, masks, 1, masks, -1, -1, window_of(),
-        _READ_ROW, 32, 32)
+    deterministic, fill = torch.are_deterministic_algorithms_enabled(), torch.utils.deterministic.fill_uninitialized_memory
+    torch.use_deterministic_algorithms(True)
+    torch.utils.deterministic.fill_uninitialized_memory = True
+    try:
+        words, unions, list_exp, *_ = facts_ops.extension().rola_facts_forward(
+            list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
+            list(layout.B), 1, masks, 1, masks, -1, -1, _READ_ROW, 32, 32)
+    finally:
+        torch.use_deterministic_algorithms(deterministic)
+        torch.utils.deterministic.fill_uninitialized_memory = fill
     _assert_written(facts_ops.Facts(words, unions, list_exp, *([None] * 5)), want, layout, read_statics,
                     write_statics)
     assert (words[:, :, :layout.B[0]] == poison).all() and (unions[:, :, :layout.group_base(1)] == poison).all()
@@ -503,12 +498,8 @@ def test_the_seam_refuses_rows_that_are_not_the_format():
     wide = [rows.float() for rows in routes.amp_read]
     with pytest.raises(RuntimeError, match="a CUDA u8 tensor"):
         facts_ops.extension().rola_facts_forward(
-            wide, wide, list(routes.scale_write), routes.g_write, values.scale,
-            torch.empty((2, 2, 32, 1), dtype=torch.int32, device="cuda"),
-            torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"),
-            torch.empty((2, 1, 16, 2), dtype=torch.int16, device="cuda"), *_outputs(2, L), list(layout.B), 0,
-            [read_statics.mask_word(0)], 0, [write_statics.mask_word(0)], 1, -1, window_of(),
-            _READ_ROW, 32, 32)
+            wide, wide, list(routes.scale_write), routes.g_write, values.scale, list(layout.B), 0,
+            [read_statics.mask_word(0)], 0, [write_statics.mask_word(0)], 1, -1, _READ_ROW, 32, 32)
 
 
 @pytest.mark.parametrize("list_groups", ((24, 32), (32, 8)))
@@ -531,21 +522,6 @@ def test_the_seam_refuses_a_mask_past_the_rows():
     routes, values = _bundle((12, 16), L, wide)
     with pytest.raises(RuntimeError, match="past its 12-digit rows"):
         _facts(routes, values, layout, *wide)
-
-
-def test_the_seam_refuses_another_window():
-    widths, L = (16, 16), 32
-    layout = _layout(widths, L)
-    read_statics, write_statics = _sides(layout, "alternating", widths)
-    routes, values = _bundle(widths, L, (read_statics, write_statics))
-    with pytest.raises(RuntimeError, match=f"window is the device's {window_of()}"):
-        facts_ops.extension().rola_facts_forward(
-            list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
-            torch.empty((2, 2, 32, 1), dtype=torch.int32, device="cuda"),
-            torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"),
-            torch.empty((2, 1, 16, 2), dtype=torch.int16, device="cuda"), *_outputs(2, L), list(layout.B), 0,
-            [read_statics.mask_word(0)], 0, [write_statics.mask_word(0)], 1, -1, 256,
-            _READ_ROW, 32, 32)
 
 
 # --------------------------------------------------------------- the producer's bundle, end to end

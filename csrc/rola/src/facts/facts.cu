@@ -696,6 +696,20 @@ void plan_units(FactsParams& p, const uint32_t (&dense)[kSides]) {
 //: THE BOUND PHASE LEDGER, or null: the next launches book into it.
 long long* g_ledger = nullptr;
 
+//: THE PLAN'S NUMBERS the host sizes the call by, at a card's build. -- see docs/internals/facts/facts.md#window
+struct HostPlan {
+  int window, window_words, list_cap, list_at;
+};
+
+HostPlan plan_of(const Card& card) {
+  HostPlan out{};
+  build_switch(card, [&](auto b) {
+    using Plan = FactsPlan<decltype(b)::build>;
+    out = HostPlan{Plan::kWindowTokens, Plan::kWindowWords, Plan::kListCap, Plan::kListAt};
+  });
+  return out;
+}
+
 }  // namespace detail
 
 //: -- see docs/internals/facts/facts_api.md#rola-facts-ledger-bind
@@ -713,28 +727,25 @@ void rola_facts_ledger_bind(std::optional<Tensor> ledger) {
 }
 
 //: -- see docs/internals/facts/facts_api.md#rola-facts-forward
-void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
-                        std::vector<Tensor> scale_write, Tensor g_write, Tensor v_scale,
-                        Tensor words, Tensor unions, Tensor list_exp, Tensor fm, Tensor gains16,
-                        Tensor gains_exp, std::vector<Tensor> write_lists,
-                        std::vector<Tensor> read_lists, std::vector<int64_t> widths,
-                        int64_t dense_read, std::vector<int64_t> mask_read, int64_t dense_write,
-                        std::vector<int64_t> mask_write, int64_t write_list_level,
-                        int64_t read_list_level, int64_t window, int64_t read_row,
-                        int64_t read_list_group, int64_t write_list_group) {
+std::vector<Tensor> rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
+                                       std::vector<Tensor> scale_write, Tensor g_write,
+                                       Tensor v_scale, std::vector<int64_t> widths,
+                                       int64_t dense_read, std::vector<int64_t> mask_read,
+                                       int64_t dense_write, std::vector<int64_t> mask_write,
+                                       int64_t write_list_level, int64_t read_list_level,
+                                       int64_t read_row, int64_t read_list_group,
+                                       int64_t write_list_group) {
   check_arch_table();
   const int D = static_cast<int>(widths.size());
   STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels, "the routing depth is one to four levels, got ", D);
   STD_TORCH_CHECK(static_cast<int>(read.size()) == D && static_cast<int>(write.size()) == D
                       && static_cast<int>(scale_write.size()) == D,
                   "each side holds one row set a level and the write side one scale a level: ", D);
-  //: the device's window (`common/window.cuh`), never the host pass's
-  int dev = 0;
-  ROLA_CUDA_CHECK(cudaGetDevice(&dev));
-  const int W = card_of(dev).traits.window;
-  STD_TORCH_CHECK(window == W, "the facts pass's window is the device's ", W, " tokens, got ",
-                  window);
   const Tensor& first = read[0];
+  const int device = first.get_device_index();
+  const Card& card = card_of(device);
+  const detail::HostPlan s = detail::plan_of(card);
+  const int W = s.window;
   STD_TORCH_CHECK(first.dim() == 4 && write[0].dim() == 4,
                   "a level's rows are [B, T, H, width], got ", shape(first.sizes()));
   //: GROUPED QUERIES: the read side's H query heads over the write side's H_w write heads, g = H / H_w each
@@ -750,7 +761,7 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   p.g = static_cast<int>(Hq / H);
   p.L = static_cast<int>(T);
   p.token_words = token_words(p.L);
-  p.windows = (p.token_words + W / kTokBits - 1) / (W / kTokBits);
+  p.windows = (p.token_words + s.window_words - 1) / s.window_words;
   const std::vector<Tensor>* sides[kSides] = {&read, &write};
   const int64_t dense_in[kSides] = {dense_read, dense_write};
   const std::vector<int64_t>* masks[kSides] = {&mask_read, &mask_write};
@@ -812,64 +823,48 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
     p.scale_write[level] = detail::column_view(scale_write[level], B, T, H, "scale_write[l]");
   p.g_write = detail::column_view(g_write, B, T, H, "g_write");
   p.v_scale = detail::column_view(v_scale, B, T, H, "v_scale");
-  //: the words and unions a write head's: its query heads' read slots, then its write side's
-  STD_TORCH_CHECK(words.is_cuda() && words.scalar_type() == Dtype::Int && words.is_contiguous()
-                      && words.dim() == 4 && words.size(0) == B * H && words.size(1) == p.g + 1
-                      && words.size(2) == p.rows_total && words.size(3) == p.token_words,
-                  "words is the contiguous int32 class-1 table [", B * H, ", ", p.g + 1, ", ",
-                  p.rows_total, ", ", p.token_words, "], got ", shape(words.sizes()));
   LivenessLayout layout{D, {}, p.L};
   for (int level = 0; level < D; ++level) layout.B[level] = p.B[level];
   for (int level = 0; level < D; ++level) p.group_base[level] = layout.group_base(level);
   p.groups = layout.groups();
   p.tiles = layout.tiles();
-  STD_TORCH_CHECK(unions.is_cuda() && unions.scalar_type() == Dtype::Int && unions.is_contiguous()
-                      && unions.dim() == 4 && unions.size(0) == B * H && unions.size(1) == p.g + 1
-                      && unions.size(2) == p.groups && unions.size(3) == p.tiles,
-                  "unions is the contiguous int32 tile-union table [", B * H, ", ", p.g + 1, ", ",
-                  p.groups, ", ", p.tiles, "], got ", shape(unions.sizes()));
-  p.words = reinterpret_cast<uint32_t*>(words.mutable_data_ptr<int32_t>());
-  p.unions = reinterpret_cast<uint32_t*>(unions.mutable_data_ptr<int32_t>());
-  const auto exact = [&](const Tensor& t, Dtype dtype, std::initializer_list<int64_t> want,
-                         const char* name) {
-    const std::vector<int64_t> dims(want);
-    STD_TORCH_CHECK(
-        t.is_cuda() && t.scalar_type() == dtype && t.is_contiguous() && t.sizes() == Shape(dims),
-        name, " is a contiguous CUDA ", dtype, " ", shape(Shape(dims)), ", got ", t.scalar_type(),
-        " ", shape(t.sizes()));
-    return t.mutable_data_ptr();
+  //: THE OUTPUTS, a write head's: the words and unions (its query heads' read slots, then its write side's), the
+  //: write list level's exponents, the factor products and gains, then each side's lists at its list level
+  const int64_t BH = B * H, list_width = p.list_level[kWrite] >= 0 ? p.B[p.list_level[kWrite]] : 0;
+  const auto out = [&](std::initializer_list<int64_t> dims, Dtype dtype) {
+    return empty_cuda(Shape(std::vector<int64_t>(dims)), dtype, device);
   };
-  if (p.list_level[kWrite] >= 0)
-    p.list_exp = static_cast<uint32_t*>(exact(list_exp, Dtype::Short,
-                                              {B * H, p.windows, p.B[p.list_level[kWrite]], 2},
-                                              "list_exp (the write list level's exponents)"));
-  p.fm = static_cast<float2*>(exact(fm, Dtype::Float, {B * H, T, 2}, "fm (the factor products)"));
-  p.gains16 = static_cast<uint32_t*>(exact(gains16, Dtype::Half, {B * H, T, 2}, "gains16"));
-  p.gains_exp =
-      static_cast<int16_t*>(exact(gains_exp, Dtype::Short, {B * H, p.windows, 2}, "gains_exp"));
-  //: THE LISTS OUT, a side's at its list level: entries, boundaries, the union by slot, its extent
-  const std::vector<Tensor>* lists[kSides] = {&read_lists, &write_lists};
-  for (int side = 0; side < kSides; ++side) {
-    STD_TORCH_CHECK(lists[side]->size() == 5, "side ", side,
-                    "'s lists are (entries, pre, totals, union, count), got ", lists[side]->size(),
-                    " tensors");
-    if (p.list_level[side] < 0) continue;
-    const int64_t width = p.B[p.list_level[side]], G = p.list_group[side],
-                  groups = (width + G - 1) / G, heads = side == kRead ? p.g : 1;
-    const std::vector<Tensor>& l = *lists[side];
-    ListsOut& o = p.lists[side];
-    o.entries = static_cast<uint2*>(
-        exact(l[0], Dtype::Short, {B * H, p.windows, width, heads * W, 4}, "a side's entries"));
-    o.pre = static_cast<uint16_t*>(
-        exact(l[1], Dtype::Short, {B * H, p.windows, groups, G + 1, heads * (W / kListBound)},
-              "a side's boundaries in prefix form"));
-    o.totals = static_cast<int32_t*>(exact(l[2], Dtype::Int,
-                                           {B * H, p.windows, groups, heads * (W / kListBound)},
-                                           "a side's groups' totals"));
-    o.union_tok = static_cast<uint16_t*>(
-        exact(l[3], Dtype::Short, {B * H, p.windows, groups, heads * W}, "a side's union"));
-    o.union_count = static_cast<int32_t*>(
-        exact(l[4], Dtype::Int, {B * H, p.windows, groups}, "a side's union extents"));
+  std::vector<Tensor> outs = {out({BH, p.g + 1, p.rows_total, p.token_words}, Dtype::Int),
+                              out({BH, p.g + 1, p.groups, p.tiles}, Dtype::Int),
+                              out({BH, p.windows, list_width, 2}, Dtype::Short),
+                              out({BH, T, 2}, Dtype::Float),
+                              out({BH, T, 2}, Dtype::Half),
+                              out({BH, p.windows, 2}, Dtype::Short)};
+  p.words = reinterpret_cast<uint32_t*>(outs[0].mutable_data_ptr<int32_t>());
+  p.unions = reinterpret_cast<uint32_t*>(outs[1].mutable_data_ptr<int32_t>());
+  if (list_width > 0) p.list_exp = static_cast<uint32_t*>(outs[2].mutable_data_ptr());
+  p.fm = static_cast<float2*>(outs[3].mutable_data_ptr());
+  p.gains16 = static_cast<uint32_t*>(outs[4].mutable_data_ptr());
+  p.gains_exp = static_cast<int16_t*>(outs[5].mutable_data_ptr());
+  //: THE LISTS OUT, a side's at its list level (none: width 0): entries, boundaries, the union by slot, its extent
+  for (const int side : {kWrite, kRead}) {
+    const int64_t width = p.list_level[side] >= 0 ? p.B[p.list_level[side]] : 0,
+                  G = p.list_group[side], groups = (width + G - 1) / G,
+                  heads = side == kRead ? p.g : 1;
+    const Tensor entries = out({BH, p.windows, width, heads * s.list_cap, 4}, Dtype::Short);
+    const Tensor pre = out({BH, p.windows, groups, G + 1, heads * s.list_at}, Dtype::Short);
+    const Tensor totals = out({BH, p.windows, groups, heads * s.list_at}, Dtype::Int);
+    const Tensor union_tok = out({BH, p.windows, groups, heads * s.list_cap}, Dtype::Short);
+    const Tensor union_count = out({BH, p.windows, groups}, Dtype::Int);
+    if (width > 0) {
+      ListsOut& o = p.lists[side];
+      o.entries = static_cast<uint2*>(entries.mutable_data_ptr());
+      o.pre = static_cast<uint16_t*>(pre.mutable_data_ptr());
+      o.totals = static_cast<int32_t*>(totals.mutable_data_ptr());
+      o.union_tok = static_cast<uint16_t*>(union_tok.mutable_data_ptr());
+      o.union_count = static_cast<int32_t*>(union_count.mutable_data_ptr());
+    }
+    outs.insert(outs.end(), {entries, pre, totals, union_tok, union_count});
   }
   detail::plan_units(p, dense);
   p.ledger = detail::g_ledger;
@@ -882,7 +877,7 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   //: THE PASS a unit's list groups need -- one group a unit unless a side splits its units in halves -- and its tenants'
   //: bytes at the device's window
   const bool halves = p.list_group[kRead] < kGroupDigits || p.list_group[kWrite] < kGroupDigits;
-  build_switch(card_of(dev), [&](auto b) {
+  build_switch(card, [&](auto b) {
     constexpr ::denseref::arch::Build kB = decltype(b)::build;
     if constexpr (in_image(kB)) {
       using Plan = FactsPlan<kB>;
@@ -903,8 +898,8 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
           cudaFuncAttributes attributes{};
           ROLA_CUDA_CHECK(cudaFuncGetAttributes(&attributes, pass_of(split)));
           int most = 0;
-          ROLA_CUDA_CHECK(cudaDeviceGetAttribute(&most, cudaDevAttrMaxSharedMemoryPerBlockOptin,
-                                                 first.get_device_index()));
+          ROLA_CUDA_CHECK(
+              cudaDeviceGetAttribute(&most, cudaDevAttrMaxSharedMemoryPerBlockOptin, device));
           STD_TORCH_CHECK(static_cast<int>(attributes.sharedSizeBytes) + bytes <= most,
                           "the facts pass's ", bytes, " bytes of dynamic and ",
                           attributes.sharedSizeBytes,
@@ -923,6 +918,7 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
       ROLA_CUDA_LAUNCH_CHECK();
     }
   });
+  return outs;
 }
 
 }  // namespace facts

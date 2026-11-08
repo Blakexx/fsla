@@ -297,7 +297,7 @@ maxima then its entries).
 MEASURED, the list groups (sm_86, 2026-11-06; `bench_facts_block.py --read-list-group 32 16`, the two timed launch by
 launch): the read side at 32 runs 442.3 / 502.7 µs (k 4 / k 16, 1.11x / 1.10x), at 16 445.3 / 504.7 µs (1.10x of its
 own floor, which its second union's bytes raise ~5 µs) -- 1.007x / 1.005x. A call whose sides are all whole groups runs
-the one-group pass (`facts_pass<1>`), the code before the halves: the layer's facts sessions at nl64k-alt-h4, -g4 and
+the one-group pass (`facts_pass<Bt, 1>`), the code before the halves: the layer's facts sessions at nl64k-alt-h4, -g4 and
 -g16 read 0.998, 0.997 and 0.993 of that build's time, and one `ncu` launch at nl64k-alt-k4 375 µs against its 376.
 
 Per architecture: sm_80 runs the same form at five CTAs an SM (registers); on sm_90 the window fills by TMA (a

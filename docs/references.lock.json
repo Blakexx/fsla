@@ -1181,6 +1181,7 @@
   {"doc": "docs/internals/facts/facts_api.md", "pinned_at": "ce7311293b16", "reviewed": true, "sha256": "f77d489b93c9daab", "target": "docs/internals/facts/facts.md#lists"},
   {"doc": "docs/internals/facts/facts_api.md", "pinned_at": "1252a9054efc", "reviewed": true, "sha256": "12ddf14861dd6ecb", "target": "docs/internals/facts/facts.md#lists-out"},
   {"doc": "docs/internals/facts/facts_api.md", "pinned_at": "ea9b9dce7552", "reviewed": true, "sha256": "6ab80f55fea8eb91", "target": "docs/internals/facts/facts.md#phase-ledger"},
+  {"doc": "docs/internals/facts/facts_api.md", "pinned_at": "fb595a9ad686", "reviewed": true, "sha256": "b45e472c4922d9d5", "target": "docs/internals/facts/facts.md#window"},
   {"doc": "docs/internals/facts/facts_api.md", "pinned_at": "ea9b9dce7552", "reviewed": true, "sha256": "", "target": "docs/internals/facts/liveness_contract.md"},
   {"doc": "docs/internals/facts/facts_api.md", "pinned_at": "9549ecf2afe5", "reviewed": true, "sha256": "c843924c8ef34429", "target": "docs/internals/facts/liveness_contract.md#alignment"},
   {"doc": "docs/internals/facts/facts_api.md", "pinned_at": "e77ce5f7f5f5", "reviewed": true, "sha256": "98633bc50b44d186", "target": "docs/internals/facts/liveness_contract.md#statics"},

@@ -23,7 +23,10 @@ sys.path.insert(0, str(ROOT))
 
 import torch  # noqa: E402
 
-TOKENS, HEADS, WIDTH, WINDOW = 65536, 4, 256, 512
+TOKENS, HEADS, WIDTH = 65536, 4, 256
+#: the GPU spin a timed launch is queued behind, in cycles (about a millisecond): the stream stays busy while the host
+#: allocates the launch's outputs, so the events bracket the kernel alone
+SPIN_CYCLES = 2_000_000
 #: the line (ruled 2026-10-13): 1.15x the pass's required-bytes floor at the colored lists' places, by k
 LINE_US = {4: 516.0, 16: 665.0}
 #: the lab's recorded flat read of the cell's 268 MB of rows (measure/lab/results/facts_two/sm_86.json)
@@ -61,31 +64,16 @@ def cell(k: int):
     return sides[0], sides[1], [column(), column()], column(), column()
 
 
-def launch(read, write, scales, g, vs, form, outs):
+def launch(read, write, scales, g, vs, form):
+    """One launch in the lists' ``form``; its outputs, each side's lists a ``Lists``."""
     from rola.engine.facts import liveness as lv
+    from rola.engine.facts.lists import Lists
     from rola.ops import facts as facts_ops
 
-    words, unions, list_exp, fm, gains16, gains_exp, wl, rl = outs
     masks = [0xFFFFFFFF] * lv.mask_words(2 * WIDTH)
-    facts_ops.extension().rola_facts_forward(
-        read, write, scales, g, vs, words, unions, list_exp, fm, gains16, gains_exp, list(wl), list(rl),
-        [WIDTH, WIDTH], 0, masks, 0, masks, 0, 1, WINDOW, *form)
-
-
-def outputs(form):
-    """The pass's outputs at the cell in the lists' ``form``, allocated once."""
-    from rola.ops import facts as facts_ops
-
-    windows, bh = TOKENS // WINDOW, HEADS
-    words = torch.empty((bh, 2, 2 * WIDTH, TOKENS // 32), dtype=torch.int32, device="cuda")
-    unions = torch.empty((bh, 2, 2 * WIDTH // 32, TOKENS // 64), dtype=torch.int32, device="cuda")
-    list_exp = torch.empty((bh, windows, WIDTH, 2), dtype=torch.int16, device="cuda")
-    fm = torch.empty((bh, TOKENS, 2), dtype=torch.float32, device="cuda")
-    gains16 = torch.empty((bh, TOKENS, 2), dtype=torch.float16, device="cuda")
-    gains_exp = torch.empty((bh, windows, 2), dtype=torch.int16, device="cuda")
-    wl = facts_ops._lists(bh, windows, WIDTH, WINDOW, "cuda", form.write_list_group)
-    rl = facts_ops._lists(bh, windows, WIDTH, WINDOW, "cuda", form.read_list_group)
-    return words, unions, list_exp, fm, gains16, gains_exp, wl, rl
+    outs = facts_ops.extension().rola_facts_forward(
+        read, write, scales, g, vs, [WIDTH, WIDTH], 0, masks, 0, masks, 0, 1, *form)
+    return (*outs[:6], Lists(*outs[6:11]), Lists(*outs[11:]))
 
 
 def required_bytes(outs) -> float:
@@ -117,17 +105,16 @@ def main() -> int:
     with gpu_lock():
         for k in args.k:
             read, write, scales, g, vs = cell(k)
-            outs = [outputs(form) for form in forms]
             for _ in range(3):
-                for form, out in zip(forms, outs):
-                    launch(read, write, scales, g, vs, form, out)
+                outs = [launch(read, write, scales, g, vs, form) for form in forms]
             torch.cuda.synchronize()
             times = [[] for _ in forms]
             for _ in range(args.reps):
-                for form, out, booked in zip(forms, outs, times):
+                for form, booked in zip(forms, times):
                     a, b = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+                    torch.cuda._sleep(SPIN_CYCLES)
                     a.record()
-                    launch(read, write, scales, g, vs, form, out)
+                    launch(read, write, scales, g, vs, form)
                     b.record()
                     b.synchronize()
                     booked.append(1000.0 * a.elapsed_time(b))
@@ -143,12 +130,12 @@ def main() -> int:
                       + (f"; {ratio:.3f}x the first group's {first:.1f} us, launch by launch" if booked is not times[0]
                          else ""))
             if args.ledger:
-                for form, out in zip(forms, outs):
+                for form in forms:
                     ledger = torch.zeros((facts_ops.LEDGER_WARPS, len(facts_ops.LEDGER_PHASES)), dtype=torch.int64,
                                          device="cuda")
                     facts_ops.ledger_bind(ledger)
                     try:
-                        launch(read, write, scales, g, vs, form, out)
+                        launch(read, write, scales, g, vs, form)
                         torch.cuda.synchronize()
                     finally:
                         facts_ops.ledger_bind(None)

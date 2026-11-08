@@ -52,11 +52,6 @@ def list_at(window: int) -> int:
     return window // LIST_BOUND
 
 
-def pre_rows(list_group: int) -> int:
-    """A list group's prefix rows: one a list, then its totals."""
-    return list_group + 1
-
-
 class Lists(NamedTuple):
     """One side's lists in the final form at a window of ``W`` tokens and list group ``G``: ``entries``
     ``[BH, windows, B, W, 4]`` int16 (a list holds at most a window's slots), ``groups = ceil(B / G)``, ``pre``
