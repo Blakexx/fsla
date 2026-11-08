@@ -60,13 +60,13 @@ __device__ __forceinline__ const uint8_t* row_at(const Plane& pl, int b, int h, 
 template <class Bt, bool SF16, bool RF16>
 __global__ __launch_bounds__(ScalePlan<Bt::build>::kThreads) void scale_writes(
     const __grid_constant__ ScaleParams p) {
-  constexpr int kWarps = ScalePlan<Bt::build>::kWarps;
-  __shared__ float c_tok[1024];
+  constexpr int kWarps = ScalePlan<Bt::build>::kWarps, kWindow = ScalePlan<Bt::build>::kWindow;
+  __shared__ float c_tok[kWindow];
   __shared__ __align__(16) float part[kWarps][kChunk];
   const int w = static_cast<int>(blockIdx.x), bh = static_cast<int>(blockIdx.y);
   const int warp = static_cast<int>(threadIdx.x) >> 5, lane = static_cast<int>(threadIdx.x) & 31;
   const int b = bh / p.write_heads, h = bh % p.write_heads;
-  const int t0 = w * p.window, n = min(p.window, p.L - t0);
+  const int t0 = w * kWindow, n = min(kWindow, p.L - t0);
   constexpr int kEs = SF16 ? 2 : 1, kEr = RF16 ? 2 : 1;
   float* const out = p.mass + (static_cast<int64_t>(bh) * p.windows + w) * p.width_s;
 
@@ -160,12 +160,13 @@ template <class Bt, bool SF16, bool RF16>
 __global__ __launch_bounds__(ScalePlan<Bt::build>::kThreads) void scale_reads(
     const __grid_constant__ ScaleParams p) {
   constexpr int kWarps = ScalePlan<Bt::build>::kWarps, kThreads = ScalePlan<Bt::build>::kThreads;
+  constexpr int kWindow = ScalePlan<Bt::build>::kWindow;
   extern __shared__ __align__(16) float mass_s[];
   const int w = static_cast<int>(blockIdx.x), bq = static_cast<int>(blockIdx.y);
   const int warp = static_cast<int>(threadIdx.x) >> 5, lane = static_cast<int>(threadIdx.x) & 31;
   const int qheads = p.write_heads * p.heads, b = bq / qheads, hq = bq % qheads;
   const int bh = bq / p.heads;
-  const int t0 = w * p.window, n = min(p.window, p.L - t0);
+  const int t0 = w * kWindow, n = min(kWindow, p.L - t0);
   constexpr int kEs = SF16 ? 2 : 1, kEr = RF16 ? 2 : 1;
 
   const float* const in = p.mass + (static_cast<int64_t>(bh) * p.windows + w) * p.width_s;
@@ -217,7 +218,7 @@ __global__ __launch_bounds__(ScalePlan<Bt::build>::kThreads) void scale_reads(
   }
   //: a partial window's tail past the call reads nothing
 #pragma unroll 1
-  for (int t = n + static_cast<int>(threadIdx.x); t < p.window; t += kThreads)
+  for (int t = n + static_cast<int>(threadIdx.x); t < kWindow; t += kThreads)
     p.bytes[static_cast<int64_t>(bq) * p.grid + t0 + t] = static_cast<int8_t>(carry::kUnitByteNone);
 }
 

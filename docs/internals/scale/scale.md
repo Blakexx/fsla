@@ -26,8 +26,8 @@ gain 16 (L 64K x 4 heads), median 2^9.2; the carry's f16 sum at it differs from 
 
 ## The constants
 
-THE PLAN at a build, `ScalePlan<B>`: its window (`traits_of(B).window`, at most 1,024 tokens -- a write CTA holds a
-window's token factors -- and whole groups), a CTA's `kWarps` = 8 warps (`kThreads` = 256) and a scan thread's `kBatch`
+THE PLAN at a build, `ScalePlan<B>`: its window (`traits_of(B).window`, whole groups; the kernels read it as a
+constant, and a write CTA holds the window's token factors), a CTA's `kWarps` = 8 warps (`kThreads` = 256) and a scan thread's `kBatch`
 = 8 windows' loads in flight; each kernel takes its build as a type and reads them there. The grains below are the
 pass's own, the same at every build. A row is read `kChunk` = 256 digits at a time, `kLaneDigits` = 8 a lane (an 8-byte load of
 a u8 row, a 16-byte load of an f16 row); a warp takes its tokens in groups of `kGroup` = 32, `kAhead` = 4 tokens' rows in
@@ -42,7 +42,7 @@ contract's (`facts/liveness_contract.md#floor`).
 and byte strides, `[B, T, H, width]`; the read side's heads the query heads); `fm` the facts pass's `(F, m)` a token,
 `[BH, L]` float2; `mass` the workspace `[BH, windows, width_S]` fp32 -- each window's own write masses after the first
 kernel, their exclusive prefix after the second; `bytes` the output `[BH heads, windows W]` int8 (the window grid whole, as the carry reads it: a partial window's tail `kUnitByteNone`); `grid` its row length; `inv_factor` the reciprocal of
-the carry's factor; `L`, `window` (the plan's W), `windows`, `heads` (query heads a write head), `write_heads`,
+the carry's factor; `L`, `windows`, `heads` (query heads a write head), `write_heads`,
 `width_s`, `width_r` the call's extents.
 
 THE TRANSLATION UNIT (`scale.cu`): `scale_forward` checks the planes (`plane_of`: each level's rows u8 or f16, 16-byte

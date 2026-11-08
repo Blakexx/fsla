@@ -25,7 +25,7 @@ struct ScaleParams {
   float* mass;
   int8_t* bytes;
   float inv_factor;
-  int L, window, windows, heads, write_heads, width_s, width_r, grid;
+  int L, windows, heads, write_heads, width_s, width_r, grid;
 };
 
 //: THE PASS'S PLAN at build `B`: its window, its CTAs' warps and a scan thread's windows in flight.
@@ -34,8 +34,7 @@ template <::denseref::arch::Build B>
 struct ScalePlan {
   static constexpr int kWindow = ::denseref::arch::traits_of(B).window;
   static constexpr int kWarps = 8, kThreads = kWarps * 32, kBatch = 8;
-  static_assert(kWindow <= 1024 && kWindow % kGroup == 0,
-                "a window is at most 1,024 tokens (a write CTA's token factors), whole groups");
+  static_assert(kWindow % kGroup == 0, "a window is whole token groups");
 };
 
 }  // namespace rola::scale

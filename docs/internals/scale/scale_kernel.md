@@ -23,7 +23,7 @@ the window's last (`n`) loads the last token's row and contributes zero by its f
 32 tokens (`g = warp, warp + 8, ..`), four tokens' rows in flight, `acc += w_S c(t)` eight digits a lane. In the FIRST
 chunk each token's `c(t) = max_r w_R(t, r) F(t)` is formed beside its level-S loads -- its level-R row loaded a chunk at
 a time and maxed in the lane, a warp max, times its `F` (`fm`, zero past the window's last) -- and lane `j` keeps token
-`j`'s into `c_tok` (4 KB at W = 1,024), which the warp's later chunks read back (the same warp's tokens: no barrier).
+`j`'s into `c_tok` (the plan's window wide: 2 KB at W = 512), which the warp's later chunks read back (the same warp's tokens: no barrier).
 Each chunk ends with the eight warps' partials into `part` (8 KB), a barrier, thread `i` summing digit `i`'s over the
 warps into the window's own masses, a barrier. One pass over the rows: the level-R and level-S loads of a token are in
 flight together, where a first form's two passes (level R's maxima, a barrier, then level S) took turns at the DRAM

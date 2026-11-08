@@ -1,6 +1,6 @@
 // csrc/rola/src/scale/scale.cu -- THE SCALE PASS'S TRANSLATION UNIT: the host entry that validates the bundle's
-// planes, the facts pass's `(F, m)` and the outputs, picks each side's form by its planes' dtypes and launches the
-// three kernels. see docs/internals/scale/scale.md
+// planes and the facts pass's `(F, m)`, allocates its outputs at the card's build, picks each side's form by its planes'
+// dtypes and launches the three kernels. see docs/internals/scale/scale.md
 #include "scale/scale_api.cuh"
 
 #include "common/torch_seam.cuh"
@@ -62,7 +62,6 @@ Tensor run(ScaleParams p, const bool (&f16)[4], int64_t BH, int device) {
   Tensor bytes = empty_cuda(Shape({BH * p.heads, windows * Sp::kWindow}), Dtype::Char, device);
   p.mass = mass.mutable_data_ptr<float>();
   p.bytes = static_cast<int8_t*>(bytes.mutable_data_ptr());
-  p.window = Sp::kWindow;
   p.windows = static_cast<int>(windows);
   p.grid = static_cast<int>(windows * Sp::kWindow);
 
