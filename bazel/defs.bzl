@@ -575,7 +575,7 @@ def _pytest_tier_impl(ctx):
     body = _PYTEST_TIER.format(venv = shell.quote(VENV), machine = "" if ctx.attr.device else _NO_DEVICE, args = " ".join([shell.quote(w) for w in words]))
     ctx.actions.write(script, body, is_executable = True)
     #: a device tier's pass is its devices': their identity is one of its inputs (docs/build-graph.md rule 5)
-    identity = [ctx.file._devices] if ctx.attr.device else []
+    identity = [ctx.file.devices] if ctx.attr.devices else []
     return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = ctx.files.data + [ctx.file._shards] + identity))]
 
 _pytest_tier_test = rule(
@@ -587,7 +587,7 @@ _pytest_tier_test = rule(
         "data": attr.label_list(allow_files = True, doc = "what it reads: the tree, and the library for a device tier"),
         "device": attr.bool(doc = "a device tier: it sees the machine's device, and takes the GPU lock"),
         "_shards": attr.label(default = "//bazel:pytest_shards.py", allow_single_file = True),
-        "_devices": attr.label(default = "@host_gpu//:identity.txt", allow_single_file = True),
+        "devices": attr.label(allow_single_file = True, doc = "a device tier's: the devices' identity (`@host_gpu`)"),
     },
 )
 
@@ -596,4 +596,6 @@ def pytest_tier(name, device = False, tags = [], **kwargs):
     (tests/conftest.py) -- a device tier the GPU lock (`host.gpu_lock`), a sharded tier a host slot a shard
     (`host.lock_dir`) -- and both live in `/tmp` by default, which a sandboxed test sees as its own. A device tier runs
     alone (`exclusive`)."""
+    if device:
+        kwargs["devices"] = "@host_gpu//:identity.txt"
     _pytest_tier_test(name = name, device = device, tags = tags + ["no-sandbox"] + (["exclusive"] if device else []), **kwargs)

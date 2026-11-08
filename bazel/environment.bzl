@@ -167,15 +167,16 @@ _host_cc_repo = repository_rule(
 )
 
 def _host_gpu_impl(rctx):
+    #: only a device tier reads this repository, and a device tier on a machine that cannot name its devices refuses
     smi = rctx.which("nvidia-smi")
-    if smi:
-        #: read again when the driver moves: its tools move with it
-        rctx.watch(smi)
-        found = rctx.execute([smi, "--query-gpu=index,name,uuid,driver_version,compute_cap,memory.total", "--format=csv,noheader"])
-        identity = found.stdout if found.return_code == 0 else "nvidia-smi failed: %s\n" % found.stderr
-    else:
-        identity = "no device: nvidia-smi is not on PATH\n"
-    rctx.file("identity.txt", "# THE MACHINE'S DEVICES, an input of every device test tier (docs/build-graph.md#rules)\n" + identity)
+    if not smi:
+        fail("no nvidia-smi on PATH: a device test tier is keyed on the machine's devices (docs/build-graph.md#rules)")
+    #: read again when the driver moves: its tools move with it
+    rctx.watch(smi)
+    found = rctx.execute([smi, "--query-gpu=index,name,uuid,driver_version,compute_cap,memory.total", "--format=csv,noheader"])
+    if found.return_code != 0 or not found.stdout.strip():
+        fail("nvidia-smi names no device (exit %d): %s" % (found.return_code, found.stderr))
+    rctx.file("identity.txt", "# THE MACHINE'S DEVICES, an input of every device test tier (docs/build-graph.md#rules)\n" + found.stdout)
     rctx.file("BUILD.bazel", 'exports_files(["identity.txt"], visibility = ["//visibility:public"])\n')
 
 _host_gpu_repo = repository_rule(

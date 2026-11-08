@@ -63,10 +63,7 @@ fails if it is edited by hand.
 ## 4. Build and test on the device
 
 ```bash
-ROLA_CUDA_ARCHS="80;86;89" pip install -e . --no-build-isolation
-pytest tests/oracle
-pytest tests/integration
-pytest tests/unit
+bazel test //:lane --//:archs=80,86,89     # every tier, on a library built for the new architecture too
 ```
 
 The ORACLE tier says the kernel computes the right function on this hardware. The

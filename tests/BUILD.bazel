@@ -1,6 +1,6 @@
 """THE TEST TIERS (docs/testing.md#running-it): each tier one target, as pytest runs it (bazel/defs.bzl's
 `pytest_tier`). Each test is in one tier: the CPU tier is tests/unit's rows that launch nothing, run with no device
-visible; a device tier runs alone. Every tier imports the library: `rola` refuses to import without its binary."""
+visible; a device tier runs alone. Every tier takes the library: collecting a tier reaches the plugin."""
 
 load("//bazel:defs.bzl", "pytest_tier", "tree_part")
 

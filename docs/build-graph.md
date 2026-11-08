@@ -6,7 +6,7 @@ release and its digest), `bazel/` (the graph's machinery: its rules, the environ
 actions run) and `bazel/bazel` (the front door); each `BUILD.bazel` sits beside what it describes. The graph builds the
 extension (`//:library`, [below](#compile)), gates it ([below](#gates)) and runs the checks ([below](#checks)).
 The commit gate is `bazel test //:gate` (`tools/git-hooks/pre-commit`, on the commit as git will write it), and the
-test tiers are its targets too ([below](#checks)). Beside the graph, `setup.py` builds the extension too
+test tiers are the graph's targets too (`//:lane`, [below](#checks)). Beside the graph, `setup.py` builds the extension too
 ([`build.md`](build.md)) with ratify's recompile and the wheels, and CI runs the lints' tools directly. Measurement is
 `rola_devtools.build`'s
 ([`measurement.md`](measurement.md)), whose timing sessions hold the GPU and the clock as machine-wide counting
@@ -26,6 +26,7 @@ semaphores, which Bazel cannot do for an action.
 | the lints' analyzer | clang-tidy at `tools/clang_tidy_pin.json`'s wheel, its binary's digest checked (`@clang_tidy`) | the shared repository cache |
 | the toolkit's parts beside the compiler | the disassemblers the SASS gate reads with (cuobjdump, nvdisasm) and cuRAND's headers (clang's CUDA front end includes one), from the toolkit's manifest by its digests (`@cuda_tools`) | the shared repository cache |
 | the host C++ compiler's identity | its version and the digests of gcc, g++ and cc1plus (`@host_cc`), an input of every compile | the output base |
+| the devices' identity | each device's name, UUID, driver and compute capability from `nvidia-smi` (`@host_gpu`, read at every fetch; a machine that names no device refuses), an input of every device test tier | the output base |
 
 ## <a id="front-door"></a>The front door
 
