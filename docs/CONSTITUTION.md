@@ -216,3 +216,22 @@ determinism".
    disjoint writes, reductions or atomics (run-to-run bitwise determinism is not required), or a stage boundary
    between kernels. A CTA waiting on another CTA's progress needs a strong reason.
 4. EVERYTHING IS A TRADE: a faster form that breaks 1-3 is chosen only with the reason and its numbers written down.
+
+<a id="r23"></a>
+## R23. The operands are scaled blocks
+
+Blake: "why cant it just take in keys with their shared scale and per-slot coefficients, queries with per-slot
+coefficients and a shared scale too ... and just use them? ... our producers just natively do that form. if someone
+doesnt use them, they use our factory which transofrms their input into the form the standard way you do any scaling";
+"the gain is a thing the producer is aware of, not something that our formaat knows about ... ultaimtely qkv are stord
+in the same scale format, and thats what the op uses".
+1. q, k and v are each SCALED BLOCKS: a level's rows (or the values') unit-max in a storage FORM, and the row's max
+   its fp32 scale. A form states the storage type, whether an entry may be negative (a routing form never: the den, the
+   liveness words and the decay's shares need it) and its floor; the factory refuses an entry its form does not hold.
+2. The op is defined on the blocks' products alone, the same for every consumer and the fp64 oracle: no level is
+   required to sum to 1, and nothing in the format says whether one does.
+3. A producer's own quantities -- a learned gain, an activation that lands on the simplex -- are folded into the
+   blocks by the producer, each block's scale formed inside the one job that holds its row, and are invisible to every
+   kernel and to the oracle. A caller's own levels reach the format through the factory, which quantizes each against
+   its max and nothing else.
+4. A consumer that needs a scale-free quantity (the decay's per-leaf shares) computes it from the rows itself.
