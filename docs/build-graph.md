@@ -4,8 +4,9 @@ The build graph is Bazel, run through bazelisk and the graph's front door. Its w
 sets and the hermetic CUDA toolkit), `.bazelrc` (the graph's settings), `.bazelversion` and `.bazeliskrc` (Bazel's
 release and its digest), `bazel/` (the graph's machinery: its rules, the environment, the platform and the scripts its
 actions run) and `bazel/bazel` (the front door); each `BUILD.bazel` sits beside what it describes. The graph builds the
-extension (`//:library`, [below](#compile)) and gates it ([below](#gates)); `setup.py` builds it too
-([`build.md`](build.md)), and runs the lints, the tests, ratify's recompile and the wheels. Measurement is
+extension (`//:library`, [below](#compile)), gates it ([below](#gates)) and runs the checks ([below](#checks)).
+Beside it, `setup.py` builds the extension too ([`build.md`](build.md)) with ratify's recompile and the wheels, pytest
+runs the tests, and the commit gate's hooks and CI run the lints with the same tools. Measurement is
 `rola_devtools.build`'s
 ([`measurement.md`](measurement.md)), whose timing sessions hold the GPU and the clock as machine-wide counting
 semaphores, which Bazel cannot do for an action.
@@ -93,20 +94,33 @@ post-build recompile is not among them: setup.py's build runs it (a warning betw
   lists, one `bin/` for both as an installed toolkit has them) and no verdict cache: Bazel's is the cache.
 - THE ARM GATE (`bazel/gates.py`): the built table against the declaration, and the coverage sweep -- the binary asked
   what it carries, loaded by the environment's interpreter against the toolkit's driver stub, so the answer is the
-  binary's on any machine. It runs outside the sandbox, where the environment's packages are; the lock is its input.
+  binary's on any machine. It runs outside the sandbox, where the environment's packages are, the environment's
+  store path on its command line (the path carries the environment's key).
 
 ## <a id="checks"></a>The checks
 
-`bazel test //:gate` runs every check the graph holds: the lints ruff, ruff's blank-line spacing, clang-format and ast-grep
-(the commit gate's hooks of the same names, run the same way).
+`bazel test //:gate` runs every check the graph holds: `//tools:lints`, the checks over files, and
+`//tools:commit_checks`, the checks of the commit.
 
 - THE TREE is `//:tree`: every tracked file (`git ls-files`, read by `bazel/environment.bzl`'s `@rola_tree`, which
-  reads again when git's index moves), each package's part its `tracked` filegroup. A file is in the tree once git
-  tracks it.
-- A CHECK IS A TEST OVER ITS FILES (`bazel/defs.bzl`'s `tree_test`): its inputs are copied into a real tree in the
-  test's own temporary directory, so a tool that resolves a path -- the runfiles are links into the checkout --
-  reads the check's inputs and nothing else, and the environment's tools are on PATH. Cached on what it reads, a check
-  reruns only when one of its files changes.
+  reads again when git's index moves), each package's part its `tracked` filegroup (`bazel/defs.bzl`'s `tree_part`,
+  which names its Python files `tracked_python` and the parts a check reads); `//:tree_python` is every Python file.
+  A file is in the tree once git tracks it.
+- A CHECK OVER FILES IS A TEST OVER THE PART OF THE TREE IT READS (`bazel/defs.bzl`'s `tree_test`): ruff the Python
+  files and `pyproject.toml`; clang-format `csrc/rola`; ast-grep `csrc/` and its rules; the instantiation lint
+  `csrc/rola` and the manifests; the spacing lint `csrc/rola` and the Python; the tree for a check of every tracked
+  file. Its inputs are copied into a real tree in the test's own temporary directory, the environment's tools on
+  PATH and no machine's dev config; a check that asks git what is tracked gets the copy as a git index of exactly
+  those files. Cached on what it reads, it reruns only when one of those files changes.
+- THE LINTS (`//tools:lints`): ruff and its blank-line spacing, clang-format, ast-grep
+  (`tools/lint/ast_grep_gate.py`), the standards lint (`tools/lint/lint_standards.py`), the unused instantiations,
+  the readability spacing, the agent files' portability (`tools/lint/portable_claude.py`), the mirror's declarations
+  (`rola_devtools.mirror --check`), and each ratchet (`tools/lint/ratchet.py <lint>`: the lint's findings against its
+  baseline, a new finding and a fixed one each red).
+- THE CHECKS OF THE COMMIT (`//tools:commit_checks`, `bazel/defs.bzl`'s `checkout_test`): what git knows rather than
+  a file set -- no ratchet's baseline grown against HEAD's (`tools/lint/ratchet.py --grown`), every doc reference
+  resolving (`tools/docrefs.py`), the dev container current (`tools/dev.py container gate`). Each runs in the
+  checkout, outside the sandbox and never cached, its input the repository's state.
 
 ## <a id="rules"></a>The rules
 
@@ -140,7 +154,8 @@ names one).
    watching is undefined there).
 10. THE SANDBOX STAYS ON: Bazel 9's hermetic `/tmp` keeps nvcc's temporary files apart, so nothing runs
     `--spawn_strategy=local` to dodge it. One action leaves it, the arm gate, because it imports the environment's
-    packages from the store, which the sandbox does not hold; the store is keyed by the lock, the action's input.
+    packages from the store, which the sandbox does not hold; the store path on its command line carries the
+    environment's key.
 11. CUDA THROUGH RULES_CUDA'S OWN SETTINGS: the architectures through `--@rules_cuda//cuda:archs`, one spec a card
     (cubins only, no PTX); a host compile flag reaches nvcc's host pass only through rules_cuda's host options; an external repository's
     headers through the target's include options.
@@ -149,6 +164,12 @@ names one).
 13. TWO SCHEDULERS SHARE ONE HOST through the host budget: the front door holds it for every build phase and never for
     a test or run phase; a caller that holds host slots never starts a Bazel build, whose actions run in a server that
     does not inherit the caller's hold.
+14. A CHECK OVER FILES READS A COPY: the runfiles are links into the checkout, so a tool that resolves a path, walks
+    a directory or asks git reads the checkout instead of the check's inputs; `tree_test` copies them into a real tree
+    (a git index of exactly them where the check asks git), and the test's own script is not among them.
+15. A CHECK OF THE COMMIT IS NEVER CACHED: its input is the repository's state (HEAD, the index, the commits a doc
+    pins), which no file set names, so it runs in the checkout tagged `external` -- never as a cached test that
+    passes on a stale verdict.
 
 ## <a id="use"></a>Using it
 

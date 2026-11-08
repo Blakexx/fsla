@@ -1,6 +1,7 @@
-"""THE GRAPH'S ENVIRONMENT: the repositories made from the tree's pins -- the Python environment built from
-requirements.lock into the shared store (`@rola_env`), the pinned linker (`@mold`), and the host C++ compiler's
-identity (`@host_cc`), and the toolkit's disassemblers (`@cuda_tools`). Docs: docs/build-graph.md#environment."""
+"""THE GRAPH'S ENVIRONMENT: the repositories made from the tree's pins and its index -- the Python environment built
+from requirements.lock and the pinned rola-devtools into the shared store (`@rola_env`), the pinned linker (`@mold`),
+the host C++ compiler's identity (`@host_cc`), the toolkit's disassemblers (`@cuda_tools`), and the checkout's
+tracked files (`@rola_tree`). Docs: docs/build-graph.md#environment."""
 
 _ENV_BUILD = """\
 load("@rules_cc//cc:defs.bzl", "cc_library")
@@ -16,10 +17,6 @@ cc_library(
     hdrs = glob(["site-packages/torch/include/**"]),
     includes = ["site-packages/torch/include", "site-packages/torch/include/torch/csrc/api/include"],
 )
-
-#: the environment's own interpreter, its packages beside it (the store's; an action that imports them runs outside
-#: the sandbox, the lock its input)
-filegroup(name = "venv_python", srcs = ["venv/bin/python3", "venv/pyvenv.cfg", "requirements.lock"])
 
 #: the torch libraries the extension links (its NEEDED, as setup.py's link leaves them)
 filegroup(
@@ -70,8 +67,6 @@ def _env_impl(rctx):
     rctx.symlink(paths["site"], "site-packages")
     rctx.symlink(paths["include"], "python_include")
     rctx.symlink(paths["base"] + "/bin/python3", "bin/python3")
-    rctx.symlink(paths["venv"], "venv")
-    rctx.symlink(rctx.path(rctx.attr.lock), "requirements.lock")
     threads = rctx.getenv("ROLA_NVCC_THREADS")
     if not threads:
         fail("ROLA_NVCC_THREADS is unset: run Bazel through its front door, `bazel` (docs/build-graph.md#front-door)")
@@ -216,6 +211,6 @@ environment = module_extension(
             "sha256": attr.string(mandatory = True, doc = "its digest: the one rules_cuda's toolkit is read by"),
         }),
     },
-    doc = "The graph's environment: the Python environment, the pinned linker, the host compiler's identity and the " +
-          "toolkit's disassemblers.",
+    doc = "The graph's environment: the Python environment, the pinned linker, the host compiler's identity, the " +
+          "toolkit's disassemblers and the checkout's tracked files.",
 )

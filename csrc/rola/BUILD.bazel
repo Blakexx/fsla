@@ -4,9 +4,8 @@ generated headers and the device stamp (docs/build-graph.md#compile)."""
 load("@rola_env//:flags.bzl", "HOST_CXX_FLAGS", "NVCC_FLAGS")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("@rules_cuda//cuda:defs.bzl", "cuda_library")
-load("//bazel:defs.bzl", "carry_arm_set", "include_root", "rola_headers")
+load("//bazel:defs.bzl", "carry_arm_set", "include_root", "rola_headers", "tree_part")
 load(":units.bzl", "CARRY_ARM_COUNT", "CARRY_ARM_UNITS", "HAND_UNITS")
-load("@rola_tree//:tree.bzl", "TRACKED")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -105,9 +104,5 @@ cc_library(
     deps = _DEPS + ["//bazel:cuda_headers"],
 )
 
-#: this package's tracked files (`git ls-files`, @rola_tree): its part of the tree the checks read
-filegroup(
-    name = "tracked",
-    srcs = TRACKED["csrc/rola"],
-    visibility = ["//visibility:public"],
-)
+#: this package's part of the tree the checks read
+tree_part()

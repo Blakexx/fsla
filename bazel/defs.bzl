@@ -5,6 +5,7 @@ run` copies into the checkout. Docs: docs/build-graph.md#compile."""
 load("@bazel_skylib//lib:shell.bzl", "shell")
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
 load("@rola_env//:flags.bzl", "VENV")
+load("@rola_tree//:tree.bzl", "TRACKED")
 load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cc_toolchain", "use_cc_toolchain")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
@@ -199,19 +200,20 @@ def _extension_impl(ctx):
     arm_args.add(ctx.file._arm_gate)
     arm_args.add("--so", so)
     arm_args.add("--header", header)
-    arm_args.add("--python", ctx.files._venv_python[0])
+    #: the environment's interpreter by its store path, which carries the environment's key
+    arm_args.add("--python", VENV + "/bin/python3")
     arm_args.add("--driver-stub", stub)
     arm_args.add("--carry-arms", ",".join(_value(ctx, "_carry_arms")))
     arm_args.add("--out", arm_verdict)
     ctx.actions.run(
         executable = ctx.file._python,
         arguments = [arm_args],
-        inputs = ctx.files._sources + ctx.files._venv_python + [so, header, stub, ctx.file._arm_gate],
+        inputs = ctx.files._sources + [so, header, stub, ctx.file._arm_gate],
         outputs = [arm_verdict],
         mnemonic = "RolaArmGate",
         progress_message = "The arm table and its coverage sweep on %{label}'s library",
-        #: the environment's interpreter reads its packages from the store, which the sandbox does not hold; the store
-        #: is keyed by the lock, an input here
+        #: the environment's interpreter reads its packages from the store, which the sandbox does not hold; its store
+        #: path on the command line keys the action by the environment
         execution_requirements = {"no-sandbox": "1"},
     )
 
@@ -247,7 +249,6 @@ rola_extension = rule(
         "_headers": attr.label(default = "//csrc/rola:generated"),
         "_cuobjdump": attr.label(default = "@cuda_tools//:bin/cuobjdump", allow_single_file = True, cfg = "exec"),
         "_nvdisasm": attr.label(default = "@cuda_tools//:bin/nvdisasm", allow_single_file = True, cfg = "exec"),
-        "_venv_python": attr.label(default = "@rola_env//:venv_python", cfg = "exec"),
         "_python": attr.label(default = "@rola_env//:python", allow_single_file = True, cfg = "exec"),
         "_cc_toolchain": attr.label(default = "@rules_cc//cc:current_cc_toolchain"),
         "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
@@ -262,23 +263,69 @@ _TREE_TEST = """\
 set -euo pipefail
 tree="$TEST_TMPDIR/tree"
 cp -rL "$TEST_SRCDIR/_main" "$tree"
+rm -f "$tree/$TEST_BINARY"
 cd "$tree"
+#: no machine reaches a check over files: the dev config is the defaults
+unset ROLA_DEV_CONFIG
 export PATH={venv}/bin:/usr/bin:/bin RUFF_NO_CACHE=true
-exec {cmd}
+{git}exec {cmd}
 """
+
+#: the copy as a git index of exactly its files: a check that asks git for the tracked files gets the check's inputs
+_TREE_GIT = "git init -q && git add -A\n"
 
 def _tree_test_impl(ctx):
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
-    words = [word.replace("{venv}", VENV) for word in ctx.attr.cmd]
-    ctx.actions.write(script, _TREE_TEST.format(venv = shell.quote(VENV), cmd = " ".join([shell.quote(w) for w in words])), is_executable = True)
+    body = _TREE_TEST.format(venv = shell.quote(VENV), git = _TREE_GIT if ctx.attr.git else "", cmd = " ".join([shell.quote(w) for w in ctx.attr.cmd]))
+    ctx.actions.write(script, body, is_executable = True)
     return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = ctx.files.data))]
 
 tree_test = rule(
     implementation = _tree_test_impl,
     test = True,
     attrs = {
-        "cmd": attr.string_list(mandatory = True, doc = "the check's command, run from the runfiles root; `{venv}` is the environment's directory"),
-        "data": attr.label_list(allow_files = True, doc = "the files it reads: the tree, or a part of it"),
+        "cmd": attr.string_list(mandatory = True, doc = "the check's command, run from the copy's root"),
+        "data": attr.label_list(allow_files = True, doc = "the files it reads: the tree, or the part of it the check reads"),
+        "git": attr.bool(default = False, doc = "the copy a git index of its files, for a check that asks git what is tracked"),
     },
     doc = "A check over the tree's tracked files, the environment's tools on PATH: one test, cached on what it reads.",
 )
+
+_CHECKOUT_TEST = """\
+#!/bin/bash
+# a check of the commit, run in the checkout it is made from (bazel/defs.bzl's checkout_test): never cached; the
+# machine's dev config is the one the front door names (ROLA_DEV_CONFIG)
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$TEST_SRCDIR/_main/MODULE.bazel")")"
+export PATH={venv}/bin:/usr/bin:/bin RUFF_NO_CACHE=true
+exec {cmd}
+"""
+
+def _checkout_test_impl(ctx):
+    script = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(script, _CHECKOUT_TEST.format(venv = shell.quote(VENV), cmd = " ".join([shell.quote(w) for w in ctx.attr.cmd])), is_executable = True)
+    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = [ctx.file._anchor]))]
+
+_checkout_test = rule(
+    implementation = _checkout_test_impl,
+    test = True,
+    attrs = {
+        "cmd": attr.string_list(mandatory = True, doc = "the check's command, run from the checkout's root"),
+        "_anchor": attr.label(default = "//:MODULE.bazel", allow_single_file = True),
+    },
+)
+
+def checkout_test(name, cmd, **kwargs):
+    """A check of the commit rather than of a tree -- what git knows (HEAD, the index, pinned commits): run in the
+    checkout, outside the sandbox, never cached, since its input is the repository's state and not a file set."""
+    _checkout_test(name = name, cmd = cmd, tags = ["external", "local"], **kwargs)
+
+def tree_part(parts = {}):
+    """This package's part of the tree (`git ls-files`, @rola_tree): `tracked`, every tracked file it holds;
+    `tracked_python`, its Python files; and each of `parts` (name -> a directory prefix), the tracked files under it --
+    so a check's data names the files it reads."""
+    files = TRACKED[native.package_name()]
+    native.filegroup(name = "tracked", srcs = files, visibility = ["//visibility:public"])
+    native.filegroup(name = "tracked_python", srcs = [f for f in files if f.endswith(".py")], visibility = ["//visibility:public"])
+    for name, prefix in parts.items():
+        native.filegroup(name = name, srcs = [f for f in files if f.startswith(prefix)], visibility = ["//visibility:public"])

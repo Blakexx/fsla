@@ -1,8 +1,7 @@
 """THE TREE'S TOOLS AS THE GRAPH'S INPUTS: the pins and records the graph's repositories read, and the generators its
 actions run."""
 
-load("@rola_tree//:tree.bzl", "TRACKED")
-load("//bazel:defs.bzl", "tree_test")
+load("//bazel:defs.bzl", "checkout_test", "tree_part", "tree_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -38,26 +37,29 @@ filegroup(
     ]),
 )
 
-#: this package's tracked files (`git ls-files`, @rola_tree): its part of the tree the checks read
-filegroup(
-    name = "tracked",
-    srcs = TRACKED["tools"],
-    visibility = ["//visibility:public"],
-)
+#: this package's part of the tree the checks read
+tree_part(parts = {
+    "lint": "lint/",
+    "manifests": "manifests/",
+})
 
-#: THE LINTS, each a test over the tree (docs/build-graph.md#checks)
+#: THE LINTS, each a test over the part of the tree it reads (docs/build-graph.md#checks)
 tree_test(
     name = "ruff",
     size = "small",
     cmd = ["ruff", "check", "--force-exclude", "."],
-    data = ["//:tree"],
+    data = ["//:pyproject.toml", "//:tree_python"],
 )
 
 tree_test(
     name = "ruff_e3",
     size = "small",
     cmd = ["tools/lint/run_ruff_e3.sh"],
-    data = ["//:tree"],
+    data = [
+        ":lint",
+        "//:pyproject.toml",
+        "//:tree_python",
+    ],
 )
 
 tree_test(
@@ -69,14 +71,146 @@ tree_test(
         "find -L csrc/rola -type f \\( -name '*.cu' -o -name '*.cuh' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \\) " +
         "-print0 | sort -z | xargs -0 clang-format --style=file --dry-run --Werror",
     ],
-    data = ["//:tree"],
+    data = [
+        "//:.clang-format",
+        "//csrc/rola:tracked",
+    ],
 )
 
 tree_test(
     name = "ast_grep",
     size = "small",
     cmd = ["python3", "tools/lint/ast_grep_gate.py"],
+    data = [
+        ":lint",
+        "//:sgconfig.yml",
+        "//csrc/rola:tracked",
+        "//csrc/third_party:tracked",
+    ],
+)
+
+tree_test(
+    name = "lint_standards",
+    size = "small",
+    cmd = ["python3", "tools/lint/lint_standards.py"],
     data = ["//:tree"],
+    git = True,
+)
+
+tree_test(
+    name = "unused_instantiations",
+    size = "small",
+    cmd = ["python3", "tools/lint/unused_instantiations.py"],
+    data = [
+        ":lint",
+        ":manifests",
+        "//csrc/rola:tracked",
+    ],
+)
+
+tree_test(
+    name = "readability_spacing",
+    size = "small",
+    cmd = ["python3", "tools/lint/readability_spacing.py"],
+    data = [
+        ":lint",
+        "//:tree_python",
+        "//csrc/rola:tracked",
+    ],
+)
+
+tree_test(
+    name = "portable_agent_files",
+    size = "small",
+    cmd = ["python3", "tools/lint/portable_claude.py"],
+    data = ["//:tree"],
+    git = True,
+)
+
+tree_test(
+    name = "mirror_declarations",
+    size = "small",
+    cmd = ["python3", "-m", "rola_devtools.mirror", "--check"],
+    data = ["//:tree"],
+    git = True,
+)
+
+#: THE RATCHETS: each lint's findings against its baseline (new and fixed) over the tree; a baseline's growth against
+#: HEAD is the commit's, `ratchet_baselines` below
+
+tree_test(
+    name = "ratchet_burst_tier",
+    size = "small",
+    cmd = ["python3", "tools/lint/ratchet.py", "burst_tier"],
+    data = ["//:tree"],
+    git = True,
+)
+
+tree_test(
+    name = "ratchet_constant_parameters",
+    size = "small",
+    cmd = ["python3", "tools/lint/ratchet.py", "constant_parameters"],
+    data = ["//:tree"],
+    git = True,
+)
+
+tree_test(
+    name = "ratchet_coverage",
+    size = "small",
+    cmd = ["python3", "tools/lint/ratchet.py", "coverage"],
+    data = ["//:tree"],
+    git = True,
+)
+
+tree_test(
+    name = "ratchet_drift_guards",
+    size = "small",
+    cmd = ["python3", "tools/lint/ratchet.py", "drift_guards"],
+    data = ["//:tree"],
+    git = True,
+)
+
+tree_test(
+    name = "ratchet_r9_enforcement",
+    size = "small",
+    cmd = ["python3", "tools/lint/ratchet.py", "r9_enforcement"],
+    data = ["//:tree"],
+    git = True,
+)
+
+tree_test(
+    name = "ratchet_vulture",
+    size = "small",
+    cmd = ["python3", "tools/lint/ratchet.py", "vulture"],
+    data = ["//:tree"],
+    git = True,
+)
+
+tree_test(
+    name = "ratchet_work_codes",
+    size = "small",
+    cmd = ["python3", "tools/lint/ratchet.py", "work_codes"],
+    data = ["//:tree"],
+    git = True,
+)
+
+#: THE CHECKS OF THE COMMIT, run in the checkout: what git knows
+checkout_test(
+    name = "ratchet_baselines",
+    size = "small",
+    cmd = ["python3", "tools/lint/ratchet.py", "--grown"],
+)
+
+checkout_test(
+    name = "docrefs",
+    size = "small",
+    cmd = ["python3", "tools/docrefs.py"],
+)
+
+checkout_test(
+    name = "dev_container",
+    size = "small",
+    cmd = ["python3", "tools/dev.py", "container", "gate"],
 )
 
 test_suite(
@@ -84,7 +218,21 @@ test_suite(
     tests = [
         ":ast_grep",
         ":clang_format",
+        ":lint_standards",
+        ":mirror_declarations",
+        ":portable_agent_files",
+        ":readability_spacing",
         ":ruff",
         ":ruff_e3",
+        ":unused_instantiations",
+    ] + [":ratchet_" + r for r in ["burst_tier", "constant_parameters", "coverage", "drift_guards", "r9_enforcement", "vulture", "work_codes"]],
+)
+
+test_suite(
+    name = "commit_checks",
+    tests = [
+        ":dev_container",
+        ":docrefs",
+        ":ratchet_baselines",
     ],
 )

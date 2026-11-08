@@ -53,7 +53,9 @@ def machine_rc() -> Path:
             f"common --disk_cache={cache / 'disk'}\n"
             f"common --repository_cache={cache / 'repository'}\n"
             f"common --repo_env=ROLA_GRAPH_STORE={cache / 'store'}\n"
-            f"common --repo_env=ROLA_NVCC_THREADS={dev_config.get('host.nvcc_threads')}\n")
+            f"common --repo_env=ROLA_NVCC_THREADS={dev_config.get('host.nvcc_threads')}\n"
+            #: a check of the commit reads the machine's dev config; a check over files unsets it
+            f"test --test_env=ROLA_DEV_CONFIG={dev_config.directory()}\n")
     path = cache / "machine.bazelrc"
     if not path.is_file() or path.read_text() != text:
         cache.mkdir(parents=True, exist_ok=True)

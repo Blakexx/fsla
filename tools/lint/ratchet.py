@@ -98,13 +98,36 @@ def _show(title: str, entries: Counter) -> None:
         print(f"  {path}: {message}" + (f"  (x{n})" if n > 1 else ""))
 
 
+def baselines_grown(lints: list[str]) -> int:
+    """No baseline holds an entry HEAD's lacks -- a backlog only shrinks, and a move is not growth (`verdict`). Run
+    against the checkout, which knows HEAD; the lints' own findings are the hermetic half."""
+    grown_any = False
+    for lint in lints:
+        path = BASELINES / f"{lint}.json"
+        head = _head(path)
+        if head is None or not path.exists():
+            continue
+        grown = verdict(Counter(), _decode(path.read_text()), head)[2]
+        if grown:
+            _show(f"ratchet {lint}: the baseline GREW against HEAD's -- a backlog only shrinks:", grown)
+            grown_any = True
+    print(f"ratchet baselines: {'GROWN' if grown_any else 'none grown'} ({len(lints)} checked against HEAD)")
+    return 1 if grown_any else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("lint", choices=sorted(LINTS))
+    ap.add_argument("lint", nargs="?", choices=sorted(LINTS))
     mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--grown", action="store_true",
+                      help="every baseline against HEAD's, none grown (the commit's half; no lint runs)")
     mode.add_argument("--shrink", action="store_true", help="remove the entries the lint no longer finds")
     mode.add_argument("--init", action="store_true", help="record the current findings as a new lint's baseline")
     a = ap.parse_args()
+    if a.grown:
+        return baselines_grown(sorted(LINTS) if a.lint is None else [a.lint])
+    if a.lint is None:
+        ap.error("name a lint, or pass --grown")
     path = BASELINES / f"{a.lint}.json"
     found = findings(a.lint)
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE ENVIRONMENT'S STORE: the pinned Python and requirements.lock's packages, built once a key into the store every
-worktree's graph shares, under a file lock -- a second builder of the same key waits and reuses it.
+"""THE ENVIRONMENT'S STORE: the pinned Python, requirements.lock's packages and rola-devtools at tools/devtools.txt's
+commit, built once a key into the store every worktree's graph shares, under a file lock -- a second builder of the same key waits and reuses it.
 
-The key hashes the lock, the pinned rola-devtools commit, the Python version, uv's version and the extra index, so a lock change is a new environment
-and an unchanged one is never rebuilt. uv's cache in the store hardlinks package files, so environments share their
+The key hashes the lock, the pinned rola-devtools commit, the Python version, uv's version and the extra index, so a
+change to any is a new environment and an unchanged one is never rebuilt. uv's cache in the store hardlinks package files, so environments share their
 bytes. Run by the graph's environment repository (bazel/environment.bzl) under the machine's python3; prints the
 environment's paths as JSON on its last line. Docs: docs/build-graph.md#environment.
 """
