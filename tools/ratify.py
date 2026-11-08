@@ -608,8 +608,8 @@ def _golden_from_output(text: str) -> dict[str, str]:
 _DERIVATION_MEASURED: dict[str, dict[str, str]] = {}
 
 
-def measure_derivation(cases: dict) -> tuple[str, dict[str, str]]:
-    """Compile and run the harness. Returns `(harness text, goldens)`.
+def measure_derivation(cases: dict) -> dict[str, str]:
+    """Compile and run the harness. Returns its goldens.
 
     No GPU and no extension: `nvcc` is used because the header carries
     `__host__ __device__` on the functions the device also calls, and defining those
@@ -620,7 +620,7 @@ def measure_derivation(cases: dict) -> tuple[str, dict[str, str]]:
     text = derivation.harness(cases)
     memo = _DERIVATION_MEASURED.get(text)
     if memo is not None:
-        return text, memo
+        return memo
     if _GRAPH:
         #: the graph compiled and linked the harness (tools/BUILD.bazel's derivation_harness) from this same rendering
         if _GRAPH["harness"].read_text() != text:
@@ -629,7 +629,7 @@ def measure_derivation(cases: dict) -> tuple[str, dict[str, str]]:
         run = subprocess.run([str(_GRAPH["harness_binary"])], capture_output=True, text=True)
         if run.returncode != 0:
             raise SystemExit(f"the derivation harness exited {run.returncode}:\n{run.stderr}")
-        return text, _derivation_golden(cases, run.stdout, text)
+        return _derivation_golden(cases, run.stdout, text)
     with tempfile.TemporaryDirectory(prefix="rola_derivation_") as tmp:
         src = Path(tmp) / "derivation_harness.cu"
         exe = Path(tmp) / "derivation_harness"
@@ -652,7 +652,7 @@ def measure_derivation(cases: dict) -> tuple[str, dict[str, str]]:
         if run.returncode != 0:
             raise SystemExit(f"the derivation harness exited "
                              f"{run.returncode}:\n{run.stderr}")
-    return text, _derivation_golden(cases, run.stdout, text)
+    return _derivation_golden(cases, run.stdout, text)
 
 
 def _derivation_golden(cases: dict, stdout: str, text: str) -> dict[str, str]:
@@ -670,7 +670,7 @@ def _derivation_golden(cases: dict, stdout: str, text: str) -> dict[str, str]:
 
 def derivation_record(cases: dict) -> dict:
     """The whole ratified record, measured now."""
-    _, golden = measure_derivation(cases)
+    golden = measure_derivation(cases)
     return {"schema": 1,
             "sources": derivation_sources(cases),
             "cases_sha256": cases_digest(cases),
@@ -711,7 +711,7 @@ def check_derivation(record: dict | None = None) -> bool:
     fresh = record.get("sources") == want_sources
     want_cases = cases_digest(cases)
     same_cases = record.get("cases_sha256") == want_cases
-    _, golden = measure_derivation(cases)
+    golden = measure_derivation(cases)
     ratified = record.get("golden", {})
 
     moved = sorted(n for n in golden if n in ratified and golden[n] != ratified[n])

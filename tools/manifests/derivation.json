@@ -38,7 +38,6 @@
   "tall-dense-128": "ok: 592 bytes, sha256 e7a6025b436a4854b14e7ef2665584c071c2535e98cbd77513b6693223d1bf8d",
   "tall-one-owner": "ok: 592 bytes, sha256 eed5d81894ca0e9675ae8dc682c1398abf90228b7b01bc55e2e320e93a7832f0"
  },
- "harness_sha256": "7928241b30ee83bdb329af6096b36a4fbdb32f4ccdd127c6a3337cd64f517d22",
  "schema": 1,
  "sources": {
   "common/geom.cuh": "373fab0da48680ff70e060a5a990901c8022607987ec7631a53649ed29003cdd"
