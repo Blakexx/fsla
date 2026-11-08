@@ -7,11 +7,11 @@ point it concerns, never the allocation. The reads and writes are `nvdisasm --pr
 marks; the liveness is this tool's own, over the function's real control flow
 (docs/internals/tools/life_ranges.md#liveness).
 
-    python tools/life_ranges.py --cubin <cubin> --source csrc/rola/src/carry/carry_kernel.cuh
+    python tools/life_ranges.py --cubin <cubin> --source csrc/rola/src/carry/ampere/carry_kernel.cuh
     python tools/life_ranges.py --so <extension .so> --source ... [--member carry_arm] [--kernel carry_kernel] [--top N]
     python tools/life_ranges.py --arm 0 --source ... [--arch sm_86]   # compiles the carry arm with -lineinfo first
-    python tools/life_ranges.py --arm 0 --kernel carry_kernel --source csrc/rola/src/carry/carry_kernel.cuh \
-        --source csrc/rola/src/carry/parts.cuh ... --budget tools/budgets/carry.json   # the register budget
+    python tools/life_ranges.py --arm 0 --kernel carry_kernel --source csrc/rola/src/carry/ampere/carry_kernel.cuh \
+        --source csrc/rola/src/carry/ampere/parts.cuh ... --budget tools/budgets/carry.json   # the register budget
 
 The cubin must carry line info (`-lineinfo`); an extension built without it reports the peak
 and the histogram but no regions. Regions are the innermost source function (struct methods as

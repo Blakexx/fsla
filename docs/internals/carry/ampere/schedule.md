@@ -1,6 +1,6 @@
-# `carry/schedule.cuh` — the window's plan and the rule
+# `carry/ampere/schedule.cuh` — the window's plan and the rule
 
-Mirrors `csrc/rola/src/carry/schedule.cuh`: each window's PLAN, made by the plan pass before the carry runs from the
+Mirrors `csrc/rola/src/carry/ampere/schedule.cuh`: each window's PLAN, made by the plan pass before the carry runs from the
 facts pass's counts -- one word (its image mode, its read and fold chunks and their counts) and a 16-bit STEP word a
 step -- and the RULE it is made by. A window's ENTRIES are its read chunks, then its fold chunks; each sits in one of
 two SLOTS of the AREA (the shared memory past the tenants, `plan.md#plan`), the rule placing entry `t + 1` beside
@@ -46,7 +46,7 @@ consumer re-extracts its fields from; `step_of` step `t`'s word.
   describe fills the carry runs in sequence instead.
 - THE RENDEZVOUS: before the retire where a drain or a fill follows; before a fold chunk's fill after the first; and
   where the step word says a fill takes the bytes of the panel being drained (`reuse`, predicated:
-  `common/atoms/barrier.md#rendezvous-if`). Only the panel: past the readout's rendezvous a read chunk's rows and entries are dead,
+  `../common/atoms/barrier.md#rendezvous-if`). Only the panel: past the readout's rendezvous a read chunk's rows and entries are dead,
   and its drain reads its panel, the union's tokens and the factors.
 - A FILL FOLLOWS THE DRAIN (measured 2026-10-16, nl64k-alt-k4 on sm_86): a fill clear of the drained place issued
   before the drain made the drain contend with its copies (the drain 1,890 to 3,934 cycles a warp-window); after it,
@@ -79,7 +79,7 @@ place, `readout_dense.md#row`), each part 128-byte aligned; a fold buffer's rows
 `read_bytes` (at the call's `reduce`) and `fold_bytes` are their sizes, so a chunk's footprint is its actual count,
 never the window's largest chunk; every size is a multiple of 128, so a place is too. The IMAGE (`ImageMode`) is whole
 (32 planes, 64 KB) or a 16-plane half (32 KB). An entry's row offset is the union's, so a chunk from a multiple of 64
-takes its pool back by its first slot, and its slot from the row (`carry.md#lists`).
+takes its pool back by its first slot, and its slot from the row (`../carry.md#lists`).
 
 <a id="totals"></a>
 ## The segment sums

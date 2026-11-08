@@ -1,9 +1,9 @@
-// csrc/rola/src/carry/handoff.cuh -- THE HAND-OFF, the fold's state to the readout's image: the digits' keys and
+// csrc/rola/src/carry/ampere/handoff.cuh -- THE HAND-OFF, the fold's state to the readout's image: the digits' keys and
 // exponents, the image's slices, a batch's stores and the den's tables, each in the sides' two forms.
-// see docs/internals/carry/handoff.md
+// see docs/internals/carry/ampere/handoff.md
 #pragma once
 
-#include "carry/parts.cuh"
+#include "carry/ampere/parts.cuh"
 
 namespace rola::carry {
 
@@ -35,7 +35,7 @@ constexpr int kKeySpan = 255;
 __host__ __device__ __forceinline__ constexpr int exp_slot(int d) { return 4 * (d & 7) + (d >> 3); }
 
 //: THE DIGIT KEYS: a digit's largest |value| at its list's unit as an integer key, at window `w`'s parity at
-//: `exp_slot`; `post_keys` returns the box's top. -- see docs/internals/carry/handoff.md#maxima
+//: `exp_slot`; `post_keys` returns the box's top. -- see docs/internals/carry/ampere/handoff.md#maxima
 //: THE ALTERNATING FORM: a digit is a fold row across every warp's lists, its key one shared atomic max a lane.
 template <class P>
 __device__ __forceinline__ void post_row_keys(const State<P>& st, uint8_t* smem, int w, int top,
@@ -115,12 +115,12 @@ __device__ __forceinline__ int post_keys(const State<P>& st, uint8_t* smem, int 
 }
 
 //: THE IMAGE'S TOP: a digit's largest value placed under 2^10, so a 32-list sum fits an fp16 accumulator.
-//: -- see docs/internals/carry/handoff.md#maxima
+//: -- see docs/internals/carry/ampere/handoff.md#maxima
 constexpr int kImageTop = 10;
 
 //: THE IMAGE, the value-carve readout's: digit `d`'s plane a slice a readout channel group `cg` -- 32 lists x 8 channels
 //: f16, list `l`'s row 16 bytes at `l ^ (d & 7)`, so the hand-off's 4-byte stores and the readout's `ldmatrix.trans`
-//: both meet 32 banks. -- see docs/internals/carry/handoff.md#image
+//: both meet 32 banks. -- see docs/internals/carry/ampere/handoff.md#image
 template <class P>
 __host__ __device__ __forceinline__ constexpr uint32_t slice_row(int cg, int l, int d) {
   return static_cast<uint32_t>(cg * P::kSliceBlock + 16 * (l ^ (d & 7)));
@@ -129,7 +129,7 @@ __host__ __device__ __forceinline__ constexpr uint32_t slice_row(int cg, int l, 
 //: THE DEN IMAGE: blocks of 8 digit columns (the den MMA's N), K rows x 8 digits f16, digit `d` the den of channel group
 //: `d mod 4` at 4 groups, of `d / kDenGroupDigits` at 8 (a group's digits one image half's): block `den_block`, column
 //: `den_col`; K row `l`'s 16 bytes at `l` XOR a constant of its 8-row group and the block (the reader's rows a 128-byte
-//: group; the writer's lanes on 16 banks). -- see docs/internals/carry/handoff.md#den
+//: group; the writer's lanes on 16 banks). -- see docs/internals/carry/ampere/handoff.md#den
 template <class P>
 constexpr int kDenGroupDigits = P::kDigits / P::kChannelGroups;
 
@@ -169,7 +169,7 @@ __host__ __device__ __forceinline__ constexpr uint32_t den_row(int l, int block)
 
 //: THE DIGITS' EXPONENTS from the keys at window `w`'s parity, lane `i` digit `i`'s (`exp_slot`): the smallest `e`
 //: with its largest |state| at most `2^e`, in the warp's own row of `kExps` (`exps_of`); warp 0 resets the other
-//: parity's keys. -- see docs/internals/carry/handoff.md#maxima
+//: parity's keys. -- see docs/internals/carry/ampere/handoff.md#maxima
 template <class P>
 __device__ __forceinline__ ops::SmemAddr exps_of(const uint8_t* smem, int warp) {
   return ops::smem_addr(smem + P::kExps) + 4u * static_cast<uint32_t>(kMaxExtent * warp);
@@ -190,7 +190,7 @@ __device__ __forceinline__ void post_exps(uint8_t* smem, int w, int top, int war
 
 //: THE DEN'S TABLES, a window's, from the den's registers (the state before the window's writes): each digit's largest
 //: by an integer max (`den_tables_max`), then each digit's factor and the den image (`den_tables_out`, past a barrier).
-//: -- see docs/internals/carry/handoff.md#den
+//: -- see docs/internals/carry/ampere/handoff.md#den
 //: A DIGIT'S DEN EXPONENT `dE` from its largest den (`kDenMax`), `kImageTop - 127` where it has none.
 __device__ __forceinline__ int den_exp(float top) {
   return top > 0.0f ? ceil_exp(top) : kImageTop - 127;
@@ -292,7 +292,7 @@ __device__ __forceinline__ StoreFrame store_frame(const uint8_t* smem, uint32_t 
 
 //: A BATCH'S STORES: the warp's state of batches `lo .. hi - 1` (8 digits each) into the image (plane `d & Mask`), f16
 //: at each digit's power of two (`list_scale`), a lane's channel pair one 4-byte store at its held base and an
-//: immediate. -- see docs/internals/carry/handoff.md#store
+//: immediate. -- see docs/internals/carry/ampere/handoff.md#store
 //: THE ALTERNATING FORM: a digit is a fold row, batch `2 M + H` its rows `16 M + 8 H + g`, list `warp + 8 J` the
 //: digit's K row `(warp ^ g) + 8 J` (digit `g`'s swizzle).
 template <class P, uint32_t Mask>

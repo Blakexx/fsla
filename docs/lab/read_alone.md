@@ -4,7 +4,7 @@ Mirrors `measure/lab/experiments/read_alone.cu`, a part harness of the lab
 ([`docs/internals/tools/lab.md`](../internals/tools/lab.md)).
 
 THE QUESTION. What does the value-carve readout cost a warp-window alone -- production's `read_factors` and
-`read_chunk` ([`readout.md`](../internals/carry/readout.md)), nothing else in the window -- against its tensor and
+`read_chunk` ([`readout.md`](../internals/carry/ampere/readout.md)), nothing else in the window -- against its tensor and
 shared-memory floors and against the composed kernel's readout phase? The readout component's instrument for the
 iteration Blake ruled 2026-11-06 (the readout to its floor without changing the ruled design).
 

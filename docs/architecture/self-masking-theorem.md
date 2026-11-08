@@ -95,7 +95,7 @@ zero in floating point, which is a separate claim with two load-bearing parts.
 
 **(a) The amplitude is never logged.** The coefficient is built as a direct
 product of per-level factors — the fold's write operand is the slot's dense slice
-times the record's coefficient ([`fold.md#step`](../internals/carry/fold.md#step)),
+times the record's coefficient ([`fold.md#step`](../internals/carry/ampere/fold.md#step)),
 and the intra's digit products are integer MMAs — so a structurally dead route is an
 exact zero. The alternative log-space
 lowering — log the factors, select with a binary MMA, exponentiate in the

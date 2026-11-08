@@ -7,7 +7,7 @@
 #include <cstdio>
 #include <vector>
 
-#include "carry/carry_kernel.cuh"
+#include "carry/ampere/carry_kernel.cuh"
 #include "common/arm.cuh"
 #include "lab.cuh"
 

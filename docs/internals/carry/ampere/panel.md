@@ -1,6 +1,6 @@
-# `carry/panel.cuh` — the panel and the drain
+# `carry/ampere/panel.cuh` — the panel and the drain
 
-Mirrors `csrc/rola/src/carry/panel.cuh`. A read chunk's PANEL is its slots' `num` words, the readout's adds landing
+Mirrors `csrc/rola/src/carry/ampere/panel.cuh`. A read chunk's PANEL is its slots' `num` words, the readout's adds landing
 there (`readout.md#chunk`), and its DEN WORDS beside it; the DRAIN takes both to HBM once every warp has read the chunk.
 The read buffer holds them after the chunk's rows (`read_panel`, `read_dens`; `schedule.md#buffers`), and the chunk's
 fill clears them (`parts.md#fill`).
@@ -43,7 +43,7 @@ channels: two 16-byte loads), one `red.global.add.f32` into `den`. Each address 
 multiply-add; the host holds a write head's rows under 2^32 words). The CTAs join only here (R22: independent units,
 joined by atomics): the cross-CTA adds (`red_add_h2`, `red_add_f32`) are unpredicated, each one `red.global`.
 
-NO BRANCH AROUND AN ADD (lab [`drain`](../../lab/drain.md): a predicated `red.global` is a convergence region around
+NO BRANCH AROUND AN ADD (lab [`drain`](../../../lab/drain.md): a predicated `red.global` is a convergence region around
 each add). A GAP slot (the union's tail, `kGap`) holds no token; the union is padded to whole 8-token steps
 (`facts.cu`), so its gaps lie in its last step and a chunk's in its last 8 slots (a dense read side stages no union:
 its slots are the window's tokens, a slot its token, no gap -- the fill's unlisted case): one load a lane, a ballot and a

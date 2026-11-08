@@ -1,6 +1,6 @@
-// csrc/rola/src/carry/fold.cuh -- THE FOLD: a warp's write lists over a window's chunks into the fp32 state -- each
+// csrc/rola/src/carry/ampere/fold.cuh -- THE FOLD: a warp's write lists over a window's chunks into the fp32 state -- each
 // list in its running unit, steps of 16 tokens and an 8-token tail, a step's A the slots' dense slice times the
-// entries' c, its B their values, fp32-accumulate MMAs. see docs/internals/carry/fold.md
+// entries' c, its B their values, fp32-accumulate MMAs. see docs/internals/carry/ampere/fold.md
 #pragma once
 
 #include <cuda_fp16.h>
@@ -8,7 +8,7 @@
 #include <cstdint>
 #include <type_traits>
 
-#include "carry/parts.cuh"
+#include "carry/ampere/parts.cuh"
 
 namespace rola::carry {
 
@@ -27,7 +27,7 @@ __device__ __forceinline__ uint32_t pow2_half2(int e) {
 }
 
 //: A UNIT'S NEXT WINDOW: a live list's exponent, held within the bound's headroom; the state's rescale returned and
-//: the bound moved (`next_units` in tests/oracle/fold_reference.py). -- see docs/internals/carry/fold.md#units
+//: the bound moved (`next_units` in tests/oracle/fold_reference.py). -- see docs/internals/carry/ampere/fold.md#units
 template <class P>
 __device__ __forceinline__ float next_unit(int k, UnitBook& book) {
   constexpr float kWindowAdd = P::kWindow * 16.0f;
@@ -42,13 +42,13 @@ __device__ __forceinline__ float next_unit(int k, UnitBook& book) {
 
 //: A WRITE SIDE WITH NO LIST LEVEL'S WINDOW EXPONENT, every list's, from the window's shift of F (`gains_shift`: its
 //: largest F in [2^-4, 2^-3) after it): F under 2^(-3 - shift) and a dense byte under 2^8 -- a bound, the dense level's
-//: floor holding each list's largest within 2^13 of it. -- see docs/internals/carry/fold.md#units
+//: floor holding each list's largest within 2^13 of it. -- see docs/internals/carry/ampere/fold.md#units
 __device__ __forceinline__ int dense_exp(int shift) { return 5 - shift; }
 
 //: A WINDOW'S UNITS, before the warp's steps: each list's exponent moves its book (lane group `j` list `j`); its state's
 //: rescale `f` (applied beside the list's first MMAs) and its c factor `2^(E - unit)` posted to the list's scale (the
 //: `kScale` tenant, read by the window's fold chunks). A side with no list level keeps its unit.
-//: -- see docs/internals/carry/fold.md#units
+//: -- see docs/internals/carry/ampere/fold.md#units
 struct ListScale {
   float f;
   uint32_t cf;
@@ -78,7 +78,7 @@ __device__ __forceinline__ void fold_units(uint8_t* smem, const Window& ww, int 
 //: AN ENTRY'S LANE VALUES: its slot's row offset in the union (its swizzle folded in; the chunk's pool is taken back
 //: by its first slot `first`) and its c paired with the next lane's, moved to the list's unit; where the list carries
 //: the den (`Den`), its c_m (the record's high half) paired the same way -- one shuffle of the record's word for both.
-//: A pad (past the run) is the chunk's first row with c = 0. -- see docs/internals/carry/fold.md#den
+//: A pad (past the run) is the chunk's first row with c = 0. -- see docs/internals/carry/ampere/fold.md#den
 template <class P, bool Den>
 __device__ __forceinline__ void entry_of(uint2 rec, bool live, int first, uint32_t cf,
                                          uint32_t& off, uint32_t& cpair, uint32_t& dpair) {
@@ -90,13 +90,13 @@ __device__ __forceinline__ void entry_of(uint2 rec, bool live, int first, uint32
 }
 
 //: A LIST'S DEN COLUMN over its steps: two m-tiles, the column in every one of B's (each lane its quad's rows).
-//: -- see docs/internals/carry/fold.md#den
+//: -- see docs/internals/carry/ampere/fold.md#den
 template <class P>
 using DenColumn = float[P::kFoldMTiles][4];
 
 //: A 16-TOKEN STEP into list `J`'s accumulators: its slots' dense slices (A, `ldmatrix.trans`, times c) and values
 //: (B), eight fp32-accumulate MMAs; where the list carries the den (`Den`), its column's two more on the raw slices
-//: (B the entries' c_m, every column). Lanes `0..15` hold its entries. -- see docs/internals/carry/fold.md#step
+//: (B the entries' c_m, every column). Lanes `0..15` hold its entries. -- see docs/internals/carry/ampere/fold.md#step
 //: @burst
 template <class P, int J, bool Den>
 __device__ __forceinline__ void step16(State<P>& st, ops::SmemAddr pool, uint32_t off,
@@ -134,7 +134,7 @@ __device__ __forceinline__ void step16(State<P>& st, ops::SmemAddr pool, uint32_
 }
 
 //: AN 8-TOKEN TAIL into list `J`'s accumulators: m16n8k8 MMAs, half a step's tensor work; the den's column on the raw
-//: slices where the list carries it. Lanes `0..7` hold its entries. -- see docs/internals/carry/fold.md#step
+//: slices where the list carries it. Lanes `0..7` hold its entries. -- see docs/internals/carry/ampere/fold.md#step
 //: @burst
 template <class P, int J, bool Den>
 __device__ __forceinline__ void step8(State<P>& st, ops::SmemAddr pool, uint32_t off,
@@ -168,7 +168,7 @@ __device__ __forceinline__ void step8(State<P>& st, ops::SmemAddr pool, uint32_t
 
 //: A LIST'S STEPS over its `n` entries: 16-token steps while more than 8 remain, then an 8-token tail, `fetch` the
 //: entry at an index; `off`, `cpair` and `dpair` arrive holding the first step's lanes (entry `lane & 15`), and each
-//: step fetches the next's in its own block, so its loads issue under its MMAs. -- see docs/internals/carry/fold.md#step
+//: step fetches the next's in its own block, so its loads issue under its MMAs. -- see docs/internals/carry/ampere/fold.md#step
 template <class P, int J, bool Den, class Fetch>
 __device__ __forceinline__ void steps(State<P>& st, uint32_t cf, ops::SmemAddr pool, int first,
                                       int n, int lane, uint32_t off, uint32_t cpair, uint32_t dpair,
@@ -188,7 +188,7 @@ __device__ __forceinline__ void steps(State<P>& st, uint32_t cf, ops::SmemAddr p
 }
 
 //: A FOLD CHUNK'S FILL, the copies issued: its rows (slices then values) at `buf`, its entries after them (a warp its
-//: own lists' runs, `run` the chunk's). -- see docs/internals/carry/parts.md#fill
+//: own lists' runs, `run` the chunk's). -- see docs/internals/carry/ampere/parts.md#fill
 template <class P>
 __device__ __forceinline__ void fold_fill(const CarryParams& p, const uint8_t* smem,
                                           const Window& ww, const Place& c, int w, const Run& run,
@@ -212,15 +212,15 @@ __device__ __forceinline__ void fold_fill(const CarryParams& p, const uint8_t* s
 //: A FOLD CHUNK, a warp's: each of its lists' run of the chunk (`run`, the chunk's) from the buffer's entries at
 //: `ents`, in 16-token steps and an 8-token tail over the rows at `rows`, the list's scale read from its tenant and its
 //: rescale applied before the window's first chunk (`rescale`) where its unit moved; a side with no list level every
-//: slot of the chunk, c from the slot's row. -- see docs/internals/carry/fold.md#chunk
+//: slot of the chunk, c from the slot's row. -- see docs/internals/carry/ampere/fold.md#chunk
 //: THE FOLD'S LAPS, an instrument: `laps(m)` at the chunk's marks (0 its lists' first steps' lanes read, `1 + 2 J` list
-//: `J`'s rescale guarded, `2 + 2 J` its steps done); the kernel's are none. -- see docs/internals/carry/fold.md#laps
+//: `J`'s rescale guarded, `2 + 2 J` its steps done); the kernel's are none. -- see docs/internals/carry/ampere/fold.md#laps
 struct NoLaps {
   __device__ __forceinline__ void operator()(int) const {}
 };
 
 //: THE DEN LISTS a channel box carries, a mask over a warp's lists `j`: where `j boxes / 4` is the box.
-//: -- see docs/internals/carry/fold.md#den
+//: -- see docs/internals/carry/ampere/fold.md#den
 template <class P>
 __device__ __forceinline__ uint32_t den_lists(int channel0, int dv) {
   const int box = channel0 / P::kChannels, boxes = dv / P::kChannels;
@@ -233,7 +233,7 @@ __device__ __forceinline__ uint32_t den_lists(int channel0, int dv) {
 
 //: A LIST'S DEN COLUMN INTO THE DEN'S REGISTERS (`State::den`, `den_place`), each row times `2^(K - kCoefTop)`: list `J`
 //: in the lanes whose pairs hold it, from their m-tile's column (every lane holds its quad's rows).
-//: -- see docs/internals/carry/fold.md#den
+//: -- see docs/internals/carry/ampere/fold.md#den
 template <int J, class P>
 __device__ __forceinline__ void den_add(State<P>& st, const DenColumn<P>& den, int k, int lane) {
   static_assert(P::kFoldMTiles <= 2,
@@ -251,7 +251,7 @@ __device__ __forceinline__ void den_add(State<P>& st, const DenColumn<P>& den, i
 //: A DENSE SIDE'S STEPS (no list level), one list: every slot of the chunk ONCE for all the warp's lists -- a 16-slot
 //: step's slices and values loaded once, each list's A the slices times its c, four lists' eight MMAs, and where the warp
 //: does its pair's den (`Den`, warps `w < 4` of a box carrying it) the pair's eight lists' tile, two more MMAs on the raw
-//: slices (B each slot's c_m); an 8-slot tail after. -- see docs/internals/carry/fold.md#dense
+//: slices (B each slot's c_m); an 8-slot tail after. -- see docs/internals/carry/ampere/fold.md#dense
 template <class P, bool Den, class Laps>
 __device__ __forceinline__ void steps_dense(State<P>& st, bool rescale, const uint8_t* smem,
                                             ops::SmemAddr pool, ops::SmemAddr rows,
@@ -419,7 +419,7 @@ __device__ __forceinline__ void steps_dense(State<P>& st, bool rescale, const ui
 //: A DENSE FOLD'S DEN TILES INTO THE DEN'S REGISTERS (`den_place`, the list owner's), at `2^(kden - kCoefTop)` where the
 //: box carries the list: warp `w < 4`'s own columns by a shuffle, its partner `w + 4`'s through shared memory (2 KB over
 //: the den image, free while folding: its readers done at the window's last drain; a barrier).
-//: -- see docs/internals/carry/fold.md#dense
+//: -- see docs/internals/carry/ampere/fold.md#dense
 //: THE TWO-LIST FORM: a doer `w < 2` holds a quad's tile (warps `w`, `w + 2`, `w + 4`, `w + 6`); every doer lane's tile
 //: goes through shared memory (its own columns too), each owner lane takes its two words.
 template <class P>
@@ -644,7 +644,7 @@ __device__ __forceinline__ void fold_chunk(State<P>& st, bool rescale, const uin
 }
 
 //: THE PROBE (an instrument; nothing unbound): the state at the call's end, absolute, fp32 `[BH, N, d_v]` by global
-//: leaf in level order. -- see docs/internals/carry/fold.md#probe
+//: leaf in level order. -- see docs/internals/carry/ampere/fold.md#probe
 __device__ __forceinline__ int64_t level_stride(const CarryParams& p, int level) {
   int64_t s = 1;
 #pragma unroll 1

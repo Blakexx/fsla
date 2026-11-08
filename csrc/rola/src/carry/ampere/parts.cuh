@@ -1,6 +1,6 @@
-// csrc/rola/src/carry/parts.cuh -- THE CARRY'S COMMON PARTS: the fold's state and the den's register places, the CTA's
+// csrc/rola/src/carry/ampere/parts.cuh -- THE CARRY'S COMMON PARTS: the fold's state and the den's register places, the CTA's
 // place, a window's lists and facts in, a chunk's fills (its rows, its entries, its cleared panel) and runs.
-// see docs/internals/carry/parts.md
+// see docs/internals/carry/ampere/parts.md
 #pragma once
 
 #include <cuda_fp16.h>
@@ -9,7 +9,7 @@
 #include <cstdint>
 #include <type_traits>
 
-#include "carry/plan.cuh"
+#include "carry/ampere/plan.cuh"
 #include "common/ops.cuh"
 #include "common/static_for.cuh"
 
@@ -18,7 +18,7 @@ namespace rola::carry {
 namespace ops = ::denseref::ops;
 
 //: THE UNITS' CONSTANTS: c's top 2^4, a state held under 2^100 of its unit, the lowest unit, a list never live,
-//: the facts pass's dead exponent. -- see docs/internals/carry/fold.md#units
+//: the facts pass's dead exponent. -- see docs/internals/carry/ampere/fold.md#units
 constexpr int kCoefTop = 4;
 constexpr int kUnitHeadroom = 100;
 constexpr int kUnitMin = kCoefTop - 127;
@@ -48,7 +48,7 @@ __device__ __forceinline__ int ceil_exp(float x) {
 
 //: A WARP'S STATE, the fold's accumulators: per list, its digits' m-tiles by the channels' n-tiles, fp32 in the list's
 //: unit; and the den's, the v+1 channel absolute, `kDenRegs` words a lane (`den_place`). -- see
-//: docs/internals/carry/fold.md#state
+//: docs/internals/carry/ampere/fold.md#state
 template <class P>
 struct State {
   float acc[P::kFoldLists][P::kFoldMTiles][P::kFoldNTiles][4];
@@ -64,7 +64,7 @@ struct State {
 };
 
 //: THE CTA'S PLACE: its batch-head and its box's first channel (a level's first digit is `origin_of`).
-//: -- see docs/internals/carry/parts.md#place
+//: -- see docs/internals/carry/ampere/parts.md#place
 struct Place {
   int bh, channel0;
 };
@@ -94,7 +94,7 @@ struct Statics {
 };
 
 //: THE CTA'S ADDRESSES, worked out once before the windows, so the window loop divides by nothing: each side's statics
-//: and operand slices, the values at the box's channels. -- see docs/internals/carry/parts.md#place
+//: and operand slices, the values at the box's channels. -- see docs/internals/carry/ampere/parts.md#place
 struct Addr {
   Statics side[2];
   Slices slices[2];
@@ -172,7 +172,7 @@ enum SideIndex : int { kRead = 0, kWrite = 1 };
 
 //: A SIDE'S TENANTS for window `w` (two windows' a side, by parity): its union tokens and its group's boundaries in
 //: prefix form -- the read side's in the call's read tables, a row of them its query heads' -- and its columns a row.
-//: -- see docs/internals/carry/plan.md#tenants
+//: -- see docs/internals/carry/ampere/plan.md#tenants
 template <class P>
 __device__ __forceinline__ int cols_of(const CarryParams& p, int side) {
   return P::kListAt * (side == kRead ? p.tables.heads : 1);
@@ -203,7 +203,7 @@ __device__ __forceinline__ int2 chunk_cols(int first, int slots, int total, int 
 }
 
 //: LISTS IN, a window ahead: a side's union tokens and count and its group's boundaries in prefix form, a row its query
-//: heads' columns. -- see docs/internals/carry/parts.md#lists-in
+//: heads' columns. -- see docs/internals/carry/ampere/parts.md#lists-in
 template <class P>
 __device__ __forceinline__ void lists_in(const CarryParams& p, const SideLists& l,
                                          const Window& win, const Place& c, int w, uint8_t* smem,
@@ -264,7 +264,7 @@ __device__ __forceinline__ void facts_in(const CarryParams& p, const Window& ww,
 }
 
 //: A POOL ROW'S SWIZZLE at a compiled row (`pool_chunk`'s): the row's own start alternates halves of the bank line.
-//: -- see docs/internals/carry/parts.md#swizzle
+//: -- see docs/internals/carry/ampere/parts.md#swizzle
 template <int Row>
 __device__ __forceinline__ constexpr uint32_t chunk_at(uint32_t s, uint32_t k) {
   static_assert(Row % 64 == 32 || (Row % 64 == 0 && (Row == 128 || (Row / 64) % 2 == 1)),
@@ -331,7 +331,7 @@ __device__ __forceinline__ const uint8_t* row_at(const uint8_t* base, int a, int
 //: A CHUNK'S ROWS: `slots` union slots from `first`, each its token's row (its slices, then `Values` its values),
 //: swizzled, by `cp.async`: thread `4 q + r` chunk `r` of slots `q + 64 k` of each 256, a trip one block -- its tokens
 //: (unclamped), every source, then the copies on the trip's room; a gap slot zero-filled. -- see
-//: docs/internals/carry/parts.md#fill
+//: docs/internals/carry/ampere/parts.md#fill
 template <class P, int Factors, bool Values>
 __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* values,
                                      int values_st, const uint16_t* tok, const Window& win,
@@ -436,7 +436,7 @@ __device__ __forceinline__ void fill(const volatile Slices& sl, const uint8_t* v
 }
 
 //: A CHUNK'S TOKEN-GROUP SPLIT, its slots `0 .. slots - 1`: the readout's group 0 below it, group 1 from it, a multiple
-//: of 64 so a list's run splits where the prefix rows hold a boundary. -- see docs/internals/carry/readout.md#warps
+//: of 64 so a list's run splits where the prefix rows hold a boundary. -- see docs/internals/carry/ampere/readout.md#warps
 __host__ __device__ __forceinline__ constexpr int group_split(int slots) {
   return slots <= kListBound ? slots
                              : kListBound * ((slots + 2 * kListBound - 1) / (2 * kListBound));
@@ -444,7 +444,7 @@ __host__ __device__ __forceinline__ constexpr int group_split(int slots) {
 
 //: A CHUNK'S RUNS, lane `l` list `l`'s: its first entry of the chunk, its count, its count below the chunk's token-group
 //: split, and its place in a buffer's entries (the lists' runs in list order), from its prefix rows modulo 2^16.
-//: -- see docs/internals/carry/parts.md#entries
+//: -- see docs/internals/carry/ampere/parts.md#entries
 struct Run {
   int at, n, n0, to;
 };
@@ -472,7 +472,7 @@ __device__ __forceinline__ Run chunk_runs(const CarryParams& p, const uint8_t* s
 
 //: A CHUNK'S ENTRIES, a warp's share: its own lists' runs (`warp + 8 j`, of the side's `Lists`) to their places at
 //: `dst`, 8 lanes a run at 4 lists a warp or 16 at 2, two copies a trip, the trips the warp's longest run's.
-//: -- see docs/internals/carry/parts.md#entries
+//: -- see docs/internals/carry/ampere/parts.md#entries
 template <class P, int Lists>
 __device__ __forceinline__ void entries_fill(const CarryParams& p, const SideLists& l,
                                              const Window& win, const Place& c, int w,
@@ -506,7 +506,7 @@ __device__ __forceinline__ void entries_fill(const CarryParams& p, const SideLis
 
 //: A CHUNK'S BUFFER, laid out at its own slots: a read buffer's rows, its num panel (a slot's channels at the reduce
 //: dtype: `panel_row_bytes`), its den words (`kDenWords` fp32 a slot, one a readout channel group), its entries; a fold
-//: buffer's rows, its entries. -- see docs/internals/carry/schedule.md#buffers
+//: buffer's rows, its entries. -- see docs/internals/carry/ampere/schedule.md#buffers
 template <class P>
 __host__ __device__ __forceinline__ constexpr int panel_row_bytes(int reduce) {
   return reduce == kReduceF32 ? P::kChannels * 4 : P::kChannels * 2;
@@ -533,7 +533,7 @@ __host__ __device__ constexpr int fold_ents(int slots) {
 }
 
 //: A READ CHUNK'S FILL, the copies issued: its rows at `buf`, its panel and den words cleared, its entries (a warp its
-//: own digits' runs, `run` the chunk's). -- see docs/internals/carry/parts.md#fill
+//: own digits' runs, `run` the chunk's). -- see docs/internals/carry/ampere/parts.md#fill
 template <class P>
 __device__ __forceinline__ void read_fill(const CarryParams& p, const uint8_t* smem,
                                           const Window& rw, const Place& c, int w, const Run& run,

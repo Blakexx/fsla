@@ -1,6 +1,6 @@
-# `carry/readout.cuh` — the value-carve readout
+# `carry/ampere/readout.cuh` — the value-carve readout
 
-Mirrors `csrc/rola/src/carry/readout.cuh`. The readout of a LISTED read side, a VALUE CARVE: every warp reads every
+Mirrors `csrc/rola/src/carry/ampere/readout.cuh`. The readout of a LISTED read side, a VALUE CARVE: every warp reads every
 digit of the box and every leaf of it, for its own channels and its own tokens -- where the fold is a state carve (its
 warps own lists, `fold.md`). The fold hands its state over through the image (`handoff.md#image`); the readout's
 output goes to the panel and from there to `num` and `den` (`panel.md`). A side with no list level (the dense
@@ -56,13 +56,13 @@ byte, the exponent build and the coefficient's conversion were a quarter of a ti
 `read_chunk<P, F32, F16>` reads a chunk's slots over digits `lo .. hi - 1` (the whole box, or a half where the image is
 stored in halves, `schedule.md#planner`; the kernel's one call site, its passes a loop), `F32` the panel's dtype (the
 call's reduce dtype), `F16` the MMAs' accumulate form (fp16 where the card's fp32 accumulate runs at half rate,
-[`carry_api.md#carry-readout-accumulate`](carry_api.md#carry-readout-accumulate)). Each lane holds its digit's RUN WORD
+[`../carry_api.md#carry-readout-accumulate`](../carry_api.md#carry-readout-accumulate)). Each lane holds its digit's RUN WORD
 in the warp's token group (`read_run`, once a chunk: the digit, its entries' place << 5, its count << 21), so a shuffle
 from it takes its source lane from the low bits. It runs two PASSES (`read_pass`), each digit with entries in the token
 group in one of them: the digits whose den the warp's channel group reads (`d mod 4` at 32 channels, its group's
 contiguous `n_d` at 64: `handoff.md#den`) with their den, then the others with the num
 alone -- the den's MMAs only where they are kept (a warp-uniform `if` around them is if-converted to predicated HMMAs,
-which the ptxas gate refuses, `../../KERNEL_STANDARDS.md#s20`; two loops are not).
+which the ptxas gate refuses, `../../../KERNEL_STANDARDS.md#s20`; two loops are not).
 
 A PASS walks HALVES in digit order -- up to 8 entries of what remains of a digit's run, one word like the run's -- two a
 TILE, tokens on M: rows 0-7 the first half's entries and rows 8-15 the second's, of any digits. At alt-k4's ~4 entries
@@ -89,12 +89,12 @@ predicated off is predicated too (`ops::load_shared_u32_if`), so a dead lane rea
 sync a tile orders one tile's adds before the next's, whose tokens may be the same in other lanes.
 
 THE f16 PANEL AT THE TOKEN'S SCALE BYTE: the scale pass's byte bounds the token's `num` under `2^(s + 15)` with 2%
-headroom ([`scale.md`](../scale/scale.md)), so every piece and every partial sum of the token's panel word lies within f16's range at
+headroom ([`scale.md`](../../scale/scale.md)), so every piece and every partial sum of the token's panel word lies within f16's range at
 `2^(-s - 1)`, the top bit kept for the cross-CTA sum; a piece under the frame's 2^-24 rounds into the subnormals, which
 the reference's bound carries (a term a piece and an add). The fp32 panel is absolute. Each piece is rounded once into
 the panel's dtype and each add once more.
 
-MEASURED (the part harness [`read_alone`](../../lab/read_alone.md), sm_86, cycles a warp-window at nl64k-alt-k4's
+MEASURED (the part harness [`read_alone`](../../../lab/read_alone.md), sm_86, cycles a warp-window at nl64k-alt-k4's
 draw, the f16 panel at fp16 accumulate): 23.9K as first built (the den on every warp, each token's factor a channel
 group, one tile at a time); the den on its own channel group 21.4K; the factors once a chunk and the tiles a tile ahead
 14.5K; the two tokens' adds overlapped 13.5K; the next digit a lane's, the den in its digits' num tiles, the panel's word

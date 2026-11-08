@@ -8,9 +8,9 @@
 #include <cstdio>
 #include <vector>
 
-#include "carry/carry_kernel.cuh"
+#include "carry/ampere/carry_kernel.cuh"
 #include "common/arm.cuh"
-#include "carry/readout_dense.cuh"
+#include "carry/ampere/readout_dense.cuh"
 #include "lab.cuh"
 
 namespace read_dense {

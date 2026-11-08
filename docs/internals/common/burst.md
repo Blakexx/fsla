@@ -46,9 +46,9 @@ of the loop.
 <a id="users"></a>
 ## Its users
 
-The producer's k-loop (`produce/produce.cu`'s `project`, [`produce.md#accumulate`](../produce/produce.md#accumulate)):
+The producer's k-loop (`produce/produce.cu`'s `k_loop`, [`produce.md#accumulate`](../produce/produce.md#accumulate)):
 a k-block's chunks of both operands are one unit's set, gathered while the previous block's MMAs issue, through the
-granular fork below. The carry's fold steps in its own straight-line block form (`docs/internals/carry/fold.md#chunk`).
+granular fork below. The carry's fold steps in its own straight-line block form (`docs/internals/carry/ampere/fold.md#chunk`).
 
 <a id="fork"></a>
 ## The granular fork (2026-09-19)

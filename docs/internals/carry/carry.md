@@ -2,14 +2,14 @@
 
 Mirrors `csrc/rola/src/carry/carry.cuh` (the constants and the operand block every component reads) and
 `csrc/rola/src/carry/carry.cu` (the kernel boundary's refusals, the block's derivation from the carve, the dispatch
-over the built arms). The body has its own page, `carry_kernel.md`; the components `parts.md` and `fold.md`; an arm's
-plan `plan.md`.
+over the built arms). The body has its own page, `ampere/carry_kernel.md`; the components `ampere/parts.md` and `ampere/fold.md`; an arm's
+plan `ampere/plan.md`.
 
 The carry is the inter-window term: each CTA owns a BOX of leaves (the carve's, `docs/internals/engine/rules.md#carve`,
 `docs/internals/engine/carve.md`) and walks a call's windows in order. Every window it reads the state before the
 window's writes out to the window's readers (the readout), then folds the window's writers into it (the fold). The
-state never leaves the registers inside a call; the readout reads an f16 image of it (`handoff.md#image`), each warp every
-leaf of the box for its channels (`readout.md`).
+state never leaves the registers inside a call; the readout reads an f16 image of it (`ampere/handoff.md#image`), each warp every
+leaf of the box for its channels (`ampere/readout.md`).
 
 <a id="constants"></a>
 ## The constants
@@ -18,14 +18,14 @@ leaf of the box for its channels (`readout.md`).
 - `kWindow = 512`: the window the intra and the facts pass share, so the inter/intra split is one recurrence.
 - THE BOX'S CAPS, every arm's: `kMaxExtent = 32` (a level's extent at most: the facts pass's group of digits, a lane
   a list), `kStateValues` = 32,768 values = 256 lanes x 128 fp32 registers. An arm's own box is its plan's
-  (`plan.md#box`): its fold's lists and rows and its channels, their product the state.
+  (`ampere/plan.md#box`): its fold's lists and rows and its channels, their product the state.
 - `kListBound = 64`, `kListAt = 8`: a list's boundaries, its entries before every 64th union slot (the last its
   length), so the carry chunks a union at any multiple of 64 the facts pass never sees, out in prefix form over the
   list group's lists modulo 2^16 (`G + 1` rows, a row a list, then the group's, at most `kPreRows = 33`:
-  `plan.md#list-groups`) beside the group's exact totals;
+  `ampere/plan.md#list-groups`) beside the group's exact totals;
   `kListCap = kWindow` entries a list.
 - `max_steps(g)`, `plan_words(g)`: a window's plan record for a box class at `g` query heads a write head, its plan
-  word and a 16-bit step word a step (`schedule.md#plan`).
+  word and a 16-bit step word a step (`ampere/schedule.md#plan`).
 - `kSliceBytes = 64`: a level's slice in a pool row, the box's 32 digits at f16.
 - `kMaxLevels = 4`: the depth the operand block addresses.
 
@@ -53,7 +53,7 @@ over `heads` query heads' rows (the read side's a write head's `g`, the write si
   offset in the union in 16-byte chunks with its swizzle folded in (the first word's low half), its token (its high
   half: its query head's row, `j 512 + t`, its place in the scale bytes) and the coefficient (f16, the second word's low
   half): a chunk from a multiple of 64 takes its pool back by its first slot's offset and its slot from the row
-  (`readout.md#chunk`). A write entry is the slot, then `c_v` and `c_m`. A step's lanes past a chunk's entries are
+  (`ampere/readout.md#chunk`). A write entry is the slot, then `c_v` and `c_m`. A step's lanes past a chunk's entries are
   masked by the carry (a read lane's stores predicated off, a write lane's row 0 with c = 0).
 - `pre` (int16, the boundaries in prefix form modulo 2^16, the arm's list group plus one rows of `8 heads` columns) and
   `totals` (int32,
@@ -74,11 +74,11 @@ the slot's residue, or its high bits within each four for a row of an odd number
 the rows and values at their strides (the row alignment law, `docs/internals/facts/facts.md`), the facts pass's
 lists, the cross-CTA sum's scale bytes (`scale`, an exponent byte a query head's token, a window wide so a window's
 copy is aligned: the scale pass's bound on |num(t)|, `scale/scale.md`, read only where `reduce` is f16 pairs). The
-outputs are `den` (each token's v+1 channel, `handoff.md#den`), `num` (a query head's: f16 pairs at each token's scale, or
-fp32 channels, by `reduce` -- `carry_api.md#carry-reduce`, `panel.md#drain`) and `check` (the final state's sum).
-`plans` are the plan pass's records (`schedule.md#pass`), a window's for each box class.
+outputs are `den` (each token's v+1 channel, `ampere/handoff.md#den`), `num` (a query head's: f16 pairs at each token's scale, or
+fp32 channels, by `reduce` -- `carry_api.md#carry-reduce`, `ampere/panel.md#drain`) and `check` (the final state's sum).
+`plans` are the plan pass's records (`ampere/schedule.md#pass`), a window's for each box class.
 `readout_f16` is the readout's accumulation (`carry_api.md#carry-readout-accumulate`); `forced` a plan form every
-window takes where it fits, -1 for none (`schedule.md#planner`). A bound capture copies the block and its grid out before the
+window takes where it fits, -1 for none (`ampere/schedule.md#planner`). A bound capture copies the block and its grid out before the
 launch (`CarryCapture`, `carry_api.md#carry-capture-bind`).
 
 <a id="refusals"></a>
@@ -90,11 +90,11 @@ launch (`CarryCapture`, `carry_api.md#carry-capture-bind`).
   its channels exactly a CTA's state; the channel extent a power of two from 32 to 128, dividing `d_v` (the built
   arms 32 and 64); the arm key's rows from 16 and channels from 32.
 - a side lists at most one level and forms its operand from all the others; a list level spans the arm's list group
-  (the box's lists or digits, `plan.md#list-groups`), and the side's lists are shaped at it; a side with no list level names exactly a row level and a coefficient level; an operand slice is a 4-byte
+  (the box's lists or digits, `ampere/plan.md#list-groups`), and the side's lists are shaped at it; a side with no list level names exactly a row level and a coefficient level; an operand slice is a 4-byte
   copy at least and `kSliceBytes` at most.
 - every tensor's dtype, contiguity and exact shape (the lists' five, `scale` `[BH, windows x W]`, `num` int32 `[BH,
   T, d_v / 2]` for f16 pairs or fp32 `[BH, T, d_v]`); the arm key's channels and factor counts agreeing with the
-  carve, and its hand-off form (`same_split`) with the levels the sides list (`handoff.md#same-split`); a write head's
+  carve, and its hand-off form (`same_split`) with the levels the sides list (`ampere/handoff.md#same-split`); a write head's
   `num` rows under 2^32 values (the drain's offsets); the readout's accumulation fp32 (0) or fp16 (1); the cross-CTA sum f16
   pairs (0) or fp32 (1); a forced form -1 or a
   mode (0 to 2) with two chunk fields in 14 bits; a window's token stride under 2^31 / `kWindow` (a window's offsets

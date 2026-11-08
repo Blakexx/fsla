@@ -1,9 +1,9 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE CARRY'S PLANS, modeled: per (batch-head, box class, window) the record `csrc/rola/src/carry/schedule.cuh`'s plan
+"""THE CARRY'S PLANS, modeled: per (batch-head, box class, window) the record `csrc/rola/src/carry/ampere/schedule.cuh`'s plan
 pass writes from the facts pass's counts -- the plan word (the forced form's where it fits, else the rule's) and a step
 word a step by the rule -- word for word, so a gate asserts the kernel's records and the forms its cell exercises
-(docs/internals/carry/schedule.md#planner).
+(docs/internals/carry/ampere/schedule.md#planner).
 
 Symbols: ``W`` the window (the device's, :func:`rola.ops.window.window_of`), ``U`` a side's union slots in a window, ``S[j]`` a side's box lists' entries
 before union slot ``64 (j + 1)``, ``B`` the area's bytes, ``n`` a window's entries (its read chunks, then its fold

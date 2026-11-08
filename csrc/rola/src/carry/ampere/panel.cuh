@@ -1,9 +1,9 @@
-// csrc/rola/src/carry/panel.cuh -- THE PANEL, a read chunk's num and den words, and THE DRAIN of both to HBM by the
+// csrc/rola/src/carry/ampere/panel.cuh -- THE PANEL, a read chunk's num and den words, and THE DRAIN of both to HBM by the
 // cross-CTA adds.
-// see docs/internals/carry/panel.md
+// see docs/internals/carry/ampere/panel.md
 #pragma once
 
-#include "carry/parts.cuh"
+#include "carry/ampere/parts.cuh"
 
 namespace rola::carry {
 
@@ -37,7 +37,7 @@ __device__ __forceinline__ T* word_at(T* base, uint32_t off) {
 
 //: SLOT `s`'s NUM WORD `w` in the panel, bytes, rotated by the slot (an XOR): a 64-byte row's (32 f16 channels) by the
 //: pool row's swizzle, a 128-byte row's by `16 (s & 7)`, a 256-byte row's by `32 (s & 7)`.
-//: -- see docs/internals/carry/panel.md#words
+//: -- see docs/internals/carry/ampere/panel.md#words
 template <int RowBytes>
 __host__ __device__ __forceinline__ constexpr uint32_t panel_word(uint32_t s, uint32_t w) {
   static_assert(RowBytes == 64 || RowBytes == 128 || RowBytes == 256,
@@ -49,7 +49,7 @@ __host__ __device__ __forceinline__ constexpr uint32_t panel_word(uint32_t s, ui
 }
 
 //: THE DRAIN: a chunk's panel to `num` and its den words to `den`, after every warp's adds; warp `w` slots `w + 8 i`, two
-//: a trip, no branch around an add. -- see docs/internals/carry/panel.md#drain
+//: a trip, no branch around an add. -- see docs/internals/carry/ampere/panel.md#drain
 template <class P, bool F32>
 __device__ __forceinline__ void drain(const CarryParams& p, const uint16_t* union_tok, int first,
                                       int slots, ops::SmemAddr panel, ops::SmemAddr dens,

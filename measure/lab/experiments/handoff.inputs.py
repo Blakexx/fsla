@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE HAND-OFF'S INPUTS: a box's fold state for `handoff.cu` (docs/lab/handoff.md) -- 32 lists x 32 digits x 32
 channels, fp32 in each list's unit -- the lists' units, and the image and the digits' exponents the hand-off must form
-from them, by `csrc/rola/src/carry/parts.cuh`'s rules: a digit's exponent the smallest `e` with every list's value at
+from them, by `csrc/rola/src/carry/ampere/parts.cuh`'s rules: a digit's exponent the smallest `e` with every list's value at
 its unit at most 2^e (`ceil_exp` of the list's largest |value| plus its unit, the largest over the lists, at least
 `IMAGE_TOP - 127`), and each value stored f16 (round to nearest) times 2^(unit + IMAGE_TOP - e), the exponent held to
 [-126, 127], at `unit_of`'s place.

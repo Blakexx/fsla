@@ -72,7 +72,7 @@ BF16_RTOL = 1e-2
 #: of itself, and keeping a float's HIGH HALF (a truncation) by at most two of them.
 U_BF16 = 2.0 ** -8
 
-#: THE CARRY'S CHAINS, counted in `csrc/rola/src/carry/carry_kernel.cuh`, where a term's error is the sum of its
+#: THE CARRY'S CHAINS, counted in `csrc/rola/src/carry/ampere/carry_kernel.cuh`, where a term's error is the sum of its
 #: roundings (every bf16 x bf16 product then lands exactly in an fp32 accumulator):
 #: the FOLD rounds a deposit twice before it reaches the fp32 state -- the outer pair times the gain, and the inner
 #: tile times that (`fold_fragment`'s two `mul_bf16x2`) -- so a state slot is off by at most two u of its terms;

@@ -1,8 +1,8 @@
-"""Gate for THE CARRY'S READOUT (csrc/rola/src/carry/readout.cuh, the value carve): each slot of ``num`` is the fp64
+"""Gate for THE CARRY'S READOUT (csrc/rola/src/carry/ampere/readout.cuh, the value carve): each slot of ``num`` is the fp64
 reference of the readout's declared arithmetic (`tests/oracle/readout_reference.py`: the image at each digit's power of
 two, each (token, digit) piece rounded into the panel at the token's scale byte, the CTAs summed in the call's reduce
 dtype) within its bound, at both orders of the even box's levels, over four windows, at both reduce dtypes
-(docs/internals/carry/readout.md).
+(docs/internals/carry/ampere/readout.md).
 
 Symbols: ``W`` the window (the device's), ``L`` tokens, ``B_l`` level ``l``'s width, ``d_v`` the value width.
 """

@@ -126,7 +126,7 @@ def census(cell: str, total_cycles: float | None) -> dict:
 
 def registers() -> dict:
     """Peak live registers of the rung's arm (`tools/life_ranges.py --arm 0`, against the rung's parts header)."""
-    doc = _instrument(["tools/life_ranges.py", "--arm", "0", "--source", "csrc/rola/src/carry/carry_kernel.cuh"], 1800)
+    doc = _instrument(["tools/life_ranges.py", "--arm", "0", "--source", "csrc/rola/src/carry/ampere/carry_kernel.cuh"], 1800)
     return {"peak_live": doc.get("peak_live"),
             "by_region": {k: v["peak"] for k, v in doc.get("by_region", {}).items()}} if "peak_live" in doc else doc
 

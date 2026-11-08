@@ -25,7 +25,7 @@ namespace {
 long long* g_ledger = nullptr;
 int64_t g_ledger_ctas = 0;
 //: THE PROBE BINDING: a device fp32 tensor `[BH, N, d_v]` the next launches write their final state into, absolute;
-//: unbound in production. -- see docs/internals/carry/fold.md#probe
+//: unbound in production. -- see docs/internals/carry/ampere/fold.md#probe
 float* g_probe = nullptr;
 int64_t g_probe_values = 0;
 float* g_probe_den = nullptr;

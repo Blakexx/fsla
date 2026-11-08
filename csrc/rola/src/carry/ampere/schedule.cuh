@@ -1,11 +1,11 @@
-// csrc/rola/src/carry/schedule.cuh -- THE WINDOWS' PLANS AND THE RULE THE CARRY RUNS THEM BY: a window's plan is one
+// csrc/rola/src/carry/ampere/schedule.cuh -- THE WINDOWS' PLANS AND THE RULE THE CARRY RUNS THEM BY: a window's plan is one
 // word -- its image mode, its read chunk and its fold chunk -- made by the plan pass from the facts pass's counts
 // before the carry runs; the carry derives the window's ENTRIES (its read chunks, then its fold chunks) and places them
 // in two alternating slots, filling entry t + 1 while entry t computes wherever the two fit side by side.
-// see docs/internals/carry/schedule.md
+// see docs/internals/carry/ampere/schedule.md
 #pragma once
 
-#include "carry/parts.cuh"
+#include "carry/ampere/parts.cuh"
 
 namespace rola::carry {
 
@@ -18,7 +18,7 @@ __host__ __device__ __forceinline__ constexpr int image_bytes(uint32_t mode) {
 }
 
 //: A WINDOW'S PLAN, a word: mode | read chunk / 64 << 1 | fold chunk / 64 << 9 | read chunks << 14 | fold chunks << 22,
-//: a chunk 0 where its side has no slots and past its union the union. -- see docs/internals/carry/schedule.md#plan
+//: a chunk 0 where its side has no slots and past its union the union. -- see docs/internals/carry/ampere/schedule.md#plan
 struct PlanWord {
   uint32_t v;
 
@@ -78,7 +78,7 @@ __host__ __device__ constexpr bool least_plan_fits(int area, int reduce) {
 
 //: A SIDE'S SEGMENT SUMS in a window: `S[j]`, its group's lists' entries before union slot `64 (j + 1)`, `cols` of them
 //: (8 a query head), read from the facts pass's exact totals; none where the side has no list level.
-//: -- see docs/internals/carry/schedule.md#totals
+//: -- see docs/internals/carry/ampere/schedule.md#totals
 struct Sums {
   const int32_t* at;
   int cols;
@@ -114,7 +114,7 @@ __device__ __forceinline__ int chunk_max(const Sums& S, int m, int total) {
 
 //: THE LARGEST CHUNK of a side: the whole union where one buffer of it fits `room`; else the largest `64 m` slots
 //: below the union whose largest buffer fits -- the fewest chunks, each paying its fill and fixed work (and a halves
-//: image's re-store). -- see docs/internals/carry/schedule.md#chunks
+//: image's re-store). -- see docs/internals/carry/ampere/schedule.md#chunks
 template <class Bytes>
 __device__ __forceinline__ int largest_chunk(int u, const Sums& S, int room, Bytes bytes) {
   if (bytes(u, S[S.cols - 1]) <= room) return u;
@@ -133,7 +133,7 @@ struct Counts {
 
 //: THE RULE'S PLAN: the read chunk sized beside the halves, the image whole where it fits beside the largest read
 //: buffer, else in halves; the fold's largest chunk in the area.
-//: -- see docs/internals/carry/schedule.md#planner
+//: -- see docs/internals/carry/ampere/schedule.md#planner
 template <class P>
 __device__ __forceinline__ uint32_t rule_plan(const CarryParams& p, const Counts& c) {
   const int area = p.tables.area;
@@ -204,7 +204,7 @@ __device__ __forceinline__ void window_counts(const CarryParams& p, int bh, int 
 
 //: THE TWO SLOTS, alternating down the CTA's stream across windows: the top slot's entry ends at the area's top, the
 //: low slot's sits above its window's image where the image is live at its fill (a read; the first fold filled while
-//: the last read computes), else at the bottom. -- see docs/internals/carry/schedule.md#rule
+//: the last read computes), else at the bottom. -- see docs/internals/carry/ampere/schedule.md#rule
 enum SlotIndex : int { kSlotTop, kSlotLow };
 
 __device__ __forceinline__ int slot_place(int slot, int bytes, int base, int area) {
@@ -264,7 +264,7 @@ __device__ __forceinline__ int entry_bytes_of(const Win& x, int t) {
 
 //: A STEP WORD, 16 bits a step of a window (its entries, then one that only retires the last): the entry's place / 128
 //: | filled ahead << 11 | the next entry filled now << 12 | a rendezvous between the retired read's drain and the
-//: step's own fill, which takes its panel's bytes << 13. -- see docs/internals/carry/schedule.md#steps
+//: step's own fill, which takes its panel's bytes << 13. -- see docs/internals/carry/ampere/schedule.md#steps
 struct StepWord {
   uint32_t v;
 
@@ -280,7 +280,7 @@ struct StepWord {
 //: THE PLAN PASS, a block a (box class, batch-head) and a thread a window of each 128-window tile: the forced form's
 //: plan where it fits, else the rule's; the stream's slot parity at each window (an exclusive scan of the windows'
 //: entry counts); then each window's steps by the rule, its first entry filled ahead where the window before's last
-//: leaves it room. -- see docs/internals/carry/schedule.md#pass
+//: leaves it room. -- see docs/internals/carry/ampere/schedule.md#pass
 constexpr int kPlanThreads = 128, kPlanWarps = kPlanThreads / 32;
 
 template <class Bt, class Arm>
@@ -395,7 +395,7 @@ __global__ __launch_bounds__(kPlanThreads) void window_plan_kernel(
 
 //: A WINDOW'S STREAM in the CTA, from its staged plan word and counts, read at each use: its mode, each side's chunk
 //: and slots, its read entries and all its entries, its image's bytes (0 where it reads nothing).
-//: -- see docs/internals/carry/schedule.md#rule
+//: -- see docs/internals/carry/ampere/schedule.md#rule
 struct Stream {
   uint32_t mode;
   int rc, fc, ru, fu, nr, n, image;

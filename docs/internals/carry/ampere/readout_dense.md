@@ -1,6 +1,6 @@
 # The readout over a dense read side
 
-Mirrors `csrc/rola/src/carry/readout_dense.cuh`. A dense read side lists no level: every token of a read chunk reads
+Mirrors `csrc/rola/src/carry/ampere/readout_dense.cuh`. A dense read side lists no level: every token of a read chunk reads
 every digit of the box. The value carve holds (`readout.md#warps`): a warp its 8 channels over every leaf of the box,
 one token group of eight channel groups at the arm `[16, 2, 16, 2, 64, 1]` (both sides dense, the same split, the box
 32 digits x K 16 x 64 channels: `plan.md#box`). Its output leaves through the chunk's panel and today's drain
@@ -59,7 +59,7 @@ times the token's `2^(e_t)`, into the warp's den word of the slot (the drain sum
 <a id="cost"></a>
 ## Cost
 
-MEASURED (the part harness [`read_dense`](../../lab/read_dense.md), sm_86, a 128-slot chunk over the image in halves,
+MEASURED (the part harness [`read_dense`](../../../lab/read_dense.md), sm_86, a 128-slot chunk over the image in halves,
 cycles a warp-window): 21,578 against the tensor floor's 16,640 (fp32 accumulate: 32 cycles an m16n8k16 a scheduler),
 1.30x; the nest alone ~19.1K (1.15x), the factors 1,444, the den 1,108. ACROSS CARDS: sm_80 and sm_86 run this form
 (`mma.sync`, `ldmatrix`); sm_80's fp32 accumulate is full rate (8 cycles), so its floor is a quarter of sm_86's.

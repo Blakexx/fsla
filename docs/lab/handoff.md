@@ -12,7 +12,7 @@ two -- in the carry's form and in a lean form, the image whole (sm_80's form) or
 `handoff.inputs.py`: units a list, one list never live, values that span octaves by list and digit, digits zero in some
 lists and one zero in all), made opaque each window so nothing is hoisted. A window is the maxima, a CTA barrier, the
 exponents, the stores and a barrier; a sample is a CTA's span over 64 windows, 80 CTAs. Every form's image and
-exponents are checked byte for byte against the mirror's, which follows `csrc/rola/src/carry/parts.cuh`'s rules.
+exponents are checked byte for byte against the mirror's, which follows `csrc/rola/src/carry/ampere/parts.cuh`'s rules.
 
 - THE CARRY'S FORM before the 16-byte image (`handoff.cu`'s `carry_maxima`, `carry_digit_exp`, `carry_stores`, its
   mirror): a list's largest value a digit row as

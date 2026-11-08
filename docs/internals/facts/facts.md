@@ -62,7 +62,7 @@ level, which this pass does not build.
 ## The list groups: a unit's whole group or each half
 
 A side's LIST GROUP `G` (`FactsParams::list_group`, the call's: the digits of the side's list level that one box of
-the carry arm reads, `rola.ops.carry.lists_form`, [`plan.md`](../carry/plan.md#list-groups)) is the digits one union
+the carry arm reads, `rola.ops.carry.lists_form`, [`plan.md`](../carry/ampere/plan.md#list-groups)) is the digits one union
 and its prefix rows span: 32, a unit's whole group, or 16, each half (`kListGroupMin`; `kUnitGroups` = 2 at most a
 unit); the host refuses any other. The unit stays a 32-digit group -- its load, vote, words and tile unions are the
 liveness contract's at every `G` -- and at 16 it ranks two unions, list group `q` its digits `16q .. 16q + 15`, each
@@ -162,7 +162,7 @@ Each token's `(m, F)` as an f16 pair at its window's powers of two (`gains16`) a
 window's largest `m` and `F` (each warp's largest posted in shared memory before the vote's barrier, joined after it)
 give `gains_shift(top)` = `-4 - floor(log2 top)` (the largest in [2^-4, 2^-3)), clamped to [-126, 127], 0 for a zero
 largest. The carry's fold reads `fm` and `gains_exp` where its write side has no list level: each slot's F into its c, the
-window's shift as every list's exponent bound (`../carry/fold.md#units`).
+window's shift as every list's exponent bound (`../carry/ampere/fold.md#units`).
 
 <a id="lists"></a>
 
@@ -224,7 +224,7 @@ An entry is 8 bytes, the carry's `uint2`:
   of an odd number of 64-byte quarters by the residue's high bits), its ROW (`512 j + t`, the token's window place `t`
   ungrouped: the readout looks up the token's scale byte by it); the coefficient `f16(byte / 256)`, 0. A chunk starting
   at a multiple of 64 takes the offset back by its first slot's, modulo 2^16, and its slot from the row
-  (`docs/internals/carry/readout.md#chunk`): the swizzle depends on a slot's low bits only, and a chunk's own span is
+  (`docs/internals/carry/ampere/readout.md#chunk`): the swizzle depends on a slot's low bits only, and a chunk's own span is
   far inside 16 bits.
 - WRITE: the slot, 0; `c_v = f16(fp32(b F) 2^(4 - E_v))`, `c_m = f16(fp32(b m) 2^(4 - E_m))`, `E = max(K, -123)` the
   list's exponent.

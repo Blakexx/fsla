@@ -1,14 +1,14 @@
-// csrc/rola/src/carry/readout.cuh -- THE READOUT, the value carve over a listed read side: a warp its token group's
-// slots and its channel group's 8 channels over every digit of the box. see docs/internals/carry/readout.md
+// csrc/rola/src/carry/ampere/readout.cuh -- THE READOUT, the value carve over a listed read side: a warp its token group's
+// slots and its channel group's 8 channels over every digit of the box. see docs/internals/carry/ampere/readout.md
 #pragma once
 
-#include "carry/handoff.cuh"
-#include "carry/panel.cuh"
+#include "carry/ampere/handoff.cuh"
+#include "carry/ampere/panel.cuh"
 
 namespace rola::carry {
 
 //: A WARP'S PLACE IN THE READOUT: its token group (a chunk's half of the slots, `group_split`) and its channel group
-//: (8 channels), the plan's (`P::kTokenGroups`, `P::kChannelGroups`). -- see docs/internals/carry/readout.md#warps
+//: (8 channels), the plan's (`P::kTokenGroups`, `P::kChannelGroups`). -- see docs/internals/carry/ampere/readout.md#warps
 template <class P>
 constexpr bool readout_box() {
   static_assert(P::kChannelGroups * P::kTokenGroups == kWarps
@@ -56,7 +56,7 @@ __device__ __forceinline__ float token_scale(int sb) {
 
 //: AN ENTRY'S KEY from its pool row's 16-byte chunk `c` (`4 s` and the row's swizzle): at 32 channels the row's byte
 //: offset, the f16 panel row's base; at 64 the slot's f16 panel base in 16-byte units, `8 s + (s & 7)`.
-//: -- see docs/internals/carry/readout.md#factors
+//: -- see docs/internals/carry/ampere/readout.md#factors
 template <class P>
 __device__ __forceinline__ uint32_t entry_key(uint32_t c) {
   if constexpr (P::kChannels == 32)
@@ -66,7 +66,7 @@ __device__ __forceinline__ uint32_t entry_key(uint32_t c) {
 }
 
 //: A READ CHUNK'S ENTRY FACTORS, once a chunk: the warp's own digits' entries rewritten in place to their rows' byte
-//: offsets, coefficients and num factors. -- see docs/internals/carry/readout.md#factors
+//: offsets, coefficients and num factors. -- see docs/internals/carry/ampere/readout.md#factors
 template <class P>
 __device__ __forceinline__ void read_factors(const CarryParams& p, const uint8_t* smem,
                                              const Run& run, int w, int first, ops::SmemAddr ents,
@@ -118,7 +118,7 @@ __device__ __forceinline__ void read_factors(const CarryParams& p, const uint8_t
 }
 
 //: A HALF: up to 8 entries of what remains of a digit's run, one word -- digit, place << 5, count << 21 (0 past the
-//: last). -- see docs/internals/carry/readout.md#chunk
+//: last). -- see docs/internals/carry/ampere/readout.md#chunk
 constexpr int kHalfAt = 5, kHalfCount = 21;
 
 __device__ __forceinline__ int half_digit(uint32_t h) { return static_cast<int>(h & 31u); }
@@ -130,7 +130,7 @@ __device__ __forceinline__ uint32_t half_place(uint32_t h) {
 }
 
 //: A TILE: two halves, rows 0-7 the first's entries and rows 8-15 the second's, and its operands.
-//: -- see docs/internals/carry/readout.md#chunk
+//: -- see docs/internals/carry/ampere/readout.md#chunk
 struct Tile {
   uint32_t a0[4], a1[4], b[2][4], h[2];
   uint2 t[2];
@@ -145,7 +145,7 @@ struct ReadLanes {
   int cg, lane, g, tq;
 };
 
-//: DIGIT `d`'s SLICE ROW for the lane: one product, a mask and an XOR. -- see docs/internals/carry/readout.md#chunk
+//: DIGIT `d`'s SLICE ROW for the lane: one product, a mask and an XOR. -- see docs/internals/carry/ampere/readout.md#chunk
 template <class P>
 __device__ __forceinline__ uint32_t slice_at(const ReadLanes& r, int d) {
   static_assert(P::kPlaneBytes == P::kChannelGroups * P::kSliceBlock
@@ -171,7 +171,7 @@ __device__ __forceinline__ void tile_in(Tile& t, const ReadLanes& r, uint32_t h0
 }
 
 //: A TILE'S LATE OPERANDS, each half's slice (`Den`: den factor) and token entry, before the next tile's rows (not a tile
-//: ahead: registers). -- see docs/internals/carry/readout.md#chunk
+//: ahead: registers). -- see docs/internals/carry/ampere/readout.md#chunk
 template <class P, bool Den>
 __device__ __forceinline__ void tile_late(Tile& t, const ReadLanes& r) {
   const int d0 = half_digit(t.h[0]), d1 = half_digit(t.h[1]);
@@ -186,7 +186,7 @@ __device__ __forceinline__ void tile_late(Tile& t, const ReadLanes& r) {
 }
 
 //: A TILE'S MMAs (each half's slice; `Den`: the warp's den block once) and the lane's two tokens' adds, one half then the
-//: other. -- see docs/internals/carry/readout.md#chunk
+//: other. -- see docs/internals/carry/ampere/readout.md#chunk
 template <class P, bool F32, bool F16, bool Den>
 __device__ __forceinline__ void tile_out(const Tile& t, const ReadLanes& r, const uint32_t (&bd)[4],
                                          bool valid) {
@@ -243,7 +243,7 @@ __device__ __forceinline__ void tile_out(const Tile& t, const ReadLanes& r, cons
 }
 
 //: A PASS over the halves of the digits `live` names, two a tile, two tiles a trip, a tile's rows a tile ahead, the trip's
-//: one exit at its end (§20). -- see docs/internals/carry/readout.md#chunk
+//: one exit at its end (§20). -- see docs/internals/carry/ampere/readout.md#chunk
 template <class P, bool F32, bool F16, bool Den>
 __device__ __forceinline__ void read_pass(const ReadLanes& r, uint32_t live) {
   if (live == 0u) return;
@@ -286,7 +286,7 @@ __device__ __forceinline__ void read_pass(const ReadLanes& r, uint32_t live) {
 }
 
 //: A WARP'S RUN WORD for digit `lane`, its token group's part as a half's word, once a chunk.
-//: -- see docs/internals/carry/readout.md#chunk
+//: -- see docs/internals/carry/ampere/readout.md#chunk
 template <class P>
 __device__ __forceinline__ uint32_t read_run(const Run& run, int warp, int lane) {
   const int tg = P::kTokenGroups == 1 ? 0 : warp / P::kChannelGroups;
@@ -299,7 +299,7 @@ __device__ __forceinline__ uint32_t read_run(const Run& run, int warp, int lane)
 }
 
 //: THE READOUT of a chunk's slots over digits `lo .. hi - 1` of the image into the num panel and the den words, reduce
-//: `F32`, accumulate `F16`. -- see docs/internals/carry/readout.md#chunk
+//: `F32`, accumulate `F16`. -- see docs/internals/carry/ampere/readout.md#chunk
 template <class P, bool F32, bool F16>
 __device__ __forceinline__ void read_chunk(const uint8_t* smem, uint32_t run, int lo, int hi,
                                            ops::SmemAddr image, uint32_t mask, ops::SmemAddr rows,

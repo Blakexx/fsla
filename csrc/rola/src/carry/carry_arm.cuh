@@ -4,7 +4,7 @@
 #pragma once
 
 #include "carry/carry_arm_abi.cuh"
-#include "carry/carry_kernel.cuh"
+#include "carry/ampere/carry_kernel.cuh"
 #include "common/arm.cuh"
 #include "common/select.cuh"
 

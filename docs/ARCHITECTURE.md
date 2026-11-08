@@ -55,9 +55,9 @@ accumulation is fp32 or exact integer ([`architecture/precision.md`](architectur
 
 | kernel | operands | accumulation |
 |---|---|---|
-| the carry's fold | the write operand f16 (a dense slice times the record's coefficient), the values f16 | fp32 state in registers ([`carry/fold.md`](internals/carry/fold.md)) |
+| the carry's fold | the write operand f16 (a dense slice times the record's coefficient), the values f16 | fp32 state in registers ([`carry/ampere/fold.md`](internals/carry/ampere/fold.md)) |
 | the carry's hand-off | the fp32 state rounded to an f16 image at a power of two a digit | — |
-| the carry's readout | the f16 image against the read rows | fp32 MMAs (fp16 where fp32 accumulate is half rate), each piece into the panel as f16 pairs at the token's scale byte or fp32, added across CTAs in that dtype ([`carry/panel.md#drain`](internals/carry/panel.md#drain)) |
+| the carry's readout | the f16 image against the read rows | fp32 MMAs (fp16 where fp32 accumulate is half rate), each piece into the panel as f16 pairs at the token's scale byte or fp32, added across CTAs in that dtype ([`carry/ampere/panel.md#drain`](internals/carry/ampere/panel.md#drain)) |
 | the intra | the rows' u8 digits and the values' digit planes, int8 tensor ops | each level's Gram exact in s32, the levels multiplied in fp32 ([`intra/intra_kernel.md`](internals/intra/intra_kernel.md)) |
 | decode | the stored state's s24 (a written leaf) or its s16 hi plane (a read-only leaf), the staged amplitudes | fp32 |
 | the stored state, between calls | s24 mantissas at a power-of-two exponent a 32-channel group, fp32 mass | — ([§3](#3-the-state)) |
@@ -288,7 +288,7 @@ The mass is the carry's own v+1 channel, read out beside `num` as each token's `
 scale bytes come from the scale pass, the write-aligned bound ([`internals/scale/scale.md`](internals/scale/scale.md),
 [`open-work.md`](open-work.md),
 [`internals/carry/carry.md`](internals/carry/carry.md),
-[`internals/carry/carry_kernel.md`](internals/carry/carry_kernel.md)).
+[`internals/carry/ampere/carry_kernel.md`](internals/carry/ampere/carry_kernel.md)).
 
 ### 6.4 The intra — the within-window term
 

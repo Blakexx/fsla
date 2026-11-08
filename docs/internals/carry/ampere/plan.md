@@ -1,6 +1,6 @@
-# `carry/plan.cuh` — one arm's plan
+# `carry/ampere/plan.cuh` — one arm's plan
 
-Mirrors `csrc/rola/src/carry/plan.cuh`: the box's tiles, registers, pool rows and shared memory on the compiling card.
+Mirrors `csrc/rola/src/carry/ampere/plan.cuh`: the box's tiles, registers, pool rows and shared memory on the compiling card.
 Every compiled size is fixed by the arm and the card, never by the data (R22); what the data sizes -- each window's
 chunks and buffers -- the window's plan places in the area at run time (`schedule.md`).
 
@@ -51,12 +51,12 @@ An arm's box is its plan's, from its key: the fold's rows `kRows` (`fold_rows`) 
 (`kSameSplit`: the fold's lists are the readout's digits); the key's `read_rows` is asserted the K. From them: the
 fold's tile (`kFoldLists` = `kLists / 8` a warp, `kFoldMTiles` = `kRows / 16`, `kFoldNTiles` = `kChannels / 8`), the
 readout's warps (`kChannelGroups` = `kChannels / 8`, `kTokenGroups` the warps left over, `kDenWords` one a channel
-group), the image below and the pool rows. The fixed tenants are sized at the caps (`kMaxExtent`, `carry.md`), so an
+group), the image below and the pool rows. The fixed tenants are sized at the caps (`kMaxExtent`, `../carry.md`), so an
 arm's box never moves them. Each component asserts the extents it serves, and the plan the boxes they serve together:
 16 or 32 lists and rows, 32 or 64 channels -- the shipped 32 x 32 x 32 boxes, the alternating 32 x 16 x 64 (one token
 group of eight channel groups), a dense write side's 16 x 32 x 64 (two fold lists a warp, `fold.md#dense`) and the same
 split's 16 x 32 x 64 (both sides listing a level of 16, a listed fold of two lists a warp) -- the boxes the planner
-picks (`../engine/carve.md#producer-v1`); a batch is half an m-tile of every fold list (the alternating form) or a list of every
+picks (`../../engine/carve.md#producer-v1`); a batch is half an m-tile of every fold list (the alternating form) or a list of every
 warp's (the same split).
 A pool row: the read side's slice over the readout's K, the write side's over the fold's rows (a dense write side's
 second over its lists), then the write side's values.
@@ -65,11 +65,11 @@ second over its lists), then the write side's values.
 ## The list groups
 
 A side's LIST GROUP is the digits of its list level one union of the facts pass spans, with its prefix rows
-(`../facts/facts.md#list-groups`): `kReadListGroup`, `kWriteListGroup`, what the arm reads its lists in, so the
+(`../../facts/facts.md#list-groups`): `kReadListGroup`, `kWriteListGroup`, what the arm reads its lists in, so the
 facts pass is called in them (`rola.ops.carry.lists_form`): the readout's digits and the fold's lists, 32 at the
 32 x 32 x 32 boxes and the read side's 16 at 32 x 16 x 64 -- a union of exactly the box's own lists, its prefix rows
 `G + 1` inside the tenants' `kPreRows` cap. The host checks the lists' shapes and a listed level's extent against the
-arm's groups (`carry.md#refusals`).
+arm's groups (`../carry.md#refusals`).
 
 <a id="image"></a>
 ## The image
@@ -84,7 +84,7 @@ warp's lists in the alternating form, one of its lists in the same split (`hando
 ## The plan
 
 `Plan<Arm, B>` is an arm's key (`tools/gen_shards.py`'s `ARM_KEY`) at build `B`
-([`../common/hardware.md#builds`](../common/hardware.md#builds)): its window, list boundaries and caps are the build's
+([`../../common/hardware.md#builds`](../../common/hardware.md#builds)): its window, list boundaries and caps are the build's
 traits, so the host and the device read one plan. The key fixes each side's dense rows a warp and its operand's level count, and the hand-off's form
 (`kSameSplit`, `handoff.md#same-split`) and the box (`#box`); the plan asserts a listed read side (the dense readout is
 the next component), and derives:
@@ -99,4 +99,4 @@ the next component), and derives:
 - the shared memory: `kSmemBytes`, the card's whole opt-in maximum a CTA, `kAreaAt` where the area starts, and
   `kArea`, what the tenants and one head's read tables leave (the census's) -- 88,832 bytes on sm_86.
 
-The launch sizes for the device's card, and the kernel refuses any other size (`carry_arm.md#plan`).
+The launch sizes for the device's card, and the kernel refuses any other size (`../carry_arm.md#plan`).

@@ -1,9 +1,9 @@
-// csrc/rola/src/carry/readout_dense.cuh -- THE READOUT OVER A DENSE READ SIDE: every token of a chunk reads every digit
+// csrc/rola/src/carry/ampere/readout_dense.cuh -- THE READOUT OVER A DENSE READ SIDE: every token of a chunk reads every digit
 // of the box, a warp its 8 channels over every leaf into one fp32 accumulator a token, out through the panel.
-// see docs/internals/carry/readout_dense.md
+// see docs/internals/carry/ampere/readout_dense.md
 #pragma once
 
-#include "carry/readout.cuh"
+#include "carry/ampere/readout.cuh"
 
 namespace rola::carry {
 
@@ -13,7 +13,7 @@ template <class P>
 constexpr int kCoefAt = 2 * P::kK;
 
 //: A TOKEN BATCH a warp: 64 tokens, four tiles' accumulators; a TRANSIT GROUP 4 digits' slices (the fold's 128 state
-//: registers live beside them). -- see docs/internals/carry/readout_dense.md#nest
+//: registers live beside them). -- see docs/internals/carry/ampere/readout_dense.md#nest
 constexpr int kDenseTiles = 4, kDenseBatch = 16 * kDenseTiles, kTransit = 4;
 
 //: A DENSE ROW'S 16-BYTE CHUNK `k` of slot `s`, the row's swizzle folded in.
@@ -35,7 +35,7 @@ __device__ __forceinline__ float pow2_sel(int e) {
 //: the CTA: `y = a 2^(e_d)` exactly, the token's exponent `e_t = ceil_exp(max |y|)` (= the largest `e_d + ceil_exp(|a|)`;
 //: two shuffles, no branch), its coefficients rewritten `f16(y 2^(-e_t))`, its exit words -- the num's
 //: `2^(e_t - kImageTop - kCoefTop)` (the state's c top undone; at the f16 panel with its scale byte's
-//: `2^(-scale - 1)`, one power of two) and the den's `2^(e_t)`; zero for a token reading nothing. -- see docs/internals/carry/readout_dense.md#factors
+//: `2^(-scale - 1)`, one power of two) and the den's `2^(e_t)`; zero for a token reading nothing. -- see docs/internals/carry/ampere/readout_dense.md#factors
 template <class P>
 __device__ __forceinline__ void dense_factors(const CarryParams& p, const uint8_t* smem, int w,
                                               int first, int slots, ops::SmemAddr rows,
@@ -125,7 +125,7 @@ __device__ __forceinline__ void scaled(uint32_t (&y)[4], const uint32_t (&a)[4],
 //: THE DENSE READOUT of a chunk's slots over digits `lo .. hi - 1` of the image (the whole, or a half) into the panel:
 //: a warp its 8 channels, a batch its four tiles' fp32 accumulators, a transit group's slices held over the batch's
 //: tiles, a tile's rows loaded once and scaled a digit, each token's accumulator times its exit word added into its
-//: panel word (`F32` the panel's dtype). -- see docs/internals/carry/readout_dense.md#nest
+//: panel word (`F32` the panel's dtype). -- see docs/internals/carry/ampere/readout_dense.md#nest
 template <class P, bool F32>
 __device__ __forceinline__ void read_dense(int slots, int lo, int hi, ops::SmemAddr image,
                                            uint32_t mask, ops::SmemAddr rows, ops::SmemAddr panel,
@@ -191,7 +191,7 @@ __device__ __forceinline__ void read_dense(int slots, int lo, int hi, ops::SmemA
 
 //: THE DENSE DEN, once a chunk over the whole den image: warp `w` the tiles `i = w mod 8`, a den MMA a block of 8
 //: digits on the unscaled K rows, its 8 columns times `c[t, d]` and the digit's `2^(dE - kImageTop - e_d)`, the
-//: token's `2^(e_t)`, into the warp's den word. -- see docs/internals/carry/readout_dense.md#den
+//: token's `2^(e_t)`, into the warp's den word. -- see docs/internals/carry/ampere/readout_dense.md#den
 template <class P>
 __device__ __forceinline__ void dense_den(const uint8_t* smem, int slots, ops::SmemAddr rows,
                                           ops::SmemAddr dens, ops::SmemAddr exits, int warp,

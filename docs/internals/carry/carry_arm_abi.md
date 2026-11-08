@@ -6,8 +6,8 @@ parses the torch headers and the dispatch unit never parses a kernel body.
 <a id="form"></a>
 ## The form
 
-`CarryForm` is an arm's plan on the current device's card (`plan.md#plan`): its shared bytes, the area its windows'
-plans place buffers in, a read and a write pool row's bytes, and each side's list group (`plan.md#list-groups`). The
+`CarryForm` is an arm's plan on the current device's card (`ampere/plan.md#plan`): its shared bytes, the area its windows'
+plans place buffers in, a read and a write pool row's bytes, and each side's list group (`ampere/plan.md#list-groups`). The
 facts pass addresses the read entries' rows in the read row and ranks each side's lists in its list group
 (`rola.ops.carry.lists_form`).
 

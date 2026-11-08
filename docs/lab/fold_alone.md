@@ -4,7 +4,7 @@ Mirrors `measure/lab/experiments/fold_alone.cu`, a part harness of the lab
 ([`docs/internals/tools/lab.md`](../internals/tools/lab.md)).
 
 THE QUESTION. What does the carry's fold phase cost a warp-window alone -- production's `fold_chunk`
-([`fold.md`](../internals/carry/fold.md#chunk)), nothing else in the window -- against its tensor floor and against the
+([`fold.md`](../internals/carry/ampere/fold.md#chunk)), nothing else in the window -- against its tensor floor and against the
 composed kernel's fold phase? Asked 2026-11-01 under the ruling that each phase is lean and at its own floor before
 any composition, after three forms built in the kernel to take the fold toward its floor all measured slower.
 
@@ -56,7 +56,7 @@ WHAT IT SETTLES.
 - Moving each list's step shuffles up front with the entries leaves the composed shape where it was (2,502) and takes
   the back-to-back one to 1,879: shorter chains help warps that are out of phase, not warps in lockstep.
 
-THE DEN COLUMN (2026-11-02, the den in the carry, [`fold.md#den`](../internals/carry/fold.md#den)): every variant
+THE DEN COLUMN (2026-11-02, the den in the carry, [`fold.md#den`](../internals/carry/ampere/fold.md#den)): every variant
 above now carries it on every list, a one-box carry's; two more variants carry it on half the lists (each of two
 channel boxes) or none. Composed, cycles a warp-window: none 2,471 (the table's 2,461 before), half 2,747, every list
 3,039; back to back with every list 2,460. Priced first with the coefficient moved onto B (+739, then dropped: the

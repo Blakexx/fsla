@@ -19,11 +19,11 @@ constexpr int kListBound = 64;
 __host__ __device__ constexpr int list_at(int w) { return w / kListBound; }
 
 constexpr int kMaxLevels = 4;
-//: THE BOX'S CAPS (an arm's own box is its plan's). -- see docs/internals/carry/plan.md#box
+//: THE BOX'S CAPS (an arm's own box is its plan's). -- see docs/internals/carry/ampere/plan.md#box
 constexpr int kMaxExtent = 32, kStateValues = 32768;
 constexpr int kPreRows = kMaxExtent + 1;
 
-//: A WINDOW'S PLAN RECORD at `heads` query heads a write head. -- see docs/internals/carry/schedule.md#plan
+//: A WINDOW'S PLAN RECORD at `heads` query heads a write head. -- see docs/internals/carry/ampere/schedule.md#plan
 __host__ __device__ constexpr int max_steps(int heads, int w) {
   return list_at(w) * heads + list_at(w) + 1;
 }
@@ -76,7 +76,7 @@ struct SideLists {
   int width, groups, heads;
 };
 
-//: THE CALL'S READ TABLES' offsets and its area. -- see docs/internals/carry/plan.md#read-tables
+//: THE CALL'S READ TABLES' offsets and its area. -- see docs/internals/carry/ampere/plan.md#read-tables
 struct ReadTables {
   int heads, plan_words;
   int union_at, pre_at, scale_at, plans_at, area_at, area;
@@ -118,7 +118,7 @@ struct CarryCapture {
   CarryParams p;
 };
 
-//: THE PHASE LEDGER's phases. -- see docs/internals/carry/carry_kernel.md#phases
+//: THE PHASE LEDGER's phases. -- see docs/internals/carry/ampere/carry_kernel.md#phases
 enum CarryPhase : int {
   kPhaseLanded,
   kPhaseMaxima,

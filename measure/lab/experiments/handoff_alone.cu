@@ -8,7 +8,7 @@
 #include <climits>
 #include <cstdio>
 
-#include "carry/carry_kernel.cuh"
+#include "carry/ampere/carry_kernel.cuh"
 #include "common/arm.cuh"
 #include "lab.cuh"
 

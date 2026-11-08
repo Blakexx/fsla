@@ -312,7 +312,7 @@ def measured(csv: Path, so: Path, cta_windows: int) -> dict[tuple, Region]:
             loop_of.setdefault(a, i)
     frames = region_ledger.frames_map(so, member, arch, "carry_kernel")
     from region_ledger import fn_of, function_map
-    fmaps = {p.name: function_map(p.read_text().splitlines()) for p in (ROOT / "csrc/rola/src/carry").glob("*.cuh")}
+    fmaps = {p.name: function_map(p.read_text().splitlines()) for p in (ROOT / "csrc/rola/src/carry").rglob("*.cuh")}
     rows = region_ledger.read_source_counters(csv)
     detail = region_ledger.read_source_detail(csv)
     base = rows[0][0]

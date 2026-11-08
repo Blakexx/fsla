@@ -14,7 +14,7 @@ phase takes more than `MISS` times its prediction, or has none (KERNEL_STANDARDS
 the price or the model that was wrong is named).
 
 The ledger is `rola.ops.carry.LEDGER_PHASES` columns by `LEDGER_WARPS` warps by one row a CTA, a CTA a box of
-the carve (docs/internals/carry/carry_kernel.md#phase-ledger). Measured work: takes the GPU lock exclusive.
+the carve (docs/internals/carry/ampere/carry_kernel.md#phase-ledger). Measured work: takes the GPU lock exclusive.
 """
 from __future__ import annotations
 

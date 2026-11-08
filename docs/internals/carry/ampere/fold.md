@@ -1,6 +1,6 @@
-# `carry/fold.cuh` — the fold
+# `carry/ampere/fold.cuh` — the fold
 
-Mirrors `csrc/rola/src/carry/fold.cuh`: a warp's write lists over a window's units into the fp32 state, in the fold's
+Mirrors `csrc/rola/src/carry/ampere/fold.cuh`: a warp's write lists over a window's units into the fp32 state, in the fold's
 declared arithmetic (`tests/oracle/fold_reference.py`, `fold_state`), gated per slot by
 `tests/oracle/test_carry_fold.py`.
 
@@ -106,7 +106,7 @@ An instrument: `fold_chunk`'s `Laps` (default `NoLaps`, whose call is empty) is 
 every list's scale, count and first step's lanes are read, `1 + 2 J` once list `J`'s rescale is guarded, `2 + 2 J` once
 its steps are done; a dense side's (`#dense`) 0 before its rescales, 1 after them, 2 to `2 lists` once its steps are
 done. The kernel passes none and its SASS is identical with the hook; the lab's
-[`fold_alone`](../../lab/fold_alone.md) passes a recorder.
+[`fold_alone`](../../../lab/fold_alone.md) passes a recorder.
 
 <a id="den"></a>
 ## The den column

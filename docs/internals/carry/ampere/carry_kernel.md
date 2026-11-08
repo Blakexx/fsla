@@ -1,6 +1,6 @@
-# `carry/carry_kernel.cuh` — the carry kernel
+# `carry/ampere/carry_kernel.cuh` — the carry kernel
 
-Mirrors `csrc/rola/src/carry/carry_kernel.cuh`: the window loop over the components (`parts.md`, `fold.md`) under each
+Mirrors `csrc/rola/src/carry/ampere/carry_kernel.cuh`: the window loop over the components (`parts.md`, `fold.md`) under each
 window's plan record (`schedule.md`) for one arm's plan (`plan.md`). The carry is one planned pipeline (ruled
 2026-10-14): shared memory holds what is active and what lands next, sized by each window's actual counts, the planner
 choosing chunk sizes the card's area holds. Its window runs in ONE FIXED ORDER (2026-10-25, from the window lab's
@@ -17,7 +17,7 @@ their share caps the `N = L` ratio.
 <a id="kernel"></a>
 ## The kernel
 
-One CTA a box and batch and write head (its query heads' reads with it, `carry.md#sides`), 8 warps, one CTA an SM,
+One CTA a box and batch and write head (its query heads' reads with it, `../carry.md#sides`), 8 warps, one CTA an SM,
 after the plan pass (`schedule.md#pass`). The fold's fp32 state
 (`kStateRegs` = 128 registers a lane) is the C fragments of the fold's MMAs and stays in registers for the whole call.
 Every part in the window loop takes the warp and lane opaque (`wid`, `lid`: `ops::opaque` of the thread index), so
@@ -39,7 +39,7 @@ Window 0's inputs and record are staged before the loop (one copy group, waited)
    den's factors and image (`handoff.md#den`).
 3. **The read chunks**, each in order: its fill where it is not the first (issued after the chunk before is drained,
    into its own place; where that place takes the panel still being drained -- the step word's `reuse` -- the chunk
-   before ends with a rendezvous after its drain, predicated: `common/atoms/barrier.md#rendezvous-if`); its image -- whole, stored
+   before ends with a rendezvous after its drain, predicated: `../common/atoms/barrier.md#rendezvous-if`); its image -- whole, stored
    once before the first chunk, or in halves, each chunk storing both
    -- its copies landed (`cp.async.wait_group`: every group but the staging's, which may still fly), a rendezvous,
    its readout over the image (`readout.md`, at the call's reduce dtype and the card's accumulate form; a dense read
@@ -47,7 +47,7 @@ Window 0's inputs and record are staged before the loop (one copy group, waited)
    accumulate; a rendezvous before the second half's store), then a rendezvous and its panel drained to `num` and
    `den` (`panel.md#drain`).
 4. **The fold chunks**, each in order: a rendezvous where the chunk before's rows or the drained panel may be taken
-   (every chunk after the first; the first where its step word's `reuse` says, predicated: `common/atoms/barrier.md#rendezvous-if`),
+   (every chunk after the first; the first where its step word's `reuse` says, predicated: `../common/atoms/barrier.md#rendezvous-if`),
    its fill, every group landed, a rendezvous, the window's units stepped at the first (`fold.md#units`), the fold
    (`fold.md#chunk`); a window folding nothing steps its units at its end.
 
@@ -128,7 +128,7 @@ stores 1.09x -- each class (b), the mechanism right and its form above its floor
 <a id="check"></a>
 ## The check
 
-The state's fp32 sum, the skeleton's `check` (`carry_api.md#carry-forward`): each lane's sum of its state, the warp's
+The state's fp32 sum, the skeleton's `check` (`../carry_api.md#carry-forward`): each lane's sum of its state, the warp's
 lanes' joined by five shuffles, one atomic add a warp. One add a thread put 32,768 adds a call on one address; they
 serialized at its L2 slice for ~47 us a call on sm_86 (the window lab's record, `measure/lab/results/carry_window`),
 most of the call's fixed cost.

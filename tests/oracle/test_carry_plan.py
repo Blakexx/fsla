@@ -1,7 +1,7 @@
-"""Gate for THE PLAN PASS (csrc/rola/src/carry/schedule.cuh `window_plan_kernel`): every window's record for every
+"""Gate for THE PLAN PASS (csrc/rola/src/carry/ampere/schedule.cuh `window_plan_kernel`): every window's record for every
 (batch-head, box class) is the plans' model's (`tests/oracle/carry_plan.py`), plan word and step words word for word,
 on every form cell and under a spread of forced forms; and the rule the model states never places a fill over anything
-live (docs/internals/carry/schedule.md#pass).
+live (docs/internals/carry/ampere/schedule.md#pass).
 
 Symbols: ``W`` the window (512 tokens), a box class a pair of the two list levels' 32-digit groups, ``B`` the area's
 bytes, ``n`` a window's entries.
@@ -113,7 +113,7 @@ def _assert_plans_are_the_model(routes, values, layout, statics, forced=None, bo
 def test_a_window_that_reads_nothing_is_planned_as_the_model():
     """A window whose box reads nothing (a cohort draw, whose groups go unread for whole windows) before one that reads:
     the records are the model's. Its successor's first read is filled in one of its steps or at its own, all of which
-    run past the store, whose work stages the inputs the fill reads (docs/internals/carry/schedule.md#steps); the
+    run past the store, whose work stages the inputs the fill reads (docs/internals/carry/ampere/schedule.md#steps); the
     successor's readout is held to the oracle by `tests/oracle/test_carry_vs_oracle.py`."""
     from measure.cells import by_name, realize
     from measure.subjects import bundle_of

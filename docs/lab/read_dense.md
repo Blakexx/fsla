@@ -4,7 +4,7 @@ Mirrors `measure/lab/experiments/read_dense.cu`, a part harness of the lab
 ([`docs/internals/tools/lab.md`](../internals/tools/lab.md)).
 
 THE QUESTION. What does the value-carve readout of a DENSE read side cost a warp-window alone -- production's
-`dense_factors`, `dense_den` and `read_dense` ([`readout_dense.md`](../internals/carry/readout_dense.md)), nothing else
+`dense_factors`, `dense_den` and `read_dense` ([`readout_dense.md`](../internals/carry/ampere/readout_dense.md)), nothing else
 in the window -- against its tensor floor (fp32 accumulate: one accumulator a token over the box's 512 leaves)?
 
 THE METHOD. One CTA an SM with the arm `[16, 2, 16, 2, 64, 1]`'s plan tenants (32 digits x K 16 x 64 channels); each of

@@ -6,7 +6,7 @@ device function (or struct method) each SASS instruction inlines from -- against
 `tools/budgets/<kernel>.json`. KERNEL_STANDARDS §19: a component over budget is red.
 
     tools/region_ledger.py --csv <ncu SourceCounters csv> --so <extension .so> \\
-        --source csrc/rola/src/carry/carry_kernel.cuh csrc/rola/src/carry/parts.cuh ... \\
+        --source csrc/rola/src/carry/ampere/carry_kernel.cuh csrc/rola/src/carry/ampere/parts.cuh ... \\
         --budget tools/budgets/carry.json --per <cta-windows in the launch>
 
 The csv is `ncu --section SourceCounters --page source --print-source sass --csv` of ONE launch

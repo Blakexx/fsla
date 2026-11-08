@@ -339,7 +339,7 @@ def carry_parts_header(parts, trivial) -> str:
     `CARRY_PARTS` (bit i: part i real), and `ROLA_CARRY_TRIVIAL` (bit i: a real part i named `=trivial` in its
     TRIVIAL form -- its loads and stores from fixed addresses, no dependence, no waits), written
     on every build and every ratify run (a composer's mask left behind must never reach a gate).
-    Included only by `carry/carry_kernel.cuh`."""
+    Included only by `carry/ampere/carry_kernel.cuh`."""
     bad = sorted((set(parts) | set(trivial)) - set(CARRY_PARTS))
     if bad:
         raise ValueError(f"carry_parts_header: no such part(s) {bad}; the parts are {CARRY_PARTS}")

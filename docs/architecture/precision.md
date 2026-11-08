@@ -29,7 +29,7 @@ nothing bounds what accumulation embeds.
 | the output | `y = P x unit / den`, bf16 | -- |
 
 The image's 2^10 top keeps a 32-list sum of image times read row under 2^15, inside an fp16 accumulator, so one
-placement serves both readout accumulations (`docs/internals/carry/handoff.md#maxima`). The fp16 readout accumulation is
+placement serves both readout accumulations (`docs/internals/carry/ampere/handoff.md#maxima`). The fp16 readout accumulation is
 not a state accumulator: it sums one tile's 32 lists, and the exact pair takes it from there.
 
 <a id="quality"></a>

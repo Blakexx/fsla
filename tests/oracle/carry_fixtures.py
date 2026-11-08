@@ -90,7 +90,7 @@ def box64_same(level: int) -> tuple[tuple[int, int], int]:
     return tuple(16 if lv == level else 32 for lv in range(2)), 64
 
 
-#: THE 64-CHANNEL BOX (docs/internals/carry/plan.md#box): the alternating box of 32 write lists x 16 read digits x 64
+#: THE 64-CHANNEL BOX (docs/internals/carry/ampere/plan.md#box): the alternating box of 32 write lists x 16 read digits x 64
 #: channels at depth two, its extents a level by the write side's sparse level
 def box64(write_sparse: int) -> tuple[tuple[int, int], int]:
     """``(extents, channels)`` of the 64-channel box over a bundle whose write side lists level ``write_sparse``."""
@@ -108,7 +108,7 @@ def assert_box64_arm(carve) -> None:
 #: THE PLAN'S FORMS, each exercised by a cell -- its widths, live digits a token, the form it forces (None: the rule's)
 #: -- and named as `tests/oracle/carry_plan.forms` names them: each image mode, alone and over read chunks, the fold in
 #: chunks, an entry filled ahead and one filled at its own step, a window's first filled by the window before, and a
-#: fill that waits on the retired read's drain (docs/internals/carry/schedule.md#planner).
+#: fill that waits on the retired read's drain (docs/internals/carry/ampere/schedule.md#planner).
 FORM_CELLS = (
     ((64, 64), 4, None, {"halves", "halves-chunks", "ahead", "deferred", "reuse"}),
     ((64, 64), 16, None, {"fold-chunks", "next"}),

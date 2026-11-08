@@ -135,7 +135,7 @@ def test_the_inter_numerator_is_the_fp64_reference(spec, reduce_dtype):
 @pytest.mark.parametrize("spec", ORACLE_CELLS, ids=IDS)
 def test_the_inter_denominator_is_the_fp64_reference(spec):
     """Every token's ``den`` over the whole call -- the v+1 channel the carry reads out beside ``num``
-    (`docs/internals/carry/handoff.md#den`) -- in the recurrence's units, against the inter term's denominator."""
+    (`docs/internals/carry/ampere/handoff.md#den`) -- in the recurrence's units, against the inter term's denominator."""
     from tests.oracle.test_den_vs_oracle import refs
 
     routes, values, _unit, _num, den = run(spec, with_den=True)

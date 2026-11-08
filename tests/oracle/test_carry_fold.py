@@ -1,6 +1,6 @@
-"""Gate for THE CARRY'S FOLD (csrc/rola/src/carry/fold.cuh): the state at a call's end, read through the probe, is the
+"""Gate for THE CARRY'S FOLD (csrc/rola/src/carry/ampere/fold.cuh): the state at a call's end, read through the probe, is the
 fp64 reference of the fold's declared arithmetic (`tests/oracle/fold_reference.py`, `fold_state`) per slot, at both
-orders of the even box's levels, and its den state the reference's mass per leaf (docs/internals/carry/fold.md#den).
+orders of the even box's levels, and its den state the reference's mass per leaf (docs/internals/carry/ampere/fold.md#den).
 
 Symbols: ``W`` the window (the device's), ``L`` tokens, ``B_l`` level ``l``'s width, ``d_v`` the value width.
 """
@@ -34,7 +34,7 @@ def _rtol(L: int) -> float:
 
 #: A DENSE FOLD'S DEN WEIGHT is rounded twice (`fold_den_dense`: the slot's `f16(255 m 2^(4 - E))`, then the coefficient
 #: times it by one HMUL2) where the reference's c_m rounds once: three f16 unit roundoffs a term at most, every term
-#: positive (docs/internals/carry/fold.md#den; ruled 2026-11-03)
+#: positive (docs/internals/carry/ampere/fold.md#den; ruled 2026-11-03)
 DENSE_DEN_WEIGHT = 3 * 2.0 ** -11
 
 

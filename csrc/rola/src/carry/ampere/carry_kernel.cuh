@@ -1,21 +1,21 @@
-// csrc/rola/src/carry/carry_kernel.cuh -- THE CARRY KERNEL: one CTA a box, window by window in one fixed order: the
+// csrc/rola/src/carry/ampere/carry_kernel.cuh -- THE CARRY KERNEL: one CTA a box, window by window in one fixed order: the
 // first read chunk's fill issued and the next window's inputs staged under the maxima, then each read chunk (its image
 // whole or in halves, its units, its tiles, its drain) and each fold chunk (its fill, the fold) from the window's plan
-// (`schedule.cuh`), the fp32 state in registers throughout. see docs/internals/carry/carry_kernel.md
+// (`schedule.cuh`), the fp32 state in registers throughout. see docs/internals/carry/ampere/carry_kernel.md
 #pragma once
 
-#include "carry/fold.cuh"
-#include "carry/handoff.cuh"
-#include "carry/panel.cuh"
-#include "carry/readout.cuh"
-#include "carry/readout_dense.cuh"
-#include "carry/schedule.cuh"
+#include "carry/ampere/fold.cuh"
+#include "carry/ampere/handoff.cuh"
+#include "carry/ampere/panel.cuh"
+#include "carry/ampere/readout.cuh"
+#include "carry/ampere/readout_dense.cuh"
+#include "carry/ampere/schedule.cuh"
 #include "common/phase_clock.cuh"
 
 namespace rola::carry {
 
 //: THE WINDOW'S INPUTS, a window ahead, by every thread: both sides' lists, the write exponents and token units, and
-//: the window's plan record for the CTA's box class. -- see docs/internals/carry/carry_kernel.md#staging
+//: the window's plan record for the CTA's box class. -- see docs/internals/carry/ampere/carry_kernel.md#staging
 template <class P>
 __device__ __forceinline__ void stage_window(const CarryParams& p, const Place& c, int w,
                                              uint8_t* smem) {
@@ -36,7 +36,7 @@ __device__ __forceinline__ void stage_window(const CarryParams& p, const Place& 
 
 //: THE KERNEL, a grid constant block in, one CTA an SM: grid `(boxes, batch-heads)`. A window: its first read chunk's
 //: fill, the next window's staging, the maxima, its read chunks, its fold chunks -- a fixed order, the plan's chunks
-//: and places read once a window. -- see docs/internals/carry/carry_kernel.md#kernel
+//: and places read once a window. -- see docs/internals/carry/ampere/carry_kernel.md#kernel
 template <class Bt, class Arm>
 __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constant__ CarryParams p) {
   using P = Plan<Arm, Bt::build>;
@@ -278,7 +278,7 @@ __global__ __launch_bounds__(kThreads, 1) void carry_kernel(const __grid_constan
     }
   }
 
-  //: THE CHECK, a warp's sum added once a warp -- see docs/internals/carry/carry_kernel.md#check
+  //: THE CHECK, a warp's sum added once a warp -- see docs/internals/carry/ampere/carry_kernel.md#check
   float sum = 0.f;
   static_for<P::kStateRegs>([&](auto k) { sum += st.template at<k>(); });
   static_for<5>([&](auto o) { sum += __shfl_xor_sync(0xffffffffu, sum, 16 >> o); });

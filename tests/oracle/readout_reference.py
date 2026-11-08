@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The fp64 reference of the carry's READOUT (docs/internals/carry/readout.md): each token's readout, from the fold's
+"""The fp64 reference of the carry's READOUT (docs/internals/carry/ampere/readout.md): each token's readout, from the fold's
 declared state before its window (`fold_reference.fold_state`), and the bound of the value-carve readout's arithmetic.
 
 THE OUTPUT: ``P(t, c) = sum_{d, r} x(t, d) a(t, r) S(d, r, c) / kappa`` over every box -- ``S`` the absolute state

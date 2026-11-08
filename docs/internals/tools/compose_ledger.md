@@ -1,7 +1,7 @@
 # `tools/compose_ledger.py` — a phase's time attributed to its parts by composition
 
 KERNEL_STANDARDS §22 (9). The carry kernel's MMA phases are built from parts that a build may stub
-(`docs/internals/carry/parts.md`). A LADDER over a phase builds the kernel with none of
+(`docs/internals/carry/ampere/parts.md`). A LADDER over a phase builds the kernel with none of
 that phase's parts real and every other part real, then adds the phase's parts back in the order
 named, one rung a build; the last rung is the kernel itself.
 

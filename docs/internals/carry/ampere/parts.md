@@ -1,6 +1,6 @@
-# `carry/parts.cuh` — the carry's components
+# `carry/ampere/parts.cuh` — the carry's components
 
-Mirrors `csrc/rola/src/carry/parts.cuh`: the parts the fold, the hand-off and the readout share -- the CTA's place, a
+Mirrors `csrc/rola/src/carry/ampere/parts.cuh`: the parts the fold, the hand-off and the readout share -- the CTA's place, a
 window's lists in, the pool rows' swizzle, a chunk's fills and runs, the den's register places. Each is at its real
 signature, tenants and copies, and keeps the work's counts; what a component leaves to its build is named in its
 section and in `carry_kernel.md#kernel`. The fold is `fold.md`'s, the hand-off `handoff.md`'s, the readout
@@ -20,7 +20,7 @@ a sixth of the carry's samples, and the carry ran 16% faster without it. The win
 window index, its statics from the tenant.
 
 <a id="window"></a>
-`ops::opaque` (`../common/atoms/warp.md#opaque`) and `parity_of` pass the window index (and a thread's) through an opaque
+`ops::opaque` (`../../common/atoms/warp.md#opaque`) and `parity_of` pass the window index (and a thread's) through an opaque
 move, so a window-invariant offset --
 a window's first token, a list's row base, a tenant by parity, the drain's cell -- is formed at each use: computed once
 before a window's steps, the compiler holds it in a register across the readout, the kernel's register peak, and at
@@ -46,7 +46,7 @@ A row of 128 bytes XORs its 16-byte chunk by the slot's residue (`slot & 7`); a 
 (64 or 192 bytes) starts on alternating halves of the 128-byte bank line, so it XORs its chunk within each four by the
 residue's high bits (`chunk_at`). Either way eight slots of distinct residues meet eight bank groups at one chunk: a
 dense pass's step is 8 consecutive slots; a list's step is its next 8 rank slots, distinct residues only where they run
-consecutively (the facts pass's [ranks](../facts/facts.md#ranks)). `chunk_addr` is a logical
+consecutively (the facts pass's [ranks](../../facts/facts.md#ranks)). `chunk_addr` is a logical
 chunk's address from a row's chunk 0 with the swizzle folded in: an XOR inside the swizzle's group, the group's offset
 added. An entry carries the row's chunk-0 offset, so a lane addresses its chunk with one XOR. A row of an odd
 number of 32 bytes (the 64-channel boxes' write rows: 160 bytes, a 32-byte slice of 16 rows then 128 bytes of values;
@@ -68,9 +68,9 @@ for a gap), so no copy's address register is rewritten while an earlier copy may
 chunk is not clamped: it reads the tenant after the union (the prefix rows), in bounds, and its copy is not issued. A
 row's swizzle is its slot's low bits (`chunk_at`), the same at every `k` and every trip, so a thread's places are one
 base and immediates. The first trip is straight-line; a chunk over 256 slots loops the rest. A read slot's row names
-its query head (`carry.md#sides`): its source is the slice at that head, a head stride on (`Slices::sh`), as a 32-bit
+its query head (`../carry.md#sides`): its source is the slice at that head, a head stride on (`Slices::sh`), as a 32-bit
 offset from the slice's base at the window's first token (the host holds a window's token and head strides under 2^31
-together). A GAP slot (`kGap`, [`carry.md`](carry.md#lists)) -- its token negative as 16 bits -- is zero-filled and
+together). A GAP slot (`kGap`, [`../carry.md`](../carry.md#lists)) -- its token negative as 16 bits -- is zero-filled and
 reads nothing. `read_fill` adds the chunk's panel and den words (`panel.md`), zeroed by 16-byte stores four a thread
 (each predicated on the quanta left, the first four straight-line, so the chunk's landing waits on its rows alone), and
 the chunk's entries; `fold_fill` (`fold.md#chunk`) the write chunk's rows and entries, or on a side with no list level
@@ -79,7 +79,7 @@ chunk's own slots (`read_panel`, `read_dens`, `read_ents`, `fold_ents`; `schedul
 
 THE FILL'S FLOOR is its bytes through the SM's global path, not its instructions: a CTA-window at nl64k-alt-k4 copies
 ~51 KB (the read rows 13.8 KB, the fold rows 27.6 KB, the entries 4 KB, the staging ~5 KB), and a `cp.async.cg` stream
-of L2 hits runs at ~18 bytes a cycle an SM ([`smem_rates`](../../lab/smem_rates.md), `common/hardware.json`'s line
+of L2 hits runs at ~18 bytes a cycle an SM ([`smem_rates`](../../../lab/smem_rates.md), `common/hardware.json`'s line
 price) -- ~2.85K cycles a window. The limit is the SM's, not the L2's: the grid's second wave (48 SMs busy) fills in the
 first's cycles (80). The copies' issue backs up into the MIO queue (the copy's samples are half MIO throttle).
 
