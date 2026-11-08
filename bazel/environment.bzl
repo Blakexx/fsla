@@ -14,7 +14,7 @@ package(default_visibility = ["//visibility:public"])
 filegroup(name = "python", srcs = ["bin/python3"])
 
 #: the pinned uv the environment was built with, for the run targets that write venvs over it (`//:dev_env`)
-filegroup(name = "uv", srcs = ["uv/uv"])
+filegroup(name = "uv", srcs = ["uv/{uv}"])
 
 cc_library(
     name = "torch_headers",
@@ -55,7 +55,7 @@ def _env_impl(rctx):
         "--store",
         _store(rctx),
         "--uv",
-        str(rctx.path("uv/uv")),
+        str(rctx.path("uv/" + pin["binary_path"])),
         "--python",
         pin["python"],
         "--lock",
@@ -87,7 +87,7 @@ def _env_impl(rctx):
     #: the environment's own interpreter and tools by their store path: the path carries the environment's key, so a
     #: command naming it is keyed by the environment
     rctx.file("flags.bzl", flags.stdout + "VENV = %s\n" % json.encode(paths["venv"]))
-    rctx.file("BUILD.bazel", _ENV_BUILD)
+    rctx.file("BUILD.bazel", _ENV_BUILD.replace("{uv}", pin["binary_path"]))
 
 _env_repo = repository_rule(
     implementation = _env_impl,
@@ -109,7 +109,7 @@ _MOLD_BUILD = 'filegroup(name = "linker", srcs = ["bin/ld.mold", "bin/mold"], vi
 _CLANG_TIDY_BUILD = """\
 package(default_visibility = ["//visibility:public"])
 
-filegroup(name = "clang_tidy", srcs = ["clang_tidy/data/bin/clang-tidy"])
+filegroup(name = "clang_tidy", srcs = ["{binary}"])
 
 #: its resource headers (clang's CUDA wrappers among them), beside the binary where clang looks for them
 filegroup(name = "resources", srcs = glob(["clang_tidy/data/lib/clang/**"]))
@@ -118,24 +118,30 @@ filegroup(name = "resources", srcs = glob(["clang_tidy/data/lib/clang/**"]))
 def _pinned_impl(rctx):
     pin = json.decode(rctx.read(rctx.attr.pin))
     asset = pin["release_asset"]
-    #: a tarball unpacks from its pin's folder (`archive_root`), as tools/dev.py's installer reads it; a wheel (a zip)
-    #: at its root
+    #: an archive unpacks from its pin's folder (`archive_root`), as tools/dev.py's installer reads it -- a wheel (a
+    #: zip) names its root; a bare binary lands at its `binary_path`
     wheel = asset.endswith(".whl")
     #: the release URL, then its mirrors: the same asset through the host's API, which serves it as octet-stream
-    rctx.download_and_extract(
-        url = [pin["release_url"]] + pin.get("mirror_urls", []),
-        sha256 = pin["asset_sha256"],
-        type = "zip" if wheel else "tar.gz",
-        stripPrefix = "" if wheel else pin["archive_root"],
-        headers = {"Accept": ["application/octet-stream"]},
-    )
+    urls = [pin["release_url"]] + pin.get("mirror_urls", [])
+    headers = {"Accept": ["application/octet-stream"]}
+    if pin.get("asset_kind") == "binary":
+        rctx.download(url = urls, sha256 = pin["asset_sha256"], output = pin["binary_path"], executable = True, headers = headers)
+    else:
+        rctx.download_and_extract(
+            url = urls,
+            sha256 = pin["asset_sha256"],
+            type = "zip" if wheel else "tar.gz",
+            stripPrefix = pin["archive_root"],
+            headers = headers,
+        )
     if "binary_sha256" in pin:
         binary = str(rctx.path(pin["binary_path"]))
         digest = rctx.execute(["sha256sum", binary]).stdout.split(" ")[0]
         if digest != pin["binary_sha256"]:
-            fail("%s: %s's sha256 is %s, not the pin's %s" % (pin["name"], rctx.attr.binary, digest, pin["binary_sha256"]))
+            fail("%s: %s's sha256 is %s, not the pin's %s" % (pin["name"], pin["binary_path"], digest, pin["binary_sha256"]))
         rctx.execute(["chmod", "0755", binary])
-    rctx.file("BUILD.bazel", rctx.attr.build)
+    #: the repository's BUILD file names the binary by its pin
+    rctx.file("BUILD.bazel", rctx.attr.build.replace("{binary}", pin["binary_path"]))
 
 _pinned_repo = repository_rule(
     implementation = _pinned_impl,
@@ -275,6 +281,8 @@ _tree_repo = repository_rule(
 def _environment_impl(mctx):
     _env_repo(name = "rola_env")
     _pinned_repo(name = "mold", pin = "//tools:mold_pin.json", build = _MOLD_BUILD)
+    #: the devbox image's bootstrap: the one tool a host installs before the graph (tools/bootstrap.py)
+    _pinned_repo(name = "bazelisk", pin = "//tools:bazelisk_pin.json", build = 'exports_files(["{binary}"], visibility = ["//visibility:public"])\n')
     _pinned_repo(
         name = "clang_tidy",
         pin = "//tools:clang_tidy_pin.json",

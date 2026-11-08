@@ -166,11 +166,16 @@ def scratch(name: str) -> Path:
     return path
 
 
+def pinned(name: str) -> Path:
+    """Where a pin's binary is installed (`tools/<name>_pin.json`): its folder under `host.tools_dir` (`archive_root`,
+    which carries the version), the binary in it (`binary_path`)."""
+    pin = json.loads((Path(__file__).resolve().parent / f"{name}_pin.json").read_text())
+    return Path(get("host.tools_dir")) / pin["archive_root"] / pin["binary_path"]
+
+
 def ncu() -> str:
-    """The Nsight Compute CLI the measurement tools run: the pinned one (tools/nsight_compute_pin.json), found by its
-    pin under `host.tools_dir`, refused until init installed it."""
-    pin = json.loads((Path(__file__).resolve().parent / "nsight_compute_pin.json").read_text())
-    path = Path(get("host.tools_dir")) / pin["archive_root"] / pin["binary_path"]
+    """The Nsight Compute CLI the measurement tools run: the pinned one, refused until init installed it."""
+    path = pinned("nsight_compute")
     if not path.is_file():
         raise SystemExit(f"the pinned Nsight Compute is not installed at {path}: bazel run //:init")
     return str(path)

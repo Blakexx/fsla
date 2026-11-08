@@ -44,13 +44,13 @@ import toolchains  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 #: THE DEVBOX'S TOOLS outside the graph's environment: a developer's commands, each a pinned release in its own
-#: versioned folder under `host.tools_dir` (`pinned_path`), linked into every checkout's venv (`dev-env`) and found by
+#: versioned folder under `host.tools_dir` (`dev_config.pinned`), linked into every checkout's venv (`dev-env`) and found by
 #: its pin, never recorded as a machine key -- see docs/setup.md#the-devbox
 DEV_TOOLS = ("hyperfine", "difftastic", "nsight_compute", "nsight_systems")
 PINS = {"sccache": ROOT / "tools" / "sccache_pin.json", "mold": ROOT / "tools" / "mold_pin.json",
         "bazelisk": ROOT / "tools" / "bazelisk_pin.json",
         **{name: ROOT / "tools" / f"{name}_pin.json" for name in DEV_TOOLS}}
-#: the pins init records in the machine's toolchain file; bazelisk is found by its pin instead (`pinned_path`), since
+#: the pins init records in the machine's toolchain file; bazelisk is found by its pin instead (`dev_config.pinned`), since
 #: every checkout loads that file and an older loader refuses a key it does not declare
 RECORDED = ("sccache", "mold")
 #: THE ENVIRONMENT'S INPUTS: what the dev image is built from and how it is run. Their hash is the environment key; a
@@ -83,18 +83,11 @@ VERSION_OF = {"sccache": sccache_toolchain.sccache_version, "mold": mold_toolcha
               "bazelisk": _bazelisk_version}
 
 
-def pinned_path(name: str) -> Path:
-    """Where `install_pinned` puts a pin's binary: its pin's folder under `host.tools_dir` (`archive_root`, which
-    carries the version), the binary in it (`binary_path`)."""
-    pin = json.loads(PINS[name].read_text())
-    return Path(dev_config.get("host.tools_dir")) / pin["archive_root"] / pin["binary_path"]
-
-
 def install_dev_tools() -> None:
     """Every devbox tool, where it is missing or does not report its pin's version."""
     for name in DEV_TOOLS:
         pin = json.loads(PINS[name].read_text())
-        if _pinned_version(name, str(pinned_path(name))) != pin["version_string"]:
+        if _pinned_version(name, str(dev_config.pinned(name))) != pin["version_string"]:
             install_pinned(name, Path(dev_config.get("host.tools_dir")))
 
 
@@ -139,7 +132,7 @@ def install_bazelisk() -> None:
     """The pinned bazelisk under `host.tools_dir` and `bazel` linked to it: the machine's one step outside the graph
     (`tools/bootstrap.py` on a host, `init --image` in the image), since every other command is a `bazel run`."""
     pin = json.loads(PINS["bazelisk"].read_text())
-    if _pinned_version("bazelisk", str(pinned_path("bazelisk"))) != pin["version_string"]:
+    if _pinned_version("bazelisk", str(dev_config.pinned("bazelisk"))) != pin["version_string"]:
         install_pinned("bazelisk", Path(dev_config.get("host.tools_dir")))
     link_bazel()
 
@@ -148,7 +141,7 @@ def link_bazel() -> None:
     """`toolchain.bazel` linked to the pinned bazelisk: `bazel` is the command the docs name, and only the pinned
     launcher reads `.bazeliskrc` and runs the graph's front door. A link it made to another pinned release (under
     `host.tools_dir`) is replaced; anything else at the path is refused, named, never overwritten."""
-    link, bazelisk = Path(dev_config.get("toolchain.bazel")), pinned_path("bazelisk")
+    link, bazelisk = Path(dev_config.get("toolchain.bazel")), dev_config.pinned("bazelisk")
     if link.is_symlink() and link.resolve() == bazelisk.resolve():
         return
     tools = Path(dev_config.get("host.tools_dir")).resolve()
@@ -392,7 +385,7 @@ def cmd_init(a) -> int:
         for name in DEV_TOOLS:
             command = Path(dev_config.get("workspace.base_venv")) / "bin" / json.loads(PINS[name].read_text())["command"]
             command.unlink(missing_ok=True)
-            command.symlink_to(pinned_path(name))
+            command.symlink_to(dev_config.pinned(name))
     base = dev_config.get("workspace.base_venv")
     drift = venv_drift(str(Path(base) / "bin" / "python")) if base else []
     if drift:
@@ -474,9 +467,9 @@ def cmd_check(a) -> int:
             row(False, f"toolchain {name}: {str(ex).splitlines()[0][:140]}", "bazel run //:init")
     for name in DEV_TOOLS:
         want = json.loads(PINS[name].read_text())["version_string"]
-        row(_pinned_version(name, str(pinned_path(name))) == want, f"devbox {name}: {pinned_path(name)} is {want}",
+        row(_pinned_version(name, str(dev_config.pinned(name))) == want, f"devbox {name}: {dev_config.pinned(name)} is {want}",
             "bazel run //:init")
-    bazelisk = pinned_path("bazelisk")
+    bazelisk = dev_config.pinned("bazelisk")
     pin = json.loads(PINS["bazelisk"].read_text())["version_string"]
     row(_pinned_version("bazelisk", str(bazelisk)) == pin, f"bazelisk: {bazelisk} is {pin}", "python3 tools/bootstrap.py")
     #: bazelisk puts the front door's directory first on PATH for what it runs (`bazel run //:check`): the user's `bazel`
@@ -679,9 +672,9 @@ def cmd_dev_env(a) -> int:
             target.symlink_to(tool)
     #: and the devbox tools, by their pins' commands
     for name in DEV_TOOLS:
-        if not pinned_path(name).is_file():
-            raise SystemExit(f"{venv}: the devbox's {name} is not installed at {pinned_path(name)}: bazel run //:init")
-        (venv / "bin" / json.loads(PINS[name].read_text())["command"]).symlink_to(pinned_path(name))
+        if not dev_config.pinned(name).is_file():
+            raise SystemExit(f"{venv}: the devbox's {name} is not installed at {dev_config.pinned(name)}: bazel run //:init")
+        (venv / "bin" / json.loads(PINS[name].read_text())["command"]).symlink_to(dev_config.pinned(name))
 
     wire_hooks(checkout)
     found = subprocess.run([str(venv / "bin" / "python"), "-c", "import json, rola, rola_devtools, rola_results, torch; "

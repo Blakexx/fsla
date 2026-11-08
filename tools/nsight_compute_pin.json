@@ -1,6 +1,6 @@
 {
     "name": "nsight_compute",
-    "role": "the kernel profiler (`ncu`): the measurement tools' Nsight Compute, recorded as toolchain.ncu, and a developer's (the devbox, docs/setup.md). NVIDIA's redistributable component at the toolkit's manifest, by its digest, as compute-sanitizer is.",
+    "role": "the kernel profiler (`ncu`): the measurement tools' Nsight Compute, found by its pin (dev_config.ncu()), and a developer's (the devbox, docs/setup.md). NVIDIA's redistributable component at the toolkit's manifest, by its digest, as compute-sanitizer is.",
     "upstream": "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.0.0.json",
     "manifest": "redistrib_13.0.0.json (MODULE.bazel's toolkit manifest, by its digest)",
     "version": "2025.3.0.19",
