@@ -1,7 +1,7 @@
 # Build — ahead of time, closed world
 
-This page is the build as `setup.py` runs it; the build graph that replaces it stage by stage is
-[`build-graph.md`](build-graph.md).
+This page is the extension's build, which `setup.py` runs; the Bazel workspace beside it, its front door and its
+rules are [`build-graph.md`](build-graph.md).
 
 ## The governing constraint
 

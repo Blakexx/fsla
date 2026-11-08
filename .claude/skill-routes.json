@@ -79,13 +79,22 @@
     "setup.py",
     "tools/build_flags.py",
     "tools/gen_shards.py",
-    "tools/build_lock.py"
+    "tools/build_lock.py",
+    "MODULE.bazel",
+    ".bazelrc",
+    ".bazeliskrc",
+    ".bazelversion",
+    "**/BUILD.bazel",
+    "**/*.bzl",
+    "bazel/front_door.py",
+    "tools/bootstrap.py"
    ],
    "bash": [
     "^(python3?\\s+-m\\s+)?pip\\s+install\\s+-e\\b",
     "^python3?\\s+setup\\.py\\b",
     "^nvcc\\b",
-    "^(python3?\\s+)?tools/sass_gate\\.py\\b"
+    "^(python3?\\s+)?tools/sass_gate\\.py\\b",
+    "^(bazel|bazelisk|bazel/bazel)\\b"
    ]
   },
   {

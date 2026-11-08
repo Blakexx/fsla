@@ -17,12 +17,18 @@ bootstrap), and `python tools/dev.py init` links the `workspace.devtools` checko
 
 | file | keys |
 |---|---|
-| `toolchain.json` | `cuda_home` (null takes torch's `CUDA_HOME`), `ncu` (Nsight Compute 2025.3+), `sccache`, `sccache_enabled`, `mold`, `clang_tidy` |
+| `toolchain.json` | `cuda_home` (null takes torch's `CUDA_HOME`), `ncu` (Nsight Compute 2025.3+), `sccache`, `sccache_enabled`, `mold`, `clang_tidy`, `bazelisk` (Bazel's launcher) |
 | `host.json` | `nvcc_threads`, `build_jobs`, `budget_slots`, `lock_dir`, `gpu_lock`, `gpu_shared_slots`, `nice`, `locks_trace`, `scratch`, `tools_dir`, `windows_system32`, `wsl_lib` |
 | `clock.json` | `ghz`, `lock`, `unlock` (null `ghz`: the host measures unlocked) |
 | `store.json` | `root` (the measurements store: a rola-results checkout) |
 | `workspace.json` | `suite` (the rola-bench checkout whose root `declare.py` measures this tree), `devtools` (the rola-devtools checkout, the public mirror's declared build system, linked into every venv), `worktrees` (the one folder worktrees live in), `base_venv` (the venv pointer venvs borrow from) |
 | `environment.json` | `image_digest` (inside the dev container) |
+
+<a id="bootstrap"></a>**Before the reader is importable.** The graph's front door (`bazel/front_door.py`) runs
+under the machine's `python3`, before any venv exists. `tools/bootstrap.py` reads one value the standard-library way --
+`workspace.devtools`, from `workspace.json` in the directory the reader's own rule names -- and the front door imports
+the reader and the host budget from that checkout. The sibling checkouts' location (`SIBLINGS`, the default of
+`store.root`, `workspace.suite` and `workspace.devtools`) is defined there once, for both.
 
 Each key's type, default and meaning are declared in `SCHEMA`. `python tools/dev.py show` prints every
 resolved value and the file it came from ([dev.md](dev.md)).
@@ -48,6 +54,7 @@ f-string prefixes resolved) and shell expansions.
   - pytest-xdist's worker id.
   - The agent harness's campaign directory.
   - The login name printed into the sudoers rule `tools/dev.py clock` suggests (`USER`).
+  - The Bazel release bazelisk hands the graph's front door (`BAZEL_REAL`).
 - `BUILD_PARAMETERS`: what one build is, set per invocation, because pip passes nothing else to `setup.py`:
   `ROLA_CUDA_ARCHS`, `ROLA_CARRY_ARMS`, `ROLA_DECODE_ARMS`, `ROLA_CARRY_PARTS`, `ROLA_BUILD_PARTS`,
   `ROLA_NO_EXTENSION`, `ROLA_STRICT_MANIFEST`, `ROLA_SKIP_POST_BUILD_RATIFY`.

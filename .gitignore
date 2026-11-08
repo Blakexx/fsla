@@ -15,6 +15,5 @@ compile_commands.json
 # the dev container's host mounts, written by `python3 tools/dev.py container compose` (host paths, never committed)
 .devcontainer/compose.local.yaml
 
-# the graph's machine-local settings and output links
-/.bazelrc.user
+# the graph's output links
 /bazel-*

@@ -796,12 +796,15 @@ _NOT_A_WORK_CODE = re.compile(
 #: so a bare rung number spelled that way escapes; the standards form is `§R<n>` and is
 #: unambiguous. The sweep that turned this check on removed both classes where it found
 #: them; a new one is caught by review, not here.
-_WORK_CODE_ROOTS = ("csrc", "rola", "docs", "tests", "measure", "tools")
+_WORK_CODE_ROOTS = ("csrc", "rola", "docs", "tests", "measure", "tools", "bazel")
 _WORK_CODE_SUFFIXES = (".py", ".cu", ".cuh", ".cpp", ".h", ".hpp", ".md", ".json",
-                       ".yaml", ".yml", ".sh", ".toml")
+                       ".yaml", ".yml", ".sh", ".toml", ".bazel", ".bzl")
+#: the build graph's files at the checkout's root
+_WORK_CODE_ROOT_FILES = (".bazelrc", ".bazeliskrc", ".bazelversion", "MODULE.bazel")
 
 
 def _work_code_files():
+    yield from (ROOT / name for name in _WORK_CODE_ROOT_FILES if (ROOT / name).is_file())
     for name in _WORK_CODE_ROOTS:
         root = ROOT / name
         if not root.is_dir():

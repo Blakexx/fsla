@@ -28,6 +28,7 @@ import tarfile
 import tempfile
 import textwrap
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -41,11 +42,12 @@ import toolchains  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 PINS = {"sccache": ROOT / "tools" / "sccache_pin.json", "mold": ROOT / "tools" / "mold_pin.json",
-        "clang_tidy": ROOT / "tools" / "clang_tidy_pin.json"}
+        "clang_tidy": ROOT / "tools" / "clang_tidy_pin.json", "bazelisk": ROOT / "tools" / "bazelisk_pin.json"}
 #: THE ENVIRONMENT'S INPUTS: what the dev image is built from and how it is run. Their hash is the environment key; a
 #: commit changing any of them carries a passing container check for its key (KERNEL_STANDARDS §23 (3)).
 ENV_INPUTS = ("Dockerfile", ".devcontainer/devcontainer.json", ".devcontainer/compose.yaml", "requirements.lock",
-              "tools/sccache_pin.json", "tools/mold_pin.json", "tools/clang_tidy_pin.json", "tools/devtools.txt", "tools/dev.py", "tools/dev_config.py",
+              "tools/sccache_pin.json", "tools/mold_pin.json", "tools/clang_tidy_pin.json", "tools/bazelisk_pin.json", "tools/devtools.txt", "tools/dev.py", "tools/dev_config.py",
+              "tools/bootstrap.py",
               "tools/sccache_toolchain.py", "tools/mold_toolchain.py",
               "tools/toolchains.py",
               *sorted(str(p.relative_to(ROOT)) for p in (ROOT / "tools" / "toolchains").glob("*.json")))
@@ -61,9 +63,16 @@ def _clang_tidy_version(path: str) -> str:
     return next(line.strip() for line in out.splitlines() if line.strip().startswith("LLVM version"))
 
 
+def _bazelisk_version(path: str) -> str:
+    """The pin's version string when the binary is the pinned release, by its digest (it prints no version alone)."""
+    pin = json.loads(PINS["bazelisk"].read_text())
+    got = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    return pin["version_string"] if got == pin["asset_sha256"] else f"bazelisk sha256 {got}"
+
+
 #: each pinned tool's own version reader, the one its build gate compares against the pin
 VERSION_OF = {"sccache": sccache_toolchain.sccache_version, "mold": mold_toolchain.mold_version,
-              "clang_tidy": _clang_tidy_version}
+              "clang_tidy": _clang_tidy_version, "bazelisk": _bazelisk_version}
 
 
 def _write_section(section: str, values: dict, force: bool) -> None:
@@ -79,20 +88,53 @@ def _write_section(section: str, values: dict, force: bool) -> None:
     print(f"wrote {path}")
 
 
+#: a release host's transient failures (a gateway timeout, a dropped connection): the same artifact asked again, from
+#: the release's URL and then its mirrors (`mirror_urls`: the same file through another of the host's front ends), the
+#: digest still the check -- github.com's release downloads returned 504s for hours on 2026-11-08 while its API served
+#: the same assets
+DOWNLOAD_ATTEMPTS = 6
+
+
+def _download(urls: list[str], to: Path) -> None:
+    """Fetch the first of `urls` that answers to `to`, asking again after a server error or a dropped connection (2, 4,
+    8, ... s apart). An API asset URL serves the file's bytes under `Accept: application/octet-stream`."""
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        for url in urls:
+            try:
+                request = urllib.request.Request(url, headers={"Accept": "application/octet-stream"})
+                with urllib.request.urlopen(request, timeout=300) as response, open(to, "wb") as out:
+                    shutil.copyfileobj(response, out)
+                return
+            except (urllib.error.HTTPError, urllib.error.URLError, ConnectionError, TimeoutError) as ex:
+                if isinstance(ex, urllib.error.HTTPError) and ex.code < 500:
+                    raise
+                print(f"{url}: {ex}; asking again ({attempt}/{DOWNLOAD_ATTEMPTS})", file=sys.stderr)
+        if attempt < DOWNLOAD_ATTEMPTS:
+            time.sleep(2 ** attempt)
+    raise SystemExit(f"none of {urls} answered in {DOWNLOAD_ATTEMPTS} attempts")
+
+
 def install_pinned(name: str, dest: Path) -> str:
     """Download the pinned release, verify its sha256 (and the binary's, where the pin has one), and unpack the whole
     release under `dest` -- its layout is part of the tool (mold selects `ld.mold` beside itself; clang-tidy reads its
-    resource headers beside its binary). A release is a tarball, or a wheel (a zip) unpacked under its own name."""
+    resource headers beside its binary). A release is a tarball, a wheel (a zip) unpacked under its own name, or a bare
+    binary (`asset_kind`), installed under its release's name."""
     pin = json.loads(PINS[name].read_text())
     wanted = f"/{pin.get('binary', name)}"
     with tempfile.TemporaryDirectory(prefix=f"rola_{name}_") as tmp:
         asset = Path(tmp) / pin["release_asset"]
-        urllib.request.urlretrieve(pin["release_url"], asset)
+        _download([pin["release_url"], *pin.get("mirror_urls", [])], asset)
         got = hashlib.sha256(asset.read_bytes()).hexdigest()
         if got != pin["asset_sha256"]:
             raise SystemExit(f"{name}: release sha256 {got} is not the pin's {pin['asset_sha256']}")
         dest.mkdir(parents=True, exist_ok=True)
-        if asset.suffix == ".whl":
+        if pin.get("asset_kind") == "binary":
+            #: a bare binary: installed under its release's own name, as an archive's tree is
+            binary = dest / f"{name}-{pin['version']}" / pin["binary"]
+            binary.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(asset, binary)
+            binary.chmod(0o755)
+        elif asset.suffix == ".whl":
             root = dest / asset.stem
             with zipfile.ZipFile(asset) as zf:
                 member = next(m for m in zf.namelist() if m.endswith(wanted))
@@ -379,6 +421,10 @@ def cmd_check(a) -> int:
             row(True, f"toolchain {name}: {dev_config.get(f'toolchain.{name}')} matches its pin")
         except RuntimeError as ex:
             row(False, f"toolchain {name}: {str(ex).splitlines()[0][:140]}", "python tools/dev.py init")
+    bazelisk = dev_config.get("toolchain.bazelisk")
+    pin = json.loads(PINS["bazelisk"].read_text())["version_string"]
+    row(bool(bazelisk) and _pinned_version("bazelisk", bazelisk) == pin, f"toolchain bazelisk: {bazelisk} is {pin}",
+        "python tools/dev.py init")
     base = dev_config.get("workspace.base_venv")
     python = Path(base or "") / "bin" / "python"
     row(bool(base) and python.exists(), f"workspace.base_venv: {base}", "python tools/dev.py init")

@@ -1,13 +1,11 @@
-# THE GRAPH'S SETTINGS (docs/build.md). Machine-local paths (the shared disk and repository caches) live in
-# .bazelrc.user, written by `tools/dev.py init`; nothing here names a machine.
+# THE GRAPH'S SETTINGS (docs/build-graph.md). Nothing here names a machine: the machine's own settings (the shared disk
+# and repository caches) come from the dev config, through the front door (bazel/bazel, docs/build-graph.md#front-door).
 
-# the server exits after 15 idle minutes: a worktree not in use holds no memory
+# the server exits after 15 idle minutes, above the disk cache collector's 5-minute idle delay
 startup --max_idle_secs=900
 
 # the hermetic toolkit is chosen for the build's platform
-build --platforms=//tools/bazel:linux_x86_64
+build --platforms=//bazel:linux_x86_64
 
-# the shared disk cache is bounded (P93's space budget)
+# the shared disk cache's bound (docs/build-graph.md#rules, the space budget)
 common --experimental_disk_cache_gc_max_size=20G
-
-try-import %workspace%/.bazelrc.user

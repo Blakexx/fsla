@@ -40,6 +40,8 @@ except ImportError as missing:
     raise SystemExit("tools/dev_config.py: rola_devtools is not importable -- `pip install -r tools/devtools.txt`, or "
                      "`pip install -e` a rola-devtools checkout (docs/setup.md)") from missing
 
+from bootstrap import DEVTOOLS, SIBLINGS  # noqa: E402 -- the defaults a pre-reader tool shares
+
 ROOT = Path(__file__).resolve().parents[1]
 
 SCHEMA: dict[str, dict[str, Key]] = {
@@ -53,17 +55,20 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "mold": Key("path?", None, "the pinned mold (tools/mold_pin.json), the only linker; null means none installed"),
         "clang_tidy": Key("path?", None, "the pinned clang-tidy (tools/clang_tidy_pin.json), both clang-tidy profiles' "
                           "analyzer; null means none installed"),
+        "bazelisk": Key("path?", None, "the pinned bazelisk (tools/bazelisk_pin.json), Bazel's launcher: it runs the "
+                        "version .bazelversion names through the graph's front door (bazel/bazel); null means none "
+                        "installed"),
     },
     **MACHINE,
     "store": {
-        "root": Key("path", str((ROOT.parent if ROOT.parent.name == "worktrees" else ROOT).parent / "rola-results"),
+        "root": Key("path", str(SIBLINGS / "rola-results"),
                     "the measurements store: its own git repository, shared by every worktree and the container "
                     "(the record, the ledgers, perf, the environment checks; docs/measurement.md)"),
     },
     "workspace": {
-        "suite": Key("path", str((ROOT.parent if ROOT.parent.name == "worktrees" else ROOT).parent / "rola-bench"),
+        "suite": Key("path", str(SIBLINGS / "rola-bench"),
                      "the rola-bench checkout whose measurement suite (its root declare.py) runs this tree's declarations"),
-        "devtools": Key("path", str((ROOT.parent if ROOT.parent.name == "worktrees" else ROOT).parent / "rola-devtools"),
+        "devtools": Key("path", str(DEVTOOLS),
                         "the rola-devtools checkout (the public mirror's export, the declared build system), linked into "
                         "every venv that runs here"),
         "worktrees": Key("path", str(ROOT.parent / "worktrees") if ROOT.parent.name != "worktrees" else str(ROOT.parent),
@@ -101,6 +106,7 @@ HANDOFFS = {
     "PYTEST_XDIST_WORKER": "pytest-xdist's worker id",
     "USER": "the login name printed into the sudoers rule `tools/dev.py clock` suggests",
     "ROLA_SCRATCH": "the agent harness's campaign directory (.claude/settings.json), outside the repository",
+    "BAZEL_REAL": "the Bazel release bazelisk hands the graph's front door (bazel/front_door.py)",
 }
 
 #: Environment variables that say what one build is. Set per invocation (pip passes nothing else to setup.py).

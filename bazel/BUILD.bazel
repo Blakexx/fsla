@@ -1,0 +1,9 @@
+"""THE GRAPH'S OWN MACHINERY: the target platform, the hermetic toolkit's selector (docs/build-graph.md)."""
+
+platform(
+    name = "linux_x86_64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+)
