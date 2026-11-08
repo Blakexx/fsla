@@ -118,7 +118,7 @@ STABLE_TORCH_LIBRARY(rola, m) {
       "Tensor factors, Tensor factor_shift, Tensor[] read_lists, "
       "Tensor scale, Tensor(a!) num, Tensor(d!) den, Tensor(b!) check, int[] widths, int[] extents, int channels, "
       "int write_list, int[] write_operand, int read_list, int[] read_operand, int[] key, int accumulate, int reduce, "
-      "int forced, Tensor(c!)? plans_out) -> ()");
+      "int forced) -> Tensor");
   m.def("carry_readout_accumulate(int device) -> int");
   m.def("device_card(int device) -> int[]");
   m.def("carry_ledger_bind(Tensor? ledger) -> ()");

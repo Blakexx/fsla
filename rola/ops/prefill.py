@@ -70,7 +70,7 @@ def prefill(routes, values, facts, carve, layout, read_statics, write_statics, *
     carry's cross-CTA dtype, each the device's or the carve's rule by default."""
     unit = carry_factor(routes)
     scale = scale_ops.scale(routes, facts, unit)
-    num_c, den_c, _ = carry_ops.carry(routes, values, facts, carve, scale, accumulate=accumulate,
+    num_c, den_c, _, _ = carry_ops.carry(routes, values, facts, carve, scale, accumulate=accumulate,
                                       reduce_dtype=reduce_dtype)
     #: the f16 sum's tokens at ``2^(s + 1)`` times the unit, an fp32 sum's at the unit: one pass with the unpack; the
     #: scale bytes lie on the whole window grid, the call's tokens first

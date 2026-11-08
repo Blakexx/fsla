@@ -90,7 +90,7 @@ def run(spec, reduce_dtype=None, with_den=False):
         torch.cuda.synchronize()
         raise NotImplementedError(f"{spec.name}: the carry's level S is defined at depth two (`carry_level_s`)")
     unit = _units(spec, routes, values)
-    num, den, _ = carry_ops.carry(routes, values, facts, carve, unit, reduce_dtype=reduce_dtype)
+    num, den, _, _ = carry_ops.carry(routes, values, facts, carve, unit, reduce_dtype=reduce_dtype)
     torch.cuda.synchronize()
     return (routes, values, unit, num, den) if with_den else (routes, values, unit, num)
 

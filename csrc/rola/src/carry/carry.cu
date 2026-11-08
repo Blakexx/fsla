@@ -131,14 +131,14 @@ SideLists lists_of(const std::vector<Tensor>& t, int64_t BH, int64_t windows, in
 
 }  // namespace
 
-void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows, Tensor values,
-                   std::vector<Tensor> write_lists, Tensor write_exp, Tensor factors,
-                   Tensor factor_shift, std::vector<Tensor> read_lists, Tensor scale, Tensor num,
-                   Tensor den, Tensor check, std::vector<int64_t> widths,
-                   std::vector<int64_t> extents, int64_t channels, int64_t write_list,
-                   std::vector<int64_t> write_operand, int64_t read_list,
-                   std::vector<int64_t> read_operand, std::vector<int64_t> key, int64_t accumulate,
-                   int64_t reduce, int64_t forced, std::optional<Tensor> plans_out) {
+Tensor carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows, Tensor values,
+                     std::vector<Tensor> write_lists, Tensor write_exp, Tensor factors,
+                     Tensor factor_shift, std::vector<Tensor> read_lists, Tensor scale, Tensor num,
+                     Tensor den, Tensor check, std::vector<int64_t> widths,
+                     std::vector<int64_t> extents, int64_t channels, int64_t write_list,
+                     std::vector<int64_t> write_operand, int64_t read_list,
+                     std::vector<int64_t> read_operand, std::vector<int64_t> key,
+                     int64_t accumulate, int64_t reduce, int64_t forced) {
   check_arch_table();
   const int D = (int)widths.size();
   STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels && (int)extents.size() == D, "the carve names ", D,
@@ -149,10 +149,11 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
                   "values is the CUDA f16 [B, T, H, d_v] plane, channels contiguous");
   const int64_t B = values.size(0), L = values.size(1), H = values.size(2), dv = values.size(3),
                 BH = B * H;
-  //: the device's window, its card's build's
-  int dev = 0;
-  ROLA_CUDA_CHECK(cudaGetDevice(&dev));
-  const int W = card_of(dev).traits.window;
+  //: THE CALL'S CARD, its values' device's, which the launch runs on: its window is the card's build's
+  const int device = values.get_device_index();
+  const Card& card = card_of(device);
+  const DeviceGuard guard(device);
+  const int W = card.traits.window;
   const int64_t windows = (L + W - 1) / W;
   STD_TORCH_CHECK(L >= 1 && L * dv < 0x40000000, "the call's tokens and channels index in 32 bits");
   STD_TORCH_CHECK(
@@ -277,9 +278,10 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
                   "check is one CUDA fp32 value");
   p.scale = scale.const_data_ptr<int8_t>();
   p.reduce = static_cast<int>(reduce);
-  STD_TORCH_CHECK(accumulate == 0 || accumulate == 1,
-                  "the readout accumulates in fp32 (0) or fp16 (1), got ", accumulate);
-  p.readout_f16 = static_cast<int>(accumulate);
+  STD_TORCH_CHECK(accumulate >= -1 && accumulate <= 1,
+                  "the readout accumulates in fp32 (0), fp16 (1) or the device's rule (-1), got ",
+                  accumulate);
+  p.readout_f16 = accumulate < 0 ? (readout_f16(device) ? 1 : 0) : static_cast<int>(accumulate);
   STD_TORCH_CHECK(
       forced >= -1 && forced < (1 << 14) && (forced < 0 || (forced & 3) != 3),
       "the forced plan form is -1 (none) or mode | read chunk << 2 | fold chunk << 10 (mode 0 "
@@ -303,11 +305,7 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   const int64_t classes = (p.read_lists.groups > 0 ? p.read_lists.groups : 1)
                           * (p.write_lists.groups > 0 ? p.write_lists.groups : 1);
   const int64_t words = p.tables.plan_words;
-  Tensor plans = plans_out ? *plans_out : empty_cuda({BH, windows, classes, words}, Dtype::Int);
-  STD_TORCH_CHECK(plans.is_cuda() && plans.is_contiguous() && plans.scalar_type() == Dtype::Int
-                      && plans.sizes() == Shape({BH, windows, classes, words}),
-                  "plans_out is the contiguous CUDA int32 [BH, windows, box classes, ", words,
-                  "] plan records, got ", shape(plans.sizes()));
+  Tensor plans = empty_cuda({BH, windows, classes, words}, Dtype::Int, device);
   p.plans = reinterpret_cast<uint32_t*>(plans.mutable_data_ptr<int32_t>());
   p.ledger = g_ledger;
   if (p.ledger != nullptr)
@@ -347,14 +345,14 @@ void carry_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   });
   STD_TORCH_CHECK(launched, "the carry arm set resolved a member that carries no launch");
   STD_TORCH_CHECK(status == cudaSuccess, "the carry launch failed: ", cudaGetErrorString(status));
+  return plans;
 }
 
 //: fp16 where the device's fp32-accumulate MMA is slower than its fp16-accumulate one, by its rates; fp32 where they
 //: are equal or no rates are tabulated (its SM's full rate). -- see docs/internals/carry/carry_api.md#carry-readout-accumulate
 int64_t carry_readout_accumulate(int64_t device) {
   check_arch_table();
-  const long long* q = mma_quanta(static_cast<int>(device));
-  return q != nullptr && q[denseref::arch::kHmmaF16F32] > q[denseref::arch::kHmmaF16F16] ? 1 : 0;
+  return readout_f16(static_cast<int>(device)) ? 1 : 0;
 }
 
 void carry_ledger_bind(const std::optional<Tensor>& ledger) {

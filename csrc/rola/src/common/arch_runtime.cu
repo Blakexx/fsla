@@ -39,4 +39,10 @@ const long long* mma_quanta(int device) {
   return out;
 }
 
+//: -- see docs/internals/common/arch_runtime.md#readout-f16
+bool readout_f16(int device) {
+  const long long* q = mma_quanta(device);
+  return q != nullptr && q[denseref::arch::kHmmaF16F32] > q[denseref::arch::kHmmaF16F16];
+}
+
 }  // namespace rola

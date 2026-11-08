@@ -44,7 +44,7 @@ def run(spec):
         raise NotImplementedError(f"{spec.name}: the carry takes no entry state yet")
     factor = carry_factor(routes)
     scale = scale_ops.scale(routes, facts, factor)
-    _num, den, _ = carry_ops.carry(routes, values, facts, carve, scale)
+    _num, den, _, _ = carry_ops.carry(routes, values, facts, carve, scale)
     torch.cuda.synchronize()
     return routes, values, den[:, :routes.tokens] * factor, scale
 

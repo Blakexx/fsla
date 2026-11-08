@@ -20,7 +20,6 @@ from rola.engine.facts import lists as list_model
 from rola.engine.types import Carve
 from rola.ops import facts as facts_ops
 from rola.ops._ext import extension
-from rola.ops.window import window_of
 
 __all__ = [
     "LEDGER_PHASES",
@@ -38,7 +37,6 @@ __all__ = [
     "form",
     "ledger_bind",
     "plan_words",
-    "plans_out",
     "probe_bind",
     "readout_accumulate",
     "reduce_ctas",
@@ -108,19 +106,19 @@ def reduce_dtype_for(carve: Carve, reduce_dtype: torch.dtype | None = None) -> t
 
 
 def carry(routes, values, facts, carve: Carve, scale: torch.Tensor, accumulate: str | None = None,
-          forced: str | None = None, plans: torch.Tensor | None = None,
-          reduce_dtype: torch.dtype | None = None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """THE LAUNCH: ``(num, den, check)`` -- ``num`` the readout's partials summed across CTAs: int32
+          forced: str | None = None,
+          reduce_dtype: torch.dtype | None = None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """THE LAUNCH: ``(num, den, check, plans)`` -- ``num`` the readout's partials summed across CTAs: int32
     ``[BH, T, d_v / 2]`` f16 pairs in channel order at each token's ``scale`` byte (``reduce_dtype`` f16), or fp32
     ``[BH, T, d_v]`` (fp32; :func:`reduce_dtype_for`'s rule where None) -- ``den`` each token's den, fp32 ``[BH, T]``,
-    the v+1 channel (`handoff.md#den`) -- ``check`` the skeleton's fp32 sum of the final state. ``facts`` is the facts pass's over this bundle, its read entries' offsets
+    the v+1 channel (`handoff.md#den`) -- ``check`` the skeleton's fp32 sum of the final state -- ``plans`` the plan
+    pass's records the entry allocated at the device's window, int32 ``[BH_w, windows, box classes, words]``, for a gate
+    to read (docs/internals/carry/carry_api.md#carry-forward). ``facts`` is the facts pass's over this bundle, its read entries' offsets
     in this arm's read pool rows (:func:`form`). The readout accumulates in the device's form
     (:func:`readout_accumulate`); ``accumulate`` (``"fp32"`` or ``"fp16"``) is reserved: the gates' choice of form, so
     both forms are gated on any card (``tests/oracle/test_carry_readout.py``). Each window's plan is the planner rule's
     (docs/internals/carry/schedule.md#planner); ``forced`` (:func:`forced_word`) is reserved: the gates' and the
-    measurements' choice of the plan a window takes where every chunk of it fits; ``plans`` (:func:`plans_out`) is
-    reserved: the plan pass's output for a gate to read, else the call's own
-    (docs/internals/carry/carry_api.md#carry). A grouped bundle's CTAs are its write heads', each reading its query
+    measurements' choice of the plan a window takes where every chunk of it fits. A grouped bundle's CTAs are its write heads', each reading its query
     heads' rows; ``num`` and ``scale`` are a query head's."""
     BH = routes.batch * routes.heads
     d_v = values.v.shape[-1]
@@ -130,14 +128,14 @@ def carry(routes, values, facts, carve: Carve, scale: torch.Tensor, accumulate: 
            torch.zeros((BH, routes.tokens, d_v), dtype=torch.float32, device=routes.device))
     den = torch.zeros((BH, routes.tokens), dtype=torch.float32, device=routes.device)
     check = torch.zeros(1, dtype=torch.float32, device=routes.device)
-    extension().carry_forward(
+    plans = extension().carry_forward(
         list(routes.amp_read), list(routes.amp_write), values.v, list(facts_ops.side_lists(facts, "write")),
         facts.list_exp, facts.fm, facts.gains_exp, list(facts_ops.side_lists(facts, "read")), scale, num, den, check,
         list(carve.widths),
         list(carve.extents), carve.channels, _list_level(carve.fold), list(carve.fold.operand),
         _list_level(carve.readout), list(carve.readout.operand), list(arm_key(carve)),
-        _ACCUMULATE[accumulate or readout_accumulate(routes.device)], _REDUCE[dtype], forced_word(forced), plans)
-    return num, den, check
+        _ACCUMULATE[accumulate] if accumulate else -1, _REDUCE[dtype], forced_word(forced))
+    return num, den, check, plans
 
 
 def plan_words(heads: int, w: int) -> int:
@@ -146,20 +144,6 @@ def plan_words(heads: int, w: int) -> int:
     fold chunks (W / 64), the retiring step -- in whole 16-byte copies."""
     steps = list_model.list_at(w) * heads + list_model.list_at(w) + 1
     return (1 + (steps + 1) // 2 + 3) // 4 * 4
-
-
-def plans_out(routes, carve: Carve) -> torch.Tensor:
-    """An uninitialized ``[BH, windows, box classes, plan_words(g)]`` int32 tensor for :func:`carry`'s plan records: a
-    box class a pair of the two list levels' groups, each side's at its arm's list group
-    (docs/internals/carry/schedule.md#pass, plan.md#list-groups)."""
-    f = form(arm_key(carve))
-    groups = 1
-    for plan, group in ((carve.readout, f.read_list_group), (carve.fold, f.write_list_group)):
-        groups *= max(1, -(-carve.widths[plan.lists[0]] // group)) if plan.lists else 1
-    w = window_of(routes.device)
-    windows = -(-routes.tokens // w)
-    return torch.empty((routes.batch * routes.write_heads, windows, groups, plan_words(routes.group, w)),
-                       dtype=torch.int32, device=routes.device)
 
 
 _ACCUMULATE = {"fp32": 0, "fp16": 1}

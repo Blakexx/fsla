@@ -60,7 +60,7 @@ def _readout_ratio(widths, L, write_sparse, growth, accumulate, *, same=False, l
     level_s = (carve.readout.operand[1] if dense
                else write_sparse if same or dense_write else 1 - write_sparse)
     scale = units(routes, values, facts.list_exp, level_s, window_of())
-    num, _den, _ = carry_ops.carry(routes, values, facts, carve, scale, accumulate=accumulate, forced=forced,
+    num, _den, _, _ = carry_ops.carry(routes, values, facts, carve, scale, accumulate=accumulate, forced=forced,
                              reduce_dtype=reduce_dtype)
     torch.cuda.synchronize()
     want, bound = readout(routes, values, facts.list_exp, level_s, window_of(), scale, accumulate, reduce_dtype,

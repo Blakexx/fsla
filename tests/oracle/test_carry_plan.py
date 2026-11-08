@@ -95,9 +95,8 @@ def _assert_plans_are_the_model(routes, values, layout, statics, forced=None, bo
     if box is not None:
         assert_box64_arm(carve)
     facts = facts_ops.facts(routes, values, layout, *statics, carry_ops.lists_form(carry_ops.arm_key(carve)))
-    plans = carry_ops.plans_out(routes, carve)
     unit = torch.zeros((routes.batch * routes.heads, routes.tokens), dtype=torch.int8, device="cuda")
-    carry_ops.carry(routes, values, facts, carve, unit, forced=forced, plans=plans)
+    *_, plans = carry_ops.carry(routes, values, facts, carve, unit, forced=forced)
     torch.cuda.synchronize()
     words = plans.cpu().view(torch.int32).long() & 0xFFFFFFFF
     want = cp.plans(routes, facts, carve, forced)

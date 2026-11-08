@@ -11,14 +11,19 @@ sides' lists in the facts pass's final form (`(entries, pre, totals, union, coun
 list level, `carry.md#lists`), the write list exponents, the facts pass's factors and their window shifts (`fm` and
 `gains_exp`: read only where the write side has no list level, `ampere/fold.md#units`), the cross-CTA sum's scale bytes a window wide (`scale`, [`#carry-reduce`](#carry-reduce)), and the carve flattened: widths, extents,
 channels, each side's list level (-1 for none) and operand levels, the arm key, the readout's accumulation (0
-fp32, 1 fp16), the cross-CTA sum's dtype (`reduce`: 0 f16 pairs, 1 fp32), the named form every window takes where it builds (-1 none, else one of the 60 in the plan pass's order,
-`ampere/schedule.md#planner`), and optionally the caller's plans tensor (`[BH, windows, box classes, 240]` u8, else the call's
-own). Out: `num`, `check` and the plans. The refusals are `carry.md#refusals`.
+fp32, 1 fp16, -1 the device's rule, [`#carry-readout-accumulate`](#carry-readout-accumulate)), the cross-CTA sum's
+dtype (`reduce`: 0 f16 pairs, 1 fp32), the named form every window takes where it builds (-1 none, else one of the 60
+in the plan pass's order, `ampere/schedule.md#planner`). The entry runs on its values' device: its card gives the
+window, and the launch is guarded onto that device. Out: `num`, `den` and `check` (the caller's), and the plan records,
+which the entry allocates at the card's window and returns -- int32 `[BH_w, windows, box classes, plan words]`, read
+only by a gate. The refusals are `carry.md#refusals`.
 
 <a id="carry-readout-accumulate"></a>
 ## `carry_readout_accumulate`
 
-The readout's accumulation on a device: fp16 (1) where its fp32-accumulate MMA is slower than its fp16-accumulate one by
+The readout's accumulation on a device, the shared rule's answer
+([`../common/arch_runtime.md#readout-f16`](../common/arch_runtime.md#readout-f16)) that each entry also applies itself
+when its caller passes -1: fp16 (1) where its fp32-accumulate MMA is slower than its fp16-accumulate one by
 its rates -- its product's row by its name, else its architecture's
 ([`../common/arch_runtime.md#mma-quanta`](../common/arch_runtime.md#mma-quanta)) -- else fp32 (0): a GeForce card's fp32
 accumulate runs at half its fp16 rate, a professional or datacenter part's at its full rate (ruled 2026-10-07). The two
@@ -44,12 +49,12 @@ W_O in bf16, `rola/layer.py`); fp32 beyond. Both pass the per-slot gate on every
 <a id="carry"></a>
 ## `rola.ops.carry.carry`
 
-The Python call returns `(num, den, check)` -- `den` each query head's token's den, fp32 `[BH, T]`, the v+1 channel
+The Python call returns `(num, den, check, plans)` -- `den` each query head's token's den, fp32 `[BH, T]`, the v+1 channel
 (`ampere/handoff.md#den`). It launches over the bundle's rows and values, the facts pass's lists and exponents and the scale bytes
-(`scale`; read only for f16 pairs), its cross-CTA sum at `reduce_dtype` or the auto rule's, its readout in the device's accumulation (`readout_accumulate`) or the one a gate names, each window's plan its
+(`scale`; read only for f16 pairs), its cross-CTA sum at `reduce_dtype` or the auto rule's, its readout in the device's accumulation (the entry's rule; `readout_accumulate` reports it) or the one a gate names, each window's plan its
 own unless a gate or a measurement forces a form (`forced`, as `forced_word` encodes it), the facts pass run with
-this arm's read pool row (`form`, read off the binary's census for the device's card). `plans_out` allocates the plan
-records a gate reads (`plan_words` a window, `tests/oracle/test_carry_plan.py`). `arm_key` is the compiled body
+this arm's read pool row (`form`, read off the binary's census for the device's card). `plans` are the plan records a
+gate reads (`plan_words` a window, `tests/oracle/test_carry_plan.py`). `arm_key` is the compiled body
 a carve selects: each side's dense rows a warp and its operand's level count, the channel extent and the publish
 field.
 

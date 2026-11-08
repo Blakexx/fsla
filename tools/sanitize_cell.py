@@ -52,7 +52,7 @@ def main() -> int:
     from rola.ops import carry as carry_ops
 
     spec = by_name(args.cell)
-    num, _den, check = carry_ops.carry(*carry_operands(spec))
+    num, _den, check, _ = carry_ops.carry(*carry_operands(spec))
     torch.cuda.synchronize()
     print(f"sanitize_cell: {spec.name} LAUNCHED "
           f"num={int(num.abs().sum()):d} check={float(check):g}")
