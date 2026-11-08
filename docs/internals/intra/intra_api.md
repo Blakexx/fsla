@@ -33,7 +33,7 @@ The refusals (KERNEL_STANDARDS §18: a seam refuses rather than guesses):
 * `T` at least one token (a partial last window runs its tiles before the call's end:
   [`ampere/intra_kernel.md`](ampere/intra_kernel.md#partial-window));
 * the write heads divide the query heads;
-* the accumulation is fp32 or fp16;
+* the accumulation is fp32 (0), fp16 (1) or the device's rule (-1);
 * one or two levels (the built arms serve depth two), each a whole number of 16-digit granules
   from 16 to 256, and no wider than the layout's level, which its union groups come from;
 * a row set or the value plane starts and strides on 16 bytes, digits contiguous — the kernel's
@@ -62,19 +62,9 @@ the next launches add into, or unbinds it with `None`. A card whose block has fe
 
 The shared-memory bytes a call at these level widths and forms launches with on `device`'s card, from the same
 geometry the launch derives ([`intra.md`](intra.md#stages)), with the same refusals of widths it does not read.
-The prefill's envelope asks `rola.ops.intra.admits` whether the intra reads a call's widths, which
-[`intra_admits`](#intra-admits) answers for the device.
-
-<a id="intra-admits"></a>
-
-## `intra_admits`
-
-    intra_admits(widths, device) -> bool
-
-Whether `device`'s card runs a call at these level widths in every form: the widest form's footprint (f16 on both
-sides) within the card's shared memory a block, `smem_per_cta_max` of its build -- the number the launch itself checks
-against, so the admission and the launch cannot disagree. The widths' own law (`rola.ops.intra.reads`) and the value
-width are the caller's to check first: neither is a fact of the device.
+The prefill's envelope asks `rola.ops.intra.admits` whether the intra reads a call's widths: the widths' law and the
+value width, no device asked, since every width it reads fits every card's shared memory in every form (each build's
+walk is sized for the widest rows, [`intra.md`](intra.md#block)).
 
 <a id="intra-block-rows"></a>
 

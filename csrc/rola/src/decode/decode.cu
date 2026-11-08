@@ -863,7 +863,6 @@ int64_t rola_decode_producer_width_mirror() { return kProducerMaxBranchWidth; }
 //: THE STEP'S RESIDENT GRID on `device`'s card: one wave of the declared residency, at most `bh` heads' unit supply.
 //: -- see docs/internals/decode/decode_api.md#ctas
 int64_t rola_decode_ctas(int64_t unit_ceiling, int64_t bh, int64_t device) {
-  check_arch_table();
   const Card& card = card_of(static_cast<int>(device));
   const int64_t supply =
       std::max<int64_t>(1, (unit_ceiling + kDecodeUnitsPerCta - 1) / kDecodeUnitsPerCta);

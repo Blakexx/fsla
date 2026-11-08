@@ -42,7 +42,7 @@ def prefill_clauses(routes, decay: Any = None, *, d_v: int, stateful: bool = Fal
         except ValueError:
             key = None
         key = key if key is not None and tuple(key) in {tuple(arm) for arm in carry_ops.arms()} else None
-    return (widths, d_v, decay, intra_ops.admits(widths, intra_ops.VALUE_WIDTH, routes.device),
+    return (widths, d_v, decay, intra_ops.admits(widths, intra_ops.VALUE_WIDTH),
             intra_ops.VALUE_WIDTH, key, scale_ops.serves(routes), stateful)
 
 

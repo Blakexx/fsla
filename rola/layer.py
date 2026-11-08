@@ -226,18 +226,18 @@ class RoLA(nn.Module):
         """The carried state at full residency, in bytes: the fixed part of a segmented call's footprint."""
         return batch * self.num_heads * self.topology.N * (self.d_v + 1) * 4
 
-    def segment_tokens(self, batch: int, length: int) -> int:
+    def segment_tokens(self, batch: int, length: int, device=None) -> int:
         """THE SEGMENT LENGTH, derived from the declared ``memory_budget``: the largest whole number of
         windows whose working set fits beside the state, capped at ``length``. No budget: one segment. A
-        budget below one window beside the state is refused. The window is the device's card's: the binary answers
-        (docs/internals/common/arch_runtime.md#segment-tokens)."""
-        from rola.ops._ext import extension
+        budget below one window beside the state is refused. The window is ``device``'s card's (the current device's for
+        ``None``): the binary answers (docs/internals/common/arch_runtime.md#segment-tokens)."""
+        from rola.ops._ext import device_index, extension
 
         if self.memory_budget is None:
             return length
         per_token = self.segment_bytes_per_token()
         tokens = int(extension().segment_tokens(self.memory_budget, self.state_bytes(batch), per_token, batch, length,
-                                                torch.cuda.current_device()))
+                                                device_index(device)))
         if tokens < 1:
             raise ValueError(
                 f"memory_budget={self.memory_budget} bytes cannot hold one window of {per_token} bytes a batch-token "
@@ -356,7 +356,7 @@ class RoLA(nn.Module):
         the next, so the projections are bounded with the op. A stateless call that spans segments carries an
         internal state and hands none back."""
         B, L, _ = x.shape
-        T = self.segment_tokens(B, L)
+        T = self.segment_tokens(B, L, x.device)
         carried = state if state is not None or T >= L else rola_state()
         outs = []
         for start in range(0, L, T):

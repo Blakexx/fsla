@@ -160,4 +160,15 @@ def is_available() -> bool:
     return _rola_cuda is not None
 
 
-__all__ = ["extension", "is_available"]
+def device_index(device) -> int:
+    """A CUDA device's index for an entry's device argument: an index as given, else the device's, the current one for
+    ``None`` or an unindexed ``cuda``."""
+    import torch
+
+    if isinstance(device, int):
+        return device
+    index = None if device is None else torch.device(device).index
+    return torch.cuda.current_device() if index is None else index
+
+
+__all__ = ["device_index", "extension", "is_available"]

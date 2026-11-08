@@ -6,6 +6,7 @@
 #include <cstring>
 
 #include "common/arch_runtime.cuh"
+#include "common/select.cuh"
 #include "produce/ampere/produce_kernel.cuh"
 #include "produce/produce_api.cuh"
 
@@ -206,7 +207,7 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   //: ONCE: the attribute call is host time on the launch path; the carveout to shared, so two blocks' stages fit an SM
   static bool configured = false;
   if (!configured) {
-    const int optin = current_device_properties().sharedMemPerBlockOptin;
+    const int optin = card_of(x.get_device_index()).traits.caps.smem_per_cta_max;
     STD_TORCH_CHECK(kProduceSmem <= optin, "the producer's ", kProduceSmem,
                     "-byte stages exceed this device's ", optin, "-byte opt-in limit");
     ROLA_CUDA_CHECK(cudaFuncSetAttribute(

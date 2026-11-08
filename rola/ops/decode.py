@@ -36,7 +36,7 @@ import torch
 
 from rola._state import CANONICAL_ORDER, PAGE_RECTANGLE_BITS, SPLIT_PLANE_DTYPE, StateFormat
 from rola.engine.plan import DecodeGeometry, DecodePlan
-from rola.ops._ext import extension
+from rola.ops._ext import device_index, extension
 from rola.ops.constants import READOUT_EPS
 from rola.ops.decay import leaf_rate_dials
 from rola.ops.lattice import box_shape, derive_lattice, permutation
@@ -180,8 +180,7 @@ def derive_ctas(widths, lattice_k: int, lattice_m: int, *, BH: int, device) -> i
     dev = torch.device(device)
     if dev.type != "cuda":
         return 1
-    index = torch.cuda.current_device() if dev.index is None else dev.index
-    return int(extension().rola_decode_ctas(int(unit_ceiling), int(BH), index))
+    return int(extension().rola_decode_ctas(int(unit_ceiling), int(BH), device_index(dev)))
 
 
 @dataclass(slots=True)

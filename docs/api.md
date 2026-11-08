@@ -83,7 +83,7 @@ the no-fallback rule forbids.
 | device | CUDA | refused |
 | `d_v` | the intra's value width (`rola.ops.intra.VALUE_WIDTH`), which the binary's carry arms at the depth must reach | refused |
 | widths | one or two levels, each a whole number of 16-digit granules up to 256, any mix (`rola.ops.intra.admits`) | refused |
-| `T` | whole 512-token windows (a segment; the layer segments, §4.2) | refused |
+| `T` | whole windows of the device's card (a segment; the layer segments, §4.2) | refused |
 | `decay` | not implemented in the prefill (decode has it) | refused |
 | an unratified activation | — | refused |
 

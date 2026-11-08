@@ -19,7 +19,7 @@ from __future__ import annotations
 import torch
 
 from rola.engine.facts.liveness import LivenessLayout, SideStatics
-from rola.ops._ext import extension
+from rola.ops._ext import device_index, extension
 
 #: The value width the kernel reads.
 VALUE_WIDTH = 64
@@ -60,14 +60,6 @@ def intra_forward(routes, values, facts, layout: LivenessLayout, read_statics: S
         _dense_bits(read_statics), _dense_bits(write_statics), form)
 
 
-def _device_index(device) -> int:
-    """A CUDA device's index: the current one for ``None`` or an unindexed ``cuda``."""
-    if isinstance(device, int):
-        return device
-    index = None if device is None else torch.device(device).index
-    return torch.cuda.current_device() if index is None else index
-
-
 def footprint(widths) -> int:
     """The kernel's shared-memory bytes at these level widths on the current device's card in the widest form, f16 on
     both sides -- for a gate reading the law (the seam refuses widths it does not read)."""
@@ -77,7 +69,7 @@ def footprint(widths) -> int:
 
 def block_rows(device) -> int:
     """The readers a CTA holds resident on ``device``'s card."""
-    return extension().intra_block_rows(_device_index(device))
+    return extension().intra_block_rows(device_index(device))
 
 
 def reads(widths) -> bool:
@@ -88,13 +80,11 @@ def reads(widths) -> bool:
         width % WIDTH_GRANULE == 0 and WIDTH_GRANULE <= width <= MAX_LEVEL_WIDTH for width in widths)
 
 
-def admits(widths, d_v: int, device: torch.device | int | None = None) -> bool:
-    """Whether the intra runs a call at these level widths and value width: widths it :func:`reads`, ``d_v`` the
-    `VALUE_WIDTH`, and the widest form's footprint within the device's card (the binary answers,
-    docs/internals/intra/intra_api.md#intra-admits)."""
-    if d_v != VALUE_WIDTH or not reads(widths):
-        return False
-    return bool(extension().intra_admits([int(width) for width in widths], _device_index(device)))
+def admits(widths, d_v: int) -> bool:
+    """Whether the intra runs a call at these level widths and value width: widths it :func:`reads` and ``d_v`` the
+    `VALUE_WIDTH`. Every width it reads fits every card's shared memory in every form: each build's walk is sized for the
+    widest rows (`Walk<B>`, asserted at compile time; docs/internals/intra/intra.md#block)."""
+    return d_v == VALUE_WIDTH and reads(widths)
 
 
 def build_stamp() -> int:

@@ -20,8 +20,6 @@ void rola_intra_ledger_bind(std::optional<Tensor> ledger);  // intra_api.md#rola
 int64_t intra_footprint(std::vector<int64_t> widths, std::vector<int64_t> forms,
                         int64_t device);  // intra_api.md#intra-footprint
 
-bool intra_admits(std::vector<int64_t> widths, int64_t device);  // intra_api.md#intra-admits
-
 int64_t intra_block_rows(int64_t device);  // intra_api.md#intra-block-rows
 
 int64_t intra_build_stamp();  // intra_api.md#intra-build-stamp

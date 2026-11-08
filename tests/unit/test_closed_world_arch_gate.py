@@ -68,6 +68,8 @@ _LAUNCHLESS = {
     "carry_sub_boxes": "a host derivation over the descriptor; no device work",
     "rola_decode_capacity": "a host derivation over the descriptor; no device work",
     "rola_decode_producer_width_mirror": "returns a compiled-in width",
+    "rola_decode_ctas": "a host query of the card it is asked about (card_of admits it); no device work",
+    "segment_tokens": "a host query of the card it is asked about (card_of admits it); no device work",
     "vmm_create": "a driver allocation, not a kernel launch",
     "vmm_probe": "a driver capability probe, not a kernel launch",
     "vmm_release": "drops the registry's reference to a driver allocation",

@@ -43,7 +43,6 @@ const long long* mma_quanta(int device) {
 //: -- see docs/internals/common/arch_runtime.md#segment-tokens
 int64_t segment_tokens(int64_t budget, int64_t state, int64_t per_token, int64_t batch,
                        int64_t length, int64_t device) {
-  check_arch_table();
   const int64_t window = card_of(static_cast<int>(device)).traits.window;
   const int64_t windows = (budget - state) / (window * batch * per_token);
   return windows < 1 ? 0 : std::min(length, windows * window);

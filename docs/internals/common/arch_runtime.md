@@ -60,7 +60,7 @@ Three things are asserted, in order:
 
 Every entry point that reaches a kernel launch — the carry forward pass, the SM clock
 read, the liveness pass, the standalone intra forward pass, the entmax and softmax
-routing forward/backward families, and the T=1 decode step and its residency query —
+routing forward/backward families, and the T=1 decode step —
 calls `check_arch_table()` as the first statement of its body.
 `tests/unit/test_closed_world_arch_gate.py` scans the registration translation unit's own
 operator list and asserts this for every entry that is not named as launch-less (an arm

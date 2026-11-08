@@ -10,9 +10,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 
-import torch
-
-from rola.ops._ext import extension
+from rola.ops._ext import device_index, extension
 
 __all__ = ["Card", "card_of", "window_of"]
 
@@ -38,17 +36,10 @@ def _card_of(index: int) -> Card:
     return Card(cc, product, variant, FAMILIES[family], window)
 
 
-def _index(device) -> int:
-    if isinstance(device, int):
-        return device
-    index = None if device is None else torch.device(device).index
-    return torch.cuda.current_device() if index is None else index
-
-
 def card_of(device=None) -> Card:
     """``device``'s card -- a device, its index, or ``None`` for the current device; refused by name where the binary
     carries no build for it."""
-    return _card_of(_index(device))
+    return _card_of(device_index(device))
 
 
 def window_of(device=None) -> int:
