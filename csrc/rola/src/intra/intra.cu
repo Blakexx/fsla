@@ -166,7 +166,7 @@ void launch(const IntraParams& p, const Shape& card, int64_t smem, int64_t bh, b
   //: each kernel's own
   static int64_t configured[2] = {0, 0};
   if (smem > configured[even]) {
-    const int optin = current_device_properties().sharedMemPerBlockOptin;
+    constexpr int optin = arch::traits_of(B).caps.smem_per_cta_max;
     STD_TORCH_CHECK(smem <= optin, "the intra's ", smem,
                     "-byte footprint at these widths exceeds this device's ", optin,
                     "-byte opt-in");
@@ -213,21 +213,21 @@ void rola_intra_ledger_bind(std::optional<Tensor> ledger) {
 void rola_intra_forward(std::vector<Tensor> read, std::vector<Tensor> write, Tensor values,
                         Tensor fm, Tensor unions, Tensor num, Tensor den,
                         std::vector<int64_t> widths, int64_t dense_read, int64_t dense_write,
-                        int64_t accumulate, int64_t window) {
+                        int64_t accumulate) {
   check_arch_table();
   const int D = static_cast<int>(widths.size());
   STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels && static_cast<int>(read.size()) == D
                       && static_cast<int>(write.size()) == D,
                   "each side one row set a level, against the layout's ", D, " levels");
-  STD_TORCH_CHECK(accumulate == 0 || accumulate == 1,
-                  "the intra accumulates in fp32 (0) or fp16 (1), got ", accumulate);
+  STD_TORCH_CHECK(accumulate >= -1 && accumulate <= 1,
+                  "the intra accumulates in fp32 (0), fp16 (1) or the device's rule (-1), got ",
+                  accumulate);
   STD_TORCH_CHECK(read[0].is_cuda() && read[0].dim() == 4,
                   "a level's rows are CUDA [B, T, H, width]");
   const int device = read[0].get_device_index();
   const DeviceGuard guard(device);
   const detail::Shape card = detail::shape_of(device);
-  STD_TORCH_CHECK(window == card.window, "the intra's window is this device's ", card.window,
-                  " tokens, got ", window);
+  const bool f16 = accumulate < 0 ? readout_f16(device) : accumulate == 1;
   const int64_t B = read[0].size(0), T = read[0].size(1), H = read[0].size(2);
   STD_TORCH_CHECK(write[0].dim() == 4, "a level's write rows are [B, T, H_w, width]");
   const int64_t Hw = write[0].size(2);
@@ -274,7 +274,7 @@ void rola_intra_forward(std::vector<Tensor> read, std::vector<Tensor> write, Ten
   p.L = static_cast<int>(T);
   //: a partial last window runs its tiles before the call's end
   p.windows = static_cast<int>((T + card.window - 1) / card.window);
-  detail::units(forms, accumulate == 1, p.lift, p.unit);
+  detail::units(forms, f16, p.lift, p.unit);
   STD_TORCH_CHECK(
       dense_read >= 0 && dense_read < (1 << D) && dense_write >= 0 && dense_write < (1 << D),
       "the dense-level bitmasks name levels inside the depth");
@@ -303,11 +303,11 @@ void rola_intra_forward(std::vector<Tensor> read, std::vector<Tensor> write, Ten
     constexpr ::denseref::arch::Build kB = decltype(b)::build;
     if constexpr (in_image(kB)) {
       if (D == 1)
-        accumulate ? detail::launch<kB, 1, true>(p, card, g.smem, B * H, even, stream)
-                   : detail::launch<kB, 1, false>(p, card, g.smem, B * H, even, stream);
+        f16 ? detail::launch<kB, 1, true>(p, card, g.smem, B * H, even, stream)
+            : detail::launch<kB, 1, false>(p, card, g.smem, B * H, even, stream);
       else
-        accumulate ? detail::launch<kB, 2, true>(p, card, g.smem, B * H, even, stream)
-                   : detail::launch<kB, 2, false>(p, card, g.smem, B * H, even, stream);
+        f16 ? detail::launch<kB, 2, true>(p, card, g.smem, B * H, even, stream)
+            : detail::launch<kB, 2, false>(p, card, g.smem, B * H, even, stream);
     }
   });
 }
@@ -315,6 +315,14 @@ void rola_intra_forward(std::vector<Tensor> read, std::vector<Tensor> write, Ten
 //: -- see docs/internals/intra/intra_api.md#intra-footprint
 int64_t intra_footprint(std::vector<int64_t> widths, std::vector<int64_t> forms, int64_t device) {
   return detail::geometry(widths, forms, detail::shape_of(static_cast<int>(device))).smem;
+}
+
+//: -- see docs/internals/intra/intra_api.md#intra-admits
+bool intra_admits(std::vector<int64_t> widths, int64_t device) {
+  //: the widest form, f16 on both sides: a call the device admits at every form
+  const std::vector<int64_t> forms(widths.size(), kFormF16F16);
+  return detail::geometry(widths, forms, detail::shape_of(static_cast<int>(device))).smem
+         <= card_of(static_cast<int>(device)).traits.caps.smem_per_cta_max;
 }
 
 //: -- see docs/internals/intra/intra_api.md#intra-block-rows

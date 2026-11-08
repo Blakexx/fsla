@@ -113,7 +113,7 @@ def function(target: Target, cell) -> str:
     if target.family == "intra":
         from rola.ops.carry import readout_accumulate
 
-        return f"intra_kernelILi{len(cell.widths)}ELb{int(readout_accumulate(None) == 'fp16')}E"
+        return f"intra_kernelILi{len(cell.widths)}ELb{int(readout_accumulate() == 'fp16')}E"
     return target.symbol
 
 

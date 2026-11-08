@@ -96,7 +96,7 @@ launch (`CarryCapture`, `carry_api.md#carry-capture-bind`).
 - every tensor's dtype, contiguity and exact shape (the lists' five, `scale` `[BH, windows x W]`, `num` int32 `[BH,
   T, d_v / 2]` for f16 pairs or fp32 `[BH, T, d_v]`); the arm key's channels and factor counts agreeing with the
   carve, and its hand-off form (`same_split`) with the levels the sides list (`ampere/handoff.md#same-split`); a write head's
-  `num` rows under 2^32 values (the drain's offsets); the readout's accumulation fp32 (0) or fp16 (1); the cross-CTA sum f16
+  `num` rows under 2^32 values (the drain's offsets); the readout's accumulation fp32 (0), fp16 (1) or the device's rule (-1); the cross-CTA sum f16
   pairs (0) or fp32 (1); a forced form -1 or a
   mode (0 to 2) with two chunk fields in 14 bits; a window's token stride under 2^31 / `kWindow` (a window's offsets
   are 32-bit).

@@ -20,8 +20,6 @@ import torch
 
 from rola.engine.facts.liveness import LivenessLayout, SideStatics
 from rola.ops._ext import extension
-from rola.ops.carry import readout_accumulate
-from rola.ops.window import window_of
 
 #: The value width the kernel reads.
 VALUE_WIDTH = 64
@@ -56,10 +54,10 @@ def intra_forward(routes, values, facts, layout: LivenessLayout, read_statics: S
     ``layout``'s, in their stored dtype; a partial last window reduces its pairs up to the call's end. ``accumulate``
     (``"fp32"`` or ``"fp16"``) is reserved: the gates' choice of form, the device's rule by default.
     """
-    form = _ACCUMULATE[accumulate or readout_accumulate(routes.device)]
+    form = _ACCUMULATE[accumulate] if accumulate else -1
     extension().rola_intra_forward(
         list(routes.amp_read), list(routes.amp_write), values.v, facts.fm, facts.unions, num, den, list(layout.B),
-        _dense_bits(read_statics), _dense_bits(write_statics), form, window_of(routes.device))
+        _dense_bits(read_statics), _dense_bits(write_statics), form)
 
 
 def _device_index(device) -> int:
@@ -70,11 +68,11 @@ def _device_index(device) -> int:
     return torch.cuda.current_device() if index is None else index
 
 
-def footprint(widths, device=None) -> int:
-    """The kernel's shared-memory bytes at these level widths on ``device``'s card in the widest form, f16 on both
-    sides (the seam refuses widths it does not read)."""
+def footprint(widths) -> int:
+    """The kernel's shared-memory bytes at these level widths on the current device's card in the widest form, f16 on
+    both sides -- for a gate reading the law (the seam refuses widths it does not read)."""
     forms = [FORM_F16_F16] * len(widths)
-    return extension().intra_footprint([int(width) for width in widths], forms, _device_index(device))
+    return extension().intra_footprint([int(width) for width in widths], forms, torch.cuda.current_device())
 
 
 def block_rows(device) -> int:
@@ -92,10 +90,11 @@ def reads(widths) -> bool:
 
 def admits(widths, d_v: int, device: torch.device | int | None = None) -> bool:
     """Whether the intra runs a call at these level widths and value width: widths it :func:`reads`, ``d_v`` the
-    `VALUE_WIDTH`, and the widest form's footprint within the device's shared-memory opt-in."""
+    `VALUE_WIDTH`, and the widest form's footprint within the device's card (the binary answers,
+    docs/internals/intra/intra_api.md#intra-admits)."""
     if d_v != VALUE_WIDTH or not reads(widths):
         return False
-    return footprint(widths, device=device) <= torch.cuda.get_device_properties(device).shared_memory_per_block_optin
+    return bool(extension().intra_admits([int(width) for width in widths], _device_index(device)))
 
 
 def build_stamp() -> int:

@@ -169,12 +169,11 @@ def forced_word(forced: str | None) -> int:
     return _MODES[mode] | chunk(read, 0xFF) << 2 | chunk(fold, 0xF) << 10
 
 
-def readout_accumulate(device: torch.device | None = None) -> str:
-    """The readout's MMA accumulation on ``device`` (the current one by default): ``"fp16"`` where its fp32-accumulate
-    MMA runs slower than its fp16-accumulate one by its rates (a GeForce card), else ``"fp32"``
-    (docs/internals/carry/carry_api.md#carry-readout-accumulate)."""
-    index = torch.cuda.current_device() if device is None or device.index is None else device.index
-    return "fp16" if extension().carry_readout_accumulate(index) else "fp32"
+def readout_accumulate() -> str:
+    """The readout's MMA accumulation on the current device, as the entries resolve it when no form is named -- for a
+    gate or a tool naming the form: ``"fp16"`` where its fp32-accumulate MMA runs slower than its fp16-accumulate one by
+    its rates (a GeForce card), else ``"fp32"`` (docs/internals/carry/carry_api.md#carry-readout-accumulate)."""
+    return "fp16" if extension().carry_readout_accumulate(torch.cuda.current_device()) else "fp32"
 
 
 def arms() -> list[tuple[int, ...]]:

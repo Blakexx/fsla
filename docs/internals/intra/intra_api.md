@@ -11,7 +11,7 @@ is the Python caller.
 ## `rola_intra_forward`
 
     rola_intra_forward(read[], write[], values, fm, unions, num!, den!, widths, dense_read,
-                       dense_write, accumulate, window) -> ()
+                       dense_write, accumulate) -> ()
 
 Each side's rows a level as the bundle stores them -- read `[B, T, H, w_l]`, write `[B, T, H_w, w_l]`, u8 for a
 sparse level and f16 for a dense one, any strides on 16 bytes -- the values (f16 `[B, T, H_w, 64]`), the facts pass's
@@ -21,15 +21,17 @@ a write head's query heads' read sides, then its write side), and the two output
 `num` contiguous fp32 `[B·H, T, 64]` and `den` `[B·H, T]`. The caller owns their contents; the carry reduces into the
 same planes. `widths` is the union table's layout, the facts pass's (`rola.ops.facts.call_layout`, the padded
 widths), `dense_*` each side's dense-level bitmask, the same statics the facts pass took
-(`rola.engine.facts.liveness.side_statics`), and `accumulate` the MMAs' accumulation, fp32 (0) or fp16 (1)
-(`rola.ops.intra.intra_forward` passes the device's rule, `rola.ops.carry.readout_accumulate`). A level's form --
+(`rola.engine.facts.liveness.side_statics`), and `accumulate` the MMAs' accumulation, fp32 (0), fp16 (1) or -1 for
+the device's rule, the one the carry's readout applies
+([`../common/arch_runtime.md#readout-f16`](../common/arch_runtime.md#readout-f16)), so the inter and intra terms of a
+call accumulate alike. The entry runs on its rows' device and takes its window from that card. A level's form --
 which side is f16 -- is read from its rows' dtypes.
 
 The refusals (KERNEL_STANDARDS §18: a seam refuses rather than guesses):
 
 * each side a row set a level, as many as the layout's levels, u8 or f16 each, and the values f16;
-* `window` is the device's W (its card's build's) and `T` at least one token (a partial last window runs its
-  tiles before the call's end: [`ampere/intra_kernel.md`](ampere/intra_kernel.md#partial-window));
+* `T` at least one token (a partial last window runs its tiles before the call's end:
+  [`ampere/intra_kernel.md`](ampere/intra_kernel.md#partial-window));
 * the write heads divide the query heads;
 * the accumulation is fp32 or fp16;
 * one or two levels (the built arms serve depth two), each a whole number of 16-digit granules
@@ -60,8 +62,19 @@ the next launches add into, or unbinds it with `None`. A card whose block has fe
 
 The shared-memory bytes a call at these level widths and forms launches with on `device`'s card, from the same
 geometry the launch derives ([`intra.md`](intra.md#stages)), with the same refusals of widths it does not read.
-`rola.ops.intra.admits` reads the widest form's (f16 on both sides) against the device's opt-in; the prefill's
-envelope asks `admits` whether the intra reads a call's widths.
+The prefill's envelope asks `rola.ops.intra.admits` whether the intra reads a call's widths, which
+[`intra_admits`](#intra-admits) answers for the device.
+
+<a id="intra-admits"></a>
+
+## `intra_admits`
+
+    intra_admits(widths, device) -> bool
+
+Whether `device`'s card runs a call at these level widths in every form: the widest form's footprint (f16 on both
+sides) within the card's shared memory a block, `smem_per_cta_max` of its build -- the number the launch itself checks
+against, so the admission and the launch cannot disagree. The widths' own law (`rola.ops.intra.reads`) and the value
+width are the caller's to check first: neither is a fact of the device.
 
 <a id="intra-block-rows"></a>
 
