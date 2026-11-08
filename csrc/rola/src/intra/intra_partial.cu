@@ -4,34 +4,43 @@
 
 #include "intra/intra_kernel.cuh"
 #include "intra/intra_partial.cuh"
+#include "common/select.cuh"
 
 namespace rola::intra::detail {
 
-template <int D, bool kF16>
+template <arch::Build B, int D, bool kF16>
 cudaError_t launch_partial(const IntraParams& p, int pieces, int threads, int64_t smem, int64_t bh,
                            cudaStream_t stream) {
-  //: the attribute call is host time on the launch path: raised only when a call's footprint passes the last one set
-  static int64_t configured = 0;
-  if (smem > configured) {
-    const cudaError_t e =
-        cudaFuncSetAttribute(intra_kernel<D, kF16, false>,
-                             cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(smem));
-    if (e != cudaSuccess) return e;
-    configured = smem;
+  if constexpr (in_image(B)) {
+    //: the attribute call is host time on the launch path: raised only when a call's footprint passes the last one set
+    static int64_t configured = 0;
+    if (smem > configured) {
+      const cudaError_t e =
+          cudaFuncSetAttribute(intra_kernel<arch::BuildTag<B>, D, kF16, false>,
+                               cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(smem));
+      if (e != cudaSuccess) return e;
+      configured = smem;
+    }
+    const dim3 grid(static_cast<unsigned>(p.windows * pieces), static_cast<unsigned>(bh));
+    intra_kernel<arch::BuildTag<B>, D, kF16, false>
+        <<<grid, static_cast<unsigned>(threads), static_cast<size_t>(smem), stream>>>(p);
+    return cudaGetLastError();
+  } else {
+    return cudaErrorInvalidDeviceFunction;
   }
-  const dim3 grid(static_cast<unsigned>(p.windows * pieces), static_cast<unsigned>(bh));
-  intra_kernel<D, kF16, false>
-      <<<grid, static_cast<unsigned>(threads), static_cast<size_t>(smem), stream>>>(p);
-  return cudaGetLastError();
 }
 
-template cudaError_t launch_partial<1, false>(const IntraParams&, int, int, int64_t, int64_t,
-                                              cudaStream_t);
-template cudaError_t launch_partial<1, true>(const IntraParams&, int, int, int64_t, int64_t,
-                                             cudaStream_t);
-template cudaError_t launch_partial<2, false>(const IntraParams&, int, int, int64_t, int64_t,
-                                              cudaStream_t);
-template cudaError_t launch_partial<2, true>(const IntraParams&, int, int, int64_t, int64_t,
-                                             cudaStream_t);
+//: the partial arms at every build this binary carries (`builds.inc`)
+#define ROLA_INTRA_PARTIAL(CC_, V_)                                                                         \
+  template cudaError_t launch_partial<arch::Build{CC_, V_}, 1, false>(const IntraParams&, int, int, int64_t, \
+                                                                      int64_t, cudaStream_t);                \
+  template cudaError_t launch_partial<arch::Build{CC_, V_}, 1, true>(const IntraParams&, int, int, int64_t,  \
+                                                                     int64_t, cudaStream_t);                 \
+  template cudaError_t launch_partial<arch::Build{CC_, V_}, 2, false>(const IntraParams&, int, int, int64_t, \
+                                                                      int64_t, cudaStream_t);                \
+  template cudaError_t launch_partial<arch::Build{CC_, V_}, 2, true>(const IntraParams&, int, int, int64_t,  \
+                                                                     int64_t, cudaStream_t);
+ROLA_BUILDS(ROLA_INTRA_PARTIAL)
+#undef ROLA_INTRA_PARTIAL
 
 }  // namespace rola::intra::detail

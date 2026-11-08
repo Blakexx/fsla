@@ -87,7 +87,7 @@ _LAUNCHLESS = {
     "rola_facts_ledger_bind": "binds the device buffer the next facts pass books into; issues no launch",
     "rola_intra_ledger_bind": "binds the device buffer the next intra launch books into; issues no launch",
     "device_card": "admits the device's card (the closed-world checks, common/select.cu) and reads it; no device work",
-    "intra_block_rows": "the device's card row (a host table by compute capability); no device work",
+    "intra_block_rows": "the device's build's walk, read on the host; no device work",
 }
 
 

@@ -17,20 +17,6 @@ constexpr int kPieceTiles = 4;
 constexpr int kValueWidth = 64;
 constexpr int kValueBytes = 2 * kValueWidth;
 
-//: A CARD'S BLOCK: the reader rows a CTA holds resident. -- see docs/internals/intra/intra.md#block
-__host__ __device__ constexpr int block_rows_for(int cc) {
-  return cc == 800 || cc == 870 ? 128 : cc == 860 || cc == 890 ? 64 : 0;
-}
-
-//: A CARD'S WARP TILE: a warp's writers of a tile's 64. -- see docs/internals/intra/intra.md#block
-__host__ __device__ constexpr int warp_cols_for(int cc) {
-  return cc == 800 || cc == 870 ? 64 : cc == 860 || cc == 890 ? 32 : 0;
-}
-
-__host__ __device__ constexpr int warps_for(int cc) {
-  return block_rows_for(cc) / 16 * (64 / warp_cols_for(cc));
-}
-
 constexpr int kMaxLevels = 2;
 constexpr int kMaxLevelWidth = 256;
 constexpr int kDigitGranule = 16;

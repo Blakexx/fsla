@@ -48,6 +48,14 @@ straight-line bodies, not a test a k-step. The widths are the call's ([`intra.md
 and slabs come from its width and its writer's storage. Templating the forms per level as well would be `4^D` bodies
 per stage count -- ~80 straight-line Gram bodies at depth two -- for the dispatch's one switch a level.
 
+<a id="walk"></a>
+
+## The walk and the kernel
+
+The device code is `IntraAt<Wk>`: the kernel's functions and types as members over the walk `Wk = Walk<B>`'s sizes,
+their bodies the same at every build, and `intra_kernel<BuildTag<B>, D, kF16, kEven>` the grid's entry calling its
+`run`. A build's arms compile in its image alone (`launch<B, D, kF16>` under `in_image`).
+
 <a id="the-grid"></a>
 
 ## The grid: a CTA a piece, the longest first

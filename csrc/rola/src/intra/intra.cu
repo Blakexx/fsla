@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "common/arch_runtime.cuh"
+#include "common/select.cuh"
 #include "common/window.cuh"
 #include "intra/intra_api.cuh"
 #include "intra/intra_kernel.cuh"
@@ -23,8 +24,9 @@ namespace stampdet {
 //: THE BUILT KERNEL's block rows and fixed tenants and the operand block's size, read back by a test as the
 //: device-side build fact.
 __global__ void stamp_kernel(int64_t* out) {
-  *out = (static_cast<int64_t>(detail::kBlockRows) * 1000003
-          + static_cast<int64_t>(sizeof(detail::Smem)))
+  using Wk = detail::Walk<::denseref::arch::Build{::denseref::arch::kArch, 0}>;
+  *out = (static_cast<int64_t>(Wk::kBlockRows) * 1000003
+          + static_cast<int64_t>(sizeof(typename Wk::Smem)))
              * 1000003
          + static_cast<int64_t>(sizeof(IntraParams));
 }
@@ -33,46 +35,25 @@ __global__ void stamp_kernel(int64_t* out) {
 
 namespace detail {
 
-//: A CARD'S WALK, read on the host at the device's compute capability: the same tables the device code compiles.
+//: A BUILD'S WALK, read on the host at the device's build: the plan its device code compiles.
 //: -- see docs/internals/intra/intra.md#block
-struct Card {
+struct Shape {
   int window, rows, warps, pieces, threads;
   int64_t tenants;
 };
 
-template <int Cc>
-Card card_at() {
-  constexpr int kW = window_for(Cc), kRows = block_rows_for(Cc), kWarpsAt = warps_for(Cc);
-  return Card{kW,
-              kRows,
-              kWarpsAt,
-              PiecesAt<kW, kRows>::count(),
-              kWarpsAt * 32,
-              static_cast<int64_t>(sizeof(SmemAt<kW, kRows, kWarpsAt>))};
+template <arch::Build B>
+Shape shape_at() {
+  using Wk = Walk<B>;
+  return Shape{Wk::kWindow,  Wk::kBlockRows,
+               Wk::kWarps,   Wk::Pieces::count(),
+               Wk::kThreads, static_cast<int64_t>(sizeof(typename Wk::Smem))};
 }
 
-int device_cc(int device) {
-  int major = 0, minor = 0;
-  ROLA_CUDA_CHECK(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device));
-  ROLA_CUDA_CHECK(cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, device));
-  return major * 100 + minor * 10;
-}
-
-Card card_of(int device) {
-  // R9-CASES: the tabulated compute capabilities (common/hardware.cuh)
-  switch (device_cc(device)) {
-    case 800:
-      return card_at<800>();
-    case 860:
-      return card_at<860>();
-    case 870:
-      return card_at<870>();
-    case 890:
-      return card_at<890>();
-    default:
-      STD_TORCH_CHECK(false, "the intra has no walk for this device's compute capability");
-  }
-  return Card{};
+Shape shape_of(int device) {
+  Shape out{};
+  build_switch(card_of(device), [&](auto b) { out = shape_at<decltype(b)::build>(); });
+  return out;
 }
 
 //: THE CALL'S GEOMETRY from its levels' widths and forms: each level's slabs and stages, the reader row's slots, pitch
@@ -86,7 +67,7 @@ struct Geometry {
 };
 
 Geometry geometry(const std::vector<int64_t>& widths, const std::vector<int64_t>& forms,
-                  const Card& card) {
+                  const Shape& card) {
   const int D = static_cast<int>(widths.size());
   STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels && static_cast<int>(forms.size()) == D,
                   "the intra reads one or two levels, a form each; got ", D);
@@ -177,8 +158,8 @@ void units(const std::vector<int64_t>& forms, bool f16, float& lift, float& unit
 }
 
 //: a call of whole windows on the arm `kEven`, one whose last window is partial on the arm `!kEven`
-template <int D, bool kF16>
-void launch(const IntraParams& p, const Card& card, int64_t smem, int64_t bh, bool even,
+template <arch::Build B, int D, bool kF16>
+void launch(const IntraParams& p, const Shape& card, int64_t smem, int64_t bh, bool even,
             cudaStream_t stream) {
   //: the attribute call is host time on the launch path: raised only when a call's footprint passes the last one set,
   //: each kernel's own
@@ -190,19 +171,20 @@ void launch(const IntraParams& p, const Card& card, int64_t smem, int64_t bh, bo
                     "-byte opt-in");
   }
   if (!even) {
-    const cudaError_t e = launch_partial<D, kF16>(p, card.pieces, card.threads, smem, bh, stream);
+    const cudaError_t e =
+        launch_partial<B, D, kF16>(p, card.pieces, card.threads, smem, bh, stream);
     ROLA_CUDA_CHECK(e);
     configured[0] = smem > configured[0] ? smem : configured[0];
     return;
   }
   if (smem > configured[1]) {
-    ROLA_CUDA_CHECK(cudaFuncSetAttribute(intra_kernel<D, kF16, true>,
+    ROLA_CUDA_CHECK(cudaFuncSetAttribute(intra_kernel<arch::BuildTag<B>, D, kF16, true>,
                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
                                          static_cast<int>(smem)));
     configured[1] = smem;
   }
   const dim3 grid(static_cast<unsigned>(p.windows * card.pieces), static_cast<unsigned>(bh));
-  intra_kernel<D, kF16, true>
+  intra_kernel<arch::BuildTag<B>, D, kF16, true>
       <<<grid, static_cast<unsigned>(card.threads), static_cast<size_t>(smem), stream>>>(p);
   ROLA_CUDA_LAUNCH_CHECK();
 }
@@ -242,7 +224,7 @@ void rola_intra_forward(std::vector<Tensor> read, std::vector<Tensor> write, Ten
                   "a level's rows are CUDA [B, T, H, width]");
   const int device = read[0].get_device_index();
   const DeviceGuard guard(device);
-  const detail::Card card = detail::card_of(device);
+  const detail::Shape card = detail::shape_of(device);
   STD_TORCH_CHECK(window == card.window, "the intra's window is this device's ", card.window,
                   " tokens, got ", window);
   const int64_t B = read[0].size(0), T = read[0].size(1), H = read[0].size(2);
@@ -316,21 +298,26 @@ void rola_intra_forward(std::vector<Tensor> read, std::vector<Tensor> write, Ten
 
   const cudaStream_t stream = current_stream();
   const bool even = T % card.window == 0;
-  if (D == 1)
-    accumulate ? detail::launch<1, true>(p, card, g.smem, B * H, even, stream)
-               : detail::launch<1, false>(p, card, g.smem, B * H, even, stream);
-  else
-    accumulate ? detail::launch<2, true>(p, card, g.smem, B * H, even, stream)
-               : detail::launch<2, false>(p, card, g.smem, B * H, even, stream);
+  build_switch(card_of(device), [&](auto b) {
+    constexpr ::denseref::arch::Build kB = decltype(b)::build;
+    if constexpr (in_image(kB)) {
+      if (D == 1)
+        accumulate ? detail::launch<kB, 1, true>(p, card, g.smem, B * H, even, stream)
+                   : detail::launch<kB, 1, false>(p, card, g.smem, B * H, even, stream);
+      else
+        accumulate ? detail::launch<kB, 2, true>(p, card, g.smem, B * H, even, stream)
+                   : detail::launch<kB, 2, false>(p, card, g.smem, B * H, even, stream);
+    }
+  });
 }
 
 //: -- see docs/internals/intra/intra_api.md#intra-footprint
 int64_t intra_footprint(std::vector<int64_t> widths, std::vector<int64_t> forms, int64_t device) {
-  return detail::geometry(widths, forms, detail::card_of(static_cast<int>(device))).smem;
+  return detail::geometry(widths, forms, detail::shape_of(static_cast<int>(device))).smem;
 }
 
 //: -- see docs/internals/intra/intra_api.md#intra-block-rows
-int64_t intra_block_rows(int64_t device) { return detail::card_of(static_cast<int>(device)).rows; }
+int64_t intra_block_rows(int64_t device) { return detail::shape_of(static_cast<int>(device)).rows; }
 
 //: -- see docs/internals/intra/intra_api.md#intra-build-stamp
 int64_t intra_build_stamp() {

@@ -23,14 +23,16 @@ storage, bit 0 its read rows f16 and bit 1 its write rows f16. `IntraPhase` is t
 
 ## A card's walk
 
-`block_rows_for(cc)`, `warp_cols_for(cc)` and `warps_for(cc)` are per-card configuration (ruled 2026-10-31: W and the
-structural constants are a card's), read by the device at its compiling card and by the host at the device's compute
-capability (`Card`, `card_of`), the same tables both ways. The BLOCK -- the readers a CTA holds resident -- is the most
-the card's area holds at the widest rows, (256, 256) f16 on both sides (1 KB a reader): 128 on sm_80 and sm_87 (164 KB),
-64 on sm_86 and sm_89 (99 KB). A warp's WRITER COLUMNS are 64 where the block is 128 readers (8 warps of one reader
-group each) and 32 where it is 64 (two warps a reader group, 8 warps), so every card's CTA is 8 warps, two a scheduler.
-A block of 64 re-reads a window's writer tiles twice as often as one of 128: the area's price, fixed per card, with no
-threshold inside one.
+A card's walk is its build's PLAN, `Walk<B>` (`intra_kernel.cuh`; [`../common/hardware.md#builds`](../common/hardware.md#builds)),
+read by the device code it compiles and by the host at the device's build (`Shape`, `shape_of`, through
+`build_switch`: [`../common/select.md`](../common/select.md)) -- one derivation both ways, from the card's traits, no
+table of compute capabilities (ruled 2026-10-31: W and the structural constants are a card's; 2026-11-07: every kernel
+adapts to its card). The BLOCK -- the readers a CTA holds resident -- is the most the card's area holds at the widest
+rows, (256, 256) f16 on both sides (1 KB a reader), a multiple of the tile and at most a row group of 16 a warp:
+`kFits<128>` at the card's `smem_per_cta_max` gives 128 on sm_80 and sm_87 (164 KB), 64 on sm_86 and sm_89 (99 KB). A
+CTA is 8 warps on every card, two a scheduler, so a warp's WRITER COLUMNS are what the block leaves: 64 where it is 128
+readers (8 warps of one reader group each) and 32 where it is 64 (two warps a reader group). A block of 64 re-reads a
+window's writer tiles twice as often as one of 128: the area's price, fixed per card, with no threshold inside one.
 
 <a id="pieces"></a>
 
