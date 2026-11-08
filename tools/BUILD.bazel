@@ -1,0 +1,17 @@
+"""THE TREE'S TOOLS AS THE GRAPH'S INPUTS: the pins and records the graph's repositories read, and the generators its
+actions run."""
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(glob([
+    "*.py",
+    "*.json",
+    "toolchains/*.json",
+    "manifests/*.json",
+    "manifests/*/*.json",
+]))
+
+filegroup(
+    name = "manifests_cu13",
+    srcs = glob(["manifests/cu13/*.json"]),
+)

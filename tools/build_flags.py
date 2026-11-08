@@ -26,7 +26,7 @@ import os
 #: Torch's `COMMON_NVCC_FLAGS`, restated ONCE. `CUDAExtension` adds exactly this set
 #: to the build, so a standalone compile of the same file must pass it too or it is
 #: compiling a different program.
-_COMMON_NVCC_FLAGS = (
+COMMON_NVCC_FLAGS = (
     "-D__CUDA_NO_HALF_OPERATORS__",
     "-D__CUDA_NO_HALF_CONVERSIONS__",
     "-D__CUDA_NO_BFLOAT16_CONVERSIONS__",
@@ -47,7 +47,7 @@ def torch_defines() -> list[str]:
     import torch
 
     abi = int(bool(torch._C._GLIBCXX_USE_CXX11_ABI))
-    return [f"-D_GLIBCXX_USE_CXX11_ABI={abi}", *_COMMON_NVCC_FLAGS]
+    return [f"-D_GLIBCXX_USE_CXX11_ABI={abi}", *COMMON_NVCC_FLAGS]
 
 
 def torch_extension_cache_key_flags(name: str = "_C") -> list[str]:
@@ -80,9 +80,14 @@ def torch_extension_cache_key_flags(name: str = "_C") -> list[str]:
     codegen of, which is exactly why they were safe to omit from ratification
     and are safe to add here.
     """
+    return ["--compiler-options", "'-fPIC'", *extension_defines(name)]
+
+
+def extension_defines(name: str = "_C") -> list[str]:
+    """The defines torch's `CUDAExtension` gives every source of a `py_limited_api` extension, and this project's
+    stable-ABI target: what the graph's compile passes in its place (docs/build-graph.md#compile)."""
     from torch.utils.cpp_extension import min_supported_cpython
-    return ["--compiler-options", "'-fPIC'",
-            f"-DTORCH_EXTENSION_NAME={name}", "-DTORCH_API_INCLUDE_EXTENSION_H",
+    return [f"-DTORCH_EXTENSION_NAME={name}", "-DTORCH_API_INCLUDE_EXTENSION_H",
             f"-DPy_LIMITED_API={min_supported_cpython}", *STABLE_DEFINES]
 
 
@@ -92,6 +97,10 @@ def torch_extension_cache_key_flags(name: str = "_C") -> list[str]:
 #: build passes these to every compile (`setup.py`); ratification's recompile passes them for cache-key fidelity.
 TORCH_MIN = (2, 13)
 STABLE_DEFINES = (f"-DTORCH_TARGET_VERSION=0x{(TORCH_MIN[0] << 56) | (TORCH_MIN[1] << 48):016x}",)
+
+#: THE HOST C++ COMPILE'S OWN FLAGS (the registration unit, `csrc/rola/rola_api.cpp`): host code only, never a codegen
+#: input of a kernel
+HOST_CXX_FLAGS = ("-O3", "-std=c++20", "-DNDEBUG", *STABLE_DEFINES)
 
 
 #: THE `-MP` INSURANCE. It adds a phony make target per header to the dependency

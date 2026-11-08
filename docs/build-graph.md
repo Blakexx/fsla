@@ -2,8 +2,10 @@
 
 The build graph is Bazel, run through bazelisk and the graph's front door. Its workspace is `MODULE.bazel` (the rule
 sets and the hermetic CUDA toolkit), `.bazelrc` (the graph's settings), `.bazelversion` and `.bazeliskrc` (Bazel's
-release and its digest), `bazel/` (the graph's machinery: the target platform) and `bazel/bazel` (the front
-door). The extension's build is `setup.py`'s ([`build.md`](build.md)); measurement is `rola_devtools.build`'s
+release and its digest), `bazel/` (the graph's machinery: its rules, the environment, the platform and the scripts its
+actions run) and `bazel/bazel` (the front door); each `BUILD.bazel` sits beside what it describes. The graph builds the
+extension (`//:library`, [below](#compile)); `setup.py` builds it too ([`build.md`](build.md)), and runs the gates,
+lints, tests and wheels the graph does not hold yet. Measurement is `rola_devtools.build`'s
 ([`measurement.md`](measurement.md)), whose timing sessions hold the GPU and the clock as machine-wide counting
 semaphores, which Bazel cannot do for an action.
 
@@ -15,7 +17,10 @@ semaphores, which Bazel cannot do for an action.
 | the machine (base OS libraries, git, `python3`, the host C++ compiler nvcc drives) | the host, or the Docker image | the image |
 | bazelisk, Bazel's launcher | `tools/bazelisk_pin.json`, installed by `python tools/dev.py init` (`toolchain.bazelisk`), which links `bazel` on PATH to it (`toolchain.bazel`; `check` has the row) | `host.tools_dir` |
 | Bazel | `.bazelversion`, verified against `.bazeliskrc`'s digest | bazelisk's cache |
-| the graph's CUDA toolkit | NVIDIA's redistributable components at release 13.0.0 (`MODULE.bazel`'s `cuda.redist_json`: nvcc 13.0.48), only the compiler's (~75 MB of the 4.7 GB set); declared, and fetched by the first target that compiles with it | the shared repository cache |
+| the graph's CUDA toolkit | NVIDIA's redistributable components at release 13.0.0 (`MODULE.bazel`'s `cuda.redist_json`: nvcc 13.0.48), only the compiler's (~75 MB of the 4.7 GB set) | the shared repository cache |
+| the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (`tools/uv_pin.json`) into the pinned CPython (3.11.13), by `bazel/environment.bzl`'s `@rola_env` (`bazel/make_env.py`) | `host.build_cache/bazel/store`, one environment a key (the lock, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages |
+| the linker | mold at `tools/mold_pin.json`'s release (`@mold`) | the shared repository cache |
+| the host C++ compiler's identity | its version and the digests of gcc, g++ and cc1plus (`@host_cc`), an input of every compile | the output base |
 
 ## <a id="front-door"></a>The front door
 
@@ -36,6 +41,40 @@ exists, reading the dev config through the rola-devtools checkout `tools/bootstr
 - Run directly, without bazelisk, it refuses; so does `bazel coverage`, whose instrumented build would differ from the
   budgeted one and run outside the budget (the graph has no coverage target).
 
+## <a id="compile"></a>The extension's compile
+
+`//:library` is `rola_cu13/_C.abi3.so` and its build record `rola_cu13/_build_config.py`; `bazel run //:library` copies
+both into the checkout's `rola_cu13/` (a copy: the library is imported from the checkout).
+
+- THE BUILD'S PARAMETERS are the root package's settings: `--//:archs` (default `@rola_env//:flags.bzl`'s
+  `RATIFIED_ARCHS`, the toolchain's ratified manifests), `--//:carry_arms` and `--//:decode_arms` (arm indices; empty is
+  every arm) and `--//:carry_parts` (`tools/gen_shards.py`'s `carry_parts_spec`). Any value but a default makes an
+  iteration build, which its record says.
+- THE FLAGS ARE `tools/build_flags.py`'S: the environment repository writes `@rola_env//:flags.bzl` from it
+  (`bazel/flags.py`) -- the nvcc codegen flags and torch's extension defines, the host C++ flags -- and the graph states
+  none of its own. rules_cuda's own additions are off on every unit (its extended lambdas, compilation-mode flags,
+  random seed and host toolchain flags), so nvcc's command line is the build flags, the `-gencode` targets, `-x cu`,
+  `-ccbin` and the include roots.
+- ONE ARCHITECTURE SPEC A CARD: the library's transition writes `--@rules_cuda//cuda:archs` as
+  `compute_80:sm_80;compute_86:sm_86`; a comma list (`sm_80,sm_86`) is one spec, which compiles every card from the
+  lowest virtual architecture.
+- THE INCLUDE ORDER IS SETUP.PY'S: the repository's headers, then CUTLASS's, then the generated headers and the stamp,
+  then torch's, Python's and the toolkit's, so a repository header wins any name collision (`bazel/defs.bzl`'s
+  `include_root`).
+- THE GENERATED HEADERS are actions over their generators: the arm selections, the carry parts and the carried builds
+  (`rola_headers`, `bazel/headers.py`, from the settings) and the device stamp (`tools/csrc_stamp.py` over every file
+  under `csrc/rola/src` but its markdown -- the digest ratify computes).
+- THE ARM SUBSET IS A UNIT SUBSET: each generated carry arm unit is its own target (`csrc/rola/arms.bzl`, written and
+  checked by `tools/gen_shards.py`), and `carry_arm_set` hands the link only the units `--//:carry_arms` names, so an
+  unwanted arm is never compiled.
+- THE LINK is the pinned mold's, of every unit's objects (each target `alwayslink`, as setup.py links every object)
+  and, by path, torch's `libc10.so` and `libtorch_cpu.so`, the CUDA runtime and the driver's stub: each NEEDED by its
+  soname, no search path written (no unit carries a dynamic library; the units' CUDA runtime is its headers,
+  `//bazel:cuda_headers` -- rules_cuda 0.3.0's own `@cuda//:cuda_headers` names a component CUDA 13 lacks).
+- THE RECORD (`bazel/record.py`, `tools/build_record.py`'s writer) runs rule 1 -- the graph's ptxas is the toolchain
+  record's byte for byte, the one tie between that record and `MODULE.bazel`'s toolkit pin -- and rule 3, every
+  architecture ratified.
+
 ## <a id="rules"></a>The rules
 
 Each is a trap a setup like this falls into, and what avoids it (checked against Bazel 9.3.1's own options where it
@@ -46,8 +85,8 @@ names one).
 2. NO MACHINE IN THE CHECKOUT: `.bazelrc` holds the graph's settings and names no path; the machine's come from the dev
    config through the front door. Startup options are never inside a `--config`.
 3. THE DISK CACHE IS BOUNDED, AND ITS BOUND RUNS: `--experimental_disk_cache_gc_max_size` caps the shared cache at
-   20 GB, the graph's space budget for it on every machine (every worktree of a machine shares it), and the collector
-   runs only after
+   5 GB, the graph's budget on every machine: a full build of `//:library` puts 34 MB in it (measured 2026-11-08), so
+   the bound holds ~150 builds' outputs across every worktree of a machine, and the collector runs only after
    the server has idled `--experimental_disk_cache_gc_idle_delay` (5 minutes), so the server's `--max_idle_secs` (15
    minutes) stays above that delay -- below it the cache grows without bound.
    The repository cache's path never moves: Bazel 9 keeps every fetched repository's contents inside it
@@ -68,16 +107,20 @@ names one).
    watching is undefined there).
 10. THE SANDBOX STAYS ON: Bazel 9's hermetic `/tmp` keeps nvcc's temporary files apart, so nothing runs
     `--spawn_strategy=local` to dodge it.
-11. CUDA THROUGH RULES_CUDA'S OWN SETTINGS: the architectures through `--@rules_cuda//cuda:archs` (cubins only, no PTX);
-    a host compile flag reaches nvcc's host pass only through rules_cuda's host options; an external repository's
+11. CUDA THROUGH RULES_CUDA'S OWN SETTINGS: the architectures through `--@rules_cuda//cuda:archs`, one spec a card
+    (cubins only, no PTX); a host compile flag reaches nvcc's host pass only through rules_cuda's host options; an external repository's
     headers through the target's include options.
-12. TWO SCHEDULERS SHARE ONE HOST through the host budget: the front door holds it for every build phase and never for
+12. AN ACTION'S SCRIPT FINDS ITS SIBLINGS UNRESOLVED (`Path(__file__).absolute()`): in the sandbox it is a link, and
+    resolving it imports the checkout's files instead of the action's declared inputs.
+13. TWO SCHEDULERS SHARE ONE HOST through the host budget: the front door holds it for every build phase and never for
     a test or run phase; a caller that holds host slots never starts a Bazel build, whose actions run in a server that
     does not inherit the caller's hold.
 
 ## <a id="use"></a>Using it
 
     python tools/dev.py init        # installs the pinned bazelisk and links `bazel` to it (toolchain.bazel)
-    bazel build //...
+    bazel run //:library                                            # the shipped build, into rola_cu13/
+    bazel run //:library --//:archs=86 --//:carry_arms=3            # an iteration build
 
-Never pass `--jobs` or a cache path: the front door sets both.
+Never pass `--jobs` or a cache path: the front door sets both. Nothing the graph builds lands in the checkout but the
+library `bazel run //:library` copies in: Bazel's output links are off (`--experimental_convenience_symlinks=clean`).

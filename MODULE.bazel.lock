@@ -207,6 +207,29 @@
   },
   "selectedYankedVersions": {},
   "moduleExtensions": {
+    "//bazel:environment.bzl%environment": {
+      "general": {
+        "bzlTransitiveDigest": "urbcjs8bpqCKRsExz9RJbb9daPDMrBNYbUi9X4VJISY=",
+        "usagesDigest": "HkBnFTQ2fbTZDMJfxNkfdOK7vkrLf5VSSo2CXQjT1hU=",
+        "recordedInputs": [],
+        "generatedRepoSpecs": {
+          "rola_env": {
+            "repoRuleId": "@@//bazel:environment.bzl%_env_repo",
+            "attributes": {}
+          },
+          "mold": {
+            "repoRuleId": "@@//bazel:environment.bzl%_pinned_repo",
+            "attributes": {
+              "pin": "@@//tools:mold_pin.json"
+            }
+          },
+          "host_cc": {
+            "repoRuleId": "@@//bazel:environment.bzl%_host_cc_repo",
+            "attributes": {}
+          }
+        }
+      }
+    },
     "@@rules_cuda+//cuda:extensions.bzl%toolchain": {
       "general": {
         "bzlTransitiveDigest": "f7SJRLlpWWrc2uQYRHAsLVfbu9zdaXB8JF23LER2H+s=",

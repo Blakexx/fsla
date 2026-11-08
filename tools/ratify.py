@@ -126,6 +126,10 @@ import mold_toolchain  # noqa: E402
 import sass  # noqa: E402
 import sccache_toolchain  # noqa: E402
 import toolchains  # noqa: E402
+from build_record import manifest_digest  # noqa: E402
+from csrc_stamp import INC as CSRC_STAMP_INC  # noqa: E402
+from csrc_stamp import digest as _csrc_digest  # noqa: E402
+from csrc_stamp import header as _csrc_header  # noqa: E402
 from rola_devtools.locks import host  # noqa: E402
 
 #: torch.utils.cpp_extension resolves its toolkit when imported; a ratification compiles against the configured one.
@@ -307,24 +311,6 @@ def load_manifest(arches, name: str | None = None) -> dict:
             "sources": sources}
 
 
-def manifest_digest(manifest: dict) -> str:
-    """The digest `setup.py` stamps into `_build_config.py`.
-
-    Canonical JSON of `{toolchain, entries, shards}` with sorted keys -- NOT the
-    bytes of any file -- so the digest is a property of the RATIFICATION and not of
-    its filing. That is what makes the per-arch split provably non-semantic: the same 1216
-    measurements in two files hash to what they hashed to in one.
-
-    THE SHARD BLOCK PARTICIPATES because "only shards X and Y were re-measured" is
-    otherwise an unprovable claim: it is membership (`{name: {members_sha256,
-    count}}`) and nothing else -- no paths, no ordering -- so it records WHAT was
-    ratified without recording how it was filed.
-    """
-    blob = json.dumps({"toolchain": manifest["toolchain"], "entries": manifest["entries"],
-                       "shards": manifest["shards"]}, sort_keys=True).encode()
-    return hashlib.sha256(blob).hexdigest()
-
-
 ENTRY = re.compile(r"Compiling entry function '([^']+)' for 'sm_(\d+)'")
 SPILL = re.compile(r"(\d+) bytes spill stores, (\d+) bytes spill loads")
 REGS = re.compile(r"Used (\d+) registers")
@@ -458,26 +444,12 @@ def check_defines(manifest: dict) -> bool:
 
 
 def csrc_digest() -> str:
-    """A digest of the kernel sources the manifest's numbers were measured against.
+    """A digest of the kernel sources the manifest's numbers were measured against (`tools/csrc_stamp.py`'s).
 
-    THE FRESHNESS TRIGGER (session 9, R1). A register budget is a MEASURED
-    constant; its justification EXPIRES when `csrc/` moves. Recording the source digest
-    in the manifest and CHECKING it makes that trap structural: a ratification
-    whose sources have materially changed is a hard failure demanding `--write`,
-    which is a fresh measurement, never an edit.
+    THE FRESHNESS TRIGGER. A register budget is a MEASURED constant; its justification EXPIRES when `csrc/` moves, so
+    a ratification whose sources have materially changed is a hard failure demanding `--write`, a fresh measurement.
     """
-    h = hashlib.sha256()
-    for path in sorted(SRC.rglob("*")):
-        #: MARKDOWN IS NOT A CODEGEN INPUT. `instantiations/README.md` lives inside
-        #: the digested tree because it documents the generated files beside it;
-        #: hashing it would make an editorial change read as SOURCE DRIFT and demand
-        #: a full re-measurement, which is how people are trained to re-ratify
-        #: without reading. Paths participate as well as contents, so a `.cu`
-        #: renamed to `.md` still moves the digest -- by disappearing from it.
-        if path.is_file() and path.suffix != ".md":
-            h.update(str(path.relative_to(SRC)).encode())
-            h.update(path.read_bytes())
-    return h.hexdigest()
+    return _csrc_digest(SRC)
 
 
 # ---------------------------------------------------------------------------
@@ -775,49 +747,10 @@ def check_derivation(record: dict | None = None) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# THE DEVICE STAMP'S CSRC KEY
-#
-# A build stamp is the one check a stale binary cannot pass -- but only if its value
-# is a function of the SOURCE. A stamp folded from struct sizes and launch widths is
-# a function of a few declarations, so a csrc change that leaves those alone leaves
-# the stamp alone, and a binary built before the change reads back as fresh. That is
-# what happened: a merge touching `csrc/` was gated without rebuilding, and the
-# freshness assertion did not fire.
-#
-# The fix is to put the csrc digest itself into the device constant, through a
-# GENERATED HEADER rather than a compiler flag. A `-D` on the extension's flag list
-# reaches every translation unit's argv, so every csrc edit would rebuild the whole
-# extension; a header included only by the stamp sites rebuilds only those, and ninja
-# hashes it through the depfile like any other include. (A flag that ninja does NOT
-# hash -- `NVCC_PREPEND_FLAGS` -- is the failure one level over: the binary silently
-# stays the previous variant. Variant selection goes through a generated header.)
-#
-# `setup.py` writes it before it compiles anything and this gate writes it before it
-# measures anything, from the SAME function, so the stamp the gate assembles is the
-# stamp the build assembles.
-CSRC_STAMP_INC = "csrc_stamp.inc"
-
-#: 60 BITS of the digest. The stamp entries return `int64_t`, and a device constant
-#: that has to be folded with other facts must leave room to be folded: 60 bits is
-#: every collision margin this needs and four bits of headroom for the arithmetic.
-CSRC_STAMP_BITS = 60
-
-
-def csrc_stamp(digest: str | None = None) -> int:
-    """The device-side value of the csrc content hash."""
-    d = digest if digest is not None else csrc_digest()
-    return int(d, 16) & ((1 << CSRC_STAMP_BITS) - 1)
-
-
+# THE DEVICE STAMP'S CSRC KEY: `tools/csrc_stamp.py`, which the build's stamp action runs too.
 def csrc_stamp_header(digest: str | None = None) -> str:
     """The generated header the stamp sites include."""
-    d = digest if digest is not None else csrc_digest()
-    return (f"// GENERATED by tools/ratify.py -- do not edit, regenerate.\n"
-            f"// THE CSRC CONTENT HASH, as a device constant. Written by setup.py\n"
-            f"// before the build compiles and by tools/ratify.py before it measures;\n"
-            f"// never checked in. See docs/ratification.md#the-device-stamp.\n"
-            f"// sha256(csrc/rola/src) = {d}\n"
-            f"#define ROLA_CSRC_STAMP {csrc_stamp(d)}LL\n")
+    return _csrc_header(digest if digest is not None else csrc_digest())
 
 
 def write_csrc_stamp(digest: str | None = None) -> Path:

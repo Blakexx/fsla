@@ -58,8 +58,8 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "bazelisk": Key("path?", None, "the pinned bazelisk (tools/bazelisk_pin.json), Bazel's launcher: it runs the "
                         "version .bazelversion names through the graph's front door (bazel/bazel); null means none "
                         "installed"),
-        "bazel": Key("path", "~/.local/bin/bazel", "where init links `bazel`, the command every doc and gate names, to "
-                     "the pinned bazelisk: a path in a directory on PATH"),
+        "bazel": Key("path", "~/.local/bin/bazel", "where init links `bazel`, the command the docs name, to the pinned "
+                     "bazelisk: a path in a directory on PATH"),
     },
     **MACHINE,
     "store": {
@@ -109,6 +109,7 @@ HANDOFFS = {
     "USER": "the login name printed into the sudoers rule `tools/dev.py clock` suggests",
     "ROLA_SCRATCH": "the agent harness's campaign directory (.claude/settings.json), outside the repository",
     "BAZEL_REAL": "the Bazel release bazelisk hands the graph's front door (bazel/front_door.py)",
+    "ROLA_GRAPH_STORE": "the shared store the front door hands the graph's environment (bazel/environment.bzl)",
 }
 
 #: Environment variables that say what one build is. Set per invocation (pip passes nothing else to setup.py).

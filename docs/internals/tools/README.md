@@ -16,9 +16,12 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 |---|---|---|---|
 | [`dev.py`](dev.md) | the one command that sets up, checks and describes a host or container | a person; the commit gate's §23 check | the `environment` record (its container check) |
 | [`dev_config.py`](dev_config.md) | every machine-dependent value, read from one directory of JSON files | every tool here, `setup.py`, the tests | — |
-| [`build_flags.py`](../../build.md) | THE ONE SOURCE of the nvcc flag list | `setup.py`, `ratify.py` | — |
+| [`build_flags.py`](../../build.md) | THE ONE SOURCE of the nvcc flag list | `setup.py`, `ratify.py`, the graph (`bazel/flags.py`) | — |
+| `build_record.py` | the build record `_build_config.py` and rule 3, which assembles the ratification it names | `setup.py`, the graph (`bazel/record.py`), `ratify.py` | the record |
+| `csrc_stamp.py` | the csrc content hash and the header that compiles it into the binary as the device stamp | `ratify.py`, the graph's stamp action | the stamp header |
+| [`bootstrap.py`](dev_config.md#bootstrap) | what a tool knows before the dev config's reader is importable: the sibling checkouts, the rola-devtools checkout | `dev_config.py`, the graph's front door | — |
 | [`build_lock.py`](build_lock.md) | the machine-wide cicc budget | `setup.py`, `ratify.py` | — |
-| [`gen_shards.py`](gen_shards.md) | THE ONE ENUMERATION of the carry family's instantiation matrix | `setup.py`, `ratify.py`, the provider | the generated per-arm units and selection header |
+| [`gen_shards.py`](gen_shards.md) | THE ONE ENUMERATION of the carry family's instantiation matrix | `setup.py`, `ratify.py`, the provider, the graph's header action | the generated per-arm units, `csrc/rola/arms.bzl` and the selection headers |
 | [`toolchains.py`](toolchains.md) | each toolchain as a named record of the assembler a fatbin is built and ratified under | `setup.py`, `ratify.py`, `dev.py` | — |
 | [`sccache_toolchain.py`](../../build.md#sccache) | the compiler-cache wrapper pin (closed-world rule 1) | `setup.py`, `ratify.py` | — |
 | `sccache_nvcc.py` | the nvcc↔sccache seam: a pass-through, never a resolver | nvcc, as its launcher | — |

@@ -1,0 +1,13 @@
+"""THE VENDORED LIBRARIES AS THE GRAPH'S INPUTS (their pins: each tree's PIN.json; docs/build.md)."""
+
+load("//bazel:defs.bzl", "include_root")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["cutlass/PIN.json"])
+
+include_root(
+    name = "cutlass",
+    hdrs = glob(["cutlass/include/**"]),
+    roots = ["cutlass/include"],
+)

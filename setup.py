@@ -65,7 +65,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import pprint
 import re
 import shutil
 import subprocess
@@ -94,6 +93,7 @@ if dev_config.get("toolchain.cuda_home"):
 os.environ["TORCH_NO_COMPILER_WRAPPER"] = "1"
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension  # noqa: E402
 import build_flags  # noqa: E402
+import build_record  # noqa: E402
 import build_lock  # noqa: E402
 import gen_shards  # noqa: E402
 import kernels  # noqa: E402
@@ -170,34 +170,11 @@ ROLA_STRICT_MANIFEST = os.getenv("ROLA_STRICT_MANIFEST") == "1"
 #: every entry point refuses an arm the binary does not carry.
 #: docs/build.md.
 def _carry_arms() -> list[int]:
-    return _family_arms(gen_shards.CARRY, os.getenv("ROLA_CARRY_ARMS", ""), "ROLA_CARRY_ARMS")
+    return gen_shards.family_arms(gen_shards.CARRY, os.getenv("ROLA_CARRY_ARMS", ""), "ROLA_CARRY_ARMS")
 
 
 def _decode_arms() -> list[int]:
-    return _family_arms(gen_shards.DECODE, os.getenv("ROLA_DECODE_ARMS", ""), "ROLA_DECODE_ARMS")
-
-
-def _family_arms(fam, value: str, knob: str) -> list[int]:
-    """A family's arm scope from its knob's value (indices into its declared rows, or ``all``); every row unset."""
-    rows = gen_shards.rows_of(fam)
-    spec = value.replace(",", " ").split()
-    if not spec:
-        return list(range(len(rows)))
-    n = len(rows)
-    out: list[int] = []
-    for tok in spec:
-        if tok == "all":
-            out += list(range(n))
-            continue
-        try:
-            i = int(tok)
-        except ValueError:
-            raise SystemExit(f"{knob}: {tok!r} is not an arm index or 'all'")
-        if not 0 <= i < n:
-            raise SystemExit(f"{knob}: no such {fam.name} arm {i}; the list has "
-                             f"{n} rows (0..{n - 1})")
-        out.append(i)
-    return sorted(set(out))
+    return gen_shards.family_arms(gen_shards.DECODE, os.getenv("ROLA_DECODE_ARMS", ""), "ROLA_DECODE_ARMS")
 
 
 def _write_carry_selection() -> None:
@@ -270,24 +247,9 @@ def _arm_coverage_sweep(build_lib: str, want: list[int]) -> int:
 
 
 def _carry_parts_spec() -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """The carry kernel's REAL parts for this build and, of those, the TRIVIAL ones (the composer's
-    switches): every part unless `ROLA_CARRY_PARTS` names a subset -- `all`, or `none`, or a comma
-    list of `gen_shards.CARRY_PARTS` names, an item `part=trivial` naming a real part built in its
-    trivial form (its memory instructions issued, its dependence or structure removed). A subset
-    stubs the rest; a subset or a trivial part makes the build an ITERATION build."""
-    spec = os.getenv("ROLA_CARRY_PARTS", "all").strip()
-    if spec in ("", "all"):
-        return gen_shards.CARRY_PARTS, ()
-    if spec == "none":
-        return (), ()
-    items = [x for x in spec.replace(" ", "").split(",") if x]
-    names = tuple(x.split("=")[0] for x in items)
-    trivial = tuple(x.split("=")[0] for x in items if x.endswith("=trivial"))
-    bad = sorted(set(names) - set(gen_shards.CARRY_PARTS)) + [x for x in items if "=" in x and not x.endswith("=trivial")]
-    if bad:
-        raise SystemExit(f"ROLA_CARRY_PARTS: no such part(s) {bad}; the parts are {gen_shards.CARRY_PARTS}, "
-                         "an item `part` or `part=trivial`")
-    return names, trivial
+    """The carry kernel's real and trivial parts for this build (`gen_shards.carry_parts_spec`): every part unless
+    `ROLA_CARRY_PARTS` names a subset."""
+    return gen_shards.carry_parts_spec(os.getenv("ROLA_CARRY_PARTS", "all"), "ROLA_CARRY_PARTS")
 
 
 def _carry_parts() -> tuple[str, ...]:
@@ -342,9 +304,8 @@ def _is_iteration_build() -> bool:
     takes no exclusive budget draw and re-runs no ratify, whose only possible outcome
     there is a warning (2026-11-01, docs/build.md#iteration).
     """
-    return (set(_carry_arms()) != set(range(len(gen_shards.CARRY_ARMS))) or _decode_arm_subset_active()
-            or set(_carry_parts()) != set(gen_shards.CARRY_PARTS) or _carry_parts_spec()[1]
-            or _arch_subset_active())
+    return gen_shards.is_iteration(_carry_arms(), _decode_arms(), *_carry_parts_spec(), ROLA_CUDA_ARCHS,
+                                   TOOLCHAIN.archs())
 
 
 def _arch_subset_active() -> bool:
@@ -398,14 +359,9 @@ STABLE_DEFINES = list(build_flags.STABLE_DEFINES)
 # version
 # ---------------------------------------------------------------------------
 def read_version() -> str:
-    """From ``rola/__init__.py``. No setuptools_scm: the tag must not be able to
-    disagree with the shipped ``__version__``, which is also stamped next to the
-    manifest hashes in ``_build_config.py``."""
-    text = (ROOT / "rola" / "__init__.py").read_text()
-    match = re.search(r'^__version__\s*=\s*([\'"])([^\'"]+)\1', text, re.M)
-    if not match:
-        raise RuntimeError("no __version__ in rola/__init__.py")
-    return match.group(2)
+    """From ``rola/__init__.py`` (`tools/build_record.py`'s `version`): the tag must not be able to disagree with the
+    shipped ``__version__``, which is also stamped next to the manifest hashes in ``_build_config.py``."""
+    return build_record.version(ROOT / "rola" / "__init__.py")
 
 
 # ---------------------------------------------------------------------------
@@ -456,50 +412,9 @@ def manifest_path(arch: str) -> Path:
 
 
 def _gate_ratified(archs: list[str]) -> dict:
-    """RULE 3: every arch in the fatbin has a ratified manifest, and they agree.
-
-    Returns the MERGED record -- the union of exactly the archs being built, which is
-    what ``manifest_sha256`` must then describe. A wheel built for one arch is gated
-    against one arch's measurements, and its recorded digest says so.
-    """
-    toolchain = None
-    shards = None
-    entries: dict = {}
-    for a in archs:
-        path = manifest_path(a)
-        if not path.exists():
-            raise RuntimeError(
-                f"CLOSED-WORLD RULE 3: sm_{a} is in ROLA_CUDA_ARCHS but there is no "
-                f"ratified manifest at {path}. Ratify it first:\n"
-                f"    python tools/ratify.py --arch {a} --write\n"
-                f"and record why the numbers are what they are (docs/bringup.md). "
-                f"Building an architecture nobody measured is the failure this rule "
-                f"exists to prevent."
-            )
-        blob = json.loads(path.read_text())
-        if not blob["entries"]:
-            raise RuntimeError(
-                f"CLOSED-WORLD RULE 3: {path} exists but ratifies NOTHING. File "
-                f"existence is the cheap form of the question, not a weaker one."
-            )
-        if toolchain is None:
-            toolchain, shards = blob["toolchain"], blob["shards"]
-        elif blob["toolchain"] != toolchain:
-            raise RuntimeError(
-                f"CLOSED-WORLD RULE 1: {path.name} pins a different assembler than the "
-                f"other manifests. The per-arch split is a FILING decision; one fatbin "
-                f"may not be gated against two ratifications."
-            )
-        elif blob["shards"] != shards:
-            raise RuntimeError(
-                f"CLOSED-WORLD RULE 3: {path.name} records a different instantiation "
-                f"membership than the other manifests. The per-arch split is a FILING "
-                f"decision; one fatbin may not be gated against two matrices."
-            )
-        entries.update(blob["entries"])
-        print(f"rule 3 OK  sm_{a}: {len(blob['entries'])} ratified instantiations "
-              f"({path.name})")
-    return {"toolchain": toolchain, "shards": shards, "entries": entries}
+    """RULE 3 (`tools/build_record.py`'s `ratified_manifest`): every arch in the fatbin has a ratified manifest, and
+    they agree; the merged record is what ``manifest_sha256`` describes."""
+    return build_record.ratified_manifest(archs, TOOLCHAIN.manifest_dir)
 
 
 def vendored_tree_sha256(root: Path) -> tuple[str, int]:
@@ -592,67 +507,15 @@ def _gate_sccache() -> dict | None:
 # ---------------------------------------------------------------------------
 def write_build_config(archs: list[str], ptxas: str, manifest: dict, pin: dict,
                         sccache: dict | None) -> Path:
+    """The build record (`tools/build_record.py`): the self-describing binary."""
     import torch
 
-    config = {
-        "version": read_version(),
-        "archs": [f"sm_{a}" for a in archs],
-        #: A binary whose arm or part set is not the shipped one: never a wheel (`tools/wheels.py`).
-        "iteration": _is_iteration_build(),
-        "toolchain": TOOLCHAIN.name,
-        "ptxas": ptxas,
-        "torch": torch.__version__,
-        "cxx11_abi": bool(torch._C._GLIBCXX_USE_CXX11_ABI),
-        #: TAKEN FROM `tools/ratify.py`, NEVER RESTATED. This digest identifies the
-        #: ratification a binary was gated against, and the tier-2 census recomputes
-        #: it independently and requires a match -- so a third spelling of "what goes
-        #: into the hash" is a spelling that can disagree with both.
-        "manifest_sha256": ratify.manifest_digest(manifest),
-        "manifest_entries": {f"sm_{a}": sum(1 for k in manifest["entries"]
-                                            if k.startswith(f"sm_{a}:"))
-                             for a in archs},
-        #: THE RATIFIED SHARD MEMBERSHIP, `{shard: members_sha256}`, taken from the
-        #: manifest rather than recomputed. It is what the dispatch table's rows are
-        #: joined against at runtime: a row whose shard membership is not the one that
-        #: was MEASURED describes an arm nobody has register or spill numbers for.
-        #: An installed wheel carries no `tools/manifests/`, so without this the
-        #: membership could only be read from a repository checkout -- which is the
-        #: half of the closed world a user does not have.
-        "shards": {name: block["members_sha256"]
-                   for name, block in sorted(manifest["shards"].items())},
-        "ptx_jit_fallback": False,
-        #: THE VENDORED CODEGEN INPUTS, one entry per pinned library. Recorded next to
-        #: `ptxas` because it answers the same question about the same binary: what
-        #: assembled this, and from what sources.
-        "vendored": {
-            "cutlass": {"tag": pin["tag"], "commit": pin["commit"],
-                        "tree_sha256": pin["tree_sha256"]},
-        },
-        #: THE COMPILER CACHE, recorded per the input-closure rule (closed-world
-        #: rule 1's extension, `tools/sccache_toolchain.py`): any cache config that
-        #: CAN affect output is part of the fingerprint, even though this one is
-        #: measured transparent (docs/build.md#sccache) -- `None` when the build ran
-        #: uncached, never omitted, so "was this binary's compile cached at all" is
-        #: answerable from the wheel with no checkout.
-        "sccache": sccache,
-    }
-    body = (
-        '"""GENERATED by setup.py -- do not edit.\n\n'
-        "Answers 'which measured evidence backs this exact .so?' from an installed\n"
-        "wheel, with no repository checkout: `manifest_sha256` is the hash of the\n"
-        "ratification this binary was gated against.\n"
-        '"""\n\n'
-        #: `pprint`, not `json.dumps`: this is a PYTHON module, and JSON spells the
-        #: booleans `true`/`false`, which do not parse here.
-        f"BUILD_CONFIG = {pprint.pformat(config, indent=4, sort_dicts=False, width=88)}\n\n\n"
-        "def show():\n"
-        '    """A copy, so a caller cannot mutate the record."""\n'
-        "    return dict(BUILD_CONFIG)\n"
-    )
     record = ROOT / PLUGIN / "_build_config.py"
-    record.write_text(body)
-    print(f"wrote {PLUGIN}/_build_config.py (manifest sha256 "
-          f"{config['manifest_sha256'][:16]}...)")
+    record.write_text(build_record.render(build_record.config(
+        version=read_version(), archs=archs, iteration=_is_iteration_build(), toolchain=TOOLCHAIN.name, ptxas=ptxas,
+        torch=torch.__version__, cxx11_abi=bool(torch._C._GLIBCXX_USE_CXX11_ABI), manifest=manifest, cutlass_pin=pin,
+        sccache=sccache)))
+    print(f"wrote {PLUGIN}/_build_config.py")
     return record
 
 
@@ -731,7 +594,7 @@ def build_parts_extension():
         name=PARTS_MODULE_NAME,
         sources=PARTS_SOURCES,
         include_dirs=[str(CSRC / "src"), str(CUTLASS_DIR / "include"), str(ROOT / "build" / "generated")],
-        extra_compile_args={"cxx": ["-O3", "-std=c++20", *STABLE_DEFINES], "nvcc": nvcc_flags + STABLE_DEFINES},
+        extra_compile_args={"cxx": list(build_flags.HOST_CXX_FLAGS), "nvcc": nvcc_flags + STABLE_DEFINES},
         extra_link_args=_link_flags(),
         py_limited_api=True,
     )
@@ -769,7 +632,7 @@ def build_extension():
         #: The vendored CuTe/CUTLASS headers come LAST, so a repository header always
         #: wins a name collision and the vendored tree can never shadow ours.
         include_dirs=[str(CSRC / "src"), str(CUTLASS_DIR / "include"), str(generated_dir)],
-        extra_compile_args={"cxx": ["-O3", "-std=c++20", *STABLE_DEFINES], "nvcc": nvcc_flags + STABLE_DEFINES},
+        extra_compile_args={"cxx": list(build_flags.HOST_CXX_FLAGS), "nvcc": nvcc_flags + STABLE_DEFINES},
         extra_link_args=ldflags,
         py_limited_api=True,
     )

@@ -1,0 +1,98 @@
+"""THE EXTENSION'S UNITS: every hand-written unit under src/, each generated carry arm unit, the registration unit, the
+generated headers and the device stamp (docs/build-graph.md#compile)."""
+
+load("@rola_env//:flags.bzl", "HOST_CXX_FLAGS", "NVCC_FLAGS")
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+load("//bazel:defs.bzl", "carry_arm_set", "include_root", "rola_headers")
+load(":arms.bzl", "CARRY_ARM_UNITS")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["src/common/hardware.json"])
+
+#: nvcc's command line is tools/build_flags.py's: rules_cuda's own additions to it are off (its extended lambdas, which
+#: the measured build never had; its compilation-mode optimization and its seed; the host toolchain's flags)
+_NVCC_FEATURES = [
+    "-cuda_host_use_toolchain_flags",
+    "-dbg",
+    "-fastbuild",
+    "-nvcc_extended_lambda",
+    "-nvcc_fixed_random_seed",
+    "-nvcc_relaxed_constexpr",
+    "-opt",
+]
+
+#: the repository's headers come first, so a repository header wins any name collision (setup.py's include order)
+include_root(
+    name = "headers",
+    hdrs = glob(["src/**/*.cuh"]),
+    roots = ["src"],
+)
+
+rola_headers(name = "generated")
+
+#: the device stamp: the digest of every file under src/ but its markdown, as ratify computes it
+genrule(
+    name = "stamp_header",
+    srcs = glob(
+        ["src/**"],
+        exclude = ["src/**/*.md"],
+    ),
+    outs = ["stamp/csrc_stamp.inc"],
+    cmd = "$(execpath @rola_env//:python) $(execpath //tools:csrc_stamp.py) --src csrc/rola/src --out $@",
+    tools = [
+        "//tools:csrc_stamp.py",
+        "@rola_env//:python",
+    ],
+)
+
+cc_library(
+    name = "stamp",
+    hdrs = [":stamp_header"],
+    includes = ["stamp"],
+)
+
+_DEPS = [
+    ":headers",
+    "//csrc/third_party:cutlass",
+    ":generated",
+    ":stamp",
+    "@host_cc//:identity",
+    "@rola_env//:python_headers",
+    "@rola_env//:torch_headers",
+]
+
+cuda_library(
+    name = "units",
+    srcs = glob(
+        ["src/**/*.cu"],
+        exclude = ["src/instantiations/**"],
+    ),
+    alwayslink = True,
+    copts = NVCC_FLAGS,
+    features = _NVCC_FEATURES,
+    deps = _DEPS,
+)
+
+[cuda_library(
+    name = unit.removesuffix(".cu"),
+    srcs = ["src/instantiations/" + unit],
+    alwayslink = True,
+    copts = NVCC_FLAGS,
+    features = _NVCC_FEATURES,
+    deps = _DEPS,
+) for unit in CARRY_ARM_UNITS]
+
+carry_arm_set(
+    name = "carry_arms",
+    units = {":" + unit.removesuffix(".cu"): str(arms) for unit, arms in CARRY_ARM_UNITS.items()},
+)
+
+cc_library(
+    name = "registration",
+    srcs = ["rola_api.cpp"],
+    alwayslink = True,
+    copts = HOST_CXX_FLAGS,
+    deps = _DEPS + ["//bazel:cuda_headers"],
+)

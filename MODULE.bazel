@@ -30,3 +30,8 @@ cuda.redist_json(
 )
 cuda.toolkit(name = "cuda")
 use_repo(cuda, "cuda")
+
+#: THE GRAPH'S ENVIRONMENT: the Python environment built from requirements.lock into the shared store, the pinned
+#: linker and the host C++ compiler's identity (bazel/environment.bzl)
+environment = use_extension("//bazel:environment.bzl", "environment")
+use_repo(environment, "host_cc", "mold", "rola_env")

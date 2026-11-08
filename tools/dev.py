@@ -113,13 +113,19 @@ def _download(urls: list[str], to: Path) -> None:
 
 
 def link_bazel() -> None:
-    """`toolchain.bazel` linked to the pinned bazelisk: `bazel` is the command every doc and gate names, and only the
-    pinned launcher reads `.bazeliskrc` and runs the graph's front door."""
+    """`toolchain.bazel` linked to the pinned bazelisk: `bazel` is the command the docs name, and only the pinned
+    launcher reads `.bazeliskrc` and runs the graph's front door. A link init made to another pinned release (under
+    `host.tools_dir`) is replaced; anything else at the path is refused, named, never overwritten."""
     link, bazelisk = Path(dev_config.get("toolchain.bazel")), Path(dev_config.get("toolchain.bazelisk"))
     if link.is_symlink() and link.resolve() == bazelisk.resolve():
         return
+    tools = Path(dev_config.get("host.tools_dir")).resolve()
+    if link.exists() or link.is_symlink():
+        if not (link.is_symlink() and link.resolve().is_relative_to(tools)):
+            raise SystemExit(f"{link} is not init's link to a pinned bazelisk ({link.resolve()}): move it, or set "
+                             f"toolchain.bazel to a free path on PATH, then python tools/dev.py init")
+        link.unlink()
     link.parent.mkdir(parents=True, exist_ok=True)
-    link.unlink(missing_ok=True)
     link.symlink_to(bazelisk)
     print(f"linked {link} -> {bazelisk}")
 
