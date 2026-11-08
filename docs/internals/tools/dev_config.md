@@ -17,7 +17,7 @@ bootstrap), and `bazel run //:init` links the `workspace.devtools` checkout into
 
 | file | keys |
 |---|---|
-| `toolchain.json` | `cuda_home` (null takes torch's `CUDA_HOME`), `ncu` (a Nsight Compute CLI older checkouts' files name; this tree finds the pinned one by its pin, `ncu()`, which refuses until init installed it), `sccache`, `sccache_enabled`, `mold`, `clang_tidy` (the host's clang-tidy, which checkouts before the build graph's unit lints install and read; this tree reads none of it), `bazel` (where the bootstrap links the pinned bazelisk on PATH) |
+| `toolchain.json` | `cuda_home` (a CUDA toolkit older checkouts' files name; this tree uses the pinned one, `cuda_home()`), `ncu` (a Nsight Compute CLI older checkouts' files name; this tree finds the pinned one by its pin, `ncu()`, which refuses until init installed it), `sccache`, `sccache_enabled`, `mold`, `clang_tidy` (the host's clang-tidy, which checkouts before the build graph's unit lints install and read; this tree reads none of it), `bazel` (where the bootstrap links the pinned bazelisk on PATH) |
 | `host.json` | `nvcc_threads`, `build_jobs`, `budget_slots`, `lock_dir`, `gpu_lock`, `gpu_shared_slots`, `nice`, `locks_trace`, `scratch`, `build_cache` (the build systems' caches: the graph's under `bazel/`), `tools_dir`, `windows_system32`, `wsl_lib` |
 | `clock.json` | `ghz`, `lock`, `unlock` (null `ghz`: the host measures unlocked) |
 | `store.json` | `root` (the measurements store: a rola-results checkout) |
@@ -37,8 +37,10 @@ resolved value and the file it came from ([dev.md](dev.md)).
 
 **The API.**
 - `get("section.key")` returns a value.
-- `cuda_home()` and `cuda_bin(tool)` resolve the toolkit. Every compile, disassembly and assembler check uses
-  them, so the ptxas a gate reads is the one the build ran.
+- `cuda_home()` and `cuda_bin(tool)` resolve the toolkit: the pinned one (`tools/cuda_toolkit_pin.json`) -- in a
+  test tier the graph's copy, which the tier hands in (`ROLA_CUDA_HOME`), else init's under `host.tools_dir`, refused
+  until init installed it. Every compile, disassembly and assembler check outside the graph's own rules uses them, so
+  the ptxas a gate reads is the one the build ran.
 - `scratch(name)` returns a tool's scratch directory.
 - `windows_tool(rel)` returns a Windows tool under WSL.
 - `pinned(name)` returns where a pin's binary is installed (`tools/<name>_pin.json`: its folder under `host.tools_dir`,

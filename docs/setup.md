@@ -232,18 +232,17 @@ image's day, its indexes' digests recorded in MODULE.bazel.lock and every packag
 pinned bazelisk linked as `bazel`, and the packages' commands under the names their alternatives give them. A package
 layer carries its whole closure, the base's core packages among them, so `bazel test //:devbox_packages` holds that
 every package the base already has is at the base's version (2026-11-08: 182 packages, 130 of them the base's, none
-at another version). The base merges /usr (`/bin`, `/lib`, `/lib64` and `/sbin` link into it), and a layer whose
-directories sit there would replace the links, so the packages' files go under /usr as dpkg writes them through the
-links (`tools/usrmerge_layer.py`), and the check refuses a layer with anything left there. Inside it the host's loop
+at another version). The base merges /usr (its top-level links into it, read from the base itself: `/bin`, `/lib`,
+`/lib32`, `/lib64`, `/libx32`, `/sbin`), and a layer whose directories sit there would replace the links, so the
+packages' files go under /usr as dpkg writes them through the links (`tools/usrmerge_layer.py`), and the check refuses
+a layer with anything left there. Inside it the host's loop
 runs (`python3 tools/bootstrap.py` is its bazelisk already, then `bazel run //:init`, `//:dev_env`), its installs on
 the container's own volumes. 1.4 GB. THE GAP: no check proves it, and no tool runs it with the GPU, the locks and the
-mounts -- the container check proves the Dockerfile's image (`dev.py container`, above), which `compose` runs; init
-inside it refuses for want of a CUDA toolkit, which the tree's tools outside the graph read (`toolchain.cuda_home`).
+mounts -- the container check proves the Dockerfile's image (`dev.py container`, above), which `compose` runs.
 
 | Tool | Source | Role |
 |---|---|---|
-| `ptxas`/`nvcc` | the toolchain record's apt pins (`cu13`: CUDA 13.0, V13.0.48) | the ratified toolchain (`docs/build.md` rule 1) |
-| `cuobjdump` | apt, pinned version | cubin extraction (SASS gate, region ledger, composer) |
+| the CUDA toolkit: `nvcc`, `ptxas`, `cuobjdump`, `nvdisasm`, `cu++filt`, `compute-sanitizer` | `tools/cuda_toolkit_pin.json` (NVIDIA's redistributable components at the manifest the graph's toolkit is read by, by its digest), init, at `dev_config.cuda_home()` and on no PATH (torch takes its toolkit from the nvcc on PATH without following links) | the ratified toolchain (`docs/build.md` rule 1, `cu13`: CUDA 13.0, V13.0.48) for every tool outside the graph's own rules; the graph's copy of the same pin (`@cuda_tools`) is the test tiers' and the binary gates' |
 | `sccache` 0.17.0 | `tools/dev.py init --image` from `tools/sccache_pin.json`, verified | the compiler cache `docs/build.md#sccache` measures |
 | `ninja` | apt | the build's actual compile driver (`docs/build.md` step 5) |
 | `mold` 2.42.0 | `tools/dev.py init --image` from `tools/mold_pin.json`, verified | the extension's only linker |

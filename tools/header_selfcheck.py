@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import os
 import subprocess
 import sys
 import tempfile
@@ -35,6 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_flags  # noqa: E402
+import dev_config  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "csrc" / "rola"
@@ -50,6 +52,8 @@ def headers() -> list[Path]:
 
 
 def compile_flags(arch: int) -> list[str]:
+    #: torch resolves its toolkit when its extension module is first imported: the pinned one, as the build's
+    os.environ["CUDA_HOME"] = dev_config.cuda_home()
     import torch
     from torch.utils.cpp_extension import include_paths
 
@@ -72,7 +76,7 @@ def check(header: Path, flags: list[str], tmp: Path) -> tuple[Path, str]:
     #: The absolute path, so the result does not depend on which `-I` resolves it.
     tu.write_text(f'#include "{header}"\n#include "{header}"\n')
     proc = subprocess.run(
-        ["nvcc", "-c", str(tu), "-o", str(tu.with_suffix(".o")), *flags],
+        [dev_config.cuda_bin("nvcc"), "-c", str(tu), "-o", str(tu.with_suffix(".o")), *flags],
         capture_output=True, text=True)
     return header, "" if proc.returncode == 0 else (proc.stderr.strip() or proc.stdout.strip())
 

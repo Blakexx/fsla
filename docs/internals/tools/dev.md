@@ -19,7 +19,9 @@ Each target is this file's command of the same name (`bazel/defs.bzl`'s `dev_run
 graph's environment interpreter, its arguments after `--`.
 
 **`init`** writes this machine's config:
-- The CUDA toolkit on `PATH`, or torch's.
+- The pinned CUDA toolkit (`TOOLKIT`, `tools/cuda_toolkit_pin.json`), where it is missing or its nvcc does not report
+  its pin's version, which every compile, disassembly and assembler check outside the graph's own rules uses
+  (`dev_config.cuda_home()`), on no PATH.
 - The pinned devbox tools (`DEV_TOOLS`: hyperfine, difftastic, Nsight Compute and Systems), each where it is missing or
   does not report its pin's version; the measurement tools find the pinned Nsight Compute by its pin
   (`dev_config.ncu()`). In the image their commands are linked into the image's venv's bin, first on its PATH.
@@ -32,8 +34,12 @@ version, is downloaded from the pin's release URL (`tools/sccache_pin.json` and 
 then from its `mirror_urls` (the same asset through GitHub's API: github.com's release downloads returned gateway
 timeouts from its own edge for hours on 2026-11-08 while the API served the same assets). Its release sha256 is
 verified, and so is its binary
-sha256 where the pin has one. The whole release -- a tarball, or a bare binary under its release's name -- lands
-under `host.tools_dir`, because the layout
+sha256 where the pin has one. A toolkit pin names NVIDIA's redistributable manifest by its digest instead and the
+components it takes: each is fetched by the digest the manifest lists and unpacked without its archive's own folder
+into the pin's one, each component's LICENSE at `licenses/<component>/LICENSE`, then the pin's `links`; the folder is
+unpacked beside its place and moved there, so a folder at the pin's path is a whole toolkit, and it is the graph's
+copy (`@cuda_tools`) file for file. The whole release -- a tarball, a bare binary under its release's name, or the
+toolkit -- lands under `host.tools_dir`, because the layout
 is part of the tool: `-fuse-ld=mold` selects the `ld.mold` next to `mold`. sccache and mold are recorded in the
 machine's `toolchain.json`; bazelisk is found by its pin (`dev_config.pinned`: under `host.tools_dir`, in its pin's folder, by its release's
 name), never recorded there -- every checkout loads the machine's files, and an older loader refuses a key it does not
@@ -42,7 +48,7 @@ clock is not set by `init`, because locking it asks for administrator consent on
 
 **`check`** prints one row per dependency and exits 1 on any red:
 - The config parses.
-- nvcc, ptxas, nvdisasm and cuobjdump exist in the toolkit.
+- The pinned toolkit's nvcc reports its pin's version.
 - Each devbox tool reports its pin's version (Nsight Compute among them).
 - sccache and mold pass the build's own gates (`sccache_toolchain.gate`, `mold_toolchain.link_flags`), so
   `check` refuses exactly what a build would.

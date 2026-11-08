@@ -22,6 +22,7 @@ docs/internals/tools/dev_config.md.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from functools import cache
 from pathlib import Path
@@ -46,8 +47,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 SCHEMA: dict[str, dict[str, Key]] = {
     "toolchain": {
-        "cuda_home": Key("path?", None, "the CUDA toolkit the extension builds with (nvcc, ptxas, nvdisasm, cuobjdump "
-                         "under bin/); null takes torch.utils.cpp_extension's CUDA_HOME"),
+        "cuda_home": Key("path?", None,
+                         "a CUDA toolkit the machine's toolchain file may name, for the checkouts on this machine that "
+                         "read it; this tree uses the pinned one (`cuda_home()`). A loader refuses a key it does not "
+                         "declare, so it stays declared while machine files carry it"),
         "ncu": Key("path?", None,
                    "a Nsight Compute CLI the machine's toolchain file may name, for the checkouts on this machine that "
                    "read it; this tree finds the pinned one by its pin (`ncu()`). A loader refuses a key it does not "
@@ -86,7 +89,7 @@ SCHEMA: dict[str, dict[str, Key]] = {
 #: THE DEV IMAGE'S FIXED LAYOUT: `tools/dev.py init --image` writes it as the image's config, and `container compose`
 #: bind-mounts the host's lock directories, store and worktrees onto it, so host and container share one of each.
 IMAGE_LAYOUT = {
-    "toolchain": {"cuda_home": "/usr/local/cuda", "bazel": "/usr/local/bin/bazel"},
+    "toolchain": {"bazel": "/usr/local/bin/bazel"},
     "host": {"lock_dir": "/run/rola/locks", "gpu_lock": "/run/rola/gpu/rola_gpu.lock", "tools_dir": "/opt/rola/tools"},
     "store": {"root": "/workspace/store"},
     "workspace": {"suite": "/workspace/suite", "devtools": "/workspace/devtools", "worktrees": "/workspace/worktrees",
@@ -101,12 +104,13 @@ HANDOFFS = {
     POINTER: "which config directory a child reads (set by a test or the container, never by a setting)",
     "ROLA_REAL_NVCC": "the gated nvcc setup.py hands the sccache wrapper (tools/sccache_nvcc.py)",
     "ROLA_SCCACHE_BIN": "the gated sccache setup.py hands the sccache wrapper",
-    "CUDA_HOME": "torch.utils.cpp_extension's toolkit, set by setup.py from toolchain.cuda_home before torch is imported",
+    "CUDA_HOME": "torch.utils.cpp_extension's toolkit, set by setup.py and ratify to `cuda_home()` before torch is imported",
     "MAX_JOBS": "torch's ninja job count, set by setup.py from the slots it holds",
     "PYTORCH_NVCC": "torch's compiler, set by setup.py to the sccache wrapper",
     "PYTEST_XDIST_WORKER": "pytest-xdist's worker id",
     "USER": "the login name printed into the sudoers rule `bazel run //:clock` suggests",
     "ROLA_SCRATCH": "the agent harness's campaign directory (.claude/settings.json), outside the repository",
+    "ROLA_CUDA_HOME": "the graph's copy of the pinned CUDA toolkit, which a test tier hands its tests (bazel/defs.bzl)",
     "BAZEL_REAL": "the Bazel release bazelisk hands the graph's front door (bazel/front_door.py)",
     "PATH": "the search path bazelisk hands what it runs, the front door's directory first (`check` finds the user's "
             "`bazel` past it)",
@@ -144,16 +148,15 @@ def get(dotted: str) -> Any:
 
 
 def cuda_home() -> str:
-    """The toolkit every compile, disassembly and assembler check uses: the configured one, else torch's."""
-    home = get("toolchain.cuda_home")
-    if home is None:
-        try:
-            from torch.utils.cpp_extension import CUDA_HOME as home
-        except ImportError:
-            home = None
-    if not home:
-        raise SystemExit("no CUDA toolkit: set toolchain.cuda_home (bazel run //:init)")
-    return home
+    """The toolkit every compile, disassembly and assembler check outside the graph's own rules uses: the pinned one
+    (tools/cuda_toolkit_pin.json) -- the graph's copy in a test tier (`ROLA_CUDA_HOME`), else init's, refused until
+    init installed it."""
+    if os.environ.get("ROLA_CUDA_HOME"):
+        return os.environ["ROLA_CUDA_HOME"]
+    nvcc = pinned("cuda_toolkit")
+    if not nvcc.is_file():
+        raise SystemExit(f"the pinned CUDA toolkit is not installed at {nvcc.parents[1]}: bazel run //:init")
+    return str(nvcc.parents[1])
 
 
 def cuda_bin(tool: str) -> str:
@@ -189,9 +192,6 @@ def windows_tool(rel: str) -> Path | None:
 def detect() -> dict[str, dict[str, Any]]:
     """This machine's values where they differ from the declared defaults: what `bazel run //:init` writes."""
     found: dict[str, dict[str, Any]] = {"toolchain": {}, "host": {}, "workspace": {}, "environment": {}}
-    nvcc = shutil.which("nvcc")
-    if nvcc:
-        found["toolchain"]["cuda_home"] = str(Path(nvcc).parents[1])
     for tool in ("sccache", "mold"):
         if shutil.which(tool):
             found["toolchain"][tool] = shutil.which(tool)

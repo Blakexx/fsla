@@ -84,8 +84,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 import dev_config  # noqa: E402
 
 #: torch.utils.cpp_extension resolves its toolkit when it is imported, so the dev config's is handed to it first.
-if dev_config.get("toolchain.cuda_home"):
-    os.environ["CUDA_HOME"] = dev_config.get("toolchain.cuda_home")
+os.environ["CUDA_HOME"] = dev_config.cuda_home()
 #: torch >= 2.10 prefixes any `ccache`/`sccache` on PATH to every compiler it runs; the only cache is the pinned one.
 os.environ["TORCH_NO_COMPILER_WRAPPER"] = "1"
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension  # noqa: E402

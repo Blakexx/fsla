@@ -47,9 +47,12 @@ ROOT = Path(__file__).resolve().parents[1]
 #: versioned folder under `host.tools_dir` (`dev_config.pinned`), linked into every checkout's venv (`dev-env`) and found by
 #: its pin, never recorded as a machine key -- see docs/setup.md#the-devbox
 DEV_TOOLS = ("hyperfine", "difftastic", "nsight_compute", "nsight_systems")
+#: THE CUDA TOOLKIT the tree's tools outside the graph use (`dev_config.cuda_home`): NVIDIA's redistributable components at
+#: the graph's toolkit manifest, installed by init as a devbox tool is, on no PATH -- see docs/setup.md#the-devbox
+TOOLKIT = "cuda_toolkit"
 PINS = {"sccache": ROOT / "tools" / "sccache_pin.json", "mold": ROOT / "tools" / "mold_pin.json",
         "bazelisk": ROOT / "tools" / "bazelisk_pin.json",
-        **{name: ROOT / "tools" / f"{name}_pin.json" for name in DEV_TOOLS}}
+        **{name: ROOT / "tools" / f"{name}_pin.json" for name in (TOOLKIT, *DEV_TOOLS)}}
 #: the pins init records in the machine's toolchain file; bazelisk is found by its pin instead (`dev_config.pinned`), since
 #: every checkout loads that file and an older loader refuses a key it does not declare
 RECORDED = ("sccache", "mold")
@@ -57,7 +60,7 @@ RECORDED = ("sccache", "mold")
 #: commit changing any of them carries a passing container check for its key (KERNEL_STANDARDS §23 (3)).
 ENV_INPUTS = ("Dockerfile", ".devcontainer/devcontainer.json", ".devcontainer/compose.yaml", "requirements.lock",
               "tools/sccache_pin.json", "tools/mold_pin.json", "tools/clang_tidy_pin.json", "tools/bazelisk_pin.json", "tools/uv_pin.json",
-              *(f"tools/{name}_pin.json" for name in DEV_TOOLS), "tools/devtools.txt", "tools/dev.py", "tools/dev_config.py",
+              *(f"tools/{name}_pin.json" for name in (TOOLKIT, *DEV_TOOLS)), "tools/devtools.txt", "tools/dev.py", "tools/dev_config.py",
               "tools/bootstrap.py",
               "tools/sccache_toolchain.py", "tools/mold_toolchain.py",
               "tools/toolchains.py",
@@ -83,12 +86,10 @@ VERSION_OF = {"sccache": sccache_toolchain.sccache_version, "mold": mold_toolcha
               "bazelisk": _bazelisk_version}
 
 
-def install_dev_tools() -> None:
-    """Every devbox tool, where it is missing or does not report its pin's version."""
-    for name in DEV_TOOLS:
-        pin = json.loads(PINS[name].read_text())
-        if _pinned_version(name, str(dev_config.pinned(name))) != pin["version_string"]:
-            install_pinned(name)
+def ensure_pinned(name: str) -> None:
+    """A pin installed where it is missing or does not report its pin's version."""
+    if _pinned_version(name, str(dev_config.pinned(name))) != json.loads(PINS[name].read_text())["version_string"]:
+        install_pinned(name)
 
 
 def _write_section(section: str, values: dict, force: bool) -> None:
@@ -131,9 +132,7 @@ def _download(urls: list[str], to: Path) -> None:
 def install_bazelisk() -> None:
     """The pinned bazelisk under `host.tools_dir` and `bazel` linked to it: the machine's one step outside the graph
     (`tools/bootstrap.py` on a host, `init --image` in the image), since every other command is a `bazel run`."""
-    pin = json.loads(PINS["bazelisk"].read_text())
-    if _pinned_version("bazelisk", str(dev_config.pinned("bazelisk"))) != pin["version_string"]:
-        install_pinned("bazelisk")
+    ensure_pinned("bazelisk")
     link_bazel()
 
 
@@ -155,31 +154,79 @@ def link_bazel() -> None:
     print(f"linked {link} -> {bazelisk}")
 
 
+def _verify(what: str, path: Path, sha256: str) -> None:
+    got = hashlib.sha256(path.read_bytes()).hexdigest()
+    if got != sha256:
+        raise SystemExit(f"{what}: sha256 {got} is not the pin's {sha256}")
+
+
+def _without_top(component: str):
+    """The extraction filter of a component's archive: a member under the pin's folder instead of the archive's own (the
+    archive's folder dropped from its name, and from a hard link's target, which names an archive path), its LICENSE
+    at `licenses/<component>/LICENSE`, since every component carries one at the same path -- the graph's copy's layout
+    (bazel/environment.bzl's `@cuda_tools`)."""
+    def keep(member: tarfile.TarInfo, dest: str) -> tarfile.TarInfo | None:
+        _, _, name = member.name.removeprefix("./").partition("/")
+        if not name:
+            return None
+        name = f"licenses/{component}/LICENSE" if name == "LICENSE" else name
+        link = member.linkname.removeprefix("./").partition("/")[2] if member.islnk() else member.linkname
+        return tarfile.tar_filter(member.replace(name=name, linkname=link, deep=False), dest)
+    return keep
+
+
+def _install_components(name: str, pin: dict) -> None:
+    """A toolkit of NVIDIA's redistributable components: the manifest by the pin's digest, each component by the digest
+    the manifest lists, all unpacked into the pin's one folder, then the pin's links (`lib64` for nvcc.profile). Unpacked
+    beside the folder and moved into place, so a folder there is always a whole toolkit."""
+    tools = Path(dev_config.get("host.tools_dir"))
+    dest, staging = tools / pin["archive_root"], tools / f".{pin['archive_root']}.partial"
+    shutil.rmtree(staging, ignore_errors=True)
+    with tempfile.TemporaryDirectory(prefix=f"rola_{name}_") as tmp:
+        index = Path(tmp) / "manifest.json"
+        _download([pin["manifest_url"]], index)
+        _verify(f"{name} manifest", index, pin["manifest_sha256"])
+        manifest, base = json.loads(index.read_text()), pin["manifest_url"].rsplit("/", 1)[0]
+        for component in pin["components"]:
+            entry = manifest[component]["linux-x86_64"]
+            archive = Path(tmp) / Path(entry["relative_path"]).name
+            _download([f"{base}/{entry['relative_path']}"], archive)
+            _verify(component, archive, entry["sha256"])
+            with tarfile.open(archive) as tf:
+                tf.extractall(staging, filter=_without_top(component))
+            archive.unlink()
+    for link, target in pin["links"].items():
+        (staging / link).symlink_to(target)
+    shutil.rmtree(dest, ignore_errors=True)
+    staging.rename(dest)
+
+
 def install_pinned(name: str) -> str:
     """Download the pinned release, verify its sha256 (and the binary's, where the pin has one), and unpack the whole
     release under `dest` -- its layout is part of the tool (mold selects `ld.mold` beside itself). A release is a tarball,
-    or a bare binary (`asset_kind`) installed under its release's name."""
+    a bare binary (`asset_kind`) installed under its release's name, or a manifest's components (`components`)."""
     pin = json.loads(PINS[name].read_text())
     root, rel = pin["archive_root"], pin["binary_path"]
     dest, binary = Path(dev_config.get("host.tools_dir")), dev_config.pinned(name)
-    with tempfile.TemporaryDirectory(prefix=f"rola_{name}_") as tmp:
-        asset = Path(tmp) / pin["release_asset"]
-        _download([pin["release_url"], *pin.get("mirror_urls", [])], asset)
-        got = hashlib.sha256(asset.read_bytes()).hexdigest()
-        if got != pin["asset_sha256"]:
-            raise SystemExit(f"{name}: release sha256 {got} is not the pin's {pin['asset_sha256']}")
-        dest.mkdir(parents=True, exist_ok=True)
-        if pin.get("asset_kind") == "binary":
-            #: a bare binary: installed in its pin's folder, as an archive's tree is
-            binary.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(asset, binary)
-            binary.chmod(0o755)
-        else:
-            with tarfile.open(asset) as tf:
-                #: an archive with no folder of its own unpacks into its pin's, so every version has one
-                own = all(n == root or n.startswith(root + "/") for n in tf.getnames())
-                tf.getmember(f"{root}/{rel}" if own else rel)
-                tf.extractall(dest if own else dest / root, filter="tar")
+    dest.mkdir(parents=True, exist_ok=True)
+    if "components" in pin:
+        _install_components(name, pin)
+    else:
+        with tempfile.TemporaryDirectory(prefix=f"rola_{name}_") as tmp:
+            asset = Path(tmp) / pin["release_asset"]
+            _download([pin["release_url"], *pin.get("mirror_urls", [])], asset)
+            _verify(f"{name} release", asset, pin["asset_sha256"])
+            if pin.get("asset_kind") == "binary":
+                #: a bare binary: installed in its pin's folder, as an archive's tree is
+                binary.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(asset, binary)
+                binary.chmod(0o755)
+            else:
+                with tarfile.open(asset) as tf:
+                    #: an archive with no folder of its own unpacks into its pin's, so every version has one
+                    own = all(n == root or n.startswith(root + "/") for n in tf.getnames())
+                    tf.getmember(f"{root}/{rel}" if own else rel)
+                    tf.extractall(dest if own else dest / root, filter="tar")
     if "binary_sha256" in pin and hashlib.sha256(binary.read_bytes()).hexdigest() != pin["binary_sha256"]:
         raise SystemExit(f"{name}: {binary} sha256 is not the pin's {pin['binary_sha256']}")
     print(f"installed {pin['version_string']} -> {binary}")
@@ -366,8 +413,6 @@ def cmd_init(a) -> int:
         _write_section("environment", {"image_digest": a.env_key}, force=True)
     for section, values in ({} if a.image else dev_config.detect()).items():
         _write_section(section, values, a.force)
-    if dev_config.get("toolchain.cuda_home") is None:
-        _write_section("toolchain", {"cuda_home": dev_config.cuda_home()}, a.force)
 
     for name in RECORDED:
         current = dev_config.get(f"toolchain.{name}")
@@ -377,7 +422,8 @@ def cmd_init(a) -> int:
     #: on a host the bootstrap installed bazelisk before `bazel run //:init` could run; the image's init is its bootstrap
     if a.image:
         install_bazelisk()
-    install_dev_tools()
+    for name in (TOOLKIT, *DEV_TOOLS):
+        ensure_pinned(name)
     #: in the image the devbox's commands go on the image's venv's bin, first on its PATH (ahead of the base image's own
     #: CUDA tools); on a host each checkout's own venv links them (`dev-env`)
     if a.image:
@@ -451,13 +497,9 @@ def cmd_check(a) -> int:
     except SystemExit as ex:
         row(False, f"config: {ex}", "fix the named file")
         return _report(rows)
-    try:
-        home = dev_config.cuda_home()
-        for tool in ("nvcc", "ptxas", "nvdisasm", "cuobjdump"):
-            path = Path(home) / "bin" / tool
-            row(path.exists(), f"toolchain {tool}: {path}", "set toolchain.cuda_home to a CUDA toolkit with it")
-    except SystemExit as ex:
-        row(False, f"toolchain: {ex}", "bazel run //:init")
+    want = json.loads(PINS[TOOLKIT].read_text())["version_string"]
+    row(_pinned_version(TOOLKIT, str(dev_config.pinned(TOOLKIT))) == want,
+        f"toolchain cuda: {dev_config.pinned(TOOLKIT).parents[1]} is {want}", "bazel run //:init")
     for name, gate in (("sccache", sccache_toolchain.gate), ("mold", mold_toolchain.link_flags)):
         try:
             gate()

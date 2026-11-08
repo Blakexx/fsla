@@ -48,7 +48,8 @@ nothing else to `setup.py`. Everything about the MACHINE is the dev config (`too
   constant in `tools/build_flags.py`, and the host budget then clamps it to the slots held.
 - `toolchain.sccache` is the pinned cache. It must match its pin or the build refuses;
   `toolchain.sccache_enabled: false` is the one deliberate opt-out, which builds uncached ([below](#sccache)).
-- `toolchain.mold` is the linker and `toolchain.cuda_home` the toolkit.
+- `toolchain.mold` is the linker. The toolkit is the pinned one (`tools/cuda_toolkit_pin.json`, which init
+  installs), found by its pin (`dev_config.cuda_home()`), never a setting.
 - `host.nice` makes every host-budget-guarded compile and every GPU-locked run lower its own CPU niceness and
   I/O class, so it cannot freeze the host (`docs/internals/tools/build_lock.md`; the locks are rola-devtools'
   `rola_devtools.locks`).

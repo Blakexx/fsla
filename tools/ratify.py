@@ -133,9 +133,6 @@ from csrc_stamp import digest as _csrc_digest  # noqa: E402
 from csrc_stamp import header as _csrc_header  # noqa: E402
 from rola_devtools.locks import host  # noqa: E402
 
-#: torch.utils.cpp_extension resolves its toolkit when imported; a ratification compiles against the configured one.
-if dev_config.get("toolchain.cuda_home"):
-    os.environ["CUDA_HOME"] = dev_config.get("toolchain.cuda_home")
 os.environ["TORCH_NO_COMPILER_WRAPPER"] = "1"
 
 #: ONE toolchain location for nvcc and ptxas, the build's own (`dev_config.cuda_bin`): the version this gate reads is
@@ -890,6 +887,8 @@ def _nvcc_command(arches, source: Path, obj_path: str) -> list[str]:
         cmd += _without_gencode(shlex.split(cuda_post_cflags))
         return cmd + build_flags.gencodes(arches)
 
+    #: torch.utils.cpp_extension resolves its toolkit when first imported: a ratification compiles against the pinned one
+    os.environ["CUDA_HOME"] = dev_config.cuda_home()
     import torch.utils.cpp_extension as ext
 
     #: `build/generated` alongside `SRC`/`CUTLASS_INC` -- mirrors `setup.py`'s

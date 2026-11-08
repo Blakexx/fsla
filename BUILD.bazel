@@ -143,9 +143,13 @@ tar(
 #: /usr, as dpkg writes it through the base's links, which a layer's directories there would replace
 genrule(
     name = "devbox_debs",
-    srcs = ["@devbox//:flat"],
+    srcs = [
+        "@devbox//:flat",
+        "@devbox_base_linux_amd64",
+    ],
     outs = ["devbox_debs.tar"],
-    cmd = "$(execpath @rola_env//:python) $(execpath //tools:usrmerge_layer.py) --in $(execpath @devbox//:flat) --out $@",
+    cmd = "$(execpath @rola_env//:python) $(execpath //tools:usrmerge_layer.py) --base $(execpath @devbox_base_linux_amd64) " +
+          "--in $(execpath @devbox//:flat) --out $@",
     tools = [
         "//tools:usrmerge_layer.py",
         "@rola_env//:python",
@@ -180,6 +184,7 @@ tool_test(
         ":devbox_debs",
         "@devbox//:packages",
         "@devbox_base_linux_amd64",
+        "//tools:usrmerge_layer.py",
     ],
     tool = "//tools:devbox_packages.py",
 )

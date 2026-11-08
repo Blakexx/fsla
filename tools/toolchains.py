@@ -112,7 +112,7 @@ def for_ptxas(version: str) -> Toolchain:
     declared = "\n".join(f"  {t.name}: {t.ptxas}" for t in records().values())
     raise ToolchainError(
         f"CLOSED-WORLD RULE 1: no toolchain record names this assembler:\n  {version}\ndeclared:\n{declared}\n"
-        "Point toolchain.cuda_home at a declared toolkit, or bring up the toolchain (docs/bringup.md).")
+        "Install the pinned toolkit (bazel run //:init), or bring up the toolchain (docs/bringup.md).")
 
 
 def version_text(binary: str) -> str:

@@ -88,9 +88,10 @@ assembler. The wheel matrix axis and the ratification axis are the same axis —
 is the whole closed-world point. Budget it as a measurement run, not as a config
 change.
 
-1. **Install the toolkit** and point the dev config's `toolchain.cuda_home` at it. NVIDIA's
-   redistributable archives install without root; they place libraries in `lib/`, where `nvcc`
-   and torch look in `lib64/`, so add `lib64 -> lib`.
+1. **Pin the toolkit**: `tools/cuda_toolkit_pin.json` names NVIDIA's redistributable manifest by its digest, the
+   components and the folder, and MODULE.bazel's `cuda.redist_json` names the same manifest
+   (`tests/unit/test_cuda_toolkit_pin.py` holds them together); `bazel run //:init` installs it. The archives place
+   libraries in `lib/`, where `nvcc` and torch look in `lib64/`, so the pin's `links` add `lib64 -> lib`.
 2. **Write the record**, `tools/toolchains/<name>.json`: the whole `ptxas --version` output, the whole
    `--version` output of the readers (`cuobjdump`, `nvdisasm`: the disassemblers the gates read with), the whole
    `--version` output of compute-sanitizer (`sanitizer`: the sanitizer lane's), the CUDA major, the PyTorch wheel

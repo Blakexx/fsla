@@ -24,7 +24,7 @@ semaphores, which Bazel cannot do for an action.
 | the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (`tools/uv_pin.json`, the graph's `@uv`, which `//:dev_env` writes venvs with too) into the pinned CPython (3.11.13), and rola-devtools at `tools/devtools.txt`'s commit, by `bazel/environment.bzl`'s `@rola_env` (`bazel/make_env.py`) | `host.build_cache/bazel/store`, one environment a key (the lock, the devtools commit, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages; `@rola_env//:flags.bzl`'s `VENV` names it, so a command naming it is keyed by the environment |
 | the linker | mold at `tools/mold_pin.json`'s release (`@mold`) | the shared repository cache |
 | the lints' analyzer | clang-tidy at `tools/clang_tidy_pin.json`'s wheel, its binary's digest checked (`@clang_tidy`) | the shared repository cache |
-| the toolkit's parts beside the compiler | the disassemblers the SASS gate reads with (cuobjdump, nvdisasm), cuRAND's headers (clang's CUDA front end includes one) and compute-sanitizer (the sanitizer lane's), from the toolkit's manifest by its digests (`@cuda_tools`) | the shared repository cache |
+| the pinned toolkit | `tools/cuda_toolkit_pin.json`: NVIDIA's redistributable manifest by its digest (the compiler's, held equal by `tests/unit/test_cuda_toolkit_pin.py`), every component it names by the manifest's digest, unpacked into one tree as init installs it outside the graph (`@cuda_tools`, file for file init's copy): the disassemblers the SASS gate reads with (cuobjdump, nvdisasm), compute-sanitizer (the sanitizer lane's) and the whole toolkit the test tiers hand their tests (`ROLA_CUDA_HOME`); beside it cuRAND's headers, the graph's alone (clang's CUDA front end includes one) | the shared repository cache |
 | the host C++ compiler's identity | its version and the digests of gcc, g++ and cc1plus (`@host_cc`), an input of every compile | the output base |
 | the devices' identity | each device's name, UUID, driver and compute capability from `nvidia-smi` (`@host_gpu`, read at every fetch; a machine that names no device refuses), an input of every device test tier | the output base |
 
@@ -103,12 +103,12 @@ target of its own ([below](#ratify)).
 - THE BUILD GATES AND THE RECORD (`bazel/record.py`): rule 1 (`tools/toolchains.py`'s `rule1`, setup.py's too) -- the
   graph's ptxas is the toolchain record's and the manifests' byte for byte (the tie between that record and
   `MODULE.bazel`'s toolkit pin), its cuobjdump and nvdisasm are the record's byte for byte too (the tie between the
-  manifest's two mentions there), and the environment's torch is the toolchain's CUDA major --; rule 3, every architecture ratified; rule 5, the vendored
+  pinned toolkit's manifest and the compiler's, which `tests/unit/test_cuda_toolkit_pin.py` holds equal), and the environment's torch is the toolchain's CUDA major --; rule 3, every architecture ratified; rule 5, the vendored
   tree its `PIN.json`'s (`tools/build_record.py`'s `vendored_pin`); the shards, the checked-in generated units the arm
   list's (`tools/gen_shards.py`'s `check_generated`); then the record, `tools/build_record.py`'s writer, setup.py's.
 - THE SASS GATE (KERNEL_STANDARDS section 20, `tools/sass_gate.py`) on the linked library, with the graph's
-  `cuobjdump` and `nvdisasm` (`@cuda_tools`, fetched from the toolkit's redistributable manifest by the digests it
-  lists, one `bin/` for both as an installed toolkit has them) and no verdict cache: Bazel's is the cache.
+  `cuobjdump` and `nvdisasm` (`@cuda_tools`, the pinned toolkit, one `bin/` for both as an installed toolkit has
+  them) and no verdict cache: Bazel's is the cache.
 - THE ARM GATE (`bazel/gates.py`): the built table against the declaration, and the coverage sweep -- the binary asked
   what it carries, loaded by the environment's interpreter against the toolkit's driver stub, so the answer is the
   binary's on any machine. It runs outside the sandbox, where the environment's packages are, the environment's
@@ -162,8 +162,9 @@ index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
   built library copied into a real tree, outside the sandbox (the machine's locks live in `/tmp`). The CPU tier is
   sharded by Bazel's protocol (`bazel/pytest_shards.py`), each shard drawing a host slot, and sees no device; a device
   tier runs alone, takes the machine's GPU lock itself, and has the devices' identity among its inputs (`@host_gpu`).
-  `--test_filter` is pytest's `-k`, `--test_arg` passes pytest an argument. Every tier reads the machine's dev config:
-  its locks, and the installed toolkit the unit tier's compiling rows still use. The sanitizer lane (`//tests:sanitizer`,
+  `--test_filter` is pytest's `-k`, `--test_arg` passes pytest an argument. Every tier reads the machine's dev config
+  (its locks), and hands its tests the graph's copy of the pinned toolkit (`@cuda_tools`, an input of the tier, so a
+  new toolkit reruns it) as `ROLA_CUDA_HOME`, which `dev_config.cuda_home()` takes over init's copy. The sanitizer lane (`//tests:sanitizer`,
   `bazel/defs.bzl`'s `device_lane`, `manual`) runs as a device tier does, passing the toolkit's own compute-sanitizer
   by its path ([`testing.md`](testing.md#the-sanitizer-lane)).
 - THE CHECKS OF THE COMMIT (`//tools:commit_checks`, `bazel/defs.bzl`'s `checkout_test`): what git knows rather than

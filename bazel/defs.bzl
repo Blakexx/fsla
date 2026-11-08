@@ -741,6 +741,8 @@ cp -rL "$TEST_SRCDIR/_main" "$tree"
 rm -f "$tree/$TEST_BINARY"
 cd "$tree"
 {machine}export PATH={venv}/bin:/usr/bin:/bin PYTHONPATH="$tree" PYTHONDONTWRITEBYTECODE=1
+#: the graph's copy of the pinned toolkit, the tree its nvcc runs in (`dev_config.cuda_home`'s handoff)
+export ROLA_CUDA_HOME="$(dirname "$(dirname "$(readlink -f "$TEST_SRCDIR/_main/{nvcc}")")")"
 {run}"""
 
 #: a pytest tier's run: Bazel's filter (`--test_filter`, pytest's `-k`), its shards (bazel/pytest_shards.py), its
@@ -758,8 +760,7 @@ exec {venv}/bin/python -m pytest -p no:cacheprovider -p bazel.pytest_shards -q -
   {args} "${{only[@]}}" "${{shard[@]}}" "$@"
 """
 
-#: a tier with no device sees none; every tier reads the machine's dev config (its locks; the installed toolkit the unit
-#: tier's compiling rows use)
+#: a tier with no device sees none; every tier reads the machine's dev config (its locks)
 _NO_DEVICE = 'export CUDA_VISIBLE_DEVICES=""\n'
 
 def _tier_impl(ctx):
@@ -786,11 +787,11 @@ def _tier_impl(ctx):
         words = list(ctx.attr.tests) + (["-m", ctx.attr.marks] if ctx.attr.marks else [])
         run = _PYTEST_RUN.format(venv = venv, args = " ".join([shell.quote(w) for w in words]))
     carried = [target.files for target in ctx.attr.tools]
-    body = _TIER.format(venv = venv, machine = "" if ctx.attr.devices else _NO_DEVICE, run = run)
+    body = _TIER.format(venv = venv, machine = "" if ctx.attr.devices else _NO_DEVICE, nvcc = ctx.file._nvcc.short_path, run = run)
     ctx.actions.write(script, body, is_executable = True)
     #: a device tier's pass is its devices': their identity is one of its inputs (docs/build-graph.md rule 5)
     identity = [ctx.file.devices] if ctx.attr.devices else []
-    files = depset(ctx.files.data + [ctx.file._shards] + identity, transitive = carried)
+    files = depset(ctx.files.data + ctx.files._toolkit + [ctx.file._shards] + identity, transitive = carried)
     return [DefaultInfo(executable = script, runfiles = ctx.runfiles(transitive_files = files))]
 
 _tier_test = rule(
@@ -804,6 +805,9 @@ _tier_test = rule(
         "tools": attr.label_keyed_string_dict(allow_files = True, doc = "the command's tools: each label's binary, by its name"),
         "data": attr.label_list(allow_files = True, doc = "what it reads: the tree and the library"),
         "_shards": attr.label(default = "//bazel:pytest_shards.py", allow_single_file = True),
+        #: the pinned toolkit the tests compile, assemble and disassemble with: an input, so a new one reruns them
+        "_toolkit": attr.label(default = "@cuda_tools//:toolkit"),
+        "_nvcc": attr.label(default = "@cuda_tools//:bin/nvcc", allow_single_file = True),
         "devices": attr.label(allow_single_file = True, doc = "a device tier's: the devices' identity (`@host_gpu`), " +
                                                               "an input of its pass; the tier sees the device and takes the GPU lock"),
     },

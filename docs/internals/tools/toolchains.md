@@ -26,7 +26,7 @@ directory: `tools/manifests/<name>/sm_XX.json`, one file per architecture
 
 ## Selection
 
-The build takes no toolchain parameter. The configured toolkit (dev config `toolchain.cuda_home`) is the choice, and the
+The build takes no toolchain parameter. The pinned toolkit (`tools/cuda_toolkit_pin.json`, `dev_config.cuda_home()`) is the choice, and the
 record whose `ptxas` equals that toolkit's is the toolchain (`for_ptxas`); a toolkit no record names refuses, naming the
 declared ones. A second spelling of the choice would be one that can disagree with the compiler that actually runs.
 `setup.py` resolves it at import;

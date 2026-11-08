@@ -37,11 +37,6 @@ use_repo(cuda, "cuda")
 #: THE GRAPH'S ENVIRONMENT: the Python environment built from requirements.lock into the shared store, the pinned
 #: linker and the host C++ compiler's identity (bazel/environment.bzl)
 environment = use_extension("//bazel:environment.bzl", "environment")
-#: the toolkit's disassemblers (the binary gates' readers), from the manifest the toolkit above is read by, by the same digest
-environment.cuda_tools(
-    manifest = "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.0.0.json",
-    sha256 = "fe6a86b54450d03ae709123a52717870c49046d65d45303ce585c7aa8a83a217",
-)
 use_repo(environment, "bazelisk", "clang_tidy", "cuda_tools", "host_cc", "host_gpu", "mold", "rola_env", "rola_tree", "uv")
 
 #: THE DEVBOX IMAGE (docs/setup.md#the-devbox): a thin wrapper around the bootstrap. Its base carries what a host

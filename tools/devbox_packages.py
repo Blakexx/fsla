@@ -9,17 +9,20 @@ way. Docs: docs/setup.md#the-devbox.
 
     devbox_packages.py --base LAYOUT_DIR --layer LAYER_TAR -- PACKAGE_FILE...
 
-The layer must also carry nothing at the base's merged-/usr links (`/bin`, `/lib`, `/lib64`, `/sbin`), which a
-directory entry there would replace (tools/usrmerge_layer.py).
+The layer must also carry nothing at the base's merged-/usr links (`/bin`, `/lib`, ...: the base's own top-level links
+into `/usr`), which a directory entry there would replace (tools/usrmerge_layer.py).
 """
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sys
 import tarfile
 from pathlib import Path
+
+#: the sibling it reads the base's layers with, from beside this file as Bazel lays it out (its declared input)
+sys.path.insert(0, str(Path(__file__).absolute().parent))
+from usrmerge_layer import layers, merged_links  # noqa: E402
 
 STATUS = "var/lib/dpkg/status"
 
@@ -52,13 +55,10 @@ def _status_in(archive: Path) -> str | None:
 
 
 def base_status(layout: Path) -> str:
-    """The base image's dpkg status: the last of its layers that writes one, in the layout's one manifest."""
-    index = json.loads((layout / "index.json").read_text())
-    blob = lambda digest: layout / "blobs" / "sha256" / digest.removeprefix("sha256:")  # noqa: E731
-    manifest = json.loads(blob(index["manifests"][0]["digest"]).read_text())
+    """The base image's dpkg status: the last of its layers that writes one."""
     status = None
-    for layer in manifest["layers"]:
-        status = _status_in(blob(layer["digest"])) or status
+    for layer in layers(layout):
+        status = _status_in(layer) or status
     if status is None:
         raise SystemExit(f"{layout}: no layer of the base image writes {STATUS}")
     return status
@@ -71,7 +71,7 @@ def main() -> int:
     ap.add_argument("packages", nargs="+", type=Path, help="the layer's packages' files, one repository a package")
     a = ap.parse_args()
     with tarfile.open(a.layer) as tf:
-        linked = sorted({n.removeprefix("./").split("/", 1)[0] for n in tf.getnames()} & {"bin", "lib", "lib64", "sbin"})
+        linked = sorted({n.removeprefix("./").split("/", 1)[0] for n in tf.getnames()} & merged_links(a.base))
     if linked:
         print(f"devbox packages: the layer carries {linked}, which would replace the base's links into /usr")
         return 1

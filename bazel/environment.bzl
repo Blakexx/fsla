@@ -200,51 +200,53 @@ _host_gpu_repo = repository_rule(
 _CUDA_TOOLS_BUILD = """\
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["bin/cuobjdump", "bin/nvdisasm"])
+exports_files(["bin/cuobjdump", "bin/nvdisasm", "bin/nvcc"])
+
+#: the pinned toolkit whole, the tree a test tier hands its tests (nvcc reads nvcc.profile, include/, lib64/ and nvvm/
+#: beside it); its lib64 is a link to lib, which the glob would list twice
+filegroup(name = "toolkit", srcs = glob(["**"], exclude = ["BUILD.bazel", "REPO.bazel", "redistrib.json", "curand/**", "lib64/**"]))
 
 #: cuRAND's headers alone: clang's CUDA front end includes one (its runtime wrapper's `curand_mtgp32_kernel.h`)
 filegroup(name = "curand_headers", srcs = glob(["curand/include/**"]))
 
 #: the toolkit's compute-sanitizer, its libraries beside it (the sanitizer lane's)
-filegroup(name = "compute_sanitizer", srcs = glob(["sanitizer/compute-sanitizer/**"]))
+filegroup(name = "compute_sanitizer", srcs = glob(["compute-sanitizer/**"]))
 """
 
+def _component(rctx, root, entry, output, license):
+    """One redistributable component by the manifest's digest, its archive's own folder stripped, its LICENSE kept at
+    `license` (every component carries one at the same path)."""
+    folder = entry["relative_path"].rsplit("/", 1)[1].removesuffix(".tar.xz")
+    rctx.download_and_extract(
+        url = root + "/" + entry["relative_path"],
+        sha256 = entry["sha256"],
+        stripPrefix = folder,
+        #: a rename comes before the folder is stripped, so the new name is under the folder too
+        rename_files = {folder + "/LICENSE": folder + "/" + license},
+        output = output,
+    )
+
 def _cuda_tools_impl(rctx):
-    rctx.download(url = rctx.attr.manifest, sha256 = rctx.attr.sha256, output = "redistrib.json")
+    pin = json.decode(rctx.read(rctx.attr.pin))
+    rctx.download(url = pin["manifest_url"], sha256 = pin["manifest_sha256"], output = "redistrib.json")
     redist = json.decode(rctx.read("redistrib.json"))
-    root = rctx.attr.manifest.rsplit("/", 1)[0]
-    #: one bin/ for both, as an installed toolkit has them: `cuobjdump -sass` runs the nvdisasm beside it
-    for component in ("cuobjdump", "nvdisasm"):
-        entry = redist["cuda_" + component]["linux-x86_64"]
-        rctx.download_and_extract(
-            url = root + "/" + entry["relative_path"],
-            sha256 = entry["sha256"],
-            rename_files = {entry["relative_path"].rsplit("/", 1)[1].removesuffix(".tar.xz") + "/LICENSE": component + "/LICENSE"},
-            stripPrefix = entry["relative_path"].rsplit("/", 1)[1].removesuffix(".tar.xz"),
-        )
-    entry = redist["libcurand"]["linux-x86_64"]
-    rctx.download_and_extract(
-        url = root + "/" + entry["relative_path"],
-        sha256 = entry["sha256"],
-        stripPrefix = entry["relative_path"].rsplit("/", 1)[1].removesuffix(".tar.xz"),
-        output = "curand",
-    )
-    #: its libraries are not the graph's: the headers stay
+    root = pin["manifest_url"].rsplit("/", 1)[0]
+    #: the pinned toolkit, as tools/dev.py's installer lays it out: every component in one tree, then the pin's links
+    for component in pin["components"]:
+        _component(rctx, root, redist[component]["linux-x86_64"], ".", "licenses/%s/LICENSE" % component)
+    for link, target in pin["links"].items():
+        rctx.execute(["ln", "-sfn", target, link])
+    #: cuRAND's headers, the graph's alone: its libraries are not the graph's
+    _component(rctx, root, redist["libcurand"]["linux-x86_64"], "curand", "LICENSE")
     rctx.delete("curand/lib")
-    entry = redist["cuda_sanitizer_api"]["linux-x86_64"]
-    rctx.download_and_extract(
-        url = root + "/" + entry["relative_path"],
-        sha256 = entry["sha256"],
-        stripPrefix = entry["relative_path"].rsplit("/", 1)[1].removesuffix(".tar.xz"),
-        output = "sanitizer",
-    )
     rctx.file("BUILD.bazel", _CUDA_TOOLS_BUILD)
 
 _cuda_tools_repo = repository_rule(
     implementation = _cuda_tools_impl,
-    attrs = {"manifest": attr.string(mandatory = True), "sha256": attr.string(mandatory = True)},
-    doc = "The toolkit's disassemblers (cuobjdump, nvdisasm), cuRAND's headers and compute-sanitizer, from the " +
-          "redistributable manifest by its digests.",
+    attrs = {"pin": attr.label(mandatory = True)},
+    doc = "The pinned CUDA toolkit (tools/cuda_toolkit_pin.json: the redistributable manifest by its digest, each " +
+          "component by the manifest's) and cuRAND's headers: the binary gates' disassemblers, the sanitizer lane's " +
+          "compute-sanitizer and the test tiers' toolkit.",
 )
 
 def _tree_impl(rctx):
@@ -291,18 +293,10 @@ def _environment_impl(mctx):
     _host_cc_repo(name = "host_cc")
     _host_gpu_repo(name = "host_gpu")
     _tree_repo(name = "rola_tree")
-    for module in mctx.modules:
-        for tag in module.tags.cuda_tools:
-            _cuda_tools_repo(name = "cuda_tools", manifest = tag.manifest, sha256 = tag.sha256)
+    _cuda_tools_repo(name = "cuda_tools", pin = "//tools:cuda_toolkit_pin.json")
 
 environment = module_extension(
     implementation = _environment_impl,
-    tag_classes = {
-        "cuda_tools": tag_class(attrs = {
-            "manifest": attr.string(mandatory = True, doc = "the toolkit's redistributable manifest"),
-            "sha256": attr.string(mandatory = True, doc = "its digest: the one rules_cuda's toolkit is read by"),
-        }),
-    },
     doc = "The graph's environment: the Python environment, the pinned linker and clang-tidy, the host compiler's " +
           "and devices' identities, the toolkit's disassemblers and the checkout's tracked files.",
 )
