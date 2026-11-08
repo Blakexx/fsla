@@ -177,15 +177,6 @@ def install_pinned(name: str, dest: Path) -> str:
     return str(binary)
 
 
-def base_venv_of(prefix: Path) -> str | None:
-    """The running interpreter's venv when it carries torch itself, never the graph's environment under
-    `host.build_cache`, which nothing outside the graph writes into."""
-    if prefix.resolve().is_relative_to(Path(dev_config.get("host.build_cache")).resolve()):
-        return None
-    site = prefix / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
-    return str(prefix) if (site / "torch").is_dir() else None
-
-
 def site_packages(venv: Path) -> Path:
     """A venv's own site-packages, as its interpreter reports it: the Python running this tool may be another version."""
     out = subprocess.run([str(venv / "bin" / "python"), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
@@ -369,9 +360,6 @@ def cmd_init(a) -> int:
         _write_section(section, values, a.force)
     if dev_config.get("toolchain.cuda_home") is None:
         _write_section("toolchain", {"cuda_home": dev_config.cuda_home()}, a.force)
-    base = base_venv_of(Path(sys.prefix))
-    if base and not a.image:
-        _write_section("workspace", {"base_venv": base}, a.force)
 
     tools_dir = Path(dev_config.get("host.tools_dir"))
     for name in RECORDED:
@@ -484,9 +472,11 @@ def cmd_check(a) -> int:
         f"python3 tools/bootstrap.py (links toolchain.bazel, {dev_config.get('toolchain.bazel')}); its directory on PATH")
     base = dev_config.get("workspace.base_venv")
     python = Path(base or "") / "bin" / "python"
-    #: only the sibling repositories' commit hooks read it, until they join the graph: checked where it is set
+    #: on a host only the sibling repositories' commit hooks read it, in the image it is the interpreter: checked where
+    #: it is set
     row(not base or python.exists(), f"workspace.base_venv: {base}" if base else
-        "workspace.base_venv: unset (only the sibling repositories' commit hooks read one)", "bazel run //:init")
+        "workspace.base_venv: unset (on a host only the sibling repositories' commit hooks read one)",
+        "point workspace.base_venv in the workspace file at a venv with an interpreter, or remove the key")
     if base and python.exists():
         drift = venv_drift(str(python))
         row(not drift, f"base venv carries requirements.lock{': drift ' + ' '.join(drift) if drift else ''}",
@@ -508,7 +498,7 @@ def cmd_check(a) -> int:
     else:
         row(True, "agent skill router: no Claude Code configuration here")
     #: commits are made on the host (the image sees no repository), so the consumers' gates are the host's to check
-    for key in GATED_CONSUMERS if readable else ():
+    for key in GATED_CONSUMERS if readable and base else ():
         if (Path(dev_config.get(key)) / ".git").exists():
             row(gate_venv(dev_config.get(key)) == base, f"{key}'s commit gate runs from {base}", "bazel run //:init")
     for key in ("host.lock_dir", "host.scratch"):
@@ -529,8 +519,8 @@ def cmd_check(a) -> int:
     devtools = Path(dev_config.get("workspace.devtools"))
     row((devtools / "rola_devtools" / "mirror.py").is_file(), f"workspace.devtools is a rola-devtools checkout: {devtools}",
         "clone rola-devtools to workspace.devtools, or point workspace.devtools at a checkout")
-    #: the co-developed checkouts import in each venv that runs here: the base venv (`store`, `container`, the sibling
-    #: repositories' hooks) and this checkout's own (its hooks)
+    #: the co-developed checkouts import in each venv that runs here: the base venv (the sibling repositories' hooks; in
+    #: the image, its interpreter) and this checkout's own (its hooks, `store`, `container`, `build`)
     for venv in ([Path(base)] if base else []) + ([own] if readable and own is not None else []):
         python = venv / "bin" / "python"
         found = subprocess.run([str(python), "-c", "import rola_results, rola_devtools; "
@@ -717,10 +707,7 @@ def cmd_build(a) -> int:
     .`, without pip's metadata, wheel and reinstall. Refuses when that interpreter's `rola` is not this checkout's (a
     venv imports the checkout it names). `--archs` and `--carry-arms` set `ROLA_CUDA_ARCHS` / `ROLA_CARRY_ARMS`.
     -- see docs/build.md#iteration"""
-    own = checkout_venv(ROOT)
-    if a.python is None and own is None:
-        raise SystemExit(f"refusing: {ROOT.name} has no venv of its own to build with: bazel run //:dev_env")
-    python = a.python or str(own / "bin" / "python")
+    python = a.python
     probe = subprocess.run([python, "-c", "import rola, pathlib; print(pathlib.Path(rola.__file__).resolve())"],
                            cwd="/", capture_output=True, text=True)
     if probe.returncode or not Path(probe.stdout.strip()).is_relative_to(ROOT / "rola"):
@@ -940,7 +927,7 @@ def main() -> int:
     p.set_defaults(fn=cmd_worktree)
 
     p = sub.add_parser("build", help="the iteration build: the extension rebuilt in place, gated and stamped")
-    p.add_argument("--python", default=None, help="the interpreter (default: this checkout's own venv's)")
+    p.add_argument("--python", default=sys.executable, help="the interpreter (default: this checkout's own venv's)")
     p.add_argument("--archs", default=None, help="ROLA_CUDA_ARCHS for this build, e.g. 86")
     p.add_argument("--carry-arms", default=None, help="ROLA_CARRY_ARMS for this build, e.g. all")
     p.set_defaults(fn=cmd_build)
@@ -959,7 +946,7 @@ def main() -> int:
 
 
 #: the commands that make or read the environment itself, and so run from whichever python starts them
-BOOTSTRAP = ("init", "check", "show", "get", "clock", "dev-env", "worktree", "build")
+BOOTSTRAP = ("init", "check", "show", "get", "clock", "dev-env", "worktree")
 
 
 def _from_own_venv() -> None:

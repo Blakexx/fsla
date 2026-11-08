@@ -23,8 +23,6 @@ graph's environment interpreter, its arguments after `--`.
 - The newest Nsight Compute CLI under `/usr/local/cuda-*`.
 - `sccache` and `mold` where they are installed.
 - The Windows System32 mount under WSL.
-- The base venv: the running interpreter's venv when it carries torch itself, never the graph's environment under
-  `host.build_cache`.
 
 A key already in a file is kept unless `--force`. A pinned tool that is missing, or does not report its pin's
 version, is downloaded from the pin's release URL (`tools/sccache_pin.json` and `tools/mold_pin.json` by init,
@@ -49,7 +47,8 @@ clock is not set by `init`, because locking it asks for administrator consent on
 - The commit gate is wired.
 - The lock directory, scratch directory and GPU lock directory are writable.
 - The clock is set, or the host is marked unlocked.
-- The base venv and the worktrees folder exist; `store.root` is a rola-results checkout, and `rola_results` and
+- The base venv's interpreter exists where the base venv is set, and the worktrees folder exists; `store.root` is a
+  rola-results checkout, and `rola_results` and
   `rola_devtools` import from `store.root` and `workspace.devtools` in the base venv and in the checkout's own venv.
 
 **`clock --mhz N`** locks the SM clock, reads the driver's clock under the lock, and releases it: the round trip
@@ -70,8 +69,10 @@ refuses when the checkout has no venv of its own, or when that interpreter's `ro
 interpreter. Its site holds five `.pth` files, read in name order: the checkout's root (`aa_rola_<name>.pth`), the
 co-developed sibling checkouts (`rola_devtools.pth`, `rola_results.pth`, `LINKED`), the environment's site-packages
 (`zz_rola_env.pth`, the venv's marker) and the bytecode prefix (`zz_rola_pycache.pth`: `sys.pycache_prefix` under
-`host.build_cache`, so no `__pycache__` lands in the checkout). It replaces only a venv it wrote, wires the checkout's
-commit gate to run from it, and refuses unless `rola`, `rola_devtools`, `rola_results` and `torch` each import from
+`host.build_cache`, so no `__pycache__` lands in the checkout). Its bin carries the environment's commands (ruff,
+pytest, ast-grep, clang-format, ...): a Python entry script copied with the venv's interpreter on its first line, so it
+imports what the venv's site names, a native one linked, and never pip, since the venv holds nothing of its own. It
+replaces only a venv it wrote, wires the checkout's commit gate to run from it, and refuses unless `rola`, `rola_devtools`, `rola_results` and `torch` each import from
 where those files say.
 
 **`worktree <name> <sha>`** creates the worktree in `workspace.worktrees`, then runs `bazel run //:dev_env` and
@@ -107,7 +108,7 @@ site-packages as a plain path, which reads none of its `.pth` files), and in the
 mount point -- by a one-line `rola_results.pth`, and `dev-env` links each venv it writes; `commit -m` commits the records (`python -m
 rola_results commit`).
 
-`init`, `check`, `show`, `get`, `clock`, `dev-env`, `worktree` and `build` run from whichever python starts them (`dev-env`'s is the environment's, through its run target; `build` compiles with the checkout's own venv); `store` and `container` re-execute themselves under the checkout's own venv (`bazel run //:dev_env`), because the store and the container read `rola_results`, which it links, and the host's own python carries nothing of this project. The base venv is the sibling repositories' alone: `check` tests it where it is set.
+`init`, `check`, `show`, `get`, `clock`, `dev-env` and `worktree` run from whichever python starts them (`dev-env`'s is the environment's, through its run target); `build`, `store` and `container` re-execute themselves under the checkout's own venv (`bazel run //:dev_env`), because the build compiles with it and the store and the container read `rola_results`, which it links; the host's own python carries nothing of this project. On a host the base venv is the venv the sibling repositories' commit hooks run from, and in the image it is the image's interpreter: `check` tests it where it is set.
 
 **`get`** prints one value, for a person or a shell (the `rola-dev` skill's way to read one setting).
 
