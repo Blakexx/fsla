@@ -85,3 +85,15 @@ def test_a_wrapped_member_is_its_own_component_and_a_nested_struct_its_struct():
     assert region_ledger.component_of("IntraAt::gram_dense", comps) == "gram_dense"
     assert region_ledger.component_of("IntraAt::Copier::values", comps) == "Copier"
     assert region_ledger.component_of("IntraAt::run", comps) is None
+
+
+def test_a_barrier_file_without_mbar_wait_is_refused(tmp_path):
+    """A spin is an `mbar_wait` frame: a `--barrier` file defining none would report no spin, silently."""
+    import pytest
+
+    bogus = tmp_path / "barrier.cuh"
+    bogus.write_text("__device__ __forceinline__ void rendezvous() {\n}\n")
+    with pytest.raises(SystemExit, match="defines no `mbar_wait`"):
+        region_ledger.Attribution(tmp_path / "none.so", "", "sm_86", [], bogus)
+    real = ROOT / "csrc" / "rola" / "src" / "common" / "atoms" / "barrier.cuh"
+    assert any(name == "mbar_wait" for _, name in region_ledger.function_map(real.read_text().splitlines()))

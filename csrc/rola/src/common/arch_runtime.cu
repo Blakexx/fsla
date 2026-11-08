@@ -24,7 +24,6 @@ const long long* mma_quanta(int device) {
   const std::lock_guard<std::mutex> hold(mu);
   const auto at = resolved.find(device);
   if (at != resolved.end()) return at->second;
-  //: the card's product (`card_of`): one product match for every reader of a product's numbers
   const Card& card = card_of(device);
   const char* slug = card.product >= 0 ? denseref::arch::kProducts[card.product].slug : nullptr;
   const long long* out = nullptr;

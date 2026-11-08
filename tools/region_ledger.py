@@ -141,11 +141,15 @@ class Attribution:
     beyond it the table splices other call sites' frames in (a readout instruction read `read_chunk <- the kernel <-
     store_batches' static_for <- the kernel`), and an outermost rule booked each to the wrong component."""
 
-    def __init__(self, so: Path, member: str, arch: str, sources: list[Path], ops: Path, kernel: str | None = None):
+    def __init__(self, so: Path, member: str, arch: str, sources: list[Path], barrier: Path,
+                 kernel: str | None = None):
         self.fmaps = {p.name: function_map(p.read_text().splitlines()) for p in sources}
         self.texts = {p.name: p.read_text().splitlines() for p in sources}
-        self.omap = function_map(ops.read_text().splitlines())
-        self.ops = ops.name
+        #: the barrier atom whose `mbar_wait` frames mark a spin; a file without it would mark none, silently
+        self.bmap = function_map(barrier.read_text().splitlines())
+        if not any(name == "mbar_wait" for _, name in self.bmap):
+            raise SystemExit(f"{barrier} defines no `mbar_wait`: no barrier spin could be found (--barrier)")
+        self.barrier = barrier.name
         self.so, self.member, self.kernel = so, member, kernel
         self.arch = arch
         self.frames = frames_map(so, member, arch, kernel)
@@ -162,7 +166,7 @@ class Attribution:
             for f, ln in chain:
                 if f in self.fmaps:
                     comp = fn_of(self.fmaps[f], ln)
-        spin = any(f == self.ops and fn_of(self.omap, ln) == "mbar_wait" for f, ln in chain)
+        spin = any(f == self.barrier and fn_of(self.bmap, ln) == "mbar_wait" for f, ln in chain)
         return comp, spin
 
 
