@@ -98,7 +98,7 @@ of 16 zeroes its slot's tail (under 16 a row) after the values. For each side th
 writes it and whether its level is dense): the row against
 its max as u8 digits (round to nearest even of `level x unit`) -- or, for a dense level, f16 at 1 with the floor
 taken in a live row (`max(level / max, 2^-13)`, an IEEE divide rounded to nearest, the torch quantizer's own
-rounding) -- the max clamped at `1e-30` as `quantize_unit_max_rows` clamps it; and the max as the side's scale: the
+rounding) -- the max clamped at `1e-30` as the forms' `quantize` (`rola.routing.quant.Form`) clamps it; and the max as the side's scale: the
 level as its solve produced it, whatever its sum ([`docs/CONSTITUTION.md` R23](../../../CONSTITUTION.md#r23)). A side
 reduces only what the solve did not give: a one-activation row's max is its top element's own value (`top`:
 `(-tau/2)^2`, `-tau` or `1 / sum`, the same expressions the elements are), so only a union's sides reduce their max.
@@ -209,7 +209,7 @@ axis in 16-byte chunks, plus the column's routing bias and `gain_bias`; a routin
 On the accumulators (`value_tile`, `value_class`), a value job's heads `d_v / 8` of a lane's values each (the head size
 the shape word's class, `d_v = 32 << rows`: 32, 64, 128 or 256 channels, so a value's head is an immediate): per
 (token, head) the channel max |v| (clamped at `1e-30`) over the 8 lanes holding the head as the scale, and each channel
-times its reciprocal rounded to f16 -- `rola.routing.quant.quantize_values`, on the fp32
+times its reciprocal rounded to f16 -- the `SIGNED` form's `quantize` (`rola.routing.quant`), on the fp32
 projection rather than the bf16 the composition's linear rounds it to. Gate: every value within one f16 unit in the
 last place plus the projection's fp32 error (the channel's and the scale's, over the scale), every scale within that
 error, against the fp64 composition.

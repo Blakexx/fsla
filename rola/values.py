@@ -1,13 +1,12 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE VALUE STREAM IN THE INTERNAL FORMAT: a token's values against its largest channel, and the token's scale.
+"""THE VALUE STREAM IN THE INTERNAL FORMAT: the values' scaled block, in the signed form.
 
-The op's value operand is the same kind of thing its routing operand is -- a record of
-tensors in the one format the kernels read (ruled 2026-09-26, docs/api.md section 4.1).
-``v`` holds each token's values in f16 with its largest channel at 1; ``scale`` is that
-largest magnitude in fp32. :meth:`Values.dequantized` is the floating view a consumer
-still computing on floats takes at its seam. The format is written in one place,
-:meth:`Values.from_projection`.
+The op's value operand is the same kind of thing its routing operand is: a scaled block (docs/CONSTITUTION.md#r23,
+docs/api.md section 2.2) -- ``v`` each token's values in the ``SIGNED`` form (`rola.routing.quant`: f16 in
+``[-1, 1]``, the largest channel at 1), ``scale`` that largest magnitude in fp32. :meth:`Values.from_projection` and
+:meth:`Values.dequantized` are the form's quantize and dequantize, the floating view a consumer still computing on
+floats takes at its seam.
 """
 from __future__ import annotations
 
@@ -31,7 +30,7 @@ class Values:
     source: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.v, torch.Tensor) or self.v.dtype is not quant.VALUE_DTYPE or self.v.ndim != 4:
+        if not isinstance(self.v, torch.Tensor) or self.v.dtype is not quant.SIGNED.dtype or self.v.ndim != 4:
             raise ValueError(
                 f"Values.v is the f16 [B, T, H, d_v] plane, got "
                 f"{getattr(self.v, 'dtype', type(self.v).__name__)} {getattr(self.v, 'shape', '')}")
@@ -50,20 +49,20 @@ class Values:
 
     @classmethod
     def from_projection(cls, v: torch.Tensor) -> Values:
-        """THE FRAMEWORK'S EPILOGUE for values: a floating ``[B, T, H, d_v]`` in, the format out
-        (`rola.routing.quant`)."""
+        """THE FRAMEWORK'S EPILOGUE for values: a floating ``[B, T, H, d_v]`` in, the ``SIGNED`` block out (a
+        non-finite entry refused)."""
         if not isinstance(v, torch.Tensor) or v.ndim != 4 or not v.dtype.is_floating_point:
             raise ValueError(
                 f"the value projection is a floating [B, T, H, d_v] tensor, got "
                 f"{getattr(v, 'dtype', type(v).__name__)} {getattr(v, 'shape', '')}")
-        unit, scale = quant.quantize_values(v)
+        unit, scale = quant.SIGNED.quantize(v)
         source = v if torch.is_grad_enabled() and v.requires_grad else None
         return cls(v=unit, scale=scale, source=source)
 
     def dequantized(self) -> torch.Tensor:
         """The values as fp32, computed at the call; with a ``source`` the projection's gradient steps straight
         through the rounding. A consumer still computing on floating values calls this at its seam."""
-        v = quant.dequantize_values(self.v, self.scale)
+        v = quant.SIGNED.dequantize(self.v, self.scale)
         return v if self.source is None else quant.straight_through(self.source, v)
 
     @property

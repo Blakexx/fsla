@@ -103,7 +103,7 @@ def _read_rows(B, H, width, *, seed, device="cuda"):
     positive, so `supp(R)` is the whole leaf space and the walk visits every row."""
     gen = torch.Generator(device=device).manual_seed(seed)
     level = 0.5 * (torch.rand(B, 1, H, width, device=device, generator=gen) + 0.25)
-    return quant.quantize_unit_max_rows(level, quant.DENSE_DTYPE, True)
+    return quant.DENSE.quantize(level)
 
 
 # ---------------------------------------------------------------------------

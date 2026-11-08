@@ -247,7 +247,9 @@ A level is numbers in a representation, not a distribution (ruled 2026-11-07,
 SCALED BLOCK: unit-max rows in a FORM that states its storage type, its signedness and its
 floor -- u8 nonnegative at 255 (a sparse routing level, a zero dead), f16 nonnegative at 1
 with the dense floor taken (a dense routing level), f16 signed in `[-1, 1]` (the values) --
-with the row's max as its fp32 scale. A side's shared scale is the product of its levels'
+with the row's max as its fp32 scale. The forms are `rola.routing.quant`'s `Form` (`SPARSE`, `DENSE`, `SIGNED`),
+quantizing into and dequantizing out of each written once on it, and the factory refuses an entry its form does not
+hold -- a negative or non-finite routing level, a non-finite value -- with one host read a call. A side's shared scale is the product of its levels'
 scales, STORED FACTORED: each level's scale is written by the producer job that quantizes that
 level and multiplied by the reader as it loads them, so no job waits on another. The op every
 consumer computes, and the fp64 oracle with them:

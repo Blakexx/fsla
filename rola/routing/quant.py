@@ -1,32 +1,36 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE INTERNAL FORMAT'S QUANTIZERS: unit-max coefficient rows, per-token values, and the straight-through view.
+"""THE INTERNAL FORMAT: scaled blocks in their storage forms, and the straight-through view.
 
-One declaration of the arithmetic the op's oracle takes as its input
-(``tests/oracle/int_reference.py`` is its fp64 statement). A coefficient row is stored against its own max -- u8 with
-the max digit at 255, except a DENSE level's, f16 at 1 -- and the row's max is its fp32 scale. A dense level is never
-zero: its rows are stored with ``DENSE_FLOOR`` of the row max already taken (docs/internals/facts/liveness_contract.md
-#floor). A token's values
-are stored as f16 against their largest channel (at 1), the largest its fp32 scale. ``straight_through`` hands a
-consumer the DEQUANTIZED values with an identity gradient, which is how the format trains (docs/api.md
-section 2.1).
+A SCALED BLOCK is unit-max rows in a storage FORM and each row's max as its fp32 scale (docs/CONSTITUTION.md#r23): a
+routing level's rows on either side, a token's values. A :class:`Form` states the storage type, whether an entry may be
+negative and the floor, and quantizing into it and dequantizing out of it are written once, on it. The three forms:
+``SPARSE`` (u8, the row max at 255, a zero digit dead -- a sparse routing level), ``DENSE`` (f16 at 1, a live row's
+floor taken -- a dense routing level: docs/internals/facts/liveness_contract.md#floor) and ``SIGNED`` (f16 in
+``[-1, 1]`` -- the values). A routing form is nonnegative, because the den, the liveness words and the decay's shares
+need it, and :meth:`Form.quantize` refuses an entry its form does not hold. ``tests/oracle/int_reference.py`` is the
+arithmetic's fp64 statement; ``straight_through`` hands a consumer the DEQUANTIZED values with an identity gradient,
+which is how the format trains (docs/api.md section 2.1).
 """
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import torch
 
 __all__ = [
     "AMP_LEVELS",
+    "DENSE",
     "DENSE_DTYPE",
     "DENSE_FLOOR",
     "ROW_ALIGN",
     "ROW_DTYPE",
+    "SIGNED",
+    "SPARSE",
     "VALUE_DTYPE",
+    "Form",
     "aligned_rows",
-    "dequantize_rows",
-    "dequantize_values",
-    "quantize_unit_max_rows",
-    "quantize_values",
+    "refuse_unheld",
     "row_slot",
     "straight_through",
 ]
@@ -60,44 +64,70 @@ def aligned_rows(B: int, T: int, H: int, width: int, device, dtype: torch.dtype 
     return torch.zeros((B, T, H, row_slot(width * size) // size), dtype=dtype, device=device)[..., :width]
 
 
-def quantize_unit_max_rows(level: torch.Tensor, dtype: torch.dtype = ROW_DTYPE,
-                           dense: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
-    """``(rows [..., w], scale fp32 [...])``: each row against its own max, in storage under the alignment law -- u8
-    digits at 255, or (``DENSE_DTYPE``) f16 at 1 with a ``dense`` level's floor taken in a live row; an all-zero row
-    stays zero."""
-    exact = level.detach().float()
-    scale = exact.abs().amax(dim=-1)
-    unit = exact / scale.clamp_min(_TINY).unsqueeze(-1)
-    B, T, H, width = exact.shape
-    rows = aligned_rows(B, T, H, width, exact.device, dtype)
-    if dtype is DENSE_DTYPE:
-        if dense:
-            unit = torch.where((scale > 0).unsqueeze(-1), unit.clamp_min(DENSE_FLOOR), unit)
-        rows.copy_(unit.to(DENSE_DTYPE))
-    else:
-        rows.copy_(torch.round(unit * AMP_LEVELS).to(ROW_DTYPE))
-    return rows, scale
+@dataclass(frozen=True, slots=True)
+class Form:
+    """A SCALED BLOCK'S STORAGE FORM: the stored type, whether an entry may be negative, the stored value of a row's max
+    (``top``), a live row's least coefficient as a fraction of its max (``floor``, stored taken; ``None`` for none) and
+    whether its rows lie under the row alignment law (the routing forms: the facts pass and the intra read them in
+    32-byte grains)."""
+
+    name: str
+    dtype: torch.dtype
+    signed: bool
+    top: float
+    floor: float | None
+    aligned: bool
+
+    def unheld(self, x: torch.Tensor) -> torch.Tensor:
+        """Whether ``x`` has an entry this form does not hold -- a negative one in a nonnegative form, a non-finite one
+        in any -- as a 0-dim bool on ``x``'s device, read by no one yet (:func:`refuse_unheld` reads it)."""
+        unfinite = ~torch.isfinite(x).all()
+        return unfinite if self.signed else unfinite | (x < 0).any()
+
+    def quantize(self, x: torch.Tensor, *, checked: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
+        """``(rows [..., w], scale fp32 [...])``: each row against its own max, rounded once into the form (u8 to the
+        nearest digit, f16 to the nearest value), the floor taken in a live row; an all-zero row stays zero. Refuses
+        an entry the form does not hold (:func:`refuse_unheld`), unless the caller ``checked`` the block already."""
+        exact = x.detach().float()
+        if not checked:
+            refuse_unheld([(self, exact)])
+        scale = exact.abs().amax(dim=-1)
+        unit = exact / scale.clamp_min(_TINY).unsqueeze(-1)
+        if self.floor is not None:
+            unit = torch.where((scale > 0).unsqueeze(-1), unit.clamp_min(self.floor), unit)
+        stored = torch.round(unit * self.top) if self.dtype is ROW_DTYPE else unit * self.top
+        if not self.aligned:
+            return stored.to(self.dtype), scale
+        rows = aligned_rows(*exact.shape, exact.device, self.dtype)
+        rows.copy_(stored.to(self.dtype))
+        return rows, scale
+
+    def dequantize(self, rows: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+        """The block's values, fp32: each stored entry over ``top`` times its row's scale, at least the floor (a dead
+        row, its scale 0, stays zero)."""
+        unit = rows.float() / self.top
+        if self.floor is not None:
+            unit = unit.clamp_min(self.floor)
+        return unit * scale.unsqueeze(-1)
 
 
-def dequantize_rows(rows: torch.Tensor, scale: torch.Tensor, dense: bool) -> torch.Tensor:
-    """The rows' amplitudes, fp32: each u8 digit over 255 (or each f16 coefficient) times its row's scale, a dense
-    level at least the floor (a dead row, its scale 0, stays zero)."""
-    unit = rows.float() if rows.dtype is DENSE_DTYPE else rows.float() / AMP_LEVELS
-    if dense:
-        unit = unit.clamp_min(DENSE_FLOOR)
-    return unit * scale.unsqueeze(-1)
+def refuse_unheld(blocks) -> None:
+    """Refuse the first ``(form, x)`` of ``blocks`` with an entry its form does not hold: ONE host read for them all, so
+    a factory over many blocks waits on the device once."""
+    blocks = list(blocks)
+    flags = [form.unheld(x.detach().float()) for form, x in blocks]
+    if flags and bool(torch.stack([f.to(flags[0].device) for f in flags]).any()):
+        form, _ = next(block for block, flag in zip(blocks, flags) if bool(flag))
+        raise ValueError(f"the {form.name} form holds {'finite' if form.signed else 'nonnegative, finite'} entries; "
+                         "this block has one it does not")
 
 
-def quantize_values(v: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """``(unit f16 [..., c], scale fp32 [...])``: the token's values against its largest channel, rounded once to
-    f16; an all-zero token stays zero."""
-    exact = v.detach().float()
-    scale = exact.abs().amax(dim=-1)
-    return (exact / scale.clamp_min(_TINY).unsqueeze(-1)).to(VALUE_DTYPE), scale
-
-
-def dequantize_values(unit: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    return unit.float() * scale.unsqueeze(-1)
+#: a sparse routing level: u8, the row max at 255, a zero digit dead
+SPARSE = Form("u8 sparse", ROW_DTYPE, signed=False, top=AMP_LEVELS, floor=None, aligned=True)
+#: a dense routing level: f16 at 1, a live row's floor taken
+DENSE = Form("f16 dense", DENSE_DTYPE, signed=False, top=1.0, floor=DENSE_FLOOR, aligned=True)
+#: the values: f16 in [-1, 1] against the token's largest channel
+SIGNED = Form("f16 signed", VALUE_DTYPE, signed=True, top=1.0, floor=None, aligned=False)
 
 
 def straight_through(exact: torch.Tensor, dequantized: torch.Tensor) -> torch.Tensor:

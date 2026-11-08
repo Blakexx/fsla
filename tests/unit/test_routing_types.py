@@ -41,7 +41,7 @@ def test_tied_routing_has_only_width_and_one_validated_activation():
     # A tied SOFTMAX level is legal and dense on both duties (no exact zeros).
     dense_tied = TiedRouting(width=3, op=SoftmaxActivation())
     assert dense_tied.activation("read") is dense_tied.activation("write")
-    assert not dense_tied.properties.exact_zeros
+    assert not dense_tied.op.properties.exact_zeros
 
 
 def test_tied_routing_at_another_width_keeps_the_activation():

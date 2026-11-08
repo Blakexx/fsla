@@ -3,8 +3,8 @@
 """THE SCALE PASS'S REFERENCE: the write-aligned bound in fp64 from the bundle's own rows, and the byte rule.
 
 ``bound(t) = (sum_r x_R(t, r)) (sum_a x_S(t, a) G_w(a))``, ``G_w(a) = sum_{t' in windows < w} w_S(t', a) max_r w_R(t',
-r) F(t')``, ``x`` and ``w`` each level's unit rows (`rola.routing.quant.dequantize_rows` at a unit scale: a u8 digit over
-255, a dense f16 at least the floor), ``F = g prod_l scale_write_l s`` -- in the recurrence's units over the reader's
+r) F(t')``, ``x`` and ``w`` each level's unit rows (their form's `dequantize` at a unit scale: a u8 digit over
+255, a dense f16 at least the floor), ``F = prod_l scale_write_l s`` -- in the recurrence's units over the reader's
 per-token factor ``r``. It bounds the inter numerator over ``r`` on every channel; over the carry's factor it is the
 byte rule's ``P``. Symbols: ``W`` the window, ``L`` tokens, ``g`` query heads a write head.
 """
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import torch
 
-from rola.routing import quant
+from rola.routing.factors import level_form
 
 __all__ = ["UNIT_HEADROOM", "UNIT_LEVELS", "bound", "byte_holds"]
 
@@ -21,7 +21,7 @@ UNIT_HEADROOM, UNIT_LEVELS = 1.02, 15
 
 
 def _units(rows, sparse: bool) -> torch.Tensor:
-    return quant.dequantize_rows(rows, torch.ones(rows.shape[:-1], device=rows.device), not sparse).double()
+    return level_form(sparse).dequantize(rows, torch.ones(rows.shape[:-1], device=rows.device)).double()
 
 
 def bound(routes, values, window: int, level_s: int) -> torch.Tensor:

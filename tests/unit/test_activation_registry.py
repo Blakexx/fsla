@@ -213,12 +213,6 @@ def test_tied_routing_admits_any_registered_activation_without_widening_an_isins
         TiedRouting(width=4, op=_Future())
 
 
-def test_mass_decay_accepts_tied_routing():
-    """`LeafMassDecay` validates the topology's shape generically -- a `TiedRouting` level needs no special case."""
-    topology = Topology(levels=(TiedRouting(width=4, op=entmax(1.5)),))
-    LeafMassDecay(dials=(torch.full((1, 4), 0.5),)).validate_against(topology)
-
-
 # --- the not-kerneled surface ------------------------------------------------
 
 class _StubBundle:

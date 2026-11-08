@@ -214,10 +214,6 @@ class UnionRouting:
                 "without exact structural zeros there is no support to intersect, only "
                 "small numbers, and the read/write split would be silently meaningless")
 
-    @property
-    def properties(self) -> ActivationProperties:
-        return properties_for(("entmax", self.alpha), owner="UnionRouting")
-
     def activation(self, duty: str) -> EntmaxActivation:
         """Union routing runs ONE solve, so both duties name the same activation."""
         if duty not in ("read", "write"):
@@ -254,10 +250,6 @@ class TiedRouting:
     def __post_init__(self) -> None:
         validate_level_width(self.width, owner="TiedRouting")
         activation_properties(self.op, owner="TiedRouting.op")
-
-    @property
-    def properties(self) -> ActivationProperties:
-        return activation_properties(self.op, owner="TiedRouting")
 
     def activation(self, duty: str) -> RoutingActivation:
         """Tied routing runs ONE solve, so both duties name the same activation."""
@@ -550,9 +542,9 @@ class OpaqueActivation:
     """The activation of a cell this package did not solve.
 
     A producer is duck-typed, so a level may be filled by a map with no registry row of
-    its own. Its cell still has to answer every question the rules ask -- density,
-    ratification, normalization -- and it answers them from ONE row, ``("opaque",
-    None)``, whose columns are argued in ``rola/routing/activations.py``.
+    its own. Its cell still has to answer every question the rules ask -- density and
+    ratification -- and it answers them from ONE row, ``("opaque", None)``, whose columns
+    are argued in ``rola/routing/activations.py``.
     """
 
     @property

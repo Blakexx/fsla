@@ -170,16 +170,37 @@ def test_the_digit_header_mirrors_the_quantizer():
     assert "constexpr float kDenseFloor = 1.0f / 8192.0f;" in text and quant.DENSE_FLOOR == 1.0 / 8192.0
 
 
+def test_the_factory_refuses_an_entry_its_form_does_not_hold():
+    """docs/CONSTITUTION.md#r23: a routing form is nonnegative and every form finite, and the factory refuses what its
+    form does not hold -- a negative or non-finite routing level, a non-finite value -- where a signed value is held."""
+    from rola.routing import quant
+
+    topology = _factors(_routes()).topology
+    good = tuple(torch.rand(1, 2, 2, w, dtype=torch.float64) for w in topology.widths)
+    for planted in (-1e-3, float("nan"), float("inf")):
+        bad = (good[0].clone(),) + good[1:]
+        bad[0][0, 0, 0, 0] = planted
+        with pytest.raises(ValueError, match="form holds nonnegative, finite entries"):
+            RouteFactors.from_levels(topology, good, bad)
+    v = torch.randn(1, 2, 2, 8, dtype=torch.float64)
+    assert torch.equal(Values.from_projection(v).v.float() < 0, v < 0), "the signed form holds negative values"
+    v[0, 0, 0, 0] = float("nan")
+    with pytest.raises(ValueError, match="form holds finite entries"):
+        Values.from_projection(v)
+    with pytest.raises(ValueError, match="f16 signed"):
+        quant.SIGNED.quantize(v)
+
+
 def test_a_dense_levels_zero_digit_reads_as_the_floor_in_a_live_row_only():
     """RULED 2026-10-03 (docs/internals/facts/liveness_contract.md#floor): a dense level's zero digit dequantizes to
     the floor times its row's scale, a dead row (scale 0) stays zero, and a sparse level's zero is exact."""
     from rola.routing import quant
 
-    rows = torch.tensor([[255, 0, 3], [0, 0, 0]], dtype=torch.uint8)
     scale = torch.tensor([2.0, 0.0])
-    dense = quant.dequantize_rows(rows, scale, True)
+    dense = quant.DENSE.dequantize(torch.tensor([[1.0, 0.0, 0.5], [0.0, 0.0, 0.0]], dtype=torch.float16), scale)
     assert dense[0, 1] == 2.0 * quant.DENSE_FLOOR and dense[0, 0] == 2.0 and torch.equal(dense[1], torch.zeros(3))
-    assert quant.dequantize_rows(rows, scale, False)[0, 1] == 0.0
+    sparse = quant.SPARSE.dequantize(torch.tensor([[255, 0, 3], [0, 0, 0]], dtype=torch.uint8), scale)
+    assert sparse[0, 1] == 0.0 and sparse[0, 0] == 2.0
 
 
 def test_rows_are_u8_at_every_depth():
@@ -203,7 +224,7 @@ def test_rows_are_u8_at_every_depth():
     from rola.routing import quant
 
     wrong = list(bundle.amp_read)
-    wrong[1] = quant.quantize_unit_max_rows(level, quant.DENSE_DTYPE)[0]
+    wrong[1] = quant.DENSE.quantize(level)[0]
     with pytest.raises(TypeError, match="stored as torch.uint8"):
         RouteFactors(topology=deep, amp_read=wrong, amp_write=bundle.amp_write, scale_read=bundle.scale_read,
                      scale_write=bundle.scale_write, sparse=sparse)
@@ -346,8 +367,6 @@ def test_the_public_levels_are_the_formats_rows_dequantized():
     factors = _factors(producer)
     #: RULED 2026-09-26: the rows (u8, a dense level's f16) and their scales ARE the stored layout; the dequantized
     #: levels are computed at a consumer's seam, for consumers that still compute on floating levels.
-    from rola.routing import quant
-
     read, _ = factors.dequantized()
     for level, (rows, scale, public) in enumerate(zip(factors.amp_read, factors.scale_read, read)):
         dense = not factors.sparse[0][level]
@@ -355,7 +374,7 @@ def test_the_public_levels_are_the_formats_rows_dequantized():
         top = 1 if dense else 255
         assert torch.equal(rows.amax(dim=-1), torch.full_like(rows.amax(dim=-1), top)), (
             f"level {level}'s rows are not unit-max")
-        assert torch.allclose(quant.dequantize_rows(rows, scale, dense).to(public.dtype), public.detach()), (
+        assert torch.allclose(factors.form(level, "read").dequantize(rows, scale).to(public.dtype), public.detach()), (
             f"level {level}'s public level is not its rows dequantized")
 
 

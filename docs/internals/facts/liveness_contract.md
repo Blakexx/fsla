@@ -40,7 +40,7 @@ the maximum of what the pass already holds when it holds it.
 
 ## <a id="max"></a>The digits: each against its row's max
 
-Python's statement of the digits is `rola.routing.quant` (`AMP_LEVELS`, `DENSE_FLOOR`, `dequantize_rows`);
+Python's statement of the digits is `rola.routing.quant` (`AMP_LEVELS`, `DENSE_FLOOR`, the `SPARSE` and `DENSE` forms);
 `tests/unit/test_api_contract.py` holds the two to the same constants.
 
 Every level's row is stored unit-max: u8 digits with the row's largest at 255 (`kRowMaxDigit`), the row's max beside
@@ -66,7 +66,7 @@ the numerically safe minimum (f16's least normal is 2^-14). A dense level's rows
 the row max with the floor already taken — the producer writes `max(w / max, 2^-13)` — so its consumers read them as
 they are (the write side ruled 2026-10-04, the read side 2026-10-07: the readout loads the read rows into its MMAs
 unconverted). The floor applies only in a live row (scale > 0): a dead row stays zero everywhere, including where a
-consumer normalizes the row by its own sum. A sparse level's zero is exact and stays 0, and its rows are u8 on both
+consumer divides the row by its own sum (the decay's shares). A sparse level's zero is exact and stays 0, and its rows are u8 on both
 sides.
 
 What it buys: the fp16 fold scales each write list by one power of two, and the readout publishes each 64-leaf block
@@ -76,8 +76,8 @@ block within 2^13 of each other, so what fp16 loses below its range is a small f
 whatever the gain spread. The cost to the model: a peaked row's mass grows by at most 255 × 2^-13 ≈ 3% of its max,
 inside the uncertainty its own zero digits already carry.
 
-Every consumer reads it the same way: the write side's f16 rows as stored, the read side's u8 with the floor at
-conversion — `dequantize_rows`, the decode fold, the fold and readout, the intra and the oracle's references. Numerical safety asks for one dense level a side (the alternating split, or fully dense);
+Every consumer reads it the same way: a dense level's f16 rows as stored, the floor taken, on either side -- the
+`DENSE` form's `dequantize`, the decode fold, the fold and readout, the intra and the oracle's references. Numerical safety asks for one dense level a side (the alternating split, or fully dense);
 sparse-sparse routing has no floor to lean on and is declared at the caller's risk.
 
 <a id="layout"></a>
