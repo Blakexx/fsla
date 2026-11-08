@@ -2,6 +2,7 @@
 and the record writer, the CUDA runtime's headers, and the sources their actions read (docs/build-graph.md)."""
 
 load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@rola_tree//:tree.bzl", "TRACKED")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -78,4 +79,11 @@ filegroup(
         "//tools:toolchain_records",
         "//tools:toolchains.py",
     ],
+)
+
+#: this package's tracked files (`git ls-files`, @rola_tree): its part of the tree the checks read
+filegroup(
+    name = "tracked",
+    srcs = TRACKED["bazel"],
+    visibility = ["//visibility:public"],
 )

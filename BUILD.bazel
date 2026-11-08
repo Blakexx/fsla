@@ -8,6 +8,7 @@
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "string_list_flag")
 load("@rola_env//:flags.bzl", "CXX11_ABI", "RATIFIED_ARCHS", "TOOLCHAIN", "TORCH", "TORCH_CUDA")
 load("//bazel:defs.bzl", "rola_extension")
+load("@rola_tree//:tree.bzl", "TRACKED")
 
 exports_files([
     "requirements.lock",
@@ -55,4 +56,23 @@ rola_extension(
         "//csrc/rola:registration",
         "//csrc/rola:units",
     ],
+)
+
+#: THE TREE: every tracked file, each package's part (`git ls-files`, @rola_tree), as the checks read it
+filegroup(
+    name = "tracked",
+    srcs = TRACKED[""],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "tree",
+    srcs = [":tracked"] + ["//%s:tracked" % package for package in TRACKED if package],
+    visibility = ["//visibility:public"],
+)
+
+#: THE GATE: every check the graph holds (docs/build-graph.md#checks)
+test_suite(
+    name = "gate",
+    tests = ["//tools:lints"],
 )

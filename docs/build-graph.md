@@ -19,7 +19,7 @@ semaphores, which Bazel cannot do for an action.
 | bazelisk, Bazel's launcher | `tools/bazelisk_pin.json`, installed by `python tools/dev.py init` (`toolchain.bazelisk`), which links `bazel` on PATH to it (`toolchain.bazel`; `check` has the row) | `host.tools_dir` |
 | Bazel | `.bazelversion`, verified against `.bazeliskrc`'s digest | bazelisk's cache |
 | the graph's CUDA toolkit | NVIDIA's redistributable components at release 13.0.0 (`MODULE.bazel`'s `cuda.redist_json`: nvcc 13.0.48), only the compiler's (~75 MB of the 4.7 GB set) | the shared repository cache |
-| the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (`tools/uv_pin.json`) into the pinned CPython (3.11.13), by `bazel/environment.bzl`'s `@rola_env` (`bazel/make_env.py`) | `host.build_cache/bazel/store`, one environment a key (the lock, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages |
+| the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (`tools/uv_pin.json`) into the pinned CPython (3.11.13), and rola-devtools at `tools/devtools.txt`'s commit, by `bazel/environment.bzl`'s `@rola_env` (`bazel/make_env.py`) | `host.build_cache/bazel/store`, one environment a key (the lock, the devtools commit, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages; `@rola_env//:flags.bzl`'s `VENV` names it, so a command naming it is keyed by the environment |
 | the linker | mold at `tools/mold_pin.json`'s release (`@mold`) | the shared repository cache |
 | the host C++ compiler's identity | its version and the digests of gcc, g++ and cc1plus (`@host_cc`), an input of every compile | the output base |
 
@@ -95,6 +95,19 @@ post-build recompile is not among them: setup.py's build runs it (a warning betw
   what it carries, loaded by the environment's interpreter against the toolkit's driver stub, so the answer is the
   binary's on any machine. It runs outside the sandbox, where the environment's packages are; the lock is its input.
 
+## <a id="checks"></a>The checks
+
+`bazel test //:gate` runs every check the graph holds: the lints ruff, ruff's blank-line spacing, clang-format and ast-grep
+(the commit gate's hooks of the same names, run the same way).
+
+- THE TREE is `//:tree`: every tracked file (`git ls-files`, read by `bazel/environment.bzl`'s `@rola_tree`, which
+  reads again when git's index moves), each package's part its `tracked` filegroup. A file is in the tree once git
+  tracks it.
+- A CHECK IS A TEST OVER ITS FILES (`bazel/defs.bzl`'s `tree_test`): its inputs are copied into a real tree in the
+  test's own temporary directory, so a tool that resolves a path -- the runfiles are links into the checkout --
+  reads the check's inputs and nothing else, and the environment's tools are on PATH. Cached on what it reads, a check
+  reruns only when one of its files changes.
+
 ## <a id="rules"></a>The rules
 
 Each is a trap a setup like this falls into, and what avoids it (checked against Bazel 9.3.1's own options where it
@@ -140,6 +153,7 @@ names one).
 ## <a id="use"></a>Using it
 
     python tools/dev.py init        # installs the pinned bazelisk and links `bazel` to it (toolchain.bazel)
+    bazel test //:gate                                              # every check the graph holds
     bazel run //:library                                            # the shipped build, into rola_cu13/
     bazel run //:library --//:archs=86 --//:carry_arms=3            # an iteration build
 

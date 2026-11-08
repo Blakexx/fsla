@@ -44,8 +44,9 @@ def _env_impl(rctx):
     pin = json.decode(rctx.read(rctx.attr.uv_pin))
     rctx.download_and_extract(url = pin["release_url"], sha256 = pin["asset_sha256"], type = "zip", output = "uv", stripPrefix = pin["strip_prefix"])
     record = json.decode(rctx.read(rctx.attr.toolchain))
-    for script in (rctx.attr.make_env, rctx.attr.flags, rctx.attr.build_flags):
-        rctx.watch(rctx.path(script))
+    #: the environment's inputs: a change to any of them is a new environment (the lock and the devtools pin by content)
+    for source in (rctx.attr.lock, rctx.attr.devtools, rctx.attr.make_env, rctx.attr.flags, rctx.attr.build_flags):
+        rctx.watch(rctx.path(source))
     rctx.watch_tree(rctx.path(rctx.attr.manifests).dirname)
     built = rctx.execute([
         rctx.which("python3"),
@@ -60,6 +61,8 @@ def _env_impl(rctx):
         str(rctx.path(rctx.attr.lock)),
         "--index",
         record["torch_index"],
+        "--devtools",
+        str(rctx.path(rctx.attr.devtools)),
     ], timeout = 7200, quiet = False)
     if built.return_code != 0:
         fail("the environment's store build failed (bazel/make_env.py):\n" + built.stderr)
@@ -82,13 +85,16 @@ def _env_impl(rctx):
     ], timeout = 600)
     if flags.return_code != 0:
         fail("the graph's flags (bazel/flags.py) failed:\n" + flags.stderr)
-    rctx.file("flags.bzl", flags.stdout)
+    #: the environment's own interpreter and tools by their store path: the path carries the environment's key, so a
+    #: command naming it is keyed by the environment
+    rctx.file("flags.bzl", flags.stdout + "VENV = %s\n" % json.encode(paths["venv"]))
     rctx.file("BUILD.bazel", _ENV_BUILD)
 
 _env_repo = repository_rule(
     implementation = _env_impl,
     attrs = {
         "lock": attr.label(default = "//:requirements.lock"),
+        "devtools": attr.label(default = "//tools:devtools.txt"),
         "uv_pin": attr.label(default = "//tools:uv_pin.json"),
         "toolchain": attr.label(default = "//tools:toolchains/cu13.json"),
         "manifests": attr.label(default = "//tools:manifests/cu13/sm_86.json"),
@@ -167,10 +173,37 @@ _cuda_tools_repo = repository_rule(
     doc = "The toolkit's disassemblers (cuobjdump, nvdisasm), from the redistributable manifest by its digests.",
 )
 
+def _tree_impl(rctx):
+    root = str(rctx.workspace_root)
+    git = rctx.which("git")
+    index = rctx.execute([git, "-C", root, "rev-parse", "--path-format=absolute", "--git-path", "index"]).stdout.strip()
+    #: re-read when the index moves: a file added, removed or staged
+    rctx.watch(index)
+    listed = rctx.execute([git, "-C", root, "ls-files", "-z"])
+    if listed.return_code != 0:
+        fail("git ls-files failed in %s: %s" % (root, listed.stderr))
+    files = [f for f in listed.stdout.split("\0") if f]
+    packages = sorted([f.rsplit("/", 1)[0] if "/" in f else "" for f in files if f.rsplit("/", 1)[-1] == "BUILD.bazel"])
+    tracked = {pkg: [] for pkg in packages}
+    for f in files:
+        owner = ""
+        for pkg in packages:
+            if pkg and f.startswith(pkg + "/") and len(pkg) > len(owner):
+                owner = pkg
+        tracked[owner].append(f[len(owner) + 1:] if owner else f)
+    rctx.file("tree.bzl", "\"\"\"GENERATED from `git ls-files`: the checkout's tracked files, by the package that holds them.\"\"\"\n\nTRACKED = %s\n" % json.encode_indent(tracked, indent = "    "))
+    rctx.file("BUILD.bazel", 'exports_files(["tree.bzl"], visibility = ["//visibility:public"])\n')
+
+_tree_repo = repository_rule(
+    implementation = _tree_impl,
+    doc = "The checkout's tracked files (`git ls-files`), by package: the tree the lints read, re-read when the index moves.",
+)
+
 def _environment_impl(mctx):
     _env_repo(name = "rola_env")
     _pinned_repo(name = "mold", pin = "//tools:mold_pin.json")
     _host_cc_repo(name = "host_cc")
+    _tree_repo(name = "rola_tree")
     for module in mctx.modules:
         for tag in module.tags.cuda_tools:
             _cuda_tools_repo(name = "cuda_tools", manifest = tag.manifest, sha256 = tag.sha256)

@@ -1,6 +1,9 @@
 """THE TREE'S TOOLS AS THE GRAPH'S INPUTS: the pins and records the graph's repositories read, and the generators its
 actions run."""
 
+load("@rola_tree//:tree.bzl", "TRACKED")
+load("//bazel:defs.bzl", "tree_test")
+
 package(default_visibility = ["//visibility:public"])
 
 exports_files(glob([
@@ -33,4 +36,55 @@ filegroup(
         "*.py",
         "lint/*.py",
     ]),
+)
+
+#: this package's tracked files (`git ls-files`, @rola_tree): its part of the tree the checks read
+filegroup(
+    name = "tracked",
+    srcs = TRACKED["tools"],
+    visibility = ["//visibility:public"],
+)
+
+#: THE LINTS, each a test over the tree (docs/build-graph.md#checks)
+tree_test(
+    name = "ruff",
+    size = "small",
+    cmd = ["ruff", "check", "--force-exclude", "."],
+    data = ["//:tree"],
+)
+
+tree_test(
+    name = "ruff_e3",
+    size = "small",
+    cmd = ["tools/lint/run_ruff_e3.sh"],
+    data = ["//:tree"],
+)
+
+tree_test(
+    name = "clang_format",
+    size = "small",
+    cmd = [
+        "/bin/bash",
+        "-c",
+        "find -L csrc/rola -type f \\( -name '*.cu' -o -name '*.cuh' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \\) " +
+        "-print0 | sort -z | xargs -0 clang-format --style=file --dry-run --Werror",
+    ],
+    data = ["//:tree"],
+)
+
+tree_test(
+    name = "ast_grep",
+    size = "small",
+    cmd = ["python3", "tools/lint/ast_grep_gate.py"],
+    data = ["//:tree"],
+)
+
+test_suite(
+    name = "lints",
+    tests = [
+        ":ast_grep",
+        ":clang_format",
+        ":ruff",
+        ":ruff_e3",
+    ],
 )

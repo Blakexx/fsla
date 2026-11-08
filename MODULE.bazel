@@ -39,4 +39,4 @@ environment.cuda_tools(
     manifest = "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.0.0.json",
     sha256 = "fe6a86b54450d03ae709123a52717870c49046d65d45303ce585c7aa8a83a217",
 )
-use_repo(environment, "cuda_tools", "host_cc", "mold", "rola_env")
+use_repo(environment, "cuda_tools", "host_cc", "mold", "rola_env", "rola_tree")

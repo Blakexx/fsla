@@ -2,7 +2,9 @@
 selects, and the library -- `rola_cu13/_C.abi3.so` linked by the pinned mold beside its build record, which `bazel
 run` copies into the checkout. Docs: docs/build-graph.md#compile."""
 
+load("@bazel_skylib//lib:shell.bzl", "shell")
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
+load("@rola_env//:flags.bzl", "VENV")
 load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cc_toolchain", "use_cc_toolchain")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
@@ -251,4 +253,32 @@ rola_extension = rule(
         "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
     },
     doc = "The extension `rola_cu13/_C.abi3.so` and its build record; `bazel run` copies both into the checkout.",
+)
+
+_TREE_TEST = """\
+#!/bin/bash
+# a check over the tree's tracked files (bazel/defs.bzl's tree_test): the runfiles copied into a real tree first, so a
+# tool that resolves a path -- the runfiles are links into the checkout -- reads the check's inputs and nothing else
+set -euo pipefail
+tree="$TEST_TMPDIR/tree"
+cp -rL "$TEST_SRCDIR/_main" "$tree"
+cd "$tree"
+export PATH={venv}/bin:/usr/bin:/bin RUFF_NO_CACHE=true
+exec {cmd}
+"""
+
+def _tree_test_impl(ctx):
+    script = ctx.actions.declare_file(ctx.label.name + ".sh")
+    words = [word.replace("{venv}", VENV) for word in ctx.attr.cmd]
+    ctx.actions.write(script, _TREE_TEST.format(venv = shell.quote(VENV), cmd = " ".join([shell.quote(w) for w in words])), is_executable = True)
+    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = ctx.files.data))]
+
+tree_test = rule(
+    implementation = _tree_test_impl,
+    test = True,
+    attrs = {
+        "cmd": attr.string_list(mandatory = True, doc = "the check's command, run from the runfiles root; `{venv}` is the environment's directory"),
+        "data": attr.label_list(allow_files = True, doc = "the files it reads: the tree, or a part of it"),
+    },
+    doc = "A check over the tree's tracked files, the environment's tools on PATH: one test, cached on what it reads.",
 )

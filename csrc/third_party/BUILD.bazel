@@ -1,6 +1,7 @@
 """THE VENDORED LIBRARIES AS THE GRAPH'S INPUTS (their pins: each tree's PIN.json; docs/build.md)."""
 
 load("//bazel:defs.bzl", "include_root")
+load("@rola_tree//:tree.bzl", "TRACKED")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -14,4 +15,11 @@ include_root(
     name = "cutlass",
     hdrs = glob(["cutlass/include/**"]),
     roots = ["cutlass/include"],
+)
+
+#: this package's tracked files (`git ls-files`, @rola_tree): its part of the tree the checks read
+filegroup(
+    name = "tracked",
+    srcs = TRACKED["csrc/third_party"],
+    visibility = ["//visibility:public"],
 )

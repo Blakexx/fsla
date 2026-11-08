@@ -4,7 +4,7 @@
 """THE ENVIRONMENT'S STORE: the pinned Python and requirements.lock's packages, built once a key into the store every
 worktree's graph shares, under a file lock -- a second builder of the same key waits and reuses it.
 
-The key hashes the lock, the Python version, uv's version and the extra index, so a lock change is a new environment
+The key hashes the lock, the pinned rola-devtools commit, the Python version, uv's version and the extra index, so a lock change is a new environment
 and an unchanged one is never rebuilt. uv's cache in the store hardlinks package files, so environments share their
 bytes. Run by the graph's environment repository (bazel/environment.bzl) under the machine's python3; prints the
 environment's paths as JSON on its last line. Docs: docs/build-graph.md#environment.
@@ -28,11 +28,13 @@ def main() -> int:
     ap.add_argument("--python", required=True, help="the interpreter version uv installs")
     ap.add_argument("--lock", type=Path, required=True)
     ap.add_argument("--index", required=True, help="the toolchain's torch index")
+    ap.add_argument("--devtools", type=Path, required=True,
+                    help="tools/devtools.txt: the rola-devtools commit the tree is tested with")
     a = ap.parse_args()
 
     uv_version = subprocess.run([a.uv, "--version"], capture_output=True, text=True, check=True).stdout.strip()
-    key = hashlib.sha256(b"\0".join([a.lock.read_bytes(), a.python.encode(), uv_version.encode(),
-                                     a.index.encode()])).hexdigest()[:16]
+    key = hashlib.sha256(b"\0".join([a.lock.read_bytes(), a.devtools.read_bytes(), a.python.encode(),
+                                     uv_version.encode(), a.index.encode()])).hexdigest()[:16]
     a.store.mkdir(parents=True, exist_ok=True)
     env = a.store / "venvs" / key
     python = env / "bin" / "python3"
@@ -49,6 +51,9 @@ def main() -> int:
             subprocess.run([a.uv, "pip", "sync", "--python", str(python), "--require-hashes", str(a.lock),
                             "--extra-index-url", a.index, "--index-strategy", "unsafe-best-match"], env=uv_env,
                            check=True)
+            #: rola-devtools at its pinned commit (a git requirement: the commit is its pin, no hash to require)
+            subprocess.run([a.uv, "pip", "install", "--python", str(python), "--no-deps", "-r", str(a.devtools)],
+                           env=uv_env, check=True)
             (env / ".complete").write_text(f"{uv_version}\n")
     probe = ("import json, sys, sysconfig; print(json.dumps({'site': sysconfig.get_paths()['purelib'], "
              "'include': sysconfig.get_paths()['include'], 'base': sys.base_prefix}))")

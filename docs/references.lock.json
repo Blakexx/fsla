@@ -305,6 +305,7 @@
   {"doc": "docs/build-graph.md", "pinned_at": "9548e6243f7d", "reviewed": true, "sha256": "", "target": "tools/build_record.py"},
   {"doc": "docs/build-graph.md", "pinned_at": "f9de7b1175b6", "reviewed": true, "sha256": "15168b0bc2a28550", "target": "tools/build_record.py::vendored_pin"},
   {"doc": "docs/build-graph.md", "pinned_at": "9548e6243f7d", "reviewed": true, "sha256": "", "target": "tools/csrc_stamp.py"},
+  {"doc": "docs/build-graph.md", "pinned_at": "08d167c58712", "reviewed": true, "sha256": "", "target": "tools/devtools.txt"},
   {"doc": "docs/build-graph.md", "pinned_at": "9548e6243f7d", "reviewed": true, "sha256": "", "target": "tools/gen_shards.py"},
   {"doc": "docs/build-graph.md", "pinned_at": "9548e6243f7d", "reviewed": true, "sha256": "e9d04cef5d1b97ed", "target": "tools/gen_shards.py::carry_parts_spec"},
   {"doc": "docs/build-graph.md", "pinned_at": "f9de7b1175b6", "reviewed": true, "sha256": "439d780e6b98ca03", "target": "tools/gen_shards.py::check_generated"},
