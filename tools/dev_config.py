@@ -53,9 +53,9 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "sccache": Key("path?", None, "the pinned sccache (tools/sccache_pin.json); null means none installed"),
         "sccache_enabled": Key("bool", True, "false builds uncached, the one deliberate opt-out of the sccache gate"),
         "mold": Key("path?", None, "the pinned mold (tools/mold_pin.json), the only linker; null means none installed"),
-        "clang_tidy": Key("path?", None, "the host's pinned clang-tidy, which checkouts before the build graph's unit "
-                          "lints install and whose commit hooks read it; this tree's unit lints run the graph's "
-                          "(@clang_tidy) and it reads none of it -- declared so their machine files load"),
+        "clang_tidy": Key("path?", None, "a clang-tidy the machine's toolchain file may name, for the checkouts on this "
+                          "machine whose commit hooks run it; this tree's unit lints run the graph's (@clang_tidy). A "
+                          "loader refuses a key it does not declare, so it stays declared while machine files carry it"),
         "bazel": Key("path", "~/.local/bin/bazel", "where init links `bazel`, the command the docs name, to the pinned "
                      "bazelisk (under host.tools_dir by its pin, never a machine key: every checkout loads this "
                      "machine's files, and an older loader refuses a key it does not declare): a path on PATH"),

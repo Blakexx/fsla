@@ -31,7 +31,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -49,7 +48,7 @@ RECORDED = ("sccache", "mold")
 #: THE ENVIRONMENT'S INPUTS: what the dev image is built from and how it is run. Their hash is the environment key; a
 #: commit changing any of them carries a passing container check for its key (KERNEL_STANDARDS §23 (3)).
 ENV_INPUTS = ("Dockerfile", ".devcontainer/devcontainer.json", ".devcontainer/compose.yaml", "requirements.lock",
-              "tools/sccache_pin.json", "tools/mold_pin.json", "tools/clang_tidy_pin.json", "tools/bazelisk_pin.json", "tools/uv_pin.json", "tools/devtools.txt", "tools/dev.py", "tools/dev_config.py",
+              "tools/sccache_pin.json", "tools/mold_pin.json", "tools/bazelisk_pin.json", "tools/uv_pin.json", "tools/devtools.txt", "tools/dev.py", "tools/dev_config.py",
               "tools/bootstrap.py",
               "tools/sccache_toolchain.py", "tools/mold_toolchain.py",
               "tools/toolchains.py",
@@ -135,9 +134,8 @@ def link_bazel() -> None:
 
 def install_pinned(name: str, dest: Path) -> str:
     """Download the pinned release, verify its sha256 (and the binary's, where the pin has one), and unpack the whole
-    release under `dest` -- its layout is part of the tool (mold selects `ld.mold` beside itself; clang-tidy reads its
-    resource headers beside its binary). A release is a tarball, a wheel (a zip) unpacked under its own name, or a bare
-    binary (`asset_kind`), installed under its release's name."""
+    release under `dest` -- its layout is part of the tool (mold selects `ld.mold` beside itself). A release is a tarball,
+    or a bare binary (`asset_kind`) installed under its release's name."""
     pin = json.loads(PINS[name].read_text())
     wanted = f"/{pin.get('binary', name)}"
     with tempfile.TemporaryDirectory(prefix=f"rola_{name}_") as tmp:
@@ -152,13 +150,6 @@ def install_pinned(name: str, dest: Path) -> str:
             binary = dest / f"{name}-{pin['version']}" / pin["binary"]
             binary.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(asset, binary)
-            binary.chmod(0o755)
-        elif asset.suffix == ".whl":
-            root = dest / asset.stem
-            with zipfile.ZipFile(asset) as zf:
-                member = next(m for m in zf.namelist() if m.endswith(wanted))
-                zf.extractall(root)
-            binary = root / member
             binary.chmod(0o755)
         else:
             with tarfile.open(asset) as tf:

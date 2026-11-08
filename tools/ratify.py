@@ -1616,6 +1616,9 @@ def main() -> int:
     sccache_info = gate_sccache()
     mold_info = mold_provenance()
     version = ptxas_version()
+    #: every SASS body below is read with the record's disassemblers, or it is not the ratification's: checked before
+    #: the first read, so `--write` and `--census` record nothing an unchecked reader produced
+    toolchains.check_readers(toolchain(), {tool: toolchains.version_text(sass.tool(tool)) for tool in toolchains.READERS})
     import tempfile
     with tempfile.TemporaryDirectory(prefix="rola_ratify_") as tmp:
         entries, unhonored, scan = measure_units(arches, tmp, sources, arms)
@@ -1738,8 +1741,6 @@ def main() -> int:
     #: costs nothing once the compile has already happened. What it must not do is
     #: turn a green entry comparison into a green gate.
     ok = check_toolchain(version, manifest["toolchain"]["ptxas"])
-    #: the SASS bodies are read with the record's disassemblers, or they are not the ratification's
-    toolchains.check_readers(toolchain(), {tool: toolchains.version_text(sass.tool(tool)) for tool in toolchains.READERS})
     ok = check_defines(manifest) and ok
     ok = check_flags(manifest) and ok
     #: REPORT, not FAIL (see the `--write` block's comment on why): sccache cannot

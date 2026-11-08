@@ -124,8 +124,9 @@ _INSTALL = """\
 #!/bin/bash
 # writes the graph's library into the checkout, and the build's generated headers where the tools that compile the
 # tree's units read them (build/generated: tools/life_ranges.py, tools/header_selfcheck.py): copies, never links into
-# Bazel's output tree; a header only when its text changed, by a rename, as the tree's own writer does
-# (tools/gen_shards.py's write_if_changed: a moved mtime recompiles every unit that includes it)
+# Bazel's output tree; a header only when its text changed, as the tree's own writer writes one
+# (tools/gen_shards.py's write_if_changed: a moved mtime recompiles every unit that includes it), through a temporary
+# file renamed into place
 set -euo pipefail
 dest="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}/rola_cu13"
 for f in {files}; do

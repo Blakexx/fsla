@@ -7,7 +7,7 @@ settings it writes and reads are the dev config ([dev_config.md](dev_config.md))
     python tools/dev.py init [--force]
     python tools/dev.py check
     python tools/dev.py show
-    python tools/dev.py get <section.key> | cuda-home
+    python tools/dev.py get <section.key>
     python tools/dev.py clock --mhz 1665
     python tools/dev.py worktree <name> <sha> [--build]
     python tools/dev.py container compose|build|check|gate
@@ -26,8 +26,8 @@ version, is downloaded from the pin's release URL (`tools/sccache_pin.json`, `to
 then from its `mirror_urls` (the same asset through GitHub's API: github.com's release downloads returned gateway
 timeouts from its own edge for hours on 2026-11-08 while the API served the same assets). Its release sha256 is
 verified, and so is its binary
-sha256 where the pin has one. The whole release -- a tarball, a wheel unpacked under its own name, or a bare binary --
-lands under `host.tools_dir`, because the layout
+sha256 where the pin has one. The whole release -- a tarball, or a bare binary under its release's name -- lands
+under `host.tools_dir`, because the layout
 is part of the tool: `-fuse-ld=mold` selects the `ld.mold` next to `mold`. sccache and mold are recorded in the
 machine's `toolchain.json`; bazelisk is found by its pin (`bazelisk_path`: under `host.tools_dir`, by its release's
 name), never recorded there -- every checkout loads the machine's files, and an older loader refuses a key it does not
@@ -95,8 +95,7 @@ rola_results commit`).
 
 `init`, `check`, `show`, `get` and `clock` run from whichever python starts them; every other command re-executes itself under `workspace.base_venv`, because the store and the container read `rola_results` and the host's own python carries nothing of this project.
 
-**`get`** prints one value, for a person or a shell (the `rola-dev` skill's way to read one setting); `cuda-home`
-resolves the installed toolkit, and nothing in the tree calls it.
+**`get`** prints one value, for a person or a shell (the `rola-dev` skill's way to read one setting).
 
 **Running a CPU-heavy command under the host budget** is `python -m rola_devtools.locks.host [--slots N]
 [--exclusive] -- <cmd>`, niced per `host.nice`. `setup.py` takes the budget itself.

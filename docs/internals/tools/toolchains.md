@@ -7,7 +7,7 @@ is one function here, `rule1`, both builds' (docs/build-graph.md#gates).
 
 ## The record
 
-`tools/toolchains/<name>.json`, exactly five fields:
+`tools/toolchains/<name>.json`, exactly six fields:
 
 | field | meaning |
 |---|---|
