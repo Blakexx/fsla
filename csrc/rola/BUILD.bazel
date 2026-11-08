@@ -3,7 +3,7 @@ generated headers and the device stamp (docs/build-graph.md#compile)."""
 
 load("@rola_env//:flags.bzl", "HOST_CXX_FLAGS", "NVCC_FLAGS")
 load("@rules_cc//cc:defs.bzl", "cc_library")
-load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+load("//bazel:cuda.bzl", "cuda_unit")
 load("//bazel:defs.bzl", "carry_arm_set", "include_root", "rola_headers", "tree_part")
 load(":units.bzl", "CARRY_ARM_COUNT", "CARRY_ARM_UNITS", "HAND_UNITS")
 
@@ -66,39 +66,42 @@ _DEPS = [
     ":headers",
     "//csrc/third_party:cutlass",
     ":generated",
-    "@host_cc//:identity",
     "@rola_env//:python_headers",
     "@rola_env//:torch_headers",
 ]
+
+#: the host C++ compiler's identity, an input of every compile: never a header, which a compile prunes when it does not
+#: read it (docs/build-graph.md#rules)
+_HOST_CC = "@host_cc//:identity.txt"
 
 #: the one unit that reads the device stamp, the digest of every source: only it depends on the stamp, so an edit to
 #: one source recompiles that source's unit and this one, not every unit
 _STAMP_UNIT = "src/common/build_stamp.cu"
 
-cuda_library(
+cuda_unit(
     name = "units",
     srcs = [unit for unit in HAND_UNITS if unit != _STAMP_UNIT],
-    alwayslink = True,
     copts = NVCC_FLAGS,
     features = _NVCC_FEATURES,
+    host_cc = _HOST_CC,
     deps = _DEPS,
 )
 
-cuda_library(
+cuda_unit(
     name = "stamp_unit",
     srcs = [_STAMP_UNIT],
-    alwayslink = True,
     copts = NVCC_FLAGS,
     features = _NVCC_FEATURES,
+    host_cc = _HOST_CC,
     deps = _DEPS + [":stamp"],
 )
 
-[cuda_library(
+[cuda_unit(
     name = unit.removesuffix(".cu"),
     srcs = ["src/instantiations/" + unit],
-    alwayslink = True,
     copts = NVCC_FLAGS,
     features = _NVCC_FEATURES,
+    host_cc = _HOST_CC,
     deps = _DEPS,
 ) for unit in CARRY_ARM_UNITS]
 
@@ -111,6 +114,7 @@ carry_arm_set(
 cc_library(
     name = "registration",
     srcs = ["rola_api.cpp"],
+    additional_compiler_inputs = [_HOST_CC],
     alwayslink = True,
     copts = HOST_CXX_FLAGS,
     deps = _DEPS + ["//bazel:cuda_headers"],

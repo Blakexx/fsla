@@ -156,10 +156,10 @@ def _host_cc_impl(rctx):
     for tool, path in tools.items():
         rctx.watch(path)
         digest = rctx.execute(["sha256sum", str(path)]).stdout.split(" ")[0]
-        parts.append("// %s %s %s" % (tool, path, digest))
+        parts.append("# %s %s %s" % (tool, path, digest))
     version = rctx.execute([cc, "--version"]).stdout.splitlines()[0]
-    rctx.file("host_cc_identity.h", "// THE HOST C++ COMPILER'S IDENTITY, an input of every compile (docs/build-graph.md#rules)\n// %s\n%s\n" % (version, "\n".join(parts)))
-    rctx.file("BUILD.bazel", 'load("@rules_cc//cc:defs.bzl", "cc_library")\n\ncc_library(name = "identity", hdrs = ["host_cc_identity.h"], visibility = ["//visibility:public"])\n')
+    rctx.file("identity.txt", "# THE HOST C++ COMPILER'S IDENTITY, an input of every compile that no compile prunes (docs/build-graph.md#rules)\n# %s\n%s\n" % (version, "\n".join(parts)))
+    rctx.file("BUILD.bazel", 'exports_files(["identity.txt"], visibility = ["//visibility:public"])\n')
 
 _host_cc_repo = repository_rule(
     implementation = _host_cc_impl,

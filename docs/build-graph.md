@@ -62,6 +62,16 @@ headers into `build/generated`.
   none of its own. rules_cuda's own additions are off on every unit (its extended lambdas, compilation-mode flags,
   random seed and host toolchain flags), so nvcc's command line is the build flags, the `-gencode` targets, `-x cu`,
   `-ccbin` and the include roots.
+- EACH UNIT IS ONE ACTION OF THE GRAPH'S OWN RULE (`bazel/cuda.bzl`'s `cuda_unit`, which runs
+  `bazel/cuda_compile.py`): rules_cuda's toolchain, flags and command line, as its `cuda_library` builds them, one
+  position-independent object a unit, always linked. nvcc writes a dependency file (`-MD -MF`), and every declared
+  header the unit did not read becomes the action's `unused_inputs_list`, so the unit's cache key holds what it read:
+  a header edit recompiles the units that include it, as ninja's dependency files did. The file lists what every pass
+  read, the host's and each architecture's device pass (nvcc 13.0.48: a header included only under
+  `__CUDA_ARCH__ == 860` is listed when sm_86 compiles and not when sm_80 alone does). Only declared headers are
+  prunable: the toolkit, the host compiler and its identity (rule 4) key every compile. The action keeps nvcc's
+  diagnostics, ptxas's `-v` report among them, as `<unit>.ptxas.txt` (the `ptxas_reports` output group); the console
+  shows them without the report's lines.
 - ONE ARCHITECTURE SPEC A CARD: the library's transition writes `--@rules_cuda//cuda:archs` as
   `compute_80:sm_80;compute_86:sm_86`; a comma list (`sm_80,sm_86`) is one spec, which compiles every card from the
   lowest virtual architecture.
@@ -167,7 +177,10 @@ names one).
    expunged.
 4. EVERY TOOL AN ACTION RUNS IS DECLARED: hermetic (the toolkit), or its identity is an input of the actions that run
    it (the host C++ compiler's version). A tool the graph does not see is one whose change shares stale results between
-   machines.
+   machines. An identity is never a header: a compile drops a declared header it did not read from its key (rules_cc's
+   C++ compile by its dependency file, as the CUDA units by theirs: a header nothing includes was edited and nothing
+   recompiled, 2026-11-08), so `@host_cc//:identity.txt` is a file each compile takes outright (`host_cc` on a CUDA
+   unit, `additional_compiler_inputs` on a C++ one).
 5. A GPU TEST'S RESULT IS THE MACHINE'S: its key carries the devices' identity (`@host_gpu`: each one's name, UUID,
    driver and compute capability, read at every fetch), so a pass is never replayed for another device; it takes the machine's GPU lock itself, since Bazel serializes tests only within one invocation and
    every worktree runs its own server.

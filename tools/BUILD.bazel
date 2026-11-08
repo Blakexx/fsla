@@ -2,7 +2,7 @@
 actions run."""
 
 load("@rules_cc//cc:defs.bzl", "cc_library")
-load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+load("//bazel:cuda.bzl", "cuda_unit")
 load("//bazel:defs.bzl", "checkout_test", "tree_part", "tree_test", "unit_lint_test")
 
 package(default_visibility = ["//visibility:public"])
@@ -279,9 +279,11 @@ tree_test(
     data = [":lint"],
 )
 
-cuda_library(
+#: compiled as the extension's units are (bazel/cuda.bzl), so the lint reads the same kind of compile
+cuda_unit(
     name = "fixture_device_unit",
     srcs = ["lint/fixtures/device_lint_unused_param.cu"],
+    host_cc = "@host_cc//:identity.txt",
 )
 
 cc_library(

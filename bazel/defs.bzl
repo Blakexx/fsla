@@ -411,7 +411,7 @@ UnitLintInfo = provider(
     },
 )
 
-#: the compiles the library links: rules_cuda's position-independent object, and rules_cc's
+#: the compiles the library links: the graph's CUDA units' (bazel/cuda.bzl), and rules_cc's
 _COMPILES = ("CudaCompile", "CppCompile")
 
 #: the attributes through which a target carries units: the library's and a unit's deps, the carry arm set's units --
@@ -436,7 +436,10 @@ def _unit_lints_impl(target, ctx):
         reads = depset(transitive = [action.inputs] + ([target[CcInfo].compilation_context.headers] if CcInfo in target else []))
         stem = "unit_lints/sm_%s/%s/%s" % (arch, target.label.name, unit)
         argv = ctx.actions.declare_file(stem + ".argv.json")
-        ctx.actions.write(argv, json.encode(action.argv))
+        #: a CUDA unit's action runs the graph's compile script, whose own command line follows its separator
+        #: (bazel/cuda.bzl)
+        compile_argv = action.argv[action.argv.index("--") + 1:] if action.mnemonic == "CudaCompile" else action.argv
+        ctx.actions.write(argv, json.encode(compile_argv))
         command = ctx.actions.declare_file(stem + ".command.json")
         ctx.actions.run(
             executable = ctx.file._python,
