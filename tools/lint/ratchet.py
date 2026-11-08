@@ -4,6 +4,7 @@
     python3 tools/lint/ratchet.py work_codes            # the gate: a new finding fails, and so does a fixed one
     python3 tools/lint/ratchet.py work_codes --shrink   # drop the fixed entries from the baseline (it never adds one)
     python3 tools/lint/ratchet.py work_codes --init     # record today's findings; refused when a baseline exists
+    python3 tools/lint/ratchet.py --grown               # every baseline against HEAD's alone, in the checkout
 
 A lint's findings are its `path:line: message` lines. A finding is known by its path, its message's first sentence and
 a digest of the line it names, never by the line number, which any edit above it moves. `tools/lint/baselines/<lint>.json`
@@ -13,7 +14,9 @@ holds the findings the tree carried when the lint began gating, with their multi
   marker), with the reason;
 - a baseline entry the lint no longer finds: `--shrink` removes it in the commit that fixed it, so the backlog on disk
   is the backlog in the tree;
-- a baseline that holds more of an entry than HEAD's: a backlog only shrinks.
+- a baseline that holds more of an entry than HEAD's: a backlog only shrinks. A lint's run checks it where HEAD is
+  readable; `--grown` checks it alone for every baseline, the graph's check of the commit (a copy of the tree, where
+  the graph runs each lint, has no HEAD).
 
 A lint that cannot run (a missing tool, a crash) fails the gate; it never reads as zero findings.
 Docs: docs/internals/tools/lint.md#ratchets.
@@ -100,18 +103,26 @@ def _show(title: str, entries: Counter) -> None:
 
 def baselines_grown(lints: list[str]) -> int:
     """No baseline holds an entry HEAD's lacks -- a backlog only shrinks, and a move is not growth (`verdict`). Run
-    against the checkout, which knows HEAD; the lints' own findings are the hermetic half."""
-    grown_any = False
+    against the checkout, which knows HEAD; the lints' own findings are the hermetic half. A HEAD git cannot read is
+    red: a comparison that compared nothing has not passed."""
+    readable = subprocess.run(["git", "rev-parse", "--verify", "--quiet", "HEAD"], cwd=ROOT, capture_output=True)
+    if readable.returncode != 0:
+        print(f"ratchet baselines: FAILED -- git cannot read HEAD in {ROOT}, so no baseline was compared")
+        return 1
+    grown_any, compared = False, 0
     for lint in lints:
         path = BASELINES / f"{lint}.json"
+        #: a baseline HEAD lacks is new, and one the tree lacks is deleted: neither has grown
         head = _head(path)
         if head is None or not path.exists():
             continue
+        compared += 1
         grown = verdict(Counter(), _decode(path.read_text()), head)[2]
         if grown:
             _show(f"ratchet {lint}: the baseline GREW against HEAD's -- a backlog only shrinks:", grown)
             grown_any = True
-    print(f"ratchet baselines: {'GROWN' if grown_any else 'none grown'} ({len(lints)} checked against HEAD)")
+    print(f"ratchet baselines: {'GROWN' if grown_any else 'none grown'} ({compared} of {len(lints)} compared against "
+          "HEAD's; the rest new or deleted)")
     return 1 if grown_any else 0
 
 

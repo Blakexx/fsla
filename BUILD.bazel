@@ -7,11 +7,12 @@
 
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "string_list_flag")
 load("@rola_env//:flags.bzl", "CXX11_ABI", "RATIFIED_ARCHS", "TOOLCHAIN", "TORCH", "TORCH_CUDA")
-load("//bazel:defs.bzl", "rola_extension", "tree_part")
+load("//bazel:defs.bzl", "compile_database", "rola_extension", "tree_part")
 load("@rola_tree//:tree.bzl", "TRACKED")
 
 exports_files([
     ".clang-format",
+    ".clang-tidy",
     "MODULE.bazel",
     "pyproject.toml",
     "requirements.lock",
@@ -76,6 +77,13 @@ filegroup(
     name = "tree_python",
     srcs = ["//%s:tracked_python" % package for package in TRACKED],
     visibility = ["//visibility:public"],
+)
+
+#: THE EDITOR'S COMPILE DATABASE: `bazel run //:compile_commands` writes compile_commands.json, each unit's clang
+#: command for the first ratified architecture (docs/build-graph.md#checks)
+compile_database(
+    name = "compile_commands",
+    units = ["//csrc/rola:compiled"],
 )
 
 #: THE GATE: every check the graph holds (docs/build-graph.md#checks)

@@ -1,10 +1,11 @@
-"""THE GRAPH'S RULES FOR THE EXTENSION: the generated headers for a build's parameters, the carry arm units it
-selects, and the library -- `rola_cu13/_C.abi3.so` linked by the pinned mold beside its build record, which `bazel
-run` copies into the checkout. Docs: docs/build-graph.md#compile."""
+"""THE GRAPH'S RULES: the generated headers for a build's parameters, the carry arm units it selects, and the library
+-- `rola_cu13/_C.abi3.so` linked by the pinned mold beside its build record, which `bazel run` copies into the checkout
+(docs/build-graph.md#compile); and the checks -- over the tree's files, of the commit, and over each unit's own compile
+(docs/build-graph.md#checks)."""
 
 load("@bazel_skylib//lib:shell.bzl", "shell")
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
-load("@rola_env//:flags.bzl", "VENV")
+load("@rola_env//:flags.bzl", "RATIFIED_ARCHS", "VENV")
 load("@rola_tree//:tree.bzl", "TRACKED")
 load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cc_toolchain", "use_cc_toolchain")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
@@ -99,12 +100,15 @@ carry_arm_set = rule(
 
 #: the build's architectures as rules_cuda's, and its runtime as headers alone: the library links the runtime itself, so
 #: no unit carries a dynamic library whose search path the link would write into the binary
-def _archs_transition_impl(settings, _attr):
+def _cuda_settings(archs):
     return {
         #: one spec an architecture, each its own virtual one: `sm_80,sm_86` would compile both from compute_80
-        "@rules_cuda//cuda:archs": ";".join(["compute_%s:sm_%s" % (a, a) for a in settings[str(Label("//:archs"))]]),
+        "@rules_cuda//cuda:archs": ";".join(["compute_%s:sm_%s" % (a, a) for a in archs]),
         "@rules_cuda//cuda:runtime": str(Label("//bazel:cuda_headers")),
     }
+
+def _archs_transition_impl(settings, _attr):
+    return _cuda_settings(settings[str(Label("//:archs"))])
 
 _archs_transition = transition(
     implementation = _archs_transition_impl,
@@ -329,3 +333,205 @@ def tree_part(parts = {}):
     native.filegroup(name = "tracked_python", srcs = [f for f in files if f.endswith(".py")], visibility = ["//visibility:public"])
     for name, prefix in parts.items():
         native.filegroup(name = name, srcs = [f for f in files if f.startswith(prefix)], visibility = ["//visibility:public"])
+
+#: THE UNIT LINTS (docs/build-graph.md#checks): clang-tidy's device and host profiles and the host warnings, each read
+#: from a unit's own compile action -- its argv and its inputs -- so a lint reads what the build compiled
+
+def _one_arch(arch):
+    """A configuration of one architecture: its compiles build for it alone, its generated headers are its own."""
+    settings = _cuda_settings([arch])
+    settings[str(Label("//:archs"))] = [arch]
+    return settings
+
+_ARCH_OUTPUTS = [str(Label("//:archs")), "@rules_cuda//cuda:archs", "@rules_cuda//cuda:runtime"]
+
+def _each_ratified_arch_impl(_settings, _attr):
+    return {arch: _one_arch(arch) for arch in RATIFIED_ARCHS}
+
+#: the lints read each ratified architecture's compile: an architecture's build set is its own
+_each_ratified_arch = transition(implementation = _each_ratified_arch_impl, inputs = [], outputs = _ARCH_OUTPUTS)
+
+def _first_ratified_arch_impl(_settings, _attr):
+    return _one_arch(RATIFIED_ARCHS[0])
+
+#: an editor reads one compile a unit: the first ratified architecture's
+_first_ratified_arch = transition(implementation = _first_ratified_arch_impl, inputs = [], outputs = _ARCH_OUTPUTS)
+
+#: clang accepts a CUDA root with a `bin/` (a tree artifact keeps no empty directory, so it holds this note)
+_CUDA_ROOT_BIN = "A CUDA root for clang's front end (bazel/defs.bzl's cuda_root): the toolkit's tools are the graph's own.\n"
+
+def _cuda_root_impl(ctx):
+    cuda_h = [f for f in ctx.attr.cudart[CcInfo].compilation_context.headers.to_list() if f.path.endswith("/include/cuda.h")]
+    root = ctx.actions.declare_directory(ctx.label.name)
+    note = ctx.actions.declare_file(ctx.label.name + ".bin.txt")
+    ctx.actions.write(note, _CUDA_ROOT_BIN)
+    ctx.actions.run_shell(
+        command = 'mkdir -p "$1/bin" "$1/include" && cp "$2" "$1/bin/README" && shift 2 && cp "$@" "$OUT/include/"',
+        arguments = [root.path, note.path] + [f.path for f in cuda_h + ctx.files.curand],
+        env = {"OUT": root.path},
+        inputs = cuda_h + ctx.files.curand + [note],
+        outputs = [root],
+        mnemonic = "RolaCudaRoot",
+    )
+    return [DefaultInfo(files = depset([root]))]
+
+cuda_root = rule(
+    implementation = _cuda_root_impl,
+    attrs = {
+        "cudart": attr.label(mandatory = True, providers = [CcInfo], doc = "the runtime's headers, `cuda.h` among them"),
+        "curand": attr.label(mandatory = True, doc = "cuRAND's headers, which clang's CUDA runtime wrapper includes"),
+    },
+    doc = "A CUDA root clang's front end accepts (`--cuda-path`): `bin/`, `include/cuda.h` for the version, and the " +
+          "cuRAND headers clang's runtime wrapper includes; the rest of the toolkit's headers reach the compile through " +
+          "its own include roots.",
+)
+
+UnitLintInfo = provider(
+    doc = "The unit lints' verdicts and clang commands of every unit at or under a target.",
+    fields = {
+        "device": "depset: the device profile's clang-tidy verdicts",
+        "host": "depset: the host profile's clang-tidy verdicts",
+        "warnings": "depset: the host warnings' verdicts",
+        "commands": "depset: each unit's clang command (the editor's compile database)",
+        "inputs": "depset: what the units' compiles read (the generated headers the database names among them)",
+    },
+)
+
+#: the compiles the library links: rules_cuda's position-independent object, and rules_cc's
+_COMPILES = ("CudaCompile", "CppCompile")
+
+#: the attributes through which a target carries units
+_CARRIERS = ("srcs", "units")
+
+def _unit_lints_impl(target, ctx):
+    found = {"device": [], "host": [], "warnings": [], "commands": [], "inputs": []}
+    #: the configuration's one architecture (`_each_ratified_arch`, `_first_ratified_arch`)
+    arch = ctx.attr._archs[BuildSettingInfo].value
+    if len(arch) != 1:
+        fail("the unit lints read one architecture's compiles; %s's configuration has %s" % (target.label, arch))
+    arch = arch[0]
+    tool = ctx.file._tool
+    for action in target.actions:
+        objects = [f for f in action.outputs.to_list() if f.basename.endswith(".pic.o")] if action.mnemonic in _COMPILES else []
+        if not objects:
+            continue
+        unit = objects[0].basename.removesuffix(".pic.o")
+        #: what the compile reads: a C++ compile's headers join its inputs only when it runs, so the target's own
+        #: headers are named too
+        reads = depset(transitive = [action.inputs] + ([target[CcInfo].compilation_context.headers] if CcInfo in target else []))
+        stem = "unit_lints/sm_%s/%s/%s" % (arch, target.label.name, unit)
+        argv = ctx.actions.declare_file(stem + ".argv.json")
+        ctx.actions.write(argv, json.encode(action.argv))
+        command = ctx.actions.declare_file(stem + ".command.json")
+        ctx.actions.run(
+            executable = ctx.file._python,
+            arguments = [tool.path, "command", "--argv", argv.path, "--arch", arch, "--cuda-root", ctx.file._cuda_root.path, "--out", command.path],
+            inputs = [argv, tool],
+            outputs = [command],
+            mnemonic = "RolaUnitCommand",
+            progress_message = "The clang command of %s (sm_%s)" % (unit, arch),
+        )
+        device = action.mnemonic == "CudaCompile"
+        config = ctx.file._device_config if device else ctx.file._host_config
+        verdict = ctx.actions.declare_file(stem + ".tidy.json")
+        ctx.actions.run(
+            executable = ctx.file._python,
+            arguments = [tool.path, "tidy", "--command", command.path, "--clang-tidy", ctx.file._clang_tidy.path, "--config", config.path, "--out", verdict.path],
+            inputs = depset([command, tool, config, ctx.file._clang_tidy, ctx.file._cuda_root] + ctx.files._clang_tidy_resources, transitive = [reads]),
+            outputs = [verdict],
+            mnemonic = "RolaClangTidy",
+            progress_message = "clang-tidy on %s (sm_%s)" % (unit, arch),
+        )
+        found["device" if device else "host"].append(depset([verdict]))
+        found["commands"].append(depset([command]))
+        found["inputs"].append(reads)
+        if not device:
+            warnings = ctx.actions.declare_file(stem + ".warnings.json")
+            ctx.actions.run(
+                executable = ctx.file._python,
+                arguments = [tool.path, "warnings", "--argv", argv.path, "--arch", arch, "--out", warnings.path],
+                inputs = depset([argv, tool], transitive = [reads]),
+                outputs = [warnings],
+                mnemonic = "RolaHostWarnings",
+                progress_message = "The host warnings of %s (sm_%s)" % (unit, arch),
+            )
+            found["warnings"].append(depset([warnings]))
+    #: what carries units: a filegroup's sources, the carry arm set's units
+    for name in _CARRIERS:
+        for dep in getattr(ctx.rule.attr, name, []):
+            if UnitLintInfo in dep:
+                for field in found:
+                    found[field].append(getattr(dep[UnitLintInfo], field))
+    return [UnitLintInfo(**{field: depset(transitive = sets) for field, sets in found.items()})]
+
+unit_lints = aspect(
+    implementation = _unit_lints_impl,
+    attr_aspects = list(_CARRIERS),
+    attrs = {
+        "_archs": attr.label(default = "//:archs"),
+        "_python": attr.label(default = "@rola_env//:python", allow_single_file = True, cfg = "exec"),
+        "_tool": attr.label(default = "//tools:lint/unit_lints.py", allow_single_file = True),
+        "_clang_tidy": attr.label(default = "@clang_tidy//:clang_tidy", allow_single_file = True, cfg = "exec"),
+        "_clang_tidy_resources": attr.label(default = "@clang_tidy//:resources", cfg = "exec"),
+        "_device_config": attr.label(default = "//tools:lint/clang-tidy-device.yaml", allow_single_file = True),
+        "_host_config": attr.label(default = "//:.clang-tidy", allow_single_file = True),
+        "_cuda_root": attr.label(default = "//bazel:cuda_root", allow_single_file = True),
+    },
+    doc = "Each compile under a target, linted: a clang-tidy verdict a unit, the host warnings' a host unit, and the " +
+          "unit's clang command.",
+)
+
+_UNIT_LINT_TEST = """\
+#!/bin/bash
+# the unit lints' verdicts, each unit's for each ratified architecture (bazel/defs.bzl's unit_lint_test)
+exec {python} {tool} verdicts {verdicts}
+"""
+
+def _unit_lint_test_impl(ctx):
+    verdicts = depset(transitive = [getattr(unit[UnitLintInfo], ctx.attr.lint) for unit in ctx.attr.units]).to_list()
+    script = ctx.actions.declare_file(ctx.label.name + ".sh")
+    words = [shell.quote(v.short_path) for v in verdicts]
+    ctx.actions.write(script, _UNIT_LINT_TEST.format(python = shell.quote(ctx.file._python.short_path), tool = shell.quote(ctx.file._tool.short_path), verdicts = " ".join(words)), is_executable = True)
+    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = verdicts + [ctx.file._python, ctx.file._tool]))]
+
+unit_lint_test = rule(
+    implementation = _unit_lint_test_impl,
+    test = True,
+    attrs = {
+        "units": attr.label_list(mandatory = True, cfg = _each_ratified_arch, aspects = [unit_lints], doc = "the units, or what carries them"),
+        "lint": attr.string(mandatory = True, values = ["device", "host", "warnings"], doc = "which verdicts it reads"),
+        "_python": attr.label(default = "@rola_env//:python", allow_single_file = True),
+        "_tool": attr.label(default = "//tools:lint/unit_lints.py", allow_single_file = True),
+    },
+    doc = "A unit lint over every unit, for each ratified architecture: red on any unit's finding.",
+)
+
+_DATABASE = """\
+#!/bin/bash
+# writes the editor's compile database into the checkout (bazel/defs.bzl's compile_database)
+set -euo pipefail
+checkout="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
+exec {python} {tool} database --checkout "$checkout" --out "$checkout/compile_commands.json" {commands}
+"""
+
+def _compile_database_impl(ctx):
+    infos = [unit[UnitLintInfo] for unit in ctx.attr.units]
+    commands = depset(transitive = [info.commands for info in infos]).to_list()
+    script = ctx.actions.declare_file(ctx.label.name + ".sh")
+    words = [shell.quote(c.short_path) for c in commands]
+    ctx.actions.write(script, _DATABASE.format(python = shell.quote(ctx.file._python.short_path), tool = shell.quote(ctx.file._tool.short_path), commands = " ".join(words)), is_executable = True)
+    #: the build makes what the commands name: the generated headers and the CUDA root
+    built = depset(ctx.files._cuda_root, transitive = [info.inputs for info in infos])
+    return [DefaultInfo(executable = script, files = built, runfiles = ctx.runfiles(files = commands + [ctx.file._python, ctx.file._tool]))]
+
+compile_database = rule(
+    implementation = _compile_database_impl,
+    executable = True,
+    attrs = {
+        "units": attr.label_list(mandatory = True, cfg = _first_ratified_arch, aspects = [unit_lints]),
+        "_python": attr.label(default = "@rola_env//:python", allow_single_file = True),
+        "_tool": attr.label(default = "//tools:lint/unit_lints.py", allow_single_file = True),
+        "_cuda_root": attr.label(default = "//bazel:cuda_root", cfg = _first_ratified_arch, allow_single_file = True),
+    },
+    doc = "`bazel run` writes compile_commands.json into the checkout: each unit's clang command, the lints' own.",
+)

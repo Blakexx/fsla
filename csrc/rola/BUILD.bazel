@@ -104,5 +104,15 @@ cc_library(
     deps = _DEPS + ["//bazel:cuda_headers"],
 )
 
+#: every unit the extension compiles: the unit lints and the editor's database read their compiles
+filegroup(
+    name = "compiled",
+    srcs = [
+        ":carry_arms",
+        ":registration",
+        ":units",
+    ],
+)
+
 #: this package's part of the tree the checks read
 tree_part()

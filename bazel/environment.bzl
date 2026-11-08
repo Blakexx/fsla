@@ -1,7 +1,7 @@
 """THE GRAPH'S ENVIRONMENT: the repositories made from the tree's pins and its index -- the Python environment built
 from requirements.lock and the pinned rola-devtools into the shared store (`@rola_env`), the pinned linker (`@mold`),
-the host C++ compiler's identity (`@host_cc`), the toolkit's disassemblers (`@cuda_tools`), and the checkout's
-tracked files (`@rola_tree`). Docs: docs/build-graph.md#environment."""
+the pinned clang-tidy (`@clang_tidy`), the host C++ compiler's identity (`@host_cc`), the toolkit's disassemblers
+and cuRAND's headers (`@cuda_tools`), and the checkout's tracked files (`@rola_tree`). Docs: docs/build-graph.md#environment."""
 
 _ENV_BUILD = """\
 load("@rules_cc//cc:defs.bzl", "cc_library")
@@ -100,21 +100,45 @@ _env_repo = repository_rule(
     doc = "The Python environment: requirements.lock built once into the shared store, and the graph's flags from it.",
 )
 
+_MOLD_BUILD = 'filegroup(name = "linker", srcs = ["bin/ld.mold", "bin/mold"], visibility = ["//visibility:public"])\n'
+
+_CLANG_TIDY_BUILD = """\
+package(default_visibility = ["//visibility:public"])
+
+filegroup(name = "clang_tidy", srcs = ["clang_tidy/data/bin/clang-tidy"])
+
+#: its resource headers (clang's CUDA wrappers among them), beside the binary where clang looks for them
+filegroup(name = "resources", srcs = glob(["clang_tidy/data/lib/clang/**"]))
+"""
+
 def _pinned_impl(rctx):
     pin = json.decode(rctx.read(rctx.attr.pin))
+    asset = pin["release_asset"]
+    #: a tarball unpacks under its release's name; a wheel (a zip) at its root
+    wheel = asset.endswith(".whl")
     #: the release URL, then its mirrors: the same asset through the host's API, which serves it as octet-stream
     rctx.download_and_extract(
         url = [pin["release_url"]] + pin.get("mirror_urls", []),
         sha256 = pin["asset_sha256"],
-        type = "tar.gz",
-        stripPrefix = pin["release_asset"].removesuffix(".tar.gz"),
+        type = "zip" if wheel else "tar.gz",
+        stripPrefix = "" if wheel else asset.removesuffix(".tar.gz"),
         headers = {"Accept": ["application/octet-stream"]},
     )
-    rctx.file("BUILD.bazel", 'filegroup(name = "linker", srcs = ["bin/ld.mold", "bin/mold"], visibility = ["//visibility:public"])\n')
+    if "binary_sha256" in pin:
+        binary = str(rctx.path(rctx.attr.binary))
+        digest = rctx.execute(["sha256sum", binary]).stdout.split(" ")[0]
+        if digest != pin["binary_sha256"]:
+            fail("%s: %s's sha256 is %s, not the pin's %s" % (pin["name"], rctx.attr.binary, digest, pin["binary_sha256"]))
+        rctx.execute(["chmod", "0755", binary])
+    rctx.file("BUILD.bazel", rctx.attr.build)
 
 _pinned_repo = repository_rule(
     implementation = _pinned_impl,
-    attrs = {"pin": attr.label(mandatory = True)},
+    attrs = {
+        "pin": attr.label(mandatory = True),
+        "build": attr.string(mandatory = True, doc = "the repository's BUILD file: the targets it exposes"),
+        "binary": attr.string(doc = "the binary's path in the repository, checked against the pin's `binary_sha256`"),
+    },
     doc = "A pinned release, downloaded by its pin's digest.",
 )
 
@@ -145,6 +169,9 @@ _CUDA_TOOLS_BUILD = """\
 package(default_visibility = ["//visibility:public"])
 
 exports_files(["bin/cuobjdump", "bin/nvdisasm"])
+
+#: cuRAND's headers alone: clang's CUDA front end includes one (its runtime wrapper's `curand_mtgp32_kernel.h`)
+filegroup(name = "curand_headers", srcs = glob(["curand/include/**"]))
 """
 
 def _cuda_tools_impl(rctx):
@@ -160,12 +187,22 @@ def _cuda_tools_impl(rctx):
             rename_files = {entry["relative_path"].rsplit("/", 1)[1].removesuffix(".tar.xz") + "/LICENSE": component + "/LICENSE"},
             stripPrefix = entry["relative_path"].rsplit("/", 1)[1].removesuffix(".tar.xz"),
         )
+    entry = redist["libcurand"]["linux-x86_64"]
+    rctx.download_and_extract(
+        url = root + "/" + entry["relative_path"],
+        sha256 = entry["sha256"],
+        stripPrefix = entry["relative_path"].rsplit("/", 1)[1].removesuffix(".tar.xz"),
+        output = "curand",
+    )
+    #: its libraries are not the graph's: the headers stay
+    rctx.delete("curand/lib")
     rctx.file("BUILD.bazel", _CUDA_TOOLS_BUILD)
 
 _cuda_tools_repo = repository_rule(
     implementation = _cuda_tools_impl,
     attrs = {"manifest": attr.string(mandatory = True), "sha256": attr.string(mandatory = True)},
-    doc = "The toolkit's disassemblers (cuobjdump, nvdisasm), from the redistributable manifest by its digests.",
+    doc = "The toolkit's disassemblers (cuobjdump, nvdisasm) and cuRAND's headers, from the redistributable manifest " +
+          "by its digests.",
 )
 
 def _tree_impl(rctx):
@@ -196,7 +233,13 @@ _tree_repo = repository_rule(
 
 def _environment_impl(mctx):
     _env_repo(name = "rola_env")
-    _pinned_repo(name = "mold", pin = "//tools:mold_pin.json")
+    _pinned_repo(name = "mold", pin = "//tools:mold_pin.json", build = _MOLD_BUILD)
+    _pinned_repo(
+        name = "clang_tidy",
+        pin = "//tools:clang_tidy_pin.json",
+        build = _CLANG_TIDY_BUILD,
+        binary = "clang_tidy/data/bin/clang-tidy",
+    )
     _host_cc_repo(name = "host_cc")
     _tree_repo(name = "rola_tree")
     for module in mctx.modules:
@@ -211,6 +254,6 @@ environment = module_extension(
             "sha256": attr.string(mandatory = True, doc = "its digest: the one rules_cuda's toolkit is read by"),
         }),
     },
-    doc = "The graph's environment: the Python environment, the pinned linker, the host compiler's identity, the " +
-          "toolkit's disassemblers and the checkout's tracked files.",
+    doc = "The graph's environment: the Python environment, the pinned linker and clang-tidy, the host compiler's " +
+          "identity, the toolkit's disassemblers and the checkout's tracked files.",
 )

@@ -22,6 +22,8 @@ semaphores, which Bazel cannot do for an action.
 | the graph's CUDA toolkit | NVIDIA's redistributable components at release 13.0.0 (`MODULE.bazel`'s `cuda.redist_json`: nvcc 13.0.48), only the compiler's (~75 MB of the 4.7 GB set) | the shared repository cache |
 | the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (`tools/uv_pin.json`) into the pinned CPython (3.11.13), and rola-devtools at `tools/devtools.txt`'s commit, by `bazel/environment.bzl`'s `@rola_env` (`bazel/make_env.py`) | `host.build_cache/bazel/store`, one environment a key (the lock, the devtools commit, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages; `@rola_env//:flags.bzl`'s `VENV` names it, so a command naming it is keyed by the environment |
 | the linker | mold at `tools/mold_pin.json`'s release (`@mold`) | the shared repository cache |
+| the lints' analyzer | clang-tidy at `tools/clang_tidy_pin.json`'s wheel, its binary's digest checked (`@clang_tidy`) | the shared repository cache |
+| the toolkit's parts beside the compiler | the disassemblers the SASS gate reads with (cuobjdump, nvdisasm) and cuRAND's headers (clang's CUDA front end includes one), from the toolkit's manifest by its digests (`@cuda_tools`) | the shared repository cache |
 | the host C++ compiler's identity | its version and the digests of gcc, g++ and cc1plus (`@host_cc`), an input of every compile | the output base |
 
 ## <a id="front-door"></a>The front door
@@ -106,10 +108,10 @@ post-build recompile is not among them: setup.py's build runs it (a warning betw
   reads again when git's index moves), each package's part its `tracked` filegroup (`bazel/defs.bzl`'s `tree_part`,
   which names its Python files `tracked_python` and the parts a check reads); `//:tree_python` is every Python file.
   A file is in the tree once git tracks it.
-- A CHECK OVER FILES IS A TEST OVER THE PART OF THE TREE IT READS (`bazel/defs.bzl`'s `tree_test`): ruff the Python
-  files and `pyproject.toml`; clang-format `csrc/rola`; ast-grep `csrc/` and its rules; the instantiation lint
-  `csrc/rola` and the manifests; the spacing lint `csrc/rola` and the Python; the tree for a check of every tracked
-  file. Its inputs are copied into a real tree in the test's own temporary directory, the environment's tools on
+- A CHECK OVER FILES IS A TEST OVER THE PART OF THE TREE IT READS (`bazel/defs.bzl`'s `tree_test`): its `data` names
+  the parts it reads -- a package's tracked files, the Python files, a named directory, a configuration file -- or the
+  whole tree for a check of every tracked file, so an edit reruns only the checks that read the edited file. Its
+  inputs are copied into a real tree in the test's own temporary directory, the environment's tools on
   PATH and no machine's dev config; a check that asks git what is tracked gets the copy as a git index of exactly
   those files. Cached on what it reads, it reruns only when one of those files changes.
 - THE LINTS (`//tools:lints`): ruff and its blank-line spacing, clang-format, ast-grep
@@ -117,6 +119,13 @@ post-build recompile is not among them: setup.py's build runs it (a warning betw
   the readability spacing, the agent files' portability (`tools/lint/portable_claude.py`), the mirror's declarations
   (`rola_devtools.mirror --check`), and each ratchet (`tools/lint/ratchet.py <lint>`: the lint's findings against its
   baseline, a new finding and a fixed one each red).
+- THE UNIT LINTS (`//tools:clang_tidy_device`, `clang_tidy_host`, `host_warnings`; `bazel/defs.bzl`'s `unit_lints`
+  aspect and `unit_lint_test`): clang-tidy's two profiles and the host warnings, each run on one unit's own compile
+  action -- its command line and its inputs -- so a lint reads what the build compiled
+  ([`internals/tools/lint.md`](internals/tools/lint.md#unit-lints)). The units are read in one configuration a ratified
+  architecture (a split transition), whose generated headers are that architecture's build set; each verdict is
+  cached on its unit's compile, and states the seconds it took. `bazel run //:compile_commands` writes the editor's
+  compile database from the same commands, for the first ratified architecture.
 - THE CHECKS OF THE COMMIT (`//tools:commit_checks`, `bazel/defs.bzl`'s `checkout_test`): what git knows rather than
   a file set -- no ratchet's baseline grown against HEAD's (`tools/lint/ratchet.py --grown`), every doc reference
   resolving (`tools/docrefs.py`), the dev container current (`tools/dev.py container gate`). Each runs in the
@@ -153,9 +162,9 @@ names one).
 9. WORKSPACES AND OUTPUT BASES LIVE ON THE LINUX DISK, never under `/mnt` (WSL's Windows mounts: slow, and file
    watching is undefined there).
 10. THE SANDBOX STAYS ON: Bazel 9's hermetic `/tmp` keeps nvcc's temporary files apart, so nothing runs
-    `--spawn_strategy=local` to dodge it. One action leaves it, the arm gate, because it imports the environment's
-    packages from the store, which the sandbox does not hold; the store path on its command line carries the
-    environment's key.
+    `--spawn_strategy=local` to dodge it. Two kinds of work leave it: the arm gate, because it imports the
+    environment's packages from the store, which the sandbox does not hold (the store path on its command line carries
+    the environment's key), and the checks of the commit, whose input is the checkout itself (rule 15).
 11. CUDA THROUGH RULES_CUDA'S OWN SETTINGS: the architectures through `--@rules_cuda//cuda:archs`, one spec a card
     (cubins only, no PTX); a host compile flag reaches nvcc's host pass only through rules_cuda's host options; an external repository's
     headers through the target's include options.
@@ -175,6 +184,7 @@ names one).
 
     python tools/dev.py init        # installs the pinned bazelisk and links `bazel` to it (toolchain.bazel)
     bazel test //:gate                                              # every check the graph holds
+    bazel run //:compile_commands                                   # the editor's compile_commands.json
     bazel run //:library                                            # the shipped build, into rola_cu13/
     bazel run //:library --//:archs=86 --//:carry_arms=3            # an iteration build
 

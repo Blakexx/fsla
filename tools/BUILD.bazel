@@ -1,12 +1,14 @@
 """THE TREE'S TOOLS AS THE GRAPH'S INPUTS: the pins and records the graph's repositories read, and the generators its
 actions run."""
 
-load("//bazel:defs.bzl", "checkout_test", "tree_part", "tree_test")
+load("//bazel:defs.bzl", "checkout_test", "tree_part", "tree_test", "unit_lint_test")
 
 package(default_visibility = ["//visibility:public"])
 
 exports_files(glob([
     "*.py",
+    "lint/unit_lints.py",
+    "lint/clang-tidy-device.yaml",
     "*.json",
     "toolchains/*.json",
     "manifests/*.json",
@@ -194,6 +196,28 @@ tree_test(
     git = True,
 )
 
+#: THE UNIT LINTS, each unit's own compile linted for each ratified architecture (docs/build-graph.md#checks)
+unit_lint_test(
+    name = "clang_tidy_device",
+    size = "large",
+    lint = "device",
+    units = ["//csrc/rola:compiled"],
+)
+
+unit_lint_test(
+    name = "clang_tidy_host",
+    size = "small",
+    lint = "host",
+    units = ["//csrc/rola:compiled"],
+)
+
+unit_lint_test(
+    name = "host_warnings",
+    size = "small",
+    lint = "warnings",
+    units = ["//csrc/rola:compiled"],
+)
+
 #: THE CHECKS OF THE COMMIT, run in the checkout: what git knows
 checkout_test(
     name = "ratchet_baselines",
@@ -218,6 +242,9 @@ test_suite(
     tests = [
         ":ast_grep",
         ":clang_format",
+        ":clang_tidy_device",
+        ":clang_tidy_host",
+        ":host_warnings",
         ":lint_standards",
         ":mirror_declarations",
         ":portable_agent_files",

@@ -16,11 +16,29 @@ tree carried when it began gating are a baseline that only shrinks.
 | `run_clang_tidy.sh` | the pinned clang-tidy (`tools/clang_tidy_pin.json`) with `.clang-tidy` on the host translation units; every finding fails |
 | `run_clang_tidy_device.sh` + `clang-tidy-device.yaml` | the pinned clang-tidy on every device translation unit (`tools/kernels.py`; under pre-commit, the units whose include closure holds a changed file): dead stores, unused parameters and redundant expressions, through clang's CUDA front end. An on-target finding fails it, and so does any compiler error -- a unit clang cannot parse is a unit it did not analyze |
 | `host_warnings.py` | `-Wall -Wextra -Wunused` dry compile of the host translation units, ON-TARGET findings only; a vendored header's warning is not this codebase's to fix |
+| `unit_lints.py` | the build graph's runner of the two clang-tidy profiles and the host warnings, each on one unit's own compile for each ratified architecture ([below](#unit-lints)) |
 | `unused_instantiations.py` | every `__global__` function template must demangle-match a symbol in a committed manifest. `__device__` templates are found, counted and explicitly NOT checked: manifests record entry functions only, and a wrapped-once helper has no standalone symbol |
 | `run_ruff_e3.sh` | pycodestyle's blank-line family. It keeps its own invocation because ruff preview-gates that family, and turning preview on in `pyproject.toml` would gate every other family's preview rules too |
 | `readability_spacing.py` | a function or kernel body of forty lines or more with ZERO blank lines in it, and a run of blank lines in `csrc` (Python's own two-line convention is ruff's `E303` territory). The rule asks for segmentation and does not say where |
 | `python -m rola_devtools.mirror --check` | every tracked path is declared ships or private for the public mirror in `.github/mirror/declarations.json`, so a new file never ships, and never silently stays behind, undecided (the tool is rola-devtools', linked into the venvs; its README describes the export) |
 | `clang-format` (root `.clang-format`) | the formatting floor, including `MaxEmptyLinesToKeep: 1` and `SeparateDefinitionBlocks: Always` — the formatter's half of the readability rule above |
+
+<a id="unit-lints"></a>
+## The unit lints in the build graph
+
+`tools/lint/unit_lints.py` is the build graph's runner of the two clang-tidy profiles and the host warnings, each on
+one unit's own compile: `bazel/defs.bzl`'s `unit_lints` aspect hands it the compile action's argv, and its inputs are
+the compile's. `command` turns the argv into clang's -- the include roots, the macros, the forced includes, the
+standard and the optimization level kept, the code generator's flags dropped; a CUDA unit through clang's CUDA front
+end on the host side (`--cuda-host-only`) for the one architecture its configuration builds, against the graph's CUDA
+root (`//bazel:cuda_root`); `tidy` runs the pinned clang-tidy (`@clang_tidy`, from `tools/clang_tidy_pin.json`) with
+the unit's profile (`.cu`: `clang-tidy-device.yaml`, its repository headers and an intra-function dead-store analysis;
+`.cpp`: `.clang-tidy`); `warnings` reruns a host compile itself to its front end with `-Wall -Wextra -Wunused`. Each
+writes a verdict: the unit, the architecture, the seconds it took, and the findings that count -- a warning in
+`csrc/rola/` and any compiler error, since a unit the compiler cannot parse is one no lint read; a failed run no
+located diagnostic explains is a finding too. `verdicts` is the test (red on any finding, and on no verdict at all);
+`database` is `bazel run //:compile_commands`'s, the editor's compile database from the same clang commands, every
+path made absolute.
 
 <a id="portable-agent-files"></a>
 ## The agent files are portable
@@ -37,7 +55,10 @@ through `$CLAUDE_PROJECT_DIR`, and a site's own locations come from the dev conf
 `tools/lint/ratchet.py <lint>` runs a lint and compares its findings to `tools/lint/baselines/<lint>.json`. A finding is
 known by its path, the first sentence of its message and a digest of the line it names, so an edit above it does not
 move it. The gate fails on a finding the baseline does not hold, on a baseline entry the lint no longer finds (run
-`--shrink` and commit the smaller baseline with the fix), and on a baseline holding more of an entry than HEAD's. Editing
+`--shrink` and commit the smaller baseline with the fix), and on a baseline holding more of an entry than HEAD's.
+`--grown` makes that last comparison alone, for every baseline: the build graph runs each lint's ratchet over a copy
+of the tree, which has no HEAD, and this one in the checkout ([`build-graph.md`](../../build-graph.md#checks)); a
+HEAD git cannot read fails it. Editing
 a line that carries a finding changes its digest, so the commit that touches the line fixes the finding. A lint that
 cannot run fails; it never reads as zero. `--init` records a new lint's baseline once.
 

@@ -2,7 +2,7 @@
 and the record writer, the CUDA runtime's headers, and the sources their actions read (docs/build-graph.md)."""
 
 load("@rules_cc//cc:defs.bzl", "cc_library")
-load(":defs.bzl", "tree_part")
+load(":defs.bzl", "cuda_root", "tree_part")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -29,6 +29,13 @@ cc_library(
         "@cuda//:nvcc_headers",
         "@cuda//:thrust",
     ],
+)
+
+#: the CUDA root clang's front end reads, for the unit lints and the editor
+cuda_root(
+    name = "cuda_root",
+    cudart = "@cuda//:cudart_headers",
+    curand = "@cuda_tools//:curand_headers",
 )
 
 exports_files([
