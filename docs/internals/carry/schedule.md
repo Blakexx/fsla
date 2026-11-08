@@ -46,7 +46,7 @@ consumer re-extracts its fields from; `step_of` step `t`'s word.
   describe fills the carry runs in sequence instead.
 - THE RENDEZVOUS: before the retire where a drain or a fill follows; before a fold chunk's fill after the first; and
   where the step word says a fill takes the bytes of the panel being drained (`reuse`, predicated:
-  `ops.md#rendezvous-if`). Only the panel: past the readout's rendezvous a read chunk's rows and entries are dead,
+  `common/atoms/barrier.md#rendezvous-if`). Only the panel: past the readout's rendezvous a read chunk's rows and entries are dead,
   and its drain reads its panel, the union's tokens and the factors.
 - A FILL FOLLOWS THE DRAIN (measured 2026-10-16, nl64k-alt-k4 on sm_86): a fill clear of the drained place issued
   before the drain made the drain contend with its copies (the drain 1,890 to 3,934 cycles a warp-window); after it,

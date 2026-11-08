@@ -2,6 +2,9 @@
 
 Mirrors `csrc/rola/src/common/atoms/memory.cuh`, a concern of the baseline operations ([`../ops.md`](../ops.md)): shared and global accesses addressed rather than indexed, plain and predicated in the instruction.
 
+- <a id="storef32"></a>`store_f32`: a summand stored at fp32, unrounded, for a buffer whose consumer is a fan-in
+  ([`reduce.md#fan-in-add`](reduce.md#fan-in-add)).
+
 - <a id="store-shared-u16"></a>`store_shared_u16`, <a id="storesharedu32"></a>`store_shared_u32`,
   <a id="loadsharedu16"></a>`load_shared_u16`, `load_shared_f32`, <a id="store-shared-f32x2"></a>`store_shared_f32x2`,
   <a id="load-shared-v4"></a>`load_shared_v4`: shared accesses ADDRESSED rather than indexed. A swizzled or

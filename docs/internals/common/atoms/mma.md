@@ -18,14 +18,12 @@ Mirrors `csrc/rola/src/common/atoms/mma.cuh`, a concern of the baseline operatio
   states the operand sources the built `mma` accepts; a kernel whose accumulator must land on a particular side
   asserts against them at its own site.
 
-- <a id="hmma"></a>`hmma`, `hmma_fresh`, `hmma_k8`, `hmma_k8_f16`, `hmma_f16`, `hmma_f16_fresh`, `hmul2`, `hfma2`,
-  `pack_half2`: the fp16 family -- `m16n8k16` f16 into fp32 (`hmma_fresh` into a fresh fragment, C = 0; `hmma_k8` the
+- <a id="hmma"></a>`hmma`, `hmma_fresh`, `hmma_k8`, `hmma_k8_f16`, `hmma_f16`, `hmma_f16_fresh`: the fp16 family -- `m16n8k16` f16 into fp32 (`hmma_fresh` into a fresh fragment, C = 0; `hmma_k8` the
   `m16n8k8` atom, half the tensor work, the fold's 8-token tail, `hmma_k8_f16` the same into an fp16 accumulator, the
   readout's den; `hmma_f16` into an fp16 accumulator, two f16 pairs a lane --
   `hmma_f16_fresh` the same into a fresh fragment -- rows `lane / 4` and `+ 8`,
-  columns `2 (lane % 4)` and `+ 1` -- at twice GeForce's fp32-accumulate rate), two f16 products or fused products each
-  rounded once to nearest, two fp32 to an f16 pair rounded to nearest (`cvt.rn.f16x2.f32`, `lo` in the low half). Every
-  rounding is explicit so `tests/oracle/fold_reference.py` can mirror it.
+  columns `2 (lane % 4)` and `+ 1` -- at twice GeForce's fp32-accumulate rate). Every rounding is explicit so
+  `tests/oracle/fold_reference.py` can mirror it; the f16 pair arithmetic beside it is [`math.md#hmul2`](math.md#hmul2).
 
 - <a id="imma-u8"></a>`imma_u8_k32`, `imma_u8_k32_fresh`, `imma_u8s8_k32`: `mma.sync.m16n8k32` over u8 and s8 into
   s32, 4096 multiply-adds. A is four registers a lane (rows `lane / 4` and `+ 8`, four consecutive k a register at

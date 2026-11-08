@@ -194,7 +194,7 @@ __device__ __forceinline__ uint32_t or_run(const __nv_bfloat16* p) {
     return x.x | x.y;
   } else {
     uint32_t acc = 0;
-    //: §6: `N` is this function's template parameter (renamed from lowercase `n` -- see docs/internals/common/atoms/math.md#koctets
+    //: §6: `N` is this function's template parameter -- see docs/internals/common/atoms/math.md#koctets
     constexpr int kOctets = N / 8;
 #pragma unroll
     for (int i = 0; i < kOctets; ++i) {

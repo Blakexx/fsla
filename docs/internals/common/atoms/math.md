@@ -15,6 +15,12 @@ Mirrors `csrc/rola/src/common/atoms/math.cuh`, a concern of the baseline operati
   `pack_byte4` takes the same byte of four words with three of them (pair selectors `0x0040`, `0x0051`, `0x0062`, then
   `0x5410`), which is how an int8 operand row is formed from four gathered words without shifts or masks.
 
+- <a id="hmul2"></a>`hmul2`, `hfma2`, `pack_half2`: two f16 products or fused products each rounded once to nearest,
+  two fp32 to an f16 pair rounded to nearest (`cvt.rn.f16x2.f32`, `lo` in the low half). Every rounding is explicit so
+  `tests/oracle/fold_reference.py` can mirror it.
+
+The bf16 pair helpers, `hi_bf16` through `or_run`, have no shipped caller.
+
 - <a id="hi-bf16"></a>`hi_bf16`, `hi_bf16x2`: an fp32's top half IS its bf16 truncation, so a register pair becomes an
   operand with one `prmt.b32` (selector `0x7632`) against `pack_bf16x2`'s conversion. It TRUNCATES where
   `pack_bf16x2` rounds to nearest even: one bf16 ulp, biased toward zero, a declared rounding an oracle mirror must

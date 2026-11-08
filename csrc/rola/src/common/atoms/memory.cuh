@@ -155,7 +155,7 @@ __device__ __forceinline__ uint32_t load_shared_u32(SmemAddr a) {
 //: One element, rounded to nearest-even exactly as `pack_bf16x2` rounds each of -- see docs/internals/common/atoms/memory.md#store-bf16
 __device__ __forceinline__ void store_bf16(__nv_bfloat16* p, float v) { *p = __float2bfloat16(v); }
 
-//: One fp32 element, stored where it will later be read as a summand rather than -- see docs/internals/common/atoms/reduce.md#storef32
+//: One fp32 element, stored where it will later be read as a summand rather than -- see docs/internals/common/atoms/memory.md#storef32
 __device__ __forceinline__ void store_f32(float* p, float v) { *p = v; }
 
 }  // namespace ops

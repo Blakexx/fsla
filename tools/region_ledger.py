@@ -240,7 +240,8 @@ def main() -> int:
     ap.add_argument("--kernel", default=None,
                     help="the profiled kernel, a regex over the member's functions (needed where it holds several)")
     ap.add_argument("--arch", default=None, help="the cubin's architecture (default: this machine's GPU)")
-    ap.add_argument("--ops", type=Path, default=Path("csrc/rola/src/common/ops.cuh"))
+    ap.add_argument("--barrier", type=Path, default=Path("csrc/rola/src/common/atoms/barrier.cuh"),
+                    help="the atom whose `mbar_wait` frames mark a barrier spin")
     ap.add_argument("--budget", type=Path, default=None)
     ap.add_argument("--cell", default=None, help="the budget cell to compare against")
     ap.add_argument("--per", type=float, default=1.0, help="divisor: CTA-windows in the launch")
@@ -253,7 +254,7 @@ def main() -> int:
                     help="also print one component's instructions by their innermost frame in ANY file (its helpers', "
                          "the headers'): instructions a unit, samples, opcodes, stall reasons")
     a = ap.parse_args()
-    attr = Attribution(a.so, a.member, a.arch or sass.device_arch(), a.source, a.ops, a.kernel)
+    attr = Attribution(a.so, a.member, a.arch or sass.device_arch(), a.source, a.barrier, a.kernel)
     kernel_source = a.source[0]
     rows = read_source_counters(a.csv)
     base = rows[0][0]
@@ -291,7 +292,7 @@ def main() -> int:
         lo, hi = (int(x) for x in a.lines.split("-"))
         print_lines(rows, attr, detail, kernel_source, lo, hi, a.per)
     if a.component:
-        print_component(rows, attr, detail, components, glue, a.component, [*a.source, a.ops], a.per)
+        print_component(rows, attr, detail, components, glue, a.component, [*a.source, a.barrier], a.per)
     doc = census(rows, attr, components, a.per, detail, kernel_source, a.top, glue)
     if a.json:
         doc["per"] = a.per

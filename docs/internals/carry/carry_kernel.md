@@ -39,7 +39,7 @@ Window 0's inputs and record are staged before the loop (one copy group, waited)
    den's factors and image (`handoff.md#den`).
 3. **The read chunks**, each in order: its fill where it is not the first (issued after the chunk before is drained,
    into its own place; where that place takes the panel still being drained -- the step word's `reuse` -- the chunk
-   before ends with a rendezvous after its drain, predicated: `ops.md#rendezvous-if`); its image -- whole, stored
+   before ends with a rendezvous after its drain, predicated: `common/atoms/barrier.md#rendezvous-if`); its image -- whole, stored
    once before the first chunk, or in halves, each chunk storing both
    -- its copies landed (`cp.async.wait_group`: every group but the staging's, which may still fly), a rendezvous,
    its readout over the image (`readout.md`, at the call's reduce dtype and the card's accumulate form; a dense read
@@ -47,7 +47,7 @@ Window 0's inputs and record are staged before the loop (one copy group, waited)
    accumulate; a rendezvous before the second half's store), then a rendezvous and its panel drained to `num` and
    `den` (`panel.md#drain`).
 4. **The fold chunks**, each in order: a rendezvous where the chunk before's rows or the drained panel may be taken
-   (every chunk after the first; the first where its step word's `reuse` says, predicated: `ops.md#rendezvous-if`),
+   (every chunk after the first; the first where its step word's `reuse` says, predicated: `common/atoms/barrier.md#rendezvous-if`),
    its fill, every group landed, a rendezvous, the window's units stepped at the first (`fold.md#units`), the fold
    (`fold.md#chunk`); a window folding nothing steps its units at its end.
 

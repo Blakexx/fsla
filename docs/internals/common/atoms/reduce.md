@@ -7,7 +7,7 @@ Mirrors `csrc/rola/src/common/atoms/reduce.cuh`, a concern of the baseline opera
   waiting, and the point of a reduction is that nothing waits. No order across contributors is defined, so a caller
   that needs a reproducible summation order needs another operation. Stated as `red.global.add.f32`, because an
   `atomicAdd` with an unused result is only sometimes lowered to a reduction; the SASS gate checks the non-returning
-  form. <a id="storef32"></a>`store_f32` stores a summand at fp32, unrounded, for a buffer whose consumer is a fan-in.
+  form.
 
 - <a id="red-global"></a>`red_global_add_f32`: the same with the address converted to the global window first. A
   generic `atomicAdd` on a pinned base lowers to an address-space probe, a shared-memory CAS spin and a local fallback
