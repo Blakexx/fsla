@@ -118,14 +118,15 @@ filegroup(name = "resources", srcs = glob(["clang_tidy/data/lib/clang/**"]))
 def _pinned_impl(rctx):
     pin = json.decode(rctx.read(rctx.attr.pin))
     asset = pin["release_asset"]
-    #: a tarball unpacks under its release's name; a wheel (a zip) at its root
+    #: a tarball unpacks from its pin's folder (`archive_root`), as tools/dev.py's installer reads it; a wheel (a zip)
+    #: at its root
     wheel = asset.endswith(".whl")
     #: the release URL, then its mirrors: the same asset through the host's API, which serves it as octet-stream
     rctx.download_and_extract(
         url = [pin["release_url"]] + pin.get("mirror_urls", []),
         sha256 = pin["asset_sha256"],
         type = "zip" if wheel else "tar.gz",
-        stripPrefix = "" if wheel else asset.removesuffix(".tar.gz"),
+        stripPrefix = "" if wheel else pin["archive_root"],
         headers = {"Accept": ["application/octet-stream"]},
     )
     if "binary_sha256" in pin:

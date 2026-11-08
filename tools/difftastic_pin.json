@@ -11,5 +11,6 @@
     ],
     "asset_sha256": "2997d2bbe620534edbd79b0049f00ce84eef3fedb15c7822456d58e38d8b05c9",
     "archive_root": "difftastic-0.70.0",
-    "binary_path": "difft"
+    "binary_path": "difft",
+    "version_string": "Difftastic 0.70.0"
 }

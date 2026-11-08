@@ -618,7 +618,7 @@ def profile(cell: str) -> Path:
               "torch.cuda.synchronize()")
     import dev_config
 
-    done = process.run([dev_config.get("toolchain.ncu"), "--kernel-name", "regex:carry_kernel", "--launch-skip", "2",
+    done = process.run([dev_config.ncu(), "--kernel-name", "regex:carry_kernel", "--launch-skip", "2",
                         "--launch-count", "1", "--section", "SourceCounters", "--page", "source", "--print-source",
                         "sass", "--csv", sys.executable, "-c", launch], cwd=ROOT, timeout=3600)
     out.write_text(done.stdout)

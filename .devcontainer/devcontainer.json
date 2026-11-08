@@ -18,7 +18,7 @@
         "nvidia.nsight-vscode-edition"
       ],
       "settings": {
-        "clangd.path": "/usr/local/bin/clangd",
+        "clangd.path": "/opt/venv/bin/clangd",
         "python.defaultInterpreterPath": "/opt/venv/bin/python3"
       }
     }

@@ -40,7 +40,7 @@ PY = sys.executable
 def measure(cell: str, out: Path, keep_csv: Path | None, family: str = "carry") -> None:
     from measure.cells import by_name
 
-    ncu = dev_config.get("toolchain.ncu")
+    ncu = dev_config.ncu()
     t = kernel_targets.target(family)
     launch_cell, arm = kernel_targets.launch(t, cell)
     if family == "produce":

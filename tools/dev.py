@@ -44,13 +44,13 @@ import toolchains  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 #: THE DEVBOX'S TOOLS outside the graph's environment: a developer's commands, each a pinned release in its own
-#: versioned folder under `host.tools_dir` (`dev_tool_path`), linked into every checkout's venv (`dev-env`) and found by
+#: versioned folder under `host.tools_dir` (`pinned_path`), linked into every checkout's venv (`dev-env`) and found by
 #: its pin, never recorded as a machine key -- see docs/setup.md#the-devbox
 DEV_TOOLS = ("hyperfine", "difftastic", "nsight_compute", "nsight_systems")
 PINS = {"sccache": ROOT / "tools" / "sccache_pin.json", "mold": ROOT / "tools" / "mold_pin.json",
         "bazelisk": ROOT / "tools" / "bazelisk_pin.json",
         **{name: ROOT / "tools" / f"{name}_pin.json" for name in DEV_TOOLS}}
-#: the pins init records in the machine's toolchain file; bazelisk is found by its pin instead (`bazelisk_path`), since
+#: the pins init records in the machine's toolchain file; bazelisk is found by its pin instead (`pinned_path`), since
 #: every checkout loads that file and an older loader refuses a key it does not declare
 RECORDED = ("sccache", "mold")
 #: THE ENVIRONMENT'S INPUTS: what the dev image is built from and how it is run. Their hash is the environment key; a
@@ -83,23 +83,19 @@ VERSION_OF = {"sccache": sccache_toolchain.sccache_version, "mold": mold_toolcha
               "bazelisk": _bazelisk_version}
 
 
-def dev_tool_path(name: str) -> Path:
-    """Where `install_pinned` puts a devbox tool's command: its pin's folder under `host.tools_dir`, the binary in it."""
+def pinned_path(name: str) -> Path:
+    """Where `install_pinned` puts a pin's binary: its pin's folder under `host.tools_dir` (`archive_root`, which
+    carries the version), the binary in it (`binary_path`)."""
     pin = json.loads(PINS[name].read_text())
     return Path(dev_config.get("host.tools_dir")) / pin["archive_root"] / pin["binary_path"]
 
 
 def install_dev_tools() -> None:
-    """Every devbox tool its pin names, where it is missing: its folder carries its version, so one present is the pin's."""
+    """Every devbox tool, where it is missing or does not report its pin's version."""
     for name in DEV_TOOLS:
-        if not dev_tool_path(name).is_file():
+        pin = json.loads(PINS[name].read_text())
+        if _pinned_version(name, str(pinned_path(name))) != pin["version_string"]:
             install_pinned(name, Path(dev_config.get("host.tools_dir")))
-
-
-def bazelisk_path() -> Path:
-    """Where `install_bazelisk` installs the pinned bazelisk: under `host.tools_dir`, by its release's name."""
-    pin = json.loads(PINS["bazelisk"].read_text())
-    return Path(dev_config.get("host.tools_dir")) / f"bazelisk-{pin['version']}" / pin["binary"]
 
 
 def _write_section(section: str, values: dict, force: bool) -> None:
@@ -143,7 +139,7 @@ def install_bazelisk() -> None:
     """The pinned bazelisk under `host.tools_dir` and `bazel` linked to it: the machine's one step outside the graph
     (`tools/bootstrap.py` on a host, `init --image` in the image), since every other command is a `bazel run`."""
     pin = json.loads(PINS["bazelisk"].read_text())
-    if _pinned_version("bazelisk", str(bazelisk_path())) != pin["version_string"]:
+    if _pinned_version("bazelisk", str(pinned_path("bazelisk"))) != pin["version_string"]:
         install_pinned("bazelisk", Path(dev_config.get("host.tools_dir")))
     link_bazel()
 
@@ -152,7 +148,7 @@ def link_bazel() -> None:
     """`toolchain.bazel` linked to the pinned bazelisk: `bazel` is the command the docs name, and only the pinned
     launcher reads `.bazeliskrc` and runs the graph's front door. A link it made to another pinned release (under
     `host.tools_dir`) is replaced; anything else at the path is refused, named, never overwritten."""
-    link, bazelisk = Path(dev_config.get("toolchain.bazel")), bazelisk_path()
+    link, bazelisk = Path(dev_config.get("toolchain.bazel")), pinned_path("bazelisk")
     if link.is_symlink() and link.resolve() == bazelisk.resolve():
         return
     tools = Path(dev_config.get("host.tools_dir")).resolve()
@@ -171,7 +167,7 @@ def install_pinned(name: str, dest: Path) -> str:
     release under `dest` -- its layout is part of the tool (mold selects `ld.mold` beside itself). A release is a tarball,
     or a bare binary (`asset_kind`) installed under its release's name."""
     pin = json.loads(PINS[name].read_text())
-    wanted = f"/{pin.get('binary', name)}"
+    root, rel = pin["archive_root"], pin["binary_path"]
     with tempfile.TemporaryDirectory(prefix=f"rola_{name}_") as tmp:
         asset = Path(tmp) / pin["release_asset"]
         _download([pin["release_url"], *pin.get("mirror_urls", [])], asset)
@@ -179,27 +175,21 @@ def install_pinned(name: str, dest: Path) -> str:
         if got != pin["asset_sha256"]:
             raise SystemExit(f"{name}: release sha256 {got} is not the pin's {pin['asset_sha256']}")
         dest.mkdir(parents=True, exist_ok=True)
+        binary = dest / root / rel
         if pin.get("asset_kind") == "binary":
-            #: a bare binary: installed under its release's own name, as an archive's tree is
-            binary = dest / f"{name}-{pin['version']}" / pin["binary"]
+            #: a bare binary: installed in its pin's folder, as an archive's tree is
             binary.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(asset, binary)
             binary.chmod(0o755)
         else:
             with tarfile.open(asset) as tf:
-                root = pin.get("archive_root")
-                names = tf.getnames()
                 #: an archive with no folder of its own unpacks into its pin's, so every version has one
-                into = dest / root if root and not all(n == root or n.startswith(root + "/") for n in names) else dest
-                if "binary_path" in pin:
-                    member = tf.getmember(pin["binary_path"] if into != dest else f"{root}/{pin['binary_path']}")
-                else:
-                    member = next(m for m in tf.getmembers() if m.name.endswith(wanted) and m.isfile())
-                tf.extractall(into, filter="tar")
-            binary = into / member.name
+                own = all(n == root or n.startswith(root + "/") for n in tf.getnames())
+                tf.getmember(f"{root}/{rel}" if own else rel)
+                tf.extractall(dest if own else dest / root, filter="tar")
     if "binary_sha256" in pin and hashlib.sha256(binary.read_bytes()).hexdigest() != pin["binary_sha256"]:
         raise SystemExit(f"{name}: {binary} sha256 is not the pin's {pin['binary_sha256']}")
-    print(f"installed {pin.get('version_string', name + ' ' + pin['version'])} -> {binary}")
+    print(f"installed {pin['version_string']} -> {binary}")
     return str(binary)
 
 
@@ -402,9 +392,9 @@ def cmd_init(a) -> int:
         for name in DEV_TOOLS:
             command = Path(dev_config.get("workspace.base_venv")) / "bin" / json.loads(PINS[name].read_text())["command"]
             command.unlink(missing_ok=True)
-            command.symlink_to(dev_tool_path(name))
+            command.symlink_to(pinned_path(name))
     #: the measurement tools' Nsight Compute is the pinned one (they read `toolchain.ncu`)
-    _write_section("toolchain", {"ncu": str(dev_tool_path("nsight_compute"))}, force=True)
+    _write_section("toolchain", {"ncu": str(pinned_path("nsight_compute"))}, force=True)
     base = dev_config.get("workspace.base_venv")
     drift = venv_drift(str(Path(base) / "bin" / "python")) if base else []
     if drift:
@@ -440,10 +430,15 @@ def cmd_store(a) -> int:
 
 
 def _pinned_version(name: str, path: str) -> str:
+    """What the binary at `path` reports, as its pin's `version_string` is written: its own reader's answer, else the
+    pin's text when a line of its `--version` says it."""
     try:
-        return VERSION_OF[name](path)
+        if name in VERSION_OF:
+            return VERSION_OF[name](path)
     except (OSError, RuntimeError):
         return ""
+    want = json.loads(PINS[name].read_text())["version_string"]
+    return want if want in _version(path).splitlines() else ""
 
 
 def _version(tool: str) -> str:
@@ -451,11 +446,6 @@ def _version(tool: str) -> str:
         return subprocess.run([tool, "--version"], capture_output=True, text=True, timeout=60).stdout.strip()
     except OSError:
         return ""
-
-
-def _ncu_version(ncu: str) -> tuple[int, ...]:
-    m = re.search(r"Version (\d+)\.(\d+)", _version(ncu))
-    return tuple(int(x) for x in m.groups()) if m else ()
 
 
 def cmd_check(a) -> int:
@@ -478,9 +468,9 @@ def cmd_check(a) -> int:
             row(path.exists(), f"toolchain {tool}: {path}", "set toolchain.cuda_home to a CUDA toolkit with it")
     except SystemExit as ex:
         row(False, f"toolchain: {ex}", "bazel run //:init")
+    #: the measurement tools' Nsight Compute is the pinned one, which init records
     ncu = dev_config.get("toolchain.ncu")
-    row(_ncu_version(ncu) >= (2025, 3), f"toolchain ncu {'.'.join(map(str, _ncu_version(ncu))) or 'missing'}: {ncu}",
-        "install Nsight Compute 2025.3+ and set toolchain.ncu")
+    row(ncu == str(pinned_path("nsight_compute")), f"toolchain.ncu is the pinned Nsight Compute: {ncu}", "bazel run //:init")
     for name, gate in (("sccache", sccache_toolchain.gate), ("mold", mold_toolchain.link_flags)):
         try:
             gate()
@@ -488,8 +478,10 @@ def cmd_check(a) -> int:
         except RuntimeError as ex:
             row(False, f"toolchain {name}: {str(ex).splitlines()[0][:140]}", "bazel run //:init")
     for name in DEV_TOOLS:
-        row(dev_tool_path(name).is_file(), f"devbox {name}: {dev_tool_path(name)}", "bazel run //:init")
-    bazelisk = bazelisk_path()
+        want = json.loads(PINS[name].read_text())["version_string"]
+        row(_pinned_version(name, str(pinned_path(name))) == want, f"devbox {name}: {pinned_path(name)} is {want}",
+            "bazel run //:init")
+    bazelisk = pinned_path("bazelisk")
     pin = json.loads(PINS["bazelisk"].read_text())["version_string"]
     row(_pinned_version("bazelisk", str(bazelisk)) == pin, f"bazelisk: {bazelisk} is {pin}", "python3 tools/bootstrap.py")
     #: bazelisk puts the front door's directory first on PATH for what it runs (`bazel run //:check`): the user's `bazel`
@@ -692,9 +684,9 @@ def cmd_dev_env(a) -> int:
             target.symlink_to(tool)
     #: and the devbox tools, by their pins' commands
     for name in DEV_TOOLS:
-        if not dev_tool_path(name).is_file():
-            raise SystemExit(f"{venv}: the devbox's {name} is not installed at {dev_tool_path(name)}: bazel run //:init")
-        (venv / "bin" / json.loads(PINS[name].read_text())["command"]).symlink_to(dev_tool_path(name))
+        if not pinned_path(name).is_file():
+            raise SystemExit(f"{venv}: the devbox's {name} is not installed at {pinned_path(name)}: bazel run //:init")
+        (venv / "bin" / json.loads(PINS[name].read_text())["command"]).symlink_to(pinned_path(name))
 
     wire_hooks(checkout)
     found = subprocess.run([str(venv / "bin" / "python"), "-c", "import json, rola, rola_devtools, rola_results, torch; "
@@ -737,8 +729,8 @@ def cmd_worktree(a) -> int:
 
 
 def cmd_build(a) -> int:
-    """THE ITERATION BUILD: the extension rebuilt in place (`setup.py build_ext --inplace`) by `--python` (this
-    checkout's venv, `bazel run //:dev_env`) -- the same compile, gates and device-stamped library as `pip install -e
+    """THE ITERATION BUILD: the extension rebuilt in place (`setup.py build_ext --inplace`) by this checkout's own venv
+    (`bazel run //:dev_env`), which `_from_own_venv` re-executes it under -- the same compile, gates and device-stamped library as `pip install -e
     .`, without pip's metadata, wheel and reinstall. Refuses when that interpreter's `rola` is not this checkout's (a
     venv imports the checkout it names). `--archs` and `--carry-arms` set `ROLA_CUDA_ARCHS` / `ROLA_CARRY_ARMS`.
     -- see docs/build.md#iteration"""

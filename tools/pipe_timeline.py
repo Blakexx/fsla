@@ -41,7 +41,6 @@ import toolchains  # noqa: E402
 from rola_devtools import process  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-NCU = dev_config.get("toolchain.ncu")
 #: the `rola_results` location of the calibrations: the MMA-only composition's plateau, per binary
 SCALE = "pipe_timeline.scale"
 PY = sys.executable
@@ -64,7 +63,7 @@ def capture(cell: str, out: Path) -> Path:
     """One launch of the cell through rola's runner under PM sampling; returns the report."""
     from measure.provider import oneshot_argv
 
-    r = process.run([NCU, "--target-processes", "all", "-k", "regex:carry_kernel", "-c", "1", "--section",
+    r = process.run([dev_config.ncu(), "--target-processes", "all", "-k", "regex:carry_kernel", "-c", "1", "--section",
                      "PmSampling", "-f", "-o", str(out), *oneshot_argv(cell)], cwd=ROOT, timeout=3600)
     rep = out.with_suffix(".ncu-rep") if out.suffix != ".ncu-rep" else out
     if r.returncode or not rep.exists():
@@ -73,7 +72,7 @@ def capture(cell: str, out: Path) -> Path:
 
 
 def export(rep: Path) -> tuple[list[str], list[str]]:
-    r = process.run([NCU, "--import", str(rep), "--page", "raw", "--print-metric-instances", "details", "--csv"],
+    r = process.run([dev_config.ncu(), "--import", str(rep), "--page", "raw", "--print-metric-instances", "details", "--csv"],
                     timeout=3600)
     csv.field_size_limit(sys.maxsize)
     rows = list(csv.reader(r.stdout.splitlines()))

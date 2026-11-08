@@ -9,5 +9,6 @@
     "release_url": "https://developer.download.nvidia.com/compute/cuda/redist/nsight_systems/linux-x86_64/nsight_systems-linux-x86_64-2025.3.2.367-archive.tar.xz",
     "asset_sha256": "3f9efdad576112c17e6e344bb366382027f1c96b0372460dc5453a93354015e8",
     "archive_root": "nsight_systems-linux-x86_64-2025.3.2.367-archive",
-    "binary_path": "nsight-systems/2025.3.2/bin/nsys"
+    "binary_path": "nsight-systems/2025.3.2/bin/nsys",
+    "version_string": "NVIDIA Nsight Systems version 2025.3.2.367-253236224375v0"
 }

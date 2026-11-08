@@ -47,9 +47,9 @@ SCHEMA: dict[str, dict[str, Key]] = {
     "toolchain": {
         "cuda_home": Key("path?", None, "the CUDA toolkit the extension builds with (nvcc, ptxas, nvdisasm, cuobjdump "
                          "under bin/); null takes torch.utils.cpp_extension's CUDA_HOME"),
-        "ncu": Key("path", "/usr/local/cuda/bin/ncu",
-                   "the Nsight Compute CLI, which init records as the pinned one (tools/nsight_compute_pin.json); "
-                   "2025.3 or later for PM sampling (tools/pipe_timeline.py)"),
+        "ncu": Key("path?", None,
+                   "the Nsight Compute CLI the measurement tools run: the pinned one (tools/nsight_compute_pin.json), "
+                   "which init records; null until it has"),
         "sccache": Key("path?", None, "the pinned sccache (tools/sccache_pin.json); null means none installed"),
         "sccache_enabled": Key("bool", True, "false builds uncached, the one deliberate opt-out of the sccache gate"),
         "mold": Key("path?", None, "the pinned mold (tools/mold_pin.json), the only linker; null means none installed"),
@@ -92,7 +92,6 @@ IMAGE_LAYOUT = {
 }
 #: where the image's loader looks for the WSL driver's libraries (the Dockerfile's LD_LIBRARY_PATH names it)
 WSL_LIB_IN_IMAGE = "/usr/lib/wsl/lib"
-#: where an Nsight Compute CLI installs: the standalone packages, then a CUDA toolkit's wrapper
 
 #: Environment variables one of the tree's processes sets for a child it starts. Never a setting: the parent resolved
 #: the value (from this config or from its own state) and the child must use exactly that value.
@@ -162,6 +161,14 @@ def cuda_bin(tool: str) -> str:
 def scratch(name: str) -> Path:
     path = Path(get("host.scratch")) / name
     path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def ncu() -> str:
+    """The Nsight Compute CLI the measurement tools run (`toolchain.ncu`), refused until init recorded the pinned one."""
+    path = get("toolchain.ncu")
+    if not path:
+        raise SystemExit("toolchain.ncu is unset: bazel run //:init records the pinned Nsight Compute")
     return path
 
 

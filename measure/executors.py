@@ -70,7 +70,8 @@ def probe_environment(ctx) -> dict:
 
     smi = _version(["nvidia-smi", "--query-gpu=name,driver_version,compute_cap", "--format=csv,noheader"]).strip()
     ptxas = _version([f"{dev_config.get('toolchain.cuda_home')}/bin/ptxas", "--version"]).split()
-    ncu = _version([dev_config.get("toolchain.ncu"), "--version"])
+    #: provenance only: a host whose init recorded no Nsight Compute records none
+    ncu = _version([dev_config.get("toolchain.ncu"), "--version"]) if dev_config.get("toolchain.ncu") else ""
     return {"gpu": smi, "ptxas": next((w for w in ptxas if w.startswith("V")), " ".join(ptxas[-2:])),
             "torch": metadata.version("torch"),
             "ncu": next((line.split("Version ")[1].split()[0] for line in ncu.splitlines() if "Version " in line), ""),

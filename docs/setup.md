@@ -74,8 +74,8 @@ tagged `rola-dev:<first 12 of the environment key>`. The key is sha256 over thos
 `environment.image_digest`, which `tools/ratify.py` stamps as `source.image_digest` and every record row carries.
 
 Its last step is `tools/dev.py init --image`: the same one init a bare host runs, writing the image's dev config
-(`ROLA_DEV_CONFIG=/opt/rola/dev-config`) for its fixed layout, installing the pinned `sccache`, `mold` and
-bazelisk from the repo's pins, and running `check --image`. A red check fails the image build -- the image built on 2026-08-28 went two
+(`ROLA_DEV_CONFIG=/opt/rola/dev-config`) for its fixed layout, installing the pinned `sccache`, `mold`,
+bazelisk and the devbox's tools from the repo's pins, and running `check --image`. A red check fails the image build -- the image built on 2026-08-28 went two
 weeks without `cuobjdump`, the Nsight Compute the pipe timeline needs, or flash-attn, and nothing said so.
 
 The image is built for a toolchain record (`tools/toolchains/<name>.json`; `--toolchain NAME` when more than one is
@@ -84,8 +84,8 @@ recently, the one it built always among them, and removes the rest (`KEPT_IMAGES
 rebuild away, its layers in Docker's build cache). `container build` passes the record's base image, its exact apt package pins and its torch index as build
 arguments, and the Dockerfile fails the build unless `ptxas --version` is the record's string byte for byte -- the same
 comparison `setup.py`'s rule 1 makes, so a base tag carrying a newer patch (every CUDA 12.4 tag shipped V12.4.131
-against a V12.4.99 pin, measured 2026-08-29) cannot slip through. `cuobjdump` is one of the record's pins and
-`nsight-compute-2025.3.0` is pinned beside them. The attention reference needs no package: it is torch's own flash
+against a V12.4.99 pin, measured 2026-08-29) cannot slip through. `cuobjdump` is one of the record's pins; Nsight Compute
+is the devbox's (`tools/nsight_compute_pin.json`), which init installs. The attention reference needs no package: it is torch's own flash
 backend (`docs/measurement.md`).
 
 ## 3. Prove it, then open it
@@ -216,7 +216,10 @@ image and the dev setup alike. The devbox's own tools (`tools/dev.py`'s `DEV_TOO
 installs into its own versioned folder under `host.tools_dir`, one copy a machine: in the image their commands are on
 the image's venv's bin, first on its PATH, and on a host each checkout's venv links them (`bazel run //:dev_env`), so an activated venv has
 them first on PATH and the system's own tools are untouched. The environment's developer commands come with
-`requirements.lock`, on the same venv's bin. The tree's own code reaches a tool by its recorded path, never PATH.
+`requirements.lock`, on the same venv's bin. The tree's own code reaches a tool by its recorded path, never PATH, but
+for `tools/build/dag_to_dot.py`'s optional `--svg`, which runs graphviz's `dot`. THE GAP: the rows sourced from apt
+are not pinned -- the image installs them unversioned from Ubuntu's archive, and on a host they are the host OS's
+own, which init does not install.
 
 | Tool | Source | Role |
 |---|---|---|

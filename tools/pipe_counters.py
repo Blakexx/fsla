@@ -57,7 +57,7 @@ def measure(cell: str, family: str = "carry") -> dict:
 
     t = kernel_targets.target(family)
     spec = by_name(cell)
-    cmd = [dev_config.get("toolchain.ncu"), "--target-processes", "all", "-k",
+    cmd = [dev_config.ncu(), "--target-processes", "all", "-k",
            f"regex:{t.symbol}", "-c", "1", "--metrics", ",".join(COUNTERS), "--csv",
            *oneshot_argv(cell, arm_name(t.arm))]
     done = process.run(cmd, cwd=ROOT, timeout=3600)

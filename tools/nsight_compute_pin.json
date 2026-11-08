@@ -9,5 +9,6 @@
     "release_url": "https://developer.download.nvidia.com/compute/cuda/redist/nsight_compute/linux-x86_64/nsight_compute-linux-x86_64-2025.3.0.19-archive.tar.xz",
     "asset_sha256": "1bd92d4059f5934a4c7c3bce29bd1386530e8506a746d478367bbf14efdf328e",
     "archive_root": "nsight_compute-linux-x86_64-2025.3.0.19-archive",
-    "binary_path": "ncu"
+    "binary_path": "ncu",
+    "version_string": "Version 2025.3.0.0 (build 36273991) (public-release)"
 }
