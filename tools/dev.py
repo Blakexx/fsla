@@ -54,6 +54,9 @@ ENV_INPUTS = ("Dockerfile", ".devcontainer/devcontainer.json", ".devcontainer/co
               "tools/toolchains.py",
               *sorted(str(p.relative_to(ROOT)) for p in (ROOT / "tools" / "toolchains").glob("*.json")))
 IMAGE_REPO = "rola-dev"
+#: the dev images a build keeps, newest first, the one it built among them: an older environment's image is a rebuild
+#: away (its layers stay in Docker's build cache), and each image kept holds ~14 GB of Docker's disk
+KEPT_IMAGES = 3
 #: the `rola_results` location of the container checks, one record per environment key
 RESULTS_ENVIRONMENT = "environment"
 IMAGE_LAYOUT, WSL_LIB_IN_IMAGE = dev_config.IMAGE_LAYOUT, dev_config.WSL_LIB_IN_IMAGE
@@ -716,6 +719,24 @@ def _only_toolchain() -> toolchains.Toolchain:
     return next(iter(declared.values()))
 
 
+def _keep_newest_images() -> None:
+    """Every `rola-dev` image but the `KEPT_IMAGES` built most recently loses its tags, and with them its layers no
+    image shares: Docker's disk holds the images a build made until something removes them."""
+    listed = subprocess.run(["docker", "images", IMAGE_REPO, "--format", "{{.ID}}\t{{.CreatedAt}}\t{{.Repository}}:{{.Tag}}"],
+                            capture_output=True, text=True, check=True).stdout.splitlines()
+    tags: dict[str, list[str]] = {}
+    created: dict[str, str] = {}
+    for line in listed:
+        image, when, name = line.split("\t")
+        tags.setdefault(image, []).append(name)
+        created[image] = when
+    old = sorted(tags, key=created.get, reverse=True)[KEPT_IMAGES:]
+    for image in old:
+        subprocess.run(["docker", "rmi", *tags[image]], capture_output=True)
+    if old:
+        print(f"kept the {KEPT_IMAGES} newest {IMAGE_REPO} images; removed {len(old)} older")
+
+
 def cmd_container(a) -> int:
     key = env_key()
     tag = f"{IMAGE_REPO}:{key[:12]}"
@@ -736,8 +757,11 @@ def cmd_container(a) -> int:
             args = {"ROLA_ENV_KEY": key, "ROLA_TOOLCHAIN": toolchain.name, "CUDA_BASE_IMAGE": toolchain.base_image,
                     "CUDA_PACKAGES": " ".join(toolchain.packages), "TORCH_INDEX": toolchain.torch_index}
             build_args = [x for name, value in args.items() for x in ("--build-arg", f"{name}={value}")]
-            return subprocess.run(["docker", "build", *build_args, "-t", tag, "-t", f"{IMAGE_REPO}:latest",
-                                   context]).returncode
+            built = subprocess.run(["docker", "build", *build_args, "-t", tag, "-t", f"{IMAGE_REPO}:latest",
+                                    context]).returncode
+        if built == 0:
+            _keep_newest_images()
+        return built
     if a.action == "gate":
         return _container_gate()
 

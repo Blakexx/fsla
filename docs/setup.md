@@ -74,7 +74,9 @@ bazelisk from the repo's pins, and running `check --image`. A red check fails th
 weeks without `cuobjdump`, the Nsight Compute the pipe timeline needs, or flash-attn, and nothing said so.
 
 The image is built for a toolchain record (`tools/toolchains/<name>.json`; `--toolchain NAME` when more than one is
-declared). `container build` passes the record's base image, its exact apt package pins and its torch index as build
+declared), tagged by its environment key, and a build that succeeds keeps the three `rola-dev` images built most
+recently and removes the rest (`KEPT_IMAGES`: an older environment's image is a rebuild away, its layers in Docker's
+build cache). `container build` passes the record's base image, its exact apt package pins and its torch index as build
 arguments, and the Dockerfile fails the build unless `ptxas --version` is the record's string byte for byte -- the same
 comparison `setup.py`'s rule 1 makes, so a base tag carrying a newer patch (every CUDA 12.4 tag shipped V12.4.131
 against a V12.4.99 pin, measured 2026-08-29) cannot slip through. `cuobjdump` is one of the record's pins and
