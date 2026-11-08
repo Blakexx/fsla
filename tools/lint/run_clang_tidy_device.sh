@@ -77,7 +77,10 @@ if [[ -z "$unit_files" ]]; then
   exit 1
 fi
 
-ARCH="$(python3 -c "from rola_cu13._build_config import BUILD_CONFIG as c; print(c['archs'][0].replace('sm_',''))" 2>/dev/null || echo 80)"
+if ! ARCH="$(python3 -c "from rola_cu13._build_config import BUILD_CONFIG as c; print(c['archs'][0].replace('sm_',''))")"; then
+  echo "run_clang_tidy_device.sh: FAILED -- no build config to read the target architecture from (rola_cu13._build_config): build first, \`python tools/dev.py build\`" >&2
+  exit 1
+fi
 
 #: THE UNITS RUN SIDE BY SIDE, as many at once as the host budget has slots (each still takes its own slot, so a
 #: compile or another lint holding slots is queued behind, never oversubscribed); each unit's report lands in its own
