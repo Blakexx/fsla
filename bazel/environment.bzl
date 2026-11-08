@@ -163,7 +163,8 @@ def _host_cc_impl(rctx):
 
 _host_cc_repo = repository_rule(
     implementation = _host_cc_impl,
-    doc = "The host C++ compiler's version and digests, as a header every compile takes as an input.",
+    doc = "The host C++ compiler's version and digests, as a file every compile takes as an input (never a header, " +
+          "which a compile drops from its key when it does not read it).",
 )
 
 def _host_gpu_impl(rctx):

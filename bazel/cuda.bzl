@@ -9,11 +9,6 @@ load("@rules_cuda//cuda:defs.bzl", "find_cuda_toolchain")
 load("@rules_cuda//cuda/private:action_names.bzl", "ACTION_NAMES")
 load("@rules_cuda//cuda/private:cuda_helper.bzl", "cuda_helper")
 
-CudaUnitInfo = provider(
-    doc = "What a unit's compile reports beside its object.",
-    fields = {"ptxas_reports": "depset: each unit's nvcc diagnostics, ptxas's `-v` report among them"},
-)
-
 def _cuda_unit_impl(ctx):
     cc_toolchain = find_cc_toolchain(ctx)
     cuda_toolchain = find_cuda_toolchain(ctx)
@@ -106,7 +101,6 @@ def _cuda_unit_impl(ctx):
     return [
         DefaultInfo(files = depset(objects)),
         OutputGroupInfo(ptxas_reports = depset(reports)),
-        CudaUnitInfo(ptxas_reports = depset(reports)),
         cc_common.merge_cc_infos(direct_cc_infos = [CcInfo(linking_context = linking)], cc_infos = [common.transitive_cc_info]),
     ]
 
@@ -138,7 +132,7 @@ cuda_unit = rule(
     fragments = ["cpp"],
     #: rules_cuda's `use_cuda_toolchain()` names the type relative to the rule that calls it, our repository
     toolchains = use_cc_toolchain() + [Label("@rules_cuda//cuda:toolchain_type")],
-    provides = [CcInfo, CudaUnitInfo],
+    provides = [CcInfo],
     doc = "CUDA units compiled as rules_cuda's cuda_library compiles them (its toolchain, its command line, a " +
           "position-independent object, always linked), each by one action whose unread headers leave its cache key.",
 )

@@ -66,9 +66,9 @@ headers into `build/generated`.
   `bazel/cuda_compile.py`): rules_cuda's toolchain, flags and command line, as its `cuda_library` builds them, one
   position-independent object a unit, always linked. nvcc writes a dependency file (`-MD -MF`), and every declared
   header the unit did not read becomes the action's `unused_inputs_list`, so the unit's cache key holds what it read:
-  a header edit recompiles the units that include it, as ninja's dependency files did. The file lists what every pass
-  read, the host's and each architecture's device pass (nvcc 13.0.48: a header included only under
-  `__CUDA_ARCH__ == 860` is listed when sm_86 compiles and not when sm_80 alone does). Only declared headers are
+  a header edit recompiles the units that include it, as ninja's dependency files do in setup.py's build. The file
+  lists what every pass read, the host's and each architecture's device pass (nvcc 13.0.48: a header included only
+  under `__CUDA_ARCH__ == 860` is listed when sm_86 compiles and not when sm_80 alone does). Only declared headers are
   prunable: the toolkit, the host compiler and its identity (rule 4) key every compile. The action keeps nvcc's
   diagnostics, ptxas's `-v` report among them, as `<unit>.ptxas.txt` (the `ptxas_reports` output group); the console
   shows them without the report's lines.
