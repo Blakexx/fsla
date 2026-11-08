@@ -51,8 +51,8 @@ jobs:
         run: python3 tools/lint/ast_grep_gate.py --test-fixtures
       - name: lint_standards.py (unroll discipline, arm-TU torch include, barrier-free regions, the docs mirror, no work codes in a mirror page)
         run: python3 tools/lint/lint_standards.py
-      # THE READABILITY AND DEAD-CODE GATES: the commit gate's (`bazel test //:gate`, docs/build-graph.md#checks)
-      # lints and self-tests that need no build, run here directly. The unit lints (clang-tidy's two profiles, the
+      # THE READABILITY AND DEAD-CODE GATES: a hand-kept copy of the commit gate's (`bazel test //:gate`,
+      # docs/build-graph.md#checks) lints and self-tests that need no build, run here directly; nothing ties the two. The unit lints (clang-tidy's two profiles, the
       # host warnings) read the graph's compile actions and run in the graph alone.
       - name: unused __global__ instantiation check
         run: python3 tools/lint/unused_instantiations.py

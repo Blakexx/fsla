@@ -66,19 +66,31 @@ _DEPS = [
     ":headers",
     "//csrc/third_party:cutlass",
     ":generated",
-    ":stamp",
     "@host_cc//:identity",
     "@rola_env//:python_headers",
     "@rola_env//:torch_headers",
 ]
 
+#: the one unit that reads the device stamp, the digest of every source: only it depends on the stamp, so an edit to
+#: one source recompiles that source's unit and this one, not every unit
+_STAMP_UNIT = "src/common/build_stamp.cu"
+
 cuda_library(
     name = "units",
-    srcs = HAND_UNITS,
+    srcs = [unit for unit in HAND_UNITS if unit != _STAMP_UNIT],
     alwayslink = True,
     copts = NVCC_FLAGS,
     features = _NVCC_FEATURES,
     deps = _DEPS,
+)
+
+cuda_library(
+    name = "stamp_unit",
+    srcs = [_STAMP_UNIT],
+    alwayslink = True,
+    copts = NVCC_FLAGS,
+    features = _NVCC_FEATURES,
+    deps = _DEPS + [":stamp"],
 )
 
 [cuda_library(

@@ -61,6 +61,7 @@ rola_extension(
     deps = [
         "//csrc/rola:carry_arms",
         "//csrc/rola:registration",
+        "//csrc/rola:stamp_unit",
         "//csrc/rola:units",
     ],
 )

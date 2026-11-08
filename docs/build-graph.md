@@ -63,12 +63,14 @@ both into the checkout's `rola_cu13/` (a copy: the library is imported from the 
 - ONE ARCHITECTURE SPEC A CARD: the library's transition writes `--@rules_cuda//cuda:archs` as
   `compute_80:sm_80;compute_86:sm_86`; a comma list (`sm_80,sm_86`) is one spec, which compiles every card from the
   lowest virtual architecture.
-- THE INCLUDE ORDER IS SETUP.PY'S: the repository's headers, then CUTLASS's, then the generated headers and the stamp,
-  then torch's, Python's and the toolkit's, so a repository header wins any name collision (`bazel/defs.bzl`'s
-  `include_root`).
+- THE INCLUDE ORDER IS SETUP.PY'S: the repository's headers, then CUTLASS's, then the generated headers (and the stamp,
+  for the one unit that reads it), then torch's, Python's and the toolkit's, so a repository header wins any name
+  collision (`bazel/defs.bzl`'s `include_root`).
 - THE GENERATED HEADERS are actions over their generators: the arm selections, the carry parts and the carried builds
   (`rola_headers`, `bazel/headers.py`, from the settings) and the device stamp (`tools/csrc_stamp.py` over every file
-  under `csrc/rola/src` but its markdown -- the digest ratify computes).
+  under `csrc/rola/src` but its markdown -- the digest ratify computes). Only `build_stamp.cu`'s unit reads the stamp
+  and depends on it (`stamp_unit`): a digest of every source, as any unit's input it would recompile every unit on
+  any edit.
 - ONE UNIT LIST: `csrc/rola/units.bzl`, written and checked by `tools/gen_shards.py`, names `tools/kernels.py`'s hand
   units and each generated carry arm unit with the arms it carries. Each arm unit is its own target, and
   `carry_arm_set` hands the link only the units `--//:carry_arms` names (`gen_shards`' grammar: indices or `all`), so an

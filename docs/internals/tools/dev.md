@@ -94,7 +94,7 @@ rola_results commit`).
 `init`, `check`, `show`, `get` and `clock` run from whichever python starts them; every other command re-executes itself under `workspace.base_venv`, because the store and the container read `rola_results` and the host's own python carries nothing of this project.
 
 **`get`** prints one value, for a person or a shell (the `rola-dev` skill's way to read one setting); `cuda-home`
-resolves the installed toolkit.
+resolves the installed toolkit, and nothing in the tree calls it.
 
 **Running a CPU-heavy command under the host budget** is `python -m rola_devtools.locks.host [--slots N]
 [--exclusive] -- <cmd>`, niced per `host.nice`. `setup.py` takes the budget itself.

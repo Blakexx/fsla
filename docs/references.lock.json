@@ -2166,6 +2166,7 @@
   {"doc": "docs/setup.md", "pinned_at": "39592acc661e", "reviewed": true, "sha256": "", "target": ".devcontainer/compose.yaml"},
   {"doc": "docs/setup.md", "pinned_at": "39592acc661e", "reviewed": true, "sha256": "", "target": ".devcontainer/devcontainer.json"},
   {"doc": "docs/setup.md", "pinned_at": "39592acc661e", "reviewed": true, "sha256": "", "target": "csrc"},
+  {"doc": "docs/setup.md", "pinned_at": "39e422ab0e61", "reviewed": true, "sha256": "a979ce352f9c2e9d", "target": "docs/build-graph.md#environment"},
   {"doc": "docs/setup.md", "pinned_at": "39592acc661e", "reviewed": true, "sha256": "", "target": "docs/build.md"},
   {"doc": "docs/setup.md", "pinned_at": "a6087a0a4ab2", "reviewed": true, "sha256": "ed354dfc5aba8b91", "target": "docs/build.md#sccache"},
   {"doc": "docs/setup.md", "pinned_at": "39592acc661e", "reviewed": true, "sha256": "", "target": "docs/internals/tools/dev.md"},
