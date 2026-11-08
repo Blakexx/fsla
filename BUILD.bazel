@@ -56,8 +56,11 @@ rola_extension(
     torch = TORCH,
     torch_cuda = TORCH_CUDA,
     shared_libraries = ["@rola_env//:torch_libraries"],
-    #: the unit lints read the units it links
-    visibility = ["//tools:__pkg__"],
+    #: the unit lints read the units it links; the device tiers import it
+    visibility = [
+        "//tests:__pkg__",
+        "//tools:__pkg__",
+    ],
     deps = [
         "//csrc/rola:carry_arms",
         "//csrc/rola:registration",
@@ -97,4 +100,10 @@ test_suite(
         "//tools:lint_fixtures",
         "//tools:lints",
     ],
+)
+
+#: THE TEST LANE: every tier (docs/testing.md#running-it)
+test_suite(
+    name = "lane",
+    tests = ["//tests:lane"],
 )

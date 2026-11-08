@@ -539,3 +539,57 @@ compile_database = rule(
     },
     doc = "`bazel run` writes compile_commands.json into the checkout: each unit's clang command, the lints' own.",
 )
+
+#: THE TEST TIERS (docs/testing.md#running-it): each tier one target, as pytest runs it
+
+_PYTEST_TIER = """\
+#!/bin/bash
+# a test tier (bazel/defs.bzl's pytest_tier): its inputs copied into a real tree, the tree's packages and the built
+# library importable from it; Bazel's shards (bazel/pytest_shards.py), its filter (`--test_filter`, pytest's `-k`), its
+# arguments (`--test_arg`) and its test report
+set -euo pipefail
+tree="$TEST_TMPDIR/tree"
+cp -rL "$TEST_SRCDIR/_main" "$tree"
+rm -f "$tree/$TEST_BINARY"
+cd "$tree"
+{machine}export PATH={venv}/bin:/usr/bin:/bin PYTHONPATH="$tree" PYTHONDONTWRITEBYTECODE=1
+only=()
+if [ -n "${{TESTBRIDGE_TEST_ONLY:-}}" ]; then only=(-k "$TESTBRIDGE_TEST_ONLY"); fi
+#: Bazel's sharding protocol: this shard's index and count, and the file that says the test honours them
+shard=()
+if [ -n "${{TEST_TOTAL_SHARDS:-}}" ]; then
+  shard=(--bazel-shard "$TEST_SHARD_INDEX/$TEST_TOTAL_SHARDS")
+  touch "$TEST_SHARD_STATUS_FILE"
+fi
+exec {venv}/bin/python -m pytest -p no:cacheprovider -p bazel.pytest_shards -q -rfE --junitxml="$XML_OUTPUT_FILE" \\
+  {args} "${{only[@]}}" "${{shard[@]}}" "$@"
+"""
+
+#: a tier with no device sees none; every tier reads the machine's dev config (its toolkit, which tests/unit's compiling
+#: rows use, and a device tier's GPU lock)
+_NO_DEVICE = 'export CUDA_VISIBLE_DEVICES=""\n'
+
+def _pytest_tier_impl(ctx):
+    script = ctx.actions.declare_file(ctx.label.name + ".sh")
+    words = list(ctx.attr.tests) + (["-m", ctx.attr.marks] if ctx.attr.marks else [])
+    body = _PYTEST_TIER.format(venv = shell.quote(VENV), machine = "" if ctx.attr.device else _NO_DEVICE, args = " ".join([shell.quote(w) for w in words]))
+    ctx.actions.write(script, body, is_executable = True)
+    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = ctx.files.data + [ctx.file._shards]))]
+
+_pytest_tier_test = rule(
+    implementation = _pytest_tier_impl,
+    test = True,
+    attrs = {
+        "tests": attr.string_list(mandatory = True, doc = "the tier's paths, as pytest takes them"),
+        "marks": attr.string(doc = "its marker expression (`-m`); none keeps pyproject's default selection"),
+        "data": attr.label_list(allow_files = True, doc = "what it reads: the tree, and the library for a device tier"),
+        "device": attr.bool(doc = "a device tier: it sees the machine's device, and takes the GPU lock"),
+        "_shards": attr.label(default = "//bazel:pytest_shards.py", allow_single_file = True),
+    },
+)
+
+def pytest_tier(name, device = False, tags = [], **kwargs):
+    """A test tier as one target. A device tier runs alone (`exclusive`) and outside the sandbox (`no-sandbox`): it
+    takes the machine's GPU lock itself (tests/conftest.py), and the lock lives in `host.lock_dir`, `/tmp` by default,
+    which a sandboxed test sees as its own -- a lock no other process holds."""
+    _pytest_tier_test(name = name, device = device, tags = tags + (["exclusive", "no-sandbox"] if device else []), **kwargs)

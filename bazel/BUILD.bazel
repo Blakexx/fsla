@@ -41,6 +41,7 @@ cuda_root(
 exports_files([
     "flags.py",
     "gates.py",
+    "pytest_shards.py",
     "headers.py",
     "make_env.py",
     "record.py",

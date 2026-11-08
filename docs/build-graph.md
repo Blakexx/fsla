@@ -131,6 +131,12 @@ index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
   its deps), read in one configuration a ratified architecture (a split transition), whose generated headers are that architecture's build set; each verdict is
   cached on its unit's compile, and states the seconds it took. `bazel run //:compile_commands` writes the editor's
   compile database from the same commands, for the first ratified architecture.
+- THE TEST TIERS (`//tests:cpu`, `unit_cuda`, `oracle`, `integration`; `//:lane` all four; `bazel/defs.bzl`'s
+  `pytest_tier`): each tier one target, as pytest runs it ([`testing.md`](testing.md#running-it)), over the tree and the
+  built library copied into a real tree. The CPU tier is sharded by Bazel's protocol (`bazel/pytest_shards.py`) and sees
+  no device; a device tier runs alone and outside the sandbox, taking the machine's GPU lock itself. `--test_filter` is
+  pytest's `-k`, `--test_arg` passes pytest an argument. Every tier reads the machine's dev config: its GPU lock, and
+  the installed toolkit `tests/unit`'s compiling rows still use.
 - THE CHECKS OF THE COMMIT (`//tools:commit_checks`, `bazel/defs.bzl`'s `checkout_test`): what git knows rather than
   a file set -- no ratchet's baseline grown against HEAD's (`tools/lint/ratchet.py --grown`), every doc reference
   resolving (`tools/docrefs.py`), the dev container current (`tools/dev.py container gate`). Each runs in the
@@ -170,7 +176,8 @@ names one).
 10. THE SANDBOX STAYS ON: Bazel 9's hermetic `/tmp` keeps nvcc's temporary files apart, so nothing runs
     `--spawn_strategy=local` to dodge it. Two kinds of work leave it: the arm gate, because it imports the
     environment's packages from the store, which the sandbox does not hold (the store path on its command line carries
-    the environment's key), and the checks of the commit, whose input is the checkout itself (rule 15).
+    the environment's key); the checks of the commit, whose input is the checkout itself (rule 15); and the device
+    test tiers, which share the machine's GPU lock in `/tmp`, a sandbox's own.
 11. CUDA THROUGH RULES_CUDA'S OWN SETTINGS: the architectures through `--@rules_cuda//cuda:archs`, one spec a card
     (cubins only, no PTX); a host compile flag reaches nvcc's host pass only through rules_cuda's host options; an external repository's
     headers through the target's include options.
@@ -191,6 +198,7 @@ names one).
     python tools/dev.py init        # installs the pinned bazelisk and links `bazel` to it (toolchain.bazel)
     bazel test //:gate                                              # every check the graph holds
     bazel run //:compile_commands                                   # the editor's compile_commands.json
+    bazel test //:lane                                              # every test tier
     bazel run //:library                                            # the shipped build, into rola_cu13/
     bazel run //:library --//:archs=86 --//:carry_arms=3            # an iteration build
 

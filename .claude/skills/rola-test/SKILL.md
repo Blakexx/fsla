@@ -4,8 +4,8 @@ description: Load before running or adding tests, or changing the oracle or a re
 ---
 # Testing
 
-1. Run by tier and file, never a bare `pytest tests/`; GPU entry points lock themselves and run bare
-   (`docs/testing.md#running-it`). New device code's first run is under `timeout -s KILL`
+1. Run by tier, `bazel test //tests:<tier>`, a few of its tests by `--test_filter` (pytest's `-k`); GPU entry points
+   lock themselves and run bare (`docs/testing.md#running-it`). New device code's first run is under `timeout -s KILL`
    (`docs/KERNEL_STANDARDS.md#first-run`).
 2. The oracle is the spec (`docs/testing.md#the-oracle-tier--semantics`). A change to it or to a reference is proven by
    running both versions (`docs/testing.md#changing-the-oracle-the-dual-run-protocol`), never by reading the diff.

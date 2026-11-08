@@ -262,30 +262,39 @@ extension.
 
 ## Running it
 
+Each tier is one target of the build graph (`tests/BUILD.bazel`, [`build-graph.md`](build-graph.md#checks)), and each
+test is in exactly one:
+
 ```bash
-pytest tests/unit tests/oracle -m "not cuda"        # CPU: no device, no build
-pytest tests/unit -m cuda                           # tests/unit's CUDA-marked rows
-pytest tests/oracle                                 # kernels vs the fp64 baselines
-pytest tests/integration                            # composition, dispatch, two-branches-agree
+bazel test //tests:cpu              # tests/unit -m "not cuda", with no device visible
+bazel test //tests:unit_cuda        # tests/unit's CUDA-marked rows
+bazel test //tests:oracle           # kernels vs the fp64 baselines
+bazel test //tests:integration      # composition, dispatch, two-branches-agree
+bazel test //:lane                  # all four
+bazel test //tests:oracle --test_filter=carry_fold --test_output=streamed   # some of a tier, by pytest's -k
 ```
+
+Every tier imports the built library -- `rola` refuses to import without its binary -- so a source change rebuilds it
+first. The CPU tier is `tests/unit` alone: an oracle or integration row needs the device whatever its marker (with none
+visible, such rows fail rather than skip), so the oracle tier runs `tests/oracle` whole.
 
 **The commit lane is the whole battery above, inside five minutes.** The build-shape gates and `tools/ratify.py` run
 additionally at a batch tip (and always when csrc, manifests or codegen flags moved); the latency gate and the sanitizer
 lane run on their own cadence, never per-commit. **Never `pytest tests/` unscoped.**
 
-**Every GPU entry point takes the GPU lock itself** — pytest through a session fixture in `tests/conftest.py`,
+**Every GPU entry point takes the GPU lock itself** — a test tier through a session fixture in `tests/conftest.py`,
 `tools/sanitize_oracle.py`, rola-devtools' build system for a target that holds the GPU — through `gpu_lock()`
 (`rola_devtools.locks.gpu`): shared for correctness runs, exclusive for measurement. Invoke them BARE: an external
 `flock` on the lock's path around a self-locking tool deadlocks, and a lint rule in `tools/lint/lint_standards.py`
-refuses one on a command line.
+refuses one on a command line. A device tier runs alone (`exclusive`) and outside the sandbox: the lock lives in
+`host.lock_dir`, `/tmp` by default, and a sandboxed test's `/tmp` is its own.
 
 **THE `cuda` MARKER IS NOT THE LOCK'S QUESTION.** The marker's job is *collection-time deselection* — it lets the first
-line avoid initializing a CUDA context at all. It is **not** a device partition: `tests/integration` carries rows that
+tier avoid initializing a CUDA context at all. It is **not** a device partition: `tests/integration` carries rows that
 launch kernels without being `cuda`-marked (e.g. `test_facts_pass.py::test_the_words_are_the_model_bit_for_bit`,
 skipped without a device), because in that tier a device is the premise rather than a property of a row. So the
 `tests/conftest.py` fixture keys on TIER (`tests/oracle/`, `tests/integration/`) OR the `cuda` marker. Every committed
-test must be collected by SOME line above; a test only a `-m "not cuda"` line ever selects against is a test nothing
-runs. The `bench` marker is opt-in for the same reason in reverse: a latency measurement is not a correctness gate and
+test is collected by one tier above. The `bench` marker is opt-in for the same reason in reverse: a latency measurement is not a correctness gate and
 must never be able to fail a merge.
 
 ## Measurement, and the tests that guard it

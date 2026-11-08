@@ -57,6 +57,7 @@
    ],
    "bash": [
     "^(python3?\\s+-m\\s+)?pytest\\b",
+    "^bazel\\s+test\\s+//(tests|:lane)\\b",
     "^(python3?\\s+)?tools/sanitize_(oracle|cell)\\.py\\b",
     "^compute-sanitizer\\b"
    ]
