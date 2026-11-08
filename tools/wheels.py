@@ -33,7 +33,7 @@ TOOLCHAIN = "cu13"
 PLUGIN = f"rola_{TOOLCHAIN}"
 #: The knobs that make an iteration build or skip a gate; a wheel's build runs with none of them.
 ITERATION_KNOBS = ("ROLA_CUDA_ARCHS", "ROLA_CARRY_ARMS", "ROLA_DECODE_ARMS", "ROLA_CARRY_PARTS", "ROLA_BUILD_PARTS",
-                   "ROLA_NO_EXTENSION", "ROLA_SKIP_POST_BUILD_RATIFY")
+                   "ROLA_SKIP_POST_BUILD_RATIFY")
 PLUGIN_TAG = "cp310-abi3-linux_x86_64"  #: the limited API torch builds against (3.10), and the host's platform
 EPOCH = (1980, 1, 1, 0, 0, 0)  #: every member's timestamp, so one commit's wheels are the same bytes
 

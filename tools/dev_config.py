@@ -121,7 +121,6 @@ BUILD_PARAMETERS = {
     "ROLA_DECODE_ARMS": "the decode arm subset of an iteration build",
     "ROLA_CARRY_PARTS": "the carry parts a composition build makes real (tools/gen_shards.py CARRY_PARTS)",
     "ROLA_BUILD_PARTS": "the source families a build compiles",
-    "ROLA_NO_EXTENSION": "install the Python package without building the extension",
     "ROLA_STRICT_MANIFEST": "refuse a build whose manifest does not match exactly (§16 tiering)",
     "ROLA_SKIP_POST_BUILD_RATIFY": "skip the post-build ratification recompile",
 }

@@ -129,10 +129,9 @@ def _declared_archs() -> list[str]:
     return named
 
 
-#: THE TOOLCHAIN: the declared record naming the configured toolkit's assembler (tools/toolchains.py). A Python-only
-#: install compiles nothing and resolves none.
-TOOLCHAIN = None if os.getenv("ROLA_NO_EXTENSION") == "1" else toolchains.for_ptxas(ratify.ptxas_version())
-ROLA_CUDA_ARCHS = [] if TOOLCHAIN is None else _declared_archs()
+#: THE TOOLCHAIN: the declared record naming the configured toolkit's assembler (tools/toolchains.py).
+TOOLCHAIN = toolchains.for_ptxas(ratify.ptxas_version())
+ROLA_CUDA_ARCHS = _declared_archs()
 
 #: THE MILESTONE/CI SWITCH (K43, KERNEL_STANDARDS §16). Manifests go stale between
 #: milestones BY DESIGN -- ratification is a per-milestone act, not a per-stage one --
@@ -294,7 +293,7 @@ def _write_decode_selection() -> None:
 #: The manifests key on MANGLED KERNEL NAMES, and the module-init symbol they do not
 #: contain is the only thing this name can move.
 PLUGIN, EXTRA = "rola_cu13", "cu13"
-if TOOLCHAIN is not None and TOOLCHAIN.name != EXTRA:
+if TOOLCHAIN.name != EXTRA:
     raise RuntimeError(f"toolchain {TOOLCHAIN.name} has no binary plugin; this tree ships {PLUGIN} alone")
 MODULE_NAME = f"{PLUGIN}._C"
 
@@ -741,11 +740,7 @@ setup(
     #: entmax's pin record, read beside `rola/routing/entmax/pin.py`: without it an installed reference cannot gate itself.
     package_data={"rola.routing.entmax": ["PIN.json"]},
     extras_require=EXTRAS,
-    #: ROLA_NO_EXTENSION=1 installs the Python package with NO extension build -- for a
-    #: Python-only package: the `rola` wheel (tools/wheels.py), which carries no binary;
-    #: the device stamp still gates freshness.
-    ext_modules=[] if os.getenv("ROLA_NO_EXTENSION") == "1" else (
-        [build_extension()] + ([build_parts_extension()] if os.getenv("ROLA_BUILD_PARTS") == "1" else [])),
+    ext_modules=[build_extension()] + ([build_parts_extension()] if os.getenv("ROLA_BUILD_PARTS") == "1" else []),
     cmdclass={"build_ext": RoLABuildExtension},
     zip_safe=False,
 )

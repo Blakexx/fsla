@@ -29,7 +29,7 @@ directory: `tools/manifests/<name>/sm_XX.json`, one file per architecture
 The build takes no toolchain parameter. The configured toolkit (dev config `toolchain.cuda_home`) is the choice, and the
 record whose `ptxas` equals that toolkit's is the toolchain (`for_ptxas`); a toolkit no record names refuses, naming the
 declared ones. A second spelling of the choice would be one that can disagree with the compiler that actually runs.
-`setup.py` resolves it at import, except for a Python-only install (`ROLA_NO_EXTENSION=1`), which compiles nothing;
+`setup.py` resolves it at import;
 `tools/ratify.py` resolves it per run; a lint that checks a built binary takes the toolchain from that binary's own
 `BUILD_CONFIG["ptxas"]`, never from whatever toolkit the checking host has.
 
