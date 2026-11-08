@@ -62,10 +62,7 @@ numeric contract those tolerances were computed under.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -191,59 +188,10 @@ def _write_carry_selection() -> None:
     gen_shards.write_if_changed(gen_shards.GENERATED_DIR / gen_shards.CARRY_SELECTION_INC, text)
 
 
-#: THE COVERAGE SWEEP'S PROBE, run in its own interpreter against the freshly built
-#: extension LOADED BY PATH.  By path, and not by `import rola`, because the fact
-#: wanted here is a property of the artifact this build just produced: importing the
-#: package would resolve through whatever is installed in the running environment,
-#: which on a developer box is routinely another worktree's build.
-_ARM_SWEEP_PROBE = """
-import importlib.util, json, sys
-from pathlib import Path
-import torch  # noqa: F401 -- the extension links against it and must load first
-name = Path(sys.argv[1]).name.split(".")[0]  # the module's init symbol is PyInit_<name>
-spec = importlib.util.spec_from_file_location(name, sys.argv[1])
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)  # loading the library registers torch.ops.rola
-print(json.dumps([list(row) for row in torch.ops.rola.carry_arms()]))
-"""
-
-
 def _built_extension(build_lib: str) -> Path | None:
     """The `_C` extension this build produced, found under its own output tree."""
     found = sorted(Path(build_lib).glob(f"{PLUGIN}/_C.*so"))
     return found[0] if found else None
-
-
-def _arm_coverage_sweep(build_lib: str, want: list[int]) -> int:
-    """R9's fourth layer, host side: every built arm answered for by the binary.
-
-    The binary is asked what it carries and the answer is required to be exactly the
-    rows this build selected from the declaration. That is what makes `arm_switch`'s
-    exhaustiveness a checked property of the shipped artifact rather than of the
-    generator alone: the generator, the selection header and the binary are three
-    statements of one set, and this is where the third one is read.
-    """
-    so = _built_extension(build_lib)
-    if so is None:
-        raise RuntimeError(
-            f"no {PLUGIN}/_C.*so under {build_lib} after the build; the arm coverage "
-            f"sweep has no artifact to ask, and a sweep that silently asks nothing "
-            f"is the vacuous gate this project keeps re-learning about")
-    #: ABSOLUTE: a wheel's `build_lib` is relative to this checkout, and the probe runs outside it (so `import rola`
-    #: cannot resolve the source tree instead of the build).
-    proc = subprocess.run([sys.executable, "-c", _ARM_SWEEP_PROBE, str(so.resolve())],
-                          capture_output=True, text=True, cwd=str(ROOT.parent))
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"the arm coverage sweep could not load {so}:\n{proc.stderr}")
-    got = sorted(tuple(row) for row in json.loads(proc.stdout))
-    expect = sorted(tuple(gen_shards.CARRY_ARMS[i]) for i in want)
-    if got != expect:
-        raise RuntimeError(
-            f"{so.name} reports the carry arms {[list(r) for r in got]}, this build "
-            f"selected {[list(r) for r in expect]}. A binary that cannot name what it "
-            f"carries cannot refuse what it does not.")
-    return len(got)
 
 
 def _carry_parts_spec() -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -417,52 +365,11 @@ def _gate_ratified(archs: list[str]) -> dict:
     return build_record.ratified_manifest(archs, TOOLCHAIN.manifest_dir)
 
 
-def vendored_tree_sha256(root: Path) -> tuple[str, int]:
-    """A digest of a DIRECTORY, defined so it cannot be argued with.
-
-    sha256 over the sorted relative POSIX paths, each followed by a NUL byte and by
-    the sha256 DIGEST of that file's bytes; ``PIN.json`` itself is excluded because it
-    carries the answer. Paths participate as well as contents, so a RENAME -- which
-    changes which header an ``#include`` resolves to, and therefore what is compiled --
-    moves the digest exactly as a content edit does.
-    """
-    digest = hashlib.sha256()
-    files = sorted(p for p in root.rglob("*") if p.is_file() and p.name != "PIN.json")
-    for path in files:
-        digest.update(path.relative_to(root).as_posix().encode())
-        digest.update(b"\0")
-        digest.update(hashlib.sha256(path.read_bytes()).digest())
-    return digest.hexdigest(), len(files)
-
-
 def _gate_vendored() -> dict:
-    """RULE 5: the vendored codegen inputs are the ones that were pinned.
-
-    Runs BEFORE the compile, with rules 1 and 3, for the same reason they do: it is
-    cheap, and a vendored header that drifted is not something to discover from a
-    manifest diff after a multi-hour build.
-    """
-    pin_path = CUTLASS_DIR / "PIN.json"
-    if not pin_path.exists():
-        raise RuntimeError(
-            f"CLOSED-WORLD RULE 5: {pin_path} is missing. A vendored library with no "
-            f"pin is an unmeasured codegen input; restore the pin or remove the "
-            f"vendored tree."
-        )
-    pin = json.loads(pin_path.read_text())
-    here, count = vendored_tree_sha256(CUTLASS_DIR)
-    if here != pin["tree_sha256"]:
-        raise RuntimeError(
-            "CLOSED-WORLD RULE 5: the vendored CUTLASS subtree does not match its "
-            f"pin.\n  PIN.json: {pin['tree_sha256']} ({pin['file_count']} files)\n"
-            f"  on disk : {here} ({count} files)\n"
-            "A vendored header is code `ptxas` assembles, so this is a codegen change "
-            "and not a packaging one. Re-vendor the pinned tag, or move the pin "
-            "DELIBERATELY and re-ratify (`python tools/ratify.py --write`)."
-        )
-    print(f"rule 5 OK  cutlass {pin['tag']} ({pin['commit'][:12]}): {count} files, "
-          f"sha256 {here[:16]}...")
-    return pin
+    """RULE 5 (`tools/build_record.py`'s `vendored_pin`): the vendored codegen inputs are the ones that were pinned.
+    Runs BEFORE the compile, with rules 1 and 3: it is cheap, and a vendored header that drifted is not something to
+    discover from a manifest diff after a long build."""
+    return build_record.vendored_pin(CUTLASS_DIR)
 
 
 def _gate_toolchain(manifest: dict) -> str:
@@ -728,70 +635,22 @@ class RoLABuildExtension(BuildExtension):
         return True
 
     def _post_build_arm_table_check(self):
-        """The built arm table against the DECLARED SHIPPED SET.
-
-        Three statements, asserted after the compile rather than before it, because
-        what is being checked is what this build PRODUCED:
-
-        1. the generator's table still matches `tools/manifests/shipped_set.json`,
-           re-read from disk now. The table was built from the file at import; a
-           build runs for long enough that "the declaration says what it said" is a
-           second statement rather than a restatement of the first;
-        2. the selection header this build compiled against names exactly the arms
-           this build selected -- the binary's arm set is the declaration's, scoped,
-           and not whatever a previous run left in `build/generated/`;
-        3. the coverage sweep: every arm the binary carries is exercised through
-           `arm_switch`, which is R9's fourth layer on the host side.
-
-        A FAILURE HERE IS FATAL WHATEVER `ROLA_STRICT_MANIFEST` SAYS. That switch
-        is about manifest STALENESS -- measurements that go out of date between
-        milestones by design -- and none of these three is a measurement. A binary
-        whose arm set disagrees with the declaration is not stale, it is wrong.
-        """
-        bad = gen_shards.declaration_matches_table()
-        if bad:
-            raise RuntimeError(
-                "the carry arm table does not match the declared shipped set at "
-                f"{gen_shards.SHIPPED_SET_JSON}:\n" + "\n".join(bad))
-
+        """The built arm table against the DECLARED SHIPPED SET, and the coverage sweep (`gen_shards`'
+        `check_built_arm_table` and `sweep_binary`). FATAL WHATEVER `ROLA_STRICT_MANIFEST` SAYS: that switch is about
+        manifest staleness, and none of these is a measurement -- a binary whose arm set disagrees with the
+        declaration is not stale, it is wrong."""
         want = _carry_arms()
         header = gen_shards.GENERATED_DIR / gen_shards.CARRY_SELECTION_INC
-        if not header.exists():
-            raise RuntimeError(
-                f"{header} does not exist after the build; the selection header is "
-                f"what the per-arm translation units and the arm set compile "
-                f"against, so a build without one compiled against something else")
-        text = header.read_text()
-        named = sorted(int(m) for m in re.findall(
-            r"^#define ROLA_CARRY_BUILD_(\d+) 1$", text, re.MULTILINE))
-        if named != want:
-            raise RuntimeError(
-                f"the selection header names carry arms {named}, this build selected "
-                f"{want}. The header is what the translation units compiled against, "
-                f"so the binary carries the header's set and not the build's.")
-        count = re.search(r"^#define ROLA_CARRY_ARM_COUNT (\d+)$", text, re.MULTILINE)
-        declared = re.search(r"^#define ROLA_CARRY_ARM_DECLARED (\d+)$", text,
-                             re.MULTILINE)
-        if count is None or declared is None:
-            raise RuntimeError(
-                f"{header} carries no ROLA_CARRY_ARM_COUNT/ROLA_CARRY_ARM_DECLARED; "
-                f"`arm_switch` has no set to dispatch over and no way to tell an "
-                f"unbuilt arm from an undeclared one")
-        if int(count.group(1)) != len(want) or \
-                int(declared.group(1)) != len(gen_shards.CARRY_ARMS):
-            raise RuntimeError(
-                f"{header} declares {count.group(1)} built / "
-                f"{declared.group(1)} declared arms; this build selected "
-                f"{len(want)} of {len(gen_shards.CARRY_ARMS)} declared")
-        members = sorted(tuple(int(x) for x in m.split(", ")) for m in re.findall(
-            r"^  F\(([\d, ]+)\)", text, re.MULTILINE))
-        if members != sorted((i,) + tuple(gen_shards.CARRY_ARMS[i]) for i in want):
-            raise RuntimeError(
-                f"the arm set names {members}, which is not this build's rows of the "
-                f"declaration. The set and the selection are two enumerations of one "
-                f"thing and must not be able to disagree.")
-
-        swept = _arm_coverage_sweep(self.build_lib, want)
+        bad = gen_shards.check_built_arm_table(header.read_text() if header.exists() else None, want)
+        if bad:
+            raise RuntimeError("the built arm table: " + "\n".join(bad))
+        so = _built_extension(self.build_lib)
+        if so is None:
+            raise RuntimeError(f"no {PLUGIN}/_C.*so under {self.build_lib} after the build; the arm coverage sweep has "
+                               "no artifact to ask")
+        #: ABSOLUTE and outside the checkout: a wheel's `build_lib` is relative to it, and `import rola` there would
+        #: resolve the source tree instead of the build
+        swept = gen_shards.sweep_binary(sys.executable, so.resolve(), want, cwd=ROOT.parent)
         print(f"arm table OK  {len(want)} built of {len(gen_shards.CARRY_ARMS)} "
               f"declared, keyed {list(gen_shards.ARM_KEY)}; {swept} arm(s) swept")
 

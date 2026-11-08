@@ -22,7 +22,7 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).absolute().parents[2]
 SRC = ROOT / "csrc" / "rola" / "src"
 
 SIGNATURE = re.compile(r"^\s*(?:__device__|__global__)\s+.*?\b(\w+)\s*\(")

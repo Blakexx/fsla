@@ -1,6 +1,6 @@
 """THE GRAPH'S ENVIRONMENT: the repositories made from the tree's pins -- the Python environment built from
 requirements.lock into the shared store (`@rola_env`), the pinned linker (`@mold`), and the host C++ compiler's
-identity (`@host_cc`). Docs: docs/build-graph.md#environment."""
+identity (`@host_cc`), and the toolkit's disassemblers (`@cuda_tools`). Docs: docs/build-graph.md#environment."""
 
 _ENV_BUILD = """\
 load("@rules_cc//cc:defs.bzl", "cc_library")
@@ -16,6 +16,10 @@ cc_library(
     hdrs = glob(["site-packages/torch/include/**"]),
     includes = ["site-packages/torch/include", "site-packages/torch/include/torch/csrc/api/include"],
 )
+
+#: the environment's own interpreter, its packages beside it (the store's; an action that imports them runs outside
+#: the sandbox, the lock its input)
+filegroup(name = "venv_python", srcs = ["venv/bin/python3", "venv/pyvenv.cfg", "requirements.lock"])
 
 #: the torch libraries the extension links (its NEEDED, as setup.py's link leaves them)
 filegroup(
@@ -63,7 +67,19 @@ def _env_impl(rctx):
     rctx.symlink(paths["site"], "site-packages")
     rctx.symlink(paths["include"], "python_include")
     rctx.symlink(paths["base"] + "/bin/python3", "bin/python3")
-    flags = rctx.execute([paths["python"], rctx.path(rctx.attr.flags), "--toolchain", str(rctx.path(rctx.attr.toolchain))], timeout = 600)
+    rctx.symlink(paths["venv"], "venv")
+    rctx.symlink(rctx.path(rctx.attr.lock), "requirements.lock")
+    threads = rctx.getenv("ROLA_NVCC_THREADS")
+    if not threads:
+        fail("ROLA_NVCC_THREADS is unset: run Bazel through its front door, `bazel` (docs/build-graph.md#front-door)")
+    flags = rctx.execute([
+        paths["python"],
+        rctx.path(rctx.attr.flags),
+        "--toolchain",
+        str(rctx.path(rctx.attr.toolchain)),
+        "--nvcc-threads",
+        threads,
+    ], timeout = 600)
     if flags.return_code != 0:
         fail("the graph's flags (bazel/flags.py) failed:\n" + flags.stderr)
     rctx.file("flags.bzl", flags.stdout)
@@ -124,12 +140,49 @@ _host_cc_repo = repository_rule(
     doc = "The host C++ compiler's version and digests, as a header every compile takes as an input.",
 )
 
-def _environment_impl(_mctx):
+_CUDA_TOOLS_BUILD = """\
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["bin/cuobjdump", "bin/nvdisasm"])
+"""
+
+def _cuda_tools_impl(rctx):
+    rctx.download(url = rctx.attr.manifest, sha256 = rctx.attr.sha256, output = "redistrib.json")
+    redist = json.decode(rctx.read("redistrib.json"))
+    root = rctx.attr.manifest.rsplit("/", 1)[0]
+    #: one bin/ for both, as an installed toolkit has them: `cuobjdump -sass` runs the nvdisasm beside it
+    for component in ("cuobjdump", "nvdisasm"):
+        entry = redist["cuda_" + component]["linux-x86_64"]
+        rctx.download_and_extract(
+            url = root + "/" + entry["relative_path"],
+            sha256 = entry["sha256"],
+            rename_files = {entry["relative_path"].rsplit("/", 1)[1].removesuffix(".tar.xz") + "/LICENSE": component + "/LICENSE"},
+            stripPrefix = entry["relative_path"].rsplit("/", 1)[1].removesuffix(".tar.xz"),
+        )
+    rctx.file("BUILD.bazel", _CUDA_TOOLS_BUILD)
+
+_cuda_tools_repo = repository_rule(
+    implementation = _cuda_tools_impl,
+    attrs = {"manifest": attr.string(mandatory = True), "sha256": attr.string(mandatory = True)},
+    doc = "The toolkit's disassemblers (cuobjdump, nvdisasm), from the redistributable manifest by its digests.",
+)
+
+def _environment_impl(mctx):
     _env_repo(name = "rola_env")
     _pinned_repo(name = "mold", pin = "//tools:mold_pin.json")
     _host_cc_repo(name = "host_cc")
+    for module in mctx.modules:
+        for tag in module.tags.cuda_tools:
+            _cuda_tools_repo(name = "cuda_tools", manifest = tag.manifest, sha256 = tag.sha256)
 
 environment = module_extension(
     implementation = _environment_impl,
-    doc = "The graph's environment: the Python environment, the pinned linker and the host compiler's identity.",
+    tag_classes = {
+        "cuda_tools": tag_class(attrs = {
+            "manifest": attr.string(mandatory = True, doc = "the toolkit's redistributable manifest"),
+            "sha256": attr.string(mandatory = True, doc = "its digest: the one rules_cuda's toolkit is read by"),
+        }),
+    },
+    doc = "The graph's environment: the Python environment, the pinned linker, the host compiler's identity and the " +
+          "toolkit's disassemblers.",
 )

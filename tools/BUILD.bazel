@@ -15,3 +15,22 @@ filegroup(
     name = "manifests_cu13",
     srcs = glob(["manifests/cu13/*.json"]),
 )
+
+filegroup(
+    name = "toolchain_records",
+    srcs = glob(["toolchains/*.json"]),
+)
+
+filegroup(
+    name = "budgets",
+    srcs = glob(["budgets/**"]),
+)
+
+#: the tools' Python and the lints', which the gates import
+filegroup(
+    name = "python_sources",
+    srcs = glob([
+        "*.py",
+        "lint/*.py",
+    ]),
+)

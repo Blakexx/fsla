@@ -18,8 +18,10 @@ Every kernel with declaration arms plugs in as an ARM FAMILY (`ArmFamily`): its 
 (`tools/manifests/<family>_set.json`, the carry's `shipped_set.json`), the generated selection header a build's subset
 is written to and who includes it. The reader, the refusals, the selection header (`ROLA_<FAMILY>_BUILT`,
 `ROLA_<FAMILY>_BUILD_<i>`, the arm set `ROLA_<FAMILY>_ARM_SET_X` with its counts) and its schema self-test are one code
-path over the family; a build's scope comes from `ROLA_<FAMILY>_ARMS` (`setup.py`'s `_family_arms`), never a flag on
-every unit's argv. The families: `carry` (one translation unit an arm group, below) and `decode` (one unit,
+path over the family; a build's scope comes from its spec (`family_arms`: `ROLA_<FAMILY>_ARMS` for `setup.py`,
+`--//:<family>_arms` for the graph), never a flag on every unit's argv. The built table is checked against the
+declaration, and the binary asked what it carries, by `check_built_arm_table` and `sweep_binary` -- the forms setup.py's
+post-build gate and the graph's arm gate (`bazel/gates.py`) run. The families: `carry` (one translation unit an arm group, below) and `decode` (one unit,
 `decode/decode.cu`).
 
 ## What it produces
@@ -27,9 +29,10 @@ every unit's argv. The families: `carry` (one translation unit an arm group, bel
 | output | checked in? | written by | consumed by |
 |---|---|---|---|
 | `csrc/rola/src/instantiations/carry_arm_<i>.cu` | yes — what is reviewed is what compiles | `--write` | the build's source list |
-| `build/generated/carry_selection.inc` | never | `setup.py`, `tools/ratify.py`, on every run | the per-arm TUs, the carry dispatch TU, `common/arm_switch.cuh` |
-| `build/generated/decode_selection.inc` | never | `setup.py`, `tools/ratify.py`, on every run | `decode/decode.cu` |
-| `build/generated/builds.inc` | never | `write_builds`, from `setup.py` and `tools/ratify.py` on every run | `common/select.cuh` ([`../common/select.md#carried`](../common/select.md#carried)) |
+| `csrc/rola/units.bzl` | yes, checked by `--check` and the graph's build gates | `--write` | the graph's units: `tools/kernels.py`'s hand units and each arm unit with the arms it carries |
+| `build/generated/carry_selection.inc` | never | `setup.py`, `tools/ratify.py`, on every run; the graph's header action (`bazel/headers.py`) into its own output | the per-arm TUs, the carry dispatch TU, `common/arm_switch.cuh` |
+| `build/generated/decode_selection.inc` | never | `setup.py`, `tools/ratify.py`, on every run; the graph's header action | `decode/decode.cu` |
+| `build/generated/builds.inc` | never | `write_builds`, from `setup.py` and `tools/ratify.py` on every run; the graph's header action | `common/select.cuh` ([`../common/select.md#carried`](../common/select.md#carried)) |
 | the `shards` block | recorded in each `tools/manifests/<toolchain>/sm_XX.json` | `tools/ratify.py --write` | the manifest digest |
 
 The selection header carries two things: the `ROLA_CARRY_BUILD_<i>` selection, and the

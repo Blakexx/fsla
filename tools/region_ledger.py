@@ -26,7 +26,7 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).absolute().parent))
 import sass  # noqa: E402
 
 #: A DEFINITION's first line, by kind: a function at column 0 (any qualifiers, any return type: a `__host__ __device__

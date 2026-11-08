@@ -4,8 +4,9 @@ The build graph is Bazel, run through bazelisk and the graph's front door. Its w
 sets and the hermetic CUDA toolkit), `.bazelrc` (the graph's settings), `.bazelversion` and `.bazeliskrc` (Bazel's
 release and its digest), `bazel/` (the graph's machinery: its rules, the environment, the platform and the scripts its
 actions run) and `bazel/bazel` (the front door); each `BUILD.bazel` sits beside what it describes. The graph builds the
-extension (`//:library`, [below](#compile)); `setup.py` builds it too ([`build.md`](build.md)), and runs the gates,
-lints, tests and wheels the graph does not hold yet. Measurement is `rola_devtools.build`'s
+extension (`//:library`, [below](#compile)) and gates it ([below](#gates)); `setup.py` builds it too
+([`build.md`](build.md)), and runs the lints, the tests, ratify's recompile and the wheels. Measurement is
+`rola_devtools.build`'s
 ([`measurement.md`](measurement.md)), whose timing sessions hold the GPU and the clock as machine-wide counting
 semaphores, which Bazel cannot do for an action.
 
@@ -64,16 +65,34 @@ both into the checkout's `rola_cu13/` (a copy: the library is imported from the 
 - THE GENERATED HEADERS are actions over their generators: the arm selections, the carry parts and the carried builds
   (`rola_headers`, `bazel/headers.py`, from the settings) and the device stamp (`tools/csrc_stamp.py` over every file
   under `csrc/rola/src` but its markdown -- the digest ratify computes).
-- THE ARM SUBSET IS A UNIT SUBSET: each generated carry arm unit is its own target (`csrc/rola/arms.bzl`, written and
-  checked by `tools/gen_shards.py`), and `carry_arm_set` hands the link only the units `--//:carry_arms` names, so an
+- ONE UNIT LIST: `csrc/rola/units.bzl`, written and checked by `tools/gen_shards.py`, names `tools/kernels.py`'s hand
+  units and each generated carry arm unit with the arms it carries. Each arm unit is its own target, and
+  `carry_arm_set` hands the link only the units `--//:carry_arms` names (`gen_shards`' grammar: indices or `all`), so an
   unwanted arm is never compiled.
+- `--threads` IS THE MACHINE'S `host.nvcc_threads`, which the front door hands the graph (`ROLA_NVCC_THREADS`): the
+  cicc a job runs is the count its job budget divides by.
 - THE LINK is the pinned mold's, of every unit's objects (each target `alwayslink`, as setup.py links every object)
   and, by path, torch's `libc10.so` and `libtorch_cpu.so`, the CUDA runtime and the driver's stub: each NEEDED by its
   soname, no search path written (no unit carries a dynamic library; the units' CUDA runtime is its headers,
   `//bazel:cuda_headers` -- rules_cuda 0.3.0's own `@cuda//:cuda_headers` names a component CUDA 13 lacks).
-- THE RECORD (`bazel/record.py`, `tools/build_record.py`'s writer) runs rule 1 -- the graph's ptxas is the toolchain
-  record's byte for byte, the one tie between that record and `MODULE.bazel`'s toolkit pin -- and rule 3, every
-  architecture ratified.
+## <a id="gates"></a>The library's gates
+
+Building `//:library` runs every gate below; their verdicts are its outputs and its runfiles, so neither a build nor
+`bazel run` hands over a library a gate has not passed. Each reruns only when its inputs change.
+
+- THE BUILD GATES AND THE RECORD (`bazel/record.py`): rule 1 -- the graph's ptxas is the toolchain record's and the
+  manifests' byte for byte (the tie between that record and `MODULE.bazel`'s toolkit pin), and the environment's torch
+  is the toolchain's CUDA major (`tools/toolchains.py`) --; rule 3, every architecture ratified; rule 5, the vendored
+  tree its `PIN.json`'s (`tools/build_record.py`'s `vendored_pin`); the shards, the checked-in generated units the arm
+  list's (`tools/gen_shards.py`'s `check_generated`); then the record, `tools/build_record.py`'s writer, setup.py's.
+- THE SASS GATE (KERNEL_STANDARDS section 20, `tools/sass_gate.py`) on the linked library, with the graph's
+  `cuobjdump` and `nvdisasm` (`@cuda_tools`, fetched from the toolkit's redistributable manifest by the digests it
+  lists, one `bin/` for both as an installed toolkit has them) and no verdict cache: Bazel's is the cache.
+- THE ARM GATE (`bazel/gates.py`): the built table against the declaration, and the coverage sweep -- the binary asked
+  what it carries, loaded by the environment's interpreter against the toolkit's driver stub, so the answer is the
+  binary's on any machine. It runs outside the sandbox, where the environment's packages are; the lock is its input.
+
+Ratify's post-build recompile is setup.py's still.
 
 ## <a id="rules"></a>The rules
 

@@ -18,11 +18,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "lint"))
+sys.path.insert(0, str(Path(__file__).absolute().parent))
+sys.path.insert(0, str(Path(__file__).absolute().parents[1] / "tools" / "lint"))
 
 import burst_tier  # noqa: E402
-import dev_config  # noqa: E402
 import sass  # noqa: E402
 
 #: THE MACHINE, an architecture: the cycles an HMMA holds the tensor pipe a scheduler (sm_86: bf16 with
@@ -111,7 +110,7 @@ def encoded(cubin: Path, kernel: str | None = None) -> dict[int, tuple[str, dict
 
 @functools.lru_cache(maxsize=16)
 def _encoded_all(path: str, _size: int, _mtime_ns: int) -> dict[str, dict[int, tuple[str, dict]]]:
-    text = subprocess.run([dev_config.cuda_bin("cuobjdump"), "-sass", path], capture_output=True, text=True,
+    text = subprocess.run([sass.tool("cuobjdump"), "-sass", path], capture_output=True, text=True,
                           check=True).stdout
     every: dict[str, dict[int, list]] = {}
     out: dict[int, list] | None = None

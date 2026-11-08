@@ -21,7 +21,7 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 | `csrc_stamp.py` | the csrc content hash and the header that compiles it into the binary as the device stamp | `ratify.py`, the graph's stamp action | the stamp header |
 | [`bootstrap.py`](dev_config.md#bootstrap) | what a tool knows before the dev config's reader is importable: the sibling checkouts, the rola-devtools checkout | `dev_config.py`, the graph's front door | — |
 | [`build_lock.py`](build_lock.md) | the machine-wide cicc budget | `setup.py`, `ratify.py` | — |
-| [`gen_shards.py`](gen_shards.md) | THE ONE ENUMERATION of the carry family's instantiation matrix | `setup.py`, `ratify.py`, the provider, the graph's header action | the generated per-arm units, `csrc/rola/arms.bzl` and the selection headers |
+| [`gen_shards.py`](gen_shards.md) | THE ONE ENUMERATION of the carry family's instantiation matrix | `setup.py`, `ratify.py`, the provider, the graph's header action | the generated per-arm units, `csrc/rola/units.bzl` and the selection headers |
 | [`toolchains.py`](toolchains.md) | each toolchain as a named record of the assembler a fatbin is built and ratified under | `setup.py`, `ratify.py`, `dev.py` | — |
 | [`sccache_toolchain.py`](../../build.md#sccache) | the compiler-cache wrapper pin (closed-world rule 1) | `setup.py`, `ratify.py` | — |
 | `sccache_nvcc.py` | the nvcc↔sccache seam: a pass-through, never a resolver | nvcc, as its launcher | — |

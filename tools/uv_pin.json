@@ -8,5 +8,5 @@
     "asset_sha256": "4545e87c7ac64af317d8daffd279e23e93b0e05035662363033d3525923339d2",
     "strip_prefix": "uv-0.12.7.data/scripts",
     "python": "3.11.13",
-    "same_pin_as": "Dockerfile's UV_VERSION ARG names the same release (its GitHub tarball): the image's Python layer, which the graph's environment replaces"
+    "same_pin_as": "Dockerfile's UV_VERSION ARG names the same release (its GitHub tarball), for the image's own Python layer"
 }

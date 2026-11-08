@@ -20,7 +20,7 @@ from pathlib import Path
 
 from measure.hw_profile import slugify_gpu
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).absolute().parents[1]
 COMMON = ROOT / "csrc" / "rola" / "src" / "common"
 CONFIG = COMMON / "hardware.json"
 HEADER = COMMON / "hardware.cuh"

@@ -71,7 +71,16 @@ include_root = rule(
 )
 
 def _arm_set_impl(ctx):
-    want = [int(i) for i in _value(ctx, "_carry_arms")]
+    #: tools/gen_shards.py's family_arms grammar: indices or `all`, empty for every arm, an index out of range refused
+    spec = _value(ctx, "_carry_arms")
+    want = []
+    for token in spec:
+        if token == "all":
+            want += range(ctx.attr.rows)
+        elif not token.isdigit() or int(token) >= ctx.attr.rows:
+            fail("--//:carry_arms: %r is not an arm index or 'all'; the list has %d rows (0..%d)" % (token, ctx.attr.rows, ctx.attr.rows - 1))
+        else:
+            want.append(int(token))
     chosen = [unit for unit, arms in ctx.attr.units.items() if not want or [i for i in json.decode(arms) if i in want]]
     return [cc_common.merge_cc_infos(cc_infos = [unit[CcInfo] for unit in chosen])]
 
@@ -79,6 +88,7 @@ carry_arm_set = rule(
     implementation = _arm_set_impl,
     attrs = {
         "units": attr.label_keyed_string_dict(providers = [CcInfo], doc = "each arm unit, and the arm indices it carries (JSON)"),
+        "rows": attr.int(mandatory = True, doc = "the declared carry arms"),
         "_carry_arms": attr.label(default = "//:carry_arms"),
     },
     doc = "The carry arm units the build's arms name: an arm the build does not want is a unit it never compiles.",
@@ -140,28 +150,73 @@ def _extension_impl(ctx):
         additional_inputs = ctx.files._linker + linked,
     )
 
+    #: THE BUILD GATES AND THE RECORD: rules 1, 3 and 5 and the shards, then the record (bazel/record.py)
     record = ctx.actions.declare_file("rola_cu13/_build_config.py")
     ptxas = [f for f in ctx.files._nvcc if f.basename == "ptxas"][0]
     args = ctx.actions.args()
     args.add(ctx.file._record)
     args.add("--out", record)
-    args.add("--toolchain", ctx.file._toolchain)
+    args.add("--toolchain", ctx.attr.toolchain)
     args.add("--ptxas", ptxas)
     args.add("--torch", ctx.attr.torch)
+    args.add("--torch-cuda", ctx.attr.torch_cuda)
     args.add("--cxx11-abi", str(ctx.attr.cxx11_abi))
     _parameters(ctx, args)
     ctx.actions.run(
         executable = ctx.file._python,
         arguments = [args],
-        inputs = ctx.files._record_sources + ctx.files._sources + [ctx.file._record, ctx.file._toolchain, ptxas],
+        inputs = ctx.files._record_sources + ctx.files._sources + [ctx.file._record, ptxas],
         outputs = [record],
         mnemonic = "RolaRecord",
-        progress_message = "Checking the toolchain and writing the build record",
+        progress_message = "Gating the build (rules 1, 3, 5, the shards) and writing its record",
     )
 
+    #: THE BINARY GATES, on the linked library: the SASS gate (KERNEL_STANDARDS section 20) on the graph's
+    #: disassemblers, and the arm table with its coverage sweep (the binary asked what it carries)
+    sass_verdict = ctx.actions.declare_file("rola_cu13/sass_gate.json")
+    sass_args = ctx.actions.args()
+    sass_args.add(ctx.file._sass_gate)
+    sass_args.add(so)
+    sass_args.add("--cuobjdump", ctx.file._cuobjdump)
+    sass_args.add("--nvdisasm", ctx.file._nvdisasm)
+    sass_args.add("--json", sass_verdict)
+    ctx.actions.run(
+        executable = ctx.file._python,
+        arguments = [sass_args],
+        inputs = ctx.files._gate_sources + [so, ctx.file._sass_gate, ctx.file._cuobjdump, ctx.file._nvdisasm],
+        outputs = [sass_verdict],
+        mnemonic = "RolaSassGate",
+        progress_message = "The SASS gate on %{label}'s library",
+    )
+    arm_verdict = ctx.actions.declare_file("rola_cu13/arm_gate.txt")
+    header = [f for f in ctx.files._headers if f.basename == "carry_selection.inc"][0]
+    stub = [f for f in ctx.files._cudart if f.path.endswith("stubs/libcuda.so")][0]
+    arm_args = ctx.actions.args()
+    arm_args.add(ctx.file._arm_gate)
+    arm_args.add("--so", so)
+    arm_args.add("--header", header)
+    arm_args.add("--python", ctx.files._venv_python[0])
+    arm_args.add("--driver-stub", stub)
+    arm_args.add("--carry-arms", ",".join(_value(ctx, "_carry_arms")))
+    arm_args.add("--out", arm_verdict)
+    ctx.actions.run(
+        executable = ctx.file._python,
+        arguments = [arm_args],
+        inputs = ctx.files._sources + ctx.files._venv_python + [so, header, stub, ctx.file._arm_gate],
+        outputs = [arm_verdict],
+        mnemonic = "RolaArmGate",
+        progress_message = "The arm table and its coverage sweep on %{label}'s library",
+        #: the environment's interpreter reads its packages from the store, which the sandbox does not hold; the store
+        #: is keyed by the lock, an input here
+        execution_requirements = {"no-sandbox": "1"},
+    )
+
+    verdicts = [sass_verdict, arm_verdict]
     install = ctx.actions.declare_file(ctx.label.name + "_install.sh")
     ctx.actions.write(install, _INSTALL.format(files = " ".join([f.short_path for f in (so, record)])), is_executable = True)
-    return [DefaultInfo(files = depset([so, record]), executable = install, runfiles = ctx.runfiles(files = [so, record]))]
+    #: the verdicts are runfiles too: `bazel run` installs nothing a gate has not passed
+    return [DefaultInfo(files = depset([so, record] + verdicts), executable = install,
+                        runfiles = ctx.runfiles(files = [so, record] + verdicts))]
 
 rola_extension = rule(
     implementation = _extension_impl,
@@ -173,6 +228,8 @@ rola_extension = rule(
         "deps": attr.label_list(providers = [CcInfo], doc = "the units and the arm set"),
         "shared_libraries": attr.label_list(allow_files = [".so"], doc = "torch's libraries the extension links"),
         "torch": attr.string(mandatory = True, doc = "the environment's torch version (@rola_env//:flags.bzl)"),
+        "torch_cuda": attr.string(mandatory = True, doc = "the CUDA release the environment's torch was built for"),
+        "toolchain": attr.string(mandatory = True, doc = "the toolchain's name (its record and manifests)"),
         "cxx11_abi": attr.bool(mandatory = True, doc = "the environment's torch ABI flag"),
         "_linker": attr.label(default = "@mold//:linker"),
         "_nvcc": attr.label(default = "@cuda//:nvcc_all_files"),
@@ -180,7 +237,13 @@ rola_extension = rule(
         "_record": attr.label(default = "//bazel:record.py", allow_single_file = True),
         "_record_sources": attr.label(default = "//bazel:record_sources"),
         "_sources": attr.label(default = "//bazel:generator_sources"),
-        "_toolchain": attr.label(default = "//tools:toolchains/cu13.json", allow_single_file = True),
+        "_sass_gate": attr.label(default = "//tools:sass_gate.py", allow_single_file = True),
+        "_arm_gate": attr.label(default = "//bazel:gates.py", allow_single_file = True),
+        "_gate_sources": attr.label(default = "//bazel:gate_sources"),
+        "_headers": attr.label(default = "//csrc/rola:generated"),
+        "_cuobjdump": attr.label(default = "@cuda_tools//:bin/cuobjdump", allow_single_file = True, cfg = "exec"),
+        "_nvdisasm": attr.label(default = "@cuda_tools//:bin/nvdisasm", allow_single_file = True, cfg = "exec"),
+        "_venv_python": attr.label(default = "@rola_env//:venv_python", cfg = "exec"),
         "_python": attr.label(default = "@rola_env//:python", allow_single_file = True, cfg = "exec"),
         "_cc_toolchain": attr.label(default = "@rules_cc//cc:current_cc_toolchain"),
         "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),

@@ -141,12 +141,6 @@
   },
   {
    "path": "tools/build_flags.py",
-   "message": "nvcc_flags(..., nvcc_threads=) is only ever 2 -- across every call in this tree, nothing moves it",
-   "line_sha256": "848c48041c545ec7",
-   "count": 1
-  },
-  {
-   "path": "tools/build_flags.py",
    "message": "torch_extension_cache_key_flags(..., name=) is only ever '_C' -- across every call in this tree, nothing moves it",
    "line_sha256": "77ea2b0bfe96d153",
    "count": 1

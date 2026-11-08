@@ -5,11 +5,20 @@ load("@rola_env//:flags.bzl", "HOST_CXX_FLAGS", "NVCC_FLAGS")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 load("//bazel:defs.bzl", "carry_arm_set", "include_root", "rola_headers")
-load(":arms.bzl", "CARRY_ARM_UNITS")
+load(":units.bzl", "CARRY_ARM_COUNT", "CARRY_ARM_UNITS", "HAND_UNITS")
 
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["src/common/hardware.json"])
+exports_files([
+    "units.bzl",
+    "src/common/hardware.json",
+])
+
+#: every source the kernel list reads, and the checked-in generated units
+filegroup(
+    name = "sources",
+    srcs = glob(["src/**"]),
+)
 
 #: nvcc's command line is tools/build_flags.py's: rules_cuda's own additions to it are off (its extended lambdas, which
 #: the measured build never had; its compilation-mode optimization and its seed; the host toolchain's flags)
@@ -65,10 +74,7 @@ _DEPS = [
 
 cuda_library(
     name = "units",
-    srcs = glob(
-        ["src/**/*.cu"],
-        exclude = ["src/instantiations/**"],
-    ),
+    srcs = HAND_UNITS,
     alwayslink = True,
     copts = NVCC_FLAGS,
     features = _NVCC_FEATURES,
@@ -86,6 +92,7 @@ cuda_library(
 
 carry_arm_set(
     name = "carry_arms",
+    rows = CARRY_ARM_COUNT,
     units = {":" + unit.removesuffix(".cu"): str(arms) for unit, arms in CARRY_ARM_UNITS.items()},
 )
 

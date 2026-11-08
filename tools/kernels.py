@@ -24,7 +24,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).absolute().parents[1]
 SRC = ROOT / "csrc" / "rola" / "src"
 MANIFESTS = ROOT / "tools" / "manifests"
 #: the generated per-arm units: the build compiles the ones the arm selection names, not the directory

@@ -33,7 +33,37 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-import dev_config
+#: THE DISASSEMBLERS AND SCRATCH THIS PROCESS READS: the dev config's toolkit and scratch (`toolchain.cuda_home`,
+#: `host.scratch`), or the graph's -- its hermetic toolkit and the action's own temporary directory (`use_graph`).
+#: -- see docs/internals/tools/sass_gate.md#graph
+_GRAPH: dict[str, Path] = {}
+
+
+def use_graph(*, cuobjdump: str, nvdisasm: str) -> None:
+    """Read the graph's disassemblers, and keep scratch in a directory of this process's own."""
+    _GRAPH.update(cuobjdump=Path(cuobjdump).absolute(), nvdisasm=Path(nvdisasm).absolute(),
+                  scratch=Path(tempfile.mkdtemp(prefix="rola_sass_")))
+
+
+def tool(name: str) -> str:
+    """The toolkit binary `name` (`cuobjdump`, `nvdisasm`)."""
+    if _GRAPH:
+        return str(_GRAPH[name])
+    import dev_config
+
+    return dev_config.cuda_bin(name)
+
+
+def scratch(name: str) -> Path:
+    """A scratch directory for `name`, never read back as a record."""
+    if _GRAPH:
+        path = _GRAPH["scratch"] / name
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    import dev_config
+
+    return dev_config.scratch(name)
+
 
 #: `/*ADDR*/ [@PRED] OPCODE ...` -- one assembled instruction, as both disassemblers print it
 INSTRUCTION = re.compile(r"^\s*/\*([0-9a-f]{4,5})\*/\s+(@!?U?P\w+\s+)?([A-Z0-9_.$]+)")
@@ -90,12 +120,12 @@ def cubins(path: Path) -> list[Path]:
     path = Path(path)
     if path.suffix == ".cubin":
         return [path]
-    root = dev_config.scratch("cubins")
+    root = scratch("cubins")
     with path.open("rb") as f:
         out = root / hashlib.file_digest(f, "sha256").hexdigest()[:16]
     if not out.is_dir():
         staging = Path(tempfile.mkdtemp(prefix=f".{out.name}.", dir=root))
-        subprocess.run([dev_config.cuda_bin("cuobjdump"), "-xelf", "all", str(path.resolve())], cwd=staging,
+        subprocess.run([tool("cuobjdump"), "-xelf", "all", str(path.resolve())], cwd=staging,
                        capture_output=True, check=True)
         try:
             staging.rename(out)
@@ -149,7 +179,7 @@ def cubin(path: Path, member: str, arch: str) -> Path:
 def sass_lines(obj: str | Path) -> Iterator[Iterator[str]]:
     """`cuobjdump -sass` over a whole object, STREAMED: the ratification scans megabytes of it and never holds the text.
     A disassembler that fails is fatal -- a gate cannot pass a binary it could not read."""
-    proc = subprocess.Popen([dev_config.cuda_bin("cuobjdump"), "-sass", str(obj)], stdout=subprocess.PIPE, text=True)
+    proc = subprocess.Popen([tool("cuobjdump"), "-sass", str(obj)], stdout=subprocess.PIPE, text=True)
     try:
         yield proc.stdout
     finally:
@@ -169,7 +199,7 @@ def disassemble(cubin_path: Path, *flags: str) -> str:
 
 @functools.lru_cache(maxsize=64)
 def _disassemble(path: str, _size: int, _mtime_ns: int, flags: tuple[str, ...]) -> str:
-    return subprocess.run([dev_config.cuda_bin("nvdisasm"), *flags, path],
+    return subprocess.run([tool("nvdisasm"), *flags, path],
                           capture_output=True, text=True, check=True).stdout
 
 

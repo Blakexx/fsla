@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).absolute().parents[1]
 RECORDS = ROOT / "tools" / "toolchains"
 MANIFESTS = ROOT / "tools" / "manifests"
 

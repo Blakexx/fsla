@@ -110,6 +110,7 @@ HANDOFFS = {
     "ROLA_SCRATCH": "the agent harness's campaign directory (.claude/settings.json), outside the repository",
     "BAZEL_REAL": "the Bazel release bazelisk hands the graph's front door (bazel/front_door.py)",
     "ROLA_GRAPH_STORE": "the shared store the front door hands the graph's environment (bazel/environment.bzl)",
+    "ROLA_NVCC_THREADS": "host.nvcc_threads, which the front door hands the graph's compile flags (bazel/flags.py)",
 }
 
 #: Environment variables that say what one build is. Set per invocation (pip passes nothing else to setup.py).

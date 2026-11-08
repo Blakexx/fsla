@@ -32,10 +32,22 @@ cc_library(
 
 exports_files([
     "flags.py",
+    "gates.py",
     "headers.py",
     "make_env.py",
     "record.py",
 ])
+
+#: what the SASS gate reads: the tree's tools (the gate and the modules it imports), its budgets, and every kernel the
+#: source defines (a kernel no cubin carries is red)
+filegroup(
+    name = "gate_sources",
+    srcs = [
+        "//csrc/rola:sources",
+        "//tools:budgets",
+        "//tools:python_sources",
+    ],
+)
 
 #: what `tools/gen_shards.py` and `measure/hardware.py` read: the arm declarations and the hardware table
 filegroup(
@@ -51,13 +63,19 @@ filegroup(
     ],
 )
 
-#: what the build record names: the ratified manifests, the vendored pin and the version
+#: what the build gates and the record read: the ratified manifests and toolchain records, the vendored tree, the
+#: checked-in generated units, the version
 filegroup(
     name = "record_sources",
     srcs = [
         "//:rola/__init__.py",
-        "//csrc/third_party:cutlass/PIN.json",
+        "//csrc/rola:units.bzl",
+        "//csrc/rola:sources",
+        "//csrc/third_party:cutlass_tree",
         "//tools:build_record.py",
+        "//tools:kernels.py",
         "//tools:manifests_cu13",
+        "//tools:toolchain_records",
+        "//tools:toolchains.py",
     ],
 )

@@ -46,7 +46,7 @@ PINS = {"sccache": ROOT / "tools" / "sccache_pin.json", "mold": ROOT / "tools" /
 #: THE ENVIRONMENT'S INPUTS: what the dev image is built from and how it is run. Their hash is the environment key; a
 #: commit changing any of them carries a passing container check for its key (KERNEL_STANDARDS §23 (3)).
 ENV_INPUTS = ("Dockerfile", ".devcontainer/devcontainer.json", ".devcontainer/compose.yaml", "requirements.lock",
-              "tools/sccache_pin.json", "tools/mold_pin.json", "tools/clang_tidy_pin.json", "tools/bazelisk_pin.json", "tools/devtools.txt", "tools/dev.py", "tools/dev_config.py",
+              "tools/sccache_pin.json", "tools/mold_pin.json", "tools/clang_tidy_pin.json", "tools/bazelisk_pin.json", "tools/uv_pin.json", "tools/devtools.txt", "tools/dev.py", "tools/dev_config.py",
               "tools/bootstrap.py",
               "tools/sccache_toolchain.py", "tools/mold_toolchain.py",
               "tools/toolchains.py",

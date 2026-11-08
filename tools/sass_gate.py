@@ -39,9 +39,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import dev_config  # noqa: E402 -- path insert must precede these imports
-import kernels  # noqa: E402
+sys.path.insert(0, str(Path(__file__).absolute().parent))
+import kernels  # noqa: E402 -- path insert must precede these imports
 import sass  # noqa: E402
 import sass_control  # noqa: E402
 
@@ -68,7 +67,7 @@ _RES = re.compile(r"Function (\S+):\s*\n\s*REG:(\d+) STACK:(\d+)")
 
 def resources(cubin: Path) -> dict[str, tuple[int, int]]:
     """`{function: (registers, stack frame bytes)}` off `cuobjdump -res-usage`."""
-    text = subprocess.run([dev_config.cuda_bin("cuobjdump"), "-res-usage", str(cubin)], capture_output=True,
+    text = subprocess.run([sass.tool("cuobjdump"), "-res-usage", str(cubin)], capture_output=True,
                           text=True, check=True).stdout
     return {m.group(1): (int(m.group(2)), int(m.group(3))) for m in _RES.finditer(text)}
 
@@ -263,7 +262,7 @@ _STEP_COVER_DEBT = {
                     "format, proposed); read under the line once the cover read its warps together",
     "calib_kernel": "a calibration probe, not a production step",
 }
-STEP_FLOORS = Path(__file__).resolve().parent / "budgets" / "step_floors.json"
+STEP_FLOORS = Path(__file__).absolute().parent / "budgets" / "step_floors.json"
 _PARTITION_REGISTERS = 16384
 
 
@@ -453,7 +452,7 @@ def _closure() -> str:
             h.update(str(path.relative_to(tools)).encode() + b"\0" + path.read_bytes())
         h.update(STEP_FLOORS.read_bytes() if STEP_FLOORS.exists() else b"")
         for tool in ("nvdisasm", "cuobjdump"):
-            h.update(subprocess.run([dev_config.cuda_bin(tool), "--version"], capture_output=True, text=True,
+            h.update(subprocess.run([sass.tool(tool), "--version"], capture_output=True, text=True,
                                     check=True).stdout.encode())
         _CLOSURE = h.hexdigest()
     return _CLOSURE
@@ -465,7 +464,7 @@ def cached_gate(cubin: Path, kernel: str | None, max_per_hmma: float | None, use
         return gate(cubin, kernel, max_per_hmma)
     key = hashlib.sha256(json.dumps([_closure(), hashlib.sha256(cubin.read_bytes()).hexdigest(), kernel,
                                      max_per_hmma, LOOPS]).encode()).hexdigest()
-    entry = dev_config.scratch("sass_gate_verdicts") / f"{key}.json"
+    entry = sass.scratch("sass_gate_verdicts") / f"{key}.json"
     if entry.exists():
         doc = json.loads(entry.read_text())
         STATS.clear()
@@ -516,10 +515,18 @@ def main() -> int:
     ap.add_argument("--write-floors", action="store_true",
                     help="record each step-cover debt's worst reading as its floor (a ratchet: a later build may not "
                          "read lower)")
+    ap.add_argument("--cuobjdump", default=None, help="the graph's cuobjdump (with --nvdisasm: the graph's toolkit, "
+                    "scratch of this run's own, no verdict cache)")
+    ap.add_argument("--nvdisasm", default=None, help="the graph's nvdisasm")
     ap.add_argument("--rekey-floors", action="store_true",
                     help="move each floor to the binary's function of the same signature, a Build argument dropped "
                          "(the rename rule, docs/internals/common/hardware.md#builds-renamed); values unchanged")
     a = ap.parse_args()
+    if (a.cuobjdump is None) != (a.nvdisasm is None):
+        raise SystemExit("--cuobjdump and --nvdisasm name the graph's toolkit together")
+    if a.cuobjdump:
+        sass.use_graph(cuobjdump=a.cuobjdump, nvdisasm=a.nvdisasm)
+        a.no_cache = True
     if a.rekey_floors:
         return rekey_floors(a.binary)
     global LOOPS

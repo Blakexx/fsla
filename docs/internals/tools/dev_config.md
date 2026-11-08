@@ -55,6 +55,8 @@ f-string prefixes resolved) and shell expansions.
   - The agent harness's campaign directory.
   - The login name printed into the sudoers rule `tools/dev.py clock` suggests (`USER`).
   - The Bazel release bazelisk hands the graph's front door (`BAZEL_REAL`).
+  - The shared store and `host.nvcc_threads`, which the front door hands the graph's environment (`ROLA_GRAPH_STORE`,
+    `ROLA_NVCC_THREADS`).
 - `BUILD_PARAMETERS`: what one build is, set per invocation, because pip passes nothing else to `setup.py`:
   `ROLA_CUDA_ARCHS`, `ROLA_CARRY_ARMS`, `ROLA_DECODE_ARMS`, `ROLA_CARRY_PARTS`, `ROLA_BUILD_PARTS`,
   `ROLA_NO_EXTENSION`, `ROLA_STRICT_MANIFEST`, `ROLA_SKIP_POST_BUILD_RATIFY`.

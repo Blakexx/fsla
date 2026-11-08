@@ -6,7 +6,7 @@
 """
 
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "string_list_flag")
-load("@rola_env//:flags.bzl", "CXX11_ABI", "RATIFIED_ARCHS", "TORCH")
+load("@rola_env//:flags.bzl", "CXX11_ABI", "RATIFIED_ARCHS", "TOOLCHAIN", "TORCH", "TORCH_CUDA")
 load("//bazel:defs.bzl", "rola_extension")
 
 exports_files([
@@ -46,7 +46,9 @@ string_flag(
 rola_extension(
     name = "library",
     cxx11_abi = CXX11_ABI,
+    toolchain = TOOLCHAIN,
     torch = TORCH,
+    torch_cuda = TORCH_CUDA,
     shared_libraries = ["@rola_env//:torch_libraries"],
     deps = [
         "//csrc/rola:carry_arms",

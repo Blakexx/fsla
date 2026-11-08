@@ -44,3 +44,11 @@ their version lines) and the arguments (`--kernel`, `--max-per-hmma`, `--loops`)
 identical gate, the argument `tools/ratify.py`'s per-unit cache makes. Any change to the cubin or the gate misses and
 re-reads. A no-change build's gate is ~0.1 s; a one-kernel edit re-reads that kernel's cubin and the stamp's.
 `--no-cache` reads every cubin and records nothing.
+
+## <a id="graph"></a>The graph's gate
+
+The graph's library rule runs the gate as an action with `--cuobjdump` and `--nvdisasm` naming its hermetic toolkit's
+(`@cuda_tools`): `sass.use_graph` points every disassembly at those binaries and every scratch directory at one of the
+process's own, and the verdict cache is off -- the action is cached by Bazel on its inputs, the library and the gate's
+sources ([`../../build-graph.md#gates`](../../build-graph.md#gates)). Run from a checkout, the gate reads the dev
+config's toolkit and scratch, and its own cache.

@@ -29,8 +29,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "lint"))
+sys.path.insert(0, str(Path(__file__).absolute().parent))
+sys.path.insert(0, str(Path(__file__).absolute().parents[1] / "tools" / "lint"))
 
 import burst_tier  # noqa: E402
 import life_ranges  # noqa: E402

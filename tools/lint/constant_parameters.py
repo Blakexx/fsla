@@ -57,7 +57,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-ROOTS = ("rola", "tools", "measure")
+ROOTS = ("rola", "tools", "measure", "bazel")
 #: THE TESTS ARE CALLERS OF THE PUBLIC SURFACE (Blake, 2026-09-29): a public option a test exercises is a product
 #: feature under test, not a dead knob. An internal function still needs a caller in the product itself -- a knob
 #: only a test sets there is a test hook in production code.

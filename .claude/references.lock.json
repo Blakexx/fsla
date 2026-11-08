@@ -30,7 +30,7 @@
   {"doc": ".claude/skills/rola-build/SKILL.md", "pinned_at": "e87322e18bcd", "reviewed": true, "sha256": "af37b10c7c588ce5", "target": "docs/build.md#the-host-budget-every-build-shares-one-pool"},
   {"doc": ".claude/skills/rola-build/SKILL.md", "pinned_at": "3fac56b5a835", "reviewed": true, "sha256": "", "target": "docs/internals/tools/build_lock.md"},
   {"doc": ".claude/skills/rola-build/SKILL.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "fb8f718432f40a46", "target": "docs/measurement.md#preconditions-which-the-targets-acquire"},
-  {"doc": ".claude/skills/rola-build/SKILL.md", "pinned_at": "e87322e18bcd", "reviewed": true, "sha256": "3ee43531e1b9715e", "target": "docs/ratification.md#the-device-stamp-keys-on-the-csrc-content-hash"},
+  {"doc": ".claude/skills/rola-build/SKILL.md", "pinned_at": "f9de7b1175b6", "reviewed": true, "sha256": "8cd0afa2c0554dc3", "target": "docs/ratification.md#the-device-stamp-keys-on-the-csrc-content-hash"},
   {"doc": ".claude/skills/rola-commit/SKILL.md", "pinned_at": "3fac56b5a835", "reviewed": true, "sha256": "133df1e8d0aa6511", "target": "docs/KERNEL_STANDARDS.md#no-verify"},
   {"doc": ".claude/skills/rola-commit/SKILL.md", "pinned_at": "a01f752595df", "reviewed": true, "sha256": "2d34a2d27bb3828e", "target": "docs/KERNEL_STANDARDS.md#s31"},
   {"doc": ".claude/skills/rola-commit/SKILL.md", "pinned_at": "e87322e18bcd", "reviewed": true, "sha256": "", "target": "docs/internals/tools/dev.md"},

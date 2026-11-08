@@ -140,9 +140,9 @@ define reaches every translation unit's argv, so every `csrc/` edit would rebuil
 whole extension, while a header included only by the stamp site rebuilds one file and
 is hashed by ninja through the depfile. (A flag ninja does *not* hash —
 `NVCC_PREPEND_FLAGS` — is the failure one level over: the build reports success and
-the binary silently stays the previous variant.) `setup.py` writes the header before
-it compiles anything and `tools/ratify.py` writes it, from the same function, before
-it measures anything.
+the binary silently stays the previous variant.) `setup.py` and the graph's stamp
+action write the header before they compile anything and `tools/ratify.py` writes it
+before it measures anything, from the same function (`tools/csrc_stamp.py`).
 
 The footprint stamps each family already carries are untouched and answer a different
 question: whether the loaded binary's struct sizes are the ones this source declares.

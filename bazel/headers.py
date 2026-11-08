@@ -20,10 +20,6 @@ import gen_shards  # noqa: E402
 from measure import hardware  # noqa: E402
 
 
-def _list(value: str) -> str:
-    return value.replace(",", " ")
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out-dir", type=Path, required=True)
@@ -32,8 +28,8 @@ def main() -> int:
     ap.add_argument("--decode-arms", default="", help="decode arm indices, comma-separated; empty is every arm")
     ap.add_argument("--carry-parts", default="all", help="gen_shards.carry_parts_spec's spec")
     a = ap.parse_args()
-    carry = gen_shards.family_arms(gen_shards.CARRY, _list(a.carry_arms), "--//:carry_arms")
-    decode = gen_shards.family_arms(gen_shards.DECODE, _list(a.decode_arms), "--//:decode_arms")
+    carry = gen_shards.family_arms(gen_shards.CARRY, a.carry_arms, "--//:carry_arms")
+    decode = gen_shards.family_arms(gen_shards.DECODE, a.decode_arms, "--//:decode_arms")
     parts = gen_shards.carry_parts_spec(a.carry_parts, "--//:carry_parts")
     texts = {gen_shards.CARRY_SELECTION_INC: gen_shards.carry_selection_header(carry),
              gen_shards.DECODE.header: gen_shards.decode_selection_header(decode),

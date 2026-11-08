@@ -52,7 +52,8 @@ def machine_rc() -> Path:
     text = (f"# written by bazel/front_door.py from the dev config's host.build_cache; regenerated every run\n"
             f"common --disk_cache={cache / 'disk'}\n"
             f"common --repository_cache={cache / 'repository'}\n"
-            f"common --repo_env=ROLA_GRAPH_STORE={cache / 'store'}\n")
+            f"common --repo_env=ROLA_GRAPH_STORE={cache / 'store'}\n"
+            f"common --repo_env=ROLA_NVCC_THREADS={dev_config.get('host.nvcc_threads')}\n")
     path = cache / "machine.bazelrc"
     if not path.is_file() or path.read_text() != text:
         cache.mkdir(parents=True, exist_ok=True)

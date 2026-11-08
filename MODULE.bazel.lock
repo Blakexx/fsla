@@ -209,8 +209,8 @@
   "moduleExtensions": {
     "//bazel:environment.bzl%environment": {
       "general": {
-        "bzlTransitiveDigest": "urbcjs8bpqCKRsExz9RJbb9daPDMrBNYbUi9X4VJISY=",
-        "usagesDigest": "HkBnFTQ2fbTZDMJfxNkfdOK7vkrLf5VSSo2CXQjT1hU=",
+        "bzlTransitiveDigest": "b1sN7OKpscbeHidQhYGSMnRHZ5lV04MfBCL/ztgea+Q=",
+        "usagesDigest": "50ipahcHiZ1flVNymIAPON0AinL6WPn1jhiL28PUv5A=",
         "recordedInputs": [],
         "generatedRepoSpecs": {
           "rola_env": {
@@ -226,6 +226,13 @@
           "host_cc": {
             "repoRuleId": "@@//bazel:environment.bzl%_host_cc_repo",
             "attributes": {}
+          },
+          "cuda_tools": {
+            "repoRuleId": "@@//bazel:environment.bzl%_cuda_tools_repo",
+            "attributes": {
+              "manifest": "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.0.0.json",
+              "sha256": "fe6a86b54450d03ae709123a52717870c49046d65d45303ce585c7aa8a83a217"
+            }
           }
         }
       }

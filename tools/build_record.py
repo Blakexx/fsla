@@ -57,6 +57,37 @@ def ratified_manifest(archs: list[str], manifest_dir: Path) -> dict:
     return {"toolchain": toolchain, "shards": shards, "entries": entries}
 
 
+def vendored_tree_sha256(root: Path) -> tuple[str, int]:
+    """A digest of a DIRECTORY, defined so it cannot be argued with: sha256 over the sorted relative POSIX paths, each
+    followed by a NUL byte and the sha256 of that file's bytes; `PIN.json` is excluded because it carries the answer.
+    Paths participate as well as contents, so a rename -- which changes what an `#include` resolves to -- moves it."""
+    digest = hashlib.sha256()
+    files = sorted(p for p in root.rglob("*") if p.is_file() and p.name != "PIN.json")
+    for path in files:
+        digest.update(path.relative_to(root).as_posix().encode())
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest(), len(files)
+
+
+def vendored_pin(root: Path) -> dict:
+    """RULE 5: the vendored tree at `root` is the one its `PIN.json` records -- a vendored header is code ptxas
+    assembles, so a drift is a codegen change, not a packaging one. Returns the pin."""
+    pin_path = root / "PIN.json"
+    if not pin_path.exists():
+        raise RuntimeError(f"CLOSED-WORLD RULE 5: {pin_path} is missing. A vendored library with no pin is an "
+                           "unmeasured codegen input; restore the pin or remove the vendored tree.")
+    pin = json.loads(pin_path.read_text())
+    here, count = vendored_tree_sha256(root)
+    if here != pin["tree_sha256"]:
+        raise RuntimeError(f"CLOSED-WORLD RULE 5: the vendored tree {root.name} does not match its pin.\n  PIN.json: "
+                           f"{pin['tree_sha256']} ({pin['file_count']} files)\n  on disk : {here} ({count} files)\n"
+                           "Re-vendor the pinned tag, or move the pin DELIBERATELY and re-ratify "
+                           "(`python tools/ratify.py --write`).")
+    print(f"rule 5 OK  {root.name} {pin['tag']} ({pin['commit'][:12]}): {count} files, sha256 {here[:16]}...")
+    return pin
+
+
 def manifest_digest(manifest: dict) -> str:
     """Canonical JSON of `{toolchain, entries, shards}` with sorted keys -- not the bytes of any file -- so the digest
     is a property of the RATIFICATION, not of its filing. The shard block is membership only (`{name: {members_sha256,
