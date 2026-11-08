@@ -141,7 +141,7 @@ def coverage(body, mach: dict, arch: str) -> dict:
 
 def registers(cubin: Path) -> dict:
     """The kernel's register allocation and the warps a scheduler it leaves room for."""
-    out = subprocess.run(["cuobjdump", "-res-usage", str(cubin)], capture_output=True, text=True).stdout
+    out = subprocess.run([sass.tool("cuobjdump"), "-res-usage", str(cubin)], capture_output=True, text=True).stdout
     m = re.search(r"REG:(\d+)", out)
     if not m:
         return {}

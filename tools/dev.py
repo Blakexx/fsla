@@ -393,8 +393,6 @@ def cmd_init(a) -> int:
             command = Path(dev_config.get("workspace.base_venv")) / "bin" / json.loads(PINS[name].read_text())["command"]
             command.unlink(missing_ok=True)
             command.symlink_to(pinned_path(name))
-    #: the measurement tools' Nsight Compute is the pinned one (they read `toolchain.ncu`)
-    _write_section("toolchain", {"ncu": str(pinned_path("nsight_compute"))}, force=True)
     base = dev_config.get("workspace.base_venv")
     drift = venv_drift(str(Path(base) / "bin" / "python")) if base else []
     if drift:
@@ -468,9 +466,6 @@ def cmd_check(a) -> int:
             row(path.exists(), f"toolchain {tool}: {path}", "set toolchain.cuda_home to a CUDA toolkit with it")
     except SystemExit as ex:
         row(False, f"toolchain: {ex}", "bazel run //:init")
-    #: the measurement tools' Nsight Compute is the pinned one, which init records
-    ncu = dev_config.get("toolchain.ncu")
-    row(ncu == str(pinned_path("nsight_compute")), f"toolchain.ncu is the pinned Nsight Compute: {ncu}", "bazel run //:init")
     for name, gate in (("sccache", sccache_toolchain.gate), ("mold", mold_toolchain.link_flags)):
         try:
             gate()

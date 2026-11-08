@@ -209,7 +209,7 @@
   "moduleExtensions": {
     "//bazel:environment.bzl%environment": {
       "general": {
-        "bzlTransitiveDigest": "rvZU90ur1XMwLHPr04Hi42uKst+0r4bNXp0Bdma09x8=",
+        "bzlTransitiveDigest": "sm+eVBgDVMGlsAPXmNpxn03Sp+m1fmaIjER42bxKDw4=",
         "usagesDigest": "50ipahcHiZ1flVNymIAPON0AinL6WPn1jhiL28PUv5A=",
         "recordedInputs": [],
         "generatedRepoSpecs": {
@@ -228,8 +228,7 @@
             "repoRuleId": "@@//bazel:environment.bzl%_pinned_repo",
             "attributes": {
               "pin": "@@//tools:clang_tidy_pin.json",
-              "build": "package(default_visibility = [\"//visibility:public\"])\n\nfilegroup(name = \"clang_tidy\", srcs = [\"clang_tidy/data/bin/clang-tidy\"])\n\n#: its resource headers (clang's CUDA wrappers among them), beside the binary where clang looks for them\nfilegroup(name = \"resources\", srcs = glob([\"clang_tidy/data/lib/clang/**\"]))\n",
-              "binary": "clang_tidy/data/bin/clang-tidy"
+              "build": "package(default_visibility = [\"//visibility:public\"])\n\nfilegroup(name = \"clang_tidy\", srcs = [\"clang_tidy/data/bin/clang-tidy\"])\n\n#: its resource headers (clang's CUDA wrappers among them), beside the binary where clang looks for them\nfilegroup(name = \"resources\", srcs = glob([\"clang_tidy/data/lib/clang/**\"]))\n"
             }
           },
           "host_cc": {

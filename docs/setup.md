@@ -216,10 +216,11 @@ image and the dev setup alike. The devbox's own tools (`tools/dev.py`'s `DEV_TOO
 installs into its own versioned folder under `host.tools_dir`, one copy a machine: in the image their commands are on
 the image's venv's bin, first on its PATH, and on a host each checkout's venv links them (`bazel run //:dev_env`), so an activated venv has
 them first on PATH and the system's own tools are untouched. The environment's developer commands come with
-`requirements.lock`, on the same venv's bin. The tree's own code reaches a tool by its recorded path, never PATH, but
-for `tools/build/dag_to_dot.py`'s optional `--svg`, which runs graphviz's `dot`. THE GAP: the rows sourced from apt
-are not pinned -- the image installs them unversioned from Ubuntu's archive, and on a host they are the host OS's
-own, which init does not install.
+`requirements.lock`, on the same venv's bin. The tree's own code reaches a pinned tool by its pin or recorded path; a
+check finds the environment's commands (ast-grep, ruff) on the PATH the graph or the venv sets, which is the
+environment's own. THE GAP: the rows sourced from apt are not pinned -- the image installs them unversioned from
+Ubuntu's archive, and on a host they are the host OS's own, which init does not install; `tools/build/dag_to_dot.py`'s
+optional `--svg` runs that graphviz's `dot` from PATH.
 
 | Tool | Source | Role |
 |---|---|---|
@@ -228,7 +229,7 @@ own, which init does not install.
 | `sccache` 0.17.0 | `tools/dev.py init --image` from `tools/sccache_pin.json`, verified | the compiler cache `docs/build.md#sccache` measures |
 | `ninja` | apt | the build's actual compile driver (`docs/build.md` step 5) |
 | `mold` 2.42.0 | `tools/dev.py init --image` from `tools/mold_pin.json`, verified | the extension's only linker |
-| Nsight Compute 2025.3, Nsight Systems 2025.3 | `tools/nsight_compute_pin.json`, `tools/nsight_systems_pin.json` (NVIDIA's redistributable components at the toolkit's manifest, by digest), init | PM sampling (pipe timeline) and the measurement tools' `toolchain.ncu`; timelines |
+| Nsight Compute 2025.3, Nsight Systems 2025.3 | `tools/nsight_compute_pin.json`, `tools/nsight_systems_pin.json` (NVIDIA's redistributable components at the toolkit's manifest, by digest), init | PM sampling (pipe timeline) and the measurement tools' Nsight Compute, found by its pin; timelines |
 | `hyperfine`, `difftastic` (`difft`) | `tools/hyperfine_pin.json`, `tools/difftastic_pin.json` (pinned GitHub releases, sha256-verified), init | ad-hoc wall-clock comparisons outside the declared timing sessions; structural diffs |
 | `ast-grep`, `py-spy`, `clangd` 22, `clang-format` 19.1.7 | `requirements.lock` (the environment) | structural code search; live Python profiling; the editor's language server, at the pinned clang-tidy's LLVM major; the formatter `.clang-format` names |
 | `graphviz`, `sqlite3` | apt | dependency/DAG rendering, the store's record index inspection |

@@ -21,6 +21,7 @@ docs/internals/tools/dev_config.md.
 """
 from __future__ import annotations
 
+import json
 import shutil
 from functools import cache
 from pathlib import Path
@@ -48,8 +49,9 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "cuda_home": Key("path?", None, "the CUDA toolkit the extension builds with (nvcc, ptxas, nvdisasm, cuobjdump "
                          "under bin/); null takes torch.utils.cpp_extension's CUDA_HOME"),
         "ncu": Key("path?", None,
-                   "the Nsight Compute CLI the measurement tools run: the pinned one (tools/nsight_compute_pin.json), "
-                   "which init records; null until it has"),
+                   "a Nsight Compute CLI the machine's toolchain file may name, for the checkouts on this machine that "
+                   "read it; this tree finds the pinned one by its pin (`ncu()`). A loader refuses a key it does not "
+                   "declare, so it stays declared while machine files carry it"),
         "sccache": Key("path?", None, "the pinned sccache (tools/sccache_pin.json); null means none installed"),
         "sccache_enabled": Key("bool", True, "false builds uncached, the one deliberate opt-out of the sccache gate"),
         "mold": Key("path?", None, "the pinned mold (tools/mold_pin.json), the only linker; null means none installed"),
@@ -165,11 +167,13 @@ def scratch(name: str) -> Path:
 
 
 def ncu() -> str:
-    """The Nsight Compute CLI the measurement tools run (`toolchain.ncu`), refused until init recorded the pinned one."""
-    path = get("toolchain.ncu")
-    if not path:
-        raise SystemExit("toolchain.ncu is unset: bazel run //:init records the pinned Nsight Compute")
-    return path
+    """The Nsight Compute CLI the measurement tools run: the pinned one (tools/nsight_compute_pin.json), found by its
+    pin under `host.tools_dir`, refused until init installed it."""
+    pin = json.loads((Path(__file__).resolve().parent / "nsight_compute_pin.json").read_text())
+    path = Path(get("host.tools_dir")) / pin["archive_root"] / pin["binary_path"]
+    if not path.is_file():
+        raise SystemExit(f"the pinned Nsight Compute is not installed at {path}: bazel run //:init")
+    return str(path)
 
 
 def windows_tool(rel: str) -> Path | None:

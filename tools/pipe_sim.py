@@ -169,7 +169,7 @@ def probe_loops(so: Path) -> dict[tuple[int, int, int], list]:
 
     cubin = [c for c in sass.cubins(so) if "carry_parts" in c.name][0]
     select(sc.machine(cubin))
-    text = subprocess.run(["cuobjdump", "-sass", str(cubin)], capture_output=True, text=True, check=True).stdout
+    text = subprocess.run([sass.tool("cuobjdump"), "-sass", str(cubin)], capture_output=True, text=True, check=True).stdout
     funcs: dict[str, list] = {}
     cur = None
     for line in text.splitlines():

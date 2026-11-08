@@ -9,8 +9,8 @@ timeline of true utilization and a chart.
     python tools/pipe_timeline.py --cell flagship-dense --rep r.ncu-rep
     python tools/pipe_timeline.py --cell flagship-dense --calibrate  # on a `--//:carry_parts=none` build
 
-**The capture.** It uses the Nsight Compute CLI 2025.3 or later: `toolchain.ncu`, the pinned one init records
-(`tools/nsight_compute_pin.json`).
+**The capture.** It uses the Nsight Compute CLI 2025.3 or later: the pinned one (`tools/nsight_compute_pin.json`),
+found by its pin (`dev_config.ncu()`).
 The 2024.1 CLI that ships with CUDA 12.4 has no PM sampling. The capture runs `--section PmSampling` over
 one launch of the cell through the probe worker. The profiler replays the kernel over several passes
 (five here). Each pass samples one single-pass counter group at a fixed interval, 1 µs on this card

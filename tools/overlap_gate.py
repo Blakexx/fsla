@@ -147,7 +147,7 @@ def shapes(row: Row) -> dict[str, int]:
 
     out_csv = ROOT / "build" / f"overlap_{re.sub(r'[^A-Za-z0-9]+', '_', row.kernel)}_{row.cell}.csv"
     out_csv.parent.mkdir(exist_ok=True)
-    cmd = [dev_config.get("toolchain.ncu"), "--target-processes", "all", "-k", f"regex:{row.kernel}",
+    cmd = [dev_config.ncu(), "--target-processes", "all", "-k", f"regex:{row.kernel}",
            "--launch-skip", str(row.warmup), "-c", "1", "--section", "SourceCounters", "--page", "source",
            "--print-source", "sass", "--csv", sys.executable, str(Path(__file__).resolve()), "--launch", row.launch,
            "--cell", row.cell, "--heads", str(row.heads), "--repeat", str(row.warmup + 1)]
@@ -166,7 +166,7 @@ def shapes(row: Row) -> dict[str, int]:
 def counters(row: Row) -> dict[str, float]:
     from rola_devtools import process
 
-    cmd = [dev_config.get("toolchain.ncu"), "--target-processes", "all", "-k", f"regex:{row.kernel}",
+    cmd = [dev_config.ncu(), "--target-processes", "all", "-k", f"regex:{row.kernel}",
            "--launch-skip", str(row.warmup), "-c", "1", "--metrics", ",".join(COUNTERS), "--csv",
            sys.executable, str(Path(__file__).resolve()), "--launch", row.launch, "--cell", row.cell,
            "--heads", str(row.heads), "--repeat", str(row.warmup + 1)]

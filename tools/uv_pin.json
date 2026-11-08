@@ -6,7 +6,8 @@
     "release_asset": "uv-0.12.7-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
     "release_url": "https://files.pythonhosted.org/packages/8a/01/616cc5f80952eef6fa48c5dbd6ea8aeed04a494e7dfbe9f5f65cfcf85ad9/uv-0.12.7-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
     "asset_sha256": "4545e87c7ac64af317d8daffd279e23e93b0e05035662363033d3525923339d2",
-    "strip_prefix": "uv-0.12.7.data/scripts",
     "python": "3.11.13",
-    "same_pin_as": "Dockerfile's UV_VERSION ARG names the same release (its GitHub tarball), for the image's own Python layer"
+    "same_pin_as": "Dockerfile's UV_VERSION ARG names the same release (its GitHub tarball), for the image's own Python layer",
+    "archive_root": "uv-0.12.7.data/scripts",
+    "binary_path": "uv"
 }

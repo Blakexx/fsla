@@ -43,7 +43,7 @@ def _store(rctx):
 
 def _env_impl(rctx):
     pin = json.decode(rctx.read(rctx.attr.uv_pin))
-    rctx.download_and_extract(url = pin["release_url"], sha256 = pin["asset_sha256"], type = "zip", output = "uv", stripPrefix = pin["strip_prefix"])
+    rctx.download_and_extract(url = pin["release_url"], sha256 = pin["asset_sha256"], type = "zip", output = "uv", stripPrefix = pin["archive_root"])
     record = json.decode(rctx.read(rctx.attr.toolchain))
     #: the environment's inputs: a change to any of them is a new environment (the lock and the devtools pin by content)
     for source in (rctx.attr.lock, rctx.attr.devtools, rctx.attr.make_env, rctx.attr.flags, rctx.attr.build_flags):
@@ -130,7 +130,7 @@ def _pinned_impl(rctx):
         headers = {"Accept": ["application/octet-stream"]},
     )
     if "binary_sha256" in pin:
-        binary = str(rctx.path(rctx.attr.binary))
+        binary = str(rctx.path(pin["binary_path"]))
         digest = rctx.execute(["sha256sum", binary]).stdout.split(" ")[0]
         if digest != pin["binary_sha256"]:
             fail("%s: %s's sha256 is %s, not the pin's %s" % (pin["name"], rctx.attr.binary, digest, pin["binary_sha256"]))
@@ -142,7 +142,6 @@ _pinned_repo = repository_rule(
     attrs = {
         "pin": attr.label(mandatory = True),
         "build": attr.string(mandatory = True, doc = "the repository's BUILD file: the targets it exposes"),
-        "binary": attr.string(doc = "the binary's path in the repository, checked against the pin's `binary_sha256`"),
     },
     doc = "A pinned release, downloaded by its pin's digest.",
 )
@@ -280,7 +279,6 @@ def _environment_impl(mctx):
         name = "clang_tidy",
         pin = "//tools:clang_tidy_pin.json",
         build = _CLANG_TIDY_BUILD,
-        binary = "clang_tidy/data/bin/clang-tidy",
     )
     _host_cc_repo(name = "host_cc")
     _host_gpu_repo(name = "host_gpu")

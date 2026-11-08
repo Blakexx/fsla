@@ -20,9 +20,9 @@ graph's environment interpreter, its arguments after `--`.
 
 **`init`** writes this machine's config:
 - The CUDA toolkit on `PATH`, or torch's.
-- The pinned devbox tools (`DEV_TOOLS`: hyperfine, difftastic, Nsight Compute and Systems), each where its pin's folder is
-  missing, and `toolchain.ncu` as the pinned Nsight Compute, which the measurement tools read; in the image their
-  commands are linked into the image's venv's bin, first on its PATH.
+- The pinned devbox tools (`DEV_TOOLS`: hyperfine, difftastic, Nsight Compute and Systems), each where it is missing or
+  does not report its pin's version; the measurement tools find the pinned Nsight Compute by its pin
+  (`dev_config.ncu()`). In the image their commands are linked into the image's venv's bin, first on its PATH.
 - `sccache` and `mold` where they are installed.
 - The Windows System32 mount under WSL.
 
@@ -43,8 +43,7 @@ clock is not set by `init`, because locking it asks for administrator consent on
 **`check`** prints one row per dependency and exits 1 on any red:
 - The config parses.
 - nvcc, ptxas, nvdisasm and cuobjdump exist in the toolkit.
-- `ncu` is 2025.3 or later.
-- Each devbox tool is installed in its pin's folder.
+- Each devbox tool reports its pin's version (Nsight Compute among them).
 - sccache and mold pass the build's own gates (`sccache_toolchain.gate`, `mold_toolchain.link_flags`), so
   `check` refuses exactly what a build would.
 - The commit gate is wired.

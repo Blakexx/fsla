@@ -247,7 +247,7 @@ def _plain(name: str) -> str:
 def counters_of(binary: Path, extra: list[str]) -> dict[str, dict]:
     """Per kernel (`_plain` name), its first launch's standard counters (docs/internals/tools/pipes.md): `pipes.short`'s
     names and `opcodes` (executed instructions by opcode)."""
-    out = subprocess.run([dev_config.get("toolchain.ncu"), "--metrics",
+    out = subprocess.run([dev_config.ncu(), "--metrics",
                           ",".join(["sass__inst_executed_per_opcode", *pipes.metric_names()]),
                           "--print-metric-instances", "details", "--csv", str(binary), "--reps", "1", *extra],
                          capture_output=True, text=True, check=True).stdout
@@ -500,7 +500,7 @@ def run(name: str, reps: int, record: bool, force: bool) -> int:
 
 def ncu_counters(binary: Path, metrics: list[str], extra: list[str]) -> dict[str, dict[str, float]]:
     """Per kernel (ncu's name), each metric's median over the kernel's launches in one repetition of the experiment."""
-    out = subprocess.run([dev_config.get("toolchain.ncu"), "--metrics", ",".join(metrics), "--csv", str(binary),
+    out = subprocess.run([dev_config.ncu(), "--metrics", ",".join(metrics), "--csv", str(binary),
                           "--reps", "1", *extra], capture_output=True, text=True, check=True).stdout
     lines = out.splitlines()
     start = next(i for i, line in enumerate(lines) if line.startswith('"ID"'))
@@ -572,7 +572,7 @@ def ledger(name: str, pattern: str | None) -> int:
         if pattern and not re.search(pattern, k):
             continue
         core = k.split("(")[0].split("::")[-1] if "<" not in k else k[:k.index(">") + 1].split("::")[-1]
-        out = subprocess.run([dev_config.get("toolchain.ncu"), "--kernel-name-base", "demangled", "--kernel-name",
+        out = subprocess.run([dev_config.ncu(), "--kernel-name-base", "demangled", "--kernel-name",
                               f"regex:{re.escape(core)}", "--launch-count", "1", "--section", "SourceCounters",
                               "--page", "source", "--print-source", "sass", "--csv", str(binary), "--reps", "1",
                               *extra], capture_output=True, text=True, check=True).stdout
