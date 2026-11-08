@@ -116,8 +116,8 @@ one name, its body selected per family where it is defined, in `common/atoms/`. 
 an atom. A kernel's semantics live in `<kernel>/`, shared by its schedules. THE SELECTION is one layer every kernel
 plugs into: the cards are data (hardware.json's arch and product rows, generated), a kernel's sizes come from its plan
 alone (`Plan<build, arm>`: the card's build traits and the declaration's arm), and one host call selects the card and
-the arm, refusing an unlisted product or an unbuilt arm by name. Products equal in their build traits share their
-kernels.
+the arm, refusing by name an untabulated architecture, a build the binary does not carry and an unbuilt arm; a device
+with no product row runs its architecture's build. Products equal in their build traits share their kernels.
 
 ## 9. The backstop (checks that should catch nothing)
 `ratify` records per arm and arch: registers, stack, spills, residency (existing) + compile wall time,

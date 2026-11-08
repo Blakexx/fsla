@@ -21,6 +21,8 @@ kernel in `tools/budgets/<kernel>.json` ([phase_ledger.md](phase_ledger.md) read
    ledger phase's predicted cycles a warp a window (`phase_cycles`, gated by `tools/phase_ledger.py --budget`,
    [`phase_ledger.md#budget`](phase_ledger.md#budget)): KERNEL_STANDARDS §32.
 
+A COMPONENT is a definition the region ledger's function map finds (`tools/region_ledger.py`): a function, a struct or a struct's method, nested structs included; a kernel whose device code is a class over its plan (the intra's `IntraAt<Walk<B>>`) keeps its components by their own names.
+
 ## Checking it
 
 `tools/lab.py run <experiment>` gates the executed counts by class (ncu's per-opcode counts of the first launch). When

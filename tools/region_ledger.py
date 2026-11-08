@@ -30,45 +30,60 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sass  # noqa: E402
 
 #: A DEFINITION's first line, by kind: a function at column 0 (any qualifiers, any return type: a `__host__ __device__
-#: constexpr` helper missed here books its lines to the definition before it), a kernel, a struct, a struct's method
-#: (two spaces in, `__device__` required so a body's local `constexpr` is never one)
+#: constexpr` helper missed here books its lines to the definition before it), a kernel, a struct at any depth, and a
+#: struct's method two spaces deeper than its struct (`__device__` required, `static` and the other qualifiers before
+#: or after it, so a body's local `constexpr` is never one) -- a kernel wrapped in a class keeps its components'
+#: attribution (docs/internals/tools/budgets.md#building-a-budget)
 _QUAL = r"(?:__host__|__device__|__forceinline__|__noinline__|constexpr|static|inline)"
 _RET = r"(?:[\w:<>,*&]+\s+)*?[*&]*"
 _NAME = r"(\w+|operator\S*?)"
-DEF = [re.compile(rf"^(?:{_QUAL}\s+)+{_RET}{_NAME}\("), re.compile(r"^__global__ .* void (\w+)\("),
-       re.compile(r"^(?:template <[^>]*>\s*)?struct (\w+)"),
-       re.compile(rf"^  (?:__host__\s+)?__device__\s+(?:{_QUAL}\s+)*{_RET}{_NAME}\(")]
+DEF = [re.compile(rf"^(?:{_QUAL}\s+)+{_RET}{_NAME}\("), re.compile(r"^__global__ .* void (\w+)\(")]
+STRUCT = re.compile(r"^( *)(?:template <[^>]*>\s*)?struct (?:alignas\(\d+\) )?(\w+)\b(?!;)")
+METHOD = re.compile(rf"^( +)(?:(?:__host__|static|inline|constexpr)\s+)*__device__\s+(?:{_QUAL}\s+)*{_RET}{_NAME}\(")
 
 
 def function_map(src_lines: list[str]) -> list[tuple[int, str]]:
-    """(line, name) per definition; a struct's methods as `Struct::method`, so a stream's
-    steps attribute to the stream."""
+    """(line, name) per definition; a struct's methods as `Struct::method` (`Outer::Inner::method` nested), so a
+    stream's steps attribute to the stream."""
     out = []
-    struct = None
+    scopes: list[tuple[int, str]] = []
     for i, l in enumerate(src_lines):
-        for k, rx in enumerate(DEF):
+        m = STRUCT.match(l)
+        if m and not l.rstrip().endswith(";"):
+            depth = len(m.group(1))
+            scopes = [s for s in scopes if s[0] < depth]
+            scopes.append((depth, m.group(2)))
+            out.append((i + 1, "::".join(name for _, name in scopes)))
+            continue
+        m = METHOD.match(l)
+        if m and scopes:
+            depth = len(m.group(1))
+            outer = [s for s in scopes if s[0] < depth]
+            if outer and outer[-1][0] == depth - 2:
+                scopes = outer
+                out.append((i + 1, "::".join([name for _, name in scopes] + [m.group(2)])))
+                continue
+        for rx in DEF:
             m = rx.match(l)
             if m:
-                name = m.group(1)
-                if k == 2:
-                    struct = name
-                elif k == 3 and struct:
-                    name = f"{struct}::{name}"
-                else:
-                    struct = None
-                out.append((i + 1, name))
+                scopes = []
+                out.append((i + 1, m.group(1)))
                 break
     return out
 
 
 def component_of(fn: str, components: set[str] | None) -> str | None:
-    """The component a function name belongs to: itself, or its struct."""
+    """The component a function name belongs to: itself, its innermost struct that is one, or -- a method of a class
+    wrapping a kernel (`IntraAt::gram_dense`) -- its own name."""
     if components is None:
         return fn
     if fn in components:
         return fn
-    head = fn.split("::")[0]
-    return head if head in components else None
+    parts = fn.split("::")
+    for struct in reversed(parts[:-1]):
+        if struct in components:
+            return struct
+    return parts[-1] if len(parts) > 1 and parts[-1] in components else None
 
 
 def owner_of(chain: list[tuple[str, int]], fmaps: dict, components: set[str], glue: str | None) -> str | None:

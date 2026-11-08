@@ -144,15 +144,15 @@ enum Mma : int { kHmmaF16F32, kHmmaF16F16, kHmmaBf16F32, kImmaU8S8K32, kMmaKinds
 //: THE MMA RATES a scheduler in quanta, read at run time -- see docs/internals/common/hardware.md#consumers
 struct MmaRow {
   int cc;
-  const char* device;
+  const char* product;  // its product row's slug; nullptr, the architecture's
   long long mma[kMmaKinds];
 };
 
 inline constexpr MmaRow kMmaRows[] = {
   {800, nullptr, {2048, 2048, 2048, 2048}},
   {860, nullptr, {4096, 4096, 4096, 4096}},
-  {800, "NVIDIA A100-SXM4-80GB", {2048, 2048, 2048, 2048}},
-  {860, "NVIDIA GeForce RTX 3080 Ti", {8226, 4130, 8226, 4130}},
+  {800, "a100", {2048, 2048, 2048, 2048}},
+  {860, "rtx3080ti", {8226, 4130, 8226, 4130}},
 };
 
 }  // namespace arch

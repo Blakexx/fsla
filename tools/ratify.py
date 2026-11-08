@@ -874,15 +874,12 @@ def _ninja_cuda_template() -> tuple[str, str, str] | None:
     return nvcc, cuda_cflags, cuda_post_cflags
 
 
-#: THE FLAGS A RATIFICATION MUST NEVER INHERIT FROM THE LAST BUILD name WHAT WAS COMPILED rather than HOW, so
-#: inheriting one lets an ITERATION build narrow the next ratification to its own subset and then pass. `-gencode` names
-#: the TARGETS: inheriting it made `ROLA_CUDA_ARCHS=86` silently narrow the next ratification to sm_86. No arm subset
-#: is a flag: every family's selection is a generated header this gate writes for its own scope (docs/build.md#arm-subset).
-
-
 def _without_gencode(flags: list[str]) -> list[str]:
     """`flags` with every `-gencode` dropped, in both of nvcc's spellings
-    (`-gencode=...` and a separated `-gencode ...`)."""
+    (`-gencode=...` and a separated `-gencode ...`): a flag naming WHAT was compiled rather than HOW is never inherited
+    from the last build, or an ITERATION build narrows the next ratification to its own subset and then passes
+    (`ROLA_CUDA_ARCHS=86` once narrowed it to sm_86). No arm subset is a flag: every family's selection is a generated
+    header this gate writes for its own scope (docs/build.md#arm-subset)."""
     out: list[str] = []
     drop_next = False
     for f in flags:

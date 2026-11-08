@@ -37,14 +37,16 @@ differences stay at the atom, read at the compiling architecture.
 A BUILD is the key a kernel compiles at: `Build{cc, variant}`. Variant 0 is the architecture's own `build` block; a
 product whose `build` block overrides a trait (`hardware.BUILD_TRAITS`) runs the next variant, and products whose
 overrides agree share one (`hardware.builds()`), so a kernel is compiled once a distinct set of traits, never once a
-product.
+product. A variant is NOT BUILT yet: the carry and the intra compile at a build, the other kernels still read their
+architecture's window (`common/window.cuh`'s `kWindow`), so the check refuses a product override until every kernel
+reads its build -- an override would otherwise reach some kernels and not others.
 
 <a id="builds-renamed"></a>
 A kernel templated on its build is the same code under a new name, so a refactor compares by signature:
 `tools/sass_bodies.py --compare A B --drop-builds` keys both maps by the demangled signature with each kernel's
 `BuildTag<Build{...}>` argument dropped -- refused where the argument is not its own image's, since a build's kernels compile in its image
-alone -- and reports the source stamp (`csrc_stamp_kernel`, which moves with every source edit) apart, never as a
-verdict.
+alone. Every comparison, with the flag or without, reports the source stamp (`csrc_stamp_kernel`, which moves with
+every source edit) apart, never as a verdict.
 
 <a id="build-tag"></a>
 A kernel takes its build as a TYPE, `BuildTag<B>` (its `build` and `traits` as constants): nvcc 13.0's host stub
@@ -54,7 +56,10 @@ while a class template carrying it compiles -- so host templates and plans take 
 <a id="traits"></a>
 `traits_of(Build)` is what a kernel's plan reads: the family, the window W ([`window.md`](window.md): a card's,
 chosen per architecture) and the architecture's `Caps`. A tabulated architecture that is not built may leave its
-window unchosen (sm_90, 0 until the hopper carry's design picks it); a built one must choose it (the check).
+window unchosen (sm_90, 0 until the hopper carry's design picks it); a built one must choose it. The check
+(`measure/hardware.py --check`) refuses an architecture whose build names no family of `FAMILIES` or a trait outside
+the family and `BUILD_TRAITS`, a built architecture whose build chooses no window, and a product overriding a trait
+outside `BUILD_TRAITS`.
 
 <a id="products"></a>
 `kProducts` names each product row's slug, architecture and variant: the host finds a device's product by the slug

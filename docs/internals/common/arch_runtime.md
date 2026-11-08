@@ -15,8 +15,8 @@ disagree with the row a compiled derivation was closed over.
 ## `mma_quanta(device)`
 
 The device's MMA rates, quanta of 1/256 cycle a scheduler in `denseref::arch::Mma` order, from the binary's
-`kMmaRows` (`hardware.cuh`, generated from `hardware.json`): the row of the product whose device name is the driver's,
-else its architecture's defaults, else null (no rates tabulated). Resolved once a device a process. The carry's
+`kMmaRows` (`hardware.cuh`, generated from `hardware.json`): the row of the device's card's product (`card_of`, the
+one product match: [`select.md#slug`](select.md#slug)), else its architecture's defaults, else null (no rates tabulated). Resolved once a device a process. The carry's
 readout chooses its accumulation from it
 ([`../carry/carry_api.md#carry-readout-accumulate`](../carry/carry_api.md#carry-readout-accumulate)).
 

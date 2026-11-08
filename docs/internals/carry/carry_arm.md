@@ -16,7 +16,7 @@ its image alone (`in_image`). The kernel still traps at entry when the launched 
 ## The launch
 
 `carry_launch<Arm>` takes the current card's build and launches, at it (`carry_launch_on<B, Arm>`), the plan pass
-(`window_plan_kernel<BuildTag<B>, Arm>`, a thread a box class and window, 64 a block, a batch-head a grid row: `schedule.md#pass`)
+(`window_plan_kernel<BuildTag<B>, Arm>`: a block a box class and batch-head, a thread a window of each `kPlanThreads`-window tile, `schedule.md#pass`)
 and then `carry_kernel<BuildTag<B>, Arm>` on `(boxes, batch-heads)` with 256 threads and the plan's
 dynamic shared memory, opting in once an arm behind a function-local flag. The launch bound is `(256, 1)`: one CTA an
 SM on every architecture. `carry_census<Arm>` reads the current build's function attributes back (registers, local bytes,

@@ -24,14 +24,14 @@ const long long* mma_quanta(int device) {
   const std::lock_guard<std::mutex> hold(mu);
   const auto at = resolved.find(device);
   if (at != resolved.end()) return at->second;
-  cudaDeviceProp prop{};
-  ROLA_CUDA_CHECK(cudaGetDeviceProperties(&prop, device));
-  const int cc = prop.major * 100 + prop.minor * 10;
+  //: the card's product (`card_of`): one product match for every reader of a product's numbers
+  const Card& card = card_of(device);
+  const char* slug = card.product >= 0 ? denseref::arch::kProducts[card.product].slug : nullptr;
   const long long* out = nullptr;
   for (const auto& row : denseref::arch::kMmaRows) {
-    if (row.cc != cc) continue;
-    if (row.device == nullptr && out == nullptr) out = row.mma;
-    if (row.device != nullptr && std::strcmp(row.device, prop.name) == 0) {
+    if (row.cc != card.cc) continue;
+    if (row.product == nullptr && out == nullptr) out = row.mma;
+    if (row.product != nullptr && slug != nullptr && std::strcmp(row.product, slug) == 0) {
       out = row.mma;
       break;
     }

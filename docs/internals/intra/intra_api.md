@@ -76,7 +76,8 @@ The readers a CTA holds resident on `device`'s card ([`intra.md`](intra.md#block
 ## `intra_build_stamp`
 
 A fact only the loaded binary can produce: a one-thread kernel returns `(rows · 1000003 + sizeof(Smem)) · 1000003 +
-sizeof(IntraParams)` -- the compiled card's block rows, its fixed tenants and the operand block -- so the value moves
+sizeof(IntraParams)` -- the compiled image's own build's (variant 0) walk: its block rows, its fixed tenants and the
+operand block -- so the value moves
 when any of them does. A path or hash check cannot catch a stale extension;
 `test_the_loaded_binary_states_the_footprint_it_carries` reads it against `intra_footprint`'s law
 (the stamp kernel's named namespace: [`intra.md`](intra.md#the-unit)).

@@ -52,3 +52,36 @@ def test_a_helper_line_is_its_own_function():
     fmap = region_ledger.function_map(SOURCE.splitlines())
     assert region_ledger.fn_of(fmap, 8) == "unit"
     assert region_ledger.fn_of(fmap, 3) == "plain"
+
+
+WRAPPED = """\
+template <class Wk>
+struct IntraAt {
+  static constexpr int kNT = Wk::kNT;
+  static __device__ __forceinline__ void gram_dense(int x) {
+    constexpr int kStep = 2;
+  }
+  struct Copier {
+    __device__ __forceinline__ void values(int x) const {
+    }
+  };
+  template <int D>
+  static __device__ __forceinline__ void run(int y) {
+  }
+};
+__device__ __forceinline__ void after(int z) {
+}
+"""
+
+
+def test_a_kernel_wrapped_in_a_class_keeps_its_members_and_nested_structs():
+    got = region_ledger.function_map(WRAPPED.splitlines())
+    assert got == [(2, "IntraAt"), (4, "IntraAt::gram_dense"), (7, "IntraAt::Copier"), (8, "IntraAt::Copier::values"),
+                   (12, "IntraAt::run"), (15, "after")]
+
+
+def test_a_wrapped_member_is_its_own_component_and_a_nested_struct_its_struct():
+    comps = {"gram_dense", "Copier"}
+    assert region_ledger.component_of("IntraAt::gram_dense", comps) == "gram_dense"
+    assert region_ledger.component_of("IntraAt::Copier::values", comps) == "Copier"
+    assert region_ledger.component_of("IntraAt::run", comps) is None

@@ -94,7 +94,6 @@ std::tuple<int64_t, bool, int64_t, std::string> vmm_probe(int64_t device) {
   return {probe.device, probe.supported, (int64_t)probe.allocation_granularity, probe.reason};
 }
 
-//: THE DEVICE'S WINDOW, the binary's table at its compute capability (`common/window.cuh`)
 //: A DEVICE'S CARD (`common/select.cuh`): its compute capability, product row (-1: none), build variant, family and W
 std::vector<int64_t> device_card_op(int64_t device) {
   const rola::Card& c = rola::card_of(static_cast<int>(device));

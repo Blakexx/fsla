@@ -170,14 +170,17 @@ ROLA_STRICT_MANIFEST = os.getenv("ROLA_STRICT_MANIFEST") == "1"
 #: every entry point refuses an arm the binary does not carry.
 #: docs/build.md.
 def _carry_arms() -> list[int]:
-    return _family_arms(gen_shards.CARRY, gen_shards.CARRY_ARMS)
+    return _family_arms(gen_shards.CARRY, os.getenv("ROLA_CARRY_ARMS", ""), "ROLA_CARRY_ARMS")
 
 
-def _family_arms(fam, rows) -> list[int]:
-    """A family's arm scope from ``ROLA_<FAMILY>_ARMS`` (indices into its declared rows, or ``all``); every row
-    unset."""
-    knob = f"ROLA_{fam.name.upper()}_ARMS"
-    spec = os.getenv(knob, "").replace(",", " ").split()
+def _decode_arms() -> list[int]:
+    return _family_arms(gen_shards.DECODE, os.getenv("ROLA_DECODE_ARMS", ""), "ROLA_DECODE_ARMS")
+
+
+def _family_arms(fam, value: str, knob: str) -> list[int]:
+    """A family's arm scope from its knob's value (indices into its declared rows, or ``all``); every row unset."""
+    rows = gen_shards.rows_of(fam)
+    spec = value.replace(",", " ").split()
     if not spec:
         return list(range(len(rows)))
     n = len(rows)
@@ -359,14 +362,14 @@ def _arch_subset_active() -> bool:
 #: arm the binary does not carry. Iteration builds pair it with
 #: ``ROLA_CUDA_ARCHS=86``; docs/build.md.
 def _decode_arm_subset_active() -> bool:
-    return bool(os.getenv("ROLA_DECODE_ARMS", "").strip())
+    return set(_decode_arms()) != set(range(len(gen_shards.DECODE_ARMS)))
 
 
 def _write_decode_selection() -> None:
     """Write `build/generated/decode_selection.inc` for THIS build's decode arm scope, as the carry's
     (`_write_carry_selection`): included by `decode.cu` alone, never a flag on every unit's argv."""
     gen_shards.GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-    text = gen_shards.decode_selection_header(_family_arms(gen_shards.DECODE, gen_shards.DECODE_ARMS))
+    text = gen_shards.decode_selection_header(_decode_arms())
     gen_shards.write_if_changed(gen_shards.GENERATED_DIR / gen_shards.DECODE.header, text)
 
 

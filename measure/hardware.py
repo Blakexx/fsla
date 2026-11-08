@@ -102,7 +102,8 @@ def header(cfg: dict | None = None) -> str:
     out += ["//: the MMA kinds, in the order a product's quanta carry their rates (`common/cost.cuh`)",
             "enum Mma : int { " + ", ".join(_camel(k) for k in kinds) + ", kMmaKinds };", "",
             "//: THE MMA RATES a scheduler in quanta, read at run time -- see docs/internals/common/hardware.md#consumers",
-            "struct MmaRow {", "  int cc;", "  const char* device;", "  long long mma[kMmaKinds];", "};", "",
+            "struct MmaRow {", "  int cc;", "  const char* product;  // its product row's slug; nullptr, the architecture's",
+            "  long long mma[kMmaKinds];", "};", "",
             "inline constexpr MmaRow kMmaRows[] = {"]
 
     rows = [(arch, None) for arch in tabulated(cfg)] + [(row["arch"], slug) for slug, row in cfg["product"].items()]
@@ -110,8 +111,8 @@ def header(cfg: dict | None = None) -> str:
         rates = resolve(arch=arch, product=product, cfg=cfg)
         if not all(f"mma.{k}" in rates for k in kinds):
             continue
-        device = f'"{cfg["product"][product]["device"]}"' if product else "nullptr"
-        out.append(f"  {{{cc_of(arch)}, {device}, {{" + ", ".join(str(quantum(rates[f'mma.{k}'].cycles))
+        slug = f'"{product}"' if product else "nullptr"
+        out.append(f"  {{{cc_of(arch)}, {slug}, {{" + ", ".join(str(quantum(rates[f'mma.{k}'].cycles))
                                                             for k in kinds) + "}},")
     out += ["};", "", "}  // namespace arch", "}  // namespace denseref", "", "// clang-format on", ""]
     return "\n".join(out)
@@ -314,6 +315,10 @@ def check(cfg: dict | None = None, header_text: str | None = None) -> list[str]:
             continue
         if not set(row.get("build", {})) <= set(BUILD_TRAITS):
             findings.append(f"product {product}: its build overrides a trait outside {', '.join(BUILD_TRAITS)}")
+        if row.get("build"):
+            findings.append(f"product {product}: a build variant is not built yet -- the carry and the intra compile at "
+                            f"a build, the other kernels still read their architecture's window "
+                            f"(docs/internals/common/hardware.md#builds)")
         if slugify_gpu(row.get("device", "")) != product:
             findings.append(f"product {product}: its device `{row.get('device')}` is not that product")
 

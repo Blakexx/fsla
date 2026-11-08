@@ -1,4 +1,4 @@
-# `tools/gen_shards.py` — the one enumeration of the carry family's arms
+# `tools/gen_shards.py` — the one enumeration of every arm family's arms
 
 Mirrors `tools/gen_shards.py`. The ratification's view of the same machinery is
 [`docs/ratification.md`](../../ratification.md#what-the-shipped-set-is-and-where-it-is-declared).
@@ -38,13 +38,14 @@ ARM SET `arm_switch` dispatches over — `ROLA_CARRY_ARM_SET_X(F)`, plus
 refusal has to tell "this wheel does not carry that arm" from "nothing builds that arm
 in any configuration".
 
-It is written unconditionally on every run, never accumulated, and only the carry
-family's own translation units include it — which is what keeps an arm-set change from
-perturbing every other translation unit's argv.
+It is written unconditionally on every run, never accumulated, and only the family's own
+translation units include it (`ArmFamily.includer`) — which is what keeps an arm-set change
+from perturbing every other translation unit's argv. Decode's is the same header for its
+family (`decode_selection.inc`, `ROLA_DECODE_ARM_SET_X`).
 
 ## What it refuses
 
-`_load_shipped_set` reads the declaration field by field and names the field it
+`_load_arm_set` reads a family's declaration field by field and names the field it
 refuses on: an unreadable schema, the wrong family, a re-keyed declaration, a domain
 that does not name the key's fields or is empty, a row of the wrong width, a value
 outside its declared domain, a row declared twice, a missing `shipped` list, and

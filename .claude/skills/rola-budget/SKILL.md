@@ -6,7 +6,8 @@ description: Load when stating, checking or correcting an instruction budget (a 
 
 The method and its data: `docs/internals/tools/budgets.md`. The law: `docs/KERNEL_STANDARDS.md#s29` (items 11-15).
 
-1. The phases are the kernel's `//:` headings (`docs/internals/tools/budgets.md#building-a-budget`).
+1. The phases are the kernel's `//:` headings and its components the definitions the region ledger finds, a class
+   over a plan's members by their own names (`docs/internals/tools/budgets.md#building-a-budget`).
 2. Trips per cell come from the experiment's mirror (its `.inputs.py`); a lane-divergent loop is priced at the warp's
    longest lane (`docs/KERNEL_STANDARDS.md#s29` item 12).
 3. Prices come from `docs/internals/tools/budgets.md#prices`. A primitive without one: compile it alone, read

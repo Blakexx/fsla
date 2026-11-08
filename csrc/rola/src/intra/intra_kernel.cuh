@@ -801,7 +801,7 @@ struct IntraAt {
   static __device__ __forceinline__ void deposit(Smem& sm, const IntraParams& p, int bh, int t_row,
                                                  int warp, int lane, const float (&out)[8][4]) {
     constexpr int kPitch = kValueWidth + 8;
-    static_assert(kWarpRows * kPitch * 4 == kStagingBytes, "the staging tile is the card table's");
+    static_assert(kWarpRows * kPitch * 4 == kStagingBytes, "the staging tile is the walk's");
     //: the reader rows are dead once every warp's last Gram is done
     __syncthreads();
     float* const staging = reinterpret_cast<float*>(reader_rows(sm) + warp * kStagingBytes);

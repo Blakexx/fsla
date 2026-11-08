@@ -249,6 +249,11 @@ CARRY_ARMS: tuple = _DECLARED["rows"]
 DECODE_ARMS: tuple = _load_arm_set(DECODE)["rows"]
 
 
+def rows_of(fam: ArmFamily) -> tuple:
+    """A family's declared rows, by name (the self-test swaps the carry's table in place)."""
+    return {"carry": CARRY_ARMS, "decode": DECODE_ARMS}[fam.name]
+
+
 def declaration_matches_table() -> list[str]:
     """RE-READ the declaration and compare it to this module's table.
 
@@ -729,8 +734,7 @@ def main() -> int:
         print("\n    python tools/gen_shards.py --write")
         return 1
 
-    selection_bad = [b for fam, rows in ((CARRY, CARRY_ARMS), (DECODE, DECODE_ARMS))
-                     for b in _check_selection_schema(fam, rows)]
+    selection_bad = [b for fam in FAMILIES for b in _check_selection_schema(fam, rows_of(fam))]
     if selection_bad:
         print("FAIL  carry_selection_header's schema self-test failed (the "
               "generated selection header is never checked in, so this asserts "
@@ -739,7 +743,8 @@ def main() -> int:
         return 1
 
     print(f"shards OK  {len(want)} generated files match the {len(CARRY_ARMS)}-row "
-          f"arm list; the carry and decode ({len(DECODE_ARMS)} rows) selection headers' schemas OK")
+          "arm list; the selection headers' schemas OK for "
+          + ", ".join(f"{fam.name} ({len(rows_of(fam))} rows)" for fam in FAMILIES))
     return 0
 
 
