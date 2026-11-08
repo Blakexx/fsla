@@ -1,4 +1,4 @@
-"""THE BUILD GRAPH'S MODULE: the rule sets the graph uses and the hermetic CUDA toolkit (docs/build-graph.md)."""
+"""THE BUILD GRAPH'S MODULE: its rule sets and the hermetic CUDA toolkit it declares (docs/build-graph.md)."""
 
 module(name = "rola")
 

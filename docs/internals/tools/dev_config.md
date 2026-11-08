@@ -17,8 +17,8 @@ bootstrap), and `python tools/dev.py init` links the `workspace.devtools` checko
 
 | file | keys |
 |---|---|
-| `toolchain.json` | `cuda_home` (null takes torch's `CUDA_HOME`), `ncu` (Nsight Compute 2025.3+), `sccache`, `sccache_enabled`, `mold`, `clang_tidy`, `bazelisk` (Bazel's launcher) |
-| `host.json` | `nvcc_threads`, `build_jobs`, `budget_slots`, `lock_dir`, `gpu_lock`, `gpu_shared_slots`, `nice`, `locks_trace`, `scratch`, `tools_dir`, `windows_system32`, `wsl_lib` |
+| `toolchain.json` | `cuda_home` (null takes torch's `CUDA_HOME`), `ncu` (Nsight Compute 2025.3+), `sccache`, `sccache_enabled`, `mold`, `clang_tidy`, `bazelisk` (Bazel's launcher), `bazel` (where init links it on PATH) |
+| `host.json` | `nvcc_threads`, `build_jobs`, `budget_slots`, `lock_dir`, `gpu_lock`, `gpu_shared_slots`, `nice`, `locks_trace`, `scratch`, `build_cache` (the build systems' caches: the graph's under `bazel/`), `tools_dir`, `windows_system32`, `wsl_lib` |
 | `clock.json` | `ghz`, `lock`, `unlock` (null `ghz`: the host measures unlocked) |
 | `store.json` | `root` (the measurements store: a rola-results checkout) |
 | `workspace.json` | `suite` (the rola-bench checkout whose root `declare.py` measures this tree), `devtools` (the rola-devtools checkout, the public mirror's declared build system, linked into every venv), `worktrees` (the one folder worktrees live in), `base_venv` (the venv pointer venvs borrow from) |

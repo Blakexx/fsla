@@ -15,8 +15,8 @@
 # ubuntu22.04 for the apt package surface the rest of this file needs (deadsnakes, clangd-14, ...).
 #
 # sccache, mold, clang-tidy and bazelisk are installed by `tools/dev.py init --image` from the repo's own pins
-# (`tools/sccache_pin.json`, `tools/mold_pin.json`, `tools/clang_tidy_pin.json`, `tools/bazelisk_pin.json`; `bazel` is
-# the pinned bazelisk) -- the same command and the same
+# (`tools/sccache_pin.json`, `tools/mold_pin.json`, `tools/clang_tidy_pin.json`, `tools/bazelisk_pin.json`; init links
+# `bazel` to the pinned bazelisk) -- the same command and the same
 # pins a bare host uses, so the image and the host cannot disagree on any of them. The container-only tools below (uv, hyperfine, difftastic) are pinned the same way: an exact
 # version, an exact upstream release asset, and a sha256 verified before the archive is trusted.
 #
@@ -208,8 +208,6 @@ RUN mkdir -p /workspace/rola /workspace/store /workspace/suite /workspace/worktr
     && uv pip install --python /opt/venv/bin/python --target /opt/rola/bootstrap/devtools \
         -r /opt/rola/bootstrap/tools/devtools.txt \
     && PYTHONPATH=/opt/rola/bootstrap/devtools \
-        /opt/venv/bin/python /opt/rola/bootstrap/tools/dev.py init --image --env-key "${ROLA_ENV_KEY}" \
-    && ln -s "$(PYTHONPATH=/opt/rola/bootstrap/devtools /opt/venv/bin/python /opt/rola/bootstrap/tools/dev.py get \
-        toolchain.bazelisk)" /usr/local/bin/bazel
+        /opt/venv/bin/python /opt/rola/bootstrap/tools/dev.py init --image --env-key "${ROLA_ENV_KEY}"
 
 CMD ["/bin/bash"]

@@ -13,9 +13,9 @@ semaphores, which Bazel cannot do for an action.
 |---|---|---|
 | the host's NVIDIA driver and GPU | the host | -- |
 | the machine (base OS libraries, git, `python3`, the host C++ compiler nvcc drives) | the host, or the Docker image | the image |
-| bazelisk, Bazel's launcher | `tools/bazelisk_pin.json`, installed by `python tools/dev.py init` (`toolchain.bazelisk`) | `host.tools_dir` |
+| bazelisk, Bazel's launcher | `tools/bazelisk_pin.json`, installed by `python tools/dev.py init` (`toolchain.bazelisk`), which links `bazel` on PATH to it (`toolchain.bazel`; `check` has the row) | `host.tools_dir` |
 | Bazel | `.bazelversion`, verified against `.bazeliskrc`'s digest | bazelisk's cache |
-| the graph's CUDA toolkit | NVIDIA's redistributable components at release 13.0.0 (`MODULE.bazel`'s `cuda.redist_json`: nvcc 13.0.48), only the compiler's (~75 MB of the 4.7 GB set) | the shared repository cache |
+| the graph's CUDA toolkit | NVIDIA's redistributable components at release 13.0.0 (`MODULE.bazel`'s `cuda.redist_json`: nvcc 13.0.48), only the compiler's (~75 MB of the 4.7 GB set); declared, and fetched by the first target that compiles with it | the shared repository cache |
 
 ## <a id="front-door"></a>The front door
 
@@ -29,11 +29,12 @@ exists, reading the dev config through the rola-devtools checkout `tools/bootstr
   (`--bazelrc`). Nothing in the checkout names a machine.
 - EVERY BUILD RUNS UNDER THE HOST BUDGET (`rola_devtools.locks.host`): a command's build phase holds the slots free
   when it starts, at least one, and runs `slots / host.nvcc_threads` jobs (nvcc runs one cicc an architecture). A
-  `test` or `coverage` command builds under the budget, then runs its tests holding none; a `run` command writes its
+  `test` command builds under the budget, then runs its tests holding none; a `run` command writes its
   launch script under the budget (`--script_path`), then runs it holding none. A test or a measurement takes its own
   locks, as outside the graph: a GPU test under a held budget would deadlock against a measurement, which takes the
   GPU before the host's slots. A timing session holds every slot, so no build runs during one.
-- Run directly, without bazelisk, it refuses.
+- Run directly, without bazelisk, it refuses; so does `bazel coverage`, whose instrumented build would differ from the
+  budgeted one and run outside the budget (the graph has no coverage target).
 
 ## <a id="rules"></a>The rules
 
@@ -45,7 +46,8 @@ names one).
 2. NO MACHINE IN THE CHECKOUT: `.bazelrc` holds the graph's settings and names no path; the machine's come from the dev
    config through the front door. Startup options are never inside a `--config`.
 3. THE DISK CACHE IS BOUNDED, AND ITS BOUND RUNS: `--experimental_disk_cache_gc_max_size` caps the shared cache at
-   20 GB (the WSL disk lives on the Windows system drive, shared by every worktree), and the collector runs only after
+   20 GB, the graph's space budget for it on every machine (every worktree of a machine shares it), and the collector
+   runs only after
    the server has idled `--experimental_disk_cache_gc_idle_delay` (5 minutes), so the server's `--max_idle_secs` (15
    minutes) stays above that delay -- below it the cache grows without bound.
    The repository cache's path never moves: Bazel 9 keeps every fetched repository's contents inside it
@@ -75,8 +77,7 @@ names one).
 
 ## <a id="use"></a>Using it
 
-    python tools/dev.py init                                        # installs the pinned bazelisk
-    ln -s "$(python tools/dev.py get toolchain.bazelisk)" ~/.local/bin/bazel
+    python tools/dev.py init        # installs the pinned bazelisk and links `bazel` to it (toolchain.bazel)
     bazel build //...
 
 Never pass `--jobs` or a cache path: the front door sets both.

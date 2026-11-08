@@ -31,7 +31,7 @@ from rola_devtools.locks import host  # noqa: E402
 
 #: the commands whose whole run is a build, and those whose build comes before a phase that holds no budget
 BUILDS = ("build",)
-TESTS = ("test", "coverage")
+TESTS = ("test",)
 #: the test command's options the build command refuses: they shape only the test summary
 TEST_SUMMARY_ONLY = ("--test_verbose_timeout_warnings", "--notest_verbose_timeout_warnings",
                      "--print_relative_test_log_paths", "--noprint_relative_test_log_paths")
@@ -86,6 +86,9 @@ def main(argv: list[str]) -> int:
         raise SystemExit("bazel/bazel is the graph's front door, which bazelisk runs in Bazel's place: run `bazel`, the "
                          "pinned bazelisk (toolchain.bazelisk; python tools/dev.py init)")
     startup, command, rest = _split(argv)
+    if command == "coverage":
+        raise SystemExit("bazel coverage is refused: its instrumented build differs from the budgeted one and would run "
+                         "outside the host budget, and the graph has no coverage target (docs/build-graph.md#front-door)")
     head = [real, *startup, f"--bazelrc={machine_rc()}"]
     if command in BUILDS:
         return under_budget(head, command, rest)

@@ -58,6 +58,8 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "bazelisk": Key("path?", None, "the pinned bazelisk (tools/bazelisk_pin.json), Bazel's launcher: it runs the "
                         "version .bazelversion names through the graph's front door (bazel/bazel); null means none "
                         "installed"),
+        "bazel": Key("path", "~/.local/bin/bazel", "where init links `bazel`, the command every doc and gate names, to "
+                     "the pinned bazelisk: a path in a directory on PATH"),
     },
     **MACHINE,
     "store": {
@@ -83,7 +85,7 @@ SCHEMA: dict[str, dict[str, Key]] = {
 #: THE DEV IMAGE'S FIXED LAYOUT: `tools/dev.py init --image` writes it as the image's config, and `container compose`
 #: bind-mounts the host's lock directories, store and worktrees onto it, so host and container share one of each.
 IMAGE_LAYOUT = {
-    "toolchain": {"cuda_home": "/usr/local/cuda"},
+    "toolchain": {"cuda_home": "/usr/local/cuda", "bazel": "/usr/local/bin/bazel"},
     "host": {"lock_dir": "/run/rola/locks", "gpu_lock": "/run/rola/gpu/rola_gpu.lock", "tools_dir": "/opt/rola/tools"},
     "store": {"root": "/workspace/store"},
     "workspace": {"suite": "/workspace/suite", "devtools": "/workspace/devtools", "worktrees": "/workspace/worktrees",

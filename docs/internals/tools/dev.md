@@ -23,7 +23,9 @@ settings it writes and reads are the dev config ([dev_config.md](dev_config.md))
 A key already in a file is kept unless `--force`. A pinned tool that is missing, or does not report its pin's
 version, is downloaded from the pin's release URL (`tools/sccache_pin.json`, `tools/mold_pin.json`,
 `tools/clang_tidy_pin.json`, `tools/bazelisk_pin.json`), asked again after a server error or a dropped connection, and
-then from its `mirror_urls` (the same asset through GitHub's API). Its release sha256 is verified, and so is its binary
+then from its `mirror_urls` (the same asset through GitHub's API: github.com's release downloads returned gateway
+timeouts from its own edge for hours on 2026-11-08 while the API served the same assets). Its release sha256 is
+verified, and so is its binary
 sha256 where the pin has one. The whole release -- a tarball, a wheel unpacked under its own name, or a bare binary --
 lands under `host.tools_dir`, because the layout
 is part of the tool: `-fuse-ld=mold` selects the `ld.mold` next to `mold`, and clang-tidy reads its resource headers

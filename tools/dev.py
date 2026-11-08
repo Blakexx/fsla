@@ -89,9 +89,7 @@ def _write_section(section: str, values: dict, force: bool) -> None:
 
 
 #: a release host's transient failures (a gateway timeout, a dropped connection): the same artifact asked again, from
-#: the release's URL and then its mirrors (`mirror_urls`: the same file through another of the host's front ends), the
-#: digest still the check -- github.com's release downloads returned 504s for hours on 2026-11-08 while its API served
-#: the same assets
+#: the release's URL and then its mirrors (`mirror_urls`), the digest still the check -- see docs/internals/tools/dev.md
 DOWNLOAD_ATTEMPTS = 6
 
 
@@ -112,6 +110,18 @@ def _download(urls: list[str], to: Path) -> None:
         if attempt < DOWNLOAD_ATTEMPTS:
             time.sleep(2 ** attempt)
     raise SystemExit(f"none of {urls} answered in {DOWNLOAD_ATTEMPTS} attempts")
+
+
+def link_bazel() -> None:
+    """`toolchain.bazel` linked to the pinned bazelisk: `bazel` is the command every doc and gate names, and only the
+    pinned launcher reads `.bazeliskrc` and runs the graph's front door."""
+    link, bazelisk = Path(dev_config.get("toolchain.bazel")), Path(dev_config.get("toolchain.bazelisk"))
+    if link.is_symlink() and link.resolve() == bazelisk.resolve():
+        return
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.unlink(missing_ok=True)
+    link.symlink_to(bazelisk)
+    print(f"linked {link} -> {bazelisk}")
 
 
 def install_pinned(name: str, dest: Path) -> str:
@@ -336,6 +346,7 @@ def cmd_init(a) -> int:
         pin = json.loads(PINS[name].read_text())
         if current is None or _pinned_version(name, current) != pin["version_string"]:
             _write_section("toolchain", {name: install_pinned(name, tools_dir)}, force=True)
+    link_bazel()
     base = dev_config.get("workspace.base_venv")
     drift = venv_drift(str(Path(base) / "bin" / "python")) if base else []
     if drift:
@@ -425,6 +436,10 @@ def cmd_check(a) -> int:
     pin = json.loads(PINS["bazelisk"].read_text())["version_string"]
     row(bool(bazelisk) and _pinned_version("bazelisk", bazelisk) == pin, f"toolchain bazelisk: {bazelisk} is {pin}",
         "python tools/dev.py init")
+    on_path = shutil.which("bazel")
+    row(bool(bazelisk) and on_path is not None and Path(on_path).resolve() == Path(bazelisk).resolve(),
+        f"`bazel` on PATH is the pinned bazelisk: {on_path}",
+        f"python tools/dev.py init (links toolchain.bazel, {dev_config.get('toolchain.bazel')}); its directory on PATH")
     base = dev_config.get("workspace.base_venv")
     python = Path(base or "") / "bin" / "python"
     row(bool(base) and python.exists(), f"workspace.base_venv: {base}", "python tools/dev.py init")

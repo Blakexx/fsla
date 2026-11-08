@@ -12,7 +12,7 @@ truth; what was removed, and why it was safe, is [`internals/DELETIONS.md`](inte
 | [`architecture/`](architecture/README.md) | the permanent decisions and their arguments: the self-masking theorem, the affine recurrence, the factored representation, fp32 accumulation, closed-world codegen, the guarantee/choice/preference taxonomy |
 | [`api.md`](api.md) | the public surface and its envelope: `rola_op`, the bundle, the routing and producer, decay, the layer, the expert pins |
 | [`build.md`](build.md) | building: parameters, the gate order, iteration subsets, the carry arm list, sccache, fatbin compression, the stable ABI, the wheels |
-| [`build-graph.md`](build-graph.md) | the build graph: Bazel for the compile, lints, tests, gates and wheels, the measurement engine beside it, the seam, the environment's layers, the graph's rules |
+| [`build-graph.md`](build-graph.md) | the build graph: Bazel through its front door (the machine's caches, the host budget), the environment's layers, the graph's rules |
 | [`ratification.md`](ratification.md) | the ratification manifest, the shipped-set declaration, what the gate refuses, the closed-world rules |
 | [`testing.md`](testing.md) | the test tiers, the oracle and its dual run, per-slot tolerance, the gates, running the suite, the GPU lock, the sanitizer lane |
 | [`measurement.md`](measurement.md) | the measurement method, its preconditions, the levels, the stopwatch, the verdict, the record, the declared build |
