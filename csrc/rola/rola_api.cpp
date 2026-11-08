@@ -145,8 +145,8 @@ STABLE_TORCH_LIBRARY(rola, m) {
 
   // ---- the scale pass: each token's scale byte for the carry's f16 sum, the write-aligned bound --
   m.def(
-      "scale_forward(Tensor[] read_rows, Tensor[] write_rows, Tensor fm, Tensor(a!) mass, Tensor(b!) bytes, "
-      "int[] widths, int level_s, int heads, float inv_factor) -> ()");
+      "scale_forward(Tensor[] read_rows, Tensor[] write_rows, Tensor fm, int[] widths, int level_s, int heads, "
+      "float inv_factor) -> Tensor");
 
   // ---- the producer: one launch from the tokens to the bundle -------------
   m.def(

@@ -34,27 +34,76 @@ Plane plane_of(const Tensor& t, int64_t B, int64_t T, int64_t H, int64_t width, 
                t.stride(1) * size, t.stride(2) * size};
 }
 
-template <bool SF16, bool RF16>
+template <class Bt, bool SF16, bool RF16>
 void writes(const ScaleParams& p, int64_t bh, cudaStream_t stream) {
   const dim3 grid(static_cast<unsigned>(p.windows), static_cast<unsigned>(bh));
-  scale_writes<SF16, RF16><<<grid, kThreads, 0, stream>>>(p);
+  scale_writes<Bt, SF16, RF16><<<grid, ScalePlan<Bt::build>::kThreads, 0, stream>>>(p);
   ROLA_CUDA_LAUNCH_CHECK();
 }
 
-template <bool SF16, bool RF16>
+template <class Bt, bool SF16, bool RF16>
 void reads(const ScaleParams& p, int64_t bq, cudaStream_t stream) {
   const dim3 grid(static_cast<unsigned>(p.windows), static_cast<unsigned>(bq));
-  scale_reads<SF16, RF16>
-      <<<grid, kThreads, static_cast<size_t>(p.width_s) * sizeof(float), stream>>>(p);
+  scale_reads<Bt, SF16, RF16><<<grid, ScalePlan<Bt::build>::kThreads,
+                                static_cast<size_t>(p.width_s) * sizeof(float), stream>>>(p);
   ROLA_CUDA_LAUNCH_CHECK();
+}
+
+//: THE CALL AT BUILD `B`: its window's grid, the mass workspace and the bytes allocated on `device`, the three
+//: launches, each side's form by its planes' dtypes. -- see docs/internals/scale/scale_api.md#scale-forward
+template <::denseref::arch::Build B>
+Tensor run(ScaleParams p, const bool (&f16)[4], int64_t BH, int device) {
+  using Sp = ScalePlan<B>;
+  using Bt = ::denseref::arch::BuildTag<B>;
+  const int64_t windows = (p.L + Sp::kWindow - 1) / Sp::kWindow;
+  STD_TORCH_CHECK(BH * p.heads <= 65535 && windows < (int64_t{1} << 31),
+                  "the grid is (windows, heads) within the launch limits");
+  const Tensor mass = empty_cuda(Shape({BH, windows, p.width_s}), Dtype::Float, device);
+  Tensor bytes = empty_cuda(Shape({BH * p.heads, windows * Sp::kWindow}), Dtype::Char, device);
+  p.mass = mass.mutable_data_ptr<float>();
+  p.bytes = static_cast<int8_t*>(bytes.mutable_data_ptr());
+  p.window = Sp::kWindow;
+  p.windows = static_cast<int>(windows);
+  p.grid = static_cast<int>(windows * Sp::kWindow);
+
+  const DeviceGuard guard(device);
+  const cudaStream_t stream = current_stream();
+  const bool ws16 = f16[0], wr16 = f16[1], rs16 = f16[2], rr16 = f16[3];
+  // R9-CASES: each side's levels' dtypes, u8 (sparse) or f16 (dense)
+  if (ws16 && wr16) {
+    writes<Bt, true, true>(p, BH, stream);
+  } else if (ws16) {
+    writes<Bt, true, false>(p, BH, stream);
+  } else if (wr16) {
+    writes<Bt, false, true>(p, BH, stream);
+  } else {
+    writes<Bt, false, false>(p, BH, stream);
+  }
+
+  const dim3 scan(static_cast<unsigned>((p.width_s + Sp::kThreads - 1) / Sp::kThreads),
+                  static_cast<unsigned>(BH));
+  scale_scan<Bt><<<scan, Sp::kThreads, 0, stream>>>(p);
+  ROLA_CUDA_LAUNCH_CHECK();
+
+  const int64_t bq = BH * p.heads;
+  if (rs16 && rr16) {
+    reads<Bt, true, true>(p, bq, stream);
+  } else if (rs16) {
+    reads<Bt, true, false>(p, bq, stream);
+  } else if (rr16) {
+    reads<Bt, false, true>(p, bq, stream);
+  } else {
+    reads<Bt, false, false>(p, bq, stream);
+  }
+  return bytes;
 }
 
 }  // namespace detail
 
 //: -- see docs/internals/scale/scale_api.md#scale-forward
-void scale_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows, Tensor fm,
-                   Tensor mass, Tensor bytes, std::vector<int64_t> widths, int64_t level_s,
-                   int64_t heads, double inv_factor) {
+Tensor scale_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows, Tensor fm,
+                     std::vector<int64_t> widths, int64_t level_s, int64_t heads,
+                     double inv_factor) {
   check_arch_table();
   STD_TORCH_CHECK(widths.size() == 2 && read_rows.size() == 2 && write_rows.size() == 2,
                   "the scale pass is built for depth two: level S and level R; got ", widths.size(),
@@ -66,14 +115,6 @@ void scale_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   const int64_t B = w0.size(0), L = w0.size(1), Hw = w0.size(2), BH = B * Hw;
   STD_TORCH_CHECK(heads >= 1 && L > 0, "one or more query heads a write head and tokens, got ",
                   heads, " and ", L);
-  int dev = 0;
-  ROLA_CUDA_CHECK(cudaGetDevice(&dev));
-  const int W = card_of(dev).traits.window;
-  STD_TORCH_CHECK(W <= 1024 && W % kGroup == 0, "the window is at most 1,024 tokens, ", kGroup,
-                  " a group; got ", W);
-  const int64_t windows = (L + W - 1) / W;
-  STD_TORCH_CHECK(BH * heads <= 65535 && windows < (int64_t{1} << 31),
-                  "the grid is (windows, heads) within the launch limits");
   STD_TORCH_CHECK(
       widths[ls] % kLaneDigits == 0 && widths[lr] % kLaneDigits == 0 && widths[ls] * 4 <= 48 * 1024,
       "each level's width is a multiple of ", kLaneDigits,
@@ -92,53 +133,22 @@ void scale_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows
   STD_TORCH_CHECK(fm.is_cuda() && fm.scalar_type() == Dtype::Float && fm.is_contiguous()
                       && fm.dim() == 3 && fm.size(0) == BH && fm.size(1) == L && fm.size(2) == 2,
                   "fm is the facts pass's contiguous fp32 [BH, L, 2]");
-  STD_TORCH_CHECK(mass.is_cuda() && mass.scalar_type() == Dtype::Float && mass.is_contiguous()
-                      && mass.dim() == 3 && mass.size(0) == BH && mass.size(1) == windows
-                      && mass.size(2) == widths[ls],
-                  "mass is a contiguous fp32 [BH, windows, width_S] workspace");
-  STD_TORCH_CHECK(bytes.is_cuda() && bytes.scalar_type() == Dtype::Char && bytes.is_contiguous()
-                      && bytes.dim() == 2 && bytes.size(0) == BH * heads
-                      && bytes.size(1) == windows * W,
-                  "bytes is a contiguous int8 [BH heads, windows x W]: the window grid whole");
   p.fm = static_cast<const float2*>(fm.const_data_ptr());
-  p.mass = mass.mutable_data_ptr<float>();
-  p.bytes = static_cast<int8_t*>(bytes.mutable_data_ptr());
   p.inv_factor = static_cast<float>(inv_factor);
   p.L = static_cast<int>(L);
-  p.window = W;
-  p.windows = static_cast<int>(windows);
   p.heads = static_cast<int>(heads);
   p.write_heads = static_cast<int>(Hw);
   p.width_s = static_cast<int>(widths[ls]);
   p.width_r = static_cast<int>(widths[lr]);
-  p.grid = static_cast<int>(windows * W);
 
-  const DeviceGuard guard(w0.get_device_index());
-  const cudaStream_t stream = current_stream();
-  // R9-CASES: each side's levels' dtypes, u8 (sparse) or f16 (dense)
-  if (ws16 && wr16) {
-    detail::writes<true, true>(p, BH, stream);
-  } else if (ws16) {
-    detail::writes<true, false>(p, BH, stream);
-  } else if (wr16) {
-    detail::writes<false, true>(p, BH, stream);
-  } else {
-    detail::writes<false, false>(p, BH, stream);
-  }
-  const dim3 scan(static_cast<unsigned>((widths[ls] + kThreads - 1) / kThreads),
-                  static_cast<unsigned>(BH));
-  scale_scan<<<scan, kThreads, 0, stream>>>(p);
-  ROLA_CUDA_LAUNCH_CHECK();
-  const int64_t bq = BH * heads;
-  if (rs16 && rr16) {
-    detail::reads<true, true>(p, bq, stream);
-  } else if (rs16) {
-    detail::reads<true, false>(p, bq, stream);
-  } else if (rr16) {
-    detail::reads<false, true>(p, bq, stream);
-  } else {
-    detail::reads<false, false>(p, bq, stream);
-  }
+  const int device = w0.get_device_index();
+  const bool f16[4] = {ws16, wr16, rs16, rr16};
+  Tensor out;
+  build_switch(card_of(device), [&](auto b) {
+    constexpr ::denseref::arch::Build kB = decltype(b)::build;
+    if constexpr (in_image(kB)) out = detail::run<kB>(p, f16, BH, device);
+  });
+  return out;
 }
 
 }  // namespace rola::scale

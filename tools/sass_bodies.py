@@ -133,6 +133,7 @@ STAMP_KERNELS = ("rola::stampdet::csrc_stamp_kernel(long*)",)
 #: A BUILD ARGUMENT (docs/internals/common/hardware.md#build-tag): `BuildTag<Build{cc, variant}>` as c++filt
 #: prints it (a zero variant may be omitted, as the ABI allows for trailing zero members)
 _BUILD_ARG = re.compile(r"denseref::arch::BuildTag<denseref::arch::Build\{(\d+)(?:, (\d+))?\}>(, )?")
+_EMPTY_ARGS = re.compile(r"<\s*>")
 
 
 def by_signature(bodies_by_key: dict[str, str], drop_builds: bool) -> dict[str, str]:
@@ -149,7 +150,12 @@ def by_signature(bodies_by_key: dict[str, str], drop_builds: bool) -> dict[str, 
             for m in _BUILD_ARG.finditer(sig):
                 if f"sm_{int(m.group(1)) // 10}" != arch:
                     raise SystemExit(f"{key}: a Build{{{m.group(1)}, {m.group(2) or 0}}} kernel in the {arch} image")
-            sig = _BUILD_ARG.sub("", sig).replace("<>", "")
+            sig = _BUILD_ARG.sub("", sig)
+            #: a kernel whose one template argument was its build is the untemplated kernel: its emptied list goes,
+            #: and with it the return type the ABI spells only for a template
+            untemplated = _EMPTY_ARGS.sub("", sig)
+            if untemplated != sig:
+                sig = untemplated.removeprefix("void ")
         if f"{arch}:{sig}" in out:
             raise SystemExit(f"{arch}:{sig}: two entry points under one name once their builds are dropped")
         out[f"{arch}:{sig}"] = bodies_by_key[key]

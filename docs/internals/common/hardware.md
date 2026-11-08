@@ -45,7 +45,8 @@ reads its build -- an override would otherwise reach some kernels and not others
 A kernel templated on its build is the same code under a new name, so a refactor compares by signature:
 `tools/sass_bodies.py --compare A B --drop-builds` keys both maps by the demangled signature with each kernel's
 `BuildTag<Build{...}>` argument dropped -- refused where the argument is not its own image's, since a build's kernels compile in its image
-alone. Every comparison, with the flag or without, reports the source stamp (`csrc_stamp_kernel`, which moves with
+alone -- and a kernel whose only template argument was its build keyed as the untemplated kernel it replaced.
+Every comparison, with the flag or without, reports the source stamp (`csrc_stamp_kernel`, which moves with
 every source edit) apart, never as a verdict.
 
 <a id="build-tag"></a>

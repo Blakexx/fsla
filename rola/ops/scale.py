@@ -17,7 +17,6 @@ import torch
 
 from rola.ops import facts as facts_ops
 from rola.ops._ext import extension
-from rola.ops.window import window_of
 
 __all__ = ["level_s", "scale", "serves"]
 
@@ -42,12 +41,5 @@ def scale(routes, facts: facts_ops.Facts, factor: float) -> torch.Tensor:
     why = serves(routes)
     if why is not None:
         raise NotImplementedError(f"the scale pass does not serve this bundle: {why}")
-    widths = list(routes.topology.padded_widths)
-    ls = level_s(routes)
-    BH, g, L = routes.batch * routes.write_heads, routes.group, routes.tokens
-    windows = -(-L // window_of(routes.device))
-    mass = torch.empty((BH, windows, widths[ls]), dtype=torch.float32, device=routes.device)
-    out = torch.empty((BH * g, windows * window_of(routes.device)), dtype=torch.int8, device=routes.device)
-    extension().scale_forward(list(routes.amp_read), list(routes.amp_write), facts.fm, mass, out, widths, ls, g,
-                              1.0 / factor)
-    return out
+    return extension().scale_forward(list(routes.amp_read), list(routes.amp_write), facts.fm,
+                                     list(routes.topology.padded_widths), level_s(routes), routes.group, 1.0 / factor)

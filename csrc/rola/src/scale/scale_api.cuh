@@ -9,8 +9,8 @@
 namespace rola::scale {
 
 //: THREE LAUNCHES: the write masses, their prefix, the bytes. -- see docs/internals/scale/scale_api.md#scale-forward
-void scale_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows, Tensor fm,
-                   Tensor mass, Tensor bytes, std::vector<int64_t> widths, int64_t level_s,
-                   int64_t heads, double inv_factor);
+Tensor scale_forward(std::vector<Tensor> read_rows, std::vector<Tensor> write_rows, Tensor fm,
+                     std::vector<int64_t> widths, int64_t level_s, int64_t heads,
+                     double inv_factor);
 
 }  // namespace rola::scale

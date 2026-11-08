@@ -57,8 +57,10 @@ __device__ __forceinline__ const uint8_t* row_at(const Plane& pl, int b, int h, 
 //: of 32, `kAhead` tokens' rows in flight, each token's `w_S c` summed 8 digits a lane -- `c = max_r w_R F` formed in
 //: the first chunk beside its level-S loads (a warp max) and kept in `c_tok` for the rest -- the warps' partials joined
 //: in shared memory and stored as the window's own masses. -- see docs/internals/scale/scale_kernel.md#writes
-template <bool SF16, bool RF16>
-__global__ __launch_bounds__(kThreads) void scale_writes(const __grid_constant__ ScaleParams p) {
+template <class Bt, bool SF16, bool RF16>
+__global__ __launch_bounds__(ScalePlan<Bt::build>::kThreads) void scale_writes(
+    const __grid_constant__ ScaleParams p) {
+  constexpr int kWarps = ScalePlan<Bt::build>::kWarps;
   __shared__ float c_tok[1024];
   __shared__ __align__(16) float part[kWarps][kChunk];
   const int w = static_cast<int>(blockIdx.x), bh = static_cast<int>(blockIdx.y);
@@ -128,8 +130,10 @@ __global__ __launch_bounds__(kThreads) void scale_writes(const __grid_constant__
 
 //: THE PREFIX, a thread a (write head, level-S digit): each window's slot comes to hold the sum of the windows' before
 //: it, eight windows' loads in flight. -- see docs/internals/scale/scale_kernel.md#scan
-__global__ __launch_bounds__(kThreads) void scale_scan(const __grid_constant__ ScaleParams p) {
-  constexpr int kBatch = 8;
+template <class Bt>
+__global__ __launch_bounds__(ScalePlan<Bt::build>::kThreads) void scale_scan(
+    const __grid_constant__ ScaleParams p) {
+  constexpr int kThreads = ScalePlan<Bt::build>::kThreads, kBatch = ScalePlan<Bt::build>::kBatch;
   const int a = static_cast<int>(blockIdx.x) * kThreads + static_cast<int>(threadIdx.x);
   const int bh = static_cast<int>(blockIdx.y);
   if (a >= p.width_s) return;
@@ -152,8 +156,10 @@ __global__ __launch_bounds__(kThreads) void scale_scan(const __grid_constant__ S
 //: against them and its level-R row's sum, a warp's tokens in groups of 32 (`kAhead` in flight), each total a warp sum;
 //: the bound times `inv_factor` is the carry's `unit_byte`, lane `j` storing token `j`'s, on the whole window grid.
 //: -- see docs/internals/scale/scale_kernel.md#reads
-template <bool SF16, bool RF16>
-__global__ __launch_bounds__(kThreads) void scale_reads(const __grid_constant__ ScaleParams p) {
+template <class Bt, bool SF16, bool RF16>
+__global__ __launch_bounds__(ScalePlan<Bt::build>::kThreads) void scale_reads(
+    const __grid_constant__ ScaleParams p) {
+  constexpr int kWarps = ScalePlan<Bt::build>::kWarps, kThreads = ScalePlan<Bt::build>::kThreads;
   extern __shared__ __align__(16) float mass_s[];
   const int w = static_cast<int>(blockIdx.x), bq = static_cast<int>(blockIdx.y);
   const int warp = static_cast<int>(threadIdx.x) >> 5, lane = static_cast<int>(threadIdx.x) & 31;
