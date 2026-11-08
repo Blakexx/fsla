@@ -26,7 +26,7 @@ from einops import rearrange
 from rola.engine.facts.operands import requires_backward
 from rola.routing import quant
 from rola.routing.entmax.production import production_routing_factor_levels
-from rola.routing.factors import RouteFactors
+from rola.routing.factors import RouteFactors, default_sparse
 from rola.routing.producer import Routing
 from rola.routing.projection import _packed_router_logits
 from rola.routing.side_gain import WRITE_GAIN, softplus_side_gain
@@ -113,7 +113,7 @@ def row_layout(plan: ProducerPlan, side: str = "read", dense: bool = False) -> t
 
 def dense_levels(plan: ProducerPlan, side: str) -> frozenset[int]:
     """The plan's dense levels on ``side``: their rows are f16 (`rola.routing.quant.DENSE_DTYPE`)."""
-    return frozenset(level for level, sparse in enumerate(_sparse_flags(plan)[side == "write"]) if not sparse)
+    return frozenset(level for level, sparse in enumerate(default_sparse(plan.routing.topology)[side == "write"]) if not sparse)
 
 
 def job_table(plan: ProducerPlan) -> list[tuple[int, ...]]:
@@ -269,15 +269,8 @@ def _kernel_bundle(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights
 
     routes = RouteFactors(topology=plan.routing.topology, amp_read=rows(out["amp_read"], "read"),
                           amp_write=rows(out["amp_write"], "write"), scale_read=scales(out["scale_read"]),
-                          scale_write=scales(out["scale_write"]), sparse=_sparse_flags(plan))
+                          scale_write=scales(out["scale_write"]), sparse=default_sparse(plan.routing.topology))
     return routes, Values(v=out["v"], scale=out["v_scale"])
-
-
-def _sparse_flags(plan: ProducerPlan) -> tuple[tuple[bool, ...], tuple[bool, ...]]:
-    """The bundle's ``sparse`` flags, decided here at production: a side whose activation has exact zeros."""
-    topology = plan.routing.topology
-    return tuple(tuple(topology.activation_properties(level, side).exact_zeros for level in range(topology.D))
-                 for side in ("read", "write"))
 
 
 def _composition(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tuple[RouteFactors, Values]:

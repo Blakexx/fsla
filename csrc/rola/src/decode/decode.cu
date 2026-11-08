@@ -50,9 +50,11 @@ namespace stampdet {
 __device__ int64_t g_decode_stamp_probe;
 
 //: THE STEP'S OWN FOOTPRINT, recompiled with this translation unit, so a test that reads -- see docs/internals/decode/decode.md#decodestampkernel
+template <class Bt>
 __global__ void decode_stamp_kernel(int64_t* out) {
   //: THE ENUMERATION'S SHAPE AND THE LAUNCH'S WIDTH ARE PART OF THE FOOTPRINT, -- see docs/internals/decode/decode.md#decode-stamp-kernel-note-l63
-  *out = (static_cast<int64_t>(kKinds * kMaxTerms * kDecodeWarps + kUnitBlockWarps + kFieldWidthMax)
+  *out = (static_cast<int64_t>(kKinds * kMaxTerms * DecodePlan<Bt::build>::kWarps + kUnitBlockWarps
+                               + kFieldWidthMax)
               * 4096
           + static_cast<int64_t>(sizeof(DecodeParams)))
              * 1000003
@@ -86,13 +88,13 @@ __device__ __forceinline__ void finish_verdict(const DecodeParams& p, int lane) 
 }
 
 //: A VISIT'S PARTIAL INTO ITS HEAD, by warp 0: the CTA's fold summed a column a lane and added once, the -- see docs/internals/decode/decode.md#queue-finish
-template <int DV>
+template <class Dp, int DV>
 __device__ __forceinline__ void add_visit(const DecodeParams& p, const float* fold, int bh,
                                           int blocks, bool paged, int* finished, int lane) {
   constexpr int cols = DV + 1;
   int positions_walked = 0;
 #pragma unroll 1
-  for (int wq = 0; wq < kDecodeWarps; ++wq) {
+  for (int wq = 0; wq < Dp::kWarps; ++wq) {
     positions_walked += __float_as_int(fold[wq * (cols + 3) + DV + 1]);
   }
   if (positions_walked == 0) return;
@@ -101,7 +103,7 @@ __device__ __forceinline__ void add_visit(const DecodeParams& p, const float* fo
   for (int c = lane; c <= DV; c += 32) {
     float part = 0.0f;
 #pragma unroll 1
-    for (int wq = 0; wq < kDecodeWarps; ++wq) part += fold[wq * (cols + 3) + c];
+    for (int wq = 0; wq < Dp::kWarps; ++wq) part += fold[wq * (cols + 3) + c];
     atomicAdd(sums + c, part);
   }
   __threadfence();
@@ -128,9 +130,13 @@ __device__ __forceinline__ void add_visit(const DecodeParams& p, const float* fo
   finish_verdict(p, lane);
 }
 
-template <int DV, int D, bool DECAY>
-__global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_step_kernel(
-    DecodeParams p) {
+//: THE STEP at build `Bt::build` (a type: docs/internals/common/hardware.md#build-tag), at its plan's threads.
+template <class Bt, int DV, int D, bool DECAY>
+__global__
+__launch_bounds__(DecodePlan<Bt::build>::kThreads, DecodePlan<Bt::build>::kBlocksPerSm) void
+decode_step_kernel(DecodeParams p) {
+  using Dp = DecodePlan<Bt::build>;
+  using Scan = LatticeScan<Dp::kThreads>;
   //: The mass column is UNCONDITIONAL (raw is dead), which is why the shape is a -- see docs/internals/decode/decode.md#cols
   constexpr int cols = DV + 1;
   //: THE STATE PAGE: s24 planes at their group exponents, and the mass.
@@ -151,13 +157,13 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
   float* sd = sa_w + total_rows;
   float* v_tok = sd + (DECAY ? total_rows : 0);
   float* fold = v_tok + DV;
-  uint32_t* mask_r = reinterpret_cast<uint32_t*>(fold + kDecodeWarps * (cols + 3));
+  uint32_t* mask_r = reinterpret_cast<uint32_t*>(fold + Dp::kWarps * (cols + 3));
   uint32_t* mask_w = mask_r + p.mask_total;
   int32_t* olist = reinterpret_cast<int32_t*>(mask_w + p.mask_total);
   int32_t* dlist = olist + kKinds * p.olist_total;
 
   __shared__ float s_sum[kMaxLevels];
-  __shared__ typename LatticeScan::TempStorage scan_temp;
+  __shared__ typename Scan::TempStorage scan_temp;
   __shared__ int s_running;
   __shared__ int s_n_o[kKinds * kMaxLevels];
   __shared__ int s_n_d[kMaxLevels];
@@ -173,7 +179,7 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
   __shared__ int s_last;
   //: A HEAD'S TERMS' FIRST POSITIONS, and past the last its position count. -- see docs/internals/decode/decode.md#queue-positions
   __shared__ int s_first[kMaxTerms + 1];
-  __shared__ long long s_clock[kDecodeWarps][PhaseClock<kDecodePhases>::kRow];
+  __shared__ long long s_clock[Dp::kWarps][PhaseClock<kDecodePhases>::kRow];
 
   PhaseClock<kDecodePhases> clock(&s_clock[warp][0], lane);
 
@@ -205,7 +211,7 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
     const ValueUnit v_c = tid < DV ? load_value(p, b, h, tid) : ValueUnit{__float2half(0.0f), 0.0f};
     if (DECAY) {
 #pragma unroll 1
-      for (int i = tid; i < total_rows; i += kDecodeThreads) {
+      for (int i = tid; i < total_rows; i += Dp::kThreads) {
         int l = 0;
 #pragma unroll
         for (int q = 1; q < D; ++q) {
@@ -215,7 +221,7 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
                         + (i - p.level_amp_offset[l])];
       }
     }
-    fold_digits<D>(p, b, h, sa_r, sa_w, mask_r, mask_w);
+    fold_digits<Dp, D>(p, b, h, sa_r, sa_w, mask_r, mask_w);
     if (tid < DV) v_tok[tid] = value_of(v_c);
     __syncthreads();
     clock.lap(kPhFold);
@@ -288,13 +294,13 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
       //: THE TABLE TEST: how many atoms this batch-head's write side reaches that the -- see docs/internals/decode/decode.md#a
       int found = 0;
 #pragma unroll 1
-      for (int i = tid; i < n_candidates; i += kDecodeThreads) {
+      for (int i = tid; i < n_candidates; i += Dp::kThreads) {
         const int a = candidate_atom(i);
         if (a >= 0 && page_row[a] < 0) ++found;
       }
       int excl = 0;
       int demand = 0;
-      LatticeScan(scan_temp).ExclusiveSum(found, excl, demand);
+      Scan(scan_temp).ExclusiveSum(found, excl, demand);
       __syncthreads();
       if (demand > 0) {
         const int cursor = (p.pool_cap > 0) ? p.pool_cursor[bh] : 0;
@@ -306,13 +312,13 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
           if (tid == 0) s_running = 0;
           __syncthreads();
 #pragma unroll 1
-          for (int base = 0; base < n_candidates; base += kDecodeThreads) {
+          for (int base = 0; base < n_candidates; base += Dp::kThreads) {
             const int i = base + tid;
             const int a = (i < n_candidates) ? candidate_atom(i) : -1;
             const bool want = a >= 0 && page_row[a] < 0;
             int rank = 0;
             int aggregate = 0;
-            LatticeScan(scan_temp).ExclusiveSum(want ? 1 : 0, rank, aggregate);
+            Scan(scan_temp).ExclusiveSum(want ? 1 : 0, rank, aggregate);
             if (want) page_row[a] = slots[cursor + s_running + rank];
             __syncthreads();
             if (tid == 0) s_running += aggregate;
@@ -324,10 +330,10 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
       //: THE CONDENSATION, published by the head's owner: the write-atom set a host admission plans from. -- see docs/internals/decode/decode.md#decode-step-kernel-note-l355
       bool* atom_row = p.atom_bits + row_base;
 #pragma unroll 1
-      for (int a = tid; a < p.atoms_per_bh; a += kDecodeThreads) atom_row[a] = false;
+      for (int a = tid; a < p.atoms_per_bh; a += Dp::kThreads) atom_row[a] = false;
       __syncthreads();
 #pragma unroll 1
-      for (int i = tid; i < n_candidates; i += kDecodeThreads) {
+      for (int i = tid; i < n_candidates; i += Dp::kThreads) {
         const int a = candidate_atom(i);
         if (a >= 0) atom_row[a] = true;
       }
@@ -523,7 +529,7 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
     }
     __syncthreads();
     if (warp == 0) {
-      add_visit<DV>(p, fold, bh, blocks, paged, &q_finished(bh), lane);
+      add_visit<Dp, DV>(p, fold, bh, blocks, paged, &q_finished(bh), lane);
       //: A NEEDY HEAD'S OWNER FINISHES IT: no positions, no y, its growth flag set. -- see docs/internals/decode/decode.md#queue-finish
       if (owner && needy) {
         if (lane == 0) p.growth[bh] = 1;
@@ -573,7 +579,7 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
           }
         }
         //: A STEAL PAYS A PROLOGUE, so it takes a head only with a position left for every warp.
-        if (most >= kDecodeWarps) {
+        if (most >= Dp::kWarps) {
           next = best;
           steal = 1;
         }
@@ -590,7 +596,7 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
 
   // ---- THE EXIT: the last CTA out resets the queue for the next step ----------------------
   //: No memset launch stands between two steps, so the step stays capturable. -- see docs/internals/decode/decode.md#queue
-  clock.publish(p.ledger, static_cast<long>(blockIdx.x), kDecodeWarps, warp);
+  clock.publish(p.ledger, static_cast<long>(blockIdx.x), Dp::kWarps, warp);
   __threadfence();
   __syncthreads();
   if (tid == 0) s_last = atomicAdd(q_exit, 1) == p.ctas - 1 ? 1 : 0;
@@ -598,7 +604,7 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
   if (s_last != 0) {
     __threadfence();
 #pragma unroll 1
-    for (int i = tid; i < p.BH; i += kDecodeThreads) {
+    for (int i = tid; i < p.BH; i += Dp::kThreads) {
       q_claim(i) = 0;
       q_finished(i) = 0;
       q_blocks(i) = -1;
@@ -613,10 +619,10 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
 
 }  // namespace detail
 
-size_t decode_step_smem_bytes(int total_rows, int d_v, bool decay, int mask_total, int olist_total,
-                              int dlist_total) {
+size_t decode_step_smem_bytes(int warps, int total_rows, int d_v, bool decay, int mask_total,
+                              int olist_total, int dlist_total) {
   const size_t amps = static_cast<size_t>(total_rows) * (decay ? 3 : 2);
-  const size_t fold = static_cast<size_t>(kDecodeWarps) * (d_v + 4);
+  const size_t fold = static_cast<size_t>(warps) * (d_v + 4);
   const size_t tables = 2 * static_cast<size_t>(mask_total)
                         + kKinds * static_cast<size_t>(olist_total)
                         + static_cast<size_t>(dlist_total);
@@ -642,20 +648,22 @@ void rola_decode_ledger_bind(const std::optional<Tensor>& ledger) {
     g_phase_ledger_ctas = 0;
     return;
   }
+  const int warps = detail::step_warps(card_of(ledger->get_device_index()));
   STD_TORCH_CHECK(ledger->is_cuda() && ledger->scalar_type() == Dtype::Long && ledger->dim() == 3
-                      && ledger->size(1) == kDecodeWarps && ledger->size(2) == kDecodePhases
+                      && ledger->size(1) == warps && ledger->size(2) == kDecodePhases
                       && ledger->is_contiguous(),
-                  "the decode phase ledger is a contiguous CUDA int64 tensor [ctas][", kDecodeWarps,
-                  "][", kDecodePhases, "]");
+                  "the decode phase ledger is a contiguous CUDA int64 tensor [ctas][", warps, "][",
+                  kDecodePhases, "]");
   g_phase_ledger = reinterpret_cast<long long*>(ledger->mutable_data_ptr<int64_t>());
   g_phase_ledger_ctas = ledger->size(0);
 }
 
-void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem_budget) {
+void launch_decode_step(const Card& card, const DecodeParams& p, int d_v, bool decay,
+                        int64_t smem_budget) {
   //: The instantiation matrix is `DV(2) x D(4) x DECAY(2) = 16`. What is NOT an axis -- -- see docs/internals/decode/decode.md#torchcheck
   STD_TORCH_CHECK(d_v == 32 || d_v == 64, "decode instantiates d_v in {32, 64}, got ", d_v);
-  const size_t smem =
-      decode_step_smem_bytes(p.total_rows, d_v, decay, p.mask_total, p.olist_total, p.dlist_total);
+  const size_t smem = decode_step_smem_bytes(detail::step_warps(card), p.total_rows, d_v, decay,
+                                             p.mask_total, p.olist_total, p.dlist_total);
   STD_TORCH_CHECK(static_cast<int64_t>(smem) <= smem_budget,
                   "the decode step's staged operands need ", smem,
                   " B of shared memory against a per-block budget of ", smem_budget,
@@ -665,8 +673,14 @@ void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem
   auto stream = current_stream();
   //: ONE LAUNCH SITE. Each axis arrives as an `integral_constant`, so the three -- see docs/internals/decode/decode.md#launch
   auto launch = [&](auto DV, auto LEVELS, auto DECAY) {
-    detail::decode_step_kernel<decltype(DV)::value, decltype(LEVELS)::value, decltype(DECAY)::value>
-        <<<dim3(p.ctas), kDecodeThreads, smem, stream>>>(p);
+    constexpr int kDv = decltype(DV)::value, kLevels = decltype(LEVELS)::value;
+    constexpr bool kDecay = decltype(DECAY)::value;
+    build_switch(card, [&](auto b) {
+      constexpr ::denseref::arch::Build kB = decltype(b)::build;
+      if constexpr (in_image(kB))
+        detail::decode_step_kernel<::denseref::arch::BuildTag<kB>, kDv, kLevels, kDecay>
+            <<<dim3(p.ctas), DecodePlan<kB>::kThreads, smem, stream>>>(p);
+    });
   };
   bool matched = false;
 #define ROLA_DECODE_TRY(I_, DV_, D_, DECAY_)                                                  \
@@ -738,13 +752,25 @@ int ilog2_exact(int64_t x, const char* what) {
   return e;
 }
 
+//: THE STEP'S PLAN at `card`'s build, for the host: its warps and its residency.
+StepPlan step_plan(const Card& card) {
+  StepPlan out{};
+  build_switch(card, [&](auto b) {
+    using Plan = DecodePlan<decltype(b)::build>;
+    out = StepPlan{Plan::kWarps, Plan::kBlocksPerSm};
+  });
+  return out;
+}
+
+int step_warps(const Card& card) { return step_plan(card).warps; }
+
 //: THE STEP'S RESIDENT GRID on `card`: one wave of the declared residency, at most `bh` heads' unit supply.
 //: -- see docs/internals/decode/decode.md#the-split-policy
 int grid_of(const Card& card, int64_t unit_ceiling, int64_t bh) {
   const int64_t supply =
       std::max<int64_t>(1, (unit_ceiling + kDecodeUnitsPerCta - 1) / kDecodeUnitsPerCta);
-  return static_cast<int>(
-      std::max<int64_t>(1, std::min<int64_t>(int64_t{card.sms} * kDecodeBlocksPerSm, bh * supply)));
+  return static_cast<int>(std::max<int64_t>(
+      1, std::min<int64_t>(int64_t{card.sms} * step_plan(card).blocks_per_sm, bh * supply)));
 }
 
 //: THE (k, m) BOX, FILLED AND REFUSED HERE. The derivation is `rola/ops/lattice.py`'s -- see docs/internals/decode/decode.md#fill-lattice
@@ -864,8 +890,12 @@ int64_t rola_decode_producer_width_mirror() { return kProducerMaxBranchWidth; }
 //: THE BUILD STAMP: a path or hash check cannot catch a stale `.so` at the right path, -- see docs/internals/decode/decode.md#roladecodebuildstamp
 int64_t rola_decode_build_stamp() {
   auto out = empty_cuda({1}, Dtype::Long);
-  detail::stampdet::decode_stamp_kernel<<<1, 1, 0, current_stream()>>>(
-      out.mutable_data_ptr<int64_t>());
+  build_switch(current_card(), [&](auto b) {
+    constexpr ::denseref::arch::Build kB = decltype(b)::build;
+    if constexpr (in_image(kB))
+      detail::stampdet::decode_stamp_kernel<::denseref::arch::BuildTag<kB>>
+          <<<1, 1, 0, current_stream()>>>(out.mutable_data_ptr<int64_t>());
+  });
   ROLA_CUDA_LAUNCH_CHECK();
   return item<int64_t>(out);
 }
@@ -1054,7 +1084,7 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
     STD_TORCH_CHECK(g_phase_ledger_ctas >= p.ctas, "the bound decode phase ledger covers ",
                     g_phase_ledger_ctas, " CTAs; this step launches ", p.ctas);
 
-  launch_decode_step(p, d_v, decay, budget);
+  launch_decode_step(card_of(v.get_device_index()), p, d_v, decay, budget);
   return y;
 }
 

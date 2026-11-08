@@ -57,6 +57,7 @@ from rola.interface import (
 )
 from rola.ops.produce import ProducerPlan, ProducerWeights, hidden_contiguous, produce, projection_dtype
 from rola.routing.decay import validate_decay_source
+from rola.routing.factors import default_sparse
 from rola.routing.producer import Routing, _init_packed_router
 from rola.routing.side_gain import init_side_gain_bias
 
@@ -214,8 +215,7 @@ class RoLA(nn.Module):
         widths = self.topology.padded_widths
         D, total = len(widths), sum(widths)
         per_head = 16 * D + total // 4 + total // 64 + 16 * self.d_v + 49
-        for side in ("read", "write"):
-            sparse = [self.topology.activation_properties(level, side).exact_zeros for level in range(D)]
+        for sparse in default_sparse(self.topology):
             per_head += sum(width if flag else 2 * width for flag, width in zip(sparse, widths))
             if sparse.count(True) == 1:
                 width = widths[sparse.index(True)]

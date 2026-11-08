@@ -34,10 +34,6 @@ __all__ = ["UNIT_HEADROOM", "UNIT_LEVELS", "UNIT_NONE", "carry_factor", "prefill
 UNIT_LEVELS, UNIT_HEADROOM, UNIT_NONE = 15, 1.02, -100
 
 
-def _u8(rows: torch.Tensor) -> bool:
-    return rows.dtype == quant.ROW_DTYPE
-
-
 def carry_factor(routes) -> float:
     """What the carry's partials at a token's unit are multiplied by to be the recurrence's numerator over ``r``: the
     state's byte scale (the fold's operand a dense write level's f16, its coefficient on the byte scale: ``1 / 255``,
@@ -46,8 +42,8 @@ def carry_factor(routes) -> float:
     ls = routes.level_s
     lr = 1 - ls
     kappa = 1.0 / quant.AMP_LEVELS
-    k_s = (quant.AMP_LEVELS + 1.0) / quant.AMP_LEVELS if _u8(routes.amp_read[ls]) else 1.0
-    k_r = 1.0 / quant.AMP_LEVELS if _u8(routes.amp_read[lr]) else 1.0
+    k_s = (quant.AMP_LEVELS + 1.0) / quant.AMP_LEVELS if routes.form(ls, "read") is quant.SPARSE else 1.0
+    k_r = 1.0 / quant.AMP_LEVELS if routes.form(lr, "read") is quant.SPARSE else 1.0
     return kappa * k_s * k_r
 
 

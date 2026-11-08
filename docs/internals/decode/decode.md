@@ -358,7 +358,7 @@ admission, through the admission's barrier), WALK (the claims and the leaves) an
 fold, the head's sums and its finish, and the choice of the next head) -- with the shared
 `PhaseClock` (`common/phase_clock.md`), summed over every head the CTA visits; every warp
 publishes its row at the CTA's exit. The ledger is bound by `rola_decode_ledger_bind` as
-`[ctas][kDecodeWarps][kDecodePhases]` int64, a row per CTA; unbound, nothing is written and the
+`[ctas][warps][kDecodePhases]` int64 (`warps` the plan's, `DecodePlan<B>::kWarps` at the card's build), a row per CTA; unbound, nothing is written and the
 clock's cost is its reads.
 
 ## <a id="max-levels"></a><a id="kmaxlevels-2"></a><a id="kmaxlevels"></a>5. `kMaxLevels` — restated, not included
@@ -392,10 +392,10 @@ checkable rather than merely written down — and see
 [§33](#producer-width-mirror) for why the mirror is exposed separately from the
 capacity.
 
-## <a id="decode-threads"></a><a id="kdecodethreads"></a>7. `kDecodeThreads` — the width IS the arm
+## <a id="decode-threads"></a><a id="kdecodethreads"></a>7. The plan's threads — the width IS the arm
 
-The step launches ONE CTA of 512 threads an SM -- 16 warps of up to 128 registers -- and one
-wave of them: the host takes the declared residency off the kernel's own launch bound and sizes
+The step launches ONE CTA an SM of the threads its card's registers hold at `kDecodeRegsPerThread` (128) each --
+`DecodePlan<B>::kThreads`, 512 (16 warps) on every tabulated card's 64K registers -- and one wave of them: the host takes the declared residency off the kernel's own launch bound and sizes
 the grid from it ([§21b](#the-split-policy)). The registers are the whole-atom walk's: a warp
 holds a quarter of an atom's leaves a lane group in flight ([`#whole-atoms`](#whole-atoms)),
 which the 64-register cap of 1024 threads could not hold without spilling; at 512 no arm
@@ -764,10 +764,9 @@ readout leaves a read side no gain of its own ([§22](#row-scales)).
 
 ## <a id="declared-residency"></a><a id="kdecoderesidentthreads"></a>30. The residency is DECLARED
 
-`decode_step_kernel` carries `__launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm)`, and the
-second argument is not decoration: it is a REGISTER CAP the assembler must meet, and the census
-is what proves it met it without spilling. `kDecodeBlocksPerSm` is
-`kDecodeResidentThreads / kDecodeThreads = 1`, so every arm runs at 128 registers a thread --
+`decode_step_kernel` carries `__launch_bounds__(Dp::kThreads, Dp::kBlocksPerSm)` (`Dp` its plan at its build), and
+the second argument is not decoration: it is a REGISTER CAP the assembler must meet, and the census is what proves it
+met it without spilling. `kBlocksPerSm` is 1, so every arm runs at 128 registers a thread --
 few warps and full registers, the ideal regime -- and none spills (`tools/sass_gate.py`). The
 residency has no template axes: at one CTA an SM there is no CTA of residency for DECAY or the
 deepest arm to trade for live state.
@@ -1107,7 +1106,7 @@ one barrier and a sixteen-row sum.
 next head: an unstarted one from the cursor, while the grid is smaller than `BH`; otherwise the
 head with the most positions left (`count - claimed`, read through `__ldcg`, a warp-wide argmax
 per 32 heads, the lower index on a tie) among those whose count is published. It steals that
-head only if at least `kDecodeWarps` positions are left: a steal pays a whole prologue, so it
+head only if at least the plan's `kWarps` positions are left: a steal pays a whole prologue, so it
 takes a head only where every warp gets a position. With nothing to take, the CTA exits, and
 the last one out resets the queue.
 

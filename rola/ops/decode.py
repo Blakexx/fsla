@@ -228,10 +228,10 @@ def _fold(t: torch.Tensor) -> torch.Tensor:
     return t.permute(0, 2, 1, 3).reshape(B * H, W).contiguous()
 
 
-def fold_levels(levels, scales, floored) -> list[torch.Tensor]:
-    """The per-level RAW coefficient values, in torch: ``[BH, width_l]`` fp32 (a u8 digit as its integer, a dense
-    level's f16 coefficient times 255; a ``floored`` level's zeros, in a live row, at the dense floor), the values the
-    step kernel's fold sums and scales.
+def fold_levels(levels, scales, forms) -> list[torch.Tensor]:
+    """The per-level RAW coefficient values, in torch: ``[BH, width_l]`` fp32, each stored entry on the u8 scale (a u8
+    digit as its integer, a dense level's f16 coefficient times 255; a form with a floor at it in a live row), the
+    values the step kernel's fold sums and scales; ``forms`` each level's (`rola.routing.quant.Form`).
 
     AN ENUMERATED REFERENCE -- ITS ONLY CALLERS ARE GATES. The shipped path folds inside
     the step kernel, from the producer's own views; a gate that fed the kernel its own
@@ -239,11 +239,11 @@ def fold_levels(levels, scales, floored) -> list[torch.Tensor]:
     (docs/internals/decode/decode_fold.md#the-gate).
     """
     out = []
-    for rows, scale, floor in zip(levels, scales, floored, strict=True):
-        raw = _fold(rows).float() * (quant.AMP_LEVELS if rows.dtype is quant.DENSE_DTYPE else 1)
-        if floor:
+    for rows, scale, form in zip(levels, scales, forms, strict=True):
+        raw = _fold(rows).float() * (quant.AMP_LEVELS / form.top)
+        if form.floor is not None:
             live = _fold(scale.unsqueeze(-1)) > 0
-            raw = torch.where(live, raw.clamp_min(quant.AMP_LEVELS * quant.DENSE_FLOOR), raw)
+            raw = torch.where(live, raw.clamp_min(quant.AMP_LEVELS * form.floor), raw)
         out.append(raw)
     return out
 

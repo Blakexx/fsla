@@ -66,13 +66,14 @@ into a compile error rather than a race.
 consumers**). One CTA therefore owns exactly the 32 tokens of one support word, so
 the `1 << (token % 32)` packing needs **no global atomics and no zero-init pass**.
 
-<a id="minblockspersm"></a>`__launch_bounds__(128, 8)` — i.e. `MIN_BLOCKS_PER_SM = 8` — states the 64-register
-target to ptxas, so a regression becomes a compile-time allocation decision instead
-of a silent spill; the ratification manifest (`tools/ratify.py`) then fails the
+<a id="minblockspersm"></a>The launch bound's residency is the solves' plan at the build (`EntmaxPlan<B>`): the blocks an
+SM their register target fits in the card's registers -- `__launch_bounds__(128, 8)` on every tabulated card's 64K, a
+64-register target (`kForwardRegs`) -- which states the target to ptxas, so a regression becomes a compile-time
+allocation decision instead of a silent spill; the ratification manifest (`tools/ratify.py`) then fails the
 BUILD on spill growth. The backward's widest class (8 items a thread) holds both terms of
 its 8 items (`d_mid`, `d_delta`) across the pair reduction, which sm_80's allocation does
 not fit in 64 (an 8-byte spill, measured 2026-10-15; sm_86's did): its target is 72
-registers, 7 blocks an SM (`backward_min_blocks`), every other class's 64.
+registers (`backward_regs`), 7 blocks an SM on 64K (`EntmaxPlan<B>::backward_min_blocks`), every other class's 64.
 
 ## <a id="strides"></a>4. `Strides` — one address expression, two route-value layouts
 

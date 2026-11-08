@@ -140,7 +140,7 @@ class RouteFactors:
                 if tensor.device != first.device:
                     raise ValueError(f"every routing level lives on one device; {name}[{level}] is on "
                                      f"{tensor.device} against {first.device}")
-                want = self.row_dtype(level, name[4:])
+                want = self.form(level, name[4:]).dtype
                 if tensor.dtype is not want:
                     raise TypeError(f"RouteFactors.{name}[{level}] is stored as {want}, got {tensor.dtype}")
                 if not _aligned(tensor):
@@ -163,7 +163,7 @@ class RouteFactors:
         one), refusing an entry the form does not hold -- and the ``sparse`` flags (:meth:`from_rows`). Whatever
         magnitude a level carries lands in its scale; there is nothing else to pass."""
         read, write = tuple(read), tuple(write)
-        sparse = _default_sparse(topology) if sparse is None else tuple(tuple(map(bool, f)) for f in sparse)
+        sparse = default_sparse(topology) if sparse is None else tuple(tuple(map(bool, f)) for f in sparse)
 
         quant.refuse_unheld((level_form(flags[i]), level) for levels, flags in ((read, sparse[0]), (write, sparse[1]))
                             for i, level in enumerate(levels))
@@ -182,7 +182,7 @@ class RouteFactors:
         ``sparse`` is ``(read, write)``, a bool a level; by default the production's own rule, a side whose
         activation has exact zeros (an opaque level, which may have zeros, included)."""
         if sparse is None:
-            sparse = _default_sparse(topology)
+            sparse = default_sparse(topology)
         return cls(topology=topology, amp_read=amp_read, amp_write=amp_write, scale_read=scale_read,
                    scale_write=scale_write, source=source, sparse=sparse)
 
@@ -194,10 +194,6 @@ class RouteFactors:
     def form(self, level: int, side: str) -> quant.Form:
         """``level``'s storage form on ``side`` (:func:`level_form`)."""
         return level_form(self.sparse[side == "write"][level])
-
-    def row_dtype(self, level: int, side: str) -> torch.dtype:
-        """The stored type of ``level``'s rows on ``side``: its form's."""
-        return self.form(level, side).dtype
 
     @property
     def batch(self) -> int:
@@ -292,7 +288,8 @@ def level_form(sparse: bool) -> quant.Form:
     return quant.SPARSE if sparse else quant.DENSE
 
 
-def _default_sparse(topology: Topology) -> tuple[tuple[bool, ...], tuple[bool, ...]]:
-    """The production's own sparse rule: a side's level whose activation has exact zeros (an opaque level included)."""
+def default_sparse(topology: Topology) -> tuple[tuple[bool, ...], tuple[bool, ...]]:
+    """THE PRODUCTION'S SPARSE RULE, ``(read, write)`` a bool a level: a side's level whose activation has exact zeros
+    (an opaque level included) -- the producer's flags, the factory's default and the layer's working set."""
     return tuple(tuple(topology.activation_properties(level, side).exact_zeros for level in range(topology.D))
                  for side in SIDES)

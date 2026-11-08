@@ -25,18 +25,18 @@ __device__ __forceinline__ float scale_of(const Span& s, int b, int h) {
 }
 
 //: THE DIGIT PASS: every digit of both sides, a thread's slots' loads issued before any is used, staged and -- see docs/internals/decode/decode_fold.md#fold-digits
-template <int D>
+template <class Dp, int D>
 __device__ __forceinline__ void fold_digits(const DecodeParams& p, int b, int h, float* sa_r,
                                             float* sa_w, uint32_t* mask_r, uint32_t* mask_w) {
   //: a side is at most `kMaxLevels` levels of `kDecodeMaxLevelWidth` digits, so a thread holds at most this many slots.
-  constexpr int kSlots = (2 * kMaxLevels * kDecodeMaxLevelWidth) / kDecodeThreads;
+  constexpr int kSlots = (2 * kMaxLevels * kDecodeMaxLevelWidth) / Dp::kThreads;
   const int lane = threadIdx.x & 31;
   const int slots = p.mask_total << 5;
   float x[kSlots];
   float scale[kSlots];
 #pragma unroll
   for (int j = 0; j < kSlots; ++j) {
-    const int s = threadIdx.x + j * kDecodeThreads;
+    const int s = threadIdx.x + j * Dp::kThreads;
     const bool write_side = s >= slots;
     const int word = (write_side ? s - slots : s) >> 5;
     int l = 0;
@@ -57,7 +57,7 @@ __device__ __forceinline__ void fold_digits(const DecodeParams& p, int b, int h,
 
 #pragma unroll
   for (int j = 0; j < kSlots; ++j) {
-    const int s = threadIdx.x + j * kDecodeThreads;
+    const int s = threadIdx.x + j * Dp::kThreads;
     if (s >= 2 * slots) break;
     const bool write_side = s >= slots;
     const int word = (write_side ? s - slots : s) >> 5;

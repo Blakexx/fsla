@@ -11,7 +11,9 @@
 namespace rola {
 namespace decode {
 
-using LatticeScan = cub::BlockScan<int, kDecodeThreads>;
+//: THE STEP'S BLOCK SCAN, over its plan's threads.
+template <int kThreads>
+using LatticeScan = cub::BlockScan<int, kThreads>;
 
 //: THE FOUR PER-LEVEL DIGIT SETS the terms are built from, as the index of one -- see docs/internals/decode/decode_lattice.md#kkindw
 constexpr int kKindW = 0;

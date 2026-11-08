@@ -90,8 +90,7 @@ def _y_of(rows, scale, *, seed, s0=0):
 
 def _reference_y(rows, scale, *, e, m, s0=0):
     """The collapsed readout, computed from the DECLARED arithmetic and nothing else."""
-    floored = _routes(rows, scale).floor_bits()[0] & 1
-    raw = fold_levels((rows,), (scale,), (floored,))[0]
+    raw = fold_levels((rows,), (scale,), (_routes(rows, scale).form(0, "read"),))[0]
     #: a tensor divisor: torch divides by a SCALAR through its reciprocal, which is not the kernel's IEEE divide.
     scale = scale.reshape(-1)
     a = raw[:, s0] * (scale / torch.full_like(scale, quant.AMP_LEVELS))

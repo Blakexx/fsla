@@ -70,7 +70,7 @@ construction, so `setup.py` skips exactly those two gates behind a banner when
 path cannot fake: it launches a one-thread kernel, compiled with this translation unit,
 that folds four facts into one `int64_t` in a positional scheme and reads it back:
 
-    stamp = ((kKinds * kMaxTerms * kDecodeWarps + kUnitBlockWarps + kFieldWidthMax) * 4096
+    stamp = ((kKinds * kMaxTerms * DecodePlan<B>::kWarps + kUnitBlockWarps + kFieldWidthMax) * 4096
              + sizeof(DecodeParams)) * 1000003
           + sizeof(Unit<4>) * 101
           + kDecodeMaxSpan
@@ -151,5 +151,5 @@ the device-side claim are [`paging/paging.md`
 ## <a id="decode-ledger-bind"></a>`rola_decode_ledger_bind`
 
 Binds the phase ledger the next decode steps book into (`decode.md#phase-ledger`), or unbinds it with `None`: a
-contiguous CUDA int64 tensor `[ctas][kDecodeWarps][kDecodePhases]`, a row per resident CTA, which the host entry
+contiguous CUDA int64 tensor `[ctas][warps][kDecodePhases]` (`warps` the step's plan's at its device's build), a row per resident CTA, which the host entry
 checks before each launch. Measurement only; nothing on the shipped path binds one.

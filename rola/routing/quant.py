@@ -27,7 +27,6 @@ __all__ = [
     "ROW_DTYPE",
     "SIGNED",
     "SPARSE",
-    "VALUE_DTYPE",
     "Form",
     "aligned_rows",
     "refuse_unheld",
@@ -47,8 +46,6 @@ DENSE_FLOOR = 2.0 ** -13
 #: THE ROW ALIGNMENT LAW: every level's rows start on, and step batch, token and head by, multiples of this many bytes
 #: (docs/internals/facts/liveness_contract.md#alignment).
 ROW_ALIGN = 32
-#: the stored value form: f16 against the token's largest channel.
-VALUE_DTYPE = torch.float16
 _TINY = 1e-30
 
 
@@ -127,7 +124,7 @@ SPARSE = Form("u8 sparse", ROW_DTYPE, signed=False, top=AMP_LEVELS, floor=None, 
 #: a dense routing level: f16 at 1, a live row's floor taken
 DENSE = Form("f16 dense", DENSE_DTYPE, signed=False, top=1.0, floor=DENSE_FLOOR, aligned=True)
 #: the values: f16 in [-1, 1] against the token's largest channel
-SIGNED = Form("f16 signed", VALUE_DTYPE, signed=True, top=1.0, floor=None, aligned=False)
+SIGNED = Form("f16 signed", torch.float16, signed=True, top=1.0, floor=None, aligned=False)
 
 
 def straight_through(exact: torch.Tensor, dequantized: torch.Tensor) -> torch.Tensor:

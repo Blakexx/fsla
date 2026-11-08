@@ -6,6 +6,8 @@
 #include <cstdint>
 
 #include "common/geom.cuh"
+#include "common/hardware.cuh"
+#include "common/select.cuh"
 
 namespace rola {
 namespace decode {
@@ -21,9 +23,20 @@ static_assert(kDecodeMaxLevelWidth >= kProducerMaxBranchWidth,
               "MAX_BRANCH_WIDTH: a topology the producer can emit would over-read "
               "the staged amplitude row");
 
-constexpr int kDecodeThreads =
-    512;  // one CTA per SM, 16 warps of 128 registers; decode.md#kdecodethreads
-constexpr int kDecodeWarps = kDecodeThreads / 32;
+//: THE WALK'S REGISTERS A THREAD: a warp holds a quarter of an atom's leaves a lane group in flight. -- see docs/internals/decode/decode.md#kdecodethreads
+constexpr int kDecodeRegsPerThread = 128;
+
+//: THE STEP'S PLAN at build `B`: ONE CTA an SM, of the threads the card's registers hold at `kDecodeRegsPerThread`.
+//: -- see docs/internals/decode/decode.md#declared-residency
+template <::denseref::arch::Build B>
+struct DecodePlan {
+  static constexpr int kThreads =
+      ::denseref::arch::traits_of(B).caps.regs_per_sm / kDecodeRegsPerThread;
+  static constexpr int kWarps = kThreads / 32;
+  static constexpr int kBlocksPerSm = 1;
+  static_assert(kThreads % 32 == 0 && kThreads <= 1024,
+                "the step's CTA is whole warps, at most 1024 threads");
+};
 
 constexpr int kUnitBlockWarps = 8;  // NOT the warp count; decode.md#kunitblockwarps
 constexpr int kUnitBlockWarpsBits = 3;
@@ -43,12 +56,9 @@ struct LeafLanes {
   static_assert(DV % 32 == 0 && kLanes <= 32, "a leaf row is whole 32-channel groups of 4 lanes");
 };
 
-constexpr int kDecodeResidentThreads = 512;  // CTA/SM residency; decode.md#kdecoderesidentthreads
-
 //: THE STEP'S PHASES, as the phase ledger books them; see decode.md#phase-ledger
 enum DecodePhase : int { kPhFold, kPhFactor, kPhAdmit, kPhWalk, kPhCombine, kDecodePhases };
 
-constexpr int kDecodeBlocksPerSm = kDecodeResidentThreads / kDecodeThreads;
 //: THE SMALLEST UNIT SHARE worth a CTA's prologue (its fold and factor tables): the grid's supply bound.
 //: -- see docs/internals/decode/decode.md#the-split-policy
 constexpr int kDecodeUnitsPerCta = 16;
@@ -121,7 +131,7 @@ struct DecodeParams {     // every pointer/extent one decode step needs; see dec
   float* yacc;  // [BH, cols] -- a head's readout sums, zeroed by its finisher; see decode.md#queue
   int32_t* queue;  // [4 BH + 2] -- the work queue's counters; see decode.md#queue
   long long*
-      ledger;  // [ctas][kDecodeWarps][kDecodePhases] cycles, or null; see decode.md#phase-ledger
+      ledger;  // [ctas][the plan's warps][kDecodePhases] cycles, or null; see decode.md#phase-ledger
 
   int64_t N;
   int atoms_per_bh;  // ceil(N / kAtomLeaves): the PAGE count per bh, both backings.
@@ -160,9 +170,20 @@ __device__ __forceinline__ uint32_t extract_bits(const uint32_t* src, int src_wo
 // `rola_api.cpp` binds only the host entry.
 // ---------------------------------------------------------------------------
 
-size_t decode_step_smem_bytes(int total_rows, int d_v, bool decay, int mask_total, int olist_total,
-                              int dlist_total);
-void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem_budget);
+size_t decode_step_smem_bytes(int warps, int total_rows, int d_v, bool decay, int mask_total,
+                              int olist_total, int dlist_total);
+void launch_decode_step(const Card& card, const DecodeParams& p, int d_v, bool decay,
+                        int64_t smem_budget);
+
+namespace detail {
+//: THE STEP'S PLAN at a card's build, for the host: its warps and its residency (`DecodePlan`).
+struct StepPlan {
+  int warps, blocks_per_sm;
+};
+
+StepPlan step_plan(const Card& card);
+int step_warps(const Card& card);
+}  // namespace detail
 
 }  // namespace decode
 }  // namespace rola

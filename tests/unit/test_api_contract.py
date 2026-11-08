@@ -370,7 +370,7 @@ def test_the_public_levels_are_the_formats_rows_dequantized():
     read, _ = factors.dequantized()
     for level, (rows, scale, public) in enumerate(zip(factors.amp_read, factors.scale_read, read)):
         dense = not factors.sparse[0][level]
-        assert rows.dtype is factors.row_dtype(level, "read") and tuple(rows.shape) == tuple(public.shape)
+        assert rows.dtype is factors.form(level, "read").dtype and tuple(rows.shape) == tuple(public.shape)
         top = 1 if dense else 255
         assert torch.equal(rows.amax(dim=-1), torch.full_like(rows.amax(dim=-1), top)), (
             f"level {level}'s rows are not unit-max")

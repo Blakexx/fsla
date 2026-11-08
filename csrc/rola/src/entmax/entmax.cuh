@@ -28,6 +28,8 @@
 #include <cuda/std/type_traits>
 #include <cuda/std/utility>
 #include <cuda_bf16.h>
+
+#include "common/hardware.cuh"
 #endif
 
 namespace rola {
@@ -42,11 +44,23 @@ constexpr int WORD_TOKENS = 32;
 constexpr int BLOCK_WARPS = 4;
 constexpr int WARP_SIZE = 32;
 constexpr int BLOCK_THREADS = BLOCK_WARPS * WARP_SIZE;
-//: With `BLOCK_THREADS`, this is `__launch_bounds__(128, 8)`: a 64-register target -- see docs/internals/entmax/entmax.md#minblockspersm
-constexpr int MIN_BLOCKS_PER_SM = 8;
+//: THE SOLVES' REGISTER TARGET a thread: 64, and the backward's a width class -- 72 where a thread holds 8 items' two
+//: terms across its reduction. -- see docs/internals/entmax/entmax.md#minblockspersm
+constexpr int kForwardRegs = 64;
 
-//: the backward's target a width class: 72 registers where a thread holds 8 items' two terms across its reduction
-constexpr int backward_min_blocks(int ipt) { return ipt == 8 ? 7 : MIN_BLOCKS_PER_SM; }
+constexpr int backward_regs(int ipt) { return ipt == 8 ? 72 : kForwardRegs; }
+
+//: THE SOLVES' PLAN at build `B`: the blocks an SM their register targets fit in the card's registers, each launch
+//: bound's residency. -- see docs/internals/entmax/entmax.md#minblockspersm
+template <::denseref::arch::Build B>
+struct EntmaxPlan {
+  static constexpr int kRegsPerSm = ::denseref::arch::traits_of(B).caps.regs_per_sm;
+  static constexpr int kMinBlocks = kRegsPerSm / (BLOCK_THREADS * kForwardRegs);
+
+  static constexpr int backward_min_blocks(int ipt) {
+    return kRegsPerSm / (BLOCK_THREADS * backward_regs(ipt));
+  }
+};
 
 //: `(stream, stream2, token, col, tile, lane)` -- ONE address expression serves -- see docs/internals/entmax/entmax.md#strides-2
 struct Strides {

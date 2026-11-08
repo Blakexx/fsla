@@ -19,6 +19,7 @@
 #include "common/torch_seam.cuh"
 
 #include "common/arch_runtime.cuh"
+#include "common/select.cuh"
 #include "dispatch_switch.cuh"
 #include "entmax.cuh"
 
@@ -29,13 +30,14 @@ namespace detail {
 // ---------------------------------------------------------------------------
 // FORWARD
 // ---------------------------------------------------------------------------
-template <int LW, int IPT, bool ALPHA15, typename LogitT, typename OutT>
-__global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forward_kernel(
-    const LogitT* __restrict__ read_logits, const LogitT* __restrict__ write_logits,
-    float* __restrict__ midpoint_values, int32_t* __restrict__ support_words,
-    OutT* __restrict__ read_values, OutT* __restrict__ write_values, int tokens, int heads,
-    LevelTable table, Strides sr, Strides sw, Strides smid, Strides sread, Strides swrite,
-    Strides ssup) {
+template <class Bt, int LW, int IPT, bool ALPHA15, typename LogitT, typename OutT>
+__global__ __launch_bounds__(BLOCK_THREADS, EntmaxPlan<Bt::build>::kMinBlocks) void
+union_forward_kernel(const LogitT* __restrict__ read_logits,
+                     const LogitT* __restrict__ write_logits, float* __restrict__ midpoint_values,
+                     int32_t* __restrict__ support_words, OutT* __restrict__ read_values,
+                     OutT* __restrict__ write_values, int tokens, int heads, LevelTable table,
+                     Strides sr, Strides sw, Strides smid, Strides sread, Strides swrite,
+                     Strides ssup) {
   constexpr int W_PAD = LW * IPT;
   constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
   constexpr int ITERS = (WORD_TOKENS + LOGICAL_PER_BLOCK - 1) / LOGICAL_PER_BLOCK;
@@ -162,15 +164,18 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
 // ---------------------------------------------------------------------------
 // BACKWARD -- the alpha-entmax Jacobian action through the union split.
 // see docs/internals/entmax/entmax.md#launch-bounds
-template <int LW, int IPT, bool ALPHA15, typename LogitT, typename OutT>
-__global__ __launch_bounds__(BLOCK_THREADS, backward_min_blocks(IPT)) void union_backward_kernel(
-    const LogitT* __restrict__ read_logits, const LogitT* __restrict__ write_logits,
-    const float* __restrict__ midpoint_values, const int32_t* __restrict__ support_words,
-    const OutT* __restrict__ read_values, const OutT* __restrict__ write_values,
-    const OutT* __restrict__ d_read, const OutT* __restrict__ d_write,
-    LogitT* __restrict__ d_read_logits, LogitT* __restrict__ d_write_logits, int tokens, int heads,
-    LevelTable table, Strides sr, Strides sw, Strides smid, Strides srv, Strides swv, Strides sdr,
-    Strides sdw, Strides sdrl, Strides sdwl, Strides ssup) {
+template <class Bt, int LW, int IPT, bool ALPHA15, typename LogitT, typename OutT>
+__global__ __launch_bounds__(BLOCK_THREADS, EntmaxPlan<Bt::build>::backward_min_blocks(IPT)) void
+union_backward_kernel(const LogitT* __restrict__ read_logits,
+                      const LogitT* __restrict__ write_logits,
+                      const float* __restrict__ midpoint_values,
+                      const int32_t* __restrict__ support_words,
+                      const OutT* __restrict__ read_values, const OutT* __restrict__ write_values,
+                      const OutT* __restrict__ d_read, const OutT* __restrict__ d_write,
+                      LogitT* __restrict__ d_read_logits, LogitT* __restrict__ d_write_logits,
+                      int tokens, int heads, LevelTable table, Strides sr, Strides sw, Strides smid,
+                      Strides srv, Strides swv, Strides sdr, Strides sdw, Strides sdrl,
+                      Strides sdwl, Strides ssup) {
   constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
   constexpr int ITERS = (WORD_TOKENS + LOGICAL_PER_BLOCK - 1) / LOGICAL_PER_BLOCK;
   using WarpRedF = cub::WarpReduce<float, LW>;
@@ -305,13 +310,18 @@ void launch_forward(const Tensor& rl, const Tensor& wl, Tensor& mid, Tensor& sup
         constexpr int kLaneWidth = kWPad < 32 ? kWPad : 32;
         constexpr int kItemsPerThread = kWPad / kLaneWidth;
         bool_switch(a15, [&](auto A15) {
-          union_forward_kernel<kLaneWidth, kItemsPerThread, decltype(A15)::value, LogitT, OutT>
-              <<<grid, BLOCK_THREADS, 0, stream>>>(
+          constexpr bool kA15 = decltype(A15)::value;
+          build_switch(card_of(rl.get_device_index()), [&](auto b) {
+            constexpr ::denseref::arch::Build kB = decltype(b)::build;
+            if constexpr (in_image(kB))
+              union_forward_kernel<::denseref::arch::BuildTag<kB>, kLaneWidth, kItemsPerThread,
+                                   kA15, LogitT, OutT><<<grid, BLOCK_THREADS, 0, stream>>>(
                   (const LogitT*)rl.data_ptr(), (const LogitT*)wl.data_ptr(),
                   mid.mutable_data_ptr<float>(), sup.mutable_data_ptr<int32_t>(),
                   (OutT*)rv.data_ptr(), (OutT*)wv.data_ptr(), tokens, heads, table,
                   five_logits(rl, heads), five_logits(wl, heads), five(mid), five(rv), five(wv),
                   five(sup));
+          });
         });
       });
   ROLA_CUDA_LAUNCH_CHECK();
@@ -334,8 +344,12 @@ void launch_backward(const Tensor& rl, const Tensor& wl, const Tensor& mid, cons
         constexpr int kLaneWidth = kWPad < 32 ? kWPad : 32;
         constexpr int kItemsPerThread = kWPad / kLaneWidth;
         bool_switch(a15, [&](auto A15) {
-          union_backward_kernel<kLaneWidth, kItemsPerThread, decltype(A15)::value, LogitT, OutT>
-              <<<grid, BLOCK_THREADS, 0, stream>>>(
+          constexpr bool kA15 = decltype(A15)::value;
+          build_switch(card_of(rl.get_device_index()), [&](auto b) {
+            constexpr ::denseref::arch::Build kB = decltype(b)::build;
+            if constexpr (in_image(kB))
+              union_backward_kernel<::denseref::arch::BuildTag<kB>, kLaneWidth, kItemsPerThread,
+                                    kA15, LogitT, OutT><<<grid, BLOCK_THREADS, 0, stream>>>(
                   (const LogitT*)rl.data_ptr(), (const LogitT*)wl.data_ptr(),
                   mid.mutable_data_ptr<float>(), sup.mutable_data_ptr<int32_t>(),
                   (const OutT*)rv.data_ptr(), (const OutT*)wv.data_ptr(),
@@ -343,6 +357,7 @@ void launch_backward(const Tensor& rl, const Tensor& wl, const Tensor& mid, cons
                   (LogitT*)dwl.data_ptr(), tokens, heads, table, five_logits(rl, heads),
                   five_logits(wl, heads), five(mid), five(rv), five(wv), five(dr), five(dw),
                   five_logits(drl, heads), five_logits(dwl, heads), five(sup));
+          });
         });
       });
   ROLA_CUDA_LAUNCH_CHECK();
