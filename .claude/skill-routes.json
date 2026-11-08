@@ -105,7 +105,8 @@
     "tools/manifests/*"
    ],
    "bash": [
-    "^(python3?\\s+)?tools/ratify\\.py\\b"
+    "^(python3?\\s+)?tools/ratify\\.py\\b",
+    "^bazel\\s+(test|run)\\s+//:(ratified|ratify)\\b"
    ]
   },
   {

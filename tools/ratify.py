@@ -142,7 +142,7 @@ os.environ["TORCH_NO_COMPILER_WRAPPER"] = "1"
 #: from the assembler that produced the numbers it parses.
 cuda_bin = dev_config.cuda_bin
 
-#: THE GRAPH'S BUILD (`--graph`, bazel/ratify.bzl): the units its compile rule compiled -- each one's ptxas report and
+#: THE GRAPH'S BUILD (`--graph`, bazel/defs.bzl's `ratify_census`): the units its compile rule compiled -- each one's ptxas report and
 #: object stand in for this gate's recompile -- its assembler and disassemblers, its derivation harness and the build's
 #: parameters. -- see docs/internals/tools/ratify.md#graph
 _GRAPH: dict = {}
@@ -1621,7 +1621,7 @@ def main() -> int:
                          "because a manifest written from a subset of the arms would "
                          "silently drop every one it did not compile.")
     ap.add_argument("--graph", type=Path, metavar="CENSUS",
-                    help="READ THE GRAPH'S BUILD instead of compiling: its census record (bazel/ratify.bzl) names each "
+                    help="READ THE GRAPH'S BUILD instead of compiling: its census record (bazel/defs.bzl's ratify_census) names each "
                          "unit's ptxas report and object, the graph's toolkit and derivation harness, and the build's "
                          "parameters, which are the scope (no --arch, --shard or --arm)")
     ap.add_argument("--runfiles", type=Path, metavar="DIR",

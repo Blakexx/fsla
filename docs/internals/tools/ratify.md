@@ -38,29 +38,23 @@ re-write without reading. The wholesale trigger for the CODEGEN remains
 
 ## <a id="graph"></a>On the graph's build: `--graph`
 
-`--graph CENSUS --runfiles DIR` measures the graph's build and compiles nothing. The
-census record (`bazel/defs.bzl`'s `ratify_census`, every path relative to `DIR`)
-names each unit the library links, with its source, nvcc's diagnostics and its object
-(`bazel/cuda.bzl`'s `cuda_unit` keeps the diagnostics as `<unit>.ptxas.txt`). It also
-names the graph's ptxas, disassemblers and mold, the derivation harness the graph
-built, and the build's parameters. `measure_built` reads each unit's report with
-`_parse_report` and scans its object with `_scan_object`, the same two readers
-`measure_units` applies to its own compile, and `_merge_units` makes one census from
-either path, refusing an instantiation two units emit. `use_graph` makes the graph's
-assembler and disassemblers this process's (`sass.use_graph` for the disassemblers).
+`--graph CENSUS --runfiles DIR` measures the graph's build and compiles nothing. The compile path recompiles the
+build's units under the build's flags so that its numbers describe the shipped binary. On the graph, those units'
+compiles are the build: each `cuda_unit` keeps ptxas's report beside its object, so reading the two measures the
+binary itself, by the same two readers the compile path applies to its own compile. There is one compile, not a
+second one the census must agree with. The census record (`bazel/defs.bzl`'s `ratify_census`, every path relative to
+`DIR`) names each unit the library links, the graph's ptxas, disassemblers and mold, the derivation harness the graph
+built, and the build's parameters; the readers read with the graph's tools.
 
-- THE SCOPE IS THE BUILD'S PARAMETERS: `--arch`, `--shard` and `--arm` are refused.
-  `graph_parameters` decides an iteration build with `gen_shards.is_iteration`, as the
-  build's record does (`bazel/record.py`). An iteration build is never verified or
-  written, and its `--census` is a measurement.
-- THE DERIVATION HARNESS is built by the graph: `tools/derivation.py` renders it from
-  the declared cases with the standard library only, and tools/BUILD.bazel's
-  `derivation_harness` compiles it as the extension's units are compiled and links
-  it. `measure_derivation` runs that binary and refuses it unless its source is this
-  tree's rendering.
-- PROVENANCE: the graph compiles with no compiler cache, so `toolchain.sccache` is
-  `null` and its drift is the REPORT the compile path prints for a changed sccache;
-  `toolchain.mold` is the graph's mold.
+- THE SCOPE IS THE BUILD'S PARAMETERS: `--arch`, `--shard` and `--arm` are refused, and an iteration build is
+  decided as the build's record decides it (`gen_shards.is_iteration`, `bazel/record.py`). An iteration build is
+  never verified or written; its `--census` is a measurement.
+- THE DERIVATION HARNESS is built by the graph: `tools/derivation.py` renders it from the declared cases with the
+  standard library only, so a build action can run it before any venv, and tools/BUILD.bazel's
+  `derivation_harness` compiles it as the extension's units are compiled and links it. Ratify runs that binary and
+  refuses it unless its source is this tree's rendering.
+- PROVENANCE: the graph compiles with no compiler cache, so `toolchain.sccache` is `null` and its drift is the
+  REPORT the compile path prints for a changed sccache; `toolchain.mold` is the graph's mold.
 
 `bazel test //:ratified` is the verdict in a copy of the tree, and `bazel run //:ratify
 -- --write` (or `-- --census --json PATH`) runs in the checkout
