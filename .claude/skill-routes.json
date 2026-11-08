@@ -129,6 +129,8 @@
    ],
    "bash": [
     "^(python3?\\s+)?tools/dev\\.py\\b",
+    "^python3?\\s+tools/bootstrap\\.py\\b",
+    "^bazel\\s+run\\s+//:(init|check|clock|show|get|worktree|store|dev_env)\\b",
     "^git\\s+(-C\\s+\\S+\\s+)?worktree\\b",
     "^uv\\s+venv\\b"
    ]

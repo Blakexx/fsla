@@ -5,8 +5,8 @@ description: Load before committing or pushing in this repo: the gate a commit r
 # Committing
 
 1. The gate is the tracked hook `tools/git-hooks/pre-commit`: `bazel test //:gate` on the commit as git will write it
-   (`docs/build-graph.md#checks`); a refusal naming no `bazel` means the checkout is unwired:
-   `bazel run //:dev_env` (`docs/internals/tools/dev.md`). Never `--no-verify` (`docs/KERNEL_STANDARDS.md#no-verify`).
+   (`docs/build-graph.md#checks`); its refusal names the fix: no `bazel` on PATH, `python3 tools/bootstrap.py`; the
+   checkout's gate not wired, `bazel run //:dev_env` (`docs/internals/tools/dev.md`). Never `--no-verify` (`docs/KERNEL_STANDARDS.md#no-verify`).
 2. Run it before committing: `bazel test //:gate` (`docs/internals/tools/lint.md#running-the-roster-by-hand`).
 3. `docrefs`: a new or moved citation fails until it is read against its target; then
    `python3 tools/docrefs.py accept <doc>` and stage the lock(s) it wrote

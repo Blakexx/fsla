@@ -22,11 +22,13 @@ directory of JSON files, the dev config (`~/.config/rola/`,
 `docs/internals/tools/dev_config.md`, KERNEL_STANDARDS §23). One command sets a
 machine up and checks it (`docs/internals/tools/dev.md`):
 
-Every command is a `bazel run` target but one: `python3 tools/bootstrap.py`, by the machine's own python3, installs the
-pinned bazelisk and links `bazel` to it, since nothing can `bazel run` before `bazel` exists. It, and every target, reads
-the dev config through rola-devtools (`rola_devtools.config`, which also holds the machine's locks), imported from the
-rola-devtools checkout beside this tree, where `workspace.devtools` points by default: clone it there first. A fresh
-machine runs on the reader's defaults until `init` writes its config.
+Every setup command is a `bazel run` target but one: `python3 tools/bootstrap.py`, by the machine's own python3,
+installs the pinned bazelisk and links `bazel` to it, since nothing can `bazel run` before `bazel` exists. The iteration
+build (`dev.py build`) and the container (`dev.py container`) are still dev.py's own commands. The bootstrap and the
+graph's front door import the dev config's reader (`rola_devtools.config`, which also holds the machine's locks) from
+the rola-devtools checkout beside this tree, where `workspace.devtools` points by default: clone it there first. The
+targets run on the graph environment's interpreter, which carries rola-devtools at its pin (`tools/devtools.txt`). A
+fresh machine runs on the reader's defaults until `init` writes its config.
 
 ```bash
 python3 tools/bootstrap.py              # the one step outside the graph: the pinned bazelisk, `bazel` linked to it

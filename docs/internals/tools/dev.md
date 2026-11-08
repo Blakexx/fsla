@@ -107,7 +107,7 @@ site-packages as a plain path, which reads none of its `.pth` files), and in the
 mount point -- by a one-line `rola_results.pth`, and `dev-env` links each venv it writes; `commit -m` commits the records (`python -m
 rola_results commit`).
 
-`init`, `check`, `show`, `get`, `clock`, `dev-env`, `worktree` and `build` run from whichever python starts them (`dev-env`'s is the environment's, through its run target; `build` compiles with the checkout's own venv); `store` and `container` re-execute themselves under `workspace.base_venv`, because the store and the container read `rola_results` and the host's own python carries nothing of this project.
+`init`, `check`, `show`, `get`, `clock`, `dev-env`, `worktree` and `build` run from whichever python starts them (`dev-env`'s is the environment's, through its run target; `build` compiles with the checkout's own venv); `store` and `container` re-execute themselves under the checkout's own venv (`bazel run //:dev_env`), because the store and the container read `rola_results`, which it links, and the host's own python carries nothing of this project. The base venv is the sibling repositories' alone: `check` tests it where it is set.
 
 **`get`** prints one value, for a person or a shell (the `rola-dev` skill's way to read one setting).
 

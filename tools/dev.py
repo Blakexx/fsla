@@ -78,7 +78,7 @@ VERSION_OF = {"sccache": sccache_toolchain.sccache_version, "mold": mold_toolcha
 
 
 def bazelisk_path() -> Path:
-    """Where init installs the pinned bazelisk: under `host.tools_dir`, by its release's name (`install_pinned`)."""
+    """Where `install_bazelisk` installs the pinned bazelisk: under `host.tools_dir`, by its release's name."""
     pin = json.loads(PINS["bazelisk"].read_text())
     return Path(dev_config.get("host.tools_dir")) / f"bazelisk-{pin['version']}" / pin["binary"]
 
@@ -131,7 +131,7 @@ def install_bazelisk() -> None:
 
 def link_bazel() -> None:
     """`toolchain.bazel` linked to the pinned bazelisk: `bazel` is the command the docs name, and only the pinned
-    launcher reads `.bazeliskrc` and runs the graph's front door. A link init made to another pinned release (under
+    launcher reads `.bazeliskrc` and runs the graph's front door. A link it made to another pinned release (under
     `host.tools_dir`) is replaced; anything else at the path is refused, named, never overwritten."""
     link, bazelisk = Path(dev_config.get("toolchain.bazel")), bazelisk_path()
     if link.is_symlink() and link.resolve() == bazelisk.resolve():
@@ -139,7 +139,7 @@ def link_bazel() -> None:
     tools = Path(dev_config.get("host.tools_dir")).resolve()
     if link.exists() or link.is_symlink():
         if not (link.is_symlink() and link.resolve().is_relative_to(tools)):
-            raise SystemExit(f"{link} is not init's link to a pinned bazelisk ({link.resolve()}): move it, or set "
+            raise SystemExit(f"{link} is not the bootstrap's link to a pinned bazelisk ({link.resolve()}): move it, or set "
                              f"toolchain.bazel to a free path on PATH, then python3 tools/bootstrap.py")
         link.unlink()
     link.parent.mkdir(parents=True, exist_ok=True)
@@ -484,7 +484,9 @@ def cmd_check(a) -> int:
         f"python3 tools/bootstrap.py (links toolchain.bazel, {dev_config.get('toolchain.bazel')}); its directory on PATH")
     base = dev_config.get("workspace.base_venv")
     python = Path(base or "") / "bin" / "python"
-    row(bool(base) and python.exists(), f"workspace.base_venv: {base}", "bazel run //:init")
+    #: only the sibling repositories' commit hooks read it, until they join the graph: checked where it is set
+    row(not base or python.exists(), f"workspace.base_venv: {base}" if base else
+        "workspace.base_venv: unset (only the sibling repositories' commit hooks read one)", "bazel run //:init")
     if base and python.exists():
         drift = venv_drift(str(python))
         row(not drift, f"base venv carries requirements.lock{': drift ' + ' '.join(drift) if drift else ''}",
@@ -654,6 +656,21 @@ def cmd_dev_env(a) -> int:
     (site / ENV_PTH).write_text(f"{site_packages(Path(a.env))}\n")
     prefix = Path(dev_config.get("host.build_cache")) / "pycache"
     (site / "zz_rola_pycache.pth").write_text(f"import sys; sys.pycache_prefix = {str(prefix)!r}\n")
+
+    #: the environment's commands (ruff, pytest, ast-grep, ...) on the venv's own bin, run by its interpreter: a Python
+    #: entry script copied with this venv's interpreter on its first line, a native one linked; never pip, which would
+    #: install into a venv that holds nothing of its own
+    for tool in sorted((Path(a.env) / "bin").iterdir()):
+        target = venv / "bin" / tool.name
+        if target.exists() or tool.name.startswith("pip") or not tool.is_file():
+            continue
+        first, _, rest = tool.read_bytes().partition(b"\n")
+        if first.startswith(b"#!") and b"python" in first:
+            target.write_bytes(f"#!{venv / 'bin' / 'python'}".encode() + b"\n" + rest)
+            target.chmod(0o755)
+        else:
+            target.symlink_to(tool)
+
     wire_hooks(checkout)
     found = subprocess.run([str(venv / "bin" / "python"), "-c", "import json, rola, rola_devtools, rola_results, torch; "
                             "print(json.dumps({m.__name__: m.__file__ for m in (rola, rola_devtools, rola_results, torch)}))"],
@@ -937,7 +954,7 @@ def main() -> int:
     p.set_defaults(fn=cmd_container)
     a = ap.parse_args()
     if a.cmd not in BOOTSTRAP:
-        _from_base_venv()
+        _from_own_venv()
     return a.fn(a)
 
 
@@ -945,14 +962,14 @@ def main() -> int:
 BOOTSTRAP = ("init", "check", "show", "get", "clock", "dev-env", "worktree", "build")
 
 
-def _from_base_venv() -> None:
-    """Every other command runs from `workspace.base_venv`, re-executing this file there when another python started it:
-    the store and the container read `rola_results`, which only the venvs carry, never the host's own python."""
-    base = dev_config.get("workspace.base_venv")
-    python = Path(base or "") / "bin" / "python"
-    if not base or not python.is_file():
-        raise SystemExit(f"no base venv at workspace.base_venv ({base!r}): bazel run //:init")
-    if Path(sys.prefix).resolve() != Path(base).resolve():
+def _from_own_venv() -> None:
+    """Every other command runs from this checkout's own venv, re-executing this file there when another python started
+    it: the store and the container read `rola_results`, which the venv links, never the host's own python."""
+    own = checkout_venv(ROOT)
+    if own is None:
+        raise SystemExit(f"{ROOT.name} has no venv of its own to run this from: bazel run //:dev_env")
+    if Path(sys.prefix).resolve() != own.resolve():
+        python = own / "bin" / "python"
         os.execv(str(python), [str(python), str(Path(__file__).resolve()), *sys.argv[1:]])
 
 

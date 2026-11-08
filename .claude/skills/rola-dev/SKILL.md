@@ -1,6 +1,6 @@
 ---
 name: rola-dev
-description: Load before setting up or checking the dev environment, creating a worktree or venv, or when a tool cannot import rola_devtools: one command sets up, checks and describes a host or container.
+description: Load before setting up or checking the dev environment (python3 tools/bootstrap.py, bazel run //:init, //:check, //:dev_env, //:worktree), creating a worktree or venv, or when a tool cannot import rola_devtools: one command sets up, checks and describes a host or container.
 ---
 # The dev environment
 

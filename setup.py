@@ -742,8 +742,8 @@ setup(
     package_data={"rola.routing.entmax": ["PIN.json"]},
     extras_require=EXTRAS,
     #: ROLA_NO_EXTENSION=1 installs the Python package with NO extension build -- for a
-    #: worktree that receives a built _C from the integration checkout at the same
-    #: SHA (`python tools/dev.py worktree`); the device stamp still gates freshness.
+    #: Python-only package: the `rola` wheel (tools/wheels.py), which carries no binary;
+    #: the device stamp still gates freshness.
     ext_modules=[] if os.getenv("ROLA_NO_EXTENSION") == "1" else (
         [build_extension()] + ([build_parts_extension()] if os.getenv("ROLA_BUILD_PARTS") == "1" else [])),
     cmdclass={"build_ext": RoLABuildExtension},

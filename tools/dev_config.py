@@ -56,7 +56,7 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "clang_tidy": Key("path?", None, "a clang-tidy the machine's toolchain file may name, for the checkouts on this "
                           "machine whose commit hooks run it; this tree's unit lints run the graph's (@clang_tidy). A "
                           "loader refuses a key it does not declare, so it stays declared while machine files carry it"),
-        "bazel": Key("path", "~/.local/bin/bazel", "where init links `bazel`, the command the docs name, to the pinned "
+        "bazel": Key("path", "~/.local/bin/bazel", "where the bootstrap links `bazel`, the command the docs name, to the pinned "
                      "bazelisk (under host.tools_dir by its pin, never a machine key: every checkout loads this "
                      "machine's files, and an older loader refuses a key it does not declare): a path on PATH"),
     },

@@ -27,7 +27,9 @@ bootstrap), and `bazel run //:init` links the `workspace.devtools` checkout into
 <a id="bootstrap"></a>**Before the reader is importable.** The graph's front door (`bazel/front_door.py`) runs
 under the machine's `python3`, before any venv exists. `tools/bootstrap.py` reads one value the standard-library way --
 `workspace.devtools`, from `workspace.json` in the directory the reader's own rule names -- and the front door imports
-the reader and the host budget from that checkout. The sibling checkouts' location (`SIBLINGS`, the default of
+the reader and the host budget from that checkout. Run (`python3 tools/bootstrap.py`), it is the machine's one step
+outside the graph: it imports the reader the same way and runs `tools/dev.py`'s `install_bazelisk`, the pinned bazelisk
+and the `bazel` link, since nothing can `bazel run` before `bazel` exists. The sibling checkouts' location (`SIBLINGS`, the default of
 `store.root`, `workspace.suite` and `workspace.devtools`) is defined there once, for both.
 
 Each key's type, default and meaning are declared in `SCHEMA`. `bazel run //:show` prints every
