@@ -42,7 +42,7 @@ def compile_arm(arm: int, arch: str) -> Path:
     arch = arch or "sm_" + current().rsplit("-sm", 1)[1]
     cubin = dev_config.scratch("life_ranges") / f"carry_arm_{arm}.{arch}.cubin"
     root = Path(__file__).resolve().parents[1]
-    subprocess.run([dev_config.cuda_bin("nvcc"), "-O3", "-std=c++17", f"-arch={arch}", "--expt-relaxed-constexpr",
+    subprocess.run([dev_config.cuda_bin("nvcc"), "-O3", "-std=c++20", f"-arch={arch}", "--expt-relaxed-constexpr",
                     "-lineinfo", f"-DROLA_CARRY_BUILD_{arm}", "-I", "csrc/rola/src", "-I", "build/generated", "-cubin",
                     f"csrc/rola/src/instantiations/carry_arm_{arm}.cu", "-o", str(cubin)], cwd=root, check=True,
                    capture_output=True, timeout=1800)

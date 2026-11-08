@@ -170,10 +170,17 @@ ROLA_STRICT_MANIFEST = os.getenv("ROLA_STRICT_MANIFEST") == "1"
 #: every entry point refuses an arm the binary does not carry.
 #: docs/build.md.
 def _carry_arms() -> list[int]:
-    spec = os.getenv("ROLA_CARRY_ARMS", "").replace(",", " ").split()
+    return _family_arms(gen_shards.CARRY, gen_shards.CARRY_ARMS)
+
+
+def _family_arms(fam, rows) -> list[int]:
+    """A family's arm scope from ``ROLA_<FAMILY>_ARMS`` (indices into its declared rows, or ``all``); every row
+    unset."""
+    knob = f"ROLA_{fam.name.upper()}_ARMS"
+    spec = os.getenv(knob, "").replace(",", " ").split()
     if not spec:
-        return list(range(len(gen_shards.CARRY_ARMS)))
-    n = len(gen_shards.CARRY_ARMS)
+        return list(range(len(rows)))
+    n = len(rows)
     out: list[int] = []
     for tok in spec:
         if tok == "all":
@@ -182,9 +189,9 @@ def _carry_arms() -> list[int]:
         try:
             i = int(tok)
         except ValueError:
-            raise SystemExit(f"ROLA_CARRY_ARMS: {tok!r} is not an arm index or 'all'")
+            raise SystemExit(f"{knob}: {tok!r} is not an arm index or 'all'")
         if not 0 <= i < n:
-            raise SystemExit(f"ROLA_CARRY_ARMS: no such carry arm {i}; the list has "
+            raise SystemExit(f"{knob}: no such {fam.name} arm {i}; the list has "
                              f"{n} rows (0..{n - 1})")
         out.append(i)
     return sorted(set(out))
@@ -342,11 +349,11 @@ def _arch_subset_active() -> bool:
     return set(ROLA_CUDA_ARCHS) != set(TOOLCHAIN.archs())
 
 
-#: THE ITERATION ARM SUBSET FOR DECODE (KERNEL_STANDARDS section 7, D1b). Same
-#: mechanism as ``_carry_arms``, one family over: ``ROLA_DECODE_ARMS=5`` (or
+#: THE ITERATION ARM SUBSET FOR DECODE (KERNEL_STANDARDS section 7, D1b). The
+#: mechanism of ``_carry_arms``, one family over: ``ROLA_DECODE_ARMS=5`` (or
 #: ``5,13``) names rows of the decode family's declared arm list by index
-#: (``csrc/rola/src/decode/decode.cu``'s ``DECODE_ARM_<i>``, the ``d_v x D x decay``
-#: matrix in that order). The DEFAULT IS EVERY DECLARED ARM, so a plain build -- and
+#: (``tools/manifests/decode_set.json``, the ``d_v x D x decay`` matrix in that order),
+#: written to its generated selection header (``_write_decode_selection``). The DEFAULT IS EVERY DECLARED ARM, so a plain build -- and
 #: every gate build -- is the closed-world one. A subset binary is SELF-IDENTIFYING:
 #: ``rola.ops.decode.arms()`` lists exactly what was built and the launch refuses an
 #: arm the binary does not carry. Iteration builds pair it with
@@ -355,12 +362,12 @@ def _decode_arm_subset_active() -> bool:
     return bool(os.getenv("ROLA_DECODE_ARMS", "").strip())
 
 
-def _decode_arm_subset() -> list[str]:
-    spec = os.getenv("ROLA_DECODE_ARMS", "").replace(",", " ").split()
-    if not spec:
-        return []
-    rows = " ".join(f"DECODE_ARM_{int(i)}(X_)" for i in spec)
-    return [f"-DROLA_DECODE_ARMS(X_)={rows}"]
+def _write_decode_selection() -> None:
+    """Write `build/generated/decode_selection.inc` for THIS build's decode arm scope, as the carry's
+    (`_write_carry_selection`): included by `decode.cu` alone, never a flag on every unit's argv."""
+    gen_shards.GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+    text = gen_shards.decode_selection_header(_family_arms(gen_shards.DECODE, gen_shards.DECODE_ARMS))
+    gen_shards.write_if_changed(gen_shards.GENERATED_DIR / gen_shards.DECODE.header, text)
 
 
 #: THE EXTENSION LIVES IN THE TOOLCHAIN'S BINARY PLUGIN, ``rola_cu13`` (wheel naming D,
@@ -739,7 +746,7 @@ def build_extension():
     nvcc_threads = dev_config.get("host.nvcc_threads")
 
     nvcc_flags = build_flags.nvcc_flags(ROLA_CUDA_ARCHS, nvcc_threads) \
-        + list(build_flags.DEPFILE_FLAGS) + _decode_arm_subset()
+        + list(build_flags.DEPFILE_FLAGS)
     assert_no_ptx(nvcc_flags)
 
     ldflags = _link_flags()
@@ -798,6 +805,7 @@ class RoLABuildExtension(BuildExtension):
         pin = _gate_vendored()
         _gate_shards()
         _write_carry_selection()
+        _write_decode_selection()
         _write_carry_parts()
         gen_shards.write_builds(ROLA_CUDA_ARCHS)
         _write_csrc_stamp()

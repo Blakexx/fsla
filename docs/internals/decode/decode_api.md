@@ -44,9 +44,11 @@ launch bound is exactly the constant that drifts when it is written down twice. 
 arm: at one CTA an SM every arm runs at the same 128-register cap.
 
 <a id="arm-subset"></a><a id="roladecodearms"></a>**THE ARM LIST IS DATA, AND A BUILD MAY NAME A SUBSET OF IT.**
-the decode family's instantiation matrix is the product `d_v(2) x D(4) x decay(2)`, and
-`decode.cu` writes it out one row per arm (`DECODE_ARM_<i>`) so a BUILD can name a subset
-by index: `ROLA_DECODE_ARMS=5` compiles arm 5 and nothing else
+the decode family's instantiation matrix is the product `d_v(2) x D(4) x decay(2)`, declared
+one row per arm in `tools/manifests/decode_set.json` (an arm family of `tools/gen_shards.py`:
+[`../tools/gen_shards.md#families`](../tools/gen_shards.md#families)) so a BUILD can name a subset
+by index: `ROLA_DECODE_ARMS=5` compiles arm 5 and nothing else, through the generated
+`decode_selection.inc` that `decode.cu` alone includes
 ([`build.md#arm-subset`](../../build.md#arm-subset)). Instantiation is the dominant build
 resource, so this is what makes iterating on one arm cost one arm.
 
@@ -60,7 +62,7 @@ only the SOURCE of the candidate set — a list the build can cut, instead of th
 written into the call — and `matched` is `int_switch`'s own refusal mechanism, kept.
 
 **THE BUILT SET IS READ BACK OFF THE SAME LIST.** `rola_decode_arms()` expands
-`ROLA_DECODE_ARMS` a second time to push `[d_v, D, decay]` rows into a vector, so
+`ROLA_DECODE_ARM_SET_X` a second time to push `[d_v, D, decay]` rows into a vector, so
 `rola.ops.decode.arms()` cannot disagree with what was compiled — there is one list and
 both readings expand it. An arm the binary does not carry is a `STD_TORCH_CHECK` refusal
 naming the shape, never a silent miss.

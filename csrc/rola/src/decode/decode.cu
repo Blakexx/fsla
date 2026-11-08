@@ -30,6 +30,7 @@
 #include "common/phase_clock.cuh"
 #include "common/state_page.cuh"
 #include "decode.cuh"
+#include "decode_selection.inc"
 #include "decode_api.cuh"
 #include "decode_fold.cuh"
 #include "decode_lattice.cuh"
@@ -620,37 +621,11 @@ size_t decode_step_smem_bytes(int total_rows, int d_v, bool decay, int mask_tota
   return (amps + static_cast<size_t>(d_v) + fold + tables) * sizeof(float);
 }
 
-//: THE DECLARED ARM LIST, AS DATA. The decode family's instantiation matrix is -- see docs/internals/decode/decode.md#decode-arm-0
-#define DECODE_ARM_0(X_) X_(32, 1, 0)
-#define DECODE_ARM_1(X_) X_(32, 1, 1)
-#define DECODE_ARM_2(X_) X_(32, 2, 0)
-#define DECODE_ARM_3(X_) X_(32, 2, 1)
-#define DECODE_ARM_4(X_) X_(32, 3, 0)
-#define DECODE_ARM_5(X_) X_(32, 3, 1)
-#define DECODE_ARM_6(X_) X_(32, 4, 0)
-#define DECODE_ARM_7(X_) X_(32, 4, 1)
-#define DECODE_ARM_8(X_) X_(64, 1, 0)
-#define DECODE_ARM_9(X_) X_(64, 1, 1)
-#define DECODE_ARM_10(X_) X_(64, 2, 0)
-#define DECODE_ARM_11(X_) X_(64, 2, 1)
-#define DECODE_ARM_12(X_) X_(64, 3, 0)
-#define DECODE_ARM_13(X_) X_(64, 3, 1)
-#define DECODE_ARM_14(X_) X_(64, 4, 0)
-#define DECODE_ARM_15(X_) X_(64, 4, 1)
-
-#ifndef ROLA_DECODE_ARMS
-#define ROLA_DECODE_ARMS(X_) \
-  DECODE_ARM_0(X_) DECODE_ARM_1(X_) DECODE_ARM_2(X_) DECODE_ARM_3(X_)  \
-  DECODE_ARM_4(X_) DECODE_ARM_5(X_) DECODE_ARM_6(X_) DECODE_ARM_7(X_)  \
-  DECODE_ARM_8(X_) DECODE_ARM_9(X_) DECODE_ARM_10(X_) DECODE_ARM_11(X_)  \
-  DECODE_ARM_12(X_) DECODE_ARM_13(X_) DECODE_ARM_14(X_) DECODE_ARM_15(X_)
-#endif
-
 //: THE BUILT SET, READ BACK OFF THE SAME LIST: `[d_v, D, decay]` per arm, in the order -- see docs/internals/decode/decode.md#roladecodearms
 std::vector<std::vector<int64_t>> rola_decode_arms() {
   std::vector<std::vector<int64_t>> out;
-#define ROLA_DECODE_ROW(DV_, D_, DECAY_) out.push_back({DV_, D_, DECAY_});
-  ROLA_DECODE_ARMS(ROLA_DECODE_ROW)
+#define ROLA_DECODE_ROW(I_, DV_, D_, DECAY_) out.push_back({DV_, D_, DECAY_});
+  ROLA_DECODE_ARM_SET_X(ROLA_DECODE_ROW)
 #undef ROLA_DECODE_ROW
   return out;
 }
@@ -692,13 +667,13 @@ void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem
         <<<dim3(p.ctas), kDecodeThreads, smem, stream>>>(p);
   };
   bool matched = false;
-#define ROLA_DECODE_TRY(DV_, D_, DECAY_)                                                  \
+#define ROLA_DECODE_TRY(I_, DV_, D_, DECAY_)                                                  \
   if (!matched && d_v == (DV_) && p.D == (D_) && decay == ((DECAY_) != 0)) {               \
     matched = true;                                                                        \
     launch(std::integral_constant<int, (DV_)>{}, std::integral_constant<int, (D_)>{},      \
            std::integral_constant<bool, (DECAY_) != 0>{});                                 \
   }
-  ROLA_DECODE_ARMS(ROLA_DECODE_TRY)
+  ROLA_DECODE_ARM_SET_X(ROLA_DECODE_TRY)
 #undef ROLA_DECODE_TRY
   STD_TORCH_CHECK(matched, "this binary does not carry the decode arm (d_v = ", d_v, ", D = ", p.D,
                   ", decay = ", decay,

@@ -219,7 +219,7 @@ The compiled key is the family's own:
 | family | compiled key | runtime addressing |
 |---|---|---|
 | carry | the carve's operation-plan pair: `fold_rows, fold_factors, read_rows, read_factors, channels, same_split` (`tools/manifests/shipped_set.json`, [`build.md#carry-arm-lists`](build.md#carry-arm-lists)) | the box's per-level extents, the depth, the widths |
-| decode | `DV × D × decay` (`decode/decode.cu`'s `DECODE_ARM_<i>`) | the `(k, m)` lattice, the widths, the operand storage types |
+| decode | `DV × D × decay` (`tools/manifests/decode_set.json`) | the `(k, m)` lattice, the widths, the operand storage types |
 | intra | the depth, one or two levels | each level's width in 16-digit granules |
 | producer, facts pass | none: one instantiation each | every width, kind and offset, from the plan's job table or the layout |
 | entmax solves | the padded width class, alpha, the operand dtypes | the level table |

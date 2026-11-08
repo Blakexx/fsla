@@ -12,9 +12,9 @@ arm, and `carry/carry.cu` expands `ROLA_CARRY_ARM_SET_X` four times — the arm
 declarations, the launch dispatch through `arm_switch` ([`common/arm_switch.md`](common/arm_switch.md)),
 the census and the per-arm row listing — so the enumeration exists once and is
 single-sourced with the per-arm translation units it partitions into
-(`instantiations/README.md`). Decode's is `ROLA_DECODE_ARMS` in `decode/decode.cu`, an
-X-macro over the declared `(DV, D, decay)` rows, tried in order and refused by name if
-none matches.
+(`instantiations/README.md`). Decode's is `ROLA_DECODE_ARM_SET_X`, generated the same way
+(`decode_selection.inc` from `tools/manifests/decode_set.json`), an X-macro over the declared
+`(DV, D, decay)` rows, tried in order and refused by name if none matches.
 
 THE RULE BETWEEN THE TWO IS WHERE THE ENUMERATION LIVES. A launcher with a handful of
 axes and one kernel writes its selection here, in the one place its `<<<...>>>`

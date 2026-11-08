@@ -664,7 +664,7 @@ def measure_derivation(cases: dict) -> tuple[str, dict[str, str]]:
         #: derivation is invariant across the tabulated set -- every row carries the same
         #: register file -- so naming the smallest tabulated one measures the shipped
         #: derivation rather than pinning it to a part.
-        cmd = [cuda_bin("nvcc"), "-std=c++17", "-O0", "-arch=sm_80", f"-I{SRC}",
+        cmd = [cuda_bin("nvcc"), "-std=c++20", "-O0", "-arch=sm_80", f"-I{SRC}",
                str(src), "-o", str(exe)]
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
@@ -874,24 +874,15 @@ def _ninja_cuda_template() -> tuple[str, str, str] | None:
     return nvcc, cuda_cflags, cuda_post_cflags
 
 
-#: THE FLAGS A RATIFICATION MUST NEVER INHERIT FROM THE LAST BUILD. Both name WHAT WAS
-#: COMPILED rather than HOW, so inheriting either lets an ITERATION build narrow the next
-#: ratification to its own subset and then pass, because the gate would be comparing its
-#: own narrowed output against the manifest it just wrote from it.
-#:   * `-gencode` names the TARGETS: inheriting it made `ROLA_CUDA_ARCHS=86` silently
-#:     narrow the next ratification to sm_86.
-#:   * `-DROLA_DECODE_ARMS(...)` names the ARM SUBSET, and it is the same bug found the
-#:     same way (2026-08-27): after `ROLA_DECODE_ARMS=5 setup.py build_ext`, this gate
-#:     inherited the define and wrote a manifest of 393 entries carrying ONE decode arm,
-#:     while the `.so` a full build had linked carried all sixteen. Every other property
-#:     the gate checks was green. docs/build.md#arm-subset
-_NOT_INHERITED_PREFIXES = ("-DROLA_DECODE_ARMS",)
+#: THE FLAGS A RATIFICATION MUST NEVER INHERIT FROM THE LAST BUILD name WHAT WAS COMPILED rather than HOW, so
+#: inheriting one lets an ITERATION build narrow the next ratification to its own subset and then pass. `-gencode` names
+#: the TARGETS: inheriting it made `ROLA_CUDA_ARCHS=86` silently narrow the next ratification to sm_86. No arm subset
+#: is a flag: every family's selection is a generated header this gate writes for its own scope (docs/build.md#arm-subset).
 
 
 def _without_gencode(flags: list[str]) -> list[str]:
     """`flags` with every `-gencode` dropped, in both of nvcc's spellings
-    (`-gencode=...` and a separated `-gencode ...`), and with every flag naming WHAT
-    was compiled rather than HOW (:data:`_NOT_INHERITED_PREFIXES`) dropped with it."""
+    (`-gencode=...` and a separated `-gencode ...`)."""
     out: list[str] = []
     drop_next = False
     for f in flags:
@@ -902,8 +893,6 @@ def _without_gencode(flags: list[str]) -> list[str]:
             drop_next = True
             continue
         if f.startswith(("-gencode=", "--generate-code=")):
-            continue
-        if f.startswith(_NOT_INHERITED_PREFIXES):
             continue
         out.append(f)
     return out
@@ -1192,6 +1181,8 @@ def measure_units(arches, objdir: str, sources: list[Path], arms=None,
                                     gen_shards.carry_selection_header(want_arms))
         gen_shards.write_if_changed(gen_shards.GENERATED_DIR / gen_shards.CARRY_PARTS_INC,
                                     gen_shards.carry_parts_header(gen_shards.CARRY_PARTS, ()))
+        gen_shards.write_if_changed(gen_shards.GENERATED_DIR / gen_shards.DECODE.header,
+                                    gen_shards.decode_selection_header(range(len(gen_shards.DECODE_ARMS))))
         gen_shards.write_builds(arches)
     #: AND THE CSRC STAMP, for the same reason and from the same function `setup.py`
     #: calls: the stamp sites include it, so a gate that did not write it would

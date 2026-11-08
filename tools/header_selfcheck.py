@@ -53,10 +53,13 @@ def compile_flags(arch: int) -> list[str]:
     import torch
     from torch.utils.cpp_extension import include_paths
 
-    flags = ["-O0", "-std=c++17", f"-gencode=arch=compute_{arch},code=sm_{arch}"]
+    flags = ["-O0", "-std=c++20", f"-gencode=arch=compute_{arch},code=sm_{arch}"]
     flags += build_flags.torch_defines()
     flags += [f"-I{p}" for p in include_paths(device_type="cuda")]
-    flags += [f"-I{SRC / 'src'}", f"-I{ROOT / 'csrc' / 'third_party' / 'cutlass' / 'include'}"]
+    #: the build's own include path: the generated headers (`build/generated`, written by every build) are includes a
+    #: header makes, not ones it leans on
+    flags += [f"-I{SRC / 'src'}", f"-I{ROOT / 'csrc' / 'third_party' / 'cutlass' / 'include'}",
+              f"-I{ROOT / 'build' / 'generated'}"]
     import sysconfig
     flags.append(f"-I{sysconfig.get_paths()['include']}")
     del torch

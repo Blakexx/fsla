@@ -11,12 +11,24 @@ carries it, what the selection header says about it, what the ratification's `sh
 block records. The split is what lets `setup.py`'s post-build check compare the two as
 independent statements instead of restating one twice.
 
+<a id="families"></a>
+## Arm families
+
+Every kernel with declaration arms plugs in as an ARM FAMILY (`ArmFamily`): its key, its declared rows
+(`tools/manifests/<family>_set.json`, the carry's `shipped_set.json`), the generated selection header a build's subset
+is written to and who includes it. The reader, the refusals, the selection header (`ROLA_<FAMILY>_BUILT`,
+`ROLA_<FAMILY>_BUILD_<i>`, the arm set `ROLA_<FAMILY>_ARM_SET_X` with its counts) and its schema self-test are one code
+path over the family; a build's scope comes from `ROLA_<FAMILY>_ARMS` (`setup.py`'s `_family_arms`), never a flag on
+every unit's argv. The families: `carry` (one translation unit an arm group, below) and `decode` (one unit,
+`decode/decode.cu`).
+
 ## What it produces
 
 | output | checked in? | written by | consumed by |
 |---|---|---|---|
 | `csrc/rola/src/instantiations/carry_arm_<i>.cu` | yes — what is reviewed is what compiles | `--write` | the build's source list |
 | `build/generated/carry_selection.inc` | never | `setup.py`, `tools/ratify.py`, on every run | the per-arm TUs, the carry dispatch TU, `common/arm_switch.cuh` |
+| `build/generated/decode_selection.inc` | never | `setup.py`, `tools/ratify.py`, on every run | `decode/decode.cu` |
 | `build/generated/builds.inc` | never | `write_builds`, from `setup.py` and `tools/ratify.py` on every run | `common/select.cuh` ([`../common/select.md#carried`](../common/select.md#carried)) |
 | the `shards` block | recorded in each `tools/manifests/<toolchain>/sm_XX.json` | `tools/ratify.py --write` | the manifest digest |
 
