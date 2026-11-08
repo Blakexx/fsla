@@ -26,7 +26,10 @@
 #include "common/torch_seam.cuh"
 #include <cuda_bf16.h>
 
+#include <algorithm>
+
 #include "common/arch_runtime.cuh"
+#include "common/select.cuh"
 #include "common/phase_clock.cuh"
 #include "common/state_page.cuh"
 #include "decode.cuh"
@@ -857,10 +860,14 @@ int64_t rola_decode_capacity() { return kDecodeMaxLevelWidth; }
 //: The MIRRORED copy of the producer's `MAX_BRANCH_WIDTH`, bound separately -- see docs/internals/decode/decode.md#rola-decode-producer-width-mirror
 int64_t rola_decode_producer_width_mirror() { return kProducerMaxBranchWidth; }
 
-//: THE STEP'S DECLARED RESIDENCY, in CTAs per SM, read off the same `constexpr` -- see docs/internals/decode/decode.md#rola-decode-residency
-int64_t rola_decode_residency() {
-  check_arch_table();
-  return kDecodeBlocksPerSm;
+//: THE STEP'S RESIDENT GRID on `device`'s card: one wave of the declared residency, at most `bh` heads' unit supply.
+//: -- see docs/internals/decode/decode_api.md#ctas
+int64_t rola_decode_ctas(int64_t unit_ceiling, int64_t bh, int64_t device) {
+  const Card& card = card_of(static_cast<int>(device));
+  const int64_t supply =
+      std::max<int64_t>(1, (unit_ceiling + kDecodeUnitsPerCta - 1) / kDecodeUnitsPerCta);
+  return std::max<int64_t>(1,
+                           std::min<int64_t>(int64_t{card.sms} * kDecodeBlocksPerSm, bh * supply));
 }
 
 //: THE BUILD STAMP: a path or hash check cannot catch a stale `.so` at the right path, -- see docs/internals/decode/decode.md#roladecodebuildstamp

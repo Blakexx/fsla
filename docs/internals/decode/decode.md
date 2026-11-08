@@ -615,8 +615,8 @@ bounded by the LEVEL WIDTHS and the OWNER-GRID EXTENTS, never by the leaf space 
 the state. The leaf-space bitmap this design replaced (`DELETIONS.md`) did carry a term in `N`.
 
 <a id="the-split-policy"></a>**THE GRID IS ONE WAVE OF THE DECLARED RESIDENCY**, work
-permitting: `rola.ops.decode.derive_ctas` takes `SMs * residency`, with the residency read back
-off the launch bound itself ([`decode_api.md` §2](decode_api.md#residency)), bounded above by
+permitting: the binary's `rola_decode_ctas` takes the card's `SMs * residency`, the residency the launch bound
+itself ([`decode_api.md`](decode_api.md#ctas)), bounded above by
 `BH` times the unit supply, so a small topology does not launch CTAs with nothing to claim. A
 second wave would pay a head's prologue for work the resident CTAs could claim. Both bounds are
 static facts, frozen for the sequence and baked into a captured launch.
@@ -900,7 +900,7 @@ Each declaration below is documented by the page that owns its mechanism.
   [`decode_lattice.md#the-refusals`](decode_lattice.md#the-refusals)
 - <a id="decode-arm-0"></a>the declared arm list: [`decode_api.md#arm-subset`](decode_api.md#arm-subset)
 - <a id="roladecodearms"></a>`rola_decode_arms`: [`decode_api.md#arm-subset`](decode_api.md#arm-subset)
-- <a id="rola-decode-residency"></a>`rola_decode_residency`: [`decode_api.md#residency`](decode_api.md#residency)
+- <a id="rola-decode-ctas"></a>`rola_decode_ctas`: [`decode_api.md#ctas`](decode_api.md#ctas)
 - <a id="note-l1083"></a>the two backings' validation: [`decode_api.md#paged-state`](decode_api.md#paged-state)
 - <a id="note-l1131"></a>the admission buffers: [`decode_api.md#the-step`](decode_api.md#the-step)
 - <a id="launch"></a>the one launch site: [`dispatch_switch.md#one-launch`](../dispatch_switch.md#one-launch)

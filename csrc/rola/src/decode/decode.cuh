@@ -49,6 +49,9 @@ constexpr int kDecodeResidentThreads = 512;  // CTA/SM residency; decode.md#kdec
 enum DecodePhase : int { kPhFold, kPhFactor, kPhAdmit, kPhWalk, kPhCombine, kDecodePhases };
 
 constexpr int kDecodeBlocksPerSm = kDecodeResidentThreads / kDecodeThreads;
+//: THE SMALLEST UNIT SHARE worth a CTA's prologue (its fold and factor tables): the grid's supply bound.
+//: -- see docs/internals/decode/decode.md#the-split-policy
+constexpr int kDecodeUnitsPerCta = 16;
 
 constexpr int kAtomShift =
     rola::carry::geom_ilog2(kAtomLeaves);  // shift+mask; decode.md#katomshift

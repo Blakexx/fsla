@@ -11,8 +11,8 @@ rather than a switch over compute capabilities in each kernel.
 <a id="card-of"></a>
 ## `card_of(device)`, `current_card()`
 
-A device's `Card`: its compute capability, its product row (`kProducts`' index, -1 where the device has none), the
-build it runs and that build's traits. The first call for a device ADMITS it -- the closed-world checks
+A device's `Card`: its compute capability, its product row (`kProducts`' index, -1 where the device has none), its SM
+count (the driver's: a product's SKUs differ in it, so no table holds it), the build it runs and that build's traits. The first call for a device ADMITS it -- the closed-world checks
 ([`arch_runtime.md#check-arch-table`](arch_runtime.md#check-arch-table)): its architecture tabulated, the
 driver's numbers its row's, and its build one this binary carries -- and keeps the card; every later call is a lookup.
 A device whose build the binary does not carry is refused by name with the builds it does carry, so an architecture is

@@ -46,7 +46,6 @@ from rola.routing import quant
 from rola.routing.types import Topology
 
 __all__ = [
-    "C_DECODE_UNITS_PER_CTA",
     "DecodeScratch",
     "arms",
     "derive_ctas",
@@ -66,13 +65,6 @@ def arms() -> tuple[tuple[int, int, bool], ...]:
     here rather than mis-launching it (``docs/build.md``).
     """
     return tuple((int(dv), int(d), bool(decay)) for dv, d, decay in extension().rola_decode_arms())
-
-
-#: THE SMALLEST UNIT SHARE worth a CTA's prologue. A CTA pays the fold and the factor
-#: tables before it can walk anything, so splitting past this point buys parallelism the
-#: replicated prologue immediately spends. It bounds the split on SMALL topologies, where
-#: the wave below is not the binding constraint.
-C_DECODE_UNITS_PER_CTA = 16
 
 
 #: THE PHASE LEDGER'S SHAPE: `[ctas][warps][phases]`, the kernel's own `DecodePhase` order.
@@ -176,9 +168,9 @@ def derive_ctas(widths, lattice_k: int, lattice_m: int, *, BH: int, device) -> i
     waited for a second wave would pay a head's prologue for work the resident CTAs could
     claim; the supply bound keeps a small topology from launching CTAs with nothing to claim.
 
-    The residency comes from :func:`rola.ops._ext.extension().rola_decode_residency`, i.e.
-    off the same ``constexpr`` the kernel's ``__launch_bounds__`` are built from: a python
-    mirror of a launch bound is exactly the constant that drifts.
+    The binary answers (`rola_decode_ctas`, docs/internals/decode/decode_api.md#ctas): the card's SMs
+    times the residency the kernel's ``__launch_bounds__`` are built from, and the supply bound,
+    so no hardware fact and no launch bound is read or mirrored here.
     """
     #: THE UNIT CEILING, from the box's spans: a walk unit's leaves are the innermost
     #: level's run, so ``N / s_{D-1}`` is the unit count exactly wherever the atom
@@ -188,10 +180,8 @@ def derive_ctas(widths, lattice_k: int, lattice_m: int, *, BH: int, device) -> i
     dev = torch.device(device)
     if dev.type != "cuda":
         return 1
-    sms = torch.cuda.get_device_properties(dev).multi_processor_count
-    residency = extension().rola_decode_residency()
-    supply = max(1, math.ceil(unit_ceiling / C_DECODE_UNITS_PER_CTA))
-    return max(1, min(sms * int(residency), BH * supply))
+    index = torch.cuda.current_device() if dev.index is None else dev.index
+    return int(extension().rola_decode_ctas(int(unit_ceiling), int(BH), index))
 
 
 @dataclass(slots=True)

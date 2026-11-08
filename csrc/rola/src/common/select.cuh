@@ -14,9 +14,10 @@ using ::denseref::arch::BuildTag;
 using ::denseref::arch::Traits;
 using ::denseref::arch::traits_of;
 
-//: A DEVICE'S CARD: its product row (-1 where it has none), the build it runs and that build's traits.
+//: A DEVICE'S CARD: its product row (-1 where it has none), its SMs (the driver's), the build it runs and that build's
+//: traits.
 struct Card {
-  int device, cc, product;
+  int device, cc, product, sms;
   Build build;
   Traits traits;
 };

@@ -36,12 +36,13 @@ separate claim from the capacity is [`decode.md`
 §33](decode.md#producer-width-mirror), and the capacity gate itself is
 [`decode.md` §6](decode.md#level-width-capacity).
 
-<a id="residency"></a><a id="roladecoderesidency"></a>`rola_decode_residency()` returns the step's DECLARED CTAs per SM,
-read off the same `constexpr` the kernel's `__launch_bounds__` are built from. The host's
-grid policy sizes ONE WAVE from it ([`decode.md` §30](decode.md#declared-residency)), and it
-is bound rather than mirrored in Python for the reason the whole bound surface exists: a
-launch bound is exactly the constant that drifts when it is written down twice. It takes no
-arm: at one CTA an SM every arm runs at the same 128-register cap.
+<a id="ctas"></a>`rola_decode_ctas(unit_ceiling, bh, device)` returns the step's resident grid on `device`'s
+card: ONE WAVE of the declared residency -- the card's SMs (the driver's) times `kDecodeBlocksPerSm`, the
+`constexpr` the kernel's `__launch_bounds__` are built from ([`decode.md` §30](decode.md#declared-residency)) --
+bounded above by `bh` times the unit supply, `ceil(unit_ceiling / kDecodeUnitsPerCta)` and at least one
+([`decode.md`](decode.md#the-split-policy)). The caller passes its box's unit ceiling, a fact of the declaration, and
+no hardware fact: the policy, the SM count and the launch bound all live beside the kernel, so none is written down
+twice. It takes no arm: at one CTA an SM every arm runs at the same 128-register cap.
 
 <a id="arm-subset"></a><a id="roladecodearms"></a>**THE ARM LIST IS DATA, AND A BUILD MAY NAME A SUBSET OF IT.**
 the decode family's instantiation matrix is the product `d_v(2) x D(4) x decay(2)`, declared
