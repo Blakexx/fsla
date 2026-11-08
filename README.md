@@ -231,10 +231,10 @@ documented in [`docs/measurement.md`](docs/measurement.md).
 ## Tests
 
 ```bash
-pytest tests/unit tests/oracle -m "not cuda"    # CPU: no device, no build
-pytest tests/oracle                             # kernels vs the fp64/torch baselines
-pytest tests/integration                        # composition, dispatch, two-branches-agree
-pytest tests/unit                               # each file's public contract
+bazel test //tests:cpu                          # each unit's public contract, with no device
+bazel test //tests:unit_cuda                    # the unit tier's CUDA-marked rows
+bazel test //tests:oracle                       # kernels vs the fp64/torch baselines
+bazel test //tests:integration                  # composition, dispatch, two-branches-agree
 python tools/ratify.py --arch 80 --arch 86              # ratification, no GPU needed
 python tools/ratify.py --self-test                      # prove the gate can fail
 ```

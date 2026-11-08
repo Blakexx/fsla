@@ -5,9 +5,9 @@ sets and the hermetic CUDA toolkit), `.bazelrc` (the graph's settings), `.bazelv
 release and its digest), `bazel/` (the graph's machinery: its rules, the environment, the platform and the scripts its
 actions run) and `bazel/bazel` (the front door); each `BUILD.bazel` sits beside what it describes. The graph builds the
 extension (`//:library`, [below](#compile)), gates it ([below](#gates)) and runs the checks ([below](#checks)).
-The commit gate is `bazel test //:gate` (`tools/git-hooks/pre-commit`, on the commit as git will write it). Beside the
-graph, `setup.py` builds the extension too ([`build.md`](build.md)) with ratify's recompile and the wheels, pytest
-runs the tests, and CI runs the lints' tools directly. Measurement is
+The commit gate is `bazel test //:gate` (`tools/git-hooks/pre-commit`, on the commit as git will write it), and the
+test tiers are its targets too ([below](#checks)). Beside the graph, `setup.py` builds the extension too
+([`build.md`](build.md)) with ratify's recompile and the wheels, and CI runs the lints' tools directly. Measurement is
 `rola_devtools.build`'s
 ([`measurement.md`](measurement.md)), whose timing sessions hold the GPU and the clock as machine-wide counting
 semaphores, which Bazel cannot do for an action.
@@ -133,10 +133,11 @@ index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
   compile database from the same commands, for the first ratified architecture.
 - THE TEST TIERS (`//tests:cpu`, `unit_cuda`, `oracle`, `integration`; `//:lane` all four; `bazel/defs.bzl`'s
   `pytest_tier`): each tier one target, as pytest runs it ([`testing.md`](testing.md#running-it)), over the tree and the
-  built library copied into a real tree. The CPU tier is sharded by Bazel's protocol (`bazel/pytest_shards.py`) and sees
-  no device; a device tier runs alone and outside the sandbox, taking the machine's GPU lock itself. `--test_filter` is
-  pytest's `-k`, `--test_arg` passes pytest an argument. Every tier reads the machine's dev config: its GPU lock, and
-  the installed toolkit `tests/unit`'s compiling rows still use.
+  built library copied into a real tree, outside the sandbox (the machine's locks live in `/tmp`). The CPU tier is
+  sharded by Bazel's protocol (`bazel/pytest_shards.py`), each shard drawing a host slot, and sees no device; a device
+  tier runs alone, takes the machine's GPU lock itself, and has the devices' identity among its inputs (`@host_gpu`).
+  `--test_filter` is pytest's `-k`, `--test_arg` passes pytest an argument. Every tier reads the machine's dev config:
+  its locks, and the installed toolkit the unit tier's compiling rows still use.
 - THE CHECKS OF THE COMMIT (`//tools:commit_checks`, `bazel/defs.bzl`'s `checkout_test`): what git knows rather than
   a file set -- no ratchet's baseline grown against HEAD's (`tools/lint/ratchet.py --grown`), every doc reference
   resolving (`tools/docrefs.py`), the dev container current (`tools/dev.py container gate`). Each runs in the
@@ -163,8 +164,8 @@ names one).
 4. EVERY TOOL AN ACTION RUNS IS DECLARED: hermetic (the toolkit), or its identity is an input of the actions that run
    it (the host C++ compiler's version). A tool the graph does not see is one whose change shares stale results between
    machines.
-5. A GPU TEST'S RESULT IS THE MACHINE'S: its key carries the device's identity, so a pass is never replayed from
-   another machine; it takes the machine's GPU lock itself, since Bazel serializes tests only within one invocation and
+5. A GPU TEST'S RESULT IS THE MACHINE'S: its key carries the devices' identity (`@host_gpu`: each one's name, UUID,
+   driver and compute capability, read at every fetch), so a pass is never replayed for another device; it takes the machine's GPU lock itself, since Bazel serializes tests only within one invocation and
    every worktree runs its own server.
 6. NO VOLATILE STAMP IN A COMPILE: the commit and other status reach only the final records (the build record, the
    wheels' metadata), never an action whose output is reused.
@@ -174,10 +175,10 @@ names one).
 9. WORKSPACES AND OUTPUT BASES LIVE ON THE LINUX DISK, never under `/mnt` (WSL's Windows mounts: slow, and file
    watching is undefined there).
 10. THE SANDBOX STAYS ON: Bazel 9's hermetic `/tmp` keeps nvcc's temporary files apart, so nothing runs
-    `--spawn_strategy=local` to dodge it. Two kinds of work leave it: the arm gate, because it imports the
+    `--spawn_strategy=local` to dodge it. Three kinds of work leave it: the arm gate, because it imports the
     environment's packages from the store, which the sandbox does not hold (the store path on its command line carries
-    the environment's key); the checks of the commit, whose input is the checkout itself (rule 15); and the device
-    test tiers, which share the machine's GPU lock in `/tmp`, a sandbox's own.
+    the environment's key); the checks of the commit, whose input is the checkout itself (rule 15); and the test
+    tiers, which take the machine's locks in `/tmp`, a sandbox's own.
 11. CUDA THROUGH RULES_CUDA'S OWN SETTINGS: the architectures through `--@rules_cuda//cuda:archs`, one spec a card
     (cubins only, no PTX); a host compile flag reaches nvcc's host pass only through rules_cuda's host options; an external repository's
     headers through the target's include options.

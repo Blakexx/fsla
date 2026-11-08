@@ -274,8 +274,8 @@ bazel test //:lane                  # all four
 bazel test //tests:oracle --test_filter=carry_fold --test_output=streamed   # some of a tier, by pytest's -k
 ```
 
-Every tier imports the built library -- `rola` refuses to import without its binary -- so a source change rebuilds it
-first. The CPU tier is `tests/unit` alone: an oracle or integration row needs the device whatever its marker (with none
+Every tier takes the built library -- collecting a tier reaches the plugin (a module that calls a kernel's entry at
+import) -- so a source change rebuilds it first. The CPU tier is `tests/unit` alone: an oracle or integration row needs the device whatever its marker (with none
 visible, such rows fail rather than skip), so the oracle tier runs `tests/oracle` whole.
 
 **The commit lane is the whole battery above, inside five minutes.** The build-shape gates and `tools/ratify.py` run
@@ -286,8 +286,9 @@ lane run on their own cadence, never per-commit. **Never `pytest tests/` unscope
 `tools/sanitize_oracle.py`, rola-devtools' build system for a target that holds the GPU — through `gpu_lock()`
 (`rola_devtools.locks.gpu`): shared for correctness runs, exclusive for measurement. Invoke them BARE: an external
 `flock` on the lock's path around a self-locking tool deadlocks, and a lint rule in `tools/lint/lint_standards.py`
-refuses one on a command line. A device tier runs alone (`exclusive`) and outside the sandbox: the lock lives in
-`host.lock_dir`, `/tmp` by default, and a sandboxed test's `/tmp` is its own.
+refuses one on a command line. A tier runs outside the sandbox, since the locks it takes live in `/tmp` by default
+(the GPU lock `host.gpu_lock`, the host budget's slots in `host.lock_dir`) and a sandboxed test's `/tmp` is its own;
+a device tier runs alone (`exclusive`), and each shard of a sharded tier draws a host slot, as an xdist worker does.
 
 **THE `cuda` MARKER IS NOT THE LOCK'S QUESTION.** The marker's job is *collection-time deselection* — it lets the first
 tier avoid initializing a CUDA context at all. It is **not** a device partition: `tests/integration` carries rows that

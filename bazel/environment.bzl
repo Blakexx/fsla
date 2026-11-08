@@ -1,6 +1,7 @@
 """THE GRAPH'S ENVIRONMENT: the repositories made from the tree's pins and its index -- the Python environment built
 from requirements.lock and the pinned rola-devtools into the shared store (`@rola_env`), the pinned linker (`@mold`),
-the pinned clang-tidy (`@clang_tidy`), the host C++ compiler's identity (`@host_cc`), the toolkit's disassemblers
+the pinned clang-tidy (`@clang_tidy`), the host C++ compiler's and devices' identities (`@host_cc`, `@host_gpu`),
+the toolkit's disassemblers
 and cuRAND's headers (`@cuda_tools`), and the checkout's tracked files (`@rola_tree`). Docs: docs/build-graph.md#environment."""
 
 _ENV_BUILD = """\
@@ -165,6 +166,26 @@ _host_cc_repo = repository_rule(
     doc = "The host C++ compiler's version and digests, as a header every compile takes as an input.",
 )
 
+def _host_gpu_impl(rctx):
+    smi = rctx.which("nvidia-smi")
+    if smi:
+        #: read again when the driver moves: its tools move with it
+        rctx.watch(smi)
+        found = rctx.execute([smi, "--query-gpu=index,name,uuid,driver_version,compute_cap,memory.total", "--format=csv,noheader"])
+        identity = found.stdout if found.return_code == 0 else "nvidia-smi failed: %s\n" % found.stderr
+    else:
+        identity = "no device: nvidia-smi is not on PATH\n"
+    rctx.file("identity.txt", "# THE MACHINE'S DEVICES, an input of every device test tier (docs/build-graph.md#rules)\n" + identity)
+    rctx.file("BUILD.bazel", 'exports_files(["identity.txt"], visibility = ["//visibility:public"])\n')
+
+_host_gpu_repo = repository_rule(
+    implementation = _host_gpu_impl,
+    #: read at every fetch, so a device swapped under one driver is the key's too
+    local = True,
+    doc = "The machine's devices (each one's name, UUID, driver and compute capability), an input of every device " +
+          "test tier: a pass is the device's, never replayed for another.",
+)
+
 _CUDA_TOOLS_BUILD = """\
 package(default_visibility = ["//visibility:public"])
 
@@ -244,6 +265,7 @@ def _environment_impl(mctx):
         binary = "clang_tidy/data/bin/clang-tidy",
     )
     _host_cc_repo(name = "host_cc")
+    _host_gpu_repo(name = "host_gpu")
     _tree_repo(name = "rola_tree")
     for module in mctx.modules:
         for tag in module.tags.cuda_tools:
@@ -258,5 +280,5 @@ environment = module_extension(
         }),
     },
     doc = "The graph's environment: the Python environment, the pinned linker and clang-tidy, the host compiler's " +
-          "identity, the toolkit's disassemblers and the checkout's tracked files.",
+          "and devices' identities, the toolkit's disassemblers and the checkout's tracked files.",
 )

@@ -220,19 +220,20 @@ def _gpu_lock_held():
         yield
 
 
-#: THE HOST-COMPUTE BUDGET, PER XDIST WORKER (LOCKS brief item 1: "a pytest
-#: tier that forks workers draws 1 per worker"). `PYTEST_XDIST_WORKER` is set
-#: by `pytest-xdist` in every worker process (never in the controller), so a
-#: bare `pytest` run (no `-n`) draws nothing here -- only a forked worker
-#: competes with compiles/sanitizer runs/clang-tidy passes for the shared pool.
+#: THE HOST-COMPUTE BUDGET, PER PARALLEL PROCESS ("a pytest tier that forks
+#: workers draws 1 per worker"): an xdist worker (`PYTEST_XDIST_WORKER`, never
+#: the controller) or one of a sharded tier's shards (`--bazel-shard`,
+#: bazel/pytest_shards.py) competes with compiles, sanitizer runs and clang-tidy
+#: passes for the shared pool; a single process draws nothing.
 @pytest.fixture(scope="session", autouse=True)
-def _host_budget_worker_slot():
-    if "PYTEST_XDIST_WORKER" not in os.environ:
+def _host_budget_worker_slot(request):
+    worker = os.environ.get("PYTEST_XDIST_WORKER") or request.config.getoption("--bazel-shard", None)
+    if worker is None:
         yield
         return
     from rola_devtools.locks import host
 
-    with host.acquire(1, label=f"pytest-worker:{os.environ['PYTEST_XDIST_WORKER']}"):
+    with host.acquire(1, label=f"pytest-worker:{worker}"):
         yield
 
 

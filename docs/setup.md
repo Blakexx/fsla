@@ -179,13 +179,10 @@ their SASS) needs only the toolchain, not a matching physical GPU — see
 ## 5. Run the battery
 
 ```bash
-pytest tests/unit tests/oracle -m "not cuda"                       # CPU-only, no device, no build
-pytest tests/unit -m cuda                 # tests/unit's CUDA-marked rows
-pytest tests/oracle                       # kernels vs the fp64/torch baselines
-pytest tests/integration                  # composition, dispatch, two-branches-agree
+bazel test //:lane     # every test tier: cpu, unit_cuda, oracle, integration
 ```
 
-This is the same battery `docs/testing.md` "Running it" names; the session-scoped
+This is the battery `docs/testing.md` "Running it" names; the session-scoped
 `gpu_lock()` fixture in `tests/conftest.py` serializes GPU-touching runs the
 way it does on the bare host — the container adds no scheduling of its own. Expect
 ~3.6 min total on hardware comparable to this repo's dev box (`docs/testing.md`,

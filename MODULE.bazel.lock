@@ -209,7 +209,7 @@
   "moduleExtensions": {
     "//bazel:environment.bzl%environment": {
       "general": {
-        "bzlTransitiveDigest": "VyMAP/jPEqvjnbIRY8xr53E1Axrr1Sebp3pd+ebwspc=",
+        "bzlTransitiveDigest": "8IxaJgEsa2Jv0liAn72bBDnm3OC0REJTFoRoZ29oP8k=",
         "usagesDigest": "50ipahcHiZ1flVNymIAPON0AinL6WPn1jhiL28PUv5A=",
         "recordedInputs": [],
         "generatedRepoSpecs": {
@@ -234,6 +234,10 @@
           },
           "host_cc": {
             "repoRuleId": "@@//bazel:environment.bzl%_host_cc_repo",
+            "attributes": {}
+          },
+          "host_gpu": {
+            "repoRuleId": "@@//bazel:environment.bzl%_host_gpu_repo",
             "attributes": {}
           },
           "rola_tree": {
