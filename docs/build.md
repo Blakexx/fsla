@@ -33,7 +33,7 @@ whose architectures are not the toolchain's ratified set is an ITERATION build, 
 and skips the post-build ratify, which could only warn; the arm table, the SASS gate (each function's registers on
 its line) and the device stamp still run. The SASS gate replays an unchanged cubin's verdict
 ([`sass_gate.md#cache`](internals/tools/sass_gate.md#cache)), so an iteration build's time is the changed units' compile
-and their cubins' read (event:2026-11-01-p88-the-iteration-build-s-cost-is-the-post-build-sas).
+and their cubins' read.
 
 A build's PARAMETERS -- what one build is -- are environment variables set per invocation, because pip passes
 nothing else to `setup.py`. Everything about the MACHINE is the dev config (`tools/dev_config.py`,

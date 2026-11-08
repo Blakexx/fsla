@@ -49,6 +49,8 @@ once, with every amendment folded in; the numbers are permanent, so a citation n
   tense, in the library's own terms: never a past state, a superseded mechanism, a stage or campaign identifier, or a
   comparison to what was. Derivations and why-not-the-other-form prose live in `docs/internals/`, which mirrors
   `csrc/`.
+- THE REPO IS ONE ATOMIC DESIGN: its docs are its whole current state and reference nothing outside it -- no log, plan
+  or tracker -- save another design cited as the reason ours differs.
 - DOCS ARE CURRENT TRUTH: a doc states what is; the past appears only as the rationale for the current shape. Removals
   are recorded in `docs/internals/DELETIONS.md` and git, and nowhere else.
 

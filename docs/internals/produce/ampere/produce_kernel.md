@@ -63,8 +63,7 @@ at `M` column tiles, at most four (two at 256 columns, four at 128 and at 64), s
 stage (8 KB at 64 columns) and its x rows follow them (to 8 KB), and one for a wide union's 512 columns (16 KB) -- 64
 MMAs a warp between barriers at 128 and 256 columns, with each tile's A fragment loaded a tile ahead of its MMAs
 (`mma_stage`). Two k-steps a stage, not one, because a warp issues in order: at one the 256-column class barriered
-every 32 MMAs and issued its 17 `ldmatrix` in one burst ahead of them
-(event:2026-11-01-p90-the-producer-at-2-88-ms-two-k-steps-a-stage-at-2). A row is 32 S bytes in 16-byte chunks, chunk `c`
+every 32 MMAs and issued its 17 `ldmatrix` in one burst ahead of them (measured 2026-11-01: two k-steps a stage, 2.88 ms). A row is 32 S bytes in 16-byte chunks, chunk `c`
 at `c` XOR the row's swizzle (`chunk_at<S>`: `(row >> 2) & 1`, `(row >> 1) & 3`, `row & 7` at one, two and four
 k-steps), so an `ldmatrix`'s eight rows at one chunk lie in eight bank groups at every depth -- A by `ldmatrix.x4` a
 column tile, B by `ldmatrix.x4` the warp's 16 tokens, one wavefront a matrix, the copies four wavefronts a warp
@@ -189,9 +188,7 @@ tokens, the block's 4 warps) by component, at nl64k-alt-h4-g4 (16 one-row route 
 softmax and 8 entmax, ~3.7 Newton steps a row; one value job). The design's counts a warp: the k-loop 16 k-steps x (32
 HMMAs, 17 `ldmatrix`, 5 copies, ~12 address and edge) ~1.1K; entmax a n-tile max and shift 128, 3.7 steps x (64 x 6 +
 40), levels 192 ~1.85K; softmax ~400 a n-tile; a u8 or f16 bundle side ~180 / ~310 a n-tile; the gain a quad a token,
-8 chunk pairs and their products. The measured attributions against it (`tools/stall_census.py --kernel produce`) are the events'
-(event:2026-11-01-p90-the-producer-at-3-28-ms-the-solve-on-values-alon,
-event:2026-11-01-p90-the-producer-at-2-88-ms-two-k-steps-a-stage-at-2).
+8 chunk pairs and their products. It is checked by attribution (`tools/stall_census.py --kernel produce`).
 
 <a id="phase-ledger"></a>THE PHASE LEDGER (`rola.ops.produce.ledger_bind`, `[jobs, 4 warps, 7 phases]` int64 cycles,
 booked over the tiles): job, project, threshold, levels, bundle, finish, values -- a warp's cycles

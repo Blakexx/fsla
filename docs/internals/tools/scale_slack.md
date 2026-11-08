@@ -31,7 +31,6 @@ power-of-two scale changes no rounding unless a partial leaves f16's normals; bu
 atomics' arrival, so two runs at one scale already differ by f16's rounding. A candidate is harmless where its spread
 is the run-to-run spread and nothing went infinite.
 
-MEASURED (sm_86, 2026-11-02, against the den pass's exact bound before its deletion): see the event log's slack
-measurements. On the synthetic carry cells both candidates sit
+MEASURED (sm_86, 2026-11-02, against the den pass's exact bound before its deletion): on the synthetic carry cells both candidates sit
 within 2^8 at L 16K and 64K; on the layer constructions the facts bound's slack grows as the routing sharpens (to
 2^25.7 at gain 16), the write bound's to 2^14.

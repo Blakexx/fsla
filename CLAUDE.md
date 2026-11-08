@@ -1,11 +1,11 @@
 # rola-standalone — session rules
 
-WHERE TRUTH LIVES. This repo's docs are the canonical current state: `docs/CONSTITUTION.md` (Blake's standing
-rulings), `docs/KERNEL_STANDARDS.md` (the laws), `docs/ARCHITECTURE.md` and `docs/architecture/` (the design),
-`docs/internals/` (each source file's mirror) and `.claude/skills/` (the procedures). The coordinator's event log
-(outside this repo) is the raw timeline -- who ruled or measured what, when, and what was tried and dropped -- never the
-place a rule or a design lives. A ruling lands in the repo doc it governs in the session it is made; a design is real
-only once its page is here. Read the repo doc before acting on a memory or an event.
+THE REPO IS ONE ATOMIC DESIGN. Its docs are the canonical current state, whole and self-contained:
+`docs/CONSTITUTION.md` (Blake's standing rulings), `docs/KERNEL_STANDARDS.md` (the laws), `docs/ARCHITECTURE.md` and
+`docs/architecture/` (the design), `docs/internals/` (each source file's why and how it connects) and `.claude/skills/`
+(the procedures). A rule or a design is real only once it is written here, and nothing here points outside the repo for
+one -- another project's design may be cited only as the reason ours differs. Read the repo's doc before acting on
+anything remembered.
 
 The rules most often violated by newcomers, restated:
 

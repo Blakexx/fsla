@@ -1,8 +1,7 @@
 # `constants.cuh` — the file constants, the launch table, and the S-from-SMEM rule
 
 The mirror of `csrc/rola/src/common/constants.cuh`, and of its Python twin
-`rola/engine/constants.py`. The axis law (`development/queue/K50_mo-runtime.md`,
-`docs/ARCHITECTURE.md` §5) sorts every quantity the carry family reads into four
+`rola/engine/constants.py`. The axis law (`docs/ARCHITECTURE.md` §5) sorts every quantity the carry family reads into four
 classes: **compiled** (`D`, `DV`), **derived** (`BC`, the spans, `kWarps`, `S`),
 **runtime addressing** (`MO`, `B_l`, the orders, the row maps) and **constant** (`W`,
 `C`). This file is where the CONSTANT class is declared and where the DERIVED
