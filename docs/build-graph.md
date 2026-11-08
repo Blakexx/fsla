@@ -207,5 +207,6 @@ names one).
     bazel run //:library --//:archs=86 --//:carry_arms=3            # an iteration build
 
 Never pass `--jobs` or a cache path: the front door sets both. Nothing the graph builds lands in the checkout but what a
-run target writes there -- the library `bazel run //:library` copies in, the database `bazel run //:compile_commands`
-writes: Bazel's output links are off (`--experimental_convenience_symlinks=clean`).
+run target writes there -- the library `bazel run //:library` copies in, with the build's generated headers into
+`build/generated` (where the tools that compile the tree's units read them: `tools/life_ranges.py`, ratify's
+recompile), and the database `bazel run //:compile_commands` writes: Bazel's output links are off (`--experimental_convenience_symlinks=clean`).

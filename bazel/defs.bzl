@@ -122,14 +122,20 @@ _CUDA_LINKED = ("libcudart.so.13", "libcuda.so")
 
 _INSTALL = """\
 #!/bin/bash
-# writes the graph's library into the checkout: a copy, never a link into Bazel's output tree
+# writes the graph's library into the checkout, and the build's generated headers where the tools that compile the
+# tree's units read them (build/generated: life_ranges, ratify's recompile): copies, never links into Bazel's output tree
 set -euo pipefail
 dest="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}/rola_cu13"
 for f in {files}; do
   install -m 0644 "$f" "$dest/$(basename "$f")"
 done
 chmod 0755 "$dest/_C.abi3.so"
-echo "installed $(basename "$dest")/_C.abi3.so and _build_config.py from the graph"
+generated="$BUILD_WORKSPACE_DIRECTORY/build/generated"
+mkdir -p "$generated"
+for f in {headers}; do
+  install -m 0644 "$f" "$generated/$(basename "$f")"
+done
+echo "installed $(basename "$dest")/_C.abi3.so and _build_config.py, and the build's generated headers, from the graph"
 """
 
 def _extension_impl(ctx):
@@ -223,10 +229,12 @@ def _extension_impl(ctx):
 
     verdicts = [sass_verdict, arm_verdict]
     install = ctx.actions.declare_file(ctx.label.name + "_install.sh")
-    ctx.actions.write(install, _INSTALL.format(files = " ".join([f.short_path for f in (so, record)])), is_executable = True)
+    headers = [f for f in ctx.files._headers if f.extension == "inc"]
+    ctx.actions.write(install, _INSTALL.format(files = " ".join([f.short_path for f in (so, record)]),
+                                               headers = " ".join([f.short_path for f in headers])), is_executable = True)
     #: the verdicts are runfiles too: `bazel run` installs nothing a gate has not passed
     return [DefaultInfo(files = depset([so, record] + verdicts), executable = install,
-                        runfiles = ctx.runfiles(files = [so, record] + verdicts))]
+                        runfiles = ctx.runfiles(files = [so, record] + verdicts + headers))]
 
 rola_extension = rule(
     implementation = _extension_impl,

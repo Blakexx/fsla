@@ -317,6 +317,7 @@
   {"doc": "docs/build-graph.md", "pinned_at": "9548e6243f7d", "reviewed": true, "sha256": "e9d04cef5d1b97ed", "target": "tools/gen_shards.py::carry_parts_spec"},
   {"doc": "docs/build-graph.md", "pinned_at": "f9de7b1175b6", "reviewed": true, "sha256": "439d780e6b98ca03", "target": "tools/gen_shards.py::check_generated"},
   {"doc": "docs/build-graph.md", "pinned_at": "f9de7b1175b6", "reviewed": true, "sha256": "", "target": "tools/kernels.py"},
+  {"doc": "docs/build-graph.md", "pinned_at": "dbde93bfb1c9", "reviewed": true, "sha256": "", "target": "tools/life_ranges.py"},
   {"doc": "docs/build-graph.md", "pinned_at": "baaf145938bc", "reviewed": true, "sha256": "", "target": "tools/lint/ast_grep_gate.py"},
   {"doc": "docs/build-graph.md", "pinned_at": "baaf145938bc", "reviewed": true, "sha256": "", "target": "tools/lint/lint_standards.py"},
   {"doc": "docs/build-graph.md", "pinned_at": "baaf145938bc", "reviewed": true, "sha256": "", "target": "tools/lint/portable_claude.py"},

@@ -211,7 +211,7 @@ def main() -> int:
     ap.add_argument("--out", type=Path, help="report path stem (default: the scratch directory's pipe_timeline/<cell>)")
     ap.add_argument("--scale", type=float, help="the MMA-only plateau in the tensor series (default: the stored row)")
     ap.add_argument("--calibrate", action="store_true",
-                    help="this capture is the MMA-only composition (ROLA_CARRY_PARTS=none): store its plateau as the scale")
+                    help="this capture is the MMA-only composition (`--//:carry_parts=none`): store its plateau as the scale")
     ap.add_argument("--no-record", action="store_true",
                     help="store no CALIBRATION: --calibrate then only prints the plateau it measured")
     ap.add_argument("--json", type=Path, help="also write the timeline document here")

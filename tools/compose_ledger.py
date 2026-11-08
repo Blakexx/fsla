@@ -47,8 +47,8 @@ NVDISASM = dev_config.cuda_bin("nvdisasm")
 SCRATCH = dev_config.scratch("compose_ledger")
 
 
-def run(cmd: list[str], env: dict | None = None, timeout: int = 3600) -> tuple[int, str]:
-    r = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True, timeout=timeout)
+def run(cmd: list[str], timeout: int = 3600) -> tuple[int, str]:
+    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=timeout)
     return r.returncode, r.stdout + r.stderr
 
 

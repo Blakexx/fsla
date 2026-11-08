@@ -7,7 +7,7 @@ timeline of true utilization and a chart.
 
     python tools/pipe_timeline.py --cell flagship-dense            # capture, then read with the stored scale
     python tools/pipe_timeline.py --cell flagship-dense --rep r.ncu-rep
-    python tools/pipe_timeline.py --cell flagship-dense --calibrate  # on a ROLA_CARRY_PARTS=none build
+    python tools/pipe_timeline.py --cell flagship-dense --calibrate  # on a `--//:carry_parts=none` build
 
 **The capture.** It uses the Nsight Compute CLI 2025.3 or later, found at `/usr/local/cuda-13.0/bin/ncu`.
 The 2024.1 CLI that ships with CUDA 12.4 has no PM sampling. The capture runs `--section PmSampling` over
