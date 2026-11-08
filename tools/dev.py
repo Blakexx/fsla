@@ -43,15 +43,21 @@ import sccache_toolchain  # noqa: E402
 import toolchains  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
+#: THE DEVBOX'S TOOLS outside the graph's environment: a developer's commands, each a pinned release in its own
+#: versioned folder under `host.tools_dir` (`dev_tool_path`), linked into every checkout's venv (`dev-env`) and found by
+#: its pin, never recorded as a machine key -- see docs/setup.md#the-devbox
+DEV_TOOLS = ("hyperfine", "difftastic", "nsight_compute", "nsight_systems")
 PINS = {"sccache": ROOT / "tools" / "sccache_pin.json", "mold": ROOT / "tools" / "mold_pin.json",
-        "bazelisk": ROOT / "tools" / "bazelisk_pin.json"}
+        "bazelisk": ROOT / "tools" / "bazelisk_pin.json",
+        **{name: ROOT / "tools" / f"{name}_pin.json" for name in DEV_TOOLS}}
 #: the pins init records in the machine's toolchain file; bazelisk is found by its pin instead (`bazelisk_path`), since
 #: every checkout loads that file and an older loader refuses a key it does not declare
 RECORDED = ("sccache", "mold")
 #: THE ENVIRONMENT'S INPUTS: what the dev image is built from and how it is run. Their hash is the environment key; a
 #: commit changing any of them carries a passing container check for its key (KERNEL_STANDARDS §23 (3)).
 ENV_INPUTS = ("Dockerfile", ".devcontainer/devcontainer.json", ".devcontainer/compose.yaml", "requirements.lock",
-              "tools/sccache_pin.json", "tools/mold_pin.json", "tools/clang_tidy_pin.json", "tools/bazelisk_pin.json", "tools/uv_pin.json", "tools/devtools.txt", "tools/dev.py", "tools/dev_config.py",
+              "tools/sccache_pin.json", "tools/mold_pin.json", "tools/clang_tidy_pin.json", "tools/bazelisk_pin.json", "tools/uv_pin.json",
+              *(f"tools/{name}_pin.json" for name in DEV_TOOLS), "tools/devtools.txt", "tools/dev.py", "tools/dev_config.py",
               "tools/bootstrap.py",
               "tools/sccache_toolchain.py", "tools/mold_toolchain.py",
               "tools/toolchains.py",
@@ -75,6 +81,19 @@ def _bazelisk_version(path: str) -> str:
 #: each pinned tool's own version reader, the one its build gate compares against the pin
 VERSION_OF = {"sccache": sccache_toolchain.sccache_version, "mold": mold_toolchain.mold_version,
               "bazelisk": _bazelisk_version}
+
+
+def dev_tool_path(name: str) -> Path:
+    """Where `install_pinned` puts a devbox tool's command: its pin's folder under `host.tools_dir`, the binary in it."""
+    pin = json.loads(PINS[name].read_text())
+    return Path(dev_config.get("host.tools_dir")) / pin["archive_root"] / pin["binary_path"]
+
+
+def install_dev_tools() -> None:
+    """Every devbox tool its pin names, where it is missing: its folder carries its version, so one present is the pin's."""
+    for name in DEV_TOOLS:
+        if not dev_tool_path(name).is_file():
+            install_pinned(name, Path(dev_config.get("host.tools_dir")))
 
 
 def bazelisk_path() -> Path:
@@ -168,12 +187,19 @@ def install_pinned(name: str, dest: Path) -> str:
             binary.chmod(0o755)
         else:
             with tarfile.open(asset) as tf:
-                member = next(m for m in tf.getmembers() if m.name.endswith(wanted) and m.isfile())
-                tf.extractall(dest, filter="tar")
-            binary = dest / member.name
+                root = pin.get("archive_root")
+                names = tf.getnames()
+                #: an archive with no folder of its own unpacks into its pin's, so every version has one
+                into = dest / root if root and not all(n == root or n.startswith(root + "/") for n in names) else dest
+                if "binary_path" in pin:
+                    member = tf.getmember(pin["binary_path"] if into != dest else f"{root}/{pin['binary_path']}")
+                else:
+                    member = next(m for m in tf.getmembers() if m.name.endswith(wanted) and m.isfile())
+                tf.extractall(into, filter="tar")
+            binary = into / member.name
     if "binary_sha256" in pin and hashlib.sha256(binary.read_bytes()).hexdigest() != pin["binary_sha256"]:
         raise SystemExit(f"{name}: {binary} sha256 is not the pin's {pin['binary_sha256']}")
-    print(f"installed {pin['version_string']} -> {binary}")
+    print(f"installed {pin.get('version_string', name + ' ' + pin['version'])} -> {binary}")
     return str(binary)
 
 
@@ -352,7 +378,6 @@ def host_toolchain() -> toolchains.Toolchain:
 
 def cmd_init(a) -> int:
     if a.image:
-        _write_section("toolchain", {"ncu": _newest_ncu()}, force=True)
         for section, values in IMAGE_LAYOUT.items():
             _write_section(section, values, force=True)
         _write_section("environment", {"image_digest": a.env_key}, force=True)
@@ -370,6 +395,16 @@ def cmd_init(a) -> int:
     #: on a host the bootstrap installed bazelisk before `bazel run //:init` could run; the image's init is its bootstrap
     if a.image:
         install_bazelisk()
+    install_dev_tools()
+    #: in the image the devbox's commands go on the image's venv's bin, first on its PATH (ahead of the base image's own
+    #: CUDA tools); on a host each checkout's own venv links them (`dev-env`)
+    if a.image:
+        for name in DEV_TOOLS:
+            command = Path(dev_config.get("workspace.base_venv")) / "bin" / json.loads(PINS[name].read_text())["command"]
+            command.unlink(missing_ok=True)
+            command.symlink_to(dev_tool_path(name))
+    #: the measurement tools' Nsight Compute is the pinned one (they read `toolchain.ncu`)
+    _write_section("toolchain", {"ncu": str(dev_tool_path("nsight_compute"))}, force=True)
     base = dev_config.get("workspace.base_venv")
     drift = venv_drift(str(Path(base) / "bin" / "python")) if base else []
     if drift:
@@ -397,13 +432,6 @@ def cmd_init(a) -> int:
         if dev_config.get("clock.ghz") is None:
             print("clock: unset -- this host measures UNLOCKED until `bazel run //:clock -- --mhz <MHz>` runs")
     return cmd_check(a)
-
-
-def _newest_ncu() -> str:
-    found = sorted(dev_config.ncu_candidates(), key=lambda p: _ncu_version(str(p)))
-    if not found:
-        raise SystemExit(f"no Nsight Compute CLI under {' or '.join(dev_config.NCU_SEARCH)}")
-    return str(found[-1])
 
 
 def cmd_store(a) -> int:
@@ -459,6 +487,8 @@ def cmd_check(a) -> int:
             row(True, f"toolchain {name}: {dev_config.get(f'toolchain.{name}')} matches its pin")
         except RuntimeError as ex:
             row(False, f"toolchain {name}: {str(ex).splitlines()[0][:140]}", "bazel run //:init")
+    for name in DEV_TOOLS:
+        row(dev_tool_path(name).is_file(), f"devbox {name}: {dev_tool_path(name)}", "bazel run //:init")
     bazelisk = bazelisk_path()
     pin = json.loads(PINS["bazelisk"].read_text())["version_string"]
     row(_pinned_version("bazelisk", str(bazelisk)) == pin, f"bazelisk: {bazelisk} is {pin}", "python3 tools/bootstrap.py")
@@ -660,6 +690,11 @@ def cmd_dev_env(a) -> int:
             target.chmod(0o755)
         else:
             target.symlink_to(tool)
+    #: and the devbox tools, by their pins' commands
+    for name in DEV_TOOLS:
+        if not dev_tool_path(name).is_file():
+            raise SystemExit(f"{venv}: the devbox's {name} is not installed at {dev_tool_path(name)}: bazel run //:init")
+        (venv / "bin" / json.loads(PINS[name].read_text())["command"]).symlink_to(dev_tool_path(name))
 
     wire_hooks(checkout)
     found = subprocess.run([str(venv / "bin" / "python"), "-c", "import json, rola, rola_devtools, rola_results, torch; "
@@ -707,7 +742,7 @@ def cmd_build(a) -> int:
     .`, without pip's metadata, wheel and reinstall. Refuses when that interpreter's `rola` is not this checkout's (a
     venv imports the checkout it names). `--archs` and `--carry-arms` set `ROLA_CUDA_ARCHS` / `ROLA_CARRY_ARMS`.
     -- see docs/build.md#iteration"""
-    python = a.python
+    python = sys.executable
     probe = subprocess.run([python, "-c", "import rola, pathlib; print(pathlib.Path(rola.__file__).resolve())"],
                            cwd="/", capture_output=True, text=True)
     if probe.returncode or not Path(probe.stdout.strip()).is_relative_to(ROOT / "rola"):
@@ -927,7 +962,6 @@ def main() -> int:
     p.set_defaults(fn=cmd_worktree)
 
     p = sub.add_parser("build", help="the iteration build: the extension rebuilt in place, gated and stamped")
-    p.add_argument("--python", default=sys.executable, help="the interpreter (default: this checkout's own venv's)")
     p.add_argument("--archs", default=None, help="ROLA_CUDA_ARCHS for this build, e.g. 86")
     p.add_argument("--carry-arms", default=None, help="ROLA_CARRY_ARMS for this build, e.g. all")
     p.set_defaults(fn=cmd_build)

@@ -20,7 +20,9 @@ graph's environment interpreter, its arguments after `--`.
 
 **`init`** writes this machine's config:
 - The CUDA toolkit on `PATH`, or torch's.
-- The newest Nsight Compute CLI under `/usr/local/cuda-*`.
+- The pinned devbox tools (`DEV_TOOLS`: hyperfine, difftastic, Nsight Compute and Systems), each where its pin's folder is
+  missing, and `toolchain.ncu` as the pinned Nsight Compute, which the measurement tools read; in the image their
+  commands are linked into the image's venv's bin, first on its PATH.
 - `sccache` and `mold` where they are installed.
 - The Windows System32 mount under WSL.
 
@@ -42,6 +44,7 @@ clock is not set by `init`, because locking it asks for administrator consent on
 - The config parses.
 - nvcc, ptxas, nvdisasm and cuobjdump exist in the toolkit.
 - `ncu` is 2025.3 or later.
+- Each devbox tool is installed in its pin's folder.
 - sccache and mold pass the build's own gates (`sccache_toolchain.gate`, `mold_toolchain.link_flags`), so
   `check` refuses exactly what a build would.
 - The commit gate is wired.
@@ -60,19 +63,20 @@ does it write `clock.json`.
   `schtasks /run` returns before the task runs, so a proof read raced the lock, and a driver's refusal read as success.
 - **On Linux:** it writes `sudo -n nvidia-smi -lgc` commands and prints the sudoers rule they need.
 
-**`build [--python PY] [--archs 86] [--carry-arms all]`** is the iteration build (`docs/build.md#iteration`):
-`setup.py build_ext --inplace` by the checkout's own venv interpreter (`bazel run //:dev_env`), or `--python`. It
-refuses when the checkout has no venv of its own, or when that interpreter's `rola` is not this checkout's.
+**`build [--archs 86] [--carry-arms all]`** is the iteration build (`docs/build.md#iteration`): `setup.py build_ext
+--inplace` by the checkout's own venv interpreter (`bazel run //:dev_env`). It refuses when the checkout has no venv
+of its own, or when that interpreter's `rola` is not this checkout's.
 
 **`dev-env`** is `bazel run //:dev_env`'s implementation, which passes the checkout and the graph's environment
 (its store venv, interpreter and uv). It writes the checkout's venv, `venv-<checkout>` beside it, on the environment's
 interpreter. Its site holds five `.pth` files, read in name order: the checkout's root (`aa_rola_<name>.pth`), the
 co-developed sibling checkouts (`rola_devtools.pth`, `rola_results.pth`, `LINKED`), the environment's site-packages
 (`zz_rola_env.pth`, the venv's marker) and the bytecode prefix (`zz_rola_pycache.pth`: `sys.pycache_prefix` under
-`host.build_cache`, so no `__pycache__` lands in the checkout). Its bin carries the environment's commands (ruff,
-pytest, ast-grep, clang-format, ...): a Python entry script copied with the venv's interpreter on its first line, so it
-imports what the venv's site names, a native one linked, and never pip, since the venv holds nothing of its own. It
-replaces only a venv it wrote, wires the checkout's commit gate to run from it, and refuses unless `rola`, `rola_devtools`, `rola_results` and `torch` each import from
+`host.build_cache`, so no `__pycache__` lands in the checkout). An activated venv is a developer's shell, so its bin
+carries every command the devbox has: the environment's (ruff, pytest, ast-grep, clangd, py-spy, ...), run by the
+venv's interpreter so they import what its site names, and the devbox's pinned tools (hyperfine, difft, ncu, nsys),
+linked from their folders under `host.tools_dir`, one install a machine whichever checkout links it. It refuses
+until init has installed them. It replaces only a venv it wrote, wires the checkout's commit gate to run from it, and refuses unless `rola`, `rola_devtools`, `rola_results` and `torch` each import from
 where those files say.
 
 **`worktree <name> <sha>`** creates the worktree in `workspace.worktrees`, then runs `bazel run //:dev_env` and
@@ -103,9 +107,9 @@ path and bytes each, is the ENVIRONMENT KEY.
   refuses the commit without a passing sample for that key.
 
 **`store`** keeps the measurements store (`store.root`, a rola-results checkout): `init` links `rola_results` into
-every interpreter that measures here -- the base venv, each checkout's own venv (it names the environment's
-site-packages as a plain path, which reads none of its `.pth` files), and in the image the base venv at the store's
-mount point -- by a one-line `rola_results.pth`, and `dev-env` links each venv it writes; `commit -m` commits the records (`python -m
+every interpreter that runs here -- each checkout's own venv (it names the environment's site-packages as a plain
+path, which reads none of its `.pth` files), the base venv the sibling repositories' hooks run from, and in the image
+the image's interpreter at the store's mount point -- by a one-line `rola_results.pth`, and `dev-env` links each venv it writes; `commit -m` commits the records (`python -m
 rola_results commit`).
 
 `init`, `check`, `show`, `get`, `clock`, `dev-env` and `worktree` run from whichever python starts them (`dev-env`'s is the environment's, through its run target); `build`, `store` and `container` re-execute themselves under the checkout's own venv (`bazel run //:dev_env`), because the build compiles with it and the store and the container read `rola_results`, which it links; the host's own python carries nothing of this project. On a host the base venv is the venv the sibling repositories' commit hooks run from, and in the image it is the image's interpreter: `check` tests it where it is set.

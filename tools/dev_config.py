@@ -21,7 +21,6 @@ docs/internals/tools/dev_config.md.
 """
 from __future__ import annotations
 
-import re
 import shutil
 from functools import cache
 from pathlib import Path
@@ -49,7 +48,8 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "cuda_home": Key("path?", None, "the CUDA toolkit the extension builds with (nvcc, ptxas, nvdisasm, cuobjdump "
                          "under bin/); null takes torch.utils.cpp_extension's CUDA_HOME"),
         "ncu": Key("path", "/usr/local/cuda/bin/ncu",
-                   "the Nsight Compute CLI; 2025.3 or later for PM sampling (tools/pipe_timeline.py)"),
+                   "the Nsight Compute CLI, which init records as the pinned one (tools/nsight_compute_pin.json); "
+                   "2025.3 or later for PM sampling (tools/pipe_timeline.py)"),
         "sccache": Key("path?", None, "the pinned sccache (tools/sccache_pin.json); null means none installed"),
         "sccache_enabled": Key("bool", True, "false builds uncached, the one deliberate opt-out of the sccache gate"),
         "mold": Key("path?", None, "the pinned mold (tools/mold_pin.json), the only linker; null means none installed"),
@@ -93,7 +93,6 @@ IMAGE_LAYOUT = {
 #: where the image's loader looks for the WSL driver's libraries (the Dockerfile's LD_LIBRARY_PATH names it)
 WSL_LIB_IN_IMAGE = "/usr/lib/wsl/lib"
 #: where an Nsight Compute CLI installs: the standalone packages, then a CUDA toolkit's wrapper
-NCU_SEARCH = ("/opt/nvidia/nsight-compute/*/ncu", "/usr/local/cuda-*/bin/ncu")
 
 #: Environment variables one of the tree's processes sets for a child it starts. Never a setting: the parent resolved
 #: the value (from this config or from its own state) and the child must use exactly that value.
@@ -171,24 +170,12 @@ def windows_tool(rel: str) -> Path | None:
     return Path(system32) / rel if system32 else None
 
 
-def ncu_candidates() -> list[Path]:
-    """Every installed Nsight Compute CLI under `NCU_SEARCH`, oldest version directory first."""
-    def version(p: Path) -> tuple[int, ...]:
-        return tuple(int(x) for x in re.findall(r"\d+", next((q for q in p.parts if q[0].isdigit() or
-                                                                  q.startswith("cuda-")), "0")))
-
-    return sorted((p for pattern in NCU_SEARCH for p in Path("/").glob(pattern.lstrip("/"))), key=version)
-
-
 def detect() -> dict[str, dict[str, Any]]:
     """This machine's values where they differ from the declared defaults: what `bazel run //:init` writes."""
     found: dict[str, dict[str, Any]] = {"toolchain": {}, "host": {}, "workspace": {}, "environment": {}}
     nvcc = shutil.which("nvcc")
     if nvcc:
         found["toolchain"]["cuda_home"] = str(Path(nvcc).parents[1])
-    ncus = ncu_candidates()
-    if ncus:
-        found["toolchain"]["ncu"] = str(ncus[-1])
     for tool in ("sccache", "mold"):
         if shutil.which(tool):
             found["toolchain"][tool] = shutil.which(tool)
