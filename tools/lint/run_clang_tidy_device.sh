@@ -82,7 +82,10 @@ ARCH="$(python3 -c "from rola_cu13._build_config import BUILD_CONFIG as c; print
 #: THE UNITS RUN SIDE BY SIDE, as many at once as the host budget has slots (each still takes its own slot, so a
 #: compile or another lint holding slots is queued behind, never oversubscribed); each unit's report lands in its own
 #: files and is printed in unit order once all are done.
-SLOTS="$(python3 -c 'from rola_devtools.locks.host import budget_slots; print(budget_slots())' 2>/dev/null || echo 1)"
+if ! SLOTS="$(python3 -c 'from rola_devtools.locks.host import budget_slots; print(budget_slots())')"; then
+  echo "run_clang_tidy_device.sh: FAILED -- the host budget is unreadable (rola_devtools.locks.host): \`python tools/dev.py check\`" >&2
+  exit 1
+fi
 OUT_DIR="$(mktemp -d)"
 trap 'rm -rf "$OUT_DIR"' EXIT
 

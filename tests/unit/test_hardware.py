@@ -68,7 +68,7 @@ def test_a_product_build_override_outside_the_traits_is_a_finding():
     assert any("overrides a trait outside window" in f for f in hardware.check(cfg))
 
 
-def test_a_product_build_override_is_refused_until_every_kernel_reads_its_build():
+def test_a_product_build_override_is_refused_until_a_variant_is_gated():
     cfg = hardware.load()
     cfg["product"]["rtx3080ti"]["build"] = {"window": 1024}
     assert any("a build variant is not gated yet" in f for f in hardware.check(cfg))
