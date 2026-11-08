@@ -751,14 +751,6 @@ def _keep_newest_images(built: str) -> None:
 def cmd_container(a) -> int:
     key = env_key()
     tag = f"{IMAGE_REPO}:{key[:12]}"
-    if a.action == "compose":
-        if subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode:
-            raise SystemExit(f"no image {tag} for this environment: python3 tools/dev.py container build")
-        local = ROOT / ".devcontainer" / "compose.local.yaml"
-        doc = {"services": {"rola": {"image": tag, "volumes": _mounts()}}}
-        local.write_text(json.dumps(doc, indent=1) + "\n")
-        print(f"wrote {local} ({tag})")
-        return 0
     if a.action == "build":
         with tempfile.TemporaryDirectory(prefix="rola_image_") as context:
             for rel in ENV_INPUTS:
@@ -776,9 +768,16 @@ def cmd_container(a) -> int:
     if a.action == "gate":
         return _container_gate()
 
-    #: a build keeps only the newest images (`KEPT_IMAGES`): an older environment's image may be gone
+    #: `compose` and `check` use this environment's image, which a build keeping only the newest (`KEPT_IMAGES`) may
+    #: have removed
     if subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode:
         raise SystemExit(f"no image {tag} for this environment: python3 tools/dev.py container build")
+    if a.action == "compose":
+        local = ROOT / ".devcontainer" / "compose.local.yaml"
+        doc = {"services": {"rola": {"image": tag, "volumes": _mounts()}}}
+        local.write_text(json.dumps(doc, indent=1) + "\n")
+        print(f"wrote {local} ({tag})")
+        return 0
     lock = Path(dev_config.get("host.lock_dir")) / "rola_container_probe.lock"
     holder = subprocess.Popen([sys.executable, "-c", "import fcntl, sys; f = open(sys.argv[1], 'w'); "
                                "fcntl.flock(f, fcntl.LOCK_EX); print('held', flush=True); sys.stdin.read()", str(lock)],
