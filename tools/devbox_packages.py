@@ -7,7 +7,10 @@ programs. The base's packages come from its dpkg status, in its OCI layout; the 
 each named by rules_distroless's sanitized key (`<suite>_<name>-<arch>_<version>`), so the base's are keyed the same
 way. Docs: docs/setup.md#the-devbox.
 
-    devbox_packages.py --base LAYOUT_DIR -- PACKAGE_FILE...
+    devbox_packages.py --base LAYOUT_DIR --layer LAYER_TAR -- PACKAGE_FILE...
+
+The layer must also carry nothing at the base's merged-/usr links (`/bin`, `/lib`, `/lib64`, `/sbin`), which a
+directory entry there would replace (tools/usrmerge_layer.py).
 """
 from __future__ import annotations
 
@@ -64,8 +67,14 @@ def base_status(layout: Path) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--base", type=Path, required=True, help="the base image's OCI layout")
+    ap.add_argument("--layer", type=Path, required=True, help="the package layer the image carries")
     ap.add_argument("packages", nargs="+", type=Path, help="the layer's packages' files, one repository a package")
     a = ap.parse_args()
+    with tarfile.open(a.layer) as tf:
+        linked = sorted({n.removeprefix("./").split("/", 1)[0] for n in tf.getnames()} & {"bin", "lib", "lib64", "sbin"})
+    if linked:
+        print(f"devbox packages: the layer carries {linked}, which would replace the base's links into /usr")
+        return 1
     #: the base's packages keyed as the layer's are, by `<name>-<arch>_<version>` and by `<name>-<arch>_` alone; an
     #: `all` package under amd64 too, as rules_distroless keys it once an architecture
     base: set[str] = set()

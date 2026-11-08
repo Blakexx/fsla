@@ -232,8 +232,13 @@ image's day, its indexes' digests recorded in MODULE.bazel.lock and every packag
 pinned bazelisk linked as `bazel`, and the packages' commands under the names their alternatives give them. A package
 layer carries its whole closure, the base's core packages among them, so `bazel test //:devbox_packages` holds that
 every package the base already has is at the base's version (2026-11-08: 182 packages, 130 of them the base's, none
-at another version). Inside it the host's loop runs (`python3 tools/bootstrap.py` is its bazelisk already, then
-`bazel run //:init`, `//:dev_env`), its installs on the container's own volumes. 1.4 GB.
+at another version). The base merges /usr (`/bin`, `/lib`, `/lib64` and `/sbin` link into it), and a layer whose
+directories sit there would replace the links, so the packages' files go under /usr as dpkg writes them through the
+links (`tools/usrmerge_layer.py`), and the check refuses a layer with anything left there. Inside it the host's loop
+runs (`python3 tools/bootstrap.py` is its bazelisk already, then `bazel run //:init`, `//:dev_env`), its installs on
+the container's own volumes. 1.4 GB. THE GAP: no check proves it, and no tool runs it with the GPU, the locks and the
+mounts -- the container check proves the Dockerfile's image (`dev.py container`, above), which `compose` runs; init
+inside it refuses for want of a CUDA toolkit, which the tree's tools outside the graph read (`toolchain.cuda_home`).
 
 | Tool | Source | Role |
 |---|---|---|

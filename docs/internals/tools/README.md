@@ -40,7 +40,8 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 | tool | what it is | called by | writes |
 |---|---|---|---|
 | [`ratify.py`](ratify.md) | the spill manifest, the census, the SASS-body gate and the derivation | `setup.py` (post-build), a person at a milestone, the graph's `//:ratified` and `//:ratify` | `tools/manifests/` |
-| [`devbox_packages.py`](../../setup.md#the-graphs-image) | the devbox image's package layer adds packages, never changes the base's | the graph's `//:devbox_packages` | — |
+| [`devbox_packages.py`](../../setup.md#the-graphs-image) | the devbox image's package layer adds packages, never changes the base's, and carries nothing at its merged-/usr links | the graph's `//:devbox_packages` | — |
+| [`usrmerge_layer.py`](../../setup.md#the-graphs-image) | the package layer for a merged-/usr base: what the packages ship under /bin, /lib, /lib64 and /sbin goes under /usr | the graph's `//:devbox_debs` | the image's package layer |
 | [`derivation.py`](ratify.md#graph) | the derivation's golden harness, rendered from the declared cases | `ratify.py`, the graph's `derivation_harness_source` genrule | the harness source |
 | `sass.py` | THE DISASSEMBLER SEAM: the one `cuobjdump`/`nvdisasm` invocation and line grammar; a frame map is one function's (`section`: offsets restart in every function) | `ratify.py`, `sass_gate.py`, `region_ledger.py`, `life_ranges.py` | — |
 | `kernel_targets.py` | the instruments' kernel families: each one's profiler filter, provider arm, cubin member, sources, budget and unit (`kernel_targets.md`) | `stall_census.py`, `pipe_counters.py`, `phase_ledger.py` | — |

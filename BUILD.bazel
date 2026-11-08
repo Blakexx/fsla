@@ -122,11 +122,8 @@ ratify_run(
     census = ":census",
 )
 
-#: THE DEVBOX IMAGE (docs/setup.md#the-devbox): a thin wrapper around the bootstrap -- what a host supplies itself
-#: before the graph. The base carries Ubuntu 22.04 with git, gcc, python3 and curl (MODULE.bazel's `devbox_base`); on
-#: it, the OS packages pinned by the archive's snapshot (`@devbox`), and the bootstrap: the pinned bazelisk linked as
-#: `bazel`, and the packages' commands under the names their alternatives would give them. Inside, the host's loop runs
-#: (`bazel run //:init`, `//:dev_env`); its installs go on the container's own volumes.
+#: THE DEVBOX IMAGE, a thin wrapper around the bootstrap: what a host supplies itself before the graph, nothing the graph
+#: installs -- see docs/setup.md#the-graphs-image
 tar(
     name = "devbox_bootstrap",
     srcs = ["@bazelisk//:bazelisk"],
@@ -142,6 +139,19 @@ tar(
     ],
 )
 
+#: the packages as one layer for the base's merged /usr: what they ship under /bin, /lib, /lib64 or /sbin goes under
+#: /usr, as dpkg writes it through the base's links, which a layer's directories there would replace
+genrule(
+    name = "devbox_debs",
+    srcs = ["@devbox//:flat"],
+    outs = ["devbox_debs.tar"],
+    cmd = "$(execpath @rola_env//:python) $(execpath //tools:usrmerge_layer.py) --in $(execpath @devbox//:flat) --out $@",
+    tools = [
+        "//tools:usrmerge_layer.py",
+        "@rola_env//:python",
+    ],
+)
+
 oci_image(
     name = "image",
     base = "@devbox_base",
@@ -149,7 +159,7 @@ oci_image(
     #: under WSL the driver's Linux libraries are mounted at /usr/lib/wsl/lib, which the loader must search first
     env = {"LD_LIBRARY_PATH": "/usr/lib/wsl/lib"},
     tars = [
-        "@devbox//:flat",
+        ":devbox_debs",
         ":devbox_bootstrap",
     ],
     workdir = "/workspace",
@@ -162,9 +172,12 @@ tool_test(
     args_ = [
         "--base",
         "$(rootpath @devbox_base_linux_amd64)",
+        "--layer",
+        "$(rootpath :devbox_debs)",
         "$(rootpaths @devbox//:packages)",
     ],
     data = [
+        ":devbox_debs",
         "@devbox//:packages",
         "@devbox_base_linux_amd64",
     ],
