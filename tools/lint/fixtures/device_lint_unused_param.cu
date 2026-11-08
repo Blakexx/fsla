@@ -1,4 +1,4 @@
-// Fixture for tools/lint/run_clang_tidy_device.sh -- must fire (misc-unused-parameters).
+// Fixture for the device clang-tidy profile (//tools:clang_tidy_device_fixtures) -- must fire (misc-unused-parameters).
 __device__ int bad(int used, int unused_param) {
   return used;
 }

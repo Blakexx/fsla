@@ -1724,12 +1724,6 @@
    "count": 1
   },
   {
-   "path": "tools/lint/run_clang_tidy_device.sh",
-   "message": "names the work code 'K46'",
-   "line_sha256": "99ea21e6867a8649",
-   "count": 1
-  },
-  {
    "path": "tools/lint/run_ruff_e3.sh",
    "message": "names the work code 'E3'",
    "line_sha256": "43be3924885840a6",
