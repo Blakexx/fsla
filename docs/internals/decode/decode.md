@@ -720,7 +720,7 @@ live in different products: the readout against the decayed entry state, plus th
 causal intra Gram's self term `G[0,0] * Vw`. At `T = 1` those two are
 
 ```
-a_r * keep^c * M_entry  +  a_r * a_w * sw * v   ==   a_r * S_exit
+a_r * keep^c * M_entry  +  a_r * a_w * v   ==   a_r * S_exit
 ```
 
 so **the whole intra Gram collapses into reading the row after it is written**.
@@ -1031,7 +1031,7 @@ lever there is the page's layout, not the walk.
 ## The coefficient rows, as the bundle holds them
 
 The step reads the bundle's rows as they are (ruled 2026-10-03/04/07): u8 unit-max digits, a dense
-level's f16 at 1 with its floor stored (either side), each row beside its fp32 max; the write gain fp32 or bf16; the value in f16 against its
+level's f16 at 1 with its floor stored (either side), each row beside its fp32 max; the value in f16 against its
 largest channel, and the fp32 token scale. The host entry refuses any other type -- the bundle
 refuses the same at construction, so a refusal here
 names a direct caller of the ABI. How the fold turns each into a staged amplitude:

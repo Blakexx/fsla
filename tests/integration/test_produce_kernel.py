@@ -84,7 +84,7 @@ def _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill: int, probe: bool
               if dense[side] else None for side in ("read", "write")},
            "scale_read": poisoned(D), "scale_write": poisoned(D), "v": poisoned(d_v, dtype=torch.float16),
            "v_scale": poisoned()}
-    jobs, shapes, _per_head = _job_tensor(plan, "cuda:0")
+    jobs, shapes = _job_tensor(plan, "cuda:0")
     probes = [torch.full((jobs.shape[0], B * T, _MAX_COLUMNS), float("nan"), device="cuda") if probe else None
               for _ in range(2)]
     extension().rola_produce_forward(
@@ -99,7 +99,7 @@ def _expected_logits(plan, x, route_W, route_bias, v_W):
     """Per job, ``(product, envelope)`` over its columns: fp64 sums of the bf16 operands, and of their magnitudes."""
     xs = x.reshape(-1, x.shape[-1]).double()
     out = []
-    for kind, head, heads, _solve, width, in0, in1, *_ in job_table(plan)[0]:
+    for kind, head, heads, _solve, width, in0, in1, *_ in job_table(plan):
         if kind == 1:
             W = v_W[head * plan.d_v:(head + heads) * plan.d_v].double().t()
             bias = torch.zeros(W.shape[1], dtype=torch.float64, device=W.device)
@@ -191,7 +191,7 @@ def test_the_solve_matches_the_fp64_reference_on_the_kernels_logits(name, B, T):
     plan, x, route_W, route_bias, gain_bias, v_W = _operands(name, B=B, T=T, hidden=64)
     _, (logits, levels) = _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill=0, probe=True)
     for index, (kind, _head, _heads, solve, width, _in0, in1, out_read, out_write, *_rest) in enumerate(
-            job_table(plan)[0]):
+            job_table(plan)):
         if kind != 0:
             continue
         row = logits[index].double()
@@ -236,7 +236,7 @@ def test_the_bundle_matches_the_reference_on_the_kernels_logits(name, B, T, bias
                        dtype=torch.float64, device=x.device)
 
     for index, (kind, head, _heads, solve, width, _in0, _in1, out_read, out_write, level) in enumerate(
-            job_table(plan)[0]):
+            job_table(plan)):
         if kind != 0:
             continue
         levels = dict(zip(("read", "write"), _solved(logits[index].double(), solve, width), strict=True))
@@ -301,7 +301,7 @@ def test_a_bound_ledger_books_every_phase_and_changes_nothing():
 
     operands = _operands("union", B=2, T=40, hidden=64)
     plain, _ = _launch(*operands, fill=0x55)
-    jobs = job_table(operands[0])[0]
+    jobs = job_table(operands[0])
     ledger = torch.zeros(len(jobs), producer.LEDGER_WARPS, len(producer.LEDGER_PHASES), dtype=torch.int64,
                          device="cuda")
     producer.ledger_bind(ledger)

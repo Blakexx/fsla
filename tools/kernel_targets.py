@@ -117,7 +117,7 @@ def produce_units(name: str) -> int:
 
     c = CONSTRUCTIONS[name]
     fx = build(by_name(c.cells[0]), c)
-    return -(-(fx["cell"].B * fx["cell"].tokens) // 64) * len(pr.job_table(fx["layer"].plan)[0])
+    return -(-(fx["cell"].B * fx["cell"].tokens) // 64) * len(pr.job_table(fx["layer"].plan))
 
 
 def function(target: Target, cell) -> str:

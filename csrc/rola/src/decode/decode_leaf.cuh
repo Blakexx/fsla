@@ -78,7 +78,6 @@ __device__ __forceinline__ void deposit_leaf(const LeafSlice& s, const LeafAddr&
                                              float (&acc)[8], float& acc_m) {
   float keep = 1.0f;
   if (DECAY) keep = expf(fminf(aw * share * log1pf(-rate), kDecodeMaxExponent));
-  const float wv = aw;
   const float kept = keep * state_page::pow2(s.e);
   const float4 v0 = *reinterpret_cast<const float4*>(v_tok + ch0);
   const float4 v1 = *reinterpret_cast<const float4*>(v_tok + ch0 + 4);
@@ -87,7 +86,7 @@ __device__ __forceinline__ void deposit_leaf(const LeafSlice& s, const LeafAddr&
   float amax = 0.0f;
 #pragma unroll
   for (int c = 0; c < 8; ++c) {
-    sv[c] = fmaf(static_cast<float>(state_page::mantissa8(s.hi, s.lo, c)), kept, wv * vt[c]);
+    sv[c] = fmaf(static_cast<float>(state_page::mantissa8(s.hi, s.lo, c)), kept, aw * vt[c]);
     amax = fmaxf(amax, fabsf(sv[c]));
   }
   amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 1));
@@ -105,7 +104,7 @@ __device__ __forceinline__ void deposit_leaf(const LeafSlice& s, const LeafAddr&
 #pragma unroll
   for (int c = 0; c < 8; ++c) acc[c] = fmaf(static_cast<float>(m[c]), arp, acc[c]);
   if (row_lead) {
-    const float mass = keep * s.mass + wv;
+    const float mass = keep * s.mass + aw;
     if (present) *a.mass = __float_as_uint(mass);
     acc_m += ar * mass;
   }

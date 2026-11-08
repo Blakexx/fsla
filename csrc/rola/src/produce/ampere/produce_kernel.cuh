@@ -578,6 +578,7 @@ static_assert(kProduceWarps * (kParkedWarpBytes + kStagedWarpBytes) + kExchangeB
                   <= kProduceSmem,
               "the parked n-tiles, the staged rows and the pairs' exchange fit the stages");
 
+//: One lane's 16-byte chunk of a hidden run, or zeros past the run's end (and no load).
 __device__ __forceinline__ uint4 chunk(const __nv_bfloat16* run, int k, bool live) {
   return live ? __ldg(reinterpret_cast<const uint4*>(run + k)) : make_uint4(0u, 0u, 0u, 0u);
 }
@@ -816,7 +817,6 @@ __device__ __forceinline__ void value_tile(const ProduceParams& p, const Job& jo
   });
 }
 
-//: One lane's 16-byte chunk of a hidden run, or zeros past the run's end (and no load).
 //: A ONE-ROW JOB'S PROJECTION: every warp the job's columns for its 16 tokens, in the job's class of `M` column tiles
 //: and `S` k-steps a stage (the stage's bytes held near level). -- see docs/internals/produce/ampere/produce_kernel.md#form
 __device__ __forceinline__ void project_one_row(const ProduceParams& p, int job_index, int token0,

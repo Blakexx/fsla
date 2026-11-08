@@ -79,13 +79,12 @@ class _Whitelist:
     token_bit = None
 
     # DOCUMENTED PUBLIC SURFACE, read by a user rather than by this tree: the paging facade's `backing_kind` and
-    # `closed` (`docs/internals/rola_api.md`), the arena's `owners_total` and `free`, the registry's
-    # `support_differentiable` column, and `Activation`, the spec-facing type alias (`docs/api.md`).
+    # `closed` (`docs/internals/rola_api.md`), the arena's `owners_total` and `free`, and `Activation`, the spec-facing
+    # type alias (`docs/api.md`).
     backing_kind = None
     closed = None
     owners_total = None
     free = None
-    support_differentiable = None
     Activation = None
 
     # zoology's `Hybrid` reads a layer's `state_size(sequence_length=...)` by name when it sizes a model.
@@ -107,5 +106,5 @@ _referenced = (_.pytestmark, _.ninja, _.pytest_addoption, _.pytest_configure,  #
                _.compile_kernel, _.binary_present, _.probe_environment, _.run_tool, _.timed, _.read_clock,
                _.forward, _.poison_torch_memory, _._gpu_lock_held, _._host_budget_worker_slot, _._take_gpu_lock,
                _.union_table, _.v_row_bytes, _.y_dtype, _.token_bit, _.backing_kind, _.closed, _.owners_total,
-               _.free, _.support_differentiable, _.Activation, _.state_size, _.sequence_length,
+               _.free, _.Activation, _.state_size, _.sequence_length,
                _.build_temp, _.external_attr, _.compress_type, _.built_arms, _.assert_fresh_binary, _.pytest_tier)

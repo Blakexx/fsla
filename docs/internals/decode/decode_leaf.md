@@ -27,12 +27,13 @@ stored value.
 
 `deposit_leaf` is UPDATE FIRST, THEN READ THE STORED VALUE, which is the step's semantics
 ([`decode.md#update-then-read`](decode.md#update-then-read)): each channel is updated in fp32,
-`keep * value + wv * v` with `keep` the detached clock under decay (`expf` of the write
-allocation times `log1pf(-rate)`, held under `kDecodeMaxExponent`); the group's exponent is
+`keep * value + aw * v` with `aw` the leaf's write amplitude and `keep` the detached clock under decay (`expf` of
+the leaf's write share `aw * share` times `log1pf(-rate)`, held under `kDecodeMaxExponent`:
+[`decode_fold.md#row-sum`](decode_fold.md#row-sum)); the group's exponent is
 the max of `|value|` over its four lanes (eight in-lane maxima, two shuffles); each channel
 is rounded once to its group's s24 quantum and stored through the byte packs; and the readout
 takes the STORED value, so the next step reads exactly what this one wrote. The group's first
-lane stores the exponent and the leaf's first lane the fp32 mass (`keep * mass + wv`).
+lane stores the exponent and the leaf's first lane the fp32 mass (`keep * mass + aw`).
 
 The store predicate is the caller's: `present` for the lane-group form, and for the atom form
 `present` AND the leaf's write bit, since a leaf outside the write support belongs to a read

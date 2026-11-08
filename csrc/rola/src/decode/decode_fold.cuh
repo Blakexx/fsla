@@ -1,6 +1,6 @@
 #pragma once
 
-// THE DECODE FOLD -- every per-token operand, read from the internal format, normalized and staged in
+// THE DECODE FOLD -- every per-token operand, read from the internal format as stored and staged in
 // SHARED MEMORY by the CTA that is about to consume it.
 // see docs/internals/decode/decode_fold.md#note-l3
 

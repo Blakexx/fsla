@@ -116,8 +116,8 @@ def dense_levels(plan: ProducerPlan, side: str) -> frozenset[int]:
     return frozenset(level for level, sparse in enumerate(_sparse_flags(plan)[side == "write"]) if not sparse)
 
 
-def job_table(plan: ProducerPlan) -> tuple[list[tuple[int, ...]], int]:
-    """``(jobs, route jobs a head)``: the plan compiled into the kernel's job table (docs/internals/produce/produce.md
+def job_table(plan: ProducerPlan) -> list[tuple[int, ...]]:
+    """The plan compiled into the kernel's job table (docs/internals/produce/produce.md
     #jobs). A route job is one head's one solve -- a union level's two logit rows, a tied level's one row filling both
     planes, or one side of an independent level; a value job is the heads whose channels fit one job."""
     resolved = plan.routing.resolved
@@ -151,7 +151,7 @@ def job_table(plan: ProducerPlan) -> tuple[list[tuple[int, ...]], int]:
     heads_per = max(1, _MAX_COLUMNS // 2 // plan.d_v)
     for head in range(0, plan.num_heads, heads_per):
         jobs.append((_VALUE, head, min(heads_per, plan.num_heads - head), 0, 0, -1, -1, -1, -1, 0))
-    return jobs, len(per_head)
+    return jobs
 
 
 #: a warp's accumulator columns: 16 column tiles of 16 (produce.cuh `kWarpColumns`)
@@ -185,12 +185,12 @@ def _shape(job: tuple[int, ...], plan: ProducerPlan) -> int:
 
 
 @lru_cache(maxsize=64)
-def _job_tensor(plan: ProducerPlan, device: str) -> tuple[torch.Tensor, torch.Tensor, int]:
-    """``(table, shapes, route jobs a head)``: the job table's addressing on the device (the head, the heads, the
+def _job_tensor(plan: ProducerPlan, device: str) -> tuple[torch.Tensor, torch.Tensor]:
+    """``(table, shapes)``: the job table's addressing on the device (the head, the heads, the
     width, the columns in and out, the level) and its control words on the host."""
-    jobs, per_head = job_table(plan)
+    jobs = job_table(plan)
     table = torch.tensor([job[1:3] + job[4:10] for job in jobs], dtype=torch.int32, device=device)
-    return table, torch.tensor([_shape(job, plan) for job in jobs], dtype=torch.int16), per_head
+    return table, torch.tensor([_shape(job, plan) for job in jobs], dtype=torch.int16)
 
 
 #: THE PHASE LEDGER'S SHAPE: ``[jobs][warps][phases]``, the kernel's own `ProducePhase` order, booked over the tiles.
@@ -228,7 +228,7 @@ def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) ->
               if dense[side] else None for side in ("read", "write")},
            "scale_read": empty(D), "scale_write": empty(D), "v": empty(plan.d_v, dtype=torch.float16),
            "v_scale": empty()}
-    jobs, shapes, _per_head = _job_tensor(plan, str(device))
+    jobs, shapes = _job_tensor(plan, str(device))
     route_bias = None if weights.route_bias is None else weights.route_bias.float().contiguous()
     extension().rola_produce_forward(
         x.reshape(B * T, hidden).to(torch.bfloat16).contiguous(), weights.route_W, route_bias,

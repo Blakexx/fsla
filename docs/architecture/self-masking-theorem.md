@@ -45,30 +45,30 @@ The normative reference implementation is `rola/ops/naive.py`
 ``c[t,s] = stop_gradient(prod_l k_l[d_l(s)] / sum_d k_l[d])``
 ```
 
-and the implementation is `:197`, over each level's share (its row over its own sum,
+and the implementation is `:196`, over each level's share (its row over its own sum,
 0 where the row sums to 0):
 
 ```python
 c = _leaf_product(shares, strides, N).detach()                # [B,T,H_w,N]
 ```
 
-`W[t,s]` is the product of the same per-level write factors (`:184`,
+`W[t,s]` is the product of the same per-level write factors (`:183`,
 `W = _leaf_product(write64, strides, N)`), and a share is zero exactly where its level
 is. **Therefore `W[t,s] = 0` and `c[t,s] = 0` have the same cause** — some level's
 factor at `s` is an exact zero.
 
-**(b) A zero clock is an exact identity survival factor.** `:198`:
+**(b) A zero clock is an exact identity survival factor.** `:197`:
 
 ```python
 keep = torch.pow(1.0 - rate, c)                    # [B,T,H,N]
 ```
 
 `x ** 0 == 1.0` exactly in IEEE arithmetic for every finite `x`, including
-`x = 0`. No rounding, no tolerance. And when `decay is None`, `:190` sets `keep`
+`x = 0`. No rounding, no tolerance. And when `decay is None`, `:189` sets `keep`
 to exact ones unconditionally, so the no-decay path is the same statement
 trivially.
 
-**(c) The update is therefore the identity.** `:210`:
+**(c) The update is therefore the identity.** `:209`:
 
 ```python
 state = keep[:, t, ..., None] * state + W[:, t, ..., None] * deposit_value[:, t, :, None, :]

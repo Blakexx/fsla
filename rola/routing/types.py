@@ -188,14 +188,6 @@ class IndependentRouting:
         """This level's operator choice at another branch width."""
         return IndependentRouting(width=width, read=self.read, write=self.write)
 
-    def duty_simplex_output(self, duty: str) -> bool:
-        """Whether this cell's own output already lands on the simplex.
-
-        Independent routing hands each duty one WHOLE solve, so the duty's answer is
-        the activation's registry column unchanged.
-        """
-        return activation_properties(self.activation(duty)).simplex_output
-
 
 @dataclass(frozen=True, slots=True)
 class UnionRouting:
@@ -235,18 +227,6 @@ class UnionRouting:
     def at(self, width: int) -> UnionRouting:
         """This level's operator choice at another branch width."""
         return UnionRouting(width=width, alpha=self.alpha)
-
-    def duty_simplex_output(self, duty: str) -> bool:
-        """Whether this cell's own output already lands on the simplex.
-
-        The write duty receives the shared solve WHOLE, so it is the activation's
-        registry column. The read duty receives a SPLIT of that solve's support and
-        therefore a strict share of its mass: measured across the shipped census, the
-        read sum runs as low as 7e-4, so the column does not transfer to it.
-        """
-        if duty not in ("read", "write"):
-            raise ValueError(f"duty must be 'read' or 'write', got {duty!r}")
-        return duty == "write" and self.properties.simplex_output
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,17 +268,6 @@ class TiedRouting:
     def at(self, width: int) -> TiedRouting:
         """This level's operator choice at another branch width."""
         return TiedRouting(width=width, op=self.op)
-
-    def duty_simplex_output(self, duty: str) -> bool:
-        """Whether this cell's own output already lands on the simplex.
-
-        Tied routing hands both duties the SAME whole solve, so the duty's answer is
-        the activation's registry column unchanged -- identical to
-        :meth:`IndependentRouting.duty_simplex_output` on a shared solve.
-        """
-        if duty not in ("read", "write"):
-            raise ValueError(f"duty must be 'read' or 'write', got {duty!r}")
-        return self.properties.simplex_output
 
 
 LevelRouting: TypeAlias = IndependentRouting | TiedRouting | UnionRouting
@@ -625,10 +594,6 @@ class OpaqueRouting:
         """The same opaque declaration at another branch width."""
         return OpaqueRouting(width=width)
 
-    def duty_simplex_output(self, duty: str) -> bool:
-        """The opaque row's column: a foreign producer's output is never vouched for."""
-        return activation_properties(self.activation(duty)).simplex_output
-
 
 LevelRouting: TypeAlias = IndependentRouting | TiedRouting | UnionRouting | OpaqueRouting
 
@@ -737,15 +702,6 @@ class Topology:
         return activation_properties(
             self.activation(level, duty), owner=f"Topology.levels[{level}].{duty}")
 
-    def duty_simplex_output(self, level: int, duty: str) -> bool:
-        """Whether that cell's own map already lands on the simplex.
-
-        THE fold's licence to skip a level. It is a routing-form
-        question and not only an activation one, because a routing form may hand a
-        duty a share of a solve rather than the whole of it.
-        """
-        return self.levels[level].duty_simplex_output(duty)
-
     def duty_cells(self) -> tuple[tuple[int, str], ...]:
         """Every `(level, duty)` cell, so a rule can quantify over the whole grid
         instead of over a hand-written pair of loops per rule."""
@@ -818,32 +774,10 @@ class LeafMassDecay:
         object.__setattr__(self, "dials", dials)
 
     def validate_against(self, topology: Topology) -> None:
-        """Check level count, per-level width, and the WRITE-side mass precondition.
-
-        **Mass decay requires a `normalized` write side.** The clock is
-        `c[t,s] = prod_l p_write_stored[t, d_l(s)]` and the survival factor is
-        `(1 - rate_leaf)**c` -- an expression that prices a decay per unit of MASS
-        DEPOSITED. If the write side does not land on the simplex, `c` is no longer
-        a unit-mass share and the same routing decays by an amount that depends on
-        the un-normalized scale of the logits, which is not a modeling choice anyone
-        made. Stated against the registry column, so it covers every present and
-        future activation without naming one.
-        """
+        """Check level count and per-level width. The clock needs no property of the write side: it is each leaf's
+        SHARE of the token's write, computed from the write rows themselves (docs/CONSTITUTION.md#r23), so it prices
+        survival per unit of deposited mass whatever magnitude a level carries."""
         widths = topology.widths
-        unnormalized = [
-            (level, topology.activation(level, "write").tag)
-            for level in range(topology.D)
-            if not topology.activation_properties(level, "write").normalized
-        ]
-        if unnormalized:
-            raise ValueError(
-                f"LeafMassDecay requires a `normalized` write side on every level; "
-                f"levels {unnormalized} name activations whose registry row says "
-                "`normalized=False`. The decay clock prices survival per unit of "
-                "DEPOSITED MASS, so an un-normalized write side makes the amount "
-                "decayed depend on the scale of the logits rather than on the "
-                "routing. Configure a normalized write activation, or do not "
-                "configure mass decay")
         if len(self.dials) != len(widths):
             raise ValueError(
                 f"LeafMassDecay.dials must contain one tensor per level (D={len(widths)}), "

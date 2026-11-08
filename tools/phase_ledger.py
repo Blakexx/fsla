@@ -98,7 +98,7 @@ def _produce(construction: str, launches: int, warmup: int, warmup_ms: float) ->
     fx = build(by_name(c.cells[0]), c)
     spec, layer = fx["cell"], fx["layer"]
     x = fx["x"][:, :spec.tokens].contiguous()
-    jobs = pr.job_table(layer.plan)[0]
+    jobs = pr.job_table(layer.plan)
     tiles = -(-(spec.B * spec.tokens) // 64)
     with gpu_lock(mode="exclusive"), torch.no_grad():
         ledger = torch.zeros((len(jobs), pr.LEDGER_WARPS, len(pr.LEDGER_PHASES)), dtype=torch.int64, device="cuda")

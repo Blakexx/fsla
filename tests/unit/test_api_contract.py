@@ -272,22 +272,6 @@ def test_the_bundle_carries_v_shape_disagreement_to_the_caller_not_to_the_kernel
 # ---------------------------------------------------------------------------
 
 
-def test_the_simplex_output_column_is_read_per_duty_not_per_activation():
-    """The skip's licence is a ROUTING-FORM question.
-
-    Union routing names one entmax for both duties, but hands the write duty the whole
-    of the shared solve and the read duty a SHARE of it. A skip keyed on the
-    activation's row alone would skip a fold that is not an identity, so the read
-    cell's answer must be ``False`` while its own activation's column is ``True``.
-    """
-    union = rola.Routing([rola.union_routing(4, 1.5), rola.union_routing(4, 1.5)]).topology
-    dense = _routes().topology
-    assert [union.duty_simplex_output(l, d) for l, d in union.duty_cells()] == [
-        False, True, False, True]
-    assert union.activation_properties(0, "read").simplex_output is True
-    assert all(dense.duty_simplex_output(l, d) for l, d in dense.duty_cells())
-
-
 def test_a_producer_outside_the_framework_still_emits_the_format_or_nothing():
     """RULED 2026-09-26: production lives in our framework and emits ONE internal format. A module that returns a
     bundle can only do so through the format's epilogue (`RouteFactors.from_levels`), so what the op admits is

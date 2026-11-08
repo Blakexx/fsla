@@ -144,7 +144,7 @@ _FAMILIES = {
              "test_g1_the_state_is_byte_reproducible_against_itself[widths0-64]",
         kernel="rola::decode::rola_decode_forward", present=True),
     #: THE FUSED PRODUCER on a union routing: the projection's burst, the solve and bundle rows under uniform passes,
-    #: the arrival counters and the head's finisher, the value digits -- every component, one launch.
+    #: the write gain's pass, the value digits -- every component, one launch.
     "produce": Family(
         test="tests/integration/test_produce_kernel.py::"
              "test_the_bundle_matches_the_reference_on_the_kernels_logits[union-2-5-True-True]",

@@ -122,12 +122,12 @@ explicit `not_kerneled` flag, and the kernel entry refuses it outright — a lab
 research surface, never a silent fallback.
 
 <!-- BEGIN GENERATED: rola.routing.activations.capability_table -->
-| activation | normalized | simplex_output | exact_zeros | support_differentiable | kerneled |
-| --- | --- | --- | --- | --- | --- |
-| entmax(alpha=1.5) | yes | yes | yes | no | yes |
-| entmax(alpha=2) | yes | yes | yes | no | yes |
-| opaque | yes | no | yes | no | yes |
-| softmax | yes | yes | no | yes | yes |
+| activation | exact_zeros | kerneled |
+| --- | --- | --- |
+| entmax(alpha=1.5) | yes | yes |
+| entmax(alpha=2) | yes | yes |
+| opaque | yes | yes |
+| softmax | no | yes |
 <!-- END GENERATED: rola.routing.activations.capability_table -->
 
 ## Usage
