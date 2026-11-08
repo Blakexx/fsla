@@ -100,10 +100,8 @@ fi
 OUT_DIR="$(mktemp -d)"
 trap 'rm -rf "$OUT_DIR"' EXIT
 
-#: THE LINT'S ONE BUILD (docs/internals/tools/lint.md#device-profile): `--cuda-host-only` is the host pass, where every
-#: carried build is in the image
-#: (`common/select.cuh`'s `in_image`), so each `build_switch` would instantiate every kernel once a carried build; the
-#: lint reads the build set of its one architecture, ahead of the generated one.
+#: THE LINT'S ONE BUILD: its architecture's build set, ahead of the generated one, so a `build_switch` instantiates one
+#: build. -- see docs/internals/tools/lint.md#device-profile
 mkdir -p "$OUT_DIR/builds"
 if ! (cd "$ROOT" && python3 -c "import sys; from measure import hardware; sys.stdout.write(hardware.builds_header(['$ARCH']))") \
     > "$OUT_DIR/builds/builds.inc"; then

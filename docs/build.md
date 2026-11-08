@@ -1,5 +1,8 @@
 # Build — ahead of time, closed world
 
+This page is the build as `setup.py` runs it; the build graph that replaces it stage by stage is
+[`build-graph.md`](build-graph.md).
+
 ## The governing constraint
 
 The kernels are compiled **ahead of time** into a fatbin containing

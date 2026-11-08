@@ -42,7 +42,7 @@ int_switch<2, 4, 8, 16, 32, 64, 128, 256>(
       constexpr int kLaneWidth = kWPad < 32 ? kWPad : 32;
       constexpr int kItemsPerThread = kWPad / kLaneWidth;
       bool_switch(alpha_is_1p5, [&](auto ALPHA) {
-        union_forward_kernel<kLaneWidth, kItemsPerThread, decltype(ALPHA)::value, LogitT, OutT>
+        union_forward_kernel<Bt, kLaneWidth, kItemsPerThread, decltype(ALPHA)::value, LogitT, OutT>
             <<<grid, BLOCK_THREADS, 0, stream>>>(/* ... */);
       });
     });
