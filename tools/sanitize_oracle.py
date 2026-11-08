@@ -18,10 +18,9 @@ ran, ad hoc, on paging -- K39 card) against ONE named oracle cell per family
 `compute-sanitizer`-wrapped pytest process so a hang or an error in one tool
 cannot block another, under the GPU lock every campaign shares.
 
-Usage (the lane is the build graph's, which passes the toolkit's own compute-sanitizer):
+Usage -- the lane is the build graph's, which passes `--sanitizer`, the toolkit's own compute-sanitizer by its path:
     bazel test //tests:sanitizer [--test_arg=--tool --test_arg=TOOL ...] [--test_arg=--family --test_arg=FAMILY ...]
-    python tools/sanitize_oracle.py --sanitizer PATH [--tool TOOL ...] [--family FAMILY ...]
-        [--timeout SECONDS]
+        [--test_arg=--timeout --test_arg=SECONDS]
 
 Invoked BARE: this script takes `gpu_lock()` itself, once, for the whole
 run, exactly the way every
@@ -344,6 +343,10 @@ def main() -> int:
     ap.add_argument("--sanitizer", required=True,
                     help="the compute-sanitizer binary; `bazel test //tests:sanitizer` passes the toolkit's own")
     args = ap.parse_args()
+    sanitizer = Path(args.sanitizer)
+    if not (sanitizer.is_absolute() and sanitizer.is_file() and os.access(sanitizer, os.X_OK)):
+        ap.error(f"--sanitizer {args.sanitizer}: an absolute path to an executable, never a name PATH resolves -- the "
+                 "lane passes the toolkit's own: bazel test //tests:sanitizer")
 
     tools = args.tool or list(_DEFAULT_TOOLS)
     families = args.family or list(_FAMILY_TESTS)

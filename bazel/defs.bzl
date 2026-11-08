@@ -551,7 +551,7 @@ tree="$TEST_TMPDIR/tree"
 cp -rL "$TEST_SRCDIR/_main" "$tree"
 rm -f "$tree/$TEST_BINARY"
 cd "$tree"
-{machine}export PATH={tools}{venv}/bin:/usr/bin:/bin PYTHONPATH="$tree" PYTHONDONTWRITEBYTECODE=1
+{machine}export PATH={venv}/bin:/usr/bin:/bin PYTHONPATH="$tree" PYTHONDONTWRITEBYTECODE=1
 {run}"""
 
 #: a pytest tier's run: Bazel's filter (`--test_filter`, pytest's `-k`), its shards (bazel/pytest_shards.py), its
@@ -578,7 +578,7 @@ def _tier_impl(ctx):
     venv = shell.quote(VENV)
     if bool(ctx.attr.cmd) == bool(ctx.attr.tests) or (ctx.attr.cmd and ctx.attr.marks):
         fail("%s: a pytest tier names its paths (`tests`, with `marks`), a lane its command (`cmd`): exactly one" % ctx.label)
-    #: a tool's binary is the PATH entry's, and a `cmd` word naming it in braces (`{compute-sanitizer}`) is its path
+    #: a lane reaches a tool by its path alone: a `cmd` word naming it in braces (`{compute-sanitizer}`) is that path
     paths = {}
     for target, binary in ctx.attr.tools.items():
         found = [f for f in target.files.to_list() if f.basename == binary]
@@ -586,15 +586,17 @@ def _tier_impl(ctx):
             fail("%s carries %d files named %s" % (target.label, len(found), binary))
         paths[binary] = found[0]
     if ctx.attr.cmd:
-        words = [('"$TEST_SRCDIR/_main/%s"' % paths[w[1:-1]].short_path) if w[1:-1] in paths and w[0] + w[-1] == "{}" else shell.quote(w) for w in ctx.attr.cmd]
+        braced = [w[1:-1] for w in ctx.attr.cmd if len(w) > 2 and w[0] + w[-1] == "{}"]
+        unknown = [name for name in braced if name not in paths]
+        if unknown:
+            fail("%s: the command names %s, which no `tools` entry carries (%s)" % (ctx.label, unknown, sorted(paths)))
+        words = [('"$TEST_SRCDIR/_main/%s"' % paths[w[1:-1]].short_path) if len(w) > 2 and w[0] + w[-1] == "{}" else shell.quote(w) for w in ctx.attr.cmd]
         run = "exec %s \"$@\"\n" % " ".join(words)
     else:
         words = list(ctx.attr.tests) + (["-m", ctx.attr.marks] if ctx.attr.marks else [])
         run = _PYTEST_RUN.format(venv = venv, args = " ".join([shell.quote(w) for w in words]))
-    #: each tool's binary's directory first on PATH, where its runfiles put it
-    tools = "".join(['"$TEST_SRCDIR/_main/%s":' % f.short_path.rsplit("/", 1)[0] for f in paths.values()])
     carried = [target.files for target in ctx.attr.tools]
-    body = _TIER.format(venv = venv, machine = "" if ctx.attr.devices else _NO_DEVICE, tools = tools, run = run)
+    body = _TIER.format(venv = venv, machine = "" if ctx.attr.devices else _NO_DEVICE, run = run)
     ctx.actions.write(script, body, is_executable = True)
     #: a device tier's pass is its devices': their identity is one of its inputs (docs/build-graph.md rule 5)
     identity = [ctx.file.devices] if ctx.attr.devices else []
@@ -609,7 +611,7 @@ _tier_test = rule(
         "marks": attr.string(doc = "its marker expression (`-m`); none keeps pyproject's default selection"),
         "cmd": attr.string_list(doc = "a lane's command, in place of pytest, run from the copy's root; a word `{name}` " +
                                       "is the path of the tool binary of that name"),
-        "tools": attr.label_keyed_string_dict(allow_files = True, doc = "what the command finds on PATH: each label's binary, by its name"),
+        "tools": attr.label_keyed_string_dict(allow_files = True, doc = "the command's tools: each label's binary, by its name"),
         "data": attr.label_list(allow_files = True, doc = "what it reads: the tree and the library"),
         "_shards": attr.label(default = "//bazel:pytest_shards.py", allow_single_file = True),
         "devices": attr.label(allow_single_file = True, doc = "a device tier's: the devices' identity (`@host_gpu`), " +

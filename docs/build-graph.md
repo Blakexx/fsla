@@ -139,8 +139,8 @@ index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
   tier runs alone, takes the machine's GPU lock itself, and has the devices' identity among its inputs (`@host_gpu`).
   `--test_filter` is pytest's `-k`, `--test_arg` passes pytest an argument. Every tier reads the machine's dev config:
   its locks, and the installed toolkit the unit tier's compiling rows still use. The sanitizer lane (`//tests:sanitizer`,
-  `bazel/defs.bzl`'s `device_lane`, `manual`) runs as a device tier does, with the toolkit's own compute-sanitizer
-  first on PATH ([`testing.md`](testing.md#the-sanitizer-lane)).
+  `bazel/defs.bzl`'s `device_lane`, `manual`) runs as a device tier does, passing the toolkit's own compute-sanitizer
+  by its path ([`testing.md`](testing.md#the-sanitizer-lane)).
 - THE CHECKS OF THE COMMIT (`//tools:commit_checks`, `bazel/defs.bzl`'s `checkout_test`): what git knows rather than
   a file set -- no ratchet's baseline grown against HEAD's (`tools/lint/ratchet.py --grown`), every doc reference
   resolving (`tools/docrefs.py`), the dev container current (`tools/dev.py container gate`). Each runs in the
