@@ -194,7 +194,8 @@ measured 2026-08-06).
 python -m rola_devtools.build run declare.py:all --only 'rola/phases' --only 'rola/sass'
 ```
 
-rola-devtools' build system runs this checkout's declarations (`declare.py`): the gated build, SASS, and a timing
+rola-devtools' build system runs this checkout's declarations (`declare.py`): the build graph's library
+(`bazel run //:library`), SASS, and a timing
 session of the carry arms on the cell under the GPU and clock locks, each result stored. A timing entry this binary
 cannot run is recorded as that entry's failure in the session's output, not skipped — which is the check this step
 stands in for: that the container's compile produced a binary carrying the arms a session measures.

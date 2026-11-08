@@ -10,7 +10,7 @@ timing registrations by arm name), so a root elsewhere (rola-bench's) loads this
 calls it per checkout with one shared timing server, and composes its own sessions. `root(g, **args)` is rola measuring itself: this checkout, its own server,
 one session and one memory pass over the cells, every result stored.
 
-Per checkout: `binary` (the gated build, held on every host slot, cached while its binary stands), `environment` (the
+Per checkout: `binary` (the build graph's library, `bazel run //:library`, every run), `environment` (the
 machine facts, every run), the instruments of `INSTRUMENTS` (SASS and the register walk once, cached; the phase clock,
 pipe counters, stall census, timeline and the intra roofline on every carry cell, and the intra's own
 (`counters-intra`, `census-intra`) on the cells of `LONG_CELL_TOKENS` and
@@ -46,9 +46,6 @@ HERE = Path(__file__).resolve().parent
 EXECUTORS = "measure.executors:"
 #: where this checkout's repository-local imports resolve, for code digests
 IMPORT_ROOTS = ["tools", "."]
-#: what the extension is built from, besides the files `setup.py` imports
-BUILD_DATA = ["csrc", "pyproject.toml", "tools/manifests", "tools/toolchains", "tools/sccache_pin.json",
-              "tools/mold_pin.json", "tools/devtools.txt"]
 #: the carry's schedule files, its kernel's own first (`tools/kernel_targets.py`'s one derivation)
 CARRY_SOURCES = load(HERE / "tools" / "kernel_targets.py")["schedule_sources"]("carry")
 #: name -> (tool, arguments, runs per carry cell, holds, data files its result depends on)
@@ -112,8 +109,11 @@ def declare(g, env: Env, *, timing=None, instruments=tuple(INSTRUMENTS)) -> dict
     #: cells to 49 and an ncu replay apiece (2026-09-16).
     carry = [c for c in cells if kind(c) == "carry" and central().cell(c)["params"].get("tier") in ("probe", "both")]
     layer = [c for c in cells if kind(c) == "layer"]
-    binary = g.node("binary", executor=EXECUTORS + "compile_kernel", env=env, holds={"host_cpu": "all"},
-                    verify=EXECUTORS + "binary_present", code=_code("setup.py", BUILD_DATA))
+    #: THE LIBRARY IS THE BUILD GRAPH'S (docs/build-graph.md#use): the node runs every build -- Bazel's cache is the
+    #: build's key, and the node's output, the library's digest, is every target's -- and holds no host slot, since the
+    #: graph's front door takes the host budget itself (a holder never starts a Bazel build, build-graph.md rule 13)
+    binary = g.node("binary", executor=EXECUTORS + "compile_kernel", env=env, cache=False, always_run=True,
+                    code=_code("measure/executors.py"))
     environment = g.node("environment", executor=EXECUTORS + "probe_environment", env=env, cache=False)
     facts = {"binary": binary, "environment": environment}
     out = {"binary": binary, "environment": environment, "instruments": {}, "entries": {}, "clock": None,

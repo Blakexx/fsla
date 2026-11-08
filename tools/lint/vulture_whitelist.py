@@ -44,10 +44,9 @@ class _Whitelist:
     pytest_configure = None
 
     # rola_devtools.build EXECUTORS: a declared target's worker calls its executor and verify functions from their
-    # `module:function` strings in `declare.py` (`measure/executors.py`'s `compile_kernel`, `binary_present`,
-    # `probe_environment`, `run_tool`, `timed`, `read_clock`).
+    # `module:function` strings in `declare.py` (`measure/executors.py`'s `compile_kernel`, `probe_environment`,
+    # `run_tool`, `timed`, `read_clock`).
     compile_kernel = None
-    binary_present = None
     probe_environment = None
     run_tool = None
     timed = None
@@ -103,7 +102,7 @@ class _Whitelist:
 
 _ = _Whitelist()
 _referenced = (_.pytestmark, _.ninja, _.pytest_addoption, _.pytest_configure,  # ruff B018: a bare attribute is "useless"
-               _.compile_kernel, _.binary_present, _.probe_environment, _.run_tool, _.timed, _.read_clock,
+               _.compile_kernel, _.probe_environment, _.run_tool, _.timed, _.read_clock,
                _.forward, _.poison_torch_memory, _._gpu_lock_held, _._host_budget_worker_slot, _._take_gpu_lock,
                _.union_table, _.v_row_bytes, _.y_dtype, _.token_bit, _.backing_kind, _.closed, _.owners_total,
                _.free, _.Activation, _.state_size, _.sequence_length,

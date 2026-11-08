@@ -588,8 +588,9 @@ def _tier_impl(ctx):
     if ctx.attr.cmd:
         braced = [w[1:-1] for w in ctx.attr.cmd if len(w) > 2 and w[0] + w[-1] == "{}"]
         unknown = [name for name in braced if name not in paths]
-        if unknown:
-            fail("%s: the command names %s, which no `tools` entry carries (%s)" % (ctx.label, unknown, sorted(paths)))
+        unused = [name for name in paths if name not in braced]
+        if unknown or unused:
+            fail("%s: the command's braced words %s and its tools %s must name each other" % (ctx.label, braced, sorted(paths)))
         words = [('"$TEST_SRCDIR/_main/%s"' % paths[w[1:-1]].short_path) if len(w) > 2 and w[0] + w[-1] == "{}" else shell.quote(w) for w in ctx.attr.cmd]
         run = "exec %s \"$@\"\n" % " ".join(words)
     else:
