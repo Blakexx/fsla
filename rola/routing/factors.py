@@ -33,7 +33,7 @@ SIDES = ("read", "write")
 def carry_level_s(read_sparse) -> int:
     """THE CARRY'S LEVEL S, from the read side's sparse flags: at depth two the read-sparse level (level 1 when it is
     read-sparse or level 0 is not, else level 0) -- the readout's digits, its read rows the coefficients; ``-1`` at
-    depth one (the list level alone) and deeper (the carry is not built). docs/internals/owner/owner.md#carve"""
+    depth one (the list level alone) and deeper (the carry is not built)."""
     if len(read_sparse) != 2:
         return -1
     return 1 if read_sparse[1] or not read_sparse[0] else 0

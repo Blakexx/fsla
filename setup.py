@@ -718,7 +718,7 @@ def _link_flags() -> list[str]:
 #: run is a defect). Never shipped: an iteration-build instrument, `-lineinfo` for the
 #: ledgers. docs/build.md#parts
 PARTS_MODULE_NAME = f"{PLUGIN}._C_parts"
-PARTS_SOURCES = ["measure/harness/carry_parts/carry_parts.cu", "measure/harness/owner/owner_skeleton.cu",
+PARTS_SOURCES = ["measure/harness/carry_parts/carry_parts.cu",
                  "csrc/rola/src/common/arch_runtime.cu", "csrc/rola/src/common/geom.cu"]
 
 

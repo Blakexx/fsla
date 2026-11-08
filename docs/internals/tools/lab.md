@@ -128,7 +128,6 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="read-step"></a>[`read_step`](../../lab/read_step.md)
 - <a id="publish-rounds"></a>[`publish_rounds`](../../lab/publish_rounds.md)
 - <a id="smem-rates"></a>[`smem_rates`](../../lab/smem_rates.md)
-- <a id="den-sweep"></a>[`den_sweep`](../../lab/den_sweep.md)
 - <a id="warp-hiding"></a>[`warp_hiding`](../../lab/warp_hiding.md)
 - <a id="row-span"></a>[`row_span`](../../lab/row_span.md)
 - <a id="vote-stash"></a>[`vote_stash`](../../lab/vote_stash.md)

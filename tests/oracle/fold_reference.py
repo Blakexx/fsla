@@ -64,7 +64,7 @@ def exponent_bounds(routes, values, level: int, window: int, padded_width: int, 
     return _exponents(top * (1 - rtol)), _exponents(top * (1 + rtol))
 
 
-# --------------------------------------------------------------- the fold (docs/internals/owner/owner_fold.md)
+# --------------------------------------------------------------- the fold (docs/internals/carry/ampere/fold.md)
 
 #: THE UNITS' CONSTANTS, the kernel's: c's top 2^4, a state held under 2^100 of its unit, the lowest unit, a list never
 #: live, a window's largest add in units (512 tokens x 16)

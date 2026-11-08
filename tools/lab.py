@@ -135,7 +135,7 @@ def signatures(binary: Path) -> dict[str, dict]:
 
 #: KERNEL_STANDARDS section 29's debts: the experiments recorded before a lab had to budget its MMA kernels and check
 #: its outputs; each is held to both when it is next changed, and the list only shrinks
-_PRE_29 = {"collective_branch", "den_sweep", "facts_block", "fold_step",
+_PRE_29 = {"collective_branch", "facts_block", "fold_step",
            "list_fold", "mma_k8", "mma_overlap", "mma_pairing", "mma_queue", "pass_fixed", "pass_pipeline",
            "pool_layout", "publish_rounds", "read_step", "row_span", "smem_rates", "sparse_pass", "state_publish",
            "tensor_tax", "vote_stash"}
