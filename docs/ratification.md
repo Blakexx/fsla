@@ -67,8 +67,9 @@ the translation units compiled against are one enumeration; `ROLA_CARRY_ARM_COUN
 and `ROLA_CARRY_ARM_DECLARED` are both emitted, because the refusal has to tell *this
 wheel does not carry that arm* from *nothing builds that arm in any configuration*.
 
-`setup.py::_post_build_arm_table_check` is where the layers become checked facts, and
-it runs **after** the compile because what it checks is what the build produced:
+`tools/gen_shards.py`'s `check_built_arm_table` and `sweep_binary` are where the layers become checked facts --
+setup.py's post-build gate and the graph's arm gate run them -- and they run **after** the compile because what they
+check is what the build produced:
 
 1. The generator's table still matches the declaration, re-read from disk;
 2. The selection header the build compiled against names exactly the arms the build
@@ -239,12 +240,12 @@ to be version 1, because guessing produces a confident wrong answer.
 
 | Rule | Refused | Enforced by |
 |---|---|---|
-| **R1** | building under an assembler the manifest was not ratified under | `setup.py::_gate_toolchain`, `ratify.py::check_toolchain` |
+| **R1** | building under an assembler the manifest was not ratified under | `tools/toolchains.py::rule1` (setup.py's `_gate_toolchain` and the graph's record action), `ratify.py::check_toolchain` |
 | **R1b** | building under CODEGEN FLAGS the manifest was not ratified under | `ratify.py::check_flags` |
 | **R2** | emitting `code=compute_XX` — any PTX a driver could JIT | `setup.py::gencodes`, asserted on the shipped `.so` (`cuobjdump --list-ptx` reports **0 PTX images**) |
-| **R3** | an architecture in the fatbin with no ratified manifest | `setup.py::_gate_ratified` — a **file-existence** question, asked before anything compiles |
+| **R3** | an architecture in the fatbin with no ratified manifest | `tools/build_record.py::ratified_manifest` (setup.py's `_gate_ratified` and the graph's record action) — a **file-existence** question, asked before anything compiles |
 | **R4** | launching on a device the kernel's arch table does not describe | `common/arch_runtime.cu`'s `check_arch_table()` at run time (first statement of every family's launching entry, carry included), `static_assert` at compile time |
-| **R5** | building from a vendored codegen input (the CUTLASS/CuTe headers under `csrc/third_party/`) that does not match its recorded pin | `setup.py::_gate_vendored`, before the compile; the pin is stamped into `_build_config.py` |
+| **R5** | building from a vendored codegen input (the CUTLASS/CuTe headers under `csrc/third_party/`) that does not match its recorded pin | `tools/build_record.py::vendored_pin` (setup.py's `_gate_vendored` and the graph's record action), before the compile; the pin is stamped into `_build_config.py` |
 
 There is no environment variable that turns any of these off.
 

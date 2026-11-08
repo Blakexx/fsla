@@ -23,11 +23,17 @@ import gen_shards  # noqa: E402
 import toolchains  # noqa: E402
 
 
+def _version(binary: str) -> str:
+    return subprocess.run([binary, "--version"], capture_output=True, text=True, check=True).stdout
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--toolchain", required=True, help="the toolchain's name (its record tools/toolchains/<name>.json)")
     ap.add_argument("--ptxas", required=True, help="the graph's ptxas")
+    ap.add_argument("--cuobjdump", required=True, help="the graph's cuobjdump")
+    ap.add_argument("--nvdisasm", required=True, help="the graph's nvdisasm")
     ap.add_argument("--archs", required=True)
     ap.add_argument("--carry-arms", default="")
     ap.add_argument("--decode-arms", default="")
@@ -40,14 +46,10 @@ def main() -> int:
     toolchain = toolchains.named(a.toolchain)
     archs = [x for x in a.archs.split(",") if x]
     manifest = build_record.ratified_manifest(archs, toolchain.manifest_dir)
-    ptxas = toolchains.normalize(subprocess.run([a.ptxas, "--version"], capture_output=True, text=True,
-                                                check=True).stdout)
-    pinned = toolchains.normalize(manifest["toolchain"]["ptxas"])
-    if ptxas != toolchain.ptxas or ptxas != pinned:
-        raise SystemExit(f"CLOSED-WORLD RULE 1: the graph's ptxas is not the toolchain {toolchain.name}'s.\n  record  : "
-                         f"{toolchain.ptxas}\n  manifest: {pinned}\n  graph   : {ptxas}\nThe manifests were ratified "
-                         "under the record's assembler; MODULE.bazel's toolkit pin must name that release.")
-    toolchains.torch_pairing(toolchain, a.torch_cuda)
+
+    #: the binary gates' disassemblers are of the compiler's release: MODULE.bazel names the toolkit's manifest twice
+    ptxas = toolchains.rule1(toolchain, _version(a.ptxas), manifest, a.torch_cuda,
+                             {"cuobjdump": _version(a.cuobjdump), "nvdisasm": _version(a.nvdisasm)})
     print(f"rule 1 OK  toolchain {toolchain.name}, torch CUDA {a.torch_cuda}, ptxas: {ptxas}")
     carry = gen_shards.family_arms(gen_shards.CARRY, a.carry_arms, "--//:carry_arms")
     decode = gen_shards.family_arms(gen_shards.DECODE, a.decode_arms, "--//:decode_arms")

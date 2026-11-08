@@ -1170,7 +1170,6 @@ def check_vendored_pin() -> list[str]:
     ratification probe compile against the vendored headers with the SAME include
     path (a probe compiled against a different include set measures a different
     kernel than the one shipped)."""
-    import hashlib
     import json
 
     cutlass_dir = ROOT / "csrc" / "third_party" / "cutlass"
@@ -1191,14 +1190,8 @@ def check_vendored_pin() -> list[str]:
                         "upstream tag, which is the only thing that makes the digest "
                         "more than self-referential")
 
-    def tree_sha256(root: Path) -> tuple[str, int]:
-        digest = hashlib.sha256()
-        files = sorted(p for p in root.rglob("*") if p.is_file() and p.name != "PIN.json")
-        for path in files:
-            digest.update(path.relative_to(root).as_posix().encode())
-            digest.update(b"\0")
-            digest.update(hashlib.sha256(path.read_bytes()).digest())
-        return digest.hexdigest(), len(files)
+    sys.path.insert(0, str(ROOT / "tools"))
+    from build_record import vendored_tree_sha256 as tree_sha256
 
     here, count = tree_sha256(cutlass_dir)
     if count != pin.get("file_count"):
@@ -1238,6 +1231,8 @@ def check_vendored_pin() -> list[str]:
                         "extension does not perform")
     if "_gate_vendored" not in setup_text:
         findings.append("closed-world rule 5 gate (_gate_vendored) is gone from setup.py")
+    if "vendored_pin(" not in (ROOT / "bazel" / "record.py").read_text():
+        findings.append("closed-world rule 5 gate (build_record.vendored_pin) is gone from the graph's record action")
 
     BUILD_CONFIG = _repo_build_config()
     if BUILD_CONFIG is None:

@@ -373,18 +373,11 @@ def _gate_vendored() -> dict:
 
 
 def _gate_toolchain(manifest: dict) -> str:
+    """RULE 1 (`tools/toolchains.py`'s `rule1`): this host's assembler is the toolchain's and the manifests', and torch
+    is the toolchain's CUDA major."""
     import torch
 
-    pinned = toolchains.normalize(manifest["toolchain"]["ptxas"])
-    here = ptxas_version()
-    if pinned != here or here != TOOLCHAIN.ptxas:
-        raise RuntimeError(
-            f"CLOSED-WORLD RULE 1: toolchain {TOOLCHAIN.name}'s manifests were ratified under a "
-            f"different assembler.\n  manifest: {pinned}\n  this host: {here}\n"
-            f"Re-ratify (`python tools/ratify.py --write`) and record the new numbers "
-            "-- do not hand-edit the manifest."
-        )
-    toolchains.torch_pairing(TOOLCHAIN, torch.version.cuda)
+    here = toolchains.rule1(TOOLCHAIN, ptxas_version(), manifest, torch.version.cuda)
     print(f"rule 1 OK  toolchain {TOOLCHAIN.name}, torch CUDA {torch.version.cuda}, ptxas: {here}")
     return here
 

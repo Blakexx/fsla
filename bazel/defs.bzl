@@ -158,6 +158,8 @@ def _extension_impl(ctx):
     args.add("--out", record)
     args.add("--toolchain", ctx.attr.toolchain)
     args.add("--ptxas", ptxas)
+    args.add("--cuobjdump", ctx.file._cuobjdump)
+    args.add("--nvdisasm", ctx.file._nvdisasm)
     args.add("--torch", ctx.attr.torch)
     args.add("--torch-cuda", ctx.attr.torch_cuda)
     args.add("--cxx11-abi", str(ctx.attr.cxx11_abi))
@@ -165,7 +167,7 @@ def _extension_impl(ctx):
     ctx.actions.run(
         executable = ctx.file._python,
         arguments = [args],
-        inputs = ctx.files._record_sources + ctx.files._sources + [ctx.file._record, ptxas],
+        inputs = ctx.files._record_sources + ctx.files._sources + [ctx.file._record, ptxas, ctx.file._cuobjdump, ctx.file._nvdisasm],
         outputs = [record],
         mnemonic = "RolaRecord",
         progress_message = "Gating the build (rules 1, 3, 5, the shards) and writing its record",

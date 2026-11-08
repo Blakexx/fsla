@@ -2,7 +2,8 @@
 
 Mirrors `tools/toolchains.py`. A **toolchain** is one exact assembler a fatbin is built and ratified under. Everything
 that asks "which compiler, which manifests" reads it through this module: `setup.py`'s rules, `tools/ratify.py`,
-`tools/supported.py` and the lints.
+`tools/supported.py`, the lints, and the graph's flags and record actions (`bazel/flags.py`, `bazel/record.py`). Rule 1
+is one function here, `rule1`, both builds' (docs/build-graph.md#gates).
 
 ## The record
 

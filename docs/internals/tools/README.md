@@ -17,12 +17,12 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 | [`dev.py`](dev.md) | the one command that sets up, checks and describes a host or container | a person; the commit gate's §23 check | the `environment` record (its container check) |
 | [`dev_config.py`](dev_config.md) | every machine-dependent value, read from one directory of JSON files | every tool here, `setup.py`, the tests | — |
 | [`build_flags.py`](../../build.md) | THE ONE SOURCE of the nvcc flag list | `setup.py`, `ratify.py`, the graph (`bazel/flags.py`) | — |
-| `build_record.py` | the build record `_build_config.py` and rule 3, which assembles the ratification it names | `setup.py`, the graph (`bazel/record.py`), `ratify.py` | the record |
+| `build_record.py` | the build record `_build_config.py`, rule 3 (which assembles the ratification it names) and rule 5 (the vendored tree's pin) | `setup.py`, the graph (`bazel/record.py`), `ratify.py` | the record |
 | `csrc_stamp.py` | the csrc content hash and the header that compiles it into the binary as the device stamp | `ratify.py`, the graph's stamp action | the stamp header |
 | [`bootstrap.py`](dev_config.md#bootstrap) | what a tool knows before the dev config's reader is importable: the sibling checkouts, the rola-devtools checkout | `dev_config.py`, the graph's front door | — |
 | [`build_lock.py`](build_lock.md) | the machine-wide cicc budget | `setup.py`, `ratify.py` | — |
-| [`gen_shards.py`](gen_shards.md) | THE ONE ENUMERATION of the carry family's instantiation matrix | `setup.py`, `ratify.py`, the provider, the graph's header action | the generated per-arm units, `csrc/rola/units.bzl` and the selection headers |
-| [`toolchains.py`](toolchains.md) | each toolchain as a named record of the assembler a fatbin is built and ratified under | `setup.py`, `ratify.py`, `dev.py` | — |
+| [`gen_shards.py`](gen_shards.md) | THE ONE ENUMERATION of the carry family's instantiation matrix | `setup.py`, `ratify.py`, the provider, the graph's header, record and arm-gate actions (`bazel/headers.py`, `bazel/record.py`, `bazel/gates.py`) | the generated per-arm units, `csrc/rola/units.bzl` and the selection headers |
+| [`toolchains.py`](toolchains.md) | each toolchain as a named record of the assembler a fatbin is built and ratified under | `setup.py`, `ratify.py`, `dev.py`, the graph's flags and record (`bazel/flags.py`, `bazel/record.py`) | — |
 | [`sccache_toolchain.py`](../../build.md#sccache) | the compiler-cache wrapper pin (closed-world rule 1) | `setup.py`, `ratify.py` | — |
 | `sccache_nvcc.py` | the nvcc↔sccache seam: a pass-through, never a resolver | nvcc, as its launcher | — |
 | `mold_toolchain.py` | the linker pin — mold is not an option, it is THE linker | `setup.py`, `dev.py`, the Dockerfile | — |
@@ -44,7 +44,7 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 | `kernel_targets.py` | the instruments' kernel families: each one's profiler filter, provider arm, cubin member, sources, budget and unit (`kernel_targets.md`) | `stall_census.py`, `pipe_counters.py`, `phase_ledger.py` | — |
 | [`scale_slack.py`](scale_slack.md) | whether a bound looser than the exact read product can be the carry's f16 scale: each candidate's slack over it, and the carry's spread at its scale against two runs at the exact bound's (the scale pass's own bytes among them) | a person | `--json` |
 | `realized_support.py` | a layer construction's realized routing support: each level's and side's nonzero digits a token in the bundle the producer emits (`realized_support.md`) | `declare.py` (`support`) | `rola/support` |
-| `sass_gate.py` | the ptxas signatures of KERNEL_STANDARDS §20, red on any of them; guarded convergence fallbacks counted; an unchanged cubin's verdict replayed (`sass_gate.md`) | every iteration build; the `sass` instrument | `--json`, `--loops` (each step loop's reading and the lines its lints count), `--no-cache` |
+| `sass_gate.py` | the ptxas signatures of KERNEL_STANDARDS §20, red on any of them; guarded convergence fallbacks counted; an unchanged cubin's verdict replayed (`sass_gate.md`) | every iteration build; the graph's SASS gate action (`--cuobjdump`/`--nvdisasm`, its toolkit); the `sass` instrument | `--json`, `--loops` (each step loop's reading and the lines its lints count), `--no-cache` |
 | `sass_bodies.py` | per-instantiation SASS body hashes, the codegen-equivalence instrument | a person, comparing two builds | `--json` |
 | `sass_control.py` | the SASS control words (stall count, yield, scoreboards, reuse) and the loop a function compiles to; its `MACHINES` table is the static simulator's per-architecture model | `pipe_sim.py`, `burst_gate.py` | — |
 | [`burst_gate.py`](burst_gate.md) | what every burst loop's SASS must satisfy, deterministically (KERNEL_STANDARDS §23) | the `sass` instrument | exit 1 when red |

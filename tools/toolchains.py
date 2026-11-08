@@ -105,6 +105,32 @@ def for_ptxas(version: str) -> Toolchain:
         "Point toolchain.cuda_home at a declared toolkit, or bring up the toolchain (docs/bringup.md).")
 
 
+#: `release 13.0` -- the toolkit release a binary's `--version` names (its patch is its own: ptxas V13.0.48, cuobjdump V13.0.39)
+_RELEASE = re.compile(r"release (\d+\.\d+)")
+
+
+def rule1(toolchain: Toolchain, ptxas: str, manifest: dict, torch_cuda: str | None,
+          readers: dict[str, str] | None = None) -> str:
+    """CLOSED-WORLD RULE 1: `ptxas` (a `--version` text) is the toolchain record's and the ratified manifests' assembler
+    byte for byte; the torch the extension builds against is the toolchain's CUDA major; and each of `readers` (the
+    disassemblers the binary gates read with: name -> `--version` text) is of the assembler's toolkit release, so a
+    toolkit bump that moves one pin and not the other is refused. The normalized assembler string, on success."""
+    here, pinned = normalize(ptxas), normalize(manifest["toolchain"]["ptxas"])
+    if here != toolchain.ptxas or here != pinned:
+        raise ToolchainError(f"CLOSED-WORLD RULE 1: toolchain {toolchain.name}'s manifests were ratified under a different "
+                             f"assembler.\n  record  : {toolchain.ptxas}\n  manifest: {pinned}\n  here    : {here}\n"
+                             "Re-ratify (`python tools/ratify.py --write`) and record the new numbers -- do not "
+                             "hand-edit the manifest.")
+    release = _RELEASE.search(here)
+    for name, text in (readers or {}).items():
+        found = _RELEASE.search(text)
+        if release is None or found is None or found.group(1) != release.group(1):
+            raise ToolchainError(f"CLOSED-WORLD RULE 1: {name} is not of the assembler's toolkit release "
+                                 f"({release.group(1) if release else '?'}): {normalize(text)}")
+    torch_pairing(toolchain, torch_cuda)
+    return here
+
+
 def torch_pairing(toolchain: Toolchain, torch_cuda: str | None) -> None:
     if torch_cuda is None or int(torch_cuda.split(".", 1)[0]) != toolchain.cuda_major:
         raise ToolchainError(

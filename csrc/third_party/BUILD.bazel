@@ -4,8 +4,6 @@ load("//bazel:defs.bzl", "include_root")
 
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["cutlass/PIN.json"])
-
 #: the whole vendored tree, which rule 5 hashes against its pin
 filegroup(
     name = "cutlass_tree",

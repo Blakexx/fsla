@@ -77,12 +77,15 @@ both into the checkout's `rola_cu13/` (a copy: the library is imported from the 
   `//bazel:cuda_headers` -- rules_cuda 0.3.0's own `@cuda//:cuda_headers` names a component CUDA 13 lacks).
 ## <a id="gates"></a>The library's gates
 
-Building `//:library` runs every gate below; their verdicts are its outputs and its runfiles, so neither a build nor
-`bazel run` hands over a library a gate has not passed. Each reruns only when its inputs change.
+Building `//:library` runs the gates below; their verdicts are its outputs and its runfiles, so neither a build nor
+`bazel run` hands over a library one of them has not passed. Each reruns only when its inputs change. Ratify's
+post-build recompile is not among them: setup.py's build runs it (a warning between milestones, fatal under
+`ROLA_STRICT_MANIFEST`; KERNEL_STANDARDS section 16).
 
-- THE BUILD GATES AND THE RECORD (`bazel/record.py`): rule 1 -- the graph's ptxas is the toolchain record's and the
-  manifests' byte for byte (the tie between that record and `MODULE.bazel`'s toolkit pin), and the environment's torch
-  is the toolchain's CUDA major (`tools/toolchains.py`) --; rule 3, every architecture ratified; rule 5, the vendored
+- THE BUILD GATES AND THE RECORD (`bazel/record.py`): rule 1 (`tools/toolchains.py`'s `rule1`, setup.py's too) -- the
+  graph's ptxas is the toolchain record's and the manifests' byte for byte (the tie between that record and
+  `MODULE.bazel`'s toolkit pin), its cuobjdump and nvdisasm are of ptxas's toolkit release (the tie between the
+  manifest's two mentions there), and the environment's torch is the toolchain's CUDA major --; rule 3, every architecture ratified; rule 5, the vendored
   tree its `PIN.json`'s (`tools/build_record.py`'s `vendored_pin`); the shards, the checked-in generated units the arm
   list's (`tools/gen_shards.py`'s `check_generated`); then the record, `tools/build_record.py`'s writer, setup.py's.
 - THE SASS GATE (KERNEL_STANDARDS section 20, `tools/sass_gate.py`) on the linked library, with the graph's
@@ -91,8 +94,6 @@ Building `//:library` runs every gate below; their verdicts are its outputs and 
 - THE ARM GATE (`bazel/gates.py`): the built table against the declaration, and the coverage sweep -- the binary asked
   what it carries, loaded by the environment's interpreter against the toolkit's driver stub, so the answer is the
   binary's on any machine. It runs outside the sandbox, where the environment's packages are; the lock is its input.
-
-Ratify's post-build recompile is setup.py's still.
 
 ## <a id="rules"></a>The rules
 
@@ -125,7 +126,8 @@ names one).
 9. WORKSPACES AND OUTPUT BASES LIVE ON THE LINUX DISK, never under `/mnt` (WSL's Windows mounts: slow, and file
    watching is undefined there).
 10. THE SANDBOX STAYS ON: Bazel 9's hermetic `/tmp` keeps nvcc's temporary files apart, so nothing runs
-    `--spawn_strategy=local` to dodge it.
+    `--spawn_strategy=local` to dodge it. One action leaves it, the arm gate, because it imports the environment's
+    packages from the store, which the sandbox does not hold; the store is keyed by the lock, the action's input.
 11. CUDA THROUGH RULES_CUDA'S OWN SETTINGS: the architectures through `--@rules_cuda//cuda:archs`, one spec a card
     (cubins only, no PTX); a host compile flag reaches nvcc's host pass only through rules_cuda's host options; an external repository's
     headers through the target's include options.

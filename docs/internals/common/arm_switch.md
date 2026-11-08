@@ -32,7 +32,8 @@ exists, and two enumerations of one set drift.
    than one member is refused separately — an arm set is a set.
 4. **A trapping default and a post-build coverage sweep.** The host's trapping default
    is the refusal (there is no fallthrough), and the coverage sweep is
-   `setup.py::_post_build_arm_table_check`: the freshly built `_C`, loaded by path,
+   `tools/gen_shards.py`'s `sweep_binary` (setup.py's post-build gate, the graph's arm gate): the freshly built `_C`,
+   loaded by path,
    must report exactly the rows the build selected
    ([`docs/ratification.md#arm-switch`](../../ratification.md#arm-switch)).
 
