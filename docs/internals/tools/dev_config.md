@@ -21,7 +21,7 @@ bootstrap), and `python tools/dev.py init` links the `workspace.devtools` checko
 | `host.json` | `nvcc_threads`, `build_jobs`, `budget_slots`, `lock_dir`, `gpu_lock`, `gpu_shared_slots`, `nice`, `locks_trace`, `scratch`, `build_cache` (the build systems' caches: the graph's under `bazel/`), `tools_dir`, `windows_system32`, `wsl_lib` |
 | `clock.json` | `ghz`, `lock`, `unlock` (null `ghz`: the host measures unlocked) |
 | `store.json` | `root` (the measurements store: a rola-results checkout) |
-| `workspace.json` | `suite` (the rola-bench checkout whose root `declare.py` measures this tree), `devtools` (the rola-devtools checkout, the public mirror's declared build system, linked into every venv), `worktrees` (the one folder worktrees live in), `base_venv` (the venv the sibling repositories' hooks, and a checkout without its own `bazel run //:dev_env` venv, run from) |
+| `workspace.json` | `suite` (the rola-bench checkout whose root `declare.py` measures this tree), `devtools` (the rola-devtools checkout, the public mirror's declared build system, linked into every venv), `worktrees` (the one folder worktrees live in), `base_venv` (the venv the sibling repositories' commit hooks, `dev.py store` and `dev.py container` run from) |
 | `environment.json` | `image_digest` (inside the dev container) |
 
 <a id="bootstrap"></a>**Before the reader is importable.** The graph's front door (`bazel/front_door.py`) runs

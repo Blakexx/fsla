@@ -74,7 +74,7 @@ SCHEMA: dict[str, dict[str, Key]] = {
                         "every venv that runs here"),
         "worktrees": Key("path", str(ROOT.parent / "worktrees") if ROOT.parent.name != "worktrees" else str(ROOT.parent),
                          "the one folder every worktree and its venv live in"),
-        "base_venv": Key("path?", None, "the shared venv every worktree's pointer venv borrows site-packages from"),
+        "base_venv": Key("path?", None, "the shared venv the sibling repositories' commit hooks, `dev.py store` and `dev.py container` run from"),
     },
     "environment": {
         "image_digest": Key("str", "", "inside the dev container: sha256 of the Dockerfile the image was built from"),

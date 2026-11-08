@@ -9,7 +9,7 @@ The build and its parameters: `docs/build.md#building`. What a stage owes and wh
 
 1. An iteration build compiles one architecture and the arms it needs (`ROLA_CUDA_ARCHS`, `ROLA_CARRY_ARMS`,
    `ROLA_DECODE_ARMS`); a gate build the shipped set, with `ROLA_STRICT_MANIFEST=1` only when it precedes a ratify
-   (`docs/build.md#building`, the table). After a checkout's first editable install, iterate with
+   (`docs/build.md#building`, the table). In a checkout with its venv (`bazel run //:dev_env`), iterate with
    `python tools/dev.py build` (`docs/build.md#iteration`), never through a scratch compile.
 2. Never set job counts: `setup.py` takes the machine-wide host budget and sizes the jobs
    (`docs/build.md#the-host-budget-every-build-shares-one-pool`, `docs/internals/tools/build_lock.md`).

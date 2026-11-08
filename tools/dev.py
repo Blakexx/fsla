@@ -8,7 +8,8 @@
     python tools/dev.py show                    # every resolved setting and the file it came from
     python tools/dev.py get <section.key>       # one value, for a person or a shell
     python tools/dev.py clock --mhz 1665        # lock this host's SM clock once, prove the round trip, record it
-    python tools/dev.py worktree <name> <sha> [--build]   # a worktree, its pointer venv, its gate, its extension
+    python tools/dev.py worktree <name> <sha>   # a worktree, its venv and gate (//:dev_env), its extension (//:library)
+    python tools/dev.py dev-env ...             # bazel run //:dev_env's implementation: this checkout's venv
     python tools/dev.py container compose|build|check|gate # the dev container: mounts, image, proof, commit gate
     python tools/dev.py store commit -m <msg>   # the measurements store (a rola-results checkout)
 
@@ -166,11 +167,11 @@ def install_pinned(name: str, dest: Path) -> str:
 
 
 def base_venv_of(prefix: Path) -> str | None:
-    """The shared venv a pointer venv borrows from, or the venv itself when it carries torch directly."""
+    """The running interpreter's venv when it carries torch itself, never the graph's environment under
+    `host.build_cache`, which nothing outside the graph writes into."""
+    if prefix.resolve().is_relative_to(Path(dev_config.get("host.build_cache")).resolve()):
+        return None
     site = prefix / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
-    pointer = site / "zz_rola_base.pth"
-    if pointer.exists():
-        return str(Path(pointer.read_text().strip()).parents[2])
     return str(prefix) if (site / "torch").is_dir() else None
 
 
@@ -190,13 +191,12 @@ LINKED = {"rola_results.pth": "store.root", "rola_devtools.pth": "workspace.devt
 
 def link_packages(image: bool) -> list[Path]:
     """`rola_results` and `rola_devtools` importable from every interpreter that runs here, by the `LINKED` `.pth` files:
-    the base venv (the image's at its build, naming the mount points), and on a host each worktree's pointer venv (it
-    borrows the base as a plain path, which reads none of the base's .pth files). Never the host's own python: nothing
-    here runs from it."""
+    the base venv (the image's at its build, naming the mount points), and on a host each checkout's own venv
+    (`checkout_venv`: it names the environment as a plain path, which reads none of its .pth files). Never the host's
+    own python: nothing here runs from it."""
     sites = [site_packages(Path(dev_config.get("workspace.base_venv")))]
     if not image:
-        sites += [site_packages(v) for v in sorted(Path(dev_config.get("workspace.worktrees")).glob("venv-*"))
-                  if any((site_packages(v) / marker).exists() for marker in ("zz_rola_base.pth", ENV_PTH))]
+        sites += [site_packages(v) for v in (checkout_venv(c) for c in _worktrees()) if v is not None]
     for site in sites:
         site.mkdir(parents=True, exist_ok=True)
         for pth, key in LINKED.items():
@@ -210,11 +210,14 @@ GATED_CONSUMERS = ("workspace.suite", "store.root", "workspace.devtools")
 
 def wire_hooks(checkout: Path) -> None:
     """The commit gate as a property of the checkout: `core.hooksPath` set per worktree to the tracked hooks (the gate
-    is `bazel test //:gate`), and `rola.venv` naming the venv the post-commit review runs from (`checkout_venv`), so no
-    hook reaches the host's python."""
+    is `bazel test //:gate`), and `rola.venv` naming the checkout's own venv, which the post-commit review runs from, so
+    no hook reaches the host's python. Refuses a checkout with no venv of its own."""
+    venv = checkout_venv(checkout)
+    if venv is None:
+        raise SystemExit(f"{checkout} has no venv of its own: bazel run //:dev_env in it")
     subprocess.run(["git", "-C", str(checkout), "config", "extensions.worktreeConfig", "true"], check=True)
     subprocess.run(["git", "-C", str(checkout), "config", "--worktree", "core.hooksPath", "tools/git-hooks"], check=True)
-    subprocess.run(["git", "-C", str(checkout), "config", "--worktree", "rola.venv", checkout_venv(checkout)], check=True)
+    subprocess.run(["git", "-C", str(checkout), "config", "--worktree", "rola.venv", str(venv)], check=True)
 
 
 #: the marker of a venv `dev-env` wrote: its `.pth` naming the graph's environment
@@ -226,10 +229,10 @@ def dev_venv(checkout: Path) -> Path:
     return checkout.parent / f"venv-{checkout.name}"
 
 
-def checkout_venv(checkout: Path) -> str:
-    """The venv a checkout's hooks run from: its own (`dev-env`'s) when it has one, else `workspace.base_venv`."""
+def checkout_venv(checkout: Path) -> Path | None:
+    """A checkout's own venv, which `dev-env` wrote (its `ENV_PTH`), or None until `bazel run //:dev_env` writes it."""
     own = dev_venv(Path(checkout))
-    return str(own) if list(own.glob(f"lib/python*/site-packages/{ENV_PTH}")) else dev_config.get("workspace.base_venv")
+    return own if list(own.glob(f"lib/python*/site-packages/{ENV_PTH}")) else None
 
 
 #: THE AGENT SKILL ROUTER (KERNEL_STANDARDS section 31): the user-level bootstrap that runs the touched checkout's
@@ -379,7 +382,11 @@ def cmd_init(a) -> int:
         print(f"rola_results, rola_devtools: linked into {site}")
     if not a.image:
         for checkout in _worktrees():
-            if os.access(checkout / "tools" / "git-hooks" / "pre-commit", os.X_OK):
+            if not os.access(checkout / "tools" / "git-hooks" / "pre-commit", os.X_OK):
+                continue
+            if checkout_venv(checkout) is None:
+                print(f"{checkout}: no venv of its own, its gate left as it is -- bazel run //:dev_env in it")
+            else:
                 wire_hooks(checkout)
         _refuse_unwired()
         install_router()
@@ -471,9 +478,11 @@ def cmd_check(a) -> int:
     readable = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--git-dir"], capture_output=True).returncode == 0
     hooks = subprocess.run(["git", "-C", str(ROOT), "config", "--get", "core.hooksPath"], capture_output=True, text=True)
     own = checkout_venv(ROOT)
-    row(not readable or (hooks.stdout.strip() == "tools/git-hooks" and gate_venv(ROOT) == own),
-        f"commit gate wired in {ROOT.name} (`bazel test //:gate`), its review run from {own}" if readable else
-        f"{ROOT}: no git repository visible here; commits are made where it is", "python tools/dev.py init")
+    row(not readable or (hooks.stdout.strip() == "tools/git-hooks" and own is not None and gate_venv(ROOT) == str(own)),
+        (f"commit gate wired in {ROOT.name} (`bazel test //:gate`), its review run from {own}" if own else
+         f"{ROOT.name} has no venv of its own for its commit gate") if readable else
+        f"{ROOT}: no git repository visible here; commits are made where it is",
+        "bazel run //:dev_env" if readable and own is None else "python tools/dev.py init")
     current, wired = router_state()
     if (Path.home() / ".claude").is_dir():
         row(current and wired, "agent skill router: " + ("installed and current" if current else "missing or stale")
@@ -499,19 +508,20 @@ def cmd_check(a) -> int:
     root = Path(dev_config.get("store.root"))
     row((root / "rola_results" / "store.py").is_file(), f"store.root is a rola-results checkout: {root}",
         "clone rola-results to store.root, or point store.root at a checkout")
-    #: the co-developed checkouts import in the venv this checkout's hooks run from
-    python = Path(own if readable else base) / "bin" / "python"
-    found = subprocess.run([str(python), "-c", "import rola_results; print(rola_results.ROOT)"], capture_output=True,
-                           text=True)
-    row(found.stdout.strip() == str(root / "records"), f"rola_results imports from store.root in {python}",
-        "python tools/dev.py init")
     devtools = Path(dev_config.get("workspace.devtools"))
     row((devtools / "rola_devtools" / "mirror.py").is_file(), f"workspace.devtools is a rola-devtools checkout: {devtools}",
         "clone rola-devtools to workspace.devtools, or point workspace.devtools at a checkout")
-    found = subprocess.run([str(python), "-c", "import rola_devtools; print(rola_devtools.__file__)"],
-                           capture_output=True, text=True)
-    row(found.stdout.strip() == str(devtools / "rola_devtools" / "__init__.py"),
-        f"rola_devtools imports from workspace.devtools in {python}", "python tools/dev.py init")
+    #: the co-developed checkouts import in each venv that runs here: the base venv (`store`, `container`, the sibling
+    #: repositories' hooks) and this checkout's own (its hooks)
+    for venv in [Path(base or "")] + ([own] if readable and own is not None else []):
+        python = venv / "bin" / "python"
+        found = subprocess.run([str(python), "-c", "import rola_results, rola_devtools; "
+                                "print(rola_results.ROOT); print(rola_devtools.__file__)"], capture_output=True, text=True)
+        lines = found.stdout.split()
+        row(lines[:1] == [str(root / "records")], f"rola_results imports from store.root in {python}",
+            "python tools/dev.py init")
+        row(lines[1:2] == [str(devtools / "rola_devtools" / "__init__.py")],
+            f"rola_devtools imports from workspace.devtools in {python}", "python tools/dev.py init")
     return _report(rows)
 
 
@@ -670,9 +680,9 @@ def cmd_worktree(a) -> int:
 
 def cmd_build(a) -> int:
     """THE ITERATION BUILD: the extension rebuilt in place (`setup.py build_ext --inplace`) by `--python` (this
-    checkout's venv), after its first editable install -- the same compile, gates and device-stamped library as
-    `pip install -e .`, without pip's metadata, wheel and reinstall. Refuses when that interpreter's `rola` is not this
-    checkout's (the editable finder's trap). `--archs` and `--carry-arms` set `ROLA_CUDA_ARCHS` / `ROLA_CARRY_ARMS`.
+    checkout's venv, `bazel run //:dev_env`) -- the same compile, gates and device-stamped library as `pip install -e
+    .`, without pip's metadata, wheel and reinstall. Refuses when that interpreter's `rola` is not this checkout's (a
+    venv imports the checkout it names). `--archs` and `--carry-arms` set `ROLA_CUDA_ARCHS` / `ROLA_CARRY_ARMS`.
     -- see docs/build.md#iteration"""
     probe = subprocess.run([a.python, "-c", "import rola, pathlib; print(pathlib.Path(rola.__file__).resolve())"],
                            cwd="/", capture_output=True, text=True)

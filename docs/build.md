@@ -27,7 +27,7 @@ pip install -e . --no-build-isolation
 from PyPI and build the extension against the wrong ABI. Flash-attention and
 mamba-ssm require the same thing for the same reason.
 
-<a id="iteration"></a>**Iterating.** After a checkout's first editable install, rebuild it with
+<a id="iteration"></a>**Iterating.** In a checkout with its venv (`bazel run //:dev_env`), rebuild it with
 `python tools/dev.py build --python <its venv's python> --archs 86 [--carry-arms all]`: `setup.py build_ext
 --inplace`, the same compile, gates and device-stamped library as `pip install -e .`, without pip's metadata, wheel and
 reinstall (`docs/internals/tools/dev.md`); it refuses when that interpreter's `rola` is not this checkout. A build

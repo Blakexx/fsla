@@ -104,7 +104,7 @@ byte count). `RETAINED_STATE_BUDGET` (512 MiB) is checked per cell (`retained_st
 `BACKWARD_SURFACES` runs the backward at all; a cell over budget is excluded from that surface, a consequence a reader
 can compute from the declaration rather than a run that died.
 
-**`rola` is installed editable, so a tool run from a WORKTREE imports the canonical checkout unless it is stopped.**
+**A venv imports the `rola` of the checkout it names, so a tool run from one WORKTREE with another checkout's venv imports that checkout unless it is stopped.**
 The protocol binds and then CHECKS the library each side imported, and prints both. Test runs are unaffected -- pytest
 puts the rootdir on the path -- but any new tool that imports `rola` and compares two trees inherits the trap.
 
