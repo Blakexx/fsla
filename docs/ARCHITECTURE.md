@@ -58,7 +58,7 @@ accumulation is fp32 or exact integer ([`architecture/precision.md`](architectur
 | the carry's fold | the write operand f16 (a dense slice times the record's coefficient), the values f16 | fp32 state in registers ([`carry/ampere/fold.md`](internals/carry/ampere/fold.md)) |
 | the carry's hand-off | the fp32 state rounded to an f16 image at a power of two a digit | — |
 | the carry's readout | the f16 image against the read rows | fp32 MMAs (fp16 where fp32 accumulate is half rate), each piece into the panel as f16 pairs at the token's scale byte or fp32, added across CTAs in that dtype ([`carry/ampere/panel.md#drain`](internals/carry/ampere/panel.md#drain)) |
-| the intra | the rows' u8 digits and the values' digit planes, int8 tensor ops | each level's Gram exact in s32, the levels multiplied in fp32 ([`intra/intra_kernel.md`](internals/intra/intra_kernel.md)) |
+| the intra | the rows' u8 digits and the values' digit planes, int8 tensor ops | each level's Gram exact in s32, the levels multiplied in fp32 ([`intra/ampere/intra_kernel.md`](internals/intra/ampere/intra_kernel.md)) |
 | decode | the stored state's s24 (a written leaf) or its s16 hi plane (a read-only leaf), the staged amplitudes | fp32 |
 | the stored state, between calls | s24 mantissas at a power-of-two exponent a 32-channel group, fp32 mass | — ([§3](#3-the-state)) |
 
@@ -298,7 +298,7 @@ Gram accumulates EXACTLY in s32 over its u8 digits by int8 tensor ops, the level
 product follows in int8. The `[W × W]` matrix is never materialized, and a tile pair or 32-digit slab whose digits
 meet nowhere is skipped on the facts pass's tile unions, an exact certificate. The kernel reads no state: every pair
 it computes is written and read inside the one window
-([`internals/intra/intra_kernel.md`](internals/intra/intra_kernel.md)).
+([`internals/intra/ampere/intra_kernel.md`](internals/intra/ampere/intra_kernel.md)).
 
 ### 6.5 Decode — the `T = 1` step
 
@@ -381,7 +381,7 @@ never select a wider-type emulation. sm_80 and sm_86 are both core targets, pric
 | the producer | [`internals/produce/produce.md`](internals/produce/produce.md) |
 | the facts pass and the liveness words | [`internals/facts/facts.md`](internals/facts/facts.md), [`internals/facts/liveness_contract.md`](internals/facts/liveness_contract.md) |
 | the carry | [`internals/carry/carry.md`](internals/carry/carry.md) and its pages |
-| the within-window term | [`internals/intra/intra_kernel.md`](internals/intra/intra_kernel.md) |
+| the within-window term | [`internals/intra/ampere/intra_kernel.md`](internals/intra/ampere/intra_kernel.md) |
 | decode: the step, the walk, growth, capture | [`internals/decode/decode.md`](internals/decode/decode.md), [`internals/decode/decode_lattice.md`](internals/decode/decode_lattice.md) |
 | the entmax solves | [`internals/entmax/entmax.md`](internals/entmax/entmax.md), [`internals/entmax/factor.md`](internals/entmax/factor.md) |
 | the architecture capability table and the per-product rates | [`internals/common/arch_caps.md`](internals/common/arch_caps.md), [`internals/common/hardware.md`](internals/common/hardware.md) |

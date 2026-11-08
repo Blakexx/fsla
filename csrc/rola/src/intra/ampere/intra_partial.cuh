@@ -1,5 +1,5 @@
-// csrc/rola/src/intra/intra_partial.cuh -- THE PARTIAL CALL'S LAUNCH, its arms in their own translation unit.
-// see docs/internals/intra/intra_partial.md
+// csrc/rola/src/intra/ampere/intra_partial.cuh -- THE PARTIAL CALL'S LAUNCH, its arms in their own translation unit.
+// see docs/internals/intra/ampere/intra_partial.md
 #pragma once
 
 #include <cuda_runtime.h>

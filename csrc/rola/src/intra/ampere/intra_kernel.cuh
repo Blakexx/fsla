@@ -1,10 +1,10 @@
-// csrc/rola/src/intra/intra_kernel.cuh -- THE INTRA KERNEL: a CTA a (query head, window, piece of a block's sweep),
+// csrc/rola/src/intra/ampere/intra_kernel.cuh -- THE INTRA KERNEL: a CTA a (query head, window, piece of a block's sweep),
 // the block's reader rows resident in shared memory, the writer tiles streamed through three stage buffers, each refilled
 // by its last reader, under the slab gate the facts pass's unions give; each level's Gram as f16 MMAs on the rows as
 // stored (a u8 digit widened in registers), the epilogue into the value product's f16 weights, the value product on the
 // f16 values, and the block's rows reduced into the output planes at the end; a call that is not a whole number of
 // windows runs the arms with every row past its end bounded (`kEven` false).
-// see docs/internals/intra/intra_kernel.md
+// see docs/internals/intra/ampere/intra_kernel.md
 #pragma once
 
 #include <cuda_fp16.h>
@@ -29,7 +29,7 @@ using Clock = PhaseClock<kIntraPhases, true>;
 
 //: THE SHARED TENANTS at (W, block rows): three writer stages, the tile's values and writer factors, the warps' row
 //: sums, the slab gate's table and the pipeline's mbarriers; the block's reader rows follow, `pitch` bytes a row.
-//: -- see docs/internals/intra/intra_kernel.md#smem
+//: -- see docs/internals/intra/ampere/intra_kernel.md#smem
 template <int W, int Rows, int Warps>
 struct alignas(128) SmemAt {
   uint8_t stage[kStageBuffers][kTile][kStageBytes];
@@ -79,11 +79,11 @@ __constant__ typename Wk::Pieces kPieceTable = typename Wk::Pieces{};
 
 //: A LEVEL'S K ORDER: f16 on both sides the MMA's own (ldmatrix both); with a u8 side the u8 fragment's, a lane's four
 //: consecutive digits a row (slot 2t, 2t + 1 <- digits 4t, 4t + 1; slot 2t + 8, 2t + 9 <- 4t + 2, 4t + 3), the f16
-//: side read in it. -- see docs/internals/intra/intra_kernel.md#gram
+//: side read in it. -- see docs/internals/intra/ampere/intra_kernel.md#gram
 template <int F>
 constexpr bool kNatural = form_read_f16(F) && form_write_f16(F);
 
-//: THE INTRA AT A WALK: its device code over the walk `Wk`'s sizes. -- see docs/internals/intra/intra_kernel.md#walk
+//: THE INTRA AT A WALK: its device code over the walk `Wk`'s sizes. -- see docs/internals/intra/ampere/intra_kernel.md#walk
 template <class Wk>
 struct IntraAt {
   static constexpr int kWindow = Wk::kWindow, kBlockRows = Wk::kBlockRows,
@@ -101,7 +101,7 @@ struct IntraAt {
   }
 
   //: A ROW'S 16-BYTE CHUNK `c` lies at chunk `c ^ swizzle(row)`: eight rows at one chunk in eight bank groups (ldmatrix),
-  //: four rows' 32-byte pairs in four (the pair reads). -- see docs/internals/intra/intra_kernel.md#swizzle
+  //: four rows' 32-byte pairs in four (the pair reads). -- see docs/internals/intra/ampere/intra_kernel.md#swizzle
   static __device__ __forceinline__ int swizzle(int row) {
     return ((row & 3) << 1) | ((row >> 2) & 1);
   }
@@ -118,7 +118,7 @@ struct IntraAt {
 
   //: A u8 WORD'S FOUR DIGITS as two f16 pairs, (0, 1) and (2, 3), exact: at fp16 accumulate `d / 16` (the byte under
   //: 0x54 is `64 + d / 16`, less 64), at fp32 the f16 subnormal `d 2^-24` (the byte alone).
-  //: -- see docs/internals/intra/intra_kernel.md#widening
+  //: -- see docs/internals/intra/ampere/intra_kernel.md#widening
   template <bool kF16>
   static __device__ __forceinline__ void widen(uint32_t x, uint32_t& lo, uint32_t& hi) {
     if constexpr (kF16) {
@@ -200,7 +200,7 @@ struct IntraAt {
   }
 
   //: A LANE'S FIXED PLACES in the operand loads: its reader rows and the writer tokens it addresses, with their swizzles.
-  //: -- see docs/internals/intra/intra_kernel.md#gram
+  //: -- see docs/internals/intra/ampere/intra_kernel.md#gram
   struct Lanes {
     uint32_t a_row, f_row, f_row8, b_row, g_row;
     int a_hi, a_swz, f_h, f_swz;
@@ -236,7 +236,7 @@ struct IntraAt {
 
   //: A SLAB'S LOADS, each landing in the registers its MMA reads: ldmatrix for a u8 operand and for both of a natural
   //: level; for the f16 reader of a u8 writer a 64-bit read a row (g, g + 8) a k-step, for the f16 writer of a u8 reader
-  //: one an n-tile -- a half-warp's pair reads one wavefront. -- see docs/internals/intra/intra_kernel.md#gram
+  //: one an n-tile -- a half-warp's pair reads one wavefront. -- see docs/internals/intra/ampere/intra_kernel.md#gram
   template <int F>
   static __device__ __forceinline__ void load_slab(const Lanes& ln, int rc, uint32_t buf,
                                                    SlabFrags<F>& fr, int S) {
@@ -337,7 +337,7 @@ struct IntraAt {
 
   //: THE GRAM OF ONE STAGE, every slab of it live: one straight-line block, each slab's loads issued before the slab
   //: ahead of it multiplies, the ring's refill a half after each half of the slabs (`refill(half)`).
-  //: -- see docs/internals/intra/intra_kernel.md#gram
+  //: -- see docs/internals/intra/ampere/intra_kernel.md#gram
   template <int F, bool kF16, typename Refill>
   static __device__ __forceinline__ void gram_dense(const Lanes& ln, int rc, uint32_t buf,
                                                     Acc<kF16>& acc, const Refill& refill) {
@@ -356,7 +356,7 @@ struct IntraAt {
 
   //: THE GRAM OF ONE STAGE under the warp's slab bits: a loop over its live slabs two at a time -- each slab's loads and
   //: widening under the other's MMAs, the step branch-free -- and the odd slab peeled after it (KERNEL_STANDARDS
-  //: section 27.5). -- see docs/internals/intra/intra_kernel.md#gram
+  //: section 27.5). -- see docs/internals/intra/ampere/intra_kernel.md#gram
   template <int F, bool kF16>
   static __device__ __forceinline__ void gram_slabs(const Lanes& ln, int rc, uint32_t buf,
                                                     uint32_t slabs, Acc<kF16>& acc) {
@@ -404,7 +404,7 @@ struct IntraAt {
   }
 
   //: THE EPILOGUE: the level product times each writer's factors -- `m` into the row sums `den`, `m s` into the value
-  //: product's weights -- zero above the diagonal on a diagonal tile. -- see docs/internals/intra/intra_kernel.md#epilogue
+  //: product's weights -- zero above the diagonal on a diagonal tile. -- see docs/internals/intra/ampere/intra_kernel.md#epilogue
   template <bool kF16>
   static __device__ __forceinline__ void epilogue(Smem& sm, float unit, bool diagonal, int warp,
                                                   int group, int col0, int lane, Acc<kF16>& acc) {
@@ -437,7 +437,7 @@ struct IntraAt {
 
   //: THE VALUE PRODUCT: each reader's weights at its own power of two (its largest in [1, 2)) as f16, packed from the
   //: accumulator's registers into the A fragments; the values by ldmatrix.trans; a channel pair's sums back at the
-  //: reader's power of two into the output. -- see docs/internals/intra/intra_kernel.md#value-product
+  //: reader's power of two into the output. -- see docs/internals/intra/ampere/intra_kernel.md#value-product
   template <bool kF16>
   static __device__ __forceinline__ void value_product(const Smem& sm, float unit, int col0,
                                                        int lane, Acc<kF16>& acc) {
@@ -505,7 +505,7 @@ struct IntraAt {
 
   //: A WARP'S COPIES: one warp issues a tile's values, a lane's place fixed (row `lane / 8 + 4 i`, chunk
   //: `lane % 8`), the source a row's 128 contiguous bytes eight lanes at a time.
-  //: -- see docs/internals/intra/intra_kernel.md#copies
+  //: -- see docs/internals/intra/ampere/intra_kernel.md#copies
   struct Copier {
     static constexpr int kRowsPerCopy = 4, kCopies = kTile / kRowsPerCopy;
     uint32_t dst;
@@ -563,7 +563,7 @@ struct IntraAt {
 
   //: A THREAD'S COPY BASES: each level's write rows of the call's (batch, write head) at the window's first token and
   //: read rows at the block's first reader, formed once -- a stage's copy adds its row's token strides and its digits.
-  //: -- see docs/internals/intra/intra_kernel.md#pipeline
+  //: -- see docs/internals/intra/ampere/intra_kernel.md#pipeline
   struct Bases {
     const uint8_t* write[kMaxLevels];
     const uint8_t* read[kMaxLevels];
@@ -593,7 +593,7 @@ struct IntraAt {
   //: A STAGE'S WORD, what a step reads of it, built once a CTA into shared memory (`build_words`): the write side's
   //: first byte and byte limit; the stage's level (bits 0-7), its reader chunk (bits 8-15) and its reader part's chunks a
   //: row as a power of two (bits 16-23: the stage's digits at the read side's width, 4, 8 or 16); its slab bits' first
-  //: index and mask; the read side's first byte and limit. -- see docs/internals/intra/intra_kernel.md#pipeline
+  //: index and mask; the read side's first byte and limit. -- see docs/internals/intra/ampere/intra_kernel.md#pipeline
   static __device__ __forceinline__ void build_words(Smem& sm, const IntraParams& p, int tid) {
     if (tid < p.stages) {
       const Stage& g = p.stage[tid];
@@ -611,7 +611,7 @@ struct IntraAt {
   //: A THREAD'S SHARE OF A STAGE: tile `tile`'s stage `s` into buffer `buf`, its two rows `tid / 8` and `+ 32` (halves 0
   //: and 1; `kHalves` the ones copied) at chunk `tid % 8` (swizzled by the row), predicated on `issue` -- a stage no
   //: warp reads, or past the piece, reads nothing and zero-fills a buffer every warp has released.
-  //: -- see docs/internals/intra/intra_kernel.md#pipeline
+  //: -- see docs/internals/intra/ampere/intra_kernel.md#pipeline
   template <int D, bool kEven, int kHalf0 = 0, int kHalves = 2>
   static __device__ __forceinline__ void stage_share(const Smem& sm, const Bases& at,
                                                      const int4& word, int buf, int tile,
@@ -644,7 +644,7 @@ struct IntraAt {
   //: the row's slot for it, a thread's chunk `tid % 16` of rows `tid / 16 + (kThreads / 16) i`, in the copy group of the
   //: piece's first tile's stage `s`, so the first Gram waits for one part, not the block's rows; each copy issued only
   //: where `issue` (a stage the call has) and the part has its chunk, its digits past the level's width zero-filled.
-  //: -- see docs/internals/intra/intra_kernel.md#pipeline
+  //: -- see docs/internals/intra/ampere/intra_kernel.md#pipeline
   template <int D, bool kEven>
   static __device__ __forceinline__ void reader_part_any(Smem& sm, const IntraParams& p,
                                                          const Bases& at, int s, bool issue,
@@ -680,7 +680,7 @@ struct IntraAt {
 
   //: A READER PART OF FORM `F`, its chunks a row known: a thread's chunk `tid % chunks` of rows `tid / chunks + (kThreads /
   //: chunks) i`, every copy live where `issue` -- the first tile's steps, whose part is always their own level's.
-  //: -- see docs/internals/intra/intra_kernel.md#pipeline
+  //: -- see docs/internals/intra/ampere/intra_kernel.md#pipeline
   template <int D, int F>
   static __device__ __forceinline__ void reader_part(Smem& sm, const IntraParams& p,
                                                      const Bases& at, int s, bool issue, int tid) {
@@ -724,7 +724,7 @@ struct IntraAt {
   //: cleared whole when a level has none (the pair's product is exactly zero) or the pair lies above the diagonal; a
   //: dense level answers all-ones unread; a partial call's (`!kEven`) pairs with a tile past its last (`tiles` the
   //: window's before it) cleared, the union table read only before it. One warp.
-  //: -- see docs/internals/intra/intra_kernel.md#slab-gate
+  //: -- see docs/internals/intra/ampere/intra_kernel.md#slab-gate
   template <int D, bool kEven>
   static __device__ __forceinline__ void gate_table(Smem& sm, const IntraParams& p, int bhw,
                                                     int slot, int window, int block, int tiles,
@@ -796,7 +796,7 @@ struct IntraAt {
 
   //: THE DEPOSIT: the warp's 16 rows of partial sums -- its writer columns' -- reduced into the output planes through a
   //: staging tile of its own in the dead reader rows, a row's channels two lines of consecutive reductions; its rows'
-  //: partial sums into `den`. -- see docs/internals/intra/intra_kernel.md#deposit
+  //: partial sums into `den`. -- see docs/internals/intra/ampere/intra_kernel.md#deposit
   template <bool kEven>
   static __device__ __forceinline__ void deposit(Smem& sm, const IntraParams& p, int bh, int t_row,
                                                  int warp, int lane, const float (&out)[8][4]) {
@@ -869,7 +869,7 @@ struct IntraAt {
   //: before -- then the stage's Gram under the level's form `F` with the refill under it (the stage `kStageBuffers - 1`
   //: on into the buffer just released, a half after each half of a straight-line Gram's slabs, after the Gram
   //: otherwise), the reader part of that stage after it while the piece's first tile is read.
-  //: -- see docs/internals/intra/intra_kernel.md#pipeline
+  //: -- see docs/internals/intra/ampere/intra_kernel.md#pipeline
   template <int D, int F, bool kF16, int Gram, bool kReader, bool kEven>
   static __device__ __forceinline__ void tile_stage(Smem& sm, const IntraParams& p, const Lanes& ln,
                                                     const Bases& at, const int4& word,
@@ -901,7 +901,7 @@ struct IntraAt {
   //: and folded after -- straight-line where the warp reads every slab of the level, by its slabs where it reads some,
   //: none for a dead pair, chosen once a level. The first tile's steps carry the reader part two stages on where it is
   //: the level's own (its first two parts ride the prologue's groups; a block a partial call ends inside lands every
-  //: part there). -- see docs/internals/intra/intra_kernel.md#pipeline
+  //: part there). -- see docs/internals/intra/ampere/intra_kernel.md#pipeline
   template <int D, bool kF16, bool kReader, bool kEven>
   static __device__ __forceinline__ void tile_stages(Smem& sm, const IntraParams& p,
                                                      const Lanes& ln, const Bases& at, int tile,
@@ -975,7 +975,7 @@ struct IntraAt {
   //: part; the piece's writer tiles stream through the stage buffers; its partial sums reduce into the output planes. An
   //: arm `kEven` false serves a call whose last window is partial: a piece runs its tiles before the call's end, one with
   //: none exits, every row past the end bounded; those arms compile in `intra_partial.cu`.
-  //: -- see docs/internals/intra/intra_kernel.md#the-grid
+  //: -- see docs/internals/intra/ampere/intra_kernel.md#the-grid
   template <int D, bool kF16, bool kEven>
   static __device__ __forceinline__ void run(const IntraParams& p) {
     extern __shared__ __align__(128) unsigned char raw[];

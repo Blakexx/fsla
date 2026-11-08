@@ -4,7 +4,7 @@ stored operands, per slot.
 The reference is `tests/oracle/int_reference.py`'s ``intra_bundle_reference`` -- the bundle's rows, factors and values
 as stored, nothing rounded -- itself gated against the fp64 intra of the bundle's own dequantized levels
 (`tests/oracle/test_int_reference.py`). The kernel's roundings are declared and bounded per slot
-(docs/internals/intra/intra_kernel.md#numerics): at fp16 accumulate each k-step's sum rounds once to f16 (``U16`` of
+(docs/internals/intra/ampere/intra_kernel.md#numerics): at fp16 accumulate each k-step's sum rounds once to f16 (``U16`` of
 the partial sum, which never exceeds the final: every term is non-negative), so a level's Gram is within ``k_l U16``
 of its own value over its ``k_l`` k-steps; the value product's weights round to f16 (``U16`` each, or half an f16
 subnormal below the reader's power of two) and, at fp16 accumulate, its four k-steps' sums. Each bound is relative
@@ -113,7 +113,7 @@ def _flat(x, routes):
 
 
 def _bounds(routes, accumulate):
-    """``(num, den)``: each plane's relative bound against its envelope (docs/internals/intra/intra_kernel.md#numerics)."""
+    """``(num, den)``: each plane's relative bound against its envelope (docs/internals/intra/ampere/intra_kernel.md#numerics)."""
     steps = sum(2 * math.ceil(w / 32) for w in routes.topology.widths)
     tiles = window_of() // 64
     fp32 = (tiles + 64) * U32

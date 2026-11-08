@@ -1,9 +1,9 @@
 // THE PARTIAL CALL'S ARMS -- `intra_kernel<D, kF16, false>` at each depth and accumulation and their launch, a
 // translation unit of their own so the whole-window arms' unit compiles as it did.
-// see docs/internals/intra/intra_partial.md
+// see docs/internals/intra/ampere/intra_partial.md
 
-#include "intra/intra_kernel.cuh"
-#include "intra/intra_partial.cuh"
+#include "intra/ampere/intra_kernel.cuh"
+#include "intra/ampere/intra_partial.cuh"
 #include "common/select.cuh"
 
 namespace rola::intra::detail {

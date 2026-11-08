@@ -1,7 +1,7 @@
 # `csrc/rola/src/intra/intra_api.cuh` / `intra.cu` — the intra's host seam
 
 Mirror doc for the intra's host entries and the refusals they make before a launch exists.
-The kernel is [`intra_kernel.md`](intra_kernel.md), the unit that defines these entries
+The kernel is [`ampere/intra_kernel.md`](ampere/intra_kernel.md), the unit that defines these entries
 [`intra.md`](intra.md); the tile unions it gates on are
 [`facts/liveness_contract.md`](../facts/liveness_contract.md#tile-unions). `rola/ops/intra.py`
 is the Python caller.
@@ -29,7 +29,7 @@ The refusals (KERNEL_STANDARDS §18: a seam refuses rather than guesses):
 
 * each side a row set a level, as many as the layout's levels, u8 or f16 each, and the values f16;
 * `window` is the device's W (`common/window.cuh`) and `T` at least one token (a partial last window runs its
-  tiles before the call's end: [`intra_kernel.md`](intra_kernel.md#partial-window));
+  tiles before the call's end: [`ampere/intra_kernel.md`](ampere/intra_kernel.md#partial-window));
 * the write heads divide the query heads;
 * the accumulation is fp32 or fp16;
 * one or two levels (the built arms serve depth two), each a whole number of 16-digit granules
@@ -49,7 +49,7 @@ size; the grid is `(windows × pieces, B·H)`, a CTA a piece, the device's card'
 
 ## `rola_intra_ledger_bind`
 
-Binds the phase ledger (`[8][7]` contiguous int64, [`intra_kernel.md`](intra_kernel.md#phase-ledger))
+Binds the phase ledger (`[8][7]` contiguous int64, [`ampere/intra_kernel.md`](ampere/intra_kernel.md#phase-ledger))
 the next launches add into, or unbinds it with `None`. A card whose block has fewer warps books its own rows.
 
 <a id="intra-footprint"></a>

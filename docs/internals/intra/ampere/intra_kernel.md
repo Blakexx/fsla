@@ -1,11 +1,11 @@
-# `csrc/rola/src/intra/intra_kernel.cuh` — the intra kernel
+# `csrc/rola/src/intra/ampere/intra_kernel.cuh` — the intra kernel
 
 Mirror doc for the kernel that computes every pair of tokens inside one window over the bundle as the producer wrote
 it: each level's Gram as f16 MMAs on the rows as stored (a sparse level's u8 digits widened in registers, a dense
 level's f16 rows as they are), the value product in f16 weights against the f16 values, the rows reduced into the
 output planes the carry reduces into beside it. The carry's readout sees the state as of a window's start, so the
 within-window pairs are this kernel's and only this kernel's (ruled 2026-10-31: the intra is fp16, on the planes as
-stored). Its constants and operand block are [`intra.md`](intra.md), its host seam [`intra_api.md`](intra_api.md); the
+stored). Its constants and operand block are [`../intra.md`](../intra.md), its host seam [`../intra_api.md`](../intra_api.md); the
 arithmetic it is graded against is `intra_bundle_reference` in `tests/oracle/int_reference.py` -- the fp64 intra on the
 same stored operands -- itself graded against the fp64 intra of the bundle's dequantized levels;
 `tests/integration/test_intra_kernel.py` holds the kernel to it per slot within the declared roundings
@@ -13,8 +13,8 @@ same stored operands -- itself graded against the fp64 intra of the bundle's deq
 
 Vocabulary, defined here and used unqualified below: `D` = routing depth, one or two (the arm); `w_l` = level `l`'s
 width in digits (a whole number of 16-digit granules up to 256); `L` = tokens; `BH` = batch × query heads; `H_w` = write
-heads; **window** = the device's W tokens ([`../common/window.md`](../common/window.md)); **tile** = 64 consecutive
-tokens; **block** = the card's reader rows a CTA owns ([`intra.md`](intra.md#block)); **form** = a level's (read, write)
+heads; **window** = the device's W tokens ([`../../common/window.md`](../../common/window.md)); **tile** = 64 consecutive
+tokens; **block** = the card's reader rows a CTA owns ([`../intra.md`](../intra.md#block)); **form** = a level's (read, write)
 storage, u8 or f16 each; **stage** = 128 bytes of a writer tile's rows -- 128 u8 or 64 f16 digits of one level;
 **slab** = 32 digits of one level, the gate's grain and two k-steps; **HMMA** = one `mma.sync.m16n8k16` on f16
 operands, 2,048 multiply-adds.
@@ -40,11 +40,11 @@ write head's, read by `H / H_w` consecutive query heads.
 The arm is the depth, the accumulation and the call's evenness, `intra_kernel<D, kF16, kEven>`: `D` = 1 or 2 fixes the
 gate's level loop; `kF16` the MMAs' accumulator, fp16 (1) where the device's fp32-accumulate rate is half its fp16 one,
 fp32 (0) elsewhere -- the carry readout's rule
-([`../carry/carry_api.md#carry-readout-accumulate`](../carry/carry_api.md#carry-readout-accumulate)); `kEven` whether
+([`../../carry/carry_api.md#carry-readout-accumulate`](../../carry/carry_api.md#carry-readout-accumulate)); `kEven` whether
 the call is a whole number of windows ([`#partial-window`](#partial-window)).
 A level's form is runtime, one of four: the tile's stages are walked LEVEL-MAJOR (`tile_stages`), each level's under
 one `rola::uniform_switch` on its form, so a stage's Gram knows its form at compile time and the four forms are four
-straight-line bodies, not a test a k-step. The widths are the call's ([`intra.md`](intra.md#stages)): a level's stages
+straight-line bodies, not a test a k-step. The widths are the call's ([`../intra.md`](../intra.md#stages)): a level's stages
 and slabs come from its width and its writer's storage. Templating the forms per level as well would be `4^D` bodies
 per stage count -- ~80 straight-line Gram bodies at depth two -- for the dispatch's one switch a level.
 
@@ -62,7 +62,7 @@ their bodies the same at every build, and `intra_kernel<BuildTag<B>, D, kF16, kE
 
 A block `b`'s readers pair with writer tiles `0 .. (b + 1) R - 1` (`R` the block's row tiles). A CTA is one PIECE of
 a block's sweep — at most `kPieceTiles` = 4 of its tiles, the diagonal pair always in the last piece
-([`intra.md`](intra.md#pieces)) — longest first so the short ones fill in behind. `blockIdx.y` is the query head. Each
+([`../intra.md`](../intra.md#pieces)) — longest first so the short ones fill in behind. `blockIdx.y` is the query head. Each
 piece stages its block's readers and reduces its partial sums into the output planes, so a row takes a reduction
 from each of its block's pieces. Measured on the int8 form (ncu, base clock): pieces of 4 tiles took `flagship-dense`
 from 71 to 42 µs for 9% at `L = 64K`; on this kernel at `nl64k-dense` a piece of a whole 64-reader block (up to 8
@@ -92,7 +92,7 @@ against 406.4K cycles a warp a window). A partial call pays its bounds on every 
 
 <a id="warps"></a>
 
-A CTA is the card's warps ([`intra.md`](intra.md#block)): a warp owns 16 readers against `kWarpCols` of a tile's 64
+A CTA is the card's warps ([`../intra.md`](../intra.md#block)): a warp owns 16 readers against `kWarpCols` of a tile's 64
 writers -- all 64 on a 128-reader card (8 warps), 32 on a 64-reader card (two warps a reader group, 8 warps), so each
 scheduler keeps two warps. A warp's rows and columns are its own for the whole sweep: its output is final in registers
 at the end, partial over its columns where two warps share its rows, and both reduce into the same planes.
@@ -163,7 +163,7 @@ each half of a straight-line Gram's slabs (`gram_dense`'s `refill`), whole after
 the next group. The refill sits under the MMAs, not before them, because every warp's copies issued at the stage's
 start delay the Gram that opens it: the lab's ring runs the dense Gram at 28.0 cycles an MMA with the refill first,
 24.0 with it whole after the MMAs and 23.8 a piece after each slab, the u8 Gram 23.4, 22.9 and 20.0
-([`intra_stream`](../../lab/intra_stream.md)); in the kernel (sm_86) the halves took the Gram from 304.6K to 266.3K
+([`intra_stream`](../../../lab/intra_stream.md)); in the kernel (sm_86) the halves took the Gram from 304.6K to 266.3K
 cycles a warp a window at `nl64k-dense` (the intra -8.9%), 276.7K to 259.4K at `nl64k-alt-k4` (-4.2%), the refill
 whole after the MMAs a percent behind on every cell. No mbarrier
 in a step: a per-lane spin compiles to a convergence barrier, and an mbarrier address from a ring index ptxas cannot
@@ -189,7 +189,7 @@ prefetch of the stage six on, 652 µs.
 
 A tile pair whose product is exactly zero is not computed, and a slab whose digits meet in no token pair is not
 multiplied. The certificate is the facts pass's TILE UNIONS
-([`facts/liveness_contract.md`](../facts/liveness_contract.md#tile-unions)): per side, 32-digit group and 64-token tile,
+([`../facts/liveness_contract.md`](../../facts/liveness_contract.md#tile-unions)): per side, 32-digit group and 64-token tile,
 the digits live anywhere in the tile -- in a grouped table, a write head's query heads' read sides and then its write
 side. Warp 0 reads, a lane a slab, the reader side's unions for the block and the writer side's for the window and
 builds `gate[tile][row tile]`: bit `s` set when slab `s`'s reader and writer unions meet. Slabs are numbered across the
@@ -327,7 +327,7 @@ runs exactly as fast as 32 distinct heads. With the Gram skipped the rest costs 
 
 What binds is the SM's copy rate beside the MMAs against the bytes an MMA takes. The region ledger
 (`tools/region_ledger.py` against `tools/budgets/intra.json`) and the lab's `intra_stream` probe
-([`../../lab/intra_stream.md`](../../lab/intra_stream.md)) agree: the Gram alone on resident stages runs at the tensor
+([`../../../lab/intra_stream.md`](../../../lab/intra_stream.md)) agree: the Gram alone on resident stages runs at the tensor
 rate, but an SM's copy path beside it delivers ~8 bytes a cycle on both cards whatever the ring's depth (3, 6 or 10
 stages measured the same) or who issues the refills, and an 8 KB f16 stage feeds a 64-reader block only 128 HMMAs --
 ~16 bytes a cycle at the tensor rate. So the dense f16 Gram runs at about twice its floor by construction, a u8 writer
@@ -344,7 +344,7 @@ over unchanged. sm_100's `tcgen05` takes the same shared-memory operands with th
 
 ## Where the mechanism came from
 
-The int8 intra it replaces (2026-09-29, rewritten 2026-11-01; [`DELETIONS.md`](../DELETIONS.md)) walked the same
+The int8 intra it replaces (2026-09-29, rewritten 2026-11-01; [`DELETIONS.md`](../../DELETIONS.md)) walked the same
 pieces, staged the block's readers once, streamed three stage buffers and gated slabs on the facts pass's tile unions;
 those stay. What changed is the operands: the int8 form needed u8 rows on both sides and s8 value digits, which the
 bundle stores for no dense level and no values since dense rows became native f16 (2026-10-04 write, 2026-10-07 read)

@@ -122,11 +122,11 @@ TARGETS = {
                     tuple(f"csrc/rola/src/carry/ampere/{f}" for f in ("carry_kernel.cuh", "parts.cuh", "readout.cuh",
                                                                 "panel.cuh", "fold.cuh", "schedule.cuh")),
                     "tools/budgets/carry.json", "CTA-windows"),
-    "intra": Target("intra", "intra_kernel", "intra_forward", "intra", ("csrc/rola/src/intra/intra_kernel.cuh",),
+    "intra": Target("intra", "intra_kernel", "intra_forward", "intra", ("csrc/rola/src/intra/ampere/intra_kernel.cuh",),
                     "tools/budgets/intra.json", "warp tile pairs"),
     "facts": Target("facts", "facts_pass", "facts_pass", "facts", ("csrc/rola/src/facts/facts.cu",), None,
                     "windows"),
-    "produce": Target("produce", "produce_kernel", "produce", "produce", ("csrc/rola/src/produce/produce.cu",),
+    "produce": Target("produce", "produce_kernel", "produce", "produce", ("csrc/rola/src/produce/ampere/produce_kernel.cuh",),
                       "tools/budgets/produce.json", "job tiles"),
 }
 

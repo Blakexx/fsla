@@ -13,8 +13,8 @@
 #include "common/select.cuh"
 #include "common/window.cuh"
 #include "intra/intra_api.cuh"
-#include "intra/intra_kernel.cuh"
-#include "intra/intra_partial.cuh"
+#include "intra/ampere/intra_kernel.cuh"
+#include "intra/ampere/intra_partial.cuh"
 
 namespace rola::intra {
 
@@ -135,7 +135,7 @@ RowView row_view(const Tensor& t, int64_t B, int64_t T, int64_t H, int64_t width
 //: THE DIGIT UNITS: a u8 digit enters an MMA as `d / 16` (fp16 accumulate), `d 2^-24` (fp32, and the floor trick's
 //: writer) or itself (a u8 x u8 level's IMMA), its unit value `d / 255`;
 //: level 0's Gram is lifted to digit units, and the rest of every level's scale rides `unit`.
-//: -- see docs/internals/intra/intra_kernel.md#widening
+//: -- see docs/internals/intra/ampere/intra_kernel.md#widening
 void units(const std::vector<int64_t>& forms, bool f16, float& lift, float& unit) {
   const double digit = f16 ? 16.0 : 16777216.0;
   double u = 1.0;

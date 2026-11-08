@@ -12,12 +12,12 @@ can poison them; the arrival counters, zero between calls; the optional logit an
 tensor a job, copied into the launch's parameters. It validates each against the
 others -- one hidden width, a multiple of 8 with 16-byte-aligned weights and strides (every hidden run is read in
 16-byte chunks), whole heads of value channels, the rows head-major `[B, H, T, rows]` on both sides -- u8, and a
-side's f16 dense plane present exactly when its dense mask names a level (`produce.md#dense`; the kernel splits a
-flat token into its batch and step, `produce.md#bundle`) -- the fp32 per-level scales and masses, the counters covering every (token tile, head), at most 65535 jobs -- and launches token tiles by
+side's f16 dense plane present exactly when its dense mask names a level (`ampere/produce_kernel.md#dense`; the kernel splits a
+flat token into its batch and step, `ampere/produce_kernel.md#bundle`) -- the fp32 per-level scales and masses, the counters covering every (token tile, head), at most 65535 jobs -- and launches token tiles by
 the job table's rows, with the logit rows' dynamic shared memory opted into once.
 
 ## <a id="rola-produce-ledger-bind"></a>`rola_produce_ledger_bind`
 
-Binds the phase ledger the next launches book into (`produce.md#phase-ledger`), a contiguous CUDA int64
+Binds the phase ledger the next launches book into (`ampere/produce_kernel.md#phase-ledger`), a contiguous CUDA int64
 `[jobs, 8, 9]`, or unbinds it with `None`. A launch with more jobs than the bound ledger holds is refused. It issues no
 launch.

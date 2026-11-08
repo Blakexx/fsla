@@ -13,7 +13,7 @@ namespace produce {
 
 constexpr int kProduceThreads = 128;
 constexpr int kProduceWarps = kProduceThreads / 32;
-//: A block's tokens: a warp's sixteen, two MMA n-tiles. -- see docs/internals/produce/produce.md#accumulate
+//: A block's tokens: a warp's sixteen, two MMA n-tiles. -- see docs/internals/produce/ampere/produce_kernel.md#accumulate
 constexpr int kTokenTiles = 2;
 constexpr int kWarpTokens = 8 * kTokenTiles;
 constexpr int kTokenTile = kProduceWarps * kWarpTokens;
@@ -22,10 +22,10 @@ constexpr int kKStep = 16;
 //: A solve row's widest; a job holds two (a union's) or a value job's heads.
 constexpr int kMaxWidth = 256;
 constexpr int kMaxColumns = 2 * kMaxWidth;
-//: A warp's accumulators: 16 column tiles of its 16 tokens. -- see docs/internals/produce/produce.md#form
+//: A warp's accumulators: 16 column tiles of its 16 tokens. -- see docs/internals/produce/ampere/produce_kernel.md#form
 constexpr int kAccTiles = 16;
 constexpr int kWarpColumns = kAccTiles * 16;
-//: A stage: at most 16 KB of weights and 8 KB of x rows, two in flight. -- see docs/internals/produce/produce.md#stage
+//: A stage: at most 16 KB of weights and 8 KB of x rows, two in flight. -- see docs/internals/produce/ampere/produce_kernel.md#stage
 constexpr int kStageWeights = kMaxColumns * kKStep * 2;
 constexpr int kStageX = kTokenTile * 4 * kKStep * 2;
 constexpr int kStageSlot = kStageWeights + kStageX;
@@ -35,7 +35,7 @@ constexpr int kProduceSmem = kStages * kStageSlot;
 constexpr int kNewtonSteps = 16;
 
 //: THE JOB TABLE, one row of int32 per job: its addressing. Its control rides the parameters as a shape word.
-//: -- see docs/internals/produce/produce.md#jobs
+//: -- see docs/internals/produce/ampere/produce_kernel.md#jobs
 enum JobField : int {
   kFieldHead,
   kFieldHeads,
@@ -56,7 +56,7 @@ constexpr int kMaxJobs = 1024;
 //: THE SOLVES a route job runs on its row: the closed registry's kerneled activations.
 enum SolveKind : int { kSoftmax = 0, kEntmax15 = 1, kEntmax20 = 2, kUnion15 = 3, kUnion20 = 4 };
 
-//: THE PHASE LEDGER's phases, a warp's cycles each, booked by job over the tiles. -- see docs/internals/produce/produce.md#phase-ledger
+//: THE PHASE LEDGER's phases, a warp's cycles each, booked by job over the tiles. -- see docs/internals/produce/ampere/produce_kernel.md#phase-ledger
 enum ProducePhase : int {
   kPhaseJob,
   kPhaseProject,
@@ -68,7 +68,7 @@ enum ProducePhase : int {
   kProducePhases
 };
 
-//: A JOB, its table row and its shape word decoded. -- see docs/internals/produce/produce.md#jobs
+//: A JOB, its table row and its shape word decoded. -- see docs/internals/produce/ampere/produce_kernel.md#jobs
 struct Job {
   int kind, solve, rows, reads, writes, head, heads, width, in0, in1, out_read, out_write, level,
       fold_read, fold_write, tiles, pair, dense_read, dense_write;

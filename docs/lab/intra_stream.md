@@ -3,7 +3,7 @@
 Mirrors `measure/lab/experiments/intra_stream.cu`, an experiment of the lab
 ([`docs/internals/tools/lab.md`](../internals/tools/lab.md)).
 
-THE QUESTION: the fp16 intra ([`docs/internals/intra/intra_kernel.md`](../internals/intra/intra_kernel.md)) moves ~5
+THE QUESTION: the fp16 intra ([`docs/internals/intra/ampere/intra_kernel.md`](../internals/intra/ampere/intra_kernel.md)) moves ~5
 bytes a cycle an SM, ~6.8 with its Gram skipped, where `cp.async` streams 18 ([`smem_rates`](smem_rates.md)). What does
 its stage ring deliver an SM beside a Gram, and which way of issuing the refills keeps the copies under the MMAs?
 
@@ -73,7 +73,7 @@ cycle; the multistage ring's one `bar.sync` a stage reaches 10.8. Within it, WHE
 at the stage's start (before the Gram, every warp's copies at once) 28.0 cycles an MMA, after the Gram's MMAs 24.0, a
 piece after each slab 23.8 -- and for the u8 stage, four slabs, only the pieces help (23.4, 22.9, 20.0). In the
 kernel the refill in halves under the slabs measured a percent ahead of it whole after the MMAs on every cell, so the
-production ring issues it in halves (see [`intra_kernel.md#pipeline`](../internals/intra/intra_kernel.md#pipeline)). The dense f16 stage feeds a 64-reader block
+production ring issues it in halves (see [`intra_kernel.md#pipeline`](../internals/intra/ampere/intra_kernel.md#pipeline)). The dense f16 stage feeds a 64-reader block
 128 MMAs an 8 KB, ~16 bytes a cycle at the tensor rate: fewer bytes an MMA -- more readers a writer byte, or narrower
 rows -- is what takes the rest; not a deeper ring (above) nor the readers' A fragments in registers to make room for
 one (built 2026-11-01 and slower: 683 against 505 us at `nl64k-dense`, spilling at depth two).

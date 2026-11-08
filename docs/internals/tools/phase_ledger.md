@@ -11,12 +11,12 @@ ledger has one row a CTA, a CTA a box of the cell's carve (`ctas(cell)`).
 Measured work: the GPU lock exclusive (`rola_devtools.locks.gpu`). Under `ncu` it is the one launch to
 profile with `--launches 1`.
 
-`--kernel produce` runs the producer (`rola.ops.produce.ledger_bind`, `docs/internals/produce/produce.md#phase-ledger`)
+`--kernel produce` runs the producer (`rola.ops.produce.ledger_bind`, `docs/internals/produce/ampere/produce_kernel.md#phase-ledger`)
 as the layer calls it, its argument a layer construction (`measure/cells/layer.py`) on its first cell: its ledger is
 `[jobs][warps][phases]` booked over the token tiles, read as cycles a warp a tile, the route jobs and the value jobs
 apart.
 
-`--kernel intra` runs the intra (`rola.ops.intra.ledger_bind`, `docs/internals/intra/intra_kernel.md#phase-ledger`): its ledger is `[warps][phases]` booked over every CTA, so its reading is a warp slot's cycles a window summed over the window's CTAs. `--per-warp` names the phases whose per-warp rows are printed (default `readout,fold`; the den's `den,writes`, the intra's `gram,wait`). A single launch's totals move
+`--kernel intra` runs the intra (`rola.ops.intra.ledger_bind`, `docs/internals/intra/ampere/intra_kernel.md#phase-ledger`): its ledger is `[warps][phases]` booked over every CTA, so its reading is a warp slot's cycles a window summed over the window's CTAs. `--per-warp` names the phases whose per-warp rows are printed (default `readout,fold`; the den's `den,writes`, the intra's `gram,wait`). A single launch's totals move
 by up to ~5% run to run; time is the probe's.
 
 The clock is not free: bound, the carry runs ~16% longer (nl64k-alt-k4's first 32 windows on sm_86: 902 us against

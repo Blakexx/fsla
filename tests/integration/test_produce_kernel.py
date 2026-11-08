@@ -3,11 +3,11 @@
 The skeleton's claim is the composition's SHAPE -- every element of every output is written, whatever the routing,
 and the arrival counters are back at zero after the call. The projection's is its logits: every job's columns for
 every token, against the fp64 product of the same bf16 operands, per slot within the envelope
-(docs/internals/produce/produce.md#accumulate). The solve's is its levels: every route job's sides against the fp64
-reference solve on the kernel's own logits (docs/internals/produce/produce.md#solve). The bundle's is the routes the
+(docs/internals/produce/ampere/produce_kernel.md#accumulate). The solve's is its levels: every route job's sides against the fp64
+reference solve on the kernel's own logits (docs/internals/produce/ampere/produce_kernel.md#solve). The bundle's is the routes the
 fp64 composition makes from the same bf16 operands: every row's digits, every scale, the read mass and the write gain
-(docs/internals/produce/produce.md#bundle). The values': every channel's f16 unit and every scale, against the same
-(docs/internals/produce/produce.md#value-rows).
+(docs/internals/produce/ampere/produce_kernel.md#bundle). The values': every channel's f16 unit and every scale, against the same
+(docs/internals/produce/ampere/produce_kernel.md#value-rows).
 """
 from __future__ import annotations
 
@@ -306,7 +306,7 @@ def test_the_values_match_the_fp64_composition(name, B, T):
 
 
 def test_a_bound_ledger_books_every_phase_and_changes_nothing():
-    """The phase ledger (docs/internals/produce/produce.md#phase-ledger): every warp of every job books, a route job
+    """The phase ledger (docs/internals/produce/ampere/produce_kernel.md#phase-ledger): every warp of every job books, a route job
     every route phase and a value job its own, and the outputs are the same bytes with it bound or not."""
     from rola.ops import produce as producer
 

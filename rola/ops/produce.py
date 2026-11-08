@@ -213,7 +213,7 @@ def _job_tensor(plan: ProducerPlan, device: str) -> tuple[torch.Tensor, torch.Te
 #: buffer a device grown as a call needs
 _ARRIVALS: dict[str, torch.Tensor] = {}
 _TOKEN_TILE = 64
-#: a token tile's warps, each its own 16 tokens' finish (docs/internals/produce/produce.md#finish)
+#: a token tile's warps, each its own 16 tokens' finish (docs/internals/produce/ampere/produce_kernel.md#finish)
 _TILE_WARPS = 4
 
 
@@ -229,7 +229,7 @@ LEDGER_PHASES = ("job", "project", "threshold", "levels", "bundle", "finish", "v
 LEDGER_WARPS = 4
 
 
-def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurement instrument (docs/internals/produce/produce.md#phase-ledger)
+def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurement instrument (docs/internals/produce/ampere/produce_kernel.md#phase-ledger)
     """Bind the phase ledger the next launches book into, ``[jobs, 4, 7]`` int64 cycles, or ``None``."""
     from rola.ops._ext import extension
 
@@ -239,7 +239,7 @@ def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurem
 def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> dict[str, torch.Tensor]:
     """The fused producer's launch over bf16 CUDA operands: every output ``[B, T, H, ...]``, a view of the head-major
     ``[B, H, T, ...]`` storage the kernel writes -- a head's tokens contiguous, which every prefill reader walks, and
-    the same bytes as token-major at one token (docs/internals/produce/produce.md#bundle)."""
+    the same bytes as token-major at one token (docs/internals/produce/ampere/produce_kernel.md#bundle)."""
     from rola.ops._ext import extension
 
     B, T, hidden = x.shape

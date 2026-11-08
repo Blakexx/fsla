@@ -2,7 +2,7 @@
 
 Mirror doc for the header every intra source includes and for the one translation unit that derives a call's geometry
 from its widths and forms on the device's card and builds the arms. The kernel is
-[`intra_kernel.md`](intra_kernel.md); the host entries this unit defines, with their refusals, are
+[`ampere/intra_kernel.md`](ampere/intra_kernel.md); the host entries this unit defines, with their refusals, are
 [`intra_api.md`](intra_api.md).
 
 <a id="constants"></a>
@@ -42,7 +42,7 @@ window's writer tiles twice as often as one of 128: the area's price, fixed per 
 pieces of at most four, so the diagonal pair lands in the block's last piece. `PiecesAt<W, Rows>` builds the window's
 table at compile time, longest first and the heavier block first among equals, and the kernel reads its entry from
 constant memory by `blockIdx.x` modulo the count (6 at W = 512 with 128-reader blocks, 12 with 64). Why four is
-[`intra_kernel.md`](intra_kernel.md#the-grid).
+[`ampere/intra_kernel.md`](ampere/intra_kernel.md#the-grid).
 
 <a id="stages"></a>
 
@@ -71,7 +71,7 @@ Per level a `RowView` of each side's rows (base, and the batch, token and head s
 first slab, first union group, first stage, stage count and slab mask; the stage table; the values' view, the facts
 pass's `fm` and tile unions; the output planes; the ledger; the stage and slab counts, the union table's group count
 and the reader row's pitch; `H`, the query heads a write head (`group`), `L`, the window count; level 0's lift and the
-digits' `unit` ([`intra_kernel.md`](intra_kernel.md#widening)); and each side's dense-level bitmask. It is a
+digits' `unit` ([`ampere/intra_kernel.md`](ampere/intra_kernel.md#widening)); and each side's dense-level bitmask. It is a
 `__grid_constant__` kernel parameter of under a kilobyte, so a launch allocates nothing to learn its shape.
 
 <a id="the-unit"></a>
@@ -80,7 +80,7 @@ digits' `unit` ([`intra_kernel.md`](intra_kernel.md#widening)); and each side's 
 
 The arms are the depth and the accumulation, `intra_kernel<D, kF16>` at `D` = 1, 2: four; a call whose last window
 is partial runs the four arms `kEven` false, `intra_kernel<D, kF16, false>`, compiled in `intra_partial.cu`
-([`intra_kernel.md`](intra_kernel.md#partial-window)). The host entry reads the device's card, derives the geometry
+([`ampere/intra_kernel.md`](ampere/intra_kernel.md#partial-window)). The host entry reads the device's card, derives the geometry
 from the rows' widths and dtypes, turns each tensor into a view after checking it (`row_view`: shape, 16-byte starts
 and strides), fills the block and launches the arm on a `(windows × pieces, B·H)` grid of the card's threads with the
 call's footprint, `windows` the call's tokens over W rounded up. A footprint past the 48 KB a kernel gets unasked is checked
