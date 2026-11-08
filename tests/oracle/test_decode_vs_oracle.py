@@ -159,8 +159,7 @@ def _kernel_realized_support(routes, side, widths, B, H, device, d_v=64):
     """
     topology = _topology(widths)
     N = math.prod(widths)
-    BH = B * H
-    config = derive_decode_geometry(topology, d_v=d_v, decay=False, BH=BH, device=device)
+    config = derive_decode_geometry(topology, d_v=d_v, decay=False)
     f32 = dict(device=device, dtype=torch.float32)
     ones = torch.ones(B, 1, H, **f32)
     rows = routes.read_rows if side == "read" else routes.write_rows
@@ -221,8 +220,7 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
         ref = ref._replace(state=state_rounded(ref.state))
 
     # ---- decode ---------------------------------------------------------------
-    config = derive_decode_geometry(topology, d_v=d_v, decay=decay is not None, BH=B * H,
-                                    device=device)
+    config = derive_decode_geometry(topology, d_v=d_v, decay=decay is not None)
     if ctas is not None:
         config = dataclasses.replace(config, ctas=ctas)
     #: THE SEAM. The oracle's plane is canonical forever; the kernel's is lattice-ordered.
@@ -342,7 +340,7 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
     zeros = tuple(torch.zeros(B, 1, H, w, device=device, dtype=torch.float32) for w in widths)
     g_write = torch.ones(B, 1, H, device=device, dtype=torch.float32)
     v = torch.randn(B, 1, H, d_v, device=device, dtype=torch.float32)
-    config = derive_decode_geometry(topology, d_v=d_v, decay=False, BH=B * H, device=device)
+    config = derive_decode_geometry(topology, d_v=d_v, decay=False)
     m0 = state_pages(0.1 * torch.randn(B, H, config.N, config.cols, device=device, dtype=torch.float32))
     state = m0.clone()
     routes, values = step_bundles(v, zeros, zeros, g_write, topology)
@@ -553,8 +551,7 @@ def test_g7_prefill_decode_seam(widths):
     step_gw = torch.rand(B, 1, H, device=device, dtype=torch.float64, generator=gen) + 0.5
     step_v = torch.randn(B, 1, H, d_v, device=device, dtype=torch.float64, generator=gen)
 
-    config = derive_decode_geometry(pre["topology"], d_v=d_v, decay=False, BH=B * H,
-                                  device=device)
+    config = derive_decode_geometry(pre["topology"], d_v=d_v, decay=False)
     #: THE SEAM ITSELF: the entry state is the oracle's, so it crosses into lattice order
     #: here and its answer crosses back.
     entry = state_pages(to_lattice(pre["state"], widths, config.lattice_k, config.lattice_m))

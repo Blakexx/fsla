@@ -135,7 +135,7 @@ def test_a_batch_head_that_cannot_address_its_writes_declines_which_is_why_lazin
     "this step does write it": the same step against a resident atom fills those rows.
     """
     fixture = _fixture(_WIDTHS, seed=11, support=0.5)
-    config = _config(_WIDTHS, fixture)
+    config = _config(_WIDTHS)
     BH = fixture["B"] * fixture["H"]
 
     declined = _arena(_WIDTHS, _BC, BH)
@@ -172,7 +172,7 @@ def test_a_step_no_batch_head_can_address_touches_nothing():
     the contract. The mixed batch is `test_decode_growth_trigger.py`'s cell.
     """
     fixture = _fixture(_WIDTHS, seed=12, support=0.5)
-    config = _config(_WIDTHS, fixture)
+    config = _config(_WIDTHS)
     BH = fixture["B"] * fixture["H"]
     arena = _arena(_WIDTHS, _BC, BH)
     bitmap = _absent_one_atom_per_bh(fixture, config, arena)
@@ -203,7 +203,7 @@ def test_gated_step_then_admit_then_replay_matches_admitting_first():
     walk must re-read in the replay without depositing again.
     """
     fixture = _fixture(_WIDTHS, seed=13, support=0.5)
-    config = _config(_WIDTHS, fixture)
+    config = _config(_WIDTHS)
     BH = fixture["B"] * fixture["H"]
     write = _bundles(fixture)[0].live("write")
     bitmap = _write_atom_bitmap(write, config)
@@ -272,7 +272,7 @@ def _sequence():
     v = torch.randn(_B, _T + 8, _H, _DV, device="cuda")
     with torch.no_grad():
         routes, _values = layer._produce(x[:, :_T])
-        config = _config(_WIDTHS, dict(B=_B, H=_H))
+        config = _config(_WIDTHS)
         bits = torch.ones(_B * _H, config.N // MMA_K_QUANTUM, dtype=torch.bool,
                           device="cuda")
         state = rola.state()
@@ -377,7 +377,7 @@ def _make_growth(state, static):
     Re-planning also reassigns slots, which is the stronger cell -- the captured graph
     holds the arena's BASE and its table, and neither moves.
     """
-    written = _write_atom_bitmap(static.live("write"), _config(_WIDTHS, dict(B=_B, H=_H)))
+    written = _write_atom_bitmap(static.live("write"), _config(_WIDTHS))
     keep = (state._arena.page_table >= 0) & written
     row, column = (keep.nonzero())[0].tolist()
     keep[row, column] = False

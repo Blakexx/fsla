@@ -746,7 +746,6 @@ int ilog2_exact(int64_t x, const char* what) {
   return e;
 }
 
-//: THE (k, m) BOX, FILLED AND REFUSED HERE. The derivation is `rola/ops/lattice.py`'s -- see docs/internals/decode/decode.md#fill-lattice
 //: THE STEP'S RESIDENT GRID on `card`: one wave of the declared residency, at most `bh` heads' unit supply.
 //: -- see docs/internals/decode/decode.md#the-split-policy
 int grid_of(const Card& card, int64_t unit_ceiling, int64_t bh) {
@@ -756,6 +755,7 @@ int grid_of(const Card& card, int64_t unit_ceiling, int64_t bh) {
       std::max<int64_t>(1, std::min<int64_t>(int64_t{card.sms} * kDecodeBlocksPerSm, bh * supply)));
 }
 
+//: THE (k, m) BOX, FILLED AND REFUSED HERE. The derivation is `rola/ops/lattice.py`'s -- see docs/internals/decode/decode.md#fill-lattice
 void fill_lattice(DecodeParams& p, int64_t k, int64_t m, int64_t N) {
   const int kappa = ilog2_exact(k, "the lattice span k");
   const int j = ilog2_exact(m, "the lattice capacity m");
@@ -1065,8 +1065,8 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   p.eps = static_cast<float>(eps);
   p.ledger = g_phase_ledger;
   if (p.ledger != nullptr)
-    STD_TORCH_CHECK(g_phase_ledger_ctas >= ctas, "the bound decode phase ledger covers ",
-                    g_phase_ledger_ctas, " CTAs; this step launches ", ctas);
+    STD_TORCH_CHECK(g_phase_ledger_ctas >= p.ctas, "the bound decode phase ledger covers ",
+                    g_phase_ledger_ctas, " CTAs; this step launches ", p.ctas);
 
   launch_decode_step(p, d_v, decay, budget);
   return y;

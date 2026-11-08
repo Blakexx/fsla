@@ -20,6 +20,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def schedule_sources(kernel: str) -> tuple[str, ...]:
+    """A kernel's schedule files, derived from the tree: every header of `csrc/rola/src/<kernel>/ampere/`, so a file a
+    schedule gains is read by the instruments without a list to keep."""
+    return tuple(sorted(f"csrc/rola/src/{kernel}/ampere/{p.name}"
+                        for p in (ROOT / "csrc/rola/src" / kernel / "ampere").glob("*.cuh")))
+
 
 @dataclass(frozen=True)
 class Target:
@@ -119,9 +128,7 @@ def function(target: Target, cell) -> str:
 
 TARGETS = {
     "carry": Target("carry", "carry_kernel", "carry_forward", "carry_arm",
-                    tuple(f"csrc/rola/src/carry/ampere/{f}" for f in ("carry_kernel.cuh", "parts.cuh", "readout.cuh",
-                                                                "panel.cuh", "fold.cuh", "schedule.cuh",
-                                                                "handoff.cuh")),
+                    schedule_sources("carry"),
                     "tools/budgets/carry.json", "CTA-windows"),
     "intra": Target("intra", "intra_kernel", "intra_forward", "intra", ("csrc/rola/src/intra/ampere/intra_kernel.cuh",),
                     "tools/budgets/intra.json", "warp tile pairs"),

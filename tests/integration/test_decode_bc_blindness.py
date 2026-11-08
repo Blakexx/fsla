@@ -96,7 +96,7 @@ def test_decode_is_blind_to_prefill_bc(widths):
         # is called inside the loop for exactly that reason: it must be a pure
         # function of the topology, `d_v`, `decay` and the device.
         assert BC in _BCS
-        config = derive_decode_geometry(topology, d_v=d_v, decay=False, BH=B * H, device=device)
+        config = derive_decode_geometry(topology, d_v=d_v, decay=False)
         configs.append(config)
         state = m0.clone()
         y, state, _ = _decode_step(routes, values, config, state)

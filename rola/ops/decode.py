@@ -76,7 +76,7 @@ def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurem
     extension().rola_decode_ledger_bind(ledger)
 
 
-def _shipped_decode_dv(D: int, decay: bool, device) -> tuple[int, ...]:
+def _shipped_decode_dv(D: int, decay: bool) -> tuple[int, ...]:
     """The ``DV`` values this binary's decode arms ship at this ``(D, decay)``.
 
     Read off :func:`arms` (the device's own declared matrix) rather than a literal
@@ -118,8 +118,6 @@ def derive_decode_geometry(
     *,
     d_v: int,
     decay: bool,
-    BH: int,
-    device: torch.device | str,
     eps: float = READOUT_EPS,
     write_dense: bool | None = None,
 ) -> DecodeGeometry:
@@ -140,7 +138,7 @@ def derive_decode_geometry(
     """
     widths = tuple(topology.widths)
     _admit(widths)
-    d_v = padded_value_width(d_v, shipped=_shipped_decode_dv(len(widths), decay, device))
+    d_v = padded_value_width(d_v, shipped=_shipped_decode_dv(len(widths), decay))
     D = len(widths)
     k, m = derive_lattice(widths)
     row_offset = []

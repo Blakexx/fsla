@@ -234,7 +234,7 @@ def test_the_two_backings_agree(arm):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=41 + len(widths), support=0.5)
-    config = _config(widths, fixture)
+    config = _config(widths)
     BH = fixture["B"] * fixture["H"]
     routes, values = _bundles(fixture)
     write = routes.live("write")

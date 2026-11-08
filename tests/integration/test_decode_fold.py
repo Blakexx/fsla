@@ -104,7 +104,7 @@ def _y_of(rows, scale, *, normalize, seed, s0=0):
     #: NO DEPOSIT: an all-zero write side leaves `supp(W)` empty, so every touched row is
     #: read-only and the state the readout sees is the state that was placed.
     values = Values.from_projection(torch.zeros(B, rows.shape[1], H, _DV, device=device))
-    config = derive_decode_geometry(routes.topology, d_v=_DV, decay=False, BH=BH, device=device)
+    config = derive_decode_geometry(routes.topology, d_v=_DV, decay=False)
     state, e, m = _single_leaf_state(BH, config, s0, device, seed + 1)
     y, _state, _ws = _decode_step(routes, values, config, state)
     return y.reshape(BH, _DV), e, m

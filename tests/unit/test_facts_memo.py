@@ -88,8 +88,7 @@ def _decode_scratch_facts():
     from rola.ops.decode import derive_decode_geometry
     from tests.oracle.oracle_fixtures import _topology
 
-    return {"geometry": derive_decode_geometry(_topology((16, 16)), d_v=64, decay=False, BH=2,
-                                               device="cpu"),
+    return {"geometry": derive_decode_geometry(_topology((16, 16)), d_v=64, decay=False),
             "BH": 2, "device": "cpu"}
 
 

@@ -151,10 +151,8 @@ def _bundles(fixture):
     return fixture["bundles"]
 
 
-def _config(widths, fixture):
-    return derive_decode_geometry(
-        _topology(widths), d_v=_DV, decay=False,
-        BH=fixture["B"] * fixture["H"], device="cuda")
+def _config(widths):
+    return derive_decode_geometry(_topology(widths), d_v=_DV, decay=False)
 
 
 def _leaf_support(levels, widths, config):
@@ -236,7 +234,7 @@ def test_the_step_write_atom_set_is_exact(arm, support):
     """
     widths, _BC = arm
     fixture = _fixture(widths, seed=len(widths) * 31 + 7, support=_SUPPORTS[support])
-    config = _config(widths, fixture)
+    config = _config(widths)
     write = _bundles(fixture)[0].live("write")
 
     got = _write_atom_bitmap(write, config)
@@ -258,7 +256,7 @@ def test_the_step_write_atom_set_is_exact(arm, support):
 def test_the_paged_backing_matches_the_dense_one(arm, support):
     widths, BC = arm
     fixture = _fixture(widths, seed=len(widths) * 97 + BC, support=_SUPPORTS[support])
-    config = _config(widths, fixture)
+    config = _config(widths)
     BH = fixture["B"] * fixture["H"]
     routes, values = _bundles(fixture)
     write = routes.live("write")
@@ -308,7 +306,7 @@ def test_an_absent_atom_is_never_written_and_reads_as_zero(arm):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=len(widths) * 13 + 5, support=0.25)
-    config = _config(widths, fixture)
+    config = _config(widths)
     BH = fixture["B"] * fixture["H"]
     routes, values = _bundles(fixture)
     write = routes.live("write")
@@ -357,7 +355,7 @@ def test_a_step_grows_residency_by_exactly_its_new_atoms(arm):
     what makes this a planned-exact claim rather than a "grew somehow" one.
     """
     widths, BC = arm
-    config = _config(widths, _fixture(widths, seed=0))
+    config = _config(widths)
     BH = 2 * 3
     first = _fixture(widths, seed=len(widths) * 41 + 1, support=0.5)
     second = _fixture(widths, seed=len(widths) * 41 + 2, support=0.5, offset=0.25)
@@ -423,7 +421,7 @@ def test_a_pool_admitted_sequence_is_the_oracle_s_and_the_host_admitted_one_s(ar
     indistinguishable from an atom `plan_exact` admitted.
     """
     widths, BC = arm
-    config = _config(widths, _fixture(widths, seed=0))
+    config = _config(widths)
     BH = 2 * 3
     first = _fixture(widths, seed=len(widths) * 41 + 1, support=0.5)
     second = _fixture(widths, seed=len(widths) * 41 + 2, support=0.5, offset=0.25)

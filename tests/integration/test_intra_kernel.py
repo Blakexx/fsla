@@ -298,8 +298,8 @@ def test_the_seam_refuses_what_it_does_not_read():
 
 def test_the_loaded_binary_states_the_footprint_it_carries():
     """The extension-trap check: the device's own block rows and fixed tenants are the footprint law's -- a reader row
-    of every stage's slot, at least three 128-byte stages and room for every warp's deposit staging, past them -- and
-    the widest rows fit the card's shared memory a block (the walk's compile-time guarantee, read here off the card)."""
+    of every stage's slot, at least three 128-byte stages and room for every warp's deposit staging, past them (that
+    the widest rows fit the card is the walk's compile-time assertion, not a runtime read)."""
     stamp = intra_ops.build_stamp() // 1000003
     rows, tenants = stamp // 1000003, stamp % 1000003
     assert rows == intra_ops.block_rows(torch.cuda.current_device())
@@ -312,4 +312,3 @@ def test_the_loaded_binary_states_the_footprint_it_carries():
     mixed = extension().intra_footprint([256, 256], [2, 1], torch.cuda.current_device())
     assert mixed == tenants + rows * (4 * 64 + 2 * 256)
     assert intra_ops.footprint((64,)) == tenants + rows * least
-    assert intra_ops.footprint((256, 256)) <= torch.cuda.get_device_properties(0).shared_memory_per_block_optin
