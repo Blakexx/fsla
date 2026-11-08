@@ -5,8 +5,9 @@ sets and the hermetic CUDA toolkit), `.bazelrc` (the graph's settings), `.bazelv
 release and its digest), `bazel/` (the graph's machinery: its rules, the environment, the platform and the scripts its
 actions run) and `bazel/bazel` (the front door); each `BUILD.bazel` sits beside what it describes. The graph builds the
 extension (`//:library`, [below](#compile)), gates it ([below](#gates)) and runs the checks ([below](#checks)).
-Beside it, `setup.py` builds the extension too ([`build.md`](build.md)) with ratify's recompile and the wheels, pytest
-runs the tests, and the commit gate's hooks and CI run the lints with the same tools. Measurement is
+The commit gate is `bazel test //:gate` (`tools/git-hooks/pre-commit`, on the commit as git will write it). Beside the
+graph, `setup.py` builds the extension too ([`build.md`](build.md)) with ratify's recompile and the wheels, pytest
+runs the tests, and CI runs the lints' tools directly. Measurement is
 `rola_devtools.build`'s
 ([`measurement.md`](measurement.md)), whose timing sessions hold the GPU and the clock as machine-wide counting
 semaphores, which Bazel cannot do for an action.
@@ -101,8 +102,10 @@ post-build recompile is not among them: setup.py's build runs it (a warning betw
 
 ## <a id="checks"></a>The checks
 
-`bazel test //:gate` runs every check the graph holds: `//tools:lints`, the checks over files, and
-`//tools:commit_checks`, the checks of the commit.
+`bazel test //:gate` runs every check the graph holds -- `//tools:lints`, the checks over files; `//tools:lint_fixtures`,
+each lint firing on its own fixture; and `//tools:commit_checks`, the checks of the commit -- and is the commit gate:
+`tools/git-hooks/pre-commit` runs it with the changes not staged for the commit set aside, and the tree the commit's
+index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
 
 - THE TREE is `//:tree`: every tracked file (`git ls-files`, read by `bazel/environment.bzl`'s `@rola_tree`, which
   reads again when git's index moves), each package's part its `tracked` filegroup (`bazel/defs.bzl`'s `tree_part`,
@@ -122,8 +125,8 @@ post-build recompile is not among them: setup.py's build runs it (a warning betw
 - THE UNIT LINTS (`//tools:clang_tidy_device`, `clang_tidy_host`, `host_warnings`; `bazel/defs.bzl`'s `unit_lints`
   aspect and `unit_lint_test`): clang-tidy's two profiles and the host warnings, each run on one unit's own compile
   action -- its command line and its inputs -- so a lint reads what the build compiled
-  ([`internals/tools/lint.md`](internals/tools/lint.md#unit-lints)). The units are read in one configuration a ratified
-  architecture (a split transition), whose generated headers are that architecture's build set; each verdict is
+  ([`internals/tools/lint.md`](internals/tools/lint.md#unit-lints)). The units are the library's own (the aspect follows
+  its deps), read in one configuration a ratified architecture (a split transition), whose generated headers are that architecture's build set; each verdict is
   cached on its unit's compile, and states the seconds it took. `bazel run //:compile_commands` writes the editor's
   compile database from the same commands, for the first ratified architecture.
 - THE CHECKS OF THE COMMIT (`//tools:commit_checks`, `bazel/defs.bzl`'s `checkout_test`): what git knows rather than
@@ -136,8 +139,9 @@ post-build recompile is not among them: setup.py's build runs it (a warning betw
 Each is a trap a setup like this falls into, and what avoids it (checked against Bazel 9.3.1's own options where it
 names one).
 
-1. BZLMOD ONLY, PINNED: `MODULE.bazel` and its `MODULE.bazel.lock` are committed with `.bazelversion`; a gate builds
-   with `--lockfile_mode=error`, so a dependency resolved differently from the lock fails rather than drifts.
+1. BZLMOD ONLY, PINNED: `MODULE.bazel` and its `MODULE.bazel.lock` are committed with `.bazelversion`; the commit gate
+   runs with `--lockfile_mode=error` (`tools/git-hooks/pre-commit`), so a dependency resolved differently from the
+   lock refuses the commit rather than drifts.
 2. NO MACHINE IN THE CHECKOUT: `.bazelrc` holds the graph's settings and names no path; the machine's come from the dev
    config through the front door. Startup options are never inside a `--config`.
 3. THE DISK CACHE IS BOUNDED, AND ITS BOUND RUNS: `--experimental_disk_cache_gc_max_size` caps the shared cache at
@@ -188,5 +192,6 @@ names one).
     bazel run //:library                                            # the shipped build, into rola_cu13/
     bazel run //:library --//:archs=86 --//:carry_arms=3            # an iteration build
 
-Never pass `--jobs` or a cache path: the front door sets both. Nothing the graph builds lands in the checkout but the
-library `bazel run //:library` copies in: Bazel's output links are off (`--experimental_convenience_symlinks=clean`).
+Never pass `--jobs` or a cache path: the front door sets both. Nothing the graph builds lands in the checkout but what a
+run target writes there -- the library `bazel run //:library` copies in, the database `bazel run //:compile_commands`
+writes: Bazel's output links are off (`--experimental_convenience_symlinks=clean`).

@@ -31,7 +31,7 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 | [`kernels.py`](kernels.md) | THE KERNEL LIST: every device unit the build compiles and every kernel the source defines, derived from the tree | `setup.py`, `ratify.py`, every kernel gate | — |
 | `build/dag_to_dot.py` | a DAG tuple (`rola.engine.dags.*`) as Graphviz DOT and SVG | a person, after a DAG change | the `.svg` beside its page |
 | `build/ninjatracing.py` | `.ninja_log` as a Chrome/Perfetto trace, the compile ledger's visual form | a person | the trace |
-| `git-hooks/pre-commit` | THE COMMIT GATE, run from the checkout's venv against `.pre-commit-config.yaml` | git, every commit | — |
+| `git-hooks/pre-commit` | THE COMMIT GATE: `bazel test //:gate` on the commit as git will write it ([`build-graph.md`](../../build-graph.md#checks)) | git, every commit | — |
 | `git-hooks/post-commit` | THE ADVISORY REVIEW: `review_gate.py` on HEAD in the background (`review_gate.md`) | git, every commit | — |
 | [`review_gate.py`](review_gate.md) | a commit, range or staged diff reviewed by an LLM against CONSTITUTION and KERNEL_STANDARDS, each finding citing a rule and a line; advisory | the post-commit hook, a person | `rola-review/` in the git common dir |
 

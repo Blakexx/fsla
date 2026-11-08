@@ -270,7 +270,7 @@ A tool or build step that could run one of two ways — a linker present or not,
 a lint with or without its compdb, a lock taken or a slot — REFUSES with the command that fixes it; it
 never silently takes the other path. Legitimate MODES (the §16 strict-manifest tiering; a comparison
 arm kept as a yardstick) are keyed on an explicit declared variable and carry their exit condition on
-a card. Applied: mold as the only linker; sccache pin miss refuses; run_clang_tidy never skips; one
+a card. Applied: mold as the only linker; sccache pin miss refuses; a unit lint with no verdict fails; one
 build-lock discipline (slots as the parameter).
 
 ## <a id="comment-density"></a>§10 addendum (law, 2026-08-28): THE COMMENT-DENSITY GATE
@@ -614,8 +614,8 @@ phase-ledger tool and declared arm set named the carry alone. Nothing had decide
    and `ratchet.py coverage` gates it: a kernel not declared, or a pointer to nothing, fails the commit; owed entries
    are the reviewed backlog, printed with their reasons (a new kernel lands owing its budget and its ratification).
    Ratified is declared "manifest" and checked against the committed manifests, or owed until the milestone.
-4. A GATE RUNS WHERE ITS INPUTS EXIST: the source gates in pre-commit; the binary gates (the SASS gate, ratify) after
-   every build.
+4. A GATE RUNS WHERE ITS INPUTS EXIST: the source gates in the commit gate (`bazel test //:gate`); the binary gates
+   (the SASS gate, ratify) after every build.
 5. A TOOL THAT CANNOT PARSE A UNIT HAS NOT GATED IT. The analyzer is pinned to a release that parses every unit
    (`tools/clang_tidy_pin.json`), and a parse error is a gate failure: the distro's clang 14 reported used
    parameters as unused on a unit it could not parse.

@@ -13,10 +13,7 @@ tree carried when it began gating are a baseline that only shrinks.
 |---|---|
 | `ast_grep_gate.py` + `rules/*.yml` | the standards' shapes an AST can see (§12 fences and collectives, a torch header in a per-arm translation unit, an anonymous-namespace kernel, a width-shaped `if`) |
 | `lint_standards.py` | unroll discipline (§6), the arm-TU torch include, the barrier-free regions (no CTA barrier between a file's `//: @barrier-free` and `//: @barrier-free-end`), the whole `docs/internals/` mirror contract (including that a mirror page names no identifier the tree does not carry), the flock spelling, the supported matrix, the shard partition, the vendored pin, the comment-density mandate, repository portability |
-| `run_clang_tidy.sh` | the pinned clang-tidy (`tools/clang_tidy_pin.json`) with `.clang-tidy` on the host translation units; every finding fails |
-| `run_clang_tidy_device.sh` + `clang-tidy-device.yaml` | the pinned clang-tidy on every device translation unit (`tools/kernels.py`; under pre-commit, the units whose include closure holds a changed file): dead stores, unused parameters and redundant expressions, through clang's CUDA front end. An on-target finding fails it, and so does any compiler error -- a unit clang cannot parse is a unit it did not analyze |
-| `host_warnings.py` | `-Wall -Wextra -Wunused` dry compile of the host translation units, ON-TARGET findings only; a vendored header's warning is not this codebase's to fix |
-| `unit_lints.py` | the build graph's runner of the two clang-tidy profiles and the host warnings, each on one unit's own compile for each ratified architecture ([below](#unit-lints)) |
+| `unit_lints.py` + `.clang-tidy`, `clang-tidy-device.yaml` | the pinned clang-tidy (`tools/clang_tidy_pin.json`) on every unit the library links, for each ratified architecture: `.clang-tidy` on the host units (every finding fails), `clang-tidy-device.yaml` on the device units through clang's CUDA front end (dead stores, unused parameters, redundant expressions); and the host units' `-Wall -Wextra -Wunused` front-end compile. A finding in the unit's own package fails, and so does any compiler error -- a unit the compiler cannot parse is a unit no lint read ([below](#unit-lints)) |
 | `unused_instantiations.py` | every `__global__` function template must demangle-match a symbol in a committed manifest. `__device__` templates are found, counted and explicitly NOT checked: manifests record entry functions only, and a wrapped-once helper has no standalone symbol |
 | `run_ruff_e3.sh` | pycodestyle's blank-line family. It keeps its own invocation because ruff preview-gates that family, and turning preview on in `pyproject.toml` would gate every other family's preview rules too |
 | `readability_spacing.py` | a function or kernel body of forty lines or more with ZERO blank lines in it, and a run of blank lines in `csrc` (Python's own two-line convention is ruff's `E303` territory). The rule asks for segmentation and does not say where |
@@ -26,19 +23,12 @@ tree carried when it began gating are a baseline that only shrinks.
 <a id="unit-lints"></a>
 ## The unit lints in the build graph
 
-`tools/lint/unit_lints.py` is the build graph's runner of the two clang-tidy profiles and the host warnings, each on
-one unit's own compile: `bazel/defs.bzl`'s `unit_lints` aspect hands it the compile action's argv, and its inputs are
-the compile's. `command` turns the argv into clang's -- the include roots, the macros, the forced includes, the
-standard and the optimization level kept, the code generator's flags dropped; a CUDA unit through clang's CUDA front
-end on the host side (`--cuda-host-only`) for the one architecture its configuration builds, against the graph's CUDA
-root (`//bazel:cuda_root`); `tidy` runs the pinned clang-tidy (`@clang_tidy`, from `tools/clang_tidy_pin.json`) with
-the unit's profile (`.cu`: `clang-tidy-device.yaml`, its repository headers and an intra-function dead-store analysis;
-`.cpp`: `.clang-tidy`); `warnings` reruns a host compile itself to its front end with `-Wall -Wextra -Wunused`. Each
-writes a verdict: the unit, the architecture, the seconds it took, and the findings that count -- a warning in
-`csrc/rola/` and any compiler error, since a unit the compiler cannot parse is one no lint read; a failed run no
-located diagnostic explains is a finding too. `verdicts` is the test (red on any finding, and on no verdict at all);
-`database` is `bazel run //:compile_commands`'s, the editor's compile database from the same clang commands, every
-path made absolute.
+The clang-tidy profiles and the host warnings read each unit's own compile: `bazel/defs.bzl`'s `unit_lints` aspect hands
+`tools/lint/unit_lints.py` the compile action's command line, and the lint's inputs are the compile's, so it reads
+what the build compiled and reruns only when that compile's inputs change. The units are the library's own, and each
+ratified architecture is its own configuration, whose generated headers are that architecture's build set. A verdict
+counts a warning in the unit's own package and any compiler error, and a run that fails with no located diagnostic
+is red too; a fixture's verdict must hold exactly its expected findings ([below](#fixtures)).
 
 <a id="portable-agent-files"></a>
 ## The agent files are portable
@@ -56,9 +46,8 @@ through `$CLAUDE_PROJECT_DIR`, and a site's own locations come from the dev conf
 known by its path, the first sentence of its message and a digest of the line it names, so an edit above it does not
 move it. The gate fails on a finding the baseline does not hold, on a baseline entry the lint no longer finds (run
 `--shrink` and commit the smaller baseline with the fix), and on a baseline holding more of an entry than HEAD's.
-`--grown` makes that last comparison alone, for every baseline: the build graph runs each lint's ratchet over a copy
-of the tree, which has no HEAD, and this one in the checkout ([`build-graph.md`](../../build-graph.md#checks)); a
-HEAD git cannot read fails it. Editing
+`--grown` makes that last comparison, every baseline at once, in the checkout; each lint's own ratchet runs over a copy
+of the tree, which has no HEAD ([`build-graph.md`](../../build-graph.md#checks)). A HEAD git cannot read fails it. Editing
 a line that carries a finding changes its digest, so the commit that touches the line fixes the finding. A lint that
 cannot run fails; it never reads as zero. `--init` records a new lint's baseline once.
 
@@ -134,19 +123,13 @@ out-of-repo journal by path, a real worktree path or a session's scratch path, w
 excluded by name, because its patterns spell what they catch). Every finding prints its section, `file:line` and the
 incident.
 
-<a id="compile-commands"></a>**The compile database.** `tools/lint/compdb.sh` reads an already-built tree's
-`build/temp/build.ninja` and writes `compile_commands.json`; both clang-tidy profiles read it, generating it from
-`build/temp` when absent, and FAIL rather than skip when there is no build (pre-commit is never green by absence):
+<a id="compile-commands"></a>**The compile database.** `bazel run //:compile_commands` writes `compile_commands.json`
+into the checkout for an editor: each unit's clang command, as the unit lints run it, for the first ratified
+architecture, every path absolute.
 
-```bash
-pip install -e . --no-build-isolation      # if not already built
-tools/lint/compdb.sh                        # writes ./compile_commands.json
-tools/lint/run_clang_tidy.sh                # .clang-tidy on every host .cpp
-tools/lint/run_clang_tidy_device.sh         # clang-tidy-device.yaml on every device unit the build compiles
-```
-
-<a id="device-profile"></a>The device profile runs clang's CUDA frontend `--cuda-host-only` with the toolkit's `include/cccl` root added (nvcc adds
-it implicitly; clang does not), and a compiler error anywhere fails it: the parse is part of the gate, which is why the
+<a id="device-profile"></a>The device profile runs clang's CUDA frontend `--cuda-host-only` on the compile's own include roots (the
+toolkit's `include/cccl` among them, which nvcc's profile adds and clang does not), and a compiler error anywhere
+fails it: the parse is part of the gate, which is why the
 analyzer is pinned (a distro clang could not parse a torch-bearing unit and reported used parameters as unused). Both
 profiles were validated against planted findings, so a clean pass is the tool running, not an inert config.
 
@@ -155,26 +138,16 @@ profile's one analyzer check, `deadcode.DeadStores`, reads each function's own l
 nothing to it -- it was ~80% of a template-heavy unit's time (`entmax/factor.cu`: 69 s without, 389 s with, the same
 findings), and the self-test's fixture plants a dead store the check must still find. THE LINT READS ITS ONE
 ARCHITECTURE'S BUILD SET: the host pass has every carried build in the image (`common/select.cuh`'s `in_image`), so a
-`build_switch` would instantiate every kernel once a carried build; the lint writes `measure/hardware.py`'s
-`builds_header` for its one architecture and puts it ahead of the generated one.
+`build_switch` would instantiate every kernel once a carried build; each architecture is the lint's own
+configuration, whose generated `builds_header` (`measure/hardware.py`'s) carries that architecture's builds alone.
 
 ## Fixtures
 
 Every lint owns a fixture pair under `tools/lint/fixtures/` (a "must fire" case and a
-"must not fire" case, most often in one file) and a `--test-fixtures` mode on its own
-driver. A rule that has never been shown to fire is a rule nobody knows is connected; one
-that has never been shown to stay quiet is a rule nobody can afford to make gating.
-
-```bash
-python3 tools/lint/host_warnings.py --test-fixtures
-python3 tools/lint/unused_instantiations.py --test-fixtures
-python3 tools/lint/readability_spacing.py --test-fixtures
-python3 tools/lint/r9_enforcement.py --test-fixtures
-python3 tools/lint/constant_parameters.py --test-fixtures
-python3 tools/lint/drift_guards.py --test-fixtures
-tools/lint/run_clang_tidy_device.sh --test-fixtures
-tools/lint/run_vulture.sh --test-fixtures      # needs vulture on PATH
-```
+"must not fire" case, most often in one file). A rule that has never been shown to fire is a rule nobody knows is
+connected; one that has never been shown to stay quiet is a rule nobody can afford to make gating. The self-tests are
+the commit gate's `//tools:lint_fixtures`: each Python lint's `--test-fixtures` mode, and the unit lints' fixtures
+linted as units, each verdict holding exactly the fixture's expected findings.
 
 Fixtures are EXCLUDED from every lint's normal-mode scan (`readability_spacing.py`'s
 `py_files()`, `run_vulture.sh`'s `--exclude`, `drift_guards.py`'s `_walk`). The lesson —
@@ -185,7 +158,8 @@ exactly how a hook drifts into being silently disabled.
 ## Running the roster by hand
 
 ```bash
-pre-commit run --all-files          # the whole roster, gates and reports together
+bazel test //:gate                  # the whole roster: every check the commit gate runs
+bazel test //tools:lints            # the checks over files alone
 
 python3 tools/lint/ratchet.py work_codes           # a ratchet's gate; the lint alone prints its inventory
 python3 tools/lint/drift_guards.py

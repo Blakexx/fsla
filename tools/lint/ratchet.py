@@ -14,9 +14,9 @@ holds the findings the tree carried when the lint began gating, with their multi
   marker), with the reason;
 - a baseline entry the lint no longer finds: `--shrink` removes it in the commit that fixed it, so the backlog on disk
   is the backlog in the tree;
-- a baseline that holds more of an entry than HEAD's: a backlog only shrinks. A lint's run checks it where HEAD is
-  readable; `--grown` checks it alone for every baseline, the graph's check of the commit (a copy of the tree, where
-  the graph runs each lint, has no HEAD).
+- a baseline that holds more of an entry than HEAD's: a backlog only shrinks. `--grown` checks it, every baseline
+  at once, in the checkout -- the graph's check of the commit; a lint's run reads a copy of the tree, which has no
+  HEAD.
 
 A lint that cannot run (a missing tool, a crash) fails the gate; it never reads as zero findings.
 Docs: docs/internals/tools/lint.md#ratchets.
@@ -160,18 +160,15 @@ def main() -> int:
         print(f"ratchet {a.lint}: baseline {sum(baseline.values())} -> {sum(kept.values())}")
         return 0
 
-    new, fixed, grown = verdict(found, baseline, _head(path))
+    new, fixed, _ = verdict(found, baseline, None)
     if new:
         _show(f"ratchet {a.lint}: {sum(new.values())} NEW finding(s) -- fix each, or exempt it the lint's own way:", new)
     if fixed:
         _show(f"ratchet {a.lint}: {sum(fixed.values())} baseline entr(ies) no longer found -- run "
               f"`python3 tools/lint/ratchet.py {a.lint} --shrink` and commit the smaller baseline:", fixed)
-    if grown:
-        _show(f"ratchet {a.lint}: the baseline gained {sum(grown.values())} entr(ies) over HEAD's -- a backlog only "
-              f"shrinks:", grown)
     total = sum(baseline.values())
-    print(f"ratchet {a.lint}: {'FAIL' if new or fixed or grown else 'OK'} ({total} in the backlog)")
-    return 1 if new or fixed or grown else 0
+    print(f"ratchet {a.lint}: {'FAIL' if new or fixed else 'OK'} ({total} in the backlog)")
+    return 1 if new or fixed else 0
 
 
 if __name__ == "__main__":

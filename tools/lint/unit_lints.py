@@ -5,9 +5,9 @@
 the build graph (`bazel/defs.bzl`'s `unit_lints` aspect), and the editor's compile database from the same commands.
 
     unit_lints.py command --argv A.json --arch 80 --cuda-root DIR --out C.json   # the unit's clang command
-    unit_lints.py tidy --command C.json --clang-tidy BIN --config F --out V.json
-    unit_lints.py warnings --argv A.json --arch 80 --out V.json        # the host compile's front end, warnings on
-    unit_lints.py verdicts V.json...                                   # every verdict; red on any finding
+    unit_lints.py tidy --command C.json --clang-tidy BIN --config F --package csrc/rola --out V.json
+    unit_lints.py warnings --argv A.json --arch 80 --package csrc/rola --out V.json   # the host compile, warnings on
+    unit_lints.py verdicts [--expect PATTERN...] V.json...             # red on any finding, or a fixture's mismatch
     unit_lints.py database --checkout DIR --out F C.json...            # compile_commands.json, from the run's execroot
 
 A unit's compile is the graph's own (its argv, the action's inputs), so the lint reads exactly what the build compiled,
@@ -37,15 +37,12 @@ _GENCODE = re.compile(r"code=sm_(\d+)")
 _DIAGNOSTIC = re.compile(r"^(?P<path>[^:\s][^:]*):\d+:\d+: (?P<severity>warning|error|fatal error): ")
 #: an action's absolute path, up to the execution root it ran in
 _SANDBOX = re.compile(r"/\S*?/execroot/_main/")
-#: this codebase's own files: a vendored or a toolkit header's diagnostic is not its to fix
-ON_TARGET = "csrc/rola/"
 #: the host warnings' flags: they select the diagnostics of the same compile, and are never a build's
 HOST_WARNING_FLAGS = ("-Wall", "-Wextra", "-Wunused")
 #: each profile's clang-tidy arguments past its config: the device profile's dead-store analysis stays inside a function
-#: (`ipa=none`), and its findings in the repository's headers count
+#: (`ipa=none`), and its findings in its own package's headers count
 PROFILES = {
-    "device": ("--header-filter=csrc/rola/.*", "--extra-arg=-Xclang", "--extra-arg=-analyzer-config",
-               "--extra-arg=-Xclang", "--extra-arg=ipa=none"),
+    "device": ("--extra-arg=-Xclang", "--extra-arg=-analyzer-config", "--extra-arg=-Xclang", "--extra-arg=ipa=none"),
     "host": (),
 }
 
@@ -84,15 +81,15 @@ def clang_command(argv: list[str], arch: str, cuda_root: str) -> dict:
     return {"file": source, "profile": "host", "arch": arch, "flags": ["-x", "c++", *kept]}
 
 
-def _verdict(lint: str, command: dict, started: float, output: str, returncode: int) -> dict:
-    """The diagnostics that count: a warning or error in this codebase's files, and any compiler error -- a unit the
-    compiler cannot parse is a unit no lint read."""
+def _verdict(lint: str, command: dict, package: str, started: float, output: str, returncode: int) -> dict:
+    """The diagnostics that count: a warning or error in the unit's own package (a vendored or a toolkit header's is not
+    its to fix), and any compiler error -- a unit the compiler cannot parse is a unit no lint read."""
     findings, errors = [], 0
     #: the action's own directory is the sandbox's: a path is reported from the execution root
     output = _SANDBOX.sub("", output)
     for line in output.splitlines():
         m = _DIAGNOSTIC.match(line)
-        if m and (ON_TARGET in m["path"] or m["severity"] != "warning"):
+        if m and (m["path"].startswith(package + "/") or m["severity"] != "warning"):
             findings.append(line)
             errors += m["severity"] != "warning"
     if returncode and not errors:
@@ -103,15 +100,15 @@ def _verdict(lint: str, command: dict, started: float, output: str, returncode: 
             "returncode": returncode, "findings": findings}
 
 
-def tidy(command: dict, clang_tidy: str, config: str) -> dict:
+def tidy(command: dict, clang_tidy: str, config: str, package: str) -> dict:
     started = time.monotonic()
     profile = command["profile"]
-    run = subprocess.run([clang_tidy, command["file"], f"--config-file={config}", *PROFILES[profile], "--",
-                          *command["flags"], "-ferror-limit=0"], capture_output=True, text=True)
-    return _verdict(f"clang-tidy {profile}", command, started, run.stdout + run.stderr, run.returncode)
+    run = subprocess.run([clang_tidy, command["file"], f"--config-file={config}", f"--header-filter={package}/.*",
+                          *PROFILES[profile], "--", *command["flags"], "-ferror-limit=0"], capture_output=True, text=True)
+    return _verdict(f"clang-tidy {profile}", command, package, started, run.stdout + run.stderr, run.returncode)
 
 
-def warnings(argv: list[str], arch: str) -> dict:
+def warnings(argv: list[str], arch: str, package: str) -> dict:
     """The host compile itself, front end only (`-fsyntax-only`: no object), with the warning flags last."""
     started = time.monotonic()
     out, source, i = [argv[0]], None, 1
@@ -126,21 +123,37 @@ def warnings(argv: list[str], arch: str) -> dict:
             out.append(word)
         i += 1
     run = subprocess.run([*out, "-fsyntax-only", *HOST_WARNING_FLAGS], capture_output=True, text=True)
-    return _verdict("host warnings", {"file": source, "arch": arch}, started, run.stdout + run.stderr, run.returncode)
+    return _verdict("host warnings", {"file": source, "arch": arch}, package, started, run.stdout + run.stderr,
+                    run.returncode)
 
 
-def verdicts(paths: list[str]) -> int:
+def _exactly(findings: list[str], expect: list[str]) -> bool:
+    """Each pattern matches its own finding, and no finding is left over."""
+    left = list(findings)
+    for pattern in expect:
+        hit = next((f for f in left if re.search(pattern, f)), None)
+        if hit is None:
+            return False
+        left.remove(hit)
+    return not left
+
+
+def verdicts(paths: list[str], expect: list[str]) -> int:
+    """A unit's verdicts are red on any finding. A fixture's (`expect`) are red unless each holds exactly the expected
+    findings: a lint fires on its must-fire case and on nothing else."""
     red = 0
     for path in sorted(paths):
         v = json.loads(Path(path).read_text())
-        print(f"== {v['lint']}: {v['file']} (sm_{v['arch']}), {v['seconds']} s, {len(v['findings'])} finding(s) ==")
+        held = _exactly(v["findings"], expect) if expect else not v["findings"]
+        print(f"== {v['lint']}: {v['file']} (sm_{v['arch']}), {v['seconds']} s, {len(v['findings'])} finding(s)"
+              + ("" if held or not expect else ", NOT the fixture's expected findings") + " ==")
         for line in v["findings"]:
             print(f"  {line}")
-        red += len(v["findings"])
-    print(f"unit lints: {red} finding(s) across {len(paths)} verdict(s)")
+        red += not held
     if not paths:
         print("unit lints: no verdict -- a lint with no unit does not pass")
         return 1
+    print(f"unit lints: {red} of {len(paths)} verdict(s) red" + (" (a fixture's)" if expect else ""))
     return 1 if red else 0
 
 
@@ -187,26 +200,31 @@ def main() -> int:
     t.add_argument("--command", type=Path, required=True)
     t.add_argument("--clang-tidy", required=True)
     t.add_argument("--config", required=True)
+    t.add_argument("--package", required=True, help="the unit's package: its findings are the ones that count")
     t.add_argument("--out", type=Path, required=True)
     w = sub.add_parser("warnings")
     w.add_argument("--argv", type=Path, required=True)
     w.add_argument("--arch", required=True)
+    w.add_argument("--package", required=True)
     w.add_argument("--out", type=Path, required=True)
     v = sub.add_parser("verdicts")
+    v.add_argument("--expect", action="append", default=[], help="a fixture's expected finding (a pattern)")
     v.add_argument("paths", nargs="*")
     d = sub.add_parser("database")
     d.add_argument("--checkout", required=True)
     d.add_argument("--out", type=Path, required=True)
     d.add_argument("commands", nargs="+")
+
     a = ap.parse_args()
     if a.mode == "command":
         a.out.write_text(json.dumps(clang_command(json.loads(a.argv.read_text()), a.arch, a.cuda_root), indent=1) + "\n")
     elif a.mode == "tidy":
-        a.out.write_text(json.dumps(tidy(json.loads(a.command.read_text()), a.clang_tidy, a.config), indent=1) + "\n")
+        a.out.write_text(json.dumps(tidy(json.loads(a.command.read_text()), a.clang_tidy, a.config, a.package), indent=1)
+                         + "\n")
     elif a.mode == "warnings":
-        a.out.write_text(json.dumps(warnings(json.loads(a.argv.read_text()), a.arch), indent=1) + "\n")
+        a.out.write_text(json.dumps(warnings(json.loads(a.argv.read_text()), a.arch, a.package), indent=1) + "\n")
     elif a.mode == "verdicts":
-        return verdicts(a.paths)
+        return verdicts(a.paths, a.expect)
     else:
         entries = database(a.commands, a.checkout)
         a.out.write_text(json.dumps(entries, indent=1) + "\n")

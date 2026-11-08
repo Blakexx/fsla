@@ -56,6 +56,8 @@ rola_extension(
     torch = TORCH,
     torch_cuda = TORCH_CUDA,
     shared_libraries = ["@rola_env//:torch_libraries"],
+    #: the unit lints read the units it links
+    visibility = ["//tools:__pkg__"],
     deps = [
         "//csrc/rola:carry_arms",
         "//csrc/rola:registration",
@@ -83,7 +85,7 @@ filegroup(
 #: command for the first ratified architecture (docs/build-graph.md#checks)
 compile_database(
     name = "compile_commands",
-    units = ["//csrc/rola:compiled"],
+    units = [":library"],
 )
 
 #: THE GATE: every check the graph holds (docs/build-graph.md#checks)
@@ -91,6 +93,7 @@ test_suite(
     name = "gate",
     tests = [
         "//tools:commit_checks",
+        "//tools:lint_fixtures",
         "//tools:lints",
     ],
 )

@@ -111,7 +111,7 @@
    "skill": "rola-commit",
    "bash": [
     "^git\\s+(-C\\s+\\S+\\s+)?(commit|push)\\b",
-    "^pre-commit\\b",
+    "^bazel\\s+test\\s+//:gate\\b",
     "^(python3?\\s+)?tools/docrefs\\.py\\b"
    ]
   },

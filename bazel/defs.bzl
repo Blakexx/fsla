@@ -400,8 +400,9 @@ UnitLintInfo = provider(
 #: the compiles the library links: rules_cuda's position-independent object, and rules_cc's
 _COMPILES = ("CudaCompile", "CppCompile")
 
-#: the attributes through which a target carries units
-_CARRIERS = ("srcs", "units")
+#: the attributes through which a target carries units: the library's and a unit's deps, the carry arm set's units --
+#: so the lints read exactly the units the library links
+_CARRIERS = ("deps", "units")
 
 def _unit_lints_impl(target, ctx):
     found = {"device": [], "host": [], "warnings": [], "commands": [], "inputs": []}
@@ -436,7 +437,7 @@ def _unit_lints_impl(target, ctx):
         verdict = ctx.actions.declare_file(stem + ".tidy.json")
         ctx.actions.run(
             executable = ctx.file._python,
-            arguments = [tool.path, "tidy", "--command", command.path, "--clang-tidy", ctx.file._clang_tidy.path, "--config", config.path, "--out", verdict.path],
+            arguments = [tool.path, "tidy", "--command", command.path, "--clang-tidy", ctx.file._clang_tidy.path, "--config", config.path, "--package", target.label.package, "--out", verdict.path],
             inputs = depset([command, tool, config, ctx.file._clang_tidy, ctx.file._cuda_root] + ctx.files._clang_tidy_resources, transitive = [reads]),
             outputs = [verdict],
             mnemonic = "RolaClangTidy",
@@ -449,7 +450,7 @@ def _unit_lints_impl(target, ctx):
             warnings = ctx.actions.declare_file(stem + ".warnings.json")
             ctx.actions.run(
                 executable = ctx.file._python,
-                arguments = [tool.path, "warnings", "--argv", argv.path, "--arch", arch, "--out", warnings.path],
+                arguments = [tool.path, "warnings", "--argv", argv.path, "--arch", arch, "--package", target.label.package, "--out", warnings.path],
                 inputs = depset([argv, tool], transitive = [reads]),
                 outputs = [warnings],
                 mnemonic = "RolaHostWarnings",
@@ -484,26 +485,29 @@ unit_lints = aspect(
 _UNIT_LINT_TEST = """\
 #!/bin/bash
 # the unit lints' verdicts, each unit's for each ratified architecture (bazel/defs.bzl's unit_lint_test)
-exec {python} {tool} verdicts {verdicts}
+exec {python} {tool} verdicts {expect} {verdicts}
 """
 
 def _unit_lint_test_impl(ctx):
     verdicts = depset(transitive = [getattr(unit[UnitLintInfo], ctx.attr.lint) for unit in ctx.attr.units]).to_list()
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
     words = [shell.quote(v.short_path) for v in verdicts]
-    ctx.actions.write(script, _UNIT_LINT_TEST.format(python = shell.quote(ctx.file._python.short_path), tool = shell.quote(ctx.file._tool.short_path), verdicts = " ".join(words)), is_executable = True)
+    expect = " ".join(["--expect " + shell.quote(pattern) for pattern in ctx.attr.expect])
+    ctx.actions.write(script, _UNIT_LINT_TEST.format(python = shell.quote(ctx.file._python.short_path), tool = shell.quote(ctx.file._tool.short_path), expect = expect, verdicts = " ".join(words)), is_executable = True)
     return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = verdicts + [ctx.file._python, ctx.file._tool]))]
 
 unit_lint_test = rule(
     implementation = _unit_lint_test_impl,
     test = True,
     attrs = {
-        "units": attr.label_list(mandatory = True, cfg = _each_ratified_arch, aspects = [unit_lints], doc = "the units, or what carries them"),
+        "units": attr.label_list(mandatory = True, cfg = _each_ratified_arch, aspects = [unit_lints], doc = "the library, or a fixture's unit"),
         "lint": attr.string(mandatory = True, values = ["device", "host", "warnings"], doc = "which verdicts it reads"),
+        "expect": attr.string_list(doc = "a fixture's: the findings (patterns) each of its verdicts holds exactly"),
         "_python": attr.label(default = "@rola_env//:python", allow_single_file = True),
         "_tool": attr.label(default = "//tools:lint/unit_lints.py", allow_single_file = True),
     },
-    doc = "A unit lint over every unit, for each ratified architecture: red on any unit's finding.",
+    doc = "A unit lint over every unit the library links, for each ratified architecture: red on any unit's finding " +
+          "(a fixture's: on any verdict that does not hold exactly the expected findings).",
 )
 
 _DATABASE = """\

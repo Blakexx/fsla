@@ -35,8 +35,8 @@ pandas==3.0.3
 entmax==1.3
 pytest-xdist==3.8.0
 
-# --- [dev] extra: the commit gate's tools, at the versions .pre-commit-config.yaml and CI pin, so the gate runs from
-# this venv and never from a tool the host happens to have ---
+# --- [dev] extra: the commit gate's tools, at the versions CI pins, so the gate runs from this environment and never
+# from a tool the host happens to have ---
 ruff==0.14.10
 pre-commit==4.6.2
 vulture==2.16

@@ -969,9 +969,9 @@ def check_supported_table() -> list[str]:
     -- `tools/supported.py`'s SECOND block, `rola.routing.activations.capability_table`,
     executes real registry code to produce its content, so ITS drift check is a TEST
     (`tests/unit/test_capability_table_docs.py`), not this lint -- a check that
-    executes the code under test is a test, not a lint (docs/testing.md). Importing
-    `rola` here crashed this hook under pre-commit's isolated environment, which has
-    no `rola` installed; this check must be a function of `tools/supported.py`, the
+    executes the code under test is a test, not a lint (docs/testing.md). A lint's run
+    holds no built `rola` (the graph runs it over a copy of the tracked files, which
+    carries no extension); this check must be a function of `tools/supported.py`, the
     README, `arch_caps.cuh` and `tools/manifests/` alone."""
     if str(_TOOLS_DIR) not in sys.path:
         sys.path.insert(0, str(_TOOLS_DIR))
@@ -1404,8 +1404,8 @@ def check_settings_come_from_the_dev_config() -> list[str]:
 
 
 def main() -> int:
-    #: THESE THIRTEEN are wired as a BLOCKING pre-commit/CI gate
-    #: (.pre-commit-config.yaml, .github/workflows/lint.yml) -- a nonzero exit
+    #: THESE THIRTEEN are wired as a BLOCKING commit/CI gate
+    #: (`//tools:lint_standards`, .github/workflows/lint.yml) -- a nonzero exit
     #: here fails every commit and every CI run, repo-wide. `check_entmax_pin`
     #: is NOT here (S5c ITEM 0): it executes real code (`pin.gate()`,
     #: monkeypatched refusal shapes) rather than reading files, so it is

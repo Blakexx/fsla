@@ -28,7 +28,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      # Pins match .pre-commit-config.yaml — one version of each tool, everywhere. rola-devtools carries the dev config
+      # Pins match requirements.lock — one version of each tool, everywhere. rola-devtools carries the dev config
       # reader every tool here imports (tools/devtools.txt).
       - run: pip install clang-format==19.1.7 ruff==0.14.10 -r tools/devtools.txt
       - name: clang-format check (csrc/rola only — third_party is vendored, never formatted)
@@ -51,12 +51,8 @@ jobs:
         run: python3 tools/lint/ast_grep_gate.py --test-fixtures
       - name: lint_standards.py (unroll discipline, arm-TU torch include, barrier-free regions, the docs mirror, no work codes in a mirror page)
         run: python3 tools/lint/lint_standards.py
-      # THE READABILITY AND DEAD-CODE GATES, mirrored from .pre-commit-config.yaml.
-      # Two of them read a compile database and are therefore the CUDA runner's, not
-      # this one's -- stated here, visibly, rather than skipped inside the script:
-      # `unused_instantiations.py` reads the committed manifests and needs no toolchain,
-      # so it runs; `host_warnings.py` and `run_clang_tidy_device.sh` need `nvcc` to
-      # produce a database at all.
+      # THE READABILITY AND DEAD-CODE GATES, the commit gate's (`bazel test //:gate`). The unit lints (clang-tidy's
+      # two profiles, the host warnings) read the build graph's own compile actions and run in the graph alone.
       - name: unused __global__ instantiation check
         run: python3 tools/lint/unused_instantiations.py
       - name: ruff E30x (blank-line spacing, preview)
@@ -84,25 +80,6 @@ jobs:
           python3 tools/lint/constant_parameters.py --test-fixtures
           python3 tools/lint/r9_enforcement.py --test-fixtures
           tools/lint/run_vulture.sh --test-fixtures
-      - name: clang-tidy (host-only TUs)
-        # Blake ruling, 2026-08-28: "pre-commit can never be green by
-        # absence" -- tools/lint/run_clang_tidy.sh no longer skips; with no
-        # compile database to generate one from, it FAILS loudly. THIS job's
-        # runner has no CUDA toolchain at all (see the file header), so it
-        # cannot produce one structurally -- that is a decision about what
-        # THIS WORKFLOW asks for, made HERE, visibly, rather than a skip
-        # hidden inside the script. It exercises for real on a dev machine
-        # after `pip install -e .`, or a future job whose runner carries the
-        # CUDA toolchain.
-        run: |
-          if ! command -v nvcc >/dev/null 2>&1; then
-            echo "clang-tidy (host-only TUs): NOT RUN -- this runner has no CUDA"
-            echo "toolchain, so it cannot produce the compile database this check"
-            echo "reads (tools/lint/run_clang_tidy.sh itself now fails rather than"
-            echo "skips when a database is missing; this job never asks it to try)."
-            exit 0
-          fi
-          tools/lint/run_clang_tidy.sh
 
   cpu-gates:
     # THE GPU-FREE GATES. Each answers a question about the REPOSITORY — is the

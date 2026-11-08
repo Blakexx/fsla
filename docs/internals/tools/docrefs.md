@@ -37,7 +37,7 @@ there. It runs from the checkout's venv, as the commit gate does.
 
 ## The gate and the pass
 
-`verdict` compares the survey to the locks. The gate (`python3 tools/docrefs.py`, a pre-commit hook and a CI step)
+`verdict` compares the survey to the locks. The gate (`python3 tools/docrefs.py`, the commit gate's `//tools:docrefs` and a CI step)
 fails on a reference no pin holds (read it, then `accept` its doc; a reference that resolves to nothing cannot be
 accepted), a pin whose reference no doc makes any more (`prune`), and a broken pin HEAD's lock did not hold, so the
 broken backlog only shrinks. A pinned reference whose target's digest moved or vanished is pending: `pending` prints

@@ -1,6 +1,8 @@
 """THE TREE'S TOOLS AS THE GRAPH'S INPUTS: the pins and records the graph's repositories read, and the generators its
 actions run."""
 
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 load("//bazel:defs.bzl", "checkout_test", "tree_part", "tree_test", "unit_lint_test")
 
 package(default_visibility = ["//visibility:public"])
@@ -201,21 +203,124 @@ unit_lint_test(
     name = "clang_tidy_device",
     size = "large",
     lint = "device",
-    units = ["//csrc/rola:compiled"],
+    units = ["//:library"],
 )
 
 unit_lint_test(
     name = "clang_tidy_host",
     size = "small",
     lint = "host",
-    units = ["//csrc/rola:compiled"],
+    units = ["//:library"],
 )
 
 unit_lint_test(
     name = "host_warnings",
     size = "small",
     lint = "warnings",
-    units = ["//csrc/rola:compiled"],
+    units = ["//:library"],
+)
+
+#: THE LINTS' FIXTURES (docs/internals/tools/lint.md#fixtures): each lint fires on its own fixture's must-fire case and
+#: stays quiet on the rest -- the Python lints' own self-tests, and the unit lints' fixtures linted as units
+
+tree_test(
+    name = "ast_grep_fixtures",
+    size = "small",
+    cmd = ["python3", "tools/lint/ast_grep_gate.py", "--test-fixtures"],
+    data = [
+        ":lint",
+        "//:sgconfig.yml",
+    ],
+)
+
+tree_test(
+    name = "constant_parameters_fixtures",
+    size = "small",
+    cmd = ["python3", "tools/lint/constant_parameters.py", "--test-fixtures"],
+    #: its self-test runs the real scan too: no fixture leaks into it
+    data = [
+        ":lint",
+        "//:tree_python",
+    ],
+)
+
+tree_test(
+    name = "drift_guards_fixtures",
+    size = "small",
+    cmd = ["python3", "tools/lint/drift_guards.py", "--test-fixtures"],
+    data = [":lint"],
+)
+
+tree_test(
+    name = "r9_enforcement_fixtures",
+    size = "small",
+    cmd = ["python3", "tools/lint/r9_enforcement.py", "--test-fixtures"],
+    data = [":lint"],
+)
+
+tree_test(
+    name = "readability_spacing_fixtures",
+    size = "small",
+    cmd = ["python3", "tools/lint/readability_spacing.py", "--test-fixtures"],
+    data = [":lint"],
+)
+
+tree_test(
+    name = "unused_instantiations_fixtures",
+    size = "small",
+    cmd = ["python3", "tools/lint/unused_instantiations.py", "--test-fixtures"],
+    data = [":lint"],
+)
+
+tree_test(
+    name = "vulture_fixtures",
+    size = "small",
+    cmd = ["tools/lint/run_vulture.sh", "--test-fixtures"],
+    data = [":lint"],
+)
+
+cuda_library(
+    name = "fixture_device_unit",
+    srcs = ["lint/fixtures/device_lint_unused_param.cu"],
+)
+
+cc_library(
+    name = "fixture_host_unit",
+    srcs = ["lint/fixtures/host_warnings_unused_param.cpp"],
+)
+
+unit_lint_test(
+    name = "clang_tidy_device_fixtures",
+    size = "small",
+    expect = [
+        "'unused_param' is unused \\[misc-unused-parameters\\]",
+        "Value stored to 'twice' is never read \\[clang-analyzer-deadcode.DeadStores\\]",
+    ],
+    lint = "device",
+    units = [":fixture_device_unit"],
+)
+
+unit_lint_test(
+    name = "host_warnings_fixtures",
+    size = "small",
+    expect = ["unused parameter .unused_param. \\[-Wunused-parameter\\]"],
+    lint = "warnings",
+    units = [":fixture_host_unit"],
+)
+
+test_suite(
+    name = "lint_fixtures",
+    tests = [
+        ":ast_grep_fixtures",
+        ":clang_tidy_device_fixtures",
+        ":constant_parameters_fixtures",
+        ":drift_guards_fixtures",
+        ":host_warnings_fixtures",
+        ":r9_enforcement_fixtures",
+        ":readability_spacing_fixtures",
+        ":unused_instantiations_fixtures",
+        ":vulture_fixtures",
+    ],
 )
 
 #: THE CHECKS OF THE COMMIT, run in the checkout: what git knows

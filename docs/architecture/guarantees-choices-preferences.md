@@ -114,7 +114,7 @@ uncertainty in the performance record.
   `docs/internals/DELETIONS.md`.
 - **Linear, single-purpose commits on `master`.**
 - **`csrc/rola` is formatted once, mechanically** (clang-format, pinned, Google
-  base, 100 columns, comment reflow off), enforced by pre-commit and CI so that
+  base, 100 columns, comment reflow off), enforced by the commit gate and CI so that
   every later diff is content.
 - **Names follow the architectural mental model** — the reduction-theorem
   vocabulary — rather than implementation history.

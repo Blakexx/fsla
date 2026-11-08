@@ -208,10 +208,13 @@ _cuda_tools_repo = repository_rule(
 def _tree_impl(rctx):
     root = str(rctx.workspace_root)
     git = rctx.which("git")
-    index = rctx.execute([git, "-C", root, "rev-parse", "--path-format=absolute", "--git-path", "index"]).stdout.strip()
+    #: the commit gate's tree is the commit's index (a partial commit's is not the checkout's): the hook hands it in
+    index_file = rctx.getenv("GIT_INDEX_FILE")
+    env = {"GIT_INDEX_FILE": index_file} if index_file else {}
+    index = rctx.execute([git, "-C", root, "rev-parse", "--path-format=absolute", "--git-path", "index"], environment = env).stdout.strip()
     #: re-read when the index moves: a file added, removed or staged
     rctx.watch(index)
-    listed = rctx.execute([git, "-C", root, "ls-files", "-z"])
+    listed = rctx.execute([git, "-C", root, "ls-files", "-z"], environment = env)
     if listed.return_code != 0:
         fail("git ls-files failed in %s: %s" % (root, listed.stderr))
     files = [f for f in listed.stdout.split("\0") if f]

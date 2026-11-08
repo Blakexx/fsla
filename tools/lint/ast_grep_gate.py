@@ -6,7 +6,7 @@
 **THE BUG THIS REPLACES.** `sgconfig.yml`'s rules each carry `files:
 [csrc/**, tools/lint/fixtures/**]` -- the fixtures glob is there so the rule's
 own must-fire fixture is reachable at all, per rule, without a second config
-file. But `.pre-commit-config.yaml` invoked `ast-grep scan --config
+file. But the commit gate's hook invoked `ast-grep scan --config
 sgconfig.yml` with NO path argument, which defaults to the whole repo -- so
 every commit re-triggered every fixture's deliberate violation as a gating
 error. `docs/build.md`'s OWN documented invocation already said `... csrc/`;

@@ -35,9 +35,9 @@ arches "built" means.
 
 **WIRING.** Run this after `tools/ratify.py`'s own census (`--census`), same
 convention: a compile-only gate, no GPU, no `flock`. `docs/build.md`'s
-"Standards lint" section is where the pre-commit-wired checks are listed;
-add this file's invocation there alongside `lint_standards.py` and
-`run_clang_tidy.sh` when it graduates from stage gate to a wired check.
+"Standards lint" section is where the commit gate's checks are listed;
+add this file there, and to the graph's lints, when it graduates from stage
+gate to a wired check.
 
 Usage (no GPU required -- compile + disassemble only):
 
