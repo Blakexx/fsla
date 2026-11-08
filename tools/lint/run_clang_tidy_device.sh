@@ -16,8 +16,8 @@ CUDA_PATH="$(python3 "$ROOT/tools/dev.py" get cuda-home)"
 CLANG_TIDY="$(python3 "$ROOT/tools/dev.py" get toolchain.clang_tidy)"
 CONFIG="$ROOT/tools/lint/clang-tidy-device.yaml"
 #: THE ANALYZER WITHOUT INLINING: the profile's one analyzer check, deadcode.DeadStores, reads each function's own
-#: liveness, so inlining callees adds nothing to it -- and it was most of the lint's time (entmax/factor.cu 389 s with,
-#: 69 s without, the same findings; measured 2026-11-07). The self-test below proves a planted dead store still fires.
+#: liveness, so inlining callees adds nothing to it but time. The self-test proves a planted dead store fires.
+#: -- see docs/internals/tools/lint.md#device-profile
 ANALYZER_ARGS=(--extra-arg=-Xclang --extra-arg=-analyzer-config --extra-arg=-Xclang --extra-arg=ipa=none)
 if [[ -z "$CLANG_TIDY" || "$CLANG_TIDY" == "None" || ! -x "$CLANG_TIDY" ]]; then
   echo "run_clang_tidy_device.sh: FAILED -- no pinned clang-tidy (toolchain.clang_tidy); \`python tools/dev.py init\`" >&2
@@ -100,7 +100,8 @@ fi
 OUT_DIR="$(mktemp -d)"
 trap 'rm -rf "$OUT_DIR"' EXIT
 
-#: THE LINT'S ONE BUILD: `--cuda-host-only` is the host pass, where every carried build is in the image
+#: THE LINT'S ONE BUILD (docs/internals/tools/lint.md#device-profile): `--cuda-host-only` is the host pass, where every
+#: carried build is in the image
 #: (`common/select.cuh`'s `in_image`), so each `build_switch` would instantiate every kernel once a carried build; the
 #: lint reads the build set of its one architecture, ahead of the generated one.
 mkdir -p "$OUT_DIR/builds"

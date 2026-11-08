@@ -124,10 +124,18 @@ tools/lint/run_clang_tidy.sh                # .clang-tidy on every host .cpp
 tools/lint/run_clang_tidy_device.sh         # clang-tidy-device.yaml on every device unit the build compiles
 ```
 
-The device profile runs clang's CUDA frontend `--cuda-host-only` with the toolkit's `include/cccl` root added (nvcc adds
+<a id="device-profile"></a>The device profile runs clang's CUDA frontend `--cuda-host-only` with the toolkit's `include/cccl` root added (nvcc adds
 it implicitly; clang does not), and a compiler error anywhere fails it: the parse is part of the gate, which is why the
 analyzer is pinned (a distro clang could not parse a torch-bearing unit and reported used parameters as unused). Both
 profiles were validated against planted findings, so a clean pass is the tool running, not an inert config.
+
+Two settings keep a unit's time on its own code. THE ANALYZER RUNS WITHOUT INLINING (`-analyzer-config ipa=none`): the
+profile's one analyzer check, `deadcode.DeadStores`, reads each function's own liveness, so inlining callees adds
+nothing to it -- it was ~80% of a template-heavy unit's time (`entmax/factor.cu`: 69 s without, 389 s with, the same
+findings), and the self-test's fixture plants a dead store the check must still find. THE LINT READS ITS ONE
+ARCHITECTURE'S BUILD SET: the host pass has every carried build in the image (`common/select.cuh`'s `in_image`), so a
+`build_switch` would instantiate every kernel once a carried build; the lint writes `measure/hardware.py`'s
+`builds_header` for its one architecture and puts it ahead of the generated one.
 
 ## Fixtures
 

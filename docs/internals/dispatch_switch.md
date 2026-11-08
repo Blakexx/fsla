@@ -48,8 +48,9 @@ int_switch<2, 4, 8, 16, 32, 64, 128, 256>(
     });
 ```
 
-(`entmax.cu`'s `launch_forward`; `launch_backward` and `factor.cu`'s four launchers
-follow the same shape.)
+(`entmax.cu`'s `launch_forward_at<Bt, ...>`, the kernel at the build tag `Bt`; `launch_backward_at` and `factor.cu`'s
+four launchers follow the same shape. Each `launch_*` above them is the one branch to the card's build,
+`build_switch`, outside every launch: [`common/select.md#build-switch`](common/select.md#build-switch).)
 
 **Uniqueness of the launch text is the property this file exists to hold.**
 `entmax.cu`'s forward launch takes FIFTEEN arguments across thirty-two selectable
