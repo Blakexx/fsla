@@ -68,6 +68,8 @@ device_lane(
     cmd = [
         "python3",
         "tools/sanitize_oracle.py",
+        "--sanitizer",
+        "{compute-sanitizer}",
     ],
     data = [
         "//:library",

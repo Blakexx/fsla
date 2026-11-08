@@ -77,7 +77,7 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 
 | tool | what it is | called by | writes |
 |---|---|---|---|
-| `sanitize_oracle.py` | the compute-sanitizer gate on the facts, intra, decode, producer and entmax oracle cells | a person, in the sanitizer lane | — |
+| `sanitize_oracle.py` | the compute-sanitizer gate on the facts, intra, decode, producer and entmax oracle cells | the sanitizer lane, `//tests:sanitizer`, which passes it the toolkit's own compute-sanitizer | — |
 | `sanitize_cell.py` | one cell, one launch, no test framework — the racecheck lane's driver | `sanitize_oracle.py` | — |
 | [`docrefs.py`](docrefs.md) | every citation a doc makes, pinned to the content it was read against | the commit gate | `docs/references.lock.json` |
 

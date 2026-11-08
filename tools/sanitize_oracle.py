@@ -18,8 +18,9 @@ ran, ad hoc, on paging -- K39 card) against ONE named oracle cell per family
 `compute-sanitizer`-wrapped pytest process so a hang or an error in one tool
 cannot block another, under the GPU lock every campaign shares.
 
-Usage:
-    python tools/sanitize_oracle.py [--tool TOOL ...] [--family FAMILY ...]
+Usage (the lane is the build graph's, which passes the toolkit's own compute-sanitizer):
+    bazel test //tests:sanitizer [--test_arg=--tool --test_arg=TOOL ...] [--test_arg=--family --test_arg=FAMILY ...]
+    python tools/sanitize_oracle.py --sanitizer PATH [--tool TOOL ...] [--family FAMILY ...]
         [--timeout SECONDS]
 
 Invoked BARE: this script takes `gpu_lock()` itself, once, for the whole
@@ -275,12 +276,12 @@ def adjudicate(decl: AssertedRaces, out: str) -> tuple[bool, str]:
                   f"{decl.source}, {sorted(decl.hazard_types)} only).")
 
 
-def run_one(python: str, family: str, tool: str, timeout: int) -> tuple[bool, str]:
+def run_one(sanitizer: str, python: str, family: str, tool: str, timeout: int) -> tuple[bool, str]:
     row = _FAMILIES[family]
     driver = tool == "racecheck" and row.racecheck_driver
     payload = [python, *row.racecheck_driver] if driver else [
         python, "-m", "pytest", row.test, "-x", "-q"]
-    cmd = ["compute-sanitizer", f"--tool={tool}", "--error-exitcode=1", *payload]
+    cmd = [sanitizer, f"--tool={tool}", "--error-exitcode=1", *payload]
     #: ITS OWN SESSION, killed whole on a timeout: compute-sanitizer runs the target under a subreaper, so killing the
     #: direct child left the target running on the GPU under the next pair's lock.
     proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -339,6 +340,9 @@ def main() -> int:
     ap.add_argument("--family", action="append", choices=tuple(_FAMILY_TESTS), default=None)
     ap.add_argument("--timeout", type=int, default=600)
     ap.add_argument("--python", default=sys.executable)
+    #: the toolkit's own, never whichever is first on PATH: the lane reads the library with the release that built it
+    ap.add_argument("--sanitizer", required=True,
+                    help="the compute-sanitizer binary; `bazel test //tests:sanitizer` passes the toolkit's own")
     args = ap.parse_args()
 
     tools = args.tool or list(_DEFAULT_TOOLS)
@@ -370,7 +374,7 @@ def main() -> int:
                         absent.append((family, tool))
                     continue
                 print(f"RUN  {family}/{tool} ({row.test}) ...", flush=True)
-                ok, tail = run_one(args.python, family, tool, args.timeout)
+                ok, tail = run_one(args.sanitizer, args.python, family, tool, args.timeout)
                 declared = (family, tool) in ASSERTED
                 status = ("DECLARED" if declared else "CLEAN") if ok else "FAIL"
                 print(f"{status} {family}/{tool}")
