@@ -69,7 +69,6 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 | [`budgets/`](budgets.md) | each kernel's instruction budget by class, per MMA (KERNEL_STANDARDS §29) | `region_ledger.py`, the lab | — |
 | [`bank_model.py`](bank_model.md) | the shared-memory wavefronts a warp instruction costs, from its lanes' byte addresses (§30) | a person, before a GPU run; the lab | — |
 | [`lab.py`](lab.md) | the lab: small SASS-gated CUDA experiments whose measurements become kernel rules ([`docs/lab/`](../../lab/README.md)) | a person | `measure/lab/results/` |
-| `nvbit/warp_trace/` | an NVBit tool: every dynamic instruction of one CTA's warps to a file | a person, tracing a schedule | the trace |
 
 ## The oracle's own gates
 
