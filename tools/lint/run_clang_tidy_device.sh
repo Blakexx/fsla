@@ -79,12 +79,18 @@ fi
 
 ARCH="$(python3 -c "from rola_cu13._build_config import BUILD_CONFIG as c; print(c['archs'][0].replace('sm_',''))" 2>/dev/null || echo 80)"
 
-total_real=0
-total_errors=0
-for src_from_db in $unit_files; do
-  rel="${src_from_db#*/csrc/}"
-  target="$ROOT/csrc/$rel"
-  [[ -f "$target" ]] || { echo "run_clang_tidy_device.sh: $target missing, skipping" >&2; continue; }
+#: THE UNITS RUN SIDE BY SIDE, as many at once as the host budget has slots (each still takes its own slot, so a
+#: compile or another lint holding slots is queued behind, never oversubscribed); each unit's report lands in its own
+#: files and is printed in unit order once all are done.
+SLOTS="$(python3 -c 'from rola_devtools.locks.host import budget_slots; print(budget_slots())' 2>/dev/null || echo 1)"
+OUT_DIR="$(mktemp -d)"
+trap 'rm -rf "$OUT_DIR"' EXIT
+
+lint_unit() {
+  local i="$1" src_from_db="$2" started=$SECONDS
+  local rel="${src_from_db#*/csrc/}"
+  local target="$ROOT/csrc/$rel"
+  [[ -f "$target" ]] || { echo "run_clang_tidy_device.sh: $target missing, skipping" >&2; return; }
 
   flags=$(python3 - "$CC_JSON" "$src_from_db" "$ROOT" "$ARCH" "$CUDA_PATH" << 'PYEOF'
 import json, shlex, sys
@@ -123,23 +129,37 @@ print(" ".join(shlex.quote(x) for x in out))
 PYEOF
 )
 
-  echo "== device clang-tidy: ${target#"$ROOT"/} (sm_$ARCH) =="
+  echo "== device clang-tidy: ${target#"$ROOT"/} (sm_$ARCH) ==" > "$OUT_DIR/$i.head"
   # LOCKS brief item 1: one host-compute-budget slot per translation unit --
   # a `clang-tidy --cuda-host-only` pass is a full front-end parse per TU, as
   # CPU-heavy as a `cicc` compile, and previously drew from no shared pool at
   # all.
   # shellcheck disable=SC2086
+  local out
   out=$(python3 -m rola_devtools.locks.host --slots 1 --label clang-tidy-tu -- \
           "$CLANG_TIDY" "$target" --config-file="$CONFIG" --header-filter='csrc/rola/.*' \
           -- $flags -ferror-limit=0 2>&1)
-  real=$(echo "$out" | grep -E '^/.*csrc/rola/.*: warning: ' || true)
-  errors=$(echo "$out" | grep -E ': (fatal )?error: ' || true)
-  real_n=$(printf '%s\n' "$real" | grep -c . || true)
-  errors_n=$(printf '%s\n' "$errors" | grep -c . || true)
-  if [[ -n "$real" ]]; then echo "$real"; fi
-  if [[ -n "$errors" ]]; then echo "$errors"; fi
-  total_real=$((total_real + real_n))
-  total_errors=$((total_errors + errors_n))
+  echo "$out" | grep -E '^/.*csrc/rola/.*: warning: ' > "$OUT_DIR/$i.real" || true
+  echo "$out" | grep -E ': (fatal )?error: ' > "$OUT_DIR/$i.errors" || true
+  echo "   $((SECONDS - started)) s" >> "$OUT_DIR/$i.head"
+}
+
+n=0
+for src_from_db in $unit_files; do
+  while (( $(jobs -rp | wc -l) >= SLOTS )); do wait -n; done
+  lint_unit "$n" "$src_from_db" &
+  n=$((n + 1))
+done
+wait
+
+total_real=0
+total_errors=0
+for ((i = 0; i < n; i++)); do
+  [[ -f "$OUT_DIR/$i.head" ]] || continue
+  cat "$OUT_DIR/$i.head"
+  cat "$OUT_DIR/$i.real" "$OUT_DIR/$i.errors"
+  total_real=$((total_real + $(grep -c . "$OUT_DIR/$i.real" || true)))
+  total_errors=$((total_errors + $(grep -c . "$OUT_DIR/$i.errors" || true)))
 done
 
 echo "---"
