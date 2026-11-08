@@ -94,7 +94,7 @@ def test_decode_is_blind_to_prefill_bc(widths):
         # COULD have run at and asserts, as before, that there is no channel
         # through which it could reach the frozen carrier. `derive_decode_geometry`
         # is called inside the loop for exactly that reason: it must be a pure
-        # function of the topology, `d_v`, `decay` and the device.
+        # function of the topology, `d_v` and `decay`.
         assert BC in _BCS
         config = derive_decode_geometry(topology, d_v=d_v, decay=False)
         configs.append(config)
@@ -104,7 +104,7 @@ def test_decode_is_blind_to_prefill_bc(widths):
 
     assert configs[0] == configs[1] == configs[2], (
         "the frozen carrier moved with the prefill's BC; it must be a pure function of "
-        "the topology, `d_v`, `decay` and the device")
+        "the topology, `d_v` and `decay`")
     for BC, (y, state) in zip(_BCS[1:], results[1:]):
         assert_reordered_close(y, results[0][0], f"decode's y at prefill BC={BC}")
         assert bytes_equal(results[0][1], state), (

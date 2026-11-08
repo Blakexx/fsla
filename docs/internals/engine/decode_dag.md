@@ -101,7 +101,7 @@ carry instead, never a launch-shape one
 ([`decode.md#bc-absent`](../decode/decode.md#bc-absent)).
 
 It is `DecodePlan`'s CONFIG HALF rather than a field of it, because the memo key is over
-this alone: `geometry` is declared `pure_of` `(widths, d_v, has_decay, BH, device, write_dense)` (`write_dense` off the
+this alone: `geometry` is declared `pure_of` `(widths, d_v, has_decay, write_dense)` (`write_dense` off the
 bundle's `sparse` flag, `docs/api.md` §2.1) and
 the terminal facts beside it — the folded amplitudes, the plane, the verdict buffers —
 are per-call and never cached.

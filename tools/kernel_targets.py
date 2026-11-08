@@ -24,10 +24,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def schedule_sources(kernel: str) -> tuple[str, ...]:
-    """A kernel's schedule files, derived from the tree: every header of `csrc/rola/src/<kernel>/ampere/`, so a file a
-    schedule gains is read by the instruments without a list to keep."""
-    return tuple(sorted(f"csrc/rola/src/{kernel}/ampere/{p.name}"
-                        for p in (ROOT / "csrc/rola/src" / kernel / "ampere").glob("*.cuh")))
+    """A kernel's schedule files, derived from the tree: its kernel file `<kernel>_kernel.cuh` FIRST (the instruments
+    read the first source as the kernel's own), then every other header of `csrc/rola/src/<kernel>/ampere/` in order,
+    so a file a schedule gains is read without a list to keep."""
+    folder = ROOT / "csrc/rola/src" / kernel / "ampere"
+    own = f"{kernel}_kernel.cuh"
+    if not (folder / own).is_file():
+        raise SystemExit(f"{folder}: no {own}, the kernel file the instruments read first")
+    rest = sorted(p.name for p in folder.glob("*.cuh") if p.name != own)
+    return tuple(f"csrc/rola/src/{kernel}/ampere/{name}" for name in (own, *rest))
 
 
 @dataclass(frozen=True)
