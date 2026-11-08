@@ -140,7 +140,7 @@ __device__ __forceinline__ float bf16_bits_to_float(unsigned short x) {
   return *reinterpret_cast<const float*>(&w);
 }
 
-//: THE ARCHETYPAL SELECTING ENTRY. Every implementation satisfies ONE contract: -- see docs/internals/common/atoms/math.md#mul-bf16x2
+//: THE ARCHETYPAL INSTRUCTION-SELECTED ENTRY. Every implementation satisfies ONE contract: -- see docs/internals/common/atoms/math.md#mul-bf16x2
 template <bool Simd = arch::kCaps.bf16_simd_arith, bool Fma = arch::kCaps.bf16_simd_fma>
 __device__ __forceinline__ uint32_t mul_bf16x2(uint32_t a, uint32_t b) {
   static_assert(Simd <= arch::kCaps.bf16_simd_arith,

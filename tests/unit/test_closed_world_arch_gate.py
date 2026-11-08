@@ -8,8 +8,8 @@ not present then; it is enforced in C++ by a pair of clauses, and this file gate
 the pair is intact.
 
 **THE PAIR.** The compile-time half is ``csrc/rola/src/common/arch_caps.cuh``'s
-``static_assert(tabulated(kArch))``, which fixes the capability row every arm's staging
-depth, CTA target and shared-memory fit was DERIVED from. The runtime half is
+``static_assert(tabulated(kArch))``, which fixes the capability row every plan's sizes are
+DERIVED from (its shared memory, its registers). The runtime half is
 ``check_arch_table()``, which refuses -- on the first launch, per device -- an
 architecture the table has no row for, or a row the driver disagrees with. Neither half
 can substitute for the other: a derivation is only as good as the facts it was closed

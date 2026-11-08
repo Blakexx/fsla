@@ -8,21 +8,14 @@ namespace arch {
 
 struct Caps {
   int cc;  // compute capability x10, e.g. 860
-  // INSTRUCTION
   bool bf16_cvt_packed;  // two fp32 -> one b32 of two bf16, one instruction
   bool reg_transpose_b16;  // an 8x8 b16 tile spread across the MMA unit's own registers is transposed IN PLACE. see docs/internals/common/arch_caps.md#reg-transpose-b16
   bool bf16_simd_arith;  // elementwise bf16 arithmetic on a packed pair (`mul.rn.bf16x2`). see docs/internals/common/arch_caps.md#bf16-simd-arith
   bool bf16_simd_fma;  // FUSED elementwise bf16 arithmetic on a packed pair (`fma.rn.bf16x2`). see docs/internals/common/arch_caps.md#bf16-simd-fma
-  // FACT
   int smem_per_sm;  // `cudaDevAttrMaxSharedMemoryPerMultiprocessor`
   int smem_per_cta_max;  // opt-in dynamic maximum, one CTA
-  int smem_granularity;  // shared-memory allocation quantum, bytes
   int regs_per_sm;
-  int regs_per_lane_max;
-  int reg_alloc_unit;  // registers allocated per warp, in units of this
   int max_threads_per_sm;
-  int max_ctas_per_sm;
-  int driver_smem_reserve;  // per-CTA reserve the driver takes off the top; the residency condition is on smem_per_cta + ... see docs/internals/common/arch_caps.md#driver-smem-reserve
 };
 
 //: THE TABULATED SET -- see docs/internals/common/arch_caps.md#tabulated
@@ -33,31 +26,26 @@ constexpr bool tabulated(int cc) {
 constexpr Caps caps_of(int cc) {
   if (cc == 800)
     return Caps{.cc = 800, .bf16_cvt_packed = true, .reg_transpose_b16 = true, .bf16_simd_arith = false,
-                .bf16_simd_fma = true, .smem_per_sm = 167936, .smem_per_cta_max = 166912, .smem_granularity = 128,
-                .regs_per_sm = 65536, .regs_per_lane_max = 255, .reg_alloc_unit = 256, .max_threads_per_sm = 2048,
-                .max_ctas_per_sm = 32, .driver_smem_reserve = 1024};
+                .bf16_simd_fma = true, .smem_per_sm = 167936, .smem_per_cta_max = 166912, .regs_per_sm = 65536,
+                .max_threads_per_sm = 2048};
   // sm_86: local dev (GA102)
   if (cc == 860)
     return Caps{.cc = 860, .bf16_cvt_packed = true, .reg_transpose_b16 = true, .bf16_simd_arith = false,
-                .bf16_simd_fma = true, .smem_per_sm = 102400, .smem_per_cta_max = 101376, .smem_granularity = 128,
-                .regs_per_sm = 65536, .regs_per_lane_max = 255, .reg_alloc_unit = 256, .max_threads_per_sm = 1536,
-                .max_ctas_per_sm = 16, .driver_smem_reserve = 1024};
+                .bf16_simd_fma = true, .smem_per_sm = 102400, .smem_per_cta_max = 101376, .regs_per_sm = 65536,
+                .max_threads_per_sm = 1536};
   if (cc == 870)
     return Caps{.cc = 870, .bf16_cvt_packed = true, .reg_transpose_b16 = true, .bf16_simd_arith = false,
-                .bf16_simd_fma = true, .smem_per_sm = 167936, .smem_per_cta_max = 166912, .smem_granularity = 128,
-                .regs_per_sm = 65536, .regs_per_lane_max = 255, .reg_alloc_unit = 256, .max_threads_per_sm = 1536,
-                .max_ctas_per_sm = 16, .driver_smem_reserve = 1024};
+                .bf16_simd_fma = true, .smem_per_sm = 167936, .smem_per_cta_max = 166912, .regs_per_sm = 65536,
+                .max_threads_per_sm = 1536};
   if (cc == 890)
     return Caps{.cc = 890, .bf16_cvt_packed = true, .reg_transpose_b16 = true, .bf16_simd_arith = false,
-                .bf16_simd_fma = true, .smem_per_sm = 102400, .smem_per_cta_max = 101376, .smem_granularity = 128,
-                .regs_per_sm = 65536, .regs_per_lane_max = 255, .reg_alloc_unit = 256, .max_threads_per_sm = 1536,
-                .max_ctas_per_sm = 24, .driver_smem_reserve = 1024};
+                .bf16_simd_fma = true, .smem_per_sm = 102400, .smem_per_cta_max = 101376, .regs_per_sm = 65536,
+                .max_threads_per_sm = 1536};
   // sm_90: TABULATED, NOT BUILT; see docs/internals/common/arch_caps.md#caps-of-note-l147
   if (cc == 900)
     return Caps{.cc = 900, .bf16_cvt_packed = true, .reg_transpose_b16 = true, .bf16_simd_arith = true,
-                .bf16_simd_fma = true, .smem_per_sm = 233472, .smem_per_cta_max = 232448, .smem_granularity = 128,
-                .regs_per_sm = 65536, .regs_per_lane_max = 255, .reg_alloc_unit = 256, .max_threads_per_sm = 2048,
-                .max_ctas_per_sm = 32, .driver_smem_reserve = 1024};
+                .bf16_simd_fma = true, .smem_per_sm = 233472, .smem_per_cta_max = 232448, .regs_per_sm = 65536,
+                .max_threads_per_sm = 2048};
   return Caps{};
 }
 

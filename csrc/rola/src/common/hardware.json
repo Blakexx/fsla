@@ -14,19 +14,14 @@
       {"name": "bf16_simd_fma", "type": "bool", "kind": "INSTRUCTION", "doc": "FUSED elementwise bf16 arithmetic on a packed pair (`fma.rn.bf16x2`). see docs/internals/common/arch_caps.md#bf16-simd-fma"},
       {"name": "smem_per_sm", "type": "int", "kind": "FACT", "doc": "`cudaDevAttrMaxSharedMemoryPerMultiprocessor`"},
       {"name": "smem_per_cta_max", "type": "int", "kind": "FACT", "doc": "opt-in dynamic maximum, one CTA"},
-      {"name": "smem_granularity", "type": "int", "kind": "FACT", "doc": "shared-memory allocation quantum, bytes"},
       {"name": "regs_per_sm", "type": "int", "kind": "FACT", "doc": ""},
-      {"name": "regs_per_lane_max", "type": "int", "kind": "FACT", "doc": ""},
-      {"name": "reg_alloc_unit", "type": "int", "kind": "FACT", "doc": "registers allocated per warp, in units of this"},
-      {"name": "max_threads_per_sm", "type": "int", "kind": "FACT", "doc": ""},
-      {"name": "max_ctas_per_sm", "type": "int", "kind": "FACT", "doc": ""},
-      {"name": "driver_smem_reserve", "type": "int", "kind": "FACT", "doc": "per-CTA reserve the driver takes off the top; the residency condition is on smem_per_cta + ... see docs/internals/common/arch_caps.md#driver-smem-reserve"}
+      {"name": "max_threads_per_sm", "type": "int", "kind": "FACT", "doc": ""}
     ]
   },
   "arch": {
     "sm_80": {
       "build": {"family": "ampere", "window": 1024},
-      "caps": {"bf16_cvt_packed": true, "reg_transpose_b16": true, "bf16_simd_arith": false, "bf16_simd_fma": true, "smem_per_sm": 167936, "smem_per_cta_max": 166912, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 2048, "max_ctas_per_sm": 32, "driver_smem_reserve": 1024},
+      "caps": {"bf16_cvt_packed": true, "reg_transpose_b16": true, "bf16_simd_arith": false, "bf16_simd_fma": true, "smem_per_sm": 167936, "smem_per_cta_max": 166912, "regs_per_sm": 65536, "max_threads_per_sm": 2048},
       "rates": {
         "schedulers": {"cycles": 4, "documented": "CUDA C++ Programming Guide, compute capability 8.x: four warp schedulers an SM"},
         "issue": {"cycles": 1, "documented": "CUDA C++ Programming Guide, compute capability 8.x: a scheduler issues one instruction a clock"},
@@ -63,7 +58,7 @@
     "sm_86": {
       "build": {"family": "ampere", "window": 512},
       "note": "local dev (GA102)",
-      "caps": {"bf16_cvt_packed": true, "reg_transpose_b16": true, "bf16_simd_arith": false, "bf16_simd_fma": true, "smem_per_sm": 102400, "smem_per_cta_max": 101376, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 1536, "max_ctas_per_sm": 16, "driver_smem_reserve": 1024},
+      "caps": {"bf16_cvt_packed": true, "reg_transpose_b16": true, "bf16_simd_arith": false, "bf16_simd_fma": true, "smem_per_sm": 102400, "smem_per_cta_max": 101376, "regs_per_sm": 65536, "max_threads_per_sm": 1536},
       "rates": {
         "schedulers": {"cycles": 4, "documented": "CUDA C++ Programming Guide, compute capability 8.x: four warp schedulers an SM"},
         "issue": {"cycles": 1, "documented": "CUDA C++ Programming Guide, compute capability 8.x: a scheduler issues one instruction a clock"},
@@ -105,16 +100,16 @@
     },
     "sm_87": {
       "build": {"family": "ampere", "window": 512},
-      "caps": {"bf16_cvt_packed": true, "reg_transpose_b16": true, "bf16_simd_arith": false, "bf16_simd_fma": true, "smem_per_sm": 167936, "smem_per_cta_max": 166912, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 1536, "max_ctas_per_sm": 16, "driver_smem_reserve": 1024}
+      "caps": {"bf16_cvt_packed": true, "reg_transpose_b16": true, "bf16_simd_arith": false, "bf16_simd_fma": true, "smem_per_sm": 167936, "smem_per_cta_max": 166912, "regs_per_sm": 65536, "max_threads_per_sm": 1536}
     },
     "sm_89": {
       "build": {"family": "ampere", "window": 512},
-      "caps": {"bf16_cvt_packed": true, "reg_transpose_b16": true, "bf16_simd_arith": false, "bf16_simd_fma": true, "smem_per_sm": 102400, "smem_per_cta_max": 101376, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 1536, "max_ctas_per_sm": 24, "driver_smem_reserve": 1024}
+      "caps": {"bf16_cvt_packed": true, "reg_transpose_b16": true, "bf16_simd_arith": false, "bf16_simd_fma": true, "smem_per_sm": 102400, "smem_per_cta_max": 101376, "regs_per_sm": 65536, "max_threads_per_sm": 1536}
     },
     "sm_90": {
       "build": {"family": "hopper"},
       "note": "TABULATED, NOT BUILT; see docs/internals/common/arch_caps.md#caps-of-note-l147",
-      "caps": {"bf16_cvt_packed": true, "reg_transpose_b16": true, "bf16_simd_arith": true, "bf16_simd_fma": true, "smem_per_sm": 233472, "smem_per_cta_max": 232448, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 2048, "max_ctas_per_sm": 32, "driver_smem_reserve": 1024}
+      "caps": {"bf16_cvt_packed": true, "reg_transpose_b16": true, "bf16_simd_arith": true, "bf16_simd_fma": true, "smem_per_sm": 233472, "smem_per_cta_max": 232448, "regs_per_sm": 65536, "max_threads_per_sm": 2048}
     }
   },
   "product": {

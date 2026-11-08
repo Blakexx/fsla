@@ -18,12 +18,11 @@ empty row (`tabulated` refuses it first).
 | <a id="reg-transpose-b16"></a>`reg_transpose_b16` | INSTRUCTION | an 8x8 b16 tile spread across the MMA unit's own registers is transposed IN PLACE. A contraction over the accumulator's own m axis puts the accumulator on the k side, and the accumulator map and the k-side map differ by exactly this transpose. |
 | <a id="bf16-simd-arith"></a>`bf16_simd_arith` | INSTRUCTION | `mul.rn.bf16x2`. ptxas rejects it below sm_90 (measured 2026-08-09): Ampere has bf16 conversion and bf16 MMA but no bf16 SIMD multiply, so the product costs 1 FMUL + 1/2 pack an element there against ~1/2 instruction on sm_90 -- the archetypal flag |
 | <a id="bf16-simd-fma"></a>`bf16_simd_fma` | INSTRUCTION | `fma.rn.bf16x2`, available at sm_80 (measured 2026-08-28): a product is one instruction through a `-0.0` addend, bit-identical to `mul.rn.bf16x2` (one rounding of the exact product; the addend's sign keeps a signed zero) |
-| `smem_per_sm`, `smem_per_cta_max`, `smem_granularity`, `regs_per_sm`, `regs_per_lane_max`, `reg_alloc_unit`, `max_threads_per_sm`, `max_ctas_per_sm` | FACT | the SM's budgets |
-| <a id="driver-smem-reserve"></a>`driver_smem_reserve` | FACT | the per-CTA reserve the driver takes off the top; the residency condition is on `smem_per_cta + driver_smem_reserve` |
+| `smem_per_sm`, `smem_per_cta_max`, `regs_per_sm`, `max_threads_per_sm` | FACT | the SM's budgets the admission checks against the driver and the plans read (an area's shared memory, the state's registers) |
 
 AN INSTRUCTION FLAG is read by an atom, where only the instruction differs between architectures of one family
 (`docs/internals/common/atoms/math.md`'s bf16 pair arithmetic picks its form by `bf16_simd_arith` and `bf16_simd_fma`).
-A FACT is an input to a plan: the shared memory an area holds, the registers a CTA reserves. Neither is ever a branch
+A FACT is an input to a plan (the shared memory an area holds) or to the admission; a fact nothing reads is not tabulated. Neither is ever a branch
 of a schedule. PER-SM FACTS LIVE HERE, PER-DEVICE FACTS DO NOT: SM count is not an architectural constant (GA102 ships
 at 80 and 82 SMs, GA100 at 108), so it is a run-time `cudaDeviceProp` query.
 

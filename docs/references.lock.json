@@ -656,7 +656,7 @@
   {"doc": "docs/internals/common/atoms/mma.md", "pinned_at": "71c340a0fb65", "reviewed": true, "sha256": "e773a5285622c865", "target": "csrc/rola/src/common/atoms/mma.cuh::transpose_frag_b16"},
   {"doc": "docs/internals/common/atoms/mma.md", "pinned_at": "35591b38e316", "reviewed": true, "sha256": "", "target": "docs/KERNEL_STANDARDS.md"},
   {"doc": "docs/internals/common/atoms/mma.md", "pinned_at": "11c806c87950", "reviewed": true, "sha256": "42c2666fabc23f25", "target": "docs/internals/common/atoms/math.md#hmul2"},
-  {"doc": "docs/internals/common/atoms/mma.md", "pinned_at": "71c340a0fb65", "reviewed": true, "sha256": "7c25eba3cc5bec14", "target": "docs/internals/common/atoms/mma.md#reg-transpose"},
+  {"doc": "docs/internals/common/atoms/mma.md", "pinned_at": "be47b01e3918", "reviewed": true, "sha256": "348be2c5dcb94153", "target": "docs/internals/common/atoms/mma.md#reg-transpose"},
   {"doc": "docs/internals/common/atoms/mma.md", "pinned_at": "71c340a0fb65", "reviewed": true, "sha256": "", "target": "docs/internals/common/ops.md"},
   {"doc": "docs/internals/common/atoms/mma.md", "pinned_at": "71c340a0fb65", "reviewed": true, "sha256": "", "target": "tests/oracle/fold_reference.py"},
   {"doc": "docs/internals/common/atoms/mma.md", "pinned_at": "71c340a0fb65", "reviewed": true, "sha256": "", "target": "tools/sass_gate.py"},

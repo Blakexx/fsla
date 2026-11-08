@@ -23,6 +23,12 @@ static_assert(tabulated(kArch),
 
 constexpr Caps kCaps = caps_of(kArch);
 
+//: THE FAMILIES WITH ATOMS: a compiling target of a family none of whose atoms are written is refused by name
+static_assert(
+    traits_of(Build{kArch, 0}).family == Family::kAmpere,
+    "no atom of this architecture's family is written (the hopper family's are next): build for an ampere "
+    "architecture (ROLA_CUDA_ARCHS)");
+
 constexpr int caps_digest(const Caps& c) {  // see docs/internals/common/arch_caps.md#capsdigest
   return c.cc * 1000 + (int)c.bf16_cvt_packed * 16 + (int)c.bf16_simd_arith * 32
          + (int)c.reg_transpose_b16 * 2048 + (int)c.bf16_simd_fma * 4096;

@@ -18,6 +18,6 @@ __host__ __device__ constexpr int window_heads(int w) { return 1 << (15 - window
 constexpr int kWindow = window_for(::denseref::arch::kArch);
 static_assert(
     kWindow > 0,
-    "an untabulated compute capability has no window: choose it in hardware.json's build block");
+    "this compute capability's build chooses no window: choose it in hardware.json's build block");
 
 }  // namespace rola

@@ -7,7 +7,7 @@ Mirrors `csrc/rola/src/common/atoms/copy.cuh`, a concern of the baseline operati
   issues, and staging loops are shaped from it. A group is every `stage_tile` since the last `stage_commit()`;
   `stage_wait<n>()` means all but the newest `n` groups have landed FOR THE ISSUING THREAD, and CTA-wide visibility
   needs a following `rendezvous()` -- a property of the contract that TMA/mbarrier satisfies the same way; the hopper
-  family's bulk (TMA) form, one descriptor issue a tile, is its own body of this contract.
+  family's bulk (TMA) form, one descriptor issue a tile, is not written yet and will be its own body of this contract.
 
 - <a id="stage-tile-if"></a>`stage_tile_if`: the copy with its source predicated -- a dead quantum ZERO-FILLS its
   destination and reads nothing, so a partial tile is the same code as a full one and never reads past an operand's

@@ -182,7 +182,7 @@ asserted where the set can be reached from, which on this branch is the geometry
 consumes the block.
 
 **`(1, 8)` DOES NOT FIT sm_86, and the number is the panel ring.** The readout law ties
-the batch tile to the warps (`kWarps * kMmaN == C`), so eight warps means `C = 64`, and
+the batch tile to the warps (`kWarps` times the MMA's N, 8, is `C`), so eight warps means `C = 64`, and
 `panel_bytes = 2 * kWarps * C * LdS * 2` is therefore QUADRATIC in the warp count:
 81,920 B at `(1, 8)` against 20,480 B at `(2, 4)`. With the readout block and two V slots
 the arm asks **117,760 B against sm_86's 99,328 B per-CTA maximum**, which no plan of the card admits. It fits sm_90's

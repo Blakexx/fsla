@@ -46,7 +46,7 @@ std::string carried_list() {
   return out;
 }
 
-//: THE CLOSED-WORLD ADMISSION of one device: its row, its required clauses, the driver's numbers against the row.
+//: THE CLOSED-WORLD ADMISSION of one device: its row, the driver's numbers against the row, its build carried.
 Card admit(int device) {
   cudaDeviceProp prop{};
   ROLA_CUDA_CHECK(cudaGetDeviceProperties(&prop, device));

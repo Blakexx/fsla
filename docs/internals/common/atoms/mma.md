@@ -9,8 +9,8 @@ Mirrors `csrc/rola/src/common/atoms/mma.cuh`, a concern of the baseline operatio
 
 - <a id="mma"></a>`mma(acc, a, b)`: acc += A(16x16) . B(16x8), bf16 operands, fp32 accumulator private to the issuing
   unit, both operands from its registers -- the ampere family's atom, a warp of 32 its unit, `m16n8k16` the shape
-  every fragment index is written in; the hopper family's warpgroup atoms (64 x {8..256} x 16) are its own members of
-  this header, chosen per family where they are defined (`docs/KERNEL_STANDARDS.md` section 8).
+  every fragment index is written in. The hopper family's warpgroup atoms (64 x {8..256} x 16) are not written yet;
+  they will be this header's members for that family, chosen where they are defined (`docs/KERNEL_STANDARDS.md` section 8).
 
 - <a id="hmma"></a>`hmma`, `hmma_fresh`, `hmma_k8`, `hmma_k8_f16`, `hmma_f16`, `hmma_f16_fresh`: the fp16 family -- `m16n8k16` f16 into fp32 (`hmma_fresh` into a fresh fragment, C = 0; `hmma_k8` the
   `m16n8k8` atom, half the tensor work, the fold's 8-token tail, `hmma_k8_f16` the same into an fp16 accumulator, the
@@ -54,8 +54,8 @@ into a thread's registers using the accumulator map, fed it as `B` against
 | `movmatrix.sync.aligned.m8n8.trans.b16` | 0 of 128 differ. Two instructions per (16 `d_v` x 8 slot) tile |
 | a shared-memory round trip through the padded buffers | not needed, not built |
 
-The capability is a REQUIRED clause of the baseline (`arch_caps.cuh`) rather than a
-selecting one, because the alternative is not a slower implementation of the same
+The capability (`reg_transpose_b16`, an INSTRUCTION fact the atom asserts) has no slower
+form beside it, because the alternative is not a slower implementation of the same
 operation — it is a different algorithm, with a `BCg x d_v` staging buffer that
 does not fit beside the ring.
 

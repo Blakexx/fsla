@@ -14,7 +14,7 @@ from enum import IntEnum
 from typing import Any
 
 #: the MMA k-extent, and the page granule. The Python mirror of
-#: the MMA k-extent (`chunk/arch_caps.cuh`'s `kMmaK` world), which a C++
+#: the MMA k-extent (16, the ampere atom's `m16n8k16`, `common/atoms/mma.cuh`), which a C++
 #: ``constexpr`` cannot supply here; :meth:`rola.ops.paging.PageArena.__init__` checks
 #: it against the atom geometry it addresses.
 MMA_K_QUANTUM = 16
