@@ -370,6 +370,7 @@ never select a wider-type emulation. sm_80 and sm_86 are both core targets, pric
 | the recurrence and the ratio readout, as the executable spec | `rola/ops/naive.py` |
 | the update is affine in the input and never in the state | [`architecture/no-delta-rule.md`](architecture/no-delta-rule.md) |
 | accumulation precision | [`architecture/precision.md`](architecture/precision.md) |
+| a schedule per family, atoms, plans, the one entry | [`architecture/families.md`](architecture/families.md) |
 | storing factors, expanding transiently | [`architecture/factored-representation.md`](architecture/factored-representation.md) |
 | dead routes are exact zeros | [`architecture/self-masking-theorem.md`](architecture/self-masking-theorem.md) |
 | the bundle, the public surface | [`api.md`](api.md), [`internals/rola_api.md`](internals/rola_api.md) |

@@ -70,6 +70,11 @@ constant the product or the declaration decides from its plan; no kernel hard-co
 hardware fixes it (an MMA shape, the warp size), as the declaration's closed-world bound (refused by name past it), or
 as an encoding.
 
+ONE ENTRY A KERNEL, BLIND TO ITS IMPLEMENTATION. A kernel's caller sees one interface: the entry finds the device's card
+from its tensors' device and selects the family's schedule and the atoms' instructions behind it; the caller passes no
+hardware fact. HARDWARE FACTS LIVE IN THE KERNEL PATH: Python reads one only for a purpose the C++ path cannot serve (the
+fp64 oracle, the measurement tools); shaping or launching a kernel call from a fact in Python moves into the entry.
+
 NO FALLBACKS AT THE ATOM. A primitive may select different native instructions per architecture; it never selects a
 wider-type emulation on a target architecture. An operation an architecture lacks is a declared design fact with its
 cost on the card, never an `#if` branch. (An fp32 emulation of a bf16 multiply lived behind a passing oracle while the

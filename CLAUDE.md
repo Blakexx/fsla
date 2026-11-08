@@ -1,8 +1,11 @@
 # rola-standalone — session rules
 
-The operating contract for all agent work in this repo lives in the coordinator's
-development queue (its own `CLAUDE.md`, outside this repo) — read it first; every
-discipline block there is binding here.
+WHERE TRUTH LIVES. This repo's docs are the canonical current state: `docs/CONSTITUTION.md` (Blake's standing
+rulings), `docs/KERNEL_STANDARDS.md` (the laws), `docs/ARCHITECTURE.md` and `docs/architecture/` (the design),
+`docs/internals/` (each source file's mirror) and `.claude/skills/` (the procedures). The coordinator's event log
+(outside this repo) is the raw timeline -- who ruled or measured what, when, and what was tried and dropped -- never the
+place a rule or a design lives. A ruling lands in the repo doc it governs in the session it is made; a design is real
+only once its page is here. Read the repo doc before acting on a memory or an event.
 
 The rules most often violated by newcomers, restated:
 

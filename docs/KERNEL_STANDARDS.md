@@ -117,7 +117,10 @@ an atom. A kernel's semantics live in `<kernel>/`, shared by its schedules. THE 
 plugs into: the cards are data (hardware.json's arch and product rows, generated), a kernel's sizes come from its plan
 alone (`Plan<build, arm>`: the card's build traits and the declaration's arm), and one host call selects the card and
 the arm, refusing by name an untabulated architecture, a build the binary does not carry and an unbuilt arm; a device
-with no product row runs its architecture's build. Products equal in their build traits share their kernels.
+with no product row runs its architecture's build. Products equal in their build traits share their kernels. THE
+CAPABILITY ROWS hold only what is read -- the numeric facts plans and the admission read, the instruction flags atoms
+read; a fact nothing reads is not tabulated, and a family is declared on its row, never derived from flags. The design
+in one page: [`architecture/families.md`](architecture/families.md).
 
 ## 9. The backstop (checks that should catch nothing)
 `ratify` records per arm and arch: registers, stack, spills, residency (existing) + compile wall time,
