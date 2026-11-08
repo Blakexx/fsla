@@ -23,7 +23,7 @@ static_assert(kDecodeMaxLevelWidth >= kProducerMaxBranchWidth,
               "MAX_BRANCH_WIDTH: a topology the producer can emit would over-read "
               "the staged amplitude row");
 
-//: THE WALK'S REGISTERS A THREAD: a warp holds a quarter of an atom's leaves a lane group in flight. -- see docs/internals/decode/decode.md#kdecodethreads
+//: THE WALK'S REGISTERS A THREAD: a warp holds a quarter of an atom's leaves a lane group in flight. -- see docs/internals/decode/decode.md#decode-threads
 constexpr int kDecodeRegsPerThread = 128;
 
 //: THE STEP'S PLAN at build `B`: ONE CTA an SM, of the threads the card's registers hold at `kDecodeRegsPerThread`.
@@ -36,6 +36,11 @@ struct DecodePlan {
   static constexpr int kBlocksPerSm = 1;
   static_assert(kThreads % 32 == 0 && kThreads <= 1024,
                 "the step's CTA is whole warps, at most 1024 threads");
+  static_assert((2 * kMaxLevels * kDecodeMaxLevelWidth) % kThreads == 0,
+                "the digit pass gives every thread the same count of both sides' digit slots");
+  static_assert(kWarps >= 3 * kMaxLevels - 1,
+                "the prologue's list and row-sum jobs are a warp each");
+  static_assert(kThreads >= 64, "a thread a value channel, at the widest value head");
 };
 
 constexpr int kUnitBlockWarps = 8;  // NOT the warp count; decode.md#kunitblockwarps

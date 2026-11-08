@@ -68,11 +68,15 @@ def arms() -> tuple[tuple[int, int, bool], ...]:
 
 #: THE PHASE LEDGER'S SHAPE: `[ctas][warps][phases]`, the kernel's own `DecodePhase` order.
 LEDGER_PHASES = ("fold", "factor", "admit", "walk", "combine")
-LEDGER_WARPS = 16
+
+
+def ledger_warps() -> int:
+    """The phase ledger's warps: the step's plan's at the current card's build, as the C++ entry derives them."""
+    return int(extension().rola_decode_ledger_warps())
 
 
 def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurement instrument (docs/internals/decode/decode.md#phase-ledger)
-    """Bind the phase ledger the next steps book into, ``[ctas, 16, 5]`` int64 cycles, or ``None``."""
+    """Bind the phase ledger the next steps book into, ``[ctas, ledger_warps(), 5]`` int64 cycles, or ``None``."""
     extension().rola_decode_ledger_bind(ledger)
 
 

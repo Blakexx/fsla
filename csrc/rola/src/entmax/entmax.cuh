@@ -45,13 +45,13 @@ constexpr int BLOCK_WARPS = 4;
 constexpr int WARP_SIZE = 32;
 constexpr int BLOCK_THREADS = BLOCK_WARPS * WARP_SIZE;
 //: THE SOLVES' REGISTER TARGET a thread: 64, and the backward's a width class -- 72 where a thread holds 8 items' two
-//: terms across its reduction. -- see docs/internals/entmax/entmax.md#minblockspersm
+//: terms across its reduction. -- see docs/internals/entmax/entmax.md#residency
 constexpr int kForwardRegs = 64;
 
 constexpr int backward_regs(int ipt) { return ipt == 8 ? 72 : kForwardRegs; }
 
 //: THE SOLVES' PLAN at build `B`: the blocks an SM their register targets fit in the card's registers, each launch
-//: bound's residency. -- see docs/internals/entmax/entmax.md#minblockspersm
+//: bound's residency. -- see docs/internals/entmax/entmax.md#residency
 template <::denseref::arch::Build B>
 struct EntmaxPlan {
   static constexpr int kRegsPerSm = ::denseref::arch::traits_of(B).caps.regs_per_sm;

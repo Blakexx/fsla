@@ -22,6 +22,9 @@ std::vector<std::vector<int64_t>> rola_decode_arms();  // see decode_api.md#rola
 //: binds the phase ledger the next steps book into, or unbinds it; see decode_api.md#decode-ledger-bind
 void rola_decode_ledger_bind(const std::optional<Tensor>& ledger);
 
+//: the phase ledger's warps at the current card's build, what a ledger is sized by; see decode_api.md#decode-ledger-warps
+int64_t rola_decode_ledger_warps();
+
 //: THE WHOLE STEP IN ONE LAUNCH -- fold, factor, walk, AND ITS OWN ADMISSION -- see docs/internals/decode/decode_api.md#note-l43
 Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                            std::vector<Tensor> read_scale, std::vector<Tensor> write_scale,

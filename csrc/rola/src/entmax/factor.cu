@@ -370,11 +370,11 @@ softmax_backward_kernel(const OutT* __restrict__ values, const OutT* __restrict_
 // The level table's entries are the caller's grouping: same class, same alpha, same
 // dtype -- docs/internals/entmax/factor.md#batched-levels
 // ---------------------------------------------------------------------------
-template <typename LogitT, typename OutT>
-void launch_factor_forward(const Tensor& logits, const std::optional<Tensor>& mask, Tensor& values,
-                           const std::optional<Tensor>& values_second, Tensor& support,
-                           const LevelTable& table, int levels, int klass, int heads,
-                           double alpha) {
+template <class Bt, typename LogitT, typename OutT>
+void launch_factor_forward_at(const Tensor& logits, const std::optional<Tensor>& mask,
+                              Tensor& values, const std::optional<Tensor>& values_second,
+                              Tensor& support, const LevelTable& table, int levels, int klass,
+                              int heads, double alpha) {
   //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`; -- see docs/internals/entmax/factor.md#nstreams
   const int n_streams = logits.size(0) * heads, tokens = logits.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
@@ -385,29 +385,38 @@ void launch_factor_forward(const Tensor& logits, const std::optional<Tensor>& ma
         constexpr int kLaneWidth = kWPad < 32 ? kWPad : 32;
         constexpr int kItemsPerThread = kWPad / kLaneWidth;
         bool_switch(alpha == 1.5, [&](auto A15) {
-          constexpr bool kA15 = decltype(A15)::value;
-          build_switch(card_of(logits.get_device_index()), [&](auto b) {
-            constexpr ::denseref::arch::Build kB = decltype(b)::build;
-            if constexpr (in_image(kB))
-              factor_forward_kernel<::denseref::arch::BuildTag<kB>, kLaneWidth, kItemsPerThread,
-                                    kA15, LogitT, OutT><<<grid, BLOCK_THREADS, 0, stream>>>(
+          factor_forward_kernel<Bt, kLaneWidth, kItemsPerThread, decltype(A15)::value, LogitT, OutT>
+              <<<grid, BLOCK_THREADS, 0, stream>>>(
                   (const LogitT*)logits.data_ptr(), ptr_or_null<const bool>(mask),
                   (OutT*)values.data_ptr(), ptr_or_null<OutT>(values_second),
                   support.mutable_data_ptr<int32_t>(), tokens, heads, table,
                   five_logits(logits, heads), five_or_zero(mask), five(values),
                   five_or_zero(values_second), five(support));
-          });
         });
       });
   ROLA_CUDA_LAUNCH_CHECK();
 }
 
+//: `launch_factor_forward_at` at `logits`'s card's build: the one branch to the build, outside every launch.
 template <typename LogitT, typename OutT>
-void launch_factor_backward(const Tensor& values, const Tensor& support,
-                            const std::optional<Tensor>& mask, const Tensor& d_values,
-                            const std::optional<Tensor>& d_values_second, Tensor& d_logits,
-                            const LevelTable& table, int levels, int klass, int heads,
-                            bool accumulate, double alpha) {
+void launch_factor_forward(const Tensor& logits, const std::optional<Tensor>& mask, Tensor& values,
+                           const std::optional<Tensor>& values_second, Tensor& support,
+                           const LevelTable& table, int levels, int klass, int heads,
+                           double alpha) {
+  build_switch(card_of(logits.get_device_index()), [&](auto b) {
+    constexpr ::denseref::arch::Build kB = decltype(b)::build;
+    if constexpr (in_image(kB))
+      launch_factor_forward_at<::denseref::arch::BuildTag<kB>, LogitT, OutT>(
+          logits, mask, values, values_second, support, table, levels, klass, heads, alpha);
+  });
+}
+
+template <class Bt, typename LogitT, typename OutT>
+void launch_factor_backward_at(const Tensor& values, const Tensor& support,
+                               const std::optional<Tensor>& mask, const Tensor& d_values,
+                               const std::optional<Tensor>& d_values_second, Tensor& d_logits,
+                               const LevelTable& table, int levels, int klass, int heads,
+                               bool accumulate, double alpha) {
   //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`; -- see docs/internals/entmax/factor.md#nstreams-2
   const int n_streams = d_logits.size(0) * heads, tokens = d_logits.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
@@ -418,27 +427,38 @@ void launch_factor_backward(const Tensor& values, const Tensor& support,
         constexpr int kLaneWidth = kWPad < 32 ? kWPad : 32;
         constexpr int kItemsPerThread = kWPad / kLaneWidth;
         bool_switch(alpha == 1.5, [&](auto A15) {
-          constexpr bool kA15 = decltype(A15)::value;
-          build_switch(card_of(values.get_device_index()), [&](auto b) {
-            constexpr ::denseref::arch::Build kB = decltype(b)::build;
-            if constexpr (in_image(kB))
-              factor_backward_kernel<::denseref::arch::BuildTag<kB>, kLaneWidth, kItemsPerThread,
-                                     kA15, LogitT, OutT><<<grid, BLOCK_THREADS, 0, stream>>>(
-                  (const OutT*)values.data_ptr(), support.mutable_data_ptr<int32_t>(),
-                  ptr_or_null<const bool>(mask), (const OutT*)d_values.data_ptr(),
-                  ptr_or_null<const OutT>(d_values_second), (LogitT*)d_logits.data_ptr(), tokens,
-                  heads, accumulate, table, five(values), five(support), five_or_zero(mask),
-                  five(d_values), five_or_zero(d_values_second), five_logits(d_logits, heads));
-          });
+          factor_backward_kernel<Bt, kLaneWidth, kItemsPerThread, decltype(A15)::value, LogitT,
+                                 OutT><<<grid, BLOCK_THREADS, 0, stream>>>(
+              (const OutT*)values.data_ptr(), support.mutable_data_ptr<int32_t>(),
+              ptr_or_null<const bool>(mask), (const OutT*)d_values.data_ptr(),
+              ptr_or_null<const OutT>(d_values_second), (LogitT*)d_logits.data_ptr(), tokens, heads,
+              accumulate, table, five(values), five(support), five_or_zero(mask), five(d_values),
+              five_or_zero(d_values_second), five_logits(d_logits, heads));
         });
       });
   ROLA_CUDA_LAUNCH_CHECK();
 }
 
+//: `launch_factor_backward_at` at `values`'s card's build: the one branch to the build, outside every launch.
 template <typename LogitT, typename OutT>
-void launch_softmax_forward(const Tensor& logits, Tensor& values,
-                            const std::optional<Tensor>& values_second, const LevelTable& table,
-                            int levels, int klass, int heads) {
+void launch_factor_backward(const Tensor& values, const Tensor& support,
+                            const std::optional<Tensor>& mask, const Tensor& d_values,
+                            const std::optional<Tensor>& d_values_second, Tensor& d_logits,
+                            const LevelTable& table, int levels, int klass, int heads,
+                            bool accumulate, double alpha) {
+  build_switch(card_of(values.get_device_index()), [&](auto b) {
+    constexpr ::denseref::arch::Build kB = decltype(b)::build;
+    if constexpr (in_image(kB))
+      launch_factor_backward_at<::denseref::arch::BuildTag<kB>, LogitT, OutT>(
+          values, support, mask, d_values, d_values_second, d_logits, table, levels, klass, heads,
+          accumulate, alpha);
+  });
+}
+
+template <class Bt, typename LogitT, typename OutT>
+void launch_softmax_forward_at(const Tensor& logits, Tensor& values,
+                               const std::optional<Tensor>& values_second, const LevelTable& table,
+                               int levels, int klass, int heads) {
   //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`; -- see docs/internals/entmax/factor.md#nstreams-3
   const int n_streams = logits.size(0) * heads, tokens = logits.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
@@ -448,24 +468,33 @@ void launch_softmax_forward(const Tensor& logits, Tensor& values,
         constexpr int kWPad = decltype(WPAD)::value;
         constexpr int kLaneWidth = kWPad < 32 ? kWPad : 32;
         constexpr int kItemsPerThread = kWPad / kLaneWidth;
-        build_switch(card_of(logits.get_device_index()), [&](auto b) {
-          constexpr ::denseref::arch::Build kB = decltype(b)::build;
-          if constexpr (in_image(kB))
-            softmax_forward_kernel<::denseref::arch::BuildTag<kB>, kLaneWidth, kItemsPerThread,
-                                   LogitT, OutT><<<grid, BLOCK_THREADS, 0, stream>>>(
+        softmax_forward_kernel<Bt, kLaneWidth, kItemsPerThread, LogitT, OutT>
+            <<<grid, BLOCK_THREADS, 0, stream>>>(
                 (const LogitT*)logits.data_ptr(), (OutT*)values.data_ptr(),
                 ptr_or_null<OutT>(values_second), tokens, heads, table, five_logits(logits, heads),
                 five(values), five_or_zero(values_second));
-        });
       });
   ROLA_CUDA_LAUNCH_CHECK();
 }
 
+//: `launch_softmax_forward_at` at `logits`'s card's build: the one branch to the build, outside every launch.
 template <typename LogitT, typename OutT>
-void launch_softmax_backward(const Tensor& values, const Tensor& d_values,
-                             const std::optional<Tensor>& d_values_second, Tensor& d_logits,
-                             const LevelTable& table, int levels, int klass, int heads,
-                             bool accumulate) {
+void launch_softmax_forward(const Tensor& logits, Tensor& values,
+                            const std::optional<Tensor>& values_second, const LevelTable& table,
+                            int levels, int klass, int heads) {
+  build_switch(card_of(logits.get_device_index()), [&](auto b) {
+    constexpr ::denseref::arch::Build kB = decltype(b)::build;
+    if constexpr (in_image(kB))
+      launch_softmax_forward_at<::denseref::arch::BuildTag<kB>, LogitT, OutT>(
+          logits, values, values_second, table, levels, klass, heads);
+  });
+}
+
+template <class Bt, typename LogitT, typename OutT>
+void launch_softmax_backward_at(const Tensor& values, const Tensor& d_values,
+                                const std::optional<Tensor>& d_values_second, Tensor& d_logits,
+                                const LevelTable& table, int levels, int klass, int heads,
+                                bool accumulate) {
   //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`; -- see docs/internals/entmax/factor.md#nstreams-4
   const int n_streams = d_logits.size(0) * heads, tokens = d_logits.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
@@ -475,18 +504,28 @@ void launch_softmax_backward(const Tensor& values, const Tensor& d_values,
         constexpr int kWPad = decltype(WPAD)::value;
         constexpr int kLaneWidth = kWPad < 32 ? kWPad : 32;
         constexpr int kItemsPerThread = kWPad / kLaneWidth;
-        build_switch(card_of(values.get_device_index()), [&](auto b) {
-          constexpr ::denseref::arch::Build kB = decltype(b)::build;
-          if constexpr (in_image(kB))
-            softmax_backward_kernel<::denseref::arch::BuildTag<kB>, kLaneWidth, kItemsPerThread,
-                                    LogitT, OutT><<<grid, BLOCK_THREADS, 0, stream>>>(
+        softmax_backward_kernel<Bt, kLaneWidth, kItemsPerThread, LogitT, OutT>
+            <<<grid, BLOCK_THREADS, 0, stream>>>(
                 (const OutT*)values.data_ptr(), (const OutT*)d_values.data_ptr(),
                 ptr_or_null<const OutT>(d_values_second), (LogitT*)d_logits.data_ptr(), tokens,
                 heads, accumulate, table, five(values), five(d_values),
                 five_or_zero(d_values_second), five_logits(d_logits, heads));
-        });
       });
   ROLA_CUDA_LAUNCH_CHECK();
+}
+
+//: `launch_softmax_backward_at` at `values`'s card's build: the one branch to the build, outside every launch.
+template <typename LogitT, typename OutT>
+void launch_softmax_backward(const Tensor& values, const Tensor& d_values,
+                             const std::optional<Tensor>& d_values_second, Tensor& d_logits,
+                             const LevelTable& table, int levels, int klass, int heads,
+                             bool accumulate) {
+  build_switch(card_of(values.get_device_index()), [&](auto b) {
+    constexpr ::denseref::arch::Build kB = decltype(b)::build;
+    if constexpr (in_image(kB))
+      launch_softmax_backward_at<::denseref::arch::BuildTag<kB>, LogitT, OutT>(
+          values, d_values, d_values_second, d_logits, table, levels, klass, heads, accumulate);
+  });
 }
 
 void check_values(const Tensor& values, const std::optional<Tensor>& second) {

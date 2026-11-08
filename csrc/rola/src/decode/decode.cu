@@ -884,6 +884,11 @@ int64_t smem_budget_of(int64_t device_index) {
 
 int64_t rola_decode_capacity() { return kDecodeMaxLevelWidth; }
 
+int64_t rola_decode_ledger_warps() {
+  check_arch_table();
+  return detail::step_warps(current_card());
+}
+
 //: The MIRRORED copy of the producer's `MAX_BRANCH_WIDTH`, bound separately -- see docs/internals/decode/decode.md#rola-decode-producer-width-mirror
 int64_t rola_decode_producer_width_mirror() { return kProducerMaxBranchWidth; }
 

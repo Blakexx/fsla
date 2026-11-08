@@ -7,3 +7,10 @@ __device__ int bad(int used, int unused_param) {
 __device__ int ok(int a, int b) {
   return a + b;
 }
+
+// must fire (clang-analyzer-deadcode.DeadStores): `twice` is stored and never read
+__device__ int dead(int x) {
+  int twice = 0;
+  twice = x * 2;
+  return x;
+}

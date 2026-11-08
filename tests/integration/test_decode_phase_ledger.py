@@ -36,7 +36,7 @@ def test_a_bound_ledger_books_every_phase_and_changes_nothing():
     booked_state = plain_state.clone()
     with torch.no_grad():
         y_plain, _ = layer(x, continuation=rola.LayerContinuation(state=plain_state))
-        ledger = torch.zeros(2 * 1024, decode_ops.LEDGER_WARPS, len(decode_ops.LEDGER_PHASES),
+        ledger = torch.zeros(2 * 1024, decode_ops.ledger_warps(), len(decode_ops.LEDGER_PHASES),
                              dtype=torch.int64, device="cuda")
         decode_ops.ledger_bind(ledger)
         try:

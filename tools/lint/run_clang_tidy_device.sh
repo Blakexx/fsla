@@ -15,6 +15,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CUDA_PATH="$(python3 "$ROOT/tools/dev.py" get cuda-home)"
 CLANG_TIDY="$(python3 "$ROOT/tools/dev.py" get toolchain.clang_tidy)"
 CONFIG="$ROOT/tools/lint/clang-tidy-device.yaml"
+#: THE ANALYZER WITHOUT INLINING: the profile's one analyzer check, deadcode.DeadStores, reads each function's own
+#: liveness, so inlining callees adds nothing to it -- and it was most of the lint's time (entmax/factor.cu 389 s with,
+#: 69 s without, the same findings; measured 2026-11-07). The self-test below proves a planted dead store still fires.
+ANALYZER_ARGS=(--extra-arg=-Xclang --extra-arg=-analyzer-config --extra-arg=-Xclang --extra-arg=ipa=none)
 if [[ -z "$CLANG_TIDY" || "$CLANG_TIDY" == "None" || ! -x "$CLANG_TIDY" ]]; then
   echo "run_clang_tidy_device.sh: FAILED -- no pinned clang-tidy (toolchain.clang_tidy); \`python tools/dev.py init\`" >&2
   exit 1
@@ -24,12 +28,16 @@ if [[ "${1:-}" == "--test-fixtures" ]]; then
   # Self-test (excluded from the commit gate, K46 convention): the fixture
   # needs no compdb -- it is self-contained CUDA, no project headers.
   FIX="$ROOT/tools/lint/fixtures/device_lint_unused_param.cu"
-  out=$("$CLANG_TIDY" "$FIX" --config-file="$CONFIG" -- \
+  out=$("$CLANG_TIDY" "$FIX" --config-file="$CONFIG" "${ANALYZER_ARGS[@]}" -- \
           -x cuda --cuda-host-only --cuda-path="$CUDA_PATH" \
           --cuda-gpu-arch=sm_80 -ferror-limit=0 2>&1)
   if echo "$out" | grep -q "misc-unused-parameters.*bad\|bad(int used"; then :; fi
   if ! echo "$out" | grep -q "'unused_param' is unused \[misc-unused-parameters\]"; then
     echo "SELF-TEST FAILED: expected finding on fixture's 'bad' did not fire" >&2
+    exit 1
+  fi
+  if ! echo "$out" | grep -q "Value stored to 'twice' is never read \[clang-analyzer-deadcode.DeadStores\]"; then
+    echo "SELF-TEST FAILED: expected dead store on fixture's 'dead' did not fire" >&2
     exit 1
   fi
   if echo "$out" | grep -q "'a' is unused\|'b' is unused"; then
@@ -92,15 +100,25 @@ fi
 OUT_DIR="$(mktemp -d)"
 trap 'rm -rf "$OUT_DIR"' EXIT
 
+#: THE LINT'S ONE BUILD: `--cuda-host-only` is the host pass, where every carried build is in the image
+#: (`common/select.cuh`'s `in_image`), so each `build_switch` would instantiate every kernel once a carried build; the
+#: lint reads the build set of its one architecture, ahead of the generated one.
+mkdir -p "$OUT_DIR/builds"
+if ! (cd "$ROOT" && python3 -c "import sys; from measure import hardware; sys.stdout.write(hardware.builds_header(['$ARCH']))") \
+    > "$OUT_DIR/builds/builds.inc"; then
+  echo "run_clang_tidy_device.sh: FAILED -- the lint's build set for sm_$ARCH (measure/hardware.py's builds_header)" >&2
+  exit 1
+fi
+
 lint_unit() {
   local i="$1" src_from_db="$2" started=$SECONDS
   local rel="${src_from_db#*/csrc/}"
   local target="$ROOT/csrc/$rel"
   [[ -f "$target" ]] || { echo "run_clang_tidy_device.sh: $target missing, skipping" >&2; return; }
 
-  flags=$(python3 - "$CC_JSON" "$src_from_db" "$ROOT" "$ARCH" "$CUDA_PATH" << 'PYEOF'
+  flags=$(python3 - "$CC_JSON" "$src_from_db" "$ROOT" "$ARCH" "$CUDA_PATH" "$OUT_DIR/builds" << 'PYEOF'
 import json, shlex, sys
-cc_json, src, root, arch, cuda_path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+cc_json, src, root, arch, cuda_path, builds = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
 db = json.load(open(cc_json))
 entry = next(e for e in db if e["file"] == src)
 old_root = entry["file"].split("/csrc/")[0]
@@ -129,6 +147,7 @@ for t in toks:
     if t.endswith(".cu"):
         continue
     out.append(t)
+out = ["-I", builds] + out
 out += ["-x", "cuda", "--cuda-host-only", f"--cuda-path={cuda_path}", "-isystem", f"{cuda_path}/include/cccl",
         f"--cuda-gpu-arch=sm_{arch}"]
 print(" ".join(shlex.quote(x) for x in out))
@@ -143,7 +162,7 @@ PYEOF
   # shellcheck disable=SC2086
   local out
   out=$(python3 -m rola_devtools.locks.host --slots 1 --label clang-tidy-tu -- \
-          "$CLANG_TIDY" "$target" --config-file="$CONFIG" --header-filter='csrc/rola/.*' \
+          "$CLANG_TIDY" "$target" --config-file="$CONFIG" --header-filter='csrc/rola/.*' "${ANALYZER_ARGS[@]}" \
           -- $flags -ferror-limit=0 2>&1)
   echo "$out" | grep -E '^/.*csrc/rola/.*: warning: ' > "$OUT_DIR/$i.real" || true
   echo "$out" | grep -E ': (fatal )?error: ' > "$OUT_DIR/$i.errors" || true

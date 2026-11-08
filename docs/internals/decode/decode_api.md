@@ -153,3 +153,6 @@ the device-side claim are [`paging/paging.md`
 Binds the phase ledger the next decode steps book into (`decode.md#phase-ledger`), or unbinds it with `None`: a
 contiguous CUDA int64 tensor `[ctas][warps][kDecodePhases]` (`warps` the step's plan's at its device's build), a row per resident CTA, which the host entry
 checks before each launch. Measurement only; nothing on the shipped path binds one.
+
+<a id="decode-ledger-warps"></a>`rola_decode_ledger_warps()` is that tensor's warps, the step's plan's at the current
+card's build (`DecodePlan<B>::kWarps`), so a caller sizes a ledger by asking rather than holding the number.

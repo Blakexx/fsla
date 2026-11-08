@@ -66,7 +66,7 @@ into a compile error rather than a race.
 consumers**). One CTA therefore owns exactly the 32 tokens of one support word, so
 the `1 << (token % 32)` packing needs **no global atomics and no zero-init pass**.
 
-<a id="minblockspersm"></a>The launch bound's residency is the solves' plan at the build (`EntmaxPlan<B>`): the blocks an
+<a id="residency"></a><a id="minblockspersm"></a>The launch bound's residency is the solves' plan at the build (`EntmaxPlan<B>`): the blocks an
 SM their register target fits in the card's registers -- `__launch_bounds__(128, 8)` on every tabulated card's 64K, a
 64-register target (`kForwardRegs`) -- which states the target to ptxas, so a regression becomes a compile-time
 allocation decision instead of a silent spill; the ratification manifest (`tools/ratify.py`) then fails the

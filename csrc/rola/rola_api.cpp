@@ -196,6 +196,7 @@ STABLE_TORCH_LIBRARY(rola, m) {
   m.def("rola_decode_build_stamp() -> int");
   m.def("rola_decode_arms() -> int[][]");
   m.def("rola_decode_ledger_bind(Tensor? ledger) -> ()");
+  m.def("rola_decode_ledger_warps() -> int");
   m.def("rola_decode_capacity() -> int");
   m.def("rola_decode_producer_width_mirror() -> int");
 
@@ -248,6 +249,7 @@ STABLE_TORCH_LIBRARY_IMPL(rola, CompositeExplicitAutograd, m) {
   m.impl("routing_softmax_backward", TORCH_BOX(&rola::entmax::softmax_backward));
   m.impl("rola_decode_forward", TORCH_BOX(&rola::decode::rola_decode_forward));
   m.impl("rola_decode_ledger_bind", TORCH_BOX(&rola::decode::rola_decode_ledger_bind));
+  m.impl("rola_decode_ledger_warps", TORCH_BOX(&rola::decode::rola_decode_ledger_warps));
   m.impl("rola_decode_build_stamp", TORCH_BOX(&rola::decode::rola_decode_build_stamp));
   m.impl("rola_decode_arms", TORCH_BOX(&rola::decode::rola_decode_arms));
   m.impl("rola_decode_capacity", TORCH_BOX(&rola::decode::rola_decode_capacity));

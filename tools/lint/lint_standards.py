@@ -85,7 +85,7 @@ DEVICE_SUFFIXES = (".cu", ".cuh")
 
 #: Identifiers that read as compile-time under this project's naming
 #: convention: ALL_CAPS (template params / macros: NC, DV, D) or a
-#: `k`-prefixed CamelCase constant (kDecodeWarps, kMaxLevels, kKinds).
+#: `k`-prefixed CamelCase constant (kDecodeMaxSpan, kMaxLevels, kKinds).
 CONSTEXPR_LOOKING = re.compile(r"^\s*(?:sizeof\s*\(.*\)|\d+|k[A-Z]\w*|[A-Z][A-Z0-9_]*)\s*$")
 
 FOR_RE = re.compile(r"^\s*for\s*\(")
