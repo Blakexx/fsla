@@ -40,7 +40,7 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 | tool | what it is | called by | writes |
 |---|---|---|---|
 | [`ratify.py`](ratify.md) | the spill manifest, the census, the SASS-body gate and the derivation | `setup.py` (post-build), a person at a milestone, the graph's `//:ratified` and `//:ratify` | `tools/manifests/` |
-| [`derivation.py`](ratify.md#graph) | the derivation's golden harness, rendered from the declared cases | `ratify.py`, the graph's `derivation_harness` | the harness source |
+| [`derivation.py`](ratify.md#graph) | the derivation's golden harness, rendered from the declared cases | `ratify.py`, the graph's `derivation_harness_source` genrule | the harness source |
 | `sass.py` | THE DISASSEMBLER SEAM: the one `cuobjdump`/`nvdisasm` invocation and line grammar; a frame map is one function's (`section`: offsets restart in every function) | `ratify.py`, `sass_gate.py`, `region_ledger.py`, `life_ranges.py` | — |
 | `kernel_targets.py` | the instruments' kernel families: each one's profiler filter, provider arm, cubin member, sources, budget and unit (`kernel_targets.md`) | `stall_census.py`, `pipe_counters.py`, `phase_ledger.py` | — |
 | [`scale_slack.py`](scale_slack.md) | whether a bound looser than the exact read product can be the carry's f16 scale: each candidate's slack over it, and the carry's spread at its scale against two runs at the exact bound's (the scale pass's own bytes among them) | a person | `--json` |
