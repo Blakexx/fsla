@@ -50,7 +50,7 @@ that level.
 ## <a id="alignment"></a>The row alignment law
 
 Every level's rows start on 32 bytes and step batch, token and head by multiples of 32 bytes (a dimension of length one
-is free), in `RouteFactors`' check, the facts seam's and the owner fill's; `quant.ROW_ALIGN` and the facts header's
+is free), in `RouteFactors`' check and the facts seam's; `quant.ROW_ALIGN` and the facts header's
 `kRowAlign` state it. The producer and `RouteFactors.from_levels` pack each side's levels in 32-byte slots
 (`rola.routing.quant.row_slot`: a level's width rounded up), the slot's tail zero — at power-of-two widths of 32 and up
 the slots are the widths, so the law costs nothing there. It is what lets a kernel move a token's run as 16-byte

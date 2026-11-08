@@ -127,7 +127,6 @@ def convergence_calls(lines: list[tuple[int, str, str, str]], labels: dict[str, 
 _MMA = re.compile(r"^(HMMA|IMMA)")
 #: KERNEL_STANDARDS 27's debts: the kernels built before the rule whose steps still branch, each with what replaces it
 _STEP_BRANCH_DEBT = {
-    "readout_part": "the readout component's rebuild replaces the skeleton's",
     "calib_kernel": "a calibration probe, not a production step",
 }
 
@@ -262,7 +261,6 @@ _STEP_COVER_DEBT = {
     "intra_kernel": "its writer rows' bytes: the dense Gram ~24 cycles an MMA against its 16.9 with the refill under "
                     "the slabs (0e0163e0), bytes an MMA the lever (the per-call reader block, the u8 dense levels' "
                     "format, proposed); read under the line once the cover read its warps together",
-    "readout_part": "the readout component's rebuild replaces the skeleton's",
     "calib_kernel": "a calibration probe, not a production step",
 }
 STEP_FLOORS = Path(__file__).resolve().parent / "budgets" / "step_floors.json"
