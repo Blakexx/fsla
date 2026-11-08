@@ -2,7 +2,7 @@
 `pytest_tier`). Each test is in one tier: the CPU tier is tests/unit's rows that launch nothing, run with no device
 visible; a device tier runs alone. Every tier takes the library: collecting a tier reaches the plugin."""
 
-load("//bazel:defs.bzl", "pytest_tier", "tree_part")
+load("//bazel:defs.bzl", "device_lane", "pytest_tier", "tree_part")
 
 pytest_tier(
     name = "cpu",
@@ -58,6 +58,22 @@ test_suite(
         ":oracle",
         ":unit_cuda",
     ],
+)
+
+#: THE SANITIZER LANE (docs/testing.md#the-sanitizer-lane): compute-sanitizer, the toolkit's own, over one oracle cell a
+#: family; run when a component lands, before a ratify and on a schedule, never by a commit's suite
+device_lane(
+    name = "sanitizer",
+    timeout = "eternal",
+    cmd = [
+        "python3",
+        "tools/sanitize_oracle.py",
+    ],
+    data = [
+        "//:library",
+        "//:tree",
+    ],
+    tools = {"@cuda_tools//:compute_sanitizer": "compute-sanitizer"},
 )
 
 #: this package's part of the tree the checks read

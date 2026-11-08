@@ -348,9 +348,11 @@ publication read before its join, an inner join standing in for an outer one, a 
 
 ### The sanitizer lane
 
-`python tools/sanitize_oracle.py` runs `compute-sanitizer` over ONE named oracle cell per family (the facts pass, the
+`bazel test //tests:sanitizer` runs `tools/sanitize_oracle.py`: the toolkit's own `compute-sanitizer` (`@cuda_tools`,
+the release the library is built by) over ONE named oracle cell per family (the facts pass, the
 carry's fold and a whole call, the intra, decode, the producer and the entmax solves), each pair in its own process
-with a timeout, under the GPU lock.
+with a timeout, under the GPU lock; `--test_arg=--tool --test_arg=racecheck` or `--family` narrows or widens it. It is
+`manual`: no suite holds it.
 It runs **when a component lands, before a ratify, and on a schedule, never per commit**
 (`docs/KERNEL_STANDARDS.md#sanitizer`) — the tools cost one to two orders of magnitude, and a gate that takes an hour
 gets disabled — with `--error-exitcode=1`, an explicit skip-list whose entries carry their

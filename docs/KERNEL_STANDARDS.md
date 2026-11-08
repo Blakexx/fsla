@@ -296,7 +296,7 @@ pre-existing hook failure and the stage that fixes it. "Another stage did it" is
 hooks are fixed (the hook, or the tree), never routed around.
 
 ## <a id="sanitizer"></a>THE SANITIZER LANE (law; its cadence ruled by Blake, 2026-10-12)
-The lane (`tools/sanitize_oracle.py`, `docs/testing.md#the-sanitizer-lane`) runs memcheck, synccheck and initcheck on
+The lane (`bazel test //tests:sanitizer`, `tools/sanitize_oracle.py`, `docs/testing.md#the-sanitizer-lane`) runs memcheck, synccheck and initcheck on
 each kernel's one-CTA cells -- `tools/coverage.json` names every kernel's row -- when a component lands, before a
 ratify, and on a schedule; never per commit (Blake: "every commit too noisy ... it nearly crashed the computer
 sometimes though, racecheck especially"). Each run is guarded by a kill timeout and the host budget. It reports zero

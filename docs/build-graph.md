@@ -24,7 +24,7 @@ semaphores, which Bazel cannot do for an action.
 | the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (`tools/uv_pin.json`) into the pinned CPython (3.11.13), and rola-devtools at `tools/devtools.txt`'s commit, by `bazel/environment.bzl`'s `@rola_env` (`bazel/make_env.py`) | `host.build_cache/bazel/store`, one environment a key (the lock, the devtools commit, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages; `@rola_env//:flags.bzl`'s `VENV` names it, so a command naming it is keyed by the environment |
 | the linker | mold at `tools/mold_pin.json`'s release (`@mold`) | the shared repository cache |
 | the lints' analyzer | clang-tidy at `tools/clang_tidy_pin.json`'s wheel, its binary's digest checked (`@clang_tidy`) | the shared repository cache |
-| the toolkit's parts beside the compiler | the disassemblers the SASS gate reads with (cuobjdump, nvdisasm) and cuRAND's headers (clang's CUDA front end includes one), from the toolkit's manifest by its digests (`@cuda_tools`) | the shared repository cache |
+| the toolkit's parts beside the compiler | the disassemblers the SASS gate reads with (cuobjdump, nvdisasm), cuRAND's headers (clang's CUDA front end includes one) and compute-sanitizer (the sanitizer lane's), from the toolkit's manifest by its digests (`@cuda_tools`) | the shared repository cache |
 | the host C++ compiler's identity | its version and the digests of gcc, g++ and cc1plus (`@host_cc`), an input of every compile | the output base |
 | the devices' identity | each device's name, UUID, driver and compute capability from `nvidia-smi` (`@host_gpu`, read at every fetch; a machine that names no device refuses), an input of every device test tier | the output base |
 
@@ -138,7 +138,9 @@ index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
   sharded by Bazel's protocol (`bazel/pytest_shards.py`), each shard drawing a host slot, and sees no device; a device
   tier runs alone, takes the machine's GPU lock itself, and has the devices' identity among its inputs (`@host_gpu`).
   `--test_filter` is pytest's `-k`, `--test_arg` passes pytest an argument. Every tier reads the machine's dev config:
-  its locks, and the installed toolkit the unit tier's compiling rows still use.
+  its locks, and the installed toolkit the unit tier's compiling rows still use. The sanitizer lane (`//tests:sanitizer`,
+  `bazel/defs.bzl`'s `device_lane`, `manual`) runs as a device tier does, with the toolkit's own compute-sanitizer
+  first on PATH ([`testing.md`](testing.md#the-sanitizer-lane)).
 - THE CHECKS OF THE COMMIT (`//tools:commit_checks`, `bazel/defs.bzl`'s `checkout_test`): what git knows rather than
   a file set -- no ratchet's baseline grown against HEAD's (`tools/lint/ratchet.py --grown`), every doc reference
   resolving (`tools/docrefs.py`), the dev container current (`tools/dev.py container gate`). Each runs in the

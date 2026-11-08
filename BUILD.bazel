@@ -56,7 +56,7 @@ rola_extension(
     torch = TORCH,
     torch_cuda = TORCH_CUDA,
     shared_libraries = ["@rola_env//:torch_libraries"],
-    #: the unit lints read the units it links; the device tiers import it
+    #: the unit lints read the units it links; the test tiers import it
     visibility = [
         "//tests:__pkg__",
         "//tools:__pkg__",

@@ -12,4 +12,4 @@ description: Load before running or adding tests, or changing the oracle or a re
 3. A kernel is graded per output slot under its kind's tolerance (`docs/testing.md#tolerance-discipline`,
    `tests/oracle/tolerances.py`); its test is the `oracle` pointer in `tools/coverage.json`
    (`docs/internals/tools/coverage.md#declaration`).
-4. The sanitizer lane: `tools/sanitize_oracle.py` (`docs/testing.md#the-sanitizer-lane`).
+4. The sanitizer lane: `bazel test //tests:sanitizer` (`docs/testing.md#the-sanitizer-lane`).

@@ -542,17 +542,21 @@ compile_database = rule(
 
 #: THE TEST TIERS (docs/testing.md#running-it): each tier one target, as pytest runs it
 
-_PYTEST_TIER = """\
+_TIER = """\
 #!/bin/bash
-# a test tier (bazel/defs.bzl's pytest_tier): its inputs copied into a real tree, the tree's packages and the built
-# library importable from it; Bazel's shards (bazel/pytest_shards.py), its filter (`--test_filter`, pytest's `-k`), its
-# arguments (`--test_arg`) and its test report
+# a test tier or device lane (bazel/defs.bzl's pytest_tier, device_lane): its inputs copied into a real tree, the
+# tree's packages and the built library importable from it
 set -euo pipefail
 tree="$TEST_TMPDIR/tree"
 cp -rL "$TEST_SRCDIR/_main" "$tree"
 rm -f "$tree/$TEST_BINARY"
 cd "$tree"
-{machine}export PATH={venv}/bin:/usr/bin:/bin PYTHONPATH="$tree" PYTHONDONTWRITEBYTECODE=1
+{machine}export PATH={tools}{venv}/bin:/usr/bin:/bin PYTHONPATH="$tree" PYTHONDONTWRITEBYTECODE=1
+{run}"""
+
+#: a pytest tier's run: Bazel's filter (`--test_filter`, pytest's `-k`), its shards (bazel/pytest_shards.py), its
+#: arguments (`--test_arg`) and its test report
+_PYTEST_RUN = """\
 only=()
 if [ -n "${{TESTBRIDGE_TEST_ONLY:-}}" ]; then only=(-k "$TESTBRIDGE_TEST_ONLY"); fi
 #: Bazel's sharding protocol: this shard's index and count, and the file that says the test honours them
@@ -569,25 +573,41 @@ exec {venv}/bin/python -m pytest -p no:cacheprovider -p bazel.pytest_shards -q -
 #: tier's compiling rows use)
 _NO_DEVICE = 'export CUDA_VISIBLE_DEVICES=""\n'
 
-def _pytest_tier_impl(ctx):
+def _tier_impl(ctx):
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
-    words = list(ctx.attr.tests) + (["-m", ctx.attr.marks] if ctx.attr.marks else [])
-    body = _PYTEST_TIER.format(venv = shell.quote(VENV), machine = "" if ctx.attr.device else _NO_DEVICE, args = " ".join([shell.quote(w) for w in words]))
+    venv = shell.quote(VENV)
+    if ctx.attr.cmd:
+        run = "exec %s \"$@\"\n" % " ".join([shell.quote(w) for w in ctx.attr.cmd])
+    else:
+        words = list(ctx.attr.tests) + (["-m", ctx.attr.marks] if ctx.attr.marks else [])
+        run = _PYTEST_RUN.format(venv = venv, args = " ".join([shell.quote(w) for w in words]))
+    #: each tool's binary's directory first on PATH, where its runfiles put it
+    tools, carried = "", []
+    for target, binary in ctx.attr.tools.items():
+        found = [f for f in target.files.to_list() if f.basename == binary]
+        if len(found) != 1:
+            fail("%s carries %d files named %s" % (target.label, len(found), binary))
+        tools += '"$TEST_SRCDIR/_main/%s":' % found[0].short_path.rsplit("/", 1)[0]
+        carried.append(target.files)
+    body = _TIER.format(venv = venv, machine = "" if ctx.attr.devices else _NO_DEVICE, tools = tools, run = run)
     ctx.actions.write(script, body, is_executable = True)
     #: a device tier's pass is its devices': their identity is one of its inputs (docs/build-graph.md rule 5)
     identity = [ctx.file.devices] if ctx.attr.devices else []
-    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = ctx.files.data + [ctx.file._shards] + identity))]
+    files = depset(ctx.files.data + [ctx.file._shards] + identity, transitive = carried)
+    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(transitive_files = files))]
 
-_pytest_tier_test = rule(
-    implementation = _pytest_tier_impl,
+_tier_test = rule(
+    implementation = _tier_impl,
     test = True,
     attrs = {
-        "tests": attr.string_list(mandatory = True, doc = "the tier's paths, as pytest takes them"),
+        "tests": attr.string_list(doc = "a pytest tier's paths, as pytest takes them"),
         "marks": attr.string(doc = "its marker expression (`-m`); none keeps pyproject's default selection"),
-        "data": attr.label_list(allow_files = True, doc = "what it reads: the tree, and the library for a device tier"),
-        "device": attr.bool(doc = "a device tier: it sees the machine's device, and takes the GPU lock"),
+        "cmd": attr.string_list(doc = "a lane's command, in place of pytest, run from the copy's root"),
+        "tools": attr.label_keyed_string_dict(allow_files = True, doc = "what the command finds on PATH: each label's binary, by its name"),
+        "data": attr.label_list(allow_files = True, doc = "what it reads: the tree and the library"),
         "_shards": attr.label(default = "//bazel:pytest_shards.py", allow_single_file = True),
-        "devices": attr.label(allow_single_file = True, doc = "a device tier's: the devices' identity (`@host_gpu`)"),
+        "devices": attr.label(allow_single_file = True, doc = "a device tier's: the devices' identity (`@host_gpu`), " +
+                                                              "an input of its pass; the tier sees the device and takes the GPU lock"),
     },
 )
 
@@ -598,4 +618,10 @@ def pytest_tier(name, device = False, tags = [], **kwargs):
     alone (`exclusive`)."""
     if device:
         kwargs["devices"] = "@host_gpu//:identity.txt"
-    _pytest_tier_test(name = name, device = device, tags = tags + ["no-sandbox"] + (["exclusive"] if device else []), **kwargs)
+    _tier_test(name = name, tags = tags + ["no-sandbox"] + (["exclusive"] if device else []), **kwargs)
+
+def device_lane(name, cmd, tags = [], **kwargs):
+    """A device lane: a command over the tree and the library on the machine's device, as a device tier runs (alone,
+    outside the sandbox, keyed on the devices), never part of a suite a commit runs (`manual`)."""
+    _tier_test(name = name, cmd = cmd, devices = "@host_gpu//:identity.txt",
+               tags = tags + ["no-sandbox", "exclusive", "manual"], **kwargs)

@@ -1,8 +1,8 @@
 """THE GRAPH'S ENVIRONMENT: the repositories made from the tree's pins and its index -- the Python environment built
 from requirements.lock and the pinned rola-devtools into the shared store (`@rola_env`), the pinned linker (`@mold`),
 the pinned clang-tidy (`@clang_tidy`), the host C++ compiler's and devices' identities (`@host_cc`, `@host_gpu`),
-the toolkit's disassemblers
-and cuRAND's headers (`@cuda_tools`), and the checkout's tracked files (`@rola_tree`). Docs: docs/build-graph.md#environment."""
+the toolkit's disassemblers, cuRAND's headers and compute-sanitizer (`@cuda_tools`), and the checkout's tracked files
+(`@rola_tree`). Docs: docs/build-graph.md#environment."""
 
 _ENV_BUILD = """\
 load("@rules_cc//cc:defs.bzl", "cc_library")
@@ -170,12 +170,14 @@ def _host_gpu_impl(rctx):
     #: only a device tier reads this repository, and a device tier on a machine that cannot name its devices refuses
     smi = rctx.which("nvidia-smi")
     if not smi:
-        fail("no nvidia-smi on PATH: a device test tier is keyed on the machine's devices (docs/build-graph.md#rules)")
+        fail("no nvidia-smi on PATH: a device test tier is keyed on the machine's devices -- load the NVIDIA driver, " +
+             "whose nvidia-smi names them, or run the tier that needs none: bazel test //tests:cpu")
     #: read again when the driver moves: its tools move with it
     rctx.watch(smi)
     found = rctx.execute([smi, "--query-gpu=index,name,uuid,driver_version,compute_cap,memory.total", "--format=csv,noheader"])
     if found.return_code != 0 or not found.stdout.strip():
-        fail("nvidia-smi names no device (exit %d): %s" % (found.return_code, found.stderr))
+        fail("nvidia-smi names no device (exit %d): %s -- a device test tier needs one; the tier that needs none: " % (
+            found.return_code, found.stderr) + "bazel test //tests:cpu")
     rctx.file("identity.txt", "# THE MACHINE'S DEVICES, an input of every device test tier (docs/build-graph.md#rules)\n" + found.stdout)
     rctx.file("BUILD.bazel", 'exports_files(["identity.txt"], visibility = ["//visibility:public"])\n')
 
@@ -194,6 +196,9 @@ exports_files(["bin/cuobjdump", "bin/nvdisasm"])
 
 #: cuRAND's headers alone: clang's CUDA front end includes one (its runtime wrapper's `curand_mtgp32_kernel.h`)
 filegroup(name = "curand_headers", srcs = glob(["curand/include/**"]))
+
+#: the toolkit's compute-sanitizer, its libraries beside it (the sanitizer lane's)
+filegroup(name = "compute_sanitizer", srcs = glob(["sanitizer/compute-sanitizer/**"]))
 """
 
 def _cuda_tools_impl(rctx):
@@ -218,13 +223,20 @@ def _cuda_tools_impl(rctx):
     )
     #: its libraries are not the graph's: the headers stay
     rctx.delete("curand/lib")
+    entry = redist["cuda_sanitizer_api"]["linux-x86_64"]
+    rctx.download_and_extract(
+        url = root + "/" + entry["relative_path"],
+        sha256 = entry["sha256"],
+        stripPrefix = entry["relative_path"].rsplit("/", 1)[1].removesuffix(".tar.xz"),
+        output = "sanitizer",
+    )
     rctx.file("BUILD.bazel", _CUDA_TOOLS_BUILD)
 
 _cuda_tools_repo = repository_rule(
     implementation = _cuda_tools_impl,
     attrs = {"manifest": attr.string(mandatory = True), "sha256": attr.string(mandatory = True)},
-    doc = "The toolkit's disassemblers (cuobjdump, nvdisasm) and cuRAND's headers, from the redistributable manifest " +
-          "by its digests.",
+    doc = "The toolkit's disassemblers (cuobjdump, nvdisasm), cuRAND's headers and compute-sanitizer, from the " +
+          "redistributable manifest by its digests.",
 )
 
 def _tree_impl(rctx):
