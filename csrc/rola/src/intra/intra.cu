@@ -319,6 +319,7 @@ int64_t intra_footprint(std::vector<int64_t> widths, std::vector<int64_t> forms,
 
 //: -- see docs/internals/intra/intra_api.md#intra-admits
 bool intra_admits(std::vector<int64_t> widths, int64_t device) {
+  check_arch_table();
   //: the widest form, f16 on both sides: a call the device admits at every form
   const std::vector<int64_t> forms(widths.size(), kFormF16F16);
   return detail::geometry(widths, forms, detail::shape_of(static_cast<int>(device))).smem

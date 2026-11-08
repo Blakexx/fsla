@@ -55,23 +55,23 @@ INSTRUMENTS = {
     "registers": ("tools/life_ranges.py", ["--arm", "0", "--kernel", "carry_kernel",
                                            *(a for f in ("carry_kernel", "parts", "readout", "panel", "fold", "schedule",
                                                                       "plan")
-                                             for a in ("--source", f"csrc/rola/src/carry/{f}.cuh")),
+                                             for a in ("--source", f"csrc/rola/src/carry/ampere/{f}.cuh")),
                                            "--budget", "tools/budgets/carry.json"], False,
                   {"host_cpu": 1}, ["csrc/rola/src"], 600),
     "burst": ("tools/burst_gate.py", ["--arm", "0", "--kernel", "carry_kernel", "--source",
-                                     "csrc/rola/src/carry/carry_kernel.cuh"], False,
+                                     "csrc/rola/src/carry/ampere/carry_kernel.cuh"], False,
               {"host_cpu": 1}, ["csrc/rola/src"], 600),
     "phases": ("tools/phase_ledger.py", ["{cell}", "--launches", "1"], True, {"gpu": "all"}, [], 120),
     "counters": ("tools/pipe_counters.py", ["{cell}"], True, {"gpu": "all"}, [], 900),
     "census": ("tools/stall_census.py", ["{cell}"], True, {"gpu": "all"},
-               ["tools/budgets/carry.json", "csrc/rola/src/carry/carry_kernel.cuh"], 900),
+               ["tools/budgets/carry.json", "csrc/rola/src/carry/ampere/carry_kernel.cuh"], 900),
     "timeline": ("tools/pipe_timeline.py", ["--cell", "{cell}"], True, {"gpu": "all"}, [], 900),
     "roofline": ("tools/roofline.py", ["--cells", "{cell}"], True, {"gpu": "all"}, [], 120),
     #: what each layer construction's weights route on its cells (the layer readings' regime), once a binary
     "support": ("tools/realized_support.py", [], False, {"gpu": 1}, ["measure/cells", "rola"], 1800),
     "counters-intra": ("tools/pipe_counters.py", ["{cell}", "--kernel", "intra"], True, {"gpu": "all"}, [], 900),
     "census-intra": ("tools/stall_census.py", ["{cell}", "--kernel", "intra"], True, {"gpu": "all"},
-                     ["tools/budgets/intra.json", "csrc/rola/src/intra/intra_kernel.cuh"], 900),
+                     ["tools/budgets/intra.json", "csrc/rola/src/intra/ampere/intra_kernel.cuh"], 900),
 }
 #: the instruments read only on the long cells (16K tokens and more): the intra's
 LONG_CELL_INSTRUMENTS = {"counters-intra", "census-intra"}
