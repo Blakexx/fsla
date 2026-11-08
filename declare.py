@@ -109,10 +109,11 @@ def declare(g, env: Env, *, timing=None, instruments=tuple(INSTRUMENTS)) -> dict
     #: cells to 49 and an ncu replay apiece (2026-09-16).
     carry = [c for c in cells if kind(c) == "carry" and central().cell(c)["params"].get("tier") in ("probe", "both")]
     layer = [c for c in cells if kind(c) == "layer"]
-    #: THE LIBRARY IS THE BUILD GRAPH'S (docs/build-graph.md#use): the node runs every build -- Bazel's cache is the
-    #: build's key, and the node's output, the library's digest, is every target's -- and holds no host slot, since the
-    #: graph's front door takes the host budget itself (a holder never starts a Bazel build, build-graph.md rule 13)
-    binary = g.node("binary", executor=EXECUTORS + "compile_kernel", env=env, cache=False, always_run=True,
+    #: THE LIBRARY IS THE BUILD GRAPH'S (docs/build-graph.md#use): the node runs every build (uncached) -- Bazel's cache
+    #: is the build's key, and the node's output, the library's digest, keys every target that reads the binary -- and
+    #: holds no host slot, since the graph's front door takes the host budget itself (a holder never starts a Bazel
+    #: build, build-graph.md rule 13)
+    binary = g.node("binary", executor=EXECUTORS + "compile_kernel", env=env, cache=False,
                     code=_code("measure/executors.py"))
     environment = g.node("environment", executor=EXECUTORS + "probe_environment", env=env, cache=False)
     facts = {"binary": binary, "environment": environment}

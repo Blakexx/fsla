@@ -234,7 +234,8 @@ bound is a tool that can ratify one.
 ## The build: everything declared, a run pruned by label
 
 A checkout's `declare.py` declares EVERY target it has -- its build (the build graph's `bazel run //:library`, run
-every build: Bazel's cache is its key, and the library's digest, its output, is every other target's), its machine
+every build: Bazel's cache is its key, and the library's digest, its output, keys every target that reads the binary),
+its machine
 facts, each instrument over the cells sized for measurement (`tier` probe or both), its timing arms, its diff sides
 and its own kernel-vs-oracle diff, the oracle tier as one node -- and takes no selector. Which of it a build runs is pruned at the CLI by LABEL, which knows
 nothing of cells, groups or instruments: `--only 'rola/phases'` runs that instrument and what it needs, `--skip

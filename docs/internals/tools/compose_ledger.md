@@ -16,7 +16,7 @@ kernel's own structure, its walks, polls and phase changes alone -- the floor th
 reaches on this card -- and adds every part back in the order named, so each part's cost is read
 against a base where every burst is covered by construction.
 
-A rung item is `part` (real) or `part=trivial`: the part in its TRIVIAL form (`part=trivial` in `ROLA_CARRY_PARTS`, the
+A rung item is `part` (real) or `part=trivial`: the part in its TRIVIAL form (`part=trivial` in the graph's `--//:carry_parts`, the
 third mode beside real and stub), its memory instructions issued but its dependence or structure removed,
 so a part named trivial then real gives two rungs: stub to trivial is its traffic, trivial to real its
 chains and waits. The forms (`carry_kernel.cuh`, the `k*Trivial` constants): the fills copy a dense

@@ -6,7 +6,7 @@
   {"doc": ".claude/skills/rola-bench/SKILL.md", "pinned_at": "71c340a0fb65", "reviewed": true, "sha256": "463f1b82e821163a", "target": "docs/KERNEL_STANDARDS.md#s32"},
   {"doc": ".claude/skills/rola-bench/SKILL.md", "pinned_at": "8724089863b8", "reviewed": true, "sha256": "af551480e301ae46", "target": "docs/measurement.md#comparing-two-builds"},
   {"doc": ".claude/skills/rola-bench/SKILL.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "fb8f718432f40a46", "target": "docs/measurement.md#preconditions-which-the-targets-acquire"},
-  {"doc": ".claude/skills/rola-bench/SKILL.md", "pinned_at": "66c8188d8d14", "reviewed": true, "sha256": "d09b9f943fc9c238", "target": "docs/measurement.md#the-build-everything-declared-a-run-pruned-by-label"},
+  {"doc": ".claude/skills/rola-bench/SKILL.md", "pinned_at": "707e483bd71c", "reviewed": true, "sha256": "2c306e698e62a4b6", "target": "docs/measurement.md#the-build-everything-declared-a-run-pruned-by-label"},
   {"doc": ".claude/skills/rola-bench/SKILL.md", "pinned_at": "a6087a0a4ab2", "reviewed": true, "sha256": "8af1b696a52e10c9", "target": "docs/measurement.md#the-flagging-rule-three-gates-all-must-fire"},
   {"doc": ".claude/skills/rola-bench/SKILL.md", "pinned_at": "3360bacd82eb", "reviewed": true, "sha256": "b129803f61dd804e", "target": "docs/measurement.md#the-measurements-record-rola_results"},
   {"doc": ".claude/skills/rola-bench/SKILL.md", "pinned_at": "3fac56b5a835", "reviewed": true, "sha256": "4e9bae636ba65761", "target": "docs/measurement.md#the-method"},

@@ -8,7 +8,7 @@
     python tools/compose_ledger.py --cells nl64k-dense --ladder all:fold.pool,fold.ring,fold.loads,readout.stream,readout.loads,readout.drain
 
 The carry kernel's MMA phases are built from PARTS (`gen_shards.CARRY_PARTS`); a build may stub
-any of them (`ROLA_CARRY_PARTS`): a stub keeps the part's HMMAs -- the same count, atom and
+any of them (the build graph's `--//:carry_parts`): a stub keeps the part's HMMAs -- the same count, atom and
 accumulators -- and drops its other work. A LADDER over a phase builds the kernel with none of
 that phase's parts real (every other part real), then adds the parts back in the order named, one
 rung a build; the last rung is the kernel. The ladder `all` starts with NO part real -- both MMA
@@ -28,7 +28,6 @@ import argparse
 import datetime as dt
 import hashlib
 import json
-import os
 import re
 import subprocess
 import sys
@@ -72,12 +71,11 @@ def device_hash(arch: str = "sm_86") -> str:
 
 
 def build(real: tuple[str, ...], trivial: tuple[str, ...] = ()) -> tuple[int, str]:
-    env = dict(os.environ)
-    env.pop("ROLA_BUILD_PARTS", None)
+    """One rung's library, by the build graph: `--//:carry_parts` names its real and trivial parts (`gen_shards`'
+    grammar), and `bazel run` copies the gated library into the checkout, where the instruments read it."""
     items = [x + ("=trivial" if x in trivial else "") for x in real]
-    env["ROLA_CARRY_PARTS"] = ("all" if set(real) == set(gen_shards.CARRY_PARTS) and not trivial
-                               else (",".join(items) or "none"))
-    return run([PY, "-m", "pip", "install", "-e", ".", "--no-build-isolation", "--no-deps", "-q"], env=env, timeout=3600)
+    parts = ("all" if set(real) == set(gen_shards.CARRY_PARTS) and not trivial else (",".join(items) or "none"))
+    return run(["bazel", "run", "--noshow_progress", "//:library", f"--//:carry_parts={parts}"], timeout=3600)
 
 
 def _instrument(args: list[str], timeout: int = 3600) -> dict:

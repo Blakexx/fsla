@@ -42,7 +42,8 @@ def test_the_root_declares_the_checkout_its_session_its_memory_pass_and_their_st
     assert {t.label for t in out["targets"]["rola/phases"].inputs} == carry
     assert out["targets"]["cells/flagship-dense"].params == {"cell": "flagship-dense"}
     assert {t.label for t in out["targets"]["rola/carry_forward"].inputs} == carry
-    assert out["targets"]["rola/binary"].holds == {"host_cpu": "all"}
+    #: the graph's front door takes the host budget for the build: a holder never starts a Bazel build
+    assert out["targets"]["rola/binary"].holds == {} and not out["targets"]["rola/binary"].cache
     assert out["targets"]["rola/phases"].holds == {"gpu": "all"}
     assert out["targets"]["timing-server-stop"].always_run
     assert set(out["public"]) == {"all"}
