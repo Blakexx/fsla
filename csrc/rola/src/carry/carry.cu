@@ -409,7 +409,7 @@ namespace stamp {
 
 //: THE DEVICE-SIDE FACT: the only answer a stale binary cannot produce.
 __global__ void carry_stamp_kernel(int* out) {
-  out[0] = kWindow;
+  out[0] = ::denseref::arch::traits_of(::denseref::arch::Build{::denseref::arch::kArch, 0}).window;
   out[1] = denseref::arch::kCapsDigest;
   out[2] = kStateValues;
   out[3] = kListBound;
