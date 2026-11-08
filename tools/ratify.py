@@ -670,11 +670,10 @@ def _derivation_golden(cases: dict, stdout: str, text: str) -> dict[str, str]:
 
 def derivation_record(cases: dict) -> dict:
     """The whole ratified record, measured now."""
-    text, golden = measure_derivation(cases)
+    _, golden = measure_derivation(cases)
     return {"schema": 1,
             "sources": derivation_sources(cases),
             "cases_sha256": cases_digest(cases),
-            "harness_sha256": hashlib.sha256(text.encode()).hexdigest(),
             "date": time.strftime("%Y-%m-%d"),
             "golden": golden}
 
