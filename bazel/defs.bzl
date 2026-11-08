@@ -123,7 +123,9 @@ _CUDA_LINKED = ("libcudart.so.13", "libcuda.so")
 _INSTALL = """\
 #!/bin/bash
 # writes the graph's library into the checkout, and the build's generated headers where the tools that compile the
-# tree's units read them (build/generated: life_ranges, ratify's recompile): copies, never links into Bazel's output tree
+# tree's units read them (build/generated: tools/life_ranges.py, tools/header_selfcheck.py): copies, never links into
+# Bazel's output tree; a header only when its text changed, by a rename, as the tree's own writer does
+# (tools/gen_shards.py's write_if_changed: a moved mtime recompiles every unit that includes it)
 set -euo pipefail
 dest="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}/rola_cu13"
 for f in {files}; do
@@ -133,7 +135,10 @@ chmod 0755 "$dest/_C.abi3.so"
 generated="$BUILD_WORKSPACE_DIRECTORY/build/generated"
 mkdir -p "$generated"
 for f in {headers}; do
-  install -m 0644 "$f" "$generated/$(basename "$f")"
+  to="$generated/$(basename "$f")"
+  if ! cmp -s "$f" "$to"; then
+    install -m 0644 "$f" "$to.graph" && mv -f "$to.graph" "$to"
+  fi
 done
 echo "installed $(basename "$dest")/_C.abi3.so and _build_config.py, and the build's generated headers, from the graph"
 """

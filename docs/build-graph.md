@@ -50,7 +50,8 @@ exists, reading the dev config through the rola-devtools checkout `tools/bootstr
 ## <a id="compile"></a>The extension's compile
 
 `//:library` is `rola_cu13/_C.abi3.so` and its build record `rola_cu13/_build_config.py`; `bazel run //:library` copies
-both into the checkout's `rola_cu13/` (a copy: the library is imported from the checkout).
+both into the checkout's `rola_cu13/` (a copy: the library is imported from the checkout), and the build's generated
+headers into `build/generated`.
 
 - THE BUILD'S PARAMETERS are the root package's settings: `--//:archs` (default `@rola_env//:flags.bzl`'s
   `RATIFIED_ARCHS`, the toolchain's ratified manifests), `--//:carry_arms` and `--//:decode_arms` (arm indices; empty is
@@ -208,5 +209,5 @@ names one).
 
 Never pass `--jobs` or a cache path: the front door sets both. Nothing the graph builds lands in the checkout but what a
 run target writes there -- the library `bazel run //:library` copies in, with the build's generated headers into
-`build/generated` (where the tools that compile the tree's units read them: `tools/life_ranges.py`, ratify's
-recompile), and the database `bazel run //:compile_commands` writes: Bazel's output links are off (`--experimental_convenience_symlinks=clean`).
+`build/generated` (where the tools that compile the tree's units read them: `tools/life_ranges.py`,
+`tools/header_selfcheck.py`; a header only when its text changed), and the database `bazel run //:compile_commands` writes: Bazel's output links are off (`--experimental_convenience_symlinks=clean`).
