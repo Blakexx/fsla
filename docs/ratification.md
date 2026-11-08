@@ -187,6 +187,9 @@ namespace path-trap fix, `internals/common/build_stamp.md`), so a mangled name i
 function of source content and toolchain only, whichever shard or per-arm unit compiled
 it.
 
+On the graph's build it compiles nothing (`--graph`, [`build-graph.md`](build-graph.md#ratify)): the census is the
+build's own compile of the same units under the same flags, read from each unit's ptxas report and object.
+
 `--shard NAME` scopes the compile to one shard's slice for triage. It is a
 measurement scope only: `--write` refuses it, because a manifest written from a
 subset would silently drop every instantiation it did not compile.

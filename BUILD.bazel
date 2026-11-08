@@ -3,11 +3,13 @@
     bazel build //:library                      # rola_cu13/_C.abi3.so and its build record, the shipped build
     bazel run //:library                        # the same, copied into this checkout's rola_cu13/
     bazel run //:library --//:archs=86 --//:carry_arms=3     # an iteration build
+    bazel test //:ratified                      # ratify's verdict on the build (docs/build-graph.md#ratify)
+    bazel run //:ratify -- --write              # re-ratify: the manifests, recorded from the build
 """
 
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "string_list_flag")
 load("@rola_env//:flags.bzl", "CXX11_ABI", "RATIFIED_ARCHS", "TOOLCHAIN", "TORCH", "TORCH_CUDA")
-load("//bazel:defs.bzl", "compile_database", "rola_extension", "tree_part")
+load("//bazel:defs.bzl", "compile_database", "ratify_census", "ratify_run", "ratify_test", "rola_extension", "tree_part")
 load("@rola_tree//:tree.bzl", "TRACKED")
 
 exports_files([
@@ -67,6 +69,29 @@ rola_extension(
         "//csrc/rola:stamp_unit",
         "//csrc/rola:units",
     ],
+)
+
+#: RATIFY ON THE BUILD: its census is the units' own compiles (docs/build-graph.md#ratify). The verdict is its own test,
+#: run at a milestone and before a wheel, never by the gate or the lane: between milestones the manifests are stale by
+#: design (KERNEL_STANDARDS section 16)
+ratify_census(
+    name = "census",
+    harness = "//tools:derivation_harness_source",
+    harness_binary = "//tools:derivation_harness",
+    library = ":library",
+)
+
+ratify_test(
+    name = "ratified",
+    size = "medium",
+    census = ":census",
+    data = [":tree"],
+    tags = ["manual"],
+)
+
+ratify_run(
+    name = "ratify",
+    census = ":census",
 )
 
 #: THE TREE: every tracked file, each package's part (`git ls-files`, @rola_tree), as the checks read it; and its

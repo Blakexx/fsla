@@ -20,18 +20,6 @@ filegroup(
     srcs = glob(["src/**"]),
 )
 
-#: nvcc's command line is tools/build_flags.py's: rules_cuda's own additions to it are off (its extended lambdas, which
-#: the measured build never had; its compilation-mode optimization and its seed; the host toolchain's flags)
-_NVCC_FEATURES = [
-    "-cuda_host_use_toolchain_flags",
-    "-dbg",
-    "-fastbuild",
-    "-nvcc_extended_lambda",
-    "-nvcc_fixed_random_seed",
-    "-nvcc_relaxed_constexpr",
-    "-opt",
-]
-
 #: the repository's headers come first, so a repository header wins any name collision (setup.py's include order)
 include_root(
     name = "headers",
@@ -82,7 +70,6 @@ cuda_unit(
     name = "units",
     srcs = [unit for unit in HAND_UNITS if unit != _STAMP_UNIT],
     copts = NVCC_FLAGS,
-    features = _NVCC_FEATURES,
     host_cc = _HOST_CC,
     deps = _DEPS,
 )
@@ -91,7 +78,6 @@ cuda_unit(
     name = "stamp_unit",
     srcs = [_STAMP_UNIT],
     copts = NVCC_FLAGS,
-    features = _NVCC_FEATURES,
     host_cc = _HOST_CC,
     deps = _DEPS + [":stamp"],
 )
@@ -100,7 +86,6 @@ cuda_unit(
     name = unit.removesuffix(".cu"),
     srcs = ["src/instantiations/" + unit],
     copts = NVCC_FLAGS,
-    features = _NVCC_FEATURES,
     host_cc = _HOST_CC,
     deps = _DEPS,
 ) for unit in CARRY_ARM_UNITS]

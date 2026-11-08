@@ -10,6 +10,7 @@ load("@rola_tree//:tree.bzl", "TRACKED")
 load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cc_toolchain", "use_cc_toolchain")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
+load(":cuda.bzl", "CudaUnitInfo")
 
 #: the build's parameters (the root package's settings), as every rule here reads them
 _SETTINGS = {
@@ -86,12 +87,15 @@ def _arm_set_impl(ctx):
         else:
             want.append(int(token))
     chosen = [unit for unit, arms in ctx.attr.units.items() if not want or [i for i in json.decode(arms) if i in want]]
-    return [cc_common.merge_cc_infos(cc_infos = [unit[CcInfo] for unit in chosen])]
+    return [
+        cc_common.merge_cc_infos(cc_infos = [unit[CcInfo] for unit in chosen]),
+        CudaUnitInfo(units = depset(transitive = [unit[CudaUnitInfo].units for unit in chosen])),
+    ]
 
 carry_arm_set = rule(
     implementation = _arm_set_impl,
     attrs = {
-        "units": attr.label_keyed_string_dict(providers = [CcInfo], doc = "each arm unit, and the arm indices it carries (JSON)"),
+        "units": attr.label_keyed_string_dict(providers = [CcInfo, CudaUnitInfo], doc = "each arm unit, and the arm indices it carries (JSON)"),
         "rows": attr.int(mandatory = True, doc = "the declared carry arms"),
         "_carry_arms": attr.label(default = "//:carry_arms"),
     },
@@ -239,8 +243,12 @@ def _extension_impl(ctx):
     ctx.actions.write(install, _INSTALL.format(files = " ".join([f.short_path for f in (so, record)]),
                                                headers = " ".join([f.short_path for f in headers])), is_executable = True)
     #: the verdicts are runfiles too: `bazel run` installs nothing a gate has not passed
-    return [DefaultInfo(files = depset([so, record] + verdicts), executable = install,
-                        runfiles = ctx.runfiles(files = [so, record] + verdicts + headers))]
+    return [
+        DefaultInfo(files = depset([so, record] + verdicts), executable = install,
+                    runfiles = ctx.runfiles(files = [so, record] + verdicts + headers)),
+        #: the units it links, for ratify's census (`ratify_census`)
+        CudaUnitInfo(units = depset(transitive = [dep[CudaUnitInfo].units for dep in ctx.attr.deps if CudaUnitInfo in dep])),
+    ]
 
 rola_extension = rule(
     implementation = _extension_impl,
@@ -272,6 +280,100 @@ rola_extension = rule(
         "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
     },
     doc = "The extension `rola_cu13/_C.abi3.so` and its build record; `bazel run` copies both into the checkout.",
+)
+
+def _census_impl(ctx):
+    units = ctx.attr.library[CudaUnitInfo].units.to_list()
+    tools = {
+        "ptxas": [f for f in ctx.files._nvcc if f.basename == "ptxas"][0],
+        "cuobjdump": ctx.file._cuobjdump,
+        "nvdisasm": ctx.file._nvdisasm,
+        "mold": [f for f in ctx.files._linker if f.basename == "mold"][0],
+    }
+    harness = ctx.executable.harness_binary
+    record = ctx.actions.declare_file(ctx.label.name + ".json")
+    ctx.actions.write(record, json.encode_indent({
+        "units": [{"source": u.source, "report": u.report.short_path, "object": u.object.short_path} for u in units],
+        "tools": {name: f.short_path for name, f in tools.items()},
+        "derivation": {"harness": ctx.file.harness.short_path, "binary": harness.short_path},
+        "parameters": {
+            "archs": ",".join(_value(ctx, "_archs")),
+            "carry_arms": ",".join(_value(ctx, "_carry_arms")),
+            "decode_arms": ",".join(_value(ctx, "_decode_arms")),
+            "carry_parts": _value(ctx, "_carry_parts"),
+        },
+    }) + "\n")
+    files = [record, ctx.file.harness, harness] + tools.values() + [u.report for u in units] + [u.object for u in units]
+    return [DefaultInfo(files = depset([record]), runfiles = ctx.runfiles(files = files))]
+
+ratify_census = rule(
+    implementation = _census_impl,
+    attrs = _setting_attrs() | {
+        "library": attr.label(mandatory = True, providers = [CudaUnitInfo], doc = "the library whose units are counted"),
+        "harness": attr.label(mandatory = True, allow_single_file = [".cu"], doc = "the derivation harness's source"),
+        "harness_binary": attr.label(mandatory = True, executable = True, cfg = "target", doc = "the harness, built"),
+        "_nvcc": attr.label(default = "@cuda//:nvcc_all_files"),
+        "_linker": attr.label(default = "@mold//:linker"),
+        "_cuobjdump": attr.label(default = "@cuda_tools//:bin/cuobjdump", allow_single_file = True),
+        "_nvdisasm": attr.label(default = "@cuda_tools//:bin/nvdisasm", allow_single_file = True),
+    },
+    doc = "The census record ratify reads in place of its recompile (tools/ratify.py's `--graph`): each unit the " +
+          "library links (its source, nvcc's diagnostics, its object), the graph's assembler, disassemblers and " +
+          "linker, the derivation harness the graph built, and the build's parameters; every path relative to the " +
+          "runfiles' root, which hold them all.",
+)
+
+_RATIFIED = """\
+#!/bin/bash
+# ratify's verdict on the graph's build (bazel/defs.bzl's ratify_test): `tools/ratify.py --graph` in a copy of the tree,
+# so a tool that resolves a path reads the copy (rule 14); the census record's paths are relative to the runfiles
+set -euo pipefail
+tree="$TEST_TMPDIR/tree"
+cp -rL "$TEST_SRCDIR/_main" "$tree"
+rm -f "$tree/$TEST_BINARY"
+cd "$tree"
+unset ROLA_DEV_CONFIG
+export PATH={venv}/bin:/usr/bin:/bin
+exec python3 tools/ratify.py --graph {census} --runfiles "$TEST_SRCDIR/_main"
+"""
+
+def _ratify_test_impl(ctx):
+    script = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(script, _RATIFIED.format(venv = shell.quote(VENV), census = shell.quote(ctx.file.census.short_path)), is_executable = True)
+    runfiles = ctx.runfiles(files = ctx.files.data).merge(ctx.attr.census[DefaultInfo].default_runfiles)
+    return [DefaultInfo(executable = script, runfiles = runfiles)]
+
+ratify_test = rule(
+    implementation = _ratify_test_impl,
+    test = True,
+    attrs = {
+        "census": attr.label(mandatory = True, allow_single_file = True, doc = "the census record (`ratify_census`)"),
+        "data": attr.label_list(allow_files = True, doc = "the tree ratify reads: its sources, manifests and tools"),
+    },
+    doc = "Ratify's verdict on the graph's build -- every refusal of docs/ratification.md -- cached on the census, " +
+          "the tree and the manifests.",
+)
+
+_RATIFY = """\
+#!/bin/bash
+# `tools/ratify.py --graph` on the graph's build, in the checkout (bazel/defs.bzl's ratify_run): `--write` records the
+# manifests there, `--census` measures; the census record's paths are relative to the runfiles, where `bazel run` starts
+set -euo pipefail
+runfiles="$PWD"
+cd "${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
+exec {venv}/bin/python3 tools/ratify.py --graph "$runfiles/{census}" --runfiles "$runfiles" "$@"
+"""
+
+def _ratify_run_impl(ctx):
+    script = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(script, _RATIFY.format(venv = shell.quote(VENV), census = ctx.file.census.short_path), is_executable = True)
+    return [DefaultInfo(executable = script, runfiles = ctx.attr.census[DefaultInfo].default_runfiles)]
+
+ratify_run = rule(
+    implementation = _ratify_run_impl,
+    executable = True,
+    attrs = {"census": attr.label(mandatory = True, allow_single_file = True, doc = "the census record (`ratify_census`)")},
+    doc = "`bazel run` ratify on the graph's build in the checkout: its arguments are ratify's (`--write`, `--census`).",
 )
 
 _TREE_TEST = """\

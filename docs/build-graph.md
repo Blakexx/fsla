@@ -96,9 +96,9 @@ headers into `build/generated`.
 ## <a id="gates"></a>The library's gates
 
 Building `//:library` runs the gates below; their verdicts are its outputs and its runfiles, so neither a build nor
-`bazel run` hands over a library one of them has not passed. Each reruns only when its inputs change. Ratify's
-post-build recompile is not among them: setup.py's build runs it (a warning between milestones, fatal under
-`ROLA_STRICT_MANIFEST`; KERNEL_STANDARDS section 16).
+`bazel run` hands over a library one of them has not passed. Each reruns only when its inputs change. Ratify is not
+among them: the manifests are stale between milestones by design (KERNEL_STANDARDS section 16), so its verdict is a
+target of its own ([below](#ratify)).
 
 - THE BUILD GATES AND THE RECORD (`bazel/record.py`): rule 1 (`tools/toolchains.py`'s `rule1`, setup.py's too) -- the
   graph's ptxas is the toolchain record's and the manifests' byte for byte (the tie between that record and
@@ -113,6 +113,20 @@ post-build recompile is not among them: setup.py's build runs it (a warning betw
   what it carries, loaded by the environment's interpreter against the toolkit's driver stub, so the answer is the
   binary's on any machine. It runs outside the sandbox, where the environment's packages are, the environment's
   store path on its command line (the path carries the environment's key).
+
+## <a id="ratify"></a>Ratify on the build
+
+`bazel test //:ratified` is ratify's verdict on the library the graph built, every refusal of
+[`ratification.md`](ratification.md#what-the-gate-refuses): `tools/ratify.py --graph` in a copy of the tree, cached on
+the census, the tree and the manifests. It is tagged `manual`, so neither the gate nor the lane runs it: it runs at a
+milestone and before a wheel. `bazel run //:ratify -- --write` re-ratifies in the checkout, and `-- --census --json
+PATH` measures. Neither compiles: the census (`//:census`, `bazel/defs.bzl`'s `ratify_census`) is the units' own
+compiles, each unit's ptxas report and object (the `cuda_unit` rule's), with the derivation harness the graph builds
+(tools/BUILD.bazel's `derivation_harness`, [`internals/tools/ratify.md`](internals/tools/ratify.md#graph)). On
+2026-11-08 the census equalled the compile path's (`python tools/ratify.py --census`: 750 entries, every register,
+spill, local-access count and body hash) and the verdict was the same line for line; the compile path also printed its
+sccache's provenance, where the graph prints a REPORT, since the graph compiles with no cache. The census reads in
+15 s at 3 jobs.
 
 ## <a id="checks"></a>The checks
 

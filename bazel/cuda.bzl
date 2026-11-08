@@ -9,6 +9,23 @@ load("@rules_cuda//cuda:defs.bzl", "find_cuda_toolchain")
 load("@rules_cuda//cuda/private:action_names.bzl", "ACTION_NAMES")
 load("@rules_cuda//cuda/private:cuda_helper.bzl", "cuda_helper")
 
+CudaUnitInfo = provider(
+    doc = "The units a target compiled or links, for ratify's census (bazel/defs.bzl's `ratify_census`).",
+    fields = {"units": "depset of struct(source, report, object): each unit's source, nvcc's diagnostics, its object"},
+)
+
+#: rules_cuda's own additions to nvcc's command line, off on every unit: its extended lambdas, its compilation-mode
+#: optimization and seed, the host toolchain's flags -- the command line is the unit's options alone
+_RULES_CUDA_ADDITIONS = [
+    "-cuda_host_use_toolchain_flags",
+    "-dbg",
+    "-fastbuild",
+    "-nvcc_extended_lambda",
+    "-nvcc_fixed_random_seed",
+    "-nvcc_relaxed_constexpr",
+    "-opt",
+]
+
 def _cuda_unit_impl(ctx):
     cc_toolchain = find_cc_toolchain(ctx)
     cuda_toolchain = find_cuda_toolchain(ctx)
@@ -32,7 +49,7 @@ def _cuda_unit_impl(ctx):
     listed.add_all(common.headers)
     ctx.actions.write(candidates, listed)
 
-    objects, reports, names = [], [], {}
+    objects, reports, units, names = [], [], [], {}
     for src in ctx.files.srcs:
         stem = src.basename.removesuffix(".cu")
         if stem in names:
@@ -87,6 +104,7 @@ def _cuda_unit_impl(ctx):
         )
         objects.append(obj)
         reports.append(report)
+        units.append(struct(source = src.path, report = report, object = obj))
 
     linking, _ = cc_common.create_linking_context_from_compilation_outputs(
         name = ctx.label.name,
@@ -101,10 +119,11 @@ def _cuda_unit_impl(ctx):
     return [
         DefaultInfo(files = depset(objects)),
         OutputGroupInfo(ptxas_reports = depset(reports)),
+        CudaUnitInfo(units = depset(units)),
         cc_common.merge_cc_infos(direct_cc_infos = [CcInfo(linking_context = linking)], cc_infos = [common.transitive_cc_info]),
     ]
 
-cuda_unit = rule(
+_cuda_unit = rule(
     implementation = _cuda_unit_impl,
     attrs = {
         "srcs": attr.label_list(allow_files = [".cu"], doc = "the units, one compile each"),
@@ -132,7 +151,11 @@ cuda_unit = rule(
     fragments = ["cpp"],
     #: rules_cuda's `use_cuda_toolchain()` names the type relative to the rule that calls it, our repository
     toolchains = use_cc_toolchain() + [Label("@rules_cuda//cuda:toolchain_type")],
-    provides = [CcInfo],
+    provides = [CcInfo, CudaUnitInfo],
     doc = "CUDA units compiled as rules_cuda's cuda_library compiles them (its toolchain, its command line, a " +
           "position-independent object, always linked), each by one action whose unread headers leave its cache key.",
 )
+
+def cuda_unit(name, features = [], **kwargs):
+    """CUDA units, rules_cuda's own additions to nvcc's command line off (`_RULES_CUDA_ADDITIONS`)."""
+    _cuda_unit(name = name, features = _RULES_CUDA_ADDITIONS + features, **kwargs)
