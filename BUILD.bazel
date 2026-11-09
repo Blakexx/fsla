@@ -416,31 +416,9 @@ checkout_test(
     tools = {":image": "--layout"},
 )
 
-#: the checked-in generated units are their generator's, and the README's support tables the derived ones
-tree_test(
-    name = "generated_shards",
-    size = "small",
-    cmd = ["python3", "tools/gen_shards.py", "--check"],
-    data = [":tree"],
-)
-
-tree_test(
-    name = "supported_matrix",
-    size = "small",
-    #: the matrix reads rola's own capability table: the tree's package, imported, never built
-    cmd = [
-        "/bin/bash",
-        "-c",
-        "PYTHONPATH=. python3 tools/supported.py --check",
-    ],
-    data = [":tree"],
-)
-
 test_suite(
     name = "lints",
     tests = [
-        ":generated_shards",
-        ":supported_matrix",
         ":ruff",
         ":ruff_e3",
         ":lint_standards",

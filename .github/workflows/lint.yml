@@ -22,18 +22,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # the dev config's reader and the graph's front door import rola-devtools from its checkout beside this one
-      - name: rola-devtools beside the checkout, at the commit the tree pins
-        run: |
-          commit="$(sed -n 's|.*rola-devtools@\([0-9a-f]\{40\}\).*|\1|p' tools/devtools.txt)"
-          git clone -q https://github.com/Blakexx/rola-devtools ../rola-devtools
-          git -C ../rola-devtools checkout -q "$commit"
-      # the graph's environment (torch and its CUDA libraries) is several GB: the runner image's unused toolchains go
-      - name: room for the graph's environment
-        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-      - name: the pinned bazelisk
-        run: |
-          python3 tools/bootstrap.py
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/graph
       - name: the commit gate's checks
         run: bazel test $(bazel query 'tests(//:gate) except //:dev_container')

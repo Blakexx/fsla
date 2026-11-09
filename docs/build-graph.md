@@ -6,8 +6,10 @@ release and its digest), `bazel/` (the graph's machinery: its rules, the environ
 actions run) and `bazel/bazel` (the front door); each `BUILD.bazel` sits beside what it describes. The graph builds the
 extension (`//:library`, [below](#compile)), gates it ([below](#gates)) and runs the checks ([below](#checks)).
 The commit gate is `bazel test //:gate` (`tools/git-hooks/pre-commit`, on the commit as git will write it), and the
-test tiers are the graph's targets too (`//:lane`, [below](#checks)). Beside the graph, `setup.py` builds the extension too
-([`build.md`](build.md)) with ratify's recompile and the wheels, and CI runs the lints' tools directly. Measurement is
+test tiers are the graph's targets too (`//:lane`, [below](#checks)). Beside the graph, `setup.py` builds the two wheels
+([`build.md`](build.md)) until they are the graph's targets, and ratify keeps its compile path for a new
+architecture's first manifest ([below](#ratify)). CI runs the commit gate's checks through the graph
+(`.github/workflows/lint.yml`, on a fresh runner as `.github/actions/graph` sets one up). Measurement is
 `rola_devtools.build`'s
 ([`measurement.md`](measurement.md)), whose timing sessions hold the GPU and the clock as machine-wide counting
 semaphores, which Bazel cannot do for an action.
@@ -127,6 +129,11 @@ compiles, each unit's ptxas report and object (the `cuda_unit` rule's), with the
 spill, local-access count and body hash) and the verdict was the same line for line; the compile path also printed its
 sccache's provenance, where the graph prints a REPORT, since the graph compiles with no cache. The census reads in
 15 s at 3 jobs.
+
+THE GAP: the graph ratifies the shipped set, the architectures the toolchain's manifests already name
+(`RATIFIED_ARCHS`), so an architecture's FIRST manifest has no graph form -- `--//:archs` naming a new one makes an
+iteration build, which is never ratified. Until it has one, a first manifest is the compile path's (`python
+tools/ratify.py --arch XX --write`, [`bringup.md`](bringup.md)), and rule 3's refusal names it.
 
 ## <a id="checks"></a>The checks
 
@@ -261,6 +268,7 @@ names one).
     bazel run //:docrefs -- accept <doc>                            # a doc's citations pinned, read against their targets
     bazel run //:measure -- run declare.py:all --only <glob>        # a measurement session (rola-devtools' build system)
     bazel run //:results -- show|history|latest|verdict|commit      # the measurements store
+    bazel run //:mirror -- --check                                  # the public mirror's export (CI's mirror job)
 
 Never pass `--jobs` or a cache path: the front door sets both. Nothing the graph builds lands in the checkout but what a
 run target writes there -- the library `bazel run //:library` copies in, with the build's generated headers into

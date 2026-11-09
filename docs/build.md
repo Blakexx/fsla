@@ -28,12 +28,10 @@ pip install -e . --no-build-isolation
 from PyPI and build the extension against the wrong ABI. Flash-attention and
 mamba-ssm require the same thing for the same reason.
 
-<a id="iteration"></a>**Iterating.** A `setup.py` build whose architectures are not the toolchain's ratified set
-(`ROLA_CUDA_ARCHS`) is an ITERATION build, as an arm subset is (`_is_iteration_build`): it prints the NOT SHIPPABLE
-banner, takes a share of the host budget rather than all of it, and skips the post-build ratify, which could only warn;
-the arm table, the SASS gate (each function's registers on its line) and the device stamp still run. The SASS gate
-replays an unchanged cubin's verdict ([`sass_gate.md#cache`](internals/tools/sass_gate.md#cache)), so an iteration
-build's time is the changed units' compile and their cubins' read.
+<a id="iteration"></a>**Its iteration settings have no caller.** The parameters below that make a `setup.py` build an
+ITERATION build (an architecture or arm subset, `_is_iteration_build`) were the development loop's, which is the
+graph's now (`bazel run //:library --//:archs=86`, [`build-graph.md`](build-graph.md#compile)); the wheels' build
+clears every one. They go with `setup.py`.
 
 A build's PARAMETERS -- what one build is -- are environment variables set per invocation, because pip passes
 nothing else to `setup.py`. Everything about the MACHINE is the dev config (`tools/dev_config.py`,
@@ -72,14 +70,6 @@ iteration build holds the slots free now, a gate build waits for every slot, and
 no invocation path can skip it. Any other CPU-heavy command -- a census compile,
 a clang-tidy translation unit -- runs under the same pool with
 `python -m rola_devtools.locks.host [--exclusive] -- <cmd>`.
-
-```bash
-# iteration: single-arch, arm-subset
-ROLA_CUDA_ARCHS=86 ROLA_CARRY_ARMS=all python -m pip install -e . --no-build-isolation
-
-# gate: both arches, the shipped set
-python -m pip install -e . --no-build-isolation
-```
 
 ## What the build does, in order
 
@@ -319,9 +309,8 @@ plugin, or a mismatched one, the first kernel call raises, naming `pip install "
 parts (the oracle, the configuration objects) still import. The extra is declared in `setup.py` and not
 `pyproject.toml` because it pins `rola`'s own version.
 
-A checkout builds the same package in place: `pip install -e . --no-build-isolation` puts the binary at
-`rola_cu13/_C.abi3.so` (and the part harness's driver at `rola_cu13/_C_parts.abi3.so`), so a checkout and an installed
-wheel load the binary by one path. `tools/toolchains.py`'s `built_extension` is how the tools find it.
+A checkout's binary sits where a wheel puts it: `bazel run //:library` copies it to `rola_cu13/_C.abi3.so`, so a
+checkout and an installed wheel load the binary by one path. `tools/toolchains.py`'s `built_extension` is how the tools find it.
 
 **The wheels are one gate build, split.** `python tools/wheels.py` refuses a tree with changes, builds the commit with
 every iteration knob cleared and `ROLA_STRICT_MANIFEST=1`, and refuses the build unless its record says: this version,
@@ -342,7 +331,7 @@ or `fla` dependency.
 ## Standards lint
 
 `KERNEL_STANDARDS.md` is enforced by the lint family under `tools/lint/` — the ast-grep rules, `lint_standards.py`,
-the two pinned clang-tidy profiles and the ratchets — run by the commit gate (`bazel test //:gate`); CI's
-`.github/workflows/lint.yml` runs the ones that need no build directly. Its roster, how each gates, how the clang-tidy
+the two pinned clang-tidy profiles and the ratchets — run by the commit gate (`bazel test //:gate`), and by CI through
+the graph (`.github/workflows/lint.yml`). Its roster, how each gates, how the clang-tidy
 profiles read each unit's own compile and how to run them by hand are
 [`internals/tools/lint.md`](internals/tools/lint.md).

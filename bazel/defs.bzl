@@ -556,8 +556,8 @@ tool_run = rule(
         "environment": attr.bool(doc = "run on the graph environment's interpreter, for a tool that imports nothing of " +
                                        "the checkout's siblings (CI has no venv)"),
     },
-    doc = "A tree tool run by `bazel run` in the checkout on its own venv (docs/build-graph.md#use): its arguments " +
-          "follow `--`.",
+    doc = "A tree tool run by `bazel run` in the checkout, on its own venv or the environment's interpreter " +
+          "(docs/build-graph.md#use): its arguments follow `--`.",
 )
 
 def tree_part(parts = {}):

@@ -3,7 +3,9 @@
 """WHAT A TOOL KNOWS BEFORE THE DEV CONFIG'S READER IS IMPORTABLE: where the sibling checkouts are, and the
 rola-devtools checkout the reader comes from. Run, it is the machine's one step outside the graph:
 
-    python3 tools/bootstrap.py      # the pinned bazelisk installed and `bazel` linked to it; then `bazel run //:init`
+    python3 tools/bootstrap.py                  # the pinned bazelisk installed and `bazel` linked to it; then init
+    python3 tools/bootstrap.py --devtools-pin   # the rola-devtools repository and commit the tree pins (a fresh runner)
+    python3 tools/bootstrap.py --bin-dir        # the directory `bazel`'s link is in, for a PATH that lacks it
 
 
 The reader (`rola_devtools.config`) and the host budget (`rola_devtools.locks.host`) are standard-library Python in the
@@ -13,8 +15,10 @@ checkout. Standard library only. Docs: docs/internals/tools/dev_config.md#bootst
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -36,12 +40,31 @@ def devtools() -> Path:
     return Path(value).expanduser() if value else DEVTOOLS
 
 
+def devtools_pin() -> tuple[str, str]:
+    """The rola-devtools repository and commit `tools/devtools.txt` pins, which a machine with no checkout of it clones
+    beside this one before anything here can run."""
+    m = re.search(r"git\+(\S+)@([0-9a-f]{40})", (ROOT / "tools" / "devtools.txt").read_text())
+    if not m:
+        raise SystemExit("tools/devtools.txt names no `git+URL@COMMIT` requirement")
+    return m.group(1), m.group(2)
+
+
 def main() -> int:
     """The pinned bazelisk and its `bazel` link (`tools/dev.py`'s `install_bazelisk`), by the machine's own python3 with
     the reader imported from the devtools checkout, as the front door imports it."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--devtools-pin", action="store_true", help="print the pinned rola-devtools repository and commit")
+    ap.add_argument("--bin-dir", action="store_true", help="print the directory `bazel`'s link is in")
+    a = ap.parse_args()
+    if a.devtools_pin:
+        print(*devtools_pin())
+        return 0
     sys.path[:0] = [str(devtools()), str(ROOT / "tools")]
     import dev
 
+    if a.bin_dir:
+        print(Path(dev.dev_config.get("toolchain.bazel")).parent)
+        return 0
     dev.install_bazelisk()
     print("bootstrap: `bazel` is the pinned bazelisk; next, bazel run //:init")
     return 0
