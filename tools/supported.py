@@ -2,7 +2,8 @@
 
 A hand-maintained support table says what someone hoped was true when
 they last edited it; this one is derived from the two artifacts that decide the
-answer, and the commit gate fails on drift (`//:supported_matrix`):
+answer, and the commit gate fails on drift (the standards lint's `check_supported_table`; the capability table's
+test is the CPU tier's, `tests/unit/test_capability_table_docs.py`):
 
 * ``csrc/rola/src/common/hardware.cuh`` (generated from ``hardware.json``) -- the architectures the KERNEL knows how to
   size itself for. ``sm_arch_tabulated()`` is a ``static_assert`` at compile time
@@ -16,8 +17,8 @@ arch that is tabulated but not ratified is listed with an empty toolchain column
 and the status *not ratified -- will refuse to load*. A support claim is worth
 nothing if the table quietly implies coverage nobody measured.
 
-    bazel run //tools:supported              # print the table
-    bazel run //tools:supported -- --check   # fail if README.md has drifted
+    bazel run //tools:supported              # print the tables
+    bazel run //tools:supported -- --write   # rewrite README.md's generated blocks
 
 GPU names are the only hand-written column, in ``GPUS`` below, because a compute
 capability does not know its own marketing name. They are labels; the ratification
@@ -28,7 +29,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import sys
 from pathlib import Path
 
 import toolchains
@@ -126,18 +126,16 @@ def table() -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--check", action="store_true",
-                    help="fail if README.md's generated block has drifted")
-    ap.add_argument("--write", action="store_true", help="rewrite README.md's block")
+    ap.add_argument("--write", action="store_true", help="rewrite README.md's generated blocks")
     a = ap.parse_args()
 
-    if not (a.check or a.write):
+    if not a.write:
         for marker, produce in BLOCKS.items():
             print(f"--- {marker}")
             print(produce())
         return 0
 
-    text = new = README.read_text()
+    new = README.read_text()
     for marker, produce in BLOCKS.items():
         begin, end = f"<!-- BEGIN GENERATED: {marker} -->", f"<!-- END GENERATED: {marker} -->"
         if begin not in new or end not in new:
@@ -146,19 +144,8 @@ def main() -> int:
         _, tail = rest.split(end, 1)
         new = f"{head}{begin}\n{produce()}\n{end}{tail}"
 
-    if a.write:
-        README.write_text(new)
-        print(f"README.md: {len(BLOCKS)} generated blocks rewritten")
-        return 0
-    if new != text:
-        sys.stderr.write(
-            "README.md's GENERATED tables have DRIFTED from the artifacts that decide "
-            "them (the kernel's arch table, the committed manifests, the activation "
-            "registry). Regenerate:\n"
-            "    bazel run //tools:supported -- --write\n"
-            "A support table edited by hand is a claim, not a report.\n")
-        return 1
-    print(f"README.md: {len(BLOCKS)} generated blocks are up to date")
+    README.write_text(new)
+    print(f"README.md: {len(BLOCKS)} generated blocks rewritten")
     return 0
 
 

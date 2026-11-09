@@ -18,3 +18,6 @@ description: Load before committing or pushing in this repo: the gate a commit r
 6. After the commit, its review lands detached (`tools/git-hooks/post-commit`;
    `bazel run //tools:review_gate -- --show 1`): never wait on it. Read it when it lands, and fix its findings in the
    next commit after it, a BLOCK fixed or answered in words (`docs/internals/tools/review_gate.md#pipelined`).
+7. A push to the default branch publishes (CI mirrors it): before it, every review of its commits has landed and been
+   read (`docs/internals/tools/review_gate.md#pipelined`). A push of any other branch to the private remote waits on
+   nothing.

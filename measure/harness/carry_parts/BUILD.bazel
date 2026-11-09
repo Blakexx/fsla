@@ -22,5 +22,8 @@ cuda_unit(
     ],
 )
 
+#: the step signatures its probes keep on purpose, which the SASS gate reads (//:parts_library)
+exports_files(["kept_signatures.json"])
+
 #: this package's part of the tree the checks read
 tree_part()

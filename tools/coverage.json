@@ -30,9 +30,7 @@
    "phases": {
     "exempt": "a footprint stamp, not a workload"
    },
-   "ratified": {
-    "owed": "not in the committed manifests; the next milestone ratify records it"
-   },
+   "ratified": "manifest",
    "overlap": {
     "exempt": "a constant-size stamp or clock read: one tiny launch, no stream to overlap"
    }
@@ -120,9 +118,7 @@
     "owed": "the line is met and the per-component instructions measured at docs/internals/facts/facts.md#budget; tools/budgets/facts.json lands with an instrument row that runs the facts pass's region ledger (none is declared yet)"
    },
    "phases": "tests/integration/test_facts_pass.py::test_a_bound_ledger_books_every_phase_and_changes_nothing",
-   "ratified": {
-    "owed": "a new kernel: the next milestone ratify records it"
-   },
+   "ratified": "manifest",
    "overlap": "facts-alt-k4"
   },
   "intra_kernel": {
@@ -130,9 +126,7 @@
    "sanitizer": "intra",
    "budget": "tools/budgets/intra.json",
    "phases": "tests/integration/test_intra_kernel.py::test_a_bound_ledger_books_every_phase_and_changes_nothing",
-   "ratified": {
-    "owed": "a new kernel: the next milestone ratify records it"
-   },
+   "ratified": "manifest",
    "overlap": {
     "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
    }
@@ -144,9 +138,7 @@
     "owed": "the producer's budget lines are on its plan card; the region ledger's file lands with its optimization pass"
    },
    "phases": "tests/integration/test_produce_kernel.py::test_a_bound_ledger_books_every_phase_and_changes_nothing",
-   "ratified": {
-    "owed": "a new kernel: the next milestone ratify records it"
-   },
+   "ratified": "manifest",
    "overlap": {
     "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
    }
@@ -164,9 +156,7 @@
    "phases": {
     "exempt": "an instrument, not a workload"
    },
-   "ratified": {
-    "owed": "not in the committed manifests; the next milestone ratify records it"
-   },
+   "ratified": "manifest",
    "overlap": {
     "exempt": "a constant-size stamp or clock read: one tiny launch, no stream to overlap"
    }
@@ -264,9 +254,7 @@
    "phases": {
     "exempt": "one straight-line step a thread: no phases"
    },
-   "ratified": {
-    "owed": "a new kernel: the next milestone ratify records it"
-   },
+   "ratified": "manifest",
    "overlap": {
     "exempt": "a small launch before the carry on its stream: its cost is the carry's row's"
    }
@@ -282,9 +270,7 @@
    "phases": {
     "exempt": "one phase a kernel (the window write masses): the pass is three streaming launches, each timed whole"
    },
-   "ratified": {
-    "owed": "a new kernel: the next milestone ratify records it"
-   },
+   "ratified": "manifest",
    "overlap": "scale-writes-alt-k4"
   },
   "scale_scan": {
@@ -298,9 +284,7 @@
    "phases": {
     "exempt": "one phase a kernel (the windows' prefix): the pass is three streaming launches, each timed whole"
    },
-   "ratified": {
-    "owed": "a new kernel: the next milestone ratify records it"
-   },
+   "ratified": "manifest",
    "overlap": {
     "exempt": "a scan of windows x width_S x 8 bytes a head: its time is its launch's, under a microsecond of DRAM"
    }
@@ -316,9 +300,7 @@
    "phases": {
     "exempt": "one phase a kernel (the bytes): the pass is three streaming launches, each timed whole"
    },
-   "ratified": {
-    "owed": "a new kernel: the next milestone ratify records it"
-   },
+   "ratified": "manifest",
    "overlap": "scale-reads-alt-k4"
   }
  }

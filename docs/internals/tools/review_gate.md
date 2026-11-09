@@ -30,12 +30,13 @@ standards, the message, the diff -- and kept in the git common dir's `rola-revie
 
 <a id="pipelined"></a>PIPELINED (Blake, 2026-11-08): nothing waits on a review. The next commit is made while it runs;
 each report is read when it lands, and its findings go into the next commit after it, each block fixed or answered in
-words. A review may trail a commit or two; a push to a public mirror waits for every landed review to be read.
+words. A review may trail a commit or two; a push to the default branch, which publishes (CI mirrors it to the public
+repository, `.github/workflows/mirror.yml`), waits until every review of its commits has landed and been read.
 
 ADVISORY: `tools/git-hooks/post-commit` starts a review of `HEAD` detached after every commit, so a commit is neither
 slowed nor refused; it is skipped mid-rebase, without the `claude` CLI, or with `ROLA_REVIEW=off`, and it runs from
 the checkout's own venv (git's rola.venv), saying so and skipping when that names none (`bazel run //:dev_env`). The first review
 (Opus, the carve planner's commit 4fbcf920) took 236 s and $1.65 and named two fair warnings. Blocking, when the
-advisory period's false positives are known, moves the review to the commit-msg stage and refuses only on a cited
-`block` finding, overridable by a `Review-Override:` trailer naming the rule and the reason -- so `--no-verify` is never
-the way out.
+advisory period's false positives are known, keeps the pipeline: no commit waits on its review, and the push to the
+default branch is what is refused while one of its commits has a cited `block` finding no later commit answers, by a
+fix or by a `Review-Override:` trailer naming the rule and the reason -- so `--no-verify` is never the way out.

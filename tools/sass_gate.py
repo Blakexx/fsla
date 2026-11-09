@@ -26,9 +26,9 @@ What it reads, per function of every cubin (every kernel and every outlined devi
                   records them)
 On a whole extension it also reds every kernel the source defines (`tools/kernels.py`) that no cubin carries: a gate
 that cannot see a kernel has not gated it. An instrument's library (`--instrument`, bazel/defs.bzl's `rola_instrument`)
-carries its own kernels and owes none of the source's, and its kernels are PROBES: a calibration puts global memory or a
-branch in its MMA loop to measure it, so the step lints, which judge a production step's design, do not read it; the
-signatures that make a binary unfit to measure do (local memory, a stack frame, convergence calls, predicated HMMA). It prints the counts it reads, the same way `ratify` prints registers and
+carries its own kernels and owes none of the source's. Its kernels are PROBES, and a probe that keeps a step
+signature on purpose (a global reduction between its HMMAs, the cost it measures) declares it in the instrument's
+DECLARATIONS, by function, with that cost; an undeclared signature is red, and so is a declaration no function uses. It prints the counts it reads, the same way `ratify` prints registers and
 spills, so a clean run is a line of zeros and a red names the signature.
 """
 from __future__ import annotations
@@ -127,9 +127,6 @@ def convergence_calls(lines: list[tuple[int, str, str, str]], labels: dict[str, 
 
 
 _MMA = re.compile(r"^(HMMA|IMMA)")
-#: KERNEL_STANDARDS 27's debts: the kernels built before the rule whose steps still branch, each with what replaces it
-_STEP_BRANCH_DEBT = {
-}
 
 
 def _resolver(lines: list[tuple[int, str, str, str]], labels: dict[str, int]):
@@ -363,19 +360,24 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
             reds.append(f"convergence subroutines a converged warp executes ({calls})")
         if phmma:
             reds.append(f"predicated HMMA ({phmma})")
-        #: the step lints judge a production step; an instrument's probes are not one
-        step = not INSTRUMENT
-        if step and branches and not any(debt in name for debt in _STEP_BRANCH_DEBT):
+        #: an instrument's probe keeps a step signature only where its declarations name it (the module docstring)
+        kept = {(key, lint) for key, lints in INSTRUMENT.items() if re.search(key, name) for lint in lints}
+        exhibited = {lint for lint, count in (("step_branches", branches), ("step_xu", xu), ("step_global", memory))
+                     if count}
+        held = {lint for _, lint in kept}
+        if branches and "step_branches" not in held:
             reds.append(f"branches inside an MMA step ({branches})")
-        if step and xu and not any(debt in name for debt in _STEP_XU_DEBT):
+        if xu and "step_xu" not in held and not any(debt in name for debt in _STEP_XU_DEBT):
             reds.append(f"the conversion unit inside an MMA step ({xu})")
-        if step and memory and not any(debt in name for debt in _STEP_GLOBAL_DEBT):
+        if memory and "step_global" not in held and not any(debt in name for debt in _STEP_GLOBAL_DEBT):
             reds.append(f"global memory inside an MMA step ({memory})")
         if max_per_hmma is not None and hmma and per > max_per_hmma:
             reds.append(f"static instructions per HMMA {per:.1f} > {max_per_hmma}")
         cover = step_cover(cubin, name, whole[name], labels[name], registers)
         debt = next((d for d in _STEP_COVER_DEBT if d in name), None)
-        if step and cover is not None and cover["cover"] < STEP_LINE:
+        if cover is not None and cover["cover"] < STEP_LINE:
+            exhibited.add("step_cover")
+        if cover is not None and cover["cover"] < STEP_LINE and "step_cover" not in held:
             if debt is None:
                 reds.append(f"a step loop's pipe cover {cover['cover']}% < {STEP_LINE:.1f}%")
             elif cover["key"] not in floors:
@@ -390,7 +392,8 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
                        "step_cover": None if cover is None else {k: cover[k] for k in (
                            "cover", "occupancy", "warps", "period", "pipe", "exposed", "worst", "loops", "key",
                            "each")},
-                       "reds": reds}
+                       "reds": reds,
+                       "kept": sorted([key, lint] for key, lint in kept if lint in exhibited)}
         short = name[:70]
         report.append(f"{'RED ' if reds else 'ok  '} {short}: regs {registers} instr {n} hmma {hmma} per-hmma {per:.1f} "
                       f"ldl {ldl} stack {stack} calls {calls} guarded {guarded} predHMMA {phmma} "
@@ -405,8 +408,9 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
 
 #: `--loops`: each function's report is followed by each innermost MMA loop's reading and the lines its lints count
 LOOPS = False
-#: `--instrument`: the binary is an instrument's library, its kernels probes (the module docstring)
-INSTRUMENT = False
+#: `--instrument`: an instrument's declarations, `{name pattern: {step lint: the cost the probe measures}}` (the module
+#: docstring); empty for the extension, whose functions keep no step signature but a named debt
+INSTRUMENT: dict[str, dict[str, str]] = {}
 
 
 def loop_report(lines: list[tuple[int, str, str, str]], labels: dict[str, int], cover: dict | None) -> list[str]:
@@ -468,7 +472,7 @@ def cached_gate(cubin: Path, kernel: str | None, max_per_hmma: float | None, use
     if not use:
         return gate(cubin, kernel, max_per_hmma)
     key = hashlib.sha256(json.dumps([_closure(), hashlib.sha256(cubin.read_bytes()).hexdigest(), kernel,
-                                     max_per_hmma, LOOPS, INSTRUMENT]).encode()).hexdigest()
+                                     max_per_hmma, LOOPS, sorted(INSTRUMENT.items())]).encode()).hexdigest()
     entry = sass.scratch("sass_gate_verdicts") / f"{key}.json"
     if entry.exists():
         doc = json.loads(entry.read_text())
@@ -510,9 +514,9 @@ def main() -> int:
     ap.add_argument("binary", type=Path)
     ap.add_argument("--kernel", default=None, help="narrow to the functions matching this regex (a measurement)")
     ap.add_argument("--member", default=None, help="narrow to the cubins whose name holds this (a measurement)")
-    ap.add_argument("--instrument", action="store_true",
-                    help="an instrument's library: its kernels are probes, gated on the signatures that make a "
-                         "binary unfit to measure, and no kernel of the source is owed")
+    ap.add_argument("--instrument", type=Path, default=None, metavar="DECLARATIONS",
+                    help="an instrument's library: no kernel of the source is owed, and its probes keep the step "
+                         "signatures DECLARATIONS names (a JSON file, docs/internals/tools/sass_gate.md#instrument)")
     ap.add_argument("--max-per-hmma", type=float, default=None)
     ap.add_argument("--json", type=Path, default=None, help="also write every function's signature here, by cubin")
     ap.add_argument("--loops", action="store_true",
@@ -539,7 +543,7 @@ def main() -> int:
         return rekey_floors(a.binary)
     global LOOPS, INSTRUMENT
     LOOPS = a.loops
-    INSTRUMENT = a.instrument
+    INSTRUMENT = json.loads(a.instrument.read_text())["kernels"] if a.instrument else {}
     allok = True
     doc = {}
     seen: set[str] = set()
@@ -560,6 +564,14 @@ def main() -> int:
         for line in missing_kernels(seen):
             print(f"RED  {line}")
             allok = False
+    #: a declaration no function uses keeps nothing: red, so the declarations only say what is so
+    if a.instrument and a.kernel is None and a.member is None:
+        used = {tuple(k) for cubin in doc.values() for st in cubin["functions"].values() for k in st["kept"]}
+        for key, lints in sorted(INSTRUMENT.items()):
+            for lint in sorted(lints):
+                if (key, lint) not in used:
+                    print(f"RED  {a.instrument}: `{key}` keeps {lint}, which no function of this binary shows")
+                    allok = False
     if a.json:
         a.json.write_text(json.dumps(doc, sort_keys=True) + "\n")
     if a.write_floors:

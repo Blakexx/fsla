@@ -387,9 +387,10 @@ carries; each was re-learned by trial this week and costs a rebuild when missed.
 - A convergence barrier or a forward conditional branch inside the innermost loop that issues MMAs: A BRANCH
   INSIDE A STEP (`mma_loop_branches`, red since 2026-10-06; §27). The loop's own exit followed only by register
   copies and an unconditional back-edge is its latch, the step's end, not inside it (2026-11-06,
-  `docs/internals/tools/sass_gate.md#step-branches`). The gate names the kernels built before the
-  rule (`_STEP_BRANCH_DEBT`, each with what replaces it); a lab form that keeps its branches declares them (an
-  expectation on BSSY), or its number is refused.
+  `docs/internals/tools/sass_gate.md#step-branches`). No kernel built before the rule still
+  branches in a step, so the gate names no branch debt; a lab form that keeps its branches declares them (an
+  expectation on BSSY), or its number is refused, and an instrument's probe declares the step signatures it keeps
+  beside its source, red when undeclared or unused (`docs/internals/tools/sass_gate.md#instrument`).
 - A warp's copy tasks mapped so its lanes touch different rows: one L2 request per copy. Rule: tasks
   CONTIGUOUS in memory across a warp's lanes; coalescing is checked by `l1tex__t_requests` per
   sector, not assumed.
@@ -799,8 +800,8 @@ scheduler") and was not applied. So the step's shape is a rule, the default, enf
 6. AN INTERLEAVE IS A PROPERTY OF THE SASS: read it there, never from the source. ptxas places register-only
    instructions; a data dependency is the only lever that places an MMA, and a zero-valued one costs an instruction.
 ENFORCED: `tools/sass_gate.py` reds a convergence barrier or a forward conditional branch in the innermost loop that
-issues MMAs (§20), on every function of every build; the kernels built before the rule are its named debts, each
-with what replaces it, and the list only shrinks. `tools/lab.py` refuses a lab number whose step branches unless
+issues MMAs (§20), on every function of every build; no kernel built before the rule still branches in a step, so
+it names no debt, and an instrument's probe keeps one only where it declares it (§20). `tools/lab.py` refuses a lab number whose step branches unless
 the experiment declares them (an expectation on BSSY: a comparison baseline kept on purpose). The burst tier's lint
 (§24) holds the source side: no data-dependent `if` inside a burst function, `@burst-exempt <reason>` the only way
 out. Register moves per MMA in a step (the copy-rotation signature) and the MMA gap (the longest MMA-free run in the
@@ -913,7 +914,8 @@ prints them against the budget, and refuses to record a variant over it (`--forc
 purpose). `tools/sass_gate.py` reds, on every function of every build, conversion-unit instructions and global
 accesses other than `cp.async` inside an innermost MMA loop; the kernels built before the rule are its named debts
 (the intra's F2I epilogue, the produce kernel's unstaged operands, the fold's past-16 records), each with what
-replaces it, and the list only shrinks; a lab variant that keeps one on purpose declares STEP_XU or STEP_GLOBAL.
+replaces it, and the list only shrinks; a lab variant that keeps one on purpose declares STEP_XU or STEP_GLOBAL, and
+an instrument's probe declares it beside its source (§20).
 `tools/lab.py run` also records no variant whose output check failed, and (past the experiments recorded before the
 rule, its named debts) none without a check or a stated reason, and builds no MMA kernel without a budget or exemption.
 Measured: `read_image` (docs/lab/read_image.md).
@@ -1017,7 +1019,8 @@ gated, and an instrument's missing target is a red.
    `mma_queue`, `mma_k8`, `issue_latency`, shared writes from `smem_rates`), and reds a loop whose COVER -- its pipe
    share with the warps a scheduler its registers admit running it together, sharing the scheduler's issue port and
    the SM's memory pipe, at most its share alone times those warps and 100% -- is under 1/1.15 (§28's line): a loop
-   under it cannot be covered by the warps the design has. The kernels under it are named debts with what replaces
+   under it cannot be covered by the warps the design has (an instrument's probe that sets the pipe's share on purpose
+   declares it, §20). The kernels under it are named debts with what replaces
    them, each function held at its floor (`tools/budgets/step_floors.json`, by architecture), and the list only
    shrinks; the floors are the debt's ratchet, never its target -- a kernel is clean only at the line on every
    architecture (Blake, 2026-11-03). The cover is a model's reading: a floor is lowered (`--write-floors`) only in a

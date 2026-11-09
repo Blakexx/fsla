@@ -137,9 +137,9 @@ ROLA_CUDA_ARCHS = _declared_archs()
 #: so the POST-BUILD gate that compares the freshly built binary against the
 #: checked-in ``tools/manifests/<toolchain>/sm_XX.json`` (``_post_build_manifest_check``'s
 #: ``ratify.py`` re-run) REPORTS a mismatch instead of failing the install by default.
-#: ``ROLA_STRICT_MANIFEST=1`` restores the pre-K43 hard failure: ``tools/wheels.py``'s
-#: build sets it (docs/build.md), because THAT build must fail loudly if the tree it
-#: packages is not actually shippable. This never weakens ``tools/ratify.py`` itself -- ``--write``/
+#: ``ROLA_STRICT_MANIFEST=1`` makes a mismatch fatal: ``tools/wheels.py``'s build sets it
+#: (docs/build.md), because THAT build must fail loudly if the tree it packages is not
+#: actually shippable. This never weakens ``tools/ratify.py`` itself -- ``--write``/
 #: ``--check`` invoked directly are untouched, as are every PRE-build gate below
 #: (``_gate_ratified``/``_gate_toolchain``/``_gate_vendored``/``_gate_shards``: those
 #: are prerequisites, not staleness) -- only whether THIS INSTALL treats a

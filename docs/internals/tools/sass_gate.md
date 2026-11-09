@@ -39,7 +39,8 @@ verdict cache leaves to the cubins that changed.
 A cubin's verdict, report and statistics are recorded under the key of everything that decides them -- the cubin's
 bytes, the gate's own source closure (every module of `tools/` it has loaded, so the debt tables and machine models in
 its source are covered), `tools/budgets/step_floors.json`, the disassemblers' identity (`nvdisasm` and `cuobjdump` by
-their version lines) and the arguments (`--kernel`, `--max-per-hmma`, `--loops`) -- in the dev config's scratch
+their version lines) and the arguments (`--kernel`, `--max-per-hmma`, `--loops`, and `--instrument`'s declarations, by
+content) -- in the dev config's scratch
 (`sass_gate_verdicts/`). A cubin whose key matches is replayed: its verdict is the reading of identical bytes under an
 identical gate, the argument `tools/ratify.py`'s per-unit cache makes. Any change to the cubin or the gate misses and
 re-reads. A no-change build's gate is ~0.1 s; a one-kernel edit re-reads that kernel's cubin and the stamp's.
@@ -47,12 +48,16 @@ re-reads. A no-change build's gate is ~0.1 s; a one-kernel edit re-reads that ke
 
 ## <a id="instrument"></a>An instrument's library
 
-`--instrument` gates an instrument's library (`bazel/defs.bzl`'s `rola_instrument`, the part harness's `_C_parts`):
-its kernels are PROBES, so it owes none of the source's kernels, and the step lints -- branches, the conversion unit
-and global memory in an MMA step, step cover -- do not read it, since a calibration puts a global reduction or a branch
-between its HMMAs to measure that very cost (`hmma_reduce_*`, `measure/harness/bench_carry_calib.py`). The signatures
-that make a binary unfit to measure stay red: local memory, a stack frame, convergence calls a converged warp
-executes, predicated HMMA.
+`--instrument DECLARATIONS` gates an instrument's library (`bazel/defs.bzl`'s `rola_instrument`, the part harness's
+`_C_parts`): its kernels are PROBES, so it owes none of the source's kernels, and a probe keeps a step signature --
+branches, the conversion unit or global memory in an MMA step, or a step cover under the line -- only where its
+declarations name it. A calibration that puts a global reduction between its HMMAs does so to measure that very cost
+(`hmma_reduce_*`, `measure/harness/bench_carry_calib.py`), so it declares it, by a pattern over the function's mangled
+name, with the cost it measures (`measure/harness/carry_parts/kept_signatures.json`, `kernels`: `{pattern: {lint:
+cost}}`, the lints `step_branches`, `step_xu`, `step_global`, `step_cover`). An undeclared signature is red, as on the
+extension, and so is a declaration no function of the binary shows: the declarations say only what is so. Every other
+signature (local memory, a stack frame, convergence calls, predicated HMMA) is red on a probe as on any kernel. This
+is section 29's lab declaration (STEP_XU, STEP_GLOBAL) for an instrument, beside its source.
 
 ## <a id="graph"></a>The graph's gate
 

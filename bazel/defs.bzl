@@ -174,9 +174,9 @@ def _link(ctx, so):
         additional_inputs = ctx.files._linker + linked,
     )
 
-def _sass_gate(ctx, so, verdict_path, flags = []):
-    """The SASS gate (KERNEL_STANDARDS section 20) on the linked library `so`, on the graph's disassemblers; its
-    verdict, `verdict_path`, the action's output."""
+def _sass_gate(ctx, so, verdict_path, flags = [], inputs = []):
+    """The SASS gate (KERNEL_STANDARDS section 20) on the linked library `so`, on the graph's disassemblers, `flags`
+    and the files they name (`inputs`) its own; its verdict, `verdict_path`, the action's output."""
     verdict = ctx.actions.declare_file(verdict_path)
     args = ctx.actions.args()
     args.add(ctx.file._sass_gate)
@@ -188,7 +188,7 @@ def _sass_gate(ctx, so, verdict_path, flags = []):
     ctx.actions.run(
         executable = ctx.file._python,
         arguments = [args],
-        inputs = ctx.files._gate_sources + [so, ctx.file._sass_gate, ctx.file._cuobjdump, ctx.file._nvdisasm],
+        inputs = ctx.files._gate_sources + inputs + [so, ctx.file._sass_gate, ctx.file._cuobjdump, ctx.file._nvdisasm],
         outputs = [verdict],
         mnemonic = "RolaSassGate",
         progress_message = "The SASS gate on %{label}'s library",
@@ -310,9 +310,10 @@ echo "installed $(basename "$dest")/$(basename {so}) from the graph"
 def _instrument_impl(ctx):
     so = ctx.actions.declare_file("rola_cu13/%s.abi3.so" % ctx.attr.module)
     _link(ctx, so)
-    #: the SASS gate, as on the extension: a measured library is gated as one; its verdict a runfile, so `bazel run`
-    #: installs nothing it has not passed
-    verdict = _sass_gate(ctx, so, "rola_cu13/%s.sass_gate.json" % ctx.attr.module, ["--instrument"])
+    #: the SASS gate, as on the extension, its probes keeping only the step signatures their declarations name; its
+    #: verdict a runfile, so `bazel run` installs nothing it has not passed
+    verdict = _sass_gate(ctx, so, "rola_cu13/%s.sass_gate.json" % ctx.attr.module,
+                         ["--instrument", ctx.file.kept.path], [ctx.file.kept])
     install = ctx.actions.declare_file(ctx.label.name + "_install.sh")
     ctx.actions.write(install, _INSTALL_INSTRUMENT.format(so = shell.quote(so.short_path)), is_executable = True)
     return [DefaultInfo(files = depset([so, verdict]), executable = install, runfiles = ctx.runfiles(files = [so, verdict]))]
@@ -325,6 +326,8 @@ rola_instrument = rule(
     toolchains = use_cc_toolchain(),
     attrs = _setting_attrs() | _SASS_GATE_ATTRS | {
         "module": attr.string(mandatory = True, doc = "the module's name in rola_cu13 (`_C_parts`)"),
+        "kept": attr.label(mandatory = True, allow_single_file = [".json"],
+                           doc = "the step signatures its probes keep on purpose (docs/internals/tools/sass_gate.md#instrument)"),
         "deps": attr.label_list(providers = [CcInfo], doc = "its units"),
         "shared_libraries": attr.label_list(allow_files = [".so"], doc = "torch's libraries it links"),
         "_linker": attr.label(default = "@mold//:linker"),
@@ -333,8 +336,8 @@ rola_instrument = rule(
         "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
     },
     doc = "An instrument's library, `rola_cu13/<module>.abi3.so`, linked as the extension is, for the architectures " +
-          "`--//:archs` names, and SASS-gated as it is; never shipped, so no record, ratify or arm gate; `bazel run` " +
-          "copies it into the checkout.",
+          "`--//:archs` names, and SASS-gated as it is, its probes keeping the step signatures `kept` declares; never " +
+          "shipped, so no record, ratify or arm gate; `bazel run` copies it into the checkout.",
 )
 
 def _census_impl(ctx):

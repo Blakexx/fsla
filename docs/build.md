@@ -138,21 +138,19 @@ Three properties make this safe to have:
   other shape is a `STD_TORCH_CHECK` refusal naming the arm, never a mis-launch.
 * **It is NOT SHIPPABLE, and its record says so.** Ratify proves the fatbin carries EVERY
   ratified instantiation in its assigned shard; a subset carries fewer by construction,
-  so it is never ratified ([`build-graph.md`](build-graph.md#ratify)). Ratify at the END
-  of a stage, from a full build.
+  so it is never ratified ([`build-graph.md`](build-graph.md#ratify)). Ratification is a
+  milestone's, from a full build (KERNEL_STANDARDS section 16).
 
-**AND THE RATIFICATION GATE MUST NOT INHERIT IT, WHICH IS THE SUBTLE HALF.**
-`tools/ratify.py` reuses the last build's `build.ninja` flags VERBATIM, because
-reconstructing them by hand was independently wrong three ways ([sccache](#sccache)). That
-makes any flag naming WHAT WAS COMPILED -- rather than HOW -- inheritable. Measured the first
-time a decode subset was a `-D`: after `ROLA_DECODE_ARMS=5 setup.py build_ext`, the next
-`ratify.py --write` inherited the define and wrote a manifest of 393 entries carrying ONE
-decode arm, while the `.so` a full build had linked carried all sixteen -- and it PASSED. So
-no arm subset is a flag: each family's selection is a generated header (`carry_selection.inc`,
-`decode_selection.inc`; [`internals/tools/gen_shards.md#families`](internals/tools/gen_shards.md#families))
-that the build and the gate each write for their own scope, and `-gencode` is the one
-what-was-compiled flag the gate strips (a single-arch build narrowing the next ratification).
-A gate that certifies numbers no shipped binary has is worse than no gate.
+**AND THE RATIFICATION MUST NOT INHERIT IT, WHICH IS THE SUBTLE HALF.** The graph's ratify reads
+the build's parameters with its census and refuses an iteration build (`tools/ratify.py`'s
+`graph_parameters`), so no manifest records a subset. And no arm subset is a compile flag:
+each family's selection is a generated header (`carry_selection.inc`, `decode_selection.inc`;
+[`internals/tools/gen_shards.md#families`](internals/tools/gen_shards.md#families)) written for
+the build's own scope, so a flag naming WHAT WAS COMPILED, rather than HOW, never reaches a
+unit's command line, where a ratification reading the compile could inherit it. Measured when a
+decode subset was a `-D`: the next ratification inherited it and wrote a manifest of 393 entries
+carrying ONE decode arm, while the library carried all sixteen -- and it PASSED. A gate that
+certifies numbers no shipped binary has is worse than no gate.
 
 The same rule governs `--//:archs=86`: iterate single-arch, gate and measure on
 the full both-arch build.

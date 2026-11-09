@@ -97,9 +97,9 @@ headers into `build/generated`.
   soname, no search path written (no unit carries a dynamic library; the units' CUDA runtime is its headers,
   `//bazel:cuda_headers` -- rules_cuda 0.3.0's own `@cuda//:cuda_headers` names a component CUDA 13 lacks).
 - AN INSTRUMENT'S LIBRARY (`bazel/defs.bzl`'s `rola_instrument`): a measurement's own kernels as
-  `rola_cu13/<module>.abi3.so` beside the extension, linked as it is and SASS-gated as it is (`--instrument`: its
-  kernels are probes, red on what makes a binary unfit to measure, and it owes none of the source's kernels,
-  [`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#instrument)), for the architectures `--//:archs` names; never shipped, so no record, arm gate or
+  `rola_cu13/<module>.abi3.so` beside the extension, linked as it is and SASS-gated as it is (`--instrument`: it owes
+  none of the source's kernels, and its probes keep only the step signatures their declarations name, the rule's
+  `kept`, [`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#instrument)), for the architectures `--//:archs` names; never shipped, so no record, arm gate or
   ratify. `//:parts_library` is the part harness's driver (`_C_parts`, KERNEL_STANDARDS section 22): the calibration
   kernels (`//measure/harness/carry_parts`, with `-lineinfo` for the ledgers) and the runtime's units, the library's own
   objects.
@@ -166,9 +166,7 @@ index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
   the kernel tree's own: clang-format, ast-grep (`tools/lint/ast_grep_gate.py`), the unused instantiations and the
   unit lints below. `//:lints` adds the repo's policies over the whole tree: ruff and its blank-line spacing, the
   standards lint (`tools/lint/lint_standards.py`), the readability spacing, the agent files' portability
-  (`tools/lint/portable_claude.py`), the mirror's declarations (`rola_devtools.mirror --check`), the README's
-  generated blocks (`tools/supported.py --check`, which imports the tree's package to run its activation registry, a
-  test and not a lint), and each ratchet
+  (`tools/lint/portable_claude.py`), the mirror's declarations (`rola_devtools.mirror --check`), and each ratchet
   (`tools/lint/ratchet.py <lint>`: the lint's findings against its baseline, a new finding and a fixed one each red).
 - THE UNIT LINTS (`//csrc/rola:clang_tidy_device`, `clang_tidy_host`, `host_warnings`; `bazel/defs.bzl`'s `unit_lints`
   aspect and `unit_lint_test`): clang-tidy's two profiles and the host warnings, each run on one unit's own compile

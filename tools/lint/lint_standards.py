@@ -950,33 +950,51 @@ def check_no_bare_flock_on_gpu_lock() -> list[str]:
 _TOOLS_DIR = ROOT / "tools"
 
 
+def _read_generated_block(text: str, marker: str) -> str | None:
+    begin, end = f"<!-- BEGIN GENERATED: {marker} -->", f"<!-- END GENERATED: {marker} -->"
+    if begin not in text or end not in text:
+        return None
+    return text.split(begin, 1)[1].split(end, 1)[0].strip("\n")
+
+
 def check_supported_table() -> list[str]:
-    """The support table says what the manifests say: every architecture the kernel tabulates (`hardware.cuh`) is a
-    row of `tools/supported.py`'s table, marked ratified exactly when `tools/manifests/` has its manifest. FILES ONLY,
-    never an import of `rola` (docs/testing.md). That the README's generated blocks are the generator's output is
-    `tools/supported.py --check`'s, the commit gate's `//:supported_matrix`: its second block runs the activation
-    registry, and a check that executes the code under test is a test, not a lint."""
+    """The README's support table is `tools/supported.py`'s output: its generated block (`tools/supported.py`) equal to
+    `supported.table()`, which derives it from the kernel's arch table and `tools/manifests/` -- FILES ONLY, no import of
+    `rola` -- and (non-vacuity) the comparison fires on a hand-tampered copy. The README's other generated block, the
+    activation registry's capability table, runs the registry to produce, so its check is a test, in the CPU tier
+    (`tests/unit/test_capability_table_docs.py`): a check that executes the code under test is a test, not a lint
+    (docs/testing.md). The unratified row's wording is `check_arch_coverage`'s."""
     if str(_TOOLS_DIR) not in sys.path:
         sys.path.insert(0, str(_TOOLS_DIR))
     import supported
 
+    marker = "tools/supported.py"
     findings = []
-    table = supported.table()
-    ratified = supported.ratified()
-    for arch in supported.tabulated_archs():
-        arch_marker = f"`{arch}`"
-        if arch_marker not in table:
-            findings.append(f"{arch} is tabulated in the kernel but absent from the "
-                            f"README support table")
-            continue
-        row = next(line for line in table.splitlines() if arch_marker in line)
-        if arch in ratified:
-            if "ratified |" not in row or "not ratified" in row:
-                findings.append(f"{arch} is ratified but the README row does not say "
-                                f"so: {row}")
-        elif "**not ratified — will refuse to load**" not in row:
-            findings.append(f"{arch} has no manifest but the README row does not say "
-                            f"so: {row}")
+
+    def _drift(readme_text: str) -> str | None:
+        committed = _read_generated_block(readme_text, marker)
+        if committed is None:
+            return f"README.md has no generated block for {marker}"
+        if committed != supported.table():
+            return (f"README.md's {marker} block drifted from tools/supported.py's "
+                    f"generator (regenerate with `bazel run //tools:supported -- --write`)")
+        return None
+
+    readme_text = supported.README.read_text()
+    drift = _drift(readme_text)
+    if drift is not None:
+        findings.append(drift)
+
+    tampered = readme_text.replace(
+        "**not ratified — will refuse to load**", "ratified", 1)
+    if tampered == readme_text:
+        findings.append("check_supported_table non-vacuity probe found nothing "
+                        "to tamper -- the README carries no 'not ratified' row to "
+                        "flip, so the drift check above was not exercised")
+    elif _drift(tampered) is None:
+        findings.append("check_supported_table non-vacuity FAILED: a hand-tampered "
+                        "README (a 'not ratified' row flipped to 'ratified') did not "
+                        "register as drift -- the comparison is vacuous")
     return findings
 
 
