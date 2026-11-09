@@ -25,7 +25,8 @@ CONFIG = COMMON / "hardware.json"
 HEADER = COMMON / "hardware.cuh"
 RESULTS = ROOT / "measure" / "lab" / "results"
 MANIFESTS = ROOT / "tools" / "manifests"
-#: the rates a built architecture must resolve: what the choice among a sparse side's forms prices
+#: the rates a built architecture must resolve: its pipes' (the schedulers, the issue, a shared wavefront and the
+#: shared atomics), which the phase floors (`tools/overlap_gate.py`), the pipe model and the budgets' forms read
 CHOICE = ("schedulers", "issue", "wavefront", "atomic", "atomic_wavefront")
 SOURCES = ("measured", "documented", "announced")
 #: a measured rate may differ from its record's median by its own rounding and no more

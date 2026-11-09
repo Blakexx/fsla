@@ -1836,6 +1836,7 @@
   {"doc": "docs/internals/tools/pipes.md", "pinned_at": "434a3c1f57a1", "reviewed": true, "sha256": "09896d8dfdd9980b", "target": "tools/pipes.py::STALLS"},
   {"doc": "docs/internals/tools/pipes.md", "pinned_at": "434a3c1f57a1", "reviewed": true, "sha256": "9af9077f95916f75", "target": "tools/pipes.py::TENSOR_COUNTED"},
   {"doc": "docs/internals/tools/quality.md", "pinned_at": "957ab879ecbe", "reviewed": true, "sha256": "", "target": "docs/architecture/precision.md"},
+  {"doc": "docs/internals/tools/quality.md", "pinned_at": "27167ca35d45", "reviewed": true, "sha256": "c35214d9ff37de27", "target": "docs/architecture/precision.md#quality"},
   {"doc": "docs/internals/tools/quality.md", "pinned_at": "d80f2c81b626", "reviewed": true, "sha256": "", "target": "rola/ops/prefill.py"},
   {"doc": "docs/internals/tools/quality.md", "pinned_at": "d80f2c81b626", "reviewed": true, "sha256": "", "target": "tools/quality.py"},
   {"doc": "docs/internals/tools/ratify.md", "pinned_at": "0338c7324212", "reviewed": true, "sha256": "", "target": "bazel/record.py"},
