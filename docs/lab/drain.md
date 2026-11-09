@@ -71,7 +71,7 @@ checked:
 
 | `num` | alt-k4 | alt-k16 | cohort-k16 | L2 sectors (alt-k4) | L2 atomic unit busy |
 |---|---|---|---|---|---|
-| s16 pairs (today) | 1,045 | 2,542 | 2,441 | 2.21M | 36% |
+| s16 pairs (the integer panel of the time) | 1,045 | 2,542 | 2,441 | 2.21M | 36% |
 | f16 pairs | 1,515 (1.45x) | 3,284 (1.29x) | 3,083 (1.26x) | 2.21M | 30% |
 | fp32 | 2,612 (2.50x) | 4,853 (1.91x) | 4,396 (1.80x) | 4.41M | 47% |
 | fp32, one FFMA a channel | 2,586 | 4,804 | 4,318 | 4.41M | 47% |

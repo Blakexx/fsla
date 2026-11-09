@@ -72,8 +72,9 @@ transactional, in either backing: a continuation advances its carried state IN P
 so a launch that fails part way through leaves that state part advanced rather than as
 it was. Recovering a pre-call state is `clone()` before the call
 ([`../internals/state.md`](../internals/state.md#the-dense-continuation)). The output
-`y` is **not** bit-reproducible run to run: the intra's and the decode step's fan-ins add
-fp32 partials in arrival order, and bitwise run-to-run reproducibility is not worth a
+`y` is **not** bit-reproducible run to run: the carry's, the intra's and the decode step's
+fan-ins add partials in arrival order (the carry's f16 pairs or fp32, the others' fp32), and
+bitwise run-to-run reproducibility is not worth a
 cost (Blake, 2026-09-30). The **state** *is* byte-equal and is gated as such; every `y`
 comparison is held to a reassociation bound
 ([`decode.md#determinism`](../internals/decode/decode.md#determinism)).

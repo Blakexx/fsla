@@ -22,7 +22,7 @@ THE RECORD: `measure/lab/results/read_red/sm_86.json` (RTX 3080 Ti), cycles a ti
 | exit | 4 tiles a warp a pass (alt-k4's ~3.3 a window) | 16 tiles a pass |
 |---|---|---|
 | none (the tiles alone) | 260 | 260 |
-| exact s16 pairs into the panel, drained a pass (today's) | 525 | 334 |
+| exact s16 pairs into the panel, drained a pass (the integer panel of the time) | 525 | 334 |
 | f16 pairs straight to `num`, the fragment's order | 573 | 574 |
 | fp32 straight to `num` | 1,112 | 1,115 |
 | **f16 pairs through the warp's staging tile, 64 bytes a token a request** | **412** | 412 |

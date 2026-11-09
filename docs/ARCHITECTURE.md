@@ -51,8 +51,9 @@ the dense floor stored: [`liveness_contract.md#floor`](internals/facts/liveness_
 values are f16 against its largest channel with an fp32 scale (`rola/values.py`). Nothing floating is stored between
 the producer and the kernels.
 
-**Declared arithmetic, per kernel.** Every kernel's arithmetic is declared and mirrored by its gate's reference, and
-accumulation is fp32 or exact integer ([`architecture/precision.md`](architecture/precision.md)):
+**Declared arithmetic, per kernel.** Every kernel's arithmetic is declared and mirrored by its gate's reference; a
+state's accumulation is fp32 or exact integer, and the readout's partials, an output's, meet at each token's scale
+byte ([`architecture/precision.md`](architecture/precision.md)):
 
 | kernel | operands | accumulation |
 |---|---|---|
