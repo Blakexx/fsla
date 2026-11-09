@@ -5,12 +5,12 @@
 -- docs/CONSTITUTION.md and docs/KERNEL_STANDARDS.md -- every finding citing the rule it breaks and the changed line it
 breaks it at. ADVISORY (Blake, 2026-11-06): it records and prints, it never refuses a commit.
 
-    python tools/review_gate.py                                 # HEAD
-    python tools/review_gate.py 4d9a3210                        # one commit
-    python tools/review_gate.py --range origin/carry-k5..HEAD   # a branch: the local review in place of a PR
-    python tools/review_gate.py --staged                        # what is staged
-    python tools/review_gate.py --show 5                        # the last five reports
-    python tools/review_gate.py HEAD --background               # what tools/git-hooks/post-commit runs
+    bazel run //tools:review_gate                                    # HEAD
+    bazel run //tools:review_gate -- 4d9a3210                        # one commit
+    bazel run //tools:review_gate -- --range origin/carry-k5..HEAD   # a branch: the local review in place of a PR
+    bazel run //tools:review_gate -- --staged                        # what is staged
+    bazel run //tools:review_gate -- --show 5                        # the last five reports
+    bazel run //tools:review_gate -- HEAD                            # what tools/git-hooks/post-commit runs, detached
 
 The reviewer is `claude -p` (Opus by default, `--model`) in the checkout, its tools read-only (Read, Grep, Glob), its
 output a fixed schema. A report is cached by everything it read (the standards, the message, the diff, the model, the

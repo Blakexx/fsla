@@ -11,23 +11,24 @@ The method and its data: `docs/internals/tools/budgets.md`. The law: `docs/KERNE
 2. Trips per cell come from the experiment's mirror (its `.inputs.py`); a lane-divergent loop is priced at the warp's
    longest lane (`docs/KERNEL_STANDARDS.md#s29` item 12).
 3. Prices come from `docs/internals/tools/budgets.md#prices`. A primitive without one: compile it alone, read
-   `python tools/lab.py sass <experiment>`, and add its row. Each line names its form from
+   `bazel run //tools:lab -- sass <experiment>`, and add its row. Each line names its form from
    `docs/internals/tools/budgets.md#forms` or why it departs; a value re-derived to save a register is its own line
    (`docs/KERNEL_STANDARDS.md#s32` item 3).
 4. State it before the code: `Bench::budget`, with `Bench::units` for a kernel without MMAs
    (`docs/internals/tools/lab.md#the-kit-measurelablabcuh`); a production kernel's in `tools/budgets/<kernel>.json`,
    read by `tools/region_ledger.py --budget` (`docs/internals/tools/budgets.md`).
-5. Check it: `python tools/lab.py run <experiment>` refuses a kernel over its budget, and one whose loops hold
+5. Check it: `bazel run //tools:lab -- run <experiment>` refuses a kernel over its budget, and one whose loops hold
    convergence instructions it did not declare (`LOOP_CONVERGENCE`). It prints every pipe's cycles per card, the
    binding one named (`docs/internals/tools/pipes.md`): state the binding pipe's cycles beside the instructions, and a
    kernel over 1.3x its binding pipe names the stall that holds it (`docs/KERNEL_STANDARDS.md#s29` item 14).
-6. Find a miss: `python tools/lab.py ledger <experiment> --kernel <regex>` gives instructions by phase; classify each
-   (`docs/internals/tools/budgets.md#checking-it`), then fix the code to its floor or correct the price.
+6. Find a miss: `bazel run //tools:lab -- ledger <experiment> --kernel <regex>` gives instructions by phase;
+   classify each (`docs/internals/tools/budgets.md#checking-it`), then fix the code to its floor or correct the price.
 7. Restate a budget only with the corrected price, in the same commit, and add the lab's row to
    `docs/internals/tools/budgets.md#ledger`.
 8. A production kernel's budget also states each component's live registers and each phase's predicted cycles
    (`docs/internals/tools/budgets.md#building-a-budget` item 5, `docs/KERNEL_STANDARDS.md#s32`); check them with
-   `python tools/life_ranges.py --arm 0 --kernel <regex> --source <kernel file> --source <component files>... --budget
-   tools/budgets/<kernel>.json` (`docs/internals/tools/life_ranges.md#budget`) and `python tools/phase_ledger.py
-   <cell> --budget tools/budgets/<kernel>.json` (`docs/internals/tools/phase_ledger.md#budget`). A phase over 1.3x
-   its prediction stops work until the wrong price or model is named.
+   `bazel run //tools:life_ranges -- --arm 0 --kernel <regex> --source <kernel file> --source <component files>...
+   --budget tools/budgets/<kernel>.json` (`docs/internals/tools/life_ranges.md#budget`)
+   and `bazel run //tools:phase_ledger -- <cell> --budget tools/budgets/<kernel>.json`
+   (`docs/internals/tools/phase_ledger.md#budget`). A phase over 1.3x its prediction
+   stops work until the wrong price or model is named.

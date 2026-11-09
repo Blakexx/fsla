@@ -44,8 +44,8 @@ they over-report, never under-report:
     is what a knob is passed as; a caller that supplies the same parameter positionally
     looks, to this scan, like a caller that did not supply it.
 
-    python tools/lint/constant_parameters.py
-    python tools/lint/constant_parameters.py --test-fixtures
+    bazel run //tools/lint:constant_parameters
+    bazel test //tools/lint:constant_parameters_fixtures
 """
 from __future__ import annotations
 

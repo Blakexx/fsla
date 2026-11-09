@@ -5,9 +5,9 @@
 as cycles a warp a window per phase, averaged over the CTAs and warps; and per warp, so an
 owner imbalance shows. KERNEL_STANDARDS §19's per-phase instrument for the composed kernel.
 
-    python tools/phase_ledger.py flagship-alt-k4 [--launches 3]
-    python tools/phase_ledger.py nl64k-alt-k4 --budget tools/budgets/carry.json   # against the predicted phases
-    python tools/phase_ledger.py nl64k-alt-h4-g4 --kernel produce                  # the producer on a construction's cell
+    bazel run //tools:phase_ledger -- flagship-alt-k4 [--launches 3]
+    bazel run //tools:phase_ledger -- nl64k-alt-k4 --budget tools/budgets/carry.json   # against the predicted phases
+    bazel run //tools:phase_ledger -- nl64k-alt-h4-g4 --kernel produce                 # the producer, one cell
 
 With `--budget`, each phase against the cycles the design predicted for it (the cell's `phase_cycles`): red where a
 phase takes more than `MISS` times its prediction, or has none (KERNEL_STANDARDS section 32: a miss stops work until

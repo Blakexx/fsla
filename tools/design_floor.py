@@ -5,8 +5,8 @@
 any box, and priced on each card -- each phase's warp instructions, shared-memory cycles, tensor cycles and global
 path, the window's floors (every phase overlapped; phases in turn) and the box's spread across CTAs.
 
-    python tools/design_floor.py nl64k-alt-k4 flagship-alt-k16 --box 32x16x64 --box 32x32x32
-    python tools/design_floor.py nl64k-dense --card sm_80 --transit 8 --batch 128
+    bazel run //tools:design_floor -- nl64k-alt-k4 flagship-alt-k16 --box 32x16x64 --box 32x32x32
+    bazel run //tools:design_floor -- nl64k-dense --card sm_80 --transit 8 --batch 128
 
 A BOX is `lists x digits x channels`: lists the fold's list level and the readout's dense level (its K), digits the
 readout's list level and the fold's dense level. ESTIMATED: there is no kernel of this form; the counts are exact over

@@ -11,7 +11,7 @@ re-runs the experiments its rules cite (`docs/KERNEL_STANDARDS.md` §26).
 1. A QUESTION about the machine, asked as one experiment, `measure/lab/experiments/<name>.cu`: its header states the
    QUESTION and the METHOD, its kernels are template instantiations (one per variant), and its `main` declares the SASS
    each kernel must contain and times the variants.
-2. `python tools/lab.py run <name>` compiles it with the pinned toolkit for the running card, reads the SASS and
+2. `bazel run //tools:lab -- run <name>` compiles it with the pinned toolkit for the running card, reads the SASS and
    REFUSES to measure unless every declared expectation holds, no kernel touches local memory and no kernel holds a
    convergence call nobody declared (the SASS gate's classification, `tools/sass_gate.py`: ptxas's loop-exit
    `CALL.REL.NOINC` and guarded fallbacks are not ones); checks the GPU is quiet; runs the repetitions; prints median, min and max and flags a result
@@ -21,12 +21,13 @@ re-runs the experiments its rules cite (`docs/KERNEL_STANDARDS.md` §26).
 4. The finding becomes a law in `docs/KERNEL_STANDARDS.md` (§26), naming the experiment, the record and the
    architectures it holds on.
 
-`python tools/lab.py list` names the experiments by their QUESTION; `python tools/lab.py sass <name> [REGEX] [--full]`
-shows each kernel's registers and leading opcodes (or the whole disassembly). `python tools/lab.py ncu <name> --metric M [--metric ...]
-[--record]` reads hardware counters per kernel (the median over its launches) into `<sm_XX>.counters.json`, for a
+`bazel run //tools:lab -- list` names the experiments by their QUESTION;
+`bazel run //tools:lab -- sass <name> [REGEX] [--full]` shows each kernel's registers and leading opcodes (or the whole
+disassembly). `bazel run //tools:lab -- ncu <name> --metric M [--metric ...] [--record]` reads
+hardware counters per kernel (the median over its launches) into `<sm_XX>.counters.json`, for a
 question about traffic rather than time.
-`python tools/lab.py ledger <name> [--kernel REGEX]` attributes a kernel's executed instructions to its phases -- the
-`//:` headings of the experiment's source -- per declared unit (KERNEL_STANDARDS §29.13; the method:
+`bazel run //tools:lab -- ledger <name> [--kernel REGEX]` attributes a kernel's executed instructions to its phases --
+the `//:` headings of the experiment's source -- per declared unit (KERNEL_STANDARDS §29.13; the method:
 [budgets.md](budgets.md)). `run` also refuses a budgeted kernel whose loops hold convergence instructions (`BSSY`,
 `BSYNC`, `BRA.DIV`) beyond what it declares as `LOOP_CONVERGENCE`.
 

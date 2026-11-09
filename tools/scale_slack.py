@@ -8,8 +8,8 @@ across CTAs is the atomics' arrival, so two runs at one scale differ by f16's ro
 harmless where its spread from the exact-bound run is that run-to-run spread. Beside it, each token's slack: log2 of
 the bound over the exact read product.
 
-    python tools/scale_slack.py nl64k-alt-k4 flagship-cohort-k16-L16384 [--json slack.json]   # carry cells
-    python tools/scale_slack.py nl64k-alt-h4 nl64k-alt-h4-g16                                 # layer constructions
+    bazel run //tools:scale_slack -- nl64k-alt-k4 flagship-cohort-k16-L16384 [--json slack.json]   # carry cells
+    bazel run //tools:scale_slack -- nl64k-alt-h4 nl64k-alt-h4-g16                                 # layer constructions
 
 THE BOUNDS on ``|num(t)|`` (``x`` a read row, ``w`` a write row, ``g`` the write gain, ``s`` a writing token's value
 scale, each sum over the writing tokens of the windows before t's), in the recurrence's units:

@@ -33,9 +33,9 @@ what CI and `tools/lint/lint_standards.py` run.
 
 Usage:
 
-    python tools/gen_shards.py --write      # regenerate the tree
-    python tools/gen_shards.py --check      # regenerate into memory and diff (CI)
-    python tools/gen_shards.py --self-test  # prove the declaration reader refuses
+    bazel run //tools:gen_shards -- --write      # regenerate the tree
+    bazel run //tools:gen_shards -- --check      # regenerate into memory and diff (CI)
+    bazel run //tools:gen_shards -- --self-test  # prove the declaration reader refuses
 """
 from __future__ import annotations
 
@@ -541,7 +541,7 @@ def check_generated(want: dict[str, str] | None = None) -> list[str]:
         bad.append(f"    {UNITS_BZL.relative_to(ROOT)}: missing or differs from the generated content")
     if bad:
         return ["FAIL  the checked-in instantiation shards do not match the arm list in tools/gen_shards.py:", *bad,
-                "", "    python tools/gen_shards.py --write"]
+                "", "    bazel run //tools:gen_shards -- --write"]
     selection_bad = [b for fam in FAMILIES for b in _check_selection_schema(fam, rows_of(fam))]
     if selection_bad:
         return ["FAIL  the selection headers' schema self-test failed (the generated selection header is never "

@@ -35,7 +35,7 @@ def ratified_manifest(archs: list[str], manifest_dir: Path) -> dict:
         if not path.exists():
             raise RuntimeError(
                 f"CLOSED-WORLD RULE 3: sm_{a} is in the build's architectures but there is no ratified manifest at "
-                f"{path}. Ratify it first:\n    python tools/ratify.py --arch {a} --write\nand record why the numbers "
+                f"{path}. Ratify it first:\n    bazel run //:ratify -- --write\nand record why the numbers "
                 f"are what they are (docs/bringup.md). Building an architecture nobody measured is the failure this "
                 f"rule exists to prevent.")
         blob = json.loads(path.read_text())
@@ -83,7 +83,7 @@ def vendored_pin(root: Path) -> dict:
         raise RuntimeError(f"CLOSED-WORLD RULE 5: the vendored tree {root.name} does not match its pin.\n  PIN.json: "
                            f"{pin['tree_sha256']} ({pin['file_count']} files)\n  on disk : {here} ({count} files)\n"
                            "Re-vendor the pinned tag, or move the pin DELIBERATELY and re-ratify "
-                           "(`python tools/ratify.py --write`).")
+                           "(`bazel run //:ratify -- --write`).")
     print(f"rule 5 OK  {root.name} {pin['tag']} ({pin['commit'][:12]}): {count} files, sha256 {here[:16]}...")
     return pin
 

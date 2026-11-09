@@ -5,7 +5,7 @@
 kernel filter, the provider arm whose one untimed launch it captures, the cubin member and sources the region ledger
 attributes against, the budget, and the launch's units (the divisor that turns a launch total into the budget's unit).
 
-    python tools/kernel_targets.py nl64k-alt-k4      # every family's target on a cell: its arm and its units
+    bazel run //tools:kernel_targets -- nl64k-alt-k4      # every family's target on a cell: its arm and its units
 
 `tools/stall_census.py`, `tools/pipe_counters.py`, `tools/pipe_timeline.py` and `tools/phase_ledger.py` take
 `--kernel FAMILY` from this table (default the carry). Docs: docs/internals/tools/kernel_targets.md.

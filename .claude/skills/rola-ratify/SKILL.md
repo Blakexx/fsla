@@ -12,4 +12,4 @@ description: Load before running tools/ratify.py, bazel test //:ratified or baze
    edited since. A re-ratification is a measurement, not an edit
    (`docs/ratification.md#re-ratification-is-a-measurement-not-an-edit`): a second `--write` on the same tree changes
    nothing.
-3. Its flags and modes: `python tools/ratify.py --help` (`docs/internals/tools/ratify.md`).
+3. Its flags and modes: `bazel run //:ratify -- --help` (`docs/internals/tools/ratify.md`).

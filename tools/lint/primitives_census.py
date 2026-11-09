@@ -41,8 +41,8 @@ gate to a wired check.
 
 Usage (no GPU required -- compile + disassemble only):
 
-    python tools/lint/primitives_census.py
-    python tools/lint/primitives_census.py -v      # print every cell, not just failures
+    bazel run //tools/lint:primitives_census
+    bazel run //tools/lint:primitives_census -- -v      # print every cell, not just failures
 """
 from __future__ import annotations
 

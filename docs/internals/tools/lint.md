@@ -80,7 +80,7 @@ question for a reviewer, never a proof. Four rules were tightened after their fi
 inventory was read, each with its reason in the source — an inventory nobody trusts is an
 inventory nobody flips.
 
-**Measured 2026-09-14, 20 findings over 11 rules** (`python3 tools/lint/drift_guards.py` prints each):
+**Measured 2026-09-14, 20 findings over 11 rules** (`bazel run //tools/lint:drift_guards` prints each):
 
 | rule | findings |
 |---|---|
@@ -161,10 +161,10 @@ exactly how a hook drifts into being silently disabled.
 bazel test //:gate                  # the whole roster: every check the commit gate runs
 bazel test //:lints                 # the checks over files alone
 
-python3 tools/lint/ratchet.py work_codes           # a ratchet's gate; the lint alone prints its inventory
-python3 tools/lint/drift_guards.py
-python3 tools/lint/work_codes.py
-python3 tools/lint/constant_parameters.py
-python3 tools/lint/r9_enforcement.py
-tools/lint/run_vulture.sh
+bazel test //:ratchet_work_codes    # a ratchet's gate
+bazel run //tools/lint:work_codes   # the lint alone: its inventory
+bazel run //tools/lint:drift_guards
+bazel run //tools/lint:constant_parameters
+bazel run //tools/lint:r9_enforcement
+bazel test //:ratchet_vulture
 ```

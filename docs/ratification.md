@@ -19,7 +19,7 @@ tools/manifests/cu13/sm_86.json
 
 One entry per instantiation the source defines: the entmax solves, the decode step's arms, the intra kernel's, the
 carry family's declared arms (`tools/manifests/shipped_set.json`) and the device build stamps. The manifest is the
-count; `python tools/ratify.py --census` prints the per-key table for the current tree.
+count; `bazel run //:ratify -- --census` prints the per-key table for the current tree.
 `defines` is the empty tuple — `RATIFIED_DEFINES = ()` in `tools/ratify.py`, since
 the closed-world codegen surface carries no `#define` this gate has to pin. The mangled
 name is the key because it is exact, stable, and encodes every template argument
@@ -52,7 +52,7 @@ shipped. The generator refuses a declaration that is malformed, and names the fi
 unknown axis value, a duplicate row, a missing list, or rows out of canonical order —
 the last because an arm's INDEX is what the selection header, the per-arm translation
 units and `ROLA_CARRY_ARMS` name, so it must be a property of the declaration and not
-of where a row was typed. `python tools/gen_shards.py --self-test` requires the reader
+of where a row was typed. `bazel run //tools:gen_shards -- --self-test` requires the reader
 to refuse every malformed declaration by name, and renders a synthetic three-row table
 at a subset scope ([`internals/tools/gen_shards.md`](internals/tools/gen_shards.md)).
 
@@ -171,7 +171,7 @@ from the one list both read (`tools/kernels.py`): every hand-written `.cu` under
 `csrc/rola/src`, plus the generated per-arm carry units under `instantiations/` that the arm
 selection names -- under the flag list `setup.py` uses, imported from `tools/build_flags.py`
 rather than restated. A kernel is shipped codegen the moment its file is under `src/`, so it
-is measured like every other; `python tools/kernels.py --check-manifest` names any kernel the
+is measured like every other; `bazel run //tools:kernels -- --check-manifest` names any kernel the
 source defines and no manifest records. Two properties follow:
 
 - **the numbers describe the shipped binary**: the keys name the entry points the
@@ -288,7 +288,7 @@ change must).
 ## The gate self-tests
 
 ```bash
-python tools/ratify.py --self-test
+bazel run //:ratify -- --self-test
 ```
 
 requires the gate to **fail** on every mutant it must reject — a manifest tightened at one entry, a perturbed

@@ -34,7 +34,7 @@ does.
 4. *There is no silent fallback.* A CUDA device whose driver cannot serve VMM raises; the
    dense allocation is reachable only by asking for it by name.
 
-Run: ``pytest tests/integration/test_page_arena_vmm.py``
+Run: ``bazel test //tests:integration --test_filter=test_page_arena_vmm``
 """
 from __future__ import annotations
 

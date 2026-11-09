@@ -43,7 +43,7 @@ leaf order = the page granule; **slot** = the physical page an atom is mapped to
 for an atom no plan committed; **needy** = a batch-head whose write set it can neither
 address nor admit.
 
-Run: ``pytest tests/integration/test_decode_growth_trigger.py``
+Run: ``bazel test //tests:integration --test_filter=test_decode_growth_trigger``
 """
 from __future__ import annotations
 

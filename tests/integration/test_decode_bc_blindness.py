@@ -23,7 +23,7 @@ compare two different inputs and prove nothing about ``BC``. The dependence bein
 is decode's, so the state is held identical and the ``BC`` is varied everywhere it could
 possibly enter: the plan, the frozen carrier's construction, and the config object.
 
-Run: ``pytest tests/integration/test_decode_bc_blindness.py``
+Run: ``bazel test //tests:integration --test_filter=test_decode_bc_blindness``
 """
 
 from __future__ import annotations

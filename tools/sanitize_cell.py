@@ -22,8 +22,8 @@ is the oracle tier's row for the same cell -- and it prints a line naming the la
 checksum of its outputs, which is what makes a vacuous pass (a cell whose arm is not built, an
 empty selection) impossible to read as coverage.
 
-    python tools/sanitize_cell.py --cell one-box-short
-    python tools/sanitize_cell.py --kernel intra --cell flagship-alt-k4
+    bazel run //tools:sanitize_cell -- --cell one-box-short
+    bazel run //tools:sanitize_cell -- --kernel intra --cell flagship-alt-k4
 """
 from __future__ import annotations
 

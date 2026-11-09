@@ -17,8 +17,8 @@ Compiled with the SAME flag list the extension is built with (`tools/build_flags
 the one source), so a header that needs a define the build supplies is not reported as
 broken and a header that needs one the build does NOT supply is.
 
-    python tools/header_selfcheck.py            # every header under csrc/rola
-    python tools/header_selfcheck.py --list     # what it would compile, no nvcc
+    bazel run //tools:header_selfcheck               # every header under csrc/rola
+    bazel run //tools:header_selfcheck -- --list     # what it would compile, no nvcc
 
 ONE ARCH, and that is deliberate: this asks a question about NAMES, not about codegen,
 so the per-arch expansion the ratification gate pays for buys nothing here. Neither

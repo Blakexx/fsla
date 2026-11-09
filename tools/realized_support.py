@@ -6,7 +6,7 @@ digits a token in the rows the kernels read (the bundle, after quantization), as
 percentile and the level's fraction, and whether the side is declared sparse. A layer reading's regime is this, not the
 construction's name: a carry cell DECLARES its support, a layer construction's weights realize one.
 
-    python tools/realized_support.py [nl64k-alt-h4] [--json support.json]   # one construction, or every one
+    bazel run //tools:realized_support -- [nl64k-alt-h4] [--json support.json]   # one construction, or every one
 
 `declare.py` runs it over every construction once a binary (`support`), stored beside the timing sessions.
 

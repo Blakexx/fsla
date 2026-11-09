@@ -39,7 +39,7 @@ whole plane; the mixed batch is `test_decode_growth_trigger.py`'s.
 capturable. A replay is SELF-CORRECTING: the verdict is re-derived inside the graph, so
 after an admission the same captured graph performs the step it had skipped.
 
-Run: ``pytest tests/integration/test_decode_graph_step.py``
+Run: ``bazel test //tests:integration --test_filter=test_decode_graph_step``
 """
 from __future__ import annotations
 

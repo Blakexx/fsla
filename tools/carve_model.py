@@ -6,9 +6,9 @@ shared-memory bytes and instructions a warp, its registers and shared-memory led
 predicted cost. It ranks no carve until it reproduces the measured forms (KERNEL_STANDARDS §32.2; the validation rows
 in docs/internals/tools/carve_model.md#validation).
 
-    python tools/carve_model.py stats nl64k-alt-k4 [nl64k-dense ...]   # the cells' statistics
-    python tools/carve_model.py events nl64k-alt-k4 [...]              # today's carve's events a CTA-window
-    python tools/carve_model.py measured <SourceCounters csv> --cta-windows N
+    bazel run //tools:carve_model -- stats nl64k-alt-k4 [nl64k-dense ...]   # the cells' statistics
+    bazel run //tools:carve_model -- events nl64k-alt-k4 [...]              # today's carve's events a CTA-window
+    bazel run //tools:carve_model -- measured <SourceCounters csv> --cta-windows N
 
 Docs: docs/internals/tools/carve_model.md
 """

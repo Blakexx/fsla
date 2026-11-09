@@ -7,8 +7,8 @@ digits summed in fp32) or OPERAND SCALING (each digit's coefficient on the f16 r
 fp32 accumulator over every leaf of the box) -- the value-carve readout's two candidates for a dense side (event
 2026-11-06 "the dense specialization weighs one shared accumulator a tile").
 
-    python tools/readout_scaling.py flagship-dense
-    python tools/readout_scaling.py nl64k-dense --windows 1 64 127 --box 32x16x64
+    bazel run //tools:readout_scaling -- flagship-dense
+    bazel run //tools:readout_scaling -- nl64k-dense --windows 1 64 127 --box 32x16x64
 
 Each slot's error is over its magnitude ``sum |x| |a| |S|`` (the readout reference's): printed max, 99.9th and 50th
 percentiles for both forms, and the share of operand products under f16's normal range and flushed to zero. The

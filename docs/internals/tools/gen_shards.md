@@ -59,7 +59,7 @@ was typed — a row inserted in the middle would silently renumber every arm.
 
 ## The self-test
 
-`python tools/gen_shards.py --self-test` requires the reader to refuse ten malformed
+`bazel run //tools:gen_shards -- --self-test` requires the reader to refuse ten malformed
 declarations BY NAME (the message must name the field), refuses a missing declaration,
 and then installs a synthetic three-row table to show the selection header, the arm set
 and the shard block rendering a subset scope (two of three rows built), which the live

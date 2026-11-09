@@ -131,7 +131,7 @@ def rule1(toolchain: Toolchain, ptxas: str, manifest: dict, torch_cuda: str | No
     if here != toolchain.ptxas or here != pinned:
         raise ToolchainError(f"CLOSED-WORLD RULE 1: toolchain {toolchain.name}'s manifests were ratified under a different "
                              f"assembler.\n  record  : {toolchain.ptxas}\n  manifest: {pinned}\n  here    : {here}\n"
-                             "Re-ratify (`python tools/ratify.py --write`) and record the new numbers -- do not "
+                             "Re-ratify (`bazel run //:ratify -- --write`) and record the new numbers -- do not "
                              "hand-edit the manifest.")
     check_readers(toolchain, readers)
     torch_pairing(toolchain, torch_cuda)

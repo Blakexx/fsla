@@ -3,9 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE COMPOSER (KERNEL_STANDARDS §22 (9)): a phase's time attributed to its parts by composition.
 
-    python tools/compose_ledger.py --cells flagship-dense,nl64k-alt-k4 \\
+    bazel run //tools:compose_ledger -- --cells flagship-dense,nl64k-alt-k4 \\
         --ladder readout:stream,loads,drain --ladder fold:pool,ring,loads
-    python tools/compose_ledger.py --cells nl64k-dense --ladder all:fold.pool,fold.ring,fold.loads,readout.stream,readout.loads,readout.drain
+    bazel run //tools:compose_ledger -- --cells nl64k-dense --ladder all:fold.pool,fold.ring,fold.loads,readout.stream,readout.loads,readout.drain
 
 The carry kernel's MMA phases are built from PARTS (`gen_shards.CARRY_PARTS`); a build may stub
 any of them (the build graph's `--//:carry_parts`): a stub keeps the part's HMMAs -- the same count, atom and

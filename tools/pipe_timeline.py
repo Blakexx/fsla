@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE PIPE TIMELINE (KERNEL_STANDARDS §22 (11)): the pipes' activity over one launch, measured on silicon.
 
-    python tools/pipe_timeline.py --cell flagship-dense [--rep existing.ncu-rep] [--html out.html]
+    bazel run //tools:pipe_timeline -- --cell flagship-dense [--rep existing.ncu-rep] [--html out.html]
 
 The capture is the Nsight Compute CLI's PM sampling (`--section PmSampling`, CLI 2025.3 or later): the profiler
 replays the kernel over several passes, each sampling one single-pass counter group at a fixed interval (1 us on

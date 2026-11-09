@@ -6,8 +6,8 @@ exponent absorbs with slack to ~2^27. The exact bound is the read product agains
 whether a bound that reads less can stand in for it, on one bundle at a time -- the scale pass's own
 ([`scale/scale.md`](../scale/scale.md), the write bound) among the candidates.
 
-    python tools/scale_slack.py nl64k-alt-k4 flagship-cohort-k16-L16384 [--json slack.json]   # carry cells
-    python tools/scale_slack.py nl64k-alt-h4 nl64k-alt-h4-g16                                 # layer constructions
+    bazel run //tools:scale_slack -- nl64k-alt-k4 flagship-cohort-k16-L16384 [--json slack.json]   # carry cells
+    bazel run //tools:scale_slack -- nl64k-alt-h4 nl64k-alt-h4-g16                                 # layer constructions
 
 THE BOUNDS (`bounds`, fp64 in torch over the bundle's dequantized operands, window by window at the device's W; `x` a
 read row, `w` a write row, `g` the write gain, `s` a writing token's value scale, each sum over the windows before):

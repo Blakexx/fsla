@@ -43,7 +43,7 @@ That took one gate with it and improved another:
   INDEPENDENT reference for the seam instead of the same family of kernel twice,
   which is the direction the standing rule points.
 
-Run: ``pytest tests/oracle/test_decode_vs_oracle.py``
+Run: ``bazel test //tests:oracle --test_filter=test_decode_vs_oracle``
 """
 
 from __future__ import annotations

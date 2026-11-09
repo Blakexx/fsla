@@ -5,9 +5,9 @@ KERNEL_STANDARDS §22 (9). The carry kernel's MMA phases are built from parts th
 that phase's parts real and every other part real, then adds the phase's parts back in the order
 named, one rung a build; the last rung is the kernel itself.
 
-    python tools/compose_ledger.py --cells flagship-dense,nl64k-alt-k4 \
+    bazel run //tools:compose_ledger -- --cells flagship-dense,nl64k-alt-k4 \
         --ladder readout:stream,loads,drain --ladder fold:pool,ring,loads
-    python tools/compose_ledger.py --cells nl64k-dense,nl64k-alt-k4 \
+    bazel run //tools:compose_ledger -- --cells nl64k-dense,nl64k-alt-k4 \
         --ladder all:fold.pool,fold.ring,fold.loads,readout.stream,readout.loads,readout.drain
 
 The ladder `all` (2026-09-18, from Blake's "make a dummy kernel where bursts are guaranteed to be fully

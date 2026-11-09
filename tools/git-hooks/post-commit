@@ -4,7 +4,7 @@
 #
 # THE ADVISORY REVIEW, after every commit (Blake, 2026-11-06): tools/review_gate.py reviews HEAD against the
 # CONSTITUTION and KERNEL_STANDARDS in the background, its report in the git common dir's rola-review/
-# (`python tools/review_gate.py --show 1`). It never slows or refuses a commit: skipped mid-rebase, without the
+# (`bazel run //tools:review_gate -- --show 1`). It never slows or refuses a commit: skipped mid-rebase, without the
 # `claude` CLI, with ROLA_REVIEW=off, or with no venv of the checkout's own. docs/internals/tools/review_gate.md
 [ "${ROLA_REVIEW:-on}" = off ] && exit 0
 command -v claude >/dev/null 2>&1 || exit 0
@@ -17,5 +17,6 @@ if [ -z "$venv" ] || [ ! -x "$venv/bin/python" ]; then
   echo "post-commit: no review -- rola.venv names no venv ($venv): bazel run //:dev_env" >&2
   exit 0
 fi
-"$venv/bin/python" tools/review_gate.py HEAD --background >/dev/null 2>&1 || true
+#: its run target, detached: a `bazel` waiting on another command's server would otherwise hold the commit
+nohup bazel run --noshow_progress //tools:review_gate -- HEAD >/dev/null 2>&1 &
 exit 0

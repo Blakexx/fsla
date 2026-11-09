@@ -21,10 +21,11 @@ kernel:
 load the skill an action names before taking it (§31).
 
 ## The instruments
-- Perf: `python -m rola_devtools.build run declare.py:all` (this checkout's declared measurement: its instruments and one
+- Perf: `bazel run //:measure -- run declare.py:all` (this checkout's declared measurement: its instruments and one
   clock-locked interleaved timing session on the cells, `docs/measurement.md`); attribution:
-  `tools/region_ledger.py --csv <ncu SourceCounters> --so <.so> --source <kernel.cuh> --budget tools/budgets/<k>.json`.
+  `bazel run //tools:region_ledger -- --csv <ncu SourceCounters> --so <.so> --source <kernel.cuh>
+  --budget tools/budgets/<k>.json`.
 - Correctness: `tests/oracle/` (scoped runs only; never a bare `tests/`).
-- Build: `python -m pip install -e . --no-build-isolation` with `ROLA_CUDA_ARCHS`; the machine is `bazel run //:check`
+- Build: `bazel run //:library` with `--//:archs`; the machine is `bazel run //:check`
   (`docs/build.md`); the device stamp proves the binary is the source.
 - The map of the documents: `docs/README.md`; of the mechanisms: `docs/ARCHITECTURE.md` §10.

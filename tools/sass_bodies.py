@@ -55,8 +55,8 @@ Two uses, both binary verdicts:
 
 Usage:
 
-    python tools/sass_bodies.py build_a/_C.so --json a.json
-    python tools/sass_bodies.py --compare a.json b.json [--drop-builds]
+    bazel run //tools:sass_bodies -- build_a/_C.so --json a.json
+    bazel run //tools:sass_bodies -- --compare a.json b.json [--drop-builds]
 
 Both `.so`s must have been built under the SAME `ratify.SASS_HASH_VERSION` -- see the
 version-stamp note above. They no longer need to have been built at the same path.

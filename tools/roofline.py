@@ -20,7 +20,7 @@ the dense count.
 Symbols at first use: ``BH`` = batch times heads, ``L`` = tokens, ``W`` = the window the
 carry and the intra share, ``D`` = routing levels, ``DV`` = the padded value width.
 
-    python tools/roofline.py --cells flagship-dense-L16384,flagship-alt-k4-L16384
+    bazel run //tools:roofline -- --cells flagship-dense-L16384,flagship-alt-k4-L16384
 """
 from __future__ import annotations
 

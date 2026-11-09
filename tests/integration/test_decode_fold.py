@@ -20,7 +20,7 @@ step's whole arithmetic collapses to
 is a function of the amplitude's last bits and of nothing else, and the reference below
 computes exactly that expression.
 
-Run: ``pytest tests/integration/test_decode_fold.py``
+Run: ``bazel test //tests:integration --test_filter=test_decode_fold``
 """
 from __future__ import annotations
 

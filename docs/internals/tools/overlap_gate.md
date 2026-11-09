@@ -16,8 +16,8 @@ of its sustained peak. The FLOORS, each a time:
 The ratio is elapsed / max(floors), red above `LINE` = 1.15. A kernel at its binding floor reads near 1.0; a kernel
 whose phases take turns, one idling a stream while another runs, reads near the sum of its floors over their max.
 
-    python tools/overlap_gate.py                    # every row; exit 1 when any is red
-    python tools/overlap_gate.py --row facts-alt-k4
+    bazel run //tools:overlap_gate                 # every row; exit 1 when any is red
+    bazel run //tools:overlap_gate -- --row facts-alt-k4
 
 THE INSTRUMENT'S CHECK (2026-10-07, RTX 3080 Ti): a pure read stream -- a torch reduction over 512 MB -- reaches 96.3%
 of the sustained DRAM peak, 1.04x, so the DRAM floor is reachable. The tensor floor's probe row (2026-10-16,

@@ -188,9 +188,7 @@ its lints and tests among it, and `bazel/` holds only the graph's own machinery:
   linters, the modes a person runs by hand and each linter's self-test;
 - `tests`: the tiers.
 
-Two moves are owed: the tools' tests to `tools/` and the hand-compiled C++ tests to C++ tests beside `csrc/rola`, after
-the cutover; and a package a kernel, its dependencies declared, with the code's split into product families. A C++ API
-of the kernels' own would make a split by language right.
+A C++ API of the kernels' own would make a split by language right.
 
 ## <a id="rules"></a>The rules
 

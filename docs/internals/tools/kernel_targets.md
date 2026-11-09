@@ -23,5 +23,5 @@ The producer's arms are a layer construction's: its instruments take the constru
 
 `tools/stall_census.py`, `tools/pipe_counters.py` and `tools/phase_ledger.py` take `--kernel FAMILY` from this table,
 the carry by default; `declare.py` declares the intra's on the cells of 16K tokens and more
-(`census-intra`, `counters-intra`). `python tools/kernel_targets.py CELL`
+(`census-intra`, `counters-intra`). `bazel run //tools:kernel_targets -- CELL`
 prints every family's target on a cell. The pipe timeline reads the carry only (its calibration plateau is the carry's).

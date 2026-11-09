@@ -16,8 +16,8 @@ arch that is tabulated but not ratified is listed with an empty toolchain column
 and the status *not ratified -- will refuse to load*. A support claim is worth
 nothing if the table quietly implies coverage nobody measured.
 
-    python tools/supported.py            # print the table
-    python tools/supported.py --check    # fail if README.md has drifted
+    bazel run //tools:supported              # print the table
+    bazel run //tools:supported -- --check   # fail if README.md has drifted
 
 GPU names are the only hand-written column, in ``GPUS`` below, because a compute
 capability does not know its own marketing name. They are labels; the ratification
@@ -155,7 +155,7 @@ def main() -> int:
             "README.md's GENERATED tables have DRIFTED from the artifacts that decide "
             "them (the kernel's arch table, the committed manifests, the activation "
             "registry). Regenerate:\n"
-            "    python tools/supported.py --write\n"
+            "    bazel run //tools:supported -- --write\n"
             "A support table edited by hand is a claim, not a report.\n")
         return 1
     print(f"README.md: {len(BLOCKS)} generated blocks are up to date")

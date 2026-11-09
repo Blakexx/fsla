@@ -9,7 +9,7 @@ static analysis can see -- with a one-line reason, per the brief. Anything
 NOT listed here that vulture still flags is a real candidate to delete, never
 silenced by omission.
 
-Run `tools/lint/run_vulture.sh`, which owns the scan: the Python packages, the tools, the batteries, the benches
+Run `bazel test //:ratchet_vulture`, which owns the scan: the Python packages, the tools, the batteries, the benches
 and `setup.py` (a CALLER -- it runs the build's own gates), with this file as the last argument.
 """
 

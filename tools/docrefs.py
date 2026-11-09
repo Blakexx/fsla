@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """THE DOC REFERENCES: every place a doc cites the tree is pinned to the content it was last read against.
 
-    python3 tools/docrefs.py                   # the gate: every reference pinned, the lock matching the docs
-    python3 tools/docrefs.py pending           # the references whose target changed or vanished, with the change
-    python3 tools/docrefs.py accept DOC...     # pin DOC's new and changed references, read against their targets
-    python3 tools/docrefs.py accept --whole DOC  # the docs pass read all of DOC: every reference in it is read
-    python3 tools/docrefs.py prune             # drop the pins of references no doc makes any more
-    python3 tools/docrefs.py --closing         # the docs pass is done: nothing pending, unread or broken
-    python3 tools/docrefs.py init              # pin today's references, unread; refused when a lock exists
+    bazel test //:docrefs                       # the gate: every reference pinned, the lock matching the docs
+    bazel run //:docrefs -- pending            # the references whose target changed or vanished, with the change
+    bazel run //:docrefs -- accept DOC...      # pin DOC's new and changed references, read against their targets
+    bazel run //:docrefs -- accept --whole DOC  # the docs pass read all of DOC: every reference in it is read
+    bazel run //:docrefs -- prune              # drop the pins of references no doc makes any more
+    bazel run //:docrefs -- --closing          # the docs pass is done: nothing pending, unread or broken
+    bazel run //:docrefs -- init               # pin today's references, unread; refused when a lock exists
 
 A REFERENCE is a doc's citation of a primitive: `` `tools/ratify.py`'s `main` ``, a dotted name in code font whose
 module is in the tree (`` `rola.ops.carry.carry_forward` ``), a path in code font, or a link (`[x](build.md#wheels)`).
@@ -472,7 +472,7 @@ def main() -> int:
         return 0
     lock = _lock()
     if lock is None:
-        raise SystemExit("docrefs: no lock (python3 tools/docrefs.py init records one)")
+        raise SystemExit("docrefs: no lock (bazel run //:docrefs -- init records one)")
 
     if a.command == "accept":
         if not a.docs:

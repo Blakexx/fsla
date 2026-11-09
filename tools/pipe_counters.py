@@ -4,8 +4,8 @@
 """THE PIPE COUNTERS (KERNEL_STANDARDS §22): the profiler's pipe and resource counters for one launch of a kernel
 family on a cell (the carry by default), as launch totals, raw.
 
-    python tools/pipe_counters.py flagship-dense --json counters.json
-    python tools/pipe_counters.py nl64k-alt-k4 --kernel intra --json counters.json
+    bazel run //tools:pipe_counters -- flagship-dense --json counters.json
+    bazel run //tools:pipe_counters -- nl64k-alt-k4 --kernel intra --json counters.json
 
 One oneshot launch through the probe worker under `ncu --metrics` (the toolchain's `ncu`): HMMAs and instructions
 executed, scheduler cycles elapsed and active, issue activity, warps active and eligible, shared loads and stores, ldsm

@@ -986,7 +986,7 @@ def check_supported_table() -> list[str]:
             return f"README.md has no generated block for {marker}"
         if committed != supported.table():
             return (f"README.md's {marker} block drifted from tools/supported.py's "
-                    f"generator (regenerate with `python tools/supported.py --write`)")
+                    f"generator (regenerate with `bazel run //tools:supported -- --write`)")
         return None
 
     readme_text = supported.README.read_text()

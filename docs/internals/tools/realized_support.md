@@ -6,7 +6,7 @@ support, so the tool reads it from the bundle the kernels take, after quantizati
 digits a token over every batch row, token and head -- the mean, the median, the 99th percentile and the fraction of
 the level's width -- and whether the side is declared sparse (a dense side is never zero).
 
-    python tools/realized_support.py [nl64k-alt-h4] [--json support.json]   # one construction, or every one
+    bazel run //tools:realized_support -- [nl64k-alt-h4] [--json support.json]   # one construction, or every one
 
 `declare.py` declares it: every construction once a binary, stored at `rola/support`.
 

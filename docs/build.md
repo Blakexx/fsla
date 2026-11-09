@@ -20,23 +20,19 @@ silently.
 ## Building
 
 ```bash
-pip install -e . --no-build-isolation
+bazel run //:library
 ```
 
 `--no-build-isolation` is required: pip's isolation would fetch a CPU-only torch
 from PyPI and build the extension against the wrong ABI. Flash-attention and
 mamba-ssm require the same thing for the same reason.
 
-<a id="iteration"></a>**Iterating.** In a checkout with its venv (`bazel run //:dev_env`), rebuild it with
-`python tools/dev.py build --archs 86 [--carry-arms all]` (in the checkout's own venv): `setup.py build_ext
---inplace`, the same compile, gates and device-stamped library as `pip install -e .`, without pip's metadata, wheel and
-reinstall (`docs/internals/tools/dev.md`); it refuses when that interpreter's `rola` is not this checkout. A build
-whose architectures are not the toolchain's ratified set is an ITERATION build, as an arm subset is
-(`_is_iteration_build`): it prints the NOT SHIPPABLE banner, takes a share of the host budget rather than all of it,
-and skips the post-build ratify, which could only warn; the arm table, the SASS gate (each function's registers on
-its line) and the device stamp still run. The SASS gate replays an unchanged cubin's verdict
-([`sass_gate.md#cache`](internals/tools/sass_gate.md#cache)), so an iteration build's time is the changed units' compile
-and their cubins' read.
+<a id="iteration"></a>**Iterating.** `bazel run //:library --//:archs=86 [--//:carry_arms=all]` rebuilds the library
+for one architecture and the arms named, into this checkout's `rola_cu13/` (`docs/build-graph.md#compile`). A build
+whose parameters are not the shipped set (every ratified architecture, every arm, every part) is an ITERATION build:
+its record says so and it is never ratified, and the library's gates run on it as on every build
+(`docs/build-graph.md#gates`). Each unit is its own cached action, so an iteration build's time is the changed units'
+compile and their cubins' read.
 
 A build's PARAMETERS -- what one build is -- are environment variables set per invocation, because pip passes
 nothing else to `setup.py`. Everything about the MACHINE is the dev config (`tools/dev_config.py`,
@@ -78,10 +74,10 @@ a clang-tidy translation unit -- runs under the same pool with
 
 ```bash
 # iteration: single-arch, arm-subset
-ROLA_CUDA_ARCHS=86 ROLA_CARRY_ARMS=all python -m pip install -e . --no-build-isolation
+bazel run //:library --//:archs=86 --//:carry_arms=all
 
 # gate: both arches, the shipped set
-python -m pip install -e . --no-build-isolation
+bazel run //:library
 ```
 
 ## What the build does, in order
@@ -284,7 +280,7 @@ codegen-affecting flag change is a fingerprint the ratification gate refuses
 ```bash
 python -c "from rola_cu13 import _build_config; print(_build_config.show())"
 cuobjdump --list-ptx rola_cu13/_C.abi3.so     # must list NOTHING
-python tools/ratify.py --arch 80 --arch 86       # must PASS
+bazel test //:ratified                  # must PASS
 ```
 
 The shipped `.so` carries one ELF image per (translation unit, architecture) and **0 PTX images**. That is not a
@@ -322,7 +318,7 @@ plugin, or a mismatched one, the first kernel call raises, naming `pip install "
 parts (the oracle, the configuration objects) still import. The extra is declared in `setup.py` and not
 `pyproject.toml` because it pins `rola`'s own version.
 
-A checkout builds the same package in place: `pip install -e . --no-build-isolation` puts the binary at
+A checkout builds the same package in place: `bazel run //:library` puts the binary at
 `rola_cu13/_C.abi3.so` (and the part harness's driver at `rola_cu13/_C_parts.abi3.so`), so a checkout and an installed
 wheel load the binary by one path. `tools/toolchains.py`'s `built_extension` is how the tools find it.
 

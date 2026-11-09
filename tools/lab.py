@@ -8,10 +8,10 @@ declares holds (an instruction the experiment means to time is really there -- p
 and no kernel touches local memory; then it checks the GPU is quiet, runs the repetitions, flags a result whose samples
 spread, and writes a record keyed by the architecture.
 
-    python tools/lab.py list
-    python tools/lab.py sass tensor_tax [KERNEL_REGEX] [--full]
-    python tools/lab.py run tensor_tax [--reps 7] [--record] [--force]
-    python tools/lab.py ncu pool_layout --metric lts__t_sectors_srcunit_tex_op_read.sum [--record]
+    bazel run //tools:lab -- list
+    bazel run //tools:lab -- sass tensor_tax [KERNEL_REGEX] [--full]
+    bazel run //tools:lab -- run tensor_tax [--reps 7] [--record] [--force]
+    bazel run //tools:lab -- ncu pool_layout --metric lts__t_sectors_srcunit_tex_op_read.sum [--record]
 
 `--record` writes `measure/lab/results/<name>/<sm_XX>.json` (or `<sm_XX>.counters.json` for `ncu`), the file a
 KERNEL_STANDARDS rule cites; without it the record goes to the scratch space. `ncu` reads hardware counters per kernel

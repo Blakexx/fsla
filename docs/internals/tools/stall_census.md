@@ -12,7 +12,7 @@ frame in any file, its helpers' and the headers' included. `--kernel FAMILY` nam
 (`tools/kernel_targets.py`: the carry by default, the den, the intra, the facts pass); the units a total is divided by
 are the family's.
 
-    python tools/stall_census.py flagship-dense --json census.json
+    bazel run //tools:stall_census -- flagship-dense --json census.json
 
 The JSON is region_ledger's `--json`, plus the cell, the schedule and whether a component exceeded its budget. It holds:
 - every component's instructions per CTA-window and its stall samples by reason (spin loops as their own

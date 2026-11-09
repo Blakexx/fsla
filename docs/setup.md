@@ -165,31 +165,15 @@ imports that worktree's `rola`.
 
 ## 4. First build of the SHIPPED set
 
-Inside the container (or on the bare host with `mold` vendored per 3b above):
-
 ```bash
-pip install -e . --no-build-isolation
+bazel run //:library      # every ratified architecture, every arm: the shipped build, into rola_cu13/
+bazel test //:ratified    # ratify's verdict on it: the build's SASS bodies and spills against the manifests
 ```
 
-This runs the closed-world gates in order (`docs/build.md`): rule 3 (ratified
-archs), rule 1 (toolchain — verified against the SAME manifest string the box
-this container was authored on already matches), rule 5 (vendored CUTLASS),
-the shard-generation check, the compile itself (`sccache`-cached per
-`docs/build.md#sccache` once a cache is warm), the fatbin gate, and the
-post-build ratification (`tools/ratify.py`) — which is the gate that answers
-"does this container's compile reproduce the committed manifest's SASS
-hashes". A clean build reports:
-
-```
-rola-standalone $ python tools/ratify.py --arch 80 --arch 86
-...
-SASS-body gate: all <N> ratified bodies unchanged; PASS
-```
-
-`--arch 80` requires an ampere-class-or-later device to actually launch
-against, but the RATIFICATION itself (recompiling the shipped TUs and hashing
-their SASS) needs only the toolchain, not a matching physical GPU — see
-`tools/ratify.py`'s own `--arch` handling.
+The library's gates run on every build (`docs/build-graph.md#gates`): the toolchain the record's (rule 1), every
+architecture ratified (rule 3), the vendored CUTLASS its pin's (rule 5), the shards their generator's, the SASS gate
+and the arm gate. Ratify is a target of its own (`docs/build-graph.md#ratify`), since the manifests are stale between
+milestones by design; it reads the build's own compiles, so it needs the toolchain and no GPU.
 
 ## 5. Run the battery
 
@@ -206,7 +190,7 @@ measured 2026-08-06).
 ## 6. Measure this checkout
 
 ```bash
-python -m rola_devtools.build run declare.py:all --only 'rola/phases' --only 'rola/sass'
+bazel run //:measure -- run declare.py:all --only 'rola/phases' --only 'rola/sass'
 ```
 
 rola-devtools' build system runs this checkout's declarations (`declare.py`): the build graph's library

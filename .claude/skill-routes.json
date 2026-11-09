@@ -18,7 +18,8 @@
     "common/hardware.json"
    ],
    "bash": [
-    "^(python3?\\s+)?tools/lab\\.py\\s+(run|sass|ncu|list)\\b"
+    "^(python3?\\s+)?tools/lab\\.py\\s+(run|sass|ncu|list)\\b",
+    "^bazel\\s+run\\s+//tools:lab\\s+--\\s+(run|sass|ncu|list)\\b"
    ]
   },
   {
@@ -28,13 +29,15 @@
     "docs/internals/tools/budgets.md"
    ],
    "bash": [
-    "^(python3?\\s+)?tools/lab\\.py\\s+ledger\\b"
+    "^(python3?\\s+)?tools/lab\\.py\\s+ledger\\b",
+    "^bazel\\s+run\\s+//tools:lab\\s+--\\s+ledger\\b"
    ]
   },
   {
    "skill": "rola-instruments",
    "bash": [
     "^(python3?\\s+)?tools/(region_ledger|phase_ledger|stall_census|pipe_counters|life_ranges|pipe_timeline|overlap_gate|roofline)\\.py\\b",
+    "^bazel\\s+run\\s+//tools:(region_ledger|phase_ledger|stall_census|pipe_counters|life_ranges|pipe_timeline|overlap_gate|roofline)\\b",
     "^ncu\\b"
    ]
   },
@@ -44,7 +47,8 @@
     "tools/bank_model.py"
    ],
    "bash": [
-    "^(python3?\\s+)?tools/bank_model\\.py\\b"
+    "^(python3?\\s+)?tools/bank_model\\.py\\b",
+    "^bazel\\s+run\\s+//tools:bank_model\\b"
    ]
   },
   {
@@ -59,6 +63,7 @@
     "^(python3?\\s+-m\\s+)?pytest\\b",
     "^bazel\\s+test\\s+//(tests|:lane)\\b",
     "^(python3?\\s+)?tools/sanitize_(oracle|cell)\\.py\\b",
+    "^bazel\\s+run\\s+//tools:sanitize_cell\\b",
     "^compute-sanitizer\\b"
    ]
   },
@@ -71,7 +76,8 @@
    ],
    "bash": [
     "^python3?\\s+-m\\s+rola_devtools\\.build\\b",
-    "^python3?\\s+-m\\s+rola_results\\b"
+    "^python3?\\s+-m\\s+rola_results\\b",
+    "^bazel\\s+run\\s+//:(measure|results)\\b"
    ]
   },
   {
@@ -95,6 +101,7 @@
     "^python3?\\s+setup\\.py\\b",
     "^nvcc\\b",
     "^(python3?\\s+)?tools/sass_gate\\.py\\b",
+    "^bazel\\s+run\\s+//tools:sass_gate\\b",
     "^(bazel|bazelisk|bazel/bazel)\\b"
    ]
   },
@@ -114,7 +121,8 @@
    "bash": [
     "^git\\s+(-C\\s+\\S+\\s+)?(commit|push)\\b",
     "^bazel\\s+test\\s+//:gate\\b",
-    "^(python3?\\s+)?tools/docrefs\\.py\\b"
+    "^(python3?\\s+)?tools/docrefs\\.py\\b",
+    "^bazel\\s+(run|test)\\s+//:docrefs\\b|^bazel\\s+run\\s+//tools/lint:"
    ]
   },
   {
@@ -130,7 +138,7 @@
    "bash": [
     "^(python3?\\s+)?tools/dev\\.py\\b",
     "^python3?\\s+tools/bootstrap\\.py\\b",
-    "^bazel\\s+run\\s+//:(init|check|clock|show|get|worktree|store|dev_env|container_check|container_compose)\\b",
+    "^bazel\\s+run\\s+//:(init|check|clock|show|get|worktree|dev_env|container_check|container_compose)\\b",
     "^git\\s+(-C\\s+\\S+\\s+)?worktree\\b",
     "^uv\\s+venv\\b"
    ]

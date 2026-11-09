@@ -52,7 +52,7 @@ The FACADE-level continuation (prefill on the chunk arm, then decode steps on th
 state object) is `tests/integration/test_decode_continuation.py`; this file stays at
 the ABI, where the addressing lives.
 
-Run: ``pytest tests/integration/test_decode_paging.py``
+Run: ``bazel test //tests:integration --test_filter=test_decode_paging``
 """
 from __future__ import annotations
 

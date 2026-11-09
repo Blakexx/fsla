@@ -13,7 +13,7 @@ settings it writes and reads are the dev config ([dev_config.md](dev_config.md))
     bazel run //:clock -- --mhz 1665
     bazel run //:dev_env                     # dev-env, given the checkout and the graph's environment
     bazel run //:worktree -- <name> <sha>
-    bazel run //:store -- commit -m <msg>
+    bazel run //:results -- commit -m <msg>
     bazel run //:container_check             # the devbox image's clean room
     bazel run //:container_compose           # the devbox image for an editor's dev container
 
@@ -111,13 +111,13 @@ Docker loads it (`//:image_tarball`), tagged `rola-devbox:<digest[:12]>`.
   commit changing the name has a passing record for the new digest. A commit that leaves the image alone needs no
   Docker.
 
-**`store`** keeps the measurements store (`store.root`, a rola-results checkout): `init` links `rola_results` into
-every interpreter that runs here -- each checkout's own venv (it names the environment's site-packages as a plain
-path, which reads none of its `.pth` files) and the base venv the sibling repositories' hooks run from -- by a
-one-line `rola_results.pth`, and `dev-env` links each venv it writes; `commit -m` commits the records (`python -m
-rola_results commit`).
+**The measurements store** (`store.root`, a rola-results checkout) is importable from every interpreter that runs
+here: `init` links `rola_results` into each checkout's own venv (it names the environment's site-packages as a plain
+path, which reads none of its `.pth` files) and the base venv the sibling repositories' hooks run from, by a one-line
+`rola_results.pth`, and `dev-env` links each venv it writes. The store's own command line is `bazel run //:results`
+(`commit -m` commits the records).
 
-`init`, `check`, `show`, `get`, `clock`, `dev-env` and `worktree` run from whichever python starts them (`dev-env`'s is the environment's, through its run target); `build`, `store` and `container` re-execute themselves under the checkout's own venv (`bazel run //:dev_env`), because the build compiles with it and the store and the container read `rola_results`, which it links; the host's own python carries nothing of this project. The base venv is the venv the sibling repositories' commit hooks run from: `check` tests it where it is set.
+`init`, `check`, `show`, `get`, `clock`, `dev-env` and `worktree` run from whichever python starts them (`dev-env`'s is the environment's, through its run target); `build` and `container` re-execute themselves under the checkout's own venv (`bazel run //:dev_env`), because the build compiles with it and the container reads `rola_results`, which it links; the host's own python carries nothing of this project. The base venv is the venv the sibling repositories' commit hooks run from: `check` tests it where it is set.
 
 **`get`** prints one value, for a person or a shell (the `rola-dev` skill's way to read one setting).
 

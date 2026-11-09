@@ -5,9 +5,9 @@
 defines, DERIVED FROM THE TREE -- never hand-listed. The build, the ratification and every gate take their targets
 from here, so a new kernel is built, ratified and gated the day it lands, and no gate can narrow back to one family.
 
-    python tools/kernels.py                  # the list: family, kernel, file:line
-    python tools/kernels.py --units          # the translation units the build compiles
-    python tools/kernels.py --check-manifest # the ratified manifests name exactly the source's kernels
+    bazel run //tools:kernels                      # the list: family, kernel, file:line
+    bazel run //tools:kernels -- --units           # the translation units the build compiles
+    bazel run //tools:kernels -- --check-manifest # the ratified manifests name exactly the source's kernels
 
 A UNIT is a `.cu` under `csrc/rola/src`: the hand-written ones, plus the per-arm carry units `gen_shards` selects
 under `instantiations/`. A KERNEL is a `__global__` function definition in a `.cu`/`.cuh` there, read from the source

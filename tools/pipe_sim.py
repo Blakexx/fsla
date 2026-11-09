@@ -6,8 +6,9 @@ occupancy, computed from its SASS alone -- the control bits ptxas wrote into eve
 (stall count, yield, the scoreboard barriers it sets and waits on, the reuse flags) and a latency
 table from this card's calibrations -- for one warp and for two warps sharing a scheduler.
 
-    python tools/pipe_sim.py --arm 0 --loop common/burst.cuh:run [--warps 1|2] [--sm-warps 8] [--iterations 6] [--trace]
-    python tools/pipe_sim.py --calibrate rola_cu13/_C_parts.abi3.so      # the model against the probe's rows
+    bazel run //tools:pipe_sim -- --arm 0 --loop common/burst.cuh:run [--warps 1|2] [--sm-warps 8]
+        [--iterations 6] [--trace]
+    bazel run //tools:pipe_sim -- --calibrate rola_cu13/_C_parts.abi3.so   # the model against the probe's rows
 
 THE MODEL. A warp issues in order. Instruction i issues at the latest of: the previous issue
 plus the previous instruction's stall count; the completion of every scoreboard barrier its wait

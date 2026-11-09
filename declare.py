@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """ROLA'S DECLARATIONS: this checkout's targets for rola-devtools' declared build system (`rola_devtools.build`).
 
-    python -m rola_devtools.build plan declare.py:all
-    python -m rola_devtools.build run  declare.py:all --only 'rola/phases' --skip '*/timeline'
+    bazel run //:measure -- plan declare.py:all
+    bazel run //:measure -- run declare.py:all --only 'rola/phases' --skip '*/timeline'
 
 `declare(g, env, cells=..., timing=...)` declares one checkout's targets under the graph's scope and returns them (the
 timing registrations by arm name), so a root elsewhere (rola-bench's) loads this file from each checkout it measures,

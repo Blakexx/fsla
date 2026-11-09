@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE OVERLAP GATE (KERNEL_STANDARDS §28): a kernel's time against the largest of its floors, on its perf cells.
 
-    python tools/overlap_gate.py                    # every row; exit 1 when any is red
-    python tools/overlap_gate.py --row facts-alt-k4
+    bazel run //tools:overlap_gate      # every row; exit 1 when any is red
+    bazel run //tools:overlap_gate -- --row facts-alt-k4
 
 A ROW is a kernel on a perf cell. One `ncu` launch of it (after warm-up launches of the same call) reads the
 elapsed time and clock, the instructions, the shared wavefronts, the tensor instructions and DRAM's share of its

@@ -14,7 +14,7 @@ which the ratchet holds as backlog: an exemption is a debt the docs name, not a 
 Findings are `path:line: message`, one a site, on stdout, exit 0 (the ratchet judges them). The tree's pre-§23 MMA sites (the decode and
 intra families, the readout's box loop) are the baseline; a new one fails the gate.
 
-    python tools/lint/burst_tier.py
+    bazel run //tools/lint:burst_tier
 """
 from __future__ import annotations
 

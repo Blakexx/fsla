@@ -19,7 +19,7 @@ of the declaration.
 
 Usage:
 
-    python tools/lint/coverage.py            # the inventory: every gap, then a per-obligation count
+    bazel run //tools/lint:coverage          # the inventory: every gap, then a per-obligation count
 Docs: docs/internals/tools/coverage.md
 """
 from __future__ import annotations

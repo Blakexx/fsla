@@ -23,7 +23,7 @@ sub-cases (carried state present / absent) because that is the second half of th
 predicate: a one-token call with NO carried state is a degenerate prefill, not a decode
 step, and a one-token prefill is outside the chunk matrix — a refusal, not a step.
 
-Run: ``pytest tests/integration/test_decode_dispatch.py``
+Run: ``bazel test //tests:integration --test_filter=test_decode_dispatch``
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-# The host-TU lint: the graph's `//tools:clang_tidy_host` runs it (`tools/lint/unit_lints.py`), with the PINNED
+# The host-TU lint: the graph's `//csrc/rola:clang_tidy_host` runs it (`tools/lint/unit_lints.py`), with the PINNED
 # clang-tidy (tools/clang_tidy_pin.json), on every `.cpp` the library links (today csrc/rola/rola_api.cpp). The device units have their own profile,
 # tools/lint/clang-tidy-device.yaml. Every finding fails the gate (WarningsAsErrors).
 #

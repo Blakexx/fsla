@@ -13,7 +13,7 @@ stored with its provenance. This document is what that sentence means.
 | statistics | rola-devtools' `rola_devtools.verdict` | whether a difference is real |
 | record | `rola_results` (the measurements store) | where a number lives afterwards, and which stored samples are a baseline |
 
-rola measures itself with `python -m rola_devtools.build run declare.py:all`; rola-bench's root loads this file from each
+rola measures itself with `bazel run //:measure -- run declare.py:all`; rola-bench's root loads this file from each
 checkout it compares, declares every checkout's targets beside its attention reference, and times them in shared
 sessions. Both are one method: a number taken either way is the same measurement.
 
@@ -58,8 +58,9 @@ Not a checklist: the requirements a target holds and the runner's setup do each 
 Blake, 2026-09-15: the LAYER holds the projections and produces the routing (RoLA's analogue of QKV); the OP takes those
 bare operands and a state and produces the next state and the readout -- the facts, the paging, the packing and the
 kernels; a KERNEL runs its own launches and nothing around them. Every subject states the level it prices
-(`Subject.level`) and every sample records it, so a reading pairs entries of ONE level and `python -m rola_results
-verdict` refuses a pair of two. A comparison between this library and another is therefore a LAYER comparison: RoLA's
+(`Subject.level`) and every sample records it, so a reading pairs entries of ONE level and
+`bazel run //:results -- verdict` refuses a pair of two.
+A comparison between this library and another is therefore a LAYER comparison: RoLA's
 own layer against attention's, because RoLA's number includes the state its capacity buys.
 
 What this line can measure today: the KERNEL level (`carry_forward`, `intra_forward`, `facts_pass`, `entmax_solve`) and one OP-level path
@@ -154,13 +155,13 @@ A change is judged against its baseline in ONE session: the baseline checkout (a
 with its venv) is a reference of rola-bench's suite, and the run is pruned to the timing sessions and their stores:
 
 ```bash
-python -m rola_devtools.build run declare.py:suite \
+bazel run //:measure -- run declare.py:suite \
     --arg target=worktree:<new checkout>,venv:<its venv> --arg references='worktree:<baseline>,venv:<its venv>' \
     --only 'store/session/*'
 ```
 
 Each session interleaves both checkouts' entries call by call at the locked clock (above), so the ratio between them
-is read from one session's samples (`python -m rola_results verdict`). Times from two separate runs are never
+is read from one session's samples (`bazel run //:results -- verdict`). Times from two separate runs are never
 compared, and an unlocked clock's are never read at all (KERNEL_STANDARDS §32.7): this host's sustained clock has two
 states ~17% apart (the method, above), larger than the effects a change is judged on. One launch's cycles each under `ncu`
 (`sm__cycles_elapsed.max`) compare two builds without a session where the question is one kernel's cycles.
@@ -202,23 +203,23 @@ when it bound (`floored_at_resolution`).
 
 ## Which samples are judged
 
-    python -m rola_results verdict --reference LABEL [--candidate LABEL] [--cell C] [--arm A] [--json]
+    bazel run //:results -- verdict --reference LABEL [--candidate LABEL] [--cell C] [--arm A] [--json]
 
 reads the stored timing sessions (the `timing_members` and `timing_samples` views). In every session that timed the
 reference label's arm on a cell, each other label's member of that arm on that cell is paired with it and judged inside
 the session. A unit is the arm, the cell, the two labels and the code each ran (commit and tracked diff); its sessions,
 oldest first, are the runs, and the newest is judged. Nothing is stored: a verdict is a reading of the records, taken
-again whenever it is asked for. `python -m rola_results dashboard --out FILE --reference LABEL` is one run as a page.
+again whenever it is asked for. `bazel run //:results -- dashboard --out FILE --reference LABEL` is one run as a page.
 
 ## SASS
 
-`python tools/ratify.py` and `python tools/sass_bodies.py` are the instruments. Two binaries in a
+`bazel run //:ratify` and `bazel run //tools:sass_bodies` are the instruments. Two binaries in a
 comparison may be built at different paths ([`build.md#sccache`](build.md#sccache)); they must agree
 on `ratify.SASS_HASH_VERSION`, which `--compare` checks and refuses on mismatch.
 
 **Measuring a kernel's register DEMAND at a bound it does not ship at** is a
 scratch-tree edit — copy the tree, change the `__launch_bounds__` CTA argument at
-the instantiation, run `python tools/ratify.py --census` there, read the spill
+the instantiation, run `bazel run //:ratify -- --census` there, read the spill
 column — and never a flag on the shipped tool, because a tool that can force a
 bound is a tool that can ratify one.
 
@@ -282,7 +283,7 @@ Every measuring tool stores what it measured through one library, `rola_results`
 `store.root` in the dev config (default `rola-results` beside the checkouts), importable from every interpreter
 `bazel run //:init` provisions. A result measured in any worktree of a machine lands in that one repository, visible
 to every other at once; the devbox container has its own clone (`docs/setup.md#the-devbox-image`), whose records
-reach another machine's by git (`bazel run //:store -- commit`, then a push and a pull).
+reach another machine's by git (`bazel run //:results -- commit`, then a push and a pull).
 
 A tool opens a store at its OWN LOCATION and hands it the SEMANTICS of what it measured -- the inputs its numbers
 depend on, reduced to identities (a commit and its tracked diff, a binary's manifest or file digest, the cells, the
@@ -306,14 +307,14 @@ and a timing only compares within the session that interleaved it.
 
 Reading across runs is a join, never a parser: `instrument_metrics` is every number every instrument recorded in
 long form (run, cell, dotted metric, value), `diff_cells` every stored diff's verdict per cell and quantity, and
-`python -m rola_results instruments --baseline RUN` is one run's numbers beside another's as deltas; the dashboard
+`bazel run //:results -- instruments --baseline RUN` is one run's numbers beside another's as deltas; the dashboard
 (`--baseline RUN`) renders the same. Which run is the baseline, like which label is the reference, is the reader's.
 
-A tool run by another tool stores nothing (`--no-record`): the caller keeps the output in its own record. `python -m
-rola_results sql "..."` queries every location through a derived SQLite index beside the records (`history` and
-`latest` for one location; views flatten the stored outputs, and the rola-results README lists them with the last,
-history, compare and baseline questions as SQL); `python -m rola_results verdict` is the regression judgement above; `bazel run
-//:store -- commit -m <message>` commits the records
-(`python -m rola_results commit`), after the repository's own check that every key recomputes from its semantics and
-every output exists. Pushing is the owner's act. The record kept before the library -- the per-run JSONL, the perf
+A tool run by another tool stores nothing (`--no-record`): the caller keeps the output in its own record.
+`bazel run //:results -- sql "..."` queries every location through a derived SQLite index beside the records
+(`history` and `latest` for one location; views flatten the stored outputs, and the rola-results README lists them
+with the last, history, compare and baseline questions as SQL); `bazel run //:results -- verdict` is the regression
+judgement above; `bazel run //:results -- commit -m <message>` commits the records, after the repository's own check
+that every key recomputes from its semantics and every output exists. Pushing is the owner's act.
+The record kept before the library -- the per-run JSONL, the perf
 ledger, the ledger and composer reports -- left the store for the owner's archive (`docs/internals/DELETIONS.md`).

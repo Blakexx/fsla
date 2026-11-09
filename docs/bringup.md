@@ -50,9 +50,9 @@ Read the output before committing it. Two things are not automatic:
 ## 3. Gate
 
 ```bash
-python tools/ratify.py --arch 80 --arch 86 --arch 89
-python tools/ratify.py --self-test
-python tools/supported.py --write     # the README table is generated
+bazel test //:ratified
+bazel run //:ratify -- --self-test
+bazel run //tools:supported -- --write     # the README table is generated
 ```
 
 `--self-test` must still fail on every mutant it is required to reject. The
@@ -99,7 +99,7 @@ change.
 3. **Check the compiler cache.** The pinned sccache must compile under the toolkit (sccache 0.17
    silently produced no objects under nvcc 13.4); otherwise build with
    `toolchain.sccache_enabled: false` until the pin moves.
-4. **Census before writing.** `python tools/ratify.py --census --json <file>` under the new toolkit
+4. **Census before writing.** `bazel run //:ratify -- --census --json <file>` under the new toolkit
    against the current toolchain's census: every entry's spill, registers and in-loop locals. A
    worse entry is a kernel finding, not a verdict on the toolkit.
 5. **Ratify** (`--write`, every shipped arch) into `tools/manifests/<name>/`, build, and run the

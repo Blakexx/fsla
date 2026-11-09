@@ -13,7 +13,8 @@ cubin with line information, deterministically.
   REGISTERS -- the arm's allocation against the thresholds a warp a scheduler costs: 248 buys two,
               168 three.
 
-    python tools/burst_gate.py --arm 0 --source csrc/rola/src/carry/ampere/carry_kernel.cuh [--loop FILE:FUNCTION ...]
+    bazel run //tools:burst_gate -- --arm 0 --source csrc/rola/src/carry/ampere/carry_kernel.cuh \
+        [--loop FILE:FUNCTION ...]
 
 The loops are named by their user functions (`--loop`), since every `Burst::run` user inlines the same lines; a name
 the source no longer defines is refused. Exit 1 on a purity red.

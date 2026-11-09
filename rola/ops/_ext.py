@@ -135,7 +135,7 @@ Install the binary for your CUDA toolchain at this version:
     pip install "rola[{extra}]=={version}"
 
 It carries the kernels for every ratified architecture and the manifests they were measured against. A checkout builds
-the same package in place (`pip install -e . --no-build-isolation`, docs/build.md), and refuses an architecture that
+the same package in place (`bazel run //:library`, docs/build.md), and refuses an architecture that
 has no measured manifest (docs/bringup.md).
 
 There is no CPU or pure-torch fallback by design: `rola.ops.naive.naive_rola` is a float64 reference for checking the

@@ -63,10 +63,9 @@ reason they moved.
 
 Usage (no GPU required -- this is a COMPILE-time gate, so it does not take the lock):
 
-    python tools/ratify.py
-    python tools/ratify.py --arch 80 --arch 86
-    python tools/ratify.py --arch 89 --write               # bringing up a new arch
-    python tools/ratify.py --shard chunk_s1                # triage one shard's slice
+    bazel test //:ratified                     # the verdict on the shipped build
+    bazel run //:ratify -- --write             # the manifests, re-recorded from the build (a milestone's)
+    bazel run //:ratify -- --census            # every instantiation's registers and spills, for a scope a flag sets
 
 `--shard` is a MEASUREMENT scope and never a ratification scope: a ratchet refusal is
 investigated one shard's slice at a time instead of by re-deriving every entry, but
@@ -240,7 +239,7 @@ SRC = Path(__file__).resolve().parents[1] / "csrc" / "rola" / "src"
 #: path in the command is already absolute (measured, `docs/build.md#sccache`),
 #: so this gate's compiles must run from the SAME directory the build's ninja
 #: compile just ran from, or the post-build recompile can never hit the build's
-#: own cache entry -- and a plain `python tools/ratify.py` run by a developer
+#: own cache entry -- and a plain `bazel test //:ratified` run by a developer
 #: must use the same fixed directory too, so re-ratifying twice in a row (or
 #: after a build) hits by construction rather than by the accident of an
 #: unchanged shell CWD.
@@ -316,7 +315,7 @@ def load_manifest(arches, name: str | None = None) -> dict:
         if not path.exists():
             raise SystemExit(
                 f"no ratified manifest for sm_{arch} at {path}; run\n"
-                f"    python tools/ratify.py --arch {arch} --write\n"
+                f"    bazel run //:ratify -- --write\n"
                 f"and put the numbers in the findings document")
         blob = json.loads(path.read_text())
         sources[arch] = blob.get("source")
@@ -696,7 +695,7 @@ def check_derivation(record: dict | None = None) -> bool:
             print(f"\nFAIL  THE DERIVATION IS NOT RATIFIED. There is no "
                   f"{DERIVATION_JSON.name}: the addressing block's outputs are "
                   f"measured by nothing. Ratify them:\n"
-                  f"    python tools/ratify.py --write-derivation")
+                  f"    bazel run //:ratify -- --write-derivation")
             return False
         record = json.loads(DERIVATION_JSON.read_text())
     if record.get("schema") != 1:
@@ -960,7 +959,7 @@ def check_freshness(manifest: dict, digest: str | None = None) -> bool:
         if src is None:
             print(f"\nFAIL  sm_{arch}'s manifest predates the source-freshness "
                   f"trigger (no `source` block). Re-ratify: "
-                  f"python tools/ratify.py --arch {arch} --write")
+                  f"bazel run //:ratify -- --write")
             ok = False
         elif src["csrc_sha256"] != digest:
             print(f"\nFAIL  SOURCE DRIFT. sm_{arch}'s manifest was ratified against "
@@ -1192,7 +1191,7 @@ def _merge_units(measured: list[tuple[Path, dict]]) -> tuple[dict, list[str], di
                 raise SystemExit(
                     f"{key} was compiled by more than one translation unit "
                     f"({source.name} is the second, after {owner[key]}). Nothing is "
-                    f"sharded; run tools/gen_shards.py --check")
+                    f"sharded; run `bazel run //tools:gen_shards -- --check`")
             entries[key] = value
             owner[key] = source.name
         unhonored |= set(rec["unhonored"])

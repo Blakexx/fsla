@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """THE RATCHET: a lint the tree does not yet pass gates on what a commit ADDS, and its old findings can only go away.
 
-    python3 tools/lint/ratchet.py work_codes            # the gate: a new finding fails, and so does a fixed one
-    python3 tools/lint/ratchet.py work_codes --shrink   # drop the fixed entries from the baseline (it never adds one)
-    python3 tools/lint/ratchet.py work_codes --init     # record today's findings; refused when a baseline exists
-    python3 tools/lint/ratchet.py --grown               # every baseline against HEAD's alone, in the checkout
+    bazel test //:ratchet_work_codes                        # the gate: a new finding fails, and so does a fixed one
+    bazel run //tools/lint:ratchet -- work_codes --shrink   # drop the fixed entries (it never adds one)
+    bazel run //tools/lint:ratchet -- work_codes --init     # record today's findings; refused when a baseline exists
+    bazel test //:ratchet_baselines                         # every baseline against HEAD's alone, in the checkout
 
 A lint's findings are its `path:line: message` lines. A finding is known by its path, its message's first sentence and
 a digest of the line it names, never by the line number, which any edit above it moves. `tools/lint/baselines/<lint>.json`
@@ -150,8 +150,8 @@ def main() -> int:
         print(f"ratchet {a.lint}: baseline recorded, {sum(found.values())} finding(s)")
         return 0
     if not path.exists():
-        raise SystemExit(f"ratchet {a.lint}: no baseline at {path.relative_to(ROOT)} (python3 tools/lint/ratchet.py "
-                         f"{a.lint} --init records one)")
+        raise SystemExit(f"ratchet {a.lint}: no baseline at {path.relative_to(ROOT)} ("
+                         f"bazel run //tools/lint:ratchet -- {a.lint} --init records one)")
     baseline = _decode(path.read_text())
 
     if a.shrink:
@@ -165,7 +165,7 @@ def main() -> int:
         _show(f"ratchet {a.lint}: {sum(new.values())} NEW finding(s) -- fix each, or exempt it the lint's own way:", new)
     if fixed:
         _show(f"ratchet {a.lint}: {sum(fixed.values())} baseline entr(ies) no longer found -- run "
-              f"`python3 tools/lint/ratchet.py {a.lint} --shrink` and commit the smaller baseline:", fixed)
+              f"`bazel run //tools/lint:ratchet -- {a.lint} --shrink` and commit the smaller baseline:", fixed)
     total = sum(baseline.values())
     print(f"ratchet {a.lint}: {'FAIL' if new or fixed else 'OK'} ({total} in the backlog)")
     return 1 if new or fixed else 0

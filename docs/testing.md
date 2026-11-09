@@ -88,7 +88,7 @@ diff -- the question is never "is this code reasonable" but "does it compute the
 
 ```bash
 # in rola-bench: this checkout against another, every surface, as targets
-python -m rola_devtools.build run declare.py:diffs --arg target=worktree:PATH --arg references=worktree:OLD
+bazel run //:measure -- run declare.py:diffs --arg target=worktree:PATH --arg references=worktree:OLD
 ```
 
 Both sides are DIFF SIDES (`tests/oracle/sides.py`) run by the build system in each checkout's own environment over the
@@ -199,7 +199,7 @@ partials added in arrival order ([`internals/decode/decode.md#determinism`](inte
 
 Each of these guards a property of the BUILD whose failure leaves every other gate green.
 
-**`python tools/gen_shards.py --check`** regenerates the per-arm carry units into memory and diffs them against the
+**`bazel run //tools:gen_shards -- --check`** regenerates the per-arm carry units into memory and diffs them against the
 checked-in ones, and holds the selection header — generated, never checked in — to its generator's schema for the
 scopes a build or ratify run uses and for the empty selection
 ([`internals/tools/gen_shards.md`](internals/tools/gen_shards.md)).
@@ -219,7 +219,7 @@ device whose arch was never measured, as a pair of clauses — `static_assert(ta
 statement of every launching entry. The test states the clause over every declared entry surface, so the next entry
 inherits it.
 
-**`python tools/header_selfcheck.py`** compiles every header under `csrc/rola/` ALONE, twice in one translation unit
+**`bazel run //tools:header_selfcheck`** compiles every header under `csrc/rola/` ALONE, twice in one translation unit
 under the extension's own flags, so a header that leans on another's include, or whose include guard is broken, fails
 here rather than at a later caller. It needs `nvcc` but no device.
 
@@ -237,7 +237,7 @@ A document nothing checks is a document that drifts. These run in the commit gat
   and a directory of GENERATED sources — `csrc/rola/src/instantiations/` — is exempt from the one-page rule and
   documented by one README, the exemption itself checked (the README exists, and the directory holds nothing its
   generator does not produce). A floor on the number of sources found keeps a broken glob from checking nothing.
-- **`tools/supported.py --check`**: the README's generated support tables are the generator's output.
+- **`bazel run //tools:supported -- --check`**: the README's generated support tables are the generator's output.
 - **`tools/lint/portable_claude.py`**: the agent files name no machine path.
 
 ## The host-structure gates
@@ -304,7 +304,7 @@ Performance work has its own document — [`measurement.md`](measurement.md) —
 subject of review as the kernel. The timing system's own non-vacuity tests live with it, in rola-devtools and
 rola-results; this repository's is `tests/unit/test_bench_provider.py`, which plants an uncarried carry arm, an
 iteration build, another library's data and a binary without the kernel a subject launches, and requires each refusal.
-`python tools/ratify.py --self-test` is the same discipline on the codegen side ([`ratification.md`](ratification.md)).
+`bazel run //:ratify -- --self-test` is the same discipline on the codegen side ([`ratification.md`](ratification.md)).
 
 ### Triaging a suspected stream-ordering bug
 

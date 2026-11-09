@@ -11,6 +11,6 @@ description: Load before measuring the shipped kernels' performance or reading t
    (`docs/measurement.md#the-build-everything-declared-a-run-pruned-by-label`).
 3. Two builds (a change against its baseline): the baseline as a reference checkout, one interleaved session, never
    two runs and never a scratch timing loop (`docs/measurement.md#comparing-two-builds`, `docs/KERNEL_STANDARDS.md#s32`).
-4. Read it from the store, never from a terminal: `python -m rola_results show|history|latest|instruments`
-   (`docs/measurement.md#the-measurements-record-rola_results`); a regression is `python -m rola_results verdict`
+4. Read it from the store, never from a terminal: `bazel run //:results -- show|history|latest|instruments`
+   (`docs/measurement.md#the-measurements-record-rola_results`); a regression is `bazel run //:results -- verdict`
    under the three gates (`docs/measurement.md#the-flagging-rule-three-gates-all-must-fire`).

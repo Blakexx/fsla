@@ -4,9 +4,9 @@
 """THE OP'S TIMELINE: a registered subject's calls on a cell under torch's profiler, each call split into the time the
 GPU runs kernels and the time it waits -- the gaps between kernels and what the host did in them.
 
-    python tools/op_timeline.py nl64k-alt-k4-h4                      # the op's prefill (`prefill`)
-    python tools/op_timeline.py nl64k-alt-k4-h4 --subject carry_intra --calls 5 --top 15
-    python tools/op_timeline.py nl64k-alt-k4-h4 --python               # and one call's host Python (cProfile)
+    bazel run //tools:op_timeline -- nl64k-alt-k4-h4            # the op's prefill (`prefill`)
+    bazel run //tools:op_timeline -- nl64k-alt-k4-h4 --subject carry_intra --calls 5 --top 15
+    bazel run //tools:op_timeline -- nl64k-alt-k4-h4 --python   # and one call's host Python (cProfile)
 
 Per call: the wall time (synchronized), the kernels' busy time (the union of their intervals), the idle remainder;
 per kernel name its launches and time; the gaps longer than `--gap` microseconds with the host ops that ran across
