@@ -16,5 +16,5 @@ description: Load before committing or pushing in this repo: the gate a commit r
    (`docs/internals/tools/lint.md#ratchets`). A change to the devbox image needs the container check (`rola-dev`).
 5. The subject states what the commit makes true, in words, never a work code.
 6. After the commit, its review lands detached (`tools/git-hooks/post-commit`;
-   `bazel run //tools:review_gate -- --show 1`, `docs/internals/tools/review_gate.md`): read it before the next
-   commit, and fix a BLOCK finding or say in words why it is wrong.
+   `bazel run //tools:review_gate -- --show 1`): never wait on it. Read it when it lands, and fix its findings in the
+   next commit after it, a BLOCK fixed or answered in words (`docs/internals/tools/review_gate.md#pipelined`).

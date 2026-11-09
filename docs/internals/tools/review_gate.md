@@ -28,6 +28,10 @@ session persistence are off. A report is cached by everything it read -- the pro
 standards, the message, the diff -- and kept in the git common dir's `rola-review/`, shared by every worktree;
 `--show N` prints the last N.
 
+<a id="pipelined"></a>PIPELINED (Blake, 2026-11-08): nothing waits on a review. The next commit is made while it runs;
+each report is read when it lands, and its findings go into the next commit after it, each block fixed or answered in
+words. A review may trail a commit or two; a push to a public mirror waits for every landed review to be read.
+
 ADVISORY: `tools/git-hooks/post-commit` starts a review of `HEAD` detached after every commit, so a commit is neither
 slowed nor refused; it is skipped mid-rebase, without the `claude` CLI, or with `ROLA_REVIEW=off`, and it runs from
 the checkout's own venv (git's rola.venv), saying so and skipping when that names none (`bazel run //:dev_env`). The first review

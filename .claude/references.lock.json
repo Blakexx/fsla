@@ -36,7 +36,7 @@
   {"doc": ".claude/skills/rola-commit/SKILL.md", "pinned_at": "baa8bc5c4a69", "reviewed": true, "sha256": "04b43b15a95ce9fa", "target": "docs/internals/tools/docrefs.md#the-gate-and-the-pass"},
   {"doc": ".claude/skills/rola-commit/SKILL.md", "pinned_at": "e87322e18bcd", "reviewed": true, "sha256": "9a9d4dbd97dc5eca", "target": "docs/internals/tools/lint.md#ratchets"},
   {"doc": ".claude/skills/rola-commit/SKILL.md", "pinned_at": "baa8bc5c4a69", "reviewed": true, "sha256": "d65c142a702ea029", "target": "docs/internals/tools/lint.md#running-the-roster-by-hand"},
-  {"doc": ".claude/skills/rola-commit/SKILL.md", "pinned_at": "71c340a0fb65", "reviewed": true, "sha256": "", "target": "docs/internals/tools/review_gate.md"},
+  {"doc": ".claude/skills/rola-commit/SKILL.md", "pinned_at": "2560862772fd", "reviewed": true, "sha256": "d90bd288adffb481", "target": "docs/internals/tools/review_gate.md#pipelined"},
   {"doc": ".claude/skills/rola-dev/SKILL.md", "pinned_at": "970150d331a0", "reviewed": true, "sha256": "1afe1e90952e6bdb", "target": "docs/KERNEL_STANDARDS.md#s23"},
   {"doc": ".claude/skills/rola-dev/SKILL.md", "pinned_at": "e87322e18bcd", "reviewed": true, "sha256": "", "target": "docs/internals/tools/dev.md"},
   {"doc": ".claude/skills/rola-dev/SKILL.md", "pinned_at": "e87322e18bcd", "reviewed": true, "sha256": "", "target": "docs/internals/tools/dev_config.md"},
