@@ -85,12 +85,12 @@ def gencodes(archs) -> list[str]:
     return [f"-gencode=arch=compute_{a},code=sm_{a}" for a in archs]
 
 
-def nvcc_flags(archs, nvcc_threads: int = 2) -> list[str]:
+def nvcc_flags(archs, nvcc_threads: int) -> list[str]:
     """The codegen flag list both compilers of these sources must pass.
 
-    `--threads` is the ARCH COUNT by default and not a core count: it parallelizes
-    nvcc across `-gencode` targets, so beyond the number of targets it buys nothing
-    while multiplying the peak resident set (jobs x `--threads` cicc processes).
+    `--threads` is the machine's `host.nvcc_threads`, the architecture count and not a core count: it parallelizes
+    nvcc across `-gencode` targets, so beyond the number of targets it buys nothing while multiplying the peak
+    resident set (jobs x `--threads` cicc processes).
     """
     return ["-O3", "-std=c++20", "-lineinfo", f"--threads={nvcc_threads}",
             #: MANDATORY, not optional: `tools/ratify.py` parses exactly this report.

@@ -210,7 +210,7 @@ def _touches_gpu(request) -> bool:
 def _gpu_lock_held():
     from rola_devtools.locks.gpu import gpu_lock
 
-    #: SHARED mode (LOCKS brief, 2026-08-29): a pytest battery is correctness
+    #: SHARED mode: a pytest battery is correctness
     #: work (oracle/integration/cuda-marked unit tests), not a measurement --
     #: it can share the device with another correctness run (up to
     #: `host.gpu_shared_slots` of them) rather than excluding every other

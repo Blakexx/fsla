@@ -25,7 +25,8 @@ Every setup command is a `bazel run` target but one: `python3 tools/bootstrap.py
 installs the pinned bazelisk and links `bazel` to it, since nothing can `bazel run` before `bazel` exists. The bootstrap and the
 graph's front door import the dev config's reader (`rola_devtools.config`, which also holds the machine's locks) from
 the rola-devtools checkout beside this tree, where `workspace.devtools` points by default: clone it there first. The
-targets run on the graph environment's interpreter, which carries rola-devtools at its pin (`tools/devtools.txt`). A
+targets run on the graph environment's interpreter, which carries rola-devtools from its module (`MODULE.bazel`'s pin, or
+the checkout the front door overrides it with). A
 fresh machine runs on the reader's defaults until `init` writes its config.
 
 ```bash

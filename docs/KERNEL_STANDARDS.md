@@ -285,7 +285,7 @@ carry_kernel.cuh 35%, decode.cu 32%, facts_kernel.cuh 32%.
 ## §14 addendum 2 (law, 2026-08-28, after Blake had to shut WSL down): ONE MACHINE, ONE COMPILE BUDGET
 Three tooling agents each ran a full rebuild concurrently (MAX_JOBS=4 each -> 12+ cicc + 3 links) and
 pegged the host at 100% CPU for 10+ minutes. The compile budget is MACHINE-WIDE and TOOL-ENFORCED, not
-brief-enforced: the graph's front door takes machine-wide slots for every build (`bazel/front_door.py` over
+brief-enforced: the graph's front door takes machine-wide slots for every build (`rola_devtools.graph.front_door` over
 `rola_devtools.locks.host`, §23) and waits when they are full — a brief cannot forget it. An agent checks
 `pgrep -c cicc` before launching and never wraps a full build in hyperfine (bounded `--runs 3`, on the
 LINK step only). Coordinator error recorded: two briefs omitted the build lock.

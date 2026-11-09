@@ -41,12 +41,15 @@ def devtools() -> Path:
 
 
 def devtools_pin() -> tuple[str, str]:
-    """The rola-devtools repository and commit `tools/devtools.txt` pins, which a machine with no checkout of it clones
-    beside this one before anything here can run."""
-    m = re.search(r"git\+(\S+)@([0-9a-f]{40})", (ROOT / "tools" / "devtools.txt").read_text())
-    if not m:
-        raise SystemExit("tools/devtools.txt names no `git+URL@COMMIT` requirement")
-    return m.group(1), m.group(2)
+    """The rola-devtools repository and commit MODULE.bazel pins (its `git_override` of the `rola_devtools` module),
+    which a machine with no checkout of it clones beside this one before anything here can run."""
+    text = (ROOT / "MODULE.bazel").read_text()
+    m = re.search(r'git_override\((?:[^()]*?)module_name\s*=\s*"rola_devtools"[^()]*\)', text, re.S)
+    commit = re.search(r'commit\s*=\s*"([0-9a-f]{40})"', m.group(0)) if m else None
+    remote = re.search(r'remote\s*=\s*"([^"]+)"', m.group(0)) if m else None
+    if not (commit and remote):
+        raise SystemExit("MODULE.bazel names no git_override of rola_devtools with a 40-hex commit and a remote")
+    return remote.group(1).removesuffix(".git"), commit.group(1)
 
 
 def main() -> int:

@@ -10,8 +10,8 @@ prints every resolved value with the file it came from.
 
 The reader and the machine's own sections -- `host` (the locks, the compute budget, scratch) and `clock` -- are
 rola-devtools' (`rola_devtools.config`), shared with the locks (`rola_devtools.locks`) and every repository on the
-host; the sections below them are rola's. rola-devtools is a development dependency: `pip install -r
-tools/devtools.txt` installs the commit this tree is tested with, and `bazel run //:init` links the checkout at
+host; the sections below them are rola's. rola-devtools is a development dependency, pinned in MODULE.bazel: the
+graph's environment installs it from the module's source, and `bazel run //:init` links the checkout at
 `workspace.devtools` into every venv here.
 
 A setting is never read from the process environment. The environment variables the tree still uses are listed in
@@ -37,8 +37,8 @@ try:
     )
     from rola_devtools.config import reload as reload_machine
 except ImportError as missing:
-    raise SystemExit("tools/dev_config.py: rola_devtools is not importable -- `pip install -r tools/devtools.txt`, or "
-                     "`pip install -e` a rola-devtools checkout (docs/setup.md)") from missing
+    raise SystemExit("tools/dev_config.py: rola_devtools is not importable -- run from the checkout's venv "
+                     "(`bazel run //:dev_env`), or put a rola-devtools checkout on the path (docs/setup.md)") from missing
 
 from bootstrap import DEVTOOLS, SIBLINGS  # noqa: E402 -- the defaults a pre-reader tool shares
 

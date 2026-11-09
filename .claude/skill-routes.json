@@ -125,7 +125,7 @@
    "edit": [
     "tools/dev.py",
     "tools/dev_config.py",
-    "tools/devtools.txt",
+    "MODULE.bazel",
     "requirements.lock",
     ".devcontainer/*",
     "tools/devbox_image.json"

@@ -360,7 +360,7 @@ def main() -> int:
 
     failures: list = []
     absent: list = []
-    #: LOCKS brief, 2026-08-29: a sanitizer run is CORRECTNESS work on the GPU
+    #: a sanitizer run is CORRECTNESS work on the GPU
     #: (`mode="shared"`, item 2) AND draws K=2 of the host-compute budget
     #: (item 1) -- `compute-sanitizer` itself is CPU-heavy (instrumenting every
     #: memory access), on top of whatever the wrapped pytest process spends.

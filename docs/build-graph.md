@@ -23,7 +23,7 @@ semaphores, which Bazel cannot do for an action.
 | bazelisk, Bazel's launcher | `tools/bazelisk_pin.json`, installed by `python3 tools/bootstrap.py` under `host.tools_dir` by its pin (never a machine key), which links `bazel` on PATH to it (`toolchain.bazel`; `check` has the row), on a host and in the devbox container alike | `host.tools_dir` |
 | Bazel | `.bazelversion`, verified against `.bazeliskrc`'s digest | bazelisk's cache |
 | the graph's CUDA toolkit | NVIDIA's redistributable components at release 13.0.0 (`MODULE.bazel`'s `cuda.redist_json`: nvcc 13.0.48), only the compiler's (~75 MB of the 4.7 GB set) | the shared repository cache |
-| the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (`tools/uv_pin.json`, the graph's `@uv`, which `//:dev_env` writes venvs with too) into the pinned CPython (3.11.13), and rola-devtools at `tools/devtools.txt`'s commit, by `bazel/environment.bzl`'s `@rola_env` (`bazel/make_env.py`) | `host.build_cache/bazel/store`, one environment a key (the lock, the devtools commit, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages; `@rola_env//:flags.bzl`'s `VENV` names it, so a command naming it is keyed by the environment |
+| the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (`tools/uv_pin.json`, the graph's `@uv`, which `//:dev_env` writes venvs with too) into the pinned CPython (3.11.13), and rola-devtools from its module's source, by rola-devtools' environment extension (`MODULE.bazel`'s `environment.python` tag, `@rola_env`; `rola_devtools.graph.make_env`) | `host.build_cache/bazel/store`, one environment a key (the lock, rola-devtools' content, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages; `@rola_env//:flags.bzl`'s `VENV` names it, so a command naming it is keyed by the environment |
 | the linker | mold at `tools/mold_pin.json`'s release (`@mold`) | the shared repository cache |
 | the lints' analyzer | clang-tidy at `tools/clang_tidy_pin.json`'s wheel, its binary's digest checked (`@clang_tidy`) | the shared repository cache |
 | the pinned toolkit | `tools/cuda_toolkit_pin.json`: NVIDIA's redistributable manifest by its digest (the compiler's, held equal by `tests/unit/test_cuda_toolkit_pin.py`), every component it names by the manifest's digest, unpacked into one tree as init installs it outside the graph (`@cuda_tools`, file for file init's copy): the disassemblers the SASS gate reads with (cuobjdump, nvdisasm), compute-sanitizer (the sanitizer lane's) and the whole toolkit the test tiers hand their tests (`ROLA_CUDA_HOME`); beside it cuRAND's headers, the graph's alone (clang's CUDA front end includes one) | the shared repository cache |
@@ -35,7 +35,16 @@ semaphores, which Bazel cannot do for an action.
 bazelisk runs `bazel/bazel` (`bazel/front_door.py`; the wrapper directory `.bazeliskrc` names, in place of
 bazelisk's default `tools/`) in place of the Bazel it downloaded, so every Bazel command
 in a checkout -- typed, or run by a tool -- goes through it. It runs under the machine's `python3` before any venv
-exists, reading the dev config through the rola-devtools checkout `tools/bootstrap.py` finds.
+exists: a stub that runs rola-devtools' front door (`rola_devtools.graph.front_door`, every RoLA repository's) from the
+rola-devtools checkout `tools/bootstrap.py` finds.
+
+- THE SHARED MACHINERY IS ROLA-DEVTOOLS' MODULE: its environment extension and generic rules (`tree_test`,
+  `checkout_test`, `tool_test`, `tool_run`, `tree_part`, `pytest_tier`, `device_lane`; `bazel/defs.bzl` hands each
+  rola's environment). `MODULE.bazel` pins the module at a public commit (`git_override`), the one pin of
+  rola-devtools; the front door overrides that pin with the checkout it found, in an rc file of this workspace's own
+  (`--override_module`), so a change made there is the one the graph runs. A machine with no checkout clones one at
+  the pin first (`tools/bootstrap.py --devtools-pin`), so every graph runs on an override and `MODULE.bazel.lock` is
+  the overridden resolution's (Bazel records one extension digest differently under the bare pin).
 
 - THE MACHINE'S SETTINGS come from the dev config: the shared disk and repository caches under `host.build_cache`
   (`bazel/disk`, `bazel/repository`), in an rc file it regenerates on every run and hands Bazel after the workspace's
@@ -134,8 +143,8 @@ PATH` measures. Neither compiles: the census (`//:census`, `bazel/defs.bzl`'s `r
 compiles, each unit's ptxas report and object (the `cuda_unit` rule's), with the derivation harness the graph builds
 (tools/BUILD.bazel's `derivation_harness`, [`internals/tools/ratify.md`](internals/tools/ratify.md#graph)). On
 2026-11-08 the census equalled the compile path's (`python tools/ratify.py --census`: 750 entries, every register,
-spill, local-access count and body hash) and the verdict was the same line for line. The census reads in 15 s, its
-disassemblers a unit a core.
+spill, local-access count and body hash) and the verdict was the same line for line. The census's disassemblers run
+under the host budget, a unit a slot.
 
 THE GAP: the graph ratifies the shipped set, the architectures the toolchain's manifests already name
 (`RATIFIED_ARCHS`), so an architecture's FIRST manifest has no graph form -- `--//:archs` naming a new one makes an
@@ -150,7 +159,7 @@ checks of the commit -- and is the commit gate:
 `tools/git-hooks/pre-commit` runs it with the changes not staged for the commit set aside, and the tree the commit's
 index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
 
-- THE TREE is `//:tree`: every tracked file (`git ls-files`, read by `bazel/environment.bzl`'s `@rola_tree`, which
+- THE TREE is `//:tree`: every tracked file (`git ls-files`, read by the environment extension's `@rola_tree`, which
   reads again when git's index moves), each package's part its `tracked` filegroup (`bazel/defs.bzl`'s `tree_part`,
   which names its Python files `tracked_python` and the parts a check reads); `//:tree_python` is every Python file.
   A file is in the tree once git tracks it.
@@ -177,7 +186,7 @@ index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
 - THE TEST TIERS (`//tests:cpu`, `unit_cuda`, `oracle`, `integration`; `//:lane` all four; `bazel/defs.bzl`'s
   `pytest_tier`): each tier one target, as pytest runs it ([`testing.md`](testing.md#running-it)), over the tree and the
   built library copied into a real tree, outside the sandbox (the machine's locks live in `/tmp`). The CPU tier is
-  sharded by Bazel's protocol (`bazel/pytest_shards.py`), each shard drawing a host slot, and sees no device; a device
+  sharded by Bazel's protocol (`rola_devtools.graph.pytest_shards`), each shard drawing a host slot, and sees no device; a device
   tier runs alone, takes the machine's GPU lock itself, and has the devices' identity among its inputs (`@host_gpu`).
   `--test_filter` is pytest's `-k`, `--test_arg` passes pytest an argument. Every tier reads the machine's dev config
   (its locks), and hands its tests the graph's copy of the pinned toolkit (`@cuda_tools`, an input of the tier, so a

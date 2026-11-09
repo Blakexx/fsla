@@ -12,6 +12,16 @@ bazel_dep(name = "rules_oci", version = "2.3.0")
 bazel_dep(name = "rules_distroless", version = "0.9.4")
 bazel_dep(name = "tar.bzl", version = "0.7.0")
 
+#: THE GRAPH'S SHARED MACHINERY, rola-devtools' module: its environment extension and generic rules, at the public
+#: commit this tree is tested with -- the one pin of rola-devtools (tools/bootstrap.py reads it for a machine with no
+#: checkout). A machine with the checkout builds against it instead: the front door overrides this pin with it.
+bazel_dep(name = "rola_devtools", version = "0.1.0")
+git_override(
+    module_name = "rola_devtools",
+    commit = "bba5ff42d44854599760fa82f18503cba8cc7aea",
+    remote = "https://github.com/Blakexx/rola-devtools.git",
+)
+
 #: THE CUDA TOOLKIT, HERMETIC: NVIDIA's redistributable components at the toolchain pin's version
 #: (tools/toolchains/cu13.json: release 13.0, nvcc V13.0.48), fetched once into the repository cache.
 cuda = use_extension("@rules_cuda//cuda:extensions.bzl", "toolchain")
@@ -34,9 +44,54 @@ cuda.redist_json(
 cuda.toolkit(name = "cuda")
 use_repo(cuda, "cuda")
 
-#: THE GRAPH'S ENVIRONMENT: the Python environment built from requirements.lock into the shared store, the pinned
-#: linker and the host C++ compiler's identity (bazel/environment.bzl)
-environment = use_extension("//bazel:environment.bzl", "environment")
+#: THE GRAPH'S ENVIRONMENT (rola-devtools' environment extension, docs/build-graph.md#environment): the pinned uv; the
+#: Python environment built from requirements.lock into the shared store, rola-devtools from its module's source, the
+#: graph's compile flags and facts from bazel/flags.py; the pinned linker and clang-tidy; the host C++ compiler's and
+#: devices' identities; the checkout's tracked files; the pinned CUDA toolkit and cuRAND's headers
+environment = use_extension("@rola_devtools//bazel:environment.bzl", "environment")
+environment.pinned(
+    name = "uv",
+    build_file = "//bazel:uv.BUILD",
+    pin = "//tools:uv_pin.json",
+)
+environment.python(
+    name = "rola_env",
+    build_file = "//bazel:env.BUILD",
+    index_from = "//tools:toolchains/cu13.json",
+    lock = "//:requirements.lock",
+    post = "//bazel:flags.py",
+    post_args = ["//tools:toolchains/cu13.json"],
+    post_env = ["ROLA_NVCC_THREADS"],
+    uv = "@uv//:uv",
+    uv_pin = "//tools:uv_pin.json",
+    #: the flags' sources, and the manifests whose architectures are the build's defaults
+    watch = [
+        "//tools:build_flags.py",
+        "//tools:toolchains.py",
+    ],
+    watch_trees = ["//tools:manifests/cu13/sm_86.json"],
+)
+environment.pinned(
+    name = "mold",
+    build_file = "//bazel:mold.BUILD",
+    pin = "//tools:mold_pin.json",
+)
+environment.pinned(
+    name = "clang_tidy",
+    build_file = "//bazel:clang_tidy.BUILD",
+    pin = "//tools:clang_tidy_pin.json",
+)
+environment.host_cc(name = "host_cc")
+environment.host_gpu(name = "host_gpu")
+environment.tree(name = "rola_tree")
+environment.cuda_toolkit(
+    name = "cuda_tools",
+    #: cuRAND's headers, the graph's alone: its libraries are not the graph's
+    beside = {"libcurand": "curand"},
+    build_file = "//bazel:cuda_tools.BUILD",
+    delete = ["curand/lib"],
+    pin = "//tools:cuda_toolkit_pin.json",
+)
 use_repo(environment, "clang_tidy", "cuda_tools", "host_cc", "host_gpu", "mold", "rola_env", "rola_tree", "uv")
 
 #: THE DEVBOX IMAGE (docs/setup.md#the-devbox-image): a thin wrapper around the bootstrap. Its base carries what a host

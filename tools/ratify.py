@@ -359,7 +359,8 @@ def ratified_flags() -> list[str]:
     `--ptxas-options=-v` and the fatbin compression. Each of those either changes what
     `ptxas` assembles or changes the report this gate parses.
     """
-    flags = build_flags.torch_defines() + build_flags.nvcc_flags(())
+    #: any thread count: `--threads` is not a codegen flag and leaves the list
+    flags = build_flags.torch_defines() + build_flags.nvcc_flags((), nvcc_threads=1)
     return [f for f in flags if not f.startswith(_NON_CODEGEN_FLAG_PREFIXES)]
 
 
@@ -989,10 +990,10 @@ def measure_built() -> tuple[dict, list[str], dict]:
         got, bad = _parse_report(unit["report"].read_text())
         return unit["source"], {"entries": got, "unhonored": bad, "scan": _scan_object(str(unit["object"]), set(got))}
 
-    #: the census compiles nothing (KERNEL_STANDARDS §14 addendum 2 budgets compiles): its disassemblers' reads run a
-    #: unit a core
-    jobs = os.cpu_count() or 1
-    with ThreadPoolExecutor(max_workers=min(jobs, len(units))) as pool:
+    #: the disassemblers' reads hold the host budget too, a job a slot: one pool sizes every heavy run on the machine
+    #: (KERNEL_STANDARDS §14 addendum 2); under the sandboxed `//:ratified` the pool is the sandbox's own default
+    with host.acquire(host.budget_slots(), label="ratify's census") as jobs, ThreadPoolExecutor(
+            max_workers=min(jobs, len(units))) as pool:
         measured = list(pool.map(one, units))
     print(f"{len(units)} translation unit(s) read from the graph's build in {time.perf_counter() - t0:.1f} s at "
           f"{min(jobs, len(units))} jobs")

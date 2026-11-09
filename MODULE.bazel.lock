@@ -253,58 +253,6 @@
   },
   "selectedYankedVersions": {},
   "moduleExtensions": {
-    "//bazel:environment.bzl%environment": {
-      "general": {
-        "bzlTransitiveDigest": "gqu+CYaGhkg6F4NYzfxhqQPh7lkFrbG6CYsOcDkDxFY=",
-        "usagesDigest": "HkBnFTQ2fbTZDMJfxNkfdOK7vkrLf5VSSo2CXQjT1hU=",
-        "recordedInputs": [],
-        "generatedRepoSpecs": {
-          "uv": {
-            "repoRuleId": "@@//bazel:environment.bzl%_pinned_repo",
-            "attributes": {
-              "pin": "@@//tools:uv_pin.json",
-              "build": "exports_files([\"{binary}\"], visibility = [\"//visibility:public\"])\n"
-            }
-          },
-          "rola_env": {
-            "repoRuleId": "@@//bazel:environment.bzl%_env_repo",
-            "attributes": {}
-          },
-          "mold": {
-            "repoRuleId": "@@//bazel:environment.bzl%_pinned_repo",
-            "attributes": {
-              "pin": "@@//tools:mold_pin.json",
-              "build": "filegroup(name = \"linker\", srcs = [\"bin/ld.mold\", \"{binary}\"], visibility = [\"//visibility:public\"])\n"
-            }
-          },
-          "clang_tidy": {
-            "repoRuleId": "@@//bazel:environment.bzl%_pinned_repo",
-            "attributes": {
-              "pin": "@@//tools:clang_tidy_pin.json",
-              "build": "package(default_visibility = [\"//visibility:public\"])\n\nfilegroup(name = \"clang_tidy\", srcs = [\"{binary}\"])\n\n#: its resource headers (clang's CUDA wrappers among them), beside the binary where clang looks for them\nfilegroup(name = \"resources\", srcs = glob([\"clang_tidy/data/lib/clang/**\"]))\n"
-            }
-          },
-          "host_cc": {
-            "repoRuleId": "@@//bazel:environment.bzl%_host_cc_repo",
-            "attributes": {}
-          },
-          "host_gpu": {
-            "repoRuleId": "@@//bazel:environment.bzl%_host_gpu_repo",
-            "attributes": {}
-          },
-          "rola_tree": {
-            "repoRuleId": "@@//bazel:environment.bzl%_tree_repo",
-            "attributes": {}
-          },
-          "cuda_tools": {
-            "repoRuleId": "@@//bazel:environment.bzl%_cuda_tools_repo",
-            "attributes": {
-              "pin": "@@//tools:cuda_toolkit_pin.json"
-            }
-          }
-        }
-      }
-    },
     "@@pybind11_bazel+//:internal_configure.bzl%internal_configure_extension": {
       "general": {
         "bzlTransitiveDigest": "BsgERqYptkJeeC8wFaLj251IoTZTSy/58WA6kVp0q8I=",
@@ -323,6 +271,96 @@
                 "https://github.com/pybind/pybind11/archive/v2.12.0.zip"
               ]
             }
+          }
+        }
+      }
+    },
+    "@@rola_devtools+//bazel:environment.bzl%environment": {
+      "general": {
+        "bzlTransitiveDigest": "kAPTjedv0bH3+V8ilIZyksyepBrgzrGCTaXvDglKGzw=",
+        "usagesDigest": "XUFJOka+IaYnDcSRjxNSxTaPHHvpzMkRCC7msE9LZMo=",
+        "recordedInputs": [
+          "REPO_MAPPING:,uv rola_devtools++environment+uv"
+        ],
+        "generatedRepoSpecs": {
+          "rola_env": {
+            "repoRuleId": "@@rola_devtools+//bazel:environment.bzl%_python_repo",
+            "attributes": {
+              "lock": "@@//:requirements.lock",
+              "uv": "@@rola_devtools++environment+uv//:uv",
+              "uv_pin": "@@//tools:uv_pin.json",
+              "index": "",
+              "index_from": "@@//tools:toolchains/cu13.json",
+              "index_field": "torch_index",
+              "devtools": true,
+              "packages": [],
+              "post": "@@//bazel:flags.py",
+              "post_args": [
+                "@@//tools:toolchains/cu13.json"
+              ],
+              "post_env": [
+                "ROLA_NVCC_THREADS"
+              ],
+              "watch": [
+                "@@//tools:build_flags.py",
+                "@@//tools:toolchains.py"
+              ],
+              "watch_trees": [
+                "@@//tools:manifests/cu13/sm_86.json"
+              ],
+              "build": "",
+              "build_file": "@@//bazel:env.BUILD"
+            }
+          },
+          "uv": {
+            "repoRuleId": "@@rola_devtools+//bazel:environment.bzl%_pinned_repo",
+            "attributes": {
+              "pin": "@@//tools:uv_pin.json",
+              "build": "",
+              "build_file": "@@//bazel:uv.BUILD"
+            }
+          },
+          "mold": {
+            "repoRuleId": "@@rola_devtools+//bazel:environment.bzl%_pinned_repo",
+            "attributes": {
+              "pin": "@@//tools:mold_pin.json",
+              "build": "",
+              "build_file": "@@//bazel:mold.BUILD"
+            }
+          },
+          "clang_tidy": {
+            "repoRuleId": "@@rola_devtools+//bazel:environment.bzl%_pinned_repo",
+            "attributes": {
+              "pin": "@@//tools:clang_tidy_pin.json",
+              "build": "",
+              "build_file": "@@//bazel:clang_tidy.BUILD"
+            }
+          },
+          "host_cc": {
+            "repoRuleId": "@@rola_devtools+//bazel:environment.bzl%_host_cc_repo",
+            "attributes": {}
+          },
+          "host_gpu": {
+            "repoRuleId": "@@rola_devtools+//bazel:environment.bzl%_host_gpu_repo",
+            "attributes": {}
+          },
+          "cuda_tools": {
+            "repoRuleId": "@@rola_devtools+//bazel:environment.bzl%_cuda_toolkit_repo",
+            "attributes": {
+              "pin": "@@//tools:cuda_toolkit_pin.json",
+              "beside": {
+                "libcurand": "curand"
+              },
+              "delete": [
+                "curand/lib"
+              ],
+              "build": "",
+              "build_file": "@@//bazel:cuda_tools.BUILD"
+            }
+          },
+          "rola_tree": {
+            "repoRuleId": "@@rola_devtools+//bazel:environment.bzl%_tree_repo",
+            "attributes": {}
           }
         }
       }

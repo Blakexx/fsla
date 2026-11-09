@@ -42,9 +42,7 @@ exports_files([
     "cuda_compile.py",
     "flags.py",
     "gates.py",
-    "pytest_shards.py",
     "headers.py",
-    "make_env.py",
     "record.py",
 ])
 

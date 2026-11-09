@@ -5,7 +5,7 @@ vulture's own convention: a whitelist is Python source that REFERENCES every
 name vulture would otherwise flag, so it disappears from the report; it is
 never executed, only parsed. Every entry below is a GENUINE DYNAMIC USE --
 a name some FRAMEWORK reads by convention, never by an explicit call vulture's
-static analysis can see -- with a one-line reason, per the brief. Anything
+static analysis can see -- with a one-line reason. Anything
 NOT listed here that vulture still flags is a real candidate to delete, never
 silenced by omission.
 
