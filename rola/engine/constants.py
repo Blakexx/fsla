@@ -46,7 +46,7 @@ __all__ = [
 #: The kernel's window, in tokens: a short sequence runs a partial window inside the
 #: kernel rather than taking a different value here. The inter/intra decomposition is
 #: defined on this grid, so the fp64 reference mirrors the same number.
-WINDOW = 512
+WINDOW = 1024
 
 #: The stream's buffering grain, in tokens: the slice a producer fills, seals and hands
 #: to the consumers, and the k step one deposit MMA contracts. Mirrors

@@ -86,4 +86,4 @@ def ledger_bind(ledger: torch.Tensor | None) -> None:
     extension().den_ledger_bind(ledger)
 
 
-assert WINDOW == 512
+assert MAX_HEADS * WINDOW <= 1 << 14, "a slot's place (query head x token) is the den pass's 14-bit field"

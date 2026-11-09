@@ -7,7 +7,7 @@ namespace rola {
 
 //: W by compute capability; a union slot's token bits and query heads at W. -- see docs/internals/common/window.md
 __host__ __device__ constexpr int window_for(int cc) {
-  return cc == 800 ? 512 : cc == 860 ? 512 : cc == 870 ? 512 : cc == 890 ? 512 : 0;
+  return cc == 800 ? 1024 : cc == 860 ? 1024 : cc == 870 ? 512 : cc == 890 ? 512 : 0;
 }
 
 __host__ __device__ constexpr int window_bits(int w) { return w == 1024 ? 10 : w == 512 ? 9 : 0; }

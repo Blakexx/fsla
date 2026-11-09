@@ -34,7 +34,7 @@ import torch
 
 from rola.engine.facts import liveness as lv
 
-WINDOW = 512
+WINDOW = 1024
 LIST_CAP = WINDOW
 #: a list's boundaries: one every 64 union slots, the last its length
 LIST_BOUND = 64
