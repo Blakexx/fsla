@@ -68,9 +68,13 @@ INSTRUMENTS = {
     "counters-intra": ("tools/pipe_counters.py", ["{cell}", "--kernel", "intra"], True, {"gpu": "all"}, [], 900),
     "census-intra": ("tools/stall_census.py", ["{cell}", "--kernel", "intra"], True, {"gpu": "all"},
                      ["tools/budgets/intra.json", "csrc/rola/src/intra/ampere/intra_kernel.cuh"], 900),
+    #: the output's error against the fp64 recurrence at each pairing of the carry's and the intra's accumulations
+    "quality": ("tools/quality.py", ["{cell}"], True, {"gpu": 1}, ["rola", "measure", "tests/oracle"], 900),
 }
 #: the instruments read only on the long cells (16K tokens and more): the intra's
 LONG_CELL_INSTRUMENTS = {"counters-intra", "census-intra"}
+#: the instruments read only on the cells sized for the fp64 recurrence as well as a measurement (tier `both`)
+BOTH_TIER_INSTRUMENTS = {"quality"}
 LONG_CELL_TOKENS = 16384
 CARRY_ARMS = ("carry_forward", "carry_intra", "intra_forward", "scale_pass", "prefill")
 LAYER_ARMS = ("entmax_solve", "produce", "layer_prefill", "decode_step", "layer_facts", "layer_scale", "layer_carry",
@@ -129,7 +133,9 @@ def declare(g, env: Env, *, timing=None, instruments=tuple(INSTRUMENTS)) -> dict
     long_cells = [c for c in carry if central().cell(c)["params"].get("tokens", 0) >= LONG_CELL_TOKENS]
     for name in instruments:
         tool, args, per_cell, holds, data, timeout = INSTRUMENTS[name]
-        on = long_cells if name in LONG_CELL_INSTRUMENTS else carry
+        on = (long_cells if name in LONG_CELL_INSTRUMENTS else
+              [c for c in carry if central().cell(c)["params"].get("tier") == "both"] if name in BOTH_TIER_INSTRUMENTS
+              else carry)
         if per_cell and not on:
             continue
         out["instruments"][name] = g.node(
