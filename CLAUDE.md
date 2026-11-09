@@ -25,7 +25,8 @@ The rules most often violated by newcomers, restated:
   changes go through the dual-run protocol, no exceptions.
 - Never run unscoped `pytest tests/`. Every GPU entry point takes
   `gpu_lock()` itself (`rola_devtools.locks.gpu`) — invoke GPU commands BARE,
-  never wrapped in an external `flock` on the same lock path (self-deadlocks).
+  never wrapped in an external `flock` on the lock path (the lock is the files beside it, so that serializes
+  against nothing); a binary with no `gpu_lock()` runs under `python -m rola_devtools.locks.gpu -- <command>`.
 
 ## Skills: procedures that ship with the repo (KERNEL_STANDARDS §31)
 

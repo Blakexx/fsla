@@ -1775,7 +1775,6 @@
   {"doc": "docs/internals/tools/lint.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "", "target": "csrc"},
   {"doc": "docs/internals/tools/lint.md", "pinned_at": "f98d31ab949e", "reviewed": true, "sha256": "9a87d0a4c49ad580", "target": "csrc/rola/src/common/select.cuh::in_image"},
   {"doc": "docs/internals/tools/lint.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "", "target": "docs"},
-  {"doc": "docs/internals/tools/lint.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "", "target": "docs/KERNEL_STANDARDS.md"},
   {"doc": "docs/internals/tools/lint.md", "pinned_at": "0f2368db7849", "reviewed": true, "sha256": "59d7abd145a74029", "target": "docs/build-graph.md#checks"},
   {"doc": "docs/internals/tools/lint.md", "pinned_at": "b438582105e5", "reviewed": true, "sha256": "", "target": "docs/internals"},
   {"doc": "docs/internals/tools/lint.md", "pinned_at": "c89dfd308291", "reviewed": true, "sha256": "", "target": "docs/internals/tools/coverage.md"},
