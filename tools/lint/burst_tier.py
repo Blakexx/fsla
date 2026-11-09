@@ -11,8 +11,8 @@ rendezvous, no `while`, no `if` that is not `if constexpr`, and no `#pragma unro
 function that issues MMAs and is not on the tier says why with `//: @burst-exempt <reason>`,
 which the ratchet holds as backlog: an exemption is a debt the docs name, not a way out.
 
-Findings are `path:line: message`, one a site, on stdout, exit 0 (the ratchet judges them). The tree's pre-§23 MMA sites (the decode and
-intra families, the readout's box loop) are the baseline; a new one fails the gate.
+Findings are `path:line: message`, one a site, on stdout, exit 0 (the ratchet judges them). The baseline is empty:
+every MMA site is on the tier or names its debt, so a new one fails the gate.
 
     bazel run //tools/lint:burst_tier
 """
@@ -27,7 +27,8 @@ SRC = ROOT / "csrc" / "rola" / "src"
 
 SIGNATURE = re.compile(r"^\s*(?:__device__|__global__)\s+.*?\b(\w+)\s*\(")
 DECL_COMMENT = re.compile(r"^\s*//")
-MMA_CALL = re.compile(r"(?<![\w:])(?:ops::)?mma\w*\s*\(|\basm\b[^;]*\bmma\.")
+#: an MMA atom (`ops::hmma`, `ops::imma_u8_k32`, ... -- common/atoms/mma.cuh) or an inline `mma` instruction
+MMA_CALL = re.compile(r"(?<![\w:])(?:ops::)?[hi]?mma\w*\s*\(|\basm\b[^;]*\bmma\.")
 FORBIDDEN = (
     (re.compile(r"__(ballot|any|all|match_any|match_all)_sync\s*\("), "a vote in a burst function"),
     (re.compile(r"__syncwarp\s*\("), "a warp sync in a burst function"),

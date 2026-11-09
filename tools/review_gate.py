@@ -14,8 +14,8 @@ breaks it at. ADVISORY (Blake, 2026-11-06): it records and prints, it never refu
 
 The reviewer is `claude -p` (Opus by default, `--model`) in the checkout, its tools read-only (Read, Grep, Glob), its
 output a fixed schema. A report is cached by everything it read (the standards, the message, the diff, the model, the
-prompt's version) and kept in the git common dir (`rola-review/`), shared by every worktree. `ROLA_REVIEW=off` skips
-the post-commit run. Docs: docs/internals/tools/review_gate.md.
+prompt's version) and kept in the git common dir (`rola-review/`), shared by every worktree. Docs:
+docs/internals/tools/review_gate.md.
 """
 from __future__ import annotations
 

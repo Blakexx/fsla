@@ -123,11 +123,12 @@ def produce_units(name: str) -> int:
 def function(target: Target, cell) -> str:
     """The instantiation a cell launches, as a regex over the cubin's mangled names (the region ledger's; the
     profiler's filter is the family's `symbol`, which it matches against the plain function name): the intra's depth
-    and the card's accumulation (`rola.ops.carry.readout_accumulate`)."""
+    and the card's accumulation (`rola.ops.carry.readout_accumulate`), after its build's tag (the first template
+    argument)."""
     if target.family == "intra":
         from rola.ops.carry import readout_accumulate
 
-        return f"intra_kernelILi{len(cell.widths)}ELb{int(readout_accumulate() == 'fp16')}E"
+        return f"intra_kernelI.*ELi{len(cell.widths)}ELb{int(readout_accumulate() == 'fp16')}E"
     return target.symbol
 
 

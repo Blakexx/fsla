@@ -25,7 +25,7 @@ MAX_CHANNELS = 128
 GROUP_CHANNELS = 8
 CAP = 32
 #: THE LISTS' GROUPS: the facts pass ranks a side's lists in a group of 16 or 32 digits
-#: (`rola.engine.facts.lists.LIST_GROUPS`), the arm reading its own (docs/internals/carry/plan.md#list-groups), so a
+#: (`rola.engine.facts.lists.LIST_GROUPS`), the arm reading its own (docs/internals/carry/ampere/plan.md#list-groups), so a
 #: listed level spans one of them (or its whole width) in the box, each side its own
 LIST_GROUPS = (16, 32)
 #: THE LISTED BOXES' CHANNELS: the components serve 32 or 64 channels where a side lists (a 128-channel box needs the

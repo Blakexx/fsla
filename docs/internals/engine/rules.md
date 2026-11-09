@@ -150,7 +150,8 @@ read-dense ones. Every side has a dense level, so every side has an operand.
   box cannot be filled under it, the cap lifts to the widths.
 * The channel extent is chosen first, toward `d_v` (at most 128): a token's output then
   leaves a CTA as whole lines, and each readout warp owns its channels -- halved until every
-  listed level spans the facts pass's 32-digit group and each side's rows fill an MMA tile
+  listed level spans one of the facts pass's list groups (16 or 32 digits, or its whole width)
+  and each side's rows fill an MMA tile, and a box with a listed side holds at most 64 channels
   (`carve.md#producer-v1`).
 
 **The fold's warp tile** is its lists x its operand rows, `box leaves / 8` leaves a warp, the

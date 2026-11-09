@@ -67,7 +67,6 @@ def header(cfg: dict | None = None) -> str:
            "// (edit that, not this). see docs/internals/common/hardware.md",
            "#pragma once", "", "// clang-format off", "namespace denseref {", "namespace arch {", "", "struct Caps {"]
     for field in schema:
-        #: a field's kind (INSTRUCTION, FACT) is the schema's and its page's (arch_caps.md), not a comment here
         out.append(f"  {field['type']} {field['name']};" + (f"  // {field['doc']}" if field["doc"] else ""))
     out += ["};", "", "//: THE TABULATED SET -- see docs/internals/common/arch_caps.md#tabulated",
             "constexpr bool tabulated(int cc) {",

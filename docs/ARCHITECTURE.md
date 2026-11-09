@@ -58,7 +58,7 @@ accumulation is fp32 or exact integer ([`architecture/precision.md`](architectur
 |---|---|---|
 | the carry's fold | the write operand f16 (a dense slice times the record's coefficient), the values f16 | fp32 state in registers ([`carry/ampere/fold.md`](internals/carry/ampere/fold.md)) |
 | the carry's hand-off | the fp32 state rounded to an f16 image at a power of two a digit | — |
-| the carry's readout | the f16 image against the read rows | fp32 MMAs (fp16 where fp32 accumulate is half rate), each piece into the panel as f16 pairs at the token's scale byte or fp32, added across CTAs in that dtype ([`carry/ampere/panel.md#drain`](internals/carry/ampere/panel.md#drain)) |
+| the carry's readout | the f16 image against the read rows | fp32 MMAs (a listed side fp16 where fp32 accumulate is half rate; a dense side fp32 on every card), each piece into the panel as f16 pairs at the token's scale byte or fp32, added across CTAs in that dtype ([`carry/ampere/panel.md#drain`](internals/carry/ampere/panel.md#drain)) |
 | the intra | the rows' u8 digits and the values' digit planes, int8 tensor ops | each level's Gram exact in s32, the levels multiplied in fp32 ([`intra/ampere/intra_kernel.md`](internals/intra/ampere/intra_kernel.md)) |
 | decode | the stored state's s24 (a written leaf) or its s16 hi plane (a read-only leaf), the staged amplitudes | fp32 |
 | the stored state, between calls | s24 mantissas at a power-of-two exponent a 32-channel group, fp32 mass | — ([§3](#3-the-state)) |

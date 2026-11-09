@@ -63,7 +63,10 @@ two-tile trip was mostly dead ([`read_alone`](../../../lab/read_alone.md), 2026-
 banks, two lanes a word, one wavefront, and inside an 8-row group the XOR is one constant, so the reader's `ldmatrix`
 stays one wavefront a matrix. At K 16 (the dense box `[16, 2, 16, 2, 64, 1]`: 16 rows a block, 256 bytes) the same
 map: the reader's 8-row groups one wavefront each; the writer's lanes (list `w + 8 t` the digit, at block `t`, rows `g +
-8 i`) meet 8 banks four ways -- two stores a lane once a window. The XOR is for the writer (`den_tables_out`): a store's 32 lanes hold two lists 16 apart and 16 digits
+8 i`) meet 8 banks four ways -- two stores a lane once a window. So do the same split's 64-channel boxes'
+(`[32, 1, 32, 1, 64, 1]`, `[32, 2, 32, 1, 64, 1]`): a store's 32 lanes are one digit column (`w`), 16 K rows in each of
+two blocks, the row's XOR leaving 8 banks four words each -- four wavefronts a store, two stores a lane once a window
+(read off `den_place` and `den_row`, not measured). The XOR is for the writer (`den_tables_out`): a store's 32 lanes hold two lists 16 apart and 16 digits
 across the four blocks, which on unpermuted rows met 4 banks (8 wavefronts a store, 2026-11-06 census); permuted they
 meet 16, two lanes a word, one wavefront. The reader's `ldmatrix` rows stay inside their 128-byte groups, so it stays
 conflict-free. So a warp's den block is the same for every tile of its den pass,

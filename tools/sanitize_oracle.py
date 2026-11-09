@@ -93,7 +93,7 @@ _FAMILIES = {
     #: unequal width and a tail word.
     "facts": Family(
         test="tests/integration/test_facts_pass.py::"
-             "test_the_lists_are_the_model_bit_for_bit[alternating-widths3-33]",
+             "test_the_lists_are_the_model_bit_for_bit[list_groups1-alternating-widths3-33]",
         kernel="rola::facts::rola_facts_forward", present=True),
     #: THE CARRY on the facts pass's final-form lists: the readout ring and the image's parts, the fold ring, the
     #: staged heads, the gap slots' zero-filled rows -- one launch of the even arm over four windows.

@@ -154,8 +154,7 @@ rows apart, four-way conflicted, 16 wavefronts a load where 4 are ideal, measure
 as 16% of every shared wavefront in the kernel). No GF(2)-linear swizzle of the physical
 row clears every order the mode words reach — the deep-4 orders force four row bits into
 one coset of the bank group, and any three of them then collide with the bit-0 pull — and
-neither does any `row ^ f(row >> 3)` with `f` free (both exhaustive searches, journal
-section 38). In the read order the pull is `{0, 1, 2}` always, and the write side's
+neither does any `row ^ f(row >> 3)` with `f` free (both searched exhaustively). In the read order the pull is `{0, 1, 2}` always, and the write side's
 accesses — a member's scatter of eight consecutive innermost digits — are a contiguous
 bit triple wherever the rank order puts that level, which the folded swizzle clears.
 The exchange-law model test (tests/unit) walks every access at every reachable (read order, write member).
@@ -367,7 +366,7 @@ leaf count:
 
 WHY 128 AND NOT THE SQUARE: the drain. At `N = L` a token's readout leaves one line of
 partials in every CTA it touches, and the L2 charges those per request, `0.15` chip-clocks
-each with every SM draining (the queue card's drain measurement, 2026-09-27). A token touches `k × 256 / d` CTAs,
+each with every SM draining (measured 2026-09-27). A token touches `k × 256 / d` CTAs,
 so the square's 32 lines a token sat six times above its tensor time at the sparse cell,
 while 128 dense digits a region give 8 lines against a fold whose tiles still fill. The wide
 span is capped rather than taken whole because the fold's per-list leaf count is the region's
@@ -395,7 +394,7 @@ the shipped body's `## innermost-invariant` is its ldmatrix operand law, and the
 operands come through the transfer and the digit lists. ONE CONSEQUENCE IS OWED: the paged plane
 the decode family reads is laid out by `rola.ops.lattice` in the `(k, m)` form at
 `LATTICE_CAP_BC = 128`, and the two families write and read one plane, so the lattice
-module learns the tall owner law when the int8 carry ships (the queue card's decode consequence).
+module learns the tall owner law when the int8 carry ships.
 
 The shipped kernel keeps the quarter-share box until the int8 body ships; until then the
 tall set is reachable through the binding at `bc = TALL_BOX_LEAVES` and is what

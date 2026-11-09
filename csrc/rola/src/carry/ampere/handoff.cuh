@@ -129,7 +129,7 @@ __host__ __device__ __forceinline__ constexpr uint32_t slice_row(int cg, int l, 
 //: THE DEN IMAGE: blocks of 8 digit columns (the den MMA's N), K rows x 8 digits f16, digit `d` the den of channel group
 //: `d mod 4` at 4 groups, of `d / kDenGroupDigits` at 8 (a group's digits one image half's): block `den_block`, column
 //: `den_col`; K row `l`'s 16 bytes at `l` XOR a constant of its 8-row group and the block (the reader's rows a 128-byte
-//: group; the writer's lanes on 16 banks). -- see docs/internals/carry/ampere/handoff.md#den
+//: group; the writer's lanes on 16 banks, on 8 at the same split). -- see docs/internals/carry/ampere/handoff.md#den
 template <class P>
 constexpr int kDenGroupDigits = P::kDigits / P::kChannelGroups;
 

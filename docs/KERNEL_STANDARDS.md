@@ -704,10 +704,12 @@ probe that replaced it measured instructions ptxas had folded or turned into cal
       costs per line it touches, so a token's row is drained aligned to its lines with den carried in it, not as its
       own request (2.3K -> 1.0K cycles a 128-slot pass); spread through the next pass's steps under a double panel the
       drain cost 0.4-1K more than a burst at the pass's end. Its corollaries (`drain`, 2026-10-18; 2026-11-02): the
-      requests are the drain's floor (~5 SM cycles a line request with every SM draining), so a request past what the
-      union holds is not issued (a group past it by a warp-uniform branch, never a predicated `red.global`, which
-      ptxas wraps in a convergence region a request); a dead lane inside an issued request adds an exact zero at a row
-      of its CTA's own, never at one row every CTA shares (a shared dummy line serialized every CTA ~6x).
+      requests are the drain's floor (~5 SM cycles a line request with every SM draining), so a group of requests past
+      what the union holds is not issued (the loop's warp-uniform bound); inside a warp's last trip a step past it is
+      issued as an exact zero, never branched around (a branch around an add compiles to a predicated `red.global`,
+      which ptxas wraps in a convergence region a request: removing it took the drain 2,758 -> 1,623 cycles a
+      warp-window at nl64k-alt-k4 on sm_86, measured 2026-11-06); a dead lane or step adds its zero at a row of its
+      CTA's own, never at one row every CTA shares (a shared dummy line serialized every CTA ~6x).
    r. A PUBLISH IN ROUNDS COSTS ITS HANDSHAKES (`publish_rounds`): four 16 KB rounds of the even carve's 64 KB
       transpose cost 0.4-0.6K cycles a window over publishing it whole when double buffered, 1.0-1.1K single.
    s. A STEP'S BODY IS ONE BASIC BLOCK (`read_step` modes 6-8, its ncu counters): ptxas schedules within a block and

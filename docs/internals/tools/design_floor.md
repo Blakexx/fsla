@@ -36,10 +36,10 @@ global path (128-byte lines from L2, atomic requests).
   group's channel-group warps loads the tiles' rows (`ceil(n / 8) 8` rows of `2L` bytes), its slice of the digit
   (`L x 8` f16) once, the entries' words, and adds its tiles into its panel (load, store; `--panel f16|fp32`).
   `READ_TILE` = 23 instructions a tile a warp, `READ_DIGIT` = 8 a live digit a warp.
-- READOUT, a dense side: the nest of event 2026-11-06 "the value-carve readout's nest" -- a token batch of `--batch`
+- READOUT, a dense side: the value-carve readout's nest -- a token batch of `--batch`
   tokens a warp, a transit group of `--transit` digits; rows once a (tile, transit group), slices once a (batch,
   digit), the coefficients on the rows (HMUL2), no panel; the exit staged to full lines.
-- DEN (event 2026-11-06 "the den takes the num's form"): one 8-wide tile a tile in the same nest, its columns up to
+- DEN, in the num's form: one 8-wide tile a tile in the same nest, its columns up to
   8 digits (1 at a listed side), its word a token a warp in the panel; `DEN_TILE` = 9.
 - DRAIN, a listed side: a token's channels and its warps' den words read and cleared by stores, a full-line RED a
   128 bytes of num, a den request a 16 tokens.
@@ -58,5 +58,5 @@ Per CTA-window: OVERLAPPED the largest of the window's totals (issue over 4 sche
 global path); IN TURN each phase's largest summed, with the global path beside it. The printed floor is the mean over
 the CTA-windows; CTA SPREAD is the slowest box's whole call over the mean box's (the wave's tail). On sm_80 each cell
 prints twice: the global path at sm_86's L2 line and at half (`l2_bracket`, the A100's L2 serving more an SM). TODAY
-is the A100 phase ledger at W = 1,024 (event 2026-11-06 "A100 batch at carry-k5 5f1aed36"); the milliseconds use that
+is the A100 phase ledger at W = 1,024 (measured 2026-11-06); the milliseconds use that
 record's alt-k4 scaling (24.2K cycles a warp-window <-> 5.09 ms) and print for that cell only.

@@ -51,7 +51,8 @@ popcount give the chunk's token count `n`, a warp-uniform bound. A step past `n`
 trip's first slot's row -- a token's own, never one row every CTA's dead lanes would share (the lab's serialized
 dummy row). The f16 pairs meet across CTAs at one scale, the token's byte, which every CTA reads the same.
 
-MEASURED (sm_86, `tools/phase_ledger.py`): the branch-free form 2,758 -> 1,623 cycles a warp-window at nl64k-alt-k4 (its
-floor ~1.1K: ~215 line requests at ~5 cycles, every SM draining), 5,811 -> 3,456 at flagship-alt-k16. Its loop is ~23
+MEASURED (sm_86, two sparse cells; no dense or sm_80 reading, `tools/phase_ledger.py`): the branch-free form 2,758 ->
+1,623 cycles a warp-window at nl64k-alt-k4 (its floor ~1.1K: ~215 line requests at ~5 cycles, every SM draining),
+5,811 -> 3,456 at flagship-alt-k16. Its loop is ~23
 instructions an add (a slot's select, its panel word, its row); the budget's ~4 (`tools/design_floor.py`) is a
 token's row precomputed, which the union does not carry.

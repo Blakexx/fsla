@@ -252,6 +252,7 @@ __device__ __forceinline__ void den_add(State<P>& st, const DenColumn<P>& den, i
 //: step's slices and values loaded once, each list's A the slices times its c, four lists' eight MMAs, and where the warp
 //: does its pair's den (`Den`, warps `w < 4` of a box carrying it) the pair's eight lists' tile, two more MMAs on the raw
 //: slices (B each slot's c_m); an 8-slot tail after. -- see docs/internals/carry/ampere/fold.md#dense
+//: @burst-exempt a loop over the chunk's slots (its votes and `unroll 1`), not yet `Burst` units
 template <class P, bool Den, class Laps>
 __device__ __forceinline__ void steps_dense(State<P>& st, bool rescale, const uint8_t* smem,
                                             ops::SmemAddr pool, ops::SmemAddr rows,

@@ -276,6 +276,7 @@
   {"doc": "docs/architecture/no-delta-rule.md", "pinned_at": "3360bacd82eb", "reviewed": true, "sha256": "", "target": "docs/internals/facts/liveness_contract.md"},
   {"doc": "docs/architecture/precision.md", "pinned_at": "1522787068fb", "reviewed": true, "sha256": "75ae3bffa09c82b1", "target": "docs/CONSTITUTION.md#r17"},
   {"doc": "docs/architecture/precision.md", "pinned_at": "86c5de45d5cc", "reviewed": true, "sha256": "ae3742ee5fad9dc5", "target": "docs/internals/carry/ampere/handoff.md#maxima"},
+  {"doc": "docs/architecture/precision.md", "pinned_at": "15e549ca93f9", "reviewed": true, "sha256": "", "target": "docs/internals/carry/ampere/readout_dense.md"},
   {"doc": "docs/architecture/precision.md", "pinned_at": "1522787068fb", "reviewed": true, "sha256": "", "target": "docs/testing.md"},
   {"doc": "docs/architecture/precision.md", "pinned_at": "1522787068fb", "reviewed": true, "sha256": "", "target": "rola/routing"},
   {"doc": "docs/architecture/self-masking-theorem.md", "pinned_at": "3360bacd82eb", "reviewed": true, "sha256": "", "target": "docs/architecture/guarantees-choices-preferences.md"},

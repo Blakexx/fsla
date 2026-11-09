@@ -34,7 +34,7 @@ words. A review may trail a commit or two; a push to the default branch, which p
 repository, `.github/workflows/mirror.yml`), waits until every review of its commits has landed and been read.
 
 ADVISORY: `tools/git-hooks/post-commit` starts a review of `HEAD` detached after every commit, so a commit is neither
-slowed nor refused; it is skipped mid-rebase, without the `claude` CLI, or with `ROLA_REVIEW=off`, and it runs from
+slowed nor refused; it is skipped mid-rebase or without the `claude` CLI, and it runs from
 the checkout's own venv (git's rola.venv), saying so and skipping when that names none (`bazel run //:dev_env`). The first review
 (Opus, the carve planner's commit 4fbcf920) took 236 s and $1.65 and named two fair warnings. Blocking, when the
 advisory period's false positives are known, keeps the pipeline: no commit waits on its review, and the push to the

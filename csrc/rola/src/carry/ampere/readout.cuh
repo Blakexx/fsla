@@ -26,6 +26,7 @@ __device__ __forceinline__ uint32_t add_h2(uint32_t a, uint32_t b) {
 }
 
 //: A TILE'S TWO MMAs over the 32 lists into `acc`, accumulating in fp16 (`F16`) or fp32.
+//: @burst
 template <bool F16>
 __device__ __forceinline__ void tile_mma(float (&acc)[4], const uint32_t (&a0)[4],
                                          const uint32_t (&a1)[4], const uint32_t (&b)[4]) {
