@@ -32,6 +32,10 @@ The image's 2^10 top keeps a 32-list sum of image times read row under 2^15, ins
 placement serves both readout accumulations (`docs/internals/carry/ampere/handoff.md#maxima`). The fp16 readout accumulation is
 not a state accumulator: it sums one tile's 32 lists, and the panel takes its result at the token's scale.
 
+MEASURED ([`tools/quality.py`](../internals/tools/quality.md), sm_86, 2026-11-09): the listed readout's fp16
+accumulation costs nothing measurable in the output (the median a token 0.032-0.045% at three listed cells, fp16 as
+fp32); the intra's fp16 doubles it (0.057-0.088%; the dense cell 0.054% -> 0.111%).
+
 The readout's partials are an output's, not a state's: each token's num into the panel and across CTAs as f16 pairs at each token's scale byte (or fp32, the declared `reduce_dtype`), added across CTAs by `red.global.add.noftz.f16x2` (or `.f32`),
 the scale pass's byte bounding the token's whole num so the f16 sum stays in range (Blake, 2026-11-06: the readout's
 exits straight to HBM by f16x2 REDs, no integer panel; the dtype declared 2026-10-19,

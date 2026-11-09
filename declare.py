@@ -14,7 +14,8 @@ Per checkout: `binary` (the build graph's library, `bazel run //:library`, every
 machine facts, every run), the instruments of `INSTRUMENTS` (SASS and the register walk once, cached; the phase clock,
 pipe counters, stall census, timeline and the intra roofline on every carry cell, and the intra's own
 (`counters-intra`, `census-intra`) on the cells of `LONG_CELL_TOKENS` and
-more, every run, holding the GPU), and with
+more, every run, holding the GPU; the output's error against fp64 by each leg's accumulation, `quality`, on the cells
+of tier `both`), and with
 a timing server the timing registrations: `carry_forward`, `carry_intra`, `intra_forward`, `scale_pass` and `prefill` on
 the carry cells, `entmax_solve@layer=C`, `produce@layer=C`, `layer_prefill@layer=C`, `decode_step@layer=C` and the op's
 stages on the layer's own bundle (`layer_facts`, `layer_scale`, `layer_carry`, `layer_intra`, `layer_op`) for each RoLA
@@ -71,10 +72,9 @@ INSTRUMENTS = {
     #: the output's error against the fp64 recurrence at each pairing of the carry's and the intra's accumulations
     "quality": ("tools/quality.py", ["{cell}"], True, {"gpu": 1}, ["rola", "measure", "tests/oracle"], 900),
 }
-#: the instruments read only on the long cells (16K tokens and more): the intra's
-LONG_CELL_INSTRUMENTS = {"counters-intra", "census-intra"}
-#: the instruments read only on the cells sized for the fp64 recurrence as well as a measurement (tier `both`)
-BOTH_TIER_INSTRUMENTS = {"quality"}
+#: THE CELLS AN INSTRUMENT RUNS ON, where not every measurement carry cell: the intra's on the long cells (16K tokens
+#: and more), the output's error on the cells sized for the fp64 recurrence as well (tier `both`)
+INSTRUMENT_CELLS = {"counters-intra": "long", "census-intra": "long", "quality": "both"}
 LONG_CELL_TOKENS = 16384
 CARRY_ARMS = ("carry_forward", "carry_intra", "intra_forward", "scale_pass", "prefill")
 LAYER_ARMS = ("entmax_solve", "produce", "layer_prefill", "decode_step", "layer_facts", "layer_scale", "layer_carry",
@@ -131,11 +131,10 @@ def declare(g, env: Env, *, timing=None, instruments=tuple(INSTRUMENTS)) -> dict
         params={"paths": ["tests/oracle"], "timeout": TIER_TIMEOUT_S},
         code={"files": ["tests/oracle", "tests/conftest.py", "rola", "measure"]})
     long_cells = [c for c in carry if central().cell(c)["params"].get("tokens", 0) >= LONG_CELL_TOKENS]
+    both = [c for c in carry if central().cell(c)["params"].get("tier") == "both"]
     for name in instruments:
         tool, args, per_cell, holds, data, timeout = INSTRUMENTS[name]
-        on = (long_cells if name in LONG_CELL_INSTRUMENTS else
-              [c for c in carry if central().cell(c)["params"].get("tier") == "both"] if name in BOTH_TIER_INSTRUMENTS
-              else carry)
+        on = {"long": long_cells, "both": both, None: carry}[INSTRUMENT_CELLS.get(name)]
         if per_cell and not on:
             continue
         out["instruments"][name] = g.node(

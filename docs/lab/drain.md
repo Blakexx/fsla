@@ -81,6 +81,6 @@ checked:
   and s32 alike, and trimming the conversion to one FFMA a channel buys 2%: L2's atomic path charges the bytes.
 - f16 PAIRS keep the bytes and the requests and cost 26-45% more: L2's atomic unit does ~20% more work a sector than
   for integer adds (30% of a 1.44x launch against 36%), the rest is the conversion in the request loop's latency
-  (issue 740 against 484 a unit); the pipe model prices it at today's (the global path binds at 1,124 either way).
+  (issue 740 against 484 a unit); the pipe model prices it at the s16 pairs' (the global path binds at 1,124 either way).
 
 Records: `measure/lab/results/drain/sm_86.json`, `sm_86.counters.json`.

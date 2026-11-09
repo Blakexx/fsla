@@ -1,10 +1,10 @@
 # `tools/quality.py` — the output's error against fp64, by accumulation
 
-A stateless prefill's per-token error against the fp64 recurrence, on a carry cell's own quantized operands, at each
-pairing of its two MMA legs' accumulations: the carry's readout and the intra's, each fp32 or fp16 (`rola.ops.prefill`'s
-`accumulate` and `intra_accumulate`). A token's error is `|y - y64| / |y64|` over its channels, over the tokens that read
-something; the record holds the median, the 99th percentile and the largest, the cell's arm and whether its read side is
-listed or dense (a dense read side's readout accumulates fp32 whatever it is told: `carry/ampere/readout_dense.md`).
+The constitution's R17 declares each component's accumulation precision, and [precision.md](../../architecture/precision.md)
+records it; this instrument is how a choice of accumulation is priced in the output, not in a model. It reads a
+stateless prefill's per-token error against the fp64 recurrence with each MMA leg -- the carry's readout and the
+intra -- at fp32 or fp16 (`rola.ops.prefill`'s `accumulate` and `intra_accumulate`); a dense read side's readout runs
+fp32 whatever it is told, so only the intra turns there.
 
     bazel run //tools:quality -- flagship-alt-k4 [--json quality.json]
 
