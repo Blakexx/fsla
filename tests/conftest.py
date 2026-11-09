@@ -223,7 +223,7 @@ def _gpu_lock_held():
 #: THE HOST-COMPUTE BUDGET, PER PARALLEL PROCESS ("a pytest tier that forks
 #: workers draws 1 per worker"): an xdist worker (`PYTEST_XDIST_WORKER`, never
 #: the controller) or one of a sharded tier's shards (`--bazel-shard`,
-#: bazel/pytest_shards.py) competes with compiles, sanitizer runs and clang-tidy
+#: rola_devtools.graph.pytest_shards) competes with compiles, sanitizer runs and clang-tidy
 #: passes for the shared pool; a single process draws nothing.
 @pytest.fixture(scope="session", autouse=True)
 def _host_budget_worker_slot(request):

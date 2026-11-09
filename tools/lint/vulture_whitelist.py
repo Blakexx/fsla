@@ -30,11 +30,9 @@ class _Whitelist:
     pytestmark = None
 
     # pytest HOOKS: a conftest's `pytest_addoption` and `pytest_configure` are called by the framework, found by
-    # their names. `tests/conftest.py` registers `--oracle-margins` with them; `bazel/pytest_shards.py`, the CPU tier's
-    # sharding plugin, selects a shard's tests in `pytest_collection_modifyitems`.
+    # their names. `tests/conftest.py` registers `--oracle-margins` with them.
     pytest_addoption = None
     pytest_configure = None
-    pytest_collection_modifyitems = None
 
     # rola_devtools.build EXECUTORS: a declared target's worker calls its executor functions from their
     # `module:function` strings in `declare.py` (`measure/executors.py`'s `compile_kernel`, `probe_environment`,
@@ -96,7 +94,7 @@ class _Whitelist:
 
 
 _ = _Whitelist()
-_referenced = (_.pytestmark, _.pytest_addoption, _.pytest_configure, _.pytest_collection_modifyitems,  # ruff B018: a bare attribute is "useless"
+_referenced = (_.pytestmark, _.pytest_addoption, _.pytest_configure,  # ruff B018: a bare attribute is "useless"
                _.compile_kernel, _.probe_environment, _.run_tool, _.timed, _.read_clock,
                _.forward, _.poison_torch_memory, _._gpu_lock_held, _._host_budget_worker_slot, _._take_gpu_lock,
                _.union_table, _.v_row_bytes, _.y_dtype, _.token_bit, _.backing_kind, _.closed, _.owners_total,

@@ -110,10 +110,8 @@ HANDOFFS = {
     "USER": "the login name printed into the sudoers rule `bazel run //:clock` suggests",
     "ROLA_SCRATCH": "the agent harness's campaign directory (.claude/settings.json), outside the repository",
     "ROLA_CUDA_HOME": "the graph's copy of the pinned CUDA toolkit, which a test tier hands its tests (bazel/defs.bzl)",
-    "BAZEL_REAL": "the Bazel release bazelisk hands the graph's front door (bazel/front_door.py)",
     "PATH": "the search path bazelisk hands what it runs, the front door's directory first (`check` finds the user's "
             "`bazel` past it)",
-    "ROLA_GRAPH_STORE": "the shared store the front door hands the graph's environment (bazel/environment.bzl)",
     "ROLA_NVCC_THREADS": "host.nvcc_threads, which the front door hands the graph's compile flags (bazel/flags.py)",
 }
 

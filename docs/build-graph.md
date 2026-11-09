@@ -23,7 +23,7 @@ semaphores, which Bazel cannot do for an action.
 | bazelisk, Bazel's launcher | `tools/bazelisk_pin.json`, installed by `python3 tools/bootstrap.py` under `host.tools_dir` by its pin (never a machine key), which links `bazel` on PATH to it (`toolchain.bazel`; `check` has the row), on a host and in the devbox container alike | `host.tools_dir` |
 | Bazel | `.bazelversion`, verified against `.bazeliskrc`'s digest | bazelisk's cache |
 | the graph's CUDA toolkit | NVIDIA's redistributable components at release 13.0.0 (`MODULE.bazel`'s `cuda.redist_json`: nvcc 13.0.48), only the compiler's (~75 MB of the 4.7 GB set) | the shared repository cache |
-| the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (`tools/uv_pin.json`, the graph's `@uv`, which `//:dev_env` writes venvs with too) into the pinned CPython (3.11.13), and rola-devtools from its module's source, by rola-devtools' environment extension (`MODULE.bazel`'s `environment.python` tag, `@rola_env`; `rola_devtools.graph.make_env`) | `host.build_cache/bazel/store`, one environment a key (the lock, rola-devtools' content, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages; `@rola_env//:flags.bzl`'s `VENV` names it, so a command naming it is keyed by the environment |
+| the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (rola-devtools' `pins/uv_pin.json`, the graph's `@uv`, which `//:dev_env` writes venvs with too) into the pinned CPython (3.11.13), and rola-devtools from its module's source, by rola-devtools' environment extension (`MODULE.bazel`'s `environment.python` tag, `@rola_env`; `rola_devtools.graph.make_env`) | `host.build_cache/bazel/store`, one environment a key (the lock, rola-devtools' content, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages; `@rola_env//:flags.bzl`'s `VENV` names it, so a command naming it is keyed by the environment |
 | the linker | mold at `tools/mold_pin.json`'s release (`@mold`) | the shared repository cache |
 | the lints' analyzer | clang-tidy at `tools/clang_tidy_pin.json`'s wheel, its binary's digest checked (`@clang_tidy`) | the shared repository cache |
 | the pinned toolkit | `tools/cuda_toolkit_pin.json`: NVIDIA's redistributable manifest by its digest (the compiler's, held equal by `tests/unit/test_cuda_toolkit_pin.py`), every component it names by the manifest's digest, unpacked into one tree as init installs it outside the graph (`@cuda_tools`, file for file init's copy): the disassemblers the SASS gate reads with (cuobjdump, nvdisasm), compute-sanitizer (the sanitizer lane's) and the whole toolkit the test tiers hand their tests (`ROLA_CUDA_HOME`); beside it cuRAND's headers, the graph's alone (clang's CUDA front end includes one) | the shared repository cache |
@@ -144,7 +144,8 @@ compiles, each unit's ptxas report and object (the `cuda_unit` rule's), with the
 (tools/BUILD.bazel's `derivation_harness`, [`internals/tools/ratify.md`](internals/tools/ratify.md#graph)). On
 2026-11-08 the census equalled the compile path's (`python tools/ratify.py --census`: 750 entries, every register,
 spill, local-access count and body hash) and the verdict was the same line for line. The census's disassemblers run
-under the host budget, a unit a slot.
+a unit a host-budget slot: the machine's budget under `bazel run //:ratify`, a pool of the sandbox's own (the default
+slot count) under the sandboxed `//:ratified`.
 
 THE GAP: the graph ratifies the shipped set, the architectures the toolchain's manifests already name
 (`RATIFIED_ARCHS`), so an architecture's FIRST manifest has no graph form -- `--//:archs` naming a new one makes an

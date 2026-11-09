@@ -18,7 +18,7 @@ bazel_dep(name = "tar.bzl", version = "0.7.0")
 bazel_dep(name = "rola_devtools", version = "0.1.0")
 git_override(
     module_name = "rola_devtools",
-    commit = "bba5ff42d44854599760fa82f18503cba8cc7aea",
+    commit = "35d6c6779672b2d0f8270e8bf04a5417a5f15f6c",
     remote = "https://github.com/Blakexx/rola-devtools.git",
 )
 
@@ -52,7 +52,8 @@ environment = use_extension("@rola_devtools//bazel:environment.bzl", "environmen
 environment.pinned(
     name = "uv",
     build_file = "//bazel:uv.BUILD",
-    pin = "//tools:uv_pin.json",
+    #: uv and the Python it installs, rola-devtools' pin: every RoLA workspace's environment is built by the same
+    pin = "@rola_devtools//pins:uv_pin.json",
 )
 environment.python(
     name = "rola_env",
@@ -63,7 +64,7 @@ environment.python(
     post_args = ["//tools:toolchains/cu13.json"],
     post_env = ["ROLA_NVCC_THREADS"],
     uv = "@uv//:uv",
-    uv_pin = "//tools:uv_pin.json",
+    uv_pin = "@rola_devtools//pins:uv_pin.json",
     #: the flags' sources, and the manifests whose architectures are the build's defaults
     watch = [
         "//tools:build_flags.py",

@@ -153,7 +153,7 @@ def _without_top(component: str):
     """The extraction filter of a component's archive: a member under the pin's folder instead of the archive's own (the
     archive's folder dropped from its name, and from a hard link's target, which names an archive path), its LICENSE
     at `licenses/<component>/LICENSE`, since every component carries one at the same path -- the graph's copy's layout
-    (bazel/environment.bzl's `@cuda_tools`)."""
+    (rola-devtools' environment extension's `cuda_toolkit` tag, `@cuda_tools`)."""
     def keep(member: tarfile.TarInfo, dest: str) -> tarfile.TarInfo | None:
         _, _, name = member.name.removeprefix("./").partition("/")
         if not name:

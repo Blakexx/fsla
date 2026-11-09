@@ -278,8 +278,9 @@
     "@@rola_devtools+//bazel:environment.bzl%environment": {
       "general": {
         "bzlTransitiveDigest": "kAPTjedv0bH3+V8ilIZyksyepBrgzrGCTaXvDglKGzw=",
-        "usagesDigest": "XUFJOka+IaYnDcSRjxNSxTaPHHvpzMkRCC7msE9LZMo=",
+        "usagesDigest": "vw2Rm4UtrTwAObJv3KRpkuNub3JN/8D5JWQ8SBWOeKo=",
         "recordedInputs": [
+          "REPO_MAPPING:,rola_devtools rola_devtools+",
           "REPO_MAPPING:,uv rola_devtools++environment+uv"
         ],
         "generatedRepoSpecs": {
@@ -288,7 +289,7 @@
             "attributes": {
               "lock": "@@//:requirements.lock",
               "uv": "@@rola_devtools++environment+uv//:uv",
-              "uv_pin": "@@//tools:uv_pin.json",
+              "uv_pin": "@@rola_devtools+//pins:uv_pin.json",
               "index": "",
               "index_from": "@@//tools:toolchains/cu13.json",
               "index_field": "torch_index",
@@ -315,7 +316,7 @@
           "uv": {
             "repoRuleId": "@@rola_devtools+//bazel:environment.bzl%_pinned_repo",
             "attributes": {
-              "pin": "@@//tools:uv_pin.json",
+              "pin": "@@rola_devtools+//pins:uv_pin.json",
               "build": "",
               "build_file": "@@//bazel:uv.BUILD"
             }

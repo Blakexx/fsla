@@ -990,8 +990,9 @@ def measure_built() -> tuple[dict, list[str], dict]:
         got, bad = _parse_report(unit["report"].read_text())
         return unit["source"], {"entries": got, "unhonored": bad, "scan": _scan_object(str(unit["object"]), set(got))}
 
-    #: the disassemblers' reads hold the host budget too, a job a slot: one pool sizes every heavy run on the machine
-    #: (KERNEL_STANDARDS §14 addendum 2); under the sandboxed `//:ratified` the pool is the sandbox's own default
+    #: the disassemblers' reads hold the host budget too, a job a slot (KERNEL_STANDARDS §14 addendum 2): the
+    #: machine's under `bazel run //:ratify`; under the sandboxed `//:ratified`, whose /tmp and dev config are its own,
+    #: a pool of the sandbox's, the default slot count
     with host.acquire(host.budget_slots(), label="ratify's census") as jobs, ThreadPoolExecutor(
             max_workers=min(jobs, len(units))) as pool:
         measured = list(pool.map(one, units))
