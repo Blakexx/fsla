@@ -120,13 +120,6 @@ __device__ __forceinline__ uint32_t lo_bf16x2(float lo, float hi) {
   return d;
 }
 
-//: a packed bf16 pair times a packed bf16 pair, elementwise, rounded once.
-__device__ __forceinline__ uint32_t mul_bf16x2(uint32_t a, uint32_t b) {
-  const __nv_bfloat162 p = __hmul2(*reinterpret_cast<const __nv_bfloat162*>(&a),
-                                   *reinterpret_cast<const __nv_bfloat162*>(&b));
-  return *reinterpret_cast<const uint32_t*>(&p);
-}
-
 //: a halfword into both halves of a packed pair.
 __device__ __forceinline__ uint32_t splat_u16(uint32_t x) { return (x & 0xFFFFu) * 0x10001u; }
 

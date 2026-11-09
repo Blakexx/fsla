@@ -103,7 +103,6 @@
   {"doc": ".claude/skills/rola-shared-layout/SKILL.md", "pinned_at": "e87322e18bcd", "reviewed": true, "sha256": "", "target": "docs/internals"},
   {"doc": ".claude/skills/rola-shared-layout/SKILL.md", "pinned_at": "3fac56b5a835", "reviewed": true, "sha256": "", "target": "docs/internals/tools/bank_model.md"},
   {"doc": ".claude/skills/rola-shared-layout/SKILL.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "", "target": "docs/lab/color_union.md"},
-  {"doc": ".claude/skills/rola-shared-layout/SKILL.md", "pinned_at": "5d19d283fa3f", "reviewed": true, "sha256": "", "target": "docs/lab/facts_color.md"},
   {"doc": ".claude/skills/rola-shared-layout/SKILL.md", "pinned_at": "e87322e18bcd", "reviewed": true, "sha256": "e993986ba3b23af7", "target": "tools/bank_model.py::wavefronts"},
   {"doc": ".claude/skills/rola-test/SKILL.md", "pinned_at": "e87322e18bcd", "reviewed": true, "sha256": "c16470ec7e16e2bf", "target": "docs/KERNEL_STANDARDS.md#first-run"},
   {"doc": ".claude/skills/rola-test/SKILL.md", "pinned_at": "e87322e18bcd", "reviewed": true, "sha256": "64bd64bc0214e249", "target": "docs/internals/tools/coverage.md#declaration"},
