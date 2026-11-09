@@ -51,19 +51,17 @@ nothing else to `setup.py`. Everything about the MACHINE is the dev config (`too
 | `ROLA_CUDA_ARCHS` | `;`-separated compute capabilities, default `80;86`. Naming one without a ratified manifest **fails before anything compiles** (R3). |
 | `ROLA_CARRY_ARMS` | A `,`/space list of INDICES into the carry family's arm list (`tools/gen_shards.py`'s `CARRY_ARMS`), or the word `all`. **The subset is a FILE subset**: each selected row contributes its generated `csrc/rola/src/instantiations/carry_arm_<i>.cu` and a `ROLA_CARRY_BUILD_<i>` line in the generated selection header (`build/generated/carry_selection.inc`), so an arm outside the set is not compiled at all. **The default is every declared row** — see [the arm list](#carry-arm-lists); `all` names the same set. A build whose arm set is not the shipped set is **NOT SHIPPABLE**: the build prints a banner and skips the two shippability gates, because the manifest ratifies the shipped set and a binary carrying a different set is not the thing that ships, in either direction. It is self-identifying at run time: `rola.ops.carry.arms()` lists what was built and every entry point refuses an arm the binary does not carry. |
 | `ROLA_CARRY_PARTS` <a id="carry-parts"></a> | **Iteration only.** `all` (the default), `none`, or a comma list of the carry kernel's parts (`readout.stream`, `readout.loads`, `readout.drain`, `fold.pool`, `fold.ring`, `fold.loads`) to build REAL; the rest are STUBS that keep their HMMAs and drop their other work, written to the generated `build/generated/carry_parts.inc` on every build and ratify. Any subset makes the build an iteration build (banner, manifest gate skipped). The composer (`tools/compose_ledger.py`, `docs/internals/tools/compose_ledger.md`) drives the build graph's `--//:carry_parts`, the same grammar; with every part real the arm's instructions are identical to a build without the switches. Never shipped. |
-| `ROLA_DECODE_ARMS` | **Iteration only.** Comma- or space-separated indices into the decode family's declared arm list (`tools/manifests/decode_set.json`, the `d_v x D x decay` matrix in that order, 16 rows). Compiles only those arms. Unset = every arm, which is what a gate build must be. Same NOT-SHIPPABLE banner/skip mechanism as `ROLA_CARRY_ARMS` (one `_is_iteration_build` covers both families). See [below](#arm-subset). |
+| `ROLA_DECODE_ARMS` | **Iteration only.** Comma- or space-separated indices into the decode family's declared arm list (`tools/manifests/decode_set.json`, the `d_v x D x decay` matrix in that order, 16 rows). Compiles only those arms. Unset = every arm, which is what a wheel must be. Same NOT-SHIPPABLE banner/skip mechanism as `ROLA_CARRY_ARMS` (one `_is_iteration_build` covers both families). See [below](#arm-subset). |
 | `ROLA_SKIP_POST_BUILD_RATIFY` | Skips the post-build gate. For iterating on non-kernel code only; a shippable binary is one that passed it. |
 | `ROLA_STRICT_MANIFEST` | `1` makes the post-build ratification fatal on a manifest mismatch; unset or `0` reports it ([the rule](#strict-manifest)). **`tools/wheels.py`'s build sets it.** |
 
 ### The host budget: every build shares one pool
 
-An **iteration build** (single-arch, `ROLA_CARRY_ARMS` subset) and a **gate build**
-(both arches, the shipped set) compete for the same host RAM the job count is
-sized against; running one of each at once can OOM the host (the §14
-addendum finding, one level up). `setup.py` takes the machine-wide host budget
-itself before compiling (`tools/build_lock.py` over `rola_devtools.locks.host`): an
-iteration build holds the slots free now, a gate build waits for every slot, and
-no invocation path can skip it. Any other CPU-heavy command -- a census compile,
+This build and the graph's compete for the same host RAM the job count is sized against; running two at once can
+OOM the host (the §14 addendum finding, one level up). `setup.py` takes the machine-wide host budget itself before
+compiling (`tools/build_lock.py` over `rola_devtools.locks.host`): the wheels' build, every architecture and arm,
+waits for every slot, and no invocation path can skip it; the graph's builds take theirs through the front door
+([`build-graph.md`](build-graph.md#front-door)). Any other CPU-heavy command -- a census compile,
 a clang-tidy translation unit -- runs under the same pool with
 `python -m rola_devtools.locks.host [--exclusive] -- <cmd>`.
 
@@ -122,26 +120,26 @@ source and binary and fatal regardless of any manifest.
 
 ## <a id="arm-subset"></a>An iteration build may compile one decode arm
 
-Instantiation is the dominant build resource, so a developer testing ONE arm may
-compile one arm:
+Instantiation is the dominant build resource, so a developer testing ONE arm may compile one arm, through the
+graph ([`build-graph.md`](build-graph.md#compile)):
 
 ```bash
-ROLA_DECODE_ARMS=5 ROLA_CUDA_ARCHS=86 pip install -e . --no-build-isolation
+bazel run //:library --//:archs=86 --//:decode_arms=5
 ```
 
 Three properties make this safe to have:
 
-* **The default is every declared arm.** `ROLA_DECODE_ARMS` unset expands to the whole
-  list, so a plain build and every gate build are the closed-world one. There is no
+* **The default is every declared arm.** `--//:decode_arms` empty expands to the whole
+  list, so a plain build and every wheel are the closed-world one. There is no
   configuration in which a subset is the default.
 * **A subset binary is SELF-IDENTIFYING and refuses what it lacks.**
   `rola.ops.decode.arms()` returns the `(d_v, D, decay)` rows the fatbin actually
   carries, read off the same list the build compiled from; asking the launch for any
   other shape is a `STD_TORCH_CHECK` refusal naming the arm, never a mis-launch.
-* **It is NOT SHIPPABLE, and the build says so.** The two post-build gates prove the
-  fatbin carries EVERY ratified instantiation in its assigned shard; a subset carries
-  fewer by construction, so they are skipped — announced in a banner, in this one
-  place and nowhere else. Ratify at the END of a stage, from a full build.
+* **It is NOT SHIPPABLE, and its record says so.** Ratify proves the fatbin carries EVERY
+  ratified instantiation in its assigned shard; a subset carries fewer by construction,
+  so it is never ratified ([`build-graph.md`](build-graph.md#ratify)). Ratify at the END
+  of a stage, from a full build.
 
 **AND THE RATIFICATION GATE MUST NOT INHERIT IT, WHICH IS THE SUBTLE HALF.**
 `tools/ratify.py` reuses the last build's `build.ninja` flags VERBATIM, because
@@ -156,7 +154,7 @@ that the build and the gate each write for their own scope, and `-gencode` is th
 what-was-compiled flag the gate strips (a single-arch build narrowing the next ratification).
 A gate that certifies numbers no shipped binary has is worse than no gate.
 
-The same rule governs `ROLA_CUDA_ARCHS=86`: iterate single-arch, gate and measure on
+The same rule governs `--//:archs=86`: iterate single-arch, gate and measure on
 the full both-arch build.
 
 ## <a id="compile-ledger"></a>Why the arm units are torch-free

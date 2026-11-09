@@ -86,7 +86,8 @@ headers into `build/generated`.
   and depends on it (`stamp_unit`): a digest of every source, as any unit's input it would recompile every unit on
   any edit.
 - ONE UNIT LIST: `csrc/rola/units.bzl`, written and checked by `tools/gen_shards.py`, names `tools/kernels.py`'s hand
-  units and each generated carry arm unit with the arms it carries. Each arm unit is its own target, and
+  units, the runtime's among them (`runtime_units`, `//csrc/rola:runtime`), and each generated carry arm unit with the
+  arms it carries. Each arm unit is its own target, and
   `carry_arm_set` hands the link only the units `--//:carry_arms` names (`gen_shards`' grammar: indices or `all`), so an
   unwanted arm is never compiled.
 - `--threads` IS THE MACHINE'S `host.nvcc_threads`, which the front door hands the graph (`ROLA_NVCC_THREADS`): the
@@ -95,6 +96,13 @@ headers into `build/generated`.
   and, by path, torch's `libc10.so` and `libtorch_cpu.so`, the CUDA runtime and the driver's stub: each NEEDED by its
   soname, no search path written (no unit carries a dynamic library; the units' CUDA runtime is its headers,
   `//bazel:cuda_headers` -- rules_cuda 0.3.0's own `@cuda//:cuda_headers` names a component CUDA 13 lacks).
+- AN INSTRUMENT'S LIBRARY (`bazel/defs.bzl`'s `rola_instrument`): a measurement's own kernels as
+  `rola_cu13/<module>.abi3.so` beside the extension, linked as it is and SASS-gated as it is (`--instrument`: its
+  kernels are probes, red on what makes a binary unfit to measure, and it owes none of the source's kernels,
+  [`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#instrument)), for the architectures `--//:archs` names; never shipped, so no record, arm gate or
+  ratify. `//:parts_library` is the part harness's driver (`_C_parts`, KERNEL_STANDARDS section 22): the calibration
+  kernels (`//measure/harness/carry_parts`, with `-lineinfo` for the ledgers) and the runtime's units, the library's own
+  objects.
 ## <a id="gates"></a>The library's gates
 
 Building `//:library` runs the gates below; their verdicts are its outputs and its runfiles, so neither a build nor
@@ -158,7 +166,9 @@ index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
   the kernel tree's own: clang-format, ast-grep (`tools/lint/ast_grep_gate.py`), the unused instantiations and the
   unit lints below. `//:lints` adds the repo's policies over the whole tree: ruff and its blank-line spacing, the
   standards lint (`tools/lint/lint_standards.py`), the readability spacing, the agent files' portability
-  (`tools/lint/portable_claude.py`), the mirror's declarations (`rola_devtools.mirror --check`), and each ratchet
+  (`tools/lint/portable_claude.py`), the mirror's declarations (`rola_devtools.mirror --check`), the README's
+  generated blocks (`tools/supported.py --check`, which imports the tree's package to run its activation registry, a
+  test and not a lint), and each ratchet
   (`tools/lint/ratchet.py <lint>`: the lint's findings against its baseline, a new finding and a fixed one each red).
 - THE UNIT LINTS (`//csrc/rola:clang_tidy_device`, `clang_tidy_host`, `host_warnings`; `bazel/defs.bzl`'s `unit_lints`
   aspect and `unit_lint_test`): clang-tidy's two profiles and the host warnings, each run on one unit's own compile
@@ -189,10 +199,12 @@ The tree keeps the layout of a Python package with a native extension, as FlashA
 2026-11-08): `rola/` beside `csrc/`, and the tests that drive the kernels through the op against the oracle in `tests/`,
 since the kernels serve the op alone and those tests grade the two as one. A BUILD file sits beside what it describes,
 its lints among it, and `bazel/` holds only the graph's own machinery:
-- the root package: the build's parameters, the extension, the devbox image, the repo-wide checks and the gate;
+- the root package: the build's parameters, the extension and the part harness's library, the devbox image, the
+  repo-wide checks and the gate;
 - `csrc/rola`: the kernel tree, its units and its own lints; `csrc/third_party`: the vendored trees;
 - `tools`: the pins and records the graph reads, the generators it runs, and each tool's run target; `tools/lint`: the
   linters, the modes a person runs by hand and each linter's self-test;
+- `measure/harness`: the part harness's run target; `measure/harness/carry_parts`: its driver's calibration kernels;
 - `tests`: the tiers.
 
 A C++ API of the kernels' own would make a split by language right.

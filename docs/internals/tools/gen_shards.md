@@ -29,7 +29,7 @@ post-build gate and the graph's arm gate (`bazel/gates.py`) run. The families: `
 | output | checked in? | written by | consumed by |
 |---|---|---|---|
 | `csrc/rola/src/instantiations/carry_arm_<i>.cu` | yes — what is reviewed is what compiles | `--write` | the build's source list |
-| `csrc/rola/units.bzl` | yes, checked by `--check` and the graph's build gates | `--write` | the graph's units: `tools/kernels.py`'s hand units and each arm unit with the arms it carries |
+| `csrc/rola/units.bzl` | yes, checked by `--check` and the graph's build gates | `--write` | the graph's units: `tools/kernels.py`'s hand units, the runtime's among them, and each arm unit with the arms it carries |
 | `build/generated/carry_selection.inc` | never | `setup.py`, `tools/ratify.py`, on every run; the graph's header action (`bazel/headers.py`) into its own output, which `bazel run //:library` copies here | the per-arm TUs, the carry dispatch TU, `common/arm_switch.cuh` |
 | `build/generated/decode_selection.inc` | never | `setup.py`, `tools/ratify.py`, on every run; the graph's header action into its own output, which `bazel run //:library` copies here | `decode/decode.cu` |
 | `build/generated/builds.inc` | never | `write_builds`, from `setup.py` and `tools/ratify.py` on every run; the graph's header action into its own output, which `bazel run //:library` copies here | `common/select.cuh` ([`../common/select.md#carried`](../common/select.md#carried)) |

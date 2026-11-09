@@ -19,6 +19,13 @@ HAND_UNITS = [
     "src/scale/scale.cu",
 ]
 
+#: the runtime's units among them (tools/kernels.py's runtime_units)
+RUNTIME_UNITS = [
+    "src/common/arch_runtime.cu",
+    "src/common/geom.cu",
+    "src/common/select.cu",
+]
+
 #: each generated carry unit and the arm indices it carries
 CARRY_ARM_UNITS = {
     "carry_arm_0.cu": [0],

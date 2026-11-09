@@ -2,7 +2,7 @@
 
 A hand-maintained support table says what someone hoped was true when
 they last edited it; this one is derived from the two artifacts that decide the
-answer, and CI fails on drift:
+answer, and the commit gate fails on drift (`//:supported_matrix`):
 
 * ``csrc/rola/src/common/hardware.cuh`` (generated from ``hardware.json``) -- the architectures the KERNEL knows how to
   size itself for. ``sm_arch_tabulated()`` is a ``static_assert`` at compile time

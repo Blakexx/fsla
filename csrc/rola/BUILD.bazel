@@ -5,17 +5,13 @@ load("@rola_env//:flags.bzl", "HOST_CXX_FLAGS", "NVCC_FLAGS")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("//bazel:cuda.bzl", "cuda_unit")
 load("//bazel:defs.bzl", "carry_arm_set", "include_root", "rola_headers", "tree_part", "tree_test", "unit_lint_test")
-load(":units.bzl", "CARRY_ARM_COUNT", "CARRY_ARM_UNITS", "HAND_UNITS")
+load(":units.bzl", "CARRY_ARM_COUNT", "CARRY_ARM_UNITS", "HAND_UNITS", "RUNTIME_UNITS")
 
 package(default_visibility = ["//visibility:public"])
 
 exports_files([
     "units.bzl",
     "src/common/hardware.json",
-    #: the runtime units the part harness's driver links too (//measure/harness/carry_parts)
-    "src/common/arch_runtime.cu",
-    "src/common/geom.cu",
-    "src/common/select.cu",
 ])
 
 #: every source the kernel list reads, and the checked-in generated units
@@ -70,9 +66,18 @@ _HOST_CC = "@host_cc//:identity.txt"
 #: one source recompiles that source's unit and this one, not every unit
 _STAMP_UNIT = "src/common/build_stamp.cu"
 
+#: the runtime's units, which an instrument's library links too (//:parts_library)
+cuda_unit(
+    name = "runtime",
+    srcs = RUNTIME_UNITS,
+    copts = NVCC_FLAGS,
+    host_cc = _HOST_CC,
+    deps = _DEPS,
+)
+
 cuda_unit(
     name = "units",
-    srcs = [unit for unit in HAND_UNITS if unit != _STAMP_UNIT],
+    srcs = [unit for unit in HAND_UNITS if unit != _STAMP_UNIT and unit not in RUNTIME_UNITS],
     copts = NVCC_FLAGS,
     host_cc = _HOST_CC,
     deps = _DEPS,

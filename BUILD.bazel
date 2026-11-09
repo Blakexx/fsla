@@ -68,6 +68,7 @@ rola_extension(
     deps = [
         "//csrc/rola:carry_arms",
         "//csrc/rola:registration",
+        "//csrc/rola:runtime",
         "//csrc/rola:stamp_unit",
         "//csrc/rola:units",
     ],
@@ -122,7 +123,10 @@ rola_instrument(
     name = "parts_library",
     module = "_C_parts",
     shared_libraries = ["@rola_env//:torch_libraries"],
-    deps = ["//measure/harness/carry_parts"],
+    deps = [
+        "//csrc/rola:runtime",
+        "//measure/harness/carry_parts",
+    ],
 )
 
 #: THE MEASUREMENTS (docs/measurement.md): rola-devtools' build system running this checkout's declarations, and the
@@ -293,8 +297,8 @@ compile_database(
 )
 
 #: THE REPO'S CHECKS (docs/build-graph.md#checks): the policies over the whole tree -- the Python's lints, the
-#: standards, the agent files and the mirror, each ratchet against its baseline -- and the checks of the commit, run in
-#: the checkout: what git knows
+#: standards, the agent files, the mirror and the README's generated blocks, each ratchet against its baseline -- and
+#: the checks of the commit, run in the checkout: what git knows
 
 tree_test(
     name = "ruff",
@@ -347,6 +351,19 @@ tree_test(
     cmd = ["python3", "-m", "rola_devtools.mirror", "--check"],
     data = [":tree"],
     git = True,
+)
+
+#: the README's generated blocks are their generators' output; the second runs the activation registry, so this is a
+#: test of the tree's package (imported, never built), not a lint
+tree_test(
+    name = "supported_matrix",
+    size = "small",
+    cmd = [
+        "/bin/bash",
+        "-c",
+        "PYTHONPATH=. python3 tools/supported.py --check",
+    ],
+    data = [":tree"],
 )
 
 tree_test(
@@ -434,6 +451,7 @@ test_suite(
         ":readability_spacing",
         ":portable_agent_files",
         ":mirror_declarations",
+        ":supported_matrix",
         ":ratchet_burst_tier",
         ":ratchet_constant_parameters",
         ":ratchet_coverage",

@@ -137,10 +137,9 @@ ROLA_CUDA_ARCHS = _declared_archs()
 #: so the POST-BUILD gate that compares the freshly built binary against the
 #: checked-in ``tools/manifests/<toolchain>/sm_XX.json`` (``_post_build_manifest_check``'s
 #: ``ratify.py`` re-run) REPORTS a mismatch instead of failing the install by default.
-#: ``ROLA_STRICT_MANIFEST=1`` restores the pre-K43 hard failure: the milestone/CI gate
-#: build that immediately precedes ``tools/ratify.py --write`` sets it (docs/build.md),
-#: because THAT build must fail loudly if the tree it is about to ratify is not
-#: actually shippable. This never weakens ``tools/ratify.py`` itself -- ``--write``/
+#: ``ROLA_STRICT_MANIFEST=1`` restores the pre-K43 hard failure: ``tools/wheels.py``'s
+#: build sets it (docs/build.md), because THAT build must fail loudly if the tree it
+#: packages is not actually shippable. This never weakens ``tools/ratify.py`` itself -- ``--write``/
 #: ``--check`` invoked directly are untouched, as are every PRE-build gate below
 #: (``_gate_ratified``/``_gate_toolchain``/``_gate_vendored``/``_gate_shards``: those
 #: are prerequisites, not staleness) -- only whether THIS INSTALL treats a
@@ -639,8 +638,8 @@ class RoLABuildExtension(BuildExtension):
         between milestones by design (KERNEL_STANDARDS §16) -- unlike the fatbin
         gate above, there is no sub-check here that is independent of the manifest,
         so the K43 split is a single blanket one: FAIL is fatal only under
-        `ROLA_STRICT_MANIFEST=1` (set by the milestone/CI gate build that precedes
-        `ratify.py --write`, docs/build.md); otherwise it is a REPORT and the
+        `ROLA_STRICT_MANIFEST=1` (set by `tools/wheels.py`'s build,
+        docs/build.md); otherwise it is a REPORT and the
         install proceeds. This never touches `ratify.py` itself -- `--write`/
         `--check` invoked directly still behave exactly as before.
         """
@@ -674,7 +673,7 @@ class RoLABuildExtension(BuildExtension):
                   "this banner). Install proceeding because ROLA_STRICT_MANIFEST is "
                   "not set: manifests go stale between milestones by design "
                   "(KERNEL_STANDARDS §16). This binary is NOT certified shippable -- "
-                  "re-run with ROLA_STRICT_MANIFEST=1 (the milestone/CI gate build "
+                  "re-run with ROLA_STRICT_MANIFEST=1 (tools/wheels.py's build "
                   "always does) before trusting it, or `python tools/ratify.py "
                   "--write` if the drift is understood and intentional.")
             print("=" * 78 + "\n")

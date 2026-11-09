@@ -1,5 +1,6 @@
-"""THE PART HARNESS'S DRIVER (KERNEL_STANDARDS section 22): the calibration kernels and the runtime units they call,
-compiled as the extension's units are with `-lineinfo` for the ledgers; `//:parts_library` links them. Never shipped."""
+"""THE PART HARNESS'S DRIVER (KERNEL_STANDARDS section 22): the calibration kernels, compiled as the extension's units
+are with `-lineinfo` for the ledgers; `//:parts_library` links them with the runtime's units (`//csrc/rola:runtime`).
+Never shipped."""
 
 load("@rola_env//:flags.bzl", "NVCC_FLAGS")
 load("//bazel:cuda.bzl", "cuda_unit")
@@ -7,12 +8,7 @@ load("//bazel:defs.bzl", "tree_part")
 
 cuda_unit(
     name = "carry_parts",
-    srcs = [
-        "carry_parts.cu",
-        "//csrc/rola:src/common/arch_runtime.cu",
-        "//csrc/rola:src/common/geom.cu",
-        "//csrc/rola:src/common/select.cu",
-    ],
+    srcs = ["carry_parts.cu"],
     hdrs = ["carry_calib.cuh"],
     copts = NVCC_FLAGS + ["-lineinfo"],
     host_cc = "@host_cc//:identity.txt",

@@ -950,50 +950,17 @@ def check_no_bare_flock_on_gpu_lock() -> list[str]:
 _TOOLS_DIR = ROOT / "tools"
 
 
-def _read_generated_block(text: str, marker: str) -> str | None:
-    begin, end = f"<!-- BEGIN GENERATED: {marker} -->", f"<!-- END GENERATED: {marker} -->"
-    if begin not in text or end not in text:
-        return None
-    return text.split(begin, 1)[1].split(end, 1)[0].strip("\n")
-
-
 def check_supported_table() -> list[str]:
-    """Ported from tests/unit/test_generated_docs.py (deleted). `tools/supported.py`
-    derives README's `tools/supported.py` block from `arch_caps.cuh` (tabulated) and
-    `tools/manifests/` (ratified) -- FILES ONLY, no import of `rola` -- so this checks
-    that ONE block matches the generator, that every tabulated arch is listed and
-    correctly marked ratified/unratified, and (non-vacuity) that the comparison is
-    not vacuous: it fires on a hand-tampered copy.
-
-    A LINT reads files; it never imports the library under test (ITEM 0, 2026-08-29
-    -- `tools/supported.py`'s SECOND block, `rola.routing.activations.capability_table`,
-    executes real registry code to produce its content, so ITS drift check is a TEST
-    (`tests/unit/test_capability_table_docs.py`), not this lint -- a check that
-    executes the code under test is a test, not a lint (docs/testing.md). A lint's run
-    holds no built `rola` (the graph runs it over a copy of the tracked files, which
-    carries no extension); this check must be a function of `tools/supported.py`, the
-    README, `arch_caps.cuh` and `tools/manifests/` alone."""
+    """The support table says what the manifests say: every architecture the kernel tabulates (`hardware.cuh`) is a
+    row of `tools/supported.py`'s table, marked ratified exactly when `tools/manifests/` has its manifest. FILES ONLY,
+    never an import of `rola` (docs/testing.md). That the README's generated blocks are the generator's output is
+    `tools/supported.py --check`'s, the commit gate's `//:supported_matrix`: its second block runs the activation
+    registry, and a check that executes the code under test is a test, not a lint."""
     if str(_TOOLS_DIR) not in sys.path:
         sys.path.insert(0, str(_TOOLS_DIR))
     import supported
 
-    marker = "tools/supported.py"
     findings = []
-
-    def _drift(readme_text: str) -> str | None:
-        committed = _read_generated_block(readme_text, marker)
-        if committed is None:
-            return f"README.md has no generated block for {marker}"
-        if committed != supported.table():
-            return (f"README.md's {marker} block drifted from tools/supported.py's "
-                    f"generator (regenerate with `bazel run //tools:supported -- --write`)")
-        return None
-
-    readme_text = supported.README.read_text()
-    drift = _drift(readme_text)
-    if drift is not None:
-        findings.append(drift)
-
     table = supported.table()
     ratified = supported.ratified()
     for arch in supported.tabulated_archs():
@@ -1010,17 +977,6 @@ def check_supported_table() -> list[str]:
         elif "**not ratified — will refuse to load**" not in row:
             findings.append(f"{arch} has no manifest but the README row does not say "
                             f"so: {row}")
-
-    tampered = readme_text.replace(
-        "**not ratified — will refuse to load**", "ratified", 1)
-    if tampered == readme_text:
-        findings.append("check_supported_table non-vacuity probe found nothing "
-                        "to tamper -- the README carries no 'not ratified' row to "
-                        "flip, so the drift check above was not exercised")
-    elif _drift(tampered) is None:
-        findings.append("check_supported_table non-vacuity FAILED: a hand-tampered "
-                        "README (a 'not ratified' row flipped to 'ratified') did not "
-                        "register as drift -- the comparison is vacuous")
     return findings
 
 

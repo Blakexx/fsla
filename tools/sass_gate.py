@@ -25,7 +25,10 @@ What it reads, per function of every cubin (every kernel and every outlined devi
                   under `STEP_LINE` (KERNEL_STANDARDS section 32); a debt kernel held at its floor (`--write-floors`
                   records them)
 On a whole extension it also reds every kernel the source defines (`tools/kernels.py`) that no cubin carries: a gate
-that cannot see a kernel has not gated it. It prints the counts it reads, the same way `ratify` prints registers and
+that cannot see a kernel has not gated it. An instrument's library (`--instrument`, bazel/defs.bzl's `rola_instrument`)
+carries its own kernels and owes none of the source's, and its kernels are PROBES: a calibration puts global memory or a
+branch in its MMA loop to measure it, so the step lints, which judge a production step's design, do not read it; the
+signatures that make a binary unfit to measure do (local memory, a stack frame, convergence calls, predicated HMMA). It prints the counts it reads, the same way `ratify` prints registers and
 spills, so a clean run is a line of zeros and a red names the signature.
 """
 from __future__ import annotations
@@ -126,7 +129,6 @@ def convergence_calls(lines: list[tuple[int, str, str, str]], labels: dict[str, 
 _MMA = re.compile(r"^(HMMA|IMMA)")
 #: KERNEL_STANDARDS 27's debts: the kernels built before the rule whose steps still branch, each with what replaces it
 _STEP_BRANCH_DEBT = {
-    "calib_kernel": "a calibration probe, not a production step",
 }
 
 
@@ -260,7 +262,6 @@ _STEP_COVER_DEBT = {
     "intra_kernel": "its writer rows' bytes: the dense Gram ~24 cycles an MMA against its 16.9 with the refill under "
                     "the slabs (0e0163e0), bytes an MMA the lever (the per-call reader block, the u8 dense levels' "
                     "format, proposed); read under the line once the cover read its warps together",
-    "calib_kernel": "a calibration probe, not a production step",
 }
 STEP_FLOORS = Path(__file__).absolute().parent / "budgets" / "step_floors.json"
 _PARTITION_REGISTERS = 16384
@@ -362,17 +363,19 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
             reds.append(f"convergence subroutines a converged warp executes ({calls})")
         if phmma:
             reds.append(f"predicated HMMA ({phmma})")
-        if branches and not any(debt in name for debt in _STEP_BRANCH_DEBT):
+        #: the step lints judge a production step; an instrument's probes are not one
+        step = not INSTRUMENT
+        if step and branches and not any(debt in name for debt in _STEP_BRANCH_DEBT):
             reds.append(f"branches inside an MMA step ({branches})")
-        if xu and not any(debt in name for debt in _STEP_XU_DEBT):
+        if step and xu and not any(debt in name for debt in _STEP_XU_DEBT):
             reds.append(f"the conversion unit inside an MMA step ({xu})")
-        if memory and not any(debt in name for debt in _STEP_GLOBAL_DEBT):
+        if step and memory and not any(debt in name for debt in _STEP_GLOBAL_DEBT):
             reds.append(f"global memory inside an MMA step ({memory})")
         if max_per_hmma is not None and hmma and per > max_per_hmma:
             reds.append(f"static instructions per HMMA {per:.1f} > {max_per_hmma}")
         cover = step_cover(cubin, name, whole[name], labels[name], registers)
         debt = next((d for d in _STEP_COVER_DEBT if d in name), None)
-        if cover is not None and cover["cover"] < STEP_LINE:
+        if step and cover is not None and cover["cover"] < STEP_LINE:
             if debt is None:
                 reds.append(f"a step loop's pipe cover {cover['cover']}% < {STEP_LINE:.1f}%")
             elif cover["key"] not in floors:
@@ -402,6 +405,8 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
 
 #: `--loops`: each function's report is followed by each innermost MMA loop's reading and the lines its lints count
 LOOPS = False
+#: `--instrument`: the binary is an instrument's library, its kernels probes (the module docstring)
+INSTRUMENT = False
 
 
 def loop_report(lines: list[tuple[int, str, str, str]], labels: dict[str, int], cover: dict | None) -> list[str]:
@@ -463,7 +468,7 @@ def cached_gate(cubin: Path, kernel: str | None, max_per_hmma: float | None, use
     if not use:
         return gate(cubin, kernel, max_per_hmma)
     key = hashlib.sha256(json.dumps([_closure(), hashlib.sha256(cubin.read_bytes()).hexdigest(), kernel,
-                                     max_per_hmma, LOOPS]).encode()).hexdigest()
+                                     max_per_hmma, LOOPS, INSTRUMENT]).encode()).hexdigest()
     entry = sass.scratch("sass_gate_verdicts") / f"{key}.json"
     if entry.exists():
         doc = json.loads(entry.read_text())
@@ -505,6 +510,9 @@ def main() -> int:
     ap.add_argument("binary", type=Path)
     ap.add_argument("--kernel", default=None, help="narrow to the functions matching this regex (a measurement)")
     ap.add_argument("--member", default=None, help="narrow to the cubins whose name holds this (a measurement)")
+    ap.add_argument("--instrument", action="store_true",
+                    help="an instrument's library: its kernels are probes, gated on the signatures that make a "
+                         "binary unfit to measure, and no kernel of the source is owed")
     ap.add_argument("--max-per-hmma", type=float, default=None)
     ap.add_argument("--json", type=Path, default=None, help="also write every function's signature here, by cubin")
     ap.add_argument("--loops", action="store_true",
@@ -529,8 +537,9 @@ def main() -> int:
         a.no_cache = True
     if a.rekey_floors:
         return rekey_floors(a.binary)
-    global LOOPS
+    global LOOPS, INSTRUMENT
     LOOPS = a.loops
+    INSTRUMENT = a.instrument
     allok = True
     doc = {}
     seen: set[str] = set()
@@ -547,7 +556,7 @@ def main() -> int:
         print(f"RED: no function matched (--kernel {a.kernel!r}, --member {a.member!r}): a gate with no target does "
               "not pass")
         allok = False
-    if a.binary.suffix != ".cubin" and a.kernel is None and a.member is None:
+    if a.binary.suffix != ".cubin" and a.kernel is None and a.member is None and not a.instrument:
         for line in missing_kernels(seen):
             print(f"RED  {line}")
             allok = False

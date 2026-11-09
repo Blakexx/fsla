@@ -174,6 +174,36 @@ def _link(ctx, so):
         additional_inputs = ctx.files._linker + linked,
     )
 
+def _sass_gate(ctx, so, verdict_path, flags = []):
+    """The SASS gate (KERNEL_STANDARDS section 20) on the linked library `so`, on the graph's disassemblers; its
+    verdict, `verdict_path`, the action's output."""
+    verdict = ctx.actions.declare_file(verdict_path)
+    args = ctx.actions.args()
+    args.add(ctx.file._sass_gate)
+    args.add(so)
+    args.add_all(flags)
+    args.add("--cuobjdump", ctx.file._cuobjdump)
+    args.add("--nvdisasm", ctx.file._nvdisasm)
+    args.add("--json", verdict)
+    ctx.actions.run(
+        executable = ctx.file._python,
+        arguments = [args],
+        inputs = ctx.files._gate_sources + [so, ctx.file._sass_gate, ctx.file._cuobjdump, ctx.file._nvdisasm],
+        outputs = [verdict],
+        mnemonic = "RolaSassGate",
+        progress_message = "The SASS gate on %{label}'s library",
+    )
+    return verdict
+
+#: the SASS gate's inputs, every library rule's
+_SASS_GATE_ATTRS = {
+    "_sass_gate": attr.label(default = "//tools:sass_gate.py", allow_single_file = True),
+    "_gate_sources": attr.label(default = "//bazel:gate_sources"),
+    "_cuobjdump": attr.label(default = "@cuda_tools//:bin/cuobjdump", allow_single_file = True, cfg = "exec"),
+    "_nvdisasm": attr.label(default = "@cuda_tools//:bin/nvdisasm", allow_single_file = True, cfg = "exec"),
+    "_python": attr.label(default = "@rola_env//:python", allow_single_file = True, cfg = "exec"),
+}
+
 def _extension_impl(ctx):
     so = ctx.actions.declare_file("rola_cu13/_C.abi3.so")
     _link(ctx, so)
@@ -201,23 +231,9 @@ def _extension_impl(ctx):
         progress_message = "Gating the build (rules 1, 3, 5, the shards) and writing its record",
     )
 
-    #: THE BINARY GATES, on the linked library: the SASS gate (KERNEL_STANDARDS section 20) on the graph's
-    #: disassemblers, and the arm table with its coverage sweep (the binary asked what it carries)
-    sass_verdict = ctx.actions.declare_file("rola_cu13/sass_gate.json")
-    sass_args = ctx.actions.args()
-    sass_args.add(ctx.file._sass_gate)
-    sass_args.add(so)
-    sass_args.add("--cuobjdump", ctx.file._cuobjdump)
-    sass_args.add("--nvdisasm", ctx.file._nvdisasm)
-    sass_args.add("--json", sass_verdict)
-    ctx.actions.run(
-        executable = ctx.file._python,
-        arguments = [sass_args],
-        inputs = ctx.files._gate_sources + [so, ctx.file._sass_gate, ctx.file._cuobjdump, ctx.file._nvdisasm],
-        outputs = [sass_verdict],
-        mnemonic = "RolaSassGate",
-        progress_message = "The SASS gate on %{label}'s library",
-    )
+    #: THE BINARY GATES, on the linked library: the SASS gate, and the arm table with its coverage sweep (the binary
+    #: asked what it carries)
+    sass_verdict = _sass_gate(ctx, so, "rola_cu13/sass_gate.json")
     arm_verdict = ctx.actions.declare_file("rola_cu13/arm_gate.txt")
     header = [f for f in ctx.files._headers if f.basename == "carry_selection.inc"][0]
     stub = [f for f in ctx.files._cudart if f.path.endswith("stubs/libcuda.so")][0]
@@ -261,7 +277,7 @@ rola_extension = rule(
     executable = True,
     fragments = ["cpp"],
     toolchains = use_cc_toolchain(),
-    attrs = _setting_attrs() | {
+    attrs = _setting_attrs() | _SASS_GATE_ATTRS | {
         "deps": attr.label_list(providers = [CcInfo], doc = "the units and the arm set"),
         "shared_libraries": attr.label_list(allow_files = [".so"], doc = "torch's libraries the extension links"),
         "torch": attr.string(mandatory = True, doc = "the environment's torch version (@rola_env//:flags.bzl)"),
@@ -274,13 +290,8 @@ rola_extension = rule(
         "_record": attr.label(default = "//bazel:record.py", allow_single_file = True),
         "_record_sources": attr.label(default = "//bazel:record_sources"),
         "_sources": attr.label(default = "//bazel:generator_sources"),
-        "_sass_gate": attr.label(default = "//tools:sass_gate.py", allow_single_file = True),
         "_arm_gate": attr.label(default = "//bazel:gates.py", allow_single_file = True),
-        "_gate_sources": attr.label(default = "//bazel:gate_sources"),
         "_headers": attr.label(default = "//csrc/rola:generated"),
-        "_cuobjdump": attr.label(default = "@cuda_tools//:bin/cuobjdump", allow_single_file = True, cfg = "exec"),
-        "_nvdisasm": attr.label(default = "@cuda_tools//:bin/nvdisasm", allow_single_file = True, cfg = "exec"),
-        "_python": attr.label(default = "@rola_env//:python", allow_single_file = True, cfg = "exec"),
         "_cc_toolchain": attr.label(default = "@rules_cc//cc:current_cc_toolchain"),
         "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
     },
@@ -299,9 +310,12 @@ echo "installed $(basename "$dest")/$(basename {so}) from the graph"
 def _instrument_impl(ctx):
     so = ctx.actions.declare_file("rola_cu13/%s.abi3.so" % ctx.attr.module)
     _link(ctx, so)
+    #: the SASS gate, as on the extension: a measured library is gated as one; its verdict a runfile, so `bazel run`
+    #: installs nothing it has not passed
+    verdict = _sass_gate(ctx, so, "rola_cu13/%s.sass_gate.json" % ctx.attr.module, ["--instrument"])
     install = ctx.actions.declare_file(ctx.label.name + "_install.sh")
     ctx.actions.write(install, _INSTALL_INSTRUMENT.format(so = shell.quote(so.short_path)), is_executable = True)
-    return [DefaultInfo(files = depset([so]), executable = install, runfiles = ctx.runfiles(files = [so]))]
+    return [DefaultInfo(files = depset([so, verdict]), executable = install, runfiles = ctx.runfiles(files = [so, verdict]))]
 
 rola_instrument = rule(
     implementation = _instrument_impl,
@@ -309,7 +323,7 @@ rola_instrument = rule(
     executable = True,
     fragments = ["cpp"],
     toolchains = use_cc_toolchain(),
-    attrs = _setting_attrs() | {
+    attrs = _setting_attrs() | _SASS_GATE_ATTRS | {
         "module": attr.string(mandatory = True, doc = "the module's name in rola_cu13 (`_C_parts`)"),
         "deps": attr.label_list(providers = [CcInfo], doc = "its units"),
         "shared_libraries": attr.label_list(allow_files = [".so"], doc = "torch's libraries it links"),
@@ -319,7 +333,8 @@ rola_instrument = rule(
         "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
     },
     doc = "An instrument's library, `rola_cu13/<module>.abi3.so`, linked as the extension is, for the architectures " +
-          "`--//:archs` names; never shipped, so none of the extension's gates; `bazel run` copies it into the checkout.",
+          "`--//:archs` names, and SASS-gated as it is; never shipped, so no record, ratify or arm gate; `bazel run` " +
+          "copies it into the checkout.",
 )
 
 def _census_impl(ctx):

@@ -13,7 +13,9 @@ did: `ratify.py`'s hand-written tuple of units had lost three kernels (`liveness
 units `gen_shards` generates there, for the arms named (every declared arm by default -- the build passes its arm
 selection, so an arm-subset build compiles a file subset). `units(arms)` is both. A unit with no kernel (the host
 seams `geom.cu`, `arch_runtime.cu`, `vmm_owner.cu`) is still a unit: the build compiles it, and ratify's compile of
-it records no entry.
+it records no entry. `runtime_units()` is the hand units under `common/` that define no kernel (the card's facts, the
+geometry, the selection): every kernel's host side calls them, so an instrument's library links them beside its own
+kernels (`//csrc/rola:runtime`, [`build-graph.md`](../../build-graph.md#compile)).
 
 `closure(unit)` is the files under `src` a unit compiles -- itself and every quoted `#include` it reaches, resolved
 against the including file's directory and then `src`, the build's include root -- and `units_of(kernel)` the units

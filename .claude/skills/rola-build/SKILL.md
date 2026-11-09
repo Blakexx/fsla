@@ -18,5 +18,6 @@ The build and its parameters: `docs/build-graph.md#compile`. What a stage owes a
 4. Prove the binary is the source by the device stamp before using it
    (`docs/measurement.md#preconditions-which-the-targets-acquire`,
    `docs/ratification.md#the-device-stamp-keys-on-the-csrc-content-hash`); the SASS gate runs on every build, and by
-   hand it is `bazel run //tools:sass_gate -- <.so>` (`docs/KERNEL_STANDARDS.md#s20`).
+   hand it is `bazel run //tools:sass_gate -- <.so>` (`docs/KERNEL_STANDARDS.md#s20`), with `--instrument` on an
+   instrument's library such as the part harness's `bazel run //:parts_library` (`docs/build-graph.md#compile`).
 5. A build that fails to start: `bazel run //:check` first (`rola-dev`).

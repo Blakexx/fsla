@@ -45,6 +45,15 @@ identical gate, the argument `tools/ratify.py`'s per-unit cache makes. Any chang
 re-reads. A no-change build's gate is ~0.1 s; a one-kernel edit re-reads that kernel's cubin and the stamp's.
 `--no-cache` reads every cubin and records nothing.
 
+## <a id="instrument"></a>An instrument's library
+
+`--instrument` gates an instrument's library (`bazel/defs.bzl`'s `rola_instrument`, the part harness's `_C_parts`):
+its kernels are PROBES, so it owes none of the source's kernels, and the step lints -- branches, the conversion unit
+and global memory in an MMA step, step cover -- do not read it, since a calibration puts a global reduction or a branch
+between its HMMAs to measure that very cost (`hmma_reduce_*`, `measure/harness/bench_carry_calib.py`). The signatures
+that make a binary unfit to measure stay red: local memory, a stack frame, convergence calls a converged warp
+executes, predicated HMMA.
+
 ## <a id="graph"></a>The graph's gate
 
 The graph's library rule runs the gate as an action with `--cuobjdump` and `--nvdisasm` naming its hermetic toolkit's

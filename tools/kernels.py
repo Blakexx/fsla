@@ -82,6 +82,14 @@ def hand_units(src: Path = SRC) -> list[Path]:
     return sorted(p for p in src.rglob("*.cu") if GENERATED not in p.relative_to(src).parts)
 
 
+def runtime_units(src: Path = SRC) -> list[Path]:
+    """The RUNTIME units: the hand units under `common/` that define no kernel -- the card's facts, the geometry and the
+    selection that every kernel's host side calls. The library links them, and so does an instrument's library
+    (bazel/defs.bzl's `rola_instrument`), whose host side calls them too."""
+    with_kernels = {k.path for k in kernels(src)}
+    return [p for p in hand_units(src) if p.relative_to(src).parts[0] == "common" and p not in with_kernels]
+
+
 def arm_units(arms=None) -> list[Path]:
     """The per-arm carry units for `arms` (every declared arm by default), from `gen_shards`' one enumeration."""
     sys.path.insert(0, str(ROOT / "tools"))
