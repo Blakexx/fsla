@@ -279,9 +279,10 @@ A question about the machine itself, rather than a shipped kernel, is a lab expe
 ## The measurements record: `rola_results`
 
 Every measuring tool stores what it measured through one library, `rola_results`, in the rola-results repository:
-`store.root` in the dev config (default `rola-results` beside the checkouts; the container mounts it at
-`/workspace/store`), importable from every interpreter `bazel run //:init` provisions. A result measured in any
-worktree, host or container lands in that one repository, visible to every other at once.
+`store.root` in the dev config (default `rola-results` beside the checkouts), importable from every interpreter
+`bazel run //:init` provisions. A result measured in any worktree of a machine lands in that one repository, visible
+to every other at once; the devbox container has its own clone (`docs/setup.md#the-devbox-image`), whose records
+reach another machine's by git (`bazel run //:store -- commit`, then a push and a pull).
 
 A tool opens a store at its OWN LOCATION and hands it the SEMANTICS of what it measured -- the inputs its numbers
 depend on, reduced to identities (a commit and its tracked diff, a binary's manifest or file digest, the cells, the

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE DEV CONFIG (KERNEL_STANDARDS §23): every value that depends on the machine, read from one directory.
 
-The directory is `~/.config/rola/`, or the directory `ROLA_DEV_CONFIG` names (a container, a test). It holds one JSON
+The directory is `~/.config/rola/`, or the directory `ROLA_DEV_CONFIG` names (a test). It holds one JSON
 file a section; every file and every key is declared in `SCHEMA` below with its type, default and meaning, and
 anything undeclared is refused, so a typo fails loudly instead of silently taking a default. A missing file or key
 takes the declared default. `bazel run //:init` writes the files for this machine, `bazel run //:show`
@@ -86,6 +86,8 @@ SCHEMA: dict[str, dict[str, Key]] = {
 #: WHERE A CONTAINER THIS TREE STARTS FINDS THE HOST'S LOCKS: its launcher mounts them there (tools/dev.py's
 #: `_mounts`) and its init records them (`detect`), so one lock governs a GPU the host and the container share
 CONTAINER_LOCKS = {"lock_dir": "/run/rola/locks", "gpu_lock": "/run/rola/gpu/rola_gpu.lock"}
+#: where that launcher mounts the image's digest (`devbox_image`)
+CONTAINER_IMAGE = "/run/rola/devbox_image"
 #: where WSL puts the driver's Linux libraries, which a container this tree starts sees at the same path (the devbox
 #: image's loader searches it first)
 WSL_LIB = "/usr/lib/wsl/lib"
@@ -93,13 +95,11 @@ WSL_LIB = "/usr/lib/wsl/lib"
 #: Environment variables one of the tree's processes sets for a child it starts. Never a setting: the parent resolved
 #: the value (from this config or from its own state) and the child must use exactly that value.
 HANDOFFS = {
-    POINTER: "which config directory a child reads (set by a test or the container, never by a setting)",
+    POINTER: "which config directory a child reads (set for the graph's tests by the front door, or by a test; never by a setting)",
     "ROLA_REAL_NVCC": "the gated nvcc setup.py hands the sccache wrapper (tools/sccache_nvcc.py)",
     "ROLA_SCCACHE_BIN": "the gated sccache setup.py hands the sccache wrapper",
     "CUDA_HOME": "torch.utils.cpp_extension's toolkit, set to `cuda_home()` before torch's extension module is imported "
                  "(setup.py, ratify, the header self-check)",
-    "ROLA_DEVBOX_IMAGE": "the devbox image's digest, which the launcher of a container this tree starts hands it "
-                         "(tools/dev.py container): ratify records it as where a manifest was measured",
     "MAX_JOBS": "torch's ninja job count, set by setup.py from the slots it holds",
     "PYTORCH_NVCC": "torch's compiler, set by setup.py to the sccache wrapper",
     "PYTEST_XDIST_WORKER": "pytest-xdist's worker id",
@@ -177,6 +177,13 @@ def ncu() -> str:
     if not path.is_file():
         raise SystemExit(f"the pinned Nsight Compute is not installed at {path}: bazel run //:init")
     return str(path)
+
+
+def devbox_image() -> str:
+    """The devbox image's digest inside a container this tree started (its launcher mounts it), else the empty string:
+    where a measurement ran, which ratify records."""
+    named = Path(CONTAINER_IMAGE)
+    return named.read_text().strip() if named.is_file() else ""
 
 
 def windows_tool(rel: str) -> Path | None:

@@ -283,7 +283,6 @@ def _environment_impl(mctx):
     _pinned_repo(name = "uv", pin = "//tools:uv_pin.json", build = 'exports_files(["{binary}"], visibility = ["//visibility:public"])\n')
     _env_repo(name = "rola_env")
     _pinned_repo(name = "mold", pin = "//tools:mold_pin.json", build = _MOLD_BUILD)
-    #: the devbox image's bootstrap: the one tool a host installs before the graph (tools/bootstrap.py)
     _pinned_repo(
         name = "clang_tidy",
         pin = "//tools:clang_tidy_pin.json",

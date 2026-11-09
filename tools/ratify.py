@@ -1752,9 +1752,9 @@ def main() -> int:
                      "source": {"csrc_sha256": csrc_digest(),
                                 "date": time.strftime("%Y-%m-%d"),
                                 #: reproducibility as a checkable statement. The
-                                #: dev container stamps this into the ratifying
-                                #: process's environment (docs/setup.md); a host
-                                #: ratification (this variable unset) records the empty
+                                #: devbox container's launcher mounts the image's digest
+                                #: where the dev config reads it (docs/setup.md); a host
+                                #: ratification (no digest mounted) records the empty
                                 #: string, which is itself the honest answer to "was
                                 #: this measured inside the pinned image?". Lives beside
                                 #: `csrc_sha256`, not inside `toolchain`, because it
@@ -1764,7 +1764,7 @@ def main() -> int:
                                 #: can never move a ratified register/spill number the
                                 #: way a `ptxas` swap can, and its presence here is
                                 #: recorded, never ratchet-gated.
-                                "image_digest": os.environ.get("ROLA_DEVBOX_IMAGE", "")},
+                                "image_digest": dev_config.devbox_image()},
                      #: WHICH INSTANTIATIONS THIS RATIFICATION COVERS, by membership
                      #: hash rather than by file list. It enters the digest, so a
                      #: re-partition is a visible re-ratification and a scoped

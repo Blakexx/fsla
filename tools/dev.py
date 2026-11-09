@@ -758,41 +758,50 @@ def _load(tarball: str, tag: str) -> None:
     subprocess.run(["docker", "tag", f"{DEVBOX_REPO}:latest", tag], check=True)
 
 
-def _mounts() -> list[str]:
+def _mounts(named: Path, digest: str) -> list[str]:
     """What a container started here shares with the host, as `source:target[:ro]`: the host's lock directories at the
-    paths its init records (`dev_config.CONTAINER_LOCKS`), so one lock governs the GPU both use, and under WSL the
-    driver's libraries at their own path. Nothing else: its checkouts and installs are its own."""
+    paths its init records (`dev_config.CONTAINER_LOCKS`), so one lock governs the GPU both use; the image's digest,
+    written to `named`, where `dev_config.devbox_image()` reads it; and under WSL the driver's libraries at their own
+    path. Nothing else: its checkouts and installs are its own."""
     gpu, shared = Path(dev_config.get("host.gpu_lock")), Path(dev_config.CONTAINER_LOCKS["gpu_lock"])
     if gpu.name != shared.name:
         raise SystemExit(f"host.gpu_lock {gpu} must be named {shared.name} for a container to share it")
-    mounts = [f"{dev_config.get('host.lock_dir')}:{dev_config.CONTAINER_LOCKS['lock_dir']}", f"{gpu.parent}:{shared.parent}"]
+    named.write_text(digest + "\n")
+    mounts = [f"{dev_config.get('host.lock_dir')}:{dev_config.CONTAINER_LOCKS['lock_dir']}", f"{gpu.parent}:{shared.parent}",
+              f"{named}:{dev_config.CONTAINER_IMAGE}:ro"]
     wsl_lib = dev_config.get("host.wsl_lib")
     #: the whole WSL directory, not only lib/: its libcuda is a loader that opens the host's driver store beside it
     return mounts + ([f"{Path(wsl_lib).parent}:{Path(wsl_lib).parent}:ro"] if wsl_lib else [])
 
 
 #: the checkouts a container clones, by the dev config key that names each on the host, and the folder it clones into
-#: (beside the checkout, where the reader's defaults look)
+#: (beside the checkout, where the reader's defaults look); this checkout's own is `CONTAINER_CHECKOUT`
 CLONED = {"workspace.devtools": "rola-devtools", "store.root": "rola-results", "workspace.suite": "rola-bench"}
+CONTAINER_CHECKOUT = Path("/workspace/rola")
+#: the checkout's venv in the container, by the rule a host's follows
+CONTAINER_PYTHON = dev_venv(CONTAINER_CHECKOUT) / "bin" / "python"
 
 #: THE CLEAN ROOM (`bazel run //:container_check`): the host's loop, step by step, in a container on fresh volumes of
-#: its own, each step timed. init's own check runs before the checkout's venv exists, so its gate row is red by design;
-#: `check`, after `dev_env`, is the verdict on the machine.
+#: its own, each step timed. init's own check runs before the checkout's venv exists, so its gate row is the one red it
+#: may report (any other fails the step); `check`, after `dev_env`, is the verdict on the machine.
 CONTAINER_LOOP = {
-    "clone the checkouts": """set -e
+    "clone the checkouts": f"""set -e
 git config --global --add safe.directory '*'
-mkdir -p /workspace/worktrees
-for name in rola-devtools rola-results rola-bench rola; do
-  git clone -q "/mnt/git/$name" "/workspace/$name"
-  git -C "/workspace/$name" checkout -q "$(cat "/mnt/git/$name.sha")"
+mkdir -p {CONTAINER_CHECKOUT.parent}/worktrees
+for name in {' '.join([*CLONED.values(), CONTAINER_CHECKOUT.name])}; do
+  git clone -q "/mnt/git/$name" "{CONTAINER_CHECKOUT.parent}/$name"
+  git -C "{CONTAINER_CHECKOUT.parent}/$name" checkout -q "$(cat "/mnt/git/$name.sha")"
 done
-if [ -s /mnt/git/rola.staged ]; then git -C /workspace/rola apply --index /mnt/git/rola.staged; fi""",
+if [ -s /mnt/git/{CONTAINER_CHECKOUT.name}.staged ]; then
+  git -C {CONTAINER_CHECKOUT} apply --index /mnt/git/{CONTAINER_CHECKOUT.name}.staged
+fi""",
     "bootstrap": "python3 tools/bootstrap.py",
-    "init": "bazel run //:init || true",
+    "init": """bazel run //:init > /tmp/init.log 2>&1; rc=$?; cat /tmp/init.log
+[ $rc -eq 0 ] || { [ "$(grep -c '^RED' /tmp/init.log)" = 1 ] && grep -q '^RED  .* has no venv of its own' /tmp/init.log; }""",
     "dev_env": "bazel run //:dev_env",
     "check": "bazel run //:check",
     "the commit gate": "bazel test $(bazel query 'tests(//:gate) except //tools:dev_container')",
-    "GPU, torch and its flash backend": """/workspace/venv-rola/bin/python - <<'PY'
+    "GPU, torch and its flash backend": f"""{CONTAINER_PYTHON} - <<'PY'
 import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
@@ -802,7 +811,7 @@ with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
     F.scaled_dot_product_attention(q, q, q, is_causal=True)
 print(torch.cuda.get_device_name(0), torch.__version__)
 PY""",
-    "a host-held lock is held here": f"""/workspace/venv-rola/bin/python - {dev_config.CONTAINER_LOCKS['lock_dir']}/rola_container_probe.lock <<'PY'
+    "a host-held lock is held here": f"""{CONTAINER_PYTHON} - {dev_config.CONTAINER_LOCKS['lock_dir']}/rola_container_probe.lock <<'PY'
 import fcntl, sys
 f = open(sys.argv[1], "w")
 try:
@@ -813,10 +822,10 @@ except BlockingIOError:
 print("acquired: the container does not see the host's lock")
 sys.exit(1)
 PY""",
-    "the library builds and imports": """set -e
-arch=$(/workspace/venv-rola/bin/python -c 'import torch; print("%d%d" % torch.cuda.get_device_capability())')
+    "the library builds and imports": f"""set -e
+arch=$({CONTAINER_PYTHON} -c 'import torch; print("%d%d" % torch.cuda.get_device_capability())')
 bazel run //:library --//:archs=$arch --//:carry_arms=0
-/workspace/venv-rola/bin/python -c 'import rola; from rola_cu13._build_config import BUILD_CONFIG as c; print("built", c["archs"])'""",
+{CONTAINER_PYTHON} -c 'import rola; from rola_cu13._build_config import BUILD_CONFIG as c; print("built", c["archs"])'""",
 }
 #: the steps a fresh machine takes before it can work: the cold start a rented box pays
 COLD_START = ("clone the checkouts", "bootstrap", "init", "dev_env")
@@ -826,7 +835,7 @@ def _git_mounts(staging: Path) -> list[str]:
     """Each checkout's git directory, read-only, for the container to clone from, its commit beside it; this checkout's
     staged change too, so the container's tree is the commit as git will write it."""
     mounts = []
-    for name, path in [*((folder, Path(dev_config.get(key))) for key, folder in CLONED.items()), ("rola", ROOT)]:
+    for name, path in [*((folder, Path(dev_config.get(key))) for key, folder in CLONED.items()), (CONTAINER_CHECKOUT.name, ROOT)]:
         common = subprocess.run(["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir"],
                                 capture_output=True, text=True, check=True).stdout.strip()
         sha = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True,
@@ -834,8 +843,8 @@ def _git_mounts(staging: Path) -> list[str]:
         (staging / f"{name}.sha").write_text(sha + "\n")
         mounts.append(f"{common}:/mnt/git/{name}:ro")
     staged = subprocess.run(["git", "-C", str(ROOT), "diff", "--cached", "--binary"], capture_output=True, check=True)
-    (staging / "rola.staged").write_bytes(staged.stdout)
-    for entry in staging.iterdir():
+    (staging / f"{CONTAINER_CHECKOUT.name}.staged").write_bytes(staged.stdout)
+    for entry in sorted(staging.iterdir()):
         mounts.append(f"{entry}:/mnt/git/{entry.name}:ro")
     return mounts
 
@@ -853,16 +862,17 @@ def _container_check(digest: str, tag: str) -> int:
     holder.stdout.readline()
     rows = []
     with tempfile.TemporaryDirectory(prefix="rola_check_") as staging:
-        args = [x for mount in [*_mounts(), *_git_mounts(Path(staging))] for x in ("-v", mount)]
+        named = Path(staging) / "image"
+        args = [x for mount in [*_git_mounts(Path(staging)), *_mounts(named, digest)] for x in ("-v", mount)]
         args += [x for volume, at in volumes.items() for x in ("-v", f"{volume}:{at}")]
         subprocess.run(["docker", "rm", "-f", CHECK_VOLUMES], capture_output=True)
         subprocess.run(["docker", "run", "-d", "--name", CHECK_VOLUMES, "--gpus", "all", "--ipc", "host", *args,
-                        "-e", f"ROLA_DEVBOX_IMAGE={digest}", tag, "sleep", "infinity"],
+                        tag, "sleep", "infinity"],
                        capture_output=True, check=True)
         try:
             for what, script in CONTAINER_LOOP.items():
                 start = time.monotonic()
-                done = subprocess.run(["docker", "exec", "-w", "/workspace/rola" if what != "clone the checkouts" else "/",
+                done = subprocess.run(["docker", "exec", "-w", "/" if what == "clone the checkouts" else str(CONTAINER_CHECKOUT),
                                        CHECK_VOLUMES, "bash", "-c", script], capture_output=True, text=True)
                 seconds = round(time.monotonic() - start, 1)
                 tail = [portable(line, ROOT) for line in (done.stdout + done.stderr).strip().splitlines()[-3:]]
@@ -901,9 +911,8 @@ def cmd_container(a) -> int:
     if a.action == "check":
         return _container_check(digest, tag)
     local = ROOT / ".devcontainer" / "compose.local.yaml"
-    volumes = [f"{DEVBOX_REPO}-home:/root", f"{DEVBOX_REPO}-work:/workspace"]
-    doc = {"services": {"rola": {"image": tag, "volumes": [*volumes, *_mounts()],
-                                 "environment": {"ROLA_DEVBOX_IMAGE": digest}}}}
+    volumes = [f"{DEVBOX_REPO}-home:/root", f"{DEVBOX_REPO}-work:{CONTAINER_CHECKOUT.parent}"]
+    doc = {"services": {"rola": {"image": tag, "volumes": [*volumes, *_mounts(local.with_name("devbox_image.local"), digest)]}}}
     local.write_text(json.dumps(doc, indent=1) + "\n")
     print(f"wrote {local} ({tag})")
     return 0

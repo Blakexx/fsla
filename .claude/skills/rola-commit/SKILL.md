@@ -13,7 +13,7 @@ description: Load before committing or pushing in this repo: the gate a commit r
    (`docs/internals/tools/docrefs.md#the-gate-and-the-pass`). A skill's references are held strictly: it changes in
    the commit that changes what it cites (`docs/KERNEL_STANDARDS.md#s31`).
 4. A lint finding is fixed at its site; a ratchet's baseline only shrinks (`--shrink`, same commit)
-   (`docs/internals/tools/lint.md#ratchets`). A changed dev environment needs the container check (`rola-dev`).
+   (`docs/internals/tools/lint.md#ratchets`). A change to the devbox image needs the container check (`rola-dev`).
 5. The subject states what the commit makes true, in words, never a work code.
 6. After the commit, its review lands detached (`tools/git-hooks/post-commit`; `python tools/review_gate.py --show 1`,
    `docs/internals/tools/review_gate.md`): read it before the next commit, and fix a BLOCK finding or say in words why

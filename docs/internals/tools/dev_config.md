@@ -5,8 +5,7 @@ this loader. Examples are where the CUDA toolkit is, how many compile slots the 
 locked, and where the measurements record is. The tree never reads a setting from the process environment, and
 never spells a machine path in a tool.
 
-**The directory** is `~/.config/rola/`, or the directory the `ROLA_DEV_CONFIG` variable names (a container, a
-test). It holds one JSON file per section. A missing file or key takes its declared default. An undeclared file
+**The directory** is `~/.config/rola/`, or the directory the `ROLA_DEV_CONFIG` variable names (a test). It holds one JSON file per section. A missing file or key takes its declared default. An undeclared file
 or key is refused, so a typo fails instead of silently taking the default.
 
 **The reader is rola-devtools'** (`rola_devtools.config`), and so are the `host` and `clock` sections: the machine's
@@ -21,7 +20,7 @@ it at the same commit, and `bazel run //:init` links the `workspace.devtools` ch
 | `host.json` | `nvcc_threads`, `build_jobs`, `budget_slots`, `lock_dir`, `gpu_lock`, `gpu_shared_slots`, `nice`, `locks_trace`, `scratch`, `build_cache` (the build systems' caches: the graph's under `bazel/`), `tools_dir`, `windows_system32`, `wsl_lib` |
 | `clock.json` | `ghz`, `lock`, `unlock` (null `ghz`: the host measures unlocked) |
 | `store.json` | `root` (the measurements store: a rola-results checkout) |
-| `workspace.json` | `suite` (the rola-bench checkout whose root `declare.py` measures this tree), `devtools` (the rola-devtools checkout, the public mirror's declared build system, linked into every venv), `worktrees` (the one folder worktrees live in), `base_venv` (the venv the sibling repositories' commit hooks run from on a host; the image's interpreter in the image) |
+| `workspace.json` | `suite` (the rola-bench checkout whose root `declare.py` measures this tree), `devtools` (the rola-devtools checkout, the public mirror's declared build system, linked into every venv), `worktrees` (the one folder worktrees live in), `base_venv` (the venv the sibling repositories' commit hooks run from) |
 
 <a id="bootstrap"></a>**Before the reader is importable.** The graph's front door (`bazel/front_door.py`) runs
 under the machine's `python3`, before any venv exists. `tools/bootstrap.py` reads one value the standard-library way --
@@ -59,7 +58,6 @@ f-string prefixes resolved) and shell expansions.
   - The inputs `setup.py` sets for torch (`CUDA_HOME`, which ratify and the header self-check set too, `MAX_JOBS`,
     `PYTORCH_NVCC`).
   - The graph's copy of the pinned toolkit a test tier hands its tests (`ROLA_CUDA_HOME`).
-  - The devbox image's digest a container's launcher hands it (`ROLA_DEVBOX_IMAGE`), which ratify records.
   - pytest-xdist's worker id.
   - The agent harness's campaign directory.
   - The login name printed into the sudoers rule `bazel run //:clock` suggests (`USER`).
