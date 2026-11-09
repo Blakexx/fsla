@@ -78,7 +78,7 @@ of its name and runs the product's variant, or its architecture's variant 0 when
 - RUN TIME reads rates: a choice among exact forms (the readout's accumulation, a sparse side's digit groups) prices
   them with the device's resolved rates -- the binary carries every architecture's and product's MMA rates
   (`kMmaRows`), found by the device's name ([`arch_runtime.md#mma-quanta`](arch_runtime.md#mma-quanta)) -- which reach
-  a kernel as quanta ([`cost.cuh`](cost.md)): the same device always gets the same numbers.
+  a kernel as quanta: the same device always gets the same numbers.
 
 `hardware.cuh` also carries the MMA kinds (`Mma`), the order a product's quanta carry their MMA rates in.
 
