@@ -9,7 +9,7 @@
 
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "string_list_flag")
 load("@rola_env//:flags.bzl", "CXX11_ABI", "RATIFIED_ARCHS", "TOOLCHAIN", "TORCH", "TORCH_CUDA")
-load("//bazel:defs.bzl", "compile_database", "dev_run", "ratify_census", "ratify_run", "ratify_test", "rola_extension", "tool_test", "tree_part")
+load("//bazel:defs.bzl", "checkout_test", "compile_database", "dev_run", "ratify_census", "ratify_run", "ratify_test", "rola_extension", "tool_run", "tool_test", "tree_part", "tree_test")
 load("@rola_tree//:tree.bzl", "TRACKED")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
 load("@tar.bzl", "tar")
@@ -62,8 +62,8 @@ rola_extension(
     shared_libraries = ["@rola_env//:torch_libraries"],
     #: the unit lints read the units it links; the test tiers import it
     visibility = [
+        "//csrc/rola:__pkg__",
         "//tests:__pkg__",
-        "//tools:__pkg__",
     ],
     deps = [
         "//csrc/rola:carry_arms",
@@ -84,7 +84,6 @@ rola_extension(
     ("show", "show"),
     ("get", "get"),
     ("worktree", "worktree"),
-    ("store", "store"),
 ]]
 
 #: THE CHECKOUT'S VENV over the graph's environment, which its commit hooks then run from (docs/build-graph.md#use)
@@ -115,6 +114,18 @@ ratify_test(
     census = ":census",
     data = [":tree"],
     tags = ["manual"],
+)
+
+#: THE MEASUREMENTS (docs/measurement.md): rola-devtools' build system running this checkout's declarations, and the
+#: store's own command line, each in the checkout on its own venv
+tool_run(
+    name = "measure",
+    module = "rola_devtools.build",
+)
+
+tool_run(
+    name = "results",
+    module = "rola_results",
 )
 
 ratify_run(
@@ -149,6 +160,7 @@ genrule(
     cmd = "$(execpath @rola_env//:python) $(execpath //tools:usrmerge_layer.py) --base $(execpath @devbox_base_linux_amd64) " +
           "--in $(execpath @devbox//:flat) --out $@",
     tools = [
+        "//tools:oci_layout.py",
         "//tools:usrmerge_layer.py",
         "@rola_env//:python",
     ],
@@ -168,8 +180,6 @@ oci_image(
         ":devbox_debs",
         ":devbox_links",
     ],
-    #: the commit gate's container check reads its digest
-    visibility = ["//tools:__pkg__"],
     workdir = "/workspace",
 )
 
@@ -188,6 +198,7 @@ tool_test(
         ":devbox_debs",
         "@devbox//:packages",
         "@devbox_base_linux_amd64",
+        "//tools:oci_layout.py",
         "//tools:usrmerge_layer.py",
     ],
     tool = "//tools:devbox_packages.py",
@@ -206,9 +217,11 @@ genrule(
     name = "image_tag",
     srcs = [":image"],
     outs = ["image_tag.txt"],
-    cmd = "$(execpath @rola_env//:python) -c \"import json, sys; " +
-          "print(json.load(open(sys.argv[1] + '/index.json'))['manifests'][0]['digest'][7:19])\" $(execpath :image) > $@",
-    tools = ["@rola_env//:python"],
+    cmd = "$(execpath @rola_env//:python) $(execpath //tools:oci_layout.py) --tag $(execpath :image) > $@",
+    tools = [
+        "//tools:oci_layout.py",
+        "@rola_env//:python",
+    ],
 )
 
 oci_push(
@@ -262,13 +275,175 @@ compile_database(
     units = [":library"],
 )
 
+#: THE REPO'S CHECKS (docs/build-graph.md#checks): the policies over the whole tree -- the Python's lints, the
+#: standards, the agent files and the mirror, each ratchet against its baseline -- and the checks of the commit, run in
+#: the checkout: what git knows
+
+tree_test(
+    name = "ruff",
+    size = "small",
+    cmd = ["ruff", "check", "--force-exclude", "."],
+    data = [":pyproject.toml", ":tree_python"],
+)
+
+tree_test(
+    name = "ruff_e3",
+    size = "small",
+    cmd = ["tools/lint/run_ruff_e3.sh"],
+    data = [
+        "//tools/lint:tracked",
+        ":pyproject.toml",
+        ":tree_python",
+    ],
+)
+
+tree_test(
+    name = "lint_standards",
+    size = "small",
+    cmd = ["python3", "tools/lint/lint_standards.py"],
+    data = [":tree"],
+    git = True,
+)
+
+tree_test(
+    name = "readability_spacing",
+    size = "small",
+    cmd = ["python3", "tools/lint/readability_spacing.py"],
+    data = [
+        "//tools/lint:tracked",
+        ":tree_python",
+        "//csrc/rola:tracked",
+    ],
+)
+
+tree_test(
+    name = "portable_agent_files",
+    size = "small",
+    cmd = ["python3", "tools/lint/portable_claude.py"],
+    data = [":tree"],
+    git = True,
+)
+
+tree_test(
+    name = "mirror_declarations",
+    size = "small",
+    cmd = ["python3", "-m", "rola_devtools.mirror", "--check"],
+    data = [":tree"],
+    git = True,
+)
+
+tree_test(
+    name = "ratchet_burst_tier",
+    size = "small",
+    cmd = ["python3", "tools/lint/ratchet.py", "burst_tier"],
+    data = [":tree"],
+    git = True,
+)
+
+tree_test(
+    name = "ratchet_constant_parameters",
+    size = "small",
+    cmd = ["python3", "tools/lint/ratchet.py", "constant_parameters"],
+    data = [":tree"],
+    git = True,
+)
+
+tree_test(
+    name = "ratchet_coverage",
+    size = "small",
+    cmd = ["python3", "tools/lint/ratchet.py", "coverage"],
+    data = [":tree"],
+    git = True,
+)
+
+tree_test(
+    name = "ratchet_drift_guards",
+    size = "small",
+    cmd = ["python3", "tools/lint/ratchet.py", "drift_guards"],
+    data = [":tree"],
+    git = True,
+)
+
+tree_test(
+    name = "ratchet_r9_enforcement",
+    size = "small",
+    cmd = ["python3", "tools/lint/ratchet.py", "r9_enforcement"],
+    data = [":tree"],
+    git = True,
+)
+
+tree_test(
+    name = "ratchet_vulture",
+    size = "small",
+    cmd = ["python3", "tools/lint/ratchet.py", "vulture"],
+    data = [":tree"],
+    git = True,
+)
+
+tree_test(
+    name = "ratchet_work_codes",
+    size = "small",
+    cmd = ["python3", "tools/lint/ratchet.py", "work_codes"],
+    data = [":tree"],
+    git = True,
+)
+
+checkout_test(
+    name = "ratchet_baselines",
+    size = "small",
+    cmd = ["python3", "tools/lint/ratchet.py", "--grown"],
+)
+
+checkout_test(
+    name = "docrefs",
+    size = "small",
+    cmd = ["python3", "tools/docrefs.py"],
+)
+
+#: the devbox image the graph builds is the one the tree names, and a change to it carries a passing container check
+checkout_test(
+    name = "dev_container",
+    size = "small",
+    cmd = ["python3", "tools/dev.py", "container", "gate"],
+    tools = {":image": "--layout"},
+)
+
+test_suite(
+    name = "lints",
+    tests = [
+        ":ruff",
+        ":ruff_e3",
+        ":lint_standards",
+        ":readability_spacing",
+        ":portable_agent_files",
+        ":mirror_declarations",
+        ":ratchet_burst_tier",
+        ":ratchet_constant_parameters",
+        ":ratchet_coverage",
+        ":ratchet_drift_guards",
+        ":ratchet_r9_enforcement",
+        ":ratchet_vulture",
+        ":ratchet_work_codes",
+        "//csrc/rola:lints",
+    ],
+)
+
+test_suite(
+    name = "commit_checks",
+    tests = [
+        ":dev_container",
+        ":docrefs",
+        ":ratchet_baselines",
+    ],
+)
+
 #: THE GATE: every check the graph holds (docs/build-graph.md#checks)
 test_suite(
     name = "gate",
     tests = [
-        "//tools:commit_checks",
-        "//tools:lint_fixtures",
-        "//tools:lints",
+        ":commit_checks",
+        ":lints",
+        "//tools/lint:lint_fixtures",
     ],
 )
 

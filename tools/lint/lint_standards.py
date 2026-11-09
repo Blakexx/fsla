@@ -1404,7 +1404,7 @@ def check_settings_come_from_the_dev_config() -> list[str]:
 
 
 def main() -> int:
-    #: EVERY CHECK BELOW GATES (`//tools:lint_standards` in the commit gate, and CI's lint job): a finding fails
+    #: EVERY CHECK BELOW GATES (`//:lint_standards` in the commit gate, and CI's lint job): a finding fails
     #: the commit and the CI run, repo-wide. Each reads files; none imports the library under test.
     gating_findings: list[str] = []
     gating_findings += check_unroll_discipline()

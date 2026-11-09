@@ -130,8 +130,9 @@ sccache's provenance, where the graph prints a REPORT, since the graph compiles 
 
 ## <a id="checks"></a>The checks
 
-`bazel test //:gate` runs every check the graph holds -- `//tools:lints`, the checks over files; `//tools:lint_fixtures`,
-each lint firing on its own fixture; and `//tools:commit_checks`, the checks of the commit -- and is the commit gate:
+`bazel test //:gate` runs every check the graph holds -- `//:lints`, the checks over files (the repo's own and
+`//csrc/rola:lints`); `//tools/lint:lint_fixtures`, each lint firing on its own fixture; and `//:commit_checks`, the
+checks of the commit -- and is the commit gate:
 `tools/git-hooks/pre-commit` runs it with the changes not staged for the commit set aside, and the tree the commit's
 index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
 
@@ -145,12 +146,14 @@ index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
   inputs are copied into a real tree in the test's own temporary directory, the environment's tools on
   PATH and no machine's dev config; a check that asks git what is tracked gets the copy as a git index of exactly
   those files. Cached on what it reads, it reruns only when one of those files changes.
-- THE LINTS (`//tools:lints`): ruff and its blank-line spacing, clang-format, ast-grep
-  (`tools/lint/ast_grep_gate.py`), the standards lint (`tools/lint/lint_standards.py`), the unused instantiations,
-  the readability spacing, the agent files' portability (`tools/lint/portable_claude.py`), the mirror's declarations
-  (`rola_devtools.mirror --check`), and each ratchet (`tools/lint/ratchet.py <lint>`: the lint's findings against its
-  baseline, a new finding and a fixed one each red).
-- THE UNIT LINTS (`//tools:clang_tidy_device`, `clang_tidy_host`, `host_warnings`; `bazel/defs.bzl`'s `unit_lints`
+- THE LINTS live beside what they check, and the linters in `tools/lint` (its package: the scripts, their
+  configuration, the modes a person runs by hand and each linter's self-test on its fixtures). `//csrc/rola:lints` are
+  the kernel tree's own: clang-format, ast-grep (`tools/lint/ast_grep_gate.py`), the unused instantiations and the
+  unit lints below. `//:lints` adds the repo's policies over the whole tree: ruff and its blank-line spacing, the
+  standards lint (`tools/lint/lint_standards.py`), the readability spacing, the agent files' portability
+  (`tools/lint/portable_claude.py`), the mirror's declarations (`rola_devtools.mirror --check`), and each ratchet
+  (`tools/lint/ratchet.py <lint>`: the lint's findings against its baseline, a new finding and a fixed one each red).
+- THE UNIT LINTS (`//csrc/rola:clang_tidy_device`, `clang_tidy_host`, `host_warnings`; `bazel/defs.bzl`'s `unit_lints`
   aspect and `unit_lint_test`): clang-tidy's two profiles and the host warnings, each run on one unit's own compile
   action -- its command line and its inputs -- so a lint reads what the build compiled
   ([`internals/tools/lint.md`](internals/tools/lint.md#unit-lints)). The units are the library's own (the aspect follows
@@ -167,11 +170,27 @@ index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
   new toolkit reruns it) as `ROLA_CUDA_HOME`, which `dev_config.cuda_home()` takes over init's copy. The sanitizer lane (`//tests:sanitizer`,
   `bazel/defs.bzl`'s `device_lane`, `manual`) runs as a device tier does, passing the toolkit's own compute-sanitizer
   by its path ([`testing.md`](testing.md#the-sanitizer-lane)).
-- THE CHECKS OF THE COMMIT (`//tools:commit_checks`, `bazel/defs.bzl`'s `checkout_test`): what git knows rather than
+- THE CHECKS OF THE COMMIT (`//:commit_checks`, `bazel/defs.bzl`'s `checkout_test`): what git knows rather than
   a file set -- no ratchet's baseline grown against HEAD's (`tools/lint/ratchet.py --grown`), every doc reference
   resolving (`tools/docrefs.py`), the devbox image the one the tree names and checked (`tools/dev.py container
   gate`, which builds `//:image`). Each runs in the
   checkout, outside the sandbox and never cached, its input the repository's state.
+
+## <a id="packages"></a>The packages
+
+The tree keeps the layout of a Python package with a native extension, as FlashAttention and PyTorch do (ruled
+2026-11-08): `rola/` beside `csrc/`, and the tests that drive the kernels through the op against the oracle in `tests/`,
+since the kernels serve the op alone and those tests grade the two as one. A BUILD file sits beside what it describes,
+its lints and tests among it, and `bazel/` holds only the graph's own machinery:
+- the root package: the build's parameters, the extension, the devbox image, the repo-wide checks and the gate;
+- `csrc/rola`: the kernel tree, its units and its own lints; `csrc/third_party`: the vendored trees;
+- `tools`: the pins and records the graph reads, the generators it runs, and each tool's run target; `tools/lint`: the
+  linters, the modes a person runs by hand and each linter's self-test;
+- `tests`: the tiers.
+
+Two moves are owed: the tools' tests to `tools/` and the hand-compiled C++ tests to C++ tests beside `csrc/rola`, after
+the cutover; and a package a kernel, its dependencies declared, with the code's split into product families. A C++ API
+of the kernels' own would make a split by language right.
 
 ## <a id="rules"></a>The rules
 
@@ -239,6 +258,11 @@ names one).
     bazel run //:library --//:archs=86 --//:carry_arms=3            # an iteration build
     bazel run //:image_load                                         # the devbox image, into Docker (docs/setup.md)
     bazel run //:image_push                                         # the devbox image, published to Docker Hub
+    bazel run //tools:<tool> -- <its arguments>                     # a tree tool, in the checkout on its own venv
+    bazel run //tools/lint:ratchet -- <lint> --shrink               # a ratchet's baseline, shrunk with its fixes
+    bazel run //:docrefs -- accept <doc>                            # a doc's citations pinned, read against their targets
+    bazel run //:measure -- run declare.py:all --only <glob>        # a measurement session (rola-devtools' build system)
+    bazel run //:results -- show|history|latest|verdict|commit      # the measurements store
 
 Never pass `--jobs` or a cache path: the front door sets both. Nothing the graph builds lands in the checkout but what a
 run target writes there -- the library `bazel run //:library` copies in, with the build's generated headers into

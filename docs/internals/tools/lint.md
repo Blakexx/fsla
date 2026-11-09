@@ -146,7 +146,7 @@ configuration, whose generated `builds_header` (`measure/hardware.py`'s) carries
 Every lint owns a fixture pair under `tools/lint/fixtures/` (a "must fire" case and a
 "must not fire" case, most often in one file). A rule that has never been shown to fire is a rule nobody knows is
 connected; one that has never been shown to stay quiet is a rule nobody can afford to make gating. The self-tests are
-the commit gate's `//tools:lint_fixtures`: each Python lint's `--test-fixtures` mode, and the unit lints' fixtures
+the commit gate's `//tools/lint:lint_fixtures`: each Python lint's `--test-fixtures` mode, and the unit lints' fixtures
 linted as units, each verdict holding exactly the fixture's expected findings.
 
 Fixtures are EXCLUDED from every lint's normal-mode scan (`readability_spacing.py`'s
@@ -159,7 +159,7 @@ exactly how a hook drifts into being silently disabled.
 
 ```bash
 bazel test //:gate                  # the whole roster: every check the commit gate runs
-bazel test //tools:lints            # the checks over files alone
+bazel test //:lints                 # the checks over files alone
 
 python3 tools/lint/ratchet.py work_codes           # a ratchet's gate; the lint alone prints its inventory
 python3 tools/lint/drift_guards.py

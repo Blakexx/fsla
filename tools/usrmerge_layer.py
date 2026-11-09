@@ -11,19 +11,13 @@ Members keep their metadata, in order; a later one at a path wins. Docs: docs/se
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import tarfile
-from collections.abc import Iterator
 from pathlib import Path
 
-
-def layers(layout: Path) -> Iterator[Path]:
-    """The layer archives of an OCI layout's one image, base first."""
-    index = json.loads((layout / "index.json").read_text())
-    blob = lambda digest: layout / "blobs" / "sha256" / digest.removeprefix("sha256:")  # noqa: E731
-    for layer in json.loads(blob(index["manifests"][0]["digest"]).read_text())["layers"]:
-        yield blob(layer["digest"])
+#: the layout's reader, from beside this file as Bazel lays it out (its declared input)
+sys.path.insert(0, str(Path(__file__).absolute().parent))
+from oci_layout import layers  # noqa: E402
 
 
 def merged_links(layout: Path) -> frozenset[str]:

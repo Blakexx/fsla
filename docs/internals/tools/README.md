@@ -41,6 +41,7 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 |---|---|---|---|
 | [`ratify.py`](ratify.md) | the spill manifest, the census, the SASS-body gate and the derivation | `setup.py` (post-build), a person at a milestone, the graph's `//:ratified` and `//:ratify` | `tools/manifests/` |
 | [`devbox_packages.py`](../../setup.md#the-devbox-image) | the devbox image's package layer adds packages, never changes the base's, and carries nothing at its merged-/usr links | the graph's `//:devbox_packages` | — |
+| [`oci_layout.py`](../../setup.md#the-devbox-image) | an OCI image layout, read: its one image's manifest digest (the devbox image's identity), the tree's tag for it, and its layers | `dev.py`'s container commands, the graph's `//:image_tag`, `usrmerge_layer.py`, `devbox_packages.py` | — |
 | [`usrmerge_layer.py`](../../setup.md#the-devbox-image) | the package layer for a merged-/usr base: what the packages ship under the base's top-level links into /usr, read from the base, goes under /usr | the graph's `//:devbox_debs` | the image's package layer |
 | [`derivation.py`](ratify.md#graph) | the derivation's golden harness, rendered from the declared cases | `ratify.py`, the graph's `derivation_harness_source` genrule | the harness source |
 | `sass.py` | THE DISASSEMBLER SEAM: the one `cuobjdump`/`nvdisasm` invocation and line grammar; a frame map is one function's (`section`: offsets restart in every function) | `ratify.py`, `sass_gate.py`, `region_ledger.py`, `life_ranges.py` | — |

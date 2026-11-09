@@ -4,7 +4,7 @@ generated headers and the device stamp (docs/build-graph.md#compile)."""
 load("@rola_env//:flags.bzl", "HOST_CXX_FLAGS", "NVCC_FLAGS")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("//bazel:cuda.bzl", "cuda_unit")
-load("//bazel:defs.bzl", "carry_arm_set", "include_root", "rola_headers", "tree_part")
+load("//bazel:defs.bzl", "carry_arm_set", "include_root", "rola_headers", "tree_part", "tree_test", "unit_lint_test")
 load(":units.bzl", "CARRY_ARM_COUNT", "CARRY_ARM_UNITS", "HAND_UNITS")
 
 package(default_visibility = ["//visibility:public"])
@@ -107,3 +107,77 @@ cc_library(
 
 #: this package's part of the tree the checks read
 tree_part()
+
+#: THIS PACKAGE'S LINTS (docs/build-graph.md#checks): its sources' format and standards rules, its instantiations
+#: against the manifests, and each unit's own compile linted for each ratified architecture
+
+tree_test(
+    name = "clang_format",
+    size = "small",
+    cmd = [
+        "/bin/bash",
+        "-c",
+        "find -L csrc/rola -type f \\( -name '*.cu' -o -name '*.cuh' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \\) " +
+        "-print0 | sort -z | xargs -0 clang-format --style=file --dry-run --Werror",
+    ],
+    data = [
+        "//:.clang-format",
+        ":tracked",
+    ],
+)
+
+tree_test(
+    name = "ast_grep",
+    size = "small",
+    cmd = ["python3", "tools/lint/ast_grep_gate.py"],
+    data = [
+        "//tools/lint:tracked",
+        "//:sgconfig.yml",
+        ":tracked",
+        "//csrc/third_party:tracked",
+    ],
+)
+
+tree_test(
+    name = "unused_instantiations",
+    size = "small",
+    cmd = ["python3", "tools/lint/unused_instantiations.py"],
+    data = [
+        "//tools/lint:tracked",
+        "//tools:manifests",
+        ":tracked",
+    ],
+)
+
+unit_lint_test(
+    name = "clang_tidy_device",
+    size = "small",
+    lint = "device",
+    units = ["//:library"],
+)
+
+unit_lint_test(
+    name = "clang_tidy_host",
+    size = "small",
+    lint = "host",
+    units = ["//:library"],
+)
+
+unit_lint_test(
+    name = "host_warnings",
+    size = "small",
+    lint = "warnings",
+    units = ["//:library"],
+)
+
+test_suite(
+    name = "lints",
+    tests = [
+        ":ast_grep",
+        ":clang_format",
+        ":clang_tidy_device",
+        ":clang_tidy_host",
+        ":host_warnings",
+        ":unused_instantiations",
+    ],
+)

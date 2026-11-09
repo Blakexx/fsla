@@ -213,7 +213,4 @@ def detect() -> dict[str, dict[str, Any]]:
     wsl_lib = Path(WSL_LIB)
     if (wsl_lib / "libdxcore.so").exists():
         found["host"]["wsl_lib"] = str(wsl_lib)
-    #: inside a container this tree started, the host's locks where its launcher mounted them
-    if locks_mounted():
-        found["host"].update(CONTAINER_LOCKS)
     return {k: v for k, v in found.items() if v}

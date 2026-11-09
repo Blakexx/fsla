@@ -20,9 +20,10 @@ import sys
 import tarfile
 from pathlib import Path
 
-#: the sibling it reads the base's layers with, from beside this file as Bazel lays it out (its declared input)
+#: the siblings it reads the base's layers and links with, from beside this file as Bazel lays it out (its inputs)
 sys.path.insert(0, str(Path(__file__).absolute().parent))
-from usrmerge_layer import layers, merged_links  # noqa: E402
+from oci_layout import layers  # noqa: E402
+from usrmerge_layer import merged_links  # noqa: E402
 
 STATUS = "var/lib/dpkg/status"
 

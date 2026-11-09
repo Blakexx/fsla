@@ -449,7 +449,7 @@ _CHECKOUT_TEST = """\
 set -euo pipefail
 {resolve}cd "$(dirname "$(readlink -f "$TEST_SRCDIR/_main/MODULE.bazel")")"
 export PATH={venv}/bin:/usr/bin:/bin RUFF_NO_CACHE=true
-exec {cmd}
+exec {cmd} "$@"
 """
 
 def _checkout_test_impl(ctx):
@@ -518,6 +518,40 @@ dev_run = rule(
         "tools": attr.label_keyed_string_dict(allow_files = True, doc = "each tool and the flag that names its path"),
     },
     doc = "A tools/dev.py command run by `bazel run` in the checkout (docs/build-graph.md#use): its arguments follow `--`.",
+)
+
+_TOOL_RUN = """\
+#!/bin/bash
+# a tree tool as a run target (bazel/defs.bzl's tool_run): in the checkout, on the checkout's own venv (`rola.venv`,
+# which `bazel run //:dev_env` records), so it imports the checkout, its siblings and the environment
+set -euo pipefail
+checkout="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
+venv="$(git -C "$checkout" config --get rola.venv || true)"
+if [ ! -x "$venv/bin/python" ]; then
+  echo "$checkout has no venv of its own: bazel run //:dev_env" >&2
+  exit 1
+fi
+cd "$checkout"
+exec "$venv/bin/python" {what} "$@"
+"""
+
+def _tool_run_impl(ctx):
+    if bool(ctx.attr.tool) == bool(ctx.attr.module):
+        fail("%s: a tool run names its script (`tool`) or its module (`module`): exactly one" % ctx.label)
+    what = shell.quote(ctx.attr.tool) if ctx.attr.tool else "-m " + shell.quote(ctx.attr.module)
+    script = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(script, _TOOL_RUN.format(what = what), is_executable = True)
+    return [DefaultInfo(executable = script)]
+
+tool_run = rule(
+    implementation = _tool_run_impl,
+    executable = True,
+    attrs = {
+        "tool": attr.string(doc = "the tool's script, from the checkout's root (`tools/lab.py`)"),
+        "module": attr.string(doc = "or the module it runs (`rola_devtools.build`)"),
+    },
+    doc = "A tree tool run by `bazel run` in the checkout on its own venv (docs/build-graph.md#use): its arguments " +
+          "follow `--`.",
 )
 
 def tree_part(parts = {}):
@@ -670,10 +704,10 @@ unit_lints = aspect(
     attrs = {
         "_archs": attr.label(default = "//:archs"),
         "_python": attr.label(default = "@rola_env//:python", allow_single_file = True, cfg = "exec"),
-        "_tool": attr.label(default = "//tools:lint/unit_lints.py", allow_single_file = True),
+        "_tool": attr.label(default = "//tools/lint:unit_lints.py", allow_single_file = True),
         "_clang_tidy": attr.label(default = "@clang_tidy//:clang_tidy", allow_single_file = True, cfg = "exec"),
         "_clang_tidy_resources": attr.label(default = "@clang_tidy//:resources", cfg = "exec"),
-        "_device_config": attr.label(default = "//tools:lint/clang-tidy-device.yaml", allow_single_file = True),
+        "_device_config": attr.label(default = "//tools/lint:clang-tidy-device.yaml", allow_single_file = True),
         "_host_config": attr.label(default = "//:.clang-tidy", allow_single_file = True),
         "_cuda_root": attr.label(default = "//bazel:cuda_root", allow_single_file = True),
     },
@@ -703,7 +737,7 @@ unit_lint_test = rule(
         "lint": attr.string(mandatory = True, values = ["device", "host", "warnings"], doc = "which verdicts it reads"),
         "expect": attr.string_list(doc = "a fixture's: the findings (patterns) each of its verdicts holds exactly"),
         "_python": attr.label(default = "@rola_env//:python", allow_single_file = True),
-        "_tool": attr.label(default = "//tools:lint/unit_lints.py", allow_single_file = True),
+        "_tool": attr.label(default = "//tools/lint:unit_lints.py", allow_single_file = True),
     },
     doc = "A unit lint over every unit the library links, for each ratified architecture: red on any unit's finding " +
           "(a fixture's: on any verdict that does not hold exactly the expected findings).",
@@ -733,7 +767,7 @@ compile_database = rule(
     attrs = {
         "units": attr.label_list(mandatory = True, cfg = _first_ratified_arch, aspects = [unit_lints]),
         "_python": attr.label(default = "@rola_env//:python", allow_single_file = True),
-        "_tool": attr.label(default = "//tools:lint/unit_lints.py", allow_single_file = True),
+        "_tool": attr.label(default = "//tools/lint:unit_lints.py", allow_single_file = True),
         "_cuda_root": attr.label(default = "//bazel:cuda_root", cfg = _first_ratified_arch, allow_single_file = True),
     },
     doc = "`bazel run` writes compile_commands.json into the checkout: each unit's clang command, the lints' own.",

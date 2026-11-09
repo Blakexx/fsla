@@ -12,7 +12,6 @@ run as the graph's target of the same name (`bazel/defs.bzl`'s `dev_run`), its a
     bazel run //:clock -- --mhz 1665             # lock this host's SM clock once, prove the round trip, record it
     bazel run //:dev_env                         # this checkout's venv over the graph's environment, its hooks' venv
     bazel run //:worktree -- <name> <sha>        # a worktree, its venv and gate, its extension (//:library)
-    bazel run //:store -- commit -m <msg>        # the measurements store (a rola-results checkout)
     bazel run //:container_check                 # the devbox image's clean room: the host's loop inside it, recorded
     bazel run //:container_compose               # the devbox image for an editor's dev container, on its own volumes
 
@@ -40,6 +39,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dev_config  # noqa: E402 -- path insert must precede this import
 import mold_toolchain  # noqa: E402
+import oci_layout  # noqa: E402
 import sccache_toolchain  # noqa: E402
 import toolchains  # noqa: E402
 
@@ -448,11 +448,6 @@ def cmd_init(a) -> int:
     return cmd_check(a)
 
 
-def cmd_store(a) -> int:
-    if a.action == "commit":
-        return subprocess.run([sys.executable, "-m", "rola_results", "commit", "-m", a.message]).returncode
-
-
 def _pinned_version(name: str, path: str) -> str:
     """What the binary at `path` reports, as its pin's `version_string` is written: its own reader's answer, else the
     pin's text when a line of its `--version` says it."""
@@ -538,11 +533,14 @@ def cmd_check(a) -> int:
             row(gate_venv(dev_config.get(key)) == base, f"{key}'s commit gate runs from {base}", "bazel run //:init")
     #: the host's locks where a launcher mounted them, else this machine's own: never a container's own beside the host's
     mounted, named = dev_config.locks_mounted(), dev_config.get("host.lock_dir") == dev_config.CONTAINER_LOCKS["lock_dir"]
-    row(mounted == named, "host.lock_dir: the host's, mounted by the container's launcher" if mounted and named else
-        "host.lock_dir: this machine's own" if not mounted else
-        f"host.lock_dir: the host's locks are mounted at {dev_config.CONTAINER_LOCKS['lock_dir']} and the config names "
-        f"{dev_config.get('host.lock_dir')}" if mounted else
-        "host.lock_dir names the host's mounted locks, and none are mounted here", "bazel run //:init")
+    if mounted == named:
+        what = "host.lock_dir: the host's, mounted by the container's launcher" if mounted else "host.lock_dir: this machine's own"
+    elif mounted:
+        what = (f"host.lock_dir: the host's locks are mounted at {dev_config.CONTAINER_LOCKS['lock_dir']} and the config "
+                f"names {dev_config.get('host.lock_dir')}")
+    else:
+        what = "host.lock_dir names the host's mounted locks, and none are mounted here"
+    row(mounted == named, what, "bazel run //:init")
     for key in ("host.lock_dir", "host.scratch"):
         path = Path(dev_config.get(key))
         path.mkdir(parents=True, exist_ok=True)
@@ -562,7 +560,7 @@ def cmd_check(a) -> int:
     row((devtools / "rola_devtools" / "mirror.py").is_file(), f"workspace.devtools is a rola-devtools checkout: {devtools}",
         "clone rola-devtools to workspace.devtools, or point workspace.devtools at a checkout")
     #: the co-developed checkouts import in each venv that runs here: the base venv (the sibling repositories' hooks)
-    #: and this checkout's own (its hooks, `store`, `container`, `build`)
+    #: and this checkout's own (its hooks, `container`, `build`)
     for venv in ([Path(base)] if base else []) + ([own] if readable and own is not None else []):
         python = venv / "bin" / "python"
         found = subprocess.run([str(python), "-c", "import rola_results, rola_devtools; "
@@ -769,9 +767,9 @@ def cmd_build(a) -> int:
 
 
 def _image(layout: str) -> tuple[str, str]:
-    """The devbox image's identity, its content digest (the manifest's, as Bazel wrote `//:image`), and its tag."""
-    digest = json.loads((Path(layout) / "index.json").read_text())["manifests"][0]["digest"]
-    return digest, f"{DEVBOX_REPO}:{digest.removeprefix('sha256:')[:12]}"
+    """The devbox image's identity, its content digest (`//:image`'s manifest), and the name Docker knows it by."""
+    digest = oci_layout.digest(Path(layout))
+    return digest, f"{DEVBOX_REPO}:{oci_layout.tag(digest)}"
 
 
 def _load(tarball: str, tag: str) -> None:
@@ -824,7 +822,7 @@ fi""",
 [ $rc -eq 0 ] || { [ "$(grep -c '^RED' /tmp/init.log)" = 1 ] && grep -q '^RED  .* has no venv of its own' /tmp/init.log; }""",
     "dev_env": "bazel run //:dev_env",
     "check": "bazel run //:check",
-    "the commit gate": "bazel test $(bazel query 'tests(//:gate) except //tools:dev_container')",
+    "the commit gate": "bazel test $(bazel query 'tests(//:gate) except //:dev_container')",
     "GPU, torch and its flash backend": f"""{CONTAINER_PYTHON} - <<'PY'
 import torch
 import torch.nn.functional as F
@@ -996,10 +994,6 @@ def main() -> int:
     p.add_argument("--archs", default=None, help="ROLA_CUDA_ARCHS for this build, e.g. 86")
     p.add_argument("--carry-arms", default=None, help="ROLA_CARRY_ARMS for this build, e.g. all")
     p.set_defaults(fn=cmd_build)
-    p = sub.add_parser("store", help="the measurements store: commit new records")
-    p.add_argument("action", choices=("commit",))
-    p.add_argument("-m", "--message", default="records", help="commit: the message")
-    p.set_defaults(fn=cmd_store)
     p = sub.add_parser("container", help="the devbox image: its clean-room check, an editor's container, the commit gate")
     p.add_argument("action", choices=("check", "compose", "gate"))
     p.add_argument("--layout", required=True, help="the image's OCI layout (`//:image`)")
@@ -1017,7 +1011,7 @@ BOOTSTRAP = ("init", "check", "show", "get", "clock", "dev-env", "worktree")
 
 def _from_own_venv() -> None:
     """Every other command runs from this checkout's own venv, re-executing this file there when another python started
-    it: the store and the container read `rola_results`, which the venv links, never the host's own python."""
+    it: the container reads `rola_results`, which the venv links, never the host's own python."""
     own = checkout_venv(ROOT)
     if own is None:
         raise SystemExit(f"{ROOT.name} has no venv of its own to run this from: bazel run //:dev_env")

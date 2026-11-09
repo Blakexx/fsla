@@ -9,7 +9,7 @@ description: Load before writing or changing anything under docs/, a skill, a ro
 2. `docs/internals/` mirrors `csrc/rola/src/` page for page and names only identifiers the tree carries
    (`docs/internals/tools/lint.md#the-gating-set`); a page explains why and how pieces connect, never how a body
    works (`docs/KERNEL_STANDARDS.md#comment-density`).
-3. Every citation is pinned: after writing, `python3 tools/docrefs.py pending` for what moved, `accept <doc>` for what
+3. Every citation is pinned: after writing, `bazel run //:docrefs -- pending` for what moved, `accept <doc>` for what
    was read (`docs/internals/tools/docrefs.md#the-gate-and-the-pass`).
 4. A skill is procedure over references, never a copy of a rule (`docs/KERNEL_STANDARDS.md#s31`); it is routed by an
    entry in `.claude/skill-routes.json` (its `about` field states the matching convention) and a row in `CLAUDE.md`'s

@@ -37,7 +37,7 @@ fi
 
 if ! command -v vulture >/dev/null 2>&1; then
   echo "run_vulture.sh: refusing -- 'vulture' not on PATH." >&2
-  echo "  run it through the graph: bazel test //tools:ratchet_vulture   (requirements.lock pins vulture 2.16)" >&2
+  echo "  run it through the graph: bazel test //:ratchet_vulture   (requirements.lock pins vulture 2.16)" >&2
   exit 1
 fi
 

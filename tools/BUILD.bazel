@@ -1,16 +1,14 @@
 """THE TREE'S TOOLS AS THE GRAPH'S INPUTS: the pins and records the graph's repositories read, and the generators its
 actions run."""
 
-load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+load("@rules_cc//cc:defs.bzl", "cc_binary")
 load("//bazel:cuda.bzl", "cuda_unit")
-load("//bazel:defs.bzl", "checkout_test", "tree_part", "tree_test", "unit_lint_test")
+load("//bazel:defs.bzl", "tool_run", "tree_part")
 
 package(default_visibility = ["//visibility:public"])
 
 exports_files(glob([
     "*.py",
-    "lint/unit_lints.py",
-    "lint/clang-tidy-device.yaml",
     "*.json",
     "toolchains/*.json",
     "manifests/*.json",
@@ -35,190 +33,11 @@ filegroup(
 #: the tools' Python and the lints', which the gates import
 filegroup(
     name = "python_sources",
-    srcs = glob([
-        "*.py",
-        "lint/*.py",
-    ]),
+    srcs = glob(["*.py"]) + ["//tools/lint:python_sources"],
 )
 
 #: this package's part of the tree the checks read
-tree_part(parts = {
-    "lint": "lint/",
-    "manifests": "manifests/",
-})
-
-#: THE LINTS, each a test over the part of the tree it reads (docs/build-graph.md#checks)
-tree_test(
-    name = "ruff",
-    size = "small",
-    cmd = ["ruff", "check", "--force-exclude", "."],
-    data = ["//:pyproject.toml", "//:tree_python"],
-)
-
-tree_test(
-    name = "ruff_e3",
-    size = "small",
-    cmd = ["tools/lint/run_ruff_e3.sh"],
-    data = [
-        ":lint",
-        "//:pyproject.toml",
-        "//:tree_python",
-    ],
-)
-
-tree_test(
-    name = "clang_format",
-    size = "small",
-    cmd = [
-        "/bin/bash",
-        "-c",
-        "find -L csrc/rola -type f \\( -name '*.cu' -o -name '*.cuh' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \\) " +
-        "-print0 | sort -z | xargs -0 clang-format --style=file --dry-run --Werror",
-    ],
-    data = [
-        "//:.clang-format",
-        "//csrc/rola:tracked",
-    ],
-)
-
-tree_test(
-    name = "ast_grep",
-    size = "small",
-    cmd = ["python3", "tools/lint/ast_grep_gate.py"],
-    data = [
-        ":lint",
-        "//:sgconfig.yml",
-        "//csrc/rola:tracked",
-        "//csrc/third_party:tracked",
-    ],
-)
-
-tree_test(
-    name = "lint_standards",
-    size = "small",
-    cmd = ["python3", "tools/lint/lint_standards.py"],
-    data = ["//:tree"],
-    git = True,
-)
-
-tree_test(
-    name = "unused_instantiations",
-    size = "small",
-    cmd = ["python3", "tools/lint/unused_instantiations.py"],
-    data = [
-        ":lint",
-        ":manifests",
-        "//csrc/rola:tracked",
-    ],
-)
-
-tree_test(
-    name = "readability_spacing",
-    size = "small",
-    cmd = ["python3", "tools/lint/readability_spacing.py"],
-    data = [
-        ":lint",
-        "//:tree_python",
-        "//csrc/rola:tracked",
-    ],
-)
-
-tree_test(
-    name = "portable_agent_files",
-    size = "small",
-    cmd = ["python3", "tools/lint/portable_claude.py"],
-    data = ["//:tree"],
-    git = True,
-)
-
-tree_test(
-    name = "mirror_declarations",
-    size = "small",
-    cmd = ["python3", "-m", "rola_devtools.mirror", "--check"],
-    data = ["//:tree"],
-    git = True,
-)
-
-#: THE RATCHETS: each lint's findings against its baseline (new and fixed) over the tree; a baseline's growth against
-#: HEAD is the commit's, `ratchet_baselines` below
-
-tree_test(
-    name = "ratchet_burst_tier",
-    size = "small",
-    cmd = ["python3", "tools/lint/ratchet.py", "burst_tier"],
-    data = ["//:tree"],
-    git = True,
-)
-
-tree_test(
-    name = "ratchet_constant_parameters",
-    size = "small",
-    cmd = ["python3", "tools/lint/ratchet.py", "constant_parameters"],
-    data = ["//:tree"],
-    git = True,
-)
-
-tree_test(
-    name = "ratchet_coverage",
-    size = "small",
-    cmd = ["python3", "tools/lint/ratchet.py", "coverage"],
-    data = ["//:tree"],
-    git = True,
-)
-
-tree_test(
-    name = "ratchet_drift_guards",
-    size = "small",
-    cmd = ["python3", "tools/lint/ratchet.py", "drift_guards"],
-    data = ["//:tree"],
-    git = True,
-)
-
-tree_test(
-    name = "ratchet_r9_enforcement",
-    size = "small",
-    cmd = ["python3", "tools/lint/ratchet.py", "r9_enforcement"],
-    data = ["//:tree"],
-    git = True,
-)
-
-tree_test(
-    name = "ratchet_vulture",
-    size = "small",
-    cmd = ["python3", "tools/lint/ratchet.py", "vulture"],
-    data = ["//:tree"],
-    git = True,
-)
-
-tree_test(
-    name = "ratchet_work_codes",
-    size = "small",
-    cmd = ["python3", "tools/lint/ratchet.py", "work_codes"],
-    data = ["//:tree"],
-    git = True,
-)
-
-#: THE UNIT LINTS, each unit's own compile linted for each ratified architecture (docs/build-graph.md#checks)
-unit_lint_test(
-    name = "clang_tidy_device",
-    size = "small",
-    lint = "device",
-    units = ["//:library"],
-)
-
-unit_lint_test(
-    name = "clang_tidy_host",
-    size = "small",
-    lint = "host",
-    units = ["//:library"],
-)
-
-unit_lint_test(
-    name = "host_warnings",
-    size = "small",
-    lint = "warnings",
-    units = ["//:library"],
-)
+tree_part(parts = {"manifests": "manifests/"})
 
 #: THE DERIVATION'S GOLDEN HARNESS, rendered from the declared cases and built as the extension's units are: ratify runs
 #: it in place of its own compile (docs/internals/tools/ratify.md#graph). It names the smallest tabulated architecture,
@@ -254,156 +73,39 @@ cc_binary(
     ],
 )
 
-#: THE LINTS' FIXTURES (docs/internals/tools/lint.md#fixtures): each lint fires on its own fixture's must-fire case and
-#: stays quiet on the rest -- the Python lints' own self-tests, and the unit lints' fixtures linted as units
+#: THE TREE'S TOOLS, each a run target (bazel/defs.bzl's `tool_run`): `bazel run //tools:<name> -- <its arguments>`, in
+#: the checkout on its own venv (docs/build-graph.md#use)
+[tool_run(
+    name = name,
+    tool = "tools/%s.py" % name,
+) for name in [
+    "bank_model",
+    "burst_gate",
+    "carve_model",
+    "compose_ledger",
+    "design_floor",
+    "gen_shards",
+    "header_selfcheck",
+    "kernel_targets",
+    "kernels",
+    "lab",
+    "life_ranges",
+    "op_timeline",
+    "overlap_gate",
+    "phase_ledger",
+    "pipe_counters",
+    "pipe_sim",
+    "pipe_timeline",
+    "readout_scaling",
+    "realized_support",
+    "region_ledger",
+    "review_gate",
+    "roofline",
+    "sanitize_cell",
+    "sass_bodies",
+    "sass_gate",
+    "scale_slack",
+    "stall_census",
+    "supported",
+]]
 
-tree_test(
-    name = "ast_grep_fixtures",
-    size = "small",
-    cmd = ["python3", "tools/lint/ast_grep_gate.py", "--test-fixtures"],
-    data = [
-        ":lint",
-        "//:sgconfig.yml",
-    ],
-)
-
-tree_test(
-    name = "constant_parameters_fixtures",
-    size = "small",
-    cmd = ["python3", "tools/lint/constant_parameters.py", "--test-fixtures"],
-    #: its self-test runs the real scan too: no fixture leaks into it
-    data = [
-        ":lint",
-        "//:tree_python",
-    ],
-)
-
-tree_test(
-    name = "drift_guards_fixtures",
-    size = "small",
-    cmd = ["python3", "tools/lint/drift_guards.py", "--test-fixtures"],
-    data = [":lint"],
-)
-
-tree_test(
-    name = "r9_enforcement_fixtures",
-    size = "small",
-    cmd = ["python3", "tools/lint/r9_enforcement.py", "--test-fixtures"],
-    data = [":lint"],
-)
-
-tree_test(
-    name = "readability_spacing_fixtures",
-    size = "small",
-    cmd = ["python3", "tools/lint/readability_spacing.py", "--test-fixtures"],
-    data = [":lint"],
-)
-
-tree_test(
-    name = "unused_instantiations_fixtures",
-    size = "small",
-    cmd = ["python3", "tools/lint/unused_instantiations.py", "--test-fixtures"],
-    data = [":lint"],
-)
-
-tree_test(
-    name = "vulture_fixtures",
-    size = "small",
-    cmd = ["tools/lint/run_vulture.sh", "--test-fixtures"],
-    data = [":lint"],
-)
-
-#: compiled as the extension's units are (bazel/cuda.bzl), so the lint reads the same kind of compile
-cuda_unit(
-    name = "fixture_device_unit",
-    srcs = ["lint/fixtures/device_lint_unused_param.cu"],
-    host_cc = "@host_cc//:identity.txt",
-)
-
-cc_library(
-    name = "fixture_host_unit",
-    srcs = ["lint/fixtures/host_warnings_unused_param.cpp"],
-    additional_compiler_inputs = ["@host_cc//:identity.txt"],
-)
-
-unit_lint_test(
-    name = "clang_tidy_device_fixtures",
-    size = "small",
-    expect = [
-        "'unused_param' is unused \\[misc-unused-parameters\\]",
-        "Value stored to 'twice' is never read \\[clang-analyzer-deadcode.DeadStores\\]",
-    ],
-    lint = "device",
-    units = [":fixture_device_unit"],
-)
-
-unit_lint_test(
-    name = "host_warnings_fixtures",
-    size = "small",
-    expect = ["unused parameter .unused_param. \\[-Wunused-parameter\\]"],
-    lint = "warnings",
-    units = [":fixture_host_unit"],
-)
-
-test_suite(
-    name = "lint_fixtures",
-    tests = [
-        ":ast_grep_fixtures",
-        ":clang_tidy_device_fixtures",
-        ":constant_parameters_fixtures",
-        ":drift_guards_fixtures",
-        ":host_warnings_fixtures",
-        ":r9_enforcement_fixtures",
-        ":readability_spacing_fixtures",
-        ":unused_instantiations_fixtures",
-        ":vulture_fixtures",
-    ],
-)
-
-#: THE CHECKS OF THE COMMIT, run in the checkout: what git knows
-checkout_test(
-    name = "ratchet_baselines",
-    size = "small",
-    cmd = ["python3", "tools/lint/ratchet.py", "--grown"],
-)
-
-checkout_test(
-    name = "docrefs",
-    size = "small",
-    cmd = ["python3", "tools/docrefs.py"],
-)
-
-#: the devbox image the graph builds is the one the tree names, and a change to it carries a passing container check
-checkout_test(
-    name = "dev_container",
-    size = "small",
-    cmd = ["python3", "tools/dev.py", "container", "gate"],
-    tools = {"//:image": "--layout"},
-)
-
-test_suite(
-    name = "lints",
-    tests = [
-        ":ast_grep",
-        ":clang_format",
-        ":clang_tidy_device",
-        ":clang_tidy_host",
-        ":host_warnings",
-        ":lint_standards",
-        ":mirror_declarations",
-        ":portable_agent_files",
-        ":readability_spacing",
-        ":ruff",
-        ":ruff_e3",
-        ":unused_instantiations",
-    ] + [":ratchet_" + r for r in ["burst_tier", "constant_parameters", "coverage", "drift_guards", "r9_enforcement", "vulture", "work_codes"]],
-)
-
-test_suite(
-    name = "commit_checks",
-    tests = [
-        ":dev_container",
-        ":docrefs",
-        ":ratchet_baselines",
-    ],
-)
