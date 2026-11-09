@@ -482,8 +482,8 @@ def cmd_check(a) -> int:
     row((devtools / "rola_devtools" / "mirror.py").is_file(), f"workspace.devtools is a rola-devtools checkout: {devtools}",
         "clone rola-devtools to workspace.devtools, or point workspace.devtools at a checkout")
     #: the co-developed checkouts import in the checkout's own venv (its hooks, `container`)
-    for venv in [own] if readable and own is not None else []:
-        python = venv / "bin" / "python"
+    if readable and own is not None:
+        python = own / "bin" / "python"
         found = subprocess.run([str(python), "-c", "import rola_results, rola_devtools; "
                                 "print(rola_results.ROOT); print(rola_devtools.__file__)"], capture_output=True, text=True)
         lines = found.stdout.split()
