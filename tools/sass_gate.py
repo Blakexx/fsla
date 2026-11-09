@@ -28,7 +28,9 @@ On a whole binary it also reds a PTX image (closed-world rule 2: cubins only), a
 the source defines (`tools/kernels.py`) that no cubin carries: a gate that cannot see a kernel has not gated it. An instrument's library (`--instrument`, bazel/defs.bzl's `rola_instrument`)
 carries its own kernels and owes none of the source's. Its kernels are PROBES, and a probe that keeps a step
 signature on purpose (a global reduction between its HMMAs, the cost it measures) declares it in the instrument's
-DECLARATIONS, by function, with that cost; an undeclared signature is red, and so is a declaration no function uses. It prints the counts it reads, the same way `ratify` prints registers and
+DECLARATIONS, by function (`sm_80 <pattern>` where one architecture's SASS keeps it alone), with that cost; an
+undeclared signature is red, and so is a declaration an architecture the binary carries does not show. It prints the
+counts it reads, the same way `ratify` prints registers and
 spills, so a clean run is a line of zeros and a red names the signature.
 """
 from __future__ import annotations
@@ -306,7 +308,7 @@ def step_cover(cubin: Path, name: str, lines: list[tuple[int, str, str, str]], l
 
 def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[bool, str]:
     _LOOPS.clear()
-    here = arch_of(cubin.name)
+    here = sass_control.machine(cubin)
     funcs: dict[str, list[str]] = {}
     whole: dict[str, list[tuple[int, str, str]]] = {}
     labels: dict[str, dict[str, int]] = {}
@@ -410,12 +412,6 @@ LOOPS = False
 #: `--instrument`: an instrument's declarations, `{name pattern: {step lint: the cost the probe measures}}` (the module
 #: docstring); empty for the extension, whose functions keep no step signature but a named debt
 INSTRUMENT: dict[str, dict[str, str]] = {}
-
-
-def arch_of(cubin: str) -> str | None:
-    """A cubin's architecture off its name (`carry_parts.sm_80.cubin`)."""
-    m = re.search(r"\b(sm_\d+a?)\b", cubin)
-    return m.group(1) if m else None
 
 
 def _declared(key: str) -> tuple[str | None, str]:
@@ -570,7 +566,7 @@ def main() -> int:
         guarded += sum(st["guarded"] for st in STATS.values())
         if rep:
             print(f"== {cub.name}\n{rep}")
-        doc[cub.name] = {"ok": ok, "functions": dict(STATS)}
+        doc[cub.name] = {"ok": ok, "arch": sass_control.machine(cub), "functions": dict(STATS)}
         seen |= set(STATS)
         allok &= ok
     if not seen:
@@ -589,18 +585,21 @@ def main() -> int:
         for line in missing_kernels(seen):
             print(f"RED  {line}")
             allok = False
-    #: a declaration no function uses keeps nothing: red, so the declarations only say what is so -- on the
-    #: architectures this binary carries (an iteration build of one card leaves another's declarations unread)
+    #: a declaration an architecture does not show keeps nothing there: red, so the declarations only say what is so
+    #: -- a plain one on every architecture the binary carries, an `sm_XX` one on its own (an iteration build of one
+    #: card reads none of another's)
     if a.instrument and a.kernel is None and a.member is None:
-        used = {tuple(k) for cubin in doc.values() for st in cubin["functions"].values() for k in st["kept"]}
-        carried = {arch_of(name) for name in doc}
+        used = {(cubin["arch"], *k) for cubin in doc.values() for st in cubin["functions"].values() for k in st["kept"]}
+        carried = sorted({cubin["arch"] for cubin in doc.values()})
         for key, lints in sorted(INSTRUMENT.items()):
-            if _declared(key)[0] not in carried | {None}:
-                continue
-            for lint in sorted(lints):
-                if (key, lint) not in used:
-                    print(f"RED  {a.instrument}: `{key}` keeps {lint}, which no function of this binary shows")
-                    allok = False
+            on = _declared(key)[0]
+            for arch in [on] if on else carried:
+                for lint in sorted(lints):
+                    if arch in carried and (arch, key, lint) not in used:
+                        hint = "" if on else " (`sm_XX <pattern>` declares a signature one architecture keeps)"
+                        print(f"RED  {a.instrument}: `{key}` keeps {lint}, which no function of {arch}'s SASS shows"
+                              + hint)
+                        allok = False
     if a.json:
         a.json.write_text(json.dumps(doc, sort_keys=True) + "\n")
     if a.write_floors:
