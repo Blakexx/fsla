@@ -1,8 +1,9 @@
 """THE ONE SOURCE OF THE nvcc FLAG LIST.
 
-**WHY THIS FILE EXISTS.** Two programs compile the same translation units. `setup.py`
-compiles them into the shipped `.so`; `tools/ratify.py` compiles them to read
-`ptxas`'s register and spill report and certify that `.so`. A register/spill profile
+**WHY THIS FILE EXISTS.** Two programs compile the same translation units. The graph
+compiles them into the shipped library (`bazel/flags.py` writes its flags from this file);
+`tools/ratify.py`'s compile path compiles them to read `ptxas`'s register and spill report
+for an architecture's first manifest. A register/spill profile
 is a property of the FLAGS as much as of the source, so if those two flag lists were
 maintained independently -- as they were, one restating the other in a comment that
 said it must not -- a divergence would produce ratified numbers that describe a binary
@@ -16,8 +17,14 @@ own flags, and include directories that only one of the two callers can know (to
 own header locations are resolved by `include_paths` at the call site).
 
 `--ptxas-options=-v` is included and is MANDATORY: `tools/ratify.py` parses exactly
-that report. `--use_fast_math` and the `-U__CUDA_NO_*` undefines are refused; the
-reasoning is in `setup.py`'s module docstring, which is the build's own contract.
+that report. It changes what the assembler PRINTS, not what it emits.
+
+REFUSED, each a codegen change that would arrive as a packaging change: the
+`-U__CUDA_NO_HALF_OPERATORS__` / `-U__CUDA_NO_HALF_CONVERSIONS__` /
+`-U__CUDA_NO_BFLOAT16_CONVERSIONS__` undefines and `--expt-extended-lambda`, which would
+undo torch's own defines and enable a language feature the measured build did not have;
+and `--use_fast_math`, since the tolerances are fp32 accumulation tolerances against an
+fp64 oracle, and fast-math silently changes the numeric contract they were derived under.
 """
 from __future__ import annotations
 
@@ -50,51 +57,18 @@ def torch_defines() -> list[str]:
     return [f"-D_GLIBCXX_USE_CXX11_ABI={abi}", *COMMON_NVCC_FLAGS]
 
 
-def torch_extension_cache_key_flags(name: str = "_C") -> list[str]:
-    """Flags `torch.utils.cpp_extension` adds to EVERY nvcc invocation in the
-    extension, for CACHE-KEY FIDELITY only -- NOT part of the ratified codegen
-    flag list (`nvcc_flags`/`torch_defines` above), and never passed to
-    `check_flags`/recorded in a manifest.
-
-    Two independently discovered sources, both host-side and inert for the
-    kernel-only `.cu` TUs `tools/ratify.py` compiles:
-    `--compiler-options '-fPIC'` (`_write_ninja_file`'s `cuda_flags +=
-    ['--compiler-options', "'-fPIC'"]`, unconditional for any CUDA compile) and
-    `-DTORCH_EXTENSION_NAME=<name> -DTORCH_API_INCLUDE_EXTENSION_H` plus, for a
-    `py_limited_api` extension, `-DPy_LIMITED_API=<torch's minimum CPython>` and this
-    project's stable-ABI target (`STABLE_DEFINES`), all added to every source.
-    `tools/ratify.py`'s standalone recompile has never modeled either
-    (deliberately: inert for the shipped kernel TUs, per the FLAG FIDELITY note
-    in `setup.py`'s module docstring), which was harmless before sccache
-    existed. It stops being harmless once a compiler cache is in the loop:
-    sccache's cache key is a function of the FULL argv, inert flags included,
-    so the two compiles of the same TU (`setup.py`'s ninja build, `ratify.py`'s
-    post-build recompile) hash to DIFFERENT keys without this and the second
-    can never hit the first's cache entry -- measured (twice: the first pass
-    caught only the defines and still missed 100%, because `--compiler-options
-    '-fPIC'` was still absent), `tools/sccache_toolchain.py`'s module docstring
-    and `docs/build.md#sccache`. Adding them to the COMPILE INVOCATION (not to
-    the ratified flag list) closes the gap without touching what the manifest
-    certifies: neither flag moves what `ptxas` assembles in a TU that never
-    expands a Python or torch macro and has no host code `-fPIC` would change the
-    codegen of, which is exactly why they were safe to omit from ratification
-    and are safe to add here.
-    """
-    return ["--compiler-options", "'-fPIC'", *extension_defines(name)]
-
-
-def extension_defines(name: str = "_C") -> list[str]:
-    """The defines torch's `CUDAExtension` gives every source of a `py_limited_api` extension, and this project's
-    stable-ABI target: what the graph's compile passes in its place (docs/build-graph.md#compile)."""
+def extension_defines() -> list[str]:
+    """The defines torch's `CUDAExtension` gives every source of a `py_limited_api` extension, the extension `_C`, and
+    this project's stable-ABI target: what the graph's compile passes in its place (docs/build-graph.md#compile)."""
     from torch.utils.cpp_extension import min_supported_cpython
-    return [f"-DTORCH_EXTENSION_NAME={name}", "-DTORCH_API_INCLUDE_EXTENSION_H",
+    return ["-DTORCH_EXTENSION_NAME=_C", "-DTORCH_API_INCLUDE_EXTENSION_H",
             f"-DPy_LIMITED_API={min_supported_cpython}", *STABLE_DEFINES]
 
 
 #: THE STABLE ABI TARGET (docs/build.md#stable-abi): the extension is built against torch's stable C shim and
 #: header-only types only, pinned to the oldest torch whose stable surface carries everything the host code uses (the
 #: native handle of the current CUDA stream arrived in 2.13), so one binary loads under every torch from there on. The
-#: build passes these to every compile (`setup.py`); ratification's recompile passes them for cache-key fidelity.
+#: graph passes these to every compile, and so does ratify's compile path.
 TORCH_MIN = (2, 13)
 STABLE_DEFINES = (f"-DTORCH_TARGET_VERSION=0x{(TORCH_MIN[0] << 56) | (TORCH_MIN[1] << 48):016x}",)
 
@@ -103,26 +77,12 @@ STABLE_DEFINES = (f"-DTORCH_TARGET_VERSION=0x{(TORCH_MIN[0] << 56) | (TORCH_MIN[
 HOST_CXX_FLAGS = ("-O3", "-std=c++20", "-DNDEBUG", *STABLE_DEFINES)
 
 
-#: THE `-MP` INSURANCE. It adds a phony make target per header to the dependency
-#: file, so a depfile consumer that meets a header which no longer exists treats the
-#: rule as dirty instead of erroring. On the pinned toolchain (nvcc 12.4) with
-#: ninja 1.13 the failure it insures against DOES NOT REPRODUCE -- deleting a header
-#: rebuilds cleanly with and without it, measured four ways
-#: (measured during the build refactor) -- so this is not the
-#: fix for a live defect. It is a zero-risk build-graph flag with no codegen effect
-#: whatever, kept because the graph it protects is also read by older ninja and by
-#: non-ninja consumers, and because the cost of being wrong about that is a wiped
-#: build directory.
-DEPFILE_FLAGS = ("-MP",)
-
-
 def gencodes(archs) -> list[str]:
     """`code=sm_XX` ONLY -- never `code=compute_XX`.
 
     A PTX entry would let the driver just-in-time compile this kernel for an
     architecture whose register and spill behaviour nobody measured, which is exactly
-    what the ratification manifest exists to exclude (closed-world rule 2, asserted in
-    `setup.py:assert_no_ptx`).
+    what the ratification manifest exists to exclude (closed-world rule 2).
     """
     return [f"-gencode=arch=compute_{a},code=sm_{a}" for a in archs]
 
@@ -132,7 +92,7 @@ def nvcc_flags(archs, nvcc_threads: int = 2) -> list[str]:
 
     `--threads` is the ARCH COUNT by default and not a core count: it parallelizes
     nvcc across `-gencode` targets, so beyond the number of targets it buys nothing
-    while multiplying the peak resident set (`MAX_JOBS` x `--threads` cicc processes).
+    while multiplying the peak resident set (jobs x `--threads` cicc processes).
     """
     return ["-O3", "-std=c++20", "-lineinfo", f"--threads={nvcc_threads}",
             #: MANDATORY, not optional: `tools/ratify.py` parses exactly this report.
@@ -184,7 +144,7 @@ def nvcc_flags(archs, nvcc_threads: int = 2) -> list[str]:
 #:
 #: So the constant is the HEADER's footprint, and it stops being a function of the arm
 #: count -- which is the property that makes it stable as arms are added. RE-MEASURE it
-#: when a translation unit joins ``setup.py::SOURCES``, or when torch's headers move.
+#: when a translation unit joins the hand units (``tools/kernels.py``), or when torch's headers move.
 GB_PER_NVCC_THREAD = 2.9
 
 
@@ -199,7 +159,7 @@ def default_max_jobs(nvcc_threads: int) -> int:
     single-arch iteration build on a 22 GB-free host, which are the settings the
     measured builds used.
 
-    The two parallelism axes MULTIPLY -- ``MAX_JOBS`` concurrent ``nvcc`` processes,
+    The two parallelism axes MULTIPLY -- the jobs' concurrent ``nvcc`` processes,
     each running ``--threads`` concurrent ``cicc`` processes -- so the divisor is
     per-thread and not per-job."""
     import psutil

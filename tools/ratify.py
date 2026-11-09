@@ -82,7 +82,7 @@ one on synthetic SASS). That is what makes a green run mean something: a gate th
 cannot fail is not a gate (`rewrite.md`'s vacuity discipline, applied to itself).
 
 MANIFEST FORMAT: `tools/manifests/<toolchain>/sm_XX.json`, ONE FILE PER ARCH, each
-`{"toolchain": {ptxas, defines, nvcc_flags, sass_hash_version, sccache}, "source":
+`{"toolchain": {ptxas, defines, nvcc_flags, sass_hash_version, mold}, "source":
 {csrc_sha256, date, image_digest}, "shards": {...},
 "entries": {<mangled name>:
 {...}}}`. The metadata blocks are siblings of the entries rather than reserved keys
@@ -94,8 +94,8 @@ file must agree on it: the per-arch split is a filing decision and may not becom
 split MATRIX.
 
 **WHY PER ARCH.** *"Does arch X have a ratified manifest?"* becomes a file-existence
-question, which is what `setup.py`'s rule-3 gate needs to ask before it compiles
-anything; a new architecture's bring-up is then one reviewable file in a PR instead of a
+question, which is what the build's rule-3 gate (the graph's record action) asks before
+anything is linked; a new architecture's bring-up is then one reviewable file in a PR instead of a
 1024-line diff; and an `--arch 89` run cannot restate measurements it did not take. The
 SPLIT IS FILING ONLY, and that is checked rather than asserted: the digest
 `_build_config.py` records is taken over the merged canonical record, so N files hash to
@@ -124,7 +124,6 @@ import gen_shards  # noqa: E402
 import kernels  # noqa: E402
 import mold_toolchain  # noqa: E402
 import sass  # noqa: E402
-import sccache_toolchain  # noqa: E402
 import toolchains  # noqa: E402
 from build_record import manifest_digest  # noqa: E402
 from csrc_stamp import INC as CSRC_STAMP_INC  # noqa: E402
@@ -178,72 +177,13 @@ def graph_parameters() -> tuple[tuple[str, ...], bool]:
     return archs, gen_shards.is_iteration(carry, decode, parts, trivial, archs, toolchain().archs())
 
 
-#: Set once by `gate_sccache()`, read by `_nvcc_command`. `None` means "compile
-#: with the real `nvcc` directly" -- the default until `gate_sccache()` runs, and
-#: the permanent state if no pinned cache is available.
-_NVCC_BIN: str | None = None
-_SCCACHE_INFO: dict | None = None
-_SCCACHE_GATED = False
-
-
-def gate_sccache() -> dict | None:
-    """Wire the pinned sccache wrapper in for THIS process's `nvcc` invocations.
-
-    Same resolution `setup.py`'s `_gate_sccache` uses (`tools/sccache_toolchain.py`)
-    so the two land in the same cache namespace: this is what turns the post-build
-    recompile (`_post_build_manifest_check` shells out to this file) into a cache
-    HIT against the build's own ninja compile, rather than a second cold compile of
-    the same ten translation units. Idempotent -- `main()` calls it once; nothing
-    else needs to.
-    """
-    global _NVCC_BIN, _SCCACHE_INFO, _SCCACHE_GATED
-    if _SCCACHE_GATED:
-        return _SCCACHE_INFO
-    _SCCACHE_GATED = True
-    info = sccache_toolchain.gate()
-    if info is not None:
-        real_nvcc = cuda_bin("nvcc")
-        wrapper, env = sccache_toolchain.wrap(real_nvcc, info["path"])
-        os.environ.update(env)
-        _NVCC_BIN = wrapper
-        print(f"sccache: wired for ratify.py's compile ({wrapper} -> {real_nvcc})")
-    _SCCACHE_INFO = info
-    return info
-
-
-def mold_provenance() -> dict | None:
-    """`{"version", "sha256"}` of the pin-checked `mold` -- PROVENANCE ONLY.
-
-    `ratify.py` never links anything (it recompiles TUs to object files to read
-    `ptxas`'s spill/register report, `setup.py`'s module docstring), so mold's
-    build-time gate (`mold_toolchain.link_flags()`, which RAISES on a pin miss)
-    has nothing to run against here. This records which linker built the
-    shipped `.so` for the manifest's `toolchain.mold` block, the same
-    "recorded, not ratchet-gated" treatment `sccache` gets -- a linker version
-    cannot move a SASS body. Best-effort: `None` if `mold` cannot be resolved at
-    all, so a ratify-only invocation (no extension build in this process) never
-    fails on a gate it does not need.
-    """
-    try:
-        return mold_toolchain.provenance()
-    except Exception:
-        return None
-
-
 MANIFEST_DIR = Path(__file__).resolve().parent / "manifests"
 SRC = Path(__file__).resolve().parents[1] / "csrc" / "rola" / "src"
 
-#: THE SAME FIXED DIRECTORY `setup.py`'s `RoLABuildExtension.finalize_options`
-#: pins `build_temp` to. Not a filing convenience: sccache's cache key for an
-#: `nvcc` invocation is sensitive to the invoking process's CWD even when every
-#: path in the command is already absolute (measured, `docs/build.md#sccache`),
-#: so this gate's compiles must run from the SAME directory the build's ninja
-#: compile just ran from, or the post-build recompile can never hit the build's
-#: own cache entry -- and a plain run of this gate's compile path by a developer
-#: must use the same fixed directory too, so re-ratifying twice in a row (or
-#: after a build) hits by construction rather than by the accident of an
-#: unchanged shell CWD.
-COMPILE_CWD = Path(__file__).resolve().parents[1] / "build" / "temp"
+
+def _compile_dir() -> Path:
+    """The compile path's working directory, in the dev config's scratch, its per-unit records beside it."""
+    return sass.scratch("ratify")
 
 
 #: THE TRANSLATION UNITS THIS GATE COMPILES ARE THE BUILD'S: `tools/kernels.py`'s one list, so every kernel the
@@ -268,14 +208,13 @@ def tu_paths(shards: tuple[str, ...] | None = None, arms=None) -> list[Path]:
     return paths
 
 
-#: The vendored CuTe/CUTLASS headers, in the SAME order `setup.py` passes them
+#: The vendored CuTe/CUTLASS headers, in the SAME order the graph passes them
 #: (repository headers first). This gate's whole premise is that it compiles the
 #: shipped translation units under the shipped kernel's flags; an include path the
 #: extension has and this gate does not is that premise failing silently.
 CUTLASS_INC = Path(__file__).resolve().parents[1] / "csrc" / "third_party" / "cutlass" / "include"
 
-#: The extension's own `-gencode` targets (`setup.py`'s `ROLA_CUDA_ARCHS`, default
-#: `80;86`), overridable per run with `--arch`. BOTH are measured by default, because
+#: The compile path's `-gencode` targets by default, overridable per run with `--arch`. BOTH are measured by default, because
 #: both are in the shipped fat binary and the two allocators reach different
 #: answers: sm_80 admits more CTAs by shared memory, so its bound is a different
 #: number and its spill profile is a different measurement.
@@ -291,7 +230,7 @@ def manifest_path(arch: str, name: str | None = None) -> Path:
     """ONE FILE PER ARCH, per toolchain.
 
     *"Does arch X have a ratified manifest?"* is then a FILE-EXISTENCE question --
-    which is what `setup.py`'s rule-3 gate needs to ask before it compiles anything,
+    which is what the build's rule-3 gate (the graph's record action) asks first,
     and what makes a new-architecture bring-up a single reviewable file in a PR
     rather than a 1024-line diff nobody can read. The union of the files is the
     ratification; `load_manifest` is the only thing that forms it.
@@ -767,146 +706,28 @@ def write_csrc_stamp(digest: str | None = None) -> Path:
     return path
 
 
-#: The build's own record of exactly what it ran, at the fixed directory
-#: `setup.py` and this file's `COMPILE_CWD` share.
-NINJA_FILE = COMPILE_CWD / "build.ninja"
-
-
-def _ninja_cuda_template() -> tuple[str, str, str] | None:
-    """`(nvcc, cuda_cflags, cuda_post_cflags)` read VERBATIM out of the build's
-    own `build.ninja`, or `None` if no build has ever run from `COMPILE_CWD`.
-
-    See `_nvcc_command`'s docstring for why this exists. Three variables, read
-    by name rather than by line position, so a torch/ninja version that
-    reorders the file (but keeps the same variable names) still parses.
-    """
-    if not NINJA_FILE.exists():
-        return None
-    text = NINJA_FILE.read_text()
-
-    def var(name: str) -> str | None:
-        m = re.search(rf"^{name} = (.*)$", text, re.M)
-        return m.group(1) if m else None
-
-    nvcc, cuda_cflags, cuda_post_cflags = var("nvcc"), var("cuda_cflags"), var("cuda_post_cflags")
-    if nvcc is None or cuda_cflags is None or cuda_post_cflags is None:
-        return None
-    #: A build directory another toolkit wrote is not this ratification's argv: its include paths name that toolkit.
-    includes = {os.path.realpath(flag[2:]) for flag in shlex.split(cuda_cflags) if flag.startswith("-I")}
-    if os.path.realpath(os.path.join(dev_config.cuda_home(), "include")) not in includes:
-        return None
-    #: AN ITERATION BUILD'S ARGV MUST NEVER BECOME A MANIFEST.  Reusing `build.ninja` VERBATIM is a cache-key fidelity win and
-    #: was also a trap: an arm-subset build wrote its `-D` into those very flags, and a
-    #: later `--write` -- run in a clean environment, with the env var no longer set --
-    #: inherited the SUBSET and certified a manifest for arms nobody built.  It happened:
-    #: a manifest carrying 3 of the carry family's arms was written and reported success,
-    #: and only the post-build instantiation-set gate caught it.
-    #:
-    #: The generated selection header removes the trap rather than detecting it.  The arm selection is no longer a
-    #: `-D` on any TU's argv at all -- it is a generated header (`_write_carry_selection`
-    #: below), written for THIS run's scope (replaced when its text differs) before anything that
-    #: includes it compiles.  So the reused `build.ninja` argv has nothing arm-set-
-    #: specific left in it to strip; the stripping-and-resubstituting dance
-    #: (`_without_carry_arms`) is dead code and deleted with it.
-    return nvcc, cuda_cflags, cuda_post_cflags
-
-
-def _without_gencode(flags: list[str]) -> list[str]:
-    """`flags` with every `-gencode` dropped, in both of nvcc's spellings
-    (`-gencode=...` and a separated `-gencode ...`): a flag naming WHAT was compiled rather than HOW is never inherited
-    from the last build, or an ITERATION build would narrow the next ratification to its own subset and pass. No arm
-    subset is a flag: every family's selection is a generated header this gate writes for its own scope
-    (docs/build.md#arm-subset)."""
-    out: list[str] = []
-    drop_next = False
-    for f in flags:
-        if drop_next:
-            drop_next = False
-            continue
-        if f in ("-gencode", "--generate-code"):
-            drop_next = True
-            continue
-        if f.startswith(("-gencode=", "--generate-code=")):
-            continue
-        out.append(f)
-    return out
-
-
 def _nvcc_command(arches, source: Path, obj_path: str) -> list[str]:
-    """The extension's own compile flags, IMPORTED rather than restated.
-
-    This gate compiles the same translation units the build does, so a flag list
-    maintained separately from `setup.py`'s would produce ratified numbers that
-    describe a binary nobody ships. `tools/build_flags.py` is the one source for
-    the CODEGEN-relevant flags (`ratified_flags()`, checked against the manifest
-    by `check_flags()` -- untouched by anything below).
-
-    **THE ARGV ITSELF**, though, is reconstructed here two different ways, and
-    which one runs is a CACHE-KEY FIDELITY question, not a codegen one:
-
-    * If `COMPILE_CWD/build.ninja` exists (a build has run from the fixed
-      directory `setup.py`'s `RoLABuildExtension.finalize_options` pins), reuse
-      its `cuda_cflags`/`cuda_post_cflags` VERBATIM. This replaced a hand
-      reconstruction that was independently wrong in three ways, each found only
-      by a full build measuring 0% sccache hits and re-deriving the real argv
-      from a captured `build.ninja` (`docs/build.md#sccache`): missing the
-      torch-injected pybind/`TORCH_EXTENSION_NAME` defines, missing
-      `--compiler-options '-fPIC'`, and using `-isystem` where `setup.py`'s
-      actual `CUDAExtension(include_dirs=...)` path emits plain `-I` for every
-      include including torch's own (a `distutils`/`setuptools` behavior
-      distinct from `torch.utils.cpp_extension`'s JIT-`load()` path, which DOES
-      use `-isystem` -- the two are not the same code path and this file
-      compiled against the wrong one's convention). Reconstructing by hand is an
-      unbounded surface against future torch/setuptools versions; reusing the
-      build's own record is correct BY CONSTRUCTION instead of by transcription.
-    * Otherwise (no build has ever run from `COMPILE_CWD` -- a fresh checkout
-      before the first `pip install -e .`), fall back to the independent
-      reconstruction below. This path has no cache to collide with yet, so its
-      only job is to compile correctly, which `ratified_flags()`'s own
-      byte-for-byte record covers.
-
-    **THE ONE FLAG THAT IS NOT INHERITED IS `-gencode`.** The targets are this
-    RUN's (`--arch`, defaulting to :data:`DEFAULT_ARCHES`), never the last
-    build's. Inheriting them made a single-arch build (`ROLA_CUDA_ARCHS=86`)
-    silently narrow the next ratification to sm_86 and then refuse with "the
-    compile reported NO entries for sm_80" -- a message that reads as source
-    drift and is not one. That is the extension-trap family: an environment fact
-    the tool could not see, surfacing as a claim about the tree. `-gencode` is
-    already excluded from :data:`_NON_CODEGEN_FLAG_PREFIXES`' ratified list for
-    the same reason it is substituted here: it names targets, and the per-arch
-    manifest filing is what records them.
-    """
-    tpl = _ninja_cuda_template()
-    if tpl is not None:
-        nvcc, cuda_cflags, cuda_post_cflags = tpl
-        cmd = [_NVCC_BIN or nvcc, "--generate-dependencies-with-compile",
-               "--dependency-output", f"{obj_path}.d"]
-        cmd += _without_gencode(shlex.split(cuda_cflags))
-        cmd += ["-c", str(source), "-o", obj_path]
-        cmd += _without_gencode(shlex.split(cuda_post_cflags))
-        return cmd + build_flags.gencodes(arches)
-
+    """The compile path's nvcc command for `source`: the graph's compile of it (docs/build-graph.md#compile) -- the
+    codegen flags `tools/build_flags.py` holds for both, torch's extension defines, the include roots in the graph's
+    order (the repository's, CUTLASS's, the generated headers, then torch's and Python's) -- with a dependency file for
+    the per-unit record. The `-gencode` targets are THIS RUN's (`--arch`, the toolchain's ratified architectures by
+    default), never a build's: a flag naming what was compiled, inherited, would narrow the ratification to a single-arch
+    build's subset (docs/build.md#arm-subset). `ratified_flags()` records the codegen flags in the manifest and
+    `check_flags()` compares them."""
     #: torch.utils.cpp_extension resolves its toolkit when first imported: a ratification compiles against the pinned one
     os.environ["CUDA_HOME"] = dev_config.cuda_home()
     import torch.utils.cpp_extension as ext
 
-    #: `build/generated` alongside `SRC`/`CUTLASS_INC` -- mirrors `setup.py`'s
-    #: `include_dirs` exactly, since this gate's whole premise is compiling
-    #: under the same flags the extension does, and the generated selection header
-    #: now lives there instead of behind a `-D`.
-    cmd = [_NVCC_BIN or cuda_bin("nvcc"), "-c", str(source),
-           f"-I{SRC}", f"-I{CUTLASS_INC}", f"-I{gen_shards.GENERATED_DIR}"]
+    cmd = [cuda_bin("nvcc"), "--generate-dependencies-with-compile", "--dependency-output", f"{obj_path}.d",
+           "-c", str(source), f"-I{SRC}", f"-I{CUTLASS_INC}", f"-I{gen_shards.GENERATED_DIR}"]
     for inc in ext.include_paths(device_type="cuda"):
         cmd += ["-I", inc]
     cmd += ["-I", sysconfig.get_paths()["include"]]
     cmd += build_flags.torch_defines()
     cmd += build_flags.nvcc_flags(arches)
-    #: CACHE-KEY FIDELITY, not codegen fidelity -- see
-    #: `build_flags.torch_extension_cache_key_flags`'s docstring. Deliberately NOT
-    #: part of `ratified_flags()`/the manifest's `nvcc_flags` block: these flags
-    #: are inert in every TU this gate compiles, so they must never gate a ratchet
-    #: or trigger a re-ratification on their own.
-    cmd += build_flags.torch_extension_cache_key_flags()
+    #: the graph's units are position-independent objects compiled with torch's extension defines: host-side, inert
+    #: in the codegen this gate reads, passed so the compile is the graph's
+    cmd += ["-Xcompiler", "-fPIC", *build_flags.extension_defines()]
     return cmd + ["-o", obj_path]
 
 
@@ -1000,10 +821,10 @@ def _parse_report(stderr: str) -> tuple[dict, list[str]]:
     return entries, unhonored
 
 
-#: WHERE A MEASURED TRANSLATION UNIT IS REMEMBERED.  Beside the build's own
-#: `build.ninja`, in the fixed directory `setup.py` pins, because the record is a
-#: property of that build tree and must die with it.
-RATIFY_CACHE = COMPILE_CWD / "ratify_cache"
+#: WHERE A MEASURED TRANSLATION UNIT IS REMEMBERED: beside the compile path's working directory, in the scratch.
+def _cache_dir() -> Path:
+    return _compile_dir() / "units"
+
 
 _FILE_SHA: dict[str, str] = {}
 
@@ -1056,7 +877,7 @@ def _cache_read(source: Path, cmd: list[str]) -> dict | None:
     The stored DEPENDENCY LIST is what the fingerprint is recomputed over -- the
     record has to say what it depended on, or "unchanged" is a claim about nothing.
     """
-    rec_path = RATIFY_CACHE / f"{source.stem}.json"
+    rec_path = _cache_dir() / f"{source.stem}.json"
     if not rec_path.exists():
         return None
     try:
@@ -1070,8 +891,8 @@ def _cache_read(source: Path, cmd: list[str]) -> dict | None:
 
 def _cache_write(source: Path, cmd: list[str], deps: list[str], entries: dict,
                  unhonored: list[str], scan: dict) -> None:
-    RATIFY_CACHE.mkdir(parents=True, exist_ok=True)
-    (RATIFY_CACHE / f"{source.stem}.json").write_text(json.dumps(
+    _cache_dir().mkdir(parents=True, exist_ok=True)
+    (_cache_dir() / f"{source.stem}.json").write_text(json.dumps(
         {"fingerprint": _tu_fingerprint(cmd, deps), "deps": deps, "entries": entries,
          "unhonored": unhonored, "scan": scan}, indent=1, sort_keys=True) + "\n")
 
@@ -1097,10 +918,7 @@ def measure_units(arches, objdir: str, sources: list[Path], arms=None,
     identical compile, and the thing that decides identity is the same content hash the
     freshness trigger uses, applied per unit instead of per tree.
     """
-    #: WRITE THIS RUN'S SELECTION HEADER, ON EVERY RUN, BEFORE COMPILING ANYTHING
-    #:. This replaces the old `-D`-substitution dance
-    #: (`_ninja_cuda_template`'s `_without_carry_arms`, now gone) with the header
-    #: equivalent, and it is not optional: docs/build.md records the exact trap
+    #: WRITE THIS RUN'S SELECTION HEADER, ON EVERY RUN, BEFORE COMPILING ANYTHING, and it is not optional: docs/build.md records the exact trap
     #: this prevents -- "an arm-subset build wrote its -D into those very flags, and
     #: a later --write ... inherited the SUBSET and certified a manifest for arms
     #: nobody built." The old fix was argv-substitution; the header gets the same
@@ -1120,14 +938,14 @@ def measure_units(arches, objdir: str, sources: list[Path], arms=None,
         gen_shards.write_if_changed(gen_shards.GENERATED_DIR / gen_shards.DECODE.header,
                                     gen_shards.decode_selection_header(range(len(gen_shards.DECODE_ARMS))))
         gen_shards.write_builds(arches)
-    #: AND THE CSRC STAMP, for the same reason and from the same function `setup.py`
-    #: calls: the stamp sites include it, so a gate that did not write it would
+    #: AND THE CSRC STAMP, for the same reason and from the same function the graph's
+    #: stamp header runs: the stamp sites include it, so a gate that did not write it would
     #: measure a tree nobody builds.
     write_csrc_stamp()
 
     jobs = jobs or build_flags.default_max_jobs(2)
     t0 = time.perf_counter()
-    COMPILE_CWD.mkdir(parents=True, exist_ok=True)
+    compile_dir = _compile_dir()
 
     def one(source: Path):
         obj = str(Path(objdir) / f"{source.stem}.o")
@@ -1135,7 +953,7 @@ def measure_units(arches, objdir: str, sources: list[Path], arms=None,
         rec = _cache_read(source, cmd)
         if rec is not None:
             return source, rec, True
-        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(COMPILE_CWD))
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(compile_dir))
         if proc.returncode != 0:
             sys.stderr.write(proc.stderr)
             raise SystemExit(f"{source.name} FAILED to compile (rc={proc.returncode})")
@@ -1658,10 +1476,9 @@ def main() -> int:
                              f"{len(gen_shards.CARRY_ARMS) - 1})")
     sources = [] if a.graph else tu_paths(tuple(a.shard) if a.shard else None, arms)
 
-    #: the graph compiles with no compiler cache and links with its own mold
-    sccache_info = None if a.graph else gate_sccache()
+    #: the linker of the measured library, the graph's mold; the compile path links nothing
     mold_info = ({"version": mold_toolchain.mold_version(_graph_bin("mold")),
-                  "sha256": mold_toolchain.binary_sha256(_graph_bin("mold"))} if a.graph else mold_provenance())
+                  "sha256": mold_toolchain.binary_sha256(_graph_bin("mold"))} if a.graph else None)
     version = ptxas_version()
     #: every SASS body below is read with the record's disassemblers, or it is not the ratification's: checked before
     #: the first read, so `--write` and `--census` record nothing an unchecked reader produced
@@ -1721,30 +1538,11 @@ def main() -> int:
                                     #: a record that cannot say what produced its
                                     #: hashes cannot certify them.
                                     "sass_hash_version": SASS_HASH_VERSION,
-                                    #: THE COMPILER CACHE, per the input-closure rule
-                                    #: (tools/sccache_toolchain.py). `None` if this
-                                    #: ratification ran uncached. Recorded, not
-                                    #: ratchet-gated: sccache is a measured-transparent
-                                    #: pass-through (docs/build.md#sccache) so its
-                                    #: version cannot move the register/spill numbers
-                                    #: the way a `ptxas` swap can -- drift is REPORTED
-                                    #: (below), not FAILED, the same treatment register
-                                    #: drift gets.
-                                    "sccache": {"version": sccache_info["version"],
-                                                "sha256": sccache_info["sha256"]}
-                                               if sccache_info else None,
-                                    #: THE LINKER, per the constitution's NO
-                                    #: FALLBACKS rule extended to the toolchain
-                                    #:: setup.py
-                                    #: links with mold unconditionally, gated hard
-                                    #: at build time by tools/mold_toolchain.py.
-                                    #: Recorded here for PROVENANCE, same
-                                    #: treatment as sccache above -- a linker does
-                                    #: not touch codegen, so its version is
-                                    #: reported, never ratchet-gated against a
-                                    #: SASS body. `None` only when this ratify-only
-                                    #: process (no extension link in this run)
-                                    #: could not resolve `mold` to ask its version.
+                                    #: THE LINKER of the measured library, for
+                                    #: PROVENANCE: a linker does not touch codegen,
+                                    #: so its version is recorded, never compared
+                                    #: against a SASS body. `None` on the compile
+                                    #: path, which links nothing.
                                     "mold": {"version": mold_info["version"],
                                              "sha256": mold_info["sha256"]}
                                             if mold_info else None},
@@ -1780,14 +1578,6 @@ def main() -> int:
     ok = check_toolchain(version, manifest["toolchain"]["ptxas"])
     ok = check_defines(manifest) and ok
     ok = check_flags(manifest) and ok
-    #: REPORT, not FAIL (see the `--write` block's comment on why): sccache cannot
-    #: move a ratified number, so a version drift here is provenance, not a ratchet.
-    manifest_sccache = manifest["toolchain"].get("sccache")
-    this_sccache = {"version": sccache_info["version"], "sha256": sccache_info["sha256"]} \
-        if sccache_info else None
-    if manifest_sccache != this_sccache:
-        print(f"sccache drift (REPORT only)  manifest: {manifest_sccache}  "
-              f"this run: {this_sccache}")
     #: The freshness verdict is REUSED rather than recomputed: the body gate reads
     #: differently on each side of it, and two independent computations of "is the
     #: source digest current" could disagree.

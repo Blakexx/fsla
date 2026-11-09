@@ -301,7 +301,7 @@ def run_one(sanitizer: str, python: str, family: str, tool: str, timeout: int) -
     if ok and not re.search(want, out):
         return False, ("VACUOUS: the wrapped pytest exited 0 without passing a test (a skip "
                        "or an empty selection). The kernel never ran, so this pair measures "
-                       "nothing -- build the cell's arm (ROLA_CARRY_ARMS=all) and re-run.\n"
+                       "nothing -- build the cell's arm (`bazel run //:library`, every arm) and re-run.\n"
                        + "\n".join(out.splitlines()[-20:]))
     #: THE DECLARED EXCEPTION IS ADJUDICATED, NOT ASSUMED. The tool ran, the whole
     #: report is read, and a pair with a declaration passes ONLY if every record in it

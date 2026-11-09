@@ -195,11 +195,12 @@ re-wakes stopped agents.
   "I'd rather re-scope than build something wrong and fix it later." A re-scoped stage restarts its
   cycle budget from the amended spec. Amendments that do not change the design (count formats, report
   shape, housekeeping) go in the NEXT brief instead.
-- Every kernel family carries an arm-subset knob (the carry's ROLA_CARRY_ARMS); a family without one gets it
+- Every kernel family carries an arm-subset knob (the carry's `--//:carry_arms`); a family without one gets it
   before its next build.
 §15 addendum (build parallelism, 2026-08-27): cicc peaks ~1 GB post-S1, on a 16-CPU / 24 GB machine.
 Gate builds: exclusive lock, MAX_JOBS=8, NVCC_THREADS=2. Iteration builds: one of two parallel slots
-(then tools/build/build_lock.sh; now the host budget `setup.py` takes, §23), MAX_JOBS=4, single-arch, arm-subset. Re-derive these numbers if
+(then tools/build/build_lock.sh; now the host budget the front door takes for every build, §23), MAX_JOBS=4,
+single-arch, arm-subset. Re-derive these numbers if
 cicc's peak changes (a per-leaf nest can push it back to 6 GB — §1).
 
 ## <a id="s16"></a>§16 — Ratify at milestones, not stages (Blake, 2026-08-28)
@@ -270,8 +271,8 @@ A tool or build step that could run one of two ways — a linker present or not,
 a lint with or without its compdb, a lock taken or a slot — REFUSES with the command that fixes it; it
 never silently takes the other path. Legitimate MODES (the §16 strict-manifest tiering; a comparison
 arm kept as a yardstick) are keyed on an explicit declared variable and carry their exit condition on
-a card. Applied: mold as the only linker; sccache pin miss refuses; a unit lint with no verdict fails; one
-build-lock discipline (slots as the parameter).
+a card. Applied: mold as the only linker; a unit lint with no verdict fails; one build-lock discipline (slots as the
+parameter).
 
 ## <a id="comment-density"></a>§10 addendum (law, 2026-08-28): THE COMMENT-DENSITY GATE
 The constitution's self-documenting-code clause is gated mechanically: `tools/lint/lint_standards.py`
@@ -284,9 +285,8 @@ carry_kernel.cuh 35%, decode.cu 32%, facts_kernel.cuh 32%.
 ## §14 addendum 2 (law, 2026-08-28, after Blake had to shut WSL down): ONE MACHINE, ONE COMPILE BUDGET
 Three tooling agents each ran a full rebuild concurrently (MAX_JOBS=4 each -> 12+ cicc + 3 links) and
 pegged the host at 100% CPU for 10+ minutes. The compile budget is MACHINE-WIDE and TOOL-ENFORCED, not
-brief-enforced: setup.py (via the one build-lock discipline) takes a machine-wide slot before
-compiling and REFUSES/waits when the slots are full — a brief cannot forget it. Until that lands: at
-most TWO agents that build at once; every build goes through tools/build/build_lock.sh (since landed in setup.py and `rola_devtools.locks.host`, §23); an agent checks
+brief-enforced: the graph's front door takes machine-wide slots for every build (`bazel/front_door.py` over
+`rola_devtools.locks.host`, §23) and waits when they are full — a brief cannot forget it. An agent checks
 `pgrep -c cicc` before launching and never wraps a full build in hyperfine (bounded `--runs 3`, on the
 LINK step only). Coordinator error recorded: two briefs omitted the build lock.
 
@@ -344,7 +344,7 @@ ever compared. From here the floor is a GATE, per component, before composition:
   after the core is at its floor.
 
 ## <a id="s20"></a>§20 — ptxas SIGNATURES (law, 2026-09-09): what the SASS gate reads, and the rule behind each
-`tools/sass_gate.py` runs after every build (`setup.py`'s post-build gate, iteration builds included), on
+`tools/sass_gate.py` runs after every build (the library's gate action, iteration builds included), on
 every function of every cubin, and fails on any of these -- and on a kernel the source defines that no cubin
 carries; each was re-learned by trial this week and costs a rebuild when missed.
 - LDL/STL > 0 or a stack frame: LOCAL MEMORY. Causes: a runtime index into a register array or
@@ -484,9 +484,8 @@ manual steps, and the dev container had drifted for two weeks unnoticed.
 1. ONE LOCATION. Every value that depends on the machine is declared in `tools/dev_config.py` and read from the dev
    config directory (`~/.config/rola/`, one JSON file a section) through that loader. A tool never reads a setting from
    the process environment and never spells a machine path; the environment variables that remain are the loader's
-   listed HANDOFFS (a parent process passing a resolved value to a child) and BUILD_PARAMETERS (what one build is).
-   `tools/lint/lint_standards.py` refuses any other read and any CUDA or Windows path spelled in tools, benchmarks or
-   setup.py. A replaced variable is deleted, never kept as a fallback (§18).
+   listed HANDOFFS (a parent process passing a resolved value to a child); what one build is, is the graph's settings.
+   `tools/lint/lint_standards.py` refuses any other read and any CUDA or Windows path spelled in tools or benchmarks. A replaced variable is deleted, never kept as a fallback (§18).
 2. ONE INIT. `tools/dev.py`'s commands, run as the graph's targets of the same name (`bazel run //:init`, `//:check`,
    `//:clock`, `//:dev_env`, `//:worktree`), are the only thing that sets up a host (config, pinned tools, commit gate,
    clock, each checkout's venv, worktrees) and the only thing that checks one (`check`: every dependency a row, exit 1 on
@@ -912,10 +911,11 @@ method is a procedure with a gate, not a memory.
 ENFORCED: `tools/lab.py run` reads each budgeted kernel's executed instructions by class (ncu's per-opcode counts),
 prints them against the budget, and refuses to record a variant over it (`--force` to record a known-over variant on
 purpose). `tools/sass_gate.py` reds, on every function of every build, conversion-unit instructions and global
-accesses other than `cp.async` inside an innermost MMA loop; the kernels built before the rule are its named debts
-(the intra's F2I epilogue, the produce kernel's unstaged operands, the fold's past-16 records), each with what
-replaces it, and the list only shrinks; a lab variant that keeps one on purpose declares STEP_XU or STEP_GLOBAL, and
-an instrument's probe declares it beside its source (§20).
+accesses other than `cp.async` inside an innermost MMA loop; the kernels built before the rule whose steps still read
+global memory are its named debts (the produce kernel's unstaged operands, the fold's past-16 records), each with what
+replaces it, and the list only shrinks; no kernel keeps the conversion unit in a step, so it names no such debt. A
+lab variant that keeps one on purpose declares STEP_XU or STEP_GLOBAL, and an instrument's probe declares it beside its
+source (§20).
 `tools/lab.py run` also records no variant whose output check failed, and (past the experiments recorded before the
 rule, its named debts) none without a check or a stated reason, and builds no MMA kernel without a budget or exemption.
 Measured: `read_image` (docs/lab/read_image.md).
@@ -1037,8 +1037,8 @@ gated, and an instrument's missing target is a red.
 7. A/B IS THE DECLARED SUITE: two builds are compared only in one interleaved, clock-locked session -- rola-bench's
    suite with the baseline as a reference checkout, pruned to the sessions (`rola-bench`) -- or by ncu's cycles of one
    launch each; times from separate unlocked runs are never compared.
-ENFORCED: items 3, 4 and 5 by the tools named; the SASS gate runs inside every build (`setup.py`), so an under-line
-step fails the build. Item 2's predictions are owed for the carry by the window's design (its first form), and its
+ENFORCED: items 3, 4 and 5 by the tools named; the SASS gate runs inside every build (the library's gate action), so
+an under-line step fails the build. Item 2's predictions are owed for the carry by the window's design (its first form), and its
 ledger check is red until they exist. Measured 2026-10-16 at 87240898: the carry's worst step loops cover 44.2% and
 39.6% (its two arms, sm_86) and 23.6% and 20.4% on sm_80's eight-cycle MMA; its components peak at 204-252 live
 registers.

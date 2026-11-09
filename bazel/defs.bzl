@@ -72,7 +72,7 @@ include_root = rule(
         "hdrs": attr.label_list(allow_files = True),
         "roots": attr.string_list(doc = "the include roots, relative to the package"),
     },
-    doc = "Source headers under `-I` roots, as setup.py's include list has them: searched before any dependency's.",
+    doc = "Source headers under `-I` roots, searched before any dependency's (docs/build-graph.md#compile).",
 )
 
 def _arm_set_impl(ctx):
@@ -120,8 +120,8 @@ _archs_transition = transition(
     outputs = ["@rules_cuda//cuda:archs", "@rules_cuda//cuda:runtime"],
 )
 
-#: the libraries the extension links by path, as setup.py's link does: torch's two, the CUDA runtime and the driver's
-#: stub (the real driver at load); each NEEDED by its soname, and no search path written
+#: the libraries the extension links by path: torch's two, the CUDA runtime and the driver's stub (the real driver at
+#: load); each NEEDED by its soname, and no search path written
 _CUDA_LINKED = ("libcudart.so.13", "libcuda.so")
 
 _INSTALL = """\
@@ -149,8 +149,8 @@ echo "installed $(basename "$dest")/_C.abi3.so and _build_config.py, and the bui
 """
 
 def _link(ctx, so):
-    """Link `deps` into the shared library `so` as setup.py's link does: mold, torch's libraries and the CUDA runtime
-    by path, each NEEDED by its soname."""
+    """Link `deps` into the shared library `so`: mold, torch's libraries and the CUDA runtime by path, each NEEDED by
+    its soname."""
     cc_toolchain = find_cc_toolchain(ctx)
     features = cc_common.configure_features(
         ctx = ctx,
@@ -432,6 +432,38 @@ ratify_run = rule(
     executable = True,
     attrs = {"census": attr.label(mandatory = True, allow_single_file = True, doc = "the census record (`ratify_census`)")},
     doc = "`bazel run` ratify on the graph's build in the checkout: its arguments are ratify's (`--write`, `--census`).",
+)
+
+_WHEELS = """\
+#!/bin/bash
+# the wheels of the graph's library (bazel/defs.bzl's rola_wheels): `tools/wheels.py` in the checkout, on a clean
+# commit, ratify's verdict first; the census record's and the library's paths are relative to the runfiles
+set -euo pipefail
+runfiles="$PWD"
+cd "${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
+exec {venv}/bin/python3 tools/wheels.py --census "$runfiles/{census}" --runfiles "$runfiles" \\
+    --library "$runfiles/{so}" --record "$runfiles/{record}" "$@"
+"""
+
+def _wheels_impl(ctx):
+    files = ctx.attr.library[DefaultInfo].files.to_list()
+    so = [f for f in files if f.basename == "_C.abi3.so"][0]
+    record = [f for f in files if f.basename == "_build_config.py"][0]
+    script = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(script, _WHEELS.format(venv = shell.quote(VENV), census = ctx.file.census.short_path,
+                                             so = so.short_path, record = record.short_path), is_executable = True)
+    runfiles = ctx.runfiles(files = [so, record]).merge(ctx.attr.census[DefaultInfo].default_runfiles)
+    return [DefaultInfo(executable = script, runfiles = runfiles)]
+
+rola_wheels = rule(
+    implementation = _wheels_impl,
+    executable = True,
+    attrs = {
+        "library": attr.label(mandatory = True, doc = "the extension (`rola_extension`), its library and record"),
+        "census": attr.label(mandatory = True, allow_single_file = True, doc = "its census (`ratify_census`)"),
+    },
+    doc = "`bazel run` the two wheels of the graph's library into the checkout's dist/ (docs/build.md#wheels): a " +
+          "clean commit, ratify's verdict on the build, the record a shippable build's.",
 )
 
 _TREE_TEST = """\

@@ -16,7 +16,7 @@ it at the same commit, and `bazel run //:init` links the `workspace.devtools` ch
 
 | file | keys |
 |---|---|
-| `toolchain.json` | `cuda_home` (a CUDA toolkit older checkouts' files name; this tree uses the pinned one, `cuda_home()`), `ncu` (a Nsight Compute CLI older checkouts' files name; this tree finds the pinned one by its pin, `ncu()`, which refuses until init installed it), `sccache`, `sccache_enabled`, `mold`, `clang_tidy` (the host's clang-tidy, which checkouts before the build graph's unit lints install and read; this tree reads none of it), `bazel` (where the bootstrap links the pinned bazelisk on PATH) |
+| `toolchain.json` | `cuda_home` (a CUDA toolkit older checkouts' files name; this tree uses the pinned one, `cuda_home()`), `ncu` (a Nsight Compute CLI older checkouts' files name; this tree finds the pinned one by its pin, `ncu()`, which refuses until init installed it), `sccache`, `sccache_enabled` and `mold` (older checkouts' compiler cache and linker; this tree reads none of them, its graph links with its own mold), `clang_tidy` (the host's clang-tidy, which checkouts before the build graph's unit lints install and read; this tree reads none of it), `bazel` (where the bootstrap links the pinned bazelisk on PATH) |
 | `host.json` | `nvcc_threads`, `build_jobs`, `budget_slots`, `lock_dir`, `gpu_lock`, `gpu_shared_slots`, `nice`, `locks_trace`, `scratch`, `build_cache` (the build systems' caches: the graph's under `bazel/`), `tools_dir`, `windows_system32`, `wsl_lib` |
 | `clock.json` | `ghz`, `lock`, `unlock` (null `ghz`: the host measures unlocked) |
 | `store.json` | `root` (the measurements store: a rola-results checkout) |
@@ -55,16 +55,13 @@ resolved value and the file it came from ([dev.md](dev.md)).
 - `detect()` returns what `init` writes.
 - `reload()` rereads the files, here and in the locks' reader, for a test that points `ROLA_DEV_CONFIG` at a
   temporary directory.
-  The `dev_config_env` fixture in `tests/conftest.py` does this.
 
-**Environment variables that remain.** Two lists in the loader name them, and nothing else may read one.
+**Environment variables that remain.** One list in the loader names them, and nothing else may read one.
 `tools/lint/lint_standards.py` enforces this: it checks Python reads through the syntax tree (constants and
 f-string prefixes resolved) and shell expansions.
 - `HANDOFFS`: values one of the tree's own processes passes to a child it starts.
   - `ROLA_DEV_CONFIG` itself.
-  - The gated `nvcc` and `sccache` that `setup.py` passes to the compiler wrapper.
-  - The inputs `setup.py` sets for torch (`CUDA_HOME`, which ratify and the header self-check set too, `MAX_JOBS`,
-    `PYTORCH_NVCC`).
+  - The toolkit ratify's compile path and the header self-check set for torch's extension module (`CUDA_HOME`).
   - The graph's copy of the pinned toolkit a test tier hands its tests (`ROLA_CUDA_HOME`).
   - pytest-xdist's worker id.
   - The agent harness's campaign directory.
@@ -72,9 +69,9 @@ f-string prefixes resolved) and shell expansions.
   - The Bazel release bazelisk hands the graph's front door (`BAZEL_REAL`).
   - The shared store and `host.nvcc_threads`, which the front door hands the graph's environment (`ROLA_GRAPH_STORE`,
     `ROLA_NVCC_THREADS`).
-- `BUILD_PARAMETERS`: what one build is, set per invocation, because pip passes nothing else to `setup.py`:
-  `ROLA_CUDA_ARCHS`, `ROLA_CARRY_ARMS`, `ROLA_DECODE_ARMS`, `ROLA_CARRY_PARTS`,
-  `ROLA_STRICT_MANIFEST`, `ROLA_SKIP_POST_BUILD_RATIFY`.
+
+What one build is, is the graph's settings (`--//:archs` and the arm and part settings, `docs/build-graph.md#compile`),
+never an environment variable.
 
 **What it replaced**, each variable deleted rather than kept as a fallback:
 - `ROLA_NVCC_THREADS`, `MAX_JOBS` as a setting, `ROLA_HOST_BUDGET_SLOTS`, `ROLA_HOST_BUDGET_DIR`,

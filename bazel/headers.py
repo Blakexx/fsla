@@ -2,8 +2,8 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """THE BUILD'S GENERATED HEADERS for one build's parameters: the carry and decode arm selections, the carry kernel's
-parts and the builds the binary carries -- `tools/gen_shards.py`'s and `measure/hardware.py`'s, the headers `setup.py`
-writes for the same parameters. Run by the graph's header action (`bazel/defs.bzl`'s `rola_headers`).
+parts and the builds the binary carries -- `tools/gen_shards.py`'s and `measure/hardware.py`'s. Run by the graph's
+header action (`bazel/defs.bzl`'s `rola_headers`).
 Docs: docs/build-graph.md#compile.
 """
 from __future__ import annotations

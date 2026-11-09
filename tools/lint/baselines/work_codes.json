@@ -1794,18 +1794,6 @@
    "message": "names the work code 'P19'",
    "line_sha256": "3ffb281459138241",
    "count": 1
-  },
-  {
-   "path": "tools/sccache_toolchain.py",
-   "message": "names the work code 'K39'",
-   "line_sha256": "0bd72e81702e29d8",
-   "count": 1
-  },
-  {
-   "path": "tools/sccache_toolchain.py",
-   "message": "names the work code 'K39'",
-   "line_sha256": "91cac358391c17a9",
-   "count": 1
   }
  ]
 }

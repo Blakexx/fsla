@@ -15,15 +15,14 @@ tools/devtools.txt` installs the commit this tree is tested with, and `bazel run
 `workspace.devtools` into every venv here.
 
 A setting is never read from the process environment. The environment variables the tree still uses are listed in
-`HANDOFFS` (a value one of the tree's own processes passes to a child it starts) and `BUILD_PARAMETERS` (what one build
-is, set per invocation); `tools/lint/lint_standards.py` refuses a read of any other. Docs:
+`HANDOFFS`, each a value one of the tree's own processes passes to a child it starts (a build's parameters are the
+graph's settings, docs/build-graph.md#compile); `tools/lint/lint_standards.py` refuses a read of any other. Docs:
 docs/internals/tools/dev_config.md.
 """
 from __future__ import annotations
 
 import json
 import os
-import shutil
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -55,9 +54,18 @@ SCHEMA: dict[str, dict[str, Key]] = {
                    "a Nsight Compute CLI the machine's toolchain file may name, for the checkouts on this machine that "
                    "read it; this tree finds the pinned one by its pin (`ncu()`). A loader refuses a key it does not "
                    "declare, so it stays declared while machine files carry it"),
-        "sccache": Key("path?", None, "the pinned sccache (tools/sccache_pin.json); null means none installed"),
-        "sccache_enabled": Key("bool", True, "false builds uncached, the one deliberate opt-out of the sccache gate"),
-        "mold": Key("path?", None, "the pinned mold (tools/mold_pin.json), the only linker; null means none installed"),
+        "sccache": Key("path?", None,
+                       "an sccache the machine's toolchain file may name, for the checkouts on this machine that read "
+                       "it; this tree reads none. A loader refuses a key it does not declare, so it stays declared "
+                       "while machine files carry it"),
+        "sccache_enabled": Key("bool", True,
+                               "the sccache switch the machine's toolchain file may hold, for the checkouts on this "
+                               "machine that read it; this tree reads none. A loader refuses a key it does not declare, "
+                               "so it stays declared while machine files carry it"),
+        "mold": Key("path?", None,
+                    "a mold the machine's toolchain file may name, for the checkouts on this machine that read it; this "
+                    "tree links with the graph's (@mold). A loader refuses a key it does not declare, so it stays "
+                    "declared while machine files carry it"),
         "clang_tidy": Key("path?", None, "a clang-tidy the machine's toolchain file may name, for the checkouts on this "
                           "machine whose commit hooks run it; this tree's unit lints run the graph's (@clang_tidy). A "
                           "loader refuses a key it does not declare, so it stays declared while machine files carry it"),
@@ -96,12 +104,8 @@ WSL_LIB = "/usr/lib/wsl/lib"
 #: the value (from this config or from its own state) and the child must use exactly that value.
 HANDOFFS = {
     POINTER: "which config directory a child reads (set for the graph's tests by the front door, or by a test; never by a setting)",
-    "ROLA_REAL_NVCC": "the gated nvcc setup.py hands the sccache wrapper (tools/sccache_nvcc.py)",
-    "ROLA_SCCACHE_BIN": "the gated sccache setup.py hands the sccache wrapper",
     "CUDA_HOME": "torch.utils.cpp_extension's toolkit, set to `cuda_home()` before torch's extension module is imported "
-                 "(setup.py, ratify, the header self-check)",
-    "MAX_JOBS": "torch's ninja job count, set by setup.py from the slots it holds",
-    "PYTORCH_NVCC": "torch's compiler, set by setup.py to the sccache wrapper",
+                 "(ratify's compile path, the header self-check)",
     "PYTEST_XDIST_WORKER": "pytest-xdist's worker id",
     "USER": "the login name printed into the sudoers rule `bazel run //:clock` suggests",
     "ROLA_SCRATCH": "the agent harness's campaign directory (.claude/settings.json), outside the repository",
@@ -111,16 +115,6 @@ HANDOFFS = {
             "`bazel` past it)",
     "ROLA_GRAPH_STORE": "the shared store the front door hands the graph's environment (bazel/environment.bzl)",
     "ROLA_NVCC_THREADS": "host.nvcc_threads, which the front door hands the graph's compile flags (bazel/flags.py)",
-}
-
-#: Environment variables that say what one build is. Set per invocation (pip passes nothing else to setup.py).
-BUILD_PARAMETERS = {
-    "ROLA_CUDA_ARCHS": "the architectures to compile; unset reads the ratified manifests",
-    "ROLA_CARRY_ARMS": "the carry arm subset of an iteration build",
-    "ROLA_DECODE_ARMS": "the decode arm subset of an iteration build",
-    "ROLA_CARRY_PARTS": "the carry parts a composition build makes real (tools/gen_shards.py CARRY_PARTS)",
-    "ROLA_STRICT_MANIFEST": "refuse a build whose manifest does not match exactly (§16 tiering)",
-    "ROLA_SKIP_POST_BUILD_RATIFY": "skip the post-build ratification recompile",
 }
 
 
@@ -203,9 +197,6 @@ def windows_tool(rel: str) -> Path | None:
 def detect() -> dict[str, dict[str, Any]]:
     """This machine's values where they differ from the declared defaults: what `bazel run //:init` writes."""
     found: dict[str, dict[str, Any]] = {"toolchain": {}, "host": {}, "workspace": {}}
-    for tool in ("sccache", "mold"):
-        if shutil.which(tool):
-            found["toolchain"][tool] = shutil.which(tool)
     system32 = Path("/mnt/c/Windows/System32")
     if system32.exists():
         found["host"]["windows_system32"] = str(system32)

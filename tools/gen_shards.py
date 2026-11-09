@@ -18,8 +18,8 @@ as DATA -- and this module reads, refuses and enumerates them.  A shipped set is
 statement about the PRODUCT (which carve operation plans a wheel carries), so it
 is reviewable on its own and readable without importing anything; what a row MEANS,
 which translation unit carries it, what the selection header and the ratification's
-shard block say about it, is code and lives here.  `setup.py`'s post-build check
-re-reads the declaration and asserts the table still matches it.
+shard block say about it, is code and lives here.  The library's arm gate
+(`bazel/gates.py`) re-reads the declaration and asserts the table still matches it.
 
 **THE KEY IS THE CARVE'S OPERATION-PLAN PAIR.** A carry arm is what a CTA compiles: the fold's and the readout's
 warp tiles (dense rows a warp, and how many dense levels form each operand), the box's channel extent and whether
@@ -56,13 +56,13 @@ OUT_DIR = ROOT / "csrc" / "rola" / "src" / "instantiations"
 #: check each have to execute to see.  As data it is diffable, reviewable in a pull
 #: request on its own, and readable by a tool that must not import anything (the 14th
 #: extension-trap form: a repo tool reads the repo's files, it does not import the
-#: package to learn a fact about the repo).  `setup.py`'s post-build check asserts the
+#: package to learn a fact about the repo).  The library's arm gate asserts the
 #: table this module exposes still MATCHES the declaration, which is what makes the
 #: two independent statements rather than one restated twice.
 SHIPPED_SET_JSON = ROOT / "tools" / "manifests" / "shipped_set.json"
 
-#: THE GENERATED (NEVER CHECKED IN) SELECTION HEADER .  `setup.py` and
-#: `tools/ratify.py` each write `GENERATED_DIR / CARRY_SELECTION_INC` for their own
+#: THE GENERATED (NEVER CHECKED IN) SELECTION HEADER .  The graph's header action and
+#: `tools/ratify.py`'s compile path each write `GENERATED_DIR / CARRY_SELECTION_INC` for their own
 #: run's arm scope on every run, before compiling any translation unit that includes it
 #: (`write_if_changed`: the file is replaced only when its text differs).  See
 #: `carry_selection_header`.
@@ -138,7 +138,7 @@ FAMILIES = (CARRY, DECODE)
 class ShippedSetError(SystemExit):
     """A declaration this generator refuses, with the field named.
 
-    A `SystemExit` because every consumer (`setup.py`, `tools/ratify.py`, the lints,
+    A `SystemExit` because every consumer (the graph's actions, `tools/ratify.py`, the lints,
     this CLI) wants the same outcome from a malformed declaration -- stop, with the
     reason on stdout -- and none of them has a recovery for it.
     """
@@ -156,7 +156,7 @@ def _load_arm_set(fam: ArmFamily, path: Path | None = None) -> dict:
     would otherwise discover as a compile error inside a generated file, or not at
     all: an unknown axis value, a duplicate row, a row in both lists, a row spelled
     out of canonical order (which would silently RENUMBER every arm index the
-    selection header, the per-arm units and `ROLA_CARRY_ARMS` name).
+    selection header, the per-arm units and `--//:carry_arms` name).
     """
     path = fam.manifest if path is None else path
     ARM_KEY = fam.key
@@ -256,8 +256,8 @@ def declaration_matches_table() -> list[str]:
     """RE-READ the declaration and compare it to this module's table.
 
     The point of the round trip is that the two statements are independent: the table
-    was built at import time from the file as it was THEN, and the post-build check
-    (`setup.py`) asks the question again against the file as it is NOW, after a build
+    was built at import time from the file as it was THEN, and the library's arm gate
+    (`bazel/gates.py`) asks the question again against the file as it is NOW, after a build
     that may have run for an hour. It is also the only check that fires when something
     mutates the table after import.
     """
@@ -333,8 +333,8 @@ def write_builds(archs) -> None:
 
 
 def carry_parts_header(parts, trivial) -> str:
-    """THE GENERATED (never checked in) PARTS HEADER: `ROLA_CARRY_PARTS` as a bit mask over
-    `CARRY_PARTS` (bit i: part i real), and `ROLA_CARRY_TRIVIAL` (bit i: a real part i named `=trivial` in its
+    """THE GENERATED (never checked in) PARTS HEADER: `ROLA_CARRY_PARTS`, the parts `--//:carry_parts` makes real, as a
+    bit mask over `CARRY_PARTS` (bit i: part i real), and `ROLA_CARRY_TRIVIAL` (bit i: a real part i named `=trivial` in its
     TRIVIAL form -- its loads and stores from fixed addresses, no dependence, no waits), written
     on every build and every ratify run (a composer's mask left behind must never reach a gate).
     Included only by `carry/ampere/carry_kernel.cuh`."""
@@ -354,12 +354,12 @@ def carry_parts_header(parts, trivial) -> str:
 
 
 def carry_selection_header(arms) -> str:
-    """The carry family's selection header (`selection_header`), from `ROLA_CARRY_ARMS`."""
+    """The carry family's selection header (`selection_header`), from `--//:carry_arms`."""
     return selection_header(CARRY, CARRY_ARMS, arms)
 
 
 def decode_selection_header(arms) -> str:
-    """The decode family's selection header (`selection_header`), from `ROLA_DECODE_ARMS`."""
+    """The decode family's selection header (`selection_header`), from `--//:decode_arms`."""
     return selection_header(DECODE, DECODE_ARMS, arms)
 
 
@@ -367,8 +367,8 @@ def selection_header(fam: ArmFamily, rows, arms) -> str:
     """THE GENERATED (never checked in) SELECTION HEADER of a family.
 
     Renders `#define ROLA_<FAMILY>_BUILT 1` plus one `#define ROLA_<FAMILY>_BUILD_<i> 1`
-    per index in `sorted(set(arms))`. Written by `setup.py` (from `ROLA_<FAMILY>_ARMS`)
-    and by `tools/ratify.py` (from the declared set or a scope)
+    per index in `sorted(set(arms))`. Written by the graph's header action (from `--//:<family>_arms`)
+    and by `tools/ratify.py`'s compile path (from the declared set or a scope)
     to `GENERATED_DIR / fam.header` on every run, REPLACING whatever is there
     (`write_if_changed`: the file only when its text differs) -- never accumulated across runs. Included ONLY by
     the family's own units (`fam.includer`), so no other translation unit's argv or included content depends on the
@@ -394,8 +394,8 @@ def selection_header(fam: ArmFamily, rows, arms) -> str:
     picked = sorted(set(arms))
     out = [BANNER,
            f"// the {name} ARM SELECTION for this build/ratify run. NEVER\n",
-           f"// CHECKED IN; regenerated by setup.py (from ROLA_{name}_ARMS) and by\n",
-           "// tools/ratify.py (from the declared set or its scope) on every run.\n",
+           f"// CHECKED IN; regenerated by the graph (from --//:{fam.name}_arms) and by\n",
+           "// tools/ratify.py's compile path (from the declared set or its scope) on every run.\n",
            f"// Included only by {fam.includer}.\n",
            f"#define ROLA_{name}_BUILT 1\n"]
     for i in picked:
@@ -416,7 +416,7 @@ def selection_header(fam: ArmFamily, rows, arms) -> str:
 
 
 def carry_sources() -> list:
-    """`{arm index -> the generated file that carries it}`, for `setup.py`."""
+    """`{arm index -> the generated file that carries it}`, for the unit list (`tools/kernels.py`'s `arm_units`)."""
     tu = carry_tu_of()
     return {i: f"carry_arm_{tu[i]}.cu" for i in range(len(CARRY_ARMS))}
 

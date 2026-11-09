@@ -1,8 +1,8 @@
 {
   "public": "Blakexx/rola",
   "ships": [".bazelrc", ".bazeliskrc", ".bazelversion", ".clang-format", ".clang-tidy", ".devcontainer", ".github", ".gitignore", "bazel", "BUILD.bazel",
-            "LICENSE", "MANIFEST.in", "MODULE.bazel", "MODULE.bazel.lock", "NOTICE", "README.md", "measure", "csrc", "declare.py", "docs", "pyproject.toml",
-            "requirements.in", "requirements.lock", "rola", "rola_cu13", "setup.py", "sgconfig.yml", "tests", "tools"],
+            "LICENSE", "MODULE.bazel", "MODULE.bazel.lock", "NOTICE", "README.md", "measure", "csrc", "declare.py", "docs", "pyproject.toml",
+            "requirements.in", "requirements.lock", "rola", "rola_cu13", "sgconfig.yml", "tests", "tools"],
   "private": [".claude", "CLAUDE.md", ".github/workflows/mirror.yml"],
   "allow": {}
 }

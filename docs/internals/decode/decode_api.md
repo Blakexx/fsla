@@ -40,7 +40,7 @@ separate claim from the capacity is [`decode.md`
 the decode family's instantiation matrix is the product `d_v(2) x D(4) x decay(2)`, declared
 one row per arm in `tools/manifests/decode_set.json` (an arm family of `tools/gen_shards.py`:
 [`../tools/gen_shards.md#families`](../tools/gen_shards.md#families)) so a BUILD can name a subset
-by index: `ROLA_DECODE_ARMS=5` compiles arm 5 and nothing else, through the generated
+by index: `--//:decode_arms=5` compiles arm 5 and nothing else, through the generated
 `decode_selection.inc` that `decode.cu` alone includes
 ([`build.md#arm-subset`](../../build.md#arm-subset)). Instantiation is the dominant build
 resource, so this is what makes iterating on one arm cost one arm.
@@ -60,10 +60,9 @@ written into the call — and `matched` is `int_switch`'s own refusal mechanism,
 both readings expand it. An arm the binary does not carry is a `STD_TORCH_CHECK` refusal
 naming the shape, never a silent miss.
 
-**A SUBSET BINARY IS NOT SHIPPABLE** and the build announces it: the fatbin and manifest
-gates prove EVERY ratified instantiation is present, which a subset contradicts by
-construction, so `setup.py` skips exactly those two gates behind a banner when
-`ROLA_DECODE_ARMS` is set — and nowhere else.
+**A SUBSET BINARY IS NOT SHIPPABLE** and its record says so: ratify proves EVERY ratified
+instantiation is present, which a subset contradicts by construction, so an iteration
+build is never ratified and never a wheel ([`build.md#iteration`](../../build.md#iteration)).
 
 <a id="build-stamp"></a>
 <a id="roladecodebuildstamp"></a>`rola_decode_build_stamp()` is a DEVICE-SIDE FACT a stale `.so` at the right

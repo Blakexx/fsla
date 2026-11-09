@@ -86,7 +86,7 @@ Card admit(int device) {
   const Build build{cc, variant};
   STD_TORCH_CHECK(carried(build), "this binary carries no build for ", prop.name, " (sm_", cc / 10,
                   variant ? " variant " + std::to_string(variant) : std::string(), "); it carries ",
-                  carried_list(), ". Build it with its architecture in ROLA_CUDA_ARCHS.");
+                  carried_list(), ". Build it with its architecture in --//:archs.");
   return Card{device, cc, product, prop.multiProcessorCount, build, traits_of(build)};
 }
 

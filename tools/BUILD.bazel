@@ -107,5 +107,6 @@ cc_binary(
     "scale_slack",
     "stall_census",
     "supported",
+    "wheels",
 ]]
 

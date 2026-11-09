@@ -3,8 +3,8 @@
 """THE BUILD RECORD: `rola_cu13/_build_config.py`, which answers "which measured evidence backs this exact .so?" from
 an installed wheel with no checkout -- and rule 3, which assembles the ratification it names.
 
-One writer for both builds (`setup.py` and the graph's record action, `bazel/record.py`), standard library only
-so the graph runs it in its sandbox. Docs: docs/build.md#what-the-build-does-in-order.
+Written by the graph's record action (`bazel/record.py`), standard library only so the graph runs it in its sandbox.
+Docs: docs/build-graph.md#gates.
 """
 from __future__ import annotations
 
@@ -98,10 +98,10 @@ def manifest_digest(manifest: dict) -> str:
 
 
 def config(*, version: str, archs: list[str], iteration: bool, toolchain: str, ptxas: str, torch: str,
-           cxx11_abi: bool, manifest: dict, cutlass_pin: dict, sccache: dict | None) -> dict:
+           cxx11_abi: bool, manifest: dict, cutlass_pin: dict) -> dict:
     """The record's fields. `iteration`: an arm, part or architecture set other than the shipped one, never a wheel.
     `shards` is the ratified membership `{shard: members_sha256}` the dispatch table's rows are joined against at
-    runtime. `sccache` is the compiler cache's identity, `None` when the build ran uncached, never omitted."""
+    runtime."""
     return {
         "version": version,
         "archs": [f"sm_{a}" for a in archs],
@@ -116,7 +116,6 @@ def config(*, version: str, archs: list[str], iteration: bool, toolchain: str, p
         "ptx_jit_fallback": False,
         "vendored": {"cutlass": {"tag": cutlass_pin["tag"], "commit": cutlass_pin["commit"],
                                  "tree_sha256": cutlass_pin["tree_sha256"]}},
-        "sccache": sccache,
     }
 
 

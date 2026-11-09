@@ -5,7 +5,7 @@
 `arms(cell)` takes a central carry cell (a shape, a draw and the state it binds) or a central layer cell (an input)
 and returns a builder for every arm this checkout runs on it, or refuses the cell by raising:
 - any cell, when the binary lacks an arm its tree ships (`tools/manifests/shipped_set.json`): an iteration build
-  (`ROLA_CARRY_ARMS`) measures a subset of the tree;
+  (`--//:carry_arms`) measures a subset of the tree;
 - a carry cell whose carry arm (the key its carve selects, `rola.ops.carry.arm_key`) the binary does not carry;
 - data that is neither kind.
 `measure/executors.py`'s timing entry calls it on the cell a registration hands it; a profiler launches one arm
@@ -84,7 +84,7 @@ def _refuse_a_partial_binary() -> None:
     built = {tuple(arm) for arm in carry.arms()}
     if declared - built:
         raise RuntimeError(f"this binary carries {sorted(built)} and lacks the shipped arms {sorted(declared - built)}: an "
-                           "iteration build (ROLA_CARRY_ARMS) measures a subset of the tree; build the shipped set")
+                           "iteration build (--//:carry_arms) measures a subset of the tree; build the shipped set")
 
 
 def _kernel_carried(subject: str, spec, construction) -> bool:

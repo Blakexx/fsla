@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE CLOSED-WORLD RUNTIME ARCH REFUSAL, checked where it can be checked.
 
-``setup.py``'s rule R4 forbids *a launch on a device whose arch was never measured*.
+The closed-world rule R4 forbids *a launch on a device whose arch was never measured*.
 Unlike the build-time rules it cannot be enforced at build time, because the device is
 not present then; it is enforced in C++ by a pair of clauses, and this file gates that
 the pair is intact.

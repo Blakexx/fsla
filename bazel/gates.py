@@ -2,7 +2,7 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """THE ARM GATE FOR THE GRAPH'S LIBRARY: the built arm table against the declared shipped set, and the coverage sweep
-(`tools/gen_shards.py`'s `check_built_arm_table` and `sweep_binary`, the forms `setup.py` runs) -- the binary asked
+(`tools/gen_shards.py`'s `check_built_arm_table` and `sweep_binary`) -- the binary asked
 what it carries, loaded by the environment's interpreter against the toolkit's driver stub, so the answer is the
 binary's on any machine, GPU or none. Run by `bazel/defs.bzl`'s `rola_extension`; writes its verdict to `--out`.
 Docs: docs/build-graph.md#gates.

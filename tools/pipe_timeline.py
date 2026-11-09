@@ -224,7 +224,7 @@ def main() -> int:
     if a.calibrate:
         import datetime as dt
         row = {"utc": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H%MZ"), "cell": a.cell, "report": rep.name,
-               "metric": dict(SERIES)["tensor"], "composition": "ROLA_CARRY_PARTS=none", **plateau(tl)}
+               "metric": dict(SERIES)["tensor"], "composition": "--//:carry_parts=none", **plateau(tl)}
         if not a.no_record:
             Store(SCALE).put({"cell": a.cell, "binary": binary(), "composition": row["composition"]}, output=row,
                              provenance=checkout(ROOT))

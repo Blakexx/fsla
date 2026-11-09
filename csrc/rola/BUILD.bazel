@@ -20,7 +20,7 @@ filegroup(
     srcs = glob(["src/**"]),
 )
 
-#: the repository's headers come first, so a repository header wins any name collision (setup.py's include order)
+#: the repository's headers come first, so a repository header wins any name collision
 include_root(
     name = "headers",
     hdrs = glob(["src/**/*.cuh"]),

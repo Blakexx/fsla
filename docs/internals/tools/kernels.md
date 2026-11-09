@@ -1,7 +1,7 @@
 # `tools/kernels.py` — the kernel list
 
-ONE LIST, DERIVED FROM THE TREE, of what the device build compiles and what kernels it defines. `setup.py` takes its
-translation units from it, `tools/ratify.py` compiles the same units and names each manifest entry's shard from it,
+ONE LIST, DERIVED FROM THE TREE, of what the device build compiles and what kernels it defines. The graph's unit
+list (`csrc/rola/units.bzl`, which `tools/gen_shards.py` writes) takes its translation units from it, `tools/ratify.py` compiles the same units and names each manifest entry's shard from it,
 and the gates take their targets from it -- so a kernel added under `csrc/rola/src` is built, ratified and
 gated without anyone adding it to a list, and no tool can hold a second enumeration that drifts. The one it replaced
 did: `ratify.py`'s hand-written tuple of units had lost three kernels (`liveness_pass`, `carry_stamp_kernel`,

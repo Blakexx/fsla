@@ -17,14 +17,13 @@
    "-compress-all"
   ],
   "sass_hash_version": 2,
-  "sccache": null,
   "mold": {
    "version": "mold 2.42.0",
    "sha256": "b9a46345b7875ea575dc18099eba1cb03199c630618878b811b5345ea2ba370b"
   }
  },
  "source": {
-  "csrc_sha256": "6e84c1ec50552e7ee50a2aa7958a7e27d2c9639b7cda1e90569ffa685776af23",
+  "csrc_sha256": "09ab41c285042495b208704a7d0c18d0f613ea073272253e478b35db825c6296",
   "date": "2026-11-08",
   "image_digest": ""
  },
@@ -3057,7 +3056,7 @@
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "e6a4fa9744ffda2497006b61d1dd6caebb8aeac2584b47722dddca390e4c6965"
+   "sass_sha256": "337cbc6111ad19bd8e5ae12d7ae57e369a98808ebc0c75305cad33d12a640481"
   }
  }
 }

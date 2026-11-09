@@ -10,7 +10,7 @@ NOT listed here that vulture still flags is a real candidate to delete, never
 silenced by omission.
 
 Run `bazel test //:ratchet_vulture`, which owns the scan: the Python packages, the tools, the batteries, the benches
-and `setup.py` (a CALLER -- it runs the build's own gates), with this file as the last argument.
+and the graph's action scripts (`bazel/`, CALLERS of the tools' gates), with this file as the last argument.
 """
 
 
@@ -29,19 +29,12 @@ class _Whitelist:
     # skip or GPU marker (27 files, measured 2026-08-29).
     pytestmark = None
 
-    # pytest FIXTURE INJECTION: a test function's parameter name is matched by
-    # NAME against a `@pytest.fixture` of the same name and the framework calls
-    # it for you -- the parameter is "unused" only to a static analyzer that
-    # does not know about fixture injection. `tests/unit/test_ratify_argv.py`'s
-    # `ninja` fixture (patches `ratify._ninja_cuda_template` for every test in
-    # the file) is the one vulture flags at 60%+100% confidence (the fixture
-    # function itself, and each test parameter named after it).
-    ninja = None
-
     # pytest HOOKS: a conftest's `pytest_addoption` and `pytest_configure` are called by the framework, found by
-    # their names. `tests/conftest.py` registers `--oracle-margins` with them.
+    # their names. `tests/conftest.py` registers `--oracle-margins` with them; `bazel/pytest_shards.py`, the CPU tier's
+    # sharding plugin, selects a shard's tests in `pytest_collection_modifyitems`.
     pytest_addoption = None
     pytest_configure = None
+    pytest_collection_modifyitems = None
 
     # rola_devtools.build EXECUTORS: a declared target's worker calls its executor functions from their
     # `module:function` strings in `declare.py` (`measure/executors.py`'s `compile_kernel`, `probe_environment`,
@@ -86,13 +79,15 @@ class _Whitelist:
     free = None
     Activation = None
 
+    # PEP 517's BUILD BACKEND HOOKS, which pip calls by name on `pyproject.toml`'s backend
+    # (`tools/no_source_build.py`): each refuses a source build.
+    build_wheel = None
+    build_sdist = None
+    build_editable = None
+
     # zoology's `Hybrid` reads a layer's `state_size(sequence_length=...)` by name when it sizes a model.
     state_size = None
     sequence_length = None
-
-    # setuptools READS `build_temp` off the command object it owns: `setup.py`'s `finalize_options` pins it to a
-    # fixed repo-relative directory so the artifact's identity is a function of the tree, not of pip's temp dir.
-    build_temp = None
 
     # `zipfile.ZipInfo` FIELDS ARE READ BY THE WRITER, not by us: `tools/wheels.py` sets `external_attr` (the POSIX
     # mode) and `compress_type` on each member and `zipfile` reads them when it writes the entry.
@@ -101,9 +96,10 @@ class _Whitelist:
 
 
 _ = _Whitelist()
-_referenced = (_.pytestmark, _.ninja, _.pytest_addoption, _.pytest_configure,  # ruff B018: a bare attribute is "useless"
+_referenced = (_.pytestmark, _.pytest_addoption, _.pytest_configure, _.pytest_collection_modifyitems,  # ruff B018: a bare attribute is "useless"
                _.compile_kernel, _.probe_environment, _.run_tool, _.timed, _.read_clock,
                _.forward, _.poison_torch_memory, _._gpu_lock_held, _._host_budget_worker_slot, _._take_gpu_lock,
                _.union_table, _.v_row_bytes, _.y_dtype, _.token_bit, _.backing_kind, _.closed, _.owners_total,
                _.free, _.Activation, _.state_size, _.sequence_length,
-               _.build_temp, _.external_attr, _.compress_type, _.built_arms, _.assert_fresh_binary, _.pytest_tier)
+               _.external_attr, _.compress_type, _.built_arms, _.assert_fresh_binary, _.pytest_tier,
+               _.build_wheel, _.build_sdist, _.build_editable)

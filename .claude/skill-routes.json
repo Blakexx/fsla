@@ -83,10 +83,8 @@
   {
    "skill": "rola-build",
    "edit": [
-    "setup.py",
     "tools/build_flags.py",
     "tools/gen_shards.py",
-    "tools/build_lock.py",
     "MODULE.bazel",
     ".bazelrc",
     ".bazeliskrc",

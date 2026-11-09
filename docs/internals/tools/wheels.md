@@ -1,29 +1,29 @@
 # `tools/wheels.py` — the two wheels
 
-Mirrors `tools/wheels.py`. It turns one gate build of a clean commit into the two distributions
+Mirrors `tools/wheels.py`. It packages the graph's library of a clean, ratified commit as the two distributions
 ([`../../build.md#wheels`](../../build.md#wheels)): `rola`, pure Python, and `rola-cu13`, the binary plugin.
-
-## The build
-
-`_build` runs `pip wheel .` on the checkout with the `ITERATION_KNOBS` removed from the environment (the arch, arm,
-part and skip variables that make an iteration build or skip a gate) and `ROLA_STRICT_MANIFEST=1`, so the post-build
-gates fail the build instead of warning. The result is one combined wheel holding both packages. `setup.py` writes the
-build record into that wheel's build tree as well as the checkout's: the package's files were copied before the
-record existed.
+`bazel run //:wheels` runs it (`bazel/defs.bzl`'s `rola_wheels`), handing it the library, its record and the build's
+census from its runfiles.
 
 ## The refusals
 
-`_clean_commit` refuses a tree with changes: a wheel names a commit. `_verify` refuses a combined wheel whose binaries
-are anything but `rola_cu13/_C.abi3.so` (a part harness driver is an instrument), and one whose record is not a
-shippable build of this version: `version`, `iteration` false, `archs` equal to the toolchain's ratified architectures,
-`toolchain`, and `manifest_sha256` equal to `ratify.manifest_digest` over the manifest files the plugin will carry.
+`_clean_commit` refuses a tree with changes: a wheel names a commit. `_ratified` runs ratify's verdict on the build
+(`tools/ratify.py --graph`, `bazel test //:ratified`'s) and refuses on anything but a pass: a wheel ships a ratified
+build. `_verify` refuses a record that is not a shippable build of this version: `version`, `iteration` false, `archs`
+equal to the toolchain's ratified architectures, `toolchain`, and `manifest_sha256` equal to `ratify.manifest_digest`
+over the manifest files the plugin will carry.
 
-## The split
+## The packages
 
-`split` gives `rola` the `rola/` package and the build's own metadata (which declares the `cu13` extra pinned to this
-version), with a `py3-none-any` WHEEL. It gives `rola-cu13` the `rola_cu13/` package, the manifests under a `manifests/` directory inside it, and metadata of its own: its name and version, the build's author, licence and Python floor,
-`Requires-Dist: rola==<version>` and the build's torch requirement, under `PLUGIN_TAG`. `_wheel_file` writes RECORD and
-stores members in name order with the fixed `EPOCH` timestamp, so a commit's wheels are the same bytes each time.
+`rola` takes the tracked files of the `rola/` package (`_package`, its `.gitkeep` placeholders left out, so the
+entmax pin's `PIN.json` is its one data file) and the project's metadata: `metadata` writes core metadata 2.4 from
+`pyproject.toml`'s `[project]` as setuptools wrote it (the licence's text folded under `License`, the README its body,
+the licence files by setuptools' patterns), with the `cu13` extra, `rola-cu13` at exactly this version, first. Its
+WHEEL is `py3-none-any`. `rola-cu13` takes the tracked `rola_cu13/` package, the graph's `_C.abi3.so` and
+`_build_config.py`, the manifests under a `manifests/` directory inside it, and metadata of its own: its name and
+version, the core's author, licence files, classifiers and Python floor in the core's order, `Requires-Dist:
+rola==<version>` and the core's torch requirement, under `PLUGIN_TAG`. `_wheel_file` writes RECORD and stores members
+in name order with the fixed `EPOCH` timestamp, so a commit's wheels are the same bytes each time.
 
 ## The check
 

@@ -619,7 +619,6 @@ def _repo_identifier_text() -> str:
                 if (path.suffix in suffixes and "third_party" not in path.parts
                         and "__pycache__" not in path.parts):
                     chunks.append(path.read_text(errors="ignore"))
-        chunks.append((ROOT / "setup.py").read_text())
         _REPO_TEXT = "\n".join(chunks)
     return _REPO_TEXT
 
@@ -950,13 +949,6 @@ def check_no_bare_flock_on_gpu_lock() -> list[str]:
 _TOOLS_DIR = ROOT / "tools"
 
 
-def _read_generated_block(text: str, marker: str) -> str | None:
-    begin, end = f"<!-- BEGIN GENERATED: {marker} -->", f"<!-- END GENERATED: {marker} -->"
-    if begin not in text or end not in text:
-        return None
-    return text.split(begin, 1)[1].split(end, 1)[0].strip("\n")
-
-
 def check_supported_table() -> list[str]:
     """The README's support table is `tools/supported.py`'s output: its generated block (`tools/supported.py`) equal to
     `supported.table()`, which derives it from the kernel's arch table and `tools/manifests/` -- FILES ONLY, no import of
@@ -972,7 +964,7 @@ def check_supported_table() -> list[str]:
     findings = []
 
     def _drift(readme_text: str) -> str | None:
-        committed = _read_generated_block(readme_text, marker)
+        committed = supported.block(readme_text, marker)
         if committed is None:
             return f"README.md has no generated block for {marker}"
         if committed != supported.table():
@@ -1046,7 +1038,7 @@ def check_shard_partition() -> list[str]:
     THE FALSE-FAIL THIS FIXES: the retired test recomputed the manifest
     digest over EVERY `tools/manifests/sm_*.json` file found on disk, but
     `BUILD_CONFIG["manifest_sha256"]` is the digest of whatever arch SUBSET this
-    build actually compiled (`ROLA_CUDA_ARCHS`) -- a single-arch iteration build
+    build actually compiled (`--//:archs`) -- a single-arch iteration build
     would then compare a one-arch digest against an all-arches recomputation and
     fail on a build that did nothing wrong. Scoped here to
     `BUILD_CONFIG["archs"]` -- what the build declares -- instead of a directory
@@ -1194,17 +1186,16 @@ def check_vendored_pin() -> list[str]:
         if "BSD-3-Clause" not in notice_text:
             findings.append("NOTICE does not name BSD-3-Clause")
 
-    setup_text = (ROOT / "setup.py").read_text()
+    units_build = (ROOT / "csrc" / "rola" / "BUILD.bazel").read_text()
     ratify_text = (ROOT / "tools" / "ratify.py").read_text()
     needle = '"csrc" / "third_party" / "cutlass"'
-    if needle not in setup_text:
-        findings.append("setup.py no longer passes the vendored include path")
+    if '"//csrc/third_party:cutlass"' not in units_build:
+        findings.append("csrc/rola/BUILD.bazel's units no longer compile against the vendored tree "
+                        "(//csrc/third_party:cutlass)")
     if needle not in ratify_text:
         findings.append("tools/ratify.py no longer passes the vendored include path; "
                         "the manifest would then be ratified against a compile the "
                         "extension does not perform")
-    if "_gate_vendored" not in setup_text:
-        findings.append("closed-world rule 5 gate (_gate_vendored) is gone from setup.py")
     if "vendored_pin(" not in (ROOT / "bazel" / "record.py").read_text():
         findings.append("closed-world rule 5 gate (build_record.vendored_pin) is gone from the graph's record action")
 
@@ -1214,8 +1205,8 @@ def check_vendored_pin() -> list[str]:
     else:
         vendored = BUILD_CONFIG.get("vendored")
         if vendored is None:
-            findings.append("this .so was built by a setup.py that did not stamp its "
-                            "vendored codegen inputs; rebuild it")
+            findings.append("this .so's build record does not stamp its vendored codegen "
+                            "inputs; rebuild it (bazel run //:library)")
         elif vendored.get("cutlass", {}).get("tree_sha256") != pin.get("tree_sha256"):
             findings.append("the built binary's stamped vendored CUTLASS digest does "
                             "not match the current PIN.json")
@@ -1342,13 +1333,12 @@ def _python_env_reads(text: str) -> tuple[list[tuple[int, str]], list[tuple[int,
 
 def check_settings_come_from_the_dev_config() -> list[str]:
     """§23 (1): every machine-dependent value is read through `tools/dev_config.py`. A Python environment read, or a
-    shell expansion of a `ROLA_*` variable (or `MOLD_PATH`), that the loader does not list as a handoff or a build
-    parameter is a finding, and so is a CUDA or Windows path spelled outside the loader in tools, benchmarks or
-    setup.py."""
+    shell expansion of a `ROLA_*` variable (or `MOLD_PATH`), that the loader does not list as a handoff is a finding,
+    and so is a CUDA or Windows path spelled outside the loader in tools or benchmarks."""
     sys.path.insert(0, str(ROOT / "tools"))
     import dev_config
 
-    allowed = set(dev_config.HANDOFFS) | set(dev_config.BUILD_PARAMETERS)
+    allowed = set(dev_config.HANDOFFS)
     loader = ROOT / "tools" / "dev_config.py"
     findings = []
     for path in _tracked_files():

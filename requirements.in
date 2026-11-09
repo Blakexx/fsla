@@ -19,8 +19,7 @@
 # --index-strategy unsafe-best-match -o requirements.lock` (uv being present
 # on this box -- the card's "uv lock, or pip-compile if uv isn't available").
 # The extra index is required because a plain PyPI resolve of `torch` fetches
-# the CPU-only wheel, which is exactly the trap `docs/build.md` and
-# `pyproject.toml`'s `[build-system]` comment both name for the build itself.
+# the CPU-only wheel, and the extension is built against the CUDA one.
 
 # --- pyproject.toml's runtime dependencies ---
 # torch for the cu13 toolchain's CUDA major, from its `torch_index` (tools/toolchains/cu13.json).
@@ -59,10 +58,8 @@ pytest-metadata==3.1.1
 pytest-timeout==2.4.0
 hypothesis==6.165.10
 
-# --- setup.py's [build-system] requires (torch excluded there for the
-# no-build-isolation reason above; the rest are ordinary build deps) ---
+# --- torch.utils.cpp_extension's imports (ratify's compile path, the header self-check), and the compile path's job
+# count (tools/build_flags.py's default_max_jobs reads the free memory) ---
 setuptools>=61
-wheel
 packaging
 psutil==7.2.2
-ninja==1.13.0

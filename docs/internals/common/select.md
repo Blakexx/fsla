@@ -27,7 +27,7 @@ product's row names its build variant; a device without a row runs its architect
 ## The builds a binary carries
 
 `build/generated/builds.inc` (`ROLA_BUILDS(F)`, one `F(cc, variant)` a build) is written before every compile by
-`setup.py` and by `tools/ratify.py` from the build's architectures (`measure/hardware.py`'s `builds_header`): every
+the graph's header action and by `tools/ratify.py`'s compile path from the build's architectures (`measure/hardware.py`'s `builds_header`): every
 variant of every architecture the binary compiles.
 
 <a id="in-image"></a>

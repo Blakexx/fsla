@@ -15,22 +15,19 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 | tool | what it is | called by | writes |
 |---|---|---|---|
 | [`dev.py`](dev.md) | the one command that sets up, checks and describes a machine (a host, or the devbox container), and checks the devbox image | a person, through its run targets; the commit gate's §23 check | the `environment` record (its container check), `tools/devbox_image.json` |
-| [`dev_config.py`](dev_config.md) | every machine-dependent value, read from one directory of JSON files | every tool here, `setup.py`, the tests | — |
-| [`build_flags.py`](../../build.md) | THE ONE SOURCE of the nvcc flag list | `setup.py`, `ratify.py`, the graph (`bazel/flags.py`) | — |
-| `build_record.py` | the build record `_build_config.py`, rule 3 (which assembles the ratification it names) and rule 5 (the vendored tree's pin) | `setup.py`, the graph (`bazel/record.py`), `ratify.py` | the record |
+| [`dev_config.py`](dev_config.md) | every machine-dependent value, read from one directory of JSON files | every tool here, the tests | — |
+| [`build_flags.py`](../../build.md) | THE ONE SOURCE of the nvcc flag list | the graph (`bazel/flags.py`), `ratify.py`'s compile path | — |
+| `build_record.py` | the build record `_build_config.py`, rule 3 (which assembles the ratification it names) and rule 5 (the vendored tree's pin) | the graph (`bazel/record.py`), `ratify.py` | the record |
 | `csrc_stamp.py` | the csrc content hash and the header that compiles it into the binary as the device stamp | `ratify.py`, the graph's stamp action | the stamp header |
 | [`bootstrap.py`](dev_config.md#bootstrap) | what a tool knows before the dev config's reader is importable: the sibling checkouts, the rola-devtools checkout; run, the machine's one step outside the graph (the pinned bazelisk) | `dev_config.py`, the graph's front door, a person setting up a machine | the `bazel` link |
-| [`build_lock.py`](build_lock.md) | the machine-wide cicc budget | `setup.py`, `ratify.py` | — |
-| [`gen_shards.py`](gen_shards.md) | THE ONE ENUMERATION of the carry family's instantiation matrix | `setup.py`, `ratify.py`, the provider, the graph's header, record and arm-gate actions (`bazel/headers.py`, `bazel/record.py`, `bazel/gates.py`) | the generated per-arm units, `csrc/rola/units.bzl` and the selection headers |
-| [`toolchains.py`](toolchains.md) | each toolchain as a named record of the assembler a fatbin is built and ratified under | `setup.py`, `ratify.py`, `dev.py`, the graph's flags and record (`bazel/flags.py`, `bazel/record.py`) | — |
-| [`sccache_toolchain.py`](../../build.md#sccache) | the compiler-cache wrapper pin (closed-world rule 1) | `setup.py`, `ratify.py` | — |
-| `sccache_nvcc.py` | the nvcc↔sccache seam: a pass-through, never a resolver | nvcc, as its launcher | — |
-| `mold_toolchain.py` | the linker pin — mold is not an option, it is THE linker | `setup.py`, `dev.py` | — |
-| [`wheels.py`](wheels.md) | one gate build of a clean commit, split into the pure-Python wheel and the binary plugin | a person, at a release | the wheels and their record |
+| [`gen_shards.py`](gen_shards.md) | THE ONE ENUMERATION of the carry family's instantiation matrix | `ratify.py`, the provider, the graph's header, record and arm-gate actions (`bazel/headers.py`, `bazel/record.py`, `bazel/gates.py`) | the generated per-arm units, `csrc/rola/units.bzl` and the selection headers |
+| [`toolchains.py`](toolchains.md) | each toolchain as a named record of the assembler a fatbin is built and ratified under | `ratify.py`, `dev.py`, the graph's flags and record (`bazel/flags.py`, `bazel/record.py`) | — |
+| `mold_toolchain.py` | the linker's provenance: the graph's mold, by its version and digest | `ratify.py` | — |
+| [`wheels.py`](wheels.md) | the graph's library of a clean, ratified commit, packaged as the pure-Python wheel and the binary plugin | a person, at a release (`bazel run //:wheels`) | the wheels |
+| `no_source_build.py` | `pyproject.toml`'s build backend, which refuses a source install by name | pip | — |
 | `supported.py` | the README's supported-configuration table — a REPORT, not a claim | a person, after an arm change | the table |
-| [`kernels.py`](kernels.md) | THE KERNEL LIST: every device unit the build compiles and every kernel the source defines, derived from the tree | `setup.py`, `ratify.py`, every kernel gate | — |
+| [`kernels.py`](kernels.md) | THE KERNEL LIST: every device unit the build compiles and every kernel the source defines, derived from the tree | the graph's unit list (`gen_shards.py`), `ratify.py`, every kernel gate | — |
 | `build/dag_to_dot.py` | a DAG tuple (`rola.engine.dags.*`) as Graphviz DOT and SVG | a person, after a DAG change | the `.svg` beside its page |
-| `build/ninjatracing.py` | `.ninja_log` as a Chrome/Perfetto trace, the compile ledger's visual form | a person | the trace |
 | `git-hooks/pre-commit` | THE COMMIT GATE: `bazel test //:gate` on the commit as git will write it ([`build-graph.md`](../../build-graph.md#checks)) | git, every commit | — |
 | `git-hooks/post-commit` | THE ADVISORY REVIEW: `review_gate.py` on HEAD in the background (`review_gate.md`) | git, every commit | — |
 | [`review_gate.py`](review_gate.md) | a commit, range or staged diff reviewed by an LLM against CONSTITUTION and KERNEL_STANDARDS, each finding citing a rule and a line; advisory | the post-commit hook, a person | `rola-review/` in the git common dir |
@@ -39,7 +36,7 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 
 | tool | what it is | called by | writes |
 |---|---|---|---|
-| [`ratify.py`](ratify.md) | the spill manifest, the census, the SASS-body gate and the derivation | `setup.py` (post-build), a person at a milestone, the graph's `//:ratified` and `//:ratify` | `tools/manifests/` |
+| [`ratify.py`](ratify.md) | the spill manifest, the census, the SASS-body gate and the derivation | a person at a milestone, the graph's `//:ratified`, `//:ratify` and `//:wheels` | `tools/manifests/` |
 | [`devbox_packages.py`](../../setup.md#the-devbox-image) | the devbox image's package layer adds packages, never changes the base's, and carries nothing at its merged-/usr links | the graph's `//:devbox_packages` | — |
 | [`oci_layout.py`](../../setup.md#the-devbox-image) | an OCI image layout, read: its one image's manifest digest (the devbox image's identity), the tree's tag for it, and its layers | `dev.py`'s container commands, the graph's `//:image_tag`, `usrmerge_layer.py`, `devbox_packages.py` | — |
 | [`usrmerge_layer.py`](../../setup.md#the-devbox-image) | the package layer for a merged-/usr base: what the packages ship under the base's top-level links into /usr, read from the base, goes under /usr | the graph's `//:devbox_debs` | the image's package layer |

@@ -96,13 +96,10 @@ change.
    `--version` output of the readers (`cuobjdump`, `nvdisasm`: the disassemblers the gates read with), the whole
    `--version` output of compute-sanitizer (`sanitizer`: the sanitizer lane's), the CUDA major, the PyTorch wheel
    index for that major. A torch of another major is refused.
-3. **Check the compiler cache.** The pinned sccache must compile under the toolkit (sccache 0.17
-   silently produced no objects under nvcc 13.4); otherwise build with
-   `toolchain.sccache_enabled: false` until the pin moves.
-4. **Census before writing.** `bazel run //:ratify -- --census --json <file>` under the new toolkit
+3. **Census before writing.** `bazel run //:ratify -- --census --json <file>` under the new toolkit
    against the current toolchain's census: every entry's spill, registers and in-loop locals. A
    worse entry is a kernel finding, not a verdict on the toolkit.
-5. **Ratify** (`--write`, every shipped arch) into `tools/manifests/<name>/`, build, and run the
+4. **Ratify** (`--write`, every shipped arch) into `tools/manifests/<name>/`, build, and run the
    suite's timing A/B against the current toolchain's build of the same source in one interleaved
    session, repeated; isolate any regression (compiler against library) before choosing.
-6. **Retire the old toolchain** in a deletion-only commit: its record and its manifests.
+5. **Retire the old toolchain** in a deletion-only commit: its record and its manifests.

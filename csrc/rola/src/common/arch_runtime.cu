@@ -1,4 +1,4 @@
-// csrc/rola/src/common/arch_runtime.cu -- the runtime half of the closed-world arch rule (setup.py's R4), the one
+// csrc/rola/src/common/arch_runtime.cu -- the runtime half of the closed-world arch rule (R4), the one
 // definition every launching entry calls first. See docs/internals/common/arch_runtime.md
 
 #include "common/torch_seam.cuh"

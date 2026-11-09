@@ -8,7 +8,7 @@ exact `ptxas`, filed under that assembler's toolchain ([`internals/tools/toolcha
 tools/manifests/cu13/sm_86.json
   { "toolchain": { "ptxas": "<the whole --version string>", "defines": {},
                    "nvcc_flags": [...], "sass_hash_version": 2,
-                   "sccache": {"version": "sccache 0.17.0", "sha256": "..."} },
+                   "mold": {"version": "mold 2.42.0", "sha256": "..."} },
     "source":   { "csrc_sha256": "...", "date": "..." },
     "shards":   { "carry_arm_0": { "members_sha256": "...", "count": 1 }, ... },
     "entries":  { "sm_86:<mangled name>": { "regs": 64, "spill_stores": 8,
@@ -51,13 +51,13 @@ The declaration has one `shipped` list: every declared row is built, ratified an
 shipped. The generator refuses a declaration that is malformed, and names the field: an
 unknown axis value, a duplicate row, a missing list, or rows out of canonical order —
 the last because an arm's INDEX is what the selection header, the per-arm translation
-units and `ROLA_CARRY_ARMS` name, so it must be a property of the declaration and not
+units and `--//:carry_arms` name, so it must be a property of the declaration and not
 of where a row was typed. `bazel run //tools:gen_shards -- --self-test` requires the reader
 to refuse every malformed declaration by name, and renders a synthetic three-row table
 at a subset scope ([`internals/tools/gen_shards.md`](internals/tools/gen_shards.md)).
 
 <a id="arm-switch"></a>
-## `arm_switch`, and what the post-build check proves about it
+## `arm_switch`, and what the arm gate proves about it
 
 `csrc/rola/src/common/arm_switch.cuh` is the host twin of `uniform_switch`: one
 branch over a GENERATED arm set, with the same four layers
@@ -67,9 +67,9 @@ the translation units compiled against are one enumeration; `ROLA_CARRY_ARM_COUN
 and `ROLA_CARRY_ARM_DECLARED` are both emitted, because the refusal has to tell *this
 wheel does not carry that arm* from *nothing builds that arm in any configuration*.
 
-`tools/gen_shards.py`'s `check_built_arm_table` and `sweep_binary` are where the layers become checked facts --
-setup.py's post-build gate and the graph's arm gate run them -- and they run **after** the compile because what they
-check is what the build produced:
+`tools/gen_shards.py`'s `check_built_arm_table` and `sweep_binary` are where the layers become checked facts -- the
+library's arm gate runs them (`bazel/gates.py`) -- and they run **after** the link because what they check is what the
+build produced:
 
 1. The generator's table still matches the declaration, re-read from disk;
 2. The selection header the build compiled against names exactly the arms the build
@@ -77,9 +77,9 @@ check is what the build produced:
 3. The coverage sweep: the freshly built `_C`, **loaded by path**, is asked what it
    carries, and the answer must be exactly those rows.
 
-A failure is fatal whatever `ROLA_STRICT_MANIFEST` says. The milestone/CI split
-(§16) is about manifest *staleness* — measurements that go out of date between
-milestones by design — and none of these three is a measurement.
+A failure is fatal on every build, iteration builds included. Ratify's own verdict is a
+separate target because §16's milestone rule is about manifest *staleness* — measurements
+that go out of date between milestones by design — and none of these three is a measurement.
 
 <a id="the-derivation"></a>
 ## The derivation, ratified as code hash and golden outputs
@@ -138,12 +138,12 @@ against a tree fact, not merely a number that changes.
 
 It is a generated header rather than a `-D` for the reason the arm selection is: a
 define reaches every translation unit's argv, so every `csrc/` edit would rebuild the
-whole extension, while a header included only by the stamp site rebuilds one file and
-is hashed by ninja through the depfile. (A flag ninja does *not* hash —
-`NVCC_PREPEND_FLAGS` — is the failure one level over: the build reports success and
-the binary silently stays the previous variant.) `setup.py` and the graph's stamp
-action write the header before they compile anything and `tools/ratify.py` writes it
-before it measures anything, from the same function (`tools/csrc_stamp.py`).
+whole extension, while a header included only by the stamp site rebuilds one unit, the
+one action that depends on it ([`build-graph.md`](build-graph.md#compile)). (A flag a
+build does *not* key on — `NVCC_PREPEND_FLAGS` — is the failure one level over: the
+build reports success and the binary silently stays the previous variant.) The graph's
+stamp action writes the header before anything compiles and `tools/ratify.py`'s compile
+path writes it before it measures anything, from the same function (`tools/csrc_stamp.py`).
 
 The footprint stamps each family already carries are untouched and answer a different
 question: whether the loaded binary's struct sizes are the ones this source declares.
@@ -166,11 +166,12 @@ instantiation ratifies zero-spill.
 
 ## What it compiles, and why that is the shipped source
 
-`python tools/ratify.py` compiles **the translation units the build compiles**, taken
+Ratify's compile path (`python tools/ratify.py`, an architecture's first manifest) compiles **the translation units
+the build compiles**, taken
 from the one list both read (`tools/kernels.py`): every hand-written `.cu` under
 `csrc/rola/src`, plus the generated per-arm carry units under `instantiations/` that the arm
-selection names -- under the flag list `setup.py` uses, imported from `tools/build_flags.py`
-rather than restated. A kernel is shipped codegen the moment its file is under `src/`, so it
+selection names -- under the flag list the graph compiles with, `tools/build_flags.py`'s, rather
+than restated. A kernel is shipped codegen the moment its file is under `src/`, so it
 is measured like every other; `bazel run //tools:kernels -- --check-manifest` names any kernel the
 source defines and no manifest records. Two properties follow:
 
@@ -209,7 +210,6 @@ and the difference between them, are deliberate:
 | **FAIL — local-memory growth** | An instantiation executes more `LDL`/`STL` *anywhere* than it ratified. A cheap complement to the two above: `ptxas`'s spill bytes miss local traffic that is not a spill (a dynamically indexed local array), and the in-loop count only sees a backward-branch interval. |
 | **FAIL — SASS body drift** | An instantiation assembles to different code than was ratified. |
 | **REPORT — register drift** | A changed register count with no spill growth is printed, not failed. Register allocation is an outcome that legitimately moves; what must not move is the spilling. |
-| **REPORT — sccache drift** | The recorded `toolchain.sccache` (`{version, sha256}` or `null`) differs from this run's. Printed, not failed: `sccache` is a measured-transparent pass-through (`docs/build.md#sccache`), so its version cannot move a ratified register/spill number the way a `ptxas` swap can. What IS gated hard, before it is used at all, is that a resolved `sccache` matches `tools/sccache_pin.json` (`tools/sccache_toolchain.py`). |
 
 ### The body hash is the incremental half of the freshness trigger
 
@@ -243,12 +243,12 @@ to be version 1, because guessing produces a confident wrong answer.
 
 | Rule | Refused | Enforced by |
 |---|---|---|
-| **R1** | building under an assembler the manifest was not ratified under | `tools/toolchains.py::rule1` (setup.py's `_gate_toolchain` and the graph's record action), `ratify.py::check_toolchain` |
+| **R1** | building under an assembler the manifest was not ratified under | `tools/toolchains.py::rule1` (the graph's record action), `ratify.py::check_toolchain` |
 | **R1b** | building under CODEGEN FLAGS the manifest was not ratified under | `ratify.py::check_flags` |
-| **R2** | emitting `code=compute_XX` — any PTX a driver could JIT | `setup.py::gencodes`, asserted on the shipped `.so` (`cuobjdump --list-ptx` reports **0 PTX images**) |
-| **R3** | an architecture in the fatbin with no ratified manifest | `tools/build_record.py::ratified_manifest` (setup.py's `_gate_ratified` and the graph's record action) — a **file-existence** question, asked before anything compiles |
+| **R2** | emitting `code=compute_XX` — any PTX a driver could JIT | the library's architecture spec (`compute_XX:sm_XX`, `bazel/defs.bzl`'s transition), asserted on the linked library by the SASS gate (`cuobjdump --list-ptx` lists **0 PTX images**) |
+| **R3** | an architecture in the fatbin with no ratified manifest | `tools/build_record.py::ratified_manifest` (the graph's record action, whose refusal hands over no library) — a **file-existence** question |
 | **R4** | launching on a device the kernel's arch table does not describe | `common/arch_runtime.cu`'s `check_arch_table()` at run time (first statement of every family's launching entry, carry included), `static_assert` at compile time |
-| **R5** | building from a vendored codegen input (the CUTLASS/CuTe headers under `csrc/third_party/`) that does not match its recorded pin | `tools/build_record.py::vendored_pin` (setup.py's `_gate_vendored` and the graph's record action), before the compile; the pin is stamped into `_build_config.py` |
+| **R5** | building from a vendored codegen input (the CUTLASS/CuTe headers under `csrc/third_party/`) that does not match its recorded pin | `tools/build_record.py::vendored_pin` (the graph's record action); the pin is stamped into `_build_config.py` |
 
 There is no environment variable that turns any of these off.
 
@@ -300,7 +300,7 @@ is why the self-test is part of the gate rather than a note about it.
 
 ## Where the record lives after the build
 
-`rola_cu13/_build_config.py` is generated by `setup.py`, ships in the binary plugin beside the `.so`
+`rola_cu13/_build_config.py` is generated by the graph's record action, ships in the binary plugin beside the `.so`
 (`rola-cu13`, [build.md#wheels](build.md#wheels)) and answers *"which measured evidence backs this exact
 `.so`?"* from an installed wheel with no repository checkout:
 

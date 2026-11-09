@@ -61,8 +61,8 @@ least one arm is one the shipped set says gets instantiated, so its absence
 from the manifests is a ratification the milestone owes and is printed as
 `pending ratification`; a kernel no declaration would instantiate is the
 closed world leaking, and that is the gating finding. The manifest-versus-
-binary half of the same question is `setup.py`'s post-build check and
-`tools/ratify.py --check`, both of which run against a real build.
+binary half of the same question is the library's arm gate (`bazel/gates.py`) and
+ratify's verdict (`bazel test //:ratified`), both of which run against a real build.
 """
 from __future__ import annotations
 

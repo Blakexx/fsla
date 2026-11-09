@@ -694,7 +694,7 @@ void launch_decode_step(const Card& card, const DecodeParams& p, int d_v, bool d
   STD_TORCH_CHECK(matched, "this binary does not carry the decode arm (d_v = ", d_v, ", D = ", p.D,
                   ", decay = ", decay,
                   "). A full build carries every declared arm; an ITERATION build "
-                  "(ROLA_DECODE_ARMS) carries a subset and is not shippable -- "
+                  "(--//:decode_arms) carries a subset and is not shippable -- "
                   "rola.ops.decode.arms() lists what this one has.");
   ROLA_CUDA_LAUNCH_CHECK();
 }

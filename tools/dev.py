@@ -38,9 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dev_config  # noqa: E402 -- path insert must precede this import
-import mold_toolchain  # noqa: E402
 import oci_layout  # noqa: E402
-import sccache_toolchain  # noqa: E402
 import toolchains  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,12 +49,8 @@ DEV_TOOLS = ("hyperfine", "difftastic", "nsight_compute", "nsight_systems")
 #: THE CUDA TOOLKIT the tree's tools outside the graph use (`dev_config.cuda_home`): NVIDIA's redistributable components at
 #: the graph's toolkit manifest, installed by init as a devbox tool is, on no PATH -- see docs/setup.md#the-devbox
 TOOLKIT = "cuda_toolkit"
-PINS = {"sccache": ROOT / "tools" / "sccache_pin.json", "mold": ROOT / "tools" / "mold_pin.json",
-        "bazelisk": ROOT / "tools" / "bazelisk_pin.json",
+PINS = {"bazelisk": ROOT / "tools" / "bazelisk_pin.json",
         **{name: ROOT / "tools" / f"{name}_pin.json" for name in (TOOLKIT, *DEV_TOOLS)}}
-#: the pins init records in the machine's toolchain file; bazelisk is found by its pin instead (`dev_config.pinned`), since
-#: every checkout loads that file and an older loader refuses a key it does not declare
-RECORDED = ("sccache", "mold")
 #: THE DEVBOX IMAGE (`//:image`, docs/setup.md#the-devbox-image): the name Docker knows it by, and the digest the tree
 #: names, which a commit changing it carries a passing container check for (KERNEL_STANDARDS §23 (3))
 DEVBOX_REPO = "rola-devbox"
@@ -77,9 +71,8 @@ def _bazelisk_version(path: str) -> str:
     return pin["version_string"] if got == pin["asset_sha256"] else f"bazelisk sha256 {got}"
 
 
-#: each pinned tool's own version reader, the one its build gate compares against the pin
-VERSION_OF = {"sccache": sccache_toolchain.sccache_version, "mold": mold_toolchain.mold_version,
-              "bazelisk": _bazelisk_version}
+#: a pinned tool's own version reader, where its `--version` cannot say its pin's version string
+VERSION_OF = {"bazelisk": _bazelisk_version}
 
 
 def ensure_pinned(name: str) -> None:
@@ -199,7 +192,7 @@ def _install_components(name: str, pin: dict) -> None:
 
 def install_pinned(name: str) -> str:
     """Download the pinned release, verify its sha256 (and the binary's, where the pin has one), and unpack the whole
-    release under `dest` -- its layout is part of the tool (mold selects `ld.mold` beside itself). A release is a tarball,
+    release under `dest` -- its layout is part of the tool (the toolkit's nvcc finds cicc and ptxas by its own place). A release is a tarball,
     a bare binary (`asset_kind`) installed under its release's name, or a manifest's components (`components`)."""
     pin = json.loads(PINS[name].read_text())
     root, rel = pin["archive_root"], pin["binary_path"]
@@ -413,11 +406,6 @@ def cmd_init(a) -> int:
         _write_section(section, values, a.force)
     _follow_lock_mount()
 
-    for name in RECORDED:
-        current = dev_config.get(f"toolchain.{name}")
-        pin = json.loads(PINS[name].read_text())
-        if current is None or _pinned_version(name, current) != pin["version_string"]:
-            _write_section("toolchain", {name: install_pinned(name)}, force=True)
     for name in (TOOLKIT, *DEV_TOOLS):
         ensure_pinned(name)
     base = dev_config.get("workspace.base_venv")
@@ -482,12 +470,6 @@ def cmd_check(a) -> int:
     want = json.loads(PINS[TOOLKIT].read_text())["version_string"]
     row(_pinned_version(TOOLKIT, str(dev_config.pinned(TOOLKIT))) == want,
         f"toolchain cuda: {dev_config.pinned(TOOLKIT).parents[1]} is {want}", "bazel run //:init")
-    for name, gate in (("sccache", sccache_toolchain.gate), ("mold", mold_toolchain.link_flags)):
-        try:
-            gate()
-            row(True, f"toolchain {name}: {dev_config.get(f'toolchain.{name}')} matches its pin")
-        except RuntimeError as ex:
-            row(False, f"toolchain {name}: {str(ex).splitlines()[0][:140]}", "bazel run //:init")
     for name in DEV_TOOLS:
         want = json.loads(PINS[name].read_text())["version_string"]
         row(_pinned_version(name, str(dev_config.pinned(name))) == want, f"devbox {name}: {dev_config.pinned(name)} is {want}",

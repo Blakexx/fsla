@@ -15,7 +15,7 @@ a box with no host of its own to set up, which runs the host's same loop.
 ## 0. The dev environment: `tools/dev.py`
 
 Everything this tree needs from a machine -- the CUDA toolkit, Nsight Compute,
-the pinned `sccache` and `mold`, the host's compile slots, the lock files, the SM
+the host's compile slots, the lock files, the SM
 clock, the measurements store, the worktrees folder and base venv -- is one
 directory of JSON files, the dev config (`~/.config/rola/`,
 `docs/internals/tools/dev_config.md`, KERNEL_STANDARDS §23). One command sets a
@@ -130,17 +130,11 @@ the reader's defaults look), then run the host's loop in `/workspace/rola`.
 Inside, the SM clock is not locked: the lock is a host act (`bazel run //:clock`), and rows measured in the container
 record `clock_locked = false`.
 
-## 3b. Building on the bare host (no container) needs `mold`
+## 3b. The linker is the graph's
 
-`mold` is THE extension's linker unconditionally (Blake, 2026-08-28)
--- `setup.py` refuses to build without it, no fallback to `ld.bfd`/`ld.gold`
-(`tools/mold_toolchain.py`, `tools/mold_pin.json`). On a bare host with no root
-and no apt package for it (this repo's dev box: `apt-cache policy mold` has no
-candidate on Ubuntu 22.04), `bazel run //:init` downloads the pinned
-release, verifies its sha256 against `tools/mold_pin.json`, unpacks the whole
-release (`bin/mold` beside `bin/ld.mold`, which `-fuse-ld=mold` selects) under
-`host.tools_dir`, and records it as `toolchain.mold`. The container and the host
-link with the byte-identical binary.
+`mold` is THE extension's linker unconditionally (Blake, 2026-08-28), no fallback to `ld.bfd`/`ld.gold`. The graph
+fetches the pinned release itself (`@mold`, by `tools/mold_pin.json`'s digest) and links with it, so the container and
+the host link with the byte-identical binary and no machine installs one.
 
 ## 3c. The checkout's venv: many worktrees on one environment
 
@@ -214,9 +208,7 @@ that graphviz's `dot` from PATH.
 | Tool | Source | Role |
 |---|---|---|
 | the CUDA toolkit: `nvcc`, `ptxas`, `cuobjdump`, `nvdisasm`, `cu++filt`, `compute-sanitizer` | `tools/cuda_toolkit_pin.json` (NVIDIA's redistributable components at the manifest the graph's toolkit is read by, by its digest), init, at `dev_config.cuda_home()` and on no PATH (torch takes its toolkit from the nvcc on PATH without following links) | the ratified toolchain (`docs/build.md` rule 1, `cu13`: CUDA 13.0, V13.0.48) for every tool outside the graph's own rules; the graph's copy of the same pin (`@cuda_tools`) is the test tiers' and the binary gates' |
-| `sccache` 0.17.0 | `tools/sccache_pin.json`, verified, init | the compiler cache `docs/build.md#sccache` measures |
-| `ninja` | `requirements.lock` (the environment) | the build's actual compile driver (`docs/build.md` step 5) |
-| `mold` 2.42.0 | `tools/mold_pin.json`, verified, init | the extension's only linker |
+| `mold` 2.42.0 | `tools/mold_pin.json`, the graph's `@mold` | the extension's only linker |
 | Nsight Compute 2025.3, Nsight Systems 2025.3 | `tools/nsight_compute_pin.json`, `tools/nsight_systems_pin.json` (NVIDIA's redistributable components at the toolkit's manifest, by digest), init | PM sampling (pipe timeline) and the measurement tools' Nsight Compute, found by its pin; timelines |
 | `hyperfine`, `difftastic` (`difft`) | `tools/hyperfine_pin.json`, `tools/difftastic_pin.json` (pinned GitHub releases, sha256-verified), init | ad-hoc wall-clock comparisons outside the declared timing sessions; structural diffs |
 | `ast-grep`, `py-spy`, `clangd` 22, `clang-format` 19.1.7 | `requirements.lock` (the environment) | structural code search; live Python profiling; the editor's language server, at the pinned clang-tidy's LLVM major; the formatter `.clang-format` names |
@@ -231,8 +223,8 @@ that graphviz's `dot` from PATH.
 `tools/ratify.py`'s written manifests carry `source.image_digest`: the devbox image's digest, which the
 container's launcher mounts (step 3), or the empty string if a ratification ran on a bare host. It sits beside
 `source.csrc_sha256`/`source.date`, not inside `toolchain` — it identifies
-WHERE a measurement ran, not WHAT was measured, so (like `sccache`'s version)
-it is recorded and reported on drift, never part of `manifest_digest()`'s
+WHERE a measurement ran, not WHAT was measured, so it is recorded and reported
+on drift, never part of `manifest_digest()`'s
 ratchet-gated hash. Re-ratifying inside this container and comparing
 `source.image_digest` across two runs is how "reproduced under the same
 pinned environment" becomes a value you can diff instead of a claim you take

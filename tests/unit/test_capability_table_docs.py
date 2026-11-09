@@ -16,9 +16,9 @@ MARKER = "rola.routing.activations.capability_table"
 
 
 def _block(text: str) -> str:
-    begin, end = f"<!-- BEGIN GENERATED: {MARKER} -->", f"<!-- END GENERATED: {MARKER} -->"
-    assert begin in text and end in text, f"README.md has no generated block for {MARKER}"
-    return text.split(begin, 1)[1].split(end, 1)[0].strip("\n")
+    found = supported.block(text, MARKER)
+    assert found is not None, f"README.md has no generated block for {MARKER}"
+    return found
 
 
 def test_the_readme_capability_table_is_the_registry_s():
@@ -26,5 +26,6 @@ def test_the_readme_capability_table_is_the_registry_s():
 
 
 def test_a_hand_edit_is_caught():
-    edited = supported.README.read_text().replace(f"<!-- END GENERATED: {MARKER} -->", f"x\n<!-- END GENERATED: {MARKER} -->")
+    end = supported.markers(MARKER)[1]
+    edited = supported.README.read_text().replace(end, f"x\n{end}")
     assert _block(edited) != supported.BLOCKS[MARKER]()

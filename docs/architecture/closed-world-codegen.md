@@ -105,7 +105,7 @@ central claims are numeric buys the second with the first.
   it is clean, not a re-stamped manifest.
 - **Anything that quietly reopens the input space is refused even when it is
   convenient.** The known instance: `TORCH_EXTENSION_SKIP_NVCC_GEN_DEPENDENCIES`
-  escapes an sccache/depfile collision, but it deletes header dependency edges,
+  escapes a compiler-cache/depfile collision, but it deletes header dependency edges,
   after which a stale object file passes every gate the project owns. Hard
   reject; a build-cache wrapper is admissible only with its own toolchain pin,
   which is R1 extended to the cache.

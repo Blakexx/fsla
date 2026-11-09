@@ -255,7 +255,7 @@
   "moduleExtensions": {
     "//bazel:environment.bzl%environment": {
       "general": {
-        "bzlTransitiveDigest": "S9wVoGXWvWvfpJItHo0oRqOjqdtyfFDTCtiuWT99LOQ=",
+        "bzlTransitiveDigest": "gqu+CYaGhkg6F4NYzfxhqQPh7lkFrbG6CYsOcDkDxFY=",
         "usagesDigest": "HkBnFTQ2fbTZDMJfxNkfdOK7vkrLf5VSSo2CXQjT1hU=",
         "recordedInputs": [],
         "generatedRepoSpecs": {

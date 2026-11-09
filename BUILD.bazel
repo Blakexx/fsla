@@ -9,7 +9,7 @@
 
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "string_list_flag")
 load("@rola_env//:flags.bzl", "CXX11_ABI", "RATIFIED_ARCHS", "TOOLCHAIN", "TORCH", "TORCH_CUDA")
-load("//bazel:defs.bzl", "checkout_test", "compile_database", "dev_run", "ratify_census", "ratify_run", "ratify_test", "rola_extension", "rola_instrument", "tool_run", "tool_test", "tree_part", "tree_test")
+load("//bazel:defs.bzl", "checkout_test", "compile_database", "dev_run", "ratify_census", "ratify_run", "ratify_test", "rola_extension", "rola_instrument", "rola_wheels", "tool_run", "tool_test", "tree_part", "tree_test")
 load("@rola_tree//:tree.bzl", "TRACKED")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
 load("@tar.bzl", "tar")
@@ -115,6 +115,14 @@ ratify_test(
     census = ":census",
     data = [":tree"],
     tags = ["manual"],
+)
+
+#: THE WHEELS (docs/build.md#wheels): `rola` and its plugin `rola-cu13` from this library, on a clean commit whose
+#: build ratify passes; `bazel run //:wheels` writes dist/
+rola_wheels(
+    name = "wheels",
+    census = ":census",
+    library = ":library",
 )
 
 #: THE PART HARNESS'S DRIVER (KERNEL_STANDARDS section 22, `measure/harness/bench_carry_calib.py`): the calibration

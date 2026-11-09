@@ -1,9 +1,9 @@
 # `tools/toolchains.py` — the toolchain records
 
 Mirrors `tools/toolchains.py`. A **toolchain** is one exact assembler a fatbin is built and ratified under. Everything
-that asks "which compiler, which manifests" reads it through this module: `setup.py`'s rules, `tools/ratify.py`,
+that asks "which compiler, which manifests" reads it through this module: `tools/ratify.py`,
 `tools/supported.py`, the lints, and the graph's flags and record actions (`bazel/flags.py`, `bazel/record.py`). Rule 1
-is one function here, `rule1`, both builds' (docs/build-graph.md#gates).
+is one function here, `rule1`, the graph's record action's (docs/build-graph.md#gates).
 
 ## The record
 
@@ -28,7 +28,6 @@ directory: `tools/manifests/<name>/sm_XX.json`, one file per architecture
 The build takes no toolchain parameter. The pinned toolkit (`tools/cuda_toolkit_pin.json`, `dev_config.cuda_home()`) is the choice, and the
 record whose `ptxas` equals that toolkit's is the toolchain (`for_ptxas`); a toolkit no record names refuses, naming the
 declared ones. A second spelling of the choice would be one that can disagree with the compiler that actually runs.
-`setup.py` resolves it at import;
 `tools/ratify.py` resolves it per run; a lint that checks a built binary takes the toolchain from that binary's own
 `BUILD_CONFIG["ptxas"]`, never from whatever toolkit the checking host has.
 

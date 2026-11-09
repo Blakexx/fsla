@@ -64,33 +64,30 @@ cannot drift apart.
 | PyTorch | built for the toolchain's CUDA major (`tools/toolchains/<name>.json`, `torch_index`) |
 | CUDA toolkit | a declared toolchain's exact `ptxas` — the table below names each ratified one |
 | GPU | a **ratified** compute capability (see the table below) |
-| Build | `ninja`; source installs need `--no-build-isolation` |
-
-`--no-build-isolation` is not optional and not a workaround: pip's build isolation
-would fetch a CPU-only torch from PyPI and build the extension against the wrong
-ABI. Flash-attention and mamba-ssm require the same thing for the same reason.
+| Build | the build graph (`bazel`, the pinned bazelisk: [docs/setup.md](docs/setup.md)); there is no source install |
 
 ### Install modes
 
 | Mode | Command | Notes |
 |---|---|---|
 | Wheel | `pip install "rola[cu13]"` | `rola` (pure Python) and `rola-cu13` (the fatbin for the ratified matrix, and its manifests), at one version ([docs/build.md#wheels](docs/build.md#wheels)) |
-| Source | `pip install . --no-build-isolation` | From a checkout: builds the fatbin ahead of time, no JIT, both packages in one install |
-| Development | `bazel run //:library` | The graph's build: rules 1, 3 and 5, the SASS gate and the arm gate on every build |
+| Development | `bazel run //:library` | The graph's build, into the checkout: rules 1, 3 and 5, the SASS gate and the arm gate on every build |
+| Release | `bazel run //:wheels` | The two wheels of a clean commit whose build ratify passes ([docs/build.md#wheels](docs/build.md#wheels)) |
+
+`pip install .` refuses: rola builds through its graph alone, so a source install, which would build a package
+without its kernels, is not supported.
 
 The build is **ahead-of-time and closed-world**. It emits `code=sm_XX` only, never
 `code=compute_XX`, so the fatbin carries no PTX for a driver to JIT; the shipped
-`.so` is asserted to contain zero PTX images. Setting `ROLA_CUDA_ARCHS` to an
-architecture with no ratified manifest fails the build before it compiles anything.
+`.so` is asserted to contain zero PTX images. Naming an architecture with no ratified
+manifest (`--//:archs`) fails the build.
 
-The consumer's 74 kernel instantiations are compiled as **three generated
-translation units** (`csrc/rola/src/instantiations/`, generated per carry arm),
-partitioned as contiguous blocks of the declared arm list, so the matrix parallelizes
-across `MAX_JOBS` instead of serializing inside one compiler process. They are
+The carry family's arms are compiled as **generated translation units, one an arm**
+(`csrc/rola/src/instantiations/`, from the declared arm list), so the matrix parallelizes
+across the build's jobs instead of serializing inside one compiler process. They are
 checked in — what is reviewed is what compiles — and `bazel run //tools:gen_shards -- --check` is the gate that keeps
-them the files their generator produces. `MAX_JOBS`
-defaults to a value derived from **available RAM**, which is the resource that
-actually binds ([`docs/build.md`](docs/build.md)).
+them the files their generator produces. Every build runs under the machine's host budget, its jobs the slots it
+holds ([`docs/build-graph.md`](docs/build-graph.md#front-door)).
 
 ## Supported configurations
 

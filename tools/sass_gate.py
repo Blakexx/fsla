@@ -24,8 +24,8 @@ What it reads, per function of every cubin (every kernel and every outlined devi
                   scheduler its registers admit sharing its issue port and the SM's memory pipe, its pipe share
                   under `STEP_LINE` (KERNEL_STANDARDS section 32); a debt kernel held at its floor (`--write-floors`
                   records them)
-On a whole extension it also reds every kernel the source defines (`tools/kernels.py`) that no cubin carries: a gate
-that cannot see a kernel has not gated it. An instrument's library (`--instrument`, bazel/defs.bzl's `rola_instrument`)
+On a whole binary it also reds a PTX image (closed-world rule 2: cubins only), and on a whole extension every kernel
+the source defines (`tools/kernels.py`) that no cubin carries: a gate that cannot see a kernel has not gated it. An instrument's library (`--instrument`, bazel/defs.bzl's `rola_instrument`)
 carries its own kernels and owes none of the source's. Its kernels are PROBES, and a probe that keeps a step
 signature on purpose (a global reduction between its HMMAs, the cost it measures) declares it in the instrument's
 DECLARATIONS, by function, with that cost; an undeclared signature is red, and so is a declaration no function uses. It prints the counts it reads, the same way `ratify` prints registers and
@@ -191,9 +191,7 @@ def mma_gap(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> t
     return inside, around
 
 
-#: KERNEL_STANDARDS section 29's debts: the kernels built before the step lints whose steps still do it
-_STEP_XU_DEBT = {
-}
+#: KERNEL_STANDARDS section 29's debts: the kernels built before the step lints whose steps still read global memory
 _STEP_GLOBAL_DEBT = {
     "carry_kernel": "the fold's steps past a list's 16th entry read records from global memory; the readout-first "
                     "rebuild stages every step's records",
@@ -367,7 +365,7 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
         held = {lint for _, lint in kept}
         if branches and "step_branches" not in held:
             reds.append(f"branches inside an MMA step ({branches})")
-        if xu and "step_xu" not in held and not any(debt in name for debt in _STEP_XU_DEBT):
+        if xu and "step_xu" not in held:
             reds.append(f"the conversion unit inside an MMA step ({xu})")
         if memory and "step_global" not in held and not any(debt in name for debt in _STEP_GLOBAL_DEBT):
             reds.append(f"global memory inside an MMA step ({memory})")
@@ -560,6 +558,14 @@ def main() -> int:
         print(f"RED: no function matched (--kernel {a.kernel!r}, --member {a.member!r}): a gate with no target does "
               "not pass")
         allok = False
+    #: CLOSED-WORLD RULE 2 on the binary itself: no PTX image a driver could just-in-time compile for an architecture
+    #: nobody measured
+    if a.binary.suffix != ".cubin":
+        listed = subprocess.run([sass.tool("cuobjdump"), "--list-ptx", str(a.binary)], capture_output=True, text=True,
+                                check=True).stdout
+        for line in (line for line in listed.splitlines() if line.startswith("PTX file")):
+            print(f"RED  rule 2: {line.strip()} -- a binary carries cubins alone (docs/build.md#what-the-build-checks)")
+            allok = False
     if a.binary.suffix != ".cubin" and a.kernel is None and a.member is None and not a.instrument:
         for line in missing_kernels(seen):
             print(f"RED  {line}")

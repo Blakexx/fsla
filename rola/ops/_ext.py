@@ -11,11 +11,10 @@ counts in ``tools/manifests/`` describe a binary that was *measured*; a JIT buil
 produces a different binary every time the environment moves, and no manifest can
 speak for it.
 
-So the extension is built ahead of time by ``setup.py`` (which runs the
-ratification gates as part of the build) and is merely *imported* here. Every
-build-environment knob that used to live in this file — ``CUDA_HOME``,
-``TORCH_CUDA_ARCH_LIST``, ``MAX_JOBS``, the WSL ``libcuda`` search path — now
-lives in ``setup.py``, where a build's environment belongs.
+So the extension is built ahead of time by the build graph (``bazel run //:library``,
+which runs the binary gates on what it links; the wheels package that library) and is
+merely *imported* here. No build-environment knob lives in this file: a build's
+parameters are the graph's settings, where a build's environment belongs.
 
 There is deliberately **no pure-torch fallback**. ``rola.ops.naive`` is an fp64
 oracle, not a fast path: silently routing to it when the wheel is missing would

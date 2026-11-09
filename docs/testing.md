@@ -203,7 +203,7 @@ Each of these guards a property of the BUILD whose failure leaves every other ga
 checked-in ones, and holds the selection header — generated, never checked in — to its generator's schema for the
 scopes a build or ratify run uses and for the empty selection
 ([`internals/tools/gen_shards.md`](internals/tools/gen_shards.md)).
-`setup.py` runs it before compiling, and the commit gate's standards lint runs it (`check_shard_partition`, below).
+The library's record action runs it on every build, and the commit gate's standards lint runs it (`check_shard_partition`, below).
 
 **`check_shard_partition`** in `tools/lint/lint_standards.py`: the ratification on disk is the one `_build_config.py`
 recorded at build time, its digest recomputed over the arch subset the build declares. CPU only; a tree that has not

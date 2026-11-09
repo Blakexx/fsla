@@ -1,6 +1,6 @@
 {
     "name": "mold",
-    "role": "the extension's linker, unconditionally: setup.py links with -fuse-ld=mold and refuses to build if it is absent or mismatched -- no fallback to ld.bfd/ld.gold, the constitution's NO FALLBACKS AT THE ATOM rule extended to the toolchain: a build must not differ by which linker happened to be installed.",
+    "role": "the extension's linker, unconditionally: the graph links with this release (@mold, fetched by its digest) -- no fallback to ld.bfd/ld.gold, the constitution's NO FALLBACKS AT THE ATOM rule extended to the toolchain: a build must not differ by which linker happened to be installed.",
     "upstream": "https://github.com/rui314/mold",
     "version": "2.42.0",
     "version_string": "mold 2.42.0",

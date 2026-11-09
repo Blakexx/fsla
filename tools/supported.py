@@ -47,6 +47,20 @@ BLOCKS = {
 }
 
 
+def markers(marker: str) -> tuple[str, str]:
+    """A generated block's two markers in the README."""
+    return f"<!-- BEGIN GENERATED: {marker} -->", f"<!-- END GENERATED: {marker} -->"
+
+
+def block(text: str, marker: str) -> str | None:
+    """The README's generated block for `marker`, its text between the markers; None when it has none. The one reader
+    of the format: `--write` and the checks read it here."""
+    begin, end = markers(marker)
+    if begin not in text or end not in text:
+        return None
+    return text.split(begin, 1)[1].split(end, 1)[0].strip("\n")
+
+
 def _capability_table() -> str:
     from rola.routing.activations import capability_table
 
@@ -137,9 +151,9 @@ def main() -> int:
 
     new = README.read_text()
     for marker, produce in BLOCKS.items():
-        begin, end = f"<!-- BEGIN GENERATED: {marker} -->", f"<!-- END GENERATED: {marker} -->"
-        if begin not in new or end not in new:
+        if block(new, marker) is None:
             raise SystemExit(f"README.md has no generated block for {marker}")
+        begin, end = markers(marker)
         head, rest = new.split(begin, 1)
         _, tail = rest.split(end, 1)
         new = f"{head}{begin}\n{produce()}\n{end}{tail}"

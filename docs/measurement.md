@@ -214,7 +214,7 @@ again whenever it is asked for. `bazel run //:results -- dashboard --out FILE --
 ## SASS
 
 `bazel run //:ratify` and `bazel run //tools:sass_bodies` are the instruments. Two binaries in a
-comparison may be built at different paths ([`build.md#sccache`](build.md#sccache)); they must agree
+comparison may be built at different paths ([`build.md#kernel-identity`](build.md#kernel-identity)); they must agree
 on `ratify.SASS_HASH_VERSION`, which `--compare` checks and refuses on mismatch.
 
 **Measuring a kernel's register DEMAND at a bound it does not ship at** is a

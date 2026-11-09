@@ -27,7 +27,7 @@ constexpr Caps kCaps = caps_of(kArch);
 static_assert(
     traits_of(Build{kArch, 0}).family == Family::kAmpere,
     "no atom of this architecture's family is written (the hopper family's are next): build for an ampere "
-    "architecture (ROLA_CUDA_ARCHS)");
+    "architecture (--//:archs)");
 
 constexpr int caps_digest(const Caps& c) {  // see docs/internals/common/arch_caps.md#capsdigest
   return c.cc * 1000 + (int)c.bf16_cvt_packed * 16 + (int)c.bf16_simd_arith * 32

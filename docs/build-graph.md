@@ -6,9 +6,9 @@ release and its digest), `bazel/` (the graph's machinery: its rules, the environ
 actions run) and `bazel/bazel` (the front door); each `BUILD.bazel` sits beside what it describes. The graph builds the
 extension (`//:library`, [below](#compile)), gates it ([below](#gates)) and runs the checks ([below](#checks)).
 The commit gate is `bazel test //:gate` (`tools/git-hooks/pre-commit`, on the commit as git will write it), and the
-test tiers are the graph's targets too (`//:lane`, [below](#checks)). Beside the graph, `setup.py` builds the two wheels
-([`build.md`](build.md)) until they are the graph's targets, and ratify keeps its compile path for a new
-architecture's first manifest ([below](#ratify)). CI runs the commit gate's checks through the graph
+test tiers are the graph's targets too (`//:lane`, [below](#checks)), and so are the two wheels (`bazel run //:wheels`,
+[`build.md`](build.md#wheels)); ratify keeps its compile path for a new architecture's first manifest
+([below](#ratify)). Nothing builds outside the graph: `pip install .` refuses (`tools/no_source_build.py`). CI runs the commit gate's checks through the graph
 (`.github/workflows/lint.yml`, on a fresh runner as `.github/actions/graph` sets one up). Measurement is
 `rola_devtools.build`'s
 ([`measurement.md`](measurement.md)), whose timing sessions hold the GPU and the clock as machine-wide counting
@@ -68,7 +68,7 @@ headers into `build/generated`.
   `bazel/cuda_compile.py`): rules_cuda's toolchain, flags and command line, as its `cuda_library` builds them, one
   position-independent object a unit, always linked. nvcc writes a dependency file (`-MD -MF`), and every declared
   header the unit did not read becomes the action's `unused_inputs_list`, so the unit's cache key holds what it read:
-  a header edit recompiles the units that include it, as ninja's dependency files do in setup.py's build. The file
+  a header edit recompiles the units that include it and no other. The file
   lists what every pass read, the host's and each architecture's device pass (nvcc 13.0.48: a header included only
   under `__CUDA_ARCH__ == 860` is listed when sm_86 compiles and not when sm_80 alone does). Only declared headers are
   prunable: the toolkit, the host compiler and its identity (rule 4) key every compile. The action keeps nvcc's
@@ -92,7 +92,7 @@ headers into `build/generated`.
   unwanted arm is never compiled.
 - `--threads` IS THE MACHINE'S `host.nvcc_threads`, which the front door hands the graph (`ROLA_NVCC_THREADS`): the
   cicc a job runs is the count its job budget divides by.
-- THE LINK is the pinned mold's, of every unit's objects (each target `alwayslink`, as setup.py links every object)
+- THE LINK is the pinned mold's, of every unit's objects (each target `alwayslink`, so every object is linked)
   and, by path, torch's `libc10.so` and `libtorch_cpu.so`, the CUDA runtime and the driver's stub: each NEEDED by its
   soname, no search path written (no unit carries a dynamic library; the units' CUDA runtime is its headers,
   `//bazel:cuda_headers` -- rules_cuda 0.3.0's own `@cuda//:cuda_headers` names a component CUDA 13 lacks).
@@ -110,15 +110,15 @@ Building `//:library` runs the gates below; their verdicts are its outputs and i
 among them: the manifests are stale between milestones by design (KERNEL_STANDARDS section 16), so its verdict is a
 target of its own ([below](#ratify)).
 
-- THE BUILD GATES AND THE RECORD (`bazel/record.py`): rule 1 (`tools/toolchains.py`'s `rule1`, setup.py's too) -- the
+- THE BUILD GATES AND THE RECORD (`bazel/record.py`): rule 1 (`tools/toolchains.py`'s `rule1`) -- the
   graph's ptxas is the toolchain record's and the manifests' byte for byte (the tie between that record and
   `MODULE.bazel`'s toolkit pin), its cuobjdump and nvdisasm are the record's byte for byte too (the tie between the
   pinned toolkit's manifest and the compiler's, which `tests/unit/test_cuda_toolkit_pin.py` holds equal), and the environment's torch is the toolchain's CUDA major --; rule 3, every architecture ratified; rule 5, the vendored
   tree its `PIN.json`'s (`tools/build_record.py`'s `vendored_pin`); the shards, the checked-in generated units the arm
-  list's (`tools/gen_shards.py`'s `check_generated`); then the record, `tools/build_record.py`'s writer, setup.py's.
+  list's (`tools/gen_shards.py`'s `check_generated`); then the record, `tools/build_record.py`'s writer.
 - THE SASS GATE (KERNEL_STANDARDS section 20, `tools/sass_gate.py`) on the linked library, with the graph's
   `cuobjdump` and `nvdisasm` (`@cuda_tools`, the pinned toolkit, one `bin/` for both as an installed toolkit has
-  them) and no verdict cache: Bazel's is the cache.
+  them) and no verdict cache: Bazel's is the cache. It reds a PTX image too: closed-world rule 2 on the binary itself.
 - THE ARM GATE (`bazel/gates.py`): the built table against the declaration, and the coverage sweep -- the binary asked
   what it carries, loaded by the environment's interpreter against the toolkit's driver stub, so the answer is the
   binary's on any machine. It runs outside the sandbox, where the environment's packages are, the environment's
@@ -134,9 +134,8 @@ PATH` measures. Neither compiles: the census (`//:census`, `bazel/defs.bzl`'s `r
 compiles, each unit's ptxas report and object (the `cuda_unit` rule's), with the derivation harness the graph builds
 (tools/BUILD.bazel's `derivation_harness`, [`internals/tools/ratify.md`](internals/tools/ratify.md#graph)). On
 2026-11-08 the census equalled the compile path's (`python tools/ratify.py --census`: 750 entries, every register,
-spill, local-access count and body hash) and the verdict was the same line for line; the compile path also printed its
-sccache's provenance, where the graph prints a REPORT, since the graph compiles with no cache. The census reads in
-15 s at 3 jobs.
+spill, local-access count and body hash) and the verdict was the same line for line. The census reads in 15 s at 3
+jobs.
 
 THE GAP: the graph ratifies the shipped set, the architectures the toolchain's manifests already name
 (`RATIFIED_ARCHS`), so an architecture's FIRST manifest has no graph form -- `--//:archs` naming a new one makes an

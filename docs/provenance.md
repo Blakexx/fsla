@@ -42,8 +42,8 @@ against something other than itself (`git clone --branch v3.5.1 && diff -r`).
 It is vendored rather than fetched because the build is closed-world: a codegen input
 that a network fetch supplies at build time is an input the ratification manifest
 cannot describe. `csrc/third_party/cutlass/PIN.json` records the tag, the commit, the
-licence and a digest of the whole subtree; `setup.py::_gate_vendored` (closed-world
-rule 5) re-computes that digest before every compile and refuses a build whose
+licence and a digest of the whole subtree; the graph's record action (`tools/build_record.py`'s
+`vendored_pin`, closed-world rule 5) re-computes that digest on every build and refuses a build whose
 vendored headers drifted, and the pin is stamped into `rola_cu13/_build_config.py` so an
 installed wheel answers "which CUTLASS is inside this `.so`?" with no checkout.
 

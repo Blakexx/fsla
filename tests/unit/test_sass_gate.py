@@ -80,7 +80,8 @@ def cubin(tmp_path_factory):
 
 def test_the_gate_passes_the_clean_kernel_and_reds_local_memory(cubin):
     ok, report = sass_gate.gate(cubin, None, None)
-    clean = next(v for k, v in sass_gate.STATS.items() if "clean_probe" in k)
+    #: the bare probe by its mangled name: `clean_probe` alone also matches the step probe `step_clean_probe`
+    clean = sass_gate.STATS["_Z11clean_probePfPKf"]
     local = next(v for k, v in sass_gate.STATS.items() if "local_probe" in k)
     assert not clean["reds"], report
     assert local["stack"] > 0 and local["ldl"] > 0, report
@@ -89,14 +90,16 @@ def test_the_gate_passes_the_clean_kernel_and_reds_local_memory(cubin):
 
 def test_the_step_lints_red_the_conversion_unit_and_global_memory_in_an_mma_loop(cubin):
     """§29: F2I inside an MMA loop and a global load inside one are red; the FMA-pipe conversion over shared memory is
-    clean."""
+    clean of both. The probes' step cover is §32's reading, not this test's subject: one dependent MMA a step leaves
+    the clean probe under the line."""
     ok, report = sass_gate.gate(cubin, None, None)
     xu = next(v for k, v in sass_gate.STATS.items() if "step_xu_probe" in k)
     memory = next(v for k, v in sass_gate.STATS.items() if "step_global_probe" in k)
     clean = next(v for k, v in sass_gate.STATS.items() if "step_clean_probe" in k)
     assert xu["step_xu"] > 0 and any("conversion unit" in r for r in xu["reds"]), report
     assert memory["step_global"] > 0 and any("global memory" in r for r in memory["reds"]), report
-    assert clean["step_xu"] == 0 and clean["step_global"] == 0 and not clean["reds"], report
+    assert clean["step_xu"] == 0 and clean["step_global"] == 0, report
+    assert not any("conversion unit" in r or "global memory" in r for r in clean["reds"]), report
     assert not ok
 
 

@@ -11,7 +11,7 @@ gate must write before it measures anything, and the gate on the graph's build.
 |---|---|---|---|
 | `tools/manifests/<toolchain>/sm_XX.json` | per toolchain, per arch | `--write` | every run |
 | `tools/manifests/derivation.json` | arch-independent | `--write-derivation`, and `--write` | every run |
-| `build/generated/*.inc` | per run, never checked in | `setup.py` and this gate | — (they are inputs) |
+| `build/generated/*.inc` | per run, never checked in | the compile path, and `bazel run //:library` | — (they are inputs) |
 
 `--write-derivation` exists as its own mode because the derivation is host code
 measured by one small compile: refreshing it should not require a whole codegen
@@ -22,7 +22,7 @@ codegen numbers from one tree beside derivation goldens from another.
 ## The generated headers are written BEFORE anything is measured
 
 `measure_units` writes `carry_selection.inc` and `csrc_stamp.inc` from the same
-functions `setup.py` calls. Both are unconditional overwrites: `arms=None` means the
+functions the graph's header and stamp actions run. Both are unconditional overwrites: `arms=None` means the
 shipped set, never "whatever the last build left behind". A gate that measured against
 headers it did not write would be measuring a tree nobody builds — and an arm-subset
 build that leaked its scope into a later ratification is a shape this project has
@@ -53,8 +53,8 @@ built, and the build's parameters; the readers read with the graph's tools.
   standard library only, so a build action can run it before any venv, and tools/BUILD.bazel's
   `derivation_harness` compiles it as the extension's units are compiled and links it. Ratify runs that binary and
   refuses it unless its source is this tree's rendering.
-- PROVENANCE: the graph compiles with no compiler cache, so `toolchain.sccache` is `null` and its drift is the
-  REPORT the compile path prints for a changed sccache; `toolchain.mold` is the graph's mold.
+- PROVENANCE: `toolchain.mold` is the graph's mold, the linker of the measured library; the compile path links
+  nothing and records none.
 
 `bazel test //:ratified` is the verdict in a copy of the tree, and `bazel run //:ratify
 -- --write` (or `-- --census --json PATH`) runs in the checkout

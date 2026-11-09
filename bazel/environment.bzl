@@ -20,7 +20,7 @@ cc_library(
     includes = ["site-packages/torch/include", "site-packages/torch/include/torch/csrc/api/include"],
 )
 
-#: the torch libraries the extension links (its NEEDED, as setup.py's link leaves them)
+#: the torch libraries the extension links (its NEEDED)
 filegroup(
     name = "torch_libraries",
     srcs = ["site-packages/torch/lib/libc10.so", "site-packages/torch/lib/libtorch_cpu.so"],

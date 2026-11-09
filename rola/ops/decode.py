@@ -59,7 +59,7 @@ def arms() -> tuple[tuple[int, int, bool], ...]:
     """The decode arms THIS BINARY carries, as ``(d_v, D, decay)`` rows.
 
     A full build carries the whole declared matrix (``d_v x D x decay`` = 16 rows). An
-    ITERATION build names a subset with ``ROLA_DECODE_ARMS`` and is NOT SHIPPABLE; this
+    ITERATION build names a subset with ``--//:decode_arms`` and is NOT SHIPPABLE; this
     is how such a binary identifies itself, and the launch refuses any arm not listed
     here rather than mis-launching it (``docs/build.md``).
     """

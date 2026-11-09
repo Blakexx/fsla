@@ -513,8 +513,8 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
 
     **THE DEFECT.** A module under `rola/` reached a package under `measure/`
     by inserting that directory onto `sys.path` RELATIVE TO ITS OWN FILE. That
-    resolves from a source checkout and from nowhere else: `setup.py` packages
-    `find_packages(include=["rola", "rola.*"])`, so an installed wheel has no
+    resolves from a source checkout and from nowhere else: the `rola` wheel packages
+    the `rola/` package alone (`tools/wheels.py`), so an installed wheel has no
     `measure/` sibling and every relocated name raised `ModuleNotFoundError`
     there.
 

@@ -5,7 +5,7 @@ selection header carries; this file never depends on which arms are actually shi
 (the shipped set lives in `tools/manifests/shipped_set.json`).
 This file compiles a probe against the SHIPPED HEADER with
 a synthetic three-arm selection header in front of it -- rendered by the one renderer
-`setup.py` and `tools/ratify.py` use, so what is tested is what a build would emit --
+the graph's header action and `tools/ratify.py` use, so what is tested is what a build would emit --
 and checks every layer of the contract:
 
 * the two counts are the generated ones, and the set names its members;
