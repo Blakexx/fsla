@@ -123,14 +123,12 @@ ratify_run(
 )
 
 #: THE DEVBOX IMAGE, a thin wrapper around the bootstrap: what a host supplies itself before the graph, nothing the graph
-#: installs -- see docs/setup.md#the-graphs-image
+#: or the bootstrap installs -- see docs/setup.md#the-devbox-image. The packages' commands under the names their
+#: alternatives give them, which a layer of files cannot run
 tar(
-    name = "devbox_bootstrap",
-    srcs = ["@bazelisk//:bazelisk"],
+    name = "devbox_links",
     mtree = [
         "usr/local/bin uid=0 gid=0 mode=0755 time=0 type=dir",
-        "usr/local/bin/bazelisk uid=0 gid=0 mode=0755 time=0 type=file content=$(location @bazelisk//:bazelisk)",
-        "usr/local/bin/bazel uid=0 gid=0 mode=0777 time=0 type=link link=bazelisk",
         "usr/local/bin/vim uid=0 gid=0 mode=0777 time=0 type=link link=/usr/bin/vim.nox",
         "usr/local/bin/vi uid=0 gid=0 mode=0777 time=0 type=link link=/usr/bin/vim.nox",
         "usr/local/bin/ctags uid=0 gid=0 mode=0777 time=0 type=link link=/usr/bin/ctags-universal",
@@ -160,12 +158,18 @@ oci_image(
     name = "image",
     base = "@devbox_base",
     cmd = ["/bin/bash"],
-    #: under WSL the driver's Linux libraries are mounted at /usr/lib/wsl/lib, which the loader must search first
-    env = {"LD_LIBRARY_PATH": "/usr/lib/wsl/lib"},
+    env = {
+        #: under WSL the driver's Linux libraries are mounted at /usr/lib/wsl/lib, which the loader must search first
+        "LD_LIBRARY_PATH": "/usr/lib/wsl/lib",
+        #: the bootstrap links `bazel` in ~/.local/bin (`toolchain.bazel`), first on PATH as on a host
+        "PATH": "/root/.local/bin:${PATH}",
+    },
     tars = [
         ":devbox_debs",
-        ":devbox_bootstrap",
+        ":devbox_links",
     ],
+    #: the commit gate's container check reads its digest
+    visibility = ["//tools:__pkg__"],
     workdir = "/workspace",
 )
 
@@ -195,6 +199,27 @@ oci_load(
     image = ":image",
     repo_tags = ["rola-devbox:latest"],
 )
+
+#: the image as Docker loads it, which the container commands hand it
+filegroup(
+    name = "image_tarball",
+    srcs = [":image_load"],
+    output_group = "tarball",
+)
+
+#: THE CONTAINER (docs/setup.md#the-devbox-image): the clean room, the host's loop run inside the image on fresh
+#: volumes of its own and recorded under the image's digest; and an editor's dev container on the devbox's volumes
+[dev_run(
+    name = name,
+    command = ["container", action],
+    tools = {
+        ":image": "--layout",
+        ":image_tarball": "--tarball",
+    },
+) for name, action in [
+    ("container_check", "check"),
+    ("container_compose", "compose"),
+]]
 
 #: THE TREE: every tracked file, each package's part (`git ls-files`, @rola_tree), as the checks read it; and its
 #: Python files

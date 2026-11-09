@@ -14,7 +14,7 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 
 | tool | what it is | called by | writes |
 |---|---|---|---|
-| [`dev.py`](dev.md) | the one command that sets up, checks and describes a host or container | a person; the commit gate's §23 check | the `environment` record (its container check) |
+| [`dev.py`](dev.md) | the one command that sets up, checks and describes a machine (a host, or the devbox container), and checks the devbox image | a person, through its run targets; the commit gate's §23 check | the `environment` record (its container check), `tools/devbox_image.json` |
 | [`dev_config.py`](dev_config.md) | every machine-dependent value, read from one directory of JSON files | every tool here, `setup.py`, the tests | — |
 | [`build_flags.py`](../../build.md) | THE ONE SOURCE of the nvcc flag list | `setup.py`, `ratify.py`, the graph (`bazel/flags.py`) | — |
 | `build_record.py` | the build record `_build_config.py`, rule 3 (which assembles the ratification it names) and rule 5 (the vendored tree's pin) | `setup.py`, the graph (`bazel/record.py`), `ratify.py` | the record |
@@ -25,7 +25,7 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 | [`toolchains.py`](toolchains.md) | each toolchain as a named record of the assembler a fatbin is built and ratified under | `setup.py`, `ratify.py`, `dev.py`, the graph's flags and record (`bazel/flags.py`, `bazel/record.py`) | — |
 | [`sccache_toolchain.py`](../../build.md#sccache) | the compiler-cache wrapper pin (closed-world rule 1) | `setup.py`, `ratify.py` | — |
 | `sccache_nvcc.py` | the nvcc↔sccache seam: a pass-through, never a resolver | nvcc, as its launcher | — |
-| `mold_toolchain.py` | the linker pin — mold is not an option, it is THE linker | `setup.py`, `dev.py`, the Dockerfile | — |
+| `mold_toolchain.py` | the linker pin — mold is not an option, it is THE linker | `setup.py`, `dev.py` | — |
 | [`wheels.py`](wheels.md) | one gate build of a clean commit, split into the pure-Python wheel and the binary plugin | a person, at a release | the wheels and their record |
 | `supported.py` | the README's supported-configuration table — a REPORT, not a claim | a person, after an arm change | the table |
 | [`kernels.py`](kernels.md) | THE KERNEL LIST: every device unit the build compiles and every kernel the source defines, derived from the tree | `setup.py`, `ratify.py`, every kernel gate | — |
@@ -40,8 +40,8 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 | tool | what it is | called by | writes |
 |---|---|---|---|
 | [`ratify.py`](ratify.md) | the spill manifest, the census, the SASS-body gate and the derivation | `setup.py` (post-build), a person at a milestone, the graph's `//:ratified` and `//:ratify` | `tools/manifests/` |
-| [`devbox_packages.py`](../../setup.md#the-graphs-image) | the devbox image's package layer adds packages, never changes the base's, and carries nothing at its merged-/usr links | the graph's `//:devbox_packages` | — |
-| [`usrmerge_layer.py`](../../setup.md#the-graphs-image) | the package layer for a merged-/usr base: what the packages ship under /bin, /lib, /lib64 and /sbin goes under /usr | the graph's `//:devbox_debs` | the image's package layer |
+| [`devbox_packages.py`](../../setup.md#the-devbox-image) | the devbox image's package layer adds packages, never changes the base's, and carries nothing at its merged-/usr links | the graph's `//:devbox_packages` | — |
+| [`usrmerge_layer.py`](../../setup.md#the-devbox-image) | the package layer for a merged-/usr base: what the packages ship under the base's top-level links into /usr, read from the base, goes under /usr | the graph's `//:devbox_debs` | the image's package layer |
 | [`derivation.py`](ratify.md#graph) | the derivation's golden harness, rendered from the declared cases | `ratify.py`, the graph's `derivation_harness_source` genrule | the harness source |
 | `sass.py` | THE DISASSEMBLER SEAM: the one `cuobjdump`/`nvdisasm` invocation and line grammar; a frame map is one function's (`section`: offsets restart in every function) | `ratify.py`, `sass_gate.py`, `region_ledger.py`, `life_ranges.py` | — |
 | `kernel_targets.py` | the instruments' kernel families: each one's profiler filter, provider arm, cubin member, sources, budget and unit (`kernel_targets.md`) | `stall_census.py`, `pipe_counters.py`, `phase_ledger.py` | — |

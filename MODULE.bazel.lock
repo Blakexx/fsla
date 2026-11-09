@@ -255,7 +255,7 @@
   "moduleExtensions": {
     "//bazel:environment.bzl%environment": {
       "general": {
-        "bzlTransitiveDigest": "ZBpd+lGcBGvQzoSRSCKhRWFzvKK3kY0lkGvD4ZkzsfI=",
+        "bzlTransitiveDigest": "PdXLHWCcYX0H+oirccPmhoeXxfugmn7cXO5HZDEZmfk=",
         "usagesDigest": "HkBnFTQ2fbTZDMJfxNkfdOK7vkrLf5VSSo2CXQjT1hU=",
         "recordedInputs": [],
         "generatedRepoSpecs": {
@@ -275,13 +275,6 @@
             "attributes": {
               "pin": "@@//tools:mold_pin.json",
               "build": "filegroup(name = \"linker\", srcs = [\"bin/ld.mold\", \"{binary}\"], visibility = [\"//visibility:public\"])\n"
-            }
-          },
-          "bazelisk": {
-            "repoRuleId": "@@//bazel:environment.bzl%_pinned_repo",
-            "attributes": {
-              "pin": "@@//tools:bazelisk_pin.json",
-              "build": "exports_files([\"{binary}\"], visibility = [\"//visibility:public\"])\n"
             }
           },
           "clang_tidy": {

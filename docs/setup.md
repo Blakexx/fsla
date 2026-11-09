@@ -6,12 +6,11 @@ tools the docs and skills use. It is not for a USER of the package — a user
 installs the prebuilt wheel (`README.md`), takes the ratified manifest inside it
 on faith, and never runs anything in this file.
 
-The container (`Dockerfile`, `.devcontainer/devcontainer.json`) exists because
-the closed-world build (`docs/build.md`) is gated on an EXACT `ptxas` string, an
-exact `sccache`, and an exact set of the surrounding tools the docs and skills
-name (`clangd`, `ast-grep`, `hyperfine`, ...). Reproducing all of that
-by hand on a new machine is exactly the kind of silent drift the rest of this
-repository refuses; the container makes it one build instead of a checklist.
+The closed-world build (`docs/build.md`) is gated on an EXACT `ptxas` string and an exact set of the surrounding
+tools the docs and skills name (`clangd`, `ast-grep`, `hyperfine`, ...). Reproducing that by hand on a new machine is
+exactly the kind of silent drift the rest of this repository refuses, so every one of them is a pin the graph or init
+installs, on a host and in the devbox container alike (`//:image`, `.devcontainer/`): an isolated, portable machine for
+a box with no host of its own to set up, which runs the host's same loop.
 
 ## 0. The dev environment: `tools/dev.py`
 
@@ -24,7 +23,7 @@ machine up and checks it (`docs/internals/tools/dev.md`):
 
 Every setup command is a `bazel run` target but one: `python3 tools/bootstrap.py`, by the machine's own python3,
 installs the pinned bazelisk and links `bazel` to it, since nothing can `bazel run` before `bazel` exists. The iteration
-build (`dev.py build`) and the container (`dev.py container`) are dev.py's own commands, run directly. The bootstrap and the
+build (`dev.py build`) is dev.py's own command, run directly. The bootstrap and the
 graph's front door import the dev config's reader (`rola_devtools.config`, which also holds the machine's locks) from
 the rola-devtools checkout beside this tree, where `workspace.devtools` points by default: clone it there first. The
 targets run on the graph environment's interpreter, which carries rola-devtools at its pin (`tools/devtools.txt`). A
@@ -59,63 +58,69 @@ bazel run //:worktree -- <name> <sha>   # a worktree, its venv and gate, its ext
     ```
     A working WSL2 GPU pass-through prints the host's GPU table from inside
     the container. Run it BEFORE anything else on a fresh machine;
-    `python tools/dev.py container check` (step 3) is the whole proof.
+    `bazel run //:container_check` (step 3) is the whole proof.
 * **git**, to clone the repo and (for a developer) create worktrees.
 
-## 2. Build the image
+## <a id="the-devbox-image"></a>2. The devbox image
 
-```bash
-python tools/dev.py container build
-```
+The devbox image (`//:image`) is a graph target and a thin wrapper around the bootstrap: what a host supplies itself
+before the graph, and nothing the graph or the bootstrap installs. rules_oci writes it as files in the standard image
+format, so Docker only runs it; `bazel run //:image_load` hands it to Docker as `rola-devbox:latest`. Its base is
+`buildpack-deps:jammy` by digest (MODULE.bazel's `devbox_base`: a Docker Official Image, Ubuntu 22.04 with git, gcc,
+python3 and curl); on it, the OS packages the base lacks (vim, less, jq, fd, ctags, graphviz, sqlite3, clang-query),
+pinned: rules_distroless resolves them against Ubuntu's archive snapshot of the base image's day, its indexes' digests
+recorded in MODULE.bazel.lock and every package fetched by the digest they list; then the packages' commands under the
+names their alternatives give them, and `~/.local/bin` first on PATH, where the bootstrap links `bazel` as on a host.
+A package layer carries its whole closure, the base's core packages among them, so `bazel test //:devbox_packages`
+holds that every package the base already has is at the base's version (2026-11-08: 182 packages, 130 of them the
+base's, none at another version). The base merges /usr (its top-level links into it, read from the base itself:
+`/bin`, `/lib`, `/lib32`, `/lib64`, `/libx32`, `/sbin`), and a layer whose directories sit there would replace the
+links, so the packages' files go under /usr as dpkg writes them through the links (`tools/usrmerge_layer.py`), and the
+check refuses a layer with anything left there. 1.4 GB.
 
-The image is built from the environment's inputs alone -- `Dockerfile`, `.devcontainer/`, `requirements.lock`, the
-tool pins and the `tools/dev.py` files (`ENV_INPUTS`), copied into a throwaway context, never the whole tree -- and
-tagged `rola-dev:<first 12 of the environment key>`. The key is sha256 over those inputs; the image records it as
-`environment.image_digest`, which `tools/ratify.py` stamps as `source.image_digest` and every record row carries.
-
-Its last step is `tools/dev.py init --image`: the same one init a bare host runs, writing the image's dev config
-(`ROLA_DEV_CONFIG=/opt/rola/dev-config`) for its fixed layout, installing the pinned `sccache`, `mold`,
-bazelisk and the devbox's tools from the repo's pins, and running `check --image`. A red check fails the image build -- the image built on 2026-08-28 went two
-weeks without `cuobjdump`, the Nsight Compute the pipe timeline needs, or flash-attn, and nothing said so.
-
-The image is built for a toolchain record (`tools/toolchains/<name>.json`; `--toolchain NAME` when more than one is
-declared), tagged by its environment key, and a build that succeeds keeps the three `rola-dev` images tagged most
-recently, the one it built always among them, and removes the rest (`KEPT_IMAGES`: an older environment's image is a
-rebuild away, its layers in Docker's build cache). `container build` passes the record's base image, its exact apt package pins and its torch index as build
-arguments, and the Dockerfile fails the build unless `ptxas --version` is the record's string byte for byte -- the same
-comparison `setup.py`'s rule 1 makes, so a base tag carrying a newer patch (every CUDA 12.4 tag shipped V12.4.131
-against a V12.4.99 pin, measured 2026-08-29) cannot slip through. `cuobjdump` is one of the record's pins; Nsight Compute
-is the devbox's (`tools/nsight_compute_pin.json`), which init installs. The attention reference needs no package: it is torch's own flash
-backend (`docs/measurement.md`).
+Its identity is its content digest, which the tree names in `tools/devbox_image.json`. The commit gate builds the
+image and refuses a tree whose image is another, and a change to the name without a passing container check for the
+new digest (KERNEL_STANDARDS §23 (3)). A commit that leaves the image alone needs no Docker, which a rented box (itself
+a container) does not have.
 
 ## 3. Prove it, then open it
 
 ```bash
-python tools/dev.py container check
+bazel run //:container_check
 ```
 
-runs the proofs inside the image, with the host's mounts, and stores the result through `rola_results` at
-`environment`, under the environment key: `tools/dev.py check` inside; the GPU and a call through torch's flash backend; a lock
-the HOST holds is seen as held inside (so one lock governs host and container, KERNEL_STANDARDS §14 addendum); and an
-iteration build of a copy of the checkout, imported. **A commit that changes any environment input needs a passing
-record for the key of what it stages -- the commit gate refuses it otherwise (KERNEL_STANDARDS §23 (3)).**
+is the clean room: the host's own loop, step by step, in the image on fresh volumes of its own, each step timed. The
+container clones the checkouts from their git directories, mounted read-only: rola-devtools, rola-results and
+rola-bench at their commits, and this checkout at its commit with its staged change applied, so its tree is the commit
+as git will write it. Inside it then runs `python3 tools/bootstrap.py`, `bazel run //:init`, `bazel run //:dev_env`,
+`bazel run //:check` (init's own check runs before the checkout's venv exists, so its gate row is red by design; this
+one is the verdict) and the commit gate; then the GPU and a call through torch's flash backend, a lock the HOST holds
+seen as held inside (so one lock governs host and container, KERNEL_STANDARDS §14 addendum), and an iteration build of
+the library for the device's architecture, imported. The result, each step's time and the cold start (the clone, the
+bootstrap, init and the venv: what a fresh machine pays before it can work) are stored through `rola_results` at
+`environment` under the image's digest, and a green check writes the digest to `tools/devbox_image.json`. A green
+run's volumes go with it; a red run's stay for a look until the next run.
 
-**The mounts come from the host's dev config.** `python3 tools/dev.py container compose` writes
-`.devcontainer/compose.local.yaml` (never committed) binding, onto the image's fixed layout: this checkout at
-`/workspace/rola`, the host's `host.lock_dir` at `/run/rola/locks` and its GPU lock's directory at `/run/rola/gpu`,
-`store.root` at `/workspace/store`, `workspace.suite` at `/workspace/suite`, and `workspace.worktrees` at
-`/workspace/worktrees`. It refuses when no image
-exists for the current key. Under WSL it also mounts the directory above `host.wsl_lib` (`/usr/lib/wsl`) read-only:
-the image's loader path starts at `/usr/lib/wsl/lib`, and without the Windows driver's libraries there CUDA fails to
-initialize inside the container with error 500 even though `nvidia-smi` works (measured 2026-09-12, Docker Desktop
-20.10.17, driver 595.95 -- the 2026-08-28 image had never been run against the GPU). The whole directory, not `lib/`
-alone: that `libcuda` is a loader that opens the driver store beside it.
+**What a container shares with the host:** the host's `host.lock_dir` at `/run/rola/locks` and its GPU lock's
+directory at `/run/rola/gpu` (`dev_config.CONTAINER_LOCKS`, which the container's init detects and records), and under
+WSL the directory above `host.wsl_lib` (`/usr/lib/wsl`) read-only: the image's loader path starts at
+`/usr/lib/wsl/lib`, and without the Windows driver's libraries there CUDA fails to initialize inside the container with
+error 500 even though `nvidia-smi` works (measured 2026-09-12, Docker Desktop 20.10.17, driver 595.95). The whole
+directory, not `lib/` alone: that `libcuda` is a loader that opens the driver store beside it. Nothing else: the
+container's checkouts, tools, caches and environment are its own, a second copy of the downloads on Docker's disk.
+The launcher hands the container the image's digest (`ROLA_DEVBOX_IMAGE`), which ratify records as where a manifest
+was measured.
 
-**VS Code / Claude Code:** "Reopen in Container". `.devcontainer/devcontainer.json` runs `container compose` as its
-`initializeCommand`, then the `rola` service of `.devcontainer/compose.yaml` with the generated mounts, and runs
-`python tools/dev.py check` once created.
+**VS Code / Claude Code:** "Reopen in Container". `.devcontainer/devcontainer.json` runs `bazel run
+//:container_compose` as its `initializeCommand`, which hands the image to Docker and writes
+`.devcontainer/compose.local.yaml` (never committed): the image's tag, the devbox's volumes and the mounts above. The
+`rola` service of `.devcontainer/compose.yaml` then runs on the devbox's own volumes, once a machine: `rola-devbox-home`
+at `/root` (the pinned tools, Bazel's caches, the environment store) and `rola-devbox-work` at `/workspace` (the
+checkouts). Inside, clone the checkouts into `/workspace` (rola beside rola-devtools, rola-results and rola-bench, where
+the reader's defaults look), then run the host's loop in `/workspace/rola`.
 
-**Without an editor:** `docker compose -f .devcontainer/compose.yaml -f .devcontainer/compose.local.yaml run --rm rola bash`.
+**Without an editor:** `bazel run //:container_compose`, then
+`docker compose -f .devcontainer/compose.yaml -f .devcontainer/compose.local.yaml run --rm rola bash`.
 
 Inside, the SM clock is not locked: the lock is a host act (`bazel run //:clock`), and rows measured in the container
 record `clock_locked = false`.
@@ -211,55 +216,37 @@ stands in for: that the graph's build in the container carries the arms a sessio
 
 ## <a id="the-devbox"></a>What's in the image, and why: the devbox
 
-The image is a devbox: every tool a developer needs, each pinned, and every tool outside the graph pinned into the
-image and the dev setup alike. The devbox's own tools (`tools/dev.py`'s `DEV_TOOLS`) are one pin each, which init
-installs into its own versioned folder under `host.tools_dir`, one copy a machine: in the image their commands are on
-the image's venv's bin, first on its PATH, and on a host each checkout's venv links them (`bazel run //:dev_env`), so an activated venv has
-them first on PATH and the system's own tools are untouched. The environment's developer commands come with
+The devbox has every tool a developer needs, each pinned, and every tool outside the graph pinned into the image or the
+dev setup. The devbox's own tools (`tools/dev.py`'s `DEV_TOOLS`) are one pin each, which init installs into its own
+versioned folder under `host.tools_dir`, one copy a machine (in the container, on its home volume); each checkout's venv
+links them (`bazel run //:dev_env`), so an activated venv has them first on PATH and the system's own tools are
+untouched. The environment's developer commands come with
 `requirements.lock`, on the same venv's bin. The tree's own code reaches a pinned tool by its pin or recorded path; a
 check finds the environment's commands (ast-grep, ruff) on the PATH the graph or the venv sets, which is the
-environment's own. THE GAP: the rows sourced from apt are not pinned in the Dockerfile's image -- it installs them
-unversioned from Ubuntu's archive -- and on a host they are the host OS's own, which init does not install;
-`tools/build/dag_to_dot.py`'s optional `--svg` runs that graphviz's `dot` from PATH.
-
-<a id="the-graphs-image"></a>**The graph's image** (`//:image`, `bazel run //:image_load` hands it to Docker as
-`rola-devbox:latest`) is the devbox as a thin wrapper around the bootstrap: what a host supplies itself before the
-graph, and nothing the graph installs. rules_oci writes it as files in the standard image format, so Docker only runs
-it. Its base is `buildpack-deps:jammy` by digest (MODULE.bazel's `devbox_base`: a Docker Official Image, Ubuntu 22.04
-with git, gcc, python3 and curl); on it, the OS packages above that the base lacks (vim, less, jq, fd, ctags,
-graphviz, sqlite3, clang-query), pinned: rules_distroless resolves them against Ubuntu's archive snapshot of the base
-image's day, its indexes' digests recorded in MODULE.bazel.lock and every package by the digest they list; then the
-pinned bazelisk linked as `bazel`, and the packages' commands under the names their alternatives give them. A package
-layer carries its whole closure, the base's core packages among them, so `bazel test //:devbox_packages` holds that
-every package the base already has is at the base's version (2026-11-08: 182 packages, 130 of them the base's, none
-at another version). The base merges /usr (its top-level links into it, read from the base itself: `/bin`, `/lib`,
-`/lib32`, `/lib64`, `/libx32`, `/sbin`), and a layer whose directories sit there would replace the links, so the
-packages' files go under /usr as dpkg writes them through the links (`tools/usrmerge_layer.py`), and the check refuses
-a layer with anything left there. Inside it the host's loop
-runs (`python3 tools/bootstrap.py` is its bazelisk already, then `bazel run //:init`, `//:dev_env`), its installs on
-the container's own volumes. 1.4 GB. THE GAP: no check proves it, and no tool runs it with the GPU, the locks and the
-mounts -- the container check proves the Dockerfile's image (`dev.py container`, above), which `compose` runs.
+environment's own. THE GAP: the rows sourced from the OS's packages are pinned in the image (its package layer) but
+on a host they are the host OS's own, which init does not install; `tools/build/dag_to_dot.py`'s optional `--svg` runs
+that graphviz's `dot` from PATH.
 
 | Tool | Source | Role |
 |---|---|---|
 | the CUDA toolkit: `nvcc`, `ptxas`, `cuobjdump`, `nvdisasm`, `cu++filt`, `compute-sanitizer` | `tools/cuda_toolkit_pin.json` (NVIDIA's redistributable components at the manifest the graph's toolkit is read by, by its digest), init, at `dev_config.cuda_home()` and on no PATH (torch takes its toolkit from the nvcc on PATH without following links) | the ratified toolchain (`docs/build.md` rule 1, `cu13`: CUDA 13.0, V13.0.48) for every tool outside the graph's own rules; the graph's copy of the same pin (`@cuda_tools`) is the test tiers' and the binary gates' |
-| `sccache` 0.17.0 | `tools/dev.py init --image` from `tools/sccache_pin.json`, verified | the compiler cache `docs/build.md#sccache` measures |
-| `ninja` | apt | the build's actual compile driver (`docs/build.md` step 5) |
-| `mold` 2.42.0 | `tools/dev.py init --image` from `tools/mold_pin.json`, verified | the extension's only linker |
+| `sccache` 0.17.0 | `tools/sccache_pin.json`, verified, init | the compiler cache `docs/build.md#sccache` measures |
+| `ninja` | `requirements.lock` (the environment) | the build's actual compile driver (`docs/build.md` step 5) |
+| `mold` 2.42.0 | `tools/mold_pin.json`, verified, init | the extension's only linker |
 | Nsight Compute 2025.3, Nsight Systems 2025.3 | `tools/nsight_compute_pin.json`, `tools/nsight_systems_pin.json` (NVIDIA's redistributable components at the toolkit's manifest, by digest), init | PM sampling (pipe timeline) and the measurement tools' Nsight Compute, found by its pin; timelines |
 | `hyperfine`, `difftastic` (`difft`) | `tools/hyperfine_pin.json`, `tools/difftastic_pin.json` (pinned GitHub releases, sha256-verified), init | ad-hoc wall-clock comparisons outside the declared timing sessions; structural diffs |
 | `ast-grep`, `py-spy`, `clangd` 22, `clang-format` 19.1.7 | `requirements.lock` (the environment) | structural code search; live Python profiling; the editor's language server, at the pinned clang-tidy's LLVM major; the formatter `.clang-format` names |
-| `graphviz`, `sqlite3` | apt | dependency/DAG rendering, the store's record index inspection |
-| `universal-ctags` | apt | cross-referencing the `csrc/` tree |
-| `jq`, `fd` (via `fd-find`) | apt | the shell one-liners this repo's own docs use |
-| `clang-tools-14` (clang-query) | apt | AST queries the skills use; clang-tidy is the graph's pinned one (`@clang_tidy`), run by the unit lints |
-| Python 3.11, `requirements.lock` | `uv venv` + `uv pip install -r` (lock generated by `uv pip compile`, see `requirements.in`'s header) | replaces the hand-grown dev venv this box iterated in; includes `pytest-timeout` and `hypothesis` per this card |
+| `graphviz`, `sqlite3` | the image's package layer; a host's own | dependency/DAG rendering, the store's record index inspection |
+| `universal-ctags` | the image's package layer; a host's own | cross-referencing the `csrc/` tree |
+| `jq`, `fd` (via `fd-find`) | the image's package layer; a host's own | the shell one-liners this repo's own docs use |
+| `clang-tools-14` (clang-query) | the image's package layer; a host's own | AST queries the skills use; clang-tidy is the graph's pinned one (`@clang_tidy`), run by the unit lints |
+| Python 3.11.13, `requirements.lock` | the graph's environment (`@rola_env`, the lock generated by `uv pip compile`, see `requirements.in`'s header), each checkout's venv over it (`bazel run //:dev_env`) | replaces the hand-grown dev venv this box iterated in; includes `pytest-timeout` and `hypothesis` |
 
 ## Reproducibility as a statement
 
-`tools/ratify.py`'s written manifests carry `source.image_digest`: the image's
-`environment.image_digest`, the environment key it was built from (step 2), or the
-empty string if a ratification ran on a bare host. It sits beside
+`tools/ratify.py`'s written manifests carry `source.image_digest`: the devbox image's digest, which the
+container's launcher hands it (`ROLA_DEVBOX_IMAGE`, step 3), or the empty string if a ratification ran on a bare
+host. It sits beside
 `source.csrc_sha256`/`source.date`, not inside `toolchain` — it identifies
 WHERE a measurement ran, not WHAT was measured, so (like `sccache`'s version)
 it is recorded and reported on drift, never part of `manifest_digest()`'s

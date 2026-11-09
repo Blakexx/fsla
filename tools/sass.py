@@ -33,8 +33,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-#: THE DISASSEMBLERS AND SCRATCH THIS PROCESS READS: the dev config's toolkit and scratch (`toolchain.cuda_home`,
-#: `host.scratch`), or the graph's -- its hermetic toolkit and the action's own temporary directory (`use_graph`).
+#: THE DISASSEMBLERS AND SCRATCH THIS PROCESS READS: the pinned toolkit's and the dev config's scratch
+#: (`dev_config.cuda_home()`, `host.scratch`), or the graph's -- its hermetic toolkit and the action's own temporary directory (`use_graph`).
 #: -- see docs/internals/tools/sass_gate.md#graph
 _GRAPH: dict[str, Path] = {}
 

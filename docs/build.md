@@ -92,7 +92,7 @@ python -m pip install -e . --no-build-isolation
 2. **R3 — ratified archs.** `tools/manifests/<toolchain>/sm_XX.json` must exist and be
    non-empty for every arch being built. A file-existence question, asked first,
    because the cheapest check is the one that must never be tempting to skip.
-3. **R1 — toolchain.** The configured toolkit's `ptxas --version` selects the
+3. **R1 — toolchain.** The pinned toolkit's `ptxas --version` selects the
    toolchain: the record in `tools/toolchains/` that names it, whitespace-normalized
    ([`internals/tools/toolchains.md`](internals/tools/toolchains.md)). A toolkit no
    record names refuses; that toolchain's manifests must pin the same string; the

@@ -1764,7 +1764,7 @@ def main() -> int:
                                 #: can never move a ratified register/spill number the
                                 #: way a `ptxas` swap can, and its presence here is
                                 #: recorded, never ratchet-gated.
-                                "image_digest": dev_config.get("environment.image_digest")},
+                                "image_digest": os.environ.get("ROLA_DEVBOX_IMAGE", "")},
                      #: WHICH INSTANTIATIONS THIS RATIFICATION COVERS, by membership
                      #: hash rather than by file list. It enters the digest, so a
                      #: re-partition is a visible re-ratification and a scoped

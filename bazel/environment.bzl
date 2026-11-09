@@ -1,7 +1,7 @@
 """THE GRAPH'S ENVIRONMENT: the repositories made from the tree's pins and its index -- the Python environment built
 from requirements.lock and the pinned rola-devtools into the shared store (`@rola_env`), the pinned linker (`@mold`),
-the pinned clang-tidy (`@clang_tidy`), the host C++ compiler's and devices' identities (`@host_cc`, `@host_gpu`),
-the toolkit's disassemblers, cuRAND's headers and compute-sanitizer (`@cuda_tools`), and the checkout's tracked files
+the pinned uv and clang-tidy (`@uv`, `@clang_tidy`), the host C++ compiler's and devices' identities (`@host_cc`,
+`@host_gpu`), the pinned CUDA toolkit and cuRAND's headers (`@cuda_tools`), and the checkout's tracked files
 (`@rola_tree`). Docs: docs/build-graph.md#environment."""
 
 _ENV_BUILD = """\
@@ -284,7 +284,6 @@ def _environment_impl(mctx):
     _env_repo(name = "rola_env")
     _pinned_repo(name = "mold", pin = "//tools:mold_pin.json", build = _MOLD_BUILD)
     #: the devbox image's bootstrap: the one tool a host installs before the graph (tools/bootstrap.py)
-    _pinned_repo(name = "bazelisk", pin = "//tools:bazelisk_pin.json", build = 'exports_files(["{binary}"], visibility = ["//visibility:public"])\n')
     _pinned_repo(
         name = "clang_tidy",
         pin = "//tools:clang_tidy_pin.json",

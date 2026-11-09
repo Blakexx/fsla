@@ -17,8 +17,8 @@ semaphores, which Bazel cannot do for an action.
 | layer | made by | stored |
 |---|---|---|
 | the host's NVIDIA driver and GPU | the host | -- |
-| the machine (base OS libraries, git, `python3`, the host C++ compiler nvcc drives) | the host, or the Docker image | the image |
-| bazelisk, Bazel's launcher | `tools/bazelisk_pin.json`, installed by `python3 tools/bootstrap.py` under `host.tools_dir` by its pin (never a machine key), which links `bazel` on PATH to it (`toolchain.bazel`; `check` has the row); the devbox image's copy is the graph's `@bazelisk`, from the same pin | `host.tools_dir`; the repository cache |
+| the machine (base OS libraries, git, `python3`, the host C++ compiler nvcc drives) | the host, or the devbox image (`//:image`, docs/setup.md#the-devbox-image) | the image |
+| bazelisk, Bazel's launcher | `tools/bazelisk_pin.json`, installed by `python3 tools/bootstrap.py` under `host.tools_dir` by its pin (never a machine key), which links `bazel` on PATH to it (`toolchain.bazel`; `check` has the row), on a host and in the devbox container alike | `host.tools_dir`; the repository cache |
 | Bazel | `.bazelversion`, verified against `.bazeliskrc`'s digest | bazelisk's cache |
 | the graph's CUDA toolkit | NVIDIA's redistributable components at release 13.0.0 (`MODULE.bazel`'s `cuda.redist_json`: nvcc 13.0.48), only the compiler's (~75 MB of the 4.7 GB set) | the shared repository cache |
 | the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (`tools/uv_pin.json`, the graph's `@uv`, which `//:dev_env` writes venvs with too) into the pinned CPython (3.11.13), and rola-devtools at `tools/devtools.txt`'s commit, by `bazel/environment.bzl`'s `@rola_env` (`bazel/make_env.py`) | `host.build_cache/bazel/store`, one environment a key (the lock, the devtools commit, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages; `@rola_env//:flags.bzl`'s `VENV` names it, so a command naming it is keyed by the environment |
@@ -169,7 +169,8 @@ index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
   by its path ([`testing.md`](testing.md#the-sanitizer-lane)).
 - THE CHECKS OF THE COMMIT (`//tools:commit_checks`, `bazel/defs.bzl`'s `checkout_test`): what git knows rather than
   a file set -- no ratchet's baseline grown against HEAD's (`tools/lint/ratchet.py --grown`), every doc reference
-  resolving (`tools/docrefs.py`), the dev container current (`tools/dev.py container gate`). Each runs in the
+  resolving (`tools/docrefs.py`), the devbox image the one the tree names and checked (`tools/dev.py container
+  gate`, which builds `//:image`). Each runs in the
   checkout, outside the sandbox and never cached, its input the repository's state.
 
 ## <a id="rules"></a>The rules

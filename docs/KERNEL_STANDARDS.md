@@ -490,17 +490,17 @@ manual steps, and the dev container had drifted for two weeks unnoticed.
    `//:clock`, `//:dev_env`, `//:worktree`), are the only thing that sets up a host (config, pinned tools, commit gate,
    clock, each checkout's venv, worktrees) and the only thing that checks one (`check`: every dependency a row, exit 1 on
    a red, the build's own gates reused); outside the graph is only `python3 tools/bootstrap.py`, the pinned bazelisk the
-   targets run under. The image runs the same `init` as its last step. A new machine-dependent value lands as a schema key with its `init` detection and its
-   `check` row in the same commit.
-3. THE CONTAINER IS KEPT CURRENT BY A KEYED GATE. The dev image is a supported environment, not a document. It is
-   built by `python tools/dev.py container build` from the environment's inputs (`ENV_INPUTS`: the Dockerfile, the
-   devcontainer and compose files, `requirements.lock`, the tool pins, `tools/dev.py` and the modules it imports) and
-   its last step is the same `init` a host runs, whose `check` fails the image build on a red. Their hash is the
-   environment key. `python tools/dev.py container check` proves the image with the host's mounts (the environment
-   check inside, the GPU and reference library, a host-held lock seen as held, an iteration build imported) and records
-   the result under that key; a commit changing any input is refused by the commit gate unless a passing record exists
-   for the key of what it stages. A host-side toolchain change that the image does not share (a driver, a toolkit
-   path) is not an input and needs no container record; a pin, a lock or a Dockerfile line always is.
+   targets run under. The devbox container runs the same loop inside. A new machine-dependent value lands as a schema
+   key with its `init` detection and its `check` row in the same commit.
+3. THE CONTAINER IS KEPT CURRENT BY A KEYED GATE. The devbox image is a supported environment, not a document: a graph
+   target (`//:image`: the pinned base, the pinned OS packages) and a thin wrapper around the bootstrap, whose identity
+   is its content digest, named in `tools/devbox_image.json`. `bazel run //:container_check` runs the host's own loop
+   inside it on fresh volumes of its own -- the bootstrap, `init`, the checkout's venv, `check`, the commit gate, the
+   GPU and reference library, a host-held lock seen as held, an iteration build imported -- each step timed, and
+   records the result under the digest. The commit gate refuses a tree whose image is not the one it names, and a
+   change to the name without a passing record for the new digest. The loop's own inputs (a pin, the lock, `dev.py`)
+   are proven by every host that runs the same loop; the container shares only the host's locks and, under WSL, the
+   driver's libraries.
 
 ## §24 — TWO TIERS: DECIDE COARSELY, BURST STATICALLY (law, 2026-09-17, from the fold's and readout's forms)
 

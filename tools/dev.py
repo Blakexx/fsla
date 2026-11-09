@@ -13,7 +13,8 @@ run as the graph's target of the same name (`bazel/defs.bzl`'s `dev_run`), its a
     bazel run //:dev_env                         # this checkout's venv over the graph's environment, its hooks' venv
     bazel run //:worktree -- <name> <sha>        # a worktree, its venv and gate, its extension (//:library)
     bazel run //:store -- commit -m <msg>        # the measurements store (a rola-results checkout)
-    python tools/dev.py container compose|build|check|gate # the dev container: mounts, image, proof, commit gate
+    bazel run //:container_check                 # the devbox image's clean room: the host's loop inside it, recorded
+    bazel run //:container_compose               # the devbox image for an editor's dev container, on its own volumes
 
 The settings live in the dev config directory (`tools/dev_config.py`). Docs: docs/internals/tools/dev.md.
 """
@@ -56,22 +57,17 @@ PINS = {"sccache": ROOT / "tools" / "sccache_pin.json", "mold": ROOT / "tools" /
 #: the pins init records in the machine's toolchain file; bazelisk is found by its pin instead (`dev_config.pinned`), since
 #: every checkout loads that file and an older loader refuses a key it does not declare
 RECORDED = ("sccache", "mold")
-#: THE ENVIRONMENT'S INPUTS: what the dev image is built from and how it is run. Their hash is the environment key; a
-#: commit changing any of them carries a passing container check for its key (KERNEL_STANDARDS §23 (3)).
-ENV_INPUTS = ("Dockerfile", ".devcontainer/devcontainer.json", ".devcontainer/compose.yaml", "requirements.lock",
-              "tools/sccache_pin.json", "tools/mold_pin.json", "tools/clang_tidy_pin.json", "tools/bazelisk_pin.json", "tools/uv_pin.json",
-              *(f"tools/{name}_pin.json" for name in (TOOLKIT, *DEV_TOOLS)), "tools/devtools.txt", "tools/dev.py", "tools/dev_config.py",
-              "tools/bootstrap.py",
-              "tools/sccache_toolchain.py", "tools/mold_toolchain.py",
-              "tools/toolchains.py",
-              *sorted(str(p.relative_to(ROOT)) for p in (ROOT / "tools" / "toolchains").glob("*.json")))
-IMAGE_REPO = "rola-dev"
-#: the dev images a build keeps, newest first, the one it built among them: an older environment's image is a rebuild
-#: away (its layers stay in Docker's build cache), and each image kept holds ~14 GB of Docker's disk
-KEPT_IMAGES = 3
-#: the `rola_results` location of the container checks, one record per environment key
+#: THE DEVBOX IMAGE (`//:image`, docs/setup.md#the-devbox-image): the name Docker knows it by, and the digest the tree
+#: names, which a commit changing it carries a passing container check for (KERNEL_STANDARDS §23 (3))
+DEVBOX_REPO = "rola-devbox"
+DEVBOX_DIGEST = ROOT / "tools" / "devbox_image.json"
+DEVBOX_DIGEST_ROLE = ("the devbox image the tree names (`//:image`'s content digest), which `bazel run //:container_check` "
+                      "writes when green; the commit gate refuses a tree whose image is another, or a change to this "
+                      "digest without a passing check for it (KERNEL_STANDARDS 23 (3))")
+#: the clean room's container and the prefix of its volumes
+CHECK_VOLUMES = "rola-devbox-check"
+#: the `rola_results` location of the container checks, one record per image digest
 RESULTS_ENVIRONMENT = "environment"
-IMAGE_LAYOUT, WSL_LIB_IN_IMAGE = dev_config.IMAGE_LAYOUT, dev_config.WSL_LIB_IN_IMAGE
 
 
 def _bazelisk_version(path: str) -> str:
@@ -131,7 +127,7 @@ def _download(urls: list[str], to: Path) -> None:
 
 def install_bazelisk() -> None:
     """The pinned bazelisk under `host.tools_dir` and `bazel` linked to it: the machine's one step outside the graph
-    (`tools/bootstrap.py` on a host, `init --image` in the image), since every other command is a `bazel run`."""
+    (`tools/bootstrap.py`, on a host and in the devbox alike), since every other command is a `bazel run`."""
     ensure_pinned("bazelisk")
     link_bazel()
 
@@ -247,15 +243,13 @@ def site_packages(venv: Path) -> Path:
 LINKED = {"rola_results.pth": "store.root", "rola_devtools.pth": "workspace.devtools"}
 
 
-def link_packages(image: bool) -> list[Path]:
+def link_packages() -> list[Path]:
     """`rola_results` and `rola_devtools` importable from every interpreter that runs here, by the `LINKED` `.pth` files:
-    the base venv (the image's at its build, naming the mount points), and on a host each checkout's own venv
-    (`checkout_venv`: it names the environment as a plain path, which reads none of its .pth files). Never the host's
-    own python: nothing here runs from it."""
+    the base venv where one is set, and each checkout's own venv (`checkout_venv`: it names the environment as a plain
+    path, which reads none of its .pth files). Never the machine's own python: nothing here runs from it."""
     base = dev_config.get("workspace.base_venv")
     sites = [site_packages(Path(base))] if base else []
-    if not image:
-        sites += [site_packages(v) for v in (checkout_venv(c) for c in _worktrees()) if v is not None]
+    sites += [site_packages(v) for v in (checkout_venv(c) for c in _worktrees()) if v is not None]
     for site in sites:
         site.mkdir(parents=True, exist_ok=True)
         for pth, key in LINKED.items():
@@ -372,14 +366,6 @@ def gate_venv(checkout: Path | str) -> str:
     return done.stdout.strip()
 
 
-def env_key(read=lambda rel: (ROOT / rel).read_bytes()) -> str:
-    """sha256 over the environment's inputs, path and bytes each; `read` takes the staged blob for the commit gate."""
-    h = hashlib.sha256()
-    for rel in ENV_INPUTS:
-        h.update(rel.encode() + b"\0" + read(rel) + b"\0")
-    return h.hexdigest()
-
-
 def lock_pins() -> dict[str, str]:
     """`requirements.lock`'s pins as {normalized name: version}; a URL pin's version is its wheel's."""
     pins = {}
@@ -407,11 +393,7 @@ def host_toolchain() -> toolchains.Toolchain:
 
 
 def cmd_init(a) -> int:
-    if a.image:
-        for section, values in IMAGE_LAYOUT.items():
-            _write_section(section, values, force=True)
-        _write_section("environment", {"image_digest": a.env_key}, force=True)
-    for section, values in ({} if a.image else dev_config.detect()).items():
+    for section, values in dev_config.detect().items():
         _write_section(section, values, a.force)
 
     for name in RECORDED:
@@ -419,18 +401,8 @@ def cmd_init(a) -> int:
         pin = json.loads(PINS[name].read_text())
         if current is None or _pinned_version(name, current) != pin["version_string"]:
             _write_section("toolchain", {name: install_pinned(name)}, force=True)
-    #: on a host the bootstrap installed bazelisk before `bazel run //:init` could run; the image's init is its bootstrap
-    if a.image:
-        install_bazelisk()
     for name in (TOOLKIT, *DEV_TOOLS):
         ensure_pinned(name)
-    #: in the image the devbox's commands go on the image's venv's bin, first on its PATH (ahead of the base image's own
-    #: CUDA tools); on a host each checkout's own venv links them (`dev-env`)
-    if a.image:
-        for name in DEV_TOOLS:
-            command = Path(dev_config.get("workspace.base_venv")) / "bin" / json.loads(PINS[name].read_text())["command"]
-            command.unlink(missing_ok=True)
-            command.symlink_to(dev_config.pinned(name))
     base = dev_config.get("workspace.base_venv")
     drift = venv_drift(str(Path(base) / "bin" / "python")) if base else []
     if drift:
@@ -439,24 +411,23 @@ def cmd_init(a) -> int:
         subprocess.run(["uv", "pip", "install", "--python", str(Path(base) / "bin" / "python"),
                         "-r", str(ROOT / "requirements.lock"), "--extra-index-url", toolchain.torch_index,
                         "--index-strategy", "unsafe-best-match"], check=True)
-    for site in link_packages(a.image):
+    for site in link_packages():
         print(f"rola_results, rola_devtools: linked into {site}")
-    if not a.image:
-        for checkout in _worktrees():
-            if not os.access(checkout / "tools" / "git-hooks" / "pre-commit", os.X_OK):
-                continue
-            if checkout_venv(checkout) is None:
-                print(f"{checkout}: no venv of its own, its gate left as it is -- bazel run //:dev_env in it")
-            else:
-                wire_hooks(checkout)
-        _refuse_unwired()
-        install_router()
-        for key in GATED_CONSUMERS if base else ():
-            if (Path(dev_config.get(key)) / ".git").exists():
-                subprocess.run(["git", "-C", dev_config.get(key), "config", "rola.venv", dev_config.get("workspace.base_venv")],
-                               check=True)
-        if dev_config.get("clock.ghz") is None:
-            print("clock: unset -- this host measures UNLOCKED until `bazel run //:clock -- --mhz <MHz>` runs")
+    for checkout in _worktrees():
+        if not os.access(checkout / "tools" / "git-hooks" / "pre-commit", os.X_OK):
+            continue
+        if checkout_venv(checkout) is None:
+            print(f"{checkout}: no venv of its own, its gate left as it is -- bazel run //:dev_env in it")
+        else:
+            wire_hooks(checkout)
+    _refuse_unwired()
+    install_router()
+    for key in GATED_CONSUMERS if base else ():
+        if (Path(dev_config.get(key)) / ".git").exists():
+            subprocess.run(["git", "-C", dev_config.get(key), "config", "rola.venv", dev_config.get("workspace.base_venv")],
+                           check=True)
+    if dev_config.get("clock.ghz") is None:
+        print("clock: unset -- this host measures UNLOCKED until `bazel run //:clock -- --mhz <MHz>` runs")
     return cmd_check(a)
 
 
@@ -485,7 +456,6 @@ def _version(tool: str) -> str:
 
 
 def cmd_check(a) -> int:
-    image = getattr(a, "image", False)
     rows: list[tuple[bool, str, str]] = []
 
     def row(ok: bool, what: str, fix: str = "") -> None:
@@ -523,8 +493,7 @@ def cmd_check(a) -> int:
         f"python3 tools/bootstrap.py (links toolchain.bazel, {dev_config.get('toolchain.bazel')}); its directory on PATH")
     base = dev_config.get("workspace.base_venv")
     python = Path(base or "") / "bin" / "python"
-    #: on a host only the sibling repositories' commit hooks read it, in the image it is the interpreter: checked where
-    #: it is set
+    #: only the sibling repositories' commit hooks read it: checked where it is set
     row(not base or python.exists(), f"workspace.base_venv: {base}" if base else
         "workspace.base_venv: unset (on a host only the sibling repositories' commit hooks read one)",
         "point workspace.base_venv in the workspace file at a venv with an interpreter, or remove the key")
@@ -532,8 +501,6 @@ def cmd_check(a) -> int:
         drift = venv_drift(str(python))
         row(not drift, f"base venv carries requirements.lock{': drift ' + ' '.join(drift) if drift else ''}",
             "bazel run //:init")
-    if image:
-        return _report(rows)
     readable = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--git-dir"], capture_output=True).returncode == 0
     hooks = subprocess.run(["git", "-C", str(ROOT), "config", "--get", "core.hooksPath"], capture_output=True, text=True)
     own = checkout_venv(ROOT)
@@ -548,7 +515,7 @@ def cmd_check(a) -> int:
             + ("" if wired else ", not in the user's settings"), "bazel run //:init")
     else:
         row(True, "agent skill router: no Claude Code configuration here")
-    #: commits are made on the host (the image sees no repository), so the consumers' gates are the host's to check
+    #: the sibling repositories' gates, where the base venv they run from is set
     for key in GATED_CONSUMERS if readable and base else ():
         if (Path(dev_config.get(key)) / ".git").exists():
             row(gate_venv(dev_config.get(key)) == base, f"{key}'s commit gate runs from {base}", "bazel run //:init")
@@ -570,8 +537,8 @@ def cmd_check(a) -> int:
     devtools = Path(dev_config.get("workspace.devtools"))
     row((devtools / "rola_devtools" / "mirror.py").is_file(), f"workspace.devtools is a rola-devtools checkout: {devtools}",
         "clone rola-devtools to workspace.devtools, or point workspace.devtools at a checkout")
-    #: the co-developed checkouts import in each venv that runs here: the base venv (the sibling repositories' hooks; in
-    #: the image, its interpreter) and this checkout's own (its hooks, `store`, `container`, `build`)
+    #: the co-developed checkouts import in each venv that runs here: the base venv (the sibling repositories' hooks)
+    #: and this checkout's own (its hooks, `store`, `container`, `build`)
     for venv in ([Path(base)] if base else []) + ([own] if readable and own is not None else []):
         python = venv / "bin" / "python"
         found = subprocess.run([str(python), "-c", "import rola_results, rola_devtools; "
@@ -777,28 +744,55 @@ def cmd_build(a) -> int:
     return subprocess.run([python, "setup.py", "build_ext", "--inplace"], cwd=ROOT, env=env).returncode
 
 
+def _image(layout: str) -> tuple[str, str]:
+    """The devbox image's identity, its content digest (the manifest's, as Bazel wrote `//:image`), and its tag."""
+    digest = json.loads((Path(layout) / "index.json").read_text())["manifests"][0]["digest"]
+    return digest, f"{DEVBOX_REPO}:{digest.removeprefix('sha256:')[:12]}"
+
+
+def _load(tarball: str, tag: str) -> None:
+    """The graph's image handed to Docker (it only runs it), tagged by its digest."""
+    loaded = subprocess.run(["docker", "load", "-i", tarball], capture_output=True, text=True)
+    if loaded.returncode:
+        raise SystemExit(f"docker load: {loaded.stderr.strip()[-400:]}")
+    subprocess.run(["docker", "tag", f"{DEVBOX_REPO}:latest", tag], check=True)
+
+
 def _mounts() -> list[str]:
-    """The host paths the container shares, onto `IMAGE_LAYOUT`, as `source:target[:ro]`: the checkout, the lock
-    directories, the store, the worktrees folder, the suite, the devtools, and under WSL the driver's libraries at the
-    path the image's loader searches."""
-    gpu, image_gpu = Path(dev_config.get("host.gpu_lock")), Path(IMAGE_LAYOUT["host"]["gpu_lock"])
-    if gpu.name != image_gpu.name:
-        raise SystemExit(f"host.gpu_lock {gpu} must be named {image_gpu.name} for the container to share it")
-    mounts = [f"{ROOT}:/workspace/rola", f"{dev_config.get('host.lock_dir')}:{IMAGE_LAYOUT['host']['lock_dir']}",
-              f"{gpu.parent}:{image_gpu.parent}", f"{dev_config.get('store.root')}:{IMAGE_LAYOUT['store']['root']}",
-              f"{dev_config.get('workspace.worktrees')}:{IMAGE_LAYOUT['workspace']['worktrees']}",
-              f"{dev_config.get('workspace.suite')}:{IMAGE_LAYOUT['workspace']['suite']}",
-              f"{dev_config.get('workspace.devtools')}:{IMAGE_LAYOUT['workspace']['devtools']}"]
+    """What a container started here shares with the host, as `source:target[:ro]`: the host's lock directories at the
+    paths its init records (`dev_config.CONTAINER_LOCKS`), so one lock governs the GPU both use, and under WSL the
+    driver's libraries at their own path. Nothing else: its checkouts and installs are its own."""
+    gpu, shared = Path(dev_config.get("host.gpu_lock")), Path(dev_config.CONTAINER_LOCKS["gpu_lock"])
+    if gpu.name != shared.name:
+        raise SystemExit(f"host.gpu_lock {gpu} must be named {shared.name} for a container to share it")
+    mounts = [f"{dev_config.get('host.lock_dir')}:{dev_config.CONTAINER_LOCKS['lock_dir']}", f"{gpu.parent}:{shared.parent}"]
     wsl_lib = dev_config.get("host.wsl_lib")
     #: the whole WSL directory, not only lib/: its libcuda is a loader that opens the host's driver store beside it
-    return mounts + ([f"{Path(wsl_lib).parent}:{Path(WSL_LIB_IN_IMAGE).parent}:ro"] if wsl_lib else [])
+    return mounts + ([f"{Path(wsl_lib).parent}:{Path(wsl_lib).parent}:ro"] if wsl_lib else [])
 
 
-#: run inside the container by `container check`, each a row: the environment check, the GPU and torch's flash backend,
-#: a lock held by the host seen as held, and an iteration build of a copy of the checkout imported
-CONTAINER_PROOFS = {
-    "dev check": "python tools/dev.py check",
-    "GPU, torch and its flash backend": """python - <<'PY'
+#: the checkouts a container clones, by the dev config key that names each on the host, and the folder it clones into
+#: (beside the checkout, where the reader's defaults look)
+CLONED = {"workspace.devtools": "rola-devtools", "store.root": "rola-results", "workspace.suite": "rola-bench"}
+
+#: THE CLEAN ROOM (`bazel run //:container_check`): the host's loop, step by step, in a container on fresh volumes of
+#: its own, each step timed. init's own check runs before the checkout's venv exists, so its gate row is red by design;
+#: `check`, after `dev_env`, is the verdict on the machine.
+CONTAINER_LOOP = {
+    "clone the checkouts": """set -e
+git config --global --add safe.directory '*'
+mkdir -p /workspace/worktrees
+for name in rola-devtools rola-results rola-bench rola; do
+  git clone -q "/mnt/git/$name" "/workspace/$name"
+  git -C "/workspace/$name" checkout -q "$(cat "/mnt/git/$name.sha")"
+done
+if [ -s /mnt/git/rola.staged ]; then git -C /workspace/rola apply --index /mnt/git/rola.staged; fi""",
+    "bootstrap": "python3 tools/bootstrap.py",
+    "init": "bazel run //:init || true",
+    "dev_env": "bazel run //:dev_env",
+    "check": "bazel run //:check",
+    "the commit gate": "bazel test $(bazel query 'tests(//:gate) except //tools:dev_container')",
+    "GPU, torch and its flash backend": """/workspace/venv-rola/bin/python - <<'PY'
 import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
@@ -808,9 +802,9 @@ with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
     F.scaled_dot_product_attention(q, q, q, is_causal=True)
 print(torch.cuda.get_device_name(0), torch.__version__)
 PY""",
-    "a host-held lock is held here": """python - <<'PY'
+    "a host-held lock is held here": f"""/workspace/venv-rola/bin/python - {dev_config.CONTAINER_LOCKS['lock_dir']}/rola_container_probe.lock <<'PY'
 import fcntl, sys
-f = open("/run/rola/locks/rola_container_probe.lock", "w")
+f = open(sys.argv[1], "w")
 try:
     fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except BlockingIOError:
@@ -819,137 +813,124 @@ except BlockingIOError:
 print("acquired: the container does not see the host's lock")
 sys.exit(1)
 PY""",
-    "the extension builds and imports": """set -e
-rm -rf /tmp/proof && mkdir /tmp/proof
-tar -C /workspace/rola --exclude=./build --exclude=./.git --exclude='*.so' -cf - . | tar -C /tmp/proof -xf -
-cd /tmp/proof
-ROLA_CUDA_ARCHS=86 ROLA_CARRY_ARMS=0 python -m pip install -e . --no-deps --no-build-isolation -q
-python -c 'import rola; from rola_cu13._build_config import BUILD_CONFIG as c; print("built", c["archs"])'""",
+    "the library builds and imports": """set -e
+arch=$(/workspace/venv-rola/bin/python -c 'import torch; print("%d%d" % torch.cuda.get_device_capability())')
+bazel run //:library --//:archs=$arch --//:carry_arms=0
+/workspace/venv-rola/bin/python -c 'import rola; from rola_cu13._build_config import BUILD_CONFIG as c; print("built", c["archs"])'""",
 }
+#: the steps a fresh machine takes before it can work: the cold start a rented box pays
+COLD_START = ("clone the checkouts", "bootstrap", "init", "dev_env")
 
 
-def _only_toolchain() -> toolchains.Toolchain:
-    declared = toolchains.records()
-    if len(declared) != 1:
-        raise SystemExit(f"several toolchains are declared ({sorted(declared)}); name one: container build --toolchain NAME")
-    return next(iter(declared.values()))
+def _git_mounts(staging: Path) -> list[str]:
+    """Each checkout's git directory, read-only, for the container to clone from, its commit beside it; this checkout's
+    staged change too, so the container's tree is the commit as git will write it."""
+    mounts = []
+    for name, path in [*((folder, Path(dev_config.get(key))) for key, folder in CLONED.items()), ("rola", ROOT)]:
+        common = subprocess.run(["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                                capture_output=True, text=True, check=True).stdout.strip()
+        sha = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True,
+                             check=True).stdout.strip()
+        (staging / f"{name}.sha").write_text(sha + "\n")
+        mounts.append(f"{common}:/mnt/git/{name}:ro")
+    staged = subprocess.run(["git", "-C", str(ROOT), "diff", "--cached", "--binary"], capture_output=True, check=True)
+    (staging / "rola.staged").write_bytes(staged.stdout)
+    for entry in staging.iterdir():
+        mounts.append(f"{entry}:/mnt/git/{entry.name}:ro")
+    return mounts
 
 
-def _keep_newest_images(built: str) -> None:
-    """Every `rola-dev` image but the `KEPT_IMAGES` tagged most recently loses its tags, and with them its layers no
-    image shares; `built`, the image a build just made, is always among those kept. An image's tag time is when a build
-    last made it (a build that hits the cache at every step keeps the image's creation time and tags it again)."""
-    listed = subprocess.run(["docker", "images", IMAGE_REPO, "--format", "{{.ID}}\t{{.Repository}}:{{.Tag}}"],
-                            capture_output=True, text=True, check=True).stdout.splitlines()
-    tags: dict[str, list[str]] = {}
-    for line in listed:
-        image, name = line.split("\t")
-        tags.setdefault(image, []).append(name)
-    tagged = {image: subprocess.run(["docker", "image", "inspect", "--format", "{{.Metadata.LastTagTime}}", image],
-                                    capture_output=True, text=True, check=True).stdout.strip() for image in tags}
-    newest = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", built], capture_output=True, text=True,
-                            check=True).stdout.strip().removeprefix("sha256:")[:12]
-    kept = [newest] + [image for image in sorted(tags, key=tagged.get, reverse=True) if image != newest]
-    removed, refused = 0, []
-    for image in kept[KEPT_IMAGES:]:
-        done = subprocess.run(["docker", "rmi", *tags[image]], capture_output=True, text=True)
-        if done.returncode == 0:
-            removed += 1
-        else:
-            said = done.stderr.strip().splitlines()
-            refused.append(f"{' '.join(tags[image])}: {said[-1] if said else f'exit {done.returncode}'}")
-    if removed:
-        print(f"kept the {KEPT_IMAGES} newest {IMAGE_REPO} images; removed {removed} older")
-    for line in refused:
-        print(f"kept, Docker refused its removal: {line}")
+def _container_check(digest: str, tag: str) -> int:
+    from rola_results import Store, checkout, portable
 
-
-def cmd_container(a) -> int:
-    key = env_key()
-    tag = f"{IMAGE_REPO}:{key[:12]}"
-    if a.action == "build":
-        with tempfile.TemporaryDirectory(prefix="rola_image_") as context:
-            for rel in ENV_INPUTS:
-                (Path(context) / rel).parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(ROOT / rel, Path(context) / rel)
-            toolchain = toolchains.named(a.toolchain) if a.toolchain else _only_toolchain()
-            args = {"ROLA_ENV_KEY": key, "ROLA_TOOLCHAIN": toolchain.name, "CUDA_BASE_IMAGE": toolchain.base_image,
-                    "CUDA_PACKAGES": " ".join(toolchain.packages), "TORCH_INDEX": toolchain.torch_index}
-            build_args = [x for name, value in args.items() for x in ("--build-arg", f"{name}={value}")]
-            built = subprocess.run(["docker", "build", *build_args, "-t", tag, "-t", f"{IMAGE_REPO}:latest",
-                                    context]).returncode
-        if built == 0:
-            _keep_newest_images(tag)
-        return built
-    if a.action == "gate":
-        return _container_gate()
-
-    #: `compose` and `check` use this environment's image, which a build keeping only the newest (`KEPT_IMAGES`) may
-    #: have removed
-    if subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode:
-        raise SystemExit(f"no image {tag} for this environment: python3 tools/dev.py container build")
-    if a.action == "compose":
-        local = ROOT / ".devcontainer" / "compose.local.yaml"
-        doc = {"services": {"rola": {"image": tag, "volumes": _mounts()}}}
-        local.write_text(json.dumps(doc, indent=1) + "\n")
-        print(f"wrote {local} ({tag})")
-        return 0
+    volumes = {f"{CHECK_VOLUMES}-home": "/root", f"{CHECK_VOLUMES}-work": "/workspace"}
+    for volume in volumes:
+        subprocess.run(["docker", "volume", "rm", "-f", volume], capture_output=True)
     lock = Path(dev_config.get("host.lock_dir")) / "rola_container_probe.lock"
     holder = subprocess.Popen([sys.executable, "-c", "import fcntl, sys; f = open(sys.argv[1], 'w'); "
                                "fcntl.flock(f, fcntl.LOCK_EX); print('held', flush=True); sys.stdin.read()", str(lock)],
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     holder.stdout.readline()
-
-    from rola_results import Store, checkout, portable
-
-    volumes = [x for mount in _mounts() for x in ("-v", mount)]
     rows = []
-    try:
-        for what, script in CONTAINER_PROOFS.items():
-            done = subprocess.run(["docker", "run", "--rm", "--gpus", "all", "--ipc", "host", *volumes, "-w",
-                                   "/workspace/rola", tag, "bash", "-c", script], capture_output=True, text=True)
-            tail = [portable(line, ROOT) for line in (done.stdout + done.stderr).strip().splitlines()[-3:]]
-            rows.append({"proof": what, "ok": done.returncode == 0, "tail": tail})
-            print(f"{'ok ' if done.returncode == 0 else 'RED'}  {what}" + ("" if done.returncode == 0 else f"  -- {tail}"))
-    finally:
-        holder.stdin.close()
-        holder.wait()
-
-    image_id = subprocess.run(["docker", "image", "inspect", "-f", "{{.Id}}", tag], capture_output=True, text=True).stdout
-    ok = all(r["ok"] for r in rows)
-    result = {"image": tag, "image_id": image_id.strip(), "proofs": rows}
+    with tempfile.TemporaryDirectory(prefix="rola_check_") as staging:
+        args = [x for mount in [*_mounts(), *_git_mounts(Path(staging))] for x in ("-v", mount)]
+        args += [x for volume, at in volumes.items() for x in ("-v", f"{volume}:{at}")]
+        subprocess.run(["docker", "rm", "-f", CHECK_VOLUMES], capture_output=True)
+        subprocess.run(["docker", "run", "-d", "--name", CHECK_VOLUMES, "--gpus", "all", "--ipc", "host", *args,
+                        "-e", f"ROLA_DEVBOX_IMAGE={digest}", tag, "sleep", "infinity"],
+                       capture_output=True, check=True)
+        try:
+            for what, script in CONTAINER_LOOP.items():
+                start = time.monotonic()
+                done = subprocess.run(["docker", "exec", "-w", "/workspace/rola" if what != "clone the checkouts" else "/",
+                                       CHECK_VOLUMES, "bash", "-c", script], capture_output=True, text=True)
+                seconds = round(time.monotonic() - start, 1)
+                tail = [portable(line, ROOT) for line in (done.stdout + done.stderr).strip().splitlines()[-3:]]
+                rows.append({"step": what, "ok": done.returncode == 0, "seconds": seconds, "tail": tail})
+                print(f"{'ok ' if done.returncode == 0 else 'RED'}  {what} ({seconds} s)" +
+                      ("" if done.returncode == 0 else f"  -- {tail}"), flush=True)
+                if done.returncode:
+                    break
+        finally:
+            subprocess.run(["docker", "rm", "-f", CHECK_VOLUMES], capture_output=True)
+            holder.stdin.close()
+            holder.wait()
+    ok = len(rows) == len(CONTAINER_LOOP) and all(r["ok"] for r in rows)
+    cold = round(sum(r["seconds"] for r in rows if r["step"] in COLD_START), 1)
+    result = {"image": tag, "steps": rows, "cold_start_seconds": cold}
     store = Store(RESULTS_ENVIRONMENT)
     if ok:
-        store.put({"env_key": key}, output=result, provenance=checkout(ROOT))
+        store.put({"image_digest": digest}, output=result, provenance=checkout(ROOT))
+        DEVBOX_DIGEST.write_text(json.dumps({"digest": digest, "role": DEVBOX_DIGEST_ROLE}, indent=4) + "\n")
+        #: a green run's volumes are its own and go with it; a red run's stay for a look until the next run
+        for volume in volumes:
+            subprocess.run(["docker", "volume", "rm", "-f", volume], capture_output=True)
     else:
-        store.put({"env_key": key}, error=f"RED: {[r['proof'] for r in rows if not r['ok']]}", provenance=checkout(ROOT),
-                  **result)
-    print(f"container check: {'green' if ok else 'RED'}; recorded under {store.dir}")
+        store.put({"image_digest": digest}, error=f"RED: {[r['step'] for r in rows if not r['ok']]}",
+                  provenance=checkout(ROOT), **result)
+    print(f"container check: {'green' if ok else 'RED'} (cold start {cold} s); recorded under {store.dir}" +
+          (f"; wrote {DEVBOX_DIGEST.relative_to(ROOT)}" if ok else ""))
     return 0 if ok else 1
 
 
-def _container_gate() -> int:
-    """KERNEL_STANDARDS §23 (3): a commit that changes the environment's inputs carries a passing container check for
-    the key of what it stages."""
-    staged = subprocess.run(["git", "-C", str(ROOT), "diff", "--cached", "--name-only"], capture_output=True, text=True,
-                            check=True).stdout.split()
-    if not set(staged) & set(ENV_INPUTS):
-        return 0
+def cmd_container(a) -> int:
+    digest, tag = _image(a.layout)
+    if a.action == "gate":
+        return _container_gate(digest)
+    _load(a.tarball, tag)
+    if a.action == "check":
+        return _container_check(digest, tag)
+    local = ROOT / ".devcontainer" / "compose.local.yaml"
+    volumes = [f"{DEVBOX_REPO}-home:/root", f"{DEVBOX_REPO}-work:/workspace"]
+    doc = {"services": {"rola": {"image": tag, "volumes": [*volumes, *_mounts()],
+                                 "environment": {"ROLA_DEVBOX_IMAGE": digest}}}}
+    local.write_text(json.dumps(doc, indent=1) + "\n")
+    print(f"wrote {local} ({tag})")
+    return 0
 
-    def read(rel: str) -> bytes:
-        blob = subprocess.run(["git", "-C", str(ROOT), "show", f":{rel}"], capture_output=True)
-        return blob.stdout if blob.returncode == 0 else b""
 
+def _container_gate(digest: str) -> int:
+    """KERNEL_STANDARDS §23 (3): the image the graph builds is the one the tree names (`tools/devbox_image.json`), and a
+    commit that changes the name carries a passing container check for the new digest. So a commit that leaves the
+    image alone needs no Docker (a rented box is itself a container)."""
     from rola_results import Store
     from rola_results import key as record_key
 
-    key = env_key(read)
-    if Store.complete(Store(RESULTS_ENVIRONMENT).get(record_key({"env_key": key}))):
-        return 0
-    print(f"§23 (3): this commit changes the dev environment ({', '.join(sorted(set(staged) & set(ENV_INPUTS)))}) and "
-          f"no passing container check exists for its key {key[:12]}.\n  python tools/dev.py container build && "
-          f"python tools/dev.py container check   (with exactly these files in the working tree)")
-    return 1
+    def named(rev: str) -> str | None:
+        blob = subprocess.run(["git", "-C", str(ROOT), "show", f"{rev}:{DEVBOX_DIGEST.relative_to(ROOT)}"],
+                              capture_output=True, text=True)
+        return json.loads(blob.stdout)["digest"] if blob.returncode == 0 else None
+
+    staged = named("")
+    if staged != digest:
+        print(f"§23 (3): the graph builds the devbox image {digest[:19]}, and the commit names {str(staged)[:19]}: "
+              f"bazel run //:container_check (it writes {DEVBOX_DIGEST.relative_to(ROOT)} when green), then stage it")
+        return 1
+    if staged != named("HEAD") and not Store.complete(Store(RESULTS_ENVIRONMENT).get(record_key({"image_digest": digest}))):
+        print(f"§23 (3): the commit changes the devbox image to {digest[:19]}, which has no passing container check: "
+              f"bazel run //:container_check")
+        return 1
+    return 0
 
 
 def main() -> int:
@@ -957,12 +938,8 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("init", help="write this machine's dev config, install pinned tools, wire hooks, then check")
     p.add_argument("--force", action="store_true", help="overwrite detected values already in the config")
-    p.add_argument("--image", action="store_true", help="inside the dev image build: its fixed layout, no hooks or clock")
-    p.add_argument("--env-key", default="", help="with --image: the environment key the image is built from")
     p.set_defaults(fn=cmd_init)
-    p = sub.add_parser("check", help="verify every setting, tool, pin and lock")
-    p.add_argument("--image", action="store_true", help="inside an image build: the toolchain, pins and venv only")
-    p.set_defaults(fn=cmd_check)
+    sub.add_parser("check", help="verify every setting, tool, pin and lock").set_defaults(fn=cmd_check)
     sub.add_parser("show", help="every resolved setting and its source").set_defaults(fn=cmd_show)
     p = sub.add_parser("get", help="print one value: <section.key>")
     p.add_argument("key")
@@ -990,9 +967,10 @@ def main() -> int:
     p.add_argument("action", choices=("commit",))
     p.add_argument("-m", "--message", default="records", help="commit: the message")
     p.set_defaults(fn=cmd_store)
-    p = sub.add_parser("container", help="the dev container: compose its mounts, build its image, check it, gate a commit")
-    p.add_argument("action", choices=("compose", "build", "check", "gate"))
-    p.add_argument("--toolchain", help="build: the toolchain record to build the image for (default: the one declared)")
+    p = sub.add_parser("container", help="the devbox image: its clean-room check, an editor's container, the commit gate")
+    p.add_argument("action", choices=("check", "compose", "gate"))
+    p.add_argument("--layout", required=True, help="the image's OCI layout (`//:image`)")
+    p.add_argument("--tarball", help="check, compose: the image as Docker loads it (`//:image_tarball`)")
     p.set_defaults(fn=cmd_container)
     a = ap.parse_args()
     if a.cmd not in BOOTSTRAP:

@@ -5,9 +5,8 @@
 "A tool that can run one of two ways must REFUSE, not choose." A build must not
 silently differ by whether `mold` happened to be on a given host's PATH, the way
 `ptxas`/`sccache` are already pinned and gated (`tools/sccache_toolchain.py`,
-closed-world rule 1). `tools/mold_pin.json` pins the exact upstream release
-(the SAME artifact `Dockerfile`'s `MOLD_VERSION`/`MOLD_SHA256` ARGs install, so
-the host-side gate here and the container's install agree on one pin, never two).
+closed-world rule 1). `tools/mold_pin.json` pins the exact upstream release, the
+one artifact init installs on every machine and the graph reads (`@mold`).
 
 mold LINKS the extension; it does not touch codegen (`tools/build_flags.py`'s
 module docstring: link flags are explicitly not part of the ratified,

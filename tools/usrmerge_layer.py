@@ -4,7 +4,7 @@
 `/lib64`, `/libx32` and `/sbin` are links into `/usr`, and a layer that carries those paths as directories replaces the
 links, so `/bin/sh` and the loader's own path go. The links are read from the base image itself; every entry under one
 of them moves under `usr/`, as dpkg writes it through the link, and the entries for the directories themselves go.
-Members keep their metadata, in order; a later one at a path wins. Docs: docs/setup.md#the-graphs-image.
+Members keep their metadata, in order; a later one at a path wins. Docs: docs/setup.md#the-devbox-image.
 
     usrmerge_layer.py --base LAYOUT_DIR --in flat.tar --out usrmerged.tar
 """

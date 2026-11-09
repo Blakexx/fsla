@@ -447,21 +447,31 @@ _CHECKOUT_TEST = """\
 # a check of the commit, run in the checkout it is made from (bazel/defs.bzl's checkout_test): never cached; the
 # machine's dev config is the one the front door names (ROLA_DEV_CONFIG)
 set -euo pipefail
-cd "$(dirname "$(readlink -f "$TEST_SRCDIR/_main/MODULE.bazel")")"
+{resolve}cd "$(dirname "$(readlink -f "$TEST_SRCDIR/_main/MODULE.bazel")")"
 export PATH={venv}/bin:/usr/bin:/bin RUFF_NO_CACHE=true
 exec {cmd}
 """
 
 def _checkout_test_impl(ctx):
+    resolve, words = [], [shell.quote(w) for w in ctx.attr.cmd]
+    tools = []
+    for i, (target, flag) in enumerate(ctx.attr.tools.items()):
+        found = target[DefaultInfo].files.to_list()
+        if len(found) != 1:
+            fail("%s: %s names %d files, not one" % (ctx.label, target.label, len(found)))
+        tools += found
+        resolve.append('tool%d="$(readlink -f "$TEST_SRCDIR/_main/%s")"\n' % (i, found[0].short_path))
+        words += [flag, '"$tool%d"' % i]
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
-    ctx.actions.write(script, _CHECKOUT_TEST.format(venv = shell.quote(VENV), cmd = " ".join([shell.quote(w) for w in ctx.attr.cmd])), is_executable = True)
-    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = [ctx.file._anchor]))]
+    ctx.actions.write(script, _CHECKOUT_TEST.format(resolve = "".join(resolve), venv = shell.quote(VENV), cmd = " ".join(words)), is_executable = True)
+    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = [ctx.file._anchor] + tools))]
 
 _checkout_test = rule(
     implementation = _checkout_test_impl,
     test = True,
     attrs = {
         "cmd": attr.string_list(mandatory = True, doc = "the check's command, run from the checkout's root"),
+        "tools": attr.label_keyed_string_dict(allow_files = True, doc = "graph outputs it reads, each by the flag that names its path"),
         "_anchor": attr.label(default = "//:MODULE.bazel", allow_single_file = True),
     },
 )

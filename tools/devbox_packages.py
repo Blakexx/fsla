@@ -5,7 +5,7 @@ rules_distroless lays every package of the closure over the base image, its own 
 package the base already has must be at the base's version, or the layer would swap a library under the base's
 programs. The base's packages come from its dpkg status, in its OCI layout; the layer's from its packages' repositories,
 each named by rules_distroless's sanitized key (`<suite>_<name>-<arch>_<version>`), so the base's are keyed the same
-way. Docs: docs/setup.md#the-devbox.
+way. Docs: docs/setup.md#the-devbox-image.
 
     devbox_packages.py --base LAYOUT_DIR --layer LAYER_TAR -- PACKAGE_FILE...
 

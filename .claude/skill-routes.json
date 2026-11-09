@@ -125,12 +125,12 @@
     "tools/devtools.txt",
     "requirements.lock",
     ".devcontainer/*",
-    "Dockerfile"
+    "tools/devbox_image.json"
    ],
    "bash": [
     "^(python3?\\s+)?tools/dev\\.py\\b",
     "^python3?\\s+tools/bootstrap\\.py\\b",
-    "^bazel\\s+run\\s+//:(init|check|clock|show|get|worktree|store|dev_env)\\b",
+    "^bazel\\s+run\\s+//:(init|check|clock|show|get|worktree|store|dev_env|container_check|container_compose)\\b",
     "^git\\s+(-C\\s+\\S+\\s+)?worktree\\b",
     "^uv\\s+venv\\b"
    ]

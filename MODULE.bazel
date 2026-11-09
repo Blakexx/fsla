@@ -37,9 +37,9 @@ use_repo(cuda, "cuda")
 #: THE GRAPH'S ENVIRONMENT: the Python environment built from requirements.lock into the shared store, the pinned
 #: linker and the host C++ compiler's identity (bazel/environment.bzl)
 environment = use_extension("//bazel:environment.bzl", "environment")
-use_repo(environment, "bazelisk", "clang_tidy", "cuda_tools", "host_cc", "host_gpu", "mold", "rola_env", "rola_tree", "uv")
+use_repo(environment, "clang_tidy", "cuda_tools", "host_cc", "host_gpu", "mold", "rola_env", "rola_tree", "uv")
 
-#: THE DEVBOX IMAGE (docs/setup.md#the-devbox): a thin wrapper around the bootstrap. Its base carries what a host
+#: THE DEVBOX IMAGE (docs/setup.md#the-devbox-image): a thin wrapper around the bootstrap. Its base carries what a host
 #: supplies itself before the graph -- Ubuntu 22.04 with git, gcc, python3 and curl -- a Docker Official Image by digest
 oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
 oci.pull(

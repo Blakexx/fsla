@@ -1,6 +1,7 @@
 # `tools/dev.py` — the dev environment, set up and checked by one command
 
-KERNEL_STANDARDS §23. One command sets up a host or a container for this tree, checks it and describes it. It
+KERNEL_STANDARDS §23. One command sets up a machine for this tree (a host, or the devbox container), checks it and
+describes it. It
 replaced tools/build/new_worktree.sh, tools/setup_clock_lock.py and tools/build/build_lock.sh. The
 settings it writes and reads are the dev config ([dev_config.md](dev_config.md)).
 
@@ -13,7 +14,8 @@ settings it writes and reads are the dev config ([dev_config.md](dev_config.md))
     bazel run //:dev_env                     # dev-env, given the checkout and the graph's environment
     bazel run //:worktree -- <name> <sha>
     bazel run //:store -- commit -m <msg>
-    python tools/dev.py container compose|build|check|gate
+    bazel run //:container_check             # the devbox image's clean room
+    bazel run //:container_compose           # the devbox image for an editor's dev container
 
 Each target is this file's command of the same name (`bazel/defs.bzl`'s `dev_run`): run in the checkout on the
 graph's environment interpreter, its arguments after `--`.
@@ -24,21 +26,19 @@ graph's environment interpreter, its arguments after `--`.
   (`dev_config.cuda_home()`), on no PATH.
 - The pinned devbox tools (`DEV_TOOLS`: hyperfine, difftastic, Nsight Compute and Systems), each where it is missing or
   does not report its pin's version; the measurement tools find the pinned Nsight Compute by its pin
-  (`dev_config.ncu()`). In the image their commands are linked into the image's venv's bin, first on its PATH.
+  (`dev_config.ncu()`).
 - `sccache` and `mold` where they are installed.
 - The Windows System32 mount under WSL.
 
 A key already in a file is kept unless `--force`. A pinned tool that is missing, or does not report its pin's
 version, is downloaded from the pin's release URL (`tools/sccache_pin.json` and `tools/mold_pin.json` by init,
-`tools/bazelisk_pin.json` by `install_bazelisk`: the bootstrap on a host, `init --image` in the image), asked again after a server error or a dropped connection, and
+`tools/bazelisk_pin.json` by `install_bazelisk`, the bootstrap's), asked again after a server error or a dropped connection, and
 then from its `mirror_urls` (the same asset through GitHub's API: github.com's release downloads returned gateway
 timeouts from its own edge for hours on 2026-11-08 while the API served the same assets). Its release sha256 is
 verified, and so is its binary
-sha256 where the pin has one. A toolkit pin names NVIDIA's redistributable manifest by its digest instead and the
-components it takes: each is fetched by the digest the manifest lists and unpacked without its archive's own folder
-into the pin's one, each component's LICENSE at `licenses/<component>/LICENSE`, then the pin's `links`; the folder is
-unpacked beside its place and moved there, so a folder at the pin's path is a whole toolkit, and it is the graph's
-copy (`@cuda_tools`) file for file. The whole release -- a tarball, a bare binary under its release's name, or the
+sha256 where the pin has one. A toolkit pin names NVIDIA's redistributable manifest by its digest instead, and the
+components it takes: init lays them out as the graph's own copy does (`@cuda_tools`), file for file, so a tool outside
+the graph and a test tier run the same toolkit. The whole release -- a tarball, a bare binary under its release's name, or the
 toolkit -- lands under `host.tools_dir`, because the layout
 is part of the tool: `-fuse-ld=mold` selects the `ld.mold` next to `mold`. sccache and mold are recorded in the
 machine's `toolchain.json`; bazelisk is found by its pin (`dev_config.pinned`: under `host.tools_dir`, in its pin's folder, by its release's
@@ -93,31 +93,28 @@ pin the venv lacks or carries at another version is drift and extras the lock do
 the missing pins with `uv pip install -r requirements.lock` from the host toolchain's `torch_index`, adding without
 removing.
 
-**`container`** keeps the dev image a supported environment (§23 (3), `docs/setup.md` §2-3). Its inputs are
-`ENV_INPUTS`: the Dockerfile, `.devcontainer/devcontainer.json` and `compose.yaml`, `requirements.lock`, the tool pins,
-the toolchain records, and this file with the modules it imports. Their sha256,
-path and bytes each, is the ENVIRONMENT KEY.
-- `build` copies only those inputs into a context and builds `rola-dev:<key[:12]>` for a toolchain record
-  (`--toolchain`, default the one declared), passing its base image, apt pins, torch index and name as build arguments. The image's last step is
-  `init --image`, which writes the fixed layout `IMAGE_LAYOUT`, installs the pins and runs `check --image`. A red row
-  fails the build. A build that succeeds keeps the `KEPT_IMAGES` (3) `rola-dev` images tagged most recently, the one it
-  built always among them, and removes the rest, naming any Docker refuses; `compose` and `check` refuse by name an
-  environment whose image is gone.
-- `compose` writes `.devcontainer/compose.local.yaml`, binding the host's checkout, lock directories, store and
-  worktrees onto that layout, and refuses without an image for the key; so does `check`.
-- `check` runs `CONTAINER_PROOFS` inside the image with those mounts: `dev.py check`, the GPU with a call through
-  torch's flash backend, a lock held by a host process seen as held, and an iteration build of a copy of the checkout. It
-  stores the result through `rola_results` at `environment`, one record per key, every check a sample.
-- `gate` is the commit hook. When the staged files touch an input, it computes the key of the staged blobs and
-  refuses the commit without a passing sample for that key.
+**`container`** keeps the devbox image a supported environment (§23 (3), `docs/setup.md` §2-3). Each action takes the
+image's OCI layout (`//:image`), whose manifest digest is the image's identity, and `check` and `compose` the image as
+Docker loads it (`//:image_tarball`), tagged `rola-devbox:<digest[:12]>`.
+- `check` (`bazel run //:container_check`) is the clean room: `CONTAINER_LOOP` run step by step by `docker exec` in a
+  container on fresh volumes of its own, which clones the checkouts from their git directories mounted read-only
+  (`CLONED`, this checkout with its staged change), each step timed; `COLD_START` names the steps a fresh machine pays
+  before it can work. It stores the result through `rola_results` at `environment`, one record per image digest, and
+  a green check writes the digest to `tools/devbox_image.json` and removes its volumes.
+- `compose` (`bazel run //:container_compose`) writes `.devcontainer/compose.local.yaml`: the image's tag, the
+  devbox's own volumes and the host's mounts (`_mounts`: the lock directories at `dev_config.CONTAINER_LOCKS`, the WSL
+  driver's libraries), and hands the container the image's digest (`ROLA_DEVBOX_IMAGE`).
+- `gate` is the commit gate's check: the image the graph builds is the one `tools/devbox_image.json` names, and a
+  commit changing the name has a passing record for the new digest. A commit that leaves the image alone needs no
+  Docker.
 
 **`store`** keeps the measurements store (`store.root`, a rola-results checkout): `init` links `rola_results` into
 every interpreter that runs here -- each checkout's own venv (it names the environment's site-packages as a plain
-path, which reads none of its `.pth` files), the base venv the sibling repositories' hooks run from, and in the image
-the image's interpreter at the store's mount point -- by a one-line `rola_results.pth`, and `dev-env` links each venv it writes; `commit -m` commits the records (`python -m
+path, which reads none of its `.pth` files) and the base venv the sibling repositories' hooks run from -- by a
+one-line `rola_results.pth`, and `dev-env` links each venv it writes; `commit -m` commits the records (`python -m
 rola_results commit`).
 
-`init`, `check`, `show`, `get`, `clock`, `dev-env` and `worktree` run from whichever python starts them (`dev-env`'s is the environment's, through its run target); `build`, `store` and `container` re-execute themselves under the checkout's own venv (`bazel run //:dev_env`), because the build compiles with it and the store and the container read `rola_results`, which it links; the host's own python carries nothing of this project. On a host the base venv is the venv the sibling repositories' commit hooks run from, and in the image it is the image's interpreter: `check` tests it where it is set.
+`init`, `check`, `show`, `get`, `clock`, `dev-env` and `worktree` run from whichever python starts them (`dev-env`'s is the environment's, through its run target); `build`, `store` and `container` re-execute themselves under the checkout's own venv (`bazel run //:dev_env`), because the build compiles with it and the store and the container read `rola_results`, which it links; the host's own python carries nothing of this project. The base venv is the venv the sibling repositories' commit hooks run from: `check` tests it where it is set.
 
 **`get`** prints one value, for a person or a shell (the `rola-dev` skill's way to read one setting).
 

@@ -299,7 +299,7 @@ and a timing only compares within the session that interleaved it.
 | `calibration` | `measure/harness/bench_carry_calib.py` | the parts binary, device, owners, sizes, clock | the calibration rows |
 | `pipe_timeline.scale` | `tools/pipe_timeline.py --calibrate` | the cell, the binary and the calibration's composition | the plateau the tool reads back as later runs' scale |
 | `compose_ledger` | `tools/compose_ledger.py` | the commit and diff, the cells | the report |
-| `environment` | `tools/dev.py container check` | the environment key | the proofs |
+| `environment` | `bazel run //:container_check` | the devbox image's digest | the steps, each timed, and the cold start |
 | `rola/oracle-tier` | a store target over the tier node | the tier's code, the binary, the environment | the counts, the failed cases, the margins |
 | `diff/<surface>` | a store target over a diff node | both sides' semantics and the rule | the verdict per cell and quantity, never a tensor |
 

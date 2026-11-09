@@ -95,8 +95,7 @@ change.
 2. **Write the record**, `tools/toolchains/<name>.json`: the whole `ptxas --version` output, the whole
    `--version` output of the readers (`cuobjdump`, `nvdisasm`: the disassemblers the gates read with), the whole
    `--version` output of compute-sanitizer (`sanitizer`: the sanitizer lane's), the CUDA major, the PyTorch wheel
-   index for that major, and the container (its base image by digest and the apt pins that carry that ptxas and those
-   readers). A torch of another major is refused.
+   index for that major. A torch of another major is refused.
 3. **Check the compiler cache.** The pinned sccache must compile under the toolkit (sccache 0.17
    silently produced no objects under nvcc 13.4); otherwise build with
    `toolchain.sccache_enabled: false` until the pin moves.

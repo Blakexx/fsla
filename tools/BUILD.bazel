@@ -373,10 +373,12 @@ checkout_test(
     cmd = ["python3", "tools/docrefs.py"],
 )
 
+#: the devbox image the graph builds is the one the tree names, and a change to it carries a passing container check
 checkout_test(
     name = "dev_container",
     size = "small",
     cmd = ["python3", "tools/dev.py", "container", "gate"],
+    tools = {"//:image": "--layout"},
 )
 
 test_suite(

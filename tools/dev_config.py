@@ -68,7 +68,7 @@ SCHEMA: dict[str, dict[str, Key]] = {
     **MACHINE,
     "store": {
         "root": Key("path", str(SIBLINGS / "rola-results"),
-                    "the measurements store: its own git repository, shared by every worktree and the container "
+                    "the measurements store: its own git repository, shared by every worktree on the machine "
                     "(the record, the ledgers, perf, the environment checks; docs/measurement.md)"),
     },
     "workspace": {
@@ -79,24 +79,16 @@ SCHEMA: dict[str, dict[str, Key]] = {
                         "every venv that runs here"),
         "worktrees": Key("path", str(ROOT.parent / "worktrees") if ROOT.parent.name != "worktrees" else str(ROOT.parent),
                          "the one folder every worktree and its venv live in"),
-        "base_venv": Key("path?", None, "the venv the sibling repositories' commit hooks run from on a host; the image's interpreter in the image"),
-    },
-    "environment": {
-        "image_digest": Key("str", "", "inside the dev container: sha256 of the Dockerfile the image was built from"),
+        "base_venv": Key("path?", None, "the venv the sibling repositories' commit hooks run from"),
     },
 }
 
-#: THE DEV IMAGE'S FIXED LAYOUT: `tools/dev.py init --image` writes it as the image's config, and `container compose`
-#: bind-mounts the host's lock directories, store and worktrees onto it, so host and container share one of each.
-IMAGE_LAYOUT = {
-    "toolchain": {"bazel": "/usr/local/bin/bazel"},
-    "host": {"lock_dir": "/run/rola/locks", "gpu_lock": "/run/rola/gpu/rola_gpu.lock", "tools_dir": "/opt/rola/tools"},
-    "store": {"root": "/workspace/store"},
-    "workspace": {"suite": "/workspace/suite", "devtools": "/workspace/devtools", "worktrees": "/workspace/worktrees",
-                  "base_venv": "/opt/venv"},
-}
-#: where the image's loader looks for the WSL driver's libraries (the Dockerfile's LD_LIBRARY_PATH names it)
-WSL_LIB_IN_IMAGE = "/usr/lib/wsl/lib"
+#: WHERE A CONTAINER THIS TREE STARTS FINDS THE HOST'S LOCKS: its launcher mounts them there (tools/dev.py's
+#: `_mounts`) and its init records them (`detect`), so one lock governs a GPU the host and the container share
+CONTAINER_LOCKS = {"lock_dir": "/run/rola/locks", "gpu_lock": "/run/rola/gpu/rola_gpu.lock"}
+#: where WSL puts the driver's Linux libraries, which a container this tree starts sees at the same path (the devbox
+#: image's loader searches it first)
+WSL_LIB = "/usr/lib/wsl/lib"
 
 #: Environment variables one of the tree's processes sets for a child it starts. Never a setting: the parent resolved
 #: the value (from this config or from its own state) and the child must use exactly that value.
@@ -104,7 +96,10 @@ HANDOFFS = {
     POINTER: "which config directory a child reads (set by a test or the container, never by a setting)",
     "ROLA_REAL_NVCC": "the gated nvcc setup.py hands the sccache wrapper (tools/sccache_nvcc.py)",
     "ROLA_SCCACHE_BIN": "the gated sccache setup.py hands the sccache wrapper",
-    "CUDA_HOME": "torch.utils.cpp_extension's toolkit, set by setup.py and ratify to `cuda_home()` before torch is imported",
+    "CUDA_HOME": "torch.utils.cpp_extension's toolkit, set to `cuda_home()` before torch's extension module is imported "
+                 "(setup.py, ratify, the header self-check)",
+    "ROLA_DEVBOX_IMAGE": "the devbox image's digest, which the launcher of a container this tree starts hands it "
+                         "(tools/dev.py container): ratify records it as where a manifest was measured",
     "MAX_JOBS": "torch's ninja job count, set by setup.py from the slots it holds",
     "PYTORCH_NVCC": "torch's compiler, set by setup.py to the sccache wrapper",
     "PYTEST_XDIST_WORKER": "pytest-xdist's worker id",
@@ -191,14 +186,17 @@ def windows_tool(rel: str) -> Path | None:
 
 def detect() -> dict[str, dict[str, Any]]:
     """This machine's values where they differ from the declared defaults: what `bazel run //:init` writes."""
-    found: dict[str, dict[str, Any]] = {"toolchain": {}, "host": {}, "workspace": {}, "environment": {}}
+    found: dict[str, dict[str, Any]] = {"toolchain": {}, "host": {}, "workspace": {}}
     for tool in ("sccache", "mold"):
         if shutil.which(tool):
             found["toolchain"][tool] = shutil.which(tool)
     system32 = Path("/mnt/c/Windows/System32")
     if system32.exists():
         found["host"]["windows_system32"] = str(system32)
-    wsl_lib = Path(WSL_LIB_IN_IMAGE)
+    wsl_lib = Path(WSL_LIB)
     if (wsl_lib / "libdxcore.so").exists():
         found["host"]["wsl_lib"] = str(wsl_lib)
+    #: inside a container this tree started, the host's locks where its launcher mounted them
+    if Path(CONTAINER_LOCKS["lock_dir"]).is_dir():
+        found["host"].update(CONTAINER_LOCKS)
     return {k: v for k, v in found.items() if v}
