@@ -29,6 +29,9 @@ graph's environment interpreter, its arguments after `--`.
   (`dev_config.ncu()`).
 - `sccache` and `mold` where they are installed.
 - The Windows System32 mount under WSL.
+- In a container, the lock directories its launcher mounted (`dev_config.locks_mounted()`, from the process's own
+  mount table), rewritten at every run and removed where the mount is gone (`_follow_lock_mount`), so a container
+  never keeps its own locks beside the host's; `check`'s row is red where the config and the mount disagree.
 
 A key already in a file is kept unless `--force`. A pinned tool that is missing, or does not report its pin's
 version, is downloaded from the pin's release URL (`tools/sccache_pin.json` and `tools/mold_pin.json` by init,

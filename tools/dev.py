@@ -392,9 +392,26 @@ def host_toolchain() -> toolchains.Toolchain:
     return toolchains.for_ptxas(_version(dev_config.cuda_bin("ptxas")))
 
 
+def _follow_lock_mount() -> None:
+    """A container's locks follow its launcher's mount at every init: the host's where they are mounted, else the
+    machine's own (the keys an earlier init wrote for a mount removed), so a container started once without the mount
+    never keeps its own locks beside the host's -- see docs/setup.md#the-devbox-image."""
+    if dev_config.locks_mounted():
+        _write_section("host", dev_config.CONTAINER_LOCKS, force=True)
+        return
+    path = dev_config.directory() / "host.json"
+    values = json.loads(path.read_text()) if path.exists() else {}
+    stale = [k for k, v in dev_config.CONTAINER_LOCKS.items() if values.get(k) == v]
+    if stale:
+        path.write_text(json.dumps({k: v for k, v in values.items() if k not in stale}, indent=1, sort_keys=True) + "\n")
+        dev_config.reload()
+        print(f"wrote {path}: the host's locks are not mounted here, so {', '.join(stale)} take this machine's own")
+
+
 def cmd_init(a) -> int:
     for section, values in dev_config.detect().items():
         _write_section(section, values, a.force)
+    _follow_lock_mount()
 
     for name in RECORDED:
         current = dev_config.get(f"toolchain.{name}")
@@ -519,6 +536,13 @@ def cmd_check(a) -> int:
     for key in GATED_CONSUMERS if readable and base else ():
         if (Path(dev_config.get(key)) / ".git").exists():
             row(gate_venv(dev_config.get(key)) == base, f"{key}'s commit gate runs from {base}", "bazel run //:init")
+    #: the host's locks where a launcher mounted them, else this machine's own: never a container's own beside the host's
+    mounted, named = dev_config.locks_mounted(), dev_config.get("host.lock_dir") == dev_config.CONTAINER_LOCKS["lock_dir"]
+    row(mounted == named, "host.lock_dir: the host's, mounted by the container's launcher" if mounted and named else
+        "host.lock_dir: this machine's own" if not mounted else
+        f"host.lock_dir: the host's locks are mounted at {dev_config.CONTAINER_LOCKS['lock_dir']} and the config names "
+        f"{dev_config.get('host.lock_dir')}" if mounted else
+        "host.lock_dir names the host's mounted locks, and none are mounted here", "bazel run //:init")
     for key in ("host.lock_dir", "host.scratch"):
         path = Path(dev_config.get(key))
         path.mkdir(parents=True, exist_ok=True)
@@ -852,7 +876,7 @@ def _git_mounts(staging: Path) -> list[str]:
 def _container_check(digest: str, tag: str) -> int:
     from rola_results import Store, checkout, portable
 
-    volumes = {f"{CHECK_VOLUMES}-home": "/root", f"{CHECK_VOLUMES}-work": "/workspace"}
+    volumes = {f"{CHECK_VOLUMES}-home": "/root", f"{CHECK_VOLUMES}-work": str(CONTAINER_CHECKOUT.parent)}
     for volume in volumes:
         subprocess.run(["docker", "volume", "rm", "-f", volume], capture_output=True)
     lock = Path(dev_config.get("host.lock_dir")) / "rola_container_probe.lock"

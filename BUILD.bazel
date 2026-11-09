@@ -11,7 +11,7 @@ load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "string_list_fla
 load("@rola_env//:flags.bzl", "CXX11_ABI", "RATIFIED_ARCHS", "TOOLCHAIN", "TORCH", "TORCH_CUDA")
 load("//bazel:defs.bzl", "compile_database", "dev_run", "ratify_census", "ratify_run", "ratify_test", "rola_extension", "tool_test", "tree_part")
 load("@rola_tree//:tree.bzl", "TRACKED")
-load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
 load("@tar.bzl", "tar")
 
 exports_files([
@@ -198,6 +198,24 @@ oci_load(
     name = "image_load",
     image = ":image",
     repo_tags = ["rola-devbox:latest"],
+)
+
+#: `bazel run //:image_push` publishes the image to Docker Hub (`blakeresearch/rola-devbox`, public like the namespace's
+#: other images), where a rented box pulls it by the digest the tree names; tagged by the digest's first 12 digits
+genrule(
+    name = "image_tag",
+    srcs = [":image"],
+    outs = ["image_tag.txt"],
+    cmd = "$(execpath @rola_env//:python) -c \"import json, sys; " +
+          "print(json.load(open(sys.argv[1] + '/index.json'))['manifests'][0]['digest'][7:19])\" $(execpath :image) > $@",
+    tools = ["@rola_env//:python"],
+)
+
+oci_push(
+    name = "image_push",
+    image = ":image",
+    remote_tags = ":image_tag",
+    repository = "index.docker.io/blakeresearch/rola-devbox",
 )
 
 #: the image as Docker loads it, which the container commands hand it

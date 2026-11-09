@@ -83,6 +83,10 @@ image and refuses a tree whose image is another, and a change to the name withou
 new digest (KERNEL_STANDARDS §23 (3)). A commit that leaves the image alone needs no Docker, which a rented box (itself
 a container) does not have.
 
+**Published:** after a green check that renames it, `bazel run //:image_push` publishes the image to Docker Hub as
+`blakeresearch/rola-devbox:<the digest's first 12 digits>`, public like the namespace's other images. A rented box
+starts from `blakeresearch/rola-devbox@<the digest tools/devbox_image.json names>` and runs the loop inside (§3).
+
 ## 3. Prove it, then open it
 
 ```bash
@@ -102,7 +106,9 @@ bootstrap, init and the venv: what a fresh machine pays before it can work) are 
 run's volumes go with it; a red run's stay for a look until the next run.
 
 **What a container shares with the host:** the host's `host.lock_dir` at `/run/rola/locks` and its GPU lock's
-directory at `/run/rola/gpu` (`dev_config.CONTAINER_LOCKS`, which the container's init detects and records), and under
+directory at `/run/rola/gpu` (`dev_config.CONTAINER_LOCKS`, which the container's init detects and records at every
+run, so the lock directory follows the mount: a container started without it uses its own locks, and `check` is red
+where the config and the mount disagree), and under
 WSL the directory above `host.wsl_lib` (`/usr/lib/wsl`) read-only: the image's loader path starts at
 `/usr/lib/wsl/lib`, and without the Windows driver's libraries there CUDA fails to initialize inside the container with
 error 500 even though `nvidia-smi` works (measured 2026-09-12, Docker Desktop 20.10.17, driver 595.95). The whole
@@ -124,12 +130,6 @@ the reader's defaults look), then run the host's loop in `/workspace/rola`.
 
 Inside, the SM clock is not locked: the lock is a host act (`bazel run //:clock`), and rows measured in the container
 record `clock_locked = false`.
-
-The history this replaced, kept because it was measured: the first devcontainer (2026-08-29) mounted worktrees through
-a `${localEnv:...}` default nested inside another variable, which `@devcontainers/cli` does not expand, then through a
-`-v`-style string the CLI forwards as a malformed `--mount`; it ended as a static empty named volume, so host worktrees
-were never visible inside. Generating the mounts from the dev config removed the variable and the question; the
-devbox container now mounts no checkouts at all, and clones its own.
 
 ## 3b. Building on the bare host (no container) needs `mold`
 

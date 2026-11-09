@@ -238,6 +238,7 @@ names one).
     bazel run //:library                                            # the shipped build, into rola_cu13/
     bazel run //:library --//:archs=86 --//:carry_arms=3            # an iteration build
     bazel run //:image_load                                         # the devbox image, into Docker (docs/setup.md)
+    bazel run //:image_push                                         # the devbox image, published to Docker Hub
 
 Never pass `--jobs` or a cache path: the front door sets both. Nothing the graph builds lands in the checkout but what a
 run target writes there -- the library `bazel run //:library` copies in, with the build's generated headers into

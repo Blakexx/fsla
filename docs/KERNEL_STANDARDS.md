@@ -499,8 +499,8 @@ manual steps, and the dev container had drifted for two weeks unnoticed.
    GPU and reference library, a host-held lock seen as held, an iteration build imported -- each step timed, and
    records the result under the digest. The commit gate refuses a tree whose image is not the one it names, and a
    change to the name without a passing record for the new digest. The loop's own inputs (a pin, the lock, `dev.py`)
-   are proven by every host that runs the same loop; the container shares only the host's locks and, under WSL, the
-   driver's libraries.
+   are proven by every host that runs the same loop; the container shares only the host's locks, the image's digest
+   (read-only, which ratify records) and, under WSL, the driver's libraries.
 
 ## §24 — TWO TIERS: DECIDE COARSELY, BURST STATICALLY (law, 2026-09-17, from the fold's and readout's forms)
 

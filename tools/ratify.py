@@ -1751,19 +1751,9 @@ def main() -> int:
                                             if mold_info else None},
                      "source": {"csrc_sha256": csrc_digest(),
                                 "date": time.strftime("%Y-%m-%d"),
-                                #: reproducibility as a checkable statement. The
-                                #: devbox container's launcher mounts the image's digest
-                                #: where the dev config reads it (docs/setup.md); a host
-                                #: ratification (no digest mounted) records the empty
-                                #: string, which is itself the honest answer to "was
-                                #: this measured inside the pinned image?". Lives beside
-                                #: `csrc_sha256`, not inside `toolchain`, because it
-                                #: identifies WHERE the measurement ran, not WHAT was
-                                #: measured -- `manifest_digest()` hashes
-                                #: `{toolchain, entries, shards}` only, so this field
-                                #: can never move a ratified register/spill number the
-                                #: way a `ptxas` swap can, and its presence here is
-                                #: recorded, never ratchet-gated.
+                                #: where it was measured: the devbox image's digest, empty on
+                                #: a host; recorded, never hashed -- see
+                                #: docs/setup.md#reproducibility-as-a-statement
                                 "image_digest": dev_config.devbox_image()},
                      #: WHICH INSTANTIATIONS THIS RATIFICATION COVERS, by membership
                      #: hash rather than by file list. It enters the digest, so a

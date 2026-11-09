@@ -179,6 +179,16 @@ def ncu() -> str:
     return str(path)
 
 
+def locks_mounted() -> bool:
+    """Whether this machine is a container whose launcher mounted the host's locks (`CONTAINER_LOCKS`): the mount point
+    is one of this process's mounts, never merely a directory, which a tool could have made."""
+    try:
+        mounts = Path("/proc/self/mountinfo").read_text().splitlines()
+    except OSError:
+        return False
+    return any(line.split()[4] == CONTAINER_LOCKS["lock_dir"] for line in mounts if len(line.split()) > 4)
+
+
 def devbox_image() -> str:
     """The devbox image's digest inside a container this tree started (its launcher mounts it), else the empty string:
     where a measurement ran, which ratify records."""
@@ -204,6 +214,6 @@ def detect() -> dict[str, dict[str, Any]]:
     if (wsl_lib / "libdxcore.so").exists():
         found["host"]["wsl_lib"] = str(wsl_lib)
     #: inside a container this tree started, the host's locks where its launcher mounted them
-    if Path(CONTAINER_LOCKS["lock_dir"]).is_dir():
+    if locks_mounted():
         found["host"].update(CONTAINER_LOCKS)
     return {k: v for k, v in found.items() if v}
