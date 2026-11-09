@@ -1,7 +1,7 @@
 # The calibrations: what one operation costs on this card
 
 `measure/harness/bench_carry_calib.py` runs the kernels in `measure/harness/carry_parts/carry_calib.cuh`
-(built into the part harness's module, `ROLA_BUILD_PARTS=1`). Each kernel isolates one cost the
+(built into the part harness's module, `bazel run //:parts_library`). Each kernel isolates one cost the
 carry kernel's parts are made of and runs it back to back on every warp of 80 CTAs, one per SM. The
 host times it under the locked clock. A row is the median launch's seconds, times the clock's cycles
 per second, divided by the operations a warp issued: **cycles an operation a warp**. The rows are

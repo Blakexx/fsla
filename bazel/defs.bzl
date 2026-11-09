@@ -148,7 +148,9 @@ done
 echo "installed $(basename "$dest")/_C.abi3.so and _build_config.py, and the build's generated headers, from the graph"
 """
 
-def _extension_impl(ctx):
+def _link(ctx, so):
+    """Link `deps` into the shared library `so` as setup.py's link does: mold, torch's libraries and the CUDA runtime
+    by path, each NEEDED by its soname."""
     cc_toolchain = find_cc_toolchain(ctx)
     features = cc_common.configure_features(
         ctx = ctx,
@@ -156,7 +158,6 @@ def _extension_impl(ctx):
         requested_features = ctx.features,
         unsupported_features = ctx.disabled_features,
     )
-    so = ctx.actions.declare_file("rola_cu13/_C.abi3.so")
     ld = [f for f in ctx.files._linker if f.basename == "ld.mold"][0]
     linked = ctx.files.shared_libraries + [f for f in ctx.files._cudart if f.basename in _CUDA_LINKED]
     if len(linked) != len(ctx.files.shared_libraries) + len(_CUDA_LINKED):
@@ -172,6 +173,10 @@ def _extension_impl(ctx):
         user_link_flags = ["-B" + ld.dirname + "/", "-fuse-ld=mold"] + [f.path for f in linked],
         additional_inputs = ctx.files._linker + linked,
     )
+
+def _extension_impl(ctx):
+    so = ctx.actions.declare_file("rola_cu13/_C.abi3.so")
+    _link(ctx, so)
 
     #: THE BUILD GATES AND THE RECORD: rules 1, 3 and 5 and the shards, then the record (bazel/record.py)
     record = ctx.actions.declare_file("rola_cu13/_build_config.py")
@@ -280,6 +285,41 @@ rola_extension = rule(
         "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
     },
     doc = "The extension `rola_cu13/_C.abi3.so` and its build record; `bazel run` copies both into the checkout.",
+)
+
+_INSTALL_INSTRUMENT = """\
+#!/bin/bash
+# writes an instrument library into the checkout's rola_cu13/, beside the extension (bazel/defs.bzl's rola_instrument)
+set -euo pipefail
+dest="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}/rola_cu13"
+install -m 0755 {so} "$dest/$(basename {so})"
+echo "installed $(basename "$dest")/$(basename {so}) from the graph"
+"""
+
+def _instrument_impl(ctx):
+    so = ctx.actions.declare_file("rola_cu13/%s.abi3.so" % ctx.attr.module)
+    _link(ctx, so)
+    install = ctx.actions.declare_file(ctx.label.name + "_install.sh")
+    ctx.actions.write(install, _INSTALL_INSTRUMENT.format(so = shell.quote(so.short_path)), is_executable = True)
+    return [DefaultInfo(files = depset([so]), executable = install, runfiles = ctx.runfiles(files = [so]))]
+
+rola_instrument = rule(
+    implementation = _instrument_impl,
+    cfg = _archs_transition,
+    executable = True,
+    fragments = ["cpp"],
+    toolchains = use_cc_toolchain(),
+    attrs = _setting_attrs() | {
+        "module": attr.string(mandatory = True, doc = "the module's name in rola_cu13 (`_C_parts`)"),
+        "deps": attr.label_list(providers = [CcInfo], doc = "its units"),
+        "shared_libraries": attr.label_list(allow_files = [".so"], doc = "torch's libraries it links"),
+        "_linker": attr.label(default = "@mold//:linker"),
+        "_cudart": attr.label(default = "@cuda//:cudart_all_files"),
+        "_cc_toolchain": attr.label(default = "@rules_cc//cc:current_cc_toolchain"),
+        "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
+    },
+    doc = "An instrument's library, `rola_cu13/<module>.abi3.so`, linked as the extension is, for the architectures " +
+          "`--//:archs` names; never shipped, so none of the extension's gates; `bazel run` copies it into the checkout.",
 )
 
 def _census_impl(ctx):
@@ -800,11 +840,16 @@ export ROLA_CUDA_HOME="$(dirname "$(dirname "$(readlink -f "$TEST_SRCDIR/_main/{
 _PYTEST_RUN = """\
 only=()
 if [ -n "${{TESTBRIDGE_TEST_ONLY:-}}" ]; then only=(-k "$TESTBRIDGE_TEST_ONLY"); fi
-#: Bazel's sharding protocol: this shard's index and count, and the file that says the test honours them
+#: Bazel's sharding protocol: this shard's index and count, and the file that says the test honours them; under a
+#: filter the first shard runs the whole selection and the rest none, so a filter that matches nothing still fails
 shard=()
 if [ -n "${{TEST_TOTAL_SHARDS:-}}" ]; then
-  shard=(--bazel-shard "$TEST_SHARD_INDEX/$TEST_TOTAL_SHARDS")
   touch "$TEST_SHARD_STATUS_FILE"
+  if [ "${{#only[@]}}" -eq 0 ]; then
+    shard=(--bazel-shard "$TEST_SHARD_INDEX/$TEST_TOTAL_SHARDS")
+  elif [ "$TEST_SHARD_INDEX" != 0 ]; then
+    exit 0
+  fi
 fi
 exec {venv}/bin/python -m pytest -p no:cacheprovider -p bazel.pytest_shards -q -rfE --junitxml="$XML_OUTPUT_FILE" \\
   {args} "${{only[@]}}" "${{shard[@]}}" "$@"

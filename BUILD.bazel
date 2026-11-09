@@ -9,7 +9,7 @@
 
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "string_list_flag")
 load("@rola_env//:flags.bzl", "CXX11_ABI", "RATIFIED_ARCHS", "TOOLCHAIN", "TORCH", "TORCH_CUDA")
-load("//bazel:defs.bzl", "checkout_test", "compile_database", "dev_run", "ratify_census", "ratify_run", "ratify_test", "rola_extension", "tool_run", "tool_test", "tree_part", "tree_test")
+load("//bazel:defs.bzl", "checkout_test", "compile_database", "dev_run", "ratify_census", "ratify_run", "ratify_test", "rola_extension", "rola_instrument", "tool_run", "tool_test", "tree_part", "tree_test")
 load("@rola_tree//:tree.bzl", "TRACKED")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
 load("@tar.bzl", "tar")
@@ -114,6 +114,15 @@ ratify_test(
     census = ":census",
     data = [":tree"],
     tags = ["manual"],
+)
+
+#: THE PART HARNESS'S DRIVER (KERNEL_STANDARDS section 22, `measure/harness/bench_carry_calib.py`): the calibration
+#: kernels as `rola_cu13/_C_parts.abi3.so` beside the extension; `bazel run //:parts_library --//:archs=86` for one card
+rola_instrument(
+    name = "parts_library",
+    module = "_C_parts",
+    shared_libraries = ["@rola_env//:torch_libraries"],
+    deps = ["//measure/harness/carry_parts"],
 )
 
 #: THE MEASUREMENTS (docs/measurement.md): rola-devtools' build system running this checkout's declarations, and the

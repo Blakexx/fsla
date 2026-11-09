@@ -28,7 +28,10 @@ under the machine's `python3`, before any venv exists. `tools/bootstrap.py` read
 the reader and the host budget from that checkout. Run (`python3 tools/bootstrap.py`), it is the machine's one step
 outside the graph: it imports the reader the same way and runs `tools/dev.py`'s `install_bazelisk`, the pinned bazelisk
 and the `bazel` link, since nothing can `bazel run` before `bazel` exists. The sibling checkouts' location (`SIBLINGS`, the default of
-`store.root`, `workspace.suite` and `workspace.devtools`) is defined there once, for both.
+`store.root`, `workspace.suite` and `workspace.devtools`) is defined there once, for both. Two read-outs serve a
+machine that has nothing yet, CI's runner (`.github/actions/graph`): `--devtools-pin`, the rola-devtools repository
+and commit `tools/devtools.txt` pins, which it clones beside the checkout first, and `--bin-dir`, the directory of
+`bazel`'s link (`toolchain.bazel`), for its PATH.
 
 Each key's type, default and meaning are declared in `SCHEMA`. `bazel run //:show` prints every
 resolved value and the file it came from ([dev.md](dev.md)).
@@ -70,7 +73,7 @@ f-string prefixes resolved) and shell expansions.
   - The shared store and `host.nvcc_threads`, which the front door hands the graph's environment (`ROLA_GRAPH_STORE`,
     `ROLA_NVCC_THREADS`).
 - `BUILD_PARAMETERS`: what one build is, set per invocation, because pip passes nothing else to `setup.py`:
-  `ROLA_CUDA_ARCHS`, `ROLA_CARRY_ARMS`, `ROLA_DECODE_ARMS`, `ROLA_CARRY_PARTS`, `ROLA_BUILD_PARTS`,
+  `ROLA_CUDA_ARCHS`, `ROLA_CARRY_ARMS`, `ROLA_DECODE_ARMS`, `ROLA_CARRY_PARTS`,
   `ROLA_STRICT_MANIFEST`, `ROLA_SKIP_POST_BUILD_RATIFY`.
 
 **What it replaced**, each variable deleted rather than kept as a fallback:

@@ -261,6 +261,7 @@ names one).
     bazel test //:lane                                              # every test tier
     bazel run //:library                                            # the shipped build, into rola_cu13/
     bazel run //:library --//:archs=86 --//:carry_arms=3            # an iteration build
+    bazel run //:parts_library --//:archs=86                        # the part harness's driver, beside the library
     bazel run //:image_load                                         # the devbox image, into Docker (docs/setup.md)
     bazel run //:image_push                                         # the devbox image, published to Docker Hub
     bazel run //tools:<tool> -- <its arguments>                     # a tree tool, in the checkout on its own venv

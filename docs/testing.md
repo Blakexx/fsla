@@ -237,7 +237,9 @@ A document nothing checks is a document that drifts. These run in the commit gat
   and a directory of GENERATED sources — `csrc/rola/src/instantiations/` — is exempt from the one-page rule and
   documented by one README, the exemption itself checked (the README exists, and the directory holds nothing its
   generator does not produce). A floor on the number of sources found keeps a broken glob from checking nothing.
-- **`bazel run //tools:supported -- --check`**: the README's generated support tables are the generator's output.
+- **`check_supported_table`** (the standards lint): the README's generated support table is `tools/supported.py`'s
+  output. Its other generated block, the activation registry's capability table, runs the registry, so it is a
+  test: `tests/unit/test_capability_table_docs.py`, in the CPU tier.
 - **`tools/lint/portable_claude.py`**: the agent files name no machine path.
 
 ## The host-structure gates

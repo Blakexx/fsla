@@ -1,6 +1,6 @@
 // measure/harness/carry_parts/carry_parts.cu -- THE PART HARNESS MODULE'S CALIBRATION OPERATOR: `torch.ops.rola_parts
 // .calibrate` runs one calibration kernel of carry_calib.cuh on every warp of every CTA (measure/harness/
-// bench_carry_calib.py). A bench instrument, built beside the arm under ROLA_BUILD_PARTS=1; never shipped.
+// bench_carry_calib.py). A bench instrument, the graph's //:parts_library; never shipped.
 // See docs/internals/carry/calibration.md
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>

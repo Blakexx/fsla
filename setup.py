@@ -461,32 +461,6 @@ def _link_flags() -> list[str]:
     return ldflags
 
 
-#: THE PART HARNESS'S DRIVER (`measure/harness/bench_carry_parts.py`), built AHEAD OF TIME
-#: beside the arm under `ROLA_BUILD_PARTS=1` -- the same pass, the same lock, the same cache
-#: -- where a torch JIT `load()` of the same three sources ran for minutes and was killed
-#: by the host's memory watchdog (KERNEL_STANDARDS §22: a gating instrument that cannot
-#: run is a defect). Never shipped: an iteration-build instrument, `-lineinfo` for the
-#: ledgers. docs/build.md#parts
-PARTS_MODULE_NAME = f"{PLUGIN}._C_parts"
-PARTS_SOURCES = ["measure/harness/carry_parts/carry_parts.cu",
-                 "csrc/rola/src/common/arch_runtime.cu", "csrc/rola/src/common/geom.cu"]
-
-
-def build_parts_extension():
-    nvcc_threads = dev_config.get("host.nvcc_threads")
-    nvcc_flags = build_flags.nvcc_flags(ROLA_CUDA_ARCHS, nvcc_threads) \
-        + list(build_flags.DEPFILE_FLAGS) + ["-lineinfo"]
-    assert_no_ptx(nvcc_flags)
-    return CUDAExtension(
-        name=PARTS_MODULE_NAME,
-        sources=PARTS_SOURCES,
-        include_dirs=[str(CSRC / "src"), str(CUTLASS_DIR / "include"), str(ROOT / "build" / "generated")],
-        extra_compile_args={"cxx": list(build_flags.HOST_CXX_FLAGS), "nvcc": nvcc_flags + STABLE_DEFINES},
-        extra_link_args=_link_flags(),
-        py_limited_api=True,
-    )
-
-
 def desired_jobs() -> int:
     """The ninja jobs a build asks the host budget for: `host.build_jobs`, else derived from the `cicc` a job runs --
     one an architecture up to `host.nvcc_threads` (`_ninja_jobs`' per-process factor), so a single-arch build asks for
@@ -739,7 +713,7 @@ setup(
     #: entmax's pin record, read beside `rola/routing/entmax/pin.py`: without it an installed reference cannot gate itself.
     package_data={"rola.routing.entmax": ["PIN.json"]},
     extras_require=EXTRAS,
-    ext_modules=[build_extension()] + ([build_parts_extension()] if os.getenv("ROLA_BUILD_PARTS") == "1" else []),
+    ext_modules=[build_extension()],
     cmdclass={"build_ext": RoLABuildExtension},
     zip_safe=False,
 )
