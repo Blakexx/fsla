@@ -577,7 +577,8 @@ def measure_derivation(cases: dict) -> dict[str, str]:
         #: derivation rather than pinning it to a part.
         cmd = [cuda_bin("nvcc"), "-std=c++20", "-O0", "-arch=sm_80", f"-I{SRC}",
                str(src), "-o", str(exe)]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        with host.acquire(1, label="ratify's derivation harness"):
+            proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
             raise SystemExit(
                 f"the derivation harness does not compile against the tree's "
@@ -723,7 +724,7 @@ def _nvcc_command(arches, source: Path, obj_path: str) -> list[str]:
         cmd += ["-I", inc]
     cmd += ["-I", sysconfig.get_paths()["include"]]
     cmd += build_flags.torch_defines()
-    cmd += build_flags.nvcc_flags(arches)
+    cmd += build_flags.nvcc_flags(arches, nvcc_threads=dev_config.get("host.nvcc_threads"))
     #: the graph's units are position-independent objects compiled with torch's extension defines: host-side, inert
     #: in the codegen this gate reads, passed so the compile is the graph's
     cmd += ["-Xcompiler", "-fPIC", *build_flags.extension_defines()]
@@ -901,8 +902,7 @@ def _scan_object(obj: str, wanted: set) -> dict:
         return sass_scan(lines, wanted)
 
 
-def measure_units(arches, objdir: str, sources: list[Path], arms=None,
-                  jobs: int | None = None) -> tuple[dict, list[str], dict]:
+def measure_units(arches, objdir: str, sources: list[Path], arms=None) -> tuple[dict, list[str], dict]:
     """COMPILE AND DISASSEMBLE EACH TRANSLATION UNIT, OR REUSE ITS RECORD.
 
     The gate used to recompile the whole matrix on every run, which is what made it a
@@ -926,7 +926,7 @@ def measure_units(arches, objdir: str, sources: list[Path], arms=None,
     #: build left behind".
     gen_shards.GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     want_arms = sorted(set(range(len(gen_shards.CARRY_ARMS)) if arms is None else arms))
-    #: ONE SHARED OUTPUT FILE (LOCKS brief item 3): two concurrent ratify/build
+    #: ONE SHARED OUTPUT FILE: two concurrent ratify/build
     #: invocations racing this write must not interleave -- one must finish
     #: writing the header before the other starts compiling against it.
     with host.file_lock("carry_selection_header"):
@@ -967,7 +967,7 @@ def measure_units(arches, objdir: str, sources: list[Path], arms=None,
     #: ONE MACHINE, ONE COMPILE BUDGET (KERNEL_STANDARDS §14 addendum 2): the compiles run under the host budget's
     #: slots, one job a `host.nvcc_threads` of them, as every build does through the graph's front door
     with host.acquire(host.budget_slots(), label="ratify's compile path") as held:
-        jobs = jobs or max(1, held // dev_config.get("host.nvcc_threads"))
+        jobs = max(1, held // dev_config.get("host.nvcc_threads"))
         with ThreadPoolExecutor(max_workers=min(jobs, len(sources))) as pool:
             measured = list(pool.map(one, sources))
     hits = [source.stem for source, _rec, hit in measured if hit]
@@ -989,9 +989,10 @@ def measure_built() -> tuple[dict, list[str], dict]:
         got, bad = _parse_report(unit["report"].read_text())
         return unit["source"], {"entries": got, "unhonored": bad, "scan": _scan_object(str(unit["object"]), set(got))}
 
-    #: the disassemblers' reads run under the host budget too, a job a slot
-    with host.acquire(host.budget_slots(), label="ratify's census") as jobs, ThreadPoolExecutor(
-            max_workers=min(jobs, len(units))) as pool:
+    #: the census compiles nothing (KERNEL_STANDARDS §14 addendum 2 budgets compiles): its disassemblers' reads run a
+    #: unit a core
+    jobs = os.cpu_count() or 1
+    with ThreadPoolExecutor(max_workers=min(jobs, len(units))) as pool:
         measured = list(pool.map(one, units))
     print(f"{len(units)} translation unit(s) read from the graph's build in {time.perf_counter() - t0:.1f} s at "
           f"{min(jobs, len(units))} jobs")
@@ -1507,7 +1508,7 @@ def main() -> int:
                 print(f"census written to {a.json}")
             return 0
     if a.write:
-        #: THE MANIFEST IS ONE SHARED ARTIFACT PER ARCH (LOCKS brief item 3):
+        #: THE MANIFEST IS ONE SHARED ARTIFACT PER ARCH:
         #: two concurrent `--write` ratifications of the same arch would
         #: interleave their `path.write_text` calls otherwise.
         with host.file_lock("ratify_manifest"):

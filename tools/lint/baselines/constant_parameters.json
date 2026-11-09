@@ -225,12 +225,6 @@
   },
   {
    "path": "tools/ratify.py",
-   "message": "measure_units(..., jobs=) is only ever None -- across every call in this tree, nothing moves it",
-   "line_sha256": "414a87c9af7b7232",
-   "count": 1
-  },
-  {
-   "path": "tools/ratify.py",
    "message": "write_csrc_stamp(..., digest=) is only ever None -- across every call in this tree, nothing moves it",
    "line_sha256": "ec52e248e0accd8b",
    "count": 1

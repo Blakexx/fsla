@@ -94,7 +94,7 @@
   {"doc": ".claude/skills/rola-lab/SKILL.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "", "target": "docs/lab/README.md"},
   {"doc": ".claude/skills/rola-ratify/SKILL.md", "pinned_at": "3fac56b5a835", "reviewed": true, "sha256": "20945eb7d7f4572c", "target": "docs/KERNEL_STANDARDS.md#s16"},
   {"doc": ".claude/skills/rola-ratify/SKILL.md", "pinned_at": "8d162a563f8b", "reviewed": true, "sha256": "", "target": "docs/bringup.md"},
-  {"doc": ".claude/skills/rola-ratify/SKILL.md", "pinned_at": "6649fa06b870", "reviewed": true, "sha256": "b8a876cf874db897", "target": "docs/build-graph.md#ratify"},
+  {"doc": ".claude/skills/rola-ratify/SKILL.md", "pinned_at": "6daf053fa8b7", "reviewed": true, "sha256": "23354c3ca9a97b80", "target": "docs/build-graph.md#ratify"},
   {"doc": ".claude/skills/rola-ratify/SKILL.md", "pinned_at": "3fac56b5a835", "reviewed": true, "sha256": "", "target": "docs/internals/tools/ratify.md"},
   {"doc": ".claude/skills/rola-ratify/SKILL.md", "pinned_at": "3fac56b5a835", "reviewed": true, "sha256": "c0aa0c47852d5c2d", "target": "docs/ratification.md#re-ratification-is-a-measurement-not-an-edit"},
   {"doc": ".claude/skills/rola-ratify/SKILL.md", "pinned_at": "6649fa06b870", "reviewed": true, "sha256": "55016adf2e303cfa", "target": "docs/ratification.md#what-the-gate-refuses"},

@@ -134,8 +134,8 @@ PATH` measures. Neither compiles: the census (`//:census`, `bazel/defs.bzl`'s `r
 compiles, each unit's ptxas report and object (the `cuda_unit` rule's), with the derivation harness the graph builds
 (tools/BUILD.bazel's `derivation_harness`, [`internals/tools/ratify.md`](internals/tools/ratify.md#graph)). On
 2026-11-08 the census equalled the compile path's (`python tools/ratify.py --census`: 750 entries, every register,
-spill, local-access count and body hash) and the verdict was the same line for line. The census reads in 15 s at 3
-jobs.
+spill, local-access count and body hash) and the verdict was the same line for line. The census reads in 15 s, its
+disassemblers a unit a core.
 
 THE GAP: the graph ratifies the shipped set, the architectures the toolchain's manifests already name
 (`RATIFIED_ARCHS`), so an architecture's FIRST manifest has no graph form -- `--//:archs` naming a new one makes an

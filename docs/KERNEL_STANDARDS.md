@@ -197,7 +197,8 @@ re-wakes stopped agents.
   shape, housekeeping) go in the NEXT brief instead.
 - Every kernel family carries an arm-subset knob (the carry's `--//:carry_arms`); a family without one gets it
   before its next build.
-§15 addendum (build parallelism, 2026-08-27): cicc peaks ~1 GB post-S1, on a 16-CPU / 24 GB machine.
+§15 addendum (build parallelism, 2026-08-27; re-measured since): a cicc peaks at ~2.9 GB in a unit that parses torch's
+extension header and ~0.33 GB in a torch-free arm unit (docs/build.md#compile-ledger), on a 16-CPU / 24 GB machine.
 A build's jobs are the host-budget slots the front door holds, divided by `host.nvcc_threads` (2: one cicc an
 architecture), every build under the same machine-wide pool (§23); an iteration build is single-arch and arm-subset.
 Re-derive the budget if cicc's peak changes (a per-leaf nest can push it back to 6 GB — §1).

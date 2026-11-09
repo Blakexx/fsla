@@ -851,7 +851,7 @@ def main() -> int:
     want = generated()
     if a.write:
         #: THE GENERATED TREE, INCLUDING THE SELECTION HEADER, IS ONE SHARED
-        #: OUTPUT (LOCKS brief item 3): `tools/ratify.py`'s compile path writes the same
+        #: OUTPUT: `tools/ratify.py`'s compile path writes the same
         #: `CARRY_SELECTION_INC` path unconditionally on every run, so this
         #: CLI's own `--write` must not interleave with that write either.
         from rola_devtools.locks import host
