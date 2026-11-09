@@ -65,8 +65,8 @@ __device__ __forceinline__ uint32_t hmul2(uint32_t a, uint32_t b) {
   return d;
 }
 
-//: TWO f16 PRODUCTS BY ONE HALF, each rounded once: the broadcast rides the multiply's operand selector
-//: (`HMUL2 .H0_H0`), no instruction of its own, where a packed `splat_u16` operand costs two.
+//: TWO f16 PRODUCTS BY ONE HALF, each rounded once, the broadcast in the multiply's operand selector. -- see
+//: docs/internals/common/atoms/math.md#hmul2-by
 __device__ __forceinline__ uint32_t hmul2_by(uint32_t a, __half m) {
   const __half2 p = __hmul2_rn(*reinterpret_cast<const __half2*>(&a), __half2half2(m));
   return *reinterpret_cast<const uint32_t*>(&p);

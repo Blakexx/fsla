@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE BURST TIER LINT (KERNEL_STANDARDS §23: decide coarsely, burst statically). Gated by
+"""THE BURST TIER LINT (KERNEL_STANDARDS §24: decide coarsely, burst statically). Gated by
 `tools/lint/ratchet.py burst_tier`.
 
 A function that issues an MMA belongs to the burst tier and says so: a `//: @burst` line in its
@@ -25,7 +25,8 @@ from pathlib import Path
 ROOT = Path(__file__).absolute().parents[2]
 SRC = ROOT / "csrc" / "rola" / "src"
 
-SIGNATURE = re.compile(r"^\s*(?:__device__|__global__)\s+.*?\b(\w+)\s*\(")
+#: a device function's signature line, behind any of `static`, `inline`, `constexpr` and `__host__`
+SIGNATURE = re.compile(r"^\s*(?:(?:static|inline|constexpr|__host__)\s+)*(?:__device__|__global__)\s+.*?\b(\w+)\s*\(")
 DECL_COMMENT = re.compile(r"^\s*//")
 #: an MMA atom (`ops::hmma`, `ops::imma_u8_k32`, ... -- common/atoms/mma.cuh) or an inline `mma` instruction
 MMA_CALL = re.compile(r"(?<![\w:])(?:ops::)?[hi]?mma\w*\s*\(|\basm\b[^;]*\bmma\.")

@@ -58,5 +58,5 @@ Per CTA-window: OVERLAPPED the largest of the window's totals (issue over 4 sche
 global path); IN TURN each phase's largest summed, with the global path beside it. The printed floor is the mean over
 the CTA-windows; CTA SPREAD is the slowest box's whole call over the mean box's (the wave's tail). On sm_80 each cell
 prints twice: the global path at sm_86's L2 line and at half (`l2_bracket`, the A100's L2 serving more an SM). TODAY
-is the A100 phase ledger at W = 1,024 (measured 2026-11-06); the milliseconds use that
-record's alt-k4 scaling (24.2K cycles a warp-window <-> 5.09 ms) and print for that cell only.
+is the A100 phase ledger at W = 1,024, measured 2026-11-06 (`TODAY_SM80`); the milliseconds use its
+alt-k4 scaling (24.2K cycles a warp-window <-> 5.09 ms) and print for that cell only.

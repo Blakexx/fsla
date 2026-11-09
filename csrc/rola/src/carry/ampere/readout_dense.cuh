@@ -121,7 +121,7 @@ __device__ __forceinline__ void scaled(uint32_t (&y)[4], const uint32_t (&a)[4],
 //: a warp its 8 channels, a batch its four tiles' fp32 accumulators, a transit group's slices held over the batch's
 //: tiles, a tile's rows loaded once and scaled a digit, each token's accumulator times its exit word added into its
 //: panel word (`F32` the panel's dtype). -- see docs/internals/carry/ampere/readout_dense.md#nest
-//: @burst-exempt a loop over the chunk's slots (its votes and `unroll 1`), not yet `Burst` units
+//: @burst-exempt a loop over the chunk's slots (`unroll 1`), not yet `Burst` units
 template <class P, bool F32>
 __device__ __forceinline__ void read_dense(int slots, int lo, int hi, ops::SmemAddr image,
                                            uint32_t mask, ops::SmemAddr rows, ops::SmemAddr panel,
@@ -188,7 +188,7 @@ __device__ __forceinline__ void read_dense(int slots, int lo, int hi, ops::SmemA
 //: THE DENSE DEN, once a chunk over the whole den image: warp `w` the tiles `i = w mod 8`, a den MMA a block of 8
 //: digits on the unscaled K rows, its 8 columns times `c[t, d]` and the digit's `2^(dE - kImageTop - e_d)`, the
 //: token's `2^(e_t)`, into the warp's den word. -- see docs/internals/carry/ampere/readout_dense.md#den
-//: @burst-exempt a loop over the chunk's slots (its votes and `unroll 1`), not yet `Burst` units
+//: @burst-exempt a loop over the chunk's slots (`unroll 1`), not yet `Burst` units
 template <class P>
 __device__ __forceinline__ void dense_den(const uint8_t* smem, int slots, ops::SmemAddr rows,
                                           ops::SmemAddr dens, ops::SmemAddr exits, int warp,

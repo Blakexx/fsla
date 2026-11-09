@@ -46,7 +46,7 @@ FOLD_STEP = 5
 FOLD_LIST = 10
 #: a hand-off's maxima a warp (the lane's 128 values, the row joins)
 MAXIMA = 150
-#: today's carry on the A100 at W = 1,024 (cycles a warp-window; event 2026-11-06 A100 batch at carry-k5 5f1aed36)
+#: today's carry on the A100 at W = 1,024: its phase ledger's cycles a warp-window, measured 2026-11-06
 TODAY_SM80 = {"nl64k-alt-k4": 24241, "flagship-alt-k16": 76813, "flagship-cohort-k16": 71345, "nl64k-dense": 173029}
 #: the record's scaling at alt-k4: 24.2K cycles a warp-window <-> 5.09 ms carry_forward (L 64K x 4 heads)
 MS_PER_CYCLE = 5.09 / 24241

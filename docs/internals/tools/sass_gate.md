@@ -54,8 +54,11 @@ branches, the conversion unit or global memory in an MMA step, or a step cover u
 declarations name it. A calibration that puts a global reduction between its HMMAs does so to measure that very cost
 (`hmma_reduce_*`, `measure/harness/bench_carry_calib.py`), so it declares it, by a pattern over the function's mangled
 name, with the cost it measures (`measure/harness/carry_parts/kept_signatures.json`, `kernels`: `{pattern: {lint:
-cost}}`, the lints `step_branches`, `step_xu`, `step_global`, `step_cover`). An undeclared signature is red, as on the
-extension, and so is a declaration no function of the binary shows: the declarations say only what is so. Every other
+cost}}`, the lints `step_branches`, `step_xu`, `step_global`, `step_cover`); `sm_80 <pattern>` declares a signature
+one architecture's SASS keeps alone (ptxas schedules each apart: the reductions' step cover is sm_80's). An undeclared
+signature is red, as on the extension, and so is a declaration no function of the binary shows, among the
+architectures it carries (a one-card iteration build reads none of another card's): the declarations say only what is
+so. Every other
 signature (local memory, a stack frame, convergence calls, predicated HMMA) is red on a probe as on any kernel. This
 is section 29's lab declaration (STEP_XU, STEP_GLOBAL) for an instrument, beside its source.
 

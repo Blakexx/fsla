@@ -207,3 +207,14 @@ def test_a_loops_exit_laid_out_as_its_latch_is_the_steps_end():
     assert sass_gate.mma_loop_branches(inside, {}) == 1
     conditional = latch[:4] + [(0x40, "BRA", "0x0", "@P2")] + latch[5:]
     assert sass_gate.mma_loop_branches(conditional, {}) == 1
+
+
+def test_an_instrument_declaration_may_name_its_architecture():
+    """`sm_80 <pattern>` keeps a signature on that architecture's SASS alone, a bare pattern on every one
+    (docs/internals/tools/sass_gate.md#instrument)."""
+    name = "_ZN4rola5carry5calib12calib_kernelILi4ELi12ELi36EEEvNS1_11CalibParamsE"
+    assert sass_gate.arch_of("carry_parts.sm_80.cubin") == "sm_80"
+    assert sass_gate._declares(r"calib_kernelILi\d+ELi12ELi", name, "sm_86")
+    assert sass_gate._declares(r"sm_80 calib_kernelILi\d+ELi12ELi", name, "sm_80")
+    assert not sass_gate._declares(r"sm_80 calib_kernelILi\d+ELi12ELi", name, "sm_86")
+    assert not sass_gate._declares(r"calib_kernelILi\d+ELi13ELi", name, "sm_80")

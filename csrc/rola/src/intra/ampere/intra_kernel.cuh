@@ -158,6 +158,7 @@ struct IntraAt {
     float out[8][4];
   };
 
+  //: @burst
   template <bool kF16>
   static __device__ __forceinline__ void gram_mma(Acc<kF16>& acc, int n, const uint32_t (&a)[4],
                                                   uint32_t b0, uint32_t b1) {
@@ -288,6 +289,7 @@ struct IntraAt {
 
   //: A SLAB'S MMAs: an IMMA an n-tile at a u8 x u8 level; otherwise 16, a k-step's eight n-tiles apart before the next
   //: k-step's, u8 words widened as they are used
+  //: @burst
   template <int F, bool kF16>
   static __device__ __forceinline__ void mma_slab(const SlabFrags<F>& fr, Acc<kF16>& acc) {
     //: A u8 x u8 LEVEL: one IMMA an n-tile, the slab's 32 digits its K, exact into s32 -- no widening
@@ -438,6 +440,7 @@ struct IntraAt {
   //: THE VALUE PRODUCT: each reader's weights at its own power of two (its largest in [1, 2)) as f16, packed from the
   //: accumulator's registers into the A fragments; the values by ldmatrix.trans; a channel pair's sums back at the
   //: reader's power of two into the output. -- see docs/internals/intra/ampere/intra_kernel.md#value-product
+  //: @burst
   template <bool kF16>
   static __device__ __forceinline__ void value_product(const Smem& sm, float unit, int col0,
                                                        int lane, Acc<kF16>& acc) {

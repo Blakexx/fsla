@@ -306,6 +306,7 @@ def step_cover(cubin: Path, name: str, lines: list[tuple[int, str, str, str]], l
 
 def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[bool, str]:
     _LOOPS.clear()
+    here = arch_of(cubin.name)
     funcs: dict[str, list[str]] = {}
     whole: dict[str, list[tuple[int, str, str]]] = {}
     labels: dict[str, dict[str, int]] = {}
@@ -359,7 +360,7 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
         if phmma:
             reds.append(f"predicated HMMA ({phmma})")
         #: an instrument's probe keeps a step signature only where its declarations name it (the module docstring)
-        kept = {(key, lint) for key, lints in INSTRUMENT.items() if re.search(key, name) for lint in lints}
+        kept = {(key, lint) for key, lints in INSTRUMENT.items() if _declares(key, name, here) for lint in lints}
         exhibited = {lint for lint, count in (("step_branches", branches), ("step_xu", xu), ("step_global", memory))
                      if count}
         held = {lint for _, lint in kept}
@@ -409,6 +410,24 @@ LOOPS = False
 #: `--instrument`: an instrument's declarations, `{name pattern: {step lint: the cost the probe measures}}` (the module
 #: docstring); empty for the extension, whose functions keep no step signature but a named debt
 INSTRUMENT: dict[str, dict[str, str]] = {}
+
+
+def arch_of(cubin: str) -> str | None:
+    """A cubin's architecture off its name (`carry_parts.sm_80.cubin`)."""
+    m = re.search(r"\b(sm_\d+a?)\b", cubin)
+    return m.group(1) if m else None
+
+
+def _declared(key: str) -> tuple[str | None, str]:
+    """A declaration's architecture and pattern: `sm_80 <pattern>` keeps its signature on that architecture's SASS
+    alone (ptxas's output is an architecture's), a bare pattern on every one."""
+    arch, _, pattern = key.partition(" ")
+    return (arch, pattern) if pattern and re.fullmatch(r"sm_\d+a?", arch) else (None, key)
+
+
+def _declares(key: str, function: str, arch: str | None) -> bool:
+    on, pattern = _declared(key)
+    return (on is None or on == arch) and re.search(pattern, function) is not None
 
 
 def loop_report(lines: list[tuple[int, str, str, str]], labels: dict[str, int], cover: dict | None) -> list[str]:
@@ -570,10 +589,14 @@ def main() -> int:
         for line in missing_kernels(seen):
             print(f"RED  {line}")
             allok = False
-    #: a declaration no function uses keeps nothing: red, so the declarations only say what is so
+    #: a declaration no function uses keeps nothing: red, so the declarations only say what is so -- on the
+    #: architectures this binary carries (an iteration build of one card leaves another's declarations unread)
     if a.instrument and a.kernel is None and a.member is None:
         used = {tuple(k) for cubin in doc.values() for st in cubin["functions"].values() for k in st["kept"]}
+        carried = {arch_of(name) for name in doc}
         for key, lints in sorted(INSTRUMENT.items()):
+            if _declared(key)[0] not in carried | {None}:
+                continue
             for lint in sorted(lints):
                 if (key, lint) not in used:
                     print(f"RED  {a.instrument}: `{key}` keeps {lint}, which no function of this binary shows")
