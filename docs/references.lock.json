@@ -278,6 +278,7 @@
   {"doc": "docs/architecture/precision.md", "pinned_at": "86c5de45d5cc", "reviewed": true, "sha256": "ae3742ee5fad9dc5", "target": "docs/internals/carry/ampere/handoff.md#maxima"},
   {"doc": "docs/architecture/precision.md", "pinned_at": "f617f9d3ac30", "reviewed": true, "sha256": "d29238d44ace5ed2", "target": "docs/internals/carry/ampere/panel.md#drain"},
   {"doc": "docs/architecture/precision.md", "pinned_at": "15e549ca93f9", "reviewed": true, "sha256": "", "target": "docs/internals/carry/ampere/readout_dense.md"},
+  {"doc": "docs/architecture/precision.md", "pinned_at": "b023f7275446", "reviewed": true, "sha256": "5143ad2f118eea58", "target": "docs/internals/carry/carry_api.md#carry-reduce"},
   {"doc": "docs/architecture/precision.md", "pinned_at": "1522787068fb", "reviewed": true, "sha256": "", "target": "docs/testing.md"},
   {"doc": "docs/architecture/precision.md", "pinned_at": "1522787068fb", "reviewed": true, "sha256": "", "target": "rola/routing"},
   {"doc": "docs/architecture/self-masking-theorem.md", "pinned_at": "3360bacd82eb", "reviewed": true, "sha256": "", "target": "docs/architecture/guarantees-choices-preferences.md"},

@@ -162,14 +162,14 @@ def declare(g, env: Env, *, timing=None, instruments=tuple(INSTRUMENTS)) -> dict
 #: and, where it has one, a tier), and what the side holds while it runs. Exposed for rola-bench, which pairs a surface
 #: across checkouts and OWNS the rule it compares them under (its `RULES`), as it owns the timing methodology; the
 #: only diff this file declares itself is the kernel against its own oracle, below. What rola states about a surface's
-#: numerics is a FACT, in `NUMERICS`: the carry's ``num`` is EXACT run to run -- its readout adds exact integer pairs,
-#: MEASURED 2026-10-15, three runs of one binary over every oracle cell it reads, every slot bit-identical.
+#: numerics is a FACT, in `NUMERICS`; it states nothing exact of the carry: its readout's f16 (or fp32) REDs from a
+#: token's CTAs land in any order and reassociate, so its ``num`` is compared under its clauses, never bit for bit.
 SURFACES = {
     "oracle": ("tests.oracle.sides:oracle", "carry", "oracle", {"host_cpu": "all"}),
     "producer": ("tests.oracle.sides:producer", "producer", None, {"host_cpu": "all"}),
     "carry-kernel": ("tests.oracle.sides:carry_kernel", "carry", "oracle", {"gpu": "all"}),
 }
-NUMERICS = {"carry-kernel": {"exact": ["num"]}}
+NUMERICS: dict = {}
 #: the kernel-vs-oracle diff INSIDE one checkout: the carry's slots against the fp64 inter term's, PER SLOT under each
 #: output kind's clauses and envelope (`tests/oracle/tolerances.py`) -- the numeric half of the oracle tier
 KERNEL_VS_ORACLE = ("carry-kernel", "tests.oracle.sides:carry_reference", {"num": "CARRY_NUM"})

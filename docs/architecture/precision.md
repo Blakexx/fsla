@@ -7,7 +7,7 @@ The distinction is the whole document, so state it first.
 
 | | What it means | Rule |
 |---|---|---|
-| **ACCUMULATION** | the format a value is *added into* across steps and carried: the fold's state, the mass (the state's v+1 channel), the scale pass's write masses, the readout's partials across lists and CTAs | fp32 or exact integer, closed. Not a default, not a knob. |
+| **ACCUMULATION** | the format a value is *added into* across steps and carried: the fold's state, the mass (the state's v+1 channel), the scale pass's write masses | fp32 or exact integer, closed. Not a default, not a knob. |
 | **STORAGE and OPERANDS** | the format a value is *held in* and read, without being accumulated into: routing rows, values, the stored state between calls, the readout's image, the output | declared per component, each with its quality measured against fp64. |
 
 A read-only value that is 1 ULP wrong contributes an error bounded by its own magnitude, once. An accumulator that is
@@ -30,7 +30,13 @@ nothing bounds what accumulation embeds.
 
 The image's 2^10 top keeps a 32-list sum of image times read row under 2^15, inside an fp16 accumulator, so one
 placement serves both readout accumulations (`docs/internals/carry/ampere/handoff.md#maxima`). The fp16 readout accumulation is
-not a state accumulator: it sums one tile's 32 lists, and the exact pair takes it from there.
+not a state accumulator: it sums one tile's 32 lists, and the panel takes its result at the token's scale.
+
+The readout's partials are an output's, not a state's: each token's num into the panel and across CTAs as f16 pairs at each token's scale byte (or fp32, the declared `reduce_dtype`), added across CTAs by `red.global.add.noftz.f16x2` (or `.f32`),
+the scale pass's byte bounding the token's whole num so the f16 sum stays in range (Blake, 2026-11-06: the readout's
+exits straight to HBM by f16x2 REDs, no integer panel; the dtype declared 2026-10-19,
+[`carry_api.md#carry-reduce`](../internals/carry/carry_api.md#carry-reduce)). The constitution's R17 still names them
+exact s16 pairs: a departure its text owes.
 
 <a id="quality"></a>
 ## Quality
