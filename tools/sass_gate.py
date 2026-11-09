@@ -307,8 +307,9 @@ def step_cover(cubin: Path, name: str, lines: list[tuple[int, str, str, str]], l
 
 
 def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[bool, str]:
+    global ARCH
     _LOOPS.clear()
-    here = sass_control.machine(cubin)
+    here = ARCH = sass_control.machine(cubin)
     funcs: dict[str, list[str]] = {}
     whole: dict[str, list[tuple[int, str, str]]] = {}
     labels: dict[str, dict[str, int]] = {}
@@ -412,6 +413,8 @@ LOOPS = False
 #: `--instrument`: an instrument's declarations, `{name pattern: {step lint: the cost the probe measures}}` (the module
 #: docstring); empty for the extension, whose functions keep no step signature but a named debt
 INSTRUMENT: dict[str, dict[str, str]] = {}
+#: the architecture of the cubin `gate` read last, which a cached verdict carries with it
+ARCH = ""
 
 
 def _declared(key: str) -> tuple[str | None, str]:
@@ -487,14 +490,16 @@ def cached_gate(cubin: Path, kernel: str | None, max_per_hmma: float | None, use
     key = hashlib.sha256(json.dumps([_closure(), hashlib.sha256(cubin.read_bytes()).hexdigest(), kernel,
                                      max_per_hmma, LOOPS, sorted(INSTRUMENT.items())]).encode()).hexdigest()
     entry = sass.scratch("sass_gate_verdicts") / f"{key}.json"
+    global ARCH
     if entry.exists():
         doc = json.loads(entry.read_text())
         STATS.clear()
         STATS.update(doc["stats"])
+        ARCH = doc["arch"]
         return doc["ok"], doc["report"]
     ok, report = gate(cubin, kernel, max_per_hmma)
     tmp = entry.with_suffix(f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps({"ok": ok, "report": report, "stats": STATS}, sort_keys=True))
+    tmp.write_text(json.dumps({"ok": ok, "report": report, "stats": STATS, "arch": ARCH}, sort_keys=True))
     tmp.replace(entry)
     return ok, report
 
@@ -566,7 +571,7 @@ def main() -> int:
         guarded += sum(st["guarded"] for st in STATS.values())
         if rep:
             print(f"== {cub.name}\n{rep}")
-        doc[cub.name] = {"ok": ok, "arch": sass_control.machine(cub), "functions": dict(STATS)}
+        doc[cub.name] = {"ok": ok, "arch": ARCH, "functions": dict(STATS)}
         seen |= set(STATS)
         allok &= ok
     if not seen:
