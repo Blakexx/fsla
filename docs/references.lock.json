@@ -1654,7 +1654,7 @@
   {"doc": "docs/internals/tools/dev_config.md", "pinned_at": "fd50388906a8", "reviewed": true, "sha256": "", "target": "tools/dev_config.py"},
   {"doc": "docs/internals/tools/dev_config.md", "pinned_at": "970150d331a0", "reviewed": true, "sha256": "54a4cfa602706ae9", "target": "tools/dev_config.py::CONTAINER_IMAGE"},
   {"doc": "docs/internals/tools/dev_config.md", "pinned_at": "970150d331a0", "reviewed": true, "sha256": "98ca63e442e793b8", "target": "tools/dev_config.py::CONTAINER_LOCKS"},
-  {"doc": "docs/internals/tools/dev_config.md", "pinned_at": "6649fa06b870", "reviewed": true, "sha256": "f71a45fdea1274e8", "target": "tools/dev_config.py::HANDOFFS"},
+  {"doc": "docs/internals/tools/dev_config.md", "pinned_at": "06df2628c7db", "reviewed": true, "sha256": "31d95acd3c129da0", "target": "tools/dev_config.py::HANDOFFS"},
   {"doc": "docs/internals/tools/dev_config.md", "pinned_at": "6649fa06b870", "reviewed": true, "sha256": "dedb63760e2c78c3", "target": "tools/dev_config.py::SCHEMA"},
   {"doc": "docs/internals/tools/dev_config.md", "pinned_at": "7aba902e9537", "reviewed": true, "sha256": "3882ca3ff3a2503c", "target": "tools/dev_config.py::cuda_home"},
   {"doc": "docs/internals/tools/dev_config.md", "pinned_at": "6649fa06b870", "reviewed": true, "sha256": "453e1a495ba43fe5", "target": "tools/dev_config.py::detect"},

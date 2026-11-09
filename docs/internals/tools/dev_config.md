@@ -67,9 +67,12 @@ f-string prefixes resolved) and shell expansions.
   - pytest-xdist's worker id.
   - The agent harness's campaign directory.
   - The login name printed into the sudoers rule `bazel run //:clock` suggests (`USER`).
-  - The Bazel release bazelisk hands the graph's front door (`BAZEL_REAL`).
-  - The shared store and `host.nvcc_threads`, which the front door hands the graph's environment (`ROLA_GRAPH_STORE`,
-    `ROLA_NVCC_THREADS`).
+  - The search path bazelisk hands what it runs, the front door's directory first (`PATH`; `check` finds the user's
+    `bazel` past it).
+  - `host.nvcc_threads`, which the front door hands the graph's compile flags (`ROLA_NVCC_THREADS`).
+
+  The Bazel release bazelisk hands the front door (`BAZEL_REAL`) and the shared store the front door hands the
+  graph's environment (`ROLA_GRAPH_STORE`) are rola-devtools' to read, not this tree's.
 
 What one build is, is the graph's settings (`--//:archs` and the arm and part settings, `docs/build-graph.md#compile`),
 never an environment variable.

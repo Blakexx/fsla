@@ -277,7 +277,7 @@
     },
     "@@rola_devtools+//bazel:environment.bzl%environment": {
       "general": {
-        "bzlTransitiveDigest": "kAPTjedv0bH3+V8ilIZyksyepBrgzrGCTaXvDglKGzw=",
+        "bzlTransitiveDigest": "nYRcMSeAmQnM3u2iQk3pDAZ0dQ/8XSSaZkIxdBKMhXg=",
         "usagesDigest": "vw2Rm4UtrTwAObJv3KRpkuNub3JN/8D5JWQ8SBWOeKo=",
         "recordedInputs": [
           "REPO_MAPPING:,rola_devtools rola_devtools+",
@@ -295,6 +295,7 @@
               "index_field": "torch_index",
               "devtools": true,
               "packages": [],
+              "isolated_builds": true,
               "post": "@@//bazel:flags.py",
               "post_args": [
                 "@@//tools:toolchains/cu13.json"
