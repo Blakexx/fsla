@@ -19,10 +19,8 @@ classifiers     = [
 ]
 
 [project.optional-dependencies]
-# `pytest-benchmark` was REMOVED, measured: it drove the latency gate's repetition, and its round schedule -- not the
-# kernel -- set the number the gate read once the committed spread narrowed to a device-event IQR. `rola_results`
-# holds the record now (docs/measurement.md). THE ATTENTION REFERENCE every reported carry number sits beside is
-# rola-bench's arm (torch's own flash backend, docs/measurement.md), so it needs no package here.
+# THE ATTENTION REFERENCE every reported carry number sits beside is rola-bench's arm (torch's own flash backend,
+# docs/measurement.md), so it needs no package here; measurements are recorded by `rola_results`.
 bench = ["matplotlib", "pandas"]
 # `entmax` (DeepSPIN) is the fp64 REFERENCE the routing gates are anchored to -- the paper authors' own
 # implementation, pure python with torch as its only dependency. A TEST dependency and never a runtime one:

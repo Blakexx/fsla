@@ -28,8 +28,6 @@ fp64 oracle, and fast-math silently changes the numeric contract they were deriv
 """
 from __future__ import annotations
 
-import os
-
 #: Torch's `COMMON_NVCC_FLAGS`, restated ONCE. `CUDAExtension` adds exactly this set
 #: to the build, so a standalone compile of the same file must pass it too or it is
 #: compiling a different program.
@@ -111,59 +109,3 @@ def nvcc_flags(archs, nvcc_threads: int = 2) -> list[str]:
             #: launch of a process, measured.
             #: docs/build.md#fatbin-compression
             "-Xfatbin", "-compress-all"] + gencodes(archs)
-
-
-#: GIGABYTES OF RESIDENT SET PER ``cicc``, MEASURED -- the constant that turns free
-#: RAM into a job count, and the reason this is a formula and not a hardcoded
-#: ``MAX_JOBS``.
-#:
-#: RE-DERIVED, AND THE OLD VALUE WAS WRONG BY 2x. At 1.5 GB the formula
-#: returned ``MAX_JOBS=7`` on this 23 GB host and a cold-cache build was OOM-KILLED --
-#: three translation units died with ``rc=255`` and the ninja build reported
-#: ``Killed``, twice, before the number was re-measured. The old table was taken when
-#: the heavy units were the instantiation shards; it did not survive the carry family
-#: joining ``SOURCES``.
-#:
-#: WHAT SETS IT NOW IS THE TENSOR LIBRARY'S HEADER, not any kernel. Measured per
-#: ``cicc`` (sm_86, ``--threads=1``):
-#:
-#: ===================================== ========== ==========
-#: translation unit                        wall      peak/cicc
-#: ===================================== ========== ==========
-#: a bare CUDA TU (one trivial kernel)      0.9 s      0.19 GB
-#: the same, plus ``torch/extension.h``    33.7 s      2.86 GB
-#: one carry arm (torch-free ABI)           4.7 s      0.33 GB
-#: carry/carry.cu (dispatch only)          36.2 s      2.88 GB
-#: ===================================== ========== ==========
-#:
-#: and per ``cicc`` over a full both-arch build (sampled): ``factor.cu`` 2.92 GB,
-#: ``entmax.cu`` 2.89, ``decode.cu`` 2.81, ``carry/carry.cu`` 2.75 -- every unit that
-#: parses the extension header lands in one narrow band, and the 22 generated carry arm
-#: translation units do not appear in the top twelve at all. The carry
-#: family's single TU peaked at **6.14 GB** and was the binding term by more than 2x.
-#:
-#: So the constant is the HEADER's footprint, and it stops being a function of the arm
-#: count -- which is the property that makes it stable as arms are added. RE-MEASURE it
-#: when a translation unit joins the hand units (``tools/kernels.py``), or when torch's headers move.
-GB_PER_NVCC_THREAD = 2.9
-
-
-def default_max_jobs(nvcc_threads: int) -> int:
-    """RAM, not cores, is the binding resource here, and that is a measurement:
-    ``MAX_JOBS=8`` was OOM-KILLED on this 23 GB / 16-core host, twice -- once after
-    8m32 while the constant said 1.5 GB, and again with a cold compiler cache,
-    which is what forced the re-measurement above. So the memory term participates
-    rather than the core count alone.
-
-    At this value it returns 3 for a both-arch build (``--threads=2``) and 7 for a
-    single-arch iteration build on a 22 GB-free host, which are the settings the
-    measured builds used.
-
-    The two parallelism axes MULTIPLY -- the jobs' concurrent ``nvcc`` processes,
-    each running ``--threads`` concurrent ``cicc`` processes -- so the divisor is
-    per-thread and not per-job."""
-    import psutil
-
-    cpus = os.cpu_count() or 1
-    free_gb = psutil.virtual_memory().available / (1024 ** 3)
-    return max(1, int(min(cpus // 2, free_gb / (GB_PER_NVCC_THREAD * nvcc_threads))))

@@ -61,27 +61,14 @@ OUT_DIR = ROOT / "csrc" / "rola" / "src" / "instantiations"
 #: two independent statements rather than one restated twice.
 SHIPPED_SET_JSON = ROOT / "tools" / "manifests" / "shipped_set.json"
 
-#: THE GENERATED (NEVER CHECKED IN) SELECTION HEADER .  The graph's header action and
-#: `tools/ratify.py`'s compile path each write `GENERATED_DIR / CARRY_SELECTION_INC` for their own
-#: run's arm scope on every run, before compiling any translation unit that includes it
-#: (`write_if_changed`: the file is replaced only when its text differs).  See
-#: `carry_selection_header`.
+#: THE GENERATED (NEVER CHECKED IN) SELECTION HEADER .  `tools/ratify.py`'s compile path writes
+#: `GENERATED_DIR / CARRY_SELECTION_INC` for its run's arm scope on every run, before compiling any translation
+#: unit that includes it; the graph's header action writes the same text into its own output, which
+#: `bazel run //:library` copies here.  See `carry_selection_header`.
 GENERATED_DIR = ROOT / "build" / "generated"
 CARRY_SELECTION_INC = "carry_selection.inc"
 CARRY_PARTS_INC = "carry_parts.inc"
 BUILDS_INC = "builds.inc"
-
-
-def write_if_changed(path: Path, text: str) -> bool:
-    """Write a generated header's ``text`` to ``path`` only when it differs from what is there.
-
-    Every build writes its generated headers, but a rewrite of the same text still moves the file's mtime, and
-    ninja then recompiles every translation unit that includes it: an edit to one kernel file rebuilt both carry
-    arms and the carry dispatch TU (2026-11-01, docs/build.md#generated-headers). Returns whether it wrote."""
-    if path.exists() and path.read_text() == text:
-        return False
-    path.write_text(text)
-    return True
 
 
 #: THE CARRY KERNEL'S PARTS (the composer's switches, KERNEL_STANDARDS §22 (9)): each names a
@@ -329,7 +316,7 @@ def write_builds(archs) -> None:
     from measure import hardware
 
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-    write_if_changed(GENERATED_DIR / BUILDS_INC, hardware.builds_header([str(a) for a in archs]))
+    (GENERATED_DIR / BUILDS_INC).write_text(hardware.builds_header([str(a) for a in archs]))
 
 
 def carry_parts_header(parts, trivial) -> str:
@@ -369,8 +356,7 @@ def selection_header(fam: ArmFamily, rows, arms) -> str:
     Renders `#define ROLA_<FAMILY>_BUILT 1` plus one `#define ROLA_<FAMILY>_BUILD_<i> 1`
     per index in `sorted(set(arms))`. Written by the graph's header action (from `--//:<family>_arms`)
     and by `tools/ratify.py`'s compile path (from the declared set or a scope)
-    to `GENERATED_DIR / fam.header` on every run, REPLACING whatever is there
-    (`write_if_changed`: the file only when its text differs) -- never accumulated across runs. Included ONLY by
+    to `GENERATED_DIR / fam.header` on every run, REPLACING whatever is there -- never accumulated across runs. Included ONLY by
     the family's own units (`fam.includer`), so no other translation unit's argv or included content depends on the
     selection -- a `-D` would reach every unit's argv and rebuild the whole extension on a subset change.
 
@@ -865,8 +851,8 @@ def main() -> int:
     want = generated()
     if a.write:
         #: THE GENERATED TREE, INCLUDING THE SELECTION HEADER, IS ONE SHARED
-        #: OUTPUT (LOCKS brief item 3): `tools/ratify.py` writes the same
-        #: `CARRY_SELECTION_INC` path unconditionally on every build, so this
+        #: OUTPUT (LOCKS brief item 3): `tools/ratify.py`'s compile path writes the same
+        #: `CARRY_SELECTION_INC` path unconditionally on every run, so this
         #: CLI's own `--write` must not interleave with that write either.
         from rola_devtools.locks import host
 

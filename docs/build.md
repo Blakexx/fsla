@@ -44,8 +44,7 @@ closed-world rule ([`ratification.md`](ratification.md#the-four-closed-world-rul
    embed PTX and let the driver just-in-time compile for an architecture whose register and spill behaviour was never
    measured.
 2. **R3 — ratified archs.** `tools/manifests/<toolchain>/sm_XX.json` must exist and be non-empty for every arch being
-   built. A file-existence question, asked first, because the cheapest check is the one that must never be tempting
-   to skip.
+   built. A file-existence question: the cheapest check, which must never be tempting to skip.
 3. **R1 — toolchain.** The graph's `ptxas --version` selects the toolchain: the record in `tools/toolchains/` that
    names it, whitespace-normalized ([`internals/tools/toolchains.md`](internals/tools/toolchains.md)). A toolkit no
    record names refuses; that toolchain's manifests must pin the same string; the disassemblers the gates read with
@@ -74,8 +73,7 @@ its verdict on a build is a target of its own, `bazel test //:ratified`, which a
 
 <a id="generated-headers"></a>The build's GENERATED HEADERS (the arm selections, the carry parts, the builds, the
 csrc stamp) are actions over their generators, and `bazel run //:library` copies them into `build/generated/`, where
-a compile outside the graph reads them. Ratify's compile path writes the same files there through
-`gen_shards.write_if_changed`, which replaces a file only when its text differs. Only `common/build_stamp.cu` reads the csrc stamp, whose text
+a compile outside the graph reads them, and ratify's compile path writes the same files there for its own run. Only `common/build_stamp.cu` reads the csrc stamp, whose text
 changes with every `csrc/` edit.
 
 ## <a id="iteration"></a><a id="arm-subset"></a>An iteration build compiles a subset
@@ -123,8 +121,20 @@ Instantiation is the dominant build resource, and with per-arm units it is not t
 tensor library's headers: a translation unit that includes them parses longer, and holds a larger resident set, than an
 arm's own codegen. So the carry family's per-arm ABI (`csrc/rola/src/carry/carry_arm_abi.cuh`) speaks POINTERS and not
 tensors, and only the dispatch unit includes the torch seam: a tensor-typed seam would re-pay the headers once per arm
-and pin every arm unit's resident set at theirs, the term the job count is derived from. The ast-grep rule
-`tools/lint/rules/torch_include_in_arm_tu.yml` refuses a torch header in a per-arm unit.
+and pin every arm unit's resident set at theirs. The ast-grep rule `tools/lint/rules/torch_include_in_arm_tu.yml`
+refuses a torch header in a per-arm unit. MEASURED per `cicc` (sm_86, `--threads=1`):
+
+| translation unit | wall | peak a `cicc` |
+|---|---|---|
+| a bare CUDA unit (one trivial kernel) | 0.9 s | 0.19 GB |
+| the same, plus `torch/extension.h` | 33.7 s | 2.86 GB |
+| one carry arm (the torch-free ABI) | 4.7 s | 0.33 GB |
+| `carry/carry.cu` (the dispatch alone) | 36.2 s | 2.88 GB |
+
+Over a full both-arch build every unit that parses the extension header lands in one narrow band (`factor.cu` 2.92 GB,
+`entmax.cu` 2.89, `decode.cu` 2.81, `carry/carry.cu` 2.75), and no generated arm unit is in the top twelve; the carry
+family's single unit, before the per-arm split, peaked at 6.14 GB. A build's peak is the header's footprint times the
+`cicc` the host budget runs at once, and it stops being a function of the arm count.
 
 Per-arm units are what let the arms compile in parallel across the jobs the host budget grants, and what make `ratify`
 per-unit incremental, keyed on the argv and the content of every input the compiler reported reading.
@@ -244,14 +254,12 @@ A checkout's binary sits where a wheel puts it: `bazel run //:library` copies it
 checkout and an installed wheel load the binary by one path. `tools/toolchains.py`'s `built_extension` is how the tools find it.
 
 **The wheels package the graph's library.** `bazel run //:wheels` refuses a tree with changes, then requires ratify's
-verdict on the build to pass, then refuses the build unless its record says: this version, not an iteration build,
-every ratified arch of the toolchain, and the manifest digest of the files it then packages. It writes
+verdict on the build to pass (which refuses an iteration build), then refuses the build unless its record names this
+version, the toolchain and the manifest digest of the files it then packages. It writes
 `dist/rola-<v>-py3-none-any.whl` and `dist/rola_cu13-<v>-cp310-abi3-linux_x86_64.whl`, byte-reproducible for a commit
 (fixed member order and timestamps). `bazel run //tools:wheels -- --check dist` installs them into a scratch venv over
 the environment's torch and requires `rola` alone to refuse naming the extra, and both together to load and name
-their carry arms ([`internals/tools/wheels.md`](internals/tools/wheels.md)). MEASURED 2026-11-08, against the wheels
-setup.py made of the same commit: `rola`'s 69 members byte-equal; `rola-cu13`'s equal but its binary (750 of 750
-kernels' SASS equal), its record (equal but `sccache`, which the graph does not use) and their RECORD.
+their carry arms ([`internals/tools/wheels.md`](internals/tools/wheels.md)).
 
 The platform tag is the build host's, `linux_x86_64`: the wheels install on a machine whose glibc is at least the build
 host's. A `manylinux` tag, which PyPI requires, is not claimed.

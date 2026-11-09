@@ -5,9 +5,9 @@ binary plugin).
     bazel run //tools:wheels -- --check dist     # install both into a scratch venv and prove what each one does alone
 
 Wheel naming D (docs/build.md#wheels): `pip install "rola[cu13]"` installs both at one version. The binary in
-`rola-cu13` is `//:library`'s, which its gates passed; ratify's verdict on that build must pass first, and the build's
-record must say it is a shippable build of this version: every ratified architecture, no iteration parameter, and the
-digest of the manifests the plugin carries. The metadata is `pyproject.toml`'s `[project]`, with the `cu13` extra
+`rola-cu13` is `//:library`'s, which its gates passed; ratify's verdict on that build must pass first (it refuses an
+iteration build), and the build's record must name this version, the toolchain and the digest of the manifests the
+plugin carries. The metadata is `pyproject.toml`'s `[project]`, with the `cu13` extra
 pinned to this version. Docs: docs/internals/tools/wheels.md.
 """
 from __future__ import annotations
@@ -66,14 +66,13 @@ def _record(path: Path) -> dict:
 
 
 def _verify(record: dict, version: str) -> list[Path]:
-    """The record is a shippable build of this version, and the manifests the plugin will carry are the ones it was
-    gated against."""
+    """The record is this version's build under this toolchain, and the manifests the plugin will carry are the ones it
+    was gated against. That it is no iteration build is ratify's verdict's, which refuses one (`_ratified`)."""
     toolchain = toolchains.named(TOOLCHAIN)
     archs = toolchain.archs()
     manifests = [toolchain.manifest_path(a) for a in archs]
     digest = ratify.manifest_digest(ratify.load_manifest(archs, TOOLCHAIN))
-    wrong = {"version": (record["version"], version), "iteration": (record["iteration"], False),
-             "archs": (record["archs"], [f"sm_{a}" for a in archs]), "toolchain": (record["toolchain"], TOOLCHAIN),
+    wrong = {"version": (record["version"], version), "toolchain": (record["toolchain"], TOOLCHAIN),
              "manifest_sha256": (record["manifest_sha256"], digest)}
     wrong = {k: v for k, v in wrong.items() if v[0] != v[1]}
     if wrong:

@@ -697,12 +697,11 @@ def csrc_stamp_header(digest: str | None = None) -> str:
 
 
 def write_csrc_stamp(digest: str | None = None) -> Path:
-    """Write `build/generated/csrc_stamp.inc` for this tree on every call (its file replaced only when its text
-    differs: `gen_shards.write_if_changed`)."""
+    """Write `build/generated/csrc_stamp.inc` for this tree on every call."""
     gen_shards.GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     path = gen_shards.GENERATED_DIR / CSRC_STAMP_INC
     with host.file_lock("csrc_stamp_header"):
-        gen_shards.write_if_changed(path, csrc_stamp_header(digest))
+        path.write_text(csrc_stamp_header(digest))
     return path
 
 
@@ -931,19 +930,18 @@ def measure_units(arches, objdir: str, sources: list[Path], arms=None,
     #: invocations racing this write must not interleave -- one must finish
     #: writing the header before the other starts compiling against it.
     with host.file_lock("carry_selection_header"):
-        gen_shards.write_if_changed(gen_shards.GENERATED_DIR / gen_shards.CARRY_SELECTION_INC,
-                                    gen_shards.carry_selection_header(want_arms))
-        gen_shards.write_if_changed(gen_shards.GENERATED_DIR / gen_shards.CARRY_PARTS_INC,
-                                    gen_shards.carry_parts_header(gen_shards.CARRY_PARTS, ()))
-        gen_shards.write_if_changed(gen_shards.GENERATED_DIR / gen_shards.DECODE.header,
-                                    gen_shards.decode_selection_header(range(len(gen_shards.DECODE_ARMS))))
+        (gen_shards.GENERATED_DIR / gen_shards.CARRY_SELECTION_INC).write_text(
+            gen_shards.carry_selection_header(want_arms))
+        (gen_shards.GENERATED_DIR / gen_shards.CARRY_PARTS_INC).write_text(
+            gen_shards.carry_parts_header(gen_shards.CARRY_PARTS, ()))
+        (gen_shards.GENERATED_DIR / gen_shards.DECODE.header).write_text(
+            gen_shards.decode_selection_header(range(len(gen_shards.DECODE_ARMS))))
         gen_shards.write_builds(arches)
     #: AND THE CSRC STAMP, for the same reason and from the same function the graph's
     #: stamp header runs: the stamp sites include it, so a gate that did not write it would
     #: measure a tree nobody builds.
     write_csrc_stamp()
 
-    jobs = jobs or build_flags.default_max_jobs(2)
     t0 = time.perf_counter()
     compile_dir = _compile_dir()
 
@@ -966,8 +964,12 @@ def measure_units(arches, objdir: str, sources: list[Path], arms=None,
             _cache_write(source, cmd, deps, got, bad, got_scan)
         return source, rec, False
 
-    with ThreadPoolExecutor(max_workers=min(jobs, len(sources))) as pool:
-        measured = list(pool.map(one, sources))
+    #: ONE MACHINE, ONE COMPILE BUDGET (KERNEL_STANDARDS §14 addendum 2): the compiles run under the host budget's
+    #: slots, one job a `host.nvcc_threads` of them, as every build does through the graph's front door
+    with host.acquire(host.budget_slots(), label="ratify's compile path") as held:
+        jobs = jobs or max(1, held // dev_config.get("host.nvcc_threads"))
+        with ThreadPoolExecutor(max_workers=min(jobs, len(sources))) as pool:
+            measured = list(pool.map(one, sources))
     hits = [source.stem for source, _rec, hit in measured if hit]
     wall = time.perf_counter() - t0
     print(f"{len(sources)} translation unit(s) measured in {wall:.1f} s at "
@@ -980,7 +982,6 @@ def measure_units(arches, objdir: str, sources: list[Path], arms=None,
 def measure_built() -> tuple[dict, list[str], dict]:
     """THE GRAPH'S CENSUS: each unit its build compiled, read from that compile -- ptxas's report and the object it
     wrote -- with no compile of its own."""
-    jobs = build_flags.default_max_jobs(2)
     units = _GRAPH["units"]
     t0 = time.perf_counter()
 
@@ -988,7 +989,9 @@ def measure_built() -> tuple[dict, list[str], dict]:
         got, bad = _parse_report(unit["report"].read_text())
         return unit["source"], {"entries": got, "unhonored": bad, "scan": _scan_object(str(unit["object"]), set(got))}
 
-    with ThreadPoolExecutor(max_workers=min(jobs, len(units))) as pool:
+    #: the disassemblers' reads run under the host budget too, a job a slot
+    with host.acquire(host.budget_slots(), label="ratify's census") as jobs, ThreadPoolExecutor(
+            max_workers=min(jobs, len(units))) as pool:
         measured = list(pool.map(one, units))
     print(f"{len(units)} translation unit(s) read from the graph's build in {time.perf_counter() - t0:.1f} s at "
           f"{min(jobs, len(units))} jobs")

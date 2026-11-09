@@ -128,9 +128,7 @@ _INSTALL = """\
 #!/bin/bash
 # writes the graph's library into the checkout, and the build's generated headers where the tools that compile the
 # tree's units read them (build/generated: tools/life_ranges.py, tools/header_selfcheck.py): copies, never links into
-# Bazel's output tree; a header only when its text changed, as the tree's own writer writes one
-# (tools/gen_shards.py's write_if_changed: a moved mtime recompiles every unit that includes it), through a temporary
-# file renamed into place
+# Bazel's output tree, each through a temporary file renamed into place, so a reader never sees half a header
 set -euo pipefail
 dest="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}/rola_cu13"
 for f in {files}; do
@@ -141,9 +139,7 @@ generated="$BUILD_WORKSPACE_DIRECTORY/build/generated"
 mkdir -p "$generated"
 for f in {headers}; do
   to="$generated/$(basename "$f")"
-  if ! cmp -s "$f" "$to"; then
-    install -m 0644 "$f" "$to.graph" && mv -f "$to.graph" "$to"
-  fi
+  install -m 0644 "$f" "$to.graph" && mv -f "$to.graph" "$to"
 done
 echo "installed $(basename "$dest")/_C.abi3.so and _build_config.py, and the build's generated headers, from the graph"
 """

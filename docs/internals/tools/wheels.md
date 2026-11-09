@@ -7,23 +7,19 @@ census from its runfiles.
 
 ## The refusals
 
-`_clean_commit` refuses a tree with changes: a wheel names a commit. `_ratified` runs ratify's verdict on the build
-(`tools/ratify.py --graph`, `bazel test //:ratified`'s) and refuses on anything but a pass: a wheel ships a ratified
-build. `_verify` refuses a record that is not a shippable build of this version: `version`, `iteration` false, `archs`
-equal to the toolchain's ratified architectures, `toolchain`, and `manifest_sha256` equal to `ratify.manifest_digest`
-over the manifest files the plugin will carry.
+A wheel names a commit and ships a ratified build, so the tool refuses before it packages anything: a tree with
+changes (`_clean_commit`); a build ratify's verdict does not pass (`_ratified`, `bazel test //:ratified`'s, which also
+refuses an iteration build); and a record that is not this version's build under this toolchain, gated against the
+manifests the plugin will carry (`_verify`).
 
 ## The packages
 
-`rola` takes the tracked files of the `rola/` package (`_package`, its `.gitkeep` placeholders left out, so the
-entmax pin's `PIN.json` is its one data file) and the project's metadata: `metadata` writes core metadata 2.4 from
-`pyproject.toml`'s `[project]` as setuptools wrote it (the licence's text folded under `License`, the README its body,
-the licence files by setuptools' patterns), with the `cu13` extra, `rola-cu13` at exactly this version, first. Its
-WHEEL is `py3-none-any`. `rola-cu13` takes the tracked `rola_cu13/` package, the graph's `_C.abi3.so` and
-`_build_config.py`, the manifests under a `manifests/` directory inside it, and metadata of its own: its name and
-version, the core's author, licence files, classifiers and Python floor in the core's order, `Requires-Dist:
-rola==<version>` and the core's torch requirement, under `PLUGIN_TAG`. `_wheel_file` writes RECORD and stores members
-in name order with the fixed `EPOCH` timestamp, so a commit's wheels are the same bytes each time.
+The two wheels are one build's output split by package, so `rola` never carries a binary and `rola-cu13` never carries
+the Python package: `rola` is the tracked `rola/` package and the project's metadata, which `metadata` writes from
+`pyproject.toml`'s `[project]` in the form setuptools wrote it, so a resolver reads the same fields it read before;
+`rola-cu13` is the tracked `rola_cu13/` package, the graph's library and record, and the manifests that record hashes,
+with metadata that requires `rola` at exactly its version. A commit's wheels are the same bytes each time (fixed member
+order and timestamps).
 
 ## The check
 

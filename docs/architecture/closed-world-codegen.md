@@ -90,7 +90,7 @@ central claims are numeric buys the second with the first.
 ## 4. Consequences a contributor should expect
 
 - **A new architecture is a ratification event**, not a `-gencode` line. Adding
-  `sm_XX` without its manifest fails the build before anything compiles.
+  `sm_XX` without its manifest fails the build.
 - **A toolchain bump invalidates every manifest**, in both directions. The
   numbers are a property of the assembler as much as of the source, so they say
   nothing about a different assembler even if they got *better*. Re-ratify.

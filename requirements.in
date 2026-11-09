@@ -58,8 +58,6 @@ pytest-metadata==3.1.1
 pytest-timeout==2.4.0
 hypothesis==6.165.10
 
-# --- torch.utils.cpp_extension's imports (ratify's compile path, the header self-check), and the compile path's job
-# count (tools/build_flags.py's default_max_jobs reads the free memory) ---
+# --- torch.utils.cpp_extension's imports (ratify's compile path, the header self-check) ---
 setuptools>=61
 packaging
-psutil==7.2.2

@@ -198,10 +198,9 @@ re-wakes stopped agents.
 - Every kernel family carries an arm-subset knob (the carry's `--//:carry_arms`); a family without one gets it
   before its next build.
 §15 addendum (build parallelism, 2026-08-27): cicc peaks ~1 GB post-S1, on a 16-CPU / 24 GB machine.
-Gate builds: exclusive lock, MAX_JOBS=8, NVCC_THREADS=2. Iteration builds: one of two parallel slots
-(then tools/build/build_lock.sh; now the host budget the front door takes for every build, §23), MAX_JOBS=4,
-single-arch, arm-subset. Re-derive these numbers if
-cicc's peak changes (a per-leaf nest can push it back to 6 GB — §1).
+A build's jobs are the host-budget slots the front door holds, divided by `host.nvcc_threads` (2: one cicc an
+architecture), every build under the same machine-wide pool (§23); an iteration build is single-arch and arm-subset.
+Re-derive the budget if cicc's peak changes (a per-leaf nest can push it back to 6 GB — §1).
 
 ## <a id="s16"></a>§16 — Ratify at milestones, not stages (Blake, 2026-08-28)
 
