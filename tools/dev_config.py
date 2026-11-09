@@ -87,7 +87,10 @@ SCHEMA: dict[str, dict[str, Key]] = {
                         "every venv that runs here"),
         "worktrees": Key("path", str(ROOT.parent / "worktrees") if ROOT.parent.name != "worktrees" else str(ROOT.parent),
                          "the one folder every worktree and its venv live in"),
-        "base_venv": Key("path?", None, "the venv the sibling repositories' commit hooks run from"),
+        "base_venv": Key("path?", None,
+                         "a venv the machine's workspace file may name, for the checkouts on this machine that read it "
+                         "(their sibling repositories' hooks ran from it); this tree reads none. A loader refuses a key "
+                         "it does not declare, so it stays declared while machine files carry it"),
     },
 }
 

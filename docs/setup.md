@@ -16,7 +16,7 @@ a box with no host of its own to set up, which runs the host's same loop.
 
 Everything this tree needs from a machine -- the CUDA toolkit, Nsight Compute,
 the host's compile slots, the lock files, the SM
-clock, the measurements store, the worktrees folder and base venv -- is one
+clock, the measurements store and the worktrees folder -- is one
 directory of JSON files, the dev config (`~/.config/rola/`,
 `docs/internals/tools/dev_config.md`, KERNEL_STANDARDS §23). One command sets a
 machine up and checks it (`docs/internals/tools/dev.md`):

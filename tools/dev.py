@@ -23,7 +23,6 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -39,7 +38,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dev_config  # noqa: E402 -- path insert must precede this import
 import oci_layout  # noqa: E402
-import toolchains  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 #: THE DEVBOX'S TOOLS outside the graph's environment: a developer's commands, each a pinned release in its own
@@ -238,20 +236,14 @@ LINKED = {"rola_results.pth": "store.root", "rola_devtools.pth": "workspace.devt
 
 def link_packages() -> list[Path]:
     """`rola_results` and `rola_devtools` importable from every interpreter that runs here, by the `LINKED` `.pth` files:
-    the base venv where one is set, and each checkout's own venv (`checkout_venv`: it names the environment as a plain
-    path, which reads none of its .pth files). Never the machine's own python: nothing here runs from it."""
-    base = dev_config.get("workspace.base_venv")
-    sites = [site_packages(Path(base))] if base else []
-    sites += [site_packages(v) for v in (checkout_venv(c) for c in _worktrees()) if v is not None]
+    each checkout's own venv (`checkout_venv`: it names the environment as a plain path, which reads none of its .pth
+    files). Never the machine's own python: nothing here runs from it."""
+    sites = [site_packages(v) for v in (checkout_venv(c) for c in _worktrees()) if v is not None]
     for site in sites:
         site.mkdir(parents=True, exist_ok=True)
         for pth, key in LINKED.items():
             (site / pth).write_text(f"{dev_config.get(key)}\n")
     return sites
-
-
-#: the other checkouts whose tracked commit hooks run from this machine's base venv: the suite, the store, the devtools
-GATED_CONSUMERS = ("workspace.suite", "store.root", "workspace.devtools")
 
 
 def wire_hooks(checkout: Path) -> None:
@@ -359,32 +351,6 @@ def gate_venv(checkout: Path | str) -> str:
     return done.stdout.strip()
 
 
-def lock_pins() -> dict[str, str]:
-    """`requirements.lock`'s pins as {normalized name: version}; a URL pin's version is its wheel's."""
-    pins = {}
-    for line in (ROOT / "requirements.lock").read_text().splitlines():
-        if m := re.match(r"^([A-Za-z0-9_.-]+)==(\S+)", line):
-            name, version = m.groups()
-        elif m := re.match(r"^([A-Za-z0-9_.-]+) @ (\S+)", line):
-            name, version = m.group(1), urllib.parse.unquote(m.group(2).split("#")[0].rsplit("/", 1)[1]).split("-")[1]
-        else:
-            continue
-        pins[re.sub(r"[-_.]+", "-", name).lower()] = version
-    return pins
-
-
-def venv_drift(python: str) -> list[str]:
-    """The lock's pins a venv lacks or carries at another version (extras the lock does not name are not drift)."""
-    out = subprocess.run([python, "-m", "pip", "list", "--format=json"], capture_output=True, text=True, check=True)
-    have = {re.sub(r"[-_.]+", "-", p["name"]).lower(): p["version"].split("+")[0] for p in json.loads(out.stdout)}
-    return sorted(f"{name}=={v}" for name, v in lock_pins().items() if have.get(name) != v.split("+")[0])
-
-
-def host_toolchain() -> toolchains.Toolchain:
-    """The declared toolchain of this machine's configured toolkit."""
-    return toolchains.for_ptxas(_version(dev_config.cuda_bin("ptxas")))
-
-
 def _follow_lock_mount() -> None:
     """A container's locks follow its launcher's mount at every init: the host's where they are mounted, else the
     machine's own (the keys an earlier init wrote for a mount removed), so a container started once without the mount
@@ -408,14 +374,6 @@ def cmd_init(a) -> int:
 
     for name in (TOOLKIT, *DEV_TOOLS):
         ensure_pinned(name)
-    base = dev_config.get("workspace.base_venv")
-    drift = venv_drift(str(Path(base) / "bin" / "python")) if base else []
-    if drift:
-        toolchain = host_toolchain()
-        print(f"base venv {base}: installing the lock's {len(drift)} missing pin(s): {' '.join(drift)}")
-        subprocess.run(["uv", "pip", "install", "--python", str(Path(base) / "bin" / "python"),
-                        "-r", str(ROOT / "requirements.lock"), "--extra-index-url", toolchain.torch_index,
-                        "--index-strategy", "unsafe-best-match"], check=True)
     for site in link_packages():
         print(f"rola_results, rola_devtools: linked into {site}")
     for checkout in _worktrees():
@@ -427,10 +385,6 @@ def cmd_init(a) -> int:
             wire_hooks(checkout)
     _refuse_unwired()
     install_router()
-    for key in GATED_CONSUMERS if base else ():
-        if (Path(dev_config.get(key)) / ".git").exists():
-            subprocess.run(["git", "-C", dev_config.get(key), "config", "rola.venv", dev_config.get("workspace.base_venv")],
-                           check=True)
     if dev_config.get("clock.ghz") is None:
         print("clock: unset -- this host measures UNLOCKED until `bazel run //:clock -- --mhz <MHz>` runs")
     return cmd_check(a)
@@ -485,16 +439,6 @@ def cmd_check(a) -> int:
     row(on_path is not None and Path(on_path).resolve() == bazelisk.resolve(),
         f"`bazel` on PATH is the pinned bazelisk: {on_path}",
         f"python3 tools/bootstrap.py (links toolchain.bazel, {dev_config.get('toolchain.bazel')}); its directory on PATH")
-    base = dev_config.get("workspace.base_venv")
-    python = Path(base or "") / "bin" / "python"
-    #: only the sibling repositories' commit hooks read it: checked where it is set
-    row(not base or python.exists(), f"workspace.base_venv: {base}" if base else
-        "workspace.base_venv: unset (on a host only the sibling repositories' commit hooks read one)",
-        "point workspace.base_venv in the workspace file at a venv with an interpreter, or remove the key")
-    if base and python.exists():
-        drift = venv_drift(str(python))
-        row(not drift, f"base venv carries requirements.lock{': drift ' + ' '.join(drift) if drift else ''}",
-            "bazel run //:init")
     readable = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--git-dir"], capture_output=True).returncode == 0
     hooks = subprocess.run(["git", "-C", str(ROOT), "config", "--get", "core.hooksPath"], capture_output=True, text=True)
     own = checkout_venv(ROOT)
@@ -509,10 +453,6 @@ def cmd_check(a) -> int:
             + ("" if wired else ", not in the user's settings"), "bazel run //:init")
     else:
         row(True, "agent skill router: no Claude Code configuration here")
-    #: the sibling repositories' gates, where the base venv they run from is set
-    for key in GATED_CONSUMERS if readable and base else ():
-        if (Path(dev_config.get(key)) / ".git").exists():
-            row(gate_venv(dev_config.get(key)) == base, f"{key}'s commit gate runs from {base}", "bazel run //:init")
     #: the host's locks where a launcher mounted them, else this machine's own: never a container's own beside the host's
     mounted, named = dev_config.locks_mounted(), dev_config.get("host.lock_dir") == dev_config.CONTAINER_LOCKS["lock_dir"]
     if mounted == named:
@@ -541,9 +481,8 @@ def cmd_check(a) -> int:
     devtools = Path(dev_config.get("workspace.devtools"))
     row((devtools / "rola_devtools" / "mirror.py").is_file(), f"workspace.devtools is a rola-devtools checkout: {devtools}",
         "clone rola-devtools to workspace.devtools, or point workspace.devtools at a checkout")
-    #: the co-developed checkouts import in each venv that runs here: the base venv (the sibling repositories' hooks)
-    #: and this checkout's own (its hooks, `container`)
-    for venv in ([Path(base)] if base else []) + ([own] if readable and own is not None else []):
+    #: the co-developed checkouts import in the checkout's own venv (its hooks, `container`)
+    for venv in [own] if readable and own is not None else []:
         python = venv / "bin" / "python"
         found = subprocess.run([str(python), "-c", "import rola_results, rola_devtools; "
                                 "print(rola_results.ROOT); print(rola_devtools.__file__)"], capture_output=True, text=True)
