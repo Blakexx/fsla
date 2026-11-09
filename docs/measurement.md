@@ -155,7 +155,7 @@ A change is judged against its baseline in ONE session: the baseline checkout (a
 with its venv) is a reference of rola-bench's suite, and the run is pruned to the timing sessions and their stores:
 
 ```bash
-bazel run //:measure -- run declare.py:suite \
+python -m rola_devtools.build run declare.py:suite \
     --arg target=worktree:<new checkout>,venv:<its venv> --arg references='worktree:<baseline>,venv:<its venv>' \
     --only 'store/session/*'
 ```

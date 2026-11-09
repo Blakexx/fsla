@@ -13,7 +13,6 @@ settings it writes and reads are the dev config ([dev_config.md](dev_config.md))
     bazel run //:clock -- --mhz 1665
     bazel run //:dev_env                     # dev-env, given the checkout and the graph's environment
     bazel run //:worktree -- <name> <sha>
-    bazel run //:results -- commit -m <msg>
     bazel run //:container_check             # the devbox image's clean room
     bazel run //:container_compose           # the devbox image for an editor's dev container
 
@@ -71,10 +70,6 @@ does it write `clock.json`.
   `schtasks /run` returns before the task runs, so a proof read raced the lock, and a driver's refusal read as success.
 - **On Linux:** it writes `sudo -n nvidia-smi -lgc` commands and prints the sudoers rule they need.
 
-**`build [--archs 86] [--carry-arms all]`** is the iteration build (`docs/build.md#iteration`): `setup.py build_ext
---inplace` by the checkout's own venv interpreter (`bazel run //:dev_env`). It refuses when the checkout has no venv
-of its own, or when that interpreter's `rola` is not this checkout's.
-
 **`dev-env`** is `bazel run //:dev_env`'s implementation, which passes the checkout and the graph's environment
 (its store venv, interpreter and uv). It writes the checkout's venv, `venv-<checkout>` beside it, on the environment's
 interpreter. Its site holds five `.pth` files, read in name order: the checkout's root (`aa_rola_<name>.pth`), the
@@ -117,7 +112,7 @@ path, which reads none of its `.pth` files) and the base venv the sibling reposi
 `rola_results.pth`, and `dev-env` links each venv it writes. The store's own command line is `bazel run //:results`
 (`commit -m` commits the records).
 
-`init`, `check`, `show`, `get`, `clock`, `dev-env` and `worktree` run from whichever python starts them (`dev-env`'s is the environment's, through its run target); `build` and `container` re-execute themselves under the checkout's own venv (`bazel run //:dev_env`), because the build compiles with it and the container reads `rola_results`, which it links; the host's own python carries nothing of this project. The base venv is the venv the sibling repositories' commit hooks run from: `check` tests it where it is set.
+`init`, `check`, `show`, `get`, `clock`, `dev-env` and `worktree` run from whichever python starts them (`dev-env`'s is the environment's, through its run target); `container` re-executes itself under the checkout's own venv (`bazel run //:dev_env`), because the container reads `rola_results`, which it links; the host's own python carries nothing of this project. The base venv is the venv the sibling repositories' commit hooks run from: `check` tests it where it is set.
 
 **`get`** prints one value, for a person or a shell (the `rola-dev` skill's way to read one setting).
 

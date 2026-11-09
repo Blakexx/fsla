@@ -165,19 +165,12 @@ def main() -> int:
     ap.add_argument("--staged", action="store_true")
     ap.add_argument("--model", default="opus")
     ap.add_argument("--show", type=int, metavar="N")
-    ap.add_argument("--background", action="store_true", help="review detached; the report lands in rola-review/")
     args = ap.parse_args()
 
     if args.show is not None:
         reports = sorted(store().glob("*.json"), key=lambda p: p.stat().st_mtime)[-args.show:]
         for p in reports:
             print(render(json.loads(p.read_text())))
-        return 0
-    if args.background:
-        log = store() / "background.log"
-        cmd = [sys.executable, str(Path(__file__).resolve()), args.rev, "--model", args.model]
-        with open(log, "a") as fh:
-            subprocess.Popen(cmd, cwd=ROOT, stdout=fh, stderr=fh, start_new_session=True)
         return 0
     rid, messages, diff = target(args)
     if not diff.strip():

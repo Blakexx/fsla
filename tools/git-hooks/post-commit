@@ -17,6 +17,9 @@ if [ -z "$venv" ] || [ ! -x "$venv/bin/python" ]; then
   echo "post-commit: no review -- rola.venv names no venv ($venv): bazel run //:dev_env" >&2
   exit 0
 fi
-#: its run target, detached: a `bazel` waiting on another command's server would otherwise hold the commit
-nohup bazel run --noshow_progress //tools:review_gate -- HEAD >/dev/null 2>&1 &
+#: its run target, detached: a `bazel` waiting on another command's server would otherwise hold the commit; its
+#: output beside the reports
+reviews="$(git rev-parse --path-format=absolute --git-common-dir)/rola-review"
+mkdir -p "$reviews"
+nohup bazel run --noshow_progress //tools:review_gate -- HEAD >>"$reviews/background.log" 2>&1 &
 exit 0

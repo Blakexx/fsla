@@ -101,7 +101,6 @@
     "^python3?\\s+setup\\.py\\b",
     "^nvcc\\b",
     "^(python3?\\s+)?tools/sass_gate\\.py\\b",
-    "^bazel\\s+run\\s+//tools:sass_gate\\b",
     "^(bazel|bazelisk|bazel/bazel)\\b"
    ]
   },

@@ -22,8 +22,7 @@ directory of JSON files, the dev config (`~/.config/rola/`,
 machine up and checks it (`docs/internals/tools/dev.md`):
 
 Every setup command is a `bazel run` target but one: `python3 tools/bootstrap.py`, by the machine's own python3,
-installs the pinned bazelisk and links `bazel` to it, since nothing can `bazel run` before `bazel` exists. The iteration
-build (`dev.py build`) is dev.py's own command, run directly. The bootstrap and the
+installs the pinned bazelisk and links `bazel` to it, since nothing can `bazel run` before `bazel` exists. The bootstrap and the
 graph's front door import the dev config's reader (`rola_devtools.config`, which also holds the machine's locks) from
 the rola-devtools checkout beside this tree, where `workspace.devtools` points by default: clone it there first. The
 targets run on the graph environment's interpreter, which carries rola-devtools at its pin (`tools/devtools.txt`). A

@@ -181,7 +181,7 @@ index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
 The tree keeps the layout of a Python package with a native extension, as FlashAttention and PyTorch do (ruled
 2026-11-08): `rola/` beside `csrc/`, and the tests that drive the kernels through the op against the oracle in `tests/`,
 since the kernels serve the op alone and those tests grade the two as one. A BUILD file sits beside what it describes,
-its lints and tests among it, and `bazel/` holds only the graph's own machinery:
+its lints among it, and `bazel/` holds only the graph's own machinery:
 - the root package: the build's parameters, the extension, the devbox image, the repo-wide checks and the gate;
 - `csrc/rola`: the kernel tree, its units and its own lints; `csrc/third_party`: the vendored trees;
 - `tools`: the pins and records the graph reads, the generators it runs, and each tool's run target; `tools/lint`: the

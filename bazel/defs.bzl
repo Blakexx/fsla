@@ -523,16 +523,19 @@ dev_run = rule(
 _TOOL_RUN = """\
 #!/bin/bash
 # a tree tool as a run target (bazel/defs.bzl's tool_run): in the checkout, on the checkout's own venv (`rola.venv`,
-# which `bazel run //:dev_env` records), so it imports the checkout, its siblings and the environment
+# which `bazel run //:dev_env` records), so it imports the checkout, its siblings and the environment -- or, for a tool
+# that needs only the environment, on the environment's own interpreter
 set -euo pipefail
 checkout="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
-venv="$(git -C "$checkout" config --get rola.venv || true)"
+{venv}cd "$checkout"
+exec "$venv/bin/python" {what} "$@"
+"""
+
+_CHECKOUT_VENV = """venv="$(git -C "$checkout" config --get rola.venv || true)"
 if [ ! -x "$venv/bin/python" ]; then
   echo "$checkout has no venv of its own: bazel run //:dev_env" >&2
   exit 1
 fi
-cd "$checkout"
-exec "$venv/bin/python" {what} "$@"
 """
 
 def _tool_run_impl(ctx):
@@ -540,7 +543,8 @@ def _tool_run_impl(ctx):
         fail("%s: a tool run names its script (`tool`) or its module (`module`): exactly one" % ctx.label)
     what = shell.quote(ctx.attr.tool) if ctx.attr.tool else "-m " + shell.quote(ctx.attr.module)
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
-    ctx.actions.write(script, _TOOL_RUN.format(what = what), is_executable = True)
+    venv = ("venv=%s\n" % shell.quote(VENV)) if ctx.attr.environment else _CHECKOUT_VENV
+    ctx.actions.write(script, _TOOL_RUN.format(venv = venv, what = what), is_executable = True)
     return [DefaultInfo(executable = script)]
 
 tool_run = rule(
@@ -549,6 +553,8 @@ tool_run = rule(
     attrs = {
         "tool": attr.string(doc = "the tool's script, from the checkout's root (`tools/lab.py`)"),
         "module": attr.string(doc = "or the module it runs (`rola_devtools.build`)"),
+        "environment": attr.bool(doc = "run on the graph environment's interpreter, for a tool that imports nothing of " +
+                                       "the checkout's siblings (CI has no venv)"),
     },
     doc = "A tree tool run by `bazel run` in the checkout on its own venv (docs/build-graph.md#use): its arguments " +
           "follow `--`.",

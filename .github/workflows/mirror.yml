@@ -1,4 +1,5 @@
-# THE PUBLIC MIRROR. A push to the default branch publishes: rola_devtools.mirror (installed at a pinned commit) writes
+# THE PUBLIC MIRROR. A push to the default branch publishes: rola_devtools.mirror (`bazel run //:mirror`, on the graph
+# environment's interpreter, which carries it at its pinned commit) writes
 # HEAD's shipping files and refuses an export with an undeclared path, an agent file or a private-shaped string; the
 # export is then committed as one snapshot on the public repository's main, on top of the snapshots before it, naming
 # the commit it was taken from. What ships is .github/mirror/declarations.json; the tool is rola-devtools' README.
@@ -18,15 +19,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install the mirror tool
-        run: pip install -r tools/devtools.txt
+      - name: rola-devtools beside the checkout, at the commit the tree pins
+        run: |
+          commit="$(sed -n 's|.*rola-devtools@\([0-9a-f]\{40\}\).*|\1|p' tools/devtools.txt)"
+          git clone -q https://github.com/Blakexx/rola-devtools ../rola-devtools
+          git -C ../rola-devtools checkout -q "$commit"
+      - name: room for the graph's environment
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: the pinned bazelisk
+        run: |
+          python3 tools/bootstrap.py
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Export and tripwire
-        run: python3 -m rola_devtools.mirror /tmp/export
+        run: bazel run //:mirror -- /tmp/export
       - name: Commit the export as a snapshot on the public mirror
         env:
           MIRROR_KEY: ${{ secrets.MIRROR_KEY }}
         run: |
-          PUBLIC="$(python3 -m rola_devtools.mirror --public)"
+          PUBLIC="$(bazel run --noshow_progress //:mirror -- --public 2>/dev/null)"
           SOURCE="${GITHUB_REPOSITORY#*/}@${GITHUB_SHA::12}"
           mkdir -p ~/.ssh && echo "$MIRROR_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null

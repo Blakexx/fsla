@@ -88,7 +88,7 @@ diff -- the question is never "is this code reasonable" but "does it compute the
 
 ```bash
 # in rola-bench: this checkout against another, every surface, as targets
-bazel run //:measure -- run declare.py:diffs --arg target=worktree:PATH --arg references=worktree:OLD
+python -m rola_devtools.build run declare.py:diffs --arg target=worktree:PATH --arg references=worktree:OLD
 ```
 
 Both sides are DIFF SIDES (`tests/oracle/sides.py`) run by the build system in each checkout's own environment over the

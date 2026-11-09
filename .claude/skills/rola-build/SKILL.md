@@ -9,7 +9,7 @@ The build and its parameters: `docs/build-graph.md#compile`. What a stage owes a
 
 1. The shipped build is `bazel run //:library`, every ratified architecture and arm; an iteration build compiles one
    architecture and the arms it needs, `bazel run //:library --//:archs=86 --//:carry_arms=3` (`--//:decode_arms`,
-   `--//:carry_parts` likewise; `docs/build.md#iteration`), never through a scratch compile.
+   `--//:carry_parts` likewise; `docs/build-graph.md#compile`), never through a scratch compile.
 2. The build graph (`docs/build-graph.md`): `bazel` is the pinned bazelisk (`toolchain.bazel` links it), which runs the
    front door `bazel/bazel`; it takes the machine-wide host budget for every build phase and sets the jobs, so never
    pass `--jobs` or a cache path (`docs/build-graph.md#front-door`).

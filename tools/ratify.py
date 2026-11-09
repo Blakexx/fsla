@@ -239,7 +239,7 @@ SRC = Path(__file__).resolve().parents[1] / "csrc" / "rola" / "src"
 #: path in the command is already absolute (measured, `docs/build.md#sccache`),
 #: so this gate's compiles must run from the SAME directory the build's ninja
 #: compile just ran from, or the post-build recompile can never hit the build's
-#: own cache entry -- and a plain `bazel test //:ratified` run by a developer
+#: own cache entry -- and a plain run of this gate's compile path by a developer
 #: must use the same fixed directory too, so re-ratifying twice in a row (or
 #: after a build) hits by construction rather than by the accident of an
 #: unchanged shell CWD.
@@ -315,7 +315,7 @@ def load_manifest(arches, name: str | None = None) -> dict:
         if not path.exists():
             raise SystemExit(
                 f"no ratified manifest for sm_{arch} at {path}; run\n"
-                f"    bazel run //:ratify -- --write\n"
+                f"    python tools/ratify.py --arch {arch} --write\n"
                 f"and put the numbers in the findings document")
         blob = json.loads(path.read_text())
         sources[arch] = blob.get("source")
@@ -1633,7 +1633,7 @@ def main() -> int:
             raise SystemExit("--graph needs --runfiles, the directory its census record's paths are relative to")
         use_graph(a.graph, a.runfiles)
         graph_archs, iteration = graph_parameters()
-        #: an iteration build is never ratified (docs/build.md#iteration); its census is a measurement scope
+        #: an iteration build is never ratified (docs/build-graph.md#compile); its census is a measurement scope
         if iteration and not a.census:
             raise SystemExit("this is an iteration build (its parameters are not the shipped set): it is never "
                              "ratified. Build //:library with its default parameters, or take --census")

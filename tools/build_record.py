@@ -35,7 +35,7 @@ def ratified_manifest(archs: list[str], manifest_dir: Path) -> dict:
         if not path.exists():
             raise RuntimeError(
                 f"CLOSED-WORLD RULE 3: sm_{a} is in the build's architectures but there is no ratified manifest at "
-                f"{path}. Ratify it first:\n    bazel run //:ratify -- --write\nand record why the numbers "
+                f"{path}. Ratify it first:\n    python tools/ratify.py --arch {a} --write\nand record why the numbers "
                 f"are what they are (docs/bringup.md). Building an architecture nobody measured is the failure this "
                 f"rule exists to prevent.")
         blob = json.loads(path.read_text())

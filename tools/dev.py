@@ -560,7 +560,7 @@ def cmd_check(a) -> int:
     row((devtools / "rola_devtools" / "mirror.py").is_file(), f"workspace.devtools is a rola-devtools checkout: {devtools}",
         "clone rola-devtools to workspace.devtools, or point workspace.devtools at a checkout")
     #: the co-developed checkouts import in each venv that runs here: the base venv (the sibling repositories' hooks)
-    #: and this checkout's own (its hooks, `container`, `build`)
+    #: and this checkout's own (its hooks, `container`)
     for venv in ([Path(base)] if base else []) + ([own] if readable and own is not None else []):
         python = venv / "bin" / "python"
         found = subprocess.run([str(python), "-c", "import rola_results, rola_devtools; "
@@ -744,26 +744,6 @@ def cmd_worktree(a) -> int:
                     "importlib.import_module(PLUGIN + '._build_config').BUILD_CONFIG['archs'])"], cwd=worktree, check=True)
     print(f"worktree {worktree}  venv {venv}")
     return 0
-
-
-def cmd_build(a) -> int:
-    """THE ITERATION BUILD: the extension rebuilt in place (`setup.py build_ext --inplace`) by this checkout's own venv
-    (`bazel run //:dev_env`), which `_from_own_venv` re-executes it under -- the same compile, gates and device-stamped library as `pip install -e
-    .`, without pip's metadata, wheel and reinstall. Refuses when that interpreter's `rola` is not this checkout's (a
-    venv imports the checkout it names). `--archs` and `--carry-arms` set `ROLA_CUDA_ARCHS` / `ROLA_CARRY_ARMS`.
-    -- see docs/build.md#iteration"""
-    python = sys.executable
-    probe = subprocess.run([python, "-c", "import rola, pathlib; print(pathlib.Path(rola.__file__).resolve())"],
-                           cwd="/", capture_output=True, text=True)
-    if probe.returncode or not Path(probe.stdout.strip()).is_relative_to(ROOT / "rola"):
-        raise SystemExit(f"refusing: {python}'s rola is {probe.stdout.strip() or probe.stderr.strip()!r}, not "
-                         f"{ROOT / 'rola'}; build with this checkout's venv (`bazel run //:dev_env` writes it)")
-    env = dict(os.environ)
-    if a.archs:
-        env["ROLA_CUDA_ARCHS"] = a.archs
-    if a.carry_arms:
-        env["ROLA_CARRY_ARMS"] = a.carry_arms
-    return subprocess.run([python, "setup.py", "build_ext", "--inplace"], cwd=ROOT, env=env).returncode
 
 
 def _image(layout: str) -> tuple[str, str]:
@@ -990,10 +970,6 @@ def main() -> int:
     p.add_argument("sha")
     p.set_defaults(fn=cmd_worktree)
 
-    p = sub.add_parser("build", help="the iteration build: the extension rebuilt in place, gated and stamped")
-    p.add_argument("--archs", default=None, help="ROLA_CUDA_ARCHS for this build, e.g. 86")
-    p.add_argument("--carry-arms", default=None, help="ROLA_CARRY_ARMS for this build, e.g. all")
-    p.set_defaults(fn=cmd_build)
     p = sub.add_parser("container", help="the devbox image: its clean-room check, an editor's container, the commit gate")
     p.add_argument("action", choices=("check", "compose", "gate"))
     p.add_argument("--layout", required=True, help="the image's OCI layout (`//:image`)")
