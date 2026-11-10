@@ -359,12 +359,12 @@ card; a kernel's schedule is designed, and written into its own page, before it 
 | mechanism | hopper (sm_90) | blackwell (sm_100) |
 |---|---|---|
 | the operands | u8 rows expanded to bf16 where they are staged, a scale or a coefficient multiplied in fp32 there; bf16 values as stored (`architecture/precision.md`) | the same |
-| the tensor products | `wgmma`: B from shared memory by descriptor, A from shared memory or from registers; fp32 accumulate; int8 for a window's pair products | `tcgen05`, operands and accumulators in tensor memory |
+| the tensor products | `wgmma`: B from shared memory by descriptor, A from shared memory or from registers; fp32 accumulate; int8 for a window's pair products of rows, exact | `tcgen05`, operands and accumulators in tensor memory; the same two products |
 | state in the register file | producer and consumer warps, the registers moved between them (`setmaxnreg`); the fold's fp32 accumulators the readout's operand, narrowed in place | the accumulator in tensor memory |
-| operand staging from DRAM | TMA box loads into rings, landed on `mbarrier`s, descriptors built at runtime | the same, plus multicast to a cluster |
+| operand staging from DRAM | TMA box loads into rings, landed on `mbarrier`s, descriptors built at runtime | the same |
 | runtime addressing | uniform-datapath registers from the prologue, pairing with runtime descriptors | the same |
 | the output's sum | fp32 in shared memory and across CTAs: a bulk reduction where the panel is contiguous, `red.global` a token where it is not | the same |
-| the box grain | one CTA per multiprocessor | the same |
+| the box grain | one CTA per multiprocessor; a cluster sharing staging through distributed shared memory (TMA multicast) only where a lab shows it pays | the same |
 | decode's walk and combine | per-lane-group gathers, a work queue of visits, global atomics into a head's sums | the same |
 | the closed world | ratified manifest per architecture, device stamp | the same |
 

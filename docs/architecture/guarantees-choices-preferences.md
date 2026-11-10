@@ -44,9 +44,8 @@ same week.
 
 **Numerics**
 
-- **State accumulators are fp32 or exact integer** — the fold's state, the mass, the scale pass's write masses, decay
-  dials. The readout's partials are an output's: f16 pairs at the token's scale byte (or fp32), bounded by the scale
-  pass. → [precision.md](precision.md).
+- **State accumulators are fp32 or exact integer** — the fold's state, the mass, the readout's and the den's sums, the output's sum
+  across CTAs, decay dials. → [precision.md](precision.md).
 - **The amplitude is never logged.** The direct staged-factor lowering is required,
   not preferred: a product of factors is formed from the factors, never through a
   log-space sum, in every kernel.

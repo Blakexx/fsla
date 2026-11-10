@@ -8,8 +8,8 @@ share it. An `ldmatrix` costs one phase per 8x8 matrix, with its 8 row addresses
 
 It runs where addresses are chosen. A producer that picks slots (the facts pass, or a lab's inputs standing in for it)
 runs the model on what it emits, so a conflict shows up before any hardware run.
-A lab's inputs write `banks.json` beside their data: the wavefronts per MMA of a CTA-window's gathers, adds, entry
-loads and state loads, for each step form.
+No lab in the tree runs it now: the ampere readout's and coloring labs, which wrote its report beside their data, are
+the branch's.
 
 ## Checked against ncu
 
