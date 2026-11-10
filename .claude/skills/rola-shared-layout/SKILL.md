@@ -12,9 +12,9 @@ The law: `docs/KERNEL_STANDARDS.md#s30`. The model: `docs/internals/tools/bank_m
 1. In the component's `docs/internals/` page (or the lab's header), write the access table §30.1 asks for and choose
    the layout from it; name the instruction shapes it is conflict-free for.
 2. Where data picks the addresses, a placement enters the producer's format only once the composed consumer is timed
-   with and without it (§30.2); the measured coloring: `docs/lab/color_union.md`.
+   with and without it (§30.2); the measurement: `docs/internals/facts/facts.md#ranks`.
 3. Place pads by §30.3.
 4. Before any GPU run, model the producer's emission with `tools/bank_model.py`'s `wavefronts` and `ldmatrix` from the
-   lab's `.inputs.py`, written beside its data as `banks.json` (as `read_image.inputs.py` does); its command line
+   lab's `.inputs.py`, written beside its data as `banks.json`; its command line
    answers one instruction (`docs/internals/tools/bank_model.md`).
 5. Put the `wavefronts` line in the budget (§30.4; `rola-budget`) and price it at every density (§30.6).

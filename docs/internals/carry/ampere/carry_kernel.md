@@ -78,7 +78,7 @@ parity), then a group a further read chunk and a group a fold chunk. A read chun
 the staging's where that was committed after it (`wait_group 1`), else for every group; a fold chunk's for every
 group. The window lab measured the groups' form (its record `measure/lab/results/carry_window`); mbarriers, which the step machine landed
 its slots on (an arrive fences the warp's outstanding atomics, the waiters poll; ~2x a hardware barrier a round,
-`docs/lab/image_ring.md`), are gone from the carry.
+the lab image_ring), are gone from the carry.
 
 <a id="barriers"></a>
 ## The barriers

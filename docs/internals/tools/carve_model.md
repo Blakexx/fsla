@@ -109,9 +109,9 @@ tenant takes 2,176 bytes of the area (`FOLD_TENANT`); a dense side stays residen
 phase, booked in `fills`: the FOLD's 1.05x its phase, from the built fold stream (2026-10-19, nl64k-alt-k4 at equal
 area: fold +898, fills and landed -960 cycles a warp-window, against the 3,320 of fills the model removes; on the
 earlier planner the same factor puts flagship-alt-k16-L16384 and -cohort-k16 at +3.0% and +1.8% against +0.2% and
-+1.3% measured); the READOUT's with its drain 0.22x, the [`read_stream`](../../lab/read_stream.md) lab's 1.34x of its
++1.3% measured); the READOUT's with its drain 0.22x, the `read_stream` lab's 1.34x of its
 bare phase rescaled to the model's (0.648) -- unvalidated: the fold's lab factor
-([`row_stream`](../../lab/row_stream.md), 0.375 of the phase) was 2.8x short of its build (the lab kept its ring across
+(`row_stream`, 0.375 of the phase) was 2.8x short of its build (the lab kept its ring across
 windows and copied half the slice), so `window` also prints the read stream at 2.8x its factor (`LAB_MISS`). A 4-stage
 read ring adds 264 cycles a CTA-window.
 
