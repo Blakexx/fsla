@@ -83,7 +83,7 @@ readout's digits and its rows the K. A dense fold side takes its coefficients fr
 ([`../engine/carve.md#sides`](../../engine/carve.md#sides)), so its box is the same split too. The image, the readout and
 the den's readout are the same in both: only the keys (`#maxima`), the stores (`#store`) and the den's tables
 (`#den`) read the fold's state the other way round. The readout reads every leaf for its channels, so the hand-off is
-always the image -- at dense its stores are ~1.0K cycles of a ~70K window (`tools/design_floor.py`).
+always the image -- at dense its stores are ~1.0K cycles of a ~70K window (the design-floor model).
 
 ARMS: `[32, 1, 32, 1, 32, 0]` the alternating box, `[32, 1, 32, 1, 32, 1]` both sides listing one level (`[SS, DD]`),
 `[32, 2, 32, 1, 32, 1]` a dense write side over a listed read side (`[SD, DD]`).

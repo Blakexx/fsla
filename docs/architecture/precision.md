@@ -37,8 +37,7 @@ with each (token, digit)'s factor `c 2^(e_d - kImageTop - s - 1)` on the read ro
 f16's normal floor 2^-14 are 32% at flagship-alt-k4, 71% at alt-k16, 57% at cohort-k16 and 100% at flagship-dense
 (3.7%, 11%, 7.6% and 38% with the token's byte left off). The scale byte's frame is the scale pass's bound, about 2^9
 over the real sums, and the image keeps its 2^10 top, so the whole shift lands on the rows. The listed readout
-therefore scales its accumulator, and the dense readout scales its rows at a per-token exponent of its own
-([`readout_scaling.py`](../internals/tools/readout_scaling.md) prices that form).
+therefore scales its accumulator, and the dense readout scales its rows at a per-token exponent of its own.
 
 The readout's partials are an output's, not a state's: each token's num into the panel and across CTAs as f16 pairs at each token's scale byte (or fp32, the declared `reduce_dtype`), added across CTAs by `red.global.add.noftz.f16x2` (or `.f32`),
 the scale pass's byte bounding the token's whole num so the f16 sum stays in range (Blake, 2026-11-06: the readout's
