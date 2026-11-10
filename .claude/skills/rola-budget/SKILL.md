@@ -27,7 +27,7 @@ The method and its data: `docs/internals/tools/budgets.md`. The law: `docs/KERNE
    `docs/internals/tools/budgets.md#ledger`.
 8. A production kernel's budget also states each component's live registers and each phase's predicted cycles
    (`docs/internals/tools/budgets.md#building-a-budget` item 5, `docs/KERNEL_STANDARDS.md#s32`); check them with
-   `bazel run //tools:life_ranges -- --arm 0 --kernel <regex> --source <kernel file> --source <component files>...
+   `bazel run //tools:life_ranges -- --so <.so> --member <member> --kernel <regex> --source <kernel file> --source <component files>...
    --budget tools/budgets/<kernel>.json` (`docs/internals/tools/life_ranges.md#budget`). A phase's cycles are read
    by its family's phase ledger, which lands with the family's first schedule; a phase over 1.3x its prediction stops
    work until the wrong price or model is named.

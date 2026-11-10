@@ -23,12 +23,12 @@ silently.
 
 ```bash
 bazel run //:library                                   # every ratified architecture and arm, into rola_cu13/
-bazel run //:library --//:archs=86 --//:carry_arms=3   # an iteration build (below)
+bazel run //:library --//:archs=86 --//:decode_arms=3  # an iteration build (below)
 bazel run //:wheels                                    # the two wheels of a clean, ratified commit (below)
 ```
 
-A build's PARAMETERS are the graph's settings -- `--//:archs`, `--//:carry_arms`, `--//:decode_arms`,
-`--//:carry_parts` ([`build-graph.md`](build-graph.md#compile)) -- and everything about the MACHINE is the dev config.
+A build's PARAMETERS are the graph's settings -- `--//:archs`, `--//:carry_arms`,
+`--//:decode_arms` ([`build-graph.md`](build-graph.md#compile)) -- and everything about the MACHINE is the dev config.
 `host.nvcc_threads` is `nvcc --threads`, default 2, the number of `-gencode` targets: beyond the target count it buys
 nothing and multiplies the resident set, since the two parallelism axes multiply. Every build runs under the
 machine-wide host budget, which the front door takes for it ([`build-graph.md`](build-graph.md#front-door)); any other

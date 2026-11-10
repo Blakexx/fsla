@@ -21,7 +21,7 @@ import pytest
 import torch
 
 from measure.cells import carry_cells, realize
-from measure.subjects import bundle_of, cell_carve, lists_form_of
+from measure.subjects import bundle_of, cell_carve
 from rola.ops import carry as carry_ops
 from rola.ops import facts as facts_ops
 from rola.ops.prefill import reader_factor
@@ -46,8 +46,9 @@ def run(spec):
     """``(routes, values, num, den)``: one carry launch over the cell, from its bundle, the facts pass's lists in the
     form of the arm its carve selects, and the carve."""
     routes, values, layout, statics = bundle_of(spec, realize(spec))
-    facts = facts_ops.facts(routes, values, layout, *statics, lists_form_of(spec))
-    num, den = carry_ops.carry(routes, values, facts, cell_carve(spec))[:2]
+    carve = cell_carve(spec)
+    facts = facts_ops.facts(routes, values, layout, *statics, carry_ops.lists_form(carry_ops.arm_key(carve)))
+    num, den = carry_ops.carry(routes, values, facts, carve)[:2]
     torch.cuda.synchronize()
     return routes, values, num, den
 

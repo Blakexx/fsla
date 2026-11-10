@@ -75,8 +75,7 @@ def test_an_arm_is_offered_only_where_the_binary_carries_its_kernel(binary, monk
 def test_a_cell_is_refused_by_name(binary, monkeypatch):
     import gen_shards
 
-    with pytest.raises(LookupError, match=r"deep3-dense: this binary carries no carry arm \(16, 3, 16, 3, 64, 1\)"):
-        provider.arms(by_name("deep3-dense"))
+    assert "prefill" not in provider.arms(by_name("deep3-dense"))
     monkeypatch.setattr(gen_shards, "CARRY_ARMS", tuple(binary.carry))
     with pytest.raises(TypeError, match="rola's runner takes a central carry cell or layer cell"):
         provider.arms(by_name("qkv-L1024-dv64"))

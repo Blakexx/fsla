@@ -91,6 +91,12 @@ _FAMILIES = {
         test="tests/integration/test_facts_pass.py::"
              "test_the_lists_are_the_model_bit_for_bit[list_groups1-alternating-widths3-33]",
         kernel="rola::facts::rola_facts_forward", present=True),
+    #: THE CARRY OVER A WHOLE CALL, absent: no carry kernel is built on this line, so the oracle's whole-call cell
+    #: refuses by name, and the row flips when a schedule lands.
+    "carry_call": Family(
+        test="tests/oracle/test_carry_vs_oracle.py::"
+             "test_the_inter_numerator_is_the_fp64_reference[flagship-cohort-k4-L4096]",
+        kernel="rola::carry::carry_forward", present=False),
     #: THE DECODE STEP on the whole resident grid: the work queue's visits, claims and head switches.
     "decode": Family(
         test="tests/oracle/test_decode_vs_oracle.py::"

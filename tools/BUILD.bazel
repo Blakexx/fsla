@@ -85,7 +85,6 @@ cc_binary(
     "op_timeline",
     "overlap_gate",
     "pipe_counters",
-    "pipe_timeline",
     "realized_support",
     "region_ledger",
     "review_gate",

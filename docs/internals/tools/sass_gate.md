@@ -2,15 +2,13 @@
 
 The gate reads every function of every cubin a binary carries and is red on any of KERNEL_STANDARDS
 [§20](../../KERNEL_STANDARDS.md#s20)'s ptxas signatures (local memory, a stack frame, convergence calls a converged
-warp executes, predicated HMMAs, branches and gaps in an MMA step, step cover under its floor); guarded convergence
+warp executes, predicated HMMAs, branches and gaps in an MMA step); guarded convergence
 fallbacks are counted, cold code, not red. A step loop leaves out a fallback's return: the stub a `BRA.DIV` enters is
-read to its unconditional branch back, however long (ptxas copies a step's remaining work into it: stubs of 49-101
-lines in the carry's fold steps read as 3,000-instruction MMA loops under the old 32-line read). Every build runs it after the link (the library's gate action, [below](#graph)); by hand,
+read to its unconditional branch back, however long (ptxas copies a step's remaining work into it). Every build runs it after the link (the library's gate action, [below](#graph)); by hand,
 `bazel run //tools:sass_gate -- <.so | .cubin> [--kernel RE] [--member S] [--loops] [--json PATH]`. Each function's line
 carries its registers (`regs`, off `cuobjdump -res-usage`), so an iteration build that skips the ratify still shows a
-register change. A step-cover floor is keyed by architecture and mangled name; a kernel renamed by the build rule
-([`../common/hardware.md#builds-renamed`](../common/hardware.md#builds-renamed)) keeps its floor through
-`--rekey-floors <.so>`, which moves each key to the binary's entry point of the same signature, values unchanged.
+register change. The step cover (KERNEL_STANDARDS §32.4) is a family's machine model's reading, and the gate runs
+none until a family's model exists.
 
 ## <a id="step-branches"></a>A branch inside a step
 
@@ -29,7 +27,7 @@ predicated copy, a branch back into the loop, or a conditional back-edge still c
 ## <a id="cost"></a>What a read costs
 
 Every lint of a function reads the same two disassemblies of its cubin and the same MMA loops, so each is formed once:
-a cubin's `nvdisasm` text (`sass.disassemble`) and its parsed `cuobjdump -sass` (`sass_control._encoded_all`) once a
+a cubin's `nvdisasm` text (`sass.disassemble`) and its parsed `cuobjdump -sass` once a
 process for each version of the file (its path, size and mtime), `mma_loops` once a function (`_LOOPS`). A whole read
 of the sm_86 extension is ~20 s (measured 2026-11-01), which the
 verdict cache leaves to the cubins that changed.

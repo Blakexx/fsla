@@ -18,10 +18,8 @@ writes).
 
 Registration is host-only. Left inside a `.cu` it is recompiled once per `-gencode` target for no benefit, and every
 architecture added to the ratified set multiplies that cost. Every declaration it names is a host header
-(`src/carry/carry_api.cuh`, `src/decode/decode_api.cuh`, `src/entmax/entmax.cuh`, `src/entmax/factor.cuh`,
-`src/common/geom_api.cuh`, `src/facts/facts_api.cuh`, `src/intra/intra_api.cuh`, `src/paging/vmm_owner.cuh`,
-`src/produce/produce_api.cuh`), so no
-device body is in scope.
+(`src/decode/decode_api.cuh`, `src/entmax/entmax.cuh`, `src/entmax/factor.cuh`, `src/common/geom_api.cuh`,
+`src/facts/facts_api.cuh`, `src/paging/vmm_owner.cuh`, `common/arm_switch.cuh`), so no device body is in scope.
 
 ## <a id="one-library"></a>2. One library, registered here only
 

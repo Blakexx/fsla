@@ -22,9 +22,9 @@ description: Load before writing or changing CUDA in this repo (csrc/ or measure
    (`docs/internals/tools/budgets.md#building-a-budget`). Comments are declaration blocks; prose goes to the mirror
    page (`docs/KERNEL_STANDARDS.md#comment-density`).
 6. Read the SASS before anything runs: `bazel run //tools:lab -- sass <experiment>` in the lab,
-   `bazel run //tools:sass_gate -- <.so>` on an extension build (it runs inside every build too); its step cover reads
-   every MMA loop's pipe share with its warps together, and the target is the line -- a debt's floor is only its
-   ratchet (`docs/KERNEL_STANDARDS.md#s32` item 4).
+   `bazel run //tools:sass_gate -- <.so>` on an extension build (it runs inside every build too). A step loop's cover is
+   its family's machine model's reading, gated at the line once that model exists (`docs/KERNEL_STANDARDS.md#s32`
+   item 4).
 7. Run new device code first under `timeout -s KILL` (`docs/KERNEL_STANDARDS.md#first-run`).
 8. Prove it: correctness with `rola-test`; cost with `rola-lab` (an experiment), `rola-instruments` (a shipped
    kernel's attribution) or `rola-bench` (the declared measurement). Commit with `rola-commit`.

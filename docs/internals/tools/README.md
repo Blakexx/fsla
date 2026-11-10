@@ -68,7 +68,7 @@ writes `--json`.
 
 | tool | what it is | called by | writes |
 |---|---|---|---|
-| `sanitize_oracle.py` | the compute-sanitizer gate on the facts, intra, decode, producer and entmax oracle cells | the sanitizer lane, `//tests:sanitizer`, which passes it the toolkit's own compute-sanitizer | — |
+| `sanitize_oracle.py` | the compute-sanitizer gate on the facts, decode and entmax oracle cells | the sanitizer lane, `//tests:sanitizer`, which passes it the toolkit's own compute-sanitizer | — |
 | [`docrefs.py`](docrefs.md) | every citation a doc makes, pinned to the content it was read against | the commit gate | `docs/references.lock.json` |
 
 `tools/lint/` is its own family with its own page ([`lint.md`](lint.md)): the ratchets, the standards lint and their

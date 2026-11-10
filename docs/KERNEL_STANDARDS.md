@@ -949,7 +949,8 @@ gated, and an instrument's missing target is a red.
    the commit, or in the commit that corrects the model, every floor re-read on an unchanged kernel (the first model
    read one warp alone times its warps, blind to the shared issue port). A floor of an architecture the host cannot
    run is lowered only on that architecture's own rented run. `[MACHINE]` Hopper's model -- an asynchronous `wgmma`'s
-   pipe time, TMA's rates -- is built from its labs with the first hopper schedule (owed).
+   pipe time, TMA's rates -- is built from its labs with the first hopper schedule (owed); the gate runs no cover until
+   a family's model exists.
 5. A TARGET THAT DISAPPEARS IS RED: a floor, budget line or gate row naming a function, loop or cell the tree no longer
    has fails; it never reads as nothing.
 6. ONE PRIMITIVE A JOB: before writing a helper, the common headers (`common/atoms/*.cuh`, `common/*.cuh`) are read for

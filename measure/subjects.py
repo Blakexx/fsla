@@ -90,14 +90,6 @@ def cell_carve(spec):
     return plan_carve(tuple(spec.widths), *(tuple(level[side] for level in declared) for side in (0, 1)), spec.dv)
 
 
-def lists_form_of(spec):
-    """What a cell's lists are built for: the carry arm its carve selects, on the device's card
-    (`rola.ops.carry.lists_form`)."""
-    from rola.ops import carry as carry_ops
-
-    return carry_ops.lists_form(carry_ops.arm_key(cell_carve(spec)))
-
-
 def prefill_op(fx) -> Launch:
     """THE PREFILL AS THE OP RUNS IT: `rola.interface.rola_op` over the cell's bundle, stateless -- the validation, the
     facts pass, the carry, the intra, the glue between them and the readout. A cell the envelope refuses
@@ -147,7 +139,7 @@ def facts_pass(fx) -> Launch:
 
     spec = fx["cell"]
     routes, values, layout, statics = bundle_of(spec, realize(spec))
-    form = lists_form_of(spec)
+    form = facts_ops.UNIT_FORM
 
     def run():
         return facts_ops.facts(routes, values, layout, *statics, form)
@@ -201,9 +193,8 @@ def _one_segment(spec, layer) -> None:
 def _layer_bundle(fx):
     """``(routes, values, layout, statics, carve, form)``: the layer's producer run once on the cell's prefill
     tokens, untimed, and what the op builds from its bundle before the facts pass, as the prefill DAG's facts node does
-    -- the layout, both sides' statics, the planner's carve and its carry arm's lists form."""
+    -- the layout, both sides' statics, the planner's carve and the lists' form."""
     from rola.engine.carve import plan_carve
-    from rola.ops import carry as carry_ops
     from rola.ops import facts as facts_ops
 
     spec, layer = fx["cell"], fx["layer"]
@@ -213,7 +204,7 @@ def _layer_bundle(fx):
     layout = facts_ops.call_layout(routes)
     statics = facts_ops.call_statics(routes, layout)
     carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, values.v.shape[-1])
-    return routes, values, layout, statics, carve, carry_ops.lists_form(carry_ops.arm_key(carve))
+    return routes, values, layout, statics, carve, facts_ops.UNIT_FORM
 
 
 def layer_facts(fx) -> Launch:
@@ -271,7 +262,7 @@ def decode_step(fx) -> Launch:
     layout = facts_ops.call_layout(routes)
     statics = facts_ops.call_statics(routes, layout)
     words = facts_ops.facts(routes, rola.Values.from_projection(fx["v_prefill"]), layout, *statics,
-                            lists_form_of(spec)).words
+                            facts_ops.UNIT_FORM).words
     bits = lv.page_bits(words, layout, *statics)
     seeded: dict = {}
 
