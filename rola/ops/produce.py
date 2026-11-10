@@ -33,8 +33,8 @@ from rola.routing.side_gain import WRITE_GAIN, softplus_side_gain
 from rola.routing.types import IndependentRouting, TiedRouting, UnionRouting
 from rola.values import Values
 
-__all__ = ["LEDGER_PHASES", "LEDGER_WARPS", "ProducerPlan", "ProducerWeights", "hidden_contiguous", "job_table",
-           "ledger_bind", "produce", "projection_dtype", "route_logits", "row_layout", "run_kernel"]
+__all__ = ["ProducerPlan", "ProducerWeights", "hidden_contiguous", "job_table", "produce", "projection_dtype",
+           "route_logits", "row_layout", "run_kernel"]
 
 
 @dataclass(frozen=True)
@@ -185,59 +185,12 @@ def _shape(job: tuple[int, ...], plan: ProducerPlan) -> int:
 
 
 @lru_cache(maxsize=64)
-def _job_tensor(plan: ProducerPlan, device: str) -> tuple[torch.Tensor, torch.Tensor]:
-    """``(table, shapes)``: the job table's addressing on the device (the head, the heads, the
-    width, the columns in and out, the level) and its control words on the host."""
-    jobs = job_table(plan)
-    table = torch.tensor([job[1:3] + job[4:10] for job in jobs], dtype=torch.int32, device=device)
-    return table, torch.tensor([_shape(job, plan) for job in jobs], dtype=torch.int16)
-
-
-#: THE PHASE LEDGER'S SHAPE: ``[jobs][warps][phases]``, the kernel's own `ProducePhase` order, booked over the tiles.
-LEDGER_PHASES = ("job", "project", "threshold", "levels", "bundle", "values")
-LEDGER_WARPS = 4
-
-
-def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurement instrument (docs/internals/produce/ampere/produce_kernel.md#phase-ledger)
-    """Bind the phase ledger the next launches book into, ``[jobs, 4, 6]`` int64 cycles, or ``None``."""
-    from rola.ops._ext import extension
-
-    extension().rola_produce_ledger_bind(ledger)
-
-
 def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> dict[str, torch.Tensor]:
-    """The fused producer's launch over bf16 CUDA operands: every output ``[B, T, H, ...]``, a view of the head-major
-    ``[B, H, T, ...]`` storage the kernel writes -- a head's tokens contiguous, which every prefill reader walks, and
-    the same bytes as token-major at one token (docs/internals/produce/ampere/produce_kernel.md#bundle)."""
-    from rola.ops._ext import extension
+    """The fused producer's launch over bf16 CUDA operands: not built on this line
+    (:func:`rola.ops._ext.not_built`)."""
+    from rola.ops._ext import not_built
 
-    B, T, hidden = x.shape
-    if hidden % 8:
-        raise ValueError(f"the producer kernel reads hidden runs in 16-byte chunks: the hidden size must be a multiple "
-                         f"of 8, got {hidden}")
-    H, D = plan.num_heads, plan.routing.topology.D
-    rows_read, rows_write = row_layout(plan, "read")[1], row_layout(plan, "write")[1]
-    dense = {side: dense_levels(plan, side) for side in ("read", "write")}
-    device = x.device
-
-    def empty(*shape, dtype=torch.float32):
-        return torch.empty(B, H, T, *shape, dtype=dtype, device=device)
-
-    out = {"amp_read": empty(rows_read, dtype=torch.uint8), "amp_write": empty(rows_write, dtype=torch.uint8),
-           **{f"dense_{side}": empty(row_layout(plan, side, dense=True)[1], dtype=quant.DENSE_DTYPE)
-              if dense[side] else None for side in ("read", "write")},
-           "scale_read": empty(D), "scale_write": empty(D), "v": empty(plan.d_v, dtype=torch.float16),
-           "v_scale": empty()}
-    jobs, shapes = _job_tensor(plan, str(device))
-    route_bias = None if weights.route_bias is None else weights.route_bias.float().contiguous()
-    extension().rola_produce_forward(
-        x.reshape(B * T, hidden).to(torch.bfloat16).contiguous(), weights.route_W, route_bias,
-        weights.gain_bias.float().contiguous(), weights.v_W, jobs,
-        *(out[name] for name in ("amp_read", "amp_write", "dense_read", "dense_write", "scale_read", "scale_write",
-                                 "v", "v_scale")),
-        None, None, shapes, D,
-        *(sum(1 << level for level in dense[side]) for side in ("read", "write")))
-    return {name: None if t is None else t.transpose(1, 2) for name, t in out.items()}
+    not_built("produce")
 
 
 def produce(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tuple[RouteFactors, Values]:

@@ -44,8 +44,7 @@ a reader can check against any linear-attention paper, with normalization carrie
 than as a second recurrence. The feature map's hard part, entmax, is the DeepSPIN authors' own package, pinned. What is
 OURS is the glue -- the leaf address map, the gate values, the ratio readout -- and it is deliberately small, because it
 is the one shared blind spot the factoring does not remove. The oracle takes the bundle itself as its input, so a kernel
-and its reference read the same quantized operands (`tests/oracle/int_reference.py` states the declared integer
-arithmetic in fp64).
+and its reference read the same quantized operands.
 
 Three promises a caller can rely on:
 
@@ -146,8 +145,8 @@ performance-only under drifting realized routing.
 2. **A rule that cannot fail is the same defect as a tolerance that cannot fail**, so each gate plants errors on the
    kernel's own output that must fail (`fixtures.assert_planted_errors_fail`), and `tests/unit/test_oracle_rule.py`
    holds the rule itself. `tests/oracle/tolerances.py` records the measured margins.
-3. **A kernel whose arithmetic is declared is graded against a reference that mirrors it** (the fold's
-   `tests/oracle/fold_reference.py`, the intra's `int_reference.py`, the state's `state_rounded`), so the tolerance
+3. **A kernel whose arithmetic is declared is graded against a reference that mirrors it** (the state's
+   `state_rounded`), so the tolerance
    charges only accumulation order, never a rounding the reference skipped. Where a third party's arithmetic is opaque
    (a cuBLAS reduction order), the gate sits at the seam: the production intermediate is fed to the reference. A fused
    kernel is gated through a shipped probe composed of its own device components (the carry's `fold_probe`), so the

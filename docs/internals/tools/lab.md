@@ -120,6 +120,5 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="vote-stash"></a>[`vote_stash`](../../lab/vote_stash.md)
 - <a id="facts-block"></a>[`facts_block`](../../lab/facts_block.md)
 - <a id="facts-two"></a>[`facts_two`](../../lab/facts_two.md)
-- <a id="mma-k8"></a>[`mma_k8`](../../lab/mma_k8.md)
 - <a id="issue-latency"></a>[`issue_latency`](../../lab/issue_latency.md)
 - <a id="drain"></a>[`drain`](../../lab/drain.md)

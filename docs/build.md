@@ -109,17 +109,13 @@ takes them from its own run, never from a build. Measured when a decode subset w
 inherited it and wrote a manifest of 393 entries carrying ONE decode arm, while the library carried all sixteen --
 and it PASSED. A gate that certifies numbers no shipped binary has is worse than no gate.
 
-The same rule governs `--//:archs=86`: iterate single-arch, gate and measure on the full both-arch build.
-`--//:carry_parts` <a id="carry-parts"></a> builds some of the carry kernel's parts (`readout.stream`, `readout.loads`,
-`readout.drain`, `fold.pool`, `fold.ring`, `fold.loads`) REAL and the rest as STUBS that keep their HMMAs and drop
-their other work. With
-every part real the arm's instructions are identical to a build without the switch. Never shipped.
+The same rule governs `--//:archs`: iterate on one architecture, gate and measure on the build of every ratified one.
 
 ## <a id="compile-ledger"></a>Why the arm units are torch-free
 
 Instantiation is the dominant build resource, and with per-arm units it is not the kernels that dominate but the
 tensor library's headers: a translation unit that includes them parses longer, and holds a larger resident set, than an
-arm's own codegen. So the carry family's per-arm ABI (`csrc/rola/src/carry/carry_arm_abi.cuh`) speaks POINTERS and not
+arm's own codegen. So a family's per-arm ABI speaks POINTERS and not
 tensors, and only the dispatch unit includes the torch seam: a tensor-typed seam would re-pay the headers once per arm
 and pin every arm unit's resident set at theirs. The ast-grep rule `tools/lint/rules/torch_include_in_arm_tu.yml`
 refuses a torch header in a per-arm unit. MEASURED per `cicc` (sm_86, `--threads=1`):

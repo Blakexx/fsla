@@ -90,10 +90,8 @@ def _refuse_a_partial_binary() -> None:
 def _kernel_carried(subject: str, spec, construction) -> bool:
     """Whether this binary carries the kernel `subject` launches at the cell's shape, or a layer cell's construction
     (the cell's own facts are `measure.subjects.applicable`'s)."""
-    from rola.ops import decode, intra
+    from rola.ops import decode
 
-    if subject == "intra_forward":
-        return intra.reads(spec.widths)
     if subject == "decode_step":
         rows = decode.arms()
         padded = [dv for dv, _d, _decay in rows if dv >= spec.dv]
@@ -157,7 +155,7 @@ def _layer_fixture(spec, construction):
     return build(spec, construction)
 
 
-def oneshot_argv(cell: str, arm: str = "carry_forward") -> list[str]:
+def oneshot_argv(cell: str, arm: str) -> list[str]:
     """One untimed launch of `arm` on `cell` by this checkout's runner, under this interpreter: what a profiler wraps.
     The arm is built exactly as a comparison builds it, so what a profile counts is the launch a comparison times."""
     #: AS A MODULE, from the checkout: a package file run by path has its own directory for a root and cannot import

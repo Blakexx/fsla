@@ -37,8 +37,7 @@ verdict cache leaves to the cubins that changed.
 ## <a id="cache"></a>The verdict cache
 
 A cubin's verdict, report and statistics are recorded under the key of everything that decides them -- the cubin's
-bytes, the gate's own source closure (every module of `tools/` it has loaded, so the debt tables and machine models in
-its source are covered), `tools/budgets/step_floors.json`, the disassemblers' identity (`nvdisasm` and `cuobjdump` by
+bytes, the gate's own source closure (every module of `tools/` it has loaded), the disassemblers' identity (`nvdisasm` and `cuobjdump` by
 their version lines) and the arguments (`--kernel`, `--max-per-hmma`, `--loops`, and `--instrument`'s declarations, by
 content) -- in the dev config's scratch
 (`sass_gate_verdicts/`). A cubin whose key matches is replayed: its verdict is the reading of identical bytes under an
@@ -48,14 +47,13 @@ re-reads. A no-change build's gate is ~0.1 s; a one-kernel edit re-reads that ke
 
 ## <a id="instrument"></a>An instrument's library
 
-`--instrument DECLARATIONS` gates an instrument's library (`bazel/defs.bzl`'s `rola_instrument`, the part harness's
-`_C_parts`): its kernels are PROBES, so it owes none of the source's kernels, and a probe keeps a step signature --
-branches, the conversion unit or global memory in an MMA step, or a step cover under the line -- only where its
-declarations name it. A calibration that puts a global reduction between its HMMAs does so to measure that very cost
-(`hmma_reduce_*`, `measure/harness/bench_carry_calib.py`), so it declares it, by a pattern over the function's mangled
-name, with the cost it measures (`measure/harness/carry_parts/kept_signatures.json`, `kernels`: `{pattern: {lint:
-cost}}`, the lints `step_branches`, `step_xu`, `step_global`, `step_cover`); `sm_80 <pattern>` declares a signature
-one architecture's SASS keeps alone (ptxas schedules each apart: the reductions' step cover is sm_80's). An undeclared
+`--instrument DECLARATIONS` gates an instrument's library (`bazel/defs.bzl`'s `rola_instrument`: a family's part
+harness, which lands with the family's first schedule): its kernels are PROBES, so it owes none of the source's
+kernels, and a probe keeps a step signature -- branches, the conversion unit or global memory in an MMA step -- only
+where its declarations name it. A calibration that puts a global reduction between its MMAs does so to measure that
+very cost, so it declares it, by a pattern over the function's mangled name, with the cost it measures (a JSON file,
+`kernels`: `{pattern: {lint: cost}}`, the lints `step_branches`, `step_xu`, `step_global`); `sm_XX <pattern>` declares
+a signature one architecture's SASS keeps alone (ptxas schedules each apart). An undeclared
 signature is red, as on the extension, and so is a declaration an architecture the binary carries does not show: a
 plain one on each such architecture, an `sm_XX` one on its own (a one-card iteration build reads none of another
 card's). The declarations say only what is so. Every other

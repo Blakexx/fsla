@@ -52,7 +52,7 @@ _OWN = (
 COUNTERS = (*_OWN, *(m for m in pipes.metric_names() if m not in _OWN))
 
 
-def measure(cell: str, family: str = "carry") -> dict:
+def measure(cell: str, family: str) -> dict:
     from measure.cells import by_name
 
     t = kernel_targets.target(family)
@@ -69,8 +69,7 @@ def measure(cell: str, family: str = "carry") -> dict:
                 values[parts[-3]] = float(parts[-1].replace(",", ""))
     if not values:
         raise SystemExit(f"pipe_counters: no counters read (ncu rc {done.returncode}):\n{(done.stdout + done.stderr)[-1500:]}")
-    return {"cell": cell, "kernel": family, "unit": t.unit, "units": kernel_targets.units(t, spec),
-            **({"cta_windows": kernel_targets.units(t, spec)} if t.unit == "CTA-windows" else {}), "launch": values,
+    return {"cell": cell, "kernel": family, "unit": t.unit, "units": kernel_targets.units(t, spec), "launch": values,
             "missing": sorted(set(COUNTERS) - set(values))}
 
 
@@ -78,7 +77,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cell")
     ap.add_argument("--json", type=Path, required=True)
-    ap.add_argument("--kernel", default="carry", choices=sorted(kernel_targets.TARGETS),
+    ap.add_argument("--kernel", default="facts", choices=sorted(kernel_targets.TARGETS),
                     help="the kernel family launched (tools/kernel_targets.py)")
     a = ap.parse_args()
     doc = measure(a.cell, a.kernel)

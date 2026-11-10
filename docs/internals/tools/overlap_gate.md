@@ -7,9 +7,8 @@ of its sustained peak. The FLOORS, each a time:
 - issue: instructions over the SMs' schedulers at one a clock (`common/hardware.json`: `schedulers`, `issue`);
 - tensor: the row's MMA kind's instructions at the product's calibrated cycles each, over the SMs' schedulers --
   never the profiler's pipe ratio (§22: GeForce runs fp32-accumulate at half the rate the profiler assumes); a row of
-  several shapes (`mma="shapes"`, the carry's three) prices each executed MMA by its SASS shape, read from a second
-  `ncu` launch's source counters: its accumulate type's rate, an m16n8k8 (or an int8 m16n8k16) half its larger shape
-  (lab [`mma_k8`](../../lab/mma_k8.md));
+  several shapes (`mma="shapes"`) prices each executed MMA by its SASS shape, read from a second
+  `ncu` launch's source counters: its accumulate type's rate, an m16n8k8 (or an int8 m16n8k16) half its larger shape;
 - shared: wavefronts at the product's `wavefront` cycles each, over the SMs;
 - DRAM: the bytes at the profiler's sustained DRAM peak, `dram__throughput` x elapsed.
 

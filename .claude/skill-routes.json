@@ -36,8 +36,8 @@
   {
    "skill": "rola-instruments",
    "bash": [
-    "^(python3?\\s+)?tools/(region_ledger|phase_ledger|stall_census|pipe_counters|life_ranges|pipe_timeline|overlap_gate|roofline)\\.py\\b",
-    "^bazel\\s+run\\s+//tools:(region_ledger|phase_ledger|stall_census|pipe_counters|life_ranges|pipe_timeline|overlap_gate|roofline)\\b",
+    "^(python3?\\s+)?tools/(region_ledger|stall_census|pipe_counters|life_ranges|overlap_gate)\\.py\\b",
+    "^bazel\\s+run\\s+//tools:(region_ledger|stall_census|pipe_counters|life_ranges|overlap_gate)\\b",
     "^ncu\\b"
    ]
   },
@@ -56,14 +56,12 @@
    "edit": [
     "tests/*",
     "rola/ops/naive.py",
-    "tools/sanitize_oracle.py",
-    "tools/sanitize_cell.py"
+    "tools/sanitize_oracle.py"
    ],
    "bash": [
     "^(python3?\\s+-m\\s+)?pytest\\b",
     "^bazel\\s+test\\s+//(tests|:lane)\\b",
-    "^(python3?\\s+)?tools/sanitize_(oracle|cell)\\.py\\b",
-    "^bazel\\s+run\\s+//tools:sanitize_cell\\b",
+    "^(python3?\\s+)?tools/sanitize_oracle\\.py\\b",
     "^compute-sanitizer\\b"
    ]
   },

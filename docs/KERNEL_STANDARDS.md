@@ -475,7 +475,7 @@ measured floor; (10) THE CALIBRATIONS (a family's own, built with its schedule):
 each operation the parts are made of (the kernel's MMA atom, shared loads and stores, matrix loads,
 asynchronous copies, global reductions, CTA and shared-memory barriers, warp syncs) alone on every warp,
 as cycles an operation a warp on this card -- reference rows every reading uses in place of a constant (an
-MMA's cycles was one such constant for eight days); (11) THE PIPE TIMELINE (`tools/pipe_timeline.py`): the
+MMA's cycles was one such constant for eight days); (11) THE PIPE TIMELINE (a family's own, built with its schedule): the
 tensor pipe's true utilization over a launch, measured on silicon by the profiler's PM sampling (1 us samples), on a
 scale taken from the MMA-only composition's plateau -- the one instrument that says when the pipe idled rather
 than how much in total; validated against the MMA-count utilization at three points on sm_86 (66.8 / 21.0 /
