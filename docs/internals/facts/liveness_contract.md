@@ -132,9 +132,9 @@ the words that exist. `union_address` in the header is the table's address from 
 extents, which `LivenessLayout::union_index` and a kernel with compile-time extents both
 call; `tile_unions` in the Python module is the model, gated against the per-token bits.
 
-The intra's slab gate is the consumer (`intra/ampere/intra_kernel.md#slab-gate`): a CTA reads 40
+An intra's slab gate is the consumer. The ampere family's (the branch `ampere`) read 40
 bytes a lane of it where reading the words themselves took a 64-byte run from each of 512
-rows 8 KB apart — measured at `L = 64K`, 10% of the intra's warp cycles against 3.5%.
+rows 8 KB apart — measured there at `L = 64K`, 10% of that intra's warp cycles against 3.5%.
 
 <a id="folds"></a>
 

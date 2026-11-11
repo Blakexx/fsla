@@ -256,7 +256,6 @@
   {"doc": "docs/architecture/self-masking-theorem.md", "pinned_at": "5893367f2de4", "reviewed": true, "sha256": "2785873f2d86968a", "target": "docs/CONSTITUTION.md#r23"},
   {"doc": "docs/architecture/self-masking-theorem.md", "pinned_at": "3360bacd82eb", "reviewed": true, "sha256": "", "target": "docs/architecture/guarantees-choices-preferences.md"},
   {"doc": "docs/architecture/self-masking-theorem.md", "pinned_at": "876a1f476c12", "reviewed": true, "sha256": "53d7fd7c0cf9f6ca", "target": "docs/internals/facts/liveness_contract.md#digits"},
-  {"doc": "docs/architecture/self-masking-theorem.md", "pinned_at": "876a1f476c12", "reviewed": true, "sha256": "073a2198a3ebfb18", "target": "docs/internals/facts/liveness_contract.md#max"},
   {"doc": "docs/architecture/self-masking-theorem.md", "pinned_at": "e51d707b980f", "reviewed": true, "sha256": "", "target": "docs/internals/paging/paging.md"},
   {"doc": "docs/architecture/self-masking-theorem.md", "pinned_at": "e51d707b980f", "reviewed": true, "sha256": "", "target": "rola/ops/naive.py"},
   {"doc": "docs/architecture/self-masking-theorem.md", "pinned_at": "3360bacd82eb", "reviewed": true, "sha256": "", "target": "rola/values.py"},

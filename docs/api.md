@@ -329,9 +329,9 @@ uniform(depth, level)                     # `depth` levels spelled the same way
 because a broadcast is a rule the reader has to know before they can read the widths off
 the call.
 
-**Every level, every head and the values are one launch.** The plan compiles into the
-kernel's job table -- a job per head's solve and per group of value heads -- so a model pays
-one launch for the whole topology, whatever its levels' operators, alphas and widths.
+**Every level, every head and the values are one launch by design** -- a model pays one launch for the whole
+topology, whatever its levels' operators, alphas and widths. That kernel is not built on this line: the no-grad
+CUDA call raises `rola.ops._ext.KernelNotBuilt`, and the torch composition behind the same call serves fp64, the host and a gradient.
 
 <a id="projection-weight"></a>**The projection reads a laid-out copy of `route_W` when no gradient flows.** The GEMM's
 operands are bf16 and the kernel reads each column's hidden run contiguous (`hidden_contiguous`), so an inference
