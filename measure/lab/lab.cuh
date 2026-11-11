@@ -389,9 +389,23 @@ __device__ __forceinline__ void cluster_add_f32(uint32_t a, float v) {
   asm volatile("red.shared::cluster.add.f32 [%0], %1;" : : "r"(a), "f"(v) : "memory");
 }
 
-//: one 64-bit integer added into a cluster-mate's shared memory by its thread (an unsigned add: the same bits)
-__device__ __forceinline__ void cluster_add_s64(uint32_t a, long long v) {
-  asm volatile("red.shared::cluster.add.u64 [%0], %1;" : : "r"(a), "l"(v) : "memory");
+//: A BULK COPY INTO A CLUSTER-MATE'S SHARED MEMORY: `bytes` of this CTA's shared memory at `src` to the mate's at
+//: `dst`, asynchronous; the bytes complete the MATE'S barrier `bar` (its arrival states them: `mbar_expect`).
+//: Multiples of 16 bytes
+__device__ __forceinline__ void cluster_bulk_copy(uint32_t dst, uint32_t src, uint32_t bytes, uint32_t bar) {
+  asm volatile("cp.async.bulk.shared::cluster.shared::cta.mbarrier::complete_tx::bytes [%0], [%1], %2, [%3];"
+               :
+               : "r"(dst), "r"(src), "r"(bytes), "r"(bar)
+               : "memory");
+}
+
+//: the same ADDED into the mate's shared memory, 64-bit integer by 64-bit integer
+__device__ __forceinline__ void cluster_bulk_add_u64(uint32_t dst, uint32_t src, uint32_t bytes, uint32_t bar) {
+  asm volatile("cp.reduce.async.bulk.shared::cluster.shared::cta.mbarrier::complete_tx::bytes.add.u64 "
+               "[%0], [%1], %2, [%3];"
+               :
+               : "r"(dst), "r"(src), "r"(bytes), "r"(bar)
+               : "memory");
 }
 
 //: THE CLUSTER'S OWN BARRIER: every thread of every CTA arrives and waits -- before any CTA touches a mate's shared
