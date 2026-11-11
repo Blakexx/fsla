@@ -312,6 +312,23 @@ __device__ __forceinline__ void regs_up() {
   asm volatile("setmaxnreg.inc.sync.aligned.u32 %0;" : : "n"(N));
 }
 
+//: A BULK COPY IN (sm_90): `bytes` of global memory at `src` into shared memory at `dst`, asynchronous; the bytes
+//: complete the barrier `bar`'s phase once its one arrival has stated them (`mbar_expect`). Multiples of 16 bytes
+__device__ __forceinline__ void bulk_load(uint32_t dst, const void* src, uint32_t bytes, uint32_t bar) {
+  asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1], %2, [%3];"
+               :
+               : "r"(dst), "l"(src), "r"(bytes), "r"(bar)
+               : "memory");
+}
+
+//: an arrival that also states the bytes a bulk copy will complete the phase with
+__device__ __forceinline__ void mbar_expect(uint32_t bar, uint32_t bytes) {
+  asm volatile("{\n.reg .b64 st;\nmbarrier.arrive.expect_tx.shared::cta.b64 st, [%0], %1;\n}"
+               :
+               : "r"(bar), "r"(bytes)
+               : "memory");
+}
+
 //: A BULK COPY OUT (sm_90): `bytes` of shared memory at `src` to global `dst`, asynchronous, in this thread's bulk
 //: group; both addresses and the size multiples of 16 bytes
 __device__ __forceinline__ void bulk_store(void* dst, uint32_t src, uint32_t bytes) {
