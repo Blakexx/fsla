@@ -300,8 +300,8 @@ __device__ __forceinline__ uint32_t bf16x2_round(float lo, float hi) {
 }
 
 //: A WARPGROUP'S REGISTERS A THREAD, lowered or raised (sm_90): 24 to 256 in eights; a raise waits for registers
-//: another warpgroup of the CTA released. Honoured only under a stated register cap (an experiment's `BUILD:` line),
-//: and each role's whole body stays in its own branch (docs/lab/reg_trade.md)
+//: another warpgroup of the CTA released. Honoured only in a kernel whose `__launch_bounds__` give the count at entry,
+//: each role's whole body in its own branch (docs/lab/reg_trade.md)
 template <int N>
 __device__ __forceinline__ void regs_down() {
   asm volatile("setmaxnreg.dec.sync.aligned.u32 %0;" : : "n"(N));
@@ -329,22 +329,17 @@ __device__ __forceinline__ void mbar_expect(uint32_t bar, uint32_t bytes) {
                : "memory");
 }
 
-//: A BULK COPY OUT (sm_90): `bytes` of shared memory at `src` to global `dst`, asynchronous, in this thread's bulk
-//: group; both addresses and the size multiples of 16 bytes
-__device__ __forceinline__ void bulk_store(void* dst, uint32_t src, uint32_t bytes) {
-  asm volatile("cp.async.bulk.global.shared::cta.bulk_group [%0], [%1], %2;"
-               :
-               : "l"(dst), "r"(src), "r"(bytes)
-               : "memory");
-}
-
-//: the same ADDED into the destination, fp32 by fp32
+//: A BULK REDUCTION OUT (sm_90): `bytes` of shared memory at `src` ADDED into global `dst`, fp32 by fp32,
+//: asynchronous, in this thread's bulk group; both addresses and the size multiples of 16 bytes
 __device__ __forceinline__ void bulk_add_f32(void* dst, uint32_t src, uint32_t bytes) {
   asm volatile("cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32 [%0], [%1], %2;"
                :
                : "l"(dst), "r"(src), "r"(bytes)
                : "memory");
 }
+
+//: THE WRITERS' EDGE to a bulk copy out: a thread's ordinary stores to shared memory made visible to the bulk engine
+__device__ __forceinline__ void bulk_fence() { asm volatile("fence.proxy.async.shared::cta;" ::: "memory"); }
 
 __device__ __forceinline__ void bulk_commit() { asm volatile("cp.async.bulk.commit_group;" ::: "memory"); }
 

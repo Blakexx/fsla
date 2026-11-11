@@ -1,20 +1,21 @@
 // measure/lab/experiments/reg_trade.cu -- QUESTION: two warpgroups of a CTA trade registers with `setmaxnreg`, one
 // down and one up; when does the compiler honour it, what does the trade cost, and does state held in registers
-// across it survive? METHOD: a CTA of two warpgroups an SM, compiled under a stated register cap (136 a thread).
-// Both fold one state (an m64n16 wgmma) into registers; traded, warpgroup 0 lowers itself to 40 and writes shared
-// memory while warpgroup 1 raises itself to 232 and reads that state out into five accumulator sets (160 fp32 a
-// thread); untraded, both read out into the three sets the cap holds. The trade is clocked alone; every accumulator
-// is checked against the host's.
-// BUILD: -maxrregcount=136
+// across it survive? METHOD: a CTA of two warpgroups, launch bounds of two CTAs an SM (128 registers a thread at
+// entry). Both fold one state (an m64n16 wgmma) into registers; traded, warpgroup 0 lowers itself to 24 and writes
+// shared memory while warpgroup 1 raises itself to 232 -- what the other released -- and reads that state out into
+// five accumulator sets (160 fp32 a thread); untraded, both read out into the three sets the entry count holds.
+// The trade is clocked alone; every accumulator is checked against the host's.
 // see docs/internals/tools/lab.md#reg-trade
 #include "lab.cuh"
 
 namespace reg_trade {
 
 constexpr int kM = 64, kK = 16, kFoldN = 16, kReadN = 64, kGroupThreads = 128, kThreads = 2 * kGroupThreads;
-//: the accumulator sets a readout holds: what the cap leaves untraded, and what the raised count holds
+//: the accumulator sets a readout holds: what the entry count leaves untraded, and what the raised count holds
 constexpr int kSetsCapped = 3, kSetsRaised = 5, kSetsMax = kSetsRaised;
-constexpr int kLow = 40, kHigh = 232;
+//: the trade, balanced about the entry count: 104 a thread released, 104 acquired
+constexpr int kEntry = 128, kLow = 24, kHigh = 232;
+static_assert(kEntry - kLow == kHigh - kEntry, "a raise takes what the other warpgroup released");
 
 constexpr int fold_a(int m, int k) { return (m * 3 + k * 5) % 5 - 2; }
 constexpr int fold_b(int k, int n) { return (k * 7 + n * 3) % 5 - 2; }
@@ -72,7 +73,7 @@ __device__ __forceinline__ void lowered(uint8_t* smem, int* sinks, int steps) {
 }
 
 template <int TRADED>
-__global__ void trade(long long* times, long long* trade_times, int* sinks, float* out, int steps) {
+__global__ void __launch_bounds__(kThreads, 2) trade(long long* times, long long* trade_times, int* sinks, float* out, int steps) {
   __shared__ alignas(128) uint8_t smem[kSmem];
   const int tid = threadIdx.x, warp = tid >> 5, group = tid >> 7;
   auto* tile = reinterpret_cast<uint16_t*>(smem);
@@ -108,13 +109,13 @@ __global__ void trade(long long* times, long long* trade_times, int* sinks, floa
     swap.stop(trade_times);
     clock.start();
     lowered(smem, sinks, steps);
-    clock.stop(times + 2 * (blockIdx.x * (kThreads >> 5) + warp));
+    clock.stop(times);
   } else {
     if constexpr (TRADED) lab::regs_up<kHigh>();
     swap.stop(trade_times);
     clock.start();
     readout<TRADED ? kSetsRaised : kSetsCapped>(s, rb, out, steps);
-    clock.stop(times + 2 * (blockIdx.x * (kThreads >> 5) + warp));
+    clock.stop(times);
   }
 }
 
@@ -125,8 +126,8 @@ void run(lab::Bench& b, long long* trade_times, float* out) {
   using namespace reg_trade;
   constexpr int kCheckSteps = 16, kSteps = 2048;
   constexpr int kSets = TRADED ? kSetsRaised : kSetsCapped;
-  const std::string name = TRADED ? "traded: one warpgroup at 40, one at 232, five sets"
-                                  : "untraded: both at the cap, three sets";
+  const std::string name = TRADED ? "traded: one warpgroup at 24, one at 232, five sets"
+                                  : "untraded: both at the entry count, three sets";
 
   LAB_CHECK(cudaMemset(out, 0, sizeof(float) * b.sms * kThreads * kOut));
   trade<TRADED><<<b.sms, kThreads>>>(b.times, trade_times, b.sinks, out, kCheckSteps);

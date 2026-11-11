@@ -72,22 +72,6 @@ def smi(*query: str) -> list[str]:
     return [field.strip() for field in out.splitlines()[0].split(",")]
 
 
-#: AN EXPERIMENT'S OWN BUILD FLAGS, its header's `// BUILD:` line: only what changes the question's machine code by
-#: design -- a register cap, without which ptxas ignores `setmaxnreg` (docs/lab/reg_trade.md)
-BUILD_LINE = re.compile(r"^// BUILD:\s*(.+)$", re.M)
-BUILD_FLAGS = re.compile(r"-maxrregcount=\d+")
-
-
-def own_flags(path: Path) -> list[str]:
-    """The experiment's `// BUILD:` flags, each one the lab admits; any other is refused."""
-    found = BUILD_LINE.search(path.read_text())
-    flags = found.group(1).split() if found else []
-    bad = [f for f in flags if not BUILD_FLAGS.fullmatch(f)]
-    if bad:
-        raise SystemExit(f"lab: {path.name}'s BUILD line asks for {bad}; the lab admits a register cap alone")
-    return flags
-
-
 def build(path: Path, arch: str) -> Path:
     """The experiment's binary for `arch`, compiled with the pinned toolkit."""
     out = dev_config.scratch("lab") / f"{path.stem}.{arch}"
@@ -98,7 +82,7 @@ def build(path: Path, arch: str) -> Path:
     cc = cc_of(arch)
     #: the extension's own target form: an architecture-specific row (`sm_90a`) names its own virtual architecture
     target, = build_flags.gencodes([arch.removeprefix("sm_")])
-    subprocess.run([dev_config.cuda_bin("nvcc"), "-O3", "-std=c++20", target, *own_flags(path), f"-DROLA_LAB_CC={cc}",
+    subprocess.run([dev_config.cuda_bin("nvcc"), "-O3", "-std=c++20", target, f"-DROLA_LAB_CC={cc}",
                     "-lineinfo", f"-I{LAB}", f"-I{KERNELS}", "--expt-relaxed-constexpr", "-o", str(out), str(path)],
                    check=True)
     return out
@@ -212,6 +196,9 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
     if binary.name.split(".")[0] not in _PRE_29:
         stated = budgets(binary) + budgets(binary, "exempt")
         for k, info in table.items():
+            if count(info["ops"], "HGMMA") and any(re.search(b["kernel"], k) for b in budgets(binary)):
+                failures.append(f"{k}: a budgeted wgmma kernel -- its per-MMA divisor is read from counters the "
+                                "hopper model does not name yet (owed with that model); exempt it or budget by units")
             if count(info["ops"], "HMMA|IMMA|HGMMA") and not any(re.search(b["kernel"], k) for b in stated):
                 failures.append(f"{k}: an MMA kernel with no instruction budget (KERNEL_STANDARDS 29: `Bench::budget`, "
                                 "or `Bench::exempt` with its reason)")

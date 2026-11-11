@@ -43,10 +43,6 @@ then carries the written exception in their place (`counters_exception`: the hos
 run. An experiment with budgeted kernels, whose gate reads executed counts, is neither packed nor recorded under
 the exception.
 
-<a id="build-line"></a>AN EXPERIMENT'S OWN BUILD FLAGS are its header's `// BUILD:` line, and the lab admits one kind: a register cap
-(`-maxrregcount=N`), without which ptxas ignores `setmaxnreg` ([`reg_trade`](../../lab/reg_trade.md)). Any other flag
-is refused.
-
 An experiment that reads data -- a cell's routing, say -- has a `<name>.inputs.py` beside it whose `write(directory)`
 writes the files and returns their names. `run` and `ncu` call it first (in the scratch space), pass the binary
 `--inputs <directory>`, and the record carries each file's digest under `inputs`.
@@ -76,8 +72,9 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
   the bricks at stated offsets), `wg_fence`, `wg_commit`, `wg_wait<N>`, `wg_hold` (a register an asynchronous MMA
   wrote, held behind its wait), `wg_bf16_n16_ss`, `wg_bf16_n64_ss`, `wg_bf16_n64_rs` (A from registers); the two
   narrowings of an fp32 pair to bf16, `bf16x2_trunc` (one `PRMT`) and `bf16x2_round` (one conversion) -- the common
-  atoms' `hi_bf16x2` and `pack_bf16x2`, spelled here until the common atoms admit a hopper build; and the bulk copies
-  out of shared memory, `bulk_store`, `bulk_add_f32` (`cp.reduce.async.bulk`, fp32 added into global), `bulk_commit`,
+  atoms' `hi_bf16x2` and `pack_bf16x2`, spelled here until the common atoms admit a hopper build; and the bulk reduction
+  out of shared memory, `bulk_add_f32` (`cp.reduce.async.bulk`, fp32 added into global) with the writers' proxy fence
+  before it (`bulk_fence`), `bulk_commit`,
   `bulk_wait<N>`, beside `red_add_f32` (one value by its thread); the bulk copy in, `bulk_load`, under a barrier whose
   arrival states its bytes (`mbar_expect`); and a warpgroup's registers a thread,
   `regs_down<N>` and `regs_up<N>` (`setmaxnreg`). The lab's MMA checks read `HGMMA` as they read `HMMA`

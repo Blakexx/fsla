@@ -1255,7 +1255,7 @@
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "", "target": "measure/lab/experiments"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "56e6db164873", "reviewed": true, "sha256": "", "target": "measure/lab/lab.cuh"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "56e6db164873", "reviewed": true, "sha256": "", "target": "tools/lab.py"},
-  {"doc": "docs/internals/tools/lab.md", "pinned_at": "452b6de42b8e", "reviewed": true, "sha256": "433a529d06f01a54", "target": "tools/lab.py::build"},
+  {"doc": "docs/internals/tools/lab.md", "pinned_at": "abcd158d17f3", "reviewed": true, "sha256": "9d2bf432297bf148", "target": "tools/lab.py::build"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "586891ed2964", "reviewed": true, "sha256": "b119d5be6d1cc06d", "target": "tools/lab.py::counters"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "5b26266f0d32", "reviewed": true, "sha256": "3d295b533ef2558a", "target": "tools/lab.py::inputs"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "0367b7225524", "reviewed": true, "sha256": "a208359324328926", "target": "tools/lab.py::main"},

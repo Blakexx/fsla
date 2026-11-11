@@ -14,7 +14,7 @@ The panel's stores alone, with the round's barriers, are the base (one neighbour
 live). Every CTA adds into ONE global panel, the contended sum, or into its own; every sum is checked exactly.
 
 WHAT THE SASS SAYS (sm_90a, the pinned toolkit; no device): a bulk add is one `UBLKRED.G.S.ADD.F32.RN` whatever its
-size, issued by one thread; the panel is 8 `STS.128` a thread; the warps' own drain is 32
+size, issued by one thread; the panel is 32 `STS` a thread, a warp's lanes on 32 banks, and the writers' proxy fence before the round's barrier; the warps' own drain is 32
 `REDG.E.ADD.F32.FTZ.RN.STRONG.GPU` a thread a round.
 
 UNMEASURED: no hopper card has run it. Its cycles a token by form, contended and not, are owed to its first run

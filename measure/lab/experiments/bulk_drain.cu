@@ -35,7 +35,7 @@ __global__ void drain(long long* times, int* sinks, float* out, int rounds, int 
   const uint32_t base = lab::smem(panels);
   float v[kMine];
 #pragma unroll
-  for (int i = 0; i < kMine; ++i) v[i] = static_cast<float>(value_of(tid * kMine + i));
+  for (int i = 0; i < kMine; ++i) v[i] = static_cast<float>(value_of(i * kThreads + tid));
 
   uint32_t seen = 0;
   lab::WarpSpan clock;
@@ -47,14 +47,16 @@ __global__ void drain(long long* times, int* sinks, float* out, int rounds, int 
     if constexpr (FORM == kWarpReds) {
       //: THE REDUCTIONS: this thread's values, each to its global word
 #pragma unroll
-      for (int i = 0; i < kMine; ++i) lab::red_add_f32(dst + tid * kMine + i, v[i]);
+      for (int i = 0; i < kMine; ++i) lab::red_add_f32(dst + i * kThreads + tid, v[i]);
     } else {
-      //: THE PANEL: this thread's values into the round's panel
+      //: THE PANEL: this thread's values into the round's panel -- word `128 i + tid`, a warp's 32 lanes on 32 banks
+      //: -- then the edge the bulk engine reads them behind
 #pragma unroll
-      for (int i = 0; i < kMine; ++i) panels[at + tid * kMine + i] = v[i];
+      for (int i = 0; i < kMine; ++i) panels[at + i * kThreads + tid] = v[i];
+      if constexpr (FORM != kPanelOnly) lab::bulk_fence();
       __syncthreads();
       //: THE BASE'S READER: a neighbour's word a round, so the panel's stores are live with no drain
-      if constexpr (FORM == kPanelOnly) seen ^= lab::bits(panels[at + ((tid + 1) % kThreads) * kMine]) + r;
+      if constexpr (FORM == kPanelOnly) seen ^= lab::bits(panels[at + (tid + 1) % kThreads]) + r;
       //: THE DRAIN
       if constexpr (FORM == kBulkPanel || FORM == kBulkTwoPanels) {
         if (tid == 0) {
@@ -77,7 +79,7 @@ __global__ void drain(long long* times, int* sinks, float* out, int rounds, int 
   if constexpr (FORM == kBulkTwoPanels) {
     if (tid == 0) lab::bulk_wait<0>();
   }
-  clock.stop(times + 2 * (blockIdx.x * (kThreads >> 5) + warp));
+  clock.stop(times);
   lab::sink(sinks, seen);
 }
 
@@ -118,7 +120,7 @@ int main(int argc, char** argv) {
     const std::string k = lab::kernel("drain", {f});
     b.expect(k, "UBLKRED", "==", f == kBulkPanel || f == kBulkTwoPanels || f == kBulkToken ? 1 : 0);
     b.expect(k, "REDG", "==", f == kWarpReds ? kMine : 0);
-    b.expect(k, "STS", f == kWarpReds ? "==" : ">=", f == kWarpReds ? 0 : kMine / 4);
+    b.expect(k, "STS", f == kWarpReds ? "==" : ">=", f == kWarpReds ? 0 : kMine);
   }
   if (b.expect_only) return 0;
   float* out = nullptr;

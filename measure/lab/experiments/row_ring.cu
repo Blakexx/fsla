@@ -145,7 +145,7 @@ __global__ void ring(long long* times, float* out, const uint8_t* src, int tiles
   clock.start();
   if (warp < 4) consume<MODE>(smem, out, tiles);
   else produce<MODE, kProducers>(smem, src, tiles, warp - 4);
-  clock.stop(times + 2 * (blockIdx.x * (blockDim.x >> 5) + warp));
+  clock.stop(times);
 }
 
 }  // namespace row_ring
