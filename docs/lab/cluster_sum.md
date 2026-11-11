@@ -37,7 +37,7 @@ others, chosen by the address at run time; its 64-bit integer add is `ATOM.E.ADD
 `UBLKCP.S.S`, the bulk integer reduction one `UBLKRED.S.S.ADD.U64`.
 
 MEASURED (H100 SXM, 132 SMs, vast.ai instance 60242098, driver 580.173.02; 2026-11-11, the experiment at
-34960275; 7 repetitions, every sum exact; cycles a token a CTA, the median, the spread under 0.9%; THE ROUND and THE
+34960275; 7 repetitions, every sum exact; cycles a token a CTA, the median, the spread under 1.0%; THE ROUND and THE
 TOKEN are the two columns' split, cost = the round / its tokens + the token):
 
 | the form | 16 tokens a round | 64 tokens a round | the round | the token |
