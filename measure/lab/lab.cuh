@@ -430,6 +430,8 @@ __device__ __forceinline__ void cluster_wait(uint32_t a, uint32_t parity) {
                : "memory");
 }
 
+//: this thread's stores and adds into a mate's shared memory ordered for the cluster, before the hand-over's barrier
+__device__ __forceinline__ void cluster_fence() { asm volatile("fence.acq_rel.cluster;" ::: "memory"); }
 //: a barrier's initialization made visible to the cluster, before any mate arrives at it
 __device__ __forceinline__ void cluster_fence_init() {
   asm volatile("fence.mbarrier_init.release.cluster;" ::: "memory");

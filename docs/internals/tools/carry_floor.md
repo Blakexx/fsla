@@ -29,9 +29,11 @@ READ FROM THE COMPILER (ptxas of toolkit 13.0, sm_90a; compiled once, no device,
 `red.shared::cluster.add.f32` into another CTA's shared memory compiles to the generic atomic add
 (`ATOM.E.ADD.F32`), predicated, with compare-and-swap loops as its fallback paths; into the CTA's own shared memory
 (`red.shared::cta`) it is a compare-and-swap loop alone; the integer add is one `ATOM.E.ADD.S32`. The asynchronous
-reductions into a cluster's shared memory the toolkit's wrappers list are integer. Which path the float add takes on
-a card, and at what rate, is UNMEASURED -- as are a plain store into another CTA's shared memory and the collector's
-read-back. The three forms' terms here differ only in bytes and instructions counted at one shared rate.
+reductions into a cluster's shared memory the toolkit's wrappers list are integer. [`cluster_sum`](../../lab/cluster_sum.md) has since MEASURED these on the H100, and it REFUTES this model's cluster
+terms: a partial into a mate's shared memory costs about what it costs straight to global memory (21 against 26
+cycles a token a CTA), the float add seventeen times a store, and a round's barriers 6,800 cycles a CTA. The
+three forms' terms here still differ only in bytes and instructions counted at one shared rate; every clustered row
+below is therefore TOO LOW in its sum, and stands until the model reads that record.
 
 MODELLED (2026-11-11; the H100's records for the pipe, the shared access rate and the drain; a load request, the
 issue rate, the clock and the memory bandwidth ESTIMATED; alt = read side sparse on one level, write side on the
@@ -53,7 +55,8 @@ FlashAttention's tensor floor at the same 65,536 tokens and width is 2,049 SM-cy
 1,048,576 tokens it is 16 times that a token, and the 256 x 256 alt row's cost a token does not move.
 
 WHAT IT SHOWS. The tensor work is 64 of the alt rows' cycles; the rest is bytes, counted a (token, box): the partials
-into the cluster, the drains, the values. A cluster is worth a factor of three to five, and its shape trades the
+into the cluster, the drains, the values. On these rows a cluster is worth a factor of three to five -- a factor
+`cluster_sum` does not bear out -- and its shape trades the
 readout's drains against the fold's value loads -- which side to favour rests on the ESTIMATED load request, the
 least known rate here. A deeper routing at the same box reads the same boxes with four times the leaves, and its
 fold sits in four times the lists a box. Dense on both sides at as many leaves as tokens is over FlashAttention's
