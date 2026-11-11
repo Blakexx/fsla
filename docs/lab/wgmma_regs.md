@@ -42,11 +42,13 @@ WHAT IT SHOWS.
   the two MMAs of one commit group overlap.
 - A second warpgroup in the CTA costs a step nothing to 7%, so at these steps one warpgroup does not hold the SM's
   tensor pipe: a step that waits for its own group is bound by the group's round trip. The pipe's own time a wgmma is
-  not read here (owed with the family's machine model, KERNEL_STANDARDS §32.4).
+  [`wgmma_rate`](wgmma_rate.md)'s: 32 cycles.
 - THE FIXED-REGISTER ROWS (A in registers loaded once: 136 against A shared's 105 alone, 165 against 121 with the
-  fold) are this experiment's own loop, not the register operand: ptxas re-derives B's descriptor inside the step loop
-  in those forms. [`wgmma_rate`](wgmma_rate.md) holds every descriptor in a register and reads the same step at 96,
-  under A shared's 105. No design rests on the rows here.
+  fold) are not the register operand's cost: [`wgmma_rate`](wgmma_rate.md) reads the same readout at 96, under A
+  shared's 105. Its kernel differs from this one's in three ways at once -- every descriptor held in a register, A's
+  words held, launch bounds stated -- so which of them is the 40 cycles is NOT isolated; ptxas re-deriving B's
+  descriptor inside this loop is one candidate the SASS shows, and the narrowed form here keeps three of those five
+  instructions and is fast. No design rests on the rows here.
 
 Record: `measure/lab/results/wgmma_regs/sm_90a.json`; its counters are the written exception (no profiler on that
 box).

@@ -1422,7 +1422,7 @@
   {"doc": "docs/lab/reg_trade.md", "pinned_at": "20cd894f95bc", "reviewed": true, "sha256": "", "target": "measure/lab/results/reg_trade/sm_90a.json"},
   {"doc": "docs/lab/row_ring.md", "pinned_at": "bcd1a3d4d09b", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
   {"doc": "docs/lab/row_ring.md", "pinned_at": "6286046643d1", "reviewed": true, "sha256": "", "target": "docs/lab/byte_expand.md"},
-  {"doc": "docs/lab/row_ring.md", "pinned_at": "747a147483d9", "reviewed": true, "sha256": "", "target": "docs/lab/wgmma_regs.md"},
+  {"doc": "docs/lab/row_ring.md", "pinned_at": "aa45b82eb800", "reviewed": true, "sha256": "", "target": "docs/lab/wgmma_rate.md"},
   {"doc": "docs/lab/row_ring.md", "pinned_at": "bcd1a3d4d09b", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/row_ring.cu"},
   {"doc": "docs/lab/row_ring.md", "pinned_at": "747a147483d9", "reviewed": true, "sha256": "", "target": "measure/lab/results/row_ring/sm_90a.json"},
   {"doc": "docs/lab/row_span.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},

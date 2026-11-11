@@ -30,9 +30,10 @@ WHAT IT SHOWS.
 - A GROUP'S ROUND TRIP is about 64 cycles: one wgmma a group is 96, so a step that commits and waits a single wgmma
   spends two thirds of itself not on the pipe, and a lone warpgroup reaches the pipe's rate only as its groups deepen
   (41 a wgmma at six).
-- A in registers is 9 cycles a step UNDER A in shared memory at every depth. With the descriptors held,
-  [`wgmma_regs`](wgmma_regs.md)'s slow fixed-register row (136) reads 96: that row's extra 40 cycles were the
-  descriptor ptxas re-derived inside its loop, now measured by removing it.
+- With one warpgroup, A in registers is 9 cycles a step UNDER A in shared memory at every depth; with two the gap is
+  5 and 12 at one and two a group and nothing once the pipe binds. [`wgmma_regs`](wgmma_regs.md)'s slow fixed-register
+  row (136) reads 96 here, in a kernel that differs from that one in three ways (descriptors held, A's words held,
+  launch bounds): the register operand is not what was slow, and which difference was is not isolated.
 
 Record: `measure/lab/results/wgmma_rate/sm_90a.json`; its counters are the written exception (no profiler on that
 box).

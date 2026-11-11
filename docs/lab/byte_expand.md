@@ -9,8 +9,10 @@ loop -- no ring, no barrier?
 THE FORM. 1, 4 or 8 warps a CTA, a CTA an SM. Each warp expands its own 1 KB of bytes (64 tokens × 16 K, in shared
 memory) into its own 2 KB operand tile, over and over: [`row_ring`](row_ring.md)'s expansion -- a lane's two tokens, a
 byte to `2^23 + byte` by one `PRMT`, the product by one `FFMA`, a pair to a bf16 word by one conversion. A lane stores
-its bytes from registers and loads them back every round, as a landed copy's would be read. The last tile is checked
-against the host's.
+its bytes from registers every round and loads them back (ptxas forwards one of the two loads). The last tile is
+checked against the host's. FOUR MORE FORMS at 4 and 8 warps each drop one instruction class, to find which one holds
+the SM's rate: the pair packed by truncation (a `PRMT` in place of the conversion), no product, no store and reload of
+the bytes, no store of the tile (ptxas then forwards both loads as well) -- UNMEASURED, owed to their first run.
 
 MEASURED (H100 SXM, 132 SMs, a rented box: vast.ai instance 60165936, driver 595.91.07; 2026-11-11, one session, 7
 repetitions, the last tile exact against the host's; cycles a 1,024-element tile a warp, the median, no spread):
@@ -22,10 +24,11 @@ repetitions, the last tile exact against the host's; cycles a 1,024-element tile
 | 8 | 448.1 | 56 |
 
 WHAT IT SHOWS. A warp alone expands a tile in 202 cycles; four warps an SM each take 224 and eight each take twice
-that, so an SM expands a tile every 56 cycles however many warps do it past four. The tensor pipe takes a tile in 32
-([`wgmma_rate`](wgmma_rate.md)): AN SM SPENDING ALL ITS ISSUE ON THIS EXPANSION FEEDS ITS OWN TENSOR PIPE AT 57% of the
-pipe's rate, where every B element is expanded for one wgmma -- and the warps that issue the wgmmas issue too. Of
-[`row_ring`](row_ring.md)'s 773 cycles a tile a producer warp, 202 are the expansion and the rest its hand-over.
+that, so this form's SM expands a tile every 56 cycles however many warps do it past four -- 57% of the rate the
+tensor pipe takes one ([`wgmma_rate`](wgmma_rate.md): 32). WHAT SATURATES IS NOT KNOWN: the loop is about 90
+instructions a warp a tile, under half of what four schedulers issue in those cycles, so it is not the SM's issue;
+the forms that each drop one class are there to find it, and until they run 56 is this form's reading, not the
+expansion's floor.
 
 Record: `measure/lab/results/byte_expand/sm_90a.json`; its counters are the written exception (no profiler on that
 box).

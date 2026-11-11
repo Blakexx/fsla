@@ -35,13 +35,13 @@ median, the spread under 0.3%):
 
 WHAT IT SHOWS. One producer warp makes a tile in about 770 cycles, 0.75 a warp an element, and the ring runs at the
 producers' rate up to two warps (760, then 391, half of it). At four it runs at 304, the consumer's own 290: a
-warpgroup under this hand-over takes a tile in 290 cycles, where its wgmma with its wait alone is 105 to 136
-([`wgmma_regs`](wgmma_regs.md)). What the other 150 to 185 cycles are -- the full and empty barriers' polled waits, the
-descriptor formed a tile, the rest of the loop -- no row here separates. By these rows a warpgroup that consumed at
-its wgmma's own pace would take six or seven such producer warps (773 against 105 to 136: arithmetic across two
-experiments, not a measured form).
+warpgroup under this hand-over takes a tile in 290 cycles, where one wgmma with its group's wait is 96 and the
+pipe's own time 32 ([`wgmma_rate`](wgmma_rate.md)). What the other 190 cycles are -- the full and empty barriers'
+polled waits, the descriptor formed a tile, the rest of the loop -- no row here separates.
 
-SEPARATED by [`byte_expand`](byte_expand.md): the expansion alone is 202 cycles a tile a warp, so about 570 of a
-producer's 773 are its hand-over -- its barrier waits, the warp's synchronization, the loads' issue.
+BESIDE IT: [`byte_expand`](byte_expand.md) reads the expansion alone at 202 cycles a tile a warp, in a loop that
+differs from this producer's (it stores its bytes itself, where these arrive by a bulk copy). So most of a producer's
+773 cycles here is not the expansion; what it is, among the barrier waits, the warp's synchronization and the loads'
+issue, no row separates.
 
 Record: `measure/lab/results/row_ring/sm_90a.json`; its counters are the written exception (no profiler on that box).

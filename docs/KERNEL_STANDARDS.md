@@ -104,7 +104,8 @@ RULE: a warp is specialized only where its registers move with its role -- `setm
 consumers -- and only where the accumulator binds: a producer that holds a consumer's slice and folds nothing is
 waste. `[MACHINE]` MEASURED (H100, 2026-11-11, `reg_trade`: `measure/lab/results/reg_trade/sm_90a.json`): a state folded
 before a trade of 24 against 232 registers a thread is read out exactly after it, and the trade costs about 200
-cycles a warp, once. `[COMPILER]` (ptxas of toolkit 13.0, sm_90a, read from compiled forms, `docs/lab/reg_trade.md`): `setmaxnreg` is
+cycles a warp, once. `[COMPILER]` (ptxas of toolkit 13.0, sm_90a; the honoured form is `reg_trade`'s kernel, the two refused ones were
+compiled once and are recorded on `docs/lab/reg_trade.md`, not kept in the tree): `setmaxnreg` is
 ignored in a kernel that states no register count at entry -- its `__launch_bounds__` state one, as the build's
 `-maxrregcount` does -- and whatever follows a join after it is compiled at the lower count: each role's whole body
 stays in its own branch.
