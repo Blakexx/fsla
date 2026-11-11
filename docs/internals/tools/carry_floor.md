@@ -20,7 +20,7 @@ a form that names an sm_90 instruction states no sm_100 form here -- owed with t
 
 THE CLUSTER. By default (`--sum none`) a cluster shares the fold's value loads and nothing else: every box drains
 its own partial. THE CLUSTER'S SUM, asked for, takes one of two forms, each summing a token's partials inside a
-cluster before one fp32 drain to global memory. `slots`, the default, is the fp32 sum the format states
+cluster before one fp32 drain to global memory. `slots` is the fp32 sum the format states
 ([precision.md](../../architecture/precision.md)):
 each box stages its partial and sends it by a bulk copy into its own slot of a collector's shared memory, and the
 collector adds a token's slots in registers. `s64` sends 64-bit integers by a bulk reduction, at a scale agreed a
@@ -28,7 +28,7 @@ window -- outside the fp32 sum the format states, counted for comparison ([`arit
 measures its accuracy). Both are MEASURED by [`cluster_sum`](../../lab/cluster_sum.md) at two round sizes, and the
 model reads that record's line: a cost a round a CTA whatever the round holds (`--round` partials a CTA hand over
 between barriers; beyond the lab's 64 the line is UNMEASURED), and a cost a partial. The lab's partial includes its
-collectors' drain, an eighth of one, which the model's drains count again: a clustered row is over by that much. The
+collectors' drain, an eighth of one, which the model's drains count again: a row with a cluster's sum is over by that much. The
 warps' own fp32 add into a mate's shared memory, read at eighteen times a store, is no form here.
 
 MODELLED (2026-11-11; the H100's records for the pipe, the shared access rate, the drain and the cluster's sum; a load
@@ -39,8 +39,8 @@ SM-cycles a token, low to high, and the 64K call):
 | the shape | boxes read | the sum (partials, rounds, drains) | fold values | total | the call |
 |---|---|---|---|---|---|
 | 256 x 256, no cluster | 58.2 | 0, 0, 1,176 to 2,726 | 320 to 640 | 1,590 to 3,460 | 440 to 950 us |
-| ... `--cluster 16 1 --sum slots`, rounds of 64 | 58.2 | 897, 6,594, 74 to 170 | 88 to 176 | 7,740 to 7,930 | 2.1 to 2.2 ms |
-| ... `--cluster 16 1 --sum slots --round 512` | 58.2 | 897, 824, 74 to 170 | 88 to 176 | 1,970 to 2,160 | 545 to 600 us |
+| ... `--cluster 16 1 --sum slots`, rounds of 64 | 58.2 | 897, 6,594, 74 to 170 | 88 to 640 | 7,740 to 8,390 | 2.1 to 2.3 ms |
+| ... `--cluster 16 1 --sum slots --round 512` | 58.2 | 897, 824, 74 to 170 | 88 to 640 | 1,970 to 2,620 | 545 to 725 us |
 | ... `--box 256 1`: a box the whole read-dense level, no cluster | 4.0 | 0, 0, 80 to 186 | 5,120 to 10,240 | 5,290 to 10,520 | 1.5 to 2.9 ms |
 | ... `--box 256 1 --cluster 1 16`: those boxes sharing value loads | 4.0 | 0, 0, 80 to 186 | 320 to 10,240 | 490 to 10,520 | 135 us to 2.9 ms |
 | 64 x 64 (4,096 leaves), no cluster | 10.9 | 0, 0, 221 to 512 | 80 to 160 | 320 to 690 | 90 to 190 us |
