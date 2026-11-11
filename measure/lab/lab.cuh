@@ -284,18 +284,49 @@ __device__ __forceinline__ void wg_bf16_n64_rs(float (&d)[32], const uint32_t (&
                : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "l"(b), "r"(1));
 }
 
-//: two fp32 narrowed to a bf16 pair by TRUNCATION: each value's high 16 bits, one byte permute
+//: two fp32 narrowed to a bf16 pair by TRUNCATION, each value's high 16 bits in one byte permute, and ROUNDED to
+//: nearest in one conversion: `common/atoms/math.cuh`'s `hi_bf16x2` and `pack_bf16x2`, spelled here because the common
+//: atoms refuse a hopper build until that family's are written (`common/arch_caps.cuh`)
 __device__ __forceinline__ uint32_t bf16x2_trunc(float lo, float hi) {
   uint32_t r;
   asm volatile("prmt.b32 %0, %1, %2, 0x7632;" : "=r"(r) : "r"(__float_as_uint(lo)), "r"(__float_as_uint(hi)));
   return r;
 }
 
-//: two fp32 narrowed to a bf16 pair ROUNDED to nearest, one conversion
 __device__ __forceinline__ uint32_t bf16x2_round(float lo, float hi) {
   uint32_t r;
   asm volatile("cvt.rn.bf16x2.f32 %0, %1, %2;" : "=r"(r) : "f"(hi), "f"(lo));
   return r;
+}
+
+//: A BULK COPY OUT (sm_90): `bytes` of shared memory at `src` to global `dst`, asynchronous, in this thread's bulk
+//: group; both addresses and the size multiples of 16 bytes
+__device__ __forceinline__ void bulk_store(void* dst, uint32_t src, uint32_t bytes) {
+  asm volatile("cp.async.bulk.global.shared::cta.bulk_group [%0], [%1], %2;"
+               :
+               : "l"(dst), "r"(src), "r"(bytes)
+               : "memory");
+}
+
+//: the same ADDED into the destination, fp32 by fp32
+__device__ __forceinline__ void bulk_add_f32(void* dst, uint32_t src, uint32_t bytes) {
+  asm volatile("cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32 [%0], [%1], %2;"
+               :
+               : "l"(dst), "r"(src), "r"(bytes)
+               : "memory");
+}
+
+__device__ __forceinline__ void bulk_commit() { asm volatile("cp.async.bulk.commit_group;" ::: "memory"); }
+
+//: wait until at most `N` of this thread's committed bulk groups are in flight
+template <int N>
+__device__ __forceinline__ void bulk_wait() {
+  asm volatile("cp.async.bulk.wait_group %0;" : : "n"(N) : "memory");
+}
+
+//: one fp32 added into global memory by its thread
+__device__ __forceinline__ void red_add_f32(float* dst, float v) {
+  asm volatile("red.global.add.f32 [%0], %1;" : : "l"(dst), "f"(v) : "memory");
 }
 
 // --------------------------------------------------------------------------------------------------- host

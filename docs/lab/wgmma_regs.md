@@ -22,4 +22,4 @@ loop is the wait (`WARPGROUP.DEPBAR.LE`), those 4, `WARPGROUP.ARRIVE`, the two `
 
 UNMEASURED: no hopper card has run it. Its cycles a step, and so whether the narrowing leaves the tensor pipe
 covered, are owed to its first run (`bazel run //tools:lab -- pack wgmma_regs --arch sm_90a`, then `carried` on the
-card), which writes its sm_90a record beside the other experiments'.
+card, which runs it under its kill timeout and writes its sm_90a record beside the other experiments').

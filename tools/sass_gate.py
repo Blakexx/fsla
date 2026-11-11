@@ -123,7 +123,7 @@ def convergence_calls(lines: list[tuple[int, str, str, str]], labels: dict[str, 
     return hot, guarded
 
 
-_MMA = re.compile(r"^(HMMA|IMMA)")
+_MMA = re.compile(r"^(HMMA|IMMA|HGMMA)")
 
 
 def _resolver(lines: list[tuple[int, str, str, str]], labels: dict[str, int]):
