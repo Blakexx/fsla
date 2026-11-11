@@ -11,7 +11,7 @@
 // bulk reduction into the collector's one panel; `warp integers`: the warps' own 64-bit adds into it. `hand-over`:
 // the arrival forms' barriers with no partial. One collector (rank 0) or eight (a token's collector its index
 // modulo 8). Barriers a round order them (the bulk forms' bytes complete the collector's), the cluster's own its
-// start and end; every thread that wrote into a mate fences at cluster scope first.
+// start and end; a thread that wrote into a mate, or read and cleared a panel, fences at cluster scope first.
 // see docs/internals/tools/lab.md#cluster-sum
 #include "lab.cuh"
 
@@ -102,7 +102,8 @@ __global__ void __cluster_dims__(kCtas, 1, 1) sum(long long* times, float* out, 
   for (int j = 0; j < kPeriod; ++j) there[j] = lab::cluster_addr(base, collector_of<SPREAD>(j * kThreads + tid));
 #pragma unroll
   for (int c = 0; c < kCtas; ++c) dones[c] = lab::cluster_addr(done, c);
-  const uint32_t to = SPREAD ? tid % kCtas : 0, bar = lab::cluster_addr(full, to), panel = lab::cluster_addr(base, to);
+  const uint32_t to = SPREAD ? tid % kCtas : 0;
+  const uint32_t bar = lab::cluster_addr(full, to), panel = lab::cluster_addr(base, to);
 
   lab::WarpSpan clock;
   clock.start();
@@ -162,6 +163,8 @@ __global__ void __cluster_dims__(kCtas, 1, 1) sum(long long* times, float* out, 
           lab::red_add_f32(dst + global_of<SPREAD>(rank, l), sum);
         }
         if constexpr (kBulk<FORM>) lab::bulk_fence();
+        //: the collector's reads and clears ordered for the cluster before its mates' next round
+        if constexpr (!kBulk<FORM>) lab::cluster_fence();
         __syncthreads();
         if (tid == 0) {
           if constexpr (kBulk<FORM>) lab::mbar_expect(full, kCtas * kShare);
@@ -185,8 +188,8 @@ void run(lab::Bench& b, float* out) {
   constexpr int kCheckRounds = 16, kRounds = 1024, kPanel = cluster_sum::kPanel<TOKENS>;
   const int clusters = b.sms / kCtas, blocks = clusters * kCtas;
   const std::string name = std::string(kFormName[FORM])
-                           + (FORM == kDirect ? "" : SPREAD ? ", eight collectors" : ", one collector") + ", rounds of "
-                           + std::to_string(TOKENS) + " tokens";
+                           + (FORM == kDirect ? "" : SPREAD ? ", eight collectors" : ", one collector")
+                           + ", rounds of " + std::to_string(TOKENS) + " tokens";
   constexpr int bytes = kSmemBytes<FORM, SPREAD, TOKENS>;
   const auto kernel = sum<FORM, SPREAD, TOKENS>;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));

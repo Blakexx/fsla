@@ -25,8 +25,9 @@ round from what it pays a token.
   at every CTA) with no partial sent or summed. A bulk form's round completes its collector's barrier by bytes, with
   a fence for the bulk engine and a re-arm, and no row isolates that.
 Each cluster form with ONE collector (rank 0 takes every token) and with EIGHT (a token's collector is its index
-modulo 8). Barriers a round order sources and collectors -- every thread that stored or added into a mate fences at
-cluster scope, an arrival releases to the cluster, a wait acquires from it -- and the cluster's own barrier its
+modulo 8). Barriers a round order sources and collectors -- every thread that stored or added into a mate, and every
+collector's thread after its reads and clears, fences at cluster scope; an arrival releases to the cluster, a wait
+acquires from it -- and the cluster's own barrier its
 start and its end. A mate's addresses are mapped once, before the clock. Every row's timed round includes its
 collectors' drain to global memory. Every sum is checked exactly.
 
@@ -35,32 +36,36 @@ generic store (`ST.E`). A warp's float add there is `ATOM.E.ADD.F32` on one path
 others, chosen by the address at run time; its 64-bit integer add is `ATOM.E.ADD.64`. The bulk copy is one
 `UBLKCP.S.S`, the bulk integer reduction one `UBLKRED.S.S.ADD.U64`.
 
-MEASURED (H100 SXM, 132 SMs, vast.ai instance 60238483, driver 580.173.02; 2026-11-11, the experiment at b870d1e2 --
-rounds of 64 tokens only, a mate's address mapped at each use, an arrival's release the one cluster-scope ordering;
-7 repetitions, every sum exact; cycles a token a CTA, the median, the spread under 0.5%):
+MEASURED (H100 SXM, 132 SMs, vast.ai instance 60240834, driver 580.178.04; 2026-11-11, the experiment at
+fe8a11d2; 7 repetitions, every sum exact; cycles a token a CTA, the median, the spread under 1.5%; THE ROUND and THE
+TOKEN are the two columns' split, cost = the round / its tokens + the token):
 
-| the form | one collector | eight collectors |
-|---|---|---|
-| every CTA drains its own | 26.0 | |
-| fp32 slots stored by the warps | 152.1 | 127.6 |
-| fp32 atomic adds into one panel | 442 | 471 |
-| fp32 slots by a bulk copy | 151.7 | 123.6 |
-| 64-bit integers by a bulk reduction | 252.2 | 135.0 |
-| 64-bit integer adds by the warps | 275.4 | 165.1 |
-| the round's barriers alone, no partial | 102.0 | 106.9 |
+| the form | 16 tokens a round | 64 tokens a round | the round | the token |
+|---|---|---|---|---|
+| every CTA drains its own | 36.7 | 22.4 | 306 | 17.6 |
+| fp32 slots stored by the warps, one collector | 529.1 | 165.9 | 7,747 | 44.9 |
+| fp32 slots stored by the warps, eight collectors | 509.2 | 142.0 | 7,833 | 19.6 |
+| fp32 atomic adds into one panel, one collector | 816.8 | 451.8 | 7,788 | 330.1 |
+| fp32 atomic adds into one panel, eight collectors | 962.3 | 477.4 | 10,345 | 315.8 |
+| fp32 slots by a bulk copy, one collector | 431.9 | 151.9 | 5,974 | 58.6 |
+| fp32 slots by a bulk copy, eight collectors | 407.0 | 114.0 | 6,251 | 16.3 |
+| 64-bit integers by a bulk reduction, one collector | 446.1 | 255.8 | 4,060 | 192.3 |
+| 64-bit integers by a bulk reduction, eight collectors | 430.3 | 134.0 | 6,320 | 35.3 |
+| 64-bit integer adds by the warps, one collector | 538.9 | 293.8 | 5,228 | 212.1 |
+| 64-bit integer adds by the warps, eight collectors | 545.6 | 181.3 | 7,771 | 59.8 |
+| the round's barriers alone, no partial, one collector | 406.1 | 101.5 | 6,498 | 0.0 |
+| the round's barriers alone, no partial, eight collectors | 420.8 | 105.2 | 6,733 | 0.0 |
 
-WHAT IT SHOWS. NO CLUSTER FORM IS CHEAPER THAN EVERY CTA DRAINING ITS OWN at this round. The barriers of one round
-cost a CTA about 6,800 cycles -- 107 a token at 64 tokens -- which is four times what the partial costs straight to
-global memory. Less that row, a warp-stored slot costs 21 cycles a token a CTA with eight collectors against the
-direct 26, its collectors' drain included; one collector is 50. Less it too, the warps' fp32 add into a mate is seventeen
-times its store. The warps' 64-bit integer add sums exactly here, under barriers that release to and acquire from
-the cluster.
+WHAT IT SHOWS. NO CLUSTER FORM IS CHEAPER THAN EVERY CTA DRAINING ITS OWN at either round, and the split says none
+would be at a larger one by more than a tenth. A cluster form pays
+twice: a round's barriers and fences, 4,060 to 10,345 cycles a CTA whatever the round holds, and then a
+token's partial, which by itself costs as much through a mate's shared memory as straight to global memory --
+16.3 cycles by a bulk copy into slots and 19.6 by the warps' stores, eight collectors, their drain included,
+against the direct 17.6. The integer forms cost more (35.3 by a bulk reduction, 59.8 by the warps' adds), the
+warps' fp32 add far more (316), and one collector two to five times eight. The hand-over row's token is zero, as
+it must be, and its round is the warps' forms' round. So a larger round only brings a cluster form down TO the
+direct drain (the split is two points on a line: a round beyond 64 tokens is UNMEASURED): on this card the output's
+sum is priced by its partials, a (token, CTA), and summing them in a cluster first buys nothing. The warps' 64-bit
+integer add sums exactly under these barriers.
 
-Two earlier runs of this experiment, at barriers without the cluster's scope, read 31 (warp slots, eight collectors),
-40 (bulk slots) and 78 (bulk integers) with every sum exact, and wrong sums from the warps' integer add (688 of
-65,536); the first of them has no record, and what made those sums wrong was not isolated.
-
-NOT YET READ: the same forms at 16 tokens a round (the round's cost against the token's), with the addresses mapped
-once and every writer fencing -- the experiment as it stands now.
-
-Record: `measure/lab/results/cluster_sum/sm_90a.json` (the experiment at b870d1e2).
+Record: `measure/lab/results/cluster_sum/sm_90a.json` (the experiment at fe8a11d2, before the collector's fence).
