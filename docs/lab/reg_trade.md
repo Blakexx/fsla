@@ -27,6 +27,20 @@ that trades registers states its launch bounds, branches on the role once, and k
 `setmaxnreg` first, inside its branch. The trade here is balanced about the entry count; what a raise does when the
 pool holds less than it asks is not established (the opcode is a TRY, so the experiment does not ask it).
 
-UNMEASURED: no hopper card has run it. The trade's cycles, the raised readout's cycles a wgmma beside the untraded
-one's, and the state's survival across the trade (the check) are owed to its first run (`bazel run //tools:lab -- pack
-reg_trade --arch sm_90a`, then `carried` on the card, under its kill timeout).
+MEASURED (H100 SXM, 132 SMs, a rented box: vast.ai instance 60164819, driver 595.91.07; 2026-11-11, one session, 7
+repetitions, the medians):
+
+| | untraded (128 a thread, three sets) | traded (24 and 232, five sets) |
+|---|---|---|
+| the trade, cycles a warp | -- | 201 |
+| the readout, cycles a wgmma | 77.1 (75.7 to 78.3) | 52.5 |
+| the accumulators against the host's | exact | exact |
+
+WHAT IT SHOWS. The trade works on the device as compiled: the state folded before it is read out exactly after it, by
+a warpgroup holding 232 registers a thread in a kernel launched at 128, and it costs about 200 cycles a warp, once.
+The readout's cycles a wgmma fall as a commit group holds more of them (three: 77; five: 52.5; one, in
+[`wgmma_regs`](wgmma_regs.md): 105 to 136), which is a group's round trip shared out, not the registers' doing: the
+two columns differ in sets, so they do not price the raised count itself.
+
+Record: `measure/lab/results/reg_trade/sm_90a.json`; its counters are the written exception (no profiler on that
+box).

@@ -2,16 +2,19 @@
 // copy, into a ring of wgmma B operands (bf16, each row times its fp32 scale); how many cycles a tile does a
 // producer take against the warpgroup consuming it, and how many producers keep one warpgroup fed? METHOD: a CTA an
 // SM: warps 0-3 a consuming warpgroup (one m64n64k16 wgmma a tile, A in registers), then 1, 2 or 4 producer warps
-// over a ring of 4 slots. A producer's tile: its 1 KB of bytes arrives under an mbarrier a tile ahead; a byte
-// becomes 2^23 + byte by one PRMT, the product by one FFMA (times the scale, less 2^23 scales), a pair a bf16 word by
-// one conversion; full and empty barriers a slot hand tiles over. Each side also runs alone (the other only
-// handshakes). The readout's accumulators are checked against the host's.
+// over a ring of 4 operand slots and 8 slots of bytes. A producer's tile: its 1 KB of bytes arrives under an
+// mbarrier, issued before the tile ahead of it is expanded (two loads in flight); a byte becomes 2^23 + byte by one
+// PRMT, the product by one FFMA (times the scale, less 2^23 scales), a pair a bf16 word by one conversion; full and
+// empty barriers a slot hand tiles over. Each side also runs alone, the other doing nothing but the barriers'
+// arrivals. The readout's accumulators are checked against the host's.
 // see docs/internals/tools/lab.md#row-ring
 #include "lab.cuh"
 
 namespace row_ring {
 
 constexpr int kM = 64, kK = 16, kN = 64, kSlots = 4, kTileBytes = 2048, kRawBytes = kN * kK, kSrcTiles = 32;
+//: the bytes' ring: twice the operands', so a producer's next tile lands while it expands this one at any count
+constexpr int kRawSlots = 2 * kSlots;
 enum Mode : int { kBoth = 0, kProducerAlone, kConsumerAlone };
 const char* kModeName[3] = {"producers and consumer", "producers alone", "the consumer alone"};
 
@@ -23,15 +26,25 @@ constexpr float scale_of(int n) { return 1.0f / static_cast<float>(1 << (n % 5))
 //: a K-major tile's byte offset: token `n`'s K half `q`, 16 bytes (`lab::wg_desc(a, 8, 16)`)
 constexpr int line_at(int n, int q) { return 16 * ((n % 8) + 16 * (n / 8) + 8 * q); }
 
-constexpr int kTiles = 0, kRaw = kTiles + kSlots * kTileBytes, kBars = kRaw + kSlots * kRawBytes,
-              kSmem = kBars + 3 * kSlots * 8;
+constexpr int kTiles = 0, kRaw = kTiles + kSlots * kTileBytes, kBars = kRaw + kRawSlots * kRawBytes,
+              kBarCount = 2 * kSlots + kRawSlots, kSmem = kBars + kBarCount * 8;
 
+//: a tile's barriers: its operand slot's full and empty, its bytes' slot's landed
 struct Bars {
   uint32_t full, empty, raw;
 };
 
-__device__ __forceinline__ Bars bars_of(uint32_t base, int slot) {
-  return {base + kBars + 8 * slot, base + kBars + 8 * (kSlots + slot), base + kBars + 8 * (2 * kSlots + slot)};
+__device__ __forceinline__ Bars bars_of(uint32_t base, int tile) {
+  return {base + kBars + 8 * (tile % kSlots), base + kBars + 8 * (kSlots + tile % kSlots),
+          base + kBars + 8 * (2 * kSlots + tile % kRawSlots)};
+}
+
+//: A TILE'S BYTES, issued: the one arrival that states them, then the copy into the tile's slot of the bytes' ring.
+//: ISSUE EDGE: the slot's last reader is this warp's tile `kRawSlots` back, expanded and synchronized iterations ago
+__device__ __forceinline__ void fetch(uint32_t base, const uint8_t* src, int tile) {
+  lab::mbar_expect(bars_of(base, tile).raw, kRawBytes);
+  lab::bulk_load(base + kRaw + (tile % kRawSlots) * kRawBytes, src + (tile % kSrcTiles) * kRawBytes, kRawBytes,
+                 bars_of(base, tile).raw);
 }
 
 //: A BYTE AS 2^23 + byte, then the product `byte * s` in one FFMA (`c` = -2^23 s)
@@ -44,55 +57,56 @@ __device__ __forceinline__ float expand(uint32_t word, int i, float s, float c) 
   return fmaf(__uint_as_float(x), s, c);
 }
 
-//: A PRODUCER WARP'S TILES: every `kProducers`-th, its bytes loaded a tile ahead
+//: A PRODUCER WARP'S TILES: every `kProducers`-th, the next one's bytes issued before this one is expanded
 template <int MODE, int kProducers>
 __device__ __forceinline__ void produce(uint8_t* smem, const uint8_t* src, int tiles, int mine) {
+  static_assert(kProducers < kRawSlots, "a producer's next tile has its own slot of bytes");
+  constexpr bool kExpands = MODE != kConsumerAlone;
   const int lane = threadIdx.x & 31;
   const uint32_t base = lab::smem(smem);
-  if (lane == 0 && mine < tiles) {
-    lab::mbar_expect(bars_of(base, mine % kSlots).raw, kRawBytes);
-    lab::bulk_load(base + kRaw + (mine % kSlots) * kRawBytes, src + (mine % kSrcTiles) * kRawBytes, kRawBytes,
-                   bars_of(base, mine % kSlots).raw);
+  //: this lane's two tokens' scales 2^-e and -2^23 times them, built as bits, once
+  float s[2], c[2];
+#pragma unroll
+  for (int j = 0; j < 2; ++j) {
+    const uint32_t e = static_cast<uint32_t>((2 * lane + j) % 5);
+    s[j] = __uint_as_float((127u - e) << 23);
+    c[j] = __uint_as_float(0x80000000u | (150u - e) << 23);
   }
+  if (kExpands && lane == 0 && mine < tiles) fetch(base, src, mine);
 #pragma unroll 1
   for (int t = mine; t < tiles; t += kProducers) {
     const int slot = t % kSlots, use = t / kSlots;
-    const Bars b = bars_of(base, slot);
+    const Bars b = bars_of(base, t);
+    if constexpr (kExpands) {
+      //: THE NEXT TILE'S BYTES, in flight under this tile's work
+      if (lane == 0 && t + kProducers < tiles) fetch(base, src, t + kProducers);
+    }
     //: THE WAITS: the slot's last tile consumed, this tile's bytes landed
     if (use > 0) lab::mbar_wait(b.empty, (use - 1) & 1);
-    lab::mbar_wait(b.raw, use & 1);
-    //: THE EXPANSION: this lane's two tokens, 16 bytes each
-    if constexpr (MODE != kConsumerAlone) {
+    if constexpr (kExpands) {
+      lab::mbar_wait(b.raw, (t / kRawSlots) & 1);
+      //: THE EXPANSION: this lane's two tokens, 16 bytes each
 #pragma unroll
       for (int j = 0; j < 2; ++j) {
         const int n = 2 * lane + j;
-        //: the token's scale 2^-e and -2^23 times it, built as bits: no conversion in the step
-        const uint32_t e = static_cast<uint32_t>(n % 5);
-        const float s = __uint_as_float((127u - e) << 23), c = __uint_as_float(0x80000000u | (150u - e) << 23);
-        const uint4 in = *reinterpret_cast<const uint4*>(smem + kRaw + slot * kRawBytes + 16 * n);
+        const uint4 in = *reinterpret_cast<const uint4*>(smem + kRaw + (t % kRawSlots) * kRawBytes + 16 * n);
         const uint32_t w[4] = {in.x, in.y, in.z, in.w};
 #pragma unroll
         for (int q = 0; q < 2; ++q) {
           uint4 o;
-          o.x = lab::bf16x2_round(expand(w[2 * q], 0, s, c), expand(w[2 * q], 1, s, c));
-          o.y = lab::bf16x2_round(expand(w[2 * q], 2, s, c), expand(w[2 * q], 3, s, c));
-          o.z = lab::bf16x2_round(expand(w[2 * q + 1], 0, s, c), expand(w[2 * q + 1], 1, s, c));
-          o.w = lab::bf16x2_round(expand(w[2 * q + 1], 2, s, c), expand(w[2 * q + 1], 3, s, c));
+          o.x = lab::bf16x2_round(expand(w[2 * q], 0, s[j], c[j]), expand(w[2 * q], 1, s[j], c[j]));
+          o.y = lab::bf16x2_round(expand(w[2 * q], 2, s[j], c[j]), expand(w[2 * q], 3, s[j], c[j]));
+          o.z = lab::bf16x2_round(expand(w[2 * q + 1], 0, s[j], c[j]), expand(w[2 * q + 1], 1, s[j], c[j]));
+          o.w = lab::bf16x2_round(expand(w[2 * q + 1], 2, s[j], c[j]), expand(w[2 * q + 1], 3, s[j], c[j]));
           *reinterpret_cast<uint4*>(smem + kTiles + slot * kTileBytes + line_at(n, q)) = o;
         }
       }
+      //: THE WRITERS' EDGE to the wgmma that reads the tile
+      lab::bulk_fence();
     }
-    //: THE HAND-OVER, and the next tile's bytes
+    //: THE HAND-OVER
     __syncwarp();
-    if (lane == 0) {
-      lab::mbar_arrive(b.full);
-      const int next = t + kProducers;
-      if (next < tiles) {
-        lab::mbar_expect(bars_of(base, next % kSlots).raw, kRawBytes);
-        lab::bulk_load(base + kRaw + (next % kSlots) * kRawBytes, src + (next % kSrcTiles) * kRawBytes, kRawBytes,
-                       bars_of(base, next % kSlots).raw);
-      }
-    }
+    if (lane == 0) lab::mbar_arrive(b.full);
   }
 }
 
@@ -113,7 +127,7 @@ __device__ __forceinline__ void consume(uint8_t* smem, float* out, int tiles) {
 #pragma unroll 1
   for (int t = 0; t < tiles; ++t) {
     const int slot = t % kSlots, use = t / kSlots;
-    const Bars b = bars_of(base, slot);
+    const Bars b = bars_of(base, t);
     lab::mbar_wait(b.full, use & 1);
     if constexpr (MODE != kProducerAlone) {
       lab::wg_fence();
@@ -136,7 +150,7 @@ __global__ void ring(long long* times, float* out, const uint8_t* src, int tiles
   const int tid = threadIdx.x, warp = tid >> 5;
   const uint32_t base = lab::smem(smem);
   //: the barriers, one arrival a phase; the tiles zero (the consumer alone reads them as they are)
-  if (tid < 3 * kSlots) lab::mbar_init(base + kBars + 8 * tid, 1);
+  if (tid < kBarCount) lab::mbar_init(base + kBars + 8 * tid, 1);
 #pragma unroll 1
   for (int i = tid; i < kSlots * kTileBytes / 4; i += blockDim.x) reinterpret_cast<uint32_t*>(smem)[i] = 0u;
   __syncthreads();
@@ -182,7 +196,7 @@ void run(lab::Bench& b, float* out, const uint8_t* src) {
             std::to_string(wrong) + " of " + std::to_string(got.size()) + " accumulators differ from the host's at "
                 + std::to_string(kCheckTiles) + " tiles");
   } else {
-    b.unchecked(name, "an isolation: one side only handshakes, so the accumulators are not the product");
+    b.unchecked(name, "an isolation: one side only arrives at the barriers, so the accumulators are not the product");
   }
   const lab::Samples cycles = b.variant([&] { ring<MODE, kProducers><<<b.sms, threads>>>(b.times, out, src, kRunTiles); },
                                         [&] { return b.span(warps) / kRunTiles; });
@@ -197,7 +211,7 @@ int main(int argc, char** argv) {
       if (mode != kBoth && p != 1) continue;
       const std::string k = lab::kernel("ring", {mode, p});
       b.expect(k, "HGMMA", "==", mode == kProducerAlone ? 0 : 1);
-      b.expect(k, "UBLKCP", "==", 2);
+      b.expect(k, "UBLKCP", "==", mode == kConsumerAlone ? 0 : 2);
       b.expect(k, "FFMA", "==", mode == kConsumerAlone ? 0 : 32);
       b.expect(k, "F2FP", "==", mode == kConsumerAlone ? 0 : 16);
       if (mode != kProducerAlone) b.exempt(k, "a rate probe: a producer's tile against a warpgroup's, no kernel's step");

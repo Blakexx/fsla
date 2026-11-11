@@ -17,6 +17,23 @@ WHAT THE SASS SAYS (sm_90a, the pinned toolkit; no device): a bulk add is one `U
 size, issued by one thread; the panel is 32 `STS` a thread, a warp's lanes on 32 banks, and the writers' proxy fence before the round's barrier; the warps' own drain is 32
 `REDG.E.ADD.F32.FTZ.RN.STRONG.GPU` a thread a round.
 
-UNMEASURED: no hopper card has run it. Its cycles a token by form, contended and not, are owed to its first run
-(`bazel run //tools:lab -- pack bulk_drain --arch sm_90a`, then `carried` on the card, which runs it under its kill
-timeout and writes its sm_90a record beside the other experiments').
+MEASURED (H100 SXM, 132 SMs, a rented box: vast.ai instance 60164819, driver 595.91.07; 2026-11-11, one session, 7
+repetitions, every sum exact; cycles a token -- 64 fp32 -- a CTA, the median, the spread under 0.2%):
+
+| the drain | one sum for every CTA | each CTA its own sum |
+|---|---|---|
+| none: the panel's stores and the round's barriers | 3.2 | 3.2 |
+| one bulk add a panel, waited | 46.1 | 19.9 |
+| one bulk add a panel, one in flight | 46.0 | 19.8 |
+| one bulk add a token's span | 46.0 | 30.4 |
+| the warps' own reduction a value, no panel | 45.9 | 19.8 |
+
+WHAT IT SHOWS. The bulk reduction drains no faster than the warps' own reductions: 19.8 cycles a token either way
+into a CTA's own sum, 46 either way into the one sum every CTA adds into. The rate belongs to what receives the
+adds, not to the engine that issues them, and contention between CTAs more than doubles it. Keeping a second panel's
+drain in flight changes nothing; a bulk add a token is slower than one a panel when uncontended. What the bulk form
+does change is the warps' issue: one instruction a round from one thread where the warps' own drain is 32 a thread --
+its worth beside tensor work is not measured here (the round waits for its drain in every form).
+
+Record: `measure/lab/results/bulk_drain/sm_90a.json`; its counters are the written exception (no profiler on that
+box).
