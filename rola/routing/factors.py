@@ -247,7 +247,7 @@ class RouteFactors:
 
     def live(self, side: str) -> tuple[torch.Tensor, ...]:
         """THE LIVE DIGITS of one side, a bool ``[B, T, H, width_l]`` a level: its nonzero digits, at every level. The
-        one definition every support and atom set is derived from."""
+        facts pass words a dense level by its width instead, a superset of this (docs/internals/facts/facts.md)."""
         return tuple(self.rows(level, side) != 0 for level in range(self.topology.D))
 
     def tensors(self) -> tuple[torch.Tensor, ...]:

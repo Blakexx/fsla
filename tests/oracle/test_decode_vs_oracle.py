@@ -156,7 +156,7 @@ def _kernel_realized_support(routes, side, widths, B, H, device, d_v=64):
     The read side is left empty so the walk's union is the set under test, the state
     starts at zero and ``v`` is all ones, so a deposited row is a nonzero row and the
     correspondence is exact rather than statistical. ``side``'s rows are the bundle's own stored rows, carried with
-    its sparse flags (a dense level's zeros read as the floor), so the support is the one the kernel is handed.
+    its sparse flags, so the support is the one the kernel is handed.
     """
     topology = _topology(widths)
     N = math.prod(widths)

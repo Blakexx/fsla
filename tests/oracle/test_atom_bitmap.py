@@ -1,4 +1,6 @@
-"""The facts pass's words, folded to atoms, are the EXACT atom-grain write bitmap.
+"""The facts pass's words, folded to atoms, are the EXACT atom-grain write bitmap of the levels as the pass words
+them: a sparse level by its nonzero digits, a dense level whole (`_declared`). Against the stored digits the bitmap is
+the write set where every write level is sparse and a superset where a dense digit rounded to zero.
 
 This is the gate the paging work's first stage exists to pass, and it is the one
 that decides the shape of everything after it. Residency is planned from this
@@ -61,7 +63,7 @@ from rola.values import Values
 from tests.oracle.fixtures import with_gain
 
 #: the lists' form the facts pass is called in; this file reads its words and unions only
-_LISTS = facts_ops.UNIT_FORM
+_LISTS = facts_ops.WHOLE_GROUPS
 
 pytestmark = [
     pytest.mark.cuda,

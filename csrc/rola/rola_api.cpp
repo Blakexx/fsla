@@ -117,7 +117,7 @@ STABLE_TORCH_LIBRARY(rola, m) {
   m.def(
       "rola_facts_forward(Tensor[] read, Tensor[] write, Tensor[] scale_write, Tensor v_scale, "
       "int[] widths, int dense_read, int[] mask_read, int dense_write, int[] mask_write, int write_list_level, "
-      "int read_list_level, int read_row, int read_list_group, int write_list_group) -> Tensor[]");
+      "int read_list_level, int read_list_group, int write_list_group) -> Tensor[]");
   m.def("rola_facts_ledger_bind(Tensor? ledger) -> ()");
 
   // ---- the producer's solves -----------------------------------------------

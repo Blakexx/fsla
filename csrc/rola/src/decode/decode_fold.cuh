@@ -5,7 +5,6 @@
 // see docs/internals/decode/decode_fold.md#note-l3
 
 #include <cuda_bf16.h>
-#include <cuda_fp16.h>
 
 #include <cstdint>
 

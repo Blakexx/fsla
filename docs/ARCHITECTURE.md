@@ -48,8 +48,7 @@ readout is the only normalization the family has.
  §2.1](api.md#21-the-bundle-is-the-contract-and-it-is-the-internal-format)): every routing level's rows, dense or
 sparse, are u8 digits unit-max against the row's fp32 maximum, a zero a zero, and each token's values are bf16 against
 its largest channel with an fp32 scale (CONSTITUTION §R17, §R23). Nothing floating but those values is stored between
-the producer and the kernels. The facts pass still emits a carry arm's entry forms
-([`open-work.md`](open-work.md)).
+the producer and the kernels.
 
 **Declared arithmetic, per kernel.** Every kernel's arithmetic is declared and mirrored by its gate's reference: every
 accumulation fp32 or an exact integer, the operands one family on every card
@@ -254,11 +253,13 @@ fp64 reference and the path a gradient takes (`rola/ops/produce.py`).
 
 One pass over the bundle's rows emits what the downstream launches need instead of an amplitude scan: per side, per
 token, per sparse level, ONE BIT PER DIGIT in canonical order (a dense level's bits are its static width mask, read
-from the statics and never written), the tile unions per 64 tokens, the write lists' per-(window, digit) exponents,
-and per (window, list digit) the lists the carry walks. The emitted size is a function of the sequence and the
-WIDTHS, never of `N`, and the digit grain is what makes the pass carve-independent: each consumer ORs its own span's
-digits a level and ANDs the levels. Liveness therefore stays a VALUE test, and a pad digit, whose amplitude is exactly
-zero, is never live ([`internals/facts/facts.md`](internals/facts/facts.md),
+from the statics and never written), the tile unions per 64 tokens, each token's factor products `(F, m)`, and per
+(window, list digit) the lists a carry walks -- the union's tokens by rank, each list's entries (a slot and a byte),
+their boundaries and totals. It is an indexer: nothing of a card is in what it emits, no exponent, no coefficient in
+an operand's format, no layout offset. The emitted size is a function of the sequence and the WIDTHS, never of `N`,
+and the digit grain is what makes the pass carve-independent: each consumer ORs its own span's digits a level and ANDs
+the levels. Liveness therefore stays a VALUE test, and a pad digit, whose amplitude is exactly zero, is never live
+([`internals/facts/facts.md`](internals/facts/facts.md),
 [`internals/facts/liveness_contract.md`](internals/facts/liveness_contract.md)).
 
 WHAT BELONGS IN IT (Blake, 2026-09-28 and 2026-09-29): a fact the raw produced values determine -- a list word, a
