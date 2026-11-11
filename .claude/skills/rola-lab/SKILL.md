@@ -19,7 +19,8 @@ The method: `docs/internals/tools/lab.md#the-loop`. The law: `docs/KERNEL_STANDA
    `bazel run //tools:lab -- ledger <name>`; a traffic question is `bazel run //tools:lab -- ncu <name> --metric M`
    (`docs/internals/tools/lab.md#the-loop`). Read its pipes report: the binding pipe per card, and on this card how
    far the kernel runs over it and which stalls hold it (`docs/internals/tools/pipes.md`).
-6. Record with `bazel run //tools:lab -- run <name> --record`.
+6. Record with `bazel run //tools:lab -- run <name> --record`. For a card elsewhere (a rented box has no toolkit):
+   `pack` it here, run it there with `carried` (`docs/internals/tools/lab.md#pack`).
 7. Write its page `docs/lab/<name>.md` (the question, the form, the measured table, what it decides), its row in
    `docs/lab/README.md` and, where a design card tracks it, its MEASURED block (the site's own skill); commit with
    `rola-commit`.
