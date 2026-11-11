@@ -38,8 +38,8 @@ SM-cycles a token, low to high, and the 64K call):
 | the shape | boxes read | the sum (partials, rounds, drains) | fold values | total | the call |
 |---|---|---|---|---|---|
 | 256 x 256, no cluster | 58.2 | 0, 0, 1,176 to 2,726 | 320 to 640 | 1,590 to 3,460 | 440 to 950 us |
-| ... `--cluster 16 1`, rounds of 64 | 58.2 | 916, 5,710, 74 to 170 | 88 to 176 | 6,880 to 7,060 | 1.9 ms |
-| ... `--cluster 16 1 --round 512` | 58.2 | 916, 714, 74 to 170 | 88 to 176 | 1,880 to 2,070 | 520 to 570 us |
+| ... `--cluster 16 1`, rounds of 64 | 58.2 | 897, 6,594, 74 to 170 | 88 to 176 | 7,740 to 7,930 | 2.1 to 2.2 ms |
+| ... `--cluster 16 1 --round 512` | 58.2 | 897, 824, 74 to 170 | 88 to 176 | 1,970 to 2,160 | 545 to 600 us |
 | 64 x 64 (4,096 leaves), no cluster | 10.9 | 0, 0, 221 to 512 | 80 to 160 | 320 to 690 | 90 to 190 us |
 | 16^4 (two sparse levels a side, 2 live digits, boxes 4^4), no cluster | 49.0 | 0, 0, 989 to 2,293 | 1,280 to 2,560 | 2,360 to 4,940 | 650 to 1,360 us |
 | 256 x 256 dense on both sides, no cluster | 256 | 0, 0, 5,169 to 11,981 | 20,480 to 40,960 | 31,500 to 58,800 | 8.7 to 16 ms |
@@ -49,7 +49,7 @@ FlashAttention's tensor floor at the same 65,536 tokens and width is 2,049 SM-cy
 
 WHAT IT SHOWS. The tensor work is 64 of the sparse rows' cycles; the rest is bytes, counted a (token, box): the
 output's partials and the fold's values. A CLUSTER DOES NOT PAY: a partial costs as much into a mate's shared memory
-as to global memory, and the round's barriers come on top -- at the lab's round the clustered row is four times the
+as to global memory, and the round's barriers come on top -- at the lab's round the clustered row is two to five times the
 unclustered one, and at a round of 512 partials (unmeasured, and more shared memory than the slots have) it is no
 better than the unclustered row's low end. So the output's sum is priced by the count of partials a token, 58 at
 these boxes, and at 65,536 tokens the unclustered row stands around FlashAttention's floor, not under it. What
