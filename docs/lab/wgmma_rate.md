@@ -13,5 +13,26 @@ SASS (sm_90a): no descriptor arithmetic inside it. The slope of a step's cycles 
 intercept the group's round trip; the K = 1 rows are [`wgmma_regs`](wgmma_regs.md)'s readout-alone forms with the
 descriptors held. Every accumulator is checked against the host's.
 
-UNMEASURED: no hopper card has run it (`bazel run //tools:lab -- pack wgmma_rate --arch sm_90a`, then `carried` on the
-card, under its kill timeout).
+MEASURED (H100 SXM, 132 SMs, a rented box: vast.ai instance 60165936, driver 595.91.07; 2026-11-11, one session, 7
+repetitions, every accumulator exact against the host's; cycles a step, the median, the spread under 0.1%):
+
+| wgmmas a group | A registers, one warpgroup | A shared, one | A registers, two warpgroups | A shared, two |
+|---|---|---|---|---|
+| 1 | 96.0 | 105.0 | 98.1 | 103.1 |
+| 2 | 123.0 | 132.0 | 128.1 | 140.1 |
+| 4 | 182.1 | 191.1 | 256.1 | 256.1 |
+| 6 | 246.1 | 255.1 | 384.1 | 384.1 |
+
+WHAT IT SHOWS.
+- A WGMMA'S OWN TIME is 32 cycles of the SM's tensor pipe (`m64n64k16`, bf16 into fp32: 65,536 products). Two
+  warpgroups at four and six a group run at exactly 64 cycles a wgmma each, the two sharing one pipe; one warpgroup's
+  step grows by 27 to 32 a wgmma.
+- A GROUP'S ROUND TRIP is about 64 cycles: one wgmma a group is 96, so a step that commits and waits a single wgmma
+  spends two thirds of itself not on the pipe, and a lone warpgroup reaches the pipe's rate only as its groups deepen
+  (41 a wgmma at six).
+- A in registers is 9 cycles a step UNDER A in shared memory at every depth. With the descriptors held,
+  [`wgmma_regs`](wgmma_regs.md)'s slow fixed-register row (136) reads 96: that row's extra 40 cycles were the
+  descriptor ptxas re-derived inside its loop, now measured by removing it.
+
+Record: `measure/lab/results/wgmma_rate/sm_90a.json`; its counters are the written exception (no profiler on that
+box).

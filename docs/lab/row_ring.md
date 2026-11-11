@@ -41,8 +41,7 @@ descriptor formed a tile, the rest of the loop -- no row here separates. By thes
 its wgmma's own pace would take six or seven such producer warps (773 against 105 to 136: arithmetic across two
 experiments, not a measured form).
 
-NOT SEPARATED: how much of a producer's 770 cycles is the expansion's ~100 instructions a lane and how much its three
-barrier waits and the warp's synchronization a tile; the expansion alone, with no ring, is owed before a design prices
-a producer.
+SEPARATED by [`byte_expand`](byte_expand.md): the expansion alone is 202 cycles a tile a warp, so about 570 of a
+producer's 773 are its hand-over -- its barrier waits, the warp's synchronization, the loads' issue.
 
 Record: `measure/lab/results/row_ring/sm_90a.json`; its counters are the written exception (no profiler on that box).

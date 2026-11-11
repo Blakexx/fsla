@@ -43,12 +43,10 @@ WHAT IT SHOWS.
 - A second warpgroup in the CTA costs a step nothing to 7%, so at these steps one warpgroup does not hold the SM's
   tensor pipe: a step that waits for its own group is bound by the group's round trip. The pipe's own time a wgmma is
   not read here (owed with the family's machine model, KERNEL_STANDARDS §32.4).
-- NOT ATTRIBUTED: the readout with A in registers loaded ONCE is slower than with A shared (136 against 105 alone,
-  165 against 121 with the fold), though the narrowed form -- also A in registers -- is the fastest. One difference
-  the SASS shows: in the shared form ptxas hoists the operand descriptors' arithmetic out of the step loop, and in the
-  fixed-register forms it re-derives B's descriptor inside it (`ULEA`, `UIADD3`, `USHF`, two `ULOP3` before the
-  `HGMMA`); the narrowed form keeps three of those five and is fast, so that alone does not explain the rows. The
-  forms with every descriptor held in a register are [`wgmma_rate`](wgmma_rate.md)'s. No design rests on these rows.
+- THE FIXED-REGISTER ROWS (A in registers loaded once: 136 against A shared's 105 alone, 165 against 121 with the
+  fold) are this experiment's own loop, not the register operand: ptxas re-derives B's descriptor inside the step loop
+  in those forms. [`wgmma_rate`](wgmma_rate.md) holds every descriptor in a register and reads the same step at 96,
+  under A shared's 105. No design rests on the rows here.
 
 Record: `measure/lab/results/wgmma_regs/sm_90a.json`; its counters are the written exception (no profiler on that
 box).
