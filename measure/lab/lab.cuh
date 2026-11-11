@@ -344,6 +344,15 @@ __device__ __forceinline__ void bulk_add_f32(void* dst, uint32_t src, uint32_t b
                : "memory");
 }
 
+//: A BULK COPY OUT (sm_90): `bytes` of shared memory at `src` to global `dst`, asynchronous, in this thread's bulk
+//: group; both addresses and the size multiples of 16 bytes
+__device__ __forceinline__ void bulk_store(void* dst, uint32_t src, uint32_t bytes) {
+  asm volatile("cp.async.bulk.global.shared::cta.bulk_group [%0], [%1], %2;"
+               :
+               : "l"(dst), "r"(src), "r"(bytes)
+               : "memory");
+}
+
 //: THE WRITERS' EDGE to an asynchronous reader of shared memory -- a bulk copy out, a wgmma in another warp: a
 //: thread's ordinary stores made visible to it
 __device__ __forceinline__ void bulk_fence() { asm volatile("fence.proxy.async.shared::cta;" ::: "memory"); }
