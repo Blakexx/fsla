@@ -36,7 +36,7 @@ def test_a_cluster_moves_the_drains_and_the_loads_and_nothing_else():
         assert none[name] == rows[name] == columns[name]
     drains, loads = "sum: drains to global memory", "fold values, loaded"
     assert rows[drains]["cycles"][0] < columns[drains]["cycles"][0] == pytest.approx(none[drains]["cycles"][0] * 16 / 58.25, rel=0.01)
-    assert columns[loads]["cycles"][0] < rows[loads]["cycles"][0] < none[loads]["cycles"][0]
+    assert max(columns[loads]["cycles"][0], rows[loads]["cycles"][0]) < none[loads]["cycles"][0]
     #: a cluster's shared load is an estimate from free to worthless: its high end is every box's own load
     assert columns[loads]["cycles"][1] == rows[loads]["cycles"][1] == none[loads]["cycles"][1]
     assert none["sum: partials into the cluster"]["cycles"] == [0.0, 0.0]
@@ -63,3 +63,16 @@ def test_a_cluster_with_no_sum_shares_the_loads_and_every_box_drains():
 def test_a_missing_record_row_is_refused():
     with pytest.raises(SystemExit, match="has no row"):
         carry_floor.median("wgmma_rate", "a row no record holds")
+
+
+def test_a_box_a_side_touches_narrowly_pays_padding_and_the_whole_tile():
+    even = carry_floor.floor(cluster=(1, 1), **ALT)["terms"]
+    strip = carry_floor.floor(cluster=(1, 1), **{**ALT, "box": (256, 1)})["terms"]
+    #: 16 x 16 boxes: a list's 16 leaves fill both steps; a strip along the read side: the fold's one leaf a list
+    #: runs a step of eight
+    assert even["tensor, fold"]["cycles"] == even["tensor, readout"]["cycles"] == strip["tensor, readout"]["cycles"]
+    assert strip["tensor, fold"]["cycles"][0] == pytest.approx(8 * even["tensor, fold"]["cycles"][0])
+    #: every token writes every strip: each takes the window's tile packed
+    rates = carry_floor.measured()
+    assert strip["fold values, loaded"]["cycles"][0] == pytest.approx(256 * rates["load_packed"][0])
+

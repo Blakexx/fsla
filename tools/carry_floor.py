@@ -16,7 +16,8 @@ THE TERMS, SM-cycles a token (each line of the report says which rate it used an
 read from an H100 lab record under `measure/lab/results/` at run time -- or ESTIMATED, a constant of this file with
 its reason):
 - tensor: the leaves a token reads and writes, times the channels, over the pipe's products a cycle (`wgmma_rate`);
-  a value width under 64 runs wgmma's 64 rows (the idle half);
+  a value width under 64 runs wgmma's 64 rows (the idle half), and a list's leaves in a box run whole steps -- the
+  fold's in eights (wgmma's N), the readout's in sixteens (its K) -- so a box a side touches narrowly pays padding;
 - the readout's operand: its (token, leaf) coefficients expanded into shared memory, at the SM's shared access rate
   (`byte_expand`, its bank-spread form);
 - the output's sum: by default (`--sum none`) every box drains its own partial to global memory (`bulk_drain`, a
@@ -28,9 +29,11 @@ its reason):
   comparison. A cluster's CTAs hand over once a ROUND of `--round` partials a CTA, and the round's cost is its own
   term (beyond 64 partials a round it is the line's, UNMEASURED);
 - the fold's operands: its (token, leaf) coefficients into shared memory, and its values loaded a (token, list) of
-  each cluster it writes into, at two MEASURED rates (`state_move`): low, 128 bytes of one large bulk copy in -- the
-  values packed by list in global memory, which no pass produces yet, and a cluster's CTAs sharing one load, which no
-  lab has read; high, a 128-byte bulk load of its own a (token, list) of every box;
+  box it writes into, at the cheaper of two MEASURED rates (`state_move`): its share of the window's whole value
+  tile loaded packed (every token's bytes: a box few tokens write pays for the rest), or a 128-byte load of its
+  own. A cluster sharing one load is the low end, ESTIMATED: no lab has read a load landed across a cluster. Then
+  the values gathered into list order in shared memory, a (token, list) of a box, ESTIMATED at the shared access
+  rate (no lab has read that copy);
 - the state in and out, a call (24-bit state, at a memory bandwidth).
 
 NOT COUNTED: the hand-over between producer and consumer warps, the den's readout, the divergent carve's register
@@ -164,20 +167,35 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
         return (x, x)
 
     drains = read.clusters if summed else read.boxes
-    #: a cluster's value load, one request landed in every CTA of it: ESTIMATED from landing free (one request a
-    #: cluster) to sharing nothing (one a box)
-    loads = ((write.clusters if clustered else write.boxes) * write.lists * value_requests,
-             write.boxes * write.lists * value_requests)
+    #: A TOKEN'S VALUE reaches each box it writes once: as its share of the window's whole value tile, loaded packed
+    #: (every token's bytes, so a box few tokens write pays for the rest), or by a load of its own -- the cheaper.
+    #: A cluster's sharing is ESTIMATED from landing free (the same, a cluster) to nothing (a box)
+    all_boxes = math.prod(w / b for w, b in zip(widths, box))
+
+    def a_value(touched: float, of: float) -> float:
+        return touched * value_requests * min(rates["load_packed"][0] * of / touched, rates["load_row"][0])
+
+    a_box = a_value(write.boxes, all_boxes)
+    loads = (a_value(write.clusters, all_boxes / math.prod(cluster)) if clustered else a_box, a_box)
+
+    #: THE STEPS' PADDING: a list's leaves in a box are wgmma's N in the fold (eights) and its K in the readout
+    #: (sixteens); a box a token touches narrowly runs the rest of the step on nothing
+
+    def padded(a: Side, step: int) -> float:
+        along = a.leaves / (a.boxes * a.lists)
+        return a.boxes * a.lists * step * math.ceil(along / step - 1e-9)
+
     terms = {
-        "tensor, readout": (both(read.leaves * rows / products), "products"),
-        "tensor, fold": (both(write.leaves * rows / products), "products"),
+        "tensor, readout": (both(padded(read, 16) * rows / products), "products"),
+        "tensor, fold": (both(padded(write, 8) * rows / products), "products"),
         "readout operand, expanded": (both(read.leaves * 2 / shared), "shared"),
         "sum: partials into the cluster": (both(read.boxes * hop), f"hop_{form}" if summed else "no cluster sum"),
         "sum: the rounds' barriers": (both(barriers), f"round_{form}" if summed else "no cluster sum"),
         "sum: drains to global memory": (tuple(drains * (dv * 4 + 4) * d for d in drain), "drain_own .. drain_shared"),
         "fold operand, expanded": (both(write.leaves * 2 / shared), "shared"),
-        "fold values, loaded": ((loads[0] * rates["load_packed"][0], loads[1] * rates["load_row"][0]),
-                                "load_packed a cluster .. load_row a box"),
+        "fold values, loaded": (loads, "load_packed of the window's tile, or load_row: the cheaper a box"),
+        "fold values, gathered by list": (both(write.boxes * write.lists * dv * 2 * 2 / shared),
+                                          "ESTIMATED: shared, a read and a write a byte"),
     }
     total = tuple(sum(v[0][i] for v in terms.values()) for i in (0, 1))
     seconds = tuple(t * tokens / SMS / est["clock"] for t in total)
