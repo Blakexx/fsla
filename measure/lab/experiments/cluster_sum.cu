@@ -164,7 +164,7 @@ __global__ void __cluster_dims__(kCtas, 1, 1) sum(long long* times, float* out, 
         }
         if constexpr (kBulk<FORM>) lab::bulk_fence();
         //: the collector's reads and clears ordered for the cluster before its mates' next round
-        if constexpr (!kBulk<FORM>) lab::cluster_fence();
+        lab::cluster_fence();
         __syncthreads();
         if (tid == 0) {
           if constexpr (kBulk<FORM>) lab::mbar_expect(full, kCtas * kShare);

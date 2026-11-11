@@ -40,11 +40,14 @@ def test_a_cluster_moves_the_drains_and_the_loads_and_nothing_else():
     assert none["sum: partials into the cluster"]["cycles"] == [0.0, 0.0]
 
 
-def test_the_sums_move_the_bytes_their_forms_say():
-    name = "sum: partials into the cluster"
-    s64, slots, atomic = (carry_floor.floor(cluster=(16, 1), form=form, **ALT)["terms"][name]["cycles"][0]
-                          for form in ("s64", "slots", "atomic"))
-    assert s64 == pytest.approx(slots) == pytest.approx(2 * atomic)
+def test_the_cluster_forms_read_the_labs_line():
+    hop, rounds = "sum: partials into the cluster", "sum: the rounds' barriers"
+    slots = carry_floor.floor(cluster=(16, 1), form="slots", **ALT)["terms"]
+    s64 = carry_floor.floor(cluster=(16, 1), form="s64", **ALT)["terms"]
+    longer = carry_floor.floor(cluster=(16, 1), form="slots", round_partials=512, **ALT)["terms"]
+    assert slots[hop]["rate"] == "hop_slots" and s64[hop]["cycles"][0] > slots[hop]["cycles"][0] > 0.0
+    assert longer[hop] == slots[hop]
+    assert longer[rounds]["cycles"][0] == pytest.approx(slots[rounds]["cycles"][0] / 8)
 
 
 def test_the_window_is_the_hardware_tables():
