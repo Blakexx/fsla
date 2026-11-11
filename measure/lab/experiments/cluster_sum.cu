@@ -7,7 +7,8 @@
 // adds a token's 8 slots in registers and adds the sum to global memory. `atomic`: the warps add fp32 into the
 // collector's one panel. `bulk slots`: the slot form with the partial staged in the CTA's own shared memory and
 // sent by one bulk copy a collector. `bulk integers`: staged as 64-bit integers and sent by one bulk reduction into
-// the collector's one panel. One collector (rank 0) or eight (a token's collector its index modulo 8). Barriers a
+// the collector's one panel; `warp integers`: the warps' own 64-bit adds into it. `hand-over`: the round's barriers
+// with no partial, the fixed cost every cluster form carries. One collector (rank 0) or eight (a token's collector its index modulo 8). Barriers a
 // round order them (the bulk forms' bytes complete the collector's), the cluster's own its start and end.
 // see docs/internals/tools/lab.md#cluster-sum
 #include "lab.cuh"
@@ -16,10 +17,11 @@ namespace cluster_sum {
 
 constexpr int kCtas = 8, kThreads = 128, kTokens = 64, kChannels = 64, kPanel = kTokens * kChannels,
               kMine = kPanel / kThreads;
-enum Form : int { kDirect = 0, kSlots, kAtomic, kBulkSlots, kBulkInteger, kForms };
+enum Form : int { kDirect = 0, kSlots, kAtomic, kBulkSlots, kBulkInteger, kWarpInteger, kHandOver, kForms };
 const char* kFormName[kForms] = {"every CTA drains its own", "fp32 slots stored by the warps",
                                  "fp32 atomic adds into one panel", "fp32 slots by a bulk copy",
-                                 "64-bit integers by a bulk reduction"};
+                                 "64-bit integers by a bulk reduction", "64-bit integer adds by the warps",
+                                 "the round's barriers alone, no partial"};
 constexpr float kScale = 1048576.0f;
 
 //: a CTA's value at panel element `e`, a small integer: every sum exact in fp32
@@ -45,7 +47,7 @@ constexpr bool kSlotted = FORM == kSlots || FORM == kBulkSlots;
 template <int FORM>
 constexpr bool kBulk = FORM == kBulkSlots || FORM == kBulkInteger;
 template <int FORM>
-constexpr int kElement = FORM == kBulkInteger ? 8 : 4;
+constexpr int kElement = FORM == kBulkInteger || FORM == kWarpInteger ? 8 : 4;
 template <int FORM, int SPREAD>
 constexpr int kPanelBytes = kLocal<SPREAD> * kElement<FORM> * (kSlotted<FORM> ? kCtas : 1);
 template <int FORM, int SPREAD>
@@ -71,6 +73,7 @@ __global__ void __cluster_dims__(kCtas, 1, 1) sum(long long* times, float* out, 
   if (tid == 0) {
     lab::mbar_init(full, kBulk<FORM> ? 1 : kCtas);
     lab::mbar_init(done, kCollectors);
+    lab::cluster_fence_init();
   }
   if constexpr (kBulk<FORM>) lab::bulk_fence();
   __syncthreads();
@@ -80,10 +83,6 @@ __global__ void __cluster_dims__(kCtas, 1, 1) sum(long long* times, float* out, 
   }
   //: every CTA of the cluster has its panel and barriers before any reaches into another's
   lab::cluster_sync();
-  //: every collector's panel, as this CTA reaches it
-  uint32_t panel[kCollectors];
-#pragma unroll
-  for (int c = 0; c < kCollectors; ++c) panel[c] = lab::cluster_addr(base, SPREAD ? c : 0);
   float v[kMine];
 #pragma unroll
   for (int i = 0; i < kMine; ++i) v[i] = static_cast<float>(value_of(rank, i * kThreads + tid));
@@ -96,12 +95,16 @@ __global__ void __cluster_dims__(kCtas, 1, 1) sum(long long* times, float* out, 
 #pragma unroll
     for (int i = 0; i < kMine; ++i) {
       const int e = i * kThreads + tid;
+      if constexpr (FORM == kHandOver) break;
       if constexpr (FORM == kDirect) {
         lab::red_add_f32(dst + e, v[i]);
       } else {
         const int c = collector_of<SPREAD>(e), l = local_of<SPREAD>(e);
-        if constexpr (FORM == kSlots) lab::cluster_store_f32(panel[c] + 4 * (rank * kLocal<SPREAD> + l), v[i]);
-        if constexpr (FORM == kAtomic) lab::cluster_add_f32(panel[c] + 4 * l, v[i]);
+        //: the collector's panel as this CTA reaches it, mapped a value (an array of them indexed here is selects)
+        const uint32_t there = kBulk<FORM> ? 0u : lab::cluster_addr(base, c);
+        if constexpr (FORM == kSlots) lab::cluster_store_f32(there + 4 * (rank * kLocal<SPREAD> + l), v[i]);
+        if constexpr (FORM == kAtomic) lab::cluster_add_f32(there + 4 * l, v[i]);
+        if constexpr (FORM == kWarpInteger) lab::cluster_add_u64(there + 8 * l, static_cast<long long>(v[i] * kScale));
         if constexpr (FORM == kBulkSlots) reinterpret_cast<float*>(smem + kStageAt)[c * kLocal<SPREAD> + l] = v[i];
         if constexpr (FORM == kBulkInteger)
           reinterpret_cast<long long*>(smem + kStageAt)[c * kLocal<SPREAD> + l] = static_cast<long long>(v[i] * kScale);
@@ -122,9 +125,10 @@ __global__ void __cluster_dims__(kCtas, 1, 1) sum(long long* times, float* out, 
       }
       //: THE COLLECTOR: its elements summed, added to global memory, the panel cleared for the next round
       if (collects) {
-        lab::mbar_wait(full, r & 1);
+        lab::cluster_wait(full, r & 1);
 #pragma unroll 1
         for (int l = tid; l < kLocal<SPREAD>; l += kThreads) {
+          if constexpr (FORM == kHandOver) break;
           float sum = 0.0f;
           if constexpr (kSlotted<FORM>) {
 #pragma unroll
@@ -134,7 +138,7 @@ __global__ void __cluster_dims__(kCtas, 1, 1) sum(long long* times, float* out, 
             sum = reinterpret_cast<const float*>(smem)[l];
             reinterpret_cast<float*>(smem)[l] = 0.0f;
           }
-          if constexpr (FORM == kBulkInteger) {
+          if constexpr (FORM == kBulkInteger || FORM == kWarpInteger) {
             sum = static_cast<float>(reinterpret_cast<const long long*>(smem)[l]) / kScale;
             reinterpret_cast<long long*>(smem)[l] = 0;
           }
@@ -148,7 +152,7 @@ __global__ void __cluster_dims__(kCtas, 1, 1) sum(long long* times, float* out, 
           for (int s = 0; s < kCtas; ++s) lab::cluster_arrive(lab::cluster_addr(done, s));
         }
       }
-      lab::mbar_wait(done, r & 1);
+      lab::cluster_wait(done, r & 1);
     }
   }
   clock.stop(times);
@@ -168,21 +172,25 @@ void run(lab::Bench& b, float* out) {
   constexpr int bytes = kSmemBytes<FORM, SPREAD>;
   LAB_CHECK(cudaFuncSetAttribute(sum<FORM, SPREAD>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));
   const size_t words = static_cast<size_t>(clusters) * kPanel;
-  LAB_CHECK(cudaMemset(out, 0, words * sizeof(float)));
-  sum<FORM, SPREAD><<<blocks, kThreads, bytes>>>(b.times, out, kCheckRounds);
-  LAB_CHECK(cudaDeviceSynchronize());
-  std::vector<float> got(words);
-  LAB_CHECK(cudaMemcpy(got.data(), out, words * sizeof(float), cudaMemcpyDeviceToHost));
-  long long wrong = 0;
-  for (size_t i = 0; i < words; ++i) {
-    const int e = static_cast<int>(i % kPanel);
-    int want = 0;
-    for (int rank = 0; rank < kCtas; ++rank) want += value_of(rank, e);
-    wrong += got[i] != static_cast<float>(want * kCheckRounds);
+  if (FORM == kHandOver) {
+    b.unchecked(name, "an isolation: the round's barriers with no partial sent or summed");
+  } else {
+    LAB_CHECK(cudaMemset(out, 0, words * sizeof(float)));
+    sum<FORM, SPREAD><<<blocks, kThreads, bytes>>>(b.times, out, kCheckRounds);
+    LAB_CHECK(cudaDeviceSynchronize());
+    std::vector<float> got(words);
+    LAB_CHECK(cudaMemcpy(got.data(), out, words * sizeof(float), cudaMemcpyDeviceToHost));
+    long long wrong = 0;
+    for (size_t i = 0; i < words; ++i) {
+      const int e = static_cast<int>(i % kPanel);
+      int want = 0;
+      for (int rank = 0; rank < kCtas; ++rank) want += value_of(rank, e);
+      wrong += got[i] != static_cast<float>(want * kCheckRounds);
+    }
+    b.check(name, wrong == 0,
+            std::to_string(wrong) + " of " + std::to_string(words) + " sums differ from the exact ones at "
+                + std::to_string(kCheckRounds) + " rounds");
   }
-  b.check(name, wrong == 0,
-          std::to_string(wrong) + " of " + std::to_string(words) + " sums differ from the exact ones at "
-              + std::to_string(kCheckRounds) + " rounds");
   const lab::Samples cycles = b.variant(
       [&] { sum<FORM, SPREAD><<<blocks, kThreads, bytes>>>(b.times, out, kRounds); },
       [&] { return b.span(kThreads >> 5, blocks) / kRounds / kTokens; });
@@ -192,6 +200,14 @@ void run(lab::Bench& b, float* out) {
 int main(int argc, char** argv) {
   using namespace cluster_sum;
   lab::Bench b(argc, argv);
+  for (int spread = 0; spread < 2; ++spread) {
+    b.expect(lab::kernel("sum", {kDirect, 0}), "REDG", "==", kMine);
+    b.expect(lab::kernel("sum", {kSlots, spread}), "ST.E", "==", kMine);
+    b.expect(lab::kernel("sum", {kAtomic, spread}), "ATOM.E.ADD.F32", "==", kMine);
+    b.expect(lab::kernel("sum", {kWarpInteger, spread}), "ATOM.E.ADD.64", "==", kMine);
+    b.expect(lab::kernel("sum", {kBulkSlots, spread}), "UBLKCP.S.S", "==", 1);
+    b.expect(lab::kernel("sum", {kBulkInteger, spread}), "UBLKRED.S.S.ADD.U64", "==", 1);
+  }
   if (b.expect_only) return 0;
   float* out = nullptr;
   LAB_CHECK(cudaMalloc(&out, sizeof(float) * (b.sms / kCtas) * kPanel));
@@ -204,5 +220,9 @@ int main(int argc, char** argv) {
   run<kBulkSlots, 1>(b, out);
   run<kBulkInteger, 0>(b, out);
   run<kBulkInteger, 1>(b, out);
+  run<kWarpInteger, 0>(b, out);
+  run<kWarpInteger, 1>(b, out);
+  run<kHandOver, 0>(b, out);
+  run<kHandOver, 1>(b, out);
   return 0;
 }

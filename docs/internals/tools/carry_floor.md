@@ -7,7 +7,7 @@ run time from an H100 lab's record under `measure/lab/results/` (the tool refuse
 ESTIMATED, a constant of the file with its reason. A total built on an estimate is an estimate.
 
     bazel run //tools:carry_floor -- --widths 256 256 --read-sparse 0 1 --write-sparse 1 0 --k 4 \
-        --box 16 16 --cluster 16 1 [--sum s64 | slots] [--dv 64] [--tokens 65536] [--json floor.json]
+        --box 16 16 --cluster 16 1 [--sum slots | atomic | s64] [--dv 64] [--tokens 65536] [--json floor.json]
 
 WHY IT EXISTS. The hopper carry's design is a choice of box and cluster, and each choice moves several costs at
 once: a box read is a partial to sum, a box written is a set of operands to load, and a cluster shares one or the

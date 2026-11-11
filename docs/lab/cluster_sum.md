@@ -18,9 +18,11 @@ tokens × 64 channels a CTA, from registers.
   collector, whose bytes complete the collector's barrier.
 - `bulk integers`: the partial staged as 64-bit integers at a fixed scale and sent by one bulk reduction into the
   collector's one panel, converted back by the collector.
+- `warp integers`: the warps' own 64-bit integer adds into that panel.
+- `hand-over`: the round's barriers with no partial sent or summed -- the fixed cost every cluster form carries.
 Each cluster form with ONE collector (rank 0 takes every token) and with EIGHT (a token's collector is its index
-modulo 8). Barriers a round order sources and collectors, and the cluster's own barrier its start and its end. Every
-sum is checked exactly.
+modulo 8). Barriers a round order sources and collectors -- an arrival releasing to the cluster, a wait acquiring
+from it -- and the cluster's own barrier its start and its end. Every sum is checked exactly.
 
 WHAT THE SASS SAYS (sm_90a, the pinned toolkit; no device): a warp's store into a cluster-mate's shared memory is a
 generic store (`ST.E`). A warp's float add there is `ATOM.E.ADD.F32` on one path with compare-and-swap loops on two
@@ -36,4 +38,22 @@ mate's shared memory costs about what its add to global memory does, and one col
 eight; the warps' float add into a mate's shared memory is seventeen times slower than a store; and the warps'
 integer add there is not atomic on this card. That last form is removed from the experiment for the two bulk forms.
 
-UNMEASURED: the experiment as it is now -- the bulk forms, and the other rows again in one record.
+MEASURED (H100 SXM, 132 SMs, vast.ai instance 60238130, driver 595.91.07; 2026-11-11, the experiment at b563ece4 --
+before the cluster-scope barriers, the warp integers and the hand-over form; 7 repetitions, every sum exact; cycles a
+token a CTA, the median, the spread under 0.5%):
+
+| the form | one collector | eight collectors |
+|---|---|---|
+| every CTA drains its own | 23.5 | |
+| fp32 slots stored by the warps | 88.8 | 31.1 |
+| fp32 atomic adds into one panel | 397 | 395 |
+| fp32 slots by a bulk copy | 116.8 | 40.1 |
+| 64-bit integers by a bulk reduction | 220.1 | 77.9 |
+
+WHAT IT SHOWS. On these rows NO CLUSTER FORM IS CHEAPER THAN EVERY CTA DRAINING ITS OWN: a partial costs a CTA 23.5
+cycles a token straight to global memory and 31 to 78 through a mate's shared memory, by the warps' stores or by the
+bulk engine, before the collector's one drain is counted for the gain. One collector is three times eight. The rows
+include the round's barriers, a cost a 64-token round spreads thin; the hand-over form is there to take it out, and
+until it runs these rows do not say what a partial's bytes alone cost.
+
+Record: `measure/lab/results/cluster_sum/sm_90a.json` (that run's; the forms added since are UNMEASURED).

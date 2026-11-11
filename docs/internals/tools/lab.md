@@ -84,7 +84,8 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
   `cluster_addr` (this CTA's shared address as a mate holds it), `cluster_store_f32` and `cluster_add_f32`
   (a value stored or added into a mate's shared memory by its thread), `cluster_bulk_copy` and `cluster_bulk_add_u64`
   (a span of this CTA's shared memory copied, or added as 64-bit integers, into a mate's, its bytes completing the
-  mate's barrier), `cluster_arrive` (at a mate's barrier)
+  mate's barrier), `cluster_add_u64` (the warps' integer add), `cluster_arrive` (at a mate's barrier, releasing to the cluster) with
+  `cluster_wait` (acquiring from it) and `cluster_fence_init`,
   and `cluster_sync` (the cluster's own barrier: before any CTA reaches into a mate, and before any exits).
 * `lab::Bench` — the host runner: `expect(kernel, op, cmp, count)` declares SASS (printed under `--expect`, run by the
   driver before anything is timed), `variant(launch, measure)` warms up and repeats a launch, `record(name, unit,

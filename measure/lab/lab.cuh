@@ -415,9 +415,29 @@ __device__ __forceinline__ void cluster_sync() {
   asm volatile("barrier.cluster.wait;" ::: "memory");
 }
 
-//: an arrival at a cluster-mate's barrier
+//: an arrival at a cluster-mate's barrier, RELEASING to the cluster: what this CTA wrote into the mate's shared memory
+//: before it is ordered before the mate's wait
 __device__ __forceinline__ void cluster_arrive(uint32_t a) {
-  asm volatile("mbarrier.arrive.shared::cluster.b64 _, [%0];" : : "r"(a) : "memory");
+  asm volatile("mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%0];" : : "r"(a) : "memory");
+}
+
+//: this CTA's barrier waited on ACQUIRING from the cluster (polled), the pair of `cluster_arrive`
+__device__ __forceinline__ void cluster_wait(uint32_t a, uint32_t parity) {
+  asm volatile("{\n.reg .pred p;\nLAB_CWAIT_%=:\n"
+               "mbarrier.test_wait.parity.acquire.cluster.shared::cta.b64 p, [%0], %1;\n@!p bra LAB_CWAIT_%=;\n}"
+               :
+               : "r"(a), "r"(parity)
+               : "memory");
+}
+
+//: a barrier's initialization made visible to the cluster, before any mate arrives at it
+__device__ __forceinline__ void cluster_fence_init() {
+  asm volatile("fence.mbarrier_init.release.cluster;" ::: "memory");
+}
+
+//: one 64-bit integer added into a cluster-mate's shared memory by its thread (an unsigned add: the same bits)
+__device__ __forceinline__ void cluster_add_u64(uint32_t a, long long v) {
+  asm volatile("red.shared::cluster.add.u64 [%0], %1;" : : "r"(a), "l"(v) : "memory");
 }
 
 // --------------------------------------------------------------------------------------------------- host
