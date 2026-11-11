@@ -25,4 +25,33 @@ The last round's image is checked exactly, word for word.
 WHAT THE SASS SAYS (sm_90a, the pinned toolkit; no device): a bulk copy into a mate is one `UBLKCP.S.S`, out to
 global memory one `UBLKCP.G.S`, in from it one `UBLKCP.S.G`.
 
-UNMEASURED: no card has run it.
+MEASURED (H100 SXM, 132 SMs, vast.ai instance 60254914, driver 580.173.02; 2026-11-11, the experiment at
+93eae8f4; 7 repetitions, every image exact; SM-cycles a kilobyte a CTA, the median, the spread under 1.0%):
+
+| the form | 1 KB blocks (8 KB a round) | 8 KB blocks (64 KB a round) |
+|---|---|---|
+| the stage's stores alone | 87.2 | 75.6 |
+| a bulk copy a cluster-mate | 1,011.0 | 228.3 |
+| one bulk copy out to global memory | 130.5 | 109.3 |
+| one bulk copy out to global memory and one back in | 204.1 | 127.9 |
+| one bulk copy in from global memory | 61.0 | 32.8 |
+
+and a 128-byte load of a scattered row, SM-cycles a load a CTA: 32.8 with a thread issuing each, 103.7 with one
+thread issuing all 64.
+
+WHAT IT SHOWS.
+- MOVING A KILOBYTE COSTS TENS OF CYCLES BY EVERY ROUTE. Less the stage, at 64 KB a round: 34 out to global memory,
+  33 in from it, 52 for both (they overlap), and to the cluster's mates 43 a kilobyte beside 7,050 a round -- the
+  two block sizes' split: (228.3 - 75.6) x 64 = 9,770 cycles a round at 64 KB, (1,011.0 - 87.2) x 8 = 7,390 at
+  8 KB. That round is the barriers' cost [`cluster_sum`](cluster_sum.md) read, and a CTA pays it every round
+  whatever it sends.
+- THE STAGE COSTS AS MUCH AS THE MOVE: 76 to 87 cycles a kilobyte to store the words a CTA will send. The loop here
+  is one store a trip with its own arithmetic; what a kernel's own narrowing store costs is UNMEASURED.
+- GLOBAL MEMORY IS NO SLOWER THAN A MATE'S SHARED MEMORY, and it needs no cluster barrier: 52 a kilobyte out and
+  back against 43 plus the round. What orders a writer and a reader in different CTAs on that route is not in this
+  experiment.
+- A VALUE LOADED BY ITSELF COSTS EIGHT TIMES ITS BYTES: 32.8 cycles a 128-byte request against 4.1 for 128 bytes of
+  a 64 KB copy, and 104 when one thread issues them. [`carry_floor`](../internals/tools/carry_floor.md) guessed 5
+  to 10. Values reach a CTA cheaply only packed together.
+
+Record: `measure/lab/results/state_move/sm_90a.json`.

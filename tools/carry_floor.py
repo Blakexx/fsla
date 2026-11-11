@@ -28,8 +28,9 @@ its reason):
   comparison. A cluster's CTAs hand over once a ROUND of `--round` partials a CTA, and the round's cost is its own
   term (beyond 64 partials a round it is the line's, UNMEASURED);
 - the fold's operands: its (token, leaf) coefficients into shared memory, and its values loaded a (token, list) of
-  each cluster it writes into: ESTIMATED from one request a cluster (a load landed in every CTA of it costing what
-  one CTA's does) to one a box (the cluster sharing nothing) -- no lab has read a load landed across a cluster;
+  each cluster it writes into, at two MEASURED rates (`state_move`): low, 128 bytes of one large bulk copy in -- the
+  values packed by list in global memory, which no pass produces yet, and a cluster's CTAs sharing one load, which no
+  lab has read; high, a 128-byte bulk load of its own a (token, list) of every box;
 - the state in and out, a call (24-bit state, at a memory bandwidth).
 
 NOT COUNTED: the hand-over between producer and consumer warps, the den's readout, the divergent carve's register
@@ -55,8 +56,6 @@ RESULTS = ROOT / "measure" / "lab" / "results"
 MMA_ROWS = 64
 #: ESTIMATED, each with its reason: nothing on an H100 has measured these
 ESTIMATES = {
-    "load_low": (5.0, "cycles a 128-byte load request through an SM's load path: no card of this line has measured it"),
-    "load_high": (10.0, "cycles a 128-byte load request, twice the low guess"),
     "clock": (1.8e9, "SM cycles a second: inferred from the card's published tensor rate, not measured"),
     "memory_low": (2.0e12, "bytes a second across memory, the low guess"),
     "memory_high": (3.0e12, "bytes a second across memory, the high guess"),
@@ -90,6 +89,10 @@ def measured() -> dict[str, tuple[float, str]]:
                       "bulk_drain / one bulk add a panel, each CTA its own sum (a byte)"),
         "drain_shared": (median("bulk_drain", "one bulk add a panel, one sum for every CTA") / 256.0,
                          "bulk_drain / one bulk add a panel, one sum for every CTA (a byte)"),
+        "load_packed": (median("state_move", "one bulk copy in from global memory, blocks of 8192 bytes") * 128 / 1024,
+                        "state_move / one bulk copy in from global memory, blocks of 8192 bytes (128 bytes of it)"),
+        "load_row": (median("state_move", "64 loads of 128 bytes, a thread each"),
+                     "state_move / 64 loads of 128 bytes, a thread each (a load)"),
         **cluster_rates(),
     }
 
@@ -173,8 +176,8 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
         "sum: the rounds' barriers": (both(barriers), f"round_{form}" if summed else "no cluster sum"),
         "sum: drains to global memory": (tuple(drains * (dv * 4 + 4) * d for d in drain), "drain_own .. drain_shared"),
         "fold operand, expanded": (both(write.leaves * 2 / shared), "shared"),
-        "fold values, loaded": ((loads[0] * est["load_low"], loads[1] * est["load_high"]),
-                                "ESTIMATED load_low a cluster .. load_high a box"),
+        "fold values, loaded": ((loads[0] * rates["load_packed"][0], loads[1] * rates["load_row"][0]),
+                                "load_packed a cluster .. load_row a box"),
     }
     total = tuple(sum(v[0][i] for v in terms.values()) for i in (0, 1))
     seconds = tuple(t * tokens / SMS / est["clock"] for t in total)

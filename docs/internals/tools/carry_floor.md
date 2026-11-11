@@ -31,21 +31,22 @@ between barriers; beyond the lab's 64 the line is UNMEASURED), and a cost a part
 collectors' drain, an eighth of one, which the model's drains count again: a row with a cluster's sum is over by that much. The
 warps' own fp32 add into a mate's shared memory, read at eighteen times a store, is no form here.
 
-MODELLED (2026-11-11; the H100's records for the pipe, the shared access rate, the drain and the cluster's sum; a load
-request, the clock and the memory bandwidth ESTIMATED; `--read-sparse 0 1 --write-sparse 1 0 --k 4
---box 16 16` unless the row says, the 16^4 row `--read-sparse 0 0 1 1 --write-sparse 1 1 0 0 --k 2 --box 4 4 4 4`;
-SM-cycles a token, low to high, and the 64K call):
+MODELLED (2026-11-11; the H100's records for the pipe, the shared access rate, the drain, the cluster's sum and the
+value load; the clock and the memory bandwidth ESTIMATED; `--read-sparse 0 1 --write-sparse 1 0 --k 4 --box 16 16`
+unless the row says, the 16^4 row `--read-sparse 0 0 1 1 --write-sparse 1 1 0 0 --k 2 --box 4 4 4 4`; SM-cycles a
+token, low to high, and the 64K call). A row's fold values run from packed loads shared by a cluster to a 128-byte
+load of its own a (token, list) of every box ([`state_move`](../../lab/state_move.md): 4.1 and 32.8 cycles):
 
 | the shape | boxes read | the sum (partials, rounds, drains) | fold values | total | the call |
 |---|---|---|---|---|---|
-| 256 x 256, no cluster | 58.2 | 0, 0, 1,176 to 2,726 | 320 to 640 | 1,590 to 3,460 | 440 to 950 us |
-| ... `--cluster 16 1 --sum slots`, rounds of 64 | 58.2 | 897, 6,594, 74 to 170 | 88 to 640 | 7,740 to 8,390 | 2.1 to 2.3 ms |
-| ... `--cluster 16 1 --sum slots --round 512` | 58.2 | 897, 824, 74 to 170 | 88 to 640 | 1,970 to 2,620 | 545 to 725 us |
-| ... `--box 256 1`: a box the whole read-dense level, no cluster | 4.0 | 0, 0, 80 to 186 | 5,120 to 10,240 | 5,290 to 10,520 | 1.5 to 2.9 ms |
-| ... `--box 256 1 --cluster 1 16`: those boxes sharing value loads | 4.0 | 0, 0, 80 to 186 | 320 to 10,240 | 490 to 10,520 | 135 us to 2.9 ms |
-| 64 x 64 (4,096 leaves), no cluster | 10.9 | 0, 0, 221 to 512 | 80 to 160 | 320 to 690 | 90 to 190 us |
-| 16^4 (two sparse levels a side, 2 live digits, boxes 4^4), no cluster | 49.0 | 0, 0, 989 to 2,293 | 1,280 to 2,560 | 2,360 to 4,940 | 650 to 1,360 us |
-| 256 x 256 dense on both sides, no cluster | 256 | 0, 0, 5,169 to 11,981 | 20,480 to 40,960 | 31,500 to 58,800 | 8.7 to 16 ms |
+| 256 x 256, no cluster | 58.2 | 0, 0, 1,176 to 2,726 | 263 to 2,100 | 1,530 to 4,920 | 420 us to 1.4 ms |
+| ... `--cluster 16 1 --sum slots`, rounds of 64 | 58.2 | 897, 6,594, 74 to 170 | 72 to 2,100 | 7,730 to 9,850 | 2.1 to 2.7 ms |
+| ... `--cluster 16 1 --sum slots --round 512` | 58.2 | 897, 824, 74 to 170 | 72 to 2,100 | 1,960 to 4,080 | 540 us to 1.1 ms |
+| ... `--box 256 1`: a box the whole read-dense level, no cluster | 4.0 | 0, 0, 80 to 186 | 4,200 to 33,590 | 4,370 to 33,870 | 1.2 to 9.3 ms |
+| ... `--box 256 1 --cluster 1 16`: those boxes sharing value loads | 4.0 | 0, 0, 80 to 186 | 263 to 33,590 | 430 to 33,870 | 120 us to 9.3 ms |
+| 64 x 64 (4,096 leaves), no cluster | 10.9 | 0, 0, 221 to 512 | 66 to 525 | 310 to 1,060 | 85 to 290 us |
+| 16^4 (two sparse levels a side, 2 live digits, boxes 4^4), no cluster | 49.0 | 0, 0, 989 to 2,293 | 1,050 to 8,400 | 2,130 to 10,780 | 590 us to 3.0 ms |
+| 256 x 256 dense on both sides, no cluster | 256 | 0, 0, 5,169 to 11,981 | 16,810 to 134,370 | 27,830 to 152,210 | 7.7 to 42 ms |
 
 FlashAttention's tensor floor at the same 65,536 tokens and width is 2,049 SM-cycles a token, 565 us the call; at
 1,048,576 tokens it is 16 times that a token, and the 256 x 256 alt row's cost a token does not move.
@@ -59,7 +60,8 @@ these boxes, and at 65,536 tokens the unclustered row stands around FlashAttenti
 lowers it is fewer partials a token, and the box's shape does that: a box the whole of the read side's dense level
 is read by 4 boxes a token, not 58, and its sum falls to 80 to 186. The cost moves to the fold, whose every token
 then writes into all 256 boxes and owes each its value. A cluster of those boxes taking one value load between them
-is the form's whole case, and that load is the model's widest ESTIMATE -- from one request a cluster to one a box,
-490 to 10,520 cycles a token -- because no lab has landed a load in every CTA of a cluster. The model also charges
+is the form's whole case, and that load is the model's widest range -- from packed loads a cluster shares to a
+load of its own a box, 430 to 33,870 cycles a token -- because no pass packs the values by list and no lab has landed
+a load in every CTA of a cluster. The model also charges
 a value once a (token, list), four a box here, where one landed copy may serve a box's lists. Dense on both sides at as many leaves as tokens is over FlashAttention's floor by
 the tensor work alone (4,096 against 2,049).
