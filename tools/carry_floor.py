@@ -19,12 +19,14 @@ its reason):
   a value width under 64 runs wgmma's 64 rows (the idle half);
 - the readout's operand: its (token, leaf) coefficients expanded into shared memory, at the SM's shared access rate
   (`byte_expand`, its bank-spread form);
-- the output's sum, in a cluster by one of two forms (`--sum`), then one fp32 drain a (token, cluster read) to global
-  memory (`bulk_drain`, a CTA's own sum to one sum for every CTA); with no cluster (`--cluster` all ones) every box
-  drains. `s64`: a box's partial a (token, box read) added as 64-bit integers into its cluster's collector at the
-  shared rate, the conversion a value and the state's scan a window at the SM's issue rate. `slots`: a box's fp32
-  partial stored into its OWN slot of the collector's shared memory, the collector loading a token's slots and
-  adding them in registers -- the fp32 sum itself, no scale: the bytes in, the same bytes read back, an add a value;
+- the output's sum, in a cluster by one of three forms (`--sum`), then one fp32 drain a (token, cluster read) to
+  global memory (`bulk_drain`, a CTA's own sum to one sum for every CTA); with no cluster (`--cluster` all ones) every
+  box drains. `slots` (the default: the fp32 sum the format states): a box's fp32 partial stored into its OWN slot of
+  the collector's shared memory, the collector loading a token's slots and adding them in registers -- the bytes in,
+  the same bytes read back, an add a value. `atomic`: a box's fp32 partial added by its warps straight into the
+  collector's panel (`red.shared::cluster.add.f32`), the bytes once. `s64`: the partial as 64-bit integers added into
+  the panel, twice the bytes, a conversion a value and the state's scan a window -- a sum outside the fp32 the format
+  states, counted for comparison;
 - the fold's operands: its (token, leaf) coefficients into shared memory, and its values loaded a (token, list) of
   each cluster it writes into (one load serves the cluster's boxes; with no cluster, each box loads);
 - the state in and out, a call (24-bit state, at a memory bandwidth).
@@ -45,6 +47,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 RESULTS = ROOT / "measure" / "lab" / "results"
 
 #: wgmma's rows: the channels a warpgroup's MMA carries
@@ -54,9 +57,8 @@ ESTIMATES = {
     "issue": (4.0, "warp-instructions a cycle an SM: one a scheduler, four schedulers"),
     "convert": (2.0, "instructions a value: fp32 to a 64-bit integer at a scale"),
     "scan": (140.0, "instructions a thread a box a window (a warpgroup's 4 warps): the state's largest magnitude"),
-    "window": (1024.0, "tokens a window (the hopper row's provisional W)"),
-    "load_low": (5.0, "cycles a 128-byte load request: the ampere fill's floor"),
-    "load_high": (10.0, "cycles a 128-byte load request: twice the ampere fill's floor"),
+    "load_low": (5.0, "cycles a 128-byte load request through an SM's load path: no card of this line has measured it"),
+    "load_high": (10.0, "cycles a 128-byte load request, twice the low guess"),
     "clock": (1.8e9, "SM cycles a second: inferred from the card's published tensor rate, not measured"),
     "memory_low": (2.0e12, "bytes a second across memory, the low guess"),
     "memory_high": (3.0e12, "bytes a second across memory, the high guess"),
@@ -126,7 +128,14 @@ def side(widths, sparse, k: int, box, cluster) -> Side:
     return Side(leaves, boxes, clusters, (leaves / boxes) / along)
 
 
-def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, tokens: int, form: str = "s64") -> dict:
+def window() -> int:
+    """The hopper row's window W, the hardware table's (`common/hardware.json`, read through its one reader)."""
+    from measure import hardware
+
+    return int(hardware.load()["arch"]["sm_90a"]["build"]["window"])
+
+
+def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, tokens: int, form: str = "slots") -> dict:
     """The report: each term's SM-cycles a token as `(low, high)`, with the rate it used."""
     rates = measured()
     est = {name: value for name, (value, _) in ESTIMATES.items()}
@@ -139,14 +148,15 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
     value_requests = math.ceil(dv * 2 / 128)
     leaves_a_box = math.prod(box)
     #: every box scans once a window, its four warps each issuing the scan
-    scan = est["scan"] * 4 / est["issue"] * (math.prod(widths) / leaves_a_box) / est["window"]
+    scan = est["scan"] * 4 / est["issue"] * (math.prod(widths) / leaves_a_box) / window()
 
     def both(x: float) -> tuple[float, float]:
         return (x, x)
 
     partial = dv * (8 if form == "s64" else 4)
-    #: `slots`: the collector reads back what the boxes stored, and adds each value once (an instruction a value)
-    passes = 1 if form == "s64" else 2
+    #: `slots`: the collector reads back what the boxes stored, and adds each value once (an instruction a value);
+    #: `atomic`: the boxes' warps issue an add a value and nothing is read back
+    passes = 2 if form == "slots" else 1
     work = (read.boxes * dv * est["convert"] / 32 / est["issue"] + scan if form == "s64"
             else read.boxes * dv / 32 / est["issue"])
     drains = read.clusters if clustered else read.boxes
@@ -188,7 +198,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--k", type=int, required=True, help="a sparse level's live digits a token")
     ap.add_argument("--box", type=int, nargs="+", required=True, help="a box's digits of each level")
     ap.add_argument("--cluster", type=int, nargs="+", required=True, help="a cluster's boxes along each level")
-    ap.add_argument("--sum", choices=("s64", "slots"), default="s64", help="the cluster's sum: integers, or fp32 slots")
+    ap.add_argument("--sum", choices=("slots", "atomic", "s64"), default="slots",
+                    help="the cluster's sum: fp32 slots a box, fp32 atomic adds, or 64-bit integers")
     ap.add_argument("--dv", type=int, default=64)
     ap.add_argument("--tokens", type=int, default=65536)
     ap.add_argument("--json", type=Path)

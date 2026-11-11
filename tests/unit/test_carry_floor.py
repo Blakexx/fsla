@@ -40,11 +40,17 @@ def test_a_cluster_moves_the_drains_and_the_loads_and_nothing_else():
     assert none["sum: partials into the cluster"]["cycles"] == [0.0, 0.0]
 
 
-def test_the_two_sums_move_the_same_bytes():
-    s64 = carry_floor.floor(cluster=(16, 1), form="s64", **ALT)["terms"]
-    slots = carry_floor.floor(cluster=(16, 1), form="slots", **ALT)["terms"]
+def test_the_sums_move_the_bytes_their_forms_say():
     name = "sum: partials into the cluster"
-    assert s64[name]["cycles"] == pytest.approx(slots[name]["cycles"])
+    s64, slots, atomic = (carry_floor.floor(cluster=(16, 1), form=form, **ALT)["terms"][name]["cycles"][0]
+                          for form in ("s64", "slots", "atomic"))
+    assert s64 == pytest.approx(slots) == pytest.approx(2 * atomic)
+
+
+def test_the_window_is_the_hardware_tables():
+    from measure import hardware
+
+    assert carry_floor.window() == hardware.load()["arch"]["sm_90a"]["build"]["window"]
 
 
 def test_a_missing_record_row_is_refused():
