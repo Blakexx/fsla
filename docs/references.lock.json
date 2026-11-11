@@ -934,7 +934,7 @@
   {"doc": "docs/internals/facts/facts.md", "pinned_at": "5c98ba768ded", "reviewed": true, "sha256": "fb0c1a21be28c03f", "target": "docs/api.md#grouped-queries"},
   {"doc": "docs/internals/facts/facts.md", "pinned_at": "33c9e04486d8", "reviewed": true, "sha256": "", "target": "docs/architecture/families.md"},
   {"doc": "docs/internals/facts/facts.md", "pinned_at": "71c340a0fb65", "reviewed": true, "sha256": "71504bf94db89c35", "target": "docs/internals/common/atoms/copy.md#stage-tile-n"},
-  {"doc": "docs/internals/facts/facts.md", "pinned_at": "0c0f9988909d", "reviewed": true, "sha256": "97e23e6c61d36c17", "target": "docs/internals/facts/facts.md#budget"},
+  {"doc": "docs/internals/facts/facts.md", "pinned_at": "baa9eae648eb", "reviewed": true, "sha256": "eb8732532364e01c", "target": "docs/internals/common/window.md#token-field"},
   {"doc": "docs/internals/facts/facts.md", "pinned_at": "0c0f9988909d", "reviewed": true, "sha256": "fd293585db1c8906", "target": "docs/internals/facts/facts.md#list-groups"},
   {"doc": "docs/internals/facts/facts.md", "pinned_at": "ea9b9dce7552", "reviewed": true, "sha256": "", "target": "docs/internals/facts/facts_api.md"},
   {"doc": "docs/internals/facts/facts.md", "pinned_at": "ea9b9dce7552", "reviewed": true, "sha256": "", "target": "docs/internals/facts/liveness_contract.md"},
