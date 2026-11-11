@@ -299,6 +299,19 @@ __device__ __forceinline__ uint32_t bf16x2_round(float lo, float hi) {
   return r;
 }
 
+//: A WARPGROUP'S REGISTERS A THREAD, lowered or raised (sm_90): 24 to 256 in eights; a raise waits for registers
+//: another warpgroup of the CTA released. Honoured only under a stated register cap (an experiment's `BUILD:` line),
+//: and each role's whole body stays in its own branch (docs/lab/reg_trade.md)
+template <int N>
+__device__ __forceinline__ void regs_down() {
+  asm volatile("setmaxnreg.dec.sync.aligned.u32 %0;" : : "n"(N));
+}
+
+template <int N>
+__device__ __forceinline__ void regs_up() {
+  asm volatile("setmaxnreg.inc.sync.aligned.u32 %0;" : : "n"(N));
+}
+
 //: A BULK COPY OUT (sm_90): `bytes` of shared memory at `src` to global `dst`, asynchronous, in this thread's bulk
 //: group; both addresses and the size multiples of 16 bytes
 __device__ __forceinline__ void bulk_store(void* dst, uint32_t src, uint32_t bytes) {

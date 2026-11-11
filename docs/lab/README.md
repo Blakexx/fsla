@@ -17,4 +17,5 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`issue_latency`](issue_latency.md) | experiment |
 | [`wgmma_regs`](wgmma_regs.md) | experiment |
 | [`bulk_drain`](bulk_drain.md) | experiment |
+| [`reg_trade`](reg_trade.md) | experiment |
 | [`drain`](drain.md) | experiment |

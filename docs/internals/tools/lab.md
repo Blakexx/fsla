@@ -43,6 +43,10 @@ then carries the written exception in their place (`counters_exception`: the hos
 run. An experiment with budgeted kernels, whose gate reads executed counts, is neither packed nor recorded under
 the exception.
 
+<a id="build-line"></a>AN EXPERIMENT'S OWN BUILD FLAGS are its header's `// BUILD:` line, and the lab admits one kind: a register cap
+(`-maxrregcount=N`), without which ptxas ignores `setmaxnreg` ([`reg_trade`](../../lab/reg_trade.md)). Any other flag
+is refused.
+
 An experiment that reads data -- a cell's routing, say -- has a `<name>.inputs.py` beside it whose `write(directory)`
 writes the files and returns their names. `run` and `ncu` call it first (in the scratch space), pass the binary
 `--inputs <directory>`, and the record carries each file's digest under `inputs`.
@@ -74,7 +78,8 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
   narrowings of an fp32 pair to bf16, `bf16x2_trunc` (one `PRMT`) and `bf16x2_round` (one conversion) -- the common
   atoms' `hi_bf16x2` and `pack_bf16x2`, spelled here until the common atoms admit a hopper build; and the bulk copies
   out of shared memory, `bulk_store`, `bulk_add_f32` (`cp.reduce.async.bulk`, fp32 added into global), `bulk_commit`,
-  `bulk_wait<N>`, beside `red_add_f32` (one value by its thread). The lab's MMA checks read `HGMMA` as they read `HMMA`
+  `bulk_wait<N>`, beside `red_add_f32` (one value by its thread); and a warpgroup's registers a thread,
+  `regs_down<N>` and `regs_up<N>` (`setmaxnreg`). The lab's MMA checks read `HGMMA` as they read `HMMA`
   and `IMMA`.
 * `lab::Bench` — the host runner: `expect(kernel, op, cmp, count)` declares SASS (printed under `--expect`, run by the
   driver before anything is timed), `variant(launch, measure)` warms up and repeats a launch, `record(name, unit,
@@ -145,3 +150,4 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="drain"></a>[`drain`](../../lab/drain.md)
 - <a id="wgmma-regs"></a>[`wgmma_regs`](../../lab/wgmma_regs.md)
 - <a id="bulk-drain"></a>[`bulk_drain`](../../lab/bulk_drain.md)
+- <a id="reg-trade"></a>[`reg_trade`](../../lab/reg_trade.md)
