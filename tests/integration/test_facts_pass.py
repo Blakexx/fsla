@@ -97,10 +97,7 @@ def _bundle(widths, L, statics, *, B=1, H=2, seed=0, packed=False, group=1):
             if not side.dense_levels[level]:
                 keep[..., 0] |= ~keep.any(-1)
             digits = digits * keep
-            if side.dense_levels[level]:
-                levels.append((digits / quant.AMP_LEVELS).clamp_min(quant.DENSE_FLOOR).to(quant.DENSE_DTYPE))
-            else:
-                levels.append(digits.to(torch.uint8))
+            levels.append(digits.to(torch.uint8))
         if packed:
             out = [None] * len(widths)
             for dtype in {level.dtype for level in levels}:
@@ -131,7 +128,7 @@ def _bundle(widths, L, statics, *, B=1, H=2, seed=0, packed=False, group=1):
                           scale_read=tuple(column(write_heads * group) for _ in range(D)),
                           scale_write=tuple(column() for _ in range(D)),
                           sparse=tuple(tuple(not dense for dense in side.dense_levels) for side in statics))
-    values = Values(v=torch.zeros((B, L, write_heads, 8), dtype=torch.float16, device="cuda"), scale=column())
+    values = Values(v=torch.zeros((B, L, write_heads, 8), dtype=torch.bfloat16, device="cuda"), scale=column())
     return routes, values
 
 

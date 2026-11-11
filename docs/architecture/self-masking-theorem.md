@@ -131,8 +131,8 @@ because several other decisions now rest on the theorem.
 **A second, narrower precondition** is the storage boundary itself. The clock reads
 the STORED write levels -- the bundle's rows, which both the oracle and the kernel are
 fed -- so the theorem holds exactly while the stored representation has the **same zero
-set** as the trained one. A sparse level's zero digit is an exact zero in both; a dense
-level has no zeros at all ([the dense floor](../internals/facts/liveness_contract.md#floor)). A quantization that
+set** as the trained one. A zero digit is an exact zero in both, at every level
+([the digits](../internals/facts/liveness_contract.md#digits)). A quantization that
 turned an exact zero
 into a denormal, or a nonzero into a zero, would break the coupling in (a) above. That
 is why the solve WRITES the stored form rather than being rounded into it afterwards:

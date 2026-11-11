@@ -168,9 +168,7 @@ def _kernel_realized_support(routes, side, widths, B, H, device, d_v=64):
     #: shows only what the step WROTE, and a read deposits nothing), the others sparse and empty
     read_flags = (False,) + (True,) * (len(widths) - 1)
     flags = routes.sparse[0] if side == "read" else routes.sparse[1]
-    #: a dense level is f16 at the floor on either side: the rows move to the write side in their own form
-    empty = tuple(quant.aligned_rows(*r.shape, r.device, quant.ROW_DTYPE if sparse else quant.DENSE_DTYPE)
-                  for r, sparse in zip(rows, read_flags))
+    empty = tuple(quant.aligned_rows(*r.shape, r.device) for r in rows)
     routes = RouteFactors.from_rows(topology, empty, rows, (ones,) * len(widths), (ones,) * len(widths),
                                     sparse=(read_flags, flags))
     values = Values.from_projection(torch.ones(B, 1, H, d_v, **f32))
