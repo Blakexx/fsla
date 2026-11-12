@@ -18,7 +18,7 @@
 // a slot, four batches of 32 entries alternating two register halves: a batch's stores and multiplies (its words
 // loaded two batches before), then those registers' loads for the batch two on; the fence and the arrival. The
 // readout's trip is a chunk: the wait on its tile group, two stores a thread of coefficients (their bytes loaded a
-// chunk before), the next chunk's load, their fence and the tiles' barrier, 8 steps, the commit and its wait, the
+// chunk before), their fence and the tiles' barrier, 8 steps, the commit, the next chunk's load and the wait, the
 // group released; then the wait on the panel two chunks back, 32 rounds to f16 and 2-byte stores a thread, the
 // arrival. A drain warp's trip is a chunk, four batches of 8 tokens alternating two register halves: a batch's adds,
 // each a word as the panel holds it, then those registers' loads for the batch two on (the chunk's first two as it
@@ -280,7 +280,6 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
         }
         *reinterpret_cast<uint4*>(tile + 16 * 8 * half) = make_uint4(two[0], two[1], two[2], two[3]);
       }
-      bytes = boxes[reader_row(reader(c + 1), box_mine)];
       //: the tiles are every readout warp's stores and every warp's step reads them all: the writers' fence, then
       //: the four warps meet at the tiles' barrier before the first step
       lab::bulk_fence();
@@ -298,6 +297,9 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
           lab::wg_bf16_n16_ss_mna(d[j], lab::wg_desc(images + box * kBoxBytes + 2 * j * kImageTile, 8, kBrickLines),
                                   lab::wg_desc(coefs + (2 * j + box) * kCoefBytes, 8, 16), box != 0);
       lab::wg_commit();
+      //: the next chunk's bytes, issued under the steps and behind this chunk's fence: a load in flight at the
+      //: fence is a load the fence waits out
+      bytes = boxes[reader_row(reader(c + 1), box_mine)];
       lab::wg_wait<0>();
       //: the group is read: its box may publish the next window's over it
       if (lane == 0) lab::mbar_arrive(bars + kTilesRead + 8 * c4);
