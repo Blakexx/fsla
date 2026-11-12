@@ -77,7 +77,11 @@ whose every reader meets every writer); the cluster's state scale holds to a spi
 normalized sum holds everywhere but a value-scale spread near 2^48. A token of nl64k-alt-k4 reads 3.66 of its
 clusters.
 
-<a id="f16"></a>THE SUM AS f16 (`sum f16 <bound>`; 2026-11-11, nl64k-alt-k4, boxes 16 x 16, clusters of 16 boxes along
+<a id="f16"></a>WHY f16 IS MODELLED: [precision.md](../../architecture/precision.md) keeps the sum across CTAs fp32,
+and [`drain_role`](../../lab/drain_role.md) prices an f16 line at half an fp32 partial's cost without measuring what
+it gives up; this is that measurement.
+
+THE SUM AS f16 (`sum f16 <bound>`; 2026-11-11, nl64k-alt-k4, boxes 16 x 16, clusters of 16 boxes along
 level 0, one box a term; a token's relative error, median / 99th percentile / largest). The family's every other
 rounding together is 0.115% / 0.174% / 0.267% on this cell, and the fp32 sum alone 0.000015%.
 

@@ -257,7 +257,7 @@ void expect(lab::Bench& b) {
     const std::string k = lab::kernel("fold", {f, WIDE, WARPS});
     b.expect(k, "HGMMA", "==", f == kProducer ? 0 : kGroups<WIDE> * (kChunk / kStep));
     b.exempt(k, "a stream probe: the producers' stores beside the fold's steps, no kernel's step");
-    //: the group producer's hit test still compiles to three divergent regions a batch; declared, not removed
+    //: the group producer's hit test compiles to three divergent regions a batch
     if (WIDE == 64 && f != kFold) b.expect(k, "LOOP_CONVERGENCE", "<=", 6);
   }
 }

@@ -22,7 +22,7 @@ THE FOLD'S VALUES. A token's value reaches each box it writes once, at the cheap
 whole value tile loaded packed and a 128-byte load of its own ([`state_move`](../../lab/state_move.md), read on
 working sets the cache holds); then it is gathered into list order in shared memory, ESTIMATED at the shared access
 rate. THE FOLD'S TENSOR TIME is its steps': a token in a list of a box is a sixteenth of a step, a step the same
-at 8 columns as at 64 and four times that at 256 (`fold_stream`); the readout's leaves run whole steps of sixteen.
+at 64 columns or fewer (ASSUMED under 64: the record reads 64 and 256) and four times that at 256 (`fold_stream`); the readout's leaves run whole steps of sixteen.
 
 THE CLUSTER. By default (`--sum none`) a cluster shares the fold's value loads and nothing else: every box drains
 its own partial; that sharing is the low end of a row's loads and is ESTIMATED (no lab has landed a load across a
@@ -66,7 +66,7 @@ WHAT IT SHOWS. A token's cost is bytes moved and steps run, a (token, box) each;
   box: 1,024 (token, list, box) steps' sixteenths a token, each at a step's whole time whatever its width
   ([`fold_stream`](../../lab/fold_stream.md)) -- the fold's tensor time alone is over the floor.
 - WHERE BOTH SIDES ARE SPARSE ON THE SAME LEVEL the read-aligned box is the write-aligned one too, and every term is
-  small: 324 to 430.
+  small: 321 to 344.
 - A DENSE WRITE SIDE is the fold's whole dense product, over the floor by itself.
 - A CLUSTER'S SUM does not pay (`cluster_sum`); a cluster sharing the value tile is the one use left for it, and its
   low end is ESTIMATED.

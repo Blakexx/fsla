@@ -18,7 +18,8 @@ its reason):
 - tensor: the leaves a token reads, times the channels, over the pipe's products a cycle (`wgmma_rate`);
   a value width under 64 runs wgmma's 64 rows (the idle half), and the readout's leaves of a list in a box run
   whole steps of sixteen (its K). THE FOLD is priced by its steps' TIME, MEASURED (`fold_stream`): a token in a list
-  of a box is a sixteenth of a step, and a step costs the same at 8 columns as at 64, and four times that at 256;
+  of a box is a sixteenth of a step; a step of 64 columns or fewer is priced at the 64-column step (ASSUMED under 64:
+  the record reads 64 and 256), one of 256 at four of them;
 - the readout's operand: its (token, leaf) coefficients expanded into shared memory, at the SM's shared access rate
   (`byte_expand`, its bank-spread form);
 - the output's sum: by default (`--sum none`) every box drains its own partial to global memory (`drain_rate`:
@@ -182,7 +183,7 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
     loads = (a_value(write.clusters, all_boxes / math.prod(cluster)) if clustered else a_box, a_box)
 
     #: A FOLD STEP IS PRICED BY ITS TIME: a token in a list of a box is a sixteenth of a step, and a step's time is
-    #: one of 64 columns' for each 64 of the list's leaves in the box (`fold_stream`: 8, 64 and 256 columns)
+    #: one of 64 columns' for each 64 of the list's leaves in the box (`fold_stream`: 64 and 256 columns; narrower ASSUMED the same)
     def steps_wide(a: Side) -> float:
         return math.ceil(a.leaves / (a.boxes * a.lists) / 64 - 1e-9)
 

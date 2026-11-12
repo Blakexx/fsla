@@ -21,7 +21,7 @@ as accumulators of WIDE leaves. Both operands are M|N-major with bricks 17 lines
 - A PRODUCER'S LOADS RUN TWO BATCHES AHEAD (the header's TIMELINE): it holds two batches of 8 tokens' values at
   fixed registers; a trip stores a batch and then loads those registers for the batch two on, so no store waits on
   its own load and no register is copied. A token that is not a group producer's is stored to a scratch word, with
-  no branch; that producer's hit test still compiles to 6 divergent instructions a trip, declared.
+  no branch; that producer's hit test compiles to 6 divergent instructions a trip, which the experiment declares.
 - THE FOLD, a chunk of 64 tokens behind: the chunk's 4 steps a group in one commit group, with no branch. The
   producers hand a chunk over by an arrival each at a barrier, after a fence; the fold frees its tiles by another.
 The lab's tokens put one leaf in each quarter of the box, so every group of 64 takes every token and every tile
@@ -46,15 +46,16 @@ CTA, the median, the spread under 0.7%):
 WHAT IT SHOWS.
 - THE ONE-PASS FILL IS CORRECT at both widths, and the transposed operands are laid out as CUTLASS's descriptors
   say.
-- A STEP'S TIME GROWS WITH ITS COLUMNS ONLY PAST 64: a chunk's steps cost 47 cycles each at 64 columns (16 a
+- A STEP'S TIME AT 256 COLUMNS IS FOUR TIMES ITS TIME AT 64: a chunk's steps cost 47 cycles each at 64 columns (16 a
   chunk) and 185 at 256 (4 a chunk), the same 11.5 to 11.8 a token. A token in a list of a box is a sixteenth
-  of a step, and a wider step spends the same time on more columns. A step narrower than 64 is not in this record.
-- FOUR PRODUCERS BY RESIDUE SCALE (76 to 23); A PRODUCER A GROUP DOES NOT PAY (157): each of the four looks at
-  every token, loads every value and stores a row of 64 coefficients, where the one-group form stores four words.
+  of a step. A step narrower than 64 is not in this record.
+- FOUR PRODUCERS BY RESIDUE SCALE (76 to 23); A PRODUCER A GROUP DOES NOT PAY (157); which of its
+  differences from the one-group form costs it is not isolated.
 - THE CHEAPEST FORM IS 29 CYCLES A TOKEN A CTA, the producers' 23 and the fold's 11.5 overlapping. Lanes 4 to 31 of a
   row's store land on a scratch word that shares banks with the row: the producers' number holds that conflict.
 - A box every token writes is visited by every token: on a card of 128 such CTAs, 29 cycles a visit is 3,700
   SM-cycles a token, and the fold's 11.5 alone 1,477.
-- THE TABLE'S SIZE DOES NOT MOVE THE FOUR-PRODUCER FORM: every CTA reads the same line, fetched from memory once.
+- THE TABLE'S SIZE DOES NOT MOVE THE FOUR-PRODUCER FORM and moves the one-producer form by a tenth; what
+  separates the two is not isolated.
 
 Record: `measure/lab/results/fold_stream/sm_90a.json`.
