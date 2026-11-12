@@ -3,10 +3,10 @@
 Mirrors `measure/lab/experiments/panel_merge.cu`, an experiment of the lab
 ([`docs/internals/tools/lab.md`](../internals/tools/lab.md)).
 
-The output's sum may be f16 across one fold group's CTAs and is fp32 across groups
-([`CONSTITUTION.md#r17`](../CONSTITUTION.md#r17)): a launch's groups each leave a panel of f16 pairs, a row a
-token, and the panels are merged into the fp32 output when the launch ends. What does that merge cost a token, by
-the groups a launch holds?
+Were the output's sum f16 across one fold group's CTAs and fp32 across groups, a launch's groups would each leave a
+panel of f16 pairs, a row a token, merged into the fp32 output when the launch ends. What does that merge cost a
+token, by the groups a launch holds? (The format takes no such form, on this experiment's answer:
+[`CONSTITUTION.md#r17`](../CONSTITUTION.md#r17).)
 
 THE FORM. A CTA an SM, 4 warps; each CTA takes its own run of tokens and each warp every fourth of them, so a row
 has one writer and nothing is atomic. A token: G loads of a 128-byte panel row (a lane a pair of f16), one of its

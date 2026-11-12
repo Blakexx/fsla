@@ -33,7 +33,8 @@ nothing bounds what accumulation embeds.
 A u8 byte is exact in bf16 (8 significant bits), so a row costs no rounding as an operand; a scale, a coefficient or a
 power of two is multiplied in fp32 where the byte is expanded. Nothing in the family depends on the card: there is no
 image of the state at a chosen exponent, no pass that bounds a token's sum before it is formed, and no switch of
-accumulation by a card's MMA rates or by a side's density.
+accumulation by a card's MMA rates or by a side's density: the one width a plan states is the output's sum across
+CTAs.
 
 WHY NOT 16-BIT FLOAT OPERANDS WITH 5 EXPONENT BITS. The fp16 family (the branch `ampere`'s) kept an unbounded fp32
 state and a token's unbounded sum inside f16's range by machinery: the state's image at an exponent a digit, list

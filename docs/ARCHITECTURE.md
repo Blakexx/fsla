@@ -184,7 +184,8 @@ SYMMETRY by construction: the read-write overlap factorizes over levels (`Σ_n R
 of the levels' inner products), and a full-support factor at every level makes each factor strictly positive, so every
 read overlaps every write -- an exact-zero pair, with its exact-zero gradient, cannot occur, while each level keeps the
 hard sparsity the kernels compact. A fold warp's tile is its side's lists by its operand rows; a readout warp holds
-every leaf for its channels, so the state reaches the readout through an image. Every kernel that
+every leaf for its channels, so where the two sides' carves differ the state reaches the readout through an image
+(where they are equal, from the fold's own registers). Every kernel that
 depends on the geometry takes the carve — the facts pass groups its unions and lists by the box's list levels, the
 carry addresses by it — and validates the one it is handed; none decides a carve. The rule derives it from
 launch-static facts (the rows' shapes and the bundle's declared flags), never from a routing statistic, so the
@@ -349,6 +350,7 @@ card; a kernel's schedule is designed, and written into its own page, before it 
 | state in the register file | producer and consumer warps, the registers moved between them (`setmaxnreg`); the fold's fp32 accumulators the readout's operand, narrowed in place | the accumulator in tensor memory |
 | operand staging from DRAM | TMA box loads into rings, landed on `mbarrier`s, descriptors built at runtime | the same |
 | runtime addressing | uniform-datapath registers from the prologue, pairing with runtime descriptors | the same |
+| the state's image | where the two sides' carves differ: the fold's fp32 state stored once a window as bf16 tiles in shared memory, the readout's A operand by descriptor; none where they are equal (R17) | the readout's operand read from tensor memory; no blackwell card measured |
 | the output's sum | fp32 inside a CTA; across CTAs fp32 or one f16 line a CTA a token at a coarse state-carried bound, as the plan states (R17). `red.global` a token: a carry's rows are not contiguous | the same |
 | the box grain | one CTA per multiprocessor; a cluster sharing staging through distributed shared memory (TMA multicast) only where a lab shows it pays | the same |
 | decode's walk and combine | per-lane-group gathers, a work queue of visits, global atomics into a head's sums | the same |

@@ -27,7 +27,7 @@ whose output is a few intra terms). With no rounding on the model is the truth e
 ## <a id="sums"></a>The cross-box sum
 
 WHY IT IS MODELLED. The readout's output is a sum over boxes that different CTAs hold, and
-[precision.md](../../architecture/precision.md) states that sum in fp32. On sm_90 the ASYNCHRONOUS reductions into another
+[precision.md](../../architecture/precision.md) states that sum's width as the plan's, fp32 or f16. On sm_90 the ASYNCHRONOUS reductions into another
 CTA's shared memory are integer (the toolkit's PTX wrappers list them; its float bulk add goes to global memory
 only), so an integer partial is the one a cluster can sum with no warp's work. The fp32 way to sum in a cluster, a slot a box
 added by one CTA, is [`carry_floor`](carry_floor.md)'s, counted beside this one; the warps' own atomic float add
@@ -96,8 +96,9 @@ WHAT IT SHOWS. A cluster's few partials added in f16 and the clusters merged in 
 own error, under every stress, and a bound that only counts what could have been written into the cluster
 (`planned`: the write mass so far, no state read) does exactly as well as the state's own magnitude -- f16's
 exponent takes the slack. EVERY box of a token into ONE f16 sum costs as much as the rest of the family together
-(58 rounded adds a token here), and with the call-wide bound more (0.174 / 0.539 / 1.25%, no stress): the f16 sum is
-a group's, not the call's. Not modelled: the den's column kept apart from the num's, and cells other than this one.
+(58 rounded adds a token here), and with the call-wide bound more (0.174 / 0.539 / 1.25%, no stress). A sum a
+group needs a panel a group and a merge that costs what the fp32 line does ([`panel_merge`](../../lab/panel_merge.md)),
+so the format's f16 form is one line a CTA, its boxes added in fp32 first (below). Not modelled: the den's column kept apart from the num's, and cells other than this one.
 
 ONE f16 SUM FOR A TOKEN, ITS CTAS' PAIRS ADDED IN fp32 FIRST (`sum f16 coarse, pairs`; nl64k-alt-k4, boxes 16 x 16,
 `--along 1`, where neighbours in the box order are the two boxes a CTA holds along the read side's dense level): 29
