@@ -14,8 +14,9 @@
 // stores and multiplies (its words loaded a trip before), then the same registers' loads for the next batch; a
 // slot on, the fence and the arrival. The readout's trip is a chunk: the wait on the panel two chunks back, the
 // fence, 8 steps, the commit and its wait, 32 stores a thread, the arrival; a window's image waited on at its
-// first chunk and released after its last. A drain warp's trip is two batches of 8 tokens at their own
-// registers: a batch's rounds and adds, then those registers' loads for the batch two on. Live: a fold thread's
+// first chunk and released after its last. A drain warp's trip is a chunk, its 16 tokens: the wait on the panel,
+// 16 rows loaded, their rounds and adds, the arrival (its loads wait in the trip: `LOAD_IN_TRIP` is of global
+// loads, and these are the panel's). Live: a fold thread's
 // 128 accumulators; a producer's 36 words; the readout's 32; a drain's 32.
 // see docs/internals/tools/lab.md#carry-window
 #include "lab.cuh"
@@ -254,8 +255,7 @@ __device__ __forceinline__ void drain_role(const uint8_t* smem, uint32_t base, l
   lab::regs_down<kDrainRegs>();
   const int lane = threadIdx.x & 31, mine = (threadIdx.x - kDrainAt) >> 5;
   const uint32_t bars = base + kBarsAt;
-  constexpr int kBatches = kTokens / kDrains / kBatch;
-  static_assert(kBatches % 2 == 0);
+  static_assert(kTokens / kDrains == 2 * kBatch);
   float lo[2][kBatch], hi[2][kBatch];
   const auto load = [&](int h, int c, int batch) {
 #pragma unroll
@@ -270,23 +270,19 @@ __device__ __forceinline__ void drain_role(const uint8_t* smem, uint32_t base, l
   clock.start();
 #pragma unroll 1
   for (int c = 0; c < kChunks * windows; ++c) {
+    //: a chunk is this warp's two batches: both loaded as the chunk opens, nothing ahead of them
     lab::mbar_wait(bars + kPanelReady + 8 * (c & 1), (c >> 1) & 1);
     load(0, c, 0);
     load(1, c, 1);
     const long long first = static_cast<long long>(blockIdx.x) * (kOutWindows * kWindow)
                             + ((c / kChunks) % kOutWindows) * kWindow + (c % kChunks) * kTokens;
-#pragma unroll 1
-    for (int b = 0; b < kBatches; b += 2) {
 #pragma unroll
-      for (int h = 0; h < 2; ++h) {
+    for (int h = 0; h < 2; ++h)
 #pragma unroll
-        for (int i = 0; i < kBatch; ++i) {
-          const int token = mine + kDrains * ((b + h) * kBatch + i);
-          lab::red_add_f16x2(out + (first + token) * (kChannels / 2) + lane, lab::pack_half2(lo[h][i], hi[h][i]));
-        }
-        load(h, c, min(b + 2 + h, kBatches - 1));
+      for (int i = 0; i < kBatch; ++i) {
+        const int token = mine + kDrains * (h * kBatch + i);
+        lab::red_add_f16x2(out + (first + token) * (kChannels / 2) + lane, lab::pack_half2(lo[h][i], hi[h][i]));
       }
-    }
     __syncwarp();
     if (lane == 0) lab::mbar_arrive(bars + kPanelFreed + 8 * (c & 1));
   }
@@ -325,15 +321,19 @@ __global__ void __launch_bounds__(kThreads, 1)
   lab::bulk_fence();
   __syncthreads();
 
-  //: EACH ROLE'S WHOLE BODY IN ITS OWN BRANCH, its registers set at its head (docs/lab/reg_trade.md)
+  //: EACH ROLE'S WHOLE BODY IN ITS OWN BRANCH, its registers set at its head (docs/lab/reg_trade.md). A role a
+  //: row leaves out still releases its registers: the fold's raise waits on every other warpgroup's
   if (tid < kReadAt) {
     fold_role<ROLES>(smem, base, times, state, windows);
   } else if (tid < kProduceAt) {
     if constexpr (ROLES & kRead) read_role(smem, base, times, windows);
+    else lab::regs_down<kReadRegs>();
   } else if (tid < kDrainAt) {
     if constexpr (ROLES & kFold) produce_role(smem, base, times, values, dense, windows);
+    else lab::regs_down<kProduceRegs>();
   } else {
     if constexpr (ROLES & kRead) drain_role(smem, base, times, out, windows);
+    else lab::regs_down<kDrainRegs>();
   }
 }
 
@@ -447,7 +447,10 @@ int main(int argc, char** argv) {
     //: the readout's panel is read by the drain warps' own loads, not by a step: its arrival needs no fence
     if (roles & kRead) b.expect(k, "STORE_UNFENCED", "<=", 1);
     b.exempt(k, "a composition probe: the carry's roles in one CTA, no kernel's step");
+    //: once a slot or a chunk a role: a `__syncwarp` before a one-lane arrival is a convergence call, and each
+    //: barrier's polled wait a region -- five roles' in one kernel
     b.expect(k, "LOOP_CONVERGENCE", "<=", 64);
+    //: the roles' loops hold their steps beside their barriers' polled waits: the waits' branches are the steps'
     b.expect(k, "BSSY", ">=", 0);
   }
   if (b.expect_only) return 0;
