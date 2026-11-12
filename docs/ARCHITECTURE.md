@@ -79,7 +79,7 @@ where the four bits fall inside a level, an aligned contiguous sub-run of that l
 fixed. That the atom is a digit rectangle at every admissible span vector is a theorem of the order, not a constraint
 on the carve.
 
-**Boxes.** A CTA's box (§4) holds a rectangle of digits a level — an extent at level `l` dividing `B_l` — and a
+**Boxes.** A box (§4; a hopper CTA owns two, R20) holds a rectangle of digits a level — an extent at level `l` dividing `B_l` — and a
 channel extent. Decode's own lattice is the `(k, m)` box: an owner's span `s(l)` at level `l`, grid `g(l) = B_l / s(l)`,
 `BC = Π_l s(l)` leaves, and the map from the canonical index to the lattice index a fixed BIT PERMUTATION, so the
 owner index is a bit-field extract and never a division chain
@@ -352,7 +352,7 @@ card; a kernel's schedule is designed, and written into its own page, before it 
 | runtime addressing | uniform-datapath registers from the prologue, pairing with runtime descriptors | the same |
 | the state's image | where the two sides' carves differ: the fold's fp32 state stored once a window as bf16 tiles in shared memory, the readout's A operand by descriptor; none where they are equal (R17) | the readout's operand read from tensor memory; no blackwell card measured |
 | the output's sum | fp32 inside a CTA; across CTAs fp32 or one f16 line a CTA a token at a coarse state-carried bound, as the plan states (R17). `red.global` a token: a carry's rows are not contiguous | the same |
-| the box grain | one CTA per multiprocessor, two boxes a CTA: a fold warpgroup a box, one readout warpgroup over both (R20); no cluster -- its sum, its state transfer and its multicast each measured as a loss ([`cluster_sum`](lab/cluster_sum.md), [`state_move`](lab/state_move.md), [`value_cast`](lab/value_cast.md)) | one CTA per multiprocessor; no blackwell card measured |
+| the box grain | one CTA per multiprocessor, two boxes a CTA: a fold warpgroup a box, and where the carves differ one readout warpgroup over both boxes' images (R20); no cluster -- its sum, its state transfer and its multicast each measured as a loss ([`cluster_sum`](lab/cluster_sum.md), [`state_move`](lab/state_move.md), [`value_cast`](lab/value_cast.md)) | one CTA per multiprocessor; its boxes a CTA and its roles are NOT STATED: no blackwell carry is designed and no blackwell card measured (owed with that family's first lab) |
 | decode's walk and combine | per-lane-group gathers, a work queue of visits, global atomics into a head's sums | the same |
 | the closed world | ratified manifest per architecture, device stamp | the same |
 

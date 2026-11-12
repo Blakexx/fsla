@@ -199,15 +199,16 @@ A ruling that changes a law is written into the standards in the same stage that
 card; the milestone carries the drift guards (lints, docs, skills).
 
 <a id="r20"></a>
-## R20. The ownership unit is the CTA's box
+## R20. The ownership unit is the CTA's boxes
 
-The CTA's box is the carve's box (per-level extents and a channel extent), carved per side by its plan; the shape set
-is the plans. A CTA loads and stores its box at entry and exit, so its read-side warps' union and its write-side
-warps' union are the same leaves; the CTA's box equals the SM's at one CTA per SM, the goal (R15). Where the
-accumulator lives (registers, tensor memory) changes how a warp touches its share, never who owns what. ON HOPPER A
-CTA OWNS TWO BOXES (Blake, 2026-11-12): two fold warpgroups, split by the sparse level between them and by values
-across their warps, each holding one box's state, and one readout warpgroup that accumulates from the state both
-publish.
+A box is the carve's box (per-level extents and a channel extent), carved per side by its plan; the shape set is the
+plans. A CTA OWNS ITS BOXES -- on hopper TWO (Blake, 2026-11-12): two fold warpgroups, split by the sparse level
+between them and by values across their warps, each holding one box's state; and one readout warpgroup that
+accumulates from the state both publish where the two sides' carves differ (where they are equal there is no
+published state, R17, and a box's own warpgroup reads out). A CTA loads and stores its boxes at entry and exit, so
+its read-side warps' union and its write-side warps' union are the same leaves; the CTA's boxes are the SM's at one
+CTA per SM, the goal (R15). Where the accumulator lives (registers, tensor memory) changes how a warp touches its
+share, never who owns what.
 
 <a id="r21"></a>
 ## R21. Every asynchronous operation states two edges
