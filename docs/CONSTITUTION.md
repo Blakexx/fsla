@@ -173,7 +173,13 @@ with the row's fp32 scale; the values are bf16 unit-max with an fp32 scale a tok
 byte is exact in it) and its accumulation fp32 -- the fold, the readout and the den alike -- but for a window's pair
 products of rows, which are integer MMAs of the bytes, exact (the data model locked 2026-11-09 has the intra so);
 the output's sum is
-fp32, in shared memory and across CTAs: no scale pass, no image, no switch of precision by card or by density. Each
+fp32, in shared memory and across fold groups: no scale pass, no image, no switch of precision by card or by density.
+ACROSS THE CTAS OF ONE FOLD GROUP -- those that share their fold-sparse digits -- the sum may be f16 (Blake,
+2026-11-11): a CTA's partial is scaled by a power of two from the group's BOUND, the most the group's leaves can
+hold, which every CTA of the group computes alike with no word between them and which is stored with the state so a
+continuation keeps it; the groups' sums are merged in fp32. That sum costs 0.023% a token at the median and 0.054% at
+most under stress, a fifth of the family's own error; every group into one f16 sum costs as much as the family and
+is not a form (`docs/internals/tools/arith_model.md#f16`). Each
 component has one form across densities and cards, unless measurements show that no single form wins or ties
 everywhere. The family's error is its own class, 0.16 to 0.20% a token against the fp64 oracle on the flagship cells
 (measured), accepted on every card and recorded in `docs/architecture/precision.md`.
