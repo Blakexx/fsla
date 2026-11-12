@@ -36,10 +36,9 @@ Four warps, 4 bytes a lane:
 | 64 | 4.95 | 19.8 |
 
 WHAT IT SHOWS.
-- A ROW'S COST FALLS WITH THE ROWS ITS WARP KEEPS IN FLIGHT. With 4 instructions in flight a warp takes a row
-  every 91 cycles; with 16, every 34; with 64, every 20. From 4 to 16 the cost falls nearly as fast as the depth
-  rises, which is what a load that lands a fixed time after its issue would do (no latency was measured here);
-  from 16 to 64 it falls by less than half, so something else binds there too.
+- A ROW'S COST FALLS WITH THE ROWS ITS WARP KEEPS IN FLIGHT, by less than in proportion. With 4 instructions in
+  flight a warp takes a row every 91 cycles; with 16, every 34; with 64, every 20: 2.7 times less for four times
+  the depth, then 1.7 times less for the next four. What binds at each depth is not separated here.
 - THREE THINGS PUT ROWS IN FLIGHT: the ring's depth, the lane's width (16 bytes a lane puts four rows in an
   instruction: 10.6 against 33.0 for one warp) and the warps.
 - THE WARPS SCALE TO FOUR AND FLATTEN BEYOND: one row an instruction, 33.0, 8.5, 4.7 and 3.3 at 1, 4, 8 and 16

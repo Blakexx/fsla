@@ -228,7 +228,8 @@ def loop_hazards(binary: Path) -> dict[str, dict[str, int]]:
     """Per kernel (demangled), inside its innermost loops: LOAD_IN_TRIP, the global loads whose value an instruction
     of the same trip reads -- that trip waits out its own load, where a load a stage ahead is hidden (KERNEL_STANDARDS
     section 32); and STORE_RELOAD, the shared loads of an address the same trip stored to -- a value kept in shared
-    memory that no other warp reads belongs in a register (section 33)."""
+    memory that no other warp reads belongs in a register (section 33). And over the whole kernel, STORE_UNFENCED
+    (`unfenced`)."""
     found = {}
     for name, body in disassembled(binary).items():
         loops = loops_of(body)

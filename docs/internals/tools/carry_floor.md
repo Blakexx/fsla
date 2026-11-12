@@ -21,7 +21,7 @@ a form that names an sm_90 instruction states no sm_100 form here -- owed with t
 THE FOLD'S OPERANDS are the cheaper of two forms, and each row says which. LISTED: a (token, list, box) entry's
 value and coefficients are fetched from scattered rows into the list's tiles by producer warps, MEASURED whole, the
 fold's steps beside them ([`pool_fill`](../../lab/pool_fill.md): 5.4 to 6.9 cycles an entry by 8 to 2 producers, at
-16 leaves a list; other widths are priced the same, UNMEASURED). TILED: every box takes the window's whole value
+16 leaves a list; a list's leaves past 16 are priced at the shared access rate, ESTIMATED). TILED: every box takes the window's whole value
 tile packed ([`state_move`](../../lab/state_move.md); every token's bytes), expands its coefficients into shared
 memory and gathers the values into list order, that copy ESTIMATED at the shared access rate. Both are read on
 working sets the cache holds.
@@ -65,8 +65,8 @@ high, and the call):
 | ... boxes 64 x 4 | 15.6 / 175.0 | 32, 288 | 304 to 394 | 1,379 to 1,753 (listed) | 2,017 to 2,480 | 556 to 684 us |
 | ... boxes 256 x 1 (the whole read-dense level) | 4.0 / 256.0 | 32, 1,152 | 77 to 100 | 2,821 (tiled) | 4,096 to 4,119 | 1.1 ms |
 | ... boxes 16 x 16, `--cluster 16 1 --sum slots` | 58.2 / 58.2 | 32, 80 | 7,562 to 7,583 | 345 to 438 (listed) | 8,033 to 8,147 | 2.2 ms |
-| 256 x 256, BOTH sides sparse on level 2; boxes 256 x 1 | 4.0 / 4.0 | 32, 32 | 77 to 100 | 22 to 27 (listed) | 177 to 205 | 49 to 57 us |
-| 256 x 256, read sparse on level 2, write DENSE; boxes 256 x 1 | 4.0 / 256.0 | 32, 2,048 | 77 to 100 | 1,379 to 1,753 (listed) | 3,550 to 3,947 | 1.0 to 1.1 ms |
+| 256 x 256, BOTH sides sparse on level 2; boxes 256 x 1 | 4.0 / 4.0 | 32, 32 | 77 to 100 | 34 to 40 (listed) | 190 to 218 | 52 to 60 us |
+| 256 x 256, read sparse on level 2, write DENSE; boxes 256 x 1 | 4.0 / 256.0 | 32, 2,048 | 77 to 100 | 2,203 to 2,576 (listed) | 4,374 to 4,770 | 1.2 to 1.3 ms |
 | 64 x 64 (4,096 leaves), sparse on opposite levels; boxes 16 x 16 | 10.9 / 10.9 | 8, 20 | 213 to 276 | 86 to 110 (listed) | 330 to 417 | 91 to 115 us |
 | 16^4, two sparse levels a side (2 live digits), boxes 4^4 | 49.0 / 49.0 | 128, 288 | 954 to 1,236 | 1,379 to 1,753 (listed) | 2,763 to 3,418 | 762 to 943 us |
 | 512 x 512 (262,144 leaves), sparse on opposite levels; boxes 16 x 16 | 122.1 / 122.1 | 64, 160 | 2,376 to 3,080 | 690 to 876 (listed) | 3,318 to 4,208 | 0.9 to 1.2 ms |

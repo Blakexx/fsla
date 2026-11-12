@@ -9,8 +9,8 @@ What does an ENTRY cost a CTA when producer warps fill both pools from scattered
 value's 128 bytes and the token's 16 dense bytes, each by the warps' own load -- and the fold's steps consume them?
 
 THE FORM. A CTA an SM: a fold warpgroup holding the box's state (16 accumulators of 16 leaves × 64 channels) and 2, 4
-or 8 producer warps. A window is the box's 16 lists of 16 entries, in one of two slots of tiles. A warp's load is
-bound by its latency, so by the rows it has in flight ([`load_rate`](load_rate.md)), and a producer takes the
+or 8 producer warps. A window is the box's 16 lists of 16 entries, in one of two slots of tiles. A warp's scattered
+load costs less the more rows it keeps in flight ([`load_rate`](load_rate.md)), so a producer takes the
 entries of its residue in batches of 32:
 - 8 VALUE instructions of FOUR entries, 8 lanes an entry: a lane loads 16 bytes of its entry's value and stores
   them as one line of the list's value tile (M|N-major; a row's 8 lanes cover the 32 banks once);
@@ -41,8 +41,5 @@ WHAT IT SHOWS.
 - THE PRODUCERS DO NOT SCALE: two warps take an entry in 6.1 cycles, four in 6.3, eight in 5.3. Two warps load at
   the rate [`load_rate`](load_rate.md) gives a warp with these rows in flight; past two the entry's 160 bytes of
   shared stores, or its loads' path, binds, and no row here separates them.
-- THE FORM IS THE NUMBER. The same entry cost 20.0 cycles with four producers taking a value row and a dense word
-  an instruction, 16 entries in flight a warp, and 9.0 with four entries an instruction at 32 in flight (two earlier
-  forms of this experiment, on the same card; their records are not kept).
 
 Record: `measure/lab/results/pool_fill/sm_90a.json`.

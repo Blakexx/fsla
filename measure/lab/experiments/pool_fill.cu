@@ -3,8 +3,8 @@
 // producer warps fill those two pools from SCATTERED rows of global memory -- a value's 128 bytes and the token's
 // 16 dense bytes, each by the warps' own load -- and the fold's steps consume them? METHOD: a CTA an SM: a fold
 // warpgroup holding the box's state (16 accumulators of 16 leaves x 64 channels) and 2, 4 or 8 producer warps. A
-// window is the box's 16 lists of 16 entries, in one of two slots of tiles. A warp's load is bound by its latency,
-// so by the rows it has in flight (`load_rate`), and a producer takes the entries of its residue in batches of
+// window is the box's 16 lists of 16 entries, in one of two slots of tiles. A warp's scattered load costs
+// less the more rows it keeps in flight (`load_rate`), so a producer takes the entries of its residue in batches of
 // 32: 8 value instructions of FOUR entries, 8 lanes an entry -- a lane loads 16 bytes of its entry's value and
 // stores them as one line of the list's value tile (M|N-major; a row's 8 lanes cover the 32 banks once) -- and
 // ONE instruction of all 32 entries' dense bytes, a lane an entry's 16, which it multiplies by the entry's byte,

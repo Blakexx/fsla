@@ -3,10 +3,12 @@
 // copy of it? METHOD: clusters of 8 CTAs, 4 warps each; a chunk is a tile of 64 tokens x 128 bytes (8 KB) of a
 // table every cluster reads. `each`: every CTA issues its own tensor copy of the chunk's tile. `cast`: the CTA of
 // rank 0 issues one multicast copy to all eight; every CTA states the bytes at its own barrier and waits on it.
-// Two tiles are in flight, a slot each by the chunk's parity. The last tiles are checked exactly in every CTA.
-// TIMELINE: a CTA's trip is a chunk, one thread: the wait on the tile two chunks back, the bytes stated at the
-// barrier of the chunk's parity, the copy issued (in `cast`, by rank 0 alone); a warp reads a word of the landed
-// tile a chunk. Live: nothing held.
+// Two tiles are in flight, a slot each by the chunk's parity. A copy into a slot is issued only past its readers:
+// the CTA's own barrier before its own copy, the CLUSTER's before a copy into every mate. The last tiles are
+// checked exactly in every CTA.
+// TIMELINE: a CTA's trip is a chunk: every thread waits on the tile two chunks back and reads a word of it; one
+// thread states the chunk's bytes at the barrier of its parity; the readers' barrier (the CTA's, or the
+// cluster's); the copy issued (in `cast`, by rank 0 alone). Live: nothing held.
 // see docs/internals/tools/lab.md#value-cast
 #include <cuda.h>
 #include <dlfcn.h>
@@ -46,19 +48,22 @@ __global__ void __cluster_dims__(kCtas, 1, 1) __launch_bounds__(kThreads, 1)
 #pragma unroll 1
   for (int c = 0; c < chunks; ++c) {
     const uint32_t slot = c & 1, bar = landed + 8 * slot;
+    //: THE LANDED EDGE: the tile two chunks back is in the slot; a word of it a thread
+    if (c >= 2) {
+      lab::mbar_wait(bar, ((c >> 1) - 1) & 1);
+      seen ^= smem[slot * kTileBytes + tid * 61] + c;
+    }
+    if (tid == 0) lab::mbar_expect(bar, kTileBytes);
+    //: THE ISSUE EDGE: every reader of the slot, and every barrier's stated bytes, before the copy that overwrites
+    //: it -- the CTA's own barrier for its own copy, the cluster's for a copy into every mate
+    if constexpr (FORM == kEach) __syncthreads();
+    if constexpr (FORM == kCast) lab::cluster_sync();
     if (tid == 0) {
-      if (c >= 2) lab::mbar_wait(bar, ((c >> 1) - 1) & 1);
-      lab::mbar_expect(bar, kTileBytes);
       if constexpr (FORM == kEach) lab::tensor_load_2d(base + slot * kTileBytes, &map, 0, tile_of(c) * kTokens, bar);
       if constexpr (FORM == kCast) {
         if (rank == 0)
           lab::tensor_cast_2d(base + slot * kTileBytes, &map, 0, tile_of(c) * kTokens, bar, (1u << kCtas) - 1);
       }
-    }
-    //: the tile two chunks back has landed: a word of it a thread
-    if (c >= 2) {
-      lab::mbar_wait(bar, ((c >> 1) - 1) & 1);
-      seen ^= smem[slot * kTileBytes + tid * 61] + c;
     }
   }
 #pragma unroll

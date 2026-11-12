@@ -7,8 +7,7 @@ Mirrors `measure/lab/experiments/state_move.cu`, an experiment of the lab
 straight to global memory, so a carry whose CTAs exchange something must exchange less of it. A CTA's STATE is
 that: it changes once a window, not once a token. What does a kilobyte of state cost a CTA to move -- into its
 cluster-mates' shared memory by bulk copies, or out to global memory and back in by one bulk copy each way? And
-what does a token's 128-byte value cost, loaded by itself -- the rate
-[`carry_floor`](../internals/tools/carry_floor.md) prices the fold's values at?
+what does a token's 128-byte value cost, loaded by itself?
 
 THE FORM. Clusters of 8 CTAs, 4 warps each, as many clusters as the card's SMs hold. A round moves 8 blocks a CTA,
 of 1 KB or of 8 KB each (8 KB or 64 KB a round).

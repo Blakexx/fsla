@@ -38,7 +38,7 @@ its reason):
   image stored once a window (`state_image`). Whether an f16 line is accurate enough is `arith_model`'s question;
 - the fold's operands, the cheaper of two forms. LISTED: a (token, list, box) entry's value and coefficients
   fetched from scattered rows into the list's tiles by producer warps, MEASURED whole (`pool_fill`, at 16 leaves a
-  list; other widths priced the same, UNMEASURED). TILED: every box takes the window's whole value tile packed
+  list; a list's leaves past 16 are priced at the shared access rate, ESTIMATED). TILED: every box takes the window's whole value tile packed
   (`state_move`; every token's bytes), expands its coefficients into shared memory and gathers the values into
   list order (that copy ESTIMATED at the shared access rate; no lab has read it). A cluster shares no load: a
   multicast copy costs each CTA what its own does (`value_cast`);
@@ -180,6 +180,8 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
     if clustered and form == "none":
         raise SystemExit("carry_floor: a cluster that sums nothing changes nothing (it shares no load): name its "
                          "`--sum`, or no cluster")
+    if form != "none" and not clustered:
+        raise SystemExit(f"carry_floor: `--sum {form}` is a cluster's sum, and no cluster is named")
     products, shared = rates["products"][0], rates["shared"][0]
     drain = (rates["drain_own"][0], rates["drain_spread"][0])
     value_requests = math.ceil(dv * 2 / 128)
@@ -207,16 +209,14 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
         image = both(all_boxes / 2 * rates["image"][0] / window if divergent else 0.0)
     else:
         line = image = both(0.0)
-    #: THE FOLD'S OPERANDS, the cheaper of two forms. LISTED: a (token, list, box) entry's value and coefficients
-    #: fetched from scattered rows into the list's tiles, MEASURED whole (`pool_fill`, at 16 leaves a list; other
-    #: widths are priced the same, UNMEASURED). TILED: every box takes the window's whole value tile packed (every
-    #: token's bytes), expands its coefficients, and gathers the values into list order (that copy ESTIMATED at
-    #: the shared access rate). A cluster shares no load: a multicast copy costs each CTA its own (`value_cast`)
+    #: THE FOLD'S OPERANDS, the cheaper of LISTED (an entry at `pool_fill`'s cost, a list's leaves past its 16 at the
+    #: shared access rate) and TILED (the window's packed tile a box, expanded and gathered): see the module's notes
     entries = write.boxes * write.lists * value_requests
-    listed = (entries * rates["entry_low"][0], entries * rates["entry_high"][0])
+    wide = write.boxes * write.lists * max(0.0, write.leaves / (write.boxes * write.lists) - 16) * 2 / shared
+    listed = (entries * rates["entry_low"][0] + wide, entries * rates["entry_high"][0] + wide)
     tiled = both(all_boxes * value_requests * rates["load_packed"][0] + write.leaves * 2 / shared
                  + write.boxes * write.lists * dv * 2 * 2 / shared)
-    operands, operands_by = ((listed, "LISTED: entry_low .. entry_high") if listed[0] <= tiled[0] else
+    operands, operands_by = ((listed, "LISTED: entry_low .. entry_high, a list's leaves past 16 at shared (ESTIMATED)") if listed[0] <= tiled[0] else
                              (tiled, "TILED: load_packed, shared, and the gather ESTIMATED"))
 
     #: A FOLD STEP IS PRICED BY ITS TIME (`wgmma_width`): a token in a list of a box is a sixteenth of a step as
