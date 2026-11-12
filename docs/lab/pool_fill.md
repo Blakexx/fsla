@@ -10,9 +10,10 @@ value's 128 bytes and the token's 16 dense bytes, each by the warps' own load --
 
 THE FORM. A CTA an SM: a fold warpgroup holding the box's state (16 accumulators of 16 leaves × 64 channels) and 1, 2
 or 4 producer warps. A chunk is 4 lists of 16 entries, in one of two slots of tiles. A producer takes the entries of
-its residue: the value row loaded and stored into the list's value tile (M|N-major, a lane one 4-byte store), the
-token's 16 dense bytes loaded, multiplied by the entry's byte, rounded to bf16 and stored into the list's
-coefficient tile by 8 lanes. A row's loads run two batches of 8 ahead of its stores, at fixed registers. The fold, a
+its residue: the value row loaded and stored into the list's value tile (M|N-major, a lane one 4-byte store); the
+16 dense bytes of FOUR entries' tokens loaded by one instruction (8 lanes an entry), multiplied by the entry's
+byte, rounded to bf16 and stored into those lists' coefficient tiles by one, its four entries on four bank groups.
+A row's loads run two batches of 8 ahead of its stores, at fixed registers. The fold, a
 chunk behind, runs the chunk's 4 steps (64 × 16 × 16, both operands from shared memory) in one commit group and
 frees the slot.
 - `the producers alone`: no step runs; the fold only hands the slots back.

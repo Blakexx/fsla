@@ -4,8 +4,9 @@
 // 16 dense bytes, each by the warps' own load -- and the fold's steps consume them? METHOD: a CTA an SM: a fold
 // warpgroup holding the box's state (16 accumulators of 16 leaves x 64 channels) and 1, 2 or 4 producer warps. A
 // chunk is 4 lists of 16 entries. A producer takes the entries of its residue: the value row loaded and stored to
-// the list's value tile (M|N-major: one 4-byte store a lane on 32 banks), the 16 dense bytes loaded, multiplied
-// by the entry's byte, rounded to bf16 and stored to the list's coefficient tile (8 lanes). The fold, a chunk
+// the list's value tile (M|N-major: one 4-byte store a lane on 32 banks); the 16 dense bytes of FOUR entries'
+// tokens loaded by one instruction (8 lanes an entry), multiplied by the entry's byte, rounded to bf16 and stored
+// to those lists' coefficient tiles by one, its four entries on four bank groups. The fold, a chunk
 // behind, runs the chunk's 4 steps in one commit group. `producers`: no step runs. `together`: both, the state
 // checked exactly after one window. An entry's token is drawn; the list it comes from is not loaded.
 // TIMELINE: a producer's trip is two batches of 8 entries at their own registers: a batch's multiplies and its
@@ -21,7 +22,12 @@ constexpr int kLists = 16, kLeaves = 16, kEntries = 16, kChunkLists = 4, kChunk 
 constexpr int kFoldThreads = 128, kTableTokens = 65536, kRowWords = 32;
 //: a tile, M|N-major: a token's 8 rows (or columns) of a brick one 16-byte line, bricks 17 lines apart
 constexpr int kBrick = 17 * 16, kValueTile = 8 * kBrick, kCoefTile = 2 * kBrick, kTile = kValueTile + kCoefTile;
-constexpr int kScratchAt = 2 * kChunkLists * kTile, kBarsAt = kScratchAt + 128, kSmemBytes = kBarsAt + 32;
+constexpr int kBarsAt = 2 * kChunkLists * kTile, kSmemBytes = kBarsAt + 32;
+//: the entry of a batch that lane group `g` of coefficient instruction `q` takes: the four of an instruction store
+//: to four different bank groups (a tile is 8 banks on from the one before, a token's line 4)
+constexpr int coef_entry(int warps, int g, int q) {
+  return warps == 1 ? 2 * g + q : warps == 2 ? g + 4 * q : (g & 1) + 4 * (g >> 1) + 2 * q;
+}
 
 //: the token of a (CTA, list, entry of the window), its value at a channel, its byte on the list's digit and on a
 //: dense leaf: small integers, every sum exact
@@ -39,7 +45,7 @@ __global__ void __launch_bounds__(kFoldThreads + 32 * WARPS, 1)
   const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
   const uint32_t base = lab::smem(smem), ready = base + kBarsAt, freed = ready + 16;
 #pragma unroll 1
-  for (int i = tid; i < kScratchAt / 4 + 32; i += blockDim.x) reinterpret_cast<uint32_t*>(smem)[i] = 0u;
+  for (int i = tid; i < kBarsAt / 4; i += blockDim.x) reinterpret_cast<uint32_t*>(smem)[i] = 0u;
   if (tid == 0) {
 #pragma unroll
     for (int p = 0; p < 2; ++p) {
@@ -57,15 +63,21 @@ __global__ void __launch_bounds__(kFoldThreads + 32 * WARPS, 1)
     const int mine = warp - kFoldThreads / 32;
     constexpr int kBatches = kChunk / WARPS / kBatch;
     static_assert(kBatches % 2 == 0);
-    uint32_t* const scratch = reinterpret_cast<uint32_t*>(smem + kScratchAt) + lane;
-    uint32_t value[2][kBatch], bytes[2][kBatch];
-    //: an entry's value words and its token's dense bytes for the box (a lane a word of the 16 bytes)
+    uint32_t value[2][kBatch], bytes[2][kBatch / 4];
+    //: an entry's value words, a row an instruction; and the dense bytes of FOUR entries' tokens an instruction, 8
+    //: lanes an entry, a lane a word of its token's 16 bytes
     const auto load = [&](int h, int batch) {
 #pragma unroll
       for (int i = 0; i < kBatch; ++i) {
         const uint32_t t = token_of(blockIdx.x, mine + WARPS * (batch * kBatch + i));
         value[h][i] = values[static_cast<long long>(t) * kRowWords + lane];
-        bytes[h][i] = dense[static_cast<long long>(t) * (kLeaves / 4) + (lane >> 1 & 3)];
+      }
+#pragma unroll
+      for (int q = 0; q < kBatch / 4; ++q) {
+        const int i = lane >> 4 ? (lane >> 3 & 1 ? coef_entry(WARPS, 3, q) : coef_entry(WARPS, 2, q))
+                                : (lane >> 3 & 1 ? coef_entry(WARPS, 1, q) : coef_entry(WARPS, 0, q));
+        const uint32_t t = token_of(blockIdx.x, mine + WARPS * (batch * kBatch + i));
+        bytes[h][q] = dense[static_cast<long long>(t) * (kLeaves / 4) + (lane >> 1 & 3)];
       }
     };
     load(0, 0);
@@ -81,17 +93,24 @@ __global__ void __launch_bounds__(kFoldThreads + 32 * WARPS, 1)
 #pragma unroll
           for (int i = 0; i < kBatch; ++i) {
             const int e = mine + WARPS * ((b + h) * kBatch + i);
-            const uint32_t t = token_of(blockIdx.x, c * kChunk + e);
             //: entry `e` of the chunk: list `e / 16` of its four, token `e % 16` of the step
             uint8_t* const tile = smem + ((c & 1) * kChunkLists + e / kEntries) * kTile;
             const uint32_t at = (lane >> 2) * kBrick + (e % kEntries) * 16 + (lane & 3) * 4;
             *reinterpret_cast<uint32_t*>(tile + at) = value[h][i];
-            //: lane `l` under 8 holds leaves `2 l` and `2 l + 1`: its two bytes times the entry's, as bf16
-            const uint32_t pair = bytes[h][i] >> (16 * (lane & 1));
+          }
+#pragma unroll
+          for (int q = 0; q < kBatch / 4; ++q) {
+            const int i = lane >> 4 ? (lane >> 3 & 1 ? coef_entry(WARPS, 3, q) : coef_entry(WARPS, 2, q))
+                                    : (lane >> 3 & 1 ? coef_entry(WARPS, 1, q) : coef_entry(WARPS, 0, q));
+            const int e = mine + WARPS * ((b + h) * kBatch + i);
+            const uint32_t t = token_of(blockIdx.x, c * kChunk + e);
+            uint8_t* const tile = smem + ((c & 1) * kChunkLists + e / kEntries) * kTile + kValueTile;
+            //: lane `l` of its entry's 8 holds leaves `2 l` and `2 l + 1`: its two bytes times the entry's, as bf16
+            const uint32_t pair = bytes[h][q] >> (16 * (lane & 1));
             const float weight = static_cast<float>(sparse_of(t));
-            const uint32_t coef = lab::bf16x2_trunc(weight * static_cast<float>(pair & 255u),
+            const uint32_t coef = lab::bf16x2_round(weight * static_cast<float>(pair & 255u),
                                                     weight * static_cast<float>(pair >> 8 & 255u));
-            *(lane < 8 ? reinterpret_cast<uint32_t*>(tile + kValueTile + at) : scratch) = coef;
+            *reinterpret_cast<uint32_t*>(tile + (lane >> 2 & 1) * kBrick + (e % kEntries) * 16 + (lane & 3) * 4) = coef;
           }
           load(h, c * kBatches + b + h + 2);
         }
@@ -191,7 +210,7 @@ int main(int argc, char** argv) {
     for (int folds = 0; folds < 2; ++folds) {
       const std::string k = lab::kernel("fill", {folds, warps});
       b.expect(k, "HGMMA", "==", folds ? kLists : 0);
-      b.expect(k, "LDG", ">=", 4 * kBatch);
+      b.expect(k, "LDG", ">=", 2 * kBatch + kBatch / 2);
       b.exempt(k, "a fill probe: the producers' loads and stores beside the fold's steps, no kernel's step");
       b.expect(k, "LOOP_CONVERGENCE", "<=", 8);
       b.expect(k, "BSSY", ">=", 0);
