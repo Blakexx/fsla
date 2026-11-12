@@ -46,14 +46,14 @@ row says, 65,536 tokens, no cluster unless the row says; SM-cycles a token, low 
 |---|---|---|---|---|---|---|
 | 256 x 256, read sparse on level 2, write on level 1; boxes 16 x 16 | 58.2 / 58.2 | 32, 189 | 1,176 to 2,726 | 1,051, 110 | 2,585 to 4,135 | 0.7 to 1.1 ms |
 | ... boxes 64 x 4 | 15.6 / 175.0 | 32, 758 | 316 to 731 | 1,051, 439 | 2,622 to 3,038 | 723 to 838 us |
-| ... boxes 256 x 1 (the whole read-dense level) | 4.0 / 256.0 | 32, 3,031 | 80 to 186 | 1,051, 1,756 | 5,977 to 6,083 | 1.6 to 1.7 ms |
+| ... boxes 256 x 1 (the whole read-dense level) | 4.0 / 256.0 | 32, 3,030 | 80 to 186 | 1,051, 1,756 | 5,977 to 6,083 | 1.6 to 1.7 ms |
 | ... boxes 16 x 16, `--cluster 16 1 --sum slots` | 58.2 / 58.2 | 32, 189 | 7,565 to 7,662 | 66 to 1,051, 110 | 7,989 to 9,071 | 2.2 to 2.5 ms |
 | 256 x 256, BOTH sides sparse on level 2; boxes 256 x 1 | 4.0 / 4.0 | 32, 47 | 80 to 186 | 130, 7 | 324 to 430 | 89 to 119 us |
-| 256 x 256, read sparse on level 2, write DENSE; boxes 256 x 1 | 4.0 / 256.0 | 32, 3,031 | 80 to 186 | 1,051, 439 | 5,525 to 5,630 | 1.5 to 1.6 ms |
+| 256 x 256, read sparse on level 2, write DENSE; boxes 256 x 1 | 4.0 / 256.0 | 32, 3,030 | 80 to 186 | 1,051, 439 | 5,524 to 5,630 | 1.5 to 1.6 ms |
 | 64 x 64 (4,096 leaves), sparse on opposite levels; boxes 16 x 16 | 10.9 / 10.9 | 8, 47 | 221 to 512 | 66, 27 | 376 to 667 | 104 to 184 us |
 | 16^4, two sparse levels a side (2 live digits), boxes 4^4 | 49.0 / 49.0 | 128, 758 | 989 to 2,293 | 1,051, 439 | 3,392 to 4,696 | 0.9 to 1.3 ms |
 | 512 x 512 (262,144 leaves), sparse on opposite levels; boxes 16 x 16 | 122.1 / 122.1 | 64, 379 | 2,466 to 5,715 | 4,006, 220 | 7,189 to 10,439 | 2.0 to 2.9 ms |
-| 256 x 256 dense on both sides; boxes 16 x 16 | 256.0 / 256.0 | 2,049, 12,122 | 5,169 to 11,981 | 1,051, 7,026 | 29,172 to 35,985 | 8.0 to 9.9 ms |
+| 256 x 256 dense on both sides; boxes 16 x 16 | 256.0 / 256.0 | 2,049, 12,121 | 5,169 to 11,981 | 1,051, 7,026 | 29,171 to 35,983 | 8.0 to 9.9 ms |
 
 FlashAttention's tensor floor at the same 65,536 tokens and width is 2,049 SM-cycles a token, 565 us the call; at
 1,048,576 tokens it is 16 times that a token, and a 256 x 256 row's counts a token do not move (its rates were read

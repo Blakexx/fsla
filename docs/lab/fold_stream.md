@@ -33,7 +33,28 @@ cache, so the larger table is a stream the cache cannot keep, not a cold load a 
 
 A FINDING OF THE COMPILER: a step under a branch on a loaded count compiles (ptxas C7520) to SERIALIZED wgmmas.
 
-UNMEASURED IN THIS FORM: no card has run it.
+MEASURED (H100 SXM, 132 SMs, vast.ai instance 60288185, driver 615.71.09; 2026-11-12, the experiment at
+0861220a; 7 repetitions, the state exact after 4,096 tokens in every `together` form; SM-cycles a token a
+CTA, the median, the spread under 0.7%):
 
-Record: `measure/lab/results/fold_stream/sm_90a.json` (the experiment at 9eed68e9: its two batches rotated by copies,
-its group producer under a branch).
+| the form | the fold alone | the producers alone | together | together, the larger table |
+|---|---|---|---|---|
+| steps of 64 leaves, 4 producers (one a group) | 11.8 | 156.8 | 164.9 | 165.0 |
+| steps of 256 leaves, 1 producer | 11.5 | 75.9 | 83.5 | 92.1 |
+| steps of 256 leaves, 4 producers | 11.5 | 23.0 | 28.9 | 28.8 |
+
+WHAT IT SHOWS.
+- THE ONE-PASS FILL IS CORRECT at both widths, and the transposed operands are laid out as CUTLASS's descriptors
+  say.
+- A STEP'S TIME GROWS WITH ITS COLUMNS ONLY PAST 64: a chunk's steps cost 47 cycles each at 64 columns (16 a
+  chunk) and 185 at 256 (4 a chunk), the same 11.5 to 11.8 a token. A token in a list of a box is a sixteenth
+  of a step, and a wider step spends the same time on more columns. A step narrower than 64 is not in this record.
+- FOUR PRODUCERS BY RESIDUE SCALE (76 to 23); A PRODUCER A GROUP DOES NOT PAY (157): each of the four looks at
+  every token, loads every value and stores a row of 64 coefficients, where the one-group form stores four words.
+- THE CHEAPEST FORM IS 29 CYCLES A TOKEN A CTA, the producers' 23 and the fold's 11.5 overlapping. Lanes 4 to 31 of a
+  row's store land on a scratch word that shares banks with the row: the producers' number holds that conflict.
+- A box every token writes is visited by every token: on a card of 128 such CTAs, 29 cycles a visit is 3,700
+  SM-cycles a token, and the fold's 11.5 alone 1,477.
+- THE TABLE'S SIZE DOES NOT MOVE THE FOUR-PRODUCER FORM: every CTA reads the same line, fetched from memory once.
+
+Record: `measure/lab/results/fold_stream/sm_90a.json`.
