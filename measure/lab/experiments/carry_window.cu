@@ -5,7 +5,7 @@
 // registers. TWO PRODUCER warps, one a box, fill a slot's 8 lists of 16 entries from scattered rows (`pool_fill`'s
 // form, one batch in registers) and the fold runs the slot's 8 steps. A window is a box's 256 entries, and 256
 // tokens read the pair: each fold warpgroup PUBLISHES its state as a bf16 image, 16 tiles, a group of 4 behind the
-// readout. ONE READOUT warpgroup takes a chunk of 4 read digits of 16 tokens, a digit a warp's rows: a warp
+// readout, a line a channel's 8 fold digits: 4 stores of 16 bytes a thread a group. ONE READOUT warpgroup takes a chunk of 4 read digits of 16 tokens, a digit a warp's rows: a warp
 // expands its tokens' coefficients from their rows' bytes IN ITS REGISTERS, and they are the A operand of the
 // digit's step on each box's image tile, its B; one accumulator holds the chunk's 64 tokens by 64 channels, and
 // the readout stores each token's row to a panel as the f16 pairs its line holds. TWO DRAIN warps add each
@@ -16,7 +16,7 @@
 // by the instruction that may suspend its thread, where the others poll. With both sides and no access out, the
 // state and every output row are checked exactly, and a long call's span over its wall time reads the card's clock.
 // TIMELINE: a fold warpgroup's trip is a window: the image a tile group at a time, four -- the wait on the
-// readout's read of that group a window back, 32 stores a thread and their fence, the group's arrival -- then a
+// readout's read of that group a window back, 4 stores a thread and their fence, the group's arrival -- then a
 // slot twice: the wait on its producer, the fence, 8 steps, the commit and its wait, the slot freed. A producer's
 // trip is a batch of 32 entries, a slot four of them: the batch's stores and multiplies (its words loaded a trip
 // before), then the same registers' loads for the next batch; a slot on, the fence and the arrival. The
@@ -49,7 +49,8 @@ static_assert(kThreads * kEntryRegs == 65536
 
 //: A POOL TILE (the fold's operands a list), M|N-major: 8 bricks of values and 2 of coefficients, a brick 17 lines
 constexpr int kBrick = 17 * 16, kValueTile = 8 * kBrick, kTile = 10 * kBrick, kPoolBytes = kSlotLists * kTile;
-//: AN IMAGE TILE (the readout's operand a read digit): a line a fold digit's 8 channels, bricks 17 lines, tiles 137
+//: AN IMAGE TILE (the readout's operand a read digit), K-major: a line a channel's 8 fold digits -- one fold
+//: thread's own values, a store -- a brick 8 channels' low digits then their high, bricks 17 lines, tiles 137
 constexpr int kBrickLines = 17, kImageTile = 137 * 16, kBoxBytes = kLists * kImageTile;
 //: a panel row: a token's 64 f16 as its line will be added, rows 272 bytes apart
 constexpr int kChunkDigits = 4, kTokens = 16 * kChunkDigits, kChunks = kLists / kChunkDigits, kRowBytes = 272,
@@ -118,9 +119,9 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
   //: a list's first step writes its accumulator whole: nothing is cleared (a cleared one in a role's branch
   //: serializes the steps, ptxas C7520)
   float d[kLists][8];
-  //: a thread's base into its box's image: every store is this plus a constant of (fold digit, column, row)
+  //: a thread's base into its box's image: every store is this plus a constant of (tile, row, half)
   uint8_t* const mine = smem + lab::held(static_cast<uint32_t>(kImageAt + box * kBoxBytes + 2 * t * kImageTile
-                                                               + 16 * (2 * warp * kBrickLines) + 2 * q));
+                                                               + 16 * (2 * warp * kBrickLines + q)));
   if constexpr (!(ROLES & kFold)) {
     //: no fold writes the state: one group of steps gives every accumulator a value to publish
     lab::wg_fence();
@@ -136,19 +137,25 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
 #pragma unroll 1
   for (int w = 0; w < windows; ++w) {
     if constexpr (ROLES & kRead) {
-      //: THE IMAGE, a tile group at a time behind the readout: value (channel m, fold digit a) of read digit b to
-      //: tile b, line `(m / 8) 17 + a`, slot `m % 8`, once the readout has read that group of the window before.
+      //: THE IMAGE, a tile group at a time behind the readout: channel m's fold digits `8 h` to `8 h + 7` of read
+      //: digit b truncated to one line of tile b, `(m / 8) 17 + m % 8 + 8 h`, once the readout has read that group
+      //: of the window before: 4 stores a thread a group.
       //: The first window's image is the cleared shared memory: the state is zero
 #pragma unroll
       for (int k = 0; k < kChunks; ++k) {
         if (w > 0) waited<ROLES>(bars + kTilesRead + 8 * k, (w - 1) & 1, on_read);
         if (w > 0 && !(ROLES & kNoImage)) {
 #pragma unroll
-          for (int a = 0; a < kLists; ++a)
+          for (int r = 0; r < 2; ++r)
 #pragma unroll
-            for (int r = 0; r < 2; ++r)
-              *reinterpret_cast<uint16_t*>(mine + (8 * (k >> 1) + (k & 1)) * kImageTile + 16 * a + 16 * r * kBrickLines)
-                  = static_cast<uint16_t>(__float_as_uint(d[a][(k & 1) | r << 1 | (k >> 1) << 2]) >> 16);
+            for (int h = 0; h < 2; ++h) {
+              const int i = (k & 1) | r << 1 | (k >> 1) << 2;
+              uint32_t pair[4];
+#pragma unroll
+              for (int j = 0; j < 4; ++j) pair[j] = lab::bf16x2_trunc(d[8 * h + 2 * j][i], d[8 * h + 2 * j + 1][i]);
+              *reinterpret_cast<uint4*>(mine + (8 * (k >> 1) + (k & 1)) * kImageTile + 16 * (r * kBrickLines + 8 * h)) =
+                  make_uint4(pair[0], pair[1], pair[2], pair[3]);
+            }
         }
         lab::bulk_fence();
         __syncwarp();
@@ -327,7 +334,7 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       for (int j = 0; j < kChunkDigits; ++j)
 #pragma unroll
         for (int box = 0; box < 2; ++box)
-          lab::wg_bf16_n64_rs_mn(d, rows[j][box],
+          lab::wg_bf16_n64_rs(d, rows[j][box],
                                  lab::wg_desc(images + box * kBoxBytes + 2 * j * kImageTile, 8, kBrickLines),
                                  j != 0 || box != 0);
       lab::wg_commit();

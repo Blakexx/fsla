@@ -329,13 +329,13 @@ __device__ __forceinline__ void wg_bf16_n256_ss_mn(float (&d)[128], uint64_t a, 
 }
 
 //: the same with A from the warpgroup's registers: a thread's 8 bf16 of A as 4 words, in the layout of an m64n16
-//: accumulator's 8 fp32 (word `j` its values `2j`, `2j + 1`)
-__device__ __forceinline__ void wg_bf16_n64_rs(float (&d)[32], const uint32_t (&a)[4], uint64_t b) {
+//: accumulator's 8 fp32 (word `j` its values `2j`, `2j + 1`); `d` added to, or written whole
+__device__ __forceinline__ void wg_bf16_n64_rs(float (&d)[32], const uint32_t (&a)[4], uint64_t b, bool add = true) {
   asm volatile("{ .reg .pred p; setp.ne.b32 p, %37, 0;\n"
                "wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16 " LAB_WG_D32_LIST
                ", {%32, %33, %34, %35}, %36, p, 1, 1, 0; }"
                : LAB_WG_D32(d)
-               : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "l"(b), "r"(1));
+               : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "l"(b), "r"(static_cast<int>(add)));
 }
 
 //: A from the warpgroup's registers and B M|N-major (a line is one K's 8 columns of a brick): `d` += A [64 x 16]

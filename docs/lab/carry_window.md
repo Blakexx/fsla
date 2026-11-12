@@ -9,7 +9,9 @@ cost a CTA when they run TOGETHER, under one register file, one tensor pipe and 
 
 THE FORM. A CTA an SM of four warpgroups, 512 threads.
 - TWO FOLD warpgroups, a 16 × 16 box each, its state 16 accumulators in registers. Each PUBLISHES its state as a
-  bf16 image of 16 tiles (the first window's is cleared memory), a group of 4 tiles at a time, each once the readout
+  bf16 image of 16 tiles (the first window's is cleared memory), K-MAJOR -- a line of a tile is one channel's 8
+  fold digits, one fold thread's own values, so a thread stores a tile group as 4 lines of 16 bytes (the record
+  below is of the form before it: a line a fold digit's 8 channels, 32 stores of two bytes) -- a group of 4 tiles at a time, each once the readout
   has read that group of the window before: the readout reads a window's first groups while its last are
   published. Then, a slot of 8 lists at a time, it runs the slot's 8 steps on the tiles its producer filled.
 - TWO PRODUCER warps, one a box, fill a slot's 8 lists of 16 entries from scattered rows, four entries a value
