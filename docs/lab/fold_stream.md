@@ -8,49 +8,30 @@ list needs each token's value copied into list order, which [`carry_floor`](../i
 prices as the form's largest term. Can the fold instead be fed by ONE PASS over the tokens -- no list, no rank, no
 look back -- and what does a token then cost a CTA, the producer's work beside the fold's?
 
-THE FORM. A CTA an SM: one producer warp and one fold warpgroup that holds the box's state, 256 leaves × 64
-channels, as 32 accumulators of 8 leaves (`m64n8k16`).
-- THE PRODUCER walks the tokens in order, 8 at a time into registers by one coalesced 128-byte load a token. For
-  each of a token's 4 leaves it stores the value into the leaf's group's tile at the group's fill count, and the
-  token's row of 8 coefficients (one of them its own) beside it. Both operands are M|N-major, so a value is one
-  4-byte store a lane on 32 banks and a row is one 16-byte line.
-- THE FOLD, a chunk of 128 tokens behind: it sweeps the 32 groups with a step each and no branch -- on the group's
-  tile if it filled, else on a tile of zeros. A step under a branch on a loaded count compiles (ptxas C7520) to
-  SERIALIZED wgmmas; the select of an address does not.
-- A group holds two tiles, so the producer fills one while the fold reads the other.
-The lab's tokens give every group exactly a step's 16 arrivals a chunk; arrivals that vary would run some steps on
-the zeros and are not in this experiment. Variants: the producer alone, the fold alone, both (the state checked
-exactly, after 4,096 tokens). The tokens' values come from a table every CTA reads, one the cache holds (65,536
-tokens, 8 MB) or does not (1,048,576 tokens, 128 MB).
+THE FORM. A CTA an SM: producer warps and one fold warpgroup that holds the box's state, 256 leaves × 64 channels,
+as accumulators of WIDE leaves. Both operands are M|N-major with bricks 17 lines apart, so a token's value is one
+4-byte store a lane on 32 banks, and so is a row of 64 coefficients.
+- STEPS OF 64 LEAVES, four groups, A PRODUCER A GROUP: a producer looks at every token, and where a token's leaves
+  fall in its group it loads the value (128 bytes, coalesced), stores it at its own running count, and stores the
+  token's row of 64 coefficients beside it. The count is the producer's own register.
+- STEPS OF ALL 256 LEAVES, one group, ONE PRODUCER OR FOUR: a token's slot is its index, so there is no count. A
+  producer takes the tokens of its residue: it stores the value, clears the 4 words the slot's last token set in the
+  row, and sets its own 4. The step's zeros do the placing.
+- THE FOLD, a chunk of 64 tokens behind: the chunk's 4 steps a group in one commit group, with no branch. The
+  producers hand a chunk over by an arrival each at a barrier, after a fence; the fold frees its tiles by another.
+The lab's tokens put one leaf in each quarter of the box, so every group of 64 takes every token and every tile
+fills exactly: arrivals that vary need a group's own back-pressure and steps on empty tiles, and NEITHER IS IN THIS
+EXPERIMENT -- a group here holds two chunks of tiles and no more. Variants: the producers alone, the fold alone,
+both (the state checked exactly, after 4,096 tokens). The values come from a table every CTA reads in step, of
+65,536 tokens (8 MB) or 1,048,576 (128 MB): a line is fetched from memory once and read by the other CTAs from the
+cache, so the larger table is a stream the cache cannot keep, not a cold load a CTA.
 
-WHAT THE SASS SAYS (sm_90a, the pinned toolkit; no device): the producer's 8 tokens are 8 `LDG`, no stack memory;
-a token's 4 leaves are 4 value stores, 4 row stores and 4 fill counts; the sweep is 32 `HGMMA` in one commit group.
+A FINDING OF THE COMPILER: a step under a branch on a loaded count compiles (ptxas C7520) to SERIALIZED wgmmas.
 
-MEASURED (H100 SXM, 132 SMs, vast.ai instance 60284495, driver 615.71.09; 2026-11-11, the experiment at 342fc132;
-7 repetitions, the state exact after 4,096 tokens at both tables; SM-cycles a token a CTA, the median, the spread
-under 0.2% but the fold alone's 4.3%):
+UNMEASURED IN THIS FORM. The record is the experiment's earlier form at 342fc132 -- 32 groups of 8 leaves, one
+producer of about 110 instructions a token with its fill counts in shared memory (H100 SXM, vast.ai instance
+60284495, the state exact; SM-cycles a token a CTA): the fold alone 9.1, 36 cycles a chunk's step; the producer
+alone 550.9; together 557.8 (599.5 from the larger table). That form's sweep was one total: it does not separate a
+narrow step's own time from what else a sweep of 32 steps holds.
 
-| the form | a table of 65,536 tokens | of 1,048,576 |
-|---|---|---|
-| the fold alone | 9.1 | |
-| the producer alone | 550.9 | 595.7 |
-| the producer and the fold together | 557.8 | 599.5 |
-
-WHAT IT SHOWS.
-- THE ONE-PASS FILL IS CORRECT, and the transposed operands are laid out as CUTLASS's descriptors say: every state
-  value is exact.
-- AN 8-COLUMN STEP COSTS WHAT A 64-COLUMN ONE DOES. The fold alone is 9.1 cycles a token: 32 steps a 128-token
-  chunk, 36 cycles a step, beside the 32 [`wgmma_rate`](wgmma_rate.md) read for `m64n64k16`. A step's time is a
-  step's, not its columns': narrowing a step to skip a sparse row's zeros buys no tensor time, and
-  [`carry_floor`](../internals/tools/carry_floor.md)'s padded steps, priced by their products, are too cheap by the
-  ratio of the widths.
-- THIS PRODUCER IS TWO ORDERS OVER ITS BUDGET: 551 cycles a token for one warp. It is about 110 instructions a
-  token as compiled, a lone warp, a fill count read and written through shared memory at every leaf, and a
-  one-lane branch at every store (36 divergent regions a batch of 8). No part of that is a floor. What the number
-  does settle is the budget's scale: a box every token writes is visited by every token, so on a card of such boxes
-  a cycle a token a CTA is a hundred and more SM-cycles a token, and a producer of any per-token work in warp
-  instructions is tens of them.
-- THE PRODUCER HIDES THE FOLD: together is the producer's time plus 7 cycles (1.3%), not plus 9.
-- A TABLE THE CACHE CANNOT HOLD costs the producer 8% more.
-
-Record: `measure/lab/results/fold_stream/sm_90a.json`.
+Record: `measure/lab/results/fold_stream/sm_90a.json` (the experiment at 342fc132).

@@ -1433,7 +1433,6 @@
   {"doc": "docs/lab/facts_two.md", "pinned_at": "83d7b4df5928", "reviewed": true, "sha256": "", "target": "measure/lab/results/facts_two/sm_86.json"},
   {"doc": "docs/lab/fold_stream.md", "pinned_at": "84cfaa2d28bc", "reviewed": true, "sha256": "", "target": "docs/internals/tools/carry_floor.md"},
   {"doc": "docs/lab/fold_stream.md", "pinned_at": "84cfaa2d28bc", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
-  {"doc": "docs/lab/fold_stream.md", "pinned_at": "342fc1329154", "reviewed": true, "sha256": "", "target": "docs/lab/wgmma_rate.md"},
   {"doc": "docs/lab/fold_stream.md", "pinned_at": "84cfaa2d28bc", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/fold_stream.cu"},
   {"doc": "docs/lab/fold_stream.md", "pinned_at": "342fc1329154", "reviewed": true, "sha256": "", "target": "measure/lab/results/fold_stream/sm_90a.json"},
   {"doc": "docs/lab/issue_latency.md", "pinned_at": "8724089863b8", "reviewed": true, "sha256": "", "target": "csrc/rola/src/common/hardware.json::latency"},
