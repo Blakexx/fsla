@@ -31,6 +31,10 @@ rounds, a window `W` at a time:
   `norm` -- no bound from the state at all: a box's num over its CLUSTER'S den for the token is a share of a weighted
   average of values, under the call's largest value scale; the cluster's shares are summed as integers at that one
   scale, turned back and multiplied by the cluster's den, and the clusters summed in fp32.
+  AS f16 (`sum f16 <bound>`, the same five bounds): a box's partial scaled by the power of two that puts its bound
+  under 2^13, rounded to f16, and the boxes ADDED IN f16, each add rounded -- every box into one sum for the first
+  three bounds, a cluster's boxes into its sum for the last two and the clusters in fp32. A box a term: a CTA that
+  adds its boxes in fp32 first rounds fewer.
   `--scale-spread B` raises the tokens' write scales by B binades over the call, `--value-spread B` their value
   scales, `--leaf-spread B` spreads the write scales over the leaves of a cluster and `--spike B` raises the call's first 16
   tokens' by B binades, to stress the scales.
@@ -94,6 +98,27 @@ def _prove_truth(reads, writes, u, s, topology, y64, tokens: int) -> None:
 
 #: the integer sums modelled: (bits, the bound's form)
 INT_SUMS = tuple((bits, form) for bits in (32, 64) for form in ("call", "coarse", "running", "state", "planned"))
+#: the bounds an f16 sum is modelled under, and the binade its bound is scaled to (f16's largest is under 2^16)
+F16_SUMS = ("call", "coarse", "running", "state", "planned")
+F16_TOP = 13
+
+
+def _f16(x):
+    import torch
+
+    return x.to(torch.float16).to(torch.float64)
+
+
+def _as_f16(partials, bound):
+    """`partials` rounded to f16 at the power of two that puts `bound` under `2^F16_TOP` -- `bound` `[..., 2]` (num,
+    den) broadcast over the leading axes -- and that scale `[..., 1, d_v + 1]`. A zero bound holds zeros."""
+    import torch
+
+    d_v = partials.shape[-1] - 1
+    scale = torch.where(bound > 0, 2.0 ** (F16_TOP - torch.ceil(torch.log2(bound.clamp_min(1e-300)))),
+                        torch.zeros_like(bound))
+    scale = torch.cat((scale[..., :1].expand(*scale.shape[:-1], d_v), scale[..., 1:]), dim=-1)[..., None, :]
+    return _f16(partials * scale), scale
 
 
 def _as_integers(partials, bound, bits: int):
@@ -134,6 +159,26 @@ def _sums(partials, cluster: int, bounds: dict) -> dict:
             for part in parts:
                 total = _fp32(total + part)
             out[f"sum s{bits} {form}"] = total
+    #: AS f16, EACH ADD ROUNDED (an atomic add of f16 into global memory): every box into one sum at one scale, or
+    #: a cluster's boxes into its sum at the cluster's scale and the clusters in fp32
+    for form in F16_SUMS:
+        bound = bounds[form]
+        if bound.dim() == 1:
+            halves, scale = _as_f16(partials, bound)
+            summed = torch.zeros_like(partials[0])
+            for half in halves:
+                summed = _f16(summed + half)
+            out[f"sum f16 {form}"] = _fp32(torch.where(scale > 0, summed / scale.clamp_min(1e-300), torch.zeros_like(summed)))
+        else:
+            halves, scale = _as_f16(grouped, bound[:, None, :])
+            summed = torch.zeros_like(grouped[:, 0])
+            for k in range(cluster):
+                summed = _f16(summed + halves[:, k])
+            parts = _fp32(torch.where(scale[:, 0] > 0, summed / scale[:, 0].clamp_min(1e-300), torch.zeros_like(summed)))
+            total = torch.zeros_like(partials[0])
+            for part in parts:
+                total = _fp32(total + part)
+            out[f"sum f16 {form}"] = total
     #: NORMALIZED IN THE CLUSTER: each box's num over the cluster's den for the token (the boxes' den partials summed
     #: in fp32) is a share of a weighted average of values, so it sits under the call's largest value scale -- the one
     #: scale, `bounds["norm"]`, known before the launch. The cluster's integers summed, back to fp32, times its den;
@@ -216,7 +261,8 @@ def model(name: str, window: int, head: int, shape: tuple[int, int], along: int,
         writes[0] = (writes[0][0], writes[0][1] * 2.0 ** torch.round(-leaf_spread * digit))
     m = torch.stack([scale for _, scale in writes]).prod(dim=0)             # the write scale, [T]
     variants = {"all": set(SOURCES), **{src: {src} for src in SOURCES}, "none": set()}
-    sum_keys = ("sum fp32", *(f"sum s{bits} {form}" for bits, form in INT_SUMS), "sum s32 norm", "sum s64 norm")
+    sum_keys = ("sum fp32", *(f"sum s{bits} {form}" for bits, form in INT_SUMS),
+                *(f"sum f16 {form}" for form in F16_SUMS), "sum s32 norm", "sum s64 norm")
     if len(widths) != 2:
         raise SystemExit(f"{name}: the box sums are modelled at two levels")
     #: THE BOXES: `shape[l]` digits of level `l` each; a CLUSTER is the boxes sharing one range of level `along`,

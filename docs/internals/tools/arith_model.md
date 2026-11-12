@@ -76,3 +76,21 @@ bound gives out at a spike near 2^40 where later tokens' reads miss the spike's 
 whose every reader meets every writer); the cluster's state scale holds to a spike or a leaf spread near 2^48; the
 normalized sum holds everywhere but a value-scale spread near 2^48. A token of nl64k-alt-k4 reads 3.66 of its
 clusters.
+
+<a id="f16"></a>THE SUM AS f16 (`sum f16 <bound>`; 2026-11-11, nl64k-alt-k4, boxes 16 x 16, clusters of 16 boxes along
+level 0, one box a term; a token's relative error, median / 99th percentile / largest). The family's every other
+rounding together is 0.115% / 0.174% / 0.267% on this cell, and the fp32 sum alone 0.000015%.
+
+| the sum | no stress | scales spread 2^24 | values spread 2^24 | leaves spread 2^24 | a spike of 2^24 |
+|---|---|---|---|---|---|
+| f16 in a cluster at its `planned` bound, the clusters in fp32 | 0.023 / 0.034 / 0.047% | 0.019 / 0.029 / 0.038% | 0.020 / 0.031 / 0.045% | 0.023 / 0.033 / 0.048% | 0.025 / 0.038 / 0.054% |
+| the same at the cluster's `state` bound | the same | the same | the same | the same | the same |
+| f16, every box into one sum, the `coarse` bound | 0.118 / 0.263 / 0.478% | 0.095 / 0.212 / 0.388% | 0.110 / 0.259 / 0.470% | 0.118 / 0.264 / 0.479% | 0.121 / 0.269 / 0.531% |
+
+WHAT IT SHOWS. A cluster's few partials added in f16 and the clusters merged in fp32 cost a fifth of the family's
+own error, under every stress, and a bound that only counts what could have been written into the cluster
+(`planned`: the write mass so far, no state read) does exactly as well as the state's own magnitude -- f16's
+exponent takes the slack. EVERY box of a token into ONE f16 sum costs as much as the rest of the family together
+(58 rounded adds a token here), and with the call-wide bound more (0.174 / 0.539 / 1.25%, no stress): the f16 sum is
+a group's, not the call's. Not modelled: a CTA adding its boxes in fp32 before its one f16 add (fewer rounded adds),
+the den's column kept apart from the num's, and cells other than this one.
