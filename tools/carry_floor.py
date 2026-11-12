@@ -23,20 +23,20 @@ its reason):
 - the readout's operand: its (token, leaf) coefficients expanded into shared memory, at the SM's shared access rate
   (`byte_expand`, its bank-spread form);
 - the output's sum: by default (`--sum none`) every box drains its own partial to global memory (`drain_rate`:
-  from rows no other CTA adds into, to rows spread over a window that every CTA shares), and a cluster changes
-  nothing. Summed in a cluster first by one of two forms, it is then one fp32 drain a (token, cluster read). Both
+  from rows no other CTA adds into, to rows spread over a window that every CTA shares), and a cluster with no
+  sum is refused. Summed in a cluster first by one of two forms, it is then one fp32 drain a (token, cluster read). Both
   forms are MEASURED (`cluster_sum`, eight collectors a cluster, its rows at two round sizes split into a cost a
   round and a cost a token), and neither pays: `slots`, the fp32 sum the format states -- a box's partial staged and
   sent by a bulk copy into its own slot of a collector, which adds a token's slots; `s64` -- the partial as 64-bit
   integers by a bulk reduction into the collector's panel, outside the fp32 the format states, counted for
   comparison. A cluster's CTAs hand over once a ROUND of `--round` partials a CTA, and the round's cost is its own
   term (beyond 64 partials a round it is the line's, UNMEASURED);
-- the fold's operands: its (token, leaf) coefficients into shared memory, and its values loaded once a (token,
-  box) it writes into, at the cheaper of two MEASURED rates: its share of the window's whole value tile loaded
-  packed (`state_move`; every token's bytes, so a box few tokens write pays for the rest), or the warps' own load
-  of its scattered row (`value_gather`). A cluster shares neither: a multicast copy costs each CTA what its own
-  does (`value_cast`). Then the values gathered into list order in shared memory, a (token, list) of a box,
-  ESTIMATED at the shared access rate (no lab has read that copy);
+- the fold's operands, the cheaper of two forms. LISTED: a (token, list, box) entry's value and coefficients
+  fetched from scattered rows into the list's tiles by producer warps, MEASURED whole (`pool_fill`, at 16 leaves a
+  list; other widths priced the same, UNMEASURED). TILED: every box takes the window's whole value tile packed
+  (`state_move`; every token's bytes), expands its coefficients into shared memory and gathers the values into
+  list order (that copy ESTIMATED at the shared access rate; no lab has read it). A cluster shares no load: a
+  multicast copy costs each CTA what its own does (`value_cast`);
 - the state in and out, a call (24-bit state, at a memory bandwidth).
 
 NOT COUNTED: the hand-over between producer and consumer warps, the den's readout, the divergent carve's register
@@ -103,8 +103,10 @@ def measured() -> dict[str, tuple[float, str]]:
                           - median("wgmma_width", f"{n} columns, 4 steps a group")) / 4,
                          f"wgmma_width / {n} columns: a step more, from 4 a group to 8")
            for n in STEP_WIDTHS},
-        "load_row": (median("value_gather", "4 warps, a table of 65536 rows"),
-                     "value_gather / 4 warps, a table of 65536 rows (a scattered row by the warps' own loads)"),
+        "entry_low": (median("pool_fill", "the producers and the fold, 8 producers"),
+                      "pool_fill / the producers and the fold, 8 producers (an entry's value and 16 coefficients)"),
+        "entry_high": (median("pool_fill", "the producers and the fold, 2 producers"),
+                       "pool_fill / the producers and the fold, 2 producers"),
         **cluster_rates(),
     }
 
@@ -164,11 +166,13 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
     write = side(widths, write_sparse, k, box, cluster)
     rows = max(dv, MMA_ROWS)
     clustered = math.prod(cluster) > 1
+    if clustered and form == "none":
+        raise SystemExit("carry_floor: a cluster that sums nothing changes nothing (it shares no load): name its "
+                         "`--sum`, or no cluster")
     products, shared = rates["products"][0], rates["shared"][0]
     drain = (rates["drain_own"][0], rates["drain_spread"][0])
     value_requests = math.ceil(dv * 2 / 128)
-    #: `none`: every box drains its own, and a cluster changes nothing
-    summed = clustered and form != "none"
+    summed = clustered
     hop = rates[f"hop_{form}"][0] * dv * 4 if summed else 0.0
     barriers = read.boxes * rates[f"round_{form}"][0] / round_partials if summed else 0.0
 
@@ -176,12 +180,18 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
         return (x, x)
 
     drains = read.clusters if summed else read.boxes
-    #: A TOKEN'S VALUE reaches each box it writes once: as its share of the window's whole value tile, loaded packed
-    #: (every token's bytes, so a box few tokens write pays for the rest), or by the warps' own load of its row --
-    #: the cheaper. A cluster shares no load: a multicast copy costs each CTA its own (`value_cast`)
+    #: THE FOLD'S OPERANDS, the cheaper of two forms. LISTED: a (token, list, box) entry's value and coefficients
+    #: fetched from scattered rows into the list's tiles, MEASURED whole (`pool_fill`, at 16 leaves a list; other
+    #: widths are priced the same, UNMEASURED). TILED: every box takes the window's whole value tile packed (every
+    #: token's bytes), expands its coefficients, and gathers the values into list order (that copy ESTIMATED at
+    #: the shared access rate). A cluster shares no load: a multicast copy costs each CTA its own (`value_cast`)
     all_boxes = math.prod(w / b for w, b in zip(widths, box))
-    a_box = write.boxes * value_requests * min(rates["load_packed"][0] * all_boxes / write.boxes, rates["load_row"][0])
-    loads = (a_box, a_box)
+    entries = write.boxes * write.lists * value_requests
+    listed = (entries * rates["entry_low"][0], entries * rates["entry_high"][0])
+    tiled = both(all_boxes * value_requests * rates["load_packed"][0] + write.leaves * 2 / shared
+                 + write.boxes * write.lists * dv * 2 * 2 / shared)
+    operands, operands_by = ((listed, "LISTED: entry_low .. entry_high") if listed[0] <= tiled[0] else
+                             (tiled, "TILED: load_packed, shared, and the gather ESTIMATED"))
 
     #: A FOLD STEP IS PRICED BY ITS TIME (`wgmma_width`): a token in a list of a box is a sixteenth of a step as
     #: wide as the list's leaves in the box -- the narrowest measured width that holds them, whole 64-column steps
@@ -204,10 +214,7 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
         "sum: partials into the cluster": (both(read.boxes * hop), f"hop_{form}" if summed else "no cluster sum"),
         "sum: the rounds' barriers": (both(barriers), f"round_{form}" if summed else "no cluster sum"),
         "sum: drains to global memory": (tuple(drains * (dv * 4 + 4) * d for d in drain), "drain_own .. drain_spread"),
-        "fold operand, expanded": (both(write.leaves * 2 / shared), "shared"),
-        "fold values, loaded": (loads, "load_packed of the window's tile, or load_row: the cheaper a box"),
-        "fold values, gathered by list": (both(write.boxes * write.lists * dv * 2 * 2 / shared),
-                                          "ESTIMATED: shared, a read and a write a byte"),
+        "fold operands": (operands, operands_by),
     }
     total = tuple(sum(v[0][i] for v in terms.values()) for i in (0, 1))
     seconds = tuple(t * tokens / SMS / est["clock"] for t in total)

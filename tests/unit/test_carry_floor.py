@@ -32,9 +32,9 @@ def test_a_clusters_sum_moves_the_drains_and_nothing_else():
     none = carry_floor.floor(cluster=(1, 1), **ALT)["terms"]
     rows = carry_floor.floor(cluster=(16, 1), form="slots", **ALT)["terms"]
     columns = carry_floor.floor(cluster=(1, 16), form="slots", **ALT)["terms"]
-    for name in ("tensor, readout", "tensor, fold", "readout operand, expanded", "fold operand, expanded"):
+    for name in ("tensor, readout", "tensor, fold", "readout operand, expanded"):
         assert none[name] == rows[name] == columns[name]
-    drains, loads = "sum: drains to global memory", "fold values, loaded"
+    drains, loads = "sum: drains to global memory", "fold operands"
     assert rows[drains]["cycles"][0] < columns[drains]["cycles"][0] == pytest.approx(none[drains]["cycles"][0] * 16 / 58.25, rel=0.01)
     #: a cluster shares no load
     assert columns[loads] == rows[loads] == none[loads]
@@ -51,10 +51,9 @@ def test_the_cluster_forms_read_the_labs_line():
     assert longer[rounds]["cycles"][0] == pytest.approx(slots[rounds]["cycles"][0] / 8)
 
 
-def test_a_cluster_with_no_sum_changes_nothing():
-    none = carry_floor.floor(cluster=(1, 1), **ALT)["terms"]
-    clustered = carry_floor.floor(cluster=(1, 16), **ALT)["terms"]
-    assert clustered == none
+def test_a_cluster_with_no_sum_is_refused():
+    with pytest.raises(SystemExit, match="sums nothing"):
+        carry_floor.floor(cluster=(1, 16), **ALT)
 
 
 def test_a_missing_record_row_is_refused():
@@ -71,6 +70,11 @@ def test_a_box_every_token_writes_pays_its_steps_and_the_whole_tile():
     rates = carry_floor.measured()
     assert strip["tensor, fold"]["cycles"][0] == pytest.approx(256 * 4 * rates["step_8"][0] / 16)
     assert even["tensor, fold"]["cycles"][0] == pytest.approx(1024 / 16 * rates["step_16"][0] / 16, rel=0.01)
-    #: every token writes every strip: each takes the window's tile packed
-    assert strip["fold values, loaded"]["cycles"][0] == pytest.approx(256 * rates["load_packed"][0])
+    #: square boxes list their entries: 64 a token, each at the measured entry's cost
+    assert even["fold operands"]["rate"].startswith("LISTED")
+    assert even["fold operands"]["cycles"][0] == pytest.approx(1024 / 16 * rates["entry_low"][0], rel=0.01)
+    #: every token writes every strip, 4 lists each: 1,024 entries a token
+    assert strip["fold operands"]["cycles"][0] == pytest.approx(
+        min(1024 * rates["entry_low"][0], 256 * rates["load_packed"][0] + 1024 * 2 / rates["shared"][0]
+            + 1024 * 64 * 4 / rates["shared"][0]))
 
