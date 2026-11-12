@@ -32,28 +32,34 @@ both, and both with one access taken out to find what the sides contend for: the
 words made in registers), the drains' global adds (their lines folded into a sink), the image's stores. With both, the fold's state and every output row are checked exactly against the host's: the state summed in
 integers, the image its truncation to bf16, a line its rounding to f16.
 
-MEASURED (H100 SXM, 132 SMs, vast.ai instance 60332314, driver 595.91.07; 2026-11-12, the experiment at
-69bd2992; 7 repetitions, the composed row's 4,325,376 state values and 8,650,752 output values exact; the median,
-the spread under 2.2%; SM-cycles a token are the window's cycles over 8 -- 128 CTAs of two boxes, 1,024 tokens):
+MEASURED (H100 SXM, 132 SMs, vast.ai instance 60332867, driver 595.91.07; 2026-11-12, the experiment at
+e290c3dc; 7 repetitions, the composed row's 4,325,376 state values and 8,650,752 output values exact; the median,
+the spread under 3%; SM-cycles a token are the window's cycles over 8 -- 128 CTAs of two boxes, 1,024 tokens):
 
 | the row | cycles a window a CTA | SM-cycles a token |
 |---|---|---|
-| the fold's side alone: producers and steps | 4,276 | 534 |
-| the read side alone: the image, the readout and the drain | 6,672 | 834 |
-| the carry: both sides | 9,223 | 1,153 |
+| the fold's side alone: producers and steps | 4,299 | 537 |
+| the read side alone: the image, the readout and the drain | 6,679 | 835 |
+| the carry: both sides | 9,182 | 1,148 |
+| both sides, the producers' global loads taken out | 7,845 | 981 |
+| both sides, the drains' global adds taken out | 7,768 | 971 |
+| both sides, the image's stores taken out | 7,064 | 883 |
 
 WHAT IT SHOWS.
 - THE CARRY COMPOSES, EXACTLY: two boxes' folds, the image a window, one readout warpgroup over both and one f16 line
   a token, in one CTA of 512 threads at the SM's whole register file.
-- A TOKEN COSTS 1,153 SM-CYCLES COMPOSED, 0.56 of FlashAttention's tensor floor at the hardest cell (2,049,
+- A TOKEN COSTS 1,148 SM-CYCLES COMPOSED, 0.56 of FlashAttention's tensor floor at the hardest cell (2,049,
   [`carry_floor`](../internals/tools/carry_floor.md)).
-- THE TWO SIDES BARELY OVERLAP. Were they independent the window would cost the slower side's 6,672; one after the
-  other, 10,948. It costs 9,223: 16% under the sum and 38% over the slower side. What they contend for -- the
-  global path the producers' loads and the drains' adds share, the shared memory's stores, the warps' issue -- no
-  row here separates.
-- THE READ SIDE IS THE SLOWER, with two drain warps: [`readout_role`](readout_role.md) read a token at 15.6 cycles by
-  two drain warps and 12.0 by four, and the image is stored while the readout waits on it.
-- THE FOLD'S SIDE BY ONE PRODUCER A BOX is 8.4 cycles an entry (4,276 over 512), its steps included, where two
+- THE WINDOW IS THE READ SIDE'S CHAIN, SLOWED BY THE FOLD'S SIDE BESIDE IT. The read side alone is 6,679 and the
+  fold's 4,299; together 9,182, which is 38% over the read side and 16% under the two's sum. The image, the
+  readout and the drain run one after another around the window -- the image waits on the readout's last window
+  and the readout on the image -- so the fold's side fits beside that chain, and what it adds is the chain's
+  slowing.
+- EACH ACCESS TAKEN OUT GIVES BACK A PART, none the whole: the image's stores 2,118 cycles a window (they cost
+  1,102 alone, [`state_image`](state_image.md): beside the other roles' stores they cost twice that, and they sit
+  on the chain); the drains' global adds 1,413; the producers' global loads 1,337. The three are not independent
+  and are not summed.
+- THE FOLD'S SIDE BY ONE PRODUCER A BOX is 8.4 cycles an entry (4,299 over 512), its steps included, where two
   producers a box read 6.9 ([`pool_fill`](pool_fill.md)).
 
 Record: `measure/lab/results/carry_window/sm_90a.json`.

@@ -91,10 +91,10 @@ WHAT IT SHOWS. A token's cost is bytes moved and steps run, a (token, box) each;
 - THE PAIR'S ONE LINE BEATS IT: with an f16 line 925 to 1,303, between 0.45 and 0.64 of FlashAttention's floor;
   with an fp32 line 1,204 to 1,582, between 0.59 and 0.77. Its terms are each a lab's whole measurement -- the
   pair's readout, panel and f16 drain 349 to 633, the state's image 138, the fold's operands 345 to 438 and its
-  steps 80. THESE ARE ROLES MEASURED APART AND SUMMED, the case in which nothing overlaps: the producers' fills,
-  the fold's steps and the readout's are different warps of one CTA and run at once, so a composed window is
-  expected under this sum, and how far under is UNMEASURED until it runs. The low end takes 8 producer warps and 4
-  drain warps beside two fold warpgroups and a readout warpgroup, a CTA no lab has run together.
+  steps 80. THESE ARE ROLES MEASURED APART AND SUMMED. Composed in one CTA of two
+  producer warps and two drain warps, the f16 form is MEASURED at 1,148 ([`carry_window`](../../lab/carry_window.md)),
+  inside this range and 16% under its own two sides' sum: the low end's 8 producer warps and 4 drain warps do not
+  fit the SM's register file beside two fold warpgroups and a readout warpgroup.
 - A box the whole of the read side's dense level pays 4 partials, and then every token writes every box: 1,024
   (token, list, box) steps' sixteenths a token, each of an 8-column step
   ([`wgmma_width`](../../lab/wgmma_width.md)), beside its operands.
