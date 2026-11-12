@@ -1499,6 +1499,7 @@
   {"doc": "docs/lab/panel_merge.md", "pinned_at": "374b5b205b83", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/panel_merge.cu"},
   {"doc": "docs/lab/panel_merge.md", "pinned_at": "db42c477ac6e", "reviewed": true, "sha256": "", "target": "measure/lab/results/panel_merge/sm_90a.json"},
   {"doc": "docs/lab/pool_fill.md", "pinned_at": "9a2fefb32364", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
+  {"doc": "docs/lab/pool_fill.md", "pinned_at": "3699007c9ab2", "reviewed": true, "sha256": "", "target": "docs/lab/load_rate.md"},
   {"doc": "docs/lab/pool_fill.md", "pinned_at": "9a2fefb32364", "reviewed": true, "sha256": "", "target": "docs/lab/value_gather.md"},
   {"doc": "docs/lab/pool_fill.md", "pinned_at": "9a2fefb32364", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/pool_fill.cu"},
   {"doc": "docs/lab/readout_role.md", "pinned_at": "f0e9e22146a2", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
