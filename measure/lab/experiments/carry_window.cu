@@ -19,11 +19,12 @@
 // trip is a batch of 32 entries, a slot four of them: the batch's stores and multiplies (its words loaded a trip
 // before), then the same registers' loads for the next batch; a slot on, the fence and the arrival. The
 // readout's trip is a chunk: the wait on its tile group, 8 rounds a thread of coefficients (their bytes loaded a
-// chunk before), the fence, 8 steps of 64 columns, the commit, the next chunk's 8 loads, the wait, the group
+// chunk before), every step's A formed in its own registers, the fence, 8 steps of 64 columns, the commit, the next chunk's 8 loads, the wait, the group
 // released; then the wait on the panel two chunks back, 16 rounds to f16 pairs and stores a thread, the arrival.
 // A drain warp's trip is a chunk, four batches of 8 tokens alternating two register halves: a batch's adds, each
 // a word as the panel holds it, then those registers' loads for the batch two on (the chunk's first two as it
-// opens). Live: a fold thread's 128 accumulators; a producer's 36 words; the readout's 32 accumulators and 8
+// opens). Live: a fold thread's 128 accumulators; a producer's 36 words; the readout's 32 accumulators, its 8
+// steps' 32 words of A through their wait, and 8
 // words; a drain's 16.
 // see docs/internals/tools/lab.md#carry-window
 #include <chrono>
@@ -81,13 +82,12 @@ __device__ __forceinline__ void waited(uint32_t bar, uint32_t parity, uint32_t& 
   lab::mbar_wait(bar, parity);
   count += static_cast<uint32_t>(clock64()) - t0;
 }
-//: a warp's four counts, stored at `kCounts (block, warp)`: its two waits, and the readout's two clocked phases
-constexpr int kCounts = 4;
-__device__ __forceinline__ void tell(uint32_t* waits, uint32_t first, uint32_t second, uint32_t third = 0,
-                                     uint32_t fourth = 0) {
+//: a warp's three counts, stored at `kCounts (block, warp)`: its two waits, and the readout's steps
+constexpr int kCounts = 3;
+__device__ __forceinline__ void tell(uint32_t* waits, uint32_t first, uint32_t second, uint32_t third = 0) {
   if ((threadIdx.x & 31) == 0) {
     uint32_t* const to = waits + kCounts * (blockIdx.x * (kThreads >> 5) + (threadIdx.x >> 5));
-    to[0] = first, to[1] = second, to[2] = third, to[3] = fourth;
+    to[0] = first, to[1] = second, to[2] = third;
   }
 }
 //: the cycles since `since`, and `since` moved to now: a phase's clock
@@ -172,7 +172,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
     for (int i = 0; i < 8; ++i) to[8 * a + i] = d[a][i];
 }
 
-//: A PRODUCER WARP, one a box: a slot's 128 entries in four batches of 32, batches alternating two register halves
+//: A PRODUCER WARP, one a box: a slot's 128 entries in four batches of 32, one batch in registers at a time
 template <int ROLES>
 __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long long* times, const uint32_t* values,
                                              const uint32_t* dense, int windows) {
@@ -317,7 +317,7 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
                                  lab::wg_desc(images + box * kBoxBytes + 2 * j * kImageTile, 8, kBrickLines),
                                  j != 0 || box != 0);
       lab::wg_commit();
-      //: the next chunk's bytes, under the steps: the coefficients' registers are free once the steps are issued
+      //: the next chunk's bytes, issued under the steps
       load(c + 1);
       lab::wg_wait<0>();
       in_steps += lap(since);
@@ -430,7 +430,8 @@ __global__ void __launch_bounds__(kThreads, 1)
   __syncthreads();
 
   //: EACH ROLE'S WHOLE BODY IN ITS OWN BRANCH, a warpgroup's registers set at the branch's head in every row: the
-  //: folds' raise is the readout's release (docs/lab/carry_window.md)
+  //: folds' raise is the release of the readout and of the producers' and drains' warpgroup
+  //: (docs/lab/carry_window.md)
   if (tid < kReadAt) {
     lab::regs_up<kFoldRegs>();
     fold_role<ROLES>(smem, base, times, waits, state, windows);
