@@ -6,7 +6,7 @@ and a cluster -- before any hopper carry exists, so a design is priced by one mo
 conversation.
 
     bazel run //tools:carry_floor -- --widths 256 256 --read-sparse 0 1 --write-sparse 1 0 --k 4 \\
-        --box 16 16 --cluster 1 16 [--dv 64] [--tokens 65536] [--json floor.json]
+        --box 16 16 --cluster 1 1 [--pair] [--window 1024] [--dv 64] [--tokens 65536] [--json floor.json]
 
 THE SHAPE. `--widths` a level; `--read-sparse` / `--write-sparse` a flag a level (a sparse level holds `--k` live
 digits a token, drawn uniformly; a dense one all of them). A BOX is `--box` digits of each level; a CLUSTER is
@@ -31,6 +31,11 @@ its reason):
   integers by a bulk reduction into the collector's panel, outside the fp32 the format states, counted for
   comparison. A cluster's CTAs hand over once a ROUND of `--round` partials a CTA, and the round's cost is its own
   term (beyond 64 partials a round it is the line's, UNMEASURED);
+- THE PAIR (`--pair`): a CTA holds two boxes neighbouring along a level the read side is dense on, one readout
+  warpgroup runs each read digit's step on both into one accumulator, and drain warps add ONE f16 line a token:
+  the readout's steps, its panel and the drain MEASURED whole (`readout_role`, by 4 to 1 drain warps), in place of
+  the readout's tensor term and a drain a box; and, where the two sides are sparse on different levels, the state's
+  image stored once a window (`state_image`). Whether an f16 line is accurate enough is `arith_model`'s question;
 - the fold's operands, the cheaper of two forms. LISTED: a (token, list, box) entry's value and coefficients
   fetched from scattered rows into the list's tiles by producer warps, MEASURED whole (`pool_fill`, at 16 leaves a
   list; other widths priced the same, UNMEASURED). TILED: every box takes the window's whole value tile packed
@@ -103,6 +108,12 @@ def measured() -> dict[str, tuple[float, str]]:
                           - median("wgmma_width", f"{n} columns, 4 steps a group")) / 4,
                          f"wgmma_width / {n} columns: a step more, from 4 a group to 8")
            for n in STEP_WIDTHS},
+        "line_low": (median("readout_role", "one readout warpgroup over two images, 4 drain warps"),
+                     "readout_role / one readout warpgroup over two images, 4 drain warps (a token a pair)"),
+        "line_high": (median("readout_role", "one readout warpgroup over two images, 1 drain warp"),
+                      "readout_role / one readout warpgroup over two images, 1 drain warp"),
+        "image": (median("state_image", "a value a 2-byte store, the image alone"),
+                  "state_image / a value a 2-byte store, the image alone (a window a CTA of two boxes)"),
         "entry_low": (median("pool_fill", "the producers and the fold, 8 producers"),
                       "pool_fill / the producers and the fold, 8 producers (an entry's value and 16 coefficients)"),
         "entry_high": (median("pool_fill", "the producers and the fold, 2 producers"),
@@ -158,7 +169,7 @@ def side(widths, sparse, k: int, box, cluster) -> Side:
 
 
 def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, tokens: int, form: str = "none",
-          round_partials: int = 64) -> dict:
+          round_partials: int = 64, pair: bool = False, window: int = 1024) -> dict:
     """The report: each term's SM-cycles a token as `(low, high)`, with the rate it used."""
     rates = measured()
     est = {name: value for name, (value, _) in ESTIMATES.items()}
@@ -179,13 +190,28 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
     def both(x: float) -> tuple[float, float]:
         return (x, x)
 
+    all_boxes = math.prod(w / b for w, b in zip(widths, box))
+
     drains = read.clusters if summed else read.boxes
+    #: THE PAIR: a CTA holds two boxes neighbouring along a level the read side is dense on, so a token that reads
+    #: one reads both; one readout warpgroup runs a read digit's step on each into ONE accumulator and drain warps
+    #: add one f16 line a token (`readout_role`, MEASURED whole: steps, panel and drain, by 4 .. 1 drain warps).
+    #: Where the two sides are sparse on different levels the readout's operand is an image of the state, stored
+    #: once a window of `window` tokens by every CTA (`state_image`)
+    if pair:
+        if clustered or not any(not flag and width // b >= 2 for width, flag, b in zip(widths, read_sparse, box)):
+            raise SystemExit("carry_floor: a pair is two boxes along a level the read side is dense on, with no "
+                             "cluster")
+        line = (read.boxes / 2 * rates["line_low"][0], read.boxes / 2 * rates["line_high"][0])
+        divergent = tuple(read_sparse) != tuple(write_sparse)
+        image = both(all_boxes / 2 * rates["image"][0] / window if divergent else 0.0)
+    else:
+        line = image = both(0.0)
     #: THE FOLD'S OPERANDS, the cheaper of two forms. LISTED: a (token, list, box) entry's value and coefficients
     #: fetched from scattered rows into the list's tiles, MEASURED whole (`pool_fill`, at 16 leaves a list; other
     #: widths are priced the same, UNMEASURED). TILED: every box takes the window's whole value tile packed (every
     #: token's bytes), expands its coefficients, and gathers the values into list order (that copy ESTIMATED at
     #: the shared access rate). A cluster shares no load: a multicast copy costs each CTA its own (`value_cast`)
-    all_boxes = math.prod(w / b for w, b in zip(widths, box))
     entries = write.boxes * write.lists * value_requests
     listed = (entries * rates["entry_low"][0], entries * rates["entry_high"][0])
     tiled = both(all_boxes * value_requests * rates["load_packed"][0] + write.leaves * 2 / shared
@@ -208,12 +234,16 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
         return a.boxes * a.lists * 16 * math.ceil(along / 16 - 1e-9)
 
     terms = {
-        "tensor, readout": (both(padded(read) * rows / products), "products"),
+        "tensor, readout": (both(0.0 if pair else padded(read) * rows / products),
+                            "in the pair's line" if pair else "products"),
         "tensor, fold": (both(write.boxes * write.lists * fold_step(write)[0] / 16), fold_step(write)[1]),
         "readout operand, expanded": (both(read.leaves * 2 / shared), "shared"),
         "sum: partials into the cluster": (both(read.boxes * hop), f"hop_{form}" if summed else "no cluster sum"),
         "sum: the rounds' barriers": (both(barriers), f"round_{form}" if summed else "no cluster sum"),
-        "sum: drains to global memory": (tuple(drains * (dv * 4 + 4) * d for d in drain), "drain_own .. drain_spread"),
+        "sum: drains to global memory": (tuple(0.0 if pair else drains * (dv * 4 + 4) * d for d in drain),
+                                         "in the pair's line" if pair else "drain_own .. drain_spread"),
+        "readout and sum: a pair's f16 line": (line, "line_low .. line_high" if pair else "no pair"),
+        "state image, a window": (image, "image" if pair else "no pair"),
         "fold operands": (operands, operands_by),
     }
     total = tuple(sum(v[0][i] for v in terms.values()) for i in (0, 1))
@@ -248,6 +278,9 @@ def main(argv: list[str]) -> int:
                          "integers by a bulk reduction")
     ap.add_argument("--round", type=int, default=64,
                     help="the partials a CTA hands over between its barriers (64 is the round the lab read)")
+    ap.add_argument("--pair", action="store_true",
+                    help="a CTA's two boxes along a read-dense level drain one f16 line a token")
+    ap.add_argument("--window", type=int, default=1024, help="the tokens a window: a pair's state image is stored once")
     ap.add_argument("--dv", type=int, default=64)
     ap.add_argument("--tokens", type=int, default=65536)
     ap.add_argument("--json", type=Path)
@@ -261,7 +294,8 @@ def main(argv: list[str]) -> int:
         if width % b or (width // b) % c:
             raise SystemExit(f"carry_floor: a level of {width} digits is not whole boxes of {b} in whole clusters of {c}")
 
-    report = floor(a.widths, a.read_sparse, a.write_sparse, a.k, a.box, a.cluster, a.dv, a.tokens, a.sum, a.round)
+    report = floor(a.widths, a.read_sparse, a.write_sparse, a.k, a.box, a.cluster, a.dv, a.tokens, a.sum, a.round,
+                   a.pair, a.window)
     read, write = report["counts"]["read"], report["counts"]["write"]
     print(f"a token reads {read['leaves']:.0f} leaves in {read['boxes']:.1f} boxes of {read['clusters']:.2f} clusters; "
           f"writes {write['leaves']:.0f} in {write['boxes']:.1f} boxes of {write['clusters']:.2f} clusters, "

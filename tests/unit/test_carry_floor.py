@@ -78,3 +78,19 @@ def test_a_box_every_token_writes_pays_its_steps_and_the_whole_tile():
         min(1024 * rates["entry_low"][0], 256 * rates["load_packed"][0] + 1024 * 2 / rates["shared"][0]
             + 1024 * 64 * 4 / rates["shared"][0]))
 
+
+def test_a_pair_drains_one_line_for_two_boxes_and_stores_its_image_a_window():
+    rates = carry_floor.measured()
+    alone = carry_floor.floor(cluster=(1, 1), **ALT)["terms"]
+    pair = carry_floor.floor(cluster=(1, 1), pair=True, **ALT)["terms"]
+    assert pair["tensor, readout"]["cycles"] == pair["sum: drains to global memory"]["cycles"] == [0.0, 0.0]
+    assert pair["readout and sum: a pair's f16 line"]["cycles"][0] == pytest.approx(58.25 / 2 * rates["line_low"][0], rel=0.01)
+    #: the carve is divergent: 128 CTAs store their image once in 1,024 tokens
+    assert pair["state image, a window"]["cycles"][0] == pytest.approx(128 * rates["image"][0] / 1024)
+    assert pair["fold operands"] == alone["fold operands"] and pair["tensor, fold"] == alone["tensor, fold"]
+    #: sparse on the same level, there is no image
+    same = carry_floor.floor(cluster=(1, 1), pair=True, **{**ALT, "write_sparse": (0, 1), "box": (16, 16)})["terms"]
+    assert same["state image, a window"]["cycles"] == [0.0, 0.0]
+    #: a box the whole read-dense level has no neighbour to pair with
+    with pytest.raises(SystemExit, match="a pair is two boxes"):
+        carry_floor.floor(cluster=(1, 1), pair=True, **{**ALT, "box": (256, 1)})
