@@ -59,7 +59,7 @@ FlashAttention's tensor floor at the same 65,536 tokens and width is 2,049 SM-cy
 1,048,576 tokens it is 16 times that a token, and a 256 x 256 row's counts a token do not move (its rates were read
 on working sets the cache holds; a million tokens' values are not such a set, and that is UNMEASURED).
 
-WHAT IT SHOWS. The tensor work is the least of it; the rest is bytes.
+WHAT IT SHOWS. A token's cost is bytes moved and steps run, a (token, box) each; the products themselves are little.
 - WHERE THE TWO SIDES ARE SPARSE ON DIFFERENT LEVELS, NO BOX SHAPE BRINGS A TOKEN UNDER FLASHATTENTION'S FLOOR at
   as many leaves as tokens. A box square on both sides pays the output's sum (58 partials a token) and a value
   load a box. A box the whole of the read side's dense level pays 4 partials, and then every token writes every

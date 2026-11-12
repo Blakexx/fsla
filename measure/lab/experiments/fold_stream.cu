@@ -7,11 +7,16 @@
 // where a token's leaves fall in its group stores the value at its own running count and the token's row of 64
 // coefficients beside it, one store each. WIDE 256, one group: a token's slot is its index, so there is no count;
 // a producer takes the tokens of its residue, stores the value, clears the 4 words the slot's last token set and
-// sets its own 4. A producer holds two batches of 8 tokens' values, the next loaded before this one is stored. A
+// sets its own 4. A
 // chunk of 64 tokens on, the producers arrive at a barrier; the fold, a chunk behind, runs the
 // chunk's 4 steps a group in one commit group and frees the tiles by another barrier. `producer`: no step runs.
 // `fold`: no token is produced. `together`: both, the state checked exactly. The tokens come from a table of
 // 65,536 (8 MB) or of 1,048,576 (128 MB) that every CTA reads in step.
+// TIMELINE: a producer's trip is two batches of 8 tokens, each from its own registers: a batch's stores (its values
+// loaded a trip before), then those registers' loads for the batch two on -- a value is loaded a batch's stores
+// ahead of its use and no register is copied. Live in a producer: 16 values. The fold's trip is a chunk: the wait
+// on the producers' barrier, one commit group of the chunk's steps, its wait, the arrival that frees the tiles; its
+// accumulators (128 registers a thread) are the state.
 // see docs/internals/tools/lab.md#fold-stream
 #include "lab.cuh"
 
@@ -80,28 +85,28 @@ __global__ void __launch_bounds__(kFoldThreads + 32 * WARPS, 1)
   if (warp >= kFoldThreads / 32) {
     //: A PRODUCER: one pass over the tokens, a chunk at most one ahead of the fold. Its tokens are every `kStride`-th
     //: from `mine` (all 256 leaves a step: its residue) or every one (a group a producer); it holds two batches of
-    //: their values, the next loaded before this one is stored
+    //: their values at fixed registers, each loaded two batches before it is stored
     const int mine = warp - kFoldThreads / 32;
     constexpr int kStride = WIDE == 256 ? WARPS : 1, kBatch = 8, kBatches = kChunk / kStride / kBatch;
+    static_assert(kBatches % 2 == 0);
     const int first = WIDE == 256 ? mine : 0, last = chunks * kChunk - 1;
     uint32_t* const scratch = reinterpret_cast<uint32_t*>(smem + kScratchAt) + lane;
     uint32_t count = 0;
-    uint32_t now[kBatch], next[kBatch];
+    uint32_t held[2][kBatch];
 #pragma unroll
-    for (int i = 0; i < kBatch; ++i)
-      next[i] = values[static_cast<long long>(min(first + kStride * i, last)) * 32 + lane];
+    for (int h = 0; h < 2; ++h)
+#pragma unroll
+      for (int i = 0; i < kBatch; ++i)
+        held[h][i] = values[static_cast<long long>(min(first + kStride * (kBatch * h + i), last)) * 32 + lane];
 #pragma unroll 1
     for (int c = 0; c < chunks; ++c) {
       if (c >= 2) lab::mbar_wait(freed + 8 * (c & 1), ((c >> 1) - 1) & 1);
       if constexpr (FORM != kFold) {
 #pragma unroll 1
-        for (int b = 0; b < kBatches; ++b) {
-          const int t0 = first + kStride * kBatch * (c * kBatches + b);
+        for (int b = 0; b < kBatches; b += 2) {
 #pragma unroll
-          for (int i = 0; i < kBatch; ++i) {
-            now[i] = next[i];
-            next[i] = values[static_cast<long long>(min(t0 + kStride * (kBatch + i), last)) * 32 + lane];
-          }
+          for (int h = 0; h < 2; ++h) {
+            const int t0 = first + kStride * kBatch * (c * kBatches + b + h);
 #pragma unroll
           for (int i = 0; i < kBatch; ++i) {
             const int t = t0 + kStride * i;
@@ -110,7 +115,7 @@ __global__ void __launch_bounds__(kFoldThreads + 32 * WARPS, 1)
               const uint32_t slot = static_cast<uint32_t>(t) % (kRing * kStep);
               uint8_t* const tile = smem + (slot / kStep) * kTile;
               const uint32_t line = (slot % kStep) * 16;
-              *reinterpret_cast<uint32_t*>(tile + (lane >> 2) * kBrick + line + (lane & 3) * 4) = now[i];
+              *reinterpret_cast<uint32_t*>(tile + (lane >> 2) * kBrick + line + (lane & 3) * 4) = held[h][i];
               //: its row: lane `j` clears the word the slot's last token set for its leaf `j`, then sets its own
               const int j = lane & 3, is = leaf_of(t, j), was = leaf_of(max(t - kRing * kStep, 0), j);
               const bool sets = lane < kLive, clears = sets && t >= kRing * kStep;
@@ -130,15 +135,18 @@ __global__ void __launch_bounds__(kFoldThreads + 32 * WARPS, 1)
                 hit |= here;
                 word |= here && lane == (col >> 1) ? coef_word(leaf, coef_of(t, j)) : 0u;
               }
-              if (hit) {
-                const uint32_t slot = count % (kRing * kStep);
-                ++count;
-                uint8_t* const tile = smem + mine * kGroupBytes + (slot / kStep) * kTile;
-                const uint32_t at = (lane >> 2) * kBrick + (slot % kStep) * 16 + (lane & 3) * 4;
-                *reinterpret_cast<uint32_t*>(tile + at) = now[i];
-                *reinterpret_cast<uint32_t*>(tile + kValueTile + at) = word;
-              }
+              //: no branch: a token not this group's is stored to the scratch word
+              const uint32_t slot = count % (kRing * kStep);
+              count += hit ? 1u : 0u;
+              uint8_t* const tile = smem + mine * kGroupBytes + (slot / kStep) * kTile;
+              const uint32_t at = (lane >> 2) * kBrick + (slot % kStep) * 16 + (lane & 3) * 4;
+              *(hit ? reinterpret_cast<uint32_t*>(tile + at) : scratch) = held[h][i];
+              *(hit ? reinterpret_cast<uint32_t*>(tile + kValueTile + at) : scratch) = word;
             }
+          }
+#pragma unroll
+          for (int i = 0; i < kBatch; ++i)
+            held[h][i] = values[static_cast<long long>(min(t0 + kStride * (2 * kBatch + i), last)) * 32 + lane];
           }
         }
       }
@@ -249,6 +257,8 @@ void expect(lab::Bench& b) {
     const std::string k = lab::kernel("fold", {f, WIDE, WARPS});
     b.expect(k, "HGMMA", "==", f == kProducer ? 0 : kGroups<WIDE> * (kChunk / kStep));
     b.exempt(k, "a stream probe: the producers' stores beside the fold's steps, no kernel's step");
+    //: the group producer's hit test still compiles to three divergent regions a batch; declared, not removed
+    if (WIDE == 64 && f != kFold) b.expect(k, "LOOP_CONVERGENCE", "<=", 6);
   }
 }
 

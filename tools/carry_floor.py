@@ -15,7 +15,7 @@ digits a token, drawn uniformly; a dense one all of them). A BOX is `--box` digi
 THE TERMS, SM-cycles a token (each line of the report says which rate it used and whether that rate is MEASURED --
 read from an H100 lab record under `measure/lab/results/` at run time -- or ESTIMATED, a constant of this file with
 its reason):
-- tensor: the leaves a token reads and writes, times the channels, over the pipe's products a cycle (`wgmma_rate`);
+- tensor: the leaves a token reads, times the channels, over the pipe's products a cycle (`wgmma_rate`);
   a value width under 64 runs wgmma's 64 rows (the idle half), and the readout's leaves of a list in a box run
   whole steps of sixteen (its K). THE FOLD is priced by its steps' TIME, MEASURED (`fold_stream`): a token in a list
   of a box is a sixteenth of a step, and a step costs the same at 8 columns as at 64, and four times that at 256;
@@ -188,12 +188,12 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
 
     #: THE READOUT'S PADDING: a list's leaves in a box are its K, whole steps of sixteen
 
-    def padded(a: Side, step: int) -> float:
+    def padded(a: Side) -> float:
         along = a.leaves / (a.boxes * a.lists)
-        return a.boxes * a.lists * step * math.ceil(along / step - 1e-9)
+        return a.boxes * a.lists * 16 * math.ceil(along / 16 - 1e-9)
 
     terms = {
-        "tensor, readout": (both(padded(read, 16) * rows / products), "products"),
+        "tensor, readout": (both(padded(read) * rows / products), "products"),
         "tensor, fold": (both(write.boxes * write.lists * steps_wide(write) * rates["fold_step"][0] / 16), "fold_step"),
         "readout operand, expanded": (both(read.leaves * 2 / shared), "shared"),
         "sum: partials into the cluster": (both(read.boxes * hop), f"hop_{form}" if summed else "no cluster sum"),

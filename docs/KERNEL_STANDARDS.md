@@ -656,7 +656,11 @@ probe that replaced it measured instructions ptxas had folded or turned into cal
    on the ampere family's own instructions is the branch `ampere`'s -- source, record and page -- and a rule that
    stands here on one names it and is owed its run on this line.
 2. AN EXPERIMENT'S NUMBER COUNTS ONLY AFTER ITS SASS GATE: the declared instructions present, no local memory, no
-   undeclared convergence call. The driver refuses to time otherwise.
+   undeclared convergence call. The driver refuses to time otherwise. AN EXPERIMENT'S KERNEL IS KERNEL CODE (Blake,
+   2026-11-11, after a lab's producers written against §32 and §33 cost three rented runs): its header states its
+   TIMELINE before the kernel is written, and every kernel of it is held to the loop hazards the driver reads
+   (docs/internals/tools/lab.md#hazards). A LESSON AN AGENT LEARNS IS KEPT BY ITS ENFORCEMENT: a row of
+   docs/internals/LEARNINGS.md naming the hook, lint or tool check that refuses its repeat, gated on naming one.
 3. THE RULES THAT STAND (each measured on sm_86 under CUDA 13.0, its sm_90a run owed). The letters a, c, e to p, r
    and t to z are the ampere family's machine rules -- what an instruction costs beside `mma.sync`, its pass
    pipelines, pools, lists and readout steps -- and stay the branch's; a card's rates are its rows of the hardware

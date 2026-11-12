@@ -140,14 +140,33 @@ def signatures(binary: Path) -> dict[str, dict]:
 _PRE_29 = {"collective_branch", "facts_block", "mma_k8", "row_span", "smem_rates", "tensor_tax", "vote_stash"}
 
 
+#: THE LEARNINGS' DEBTS (docs/internals/LEARNINGS.md): the experiments written before an experiment's header had to
+#: state its TIMELINE and every kernel's loops were held to the hazards below; each is held to them when it is next
+#: changed, and the list only shrinks
+_PRE_TIMELINE = {"bulk_drain", "byte_expand", "cluster_sum", "collective_branch", "facts_block", "facts_two",
+                 "issue_latency", "reg_trade", "row_ring", "row_span", "smem_rates", "state_move", "tensor_tax",
+                 "vote_stash", "wgmma_rate", "wgmma_regs"}
+#: the hazards an experiment may declare a count of (`Bench::expect(kernel, NAME, "<=", n)`), beside its opcodes
+HAZARDS = ("LOOP_CONVERGENCE", "LOAD_IN_TRIP", "STORE_RELOAD")
+
+
+def timeline(path: Path) -> bool:
+    """Whether the experiment's header comment states its TIMELINE: each phase's stream, and which load is a stage
+    ahead of which use (KERNEL_STANDARDS section 32, written before the kernel)."""
+    head = []
+    for line in path.read_text().splitlines():
+        if not line.startswith("//"):
+            break
+        head.append(line)
+    return any("TIMELINE:" in line for line in head)
+
+
 #: a branch's target in `cuobjdump -sass` text (function-relative)
 BRANCH = re.compile(r"\bBRA(?:\.[A-Z.]+)?\s+(?:!?U?P[T\d]+,\s*)?(?:~?URZ,\s*)?(0x[0-9a-f]+)")
 
 
-def loop_convergence(binary: Path) -> dict[str, int]:
-    """Per kernel (demangled): the convergence instructions (`BSSY`, `BSYNC`, `BRA.DIV`) inside its loops -- the spans a
-    backward branch closes -- which KERNEL_STANDARDS section 29.13 has removed by the source patterns of 29.9 or
-    declared (`LOOP_CONVERGENCE`)."""
+def disassembled(binary: Path) -> dict[str, list[tuple[int, str, str]]]:
+    """Per kernel (mangled): its instructions as (address, opcode, line)."""
     code: dict[str, list[tuple[int, str, str]]] = {}
     current = None
     with sass.sass_lines(binary) as lines:
@@ -157,12 +176,70 @@ def loop_convergence(binary: Path) -> dict[str, int]:
                 code[current] = []
             elif current and (m := sass.INSTRUCTION.match(line)):
                 code[current].append((int(m.group(1), 16), m.group(3), line))
+    return code
+
+
+def loops_of(body: list[tuple[int, str, str]]) -> list[tuple[int, int]]:
+    """A kernel's loops: the spans a backward branch closes."""
+    return [(int(t.group(1), 16), at) for at, op, line in body
+            if op.startswith("BRA") and (t := BRANCH.search(line)) and int(t.group(1), 16) < at]
+
+
+def loop_convergence(binary: Path) -> dict[str, int]:
+    """Per kernel (demangled): the convergence instructions (`BSSY`, `BSYNC`, `BRA.DIV`) inside its loops -- the spans a
+    backward branch closes -- which KERNEL_STANDARDS section 29.13 has removed by the source patterns of 29.9 or
+    declared (`LOOP_CONVERGENCE`)."""
     found = {}
-    for name, body in code.items():
-        loops = [(int(t.group(1), 16), at) for at, op, line in body
-                 if op.startswith("BRA") and (t := BRANCH.search(line)) and int(t.group(1), 16) < at]
+    for name, body in disassembled(binary).items():
+        loops = loops_of(body)
         found[name] = sum(1 for at, op, _ in body if op.startswith(("BSSY", "BSYNC", "BRA.DIV"))
                           and any(lo <= at <= hi for lo, hi in loops))
+    names = demangle(list(found))
+    return {names[k]: v for k, v in found.items()}
+
+
+#: an instruction's operands, and the registers and the one bracketed address among them
+OPERANDS = re.compile(r"^\s*/\*[0-9a-f]+\*/\s+(?:@!?U?P\w+\s+)?[A-Z0-9_.$]+\s+(.*?)\s*;")
+REGISTER = re.compile(r"\bR(\d+)\b")
+ADDRESS = re.compile(r"\[[^\]]*\]")
+#: the opcodes whose first operand is read, not written
+READS_FIRST = ("ST", "BRA", "RED", "ATOM", "BSSY", "BSYNC", "HGMMA", "ISETP", "FSETP", "CALL", "EXIT", "NOP", "BAR")
+
+
+def loop_hazards(binary: Path) -> dict[str, dict[str, int]]:
+    """Per kernel (demangled), inside its innermost loops: LOAD_IN_TRIP, the global loads whose value an instruction
+    of the same trip reads -- that trip waits out its own load, where a load a stage ahead is hidden (KERNEL_STANDARDS
+    section 32); and STORE_RELOAD, the shared loads of an address the same trip stored to -- a value kept in shared
+    memory that no other warp reads belongs in a register (section 33)."""
+    found = {}
+    for name, body in disassembled(binary).items():
+        loops = loops_of(body)
+        inner = [(lo, hi) for lo, hi in loops if not any((a, b) != (lo, hi) and lo <= a and b <= hi for a, b in loops)]
+        in_trip = reloads = 0
+        for lo, hi in inner:
+            trip = [(op, m.group(1)) for at, op, line in body if lo <= at <= hi and (m := OPERANDS.match(line))]
+            for i, (op, operands) in enumerate(trip):
+                registers = REGISTER.findall(operands)
+                if op.startswith("LDG") and not op.startswith("LDGSTS") and registers:
+                    value = registers[0]
+                    for later, text in trip[i + 1:]:
+                        named = REGISTER.findall(text)
+                        written = named[:1] if named and not later.startswith(READS_FIRST) else []
+                        if value in (named[1:] if written else named):
+                            in_trip += 1
+                            break
+                        if value in written:
+                            break
+                if op.startswith("STS") and (address := ADDRESS.search(operands)):
+                    base = REGISTER.findall(address.group(0))
+                    for later, text in trip[i + 1:]:
+                        named = REGISTER.findall(text)
+                        if later.startswith("LDS") and address.group(0) in text:
+                            reloads += 1
+                            break
+                        if named and not later.startswith(READS_FIRST) and named[0] in base:
+                            break
+        found[name] = {"LOAD_IN_TRIP": in_trip, "STORE_RELOAD": reloads}
     names = demangle(list(found))
     return {names[k]: v for k, v in found.items()}
 
@@ -173,7 +250,7 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
     lines = subprocess.run([str(binary), "--expect"], capture_output=True, text=True, check=True).stdout
     expected = [e for e in map(json.loads, lines.splitlines()) if e["lab"] == "expect"]
     failures = []
-    for e in (e for e in expected if e["op"] != "LOOP_CONVERGENCE"):
+    for e in (e for e in expected if e["op"] not in HAZARDS):
         hits = [k for k in table if re.search(e["kernel"], k)]
         if not hits:
             failures.append(f"no kernel matches {e['kernel']!r}")
@@ -188,10 +265,26 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
     declared_loops = {k: e["count"] for e in expected if e["op"] == "LOOP_CONVERGENCE"
                       for k in table if re.search(e["kernel"], k)}
     budgeted = {k for b in budgets(binary) for k in table if re.search(b["kernel"], k)}
+    #: an experiment past the learnings' debts is held to every hazard in every kernel, budgeted or not
+    experiment = binary.name.split(".")[0]
+    held = experiment not in _PRE_TIMELINE
     for k, n in loop_convergence(binary).items():
-        if k in budgeted and n > declared_loops.get(k, 0):
+        if (k in budgeted or held) and n > declared_loops.get(k, 0):
             failures.append(f"{k}: {n} convergence instructions inside its loops, {declared_loops.get(k, 0)} "
                             "declared (KERNEL_STANDARDS 29.13: the source patterns of 29.9, or LOOP_CONVERGENCE)")
+    if held:
+        if not timeline(experiments()[experiment]):
+            failures.append(f"{experiment}: its header states no TIMELINE -- each phase's stream and which load is a "
+                            "stage ahead of which use, written before the kernel (docs/internals/LEARNINGS.md)")
+        why = {"LOAD_IN_TRIP": "global loads read in the trip that issued them (KERNEL_STANDARDS 32: a load a stage "
+                               "ahead of its use)",
+               "STORE_RELOAD": "shared loads of an address the same trip stored to (KERNEL_STANDARDS 33: a value no "
+                               "other warp reads stays in a register)"}
+        for k, hazards in loop_hazards(binary).items():
+            for kind, n in hazards.items():
+                declared = max((e["count"] for e in expected if e["op"] == kind and re.search(e["kernel"], k)), default=0)
+                if n > declared:
+                    failures.append(f"{k}: {n} {why[kind]}, {declared} declared ({kind})")
 
     if binary.name.split(".")[0] not in _PRE_29:
         stated = budgets(binary) + budgets(binary, "exempt")

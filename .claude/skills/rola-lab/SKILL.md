@@ -7,7 +7,7 @@ description: Load when creating, changing or running a lab experiment (measure/l
 The method: `docs/internals/tools/lab.md#the-loop`. The law: `docs/KERNEL_STANDARDS.md#s26`.
 
 1. `bazel run //tools:lab -- list` first: the question may be asked already. One question per experiment, stated in its
-   header.
+   header, with its `TIMELINE:` written before the kernel (`docs/internals/tools/lab.md#hazards`).
 2. Data comes from `<name>.inputs.py`'s `write(directory)`, with a mirror of the kernel in Python that defines its
    exact outputs and counts the trips its budget uses.
 3. Every variant checks its outputs (`Bench::check`: exact against the mirror, or invariants where the kernel races)

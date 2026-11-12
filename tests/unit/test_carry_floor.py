@@ -65,11 +65,10 @@ def test_a_missing_record_row_is_refused():
         carry_floor.median("wgmma_rate", "a row no record holds")
 
 
-def test_a_box_a_side_touches_narrowly_pays_padding_and_the_whole_tile():
+def test_a_box_every_token_writes_pays_its_steps_and_the_whole_tile():
     even = carry_floor.floor(cluster=(1, 1), **ALT)["terms"]
     strip = carry_floor.floor(cluster=(1, 1), **{**ALT, "box": (256, 1)})["terms"]
-    #: 16 x 16 boxes: a list's 16 leaves fill both steps; a strip along the read side: the fold's one leaf a list
-    #: runs a step of eight
+    #: the readout's leaves of a list fill whole steps of sixteen in both shapes
     assert even["tensor, readout"]["cycles"] == strip["tensor, readout"]["cycles"]
     #: the fold is its steps' time, a sixteenth of one a (token, list, box): 64 of those square, 1,024 in strips
     step = carry_floor.measured()["fold_step"][0]

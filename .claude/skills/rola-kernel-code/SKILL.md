@@ -6,7 +6,8 @@ description: Load before writing or changing CUDA in this repo (csrc/ or measure
 
 0. The steady state first: one warp's window (or item) as a timeline -- each phase's stream, every load a stage
    ahead of its use, each phase's live registers -- before any component, and components split at those stages
-   (`docs/KERNEL_STANDARDS.md#s32`). Read the concern's atom (`csrc/rola/src/common/atoms/`) for a primitive before writing one.
+   (`docs/KERNEL_STANDARDS.md#s32`); a lab experiment's kernel the same, its timeline in its header
+   (`docs/internals/LEARNINGS.md`). Read the concern's atom (`csrc/rola/src/common/atoms/`) for a primitive before writing one.
 1. The design first: the component's page under `docs/internals/` (it mirrors `csrc/rola/src/`; a csrc file without
    its page, or a page naming an identifier the tree lacks, fails the commit:
    `docs/internals/tools/lint.md#the-gating-set`) and `docs/ARCHITECTURE.md`. A new component starts as a skeleton of
