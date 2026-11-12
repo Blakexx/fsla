@@ -38,4 +38,46 @@ the readout and the drain warps, and the composed row reports each: a role's own
 With both, the fold's state and every output row are checked exactly against the host's: the state summed in
 integers, the image its truncation to bf16, a line its rounding to f16.
 
-MEASURED: not yet run.
+MEASURED (H100 SXM, 132 SMs, vast.ai instance 60335581, driver 595.91.07; 2026-11-12, the experiment at
+6f85c2d4; 7 repetitions, the composed row's 4,325,376 state values and 8,650,752 output values exact; the median,
+the spread under 3%; SM-cycles a token are the window's cycles over 8 -- 128 CTAs of two boxes, 1,024 tokens):
+
+| the row | cycles a window a CTA | SM-cycles a token |
+|---|---|---|
+| the fold's side alone: producers and steps | 4,318 | 540 |
+| the read side alone: the image, the readout and the drain | 7,775 | 972 |
+| the carry: both sides | 10,221 | 1,278 |
+| both sides, the producers' global loads taken out | 8,808 | 1,101 |
+| both sides, the drains' global adds taken out | 8,120 | 1,015 |
+| both sides, the image's stores taken out | 8,794 | 1,099 |
+
+The composed row's waits, cycles a window a warp of the role:
+
+| the role's wait | cycles | of the window |
+|---|---|---|
+| a fold warp, on the readout's read of a tile group | 2,149 | 21% |
+| a fold warp, on its producer | 910 | 9% |
+| a readout warp, on a tile group's publish | 528 | 5% |
+| a readout warp, on the panel's drain | 3,283 | 32% |
+| a drain warp, on the readout's panel | 1,379 | 13% |
+
+WHAT IT SHOWS.
+- THE CARRY COMPOSES, EXACTLY: two boxes' folds, the image a window, one readout warpgroup over both -- its
+  coefficients expanded by itself from the readers' bytes -- and one f16 line a token, in one CTA of 512 threads
+  at the SM's whole register file.
+- A TOKEN COSTS 1,278 SM-CYCLES COMPOSED, 0.62 of FlashAttention's tensor floor at this cell (2,049,
+  [`carry_floor`](../internals/tools/carry_floor.md); a cell with its sides sparse on opposite levels, 256 x 256
+  leaves -- the model prices a dense side higher).
+- THE DRAIN WARPS ARE THE BUSIEST ROLE AND THE READOUT WAITS ON THEM: a drain warp is out of its wait 87% of the
+  window, 8,842 cycles for its 128 lines, 69 a line; a readout warp waits on the panel's drain a third of the
+  window and a fold warp on the readout's read a fifth.
+- A DRAIN WARP'S LINE COSTS IT TWICE WHAT IT DID ALONE: [`readout_role`](readout_role.md) read a token at 15.6
+  cycles a CTA by two drain warps, 31 a warp. Taking the producers' global loads out gives back 1,413 cycles a
+  window and the drains' adds 2,101; that the two streams share the path to global memory is not separated here
+  from the other things the rows change.
+- THE TENSOR PIPE IS MOSTLY IDLE: a window is 64 steps of some 20 cycles
+  ([`wgmma_width`](wgmma_width.md)), about 1,300 of its 10,221.
+- The readout's own coefficients cost the read side about 1,000 cycles a window against the form that wrote them
+  once (6,780 then; that form's record is not kept).
+
+Record: `measure/lab/results/carry_window/sm_90a.json`.
