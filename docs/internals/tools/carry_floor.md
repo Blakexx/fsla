@@ -93,8 +93,7 @@ WHAT IT SHOWS. A token's cost is bytes moved and steps run, a (token, box) each;
   pair's readout, panel and f16 drain 349 to 633, the state's image 138, the fold's operands 345 to 438 and its
   steps 80. THESE ARE ROLES MEASURED APART AND SUMMED; the low end's 8 producer warps
   and 4 drain warps do not fit the SM's register file beside two fold warpgroups and a readout warpgroup, and
-  composed with two producer warps and two drain warps the f16 form is MEASURED at 1,094
-  ([`carry_window`](../../lab/carry_window.md)).
+  what the roles cost composed is [`carry_window`](../../lab/carry_window.md)'s to state.
 - A box the whole of the read side's dense level pays 4 partials, and then every token writes every box: 1,024
   (token, list, box) steps' sixteenths a token, each of an 8-column step
   ([`wgmma_width`](../../lab/wgmma_width.md)), beside its operands.
