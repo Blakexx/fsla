@@ -204,7 +204,10 @@ card; the milestone carries the drift guards (lints, docs, skills).
 The CTA's box is the carve's box (per-level extents and a channel extent), carved per side by its plan; the shape set
 is the plans. A CTA loads and stores its box at entry and exit, so its read-side warps' union and its write-side
 warps' union are the same leaves; the CTA's box equals the SM's at one CTA per SM, the goal (R15). Where the
-accumulator lives (registers, tensor memory) changes how a warp touches its share, never who owns what.
+accumulator lives (registers, tensor memory) changes how a warp touches its share, never who owns what. ON HOPPER A
+CTA OWNS TWO BOXES (Blake, 2026-11-12): two fold warpgroups, split by the sparse level between them and by values
+across their warps, each holding one box's state, and one readout warpgroup that accumulates from the state both
+publish.
 
 <a id="r21"></a>
 ## R21. Every asynchronous operation states two edges

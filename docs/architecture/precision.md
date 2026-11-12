@@ -63,8 +63,8 @@ ones.
 THE SUM'S WIDTH IS THE PLAN'S because f16 costs by the partials it joins and the op counts none (R24): 29 f16 lines
 a token (two boxes a CTA, added in fp32 first) are 0.083% a token at the median on nl64k-alt-k4, 58 are 0.115%, the
 family's own error being 0.115% ([`arith_model`](../internals/tools/arith_model.md#f16); MODELLED on that one
-sparse cell -- a dense read side and wider levels are NOT modelled). So the planner's default is f16 where a
-token's partials are few and fp32 where they are many. A sum a fold group with the groups merged in fp32 reads
+sparse cell -- a dense read side and wider levels are NOT modelled). So the producer's planner chooses the width from the
+declaration's structure, the levels' widths and walks. A sum a fold group with the groups merged in fp32 reads
 0.023%, and is no form: its merge costs what the fp32 line does
 ([`panel_merge`](../lab/panel_merge.md)).
 

@@ -189,3 +189,4 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="value-cast"></a>[`value_cast`](../../lab/value_cast.md)
 - <a id="pool-fill"></a>[`pool_fill`](../../lab/pool_fill.md)
 - <a id="load-rate"></a>[`load_rate`](../../lab/load_rate.md)
+- <a id="carry-window"></a>[`carry_window`](../../lab/carry_window.md)
