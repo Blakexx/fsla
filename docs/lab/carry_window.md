@@ -36,50 +36,13 @@ no run separated.
 
 ROWS: the fold's side alone (producers and steps), the read side alone (the image, the readout and the drain),
 both, and both with one access taken out: the producers' global loads (their words made in registers), the drains'
-global adds (their lines folded into a sink), the image's stores. THE FOLD'S, THE READOUT'S AND THE DRAIN WARPS'
-WAITS at their barriers are clocked, and two of the readout's phases beside them -- its fence with its tiles'
-barrier, and its steps; the composed row and the read side's report them.
-With both, the fold's state and every output row are checked exactly against the host's: the state summed in
-integers, the image its truncation to bf16, a line its rounding to f16.
+global adds (their lines folded into a sink), the image's stores. Two rows part the readout's own costs: THE
+COEFFICIENTS EXPANDED ONCE (in the first window, the tiles standing after), and THE PANEL fp32 (a 4-byte store a
+register and a lane a word of shared memory, the drain warps loading two words and rounding as they add), the read
+side alone and both sides. THE FOLD'S, THE READOUT'S AND THE DRAIN WARPS' WAITS at their barriers are clocked, and
+two of the readout's phases beside them -- its fence with its tiles' barrier, and its steps. THE CARD'S CLOCK is
+read from the composed row: a long call's span in SM cycles over its wall time. With both sides and nothing taken
+out, the fold's state and every output row are checked exactly against the host's: the state summed in integers,
+the image its truncation to bf16, a line its rounding to f16.
 
-MEASURED (H100 SXM, 132 SMs, vast.ai instance 60388560, driver 580.173.02; 2026-11-12, the experiment at
-1b0067bc; 7 repetitions, the composed row's 4,325,376 state values and 8,650,752 output values exact; the median;
-SM-cycles a token are the window's cycles over 8 -- 128 CTAs of two boxes, 1,024 tokens):
-
-| the row | cycles a window a CTA | SM-cycles a token |
-|---|---|---|
-| the fold's side alone: producers and steps | 4,402 | 550 |
-| the read side alone: the image, the readout and the drain | 8,009 | 1,001 |
-| the carry: both sides | 9,743 | 1,218 |
-| both sides, the producers' global loads taken out | 8,861 | 1,108 |
-| both sides, the drains' global adds taken out | 9,219 | 1,152 |
-| both sides, the image's stores taken out | 8,918 | 1,115 |
-
-A warp's clocked cycles a window, the composed row and the read side alone:
-
-| the role's count | both sides | the read side alone |
-|---|---|---|
-| a fold warp waits on the readout's read of a tile group | 1,961 | |
-| a fold warp waits on its producer | 869 | |
-| a readout warp waits on a tile group's publish | 474 | 310 |
-| a readout warp waits on the panel's drain | 328 | 346 |
-| a readout warp at its fence and its tiles' barrier | 1,887 | 1,529 |
-| a readout warp in its steps | 1,926 | 1,657 |
-| a drain warp waits on the panel | 3,142 | 2,749 |
-
-WHAT IT SHOWS.
-- THE CARRY COMPOSES, EXACTLY: two boxes' folds, the image a window, one readout warpgroup over both -- its
-  coefficients expanded by itself from the readers' bytes -- and one f16 line a token, in one CTA of 512 threads
-  at the SM's whole register file.
-- A TOKEN COSTS 1,218 SM-CYCLES COMPOSED at this cell (its sides sparse on opposite levels, 256 x 256 leaves;
-  [`carry_floor`](../internals/tools/carry_floor.md) prices a dense side higher).
-- THE READOUT WAITS ON NOTHING MUCH AND IS THE LONG ROLE: on the drain 328 cycles of the window's 9,743 and on
-  the image 474, while a drain warp waits on its panel a third of the window and a fold warp on the readout's
-  read a fifth.
-- OF THE READOUT'S TIME, its fence with its tiles' barrier is 1,887 cycles a window and its 32 steps 1,926;
-  the rest, 5,128, is its coefficients' expansion and the panel's stores, which this run does not clock apart.
-  Alone, the read side's readout spends the same shares.
-- THE TENSOR PIPE IS MOSTLY IDLE: a window is 64 steps of some 20 cycles ([`wgmma_width`](wgmma_width.md)), about
-  1,300 of its 9,743.
-
-Record: `measure/lab/results/carry_window/sm_90a.json`.
+MEASURED: not yet run.

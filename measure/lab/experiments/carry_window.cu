@@ -26,6 +26,8 @@
 // opens). Live: a fold thread's 128 accumulators; a producer's 72 words; the readout's 32 and its 4 words of bytes; a
 // drain's 16.
 // see docs/internals/tools/lab.md#carry-window
+#include <chrono>
+
 #include "lab.cuh"
 
 namespace carry_window {
@@ -57,7 +59,9 @@ constexpr int kPoolReady = 0, kPoolFreed = 32, kTilesReady = 64, kTilesRead = 96
 constexpr int kOutWindows = 4;
 //: a row's roles, and what a row takes OUT of them to find what the two sides contend for: the producers' global
 //: loads (the words made in registers), the drains' global adds (the lines folded into a sink), the image's stores
-enum Roles : int { kFold = 1, kRead = 2, kNoLoads = 4, kNoAdds = 8, kNoImage = 16 };
+//: and two of the read side's own: its coefficients expanded in the first window alone (the tiles then stand), and
+//: the panel held as fp32 -- a 4-byte store a register, a lane a word, the drain warps rounding as they add
+enum Roles : int { kFold = 1, kRead = 2, kNoLoads = 4, kNoAdds = 8, kNoImage = 16, kNoFill = 32, kWidePanel = 64 };
 
 //: the token of a (CTA, box, entry of the call), its value at a channel, its byte on its list's digit and on a
 //: dense leaf; a read coefficient at (read digit, fold digit, token): small integers
@@ -246,11 +250,14 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
 
 //: THE READOUT WARPGROUP: a chunk is 4 read digits of 16 tokens -- their coefficients expanded into its own tiles
 //: from the readers' bytes, then a digit's step on each box's image tile into one accumulator
+template <int ROLES>
 __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long long* times, uint32_t* waits,
                                           const uint32_t* dense, int windows) {
   const int tid = threadIdx.x - kReadAt, warp = tid >> 5, lane = tid & 31, q = lane >> 2, t = lane & 3;
   const uint32_t bars = base + kBarsAt;
-  const uint32_t mine = lab::held(static_cast<uint32_t>(kPanelAt + 2 * t * kRowBytes + (16 * warp + q) * 2));
+  constexpr int kValueBytes = ROLES & kWidePanel ? 4 : 2;
+  const uint32_t mine =
+      lab::held(static_cast<uint32_t>(kPanelAt + 2 * t * kRowBytes + (16 * warp + q) * kValueBytes));
   //: THE COEFFICIENTS' SHARE: a thread a (digit `j`, token `n`) of the chunk for one box
   const int pair = tid & 63, j_mine = pair >> 4, n_mine = pair & 15, box_mine = tid >> 6;
   const uint4* const boxes = reinterpret_cast<const uint4*>(dense);
@@ -275,29 +282,32 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       const int c = kChunks * w + c4;
       //: chunk `2 h + c`'s digits are `8 h + c + 2 j`: its tile group, published for this window
       waited(bars + kTilesReady + 8 * c4, w & 1, on_image);
-      //: THE COEFFICIENTS: the reader's 16 bytes (loaded a chunk before) times its byte on the digit, 8 pairs of
-      //: bf16, a line each four
-      const float weight = static_cast<float>(sparse_of(reader(c)));
-      const uint32_t words[4] = {bytes.x, bytes.y, bytes.z, bytes.w};
-#pragma unroll
-      for (int half = 0; half < 2; ++half) {
-        uint32_t two[4];
-#pragma unroll
-        for (int i = 0; i < 4; ++i) {
-          const uint32_t both = words[2 * half + i / 2] >> (16 * (i & 1));
-          two[i] = lab::bf16x2_round(weight * static_cast<float>(both & 255u),
-                                     weight * static_cast<float>(both >> 8 & 255u));
-        }
-        *reinterpret_cast<uint4*>(tile + 16 * 8 * half) = make_uint4(two[0], two[1], two[2], two[3]);
-      }
-      //: the tiles are every readout warp's stores and every warp's step reads them all: the writers' fence, then
-      //: the four warps meet at the tiles' barrier before the first step
       uint32_t since = static_cast<uint32_t>(clock64());
-      lab::bulk_fence();
-      __syncwarp();
-      if (lane == 0) lab::mbar_arrive(bars + kCoefs);
-      lab::mbar_wait(bars + kCoefs, c & 1);
-      in_fence += lap(since);
+      //: (a row with the fill taken out expands its tiles in the first window and reads them thereafter)
+      if (!(ROLES & kNoFill) || w == 0) {
+        //: THE COEFFICIENTS: the reader's 16 bytes (loaded a chunk before) times its byte on the digit, 8 pairs of
+        //: bf16, a line each four
+        const float weight = static_cast<float>(sparse_of(reader(c)));
+        const uint32_t words[4] = {bytes.x, bytes.y, bytes.z, bytes.w};
+  #pragma unroll
+        for (int half = 0; half < 2; ++half) {
+          uint32_t two[4];
+  #pragma unroll
+          for (int i = 0; i < 4; ++i) {
+            const uint32_t both = words[2 * half + i / 2] >> (16 * (i & 1));
+            two[i] = lab::bf16x2_round(weight * static_cast<float>(both & 255u),
+                                       weight * static_cast<float>(both >> 8 & 255u));
+          }
+          *reinterpret_cast<uint4*>(tile + 16 * 8 * half) = make_uint4(two[0], two[1], two[2], two[3]);
+        }
+        //: the tiles are every readout warp's stores and every warp's step reads them all: the writers' fence, then
+        //: the four warps meet at the tiles' barrier before the first step
+        lab::bulk_fence();
+        __syncwarp();
+        if (lane == 0) lab::mbar_arrive(bars + kCoefs);
+        lab::mbar_wait(bars + kCoefs, c & 1);
+        in_fence += lap(since);
+      }
       const uint32_t first = static_cast<uint32_t>(8 * (c4 >> 1) + (c4 & 1));
       const uint32_t images = lab::held(base + kImageAt + first * kImageTile);
       const uint32_t coefs = lab::held(base + kCoefAt);
@@ -323,8 +333,11 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       for (int j = 0; j < kChunkDigits; ++j)
 #pragma unroll
         for (int i = 0; i < 8; ++i)
-          *reinterpret_cast<uint16_t*>(row + (16 * j + 8 * (i >> 2) + (i & 1)) * kRowBytes + 16 * ((i >> 1) & 1))
-              = __half_as_ushort(__float2half(d[j][i]));
+        {
+          uint8_t* const to = row + (16 * j + 8 * (i >> 2) + (i & 1)) * kRowBytes + 8 * kValueBytes * ((i >> 1) & 1);
+          if constexpr (ROLES & kWidePanel) *reinterpret_cast<float*>(to) = d[j][i];
+          else *reinterpret_cast<uint16_t*>(to) = __half_as_ushort(__float2half(d[j][i]));
+        }
       __syncwarp();
       if (lane == 0) lab::mbar_arrive(bars + kPanelReady + 8 * (c & 1));
     }
@@ -343,14 +356,22 @@ __device__ __forceinline__ void drain_role(const uint8_t* smem, uint32_t base, l
   const uint32_t bars = base + kBarsAt;
   constexpr int kBatches = kTokens / kDrains / kBatch;
   static_assert(kBatches % 2 == 0);
-  uint32_t held[2][kBatch];
+  uint32_t held[2][kBatch], high[ROLES & kWidePanel ? 2 : 1][ROLES & kWidePanel ? kBatch : 1];
   uint32_t kept = 0;
-  //: batch `n` of chunk `c` into register half `n & 1`: a lane's word of a token's row is its f16 pair
+  //: batch `n` of chunk `c` into register half `n & 1`: a lane's word of a token's row is its f16 pair -- or, the
+  //: panel fp32, its two words are its two channels
   const auto load = [&](int c, int n) {
 #pragma unroll
-    for (int i = 0; i < kBatch; ++i)
-      held[n & 1][i] = reinterpret_cast<const uint32_t*>(
-          smem + kPanelAt + (c & 1) * kPanelBytes + (mine + kDrains * (n * kBatch + i)) * kRowBytes)[lane];
+    for (int i = 0; i < kBatch; ++i) {
+      const uint32_t* const row = reinterpret_cast<const uint32_t*>(
+          smem + kPanelAt + (c & 1) * kPanelBytes + (mine + kDrains * (n * kBatch + i)) * kRowBytes);
+      if constexpr (ROLES & kWidePanel) {
+        held[n & 1][i] = row[2 * lane];
+        high[n & 1][i] = row[2 * lane + 1];
+      } else {
+        held[n & 1][i] = row[lane];
+      }
+    }
   };
   uint32_t on_panel = 0;
   lab::WarpSpan clock;
@@ -369,7 +390,9 @@ __device__ __forceinline__ void drain_role(const uint8_t* smem, uint32_t base, l
 #pragma unroll
       for (int i = 0; i < kBatch; ++i) {
         const int token = mine + kDrains * (n * kBatch + i);
-        const uint32_t pair = held[n & 1][i];
+        const uint32_t pair = ROLES & kWidePanel ? lab::pack_half2(__uint_as_float(held[n & 1][i]),
+                                                                     __uint_as_float(high[n & 1][i]))
+                                                   : held[n & 1][i];
         if constexpr (ROLES & kNoAdds) kept ^= pair + token;
         else lab::red_add_f16x2(out + (first + 32 * (token / 16) + token % 16) * (kChannels / 2) + lane, pair);
       }
@@ -429,7 +452,7 @@ __global__ void __launch_bounds__(kThreads, 1)
     fold_role<ROLES>(smem, base, times, waits, state, windows);
   } else if (tid < kProduceAt) {
     lab::regs_down<kReadRegs>();
-    if constexpr (ROLES & kRead) read_role(smem, base, times, waits, dense, windows);
+    if constexpr (ROLES & kRead) read_role<ROLES>(smem, base, times, waits, dense, windows);
     else idle_role(times, waits);
   } else if (tid < kDrainAt) {
     if constexpr (ROLES & kFold) produce_role<ROLES>(smem, base, times, values, dense, windows);
@@ -478,17 +501,20 @@ template <int ROLES>
 void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t* dense, float* state, uint32_t* out) {
   using namespace carry_window;
   constexpr int kTimed = 64;
-  const std::string name = ROLES == kFold ? "the fold's side alone: producers and steps"
-                           : ROLES == kRead ? "the read side alone: the image, the readout and the drain"
-                           : ROLES == (kFold | kRead) ? "the carry: both sides"
-                           : ROLES & kNoLoads ? "both sides, the producers' global loads taken out"
-                           : ROLES & kNoAdds ? "both sides, the drains' global adds taken out"
-                           : "both sides, the image's stores taken out";
+  const std::string side = (ROLES & 3) == kFold ? "the fold's side alone: producers and steps"
+                           : (ROLES & 3) == kRead ? "the read side alone: the image, the readout and the drain"
+                           : "the carry: both sides";
+  const std::string name = side + (ROLES & kNoLoads ? ", the producers' global loads taken out" : "")
+                           + (ROLES & kNoAdds ? ", the drains' global adds taken out" : "")
+                           + (ROLES & kNoImage ? ", the image's stores taken out" : "")
+                           + (ROLES & kNoFill ? ", the coefficients expanded once" : "")
+                           + (ROLES & kWidePanel ? ", the panel fp32" : "");
   const auto kernel = window<ROLES>;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
   LAB_CHECK(cudaMemset(out, 0, words * 4));
-  if (ROLES == (kFold | kRead)) {
+  //: checked: both sides with nothing taken out, the panel in either form
+  if ((ROLES & ~kWidePanel) == (kFold | kRead)) {
     kernel<<<b.sms, kThreads, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * kLists * 8;
@@ -569,15 +595,30 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
       });
   b.record(name, "cycles a window a CTA", cycles);
   //: the composed row's sites, and the read side's own but the fold's wait on a producer, which does not run there
-  if (ROLES == (kFold | kRead) || ROLES == kRead)
+  if (ROLES == (kFold | kRead)) {
+    //: THE CARD'S CLOCK: a long call's span in SM cycles over its wall time, the launch and its wait included (a
+    //: call of some 20 ms: they are under a percent of it)
+    constexpr int kLong = 4096;
+    lab::Samples clock_rate;
+    for (int r = 0; r < 5; ++r) {
+      LAB_CHECK(cudaDeviceSynchronize());
+      const auto t0 = std::chrono::steady_clock::now();
+      kernel<<<b.sms, kThreads, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, kLong);
+      LAB_CHECK(cudaDeviceSynchronize());
+      const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      clock_rate.v.push_back(b.span(kThreads >> 5) / seconds / 1e9);
+    }
+    b.record("the card's clock: the composed call's span over its wall time", "GHz", clock_rate);
+  }
+  if (!(ROLES & (kNoLoads | kNoAdds | kNoImage)) && ROLES & kRead)
     for (int i = 0; i < kSites; ++i)
-      if (ROLES != kRead || i != 1) b.record(name + ": " + sites[i].name, "cycles a window a warp", waited_at[i]);
+      if (ROLES & kFold || i != 1) b.record(name + ": " + sites[i].name, "cycles a window a warp", waited_at[i]);
 }
 
 int main(int argc, char** argv) {
   using namespace carry_window;
   lab::Bench b(argc, argv);
-  for (int roles : {1, 2, 3, 3 | kNoLoads, 3 | kNoAdds, 3 | kNoImage}) {
+  for (int roles : {1, 2, 3, 3 | kNoLoads, 3 | kNoAdds, 3 | kNoImage, 2 | kNoFill, 2 | kWidePanel, 3 | kWidePanel}) {
     const std::string k = lab::kernel("window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     b.expect(k, "HGMMA", "==", (roles & kFold ? 2 * kSlotLists : 1) + (roles & kRead ? 2 * kChunkDigits : 0));
@@ -622,5 +663,8 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kNoLoads>(b, waits, values, dense, state, out);
   run<kFold | kRead | kNoAdds>(b, waits, values, dense, state, out);
   run<kFold | kRead | kNoImage>(b, waits, values, dense, state, out);
+  run<kRead | kNoFill>(b, waits, values, dense, state, out);
+  run<kRead | kWidePanel>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kWidePanel>(b, waits, values, dense, state, out);
   return 0;
 }
