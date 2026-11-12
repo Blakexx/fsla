@@ -433,6 +433,14 @@ __device__ __forceinline__ void red_add_f32(float* dst, float v) {
   asm volatile("red.global.add.f32 [%0], %1;" : : "l"(dst), "f"(v) : "memory");
 }
 
+//: one 32-bit and one 64-bit integer added into global memory by its thread
+__device__ __forceinline__ void red_add_u32(uint32_t* dst, uint32_t v) {
+  asm volatile("red.global.add.u32 [%0], %1;" : : "l"(dst), "r"(v) : "memory");
+}
+__device__ __forceinline__ void red_add_u64(uint64_t* dst, uint64_t v) {
+  asm volatile("red.global.add.u64 [%0], %1;" : : "l"(dst), "l"(v) : "memory");
+}
+
 // ------------------------------------------------------------------------------------------ hopper clusters
 // a cluster's CTAs reach each other's shared memory; a kernel of them carries `__cluster_dims__`
 // see docs/internals/tools/lab.md#cluster

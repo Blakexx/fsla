@@ -4,7 +4,9 @@
 // or the add being atomic? METHOD: a CTA an SM of 1, 2, 4 or 8 warps; each warp issues 16 instructions a trip to
 // its own rows of global memory, from registers that never change. ONE LINE: an instruction's lanes add f16 pairs
 // into one 128-byte line, by 32, 16 or 8 lanes. SPREAD: its 32 lanes each add into a different line. STORE: the
-// one-line form as a plain 4-byte store a lane, no add. Every row's sums are checked exactly.
+// one-line form as a plain 4-byte store a lane, no add. INTEGER AND fp32: the one-line form by a 32-bit integer
+// add and by an fp32 add, and 64-bit integer adds, 8 bytes a lane, two lines an instruction. Every row's sums
+// are checked exactly.
 // TIMELINE: no load. A warp's trip is 16 instructions, each from a register set before the clock and to an
 // address that is a constant off the warp's base: nothing waits on anything. Live: one word a thread.
 // see docs/internals/tools/lab.md#add-rate
@@ -13,7 +15,7 @@
 namespace add_rate {
 
 constexpr int kTrip = 16, kLineWords = 32, kWarpLines = kTrip * 32;
-enum Form : int { kOneLine = 0, kSpread, kStore };
+enum Form : int { kOneLine = 0, kSpread, kStore, kU32, kF32, kU64 };
 
 __device__ __forceinline__ uint32_t f16_of(int v) { return __half_as_ushort(__float2half(static_cast<float>(v))); }
 
@@ -31,9 +33,13 @@ __global__ void __launch_bounds__(32 * WARPS, 1) add(long long* times, uint32_t*
   for (int r = 0; r < rounds; ++r) {
 #pragma unroll
     for (int i = 0; i < kTrip; ++i) {
-      uint32_t* const to = own + i * (FORM == kSpread ? 32 : 1) * kLineWords;
+      uint32_t* const to = own + i * (FORM == kSpread ? 32 : FORM == kU64 ? 2 : 1) * kLineWords;
       if (lane < LANES) {
         if constexpr (FORM == kStore) *to = v + r;
+        else if constexpr (FORM == kU32) lab::red_add_u32(to, 1u);
+        else if constexpr (FORM == kF32) lab::red_add_f32(reinterpret_cast<float*>(to), 1.0f);
+        //: 8 bytes a lane: an instruction is two lines, its lanes' words `2 lane` and the next
+        else if constexpr (FORM == kU64) lab::red_add_u64(reinterpret_cast<uint64_t*>(to + lane), 1ull);
         else lab::red_add_f16x2(to, v);
       }
     }
@@ -49,7 +55,10 @@ void run(lab::Bench& b, uint32_t* out) {
   constexpr int kCheckRounds = 64, kRounds = 2048;
   const std::string name = std::string(FORM == kOneLine ? "f16 adds into one line an instruction"
                                        : FORM == kSpread ? "f16 adds, a lane a line of its own"
-                                       : "plain stores into one line an instruction")
+                                       : FORM == kStore ? "plain stores into one line an instruction"
+                                       : FORM == kU32 ? "32-bit integer adds into one line an instruction"
+                                       : FORM == kF32 ? "fp32 adds into one line an instruction"
+                                       : "64-bit integer adds, two lines an instruction")
                            + ", " + std::to_string(LANES) + " lanes, " + std::to_string(WARPS)
                            + (WARPS == 1 ? " warp" : " warps");
   const auto kernel = add<WARPS, LANES, FORM>;
@@ -65,11 +74,19 @@ void run(lab::Bench& b, uint32_t* out) {
     const int lane = static_cast<int>(w % kLineWords), line = static_cast<int>(w / kLineWords) % kWarpLines,
               warp = static_cast<int>(w / (static_cast<size_t>(kWarpLines) * kLineWords)) % 8;
     const bool written = warp < WARPS && lane < LANES
-                         && (FORM == kSpread ? line % 32 == lane : line < kTrip);
+                         && (FORM == kSpread ? line % 32 == lane : line < (FORM == kU64 ? 2 * kTrip : kTrip));
     uint32_t want = 0;
     if (written) {
       if (FORM == kStore) {
         want = (0x3c00u | 0x3c00u << 16) + (kCheckRounds - 1);
+      } else if (FORM == kU32) {
+        want = kCheckRounds;
+      } else if (FORM == kF32) {
+        const float f = static_cast<float>(kCheckRounds);
+        std::memcpy(&want, &f, 4);
+      } else if (FORM == kU64) {
+        //: a lane's count in its low word, nothing in its high
+        want = lane % 2 == 0 ? kCheckRounds : 0;
       } else {
         //: 64 as an f16: 2^6, exponent field 21
         want = 0x5400u | 0x5400u << 16;
@@ -98,6 +115,8 @@ int main(int argc, char** argv) {
     //: the timed stores are there: one an instruction of the trip
     b.expect(lab::kernel("add", {warps, 32, kStore}), "STG", ">=", kTrip);
   }
+  for (int form : {kU32, kF32, kU64})
+    for (int warps : {1, 4}) b.expect(lab::kernel("add", {warps, 32, form}), "RED", ">=", kTrip);
   if (b.expect_only) return 0;
   uint32_t* out = nullptr;
   LAB_CHECK(cudaMalloc(&out, static_cast<size_t>(b.sms) * 8 * kWarpLines * kLineWords * 4));
@@ -111,5 +130,11 @@ int main(int argc, char** argv) {
   run<4, 32, kSpread>(b, out);
   run<1, 32, kStore>(b, out);
   run<4, 32, kStore>(b, out);
+  run<1, 32, kU32>(b, out);
+  run<4, 32, kU32>(b, out);
+  run<1, 32, kF32>(b, out);
+  run<4, 32, kF32>(b, out);
+  run<1, 32, kU64>(b, out);
+  run<4, 32, kU64>(b, out);
   return 0;
 }

@@ -16,6 +16,8 @@ on anything.
   issue nothing).
 - SPREAD: its 32 lanes each add into a different line.
 - STORE: the one-line form as a plain 4-byte store a lane, no add.
+- INTEGER AND fp32: the one-line form by a 32-bit integer add and by an fp32 add; and 64-bit integer adds, 8 bytes
+  a lane, two lines an instruction.
 Every row's words are checked exactly.
 
 MEASURED (H100 SXM, 132 SMs, vast.ai instance 60336666, driver 595.91.07; 2026-11-12, the experiment at
