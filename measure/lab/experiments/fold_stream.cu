@@ -3,8 +3,8 @@
 // width -- 64 leaves a step in four groups, or all 256 in one -- and with one producer warp or four? METHOD: a CTA
 // an SM: producer warps and one fold warpgroup holding the box's state, 256 leaves x 64 channels, as accumulators
 // of WIDE leaves. Both operands are M|N-major, bricks 17 lines apart: a token's value is one 4-byte store a lane on
-// 32 banks. WIDE 64, a producer a group: it walks every token, and where a token's leaves fall in its group it
-// loads the value (128 bytes, coalesced), stores it at its own running count and the token's row of 64
+// 32 banks. WIDE 64, a producer a group: it walks every token and loads every value (128 bytes, coalesced), and
+// where a token's leaves fall in its group stores the value at its own running count and the token's row of 64
 // coefficients beside it, one store each. WIDE 256, one group: a token's slot is its index, so there is no count;
 // a producer takes the tokens of its residue, stores the value, clears the 4 words the slot's last token set and
 // sets its own 4. A producer holds two batches of 8 tokens' values, the next loaded before this one is stored. A

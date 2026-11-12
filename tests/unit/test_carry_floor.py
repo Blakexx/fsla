@@ -70,8 +70,11 @@ def test_a_box_a_side_touches_narrowly_pays_padding_and_the_whole_tile():
     strip = carry_floor.floor(cluster=(1, 1), **{**ALT, "box": (256, 1)})["terms"]
     #: 16 x 16 boxes: a list's 16 leaves fill both steps; a strip along the read side: the fold's one leaf a list
     #: runs a step of eight
-    assert even["tensor, fold"]["cycles"] == even["tensor, readout"]["cycles"] == strip["tensor, readout"]["cycles"]
-    assert strip["tensor, fold"]["cycles"][0] == pytest.approx(8 * even["tensor, fold"]["cycles"][0])
+    assert even["tensor, readout"]["cycles"] == strip["tensor, readout"]["cycles"]
+    #: the fold is its steps' time, a sixteenth of one a (token, list, box): 64 of those square, 1,024 in strips
+    step = carry_floor.measured()["fold_step"][0]
+    assert strip["tensor, fold"]["cycles"][0] == pytest.approx(256 * 4 * step / 16)
+    assert even["tensor, fold"]["cycles"][0] == pytest.approx(1024 / 16 * step / 16, rel=0.01)
     #: every token writes every strip: each takes the window's tile packed
     rates = carry_floor.measured()
     assert strip["fold values, loaded"]["cycles"][0] == pytest.approx(256 * rates["load_packed"][0])

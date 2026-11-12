@@ -16,8 +16,9 @@ THE TERMS, SM-cycles a token (each line of the report says which rate it used an
 read from an H100 lab record under `measure/lab/results/` at run time -- or ESTIMATED, a constant of this file with
 its reason):
 - tensor: the leaves a token reads and writes, times the channels, over the pipe's products a cycle (`wgmma_rate`);
-  a value width under 64 runs wgmma's 64 rows (the idle half), and a list's leaves in a box run whole steps -- the
-  fold's in eights (wgmma's N), the readout's in sixteens (its K) -- so a box a side touches narrowly pays padding;
+  a value width under 64 runs wgmma's 64 rows (the idle half), and the readout's leaves of a list in a box run
+  whole steps of sixteen (its K). THE FOLD is priced by its steps' TIME, MEASURED (`fold_stream`): a token in a list
+  of a box is a sixteenth of a step, and a step costs the same at 8 columns as at 64, and four times that at 256;
 - the readout's operand: its (token, leaf) coefficients expanded into shared memory, at the SM's shared access rate
   (`byte_expand`, its bank-spread form);
 - the output's sum: by default (`--sum none`) every box drains its own partial to global memory (`bulk_drain`, a
@@ -94,6 +95,8 @@ def measured() -> dict[str, tuple[float, str]]:
                          "bulk_drain / one bulk add a panel, one sum for every CTA (a byte)"),
         "load_packed": (median("state_move", "one bulk copy in from global memory, blocks of 8192 bytes") * 128 / 1024,
                         "state_move / one bulk copy in from global memory, blocks of 8192 bytes (128 bytes of it)"),
+        "fold_step": (median("fold_stream", "the fold alone, steps of 64 leaves, 4 producers") * 64 / 16,
+                      "fold_stream / the fold alone, steps of 64 leaves (a step of 16 tokens)"),
         "load_row": (median("state_move", "64 loads of 128 bytes, a thread each"),
                      "state_move / 64 loads of 128 bytes, a thread each (a load)"),
         **cluster_rates(),
@@ -178,8 +181,12 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
     a_box = a_value(write.boxes, all_boxes)
     loads = (a_value(write.clusters, all_boxes / math.prod(cluster)) if clustered else a_box, a_box)
 
-    #: THE STEPS' PADDING: a list's leaves in a box are wgmma's N in the fold (eights) and its K in the readout
-    #: (sixteens); a box a token touches narrowly runs the rest of the step on nothing
+    #: A FOLD STEP IS PRICED BY ITS TIME: a token in a list of a box is a sixteenth of a step, and a step's time is
+    #: one of 64 columns' for each 64 of the list's leaves in the box (`fold_stream`: 8, 64 and 256 columns)
+    def steps_wide(a: Side) -> float:
+        return math.ceil(a.leaves / (a.boxes * a.lists) / 64 - 1e-9)
+
+    #: THE READOUT'S PADDING: a list's leaves in a box are its K, whole steps of sixteen
 
     def padded(a: Side, step: int) -> float:
         along = a.leaves / (a.boxes * a.lists)
@@ -187,7 +194,7 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
 
     terms = {
         "tensor, readout": (both(padded(read, 16) * rows / products), "products"),
-        "tensor, fold": (both(padded(write, 8) * rows / products), "products"),
+        "tensor, fold": (both(write.boxes * write.lists * steps_wide(write) * rates["fold_step"][0] / 16), "fold_step"),
         "readout operand, expanded": (both(read.leaves * 2 / shared), "shared"),
         "sum: partials into the cluster": (both(read.boxes * hop), f"hop_{form}" if summed else "no cluster sum"),
         "sum: the rounds' barriers": (both(barriers), f"round_{form}" if summed else "no cluster sum"),

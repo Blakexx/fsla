@@ -1155,6 +1155,7 @@
   {"doc": "docs/internals/tools/carry_floor.md", "pinned_at": "a6fa1be51dd2", "reviewed": true, "sha256": "", "target": "docs/architecture/precision.md"},
   {"doc": "docs/internals/tools/carry_floor.md", "pinned_at": "93eae8f4adbc", "reviewed": true, "sha256": "da89c5bdb473906c", "target": "docs/internals/tools/arith_model.md#sums"},
   {"doc": "docs/internals/tools/carry_floor.md", "pinned_at": "b870d1e2a9e1", "reviewed": true, "sha256": "", "target": "docs/lab/cluster_sum.md"},
+  {"doc": "docs/internals/tools/carry_floor.md", "pinned_at": "9eed68e9ff5a", "reviewed": true, "sha256": "", "target": "docs/lab/fold_stream.md"},
   {"doc": "docs/internals/tools/carry_floor.md", "pinned_at": "93eae8f4adbc", "reviewed": true, "sha256": "", "target": "docs/lab/state_move.md"},
   {"doc": "docs/internals/tools/carry_floor.md", "pinned_at": "bd8d1b75bdc8", "reviewed": true, "sha256": "", "target": "measure/lab/results"},
   {"doc": "docs/internals/tools/carry_floor.md", "pinned_at": "bd8d1b75bdc8", "reviewed": true, "sha256": "", "target": "tools/carry_floor.py"},
