@@ -13,8 +13,8 @@ waits for it, K = 1, 2, 4 and 8, at 8, 16, 32, 64, 128 and 256 columns (64 rows,
 both operands shared-memory tiles of ones, every descriptor held in a register. A step's own time is the increment
 from 4 steps a group to 8, and the rest of a trip its group's round trip. Every accumulator is checked: 16 a step in every value.
 
-MEASURED (H100 SXM, 132 SMs, vast.ai instance 60309361, driver 595.91.07; 2026-11-12, the experiment at
-f0311efc; 7 repetitions, every accumulator exact; cycles a commit group, the median, the spread under 0.1%;
+MEASURED (H100 SXM, 132 SMs, vast.ai instance 60311139, driver 595.91.07; 2026-11-12, the experiment at
+1eba273a; 7 repetitions, every accumulator exact; cycles a commit group, the median, the spread under 0.1%;
 THE STEP is a step more once a group holds several, from 4 steps to 8 -- a group's first steps cost less each,
 so the slope from 1 is under it -- and THE GROUP what the 8-step trip holds beside eight of them):
 
@@ -34,5 +34,7 @@ WHAT IT SHOWS.
   [`wgmma_rate`](wgmma_rate.md) read.
 - THE COMMIT GROUP'S ROUND TRIP is 50 to 65 cycles beside its steps.
 - So a step's work is cheapest a column at 64 columns, and the same there as at any multiple of 64.
+- A GROUP OF 32 EIGHT-COLUMN STEPS is 625 cycles: a box of 256 leaves folded 8 at a step, 19.5 a step with its
+  round trip.
 
 Record: `measure/lab/results/wgmma_width/sm_90a.json`.

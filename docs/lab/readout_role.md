@@ -16,4 +16,20 @@ role's branch draws) -- then the 64 tokens' fp32 rows stored to the panel, rows 
 fall on 32 banks. The drain warps, a chunk behind, load a token's row, round it to f16 pairs and add one line into
 its output row. Every output row is checked exactly.
 
-UNMEASURED: no card has run it.
+MEASURED (H100 SXM, 132 SMs, vast.ai instance 60311139, driver 595.91.07; 2026-11-12, the experiment at
+1eba273a; 7 repetitions, every output row exact; SM-cycles a token a CTA, the median, the spread under 1.0%):
+
+| the drain warps | cycles a token |
+|---|---|
+| 1 | 21.7 |
+| 2 | 15.6 |
+| 4 | 12.0 |
+
+WHAT IT SHOWS.
+- ONE READOUT WARPGROUP OVER BOTH IMAGES WORKS: the two boxes are one partial a token, exact, with the steps not
+  serialized.
+- IT NEEDS FEWER DRAIN WARPS THAN A MERGE DOES: 21.7, 15.6 and 12.0 cycles a token with one, two and four, the
+  readout's steps and its panel's stores included, where [`drain_role`](drain_role.md)'s two panels merged by the
+  drain read 36.2, 21.1 and 11.7. With four it is the line's own rate; with two it is within 59% over it.
+
+Record: `measure/lab/results/readout_role/sm_90a.json`.
