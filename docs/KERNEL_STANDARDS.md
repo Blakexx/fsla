@@ -984,6 +984,10 @@ without a reason. A value is staged in shared memory only when:
 Otherwise it stays in the registers that produce and consume it (`wgmma`'s A operand, where it is the warp's own
 accumulators: §2). Staging is not a pipe saving to be had by skipping it: a load from L2 into registers is written into
 the banks and read out as a staged copy and its read are, and it holds registers for the loads in flight (`[MACHINE]`
-sm_86, `smem_rates`: ~1.6 pipe cycles a 128 bytes against a copy's 0.5 and its matrix load's 1.0) -- so rows an MMA
-reads from global memory are staged by the family's copy (TMA's bulk copy on hopper), never loaded to registers
-direct. sm_90: item 4 stages B; sm_100: accumulators in tensor memory, operands as item 4.
+sm_86, `smem_rates`: ~1.6 pipe cycles a 128 bytes against a copy's 0.5 and its matrix load's 1.0) -- so CONTIGUOUS
+rows an MMA reads from global memory (a window's tokens, a stream in order) are staged by the family's copy (TMA's
+bulk copy on hopper), never loaded to registers direct. SCATTERED rows, each its own request (a carry's entries: a
+list's tokens lie anywhere in the table), are loaded by warps and stored (amended 2026-11-12, Blake's "The
+amendment makes sense"): a copy engine takes scattered requests one after another, and warps' own loads overlap
+(`[MACHINE]` sm_90, a scattered 128-byte row: the bulk copy 32.8 cycles, [`state_move`](lab/state_move.md); one
+warp's loads 33.0 and four warps' 8.5, [`load_rate`](lab/load_rate.md), [`value_gather`](lab/value_gather.md)). sm_90: item 4 stages B; sm_100: accumulators in tensor memory, operands as item 4.

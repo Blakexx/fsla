@@ -8,6 +8,8 @@ The law: `docs/KERNEL_STANDARDS.md#s30`. The model: `docs/internals/tools/bank_m
 
 0. Stage the data at all only for a reason `docs/KERNEL_STANDARDS.md#s33` names (other warps read it, it is
    rearranged, buffered past the registers, or the MMA reads it from shared memory); else it stays in registers.
+   Contiguous rows from global memory arrive by the family's copy; scattered rows, each its own request, by warps'
+   loads (the same section).
 
 1. In the component's `docs/internals/` page (or the lab's header), write the access table §30.1 asks for and choose
    the layout from it; name the instruction shapes it is conflict-free for.
