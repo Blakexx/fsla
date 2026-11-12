@@ -9,13 +9,15 @@
 // each token's row as one f16 line. Rows: the fold's side alone, the read side alone, both, and both with one
 // access taken out -- the producers' global loads, the drains' global adds, the image's stores. Both: the state
 // and every output row are checked exactly.
-// TIMELINE: a fold warpgroup's trip is a window: the wait on the readout's last window, 128 stores a thread and
-// their fence, the image's arrival; then a slot twice: the wait on its producer, the fence, 8 steps, the commit
+// TIMELINE: a fold warpgroup's trip is a window: the image a tile group at a time, four -- the wait on the
+// readout's read of that group a window back, 32 stores a thread and their fence, the group's arrival -- so the
+// readout reads a window's first groups while its last are published; then a slot twice: the wait on its producer,
+// the fence, 8 steps, the commit
 // and its wait, the slot freed. A producer's trip is a slot, four batches of 32 entries alternating two register
 // halves: a batch's stores and multiplies (its words loaded two batches before), then those registers' loads for
 // the batch two on; the fence and the arrival. The readout's trip is a chunk: the wait on the panel two chunks
-// back, the fence, 8 steps, the commit and its wait, 32 stores a thread, the arrival; a window's image waited on
-// at its first chunk and released after its last. A drain warp's trip is a chunk, four batches of 8 tokens
+// back and on the chunk's tile group, the fence, 8 steps, the commit and its wait, the group released, 32 stores
+// a thread, the arrival. A drain warp's trip is a chunk, four batches of 8 tokens
 // alternating two register halves: a batch's rounds and adds, then those registers' loads for the batch two on
 // (the chunk's first two as it opens). Live: a fold thread's 128 accumulators; a producer's 72 words; the
 // readout's 32; a drain's 32.
@@ -42,10 +44,11 @@ constexpr int kBrickLines = 17, kImageTile = 137 * 16, kBoxBytes = kLists * kIma
 constexpr int kChunkDigits = 4, kTokens = 16 * kChunkDigits, kChunks = kLists / kChunkDigits, kRowBytes = 272,
               kPanelBytes = kTokens * kRowBytes, kBatch = 8;
 constexpr int kImageAt = 4 * kPoolBytes, kCoefAt = kImageAt + 2 * kBoxBytes, kPanelAt = kCoefAt + kLists * kCoefBytes,
-              kBarsAt = kPanelAt + 2 * kPanelBytes, kSmemBytes = kBarsAt + 112;
-//: the barriers, 8 bytes each: a pool slot filled and freed (box, slot), the image published, the window read, a
+              kBarsAt = kPanelAt + 2 * kPanelBytes, kSmemBytes = kBarsAt + 160;
+//: the barriers, 8 bytes each: a pool slot filled and freed (box, slot); an image's tile group published and read
+//: (a group is the 4 read digits `8 h + c + 2 j` of a chunk `2 h + c`: every fold thread holds a quarter of it); a
 //: panel filled and drained
-constexpr int kPoolReady = 0, kPoolFreed = 32, kImaged = 64, kReadDone = 72, kPanelReady = 80, kPanelFreed = 96;
+constexpr int kPoolReady = 0, kPoolFreed = 32, kTilesReady = 64, kTilesRead = 96, kPanelReady = 128, kPanelFreed = 144;
 constexpr int kOutWindows = 4;
 //: a row's roles, and what a row takes OUT of them to find what the two sides contend for: the producers' global
 //: loads (the words made in registers), the drains' global adds (the lines folded into a sink), the image's stores
@@ -91,23 +94,24 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
 #pragma unroll 1
   for (int w = 0; w < windows; ++w) {
     if constexpr (ROLES & kRead) {
-      //: THE IMAGE: value (channel m, fold digit a) of read digit b to tile b, line `(m / 8) 17 + a`, slot `m % 8`,
-      //: once the readout has left the window before
-      //: the first window's image is the cleared shared memory: the state is zero
-      if (w > 0) lab::mbar_wait(bars + kReadDone, (w - 1) & 1);
-      if (w > 0 && !(ROLES & kNoImage)) {
+      //: THE IMAGE, a tile group at a time behind the readout: value (channel m, fold digit a) of read digit b to
+      //: tile b, line `(m / 8) 17 + a`, slot `m % 8`, once the readout has read that group of the window before.
+      //: The first window's image is the cleared shared memory: the state is zero
 #pragma unroll
-        for (int a = 0; a < kLists; ++a)
+      for (int k = 0; k < kChunks; ++k) {
+        if (w > 0) lab::mbar_wait(bars + kTilesRead + 8 * k, (w - 1) & 1);
+        if (w > 0 && !(ROLES & kNoImage)) {
 #pragma unroll
-          for (int hc = 0; hc < 4; ++hc)
+          for (int a = 0; a < kLists; ++a)
 #pragma unroll
             for (int r = 0; r < 2; ++r)
-              *reinterpret_cast<uint16_t*>(mine + (8 * (hc >> 1) + (hc & 1)) * kImageTile + 16 * a + 16 * r * kBrickLines)
-                  = static_cast<uint16_t>(__float_as_uint(d[a][(hc & 1) | r << 1 | (hc >> 1) << 2]) >> 16);
+              *reinterpret_cast<uint16_t*>(mine + (8 * (k >> 1) + (k & 1)) * kImageTile + 16 * a + 16 * r * kBrickLines)
+                  = static_cast<uint16_t>(__float_as_uint(d[a][(k & 1) | r << 1 | (k >> 1) << 2]) >> 16);
+        }
+        lab::bulk_fence();
+        __syncwarp();
+        if (lane == 0) lab::mbar_arrive(bars + kTilesReady + 8 * k);
       }
-      lab::bulk_fence();
-      __syncwarp();
-      if (lane == 0) lab::mbar_arrive(bars + kImaged);
     }
     if constexpr (ROLES & kFold) {
 #pragma unroll
@@ -223,22 +227,26 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
   clock.start();
 #pragma unroll 1
   for (int w = 0; w < windows; ++w) {
-    lab::mbar_wait(bars + kImaged, w & 1);
 #pragma unroll 1
     for (int c4 = 0; c4 < kChunks; ++c4) {
       const int c = kChunks * w + c4;
+      //: chunk `2 h + c`'s digits are `8 h + c + 2 j`: its tile group, published for this window
+      lab::mbar_wait(bars + kTilesReady + 8 * c4, w & 1);
       if (c >= 2) lab::mbar_wait(bars + kPanelFreed + 8 * (c & 1), ((c >> 1) - 1) & 1);
-      const uint32_t images = lab::held(base + kImageAt + c4 * kChunkDigits * kImageTile);
-      const uint32_t coefs = lab::held(base + kCoefAt + c4 * kChunkDigits * kCoefBytes);
+      const uint32_t first = static_cast<uint32_t>(8 * (c4 >> 1) + (c4 & 1));
+      const uint32_t images = lab::held(base + kImageAt + first * kImageTile);
+      const uint32_t coefs = lab::held(base + kCoefAt + first * kCoefBytes);
       lab::wg_fence();
 #pragma unroll
       for (int j = 0; j < kChunkDigits; ++j)
 #pragma unroll
         for (int box = 0; box < 2; ++box)
-          lab::wg_bf16_n16_ss_mna(d[j], lab::wg_desc(images + box * kBoxBytes + j * kImageTile, 8, kBrickLines),
-                                  lab::wg_desc(coefs + j * kCoefBytes, 8, 16), box != 0);
+          lab::wg_bf16_n16_ss_mna(d[j], lab::wg_desc(images + box * kBoxBytes + 2 * j * kImageTile, 8, kBrickLines),
+                                  lab::wg_desc(coefs + 2 * j * kCoefBytes, 8, 16), box != 0);
       lab::wg_commit();
       lab::wg_wait<0>();
+      //: the group is read: its box may publish the next window's over it
+      if (lane == 0) lab::mbar_arrive(bars + kTilesRead + 8 * c4);
       //: THE PANEL: value (channel, token) to the token's row, a store a register
       uint8_t* const row = smem + mine + (c & 1) * kPanelBytes;
 #pragma unroll
@@ -249,8 +257,6 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       __syncwarp();
       if (lane == 0) lab::mbar_arrive(bars + kPanelReady + 8 * (c & 1));
     }
-    //: the window's image is read: its box may publish the next
-    if (lane == 0) lab::mbar_arrive(bars + kReadDone);
   }
   clock.stop(times);
 }
@@ -283,8 +289,10 @@ __device__ __forceinline__ void drain_role(const uint8_t* smem, uint32_t base, l
     lab::mbar_wait(bars + kPanelReady + 8 * (c & 1), (c >> 1) & 1);
     load(c, 0);
     load(c, 1);
+    //: the chunk's digit `j` is read digit `8 h + c + 2 j`: its 16 tokens' rows start at 16 of that
     const long long first = static_cast<long long>(blockIdx.x) * (kOutWindows * kWindow)
-                            + ((c / kChunks) % kOutWindows) * kWindow + (c % kChunks) * kTokens;
+                            + ((c / kChunks) % kOutWindows) * kWindow
+                            + 16 * (8 * ((c % kChunks) >> 1) + ((c % kChunks) & 1));
 #pragma unroll
     for (int n = 0; n < kBatches; ++n) {
 #pragma unroll
@@ -292,7 +300,7 @@ __device__ __forceinline__ void drain_role(const uint8_t* smem, uint32_t base, l
         const int token = mine + kDrains * (n * kBatch + i);
         const uint32_t pair = lab::pack_half2(lo[n & 1][i], hi[n & 1][i]);
         if constexpr (ROLES & kNoAdds) kept ^= pair + token;
-        else lab::red_add_f16x2(out + (first + token) * (kChannels / 2) + lane, pair);
+        else lab::red_add_f16x2(out + (first + 32 * (token / 16) + token % 16) * (kChannels / 2) + lane, pair);
       }
       if (n + 2 < kBatches) load(c, n + 2);
     }
@@ -331,8 +339,11 @@ __global__ void __launch_bounds__(kThreads, 1)
       lab::mbar_init(base + kBarsAt + kPoolReady + 8 * p, 1);
       lab::mbar_init(base + kBarsAt + kPoolFreed + 8 * p, 1);
     }
-    lab::mbar_init(base + kBarsAt + kImaged, 2 * kGroup / 32);
-    lab::mbar_init(base + kBarsAt + kReadDone, kGroup / 32);
+#pragma unroll
+    for (int k = 0; k < kChunks; ++k) {
+      lab::mbar_init(base + kBarsAt + kTilesReady + 8 * k, 2 * kGroup / 32);
+      lab::mbar_init(base + kBarsAt + kTilesRead + 8 * k, kGroup / 32);
+    }
 #pragma unroll
     for (int p = 0; p < 2; ++p) {
       lab::mbar_init(base + kBarsAt + kPanelReady + 8 * p, kGroup / 32);
