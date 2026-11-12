@@ -48,45 +48,55 @@ long call's span in SM cycles over its wall time. With both sides and nothing ta
 every output row are checked exactly against the host's: the state summed in integers, the image its truncation to
 bf16, a line its rounding to f16.
 
-MEASURED (H100 SXM, 132 SMs, vast.ai instance 60394533, driver 610.57.04; 2026-11-12, the experiment at
-18aee859; 7 repetitions, the composed row's 4,325,376 state values and 8,650,752 output values exact; the median,
-the spread under 8%; SM-cycles a token are the window's cycles over 8 -- 128 CTAs of two boxes, 1,024 tokens):
+MEASURED (H100 SXM, 132 SMs, vast.ai instance 60398450, driver 595.91.07; 2026-11-12, the experiment at
+bb5fa556; 7 repetitions, the composed rows' 4,325,376 state values and 8,650,752 output values exact; the median,
+the spread under 3%; SM-cycles a token are the window's cycles over 8 -- 128 CTAs of two boxes, 1,024 tokens):
 
 | the row | cycles a window a CTA | SM-cycles a token |
 |---|---|---|
-| the fold's side alone: producers and steps | 5,755 | 719 |
-| the read side alone: the image, the readout and the drain | 7,679 | 960 |
-| the carry: both sides | 8,803 | 1,100 |
-| both sides, the producers' global loads taken out | 7,931 | 991 |
-| both sides, the drains' global adds taken out | 7,459 | 932 |
-| both sides, the image's stores taken out | 8,007 | 1,001 |
+| the fold's side alone: producers and steps | 5,782 | 723 |
+| the read side alone: the image, the readout and the drain | 7,812 | 977 |
+| the carry: both sides | 8,765 | 1,096 |
+| both sides, the producers' global loads taken out | 7,666 | 958 |
+| both sides, the drains' global adds taken out | 7,363 | 920 |
+| both sides, the image's stores taken out | 7,674 | 959 |
+| the read side alone, no fold warp running | 4,209 | 526 |
+| the read side alone, every wait suspended | 7,161 | 895 |
+| both sides, every wait suspended | 8,486 | 1,061 |
 
-THE CARD'S CLOCK, the composed row's long call: 1.78 GHz. At it a window's 8,803 cycles are 4.94 microseconds, and
-64 windows -- 65,536 tokens' carry -- 0.316 ms.
+THE CARD'S CLOCK, the composed row's long call, did not hold on this box: 1.56 falling to 1.28 GHz over five calls.
+This record gives cycles and no time.
 
 A warp's clocked cycles a window:
 
-| the role's count | both sides | the read side alone |
-|---|---|---|
-| a fold warp waits on the readout's read of a tile group | 451 | 4,038 |
-| a fold warp waits on its producer | 3,430 | |
-| a readout warp waits on a tile group's publish | 1,818 | 317 |
-| a readout warp waits on the panel's drain | 360 | 785 |
-| a readout warp in its steps | 3,023 | 4,206 |
-| a drain warp waits on the panel | 3,090 | 2,476 |
+| the role's count | both sides | both, waits suspended | the read side alone | alone, waits suspended | alone, no fold warp |
+|---|---|---|---|---|---|
+| a fold warp waits on the readout's read of a tile group | 448 | 403 | 4,071 | 3,682 | |
+| a fold warp waits on its producer | 3,193 | 3,331 | | | |
+| a readout warp waits on a tile group's publish | 1,761 | 1,703 | 303 | 291 | |
+| a readout warp waits on the panel's drain | 373 | 329 | 975 | 768 | 260 |
+| a readout warp forming its steps' A | 1,446 | 1,465 | 1,055 | 1,093 | 1,079 |
+| a readout warp in its steps | 2,351 | 2,390 | 3,727 | 2,962 | 2,191 |
+| a drain warp waits on the panel | 2,896 | 2,887 | 2,634 | 2,281 | 697 |
 
 WHAT IT SHOWS.
 - THE CARRY COMPOSES, EXACTLY: two boxes' folds, the image a window, one readout warpgroup over both -- its
   coefficients expanded in its registers, its steps' A operand -- and one f16 line a token, in one CTA of 512
   threads at the SM's whole register file.
-- A TOKEN COSTS 1,100 SM-CYCLES COMPOSED at this cell (its sides sparse on opposite levels, 256 x 256 leaves;
+- A TOKEN COSTS 1,096 SM-CYCLES COMPOSED at this cell (its sides sparse on opposite levels, 256 x 256 leaves;
   [`carry_floor`](../internals/tools/carry_floor.md) prices a dense side higher).
-- THE READOUT'S STEPS RUN FAR OVER THEIR OWN TIME, the cause not isolated by this record: a chunk's 8 steps are
-  756 cycles of a readout warp's time composed and 1,052 with the read side alone, where 8 steps of 64 columns
-  into one accumulator, both operands shared memory and nothing else running, are 319
-  ([`wgmma_width`](wgmma_width.md)), and a register A is no slower than a shared one
-  ([`wgmma_rate`](wgmma_rate.md)). The clocked span here also holds the 32 words of A formed and 8 loads issued.
-- THE FOLD WAITS ON ITS PRODUCER 3,430 cycles of the window: a producer holds one batch in registers.
+- THE FOLD WARPS' PUBLISHING HALVES THE READ SIDE: with no fold warp running the read side is 4,209 cycles a
+  window where it is 7,812 with them, and there the fold warps do nothing but store the image -- 32 stores of two
+  bytes a thread a tile group -- and wait. The readout's steps are 2,191 without them and 3,727 with; the drain's
+  wait on the panel 697 and 2,634.
+- THE READOUT FORMS ITS STEPS' A IN 1,050 TO 1,450 CYCLES A WINDOW, 260 to 360 a chunk: the coefficients' rounds
+  and the 32 words held, a third of what its steps and their forming take together.
+- THE STEPS THEMSELVES ARE STILL OVER THEIR OWN TIME with nothing beside them but the drains: 548 cycles a chunk
+  (the fence, 8 steps, the commit, 8 loads issued, the wait) where 8 steps of 64 columns into one accumulator from
+  shared memory are 319 ([`wgmma_width`](wgmma_width.md)). Not isolated here.
+- A SUSPENDED WAIT IS WORTH 3% COMPOSED (8,486 against 8,765) and 8% with the read side alone: the polling warps
+  are not what holds the steps.
+- THE FOLD WAITS ON ITS PRODUCER 3,193 cycles of the window: a producer holds one batch in registers.
 - THE TENSOR PIPE'S OWN WORK is a window's 32 steps of 16 columns and 32 of 64, some 1,700 cycles at their
   shared-memory rates.
 
