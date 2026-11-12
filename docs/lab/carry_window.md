@@ -15,9 +15,12 @@ THE FORM. A CTA an SM of four warpgroups, 512 threads.
   B K-major -- a group of 4 tiles at a time, each once the readout
   has read that group of the window before: the readout reads a window's first groups while its last are
   published. Then, a slot of 8 lists at a time, it runs the slot's 8 steps on the tiles its producer filled.
-- TWO PRODUCER warps, one a box, fill a slot's 8 lists of 16 entries from scattered rows, four entries a value
-  instruction and one instruction of 32 entries' dense bytes ([`pool_fill`](pool_fill.md)'s form, which had two
-  producers a box and two batches in registers where this has one).
+- TWO PRODUCER warps, one a box, fill a slot's 8 lists of 16 entries from scattered rows. The entries' VALUES are
+  copied from global memory straight into the pool's tiles (`cp.async`, 16 bytes a lane, four entries an
+  instruction), no register between, so a slot's 32 copies are all in flight at once; the coefficients are
+  multiplied in registers from the entries' dense bytes, loaded a slot ahead. A lane arrives at the slot's barrier
+  as its own copies land (the record below is of the form before it: values through a producer's registers, one
+  batch of 32 entries at a time).
 - ONE READOUT warpgroup, a chunk of 4 read digits of 16 tokens at a time, A DIGIT A WARP'S ROWS. A warp EXPANDS ITS
   TOKENS' COEFFICIENTS IN ITS REGISTERS -- a thread loads two words of a reader's bytes on a box's leaves,
   multiplies by the reader's byte on the digit and rounds to bf16 pairs -- and they are the A OPERAND of the
