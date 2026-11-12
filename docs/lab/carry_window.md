@@ -15,13 +15,13 @@ THE FORM. A CTA an SM of four warpgroups, 512 threads.
   B K-major -- a group of 4 tiles at a time, each once the readout
   has read that group of the window before: the readout reads a window's first groups while its last are
   published. Then, a slot of 8 lists at a time, it runs the slot's 8 steps on the tiles its producer filled.
-- FOUR SERVE warps, each doing two jobs, neither waiting at a barrier: a trip tests a slot's and a panel's and
-  does what is ready. They FILL: two warps a box, each two of a slot's four batches of 32 entries from scattered
-  rows, four entries a value instruction and one instruction of 32 entries' dense bytes, a batch in registers and
-  its loads issued a batch of the warp's own ahead ([`pool_fill`](pool_fill.md)'s form at two producers a box,
-  which held two batches where this holds one). They DRAIN: each adds a quarter of a chunk's tokens, a token's row
-  one whole line of f16 pairs, a load of the row as the panel holds it and the add. A fill's loads land under the
-  drains that follow it.
+- FOUR SERVE warps that FILL, DRAIN or do both, by the row: all four both; one draining and three filling; two
+  and two. No job waits at a barrier: a trip tests a slot's and a panel's and does what is ready. A FILL is a
+  batch of 32 entries from scattered rows, four entries a value instruction and one instruction of 32 entries'
+  dense bytes, in registers, the window's 16 batches dealt round the filling warps and a warp's loads issued a
+  batch of its own ahead ([`pool_fill`](pool_fill.md)'s form, which held two batches where this holds one). A
+  DRAIN is the warp's share of a chunk's tokens, a token's row one whole line of f16 pairs: a load of the row as
+  the panel holds it and the add. A fill's loads land under the drains that follow it.
 - ONE READOUT warpgroup, a chunk of 4 read digits of 16 tokens at a time, A DIGIT A WARP'S ROWS. A warp EXPANDS ITS
   TOKENS' COEFFICIENTS IN ITS REGISTERS -- a thread loads two words of a reader's bytes on a box's leaves,
   multiplies by the reader's byte on the digit and rounds to bf16 pairs -- and they are the A OPERAND of the
@@ -42,7 +42,8 @@ whole file hung on the device, and whether at the folds' raise no run separated.
 
 ROWS: the fold's side alone (fills and steps), the read side alone (the image, the readout and the drain),
 both, and both with one access taken out: the fills' global loads (their words made in registers), the drains'
-global adds (their lines folded into a sink), the image's stores. Then WHAT THE READOUT'S STEPS WAIT BEHIND: the
+global adds (their lines folded into a sink), the image's stores; both with the serve warps' jobs split, one draining and three filling or two and two, and
+each side alone at one and three. Then WHAT THE READOUT'S STEPS WAIT BEHIND: the
 readout and the drains with no fold warp running (the image as it lies, never rewritten, no fold warp at a
 barrier); every barrier's wait by the instruction that may suspend its thread (`mbarrier.try_wait`) where the
 other rows poll (`test_wait` in a loop, an instruction every trip of every waiting warp). THE FOLD'S, THE READOUT'S AND THE DRAIN WARPS'
