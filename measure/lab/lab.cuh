@@ -338,16 +338,6 @@ __device__ __forceinline__ void wg_bf16_n64_rs(float (&d)[32], const uint32_t (&
                : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "l"(b), "r"(static_cast<int>(add)));
 }
 
-//: A from the warpgroup's registers and B M|N-major (a line is one K's 8 columns of a brick): `d` += A [64 x 16]
-//: B [16 x 64], or `d` written whole
-__device__ __forceinline__ void wg_bf16_n64_rs_mn(float (&d)[32], const uint32_t (&a)[4], uint64_t b, bool add = true) {
-  asm volatile("{ .reg .pred p; setp.ne.b32 p, %37, 0;\n"
-               "wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16 " LAB_WG_D32_LIST
-               ", {%32, %33, %34, %35}, %36, p, 1, 1, 1; }"
-               : LAB_WG_D32(d)
-               : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "l"(b), "r"(static_cast<int>(add)));
-}
-
 //: two fp32 narrowed to a bf16 pair by TRUNCATION, each value's high 16 bits in one byte permute, and ROUNDED to
 //: nearest in one conversion: `common/atoms/math.cuh`'s `hi_bf16x2` and `pack_bf16x2`, spelled here because the common
 //: atoms refuse a hopper build until that family's are written (`common/arch_caps.cuh`)
