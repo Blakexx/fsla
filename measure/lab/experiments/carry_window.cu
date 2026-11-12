@@ -14,7 +14,7 @@
 // out: the producers' global loads, the drains' global adds, the image's stores. Then what the readout's steps
 // wait behind: the readout and the drains with NO fold warp running (the image as it lies); every barrier's wait
 // by the instruction that may suspend its thread, where the others poll; and the registers SPLIT BY WARP in the
-// fourth warpgroup -- a drain warp 64, a producer 128 and two batches held. With both sides and no access out, the
+// fourth warpgroup -- a drain warp 72, a producer 120 and two batches held. With both sides and no access out, the
 // state and every output row are checked exactly, and a long call's span over its wall time reads the card's clock.
 // TIMELINE: a fold warpgroup's trip is a window: the image a tile group at a time, four -- the wait on the
 // readout's read of that group a window back, 32 stores a thread and their fence, the group's arrival -- then a
@@ -45,8 +45,8 @@ constexpr int kReadAt = 2 * kGroup, kProduceAt = 3 * kGroup, kDrainAt = kProduce
 //: at -- 128 a thread at 512 threads, the SM's whole file: the folds' 32 more each are the 32 fewer of the readout
 //: and of the producers' and drains' warpgroup
 constexpr int kEntryRegs = 128, kFoldRegs = 160, kReadRegs = 96, kServeRegs = 96;
-//: the fourth warpgroup's registers split by warp: a producer keeps the entry count, a drain warp gives its half
-constexpr int kProduceRegs = 128, kDrainRegs = 64;
+//: the fourth warpgroup's registers split by warp: two batches fill a producer's, a drain warp's 16 words its own
+constexpr int kProduceRegs = 120, kDrainRegs = 72;
 static_assert(kThreads * kEntryRegs == 65536
               && 2 * (kFoldRegs - kEntryRegs) == 2 * kEntryRegs - kReadRegs - kServeRegs
               && kProduceRegs + kDrainRegs == 2 * kServeRegs);
@@ -468,8 +468,9 @@ __global__ void __launch_bounds__(kThreads, 1)
     if constexpr (ROLES & kRead) read_role<ROLES>(smem, base, times, waits, dense, windows);
     else idle_role(times, waits);
   } else if constexpr (ROLES & kSplit) {
-    //: the registers by WARP: a producer keeps the entry count and a drain warp releases its half
+    //: the registers by WARP: a producer releases 8 a thread and a drain warp 56
     if (tid < kDrainAt) {
+      lab::regs_down<kProduceRegs>();
       produce_role<ROLES>(smem, base, times, values, dense, windows);
     } else {
       lab::regs_down<kDrainRegs>();

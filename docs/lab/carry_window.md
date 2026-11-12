@@ -32,8 +32,8 @@ SM's whole file of 65,536. A fold thread raises to 160; a readout thread lowers 
 one warpgroup, to 96: the folds' 32 more each are those 32 fewer. At 152 the fold spills to local memory; at 80 the
 toolkit serializes the readout's steps of 64 columns with A in registers; a producer holding two batches needs
 some 125. THE FOURTH WARPGROUP'S REGISTERS CAN BE SPLIT BY WARP (a row): a drain warp, which holds 16 words, lowers
-to 64 and a producer keeps the 128 it entered with and holds two batches; the compiler takes both counts (a release
-to 64 and one to 96, the raise to 160). NO REGISTER IS LEFT for a fifth warpgroup: one beside these roles takes its registers from them. A form
+to 72 and a producer to 120 and holds two batches; the compiler takes each warp's count (releases to 72, 120 and 96,
+the raise to 160). At 64 a drain warp spills to local memory. NO REGISTER IS LEFT for a fifth warpgroup: one beside these roles takes its registers from them. A form
 of five warpgroups (640 threads) launches at 96 a thread, 61,440 in all; one whose roles' counts summed to the
 whole file hung on the device, and whether at the folds' raise no run separated.
 
