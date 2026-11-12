@@ -18,11 +18,13 @@ THE FORM. A CTA an SM of four warpgroups, 512 threads.
 - ONE READOUT warpgroup is the read side whole, a chunk of 4 read digits of 16 tokens at a time. It EXPANDS the 64
   readers' coefficients itself -- a thread loads a reader's 16 bytes on one box's leaves, multiplies by the
   reader's byte on the digit, rounds to bf16 and stores a line of its own tile, nothing staged between -- runs each
-  digit's step on box 0's image tile and box 1's into one accumulator, and ADDS each token's row to the output as
-  f16 pairs straight from its registers, a lane pairing its value with its neighbour's by one shuffle. No panel
-  and no drain warp.
+  digit's step on box 0's image tile and box 1's into one accumulator, stores the 64 tokens' rows to its panel, and
+  its own four warps ADD each token's row to the output as one whole line of f16 pairs. No drain warp. (Adding
+  from the registers themselves was run and is slower: a warp holds 16 of a token's 64 channels, so a token's line
+  was four partial adds -- the read side alone 7,316 cycles a window where the panel and two drain warps read
+  6,780.)
 A window is a box's 256 entries, and 256 tokens read the pair. Shared memory: two slots of pools a box 87 KB, the two
-images 70 KB, a chunk's coefficient tiles 4 KB.
+images 70 KB, a chunk's coefficient tiles 4 KB, the panel 17 KB.
 
 THE REGISTERS (`setmaxnreg`, each role's body in its own branch). 512 threads launch at 128 registers a thread, the
 SM's whole file of 65,536. A fold thread raises to 160, a readout thread lowers to 64, and the producers stay at

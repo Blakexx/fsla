@@ -6,8 +6,9 @@
 // 8 steps. A window is a box's 256 entries, and 256 tokens read the pair: each fold warpgroup PUBLISHES its state
 // as a bf16 image, 16 tiles, a group of 4 behind the readout; ONE READOUT warpgroup is the read side whole -- it
 // expands a chunk's 64 readers' coefficients from their rows' bytes into its own tiles, runs a read digit's step
-// on both boxes' image tiles into one accumulator, 4 digits a chunk, and adds each token's row to the output as
-// f16 pairs from its registers. Rows: the fold's side alone, the read side alone, both, and both with one access
+// on both boxes' image tiles into one accumulator, 4 digits a chunk, stores the 64 tokens' rows to its panel, and
+// its own warps add each token's row to the output as one line of f16 pairs. Rows: the fold's side alone, the read
+// side alone, both, and both with one access
 // taken out -- the producers' global loads, the readout's global adds, the image's stores. Both: the state and
 // every output row are checked exactly.
 // TIMELINE: a fold warpgroup's trip is a window: the image a tile group at a time, four -- the wait on the
@@ -18,8 +19,9 @@
 // the fence and the arrival. The readout's trip is a chunk: the wait on its tile group, two stores a thread of
 // coefficients (their
 // bytes loaded a chunk before), the next chunk's load and their fence, 8 steps, the commit and its wait, the group
-// released, then 16 lines a thread, each a shuffle, a round and an add. Live: a fold thread's 128 accumulators; a
-// producer's 68 words; the readout's 32 and its 4 words of bytes.
+// released, 32 stores a thread into the panel and its barrier, then a warp's 16 tokens in four batches of 4 --
+// their rows loaded, rounded and added. Live: a fold thread's 128 accumulators; a
+// producer's 68 words; the readout's 32, its 4 words of bytes and a batch's 8.
 // see docs/internals/tools/lab.md#carry-window
 #include "lab.cuh"
 
@@ -42,11 +44,14 @@ constexpr int kBrickLines = 17, kImageTile = 137 * 16, kBoxBytes = kLists * kIma
 //: a chunk is 4 read digits of 16 tokens; its coefficient tiles, one a (digit, box), are filled and read by the
 //: readout itself
 constexpr int kChunkDigits = 4, kChunks = kLists / kChunkDigits;
+//: the readout's panel: a chunk's 64 tokens, a row a token's 64 fp32 and a pad, rows 272 bytes apart
+constexpr int kTokens = 16 * kChunkDigits, kRowBytes = 272, kBatch = 4;
 constexpr int kImageAt = 4 * kPoolBytes, kCoefAt = kImageAt + 2 * kBoxBytes,
-              kBarsAt = kCoefAt + 2 * kChunkDigits * kCoefBytes, kSmemBytes = kBarsAt + 128;
+              kPanelAt = kCoefAt + 2 * kChunkDigits * kCoefBytes, kBarsAt = kPanelAt + kTokens * kRowBytes,
+              kSmemBytes = kBarsAt + 136;
 //: the barriers, 8 bytes each: a pool slot filled and freed (box, slot); an image's tile group published and read
 //: (a group is the 4 read digits `8 h + c + 2 j` of a chunk `2 h + c`: every fold thread holds a quarter of it)
-constexpr int kPoolReady = 0, kPoolFreed = 32, kTilesReady = 64, kTilesRead = 96;
+constexpr int kPoolReady = 0, kPoolFreed = 32, kTilesReady = 64, kTilesRead = 96, kPanel = 128;
 constexpr int kOutWindows = 4;
 //: a row's roles, and what a row takes OUT of them to find what the two sides contend for: the producers' global
 //: loads (the words made in registers), the readout's global adds (its lines folded into a sink), the image's stores
@@ -224,8 +229,8 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
 }
 
 //: THE READOUT WARPGROUP, the read side whole: a chunk is 4 read digits of 16 tokens -- their coefficients expanded
-//: into its own tiles, a digit's step on each box's image tile into one accumulator, and the tokens' lines added
-//: to the output from its registers
+//: into its own tiles, a digit's step on each box's image tile into one accumulator, the rows stored to its panel,
+//: and each token's whole line added to the output by one of its warps
 template <int ROLES>
 __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long long* times, int* sinks,
                                           const uint32_t* dense, uint32_t* out, int windows) {
@@ -242,10 +247,8 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
     return reader_of(blockIdx.x, (c / kChunks) * kWindow + 16 * (8 * (k >> 1) + (k & 1) + 2 * j_mine) + n_mine);
   };
   uint4 bytes = boxes[reader_row(reader(0), box_mine)];
-  //: THE LINES' SHARE: a thread's rows are `16 warp + q` and that + 8; a lane of even `q` issues row 0's pair with
-  //: its neighbour's, one of odd `q` row 1's
-  const bool odd = q & 1;
-  const uint32_t word = static_cast<uint32_t>(odd ? (16 * warp + q + 7) / 2 : (16 * warp + q) / 2);
+  //: THE PANEL'S SHARE: a thread's rows are `16 warp + q` and that + 8, its tokens of a digit `8 h + 2 t + cc`
+  const uint32_t mine = lab::held(static_cast<uint32_t>(kPanelAt + 2 * t * kRowBytes + (16 * warp + q) * 4));
   uint32_t kept = 0;
   //: a digit's first step writes its accumulator whole: nothing is cleared between chunks
   float d[kChunkDigits][8];
@@ -288,20 +291,39 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
     lab::wg_wait<0>();
     //: the group is read: its box may publish the next window's over it
     if (lane == 0) lab::mbar_arrive(bars + kTilesRead + 8 * c4);
-    //: THE LINES: digit `j`'s token `8 h + 2 t + cc` of read digit `first + 2 j`, its row 16 of that digit on
-    const long long rows = static_cast<long long>(blockIdx.x) * (kOutWindows * kWindow) + (w % kOutWindows) * kWindow
-                           + 16 * first + 2 * t;
+    //: THE PANEL: value (channel, token) to the token's row, a store a register; the four warps' stores meet at
+    //: its barrier
 #pragma unroll
     for (int j = 0; j < kChunkDigits; ++j)
 #pragma unroll
-      for (int hc = 0; hc < 4; ++hc) {
-        const int h = hc >> 1, cc = hc & 1;
-        const float own = odd ? d[j][cc | 2 | h << 2] : d[j][cc | h << 2];
-        const float got = __shfl_xor_sync(0xffffffffu, odd ? d[j][cc | h << 2] : d[j][cc | 2 | h << 2], 4);
-        const uint32_t line = lab::pack_half2(odd ? got : own, odd ? own : got);
-        if constexpr (ROLES & kNoAdds) kept ^= line + hc;
-        else lab::red_add_f16x2(out + (rows + 32 * j + 8 * h + cc) * (kChannels / 2) + word, line);
+      for (int i = 0; i < 8; ++i)
+        *reinterpret_cast<float*>(smem + mine + (16 * j + 8 * (i >> 2) + (i & 1)) * kRowBytes + 32 * ((i >> 1) & 1))
+            = d[j][i];
+    __syncwarp();
+    if (lane == 0) lab::mbar_arrive(bars + kPanel);
+    lab::mbar_wait(bars + kPanel, c & 1);
+    //: THE LINES: a warp takes the chunk's tokens of its residue, 4 at a time: a lane a token's two channels,
+    //: rounded to an f16 pair, a token one whole line. Token `16 j + n` is read digit `first + 2 j`'s `n`
+    const long long rows = static_cast<long long>(blockIdx.x) * (kOutWindows * kWindow) + (w % kOutWindows) * kWindow
+                           + 16 * first;
+#pragma unroll 1
+    for (int half = 0; half < kTokens / 4 / kBatch; ++half) {
+      float lo[kBatch], hi[kBatch];
+#pragma unroll
+      for (int i = 0; i < kBatch; ++i) {
+        const float* const row = reinterpret_cast<const float*>(
+            smem + kPanelAt + (warp + 4 * (half * kBatch + i)) * kRowBytes) + 2 * lane;
+        lo[i] = row[0];
+        hi[i] = row[1];
       }
+#pragma unroll
+      for (int i = 0; i < kBatch; ++i) {
+        const int token = warp + 4 * (half * kBatch + i);
+        const uint32_t line = lab::pack_half2(lo[i], hi[i]);
+        if constexpr (ROLES & kNoAdds) kept ^= line + token;
+        else lab::red_add_f16x2(out + (rows + 32 * (token / 16) + token % 16) * (kChannels / 2) + lane, line);
+      }
+    }
   }
   clock.stop(times);
   if constexpr (ROLES & kNoAdds) lab::sink(sinks, kept);
@@ -335,6 +357,7 @@ __global__ void __launch_bounds__(kThreads, 1)
       lab::mbar_init(base + kBarsAt + kTilesReady + 8 * k, 2 * kGroup / 32);
       lab::mbar_init(base + kBarsAt + kTilesRead + 8 * k, kGroup / 32);
     }
+    lab::mbar_init(base + kBarsAt + kPanel, kGroup / 32);
   }
   lab::bulk_fence();
   __syncthreads();
@@ -476,6 +499,8 @@ int main(int argc, char** argv) {
     //: the readout is the read side whole: its trip holds its coefficients' rounds and load and its lines' rounds
     //: and adds beside its steps, by design -- the tensor pipe is idle most of a window
     if (roles & kRead) {
+      //: the readout's panel is read by its own warps' loads, not by a step: that arrival needs no fence
+      b.expect(k, "STORE_UNFENCED", "<=", 1);
       b.expect(k, "STEP_XU", ">=", 0);
       b.expect(k, "STEP_GLOBAL", ">=", 0);
     }
