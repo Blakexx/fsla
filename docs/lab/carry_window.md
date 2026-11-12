@@ -15,9 +15,13 @@ THE FORM. A CTA an SM of four warpgroups, 512 threads.
   B K-major -- a group of 4 tiles at a time, each once the readout
   has read that group of the window before: the readout reads a window's first groups while its last are
   published. Then, a slot of 8 lists at a time, it runs the slot's 8 steps on the tiles its producer filled.
-- TWO PRODUCER warps, one a box, fill a slot's 8 lists of 16 entries from scattered rows, four entries a value
-  instruction and one instruction of 32 entries' dense bytes ([`pool_fill`](pool_fill.md)'s form, which had two
-  producers a box and two batches in registers where this has one).
+- FOUR SERVE warps, each doing two jobs, neither waiting at a barrier: a trip tests a slot's and a panel's and
+  does what is ready. They FILL: two warps a box, each two of a slot's four batches of 32 entries from scattered
+  rows, four entries a value instruction and one instruction of 32 entries' dense bytes, a batch in registers and
+  its loads issued a batch of the warp's own ahead ([`pool_fill`](pool_fill.md)'s form at two producers a box,
+  which held two batches where this holds one). They DRAIN: each adds a quarter of a chunk's tokens, a token's row
+  one whole line of f16 pairs, a load of the row as the panel holds it and the add. A fill's loads land under the
+  drains that follow it.
 - ONE READOUT warpgroup, a chunk of 4 read digits of 16 tokens at a time, A DIGIT A WARP'S ROWS. A warp EXPANDS ITS
   TOKENS' COEFFICIENTS IN ITS REGISTERS -- a thread loads two words of a reader's bytes on a box's leaves,
   multiplies by the reader's byte on the digit and rounds to bf16 pairs -- and they are the A OPERAND of the
@@ -25,21 +29,19 @@ THE FORM. A CTA an SM of four warpgroups, 512 threads.
   other warp's rows nothing. One accumulator holds the chunk's 64 tokens, box 0's and box 1's steps added in it,
   and a token's whole row is one warp's: the readout stores it to a panel as the f16 pairs its line holds, a
   warp's lanes on 32 banks. No coefficient reaches shared memory.
-- TWO DRAIN warps add each token's row to its output row as one whole line of f16 pairs: a load of the row as the
-  panel holds it and the add.
 A window is a box's 256 entries, and 256 tokens read the pair. Shared memory: two slots of pools a box 87 KB, the two
 images 70 KB, two panels 35 KB.
 
 THE REGISTERS (`setmaxnreg`, each role's body in its own branch). 512 threads launch at 128 registers a thread, the
-SM's whole file of 65,536. A fold thread raises to 160; a readout thread lowers to 96, and the producers and drains,
+SM's whole file of 65,536. A fold thread raises to 160; a readout thread lowers to 96, and the serve warps,
 one warpgroup, to 96: the folds' 32 more each are those 32 fewer. At 152 the fold spills to local memory; at 80 the
-toolkit serializes the readout's steps of 64 columns with A in registers; a producer holding two batches needs
-some 125. NO REGISTER IS LEFT for a fifth warpgroup: one beside these roles takes its registers from them. A form
+toolkit serializes the readout's steps of 64 columns with A in registers; a serve warp holds one batch of a fill
+and a drain's 8 words. NO REGISTER IS LEFT for a fifth warpgroup: one beside these roles takes its registers from them. A form
 of five warpgroups (640 threads) launches at 96 a thread, 61,440 in all; one whose roles' counts summed to the
 whole file hung on the device, and whether at the folds' raise no run separated.
 
-ROWS: the fold's side alone (producers and steps), the read side alone (the image, the readout and the drain),
-both, and both with one access taken out: the producers' global loads (their words made in registers), the drains'
+ROWS: the fold's side alone (fills and steps), the read side alone (the image, the readout and the drain),
+both, and both with one access taken out: the fills' global loads (their words made in registers), the drains'
 global adds (their lines folded into a sink), the image's stores. Then WHAT THE READOUT'S STEPS WAIT BEHIND: the
 readout and the drains with no fold warp running (the image as it lies, never rewritten, no fold warp at a
 barrier); every barrier's wait by the instruction that may suspend its thread (`mbarrier.try_wait`) where the
