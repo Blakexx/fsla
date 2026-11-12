@@ -298,17 +298,24 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       uint32_t since = static_cast<uint32_t>(clock64());
       const uint32_t first = static_cast<uint32_t>(8 * (c4 >> 1) + (c4 & 1));
       const uint32_t images = lab::held(base + kImageAt + first * kImageTile);
-      lab::wg_fence();
-      //: digit `j`'s step on each box's tile: its tokens are warp `j`'s rows, every other warp's A nothing
+      //: digit `j`'s step on each box's tile: its tokens are warp `j`'s rows, every other warp's A nothing. EVERY
+      //: step's A is in its own registers before the first is issued: a register a step would write between two
+      //: steps makes the toolkit wait out the one before
+      uint32_t rows[kChunkDigits][2][4];
 #pragma unroll
       for (int j = 0; j < kChunkDigits; ++j)
 #pragma unroll
-        for (int box = 0; box < 2; ++box) {
-          const uint32_t rows[4] = {warp == j ? a[box][0] : 0u, warp == j ? a[box][1] : 0u,
-                                    warp == j ? a[box][2] : 0u, warp == j ? a[box][3] : 0u};
-          lab::wg_bf16_n64_rs_mn(d, rows, lab::wg_desc(images + box * kBoxBytes + 2 * j * kImageTile, 8, kBrickLines),
+        for (int box = 0; box < 2; ++box)
+#pragma unroll
+          for (int i = 0; i < 4; ++i) rows[j][box][i] = lab::held(warp == j ? a[box][i] : 0u);
+      lab::wg_fence();
+#pragma unroll
+      for (int j = 0; j < kChunkDigits; ++j)
+#pragma unroll
+        for (int box = 0; box < 2; ++box)
+          lab::wg_bf16_n64_rs_mn(d, rows[j][box],
+                                 lab::wg_desc(images + box * kBoxBytes + 2 * j * kImageTile, 8, kBrickLines),
                                  j != 0 || box != 0);
-        }
       lab::wg_commit();
       //: the next chunk's bytes, under the steps: the coefficients' registers are free once the steps are issued
       load(c + 1);
