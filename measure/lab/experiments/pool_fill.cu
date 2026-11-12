@@ -14,7 +14,7 @@
 // from is not loaded.
 // TIMELINE: a producer's trip is two windows, a window its batches of 32 entries, batches alternating two
 // register halves: a batch's stores and multiplies (its words loaded two batches before), then those registers'
-// loads for the batch two on (64 rows in flight a warp); a window on, its arrival. The fold's trip is a window:
+// loads for the batch two on (64 rows in flight a warp); a window on, its fence and arrival. The fold's trip is a window:
 // the wait on the producers, the fence, 16 steps, the commit, its wait, the arrival that frees the tiles. Live: a
 // producer's 72 words; the fold's 128 accumulator registers.
 // see docs/internals/tools/lab.md#pool-fill
@@ -122,6 +122,8 @@ __global__ void __launch_bounds__(kFoldThreads + 32 * WARPS, 1)
           *reinterpret_cast<uint4*>(at + (first ^ 1) * kBrick) = first ? line[0] : line[1];
           load(h, (w + slot) * kBatches + b + 2);
         }
+        //: the writers' fence: the steps read these stores through the tensor pipe's own view of shared memory
+        lab::bulk_fence();
         __syncwarp();
         if (lane == 0) lab::mbar_arrive(ready + 8 * slot);
       }

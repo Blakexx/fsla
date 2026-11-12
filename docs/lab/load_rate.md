@@ -17,7 +17,7 @@ toolkit copies two of a trip's loaded words at the trip's end, whatever the sour
 run half a trip ahead of their use. Every lane's chain is checked exactly.
 
 MEASURED (H100 SXM, 132 SMs, vast.ai instance 60313590, driver 595.91.07; 2026-11-12, the experiment at
-3699007c; 7 repetitions, every chain exact; cycles a 128-byte row a CTA, the median, the spread under 1.5%).
+3699007c; 7 repetitions, every chain exact; cycles a 128-byte row a CTA, the median, the spread under 5%).
 Sixteen instructions in flight a warp:
 
 | the warps | 4 bytes a lane, a row an instruction | 16 bytes a lane, four rows an instruction |
