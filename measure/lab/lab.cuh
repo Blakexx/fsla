@@ -384,6 +384,18 @@ __device__ __forceinline__ void bulk_wait() {
   asm volatile("cp.async.bulk.wait_group %0;" : : "n"(N) : "memory");
 }
 
+//: one pair of f16 added into global memory by its thread, each half its own sum (no flush to zero)
+__device__ __forceinline__ void red_add_f16x2(uint32_t* dst, uint32_t v) {
+  asm volatile("red.global.add.noftz.f16x2 [%0], %1;" : : "l"(dst), "r"(v) : "memory");
+}
+
+//: two fp32 rounded to a pair of f16, `lo` the low half
+__device__ __forceinline__ uint32_t f16x2_round(float lo, float hi) {
+  uint32_t r;
+  asm volatile("cvt.rn.f16x2.f32 %0, %1, %2;" : "=r"(r) : "f"(hi), "f"(lo));
+  return r;
+}
+
 //: one fp32 added into global memory by its thread
 __device__ __forceinline__ void red_add_f32(float* dst, float v) {
   asm volatile("red.global.add.f32 [%0], %1;" : : "l"(dst), "f"(v) : "memory");

@@ -85,7 +85,8 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
   atoms' `hi_bf16x2` and `pack_bf16x2`, spelled here until the common atoms admit a hopper build; and the bulk reduction
   out of shared memory, `bulk_add_f32` (`cp.reduce.async.bulk`, fp32 added into global) with the writers' proxy fence
   before an asynchronous reader of their stores (`bulk_fence`: a bulk copy out, another warp's wgmma), `bulk_commit`,
-  `bulk_wait<N>`, beside `red_add_f32` (one value by its thread); the plain bulk copy out, `bulk_store`; the bulk copy
+  `bulk_wait<N>`, beside `red_add_f32` (one value by its thread) and `red_add_f16x2` (a pair of f16, each half its
+  own sum, from `f16x2_round`); the plain bulk copy out, `bulk_store`; the bulk copy
   in, `bulk_load`, under a barrier whose
   arrival states its bytes (`mbar_expect`); and a warpgroup's registers a thread,
   `regs_down<N>` and `regs_up<N>` (`setmaxnreg`). The lab's step checks read `HGMMA` as they read `HMMA`
@@ -176,3 +177,4 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="state-move"></a>[`state_move`](../../lab/state_move.md)
 - <a id="fold-stream"></a>[`fold_stream`](../../lab/fold_stream.md)
 - <a id="drain-rate"></a>[`drain_rate`](../../lab/drain_rate.md)
+- <a id="drain-role"></a>[`drain_role`](../../lab/drain_role.md)
