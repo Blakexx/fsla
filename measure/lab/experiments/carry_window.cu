@@ -77,13 +77,13 @@ __device__ __forceinline__ void waited(uint32_t bar, uint32_t parity, uint32_t& 
   lab::mbar_wait(bar, parity);
   count += static_cast<uint32_t>(clock64()) - t0;
 }
-//: a warp's counts, `kCounts` of them stored at `kCounts (block, warp)`: its waits, and the readout's phases
-constexpr int kCounts = 6;
+//: a warp's four counts, stored at `kCounts (block, warp)`: its two waits, and the readout's two clocked phases
+constexpr int kCounts = 4;
 __device__ __forceinline__ void tell(uint32_t* waits, uint32_t first, uint32_t second, uint32_t third = 0,
-                                     uint32_t fourth = 0, uint32_t fifth = 0, uint32_t sixth = 0) {
+                                     uint32_t fourth = 0) {
   if ((threadIdx.x & 31) == 0) {
     uint32_t* const to = waits + kCounts * (blockIdx.x * (kThreads >> 5) + (threadIdx.x >> 5));
-    to[0] = first, to[1] = second, to[2] = third, to[3] = fourth, to[4] = fifth, to[5] = sixth;
+    to[0] = first, to[1] = second, to[2] = third, to[3] = fourth;
   }
 }
 //: the cycles since `since`, and `since` moved to now: a phase's clock
@@ -567,8 +567,9 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
         return b.span(kThreads >> 5) / kTimed;
       });
   b.record(name, "cycles a window a CTA", cycles);
+  //: the composed row's sites, and the read side's own (no producer runs there: that site is not a reading)
   if (ROLES == (kFold | kRead) || ROLES == kRead)
-    for (int i = 0; i < kSites; ++i) b.record(name + ": " + sites[i].name, "cycles a window a warp", waited_at[i]);
+    for (int i = ROLES == kRead ? 2 : 0; i < kSites; ++i) b.record(name + ": " + sites[i].name, "cycles a window a warp", waited_at[i]);
 }
 
 int main(int argc, char** argv) {
