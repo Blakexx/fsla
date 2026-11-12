@@ -1557,6 +1557,7 @@
   {"doc": "docs/lab/slot_sum.md", "pinned_at": "15ee21ec1cc3", "reviewed": true, "sha256": "", "target": "docs/lab/add_rate.md"},
   {"doc": "docs/lab/slot_sum.md", "pinned_at": "15ee21ec1cc3", "reviewed": true, "sha256": "", "target": "docs/lab/carry_window.md"},
   {"doc": "docs/lab/slot_sum.md", "pinned_at": "15ee21ec1cc3", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/slot_sum.cu"},
+  {"doc": "docs/lab/slot_sum.md", "pinned_at": "fbdaa4cb6232", "reviewed": true, "sha256": "", "target": "measure/lab/results/slot_sum/sm_90a.json"},
   {"doc": "docs/lab/smem_rates.md", "pinned_at": "434a3c1f57a1", "reviewed": true, "sha256": "", "target": "csrc/rola/src/common/hardware.json::shared"},
   {"doc": "docs/lab/smem_rates.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
   {"doc": "docs/lab/smem_rates.md", "pinned_at": "434a3c1f57a1", "reviewed": true, "sha256": "", "target": "docs/internals/tools/pipes.md"},

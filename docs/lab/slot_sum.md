@@ -25,4 +25,37 @@ The SUM is a pass of this experiment's own shape, not the op's dividing pass: it
 and writes bf16, where that pass divides by a summed channel and writes fp32.
 Every stored word and every output value is checked exactly.
 
-MEASURED: not yet run.
+MEASURED (H100 SXM, 132 SMs, vast.ai instance 60338744, driver 595.91.07; 2026-11-12, the experiment at
+fbdaa4cb; 7 repetitions, every stored word and output value exact; the median, the spread under 9%).
+A line stored, cycles a line a CTA:
+
+| where | 1 warp | 4 warps |
+|---|---|---|
+| memory nothing has touched, lines packed | 8.2 | 7.8 |
+| the same, one line every 4 KB | 18.2 | 8.6 |
+| a ring of 128 KB, over and over | 14.3 | 6.3 |
+
+A token's 32 partials summed, scaled and stored, cycles a token a CTA:
+
+| the partials | 4 warps | 8 warps | 16 warps |
+|---|---|---|---|
+| packed a token, a CTA's 4 MB | 328.8 | 311.4 | 304.7 |
+| gathered from 32 streams, a CTA's 4 MB | 363.8 | 302.4 | 285.6 |
+| packed, 32 tokens' 128 KB over and over | 66.0 | 53.2 | |
+| gathered, 32 tokens' 128 KB over and over | 108.8 | 55.9 | |
+
+WHAT IT SHOWS.
+- A LINE THAT GOES OUT TO MEMORY COSTS AN SM ABOUT 8 CYCLES, STORED OR READ, AND WARPS DO NOT BUY IT BACK: 7.8 to
+  8.2 a line stored packed, and a token's 32 lines read and summed some 300, 9.5 a line, at 4 warps or 16. Every
+  SM at once, that is the order of the card's memory bandwidth.
+- A STORE INTO A RING THE CACHE HOLDS IS LITTLE CHEAPER: 6.3 cycles a line by four warps where the untouched
+  lines read 7.8. [`add_rate`](add_rate.md)'s 1.8 was of 16 lines; 128 KB is not held that near.
+- A SUM OF PARTIALS THE CACHE HOLDS IS A SIXTH OF ONE FROM MEMORY: 53 cycles a token by 8 warps against 311, the
+  partials packed; gathered from 32 streams the same by 8 warps (56) and twice that by 4 (109).
+- GATHERED AND PACKED READ ALIKE from memory at 8 warps and more (302 and 286 against 311 and 305).
+- BESIDE AN ATOMIC ADD ([`add_rate`](add_rate.md): 10 to 12 cycles a line, of lines the cache holds): a token of
+  29 partials is some 290 to 350 by adds; by stores to memory and a sum from it, some 225 and 300; by stores into
+  a ring and a sum from it, some 180 and 55. These are this page's rates times a count, not a composed
+  measurement.
+
+Record: `measure/lab/results/slot_sum/sm_90a.json`.
