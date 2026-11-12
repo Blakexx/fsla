@@ -95,6 +95,8 @@ int main(int argc, char** argv) {
   for (int warps : {1, 4}) {
     b.expect(lab::kernel("add", {warps, 32, kSpread}), "RED", ">=", kTrip);
     b.expect(lab::kernel("add", {warps, 32, kStore}), "RED", "==", 0);
+    //: the timed stores are there: one an instruction of the trip
+    b.expect(lab::kernel("add", {warps, 32, kStore}), "STG", ">=", kTrip);
   }
   if (b.expect_only) return 0;
   uint32_t* out = nullptr;
