@@ -257,3 +257,17 @@ in the same scale format, and thats what the op uses".
    kernel and to the oracle. A caller's own levels reach the format through the factory, which quantizes each against
    its max and nothing else.
 4. A consumer that needs a scale-free quantity (the decay's per-leaf shares) computes it from the rows itself.
+
+<a id="r24"></a>
+## R24. The plan says what to do, never what the op is given
+
+The op and every kernel under it execute a PLAN their caller supplies (Blake, 2026-11-11): the carve, each side's
+walk of each level -- by its lists, or every digit -- the list groups, the window and the segment, the drain's width
+and its scale's form. A plan field names an ACTION. It never names a property of the data -- dense, sparse, an
+activation, a count of live digits -- and the op's inputs carry none: they carry shapes, dtypes, scales and counts.
+The producer knows what it gives, its sparsity too, and owns the rules that turn that into a plan; the layer calls
+them, and any other caller supplies whatever valid plan it wants. The op refuses a plan the data's shape cannot
+take and derives nothing from how the data was made. A plan is never wrong for the data in a way that changes the
+result: a level walked by its lists that turns out dense, or walked whole where it was sparse, costs time and
+nothing else. NOT YET SO: [`open-work.md`](open-work.md#the-surface) row A-c lists where the op still reads its
+inputs' provenance.
