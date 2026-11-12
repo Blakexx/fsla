@@ -179,3 +179,4 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="drain-rate"></a>[`drain_rate`](../../lab/drain_rate.md)
 - <a id="drain-role"></a>[`drain_role`](../../lab/drain_role.md)
 - <a id="state-image"></a>[`state_image`](../../lab/state_image.md)
+- <a id="panel-merge"></a>[`panel_merge`](../../lab/panel_merge.md)
