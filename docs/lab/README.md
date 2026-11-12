@@ -28,4 +28,5 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`drain_role`](drain_role.md) | experiment |
 | [`state_image`](state_image.md) | experiment |
 | [`panel_merge`](panel_merge.md) | experiment |
+| [`wgmma_width`](wgmma_width.md) | experiment |
 | [`drain`](drain.md) | experiment |
