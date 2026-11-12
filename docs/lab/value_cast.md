@@ -16,5 +16,20 @@ readers' edge, and the copy into the slot.
   mate's slot is ordered after that mate's readers and its stated bytes by nothing less.
 The last tiles are checked exactly in every CTA.
 
-MEASURED: not yet run in this form. (An earlier form issued a copy into a slot with no edge from the slot's
-readers; its numbers are withdrawn.)
+MEASURED (H100 SXM, 132 SMs, vast.ai instance 60316069, driver 615.71.09; 2026-11-12, the experiment at
+864c6e3f; 7 repetitions, every landed tile exact in every CTA; SM-cycles a kilobyte a CTA, the median, the
+spread under 0.7%):
+
+| the form | cycles a kilobyte a CTA |
+|---|---|
+| every CTA its own copy | 38.3 |
+| one multicast copy a cluster | 137.4 |
+
+WHAT IT SHOWS. A MULTICAST COPY COSTS A RECEIVING CTA 3.6 TIMES ITS OWN COPY: 137.4 cycles a kilobyte against
+38.3. The copy itself lands in every CTA it names, as a CTA's own does; what the multicast adds is its issue edge,
+the cluster's barrier a chunk, where a CTA's own copy waits on its own. A cluster shares no load's cost, as it
+shares no sum's ([`cluster_sum`](cluster_sum.md)) and no state's ([`state_move`](state_move.md)). A larger chunk
+would spread the cluster's barrier over more bytes and bring the multicast towards the own copy, never under it by
+this form; chunks past 8 KB are UNMEASURED.
+
+Record: `measure/lab/results/value_cast/sm_90a.json`.

@@ -7,7 +7,7 @@ run time from an H100 lab's record under `measure/lab/results/` (the tool refuse
 ESTIMATED, a constant of the file with its reason. A total built on an estimate is an estimate.
 
     bazel run //tools:carry_floor -- --widths 256 256 --read-sparse 0 1 --write-sparse 1 0 --k 4 \
-        --box 16 16 --cluster 1 1 [--sum none | slots | s64] [--round 64] [--pair] [--window 1024] [--dv 64] [--tokens 65536] [--json floor.json]
+        --box 16 16 --cluster 1 1 [--sum none | slots | s64] [--round 64] [--pair fp32 | f16] [--window 1024] [--dv 64] [--tokens 65536] [--json floor.json]
 
 WHY IT EXISTS. The hopper carry's design is a choice of box and cluster, and each choice moves several costs at
 once: a box read is a partial to sum and a box written is a set of operands to load. The model makes that trade
@@ -29,16 +29,24 @@ THE FOLD'S TENSOR TIME is its steps': a token in a list of a box is a sixteenth 
 list's leaves in the box, a step's own time MEASURED at 8, 16, 32 and 64 columns and whole 64-column steps past
 that ([`wgmma_width`](../../lab/wgmma_width.md)); the readout's leaves run whole steps of sixteen.
 
-THE PAIR (`--pair`) is the form the labs converged on for the output's sum. A CTA holds two boxes neighbouring along
-a level the read side is dense on, so a token that reads one reads both; one readout warpgroup runs each read
-digit's step on both boxes into ONE accumulator, and drain warps add one f16 line a token. Its steps, its panel and
-its drain are MEASURED whole ([`readout_role`](../../lab/readout_role.md): 12.0 to 21.7 cycles a token a pair by 4
-to 1 drain warps) and stand in place of the readout's tensor term and a drain a box. Where the two sides are sparse
-on different levels the readout's operand is an image of the state, stored once a window by every CTA
-([`state_image`](../../lab/state_image.md)). Whether an f16 line is accurate enough is
-[`arith_model`](arith_model.md#sums)'s question, not this model's.
+THE PAIR (`--pair fp32 | f16`). A CTA holds two boxes neighbouring along a level the read side is dense on, so a
+token that reads one reads both; one readout warpgroup runs each read digit's step on both boxes' images into ONE
+accumulator, and drain warps add one line a token.
+- `f16`: the steps, the panel and the drain are MEASURED whole ([`readout_role`](../../lab/readout_role.md): 12.0 to
+  21.7 cycles a token a pair by 4 to 1 drain warps) and stand in place of the readout's tensor term and a drain a
+  box. It is a sum of every CTA's f16 line into the token's row, which the constitution's R17 AS WRITTEN DOES NOT
+  ALLOW: an f16 sum is within one fold group, the groups merged in fp32
+  ([`CONSTITUTION.md`](../../CONSTITUTION.md#r17-one-family-one-form-a-component)). Its accuracy is
+  [`arith_model`](arith_model.md#sums)'s to state, and whether it becomes a form is a ruling this page does not
+  make.
+- `fp32`: that measurement and one more line of the drain ([`drain_rate`](../../lab/drain_rate.md)), an ESTIMATED
+  sum of two measurements; the form R17 allows.
+Both store an image of the state once a window ([`state_image`](../../lab/state_image.md)), which the readout
+warpgroup reads. The pair is priced at 64 channels and for sides sparse on different levels alone: nothing else was
+measured, and where the sides are sparse on the same levels a box's own warpgroup reads out from its registers,
+UNMEASURED.
 
-THE CLUSTER. A cluster shares no load -- a multicast copy costs each CTA what its own does
+THE CLUSTER. A cluster shares no load -- a multicast copy costs each CTA more than its own does
 ([`value_cast`](../../lab/value_cast.md)) -- so a cluster with no sum (`--sum none`, the default) changes nothing
 and is refused. THE CLUSTER'S SUM takes
 one of two forms, each summing a token's partials inside a
@@ -61,7 +69,8 @@ high, and the call):
 | the shape | boxes read / written | tensor (readout, fold) | the output's sum (with a pair's readout and image) | the fold's operands | total | the call |
 |---|---|---|---|---|---|---|
 | 256 x 256, read sparse on level 2, write on level 1; boxes 16 x 16 | 58.2 / 58.2 | 32, 80 | 1,133 to 1,469 | 345 to 438 (listed) | 1,604 to 2,033 | 442 to 561 us |
-| ... boxes 16 x 16, `--pair` (one f16 line a pair, an image a window of 1,024) | 58.2 / 58.2 | 0, 80 | 487 to 771 | 345 to 438 (listed) | 925 to 1,303 | 255 to 359 us |
+| ... boxes 16 x 16, `--pair fp32` (one fp32 line a pair, an image a window of 1,024) | 58.2 / 58.2 | 0, 80 | 766 to 1,050 | 345 to 438 (listed) | 1,204 to 1,582 | 332 to 436 us |
+| ... boxes 16 x 16, `--pair f16` (outside R17 as written) | 58.2 / 58.2 | 0, 80 | 487 to 771 | 345 to 438 (listed) | 925 to 1,303 | 255 to 359 us |
 | ... boxes 64 x 4 | 15.6 / 175.0 | 32, 288 | 304 to 394 | 1,379 to 1,753 (listed) | 2,017 to 2,480 | 556 to 684 us |
 | ... boxes 256 x 1 (the whole read-dense level) | 4.0 / 256.0 | 32, 1,152 | 77 to 100 | 2,821 (tiled) | 4,096 to 4,119 | 1.1 ms |
 | ... boxes 16 x 16, `--cluster 16 1 --sum slots` | 58.2 / 58.2 | 32, 80 | 7,562 to 7,583 | 345 to 438 (listed) | 8,033 to 8,147 | 2.2 ms |
@@ -70,7 +79,7 @@ high, and the call):
 | 64 x 64 (4,096 leaves), sparse on opposite levels; boxes 16 x 16 | 10.9 / 10.9 | 8, 20 | 213 to 276 | 86 to 110 (listed) | 330 to 417 | 91 to 115 us |
 | 16^4, two sparse levels a side (2 live digits), boxes 4^4 | 49.0 / 49.0 | 128, 288 | 954 to 1,236 | 1,379 to 1,753 (listed) | 2,763 to 3,418 | 762 to 943 us |
 | 512 x 512 (262,144 leaves), sparse on opposite levels; boxes 16 x 16 | 122.1 / 122.1 | 64, 160 | 2,376 to 3,080 | 690 to 876 (listed) | 3,318 to 4,208 | 0.9 to 1.2 ms |
-| 512 x 512 ... boxes 16 x 16, `--pair` | 122.1 / 122.1 | 0, 160 | 1,283 to 1,879 | 690 to 876 (listed) | 2,160 to 2,942 | 596 to 812 us |
+| 512 x 512 ... boxes 16 x 16, `--pair fp32` | 122.1 / 122.1 | 0, 160 | 1,868 to 2,464 | 690 to 876 (listed) | 2,745 to 3,527 | 757 to 973 us |
 | 256 x 256 dense on both sides; boxes 16 x 16 | 256.0 / 256.0 | 2,049, 5,120 | 4,982 to 6,457 | 8,955 (tiled) | 21,983 to 23,459 | 6.1 to 6.5 ms |
 
 FlashAttention's tensor floor at the same 65,536 tokens and width is 2,049 SM-cycles a token, 565 us the call; at
@@ -81,8 +90,9 @@ WHAT IT SHOWS. A token's cost is bytes moved and steps run, a (token, box) each;
 - WHERE THE TWO SIDES ARE SPARSE ON DIFFERENT LEVELS, at as many leaves as tokens, A BOX THAT DRAINS ITS OWN fp32
   PARTIAL DOES NOT BEAT FLASHATTENTION'S FLOOR: square boxes are 1,604 to 2,033 against 2,049, which is parity,
   and parity is a loss. Seven tenths of it is the output's sum, 58 partials a token.
-- THE PAIR'S ONE f16 LINE HALVES THAT: 925 to 1,303, between 0.45 and 0.64 of FlashAttention's floor, its terms each
-  a lab's whole measurement -- the pair's readout, panel and drain 349 to 633, the state's image 138, the fold's
+- THE PAIR'S ONE LINE BEATS IT: with an fp32 line 1,204 to 1,582, between 0.59 and 0.77 of FlashAttention's floor;
+  with an f16 line, which R17 as written does not allow, 925 to 1,303, between 0.45 and 0.64. Its terms are each a
+  lab's whole measurement -- the pair's readout, panel and f16 drain 349 to 633, the state's image 138, the fold's
   operands 345 to 438 and its steps 80. These are roles measured apart and summed: the low end takes 8 producer
   warps and 4 drain warps beside two fold warpgroups and a readout warpgroup, a CTA no lab has run together, and
   what the roles cost beside each other is UNMEASURED until the composed window is.

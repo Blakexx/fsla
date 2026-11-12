@@ -6,7 +6,7 @@ and a cluster -- before any hopper carry exists, so a design is priced by one mo
 conversation.
 
     bazel run //tools:carry_floor -- --widths 256 256 --read-sparse 0 1 --write-sparse 1 0 --k 4 \\
-        --box 16 16 --cluster 1 1 [--pair] [--window 1024] [--dv 64] [--tokens 65536] [--json floor.json]
+        --box 16 16 --cluster 1 1 [--pair fp32 | f16] [--window 1024] [--dv 64] [--tokens 65536] [--json floor.json]
 
 THE SHAPE. `--widths` a level; `--read-sparse` / `--write-sparse` a flag a level (a sparse level holds `--k` live
 digits a token, drawn uniformly; a dense one all of them). A BOX is `--box` digits of each level; a CLUSTER is
@@ -31,17 +31,20 @@ its reason):
   integers by a bulk reduction into the collector's panel, outside the fp32 the format states, counted for
   comparison. A cluster's CTAs hand over once a ROUND of `--round` partials a CTA, and the round's cost is its own
   term (beyond 64 partials a round it is the line's, UNMEASURED);
-- THE PAIR (`--pair`): a CTA holds two boxes neighbouring along a level the read side is dense on, one readout
-  warpgroup runs each read digit's step on both into one accumulator, and drain warps add ONE f16 line a token:
-  the readout's steps, its panel and the drain MEASURED whole (`readout_role`, by 4 to 1 drain warps), in place of
-  the readout's tensor term and a drain a box; and, where the two sides are sparse on different levels, the state's
-  image stored once a window (`state_image`). Whether an f16 line is accurate enough is `arith_model`'s question;
+- THE PAIR (`--pair fp32 | f16`): a CTA holds two boxes neighbouring along a level the read side is dense on, one
+  readout warpgroup runs each read digit's step on both boxes' images into one accumulator, and drain warps add
+  ONE line a token. `f16`: the steps, the panel and the drain MEASURED whole (`readout_role`, by 4 to 1 drain
+  warps), in place of the readout's tensor term and a drain a box -- a sum of every CTA's f16 line, which the
+  constitution's R17 as written does not allow (f16 within one fold group, fp32 across them). `fp32`: that
+  measurement and one more line of the drain (`drain_rate`), an ESTIMATED sum, the form R17 allows. Both store the
+  state's image once a window (`state_image`). Priced at 64 channels and for sides sparse on different levels
+  alone: nothing else was measured;
 - the fold's operands, the cheaper of two forms. LISTED: a (token, list, box) entry's value and coefficients
   fetched from scattered rows into the list's tiles by producer warps, MEASURED whole (`pool_fill`, at 16 leaves a
   list; a list's leaves past 16 are priced at the shared access rate, ESTIMATED). TILED: every box takes the window's whole value tile packed
   (`state_move`; every token's bytes), expands its coefficients into shared memory and gathers the values into
   list order (that copy ESTIMATED at the shared access rate; no lab has read it). A cluster shares no load: a
-  multicast copy costs each CTA what its own does (`value_cast`);
+  multicast copy costs each CTA more than its own does (`value_cast`);
 - the state in and out, a call (24-bit state, at a memory bandwidth).
 
 NOT COUNTED: the hand-over between producer and consumer warps, the den's readout, the divergent carve's register
@@ -169,7 +172,7 @@ def side(widths, sparse, k: int, box, cluster) -> Side:
 
 
 def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, tokens: int, form: str = "none",
-          round_partials: int = 64, pair: bool = False, window: int = 1024) -> dict:
+          round_partials: int = 64, pair: str = "none", window: int = 1024) -> dict:
     """The report: each term's SM-cycles a token as `(low, high)`, with the rate it used."""
     rates = measured()
     est = {name: value for name, (value, _) in ESTIMATES.items()}
@@ -195,18 +198,23 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
     all_boxes = math.prod(w / b for w, b in zip(widths, box))
 
     drains = read.clusters if summed else read.boxes
-    #: THE PAIR: a CTA holds two boxes neighbouring along a level the read side is dense on, so a token that reads
-    #: one reads both; one readout warpgroup runs a read digit's step on each into ONE accumulator and drain warps
-    #: add one f16 line a token (`readout_role`, MEASURED whole: steps, panel and drain, by 4 .. 1 drain warps).
-    #: Where the two sides are sparse on different levels the readout's operand is an image of the state, stored
-    #: once a window of `window` tokens by every CTA (`state_image`)
-    if pair:
+    #: THE PAIR (the module's notes): its line and image are whole measurements at 64 channels of a pair that reads
+    #: images, so only that width and only a divergent carve are priced
+    paired = pair != "none"
+    if paired:
         if clustered or not any(not flag and width // b >= 2 for width, flag, b in zip(widths, read_sparse, box)):
             raise SystemExit("carry_floor: a pair is two boxes along a level the read side is dense on, with no "
                              "cluster")
-        line = (read.boxes / 2 * rates["line_low"][0], read.boxes / 2 * rates["line_high"][0])
-        divergent = tuple(read_sparse) != tuple(write_sparse)
-        image = both(all_boxes / 2 * rates["image"][0] / window if divergent else 0.0)
+        if tuple(read_sparse) == tuple(write_sparse):
+            raise SystemExit("carry_floor: a pair's readout reads both boxes' images; where the two sides are sparse "
+                             "on the same levels there is no image and a box's own warpgroup reads out from its "
+                             "registers -- UNMEASURED, no term here")
+        if dv != MMA_ROWS:
+            raise SystemExit(f"carry_floor: a pair's line and image are measured at {MMA_ROWS} channels alone")
+        #: an fp32 line is the f16 line's measurement and one more line of the drain (`drain_rate`), ESTIMATED so
+        more = rates["drain_own"][0] * 128 if pair == "fp32" else 0.0
+        line = (read.boxes / 2 * (rates["line_low"][0] + more), read.boxes / 2 * (rates["line_high"][0] + more))
+        image = both(all_boxes / 2 * rates["image"][0] / window)
     else:
         line = image = both(0.0)
     #: THE FOLD'S OPERANDS, the cheaper of LISTED (an entry at `pool_fill`'s cost, a list's leaves past its 16 at the
@@ -234,16 +242,18 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
         return a.boxes * a.lists * 16 * math.ceil(along / 16 - 1e-9)
 
     terms = {
-        "tensor, readout": (both(0.0 if pair else padded(read) * rows / products),
-                            "in the pair's line" if pair else "products"),
+        "tensor, readout": (both(0.0 if paired else padded(read) * rows / products),
+                            "in the pair's line" if paired else "products"),
         "tensor, fold": (both(write.boxes * write.lists * fold_step(write)[0] / 16), fold_step(write)[1]),
         "readout operand, expanded": (both(read.leaves * 2 / shared), "shared"),
         "sum: partials into the cluster": (both(read.boxes * hop), f"hop_{form}" if summed else "no cluster sum"),
         "sum: the rounds' barriers": (both(barriers), f"round_{form}" if summed else "no cluster sum"),
-        "sum: drains to global memory": (tuple(0.0 if pair else drains * (dv * 4 + 4) * d for d in drain),
-                                         "in the pair's line" if pair else "drain_own .. drain_spread"),
-        "readout and sum: a pair's f16 line": (line, "line_low .. line_high" if pair else "no pair"),
-        "state image, a window": (image, "image" if pair else "no pair"),
+        "sum: drains to global memory": (tuple(0.0 if paired else drains * (dv * 4 + 4) * d for d in drain),
+                                         "in the pair's line" if paired else "drain_own .. drain_spread"),
+        "readout and sum: a pair's line": (line, {"none": "no pair", "f16": "line_low .. line_high",
+                                                  "fp32": "line_low .. line_high, and a line of drain_own "
+                                                          "(ESTIMATED sum)"}[pair]),
+        "state image, a window": (image, "image" if paired else "no pair"),
         "fold operands": (operands, operands_by),
     }
     total = tuple(sum(v[0][i] for v in terms.values()) for i in (0, 1))
@@ -278,7 +288,7 @@ def main(argv: list[str]) -> int:
                          "integers by a bulk reduction")
     ap.add_argument("--round", type=int, default=64,
                     help="the partials a CTA hands over between its barriers (64 is the round the lab read)")
-    ap.add_argument("--pair", action="store_true",
+    ap.add_argument("--pair", choices=("none", "fp32", "f16"), default="none",
                     help="a CTA's two boxes along a read-dense level drain one f16 line a token")
     ap.add_argument("--window", type=int, default=1024, help="the tokens a window: a pair's state image is stored once")
     ap.add_argument("--dv", type=int, default=64)

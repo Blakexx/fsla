@@ -82,15 +82,25 @@ def test_a_box_every_token_writes_pays_its_steps_and_the_whole_tile():
 def test_a_pair_drains_one_line_for_two_boxes_and_stores_its_image_a_window():
     rates = carry_floor.measured()
     alone = carry_floor.floor(cluster=(1, 1), **ALT)["terms"]
-    pair = carry_floor.floor(cluster=(1, 1), pair=True, **ALT)["terms"]
+    pair = carry_floor.floor(cluster=(1, 1), pair="f16", **ALT)["terms"]
+    line = "readout and sum: a pair's line"
     assert pair["tensor, readout"]["cycles"] == pair["sum: drains to global memory"]["cycles"] == [0.0, 0.0]
-    assert pair["readout and sum: a pair's f16 line"]["cycles"][0] == pytest.approx(58.25 / 2 * rates["line_low"][0], rel=0.01)
+    assert pair[line]["cycles"][0] == pytest.approx(58.25 / 2 * rates["line_low"][0], rel=0.01)
     #: the carve is divergent: 128 CTAs store their image once in 1,024 tokens
     assert pair["state image, a window"]["cycles"][0] == pytest.approx(128 * rates["image"][0] / 1024)
     assert pair["fold operands"] == alone["fold operands"] and pair["tensor, fold"] == alone["tensor, fold"]
-    #: sparse on the same level, there is no image
-    same = carry_floor.floor(cluster=(1, 1), pair=True, **{**ALT, "write_sparse": (0, 1), "box": (16, 16)})["terms"]
-    assert same["state image, a window"]["cycles"] == [0.0, 0.0]
+    #: an fp32 line is one more line of the drain a (token, pair)
+    wide = carry_floor.floor(cluster=(1, 1), pair="fp32", **ALT)["terms"]
+    assert wide[line]["cycles"][0] - pair[line]["cycles"][0] == pytest.approx(
+        58.25 / 2 * rates["drain_own"][0] * 128, rel=0.01)
+
+
+def test_a_pair_is_priced_only_where_it_was_measured():
+    #: sparse on the same level: no image for a readout warpgroup to read
+    with pytest.raises(SystemExit, match="no image"):
+        carry_floor.floor(cluster=(1, 1), pair="f16", **{**ALT, "write_sparse": (0, 1)})
     #: a box the whole read-dense level has no neighbour to pair with
     with pytest.raises(SystemExit, match="a pair is two boxes"):
-        carry_floor.floor(cluster=(1, 1), pair=True, **{**ALT, "box": (256, 1)})
+        carry_floor.floor(cluster=(1, 1), pair="f16", **{**ALT, "box": (256, 1)})
+    with pytest.raises(SystemExit, match="64 channels alone"):
+        carry_floor.floor(cluster=(1, 1), pair="f16", **{**ALT, "dv": 128})
