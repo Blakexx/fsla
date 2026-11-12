@@ -175,3 +175,4 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="cluster-sum"></a>[`cluster_sum`](../../lab/cluster_sum.md)
 - <a id="state-move"></a>[`state_move`](../../lab/state_move.md)
 - <a id="fold-stream"></a>[`fold_stream`](../../lab/fold_stream.md)
+- <a id="drain-rate"></a>[`drain_rate`](../../lab/drain_rate.md)

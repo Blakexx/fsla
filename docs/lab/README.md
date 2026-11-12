@@ -24,4 +24,5 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`cluster_sum`](cluster_sum.md) | experiment |
 | [`state_move`](state_move.md) | experiment |
 | [`fold_stream`](fold_stream.md) | experiment |
+| [`drain_rate`](drain_rate.md) | experiment |
 | [`drain`](drain.md) | experiment |
