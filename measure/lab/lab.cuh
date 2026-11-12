@@ -275,6 +275,15 @@ __device__ __forceinline__ void wg_bf16_n16_ss_mna(float (&d)[8], uint64_t a, ui
       : "l"(a), "l"(b), "r"(add ? 1 : 0));
 }
 
+//: m64n16k16 with BOTH operands M|N-major: `d` += A [64 x 16] B [16 x 16]; a line is one K's 8 rows or columns
+__device__ __forceinline__ void wg_bf16_n16_ss_mn(float (&d)[8], uint64_t a, uint64_t b) {
+  asm volatile(
+      "{ .reg .pred p; setp.ne.b32 p, %10, 0;\n"
+      "wgmma.mma_async.sync.aligned.m64n16k16.f32.bf16.bf16 {%0, %1, %2, %3, %4, %5, %6, %7}, %8, %9, p, 1, 1, 1, 1; }"
+      : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]), "+f"(d[4]), "+f"(d[5]), "+f"(d[6]), "+f"(d[7])
+      : "l"(a), "l"(b), "r"(1));
+}
+
 #define LAB_WG_D32(d)                                                                                              \
   "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]), "+f"(d[4]), "+f"(d[5]), "+f"(d[6]), "+f"(d[7]), "+f"(d[8]),      \
       "+f"(d[9]), "+f"(d[10]), "+f"(d[11]), "+f"(d[12]), "+f"(d[13]), "+f"(d[14]), "+f"(d[15]), "+f"(d[16]),       \

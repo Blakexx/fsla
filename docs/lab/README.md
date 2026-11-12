@@ -32,4 +32,5 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`value_gather`](value_gather.md) | experiment |
 | [`readout_role`](readout_role.md) | experiment |
 | [`value_cast`](value_cast.md) | experiment |
+| [`pool_fill`](pool_fill.md) | experiment |
 | [`drain`](drain.md) | experiment |
