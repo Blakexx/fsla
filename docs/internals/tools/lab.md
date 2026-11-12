@@ -78,7 +78,7 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
 * <a id="wgmma"></a>Hopper's atoms, each one PTX instruction of sm_90a (an experiment calling one compiles for sm_90a
   only): `wg_desc` (wgmma's unswizzled K-major shared operand: lines in bricks of 8, 16 bytes a line, the K halves and
   the bricks at stated offsets), `wg_fence`, `wg_commit`, `wg_wait<N>`, `wg_hold` (a register an asynchronous MMA
-  wrote, held behind its wait), `wg_bf16_n16_ss`, `wg_bf16_n64_ss`, `wg_bf16_n64_rs` (A from registers), `wg_bf16_n64_ss_mn` and
+  wrote, held behind its wait), `wg_bf16_n16_ss`, `wg_bf16_n64_ss`, `wg_bf16_n64_rs` (A from registers), `wg_bf16_n16_ss_mna` (A alone M|N-major), `wg_bf16_n64_ss_mn` and
   `wg_bf16_n256_ss_mn` (both operands M|N-major: a line is one K's 8 rows or columns; `wg_desc` describes either
   major's tile); the two
   narrowings of an fp32 pair to bf16, `bf16x2_trunc` (one `PRMT`) and `bf16x2_round` (one conversion) -- the common
@@ -86,7 +86,7 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
   out of shared memory, `bulk_add_f32` (`cp.reduce.async.bulk`, fp32 added into global) with the writers' proxy fence
   before an asynchronous reader of their stores (`bulk_fence`: a bulk copy out, another warp's wgmma), `bulk_commit`,
   `bulk_wait<N>`, beside `red_add_f32` (one value by its thread) and `red_add_f16x2` (a pair of f16, each half its
-  own sum, from `f16x2_round`); the plain bulk copy out, `bulk_store`; the bulk copy
+  own sum, from `pack_half2`); the plain bulk copy out, `bulk_store`; the bulk copy
   in, `bulk_load`, under a barrier whose
   arrival states its bytes (`mbar_expect`); and a warpgroup's registers a thread,
   `regs_down<N>` and `regs_up<N>` (`setmaxnreg`). The lab's step checks read `HGMMA` as they read `HMMA`
@@ -178,3 +178,4 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="fold-stream"></a>[`fold_stream`](../../lab/fold_stream.md)
 - <a id="drain-rate"></a>[`drain_rate`](../../lab/drain_rate.md)
 - <a id="drain-role"></a>[`drain_role`](../../lab/drain_role.md)
+- <a id="state-image"></a>[`state_image`](../../lab/state_image.md)

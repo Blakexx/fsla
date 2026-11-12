@@ -26,4 +26,5 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`fold_stream`](fold_stream.md) | experiment |
 | [`drain_rate`](drain_rate.md) | experiment |
 | [`drain_role`](drain_role.md) | experiment |
+| [`state_image`](state_image.md) | experiment |
 | [`drain`](drain.md) | experiment |

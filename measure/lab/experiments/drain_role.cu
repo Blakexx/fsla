@@ -5,12 +5,14 @@
 // registers. `role`: two source warpgroups store a chunk of 64 tokens x 64 channels fp32 each into their panels;
 // 1, 2 or 4 drain warps, a chunk behind, load a token's two rows, add in fp32, round once to f16 pairs and add the
 // line into the token's row -- the CTA's own rows, or rows drawn from 1,024 every CTA shares. `loads`: one thread
-// bulk-loads 32 KB a chunk from global memory, a chunk ahead, nothing else running. `role and loads`: both.
+// bulk-loads 32 KB a chunk from global memory, a chunk ahead, nothing else running. `role and loads`: both, with
+// two drain warps and with four.
 // Every drained sum is checked exactly.
 // TIMELINE: a source's trip is a chunk: the wait on the drain's barrier two chunks back, its stores, its arrival.
 // A drain warp's trip is two batches of 8 of its tokens, each at its own registers: a batch's adds, rounds and
-// global adds (its rows loaded from the panels a trip before), then those registers' loads for the batch two on;
-// a chunk on, its arrival frees the panels. The loader's trip is a chunk: the wait on the load two chunks back,
+// global adds, then those registers' loads for the batch two on -- but a chunk's first two batches are loaded as
+// it opens, its panels not whole before, so with four drain warps (two batches a chunk) no load runs ahead; a
+// chunk on, its arrival frees the panels. The loader's trip is a chunk: the wait on the load two chunks back,
 // the next load issued. Live in a drain warp: 4 fp32 a token of two batches, 64 registers.
 // see docs/internals/tools/lab.md#drain-role
 #include "lab.cuh"
@@ -145,10 +147,10 @@ __global__ void __launch_bounds__(kSourceThreads + 32 * DRAINS, 1)
             const int t = mine + DRAINS * ((b + h) * kBatch + i);
             const uint32_t row = FORM & kSpread ? row_of(blockIdx.x, c, t) : blockIdx.x * kTokens + t;
             lab::red_add_f16x2(out + static_cast<long long>(row) * (kChannels / 2) + lane,
-                               lab::f16x2_round(a0[h][i] + b0[h][i], a1[h][i] + b1[h][i]));
+                               lab::pack_half2(a0[h][i] + b0[h][i], a1[h][i] + b1[h][i]));
           }
-          //: no branch: past the chunk's last batch this reads the other parity's panel, and nothing uses it
-          load(h, c * kBatches + b + 2 + h);
+          //: no branch: past the chunk's last batch it loads that batch again, and nothing uses it
+          load(h, c * kBatches + min(b + 2 + h, kBatches - 1));
         }
       }
       __syncwarp();
@@ -243,7 +245,8 @@ int main(int argc, char** argv) {
   b.expect("direct", "RED", ">=", 16);
   for (int drains : {1, 2, 4})
     for (int form : {int(kRole), kRole | kSpread, kRole | kLoads}) {
-      if (drains != 2 && form != kRole) continue;
+      if (drains == 1 && form != kRole) continue;
+      if (drains == 4 && form == (kRole | kSpread)) continue;
       b.expect(lab::kernel("role", {drains, form}), "RED", ">=", 2 * kBatch);
       //: once a chunk, not a token: a role's `__syncwarp` before its one-lane arrival is a convergence call, and
       //: the loader is one thread of its warp
@@ -266,5 +269,6 @@ int main(int argc, char** argv) {
   run<2, kRole | kSpread>(b, table, out);
   run<2, kLoads>(b, table, out);
   run<2, kRole | kLoads>(b, table, out);
+  run<4, kRole | kLoads>(b, table, out);
   return 0;
 }
