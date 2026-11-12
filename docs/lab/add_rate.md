@@ -21,7 +21,7 @@ Every row's words are checked exactly.
 
 MEASURED (H100 SXM, 132 SMs, vast.ai instance 60337303, driver 595.91.07; 2026-11-12, the experiment at
 78cbf76f; 7 repetitions, every word exact; the cycles in which each warp of the CTA issues one instruction, the
-median, the spread under 3% but the spread form at four warps, 5%):
+median; the spread under 3.2%, but the spread form at four warps 5.4%, which the record marks unstable):
 
 | the form | 1 warp | 2 warps | 4 warps | 8 warps |
 |---|---|---|---|---|
@@ -35,19 +35,19 @@ median, the spread under 3% but the spread form at four warps, 5%):
 | plain stores into one line, 32 lanes | 1.8 | | 1.8 | |
 
 WHAT IT SHOWS.
-- THE ADD IS HELD BY THE SM, NOT BY THE WARP. One warp issues an add of a whole line every 12.6 cycles; two warps
-  each every 21.9, four every 41.3, eight every 80.6. The SM takes one line's add about every 10 to 12 cycles
-  whoever issues it, and more warps adding buy nothing. The rows are of lines a CTA owns and rewrites, which stay
-  in its cache; where the limit sits -- the SM or beyond it -- they do not say.
+- THE ADD IS NOT HELD BY THE WARP. One warp issues an add of a whole line every 12.6 cycles; two warps
+  each every 21.9, four every 41.3, eight every 80.6. An SM gets one line's add out about every 10 to 12
+  cycles whichever of its warps issues it, and more warps adding buy nothing. The rows are of lines a CTA owns and
+  rewrites, which stay in its cache.
 - IT IS THE ATOMIC ADD, WHATEVER ITS TYPE: a line by 32-bit integers is 11.9 and 40.6 at one and four warps, by
   fp32 12.2 and 39.9, and 64-bit integers, two lines an instruction, twice that. No integer form is faster.
 - AN INSTRUCTION COSTS MOSTLY ITSELF, THEN ITS LINES: 32 lanes into one line 12.6, into 32 lines 86.5 -- some 10
   an instruction and 2.4 a line it touches. Fewer lanes into the one line cost less, 8.2 at 16 and 7.8 at 8;
   those two rows also carry a lane's predicate around each add, so what of their cost is the lanes' is not
   separated.
-- A PLAIN STORE OF THE SAME LINE IS 1.8 CYCLES AND DOES NOT SLOW WITH THE WARPS -- of lines it rewrites in its
-  cache. Four warps at that rate would be three times what [`state_move`](state_move.md) read going out to
-  memory (34 cycles a kilobyte, 4.4 a line), so this row is not a store's cost to a fresh line: that is
-  UNMEASURED here, and bounded below by that page's rate.
+- A PLAIN STORE OF THE SAME LINE IS 1.8 CYCLES AND DOES NOT SLOW WITH THE WARPS -- of lines it rewrites, which
+  its cache holds. That is no store's cost to a line nothing has touched; [`slot_sum`](slot_sum.md) asks that.
+- WHERE THE LIMIT SITS IS OPEN: every SM adds at once here, so a limit an SM and one shared by the card and split
+  among its SMs read the same.
 
 Record: `measure/lab/results/add_rate/sm_90a.json`.

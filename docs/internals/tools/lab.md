@@ -191,3 +191,4 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="load-rate"></a>[`load_rate`](../../lab/load_rate.md)
 - <a id="carry-window"></a>[`carry_window`](../../lab/carry_window.md)
 - <a id="add-rate"></a>[`add_rate`](../../lab/add_rate.md)
+- <a id="slot-sum"></a>[`slot_sum`](../../lab/slot_sum.md)
