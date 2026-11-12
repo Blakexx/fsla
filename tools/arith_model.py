@@ -96,9 +96,9 @@ def _prove_truth(reads, writes, u, s, topology, y64, tokens: int) -> None:
         raise SystemExit(f"the windowed truth is not the oracle's over the first {tokens} tokens: {worst:.3e}")
 
 
-#: the integer sums modelled: (bits, the bound's form)
 #: the bounds a sum's scale is modelled under: the first three sum every box, the last two a cluster's
 BOUNDS = ("call", "coarse", "running", "state", "planned")
+#: the integer sums modelled: (bits, the bound's form)
 INT_SUMS = tuple((bits, form) for bits in (32, 64) for form in BOUNDS)
 #: the f16 sums, and the binade a bound is scaled to (f16's largest is under 2^16)
 F16_SUMS = BOUNDS

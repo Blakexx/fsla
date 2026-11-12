@@ -77,9 +77,10 @@ whose every reader meets every writer); the cluster's state scale holds to a spi
 normalized sum holds everywhere but a value-scale spread near 2^48. A token of nl64k-alt-k4 reads 3.66 of its
 clusters.
 
-<a id="f16"></a>WHY f16 IS MODELLED: [precision.md](../../architecture/precision.md) keeps the sum across CTAs fp32,
-and [`drain_role`](../../lab/drain_role.md) prices an f16 line at half an fp32 partial's cost without measuring what
-it gives up; this is that measurement.
+<a id="f16"></a>WHY f16 IS MODELLED: [`drain_role`](../../lab/drain_role.md) prices an f16 line at half an fp32 partial's cost, and
+[precision.md](../../architecture/precision.md) allows an f16 sum across one fold group's CTAs on this measurement
+of what it gives up. The model's CLUSTER -- the boxes sharing one range of a level -- is that fold group when
+`--along` is the write side's sparse level.
 
 THE SUM AS f16 (`sum f16 <bound>`; 2026-11-11, nl64k-alt-k4, boxes 16 x 16, clusters of 16 boxes along
 level 0, one box a term; a token's relative error, median / 99th percentile / largest). The family's every other

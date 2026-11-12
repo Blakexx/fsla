@@ -59,8 +59,11 @@ everywhere; the fold's coefficient, the state as an operand and the read coeffic
 reads, and each alone costs under 0.02% at the 99th percentile on the dense cells and at most 0.10% on the alt-k4
 ones.
 
-THE SUM ACROSS CTAs is fp32 because an f16 one costs by the CTAs it joins: 0.012% x sqrt(CTAs), about 0.14% at the 128
-CTAs a 64K call reduces over (MEASURED, sm_86), against ~1e-4% for fp32.
+AN f16 SUM STOPS AT ONE FOLD GROUP because it costs by the partials it joins: every box of a token into one f16 sum
+is 0.118% a token on nl64k-alt-k4, as much as the family's every other rounding together, where a group's few
+partials are 0.023% and the groups merged in fp32 add ~1e-5% ([`arith_model`](../internals/tools/arith_model.md#f16);
+MODELLED on that one sparse cell -- a dense side, where a token reads every box of a group, is NOT modelled). The
+earlier reading on sm_86 was 0.012% x sqrt(CTAs), about 0.14% at the 128 CTAs a 64K call reduces over.
 
 <a id="why"></a>
 ## Why accumulation stays fp32

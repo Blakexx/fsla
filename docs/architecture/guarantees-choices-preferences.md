@@ -45,7 +45,7 @@ same week.
 **Numerics**
 
 - **State accumulators are fp32 or exact integer** — the fold's state, the mass, the readout's and the den's sums, the output's sum
-  across CTAs, decay dials. → [precision.md](precision.md).
+  across fold groups, decay dials; the output's sum across ONE fold group's CTAs may be f16 at the group's bound. → [precision.md](precision.md).
 - **The amplitude is never logged.** The direct staged-factor lowering is required,
   not preferred: a product of factors is formed from the factors, never through a
   log-space sum, in every kernel.

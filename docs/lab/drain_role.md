@@ -9,8 +9,9 @@ share their read-sparse digits. What does a token cost when a DRAIN ROLE of warp
 memory, adds them, and issues ONE line of f16 pairs -- and what does an f16 line cost by itself? Do value loads on
 the same path add to it?
 
-THE FORMAT'S SUM ACROSS CTAS IS fp32 ([precision.md](../architecture/precision.md)): an f16 line is priced here as
-a cost, and is no adopted form -- what the f16 sum gives up in accuracy is not measured by this experiment.
+THE FORMAT ALLOWS f16 ACROSS ONE FOLD GROUP'S CTAS and keeps fp32 across groups
+([precision.md](../architecture/precision.md)); what the f16 sum gives up in accuracy is
+[`arith_model`](../internals/tools/arith_model.md#f16)'s, not this experiment's.
 
 THE FORM. A CTA an SM.
 - `direct`: 4 warps add a token's 64 channels as 32 f16 pairs, one line, from registers.

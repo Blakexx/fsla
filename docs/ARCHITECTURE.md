@@ -51,7 +51,8 @@ its largest channel with an fp32 scale (CONSTITUTION §R17, §R23). Nothing floa
 the producer and the kernels.
 
 **Declared arithmetic, per kernel.** Every kernel's arithmetic is declared and mirrored by its gate's reference: every
-accumulation fp32 or an exact integer, the operands one family on every card
+accumulation fp32 or an exact integer -- but the output's sum across one fold group's CTAs, which may be f16
+(R17) -- the operands one family on every card
 ([`architecture/precision.md`](architecture/precision.md#components)).
 
 **The window decomposition.** A call's token axis is cut into fixed windows of `W` tokens, global to every box. The
