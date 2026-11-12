@@ -405,7 +405,8 @@ __device__ __forceinline__ void serve_role(uint8_t* smem, uint32_t base, long lo
                                 + ((c / kChunks) % kOutWindows) * kWindow
                                 + 16 * (8 * ((c % kChunks) >> 1) + ((c % kChunks) & 1));
         const uint8_t* const panel = smem + kPanelAt + (c & 1) * kPanelBytes;
-#pragma unroll
+        //: a rolled loop: a batch's addresses are formed in its trip, none held for the chunk
+#pragma unroll 1
         for (int n = 0; n < kDrainBatches; ++n) {
           uint32_t held[kBatch];
 #pragma unroll
