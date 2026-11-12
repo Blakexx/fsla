@@ -21,4 +21,29 @@ THE FORM. A CTA an SM.
 Every drained sum is checked exactly. A role's `__syncwarp` before its one-lane arrival compiles to a convergence
 call, once a chunk; the experiment declares those.
 
-UNMEASURED: no card has run it.
+MEASURED (H100 SXM, 132 SMs, vast.ai instance 60296546, driver 615.71.09; 2026-11-12, the experiment at
+627e96c0; 7 repetitions, every drained sum exact; SM-cycles a token a CTA, the median, the spread under
+2.0%):
+
+| the form | cycles a token |
+|---|---|
+| an f16 line from registers, 4 warps | 9.9 |
+| the drain role, 1 drain warp, the CTA's own rows | 33.4 |
+| the drain role, 2 drain warps, the CTA's own rows | 20.5 |
+| the drain role, 4 drain warps, the CTA's own rows | 11.7 |
+| the drain role, 2 drain warps, rows spread over 1,024 | 21.0 |
+| the loads alone, 32 KB a chunk | 10.5 |
+| the drain role, 2 drain warps, the CTA's own rows, beside the loads | 24.2 |
+
+WHAT IT SHOWS.
+- AN F16 LINE COSTS WHAT AN FP32 LINE DOES: 9.9 cycles, and a token's 64 channels as f16 pairs are one line where
+  fp32 is two ([`drain_rate`](drain_rate.md): 19.2 a token).
+- THE DRAIN ROLE WORKS, AND IS ITS WARPS' UNTIL THERE ARE FOUR: 33.4 cycles a token with one drain warp, 20.5 with two,
+  11.7 with four -- within 18% of the line's own rate, the two sources' stores and the hand-over included. Two
+  partials combined in the CTA leave as one line.
+- ROWS SPREAD OVER A WINDOW COST THE TWO-WARP ROLE NOTHING (21.0 against 20.5): at that rate the path has room.
+- THE LOADS MOSTLY HIDE BESIDE IT: 32 KB a chunk costs 10.5 cycles a token alone (21 a kilobyte, two in flight)
+  and adds 3.7 to the two-warp role (24.2 against 20.5). The role there is its warps' and not the path's; the
+  same pair with four drain warps, where the path binds, is NOT in this record.
+
+Record: `measure/lab/results/drain_role/sm_90a.json`.
