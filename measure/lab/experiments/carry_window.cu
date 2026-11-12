@@ -292,6 +292,13 @@ __device__ __forceinline__ void drain_role(const uint8_t* smem, uint32_t base, l
   clock.stop(times);
 }
 
+//: A ROLE A ROW LEAVES OUT: its warps' spans are empty, at the roles' start, so the block's span is the roles' own
+__device__ __forceinline__ void idle_role(long long* times) {
+  lab::WarpSpan clock;
+  clock.start();
+  clock.stop(times);
+}
+
 template <int ROLES>
 __global__ void __launch_bounds__(kThreads, 1)
     window(long long* times, const uint32_t* values, const uint32_t* dense, float* state, uint32_t* out,
@@ -332,10 +339,13 @@ __global__ void __launch_bounds__(kThreads, 1)
   } else if (tid < kProduceAt) {
     lab::regs_down<kReadRegs>();
     if constexpr (ROLES & kRead) read_role(smem, base, times, windows);
+    else idle_role(times);
   } else if (tid < kDrainAt) {
     if constexpr (ROLES & kFold) produce_role(smem, base, times, values, dense, windows);
+    else idle_role(times);
   } else {
     if constexpr (ROLES & kRead) drain_role(smem, base, times, out, windows);
+    else idle_role(times);
   }
 }
 
