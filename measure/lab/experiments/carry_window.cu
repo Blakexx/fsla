@@ -46,7 +46,7 @@ static_assert(kThreads * kEntryRegs == 65536 && 2 * (kFoldRegs - kEntryRegs) == 
 constexpr int kBrick = 17 * 16, kValueTile = 8 * kBrick, kTile = 10 * kBrick, kPoolBytes = kSlotLists * kTile;
 //: AN IMAGE TILE (the readout's operand a read digit): a line a fold digit's 8 channels, bricks 17 lines, tiles 137
 constexpr int kBrickLines = 17, kImageTile = 137 * 16, kBoxBytes = kLists * kImageTile, kCoefBytes = 512;
-//: a panel row: a token's 64 f16 as its line will be added, rows 272 bytes apart
+//: a panel row: a token's 64 f16 as its line will be added, or its 64 fp32, rows 272 bytes apart
 constexpr int kChunkDigits = 4, kTokens = 16 * kChunkDigits, kChunks = kLists / kChunkDigits, kRowBytes = 272,
               kPanelBytes = kTokens * kRowBytes, kBatch = 8;
 constexpr int kImageAt = 4 * kPoolBytes, kCoefAt = kImageAt + 2 * kBoxBytes, kPanelAt = kCoefAt + kLists * kCoefBytes,
@@ -269,7 +269,8 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
     return reader_of(blockIdx.x, (c / kChunks) * kWindow + 16 * (8 * (k >> 1) + (k & 1) + 2 * j_mine) + n_mine);
   };
   uint4 bytes = boxes[reader_row(reader(0), box_mine)];
-  //: two phases clocked, at its 64 registers: the fill and the panel's stores are its span less these and its waits
+  //: two phases clocked, at its 64 registers -- its coefficients' expansion with their fence and barrier, and its
+  //: steps: the panel's stores are its span less these and its waits
   uint32_t on_image = 0, on_drain = 0, in_fence = 0, in_steps = 0;
   //: a digit's first step writes its accumulator whole: nothing is cleared between chunks
   float d[kChunkDigits][8];
@@ -325,8 +326,8 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       in_steps += lap(since);
       //: the group is read: its box may publish the next window's over it
       if (lane == 0) lab::mbar_arrive(bars + kTilesRead + 8 * c4);
-      //: THE PANEL, once the drain has left it: value (channel, token) rounded to f16 into the token's row, a
-      //: 2-byte store a register -- the row a drain warp adds as it lies
+      //: THE PANEL, once the drain has left it: value (channel, token) into the token's row, a store a register --
+      //: rounded to f16, 2 bytes, the row a drain warp adds as it lies; or fp32, 4 bytes, the drain warp's to round
       if (c >= 2) waited(bars + kPanelFreed + 8 * (c & 1), ((c >> 1) - 1) & 1, on_drain);
       uint8_t* const row = smem + mine + (c & 1) * kPanelBytes;
 #pragma unroll
@@ -575,7 +576,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                               {0, 8, 1, "a fold warp waits on its producer"},
                               {8, 4, 0, "a readout warp waits on the image"},
                               {8, 4, 1, "a readout warp waits on the drain"},
-                              {8, 4, 2, "a readout warp at its fence and its tiles' barrier"},
+                              {8, 4, 2, "a readout warp expands its coefficients, to its tiles' barrier"},
                               {8, 4, 3, "a readout warp in its steps"},
                               {14, 2, 0, "a drain warp waits on the panel"}};
   lab::Samples waited_at[kSites];
@@ -608,6 +609,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
       const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
       clock_rate.v.push_back(b.span(kThreads >> 5) / seconds / 1e9);
     }
+    b.unchecked("the card's clock", "a rate read off the composed row's call, which that row checks");
     b.record("the card's clock: the composed call's span over its wall time", "GHz", clock_rate);
   }
   if (!(ROLES & (kNoLoads | kNoAdds | kNoImage)) && ROLES & kRead)
