@@ -35,4 +35,5 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`pool_fill`](pool_fill.md) | experiment |
 | [`load_rate`](load_rate.md) | experiment |
 | [`carry_window`](carry_window.md) | experiment |
+| [`add_rate`](add_rate.md) | experiment |
 | [`drain`](drain.md) | experiment |
