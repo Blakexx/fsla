@@ -33,4 +33,34 @@ both, and both with one access taken out to find what the sides contend for: the
 words made in registers), the drains' global adds (their lines folded into a sink), the image's stores. With both, the fold's state and every output row are checked exactly against the host's: the state summed in
 integers, the image its truncation to bf16, a line its rounding to f16.
 
-MEASURED: not yet run.
+MEASURED (H100 SXM, 132 SMs, vast.ai instance 60333577, driver 595.91.07; 2026-11-12, the experiment at
+1992396b; 7 repetitions, the composed row's 4,325,376 state values and 8,650,752 output values exact; the median,
+the spread under 3%; SM-cycles a token are the window's cycles over 8 -- 128 CTAs of two boxes, 1,024 tokens):
+
+| the row | cycles a window a CTA | SM-cycles a token |
+|---|---|---|
+| the fold's side alone: producers and steps | 4,285 | 536 |
+| the read side alone: the image, the readout and the drain | 6,780 | 847 |
+| the carry: both sides | 8,756 | 1,094 |
+| both sides, the producers' global loads taken out | 7,877 | 985 |
+| both sides, the drains' global adds taken out | 7,136 | 892 |
+| both sides, the image's stores taken out | 7,252 | 906 |
+
+WHAT IT SHOWS.
+- THE CARRY COMPOSES, EXACTLY: two boxes' folds, the image a window, one readout warpgroup over both and one f16 line
+  a token, in one CTA of 512 threads at the SM's whole register file.
+- A TOKEN COSTS 1,094 SM-CYCLES COMPOSED, 0.53 of FlashAttention's tensor floor at the hardest cell (2,049,
+  [`carry_floor`](../internals/tools/carry_floor.md)).
+- THE TWO SIDES OVERLAP IN PART: 8,756 together, where the slower side alone is 6,780 and the two's sum 11,065 --
+  29% over the one, 21% under the other.
+- EACH ACCESS TAKEN OUT GIVES BACK A PART, none the whole: the drains' global adds 1,620 cycles a window, the image's
+  stores 1,504, the producers' global loads 879. The three are not independent and are not summed, and which
+  resource each contends for -- the global path, the shared memory's stores, the warps' issue -- these rows do
+  not separate.
+- THE TENSOR PIPE IS MOSTLY IDLE: a window is 64 steps of some 20 cycles
+  ([`wgmma_width`](wgmma_width.md)), about 1,300 of its 8,756. The window is its operands' fill and its results'
+  drain.
+- THE FOLD'S SIDE BY ONE PRODUCER A BOX is 8.4 cycles an entry (4,285 over 512), its steps included, where two
+  producers a box read 6.9 ([`pool_fill`](pool_fill.md)).
+
+Record: `measure/lab/results/carry_window/sm_90a.json`.
