@@ -21,8 +21,8 @@ its reason):
   of a box is a sixteenth of a step, and a step costs the same at 8 columns as at 64, and four times that at 256;
 - the readout's operand: its (token, leaf) coefficients expanded into shared memory, at the SM's shared access rate
   (`byte_expand`, its bank-spread form);
-- the output's sum: by default (`--sum none`) every box drains its own partial to global memory (`bulk_drain`, a
-  CTA's own sum to one sum for every CTA), and a cluster shares the fold's value loads only. Summed in a cluster
+- the output's sum: by default (`--sum none`) every box drains its own partial to global memory (`drain_rate`:
+  from rows no other CTA adds into, to rows spread over a window that every CTA shares), and a cluster shares the fold's value loads only. Summed in a cluster
   first by one of two forms, it is then one fp32 drain a (token, cluster read). Both forms are MEASURED
   (`cluster_sum`, eight collectors a cluster, its rows at two round sizes split into a cost a round and a cost a
   token), and neither pays: `slots`, the fp32 sum the format states -- a box's partial staged and sent by a bulk copy into its own slot of a collector, which adds a token's slots; `s64` -- the partial
@@ -89,10 +89,10 @@ def measured() -> dict[str, tuple[float, str]]:
     return {
         "products": (products, f"wgmma_rate / {pipe_row}"),
         "shared": (shared, f"byte_expand / {spread_row} (7 16-byte accesses a lane)"),
-        "drain_own": (median("bulk_drain", "one bulk add a panel, each CTA its own sum") / 256.0,
-                      "bulk_drain / one bulk add a panel, each CTA its own sum (a byte)"),
-        "drain_shared": (median("bulk_drain", "one bulk add a panel, one sum for every CTA") / 256.0,
-                         "bulk_drain / one bulk add a panel, one sum for every CTA (a byte)"),
+        "drain_own": (median("drain_rate", "each CTA its own rows, 4 warps") / 256.0,
+                      "drain_rate / each CTA its own rows (a byte; the same at 4, 8 and 16 warps)"),
+        "drain_spread": (median("drain_rate", "rows spread over 1,024, 4 warps") / 256.0,
+                         "drain_rate / rows spread over 1,024 that every CTA shares (a byte)"),
         "load_packed": (median("state_move", "one bulk copy in from global memory, blocks of 8192 bytes") * 128 / 1024,
                         "state_move / one bulk copy in from global memory, blocks of 8192 bytes (128 bytes of it)"),
         "fold_step": (median("fold_stream", "the fold alone, steps of 64 leaves, 4 producers") * 64 / 16,
@@ -159,7 +159,7 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
     rows = max(dv, MMA_ROWS)
     clustered = math.prod(cluster) > 1
     products, shared = rates["products"][0], rates["shared"][0]
-    drain = (rates["drain_own"][0], rates["drain_shared"][0])
+    drain = (rates["drain_own"][0], rates["drain_spread"][0])
     value_requests = math.ceil(dv * 2 / 128)
     #: `none`: the cluster shares the fold's value loads only, and every box drains its own
     summed = clustered and form != "none"
@@ -198,7 +198,7 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
         "readout operand, expanded": (both(read.leaves * 2 / shared), "shared"),
         "sum: partials into the cluster": (both(read.boxes * hop), f"hop_{form}" if summed else "no cluster sum"),
         "sum: the rounds' barriers": (both(barriers), f"round_{form}" if summed else "no cluster sum"),
-        "sum: drains to global memory": (tuple(drains * (dv * 4 + 4) * d for d in drain), "drain_own .. drain_shared"),
+        "sum: drains to global memory": (tuple(drains * (dv * 4 + 4) * d for d in drain), "drain_own .. drain_spread"),
         "fold operand, expanded": (both(write.leaves * 2 / shared), "shared"),
         "fold values, loaded": (loads, "load_packed of the window's tile, or load_row: the cheaper a box"),
         "fold values, gathered by list": (both(write.boxes * write.lists * dv * 2 * 2 / shared),

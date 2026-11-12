@@ -1445,6 +1445,7 @@
   {"doc": "docs/lab/drain_rate.md", "pinned_at": "603e6ec0dc50", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
   {"doc": "docs/lab/drain_rate.md", "pinned_at": "603e6ec0dc50", "reviewed": true, "sha256": "", "target": "docs/lab/bulk_drain.md"},
   {"doc": "docs/lab/drain_rate.md", "pinned_at": "603e6ec0dc50", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/drain_rate.cu"},
+  {"doc": "docs/lab/drain_rate.md", "pinned_at": "41730f9b6e37", "reviewed": true, "sha256": "", "target": "measure/lab/results/drain_rate/sm_90a.json"},
   {"doc": "docs/lab/facts_block.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
   {"doc": "docs/lab/facts_block.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/facts_block.cu"},
   {"doc": "docs/lab/facts_block.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "", "target": "measure/lab/results/facts_block/sm_86.json"},
