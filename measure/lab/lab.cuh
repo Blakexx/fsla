@@ -210,6 +210,16 @@ __device__ __forceinline__ void mbar_wait(uint32_t a, uint32_t parity) {
       : "memory");
 }
 
+//: the same wait by the instruction that may SUSPEND the thread until the phase completes or a time limit of the
+//: system's passes (`try_wait`); `mbar_wait`'s `test_wait` never suspends: its loop issues every trip it waits
+__device__ __forceinline__ void mbar_wait_suspended(uint32_t a, uint32_t parity) {
+  asm volatile(
+      "{\n.reg .pred p;\nLAB_TRY_%=:\nmbarrier.try_wait.parity.shared.b64 p, [%0], %1;\n@!p bra LAB_TRY_%=;\n}" ::
+          "r"(a),
+      "r"(parity)
+      : "memory");
+}
+
 //: A NAMED BARRIER (ids 1-15; 0 is `__syncthreads`'s): `count` threads, a multiple of 32, complete it; `bar_sync`
 //: arrives and waits, `bar_arrive` arrives and goes on
 __device__ __forceinline__ void bar_sync(int id, int count) {

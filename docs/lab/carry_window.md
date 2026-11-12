@@ -31,14 +31,22 @@ THE REGISTERS (`setmaxnreg`, each role's body in its own branch). 512 threads la
 SM's whole file of 65,536. A fold thread raises to 160; a readout thread lowers to 96, and the producers and drains,
 one warpgroup, to 96: the folds' 32 more each are those 32 fewer. At 152 the fold spills to local memory; at 80 the
 toolkit serializes the readout's steps of 64 columns with A in registers; a producer holding two batches needs
-some 125. NO REGISTER IS LEFT for a fifth warpgroup: one beside these roles takes its registers from them. A form
+some 125. THE FOURTH WARPGROUP'S REGISTERS CAN BE SPLIT BY WARP (a row): a drain warp, which holds 16 words, lowers
+to 64 and a producer keeps the 128 it entered with and holds two batches; the compiler takes both counts (a release
+to 64 and one to 96, the raise to 160). NO REGISTER IS LEFT for a fifth warpgroup: one beside these roles takes its registers from them. A form
 of five warpgroups (640 threads) launches at 96 a thread, 61,440 in all; one whose roles' counts summed to the
 whole file hung on the device, and whether at the folds' raise no run separated.
 
 ROWS: the fold's side alone (producers and steps), the read side alone (the image, the readout and the drain),
 both, and both with one access taken out: the producers' global loads (their words made in registers), the drains'
-global adds (their lines folded into a sink), the image's stores. THE FOLD'S, THE READOUT'S AND THE DRAIN WARPS'
-WAITS at their barriers are clocked, and the readout's steps. THE CARD'S CLOCK is read from the composed row: a
+global adds (their lines folded into a sink), the image's stores. Then WHAT THE READOUT'S STEPS WAIT BEHIND: the
+readout and the drains with no fold warp running (the image as it lies, never rewritten, no fold warp at a
+barrier); every barrier's wait by the instruction that may suspend its thread (`mbarrier.try_wait`) where the
+other rows poll (`test_wait` in a loop, an instruction every trip of every waiting warp); and the registers by
+warp. THE FOLD'S, THE READOUT'S AND THE DRAIN WARPS'
+WAITS at their barriers are clocked, and the readout's cycles FORMING its steps' A (the coefficients' rounds and
+the 32 words held) apart from those IN ITS STEPS (the fence, 8 steps, the commit, the next chunk's 8 loads issued,
+the wait). THE CARD'S CLOCK is read from the composed row: a
 long call's span in SM cycles over its wall time. With both sides and nothing taken out, the fold's state and
 every output row are checked exactly against the host's: the state summed in integers, the image its truncation to
 bf16, a line its rounding to f16.
@@ -76,12 +84,12 @@ WHAT IT SHOWS.
   threads at the SM's whole register file.
 - A TOKEN COSTS 1,100 SM-CYCLES COMPOSED at this cell (its sides sparse on opposite levels, 256 x 256 leaves;
   [`carry_floor`](../internals/tools/carry_floor.md) prices a dense side higher).
-- A STEP WITH A FROM REGISTERS IS SLOW: the readout's 32 steps a window are 3,023 cycles of a readout warp's
-  time composed and 4,206 alone, some 95 to 130 a step where a step of 64 columns from shared memory is 32
-  ([`wgmma_width`](wgmma_width.md)) -- with every step's A in its own registers before the group, as with each
-  chosen as its step was issued (a run before this one: both sides 9,174).
-- THE FOLD WAITS ON ITS PRODUCER 3,430 cycles of the window: a producer holds one batch in registers here, and
-  the fold's side alone is 5,755 where two batches read 4,300 (a run before this one).
+- THE READOUT'S STEPS RUN FAR OVER THEIR OWN TIME, the cause not isolated by this record: a chunk's 8 steps are
+  756 cycles of a readout warp's time composed and 1,052 with the read side alone, where 8 steps of 64 columns
+  into one accumulator, both operands shared memory and nothing else running, are 319
+  ([`wgmma_width`](wgmma_width.md)), and a register A is no slower than a shared one
+  ([`wgmma_rate`](wgmma_rate.md)). The clocked span here also holds the 32 words of A formed and 8 loads issued.
+- THE FOLD WAITS ON ITS PRODUCER 3,430 cycles of the window: a producer holds one batch in registers.
 - THE TENSOR PIPE'S OWN WORK is a window's 32 steps of 16 columns and 32 of 64, some 1,700 cycles at their
   shared-memory rates.
 
