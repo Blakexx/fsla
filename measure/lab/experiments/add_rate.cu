@@ -1,7 +1,7 @@
-// measure/lab/experiments/add_rate.cu -- QUESTION: a warp adding f16 lines to global memory from registers, with
-// nothing between its adds, gets one out about every 39 cycles (`drain_role`), and the rate scales with the warps
-// up to four. What holds a warp to that: a limit a warp, the lanes an instruction carries, the lines it touches,
-// or the add being atomic? METHOD: a CTA an SM of 1, 2, 4 or 8 warps; each warp issues 16 instructions a trip to
+// measure/lab/experiments/add_rate.cu -- QUESTION: in the composed carry the warps adding lines to the output are
+// the role the others wait on (`carry_window`). What holds an add to global memory: a limit a warp, the lanes an
+// instruction carries, the lines it touches, the add's type, or its being atomic? METHOD: a CTA an SM of 1, 2, 4 or 8
+// warps; each warp issues 16 instructions a trip to
 // its own rows of global memory, from registers that never change. ONE LINE: an instruction's lanes add f16 pairs
 // into one 128-byte line, by 32, 16 or 8 lanes. SPREAD: its 32 lanes each add into a different line. STORE: the
 // one-line form as a plain 4-byte store a lane, no add. INTEGER AND fp32: the one-line form by a 32-bit integer
@@ -68,7 +68,8 @@ void run(lab::Bench& b, uint32_t* out) {
   LAB_CHECK(cudaDeviceSynchronize());
   std::vector<uint32_t> got(words);
   LAB_CHECK(cudaMemcpy(got.data(), out, words * 4, cudaMemcpyDeviceToHost));
-  //: a written word holds the rounds' sum in both halves (a store: its last value); every other word nothing
+  //: a written word holds its form's value after the rounds -- the sum in both f16 halves, a store's last value,
+  //: an integer's or an fp32's count, a 64-bit count's low word and nothing in its high; every other word nothing
   long long wrong = 0;
   for (size_t w = 0; w < words; ++w) {
     const int lane = static_cast<int>(w % kLineWords), line = static_cast<int>(w / kLineWords) % kWarpLines,
