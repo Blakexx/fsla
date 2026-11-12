@@ -71,10 +71,9 @@ def test_a_box_every_token_writes_pays_its_steps_and_the_whole_tile():
     #: the readout's leaves of a list fill whole steps of sixteen in both shapes
     assert even["tensor, readout"]["cycles"] == strip["tensor, readout"]["cycles"]
     #: the fold is its steps' time, a sixteenth of one a (token, list, box): 64 of those square, 1,024 in strips
-    step = carry_floor.measured()["fold_step"][0]
-    assert strip["tensor, fold"]["cycles"][0] == pytest.approx(256 * 4 * step / 16)
-    assert even["tensor, fold"]["cycles"][0] == pytest.approx(1024 / 16 * step / 16, rel=0.01)
-    #: every token writes every strip: each takes the window's tile packed
     rates = carry_floor.measured()
+    assert strip["tensor, fold"]["cycles"][0] == pytest.approx(256 * 4 * rates["step_8"][0] / 16)
+    assert even["tensor, fold"]["cycles"][0] == pytest.approx(1024 / 16 * rates["step_16"][0] / 16, rel=0.01)
+    #: every token writes every strip: each takes the window's tile packed
     assert strip["fold values, loaded"]["cycles"][0] == pytest.approx(256 * rates["load_packed"][0])
 

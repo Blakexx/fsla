@@ -17,9 +17,9 @@ read from an H100 lab record under `measure/lab/results/` at run time -- or ESTI
 its reason):
 - tensor: the leaves a token reads, times the channels, over the pipe's products a cycle (`wgmma_rate`);
   a value width under 64 runs wgmma's 64 rows (the idle half), and the readout's leaves of a list in a box run
-  whole steps of sixteen (its K). THE FOLD is priced by its steps' TIME, MEASURED (`fold_stream`): a token in a list
-  of a box is a sixteenth of a step; a step of 64 columns or fewer is priced at the 64-column step (ASSUMED under 64:
-  the record reads 64 and 256), one of 256 at four of them;
+  whole steps of sixteen (its K). THE FOLD is priced by its steps' TIME, MEASURED (`wgmma_width`): a token in a
+  list of a box is a sixteenth of a step as wide as the list's leaves in the box; a step of 8 columns is over half
+  a step of 64, and one past 64 is whole 64-column steps;
 - the readout's operand: its (token, leaf) coefficients expanded into shared memory, at the SM's shared access rate
   (`byte_expand`, its bank-spread form);
 - the output's sum: by default (`--sum none`) every box drains its own partial to global memory (`drain_rate`:
@@ -59,6 +59,8 @@ RESULTS = ROOT / "measure" / "lab" / "results"
 
 #: wgmma's rows: the channels a warpgroup's MMA carries
 MMA_ROWS = 64
+#: the output widths `wgmma_width` reads a step's own time at; a step past 64 columns is whole 64-column steps
+STEP_WIDTHS = (8, 16, 32, 64)
 #: ESTIMATED, each with its reason: nothing on an H100 has measured these
 ESTIMATES = {
     "clock": (1.8e9, "SM cycles a second: inferred from the card's published tensor rate, not measured"),
@@ -96,8 +98,10 @@ def measured() -> dict[str, tuple[float, str]]:
                          "drain_rate / rows spread over 1,024 that every CTA shares (a byte)"),
         "load_packed": (median("state_move", "one bulk copy in from global memory, blocks of 8192 bytes") * 128 / 1024,
                         "state_move / one bulk copy in from global memory, blocks of 8192 bytes (128 bytes of it)"),
-        "fold_step": (median("fold_stream", "the fold alone, steps of 64 leaves, 4 producers") * 64 / 16,
-                      "fold_stream / the fold alone, steps of 64 leaves (a step of 16 tokens)"),
+        **{f"step_{n}": ((median("wgmma_width", f"{n} columns, 8 steps a group")
+                          - median("wgmma_width", f"{n} columns, 1 step a group")) / 7,
+                         f"wgmma_width / {n} columns: the slope from 1 step a group to 8 (a step)")
+           for n in STEP_WIDTHS},
         "load_row": (median("state_move", "64 loads of 128 bytes, a thread each"),
                      "state_move / 64 loads of 128 bytes, a thread each (a load)"),
         **cluster_rates(),
@@ -182,10 +186,13 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
     a_box = a_value(write.boxes, all_boxes)
     loads = (a_value(write.clusters, all_boxes / math.prod(cluster)) if clustered else a_box, a_box)
 
-    #: A FOLD STEP IS PRICED BY ITS TIME: a token in a list of a box is a sixteenth of a step, and a step's time is
-    #: one of 64 columns' for each 64 of the list's leaves in the box (`fold_stream`: 64 and 256 columns; narrower ASSUMED the same)
-    def steps_wide(a: Side) -> float:
-        return math.ceil(a.leaves / (a.boxes * a.lists) / 64 - 1e-9)
+    #: A FOLD STEP IS PRICED BY ITS TIME (`wgmma_width`): a token in a list of a box is a sixteenth of a step as
+    #: wide as the list's leaves in the box -- the narrowest measured width that holds them, whole 64-column steps
+    #: past 64
+    def fold_step(a: Side) -> tuple[float, str]:
+        along = a.leaves / (a.boxes * a.lists)
+        width = next((n for n in STEP_WIDTHS if n >= along - 1e-9), 64)
+        return rates[f"step_{width}"][0] * math.ceil(along / 64 - 1e-9), f"step_{width}"
 
     #: THE READOUT'S PADDING: a list's leaves in a box are its K, whole steps of sixteen
 
@@ -195,7 +202,7 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
 
     terms = {
         "tensor, readout": (both(padded(read) * rows / products), "products"),
-        "tensor, fold": (both(write.boxes * write.lists * steps_wide(write) * rates["fold_step"][0] / 16), "fold_step"),
+        "tensor, fold": (both(write.boxes * write.lists * fold_step(write)[0] / 16), fold_step(write)[1]),
         "readout operand, expanded": (both(read.leaves * 2 / shared), "shared"),
         "sum: partials into the cluster": (both(read.boxes * hop), f"hop_{form}" if summed else "no cluster sum"),
         "sum: the rounds' barriers": (both(barriers), f"round_{form}" if summed else "no cluster sum"),
