@@ -31,14 +31,13 @@ its reason):
   integers by a bulk reduction into the collector's panel, outside the fp32 the format states, counted for
   comparison. A cluster's CTAs hand over once a ROUND of `--round` partials a CTA, and the round's cost is its own
   term (beyond 64 partials a round it is the line's, UNMEASURED);
-- THE PAIR (`--pair fp32 | f16`): a CTA holds two boxes neighbouring along a level the read side is dense on, one
-  readout warpgroup runs each read digit's step on both boxes' images into one accumulator, and drain warps add
-  ONE line a token. `f16`: the steps, the panel and the drain MEASURED whole (`readout_role`, by 4 to 1 drain
-  warps), in place of the readout's tensor term and a drain a box -- a sum of every CTA's f16 line, which the
-  constitution's R17 as written does not allow (f16 within one fold group, fp32 across them). `fp32`: that
-  measurement and one more line of the drain (`drain_rate`), an ESTIMATED sum, the form R17 allows. Both store the
-  state's image once a window (`state_image`). Priced at 64 channels and for sides sparse on different levels
-  alone: nothing else was measured;
+- THE PAIR (`--pair f16 | fp32`, the width the plan states): a CTA holds two boxes neighbouring along a level the
+  read side is dense on, one readout warpgroup runs each read digit's step on both boxes' images into one
+  accumulator, and drain warps add ONE line a token. `f16`: the steps, the panel and the drain MEASURED whole
+  (`readout_role`, by 4 to 1 drain warps), in place of the readout's tensor term and a drain a box. `fp32`: that
+  measurement and one more line of the drain (`drain_rate`), an ESTIMATED sum. Both store the state's image once a
+  window (`state_image`). Priced at 64 channels and for sides sparse on different levels alone: nothing else was
+  measured;
 - the fold's operands, one of two forms, the cheaper at its low end. LISTED: a (token, list, box) entry's value and coefficients
   fetched from scattered rows into the list's tiles by producer warps, MEASURED whole (`pool_fill`, at 16 leaves a
   list; a list's leaves past 16 are priced at the shared access rate, ESTIMATED). TILED: every box takes the window's whole value tile packed

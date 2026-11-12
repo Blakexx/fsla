@@ -1,14 +1,14 @@
 # Precision
 
-> **Every accumulator is fp32 or an exact integer, but one: a fold group's output sum across its own CTAs may be
-> f16 under the group's bound, merged in fp32.** Storage and operands are one family on every card: u8 rows,
+> **Every accumulator is fp32 or an exact integer, but one: the output's sum across CTAs is fp32 or f16, as the
+> plan states.** Storage and operands are one family on every card: u8 rows,
 > bf16 values and operands (`docs/CONSTITUTION.md#r17`).
 
 The distinction is the whole document, so state it first.
 
 | | What it means | Rule |
 |---|---|---|
-| **ACCUMULATION** | the format a value is *added into* across steps and carried: the fold's state, the mass (the state's v+1 channel), the readout's and the den's sums, the output's sum across fold groups | fp32 or exact integer, closed. Not a default, not a knob, not a card's. The one exception is the output's sum across the CTAs of one fold group (the table below). |
+| **ACCUMULATION** | the format a value is *added into* across steps and carried: the fold's state, the mass (the state's v+1 channel), the readout's and the den's sums, the output's sum inside a CTA | fp32 or exact integer, closed. Not a default, not a knob, not a card's. The one exception is the output's sum across CTAs, whose width the plan states (the table below). |
 | **STORAGE and OPERANDS** | the format a value is *held in* and read, without being accumulated into: routing rows, values, the stored state between calls, an MMA's operands, the output | declared per component, each with its quality measured against fp64. |
 
 A read-only value that is 1 ULP wrong contributes an error bounded by its own magnitude, once. An accumulator that is
@@ -26,7 +26,7 @@ nothing bounds what accumulation embeds.
 | the fold | the coefficient of a (token, leaf) -- its levels' bytes with the token's scales, multiplied in fp32 where the bytes are expanded -- rounded to bf16 once; the values bf16 as stored | fp32 |
 | the readout | the state as a bf16 operand; the read coefficient bf16 | fp32 |
 | the intra | a window's token pairs' products exact (u8 rows, integer MMAs); the pair's weight bf16; the values bf16 | fp32 |
-| the output's sum | a token's partial sums from every CTA that reads it | fp32 in shared memory and across fold groups; across the CTAs of ONE fold group it may be f16, each partial scaled by a power of two from the group's bound (the most its leaves can hold, carried with the state), the groups merged in fp32 -- 0.023% a token at the median ([`arith_model`](../internals/tools/arith_model.md#f16)) |
+| the output's sum | a token's partial sums from every CTA that reads it | fp32 inside a CTA; across CTAs the plan's: fp32, or one f16 line a CTA a token, scaled by a power of two from one coarse bound re-based each segment and stored with the state -- 0.083% a token at the median with two boxes a CTA ([`arith_model`](../internals/tools/arith_model.md#f16)) |
 | decode | the bundle's token, the stored state | each written element updated in fp32 and rounded to its group's unit (2^-23 of the group's largest) |
 | the output | `y = P / den`, bf16 | -- |
 
@@ -59,11 +59,13 @@ everywhere; the fold's coefficient, the state as an operand and the read coeffic
 reads, and each alone costs under 0.02% at the 99th percentile on the dense cells and at most 0.10% on the alt-k4
 ones.
 
-AN f16 SUM STOPS AT ONE FOLD GROUP because it costs by the partials it joins: every box of a token into one f16 sum
-is 0.118% a token on nl64k-alt-k4, as much as the family's every other rounding together, where a group's few
-partials are 0.023% and the groups merged in fp32 add ~1e-5% ([`arith_model`](../internals/tools/arith_model.md#f16);
-MODELLED on that one sparse cell -- a dense side, where a token reads every box of a group, is NOT modelled). The
-earlier reading on sm_86 was 0.012% x sqrt(CTAs), about 0.14% at the 128 CTAs a 64K call reduces over.
+THE SUM'S WIDTH IS THE PLAN'S because f16 costs by the partials it joins and the op counts none (R24): 29 f16 lines
+a token (two boxes a CTA, added in fp32 first) are 0.083% a token at the median on nl64k-alt-k4, 58 are 0.115%, the
+family's own error being 0.115% ([`arith_model`](../internals/tools/arith_model.md#f16); MODELLED on that one
+sparse cell -- a dense read side and wider levels are NOT modelled). So the planner's default is f16 where a
+token's partials are few and fp32 where they are many. A sum a fold group with the groups merged in fp32 reads
+0.023%, and is no form: its merge costs what the fp32 line does
+([`panel_merge`](../lab/panel_merge.md)).
 
 <a id="why"></a>
 ## Why accumulation stays fp32

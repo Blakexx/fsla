@@ -78,8 +78,8 @@ normalized sum holds everywhere but a value-scale spread near 2^48. A token of n
 clusters.
 
 <a id="f16"></a>WHY f16 IS MODELLED: [`drain_role`](../../lab/drain_role.md) prices an f16 line at half an fp32 partial's cost, and
-[precision.md](../../architecture/precision.md) allows an f16 sum across one fold group's CTAs on this measurement
-of what it gives up. The model's CLUSTER -- the boxes sharing one range of a level -- is that fold group when
+[precision.md](../../architecture/precision.md) lets the plan state an f16 sum across CTAs on this measurement
+of what it gives up. The model's CLUSTER -- the boxes sharing one range of a level -- is a fold group when
 `--along` is the write side's sparse level.
 
 THE SUM AS f16 (`sum f16 <bound>`; 2026-11-11, nl64k-alt-k4, boxes 16 x 16, clusters of 16 boxes along

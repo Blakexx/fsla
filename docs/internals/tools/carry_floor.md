@@ -29,18 +29,15 @@ THE FOLD'S TENSOR TIME is its steps': a token in a list of a box is a sixteenth 
 list's leaves in the box, a step's own time MEASURED at 8, 16, 32 and 64 columns and whole 64-column steps past
 that ([`wgmma_width`](../../lab/wgmma_width.md)); the readout's leaves run whole steps of sixteen.
 
-THE PAIR (`--pair fp32 | f16`). A CTA holds two boxes neighbouring along a level the read side is dense on, so a
-token that reads one reads both; one readout warpgroup runs each read digit's step on both boxes' images into ONE
-accumulator, and drain warps add one line a token.
+THE PAIR (`--pair f16 | fp32`) is the carry's form for the output's sum, its line's width the plan's
+([`CONSTITUTION.md`](../../CONSTITUTION.md#r17-one-family-one-form-a-component)). A CTA holds two boxes
+neighbouring along a level the read side is dense on, so a token that reads one reads both; one readout warpgroup
+runs each read digit's step on both boxes' images into ONE accumulator, and drain warps add one line a token.
 - `f16`: the steps, the panel and the drain are MEASURED whole ([`readout_role`](../../lab/readout_role.md): 12.0 to
   21.7 cycles a token a pair by 4 to 1 drain warps) and stand in place of the readout's tensor term and a drain a
-  box. It is a sum of every CTA's f16 line into the token's row, which the constitution's R17 AS WRITTEN DOES NOT
-  ALLOW: an f16 sum is within one fold group, the groups merged in fp32
-  ([`CONSTITUTION.md`](../../CONSTITUTION.md#r17-one-family-one-form-a-component)). Its accuracy is
-  [`arith_model`](arith_model.md#sums)'s to state, and whether it becomes a form is a ruling this page does not
-  make.
+  box. Its accuracy is [`arith_model`](arith_model.md#f16)'s to state.
 - `fp32`: that measurement and one more line of the drain ([`drain_rate`](../../lab/drain_rate.md)), an ESTIMATED
-  sum of two measurements; the form R17 allows.
+  sum of two measurements.
 Both store an image of the state once a window ([`state_image`](../../lab/state_image.md)), which the readout
 warpgroup reads. The pair is priced at 64 channels and for sides sparse on different levels alone: nothing else was
 measured, and where the sides are sparse on the same levels a box's own warpgroup reads out from its registers,
@@ -71,7 +68,7 @@ high, and the call):
 |---|---|---|---|---|---|---|
 | 256 x 256, read sparse on level 2, write on level 1; boxes 16 x 16 | 58.2 / 58.2 | 32, 80 | 1,133 to 1,469 | 345 to 438 (listed) | 1,604 to 2,033 | 442 to 561 us |
 | ... boxes 16 x 16, `--pair fp32` (one fp32 line a pair, an image a window of 1,024) | 58.2 / 58.2 | 0, 80 | 766 to 1,050 | 345 to 438 (listed) | 1,204 to 1,582 | 332 to 436 us |
-| ... boxes 16 x 16, `--pair f16` (outside R17 as written) | 58.2 / 58.2 | 0, 80 | 487 to 771 | 345 to 438 (listed) | 925 to 1,303 | 255 to 359 us |
+| ... boxes 16 x 16, `--pair f16` | 58.2 / 58.2 | 0, 80 | 487 to 771 | 345 to 438 (listed) | 925 to 1,303 | 255 to 359 us |
 | ... boxes 64 x 4 | 15.6 / 175.0 | 32, 288 | 304 to 394 | 1,379 to 1,753 (listed) | 2,017 to 2,480 | 556 to 684 us |
 | ... boxes 256 x 1 (the whole read-dense level) | 4.0 / 256.0 | 32, 1,152 | 77 to 100 | 2,821 (tiled) | 4,096 to 4,119 | 1.1 ms |
 | ... boxes 16 x 16, `--cluster 16 1 --sum slots` | 58.2 / 58.2 | 32, 80 | 7,562 to 7,583 | 345 to 438 (listed) | 8,033 to 8,147 | 2.2 ms |
@@ -91,12 +88,13 @@ WHAT IT SHOWS. A token's cost is bytes moved and steps run, a (token, box) each;
 - WHERE THE TWO SIDES ARE SPARSE ON DIFFERENT LEVELS, at as many leaves as tokens, A BOX THAT DRAINS ITS OWN fp32
   PARTIAL DOES NOT BEAT FLASHATTENTION'S FLOOR: square boxes are 1,604 to 2,033 against 2,049, which is parity,
   and parity is a loss. Seven tenths of it is the output's sum, 58 partials a token.
-- THE PAIR'S ONE LINE BEATS IT: with an fp32 line 1,204 to 1,582, between 0.59 and 0.77 of FlashAttention's floor;
-  with an f16 line, which R17 as written does not allow, 925 to 1,303, between 0.45 and 0.64. Its terms are each a
-  lab's whole measurement -- the pair's readout, panel and f16 drain 349 to 633, the state's image 138, the fold's
-  operands 345 to 438 and its steps 80. These are roles measured apart and summed: the low end takes 8 producer
-  warps and 4 drain warps beside two fold warpgroups and a readout warpgroup, a CTA no lab has run together, and
-  what the roles cost beside each other is UNMEASURED until the composed window is.
+- THE PAIR'S ONE LINE BEATS IT: with an f16 line 925 to 1,303, between 0.45 and 0.64 of FlashAttention's floor;
+  with an fp32 line 1,204 to 1,582, between 0.59 and 0.77. Its terms are each a lab's whole measurement -- the
+  pair's readout, panel and f16 drain 349 to 633, the state's image 138, the fold's operands 345 to 438 and its
+  steps 80. THESE ARE ROLES MEASURED APART AND SUMMED, the case in which nothing overlaps: the producers' fills,
+  the fold's steps and the readout's are different warps of one CTA and run at once, so a composed window is
+  expected under this sum, and how far under is UNMEASURED until it runs. The low end takes 8 producer warps and 4
+  drain warps beside two fold warpgroups and a readout warpgroup, a CTA no lab has run together.
 - A box the whole of the read side's dense level pays 4 partials, and then every token writes every box: 1,024
   (token, list, box) steps' sixteenths a token, each of an 8-column step
   ([`wgmma_width`](../../lab/wgmma_width.md)), beside its operands.

@@ -51,7 +51,7 @@ its largest channel with an fp32 scale (CONSTITUTION §R17, §R23). Nothing floa
 the producer and the kernels.
 
 **Declared arithmetic, per kernel.** Every kernel's arithmetic is declared and mirrored by its gate's reference: every
-accumulation fp32 or an exact integer -- but the output's sum across one fold group's CTAs, which may be f16
+accumulation fp32 or an exact integer -- but the output's sum across CTAs, fp32 or f16 as the plan states
 (R17) -- the operands one family on every card
 ([`architecture/precision.md`](architecture/precision.md#components)).
 
@@ -349,7 +349,7 @@ card; a kernel's schedule is designed, and written into its own page, before it 
 | state in the register file | producer and consumer warps, the registers moved between them (`setmaxnreg`); the fold's fp32 accumulators the readout's operand, narrowed in place | the accumulator in tensor memory |
 | operand staging from DRAM | TMA box loads into rings, landed on `mbarrier`s, descriptors built at runtime | the same |
 | runtime addressing | uniform-datapath registers from the prologue, pairing with runtime descriptors | the same |
-| the output's sum | fp32 in shared memory and across fold groups; f16 pairs across one fold group's CTAs at the group's state-carried bound, merged in fp32 (R17). `red.global` a token: a carry's rows are not contiguous | the same |
+| the output's sum | fp32 inside a CTA; across CTAs fp32 or one f16 line a CTA a token at a coarse state-carried bound, as the plan states (R17). `red.global` a token: a carry's rows are not contiguous | the same |
 | the box grain | one CTA per multiprocessor; a cluster sharing staging through distributed shared memory (TMA multicast) only where a lab shows it pays | the same |
 | decode's walk and combine | per-lane-group gathers, a work queue of visits, global atomics into a head's sums | the same |
 | the closed world | ratified manifest per architecture, device stamp | the same |

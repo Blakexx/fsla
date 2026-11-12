@@ -173,13 +173,14 @@ with the row's fp32 scale; the values are bf16 unit-max with an fp32 scale a tok
 byte is exact in it) and its accumulation fp32 -- the fold, the readout and the den alike -- but for a window's pair
 products of rows, which are integer MMAs of the bytes, exact (the data model locked 2026-11-09 has the intra so);
 the output's sum is
-fp32, in shared memory and across fold groups: no scale pass, no image, no switch of precision by card or by density.
-ACROSS THE CTAS OF ONE FOLD GROUP -- those that share their fold-sparse digits -- the sum may be f16 (Blake,
-2026-11-11): a CTA's partial is scaled by a power of two from the group's BOUND, the most the group's leaves can
-hold, which every CTA of the group computes alike with no word between them and which is stored with the state so a
-continuation keeps it; the groups' sums are merged in fp32. That sum costs 0.023% a token at the median and 0.054% at
-most under stress, a fifth of the family's own error; every group into one f16 sum costs as much as the family and
-is not a form (`docs/internals/tools/arith_model.md#f16`). Each
+fp32 inside a CTA, and ACROSS CTAS ITS WIDTH IS THE PLAN'S (R24; Blake, 2026-11-11): fp32, or f16 -- a CTA adds its
+boxes' partials in fp32 and issues ONE f16 line a token, scaled by a power of two from one coarse bound that is
+re-based each segment and stored with the state so a continuation keeps it. No scale pass, no panel a group and no
+pass that merges them, no switch of precision by card: the plan's default is f16 where a token's partials are few
+and fp32 where they are many, its cut-off taken from the arithmetic model, and the op counts nothing. One f16 line a
+CTA of two boxes costs 0.083% a token at the median on the hardest sparse cell, 0.40% at most, against the family's
+own 0.115% (`docs/internals/tools/arith_model.md#f16`). The state's image in shared memory is a form where the two
+sides' carves differ, stored once a window; where they are equal there is none (Blake, 2026-11-11). Each
 component has one form across densities and cards, unless measurements show that no single form wins or ties
 everywhere. The family's error is its own class, 0.16 to 0.20% a token against the fp64 oracle on the flagship cells
 (measured), accepted on every card and recorded in `docs/architecture/precision.md`.
