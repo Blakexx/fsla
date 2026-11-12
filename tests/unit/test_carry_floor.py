@@ -28,7 +28,7 @@ def test_a_sides_counts_are_the_expected_ones():
     assert (dense.leaves, dense.boxes, dense.clusters, dense.lists) == (65536, 256, 16, 16)
 
 
-def test_a_cluster_moves_the_drains_and_the_loads_and_nothing_else():
+def test_a_clusters_sum_moves_the_drains_and_nothing_else():
     none = carry_floor.floor(cluster=(1, 1), **ALT)["terms"]
     rows = carry_floor.floor(cluster=(16, 1), form="slots", **ALT)["terms"]
     columns = carry_floor.floor(cluster=(1, 16), form="slots", **ALT)["terms"]
@@ -36,9 +36,8 @@ def test_a_cluster_moves_the_drains_and_the_loads_and_nothing_else():
         assert none[name] == rows[name] == columns[name]
     drains, loads = "sum: drains to global memory", "fold values, loaded"
     assert rows[drains]["cycles"][0] < columns[drains]["cycles"][0] == pytest.approx(none[drains]["cycles"][0] * 16 / 58.25, rel=0.01)
-    assert max(columns[loads]["cycles"][0], rows[loads]["cycles"][0]) < none[loads]["cycles"][0]
-    #: a cluster's shared load is an estimate from free to worthless: its high end is what every box pays unshared
-    assert columns[loads]["cycles"][1] == rows[loads]["cycles"][1] == none[loads]["cycles"][1]
+    #: a cluster shares no load
+    assert columns[loads] == rows[loads] == none[loads]
     assert none["sum: partials into the cluster"]["cycles"] == [0.0, 0.0]
 
 
@@ -52,12 +51,10 @@ def test_the_cluster_forms_read_the_labs_line():
     assert longer[rounds]["cycles"][0] == pytest.approx(slots[rounds]["cycles"][0] / 8)
 
 
-def test_a_cluster_with_no_sum_shares_the_loads_and_every_box_drains():
+def test_a_cluster_with_no_sum_changes_nothing():
     none = carry_floor.floor(cluster=(1, 1), **ALT)["terms"]
-    shared = carry_floor.floor(cluster=(1, 16), **ALT)["terms"]
-    drains, loads = "sum: drains to global memory", "fold values, loaded"
-    assert shared[drains] == none[drains] and shared["sum: the rounds' barriers"]["cycles"] == [0.0, 0.0]
-    assert shared[loads]["cycles"][0] < none[loads]["cycles"][0]
+    clustered = carry_floor.floor(cluster=(1, 16), **ALT)["terms"]
+    assert clustered == none
 
 
 def test_a_missing_record_row_is_refused():

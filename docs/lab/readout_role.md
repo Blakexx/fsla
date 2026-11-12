@@ -30,6 +30,6 @@ WHAT IT SHOWS.
   serialized.
 - IT NEEDS FEWER DRAIN WARPS THAN A MERGE DOES: 21.7, 15.6 and 12.0 cycles a token with one, two and four, the
   readout's steps and its panel's stores included, where [`drain_role`](drain_role.md)'s two panels merged by the
-  drain read 36.2, 21.1 and 11.7. With four it is the line's own rate; with two it is within 59% over it.
+  drain read 36.2, 21.1 and 11.7. With four it is a fifth over the line's own 9.8; with two it is three fifths over it.
 
 Record: `measure/lab/results/readout_role/sm_90a.json`.

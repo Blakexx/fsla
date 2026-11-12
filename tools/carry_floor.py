@@ -23,19 +23,20 @@ its reason):
 - the readout's operand: its (token, leaf) coefficients expanded into shared memory, at the SM's shared access rate
   (`byte_expand`, its bank-spread form);
 - the output's sum: by default (`--sum none`) every box drains its own partial to global memory (`drain_rate`:
-  from rows no other CTA adds into, to rows spread over a window that every CTA shares), and a cluster shares the fold's value loads only. Summed in a cluster
-  first by one of two forms, it is then one fp32 drain a (token, cluster read). Both forms are MEASURED
-  (`cluster_sum`, eight collectors a cluster, its rows at two round sizes split into a cost a round and a cost a
-  token), and neither pays: `slots`, the fp32 sum the format states -- a box's partial staged and sent by a bulk copy into its own slot of a collector, which adds a token's slots; `s64` -- the partial
-  as 64-bit integers by a bulk reduction into the collector's panel, outside the fp32 the format states, counted for
+  from rows no other CTA adds into, to rows spread over a window that every CTA shares), and a cluster changes
+  nothing. Summed in a cluster first by one of two forms, it is then one fp32 drain a (token, cluster read). Both
+  forms are MEASURED (`cluster_sum`, eight collectors a cluster, its rows at two round sizes split into a cost a
+  round and a cost a token), and neither pays: `slots`, the fp32 sum the format states -- a box's partial staged and
+  sent by a bulk copy into its own slot of a collector, which adds a token's slots; `s64` -- the partial as 64-bit
+  integers by a bulk reduction into the collector's panel, outside the fp32 the format states, counted for
   comparison. A cluster's CTAs hand over once a ROUND of `--round` partials a CTA, and the round's cost is its own
   term (beyond 64 partials a round it is the line's, UNMEASURED);
 - the fold's operands: its (token, leaf) coefficients into shared memory, and its values loaded once a (token,
-  box) it writes into, at the cheaper of two MEASURED rates (`state_move`): its share of the window's whole value
-  tile loaded packed (every token's bytes: a box few tokens write pays for the rest), or a 128-byte load of its
-  own. A cluster sharing one load is the low end, ESTIMATED: no lab has read a load landed across a cluster. Then
-  the values gathered into list order in shared memory, a (token, list) of a box, ESTIMATED at the shared access
-  rate (no lab has read that copy);
+  box) it writes into, at the cheaper of two MEASURED rates: its share of the window's whole value tile loaded
+  packed (`state_move`; every token's bytes, so a box few tokens write pays for the rest), or the warps' own load
+  of its scattered row (`value_gather`). A cluster shares neither: a multicast copy costs each CTA what its own
+  does (`value_cast`). Then the values gathered into list order in shared memory, a (token, list) of a box,
+  ESTIMATED at the shared access rate (no lab has read that copy);
 - the state in and out, a call (24-bit state, at a memory bandwidth).
 
 NOT COUNTED: the hand-over between producer and consumer warps, the den's readout, the divergent carve's register
@@ -102,8 +103,8 @@ def measured() -> dict[str, tuple[float, str]]:
                           - median("wgmma_width", f"{n} columns, 4 steps a group")) / 4,
                          f"wgmma_width / {n} columns: a step more, from 4 a group to 8")
            for n in STEP_WIDTHS},
-        "load_row": (median("state_move", "64 loads of 128 bytes, a thread each"),
-                     "state_move / 64 loads of 128 bytes, a thread each (a load)"),
+        "load_row": (median("value_gather", "4 warps, a table of 65536 rows"),
+                     "value_gather / 4 warps, a table of 65536 rows (a scattered row by the warps' own loads)"),
         **cluster_rates(),
     }
 
@@ -166,7 +167,7 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
     products, shared = rates["products"][0], rates["shared"][0]
     drain = (rates["drain_own"][0], rates["drain_spread"][0])
     value_requests = math.ceil(dv * 2 / 128)
-    #: `none`: the cluster shares the fold's value loads only, and every box drains its own
+    #: `none`: every box drains its own, and a cluster changes nothing
     summed = clustered and form != "none"
     hop = rates[f"hop_{form}"][0] * dv * 4 if summed else 0.0
     barriers = read.boxes * rates[f"round_{form}"][0] / round_partials if summed else 0.0
@@ -176,15 +177,11 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
 
     drains = read.clusters if summed else read.boxes
     #: A TOKEN'S VALUE reaches each box it writes once: as its share of the window's whole value tile, loaded packed
-    #: (every token's bytes, so a box few tokens write pays for the rest), or by a load of its own -- the cheaper.
-    #: A cluster's sharing is ESTIMATED from landing free (the same, a cluster) to nothing (a box)
+    #: (every token's bytes, so a box few tokens write pays for the rest), or by the warps' own load of its row --
+    #: the cheaper. A cluster shares no load: a multicast copy costs each CTA its own (`value_cast`)
     all_boxes = math.prod(w / b for w, b in zip(widths, box))
-
-    def a_value(touched: float, of: float) -> float:
-        return touched * value_requests * min(rates["load_packed"][0] * of / touched, rates["load_row"][0])
-
-    a_box = a_value(write.boxes, all_boxes)
-    loads = (a_value(write.clusters, all_boxes / math.prod(cluster)) if clustered else a_box, a_box)
+    a_box = write.boxes * value_requests * min(rates["load_packed"][0] * all_boxes / write.boxes, rates["load_row"][0])
+    loads = (a_box, a_box)
 
     #: A FOLD STEP IS PRICED BY ITS TIME (`wgmma_width`): a token in a list of a box is a sixteenth of a step as
     #: wide as the list's leaves in the box -- the narrowest measured width that holds them, whole 64-column steps
@@ -240,8 +237,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--box", type=int, nargs="+", required=True, help="a box's digits of each level")
     ap.add_argument("--cluster", type=int, nargs="+", required=True, help="a cluster's boxes along each level")
     ap.add_argument("--sum", choices=("none", "slots", "s64"), default="none",
-                    help="the cluster's sum: none (every box drains its own; the cluster shares the fold's value "
-                         "loads only), fp32 slots by a bulk copy, or 64-bit integers by a bulk reduction")
+                    help="the cluster's sum: none (every box drains its own), fp32 slots by a bulk copy, or 64-bit "
+                         "integers by a bulk reduction")
     ap.add_argument("--round", type=int, default=64,
                     help="the partials a CTA hands over between its barriers (64 is the round the lab read)")
     ap.add_argument("--dv", type=int, default=64)
