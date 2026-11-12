@@ -31,4 +31,5 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`wgmma_width`](wgmma_width.md) | experiment |
 | [`value_gather`](value_gather.md) | experiment |
 | [`readout_role`](readout_role.md) | experiment |
+| [`value_cast`](value_cast.md) | experiment |
 | [`drain`](drain.md) | experiment |
