@@ -97,8 +97,7 @@ own error, under every stress, and a bound that only counts what could have been
 (`planned`: the write mass so far, no state read) does exactly as well as the state's own magnitude -- f16's
 exponent takes the slack. EVERY box of a token into ONE f16 sum costs as much as the rest of the family together
 (58 rounded adds a token here), and with the call-wide bound more (0.174 / 0.539 / 1.25%, no stress): the f16 sum is
-a group's, not the call's. Not modelled: a CTA adding its boxes in fp32 before its one f16 add (fewer rounded adds),
-the den's column kept apart from the num's, and cells other than this one.
+a group's, not the call's. Not modelled: the den's column kept apart from the num's, and cells other than this one.
 
 ONE f16 SUM FOR A TOKEN, ITS CTAS' PAIRS ADDED IN fp32 FIRST (`sum f16 coarse, pairs`; nl64k-alt-k4, boxes 16 x 16,
 `--along 1`, where neighbours in the box order are the two boxes a CTA holds along the read side's dense level): 29

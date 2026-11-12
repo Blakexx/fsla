@@ -9,9 +9,9 @@ count. What is a step's own time BY ITS OUTPUT WIDTH, and does a step narrower t
 [`carry_floor`](../internals/tools/carry_floor.md) prices the fold's steps from this record.
 
 THE FORM. One warpgroup a CTA, a CTA an SM. A trip issues K steps into one accumulator in one commit group and
-waits for it, K = 1, 2, 4 and 8, at 8, 16, 32, 64, 128 and 256 columns (64 rows, K 16); both operands
-shared-memory tiles of ones, every descriptor held in a register. The slope of a trip's cycles over K is a step's
-own time and the intercept the group's round trip. Every accumulator is checked: 16 a step in every value.
+waits for it, K = 1, 2, 4 and 8, at 8, 16, 32, 64, 128 and 256 columns (64 rows, K 16), and K = 32 at 8 columns;
+both operands shared-memory tiles of ones, every descriptor held in a register. A step's own time is the increment
+from 4 steps a group to 8, and the rest of a trip its group's round trip. Every accumulator is checked: 16 a step in every value.
 
 MEASURED (H100 SXM, 132 SMs, vast.ai instance 60309361, driver 595.91.07; 2026-11-12, the experiment at
 f0311efc; 7 repetitions, every accumulator exact; cycles a commit group, the median, the spread under 0.1%;

@@ -1,8 +1,9 @@
 // measure/lab/experiments/wgmma_width.cu -- QUESTION: what is one wgmma's own time by its OUTPUT WIDTH -- 8, 16,
 // 32, 64, 128 and 256 columns at 64 rows and K 16 -- apart from its commit group's round trip? Does a step narrower
 // than 64 columns cost less? METHOD: one warpgroup a CTA, a CTA an SM; a trip issues K steps into ONE accumulator
-// in one commit group and waits for it, K = 1, 2, 4 and 8; both operands shared-memory tiles of ones, every
-// descriptor held in a register. The slope of a trip's cycles over K is a step's own time, the intercept the
+// in one commit group and waits for it, K = 1, 2, 4 and 8 (and 32 at 8 columns: a box's 32 groups of 8 leaves in
+// one group); both operands shared-memory tiles of ones, every descriptor held in a register. A step's own time is
+// the increment from 4 steps a group to 8 -- a group's first steps cost less each -- and the rest of a trip its
 // group's round trip. Every accumulator is checked: 16 a step in every value.
 // TIMELINE: no load: the tiles are written once before the clock. A trip is a commit group: the fence, K steps
 // back to back on held descriptors, the commit, the wait. Live: the accumulator, N / 2 registers a thread.
@@ -136,7 +137,8 @@ int main(int argc, char** argv) {
   using namespace wgmma_width;
   lab::Bench b(argc, argv);
   for (int n : {8, 16, 32, 64, 128, 256})
-    for (int steps : {1, 2, 4, 8}) {
+    for (int steps : {1, 2, 4, 8, 32}) {
+      if (steps == 32 && n != 8) continue;
       const std::string k = lab::kernel("width", {n, steps});
       b.expect(k, "HGMMA", "==", steps);
       b.exempt(k, "a rate probe: a wgmma's own time by its width, no kernel's step");
@@ -145,6 +147,7 @@ int main(int argc, char** argv) {
   float* out = nullptr;
   LAB_CHECK(cudaMalloc(&out, sizeof(float) * b.sms * kThreads * 2));
   widths<8>(b, out);
+  run<8, 32>(b, out);
   widths<16>(b, out);
   widths<32>(b, out);
   widths<64>(b, out);

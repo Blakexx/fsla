@@ -67,7 +67,7 @@ WHAT IT SHOWS. A token's cost is bytes moved and steps run, a (token, box) each;
   box: 1,024 (token, list, box) steps' sixteenths a token, each of an 8-column step
   ([`wgmma_width`](../../lab/wgmma_width.md)), beside a value tile and a gather a box.
 - WHERE BOTH SIDES ARE SPARSE ON THE SAME LEVEL the read-aligned box is the write-aligned one too, and every term is
-  small: 305 to 328.
+  small: 306 to 329.
 - A DENSE WRITE SIDE is the fold's whole dense product: its tensor time alone is about the floor.
 - A CLUSTER'S SUM does not pay (`cluster_sum`); a cluster sharing the value tile is the one use left for it, and its
   low end is ESTIMATED.
