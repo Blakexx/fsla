@@ -27,8 +27,9 @@ local memory, and at 48 the toolkit serializes the readout's steps. NO REGISTER 
 beside these roles takes its registers from them. A form of five warpgroups (640 threads) launches at 96 a thread, 61,440 in all; one whose roles' counts summed
 to the whole file hung on the device, and whether at the folds' raise no run separated.
 
-ROWS: the fold's side alone (producers and steps), the read side alone (the image, the readout and the drain), and
-both. With both, the fold's state and every output row are checked exactly against the host's: the state summed in
+ROWS: the fold's side alone (producers and steps), the read side alone (the image, the readout and the drain),
+both, and both with one access taken out to find what the sides contend for: the producers' global loads (their
+words made in registers), the drains' global adds (their lines folded into a sink), the image's stores. With both, the fold's state and every output row are checked exactly against the host's: the state summed in
 integers, the image its truncation to bf16, a line its rounding to f16.
 
 MEASURED (H100 SXM, 132 SMs, vast.ai instance 60332314, driver 595.91.07; 2026-11-12, the experiment at
