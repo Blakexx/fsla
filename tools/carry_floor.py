@@ -28,8 +28,8 @@ its reason):
   as 64-bit integers by a bulk reduction into the collector's panel, outside the fp32 the format states, counted for
   comparison. A cluster's CTAs hand over once a ROUND of `--round` partials a CTA, and the round's cost is its own
   term (beyond 64 partials a round it is the line's, UNMEASURED);
-- the fold's operands: its (token, leaf) coefficients into shared memory, and its values loaded a (token, list) of
-  box it writes into, at the cheaper of two MEASURED rates (`state_move`): its share of the window's whole value
+- the fold's operands: its (token, leaf) coefficients into shared memory, and its values loaded once a (token,
+  box) it writes into, at the cheaper of two MEASURED rates (`state_move`): its share of the window's whole value
   tile loaded packed (every token's bytes: a box few tokens write pays for the rest), or a 128-byte load of its
   own. A cluster sharing one load is the low end, ESTIMATED: no lab has read a load landed across a cluster. Then
   the values gathered into list order in shared memory, a (token, list) of a box, ESTIMATED at the shared access

@@ -23,4 +23,5 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`byte_expand`](byte_expand.md) | experiment |
 | [`cluster_sum`](cluster_sum.md) | experiment |
 | [`state_move`](state_move.md) | experiment |
+| [`fold_stream`](fold_stream.md) | experiment |
 | [`drain`](drain.md) | experiment |

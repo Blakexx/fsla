@@ -37,7 +37,7 @@ def test_a_cluster_moves_the_drains_and_the_loads_and_nothing_else():
     drains, loads = "sum: drains to global memory", "fold values, loaded"
     assert rows[drains]["cycles"][0] < columns[drains]["cycles"][0] == pytest.approx(none[drains]["cycles"][0] * 16 / 58.25, rel=0.01)
     assert max(columns[loads]["cycles"][0], rows[loads]["cycles"][0]) < none[loads]["cycles"][0]
-    #: a cluster's shared load is an estimate from free to worthless: its high end is every box's own load
+    #: a cluster's shared load is an estimate from free to worthless: its high end is what every box pays unshared
     assert columns[loads]["cycles"][1] == rows[loads]["cycles"][1] == none[loads]["cycles"][1]
     assert none["sum: partials into the cluster"]["cycles"] == [0.0, 0.0]
 

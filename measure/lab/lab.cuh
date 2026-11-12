@@ -263,6 +263,16 @@ __device__ __forceinline__ void wg_bf16_n16_ss(float (&d)[8], uint64_t a, uint64
       : "l"(a), "l"(b), "r"(1));
 }
 
+//: m64n8k16 with BOTH operands M|N-major (the transposed form): `d` += A [64 x 16] B [16 x 8]. A line of 16 bytes
+//: is one K's 8 rows (A) or 8 columns (B); a brick's K 0-7 are 8 contiguous lines, its K 8-15 `lbo` lines on, A's
+//: next 8 rows `sbo` lines on
+__device__ __forceinline__ void wg_bf16_n8_ss_mn(float (&d)[4], uint64_t a, uint64_t b) {
+  asm volatile("{ .reg .pred p; setp.ne.b32 p, %6, 0;\n"
+               "wgmma.mma_async.sync.aligned.m64n8k16.f32.bf16.bf16 {%0, %1, %2, %3}, %4, %5, p, 1, 1, 1, 1; }"
+               : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+               : "l"(a), "l"(b), "r"(1));
+}
+
 #define LAB_WG_D32(d)                                                                                              \
   "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]), "+f"(d[4]), "+f"(d[5]), "+f"(d[6]), "+f"(d[7]), "+f"(d[8]),      \
       "+f"(d[9]), "+f"(d[10]), "+f"(d[11]), "+f"(d[12]), "+f"(d[13]), "+f"(d[14]), "+f"(d[15]), "+f"(d[16]),       \
