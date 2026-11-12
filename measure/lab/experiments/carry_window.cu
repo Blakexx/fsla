@@ -77,12 +77,20 @@ __device__ __forceinline__ void waited(uint32_t bar, uint32_t parity, uint32_t& 
   lab::mbar_wait(bar, parity);
   count += static_cast<uint32_t>(clock64()) - t0;
 }
-//: a warp's two wait counts, stored at `2 (block, warp)`
-__device__ __forceinline__ void tell(uint32_t* waits, uint32_t first, uint32_t second) {
+//: a warp's counts, `kCounts` of them stored at `kCounts (block, warp)`: its waits, and the readout's phases
+constexpr int kCounts = 6;
+__device__ __forceinline__ void tell(uint32_t* waits, uint32_t first, uint32_t second, uint32_t third = 0,
+                                     uint32_t fourth = 0, uint32_t fifth = 0, uint32_t sixth = 0) {
   if ((threadIdx.x & 31) == 0) {
-    waits[2 * (blockIdx.x * (kThreads >> 5) + (threadIdx.x >> 5))] = first;
-    waits[2 * (blockIdx.x * (kThreads >> 5) + (threadIdx.x >> 5)) + 1] = second;
+    uint32_t* const to = waits + kCounts * (blockIdx.x * (kThreads >> 5) + (threadIdx.x >> 5));
+    to[0] = first, to[1] = second, to[2] = third, to[3] = fourth, to[4] = fifth, to[5] = sixth;
   }
+}
+//: the cycles since `since`, and `since` moved to now: a phase's clock
+__device__ __forceinline__ uint32_t lap(uint32_t& since) {
+  const uint32_t now = static_cast<uint32_t>(clock64()), took = now - since;
+  since = now;
+  return took;
 }
 
 //: A FOLD WARPGROUP: its box's state; a window is the image, then two slots of 8 steps
@@ -253,7 +261,8 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
     return reader_of(blockIdx.x, (c / kChunks) * kWindow + 16 * (8 * (k >> 1) + (k & 1) + 2 * j_mine) + n_mine);
   };
   uint4 bytes = boxes[reader_row(reader(0), box_mine)];
-  uint32_t on_image = 0, on_drain = 0;
+  //: two phases clocked, at its 64 registers: the fill and the panel's stores are its span less these and its waits
+  uint32_t on_image = 0, on_drain = 0, in_fence = 0, in_steps = 0;
   //: a digit's first step writes its accumulator whole: nothing is cleared between chunks
   float d[kChunkDigits][8];
   lab::WarpSpan clock;
@@ -266,7 +275,7 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       //: chunk `2 h + c`'s digits are `8 h + c + 2 j`: its tile group, published for this window
       waited(bars + kTilesReady + 8 * c4, w & 1, on_image);
       //: THE COEFFICIENTS: the reader's 16 bytes (loaded a chunk before) times its byte on the digit, 8 pairs of
-      //: bf16, a line each four; the next chunk's bytes into the same registers; the writers' fence
+      //: bf16, a line each four
       const float weight = static_cast<float>(sparse_of(reader(c)));
       const uint32_t words[4] = {bytes.x, bytes.y, bytes.z, bytes.w};
 #pragma unroll
@@ -282,10 +291,12 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       }
       //: the tiles are every readout warp's stores and every warp's step reads them all: the writers' fence, then
       //: the four warps meet at the tiles' barrier before the first step
+      uint32_t since = static_cast<uint32_t>(clock64());
       lab::bulk_fence();
       __syncwarp();
       if (lane == 0) lab::mbar_arrive(bars + kCoefs);
       lab::mbar_wait(bars + kCoefs, c & 1);
+      in_fence += lap(since);
       const uint32_t first = static_cast<uint32_t>(8 * (c4 >> 1) + (c4 & 1));
       const uint32_t images = lab::held(base + kImageAt + first * kImageTile);
       const uint32_t coefs = lab::held(base + kCoefAt);
@@ -297,10 +308,10 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
           lab::wg_bf16_n16_ss_mna(d[j], lab::wg_desc(images + box * kBoxBytes + 2 * j * kImageTile, 8, kBrickLines),
                                   lab::wg_desc(coefs + (2 * j + box) * kCoefBytes, 8, 16), box != 0);
       lab::wg_commit();
-      //: the next chunk's bytes, issued under the steps and behind this chunk's fence: a load in flight at the
-      //: fence is a load the fence waits out
+      //: the next chunk's bytes, issued under the steps
       bytes = boxes[reader_row(reader(c + 1), box_mine)];
       lab::wg_wait<0>();
+      in_steps += lap(since);
       //: the group is read: its box may publish the next window's over it
       if (lane == 0) lab::mbar_arrive(bars + kTilesRead + 8 * c4);
       //: THE PANEL, once the drain has left it: value (channel, token) rounded to f16 into the token's row, a
@@ -318,7 +329,7 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
     }
   }
   clock.stop(times);
-  tell(waits, on_image, on_drain);
+  tell(waits, on_image, on_drain, in_fence, in_steps);
 }
 
 //: A DRAIN WARP: a chunk's 32 tokens of its residue in four batches of 8; a lane holds a token's two channels and
@@ -532,28 +543,32 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
   //: tile group, on its producer; readout: on a tile group's publish, on the panel's drain; drain: on the
   //: panel). A producer's are not clocked: its 128 registers hold no count
   struct Site { int first, count, slot; const char* name; };
-  const Site sites[5] = {{0, 8, 0, "a fold warp waits on the readout's read"},
-                         {0, 8, 1, "a fold warp waits on its producer"},
-                         {8, 4, 0, "a readout warp waits on the image"}, {8, 4, 1, "a readout warp waits on the drain"},
-                         {14, 2, 0, "a drain warp waits on the panel"}};
-  lab::Samples waited_at[5];
+  constexpr int kSites = 7;
+  const Site sites[kSites] = {{0, 8, 0, "a fold warp waits on the readout's read"},
+                              {0, 8, 1, "a fold warp waits on its producer"},
+                              {8, 4, 0, "a readout warp waits on the image"},
+                              {8, 4, 1, "a readout warp waits on the drain"},
+                              {8, 4, 2, "a readout warp at its fence and its tiles' barrier"},
+                              {8, 4, 3, "a readout warp in its steps"},
+                              {14, 2, 0, "a drain warp waits on the panel"}};
+  lab::Samples waited_at[kSites];
   const lab::Samples cycles = b.variant(
       [&] { kernel<<<b.sms, kThreads, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, kTimed); },
       [&] {
-        std::vector<uint32_t> h(static_cast<size_t>(b.sms) * (kThreads >> 5) * 2);
+        std::vector<uint32_t> h(static_cast<size_t>(b.sms) * (kThreads >> 5) * kCounts);
         LAB_CHECK(cudaMemcpy(h.data(), waits, h.size() * 4, cudaMemcpyDeviceToHost));
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < kSites; ++i) {
           double sum = 0;
           for (int blk = 0; blk < b.sms; ++blk)
             for (int w = sites[i].first; w < sites[i].first + sites[i].count; ++w)
-              sum += h[2 * (static_cast<size_t>(blk) * (kThreads >> 5) + w) + sites[i].slot];
+              sum += h[kCounts * (static_cast<size_t>(blk) * (kThreads >> 5) + w) + sites[i].slot];
           waited_at[i].v.push_back(sum / (static_cast<double>(b.sms) * sites[i].count * kTimed));
         }
         return b.span(kThreads >> 5) / kTimed;
       });
   b.record(name, "cycles a window a CTA", cycles);
-  if (ROLES == (kFold | kRead))
-    for (int i = 0; i < 5; ++i) b.record(name + ": " + sites[i].name, "cycles a window a warp", waited_at[i]);
+  if (ROLES == (kFold | kRead) || ROLES == kRead)
+    for (int i = 0; i < kSites; ++i) b.record(name + ": " + sites[i].name, "cycles a window a warp", waited_at[i]);
 }
 
 int main(int argc, char** argv) {
@@ -597,7 +612,7 @@ int main(int argc, char** argv) {
   LAB_CHECK(cudaMalloc(&state, sizeof(float) * b.sms * 2 * kGroup * kLists * 8));
   LAB_CHECK(cudaMalloc(&out, static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2) * 4));
   uint32_t* waits = nullptr;
-  LAB_CHECK(cudaMalloc(&waits, static_cast<size_t>(b.sms) * (kThreads >> 5) * 2 * 4));
+  LAB_CHECK(cudaMalloc(&waits, static_cast<size_t>(b.sms) * (kThreads >> 5) * kCounts * 4));
   run<kFold>(b, waits, values, dense, state, out);
   run<kRead>(b, waits, values, dense, state, out);
   run<kFold | kRead>(b, waits, values, dense, state, out);
