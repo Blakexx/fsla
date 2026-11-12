@@ -45,16 +45,16 @@ row says, 65,536 tokens, no cluster unless the row says; SM-cycles a token, low 
 
 | the shape | boxes read / written | tensor (readout, fold) | the output's sum | fold values (loaded, gathered) | total | the call |
 |---|---|---|---|---|---|---|
-| 256 x 256, read sparse on level 2, write on level 1; boxes 16 x 16 | 58.2 / 58.2 | 32, 74 | 1,133 to 1,469 | 1,051, 110 | 2,428 to 2,763 | 670 to 762 us |
-| ... boxes 64 x 4 | 15.6 / 175.0 | 32, 265 | 304 to 394 | 1,051, 439 | 2,119 to 2,209 | 584 to 609 us |
-| ... boxes 256 x 1 (the whole read-dense level) | 4.0 / 256.0 | 32, 1,061 | 77 to 100 | 1,051, 1,756 | 4,005 to 4,027 | 1.1 ms |
-| ... boxes 16 x 16, `--cluster 16 1 --sum slots` | 58.2 / 58.2 | 32, 74 | 7,562 to 7,583 | 66 to 1,051, 110 | 7,871 to 8,877 | 2.2 to 2.4 ms |
-| 256 x 256, BOTH sides sparse on level 2; boxes 256 x 1 | 4.0 / 4.0 | 32, 31 | 77 to 100 | 130, 7 | 305 to 328 | 84 to 90 us |
-| 256 x 256, read sparse on level 2, write DENSE; boxes 256 x 1 | 4.0 / 256.0 | 32, 1,957 | 77 to 100 | 1,051, 439 | 4,448 to 4,471 | 1.2 ms |
-| 64 x 64 (4,096 leaves), sparse on opposite levels; boxes 16 x 16 | 10.9 / 10.9 | 8, 19 | 213 to 276 | 66, 27 | 339 to 402 | 94 to 111 us |
-| 16^4, two sparse levels a side (2 live digits), boxes 4^4 | 49.0 / 49.0 | 128, 265 | 954 to 1,236 | 1,051, 439 | 2,864 to 3,146 | 790 to 868 us |
-| 512 x 512 (262,144 leaves), sparse on opposite levels; boxes 16 x 16 | 122.1 / 122.1 | 64, 149 | 2,376 to 3,080 | 4,006, 220 | 6,870 to 7,574 | 1.9 to 2.1 ms |
-| 256 x 256 dense on both sides; boxes 16 x 16 | 256.0 / 256.0 | 2,049, 4,754 | 4,982 to 6,457 | 1,051, 7,026 | 21,617 to 23,093 | 6.0 to 6.4 ms |
+| 256 x 256, read sparse on level 2, write on level 1; boxes 16 x 16 | 58.2 / 58.2 | 32, 80 | 1,133 to 1,469 | 1,051, 110 | 2,433 to 2,769 | 671 to 764 us |
+| ... boxes 64 x 4 | 15.6 / 175.0 | 32, 288 | 304 to 394 | 1,051, 439 | 2,141 to 2,231 | 591 to 615 us |
+| ... boxes 256 x 1 (the whole read-dense level) | 4.0 / 256.0 | 32, 1,152 | 77 to 100 | 1,051, 1,756 | 4,096 to 4,119 | 1.1 ms |
+| ... boxes 16 x 16, `--cluster 16 1 --sum slots` | 58.2 / 58.2 | 32, 80 | 7,562 to 7,583 | 66 to 1,051, 110 | 7,877 to 8,883 | 2.2 to 2.5 ms |
+| 256 x 256, BOTH sides sparse on level 2; boxes 256 x 1 | 4.0 / 4.0 | 32, 32 | 77 to 100 | 130, 7 | 306 to 329 | 84 to 91 us |
+| 256 x 256, read sparse on level 2, write DENSE; boxes 256 x 1 | 4.0 / 256.0 | 32, 2,048 | 77 to 100 | 1,051, 439 | 4,539 to 4,562 | 1.3 ms |
+| 64 x 64 (4,096 leaves), sparse on opposite levels; boxes 16 x 16 | 10.9 / 10.9 | 8, 20 | 213 to 276 | 66, 27 | 341 to 404 | 94 to 111 us |
+| 16^4, two sparse levels a side (2 live digits), boxes 4^4 | 49.0 / 49.0 | 128, 288 | 954 to 1,236 | 1,051, 439 | 2,887 to 3,169 | 796 to 874 us |
+| 512 x 512 (262,144 leaves), sparse on opposite levels; boxes 16 x 16 | 122.1 / 122.1 | 64, 160 | 2,376 to 3,080 | 4,006, 220 | 6,881 to 7,585 | 1.9 to 2.1 ms |
+| 256 x 256 dense on both sides; boxes 16 x 16 | 256.0 / 256.0 | 2,049, 5,120 | 4,982 to 6,457 | 1,051, 7,026 | 21,983 to 23,459 | 6.1 to 6.5 ms |
 
 FlashAttention's tensor floor at the same 65,536 tokens and width is 2,049 SM-cycles a token, 565 us the call; at
 1,048,576 tokens it is 16 times that a token, and a 256 x 256 row's counts a token do not move (its rates were read
@@ -68,7 +68,7 @@ WHAT IT SHOWS. A token's cost is bytes moved and steps run, a (token, box) each;
   ([`wgmma_width`](../../lab/wgmma_width.md)), beside a value tile and a gather a box.
 - WHERE BOTH SIDES ARE SPARSE ON THE SAME LEVEL the read-aligned box is the write-aligned one too, and every term is
   small: 305 to 328.
-- A DENSE WRITE SIDE is the fold's whole dense product, over the floor by itself.
+- A DENSE WRITE SIDE is the fold's whole dense product: its tensor time alone is about the floor.
 - A CLUSTER'S SUM does not pay (`cluster_sum`); a cluster sharing the value tile is the one use left for it, and its
   low end is ESTIMATED.
 - The model's unit is the box. A CTA's boxes that share one value tile and one gather halve those two terms; that

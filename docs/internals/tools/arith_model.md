@@ -99,3 +99,10 @@ exponent takes the slack. EVERY box of a token into ONE f16 sum costs as much as
 (58 rounded adds a token here), and with the call-wide bound more (0.174 / 0.539 / 1.25%, no stress): the f16 sum is
 a group's, not the call's. Not modelled: a CTA adding its boxes in fp32 before its one f16 add (fewer rounded adds),
 the den's column kept apart from the num's, and cells other than this one.
+
+ONE f16 SUM FOR A TOKEN, ITS CTAS' PAIRS ADDED IN fp32 FIRST (`sum f16 coarse, pairs`; nl64k-alt-k4, boxes 16 x 16,
+`--along 1`, where neighbours in the box order are the two boxes a CTA holds along the read side's dense level): 29
+rounded adds a token in place of 58 -- 0.083% a token at the median, 0.204% at the 99th percentile, 0.40% at most,
+against 0.115 / 0.314 / 0.74% with every box its own add. With `--along 0` the neighbours share no token and the
+pairing changes nothing (0.112%).
+

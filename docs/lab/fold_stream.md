@@ -6,8 +6,7 @@ Mirrors `measure/lab/experiments/fold_stream.cu`, an experiment of the lab
 A box as wide as the read side wants is written by every token, sparsely: 4 of its 256 leaves. Folding it list by
 list needs each token's value copied into list order. Can the fold instead be fed by ONE PASS over the tokens -- no
 list, no rank, no look back -- and what does a token then cost a CTA, by the step's width and the producers' count,
-the producers' work beside the fold's? [`carry_floor`](../internals/tools/carry_floor.md) prices the fold's tensor
-time from this experiment.
+the producers' work beside the fold's?
 
 THE FORM. A CTA an SM: producer warps and one fold warpgroup that holds the box's state, 256 leaves × 64 channels,
 as accumulators of WIDE leaves. Both operands are M|N-major with bricks 17 lines apart, so a token's value is one

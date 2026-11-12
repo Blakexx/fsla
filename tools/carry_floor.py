@@ -99,8 +99,8 @@ def measured() -> dict[str, tuple[float, str]]:
         "load_packed": (median("state_move", "one bulk copy in from global memory, blocks of 8192 bytes") * 128 / 1024,
                         "state_move / one bulk copy in from global memory, blocks of 8192 bytes (128 bytes of it)"),
         **{f"step_{n}": ((median("wgmma_width", f"{n} columns, 8 steps a group")
-                          - median("wgmma_width", f"{n} columns, 1 step a group")) / 7,
-                         f"wgmma_width / {n} columns: the slope from 1 step a group to 8 (a step)")
+                          - median("wgmma_width", f"{n} columns, 4 steps a group")) / 4,
+                         f"wgmma_width / {n} columns: a step more, from 4 a group to 8")
            for n in STEP_WIDTHS},
         "load_row": (median("state_move", "64 loads of 128 bytes, a thread each"),
                      "state_move / 64 loads of 128 bytes, a thread each (a load)"),
