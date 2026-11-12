@@ -7,7 +7,8 @@
 // loads the value (128 bytes, coalesced), stores it at its own running count and the token's row of 64
 // coefficients beside it, one store each. WIDE 256, one group: a token's slot is its index, so there is no count;
 // a producer takes the tokens of its residue, stores the value, clears the 4 words the slot's last token set and
-// sets its own 4. A chunk of 64 tokens on, the producers arrive at a barrier; the fold, a chunk behind, runs the
+// sets its own 4. A producer holds two batches of 8 tokens' values, the next loaded before this one is stored. A
+// chunk of 64 tokens on, the producers arrive at a barrier; the fold, a chunk behind, runs the
 // chunk's 4 steps a group in one commit group and frees the tiles by another barrier. `producer`: no step runs.
 // `fold`: no token is produced. `together`: both, the state checked exactly. The tokens come from a table of
 // 65,536 (8 MB) or of 1,048,576 (128 MB) that every CTA reads in step.
@@ -77,51 +78,66 @@ __global__ void __launch_bounds__(kFoldThreads + 32 * WARPS, 1)
   lab::WarpSpan clock;
   clock.start();
   if (warp >= kFoldThreads / 32) {
-    //: A PRODUCER: one pass over the tokens, a chunk at most one ahead of the fold
+    //: A PRODUCER: one pass over the tokens, a chunk at most one ahead of the fold. Its tokens are every `kStride`-th
+    //: from `mine` (all 256 leaves a step: its residue) or every one (a group a producer); it holds two batches of
+    //: their values, the next loaded before this one is stored
     const int mine = warp - kFoldThreads / 32;
+    constexpr int kStride = WIDE == 256 ? WARPS : 1, kBatch = 8, kBatches = kChunk / kStride / kBatch;
+    const int first = WIDE == 256 ? mine : 0, last = chunks * kChunk - 1;
     uint32_t* const scratch = reinterpret_cast<uint32_t*>(smem + kScratchAt) + lane;
     uint32_t count = 0;
+    uint32_t now[kBatch], next[kBatch];
+#pragma unroll
+    for (int i = 0; i < kBatch; ++i)
+      next[i] = values[static_cast<long long>(min(first + kStride * i, last)) * 32 + lane];
 #pragma unroll 1
     for (int c = 0; c < chunks; ++c) {
       if (c >= 2) lab::mbar_wait(freed + 8 * (c & 1), ((c >> 1) - 1) & 1);
       if constexpr (FORM != kFold) {
-        if constexpr (WIDE == 256) {
-          //: ONE GROUP: token `t`'s slot is `t`; this warp's tokens are its residue's
 #pragma unroll 1
-          for (int t = c * kChunk + mine; t < (c + 1) * kChunk; t += WARPS) {
-            const uint32_t slot = static_cast<uint32_t>(t) % (kRing * kStep);
-            uint8_t* const tile = smem + (slot / kStep) * kTile;
-            const uint32_t line = (slot % kStep) * 16;
-            const uint32_t v = values[static_cast<long long>(t) * 32 + lane];
-            *reinterpret_cast<uint32_t*>(tile + (lane >> 2) * kBrick + line + (lane & 3) * 4) = v;
-            //: its row: lane `j` clears the word the slot's last token set for its leaf `j`, then sets its own
-            const int j = lane & 3, was = leaf_of(t - kRing * kStep, j), is = leaf_of(t, j);
-            uint8_t* const row = tile + kValueTile + line;
-            uint32_t* const clear = reinterpret_cast<uint32_t*>(row + (was >> 3) * kBrick + ((was & 7) >> 1) * 4);
-            uint32_t* const set = reinterpret_cast<uint32_t*>(row + (is >> 3) * kBrick + ((is & 7) >> 1) * 4);
-            *(lane < kLive ? clear : scratch) = 0u;
-            *(lane < kLive ? set : scratch) = coef_word(is, coef_of(t, j));
-          }
-        } else {
-          //: A GROUP A PRODUCER: every token is looked at; one whose leaves fall here is taken at the running count
-#pragma unroll 1
-          for (int t = c * kChunk; t < (c + 1) * kChunk; ++t) {
-            uint32_t word = 0;
-            bool hit = false;
+        for (int b = 0; b < kBatches; ++b) {
+          const int t0 = first + kStride * kBatch * (c * kBatches + b);
 #pragma unroll
-            for (int j = 0; j < kLive; ++j) {
-              const int leaf = leaf_of(t, j), col = leaf % WIDE;
-              const bool here = leaf / WIDE == mine;
-              hit |= here;
-              word |= here && lane == (col >> 1) ? coef_word(leaf, coef_of(t, j)) : 0u;
-            }
-            if (hit) {
-              const uint32_t slot = count % (kRing * kStep);
-              ++count;
-              uint8_t* const tile = smem + mine * kGroupBytes + (slot / kStep) * kTile;
-              const uint32_t at = (lane >> 2) * kBrick + (slot % kStep) * 16 + (lane & 3) * 4;
-              *reinterpret_cast<uint32_t*>(tile + at) = values[static_cast<long long>(t) * 32 + lane];
-              *reinterpret_cast<uint32_t*>(tile + kValueTile + at) = word;
+          for (int i = 0; i < kBatch; ++i) {
+            now[i] = next[i];
+            next[i] = values[static_cast<long long>(min(t0 + kStride * (kBatch + i), last)) * 32 + lane];
+          }
+#pragma unroll
+          for (int i = 0; i < kBatch; ++i) {
+            const int t = t0 + kStride * i;
+            if constexpr (WIDE == 256) {
+              //: ONE GROUP: token `t`'s slot is `t`
+              const uint32_t slot = static_cast<uint32_t>(t) % (kRing * kStep);
+              uint8_t* const tile = smem + (slot / kStep) * kTile;
+              const uint32_t line = (slot % kStep) * 16;
+              *reinterpret_cast<uint32_t*>(tile + (lane >> 2) * kBrick + line + (lane & 3) * 4) = now[i];
+              //: its row: lane `j` clears the word the slot's last token set for its leaf `j`, then sets its own
+              const int j = lane & 3, is = leaf_of(t, j), was = leaf_of(max(t - kRing * kStep, 0), j);
+              const bool sets = lane < kLive, clears = sets && t >= kRing * kStep;
+              uint8_t* const row = tile + kValueTile + line;
+              uint32_t* const clear = reinterpret_cast<uint32_t*>(row + (was >> 3) * kBrick + ((was & 7) >> 1) * 4);
+              uint32_t* const set = reinterpret_cast<uint32_t*>(row + (is >> 3) * kBrick + ((is & 7) >> 1) * 4);
+              *(clears ? clear : scratch) = 0u;
+              *(sets ? set : scratch) = coef_word(is, coef_of(t, j));
+            } else {
+              //: A GROUP A PRODUCER: a token whose leaves fall here is taken at the running count
+              uint32_t word = 0;
+              bool hit = false;
+#pragma unroll
+              for (int j = 0; j < kLive; ++j) {
+                const int leaf = leaf_of(t, j), col = leaf % WIDE;
+                const bool here = leaf / WIDE == mine;
+                hit |= here;
+                word |= here && lane == (col >> 1) ? coef_word(leaf, coef_of(t, j)) : 0u;
+              }
+              if (hit) {
+                const uint32_t slot = count % (kRing * kStep);
+                ++count;
+                uint8_t* const tile = smem + mine * kGroupBytes + (slot / kStep) * kTile;
+                const uint32_t at = (lane >> 2) * kBrick + (slot % kStep) * 16 + (lane & 3) * 4;
+                *reinterpret_cast<uint32_t*>(tile + at) = now[i];
+                *reinterpret_cast<uint32_t*>(tile + kValueTile + at) = word;
+              }
             }
           }
         }

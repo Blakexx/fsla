@@ -17,6 +17,8 @@ as accumulators of WIDE leaves. Both operands are M|N-major with bricks 17 lines
 - STEPS OF ALL 256 LEAVES, one group, ONE PRODUCER OR FOUR: a token's slot is its index, so there is no count. A
   producer takes the tokens of its residue: it stores the value, clears the 4 words the slot's last token set in the
   row, and sets its own 4. The step's zeros do the placing.
+- A PRODUCER'S LOADS RUN A BATCH AHEAD: it holds two batches of 8 tokens' values in registers, the next loaded
+  before this one is stored, so no store waits on its own load.
 - THE FOLD, a chunk of 64 tokens behind: the chunk's 4 steps a group in one commit group, with no branch. The
   producers hand a chunk over by an arrival each at a barrier, after a fence; the fold frees its tiles by another.
 The lab's tokens put one leaf in each quarter of the box, so every group of 64 takes every token and every tile
