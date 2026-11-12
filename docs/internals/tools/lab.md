@@ -34,10 +34,11 @@ the `//:` headings of the experiment's source -- per declared unit (KERNEL_STAND
 <a id="hazards"></a>THE LEARNINGS' CHECKS ([`LEARNINGS.md`](../LEARNINGS.md)). An experiment outside `tools/lab.py`'s `_PRE_TIMELINE` (the
 experiments written before these checks; the list only shrinks) is refused by `run` and by `pack` unless its header
 comment states a `TIMELINE:` -- each phase's stream, which load is a stage ahead of which use, the live registers --
-and EVERY kernel of it, budgeted or exempt, is held to three counts over its loops, each zero unless the experiment
+and EVERY kernel of it, budgeted or exempt, is held to four counts, each zero unless the experiment
 declares it (`Bench::expect(kernel, NAME, "<=", n)`): `LOOP_CONVERGENCE`; `LOAD_IN_TRIP`, the global loads whose
 value an instruction of the same innermost trip reads; `STORE_RELOAD`, the shared loads of an address the same trip
-stored to.
+stored to; `STORE_UNFENCED`, in a kernel that holds a wgmma, the barrier arrivals that follow a shared store with no
+`fence.proxy.async` between them.
 
 <a id="pack"></a>A CARD ELSEWHERE. A box that is not started from the devbox image ([`setup.md`](../../setup.md)) carries a driver and
 no toolkit, so an experiment for it is built and checked here and run there: `bazel run //tools:lab -- pack <name> --arch sm_90a --into DIR` compiles it for that architecture,

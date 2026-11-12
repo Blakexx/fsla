@@ -147,7 +147,7 @@ _PRE_TIMELINE = {"bulk_drain", "byte_expand", "cluster_sum", "collective_branch"
                  "issue_latency", "reg_trade", "row_ring", "row_span", "smem_rates", "state_move", "tensor_tax",
                  "vote_stash", "wgmma_rate", "wgmma_regs"}
 #: the hazards an experiment may declare a count of (`Bench::expect(kernel, NAME, "<=", n)`), beside its opcodes
-HAZARDS = ("LOOP_CONVERGENCE", "LOAD_IN_TRIP", "STORE_RELOAD")
+HAZARDS = ("LOOP_CONVERGENCE", "LOAD_IN_TRIP", "STORE_RELOAD", "STORE_UNFENCED")
 
 
 def timeline(path: Path) -> bool:
@@ -206,6 +206,24 @@ ADDRESS = re.compile(r"\[[^\]]*\]")
 READS_FIRST = ("ST", "BRA", "RED", "ATOM", "BSSY", "BSYNC", "HGMMA", "ISETP", "FSETP", "CALL", "EXIT", "NOP", "BAR")
 
 
+def unfenced(body: list[tuple[int, str, str]]) -> int:
+    """STORE_UNFENCED: in a kernel that holds a wgmma, the barrier arrivals that follow a shared store with no
+    `fence.proxy.async` between them -- a step reads shared memory through the tensor pipe's own view, and a
+    writer's ordinary stores reach it only past the writer's fence (KERNEL_STANDARDS section 12)."""
+    if not any(op.startswith("HGMMA") for _, op, _ in body):
+        return 0
+    found, stored = 0, False
+    for _, op, _ in body:
+        if op.startswith("STS"):
+            stored = True
+        elif op.startswith("FENCE.VIEW.ASYNC"):
+            stored = False
+        elif op.startswith("SYNCS.ARRIVE"):
+            found += stored
+            stored = False
+    return found
+
+
 def loop_hazards(binary: Path) -> dict[str, dict[str, int]]:
     """Per kernel (demangled), inside its innermost loops: LOAD_IN_TRIP, the global loads whose value an instruction
     of the same trip reads -- that trip waits out its own load, where a load a stage ahead is hidden (KERNEL_STANDARDS
@@ -239,7 +257,7 @@ def loop_hazards(binary: Path) -> dict[str, dict[str, int]]:
                             break
                         if named and not later.startswith(READS_FIRST) and named[0] in base:
                             break
-        found[name] = {"LOAD_IN_TRIP": in_trip, "STORE_RELOAD": reloads}
+        found[name] = {"LOAD_IN_TRIP": in_trip, "STORE_RELOAD": reloads, "STORE_UNFENCED": unfenced(body)}
     names = demangle(list(found))
     return {names[k]: v for k, v in found.items()}
 
@@ -279,7 +297,9 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
         why = {"LOAD_IN_TRIP": "global loads read in the trip that issued them (KERNEL_STANDARDS 32: a load a stage "
                                "ahead of its use)",
                "STORE_RELOAD": "shared loads of an address the same trip stored to (KERNEL_STANDARDS 33: a value no "
-                               "other warp reads stays in a register)"}
+                               "other warp reads stays in a register)",
+               "STORE_UNFENCED": "barrier arrivals after a shared store with no fence between, in a kernel whose "
+                                 "steps read shared memory (KERNEL_STANDARDS 12: the writer's fence)"}
         for k, hazards in loop_hazards(binary).items():
             for kind, n in hazards.items():
                 declared = max((e["count"] for e in expected if e["op"] == kind and re.search(e["kernel"], k)), default=0)

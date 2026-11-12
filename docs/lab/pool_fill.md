@@ -25,4 +25,24 @@ frees the slot.
 An entry's token is drawn; the list it comes from is not loaded, and the table of 65,536 tokens (8 MB of values)
 is one the cache holds.
 
-MEASURED: not yet run.
+MEASURED (H100 SXM, 132 SMs, vast.ai instance 60314921, driver 595.91.07; 2026-11-12, the experiment at
+a82c550e; 7 repetitions, every state value exact; cycles an entry a CTA, the median):
+
+| the producers | alone | with the fold (lowest to highest of 7) |
+|---|---|---|
+| 2 | 6.1 | 6.8 (6.8 to 6.9) |
+| 4 | 6.3 | 6.3 (6.3 to 6.3) |
+| 8 | 5.3 | 5.4 (5.3 to 5.4) |
+
+WHAT IT SHOWS.
+- AN ENTRY OF THE FOLD'S POOLS COSTS A CTA 5.4 TO 6.9 CYCLES, its value's 128 bytes and its 16 coefficients fetched
+  from scattered rows and stored as the steps' operands. The fold's 16 steps beside the producers add 0.7 cycles
+  with two producers and nothing with four or eight.
+- THE PRODUCERS DO NOT SCALE: two warps take an entry in 6.1 cycles, four in 6.3, eight in 5.3. Two warps load at
+  the rate [`load_rate`](load_rate.md) gives a warp with these rows in flight; past two the entry's 160 bytes of
+  shared stores, or its loads' path, binds, and no row here separates them.
+- THE FORM IS THE NUMBER. The same entry cost 20.0 cycles with four producers taking a value row and a dense word
+  an instruction, 16 entries in flight a warp, and 9.0 with four entries an instruction at 32 in flight (two earlier
+  forms of this experiment, on the same card; their records are not kept).
+
+Record: `measure/lab/results/pool_fill/sm_90a.json`.

@@ -22,7 +22,7 @@
 
 namespace pool_fill {
 
-constexpr int kLists = 16, kLeaves = 16, kEntries = 16, kChunk = kLists * kEntries, kBatch = 32;
+constexpr int kLists = 16, kLeaves = 16, kEntries = 16, kWindow = kLists * kEntries, kBatch = 32;
 constexpr int kFoldThreads = 128, kTableTokens = 65536, kRowWords = 32;
 //: a tile, M|N-major: a token's 8 rows (or columns) of a brick one 16-byte line, bricks 17 lines apart
 constexpr int kBrick = 17 * 16, kValueTile = 8 * kBrick, kCoefTile = 2 * kBrick, kTile = kValueTile + kCoefTile;
@@ -69,7 +69,7 @@ __global__ void __launch_bounds__(kFoldThreads + 32 * WARPS, 1)
     //: value instructions of FOUR entries (8 lanes an entry, a lane 16 bytes of its value: a line of a brick), and
     //: ONE instruction of all 32 entries' dense bytes (a lane an entry's 16)
     const int mine = warp - kFoldThreads / 32, group = lane >> 3;
-    constexpr int kBatches = kChunk / WARPS / kBatch, kQuads = kBatch / 4;
+    constexpr int kBatches = kWindow / WARPS / kBatch, kQuads = kBatch / 4;
     const uint4* const wide = reinterpret_cast<const uint4*>(values);
     const uint4* const boxes = reinterpret_cast<const uint4*>(dense);
     uint4 value[2][kQuads], bytes[2];
@@ -102,7 +102,7 @@ __global__ void __launch_bounds__(kFoldThreads + 32 * WARPS, 1)
           }
           //: the lane's entry: its 16 bytes times the entry's, 8 pairs of bf16, a brick's line each four
           const int e = mine + WARPS * (b * kBatch + lane);
-          const float weight = static_cast<float>(sparse_of(token_of(blockIdx.x, (w + slot) * kChunk + e)));
+          const float weight = static_cast<float>(sparse_of(token_of(blockIdx.x, (w + slot) * kWindow + e)));
           const uint32_t word[4] = {bytes[h].x, bytes[h].y, bytes[h].z, bytes[h].w};
           uint4 line[2];
 #pragma unroll
@@ -167,7 +167,7 @@ void run(lab::Bench& b, const uint32_t* values, const uint32_t* dense, float* ou
   using namespace pool_fill;
   constexpr int kWindows = 64, kThreads = kFoldThreads + 32 * WARPS;
   const std::string name = std::string(FOLDS ? "the producers and the fold" : "the producers alone") + ", "
-                           + std::to_string(WARPS) + (WARPS == 1 ? " producer" : " producers");
+                           + std::to_string(WARPS) + " producers";
   const auto kernel = fill<FOLDS, WARPS>;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
   if (FOLDS) {
@@ -186,7 +186,7 @@ void run(lab::Bench& b, const uint32_t* values, const uint32_t* dense, float* ou
             long long want = 0;
             for (int w = 0; w < 2; ++w)
               for (int k = 0; k < kEntries; ++k) {
-              const int t = static_cast<int>(token_of(blk, w * kChunk + a * kEntries + k));
+              const int t = static_cast<int>(token_of(blk, w * kWindow + a * kEntries + k));
               want += value_of(t, m) * sparse_of(t) * dense_of(t, leaf);
             }
             wrong += got[blk * per + (static_cast<size_t>(tid) * kLists + a) * 8 + i] != static_cast<float>(want);
@@ -198,7 +198,7 @@ void run(lab::Bench& b, const uint32_t* values, const uint32_t* dense, float* ou
   }
   const lab::Samples cycles = b.variant(
       [&] { kernel<<<b.sms, kThreads, kSmemBytes>>>(b.times, values, dense, out, kWindows); },
-      [&] { return b.span(kThreads >> 5) / (static_cast<double>(kWindows) * kChunk); });
+      [&] { return b.span(kThreads >> 5) / (static_cast<double>(kWindows) * kWindow); });
   b.record(name, "cycles an entry a CTA", cycles);
 }
 
