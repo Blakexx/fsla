@@ -72,7 +72,7 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
 * `lab::WarpSpan` — a warp's start and end `clock64`; `Bench::span(warps)` is the mean block's span (last end less
   first start), the throughput when warps finish apart.
 * The operand pieces the kernels use: `ldsm` and `ldsm_t` (`ldmatrix.x4`, `.trans`), `hmul2`, `pack_half2`, `smem`;
-  the mbarrier as `ops.cuh` spells it: `mbar_init`, `mbar_arrive`, `mbar_wait` (polled), `mbar_test` (once).
+  the mbarrier as `ops.cuh` spells it: `mbar_init`, `mbar_arrive`, `mbar_wait` (polled), `mbar_wait_suspended` (sm_90: `try_wait`, the thread may be suspended), `mbar_test` (once).
 * `lab::sink(out, v)` — a fold of everything a thread computed, stored unconditionally.
 * The atoms as one PTX instruction each: `mma_f16_f32` (and `_fresh`), `mma_f16_f16`, `mma_bf16_f32`, `mma_u8u8`,
   `mma_u8s8`.

@@ -13,8 +13,7 @@
 // and the readout's steps. Rows: the fold's side alone, the read side alone, both, and both with one access taken
 // out: the producers' global loads, the drains' global adds, the image's stores. Then what the readout's steps
 // wait behind: the readout and the drains with NO fold warp running (the image as it lies); every barrier's wait
-// by the instruction that may suspend its thread, where the others poll; and the registers SPLIT BY WARP in the
-// fourth warpgroup -- a drain warp 72, a producer 120 and two batches held. With both sides and no access out, the
+// by the instruction that may suspend its thread, where the others poll. With both sides and no access out, the
 // state and every output row are checked exactly, and a long call's span over its wall time reads the card's clock.
 // TIMELINE: a fold warpgroup's trip is a window: the image a tile group at a time, four -- the wait on the
 // readout's read of that group a window back, 32 stores a thread and their fence, the group's arrival -- then a
@@ -45,11 +44,8 @@ constexpr int kReadAt = 2 * kGroup, kProduceAt = 3 * kGroup, kDrainAt = kProduce
 //: at -- 128 a thread at 512 threads, the SM's whole file: the folds' 32 more each are the 32 fewer of the readout
 //: and of the producers' and drains' warpgroup
 constexpr int kEntryRegs = 128, kFoldRegs = 160, kReadRegs = 96, kServeRegs = 96;
-//: the fourth warpgroup's registers split by warp: two batches fill a producer's, a drain warp's 16 words its own
-constexpr int kProduceRegs = 120, kDrainRegs = 72;
 static_assert(kThreads * kEntryRegs == 65536
-              && 2 * (kFoldRegs - kEntryRegs) == 2 * kEntryRegs - kReadRegs - kServeRegs
-              && kProduceRegs + kDrainRegs == 2 * kServeRegs);
+              && 2 * (kFoldRegs - kEntryRegs) == 2 * kEntryRegs - kReadRegs - kServeRegs);
 
 //: A POOL TILE (the fold's operands a list), M|N-major: 8 bricks of values and 2 of coefficients, a brick 17 lines
 constexpr int kBrick = 17 * 16, kValueTile = 8 * kBrick, kTile = 10 * kBrick, kPoolBytes = kSlotLists * kTile;
@@ -68,11 +64,8 @@ constexpr int kOutWindows = 4;
 //: a row's roles, and what a row takes OUT of them to find what the two sides contend for: the producers' global
 //: loads (the words made in registers), the drains' global adds (the lines folded into a sink), the image's stores
 //: and what a row changes to find what the readout's steps wait behind: every wait SUSPENDED (`try_wait`) where the
-//: others poll; the image STILL -- no fold warp runs, the readout reads it as it lies; the fourth warpgroup's
-//: registers SPLIT by warp, its producers holding two batches
-enum Roles : int {
-  kFold = 1, kRead = 2, kNoLoads = 4, kNoAdds = 8, kNoImage = 16, kSuspend = 32, kStill = 64, kSplit = 128
-};
+//: others poll; the image STILL -- no fold warp runs, the readout reads it as it lies
+enum Roles : int { kFold = 1, kRead = 2, kNoLoads = 4, kNoAdds = 8, kNoImage = 16, kSuspend = 32, kStill = 64 };
 
 //: the token of a (CTA, box, entry of the call), its value at a channel, its byte on its list's digit and on a
 //: dense leaf; a read coefficient at (read digit, fold digit, token): small integers
@@ -191,33 +184,31 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
     for (int i = 0; i < 8; ++i) to[8 * a + i] = d[a][i];
 }
 
-//: A PRODUCER WARP, one a box: a slot's 128 entries in four batches of 32; one batch in registers at a time, or
-//: two where the row splits the warpgroup's registers by warp
+//: A PRODUCER WARP, one a box: a slot's 128 entries in four batches of 32, one batch in registers at a time
 template <int ROLES>
 __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long long* times, const uint32_t* values,
                                              const uint32_t* dense, int windows) {
   const int lane = threadIdx.x & 31, box = (threadIdx.x - kProduceAt) >> 5, group = lane >> 3;
   const uint32_t bars = base + kBarsAt, source = blockIdx.x * 2 + box;
-  constexpr int kQuads = kFill / 4, kBatches = kSlot / kFill, kHeld = ROLES & kSplit ? 2 : 1;
+  constexpr int kQuads = kFill / 4, kBatches = kSlot / kFill;
   const uint4* const wide = reinterpret_cast<const uint4*>(values);
   const uint4* const boxes = reinterpret_cast<const uint4*>(dense);
-  //: `kHeld` batches in registers, a batch a half: 96 registers a thread hold one, 128 two
-  uint4 value[kHeld][kQuads], bytes[kHeld];
-  //: batch `n` of the call into half `h`: 8 value instructions of four entries (8 lanes an entry, a lane 16
-  //: bytes), and one of all 32 entries' dense bytes (a lane an entry's 16)
-  const auto load = [&](int n, int h) {
+  //: ONE batch in registers: the warpgroup's 96 a thread hold no second
+  uint4 value[kQuads], bytes;
+  //: batch `n` of the call: 8 value instructions of four entries (8 lanes an entry, a lane 16 bytes), and one of
+  //: all 32 entries' dense bytes (a lane an entry's 16)
+  const auto load = [&](int n) {
 #pragma unroll
     for (int qd = 0; qd < kQuads; ++qd) {
       const uint32_t tk = token_of(source, n * kFill + 4 * qd + group);
-      if constexpr (ROLES & kNoLoads) value[h][qd] = make_uint4(tk, tk, tk, tk);
-      else value[h][qd] = wide[static_cast<long long>(tk) * (kRowWords / 4) + (lane & 7)];
+      if constexpr (ROLES & kNoLoads) value[qd] = make_uint4(tk, tk, tk, tk);
+      else value[qd] = wide[static_cast<long long>(tk) * (kRowWords / 4) + (lane & 7)];
     }
     const uint32_t tb = token_of(source, n * kFill + lane);
-    if constexpr (ROLES & kNoLoads) bytes[h] = make_uint4(tb, tb, tb, tb);
-    else bytes[h] = boxes[tb];
+    if constexpr (ROLES & kNoLoads) bytes = make_uint4(tb, tb, tb, tb);
+    else bytes = boxes[tb];
   };
-#pragma unroll
-  for (int h = 0; h < kHeld; ++h) load(h, h);
+  load(0);
   lab::WarpSpan clock;
   clock.start();
 #pragma unroll 1
@@ -228,21 +219,18 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
       uint8_t* const tiles = smem + (2 * box + slot) * kPoolBytes;
       //: a rolled loop: a batch's addresses are formed in its trip, none held for the slot
 #pragma unroll 1
-      for (int b0 = 0; b0 < kBatches; b0 += kHeld)
-#pragma unroll
-       for (int h = 0; h < kHeld; ++h) {
-        const int b = b0 + h;
+      for (int b = 0; b < kBatches; ++b) {
 #pragma unroll
         for (int qd = 0; qd < kQuads; ++qd) {
           //: entry `e` of the slot: list `e / 16`, token `e % 16` of its step
           const int e = b * kFill + 4 * qd + group;
           *reinterpret_cast<uint4*>(tiles + (e / kEntries) * kTile + (lane & 7) * kBrick + (e % kEntries) * 16) =
-              value[h][qd];
+              value[qd];
         }
         //: the lane's entry: its 16 bytes times the entry's, 8 pairs of bf16, a brick's line each four
         const int e = b * kFill + lane;
         const float weight = static_cast<float>(sparse_of(token_of(source, w * kWindow + slot * kSlot + e)));
-        const uint32_t word[4] = {bytes[h].x, bytes[h].y, bytes[h].z, bytes[h].w};
+        const uint32_t word[4] = {bytes.x, bytes.y, bytes.z, bytes.w};
         uint4 line[2];
 #pragma unroll
         for (int k = 0; k < 2; ++k) {
@@ -260,7 +248,7 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
         uint8_t* const at = tiles + (e / kEntries) * kTile + kValueTile + (e % kEntries) * 16;
         *reinterpret_cast<uint4*>(at + first * kBrick) = first ? line[1] : line[0];
         *reinterpret_cast<uint4*>(at + (first ^ 1) * kBrick) = first ? line[0] : line[1];
-        load((2 * w + slot) * kBatches + b + kHeld, h);
+        load((2 * w + slot) * kBatches + b + 1);
       }
       lab::bulk_fence();
       __syncwarp();
@@ -467,15 +455,6 @@ __global__ void __launch_bounds__(kThreads, 1)
     lab::regs_down<kReadRegs>();
     if constexpr (ROLES & kRead) read_role<ROLES>(smem, base, times, waits, dense, windows);
     else idle_role(times, waits);
-  } else if constexpr (ROLES & kSplit) {
-    //: the registers by WARP: a producer releases 8 a thread and a drain warp 56
-    if (tid < kDrainAt) {
-      lab::regs_down<kProduceRegs>();
-      produce_role<ROLES>(smem, base, times, values, dense, windows);
-    } else {
-      lab::regs_down<kDrainRegs>();
-      drain_role<ROLES>(smem, base, times, waits, sinks, out, windows);
-    }
   } else {
     //: the producers and the drain warps are one warpgroup: one register call, the four warps together
     lab::regs_down<kServeRegs>();
@@ -534,13 +513,12 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kNoAdds ? ", the drains' global adds taken out" : "")
                            + (ROLES & kNoImage ? ", the image's stores taken out" : "")
                            + (ROLES & kStill ? ", no fold warp running" : "")
-                           + (ROLES & kSuspend ? ", every wait suspended" : "")
-                           + (ROLES & kSplit ? ", registers by warp and two batches a producer" : "");
+                           + (ROLES & kSuspend ? ", every wait suspended" : "");
   const auto kernel = window<ROLES>;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
   LAB_CHECK(cudaMemset(out, 0, words * 4));
-  if ((ROLES & ~(kSuspend | kSplit)) == (kFold | kRead)) {
+  if ((ROLES & ~kSuspend) == (kFold | kRead)) {
     kernel<<<b.sms, kThreads, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * kLists * 8;
@@ -647,8 +625,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
 int main(int argc, char** argv) {
   using namespace carry_window;
   lab::Bench b(argc, argv);
-  for (int roles : {1, 2, 3, 3 | kNoLoads, 3 | kNoAdds, 3 | kNoImage, 2 | kStill, 2 | kSuspend, 3 | kSuspend,
-                    3 | kSplit, 3 | kSplit | kSuspend}) {
+  for (int roles : {1, 2, 3, 3 | kNoLoads, 3 | kNoAdds, 3 | kNoImage, 2 | kStill, 2 | kSuspend, 3 | kSuspend}) {
     const std::string k = lab::kernel("window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     b.expect(k, "HGMMA", "==",
@@ -697,7 +674,5 @@ int main(int argc, char** argv) {
   run<kRead | kStill>(b, waits, values, dense, state, out);
   run<kRead | kSuspend>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend>(b, waits, values, dense, state, out);
-  run<kFold | kRead | kSplit>(b, waits, values, dense, state, out);
-  run<kFold | kRead | kSplit | kSuspend>(b, waits, values, dense, state, out);
   return 0;
 }

@@ -31,9 +31,7 @@ THE REGISTERS (`setmaxnreg`, each role's body in its own branch). 512 threads la
 SM's whole file of 65,536. A fold thread raises to 160; a readout thread lowers to 96, and the producers and drains,
 one warpgroup, to 96: the folds' 32 more each are those 32 fewer. At 152 the fold spills to local memory; at 80 the
 toolkit serializes the readout's steps of 64 columns with A in registers; a producer holding two batches needs
-some 125. THE FOURTH WARPGROUP'S REGISTERS CAN BE SPLIT BY WARP (a row): a drain warp, which holds 16 words, lowers
-to 72 and a producer to 120 and holds two batches; the compiler takes each warp's count (releases to 72, 120 and 96,
-the raise to 160). At 64 a drain warp spills to local memory. NO REGISTER IS LEFT for a fifth warpgroup: one beside these roles takes its registers from them. A form
+some 125. NO REGISTER IS LEFT for a fifth warpgroup: one beside these roles takes its registers from them. A form
 of five warpgroups (640 threads) launches at 96 a thread, 61,440 in all; one whose roles' counts summed to the
 whole file hung on the device, and whether at the folds' raise no run separated.
 
@@ -42,8 +40,7 @@ both, and both with one access taken out: the producers' global loads (their wor
 global adds (their lines folded into a sink), the image's stores. Then WHAT THE READOUT'S STEPS WAIT BEHIND: the
 readout and the drains with no fold warp running (the image as it lies, never rewritten, no fold warp at a
 barrier); every barrier's wait by the instruction that may suspend its thread (`mbarrier.try_wait`) where the
-other rows poll (`test_wait` in a loop, an instruction every trip of every waiting warp); and the registers by
-warp. THE FOLD'S, THE READOUT'S AND THE DRAIN WARPS'
+other rows poll (`test_wait` in a loop, an instruction every trip of every waiting warp). THE FOLD'S, THE READOUT'S AND THE DRAIN WARPS'
 WAITS at their barriers are clocked, and the readout's cycles FORMING its steps' A (the coefficients' rounds and
 the 32 words held) apart from those IN ITS STEPS (the fence, 8 steps, the commit, the next chunk's 8 loads issued,
 the wait). THE CARD'S CLOCK is read from the composed row: a

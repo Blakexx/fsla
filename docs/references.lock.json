@@ -72,6 +72,7 @@
   {"doc": "docs/ARCHITECTURE.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "docs/internals/state.md"},
   {"doc": "docs/ARCHITECTURE.md", "pinned_at": "fbb38e2e3e0f", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
   {"doc": "docs/ARCHITECTURE.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "", "target": "docs/lab/README.md"},
+  {"doc": "docs/ARCHITECTURE.md", "pinned_at": "45ba6b8a2f2f", "reviewed": true, "sha256": "", "target": "docs/lab/carry_window.md"},
   {"doc": "docs/ARCHITECTURE.md", "pinned_at": "8b1174b3fdcf", "reviewed": true, "sha256": "", "target": "docs/lab/cluster_sum.md"},
   {"doc": "docs/ARCHITECTURE.md", "pinned_at": "8b1174b3fdcf", "reviewed": true, "sha256": "", "target": "docs/lab/state_move.md"},
   {"doc": "docs/ARCHITECTURE.md", "pinned_at": "8b1174b3fdcf", "reviewed": true, "sha256": "", "target": "docs/lab/value_cast.md"},
