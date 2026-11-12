@@ -18,7 +18,7 @@ WHAT IT LEAVES OUT: the hand-over between producer and consumer warps, the den, 
 paging, and every other kernel. Its rates are the H100's; no blackwell card is priced (none has been measured), and
 a form that names an sm_90 instruction states no sm_100 form here -- owed with that family's first lab.
 
-THE FOLD'S OPERANDS are the cheaper of two forms, and each row says which. LISTED: a (token, list, box) entry's
+THE FOLD'S OPERANDS are one of two forms, the cheaper at its low end, and each row says which. LISTED: a (token, list, box) entry's
 value and coefficients are fetched from scattered rows into the list's tiles by producer warps, MEASURED whole, the
 fold's steps beside them ([`pool_fill`](../../lab/pool_fill.md): 5.4 to 6.9 cycles an entry by 8 to 2 producers, at
 16 leaves a list; a list's leaves past 16 are priced at the shared access rate, ESTIMATED). TILED: every box takes the window's whole value
@@ -62,7 +62,8 @@ collectors' drain, an eighth of one, which the model's drains count again: a row
 that much. The warps' own fp32 add into a mate's shared memory, read at eighteen times a store, is no form here.
 
 MODELLED (2026-11-12; the H100's records for the pipe, the shared access rate, the drain, the cluster's sum, the
-fold's step time and its operands; the tiled form's gather, the clock and the memory bandwidth ESTIMATED; 4 live
+fold's step time and its operands; the tiled form's gather, a listed list's leaves past 16, a pair's fp32 line,
+the clock and the memory bandwidth ESTIMATED; 4 live
 digits a sparse level unless the row says, 65,536 tokens, no cluster unless the row says; SM-cycles a token, low to
 high, and the call):
 
@@ -100,7 +101,7 @@ WHAT IT SHOWS. A token's cost is bytes moved and steps run, a (token, box) each;
   (token, list, box) steps' sixteenths a token, each of an 8-column step
   ([`wgmma_width`](../../lab/wgmma_width.md)), beside its operands.
 - WHERE BOTH SIDES ARE SPARSE ON THE SAME LEVEL the read-aligned box is the write-aligned one too, and every term is
-  small: 177 to 205.
+  small: 190 to 218.
 - A DENSE WRITE SIDE is the fold's whole dense product: its tensor time alone is about the floor.
 - A CLUSTER BUYS NOTHING: its sum does not pay (`cluster_sum`) and it shares no load (`value_cast`).
 - Dense on both sides at as many leaves as tokens is over the floor by the tensor work

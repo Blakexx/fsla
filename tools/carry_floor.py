@@ -39,7 +39,7 @@ its reason):
   measurement and one more line of the drain (`drain_rate`), an ESTIMATED sum, the form R17 allows. Both store the
   state's image once a window (`state_image`). Priced at 64 channels and for sides sparse on different levels
   alone: nothing else was measured;
-- the fold's operands, the cheaper of two forms. LISTED: a (token, list, box) entry's value and coefficients
+- the fold's operands, one of two forms, the cheaper at its low end. LISTED: a (token, list, box) entry's value and coefficients
   fetched from scattered rows into the list's tiles by producer warps, MEASURED whole (`pool_fill`, at 16 leaves a
   list; a list's leaves past 16 are priced at the shared access rate, ESTIMATED). TILED: every box takes the window's whole value tile packed
   (`state_move`; every token's bytes), expands its coefficients into shared memory and gathers the values into
@@ -217,7 +217,7 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
         image = both(all_boxes / 2 * rates["image"][0] / window)
     else:
         line = image = both(0.0)
-    #: THE FOLD'S OPERANDS, the cheaper of LISTED (an entry at `pool_fill`'s cost, a list's leaves past its 16 at the
+    #: THE FOLD'S OPERANDS, the cheaper at its low end of LISTED (an entry at `pool_fill`'s cost, a list's leaves past its 16 at the
     #: shared access rate) and TILED (the window's packed tile a box, expanded and gathered): see the module's notes
     entries = write.boxes * write.lists * value_requests
     wide = write.boxes * write.lists * max(0.0, write.leaves / (write.boxes * write.lists) - 16) * 2 / shared
