@@ -1,19 +1,20 @@
-// measure/lab/experiments/slot_sum.cu -- QUESTION: an atomic add to global memory is held by the SM at one line
-// about every 10 to 12 cycles (`add_rate`). Were every CTA to STORE a token's partial line into a slot of its own
-// and a later pass to sum a token's slots, what does a line cost stored to a slot nothing has touched, and what
-// does a token cost the pass that sums its 32 slots in fp32, divides and writes the output? METHOD: a CTA an SM.
-// STORE: 1 or 4 warps write 16,384 lines of f16 pairs from registers into the CTA's own 64 MB of global memory,
-// each line once -- packed, or a line every 4 KB, as a slot of a token-major layout sits. SUM: 4, 8 or 16 warps;
-// a token is 32 slots of 128 bytes; 8 lanes take a token, a lane 16 bytes of a slot an instruction -- 8 f16 turned
-// to fp32 and added into the lane's 8 sums -- then the sums times the token's reciprocal, rounded to bf16 and
-// stored, a 128-byte line a token. PACKED: a token's slots lie together. GATHERED: slot `s` lies in stream `s` of
-// the CTA's 32, at a row scattered over the stream, as a partial a CTA copied out among its own would. 540 MB of
-// slots, a CTA its own 4 MB. Every
-// stored word and every output value is checked exactly.
-// TIMELINE: no load in STORE: a warp's trip is 16 stores from one register to addresses constant off its base.
-// A SUM warp's trip is four tokens, 8 lanes each, in four batches of 8 slots alternating two register halves: a
-// batch's 64 conversions and adds a lane (its words loaded two batches before), then those registers' loads for
-// the batch two on; after the fourth, the multiply, 4 rounds and one store. Live: 64 words of slots and 8 sums.
+// measure/lab/experiments/slot_sum.cu -- QUESTION: an atomic add to global memory goes out at one line about every
+// 10 to 12 cycles an SM, whatever the warps (`add_rate`). Were every CTA to STORE a token's partial line where no
+// other CTA writes and a later pass to sum a token's partials, what does a line cost stored, and what does a
+// token cost the pass that sums 32 partials in fp32, scales and writes a line -- into memory nothing has touched,
+// and into a ring the cache holds because the pass keeps up? METHOD: a CTA an SM. STORE: 1 or 4 warps write
+// 16,384 lines of 128 bytes, each store its line's own words, into the CTA's own 64 MB of global memory -- each
+// line once, packed or one every 4 KB; or its first 1,024 lines over and over. SUM: 4, 8 or 16 warps; a token is
+// 32 partials of 128 bytes, f16; 8 lanes take a token, a lane 16 bytes of a partial an instruction -- 8 f16
+// turned to fp32 and added into the lane's 8 sums -- then the sums times the token's reciprocal, rounded to bf16
+// and stored, a 128-byte line a token. PACKED: a token's partials lie together. GATHERED: partial `s` lies in
+// stream `s` of the CTA's 32, at a row scattered over the stream. Each over a CTA's 4 MB of partials (528 MB a
+// call), or over its first 32 tokens' again and again. Every stored word and output value is checked exactly.
+// TIMELINE: no load in STORE: a warp's trip is 16 stores, each of words made from its line's index, to addresses
+// constant off the warp's base. A SUM warp's trip is four tokens, 8 lanes each, in four batches of 8 partials
+// alternating two register halves: a batch's 64 conversions and adds a lane (its words loaded two batches
+// before), then those registers' loads for the batch two on; after the fourth, the multiply, 4 rounds and one
+// store. Live: 64 words of partials and 8 sums.
 // see docs/internals/tools/lab.md#slot-sum
 #include "lab.cuh"
 
@@ -34,7 +35,7 @@ constexpr long long gathered_at(long long block, int token, int slot) {
   return (block * kSlots + slot) * kTokens + ((static_cast<uint32_t>(token) * 613u + slot * 331u) & (kTokens - 1));
 }
 
-template <int WARPS, int STRIDE>
+template <int WARPS, int STRIDE, int RING>
 __global__ void __launch_bounds__(32 * WARPS, 1) store(long long* times, uint32_t* region) {
   const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
   uint32_t* const own = region + static_cast<long long>(blockIdx.x) * kRegionWords + lane;
@@ -45,14 +46,16 @@ __global__ void __launch_bounds__(32 * WARPS, 1) store(long long* times, uint32_
 #pragma unroll
     for (int j = 0; j < kTrip; ++j) {
       //: the warp's line `i + j` is the CTA's line `warp + WARPS (i + j)`, `STRIDE` lines apart
-      const uint32_t line = static_cast<uint32_t>(warp + WARPS * (i + j)) * STRIDE;
+      //: RING: the CTA's first `RING` lines over and over, a ring a pass keeps emptying
+      const uint32_t line = (RING ? static_cast<uint32_t>(warp + WARPS * (i + j)) % RING
+                                  : static_cast<uint32_t>(warp + WARPS * (i + j))) * STRIDE;
       own[static_cast<long long>(line) * kLineWords] = line * kLineWords + lane + 1u;
     }
   }
   clock.stop(times);
 }
 
-//: the slots and the divisors, written on the device: 540 MB the host does not hold
+//: the slots and the divisors, written on the device: 528 MB the host does not hold
 __global__ void fill(uint16_t* slots, float* inverse, int gather) {
   const long long token = static_cast<long long>(blockIdx.x) * kTokens + blockIdx.y;
   for (int i = threadIdx.x; i < kSlots * kChannels; i += blockDim.x) {
@@ -64,7 +67,7 @@ __global__ void fill(uint16_t* slots, float* inverse, int gather) {
   if (threadIdx.x == 0) inverse[token] = 1.0f / static_cast<float>(den_of(static_cast<int>(token)));
 }
 
-template <int WARPS, int GATHER>
+template <int WARPS, int GATHER, int RING>
 __global__ void __launch_bounds__(32 * WARPS, 1)
     sum(long long* times, const uint4* slots, const float* inverse, uint4* out) {
   const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, group = lane >> 3, piece = lane & 7;
@@ -72,7 +75,11 @@ __global__ void __launch_bounds__(32 * WARPS, 1)
   constexpr int kQuads = kTokens / 4 / WARPS;
   uint4 held[2][kBatch];
   //: batch `n` of the warp's call: slots `8 (n % 4)` on of its token of quad `n / 4`
-  const auto token_of = [&](int quad) { return first + (warp + WARPS * min(quad, kQuads - 1)) * 4 + group; };
+  //: RING: the CTA's first `RING` tokens over and over, partials a pass sums as they land
+  const auto token_of = [&](int quad) {
+    const int token = (warp + WARPS * min(quad, kQuads - 1)) * 4 + group;
+    return first + (RING ? token % RING : token);
+  };
   const auto load = [&](int h, int n) {
     const long long token = token_of(n / 4);
 #pragma unroll
@@ -115,14 +122,15 @@ __global__ void __launch_bounds__(32 * WARPS, 1)
 
 }  // namespace slot_sum
 
-template <int WARPS, int STRIDE>
+template <int WARPS, int STRIDE, int RING>
 void run_store(lab::Bench& b, uint32_t* region) {
   using namespace slot_sum;
-  const std::string name = std::string(STRIDE == 1 ? "a line stored, lines packed" : "a line stored, one every 4 KB")
+  const std::string name = std::string(RING ? "a line stored into a ring of 128 KB"
+                                       : STRIDE == 1 ? "a line stored, lines packed" : "a line stored, one every 4 KB")
                            + ", " + std::to_string(WARPS) + (WARPS == 1 ? " warp" : " warps");
   const size_t words = static_cast<size_t>(b.sms) * kRegionWords;
   LAB_CHECK(cudaMemset(region, 0, words * 4));
-  store<WARPS, STRIDE><<<b.sms, 32 * WARPS>>>(b.times, region);
+  store<WARPS, STRIDE, RING><<<b.sms, 32 * WARPS>>>(b.times, region);
   LAB_CHECK(cudaDeviceSynchronize());
   //: the first and the last CTA's regions: a written line holds its words, every other nothing
   std::vector<uint32_t> got(kRegionWords);
@@ -132,7 +140,7 @@ void run_store(lab::Bench& b, uint32_t* region) {
                          cudaMemcpyDeviceToHost));
     for (size_t w = 0; w < got.size(); ++w) {
       const size_t line = w / kLineWords;
-      const bool written = line % STRIDE == 0 && line / STRIDE < kStoreLines;
+      const bool written = line % STRIDE == 0 && line / STRIDE < (RING ? RING : kStoreLines);
       wrong += got[w] != (written ? static_cast<uint32_t>(w) + 1u : 0u);
     }
   }
@@ -140,7 +148,7 @@ void run_store(lab::Bench& b, uint32_t* region) {
   const lab::Samples cycles = b.variant(
       [&] {
         LAB_CHECK(cudaMemset(region, 0, words * 4));
-        store<WARPS, STRIDE><<<b.sms, 32 * WARPS>>>(b.times, region);
+        store<WARPS, STRIDE, RING><<<b.sms, 32 * WARPS>>>(b.times, region);
       },
       [&] { return b.span(WARPS) / kStoreLines; });
   b.record(name, "cycles a line a CTA", cycles);
@@ -152,15 +160,16 @@ inline uint32_t bf16_host(float f) {
   return u >> 16;
 }
 
-template <int WARPS, int GATHER>
+template <int WARPS, int GATHER, int RING>
 void run_sum(lab::Bench& b, const uint4* slots, const float* inverse, uint4* out) {
   using namespace slot_sum;
   const std::string name = std::string(GATHER ? "a token's 32 partials gathered from 32 streams"
                                               : "a token's 32 slots, packed,")
-                           + " summed, divided and stored, " + std::to_string(WARPS) + " warps";
+                           + " summed, divided and stored, " + std::to_string(WARPS) + " warps"
+                           + (RING ? ", the 128 KB of 32 tokens over and over" : "");
   const size_t values = static_cast<size_t>(b.sms) * kTokens * kChannels;
   LAB_CHECK(cudaMemset(out, 0, values * 2));
-  sum<WARPS, GATHER><<<b.sms, 32 * WARPS>>>(b.times, slots, inverse, out);
+  sum<WARPS, GATHER, RING><<<b.sms, 32 * WARPS>>>(b.times, slots, inverse, out);
   LAB_CHECK(cudaDeviceSynchronize());
   std::vector<uint16_t> got(values);
   LAB_CHECK(cudaMemcpy(got.data(), out, values * 2, cudaMemcpyDeviceToHost));
@@ -169,11 +178,17 @@ void run_sum(lab::Bench& b, const uint4* slots, const float* inverse, uint4* out
     const int token = static_cast<int>(v / kChannels), c = static_cast<int>(v % kChannels);
     int total = 0;
     for (int s = 0; s < kSlots; ++s) total += value_of(token, s, c);
+    //: a ring's call writes its 32 tokens' rows and no other
+    if (RING && token % kTokens >= RING) {
+      wrong += got[v] != 0;
+      continue;
+    }
     //: a sum under 97 over 2 or 4: exact in bf16
     wrong += got[v] != bf16_host(static_cast<float>(total) / static_cast<float>(den_of(token)));
   }
   b.check(name, wrong == 0, std::to_string(wrong) + " of " + std::to_string(values) + " output values differ");
-  const lab::Samples cycles = b.variant([&] { sum<WARPS, GATHER><<<b.sms, 32 * WARPS>>>(b.times, slots, inverse, out); },
+  const lab::Samples cycles = b.variant(
+      [&] { sum<WARPS, GATHER, RING><<<b.sms, 32 * WARPS>>>(b.times, slots, inverse, out); },
                                         [&] { return b.span(WARPS) / kTokens; });
   b.record(name, "cycles a token a CTA", cycles);
 }
@@ -181,14 +196,21 @@ void run_sum(lab::Bench& b, const uint4* slots, const float* inverse, uint4* out
 int main(int argc, char** argv) {
   using namespace slot_sum;
   lab::Bench b(argc, argv);
-  for (int warps : {1, 4})
-    for (int stride : {1, 32}) b.expect(lab::kernel("store", {warps, stride}), "STG", ">=", kTrip);
+  for (int warps : {1, 4}) {
+    for (int stride : {1, 32}) b.expect(lab::kernel("store", {warps, stride, 0}), "STG", ">=", kTrip);
+    b.expect(lab::kernel("store", {warps, 1, 1024}), "STG", ">=", kTrip);
+  }
   for (int gather = 0; gather < 2; ++gather)
     for (int warps : {4, 8, 16}) {
-      b.expect(lab::kernel("sum", {warps, gather}), "LDG.E.128", ">=", 2 * kBatch);
+      b.expect(lab::kernel("sum", {warps, gather, 0}), "LDG.E.128", ">=", 2 * kBatch);
+      //: the ring's rows by 4 and 8 warps: 16 at the launch's 128 registers spill the gathered ring's addresses
+      if (warps < 16) {
+        b.expect(lab::kernel("sum", {warps, gather, 32}), "LDG.E.128", ">=", 2 * kBatch);
+        b.expect(lab::kernel("sum", {warps, gather, 32}), "LOAD_IN_TRIP", "<=", 2 * kBatch);
+      }
       //: a trip is a quad's four batches, and a batch's loads are read two batches on: its first two batches'
       //: inside the trip that issued them, a stage ahead all the same
-      b.expect(lab::kernel("sum", {warps, gather}), "LOAD_IN_TRIP", "<=", 2 * kBatch);
+      b.expect(lab::kernel("sum", {warps, gather, 0}), "LOAD_IN_TRIP", "<=", 2 * kBatch);
     }
   if (b.expect_only) return 0;
   uint32_t* region = nullptr;
@@ -201,19 +223,25 @@ int main(int argc, char** argv) {
   LAB_CHECK(cudaMalloc(&out, static_cast<size_t>(b.sms) * kTokens * kChannels * 2));
   fill<<<dim3(b.sms, kTokens), 256>>>(slots, inverse, 0);
   LAB_CHECK(cudaDeviceSynchronize());
-  run_store<1, 1>(b, region);
-  run_store<4, 1>(b, region);
-  run_store<1, 32>(b, region);
-  run_store<4, 32>(b, region);
+  run_store<1, 1, 0>(b, region);
+  run_store<4, 1, 0>(b, region);
+  run_store<1, 32, 0>(b, region);
+  run_store<4, 32, 0>(b, region);
+  run_store<1, 1, 1024>(b, region);
+  run_store<4, 1, 1024>(b, region);
   const uint4* const wide = reinterpret_cast<const uint4*>(slots);
-  run_sum<4, 0>(b, wide, inverse, out);
-  run_sum<8, 0>(b, wide, inverse, out);
-  run_sum<16, 0>(b, wide, inverse, out);
+  run_sum<4, 0, 0>(b, wide, inverse, out);
+  run_sum<8, 0, 0>(b, wide, inverse, out);
+  run_sum<16, 0, 0>(b, wide, inverse, out);
+  run_sum<4, 0, 32>(b, wide, inverse, out);
+  run_sum<8, 0, 32>(b, wide, inverse, out);
   //: the same slots laid a stream a slot, a token's row scattered in each
   fill<<<dim3(b.sms, kTokens), 256>>>(slots, inverse, 1);
   LAB_CHECK(cudaDeviceSynchronize());
-  run_sum<4, 1>(b, wide, inverse, out);
-  run_sum<8, 1>(b, wide, inverse, out);
-  run_sum<16, 1>(b, wide, inverse, out);
+  run_sum<4, 1, 0>(b, wide, inverse, out);
+  run_sum<8, 1, 0>(b, wide, inverse, out);
+  run_sum<16, 1, 0>(b, wide, inverse, out);
+  run_sum<4, 1, 32>(b, wide, inverse, out);
+  run_sum<8, 1, 32>(b, wide, inverse, out);
   return 0;
 }
