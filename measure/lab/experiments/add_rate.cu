@@ -1,5 +1,5 @@
-// measure/lab/experiments/add_rate.cu -- QUESTION: in the composed carry the warps adding lines to the output are
-// the role the others wait on (`carry_window`). What holds an add to global memory: a limit a warp, the lanes an
+// measure/lab/experiments/add_rate.cu -- QUESTION: the carry's output is a line added to global memory a token a
+// pair of boxes (`carry_window`). What holds an add to global memory: a limit a warp, the lanes an
 // instruction carries, the lines it touches, the add's type, or its being atomic? METHOD: a CTA an SM of 1, 2, 4 or 8
 // warps; each warp issues 16 instructions a trip to
 // its own rows of global memory, from registers that never change. ONE LINE: an instruction's lanes add f16 pairs

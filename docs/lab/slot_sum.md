@@ -4,7 +4,7 @@ Mirrors `measure/lab/experiments/slot_sum.cu`, an experiment of the lab
 ([`docs/internals/tools/lab.md`](../internals/tools/lab.md)).
 
 An atomic add to global memory goes out at one line about every 10 to 12 cycles an SM whatever the warps and the
-add's type ([`add_rate`](add_rate.md)), and in the composed carry the adds are what the other roles wait on
+add's type ([`add_rate`](add_rate.md)), and the carry adds a line a token a pair of boxes
 ([`carry_window`](carry_window.md)). Were every CTA to STORE a token's partial line where no other CTA writes, and
 a later pass to add a token's partials, what does a line cost stored and what does a token cost that pass -- into
 and out of memory nothing has touched, and a ring the cache holds because the pass comes soon enough?

@@ -7,7 +7,8 @@
 // fold warpgroup PUBLISHES its state as a bf16 image, 16 tiles, a group of 4 behind the readout; ONE READOUT
 // warpgroup expands a chunk's 64 readers' coefficients from their rows' bytes into its own tiles, runs a read
 // digit's step on both boxes' image tiles into one accumulator, 4 digits a chunk, and stores the 64 tokens' rows
-// to a panel; TWO DRAIN warps add each token's row as one f16 line. Every wait at a barrier is clocked. Rows: the
+// to a panel; TWO DRAIN warps add each token's row as one f16 line. The fold's, the readout's and the drains'
+// waits at their barriers are clocked, and the readout's fence and steps. Rows: the
 // fold's side alone, the read side alone, both -- with the fold's, the readout's and the drains' waits -- and both
 // with one access taken out:
 // the producers' global loads, the drains' global adds, the image's stores. Both: the state and every output row
@@ -567,9 +568,10 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
         return b.span(kThreads >> 5) / kTimed;
       });
   b.record(name, "cycles a window a CTA", cycles);
-  //: the composed row's sites, and the read side's own (no producer runs there: that site is not a reading)
+  //: the composed row's sites, and the read side's own but the fold's wait on a producer, which does not run there
   if (ROLES == (kFold | kRead) || ROLES == kRead)
-    for (int i = ROLES == kRead ? 2 : 0; i < kSites; ++i) b.record(name + ": " + sites[i].name, "cycles a window a warp", waited_at[i]);
+    for (int i = 0; i < kSites; ++i)
+      if (ROLES != kRead || i != 1) b.record(name + ": " + sites[i].name, "cycles a window a warp", waited_at[i]);
 }
 
 int main(int argc, char** argv) {

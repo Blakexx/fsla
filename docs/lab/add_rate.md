@@ -3,7 +3,7 @@
 Mirrors `measure/lab/experiments/add_rate.cu`, an experiment of the lab
 ([`docs/internals/tools/lab.md`](../internals/tools/lab.md)).
 
-In the composed carry the warps that add each token's line to the output are the role the others wait on
+The carry's output is a line added to global memory a token a pair of boxes
 ([`carry_window`](carry_window.md)), and four warps adding lines from registers read 9.8 cycles a line a CTA
 ([`drain_role`](drain_role.md)). What holds an add to global memory: a limit a warp, the lanes an instruction
 carries, the lines it touches, the add's type, or its being atomic?
