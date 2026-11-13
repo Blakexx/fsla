@@ -82,8 +82,10 @@ registers, since its 128 stores a thread -- each instruction's lanes on 32 lines
 readout and the drains are in their last windows and be clocked as theirs.
 
 MEASURED (H100 SXM, 132 SMs, vast.ai instance 60441663, driver 595.91.07; 2026-11-13, the experiment at
-fcb7a831 (the record names a5725b1d dirty: the one edit between is the lean-wide rows' 88-register split), one
-session; 7 repetitions, the composed rows' 4,325,376 state values and 8,650,752 output values exact;
+fcb7a831 (the record names a5725b1d dirty: the one edit between lowers the lean-wide rows' fourth warpgroup to
+104), one
+session; 7 repetitions, the composed rows' 4,325,376 state values and 8,650,752 output values exact (the dump
+row runs unchecked: its kernel is the checked baseline plus the stores);
 the median; SM-cycles a token are the window's cycles over 8 -- 128 CTAs of two boxes, 1,024 tokens. THE FOLD'S STATE
 DUMP STAYS OUT OF THE TIMED CALLS, and one row restores it to price it in this session):
 
@@ -130,10 +132,12 @@ DUMP STAYS OUT OF THE TIMED CALLS, and one row restores it to price it in this s
 | THE DUMP RESTORED: both sides, the fold's state stored out in every call | 8,214 | 1,027 |
 | THE WINNERS COMBINED: both sides, suspended waits and the lean readout | 6,752 | 844 |
 | the same, suspended waits and the wide byte load | 6,760 | 845 |
-| the same, suspended waits, the lean readout and the wide byte load (the readout at 88) | 6,867 | 858 |
+| the same, suspended waits, the lean readout and the wide byte load (the fourth warpgroup at 104) | 6,867 | 858 |
 | the same, sleeping waits, the lean readout and the wide byte load | 7,085 | 886 |
 
-THE CARD'S CLOCK did not hold on this box: 1.37 to 1.58 GHz over five calls. This record gives cycles and no
+Every count is a span of SM cycles, so a drifting clock does not rescale it, but it does move the memory-to-core
+ratio: the verdicts a percent apart carry that caveat, and the dump's 17% does not. THE CARD'S CLOCK did not hold
+on this box: 1.37 to 1.58 GHz over five calls. This record gives cycles and no
 time; at the steady 1.79 GHz of instances 60424081 and 60433783 a window's 7,019 cycles would be 3.92 microseconds,
 and 64 windows -- 65,536 tokens' carry -- 0.251 ms.
 
@@ -164,9 +168,9 @@ WHAT IT SHOWS.
 - SUSPENDED WAITS WITH THE LEAN READOUT ARE THE FASTEST COMPOSED FORM: 6,752 cycles a window against the
   baseline's 7,019, with the suspended waits beside the wide byte load a near tie at 6,760. The parts: every wait
   suspended alone 6,821, the long waits asleep at named barriers 6,842, the lean readout alone within 1.5%
-  of the baseline, the wide load alone 6,957. ALL THREE AT ONCE LOSE the pairing's gain (6,867: the lean
-  readout beside the wide load's scratch needs 88 registers a thread and the fourth warpgroup drops to 104), and
-  the sleeping triple is 7,085.
+  of the baseline, the wide load alone 6,957. ALL THREE AT ONCE LOSE the pairing's gain (6,867; beside the wide load's scratch the build spills at the lean
+  split of 80 and 112 and compiles at 80 and 104, so its producers run 8 registers short -- the spill's site is
+  not isolated), and the sleeping triple is 7,085.
 - THE DUMP IS PRICED IN THIS SESSION: the fold's state stored out in every call, as every record before 79ec1b08
   ran, puts the composed row at 8,214 against 7,019 -- one binary, one box, one session.
 - FIVE WARPGROUPS LOSE COMPOSED, 7,657 against 7,019: 640 threads leave four producers and four drain warps 40
