@@ -43,7 +43,11 @@ both, and both with one access taken out: the producers' global loads (their wor
 global adds (their lines folded into a sink), the image's stores; and, both and each side alone, with THE READOUT
 DRAINING ITS OWN ROWS -- a readout warp loads its 16 tokens' lines back from the panel and adds them itself, the
 adds one whole line each as a drain warp's are, no drain warp and no panel barrier -- and all four warps of the
-fourth warpgroup producers, two a box, each two of a slot's four batches. Then WHAT THE READOUT'S STEPS WAIT BEHIND: the
+fourth warpgroup producers, two a box, each two of a slot's four batches; and, both and each side alone, with THE
+READOUT LEAN -- a chunk's four digits take turns in TWO sets of A registers, a digit's two steps a commit group and
+a set written again once the group two back is done, 16 words of A where every step's own are 32; the readout then
+lowers to 80 registers a thread and the fourth warpgroup to 112, where a producer holds two batches, its loads two
+batches ahead (at 72 the toolkit serializes the readout's steps). Then WHAT THE READOUT'S STEPS WAIT BEHIND: the
 readout and the drains with no fold warp running (the image as it lies, never rewritten, no fold warp at a
 barrier); every barrier's wait by the instruction that may suspend its thread (`mbarrier.try_wait`) where the
 other rows poll (`test_wait` in a loop, an instruction every trip of every waiting warp). THE FOLD'S, THE READOUT'S AND THE DRAIN WARPS'

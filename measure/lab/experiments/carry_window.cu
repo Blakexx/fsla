@@ -13,7 +13,9 @@
 // and the readout's steps. Rows: the fold's side alone, the read side alone, both, and both with one access taken
 // out: the producers' global loads, the drains' global adds, the image's stores; and with the readout DRAINING
 // ITS OWN rows -- a readout warp loads its 16 tokens' lines back from the panel and adds them, no drain warp and
-// no panel barrier -- and all four warps of the fourth warpgroup producers, two a box. Then what the readout's steps
+// no panel barrier -- and all four warps of the fourth warpgroup producers, two a box; and with THE READOUT LEAN --
+// a chunk's digits taking turns in two sets of A registers, a digit's two steps a commit group, the readout at 80
+// registers a thread and the fourth warpgroup at 112, its producers holding two batches. Then what the readout's steps
 // wait behind: the readout and the drains with NO fold warp running (the image as it lies); every barrier's wait
 // by the instruction that may suspend its thread, where the others poll. With both sides and no access out, the
 // state and every output row are checked exactly, and a long call's span over its wall time reads the card's clock.
@@ -71,11 +73,22 @@ constexpr int kOutWindows = 4;
 //: and the row whose readout DRAINS ITS OWN rows: a readout warp loads its 16 tokens' lines back from the panel and
 //: adds them itself, no drain warp and no panel barrier, and the fourth warpgroup is four producers, two a box
 enum Roles : int {
-  kFold = 1, kRead = 2, kNoLoads = 4, kNoAdds = 8, kNoImage = 16, kSuspend = 32, kStill = 64, kSelf = 128
+  kFold = 1, kRead = 2, kNoLoads = 4, kNoAdds = 8, kNoImage = 16, kSuspend = 32, kStill = 64, kSelf = 128, kLean = 256
 };
 //: the producers a box
 template <int ROLES>
 constexpr int producers_of = ROLES & kSelf ? 2 : 1;
+//: THE LEAN READOUT's row: a chunk's digits take turns in TWO sets of A registers, a digit's two steps a commit
+//: group, a set written again once its group is done -- 16 words of A where every step's own are 32 -- and the 16
+//: registers a thread it gives up are the fourth warpgroup's, whose producers then hold two batches (at 72 the
+//: toolkit serializes the steps, C7512)
+template <int ROLES>
+constexpr int read_regs = ROLES & kLean ? 80 : kReadRegs;
+template <int ROLES>
+constexpr int serve_regs = ROLES & kLean ? 112 : kServeRegs;
+static_assert(read_regs<kLean> + serve_regs<kLean> == kReadRegs + kServeRegs);
+template <int ROLES>
+constexpr int batches_held = ROLES & kLean ? 2 : 1;
 
 //: the token of a (CTA, box, entry of the call), its value at a channel, its byte on its list's digit and on a
 //: dense leaf; a read coefficient at (read digit, fold digit, token): small integers
@@ -215,21 +228,24 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
   const uint4* const wide = reinterpret_cast<const uint4*>(values);
   const uint4* const boxes = reinterpret_cast<const uint4*>(dense);
   //: ONE batch in registers: the warpgroup's 96 a thread hold no second
-  uint4 value[kQuads], bytes;
-  //: batch `n` of the call: 8 value instructions of four entries (8 lanes an entry, a lane 16 bytes), and one of
-  //: all 32 entries' dense bytes (a lane an entry's 16)
-  const auto load = [&](int n) {
+  constexpr int kHeld = batches_held<ROLES>;
+  static_assert(kOwn % kHeld == 0);
+  uint4 value[kHeld][kQuads], bytes[kHeld];
+  //: batch `n` of the call into register half `h`: 8 value instructions of four entries (8 lanes an entry, a lane
+  //: 16 bytes), and one of all 32 entries' dense bytes (a lane an entry's 16)
+  const auto load = [&](int n, int h) {
 #pragma unroll
     for (int qd = 0; qd < kQuads; ++qd) {
       const uint32_t tk = token_of(source, n * kFill + 4 * qd + group);
-      if constexpr (ROLES & kNoLoads) value[qd] = make_uint4(tk, tk, tk, tk);
-      else value[qd] = wide[static_cast<long long>(tk) * (kRowWords / 4) + (lane & 7)];
+      if constexpr (ROLES & kNoLoads) value[h][qd] = make_uint4(tk, tk, tk, tk);
+      else value[h][qd] = wide[static_cast<long long>(tk) * (kRowWords / 4) + (lane & 7)];
     }
     const uint32_t tb = token_of(source, n * kFill + lane);
-    if constexpr (ROLES & kNoLoads) bytes = make_uint4(tb, tb, tb, tb);
-    else bytes = boxes[tb];
+    if constexpr (ROLES & kNoLoads) bytes[h] = make_uint4(tb, tb, tb, tb);
+    else bytes[h] = boxes[tb];
   };
-  load(batch_of(0));
+#pragma unroll
+  for (int h = 0; h < kHeld; ++h) load(batch_of(h), h);
   lab::WarpSpan clock;
   clock.start();
 #pragma unroll 1
@@ -240,19 +256,21 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
       uint8_t* const tiles = smem + (2 * box + slot) * kPoolBytes;
       //: a rolled loop: a batch's addresses are formed in its trip, none held for the slot
 #pragma unroll 1
-      for (int o = 0; o < kOwn; ++o) {
-        const int b = part + kPer * o;
+      for (int o0 = 0; o0 < kOwn; o0 += kHeld)
+#pragma unroll
+       for (int h = 0; h < kHeld; ++h) {
+        const int o = o0 + h, b = part + kPer * o;
 #pragma unroll
         for (int qd = 0; qd < kQuads; ++qd) {
           //: entry `e` of the slot: list `e / 16`, token `e % 16` of its step
           const int e = b * kFill + 4 * qd + group;
           *reinterpret_cast<uint4*>(tiles + (e / kEntries) * kTile + (lane & 7) * kBrick + (e % kEntries) * 16) =
-              value[qd];
+              value[h][qd];
         }
         //: the lane's entry: its 16 bytes times the entry's, 8 pairs of bf16, a brick's line each four
         const int e = b * kFill + lane;
         const float weight = static_cast<float>(sparse_of(token_of(source, w * kWindow + slot * kSlot + e)));
-        const uint32_t word[4] = {bytes.x, bytes.y, bytes.z, bytes.w};
+        const uint32_t word[4] = {bytes[h].x, bytes[h].y, bytes[h].z, bytes[h].w};
         uint4 line[2];
 #pragma unroll
         for (int k = 0; k < 2; ++k) {
@@ -270,7 +288,7 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
         uint8_t* const at = tiles + (e / kEntries) * kTile + kValueTile + (e % kEntries) * 16;
         *reinterpret_cast<uint4*>(at + first * kBrick) = first ? line[1] : line[0];
         *reinterpret_cast<uint4*>(at + (first ^ 1) * kBrick) = first ? line[0] : line[1];
-        load(batch_of((2 * w + slot) * kOwn + o + 1));
+        load(batch_of((2 * w + slot) * kOwn + o + kHeld), h);
       }
       lab::bulk_fence();
       __syncwarp();
@@ -333,26 +351,47 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
         }
       const uint32_t first = static_cast<uint32_t>(8 * (c4 >> 1) + (c4 & 1));
       const uint32_t images = lab::held(base + kImageAt + first * kImageTile);
-      //: digit `j`'s step on each box's tile: its tokens are warp `j`'s rows, every other warp's A nothing. EVERY
-      //: step's A is in its own registers before the first is issued: a register a step would write between two
-      //: steps makes the toolkit wait out the one before
-      uint32_t rows[kChunkDigits][2][4];
+      //: digit `j`'s step on each box's tile: its tokens are warp `j`'s rows, every other warp's A nothing
+      if constexpr (ROLES & kLean) {
+        //: TWO sets of A, a digit's two steps a commit group: a set is written again once the group two back,
+        //: which read it, is done
+        uint32_t rows[2][2][4];
+        lab::wg_fence();
 #pragma unroll
-      for (int j = 0; j < kChunkDigits; ++j)
+        for (int j = 0; j < kChunkDigits; ++j) {
+          if (j >= 2) lab::wg_wait<1>();
 #pragma unroll
-        for (int box = 0; box < 2; ++box)
+          for (int box = 0; box < 2; ++box)
 #pragma unroll
-          for (int i = 0; i < 4; ++i) rows[j][box][i] = lab::held(warp == j ? a[box][i] : 0u);
-      in_form += lap(since);
-      lab::wg_fence();
+            for (int i = 0; i < 4; ++i) rows[j & 1][box][i] = lab::held(warp == j ? a[box][i] : 0u);
 #pragma unroll
-      for (int j = 0; j < kChunkDigits; ++j)
+          for (int box = 0; box < 2; ++box)
+            lab::wg_bf16_n64_rs(d, rows[j & 1][box],
+                                lab::wg_desc(images + box * kBoxBytes + 2 * j * kImageTile, 8, kBrickLines),
+                                j != 0 || box != 0);
+          lab::wg_commit();
+        }
+      } else {
+        //: EVERY step's A is in its own registers before the first is issued: a register a step would write between
+        //: two steps makes the toolkit wait out the one before
+        uint32_t rows[kChunkDigits][2][4];
 #pragma unroll
-        for (int box = 0; box < 2; ++box)
-          lab::wg_bf16_n64_rs(d, rows[j][box],
-                                 lab::wg_desc(images + box * kBoxBytes + 2 * j * kImageTile, 8, kBrickLines),
-                                 j != 0 || box != 0);
-      lab::wg_commit();
+        for (int j = 0; j < kChunkDigits; ++j)
+#pragma unroll
+          for (int box = 0; box < 2; ++box)
+#pragma unroll
+            for (int i = 0; i < 4; ++i) rows[j][box][i] = lab::held(warp == j ? a[box][i] : 0u);
+        in_form += lap(since);
+        lab::wg_fence();
+#pragma unroll
+        for (int j = 0; j < kChunkDigits; ++j)
+#pragma unroll
+          for (int box = 0; box < 2; ++box)
+            lab::wg_bf16_n64_rs(d, rows[j][box],
+                                lab::wg_desc(images + box * kBoxBytes + 2 * j * kImageTile, 8, kBrickLines),
+                                j != 0 || box != 0);
+        lab::wg_commit();
+      }
       //: the next chunk's bytes, issued under the steps
       load(c + 1);
       lab::wg_wait<0>();
@@ -496,12 +535,12 @@ __global__ void __launch_bounds__(kThreads, 1)
     if constexpr (ROLES & kStill) idle_role(times, waits);
     else fold_role<ROLES>(smem, base, times, waits, state, windows);
   } else if (tid < kProduceAt) {
-    lab::regs_down<kReadRegs>();
+    lab::regs_down<read_regs<ROLES>>();
     if constexpr (ROLES & kRead) read_role<ROLES>(smem, base, times, waits, dense, out, windows);
     else idle_role(times, waits);
   } else {
     //: the producers and the drain warps are one warpgroup: one register call, the four warps together
-    lab::regs_down<kServeRegs>();
+    lab::regs_down<serve_regs<ROLES>>();
     if (tid < (ROLES & kSelf ? kThreads : kDrainAt)) {
       if constexpr (ROLES & kFold) produce_role<ROLES>(smem, base, times, values, dense, windows);
       else idle_role(times, waits);
@@ -558,12 +597,13 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kNoImage ? ", the image's stores taken out" : "")
                            + (ROLES & kStill ? ", no fold warp running" : "")
                            + (ROLES & kSuspend ? ", every wait suspended" : "")
-                           + (ROLES & kSelf ? ", the readout draining its own rows and four producers" : "");
+                           + (ROLES & kSelf ? ", the readout draining its own rows and four producers" : "")
+                           + (ROLES & kLean ? ", the readout's A in two sets and two batches a producer" : "");
   const auto kernel = window<ROLES>;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
   LAB_CHECK(cudaMemset(out, 0, words * 4));
-  if ((ROLES & ~(kSuspend | kSelf)) == (kFold | kRead)) {
+  if ((ROLES & ~(kSuspend | kSelf | kLean)) == (kFold | kRead)) {
     kernel<<<b.sms, kThreads, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * kLists * 8;
@@ -673,7 +713,7 @@ int main(int argc, char** argv) {
   using namespace carry_window;
   lab::Bench b(argc, argv);
   for (int roles : {1, 2, 3, 3 | kNoLoads, 3 | kNoAdds, 3 | kNoImage, 2 | kStill, 2 | kSuspend, 3 | kSuspend,
-                    3 | kSelf, 1 | kSelf, 2 | kSelf}) {
+                    3 | kSelf, 1 | kSelf, 2 | kSelf, 3 | kLean, 1 | kLean, 2 | kLean}) {
     const std::string k = lab::kernel("window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     b.expect(k, "HGMMA", "==",
@@ -725,5 +765,8 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSelf>(b, waits, values, dense, state, out);
   run<kFold | kSelf>(b, waits, values, dense, state, out);
   run<kRead | kSelf>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kLean>(b, waits, values, dense, state, out);
+  run<kFold | kLean>(b, waits, values, dense, state, out);
+  run<kRead | kLean>(b, waits, values, dense, state, out);
   return 0;
 }
