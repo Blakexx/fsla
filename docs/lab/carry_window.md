@@ -64,14 +64,12 @@ equal, in place of a form of its own.
 
 THE DEN'S PARTS (a chain of rows, no clock inside a role). Each row adds one part to the row before, so each
 part is one subtraction: the fold's steps; the image's ninth brick and its store; the register split; the
-72-column steps; and, last, the panel's word and the drain's add, which is the whole den. A part without the one
-that feeds it stores a word of the num's state in its place, the same instructions. The den's image store has no
-branch: every lane stores, the lanes that hold no den value to a line of the ninth brick no kept column reads.
-A slot's step descriptors are one derived from its pool's address and a constant added a step.
+72-column steps; and, last, the panel's word and the drain's add, which is the whole den. One more row moves the
+winner's tiles to the den's pitch, 155 lines, without the den.
 
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
-through uniform registers in the den's. Four rows (the winner's form and the den's, at both cells) run with no
+through uniform registers in the den's. Rows of the winner's form and the den's, at both cells, and the den's chain run with no
 clock read inside a role: their windows are the roles' own work, and their difference is the den's.
 
 ROWS: the fold's side alone (producers and steps), the read side alone (the image, the readout and the drain),
