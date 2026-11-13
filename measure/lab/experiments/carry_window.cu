@@ -877,7 +877,8 @@ int main(int argc, char** argv) {
     if (roles & kRead) {
       //: the readout's panel is read by the drain warps' own loads, not by a step: its arrival needs no fence
       //: nor does the wide row's scratch, which only its own warp's loads read
-      b.expect(k, "STORE_UNFENCED", "<=", roles & kWide ? 2 : 1);
+      //: the row that takes the fold's fence out leaves its four tile groups' arrivals unfenced: what it measures
+      b.expect(k, "STORE_UNFENCED", "<=", roles & kNoFence ? 5 : roles & kWide ? 2 : 1);
       //: the readout's trip holds its coefficients' rounds and their load beside its steps, by design: the tensor
       //: pipe is idle most of a window
       b.expect(k, "STEP_XU", ">=", 0);
