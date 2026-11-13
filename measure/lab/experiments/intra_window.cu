@@ -43,28 +43,47 @@ constexpr uint32_t digit_of(int level, uint32_t token, int i) {
 }
 constexpr int value_of(uint32_t token, int channel) { return static_cast<int>((token + channel) % 2 + 1); }
 
-//: m64n64k32, u8 x u8 into s32, both operands shared memory: `d` += A [64 x 32] B [32 x 64], or written whole
-__device__ __forceinline__ void gram_step(int (&d)[32], uint64_t a, uint64_t b, bool add) {
-  asm volatile("{ .reg .pred p; setp.ne.b32 p, %34, 0;\n"
-               "wgmma.mma_async.sync.aligned.m64n64k32.s32.u8.u8 " LAB_WG_D32_LIST ", %32, %33, p; }"
-               : LAB_WG_D32_INT(d)
-               : "l"(a), "l"(b), "r"(static_cast<int>(add)));
+//: the rows' two layouts in global memory: TOKEN-MAJOR, the bundle's -- a tile lands as tensor copies, a box a
+//: block -- and TILE-MAJOR -- a tile of 64 tokens its blocks one after another, each a token's 16 bytes a line, as a
+//: step reads them: a tile's level is one contiguous copy
+enum Form : int { kBoxes = 0, kTiled = 1 };
+struct Tiled {
+  const uint8_t* levels[kLevels];
+  const uint8_t* values;
+};
+
+//: a tile's copies into `at`: boxes of the token-major rows a lane each, or the tile-major rows' three runs
+template <int FORM>
+__device__ __forceinline__ void land(uint32_t at, bool whole, const CUtensorMap* level0, const CUtensorMap* level1,
+                                     const CUtensorMap* values, const Tiled& tiled, int tokens, uint32_t bar) {
+  const int lane = threadIdx.x & 31;
+  if constexpr (FORM == kTiled) {
+    const long long tile = tokens / kTile;
+    //: a level a lane, its rows chosen by a select: an index into the argument is local memory
+    const uint8_t* const rows = lane ? tiled.levels[1] : tiled.levels[0];
+    if (lane < kLevels) lab::bulk_load(at + lane * kLevelBytes, rows + tile * kLevelBytes, kLevelBytes, bar);
+    if (whole && lane == kLevels)
+      lab::bulk_load(at + kSlotValues, tiled.values + tile * (kValueBlocks * kBlock), kValueBlocks * kBlock, bar);
+  } else {
+    //: a lane a block: level `lane / 16`, digits `16 (lane % 16)` on; the values' 8 blocks a lane of the first 8
+    lab::tensor_load_2d(at + lane * kBlock, lane & 16 ? level1 : level0, 16 * (lane & 15), tokens, bar);
+    if (whole && lane < kValueBlocks) lab::tensor_load_2d(at + kSlotValues + lane * kBlock, values, 8 * lane, tokens, bar);
+  }
 }
 
 //: THE LOADER WARP: the readers' rows once, then a writer tile a trip into the slot the compute released
+template <int FORM>
 __device__ __forceinline__ void load_role(uint32_t base, long long* times, const CUtensorMap* level0,
-                                          const CUtensorMap* level1, const CUtensorMap* values, int rounds) {
+                                          const CUtensorMap* level1, const CUtensorMap* values, const Tiled& tiled,
+                                          int rounds) {
   const int lane = threadIdx.x & 31, mine = blockIdx.x % kTiles;
   const int first = (blockIdx.x / kTiles) * kWindow;
   const uint32_t bars = base + kBarsAt;
-  const CUtensorMap* const level = lane & 16 ? level1 : level0;
   //: the CTA's span is its warps' earliest start to their latest stop: the loader's is inside the compute's
   lab::WarpSpan clock;
   clock.start();
   if (lane == 0) lab::mbar_expect(bars + kReadersReady, kReadersLanded);
-  //: a lane a block: level `lane / 16`, digits `16 (lane % 16)` on
-  lab::tensor_load_2d(base + kReadersAt + lane * kBlock, level, 16 * (lane & 15), first + mine * kTile,
-                      bars + kReadersReady);
+  land<FORM>(base + kReadersAt, false, level0, level1, values, tiled, first + mine * kTile, bars + kReadersReady);
   const int trips = rounds * (mine + 1);
 #pragma unroll 1
   for (int n = 0; n < trips; ++n) {
@@ -72,9 +91,7 @@ __device__ __forceinline__ void load_role(uint32_t base, long long* times, const
     const int tokens = first + (n % (mine + 1)) * kTile;
     if (n >= 2) lab::mbar_wait_suspended(bars + kSlotFreed + 8 * slot, ((n >> 1) - 1) & 1);
     if (lane == 0) lab::mbar_expect(ready, kSlotLanded);
-    lab::tensor_load_2d(at + lane * kBlock, level, 16 * (lane & 15), tokens, ready);
-    //: the values' 8 blocks: a lane of the first 8 one
-    if (lane < kValueBlocks) lab::tensor_load_2d(at + kSlotValues + lane * kBlock, values, 8 * lane, tokens, ready);
+    land<FORM>(at, true, level0, level1, values, tiled, tokens, ready);
   }
   clock.stop(times);
 }
@@ -114,7 +131,7 @@ __device__ __forceinline__ void compute_role(uint32_t base, long long* times, ui
 #pragma unroll
       for (int s = 0; s < kDigits / 32; ++s) {
         const uint64_t on = static_cast<uint64_t>((l * kLevelBytes + 2 * s * kBlock) / 16);
-        gram_step(g[l], readers + on, written + on, s != 0);
+        lab::wg_u8_n64_ss(g[l], readers + on, written + on, s != 0);
       }
     lab::wg_commit();
     lab::wg_wait<0>();
@@ -161,11 +178,11 @@ __device__ __forceinline__ void compute_role(uint32_t base, long long* times, ui
   clock.stop(times);
 }
 
-//: `FORM` names the kernel for the lab's checks: one form
 template <int FORM>
 __global__ void __launch_bounds__(kThreads, 1)
     window(const __grid_constant__ CUtensorMap level0, const __grid_constant__ CUtensorMap level1,
-           const __grid_constant__ CUtensorMap values, long long* times, uint32_t* out, float* den, int rounds) {
+           const __grid_constant__ CUtensorMap values, Tiled tiled, long long* times, uint32_t* out, float* den,
+           int rounds) {
   extern __shared__ __align__(128) uint8_t smem[];
   const int tid = threadIdx.x;
   const uint32_t base = lab::smem(smem);
@@ -188,7 +205,7 @@ __global__ void __launch_bounds__(kThreads, 1)
   if (tid < kGroup) {
     compute_role(base, times, out, den, rounds);
   } else {
-    load_role(base, times, &level0, &level1, &values, rounds);
+    load_role<FORM>(base, times, &level0, &level1, &values, tiled, rounds);
   }
 }
 
@@ -197,19 +214,21 @@ __global__ void __launch_bounds__(kThreads, 1)
 int main(int argc, char** argv) {
   using namespace intra_window;
   lab::Bench b(argc, argv);
-  const std::string k = lab::kernel("window", {0});
-  b.expect(k, "IGMMA", "==", kLevels * kDigits / 32);
-  b.expect(k, "HGMMA", "==", 4);
-  b.expect(k, "UTMALDG", "==", 3);
-  //: the conversion unit kept in the trip, as hopper's row of the standards allows (KERNEL_STANDARDS 29, item 6)
-  b.expect(k, "STEP_XU", ">=", 0);
-  //: a lane's own copy and a holding thread's den sum are lane-dependent branches
-  b.expect(k, "LOOP_CONVERGENCE", "<=", 8);
-  //: the slot's release is one thread's arrival, a branch in the trip
-  b.expect(k, "BSSY", ">=", 0);
-  //: the tokens' lines are a CTA's last act, outside its trips: the timed call's rounds repeat the CTA, lines and all
-  b.expect(k, "STEP_GLOBAL", ">=", 0);
-  b.exempt(k, "a kernel's first lab: its budget follows this record");
+  for (int form : {static_cast<int>(kBoxes), static_cast<int>(kTiled)}) {
+    const std::string k = lab::kernel("window", {form});
+    b.expect(k, "IGMMA", "==", kLevels * kDigits / 32);
+    b.expect(k, "HGMMA", "==", 4);
+    b.expect(k, form == kBoxes ? "UTMALDG" : "UBLKCP", ">=", 3);
+    //: the conversion unit kept in the trip, as hopper's row of the standards allows (KERNEL_STANDARDS 29, item 6)
+    b.expect(k, "STEP_XU", ">=", 0);
+    //: a lane's own copy and a holding thread's den sum are lane-dependent branches
+    b.expect(k, "LOOP_CONVERGENCE", "<=", 8);
+    //: the slot's release is one thread's arrival, a branch in the trip
+    b.expect(k, "BSSY", ">=", 0);
+    //: the tokens' lines are a CTA's last act, outside its trips: the timed call's rounds repeat the CTA, lines and all
+    b.expect(k, "STEP_GLOBAL", ">=", 0);
+    b.exempt(k, "a kernel's first lab: its budget follows this record");
+  }
   if (b.expect_only) return 0;
   const int windows = b.sms / kTiles, blocks = windows * kTiles;
   const size_t tokens = static_cast<size_t>(windows) * kWindow;
@@ -233,6 +252,28 @@ int main(int argc, char** argv) {
   }
   LAB_CHECK(cudaMalloc(&dvals, vals.size() * 2));
   LAB_CHECK(cudaMemcpy(dvals, vals.data(), vals.size() * 2, cudaMemcpyHostToDevice));
+  //: the same rows TILE-MAJOR: a tile's block `b` holds each of its 64 tokens' 16 bytes of that block, a line a token
+  Tiled tiled{};
+  {
+    std::vector<uint8_t> t(tokens * kDigits);
+    for (int l = 0; l < kLevels; ++l) {
+      for (size_t x = 0; x < tokens; ++x)
+        for (int d = 0; d < kDigits; ++d)
+          t[(x / kTile) * kLevelBytes + (d / 16) * kBlock + (x % kTile) * 16 + d % 16] = rows[l][x * kDigits + d];
+      uint8_t* dev = nullptr;
+      LAB_CHECK(cudaMalloc(&dev, t.size()));
+      LAB_CHECK(cudaMemcpy(dev, t.data(), t.size(), cudaMemcpyHostToDevice));
+      tiled.levels[l] = dev;
+    }
+    std::vector<uint16_t> tv(tokens * kChannels);
+    for (size_t x = 0; x < tokens; ++x)
+      for (int c = 0; c < kChannels; ++c)
+        tv[(x / kTile) * (kValueBlocks * kBlock / 2) + (c / 8) * (kBlock / 2) + (x % kTile) * 8 + c % 8] = vals[x * kChannels + c];
+    uint16_t* dev = nullptr;
+    LAB_CHECK(cudaMalloc(&dev, tv.size() * 2));
+    LAB_CHECK(cudaMemcpy(dev, tv.data(), tv.size() * 2, cudaMemcpyHostToDevice));
+    tiled.values = reinterpret_cast<const uint8_t*>(dev);
+  }
   const size_t words = tokens * (kChannels / 2);
   LAB_CHECK(cudaMalloc(&out, words * 4));
   LAB_CHECK(cudaMalloc(&den, tokens * 4));
@@ -264,61 +305,68 @@ int main(int argc, char** argv) {
       return 2;
     }
   }
-  const std::string name = "a window of 1,024 tokens, two levels of 256 digits, 64 channels and the den";
-  LAB_CHECK(cudaFuncSetAttribute(window<0>, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
-  window<0><<<blocks, kThreads, kSmemBytes>>>(maps[0], maps[1], maps[2], b.times, out, den, 1);
-  LAB_CHECK(cudaDeviceSynchronize());
-  std::vector<uint32_t> got(words);
-  std::vector<float> got_den(tokens);
-  LAB_CHECK(cudaMemcpy(got.data(), out, words * 4, cudaMemcpyDeviceToHost));
-  LAB_CHECK(cudaMemcpy(got_den.data(), den, tokens * 4, cudaMemcpyDeviceToHost));
-  //: THE HOST'S: a pair's weight the product of its levels' common live digits, a reader's sums over the window's
-  //: writers not after it; a line's value rounded to f16 as the device rounds it
-  long long wrong = 0, wrong_den = 0;
-  std::vector<uint64_t> live(tokens * kLevels * 4, 0);
-  for (size_t x = 0; x < tokens; ++x)
-    for (int l = 0; l < kLevels; ++l)
-      for (int i = 0; i < 8; ++i) {
-        const uint32_t d = digit_of(l, static_cast<uint32_t>(x), i);
-        live[(x * kLevels + l) * 4 + d / 64] |= 1ull << (d % 64);
+  const auto run = [&](auto kernel, int form) {
+    const std::string name = std::string("a window of 1,024 tokens, two levels of 256 digits, 64 channels and the den, ")
+                             + (form == kBoxes ? "the rows token-major: tensor copies a block" : "the rows tile-major: a tile's level one copy");
+    LAB_CHECK(cudaMemset(out, 0, words * 4));
+    LAB_CHECK(cudaMemset(den, 0, tokens * 4));
+    LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
+    kernel<<<blocks, kThreads, kSmemBytes>>>(maps[0], maps[1], maps[2], tiled, b.times, out, den, 1);
+    LAB_CHECK(cudaDeviceSynchronize());
+    std::vector<uint32_t> got(words);
+    std::vector<float> got_den(tokens);
+    LAB_CHECK(cudaMemcpy(got.data(), out, words * 4, cudaMemcpyDeviceToHost));
+    LAB_CHECK(cudaMemcpy(got_den.data(), den, tokens * 4, cudaMemcpyDeviceToHost));
+    //: THE HOST'S: a pair's weight the product of its levels' common live digits, a reader's sums over the window's
+    //: writers not after it; a line's value rounded to f16 as the device rounds it
+    long long wrong = 0, wrong_den = 0;
+    std::vector<uint64_t> live(tokens * kLevels * 4, 0);
+    for (size_t x = 0; x < tokens; ++x)
+      for (int l = 0; l < kLevels; ++l)
+        for (int i = 0; i < 8; ++i) {
+          const uint32_t d = digit_of(l, static_cast<uint32_t>(x), i);
+          live[(x * kLevels + l) * 4 + d / 64] |= 1ull << (d % 64);
+        }
+    const auto common = [&](size_t t, size_t s, int l) {
+      int n = 0;
+      for (int w = 0; w < 4; ++w) n += __builtin_popcountll(live[(t * kLevels + l) * 4 + w] & live[(s * kLevels + l) * 4 + w]);
+      return n;
+    };
+    for (int w = 0; w < windows; ++w)
+      for (int t = 0; t < kWindow; ++t) {
+        const size_t reader = static_cast<size_t>(w) * kWindow + t;
+        long long sum[2] = {0, 0}, mass = 0;
+        for (int s = 0; s <= t; ++s) {
+          const size_t writer = static_cast<size_t>(w) * kWindow + s;
+          const int first = common(reader, writer, 0);
+          if (!first) continue;
+          const long long weight = static_cast<long long>(first) * common(reader, writer, 1);
+          mass += weight;
+          //: a writer's values are 1 and 2 by the parity of token plus channel
+          sum[writer & 1] += weight;
+        }
+        wrong_den += got_den[reader] != static_cast<float>(mass);
+        for (int c = 0; c < kChannels; ++c) {
+          //: channel c's value of a writer of parity p is `(p + c) % 2 + 1`
+          const long long want = sum[0] * (c % 2 + 1) + sum[1] * ((c + 1) % 2 + 1);
+          const uint32_t word = got[reader * (kChannels / 2) + c / 2];
+          wrong += lab::half_to_float(static_cast<uint16_t>(word >> (16 * (c & 1)))) != static_cast<float>(lab::f16_of(want));
+        }
       }
-  const auto common = [&](size_t t, size_t s, int l) {
-    int n = 0;
-    for (int w = 0; w < 4; ++w) n += __builtin_popcountll(live[(t * kLevels + l) * 4 + w] & live[(s * kLevels + l) * 4 + w]);
-    return n;
+    b.check(name, wrong == 0 && wrong_den == 0,
+            std::to_string(wrong) + " of " + std::to_string(tokens * kChannels) + " output values and "
+                + std::to_string(wrong_den) + " of " + std::to_string(tokens) + " den sums differ");
+    //: a CTA's span is its tile's `i + 1` trips; a window is its 16 CTAs' spans, 136 trips
+    constexpr int kRounds = 32;
+    const lab::Samples cycles = b.variant(
+        [&] { kernel<<<blocks, kThreads, kSmemBytes>>>(maps[0], maps[1], maps[2], tiled, b.times, out, den, kRounds); },
+        [&] { return b.span(kThreads >> 5, blocks) * kTiles / kRounds; });
+    b.record(name, "SM-cycles a window", cycles);
+    lab::Samples token = cycles;
+    for (double& v : token.v) v /= kWindow;
+    b.record(name + ": a token", "SM-cycles a token", token);
   };
-  for (int w = 0; w < windows; ++w)
-    for (int t = 0; t < kWindow; ++t) {
-      const size_t reader = static_cast<size_t>(w) * kWindow + t;
-      long long sum[2] = {0, 0}, mass = 0;
-      for (int s = 0; s <= t; ++s) {
-        const size_t writer = static_cast<size_t>(w) * kWindow + s;
-        const int first = common(reader, writer, 0);
-        if (!first) continue;
-        const long long weight = static_cast<long long>(first) * common(reader, writer, 1);
-        mass += weight;
-        //: a writer's values are 1 and 2 by the parity of token plus channel
-        sum[writer & 1] += weight;
-      }
-      wrong_den += got_den[reader] != static_cast<float>(mass);
-      for (int c = 0; c < kChannels; ++c) {
-        //: channel c's value of a writer of parity p is `(p + c) % 2 + 1`
-        const long long want = sum[0] * (c % 2 + 1) + sum[1] * ((c + 1) % 2 + 1);
-        const uint32_t word = got[reader * (kChannels / 2) + c / 2];
-        wrong += lab::half_to_float(static_cast<uint16_t>(word >> (16 * (c & 1)))) != static_cast<float>(lab::f16_of(want));
-      }
-    }
-  b.check(name, wrong == 0 && wrong_den == 0,
-          std::to_string(wrong) + " of " + std::to_string(tokens * kChannels) + " output values and "
-              + std::to_string(wrong_den) + " of " + std::to_string(tokens) + " den sums differ");
-  //: a CTA's span is its tile's `i + 1` trips; a window is its 16 CTAs' spans, 136 trips
-  constexpr int kRounds = 32;
-  const lab::Samples cycles = b.variant(
-      [&] { window<0><<<blocks, kThreads, kSmemBytes>>>(maps[0], maps[1], maps[2], b.times, out, den, kRounds); },
-      [&] { return b.span(kThreads >> 5, blocks) * kTiles / kRounds; });
-  b.record(name, "SM-cycles a window", cycles);
-  lab::Samples token = cycles;
-  for (double& v : token.v) v /= kWindow;
-  b.record(name + ": a token", "SM-cycles a token", token);
+  run(window<kBoxes>, kBoxes);
+  run(window<kTiled>, kTiled);
   return 0;
 }

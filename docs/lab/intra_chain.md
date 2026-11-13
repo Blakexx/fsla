@@ -21,7 +21,7 @@ THE FORM. One warpgroup a CTA, a CTA an SM; a trip is a tile pair.
   accumulator, 64 readers by 64 channels.
 A product is made fp32 on the float pipe -- an integer under 2^24 as two halves of 12 bits, each the low bits of a
 float, joined by one multiply-add -- the form the standards drew from another family's conversion unit; one row
-converts by a cast, which the toolkit compiles as `I2F`, to price the two on this card. Every operand tile is constant, so every accumulator is checked
+converts by a cast, which the toolkit compiles as `I2FP.F32.S32`, to price the two on this card. Every operand tile is constant, so every accumulator is checked
 exactly; a level's steps read their own tiles (two levels on the same tiles compile as one level's steps and a copy).
 The output's line and its drain are the carry's, measured there, and not in a trip.
 
@@ -46,7 +46,7 @@ WHAT IT SHOWS.
   diagonal, so the chain alone is some 131 SM-cycles a token at 256 digits a level with no pair skipped
   (ESTIMATED from the tile pair: no window was run), beside the carry's composed window
   ([`carry_window`](carry_window.md)).
-- THE PRODUCTS' CONVERSION ON THE FLOAT PIPE LOSES ON THIS CARD: 1,336 cycles against 985 by `I2F` -- 64
+- THE PRODUCTS' CONVERSION ON THE FLOAT PIPE LOSES ON THIS CARD: 1,336 cycles against 985 by the cast -- 64
   conversions a thread a tile pair as two adds and a multiply-add each are some six instructions where the
   cast is one. Which unit of the card runs the cast is not read here; the standards' rule, drawn from another
   family, is amended for hopper on this row (KERNEL_STANDARDS 29, item 6).

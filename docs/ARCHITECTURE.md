@@ -288,7 +288,7 @@ into: per tile pair each level's Gram accumulates EXACTLY over its u8 digits by 
 in fp32, and the value product follows in bf16 against fp32 sums. The `[W × W]` matrix is never materialized, and a
 tile pair whose digits meet nowhere is skipped on the facts pass's tile unions, an exact certificate. The kernel reads
 no state: every pair it computes is written and read inside the one window. No intra kernel is built on this line
-([`open-work.md`](open-work.md)). ON HOPPER it is a kernel of its own, RUN AFTER THE CARRY (Blake, 2026-11-13): its
+([`open-work.md`](open-work.md)). ON HOPPER it is a kernel of its own BESIDE THE CARRY, not a role in its CTA (Blake, 2026-11-13): its
 chain alone is MEASURED at 985 cycles a tile pair of 64 readers by 64 writers at 256 digits a level
 ([`intra_chain`](lab/intra_chain.md)), some 131 SM-cycles a token at a window of 1,024 ESTIMATED from it, and the
 carry's CTA has no register for it. The two are LAUNCHED CONCURRENTLY on two streams once its window kernel is built, timed against the

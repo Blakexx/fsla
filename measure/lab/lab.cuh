@@ -376,6 +376,15 @@ __device__ __forceinline__ void wg_bf16_n72_rs(float (&d)[36], const uint32_t (&
                : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "l"(b), "r"(static_cast<int>(add)));
 }
 
+//: m64n64k32, u8 x u8 into s32 (the toolkit's `IGMMA`), both operands shared memory and K-major -- a line a row's
+//: or a column's 16 digits: `d` += A [64 x 32] B [32 x 64], or written whole
+__device__ __forceinline__ void wg_u8_n64_ss(int (&d)[32], uint64_t a, uint64_t b, bool add = true) {
+  asm volatile("{ .reg .pred p; setp.ne.b32 p, %34, 0;\n"
+               "wgmma.mma_async.sync.aligned.m64n64k32.s32.u8.u8 " LAB_WG_D32_LIST ", %32, %33, p; }"
+               : LAB_WG_D32_INT(d)
+               : "l"(a), "l"(b), "r"(static_cast<int>(add)));
+}
+
 //: the same with B M|N-major: a line one K's 8 columns
 __device__ __forceinline__ void wg_bf16_n72_rs_mn(float (&d)[36], const uint32_t (&a)[4], uint64_t b, bool add = true) {
   asm volatile("{ .reg .pred p; setp.ne.b32 p, %41, 0;\n"
@@ -599,7 +608,6 @@ inline std::string kernel(const std::string& name, std::initializer_list<int> ar
     }                                                                                         \
   } while (0)
 
-//: A RESULT'S SAMPLES, one a repetition.
 //: THE HOST'S f16: a half's value, and a nonnegative integer as a conversion to f16 rounds it (to nearest, ties to
 //: even; under 65,520)
 inline float half_to_float(uint16_t h) {
@@ -617,6 +625,7 @@ inline long long f16_of(long long v) {
   return kept << e;
 }
 
+//: A RESULT'S SAMPLES, one a repetition.
 struct Samples {
   std::vector<double> v;
 
@@ -735,6 +744,11 @@ class Bench {
       for (int w = 1; w < warps; ++w) {
         lo = std::min(lo, h[2 * (b * warps + w)]);
         hi = std::max(hi, h[2 * (b * warps + w) + 1]);
+      }
+      //: a warp that never stopped its clock leaves its slot as it lay: no span is that long
+      if (lo <= 0 || hi < lo || hi - lo > (1ll << 40)) {
+        std::fprintf(stderr, "lab: block %d's span is not a measurement: a warp of its %d did not record its clock\n", b, warps);
+        std::exit(3);
       }
       s += double(hi - lo);
     }

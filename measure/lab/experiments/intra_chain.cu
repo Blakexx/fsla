@@ -24,7 +24,7 @@ constexpr int kThreads = 128;
 //: values
 constexpr int kBytesA = 0, kBytesB = 8192, kLevel = 4096, kValues = 16384, kSmem = kValues + 4096;
 //: a row's parts
-//: `kXu` keeps the conversion unit: a product converted by `I2F` where the others' is made on the float pipe
+//: `kXu` keeps the conversion unit: a product converted by a cast (`I2FP.F32.S32`) where the others' is made on the float pipe
 enum Parts : int { kGram = 1, kMath = 2, kValue = 4, kMask = 8, kXu = 16 };
 
 //: a level's product as fp32, exact, with no conversion unit: an integer under 2^24 in two halves of 12 bits, each
@@ -34,14 +34,6 @@ __device__ __forceinline__ float product_float(int x) {
   const float hi = __uint_as_float(u >> 12 | 0x4b000000u) - 8388608.f;
   const float lo = __uint_as_float((u & 0xfffu) | 0x4b000000u) - 8388608.f;
   return fmaf(hi, 4096.f, lo);
-}
-
-//: m64n64k32, u8 x u8 into s32, both operands shared memory: `d` += A [64 x 32] B [32 x 64], or written whole
-__device__ __forceinline__ void gram_step(int (&d)[32], uint64_t a, uint64_t b, bool add) {
-  asm volatile("{ .reg .pred p; setp.ne.b32 p, %34, 0;\n"
-               "wgmma.mma_async.sync.aligned.m64n64k32.s32.u8.u8 " LAB_WG_D32_LIST ", %32, %33, p; }"
-               : LAB_WG_D32_INT(d)
-               : "l"(a), "l"(b), "r"(static_cast<int>(add)));
 }
 
 //: A TILE PAIR a trip: `S` integer steps a level, the arithmetic, the value steps
@@ -90,7 +82,7 @@ __global__ void __launch_bounds__(kThreads, 1) chain(long long* times, float* ou
 #pragma unroll
       for (int l = 0; l < 2; ++l)
 #pragma unroll
-        for (int s = 0; s < S; ++s) gram_step(g[l], ra[l], rb[l], s != 0);
+        for (int s = 0; s < S; ++s) lab::wg_u8_n64_ss(g[l], ra[l], rb[l], s != 0);
       lab::wg_commit();
       lab::wg_wait<0>();
     }
