@@ -41,13 +41,13 @@ WHAT IT SHOWS.
   token and no row.
 - A VALUE TEST OF THE ROWS IS TWICE THAT, 20.5 once-read and 14.1 cached: 256 bytes a token where the mask is 32.
 - AT 32 LIVE DIGITS A TOKEN THE PASS IS ITS ENTRIES: 45.7 from the mask and 46.4 by the value test, once-read --
-  some 1.1 cycles an entry past the counts, a shared-memory atomic and a store a live digit. The mask's
-  gain is the sparse cell's; at this density the two forms meet.
+  some 1.1 cycles an entry past the counts (the lists' call adds the offsets and a store a live digit to the counts'; which
+  of them it is is not isolated). The mask's gain is the sparse cell's; at this density the two forms meet.
 - WITH ITS BYTE AN ENTRY COST MORE THAN THE REST OF THE PASS: the form before this one, whose entry held the token's
-  byte read from its row, was 23.2 cycles a token cached at the sparse cell where this one is 8.2 (its record
-  was replaced by this one; the experiment at 5d489776).
+  byte read from its row, was 23.2 cycles a token cached at the sparse cell where this one is 8.2 (the experiment at 5d489776).
 - BESIDE THE CARRY's window ([`carry_window`](carry_window.md)), two sparse level-sides are some 20 SM-cycles a
-  token at the sparse cell. Two cells of one level width, their live digits spread evenly: a clustered level, where
-  lanes' atomics meet on one word, is unmeasured.
+  token at the sparse cell. Two cells of one level width, their live digits spread evenly: a DENSE level (every
+  digit live, which a level walked by its lists may turn out to be) and a clustered one, where lanes' atomics meet
+  on one word, are unmeasured; so is the pass against a flat stream's rate over the same bytes.
 
 Record: `measure/lab/results/facts_lists/sm_90a.json`.
