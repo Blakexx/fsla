@@ -279,9 +279,8 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
       ROLES & kAligned ? kImageAt + box * kBoxBytes + 16 * (2 * warp * kBrickLines + q) + 4 * t
                        : kImageAt + box * kBoxBytes + 2 * t * tile_of<ROLES> + 16 * (2 * warp * kBrickLines + q)));
   //: THE DEN'S STORE, a held base a thread for each of a tile group's two kinds and an immediate past it: EVERY
-  //: lane stores, the lanes that hold the group's den values to the den's line and the others to ONE place a warp
-  //: -- line 1 of a ninth brick, channel 65's, which no kept column reads -- so their stores merge, on banks the
-  //: holders' do not use: no branch around the store and no wavefront added
+  //: lane stores, the lanes that hold the group's den values to the den's line and the others to ONE place a warp,
+  //: line 1 of a ninth brick (docs/lab/carry_window.md, THE DEN'S PARTS)
   uint32_t den_at[2] = {0u, 0u};
   if constexpr (ROLES & kDenImage) {
 #pragma unroll
