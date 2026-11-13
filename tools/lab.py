@@ -218,14 +218,15 @@ def loop_convergence(binary: Path) -> dict[str, int]:
     return {names[k]: v for k, v in found.items()}
 
 
+#: the warpgroup steps among the opcode table's MMAs (`tools/sass.py`): the asynchronous ones, float and integer
+WGMMA = tuple(op for op in sass.OPCODE_CLASSES["mma"] if op.endswith("GMMA"))
+
 #: an instruction's operands, and the registers and the one bracketed address among them
 OPERANDS = re.compile(r"^\s*/\*[0-9a-f]+\*/\s+(?:@!?U?P\w+\s+)?[A-Z0-9_.$]+\s+(.*?)\s*;")
 REGISTER = re.compile(r"\bR(\d+)\b")
 ADDRESS = re.compile(r"\[[^\]]*\]")
 #: the opcodes whose first operand is read, not written
-#: the warpgroup steps among the opcode table's MMAs (`tools/sass.py`): the asynchronous ones, float and integer
-WGMMA = tuple(op for op in sass.OPCODE_CLASSES["mma"] if op.endswith("GMMA"))
-READS_FIRST = ("ST", "BRA", "RED", "ATOM", "BSSY", "BSYNC", "HGMMA", "IGMMA", "ISETP", "FSETP", "CALL", "EXIT", "NOP", "BAR")
+READS_FIRST = ("ST", "BRA", "RED", "ATOM", "BSSY", "BSYNC", *WGMMA, "ISETP", "FSETP", "CALL", "EXIT", "NOP", "BAR")
 
 
 def unfenced(body: list[tuple[int, str, str]]) -> int:

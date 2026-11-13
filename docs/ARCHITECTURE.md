@@ -291,8 +291,9 @@ no state: every pair it computes is written and read inside the one window. No i
 ([`open-work.md`](open-work.md)). ON HOPPER it is a kernel of its own, RUN AFTER THE CARRY (Blake, 2026-11-13): its
 chain alone is MEASURED at 985 cycles a tile pair of 64 readers by 64 writers at 256 digits a level
 ([`intra_chain`](lab/intra_chain.md)), some 131 SM-cycles a token at a window of 1,024 ESTIMATED from it, and the
-carry's CTA has no register for it. An overlap with the carry is built only if the intra's measured share of the
-call is not small.
+carry's CTA has no register for it. The two are LAUNCHED CONCURRENTLY on two streams once its window kernel is built, timed against the
+intra after the carry in one session, and nothing closer is built unless that measurement asks (Blake, 2026-11-13).
+BLACKWELL: NOT STATED -- no blackwell intra is designed and no blackwell card measured.
 
 ### 6.5 Decode — the `T = 1` step
 

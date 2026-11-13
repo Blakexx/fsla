@@ -793,8 +793,8 @@ method is a procedure with a gate, not a memory.
    rounded integer in the low bits), a pair packed by one PRMT; the conversion unit (F2I/I2F/F2F/MUFU; on sm_86 16
    lanes a cycle an SM) never in a step. ON HOPPER (amended 2026-11-13) a step's trip keeps a conversion instruction
    where a lab row on the card measures it against the float-pipe form, and declares it: an integer under 2^24 made
-   fp32 by `I2F` is 985 cycles a tile pair of the intra's chain against 1,336 by two adds and a multiply-add
-   (`docs/lab/intra_chain.md`).
+   fp32 by a cast (compiled `I2FP.F32.S32`) is 985 cycles a tile pair of the intra's chain against 1,336 by two adds
+   and a multiply-add (`docs/lab/intra_chain.md`); the declaration is the lab's `STEP_XU`.
 7. GLOBAL MEMORY NEVER IN A STEP: a step's operands are staged ahead by the family's copy (TMA on hopper); a reduction
    to global memory is a drain outside the steps.
 8. A LAB'S NUMBERS ARE A CORRECT KERNEL'S: every recorded variant checks its outputs against a host reference
@@ -852,7 +852,7 @@ prints them against the budget, and refuses to record a variant over it (`--forc
 purpose). `tools/sass_gate.py` reds, on every function of every build, conversion-unit instructions and global
 accesses other than the family's staged copy inside an innermost MMA loop; a kernel built before the rule whose steps
 still read global memory is a named debt with what replaces it, and the list only shrinks; no kernel keeps the
-conversion unit in a step, so it names no such debt. A
+conversion unit in a step but a hopper one under item 6's amendment, so it names no such debt. A
 lab variant that keeps one on purpose declares STEP_XU or STEP_GLOBAL, and an instrument's probe declares it beside its
 source (§20).
 `tools/lab.py run` also records no variant whose output check failed, and (past the experiments recorded before the

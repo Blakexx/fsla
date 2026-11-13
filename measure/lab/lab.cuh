@@ -376,6 +376,15 @@ __device__ __forceinline__ void wg_bf16_n72_rs(float (&d)[36], const uint32_t (&
                : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "l"(b), "r"(static_cast<int>(add)));
 }
 
+//: the same with B M|N-major: a line one K's 8 columns
+__device__ __forceinline__ void wg_bf16_n72_rs_mn(float (&d)[36], const uint32_t (&a)[4], uint64_t b, bool add = true) {
+  asm volatile("{ .reg .pred p; setp.ne.b32 p, %41, 0;\n"
+               "wgmma.mma_async.sync.aligned.m64n72k16.f32.bf16.bf16 {%0, %1, %2, %3, %4, %5, %6, %7, %8, %9, %10, %11, %12, %13, %14, %15, %16, %17, %18, %19, %20, %21, %22, %23, %24, %25, %26, %27, %28, %29, %30, %31, %32, %33, %34, %35}"
+               ", {%36, %37, %38, %39}, %40, p, 1, 1, 1; }"
+               : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]), "+f"(d[4]), "+f"(d[5]), "+f"(d[6]), "+f"(d[7]), "+f"(d[8]), "+f"(d[9]), "+f"(d[10]), "+f"(d[11]), "+f"(d[12]), "+f"(d[13]), "+f"(d[14]), "+f"(d[15]), "+f"(d[16]), "+f"(d[17]), "+f"(d[18]), "+f"(d[19]), "+f"(d[20]), "+f"(d[21]), "+f"(d[22]), "+f"(d[23]), "+f"(d[24]), "+f"(d[25]), "+f"(d[26]), "+f"(d[27]), "+f"(d[28]), "+f"(d[29]), "+f"(d[30]), "+f"(d[31]), "+f"(d[32]), "+f"(d[33]), "+f"(d[34]), "+f"(d[35])
+               : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "l"(b), "r"(static_cast<int>(add)));
+}
+
 //: two fp32 narrowed to a bf16 pair by TRUNCATION, each value's high 16 bits in one byte permute, and ROUNDED to
 //: nearest in one conversion: `common/atoms/math.cuh`'s `hi_bf16x2` and `pack_bf16x2`, spelled here because the common
 //: atoms refuse a hopper build until that family's are written (`common/arch_caps.cuh`)
@@ -591,6 +600,23 @@ inline std::string kernel(const std::string& name, std::initializer_list<int> ar
   } while (0)
 
 //: A RESULT'S SAMPLES, one a repetition.
+//: THE HOST'S f16: a half's value, and a nonnegative integer as a conversion to f16 rounds it (to nearest, ties to
+//: even; under 65,520)
+inline float half_to_float(uint16_t h) {
+  const int e = (h >> 10) & 31, m = h & 1023;
+  const float mag = e == 0 ? std::ldexp(static_cast<float>(m), -24) : std::ldexp(static_cast<float>(m | 1024), e - 25);
+  return h & 0x8000 ? -mag : mag;
+}
+inline long long f16_of(long long v) {
+  if (v < 2048) return v;
+  int e = 0;
+  while ((v >> e) >= 2048) ++e;
+  long long kept = v >> e;
+  const long long rest = v & ((1ll << e) - 1), half = 1ll << (e - 1);
+  kept += rest > half || (rest == half && (kept & 1));
+  return kept << e;
+}
+
 struct Samples {
   std::vector<double> v;
 

@@ -85,7 +85,7 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
 * <a id="wgmma"></a>Hopper's atoms, each one PTX instruction of sm_90a (an experiment calling one compiles for sm_90a
   only): `wg_desc` (wgmma's unswizzled K-major shared operand: lines in bricks of 8, 16 bytes a line, the K halves and
   the bricks at stated offsets), `wg_fence`, `wg_commit`, `wg_wait<N>`, `wg_hold` (a register an asynchronous MMA
-  wrote, held behind its wait), `wg_bf16_n16_ss`, `wg_bf16_n64_ss`, `wg_bf16_n64_rs` (A from registers), `wg_bf16_n72_rs` (the same 72 columns wide), `wg_bf16_n8_ss_mn` (8 columns, both operands M|N-major), `wg_bf16_n16_ss_mna` (A alone M|N-major; its `add` false makes a step the accumulator's first, with nothing
+  wrote, held behind its wait), `wg_bf16_n16_ss`, `wg_bf16_n64_ss`, `wg_bf16_n64_rs` (A from registers), `wg_bf16_n72_rs` (the same 72 columns wide; `wg_bf16_n72_rs_mn` with B M|N-major), `wg_bf16_n8_ss_mn` (8 columns, both operands M|N-major), `wg_bf16_n16_ss_mna` (A alone M|N-major; its `add` false makes a step the accumulator's first, with nothing
   cleared), `wg_bf16_n16_ss_mn`, `wg_bf16_n64_ss_mn`,
   `wg_bf16_n256_ss_mn` (both operands M|N-major: a line is one K's 8 rows or columns; `wg_desc` describes either
   major's tile); the two
@@ -192,6 +192,7 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="panel-merge"></a>[`panel_merge`](../../lab/panel_merge.md)
 - <a id="wgmma-width"></a>[`wgmma_width`](../../lab/wgmma_width.md)
 - <a id="intra-chain"></a>[`intra_chain`](../../lab/intra_chain.md)
+- <a id="intra-window"></a>[`intra_window`](../../lab/intra_window.md)
 - <a id="value-gather"></a>[`value_gather`](../../lab/value_gather.md)
 - <a id="readout-role"></a>[`readout_role`](../../lab/readout_role.md)
 - <a id="value-cast"></a>[`value_cast`](../../lab/value_cast.md)
