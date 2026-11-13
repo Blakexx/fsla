@@ -807,41 +807,14 @@ def ledger(name: str, pattern: str | None) -> int:
     return 0
 
 
-#: what a loop's instructions are counted as in the static ledger: the accesses that hold a warp, the tensor step,
-#: and everything else a warp issues
-_STATIC_KINDS = (("global load", ("LDG",)), ("global store", ("STG",)), ("global add", ("REDG", "ATOMG")),
-                 ("shared load", ("LDS",)), ("shared store", ("STS",)), ("copy", ("LDGSTS", "UBLKCP")),
-                 ("MMA", ("HGMMA", "HMMA", "IMMA")), ("barrier", ("UMBAR", "BAR", "WARPSYNC", "USETMAXREG")))
-
-
 def static_kind(opcode: str) -> str:
-    return next((kind for kind, prefixes in _STATIC_KINDS if opcode.startswith(prefixes)), "other")
-
-
-def static_loops(text: str) -> list[tuple[int, int]]:
-    """The loops of one function's listing, as (first offset, last offset): every backward branch closes one. A
-    branch names its target by a label (`.L_x_N`, the line before the instruction it marks) or by an offset."""
-    labels: dict[str, int] = {}
-    pending: list[str] = []
-    branches: list[tuple[int, str]] = []
-    for line in text.splitlines():
-        if (label := re.match(r"^\s*(\.L_x_\d+):", line)):
-            pending.append(label.group(1))
-        elif (m := sass.INSTRUCTION.match(line)):
-            at = int(m.group(1), 16)
-            for name in pending:
-                labels[name] = at
-            pending = []
-            if m.group(3).startswith(("BRA", "JMP")):
-                branches.append((at, line[m.end():]))
-    out = set()
-    for at, operands in branches:
-        named = re.search(r"\.L_x_\d+", operands)
-        offset = re.search(r"\b0x([0-9a-f]+)\b", operands)
-        target = labels.get(named.group(0)) if named else int(offset.group(1), 16) if offset else None
-        if target is not None and target <= at:
-            out.add((target, at))
-    return sorted(out)
+    """An opcode's budget class (`sass.opcode_class`), a global access by what it does: the accesses that hold the
+    warp that issues them are told apart."""
+    kind = sass.opcode_class(opcode)
+    if kind != "global":
+        return kind
+    return ("global copy" if opcode.startswith(("LDGSTS", "UBLK")) else "global load" if opcode.startswith("LDG")
+            else "global store" if opcode.startswith("STG") else "global add")
 
 
 def static_ledger(name: str, pattern: str | None, arch: str | None) -> int:
@@ -860,13 +833,17 @@ def static_ledger(name: str, pattern: str | None, arch: str | None) -> int:
         return 1
     mangled = dict(zip(demangle(list(kernels_mangled(binary))).values(), kernels_mangled(binary), strict=True))
     disassembly = sass.disassemble(images[0], "--print-line-info-inline", "-gi")
+    bodies = disassembled(binary)
+    #: a kernel the lab would refuse is counted all the same, its refusals stated first
+    for failure in check(binary, kernels(binary)):
+        print(f"  REFUSED AS IT STANDS: {failure}")
 
     for k, symbol in mangled.items():
         if pattern and not re.search(pattern, k):
             continue
         text = own_section(disassembly, symbol)
         frames = sass.frames(text)
-        loops = static_loops(text)
+        loops = loops_of(bodies[symbol])
         by: dict[tuple, Counter] = {}
         for line in text.splitlines():
             if not (m := sass.INSTRUCTION.match(line)):

@@ -29,7 +29,8 @@ question about traffic rather than time.
 `bazel run //tools:lab -- ledger <name> [--kernel REGEX]` attributes a kernel's executed instructions to its phases --
 the `//:` headings of the experiment's source -- per declared unit (KERNEL_STANDARDS §29.13; the method:
 [budgets.md](budgets.md)). `run` also refuses a budgeted kernel whose loops hold convergence instructions (`BSSY`,
-`BSYNC`, `BRA.DIV`) beyond what it declares as `LOOP_CONVERGENCE`. `ledger <name> --static [--arch sm_90a]` needs no device and no counters: it prints each
+`BSYNC`, `BRA.DIV`) beyond what it declares as `LOOP_CONVERGENCE`. `ledger <name> --static --arch sm_90a` needs no device and no counters (without `--arch` it reads the
+device's): it prints each
 kernel's instructions AS COMPILED, by the role that holds them (the `NAME_role` call they were inlined from), by
 innermost loop (every backward branch closes one) and by phase and kind (global loads, stores and adds, shared
 loads and stores, MMAs); a loop's cost a unit is its count times its trips, which the source states. It is the
