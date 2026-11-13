@@ -129,7 +129,13 @@ enum Roles : int {
   //: THE DEN: two more fold steps a slot, whose A is 8 lists' coefficients on 8 digits and whose B is a column of
   //: ones -- the box's den state, a value a (list, digit), in one accumulator set of 4 -- its image a ninth brick
   //: of each tile, the readout's steps 72 columns wide and a token's den an fp32 behind its panel row
-  kDen = 524288,
+  kDenFold = 524288,
+  //: THE DEN'S OTHER PARTS, each a row's own so a chain of rows prices them one at a time: the image's ninth brick
+  //: and its store (without the fold's part it stores a word of the num's state, the same instructions); the
+  //: register split (readout 88, fourth warpgroup 104); the readout's 72-column steps; the panel's word and the
+  //: drain's add (without the 72 columns, a word of the num's accumulator)
+  kDenImage = 8388608, kDenSplit = 16777216, kDenRead = 33554432, kDenDrain = 67108864,
+  kDen = kDenFold | kDenImage | kDenSplit | kDenRead | kDenDrain,
   //: the row that moves the image's tiles apart with nothing else changed: 154 lines where the tile is 137, and
   //: 161 where the den's is 155 -- what the tiles' pitch costs the fold's stores (an even pitch was measured
   //: slower)
@@ -146,10 +152,10 @@ enum Roles : int {
 };
 //: an image tile's pitch in bytes: the stores of a warp's lanes are two tiles apart
 template <int ROLES>
-constexpr int tile_of = 16 * (ROLES & kDen ? (ROLES & kPitch ? 161 : 155) : ROLES & kPitch ? 154 : 137);
+constexpr int tile_of = 16 * (ROLES & kDenImage ? (ROLES & kPitch ? 161 : 155) : ROLES & kPitch ? 154 : 137);
 //: a fold thread's state values: its 16 accumulator sets, and the den's 4
 template <int ROLES>
-constexpr int state_words = kLists * 8 + (ROLES & kDen ? 4 : 0);
+constexpr int state_words = kLists * 8 + (ROLES & kDenFold ? 4 : 0);
 //: a row in the replicated tables: the token's own, or the replica of it the access's position picks
 template <int ROLES>
 __device__ __forceinline__ uint32_t row_of(uint32_t t, uint32_t at) {
@@ -183,9 +189,9 @@ constexpr int value_parts = ROLES & kFive ? kFiveParts : 1;
 //: the den's readout holds 4 more accumulators, column 64's set: at 80 the toolkit serializes its steps, and its 8
 //: more a thread are the fourth warpgroup's, as the wide and the big rows' are
 template <int ROLES>
-constexpr int read_regs = ROLES & kFive ? kFiveReadRegs : (ROLES & kLean) && (ROLES & (kDen | kWide)) ? 88 : ROLES & kLean ? 80 : kReadRegs;
+constexpr int read_regs = ROLES & kFive ? kFiveReadRegs : (ROLES & kLean) && (ROLES & (kDenSplit | kWide)) ? 88 : ROLES & kLean ? 80 : kReadRegs;
 template <int ROLES>
-constexpr int serve_regs = (ROLES & kLean) && (ROLES & (kWide | kDen)) ? 104 : ROLES & kLean ? 112 : kServeRegs;
+constexpr int serve_regs = (ROLES & kLean) && (ROLES & (kWide | kDenSplit)) ? 104 : ROLES & kLean ? 112 : kServeRegs;
 static_assert(read_regs<kLean | kWide> + serve_regs<kLean | kWide> == kReadRegs + kServeRegs
               && read_regs<kLean | kBig> + serve_regs<kLean | kBig> == kReadRegs + kServeRegs);
 static_assert(read_regs<kLean | kDen> + serve_regs<kLean | kDen> == kReadRegs + kServeRegs);
@@ -270,6 +276,28 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
   uint8_t* const mine = smem + lab::held(static_cast<uint32_t>(
       ROLES & kAligned ? kImageAt + box * kBoxBytes + 16 * (2 * warp * kBrickLines + q) + 4 * t
                        : kImageAt + box * kBoxBytes + 2 * t * tile_of<ROLES> + 16 * (2 * warp * kBrickLines + q)));
+  //: THE DEN'S STORE, a held base a thread for each of a tile group's two kinds and an immediate past it: EVERY
+  //: lane stores, the lanes that hold the group's den values to the den's line and the others to a line of the
+  //: ninth brick no step's kept column reads (channels 65 to 71) -- no branch around the store
+  uint32_t den_at[2] = {0u, 0u};
+  if constexpr (ROLES & kDenImage) {
+#pragma unroll
+    for (int p = 0; p < 2; ++p) {
+      if constexpr (ROLES & kAligned) {
+        //: kind `p` is the group's list half: the holders are the threads `t == p`, lists `8 t + 2 warp` on
+        const bool holds = t == p;
+        den_at[p] = lab::held(static_cast<uint32_t>(
+            kImageAt + box * kBoxBytes + (8 * (holds ? t : p) + 2 * warp) * tile_of<ROLES>
+            + 16 * ((kImageBricks - 1) * kBrickLines + (holds ? 0 : t < 2 ? 1 : t)) + 2 * q));
+      } else {
+        //: kind `p` is the group's digit parity: the holders are the threads `t < 2` whose `q` has it
+        const bool holds = t < 2 && (q & 1) == p;
+        den_at[p] = lab::held(static_cast<uint32_t>(
+            kImageAt + box * kBoxBytes + ((q & 1) == p ? q : q ^ 1) * tile_of<ROLES>
+            + 16 * ((kImageBricks - 1) * kBrickLines + (holds ? 8 * t : t < 2 ? 1 + 8 * t : t)) + 4 * warp));
+      }
+    }
+  }
   if constexpr (!(ROLES & kFold)) {
     //: no fold writes the state: one group of steps gives every accumulator a value to publish
     lab::wg_fence();
@@ -309,16 +337,15 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
                   *reinterpret_cast<uint32_t*>(mine + a * tile_of<ROLES> + 16 * (r * kBrickLines + 8 * h)) =
                       lab::bf16x2_trunc(d[a][r << 1 | h << 2], d[a][1 | r << 1 | h << 2]);
                 }
-            if constexpr (ROLES & kDen) {
+            if constexpr (ROLES & kDenImage) {
               //: THE DEN'S LINES: list `8 s + l`'s den on digit `8 hc + r` is row `8 l + r` of column `2 s + hc`
-              //: -- a thread's value of its list `8 t + 2 warp + k % 2`, 2 bytes of the list's tile's ninth brick
-              if (t == (k >> 1)) {
+              //: -- a holding thread's value of its list `8 t + 2 warp + k % 2`, 2 bytes of the list's tile's ninth
+              //: brick
 #pragma unroll
-                for (int hc = 0; hc < 2; ++hc)
-                  *reinterpret_cast<uint16_t*>(smem + kImageAt + box * kBoxBytes
-                                               + (8 * t + 2 * warp + (k & 1)) * tile_of<ROLES>
-                                               + 16 * ((kImageBricks - 1) * kBrickLines + 8 * hc) + 2 * q) =
-                      static_cast<uint16_t>(__float_as_uint(den[hc | (k & 1) << 1]) >> 16);
+              for (int hc = 0; hc < 2; ++hc) {
+                const float value = ROLES & kDenFold ? den[hc | (k & 1) << 1] : d[0][hc | (k & 1) << 1];
+                *reinterpret_cast<uint16_t*>(smem + den_at[k >> 1] + (k & 1) * tile_of<ROLES> + 16 * 8 * hc) =
+                    static_cast<uint16_t>(__float_as_uint(value) >> 16);
               }
             }
           } else {
@@ -333,16 +360,13 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
                 *reinterpret_cast<uint4*>(mine + (8 * (k >> 1) + (k & 1)) * tile_of<ROLES> + 16 * (r * kBrickLines + 8 * h)) =
                     make_uint4(pair[0], pair[1], pair[2], pair[3]);
               }
-            if constexpr (ROLES & kDen) {
+            if constexpr (ROLES & kDenImage) {
               //: THE DEN'S LINES of the group: column `2 s + k / 2` of the accumulator is lists `8 s` on of digits
               //: `8 (k / 2)` on, a thread's two rows lists `2 warp` and the next on digit `q` -- one word of line `s` of
-              //: tile `8 (k / 2) + q`'s ninth brick, stored by the threads that hold the column: 8 lanes a warp, a
-              //: 4-byte word each at one word of lines 8 apart in tiles 2 apart -- the tile's layout fixes the places,
-              //: so the lanes share banks; one instruction a tile group
-              const uint32_t word = lab::bf16x2_trunc(den[k >> 1], den[(k >> 1) | 2]);
-              if (t < 2 && (q & 1) == (k & 1))
-                *reinterpret_cast<uint32_t*>(smem + kImageAt + box * kBoxBytes + (8 * (k >> 1) + q) * tile_of<ROLES>
-                                             + 16 * ((kImageBricks - 1) * kBrickLines + 8 * t) + 4 * warp) = word;
+              //: tile `8 (k / 2) + q`'s ninth brick; the tile's layout fixes the holders' places, so they share banks
+              const uint32_t word = ROLES & kDenFold ? lab::bf16x2_trunc(den[k >> 1], den[(k >> 1) | 2])
+                                                     : lab::bf16x2_trunc(d[0][k >> 1], d[0][(k >> 1) | 2]);
+              *reinterpret_cast<uint32_t*>(smem + den_at[k & 1] + 8 * (k >> 1) * tile_of<ROLES>) = word;
             }
           }
         }
@@ -363,19 +387,25 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         const uint32_t tiles = lab::held(base + (2 * box + slot) * kPoolBytes);
         lab::wg_fence();
 #pragma unroll
+        //: a slot's descriptors are ONE derived from its pool's address and a constant of lines added a list: the
+        //: start field is the address in lines, linear in it
+        const uint64_t first = lab::wg_desc(tiles, 8, 17);
+#pragma unroll
         for (int j = 0; j < kSlotLists; ++j)
-          lab::wg_bf16_n16_ss_mn(d[slot * kSlotLists + j], lab::wg_desc(tiles + j * kTile, 8, 17),
-                                 lab::wg_desc(tiles + j * kTile + kValueTile, 8, 17), w != 0);
-        if constexpr (ROLES & kDen) {
+          lab::wg_bf16_n16_ss_mn(d[slot * kSlotLists + j], first + static_cast<uint64_t>(j * (kTile / 16)),
+                                 first + static_cast<uint64_t>(j * (kTile / 16) + kValueTile / 16), w != 0);
+        if constexpr (ROLES & kDenFold) {
           //: THE DEN'S STEPS, in the slot's group, two: A is the slot's 8 lists' coefficient bricks of digits `8 h`
           //: to `8 h + 7` -- a brick a list, the bricks a pool tile apart -- and B the ones of column `2 slot + h`,
           //: so row `8 l + r` of that column is list `8 slot + l`'s den on digit `8 h + r`; the call's first writes
           //: the accumulator whole
-          const uint32_t ones = lab::held(base + kOnesAt);
+          const uint64_t ones = lab::wg_desc(lab::held(base + kOnesAt), 8, 16);
+          const uint64_t bricks = lab::wg_desc(tiles + kValueTile, 8, kTile / 16);
 #pragma unroll
           for (int h = 0; h < 2; ++h)
-            lab::wg_bf16_n8_ss_mn(den, lab::wg_desc(tiles + kValueTile + h * kBrick, 8, kTile / 16),
-                                  lab::wg_desc(ones + (2 * slot + h) * kOnesBrick, 8, 16), w != 0 || slot != 0 || h != 0);
+            lab::wg_bf16_n8_ss_mn(den, bricks + static_cast<uint64_t>(h * (kBrick / 16)),
+                                  ones + static_cast<uint64_t>((2 * slot + h) * (kOnesBrick / 16)),
+                                  w != 0 || slot != 0 || h != 0);
         }
         lab::wg_commit();
         lab::wg_wait<0>();
@@ -387,7 +417,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
   for (int a = 0; a < kLists; ++a)
 #pragma unroll
     for (int i = 0; i < 8; ++i) lab::wg_hold(d[a][i]);
-  if constexpr (ROLES & kDen) {
+  if constexpr (ROLES & kDenFold) {
 #pragma unroll
     for (int i = 0; i < 4; ++i) lab::wg_hold(den[i]);
   }
@@ -402,7 +432,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
     for (int a = 0; a < kLists; ++a)
 #pragma unroll
       for (int i = 0; i < 8; ++i) to[8 * a + i] = d[a][i];
-    if constexpr (ROLES & kDen) {
+    if constexpr (ROLES & kDenFold) {
 #pragma unroll
       for (int i = 0; i < 4; ++i) to[8 * kLists + i] = den[i];
     }
@@ -521,7 +551,7 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
 //: the readout's step: 64 tokens by the tile's 64 channels, or by its 72 columns where the den's is the 65th
 template <int ROLES, int N>
 __device__ __forceinline__ void read_step(float (&d)[N], const uint32_t (&a)[4], uint64_t b, bool add) {
-  if constexpr (ROLES & kDen) lab::wg_bf16_n72_rs(d, a, b, add);
+  if constexpr (ROLES & kDenRead) lab::wg_bf16_n72_rs(d, a, b, add);
   else lab::wg_bf16_n64_rs(d, a, b, add);
 }
 //: where a call's den sums are: an fp32 a token behind the output's lines
@@ -568,7 +598,8 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
   uint32_t on_image = 0, on_drain = 0, in_steps = 0, in_form = 0;
   //: the chunk's first step writes the accumulator whole: nothing is cleared between chunks
   //: the den's rows read a ninth brick of 8 columns: column 64 is the token's den
-  float d[ROLES & kDen ? 36 : 32];
+  static_assert(!(ROLES & kDenRead) || ((ROLES & kDenSplit) && (ROLES & kDenImage)));
+  float d[ROLES & kDenRead ? 36 : 32];
   lab::WarpSpan clock;
   clock.start();
 #pragma unroll 1
@@ -665,12 +696,12 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
         for (int r = 0; r < 2; ++r)
           *reinterpret_cast<uint32_t*>(row + 8 * r * kRowBytes + 16 * j) =
               lab::pack_half2(d[4 * j + 2 * r], d[4 * j + 2 * r + 1]);
-      if constexpr (ROLES & kDen) {
+      if constexpr (ROLES & kDenDrain) {
         //: THE DEN'S WORD of a row, as the step summed it: the threads that hold column 64
         if (t == 0) {
 #pragma unroll
           for (int r = 0; r < 2; ++r)
-            *reinterpret_cast<float*>(row + 8 * r * kRowBytes + den_word(16 * warp + 8 * r)) = d[32 + 2 * r];
+            *reinterpret_cast<float*>(row + 8 * r * kRowBytes + den_word(16 * warp + 8 * r)) = d[(ROLES & kDenRead ? 32 : 28) + 2 * r];
         }
       }
       __syncwarp();
@@ -741,7 +772,7 @@ __device__ __forceinline__ void drain_role(const uint8_t* smem, uint32_t base, l
     }
     //: THE DEN'S WORD, loaded as the chunk opens: a lane one of the warp's 32 tokens
     float den_sum = 0.f;
-    if constexpr (ROLES & kDen)
+    if constexpr (ROLES & kDenDrain)
       den_sum = *reinterpret_cast<const float*>(smem + kPanelAt + (c & 1) * kPanelBytes
                                                 + (mine + kDrainers * lane) * kRowBytes + den_word(mine + kDrainers * lane));
     //: the chunk's digit `j` is read digit `8 h + c + 2 j`: its 16 tokens' rows start at 16 of that
@@ -771,7 +802,7 @@ __device__ __forceinline__ void drain_role(const uint8_t* smem, uint32_t base, l
         }
         if (n + 2 < kBatches) load(c, n + 2, n & 1);
       }
-      if constexpr (ROLES & kDen) {
+      if constexpr (ROLES & kDenDrain) {
         //: THE DEN'S ADD, behind the chunk's lines': the lane's token's sum
         const int token = mine + kDrainers * lane;
         lab::red_add_f32(den_out(out) + first + 32 * (token / 16) + token % 16, den_sum);
@@ -807,7 +838,7 @@ __global__ void __launch_bounds__(threads_of<ROLES>, 1)
   //: the images cleared: the state is zero at the call's start
 #pragma unroll 1
   for (int i = tid; i < 2 * kBoxBytes / 4; i += threads_of<ROLES>) *reinterpret_cast<uint32_t*>(smem + kImageAt + 4 * i) = 0u;
-  if constexpr (ROLES & kDen) {
+  if constexpr (ROLES & kDenFold) {
     //: the den's ones: brick c's every line bf16 1 in slot c
 #pragma unroll 1
     for (int i = tid; i < kDenSteps * kOnesBrick / 2; i += threads_of<ROLES>)
@@ -935,8 +966,13 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kBig ? ", the tables 16 replicas the cache cannot hold" : "")
                            + (ROLES & kAligned ? ", the sides' carves equal: an image tile a list, its lines four threads' words" : "")
                            + (ROLES & kNoClock ? ", no clock inside a role" : "")
-                           + (ROLES & kPitch ? (ROLES & kDen ? ", the image's tiles 161 lines apart" : ", the image's tiles 154 lines apart") : "")
-                           + (ROLES & kDen ? ", the den: two more steps a slot, the readout's steps 72 columns and an fp32 a token" : "");
+                           + (ROLES & kPitch ? (ROLES & kDenImage ? ", the image's tiles 161 lines apart" : ", the image's tiles 154 lines apart") : "")
+                           + ((ROLES & kDen) == kDen ? ", the den: two more steps a slot, the readout's steps 72 columns and an fp32 a token"
+                              : ROLES & kDen ? std::string(", the den's parts alone: its fold steps")
+                                                   + (ROLES & kDenImage ? ", its image brick" : "")
+                                                   + (ROLES & kDenSplit ? ", its register split" : "")
+                                                   + (ROLES & kDenRead ? ", its 72-column steps" : "")
+                                             : std::string());
   constexpr int kLaunch = threads_of<ROLES>, kWarps = kLaunch >> 5;
   const auto kernel = window<ROLES>;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
@@ -950,7 +986,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
     std::vector<float> got_state(static_cast<size_t>(b.sms) * per);
     std::vector<uint32_t> got(words);
     std::vector<float> got_den(tokens);
-    if (ROLES & kDen) LAB_CHECK(cudaMemcpy(got_den.data(), out + words, tokens * 4, cudaMemcpyDeviceToHost));
+    if ((ROLES & kDen) == kDen) LAB_CHECK(cudaMemcpy(got_den.data(), out + words, tokens * 4, cudaMemcpyDeviceToHost));
     LAB_CHECK(cudaMemcpy(got_state.data(), state, got_state.size() * sizeof(float), cudaMemcpyDeviceToHost));
     LAB_CHECK(cudaMemcpy(got.data(), out, words * 4, cudaMemcpyDeviceToHost));
     long long wrong_state = 0, wrong_out = 0, wrong_den = 0;
@@ -963,7 +999,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
       std::fill(s.begin(), s.end(), 0);
       std::fill(sden.begin(), sden.end(), 0);
       for (int w = 0; w < kOutWindows; ++w) {
-        if (ROLES & kDen)
+        if ((ROLES & kDen) == kDen)
           for (int token = 0; token < kWindow; ++token) {
             //: a token's den: the den's image by the token's coefficients, as its channels' are
             const int bb = token / 16;
@@ -1006,7 +1042,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
             wrong_state += got_state[blk * per + static_cast<size_t>(tid) * state_words<ROLES> + a * 8 + i]
                            != static_cast<float>(s[at(box, m, a, bb)]);
           }
-        if (ROLES & kDen)
+        if (ROLES & kDenFold)
           for (int i = 0; i < 4; ++i) {
             //: the den's accumulator: column c's row m is list `8 (c / 2) + m / 8`'s den on digit `8 (c % 2) + m % 8`
             const int m = rows + 8 * ((i >> 1) & 1), c = 2 * pair + (i & 1);
@@ -1019,7 +1055,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
     b.check(name, wrong_state == 0 && wrong_out == 0 && wrong_den == 0,
             std::to_string(wrong_state) + " of " + std::to_string(got_state.size()) + " state values and "
                 + std::to_string(wrong_out) + " of " + std::to_string(2 * words) + " output values differ"
-                + (ROLES & kDen ? ", " + std::to_string(wrong_den) + " of " + std::to_string(tokens) + " den sums" : ""));
+                + ((ROLES & kDen) == kDen ? ", " + std::to_string(wrong_den) + " of " + std::to_string(tokens) + " den sums" : ""));
   } else {
     b.unchecked(name, "an isolation: a side's roles or one of their accesses absent");
   }
@@ -1099,11 +1135,14 @@ int main(int argc, char** argv) {
                     2 | kStill | kPark, 2 | kStill | kSpin, 3 | kDump,
                     3 | kSuspend | kLean, 3 | kSuspend | kWide, 3 | kSuspend | kLean | kWide,
                     3 | kSleep | kLean | kWide, 3 | kBig, 3 | kSuspend | kLean | kBig, 1 | kBig, 1 | kDen, 3 | kSuspend | kLean | kDen, 3 | kSuspend | kLean | kBig | kDen, 3 | kSuspend | kLean | kPitch, 3 | kSuspend | kLean | kDen | kPitch, 3 | kSuspend | kLean | kAligned, 3 | kSuspend | kLean | kAligned | kDen, 3 | kSuspend | kLean | kNoClock, 3 | kSuspend | kLean | kDen | kNoClock,
-                    3 | kSuspend | kLean | kAligned | kNoClock, 3 | kSuspend | kLean | kAligned | kDen | kNoClock}) {
+                    3 | kSuspend | kLean | kAligned | kNoClock, 3 | kSuspend | kLean | kAligned | kDen | kNoClock,
+                    3 | kSuspend | kLean | kNoClock | kDenFold, 3 | kSuspend | kLean | kNoClock | kDenFold | kDenImage,
+                    3 | kSuspend | kLean | kNoClock | kDenFold | kDenImage | kDenSplit,
+                    3 | kSuspend | kLean | kNoClock | kDenFold | kDenImage | kDenSplit | kDenRead}) {
     const std::string k = lab::kernel("window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     b.expect(k, "HGMMA", "==",
-             (roles & kFold ? 2 * kSlotLists + (roles & kDen ? kDenSteps : 0) : roles & kStill ? 0 : 1)
+             (roles & kFold ? 2 * kSlotLists + (roles & kDenFold ? kDenSteps : 0) : roles & kStill ? 0 : 1)
                  + (roles & kRead ? 2 * kChunkDigits : 0));
     if (roles & kRead) {
       //: the readout's panel is read by the drain warps' own loads, not by a step: its arrival needs no fence
@@ -1208,5 +1247,9 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kLean | kDen | kNoClock>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kAligned | kNoClock>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kAligned | kDen | kNoClock>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kDenFold>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kDenFold | kDenImage>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kDenFold | kDenImage | kDenSplit>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kDenFold | kDenImage | kDenSplit | kDenRead>(b, waits, values, dense, state, out);
   return 0;
 }
