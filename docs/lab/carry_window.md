@@ -34,10 +34,21 @@ THE REGISTERS (`setmaxnreg`, each role's body in its own branch). 512 threads la
 SM's whole file of 65,536. A fold thread raises to 160; a readout thread lowers to 96, and the producers and drains,
 one warpgroup, to 96: the folds' 32 more each are those 32 fewer. At 152 the fold spills to local memory; with every step's A in its own registers (32 words) the toolkit serializes
 the readout's steps at 80, and with A in two sets (16 words, the lean row) at 72; a producer holds two batches at
-112. NO REGISTER IS LEFT for a fifth warpgroup: one beside these roles takes its registers from them. A form
+112. THE DEN'S ROWS take the fold to 168: its 17 accumulator sets are 136 registers, a set 8 in a row from a multiple
+of 8, above the 24 the thread's other values use, and at 160 the toolkit keeps one set in local memory and
+serializes the steps; the 8 more a fold thread are 16 fewer of the fourth warpgroup's (96), whose producers hold
+one batch again beside the lean readout's 80. NO REGISTER IS LEFT for a fifth warpgroup: one beside these roles takes its registers from them. A form
 of five warpgroups (640 threads) launches at 96 a thread, 61,440 in all, and its roles' counts sum to that
 ([`reg_five`](reg_five.md)): one whose counts summed to the SM's whole file hung on the device, a raise waiting
 for registers the kernel never entered with.
+
+THE DEN'S FOLD HALF (its own rows). The den is the num with every value 1: a box's den state is a value a (list,
+digit), 256 where the num's is 16,384, and it is folded by ONE MORE STEP A LIST in the slot's commit group, B the
+list's coefficients as the num's step reads them and A a constant tile whose one row of ones is the list's -- cut
+by descriptor from two strips in shared memory (15 bricks each, 8 KB together; the middle brick's lines hold a 1 in
+slot 0 or slot 1), so list `a`'s tile starts `7 - a / 2` bricks into strip `a % 2` and its ones are row
+`8 (a / 2) + a % 2`. All 16 lists' steps add into ONE accumulator set, each in its own rows, checked exactly
+against the host's sum. The readout's half is not in this experiment.
 
 ROWS: the fold's side alone (producers and steps), the read side alone (the image, the readout and the drain),
 both, and both with one access taken out: the producers' global loads (their words made in registers), the drains'
@@ -153,7 +164,7 @@ clock lock, and the carry is one part of the op (no intra, facts pass, den or jo
 the comparison is a layer comparison in the declared suite ([`measurement.md`](../measurement.md)), owed when a
 layer of this op is a session member beside it. THE PRICE (R22.2) is the once-read wall time -- a cache that may
 not hold the working set is priced as if it does not -- and the cached-table time is the upside when the cache
-holds, which a streamed carry's arrival clustering is expected to give.
+holds; whether a streamed carry's arrivals keep it there is unmeasured.
 
 A warp's clocked cycles a window (the sleeping row's are not tabled: a clock read is not held to its side of a named
 barrier, and its waits read as its neighbours' time):
@@ -173,7 +184,8 @@ WHAT IT SHOWS.
 - THE CARRY COMPOSES, EXACTLY: two boxes' folds, the image a window, one readout warpgroup over both -- its
   coefficients expanded in its registers, its steps' A operand -- and one f16 line a token, in one CTA of 512
   threads at the SM's whole register file.
-- A TOKEN COSTS 878 SM-CYCLES COMPOSED at this cell (its sides sparse on opposite levels, 256 x 256 leaves;
+- A TOKEN IS PRICED AT 1,454 SM-CYCLES COMPOSED, its tables read once (R22.2), in the winner's form; 844 when the
+  cache holds them (878 in the first form) at this cell (its sides sparse on opposite levels, 256 x 256 leaves;
   [`carry_floor`](../internals/tools/carry_floor.md) prices a dense side higher).
 - THE FILL WANTS WARPS THAT EACH HOLD A BATCH: two producers a box, a batch of 32 entries in registers each, take
   the fold's side alone to 3,048 cycles a window where one a box is 5,063; one a box holding TWO batches is
