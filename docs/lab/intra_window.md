@@ -59,8 +59,8 @@ WHAT IT SHOWS.
   token's values as one run, lose most of a window to them tile-major ([`carry_window`](carry_window.md)). The
   levels tile-major and the values token-major is the layout both readers' measurements give.
 - THE COST A TOKEN FOLLOWS THE WINDOW: 67, 103, 176 and 346 SM-cycles a token at 256, 512, 1,024 and 2,048 tokens -- some
-  160 a token a 1,024 of window over about 27 that does not move with it. The window is the carry's to
-  choose: its steps hold 16 entries a list at 1,024 at its cell, and its cost at another window is not measured.
+  160 a token a 1,024 of window over about 27 that does not move with it. The window is the plan's (R24);
+  the carry's steps hold 16 entries a list at 1,024 at its cell, and its cost at another window is not measured.
 - AGAINST ITS OWN ARITHMETIC: a pair of tokens is 512 byte products and 72 value products; at the measured step
   rates (an integer step 36 cycles, a value step some 35) a window of 1,024 is 96 SM-cycles a token of tensor work,
   and the kernel is 1.8 times that -- the steps' groups, the weights' arithmetic and the staging. A window's rows are

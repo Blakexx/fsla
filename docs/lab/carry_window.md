@@ -272,7 +272,7 @@ WHAT IT SHOWS.
   image's stores; it is not built.
 - THE CARRY'S PRODUCERS WANT A TOKEN'S VALUES AS ONE RUN: with the values tile-major in global memory -- a token's 8
   lines a kilobyte apart -- the winner's form is 11,993 cycles a window against 6,535, and with the tables once-read
-  48,735 against 14,618. The intra's window moves 3% with the values' order ([`intra_window`](intra_window.md)), so
+  48,735 against 14,618. The intra's window moves 5% with the values' order ([`intra_window`](intra_window.md)), so
   the values stay token-major and the levels, which the carry reads 16 bytes at a time, go tile-major.
 - THE TABLES ONCE-READ COST 1.7 TO 2.3 TIMES THE WINDOW ON THIS BOX (in cycles, which for a row bound by global
   memory follow the card's clock): 15,683 cycles composed against 6,947, the winner's form

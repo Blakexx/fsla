@@ -55,7 +55,7 @@ layout an integer step reads -- since the intra stages a tile's level as one cop
 otherwise ([`intra_window`](lab/intra_window.md)), and the carry reads a level in pieces of at most 16 bytes. The
 VALUES STAY TOKEN-MAJOR, MEASURED on both readers: the carry's producers read a token's values as one run and lose
 most of a window to them tile-major (11,993 cycles a window against 6,535, and 48,735 against 14,618 once-read:
-[`carry_window`](lab/carry_window.md)), where the intra's window moves 3% with their order.
+[`carry_window`](lab/carry_window.md)), where the intra's window moves 5% with their order.
 
 **Declared arithmetic, per kernel.** Every kernel's arithmetic is declared and mirrored by its gate's reference: every
 accumulation fp32 or an exact integer -- but the output's sum across CTAs, fp32 or f16 as the plan states
@@ -302,8 +302,8 @@ tile pair whose digits meet nowhere is skipped on the facts pass's tile unions, 
 no state: every pair it computes is written and read inside the one window. No intra kernel is built on this line
 ([`open-work.md`](open-work.md)). ON HOPPER it is a kernel of its own BESIDE THE CARRY, not a role in its CTA (Blake, 2026-11-13): its
 chain alone is MEASURED at 985 cycles a tile pair of 64 readers by 64 writers at 256 digits a level
-([`intra_chain`](lab/intra_chain.md)); its WINDOW as a kernel of its own is MEASURED at 179 SM-cycles a token with
-the levels tile-major and the values token-major, and 419 with every plane token-major ([`intra_window`](lab/intra_window.md)); and the carry's CTA has no
+([`intra_chain`](lab/intra_chain.md)); its WINDOW as a kernel of its own is MEASURED at 176 SM-cycles a token with
+the levels tile-major and the values token-major, and 418 with every plane token-major ([`intra_window`](lab/intra_window.md)); and the carry's CTA has no
 register for it. The two are LAUNCHED CONCURRENTLY on two streams (Blake, 2026-11-13): MEASURED WITH THE TABLES CACHED -- the upside, not the
 price (R22.2: the call with tables the cache does not hold is unmeasured) -- a call of 65,536 tokens with the carry,
 its den and the intra is 0.39 ms a head so and 0.40 one after the other, at one cell

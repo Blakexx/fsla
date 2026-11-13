@@ -282,4 +282,4 @@ them, and any other caller supplies whatever valid plan it wants. The op refuses
 take and derives nothing from how the data was made. A plan is never wrong for the data in a way that changes the
 result: a level walked by its lists that turns out dense, or walked whole where it was sparse, costs time and
 nothing else. NOT YET SO: [`open-work.md`](open-work.md#the-surface) row A-c lists where the op still reads its
-inputs' provenance.
+inputs' provenance, and row A-e where liveness is still decided from row values.
