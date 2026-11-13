@@ -235,7 +235,8 @@ WHAT IT SHOWS.
   that cell's are 4 lines, at no cost -- and with the den 7,185 against 7,080, the den's lines there 2-byte
   stores of 8 threads. A form that reads the fold's own registers has nothing of the window to win back but the
   image's stores; it is not built.
-- THE TABLES ONCE-READ COST 1.7 TO 2.2 TIMES THE WINDOW: 17,457 cycles composed against 7,091, the winner's form
+- THE TABLES ONCE-READ COST 2.3 TO 2.5 TIMES THE WINDOW ON THIS BOX (in cycles, which for a row bound by global
+  memory follow the card's clock): 17,457 cycles composed against 7,091, the winner's form
   16,101 against 6,763, the fold's side alone 11,679 against 5,079 -- every access a fresh row of 128 MB of
   values, the model of a large table whose rows are each read once.
 - THE DUMP IS PRICED IN THIS SESSION: the fold's state stored out in every call, as every record before 79ec1b08
