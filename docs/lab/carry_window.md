@@ -204,8 +204,7 @@ DUMP STAYS OUT OF THE TIMED CALLS, and one row restores it to price it in this s
 
 THE WALL TIME, measured on this box and immune to its clock (1.13 to 1.41 GHz, its rows' medians): the long call
 scaled to 65,536 tokens is 0.314 ms for the baseline, 0.311 ms for the winner's form, and 0.596 ms at the
-once-read bound (0.662 without the winner's changes). THE FLASH REFERENCES, from the session of instance 60450651 ON ANOTHER BOX (a different offer and driver, whose
-once-read rows were a third fewer cycles than this box's)
+once-read bound (0.662 without the winner's changes). THE FLASH REFERENCES, from the session of instance 60450651 ON ANOTHER BOX (a different offer and driver)
 (`rola_bench.measure.attention`, causal, 1 head, dv 64, bf16; the records in rola-results at `flash/reference`):
 FlashAttention-3, built on the box at Dao's pinned commit, 1.775 ms at 65,536 tokens (0.300 at 16,384; 0.121 at
 1,024); torch's FlashAttention-2 3.072 ms (0.323; 0.040). THESE ARE ADJACENT MEASUREMENTS, NOT A COMPARISON: the
@@ -294,7 +293,7 @@ WHAT IT SHOWS.
   those loads are three fifths of the fold's side alone -- 2,406 cycles a window without them against 5,090, some
   168 cycles a batch of a producer's 9 load instructions; their coefficient arithmetic is 407 of it
   (4,683 without). The drains' adds out, the window is 6,616; the image's stores out, 6,562.
-- A PRESENT FOLD WARP COSTS THE READ SIDE NOTHING, A PUBLISHING ONE 1,297 CYCLES: the read side alone is 5,563
+- A PARKED FOLD WARP COSTS THE READ SIDE 112 CYCLES, A PUBLISHING ONE 1,297: the read side alone is 5,563
   with the fold warps publishing and 4,266 with no fold warp running, while one parked asleep beside it costs
   112 cycles and one spinning 234. What of the publishing fold's hand-off holds it is NOT ISOLATED
   (its stores are 570 of it; its fence nothing).

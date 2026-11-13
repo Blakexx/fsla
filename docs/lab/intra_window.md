@@ -48,7 +48,7 @@ WHAT IT SHOWS.
 - THE VALUES STAY TOKEN-MAJOR: their order is 3% of the intra's window, and the carry's producers, who read a
   token's values as one run, lose most of a window to them tile-major ([`carry_window`](carry_window.md)). The
   levels tile-major and the values token-major is the layout both readers' measurements give.
-- BESIDE THE CARRY (179 against its SM-cycles a token with no clock inside a role,
+- BESIDE THE CARRY (179 against its 817 SM-cycles a token with no clock inside a role,
   [`carry_window`](carry_window.md)) the intra in that layout is about a fifth of the carry's window. Adjacent
   measurements of two labs at their own cells, not a call: the tables here are 2 MB a level, cached, and no pair is
   skipped.
