@@ -128,14 +128,14 @@ re-measures whole; a row here states the size of the difference, not the session
 
 | the form | what it lost to | by how much | measured in |
 |---|---|---|---|
-| a scattered row by the bulk copy engine, one request a row | four warps' own loads | 32.8 cycles a row against 8.5 | [`state_move`](../../lab/state_move.md), [`value_gather`](../../lab/value_gather.md) |
+| a scattered row by the bulk copy engine, one request a row | four warps' own loads | several times the cycles a row | [`state_move`](../../lab/state_move.md), [`value_gather`](../../lab/value_gather.md) |
 | a producer holding two batches, its loads two ahead | one batch held | a few percent on the fold's side alone, for 16 more registers a thread; composed only with the two-set readout those registers come from, which loses: its own composed cost is NOT ISOLATED | [`carry_window`](../../lab/carry_window.md) |
 | four producers each holding one value instruction's four entries (40 registers a thread) | two producers each holding a batch | slower on the fold's side alone, with twice the warps | [`carry_window`](../../lab/carry_window.md) |
 | the readout adding its own rows after its steps | two drain warps beside it | the window a tenth longer: its adds hold it, and the window becomes the readout's | [`carry_window`](../../lab/carry_window.md) |
 | two sets of A registers reused across a chunk's commit groups | every step's own A, one group | composed only with two-batch producers, where the window is longer: NOT ISOLATED | [`carry_window`](../../lab/carry_window.md) |
 | a fifth warpgroup (640 threads) of serve warps | four warpgroups (512) | the window a tenth longer: 61,440 registers leave the serve warps 40 a thread | [`carry_window`](../../lab/carry_window.md), [`reg_five`](../../lab/reg_five.md) |
 | a role's long wait asleep at a named barrier (`bar.sync`) | the polled `mbarrier` wait | about a percent of the window: a waiting warp's polling does not hold the others | [`carry_window`](../../lab/carry_window.md) |
-| the readout's coefficient bytes as 4-byte loads, each lane a different row (8 instructions a chunk of 64 tokens) | not yet measured against a form | a third of the readout's steps' span: OPEN | [`carry_window`](../../lab/carry_window.md) |
+| the readout's coefficient bytes as 4-byte loads, a lane the word it needs (8 instructions a chunk of 64 tokens) | one wide load a warp a chunk, a lane a row's 16 bytes, relaid through the warp's scratch | the wide load is the read side alone without those loads; composed the two are within a session's noise | [`carry_window`](../../lab/carry_window.md) |
 
 <a id="ledger"></a>
 ## Ledger

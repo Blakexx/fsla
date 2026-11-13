@@ -22,7 +22,8 @@
 // access out -- the producers' loads, their coefficient arithmetic, both, and the readout's loads of its readers'
 // bytes; and with those bytes ONE WIDE LOAD a readout warp a chunk -- a lane a row's 16 bytes, relaid through the
 // warp's scratch in shared memory; and the read side with the fold's image stores, its fence behind them, or both
-// taken out. Then what the readout's steps
+// taken out, and the readout and drains with the fold warps present and idle -- parked at a named barrier, or
+// spinning at a polled one. Then what the readout's steps
 // wait behind: the readout and the drains with NO fold warp running (the image as it lies); every barrier's wait
 // by the instruction that may suspend its thread, where the others poll. With both sides and no access out, the
 // state and every output row are checked exactly, and a long call's span over its wall time reads the card's clock.
@@ -67,13 +68,15 @@ constexpr int kBrickLines = 17, kImageTile = 137 * 16, kBoxBytes = kLists * kIma
 constexpr int kChunkDigits = 4, kTokens = 16 * kChunkDigits, kChunks = kLists / kChunkDigits, kRowBytes = 272,
               kPanelBytes = kTokens * kRowBytes, kBatch = 8;
 constexpr int kImageAt = 4 * kPoolBytes, kPanelAt = kImageAt + 2 * kBoxBytes,
-              kBarsAt = kPanelAt + 2 * kPanelBytes, kScratchAt = kBarsAt + 160;
+              kBarsAt = kPanelAt + 2 * kPanelBytes, kScratchAt = kBarsAt + 176;
 //: a readout warp's scratch: its chunk's 32 rows of 16 bytes, row `16 box + token`
 constexpr int kScratchBytes = 32 * 16, kSmemBytes = kScratchAt + 4 * kScratchBytes;
 //: the barriers, 8 bytes each: a pool slot filled and freed (box, slot); an image's tile group published and read
 //: (a group is the 4 read digits `8 h + c + 2 j` of a chunk `2 h + c`: every fold thread holds a quarter of it); a
 //: panel filled and drained
-constexpr int kPoolReady = 0, kPoolFreed = 32, kTilesReady = 64, kTilesRead = 96, kPanelReady = 128, kPanelFreed = 144;
+constexpr int kPoolReady = 0, kPoolFreed = 32, kTilesReady = 64, kTilesRead = 96, kPanelReady = 128, kPanelFreed = 144, kDone = 160;
+//: the named barrier the parked row's fold warps sleep at until the readout's end: theirs and the readout's threads
+constexpr int kParkId = 15, kParkCount = 3 * kGroup;
 constexpr int kOutWindows = 4;
 //: a row's roles, and what a row takes OUT of them to find what the two sides contend for: the producers' global
 //: loads (the words made in registers), the drains' global adds (the lines folded into a sink), the image's stores
@@ -92,7 +95,11 @@ enum Roles : int {
   kWide = 8192,
   //: one more access a row takes out: the fold's fence behind its image's stores (an isolation: the readout's steps
   //: may then read a tile before its stores are theirs to read)
-  kNoFence = 16384
+  kNoFence = 16384,
+  //: two rows of the readout and the drains with the fold warps PRESENT AND IDLE for the whole call -- parked at a
+  //: named barrier, or spinning at a polled one -- where the still row's fold warps have left: what a present warp
+  //: costs the others by being there
+  kPark = 32768, kSpin = 65536
 };
 //: THE FIVE-WARPGROUP row: 640 threads, a fourth warpgroup of four producers and a fifth of four drain warps. A
 //: kernel of 640 threads enters with 96 registers a thread (docs/lab/reg_five.md), and the roles' counts sum to
@@ -546,6 +553,9 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
   }
   clock.stop(times);
   tell(waits, on_image, on_drain, in_steps, in_form);
+  if constexpr (ROLES & kPark) lab::bar_arrive(kParkId, kParkCount);
+  if constexpr (ROLES & kSpin)
+    if (lane == 0) lab::mbar_arrive(bars + kDone);
 }
 
 //: A DRAIN WARP: a chunk's 32 tokens of its residue in four batches of 8; a lane holds a token's two channels and
@@ -655,6 +665,7 @@ __global__ void __launch_bounds__(threads_of<ROLES>, 1)
       lab::mbar_init(base + kBarsAt + kPanelReady + 8 * p, kGroup / 32);
       lab::mbar_init(base + kBarsAt + kPanelFreed + 8 * p, drains_of<ROLES>);
     }
+    lab::mbar_init(base + kBarsAt + kDone, kGroup / 32);
   }
   lab::bulk_fence();
   __syncthreads();
@@ -664,7 +675,12 @@ __global__ void __launch_bounds__(threads_of<ROLES>, 1)
   //: (docs/lab/carry_window.md)
   if (tid < kReadAt) {
     lab::regs_up<kFoldRegs>();
-    if constexpr (ROLES & kStill) idle_role(times, waits);
+    if constexpr (ROLES & kStill) {
+      idle_role(times, waits);
+      //: present and idle until the readout is done
+      if constexpr (ROLES & kPark) lab::bar_sync(kParkId, kParkCount);
+      if constexpr (ROLES & kSpin) lab::mbar_wait(base + kBarsAt + kDone, 0);
+    }
     else fold_role<ROLES>(smem, base, times, waits, state, windows);
   } else if (tid < kProduceAt) {
     lab::regs_down<read_regs<ROLES>>();
@@ -747,7 +763,9 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kNoMath ? ", the producers' coefficient arithmetic taken out" : "")
                            + (ROLES & kNoBytes ? ", the readout's byte loads taken out" : "")
                            + (ROLES & kWide ? ", the readout's bytes one wide load a warp" : "")
-                           + (ROLES & kNoFence ? ", the fold's fence behind its image taken out" : "");
+                           + (ROLES & kNoFence ? ", the fold's fence behind its image taken out" : "")
+                           + (ROLES & kPark ? ", the fold warps parked at a named barrier" : "")
+                           + (ROLES & kSpin ? ", the fold warps spinning at a polled barrier" : "");
   constexpr int kLaunch = threads_of<ROLES>, kWarps = kLaunch >> 5;
   const auto kernel = window<ROLES>;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
@@ -869,7 +887,8 @@ int main(int argc, char** argv) {
                     3 | kFive, 1 | kFive, 2 | kFive, 3 | kSleep, 1 | kSleep, 2 | kSleep, 1 | kNoLoads, 1 | kNoMath,
                     1 | kNoLoads | kNoMath, 2 | kNoBytes, 2 | kStill | kNoBytes, 3 | kNoBytes,
                     3 | kNoBytes | kNoAdds, 3 | kWide, 2 | kWide, 2 | kStill | kWide, 3 | kWide | kSleep,
-                    2 | kNoImage, 2 | kNoFence, 2 | kNoImage | kNoFence, 3 | kNoFence}) {
+                    2 | kNoImage, 2 | kNoFence, 2 | kNoImage | kNoFence, 3 | kNoFence,
+                    2 | kStill | kPark, 2 | kStill | kSpin}) {
     const std::string k = lab::kernel("window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     b.expect(k, "HGMMA", "==",
@@ -953,5 +972,7 @@ int main(int argc, char** argv) {
   run<kRead | kNoFence>(b, waits, values, dense, state, out);
   run<kRead | kNoImage | kNoFence>(b, waits, values, dense, state, out);
   run<kFold | kRead | kNoFence>(b, waits, values, dense, state, out);
+  run<kRead | kStill | kPark>(b, waits, values, dense, state, out);
+  run<kRead | kStill | kSpin>(b, waits, values, dense, state, out);
   return 0;
 }
