@@ -35,8 +35,9 @@ SM's whole file of 65,536. A fold thread raises to 160; a readout thread lowers 
 one warpgroup, to 96: the folds' 32 more each are those 32 fewer. At 152 the fold spills to local memory; with every step's A in its own registers (32 words) the toolkit serializes
 the readout's steps at 80, and with A in two sets (16 words, the lean row) at 72; a producer holds two batches at
 112. NO REGISTER IS LEFT for a fifth warpgroup: one beside these roles takes its registers from them. A form
-of five warpgroups (640 threads) launches at 96 a thread, 61,440 in all; one whose roles' counts summed to the
-whole file hung on the device, and whether at the folds' raise no run separated.
+of five warpgroups (640 threads) launches at 96 a thread, 61,440 in all, and its roles' counts sum to that
+([`reg_five`](reg_five.md)): one whose counts summed to the SM's whole file hung on the device, a raise waiting
+for registers the kernel never entered with.
 
 ROWS: the fold's side alone (producers and steps), the read side alone (the image, the readout and the drain),
 both, and both with one access taken out: the producers' global loads (their words made in registers), the drains'

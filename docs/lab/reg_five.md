@@ -17,3 +17,16 @@ takes from the CTA's pool only what its other warpgroups released from that coun
 61,440, NOT TO THE SM'S FILE: here 2 × 160 + 80 + 2 × 40 = 5 × 96. The kernel compiles to two releases (to 40 and
 to 80) and one raise (to 160), with no local memory. At 80 a role holding 40 words spills; at 40 one holding 12
 does not.
+
+MEASURED (H100 SXM, 132 SMs, vast.ai instance 60425304, driver 580.173.02; 2026-11-12, the experiment at
+bed41355; 7 repetitions, every one of the 84,480 threads' sums exact):
+
+| the form | cycles a trip a CTA |
+|---|---|
+| five warpgroups: two at 160, one at 80, two at 40 | 666 (665 to 667) |
+
+WHAT IT SHOWS. FIVE WARPGROUPS TRADE REGISTERS ON THE DEVICE when their counts sum to what the kernel entered
+with: the two raised to 160 return from their raise and every role's held words are exact. A CTA of 640 threads
+has 61,440 registers for its roles, 4,096 under the SM's file.
+
+Record: `measure/lab/results/reg_five/sm_90a.json`.
