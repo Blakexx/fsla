@@ -307,6 +307,15 @@ __device__ __forceinline__ void wg_bf16_n16_ss_mn(float (&d)[8], uint64_t a, uin
       : "l"(a), "l"(b), "r"(static_cast<int>(add)));
 }
 
+//: m64n8k16 with both operands M|N-major: `d` += A [64 x 16] B [16 x 8]
+__device__ __forceinline__ void wg_bf16_n8_ss_mn(float (&d)[4], uint64_t a, uint64_t b, bool add = true) {
+  asm volatile(
+      "{ .reg .pred p; setp.ne.b32 p, %6, 0;\n"
+      "wgmma.mma_async.sync.aligned.m64n8k16.f32.bf16.bf16 {%0, %1, %2, %3}, %4, %5, p, 1, 1, 1, 1; }"
+      : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+      : "l"(a), "l"(b), "r"(static_cast<int>(add)));
+}
+
 #define LAB_WG_D32(d)                                                                                              \
   "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]), "+f"(d[4]), "+f"(d[5]), "+f"(d[6]), "+f"(d[7]), "+f"(d[8]),      \
       "+f"(d[9]), "+f"(d[10]), "+f"(d[11]), "+f"(d[12]), "+f"(d[13]), "+f"(d[14]), "+f"(d[15]), "+f"(d[16]),       \
