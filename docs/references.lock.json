@@ -1515,6 +1515,7 @@
   {"doc": "docs/lab/carry_window.md", "pinned_at": "4dea0c757c33", "reviewed": true, "sha256": "83541758d9344aed", "target": "docs/ARCHITECTURE.md#1-what-the-kernel-computes"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "18aee859836d", "reviewed": true, "sha256": "", "target": "docs/internals/tools/carry_floor.md"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "8b1174b3fdcf", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
+  {"doc": "docs/lab/carry_window.md", "pinned_at": "6c6bf5a299d2", "reviewed": true, "sha256": "", "target": "docs/lab/facts_lists.md"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "1cc213f25e01", "reviewed": true, "sha256": "", "target": "docs/lab/intra_window.md"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "8b1174b3fdcf", "reviewed": true, "sha256": "", "target": "docs/lab/pool_fill.md"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "8b1174b3fdcf", "reviewed": true, "sha256": "", "target": "docs/lab/readout_role.md"},

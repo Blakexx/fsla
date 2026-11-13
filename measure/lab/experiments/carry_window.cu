@@ -55,7 +55,9 @@
 // lane, the lanes without a den value to one place a warp. A CHAIN of rows with no clock inside a role adds the
 // den a part at a time (the fold's steps, the image's brick, the register split, the 72 columns, the whole), and
 // one row moves the winner's tiles to the den's pitch. Rows with the VALUES TILE-MAJOR in global memory price the
-// producers' loads of a token's 8 lines a kilobyte apart, the tables cached and once-read.
+// producers' loads of a token's 8 lines a kilobyte apart, the tables cached and once-read. THE LISTED rows' fold
+// reads REAL LISTS: a batch's 32 places loaded a batch before the loads they address, a window's tokens its own
+// 1,024, an entry's sparse byte and dense bytes a block each of the levels' tile-major rows.
 // see docs/internals/tools/lab.md#carry-window
 #include <chrono>
 
@@ -155,7 +157,12 @@ enum Roles : int {
   //: the row whose VALUES ARE TILE-MAJOR in global memory -- a tile of 64 tokens its 8 blocks of 8 channels one
   //: after another, a block a token's 16 bytes a line, the order a step's operand lands in -- so a token's 8 lines
   //: are a kilobyte apart where the others' are one run of 128 bytes: what that order costs the producers' loads
-  kTiledValues = 134217728
+  kTiledValues = 134217728,
+  //: THE LISTED row: the fold's entries are REAL LISTS' -- a producer loads a batch's 32 entries' tokens from the
+  //: lists the facts pass makes (a token's place in its window, 2 bytes), a batch ahead of the loads they address;
+  //: a window's tokens are its 1,024, their rows one stretch of each table; an entry's byte on its list's digit and
+  //: its 16 dense bytes are read from the levels' tile-major rows, a block each
+  kListed = 268435456
 };
 //: an image tile's pitch in bytes: the stores of a warp's lanes are two tiles apart
 template <int ROLES>
@@ -204,12 +211,30 @@ static_assert(read_regs<kLean | kWide> + serve_regs<kLean | kWide> == kReadRegs 
 static_assert(read_regs<kLean | kDen> + serve_regs<kLean | kDen> == kReadRegs + kServeRegs);
 static_assert(read_regs<kLean> + serve_regs<kLean> == kReadRegs + kServeRegs);
 template <int ROLES>
-constexpr int batches_held = ROLES & kLean ? 2 : 1;
+//: the listed row's producers hold one batch: its places and its sparse words are 4 registers a thread two batches
+//: do not leave
+constexpr int batches_held = (ROLES & kLean) && !(ROLES & kListed) ? 2 : 1;
 
 //: the token of a (CTA, box, entry of the call), its value at a channel, its byte on its list's digit and on a
 //: dense leaf; a read coefficient at (read digit, fold digit, token): small integers
 constexpr uint32_t token_of(uint32_t source, uint32_t entry) {
   return ((source * 4099u + entry) * 2654435761u >> 12) & (kTableTokens - 1);
+}
+//: THE LISTED row's tables behind one pointer: the dense level's and the sparse level's rows, tile-major, 65,536
+//: tokens each, then the lists -- a source's 64 windows of 256 entries, 2 bytes an entry
+constexpr int kLevelDigits = 256, kLevelTile = 64, kCallWindows = 64, kWindowTokens = 1024;
+constexpr long long kLevelBytes = static_cast<long long>(kTableTokens) * kLevelDigits, kListsAt = 2 * kLevelBytes;
+constexpr int kListEntries = kCallWindows * kWindow;
+//: a listed entry's token: its window's first and the place the list holds
+constexpr uint32_t listed_place(uint32_t source, uint32_t entry) {
+  return ((source * 4099u + entry % kListEntries) * 2654435761u >> 12) & (kWindowTokens - 1);
+}
+constexpr uint32_t listed_token(uint32_t source, uint32_t entry) {
+  return (entry / kWindow % kCallWindows) * kWindowTokens + listed_place(source, entry);
+}
+//: a token's 16 bytes of block `block` of a tile-major level, in lines of 16 bytes
+constexpr long long level_line(uint32_t token, int block) {
+  return static_cast<long long>(token / kLevelTile) * (kLevelDigits * kLevelTile / 16) + block * kLevelTile + token % kLevelTile;
 }
 constexpr int value_of(int t, int c) { return (t + c) % 2 + 1; }
 constexpr int sparse_of(int t) { return t % 2 + 1; }
@@ -463,12 +488,27 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
   constexpr int kHeld = batches_held<ROLES>, kParts = value_parts<ROLES>, kPart = kQuads / kParts;
   static_assert(kOwn % kHeld == 0);
   uint4 value[kHeld][kPart], bytes[kHeld];
+  //: THE LISTED row's: the lane's entry's place in its window for the batch a half loads next, and the word of
+  //: its sparse row that holds its list's byte
+  uint32_t ahead[kHeld], sword[kHeld];
+  static_assert(!(ROLES & kListed) || (kParts == 1 && !(ROLES & (kBig | kTiledValues | kNoLoads))));
+  const uint16_t* const lists = reinterpret_cast<const uint16_t*>(reinterpret_cast<const uint8_t*>(dense) + kListsAt)
+                                + static_cast<long long>(source) * kListEntries;
+  const auto load_places = [&](int n, int h) {
+    ahead[h] = lists[(n * kFill + lane) % kListEntries];
+  };
+  //: batch `n`'s window's first token, and the lane's entry's list in its box
+  const auto first_of = [&](int n) { return static_cast<uint32_t>(n / (kWindow / kFill) % kCallWindows) * kWindowTokens; };
+  const auto list_of = [&](int n) { return (n / kBatches & 1) * kSlotLists + (n % kBatches * kFill + lane) / kEntries; };
   //: part `part_at` of batch `n` of the call into register half `h`: value instructions of four entries (8 lanes
   //: an entry, a lane 16 bytes)
   const auto load_values = [&](int n, int part_at, int h) {
 #pragma unroll
     for (int qd = 0; qd < kPart; ++qd) {
-      const uint32_t tk = token_of(source, n * kFill + 4 * (part_at * kPart + qd) + group);
+      uint32_t tk;
+      //: the entry's place is its lane's: the lanes of a value instruction take their entry's by a shuffle
+      if constexpr (ROLES & kListed) tk = first_of(n) + __shfl_sync(0xffffffffu, ahead[h], 4 * qd + group);
+      else tk = token_of(source, n * kFill + 4 * (part_at * kPart + qd) + group);
       if constexpr (ROLES & kNoLoads) value[h][qd] = make_uint4(tk, tk, tk, tk);
       else {
         const uint32_t row = row_of<ROLES>(tk, static_cast<uint32_t>(n * kFill + 4 * qd + group));
@@ -480,14 +520,26 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
   };
   //: batch `n`'s dense bytes, all 32 entries' in one instruction (a lane an entry's 16)
   const auto load_bytes = [&](int n, int h) {
-    const uint32_t tb = token_of(source, n * kFill + lane);
-    if constexpr (ROLES & kNoLoads) bytes[h] = make_uint4(tb, tb, tb, tb);
-    else bytes[h] = boxes[row_of<ROLES>(tb, static_cast<uint32_t>(n * kFill + lane) * 2u + 1u)];
+    if constexpr (ROLES & kListed) {
+      //: the entry's 16 dense bytes, a block of the dense level's row, and the word of its sparse row's block that
+      //: holds its list's byte
+      const uint32_t tb = first_of(n) + ahead[h];
+      bytes[h] = boxes[level_line(tb, static_cast<int>(source & 15))];
+      sword[h] = reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(dense) + kLevelBytes)[
+          level_line(tb, static_cast<int>(source >> 4 & 15)) * 4 + (list_of(n) >> 2)];
+    } else {
+      const uint32_t tb = token_of(source, n * kFill + lane);
+      if constexpr (ROLES & kNoLoads) bytes[h] = make_uint4(tb, tb, tb, tb);
+      else bytes[h] = boxes[row_of<ROLES>(tb, static_cast<uint32_t>(n * kFill + lane) * 2u + 1u)];
+    }
   };
 #pragma unroll
   for (int h = 0; h < kHeld; ++h) {
+    if constexpr (ROLES & kListed) load_places(batch_of(h), h);
     load_values(batch_of(h), 0, h);
     load_bytes(batch_of(h), h);
+    //: the places of the batch a half loads next, a batch ahead of the loads they address
+    if constexpr (ROLES & kListed) load_places(batch_of(h + kHeld), h);
   }
   lab::WarpSpan clock;
   if constexpr (ROLES & kFive) lab::WarpMark::start(times);
@@ -520,7 +572,10 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
         part_out(0);
         //: the lane's entry: its 16 bytes times the entry's, 8 pairs of bf16, a brick's line each four
         const int e = b * kFill + lane;
-        const float weight = static_cast<float>(sparse_of(token_of(source, w * kWindow + slot * kSlot + e)));
+        //: the entry's byte on its list's digit: the listed row's from its row, a byte of the word loaded
+        float weight;
+        if constexpr (ROLES & kListed) weight = static_cast<float>(sword[h] >> (8 * (((slot * kSlot + e) / kEntries) & 3)) & 255u);
+        else weight = static_cast<float>(sparse_of(token_of(source, w * kWindow + slot * kSlot + e)));
         const uint32_t word[4] = {bytes[h].x, bytes[h].y, bytes[h].z, bytes[h].w};
         uint4 line[2];
 #pragma unroll
@@ -541,6 +596,8 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
         *reinterpret_cast<uint4*>(at + first * kBrick) = first ? line[1] : line[0];
         *reinterpret_cast<uint4*>(at + (first ^ 1) * kBrick) = first ? line[0] : line[1];
         load_bytes(batch_of(g + kHeld), h);
+        //: the places of the batch after that one, once this trip's loads have taken theirs
+        if constexpr (ROLES & kListed) load_places(batch_of(g + 2 * kHeld), h);
         //: a rolled loop: a part's addresses are formed in its trip
 #pragma unroll 1
         for (int part_at = 1; part_at < kParts; ++part_at) part_out(part_at);
@@ -954,6 +1011,8 @@ inline float half_to_float(uint16_t h) {
 
 //: the value table laid tile-major, for the rows that read it so
 static const uint32_t* tiled_values = nullptr;
+//: the listed row's tables: the two levels' tile-major rows and the lists
+static const uint32_t* listed_tables = nullptr;
 
 template <int ROLES>
 void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t* dense, float* state, uint32_t* out) {
@@ -968,7 +1027,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kStill ? ", no fold warp running" : "")
                            + (ROLES & kSuspend ? ", every wait suspended" : "")
                            + (ROLES & kSelf ? ", the readout draining its own rows and four producers" : "")
-                           + (ROLES & kLean ? ", the readout's A in two sets and two batches a producer" : "")
+                           + (ROLES & kLean ? (ROLES & kListed ? ", the readout's A in two sets" : ", the readout's A in two sets and two batches a producer") : "")
                            + (ROLES & kFive ? ", five warpgroups: four producers and four drain warps" : "")
                            + (ROLES & kSleep ? ", the long waits asleep at named barriers" : "")
                            + (ROLES & kNoMath ? ", the producers' coefficient arithmetic taken out" : "")
@@ -982,6 +1041,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kAligned ? ", the sides' carves equal: an image tile a list, its lines four threads' words" : "")
                            + (ROLES & kNoClock ? ", no clock inside a role" : "")
                            + (ROLES & kTiledValues ? ", the values tile-major in global memory" : "")
+                           + (ROLES & kListed ? ", the fold's entries real lists' and a window's own tokens" : "")
                            + (ROLES & kPitch ? (ROLES & kDenImage ? ", the image's tiles 161 lines apart" : ROLES & kNoClock ? ", the image's tiles 155 lines apart" : ", the image's tiles 154 lines apart") : "")
                            + ((ROLES & kDen) == kDen ? ", the den: two more steps a slot, the readout's steps 72 columns and an fp32 a token"
                               : ROLES & kDen ? std::string(", the den's parts alone: its fold steps")
@@ -993,11 +1053,12 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
   const auto kernel = window<ROLES>;
   //: the rows that read the values tile-major read the table laid so
   values = ROLES & kTiledValues ? tiled_values : values;
+  dense = ROLES & kListed ? listed_tables : dense;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
   const size_t tokens = static_cast<size_t>(b.sms) * kOutWindows * kWindow;
   LAB_CHECK(cudaMemset(out, 0, (words + tokens) * 4));
-  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues)) == (kFold | kRead)) {
+  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed)) == (kFold | kRead)) {
     kernel<<<b.sms, kLaunch, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * state_words<ROLES>;
@@ -1045,7 +1106,9 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
           }
         for (int box = 0; box < 2; ++box)
           for (int e = 0; e < kWindow; ++e) {
-            const int t = static_cast<int>(token_of(blk * 2 + box, w * kWindow + e)), a = e / kEntries;
+            const int t = static_cast<int>(ROLES & kListed ? listed_token(blk * 2 + box, w * kWindow + e)
+                                                           : token_of(blk * 2 + box, w * kWindow + e)),
+                      a = e / kEntries;
             for (int m = 0; m < kChannels; ++m)
               for (int bb = 0; bb < kLists; ++bb)
                 s[at(box, m, a, bb)] += value_of(t, m) * sparse_of(t) * dense_of(t, bb);
@@ -1176,6 +1239,26 @@ inline Buffers buffers(const lab::Bench& b) {
     LAB_CHECK(cudaMemcpy(dev, tiled.data(), tiled.size() * 4, cudaMemcpyHostToDevice));
     tiled_values = dev;
   }
+  {
+    //: the listed row's: a level's byte of token `t` at digit `d` is `dense_of(t, d % 16)` in the dense level and
+    //: `sparse_of(t)` in the sparse; a source's list entry its token's place in its window
+    const size_t sources = static_cast<size_t>(b.sms) * 2;
+    std::vector<uint8_t> blob(static_cast<size_t>(kListsAt) + sources * kListEntries * 2);
+    for (uint32_t t = 0; t < static_cast<uint32_t>(kTableTokens); ++t)
+      for (int d = 0; d < kLevelDigits; ++d) {
+        const size_t at = static_cast<size_t>(level_line(t, d / 16)) * 16 + d % 16;
+        blob[at] = static_cast<uint8_t>(dense_of(static_cast<int>(t), d % 16));
+        blob[static_cast<size_t>(kLevelBytes) + at] = static_cast<uint8_t>(sparse_of(static_cast<int>(t)));
+      }
+    uint16_t* const ids = reinterpret_cast<uint16_t*>(blob.data() + kListsAt);
+    for (size_t src = 0; src < sources; ++src)
+      for (int e = 0; e < kListEntries; ++e)
+        ids[src * kListEntries + e] = static_cast<uint16_t>(listed_place(static_cast<uint32_t>(src), static_cast<uint32_t>(e)));
+    uint8_t* dev = nullptr;
+    LAB_CHECK(cudaMalloc(&dev, blob.size()));
+    LAB_CHECK(cudaMemcpy(dev, blob.data(), blob.size(), cudaMemcpyHostToDevice));
+    listed_tables = reinterpret_cast<const uint32_t*>(dev);
+  }
   LAB_CHECK(cudaMalloc(&dense, host_dense.size() * 4));
   LAB_CHECK(cudaMemcpy(dense, host_dense.data(), host_dense.size() * 4, cudaMemcpyHostToDevice));
   LAB_CHECK(cudaMalloc(&state, sizeof(float) * b.sms * 2 * kGroup * state_words<kDen>));
@@ -1202,7 +1285,8 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kNoClock | kDenFold | kDenImage | kDenSplit,
                     3 | kSuspend | kLean | kNoClock | kDenFold | kDenImage | kDenSplit | kDenRead,
                     3 | kSuspend | kLean | kNoClock | kPitch, 3 | kSuspend | kLean | kNoClock | kTiledValues,
-                    3 | kSuspend | kLean | kNoClock | kBig, 3 | kSuspend | kLean | kNoClock | kBig | kTiledValues}) {
+                    3 | kSuspend | kLean | kNoClock | kBig, 3 | kSuspend | kLean | kNoClock | kBig | kTiledValues,
+                    1 | kListed, 3 | kSuspend | kLean | kNoClock | kListed}) {
     const std::string k = lab::kernel("carry_window::window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     b.expect(k, "HGMMA", "==",
@@ -1300,5 +1384,7 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kLean | kNoClock | kTiledValues>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kBig>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kBig | kTiledValues>(b, waits, values, dense, state, out);
+  run<kFold | kListed>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kListed>(b, waits, values, dense, state, out);
   return 0;
 }

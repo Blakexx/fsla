@@ -75,6 +75,14 @@ tokens laid block by block ([`intra_window`](intra_window.md)). The carry's prod
 lines of 16 bytes: token-major they are one run of 128 bytes, tile-major a kilobyte apart. Rows read the values
 tile-major with the tables cached and once-read, each beside its token-major row.
 
+REAL LISTS (its own rows; the fold's side). The facts pass turns a sparse level's mask into a window's tokens by
+digit ([`facts_lists`](facts_lists.md)), an entry the token's place in its window and no byte. In these rows a
+producer loads a batch's 32 places from such lists, a batch ahead of the loads they address; a window's tokens are
+its own 1,024, so their rows are one stretch of each table where the other rows' tokens are spread over 65,536;
+and an entry's byte on its list's digit and its 16 dense bytes are each a block of a level's tile-major row. The
+producers hold one batch: the places and the sparse words are 4 registers a thread that two batches do not leave.
+The readout's side still reads the synthetic readers.
+
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
 through uniform registers in the den's. Rows of the winner's form and the den's, at both cells, and the den's chain run with no
