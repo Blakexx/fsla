@@ -10,7 +10,7 @@
 // counts alone (what sizes its lists) or the lists too. Every count and entry is checked against the host's.
 // TIMELINE: no MMA and no staged operand. A thread's trip is its window once: its mask's two loads (or its row's
 // 16 and their tests); a shared-memory atomic a live digit; the barrier; a digit's 32 words summed by its thread
-// and the 256 offsets by one warp's; the barrier; a byte's load and an entry's store a live digit. Live: a thread's
+// and the 256 offsets by one thread while the CTA waits; the barrier; a byte's load and an entry's store a live digit. Live: a thread's
 // 8 mask words.
 // see docs/internals/tools/lab.md#facts-lists
 #include "lab.cuh"

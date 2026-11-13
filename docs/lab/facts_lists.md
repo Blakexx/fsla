@@ -3,8 +3,9 @@
 Mirrors `measure/lab/experiments/facts_lists.cu`, an experiment of the lab
 ([`docs/internals/tools/lab.md`](../internals/tools/lab.md)).
 
-A sparse level's liveness is a MASK the op is handed, a bit a digit a token, used blindly
-([`ARCHITECTURE.md`](../ARCHITECTURE.md#62-the-facts-pass)). The mask says, for a token, which digits are live; a
+A sparse level's liveness is RULED to be a mask the op is handed, a bit a digit a token, used blindly; the pass
+this tree builds still tests the rows' values ([`ARCHITECTURE.md`](../ARCHITECTURE.md#62-the-facts-pass)). This
+lab prices the ruled form beside the built one's access. The mask says, for a token, which digits are live; a
 carry CTA needs the opposite each window -- for each of its digits, WHICH TOKENS are live on it, the data it pulls.
 What does turning one into the other cost a token on hopper, and what does the value test it replaces cost beside
 it?
@@ -30,12 +31,14 @@ SM-cycles a token for one side's sparse level):
 | a value test of its row | 21.0 | 49.7 |
 
 WHAT IT SHOWS.
-- FROM A HANDED MASK THE PASS IS 23 SM-CYCLES A TOKEN a sparse level-side, lists and all, and 5 for the counts
+- WITH EVERY TABLE IN CACHE -- the upside, not the price (R22.2): each timed call re-reads the same windows, and the
+  pass over masks and rows the cache does not hold is unmeasured -- FROM A HANDED MASK THE PASS IS 23 SM-CYCLES A TOKEN a sparse level-side, lists and all, and 5 for the counts
   alone; a value test of the rows is 50 and 21. The mask halves the pass and takes the count to a quarter.
-- THE LISTS' OWN PART IS THE ENTRIES: 18 cycles a token past the counts -- a live digit's byte loaded from its row
-  and its entry stored, one of each a live digit, neither staged. An entry without its byte is not measured.
+- THE LISTS COST 18 cycles a token past the counts: the digits' offsets (one thread's 256 sums while the CTA waits), a live digit's byte
+  loaded from its row unstaged, and its entry's store. Which of them it is is NOT ISOLATED; an entry without its byte
+  is not measured.
 - BESIDE THE CARRY's window ([`carry_window`](carry_window.md)) the pass is a few hundredths a sparse level-side.
-  The tables are cached and the cell has 4 to 5 live digits a token; a level with more live digits is more entries
-  in proportion.
+  ONE CELL: 4 to 5 live digits a token of 256, spread evenly; a denser or a clustered level is unmeasured. The value
+  test reads token-major rows, which the hopper bundle does not hold.
 
 Record: `measure/lab/results/facts_lists/sm_90a.json`.
