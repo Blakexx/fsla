@@ -52,12 +52,15 @@ __device__ __forceinline__ void gram_step(int (&d)[32], uint64_t a, uint64_t b, 
 }
 
 //: THE LOADER WARP: the readers' rows once, then a writer tile a trip into the slot the compute released
-__device__ __forceinline__ void load_role(uint32_t base, const CUtensorMap* level0, const CUtensorMap* level1,
-                                          const CUtensorMap* values, int rounds) {
+__device__ __forceinline__ void load_role(uint32_t base, long long* times, const CUtensorMap* level0,
+                                          const CUtensorMap* level1, const CUtensorMap* values, int rounds) {
   const int lane = threadIdx.x & 31, mine = blockIdx.x % kTiles;
   const int first = (blockIdx.x / kTiles) * kWindow;
   const uint32_t bars = base + kBarsAt;
   const CUtensorMap* const level = lane & 16 ? level1 : level0;
+  //: the CTA's span is its warps' earliest start to their latest stop: the loader's is inside the compute's
+  lab::WarpSpan clock;
+  clock.start();
   if (lane == 0) lab::mbar_expect(bars + kReadersReady, kReadersLanded);
   //: a lane a block: level `lane / 16`, digits `16 (lane % 16)` on
   lab::tensor_load_2d(base + kReadersAt + lane * kBlock, level, 16 * (lane & 15), first + mine * kTile,
@@ -73,6 +76,7 @@ __device__ __forceinline__ void load_role(uint32_t base, const CUtensorMap* leve
     //: the values' 8 blocks: a lane of the first 8 one
     if (lane < kValueBlocks) lab::tensor_load_2d(at + kSlotValues + lane * kBlock, values, 8 * lane, tokens, ready);
   }
+  clock.stop(times);
 }
 
 //: THE COMPUTE WARPGROUP: a trip a writer tile -- the levels' products, the weights, the value steps
@@ -184,7 +188,7 @@ __global__ void __launch_bounds__(kThreads, 1)
   if (tid < kGroup) {
     compute_role(base, times, out, den, rounds);
   } else {
-    load_role(base, &level0, &level1, &values, rounds);
+    load_role(base, times, &level0, &level1, &values, rounds);
   }
 }
 
