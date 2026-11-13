@@ -65,7 +65,9 @@ instruction), the warp stores them to its own scratch in shared memory and each 
 one instruction where 8 are, each of whose 32 lanes takes 4 bytes of one of 8 rows; and the read side alone with
 the fold's image stores, its fence behind them, or both taken out, and both sides with that fence out. Two rows
 keep the fold warps PRESENT AND IDLE beside the readout and the drains for the whole call -- parked at a named
-barrier, or spinning at a polled one -- where the row with no fold warp running has them leave. Then WHAT THE
+barrier, or spinning at a polled one -- where the row with no fold warp running has them leave. One row RESTORES
+the fold's state dump to every call, as every record before this form had it: the A/B that prices the dump in one
+session. The suspended and the sleeping waits also run combined with the lean readout and the wide byte load. Then WHAT THE
 READOUT'S STEPS WAIT BEHIND: the
 readout and the drains with no fold warp running (the image as it lies, never rewritten, no fold warp at a
 barrier); every barrier's wait by the instruction that may suspend its thread (`mbarrier.try_wait`) where the
@@ -82,9 +84,8 @@ readout and the drains are in their last windows and be clocked as theirs.
 MEASURED (H100 SXM, 132 SMs, vast.ai instance 60440177, driver 595.91.07; 2026-11-13, the experiment at
 79ec1b08, one session; 7 repetitions, the composed rows' 4,325,376 state values and 8,650,752 output values exact;
 the median; SM-cycles a token are the window's cycles over 8 -- 128 CTAs of two boxes, 1,024 tokens. FIRST SESSION
-WITH THE FOLD'S STATE DUMP OUT OF THE TIMED CALLS: every earlier record's rows with a fold running were overstated
-by its 1,024 store instructions a CTA, issued after the fold's clock stopped and paid by the read side -- the
-composed row read 8,245 with them and 7,024 without):
+WITH THE FOLD'S STATE DUMP OUT OF THE TIMED CALLS (the record before it, on another box, read the composed row at
+8,245 with the dump in every call; the dump's price in one session is a row still owed):
 
 | the row | cycles a window a CTA | SM-cycles a token |
 |---|---|---|
@@ -155,9 +156,9 @@ WHAT IT SHOWS.
   the fold's side alone to 3,053 cycles a window where one a box is 5,071; one a box holding TWO batches is
   4,595; and two a box at 40 registers a thread, each holding one value instruction's four entries, are
   5,962 -- slower than one a box that holds a batch.
-- THE LONG WAITS ASLEEP AT NAMED BARRIERS ARE THE BEST COMPOSED FORM: 6,846 against 7,024 polled, and the read
-  side alone 5,055 against 5,560 -- with the dump artifact gone, the sleeping waits' gain is real where it was
-  buried before.
+- EVERY WAIT SUSPENDED IS THE FASTEST COMPOSED ROW: 6,819 cycles a window (6,812 to 6,824), the long waits
+  asleep at named barriers 6,846 (6,840 to 6,852), the polled baseline 7,024 (7,010 to 7,029): the ranges do not
+  overlap, and both non-polling forms beat the polled one by 2.5 to 3%.
 - FIVE WARPGROUPS LOSE COMPOSED, 7,657 against 7,024: 640 threads leave four producers and four drain warps 40
   registers a thread, the fold waits on its producers 5,192 cycles a window, and the lean readout the count
   forces is 3,890 in its steps and their forming where one commit group's are 3,582. Four drain warps do
@@ -171,10 +172,11 @@ WHAT IT SHOWS.
   those loads are three fifths of the fold's side alone -- 2,439 cycles a window without them against 5,071, some
   164 cycles a batch of a producer's 9 load instructions; their coefficient arithmetic is 415 of it
   (4,656 without). The drains' adds out, the window is 6,683; the image's stores out, 6,642.
-- THE DUMP WAS THE FOLD-PRESENCE PENALTY: the read side alone is 5,560 with the fold warps publishing, 4,278 with
-  no fold warp running, and a fold warp parked asleep beside it costs 81 cycles and one spinning 210
-  (the no-fold-warp row, the fold warps parked or spinning).
-- THE READOUT'S OWN BYTE LOADS ARE A THIRD OF ITS STEPS' SPAN: 8 instructions a chunk, each lane's 4 bytes of a
+- A PRESENT FOLD WARP COSTS THE READ SIDE NOTHING, A PUBLISHING ONE 1,282 CYCLES: the read side alone is 5,560
+  with the fold warps publishing and 4,278 with no fold warp running, while one parked asleep beside it costs 81
+  cycles and one spinning 210. What of the publishing fold's hand-off holds the read side's 1,282 is NOT
+  ISOLATED (its stores are 568 of it: 4,992 with them out; its fence nothing).
+- THE READOUT'S OWN BYTE LOADS ARE A SIXTH OF ITS STEPS' SPAN: 8 instructions a chunk, each lane's 4 bytes of a
   different row; without them a readout warp's steps are 2,128 cycles a window against 2,576. The read side alone
   is then the drain's -- 5,002 against 5,560, the readout waiting on the drain 273 -- at some
   27 cycles an add a drain warp, where with no fold warp running an add is 26.

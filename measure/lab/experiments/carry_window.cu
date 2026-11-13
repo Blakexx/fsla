@@ -23,7 +23,9 @@
 // bytes; and with those bytes ONE WIDE LOAD a readout warp a chunk -- a lane a row's 16 bytes, relaid through the
 // warp's scratch in shared memory; and the read side with the fold's image stores, its fence behind them, or both
 // taken out, and the readout and drains with the fold warps present and idle -- parked at a named barrier, or
-// spinning at a polled one. Then what the readout's steps
+// spinning at a polled one; a row that restores the fold's state dump to every call (the A/B that prices it in
+// one session); and the suspended and sleeping waits combined with the lean readout and the wide byte load. Then
+// what the readout's steps
 // wait behind: the readout and the drains with NO fold warp running (the image as it lies); every barrier's wait
 // by the instruction that may suspend its thread, where the others poll. With both sides and no access out, the
 // state and every output row are checked exactly, and a long call's span over its wall time reads the card's clock.
@@ -99,7 +101,10 @@ enum Roles : int {
   //: two rows of the readout and the drains with the fold warps PRESENT AND IDLE for the whole call -- parked at a
   //: named barrier, or spinning at a polled one -- where the still row's fold warps have left: what a present warp
   //: costs the others by being there
-  kPark = 32768, kSpin = 65536
+  kPark = 32768, kSpin = 65536,
+  //: the row that RESTORES the fold's state dump to every call, as every record before this form had it: the A/B
+  //: that prices the dump in one session
+  kDump = 131072
 };
 //: THE FIVE-WARPGROUP row: 640 threads, a fourth warpgroup of four producers and a fifth of four drain warps. A
 //: kernel of 640 threads enters with 96 registers a thread (docs/lab/reg_five.md), and the roles' counts sum to
@@ -276,7 +281,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
   //: THE STATE OUT, for the checked call alone: 128 stores a thread, each instruction's lanes on 32 lines, issued
   //: while the readout and the drains are still in their last windows -- in a timed call they would be clocked as
   //: the read side's
-  if (windows <= kOutWindows) {
+  if (windows <= kOutWindows || (ROLES & kDump)) {
     float* const to = state + (static_cast<long long>(blockIdx.x) * 2 * kGroup + tid) * (kLists * 8);
 #pragma unroll
     for (int a = 0; a < kLists; ++a)
@@ -770,7 +775,8 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kWide ? ", the readout's bytes one wide load a warp" : "")
                            + (ROLES & kNoFence ? ", the fold's fence behind its image taken out" : "")
                            + (ROLES & kPark ? ", the fold warps parked at a named barrier" : "")
-                           + (ROLES & kSpin ? ", the fold warps spinning at a polled barrier" : "");
+                           + (ROLES & kSpin ? ", the fold warps spinning at a polled barrier" : "")
+                           + (ROLES & kDump ? ", the fold's state stored out in every call" : "");
   constexpr int kLaunch = threads_of<ROLES>, kWarps = kLaunch >> 5;
   const auto kernel = window<ROLES>;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
@@ -893,7 +899,9 @@ int main(int argc, char** argv) {
                     1 | kNoLoads | kNoMath, 2 | kNoBytes, 2 | kStill | kNoBytes, 3 | kNoBytes,
                     3 | kNoBytes | kNoAdds, 3 | kWide, 2 | kWide, 2 | kStill | kWide, 3 | kWide | kSleep,
                     2 | kNoImage, 2 | kNoFence, 2 | kNoImage | kNoFence, 3 | kNoFence,
-                    2 | kStill | kPark, 2 | kStill | kSpin}) {
+                    2 | kStill | kPark, 2 | kStill | kSpin, 3 | kDump,
+                    3 | kSuspend | kLean, 3 | kSuspend | kWide, 3 | kSuspend | kLean | kWide,
+                    3 | kSleep | kLean | kWide}) {
     const std::string k = lab::kernel("window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     b.expect(k, "HGMMA", "==",
@@ -979,5 +987,10 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kNoFence>(b, waits, values, dense, state, out);
   run<kRead | kStill | kPark>(b, waits, values, dense, state, out);
   run<kRead | kStill | kSpin>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kDump>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kWide>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kWide>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSleep | kLean | kWide>(b, waits, values, dense, state, out);
   return 0;
 }
