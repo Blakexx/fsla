@@ -81,7 +81,8 @@ producer loads a batch's 32 places from such lists, a batch ahead of the loads t
 its own 1,024, so their rows are one stretch of each table where the other rows' tokens are spread over 65,536;
 and an entry's byte on its list's digit and its 16 dense bytes are each a block of a level's tile-major row. The
 producers hold one batch: the places and the sparse words are 4 registers a thread that two batches do not leave.
-The readout's side still reads the synthetic readers.
+The readout's side still reads the synthetic readers. A second pair of rows gives every window the SAME 1,024 tokens, so
+their rows stay in cache: what of the listed rows is their loads' code and what their rows' arrival.
 
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
