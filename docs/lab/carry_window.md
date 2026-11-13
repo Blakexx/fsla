@@ -62,6 +62,11 @@ cell's is 4 lines, a warp's lanes on 128 consecutive bytes -- and the den's line
 each. The readout, the panel and the drains are the same code. It prices the image form where the carves are
 equal, in place of a form of its own.
 
+NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
+the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
+through uniform registers in the den's. Four rows (the winner's form and the den's, at both cells) run with no
+clock read inside a role: their windows are the roles' own work, and their difference is the den's.
+
 ROWS: the fold's side alone (producers and steps), the read side alone (the image, the readout and the drain),
 both, and both with one access taken out: the producers' global loads (their words made in registers), the drains'
 global adds (their lines folded into a sink), the image's stores; and, both and each side alone, with THE READOUT

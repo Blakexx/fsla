@@ -138,7 +138,11 @@ enum Roles : int {
   //: -- an image tile is a LIST and its K the digits. A line (a channel's 8 digits of a list) is then four fold
   //: threads' values, a 4-byte word each: 16 word stores a thread a tile group where the other cell's are 4 lines;
   //: the den's line is 8 threads' values, 2 bytes each. The readout and the drains are the same code
-  kAligned = 2097152
+  kAligned = 2097152,
+  //: the rows with NO CLOCK INSIDE A ROLE: a wait is its wait and a phase is not lapped, so the window's cycles are
+  //: the roles' own -- a role's clock reads compile differently from row to row (into registers in one kernel,
+  //: through uniform registers in another), and these rows price a row's work without them
+  kNoClock = 4194304
 };
 //: an image tile's pitch in bytes: the stores of a warp's lanes are two tiles apart
 template <int ROLES>
@@ -179,9 +183,11 @@ constexpr int value_parts = ROLES & kFive ? kFiveParts : 1;
 //: the den's readout holds 4 more accumulators, column 64's set: at 80 the toolkit serializes its steps, and its 8
 //: more a thread are the fourth warpgroup's, as the wide and the big rows' are
 template <int ROLES>
-constexpr int read_regs = ROLES & kFive ? kFiveReadRegs : (ROLES & kLean) && (ROLES & kDen) ? 88 : ROLES & kLean ? 80 : kReadRegs;
+constexpr int read_regs = ROLES & kFive ? kFiveReadRegs : (ROLES & kLean) && (ROLES & (kDen | kWide)) ? 88 : ROLES & kLean ? 80 : kReadRegs;
 template <int ROLES>
-constexpr int serve_regs = (ROLES & kLean) && (ROLES & (kWide | kBig | kDen)) ? 104 : ROLES & kLean ? 112 : kServeRegs;
+constexpr int serve_regs = (ROLES & kLean) && (ROLES & (kWide | kDen)) ? 104 : ROLES & kLean ? 112 : kServeRegs;
+static_assert(read_regs<kLean | kWide> + serve_regs<kLean | kWide> == kReadRegs + kServeRegs
+              && read_regs<kLean | kBig> + serve_regs<kLean | kBig> == kReadRegs + kServeRegs);
 static_assert(read_regs<kLean | kDen> + serve_regs<kLean | kDen> == kReadRegs + kServeRegs);
 static_assert(read_regs<kLean> + serve_regs<kLean> == kReadRegs + kServeRegs);
 template <int ROLES>
@@ -224,9 +230,13 @@ __device__ __forceinline__ void await(uint32_t bar, uint32_t parity) {
 //: the same, its cycles added to the warp's count for that barrier: a role's time is its span less its waits
 template <int ROLES>
 __device__ __forceinline__ void waited(uint32_t bar, uint32_t parity, uint32_t& count) {
-  const uint32_t t0 = static_cast<uint32_t>(clock64());
-  await<ROLES>(bar, parity);
-  count += static_cast<uint32_t>(clock64()) - t0;
+  if constexpr (ROLES & kNoClock) {
+    await<ROLES>(bar, parity);
+  } else {
+    const uint32_t t0 = static_cast<uint32_t>(clock64());
+    await<ROLES>(bar, parity);
+    count += static_cast<uint32_t>(clock64()) - t0;
+  }
 }
 //: a warp's four counts, stored at `kCounts (block, warp)`: its two waits, and the readout's steps and their A
 constexpr int kCounts = 4;
@@ -569,7 +579,7 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       //: chunk `2 h + c`'s digits are `8 h + c + 2 j`: its tile group, published for this window
       if constexpr (ROLES & kSleep) slept(kTilesId + c4, kTilesCount, on_image);
       else if constexpr (!(ROLES & kStill)) waited<ROLES>(bars + kTilesReady + 8 * c4, w & 1, on_image);
-      uint32_t since = static_cast<uint32_t>(clock64());
+      uint32_t since = ROLES & kNoClock ? 0u : static_cast<uint32_t>(clock64());
       //: THE COEFFICIENTS, in registers: a row's two bytes times its reader's byte on the digit, a bf16 pair a word
       //: -- word `r | h << 1` of A, as an m64n16 accumulator lays its values
       if constexpr (ROLES & kWide) {
@@ -625,7 +635,7 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
           for (int box = 0; box < 2; ++box)
 #pragma unroll
             for (int i = 0; i < 4; ++i) rows[j][box][i] = lab::held(warp == j ? a[box][i] : 0u);
-        in_form += lap(since);
+        if constexpr (!(ROLES & kNoClock)) in_form += lap(since);
         lab::wg_fence();
 #pragma unroll
         for (int j = 0; j < kChunkDigits; ++j)
@@ -639,7 +649,7 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       //: the next chunk's bytes, issued under the steps
       load(c + 1);
       lab::wg_wait<0>();
-      in_steps += lap(since);
+      if constexpr (!(ROLES & kNoClock)) in_steps += lap(since);
       //: the group is read: its box may publish the next window's over it
       if constexpr (!(ROLES & kStill))
         if constexpr (ROLES & kSleep) lab::bar_arrive(kReadId + c4, kTilesCount);
@@ -924,6 +934,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kDump ? ", the fold's state stored out in every call" : "")
                            + (ROLES & kBig ? ", the tables 16 replicas the cache cannot hold" : "")
                            + (ROLES & kAligned ? ", the sides' carves equal: an image tile a list, its lines four threads' words" : "")
+                           + (ROLES & kNoClock ? ", no clock inside a role" : "")
                            + (ROLES & kPitch ? (ROLES & kDen ? ", the image's tiles 161 lines apart" : ", the image's tiles 154 lines apart") : "")
                            + (ROLES & kDen ? ", the den: two more steps a slot, the readout's steps 72 columns and an fp32 a token" : "");
   constexpr int kLaunch = threads_of<ROLES>, kWarps = kLaunch >> 5;
@@ -932,7 +943,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
   const size_t tokens = static_cast<size_t>(b.sms) * kOutWindows * kWindow;
   LAB_CHECK(cudaMemset(out, 0, (words + tokens) * 4));
-  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned)) == (kFold | kRead)) {
+  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock)) == (kFold | kRead)) {
     kernel<<<b.sms, kLaunch, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * state_words<ROLES>;
@@ -1066,7 +1077,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                 "the same launches as the card's clock: the row checks the kernel");
     b.record(name + ": the long call by wall time, scaled to 65,536 tokens", "milliseconds", wall);
   }
-  if (!(ROLES & (kNoLoads | kNoAdds | kNoImage)) && ROLES & kRead)
+  if (!(ROLES & (kNoLoads | kNoAdds | kNoImage | kNoClock)) && ROLES & kRead)
     for (int i = 0; i < kSites; ++i)
       if (ROLES & (kLean | kFive) && i == kFoldSites + 2) continue;
       else if (ROLES & kFive && i == kSites - 1) continue;
@@ -1087,7 +1098,8 @@ int main(int argc, char** argv) {
                     2 | kNoImage, 2 | kNoFence, 2 | kNoImage | kNoFence, 3 | kNoFence,
                     2 | kStill | kPark, 2 | kStill | kSpin, 3 | kDump,
                     3 | kSuspend | kLean, 3 | kSuspend | kWide, 3 | kSuspend | kLean | kWide,
-                    3 | kSleep | kLean | kWide, 3 | kBig, 3 | kSuspend | kLean | kBig, 1 | kBig, 1 | kDen, 3 | kSuspend | kLean | kDen, 3 | kSuspend | kLean | kBig | kDen, 3 | kSuspend | kLean | kPitch, 3 | kSuspend | kLean | kDen | kPitch, 3 | kSuspend | kLean | kAligned, 3 | kSuspend | kLean | kAligned | kDen}) {
+                    3 | kSleep | kLean | kWide, 3 | kBig, 3 | kSuspend | kLean | kBig, 1 | kBig, 1 | kDen, 3 | kSuspend | kLean | kDen, 3 | kSuspend | kLean | kBig | kDen, 3 | kSuspend | kLean | kPitch, 3 | kSuspend | kLean | kDen | kPitch, 3 | kSuspend | kLean | kAligned, 3 | kSuspend | kLean | kAligned | kDen, 3 | kSuspend | kLean | kNoClock, 3 | kSuspend | kLean | kDen | kNoClock,
+                    3 | kSuspend | kLean | kAligned | kNoClock, 3 | kSuspend | kLean | kAligned | kDen | kNoClock}) {
     const std::string k = lab::kernel("window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     b.expect(k, "HGMMA", "==",
@@ -1192,5 +1204,9 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kLean | kDen | kPitch>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kAligned>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kAligned | kDen>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kDen | kNoClock>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kAligned | kNoClock>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kAligned | kDen | kNoClock>(b, waits, values, dense, state, out);
   return 0;
 }
