@@ -86,13 +86,34 @@ measures it. Pipe cycles are an SM's, from `common/hardware.json` ([pipes.md](pi
 | a reduction across warps into a slot an item | one shared atomic (max, add) a lane at the item's slot, then one wide load of a lane's slots | 2 pipe cycles an atomic instruction; one `LDS.128` for four slots | `handoff`, `smem_rates` |
 | an address at every access of a level | a base held for the level plus compile-time offsets (§29.3); a lane's constants held (`lab::held`) | 0-1 instructions an access | `read_image`, `handoff` |
 | a lane's several words into shared memory | the widest store the layout allows | a 4-byte store 2 pipe cycles a wavefront, 8 or 16 bytes ~1.0-1.14 | `smem_rates` |
-| global rows into shared memory | `cp.async.cg` | 0.5 pipe cycles a 128 B (`.ca` 5.4; a load into registers 1.6-1.7 and its registers in flight) | `smem_rates` |
+| contiguous global rows into shared memory, sm_80/86 | `cp.async.cg` | 0.5 pipe cycles a 128 B (`.ca` 5.4; a load into registers 1.6-1.7 and its registers in flight) | `smem_rates` |
 | a stream's per-step scalars (coefficients, tokens, entries) | in the record riding the stage copy, read lane-ready | one 8-byte load a lane a step | `row_stream`, `read_stream` |
 | a pad in a stream | not copied: its zero coefficient cancels the stale row | nothing | `row_stream` |
 | fp32 to integer | one FFMA adding 1.5 x 2^23, a pair packed by one PRMT (§29.6) | 1.5 instructions a value, the FMA pipe | `read_image` |
 | an accumulation into shared memory from many lanes, sm_80/86 | the 32-bit integer `red.shared.add` (their only native shared atomic add) | 2 pipe cycles an instruction | `read_image`, `smem_rates` |
 | a branch on loaded data around collectives | a vote (`__any_sync`), a loop bottom-tested on it (§29.9) | no convergence barrier | `read_image` |
 | a value every lane needs from a warp reduction | `__reduce_*_sync` | 2 instructions (its uniform-register move) | `color_union` |
+
+THE HOPPER CARRY'S FORMS (sm_90, an H100), each beside the form it was measured against:
+
+| job | the form | its cost | measured in |
+|---|---|---|---|
+| scattered global rows into shared memory, each its own request | warps' own loads, 16 bytes a lane and four rows an instruction, then stores; a producing warp holds one batch of 32 entries | 8.5 cycles a row from four warps, 33.0 from one; a warp's rate rises with the entries it holds up to a batch and no further | [`load_rate`](../../lab/load_rate.md), [`value_gather`](../../lab/value_gather.md), [`carry_window`](../../lab/carry_window.md) |
+| an output row summed into global memory | one atomic add of the row's whole 128-byte line, from warps that do nothing else | 12.6 cycles a line a warp alone; the issuing warp is held until the SM passes the add | [`add_rate`](../../lab/add_rate.md), [`carry_window`](../../lab/carry_window.md) |
+| a register state published as a wgmma's shared-memory operand | the major whose 16-byte line is one thread's own values (K-major for a fold's accumulators) | 4 stores a thread a tile group; some 200 cycles of a window | [`carry_window`](../../lab/carry_window.md) |
+| registers moved between a CTA's roles | `setmaxnreg`, one count a whole warpgroup, each role's body in its own branch; the counts sum to what the kernel enters with, which goes by whole warpgroups (128 a thread at 512 threads, 96 at 640) | about 200 cycles a warp, once | [`reg_trade`](../../lab/reg_trade.md), [`reg_five`](../../lab/reg_five.md) |
+| the register A operands of several asynchronous steps | every step's A in its own registers, the steps one commit group | nothing beside the steps | [`carry_window`](../../lab/carry_window.md) |
+
+FORMS THAT LOST there, with what each was measured against (a row stays until a later measurement overturns it):
+
+| the form | what it lost to | by how much | measured in |
+|---|---|---|---|
+| a scattered row by the bulk copy engine, one request a row | four warps' own loads | 32.8 cycles a row against 8.5 | [`state_move`](../../lab/state_move.md), [`value_gather`](../../lab/value_gather.md) |
+| a producer holding two batches, its loads two ahead | one batch held | no faster: the fold's side 5,611 cycles a window against 5,994 | [`carry_window`](../../lab/carry_window.md) |
+| four producers each holding one value instruction's four entries (40 registers a thread) | two producers each holding a batch | slower: 6,218 against 5,994 | [`carry_window`](../../lab/carry_window.md) |
+| the readout adding its own rows after its steps | two drain warps beside it | the window 9,260 against 8,248: its adds hold it | [`carry_window`](../../lab/carry_window.md) |
+| two sets of A registers reused across a chunk's commit groups | every step's own A, one group | 960 cycles a window more in the readout's steps | [`carry_window`](../../lab/carry_window.md) |
+| a fifth warpgroup (640 threads) of serve warps | four warpgroups (512) | the window 9,078 against 8,248: 61,440 registers leave the serve warps 40 a thread | [`carry_window`](../../lab/carry_window.md), [`reg_five`](../../lab/reg_five.md) |
 
 <a id="ledger"></a>
 ## Ledger
