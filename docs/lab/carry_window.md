@@ -193,7 +193,7 @@ DUMP STAYS OUT OF THE TIMED CALLS, and one row restores it to price it in this s
 | then the 72-column steps | 6,871 | 859 |
 | the winner's form with its tiles at the den's pitch, 155 lines | 6,590 | 824 |
 
-THE WALL TIME, measured on this box and immune to its clock (1.80 to 1.80 GHz over the session): the long call
+THE WALL TIME, measured on this box and immune to its clock (1.77 to 7062.76 GHz, its rows' medians): the long call
 scaled to 65,536 tokens is 0.253 ms for the baseline, 0.243 ms for the winner's form, and 0.508 ms at the
 once-read bound (0.591 without the winner's changes). THE FLASH REFERENCES, from the session of instance 60450651 ON ANOTHER BOX (a different offer and driver, whose
 once-read rows were a third fewer cycles than this box's)
@@ -234,8 +234,8 @@ WHAT IT SHOWS.
   5,929 -- slower than one a box that holds a batch.
 - SUSPENDED WAITS WITH THE LEAN READOUT ARE THE FASTEST COMPOSED FORM: 6,658 cycles a window against the
   baseline's 7,052, with the suspended waits beside the wide byte load a near tie at 6,921. The parts: every wait
-  suspended alone 6,927, the long waits asleep at named barriers 6,999, the lean readout alone within 1.5%
-  of the baseline, the wide load alone 6,984. ALL THREE AT ONCE LOSE the pairing's gain (6,739: the lean
+  suspended alone 6,927, the long waits asleep at named barriers 6,999, the lean readout alone 3.6%
+  under the baseline, the wide load alone 6,984. ALL THREE AT ONCE LOSE the pairing's gain (6,739: the lean
   readout beside the wide load's scratch needs 88 registers a thread and the fourth warpgroup drops to 104), and
   the sleeping triple is 7,025.
 - THE DEN COSTS 4.9% OF THE COMPOSED WINDOW AT THIS CELL AND 5.9% AT THE ALIGNED ONE, the tables cached and no

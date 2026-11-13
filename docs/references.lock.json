@@ -95,6 +95,7 @@
   {"doc": "docs/CONSTITUTION.md", "pinned_at": "1522787068fb", "reviewed": true, "sha256": "", "target": "docs/internals"},
   {"doc": "docs/CONSTITUTION.md", "pinned_at": "1522787068fb", "reviewed": true, "sha256": "", "target": "docs/internals/DELETIONS.md"},
   {"doc": "docs/CONSTITUTION.md", "pinned_at": "b6538263bc46", "reviewed": true, "sha256": "aee19e97a861b8f5", "target": "docs/internals/tools/arith_model.md#f16"},
+  {"doc": "docs/CONSTITUTION.md", "pinned_at": "fc28afecc2aa", "reviewed": true, "sha256": "", "target": "docs/lab/carry_window.md"},
   {"doc": "docs/CONSTITUTION.md", "pinned_at": "8b1174b3fdcf", "reviewed": true, "sha256": "0cd85c496a9e2abb", "target": "docs/open-work.md#the-surface"},
   {"doc": "docs/CONSTITUTION.md", "pinned_at": "1522787068fb", "reviewed": true, "sha256": "", "target": "docs/ratification.md"},
   {"doc": "docs/CONSTITUTION.md", "pinned_at": "1522787068fb", "reviewed": true, "sha256": "", "target": "docs/testing.md"},

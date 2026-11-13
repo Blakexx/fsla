@@ -180,9 +180,12 @@ pass that merges them, no switch of precision by card. The width is a field the 
 (R9), each width a form gated by forcing it; the producer's planner chooses it from the declaration's structure --
 the levels' widths and walks -- and the op counts nothing. MODELLED on one cell (nl64k-alt-k4; a dense read side and
 wider levels are not): one f16 line a CTA holding two boxes costs 0.083% a token at the median, 0.40% at most,
-against the family's own 0.115% (`docs/internals/tools/arith_model.md#f16`). The state's image in shared memory is
-a form where the two sides' carves differ, stored once a window; where they are equal there is none (Blake,
-2026-11-11). Each
+against the family's own 0.115% (`docs/internals/tools/arith_model.md#f16`). The state reaches the readout through its
+IMAGE in shared memory, stored once a window (Blake, 2026-11-11), WHETHER THE TWO SIDES' CARVES DIFFER OR ARE EQUAL
+(Blake, 2026-11-13, amending the earlier form, where equal carves had none): laid across the fold's sparse digits
+where they differ and along one sparse digit's dense digits where they are equal, the readout the same. A readout
+from the fold's own registers is not built until a measurement shows it wins: MEASURED, the image costs the equal
+cell 1.3% of the window over the other's (`docs/lab/carry_window.md`). Each
 component has one form across densities and cards, unless measurements show that no single form wins or ties
 everywhere. The family's error is its own class, 0.16 to 0.20% a token against the fp64 oracle on the flagship cells
 (measured), accepted on every card and recorded in `docs/architecture/precision.md`.
@@ -204,8 +207,7 @@ card; the milestone carries the drift guards (lints, docs, skills).
 A box is the carve's box (per-level extents and a channel extent), carved per side by its plan; the shape set is the
 plans. A CTA OWNS ITS BOXES -- on hopper TWO (Blake, 2026-11-12): two fold warpgroups, split by the sparse level
 between them and by values across their warps, each holding one box's state; and one readout warpgroup that
-accumulates from the state both publish where the two sides' carves differ (where they are equal there is no
-published state, R17, and a box's own warpgroup reads out). A CTA loads and stores its boxes at entry and exit, so
+accumulates from the state both publish, whether the two sides' carves differ or are equal (R17). A CTA loads and stores its boxes at entry and exit, so
 its read-side warps' union and its write-side warps' union are the same leaves; the CTA's boxes are the SM's at one
 CTA per SM, the goal (R15). Where the accumulator lives (registers, tensor memory) changes how a warp touches its
 share, never who owns what.
