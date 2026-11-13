@@ -17,11 +17,12 @@
 // a chunk's digits taking turns in two sets of A registers, a digit's two steps a commit group, the readout at 80
 // registers a thread and the fourth warpgroup at 112, its producers holding two batches; and with FIVE WARPGROUPS,
 // 640 threads -- a fourth of four producers and a fifth of four drain warps at 40 registers a thread, the lean
-// readout at 80; and with THE LONG WAITS ASLEEP -- a fold on its producer, the readout on the image and a drain
-// warp on the panel at named barriers, where a waiting warp issues nothing; and each side alone with one more
+// readout at 80; and with THE LONG WAITS ASLEEP -- a fold on its producer and on the readout's read, the readout
+// on the image and a drain warp on the panel at named barriers, where a waiting warp issues nothing; and each side alone with one more
 // access out -- the producers' loads, their coefficient arithmetic, both, and the readout's loads of its readers'
 // bytes; and with those bytes ONE WIDE LOAD a readout warp a chunk -- a lane a row's 16 bytes, relaid through the
-// warp's scratch in shared memory. Then what the readout's steps
+// warp's scratch in shared memory; and the read side with the fold's image stores, its fence behind them, or both
+// taken out. Then what the readout's steps
 // wait behind: the readout and the drains with NO fold warp running (the image as it lies); every barrier's wait
 // by the instruction that may suspend its thread, where the others poll. With both sides and no access out, the
 // state and every output row are checked exactly, and a long call's span over its wall time reads the card's clock.
@@ -88,7 +89,10 @@ enum Roles : int {
   //: THE WIDE row: a readout warp fetches its chunk's readers' bytes as ONE load -- a lane a whole row's 16 bytes,
   //: its 16 tokens on the two boxes -- stores them to the warp's own scratch and each thread reads its 8 words
   //: back, where the others' threads load each word from global memory, a lane a different row (8 instructions)
-  kWide = 8192
+  kWide = 8192,
+  //: one more access a row takes out: the fold's fence behind its image's stores (an isolation: the readout's steps
+  //: may then read a tile before its stores are theirs to read)
+  kNoFence = 16384
 };
 //: THE FIVE-WARPGROUP row: 640 threads, a fourth warpgroup of four producers and a fifth of four drain warps. A
 //: kernel of 640 threads enters with 96 registers a thread (docs/lab/reg_five.md), and the roles' counts sum to
@@ -139,7 +143,8 @@ constexpr uint32_t reader_row(uint32_t reader, int box) { return (reader + box) 
 //: readout on a tile group's publish, a drain warp on the panel -- are at NAMED barriers, where a waiting warp issues nothing (the polled waits issue a test
 //: and a branch every trip). A named barrier counts threads: its arrivers' and its waiters' together complete it.
 //: Each pair alternates -- an arriver's next arrival follows its waiter's release, behind the polled barrier that
-//: frees the slot, the tiles or the panel -- so no arrival is counted twice
+//: frees the slot or the panel, or the named one the readout's read of the tiles arrives at -- so no arrival is
+//: counted twice
 constexpr int kPoolId = 1, kTilesId = 5, kPanelId = 9, kReadId = 11;
 constexpr int kPoolCount = kGroup + 32, kTilesCount = 3 * kGroup, kPanelCount = kGroup + 32 * kDrains;
 //: a sleeping wait, its cycles added to the warp's count
@@ -229,7 +234,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
                   make_uint4(pair[0], pair[1], pair[2], pair[3]);
             }
         }
-        lab::bulk_fence();
+        if constexpr (!(ROLES & kNoFence)) lab::bulk_fence();
         if constexpr (ROLES & kSleep) {
           lab::bar_arrive(kTilesId + k, kTilesCount);
         } else {
@@ -433,6 +438,7 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       if constexpr (ROLES & kWide) {
         //: the warp's rows relaid through its scratch: a lane's row stored whole, a thread's 8 words read back
         *reinterpret_cast<uint4*>(scratch + 16 * lane) = wide_row;
+        __syncwarp();
 #pragma unroll
         for (int box = 0; box < 2; ++box)
 #pragma unroll
@@ -740,7 +746,8 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kSleep ? ", the long waits asleep at named barriers" : "")
                            + (ROLES & kNoMath ? ", the producers' coefficient arithmetic taken out" : "")
                            + (ROLES & kNoBytes ? ", the readout's byte loads taken out" : "")
-                           + (ROLES & kWide ? ", the readout's bytes one wide load a warp" : "");
+                           + (ROLES & kWide ? ", the readout's bytes one wide load a warp" : "")
+                           + (ROLES & kNoFence ? ", the fold's fence behind its image taken out" : "");
   constexpr int kLaunch = threads_of<ROLES>, kWarps = kLaunch >> 5;
   const auto kernel = window<ROLES>;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
@@ -861,7 +868,8 @@ int main(int argc, char** argv) {
                     3 | kSelf, 1 | kSelf, 2 | kSelf, 3 | kLean, 1 | kLean, 2 | kLean,
                     3 | kFive, 1 | kFive, 2 | kFive, 3 | kSleep, 1 | kSleep, 2 | kSleep, 1 | kNoLoads, 1 | kNoMath,
                     1 | kNoLoads | kNoMath, 2 | kNoBytes, 2 | kStill | kNoBytes, 3 | kNoBytes,
-                    3 | kNoBytes | kNoAdds, 3 | kWide, 2 | kWide, 2 | kStill | kWide, 3 | kWide | kSleep}) {
+                    3 | kNoBytes | kNoAdds, 3 | kWide, 2 | kWide, 2 | kStill | kWide, 3 | kWide | kSleep,
+                    2 | kNoImage, 2 | kNoFence, 2 | kNoImage | kNoFence, 3 | kNoFence}) {
     const std::string k = lab::kernel("window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     b.expect(k, "HGMMA", "==",
@@ -940,5 +948,9 @@ int main(int argc, char** argv) {
   run<kRead | kWide>(b, waits, values, dense, state, out);
   run<kRead | kStill | kWide>(b, waits, values, dense, state, out);
   run<kFold | kRead | kWide | kSleep>(b, waits, values, dense, state, out);
+  run<kRead | kNoImage>(b, waits, values, dense, state, out);
+  run<kRead | kNoFence>(b, waits, values, dense, state, out);
+  run<kRead | kNoImage | kNoFence>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kNoFence>(b, waits, values, dense, state, out);
   return 0;
 }
