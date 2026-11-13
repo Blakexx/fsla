@@ -1,0 +1,19 @@
+# `reg_five`
+
+Mirrors `measure/lab/experiments/reg_five.cu`, an experiment of the lab
+([`docs/internals/tools/lab.md`](../internals/tools/lab.md)).
+
+[`reg_trade`](reg_trade.md) traded registers between two warpgroups of a CTA. Can a CTA of FIVE warpgroups, 640
+threads, trade them among its roles, and what does the compiler give such a kernel at entry?
+
+THE FORM. A CTA an SM of five warpgroups, its launch bounds one CTA an SM. Two warpgroups raise themselves to 160
+registers a thread, one lowers to 80 and two to 40: 480 over the five. Each role's whole body is in its own branch,
+its `setmaxnreg` first. A thread holds as many words as its role's registers hold -- 128, 32 or 12 -- through a
+loop that rewrites every one each trip, and stores their sum; every sum is checked exactly.
+
+WHAT THE COMPILER SAYS (ptxas of the pinned toolkit, sm_90a; no device). A KERNEL OF 640 THREADS ENTERS WITH 96
+REGISTERS A THREAD, 61,440 in all: the SM's 65,536 over 640 is 102.4, and the count is a multiple of 8. A raise
+takes from the CTA's pool only what its other warpgroups released from that count, so THE ROLES' COUNTS SUM TO
+61,440, NOT TO THE SM'S FILE: here 2 × 160 + 80 + 2 × 40 = 5 × 96. The kernel compiles to two releases (to 40 and
+to 80) and one raise (to 160), with no local memory. At 80 a role holding 40 words spills; at 40 one holding 12
+does not.

@@ -173,6 +173,7 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="wgmma-regs"></a>[`wgmma_regs`](../../lab/wgmma_regs.md)
 - <a id="bulk-drain"></a>[`bulk_drain`](../../lab/bulk_drain.md)
 - <a id="reg-trade"></a>[`reg_trade`](../../lab/reg_trade.md)
+- <a id="reg-five"></a>[`reg_five`](../../lab/reg_five.md)
 - <a id="row-ring"></a>[`row_ring`](../../lab/row_ring.md)
 - <a id="wgmma-rate"></a>[`wgmma_rate`](../../lab/wgmma_rate.md)
 - <a id="byte-expand"></a>[`byte_expand`](../../lab/byte_expand.md)

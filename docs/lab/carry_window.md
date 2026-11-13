@@ -58,7 +58,7 @@ long call's span in SM cycles over its wall time. With both sides and nothing ta
 every output row are checked exactly against the host's: the state summed in integers, the image its truncation to
 bf16, a line its rounding to f16.
 
-MEASURED (H100 SXM, 132 SMs, vast.ai instance 60424081, driver 595.91.07; 2026-11-12, the experiment at
+MEASURED (H100 SXM, 132 SMs, vast.ai instance 60424081, driver 580.173.02; 2026-11-12, the experiment at
 7b476530, one session; 7 repetitions, the composed rows' 4,325,376 state values and 8,650,752 output values exact;
 the median; SM-cycles a token are the window's cycles over 8 -- 128 CTAs of two boxes, 1,024 tokens):
 
@@ -113,13 +113,13 @@ WHAT IT SHOWS.
   issues an add is held until the SM passes it: adds issued by the readout hold the readout.
 - THE DRAINS' ADDS ARE THE LARGEST SINGLE ACCESS: 6,990 with them out.
 - THE IMAGE'S STORES ARE 191 CYCLES OF THE WINDOW (8,059 with them out).
-- THE READ SIDE IS HELD BY THE FOLD WARPS BESIDE IT, by more than their stores: alone it is 7,345 cycles a window
-  with the fold warps publishing and waiting, and 4,373 with no fold warp running. That row takes out their
+- THE READ SIDE IS HELD BY THE FOLD WARPS BESIDE IT, by more than their stores: alone it is 7,350 cycles a window
+  with the fold warps publishing and waiting, and 4,387 with no fold warp running. That row takes out their
   stores, their polled waits and the readout's wait on the publish together; with every wait suspended the read
-  side alone is 7,057 and the readout's steps 2,774 against 3,398.
-- THE READOUT FORMS ITS STEPS' A IN 1,100 TO 1,450 CYCLES A WINDOW, 275 to 360 a chunk: the coefficients' rounds
+  side alone is 7,091 and the readout's steps 2,798 against 3,410.
+- THE READOUT FORMS ITS STEPS' A IN 1,098 TO 1,446 CYCLES A WINDOW, 275 to 362 a chunk: the coefficients' rounds
   and the 32 words held.
-- THE STEPS THEMSELVES ARE OVER THEIR OWN TIME with nothing beside them but the drains: 551 cycles a chunk (the
+- THE STEPS THEMSELVES ARE OVER THEIR OWN TIME with nothing beside them but the drains: 552 cycles a chunk (the
   fence, 8 steps, the commit, 8 loads issued, the wait) where 8 steps of 64 columns into one accumulator from
   shared memory are 319 ([`wgmma_width`](wgmma_width.md)). Not isolated here.
 - THE TENSOR PIPE'S OWN WORK is a window's 32 steps of 16 columns and 32 of 64, some 1,700 cycles at their
