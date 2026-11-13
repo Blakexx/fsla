@@ -273,11 +273,16 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
     for (int i = 0; i < 8; ++i) lab::wg_hold(d[a][i]);
   clock.stop(times);
   tell(waits, on_read, on_fill);
-  float* const to = state + (static_cast<long long>(blockIdx.x) * 2 * kGroup + tid) * (kLists * 8);
+  //: THE STATE OUT, for the checked call alone: 128 stores a thread, each instruction's lanes on 32 lines, issued
+  //: while the readout and the drains are still in their last windows -- in a timed call they would be clocked as
+  //: the read side's
+  if (windows <= kOutWindows) {
+    float* const to = state + (static_cast<long long>(blockIdx.x) * 2 * kGroup + tid) * (kLists * 8);
 #pragma unroll
-  for (int a = 0; a < kLists; ++a)
+    for (int a = 0; a < kLists; ++a)
 #pragma unroll
-    for (int i = 0; i < 8; ++i) to[8 * a + i] = d[a][i];
+      for (int i = 0; i < 8; ++i) to[8 * a + i] = d[a][i];
+  }
 }
 
 //: A PRODUCER WARP, one or two a box: its share of a slot's four batches of 32 entries, one batch in registers at a

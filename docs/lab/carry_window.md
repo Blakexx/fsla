@@ -75,7 +75,9 @@ the 32 words held) apart from those IN ITS STEPS (the fence, 8 steps, the commit
 the wait). THE CARD'S CLOCK is read from the composed row: a
 long call's span in SM cycles over its wall time. With both sides and nothing taken out, the fold's state and
 every output row are checked exactly against the host's: the state summed in integers, the image its truncation to
-bf16, a line its rounding to f16.
+bf16, a line its rounding to f16. The fold's state is stored out for that checked call alone: a timed call leaves it in
+registers, since its 128 stores a thread -- each instruction's lanes on 32 lines -- would be issued while the
+readout and the drains are in their last windows and be clocked as theirs.
 
 MEASURED (H100 SXM, 132 SMs, vast.ai instance 60435886, driver 580.173.02; 2026-11-13, the experiment at
 1140ab55, one session; 7 repetitions, the composed rows' 4,325,376 state values and 8,650,752 output values exact;
