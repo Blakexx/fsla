@@ -28,7 +28,7 @@ THE FORM. A CTA an SM of four warpgroups, 512 threads.
 - TWO DRAIN warps add each token's row to its output row as one whole line of f16 pairs: a load of the row as the
   panel holds it and the add.
 A window is a box's 256 entries, and 256 tokens read the pair. Shared memory: two slots of pools a box 87 KB, the two
-images 70 KB, two panels 35 KB.
+images 82 KB (room for tiles 161 lines apart; 70 at the num's 137), two panels 35 KB.
 
 THE REGISTERS (`setmaxnreg`, each role's body in its own branch). 512 threads launch at 128 registers a thread, the
 SM's whole file of 65,536. A fold thread raises to 160; a readout thread lowers to 96, and the producers and drains,
@@ -48,8 +48,8 @@ where the num's is 16,384.
   on 8 digits, read where the producers stored them (a descriptor whose bricks are a pool tile apart), and B a
   constant brick of ones in one column. TWO STEPS A SLOT, four a window, add into one accumulator set of 4
   registers a thread, a column a step.
-- PUBLISHED as a NINTH BRICK of each image tile (a tile is 154 lines in every row): its first channel's two lines
-  are the den's, a fold thread that holds the column storing one word of two lists a tile group.
+- PUBLISHED as a NINTH BRICK of each image tile (the den's rows' tiles are 155 lines apart, the others' 137; rows
+  that move the pitch alone price it): its first channel's two lines are the den's, a fold thread that holds the column storing one word of two lists a tile group.
 - READ as column 64 of the readout's steps, 72 columns wide where the num's are 64: no step is added. A readout
   thread holds 4 more accumulators, and a token's den is an fp32 behind its panel row.
 - DRAINED by one more load and one more add a drain warp a chunk, a lane a token.
