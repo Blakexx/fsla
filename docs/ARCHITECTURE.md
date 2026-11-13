@@ -267,7 +267,11 @@ from the statics and never written), the tile unions per 64 tokens, each token's
 their boundaries and totals. It is an indexer: nothing of a card is in what it emits, no exponent, no coefficient in
 an operand's format, no layout offset. The emitted size is a function of the sequence and the WIDTHS, never of `N`,
 and the digit grain is what makes the pass carve-independent: each consumer ORs its own span's digits a level and ANDs
-the levels. Liveness therefore stays a VALUE test, and a pad digit, whose amplitude is exactly zero, is never live
+the levels. SPARSITY IS DECLARED, NEVER DETECTED (Blake, 2026-11-13): a side's sparse masks are the op's input, as
+the causal mask is, and the op uses them blindly -- every list, union and skipped pair is decided from the masks
+alone, no row is read to find what is live and none is checked against its mask; what is computed is the product
+under the mask. On this line the facts pass therefore reads masks, not rows; the pages below describe the ampere
+branch's value test, restated when the hopper pass is built ([`open-work.md`](open-work.md))
 ([`internals/facts/facts.md`](internals/facts/facts.md),
 [`internals/facts/liveness_contract.md`](internals/facts/liveness_contract.md)).
 
