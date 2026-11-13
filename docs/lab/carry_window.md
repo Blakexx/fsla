@@ -48,7 +48,12 @@ fourth warpgroup producers, two a box, each two of a slot's four batches; and, b
 READOUT LEAN -- a chunk's four digits take turns in TWO sets of A registers, a digit's two steps a commit group and
 a set written again once the group two back is done, 16 words of A where every step's own are 32; the readout then
 lowers to 80 registers a thread and the fourth warpgroup to 112, where a producer holds two batches, its loads two
-batches ahead (at 72 the toolkit serializes the readout's steps). Then WHAT THE READOUT'S STEPS WAIT BEHIND: the
+batches ahead (at 72 the toolkit serializes the readout's steps); and, both and each side alone, with FIVE
+WARPGROUPS -- 640 threads, which enter with 96 registers a thread ([`reg_five`](reg_five.md)): the folds at 160,
+the lean readout at 80, a fourth warpgroup of four producers and a fifth of four drain warps at 40 each. At 40 a
+producer holds one value instruction's four entries at a time and a drain warp one batch of 4 tokens, and neither
+holds a clock or a count (a producer holding two instructions' entries fits at 48 and four's at 56; a drain warp
+holding 8 tokens at 48). Then WHAT THE READOUT'S STEPS WAIT BEHIND: the
 readout and the drains with no fold warp running (the image as it lies, never rewritten, no fold warp at a
 barrier); every barrier's wait by the instruction that may suspend its thread (`mbarrier.try_wait`) where the
 other rows poll (`test_wait` in a loop, an instruction every trip of every waiting warp). THE FOLD'S, THE READOUT'S AND THE DRAIN WARPS'

@@ -16,7 +16,9 @@ REGISTERS A THREAD, 61,440 in all: the SM's 65,536 over 640 is 102.4, and the co
 takes from the CTA's pool only what its other warpgroups released from that count, so THE ROLES' COUNTS SUM TO
 61,440, NOT TO THE SM'S FILE: here 2 × 160 + 80 + 2 × 40 = 5 × 96. The kernel compiles to two releases (to 40 and
 to 80) and one raise (to 160), with no local memory. At 80 a role holding 40 words spills; at 40 one holding 12
-does not.
+does not. THE ENTRY COUNT GOES BY WHOLE WARPGROUPS: kernels of 528, 560, 592 and 624 threads also enter
+with 96, and of 656, 672, 704 and 768 with 80 -- the SM's file over the threads rounded up to 128s -- so a partial
+fifth warpgroup has no more registers a thread than a whole one.
 
 MEASURED (H100 SXM, 132 SMs, vast.ai instance 60425304, driver 580.173.02; 2026-11-12, the experiment at
 bed41355; 7 repetitions, every one of the 84,480 threads' sums exact):

@@ -59,6 +59,19 @@ struct WarpSpan {
   }
 };
 
+//: THE SAME SPAN WITH NOTHING HELD: the start stored as it is read, for a role whose registers hold no count
+struct WarpMark {
+  __device__ __forceinline__ static void start(long long* out) {
+    const long long t = clock64();
+    if (lane_id() == 0) out[2 * (blockIdx.x * (blockDim.x >> 5) + warp_id())] = t;
+  }
+
+  __device__ __forceinline__ static void stop(long long* out) {
+    const long long t = clock64();
+    if (lane_id() == 0) out[2 * (blockIdx.x * (blockDim.x >> 5) + warp_id()) + 1] = t;
+  }
+};
+
 //: THE SINK: a fold of everything a thread computed, stored unconditionally. A result tested against a value the
 //: compiler can fold lets ptxas delete the work behind it -- the failure the expectations exist to catch.
 __device__ __forceinline__ void sink(int* out, uint32_t v) {
