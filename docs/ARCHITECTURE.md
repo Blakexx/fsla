@@ -269,7 +269,8 @@ an operand's format, no layout offset. The emitted size is a function of the seq
 and the digit grain is what makes the pass carve-independent: each consumer ORs its own span's digits a level and ANDs
 the levels. Liveness is a VALUE test in the pass this tree builds, and a pad digit, whose amplitude is exactly zero, is
 never live. RULED AND NOT YET BUILT (Blake, 2026-11-13): SPARSITY IS DECLARED, NEVER DETECTED -- a side's sparse masks
-become an input OPERAND, data as the rows are and as the causal mask is, which the op uses blindly: every list, union
+become an input OPERAND, data as the rows are and as the causal mask is -- A BIT A DIGIT A TOKEN, a side and a level
+(fixed in size, and a mask on the public surface as an attention mask is) -- which the op uses blindly: every list, union
 and skipped pair decided from the masks alone, no row read to find what is live and none checked against its mask.
 The result is the oracle's wherever a mask covers its rows' nonzero digits, which is its supplier's to give; the
 pass then reads masks, not rows ([`open-work.md`](open-work.md) row A-e names what changes)

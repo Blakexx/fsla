@@ -33,6 +33,7 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`intra_chain`](intra_chain.md) | experiment |
 | [`intra_window`](intra_window.md) | experiment |
 | [`call_pair`](call_pair.md) | experiment |
+| [`facts_lists`](facts_lists.md) | experiment |
 | [`value_gather`](value_gather.md) | experiment |
 | [`readout_role`](readout_role.md) | experiment |
 | [`value_cast`](value_cast.md) | experiment |

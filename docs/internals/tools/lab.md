@@ -194,6 +194,7 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="intra-chain"></a>[`intra_chain`](../../lab/intra_chain.md)
 - <a id="intra-window"></a>[`intra_window`](../../lab/intra_window.md)
 - <a id="call-pair"></a>[`call_pair`](../../lab/call_pair.md)
+- <a id="facts-lists"></a>[`facts_lists`](../../lab/facts_lists.md)
 - <a id="value-gather"></a>[`value_gather`](../../lab/value_gather.md)
 - <a id="readout-role"></a>[`readout_role`](../../lab/readout_role.md)
 - <a id="value-cast"></a>[`value_cast`](../../lab/value_cast.md)
