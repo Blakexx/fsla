@@ -223,6 +223,8 @@ OPERANDS = re.compile(r"^\s*/\*[0-9a-f]+\*/\s+(?:@!?U?P\w+\s+)?[A-Z0-9_.$]+\s+(.
 REGISTER = re.compile(r"\bR(\d+)\b")
 ADDRESS = re.compile(r"\[[^\]]*\]")
 #: the opcodes whose first operand is read, not written
+#: the warpgroup steps among the opcode table's MMAs (`tools/sass.py`): the asynchronous ones, float and integer
+WGMMA = tuple(op for op in sass.OPCODE_CLASSES["mma"] if op.endswith("GMMA"))
 READS_FIRST = ("ST", "BRA", "RED", "ATOM", "BSSY", "BSYNC", "HGMMA", "IGMMA", "ISETP", "FSETP", "CALL", "EXIT", "NOP", "BAR")
 
 
@@ -230,7 +232,7 @@ def unfenced(body: list[tuple[int, str, str]]) -> int:
     """STORE_UNFENCED: in a kernel that holds a wgmma, the barrier arrivals that follow a shared store with no
     `fence.proxy.async` between them -- a step reads shared memory through the tensor pipe's own view, and a
     writer's ordinary stores reach it only past the writer's fence (KERNEL_STANDARDS section 12)."""
-    if not any(op.startswith(("HGMMA", "IGMMA")) for _, op, _ in body):
+    if not any(op.startswith(WGMMA) for _, op, _ in body):
         return 0
     found, stored = 0, False
     for _, op, _ in body:
@@ -338,10 +340,10 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
     if binary.name.split(".")[0] not in _PRE_29:
         stated = budgets(binary) + budgets(binary, "exempt")
         for k, info in table.items():
-            if count(info["ops"], "HGMMA|IGMMA") and any(re.search(b["kernel"], k) for b in budgets(binary)):
+            if count(info["ops"], "|".join(WGMMA)) and any(re.search(b["kernel"], k) for b in budgets(binary)):
                 failures.append(f"{k}: a budgeted wgmma kernel -- its per-MMA divisor is read from counters the "
                                 "hopper model does not name yet (owed with that model): state `Bench::exempt`")
-            if count(info["ops"], "HMMA|IMMA|HGMMA|IGMMA") and not any(re.search(b["kernel"], k) for b in stated):
+            if count(info["ops"], "|".join(sass.OPCODE_CLASSES["mma"])) and not any(re.search(b["kernel"], k) for b in stated):
                 failures.append(f"{k}: an MMA kernel with no instruction budget (KERNEL_STANDARDS 29: `Bench::budget` "
                                 "-- `HMMA` and `IMMA` kernels -- or `Bench::exempt` with its reason)")
     declared = {op: {k for e in expected for k in table if re.search(e["kernel"], k) and e["op"] == op}

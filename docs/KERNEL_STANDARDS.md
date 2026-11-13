@@ -23,7 +23,8 @@ as it is written for every card, so the development card runs it; nothing is wri
   re-check on sm_90a is owed (§26.1) -- on the instruction this line issues, where it was measured around `mma.sync`.
 - `[MACHINE]`: what a card's pipes cost, and the form that cost forces. A card's rates are its rows of the hardware
   table, each citing its lab record: a number quoted beside a rule here is the measurement the rule was drawn from,
-  and the row is the rate. A rule drawn from them holds for the family it was measured on. The ampere family's are the branch's. The few that stand here were measured on sm_86 on work every card
+  and the row is the rate. A rule drawn from them holds for the family it was measured on, and gives way on another
+  family to that family's own lab row (Blake, 2026-11-13). The ampere family's are the branch's. The few that stand here were measured on sm_86 on work every card
   does the same way (a stream of rows from DRAM, a reduction's L2 requests) and are owed their sm_90a run; hopper's
   are written here as its labs run.
 
@@ -790,7 +791,10 @@ method is a procedure with a gate, not a memory.
    the outermost level its inputs allow (item 2).
 6. `[MACHINE]` CONVERSIONS RUN ON THE FMA PIPE: an fp32 to integer conversion is one FFMA adding 1.5 x 2^23 (the
    rounded integer in the low bits), a pair packed by one PRMT; the conversion unit (F2I/I2F/F2F/MUFU; on sm_86 16
-   lanes a cycle an SM) never in a step.
+   lanes a cycle an SM) never in a step. ON HOPPER (amended 2026-11-13) a step's trip keeps a conversion instruction
+   where a lab row on the card measures it against the float-pipe form, and declares it: an integer under 2^24 made
+   fp32 by `I2F` is 985 cycles a tile pair of the intra's chain against 1,336 by two adds and a multiply-add
+   (`docs/lab/intra_chain.md`).
 7. GLOBAL MEMORY NEVER IN A STEP: a step's operands are staged ahead by the family's copy (TMA on hopper); a reduction
    to global memory is a drain outside the steps.
 8. A LAB'S NUMBERS ARE A CORRECT KERNEL'S: every recorded variant checks its outputs against a host reference

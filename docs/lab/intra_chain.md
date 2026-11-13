@@ -20,8 +20,8 @@ THE FORM. One warpgroup a CTA, a CTA an SM; a trip is a tile pair.
 - THE VALUE STEPS: 4 steps of `m64n64k16`, A those registers and B a tile of values, into the output's
   accumulator, 64 readers by 64 channels.
 A product is made fp32 on the float pipe -- an integer under 2^24 as two halves of 12 bits, each the low bits of a
-float, joined by one multiply-add -- since the standards keep the conversion unit out of a step loop; one row
-converts by `I2F` to price that choice on this card. Every operand tile is constant, so every accumulator is checked
+float, joined by one multiply-add -- the form the standards drew from another family's conversion unit; one row
+converts by a cast, which the toolkit compiles as `I2F`, to price the two on this card. Every operand tile is constant, so every accumulator is checked
 exactly; a level's steps read their own tiles (two levels on the same tiles compile as one level's steps and a copy).
 The output's line and its drain are the carry's, measured there, and not in a trip.
 
@@ -48,16 +48,19 @@ WHAT IT SHOWS.
   ([`carry_window`](carry_window.md)).
 - THE PRODUCTS' CONVERSION ON THE FLOAT PIPE LOSES ON THIS CARD: 1,336 cycles against 985 by `I2F` -- 64
   conversions a thread a tile pair as two adds and a multiply-add each are some six instructions where the
-  conversion unit's is one. The standards keep the conversion unit out of a step loop on a measurement of another
-  family; this row is the measurement for this one.
+  cast is one. Which unit of the card runs the cast is not read here; the standards' rule, drawn from another
+  family, is amended for hopper on this row (KERNEL_STANDARDS 29, item 6).
 - THE INTEGER STEPS ARE 36 CYCLES EACH in a group of 16 (573 a tile pair) and 47 in a group of 4 (189): the
   levels' products are about three fifths of the chain at 256 digits and a third at 64.
-- THE VALUE STEPS WITH THEIR A FORMED ARE 206 CYCLES, four steps from registers.
+- FOUR VALUE STEPS FROM REGISTERS ARE 206 CYCLES: in that row the words of A are constants the toolkit
+  formed before the trip, so it is the steps' own time.
 - THE ARITHMETIC'S OWN ROWS DO NOT ISOLATE IT: with no integer step the products are constants and the toolkit
   makes them floats once, outside the trip. Its cost is the chain less the two step rows: 557 cycles on the
   float pipe and 206 by the conversion unit.
-- A CHAIN THREAD HOLDS 144 TO 172 REGISTERS (two integer accumulators of 32, the output's 32, 16 words of A): a
-  warpgroup of its own at the fold's count. The carry's CTA has no register left for one
-  ([`carry_window`](carry_window.md)), so a hopper intra runs in CTAs of its own.
+- THE CHAIN'S LIVE VALUES ARE 112 REGISTERS A THREAD by its timeline -- two integer accumulators of 32, the
+  output's 32 and 16 words of A -- and the toolkit assigned its kernels 144 to 172 (its allocation, not a count of
+  live ranges). The carry's CTA has no register left for a role of 112 ([`carry_window`](carry_window.md)), so a
+  hopper intra runs in CTAs of its own: after the carry first (Blake, 2026-11-13), its share of the call measured
+  before any overlap is built.
 
 Record: `measure/lab/results/intra_chain/sm_90a.json`.

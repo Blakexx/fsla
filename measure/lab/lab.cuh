@@ -278,6 +278,7 @@ __device__ __forceinline__ void wg_wait() {
 
 //: A REGISTER AN ASYNCHRONOUS MMA WROTE, held behind the wait the compiler cannot see it depends on
 __device__ __forceinline__ void wg_hold(float& r) { asm volatile("" : "+f"(r) : : "memory"); }
+__device__ __forceinline__ void wg_hold(int& r) { asm volatile("" : "+r"(r) : : "memory"); }
 
 //: m64n16k16, bf16 x bf16 into fp32, both operands shared memory: `d` += A [64 x 16] B [16 x 16]
 __device__ __forceinline__ void wg_bf16_n16_ss(float (&d)[8], uint64_t a, uint64_t b) {
@@ -321,6 +322,12 @@ __device__ __forceinline__ void wg_bf16_n8_ss_mn(float (&d)[4], uint64_t a, uint
       "+f"(d[9]), "+f"(d[10]), "+f"(d[11]), "+f"(d[12]), "+f"(d[13]), "+f"(d[14]), "+f"(d[15]), "+f"(d[16]),       \
       "+f"(d[17]), "+f"(d[18]), "+f"(d[19]), "+f"(d[20]), "+f"(d[21]), "+f"(d[22]), "+f"(d[23]), "+f"(d[24]),      \
       "+f"(d[25]), "+f"(d[26]), "+f"(d[27]), "+f"(d[28]), "+f"(d[29]), "+f"(d[30]), "+f"(d[31])
+//: an integer accumulator of 32 as a step's operands
+#define LAB_WG_D32_INT(d)                                                                                          \
+  "+r"(d[0]), "+r"(d[1]), "+r"(d[2]), "+r"(d[3]), "+r"(d[4]), "+r"(d[5]), "+r"(d[6]), "+r"(d[7]), "+r"(d[8]),      \
+      "+r"(d[9]), "+r"(d[10]), "+r"(d[11]), "+r"(d[12]), "+r"(d[13]), "+r"(d[14]), "+r"(d[15]), "+r"(d[16]),       \
+      "+r"(d[17]), "+r"(d[18]), "+r"(d[19]), "+r"(d[20]), "+r"(d[21]), "+r"(d[22]), "+r"(d[23]), "+r"(d[24]),      \
+      "+r"(d[25]), "+r"(d[26]), "+r"(d[27]), "+r"(d[28]), "+r"(d[29]), "+r"(d[30]), "+r"(d[31])
 #define LAB_WG_D32_LIST                                                                                            \
   "{%0, %1, %2, %3, %4, %5, %6, %7, %8, %9, %10, %11, %12, %13, %14, %15, %16, %17, %18, %19, %20, %21, %22, %23, " \
   "%24, %25, %26, %27, %28, %29, %30, %31}"

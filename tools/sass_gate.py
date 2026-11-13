@@ -124,7 +124,7 @@ def convergence_calls(lines: list[tuple[int, str, str, str]], labels: dict[str, 
     return hot, guarded
 
 
-_MMA = re.compile(r"^(HMMA|IMMA|HGMMA|IGMMA)")
+_MMA = re.compile("^(" + "|".join(sass.OPCODE_CLASSES["mma"]) + ")")
 #: a step's operands staged ahead, the one global access a step may hold: `cp.async`, and hopper's bulk copy in
 _STAGED = ("LDGSTS", "UBLKCP.S.G")
 

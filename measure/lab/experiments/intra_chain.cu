@@ -7,7 +7,7 @@
 // masked where the row asks, rounded to bf16 pairs -- 16 words a thread, a writer group of 16 its 4; then 4 value
 // steps (`m64n64k16`, A those registers, B a tile of values) into the output's accumulator. Every operand tile is
 // constant (bytes of 1, values of 1.0), so every accumulator is checked exactly. Rows take the chain apart: the
-// integer steps alone, the arithmetic between alone, the value steps alone; and one row converts the products on
+// integer steps alone, the arithmetic between alone, the value steps with the arithmetic and no integer step; and one row converts the products on
 // the conversion unit where the others make them on the float pipe.
 // TIMELINE: no load: the tiles are written once before the clock. A trip: the fence, 2 S integer steps on held
 // descriptors, the commit, the wait; 64 products made floats (two adds and a multiply-add each), 32 multiplies,
@@ -36,20 +36,13 @@ __device__ __forceinline__ float product_float(int x) {
   return fmaf(hi, 4096.f, lo);
 }
 
-#define INTRA_D32(d)                                                                                              \
-  "+r"(d[0]), "+r"(d[1]), "+r"(d[2]), "+r"(d[3]), "+r"(d[4]), "+r"(d[5]), "+r"(d[6]), "+r"(d[7]), "+r"(d[8]),      \
-      "+r"(d[9]), "+r"(d[10]), "+r"(d[11]), "+r"(d[12]), "+r"(d[13]), "+r"(d[14]), "+r"(d[15]), "+r"(d[16]),       \
-      "+r"(d[17]), "+r"(d[18]), "+r"(d[19]), "+r"(d[20]), "+r"(d[21]), "+r"(d[22]), "+r"(d[23]), "+r"(d[24]),      \
-      "+r"(d[25]), "+r"(d[26]), "+r"(d[27]), "+r"(d[28]), "+r"(d[29]), "+r"(d[30]), "+r"(d[31])
-
 //: m64n64k32, u8 x u8 into s32, both operands shared memory: `d` += A [64 x 32] B [32 x 64], or written whole
 __device__ __forceinline__ void gram_step(int (&d)[32], uint64_t a, uint64_t b, bool add) {
   asm volatile("{ .reg .pred p; setp.ne.b32 p, %34, 0;\n"
                "wgmma.mma_async.sync.aligned.m64n64k32.s32.u8.u8 " LAB_WG_D32_LIST ", %32, %33, p; }"
-               : INTRA_D32(d)
+               : LAB_WG_D32_INT(d)
                : "l"(a), "l"(b), "r"(static_cast<int>(add)));
 }
-__device__ __forceinline__ void hold(int& r) { asm volatile("" : "+r"(r) : : "memory"); }
 
 //: A TILE PAIR a trip: `S` integer steps a level, the arithmetic, the value steps
 template <int PARTS, int S>
@@ -139,7 +132,7 @@ __global__ void __launch_bounds__(kThreads, 1) chain(long long* times, float* ou
 #pragma unroll
   for (int l = 0; l < 2; ++l)
 #pragma unroll
-    for (int i = 0; i < 32; ++i) hold(g[l][i]);
+    for (int i = 0; i < 32; ++i) lab::wg_hold(g[l][i]);
   clock.stop(times);
   const long long at = static_cast<long long>(blockIdx.x) * kThreads + tid;
 #pragma unroll
