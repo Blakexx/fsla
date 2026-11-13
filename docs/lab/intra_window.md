@@ -27,6 +27,9 @@ tokens its blocks one after another, each block a token's 16 bytes a line, which
 a tile's level is one contiguous copy of 16 KB and its values one of 8. A third form is MIXED: the levels tile-major and the values
 token-major, as a reader of a token's values at one run would have them.
 
+THE WINDOW'S SIZE (its own rows, that third form): 256, 512 and 2,048 tokens beside 1,024 -- 4, 8 and 32 reader
+tiles a window. The intra's pairs a token are half the window, so its cost a token should follow the window.
+
 The cell: a level's row is 8 live digits of byte 1 (a pair's weight at most 64, exact in bf16 and in every sum), a
 value 1 or 2; every output value and every den sum is checked against the host's. Shared memory 114 KB.
 

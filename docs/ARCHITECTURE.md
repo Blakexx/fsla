@@ -267,11 +267,12 @@ from the statics and never written), the tile unions per 64 tokens, each token's
 their boundaries and totals. It is an indexer: nothing of a card is in what it emits, no exponent, no coefficient in
 an operand's format, no layout offset. The emitted size is a function of the sequence and the WIDTHS, never of `N`,
 and the digit grain is what makes the pass carve-independent: each consumer ORs its own span's digits a level and ANDs
-the levels. SPARSITY IS DECLARED, NEVER DETECTED (Blake, 2026-11-13): a side's sparse masks are the op's input, as
-the causal mask is, and the op uses them blindly -- every list, union and skipped pair is decided from the masks
-alone, no row is read to find what is live and none is checked against its mask; what is computed is the product
-under the mask. On this line the facts pass therefore reads masks, not rows; the pages below describe the ampere
-branch's value test, restated when the hopper pass is built ([`open-work.md`](open-work.md))
+the levels. Liveness is a VALUE test in the pass this tree builds, and a pad digit, whose amplitude is exactly zero, is
+never live. RULED AND NOT YET BUILT (Blake, 2026-11-13): SPARSITY IS DECLARED, NEVER DETECTED -- a side's sparse masks
+become an input OPERAND, data as the rows are and as the causal mask is, which the op uses blindly: every list, union
+and skipped pair decided from the masks alone, no row read to find what is live and none checked against its mask.
+The result is the oracle's wherever a mask covers its rows' nonzero digits, which is its supplier's to give; the
+pass then reads masks, not rows ([`open-work.md`](open-work.md) row A-e names what changes)
 ([`internals/facts/facts.md`](internals/facts/facts.md),
 [`internals/facts/liveness_contract.md`](internals/facts/liveness_contract.md)).
 

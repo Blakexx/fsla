@@ -59,7 +59,8 @@ int main(int argc, char** argv) {
   };
   const auto launch_intra = [&](cudaStream_t s) {
     intra_kernel<<<intra_ctas, intra_window::kThreads, intra_window::kSmemBytes, s>>>(
-        intra.maps[0], intra.maps[1], intra.maps[2], intra.tiled, intra_times, intra.out, intra.den, kCalls);
+        intra.maps[0], intra.maps[1], intra.maps[2], intra.tiled, intra_times, intra.out, intra.den, kCalls,
+        intra_window::kTiles);
   };
   //: a row: its launches, timed wall to wall from a drained device, a call's share
   const auto row = [&](const std::string& name, auto launches) {
