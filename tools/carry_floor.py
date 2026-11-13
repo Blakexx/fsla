@@ -206,8 +206,8 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
                              "cluster")
         if tuple(read_sparse) == tuple(write_sparse):
             raise SystemExit("carry_floor: a pair's readout reads both boxes' images; where the two sides are sparse "
-                             "on the same levels there is no image and a box's own warpgroup reads out from its "
-                             "registers -- UNMEASURED, no term here")
+                             "on the same levels the image is laid along a sparse digit's dense digits, which "
+                             "the lab `carry_window` measures and this tool has no term for")
         if dv != MMA_ROWS:
             raise SystemExit(f"carry_floor: a pair's line and image are measured at {MMA_ROWS} channels alone")
         #: an fp32 line is the f16 line's measurement and one more line of the drain (`drain_rate`), ESTIMATED so

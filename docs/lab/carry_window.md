@@ -193,7 +193,7 @@ DUMP STAYS OUT OF THE TIMED CALLS, and one row restores it to price it in this s
 | then the 72-column steps | 6,871 | 859 |
 | the winner's form with its tiles at the den's pitch, 155 lines | 6,590 | 824 |
 
-THE WALL TIME, measured on this box and immune to its clock (1.77 to 7062.76 GHz, its rows' medians): the long call
+THE WALL TIME, measured on this box and immune to its clock (1.77 to 1.81 GHz, its rows' medians): the long call
 scaled to 65,536 tokens is 0.253 ms for the baseline, 0.243 ms for the winner's form, and 0.508 ms at the
 once-read bound (0.591 without the winner's changes). THE FLASH REFERENCES, from the session of instance 60450651 ON ANOTHER BOX (a different offer and driver, whose
 once-read rows were a third fewer cycles than this box's)

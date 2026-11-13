@@ -96,8 +96,8 @@ def test_a_pair_drains_one_line_for_two_boxes_and_stores_its_image_a_window():
 
 
 def test_a_pair_is_priced_only_where_it_was_measured():
-    #: sparse on the same level: no image for a readout warpgroup to read
-    with pytest.raises(SystemExit, match="no image"):
+    #: sparse on the same level: the image lies along a sparse digit's dense digits, which this tool has no term for
+    with pytest.raises(SystemExit, match="has no term for"):
         carry_floor.floor(cluster=(1, 1), pair="f16", **{**ALT, "write_sparse": (0, 1)})
     #: a box the whole read-dense level has no neighbour to pair with
     with pytest.raises(SystemExit, match="a pair is two boxes"):

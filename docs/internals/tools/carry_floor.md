@@ -40,8 +40,9 @@ runs each read digit's step on both boxes' images into ONE accumulator, and drai
   sum of two measurements.
 Both store an image of the state once a window ([`state_image`](../../lab/state_image.md)), which the readout
 warpgroup reads. The pair is priced at 64 channels and for sides sparse on different levels alone: nothing else was
-measured, and where the sides are sparse on the same levels a box's own warpgroup reads out from its registers,
-UNMEASURED.
+measured by the labs this tool reads; where the sides are sparse on the same levels the image is laid along a
+sparse digit's dense digits ([`carry_window`](../../lab/carry_window.md) measures it), and this tool has no term
+for it.
 
 THE CLUSTER. A cluster shares no load -- a multicast copy costs each CTA more than its own does
 ([`value_cast`](../../lab/value_cast.md)) -- so a cluster with no sum (`--sum none`, the default) changes nothing

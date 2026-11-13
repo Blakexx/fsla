@@ -181,8 +181,8 @@ pass that merges them, no switch of precision by card. The width is a field the 
 the levels' widths and walks -- and the op counts nothing. MODELLED on one cell (nl64k-alt-k4; a dense read side and
 wider levels are not): one f16 line a CTA holding two boxes costs 0.083% a token at the median, 0.40% at most,
 against the family's own 0.115% (`docs/internals/tools/arith_model.md#f16`). The state reaches the readout through its
-IMAGE in shared memory, stored once a window (Blake, 2026-11-11), WHETHER THE TWO SIDES' CARVES DIFFER OR ARE EQUAL
-(Blake, 2026-11-13, amending the earlier form, where equal carves had none): laid across the fold's sparse digits
+IMAGE in shared memory, stored once a window, WHETHER THE TWO SIDES' CARVES DIFFER OR ARE EQUAL (Blake, 2026-11-11;
+amended 2026-11-13): laid across the fold's sparse digits
 where they differ and along one sparse digit's dense digits where they are equal, the readout the same. A readout
 from the fold's own registers is not built until a measurement shows it wins: MEASURED, the image costs the equal
 cell 1.3% of the window over the other's (`docs/lab/carry_window.md`). Each
