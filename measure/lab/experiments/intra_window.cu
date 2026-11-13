@@ -220,27 +220,16 @@ __global__ void __launch_bounds__(kThreads, 1)
 
 }  // namespace intra_window
 
-int main(int argc, char** argv) {
+//: A CALL'S ROWS AND OUTPUTS over `tokens`: the levels and the values token-major and tile-major, their tensor
+//: maps, the output's lines and the den's sums
+struct Call {
+  CUtensorMap maps[3];
+  intra_window::Tiled tiled;
+  uint32_t* out;
+  float* den;
+};
+inline Call call_of(size_t tokens) {
   using namespace intra_window;
-  lab::Bench b(argc, argv);
-  for (int form : {static_cast<int>(kBoxes), static_cast<int>(kTiled), static_cast<int>(kMixed)}) {
-    const std::string k = lab::kernel("window", {form});
-    b.expect(k, "IGMMA", "==", kLevels * kDigits / 32);
-    b.expect(k, "HGMMA", "==", 4);
-    b.expect(k, form == kBoxes ? "UTMALDG" : "UBLKCP", ">=", form == kMixed ? 2 : 3);
-    //: the conversion unit kept in the trip, as hopper's row of the standards allows (KERNEL_STANDARDS 29, item 6)
-    b.expect(k, "STEP_XU", ">=", 0);
-    //: a lane's own copy and a holding thread's den sum are lane-dependent branches
-    b.expect(k, "LOOP_CONVERGENCE", "<=", 8);
-    //: the slot's release is one thread's arrival, a branch in the trip
-    b.expect(k, "BSSY", ">=", 0);
-    //: the tokens' lines are a CTA's last act, outside its trips: the timed call's rounds repeat the CTA, lines and all
-    b.expect(k, "STEP_GLOBAL", ">=", 0);
-    b.exempt(k, "a kernel's first lab: its budget follows this record");
-  }
-  if (b.expect_only) return 0;
-  const int windows = b.sms / kTiles, blocks = windows * kTiles;
-  const size_t tokens = static_cast<size_t>(windows) * kWindow;
   //: THE ROWS, token-major as the bundle holds them: a level's 256 bytes a token, a token's 64 bf16 values
   std::vector<uint8_t> rows[kLevels];
   for (int l = 0; l < kLevels; ++l) {
@@ -296,7 +285,7 @@ int main(int argc, char** argv) {
   const auto encode = driver ? reinterpret_cast<Encode>(dlsym(driver, "cuTensorMapEncodeTiled")) : nullptr;
   if (!encode) {
     std::fprintf(stderr, "intra_window: the driver's cuTensorMapEncodeTiled is not reachable\n");
-    return 2;
+    std::exit(2);
   }
   CUtensorMap maps[3];
   const cuuint32_t steps[2] = {1, 1};
@@ -311,9 +300,42 @@ int main(int argc, char** argv) {
                                  CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
     if (made != CUDA_SUCCESS) {
       std::fprintf(stderr, "intra_window: cuTensorMapEncodeTiled refused map %d (%d)\n", m, static_cast<int>(made));
-      return 2;
+      std::exit(2);
     }
   }
+  Call made{};
+  for (int m = 0; m < 3; ++m) made.maps[m] = maps[m];
+  made.tiled = tiled, made.out = out, made.den = den;
+  return made;
+}
+
+int main(int argc, char** argv) {
+  using namespace intra_window;
+  lab::Bench b(argc, argv);
+  for (int form : {static_cast<int>(kBoxes), static_cast<int>(kTiled), static_cast<int>(kMixed)}) {
+    const std::string k = lab::kernel("intra_window::window", {form});
+    b.expect(k, "IGMMA", "==", kLevels * kDigits / 32);
+    b.expect(k, "HGMMA", "==", 4);
+    b.expect(k, form == kBoxes ? "UTMALDG" : "UBLKCP", ">=", form == kMixed ? 2 : 3);
+    //: the conversion unit kept in the trip, as hopper's row of the standards allows (KERNEL_STANDARDS 29, item 6)
+    b.expect(k, "STEP_XU", ">=", 0);
+    //: a lane's own copy and a holding thread's den sum are lane-dependent branches
+    b.expect(k, "LOOP_CONVERGENCE", "<=", 8);
+    //: the slot's release is one thread's arrival, a branch in the trip
+    b.expect(k, "BSSY", ">=", 0);
+    //: the tokens' lines are a CTA's last act, outside its trips: the timed call's rounds repeat the CTA, lines and all
+    b.expect(k, "STEP_GLOBAL", ">=", 0);
+    b.exempt(k, "a kernel's first lab: its budget follows this record");
+  }
+  if (b.expect_only) return 0;
+  const int windows = b.sms / kTiles, blocks = windows * kTiles;
+  const size_t tokens = static_cast<size_t>(windows) * kWindow;
+  const Call held = call_of(tokens);
+  const CUtensorMap* const maps = held.maps;
+  const Tiled tiled = held.tiled;
+  uint32_t* const out = held.out;
+  float* const den = held.den;
+  const size_t words = tokens * (kChannels / 2);
   const auto run = [&](auto kernel, int form) {
     const std::string name = std::string("a window of 1,024 tokens, two levels of 256 digits, 64 channels and the den, ")
                              + (form == kBoxes ? "the rows token-major: tensor copies a block"

@@ -1141,53 +1141,14 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                  "cycles a window a warp", waited_at[i]);
 }
 
-int main(int argc, char** argv) {
+//: A CALL'S BUFFERS: the replicated tables, token-major and the values' tile-major twin, the state, the output and
+//: the waits' counts
+struct Buffers {
+  uint32_t *values, *dense, *out, *waits;
+  float* state;
+};
+inline Buffers buffers(const lab::Bench& b) {
   using namespace carry_window;
-  lab::Bench b(argc, argv);
-  for (int roles : {1, 2, 3, 3 | kNoLoads, 3 | kNoAdds, 3 | kNoImage, 2 | kStill, 2 | kSuspend, 3 | kSuspend,
-                    3 | kSelf, 1 | kSelf, 2 | kSelf, 3 | kLean, 1 | kLean, 2 | kLean,
-                    3 | kFive, 1 | kFive, 2 | kFive, 3 | kSleep, 1 | kSleep, 2 | kSleep, 1 | kNoLoads, 1 | kNoMath,
-                    1 | kNoLoads | kNoMath, 2 | kNoBytes, 2 | kStill | kNoBytes, 3 | kNoBytes,
-                    3 | kNoBytes | kNoAdds, 3 | kWide, 2 | kWide, 2 | kStill | kWide, 3 | kWide | kSleep,
-                    2 | kNoImage, 2 | kNoFence, 2 | kNoImage | kNoFence, 3 | kNoFence,
-                    2 | kStill | kPark, 2 | kStill | kSpin, 3 | kDump,
-                    3 | kSuspend | kLean, 3 | kSuspend | kWide, 3 | kSuspend | kLean | kWide,
-                    3 | kSleep | kLean | kWide, 3 | kBig, 3 | kSuspend | kLean | kBig, 1 | kBig, 1 | kDen, 3 | kSuspend | kLean | kDen, 3 | kSuspend | kLean | kBig | kDen, 3 | kSuspend | kLean | kPitch, 3 | kSuspend | kLean | kDen | kPitch, 3 | kSuspend | kLean | kAligned, 3 | kSuspend | kLean | kAligned | kDen, 3 | kSuspend | kLean | kNoClock, 3 | kSuspend | kLean | kDen | kNoClock,
-                    3 | kSuspend | kLean | kAligned | kNoClock, 3 | kSuspend | kLean | kAligned | kDen | kNoClock,
-                    3 | kSuspend | kLean | kNoClock | kDenFold, 3 | kSuspend | kLean | kNoClock | kDenFold | kDenImage,
-                    3 | kSuspend | kLean | kNoClock | kDenFold | kDenImage | kDenSplit,
-                    3 | kSuspend | kLean | kNoClock | kDenFold | kDenImage | kDenSplit | kDenRead,
-                    3 | kSuspend | kLean | kNoClock | kPitch, 3 | kSuspend | kLean | kNoClock | kTiledValues,
-                    3 | kSuspend | kLean | kNoClock | kBig, 3 | kSuspend | kLean | kNoClock | kBig | kTiledValues}) {
-    const std::string k = lab::kernel("window", {roles});
-    //: with no fold, the state's one group of steps is a rolled loop: one instruction
-    b.expect(k, "HGMMA", "==",
-             (roles & kFold ? 2 * kSlotLists + (roles & kDenFold ? kDenSteps : 0) : roles & kStill ? 0 : 1)
-                 + (roles & kRead ? 2 * kChunkDigits : 0));
-    if (roles & kRead) {
-      //: the readout's panel is read by the drain warps' own loads, not by a step: its arrival needs no fence
-      //: nor does the wide row's scratch, which only its own warp's loads read
-      //: the row that takes the fold's fence out leaves its four tile groups' arrivals unfenced: what it measures
-      b.expect(k, "STORE_UNFENCED", "<=", roles & kNoFence ? 5 : roles & kWide ? 2 : 1);
-      //: the readout's trip holds its coefficients' rounds and their load beside its steps, by design: the tensor
-      //: pipe is idle most of a window
-      b.expect(k, "STEP_XU", ">=", 0);
-      b.expect(k, "STEP_GLOBAL", ">=", 0);
-    }
-    //: the five-warpgroup row's producer holds one value instruction's entries: a part's loads are read a trip of
-    //: its rolled loop on, with nothing between
-    if ((roles & kFive) && (roles & kFold)) b.expect(k, "LOAD_IN_TRIP", "<=", 14);
-    //: the wide row relays a warp's rows through its scratch -- stored a lane a row, read back a thread's words: a
-    //: rearrangement on the way (KERNEL_STANDARDS 33), its reloads the 8 words
-    if (roles & kWide) b.expect(k, "STORE_RELOAD", "<=", 8);
-    b.exempt(k, "a composition probe: the carry's roles in one CTA, no kernel's step");
-    //: once a slot or a chunk a role: a `__syncwarp` before a one-lane arrival is a convergence call, and each
-    //: barrier's polled wait a region -- five roles' in one kernel
-    b.expect(k, "LOOP_CONVERGENCE", "<=", 64);
-    //: the roles' loops hold their steps beside their barriers' polled waits: the waits' branches are the steps'
-    b.expect(k, "BSSY", ">=", 0);
-  }
-  if (b.expect_only) return 0;
   //: the tables hold `kReplicas` copies of the 65,536 tokens' rows: a replica's row is its token's, so the big
   //: row's spread reads the same values and the host's mirror stands
   std::vector<uint32_t> host_values(static_cast<size_t>(kReplicas) * kTableTokens * kRowWords),
@@ -1221,6 +1182,59 @@ int main(int argc, char** argv) {
   LAB_CHECK(cudaMalloc(&out, static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2 + 1) * 4));
   uint32_t* waits = nullptr;
   LAB_CHECK(cudaMalloc(&waits, static_cast<size_t>(b.sms) * (threads_of<kFive> >> 5) * kCounts * 4));
+  return {values, dense, out, waits, state};
+}
+
+int main(int argc, char** argv) {
+  using namespace carry_window;
+  lab::Bench b(argc, argv);
+  for (int roles : {1, 2, 3, 3 | kNoLoads, 3 | kNoAdds, 3 | kNoImage, 2 | kStill, 2 | kSuspend, 3 | kSuspend,
+                    3 | kSelf, 1 | kSelf, 2 | kSelf, 3 | kLean, 1 | kLean, 2 | kLean,
+                    3 | kFive, 1 | kFive, 2 | kFive, 3 | kSleep, 1 | kSleep, 2 | kSleep, 1 | kNoLoads, 1 | kNoMath,
+                    1 | kNoLoads | kNoMath, 2 | kNoBytes, 2 | kStill | kNoBytes, 3 | kNoBytes,
+                    3 | kNoBytes | kNoAdds, 3 | kWide, 2 | kWide, 2 | kStill | kWide, 3 | kWide | kSleep,
+                    2 | kNoImage, 2 | kNoFence, 2 | kNoImage | kNoFence, 3 | kNoFence,
+                    2 | kStill | kPark, 2 | kStill | kSpin, 3 | kDump,
+                    3 | kSuspend | kLean, 3 | kSuspend | kWide, 3 | kSuspend | kLean | kWide,
+                    3 | kSleep | kLean | kWide, 3 | kBig, 3 | kSuspend | kLean | kBig, 1 | kBig, 1 | kDen, 3 | kSuspend | kLean | kDen, 3 | kSuspend | kLean | kBig | kDen, 3 | kSuspend | kLean | kPitch, 3 | kSuspend | kLean | kDen | kPitch, 3 | kSuspend | kLean | kAligned, 3 | kSuspend | kLean | kAligned | kDen, 3 | kSuspend | kLean | kNoClock, 3 | kSuspend | kLean | kDen | kNoClock,
+                    3 | kSuspend | kLean | kAligned | kNoClock, 3 | kSuspend | kLean | kAligned | kDen | kNoClock,
+                    3 | kSuspend | kLean | kNoClock | kDenFold, 3 | kSuspend | kLean | kNoClock | kDenFold | kDenImage,
+                    3 | kSuspend | kLean | kNoClock | kDenFold | kDenImage | kDenSplit,
+                    3 | kSuspend | kLean | kNoClock | kDenFold | kDenImage | kDenSplit | kDenRead,
+                    3 | kSuspend | kLean | kNoClock | kPitch, 3 | kSuspend | kLean | kNoClock | kTiledValues,
+                    3 | kSuspend | kLean | kNoClock | kBig, 3 | kSuspend | kLean | kNoClock | kBig | kTiledValues}) {
+    const std::string k = lab::kernel("carry_window::window", {roles});
+    //: with no fold, the state's one group of steps is a rolled loop: one instruction
+    b.expect(k, "HGMMA", "==",
+             (roles & kFold ? 2 * kSlotLists + (roles & kDenFold ? kDenSteps : 0) : roles & kStill ? 0 : 1)
+                 + (roles & kRead ? 2 * kChunkDigits : 0));
+    if (roles & kRead) {
+      //: the readout's panel is read by the drain warps' own loads, not by a step: its arrival needs no fence
+      //: nor does the wide row's scratch, which only its own warp's loads read
+      //: the row that takes the fold's fence out leaves its four tile groups' arrivals unfenced: what it measures
+      b.expect(k, "STORE_UNFENCED", "<=", roles & kNoFence ? 5 : roles & kWide ? 2 : 1);
+      //: the readout's trip holds its coefficients' rounds and their load beside its steps, by design: the tensor
+      //: pipe is idle most of a window
+      b.expect(k, "STEP_XU", ">=", 0);
+      b.expect(k, "STEP_GLOBAL", ">=", 0);
+    }
+    //: the five-warpgroup row's producer holds one value instruction's entries: a part's loads are read a trip of
+    //: its rolled loop on, with nothing between
+    if ((roles & kFive) && (roles & kFold)) b.expect(k, "LOAD_IN_TRIP", "<=", 14);
+    //: the wide row relays a warp's rows through its scratch -- stored a lane a row, read back a thread's words: a
+    //: rearrangement on the way (KERNEL_STANDARDS 33), its reloads the 8 words
+    if (roles & kWide) b.expect(k, "STORE_RELOAD", "<=", 8);
+    b.exempt(k, "a composition probe: the carry's roles in one CTA, no kernel's step");
+    //: once a slot or a chunk a role: a `__syncwarp` before a one-lane arrival is a convergence call, and each
+    //: barrier's polled wait a region -- five roles' in one kernel
+    b.expect(k, "LOOP_CONVERGENCE", "<=", 64);
+    //: the roles' loops hold their steps beside their barriers' polled waits: the waits' branches are the steps'
+    b.expect(k, "BSSY", ">=", 0);
+  }
+  if (b.expect_only) return 0;
+  const Buffers held = buffers(b);
+  uint32_t *const values = held.values, *const dense = held.dense, *const out = held.out, *const waits = held.waits;
+  float* const state = held.state;
   run<kFold>(b, waits, values, dense, state, out);
   run<kRead>(b, waits, values, dense, state, out);
   run<kFold | kRead>(b, waits, values, dense, state, out);

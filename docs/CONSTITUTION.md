@@ -184,8 +184,8 @@ against the family's own 0.115% (`docs/internals/tools/arith_model.md#f16`). The
 IMAGE in shared memory, stored once a window, WHETHER THE TWO SIDES' CARVES DIFFER OR ARE EQUAL (Blake, 2026-11-11;
 amended 2026-11-13): laid across the fold's sparse digits
 where they differ and along one sparse digit's dense digits where they are equal, the readout the same. A readout
-from the fold's own registers is not built until a measurement shows it wins: its cost at the equal cell is the lab's
-record (`docs/lab/carry_window.md`). Each
+from the fold's own registers is not built until a measurement shows it wins: the image's cost at the equal cell is
+the lab's record (`docs/lab/carry_window.md`). Each
 component has one form across densities and cards, unless measurements show that no single form wins or ties
 everywhere. The family's error is its own class, 0.16 to 0.20% a token against the fp64 oracle on the flagship cells
 (measured), accepted on every card and recorded in `docs/architecture/precision.md`.
