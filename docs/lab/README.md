@@ -30,6 +30,7 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`state_image`](state_image.md) | experiment |
 | [`panel_merge`](panel_merge.md) | experiment |
 | [`wgmma_width`](wgmma_width.md) | experiment |
+| [`intra_chain`](intra_chain.md) | experiment |
 | [`value_gather`](value_gather.md) | experiment |
 | [`readout_role`](readout_role.md) | experiment |
 | [`value_cast`](value_cast.md) | experiment |

@@ -98,7 +98,7 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
   `tensor_load_2d` and its multicast `tensor_cast_2d` (one copy landed in every CTA of a cluster a mask names); the bulk copy
   in, `bulk_load`, under a barrier whose
   arrival states its bytes (`mbar_expect`); and a warpgroup's registers a thread,
-  `regs_down<N>` and `regs_up<N>` (`setmaxnreg`). The lab's step checks read `HGMMA` as they read `HMMA`
+  `regs_down<N>` and `regs_up<N>` (`setmaxnreg`). The lab's step checks read `HGMMA` and the integer `IGMMA` as they read `HMMA`
   and `IMMA`; a wgmma kernel states `Bench::exempt`, a budgeted one being refused until the hopper counters' model
   names its per-MMA divisor.
 * <a id="cluster"></a>Hopper's clusters (a kernel of them carries `__cluster_dims__`): `cluster_rank`,
@@ -191,6 +191,7 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="state-image"></a>[`state_image`](../../lab/state_image.md)
 - <a id="panel-merge"></a>[`panel_merge`](../../lab/panel_merge.md)
 - <a id="wgmma-width"></a>[`wgmma_width`](../../lab/wgmma_width.md)
+- <a id="intra-chain"></a>[`intra_chain`](../../lab/intra_chain.md)
 - <a id="value-gather"></a>[`value_gather`](../../lab/value_gather.md)
 - <a id="readout-role"></a>[`readout_role`](../../lab/readout_role.md)
 - <a id="value-cast"></a>[`value_cast`](../../lab/value_cast.md)
