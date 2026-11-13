@@ -22,7 +22,33 @@ THE FORM. A CTA a tile of 64 READERS, 16 CTAs a window, a CTA an SM: one compute
   constant brick of ones behind the values' 8.
 - A CTA's last act is its 64 tokens' lines: f16 pairs added to the output and the den's sums. Reader tile `i` runs
   `i + 1` trips, so a window is 136.
+TWO FORMS OF THE ROWS in global memory: TOKEN-MAJOR, the bundle's (the copies above), and TILE-MAJOR -- a tile of 64
+tokens its blocks one after another, each block a token's 16 bytes a line, which is the layout a step reads -- where
+a tile's level is one contiguous copy of 16 KB and its values one of 8.
+
 The cell: a level's row is 8 live digits of byte 1 (a pair's weight at most 64, exact in bf16 and in every sum), a
 value 1 or 2; every output value and every den sum is checked against the host's. Shared memory 114 KB.
 
-MEASURED: not yet run.
+MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance 60542623, driver 580.173.02; 2026-11-13, the experiment at
+4f56ae4a; 7 repetitions, 8 windows; each form's 524,288 output values and 8,192 den sums exact; the median):
+
+| the rows in global memory | SM-cycles a window | a trip | SM-cycles a token |
+|---|---|---|---|
+| token-major, a tile landed as 40 tensor copies of a kilobyte | 430,973 | 3,169 | 421 |
+| tile-major, a tile landed as 3 contiguous copies | 177,545 | 1,305 | 173 |
+
+WHAT IT SHOWS.
+- THE INTRA COMPOSES, EXACTLY, as a kernel of its own: the integer steps' operands as tensor copies land them, the
+  weights in place as the value steps' A, the den as the 65th column, a token's line from registers.
+- THE ROWS' LAYOUT IS THE COST: token-major, a trip is 3,169 cycles where its chain alone is 985
+  ([`intra_chain`](intra_chain.md)) -- 40 copies of a kilobyte a writer tile hold it -- and tile-major it is 1,305.
+  A window is 421 SM-cycles a token against 173.
+- BESIDE THE CARRY (173 against its 823 SM-cycles a token with no clock inside a role,
+  [`carry_window`](carry_window.md)) the tile-major intra is a fifth of the carry's window and the token-major one a
+  half. Adjacent measurements of two labs at their own cells, not a call: the tables here are 2 MB a level, cached,
+  and no pair is skipped.
+- NOT MEASURED: tile-major levels beside token-major values (the carry's producers read a token's values as one
+  run); a window whose tile pairs are skipped by the facts pass's unions; rows the cache does not hold; the two
+  kernels launched together.
+
+Record: `measure/lab/results/intra_window/sm_90a.json`.
