@@ -71,9 +71,9 @@ session. Rows whose TABLES THE CACHE CANNOT HOLD read every access's row at a re
 the access's own position -- a replica's row holds its token's values, so the check stands -- as a large table's
 rows are each read once; 16 replicas, 128 MB of values (composed, the winner's form, and the fold's side alone). The long call and its wall milliseconds (scaled to 65,536 tokens) run for the headline's
 rows -- the baseline, the winner's form and the two big-table composed rows -- each record named by its row. The
-cached-table rows and the once-read rows are both prices (R22.2): a streamed carry reads a token's rows in its
-arrival window, so one CTA's window working set is small at any length, and 132 CTAs' phases can drift apart
-(the open-work list carries that) -- the two bracket production and neither is named its point. The suspended and the sleeping waits also run combined with the lean readout and the wide byte load. Then WHAT THE
+once-read rows are the price (R22.2: a cache that may not hold is priced as if it does not) and the cached-table
+rows the upside: a streamed carry reads a token's rows in its arrival window, so one CTA's window working set is
+small at any length, while 132 CTAs' phases can drift apart (the open-work list carries that). The suspended and the sleeping waits also run combined with the lean readout and the wide byte load. Then WHAT THE
 READOUT'S STEPS WAIT BEHIND: the
 readout and the drains with no fold warp running (the image as it lies, never rewritten, no fold warp at a
 barrier); every barrier's wait by the instruction that may suspend its thread (`mbarrier.try_wait`) where the
@@ -149,10 +149,11 @@ once-read bound (0.627 without the winner's changes). THE FLASH REFERENCES, THE 
 FlashAttention-3, built on the box at Dao's pinned commit, 1.775 ms at 65,536 tokens (0.300 at 16,384; 0.121 at
 1,024); torch's FlashAttention-2 3.072 ms (0.323; 0.040). THESE ARE ADJACENT MEASUREMENTS, NOT A COMPARISON: the
 carry's wall time is this lab's and the flash times the bench's attention entry's, two processes on a box with no
-clock lock, and the carry is one part of the op (no intra, facts pass, den or join). The comparison is the
-declared suite's, owed when the op is a member of a bench session beside the flash entry
-([`measurement.md`](../measurement.md)). The cached-table and the once-read wall times are both this record's
-prices: neither is named the operating point.
+clock lock, and the carry is one part of the op (no intra, facts pass, den or join). Flash is a LAYER entry, so
+the comparison is a layer comparison in the declared suite ([`measurement.md`](../measurement.md)), owed when a
+layer of this op is a session member beside it. THE PRICE (R22.2) is the once-read wall time -- a cache that may
+not hold the working set is priced as if it does not -- and the cached-table time is the upside when the cache
+holds, which a streamed carry's arrival clustering is expected to give.
 
 A warp's clocked cycles a window (the sleeping row's are not tabled: a clock read is not held to its side of a named
 barrier, and its waits read as its neighbours' time):
@@ -184,7 +185,7 @@ WHAT IT SHOWS.
   of the baseline, the wide load alone 6,962. ALL THREE AT ONCE LOSE the pairing's gain (6,872: the lean
   readout beside the wide load's scratch needs 88 registers a thread and the fourth warpgroup drops to 104), and
   the sleeping triple is 7,091.
-- THE TABLES ONCE-READ COST 1.6 TO 2.2 TIMES THE WINDOW: 15,379 cycles composed against 7,022, the winner's form
+- THE TABLES ONCE-READ COST 1.7 TO 2.2 TIMES THE WINDOW: 15,379 cycles composed against 7,022, the winner's form
   11,629 against 6,750, the fold's side alone 8,951 against 5,063 -- every access a fresh row of 128 MB of
   values, the model of a large table whose rows are each read once.
 - THE DUMP IS PRICED IN THIS SESSION: the fold's state stored out in every call, as every record before 79ec1b08
