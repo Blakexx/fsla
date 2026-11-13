@@ -807,6 +807,96 @@ def ledger(name: str, pattern: str | None) -> int:
     return 0
 
 
+#: what a loop's instructions are counted as in the static ledger: the accesses that hold a warp, the tensor step,
+#: and everything else a warp issues
+_STATIC_KINDS = (("global load", ("LDG",)), ("global store", ("STG",)), ("global add", ("REDG", "ATOMG")),
+                 ("shared load", ("LDS",)), ("shared store", ("STS",)), ("copy", ("LDGSTS", "UBLKCP")),
+                 ("MMA", ("HGMMA", "HMMA", "IMMA")), ("barrier", ("UMBAR", "BAR", "WARPSYNC", "USETMAXREG")))
+
+
+def static_kind(opcode: str) -> str:
+    return next((kind for kind, prefixes in _STATIC_KINDS if opcode.startswith(prefixes)), "other")
+
+
+def static_loops(text: str) -> list[tuple[int, int]]:
+    """The loops of one function's listing, as (first offset, last offset): every backward branch closes one. A
+    branch names its target by a label (`.L_x_N`, the line before the instruction it marks) or by an offset."""
+    labels: dict[str, int] = {}
+    pending: list[str] = []
+    branches: list[tuple[int, str]] = []
+    for line in text.splitlines():
+        if (label := re.match(r"^\s*(\.L_x_\d+):", line)):
+            pending.append(label.group(1))
+        elif (m := sass.INSTRUCTION.match(line)):
+            at = int(m.group(1), 16)
+            for name in pending:
+                labels[name] = at
+            pending = []
+            if m.group(3).startswith(("BRA", "JMP")):
+                branches.append((at, line[m.end():]))
+    out = set()
+    for at, operands in branches:
+        named = re.search(r"\.L_x_\d+", operands)
+        offset = re.search(r"\b0x([0-9a-f]+)\b", operands)
+        target = labels.get(named.group(0)) if named else int(offset.group(1), 16) if offset else None
+        if target is not None and target <= at:
+            out.add((target, at))
+    return sorted(out)
+
+
+def static_ledger(name: str, pattern: str | None, arch: str | None) -> int:
+    """A kernel's instructions AS COMPILED, with no device: each innermost loop's body by the role that holds it (the
+    call in the kernel's body the instruction was inlined from), its phases (the source's `//:` headings) and its
+    kinds. A loop's cost a unit is this count times its trips, which the source states; a card that grants no
+    profiler counters has no executed ledger, and this one stands in its place."""
+    arch = arch or sass.device_arch()
+    path = experiments()[name]
+    binary = build(path, arch)
+    heads = phases(path)
+    source = path.read_text().splitlines()
+    images = [c for c in sass.cubins(binary) if arch in c.name]
+    if len(images) != 1:
+        print(f"lab: {len(images)} images for {arch} in {binary.name}")
+        return 1
+    mangled = dict(zip(demangle(list(kernels_mangled(binary))).values(), kernels_mangled(binary), strict=True))
+    disassembly = sass.disassemble(images[0], "--print-line-info-inline", "-gi")
+
+    for k, symbol in mangled.items():
+        if pattern and not re.search(pattern, k):
+            continue
+        text = own_section(disassembly, symbol)
+        frames = sass.frames(text)
+        loops = static_loops(text)
+        by: dict[tuple, Counter] = {}
+        for line in text.splitlines():
+            if not (m := sass.INSTRUCTION.match(line)):
+                continue
+            at = int(m.group(1), 16)
+            inside = [loop for loop in loops if loop[0] <= at <= loop[1]]
+            loop = min(inside, key=lambda span: span[1] - span[0]) if inside else None
+            own = [ln for f, ln in frames.get(at, []) if f == path.name]
+            #: the role: the outermost frame that calls one (`NAME_role`) names it
+            called = next((c for ln in reversed(own) if (c := re.search(r"\b(\w+_role)\b", source[ln - 1]))), None)
+            role = called.group(1) if called else "(the kernel's body)"
+            head = next((h for first, h in reversed(heads) if own and first <= own[0]), "(outside the source)")
+            by.setdefault((role, loop), Counter())[(head, static_kind(m.group(3)))] += 1
+
+        print(f"  {k[:110]}")
+        for (role, loop), counts in sorted(by.items(), key=lambda item: (item[0][0], item[0][1] or (-1, -1))):
+            where = f"loop {loop[0]:#06x}-{loop[1]:#06x}" if loop else "outside every loop"
+            kinds = Counter()
+            for (_, kind), n in counts.items():
+                kinds[kind] += n
+            print(f"    {role}, {where}: {sum(counts.values())} instructions -- "
+                  + ", ".join(f"{n} {kind}" for kind, n in kinds.most_common()))
+            phase = Counter()
+            for (head, _), n in counts.items():
+                phase[head] += n
+            for head, n in phase.most_common():
+                print(f"      {n:6d}  {head}")
+    return 0
+
+
 def own_section(disassembly: str, mangled: str) -> str:
     """A kernel's own code section of an `nvdisasm` listing: offsets restart in every function, so the frame map of the
     whole listing would merge them."""
@@ -871,6 +961,9 @@ def main() -> int:
     g = sub.add_parser("ledger", help="a kernel's executed instructions by phase (KERNEL_STANDARDS 29.13)")
     g.add_argument("experiment")
     g.add_argument("--kernel", help="a regex over the demangled kernel names")
+    g.add_argument("--static", action="store_true",
+                   help="the instructions as compiled, by role, loop and phase: no device and no counters")
+    g.add_argument("--arch", help="with --static: compile for this architecture in place of the device's")
     n = sub.add_parser("ncu")
     n.add_argument("experiment")
     n.add_argument("--metric", action="append", required=True, help="an ncu metric; repeat for several")
@@ -893,6 +986,8 @@ def main() -> int:
     if args.cmd == "ncu":
         return counters(args.experiment, args.metric, args.record)
     if args.cmd == "ledger":
+        if args.static:
+            return static_ledger(args.experiment, args.kernel, args.arch)
         return ledger(args.experiment, args.kernel)
     return run(args.experiment, args)
 
