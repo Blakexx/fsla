@@ -32,9 +32,9 @@ images 70 KB, two panels 35 KB.
 
 THE REGISTERS (`setmaxnreg`, each role's body in its own branch). 512 threads launch at 128 registers a thread, the
 SM's whole file of 65,536. A fold thread raises to 160; a readout thread lowers to 96, and the producers and drains,
-one warpgroup, to 96: the folds' 32 more each are those 32 fewer. At 152 the fold spills to local memory; at 80 the
-toolkit serializes the readout's steps of 64 columns with A in registers; a producer holding two batches needs
-some 125. NO REGISTER IS LEFT for a fifth warpgroup: one beside these roles takes its registers from them. A form
+one warpgroup, to 96: the folds' 32 more each are those 32 fewer. At 152 the fold spills to local memory; with every step's A in its own registers (32 words) the toolkit serializes
+the readout's steps at 80, and with A in two sets (16 words, the lean row) at 72; a producer holds two batches at
+112. NO REGISTER IS LEFT for a fifth warpgroup: one beside these roles takes its registers from them. A form
 of five warpgroups (640 threads) launches at 96 a thread, 61,440 in all; one whose roles' counts summed to the
 whole file hung on the device, and whether at the folds' raise no run separated.
 
@@ -58,57 +58,61 @@ long call's span in SM cycles over its wall time. With both sides and nothing ta
 every output row are checked exactly against the host's: the state summed in integers, the image its truncation to
 bf16, a line its rounding to f16.
 
-MEASURED (H100 SXM, 132 SMs, vast.ai instance 60402408, driver 595.91.07; 2026-11-12, the experiment at
-5fdfffa3, one session; 7 repetitions, the composed rows' 4,325,376 state values and 8,650,752 output values exact;
-the median, the composed row 8,151 to 8,343; SM-cycles a token are the window's cycles over 8 -- 128 CTAs of two
-boxes, 1,024 tokens):
+MEASURED (H100 SXM, 132 SMs, vast.ai instance 60424081, driver 595.91.07; 2026-11-12, the experiment at
+7b476530, one session; 7 repetitions, the composed rows' 4,325,376 state values and 8,650,752 output values exact;
+the median; SM-cycles a token are the window's cycles over 8 -- 128 CTAs of two boxes, 1,024 tokens):
 
 | the row | cycles a window a CTA | SM-cycles a token |
 |---|---|---|
-| the fold's side alone: producers and steps | 5,827 | 728 |
-| the read side alone: the image, the readout and the drain | 7,345 | 918 |
-| the carry: both sides | 8,266 | 1,033 |
-| both sides, the producers' global loads taken out | 8,224 | 1,028 |
-| both sides, the drains' global adds taken out | 6,929 | 866 |
-| both sides, the image's stores taken out | 8,024 | 1,003 |
-| the read side alone, no fold warp running | 4,373 | 547 |
-| the read side alone, every wait suspended | 7,057 | 882 |
-| both sides, every wait suspended | 8,060 | 1,008 |
-| THE READOUT DRAINING ITS OWN ROWS, FOUR PRODUCERS: the fold's side alone | 3,700 | 462 |
-| the same: the read side alone | 7,212 | 902 |
-| the same: both sides | 9,248 | 1,156 |
+| the fold's side alone: producers and steps | 5,758 | 720 |
+| the read side alone: the image, the readout and the drain | 7,350 | 919 |
+| the carry: both sides | 8,250 | 1,031 |
+| both sides, the producers' global loads taken out | 8,252 | 1,031 |
+| both sides, the drains' global adds taken out | 6,990 | 874 |
+| both sides, the image's stores taken out | 8,059 | 1,007 |
+| the read side alone, no fold warp running | 4,387 | 548 |
+| the read side alone, every wait suspended | 7,091 | 886 |
+| both sides, every wait suspended | 8,058 | 1,007 |
+| THE READOUT DRAINING ITS OWN ROWS, FOUR PRODUCERS: the fold's side alone | 3,696 | 462 |
+| the same: the read side alone | 7,208 | 901 |
+| the same: both sides | 9,265 | 1,158 |
+| THE READOUT LEAN, TWO BATCHES A PRODUCER: the fold's side alone | 5,661 | 708 |
+| the same: the read side alone | 7,545 | 943 |
+| the same: both sides | 8,924 | 1,115 |
 
-THE CARD'S CLOCK, the composed row's long call: 1.78 to 1.79 GHz over five calls. At it a window's 8,266 cycles
-are 4.63 microseconds, and 64 windows -- 65,536 tokens' carry -- 0.296 ms.
+THE CARD'S CLOCK, the composed row's long call: 1.79 to 1.80 GHz over five calls. At it a window's 8,250 cycles
+are 4.59 microseconds, and 64 windows -- 65,536 tokens' carry -- 0.294 ms.
 
-A warp's clocked cycles a window (the last two columns the row whose readout drains its own rows):
+A warp's clocked cycles a window:
 
-| the role's count | both sides | the read side alone | alone, no fold warp | both, readout draining | read side alone, readout draining |
+| the role's count | both sides | the read side alone | both, readout draining | both, readout lean | read side alone, lean |
 |---|---|---|---|---|---|
-| a fold warp waits on the readout's read of a tile group | 470 | 4,205 | | 3,488 | 3,792 |
-| a fold warp waits on its producer | 4,838 | | | 727 | |
-| a readout warp waits on a tile group's publish | 1,866 | 292 | | 427 | 246 |
-| a readout warp waits on the panel's drain | 356 | 904 | 246 | | |
-| a readout warp draining its own rows | | | | 3,695 | 2,855 |
-| a readout warp forming its steps' A | 1,444 | 1,100 | 1,254 | 1,195 | 806 |
-| a readout warp in its steps | 2,262 | 3,398 | 2,205 | 2,487 | 2,161 |
-| a drain warp waits on the panel | 3,142 | 2,048 | 819 | | |
+| a fold warp waits on the readout's read of a tile group | 472 | 4,204 | 3,487 | 614 | 4,263 |
+| a fold warp waits on its producer | 4,871 |  | 737 | 4,174 |  |
+| a readout warp waits on a tile group's publish | 1,880 | 292 | 432 | 807 | 289 |
+| a readout warp waits on the panel's drain | 354 | 899 |  | 378 | 838 |
+| a readout warp draining its own rows |  |  | 3,688 |  |  |
+| a readout warp forming its steps' A | 1,446 | 1,098 | 1,193 |  |  |
+| a readout warp in its steps (the lean row's hold the forming) | 2,250 | 3,410 | 2,496 | 4,658 | 4,273 |
+| a drain warp waits on the panel | 3,173 | 2,052 |  | 2,846 | 2,376 |
 
 WHAT IT SHOWS.
 - THE CARRY COMPOSES, EXACTLY: two boxes' folds, the image a window, one readout warpgroup over both -- its
   coefficients expanded in its registers, its steps' A operand -- and one f16 line a token, in one CTA of 512
   threads at the SM's whole register file.
-- A TOKEN COSTS 1,033 SM-CYCLES COMPOSED at this cell (its sides sparse on opposite levels, 256 x 256 leaves;
+- A TOKEN COSTS 1,031 SM-CYCLES COMPOSED at this cell (its sides sparse on opposite levels, 256 x 256 leaves;
   [`carry_floor`](../internals/tools/carry_floor.md) prices a dense side higher).
-- FOUR PRODUCERS FILL THE FOLD: with two a box the fold's side alone is 3,700 cycles a window where one a box is
-  5,827, and composed the fold then waits on its producer 727 cycles where it waited 4,838.
-- THE READOUT DRAINING ITS OWN ROWS LOSES COMPOSED, 9,248 against 8,266: a readout warp is 3,695 cycles a window
-  in its 64 adds, 58 an add, and the window becomes the readout's -- the fold waits on its read 3,488. Two drain
-  warps beside the readout spend 5,124 cycles a window each on 128 adds, 40 an add. Either way the SM passes a
-  line's add every 14 to 20 cycles, and a warp that issues one is held until it passes: adds issued by the readout
-  hold the readout.
-- THE DRAINS' ADDS ARE THE LARGEST SINGLE ACCESS: 6,929 with them out.
-- THE IMAGE'S STORES ARE 240 CYCLES OF THE WINDOW (8,024 with them out).
+- THE FILL WANTS WARPS, NOT REGISTERS: two producers a box take the fold's side alone to 3,696 cycles a window
+  where one a box is 5,758, and composed the fold then waits on its producer 737 cycles where it waited
+  4,871; one a box holding TWO batches, its loads two ahead, is 5,661 -- no faster than one batch.
+- THE LEAN READOUT LOSES COMPOSED, 8,924 against 8,250: its four commit groups a chunk put a readout warp
+  4,658 cycles a window in its steps and their forming where one group's are 3,696, and the second batch
+  its registers bought the producers returned nothing.
+- THE READOUT DRAINING ITS OWN ROWS LOSES COMPOSED, 9,265 against 8,250: a readout warp is 3,688 cycles a
+  window in its 64 adds, and the window becomes the readout's -- the fold waits on its read 3,487. A warp that
+  issues an add is held until the SM passes it: adds issued by the readout hold the readout.
+- THE DRAINS' ADDS ARE THE LARGEST SINGLE ACCESS: 6,990 with them out.
+- THE IMAGE'S STORES ARE 191 CYCLES OF THE WINDOW (8,059 with them out).
 - THE READ SIDE IS HELD BY THE FOLD WARPS BESIDE IT, by more than their stores: alone it is 7,345 cycles a window
   with the fold warps publishing and waiting, and 4,373 with no fold warp running. That row takes out their
   stores, their polled waits and the readout's wait on the publish together; with every wait suspended the read

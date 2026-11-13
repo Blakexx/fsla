@@ -214,7 +214,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
 }
 
 //: A PRODUCER WARP, one or two a box: its share of a slot's four batches of 32 entries, one batch in registers at a
-//: time
+//: time or, in the lean row, two
 template <int ROLES>
 __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long long* times, const uint32_t* values,
                                              const uint32_t* dense, int windows) {
@@ -227,7 +227,7 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
   const auto batch_of = [&](int g) { return (g / kOwn) * kBatches + part + kPer * (g % kOwn); };
   const uint4* const wide = reinterpret_cast<const uint4*>(values);
   const uint4* const boxes = reinterpret_cast<const uint4*>(dense);
-  //: ONE batch in registers: the warpgroup's 96 a thread hold no second
+  //: `kHeld` batches in registers, a batch a half: 96 registers a thread hold one, the lean row's 112 two
   constexpr int kHeld = batches_held<ROLES>;
   static_assert(kOwn % kHeld == 0);
   uint4 value[kHeld][kQuads], bytes[kHeld];
