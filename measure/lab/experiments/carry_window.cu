@@ -223,16 +223,18 @@ constexpr int batches_held = (ROLES & kLean) && !(ROLES & kListed) ? 2 : 1;
 constexpr uint32_t token_of(uint32_t source, uint32_t entry) {
   return ((source * 4099u + entry) * 2654435761u >> 12) & (kTableTokens - 1);
 }
-//: THE LISTED row's tables behind one pointer: the dense level's and the sparse level's rows, tile-major, 65,536
-//: tokens each, then the lists -- a source's 64 windows of 256 entries, 2 bytes an entry
+//: THE LISTED row's tables behind the dense pointer: the readers' table as every row has it, then the dense
+//: level's and the sparse level's rows, tile-major, 65,536 tokens each, then the lists -- a source's 64 windows of
+//: 256 entries, 2 bytes an entry
 constexpr int kLevelDigits = 256, kLevelTile = 64, kCallWindows = 64, kWindowTokens = 1024;
-constexpr long long kLevelBytes = static_cast<long long>(kTableTokens) * kLevelDigits, kListsAt = 2 * kLevelBytes;
+constexpr long long kLevelBytes = static_cast<long long>(kTableTokens) * kLevelDigits,
+                    kLevelsAt = static_cast<long long>(kReplicas) * kTableTokens * 16, kListsAt = kLevelsAt + 2 * kLevelBytes;
 constexpr int kListEntries = kCallWindows * kWindow;
 //: a listed entry's token: its window's first and the place the list holds
 constexpr uint32_t listed_place(uint32_t source, uint32_t entry) {
   return ((source * 4099u + entry % kListEntries) * 2654435761u >> 12) & (kWindowTokens - 1);
 }
-constexpr uint32_t listed_token(uint32_t source, uint32_t entry, bool hot = false) {
+constexpr uint32_t listed_token(uint32_t source, uint32_t entry, bool hot) {
   return (hot ? 0u : (entry / kWindow % kCallWindows) * kWindowTokens) + listed_place(source, entry);
 }
 //: a token's 16 bytes of block `block` of a tile-major level, in lines of 16 bytes
@@ -485,7 +487,9 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
   //: the warp's batch `g` of the call: its `g % kOwn`-th of slot `g / kOwn`, the slot's batch `part + kPer` of that
   const auto batch_of = [&](int g) { return (g / kOwn) * kBatches + part + kPer * (g % kOwn); };
   const uint4* const wide = reinterpret_cast<const uint4*>(values);
-  const uint4* const boxes = reinterpret_cast<const uint4*>(dense);
+  //: the entries' dense bytes: the readers' table, or in the listed row the dense level's rows behind it
+  const uint4* const boxes = reinterpret_cast<const uint4*>(reinterpret_cast<const uint8_t*>(dense)
+                                                            + (ROLES & kListed ? kLevelsAt : 0));
   //: `kHeld` batches in registers, a batch a half: 96 registers a thread hold one, the lean row's 112 two. A
   //: batch's values are `kParts` parts of `kPart` instructions, a part in registers at a time
   constexpr int kHeld = batches_held<ROLES>, kParts = value_parts<ROLES>, kPart = kQuads / kParts;
@@ -530,7 +534,7 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
       //: holds its list's byte
       const uint32_t tb = first_of(n) + ahead[h];
       bytes[h] = boxes[level_line(tb, static_cast<int>(source & 15))];
-      sword[h] = reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(dense) + kLevelBytes)[
+      sword[h] = (reinterpret_cast<const uint32_t*>(boxes) + kLevelBytes / 4)[
           level_line(tb, static_cast<int>(source >> 4 & 15)) * 4 + (list_of(n) >> 2)];
     } else {
       const uint32_t tb = token_of(source, n * kFill + lane);
@@ -1046,7 +1050,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kAligned ? ", the sides' carves equal: an image tile a list, its lines four threads' words" : "")
                            + (ROLES & kNoClock ? ", no clock inside a role" : "")
                            + (ROLES & kTiledValues ? ", the values tile-major in global memory" : "")
-                           + (ROLES & kListed ? (ROLES & kHot ? ", the fold's entries real lists' and every window the same tokens" : ", the fold's entries real lists' and a window's own tokens") : "")
+                           + (ROLES & kListed ? (ROLES & kHot ? ", the fold's entries from lists, every window the same tokens" : ", the fold's entries from lists, a window's own tokens") : "")
                            + (ROLES & kPitch ? (ROLES & kDenImage ? ", the image's tiles 161 lines apart" : ROLES & kNoClock ? ", the image's tiles 155 lines apart" : ", the image's tiles 154 lines apart") : "")
                            + ((ROLES & kDen) == kDen ? ", the den: two more steps a slot, the readout's steps 72 columns and an fp32 a token"
                               : ROLES & kDen ? std::string(", the den's parts alone: its fold steps")
@@ -1249,9 +1253,10 @@ inline Buffers buffers(const lab::Bench& b) {
     //: `sparse_of(t)` in the sparse; a source's list entry its token's place in its window
     const size_t sources = static_cast<size_t>(b.sms) * 2;
     std::vector<uint8_t> blob(static_cast<size_t>(kListsAt) + sources * kListEntries * 2);
+    std::memcpy(blob.data(), host_dense.data(), host_dense.size() * 4);
     for (uint32_t t = 0; t < static_cast<uint32_t>(kTableTokens); ++t)
       for (int d = 0; d < kLevelDigits; ++d) {
-        const size_t at = static_cast<size_t>(level_line(t, d / 16)) * 16 + d % 16;
+        const size_t at = static_cast<size_t>(kLevelsAt) + static_cast<size_t>(level_line(t, d / 16)) * 16 + d % 16;
         blob[at] = static_cast<uint8_t>(dense_of(static_cast<int>(t), d % 16));
         blob[static_cast<size_t>(kLevelBytes) + at] = static_cast<uint8_t>(sparse_of(static_cast<int>(t)));
       }
