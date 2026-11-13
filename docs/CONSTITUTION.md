@@ -274,6 +274,9 @@ The op and every kernel under it execute a PLAN their caller supplies (Blake, 20
 walk of each level -- by its lists, or every digit -- the list groups, the window and the segment, the drain's width
 and its scale's form. A plan field names an ACTION. It never names a property of the data -- dense, sparse, an
 activation, a count of live digits -- and the op's inputs carry none: they carry shapes, dtypes, scales and counts.
+A level's sparse MASK is not a plan field but an OPERAND, data as its rows are (Blake, 2026-11-13): the op uses it
+blindly and reads no row to find what is live; a mask that does not cover its rows' nonzero digits changes the
+result, and that is its supplier's to get right.
 The producer knows what it gives, its sparsity too, and owns the rules that turn that into a plan; the layer calls
 them, and any other caller supplies whatever valid plan it wants. The op refuses a plan the data's shape cannot
 take and derives nothing from how the data was made. A plan is never wrong for the data in a way that changes the

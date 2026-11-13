@@ -8,7 +8,8 @@
 // on those tiles: each of two levels' pair products as 8 integer steps, the levels multiplied in fp32, the pairs
 // whose writer is after its reader dropped (the diagonal tile alone), the weight rounded to bf16 in place as the A
 // of 4 value steps 72 columns wide -- the 65th column the den's, a constant brick of ones. A CTA's last act is its
-// 64 tokens' lines, f16 pairs added to the output, and their den sums. Reader tile `i` runs `i + 1` trips. TWO
+// 64 tokens' lines, f16 pairs added to the output, and their den sums. Reader tile `i` runs `i + 1` trips. The
+// window is a call's argument: rows at 256, 512 and 2,048 tokens stand beside 1,024. TWO
 // MORE FORMS hold the rows TILE-MAJOR in global memory -- a tile's blocks one after another, as a step reads them
 // -- so a tile's level is one contiguous copy: every plane so, or the levels alone with the values token-major.
 // TIMELINE: the loader's trip: the wait on the slot's release two trips back, the barrier's bytes stated, 40 copies
@@ -393,7 +394,7 @@ int main(int argc, char** argv) {
     b.check(name, wrong == 0 && wrong_den == 0,
             std::to_string(wrong) + " of " + std::to_string(tokens * kChannels) + " output values and "
                 + std::to_string(wrong_den) + " of " + std::to_string(tokens) + " den sums differ");
-    //: a CTA's span is its tile's `i + 1` trips; a window is its 16 CTAs' spans, 136 trips
+    //: a CTA's span is its tile's `i + 1` trips; a window is its `tiles` CTAs' spans
     constexpr int kRounds = 32;
     const lab::Samples cycles = b.variant(
         [&] { kernel<<<blocks, kThreads, kSmemBytes>>>(maps[0], maps[1], maps[2], tiled, b.times, out, den, kRounds, tiles); },

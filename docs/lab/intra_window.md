@@ -33,29 +33,43 @@ tiles a window. The intra's pairs a token are half the window, so its cost a tok
 The cell: a level's row is 8 live digits of byte 1 (a pair's weight at most 64, exact in bf16 and in every sum), a
 value 1 or 2; every output value and every den sum is checked against the host's. Shared memory 114 KB.
 
-MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance 60544158, driver 595.91.07; 2026-11-13, the experiment at
-3e13195f; 7 repetitions, 8 windows; each form's 524,288 output values and 8,192 den sums exact; the median):
+MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance 60547171, driver 595.91.07; 2026-11-13, the experiment at
+d6fe34f6; 7 repetitions, 8,192 tokens; each row's 524,288 output values and 8,192 den sums exact; the median):
 
-| the rows in global memory | SM-cycles a window | a trip | SM-cycles a token |
+| the rows in global memory, a window of 1,024 tokens | SM-cycles a window | a trip | SM-cycles a token |
 |---|---|---|---|
-| token-major, a tile landed as 40 tensor copies of a kilobyte | 429,099 | 3,155 | 419 |
-| tile-major, a tile landed as 3 contiguous copies | 177,498 | 1,305 | 173 |
-| the levels tile-major, the values token-major: 2 contiguous copies and 8 tensor copies | 183,538 | 1,350 | 179 |
+| token-major, a tile landed as 40 tensor copies of a kilobyte | 428,171 | 3,148 | 418 |
+| tile-major, a tile landed as 3 contiguous copies | 171,907 | 1,264 | 168 |
+| the levels tile-major, the values token-major: 2 contiguous copies and 8 tensor copies | 180,455 | 1,327 | 176 |
+
+| the window, the levels tile-major and the values token-major | trips a window | SM-cycles a token |
+|---|---|---|
+| 256 tokens | 10 | 67 |
+| 512 tokens | 36 | 103 |
+| 1,024 tokens | 136 | 176 |
+| 2,048 tokens | 528 | 346 |
 
 WHAT IT SHOWS.
 - THE INTRA COMPOSES, EXACTLY, as a kernel of its own: the integer steps' operands as tensor copies land them, the
   weights in place as the value steps' A, the den as the 65th column, a token's line from registers.
-- THE LEVELS' LAYOUT IS THE COST: token-major, a trip is 3,155 cycles where its chain alone is 985
+- THE LEVELS' LAYOUT IS THE COST: token-major, a trip is 3,148 cycles where its chain alone is 985
   ([`intra_chain`](intra_chain.md)) -- 40 copies of a kilobyte a writer tile hold it -- and with the levels
-  tile-major it is 1,350, the values' order then worth 44 cycles a trip (1,305 with the values tile-major too).
-- THE VALUES STAY TOKEN-MAJOR: their order is 3% of the intra's window, and the carry's producers, who read a
+  tile-major it is 1,327, the values' order then worth 63 cycles a trip (1,264 with the values tile-major too).
+- THE VALUES STAY TOKEN-MAJOR: their order is 5% of the intra's window, and the carry's producers, who read a
   token's values as one run, lose most of a window to them tile-major ([`carry_window`](carry_window.md)). The
   levels tile-major and the values token-major is the layout both readers' measurements give.
-- BESIDE THE CARRY (179 against its 817 SM-cycles a token with no clock inside a role,
+- THE COST A TOKEN FOLLOWS THE WINDOW: 67, 103, 176 and 346 SM-cycles a token at 256, 512, 1,024 and 2,048 tokens -- some
+  160 a token a 1,024 of window over about 27 that does not move with it. The window is the carry's to
+  choose: its steps hold 16 entries a list at 1,024 at its cell, and its cost at another window is not measured.
+- AGAINST ITS OWN ARITHMETIC: a pair of tokens is 512 byte products and 72 value products; at the measured step
+  rates (an integer step 36 cycles, a value step some 35) a window of 1,024 is 96 SM-cycles a token of tensor work,
+  and the kernel is 1.8 times that -- the steps' groups, the weights' arithmetic and the staging. A window's rows are
+  655 KB and the kernel lands 5.9 MB a window: a writer tile is landed once by every reader tile's CTA after it.
+- BESIDE THE CARRY (176 against its 817 SM-cycles a token with no clock inside a role,
   [`carry_window`](carry_window.md)) the intra in that layout is about a fifth of the carry's window. Adjacent
   measurements of two labs at their own cells, not a call: the tables here are 2 MB a level, cached, and no pair is
   skipped.
-- NOT MEASURED HERE: a window whose tile pairs are skipped by the facts pass's unions; rows the cache does not hold.
-  The two kernels launched together are [`call_pair`](call_pair.md)'s.
+- NOT MEASURED HERE: a window whose tile pairs are skipped by unions; rows the cache does not hold. The two kernels
+  launched together are [`call_pair`](call_pair.md)'s.
 
 Record: `measure/lab/results/intra_window/sm_90a.json`.
