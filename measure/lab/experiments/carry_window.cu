@@ -56,7 +56,7 @@
 // den a part at a time (the fold's steps, the image's brick, the register split, the 72 columns, the whole), and
 // one row moves the winner's tiles to the den's pitch. Rows with the VALUES TILE-MAJOR in global memory price the
 // producers' loads of a token's 8 lines a kilobyte apart, the tables cached and once-read. THE LISTED rows' fold
-// reads REAL LISTS: a batch's 32 places loaded a batch before the loads they address, a window's tokens its own
+// reads its entries FROM LISTS: a batch's 32 places loaded a batch before the loads they address, a window's tokens its own
 // 1,024, an entry's sparse byte and dense bytes a block each of the levels' tile-major rows.
 // see docs/internals/tools/lab.md#carry-window
 #include <chrono>
@@ -158,8 +158,9 @@ enum Roles : int {
   //: after another, a block a token's 16 bytes a line, the order a step's operand lands in -- so a token's 8 lines
   //: are a kilobyte apart where the others' are one run of 128 bytes: what that order costs the producers' loads
   kTiledValues = 134217728,
-  //: THE LISTED row: the fold's entries are REAL LISTS' -- a producer loads a batch's 32 entries' tokens from the
-  //: lists the facts pass makes (a token's place in its window, 2 bytes), a batch ahead of the loads they address;
+  //: THE LISTED row: the fold's entries come FROM LISTS -- a producer loads a batch's 32 entries' places in their
+  //: window from a list buffer (2 bytes a place, as the facts pass's lists hold them; these places are hashed, not
+  //: a mask's), a batch ahead of the loads they address;
   //: a window's tokens are its 1,024, their rows one stretch of each table; an entry's byte on its list's digit and
   //: its 16 dense bytes are read from the levels' tile-major rows, a block each
   kListed = 268435456,
