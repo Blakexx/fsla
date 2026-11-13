@@ -28,4 +28,36 @@ The output's line and its drain are the carry's, measured there, and not in a tr
 ROWS, at 256 and at 64 digits a level: the chain with the causal mask and without; the integer steps alone; the
 arithmetic alone; the value steps with the arithmetic and no integer step; the chain with the conversion unit.
 
-MEASURED: not yet run.
+MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance 60540284, driver 580.173.02; 2026-11-13, the experiment at
+c063e24d; 7 repetitions, every accumulator exact; the median, cycles a tile pair):
+
+| the row | 256 digits a level | 64 digits a level |
+|---|---|---|
+| the chain, the causal mask on | 1,336 | 952 |
+| the chain, no mask | 1,272 | 887 |
+| the integer steps alone | 573 | 189 |
+| the arithmetic alone, the mask on | 40 | 40 |
+| the value steps and the arithmetic, no integer step | 206 | 206 |
+| the chain, the causal mask on, the products by the conversion unit | 985 | 601 |
+
+WHAT IT SHOWS.
+- A TILE PAIR IS 985 CYCLES at 256 digits a level and 601 at 64, its products converted by the conversion unit:
+  64 readers by 64 writers, 0.24 cycles a pair of tokens. A window of 1,024 tokens is 136 tile pairs with its
+  diagonal, so the chain alone is some 131 SM-cycles a token at 256 digits a level with no pair skipped
+  (ESTIMATED from the tile pair: no window was run), beside the carry's composed window
+  ([`carry_window`](carry_window.md)).
+- THE PRODUCTS' CONVERSION ON THE FLOAT PIPE LOSES ON THIS CARD: 1,336 cycles against 985 by `I2F` -- 64
+  conversions a thread a tile pair as two adds and a multiply-add each are some six instructions where the
+  conversion unit's is one. The standards keep the conversion unit out of a step loop on a measurement of another
+  family; this row is the measurement for this one.
+- THE INTEGER STEPS ARE 36 CYCLES EACH in a group of 16 (573 a tile pair) and 47 in a group of 4 (189): the
+  levels' products are about three fifths of the chain at 256 digits and a third at 64.
+- THE VALUE STEPS WITH THEIR A FORMED ARE 206 CYCLES, four steps from registers.
+- THE ARITHMETIC'S OWN ROWS DO NOT ISOLATE IT: with no integer step the products are constants and the toolkit
+  makes them floats once, outside the trip. Its cost is the chain less the two step rows: 557 cycles on the
+  float pipe and 206 by the conversion unit.
+- A CHAIN THREAD HOLDS 144 TO 172 REGISTERS (two integer accumulators of 32, the output's 32, 16 words of A): a
+  warpgroup of its own at the fold's count. The carry's CTA has no register left for one
+  ([`carry_window`](carry_window.md)), so a hopper intra runs in CTAs of its own.
+
+Record: `measure/lab/results/intra_chain/sm_90a.json`.
