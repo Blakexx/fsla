@@ -185,7 +185,7 @@ of the levels' inner products), and a full-support factor at every level makes e
 read overlaps every write -- an exact-zero pair, with its exact-zero gradient, cannot occur, while each level keeps the
 hard sparsity the kernels compact. A fold warp's tile is its side's lists by its operand rows; a readout warp holds
 every leaf for its channels, so where the two sides' carves differ the state reaches the readout through an image
-(where they are equal, from the fold's own registers). Every kernel that
+(on hopper where they are equal too, the image then laid along the fold's own lists -- its price at an aligned cell OPEN; a readout on the fold's own registers is deferred until a measurement shows it wins). Every kernel that
 depends on the geometry takes the carve — the facts pass groups its unions and lists by the box's list levels, the
 carry addresses by it — and validates the one it is handed; none decides a carve. The rule derives it from
 launch-static facts (the rows' shapes and the bundle's declared flags), never from a routing statistic, so the

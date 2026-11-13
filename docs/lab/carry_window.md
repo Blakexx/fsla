@@ -55,6 +55,13 @@ where the num's is 16,384.
 - DRAINED by one more load and one more add a drain warp a chunk, a lane a token.
 The den's state and every token's den sum are checked exactly against the host's.
 
+THE ALIGNED CELL (its own rows). Where both sides list the same level, a reader reads one list on the operand
+level's 16 digits, so an image tile is a LIST and its K the digits: the image lies along the fold's own lists.
+A line is then four fold threads' values, a word each -- a thread stores a tile group as 16 words where the other
+cell's is 4 lines, a warp's lanes on 128 consecutive bytes -- and the den's line is 8 threads' values, 2 bytes
+each. The readout, the panel and the drains are the same code. It prices the image form where the carves are
+equal, in place of a form of its own.
+
 ROWS: the fold's side alone (producers and steps), the read side alone (the image, the readout and the drain),
 both, and both with one access taken out: the producers' global loads (their words made in registers), the drains'
 global adds (their lines folded into a sink), the image's stores; and, both and each side alone, with THE READOUT

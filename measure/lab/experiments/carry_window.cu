@@ -48,7 +48,9 @@
 // steps' 32 words of A through their wait, and 8
 // words; a drain's 16. THE DEN'S ROWS add: to the fold's slot 2 steps in its group and to its tile group one
 // 4-byte store a holding thread; to the readout 4 accumulators (its steps 72 columns) and one fp32 store a row's
-// holding thread; to a drain warp one load as the chunk opens and one add behind the chunk's lines'. Live: 4 more
+// holding thread; to a drain warp one load as the chunk opens and one add behind the chunk's lines'. THE ALIGNED
+// CELL's fold stores a tile group as 16 words a thread (and the den's 2 values a holding thread) where it stores 4
+// lines; nothing else moves. Live: 4 more
 // fold accumulators, 4 more readout accumulators, a drain's one word.
 // see docs/internals/tools/lab.md#carry-window
 #include <chrono>
@@ -131,7 +133,12 @@ enum Roles : int {
   //: the row that moves the image's tiles apart with nothing else changed: 154 lines where the tile is 137, and
   //: 161 where the den's is 155 -- what the tiles' pitch costs the fold's stores (an even pitch was measured
   //: slower)
-  kPitch = 1048576
+  kPitch = 1048576,
+  //: THE ALIGNED CELL: both sides list the same level, so a reader reads ONE list on the operand level's 16 digits
+  //: -- an image tile is a LIST and its K the digits. A line (a channel's 8 digits of a list) is then four fold
+  //: threads' values, a 4-byte word each: 16 word stores a thread a tile group where the other cell's are 4 lines;
+  //: the den's line is 8 threads' values, 2 bytes each. The readout and the drains are the same code
+  kAligned = 2097152
 };
 //: an image tile's pitch in bytes: the stores of a warp's lanes are two tiles apart
 template <int ROLES>
@@ -248,9 +255,11 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
   float d[kLists][8];
   //: the den's accumulator, 64 rows by 8: column c holds 8 lists' den on 8 digits, a row a (list, digit)
   float den[4];
-  //: a thread's base into its box's image: every store is this plus a constant of (tile, row, half)
-  uint8_t* const mine = smem + lab::held(static_cast<uint32_t>(kImageAt + box * kBoxBytes + 2 * t * tile_of<ROLES>
-                                                               + 16 * (2 * warp * kBrickLines + q)));
+  //: a thread's base into its box's image: every store is this plus a constant of (tile, row, half); the aligned
+  //: cell's is its word of its row's line in the box's first tile
+  uint8_t* const mine = smem + lab::held(static_cast<uint32_t>(
+      ROLES & kAligned ? kImageAt + box * kBoxBytes + 16 * (2 * warp * kBrickLines + q) + 4 * t
+                       : kImageAt + box * kBoxBytes + 2 * t * tile_of<ROLES> + 16 * (2 * warp * kBrickLines + q)));
   if constexpr (!(ROLES & kFold)) {
     //: no fold writes the state: one group of steps gives every accumulator a value to publish
     lab::wg_fence();
@@ -278,27 +287,53 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
           if (w > 0) waited<ROLES>(bars + kTilesRead + 8 * k, (w - 1) & 1, on_read);
         }
         if (w > 0 && !(ROLES & kNoImage)) {
+          if constexpr (ROLES & kAligned) {
+            //: the group's 4 tiles are lists `8 (k / 2) + k % 2 + 2 j`: a thread's word of each row's two lines
 #pragma unroll
-          for (int r = 0; r < 2; ++r)
+            for (int j = 0; j < kChunkDigits; ++j)
 #pragma unroll
-            for (int h = 0; h < 2; ++h) {
-              const int i = (k & 1) | r << 1 | (k >> 1) << 2;
-              uint32_t pair[4];
+              for (int r = 0; r < 2; ++r)
 #pragma unroll
-              for (int j = 0; j < 4; ++j) pair[j] = lab::bf16x2_trunc(d[8 * h + 2 * j][i], d[8 * h + 2 * j + 1][i]);
-              *reinterpret_cast<uint4*>(mine + (8 * (k >> 1) + (k & 1)) * tile_of<ROLES> + 16 * (r * kBrickLines + 8 * h)) =
-                  make_uint4(pair[0], pair[1], pair[2], pair[3]);
+                for (int h = 0; h < 2; ++h) {
+                  const int a = 8 * (k >> 1) + (k & 1) + 2 * j;
+                  *reinterpret_cast<uint32_t*>(mine + a * tile_of<ROLES> + 16 * (r * kBrickLines + 8 * h)) =
+                      lab::bf16x2_trunc(d[a][r << 1 | h << 2], d[a][1 | r << 1 | h << 2]);
+                }
+            if constexpr (ROLES & kDen) {
+              //: THE DEN'S LINES: list `8 s + l`'s den on digit `8 hc + r` is row `8 l + r` of column `2 s + hc`
+              //: -- a thread's value of its list `8 t + 2 warp + k % 2`, 2 bytes of the list's tile's ninth brick
+              if (t == (k >> 1)) {
+#pragma unroll
+                for (int hc = 0; hc < 2; ++hc)
+                  *reinterpret_cast<uint16_t*>(smem + kImageAt + box * kBoxBytes
+                                               + (8 * t + 2 * warp + (k & 1)) * tile_of<ROLES>
+                                               + 16 * ((kImageBricks - 1) * kBrickLines + 8 * hc) + 2 * q) =
+                      static_cast<uint16_t>(__float_as_uint(den[hc | (k & 1) << 1]) >> 16);
+              }
             }
-          if constexpr (ROLES & kDen) {
-            //: THE DEN'S LINES of the group: column `2 s + k / 2` of the accumulator is lists `8 s` on of digits
-            //: `8 (k / 2)` on, a thread's two rows lists `2 warp` and the next on digit `q` -- one word of line `s` of
-            //: tile `8 (k / 2) + q`'s ninth brick, stored by the threads that hold the column: 8 lanes a warp, a
-            //: 4-byte word each at one word of lines 8 apart in tiles 2 apart -- the tile's layout fixes the places,
-            //: so the lanes share banks; one instruction a tile group
-            const uint32_t word = lab::bf16x2_trunc(den[k >> 1], den[(k >> 1) | 2]);
-            if (t < 2 && (q & 1) == (k & 1))
-              *reinterpret_cast<uint32_t*>(smem + kImageAt + box * kBoxBytes + (8 * (k >> 1) + q) * tile_of<ROLES>
-                                           + 16 * ((kImageBricks - 1) * kBrickLines + 8 * t) + 4 * warp) = word;
+          } else {
+  #pragma unroll
+            for (int r = 0; r < 2; ++r)
+  #pragma unroll
+              for (int h = 0; h < 2; ++h) {
+                const int i = (k & 1) | r << 1 | (k >> 1) << 2;
+                uint32_t pair[4];
+  #pragma unroll
+                for (int j = 0; j < 4; ++j) pair[j] = lab::bf16x2_trunc(d[8 * h + 2 * j][i], d[8 * h + 2 * j + 1][i]);
+                *reinterpret_cast<uint4*>(mine + (8 * (k >> 1) + (k & 1)) * tile_of<ROLES> + 16 * (r * kBrickLines + 8 * h)) =
+                    make_uint4(pair[0], pair[1], pair[2], pair[3]);
+              }
+            if constexpr (ROLES & kDen) {
+              //: THE DEN'S LINES of the group: column `2 s + k / 2` of the accumulator is lists `8 s` on of digits
+              //: `8 (k / 2)` on, a thread's two rows lists `2 warp` and the next on digit `q` -- one word of line `s` of
+              //: tile `8 (k / 2) + q`'s ninth brick, stored by the threads that hold the column: 8 lanes a warp, a
+              //: 4-byte word each at one word of lines 8 apart in tiles 2 apart -- the tile's layout fixes the places,
+              //: so the lanes share banks; one instruction a tile group
+              const uint32_t word = lab::bf16x2_trunc(den[k >> 1], den[(k >> 1) | 2]);
+              if (t < 2 && (q & 1) == (k & 1))
+                *reinterpret_cast<uint32_t*>(smem + kImageAt + box * kBoxBytes + (8 * (k >> 1) + q) * tile_of<ROLES>
+                                             + 16 * ((kImageBricks - 1) * kBrickLines + 8 * t) + 4 * warp) = word;
+            }
           }
         }
         if constexpr (!(ROLES & kNoFence)) lab::bulk_fence();
@@ -888,6 +923,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kSpin ? ", the fold warps spinning at a polled barrier" : "")
                            + (ROLES & kDump ? ", the fold's state stored out in every call" : "")
                            + (ROLES & kBig ? ", the tables 16 replicas the cache cannot hold" : "")
+                           + (ROLES & kAligned ? ", the sides' carves equal: an image tile a list, its lines four threads' words" : "")
                            + (ROLES & kPitch ? (ROLES & kDen ? ", the image's tiles 161 lines apart" : ", the image's tiles 154 lines apart") : "")
                            + (ROLES & kDen ? ", the den: two more steps a slot, the readout's steps 72 columns and an fp32 a token" : "");
   constexpr int kLaunch = threads_of<ROLES>, kWarps = kLaunch >> 5;
@@ -896,7 +932,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
   const size_t tokens = static_cast<size_t>(b.sms) * kOutWindows * kWindow;
   LAB_CHECK(cudaMemset(out, 0, (words + tokens) * 4));
-  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch)) == (kFold | kRead)) {
+  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned)) == (kFold | kRead)) {
     kernel<<<b.sms, kLaunch, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * state_words<ROLES>;
@@ -924,8 +960,9 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
             long long want = 0;
             for (int box = 0; box < 2; ++box)
               for (int a = 0; a < kLists; ++a)
-                want += image_host(sden[(box * kLists + a) * kLists + bb]) * sparse_of(static_cast<int>(rt))
-                        * dense_of(static_cast<int>(reader_row(rt, box)), a);
+                want += image_host(ROLES & kAligned ? sden[(box * kLists + bb) * kLists + a]
+                                                    : sden[(box * kLists + a) * kLists + bb])
+                        * sparse_of(static_cast<int>(rt)) * dense_of(static_cast<int>(reader_row(rt, box)), a);
             wrong_den += got_den[(static_cast<size_t>(blk) * kOutWindows + w) * kWindow + token] != static_cast<float>(want);
           }
         for (int token = 0; token < kWindow; ++token)
@@ -935,8 +972,8 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
             long long want = 0;
             for (int box = 0; box < 2; ++box)
               for (int a = 0; a < kLists; ++a)
-                want += image_host(s[at(box, m, a, bb)]) * sparse_of(static_cast<int>(rt))
-                        * dense_of(static_cast<int>(reader_row(rt, box)), a);
+                want += image_host(ROLES & kAligned ? s[at(box, m, bb, a)] : s[at(box, m, a, bb)])
+                        * sparse_of(static_cast<int>(rt)) * dense_of(static_cast<int>(reader_row(rt, box)), a);
             const size_t row = (static_cast<size_t>(blk) * kOutWindows + w) * kWindow + token;
             const uint32_t word = got[row * (kChannels / 2) + m / 2];
             wrong_out += half_to_float(static_cast<uint16_t>(word >> (16 * (m & 1)))) != static_cast<float>(line_host(want));
@@ -1050,7 +1087,7 @@ int main(int argc, char** argv) {
                     2 | kNoImage, 2 | kNoFence, 2 | kNoImage | kNoFence, 3 | kNoFence,
                     2 | kStill | kPark, 2 | kStill | kSpin, 3 | kDump,
                     3 | kSuspend | kLean, 3 | kSuspend | kWide, 3 | kSuspend | kLean | kWide,
-                    3 | kSleep | kLean | kWide, 3 | kBig, 3 | kSuspend | kLean | kBig, 1 | kBig, 1 | kDen, 3 | kSuspend | kLean | kDen, 3 | kSuspend | kLean | kBig | kDen, 3 | kSuspend | kLean | kPitch, 3 | kSuspend | kLean | kDen | kPitch}) {
+                    3 | kSleep | kLean | kWide, 3 | kBig, 3 | kSuspend | kLean | kBig, 1 | kBig, 1 | kDen, 3 | kSuspend | kLean | kDen, 3 | kSuspend | kLean | kBig | kDen, 3 | kSuspend | kLean | kPitch, 3 | kSuspend | kLean | kDen | kPitch, 3 | kSuspend | kLean | kAligned, 3 | kSuspend | kLean | kAligned | kDen}) {
     const std::string k = lab::kernel("window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     b.expect(k, "HGMMA", "==",
@@ -1153,5 +1190,7 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kLean | kBig | kDen>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kPitch>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kDen | kPitch>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kAligned>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kAligned | kDen>(b, waits, values, dense, state, out);
   return 0;
 }
