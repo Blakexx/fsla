@@ -788,7 +788,9 @@ method is a procedure with a gate, not a memory.
    the data's alone -- the liveness words and unions, each sparse level's lists (tokens in order, ranks, boundaries,
    totals), the per-token factor products -- and nothing of a card's: no exponent, no coefficient in an operand's
    format, no layout offset. What a card's step needs beyond the entry it forms where it expands the byte, once at
-   the outermost level its inputs allow (item 2).
+   the outermost level its inputs allow (item 2). ON HOPPER (amended 2026-11-13) the pass emits a sparse level's mask TURNED
+   AROUND and nothing else -- a window's tokens by digit, in token order, and their counts: an entry is the token,
+   with no byte, and a kernel reads a token's byte from its row with the rest of the token's data.
 6. `[MACHINE]` CONVERSIONS RUN ON THE FMA PIPE: an fp32 to integer conversion is one FFMA adding 1.5 x 2^23 (the
    rounded integer in the low bits), a pair packed by one PRMT; the conversion unit (F2I/I2F/F2F/MUFU; on sm_86 16
    lanes a cycle an SM) never in a step. ON HOPPER (amended 2026-11-13) a step's trip keeps a conversion instruction
