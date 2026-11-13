@@ -24,7 +24,8 @@
 // warp's scratch in shared memory; and the read side with the fold's image stores, its fence behind them, or both
 // taken out, and the readout and drains with the fold warps present and idle -- parked at a named barrier, or
 // spinning at a polled one; a row that restores the fold's state dump to every call (the A/B that prices it in
-// one session); and the suspended and sleeping waits combined with the lean readout and the wide byte load. Then
+// one session); the suspended and sleeping waits combined with the lean readout and the wide byte load; and rows
+// whose tables are 16 replicas (128 MB of values) the cache cannot hold, a token's replica picked by its hash. Then
 // what the readout's steps
 // wait behind: the readout and the drains with NO fold warp running (the image as it lies); every barrier's wait
 // by the instruction that may suspend its thread, where the others poll. With both sides and no access out, the
@@ -50,7 +51,7 @@
 namespace carry_window {
 
 constexpr int kLists = 16, kEntries = 16, kWindow = kLists * kEntries, kSlotLists = 8, kSlot = kSlotLists * kEntries;
-constexpr int kChannels = 64, kTableTokens = 65536, kRowWords = 32, kFill = 32;
+constexpr int kChannels = 64, kTableTokens = 65536, kRowWords = 32, kFill = 32, kReplicas = 16;
 constexpr int kGroup = 128, kDrains = 2, kThreads = 4 * kGroup;
 //: the roles' first threads: fold 0, fold 1, the readout, then one warpgroup of two producers and two drain warps
 constexpr int kReadAt = 2 * kGroup, kProduceAt = 3 * kGroup, kDrainAt = kProduceAt + 64;
@@ -104,8 +105,18 @@ enum Roles : int {
   kPark = 32768, kSpin = 65536,
   //: the row that RESTORES the fold's state dump to every call, as every record before this form had it: the A/B
   //: that prices the dump in one session
-  kDump = 131072
+  kDump = 131072,
+  //: the row whose tables the cache cannot hold: every token's rows are read at a REPLICA of the table picked by
+  //: the token's hash -- the same token always the same replica, so the values are the small table's and the host's
+  //: check stands -- and the values' 16 replicas are 128 MB against the card's 50 MB L2
+  kBig = 262144
 };
+//: a token's row in the replicated tables: its own, or its replica's
+template <int ROLES>
+__device__ __forceinline__ uint32_t row_of(uint32_t t) {
+  if constexpr (ROLES & kBig) return t | ((t * 2654435761u >> 12) & ((kReplicas - 1) * kTableTokens));
+  else return t;
+}
 //: THE FIVE-WARPGROUP row: 640 threads, a fourth warpgroup of four producers and a fifth of four drain warps. A
 //: kernel of 640 threads enters with 96 registers a thread (docs/lab/reg_five.md), and the roles' counts sum to
 //: that: the folds' 160, the lean readout's 80, and 40 a producer and a drain warp -- a producer holds one value
@@ -316,14 +327,14 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
     for (int qd = 0; qd < kPart; ++qd) {
       const uint32_t tk = token_of(source, n * kFill + 4 * (part_at * kPart + qd) + group);
       if constexpr (ROLES & kNoLoads) value[h][qd] = make_uint4(tk, tk, tk, tk);
-      else value[h][qd] = wide[static_cast<long long>(tk) * (kRowWords / 4) + (lane & 7)];
+      else value[h][qd] = wide[static_cast<long long>(row_of<ROLES>(tk)) * (kRowWords / 4) + (lane & 7)];
     }
   };
   //: batch `n`'s dense bytes, all 32 entries' in one instruction (a lane an entry's 16)
   const auto load_bytes = [&](int n, int h) {
     const uint32_t tb = token_of(source, n * kFill + lane);
     if constexpr (ROLES & kNoLoads) bytes[h] = make_uint4(tb, tb, tb, tb);
-    else bytes[h] = boxes[tb];
+    else bytes[h] = boxes[row_of<ROLES>(tb)];
   };
 #pragma unroll
   for (int h = 0; h < kHeld; ++h) {
@@ -425,14 +436,14 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       const int k = c % kChunks;
       const uint32_t rd = reader_of(blockIdx.x, (c / kChunks) * kWindow + 16 * (8 * (k >> 1) + (k & 1) + 2 * warp)
                                                     + (lane & 15));
-      wide_row = reinterpret_cast<const uint4*>(dense)[reader_row(rd, lane >> 4)];
+      wide_row = reinterpret_cast<const uint4*>(dense)[row_of<ROLES>(reader_row(rd, lane >> 4))];
     } else {
 #pragma unroll
       for (int box = 0; box < 2; ++box)
 #pragma unroll
         for (int j = 0; j < 4; ++j)
           if constexpr (ROLES & kNoBytes) bytes[box][j] = reader(c, j & 1) + static_cast<uint32_t>(box + j);
-          else bytes[box][j] = dense[static_cast<long long>(reader_row(reader(c, j & 1), box)) * 4 + 2 * (j >> 1) + (t >> 1)];
+          else bytes[box][j] = dense[static_cast<long long>(row_of<ROLES>(reader_row(reader(c, j & 1), box))) * 4 + 2 * (j >> 1) + (t >> 1)];
     }
   };
   load(0);
@@ -776,13 +787,14 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kNoFence ? ", the fold's fence behind its image taken out" : "")
                            + (ROLES & kPark ? ", the fold warps parked at a named barrier" : "")
                            + (ROLES & kSpin ? ", the fold warps spinning at a polled barrier" : "")
-                           + (ROLES & kDump ? ", the fold's state stored out in every call" : "");
+                           + (ROLES & kDump ? ", the fold's state stored out in every call" : "")
+                           + (ROLES & kBig ? ", the tables 16 replicas the cache cannot hold" : "");
   constexpr int kLaunch = threads_of<ROLES>, kWarps = kLaunch >> 5;
   const auto kernel = window<ROLES>;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
   LAB_CHECK(cudaMemset(out, 0, words * 4));
-  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump)) == (kFold | kRead)) {
+  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig)) == (kFold | kRead)) {
     kernel<<<b.sms, kLaunch, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * kLists * 8;
@@ -901,7 +913,7 @@ int main(int argc, char** argv) {
                     2 | kNoImage, 2 | kNoFence, 2 | kNoImage | kNoFence, 3 | kNoFence,
                     2 | kStill | kPark, 2 | kStill | kSpin, 3 | kDump,
                     3 | kSuspend | kLean, 3 | kSuspend | kWide, 3 | kSuspend | kLean | kWide,
-                    3 | kSleep | kLean | kWide}) {
+                    3 | kSleep | kLean | kWide, 3 | kBig, 3 | kSuspend | kLean | kBig, 1 | kBig}) {
     const std::string k = lab::kernel("window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     b.expect(k, "HGMMA", "==",
@@ -930,13 +942,16 @@ int main(int argc, char** argv) {
     b.expect(k, "BSSY", ">=", 0);
   }
   if (b.expect_only) return 0;
-  std::vector<uint32_t> host_values(static_cast<size_t>(kTableTokens) * kRowWords), host_dense(kTableTokens * 4);
+  //: the tables hold `kReplicas` copies of the 65,536 tokens' rows: a replica's row is its token's, so the big
+  //: row's spread reads the same values and the host's mirror stands
+  std::vector<uint32_t> host_values(static_cast<size_t>(kReplicas) * kTableTokens * kRowWords),
+      host_dense(static_cast<size_t>(kReplicas) * kTableTokens * 4);
   for (size_t w = 0; w < host_values.size(); ++w) {
-    const int t = static_cast<int>(w / kRowWords), c = 2 * static_cast<int>(w % kRowWords);
+    const int t = static_cast<int>(w / kRowWords) & (kTableTokens - 1), c = 2 * static_cast<int>(w % kRowWords);
     host_values[w] = bf16_host(value_of(t, c)) | bf16_host(value_of(t, c + 1)) << 16;
   }
   for (size_t w = 0; w < host_dense.size(); ++w) {
-    const int t = static_cast<int>(w / 4), b0 = 4 * static_cast<int>(w % 4);
+    const int t = static_cast<int>(w / 4) & (kTableTokens - 1), b0 = 4 * static_cast<int>(w % 4);
     host_dense[w] = dense_of(t, b0) | dense_of(t, b0 + 1) << 8 | dense_of(t, b0 + 2) << 16 | dense_of(t, b0 + 3) << 24;
   }
   uint32_t *values = nullptr, *dense = nullptr, *out = nullptr;
@@ -992,5 +1007,8 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kWide>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kWide>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSleep | kLean | kWide>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kBig>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kBig>(b, waits, values, dense, state, out);
+  run<kFold | kBig>(b, waits, values, dense, state, out);
   return 0;
 }

@@ -67,7 +67,10 @@ the fold's image stores, its fence behind them, or both taken out, and both side
 keep the fold warps PRESENT AND IDLE beside the readout and the drains for the whole call -- parked at a named
 barrier, or spinning at a polled one -- where the row with no fold warp running has them leave. One row RESTORES
 the fold's state dump to every call, as every record before this form had it: the A/B that prices the dump in one
-session. The suspended and the sleeping waits also run combined with the lean readout and the wide byte load. Then WHAT THE
+session. Rows whose TABLES THE CACHE CANNOT HOLD read every token's rows at a replica of the table picked by
+the token's hash -- the same token always the same replica, so the values are the small table's and the check
+stands -- 16 replicas, 128 MB of values against the card's 50 MB L2 (composed, the winner's form, and the fold's
+side alone). The suspended and the sleeping waits also run combined with the lean readout and the wide byte load. Then WHAT THE
 READOUT'S STEPS WAIT BEHIND: the
 readout and the drains with no fold warp running (the image as it lies, never rewritten, no fold warp at a
 barrier); every barrier's wait by the instruction that may suspend its thread (`mbarrier.try_wait`) where the
