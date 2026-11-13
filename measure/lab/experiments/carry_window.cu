@@ -54,7 +54,8 @@
 // fold accumulators, 4 more readout accumulators, a drain's one word. The den's image store is issued by every
 // lane, the lanes without a den value to one place a warp. A CHAIN of rows with no clock inside a role adds the
 // den a part at a time (the fold's steps, the image's brick, the register split, the 72 columns, the whole), and
-// one row moves the winner's tiles to the den's pitch.
+// one row moves the winner's tiles to the den's pitch. Rows with the VALUES TILE-MAJOR in global memory price the
+// producers' loads of a token's 8 lines a kilobyte apart, the tables cached and once-read.
 // see docs/internals/tools/lab.md#carry-window
 #include <chrono>
 
@@ -150,7 +151,11 @@ enum Roles : int {
   //: the rows with NO CLOCK INSIDE A ROLE: a wait is its wait and a phase is not lapped, so the window's cycles are
   //: the roles' own -- a role's clock reads compile differently from row to row (into registers in one kernel,
   //: through uniform registers in another), and these rows price a row's work without them
-  kNoClock = 4194304
+  kNoClock = 4194304,
+  //: the row whose VALUES ARE TILE-MAJOR in global memory -- a tile of 64 tokens its 8 blocks of 8 channels one
+  //: after another, a block a token's 16 bytes a line, the order a step's operand lands in -- so a token's 8 lines
+  //: are a kilobyte apart where the others' are one run of 128 bytes: what that order costs the producers' loads
+  kTiledValues = 134217728
 };
 //: an image tile's pitch in bytes: the stores of a warp's lanes are two tiles apart
 template <int ROLES>
@@ -465,7 +470,12 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
     for (int qd = 0; qd < kPart; ++qd) {
       const uint32_t tk = token_of(source, n * kFill + 4 * (part_at * kPart + qd) + group);
       if constexpr (ROLES & kNoLoads) value[h][qd] = make_uint4(tk, tk, tk, tk);
-      else value[h][qd] = wide[static_cast<long long>(row_of<ROLES>(tk, static_cast<uint32_t>(n * kFill + 4 * qd + group))) * (kRowWords / 4) + (lane & 7)];
+      else {
+        const uint32_t row = row_of<ROLES>(tk, static_cast<uint32_t>(n * kFill + 4 * qd + group));
+        //: tile-major, line `p` of token `x` is 16 bytes at `512 (x / 64) + 64 p + x % 64`: the row and 448 a tile
+        if constexpr (ROLES & kTiledValues) value[h][qd] = wide[row + (row >> 6) * 448u + static_cast<uint32_t>(lane & 7) * 64u];
+        else value[h][qd] = wide[static_cast<long long>(row) * (kRowWords / 4) + (lane & 7)];
+      }
     }
   };
   //: batch `n`'s dense bytes, all 32 entries' in one instruction (a lane an entry's 16)
@@ -942,6 +952,9 @@ inline float half_to_float(uint16_t h) {
   return h & 0x8000 ? -mag : mag;
 }
 
+//: the value table laid tile-major, for the rows that read it so
+static const uint32_t* tiled_values = nullptr;
+
 template <int ROLES>
 void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t* dense, float* state, uint32_t* out) {
   using namespace carry_window;
@@ -968,6 +981,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kBig ? ", the tables 16 replicas the cache cannot hold" : "")
                            + (ROLES & kAligned ? ", the sides' carves equal: an image tile a list, its lines four threads' words" : "")
                            + (ROLES & kNoClock ? ", no clock inside a role" : "")
+                           + (ROLES & kTiledValues ? ", the values tile-major in global memory" : "")
                            + (ROLES & kPitch ? (ROLES & kDenImage ? ", the image's tiles 161 lines apart" : ROLES & kNoClock ? ", the image's tiles 155 lines apart" : ", the image's tiles 154 lines apart") : "")
                            + ((ROLES & kDen) == kDen ? ", the den: two more steps a slot, the readout's steps 72 columns and an fp32 a token"
                               : ROLES & kDen ? std::string(", the den's parts alone: its fold steps")
@@ -977,11 +991,13 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                                              : std::string());
   constexpr int kLaunch = threads_of<ROLES>, kWarps = kLaunch >> 5;
   const auto kernel = window<ROLES>;
+  //: the rows that read the values tile-major read the table laid so
+  values = ROLES & kTiledValues ? tiled_values : values;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
   const size_t tokens = static_cast<size_t>(b.sms) * kOutWindows * kWindow;
   LAB_CHECK(cudaMemset(out, 0, (words + tokens) * 4));
-  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock)) == (kFold | kRead)) {
+  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues)) == (kFold | kRead)) {
     kernel<<<b.sms, kLaunch, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * state_words<ROLES>;
@@ -1141,7 +1157,8 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kNoClock | kDenFold, 3 | kSuspend | kLean | kNoClock | kDenFold | kDenImage,
                     3 | kSuspend | kLean | kNoClock | kDenFold | kDenImage | kDenSplit,
                     3 | kSuspend | kLean | kNoClock | kDenFold | kDenImage | kDenSplit | kDenRead,
-                    3 | kSuspend | kLean | kNoClock | kPitch}) {
+                    3 | kSuspend | kLean | kNoClock | kPitch, 3 | kSuspend | kLean | kNoClock | kTiledValues,
+                    3 | kSuspend | kLean | kNoClock | kBig, 3 | kSuspend | kLean | kNoClock | kBig | kTiledValues}) {
     const std::string k = lab::kernel("window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     b.expect(k, "HGMMA", "==",
@@ -1187,6 +1204,17 @@ int main(int argc, char** argv) {
   float* state = nullptr;
   LAB_CHECK(cudaMalloc(&values, host_values.size() * 4));
   LAB_CHECK(cudaMemcpy(values, host_values.data(), host_values.size() * 4, cudaMemcpyHostToDevice));
+  {
+    //: token `x`'s line `p` (channels `8 p` on) at tile `x / 64`, block `p`, line `x % 64`
+    std::vector<uint32_t> tiled(host_values.size());
+    for (size_t x = 0; x < host_values.size() / kRowWords; ++x)
+      for (int w = 0; w < kRowWords; ++w)
+        tiled[((x >> 6) * 512 + (w / 4) * 64 + (x & 63)) * 4 + w % 4] = host_values[x * kRowWords + w];
+    uint32_t* dev = nullptr;
+    LAB_CHECK(cudaMalloc(&dev, tiled.size() * 4));
+    LAB_CHECK(cudaMemcpy(dev, tiled.data(), tiled.size() * 4, cudaMemcpyHostToDevice));
+    tiled_values = dev;
+  }
   LAB_CHECK(cudaMalloc(&dense, host_dense.size() * 4));
   LAB_CHECK(cudaMemcpy(dense, host_dense.data(), host_dense.size() * 4, cudaMemcpyHostToDevice));
   LAB_CHECK(cudaMalloc(&state, sizeof(float) * b.sms * 2 * kGroup * state_words<kDen>));
@@ -1255,5 +1283,8 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kLean | kNoClock | kDenFold | kDenImage | kDenSplit>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kDenFold | kDenImage | kDenSplit | kDenRead>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kPitch>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kTiledValues>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kBig>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kBig | kTiledValues>(b, waits, values, dense, state, out);
   return 0;
 }

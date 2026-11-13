@@ -8,9 +8,12 @@
 // on those tiles: each of two levels' pair products as 8 integer steps, the levels multiplied in fp32, the pairs
 // whose writer is after its reader dropped (the diagonal tile alone), the weight rounded to bf16 in place as the A
 // of 4 value steps 72 columns wide -- the 65th column the den's, a constant brick of ones. A CTA's last act is its
-// 64 tokens' lines, f16 pairs added to the output, and their den sums. Reader tile `i` runs `i + 1` trips.
+// 64 tokens' lines, f16 pairs added to the output, and their den sums. Reader tile `i` runs `i + 1` trips. TWO
+// MORE FORMS hold the rows TILE-MAJOR in global memory -- a tile's blocks one after another, as a step reads them
+// -- so a tile's level is one contiguous copy: every plane so, or the levels alone with the values token-major.
 // TIMELINE: the loader's trip: the wait on the slot's release two trips back, the barrier's bytes stated, 40 copies
-// issued in two instructions (a lane a copy). The compute's trip: the wait on the slot's landing; the fence, 16
+// issued in two instructions (a lane a copy) -- tile-major, 3 contiguous copies in one or two instructions, a lane a
+// plane; mixed, 2 and the values' 8 boxes. The compute's trip: the wait on the slot's landing; the fence, 16
 // integer steps on descriptors a constant apart, the commit, the wait; 64 conversions, 32 multiplies, the mask's
 // selects on the diagonal, 16 rounds; the fence, 4 value steps, the commit, the wait; the slot released. Staged a
 // trip ahead: the next writer tile lands while this one is computed. Live: two integer accumulators of 32 through
@@ -46,7 +49,9 @@ constexpr int value_of(uint32_t token, int channel) { return static_cast<int>((t
 //: the rows' two layouts in global memory: TOKEN-MAJOR, the bundle's -- a tile lands as tensor copies, a box a
 //: block -- and TILE-MAJOR -- a tile of 64 tokens its blocks one after another, each a token's 16 bytes a line, as a
 //: step reads them: a tile's level is one contiguous copy
-enum Form : int { kBoxes = 0, kTiled = 1 };
+//: and MIXED -- the levels tile-major, the values token-major, as a reader of a token's values at a run would have
+//: them
+enum Form : int { kBoxes = 0, kTiled = 1, kMixed = 2 };
 struct Tiled {
   const uint8_t* levels[kLevels];
   const uint8_t* values;
@@ -57,13 +62,17 @@ template <int FORM>
 __device__ __forceinline__ void land(uint32_t at, bool whole, const CUtensorMap* level0, const CUtensorMap* level1,
                                      const CUtensorMap* values, const Tiled& tiled, int tokens, uint32_t bar) {
   const int lane = threadIdx.x & 31;
-  if constexpr (FORM == kTiled) {
+  if constexpr (FORM != kBoxes) {
     const long long tile = tokens / kTile;
     //: a level a lane, its rows chosen by a select: an index into the argument is local memory
     const uint8_t* const rows = lane ? tiled.levels[1] : tiled.levels[0];
     if (lane < kLevels) lab::bulk_load(at + lane * kLevelBytes, rows + tile * kLevelBytes, kLevelBytes, bar);
-    if (whole && lane == kLevels)
-      lab::bulk_load(at + kSlotValues, tiled.values + tile * (kValueBlocks * kBlock), kValueBlocks * kBlock, bar);
+    if constexpr (FORM == kTiled) {
+      if (whole && lane == kLevels)
+        lab::bulk_load(at + kSlotValues, tiled.values + tile * (kValueBlocks * kBlock), kValueBlocks * kBlock, bar);
+    } else {
+      if (whole && lane < kValueBlocks) lab::tensor_load_2d(at + kSlotValues + lane * kBlock, values, 8 * lane, tokens, bar);
+    }
   } else {
     //: a lane a block: level `lane / 16`, digits `16 (lane % 16)` on; the values' 8 blocks a lane of the first 8
     lab::tensor_load_2d(at + lane * kBlock, lane & 16 ? level1 : level0, 16 * (lane & 15), tokens, bar);
@@ -214,11 +223,11 @@ __global__ void __launch_bounds__(kThreads, 1)
 int main(int argc, char** argv) {
   using namespace intra_window;
   lab::Bench b(argc, argv);
-  for (int form : {static_cast<int>(kBoxes), static_cast<int>(kTiled)}) {
+  for (int form : {static_cast<int>(kBoxes), static_cast<int>(kTiled), static_cast<int>(kMixed)}) {
     const std::string k = lab::kernel("window", {form});
     b.expect(k, "IGMMA", "==", kLevels * kDigits / 32);
     b.expect(k, "HGMMA", "==", 4);
-    b.expect(k, form == kBoxes ? "UTMALDG" : "UBLKCP", ">=", 3);
+    b.expect(k, form == kBoxes ? "UTMALDG" : "UBLKCP", ">=", form == kMixed ? 2 : 3);
     //: the conversion unit kept in the trip, as hopper's row of the standards allows (KERNEL_STANDARDS 29, item 6)
     b.expect(k, "STEP_XU", ">=", 0);
     //: a lane's own copy and a holding thread's den sum are lane-dependent branches
@@ -307,7 +316,9 @@ int main(int argc, char** argv) {
   }
   const auto run = [&](auto kernel, int form) {
     const std::string name = std::string("a window of 1,024 tokens, two levels of 256 digits, 64 channels and the den, ")
-                             + (form == kBoxes ? "the rows token-major: tensor copies a block" : "the rows tile-major: a tile's level one copy");
+                             + (form == kBoxes ? "the rows token-major: tensor copies a block"
+                               : form == kTiled ? "the rows tile-major: a tile's level one copy"
+                                                : "the levels tile-major, the values token-major");
     LAB_CHECK(cudaMemset(out, 0, words * 4));
     LAB_CHECK(cudaMemset(den, 0, tokens * 4));
     LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
@@ -368,5 +379,6 @@ int main(int argc, char** argv) {
   };
   run(window<kBoxes>, kBoxes);
   run(window<kTiled>, kTiled);
+  run(window<kMixed>, kMixed);
   return 0;
 }

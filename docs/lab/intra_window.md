@@ -24,7 +24,8 @@ THE FORM. A CTA a tile of 64 READERS, 16 CTAs a window, a CTA an SM: one compute
   `i + 1` trips, so a window is 136.
 TWO FORMS OF THE ROWS in global memory: TOKEN-MAJOR, the bundle's (the copies above), and TILE-MAJOR -- a tile of 64
 tokens its blocks one after another, each block a token's 16 bytes a line, which is the layout a step reads -- where
-a tile's level is one contiguous copy of 16 KB and its values one of 8.
+a tile's level is one contiguous copy of 16 KB and its values one of 8. A third form is MIXED: the levels tile-major and the values
+token-major, as a reader of a token's values at one run would have them.
 
 The cell: a level's row is 8 live digits of byte 1 (a pair's weight at most 64, exact in bf16 and in every sum), a
 value 1 or 2; every output value and every den sum is checked against the host's. Shared memory 114 KB.

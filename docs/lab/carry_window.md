@@ -69,6 +69,12 @@ winner's tiles to the den's pitch, 155 lines, without the den. The den's image s
 lane with no branch around it: the lanes that hold no den value store to one place a warp -- channel 65's line,
 which no kept column reads -- so their stores merge, on banks the holders' stores do not use.
 
+THE VALUES TILE-MAJOR (its own rows, no clock inside a role). A plane's order in global memory follows its readers'
+measured access ([`ARCHITECTURE.md`](../ARCHITECTURE.md#1-what-the-kernel-computes)), and the intra wants a tile of 64
+tokens laid block by block ([`intra_window`](intra_window.md)). The carry's producers read a token's values as 8
+lines of 16 bytes: token-major they are one run of 128 bytes, tile-major a kilobyte apart. Rows read the values
+tile-major with the tables cached and once-read, each beside its token-major row.
+
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
 through uniform registers in the den's. Rows of the winner's form and the den's, at both cells, and the den's chain run with no

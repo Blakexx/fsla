@@ -734,6 +734,15 @@ class Bench {
   }
 
   //: the mean over blocks of the block's span (`WarpSpan`), `warps` a block, `blocks` launched (one an SM if omitted)
+  //: SPAN_RECORDED: a timed launch starts from cleared clocks (`variant`), so a warp that never stopped its own
+  //: leaves a zero -- no block's span is read over one
+  static void span_recorded(long long lo, long long hi, int block, int warps) {
+    if (lo > 0 && hi >= lo && hi - lo < (1ll << 40)) return;
+    std::fprintf(stderr, "lab: block %d's span is not a measurement: a warp of its %d did not record its clock\n",
+                 block, warps);
+    std::exit(3);
+  }
+
   double span(int warps, int blocks = 0) const {
     const int n = blocks > 0 ? blocks : sms;
     std::vector<long long> h(static_cast<size_t>(n) * warps * 2);
@@ -745,11 +754,7 @@ class Bench {
         lo = std::min(lo, h[2 * (b * warps + w)]);
         hi = std::max(hi, h[2 * (b * warps + w) + 1]);
       }
-      //: a warp that never stopped its clock leaves its slot as it lay: no span is that long
-      if (lo <= 0 || hi < lo || hi - lo > (1ll << 40)) {
-        std::fprintf(stderr, "lab: block %d's span is not a measurement: a warp of its %d did not record its clock\n", b, warps);
-        std::exit(3);
-      }
+      span_recorded(lo, hi, b, warps);
       s += double(hi - lo);
     }
     return s / n;
@@ -771,6 +776,7 @@ class Bench {
     launch();
     LAB_CHECK(cudaDeviceSynchronize());
     for (int r = 0; r < reps; ++r) {
+      LAB_CHECK(cudaMemset(times, 0, sizeof(long long) * sms * kMaxWarps));
       launch();
       LAB_CHECK(cudaDeviceSynchronize());
       out.v.push_back(measure());

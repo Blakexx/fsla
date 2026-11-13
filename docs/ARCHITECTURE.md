@@ -48,7 +48,12 @@ readout is the only normalization the family has.
  §2.1](api.md#21-the-bundle-is-the-contract-and-it-is-the-internal-format)): every routing level's rows, dense or
 sparse, are u8 digits unit-max against the row's fp32 maximum, a zero a zero, and each token's values are bf16 against
 its largest channel with an fp32 scale (CONSTITUTION §R17, §R23). Nothing floating but those values is stored between
-the producer and the kernels.
+the producer and the kernels. THE ORDER OF A PLANE'S BYTES FOLLOWS ITS READERS' MEASURED ACCESS (Blake, 2026-11-13):
+the producer writes each plane in the layout its readers' cheapest access wants. On hopper a level's rows are
+TILE-MAJOR -- a tile of 64 tokens its 16-digit blocks one after another, each block a token's 16 bytes a line, the
+layout an integer step reads -- since the intra stages a tile's level as one copy so and as 16 strided ones
+otherwise ([`intra_window`](lab/intra_window.md)), and the carry reads a level in pieces of at most 16 bytes. The
+values' order is OPEN until both its readers are measured in each ([`open-work.md`](open-work.md)).
 
 **Declared arithmetic, per kernel.** Every kernel's arithmetic is declared and mirrored by its gate's reference: every
 accumulation fp32 or an exact integer -- but the output's sum across CTAs, fp32 or f16 as the plan states
@@ -290,8 +295,9 @@ tile pair whose digits meet nowhere is skipped on the facts pass's tile unions, 
 no state: every pair it computes is written and read inside the one window. No intra kernel is built on this line
 ([`open-work.md`](open-work.md)). ON HOPPER it is a kernel of its own BESIDE THE CARRY, not a role in its CTA (Blake, 2026-11-13): its
 chain alone is MEASURED at 985 cycles a tile pair of 64 readers by 64 writers at 256 digits a level
-([`intra_chain`](lab/intra_chain.md)), some 131 SM-cycles a token at a window of 1,024 ESTIMATED from it, and the
-carry's CTA has no register for it. The two are LAUNCHED CONCURRENTLY on two streams once its window kernel is built, timed against the
+([`intra_chain`](lab/intra_chain.md)); its WINDOW as a kernel of its own is MEASURED at 173 SM-cycles a token with
+the rows tile-major and 421 token-major ([`intra_window`](lab/intra_window.md)); and the carry's CTA has no
+register for it. The two are LAUNCHED CONCURRENTLY on two streams once its window kernel is built, timed against the
 intra after the carry in one session, and nothing closer is built unless that measurement asks (Blake, 2026-11-13).
 BLACKWELL: NOT STATED -- no blackwell intra is designed and no blackwell card measured.
 
