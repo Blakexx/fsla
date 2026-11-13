@@ -20,4 +20,22 @@ Two forms find a token's live digits: the mask's 32 bytes as handed, or a value 
 A call is the window's COUNTS alone -- what sizes its lists before they are written -- or the LISTS too. The cell:
 4 live digits a token and a fifth for a token in three. Every count and every entry is checked against the host's.
 
-MEASURED: not yet run.
+MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance 60552186, driver 580.173.02; 2026-11-13, the experiment at
+5d489776; 7 repetitions, 132 windows; every row's 33,792 counts and the lists' 585,728 entries exact; the median,
+SM-cycles a token for one side's sparse level):
+
+| a token's live digits from | a window's counts | a window's lists |
+|---|---|---|
+| the mask as handed | 4.8 | 23.2 |
+| a value test of its row | 21.0 | 49.7 |
+
+WHAT IT SHOWS.
+- FROM A HANDED MASK THE PASS IS 23 SM-CYCLES A TOKEN a sparse level-side, lists and all, and 5 for the counts
+  alone; a value test of the rows is 50 and 21. The mask halves the pass and takes the count to a quarter.
+- THE LISTS' OWN PART IS THE ENTRIES: 18 cycles a token past the counts -- a live digit's byte loaded from its row
+  and its entry stored, one of each a live digit, neither staged. An entry without its byte is not measured.
+- BESIDE THE CARRY's window ([`carry_window`](carry_window.md)) the pass is a few hundredths a sparse level-side.
+  The tables are cached and the cell has 4 to 5 live digits a token; a level with more live digits is more entries
+  in proportion.
+
+Record: `measure/lab/results/facts_lists/sm_90a.json`.
