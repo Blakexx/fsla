@@ -939,7 +939,7 @@ def main() -> int:
     g.add_argument("experiment")
     g.add_argument("--kernel", help="a regex over the demangled kernel names")
     g.add_argument("--static", action="store_true",
-                   help="the instructions as compiled, by role, loop and phase: no device and no counters")
+                   help="the instructions as compiled, by role, loop and phase: no counters, and with --arch no device")
     g.add_argument("--arch", help="with --static: compile for this architecture in place of the device's")
     n = sub.add_parser("ncu")
     n.add_argument("experiment")
