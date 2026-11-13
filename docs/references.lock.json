@@ -1498,6 +1498,7 @@
   {"doc": "docs/lab/carry_window.md", "pinned_at": "bed4135581c7", "reviewed": true, "sha256": "", "target": "docs/lab/reg_five.md"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "8b1174b3fdcf", "reviewed": true, "sha256": "", "target": "docs/lab/state_image.md"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "18aee859836d", "reviewed": true, "sha256": "", "target": "docs/lab/wgmma_width.md"},
+  {"doc": "docs/lab/carry_window.md", "pinned_at": "437a7eb3ded2", "reviewed": true, "sha256": "", "target": "docs/measurement.md"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "8b1174b3fdcf", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/carry_window.cu"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "18aee859836d", "reviewed": true, "sha256": "", "target": "measure/lab/results/carry_window/sm_90a.json"},
   {"doc": "docs/lab/cluster_sum.md", "pinned_at": "00d6bcf6cebf", "reviewed": true, "sha256": "", "target": "docs/internals/tools/carry_floor.md"},
