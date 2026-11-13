@@ -138,7 +138,7 @@ enum Roles : int {
   kDen = kDenFold | kDenImage | kDenSplit | kDenRead | kDenDrain,
   //: the row that moves the image's tiles apart with nothing else changed: 154 lines where the tile is 137, and
   //: 161 where the den's is 155 -- what the tiles' pitch costs the fold's stores (an even pitch was measured
-  //: slower)
+  //: slower); with no clock inside a role, 155 where the tile is 137: the den's own pitch without the den
   kPitch = 1048576,
   //: THE ALIGNED CELL: both sides list the same level, so a reader reads ONE list on the operand level's 16 digits
   //: -- an image tile is a LIST and its K the digits. A line (a channel's 8 digits of a list) is then four fold
@@ -152,7 +152,7 @@ enum Roles : int {
 };
 //: an image tile's pitch in bytes: the stores of a warp's lanes are two tiles apart
 template <int ROLES>
-constexpr int tile_of = 16 * (ROLES & kDenImage ? (ROLES & kPitch ? 161 : 155) : ROLES & kPitch ? 154 : 137);
+constexpr int tile_of = 16 * (ROLES & kDenImage ? (ROLES & kPitch ? 161 : 155) : ROLES & kPitch ? (ROLES & kNoClock ? 155 : 154) : 137);
 //: a fold thread's state values: its 16 accumulator sets, and the den's 4
 template <int ROLES>
 constexpr int state_words = kLists * 8 + (ROLES & kDenFold ? 4 : 0);
@@ -598,6 +598,7 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
   uint32_t on_image = 0, on_drain = 0, in_steps = 0, in_form = 0;
   //: the chunk's first step writes the accumulator whole: nothing is cleared between chunks
   //: the den's rows read a ninth brick of 8 columns: column 64 is the token's den
+  //: the 72-column readout needs its split: at 80 registers the toolkit serializes its steps with no clock read too
   static_assert(!(ROLES & kDenRead) || ((ROLES & kDenSplit) && (ROLES & kDenImage)));
   float d[ROLES & kDenRead ? 36 : 32];
   lab::WarpSpan clock;
@@ -966,7 +967,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kBig ? ", the tables 16 replicas the cache cannot hold" : "")
                            + (ROLES & kAligned ? ", the sides' carves equal: an image tile a list, its lines four threads' words" : "")
                            + (ROLES & kNoClock ? ", no clock inside a role" : "")
-                           + (ROLES & kPitch ? (ROLES & kDenImage ? ", the image's tiles 161 lines apart" : ", the image's tiles 154 lines apart") : "")
+                           + (ROLES & kPitch ? (ROLES & kDenImage ? ", the image's tiles 161 lines apart" : ROLES & kNoClock ? ", the image's tiles 155 lines apart" : ", the image's tiles 154 lines apart") : "")
                            + ((ROLES & kDen) == kDen ? ", the den: two more steps a slot, the readout's steps 72 columns and an fp32 a token"
                               : ROLES & kDen ? std::string(", the den's parts alone: its fold steps")
                                                    + (ROLES & kDenImage ? ", its image brick" : "")
@@ -1138,7 +1139,8 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kAligned | kNoClock, 3 | kSuspend | kLean | kAligned | kDen | kNoClock,
                     3 | kSuspend | kLean | kNoClock | kDenFold, 3 | kSuspend | kLean | kNoClock | kDenFold | kDenImage,
                     3 | kSuspend | kLean | kNoClock | kDenFold | kDenImage | kDenSplit,
-                    3 | kSuspend | kLean | kNoClock | kDenFold | kDenImage | kDenSplit | kDenRead}) {
+                    3 | kSuspend | kLean | kNoClock | kDenFold | kDenImage | kDenSplit | kDenRead,
+                    3 | kSuspend | kLean | kNoClock | kPitch}) {
     const std::string k = lab::kernel("window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     b.expect(k, "HGMMA", "==",
@@ -1251,5 +1253,6 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kLean | kNoClock | kDenFold | kDenImage>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kDenFold | kDenImage | kDenSplit>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kDenFold | kDenImage | kDenSplit | kDenRead>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kPitch>(b, waits, values, dense, state, out);
   return 0;
 }
