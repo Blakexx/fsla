@@ -53,7 +53,11 @@ WARPGROUPS -- 640 threads, which enter with 96 registers a thread ([`reg_five`](
 the lean readout at 80, a fourth warpgroup of four producers and a fifth of four drain warps at 40 each. At 40 a
 producer holds one value instruction's four entries at a time and a drain warp one batch of 4 tokens, and neither
 holds a clock or a count (a producer holding two instructions' entries fits at 48 and four's at 56; a drain warp
-holding 8 tokens at 48). Then WHAT THE READOUT'S STEPS WAIT BEHIND: the
+holding 8 tokens at 48); and, both and each side alone, with THE LONG WAITS ASLEEP: a fold's wait on its
+producer, the readout's on a tile group's publish and a drain warp's on the panel are at NAMED barriers
+(`bar.sync`), where a waiting warp issues nothing, in place of the polled test and branch a waiting warp issues
+every trip; the short waits -- a slot freed, a tile group read, a panel drained -- stay polled. Then WHAT THE
+READOUT'S STEPS WAIT BEHIND: the
 readout and the drains with no fold warp running (the image as it lies, never rewritten, no fold warp at a
 barrier); every barrier's wait by the instruction that may suspend its thread (`mbarrier.try_wait`) where the
 other rows poll (`test_wait` in a loop, an instruction every trip of every waiting warp). THE FOLD'S, THE READOUT'S AND THE DRAIN WARPS'

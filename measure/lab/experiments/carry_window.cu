@@ -17,7 +17,8 @@
 // a chunk's digits taking turns in two sets of A registers, a digit's two steps a commit group, the readout at 80
 // registers a thread and the fourth warpgroup at 112, its producers holding two batches; and with FIVE WARPGROUPS,
 // 640 threads -- a fourth of four producers and a fifth of four drain warps at 40 registers a thread, the lean
-// readout at 80. Then what the readout's steps
+// readout at 80; and with THE LONG WAITS ASLEEP -- a fold on its producer, the readout on the image and a drain
+// warp on the panel at named barriers, where a waiting warp issues nothing. Then what the readout's steps
 // wait behind: the readout and the drains with NO fold warp running (the image as it lies); every barrier's wait
 // by the instruction that may suspend its thread, where the others poll. With both sides and no access out, the
 // state and every output row are checked exactly, and a long call's span over its wall time reads the card's clock.
@@ -75,7 +76,7 @@ constexpr int kOutWindows = 4;
 //: and the row whose readout DRAINS ITS OWN rows: a readout warp loads its 16 tokens' lines back from the panel and
 //: adds them itself, no drain warp and no panel barrier, and the fourth warpgroup is four producers, two a box
 enum Roles : int {
-  kFold = 1, kRead = 2, kNoLoads = 4, kNoAdds = 8, kNoImage = 16, kSuspend = 32, kStill = 64, kSelf = 128, kLean = 256, kFive = 512
+  kFold = 1, kRead = 2, kNoLoads = 4, kNoAdds = 8, kNoImage = 16, kSuspend = 32, kStill = 64, kSelf = 128, kLean = 256, kFive = 512, kSleep = 1024
 };
 //: THE FIVE-WARPGROUP row: 640 threads, a fourth warpgroup of four producers and a fifth of four drain warps. A
 //: kernel of 640 threads enters with 96 registers a thread (docs/lab/reg_five.md), and the roles' counts sum to
@@ -121,6 +122,20 @@ constexpr int dense_of(int t, int b) { return (t + b) % 2 + 1; }
 //: `256 w + 16 b + n` -- whose bytes on box `box`'s 16 leaves are the dense row of the token `box` on from it
 constexpr uint32_t reader_of(uint32_t block, uint32_t entry) { return token_of(0x10000u + block, entry); }
 constexpr uint32_t reader_row(uint32_t reader, int box) { return (reader + box) & (kTableTokens - 1); }
+
+//: THE SLEEPING row's three long waits -- a fold on its producer, the readout on a tile group's publish, a drain
+//: warp on the panel -- are at NAMED barriers, where a waiting warp issues nothing (the polled waits issue a test
+//: and a branch every trip). A named barrier counts threads: its arrivers' and its waiters' together complete it.
+//: Each pair alternates -- an arriver's next arrival follows its waiter's release, behind the polled barrier that
+//: frees the slot, the tiles or the panel -- so no arrival is counted twice
+constexpr int kPoolId = 1, kTilesId = 5, kPanelId = 9;
+constexpr int kPoolCount = kGroup + 32, kTilesCount = 3 * kGroup, kPanelCount = kGroup + 32 * kDrains;
+//: a sleeping wait, its cycles added to the warp's count
+__device__ __forceinline__ void slept(int id, int count, uint32_t& clocked) {
+  const uint32_t t0 = static_cast<uint32_t>(clock64());
+  lab::bar_sync(id, count);
+  clocked += static_cast<uint32_t>(clock64()) - t0;
+}
 
 //: A WAIT at a barrier, polled or suspended by the row
 template <int ROLES>
@@ -199,14 +214,19 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
             }
         }
         lab::bulk_fence();
-        __syncwarp();
-        if (lane == 0) lab::mbar_arrive(bars + kTilesReady + 8 * k);
+        if constexpr (ROLES & kSleep) {
+          lab::bar_arrive(kTilesId + k, kTilesCount);
+        } else {
+          __syncwarp();
+          if (lane == 0) lab::mbar_arrive(bars + kTilesReady + 8 * k);
+        }
       }
     }
     if constexpr (ROLES & kFold) {
 #pragma unroll
       for (int slot = 0; slot < 2; ++slot) {
-        waited<ROLES>(bars + kPoolReady + 8 * (2 * box + slot), w & 1, on_fill);
+        if constexpr (ROLES & kSleep) slept(kPoolId + 2 * box + slot, kPoolCount, on_fill);
+        else waited<ROLES>(bars + kPoolReady + 8 * (2 * box + slot), w & 1, on_fill);
         const uint32_t tiles = lab::held(base + (2 * box + slot) * kPoolBytes);
         lab::wg_fence();
 #pragma unroll
@@ -328,8 +348,12 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
         for (int part_at = 1; part_at < kParts; ++part_at) part_out(part_at);
       }
       lab::bulk_fence();
-      __syncwarp();
-      if (lane == 0) lab::mbar_arrive(bars + kPoolReady + 8 * (2 * box + slot));
+      if constexpr (ROLES & kSleep) {
+        lab::bar_arrive(kPoolId + 2 * box + slot, kPoolCount);
+      } else {
+        __syncwarp();
+        if (lane == 0) lab::mbar_arrive(bars + kPoolReady + 8 * (2 * box + slot));
+      }
     }
   }
   if constexpr (ROLES & kFive) lab::WarpMark::stop(times);
@@ -373,7 +397,8 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
     for (int c4 = 0; c4 < kChunks; ++c4) {
       const int c = kChunks * w + c4;
       //: chunk `2 h + c`'s digits are `8 h + c + 2 j`: its tile group, published for this window
-      if constexpr (!(ROLES & kStill)) waited<ROLES>(bars + kTilesReady + 8 * c4, w & 1, on_image);
+      if constexpr (ROLES & kSleep) slept(kTilesId + c4, kTilesCount, on_image);
+      else if constexpr (!(ROLES & kStill)) waited<ROLES>(bars + kTilesReady + 8 * c4, w & 1, on_image);
       uint32_t since = static_cast<uint32_t>(clock64());
       //: THE COEFFICIENTS, in registers: a row's two bytes times its reader's byte on the digit, a bf16 pair a word
       //: -- word `r | h << 1` of A, as an m64n16 accumulator lays its values
@@ -469,7 +494,8 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
         }
         on_drain += lap(since);
       } else {
-        if (lane == 0) lab::mbar_arrive(bars + kPanelReady + 8 * (c & 1));
+        if constexpr (ROLES & kSleep) lab::bar_arrive(kPanelId + (c & 1), kPanelCount);
+        else if (lane == 0) lab::mbar_arrive(bars + kPanelReady + 8 * (c & 1));
       }
     }
   }
@@ -503,7 +529,8 @@ __device__ __forceinline__ void drain_role(const uint8_t* smem, uint32_t base, l
   else clock.start();
 #pragma unroll 1
   for (int c = 0; c < kChunks * windows; ++c) {
-    if constexpr (ROLES & kFive) await<ROLES>(bars + kPanelReady + 8 * (c & 1), (c >> 1) & 1);
+    if constexpr (ROLES & kSleep) slept(kPanelId + (c & 1), kPanelCount, on_panel);
+    else if constexpr (ROLES & kFive) await<ROLES>(bars + kPanelReady + 8 * (c & 1), (c >> 1) & 1);
     else waited<ROLES>(bars + kPanelReady + 8 * (c & 1), (c >> 1) & 1, on_panel);
     if constexpr (!(ROLES & kFive)) {
       load(c, 0, 0);
@@ -670,13 +697,14 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kSuspend ? ", every wait suspended" : "")
                            + (ROLES & kSelf ? ", the readout draining its own rows and four producers" : "")
                            + (ROLES & kLean ? ", the readout's A in two sets and two batches a producer" : "")
-                           + (ROLES & kFive ? ", five warpgroups: four producers and four drain warps" : "");
+                           + (ROLES & kFive ? ", five warpgroups: four producers and four drain warps" : "")
+                           + (ROLES & kSleep ? ", the long waits asleep at named barriers" : "");
   constexpr int kLaunch = threads_of<ROLES>, kWarps = kLaunch >> 5;
   const auto kernel = window<ROLES>;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
   LAB_CHECK(cudaMemset(out, 0, words * 4));
-  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive)) == (kFold | kRead)) {
+  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep)) == (kFold | kRead)) {
     kernel<<<b.sms, kLaunch, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * kLists * 8;
@@ -789,7 +817,7 @@ int main(int argc, char** argv) {
   lab::Bench b(argc, argv);
   for (int roles : {1, 2, 3, 3 | kNoLoads, 3 | kNoAdds, 3 | kNoImage, 2 | kStill, 2 | kSuspend, 3 | kSuspend,
                     3 | kSelf, 1 | kSelf, 2 | kSelf, 3 | kLean, 1 | kLean, 2 | kLean,
-                    3 | kFive, 1 | kFive, 2 | kFive}) {
+                    3 | kFive, 1 | kFive, 2 | kFive, 3 | kSleep, 1 | kSleep, 2 | kSleep}) {
     const std::string k = lab::kernel("window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     b.expect(k, "HGMMA", "==",
@@ -850,5 +878,8 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kFive>(b, waits, values, dense, state, out);
   run<kFold | kFive>(b, waits, values, dense, state, out);
   run<kRead | kFive>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSleep>(b, waits, values, dense, state, out);
+  run<kFold | kSleep>(b, waits, values, dense, state, out);
+  run<kRead | kSleep>(b, waits, values, dense, state, out);
   return 0;
 }
