@@ -133,7 +133,7 @@ constexpr int value_parts = ROLES & kFive ? kFiveParts : 1;
 template <int ROLES>
 constexpr int read_regs = ROLES & kFive ? kFiveReadRegs : ROLES & kLean ? 80 : kReadRegs;
 template <int ROLES>
-constexpr int serve_regs = ROLES & kLean ? 112 : kServeRegs;
+constexpr int serve_regs = (ROLES & kLean) && (ROLES & kWide) ? 104 : ROLES & kLean ? 112 : kServeRegs;
 static_assert(read_regs<kLean> + serve_regs<kLean> == kReadRegs + kServeRegs);
 template <int ROLES>
 constexpr int batches_held = ROLES & kLean ? 2 : 1;
