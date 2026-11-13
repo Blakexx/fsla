@@ -34,19 +34,26 @@ THE REGISTERS (`setmaxnreg`, each role's body in its own branch). 512 threads la
 SM's whole file of 65,536. A fold thread raises to 160; a readout thread lowers to 96, and the producers and drains,
 one warpgroup, to 96: the folds' 32 more each are those 32 fewer. At 152 the fold spills to local memory; with every step's A in its own registers (32 words) the toolkit serializes
 the readout's steps at 80, and with A in two sets (16 words, the lean row) at 72; a producer holds two batches at
-112. The den's 4 accumulators fit the fold's 160 (a ninth register of the 8 a list's set would not: at 160 the
-toolkit keeps a 17th set of 8 in local memory and serializes the steps). NO REGISTER IS LEFT for a fifth warpgroup: one beside these roles takes its registers from them. A form
+112. The den's 4 fold accumulators fit the fold's 160 (a 17th set of 8 would not: the toolkit keeps one in local
+memory and serializes the steps); the den's 4 readout accumulators take the lean readout to 88 (serialized at
+80) and the fourth warpgroup to 104, its producers still two batches. NO REGISTER IS LEFT for a fifth warpgroup: one beside these roles takes its registers from them. A form
 of five warpgroups (640 threads) launches at 96 a thread, 61,440 in all, and its roles' counts sum to that
 ([`reg_five`](reg_five.md)): one whose counts summed to the SM's whole file hung on the device, a raise waiting
 for registers the kernel never entered with.
 
-THE DEN'S FOLD HALF (its own rows). The den is the num with every value 1: a box's den state is a value a (list,
-digit), 256 where the num's is 16,384. A step's 64 rows are too many for it as a value row -- a step a list with
-a tile of ones in one row is 16 steps a window for 1 row in 64 -- so the COEFFICIENTS ARE THE STEP'S A: 8 lists'
-coefficient bricks on 8 digits, read where the producers stored them (a descriptor whose bricks are a pool tile
-apart), times a B of ones in one column, a constant brick. TWO STEPS A SLOT, four a window, add into one
-accumulator set of 4 registers a thread, a column a step, checked exactly against the host's sum. The readout's
-half is not in this experiment.
+THE DEN (its own rows). The den is the num with every value 1: a box's den state is a value a (list, digit), 256
+where the num's is 16,384.
+- FOLDED with the coefficients as the step's A. A step's 64 rows are too many for it as a value row -- a step a
+  list with a tile of ones in one row is 16 steps a window for 1 row in 64 -- so A is 8 lists' coefficient bricks
+  on 8 digits, read where the producers stored them (a descriptor whose bricks are a pool tile apart), and B a
+  constant brick of ones in one column. TWO STEPS A SLOT, four a window, add into one accumulator set of 4
+  registers a thread, a column a step.
+- PUBLISHED as a NINTH BRICK of each image tile (a tile is 154 lines in every row): its first channel's two lines
+  are the den's, a fold thread that holds the column storing one word of two lists a tile group.
+- READ as column 64 of the readout's steps, 72 columns wide where the num's are 64: no step is added. A readout
+  thread holds 4 more accumulators, and a token's den is an fp32 behind its panel row.
+- DRAINED by one more load and one more add a drain warp a chunk, a lane a token.
+The den's state and every token's den sum are checked exactly against the host's.
 
 ROWS: the fold's side alone (producers and steps), the read side alone (the image, the readout and the drain),
 both, and both with one access taken out: the producers' global loads (their words made in registers), the drains'

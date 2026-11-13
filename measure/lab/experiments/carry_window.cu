@@ -27,8 +27,9 @@
 // one session); the suspended and sleeping waits combined with the lean readout and the wide byte load; and rows
 // whose tables are 16 replicas (128 MB of values) the cache cannot hold: an access's row is the replica its own
 // position picks -- a reader row one replica a chunk and box -- as a large table's rows are each read once; and
-// with THE DEN'S FOLD HALF -- two more steps a slot, their A the slot's lists' coefficient bricks and their B a
-// column of ones, the box's den state in one accumulator set of 4, checked exactly. Then
+// with THE DEN -- folded by two more steps a slot, their A the slot's lists' coefficient bricks and their B a
+// column of ones; published as a ninth brick of the image's tiles; read as column 64 of the readout's steps, 72
+// columns wide; and an fp32 a token through the panel and one more add a drain warp's lane, checked exactly. Then
 // what the readout's steps
 // wait behind: the readout and the drains with NO fold warp running (the image as it lies); every barrier's wait
 // by the instruction that may suspend its thread, where the others poll. With both sides and no access out, the
@@ -68,11 +69,15 @@ static_assert(kThreads * kEntryRegs == 65536
 //: A POOL TILE (the fold's operands a list), M|N-major: 8 bricks of values and 2 of coefficients, a brick 17 lines
 constexpr int kBrick = 17 * 16, kValueTile = 8 * kBrick, kTile = 10 * kBrick, kPoolBytes = kSlotLists * kTile;
 //: AN IMAGE TILE (the readout's operand a read digit), K-major: a line a channel's 8 fold digits -- one fold
-//: thread's own values, a store -- a brick 8 channels' low digits then their high, bricks 17 lines, tiles 137
-constexpr int kBrickLines = 17, kImageTile = 137 * 16, kBoxBytes = kLists * kImageTile;
+//: thread's own values, a store -- a brick 8 channels' low digits then their high, bricks 17 lines; a NINTH brick is the den's, its first channel's two lines a (list half) each and the rest
+//: nothing: tiles 154
+constexpr int kBrickLines = 17, kImageBricks = 9, kImageTile = (kImageBricks * kBrickLines + 1) * 16, kBoxBytes = kLists * kImageTile;
 //: a panel row: a token's 64 f16 as its line will be added, rows 272 bytes apart
 constexpr int kChunkDigits = 4, kTokens = 16 * kChunkDigits, kChunks = kLists / kChunkDigits, kRowBytes = 272,
               kPanelBytes = kTokens * kRowBytes, kBatch = 8;
+//: a token's den in its panel row: an fp32 behind the line, at the word `row / 8 % 8` -- the 32 rows a drain warp's
+//: lanes load are then on 32 banks, as the 8 a readout warp's lanes store are
+constexpr int den_word(int row) { return 128 + 4 * ((row >> 3) & 7); }
 constexpr int kImageAt = 4 * kPoolBytes, kPanelAt = kImageAt + 2 * kBoxBytes,
               kBarsAt = kPanelAt + 2 * kPanelBytes, kScratchAt = kBarsAt + 176;
 //: a readout warp's scratch: its chunk's 32 rows of 16 bytes, row `16 box + token`
@@ -116,8 +121,9 @@ enum Roles : int {
   //: the access's own position, so the distinct rows touched grow with the accesses -- a replica's row holds its
   //: token's values, so the host's check stands -- as a large table's rows are each read once; 128 MB of values
   kBig = 262144,
-  //: THE DEN's fold half: two more steps a slot, whose A is 8 lists' coefficients on 8 digits and whose B is a
-  //: column of ones -- the box's den state, a value a (list, digit), in one accumulator set of 4
+  //: THE DEN: two more fold steps a slot, whose A is 8 lists' coefficients on 8 digits and whose B is a column of
+  //: ones -- the box's den state, a value a (list, digit), in one accumulator set of 4 -- its image a ninth brick
+  //: of each tile, the readout's steps 72 columns wide and a token's den an fp32 behind its panel row
   kDen = 524288
 };
 //: a fold thread's state values: its 16 accumulator sets, and the den's 4
@@ -153,10 +159,13 @@ constexpr int value_parts = ROLES & kFive ? kFiveParts : 1;
 //: group, a set written again once its group is done -- 16 words of A where every step's own are 32 -- and the 16
 //: registers a thread it gives up are the fourth warpgroup's, whose producers then hold two batches (at 72 the
 //: toolkit serializes the steps, C7512)
+//: the den's readout holds 4 more accumulators, column 64's set: at 80 the toolkit serializes its steps, and its 8
+//: more a thread are the fourth warpgroup's, as the wide and the big rows' are
 template <int ROLES>
-constexpr int read_regs = ROLES & kFive ? kFiveReadRegs : ROLES & kLean ? 80 : kReadRegs;
+constexpr int read_regs = ROLES & kFive ? kFiveReadRegs : (ROLES & kLean) && (ROLES & kDen) ? 88 : ROLES & kLean ? 80 : kReadRegs;
 template <int ROLES>
-constexpr int serve_regs = (ROLES & kLean) && (ROLES & (kWide | kBig)) ? 104 : ROLES & kLean ? 112 : kServeRegs;
+constexpr int serve_regs = (ROLES & kLean) && (ROLES & (kWide | kBig | kDen)) ? 104 : ROLES & kLean ? 112 : kServeRegs;
+static_assert(read_regs<kLean | kDen> + serve_regs<kLean | kDen> == kReadRegs + kServeRegs);
 static_assert(read_regs<kLean> + serve_regs<kLean> == kReadRegs + kServeRegs);
 template <int ROLES>
 constexpr int batches_held = ROLES & kLean ? 2 : 1;
@@ -270,6 +279,15 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
               *reinterpret_cast<uint4*>(mine + (8 * (k >> 1) + (k & 1)) * kImageTile + 16 * (r * kBrickLines + 8 * h)) =
                   make_uint4(pair[0], pair[1], pair[2], pair[3]);
             }
+          if constexpr (ROLES & kDen) {
+            //: THE DEN'S LINES of the group: column `2 s + k / 2` of the accumulator is lists `8 s` on of digits
+            //: `8 (k / 2)` on, a thread's two rows lists `2 warp` and the next on digit `q` -- one word of line `s` of
+            //: tile `8 (k / 2) + q`'s ninth brick, stored by the threads that hold the column
+            const uint32_t word = lab::bf16x2_trunc(den[k >> 1], den[(k >> 1) | 2]);
+            if (t < 2 && (q & 1) == (k & 1))
+              *reinterpret_cast<uint32_t*>(smem + kImageAt + box * kBoxBytes + (8 * (k >> 1) + q) * kImageTile
+                                           + 16 * ((kImageBricks - 1) * kBrickLines + 8 * t) + 4 * warp) = word;
+          }
         }
         if constexpr (!(ROLES & kNoFence)) lab::bulk_fence();
         if constexpr (ROLES & kSleep) {
@@ -443,6 +461,16 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
   else clock.stop(times);
 }
 
+//: the readout's step: 64 tokens by the tile's 64 channels, or by its 72 columns where the den's is the 65th
+template <int ROLES, int N>
+__device__ __forceinline__ void read_step(float (&d)[N], const uint32_t (&a)[4], uint64_t b, bool add) {
+  if constexpr (ROLES & kDen) lab::wg_bf16_n72_rs(d, a, b, add);
+  else lab::wg_bf16_n64_rs(d, a, b, add);
+}
+//: where a call's den sums are: an fp32 a token behind the output's lines
+__device__ __forceinline__ float* den_out(uint32_t* out) {
+  return reinterpret_cast<float*>(out + static_cast<long long>(gridDim.x) * (kOutWindows * kWindow) * (kChannels / 2));
+}
 //: THE READOUT WARPGROUP: a chunk is 4 read digits of 16 tokens, a digit a warp's 16 rows. A warp expands its
 //: tokens' coefficients in its registers and they are the step's A operand; the image's tile is its B; the
 //: accumulator is the chunk's 64 tokens by 64 channels, stored to the panel as the f16 pairs a line holds
@@ -482,7 +510,8 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
   load(0);
   uint32_t on_image = 0, on_drain = 0, in_steps = 0, in_form = 0;
   //: the chunk's first step writes the accumulator whole: nothing is cleared between chunks
-  float d[32];
+  //: the den's rows read a ninth brick of 8 columns: column 64 is the token's den
+  float d[ROLES & kDen ? 36 : 32];
   lab::WarpSpan clock;
   clock.start();
 #pragma unroll 1
@@ -534,9 +563,9 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
             for (int i = 0; i < 4; ++i) rows[j & 1][box][i] = lab::held(warp == j ? a[box][i] : 0u);
 #pragma unroll
           for (int box = 0; box < 2; ++box)
-            lab::wg_bf16_n64_rs(d, rows[j & 1][box],
-                                lab::wg_desc(images + box * kBoxBytes + 2 * j * kImageTile, 8, kBrickLines),
-                                j != 0 || box != 0);
+            read_step<ROLES>(d, rows[j & 1][box],
+                             lab::wg_desc(images + box * kBoxBytes + 2 * j * kImageTile, 8, kBrickLines),
+                             j != 0 || box != 0);
           lab::wg_commit();
         }
       } else {
@@ -555,9 +584,9 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
         for (int j = 0; j < kChunkDigits; ++j)
 #pragma unroll
           for (int box = 0; box < 2; ++box)
-            lab::wg_bf16_n64_rs(d, rows[j][box],
-                                lab::wg_desc(images + box * kBoxBytes + 2 * j * kImageTile, 8, kBrickLines),
-                                j != 0 || box != 0);
+            read_step<ROLES>(d, rows[j][box],
+                             lab::wg_desc(images + box * kBoxBytes + 2 * j * kImageTile, 8, kBrickLines),
+                             j != 0 || box != 0);
         lab::wg_commit();
       }
       //: the next chunk's bytes, issued under the steps
@@ -579,6 +608,14 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
         for (int r = 0; r < 2; ++r)
           *reinterpret_cast<uint32_t*>(row + 8 * r * kRowBytes + 16 * j) =
               lab::pack_half2(d[4 * j + 2 * r], d[4 * j + 2 * r + 1]);
+      if constexpr (ROLES & kDen) {
+        //: THE DEN'S WORD of a row, as the step summed it: the threads that hold column 64
+        if (t == 0) {
+#pragma unroll
+          for (int r = 0; r < 2; ++r)
+            *reinterpret_cast<float*>(row + 8 * r * kRowBytes + den_word(16 * warp + 8 * r)) = d[32 + 2 * r];
+        }
+      }
       __syncwarp();
       if constexpr (ROLES & kSelf) {
         //: THE WARP DRAINS ITS OWN 16 TOKENS, the digit `8 h + c + 2 warp`'s: a lane loads its word of a token's
@@ -671,6 +708,13 @@ __device__ __forceinline__ void drain_role(const uint8_t* smem, uint32_t base, l
           else lab::red_add_f16x2(out + (first + 32 * (token / 16) + token % 16) * (kChannels / 2) + lane, pair);
         }
         if (n + 2 < kBatches) load(c, n + 2, n & 1);
+      }
+      if constexpr (ROLES & kDen) {
+        //: THE DEN'S ADD: a lane one of the warp's 32 tokens, its word loaded and added to the token's sum
+        const int token = mine + kDrainers * lane;
+        const float sum = *reinterpret_cast<const float*>(smem + kPanelAt + (c & 1) * kPanelBytes + token * kRowBytes
+                                                          + den_word(token));
+        lab::red_add_f32(den_out(out) + first + 32 * (token / 16) + token % 16, sum);
       }
     }
     __syncwarp();
@@ -829,21 +873,24 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kSpin ? ", the fold warps spinning at a polled barrier" : "")
                            + (ROLES & kDump ? ", the fold's state stored out in every call" : "")
                            + (ROLES & kBig ? ", the tables 16 replicas the cache cannot hold" : "")
-                           + (ROLES & kDen ? ", the den's fold half: two more steps a slot" : "");
+                           + (ROLES & kDen ? ", the den: two more steps a slot, the readout's steps 72 columns and an fp32 a token" : "");
   constexpr int kLaunch = threads_of<ROLES>, kWarps = kLaunch >> 5;
   const auto kernel = window<ROLES>;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
-  LAB_CHECK(cudaMemset(out, 0, words * 4));
+  const size_t tokens = static_cast<size_t>(b.sms) * kOutWindows * kWindow;
+  LAB_CHECK(cudaMemset(out, 0, (words + tokens) * 4));
   if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen)) == (kFold | kRead)) {
     kernel<<<b.sms, kLaunch, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * state_words<ROLES>;
     std::vector<float> got_state(static_cast<size_t>(b.sms) * per);
     std::vector<uint32_t> got(words);
+    std::vector<float> got_den(tokens);
+    if (ROLES & kDen) LAB_CHECK(cudaMemcpy(got_den.data(), out + words, tokens * 4, cudaMemcpyDeviceToHost));
     LAB_CHECK(cudaMemcpy(got_state.data(), state, got_state.size() * sizeof(float), cudaMemcpyDeviceToHost));
     LAB_CHECK(cudaMemcpy(got.data(), out, words * 4, cudaMemcpyDeviceToHost));
-    long long wrong_state = 0, wrong_out = 0;
+    long long wrong_state = 0, wrong_out = 0, wrong_den = 0;
     //: the host's: s[box][m][a][b], read at each window's start through its image, then the window folded in
     std::vector<long long> s(2 * kChannels * kLists * kLists);
     const auto at = [](int box, int m, int a, int bb) { return ((box * kChannels + m) * kLists + a) * kLists + bb; };
@@ -853,6 +900,18 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
       std::fill(s.begin(), s.end(), 0);
       std::fill(sden.begin(), sden.end(), 0);
       for (int w = 0; w < kOutWindows; ++w) {
+        if (ROLES & kDen)
+          for (int token = 0; token < kWindow; ++token) {
+            //: a token's den: the den's image by the token's coefficients, as its channels' are
+            const int bb = token / 16;
+            const uint32_t rt = reader_of(blk, w * kWindow + token);
+            long long want = 0;
+            for (int box = 0; box < 2; ++box)
+              for (int a = 0; a < kLists; ++a)
+                want += image_host(sden[(box * kLists + a) * kLists + bb]) * sparse_of(static_cast<int>(rt))
+                        * dense_of(static_cast<int>(reader_row(rt, box)), a);
+            wrong_den += got_den[(static_cast<size_t>(blk) * kOutWindows + w) * kWindow + token] != static_cast<float>(want);
+          }
         for (int token = 0; token < kWindow; ++token)
           for (int m = 0; m < kChannels; ++m) {
             const int bb = token / 16;
@@ -893,9 +952,10 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
           }
       }
     }
-    b.check(name, wrong_state == 0 && wrong_out == 0,
+    b.check(name, wrong_state == 0 && wrong_out == 0 && wrong_den == 0,
             std::to_string(wrong_state) + " of " + std::to_string(got_state.size()) + " state values and "
-                + std::to_string(wrong_out) + " of " + std::to_string(2 * words) + " output values differ");
+                + std::to_string(wrong_out) + " of " + std::to_string(2 * words) + " output values differ"
+                + (ROLES & kDen ? ", " + std::to_string(wrong_den) + " of " + std::to_string(tokens) + " den sums" : ""));
   } else {
     b.unchecked(name, "an isolation: a side's roles or one of their accesses absent");
   }
@@ -974,7 +1034,7 @@ int main(int argc, char** argv) {
                     2 | kNoImage, 2 | kNoFence, 2 | kNoImage | kNoFence, 3 | kNoFence,
                     2 | kStill | kPark, 2 | kStill | kSpin, 3 | kDump,
                     3 | kSuspend | kLean, 3 | kSuspend | kWide, 3 | kSuspend | kLean | kWide,
-                    3 | kSleep | kLean | kWide, 3 | kBig, 3 | kSuspend | kLean | kBig, 1 | kBig, 1 | kDen, 3 | kSuspend | kLean | kDen}) {
+                    3 | kSleep | kLean | kWide, 3 | kBig, 3 | kSuspend | kLean | kBig, 1 | kBig, 1 | kDen, 3 | kSuspend | kLean | kDen, 3 | kSuspend | kLean | kBig | kDen}) {
     const std::string k = lab::kernel("window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     b.expect(k, "HGMMA", "==",
@@ -1023,7 +1083,7 @@ int main(int argc, char** argv) {
   LAB_CHECK(cudaMalloc(&dense, host_dense.size() * 4));
   LAB_CHECK(cudaMemcpy(dense, host_dense.data(), host_dense.size() * 4, cudaMemcpyHostToDevice));
   LAB_CHECK(cudaMalloc(&state, sizeof(float) * b.sms * 2 * kGroup * state_words<kDen>));
-  LAB_CHECK(cudaMalloc(&out, static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2) * 4));
+  LAB_CHECK(cudaMalloc(&out, static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2 + 1) * 4));
   uint32_t* waits = nullptr;
   LAB_CHECK(cudaMalloc(&waits, static_cast<size_t>(b.sms) * (threads_of<kFive> >> 5) * kCounts * 4));
   run<kFold>(b, waits, values, dense, state, out);
@@ -1074,5 +1134,6 @@ int main(int argc, char** argv) {
   run<kFold | kBig>(b, waits, values, dense, state, out);
   run<kFold | kDen>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kDen>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kBig | kDen>(b, waits, values, dense, state, out);
   return 0;
 }

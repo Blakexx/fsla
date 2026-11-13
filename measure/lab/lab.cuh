@@ -360,6 +360,15 @@ __device__ __forceinline__ void wg_bf16_n64_rs(float (&d)[32], const uint32_t (&
                : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "l"(b), "r"(static_cast<int>(add)));
 }
 
+//: the same 72 columns wide: `d` += A [64 x 16] B [16 x 72], B a K-major tile of 9 bricks
+__device__ __forceinline__ void wg_bf16_n72_rs(float (&d)[36], const uint32_t (&a)[4], uint64_t b, bool add = true) {
+  asm volatile("{ .reg .pred p; setp.ne.b32 p, %41, 0;\n"
+               "wgmma.mma_async.sync.aligned.m64n72k16.f32.bf16.bf16 {%0, %1, %2, %3, %4, %5, %6, %7, %8, %9, %10, %11, %12, %13, %14, %15, %16, %17, %18, %19, %20, %21, %22, %23, %24, %25, %26, %27, %28, %29, %30, %31, %32, %33, %34, %35}"
+               ", {%36, %37, %38, %39}, %40, p, 1, 1, 0; }"
+               : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]), "+f"(d[4]), "+f"(d[5]), "+f"(d[6]), "+f"(d[7]), "+f"(d[8]), "+f"(d[9]), "+f"(d[10]), "+f"(d[11]), "+f"(d[12]), "+f"(d[13]), "+f"(d[14]), "+f"(d[15]), "+f"(d[16]), "+f"(d[17]), "+f"(d[18]), "+f"(d[19]), "+f"(d[20]), "+f"(d[21]), "+f"(d[22]), "+f"(d[23]), "+f"(d[24]), "+f"(d[25]), "+f"(d[26]), "+f"(d[27]), "+f"(d[28]), "+f"(d[29]), "+f"(d[30]), "+f"(d[31]), "+f"(d[32]), "+f"(d[33]), "+f"(d[34]), "+f"(d[35])
+               : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "l"(b), "r"(static_cast<int>(add)));
+}
+
 //: two fp32 narrowed to a bf16 pair by TRUNCATION, each value's high 16 bits in one byte permute, and ROUNDED to
 //: nearest in one conversion: `common/atoms/math.cuh`'s `hi_bf16x2` and `pack_bf16x2`, spelled here because the common
 //: atoms refuse a hopper build until that family's are written (`common/arch_caps.cuh`)
