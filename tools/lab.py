@@ -82,10 +82,30 @@ def build(path: Path, arch: str) -> Path:
     cc = cc_of(arch)
     #: the extension's own target form: an architecture-specific row (`sm_90a`) names its own virtual architecture
     target, = build_flags.gencodes([arch.removeprefix("sm_")])
-    subprocess.run([dev_config.cuda_bin("nvcc"), "-O3", "-std=c++20", target, f"-DROLA_LAB_CC={cc}",
-                    "-lineinfo", f"-I{LAB}", f"-I{KERNELS}", "--expt-relaxed-constexpr", "-o", str(out), str(path)],
-                   check=True)
+    done = subprocess.run([dev_config.cuda_bin("nvcc"), "-O3", "-std=c++20", target, f"-DROLA_LAB_CC={cc}",
+                           "-lineinfo", f"-I{LAB}", f"-I{KERNELS}", "--expt-relaxed-constexpr", "-o", str(out),
+                           str(path)], capture_output=True, text=True, check=False)
+    sys.stdout.write(done.stdout)
+    sys.stderr.write(done.stderr)
+    done.check_returncode()
+    #: the toolkit's notices of this build, beside its binary: `serialized` reads them
+    notices(out).write_text(done.stderr)
     return out
+
+
+def notices(binary: Path) -> Path:
+    return binary.with_name(binary.name + ".ptxas")
+
+
+def serialized(binary: Path) -> dict[str, int]:
+    """Per kernel (demangled): the toolkit's notices that it SERIALIZED the kernel's asynchronous MMAs for want of
+    registers (ptxas C7512) -- each then waits out the one before, and the kernel does not measure the steps its
+    source states. Nothing where the build left no notices (a packed binary run elsewhere)."""
+    if not notices(binary).exists():
+        return {}
+    found = Counter(re.findall(r"\(C7512\).*?function '([^']+)'", notices(binary).read_text()))
+    names = demangle(list(found))
+    return {names[k]: n for k, n in found.items()}
 
 
 def demangle(names: list[str]) -> dict[str, str]:
@@ -147,7 +167,7 @@ _PRE_TIMELINE = {"bulk_drain", "byte_expand", "cluster_sum", "collective_branch"
                  "issue_latency", "reg_trade", "row_ring", "row_span", "smem_rates", "state_move", "tensor_tax",
                  "vote_stash", "wgmma_rate", "wgmma_regs"}
 #: the hazards an experiment may declare a count of (`Bench::expect(kernel, NAME, "<=", n)`), beside its opcodes
-HAZARDS = ("LOOP_CONVERGENCE", "LOAD_IN_TRIP", "STORE_RELOAD", "STORE_UNFENCED")
+HAZARDS = ("LOOP_CONVERGENCE", "LOAD_IN_TRIP", "STORE_RELOAD", "STORE_UNFENCED", "STEPS_SERIALIZED")
 
 
 def timeline(path: Path) -> bool:
@@ -306,6 +326,14 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
                 declared = max((e["count"] for e in expected if e["op"] == kind and re.search(e["kernel"], k)), default=0)
                 if n > declared:
                     failures.append(f"{k}: {n} {why[kind]}, {declared} declared ({kind})")
+        for k, n in serialized(binary).items():
+            declared = max((e["count"] for e in expected if e["op"] == "STEPS_SERIALIZED" and re.search(e["kernel"], k)),
+                           default=0)
+            if n > declared:
+                failures.append(f"{k}: the toolkit serialized its asynchronous MMAs for want of registers (ptxas "
+                                f"C7512), {declared} declared (STEPS_SERIALIZED): a step's operand registers are "
+                                "written before its commit group and the role holds the count they need "
+                                "(docs/internals/LEARNINGS.md)")
 
     if binary.name.split(".")[0] not in _PRE_29:
         stated = budgets(binary) + budgets(binary, "exempt")

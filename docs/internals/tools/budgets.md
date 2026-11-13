@@ -94,25 +94,44 @@ measures it. Pipe cycles are an SM's, from `common/hardware.json` ([pipes.md](pi
 | a branch on loaded data around collectives | a vote (`__any_sync`), a loop bottom-tested on it (§29.9) | no convergence barrier | `read_image` |
 | a value every lane needs from a warp reduction | `__reduce_*_sync` | 2 instructions (its uniform-register move) | `color_union` |
 
+HOW IT IS WRITTEN (sm_90a, ptxas of the pinned toolkit): what the compiler does with a way of writing a kernel,
+each read off a build of the experiment named -- its SASS, its notices, or the lab's refusal.
+
+| the job | written this way | written the other way, the compiler | read in |
+|---|---|---|---|
+| several asynchronous steps with register operands | every step's operand in its own registers, all written before the group's first step | a register written between two steps that read it makes it wait out the earlier step (the steps serialized); with too few registers for the sets it serializes them all (C7512) | `carry_window` (the readout at 80 and at 72 registers a thread) |
+| an accumulator's first step of a trip | the step writes the accumulator whole (its add flag off); nothing is cleared | a cleared accumulator inside a role's branch serializes the steps that follow (C7520) | `readout_role`, `carry_window` |
+| a loop of global accesses at distinct addresses (a batch's loads, a chunk's adds) | rolled over its batches (`#pragma unroll 1`), a batch's few accesses unrolled inside | unrolled whole, every access's 64-bit address is formed ahead and held: local memory at the role's count (64 adds: a 144-byte frame) | `carry_window` (the drain of one warp, the producer's batches, the 40-register roles) |
+| batches alternating two register halves | the outer loop rolled in steps of two, the half an unrolled inner index | a half chosen by a rolled loop's index is a runtime index into registers: local memory | `carry_window` (the producer's two batches) |
+| a choice between two loads into the same registers | one load whose arguments are selected (`last ? next : cur`) | a branch with a load in each arm: both arms' address arithmetic, and a convergence barrier | `carry_window` (the producer's parts) |
+| a value a lane derives once and uses every trip | held (`lab::held`): an empty asm hides its derivation | rematerialized from `S2R` and its arithmetic at every use | `read_image`, `carry_window` |
+| a role's clock in a role short of registers | the start stored as it is read (`lab::WarpMark`) | a held 64-bit start costs two registers for the role's whole span: the last spill of a 40-register producer and drain | `carry_window` (the five-warpgroup row) |
+| values published for another warpgroup's step | the tile's major chosen so a 16-byte line is one thread's own values, packed by `PRMT` | a line that is eight lanes' values is eight 2-byte stores a line: 32 store instructions a thread where 4 do | `carry_window` (the image) |
+| a role's wait for work | at its barrier (`mbarrier.test_wait` in a loop, or `try_wait`) | a loop that tests several barriers and does what is ready: a test, a fence and an arrival a batch, and addresses formed at run time -- 2,000 cycles a window in the serve warps | `carry_window` (the serve warps, removed) |
+| a readiness test a warp branches on | one vote of the warp | each lane's own read of the barrier under a collective is a lane-divergent branch the SASS cannot rule out | `carry_window` (the serve warps, removed) |
+| registers given to a warpgroup's roles | one `setmaxnreg` a whole warpgroup, first in the role's branch | two counts inside one warpgroup compile clean and hang the CTA on the device | `carry_window` (the per-warp row, removed) |
+| a role's order around a global load | the loads issued, then the role's arithmetic and stores, then the loaded values' use | the use straight after the issue holds the warp for the load's whole latency (`LOAD_IN_TRIP`) | `carry_window` (the producer), `load_rate` |
+
 THE HOPPER CARRY'S FORMS (sm_90, an H100), each beside the form it was measured against:
 
 | job | the form | its cost | measured in |
 |---|---|---|---|
-| scattered global rows into shared memory, each its own request | warps' own loads, 16 bytes a lane and four rows an instruction, then stores; a producing warp holds one batch of 32 entries | 8.5 cycles a row from four warps, 33.0 from one; a warp's rate rises with the entries it holds up to a batch and no further | [`load_rate`](../../lab/load_rate.md), [`value_gather`](../../lab/value_gather.md), [`carry_window`](../../lab/carry_window.md) |
+| scattered global rows into shared memory, each its own request | warps' own loads, 16 bytes a lane and four rows an instruction, then stores; a producing warp holds one batch of 32 entries | 3.5 cycles a row from four warps, 10.6 from one (a row a lane's 4 bytes: 8.5 and 33.0); a producing warp's rate rises with the entries it holds up to about a batch | [`load_rate`](../../lab/load_rate.md), [`value_gather`](../../lab/value_gather.md), [`carry_window`](../../lab/carry_window.md) |
 | an output row summed into global memory | one atomic add of the row's whole 128-byte line, from warps that do nothing else | 12.6 cycles a line a warp alone; the issuing warp is held until the SM passes the add | [`add_rate`](../../lab/add_rate.md), [`carry_window`](../../lab/carry_window.md) |
-| a register state published as a wgmma's shared-memory operand | the major whose 16-byte line is one thread's own values (K-major for a fold's accumulators) | 4 stores a thread a tile group; some 200 cycles of a window | [`carry_window`](../../lab/carry_window.md) |
+| a register state published as a wgmma's shared-memory operand | the major whose 16-byte line is one thread's own values (K-major for a fold's accumulators) | 4 stores a thread a tile group; 289 cycles of a window | [`carry_window`](../../lab/carry_window.md) |
 | registers moved between a CTA's roles | `setmaxnreg`, one count a whole warpgroup, each role's body in its own branch; the counts sum to what the kernel enters with, which goes by whole warpgroups (128 a thread at 512 threads, 96 at 640) | about 200 cycles a warp, once | [`reg_trade`](../../lab/reg_trade.md), [`reg_five`](../../lab/reg_five.md) |
-| the register A operands of several asynchronous steps | every step's A in its own registers, the steps one commit group | nothing beside the steps | [`carry_window`](../../lab/carry_window.md) |
+| the register A operands of several asynchronous steps | every step's A in its own registers, the steps one commit group | 4 words of A a step a thread held through the group's wait (32 for a chunk's 8 steps) | [`carry_window`](../../lab/carry_window.md) |
 
-FORMS THAT LOST there, with what each was measured against (a row stays until a later measurement overturns it):
+FORMS THAT LOST there or bought nothing, with what each was measured against (a row stays until a later measurement
+overturns it; one that says NOT ISOLATED is open):
 
 | the form | what it lost to | by how much | measured in |
 |---|---|---|---|
 | a scattered row by the bulk copy engine, one request a row | four warps' own loads | 32.8 cycles a row against 8.5 | [`state_move`](../../lab/state_move.md), [`value_gather`](../../lab/value_gather.md) |
-| a producer holding two batches, its loads two ahead | one batch held | no faster: the fold's side 5,611 cycles a window against 5,994 | [`carry_window`](../../lab/carry_window.md) |
+| a producer holding two batches, its loads two ahead | one batch held | 6% on the fold's side alone (5,611 cycles a window against 5,994), for 16 more registers a thread; composed only with the two-set readout those registers come from, 8,821 against 8,248: its own composed cost is not isolated | [`carry_window`](../../lab/carry_window.md) |
 | four producers each holding one value instruction's four entries (40 registers a thread) | two producers each holding a batch | slower: 6,218 against 5,994 | [`carry_window`](../../lab/carry_window.md) |
 | the readout adding its own rows after its steps | two drain warps beside it | the window 9,260 against 8,248: its adds hold it | [`carry_window`](../../lab/carry_window.md) |
-| two sets of A registers reused across a chunk's commit groups | every step's own A, one group | 960 cycles a window more in the readout's steps | [`carry_window`](../../lab/carry_window.md) |
+| two sets of A registers reused across a chunk's commit groups | every step's own A, one group | the read side alone 7,523 cycles a window against 7,352; composed only with two-batch producers, 8,821 against 8,248: not isolated | [`carry_window`](../../lab/carry_window.md) |
 | a fifth warpgroup (640 threads) of serve warps | four warpgroups (512) | the window 9,078 against 8,248: 61,440 registers leave the serve warps 40 a thread | [`carry_window`](../../lab/carry_window.md), [`reg_five`](../../lab/reg_five.md) |
 
 <a id="ledger"></a>
