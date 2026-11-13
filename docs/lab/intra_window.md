@@ -30,26 +30,29 @@ token-major, as a reader of a token's values at one run would have them.
 The cell: a level's row is 8 live digits of byte 1 (a pair's weight at most 64, exact in bf16 and in every sum), a
 value 1 or 2; every output value and every den sum is checked against the host's. Shared memory 114 KB.
 
-MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance 60542623, driver 580.173.02; 2026-11-13, the experiment at
-4f56ae4a; 7 repetitions, 8 windows; each form's 524,288 output values and 8,192 den sums exact; the median):
+MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance 60544158, driver 595.91.07; 2026-11-13, the experiment at
+3e13195f; 7 repetitions, 8 windows; each form's 524,288 output values and 8,192 den sums exact; the median):
 
 | the rows in global memory | SM-cycles a window | a trip | SM-cycles a token |
 |---|---|---|---|
-| token-major, a tile landed as 40 tensor copies of a kilobyte | 430,973 | 3,169 | 421 |
-| tile-major, a tile landed as 3 contiguous copies | 177,545 | 1,305 | 173 |
+| token-major, a tile landed as 40 tensor copies of a kilobyte | 429,099 | 3,155 | 419 |
+| tile-major, a tile landed as 3 contiguous copies | 177,498 | 1,305 | 173 |
+| the levels tile-major, the values token-major: 2 contiguous copies and 8 tensor copies | 183,538 | 1,350 | 179 |
 
 WHAT IT SHOWS.
 - THE INTRA COMPOSES, EXACTLY, as a kernel of its own: the integer steps' operands as tensor copies land them, the
   weights in place as the value steps' A, the den as the 65th column, a token's line from registers.
-- THE ROWS' LAYOUT IS THE COST: token-major, a trip is 3,169 cycles where its chain alone is 985
-  ([`intra_chain`](intra_chain.md)) -- 40 copies of a kilobyte a writer tile hold it -- and tile-major it is 1,305.
-  A window is 421 SM-cycles a token against 173.
-- BESIDE THE CARRY (173 against its 823 SM-cycles a token with no clock inside a role,
-  [`carry_window`](carry_window.md)) the tile-major intra is a fifth of the carry's window and the token-major one a
-  half. Adjacent measurements of two labs at their own cells, not a call: the tables here are 2 MB a level, cached,
-  and no pair is skipped.
-- NOT MEASURED: tile-major levels beside token-major values (the carry's producers read a token's values as one
-  run); a window whose tile pairs are skipped by the facts pass's unions; rows the cache does not hold; the two
-  kernels launched together.
+- THE LEVELS' LAYOUT IS THE COST: token-major, a trip is 3,155 cycles where its chain alone is 985
+  ([`intra_chain`](intra_chain.md)) -- 40 copies of a kilobyte a writer tile hold it -- and with the levels
+  tile-major it is 1,350, the values' order then worth 44 cycles a trip (1,305 with the values tile-major too).
+- THE VALUES STAY TOKEN-MAJOR: their order is 3% of the intra's window, and the carry's producers, who read a
+  token's values as one run, lose most of a window to them tile-major ([`carry_window`](carry_window.md)). The
+  levels tile-major and the values token-major is the layout both readers' measurements give.
+- BESIDE THE CARRY (179 against its SM-cycles a token with no clock inside a role,
+  [`carry_window`](carry_window.md)) the intra in that layout is about a fifth of the carry's window. Adjacent
+  measurements of two labs at their own cells, not a call: the tables here are 2 MB a level, cached, and no pair is
+  skipped.
+- NOT MEASURED: a window whose tile pairs are skipped by the facts pass's unions; rows the cache does not hold; the
+  two kernels launched together.
 
 Record: `measure/lab/results/intra_window/sm_90a.json`.
