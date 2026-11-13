@@ -106,15 +106,15 @@ enum Roles : int {
   //: the row that RESTORES the fold's state dump to every call, as every record before this form had it: the A/B
   //: that prices the dump in one session
   kDump = 131072,
-  //: the row whose tables the cache cannot hold: every token's rows are read at a REPLICA of the table picked by
-  //: the token's hash -- the same token always the same replica, so the values are the small table's and the host's
-  //: check stands -- and the values' 16 replicas are 128 MB against the card's 50 MB L2
+  //: the row whose tables the cache cannot hold: every ACCESS reads its row at a replica of the table picked by
+  //: the access's own position, so the distinct rows touched grow with the accesses -- a replica's row holds its
+  //: token's values, so the host's check stands -- as a large table's rows are each read once; 128 MB of values
   kBig = 262144
 };
-//: a token's row in the replicated tables: its own, or its replica's
+//: a row in the replicated tables: the token's own, or the replica of it the access's position picks
 template <int ROLES>
-__device__ __forceinline__ uint32_t row_of(uint32_t t) {
-  if constexpr (ROLES & kBig) return t | ((t * 2654435761u >> 12) & ((kReplicas - 1) * kTableTokens));
+__device__ __forceinline__ uint32_t row_of(uint32_t t, uint32_t at) {
+  if constexpr (ROLES & kBig) return t | ((at * 2654435761u >> 12) & ((kReplicas - 1) * kTableTokens));
   else return t;
 }
 //: THE FIVE-WARPGROUP row: 640 threads, a fourth warpgroup of four producers and a fifth of four drain warps. A
@@ -144,7 +144,7 @@ constexpr int value_parts = ROLES & kFive ? kFiveParts : 1;
 template <int ROLES>
 constexpr int read_regs = ROLES & kFive ? kFiveReadRegs : ROLES & kLean ? 80 : kReadRegs;
 template <int ROLES>
-constexpr int serve_regs = (ROLES & kLean) && (ROLES & kWide) ? 104 : ROLES & kLean ? 112 : kServeRegs;
+constexpr int serve_regs = (ROLES & kLean) && (ROLES & (kWide | kBig)) ? 104 : ROLES & kLean ? 112 : kServeRegs;
 static_assert(read_regs<kLean> + serve_regs<kLean> == kReadRegs + kServeRegs);
 template <int ROLES>
 constexpr int batches_held = ROLES & kLean ? 2 : 1;
@@ -327,14 +327,14 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
     for (int qd = 0; qd < kPart; ++qd) {
       const uint32_t tk = token_of(source, n * kFill + 4 * (part_at * kPart + qd) + group);
       if constexpr (ROLES & kNoLoads) value[h][qd] = make_uint4(tk, tk, tk, tk);
-      else value[h][qd] = wide[static_cast<long long>(row_of<ROLES>(tk)) * (kRowWords / 4) + (lane & 7)];
+      else value[h][qd] = wide[static_cast<long long>(row_of<ROLES>(tk, static_cast<uint32_t>(n * kFill + 4 * qd + group))) * (kRowWords / 4) + (lane & 7)];
     }
   };
   //: batch `n`'s dense bytes, all 32 entries' in one instruction (a lane an entry's 16)
   const auto load_bytes = [&](int n, int h) {
     const uint32_t tb = token_of(source, n * kFill + lane);
     if constexpr (ROLES & kNoLoads) bytes[h] = make_uint4(tb, tb, tb, tb);
-    else bytes[h] = boxes[row_of<ROLES>(tb)];
+    else bytes[h] = boxes[row_of<ROLES>(tb, static_cast<uint32_t>(n * kFill + lane) * 2u + 1u)];
   };
 #pragma unroll
   for (int h = 0; h < kHeld; ++h) {
@@ -436,14 +436,14 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       const int k = c % kChunks;
       const uint32_t rd = reader_of(blockIdx.x, (c / kChunks) * kWindow + 16 * (8 * (k >> 1) + (k & 1) + 2 * warp)
                                                     + (lane & 15));
-      wide_row = reinterpret_cast<const uint4*>(dense)[row_of<ROLES>(reader_row(rd, lane >> 4))];
+      wide_row = reinterpret_cast<const uint4*>(dense)[row_of<ROLES>(reader_row(rd, lane >> 4), static_cast<uint32_t>(c) * 64u + lane)];
     } else {
 #pragma unroll
       for (int box = 0; box < 2; ++box)
 #pragma unroll
         for (int j = 0; j < 4; ++j)
           if constexpr (ROLES & kNoBytes) bytes[box][j] = reader(c, j & 1) + static_cast<uint32_t>(box + j);
-          else bytes[box][j] = dense[static_cast<long long>(row_of<ROLES>(reader_row(reader(c, j & 1), box))) * 4 + 2 * (j >> 1) + (t >> 1)];
+          else bytes[box][j] = dense[static_cast<long long>(row_of<ROLES>(reader_row(reader(c, j & 1), box), static_cast<uint32_t>(c) * 64u + static_cast<uint32_t>(16 * box + 4 * j) + static_cast<uint32_t>(t))) * 4 + 2 * (j >> 1) + (t >> 1)];
     }
   };
   load(0);
@@ -880,7 +880,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
     //: THE CARD'S CLOCK: a long call's span in SM cycles over its wall time, the launch and its wait included (a
     //: call of some 20 ms: they are under a percent of it)
     constexpr int kLong = 4096;
-    lab::Samples clock_rate;
+    lab::Samples clock_rate, wall;
     for (int r = 0; r < 5; ++r) {
       LAB_CHECK(cudaDeviceSynchronize());
       const auto t0 = std::chrono::steady_clock::now();
@@ -888,9 +888,12 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
       LAB_CHECK(cudaDeviceSynchronize());
       const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
       clock_rate.v.push_back(b.span(kWarps) / seconds / 1e9);
+      wall.v.push_back(seconds * 1000.0 * (65536.0 / (static_cast<double>(kLong) * kWindow)));
     }
     b.unchecked("the card's clock", "a rate read off the composed row's call, which that row checks");
     b.record("the card's clock: the composed call's span over its wall time", "GHz", clock_rate);
+    //: THE WALL TIME, the headline a drifting clock cannot touch: the long call's seconds scaled to 65,536 tokens
+    b.record("the composed long call by wall time, scaled to 65,536 tokens", "milliseconds", wall);
   }
   if (!(ROLES & (kNoLoads | kNoAdds | kNoImage)) && ROLES & kRead)
     for (int i = 0; i < kSites; ++i)
