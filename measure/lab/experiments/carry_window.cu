@@ -25,7 +25,8 @@
 // taken out, and the readout and drains with the fold warps present and idle -- parked at a named barrier, or
 // spinning at a polled one; a row that restores the fold's state dump to every call (the A/B that prices it in
 // one session); the suspended and sleeping waits combined with the lean readout and the wide byte load; and rows
-// whose tables are 16 replicas (128 MB of values) the cache cannot hold, a token's replica picked by its hash. Then
+// whose tables are 16 replicas (128 MB of values) the cache cannot hold: an access's row is the replica its own
+// position picks -- a reader row one replica a chunk and box -- as a large table's rows are each read once. Then
 // what the readout's steps
 // wait behind: the readout and the drains with NO fold warp running (the image as it lies); every barrier's wait
 // by the instruction that may suspend its thread, where the others poll. With both sides and no access out, the
@@ -443,7 +444,7 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
 #pragma unroll
         for (int j = 0; j < 4; ++j)
           if constexpr (ROLES & kNoBytes) bytes[box][j] = reader(c, j & 1) + static_cast<uint32_t>(box + j);
-          else bytes[box][j] = dense[static_cast<long long>(row_of<ROLES>(reader_row(reader(c, j & 1), box), static_cast<uint32_t>(c) * 64u + static_cast<uint32_t>(16 * box + 4 * j) + static_cast<uint32_t>(t))) * 4 + 2 * (j >> 1) + (t >> 1)];
+          else bytes[box][j] = dense[static_cast<long long>(row_of<ROLES>(reader_row(reader(c, j & 1), box), (static_cast<uint32_t>(c) * 2u + static_cast<uint32_t>(j & 1)) * 2u + static_cast<uint32_t>(box))) * 4 + 2 * (j >> 1) + (t >> 1)];
     }
   };
   load(0);
@@ -888,11 +889,14 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
       LAB_CHECK(cudaDeviceSynchronize());
       const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
       clock_rate.v.push_back(b.span(kWarps) / seconds / 1e9);
-      wall.v.push_back(seconds * 1000.0 * (65536.0 / (static_cast<double>(kLong) * kWindow)));
+      wall.v.push_back(seconds * 1000.0 * (65536.0 / (static_cast<double>(kLong) * 4 * kWindow)));
     }
     b.unchecked("the card's clock", "a rate read off the composed row's call, which that row checks");
     b.record("the card's clock: the composed call's span over its wall time", "GHz", clock_rate);
     //: THE WALL TIME, the headline a drifting clock cannot touch: the long call's seconds scaled to 65,536 tokens
+    //: (a window is 4 x kWindow = 1,024 tokens across the call's CTAs)
+    b.unchecked("the composed long call by wall time, scaled to 65,536 tokens",
+                "the same launches as the card's clock: the composed row checks the kernel");
     b.record("the composed long call by wall time, scaled to 65,536 tokens", "milliseconds", wall);
   }
   if (!(ROLES & (kNoLoads | kNoAdds | kNoImage)) && ROLES & kRead)
