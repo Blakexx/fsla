@@ -56,10 +56,14 @@ holds a clock or a count (a producer holding two instructions' entries fits at 4
 holding 8 tokens at 48); and, both and each side alone, with THE LONG WAITS ASLEEP: a fold's wait on its
 producer, the readout's on a tile group's publish and a drain warp's on the panel are at NAMED barriers
 (`bar.sync`), where a waiting warp issues nothing, in place of the polled test and branch a waiting warp issues
-every trip; the other waits -- a slot freed, a tile group read, a panel drained -- stay polled; and each side
+every trip; a slot freed and a panel drained stay polled; and each side
 alone with one more access out: the producers' loads, their coefficient arithmetic (the bytes stored as they
 are), both, and the readout's loads of its readers' bytes (the words made in registers), with the fold warps
-and without. Then WHAT THE
+and without; and with those bytes ONE WIDE LOAD a readout warp a chunk: a lane fetches a whole row's 16 bytes
+(the warp's 16 tokens on the two boxes, 32 rows an instruction), the warp stores them to its own scratch in
+shared memory and each thread reads its 8 words back -- 32 global lines a warp a chunk where the 8 instructions
+of 4-byte loads touch 256. The sleeping row's waits now include the fold's on the readout's read of a tile
+group. Then WHAT THE
 READOUT'S STEPS WAIT BEHIND: the
 readout and the drains with no fold warp running (the image as it lies, never rewritten, no fold warp at a
 barrier); every barrier's wait by the instruction that may suspend its thread (`mbarrier.try_wait`) where the
