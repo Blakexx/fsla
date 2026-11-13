@@ -52,7 +52,7 @@ WHAT IT SHOWS.
   [`carry_window`](carry_window.md)) the intra in that layout is about a fifth of the carry's window. Adjacent
   measurements of two labs at their own cells, not a call: the tables here are 2 MB a level, cached, and no pair is
   skipped.
-- NOT MEASURED: a window whose tile pairs are skipped by the facts pass's unions; rows the cache does not hold; the
-  two kernels launched together.
+- NOT MEASURED HERE: a window whose tile pairs are skipped by the facts pass's unions; rows the cache does not hold.
+  The two kernels launched together are [`call_pair`](call_pair.md)'s.
 
 Record: `measure/lab/results/intra_window/sm_90a.json`.

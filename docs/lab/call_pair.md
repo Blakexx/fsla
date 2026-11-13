@@ -30,7 +30,8 @@ MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance 60545556, driver 595.91.07; 
 WHAT IT SHOWS.
 - A CALL WITH THE CARRY, ITS DEN AND THE INTRA IS 0.39 TO 0.40 MILLISECONDS a head at 65,536 tokens on this card:
   the carry alone 0.285, the intra alone 0.072 -- a quarter of the carry's time. No facts pass and no producer
-  is in it, the tables are cached, and no tile pair of the intra is skipped.
+  is in it and no tile pair of the intra is skipped. THE TABLES ARE CACHED, so this is the upside and not the price
+  (R22.2): the call with tables the cache does not hold is unmeasured.
 - LAUNCHING THE TWO TOGETHER BUYS 2%: 0.392 on two streams against 0.401 on one, and nothing with the intra
   launched first (0.400). The carry's 128 CTAs hold their multiprocessors for the call, so the intra's CTAs have
   the card's other 4 until the carry leaves. Nothing closer than the two streams is built.

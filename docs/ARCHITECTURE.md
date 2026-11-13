@@ -299,9 +299,10 @@ no state: every pair it computes is written and read inside the one window. No i
 chain alone is MEASURED at 985 cycles a tile pair of 64 readers by 64 writers at 256 digits a level
 ([`intra_chain`](lab/intra_chain.md)); its WINDOW as a kernel of its own is MEASURED at 179 SM-cycles a token with
 the levels tile-major and the values token-major, and 419 with every plane token-major ([`intra_window`](lab/intra_window.md)); and the carry's CTA has no
-register for it. The two are LAUNCHED CONCURRENTLY on two streams (Blake, 2026-11-13): MEASURED, a call of 65,536 tokens with
-the carry, its den and the intra is 0.39 ms a head so and 0.40 one after the other
-([`call_pair`](lab/call_pair.md)); nothing closer is built.
+register for it. The two are LAUNCHED CONCURRENTLY on two streams (Blake, 2026-11-13): MEASURED WITH THE TABLES CACHED -- the upside, not the
+price (R22.2: the call with tables the cache does not hold is unmeasured) -- a call of 65,536 tokens with the carry,
+its den and the intra is 0.39 ms a head so and 0.40 one after the other, at one cell
+([`call_pair`](lab/call_pair.md)); nothing closer is built on that measurement.
 BLACKWELL: NOT STATED -- no blackwell intra is designed and no blackwell card measured.
 
 ### 6.5 Decode — the `T = 1` step
