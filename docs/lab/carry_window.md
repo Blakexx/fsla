@@ -69,7 +69,9 @@ barrier, or spinning at a polled one -- where the row with no fold warp running 
 the fold's state dump to every call, as every record before this form had it: the A/B that prices the dump in one
 session. Rows whose TABLES THE CACHE CANNOT HOLD read every access's row at a replica of the table picked by
 the access's own position -- a replica's row holds its token's values, so the check stands -- as a large table's
-rows are each read once; 16 replicas, 128 MB of values (composed, the winner's form, and the fold's side alone). The suspended and the sleeping waits also run combined with the lean readout and the wide byte load. Then WHAT THE
+rows are each read once; 16 replicas, 128 MB of values (composed, the winner's form, and the fold's side alone). A row reads every big row 8 TIMES, SCATTERED (the salt's low three bits shared): production's shape of
+reuse, asking whether L2 dedups it. The long call and its wall time run for the headline's rows: the baseline,
+the winner, the big tables and the shared-reuse row. The suspended and the sleeping waits also run combined with the lean readout and the wide byte load. Then WHAT THE
 READOUT'S STEPS WAIT BEHIND: the
 readout and the drains with no fold warp running (the image as it lies, never rewritten, no fold warp at a
 barrier); every barrier's wait by the instruction that may suspend its thread (`mbarrier.try_wait`) where the

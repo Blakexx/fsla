@@ -26,7 +26,8 @@
 // spinning at a polled one; a row that restores the fold's state dump to every call (the A/B that prices it in
 // one session); the suspended and sleeping waits combined with the lean readout and the wide byte load; and rows
 // whose tables are 16 replicas (128 MB of values) the cache cannot hold: an access's row is the replica its own
-// position picks -- a reader row one replica a chunk and box -- as a large table's rows are each read once. Then
+// position picks -- a reader row one replica a chunk and box -- as a large table's rows are each read once, and
+// with every row read 8 times scattered (the salt's low three bits shared), production's shape of reuse. Then
 // what the readout's steps
 // wait behind: the readout and the drains with NO fold warp running (the image as it lies); every barrier's wait
 // by the instruction that may suspend its thread, where the others poll. With both sides and no access out, the
@@ -110,12 +111,16 @@ enum Roles : int {
   //: the row whose tables the cache cannot hold: every ACCESS reads its row at a replica of the table picked by
   //: the access's own position, so the distinct rows touched grow with the accesses -- a replica's row holds its
   //: token's values, so the host's check stands -- as a large table's rows are each read once; 128 MB of values
-  kBig = 262144
+  kBig = 262144,
+  //: the big tables with PRODUCTION-SHAPED REUSE: every row is read 8 times, scattered -- the salt keeps its low
+  //: three bits, so 8 accesses share a replica -- asking whether L2 dedups a token's k scattered reads by itself
+  kShare = 524288
 };
 //: a row in the replicated tables: the token's own, or the replica of it the access's position picks
 template <int ROLES>
 __device__ __forceinline__ uint32_t row_of(uint32_t t, uint32_t at) {
-  if constexpr (ROLES & kBig) return t | ((at * 2654435761u >> 12) & ((kReplicas - 1) * kTableTokens));
+  if constexpr (ROLES & kShare) return t | (((at >> 3) * 2654435761u >> 12) & ((kReplicas - 1) * kTableTokens));
+  else if constexpr (ROLES & kBig) return t | ((at * 2654435761u >> 12) & ((kReplicas - 1) * kTableTokens));
   else return t;
 }
 //: THE FIVE-WARPGROUP row: 640 threads, a fourth warpgroup of four producers and a fifth of four drain warps. A
@@ -789,13 +794,14 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kPark ? ", the fold warps parked at a named barrier" : "")
                            + (ROLES & kSpin ? ", the fold warps spinning at a polled barrier" : "")
                            + (ROLES & kDump ? ", the fold's state stored out in every call" : "")
-                           + (ROLES & kBig ? ", the tables 16 replicas the cache cannot hold" : "");
+                           + (ROLES & kBig ? ", the tables 16 replicas the cache cannot hold" : "")
+                           + (ROLES & kShare ? ", the big tables with every row read 8 times, scattered" : "");
   constexpr int kLaunch = threads_of<ROLES>, kWarps = kLaunch >> 5;
   const auto kernel = window<ROLES>;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
   LAB_CHECK(cudaMemset(out, 0, words * 4));
-  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig)) == (kFold | kRead)) {
+  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kShare)) == (kFold | kRead)) {
     kernel<<<b.sms, kLaunch, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * kLists * 8;
@@ -877,7 +883,8 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
       });
   b.record(name, "cycles a window a CTA", cycles);
   //: the composed row's sites, and the read side's own but the fold's wait on a producer, which does not run there
-  if (ROLES == (kFold | kRead)) {
+  //: the long call and its wall time also run for the winner's rows and the big tables': the headline's rows
+  if ((ROLES & ~(kSuspend | kLean | kBig | kShare)) == (kFold | kRead)) {
     //: THE CARD'S CLOCK: a long call's span in SM cycles over its wall time, the launch and its wait included (a
     //: call of some 20 ms: they are under a percent of it)
     constexpr int kLong = 4096;
@@ -920,7 +927,7 @@ int main(int argc, char** argv) {
                     2 | kNoImage, 2 | kNoFence, 2 | kNoImage | kNoFence, 3 | kNoFence,
                     2 | kStill | kPark, 2 | kStill | kSpin, 3 | kDump,
                     3 | kSuspend | kLean, 3 | kSuspend | kWide, 3 | kSuspend | kLean | kWide,
-                    3 | kSleep | kLean | kWide, 3 | kBig, 3 | kSuspend | kLean | kBig, 1 | kBig}) {
+                    3 | kSleep | kLean | kWide, 3 | kBig, 3 | kSuspend | kLean | kBig, 1 | kBig, 3 | kShare}) {
     const std::string k = lab::kernel("window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     b.expect(k, "HGMMA", "==",
@@ -1017,5 +1024,6 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kBig>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kBig>(b, waits, values, dense, state, out);
   run<kFold | kBig>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kShare>(b, waits, values, dense, state, out);
   return 0;
 }
