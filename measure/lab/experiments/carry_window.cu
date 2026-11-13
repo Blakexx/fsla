@@ -18,7 +18,9 @@
 // registers a thread and the fourth warpgroup at 112, its producers holding two batches; and with FIVE WARPGROUPS,
 // 640 threads -- a fourth of four producers and a fifth of four drain warps at 40 registers a thread, the lean
 // readout at 80; and with THE LONG WAITS ASLEEP -- a fold on its producer, the readout on the image and a drain
-// warp on the panel at named barriers, where a waiting warp issues nothing. Then what the readout's steps
+// warp on the panel at named barriers, where a waiting warp issues nothing; and each side alone with one more
+// access out -- the producers' loads, their coefficient arithmetic, both, and the readout's loads of its readers'
+// bytes. Then what the readout's steps
 // wait behind: the readout and the drains with NO fold warp running (the image as it lies); every barrier's wait
 // by the instruction that may suspend its thread, where the others poll. With both sides and no access out, the
 // state and every output row are checked exactly, and a long call's span over its wall time reads the card's clock.
@@ -76,7 +78,10 @@ constexpr int kOutWindows = 4;
 //: and the row whose readout DRAINS ITS OWN rows: a readout warp loads its 16 tokens' lines back from the panel and
 //: adds them itself, no drain warp and no panel barrier, and the fourth warpgroup is four producers, two a box
 enum Roles : int {
-  kFold = 1, kRead = 2, kNoLoads = 4, kNoAdds = 8, kNoImage = 16, kSuspend = 32, kStill = 64, kSelf = 128, kLean = 256, kFive = 512, kSleep = 1024
+  kFold = 1, kRead = 2, kNoLoads = 4, kNoAdds = 8, kNoImage = 16, kSuspend = 32, kStill = 64, kSelf = 128, kLean = 256, kFive = 512, kSleep = 1024,
+  //: two more accesses a row takes out: the producers' coefficient arithmetic (the bytes stored as they are) and
+  //: the readout's loads of its readers' bytes (the words made in registers)
+  kNoMath = 2048, kNoBytes = 4096
 };
 //: THE FIVE-WARPGROUP row: 640 threads, a fourth warpgroup of four producers and a fifth of four drain warps. A
 //: kernel of 640 threads enters with 96 registers a thread (docs/lab/reg_five.md), and the roles' counts sum to
@@ -332,8 +337,9 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
 #pragma unroll
           for (int j = 0; j < 4; ++j) {
             const uint32_t two = word[2 * k + j / 2] >> (16 * (j & 1));
-            pair[j] = lab::bf16x2_round(weight * static_cast<float>(two & 255u),
-                                        weight * static_cast<float>(two >> 8 & 255u));
+            if constexpr (ROLES & kNoMath) pair[j] = two;
+            else pair[j] = lab::bf16x2_round(weight * static_cast<float>(two & 255u),
+                                             weight * static_cast<float>(two >> 8 & 255u));
           }
           line[k] = make_uint4(pair[0], pair[1], pair[2], pair[3]);
         }
@@ -383,7 +389,8 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
     for (int box = 0; box < 2; ++box)
 #pragma unroll
       for (int j = 0; j < 4; ++j)
-        bytes[box][j] = dense[static_cast<long long>(reader_row(reader(c, j & 1), box)) * 4 + 2 * (j >> 1) + (t >> 1)];
+        if constexpr (ROLES & kNoBytes) bytes[box][j] = reader(c, j & 1) + static_cast<uint32_t>(box + j);
+        else bytes[box][j] = dense[static_cast<long long>(reader_row(reader(c, j & 1), box)) * 4 + 2 * (j >> 1) + (t >> 1)];
   };
   load(0);
   uint32_t on_image = 0, on_drain = 0, in_steps = 0, in_form = 0;
@@ -698,7 +705,9 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kSelf ? ", the readout draining its own rows and four producers" : "")
                            + (ROLES & kLean ? ", the readout's A in two sets and two batches a producer" : "")
                            + (ROLES & kFive ? ", five warpgroups: four producers and four drain warps" : "")
-                           + (ROLES & kSleep ? ", the long waits asleep at named barriers" : "");
+                           + (ROLES & kSleep ? ", the long waits asleep at named barriers" : "")
+                           + (ROLES & kNoMath ? ", the producers' coefficient arithmetic taken out" : "")
+                           + (ROLES & kNoBytes ? ", the readout's byte loads taken out" : "");
   constexpr int kLaunch = threads_of<ROLES>, kWarps = kLaunch >> 5;
   const auto kernel = window<ROLES>;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
@@ -817,7 +826,8 @@ int main(int argc, char** argv) {
   lab::Bench b(argc, argv);
   for (int roles : {1, 2, 3, 3 | kNoLoads, 3 | kNoAdds, 3 | kNoImage, 2 | kStill, 2 | kSuspend, 3 | kSuspend,
                     3 | kSelf, 1 | kSelf, 2 | kSelf, 3 | kLean, 1 | kLean, 2 | kLean,
-                    3 | kFive, 1 | kFive, 2 | kFive, 3 | kSleep, 1 | kSleep, 2 | kSleep}) {
+                    3 | kFive, 1 | kFive, 2 | kFive, 3 | kSleep, 1 | kSleep, 2 | kSleep, 1 | kNoLoads, 1 | kNoMath,
+                    1 | kNoLoads | kNoMath, 2 | kNoBytes, 2 | kStill | kNoBytes}) {
     const std::string k = lab::kernel("window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     b.expect(k, "HGMMA", "==",
@@ -881,5 +891,10 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSleep>(b, waits, values, dense, state, out);
   run<kFold | kSleep>(b, waits, values, dense, state, out);
   run<kRead | kSleep>(b, waits, values, dense, state, out);
+  run<kFold | kNoLoads>(b, waits, values, dense, state, out);
+  run<kFold | kNoMath>(b, waits, values, dense, state, out);
+  run<kFold | kNoLoads | kNoMath>(b, waits, values, dense, state, out);
+  run<kRead | kNoBytes>(b, waits, values, dense, state, out);
+  run<kRead | kStill | kNoBytes>(b, waits, values, dense, state, out);
   return 0;
 }
