@@ -77,8 +77,9 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
 * `lab::WarpClock` — a warp's cycles over a region, lane 0's `clock64`, stored at `(block, warp)`.
 * `lab::WarpSpan` — a warp's start and end `clock64`; `Bench::span(warps)` (it exits on a block one of whose warps recorded no clock: a timed launch starts from cleared clocks) is the mean block's span (last end less
   first start), the throughput when warps finish apart.
-* `lab::touch` — a line asked into the L2 cache ahead of the load that uses it (`prefetch.global.L2`); a plain load
-  nobody reads is removed by the toolkit.
+* `lab::touch` — a line asked into the L2 cache ahead of the load that uses it (`prefetch.global.L2`). MEASURED on
+  sm_90a under CUDA 13.0 (`carry_window`'s ahead rows): a plain `ld.global` whose result nothing reads compiled to no
+  instruction at all; a row that asks states the asks its binary must hold.
 * The operand pieces the kernels use: `ldsm` and `ldsm_t` (`ldmatrix.x4`, `.trans`), `hmul2`, `pack_half2`, `smem`;
   the mbarrier as `ops.cuh` spells it: `mbar_init`, `mbar_arrive`, `mbar_wait` (polled), `mbar_wait_suspended` (sm_90: `try_wait`, the thread may be suspended), `mbar_test` (once).
 * `lab::sink(out, v)` — a fold of everything a thread computed, stored unconditionally.

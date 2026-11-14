@@ -495,7 +495,7 @@ __device__ __forceinline__ void red_add_f16x2(uint32_t* dst, uint32_t v) {
 }
 
 //: A LINE ASKED INTO THE CACHE: `prefetch.global.L2` of the line at `p` (the toolkit's `CCTL.E.PF2`), which its thread
-//: does not wait for. A plain load nobody reads does not do: the toolkit removes it
+//: does not wait for (docs/internals/tools/lab.md)
 __device__ __forceinline__ void touch(const void* p) {
   asm volatile("prefetch.global.L2 [%0];" : : "l"(p) : "memory");
 }

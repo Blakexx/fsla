@@ -1320,10 +1320,12 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kNoClock | kPitch, 3 | kSuspend | kLean | kNoClock | kTiledValues,
                     3 | kSuspend | kLean | kNoClock | kBig, 3 | kSuspend | kLean | kNoClock | kBig | kTiledValues,
                     1 | kListed, 3 | kSuspend | kLean | kNoClock | kListed, 1 | kListed | kHot,
-                    3 | kSuspend | kLean | kNoClock | kListed | kHot, 1 | kListed | kAhead,
+                    3 | kSuspend | kLean | kNoClock | kListed | kHot,
                     3 | kSuspend | kLean | kNoClock | kListed | kAhead}) {
     const std::string k = lab::kernel("carry_window::window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
+    //: the ahead row's asks are in its binary: 6 a batch, at the producers' two sites
+    if (roles & kAhead) b.expect(k, "CCTL", ">=", 12);
     b.expect(k, "HGMMA", "==",
              (roles & kFold ? 2 * kSlotLists + (roles & kDenFold ? kDenSteps : 0) : roles & kStill ? 0 : 1)
                  + (roles & kRead ? 2 * kChunkDigits : 0));
@@ -1423,7 +1425,6 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kLean | kNoClock | kListed>(b, waits, values, dense, state, out);
   run<kFold | kListed | kHot>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kListed | kHot>(b, waits, values, dense, state, out);
-  run<kFold | kListed | kAhead>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kListed | kAhead>(b, waits, values, dense, state, out);
   return 0;
 }
