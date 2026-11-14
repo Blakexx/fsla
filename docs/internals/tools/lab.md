@@ -38,9 +38,9 @@ ledger of a card that grants no profiler counters.
 
 <a id="hazards"></a>THE LEARNINGS' CHECKS ([`LEARNINGS.md`](../LEARNINGS.md)). An experiment outside `tools/lab.py`'s `_PRE_TIMELINE` (the
 experiments written before these checks; the list only shrinks) is refused by `run` and by `pack` unless its header
-comment states a `TIMELINE:` -- each phase's stream, which load is a stage ahead of which use, the live registers --
-or its source has a warp collective after a conditional's `?` (`collective_selected`: only the lanes the condition
-takes reach a collective every lane must), and EVERY kernel of it, budgeted or exempt, is held to five counts, each zero unless the experiment
+comment states a `TIMELINE:` -- each phase's stream, which load is a stage ahead of which use, the live registers;
+it is refused too where its source has a warp collective after a conditional's `?` (`collective_selected`: only
+the lanes the condition takes reach a collective every lane must). And EVERY kernel of it, budgeted or exempt, is held to five counts, each zero unless the experiment
 declares it (`Bench::expect(kernel, NAME, "<=", n)`): `LOOP_CONVERGENCE`; `LOAD_IN_TRIP`, the global loads whose
 value an instruction of the same innermost trip reads; `STORE_RELOAD`, the shared loads of an address the same trip
 stored to; `STORE_UNFENCED`, in a kernel that holds a wgmma, the barrier arrivals that follow a shared store with no
