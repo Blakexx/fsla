@@ -1776,7 +1776,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
   }
   if (!(ROLES & (kNoLoads | kNoAdds | kNoImage | kNoClock)) && ROLES & kRead)
     for (int i = 0; i < kSites; ++i)
-      if (ROLES & (kLean | kFive) && i == kFoldSites + 2) continue;
+      if (ROLES & (kLean | kFive) && !(ROLES & kMirror) && i == kFoldSites + 2) continue;
       else if (ROLES & kFive && i == kSites - 1) continue;
       else if (ROLES & kSelf ? i != kSites - 1 && (ROLES & kFold || i != 1)
           : ROLES & kStill ? i > kFoldSites : ROLES & kFold || i != 1)
