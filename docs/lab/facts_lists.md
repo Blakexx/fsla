@@ -31,30 +31,33 @@ and its dense row's 16 blocks to its slot of its digit's steps of 16 entries, in
 lines a step; nothing is computed -- and writes each digit's count. A load and a store a line, unstaged, a thread a
 token. Every arranged line is checked, each byte of the tables its own position's.
 
-MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance 60558804, driver 595.91.07; 2026-11-13, the experiment at
-f93be08e; 7 repetitions; every count and entry of each form's first round exact; the median, SM-cycles a token
-for one side's sparse level):
+MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance 60599125, driver 595.91.07; 2026-11-14, the experiment at
+1b43da74; 7 repetitions; every count, entry and arranged line of each form's first round exact; the median,
+SM-cycles a token for one side's sparse level):
 
 | the cell | a token's live digits from | counts, cached | counts, once-read | lists, cached | lists, once-read |
 |---|---|---|---|---|---|
-| 4 to 5 live digits a token | the mask as handed | 5.0 | 6.1 | 8.2 | 9.9 |
-| 4 to 5 live digits a token | a value test of the rows | 11.0 | 19.4 | 14.1 | 20.5 |
-| 32 live digits a token | the mask as handed | 9.5 | 10.5 | 43.5 | 45.7 |
-| 32 live digits a token | a value test of the rows | 15.1 | 18.6 | 47.1 | 46.4 |
+| 4 to 5 live digits a token | the mask as handed | 5.1 | 5.5 | 8.4 | 9.7 |
+| 4 to 5 live digits a token | a value test of the rows | 11.4 | 20.8 | 14.5 | 23.0 |
+| 32 live digits a token | the mask as handed | 9.5 | 9.9 | 44.6 | 47.1 |
+| 32 live digits a token | a value test of the rows | 15.5 | 21.6 | 49.6 | 50.9 |
+
+| the cell | the gather pass, cached | once-read |
+|---|---|---|
+| 4 to 5 live digits a token | 1,593 | 1,577 |
+| 32 live digits a token | 5,746 | 5,690 |
 
 WHAT IT SHOWS.
-- THE PASS IS PRICED AT 9.9 SM-CYCLES A TOKEN a sparse level-side at 4 to 5 live digits, its tables read once
-  (R22.2), and 8.2 when the cache holds them; the counts alone 6.1 and 5.0. It reads the mask's 32 bytes a
-  token and no row.
-- A VALUE TEST OF THE ROWS IS TWICE THAT, 20.5 once-read and 14.1 cached: 256 bytes a token where the mask is 32.
-- AT 32 LIVE DIGITS A TOKEN THE PASS IS ITS ENTRIES: 45.7 from the mask and 46.4 by the value test, once-read --
-  some 1.1 cycles an entry past the counts (the lists' call adds the offsets and a store a live digit to the counts'; which
-  of them it is is not isolated). The mask's gain is the sparse cell's; at this density the two forms meet.
-- WITH ITS BYTE AN ENTRY COST MORE THAN THE REST OF THE PASS: the form before this one, whose entry held the token's
-  byte read from its row, was 23.2 cycles a token cached at the sparse cell where this one is 8.2 (the experiment at 5d489776).
-- BESIDE THE CARRY's window ([`carry_window`](carry_window.md)), two sparse level-sides are some 20 SM-cycles a
-  token at the sparse cell. Two cells of one level width, their live digits spread evenly: a DENSE level (every
-  digit live, which a level walked by its lists may turn out to be) and a clustered one, where lanes' atomics meet
-  on one word, are unmeasured; so is the pass against a flat stream's rate over the same bytes.
+- THE LISTS ARE PRICED AT 9.7 SM-CYCLES A TOKEN a sparse level-side at 4 to 5 live digits, its tables read once
+  (R22.2), and 8.4 when the cache holds them; the counts alone 5.5 and 5.1. A value test of the rows is
+  twice that (23.0, 14.5); at 32 live digits the two forms meet (47.1, 50.9).
+- THE GATHER PASS IN THIS FORM IS NOT A FORM: 1,577 SM-cycles a token a side at 4 to 5 live digits, twice the carry's
+  whole window ([`carry_window`](carry_window.md)), and 5,690 at 32. It is exact -- every arranged line -- and it
+  moves a pair's 25 lines as 25 loads and 25 stores of global memory by the pair's own thread: some
+  7 cycles a line of 16 bytes to or from global memory a multiprocessor, the rate [`slot_sum`](slot_sum.md)
+  read for a line. The cache makes no difference to it. A gather pass moves its bytes through shared memory with
+  bulk copies at both ends, or it costs more than what it feeds; that form is not built.
+- ONE CELL WIDTH, two densities, live digits spread evenly: a dense level and a clustered one are unmeasured, and so
+  is any of it against a flat stream's rate over the same bytes.
 
 Record: `measure/lab/results/facts_lists/sm_90a.json`.
