@@ -123,7 +123,8 @@ THE FOLD EXPANDS (a pair, even lists). A producer only issues a slot's 8 copies,
 slot's fold warpgroup waits on their bytes and expands them itself -- its 128 threads the slot's 128 entries at
 once, a thread an entry, where one producer warp takes four trips of 32 -- then its barrier and its 8 steps.
 Further rows have THE FOLD ISSUE ITS OWN COPIES -- the window after's, as it leaves the slot: no producer warp
-runs and no slot is handed back -- alone and composed, and composed with the serve warpgroup FOUR DRAIN WARPS,
+runs and no slot is handed back; the fold takes 8 registers a thread more, the serve warpgroup's -- composed,
+and composed with the serve warpgroup FOUR DRAIN WARPS,
 16 of a chunk's 64 tokens each. The composed rows of these forms run once more with every role's waits clocked:
 the role that does not wait is the window's.
 

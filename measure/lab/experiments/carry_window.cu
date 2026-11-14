@@ -1820,7 +1820,7 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kNoClock | kListed | kAhead, 1 | kExpanded,
                     3 | kSuspend | kLean | kNoClock | kExpanded, 1 | kWhole, 3 | kSuspend | kLean | kNoClock | kWhole,
                     1 | kApart, 3 | kSuspend | kLean | kNoClock | kApart, 1 | kFresh, 3 | kSuspend | kLean | kNoClock | kFresh, 1 | kPacked, 3 | kSuspend | kLean | kNoClock | kPacked, 1 | kPacked | kFour, 3 | kSuspend | kLean | kNoClock | kPacked | kFour, 1 | kPacked | kFour | kSelf, 1 | kWhole | kFour, 3 | kSuspend | kLean | kNoClock | kWhole | kFour, 3 | kSuspend | kLean | kWhole | kFour,
-                    1 | kWhole | kFour | kFoldIssues, 3 | kSuspend | kLean | kNoClock | kWhole | kFour | kFoldIssues,
+                    3 | kSuspend | kLean | kNoClock | kWhole | kFour | kFoldIssues,
                     3 | kSuspend | kLean | kWhole | kFour | kFoldIssues,
                     3 | kSuspend | kLean | kNoClock | kWhole | kFour | kFoldIssues | kDrains4,
                     3 | kSuspend | kLean | kWhole | kFour | kFoldIssues | kDrains4}) {
@@ -1872,7 +1872,6 @@ int main(int argc, char** argv) {
   run<kFold>(b, waits, values, dense, state, out);
   run<kRead>(b, waits, values, dense, state, out);
   //: the fold-expands rows and the packed rows first: their waits are their own forms', and a hang shows at once
-  run<kFold | kWhole | kFour | kFoldIssues>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kFour | kFoldIssues>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kWhole | kFour | kFoldIssues>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kFour | kFoldIssues | kDrains4>(b, waits, values, dense, state, out);
