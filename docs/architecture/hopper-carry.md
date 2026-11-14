@@ -73,11 +73,11 @@ window, and each entry's token and byte were computed, not read.
   many slots as its steps need. The readout likewise: a sparse digit's readers are `ceil(count / 16)` warp-rows, the
   last padded with a zero A. The step tables are a prefix sum of the counts, made once a window by the producers.
   OPEN: the cost of a window whose digits are unevenly full; a digit with no entry costs nothing.
-- ROWS THAT ARRIVE COLD. With real lists a window's tokens are its own, new to the cache each window. MEASURED on the
-  fold's side: 8,295 cycles a window against 6,273 with rows the cache holds, and 5,111 for the synthetic entries;
-  composed 9,650 with the readout still synthetic. Asking for a window's rows a window ahead by prefetch LOSES
-  (11,563). OPEN: the real loads issued two batches ahead, which needs registers the producers do not have at 104;
-  and two producers a box, which the lab measured as the faster fill on synthetic entries.
+- ROWS THAT ARRIVE COLD. With real lists a window's tokens are its own, new to the cache each window, and a
+  carry that gathers its entries from the tables itself pays for it; asking for a window's rows a window ahead by
+  prefetch loses. Whole entries landed from a stream do not: a window's stream is read by the 16 boxes that share
+  it, and it costs the carry the same whether the cache held it before or not; only a stream no box shares costs
+  more. The figures are [`lab/carry_window.md`](../lab/carry_window.md)'s.
 - THE SCALES. Every lab ran on small integers. The kernel multiplies a row's bytes by the row's fp32 scale and a
   value by its token's, carries a token's factor product, and issues one f16 line a token scaled by a power of two
   from a coarse bound (CONSTITUTION R17). None of this is measured on hopper; it is designed with the kernel and
@@ -89,9 +89,9 @@ window, and each entry's token and byte were computed, not read.
 At the hardest cell measured -- each side sparse on a different level, 256 by 256 leaves, 4 live digits a token --
 with no clock inside a role, the readout on synthetic readers in every figure
 ([`lab/carry_window.md`](../lab/carry_window.md)): 817 SM-cycles a token for the synthetic entries with every table
-in cache; 1,235 with the fold's entries gathered from lists by the carry itself, a window's own tokens; 727 with
-whole entries landed from a stream the cache holds and 967 from one past it, to which the stream's pass adds
-([`lab/gather_pass.md`](../lab/gather_pass.md)). The price is a figure whose bytes are not assumed in the cache
+in cache; some 1,230 with the fold's entries gathered from lists by the carry itself, a window's own tokens; some
+725 with whole entries landed from a stream its 16 boxes share, read before or not, to which the stream's pass
+adds ([`lab/gather_pass.md`](../lab/gather_pass.md)). The price is a figure whose bytes are not assumed in the cache
 (CONSTITUTION R22.2). The den is 5% of the window; the intra, a kernel of its own launched beside
 the carry, a fifth of it ([`lab/intra_window.md`](../lab/intra_window.md), [`lab/call_pair.md`](../lab/call_pair.md)).
 A dense side is unmeasured on hopper.
