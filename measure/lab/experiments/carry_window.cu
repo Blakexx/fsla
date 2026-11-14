@@ -237,7 +237,7 @@ enum Roles : long long {
   kDrains4 = 1ll << 33,
   //: THE READOUT A SUM A BOX: a chunk's steps on box 0's tiles add into one accumulator and those on box 1's into
   //: another -- two chains of 4 steps where one accumulator makes a chain of 8 -- summed a thread before the row is
-  //: rounded; 32 registers a readout thread more, the serve warpgroup's
+  //: rounded; 24 registers a readout thread more, the serve warpgroup's
   kTwoSums = 1ll << 34
 };
 template <long long ROLES>
@@ -310,10 +310,10 @@ constexpr int value_parts = ROLES & kFive ? kFiveParts : 1;
 //: more a thread are the fourth warpgroup's, as the wide and the big rows' are
 template <long long ROLES>
 constexpr int read_regs = (ROLES & kFive ? kFiveReadRegs : (ROLES & kLean) && (ROLES & (kDenSplit | kWide)) ? 88 : ROLES & kLean ? 80 : kReadRegs)
-                          + (ROLES & kTwoSums ? 32 : 0);
+                          + (ROLES & kTwoSums ? 24 : 0);
 template <long long ROLES>
 constexpr int serve_regs = ((ROLES & kLean) && (ROLES & (kWide | kDenSplit)) ? 104 : ROLES & kLean ? 112 : kServeRegs)
-                           - (ROLES & kTwoSums ? 32 : 0)
+                           - (ROLES & kTwoSums ? 24 : 0)
                            - ((ROLES & kWhole) == kWhole && (ROLES & kNoMath) == 0 && (ROLES & kFour) && (ROLES & kFoldIssues) ? 16 : 0);
 //: a fold that issues its own copies holds their addresses beside its state: 8 registers a thread more, the serve
 //: warpgroup's, whose warps hold no entry
