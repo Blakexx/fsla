@@ -602,6 +602,8 @@ __device__ __forceinline__ void produce_packed(uint8_t* smem, uint32_t base, lon
     const uint8_t* const stream = buffer + kPackedTable + at * kPackedRoom;
     //: the window's counts, its fold's before the window's first slot is ready
     if (lane < kLists) smem[kCountsAt + (2 * box + (w & 1)) * 16 + lane] = head[lane];
+    //: the counts' writers' edge, before this warp's next arrival at a barrier
+    lab::bulk_fence();
     const int total = static_cast<int>(*reinterpret_cast<const uint32_t*>(head + 16));
 #pragma unroll 1
     for (int s0 = 0; s0 < total; s0 += kSlotLists, ++uses) {
@@ -1625,7 +1627,13 @@ int main(int argc, char** argv) {
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     //: the ahead row's asks are in its binary: 6 a batch, at the producers' two sites
     if ((roles & kAhead) && (roles & kExpanded) != kExpanded) b.expect(k, "CCTL", ">=", 12);
-    b.expect(k, "HGMMA", "==",
+    //: the packed row's fold steps are a list's rolled loop: the toolkit lays a list's first step and its later ones
+    //: as two instructions, and one more at the loop's entry
+    if ((roles & kPacked) == kPacked) {
+      b.expect(k, "HGMMA", ">=", 2 * kSlotLists + (roles & kRead ? 2 * kChunkDigits : 0));
+      b.expect(k, "HGMMA", "<=", 4 * kSlotLists + 2 + (roles & kRead ? 2 * kChunkDigits : 0));
+    } else
+      b.expect(k, "HGMMA", "==",
              (roles & kFold ? 2 * kSlotLists + (roles & kDenFold ? kDenSteps : 0) : roles & kStill ? 0 : 1)
                  + (roles & kRead ? 2 * kChunkDigits : 0));
     if (roles & kRead) {
