@@ -211,10 +211,9 @@ constexpr int value_parts = ROLES & kFive ? kFiveParts : 1;
 //: the den's readout holds 4 more accumulators, column 64's set: at 80 the toolkit serializes its steps, and its 8
 //: more a thread are the fourth warpgroup's, as the wide and the big rows' are
 template <int ROLES>
-constexpr int read_regs = (ROLES & kLean) && (ROLES & kListed) && !(ROLES & kRead) ? 48 : ROLES & kFive ? kFiveReadRegs : (ROLES & kLean) && (ROLES & (kDenSplit | kWide)) ? 88 : ROLES & kLean ? 80 : kReadRegs;
+constexpr int read_regs = ROLES & kFive ? kFiveReadRegs : (ROLES & kLean) && (ROLES & (kDenSplit | kWide)) ? 88 : ROLES & kLean ? 80 : kReadRegs;
 template <int ROLES>
-constexpr int serve_regs = (ROLES & kLean) && (ROLES & kListed) && !(ROLES & kRead) ? 144
-                           : (ROLES & kLean) && (ROLES & (kWide | kDenSplit)) ? 104 : ROLES & kLean ? 112 : kServeRegs;
+constexpr int serve_regs = (ROLES & kLean) && (ROLES & (kWide | kDenSplit)) ? 104 : ROLES & kLean ? 112 : kServeRegs;
 static_assert(read_regs<kLean | kWide> + serve_regs<kLean | kWide> == kReadRegs + kServeRegs
               && read_regs<kLean | kBig> + serve_regs<kLean | kBig> == kReadRegs + kServeRegs);
 static_assert(read_regs<kLean | kDen> + serve_regs<kLean | kDen> == kReadRegs + kServeRegs);
@@ -222,8 +221,7 @@ static_assert(read_regs<kLean> + serve_regs<kLean> == kReadRegs + kServeRegs);
 template <int ROLES>
 //: the listed row's producers hold one batch: its places and its sparse words are 4 registers a thread two batches
 //: do not leave
-//: -- but where no readout runs: its warpgroup's registers are then the producers', and the listed row holds two
-constexpr int batches_held = (ROLES & kLean) && (!(ROLES & kListed) || !(ROLES & kRead)) ? 2 : 1;
+constexpr int batches_held = (ROLES & kLean) && !(ROLES & kListed) ? 2 : 1;
 
 //: the token of a (CTA, box, entry of the call), its value at a channel, its byte on its list's digit and on a
 //: dense leaf; a read coefficient at (read digit, fold digit, token): small integers
@@ -1323,14 +1321,11 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kNoClock | kBig, 3 | kSuspend | kLean | kNoClock | kBig | kTiledValues,
                     1 | kListed, 3 | kSuspend | kLean | kNoClock | kListed, 1 | kListed | kHot,
                     3 | kSuspend | kLean | kNoClock | kListed | kHot,
-                    3 | kSuspend | kLean | kNoClock | kListed | kAhead, 1 | kLean | kListed, 1 | kLean | kListed | kHot}) {
+                    3 | kSuspend | kLean | kNoClock | kListed | kAhead}) {
     const std::string k = lab::kernel("carry_window::window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     //: the ahead row's asks are in its binary: 6 a batch, at the producers' two sites
     if (roles & kAhead) b.expect(k, "CCTL", ">=", 12);
-    //: the two-batch listed producers: the toolkit orders some of a half's loads into the trip that reads them; the
-    //: rows are a probe of the loads' depth, their outputs checked
-    if ((roles & kLean) && (roles & kListed) && !(roles & kRead)) b.expect(k, "LOAD_IN_TRIP", "<=", 12);
     b.expect(k, "HGMMA", "==",
              (roles & kFold ? 2 * kSlotLists + (roles & kDenFold ? kDenSteps : 0) : roles & kStill ? 0 : 1)
                  + (roles & kRead ? 2 * kChunkDigits : 0));
@@ -1431,7 +1426,5 @@ int main(int argc, char** argv) {
   run<kFold | kListed | kHot>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kListed | kHot>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kListed | kAhead>(b, waits, values, dense, state, out);
-  run<kFold | kLean | kListed>(b, waits, values, dense, state, out);
-  run<kFold | kLean | kListed | kHot>(b, waits, values, dense, state, out);
   return 0;
 }
