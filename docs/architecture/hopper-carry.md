@@ -13,8 +13,10 @@ then the fold of the window's writes into the state.
 RULED, NOT BUILT; it supersedes this page's lists and its per-entry fills below, which are rewritten when the form
 is measured in the carry. The gather pass writes, for each sparse block of 16 digits -- the group of CTAs that share
 it -- A STREAM, packed: the block's live entries of a window, each digit's in token order, laid as the steps the
-carry runs. The steps are taken A ROUND AT A TIME -- every digit's first, then every digit's second -- 8 a slot,
-so a digit's two steps are never one behind the other in a slot; a slot's steps lie in the order of their digits. A digit's full steps of 16 entries are tiles as the fold's operand reads them; its last, part-filled
+carry runs. The steps are taken A ROUND AT A TIME -- every digit's first, then every digit's second -- a slot's
+worth at a time, a slot's lying in the order of their digits: where a round fills its slots a digit's two steps
+are in different slots; a window with few live digits has them in one, and the fold runs them one behind the
+other there. A digit's full steps of 16 entries are tiles as the fold's operand reads them; its last, part-filled
 step is stored TRUNCATED -- each brick only the entries it has -- and used where it lands, the operand's brick
 spacing taken at run time and its pads' coefficient lines zeroed in shared memory: no step's padding crosses
 global memory and no value line is moved in shared memory. An entry's values and its byte on its digit are shared
@@ -79,7 +81,8 @@ window, and each entry's token and byte were computed, not read.
   `ceil(count / 16)` steps into the same accumulator set, the last padded with entries whose coefficient lines are
   zero -- exact, since a zero coefficient adds nothing. A slot is 8 steps, whichever digits they are; a window is as
   many slots as its steps need. The readout likewise: a sparse digit's readers are `ceil(count / 16)` warp-rows, the
-  last padded with a zero A. The step tables are a prefix sum of the counts, made once a window by the producers.
+  last padded with a zero A. On the fold's side the stream's pass lays the steps and each slot's header (the
+  section above); the read side's tables are not designed.
   MEASURED in the lab at lists of 8 to 24 entries: a slot more a window ([`lab/carry_window.md`](../lab/carry_window.md)).
 - ROWS THAT ARRIVE COLD. With real lists a window's tokens are its own, new to the cache each window, and a
   carry that gathers its entries from the tables itself pays for it; asking for a window's rows a window ahead by
@@ -99,8 +102,8 @@ on a different level, 256 by 256 leaves, 4 live digits a token -- with the reado
 holds the numbers, which follow the card a session ran on. Their order: whole entries landed from a stream its 16
 boxes share, read before or not, cost the least; the carry gathering its entries from lists itself some two
 thirds more; a stream no box shares more again. THOSE ARE AT 16 ENTRIES A LIST. With the stream as ruled and its
-lists uneven, 8 to 24, the fold's side takes a slot more a window and the window nearly doubles: raggedness is the
-carry's largest open cost in any form. To each the stream's pass adds ([`lab/gather_pass.md`](../lab/gather_pass.md)).
+lists uneven, 8 to 24, a window is half again as many steps and costs more than that in proportion; what binds
+it is not isolated. Raggedness is the carry's largest open cost in any form. To each the stream's pass adds ([`lab/gather_pass.md`](../lab/gather_pass.md)).
 The den is 5% of the window; the intra, a kernel of its own launched beside the carry, a fifth of it
 ([`lab/intra_window.md`](../lab/intra_window.md), [`lab/call_pair.md`](../lab/call_pair.md)). A dense side is
 unmeasured on hopper.
@@ -112,7 +115,7 @@ NOT STATED. No blackwell carry is designed and no blackwell card measured.
 ## To be ruled before it is built
 
 1. The padding form: zero coefficient lines for a short list's last step, a zero A for a short reader row.
-2. The step tables made by the producer warps once a window from the facts pass's counts.
+2. The read side's step tables: who makes them, from what.
 3. The carry's price taken at the cold figure, the kernel built to that and the open staging questions measured in
    it.
 4. The build's order: the facts pass from masks; the carry skeleton with real lists, exact against the oracle at one
