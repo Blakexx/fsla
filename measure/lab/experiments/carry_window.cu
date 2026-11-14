@@ -620,7 +620,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
 
 //: THE PACKED row's PRODUCER WARP, one a box. A window's step records and slot headers are loaded A WINDOW AHEAD,
 //: a lane a record. A slot's copies -- a lane a step, one bulk copy of its own size to its tile -- are issued
-//: `slots_ahead` slots before the slot is expanded: the four-slot row's two ahead, so a slot's bytes land behind two
+//: `slots_ahead` slots before the slot is expanded (`kOn`): the four-slot row's two ahead, so a slot's bytes land behind two
 //: slots' expanding. A slot's trip: the copies of the slot that far on; its own header to the fold; the wait on its
 //: bytes; its entries, a lane an entry -- its landed dense line by its sparse byte, to its two coefficient lines; a
 //: pad's lines zero; and of a truncated step, every line its operand's bricks reach past its entries -- its landed
@@ -628,8 +628,12 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
 template <int ROLES>
 __device__ __forceinline__ void produce_packed(uint8_t* smem, uint32_t base, long long* times, const uint32_t* values,
                                                int windows) {
-  constexpr int kT = slot_tiles<ROLES>, kS = box_slots<ROLES>, kAhead = slots_ahead<ROLES>;
-  const int lane = threadIdx.x & 31, box = (threadIdx.x - kProduceAt) >> 5;
+  constexpr int kT = slot_tiles<ROLES>, kS = box_slots<ROLES>, kOn = slots_ahead<ROLES>;
+  //: TWO PRODUCERS A BOX (the four-slot row with the serve warps all producing): the call's even slots are one's
+  //: and its odd ones the other's, so the slot two on is each one's own next
+  constexpr int kPer = producers_of<ROLES>;
+  static_assert(kPer == 1 || kOn == kPer);
+  const int lane = threadIdx.x & 31, mine = (threadIdx.x - kProduceAt) >> 5, box = mine / kPer, part = mine % kPer;
   const uint32_t bars = base + kBarsAt, key = (blockIdx.x * 2 + box) % kColumns;
   const uint8_t* const buffer = reinterpret_cast<const uint8_t*>(values);
   const auto head_of = [&](int w) { return buffer + (static_cast<long long>(key) * kCallWindows + w % kCallWindows) * kPackedHead; };
@@ -667,7 +671,8 @@ __device__ __forceinline__ void produce_packed(uint8_t* smem, uint32_t base, lon
   clock.start();
   //: the call's first slots' copies, as far ahead as every later slot's
 #pragma unroll
-  for (int a = 0; a < kAhead; ++a) issue(record_next, stream_of(0), a, a);
+  for (int a = 0; a < kOn; ++a)
+    if (__any_sync(0xffffffffu, a % kPer == part)) issue(record_next, stream_of(0), a, a);
 #pragma unroll 1
   for (int w = 0; w < windows; ++w) {
     const uint32_t slots = slots_next;
@@ -681,9 +686,15 @@ __device__ __forceinline__ void produce_packed(uint8_t* smem, uint32_t base, lon
     uint32_t i = 0;
 #pragma unroll 1
     do {
-      //: THE ISSUE EDGE: the slot `kAhead` on -- this window's, or the first of the next's; none past the call
-      if (__any_sync(0xffffffffu, i + kAhead < slots)) issue(record, stream_of(w), i + kAhead, uses + kAhead);
-      else if (__any_sync(0xffffffffu, w + 1 < windows)) issue(record_next, stream_of(w + 1), i + kAhead - slots, uses + kAhead);
+      //: a slot is one producer's: the other's trip is its counts alone
+      if (__any_sync(0xffffffffu, static_cast<int>(uses % kPer) == part)) {
+      //: THE ISSUE EDGE: the slot `kOn` on -- this window's, or one of the next's first; none past the call. One
+      //: body: whose records and stream it reads is a select
+      const bool here = i + kOn < slots;
+      uint2 of;
+      of.x = here ? record.x : record_next.x, of.y = here ? record.y : record_next.y;
+      if (__any_sync(0xffffffffu, here || w + 1 < windows))
+        issue(of, stream_of(here ? w : w + 1), here ? i + kOn : i + kOn - slots, uses + kOn);
       const uint32_t q = uses % kS, use = uses / kS;
       uint8_t* const tiles = smem + 2 * box * kPoolBytes + q * kT * kTile;
       const uint32_t n = entries_of(record, i);
@@ -736,6 +747,7 @@ __device__ __forceinline__ void produce_packed(uint8_t* smem, uint32_t base, lon
       lab::bulk_fence();
       __syncwarp();
       if (lane == 0) lab::mbar_arrive(slot_bar<ROLES>(bars, 0, box, q));
+      }
       ++uses;
       ++i;
     } while (__any_sync(0xffffffffu, i < slots));
@@ -1554,6 +1566,9 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
           : ROLES & kStill ? i > kFoldSites : ROLES & kFold || i != 1)
         b.record(name + ": " + (ROLES & kSelf && i == kFoldSites + 1 ? "a readout warp draining its own rows" : sites[i].name),
                  "cycles a window a warp", waited_at[i]);
+  //: the whole-entry rows' fold alone: what its fold warps wait on their producer
+  if ((ROLES & 3) == kFold && (ROLES & kWhole) == kWhole && !(ROLES & kNoClock))
+    b.record(name + ": " + sites[1].name, "cycles a window a warp", waited_at[1]);
 }
 
 //: A CALL'S BUFFERS: the replicated tables, token-major and the values' tile-major twin, the state, the output and
@@ -1729,7 +1744,7 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kNoClock | kListed | kHot,
                     3 | kSuspend | kLean | kNoClock | kListed | kAhead, 1 | kExpanded,
                     3 | kSuspend | kLean | kNoClock | kExpanded, 1 | kWhole, 3 | kSuspend | kLean | kNoClock | kWhole,
-                    1 | kApart, 3 | kSuspend | kLean | kNoClock | kApart, 1 | kFresh, 3 | kSuspend | kLean | kNoClock | kFresh, 1 | kPacked, 3 | kSuspend | kLean | kNoClock | kPacked, 1 | kPacked | kFour, 3 | kSuspend | kLean | kNoClock | kPacked | kFour}) {
+                    1 | kApart, 3 | kSuspend | kLean | kNoClock | kApart, 1 | kFresh, 3 | kSuspend | kLean | kNoClock | kFresh, 1 | kPacked, 3 | kSuspend | kLean | kNoClock | kPacked, 1 | kPacked | kFour, 3 | kSuspend | kLean | kNoClock | kPacked | kFour, 1 | kPacked | kFour | kSelf}) {
     const std::string k = lab::kernel("carry_window::window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     //: the ahead row's asks are in its binary: 6 a batch, at the producers' two sites
@@ -1776,6 +1791,7 @@ int main(int argc, char** argv) {
   run<kFold>(b, waits, values, dense, state, out);
   run<kRead>(b, waits, values, dense, state, out);
   //: the packed rows first: their loops' trips are data, and a first run's hang shows at once
+  run<kFold | kPacked | kFour | kSelf>(b, waits, values, dense, state, out);
   run<kFold | kPacked | kFour>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kPacked | kFour>(b, waits, values, dense, state, out);
   run<kFold | kPacked>(b, waits, values, dense, state, out);
