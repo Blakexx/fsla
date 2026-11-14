@@ -579,7 +579,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
           const uint4 landed = *reinterpret_cast<const uint4*>(raw + k * 16);
           const float weight = static_cast<float>(raw[16 * kEntries + k]);
           const uint32_t word[4] = {landed.x, landed.y, landed.z, landed.w};
-          uint4 line[2];
+          //: a line at a time, stored before the next is made: a fold thread has few registers past its state
 #pragma unroll
           for (int h = 0; h < 2; ++h) {
             uint32_t pair[4];
@@ -588,11 +588,8 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
               const uint32_t two = word[2 * h + c / 2] >> (16 * (c & 1));
               pair[c] = lab::bf16x2_round(weight * static_cast<float>(two & 255u), weight * static_cast<float>(two >> 8 & 255u));
             }
-            line[h] = make_uint4(pair[0], pair[1], pair[2], pair[3]);
+            *reinterpret_cast<uint4*>(raw + k * 16 + h * kBrick) = make_uint4(pair[0], pair[1], pair[2], pair[3]);
           }
-          const int lead = j & 1;
-          *reinterpret_cast<uint4*>(raw + k * 16 + lead * kBrick) = lead ? line[1] : line[0];
-          *reinterpret_cast<uint4*>(raw + k * 16 + (lead ^ 1) * kBrick) = lead ? line[0] : line[1];
           lab::bulk_fence();
           lab::bar_sync(kPoolId + box, kGroup);
         } else if constexpr (ROLES & kSleep) slept(kPoolId + 2 * box + slot, kPoolCount, on_fill);
@@ -1800,6 +1797,8 @@ int main(int argc, char** argv) {
     //: a packed producer's statement of a later slot's bytes follows its store of its own slot's header: the fold
     //: reads the header behind the slot's arrival, which the fence precedes
     if ((roles & kPacked) == kPacked && !(roles & kRead)) b.expect(k, "STORE_UNFENCED", "<=", 1);
+    //: the fold-expands rows' conversions are in the fold's own trip, beside its steps: what the rows measure
+    if ((roles & kWhole) == kWhole && (roles & kPacked) != kPacked && (roles & kFour)) b.expect(k, "STEP_XU", "<=", 40);
     if (roles & kRead) {
       //: the readout's panel is read by the drain warps' own loads, not by a step: its arrival needs no fence
       //: nor does the wide row's scratch, which only its own warp's loads read
