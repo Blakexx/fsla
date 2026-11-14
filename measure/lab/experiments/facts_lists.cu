@@ -11,13 +11,16 @@
 // lists) or the lists too. Each is timed with every table in cache -- a call's rounds over the same windows -- and
 // ONCE-READ, a round a fresh window; at a cell of 4 to 5 live digits a token and at one of 32. Every count and
 // entry of the first round is checked against the host's. A third call is THE GATHER PASS that feeds the carry
-// (docs/lab/carry_window.md): no list is written; each live (token, digit) pair's values, its byte on the digit
-// and its dense row are moved to its slot of its digit's steps of 16, in the layout the carry lands -- a load and
-// a store a line, 25 lines a pair -- every line checked, each byte of the tables its own position's.
+// (docs/lab/carry_window.md) IN ITS PLAINEST FORM: no list is written; each live (token, digit) pair's values, its
+// byte on the digit and its dense row are moved to its slot of its digit's steps of 16, a step 393 lines of this
+// lab's own layout -- a load and a store a line, 25 lines a pair -- every line checked, each byte of the tables its
+// own position's. Its working set is past the cache in either mode: its rows are named by their windows.
 // TIMELINE: no MMA and no staged operand: the mask's two loads (or the rows' 16) are a thread's first act of a
 // round, used in it. A thread's round: those loads; a shared-memory atomic a live digit; the barrier; a digit's 32
 // words summed by its thread, the offsets' scan (5 shuffles a warp, 8 totals); the barrier; a store a live digit.
-// Live: a thread's 8 mask words.
+// Live: a thread's 8 mask words. THE GATHER CALL'S last phase, a live digit a trip: 8 loads of the token's value
+// lines and a store each, a byte, 16 loads of its dense row's lines and a store each -- EVERY LOAD USED IN ITS OWN
+// TRIP, none a stage ahead (declared: `LOAD_IN_TRIP`), a line live at a time. It is the form `gather_pass` replaces.
 // see docs/internals/tools/lab.md#facts-lists
 #include "lab.cuh"
 
@@ -199,7 +202,7 @@ int main(int argc, char** argv) {
     b.expect(k, "LOAD_IN_TRIP", "<=", 256);
   }
   if (b.expect_only) return 0;
-  constexpr int kRounds = 8;
+  constexpr int kRounds = 16;
   const int windows = b.sms;
   const size_t all_windows = static_cast<size_t>(windows) * kRounds, tokens = all_windows * kWindow;
   uint4 *dmask = nullptr, *drows = nullptr;
@@ -307,7 +310,8 @@ int main(int argc, char** argv) {
                                                          fresh ? windows : 0, dvalues, ddense, darranged, max_steps);
             },
             [&] { return b.span(kThreads >> 5) / kRounds / kWindow; });
-        const std::string timed = name + (fresh ? ", the tables once-read" : ", the tables in cache");
+        const std::string timed = name + (call == kGather ? (fresh ? ", a fresh window a round" : ", its rounds the same windows")
+                                                          : (fresh ? ", the tables once-read" : ", the tables in cache"));
         b.unchecked(timed, "the row above checks this kernel's first round; this one is its time");
         b.record(timed, "SM-cycles a token", cycles);
       }

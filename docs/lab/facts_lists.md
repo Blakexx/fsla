@@ -24,12 +24,14 @@ are written -- or the LISTS too. Each is timed with every table in cache (a call
 windows) and ONCE-READ (a round a fresh window: 2.2 million tokens, 540 MB of rows), at a cell of 4 to 5 live
 digits a token and at one of 32. Every count and entry of the first round is checked against the host's.
 
-THE GATHER PASS (a third call). With the carry landing whole entries by bulk copy
-([`carry_window`](carry_window.md)), no list is written to global memory: the pass that makes a window's lists is
-the pass that gathers. For each live (token, digit) pair it moves the token's 8 value lines, its byte on the digit
-and its dense row's 16 blocks to its slot of its digit's steps of 16 entries, in the layout the carry lands -- 393
-lines a step; nothing is computed -- and writes each digit's count. A load and a store a line, unstaged, a thread a
-token. Every arranged line is checked, each byte of the tables its own position's.
+THE GATHER PASS IN ITS PLAINEST FORM (a third call). With the carry landing whole entries by bulk copy
+([`carry_window`](carry_window.md)), the pass that turns the mask around can move the DATA: for each live (token,
+digit) pair, the token's 8 value lines, its byte on the digit and its dense row's 16 blocks, to its slot of its
+digit's steps of 16 entries -- a step 393 lines, a layout of this call's own, not the tile the carry lands. A load
+and a store of global memory a line, each load used in its own trip, a thread a token. Every arranged line is
+checked, each byte of the tables its own position's. Its tables and what it writes are past the cache in either
+mode, so its rows are named by their windows, not by a cache. The form that moves the same lines in shared memory
+between bulk copies, and the flat stream that is its floor, are [`gather_pass`](gather_pass.md).
 
 MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance 60599125, driver 595.91.07; 2026-11-14, the experiment at
 1b43da74; 7 repetitions; every count, entry and arranged line of each form's first round exact; the median,
