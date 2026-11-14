@@ -1576,7 +1576,6 @@
   {"doc": "docs/lab/facts_lists.md", "pinned_at": "2914c9602ea1", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
   {"doc": "docs/lab/facts_lists.md", "pinned_at": "f93be08e8574", "reviewed": true, "sha256": "", "target": "docs/lab/carry_window.md"},
   {"doc": "docs/lab/facts_lists.md", "pinned_at": "95672f936f50", "reviewed": true, "sha256": "", "target": "docs/lab/gather_pass.md"},
-  {"doc": "docs/lab/facts_lists.md", "pinned_at": "1b43da74cac9", "reviewed": true, "sha256": "", "target": "docs/lab/slot_sum.md"},
   {"doc": "docs/lab/facts_lists.md", "pinned_at": "2914c9602ea1", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/facts_lists.cu"},
   {"doc": "docs/lab/facts_lists.md", "pinned_at": "f93be08e8574", "reviewed": true, "sha256": "", "target": "measure/lab/results/facts_lists/sm_90a.json"},
   {"doc": "docs/lab/facts_two.md", "pinned_at": "83d7b4df5928", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},

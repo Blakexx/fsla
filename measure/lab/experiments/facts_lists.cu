@@ -32,8 +32,8 @@ constexpr int kWindow = 1024, kThreads = kWindow, kWarps = kThreads / 32, kDigit
 constexpr int kWordsAt = 0, kBeforeAt = kWordsAt + kWarps * kDigits * 4, kOffsetsAt = kBeforeAt + kWarps * kDigits * 2,
               kTotalsAt = kOffsetsAt + kDigits * 4, kSmemBytes = kTotalsAt + 8 * 4;
 enum Form : int { kMask = 0, kValues = 1 };
-//: `kGather`: the pass that feeds the carry -- no list is written; each live (token, digit) pair's DATA is moved to
-//: its place in its digit's steps of 16 entries, as the carry lands them
+//: `kGather`: no list is written; each live (token, digit) pair's DATA is moved to its place in its digit's steps of
+//: 16 entries, a step this call's own layout
 enum Call : int { kCounts = 0, kLists = 1, kGather = 2 };
 //: A STEP of the arranged buffer, in lines of 16 bytes: 8 value bricks of 17 lines -- line `k` of brick `b` entry
 //: k's channels `8 b` on -- then a line of the 16 entries' sparse bytes, then the dense level's 16 blocks, 16 lines

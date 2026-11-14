@@ -11,13 +11,17 @@
 // block's rows of the window (16 KB) and walks every step, 192 a unit, 16 times. A pad's lines are zero: token
 // 1,024 is a zero line after each table. Each plane is timed at 256, 512 and 1,024 threads, moved and as a flat
 // stream, its rounds the same windows or a fresh window a round, at 4 to 5 live digits a token and at 32. Every
-// line and pad of the first round is checked, each byte of the tables its own position's.
-// TIMELINE: no MMA. A trip is a unit. Thread 0 issues the copy out of the unit before (its lines fenced), then the
-// copies in of the unit AFTER this one -- its step list and, when it opens a block, the block's rows -- a unit
-// ahead of their use; every thread waits on this unit's barriers and moves its lines, shared to shared; thread 0
-// waits until one copy out is in flight, and the CTA's barrier. Three buffers out in turn: the one being filled,
-// the one being copied, the one whose copy the wait saw done. A window's values are asked at its first trip and
-// used a trip later. Live: a unit's coordinates.
+// line and pad of the first round is checked, each byte of the tables its own position's. TWO CONTROLS say what
+// binds a flat stream that costs what the moved form does: the same kernels on A QUARTER of the multiprocessors
+// (the card's memory, if a CTA's cycles fall), and the dense plane with SIX buffers out of half the size, four
+// copies out in flight where three buffers allow one (a CTA's own queue, if they fall).
+// TIMELINE: no MMA. A trip is a unit. Thread 0 issues the copy out of the unit before (each writer fenced its own
+// lines before the barrier), then the copies in of the unit AFTER this one -- its step list and, when it opens a
+// block, the block's rows -- a unit ahead of their use; every thread waits on this unit's barriers, moves its
+// lines shared to shared and fences them; thread 0 waits until all but the last `D - 2` copies out are done, and
+// the CTA's barrier. `D` buffers out in turn (3; the dense plane's also 6): the one being filled, the one being
+// copied, and those whose copies may be in flight. A window's values are asked at its first trip and used a trip
+// later. Live: a unit's coordinates.
 // see docs/internals/tools/lab.md#gather-pass
 #include "lab.cuh"
 
@@ -105,7 +109,6 @@ __global__ void __launch_bounds__(THREADS, 1)
       //: THE ISSUE EDGE: the unit before's tiles out, the unit after's list and rows in
       if (tid == 0) {
         if (prev.steps) {
-          lab::bulk_fence();
           lab::bulk_store(wplane + static_cast<long long>(prev.step) * kTileLines, base + kOutAt + prev_slot * kOutBytes,
                           prev.steps * kTileLines * 16);
           lab::bulk_commit();
@@ -146,6 +149,8 @@ __global__ void __launch_bounds__(THREADS, 1)
                 reinterpret_cast<uint8_t*>(out + j * kTileLines + kSparseLine)[k] = sparse[token * 16 + (e >> 12)];
             }
           }
+          //: THE WRITERS' EDGE: each thread's own lines, before the barrier the copy out follows
+          lab::bulk_fence();
         }
       }
       if (tid == 0) lab::bulk_wait<1>();
@@ -169,26 +174,37 @@ __global__ void __launch_bounds__(THREADS, 1)
 
 // -------------------------------------------------------------------------------------------- the dense plane
 namespace dense {
-constexpr int kUnit = 192, kOutBytes = kUnit * 256;
-constexpr int kSrcAt = 0, kListAt = kSrcAt + 2 * kLevelBytes, kOutAt = kListAt + 2 * kUnit * 32,
-              kTotalAt = kOutAt + 3 * kOutBytes, kBarsAt = kTotalAt + 16, kSmemBytes = kBarsAt + 4 * 8;
+//: `D` buffers out share 576 steps of room: a unit 192 steps at 3, 96 at 6
+template <int D>
+constexpr int kUnit = 576 / D;
+template <int D>
+constexpr int kOutBytes = kUnit<D> * 256;
+constexpr int kSrcAt = 0, kListAt = kSrcAt + 2 * kLevelBytes;
+template <int D>
+constexpr int kOutAt = kListAt + 2 * kUnit<D> * 32;
+template <int D>
+constexpr int kTotalAt = kOutAt<D> + D * kOutBytes<D>;
+template <int D>
+constexpr int kBarsAt = kTotalAt<D> + 16;
+template <int D>
+constexpr int kSmemBytes = kBarsAt<D> + 4 * 8;
 enum Bar : int { kSource = 0, kList = 16 };
 
-//: the unit at step `s` of dense block `b`: the window's steps left, 192 at most, then the next block's first
-__device__ __forceinline__ Unit unit_at(int total, int b, int s) {
+//: the unit at step `s` of dense block `b`: the window's steps left, `unit` at most, then the next block's first
+__device__ __forceinline__ Unit unit_at(int total, int unit, int b, int s) {
   if (s >= total) ++b, s = 0;
   if (b >= kBlocks || total == 0) return {kBlocks, 0, 0};
-  return {b, s, min(kUnit, total - s)};
+  return {b, s, min(unit, total - s)};
 }
 
-template <int THREADS, int MOVE>
+template <int THREADS, int MOVE, int D>
 __global__ void __launch_bounds__(THREADS, 1)
     plane(long long* times, const uint4* rows, const uint4* lists, const uint32_t* firsts, uint4* out_plane, int rounds,
           int stride, int max_steps) {
   extern __shared__ __align__(128) uint8_t smem[];
   const int tid = threadIdx.x;
-  const uint32_t base = lab::smem(smem), bars = base + kBarsAt;
-  uint32_t* const total_at = reinterpret_cast<uint32_t*>(smem + kTotalAt);
+  const uint32_t base = lab::smem(smem), bars = base + kBarsAt<D>;
+  uint32_t* const total_at = reinterpret_cast<uint32_t*>(smem + kTotalAt<D>);
   if (tid < 2) reinterpret_cast<uint4*>(smem + kSrcAt + tid * kLevelBytes)[kWindow] = make_uint4(0, 0, 0, 0);
   if (tid == 0) {
 #pragma unroll
@@ -207,11 +223,11 @@ __global__ void __launch_bounds__(THREADS, 1)
     uint4* const wplane = out_plane + static_cast<long long>(blockIdx.x) * kBlocks * max_steps * 16;
     if (tid == 0) {
       *total_at = firsts[at * (kBlocks + 1) + kBlocks];
-      lab::bulk_wait<1>();
+      lab::bulk_wait<D - 2>();
     }
     __syncthreads();
     const int total = static_cast<int>(*total_at);
-    Unit prev{kBlocks, 0, 0}, cur{kBlocks, 0, 0}, next = unit_at(total, 0, 0);
+    Unit prev{kBlocks, 0, 0}, cur{kBlocks, 0, 0}, next = unit_at(total, kUnit<D>, 0, 0);
     uint32_t prev_slot = 0;
     bool opens = false;
 #pragma unroll 1
@@ -219,15 +235,14 @@ __global__ void __launch_bounds__(THREADS, 1)
       //: THE ISSUE EDGE: the unit before's lines out, the unit after's list and its block's rows in
       if (tid == 0) {
         if (prev.steps) {
-          lab::bulk_fence();
           lab::bulk_store(wplane + (static_cast<long long>(prev.block) * max_steps + prev.step) * 16,
-                          base + kOutAt + prev_slot * kOutBytes, prev.steps * 256);
+                          base + kOutAt<D> + prev_slot * kOutBytes<D>, prev.steps * 256);
           lab::bulk_commit();
         }
         if (next.steps) {
           const uint32_t slot = (list_n + 1) & 1u;
           lab::mbar_expect(bars + kList + 8 * slot, next.steps * 32);
-          lab::bulk_load(base + kListAt + slot * kUnit * 32, wlists + next.step * 2, next.steps * 32, bars + kList + 8 * slot);
+          lab::bulk_load(base + kListAt + slot * kUnit<D> * 32, wlists + next.step * 2, next.steps * 32, bars + kList + 8 * slot);
           if (next.block != cur.block) {
             const uint32_t level = (source_n + 1) & 1u;
             lab::mbar_expect(bars + kSource + 8 * level, kTiles * kBlockBytes);
@@ -244,23 +259,25 @@ __global__ void __launch_bounds__(THREADS, 1)
         lab::mbar_wait_suspended(bars + kList + 8 * (list_n & 1u), (list_n >> 1) & 1u);
         if (opens) lab::mbar_wait_suspended(bars + kSource + 8 * (source_n & 1u), (source_n >> 1) & 1u);
         if constexpr (MOVE == kMoved) {
-          const uint16_t* const list = reinterpret_cast<const uint16_t*>(smem + kListAt + (list_n & 1u) * kUnit * 32);
+          const uint16_t* const list = reinterpret_cast<const uint16_t*>(smem + kListAt + (list_n & 1u) * kUnit<D> * 32);
           const uint4* const src = reinterpret_cast<const uint4*>(smem + kSrcAt + (source_n & 1u) * kLevelBytes);
-          uint4* const out = reinterpret_cast<uint4*>(smem + kOutAt + (list_n % 3u) * kOutBytes);
+          uint4* const out = reinterpret_cast<uint4*>(smem + kOutAt<D> + (list_n % D) * kOutBytes<D>);
           //: A LINE an entry: its token's line of the block
 #pragma unroll 1
           for (int i = tid; i < cur.steps * 16; i += THREADS) out[i] = src[list[i] & kToken];
+          //: THE WRITERS' EDGE: each thread's own lines, before the barrier the copy out follows
+          lab::bulk_fence();
         }
       }
-      if (tid == 0) lab::bulk_wait<1>();
+      if (tid == 0) lab::bulk_wait<D - 2>();
       __syncthreads();
       opens = next.block != cur.block;
-      prev = cur, prev_slot = list_n % 3u;
+      prev = cur, prev_slot = list_n % D;
       cur = next;
       if (cur.steps) {
         ++list_n;
         source_n += opens;
-        next = unit_at(total, cur.block, cur.step + cur.steps);
+        next = unit_at(total, kUnit<D>, cur.block, cur.step + cur.steps);
       }
     }
   }
@@ -281,12 +298,13 @@ constexpr uint32_t digit_of(int cell, uint32_t x, int i) {
 int main(int argc, char** argv) {
   using namespace gather_pass;
   lab::Bench b(argc, argv);
-  for (const char* plane : {"gather_pass::values::plane", "gather_pass::dense::plane"})
-    for (int threads : {256, 512, 1024})
-      for (int move : {static_cast<int>(kFlat), static_cast<int>(kMoved)}) {
-        //: a unit is a trip: one thread's issue, every thread's waits, and a window's units a count of its data's
-        b.expect(lab::kernel(plane, {threads, move}), "LOOP_CONVERGENCE", "<=", 64);
-      }
+  for (int threads : {256, 512, 1024})
+    for (int move : {static_cast<int>(kFlat), static_cast<int>(kMoved)}) {
+      //: a unit is a trip: one thread's issue, every thread's waits, and a window's units a count of its data's
+      b.expect(lab::kernel("gather_pass::values::plane", {threads, move}), "LOOP_CONVERGENCE", "<=", 64);
+      b.expect(lab::kernel("gather_pass::dense::plane", {threads, move, 3}), "LOOP_CONVERGENCE", "<=", 64);
+      if (threads == 512) b.expect(lab::kernel("gather_pass::dense::plane", {threads, move, 6}), "LOOP_CONVERGENCE", "<=", 64);
+    }
   if (b.expect_only) return 0;
   constexpr int kRounds = 8, kMax = kMaxSteps<32>;
   const int windows = b.sms;
@@ -373,19 +391,23 @@ int main(int argc, char** argv) {
       }
       return std::to_string(wrong) + " of " + std::to_string(lines) + " arranged lines differ";
     };
-    const auto launch_values = [&](auto kernel, int threads, int rounds, int stride) {
-      kernel<<<windows, threads, values::kSmemBytes>>>(b.times, dvalues, drows, dlists, dfirsts, dvplane, rounds, stride, kMax);
+    const auto launch_values = [&](auto kernel, int blocks, int threads, int, int rounds, int stride) {
+      LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, values::kSmemBytes));
+      kernel<<<blocks, threads, values::kSmemBytes>>>(b.times, dvalues, drows, dlists, dfirsts, dvplane, rounds, stride, kMax);
     };
-    const auto launch_dense = [&](auto kernel, int threads, int rounds, int stride) {
-      kernel<<<windows, threads, dense::kSmemBytes>>>(b.times, ddense, dlists, dfirsts, ddplane, rounds, stride, kMax);
+    const auto launch_dense = [&](auto kernel, int blocks, int threads, int depth, int rounds, int stride) {
+      const int bytes = depth == 3 ? dense::kSmemBytes<3> : dense::kSmemBytes<6>;
+      LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));
+      kernel<<<blocks, threads, bytes>>>(b.times, ddense, dlists, dfirsts, ddplane, rounds, stride, kMax);
     };
-    const auto run = [&](auto launcher, auto kernel, bool is_values, int threads, int move) {
+    //: `quarter`: the CTAs of a quarter of the multiprocessors, the rest idle; `depth`: the buffers out
+    const auto run = [&](auto launcher, auto kernel, bool is_values, int threads, int move, bool quarter, int depth) {
+      const int blocks = quarter ? windows / 4 : windows;
       const std::string name = cell_name + ", " + (is_values ? "the values plane" : "the dense plane") + ", "
-                               + std::to_string(threads) + " threads, " + (move ? "its lines moved" : "a flat stream of its copies");
-      const auto launch = [&](int rounds, int stride) { launcher(kernel, threads, rounds, stride); };
-      LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                     is_values ? values::kSmemBytes : dense::kSmemBytes));
-      if (move) {
+                               + std::to_string(threads) + " threads, " + (move ? "its lines moved" : "a flat stream of its copies")
+                               + (depth == 6 ? ", six buffers out" : "") + (quarter ? ", a quarter of the multiprocessors" : "");
+      const auto launch = [&](int rounds, int stride) { launcher(kernel, blocks, threads, depth, rounds, stride); };
+      if (move && !quarter) {
         LAB_CHECK(cudaMemset(is_values ? dvplane : ddplane, 0xa5, is_values ? vplane_bytes : dplane_bytes));
         launch(1, 0);
         LAB_CHECK(cudaDeviceSynchronize());
@@ -394,23 +416,27 @@ int main(int argc, char** argv) {
       }
       for (int fresh = 0; fresh < 2; ++fresh) {
         const lab::Samples cycles = b.variant([&] { launch(kRounds, fresh ? windows : 0); },
-                                              [&] { return b.span(threads >> 5) / kRounds / kWindow; });
+                                              [&] { return b.span(threads >> 5, blocks) / kRounds / kWindow; });
         const std::string timed = name + (fresh ? ", a fresh window a round" : ", its rounds the same windows");
-        b.unchecked(timed, move ? "the row above checks this kernel's first round; this one is its time"
+        b.unchecked(timed, move ? "its kernel's first round is checked on every multiprocessor; this one is its time"
                                 : "a flat stream moves no line: its copies in and out are the floor");
         b.record(timed, "SM-cycles a token", cycles);
       }
     };
-    const auto both = [&](auto launcher, auto flat, auto moved, bool is_values, int threads) {
-      run(launcher, flat, is_values, threads, kFlat);
-      run(launcher, moved, is_values, threads, kMoved);
+    const auto both = [&](auto launcher, auto flat, auto moved, bool is_values, int threads, bool quarter, int depth) {
+      run(launcher, flat, is_values, threads, kFlat, quarter, depth);
+      run(launcher, moved, is_values, threads, kMoved, quarter, depth);
     };
-    both(launch_values, values::plane<256, kFlat>, values::plane<256, kMoved>, true, 256);
-    both(launch_values, values::plane<512, kFlat>, values::plane<512, kMoved>, true, 512);
-    both(launch_values, values::plane<1024, kFlat>, values::plane<1024, kMoved>, true, 1024);
-    both(launch_dense, dense::plane<256, kFlat>, dense::plane<256, kMoved>, false, 256);
-    both(launch_dense, dense::plane<512, kFlat>, dense::plane<512, kMoved>, false, 512);
-    both(launch_dense, dense::plane<1024, kFlat>, dense::plane<1024, kMoved>, false, 1024);
+    both(launch_values, values::plane<256, kFlat>, values::plane<256, kMoved>, true, 256, false, 3);
+    both(launch_values, values::plane<512, kFlat>, values::plane<512, kMoved>, true, 512, false, 3);
+    both(launch_values, values::plane<1024, kFlat>, values::plane<1024, kMoved>, true, 1024, false, 3);
+    both(launch_values, values::plane<512, kFlat>, values::plane<512, kMoved>, true, 512, true, 3);
+    both(launch_dense, dense::plane<256, kFlat, 3>, dense::plane<256, kMoved, 3>, false, 256, false, 3);
+    both(launch_dense, dense::plane<512, kFlat, 3>, dense::plane<512, kMoved, 3>, false, 512, false, 3);
+    both(launch_dense, dense::plane<1024, kFlat, 3>, dense::plane<1024, kMoved, 3>, false, 1024, false, 3);
+    both(launch_dense, dense::plane<512, kFlat, 3>, dense::plane<512, kMoved, 3>, false, 512, true, 3);
+    both(launch_dense, dense::plane<512, kFlat, 6>, dense::plane<512, kMoved, 6>, false, 512, false, 6);
+    both(launch_dense, dense::plane<512, kFlat, 6>, dense::plane<512, kMoved, 6>, false, 512, true, 6);
   }
   return 0;
 }
