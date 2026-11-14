@@ -49,10 +49,13 @@ One CTA a multiprocessor, two boxes a CTA, 512 threads at the multiprocessor's w
 
 | the role | threads | registers a thread | what it holds |
 |---|---|---|---|
-| a FOLD warpgroup a box, two | 128 each | 160 | the box's state, 16 accumulator sets of 8, and the den's set of 4 |
-| the READOUT warpgroup | 128 | 88 | a chunk's accumulator, 36 with the den's column; its A in two sets |
-| PRODUCER warps, one a box | 32 each | 104 | a batch of 32 entries |
-| DRAIN warps, two | 32 each | 104 | two batches of 8 tokens' lines |
+| a FOLD warpgroup a box, two | 128 each | 160 | the box's state, 16 accumulator sets of 8; it issues its own slots' copies and expands their coefficients where they land |
+| the READOUT warpgroup | 128 | 104 | a pass's two tile groups' sums, 64 a thread; its coefficients are in shared memory |
+| DRAIN warps, four | 32 each | 88 | batches of the panel's lines on their way to the output |
+
+NO PRODUCER WARP: a fold warpgroup waited on its one producer for most of a window, and expanding and issuing for
+itself it does not. The den in this form is NOT MEASURED: it was measured with the readout's A in registers (a
+ninth brick of each image tile, a 65th column of the readout's step), and is owed here.
 
 Every barrier wait is a suspending poll. Shared memory: two slots of pools a box, the two boxes' images (a tile 155
 lines, an odd count), two panels; under pressure the buffers' depths give way before the box
@@ -64,13 +67,14 @@ lines, an odd count), two panels; under pressure the buffers' depths give way be
    the readout's read of the window before: across its sparse digits where the two sides' carves differ, along one
    sparse digit's dense digits where they are equal (CONSTITUTION R17). The den's state is a ninth brick of each
    tile.
-2. THE READOUT. A chunk is 4 of the read side's sparse digits, 16 readers each. A readout warp expands its readers'
-   coefficients in its registers -- a reader's 16 dense bytes on a box by its byte on its sparse digit -- and they are
-   the A of the digit's step on each box's image tile, 72 columns wide; the 65th column is the den. The chunk's 64
-   rows go to a panel as f16 pairs and one fp32, and the drain warps add them to the output.
-3. THE FOLD. A producer warp fills a slot of 8 sparse digits' tiles: an entry's 64 values, and its 16 dense bytes by
-   its byte on its sparse digit. A fold warpgroup then runs the slot's steps, one a sparse digit's 16 entries, and
-   the den's two.
+2. THE READOUT, MIRRORED: its coefficients in shared memory and its tokens on the step's columns, as the fold's
+   are. A pass is 8 of the read side's sparse digits, 16 readers each, two tile groups: a thread expands a
+   reader's 16 dense bytes on a box by its byte on its sparse digit to a coefficient tile, and a digit's step is
+   an image tile by that tile. The pass's sums go to two panels as f16 pairs, and the drain warps add them to the
+   output.
+3. THE FOLD. A fold warpgroup issues a slot's copy from the stream a window ahead, as it leaves the slot; when it
+   has landed, a thread expands an entry's 16 dense bytes by its byte on its sparse digit where they lie, and the
+   warpgroup runs the slot's steps, one a sparse digit's 16 entries.
 
 ## What the lab did not have, and the kernel must
 
@@ -103,8 +107,8 @@ holds the numbers, which follow the card a session ran on. Their order: whole en
 boxes share, read before or not, cost the least; the carry gathering its entries from lists itself some two
 thirds more; a stream no box shares more again. THOSE ARE AT 16 ENTRIES A LIST. With the stream as ruled and its
 lists uneven, 8 to 24, a window is half again as many steps and costs more than that in proportion. At even lists
-the fold's side waits on its one producer warp a box for most of a window; the lab page holds what is and is not
-isolated on the uneven stream. To each the stream's pass adds ([`lab/gather_pass.md`](../lab/gather_pass.md)).
+the form above -- no producer, the readout mirrored, four drain warps -- is the least of the composed forms
+measured; the lab page holds what is and is not isolated on the uneven stream. To each the stream's pass adds ([`lab/gather_pass.md`](../lab/gather_pass.md)).
 The den is 5% of the window; the intra, a kernel of its own launched beside the carry, a fifth of it
 ([`lab/intra_window.md`](../lab/intra_window.md), [`lab/call_pair.md`](../lab/call_pair.md)). A dense side is
 unmeasured on hopper.
