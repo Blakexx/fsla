@@ -75,7 +75,8 @@
 // two on is each one's own next. That row is the fold's side alone and unchecked, as every fold-alone row is.
 // THE FOLD-EXPANDS rows' TIMELINE: a producer's slot is its 8 copies, issued when the fold frees the slot; a fold's
 // slot is the wait on those bytes, one landed line's load a thread, its rounds, two stores, the warpgroup's
-// barrier, then its 8 steps as one block.
+// barrier, then its 8 steps as one block. Live in the expansion beside the fold's 128 accumulators: the landed
+// line's 4 words, its weight and a line's 4 pairs.
 // see docs/internals/tools/lab.md#carry-window
 #include <chrono>
 
@@ -1828,7 +1829,8 @@ int main(int argc, char** argv) {
   float* const state = held.state;
   run<kFold>(b, waits, values, dense, state, out);
   run<kRead>(b, waits, values, dense, state, out);
-  //: the packed rows first: their loops' trips are data, and a first run's hang shows at once
+  //: the rows with the newest waits first -- the fold-expands rows, then the packed, whose loops' trips are data: a
+  //: first run's hang shows at once
   run<kFold | kWhole | kFour>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kFour>(b, waits, values, dense, state, out);
   run<kFold | kPacked | kFour | kSelf>(b, waits, values, dense, state, out);
