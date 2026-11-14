@@ -454,12 +454,17 @@ int main(int argc, char** argv) {
       kernel<<<blocks, threads, bytes>>>(b.times, ddense, dlists, dfirsts, ddplane, rounds, stride, kMax, out_stride);
     };
     //: `few`: 0 every multiprocessor's CTA; 1 a quarter of them, the rest idle; 8 or 16 that many CTAs, their planes
-    //: A RING each rewrites every round (in the cache: 16 regions are 19 MB at most) -- or, `few` negative, the same
-    //: CTAs writing A NEW REGION a round, past the cache; `depth`: the buffers out
+    //: A RING each rewrites every round -- or, `few` negative, the same CTAs writing A NEW REGION a round, eight
+    //: times the footprint; `depth`: the buffers out
     const auto run = [&](auto launcher, auto kernel, bool is_values, int threads, int move, int few, int depth) {
       const bool quarter = few == 1;
       const int blocks = few == 0 ? windows : quarter ? windows / 4 : few < 0 ? -few : few;
       const int out_stride = few < 0 ? blocks : 0;
+      //: a new region a round stays inside the planes, a region a multiprocessor of the card
+      if (blocks * (out_stride ? kRounds : 1) > windows) {
+        std::fprintf(stderr, "gather_pass: %d CTAs' regions over %d rounds do not fit this card's planes\n", blocks, kRounds);
+        std::exit(2);
+      }
       const std::string name = cell_name + ", "
                                + (stream ? (is_values ? "the stream's values and sparse lines" : "the stream's dense lines")
                                          : (is_values ? "the values plane" : "the dense plane")) + ", "

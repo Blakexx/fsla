@@ -36,65 +36,77 @@ block's 16 sparse bytes, 9 lines a token -- that the block's CTAs share; the den
 CTA's dense block of its sparse block's tokens is one run. No digit's step is padded in global memory. At 512
 threads, moved and flat, on every multiprocessor and on a quarter. THE RING: a carry's CTAs read one window's
 stream at a time, so the pass's planes can be a ring the cache holds. The stream's kernels on 16 and on 8
-multiprocessors, each CTA rewriting its own region every round (16 regions are 19 MB at most), beside the same
-CTAs writing a new region a round -- the same reads, the planes past the cache.
+multiprocessors, each CTA rewriting its own region every round, beside the same CTAs writing a new region a
+round: the same reads, eight times the planes' footprint (at the sparse cell 16 CTAs' rings are some 30 MB of a
+cache of 50 and their new regions 240; at 32 live digits neither fits).
 
-MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance 60612875, driver 580.173.02; 2026-11-14, the experiment at
-27b94614; 7 repetitions; every arranged line and pad of every moved form exact; the median, SM-cycles a
-token for one side's sparse level; every figure below is this one run's):
+MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance 60614444, driver 595.91.07; 2026-11-14, the experiment at
+46f4e03a; 7 repetitions; every arranged line and pad of every moved form exact on every multiprocessor; the
+median, SM-cycles a token for one side's sparse level; every figure below is this one run's):
 
 THE ARRANGED STEPS, by digit:
 
 | the cell | the plane | threads | a flat stream, a fresh window a round | its lines moved, a fresh window | moved, the same windows |
 |---|---|---|---|---|---|
-| 4 to 5 live digits a token | values | 256 | 141 | 160 | 160 |
-| 4 to 5 live digits a token | values | 512 | 142 | 160 | 160 |
-| 4 to 5 live digits a token | values | 1024 | 146 | 170 | 170 |
-| 4 to 5 live digits a token | dense | 256 | 194 | 197 | 196 |
-| 4 to 5 live digits a token | dense | 512 | 194 | 197 | 196 |
-| 4 to 5 live digits a token | dense | 1024 | 195 | 199 | 198 |
-| 32 live digits a token | values | 256 | 490 | 606 | 606 |
-| 32 live digits a token | values | 512 | 495 | 614 | 614 |
-| 32 live digits a token | values | 1024 | 510 | 687 | 687 |
-| 32 live digits a token | dense | 256 | 857 | 874 | 873 |
-| 32 live digits a token | dense | 512 | 858 | 875 | 872 |
-| 32 live digits a token | dense | 1024 | 862 | 881 | 879 |
+| 4 to 5 live digits a token | values | 256 | 141 | 155 | 155 |
+| 4 to 5 live digits a token | values | 512 | 134 | 153 | 152 |
+| 4 to 5 live digits a token | values | 1024 | 136 | 164 | 164 |
+| 4 to 5 live digits a token | dense | 256 | 130 | 141 | 140 |
+| 4 to 5 live digits a token | dense | 512 | 151 | 137 | 140 |
+| 4 to 5 live digits a token | dense | 1024 | 132 | 147 | 147 |
+| 32 live digits a token | values | 256 | 428 | 583 | 594 |
+| 32 live digits a token | values | 512 | 360 | 597 | 598 |
+| 32 live digits a token | values | 1024 | 391 | 679 | 679 |
+| 32 live digits a token | dense | 256 | 550 | 594 | 551 |
+| 32 live digits a token | dense | 512 | 480 | 577 | 551 |
+| 32 live digits a token | dense | 1024 | 474 | 593 | 585 |
 
 BOTH FORMS at 512 threads, a fresh window a round:
 
 | the cell | the plane | flat, every multiprocessor | flat, a quarter | moved, every multiprocessor | moved, a quarter |
 |---|---|---|---|---|---|
-| 4 to 5 live digits a token | values plane | 142 | 84 | 160 | 130 |
-| 4 to 5 live digits a token | dense plane | 194 | 89 | 197 | 111 |
-| 4 to 5 live digits a token | dense plane, six buffers out | 200 | 102 | 206 | 139 |
-| 4 to 5 live digits a token | stream's values and sparse lines | 102 | 60 | 111 | 83 |
-| 4 to 5 live digits a token | stream's dense lines | 127 | 62 | 132 | 84 |
-| 32 live digits a token | values plane | 495 | 299 | 614 | 581 |
-| 32 live digits a token | dense plane | 858 | 330 | 875 | 426 |
-| 32 live digits a token | dense plane, six buffers out | 898 | 357 | 950 | 526 |
-| 32 live digits a token | stream's values and sparse lines | 247 | 143 | 263 | 194 |
-| 32 live digits a token | stream's dense lines | 374 | 148 | 378 | 175 |
+| 4 to 5 live digits a token | values plane | 134 | 85 | 153 | 130 |
+| 4 to 5 live digits a token | dense plane | 151 | 89 | 137 | 111 |
+| 4 to 5 live digits a token | dense plane, six buffers out | 157 | 102 | 166 | 138 |
+| 4 to 5 live digits a token | stream's values and sparse lines | 97 | 61 | 101 | 83 |
+| 4 to 5 live digits a token | stream's dense lines | 87 | 63 | 98 | 84 |
+| 32 live digits a token | values plane | 360 | 270 | 597 | 578 |
+| 32 live digits a token | dense plane | 480 | 315 | 577 | 421 |
+| 32 live digits a token | dense plane, six buffers out | 608 | 342 | 667 | 528 |
+| 32 live digits a token | stream's values and sparse lines | 244 | 130 | 215 | 191 |
+| 32 live digits a token | stream's dense lines | 234 | 145 | 225 | 174 |
+
+THE STREAM ON A FEW MULTIPROCESSORS, 512 threads, a fresh window a round:
+
+| the cell | the plane | CTAs | flat, a ring | flat, a new region a round | moved, a ring | moved, a new region a round |
+|---|---|---|---|---|---|---|
+| 4 to 5 live digits a token | stream's values and sparse lines | 16 | 57.0 | 57.7 | 81.0 | 81.5 |
+| 4 to 5 live digits a token | stream's values and sparse lines | 8 | 55.9 | 56.9 | 80.5 | 81.0 |
+| 4 to 5 live digits a token | stream's dense lines | 16 | 55.8 | 56.6 | 81.5 | 81.9 |
+| 4 to 5 live digits a token | stream's dense lines | 8 | 55.2 | 55.9 | 81.0 | 81.8 |
+| 32 live digits a token | stream's values and sparse lines | 16 | 129.4 | 134.2 | 191.3 | 192.5 |
+| 32 live digits a token | stream's values and sparse lines | 8 | 122.6 | 132.2 | 190.9 | 191.7 |
+| 32 live digits a token | stream's dense lines | 16 | 143.5 | 143.6 | 172.8 | 172.7 |
+| 32 live digits a token | stream's dense lines | 8 | 144.2 | 144.4 | 172.6 | 172.8 |
 
 WHAT IT SHOWS.
-- THE STREAM COSTS 243 SM-CYCLES A TOKEN a side at 4 to 5 live digits a token (111 its values and sparse lines,
-  132 its dense lines) and 641 at 32; the arranged steps 357 and 1,489. On a quarter of the multiprocessors
-  the stream is 167 and 369. At 32 live digits it is 0.43 of the arranged steps: a token is in at most 16
-  sparse blocks however many of its digits are live.
-- THE COPIES ARE THE PRICE, in both forms. A flat stream of the same copies, no line moved, is nine tenths of
-  the moved form on every multiprocessor; the threads' count does not move it, and neither does a window the
-  cache has seen -- a window's tables and planes are past the cache in either mode.
-- THE CARD'S MEMORY BINDS THEM, NOT A CTA'S QUEUE. On a quarter of the multiprocessors a CTA's flat stream costs
-  0.59 and 0.46 of its cost with every multiprocessor at work (the arranged planes; 0.59 and 0.49 the
-  stream's). Six buffers out lose to three everywhere. With the card less loaded the moving of lines shows:
-  23 and 21 over the stream's flat forms.
-- THE STREAM IS NOT ITS BYTES' SHARE OF THE STEPS. At the sparse cell it writes 0.6 of the steps the arranged form
-  does (a block's tokens once each, no digit padded) and costs 0.68: both read the same tables, some 0.9 MB a
-  window, which the stream's smaller planes leave the larger part.
-- A PASS BOUND BY A CARD'S MEMORY IS PRICED BY ITS CARD: rented cards have read these kernels 20 to 40% apart, in
-  runs of different builds that this page does not compare.
-- WHAT IT DOES NOT SAY: the lists are the host's (a counts pass and the lists' making are priced by
-  [`facts_lists`](facts_lists.md), not here); the stream's token indices and mask slices are not written; the read
-  side's stream -- no values -- is not built; a dense level and a clustered one are unmeasured; the pass beside a
-  running carry, and the carry filling from the stream, are unmeasured.
+- THE STREAM COSTS 199 SM-CYCLES A TOKEN a side at 4 to 5 live digits a token with every multiprocessor at work
+  (101 its values and sparse lines, 98 its dense lines) and 441 at 32; the arranged steps 290 and 1,174.
+  At 32 live digits it is 0.38 of the arranged steps: a token is in at most 16 sparse blocks however many of
+  its digits are live.
+- WITH THE CARD UNLOADED IT IS 163, AND THERE IT IS ITS OWN CTA THAT BINDS. On 16 or on 8 multiprocessors the stream is
+  163 and 162 at the sparse cell (167 on a quarter of them), its flat form 113: the cost stops falling with
+  the load, and a third of it is the moving of lines.
+- A RING THE CACHE HOLDS BUYS NOTHING. At the sparse cell, where 16 CTAs' rings fit the cache and their new
+  regions do not, the two cost the same to a cycle a token (81.0 and 81.5; 81.5 and 81.9). What a loaded card
+  slows is not where the planes come to rest.
+- SIX BUFFERS OUT LOSE TO THREE everywhere (the arranged dense plane): a copy out half the size, twice as often,
+  costs more, and more of them in flight buys nothing. With the flat form at 114 thousand cycles a window for
+  some 2.7 MB in and out, a unit's trip -- its barrier, its list a unit ahead, its copy out waited on -- is the
+  suspect; no row here parts those.
+- WHAT IT DOES NOT SAY: the lists are the host's -- no pass that makes a block's live tokens, their indices and
+  their mask slices is built or priced anywhere -- and the stream's kernels write neither; the read side's stream
+  -- no values -- is not built; a dense level and a clustered one are unmeasured; the pass beside a running carry,
+  and the carry filling from the stream, are unmeasured; the same kernels on another rented card are not compared.
 
 Record: `measure/lab/results/gather_pass/sm_90a.json`.

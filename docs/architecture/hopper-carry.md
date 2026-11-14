@@ -18,8 +18,9 @@ each CTA takes its own segment as one run; with it go the token's index and its 
 A carry CTA's pools hold a view over its stream, and its fill places each token on its digits' steps in shared
 memory by that mask slice, a short list's pads made there: no step's padding crosses global memory. A counts pass
 sizes the streams. The workspace is the segment's ([`ARCHITECTURE.md` section 6](../ARCHITECTURE.md#6-the-kernels)).
-The read side's stream is the same without values, its token's index where the drain adds. The pass's two kernels
-are measured in [`lab/gather_pass.md`](../lab/gather_pass.md); the carry filling from the views is not.
+The read side's stream is the same without values, its token's index where the drain adds. The pass's two
+copying kernels are measured in [`lab/gather_pass.md`](../lab/gather_pass.md) from lists the host made; the pass
+that makes the lists, the indices and the mask slices, and the carry filling from the views, are not.
 
 ## What it is handed
 
