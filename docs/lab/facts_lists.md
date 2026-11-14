@@ -24,6 +24,13 @@ are written -- or the LISTS too. Each is timed with every table in cache (a call
 windows) and ONCE-READ (a round a fresh window: 2.2 million tokens, 540 MB of rows), at a cell of 4 to 5 live
 digits a token and at one of 32. Every count and entry of the first round is checked against the host's.
 
+THE GATHER PASS (a third call). With the carry landing whole entries by bulk copy
+([`carry_window`](carry_window.md)), no list is written to global memory: the pass that makes a window's lists is
+the pass that gathers. For each live (token, digit) pair it moves the token's 8 value lines, its byte on the digit
+and its dense row's 16 blocks to its slot of its digit's steps of 16 entries, in the layout the carry lands -- 393
+lines a step; nothing is computed -- and writes each digit's count. A load and a store a line, unstaged, a thread a
+token. Every arranged line is checked, each byte of the tables its own position's.
+
 MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance 60558804, driver 595.91.07; 2026-11-13, the experiment at
 f93be08e; 7 repetitions; every count and entry of each form's first round exact; the median, SM-cycles a token
 for one side's sparse level):

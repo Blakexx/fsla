@@ -10,7 +10,10 @@
 // 256 bytes, read from the tile-major rows the bundle holds. A call is the window's counts alone (what sizes its
 // lists) or the lists too. Each is timed with every table in cache -- a call's rounds over the same windows -- and
 // ONCE-READ, a round a fresh window; at a cell of 4 to 5 live digits a token and at one of 32. Every count and
-// entry of the first round is checked against the host's.
+// entry of the first round is checked against the host's. A third call is THE GATHER PASS that feeds the carry
+// (docs/lab/carry_window.md): no list is written; each live (token, digit) pair's values, its byte on the digit
+// and its dense row are moved to its slot of its digit's steps of 16, in the layout the carry lands -- a load and
+// a store a line, 25 lines a pair -- every line checked, each byte of the tables its own position's.
 // TIMELINE: no MMA and no staged operand: the mask's two loads (or the rows' 16) are a thread's first act of a
 // round, used in it. A thread's round: those loads; a shared-memory atomic a live digit; the barrier; a digit's 32
 // words summed by its thread, the offsets' scan (5 shuffles a warp, 8 totals); the barrier; a store a live digit.
@@ -26,7 +29,17 @@ constexpr int kWindow = 1024, kThreads = kWindow, kWarps = kThreads / 32, kDigit
 constexpr int kWordsAt = 0, kBeforeAt = kWordsAt + kWarps * kDigits * 4, kOffsetsAt = kBeforeAt + kWarps * kDigits * 2,
               kTotalsAt = kOffsetsAt + kDigits * 4, kSmemBytes = kTotalsAt + 8 * 4;
 enum Form : int { kMask = 0, kValues = 1 };
-enum Call : int { kCounts = 0, kLists = 1 };
+//: `kGather`: the pass that feeds the carry -- no list is written; each live (token, digit) pair's DATA is moved to
+//: its place in its digit's steps of 16 entries, as the carry lands them
+enum Call : int { kCounts = 0, kLists = 1, kGather = 2 };
+//: A STEP of the arranged buffer, in lines of 16 bytes: 8 value bricks of 17 lines -- line `k` of brick `b` entry
+//: k's channels `8 b` on -- then a line of the 16 entries' sparse bytes, then the dense level's 16 blocks, 16 lines
+//: each, line `k` entry k's 16 bytes of the block
+constexpr int kChannels = 64, kValueLines = 8 * 17, kSparseLine = kValueLines, kDenseLines = kSparseLine + 1,
+              kStepLines = kDenseLines + 16 * 16;
+//: a window's steps have room for every digit's last, part-filled one
+template <int LIVE>
+constexpr int kMaxSteps = kWindow * LIVE / 16 + kDigits;
 
 //: A CELL: token `x` has `live_of` live digits, a stride apart from a start its own
 constexpr int live_of(int cell, uint32_t x) { return cell == 0 ? 4 + (x % 3 == 0) : 32; }
@@ -44,7 +57,8 @@ __device__ __forceinline__ uint32_t nonzero4(uint32_t w) {
 template <int FORM, int CALL>
 __global__ void __launch_bounds__(kThreads, 1)
     window(long long* times, const uint4* masks, const uint4* rows, const uint32_t* bases, uint16_t* counts,
-           uint16_t* entries, int rounds, int stride) {
+           uint16_t* entries, int rounds, int stride, const uint4* values, const uint4* dense, uint4* arranged,
+           int max_steps) {
   extern __shared__ __align__(16) uint8_t smem[];
   const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
   uint32_t* const words = reinterpret_cast<uint32_t*>(smem + kWordsAt);
@@ -97,19 +111,21 @@ __global__ void __launch_bounds__(kThreads, 1)
         sum += static_cast<uint32_t>(__popc(words[w * kDigits + tid]));
       }
       counts[at * kDigits + tid] = static_cast<uint16_t>(sum);
-      if constexpr (CALL == kLists) {
-        uint32_t scan = sum;
+      if constexpr (CALL != kCounts) {
+        //: what is scanned: a digit's entries, or in the gather its steps of 16
+        const uint32_t mine = CALL == kGather ? (sum + 15) >> 4 : sum;
+        uint32_t scan = mine;
 #pragma unroll
         for (int step = 1; step < 32; step <<= 1) {
           const uint32_t up = __shfl_up_sync(0xffffffffu, scan, step);
           scan += lane >= step ? up : 0u;
         }
-        offsets[tid] = scan - sum;
+        offsets[tid] = scan - mine;
         if (lane == 31) totals[warp] = scan;
       }
     }
     __syncthreads();
-    if constexpr (CALL == kLists) {
+    if constexpr (CALL != kCounts) {
       //: AN ENTRY a live digit, the token: at its digit's offset -- its warp of digits' start and its place in it
       //: -- the count before its warp and the lanes before it
       uint32_t first[8];
@@ -119,17 +135,44 @@ __global__ void __launch_bounds__(kThreads, 1)
         first[w] = sum;
         sum += totals[w];
       }
-      const uint32_t base = bases[at];
+      if constexpr (CALL == kLists) {
+        const uint32_t base = bases[at];
 #pragma unroll
-      for (int w = 0; w < 8; ++w) {
-        uint32_t m = live[w];
+        for (int w = 0; w < 8; ++w) {
+          uint32_t m = live[w];
 #pragma unroll 1
-        while (m) {
-          const int d = 32 * w + __ffs(static_cast<int>(m)) - 1;
-          m &= m - 1;
-          const uint32_t place = first[w] + offsets[d] + before[warp * kDigits + d]
-                                 + static_cast<uint32_t>(__popc(words[warp * kDigits + d] & ((1u << lane) - 1u)));
-          entries[base + place] = static_cast<uint16_t>(tid);
+          while (m) {
+            const int d = 32 * w + __ffs(static_cast<int>(m)) - 1;
+            m &= m - 1;
+            const uint32_t place = first[w] + offsets[d] + before[warp * kDigits + d]
+                                   + static_cast<uint32_t>(__popc(words[warp * kDigits + d] & ((1u << lane) - 1u)));
+            entries[base + place] = static_cast<uint16_t>(tid);
+          }
+        }
+      } else {
+        //: THE GATHER: the token's place in its digit is step `place / 16`, slot `place % 16`; its 8 value lines,
+        //: its byte on the digit and its dense row's 16 blocks go to that slot's lines -- a load and a store each
+        uint4* const steps = arranged + static_cast<long long>(blockIdx.x) * max_steps * kStepLines;
+        const uint4* const value = values + token * (kChannels / 8);
+        const uint4* const block = dense + (token / kTile) * (kDigits * kTile / 16) + token % kTile;
+        const uint8_t* const row = reinterpret_cast<const uint8_t*>(rows) + (token / kTile) * (kDigits * kTile)
+                                   + (token % kTile) * 16;
+#pragma unroll
+        for (int w = 0; w < 8; ++w) {
+          uint32_t m = live[w];
+#pragma unroll 1
+          while (m) {
+            const int d = 32 * w + __ffs(static_cast<int>(m)) - 1;
+            m &= m - 1;
+            const uint32_t place = before[warp * kDigits + d]
+                                   + static_cast<uint32_t>(__popc(words[warp * kDigits + d] & ((1u << lane) - 1u)));
+            uint4* const to = steps + static_cast<long long>(first[w] + offsets[d] + (place >> 4)) * kStepLines + (place & 15);
+#pragma unroll
+            for (int b = 0; b < 8; ++b) to[b * 17] = value[b];
+            reinterpret_cast<uint8_t*>(to - (place & 15) + kSparseLine)[place & 15] = row[(d >> 4) * (kTile * 16) + (d & 15)];
+#pragma unroll
+            for (int b = 0; b < 16; ++b) to[kDenseLines + b * 16] = block[b * kTile];
+          }
         }
       }
       __syncthreads();
@@ -149,8 +192,14 @@ int main(int argc, char** argv) {
       //: a token's live digits are a loop a lane its own count of trips
       b.expect(k, "LOOP_CONVERGENCE", "<=", 64);
     }
+  {
+    const std::string k = lab::kernel("facts_lists::window", {kMask, kGather});
+    b.expect(k, "LOOP_CONVERGENCE", "<=", 64);
+    //: the gather is a load and a store a line, a live digit a trip: the pass's first form, unstaged
+    b.expect(k, "LOAD_IN_TRIP", "<=", 256);
+  }
   if (b.expect_only) return 0;
-  constexpr int kRounds = 16;
+  constexpr int kRounds = 8;
   const int windows = b.sms;
   const size_t all_windows = static_cast<size_t>(windows) * kRounds, tokens = all_windows * kWindow;
   uint4 *dmask = nullptr, *drows = nullptr;
@@ -161,6 +210,20 @@ int main(int argc, char** argv) {
   LAB_CHECK(cudaMalloc(&dbases, (all_windows + 1) * 4));
   LAB_CHECK(cudaMalloc(&dcounts, all_windows * kDigits * 2));
   LAB_CHECK(cudaMalloc(&dentries, tokens * 32 * 2));
+  //: THE GATHER'S: the values token-major and the dense level's rows tile-major, every byte its own position's,
+  //: and the arranged buffer, a window's steps a CTA's own region
+  constexpr uint32_t kValuesSalt = 0x9e3779b9u, kDenseSalt = 0x85ebca6bu;
+  const auto byte_at = [](uint32_t salt, size_t i) { return static_cast<uint8_t>((static_cast<uint32_t>(i) ^ salt) * 2654435761u >> 24); };
+  std::vector<uint8_t> hvalues(tokens * 2 * kChannels), hdense(tokens * kDigits);
+  for (size_t i = 0; i < hvalues.size(); ++i) hvalues[i] = byte_at(kValuesSalt, i);
+  for (size_t i = 0; i < hdense.size(); ++i) hdense[i] = byte_at(kDenseSalt, i);
+  uint4 *dvalues = nullptr, *ddense = nullptr, *darranged = nullptr;
+  LAB_CHECK(cudaMalloc(&dvalues, hvalues.size()));
+  LAB_CHECK(cudaMemcpy(dvalues, hvalues.data(), hvalues.size(), cudaMemcpyHostToDevice));
+  LAB_CHECK(cudaMalloc(&ddense, hdense.size()));
+  LAB_CHECK(cudaMemcpy(ddense, hdense.data(), hdense.size(), cudaMemcpyHostToDevice));
+  const size_t arranged_bytes = static_cast<size_t>(windows) * kMaxSteps<32> * kStepLines * 16;
+  LAB_CHECK(cudaMalloc(&darranged, arranged_bytes));
   for (int cell = 0; cell < 2; ++cell) {
     //: the mask, 8 words a token, and the level's rows tile-major; the host's lists of the first round's windows
     std::vector<uint32_t> mask(tokens * 8, 0);
@@ -188,11 +251,13 @@ int main(int argc, char** argv) {
     const auto run = [&](auto kernel, int form, int call) {
       const std::string name = std::string(cell == 0 ? "4 to 5 live digits a token" : "32 live digits a token") + ", "
                                + (form == kMask ? "the mask as handed" : "a value test of the rows") + ", "
-                               + (call == kCounts ? "a window's counts" : "a window's lists");
+                               + (call == kCounts ? "a window's counts" : call == kLists ? "a window's lists" : "a window's data gathered into its digits' steps");
       LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
       LAB_CHECK(cudaMemset(dentries, 0xff, checked * 2));
       LAB_CHECK(cudaMemset(dcounts, 0xff, static_cast<size_t>(windows) * kDigits * 2));
-      kernel<<<windows, kThreads, kSmemBytes>>>(b.times, dmask, drows, dbases, dcounts, dentries, 1, 0);
+      const int max_steps = kMaxSteps<32>;
+      kernel<<<windows, kThreads, kSmemBytes>>>(b.times, dmask, drows, dbases, dcounts, dentries, 1, 0, dvalues, ddense,
+                                                 darranged, max_steps);
       LAB_CHECK(cudaDeviceSynchronize());
       std::vector<uint16_t> got_counts(static_cast<size_t>(windows) * kDigits), got(checked);
       LAB_CHECK(cudaMemcpy(got_counts.data(), dcounts, got_counts.size() * 2, cudaMemcpyDeviceToHost));
@@ -204,16 +269,42 @@ int main(int argc, char** argv) {
         if (call == kLists)
           for (uint16_t e : want[l]) wrong += got[at++] != e;
       }
-      b.check(name, wrong_counts == 0 && wrong == 0,
+      long long wrong_lines = 0, lines = 0;
+      if (call == kGather) {
+        //: every entry's 8 value lines, sparse byte and 16 dense lines, where its digit's steps hold its slot
+        std::vector<uint8_t> out(arranged_bytes);
+        LAB_CHECK(cudaMemcpy(out.data(), darranged, arranged_bytes, cudaMemcpyDeviceToHost));
+        for (int w = 0; w < windows; ++w) {
+          size_t step = 0;
+          for (int d = 0; d < kDigits; ++d) {
+            const auto& list = want[static_cast<size_t>(w) * kDigits + d];
+            for (size_t e = 0; e < list.size(); ++e) {
+              const size_t x = static_cast<size_t>(w) * kWindow + list[e];
+              const uint8_t* const to = out.data() + ((static_cast<size_t>(w) * max_steps + step + e / 16) * kStepLines + e % 16) * 16;
+              for (int br = 0; br < 8; ++br, ++lines)
+                wrong_lines += std::memcmp(to + br * 17 * 16, hvalues.data() + x * 2 * kChannels + br * 16, 16) != 0;
+              ++lines;
+              wrong_lines += (to - (e % 16) * 16 + kSparseLine * 16)[e % 16]
+                             != tiled[(x / kTile) * (kDigits * kTile) + (d / 16) * (kTile * 16) + (x % kTile) * 16 + d % 16];
+              for (int bl = 0; bl < 16; ++bl, ++lines)
+                wrong_lines += std::memcmp(to + (kDenseLines + bl * 16) * 16,
+                                           hdense.data() + (x / kTile) * (kDigits * kTile) + bl * (kTile * 16) + (x % kTile) * 16, 16) != 0;
+            }
+            step += (list.size() + 15) / 16;
+          }
+        }
+      }
+      b.check(name, wrong_counts == 0 && wrong == 0 && wrong_lines == 0,
               std::to_string(wrong_counts) + " of " + std::to_string(got_counts.size()) + " counts"
                   + (call == kLists ? " and " + std::to_string(wrong) + " of " + std::to_string(checked) + " entries" : "")
+                  + (call == kGather ? " and " + std::to_string(wrong_lines) + " of " + std::to_string(lines) + " arranged lines" : "")
                   + " differ");
       for (int fresh = 0; fresh < 2; ++fresh) {
         //: the tables in cache: a call's rounds are the same windows; ONCE-READ: a round a fresh window
         const lab::Samples cycles = b.variant(
             [&] {
               kernel<<<windows, kThreads, kSmemBytes>>>(b.times, dmask, drows, dbases, dcounts, dentries, kRounds,
-                                                         fresh ? windows : 0);
+                                                         fresh ? windows : 0, dvalues, ddense, darranged, max_steps);
             },
             [&] { return b.span(kThreads >> 5) / kRounds / kWindow; });
         const std::string timed = name + (fresh ? ", the tables once-read" : ", the tables in cache");
@@ -225,6 +316,7 @@ int main(int argc, char** argv) {
     run(window<kMask, kLists>, kMask, kLists);
     run(window<kValues, kCounts>, kValues, kCounts);
     run(window<kValues, kLists>, kValues, kLists);
+    run(window<kMask, kGather>, kMask, kGather);
   }
   return 0;
 }
