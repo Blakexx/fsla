@@ -792,7 +792,10 @@ method is a procedure with a gate, not a memory.
    AROUND and nothing else -- a window's tokens by digit, in token order, and their counts: an entry is the token,
    with no byte, and a kernel reads a token's byte from its row with the rest of the token's data. RULED AND NOT
    BUILT: the pass this tree builds emits the heading's form (`docs/open-work.md`, row A-e); blackwell's form is
-   NOT STATED, no blackwell pass being designed.
+   NOT STATED, no blackwell pass being designed. THE CARRY'S LISTS ARE NOT EMITTED ON HOPPER (Blake, 2026-11-13,
+   the same day, later): the gather pass reads the masks, makes its lists in its own kernel and writes the carry's
+   stream and its tables (`docs/architecture/hopper-carry.md`); no separate pass hands the carry a list. Where the
+   factor products and the tile unions then come from is OPEN (row A-e).
 6. `[MACHINE]` CONVERSIONS RUN ON THE FMA PIPE: an fp32 to integer conversion is one FFMA adding 1.5 x 2^23 (the
    rounded integer in the low bits), a pair packed by one PRMT; the conversion unit (F2I/I2F/F2F/MUFU; on sm_86 16
    lanes a cycle an SM) never in a step. ON HOPPER (amended 2026-11-13) a step's trip keeps a conversion instruction
