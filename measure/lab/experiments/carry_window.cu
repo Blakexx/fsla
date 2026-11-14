@@ -67,9 +67,11 @@
 // THE PACKED rows are fed the stream as ruled: a column's entries laid as its lists' steps, the lists uneven (8 to 24
 // entries), a list's last step stored truncated and used where it lands, a step one bulk copy of its own size.
 // THE PACKED rows' TIMELINE: a producer loads a window's step records and slot headers A WINDOW AHEAD of their use
-// (a lane a record, a lane a header: 22 words held); a slot is its copies issued from those registers, its header
-// stored, the wait on its bytes, 4 trips of 32 entries -- a landed line's load, its rounds, two stores -- and the
-// arrival. A fold's slot is the wait, the header's three words, then each list's steps, a loop a list.
+// (a lane a record, a lane a header: 22 words held). Its trip is a slot: the copies of the slot `slots_ahead` on,
+// issued from those registers -- none ahead with two slots of 8 tiles a box, TWO SLOTS AHEAD with four of 4 -- its
+// own slot's header stored, the wait on its bytes, a trip of 32 entries a pair of tiles (a landed line's load, its
+// rounds, two stores), the arrival. A fold's slot is the wait, the header's three words, then each list's steps, a
+// loop a list.
 // see docs/internals/tools/lab.md#carry-window
 #include <chrono>
 
@@ -234,6 +236,10 @@ template <int ROLES>
 constexpr int slot_tiles = four<ROLES> ? 4 : 8;
 template <int ROLES>
 constexpr int box_slots = 16 / slot_tiles<ROLES>;
+//: the slots a packed producer issues copies ahead of the one it expands: with four slots a box, two -- the fold's,
+//: the producer's and two landing; with two, none
+template <int ROLES>
+constexpr int slots_ahead = box_slots<ROLES> - 2;
 //: a packed slot's barrier of `kind` (0 filled, 1 freed, 2 landed), `bars` the barriers' base
 template <int ROLES>
 __device__ __forceinline__ uint32_t slot_bar(uint32_t bars, int kind, int box, uint32_t q) {
@@ -613,17 +619,42 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
 }
 
 //: THE PACKED row's PRODUCER WARP, one a box. A window's step records and slot headers are loaded A WINDOW AHEAD,
-//: a lane a record. A slot: a lane a step -- one bulk copy of its own size to its tile -- then its header to the
-//: fold, then the slot's 128 entries, a lane an entry four times: its landed dense line by its sparse byte, to its
-//: two coefficient lines; a pad's lines zero; and of a truncated step, every line its operand's bricks reach past
-//: its entries -- its landed dense lines and sparse bytes, and what no copy of it wrote -- zeroed behind the read
+//: a lane a record. A slot's copies -- a lane a step, one bulk copy of its own size to its tile -- are issued
+//: `slots_ahead` slots before the slot is expanded: the four-slot row's two ahead, so a slot's bytes land behind two
+//: slots' expanding. A slot's trip: the copies of the slot that far on; its own header to the fold; the wait on its
+//: bytes; its entries, a lane an entry -- its landed dense line by its sparse byte, to its two coefficient lines; a
+//: pad's lines zero; and of a truncated step, every line its operand's bricks reach past its entries -- its landed
+//: dense lines and sparse bytes, and what no copy of it wrote -- zeroed behind the read
 template <int ROLES>
 __device__ __forceinline__ void produce_packed(uint8_t* smem, uint32_t base, long long* times, const uint32_t* values,
                                                int windows) {
+  constexpr int kT = slot_tiles<ROLES>, kS = box_slots<ROLES>, kAhead = slots_ahead<ROLES>;
   const int lane = threadIdx.x & 31, box = (threadIdx.x - kProduceAt) >> 5;
   const uint32_t bars = base + kBarsAt, key = (blockIdx.x * 2 + box) % kColumns;
   const uint8_t* const buffer = reinterpret_cast<const uint8_t*>(values);
   const auto head_of = [&](int w) { return buffer + (static_cast<long long>(key) * kCallWindows + w % kCallWindows) * kPackedHead; };
+  const auto stream_of = [&](int w) {
+    return buffer + kPackedTable + (static_cast<long long>(key) * kCallWindows + w % kCallWindows) * kPackedRoom;
+  };
+  //: a step's entries, the lane's of slot `j` of the window whose records are `of`: every lane takes the shuffle,
+  //: and the lanes past the slot's tiles hold no step
+  const auto entries_of = [&](const uint2& of, uint32_t j) {
+    const uint32_t taken = __shfl_sync(0xffffffffu, of.y, (static_cast<uint32_t>(kT) * j + static_cast<uint32_t>(lane)) & 31u);
+    return lane < kT ? taken : 0u;
+  };
+  //: THE COPIES of the call's slot `at`, slot `j` of the window whose records and stream these are: its pool slot
+  //: freed by the fold's steps of the slot a ring before, a lane a step
+  const auto issue = [&](const uint2& of, const uint8_t* stream, uint32_t j, uint32_t at) {
+    const uint32_t q = at % kS, use = at / kS;
+    if (use > 0) await<ROLES>(slot_bar<ROLES>(bars, 1, box, q), (use - 1) & 1);
+    const uint32_t first = __shfl_sync(0xffffffffu, of.x, (static_cast<uint32_t>(kT) * j + static_cast<uint32_t>(lane)) & 31u);
+    const uint32_t n = entries_of(of, j);
+    const uint32_t bytes = static_cast<uint32_t>(packed_lines(static_cast<int>(n))) * 16u;
+    const uint32_t all = __reduce_add_sync(0xffffffffu, bytes);
+    const uint32_t landed = slot_bar<ROLES>(bars, 2, box, q);
+    if (lane == 0) lab::mbar_expect(landed, all);
+    if (n) lab::bulk_load(base + 2 * box * kPoolBytes + (q * kT + lane) * kTile, stream + static_cast<long long>(first) * 16, bytes, landed);
+  };
   //: the window ahead's: its slots' count, a lane its step's record, a lane its slot's header
   uint32_t slots_next = *reinterpret_cast<const uint32_t*>(head_of(0));
   uint2 record_next = *reinterpret_cast<const uint2*>(head_of(0) + kPackedRecordsAt + 8 * lane);
@@ -634,10 +665,11 @@ __device__ __forceinline__ void produce_packed(uint8_t* smem, uint32_t base, lon
   uint32_t uses = 0;
   lab::WarpSpan clock;
   clock.start();
+  //: the call's first slots' copies, as far ahead as every later slot's
+#pragma unroll
+  for (int a = 0; a < kAhead; ++a) issue(record_next, stream_of(0), a, a);
 #pragma unroll 1
   for (int w = 0; w < windows; ++w) {
-    const uint8_t* const stream = buffer + kPackedTable
-                                  + (static_cast<long long>(key) * kCallWindows + w % kCallWindows) * kPackedRoom;
     const uint32_t slots = slots_next;
     const uint2 record = record_next;
     const uint4 header[2] = {header_next[0], header_next[1]};
@@ -649,21 +681,12 @@ __device__ __forceinline__ void produce_packed(uint8_t* smem, uint32_t base, lon
     uint32_t i = 0;
 #pragma unroll 1
     do {
-      const uint32_t q = uses % box_slots<ROLES>, use = uses / box_slots<ROLES>;
-      if (use > 0) await<ROLES>(slot_bar<ROLES>(bars, 1, box, q), (use - 1) & 1);
-      const uint32_t pool = 2 * box * kPoolBytes + q * slot_tiles<ROLES> * kTile;
-      uint8_t* const tiles = smem + pool;
-      //: A STEP a lane, the slot's tiles': its first line and its entries (none past the window's last), its bytes
-      const uint32_t from = (static_cast<uint32_t>(slot_tiles<ROLES>) * i + static_cast<uint32_t>(lane)) & 31u;
-      const uint32_t first = __shfl_sync(0xffffffffu, record.x, from);
-      //: every lane takes the shuffle; the lanes past the slot's tiles hold no step
-      const uint32_t taken = __shfl_sync(0xffffffffu, record.y, from);
-      const uint32_t n = lane < slot_tiles<ROLES> ? taken : 0u;
-      const uint32_t bytes = static_cast<uint32_t>(packed_lines(static_cast<int>(n))) * 16u;
-      const uint32_t all = __reduce_add_sync(0xffffffffu, bytes);
-      const uint32_t landed = slot_bar<ROLES>(bars, 2, box, q);
-      if (lane == 0) lab::mbar_expect(landed, all);
-      if (n) lab::bulk_load(base + pool + lane * kTile, stream + static_cast<long long>(first) * 16, bytes, landed);
+      //: THE ISSUE EDGE: the slot `kAhead` on -- this window's, or the first of the next's; none past the call
+      if (__any_sync(0xffffffffu, i + kAhead < slots)) issue(record, stream_of(w), i + kAhead, uses + kAhead);
+      else if (__any_sync(0xffffffffu, w + 1 < windows)) issue(record_next, stream_of(w + 1), i + kAhead - slots, uses + kAhead);
+      const uint32_t q = uses % kS, use = uses / kS;
+      uint8_t* const tiles = smem + 2 * box * kPoolBytes + q * kT * kTile;
+      const uint32_t n = entries_of(record, i);
       //: THE SLOT'S HEADER, one lane's store of each half: the lane that holds the slot's
 #pragma unroll
       for (int h = 0; h < 2; ++h) {
@@ -671,9 +694,9 @@ __device__ __forceinline__ void produce_packed(uint8_t* smem, uint32_t base, lon
                                       __shfl_sync(0xffffffffu, header[h].z, i), __shfl_sync(0xffffffffu, header[h].w, i));
         if (lane == h) *reinterpret_cast<uint4*>(smem + kHeadersAt + (4 * box + q) * kHeader + 16 * h) = mine;
       }
-      await<ROLES>(landed, use & 1);
+      await<ROLES>(slot_bar<ROLES>(bars, 2, box, q), use & 1);
 #pragma unroll
-      for (int o = 0; o < slot_tiles<ROLES> / 2; ++o) {
+      for (int o = 0; o < kT / 2; ++o) {
         //: the lane's entry `k` of the slot's tile `j`, a step of `nj` entries
         const int j = 2 * o + (lane >> 4), k = lane & 15;
         const uint32_t nj = __shfl_sync(0xffffffffu, n, j);
@@ -691,9 +714,9 @@ __device__ __forceinline__ void produce_packed(uint8_t* smem, uint32_t base, lon
         for (int h = 0; h < 2; ++h) {
           uint32_t pair[4];
 #pragma unroll
-          for (int q = 0; q < 4; ++q) {
-            const uint32_t two = word[2 * h + q / 2] >> (16 * (q & 1));
-            pair[q] = lab::bf16x2_round(weight * static_cast<float>(two & 255u), weight * static_cast<float>(two >> 8 & 255u));
+          for (int c = 0; c < 4; ++c) {
+            const uint32_t two = word[2 * h + c / 2] >> (16 * (c & 1));
+            pair[c] = lab::bf16x2_round(weight * static_cast<float>(two & 255u), weight * static_cast<float>(two >> 8 & 255u));
           }
           line[h] = make_uint4(pair[0], pair[1], pair[2], pair[3]);
         }
@@ -1618,7 +1641,7 @@ inline Buffers buffers(const lab::Bench& b) {
     //: the packed rows' buffers, a slot `tiles` steps
     const auto pack = [&](int tiles) {
       //: THE PACKED row's: each (column, window)'s head and its stream. A window's steps -- a list's full ones and
-      //: its truncated last -- are taken a round at a time, 8 a slot, a slot's laid in the order of their lists
+      //: its truncated last -- are taken a round at a time, `tiles` a slot, a slot's laid in the order of their lists
       std::vector<uint8_t> buffer(static_cast<size_t>(kPackedTable) + static_cast<size_t>(kColumns) * kCallWindows * kPackedRoom, 0);
       struct Step { int list, round, first, entries; };
       for (int c = 0; c < kColumns; ++c)
@@ -1634,7 +1657,8 @@ inline Buffers buffers(const lab::Bench& b) {
           }
           std::stable_sort(steps.begin(), steps.end(), [](const Step& x, const Step& y) { return x.round < y.round; });
           const uint32_t total = static_cast<uint32_t>(steps.size()), slots = (total + tiles - 1) / tiles;
-          if (total > static_cast<uint32_t>(kPackedSteps)) {
+          //: and no window has fewer slots than a producer issues ahead (2 at most)
+          if (total > static_cast<uint32_t>(kPackedSteps) || slots < 2) {
             std::fprintf(stderr, "carry_window: a packed window's %u steps do not fit its head\n", total);
             std::exit(2);
           }

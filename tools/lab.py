@@ -170,6 +170,17 @@ _PRE_TIMELINE = {"bulk_drain", "byte_expand", "cluster_sum", "collective_branch"
 HAZARDS = ("LOOP_CONVERGENCE", "LOAD_IN_TRIP", "STORE_RELOAD", "STORE_UNFENCED", "STEPS_SERIALIZED")
 
 
+#: a warp collective after the `?` of a statement's conditional: only the lanes the condition takes reach it
+_SELECTED = re.compile(r"\?[^;{}]*\b__(?:shfl\w*|reduce_\w+|ballot|any|all)_sync\s*\(")
+
+
+def collective_selected(path: Path) -> list[int]:
+    """The lines of an experiment's source where a warp collective is an operand of a conditional: a full-mask
+    collective that only some lanes reach hangs its warp (docs/internals/LEARNINGS.md, shuffle-under-lane)."""
+    text = re.sub(r"//[^\n]*", "", path.read_text())
+    return [text.count("\n", 0, m.start()) + 1 for m in _SELECTED.finditer(text)]
+
+
 def timeline(path: Path) -> bool:
     """Whether the experiment's header comment states its TIMELINE: each phase's stream, and which load is a stage
     ahead of which use (KERNEL_STANDARDS section 32, written before the kernel)."""
@@ -318,6 +329,9 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
         if not timeline(experiments()[experiment]):
             failures.append(f"{experiment}: its header states no TIMELINE -- each phase's stream and which load is a "
                             "stage ahead of which use, written before the kernel (docs/internals/LEARNINGS.md)")
+        for at in collective_selected(experiments()[experiment]):
+            failures.append(f"{experiment}: line {at}: a warp collective is an operand of a conditional -- every "
+                            "lane takes it, and the select follows (docs/internals/LEARNINGS.md)")
         why = {"LOAD_IN_TRIP": "global loads read in the trip that issued them (KERNEL_STANDARDS 32: a load a stage "
                                "ahead of its use)",
                "STORE_RELOAD": "shared loads of an address the same trip stored to (KERNEL_STANDARDS 33: a value no "

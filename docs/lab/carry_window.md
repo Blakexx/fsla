@@ -113,7 +113,8 @@ size, then the slot's header to its fold, then its entries expanded where they l
 zero, and every line a truncated step's operand reaches past its entries zeroed behind the read. The fold runs a
 slot's steps list by list, a list's a loop of its own bottom-tested on a vote; a truncated step is used where it
 lies, its operand's bricks as far apart as it has entries. A second pair gives a box FOUR SLOTS OF 4 TILES where
-it has two of 8 -- the same pool, three slots in flight behind the one its fold runs where there is one.
+it has two of 8 -- the same pool -- and its producer issues a slot's copies TWO SLOTS AHEAD of expanding it, so a
+slot's bytes land behind two slots' work where the two-slot row's producer waits out its own copy.
 
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
