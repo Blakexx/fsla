@@ -314,11 +314,11 @@ WHAT IT SHOWS.
   PREFETCH LOSES: 11,527 composed against 9,617 -- six prefetches an entry-batch are more requests of the same
   memory, not less waiting. Whether loads issued two batches ahead hide the rows' arrival is not measured (the
   producers' registers hold one batch from lists). The check of these rows is weak: every table's byte is its token's parity.
-- LANDING THE VALUES FROM EXPANDED LISTS TAKES BACK THE COLD ROWS' COST COMPOSED: 8,974 cycles a window against
-  9,617 with every entry's values gathered, and 8,115 for the gather with rows the cache holds. A list's values are
-  one bulk copy of 2 KB from a buffer laid contiguous a window (the host's here; 16 sources share a buffer), new
-  each window. The fold's side alone is 8,361 against 8,270: what its producers still gather -- an entry's 16 dense bytes and
-  its sparse byte, a line of each level's rows an entry -- is NOT ISOLATED from the copies' own time.
+- LANDING THE VALUES ALONE FROM EXPANDED LISTS is 8,974 cycles a window composed against 9,617 with every entry's
+  values gathered (8,115 for the gather with rows the cache holds), and the fold's side alone 8,361 against 8,270: a
+  list's values are one bulk copy of 2 KB from a buffer laid contiguous a window (the host's here; 16 sources
+  share a buffer), new each window, and its producers still gather an entry's 16 dense bytes and its sparse byte,
+  a line of each level's rows an entry. What that leaves is the next finding's.
 - WITH THE WHOLE ENTRY LANDED -- its coefficient bytes beside its values, raw, a list one bulk copy and no global load
   in a producer's trip -- the window is 5,983 cycles composed and the fold's side alone 5,163, against 6,584 and
   5,115 for the synthetic entries whose rows the cache holds.
