@@ -328,11 +328,11 @@ constexpr int read_regs = (ROLES & kFive ? kFiveReadRegs : (ROLES & kLean) && (R
 template <long long ROLES>
 constexpr int serve_regs = ((ROLES & kLean) && (ROLES & (kWide | kDenSplit)) ? 104 : ROLES & kLean ? 112 : kServeRegs)
                            - (ROLES & kTwoSums ? 32 : 0)
-                           - ((ROLES & kWhole) == kWhole && (ROLES & kNoMath) == 0 && (ROLES & kFour) && (ROLES & kFoldIssues) ? 16 : 0);
+                           - ((ROLES & kWhole) == kWhole && (ROLES & kNoMath) == 0 && (ROLES & kFour) && (ROLES & (kFoldIssues | kMirror)) ? 16 : 0);
 //: a fold that issues its own copies holds their addresses beside its state: 8 registers a thread more, the serve
-//: warpgroup's, whose warps hold no entry
+//: warpgroup's, whose warps hold no entry; and the mirrored rows' fold, whose expansion spills a product at 160
 template <long long ROLES>
-constexpr int fold_regs = (ROLES & kWhole) == kWhole && (ROLES & kNoMath) == 0 && (ROLES & kFour) && (ROLES & kFoldIssues) ? kFoldRegs + 8 : kFoldRegs;
+constexpr int fold_regs = (ROLES & kWhole) == kWhole && (ROLES & kNoMath) == 0 && (ROLES & kFour) && (ROLES & (kFoldIssues | kMirror)) ? kFoldRegs + 8 : kFoldRegs;
 static_assert(read_regs<kLean | kWide> + serve_regs<kLean | kWide> == kReadRegs + kServeRegs
               && read_regs<kLean | kBig> + serve_regs<kLean | kBig> == kReadRegs + kServeRegs);
 static_assert(read_regs<kLean | kDen> + serve_regs<kLean | kDen> == kReadRegs + kServeRegs);
