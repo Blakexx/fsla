@@ -1743,11 +1743,14 @@ int main(int argc, char** argv) {
       b.expect(k, "HGMMA", "==",
              (roles & kFold ? 2 * kSlotLists + (roles & kDenFold ? kDenSteps : 0) : roles & kStill ? 0 : 1)
                  + (roles & kRead ? 2 * kChunkDigits : 0));
+    //: a packed producer's statement of a later slot's bytes follows its store of its own slot's header: the fold
+    //: reads the header behind the slot's arrival, which the fence precedes
+    if ((roles & kPacked) == kPacked && !(roles & kRead)) b.expect(k, "STORE_UNFENCED", "<=", 1);
     if (roles & kRead) {
       //: the readout's panel is read by the drain warps' own loads, not by a step: its arrival needs no fence
       //: nor does the wide row's scratch, which only its own warp's loads read
       //: the row that takes the fold's fence out leaves its four tile groups' arrivals unfenced: what it measures
-      b.expect(k, "STORE_UNFENCED", "<=", roles & kNoFence ? 5 : roles & kWide ? 2 : 1);
+      b.expect(k, "STORE_UNFENCED", "<=", (roles & kNoFence ? 5 : roles & kWide ? 2 : 1) + ((roles & kPacked) == kPacked ? 1 : 0));
       //: the readout's trip holds its coefficients' rounds and their load beside its steps, by design: the tensor
       //: pipe is idle most of a window
       b.expect(k, "STEP_XU", ">=", 0);
