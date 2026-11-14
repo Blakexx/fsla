@@ -41,6 +41,19 @@ multiprocessors, each CTA rewriting its own region every round, beside the same 
 round: the same reads, eight times the planes' footprint (at the sparse cell 16 CTAs' rings are some 30 MB of a
 cache of 50 and their new regions 240; at 32 live digits neither fits).
 
+THE BLOCK STREAM, ITS LISTS THE PASS'S OWN (the ruled stream's shared part --
+[`hopper-carry.md`](../architecture/hopper-carry.md#the-gather-stream); 4 to 5 live digits a token, 512 threads).
+The pass is handed the sparse level's MASK digit-major -- a digit's 1,024 bits of a window, 32 words -- and no
+list. A block of 16 digits at a time, a warp a digit and a lane 32 tokens' bits: a lane's live tokens go to their
+ranks in the digit's list, the lanes' counts before it by the warp's scan and the bits under each by a count, 32
+fixed trips whatever is live. A UNIT IS A SLOT, 8 digits' lists: every warp scans the slot's layout, and a thread
+a (list, place) writes the carry's image -- an entry's 8 value lines to its list's runs, a brick a run, as long as
+the list; its word (its dense line and its second run's line in a CTA's dense run); its sparse byte; a pad's
+line; 16 threads a step's four halves; the head -- then one copy out and the slot's plan, its first line and
+its bytes. Every word, byte, line, pad, step and plan of the first round is checked on every multiprocessor
+against lists the host makes from the same mask. The lab's bounds: a list is at most 32 entries and a slot 150
+(this cell's are 16 to 19 and 128 to 143). NOT IN THE ROW: the dense lines, a run a CTA's dense block.
+
 MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance 60614444, driver 595.91.07; 2026-11-14, the experiment at
 46f4e03a; 7 repetitions; every arranged line and pad of every moved form exact on every multiprocessor; the
 median, SM-cycles a token for one side's sparse level; every figure below is this one run's):

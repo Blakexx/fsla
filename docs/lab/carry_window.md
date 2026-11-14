@@ -177,6 +177,9 @@ The even-list row beside them is the fold issuing whole-entry tiles under the sa
 at 160 and its drain warps at 88.
 The mirrored readout's rows clock a third phase: its sums' rounding, their stores to the panel and its arrivals,
 recorded with its wait on the drain in it.
+The clocked rows of the block form and of the even lists' self-issuing form clock THE FOLD'S PHASES too: the
+image's publishing (its wait on the readout's read in it), its slots' expansion -- from a slot's bytes landed to
+the warpgroup's barrier -- and its steps with the next copy's issue. A clocked fold holds four more registers.
 
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
@@ -460,7 +463,9 @@ WHAT IT SHOWS.
   image's tables' -- and the readout still waits on the image as it does not with even lists. NOT ISOLATED: which
   of the fold's work the uneven lists' excess is -- its 32 steps a window where even lists' are 16, its pads'
   lines, its steps' operands made a slot, the slot's barrier, or its image's larger copy. A slot's steps are a
-  fixed two rounds. NOT ASKED: the drain warps at 88 registers under this fold (they are at 72 here); lists past
+  fixed two rounds: ISSUING ONLY THE STEPS ITS LISTS HAVE, a second-round step a trip of one or none, WAS MEASURED
+  AND LOST (the experiment at 758f0d43, its record that commit's: 7,022 against 6,822 composed, the fold's side
+  alone 4,385 against 3,741), and its rows are not kept. NOT ASKED: the drain warps at 88 registers under this fold (they are at 72 here); lists past
   two rounds.
 - THE MIRRORED READOUT'S SUMS TO THE PANEL ARE ITS LARGEST PHASE (the even lists' form, clocked): a readout warp is
   2,036 cycles a window rounding its sums, storing them a half each and arriving -- its
