@@ -102,8 +102,9 @@ on a different level, 256 by 256 leaves, 4 live digits a token -- with the reado
 holds the numbers, which follow the card a session ran on. Their order: whole entries landed from a stream its 16
 boxes share, read before or not, cost the least; the carry gathering its entries from lists itself some two
 thirds more; a stream no box shares more again. THOSE ARE AT 16 ENTRIES A LIST. With the stream as ruled and its
-lists uneven, 8 to 24, a window is half again as many steps and costs more than that in proportion; what binds
-it is not isolated. Raggedness is the carry's largest open cost in any form. To each the stream's pass adds ([`lab/gather_pass.md`](../lab/gather_pass.md)).
+lists uneven, 8 to 24, a window is half again as many steps and costs more than that in proportion. At even lists
+the fold's side waits on its one producer warp a box for most of a window; the lab page holds what is and is not
+isolated on the uneven stream. To each the stream's pass adds ([`lab/gather_pass.md`](../lab/gather_pass.md)).
 The den is 5% of the window; the intra, a kernel of its own launched beside the carry, a fifth of it
 ([`lab/intra_window.md`](../lab/intra_window.md), [`lab/call_pair.md`](../lab/call_pair.md)). A dense side is
 unmeasured on hopper.

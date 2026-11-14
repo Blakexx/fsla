@@ -119,6 +119,10 @@ fold's side alone, gives that form TWO PRODUCERS A BOX -- the four serve warps a
 slots one's and its odd ones the other's. The whole-entry rows' fold alone also record what a fold warp waits on
 its producer.
 
+THE FOLD EXPANDS (a pair, even lists). A producer only issues a slot's 8 copies, when the fold frees the slot; the
+slot's fold warpgroup waits on their bytes and expands them itself -- its 128 threads the slot's 128 entries at
+once, a thread an entry, where one producer warp takes four trips of 32 -- then its barrier and its 8 steps.
+
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
 through uniform registers in the den's. Rows of the winner's form and the den's, at both cells, and the den's chain run with no
