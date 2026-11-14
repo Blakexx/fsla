@@ -179,8 +179,8 @@ The mirrored readout's rows clock a third phase: its sums' rounding, their store
 recorded with its wait on the drain in it.
 The clocked rows of the block form and of the even lists' self-issuing form clock THE FOLD'S PHASES too: the
 image's publishing (its wait on the readout's read in it); its entries' expansion, from a slot's bytes landed;
-the block form's pads and steps' operands; the slot's fence and the warpgroup's barrier; and its steps with the
-next copy's issue. A clocked fold holds six more registers, and a lap's arithmetic is each thread's own
+the block form's pads and steps' operands; the slot's fence; the warpgroup's barrier; and its steps with the
+next copy's issue. A clocked fold holds seven more registers, and every role's clock reading is each thread's own
 ([`LEARNINGS.md`](../internals/LEARNINGS.md#lap-in-uniform)).
 A CONTROL, both forms, with and without clocks: the fold stores its landed bytes AS THEY ARE to its coefficient
 lines -- no conversion, no product, no sparse byte. Its sums are not the carry's: an isolation, unchecked.

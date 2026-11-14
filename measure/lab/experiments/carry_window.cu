@@ -300,7 +300,7 @@ constexpr bool fold_expands = (ROLES & kWhole) == kWhole && !packed<ROLES> && (R
 template <long long ROLES>
 constexpr bool fold_issues = fold_expands<ROLES> && (ROLES & kFoldIssues) != 0;
 //: the composed rows whose fold clocks its phases: the image, its entries' expansion, its pads and operands, its
-//: slot's fence and barrier, its steps
+//: slot's fence and its barrier, its steps
 template <long long ROLES>
 constexpr bool fold_clocked = (ROLES & kRead) && !(ROLES & kNoClock) && (ROLES & kChunk8) && (ROLES & kWhole) == kWhole && (ROLES & kNoMath) == 0
                               && ((ROLES & kBlocks) || ((ROLES & kFour) && (ROLES & kFoldIssues)));
@@ -380,7 +380,9 @@ constexpr int serve_regs = ((ROLES & kLean) && (ROLES & (kWide | kDenSplit)) ? 1
 //: and the block rows' fold, which holds its steps' table beside its state
 template <long long ROLES>
 constexpr int fold_regs = (ROLES & kWhole) == kWhole && (ROLES & kNoMath) == 0 && (ROLES & kFour) && (ROLES & (kFoldIssues | kMirror)) && !(ROLES & kChunk8) ? kFoldRegs + 8
-                          : ROLES & kBlocks ? kFoldRegs + 8 : kFoldRegs;
+                          : ROLES & kBlocks ? kFoldRegs + 8
+                          //: a self-expanding fold alone holds its wait's count beside its line: no other role's registers are asked
+                          : (ROLES & 3) == kFold && fold_expands<ROLES> ? kFoldRegs + 8 : kFoldRegs;
 static_assert(read_regs<kLean | kWide> + serve_regs<kLean | kWide> == kReadRegs + kServeRegs
               && read_regs<kLean | kBig> + serve_regs<kLean | kBig> == kReadRegs + kServeRegs);
 static_assert(read_regs<kLean | kDen> + serve_regs<kLean | kDen> == kReadRegs + kServeRegs);
@@ -453,11 +455,14 @@ constexpr uint32_t reader_row(uint32_t reader, int box) { return (reader + box) 
 //: counted twice
 constexpr int kPoolId = 1, kTilesId = 5, kPanelId = 9, kReadId = 11;
 constexpr int kPoolCount = kGroup + 32, kTilesCount = 3 * kGroup, kPanelCount = kGroup + 32 * kDrains;
+//: A ROLE'S CLOCK READING, each thread's own: a zero the toolkit cannot know is one, from the thread's index, is
+//: added, so a phase's arithmetic stays in the thread's registers (docs/internals/LEARNINGS.md#lap-in-uniform)
+__device__ __forceinline__ uint32_t own_clock() { return static_cast<uint32_t>(clock64()) + (lab::held(threadIdx.x) >> 31); }
 //: a sleeping wait, its cycles added to the warp's count
 __device__ __forceinline__ void slept(int id, int count, uint32_t& clocked) {
-  const uint32_t t0 = static_cast<uint32_t>(clock64());
+  const uint32_t t0 = own_clock();
   lab::bar_sync(id, count);
-  clocked += static_cast<uint32_t>(clock64()) - t0;
+  clocked += own_clock() - t0;
 }
 
 //: A WAIT at a barrier, polled or suspended by the row
@@ -472,33 +477,25 @@ __device__ __forceinline__ void waited(uint32_t bar, uint32_t parity, uint32_t& 
   if constexpr (ROLES & kNoClock) {
     await<ROLES>(bar, parity);
   } else {
-    const uint32_t t0 = static_cast<uint32_t>(clock64());
+    const uint32_t t0 = own_clock();
     await<ROLES>(bar, parity);
-    count += static_cast<uint32_t>(clock64()) - t0;
+    count += own_clock() - t0;
   }
 }
-//: a warp's seven counts, stored at `kCounts (block, warp)`: its two waits, then its phases -- the readout's steps,
+//: a warp's eight counts, stored at `kCounts (block, warp)`: its two waits, then its phases -- the readout's steps,
 //: their A and the mirrored readout's sums on their way to the panel; a clocked fold's image, its entries'
-//: expansion, its steps, its pads and operands, and its slot's fence and barrier
-constexpr int kCounts = 7;
+//: expansion, its steps, its pads and operands, its slot's barrier, and its fence
+constexpr int kCounts = 8;
 __device__ __forceinline__ void tell(uint32_t* waits, uint32_t first, uint32_t second, uint32_t third = 0,
-                                     uint32_t fourth = 0, uint32_t fifth = 0, uint32_t sixth = 0, uint32_t seventh = 0) {
+                                     uint32_t fourth = 0, uint32_t fifth = 0, uint32_t sixth = 0, uint32_t seventh = 0,
+                                     uint32_t eighth = 0) {
   if ((threadIdx.x & 31) == 0) {
     uint32_t* const to = waits + kCounts * (blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5));
-    to[0] = first, to[1] = second, to[2] = third, to[3] = fourth, to[4] = fifth, to[5] = sixth, to[6] = seventh;
+    to[0] = first, to[1] = second, to[2] = third, to[3] = fourth, to[4] = fifth, to[5] = sixth, to[6] = seventh, to[7] = eighth;
   }
 }
 //: the cycles since `since`, and `since` moved to now: a phase's clock
 __device__ __forceinline__ uint32_t lap(uint32_t& since) {
-  const uint32_t now = static_cast<uint32_t>(clock64()), took = now - since;
-  since = now;
-  return took;
-}
-//: the same with the reading a thread's OWN -- a zero the toolkit cannot know is one, from the thread's index, is
-//: added to it, so the lap's arithmetic stays in the thread's registers. A fold's laps compiled into a warp's
-//: uniform registers recorded a wrapped count in one row (docs/lab/carry_window.md, THE FOLD'S PHASES)
-__device__ __forceinline__ uint32_t own_clock() { return static_cast<uint32_t>(clock64()) + (lab::held(threadIdx.x) >> 31); }
-__device__ __forceinline__ uint32_t lap_own(uint32_t& since) {
   const uint32_t now = own_clock(), took = now - since;
   since = now;
   return took;
@@ -583,7 +580,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
       lab::bulk_load(base + at * kPoolBytes, stream + static_cast<long long>(plan[2 * slot]) * 16, plan[2 * slot + 1], landed);
     }
   };
-  uint32_t on_read = 0, on_fill = 0, in_image = 0, in_expand = 0, in_steps = 0, in_pads = 0, in_sync = 0;
+  uint32_t on_read = 0, on_fill = 0, in_image = 0, in_expand = 0, in_steps = 0, in_pads = 0, in_sync = 0, in_fence = 0;
   //: the packed row's: the slots its steps have used, a slot and a phase each
   uint32_t uses = 0;
   lab::WarpSpan clock;
@@ -673,14 +670,14 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         }
       }
     }
-    if constexpr (fold_clocked<ROLES>) in_image += lap_own(since);
+    if constexpr (fold_clocked<ROLES>) in_image += lap(since);
     if constexpr (blocks<ROLES>) {
       //: THE BLOCK rows' window: the next window's plan, a window ahead
       if ((tid & (kGroup - 1)) == 0) *reinterpret_cast<uint4*>(plan_at()) = *reinterpret_cast<const uint4*>(block_head(w + 1));
 #pragma unroll
       for (int slot = 0; slot < 2; ++slot) {
         waited<ROLES>(bars + kPoolLanded + 8 * (2 * box + slot), w & 1, on_fill);
-        if constexpr (fold_clocked<ROLES>) lap_own(since);
+        if constexpr (fold_clocked<ROLES>) lap(since);
         const uint32_t pool = (2 * box + slot) * kPoolBytes;
         const int g = tid & (kGroup - 1);
         uint8_t* const image = smem + pool;
@@ -704,7 +701,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
             *reinterpret_cast<uint4*>(h == 0 ? raw : image + (word >> 16) * 16) = make_uint4(pair[0], pair[1], pair[2], pair[3]);
           }
         }
-        if constexpr (fold_clocked<ROLES>) in_expand += lap_own(since);
+        if constexpr (fold_clocked<ROLES>) in_expand += lap(since);
         //: its PAD LINE of the second runs, where the image's count reaches it
         if (static_cast<uint32_t>(g) < *reinterpret_cast<const uint32_t*>(image + kImageHead * 16))
           *reinterpret_cast<uint4*>(image + reinterpret_cast<const uint16_t*>(image + kImagePads * 16)[g] * 16) = make_uint4(0, 0, 0, 0);
@@ -715,10 +712,11 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
           to[0] = lab::wg_desc(base + pool + step[0] * 16u, 8, step[1]);
           to[1] = step[2] == 0xffffu ? lab::wg_desc(base + kZeroAt + box * 512, 8, 16) : lab::wg_desc(base + pool + step[2] * 16u, 8, step[3]);
         }
-        if constexpr (fold_clocked<ROLES>) in_pads += lap_own(since);
+        if constexpr (fold_clocked<ROLES>) in_pads += lap(since);
         lab::bulk_fence();
+        if constexpr (fold_clocked<ROLES>) in_fence += lap(since);
         lab::bar_sync(kPoolId + box, kGroup);
-        if constexpr (fold_clocked<ROLES>) in_sync += lap_own(since);
+        if constexpr (fold_clocked<ROLES>) in_sync += lap(since);
         //: THE SLOT'S STEPS, one block: a round at a time, a list's step on its own accumulator, its operands the
         //: table's
         const uint64_t* const steps = reinterpret_cast<const uint64_t*>(smem + kStepsAt + box * 256);
@@ -734,7 +732,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         lab::wg_commit();
         lab::wg_wait<0>();
         if (w + 1 < windows) issue_slot(w + 1, slot);
-        if constexpr (fold_clocked<ROLES>) in_steps += lap_own(since);
+        if constexpr (fold_clocked<ROLES>) in_steps += lap(since);
       }
     } else if constexpr (packed<ROLES>) {
       //: THE PACKED row's slots, a window as many as its steps need: a slot's header says each list's steps in it
@@ -781,7 +779,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
           //: landed dense line by its sparse byte, to its two coefficient lines -- and the warpgroup together before
           //: its steps read them
           waited<ROLES>(bars + kPoolLanded + 8 * (2 * box + slot), w & 1, on_fill);
-          if constexpr (fold_clocked<ROLES>) lap_own(since);
+          if constexpr (fold_clocked<ROLES>) lap(since);
           const int j = (tid & (kGroup - 1)) >> 4, k = tid & 15;
           uint8_t* const raw = smem + (2 * box + slot) * kPoolBytes + j * kTile + kValueTile;
           const uint4 landed = *reinterpret_cast<const uint4*>(raw + k * 16);
@@ -799,10 +797,11 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
             }
             *reinterpret_cast<uint4*>(raw + k * 16 + h * kBrick) = make_uint4(pair[0], pair[1], pair[2], pair[3]);
           }
-          if constexpr (fold_clocked<ROLES>) in_expand += lap_own(since);
+          if constexpr (fold_clocked<ROLES>) in_expand += lap(since);
           lab::bulk_fence();
+          if constexpr (fold_clocked<ROLES>) in_fence += lap(since);
           lab::bar_sync(kPoolId + box, kGroup);
-          if constexpr (fold_clocked<ROLES>) in_sync += lap_own(since);
+          if constexpr (fold_clocked<ROLES>) in_sync += lap(since);
         } else if constexpr (ROLES & kSleep) slept(kPoolId + 2 * box + slot, kPoolCount, on_fill);
         else waited<ROLES>(bars + kPoolReady + 8 * (2 * box + slot), w & 1, on_fill);
         //: the expanded row's values are the bulk copies': their bytes landed
@@ -833,7 +832,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         lab::wg_wait<0>();
         if constexpr (fold_issues<ROLES>) {
           if (w + 1 < windows) issue(w + 1, slot);
-          if constexpr (fold_clocked<ROLES>) in_steps += lap_own(since);
+          if constexpr (fold_clocked<ROLES>) in_steps += lap(since);
         } else {
           if ((tid & (kGroup - 1)) == 0) lab::mbar_arrive(bars + kPoolFreed + 8 * (2 * box + slot));
         }
@@ -850,7 +849,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
   }
   if constexpr (ROLES & (kTwoSums | kMirror | kBlocks)) lab::WarpMark::stop(times);
   else clock.stop(times);
-  tell(waits, on_read, on_fill, in_image, in_expand, in_steps, in_pads, in_sync);
+  tell(waits, on_read, on_fill, in_image, in_expand, in_steps, in_pads, in_sync, in_fence);
   //: THE STATE OUT, for the checked call alone: 128 stores a thread, each instruction's lanes on 32 lines, issued
   //: while the readout and the drains are still in their last windows -- in a timed call they would be clocked as
   //: the read side's
@@ -1253,7 +1252,7 @@ __device__ __forceinline__ void read_mirror(uint8_t* smem, uint32_t base, long l
       const int c = kChunks * w + c4;
 #pragma unroll
       for (int g = 0; g < kG; ++g) waited<ROLES>(bars + kTilesReady + 8 * (c4 + g), w & 1, on_image);
-      uint32_t since = ROLES & kNoClock ? 0u : static_cast<uint32_t>(clock64());
+      uint32_t since = ROLES & kNoClock ? 0u : own_clock();
       //: THE COEFFICIENTS, to shared memory: the reader's 16 bytes on the box by its byte on its digit
 #pragma unroll
       for (int g = 0; g < kG; ++g) {
@@ -1390,7 +1389,7 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       //: chunk `2 h + c`'s digits are `8 h + c + 2 j`: its tile group, published for this window
       if constexpr (ROLES & kSleep) slept(kTilesId + c4, kTilesCount, on_image);
       else if constexpr (!(ROLES & kStill)) waited<ROLES>(bars + kTilesReady + 8 * c4, w & 1, on_image);
-      uint32_t since = ROLES & kNoClock ? 0u : static_cast<uint32_t>(clock64());
+      uint32_t since = ROLES & kNoClock ? 0u : own_clock();
       //: THE COEFFICIENTS, in registers: a row's two bytes times its reader's byte on the digit, a bf16 pair a word
       //: -- word `r | h << 1` of A, as an m64n16 accumulator lays its values
       if constexpr (ROLES & kWide) {
@@ -1505,7 +1504,7 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       if constexpr (ROLES & kSelf) {
         //: THE WARP DRAINS ITS OWN 16 TOKENS, the digit `8 h + c + 2 warp`'s: a lane loads its word of a token's
         //: line and adds it, two batches of 8 in the accumulator's registers' place; no other warp reads the rows
-        since = static_cast<uint32_t>(clock64());
+        since = own_clock();
         const long long first = static_cast<long long>(blockIdx.x) * (kOutWindows * kWindow)
                                 + ((c / kChunks) % kOutWindows) * kWindow
                                 + 16 * (8 * (c4 >> 1) + (c4 & 1) + 2 * warp);
@@ -1926,7 +1925,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
   //: panel), the readout's cycles forming its steps' A and in its steps, and a clocked fold's phases. A producer's
   //: are not clocked
   struct Site { int first, count, slot; const char* name; };
-  constexpr int kSites = 13, kPanelSite = 6, kDrainSite = 7;
+  constexpr int kSites = 14, kPanelSite = 6, kDrainSite = 7, kPadsSite = 11;
   const Site sites[kSites] = {{0, 8, 0, "a fold warp waits on the readout's read"},
                               {0, 8, 1, "a fold warp waits on its producer"},
                               {8, 4, 0, "a readout warp waits on the image"},
@@ -1939,7 +1938,8 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                               {0, 8, 3, "a fold warp expanding its entries' lines"},
                               {0, 8, 4, "a fold warp in its steps and issuing its copies"},
                               {0, 8, 5, "a fold warp at its pads and its steps' operands"},
-                              {0, 8, 6, "a fold warp at its slot's fence and barrier"}};
+                              {0, 8, 6, "a fold warp at its slot's barrier"},
+                              {0, 8, 7, "a fold warp at its slot's fence"}};
   constexpr int kFoldSites = 2;
   lab::Samples waited_at[kSites];
   const lab::Samples cycles = b.variant(
@@ -1987,7 +1987,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
       if (ROLES & (kLean | kFive) && !(ROLES & kMirror) && i == kFoldSites + 2) continue;
       else if (!(ROLES & kMirror) && i == kPanelSite) continue;
       else if (i > kDrainSite && !fold_clocked<ROLES>) continue;
-      else if (i == kSites - 2 && !(ROLES & kBlocks)) continue;
+      else if (i == kPadsSite && !(ROLES & kBlocks)) continue;
       else if (ROLES & kFive && i == kDrainSite) continue;
       else if (ROLES & kSelf ? i != kDrainSite && (ROLES & kFold || i != 1)
           : ROLES & kStill ? i > kFoldSites : ROLES & kFold || i != 1)
