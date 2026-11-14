@@ -8,6 +8,19 @@ What the carry computes is [`ARCHITECTURE.md` section 6.3](../ARCHITECTURE.md#63
 window at a time, the readout of the state as of the window's start by the window's readers, into `num` and `den`,
 then the fold of the window's writes into the state.
 
+## The gather stream
+
+RULED, NOT BUILT; it supersedes this page's lists and its per-entry fills below, which are rewritten when the form
+is measured in the carry. The gather pass writes, for each sparse block of 16 digits -- the group of CTAs that share
+it -- A STREAM: the block's live tokens of a window once each, in token order, packed. A token's record is its
+values and its 16 sparse bytes of the block, shared by the group's CTAs; its dense row is laid by dense block, so
+each CTA takes its own segment as one run; with it go the token's index and its slice of the mask it was handed.
+A carry CTA's pools hold a view over its stream, and its fill places each token on its digits' steps in shared
+memory by that mask slice, a short list's pads made there: no step's padding crosses global memory. A counts pass
+sizes the streams. The workspace is the segment's ([`ARCHITECTURE.md` section 6](../ARCHITECTURE.md#6-the-kernels)).
+The read side's stream is the same without values, its token's index where the drain adds. The pass's two kernels
+are measured in [`lab/gather_pass.md`](../lab/gather_pass.md); the carry filling from the views is not.
+
 ## What it is handed
 
 - A side's levels, u8 rows TILE-MAJOR, and each row's fp32 scale; the values, bf16 TOKEN-MAJOR, and each token's fp32

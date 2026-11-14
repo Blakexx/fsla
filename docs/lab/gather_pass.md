@@ -29,6 +29,13 @@ kernels with CTAs on A QUARTER of the multiprocessors, and the dense plane with 
 (four copies out in flight where three buffers allow one). Every line and pad of each moved form's first round is
 checked on every multiprocessor, each byte of the tables its own position's.
 
+THE STREAM (the ruled form, [`hopper-carry.md`](../architecture/hopper-carry.md#the-gather-stream)). The same
+two kernels fed lists BY SPARSE BLOCK, not by digit: a block's live tokens once each, in token order, padded to 16
+only at the block's end. The values kernel writes RECORDS -- a token's 8 value lines and then its line of the
+block's 16 sparse bytes, 9 lines a token -- that the block's CTAs share; the dense plane is the block-major one, so a
+CTA's dense block of its sparse block's tokens is one run. No digit's step is padded in global memory. At 512
+threads, moved and flat, on every multiprocessor and on a quarter.
+
 MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance 60601585, driver 610.57.04; 2026-11-14, the experiment at
 ad82c249; 7 repetitions; every arranged line and pad exact; the median, SM-cycles a token for one side's
 sparse level):
