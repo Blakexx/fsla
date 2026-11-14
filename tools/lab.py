@@ -297,6 +297,37 @@ def loop_hazards(binary: Path) -> dict[str, dict[str, int]]:
     return {names[k]: v for k, v in found.items()}
 
 
+#: a uniform register, and the reading of the cycle counter into one
+UNIFORM = re.compile(r"\bUR(\d+)\b")
+CLOCK_UNIFORM = re.compile(r"\bS2UR\s+UR(\d+),\s*SR_CLOCKLO\b")
+
+
+def clock_summed_uniform(body: list[tuple[int, str, str]]) -> int:
+    """The uniform sums (`UIADD3`) that read a uniform register holding a cycle-counter reading: a phase clock
+    accumulated in a warp's uniform registers is not a thread's count (docs/internals/LEARNINGS.md,
+    lap-in-uniform). A straight-line scan: a register stops holding a reading where it is next written."""
+    found, holding = 0, set()
+    for _, op, line in body:
+        if m := CLOCK_UNIFORM.search(line):
+            holding.add(m.group(1))
+            continue
+        if not (ops := OPERANDS.match(line)):
+            continue
+        written, *read = [o.strip() for o in ops.group(1).split(",")]
+        if op.startswith("UIADD3") and any(r in holding for o in read for r in UNIFORM.findall(o)):
+            found += 1
+        if (w := UNIFORM.fullmatch(written)) and op.startswith(("U", "R2UR", "S2UR")):
+            holding.discard(w.group(1))
+    return found
+
+
+def clocks_summed_uniform(binary: Path) -> dict[str, int]:
+    """Per kernel (demangled): `clock_summed_uniform`."""
+    found = {name: clock_summed_uniform(body) for name, body in disassembled(binary).items()}
+    names = demangle(list(found))
+    return {names[k]: v for k, v in found.items()}
+
+
 def check(binary: Path, table: dict[str, dict]) -> list[str]:
     """Every expectation the experiment declares, no local memory and no undeclared convergence call anywhere: the
     failures, empty when it may run."""
@@ -329,6 +360,10 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
         if not timeline(experiments()[experiment]):
             failures.append(f"{experiment}: its header states no TIMELINE -- each phase's stream and which load is a "
                             "stage ahead of which use, written before the kernel (docs/internals/LEARNINGS.md)")
+        for k, n in clocks_summed_uniform(binary).items():
+            if n:
+                failures.append(f"{k}: {n} sums of a cycle-counter reading in uniform registers -- a phase clock is "
+                                "each thread's own arithmetic (docs/internals/LEARNINGS.md, lap-in-uniform)")
         for at in collective_selected(experiments()[experiment]):
             failures.append(f"{experiment}: line {at}: a warp collective is an operand of a conditional -- every "
                             "lane takes it, and the select follows (docs/internals/LEARNINGS.md)")
