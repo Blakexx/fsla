@@ -77,6 +77,8 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
 * `lab::WarpClock` — a warp's cycles over a region, lane 0's `clock64`, stored at `(block, warp)`.
 * `lab::WarpSpan` — a warp's start and end `clock64`; `Bench::span(warps)` (it exits on a block one of whose warps recorded no clock: a timed launch starts from cleared clocks) is the mean block's span (last end less
   first start), the throughput when warps finish apart.
+* `lab::touch` — a line asked into the L2 cache ahead of the load that uses it (`prefetch.global.L2`); a plain load
+  nobody reads is removed by the toolkit.
 * The operand pieces the kernels use: `ldsm` and `ldsm_t` (`ldmatrix.x4`, `.trans`), `hmul2`, `pack_half2`, `smem`;
   the mbarrier as `ops.cuh` spells it: `mbar_init`, `mbar_arrive`, `mbar_wait` (polled), `mbar_wait_suspended` (sm_90: `try_wait`, the thread may be suspended), `mbar_test` (once).
 * `lab::sink(out, v)` — a fold of everything a thread computed, stored unconditionally.
@@ -85,7 +87,7 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
 * <a id="wgmma"></a>Hopper's atoms, each one PTX instruction of sm_90a (an experiment calling one compiles for sm_90a
   only): `wg_desc` (wgmma's unswizzled K-major shared operand: lines in bricks of 8, 16 bytes a line, the K halves and
   the bricks at stated offsets), `wg_fence`, `wg_commit`, `wg_wait<N>`, `wg_hold` (a register an asynchronous MMA
-  wrote, held behind its wait), `wg_bf16_n16_ss`, `wg_bf16_n64_ss`, `touch` (a global load nobody reads: a line asked into the cache ahead of its use), `wg_u8_n64_ss` (the integer step, u8 by u8 into s32), `wg_bf16_n64_rs` (A from registers), `wg_bf16_n72_rs` (the same 72 columns wide; `wg_bf16_n72_rs_mn` with B M|N-major), `wg_bf16_n8_ss_mn` (8 columns, both operands M|N-major), `wg_bf16_n16_ss_mna` (A alone M|N-major; its `add` false makes a step the accumulator's first, with nothing
+  wrote, held behind its wait), `wg_bf16_n16_ss`, `wg_bf16_n64_ss`, `wg_u8_n64_ss` (the integer step, u8 by u8 into s32), `wg_bf16_n64_rs` (A from registers), `wg_bf16_n72_rs` (the same 72 columns wide; `wg_bf16_n72_rs_mn` with B M|N-major), `wg_bf16_n8_ss_mn` (8 columns, both operands M|N-major), `wg_bf16_n16_ss_mna` (A alone M|N-major; its `add` false makes a step the accumulator's first, with nothing
   cleared), `wg_bf16_n16_ss_mn`, `wg_bf16_n64_ss_mn`,
   `wg_bf16_n256_ss_mn` (both operands M|N-major: a line is one K's 8 rows or columns; `wg_desc` describes either
   major's tile); the two

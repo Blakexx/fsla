@@ -494,11 +494,10 @@ __device__ __forceinline__ void red_add_f16x2(uint32_t* dst, uint32_t v) {
   asm volatile("red.global.add.noftz.f16x2 [%0], %1;" : : "l"(dst), "r"(v) : "memory");
 }
 
-//: A LOAD NOBODY READS: the word at `p` is asked of global memory and its thread does not wait for it -- what brings
-//: a line into the cache ahead of the load that uses it
+//: A LINE ASKED INTO THE CACHE: `prefetch.global.L2` of the line at `p` (the toolkit's `CCTL.E.PF2`), which its thread
+//: does not wait for. A plain load nobody reads does not do: the toolkit removes it
 __device__ __forceinline__ void touch(const void* p) {
-  uint32_t unread;
-  asm volatile("ld.global.u32 %0, [%1];" : "=r"(unread) : "l"(p) : "memory");
+  asm volatile("prefetch.global.L2 [%0];" : : "l"(p) : "memory");
 }
 
 //: one fp32 added into global memory by its thread

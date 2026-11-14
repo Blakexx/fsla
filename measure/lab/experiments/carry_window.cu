@@ -167,9 +167,9 @@ enum Roles : int {
   //: the listed row with EVERY WINDOW THE SAME 1,024 TOKENS: its rows stay in cache, where the listed row's are
   //: new each window -- what of the listed row is its loads' code and what its rows' arrival
   kHot = 536870912,
-  //: the listed row whose producers ASK FOR A WINDOW'S ROWS A WINDOW AHEAD: for the batch a window on, loads nobody
-  //: reads of each entry's values (4 words, 32 bytes apart), its dense bytes and its sparse word, from that
-  //: batch's places, themselves loaded a batch before
+  //: the listed row whose producers ASK FOR A WINDOW'S ROWS A WINDOW AHEAD: for the batch a window on, a prefetch
+  //: of each entry's values (4 lines, 32 bytes apart), its dense bytes and its sparse word, from that batch's
+  //: places, themselves loaded a batch before
   kAhead = 1073741824
 };
 //: an image tile's pitch in bytes: the stores of a warp's lanes are two tiles apart

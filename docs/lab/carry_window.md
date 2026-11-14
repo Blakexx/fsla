@@ -83,8 +83,8 @@ and an entry's byte on its list's digit and its 16 dense bytes are each a block 
 producers hold one batch: the places and the sparse words are 4 registers a thread that two batches do not leave.
 The readout's side still reads the synthetic readers. A second pair of rows gives every window the SAME 1,024 tokens, so
 their rows stay in cache: what of the listed rows is their loads' code and what their rows' arrival. A third pair ASKS FOR
-A WINDOW'S ROWS A WINDOW AHEAD: for the batch a window on, loads nobody reads of each entry's values, dense bytes
-and sparse word, so the loads that use them find them in cache.
+A WINDOW'S ROWS A WINDOW AHEAD: for the batch a window on, a prefetch of each entry's values, dense bytes and sparse
+word, so the loads that use them find them in cache.
 
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
