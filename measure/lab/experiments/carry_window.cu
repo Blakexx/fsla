@@ -62,7 +62,8 @@
 // fold waits on those bytes beside its producer's arrival. THE WHOLE-ENTRY rows' copy carries the coefficients'
 // bytes too: a slot's 8 copies are issued when the slot is freed, its producer waits for their bytes, then expands
 // each entry's landed line in place -- no global load in its trips. Those rows' 16 columns are 40 MB that 16 boxes
-// each read; THE APART rows give each box its own expanded windows, 660 MB the cache does not hold.
+// each read; THE APART rows give each box its own expanded windows, 660 MB the cache does not hold; THE FRESH rows
+// keep the 16 columns and run 128 windows of their own addresses, read by their 16 boxes at once and never before.
 // see docs/internals/tools/lab.md#carry-window
 #include <chrono>
 
@@ -191,10 +192,16 @@ enum Roles : int {
   //: the whole-entry row with EACH BOX ITS OWN expanded windows, 660 MB of them: every list a copy of bytes no
   //: other box read and the cache does not hold, where the whole-entry row's 16 columns are 40 MB read by 16 boxes
   //: each -- what of that row is its bytes' being in the cache
-  kApart = kWhole | kHot
+  kApart = kWhole | kHot,
+  //: the whole-entry row with its 16 columns' windows NEVER READ BEFORE: a launch runs 128 windows of its own
+  //: addresses, 80 MB, so a window's bytes are read by its 16 boxes at once and are not in the cache when the
+  //: first asks -- what a stream written up front for a segment is
+  kFresh = kWhole | kNoLoads
 };
 template <int ROLES>
 constexpr bool apart = (ROLES & kApart) == kApart;
+template <int ROLES>
+constexpr bool fresh = (ROLES & kFresh) == kFresh;
 //: an image tile's pitch in bytes: the stores of a warp's lanes are two tiles apart
 template <int ROLES>
 constexpr int tile_of = 16 * (ROLES & kDenImage ? (ROLES & kPitch ? 161 : 155) : ROLES & kPitch ? (ROLES & kNoClock ? 155 : 154) : 137);
@@ -264,6 +271,9 @@ constexpr uint32_t listed_place(uint32_t source, uint32_t entry) {
 }
 //: the expanded row's lists and values are a sparse column's, 16 columns, a source its own
 constexpr int kColumns = 16;
+//: the windows of its own addresses a column's expanded buffer holds
+template <int ROLES>
+constexpr int expanded_windows = fresh<ROLES> ? 2 * kCallWindows : kCallWindows;
 //: an expanded list: its value tile and a brick of its coefficients' bytes
 constexpr int kExpandedList = kValueTile + kBrick;
 constexpr long long kExpandedWindow = static_cast<long long>(kLists) * kExpandedList;
@@ -535,7 +545,7 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
   uint32_t ahead[kHeld], sword[kHeld];
   //: the ahead row's: the lane's entry's place for the batch a window on
   uint32_t far[kHeld];
-  static_assert(!(ROLES & kListed) || (kParts == 1 && !(ROLES & (kBig | kNoLoads))));
+  static_assert(!(ROLES & kListed) || (kParts == 1 && !(ROLES & kBig) && (!(ROLES & kNoLoads) || fresh<ROLES>)));
   static_assert(!(ROLES & kTiledValues) || !(ROLES & kListed) || !(ROLES & kHot) || apart<ROLES>);
   constexpr bool kLanded = (ROLES & kExpanded) == kExpanded, kRaw = (ROLES & kWhole) == kWhole;
   //: the row that asks a window ahead, not the whole-entry row that shares its bit
@@ -619,7 +629,7 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
         constexpr int kBytes = kRaw ? kExpandedList : kValueTile;
         if (lane == 0) lab::mbar_expect(landed, kSlotLists * kBytes);
         const uint8_t* const from = reinterpret_cast<const uint8_t*>(values)
-                                    + (static_cast<long long>(key) * kCallWindows + w % kCallWindows) * kExpandedWindow
+                                    + (static_cast<long long>(key) * expanded_windows<ROLES> + w % expanded_windows<ROLES>) * kExpandedWindow
                                     + (slot * kSlotLists + lane) * kExpandedList;
         if (lane < kSlotLists) lab::bulk_load(base + (2 * box + slot) * kPoolBytes + lane * kTile, from, kBytes, landed);
         //: the whole-entry row's producer reads what landed: it waits for the bytes itself
@@ -1103,17 +1113,19 @@ static const uint32_t* tiled_values = nullptr;
 static const uint32_t* expanded_values = nullptr;
 //: the apart row's: a source its own expanded windows
 static const uint32_t* apart_values = nullptr;
+//: the fresh row's: the 16 columns' windows twice over, a launch's 128 its own addresses
+static const uint32_t* fresh_values = nullptr;
 //: the listed row's tables: the two levels' tile-major rows and the lists
 static const uint32_t* listed_tables = nullptr;
 
 template <int ROLES>
 void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t* dense, float* state, uint32_t* out) {
   using namespace carry_window;
-  constexpr int kTimed = 64;
+  constexpr int kTimed = fresh<ROLES> ? 128 : 64;
   const std::string side = (ROLES & 3) == kFold ? "the fold's side alone: producers and steps"
                            : (ROLES & 3) == kRead ? "the read side alone: the image, the readout and the drain"
                            : "the carry: both sides";
-  const std::string name = side + (ROLES & kNoLoads ? ", the producers' global loads taken out" : "")
+  const std::string name = side + ((ROLES & kNoLoads) && !fresh<ROLES> ? ", the producers' global loads taken out" : "")
                            + (ROLES & kNoAdds ? ", the drains' global adds taken out" : "")
                            + (ROLES & kNoImage ? ", the image's stores taken out" : "")
                            + (ROLES & kStill ? ", no fold warp running" : "")
@@ -1135,6 +1147,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + ((ROLES & kExpanded) == kExpanded ? ", the values landed from a column's expanded lists" : ROLES & kTiledValues ? ", the values tile-major in global memory" : "")
                            + ((ROLES & kWhole) == kWhole ? ", the coefficients' bytes landed with them" : ROLES & kAhead ? ", a window's rows asked for a window ahead" : "")
                            + (apart<ROLES> ? ", each box its own expanded windows" : "")
+                           + (fresh<ROLES> ? ", a column's windows never read before" : "")
                            + (ROLES & kListed ? ((ROLES & kHot) && !apart<ROLES> ? ", the fold's entries from lists, every window the same tokens" : ", the fold's entries from lists, a window's own tokens") : "")
                            + (ROLES & kPitch ? (ROLES & kDenImage ? ", the image's tiles 161 lines apart" : ROLES & kNoClock ? ", the image's tiles 155 lines apart" : ", the image's tiles 154 lines apart") : "")
                            + ((ROLES & kDen) == kDen ? ", the den: two more steps a slot, the readout's steps 72 columns and an fp32 a token"
@@ -1146,13 +1159,13 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
   constexpr int kLaunch = threads_of<ROLES>, kWarps = kLaunch >> 5;
   const auto kernel = window<ROLES>;
   //: the rows that read the values tile-major read the table laid so
-  values = apart<ROLES> ? apart_values : (ROLES & kExpanded) == kExpanded ? expanded_values : ROLES & kTiledValues ? tiled_values : values;
+  values = fresh<ROLES> ? fresh_values : apart<ROLES> ? apart_values : (ROLES & kExpanded) == kExpanded ? expanded_values : ROLES & kTiledValues ? tiled_values : values;
   dense = ROLES & kListed ? listed_tables : dense;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
   const size_t tokens = static_cast<size_t>(b.sms) * kOutWindows * kWindow;
   LAB_CHECK(cudaMemset(out, 0, (words + tokens) * 4));
-  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed | kHot | kAhead)) == (kFold | kRead)) {
+  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed | kHot | kAhead | (fresh<ROLES> ? kNoLoads : 0))) == (kFold | kRead)) {
     kernel<<<b.sms, kLaunch, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * state_words<ROLES>;
@@ -1357,13 +1370,13 @@ inline Buffers buffers(const lab::Bench& b) {
     //: the expanded values: column `c`'s window `w`'s list `a`'s tile -- brick `b` its 16 entries' channels `8 b`
     //: on, a line an entry, the 17th nothing -- from the entries' tokens as the lists place them
     //: `keys` sources' windows: the 16 columns' that the boxes share, or every source's own
-    const auto expand = [&](int keys) {
-      std::vector<uint32_t> wide(static_cast<size_t>(keys) * kCallWindows * kExpandedWindow / 4, 0);
+    const auto expand = [&](int keys, int copies) {
+      std::vector<uint32_t> wide(static_cast<size_t>(keys) * copies * kCallWindows * kExpandedWindow / 4, 0);
       for (int c = 0; c < keys; ++c)
-        for (int w = 0; w < kCallWindows; ++w)
+        for (int w = 0; w < copies * kCallWindows; ++w)
           for (int e = 0; e < kWindow; ++e) {
             const uint32_t t = listed_token(static_cast<uint32_t>(c), static_cast<uint32_t>(w * kWindow + e), false);
-            const size_t tile = ((static_cast<size_t>(c) * kCallWindows + w) * kExpandedWindow + (e / kEntries) * kExpandedList) / 4;
+            const size_t tile = ((static_cast<size_t>(c) * copies * kCallWindows + w) * kExpandedWindow + (e / kEntries) * kExpandedList) / 4;
             for (int br = 0; br < 8; ++br)
               for (int i = 0; i < 4; ++i)
                 wide[tile + (br * kBrick + (e % kEntries) * 16) / 4 + i] = host_values[static_cast<size_t>(t) * kRowWords + 4 * br + i];
@@ -1377,8 +1390,9 @@ inline Buffers buffers(const lab::Bench& b) {
       LAB_CHECK(cudaMemcpy(wdev, wide.data(), wide.size() * 4, cudaMemcpyHostToDevice));
       return static_cast<const uint32_t*>(wdev);
     };
-    expanded_values = expand(kColumns);
-    apart_values = expand(static_cast<int>(sources));
+    expanded_values = expand(kColumns, 1);
+    apart_values = expand(static_cast<int>(sources), 1);
+    fresh_values = expand(kColumns, 2);
   }
   LAB_CHECK(cudaMalloc(&dense, host_dense.size() * 4));
   LAB_CHECK(cudaMemcpy(dense, host_dense.data(), host_dense.size() * 4, cudaMemcpyHostToDevice));
@@ -1411,7 +1425,7 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kNoClock | kListed | kHot,
                     3 | kSuspend | kLean | kNoClock | kListed | kAhead, 1 | kExpanded,
                     3 | kSuspend | kLean | kNoClock | kExpanded, 1 | kWhole, 3 | kSuspend | kLean | kNoClock | kWhole,
-                    1 | kApart, 3 | kSuspend | kLean | kNoClock | kApart}) {
+                    1 | kApart, 3 | kSuspend | kLean | kNoClock | kApart, 1 | kFresh, 3 | kSuspend | kLean | kNoClock | kFresh}) {
     const std::string k = lab::kernel("carry_window::window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     //: the ahead row's asks are in its binary: 6 a batch, at the producers' two sites
@@ -1522,5 +1536,7 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole>(b, waits, values, dense, state, out);
   run<kFold | kApart>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kApart>(b, waits, values, dense, state, out);
+  run<kFold | kFresh>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kFresh>(b, waits, values, dense, state, out);
   return 0;
 }

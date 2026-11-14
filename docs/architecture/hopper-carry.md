@@ -87,9 +87,12 @@ window, and each entry's token and byte were computed, not read.
 ## Its price
 
 At the hardest cell measured -- each side sparse on a different level, 256 by 256 leaves, 4 live digits a token --
-with no clock inside a role: 823 SM-cycles a token for the synthetic entries with every table in cache, the upside;
-1,206 with the fold's entries from lists and a window's own tokens, the readout still synthetic. The price is the
-second or more (CONSTITUTION R22.2). The den is 5% of the window; the intra, a kernel of its own launched beside
+with no clock inside a role, the readout on synthetic readers in every figure
+([`lab/carry_window.md`](../lab/carry_window.md)): 817 SM-cycles a token for the synthetic entries with every table
+in cache; 1,235 with the fold's entries gathered from lists by the carry itself, a window's own tokens; 727 with
+whole entries landed from a stream the cache holds and 967 from one past it, to which the stream's pass adds
+([`lab/gather_pass.md`](../lab/gather_pass.md)). The price is a figure whose bytes are not assumed in the cache
+(CONSTITUTION R22.2). The den is 5% of the window; the intra, a kernel of its own launched beside
 the carry, a fifth of it ([`lab/intra_window.md`](../lab/intra_window.md), [`lab/call_pair.md`](../lab/call_pair.md)).
 A dense side is unmeasured on hopper.
 
