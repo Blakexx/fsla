@@ -71,7 +71,8 @@
 // issued from those registers -- none ahead with two slots of 8 tiles a box, TWO SLOTS AHEAD with four of 4 -- its
 // own slot's header stored, the wait on its bytes, a trip of 32 entries a pair of tiles (a landed line's load, its
 // rounds, two stores), the arrival. A fold's slot is the wait, the header's three words, then each list's steps, a
-// loop a list.
+// loop a list. With TWO PRODUCERS A BOX the call's even slots are one's trips and its odd ones the other's: the slot
+// two on is each one's own next. That row is the fold's side alone and unchecked, as every fold-alone row is.
 // see docs/internals/tools/lab.md#carry-window
 #include <chrono>
 
