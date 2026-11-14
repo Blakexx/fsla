@@ -149,6 +149,9 @@ chains of 2. A thread's 32 sums are a channel's values on two tokens each: it st
 panel line, 32 stores of 2 bytes where the other form stores 16 words. These rows' folds are at 168 registers a
 thread and their serve warps at 96 (at 160 the fold's own expansion spills a product), and every role marks its
 clock in global memory.
+A second pair gives the mirrored readout A CHUNK OF 8 DIGITS: a pass is two tile groups -- both awaited, both
+expanded, their 16 steps one commit group, both panels written -- so a window is two passes of the readout's
+fixed work, not four; 64 sums a thread, the readout at 104 registers, the folds at 160 and the serve warps at 88.
 
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
