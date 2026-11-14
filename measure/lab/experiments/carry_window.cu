@@ -509,8 +509,8 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
   //: the packed row's: the slots its steps have used, a slot and a phase each
   uint32_t uses = 0;
   lab::WarpSpan clock;
-  //: where the readout keeps a sum a box every role marks its clock in global memory: a held start spills
-  if constexpr (ROLES & kTwoSums) lab::WarpMark::start(times);
+  //: in the sum-a-box and the mirrored rows a fold marks its clock in global memory: there its held start spills
+  if constexpr (ROLES & (kTwoSums | kMirror)) lab::WarpMark::start(times);
   else clock.start();
   if constexpr (fold_issues<ROLES>) {
     issue(0, 0);
@@ -691,7 +691,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
 #pragma unroll
     for (int i = 0; i < 4; ++i) lab::wg_hold(den[i]);
   }
-  if constexpr (ROLES & kTwoSums) lab::WarpMark::stop(times);
+  if constexpr (ROLES & (kTwoSums | kMirror)) lab::WarpMark::stop(times);
   else clock.stop(times);
   tell(waits, on_read, on_fill);
   //: THE STATE OUT, for the checked call alone: 128 stores a thread, each instruction's lanes on 32 lines, issued
@@ -1083,8 +1083,7 @@ __device__ __forceinline__ void read_mirror(uint8_t* smem, uint32_t base, long l
   //: the lane's two lines of its digit's tile on its box, and its sums' rows of a panel
   uint8_t* const lines = smem + kCoefAt + (2 * warp + box) * kCoefTile + ((n >> 3) * 17 + (n & 7)) * 16;
   const uint32_t mine = lab::held(static_cast<uint32_t>(kPanelAt + 2 * t * kRowBytes + 2 * (16 * warp + q)));
-  lab::WarpSpan clock;
-  clock.start();
+  lab::WarpMark::start(times);
 #pragma unroll 1
   for (int w = 0; w < windows; ++w) {
 #pragma unroll 1
@@ -1142,7 +1141,7 @@ __device__ __forceinline__ void read_mirror(uint8_t* smem, uint32_t base, long l
       if (lane == 0) lab::mbar_arrive(bars + kPanelReady + 8 * (c & 1));
     }
   }
-  clock.stop(times);
+  lab::WarpMark::stop(times);
   tell(waits, on_image, on_drain, in_steps, in_form);
 }
 
