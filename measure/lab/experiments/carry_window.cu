@@ -186,8 +186,14 @@ enum Roles : int {
   //: THE WHOLE-ENTRY row: the pass has written an entry's COEFFICIENT BYTES beside its values too -- a list's ninth
   //: brick, a line an entry's 16 dense bytes and the 17th its 16 entries' sparse bytes -- so a list is one bulk copy
   //: and its producer loads nothing from global memory: it expands the landed bytes where they lie
-  kWhole = kExpanded | kAhead
+  kWhole = kExpanded | kAhead,
+  //: the whole-entry row with EACH BOX ITS OWN expanded windows, 660 MB of them: every list a copy of bytes no
+  //: other box read and the cache does not hold, where the whole-entry row's 16 columns are 40 MB read by 16 boxes
+  //: each -- what of that row is its bytes' being in the cache
+  kApart = kWhole | kHot
 };
+template <int ROLES>
+constexpr bool apart = (ROLES & kApart) == kApart;
 //: an image tile's pitch in bytes: the stores of a warp's lanes are two tiles apart
 template <int ROLES>
 constexpr int tile_of = 16 * (ROLES & kDenImage ? (ROLES & kPitch ? 161 : 155) : ROLES & kPitch ? (ROLES & kNoClock ? 155 : 154) : 137);
@@ -529,12 +535,12 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
   //: the ahead row's: the lane's entry's place for the batch a window on
   uint32_t far[kHeld];
   static_assert(!(ROLES & kListed) || (kParts == 1 && !(ROLES & (kBig | kNoLoads))));
-  static_assert(!(ROLES & kTiledValues) || !(ROLES & kListed) || !(ROLES & kHot));
+  static_assert(!(ROLES & kTiledValues) || !(ROLES & kListed) || !(ROLES & kHot) || apart<ROLES>);
   constexpr bool kLanded = (ROLES & kExpanded) == kExpanded, kRaw = (ROLES & kWhole) == kWhole;
   //: the row that asks a window ahead, not the whole-entry row that shares its bit
   constexpr bool kAsks = (ROLES & kAhead) && !kLanded;
   //: the lists' and the expanded values' key: the source, or its sparse column
-  const uint32_t key = kLanded ? source % kColumns : source;
+  const uint32_t key = kLanded && !apart<ROLES> ? source % kColumns : source;
   const uint16_t* const lists = reinterpret_cast<const uint16_t*>(reinterpret_cast<const uint8_t*>(dense) + kListsAt)
                                 + static_cast<long long>(key) * kListEntries;
   const auto load_places = [&](int n, int h) {
@@ -1094,6 +1100,8 @@ inline float half_to_float(uint16_t h) {
 static const uint32_t* tiled_values = nullptr;
 //: the expanded row's values: a sparse column's lists' value tiles, a window after a window
 static const uint32_t* expanded_values = nullptr;
+//: the apart row's: a source its own expanded windows
+static const uint32_t* apart_values = nullptr;
 //: the listed row's tables: the two levels' tile-major rows and the lists
 static const uint32_t* listed_tables = nullptr;
 
@@ -1125,7 +1133,8 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kNoClock ? ", no clock inside a role" : "")
                            + ((ROLES & kExpanded) == kExpanded ? ", the values landed from a column's expanded lists" : ROLES & kTiledValues ? ", the values tile-major in global memory" : "")
                            + ((ROLES & kWhole) == kWhole ? ", the coefficients' bytes landed with them" : ROLES & kAhead ? ", a window's rows asked for a window ahead" : "")
-                           + (ROLES & kListed ? (ROLES & kHot ? ", the fold's entries from lists, every window the same tokens" : ", the fold's entries from lists, a window's own tokens") : "")
+                           + (apart<ROLES> ? ", each box its own expanded windows" : "")
+                           + (ROLES & kListed ? ((ROLES & kHot) && !apart<ROLES> ? ", the fold's entries from lists, every window the same tokens" : ", the fold's entries from lists, a window's own tokens") : "")
                            + (ROLES & kPitch ? (ROLES & kDenImage ? ", the image's tiles 161 lines apart" : ROLES & kNoClock ? ", the image's tiles 155 lines apart" : ", the image's tiles 154 lines apart") : "")
                            + ((ROLES & kDen) == kDen ? ", the den: two more steps a slot, the readout's steps 72 columns and an fp32 a token"
                               : ROLES & kDen ? std::string(", the den's parts alone: its fold steps")
@@ -1136,7 +1145,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
   constexpr int kLaunch = threads_of<ROLES>, kWarps = kLaunch >> 5;
   const auto kernel = window<ROLES>;
   //: the rows that read the values tile-major read the table laid so
-  values = (ROLES & kExpanded) == kExpanded ? expanded_values : ROLES & kTiledValues ? tiled_values : values;
+  values = apart<ROLES> ? apart_values : (ROLES & kExpanded) == kExpanded ? expanded_values : ROLES & kTiledValues ? tiled_values : values;
   dense = ROLES & kListed ? listed_tables : dense;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
@@ -1190,8 +1199,8 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
           }
         for (int box = 0; box < 2; ++box)
           for (int e = 0; e < kWindow; ++e) {
-            const int t = static_cast<int>(ROLES & kListed ? listed_token((ROLES & kExpanded) == kExpanded ? (blk * 2 + box) % kColumns : blk * 2 + box,
-                                                                          w * kWindow + e, ROLES & kHot)
+            const int t = static_cast<int>(ROLES & kListed ? listed_token((ROLES & kExpanded) == kExpanded && !apart<ROLES> ? (blk * 2 + box) % kColumns : blk * 2 + box,
+                                                                          w * kWindow + e, (ROLES & kHot) && !apart<ROLES>)
                                                            : token_of(blk * 2 + box, w * kWindow + e)),
                       a = e / kEntries;
             for (int m = 0; m < kChannels; ++m)
@@ -1346,24 +1355,29 @@ inline Buffers buffers(const lab::Bench& b) {
     listed_tables = reinterpret_cast<const uint32_t*>(dev);
     //: the expanded values: column `c`'s window `w`'s list `a`'s tile -- brick `b` its 16 entries' channels `8 b`
     //: on, a line an entry, the 17th nothing -- from the entries' tokens as the lists place them
-    std::vector<uint32_t> wide(static_cast<size_t>(kColumns) * kCallWindows * kExpandedWindow / 4, 0);
-    for (int c = 0; c < kColumns; ++c)
-      for (int w = 0; w < kCallWindows; ++w)
-        for (int e = 0; e < kWindow; ++e) {
-          const uint32_t t = listed_token(static_cast<uint32_t>(c), static_cast<uint32_t>(w * kWindow + e), false);
-          const size_t tile = ((static_cast<size_t>(c) * kCallWindows + w) * kExpandedWindow + (e / kEntries) * kExpandedList) / 4;
-          for (int br = 0; br < 8; ++br)
-            for (int i = 0; i < 4; ++i)
-              wide[tile + (br * kBrick + (e % kEntries) * 16) / 4 + i] = host_values[static_cast<size_t>(t) * kRowWords + 4 * br + i];
-          //: the ninth brick: the entry's 16 dense bytes a line, and the list's 16 sparse bytes the 17th
-          uint8_t* const raw = reinterpret_cast<uint8_t*>(wide.data()) + tile * 4 + kValueTile;
-          for (int d = 0; d < 16; ++d) raw[(e % kEntries) * 16 + d] = static_cast<uint8_t>(dense_of(static_cast<int>(t), d));
-          raw[16 * kEntries + e % kEntries] = static_cast<uint8_t>(sparse_of(static_cast<int>(t)));
-        }
-    uint32_t* wdev = nullptr;
-    LAB_CHECK(cudaMalloc(&wdev, wide.size() * 4));
-    LAB_CHECK(cudaMemcpy(wdev, wide.data(), wide.size() * 4, cudaMemcpyHostToDevice));
-    expanded_values = wdev;
+    //: `keys` sources' windows: the 16 columns' that the boxes share, or every source's own
+    const auto expand = [&](int keys) {
+      std::vector<uint32_t> wide(static_cast<size_t>(keys) * kCallWindows * kExpandedWindow / 4, 0);
+      for (int c = 0; c < keys; ++c)
+        for (int w = 0; w < kCallWindows; ++w)
+          for (int e = 0; e < kWindow; ++e) {
+            const uint32_t t = listed_token(static_cast<uint32_t>(c), static_cast<uint32_t>(w * kWindow + e), false);
+            const size_t tile = ((static_cast<size_t>(c) * kCallWindows + w) * kExpandedWindow + (e / kEntries) * kExpandedList) / 4;
+            for (int br = 0; br < 8; ++br)
+              for (int i = 0; i < 4; ++i)
+                wide[tile + (br * kBrick + (e % kEntries) * 16) / 4 + i] = host_values[static_cast<size_t>(t) * kRowWords + 4 * br + i];
+            //: the ninth brick: the entry's 16 dense bytes a line, and the list's 16 sparse bytes the 17th
+            uint8_t* const raw = reinterpret_cast<uint8_t*>(wide.data()) + tile * 4 + kValueTile;
+            for (int d = 0; d < 16; ++d) raw[(e % kEntries) * 16 + d] = static_cast<uint8_t>(dense_of(static_cast<int>(t), d));
+            raw[16 * kEntries + e % kEntries] = static_cast<uint8_t>(sparse_of(static_cast<int>(t)));
+          }
+      uint32_t* wdev = nullptr;
+      LAB_CHECK(cudaMalloc(&wdev, wide.size() * 4));
+      LAB_CHECK(cudaMemcpy(wdev, wide.data(), wide.size() * 4, cudaMemcpyHostToDevice));
+      return static_cast<const uint32_t*>(wdev);
+    };
+    expanded_values = expand(kColumns);
+    apart_values = expand(static_cast<int>(sources));
   }
   LAB_CHECK(cudaMalloc(&dense, host_dense.size() * 4));
   LAB_CHECK(cudaMemcpy(dense, host_dense.data(), host_dense.size() * 4, cudaMemcpyHostToDevice));
@@ -1395,7 +1409,8 @@ int main(int argc, char** argv) {
                     1 | kListed, 3 | kSuspend | kLean | kNoClock | kListed, 1 | kListed | kHot,
                     3 | kSuspend | kLean | kNoClock | kListed | kHot,
                     3 | kSuspend | kLean | kNoClock | kListed | kAhead, 1 | kExpanded,
-                    3 | kSuspend | kLean | kNoClock | kExpanded, 1 | kWhole, 3 | kSuspend | kLean | kNoClock | kWhole}) {
+                    3 | kSuspend | kLean | kNoClock | kExpanded, 1 | kWhole, 3 | kSuspend | kLean | kNoClock | kWhole,
+                    1 | kApart, 3 | kSuspend | kLean | kNoClock | kApart}) {
     const std::string k = lab::kernel("carry_window::window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     //: the ahead row's asks are in its binary: 6 a batch, at the producers' two sites
@@ -1504,5 +1519,7 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kLean | kNoClock | kExpanded>(b, waits, values, dense, state, out);
   run<kFold | kWhole>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole>(b, waits, values, dense, state, out);
+  run<kFold | kApart>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kApart>(b, waits, values, dense, state, out);
   return 0;
 }

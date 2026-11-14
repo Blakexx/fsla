@@ -97,9 +97,10 @@ WHAT IT SHOWS.
 - WITH THE CARD UNLOADED IT IS 163, AND THERE IT IS ITS OWN CTA THAT BINDS. On 16 or on 8 multiprocessors the stream is
   163 and 162 at the sparse cell (167 on a quarter of them), its flat form 113: the cost stops falling with
   the load, and a third of it is the moving of lines.
-- A RING THE CACHE HOLDS BUYS NOTHING. At the sparse cell, where 16 CTAs' rings fit the cache and their new
-  regions do not, the two cost the same to a cycle a token (81.0 and 81.5; 81.5 and 81.9). What a loaded card
-  slows is not where the planes come to rest.
+- A RING THE CACHE HOLDS DOES NOT MOVE THE PASS'S WRITES ON AN UNLOADED CARD, at the sparse cell: there 16 CTAs'
+  rings fit the cache and their new regions do not, and the moved forms cost the same (the table's sparse rows).
+  At 32 live digits neither footprint fits and the flat forms' rings read a few cycles a token under their new
+  regions. NOT ASKED: a ring on a loaded card, where the card's memory binds; a reader of the ring; a discard.
 - SIX BUFFERS OUT LOSE TO THREE everywhere (the arranged dense plane): a copy out half the size, twice as often,
   costs more, and more of them in flight buys nothing. With the flat form at 114 thousand cycles a window for
   some 2.7 MB in and out, a unit's trip -- its barrier, its list a unit ahead, its copy out waited on -- is the
