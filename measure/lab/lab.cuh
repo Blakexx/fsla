@@ -598,10 +598,17 @@ __device__ __forceinline__ void cluster_add_u64(uint32_t a, long long v) {
 
 //: A KERNEL'S DEMANGLED NAME AS AN EXPECTATION'S PATTERN: `kernel("tax", {3, 17})` matches
 //: `ns::tax<(int)3, (int)17>(...)`, the spelling `cu++filt` gives integer template arguments.
-inline std::string kernel(const std::string& name, std::initializer_list<int> args) {
+inline std::string kernel(const std::string& name, std::initializer_list<long long> args) {
   std::string out = name + "<";
   int i = 0;
-  for (int a : args) out += std::string(i++ ? ", " : "") + "\\(int\\)" + std::to_string(a);
+  //: a template's integer argument, as the demangler writes an `int`'s or a `long long`'s
+  for (long long a : args) out += std::string(i++ ? ", " : "") + "\\((?:int|long long)\\)" + std::to_string(a);
+  return out + ">\\(";
+}
+inline std::string kernel(const std::string& name, std::initializer_list<int> args) {
+  std::vector<long long> wide(args.begin(), args.end());
+  std::string out = name + "<";
+  for (size_t i = 0; i < wide.size(); ++i) out += std::string(i ? ", " : "") + "\\((?:int|long long)\\)" + std::to_string(wide[i]);
   return out + ">\\(";
 }
 
