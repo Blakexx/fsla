@@ -1131,7 +1131,7 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       //: digit `j`'s step on each box's tile: its tokens are warp `j`'s rows, every other warp's A nothing
       if constexpr (ROLES & (kLean | kFive)) {
         //: TWO sets of A, a digit's two steps a commit group: a set is written again once the group two back,
-        //: which read it, is done
+        //: which read it, is done -- or, with a sum a box, ONE set, written again once the group before is done
         uint32_t rows[2][2][4];
         lab::wg_fence();
 #pragma unroll
