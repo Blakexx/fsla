@@ -166,7 +166,11 @@ enum Roles : int {
   kListed = 268435456,
   //: the listed row with EVERY WINDOW THE SAME 1,024 TOKENS: its rows stay in cache, where the listed row's are
   //: new each window -- what of the listed row is its loads' code and what its rows' arrival
-  kHot = 536870912
+  kHot = 536870912,
+  //: the listed row whose producers ASK FOR A WINDOW'S ROWS A WINDOW AHEAD: for the batch a window on, loads nobody
+  //: reads of each entry's values (4 words, 32 bytes apart), its dense bytes and its sparse word, from that
+  //: batch's places, themselves loaded a batch before
+  kAhead = 1073741824
 };
 //: an image tile's pitch in bytes: the stores of a warp's lanes are two tiles apart
 template <int ROLES>
@@ -499,11 +503,22 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
   //: THE LISTED row's: the lane's entry's place in its window for the batch a half loads next, and the word of
   //: its sparse row that holds its list's byte
   uint32_t ahead[kHeld], sword[kHeld];
+  //: the ahead row's: the lane's entry's place for the batch a window on
+  uint32_t far[kHeld];
   static_assert(!(ROLES & kListed) || (kParts == 1 && !(ROLES & (kBig | kTiledValues | kNoLoads))));
   const uint16_t* const lists = reinterpret_cast<const uint16_t*>(reinterpret_cast<const uint8_t*>(dense) + kListsAt)
                                 + static_cast<long long>(source) * kListEntries;
   const auto load_places = [&](int n, int h) {
     ahead[h] = lists[(n * kFill + lane) % kListEntries];
+  };
+  //: THE AHEAD row's asks: batch `n`'s entries' rows, a lane an entry, from the places `far` holds
+  const auto ask = [&](int n, int h) {
+    const uint32_t tb = (ROLES & kHot ? 0u : static_cast<uint32_t>(n / (kWindow / kFill) % kCallWindows) * kWindowTokens) + far[h];
+    const uint8_t* const row = reinterpret_cast<const uint8_t*>(values) + static_cast<long long>(tb) * (kRowWords * 4);
+#pragma unroll
+    for (int i = 0; i < 4; ++i) lab::touch(row + 32 * i);
+    lab::touch(boxes + level_line(tb, static_cast<int>(source & 15)));
+    lab::touch(reinterpret_cast<const uint32_t*>(boxes) + kLevelBytes / 4 + level_line(tb, static_cast<int>(source >> 4 & 15)) * 4);
   };
   //: batch `n`'s window's first token, and the lane's entry's list in its box
   const auto first_of = [&](int n) {
@@ -550,6 +565,7 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
     load_bytes(batch_of(h), h);
     //: the places of the batch a half loads next, a batch ahead of the loads they address
     if constexpr (ROLES & kListed) load_places(batch_of(h + kHeld), h);
+    if constexpr (ROLES & kAhead) far[h] = lists[(batch_of(h + 2 * kOwn) * kFill + lane) % kListEntries];
   }
   lab::WarpSpan clock;
   if constexpr (ROLES & kFive) lab::WarpMark::start(times);
@@ -608,6 +624,11 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
         load_bytes(batch_of(g + kHeld), h);
         //: the places of the batch after that one, once this trip's loads have taken theirs
         if constexpr (ROLES & kListed) load_places(batch_of(g + 2 * kHeld), h);
+        if constexpr (ROLES & kAhead) {
+          //: the batch a window on: its rows asked for with the places loaded a trip ago, then the next's places
+          ask(batch_of(g + 2 * kOwn), h);
+          far[h] = lists[(batch_of(g + 2 * kOwn + kHeld) * kFill + lane) % kListEntries];
+        }
         //: a rolled loop: a part's addresses are formed in its trip
 #pragma unroll 1
         for (int part_at = 1; part_at < kParts; ++part_at) part_out(part_at);
@@ -1051,6 +1072,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kAligned ? ", the sides' carves equal: an image tile a list, its lines four threads' words" : "")
                            + (ROLES & kNoClock ? ", no clock inside a role" : "")
                            + (ROLES & kTiledValues ? ", the values tile-major in global memory" : "")
+                           + (ROLES & kAhead ? ", a window's rows asked for a window ahead" : "")
                            + (ROLES & kListed ? (ROLES & kHot ? ", the fold's entries from lists, every window the same tokens" : ", the fold's entries from lists, a window's own tokens") : "")
                            + (ROLES & kPitch ? (ROLES & kDenImage ? ", the image's tiles 161 lines apart" : ROLES & kNoClock ? ", the image's tiles 155 lines apart" : ", the image's tiles 154 lines apart") : "")
                            + ((ROLES & kDen) == kDen ? ", the den: two more steps a slot, the readout's steps 72 columns and an fp32 a token"
@@ -1068,7 +1090,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
   const size_t tokens = static_cast<size_t>(b.sms) * kOutWindows * kWindow;
   LAB_CHECK(cudaMemset(out, 0, (words + tokens) * 4));
-  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed | kHot)) == (kFold | kRead)) {
+  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed | kHot | kAhead)) == (kFold | kRead)) {
     kernel<<<b.sms, kLaunch, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * state_words<ROLES>;
@@ -1298,7 +1320,8 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kNoClock | kPitch, 3 | kSuspend | kLean | kNoClock | kTiledValues,
                     3 | kSuspend | kLean | kNoClock | kBig, 3 | kSuspend | kLean | kNoClock | kBig | kTiledValues,
                     1 | kListed, 3 | kSuspend | kLean | kNoClock | kListed, 1 | kListed | kHot,
-                    3 | kSuspend | kLean | kNoClock | kListed | kHot}) {
+                    3 | kSuspend | kLean | kNoClock | kListed | kHot, 1 | kListed | kAhead,
+                    3 | kSuspend | kLean | kNoClock | kListed | kAhead}) {
     const std::string k = lab::kernel("carry_window::window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     b.expect(k, "HGMMA", "==",
@@ -1400,5 +1423,7 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kLean | kNoClock | kListed>(b, waits, values, dense, state, out);
   run<kFold | kListed | kHot>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kListed | kHot>(b, waits, values, dense, state, out);
+  run<kFold | kListed | kAhead>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kListed | kAhead>(b, waits, values, dense, state, out);
   return 0;
 }

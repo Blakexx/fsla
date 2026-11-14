@@ -494,6 +494,13 @@ __device__ __forceinline__ void red_add_f16x2(uint32_t* dst, uint32_t v) {
   asm volatile("red.global.add.noftz.f16x2 [%0], %1;" : : "l"(dst), "r"(v) : "memory");
 }
 
+//: A LOAD NOBODY READS: the word at `p` is asked of global memory and its thread does not wait for it -- what brings
+//: a line into the cache ahead of the load that uses it
+__device__ __forceinline__ void touch(const void* p) {
+  uint32_t unread;
+  asm volatile("ld.global.u32 %0, [%1];" : "=r"(unread) : "l"(p) : "memory");
+}
+
 //: one fp32 added into global memory by its thread
 __device__ __forceinline__ void red_add_f32(float* dst, float v) {
   asm volatile("red.global.add.f32 [%0], %1;" : : "l"(dst), "f"(v) : "memory");
