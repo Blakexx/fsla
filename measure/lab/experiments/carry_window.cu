@@ -306,7 +306,12 @@ constexpr int value_parts = ROLES & kFive ? kFiveParts : 1;
 template <long long ROLES>
 constexpr int read_regs = ROLES & kFive ? kFiveReadRegs : (ROLES & kLean) && (ROLES & (kDenSplit | kWide)) ? 88 : ROLES & kLean ? 80 : kReadRegs;
 template <long long ROLES>
-constexpr int serve_regs = (ROLES & kLean) && (ROLES & (kWide | kDenSplit)) ? 104 : ROLES & kLean ? 112 : kServeRegs;
+constexpr int serve_regs = ((ROLES & kLean) && (ROLES & (kWide | kDenSplit)) ? 104 : ROLES & kLean ? 112 : kServeRegs)
+                           - ((ROLES & kWhole) == kWhole && (ROLES & kNoMath) == 0 && (ROLES & kFour) && (ROLES & kFoldIssues) ? 16 : 0);
+//: a fold that issues its own copies holds their addresses beside its state: 8 registers a thread more, the serve
+//: warpgroup's, whose warps hold no entry
+template <long long ROLES>
+constexpr int fold_regs = (ROLES & kWhole) == kWhole && (ROLES & kNoMath) == 0 && (ROLES & kFour) && (ROLES & kFoldIssues) ? kFoldRegs + 8 : kFoldRegs;
 static_assert(read_regs<kLean | kWide> + serve_regs<kLean | kWide> == kReadRegs + kServeRegs
               && read_regs<kLean | kBig> + serve_regs<kLean | kBig> == kReadRegs + kServeRegs);
 static_assert(read_regs<kLean | kDen> + serve_regs<kLean | kDen> == kReadRegs + kServeRegs);
@@ -1347,7 +1352,7 @@ __global__ void __launch_bounds__(threads_of<ROLES>, 1)
   //: folds' raise is the release of the readout and of the producers' and drains' warpgroup
   //: (docs/lab/carry_window.md)
   if (tid < kReadAt) {
-    lab::regs_up<kFoldRegs>();
+    lab::regs_up<fold_regs<ROLES>>();
     if constexpr (ROLES & kStill) {
       idle_role(times, waits);
       //: present and idle until the readout is done
