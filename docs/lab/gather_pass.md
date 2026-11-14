@@ -99,8 +99,8 @@ WHAT IT SHOWS.
   the load, and a third of it is the moving of lines.
 - A RING THE CACHE HOLDS DOES NOT MOVE THE PASS'S WRITES ON AN UNLOADED CARD, at the sparse cell: there 16 CTAs'
   rings fit the cache and their new regions do not, and the moved forms cost the same (the table's sparse rows).
-  At 32 live digits neither footprint fits and the flat forms' rings read a few cycles a token under their new
-  regions. NOT ASKED: a ring on a loaded card, where the card's memory binds; a reader of the ring; a discard.
+  At 32 live digits neither footprint fits; the values kernel's flat rings read a few cycles a token under its
+  new regions and the dense kernel's the same as theirs. NOT ASKED: a ring on a loaded card, where the card's memory binds; a reader of the ring; a discard.
 - SIX BUFFERS OUT LOSE TO THREE everywhere (the arranged dense plane): a copy out half the size, twice as often,
   costs more, and more of them in flight buys nothing. With the flat form at 114 thousand cycles a window for
   some 2.7 MB in and out, a unit's trip -- its barrier, its list a unit ahead, its copy out waited on -- is the

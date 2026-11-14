@@ -61,7 +61,8 @@
 // copy from a buffer a pass before the carry is taken to have written, a column's lists contiguous a window; the
 // fold waits on those bytes beside its producer's arrival. THE WHOLE-ENTRY rows' copy carries the coefficients'
 // bytes too: a slot's 8 copies are issued when the slot is freed, its producer waits for their bytes, then expands
-// each entry's landed line in place -- no global load in its trips.
+// each entry's landed line in place -- no global load in its trips. Those rows' 16 columns are 40 MB that 16 boxes
+// each read; THE APART rows give each box its own expanded windows, 660 MB the cache does not hold.
 // see docs/internals/tools/lab.md#carry-window
 #include <chrono>
 
