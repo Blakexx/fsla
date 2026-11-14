@@ -25,7 +25,11 @@
 // region a round -- the same reads, the planes past the cache.
 // THE BLOCK STREAM, ITS LISTS THE PASS'S (`blocks`): the pass is handed the level's mask digit-major and no list; a
 // block's 16 lists are made a warp a digit in 32 fixed trips, and a unit is a slot's image as the carry lands it --
-// tables, then each list's value runs as long as the list -- with its plan.
+// tables, then each list's value runs as long as the list -- with its plan. ITS TIMELINE: a window's values and its
+// first block's mask and rows are asked before the first trip and waited on in it; a later block's are asked a
+// unit ahead. A block's first unit is the lists (a barrier), the layout by one warp (a barrier), the image and the
+// writers' fence (the CTA's barrier); its second the last two. Thread 0 issues a unit's copy out and its plan at
+// the next trip and keeps one copy in flight, three buffers in turn.
 // TIMELINE: no MMA. A trip is a unit. Thread 0 issues the copy out of the unit before (each writer fenced its own
 // lines before the barrier), then the copies in of the unit AFTER this one -- its step list and, when it opens a
 // block, the block's rows -- a unit ahead of their use; every thread waits on this unit's barriers, moves its
@@ -422,9 +426,9 @@ __global__ void __launch_bounds__(THREADS, 1)
         }
         __syncthreads();
       }
-      //: THE SLOT'S LAYOUT: its 8 lists' entries, runs' lines and pads before each, by every warp's scans; the
-      //: first warp's lanes store them
-      {
+      //: THE SLOT'S LAYOUT, once a CTA: its 8 lists' entries, runs' lines and pads before each, by the first warp's
+      //: scans, published behind the unit's barrier
+      if (warp == 0) {
         const uint32_t n = lane < 8 ? count[8 * h + lane] : 0u, lines = static_cast<uint32_t>(spread(static_cast<int>(n)));
         const uint32_t entries = scan(n, lane), dense = scan(lines, lane), pads = scan(lines - n, lane);
         if (tid < 8) layout[tid] = make_uint4(entries - n, kTables + 8 * (entries - n), dense - lines, pads - (lines - n));

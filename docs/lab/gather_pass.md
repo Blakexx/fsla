@@ -29,8 +29,8 @@ kernels with CTAs on A QUARTER of the multiprocessors, and the dense plane with 
 (four copies out in flight where three buffers allow one). Every line and pad of each moved form's first round is
 checked on every multiprocessor, each byte of the tables its own position's.
 
-THE STREAM, TOKEN-ORDERED (not the ruled stream, which is laid as the carry's steps --
-[`hopper-carry.md`](../architecture/hopper-carry.md#the-gather-stream) -- and whose pass is not built). The same
+THE STREAM, TOKEN-ORDERED (not the ruled stream, which is laid as the carry's blocks --
+[`hopper-carry.md`](../architecture/hopper-carry.md#the-gather-stream) -- and is the block stream's rows below). The same
 two kernels fed lists BY SPARSE BLOCK, not by digit: a block's live tokens once each, in token order, padded to 16
 only at the block's end. The values kernel writes RECORDS -- a token's 8 value lines and then its line of the
 block's 16 sparse bytes, 9 lines a token -- that the block's CTAs share; the dense plane is the block-major one, so a
@@ -43,16 +43,13 @@ cache of 50 and their new regions 240; at 32 live digits neither fits).
 
 THE BLOCK STREAM, ITS LISTS THE PASS'S OWN (the ruled stream's shared part --
 [`hopper-carry.md`](../architecture/hopper-carry.md#the-gather-stream); 4 to 5 live digits a token, 512 threads).
-The pass is handed the sparse level's MASK digit-major -- a digit's 1,024 bits of a window, 32 words -- and no
-list. A block of 16 digits at a time, a warp a digit and a lane 32 tokens' bits: a lane's live tokens go to their
-ranks in the digit's list, the lanes' counts before it by the warp's scan and the bits under each by a count, 32
-fixed trips whatever is live. A UNIT IS A SLOT, 8 digits' lists: every warp scans the slot's layout, and a thread
-a (list, place) writes the carry's image -- an entry's 8 value lines to its list's runs, a brick a run, as long as
-the list; its word (its dense line and its second run's line in a CTA's dense run); its sparse byte; a pad's
-line; 16 threads a step's four halves; the head -- then one copy out and the slot's plan, its first line and
-its bytes. Every word, byte, line, pad, step and plan of the first round is checked on every multiprocessor
-against lists the host makes from the same mask. The lab's bounds: a list is at most 32 entries and a slot 150
-(this cell's are 16 to 19 and 128 to 143). NOT IN THE ROW: the dense lines, a run a CTA's dense block.
+THE QUESTION: every row above is fed lists the host made, and the one pass that made its own cost twice the
+carry. What does the ruled stream cost when the pass is handed THE MASK ALONE and writes what the carry lands --
+a slot's tables, its lists' value runs as long as the lists, its sparse bytes, its plan? The mask is digit-major,
+a digit's 1,024 bits of a window; the pass turns it around in shared memory, a fixed count of trips whatever is
+live, and no list crosses global memory. Checked on every multiprocessor against lists the host makes from the
+same mask. The lab's bounds: a list is at most 32 entries and a slot 150 (this cell's are 16 to 19 and 128 to
+143). NOT IN THE ROW: the dense lines, a run a CTA's dense block.
 
 MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance 60703552, driver 580.173.02; 2026-11-14, the experiment at
 f6a6f250; 7 repetitions; every arranged line and pad of every moved form, and every word, byte, line,

@@ -28,9 +28,10 @@ share it and costs the carry the same whether the cache held it before or not
 ([`lab/carry_window.md`](../lab/carry_window.md)) -- WHILE those boxes read it close together: boxes that drift
 apart, as their read sides' counts differ, are not measured. MEASURED: the carry filling from a stream the host
 laid in this form, its lists 8 to 24 entries and no list past two steps
-([`lab/carry_window.md`](../lab/carry_window.md)); the pass's copying kernels for a token-ordered stream from
-lists the host made ([`lab/gather_pass.md`](../lab/gather_pass.md)). NOT MEASURED: the pass that writes this
-stream and its tables, the pass that makes the lists, and lists past two steps.
+([`lab/carry_window.md`](../lab/carry_window.md)); the pass writing this stream's shared part -- tables, value
+runs, sparse bytes, plan -- from the mask alone, its lists its own, at lists of 16 to 19 entries
+([`lab/gather_pass.md`](../lab/gather_pass.md)). NOT MEASURED: the pass's dense lines in this form, the read
+side's stream, and lists past two steps.
 
 ## What it is handed
 
