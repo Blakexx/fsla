@@ -175,6 +175,11 @@ and walks none. The lab's bounds: a slot's 8 lists are 128 entries, no list is p
 1,488 lines. These rows' folds are at 168 registers a thread, their readout at 104 and their drain warps at 72.
 The even-list row beside them is the fold issuing whole-entry tiles under the same readout and drains, its folds
 at 160 and its drain warps at 88.
+A second set of the three rows issues ONLY THE STEPS ITS LISTS HAVE: the image's head holds a bit a list a round,
+and a second-round step is a trip of one or none; the first set issues every list's second step, an absent one
+multiplying zeros.
+The mirrored readout's rows clock a third phase: its sums' rounding, their stores to the panel and its arrivals,
+recorded with its wait on the drain in it.
 
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
