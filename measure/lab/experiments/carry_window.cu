@@ -1391,6 +1391,8 @@ __device__ __forceinline__ void drain_role(const uint8_t* smem, uint32_t base, l
                                            int* sinks,
                                            uint32_t* out, int windows) {
   constexpr int kDrainers = drains_of<ROLES>;
+  //: the drain rounds only what the mirrored readout stores unrounded
+  static_assert(!(ROLES & kRawPanel) || (ROLES & kMirror) || !(ROLES & kRead));
   const int lane = threadIdx.x & 31, mine = (threadIdx.x - drain_at<ROLES>) >> 5;
   const uint32_t bars = base + kBarsAt;
   constexpr int kHold = ROLES & kFive ? kFiveHold : kBatch, kBatches = kTokens / kDrainers / kHold;
