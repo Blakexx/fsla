@@ -12,21 +12,23 @@ then the fold of the window's writes into the state.
 
 RULED, NOT BUILT; it supersedes this page's lists and its per-entry fills below, which are rewritten when the form
 is measured in the carry. The gather pass writes, for each sparse block of 16 digits -- the group of CTAs that share
-it -- A STREAM, packed: the block's live entries of a window ORDERED BY DIGIT, THEN TOKEN, laid as the steps the
-carry runs. A digit's full steps of 16 entries are tiles as the fold's operand reads them; its last, part-filled
+it -- A STREAM, packed: the block's live entries of a window, each digit's in token order, laid as the steps the
+carry runs. The steps are taken A ROUND AT A TIME -- every digit's first, then every digit's second -- 8 a slot,
+so a digit's two steps are never one behind the other in a slot; a slot's steps lie in the order of their digits. A digit's full steps of 16 entries are tiles as the fold's operand reads them; its last, part-filled
 step is stored TRUNCATED -- each brick only the entries it has -- and used where it lands, the operand's brick
 spacing taken at run time and its pads' coefficient lines zeroed in shared memory: no step's padding crosses
 global memory and no value line is moved in shared memory. An entry's values and its byte on its digit are shared
 by the group's CTAs; its dense row is laid by dense block, so each CTA takes its own segment as one run. A token
-live on two digits of one block is two entries. The pass consumes the masks; the carry is handed each digit's
-count. A counts pass sizes the streams. The workspace is the segment's
+live on two digits of one block is two entries. The pass consumes the masks; the carry is handed, a slot, each
+digit's steps in it and which digit's last is truncated. A counts pass sizes the streams. The workspace is the segment's
 ([`ARCHITECTURE.md` section 6](../ARCHITECTURE.md#6-the-kernels)). The read side's stream is the same without
 values, with each entry's token index, where the drain adds. A window's stream is read by the 16 boxes that share
 it and costs the carry the same whether the cache held it before or not ([`lab/carry_window.md`](../lab/carry_window.md))
 -- WHILE those boxes read it close together: boxes that drift apart, as their read sides' counts differ, are not
 measured. The pass's copying kernels are measured in [`lab/gather_pass.md`](../lab/gather_pass.md) for a
-token-ordered stream from lists the host made; the digit-ordered pass, the pass that makes the lists, and the
-carry filling from it are not.
+token-ordered stream from lists the host made, and the carry filling from a stream the host laid in
+[`lab/carry_window.md`](../lab/carry_window.md); the pass that writes this stream and the pass that makes the
+lists are not.
 
 ## What it is handed
 
@@ -78,7 +80,7 @@ window, and each entry's token and byte were computed, not read.
   zero -- exact, since a zero coefficient adds nothing. A slot is 8 steps, whichever digits they are; a window is as
   many slots as its steps need. The readout likewise: a sparse digit's readers are `ceil(count / 16)` warp-rows, the
   last padded with a zero A. The step tables are a prefix sum of the counts, made once a window by the producers.
-  OPEN: the cost of a window whose digits are unevenly full; a digit with no entry costs nothing.
+  MEASURED in the lab at lists of 8 to 24 entries: a slot more a window ([`lab/carry_window.md`](../lab/carry_window.md)).
 - ROWS THAT ARRIVE COLD. With real lists a window's tokens are its own, new to the cache each window, and a
   carry that gathers its entries from the tables itself pays for it; asking for a window's rows a window ahead by
   prefetch loses. Whole entries landed from a stream do not: a window's stream is read by the 16 boxes that share
@@ -92,15 +94,16 @@ window, and each entry's token and byte were computed, not read.
 
 ## Its price
 
-At the hardest cell measured -- each side sparse on a different level, 256 by 256 leaves, 4 live digits a token --
-with no clock inside a role, the readout on synthetic readers in every figure
-([`lab/carry_window.md`](../lab/carry_window.md)): 817 SM-cycles a token for the synthetic entries with every table
-in cache; some 1,230 with the fold's entries gathered from lists by the carry itself, a window's own tokens; some
-725 with whole entries landed from a stream its 16 boxes share, read before or not, to which the stream's pass
-adds ([`lab/gather_pass.md`](../lab/gather_pass.md)). The price is a figure whose bytes are not assumed in the cache
-(CONSTITUTION R22.2). The den is 5% of the window; the intra, a kernel of its own launched beside
-the carry, a fifth of it ([`lab/intra_window.md`](../lab/intra_window.md), [`lab/call_pair.md`](../lab/call_pair.md)).
-A dense side is unmeasured on hopper.
+Every figure is [`lab/carry_window.md`](../lab/carry_window.md)'s, at the hardest cell measured -- each side sparse
+on a different level, 256 by 256 leaves, 4 live digits a token -- with the readout on synthetic readers; that page
+holds the numbers, which follow the card a session ran on. Their order: whole entries landed from a stream its 16
+boxes share, read before or not, cost the least; the carry gathering its entries from lists itself some two
+thirds more; a stream no box shares more again. THOSE ARE AT 16 ENTRIES A LIST. With the stream as ruled and its
+lists uneven, 8 to 24, the fold's side takes a slot more a window and the window nearly doubles: raggedness is the
+carry's largest open cost in any form. To each the stream's pass adds ([`lab/gather_pass.md`](../lab/gather_pass.md)).
+The den is 5% of the window; the intra, a kernel of its own launched beside the carry, a fifth of it
+([`lab/intra_window.md`](../lab/intra_window.md), [`lab/call_pair.md`](../lab/call_pair.md)). A dense side is
+unmeasured on hopper.
 
 ## Blackwell
 

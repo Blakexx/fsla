@@ -29,7 +29,8 @@ kernels with CTAs on A QUARTER of the multiprocessors, and the dense plane with 
 (four copies out in flight where three buffers allow one). Every line and pad of each moved form's first round is
 checked on every multiprocessor, each byte of the tables its own position's.
 
-THE STREAM (the ruled form, [`hopper-carry.md`](../architecture/hopper-carry.md#the-gather-stream)). The same
+THE STREAM, TOKEN-ORDERED (the form first ruled; the ruled stream is now laid as the carry's steps,
+[`hopper-carry.md`](../architecture/hopper-carry.md#the-gather-stream), and its pass is not built). The same
 two kernels fed lists BY SPARSE BLOCK, not by digit: a block's live tokens once each, in token order, padded to 16
 only at the block's end. The values kernel writes RECORDS -- a token's 8 value lines and then its line of the
 block's 16 sparse bytes, 9 lines a token -- that the block's CTAs share; the dense plane is the block-major one, so a
@@ -107,7 +108,7 @@ WHAT IT SHOWS.
   suspect; no row here parts those.
 - WHAT IT DOES NOT SAY: the lists are the host's -- no pass that makes a block's live tokens, their indices and
   their mask slices is built or priced anywhere -- and the stream's kernels write neither; the read side's stream
-  -- no values -- is not built; a dense level and a clustered one are unmeasured; the pass beside a running carry,
-  and the carry filling from the stream, are unmeasured; the same kernels on another rented card are not compared.
+  -- no values -- is not built; a dense level and a clustered one are unmeasured; the pass beside a running carry
+  is unmeasured (the carry filling from a stream the host laid is [`carry_window`](carry_window.md)'s); the same kernels on another rented card are not compared.
 
 Record: `measure/lab/results/gather_pass/sm_90a.json`.
