@@ -948,7 +948,7 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
   }
   lab::WarpSpan clock;
   //: a serve warp with few registers marks its clock in global memory: a held start is the value that spills
-  if constexpr (ROLES & (kFive | kTwoSums)) lab::WarpMark::start(times);
+  if constexpr (ROLES & (kFive | kTwoSums | kMirror)) lab::WarpMark::start(times);
   else clock.start();
 #pragma unroll 1
   for (int w = 0; w < windows; ++w) {
@@ -1044,7 +1044,7 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
       }
     }
   }
-  if constexpr (ROLES & (kFive | kTwoSums)) lab::WarpMark::stop(times);
+  if constexpr (ROLES & (kFive | kTwoSums | kMirror)) lab::WarpMark::stop(times);
   else clock.stop(times);
 }
 
@@ -1371,7 +1371,7 @@ __device__ __forceinline__ void drain_role(const uint8_t* smem, uint32_t base, l
   uint32_t on_panel = 0;
   lab::WarpSpan clock;
   //: a serve warp with few registers marks its clock in global memory: a held start is the value that spills
-  if constexpr (ROLES & (kFive | kTwoSums)) lab::WarpMark::start(times);
+  if constexpr (ROLES & (kFive | kTwoSums | kMirror)) lab::WarpMark::start(times);
   else clock.start();
 #pragma unroll 1
   for (int c = 0; c < kChunks * windows; ++c) {
@@ -1425,7 +1425,7 @@ __device__ __forceinline__ void drain_role(const uint8_t* smem, uint32_t base, l
   }
   if constexpr (ROLES & kFive) {
     lab::WarpMark::stop(times);
-  } else if constexpr (ROLES & kTwoSums) {
+  } else if constexpr (ROLES & (kTwoSums | kMirror)) {
     lab::WarpMark::stop(times);
     tell(waits, on_panel, 0u);
   } else {
