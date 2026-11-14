@@ -292,7 +292,8 @@ One CTA a box and batch-head, one CTA an SM; the box's fp32 state lives in the C
 READOUT of the state as of the window's start by the window's readers, each token's partial sums added in fp32 into
 `num` and, as the v+1 channel, `den` (CTAs join only there, R22); then the FOLD of the window's writes into the state.
 No carry kernel is built on this line: its hopper schedule is a design of its own, written before it is built
-(section 9's forms; [`open-work.md`](open-work.md)).
+([`architecture/hopper-carry.md`](architecture/hopper-carry.md), PROPOSED and not locked; section 9's forms;
+[`open-work.md`](open-work.md)).
 
 ### 6.4 The intra — the within-window term
 
