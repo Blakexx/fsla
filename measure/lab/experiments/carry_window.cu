@@ -237,7 +237,8 @@ enum Roles : long long {
   kDrains4 = 1ll << 33,
   //: THE READOUT A SUM A BOX: a chunk's steps on box 0's tiles add into one accumulator and those on box 1's into
   //: another -- two chains of 4 steps where one accumulator makes a chain of 8 -- summed a thread before the row is
-  //: rounded; 24 registers a readout thread more, the serve warpgroup's
+  //: rounded; 32 registers a readout thread more, the serve warpgroup's. Its A is ONE set: a digit's pair of steps
+  //: is done before the next pair's is written -- a chain's steps follow one another whatever is in flight
   kTwoSums = 1ll << 34
 };
 template <long long ROLES>
@@ -310,10 +311,10 @@ constexpr int value_parts = ROLES & kFive ? kFiveParts : 1;
 //: more a thread are the fourth warpgroup's, as the wide and the big rows' are
 template <long long ROLES>
 constexpr int read_regs = (ROLES & kFive ? kFiveReadRegs : (ROLES & kLean) && (ROLES & (kDenSplit | kWide)) ? 88 : ROLES & kLean ? 80 : kReadRegs)
-                          + (ROLES & kTwoSums ? 24 : 0);
+                          + (ROLES & kTwoSums ? 32 : 0);
 template <long long ROLES>
 constexpr int serve_regs = ((ROLES & kLean) && (ROLES & (kWide | kDenSplit)) ? 104 : ROLES & kLean ? 112 : kServeRegs)
-                           - (ROLES & kTwoSums ? 24 : 0)
+                           - (ROLES & kTwoSums ? 32 : 0)
                            - ((ROLES & kWhole) == kWhole && (ROLES & kNoMath) == 0 && (ROLES & kFour) && (ROLES & kFoldIssues) ? 16 : 0);
 //: a fold that issues its own copies holds their addresses beside its state: 8 registers a thread more, the serve
 //: warpgroup's, whose warps hold no entry
@@ -495,7 +496,9 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
   //: the packed row's: the slots its steps have used, a slot and a phase each
   uint32_t uses = 0;
   lab::WarpSpan clock;
-  clock.start();
+  //: where the readout keeps a sum a box every role marks its clock in global memory: a held start spills
+  if constexpr (ROLES & kTwoSums) lab::WarpMark::start(times);
+  else clock.start();
   if constexpr (fold_issues<ROLES>) {
     issue(0, 0);
     issue(0, 1);
@@ -675,7 +678,8 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
 #pragma unroll
     for (int i = 0; i < 4; ++i) lab::wg_hold(den[i]);
   }
-  clock.stop(times);
+  if constexpr (ROLES & kTwoSums) lab::WarpMark::stop(times);
+  else clock.stop(times);
   tell(waits, on_read, on_fill);
   //: THE STATE OUT, for the checked call alone: 128 stores a thread, each instruction's lanes on 32 lines, issued
   //: while the readout and the drains are still in their last windows -- in a timed call they would be clocked as
@@ -930,7 +934,8 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
     if constexpr (kAsks) far[h] = lists[(batch_of(h + 2 * kOwn) * kFill + lane) % kListEntries];
   }
   lab::WarpSpan clock;
-  if constexpr (ROLES & kFive) lab::WarpMark::start(times);
+  //: a serve warp with few registers marks its clock in global memory: a held start is the value that spills
+  if constexpr (ROLES & (kFive | kTwoSums)) lab::WarpMark::start(times);
   else clock.start();
 #pragma unroll 1
   for (int w = 0; w < windows; ++w) {
@@ -1026,7 +1031,7 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
       }
     }
   }
-  if constexpr (ROLES & kFive) lab::WarpMark::stop(times);
+  if constexpr (ROLES & (kFive | kTwoSums)) lab::WarpMark::stop(times);
   else clock.stop(times);
 }
 
@@ -1131,17 +1136,22 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
         lab::wg_fence();
 #pragma unroll
         for (int j = 0; j < kChunkDigits; ++j) {
-          if (j >= 2) lab::wg_wait<1>();
+          if constexpr ((ROLES & kTwoSums) != 0) {
+            if (j >= 1) lab::wg_wait<0>();
+          } else {
+            if (j >= 2) lab::wg_wait<1>();
+          }
 #pragma unroll
           for (int box = 0; box < 2; ++box)
 #pragma unroll
-            for (int i = 0; i < 4; ++i) rows[j & 1][box][i] = lab::held(warp == j ? a[box][i] : 0u);
+            for (int i = 0; i < 4; ++i) rows[ROLES & kTwoSums ? 0 : j & 1][box][i] = lab::held(warp == j ? a[box][i] : 0u);
 #pragma unroll
           for (int box = 0; box < 2; ++box)
             if constexpr ((ROLES & kTwoSums) != 0) {
               //: a box's own accumulator: its chain is its 4 digits' steps, the other box's beside it
-              if (box == 0) lab::wg_bf16_n64_rs(d, rows[j & 1][0], lab::wg_desc(images + 2 * j * tile_of<ROLES>, 8, kBrickLines), j != 0);
-              else lab::wg_bf16_n64_rs(d1, rows[j & 1][1], lab::wg_desc(images + kBoxBytes + 2 * j * tile_of<ROLES>, 8, kBrickLines), j != 0);
+              const uint64_t tile = lab::wg_desc(images + box * kBoxBytes + 2 * j * tile_of<ROLES>, 8, kBrickLines);
+              if (box == 0) read_step<ROLES>(d, rows[0][0], tile, j != 0);
+              else read_step<ROLES>(d1, rows[0][1], tile, j != 0);
             } else {
               read_step<ROLES>(d, rows[j & 1][box],
                                lab::wg_desc(images + box * kBoxBytes + 2 * j * tile_of<ROLES>, 8, kBrickLines),
@@ -1170,9 +1180,11 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
                              j != 0 || box != 0);
         lab::wg_commit();
       }
-      //: the next chunk's bytes, issued under the steps
-      load(c + 1);
+      //: the next chunk's bytes, issued under the steps -- or, where the readout keeps a sum a box, behind them: its
+      //: two accumulators, its A and those bytes are more than a thread's registers at once
+      if constexpr (!(ROLES & kTwoSums)) load(c + 1);
       lab::wg_wait<0>();
+      if constexpr ((ROLES & kTwoSums) != 0) load(c + 1);
       if constexpr (!(ROLES & kNoClock)) in_steps += lap(since);
       //: the group is read: its box may publish the next window's over it
       if constexpr (!(ROLES & kStill))
@@ -1256,7 +1268,8 @@ __device__ __forceinline__ void drain_role(const uint8_t* smem, uint32_t base, l
   };
   uint32_t on_panel = 0;
   lab::WarpSpan clock;
-  if constexpr (ROLES & kFive) lab::WarpMark::start(times);
+  //: a serve warp with few registers marks its clock in global memory: a held start is the value that spills
+  if constexpr (ROLES & (kFive | kTwoSums)) lab::WarpMark::start(times);
   else clock.start();
 #pragma unroll 1
   for (int c = 0; c < kChunks * windows; ++c) {
@@ -1310,6 +1323,9 @@ __device__ __forceinline__ void drain_role(const uint8_t* smem, uint32_t base, l
   }
   if constexpr (ROLES & kFive) {
     lab::WarpMark::stop(times);
+  } else if constexpr (ROLES & kTwoSums) {
+    lab::WarpMark::stop(times);
+    tell(waits, on_panel, 0u);
   } else {
     clock.stop(times);
     tell(waits, on_panel, 0u);

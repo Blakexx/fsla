@@ -133,8 +133,10 @@ the role that does not wait is the window's.
 THE READOUT A SUM A BOX (a pair, composed, with and without clocks; the fold expanding, a producer issuing). A
 chunk's 8 steps all add into the readout's one accumulator, a chain. Here the steps on box 0's tiles add into one
 accumulator and those on box 1's into another -- two chains of 4 -- and a thread sums the two before its row is
-rounded: one panel, the drain as it was. A readout thread is at 104 registers and a serve thread at 88 (at 80
-a serve thread does not fit).
+rounded: one panel, the drain as it was. A readout thread is at 112 registers (at 104 the toolkit serializes its
+steps) and a serve thread at 80; its A is one set, a digit's pair of steps done before the next pair's is
+written; the next chunk's bytes are loaded behind the steps, not under them; and every role marks its clock in
+global memory, a held clock's start being the value such a kernel spills.
 
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
