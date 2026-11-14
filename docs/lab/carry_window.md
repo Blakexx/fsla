@@ -90,8 +90,11 @@ EXPANDED VALUES (its own rows; the fold's side). An entry's values are 128 of th
 the 16 boxes of a sparse digit's column gather the same ones. In these rows a pass before the carry is taken to
 have written each column's lists' values a window, contiguous, in the layout a step reads -- the host lays that
 buffer here -- and a producer lands a list's value tile with one bulk copy, 8 a slot; it still makes the list's
-coefficients from the lists and the levels' rows. A window's values are new each window, and a column's are shared
-by the sources of that column.
+coefficients from the lists and the levels' rows. A window's values are new each window, and a buffer is shared by 16
+sources. A second pair has the pass write an entry's COEFFICIENT BYTES beside its values -- a list's ninth brick,
+a line an entry's 16 dense bytes and the 17th the list's sparse bytes, raw, nothing computed -- so a list is one
+bulk copy of 2,448 bytes and its producer loads nothing from global memory: it expands the landed bytes where
+they lie.
 
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
