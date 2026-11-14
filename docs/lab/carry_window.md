@@ -86,6 +86,13 @@ their rows stay in cache: what of the listed rows is their loads' code and what 
 A WINDOW'S ROWS A WINDOW AHEAD: for the batch a window on, a prefetch of each entry's values, dense bytes and sparse
 word, so the loads that use them find them in cache.
 
+EXPANDED VALUES (its own rows; the fold's side). An entry's values are 128 of the 148 bytes its CTA gathers, and
+the 16 boxes of a sparse digit's column gather the same ones. In these rows a pass before the carry is taken to
+have written each column's lists' values a window, contiguous, in the layout a step reads -- the host lays that
+buffer here -- and a producer lands a list's value tile with one bulk copy, 8 a slot; it still makes the list's
+coefficients from the lists and the levels' rows. A window's values are new each window, and a column's are shared
+by the sources of that column.
+
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
 through uniform registers in the den's. Rows of the winner's form and the den's, at both cells, and the den's chain run with no
