@@ -96,6 +96,24 @@ a line an entry's 16 dense bytes and the 17th the list's sparse bytes, raw, noth
 bulk copy of 2,448 bytes and its producer loads nothing from global memory: it expands the landed bytes where
 they lie.
 
+WHERE THOSE BYTES ARE (two pairs more). The whole-entry rows' lists are 16 columns' expanded windows, 40 MB that 16
+boxes each read and every launch reads again. One pair gives EACH BOX ITS OWN, 660 MB no other box read. The other
+keeps the 16 columns and runs 128 windows of their own addresses, 80 MB: a window's bytes are read by its 16
+boxes at once and, by the sizes, are not in a cache of 50 MB when the first asks.
+
+THE STREAM AS RULED (a pair; [`hopper-carry.md`](../architecture/hopper-carry.md#the-gather-stream)). The same 256
+entries a box a window fall UNEVENLY on its 16 lists, 8 to 24 a list. A list's full steps are whole-entry tiles; its
+last, part-filled step is stored TRUNCATED -- each value brick only the lines of the entries it has, then their
+dense lines and a line of their sparse bytes -- so nothing of a pad crosses global memory. A window's steps are
+taken a round at a time (every list's first, then every list's second), 8 a slot, a slot's laid in the order of
+their lists; the buffer's head holds, a window, a record a step (its first line, its entries) and a header a slot
+(each list's steps in it, which list's last is truncated, whether the slot is the window's last). A producer
+loads a window's records and headers a window ahead; a slot is a lane a step, one bulk copy of the step's own
+size, then the slot's header to its fold, then its entries expanded where they landed -- a pad's coefficient lines
+zero, and every line a truncated step's operand reaches past its entries zeroed behind the read. The fold runs a
+slot's steps list by list, a list's a loop of its own bottom-tested on a vote; a truncated step is used where it
+lies, its operand's bricks as far apart as it has entries.
+
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
 through uniform registers in the den's. Rows of the winner's form and the den's, at both cells, and the den's chain run with no

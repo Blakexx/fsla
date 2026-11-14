@@ -104,8 +104,10 @@ constexpr int kScratchBytes = 32 * 16, kOnesAt = kScratchAt + 4 * kScratchBytes;
 //: THE DEN'S B: a brick a den step, 16 lines, every line of brick c holding 1 in slot c and nothing else -- an
 //: M|N-major tile of 16 by 8 whose column c is ones
 constexpr int kDenSteps = 4, kOnesBrick = 16 * 16, kCountsAt = kOnesAt + kDenSteps * kOnesBrick;
-//: THE PACKED row's: a window's 16 lists' counts a box, two windows' in turn, a producer's to its fold
-constexpr int kSmemBytes = kCountsAt + 2 * 2 * 16;
+//: THE PACKED row's: a slot's HEADER, a producer's to its fold before the slot is ready -- three words of 64 bits:
+//: a nibble a list its steps in the slot; a nibble a list its last step's entries where that step is truncated;
+//: and whether the slot is the window's last
+constexpr int kHeader = 32, kSmemBytes = kCountsAt + 4 * kHeader;
 //: the barriers, 8 bytes each: a pool slot filled and freed (box, slot); an image's tile group published and read
 //: (a group is the 4 read digits `8 h + c + 2 j` of a chunk `2 h + c`: every fold thread holds a quarter of it); a
 //: panel filled and drained
@@ -125,6 +127,7 @@ enum Roles : int {
   kFold = 1, kRead = 2, kNoLoads = 4, kNoAdds = 8, kNoImage = 16, kSuspend = 32, kStill = 64, kSelf = 128, kLean = 256, kFive = 512, kSleep = 1024,
   //: two more accesses a row takes out: the producers' coefficient arithmetic (the bytes stored as they are) and
   //: the readout's loads of its readers' bytes (the words made in registers)
+  //: (with the whole-entry row's bits `kNoMath` is no row of its own: it names THE PACKED row, which does its arithmetic)
   kNoMath = 2048, kNoBytes = 4096,
   //: THE WIDE row: a readout warp fetches its chunk's readers' bytes as ONE load -- a lane a whole row's 16 bytes,
   //: its 16 tokens on the two boxes -- stores them to the warp's own scratch and each thread reads its 8 words
@@ -289,10 +292,13 @@ constexpr int expanded_windows = fresh<ROLES> ? 2 * kCallWindows : kCallWindows;
 //: an expanded list: its value tile and a brick of its coefficients' bytes
 constexpr int kExpandedList = kValueTile + kBrick;
 constexpr long long kExpandedWindow = static_cast<long long>(kLists) * kExpandedList;
-//: THE PACKED row's buffer: a head a (column, window) -- its 16 lists' counts, its steps' count at byte 16, and a
-//: record a step at byte 24: the step's first line in the window's stream, then its list and its entries -- and
-//: then the streams, a (column, window) room for 32 full steps
-constexpr int kPackedSteps = 2 * kLists, kPackedHead = 24 + 8 * kPackedSteps, kPackedRoom = kPackedSteps * kExpandedList;
+//: THE PACKED row's buffer: a head a (column, window) -- its slots' count and its steps', then a header a slot
+//: (8 at most), then a record a step: the step's first line in the window's stream, and its entries -- and then
+//: the streams, a (column, window) room for 32 full steps. A SLOT is the window's next 8 steps taken A ROUND AT A
+//: TIME (every list's first step, then every list's second), laid in the order of their lists
+constexpr int kPackedSteps = 2 * kLists, kPackedSlots = 8, kPackedHeadersAt = 16,
+              kPackedRecordsAt = kPackedHeadersAt + kPackedSlots * kHeader, kPackedHead = kPackedRecordsAt + 8 * kPackedSteps,
+              kPackedRoom = kPackedSteps * kExpandedList;
 constexpr long long kPackedTable = static_cast<long long>(kColumns) * kCallWindows * kPackedHead;
 //: a list's entries in a window, 8 to 24 and a window's 256: lists `2 p` and `2 p + 1` are 16 more and less the same
 constexpr int packed_count(uint32_t column, uint32_t window, int list) {
@@ -486,41 +492,42 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
       }
     }
     if constexpr (packed<ROLES>) {
-      //: THE PACKED row's steps: a list's count's worth, each on the next tile of the slots in turn -- a slot
-      //: awaited as its first tile is reached and freed behind its last -- a part-filled step's bricks as far apart
-      //: as it has entries
-      const uint8_t* const counts = smem + kCountsAt + (2 * box + (w & 1)) * 16;
-      uint32_t tiles = 0;
-      const auto open = [&] {
-        waited<ROLES>(bars + kPoolReady + 8 * (2 * box + (uses & 1)), (uses >> 1) & 1, on_fill);
-        tiles = base + (2 * box + (uses & 1)) * kPoolBytes;
+      //: THE PACKED row's slots, a window as many as its steps need: a slot's header says each list's steps in it
+      //: (its tiles in the lists' order) and which list's last is truncated -- that step's bricks as far apart as
+      //: it has entries. A list's steps are a loop of its own, bottom-tested on a vote; no slot ends inside one
+      uint32_t seen = 0;
+      bool more;
+#pragma unroll 1
+      do {
+        const uint32_t slot = 2 * box + (uses & 1);
+        waited<ROLES>(bars + kPoolReady + 8 * slot, (uses >> 1) & 1, on_fill);
+        const uint64_t* const header = reinterpret_cast<const uint64_t*>(smem + kCountsAt + slot * kHeader);
+        const uint64_t steps = header[0], cut_at = header[1];
+        more = header[2] == 0;
+        uint32_t tile = lab::held(base + slot * kPoolBytes);
         lab::wg_fence();
-      };
-      const auto close = [&] {
+#pragma unroll
+        for (int a = 0; a < kLists; ++a) {
+          int left = static_cast<int>(steps >> (4 * a) & 15u);
+          const uint32_t cut = static_cast<uint32_t>(cut_at >> (4 * a) & 15u);
+          if (__any_sync(0xffffffffu, left > 0)) {
+#pragma unroll 1
+            do {
+              //: the list's last step of the slot is the truncated one, where the header names one
+              const uint32_t apart = left == 1 && cut ? cut : 17u;
+              lab::wg_bf16_n16_ss_mn(d[a], lab::wg_desc(tile, 8, apart), lab::wg_desc(tile + kValueTile, 8, 17),
+                                     w != 0 || (seen >> a & 1u));
+              seen |= 1u << a;
+              tile += kTile;
+              --left;
+            } while (__any_sync(0xffffffffu, left > 0));
+          }
+        }
         lab::wg_commit();
         lab::wg_wait<0>();
-        if ((tid & (kGroup - 1)) == 0) lab::mbar_arrive(bars + kPoolFreed + 8 * (2 * box + (uses & 1)));
+        if ((tid & (kGroup - 1)) == 0) lab::mbar_arrive(bars + kPoolFreed + 8 * slot);
         ++uses;
-      };
-      open();
-      int step = 0;
-#pragma unroll
-      for (int a = 0; a < kLists; ++a) {
-        const int n = counts[a];
-#pragma unroll 1
-        for (int left = n; left > 0; left -= kEntries) {
-          if (step == kSlotLists) {
-            close();
-            open();
-            step = 0;
-          }
-          const uint32_t tile = tiles + static_cast<uint32_t>(step) * kTile;
-          lab::wg_bf16_n16_ss_mn(d[a], lab::wg_desc(tile, 8, left >= kEntries ? 17u : static_cast<uint32_t>(left)),
-                                 lab::wg_desc(tile + kValueTile, 8, 17), w != 0 || left != n);
-          ++step;
-        }
-      }
-      close();
+      } while (__any_sync(0xffffffffu, more));
     } else if constexpr (ROLES & kFold) {
 #pragma unroll
       for (int slot = 0; slot < 2; ++slot) {
@@ -582,74 +589,94 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
   }
 }
 
-//: THE PACKED row's PRODUCER WARP, one a box: a slot is the window's next 8 steps, a lane a step -- its record, one
-//: bulk copy of its own size to its tile -- then the slot's 128 entries, a lane an entry four times: its landed
-//: dense line by its sparse byte, to its two coefficient lines; a pad's lines zero; a truncated step's landed
-//: bytes, which its operand's last bricks reach past its entries, zeroed behind the read
+//: THE PACKED row's PRODUCER WARP, one a box. A window's step records and slot headers are loaded A WINDOW AHEAD,
+//: a lane a record. A slot: a lane a step -- one bulk copy of its own size to its tile -- then its header to the
+//: fold, then the slot's 128 entries, a lane an entry four times: its landed dense line by its sparse byte, to its
+//: two coefficient lines; a pad's lines zero; and of a truncated step, every line its operand's bricks reach past
+//: its entries -- its landed dense lines and sparse bytes, and what no copy of it wrote -- zeroed behind the read
 template <int ROLES>
 __device__ __forceinline__ void produce_packed(uint8_t* smem, uint32_t base, long long* times, const uint32_t* values,
                                                int windows) {
   const int lane = threadIdx.x & 31, box = (threadIdx.x - kProduceAt) >> 5;
   const uint32_t bars = base + kBarsAt, key = (blockIdx.x * 2 + box) % kColumns;
   const uint8_t* const buffer = reinterpret_cast<const uint8_t*>(values);
+  const auto head_of = [&](int w) { return buffer + (static_cast<long long>(key) * kCallWindows + w % kCallWindows) * kPackedHead; };
+  //: the window ahead's: its slots' count, a lane its step's record, a lane its slot's header
+  uint32_t slots_next = *reinterpret_cast<const uint32_t*>(head_of(0));
+  uint2 record_next = *reinterpret_cast<const uint2*>(head_of(0) + kPackedRecordsAt + 8 * lane);
+  uint4 header_next[2];
+#pragma unroll
+  for (int h = 0; h < 2; ++h)
+    header_next[h] = *reinterpret_cast<const uint4*>(head_of(0) + kPackedHeadersAt + (lane & (kPackedSlots - 1)) * kHeader + 16 * h);
   uint32_t uses = 0;
   lab::WarpSpan clock;
   clock.start();
 #pragma unroll 1
   for (int w = 0; w < windows; ++w) {
-    const long long at = static_cast<long long>(key) * kCallWindows + w % kCallWindows;
-    const uint8_t* const head = buffer + at * kPackedHead;
-    const uint8_t* const stream = buffer + kPackedTable + at * kPackedRoom;
-    //: the window's counts, its fold's before the window's first slot is ready
-    if (lane < kLists) smem[kCountsAt + (2 * box + (w & 1)) * 16 + lane] = head[lane];
-    //: the counts' writers' edge, before this warp's next arrival at a barrier
-    lab::bulk_fence();
-    const int total = static_cast<int>(*reinterpret_cast<const uint32_t*>(head + 16));
+    const uint8_t* const stream = buffer + kPackedTable
+                                  + (static_cast<long long>(key) * kCallWindows + w % kCallWindows) * kPackedRoom;
+    const uint32_t slots = slots_next;
+    const uint2 record = record_next;
+    const uint4 header[2] = {header_next[0], header_next[1]};
+    slots_next = *reinterpret_cast<const uint32_t*>(head_of(w + 1));
+    record_next = *reinterpret_cast<const uint2*>(head_of(w + 1) + kPackedRecordsAt + 8 * lane);
+#pragma unroll
+    for (int h = 0; h < 2; ++h)
+      header_next[h] = *reinterpret_cast<const uint4*>(head_of(w + 1) + kPackedHeadersAt + (lane & (kPackedSlots - 1)) * kHeader + 16 * h);
+    uint32_t i = 0;
 #pragma unroll 1
-    for (int s0 = 0; s0 < total; s0 += kSlotLists, ++uses) {
+    do {
       const uint32_t slot = 2 * box + (uses & 1), use = uses >> 1;
       if (use > 0) await<ROLES>(bars + kPoolFreed + 8 * slot, (use - 1) & 1);
       uint8_t* const tiles = smem + slot * kPoolBytes;
-      //: A STEP a lane: its first line and its entries, and its bytes -- none past the window's last
-      uint32_t first = 0, n = 0;
-      if (lane < kSlotLists && s0 + lane < total) {
-        const uint2 record = *reinterpret_cast<const uint2*>(head + 24 + 8 * (s0 + lane));
-        first = record.x, n = record.y >> 8;
-      }
-      const uint32_t bytes = n ? static_cast<uint32_t>(packed_lines(static_cast<int>(n))) * 16u : 0u;
+      //: A STEP a lane, the slot's 8: its first line and its entries (none past the window's last), its bytes
+      const uint32_t from = (8u * i + static_cast<uint32_t>(lane)) & 31u;
+      const uint32_t first = __shfl_sync(0xffffffffu, record.x, from);
+      const uint32_t n = lane < kSlotLists ? __shfl_sync(0xffffffffu, record.y, from) : 0u;
+      const uint32_t bytes = n ? static_cast<uint32_t>(n == kEntries ? kExpandedList : (9 * n + 1) * 16) : 0u;
       const uint32_t all = __reduce_add_sync(0xffffffffu, bytes);
       const uint32_t landed = bars + kPoolLanded + 8 * slot;
       if (lane == 0) lab::mbar_expect(landed, all);
       if (n) lab::bulk_load(base + slot * kPoolBytes + lane * kTile, stream + static_cast<long long>(first) * 16, bytes, landed);
+      //: THE SLOT'S HEADER, one lane's store of each half: the lane that holds the slot's
+#pragma unroll
+      for (int h = 0; h < 2; ++h) {
+        const uint4 mine = make_uint4(__shfl_sync(0xffffffffu, header[h].x, i), __shfl_sync(0xffffffffu, header[h].y, i),
+                                      __shfl_sync(0xffffffffu, header[h].z, i), __shfl_sync(0xffffffffu, header[h].w, i));
+        if (lane == h) *reinterpret_cast<uint4*>(smem + kCountsAt + slot * kHeader + 16 * h) = mine;
+      }
       await<ROLES>(landed, use & 1);
 #pragma unroll
       for (int o = 0; o < kSlot / 32; ++o) {
         //: the lane's entry `k` of the slot's tile `j`, a step of `nj` entries
         const int j = 2 * o + (lane >> 4), k = lane & 15;
         const uint32_t nj = __shfl_sync(0xffffffffu, n, j);
+        uint8_t* const tile = tiles + j * kTile;
+        uint8_t* const raw = tile + (nj == kEntries ? kValueTile : 8 * nj * 16);
+        uint4 bytes4 = make_uint4(0, 0, 0, 0);
+        float weight = 0.0f;
+        if (static_cast<uint32_t>(k) < nj) {
+          bytes4 = *reinterpret_cast<const uint4*>(raw + k * 16);
+          weight = static_cast<float>(raw[nj * 16 + k]);
+        }
+        const uint32_t word[4] = {bytes4.x, bytes4.y, bytes4.z, bytes4.w};
+        uint4 line[2];
+#pragma unroll
+        for (int h = 0; h < 2; ++h) {
+          uint32_t pair[4];
+#pragma unroll
+          for (int q = 0; q < 4; ++q) {
+            const uint32_t two = word[2 * h + q / 2] >> (16 * (q & 1));
+            pair[q] = lab::bf16x2_round(weight * static_cast<float>(two & 255u), weight * static_cast<float>(two >> 8 & 255u));
+          }
+          line[h] = make_uint4(pair[0], pair[1], pair[2], pair[3]);
+        }
+        //: the half-warp's reads of the tile's landed lines are done before any lane's store over them
+        __syncwarp();
         if (nj) {
-          uint8_t* const tile = tiles + j * kTile;
-          uint8_t* const raw = tile + (nj == kEntries ? kValueTile : 8 * nj * 16);
-          uint4 bytes4 = make_uint4(0, 0, 0, 0);
-          float weight = 0.0f;
-          if (static_cast<uint32_t>(k) < nj) {
-            bytes4 = *reinterpret_cast<const uint4*>(raw + k * 16);
-            weight = static_cast<float>(raw[nj * 16 + k]);
-          }
-          const uint32_t word[4] = {bytes4.x, bytes4.y, bytes4.z, bytes4.w};
-          uint4 line[2];
-#pragma unroll
-          for (int h = 0; h < 2; ++h) {
-            uint32_t pair[4];
-#pragma unroll
-            for (int i = 0; i < 4; ++i) {
-              const uint32_t two = word[2 * h + i / 2] >> (16 * (i & 1));
-              pair[i] = lab::bf16x2_round(weight * static_cast<float>(two & 255u), weight * static_cast<float>(two >> 8 & 255u));
-            }
-            line[h] = make_uint4(pair[0], pair[1], pair[2], pair[3]);
-          }
-          //: a truncated step's landed lines, behind their read: no byte of them is an operand's
-          if (nj < kEntries && static_cast<uint32_t>(k) <= nj) *reinterpret_cast<uint4*>(raw + k * 16) = make_uint4(0, 0, 0, 0);
+          //: a truncated step's lines past its values: brick 7's 16 lines end at `7 nj + 15`, its landed bytes at `9 nj`
+          const uint32_t reach = nj > 15u - nj ? nj : 15u - nj;
+          if (nj < kEntries && static_cast<uint32_t>(k) <= reach) *reinterpret_cast<uint4*>(raw + k * 16) = make_uint4(0, 0, 0, 0);
           //: a slot's two lists a trip take opposite bricks first: each store covers the 32 banks evenly
           const int lead = j & 1;
           uint8_t* const to = tile + kValueTile + k * 16;
@@ -660,7 +687,9 @@ __device__ __forceinline__ void produce_packed(uint8_t* smem, uint32_t base, lon
       lab::bulk_fence();
       __syncwarp();
       if (lane == 0) lab::mbar_arrive(bars + kPoolReady + 8 * slot);
-    }
+      ++uses;
+      ++i;
+    } while (__any_sync(0xffffffffu, i < slots));
   }
   clock.stop(times);
 }
@@ -1553,27 +1582,44 @@ inline Buffers buffers(const lab::Bench& b) {
     apart_values = expand(static_cast<int>(sources), 1);
     fresh_values = expand(kColumns, 2);
     {
-      //: THE PACKED row's: each (column, window)'s head and its stream -- its lists' entries in order, a list's
-      //: full steps tiles as the expanded windows', its last truncated
+      //: THE PACKED row's: each (column, window)'s head and its stream. A window's steps -- a list's full ones and
+      //: its truncated last -- are taken a round at a time, 8 a slot, a slot's laid in the order of their lists
       std::vector<uint8_t> buffer(static_cast<size_t>(kPackedTable) + static_cast<size_t>(kColumns) * kCallWindows * kPackedRoom, 0);
+      struct Step { int list, round, first, entries; };
       for (int c = 0; c < kColumns; ++c)
         for (int w = 0; w < kCallWindows; ++w) {
           const size_t at = static_cast<size_t>(c) * kCallWindows + w;
           uint8_t* const head = buffer.data() + at * kPackedHead;
           uint8_t* const stream = buffer.data() + kPackedTable + at * kPackedRoom;
-          uint32_t line = 0, step = 0;
-          int e = 0;
-          for (int a = 0; a < kLists; ++a) {
+          std::vector<Step> steps;
+          for (int a = 0, e = 0; a < kLists; ++a) {
             const int n = packed_count(c, w, a);
-            head[a] = static_cast<uint8_t>(n);
-            for (int k0 = 0; k0 < n; k0 += kEntries, ++step) {
-              const int m = std::min(kEntries, n - k0), pitch = m == kEntries ? kBrick / 16 : m;
-              const uint32_t record[2] = {line, static_cast<uint32_t>(a) | static_cast<uint32_t>(m) << 8};
-              std::memcpy(head + 24 + 8 * step, record, 8);
+            for (int k0 = 0; k0 < n; k0 += kEntries) steps.push_back({a, k0 / kEntries, e + k0, std::min(kEntries, n - k0)});
+            e += n;
+          }
+          std::stable_sort(steps.begin(), steps.end(), [](const Step& x, const Step& y) { return x.round < y.round; });
+          const uint32_t total = static_cast<uint32_t>(steps.size()), slots = (total + kSlotLists - 1) / kSlotLists;
+          if (total > static_cast<uint32_t>(kPackedSteps) || slots > static_cast<uint32_t>(kPackedSlots)) {
+            std::fprintf(stderr, "carry_window: a packed window's %u steps do not fit its head\n", total);
+            std::exit(2);
+          }
+          std::memcpy(head, &slots, 4);
+          std::memcpy(head + 4, &total, 4);
+          uint32_t line = 0;
+          for (uint32_t i = 0; i < slots; ++i) {
+            const auto from = steps.begin() + i * kSlotLists, to = steps.begin() + std::min(total, (i + 1) * kSlotLists);
+            std::stable_sort(from, to, [](const Step& x, const Step& y) { return x.list < y.list; });
+            uint64_t header[4] = {0, 0, i + 1 == slots, 0};
+            for (auto st = from; st != to; ++st) {
+              const int m = st->entries, pitch = m == kEntries ? kBrick / 16 : m;
+              header[0] += 1ull << (4 * st->list);
+              if (m < kEntries) header[1] |= static_cast<uint64_t>(m) << (4 * st->list);
+              const uint32_t record[2] = {line, static_cast<uint32_t>(m)};
+              std::memcpy(head + kPackedRecordsAt + 8 * (st - steps.begin()), record, 8);
               uint8_t* const tile = stream + static_cast<size_t>(line) * 16;
               uint8_t* const raw = tile + 8 * pitch * 16;
               for (int k = 0; k < m; ++k) {
-                const uint32_t t = listed_token(static_cast<uint32_t>(c), static_cast<uint32_t>(w * kWindow + e + k0 + k), false);
+                const uint32_t t = listed_token(static_cast<uint32_t>(c), static_cast<uint32_t>(w * kWindow + st->first + k), false);
                 for (int br = 0; br < 8; ++br)
                   std::memcpy(tile + (br * pitch + k) * 16, &host_values[static_cast<size_t>(t) * kRowWords + 4 * br], 16);
                 for (int dd = 0; dd < 16; ++dd) raw[k * 16 + dd] = static_cast<uint8_t>(dense_of(static_cast<int>(t), dd));
@@ -1581,9 +1627,8 @@ inline Buffers buffers(const lab::Bench& b) {
               }
               line += static_cast<uint32_t>(packed_lines(m));
             }
-            e += n;
+            std::memcpy(head + kPackedHeadersAt + i * kHeader, header, kHeader);
           }
-          std::memcpy(head + 16, &step, 4);
         }
       uint8_t* pdev = nullptr;
       LAB_CHECK(cudaMalloc(&pdev, buffer.size()));
