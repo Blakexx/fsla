@@ -1543,6 +1543,7 @@
   {"doc": "docs/lab/cast_cluster.md", "pinned_at": "b4855d267067", "reviewed": true, "sha256": "", "target": "docs/lab/intra_window.md"},
   {"doc": "docs/lab/cast_cluster.md", "pinned_at": "b4855d267067", "reviewed": true, "sha256": "", "target": "docs/lab/value_cast.md"},
   {"doc": "docs/lab/cast_cluster.md", "pinned_at": "b4855d267067", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/cast_cluster.cu"},
+  {"doc": "docs/lab/cast_cluster.md", "pinned_at": "46954a3b51cb", "reviewed": true, "sha256": "", "target": "measure/lab/results/cast_cluster/sm_90a.json"},
   {"doc": "docs/lab/cluster_sum.md", "pinned_at": "00d6bcf6cebf", "reviewed": true, "sha256": "", "target": "docs/internals/tools/carry_floor.md"},
   {"doc": "docs/lab/cluster_sum.md", "pinned_at": "00d6bcf6cebf", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
   {"doc": "docs/lab/cluster_sum.md", "pinned_at": "00d6bcf6cebf", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/cluster_sum.cu"},

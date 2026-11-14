@@ -8,9 +8,9 @@
 // CTAs; rank 0's issuing thread waits on that barrier and issues one multicast copy to all. No cluster barrier, and
 // no thread of a mate waits on another CTA. Each is timed on a few tiles the cache holds and on a fresh tile a
 // chunk a cluster. The last tiles are checked exactly in every CTA.
-// TIMELINE: a CTA's trip is a chunk: every thread waits on the tile two chunks back and reads a word of it; the
-// CTA's barrier; one thread states the chunk's bytes at the barrier of its parity and, in `cast`, arrives at rank
-// 0's; the copy issued by that thread (`each`) or by rank 0's once the cluster's arrivals are in (`cast`). Live:
+// TIMELINE: a CTA's trip is a chunk, its slot the chunk's turn of the `D` in flight: every thread waits on the
+// tile `D` chunks back in that slot and reads a word of it; the CTA's barrier; one thread states the chunk's bytes
+// at the slot's barrier and, in `cast`, arrives at rank 0's for the slot; the copy issued by that thread (`each`) or by rank 0's once the cluster's arrivals are in (`cast`). Live:
 // nothing held.
 // see docs/internals/tools/lab.md#cast-cluster
 #include <cuda.h>
@@ -131,16 +131,14 @@ void run(lab::Bench& b, const CUtensorMap& map, uint8_t* out) {
 template <int C>
 void sizes(lab::Bench& b, const CUtensorMap& map, uint8_t* out) {
   using namespace cast_cluster;
-  for (int pass = 0; pass < 1; ++pass) {
-    run<C, kEach, 0, 2>(b, map, out);
-    run<C, kCast, 0, 2>(b, map, out);
-    run<C, kEach, 1, 2>(b, map, out);
-    run<C, kCast, 1, 2>(b, map, out);
-    run<C, kEach, 0, 4>(b, map, out);
-    run<C, kCast, 0, 4>(b, map, out);
-    run<C, kEach, 1, 4>(b, map, out);
-    run<C, kCast, 1, 4>(b, map, out);
-  }
+  run<C, kEach, 0, 2>(b, map, out);
+  run<C, kCast, 0, 2>(b, map, out);
+  run<C, kEach, 1, 2>(b, map, out);
+  run<C, kCast, 1, 2>(b, map, out);
+  run<C, kEach, 0, 4>(b, map, out);
+  run<C, kCast, 0, 4>(b, map, out);
+  run<C, kEach, 1, 4>(b, map, out);
+  run<C, kCast, 1, 4>(b, map, out);
 }
 
 int main(int argc, char** argv) {
