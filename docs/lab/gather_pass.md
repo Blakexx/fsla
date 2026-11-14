@@ -34,7 +34,10 @@ two kernels fed lists BY SPARSE BLOCK, not by digit: a block's live tokens once 
 only at the block's end. The values kernel writes RECORDS -- a token's 8 value lines and then its line of the
 block's 16 sparse bytes, 9 lines a token -- that the block's CTAs share; the dense plane is the block-major one, so a
 CTA's dense block of its sparse block's tokens is one run. No digit's step is padded in global memory. At 512
-threads, moved and flat, on every multiprocessor and on a quarter.
+threads, moved and flat, on every multiprocessor and on a quarter. THE RING: a carry's CTAs read one window's
+stream at a time, so the pass's planes can be a ring the cache holds. The stream's kernels on 16 and on 8
+multiprocessors, each CTA rewriting its own region every round (16 regions are 19 MB at most), beside the same
+CTAs writing a new region a round -- the same reads, the planes past the cache.
 
 MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance 60612875, driver 580.173.02; 2026-11-14, the experiment at
 27b94614; 7 repetitions; every arranged line and pad of every moved form exact; the median, SM-cycles a

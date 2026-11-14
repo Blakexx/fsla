@@ -19,7 +19,10 @@
 // once each, in token order, padded to 16 only at the block's end. Its values kernel writes RECORDS -- a token's 8
 // value lines and then its line of the block's 16 sparse bytes, 9 lines a token -- which the block's CTAs share;
 // its dense plane is the block-major one, a CTA's dense block of its sparse block's tokens one run. No digit's
-// step is padded in global memory: a CTA places a token on its digits' steps in shared memory by the mask.
+// step is padded in global memory: a CTA places a token on its digits' steps in shared memory by the mask. A carry's
+// CTAs read ONE window's stream at a time, so the pass's planes can be A RING the cache holds: the stream's rows
+// on 16 and on 8 multiprocessors, each CTA rewriting its region every round, and the same CTAs writing a new
+// region a round -- the same reads, the planes past the cache.
 // TIMELINE: no MMA. A trip is a unit. Thread 0 issues the copy out of the unit before (each writer fenced its own
 // lines before the barrier), then the copies in of the unit AFTER this one -- its step list and, when it opens a
 // block, the block's rows -- a unit ahead of their use; every thread waits on this unit's barriers, moves its
@@ -72,7 +75,7 @@ __device__ __forceinline__ Unit unit_at(const uint32_t* first, int g, int s) {
 template <int THREADS, int MOVE, int FORM>
 __global__ void __launch_bounds__(THREADS, 1)
     plane(long long* times, const uint4* vals, const uint4* rows, const uint4* lists, const uint32_t* firsts,
-          uint4* out_plane, int rounds, int stride, int max_steps) {
+          uint4* out_plane, int rounds, int stride, int max_steps, int out_stride) {
   extern __shared__ __align__(128) uint8_t smem[];
   const int tid = threadIdx.x;
   const uint32_t base = lab::smem(smem), bars = base + kBarsAt;
@@ -96,7 +99,8 @@ __global__ void __launch_bounds__(THREADS, 1)
     const uint4* const wvals = vals + at * (kWindow * kValueBytes / 16);
     const uint4* const wrows = rows + at * (kWindow * kDigits / 16);
     const uint4* const wlists = lists + at * max_steps * 2;
-    uint4* const wplane = out_plane + static_cast<long long>(blockIdx.x) * max_steps * kLines<FORM>;
+    //: a CTA's region of the plane: one it rewrites every round (a ring), or a new one a round
+    uint4* const wplane = out_plane + (static_cast<long long>(blockIdx.x) + static_cast<long long>(round) * out_stride) * max_steps * kLines<FORM>;
     if (tid <= kBlocks) first[tid] = firsts[at * (kBlocks + 1) + tid];
     if (tid == 0) lab::bulk_wait<1>();
     __syncthreads();
@@ -222,7 +226,7 @@ __device__ __forceinline__ Unit unit_at(int total, int unit, int b, int s) {
 template <int THREADS, int MOVE, int D>
 __global__ void __launch_bounds__(THREADS, 1)
     plane(long long* times, const uint4* rows, const uint4* lists, const uint32_t* firsts, uint4* out_plane, int rounds,
-          int stride, int max_steps) {
+          int stride, int max_steps, int out_stride) {
   extern __shared__ __align__(128) uint8_t smem[];
   const int tid = threadIdx.x;
   const uint32_t base = lab::smem(smem), bars = base + kBarsAt<D>;
@@ -242,7 +246,7 @@ __global__ void __launch_bounds__(THREADS, 1)
     const long long at = static_cast<long long>(blockIdx.x) + static_cast<long long>(round) * stride;
     const uint4* const wrows = rows + at * (kWindow * kDigits / 16);
     const uint4* const wlists = lists + at * max_steps * 2;
-    uint4* const wplane = out_plane + static_cast<long long>(blockIdx.x) * kBlocks * max_steps * 16;
+    uint4* const wplane = out_plane + (static_cast<long long>(blockIdx.x) + static_cast<long long>(round) * out_stride) * kBlocks * max_steps * 16;
     if (tid == 0) {
       *total_at = firsts[at * (kBlocks + 1) + kBlocks];
       lab::bulk_wait<D - 2>();
@@ -440,25 +444,31 @@ int main(int argc, char** argv) {
       }
       return std::to_string(wrong) + " of " + std::to_string(lines) + " arranged lines differ";
     };
-    const auto launch_values = [&](auto kernel, int blocks, int threads, int, int rounds, int stride) {
+    const auto launch_values = [&](auto kernel, int blocks, int threads, int, int rounds, int stride, int out_stride) {
       LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, values::kSmemBytes));
-      kernel<<<blocks, threads, values::kSmemBytes>>>(b.times, dvalues, drows, dlists, dfirsts, dvplane, rounds, stride, kMax);
+      kernel<<<blocks, threads, values::kSmemBytes>>>(b.times, dvalues, drows, dlists, dfirsts, dvplane, rounds, stride, kMax, out_stride);
     };
-    const auto launch_dense = [&](auto kernel, int blocks, int threads, int depth, int rounds, int stride) {
+    const auto launch_dense = [&](auto kernel, int blocks, int threads, int depth, int rounds, int stride, int out_stride) {
       const int bytes = depth == 3 ? dense::kSmemBytes<3> : dense::kSmemBytes<6>;
       LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));
-      kernel<<<blocks, threads, bytes>>>(b.times, ddense, dlists, dfirsts, ddplane, rounds, stride, kMax);
+      kernel<<<blocks, threads, bytes>>>(b.times, ddense, dlists, dfirsts, ddplane, rounds, stride, kMax, out_stride);
     };
-    //: `quarter`: the CTAs of a quarter of the multiprocessors, the rest idle; `depth`: the buffers out
-    const auto run = [&](auto launcher, auto kernel, bool is_values, int threads, int move, bool quarter, int depth) {
-      const int blocks = quarter ? windows / 4 : windows;
+    //: `few`: 0 every multiprocessor's CTA; 1 a quarter of them, the rest idle; 8 or 16 that many CTAs, their planes
+    //: A RING each rewrites every round (in the cache: 16 regions are 19 MB at most) -- or, `few` negative, the same
+    //: CTAs writing A NEW REGION a round, past the cache; `depth`: the buffers out
+    const auto run = [&](auto launcher, auto kernel, bool is_values, int threads, int move, int few, int depth) {
+      const bool quarter = few == 1;
+      const int blocks = few == 0 ? windows : quarter ? windows / 4 : few < 0 ? -few : few;
+      const int out_stride = few < 0 ? blocks : 0;
       const std::string name = cell_name + ", "
                                + (stream ? (is_values ? "the stream's values and sparse lines" : "the stream's dense lines")
                                          : (is_values ? "the values plane" : "the dense plane")) + ", "
                                + std::to_string(threads) + " threads, " + (move ? "its lines moved" : "a flat stream of its copies")
-                               + (depth == 6 ? ", six buffers out" : "") + (quarter ? ", a quarter of the multiprocessors" : "");
-      const auto launch = [&](int rounds, int stride) { launcher(kernel, blocks, threads, depth, rounds, stride); };
-      if (move && !quarter) {
+                               + (depth == 6 ? ", six buffers out" : "") + (quarter ? ", a quarter of the multiprocessors" : "")
+                               + (few > 1 ? ", " + std::to_string(blocks) + " multiprocessors, its plane a ring"
+                                  : few < 0 ? ", " + std::to_string(blocks) + " multiprocessors, a new region a round" : "");
+      const auto launch = [&](int rounds, int stride) { launcher(kernel, blocks, threads, depth, rounds, stride, out_stride); };
+      if (move && few == 0) {
         LAB_CHECK(cudaMemset(is_values ? dvplane : ddplane, 0xa5, is_values ? vplane_bytes : dplane_bytes));
         launch(1, 0);
         LAB_CHECK(cudaDeviceSynchronize());
@@ -474,27 +484,31 @@ int main(int argc, char** argv) {
         b.record(timed, "SM-cycles a token", cycles);
       }
     };
-    const auto both = [&](auto launcher, auto flat, auto moved, bool is_values, int threads, bool quarter, int depth) {
-      run(launcher, flat, is_values, threads, kFlat, quarter, depth);
-      run(launcher, moved, is_values, threads, kMoved, quarter, depth);
+    const auto both = [&](auto launcher, auto flat, auto moved, bool is_values, int threads, int few, int depth) {
+      run(launcher, flat, is_values, threads, kFlat, few, depth);
+      run(launcher, moved, is_values, threads, kMoved, few, depth);
     };
     if (stream) {
-      both(launch_values, values::plane<512, kFlat, kRecords>, values::plane<512, kMoved, kRecords>, true, 512, false, 3);
-      both(launch_values, values::plane<512, kFlat, kRecords>, values::plane<512, kMoved, kRecords>, true, 512, true, 3);
-      both(launch_dense, dense::plane<512, kFlat, 3>, dense::plane<512, kMoved, 3>, false, 512, false, 3);
-      both(launch_dense, dense::plane<512, kFlat, 3>, dense::plane<512, kMoved, 3>, false, 512, true, 3);
+      both(launch_values, values::plane<512, kFlat, kRecords>, values::plane<512, kMoved, kRecords>, true, 512, 0, 3);
+      both(launch_values, values::plane<512, kFlat, kRecords>, values::plane<512, kMoved, kRecords>, true, 512, 1, 3);
+      both(launch_dense, dense::plane<512, kFlat, 3>, dense::plane<512, kMoved, 3>, false, 512, 0, 3);
+      both(launch_dense, dense::plane<512, kFlat, 3>, dense::plane<512, kMoved, 3>, false, 512, 1, 3);
+      for (int few : {16, -16, 8, -8}) {
+        both(launch_values, values::plane<512, kFlat, kRecords>, values::plane<512, kMoved, kRecords>, true, 512, few, 3);
+        both(launch_dense, dense::plane<512, kFlat, 3>, dense::plane<512, kMoved, 3>, false, 512, few, 3);
+      }
       continue;
     }
-    both(launch_values, values::plane<256, kFlat, kTiled>, values::plane<256, kMoved, kTiled>, true, 256, false, 3);
-    both(launch_values, values::plane<512, kFlat, kTiled>, values::plane<512, kMoved, kTiled>, true, 512, false, 3);
-    both(launch_values, values::plane<1024, kFlat, kTiled>, values::plane<1024, kMoved, kTiled>, true, 1024, false, 3);
-    both(launch_values, values::plane<512, kFlat, kTiled>, values::plane<512, kMoved, kTiled>, true, 512, true, 3);
-    both(launch_dense, dense::plane<256, kFlat, 3>, dense::plane<256, kMoved, 3>, false, 256, false, 3);
-    both(launch_dense, dense::plane<512, kFlat, 3>, dense::plane<512, kMoved, 3>, false, 512, false, 3);
-    both(launch_dense, dense::plane<1024, kFlat, 3>, dense::plane<1024, kMoved, 3>, false, 1024, false, 3);
-    both(launch_dense, dense::plane<512, kFlat, 3>, dense::plane<512, kMoved, 3>, false, 512, true, 3);
-    both(launch_dense, dense::plane<512, kFlat, 6>, dense::plane<512, kMoved, 6>, false, 512, false, 6);
-    both(launch_dense, dense::plane<512, kFlat, 6>, dense::plane<512, kMoved, 6>, false, 512, true, 6);
+    both(launch_values, values::plane<256, kFlat, kTiled>, values::plane<256, kMoved, kTiled>, true, 256, 0, 3);
+    both(launch_values, values::plane<512, kFlat, kTiled>, values::plane<512, kMoved, kTiled>, true, 512, 0, 3);
+    both(launch_values, values::plane<1024, kFlat, kTiled>, values::plane<1024, kMoved, kTiled>, true, 1024, 0, 3);
+    both(launch_values, values::plane<512, kFlat, kTiled>, values::plane<512, kMoved, kTiled>, true, 512, 1, 3);
+    both(launch_dense, dense::plane<256, kFlat, 3>, dense::plane<256, kMoved, 3>, false, 256, 0, 3);
+    both(launch_dense, dense::plane<512, kFlat, 3>, dense::plane<512, kMoved, 3>, false, 512, 0, 3);
+    both(launch_dense, dense::plane<1024, kFlat, 3>, dense::plane<1024, kMoved, 3>, false, 1024, 0, 3);
+    both(launch_dense, dense::plane<512, kFlat, 3>, dense::plane<512, kMoved, 3>, false, 512, 1, 3);
+    both(launch_dense, dense::plane<512, kFlat, 6>, dense::plane<512, kMoved, 6>, false, 512, 0, 6);
+    both(launch_dense, dense::plane<512, kFlat, 6>, dense::plane<512, kMoved, 6>, false, 512, 1, 6);
     }
   }
   return 0;
