@@ -158,18 +158,23 @@ marked in global memory, the self-issuing fold fits at 160) and the serve warpgr
 fp32, and ROUNDED BY THE DRAIN WARPS as they load them -- a row's 64 values are 256 of its 272 bytes, so the panel
 is no larger.
 
-THE BLOCK ROWS (the fold alone; composed, with and without clocks, beside the mirrored readout and four drain
-warps; and that composed form's even-list row, the fold issuing whole-entry tiles). The fold is fed A BLOCK A LIST
-A WINDOW, its lists uneven, 8 to 24 entries: the list's sparse bytes, then 8 runs of its entries' value lines -- a
-brick a run, a line an entry -- then its entries' dense lines; as long as the list, nothing padded. The carry is
-handed a window's 16 counts and nothing else. A fold lands a block with one bulk copy, issued a window ahead as
-it leaves the slot; a thread expands one entry's dense line where it lies -- its brick-0 line -- and to a second
-run, both runs padded with zero lines to a step's 16; and a slot's steps are ONE BLOCK of 16, two rounds of its 8
-lists: a step's A is the block's runs from the round's first entry on, its bricks as far apart as the list is
-long, and a list with no entry in a round multiplies by a tile of zeros. A step's operands are a thread's two
-words of a table in shared memory, as a window's counts are a box's 16 bytes: a fold thread holds neither. The
-lab's bounds: a slot's 8 lists are 128 entries, no list is past two rounds, and a slot is 1,424 lines. These rows'
-folds are at 184 registers a thread and their readout and serve warps at 72.
+THE BLOCK ROWS (the fold alone; composed, with and without clocks, beside the mirrored readout at a chunk of 8
+digits and four drain warps). THE QUESTION: what uneven lists cost the carry when the stream says what to do and
+the fold walks nothing. The fold is fed A BLOCK A LIST A WINDOW, its lists uneven, 8 to 24 entries, a slot ONE
+LANDED IMAGE the host laid: a word an entry -- the line of its dense bytes and the line of its second coefficient
+run; the entries' sparse bytes; the second runs' pad lines; a step's four halves -- its A's first line and brick
+spacing, its B's line and its two bricks' spacing, or all ones for a step that is absent; the pads' count; then
+each list's 8 runs of value lines, a brick a run, a line an entry, as long as the list; then each list's dense
+lines, padded with zero lines to its steps. A window's PLAN is 16 bytes -- each slot's image's first line in the
+stream and its bytes -- loaded a window ahead by one thread a box. A fold lands a slot with one bulk copy, issued
+a window ahead as it leaves the slot; a thread reads its entry's word, expands the entry's dense line by its
+sparse byte where it lies and to its second run -- behind the landed image, in shared memory only -- zeroes a pad
+line and, a thread of 16, makes a step's two operands from the image's halves; and a slot's steps are ONE BLOCK
+of 16, two rounds of its 8 lists, an absent step multiplying a box's tile of zeros. A fold thread holds no count
+and walks none. The lab's bounds: a slot's 8 lists are 128 entries, no list is past two rounds, and a slot is
+1,488 lines. These rows' folds are at 168 registers a thread, their readout at 104 and their drain warps at 72.
+The even-list row beside them is the fold issuing whole-entry tiles under the same readout and drains, its folds
+at 160 and its drain warps at 88.
 
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
