@@ -84,7 +84,8 @@
 // expanded to two lines of its digit's tile; the warpgroup's barrier; 8 steps of 64 channels by 16 tokens, a
 // digit's two into its own accumulator; the next chunk's bytes issued under them; then its 32 sums as halves of
 // the panel's rows. Live: 32 sums and the 4 words of its bytes. With A CHUNK OF 8 DIGITS a pass is two tile
-// groups: 64 sums and 8 words live, 16 steps a commit group, both panels written.
+// groups: 64 sums and 8 words live, 16 steps a commit group, both panels written. Where the DRAIN WARPS ROUND, the
+// readout stores a sum a word and a drain lane loads a token's two sums and rounds them to its pair.
 // see docs/internals/tools/lab.md#carry-window
 #include <chrono>
 
@@ -257,7 +258,10 @@ enum Roles : long long {
   //: the mirrored readout with A CHUNK OF 8 DIGITS: two tile groups a pass -- both awaited, both expanded, their 16
   //: steps one commit group, both panels written -- so a window is two passes of the readout's fixed work, not four;
   //: 64 sums a thread
-  kChunk8 = 1ll << 36
+  kChunk8 = 1ll << 36,
+  //: the mirrored readout's sums stored AS THEY ARE, fp32, and ROUNDED BY THE DRAIN WARPS as they load them: a
+  //: panel row's 64 values are 256 of its 272 bytes, where its f16 pairs are 128
+  kRawPanel = 1ll << 37
 };
 template <long long ROLES>
 constexpr bool apart = (ROLES & kApart) == kApart;
@@ -1156,10 +1160,17 @@ __device__ __forceinline__ void read_mirror(uint8_t* smem, uint32_t base, long l
           for (int i = 0; i < 2; ++i)
 #pragma unroll
             for (int r = 0; r < 2; ++r) {
-              const uint32_t halves = lab::pack_half2(d[g * kChunkDigits + j][4 * i + 2 * r], d[g * kChunkDigits + j][4 * i + 2 * r + 1]);
-              uint8_t* const at = panel + (16 * j + 8 * i) * kRowBytes + 16 * r;
-              *reinterpret_cast<uint16_t*>(at) = static_cast<uint16_t>(halves);
-              *reinterpret_cast<uint16_t*>(at + kRowBytes) = static_cast<uint16_t>(halves >> 16);
+              if constexpr ((ROLES & kRawPanel) != 0) {
+                //: a sum a word of its token's row, its channel's: the thread's base is its channel's half, so twice it
+                uint8_t* const at = panel + (16 * j + 8 * i) * kRowBytes + 32 * r + 2 * (16 * warp + q);
+                *reinterpret_cast<float*>(at) = d[g * kChunkDigits + j][4 * i + 2 * r];
+                *reinterpret_cast<float*>(at + kRowBytes) = d[g * kChunkDigits + j][4 * i + 2 * r + 1];
+              } else {
+                const uint32_t halves = lab::pack_half2(d[g * kChunkDigits + j][4 * i + 2 * r], d[g * kChunkDigits + j][4 * i + 2 * r + 1]);
+                uint8_t* const at = panel + (16 * j + 8 * i) * kRowBytes + 16 * r;
+                *reinterpret_cast<uint16_t*>(at) = static_cast<uint16_t>(halves);
+                *reinterpret_cast<uint16_t*>(at + kRowBytes) = static_cast<uint16_t>(halves >> 16);
+              }
             }
         __syncwarp();
         if (lane == 0) lab::mbar_arrive(bars + kPanelReady + 8 * (cg & 1));
@@ -1389,9 +1400,16 @@ __device__ __forceinline__ void drain_role(const uint8_t* smem, uint32_t base, l
   //: batch `n` of chunk `c` into register half `h`: a lane's word of a token's row is its f16 pair
   const auto load = [&](int c, int n, int h) {
 #pragma unroll
-    for (int i = 0; i < kHold; ++i)
-      held[h][i] = reinterpret_cast<const uint32_t*>(
-          smem + kPanelAt + (c & 1) * kPanelBytes + (mine + kDrainers * (n * kHold + i)) * kRowBytes)[lane];
+    for (int i = 0; i < kHold; ++i) {
+      const uint8_t* const row = smem + kPanelAt + (c & 1) * kPanelBytes + (mine + kDrainers * (n * kHold + i)) * kRowBytes;
+      if constexpr ((ROLES & kRawPanel) != 0) {
+        //: the row's two sums of the lane's channels, rounded to its pair here
+        const float2 two = reinterpret_cast<const float2*>(row)[lane];
+        held[h][i] = lab::pack_half2(two.x, two.y);
+      } else {
+        held[h][i] = reinterpret_cast<const uint32_t*>(row)[lane];
+      }
+    }
   };
   uint32_t on_panel = 0;
   lab::WarpSpan clock;
@@ -1639,6 +1657,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kTwoSums ? ", the readout a sum a box" : "")
                            + (ROLES & kMirror ? ", the readout's coefficients in shared memory and its tokens on the step's columns" : "")
                            + (ROLES & kChunk8 ? ", its chunk 8 digits" : "")
+                           + (ROLES & kRawPanel ? ", its sums rounded by the drain warps" : "")
                            + (ROLES & kListed ? ((ROLES & kHot) && !apart<ROLES> ? ", the fold's entries from lists, every window the same tokens" : ", the fold's entries from lists, a window's own tokens") : "")
                            + (ROLES & kPitch ? (ROLES & kDenImage ? ", the image's tiles 161 lines apart" : ROLES & kNoClock ? ", the image's tiles 155 lines apart" : ", the image's tiles 154 lines apart") : "")
                            + ((ROLES & kDen) == kDen ? ", the den: two more steps a slot, the readout's steps 72 columns and an fp32 a token"
@@ -1656,7 +1675,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
   const size_t tokens = static_cast<size_t>(b.sms) * kOutWindows * kWindow;
   LAB_CHECK(cudaMemset(out, 0, (words + tokens) * 4));
-  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed | kHot | kAhead | (fresh<ROLES> ? kNoLoads : 0) | (packed<ROLES> ? kNoMath : 0) | (four<ROLES> || fold_expands<ROLES> ? kFour | kFoldIssues | kDrains4 : 0) | kTwoSums | kMirror | kChunk8)) == (kFold | kRead)) {
+  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed | kHot | kAhead | (fresh<ROLES> ? kNoLoads : 0) | (packed<ROLES> ? kNoMath : 0) | (four<ROLES> || fold_expands<ROLES> ? kFour | kFoldIssues | kDrains4 : 0) | kTwoSums | kMirror | kChunk8 | kRawPanel)) == (kFold | kRead)) {
     kernel<<<b.sms, kLaunch, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * state_words<ROLES>;
@@ -1993,7 +2012,11 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kNoClock | kWhole | kFour | kTwoSums, 3 | kSuspend | kLean | kWhole | kFour | kTwoSums,
                     3 | kSuspend | kLean | kNoClock | kWhole | kFour | kMirror, 3 | kSuspend | kLean | kWhole | kFour | kMirror,
                     3 | kSuspend | kLean | kNoClock | kWhole | kFour | kMirror | kChunk8,
-                    3 | kSuspend | kLean | kWhole | kFour | kMirror | kChunk8}) {
+                    3 | kSuspend | kLean | kWhole | kFour | kMirror | kChunk8,
+                    3 | kSuspend | kLean | kNoClock | kWhole | kFour | kMirror | kChunk8 | kFoldIssues | kDrains4,
+                    3 | kSuspend | kLean | kWhole | kFour | kMirror | kChunk8 | kFoldIssues | kDrains4,
+                    3 | kSuspend | kLean | kNoClock | kWhole | kFour | kMirror | kChunk8 | kFoldIssues | kDrains4 | kRawPanel,
+                    3 | kSuspend | kLean | kWhole | kFour | kMirror | kChunk8 | kFoldIssues | kDrains4 | kRawPanel}) {
     const std::string k = lab::kernel("carry_window::window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     //: the ahead row's asks are in its binary: 6 a batch, at the producers' two sites
@@ -2044,6 +2067,10 @@ int main(int argc, char** argv) {
   run<kFold>(b, waits, values, dense, state, out);
   run<kRead>(b, waits, values, dense, state, out);
   //: the fold-expands rows and the packed rows first: their waits are their own forms', and a hang shows at once
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kFour | kMirror | kChunk8 | kFoldIssues | kDrains4 | kRawPanel>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kWhole | kFour | kMirror | kChunk8 | kFoldIssues | kDrains4 | kRawPanel>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kFour | kMirror | kChunk8 | kFoldIssues | kDrains4>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kWhole | kFour | kMirror | kChunk8 | kFoldIssues | kDrains4>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kFour | kMirror | kChunk8>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kWhole | kFour | kMirror | kChunk8>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kFour | kMirror>(b, waits, values, dense, state, out);
