@@ -1588,6 +1588,7 @@
   {"doc": "docs/lab/gather_pass.md", "pinned_at": "95672f936f50", "reviewed": true, "sha256": "", "target": "docs/lab/carry_window.md"},
   {"doc": "docs/lab/gather_pass.md", "pinned_at": "95672f936f50", "reviewed": true, "sha256": "", "target": "docs/lab/facts_lists.md"},
   {"doc": "docs/lab/gather_pass.md", "pinned_at": "95672f936f50", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/gather_pass.cu"},
+  {"doc": "docs/lab/gather_pass.md", "pinned_at": "ad82c2499241", "reviewed": true, "sha256": "", "target": "measure/lab/results/gather_pass/sm_90a.json"},
   {"doc": "docs/lab/intra_chain.md", "pinned_at": "f6a5a5685bd0", "reviewed": true, "sha256": "9c43d4f21573d713", "target": "docs/ARCHITECTURE.md#64-the-intra--the-within-window-term"},
   {"doc": "docs/lab/intra_chain.md", "pinned_at": "8a4742c32f72", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
   {"doc": "docs/lab/intra_chain.md", "pinned_at": "c063e24d875a", "reviewed": true, "sha256": "", "target": "docs/lab/carry_window.md"},
