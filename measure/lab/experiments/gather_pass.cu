@@ -27,7 +27,7 @@
 // block's 16 lists are made a warp a digit in 32 fixed trips, and a unit is a slot's image as the carry lands it --
 // tables, then each list's value runs as long as the list -- with its plan. ITS TIMELINE: a window's values and its
 // first block's mask and rows are asked before the first trip and waited on in it; a later block's are asked a
-// unit ahead. A block's first unit is the lists (a barrier), the layout by one warp (a barrier), the image and the
+// unit ahead. A block's first unit is the lists (a barrier), the layout by nine threads (a barrier), the image and the
 // writers' fence (the CTA's barrier); its second the last two. Thread 0 issues a unit's copy out and its plan at
 // the next trip and keeps one copy in flight, three buffers in turn.
 // TIMELINE: no MMA. A trip is a unit. Thread 0 issues the copy out of the unit before (each writer fenced its own
@@ -426,13 +426,17 @@ __global__ void __launch_bounds__(THREADS, 1)
         }
         __syncthreads();
       }
-      //: THE SLOT'S LAYOUT, once a CTA: its 8 lists' entries, runs' lines and pads before each, by the first warp's
-      //: scans, published behind the unit's barrier
-      if (warp == 0) {
-        const uint32_t n = lane < 8 ? count[8 * h + lane] : 0u, lines = static_cast<uint32_t>(spread(static_cast<int>(n)));
-        const uint32_t entries = scan(n, lane), dense = scan(lines, lane), pads = scan(lines - n, lane);
-        if (tid < 8) layout[tid] = make_uint4(entries - n, kTables + 8 * (entries - n), dense - lines, pads - (lines - n));
-        if (tid == 31) *reinterpret_cast<uint4*>(smem + kTotalAt) = make_uint4(entries, dense, pads, 0);
+      //: THE SLOT'S LAYOUT, once a CTA: its 8 lists' entries, runs' lines and pads before each -- nine threads, a
+      //: list each and the totals, each summing the counts before it; published behind the unit's barrier
+      if (tid <= 8) {
+        uint32_t entries = 0, dense = 0, pads = 0;
+#pragma unroll
+        for (int i = 0; i < 8; ++i) {
+          const uint32_t n = i < tid ? count[8 * h + i] : 0u, lines = static_cast<uint32_t>(spread(static_cast<int>(n)));
+          entries += n, dense += lines, pads += lines - n;
+        }
+        if (tid < 8) layout[tid] = make_uint4(entries, kTables + 8 * entries, dense, pads);
+        else *reinterpret_cast<uint4*>(smem + kTotalAt) = make_uint4(entries, dense, pads, 0);
       }
       __syncthreads();
       {
@@ -499,7 +503,7 @@ int main(int argc, char** argv) {
       b.expect(lab::kernel("gather_pass::dense::plane", {threads, move, 3}), "LOOP_CONVERGENCE", "<=", 64);
       if (threads == 512) b.expect(lab::kernel("gather_pass::dense::plane", {threads, move, 6}), "LOOP_CONVERGENCE", "<=", 64);
     }
-  //: the block stream's unit is a trip: its scans are every warp's, in the trip
+  //: the block stream's unit is a trip, and a block's lists' scan is every warp's, a digit each, in its trip
   b.expect(lab::kernel("gather_pass::blocks::plane", {blocks::kThreads}), "LOOP_CONVERGENCE", "<=", 64);
   if (b.expect_only) return 0;
   constexpr int kRounds = 8, kMax = kMaxSteps<32>;

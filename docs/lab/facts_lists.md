@@ -17,8 +17,8 @@ counting sort of the window's live (token, digit) pairs by digit, in token order
   digits and their totals -- no thread works while the CTA waits;
 - a thread stores each of its live digits' ENTRY at its digit's offset, the count before its warp and the lanes
   before it in its warp's word. AN ENTRY IS THE TOKEN, with no byte (KERNEL_STANDARDS 29, item 5): the pass turns
-  the mask around and reads no row. This lab writes its lists to global memory; the ruled gather pass keeps them in
-  shared memory ([`gather_pass`](gather_pass.md)).
+  the mask around and reads no row. This lab writes its lists to global memory; the ruled gather pass keeps the fold
+  side's in shared memory ([`gather_pass`](gather_pass.md)) and writes the read side's token indices in its stream.
 Two forms find a token's live digits: the mask's 32 bytes as handed, or a value test of the token's 256 bytes read
 from the tile-major rows the bundle holds. A call is the window's COUNTS alone -- what sizes its lists before they
 are written -- or the LISTS too. Each is timed with every table in cache (a call's 16 rounds over the same

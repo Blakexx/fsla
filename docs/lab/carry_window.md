@@ -180,7 +180,9 @@ recorded with its wait on the drain in it.
 The clocked rows of the block form and of the even lists' self-issuing form clock THE FOLD'S PHASES too: the
 image's publishing (its wait on the readout's read in it); its entries' expansion, from a slot's bytes landed;
 the block form's pads and steps' operands; the slot's fence and the warpgroup's barrier; and its steps with the
-next copy's issue. A clocked fold holds six more registers.
+next copy's issue. A clocked fold holds six more registers, and its laps' readings are each thread's own: read
+through a warp's uniform registers, one row's steps clock recorded a wrapped count (the experiment at 17c91fcf;
+why is not established).
 A CONTROL, both forms, with and without clocks: the fold stores its landed bytes AS THEY ARE to its coefficient
 lines -- no conversion, no product, no sparse byte. Its sums are not the carry's: an isolation, unchecked.
 
