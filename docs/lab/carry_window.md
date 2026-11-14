@@ -187,8 +187,14 @@ next copy's issue, the two slots' fences apart. A clocked fold holds eight more 
 A CONTROL, both forms, with and without clocks: the fold stores its landed bytes AS THEY ARE to its coefficient
 lines -- no conversion, no product, no sparse byte. Its sums are not the carry's: an isolation, unchecked.
 A SECOND, the even lists' form: BOTH its next window's copies ISSUED AT THE WINDOW'S END, behind its second
-slot's steps, where the form issues a slot's as it leaves the slot -- so no copy of the fold's own is in flight
-at a slot's fence. THE QUESTION: is a fence's time a wait on the copies in flight? Checked, exact.
+slot's steps, where the form issues a slot's as it leaves the slot -- so the second slot's fence has no copy of
+the fold's own issued since the window began, where the form's has the first slot's issued a slot before; at the
+first slot's fence both copies have had the image's publishing to land, and the second's is not waited on
+there. THE QUESTION: is a fence's time a wait on the copies in flight? Checked, exact.
+THE MEETING ROWS, both forms, with and without clocks: a warpgroup's rendezvous behind its coefficient lines --
+a fold's a slot, the readout's a pass -- is AN MBARRIER'S: a warp arrives and every thread waits as the row waits,
+where the other rows sync a named barrier. THE QUESTION: what the named barrier costs a warpgroup. Checked,
+exact. Their clocked even-list row's folds are at 168 registers and its drain warps at 72.
 
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, each
 thread's own, their counts held in its registers: a clocked row's window is longer than its work. Rows of the winner's form and the den's, at both cells, and the den's chain run with no
