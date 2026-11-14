@@ -130,6 +130,11 @@ and composed with the serve warpgroup FOUR DRAIN WARPS,
 16 of a chunk's 64 tokens each. The composed rows of these forms run once more with every role's waits clocked:
 the role that does not wait is the window's.
 
+THE READOUT A SUM A BOX (a pair, composed, with and without clocks; the fold expanding, a producer issuing). A
+chunk's 8 steps all add into the readout's one accumulator, a chain. Here the steps on box 0's tiles add into one
+accumulator and those on box 1's into another -- two chains of 4 -- and a thread sums the two before its row is
+rounded: one panel, the drain as it was. A readout thread is at 112 registers and a serve thread at 80.
+
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
 through uniform registers in the den's. Rows of the winner's form and the den's, at both cells, and the den's chain run with no

@@ -78,7 +78,8 @@
 // barrier, then its 8 steps as one block. Live in the expansion beside the fold's 128 accumulators: the landed
 // line's 4 words, its weight and a line's 4 pairs. THE FOLD-ISSUES rows have no producer: a fold issues its slot's
 // next copies -- the window after's -- as it leaves the slot, a window's steps ahead of their use; the serve
-// warpgroup's other two warps idle, or with FOUR DRAIN WARPS take 16 of a chunk's 64 tokens each.
+// warpgroup's other two warps idle, or with FOUR DRAIN WARPS take 16 of a chunk's 64 tokens each. THE SUM-A-BOX
+// rows' readout holds two accumulators, 64 words beside its 16 of A: a chunk's steps are two chains of 4.
 // see docs/internals/tools/lab.md#carry-window
 #include <chrono>
 
@@ -233,7 +234,11 @@ enum Roles : long long {
   //: producer warp runs, and no hand-off of a freed slot
   kFoldIssues = 1ll << 32,
   //: the serve warpgroup FOUR DRAIN WARPS (a row with no producer): 16 of a chunk's 64 tokens each
-  kDrains4 = 1ll << 33
+  kDrains4 = 1ll << 33,
+  //: THE READOUT A SUM A BOX: a chunk's steps on box 0's tiles add into one accumulator and those on box 1's into
+  //: another -- two chains of 4 steps where one accumulator makes a chain of 8 -- summed a thread before the row is
+  //: rounded; 32 registers a readout thread more, the serve warpgroup's
+  kTwoSums = 1ll << 34
 };
 template <long long ROLES>
 constexpr bool apart = (ROLES & kApart) == kApart;
@@ -304,9 +309,11 @@ constexpr int value_parts = ROLES & kFive ? kFiveParts : 1;
 //: the den's readout holds 4 more accumulators, column 64's set: at 80 the toolkit serializes its steps, and its 8
 //: more a thread are the fourth warpgroup's, as the wide and the big rows' are
 template <long long ROLES>
-constexpr int read_regs = ROLES & kFive ? kFiveReadRegs : (ROLES & kLean) && (ROLES & (kDenSplit | kWide)) ? 88 : ROLES & kLean ? 80 : kReadRegs;
+constexpr int read_regs = (ROLES & kFive ? kFiveReadRegs : (ROLES & kLean) && (ROLES & (kDenSplit | kWide)) ? 88 : ROLES & kLean ? 80 : kReadRegs)
+                          + (ROLES & kTwoSums ? 32 : 0);
 template <long long ROLES>
 constexpr int serve_regs = ((ROLES & kLean) && (ROLES & (kWide | kDenSplit)) ? 104 : ROLES & kLean ? 112 : kServeRegs)
+                           - (ROLES & kTwoSums ? 32 : 0)
                            - ((ROLES & kWhole) == kWhole && (ROLES & kNoMath) == 0 && (ROLES & kFour) && (ROLES & kFoldIssues) ? 16 : 0);
 //: a fold that issues its own copies holds their addresses beside its state: 8 registers a thread more, the serve
 //: warpgroup's, whose warps hold no entry
@@ -1077,6 +1084,9 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
   static_assert(!(ROLES & kDenImage) || (ROLES & kDenFold));
   static_assert(!(ROLES & kDenDrain) || (ROLES & kDenRead));
   float d[ROLES & kDenRead ? 36 : 32];
+  //: box 1's sum, where the row keeps a sum a box
+  float d1[32];
+  static_assert(!(ROLES & kTwoSums) || ((ROLES & kLean) && !(ROLES & (kDenRead | kFive))));
   lab::WarpSpan clock;
   clock.start();
 #pragma unroll 1
@@ -1128,9 +1138,15 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
             for (int i = 0; i < 4; ++i) rows[j & 1][box][i] = lab::held(warp == j ? a[box][i] : 0u);
 #pragma unroll
           for (int box = 0; box < 2; ++box)
-            read_step<ROLES>(d, rows[j & 1][box],
-                             lab::wg_desc(images + box * kBoxBytes + 2 * j * tile_of<ROLES>, 8, kBrickLines),
-                             j != 0 || box != 0);
+            if constexpr ((ROLES & kTwoSums) != 0) {
+              //: a box's own accumulator: its chain is its 4 digits' steps, the other box's beside it
+              if (box == 0) lab::wg_bf16_n64_rs(d, rows[j & 1][0], lab::wg_desc(images + 2 * j * tile_of<ROLES>, 8, kBrickLines), j != 0);
+              else lab::wg_bf16_n64_rs(d1, rows[j & 1][1], lab::wg_desc(images + kBoxBytes + 2 * j * tile_of<ROLES>, 8, kBrickLines), j != 0);
+            } else {
+              read_step<ROLES>(d, rows[j & 1][box],
+                               lab::wg_desc(images + box * kBoxBytes + 2 * j * tile_of<ROLES>, 8, kBrickLines),
+                               j != 0 || box != 0);
+            }
           lab::wg_commit();
         }
       } else {
@@ -1171,8 +1187,12 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       for (int j = 0; j < 8; ++j)
 #pragma unroll
         for (int r = 0; r < 2; ++r)
-          *reinterpret_cast<uint32_t*>(row + 8 * r * kRowBytes + 16 * j) =
-              lab::pack_half2(d[4 * j + 2 * r], d[4 * j + 2 * r + 1]);
+          if constexpr ((ROLES & kTwoSums) != 0)
+            *reinterpret_cast<uint32_t*>(row + 8 * r * kRowBytes + 16 * j) =
+                lab::pack_half2(d[4 * j + 2 * r] + d1[4 * j + 2 * r], d[4 * j + 2 * r + 1] + d1[4 * j + 2 * r + 1]);
+          else
+            *reinterpret_cast<uint32_t*>(row + 8 * r * kRowBytes + 16 * j) =
+                lab::pack_half2(d[4 * j + 2 * r], d[4 * j + 2 * r + 1]);
       if constexpr (ROLES & kDenDrain) {
         //: THE DEN'S WORD of a row, as the step summed it: the threads that hold column 64
         if (t == 0) {
@@ -1473,6 +1493,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (fold_expands<ROLES> ? ", the fold warps expanding their own slot" : "")
                            + (fold_issues<ROLES> ? " and issuing its copies" : "")
                            + (ROLES & kDrains4 ? ", four drain warps" : "")
+                           + (ROLES & kTwoSums ? ", the readout a sum a box" : "")
                            + (ROLES & kListed ? ((ROLES & kHot) && !apart<ROLES> ? ", the fold's entries from lists, every window the same tokens" : ", the fold's entries from lists, a window's own tokens") : "")
                            + (ROLES & kPitch ? (ROLES & kDenImage ? ", the image's tiles 161 lines apart" : ROLES & kNoClock ? ", the image's tiles 155 lines apart" : ", the image's tiles 154 lines apart") : "")
                            + ((ROLES & kDen) == kDen ? ", the den: two more steps a slot, the readout's steps 72 columns and an fp32 a token"
@@ -1490,7 +1511,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
   const size_t tokens = static_cast<size_t>(b.sms) * kOutWindows * kWindow;
   LAB_CHECK(cudaMemset(out, 0, (words + tokens) * 4));
-  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed | kHot | kAhead | (fresh<ROLES> ? kNoLoads : 0) | (packed<ROLES> ? kNoMath : 0) | (four<ROLES> || fold_expands<ROLES> ? kFour | kFoldIssues | kDrains4 : 0))) == (kFold | kRead)) {
+  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed | kHot | kAhead | (fresh<ROLES> ? kNoLoads : 0) | (packed<ROLES> ? kNoMath : 0) | (four<ROLES> || fold_expands<ROLES> ? kFour | kFoldIssues | kDrains4 : 0) | kTwoSums)) == (kFold | kRead)) {
     kernel<<<b.sms, kLaunch, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * state_words<ROLES>;
@@ -1823,7 +1844,8 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kNoClock | kWhole | kFour | kFoldIssues,
                     3 | kSuspend | kLean | kWhole | kFour | kFoldIssues,
                     3 | kSuspend | kLean | kNoClock | kWhole | kFour | kFoldIssues | kDrains4,
-                    3 | kSuspend | kLean | kWhole | kFour | kFoldIssues | kDrains4}) {
+                    3 | kSuspend | kLean | kWhole | kFour | kFoldIssues | kDrains4,
+                    3 | kSuspend | kLean | kNoClock | kWhole | kFour | kTwoSums, 3 | kSuspend | kLean | kWhole | kFour | kTwoSums}) {
     const std::string k = lab::kernel("carry_window::window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     //: the ahead row's asks are in its binary: 6 a batch, at the producers' two sites
@@ -1872,6 +1894,8 @@ int main(int argc, char** argv) {
   run<kFold>(b, waits, values, dense, state, out);
   run<kRead>(b, waits, values, dense, state, out);
   //: the fold-expands rows and the packed rows first: their waits are their own forms', and a hang shows at once
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kFour | kTwoSums>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kWhole | kFour | kTwoSums>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kFour | kFoldIssues>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kWhole | kFour | kFoldIssues>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kFour | kFoldIssues | kDrains4>(b, waits, values, dense, state, out);
