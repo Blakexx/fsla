@@ -139,6 +139,15 @@ written; the next chunk's bytes are loaded behind the steps, not under them; and
 their clocks in global memory (the readout holds its own), a held clock's start being the value such a kernel
 spills.
 
+THE MIRRORED READOUT (a pair, composed, with and without clocks; the fold expanding, a producer issuing). The
+readout's step has its tokens on its 64 rows, and one read digit's 16 readers are a step: 48 of a step's rows are
+zeros. Here the readout is laid as the fold is: its coefficients in SHARED MEMORY and its tokens on the step's
+COLUMNS. A thread expands one (token, box)'s 16 bytes into two lines of that digit's tile (16 tokens by 16 fold
+digits, K-major); the warpgroup's barrier; then a step a (digit, box) of 64 channels by 16 tokens -- the image its
+A as it lies, the tile its B, every row and column live -- a digit's two steps into its own accumulator, four
+chains of 2. A thread's 32 sums are a channel's values on two tokens each: it stores each as a half of its token's
+panel line, 32 stores of 2 bytes where the other form stores 16 words.
+
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
 through uniform registers in the den's. Rows of the winner's form and the den's, at both cells, and the den's chain run with no
