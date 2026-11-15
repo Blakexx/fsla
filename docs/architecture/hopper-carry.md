@@ -16,11 +16,13 @@ order, packed, a token's values and its sparse bytes on the block's digits (RULE
 2026-11-15). EACH CARRY CTA MAKES ITS OWN OPERANDS (RULED 2026-11-15: "the expansion is unique to each final cta, not
 something shared. each final cta should own it, to distribute load"): it lands its window's view by bulk copies, and
 its fold's and readout's warps place each token's value lines on its digits' steps and form its coefficients -- an
-entry's sparse digits, the scales and the box's dense digits, their product, bf16 -- in shared memory. PROPOSED, NOT
-RULED, NOT MEASURED: the fill is SLICES -- one pass over the view in token order, a token's lines stored to its
-digit's slice at its rank, the rank a count of the digit's mask before the token, a step issued when a slice holds 16
-entries, a digit's last step of the window padded with zero lines; the window's steps are counted once from the masks
-and run with no decision on data. A token live on two digits of one block is one token of the list and an entry of
+entry's sparse digits, the scales and the box's dense digits, their product, bf16 -- in shared memory. THE FILL IS SLICES (RULED 2026-11-15; NOT MEASURED): ONE VIEW A WINDOW for all 16 digits of the block and ONE PASS
+over it in token order -- a token's lines stored to its digit's slice at its rank, the rank a count of the digit's
+mask before the token -- then all the window's steps, a digit's last padded with zero lines; the steps are counted
+once from the window's counts and run with no decision on data. The view is held THROUGH REGISTERS where they fit: a
+fold thread loads a token's lines from global memory and stores them to the slices, so no shared memory stages the
+view, and a window's slices are the room two half-window slots of landed operands took. A fold thread holds two value lines at a time
+([`lab/carry_window.md`](../lab/carry_window.md)). A token live on two digits of one block is one token of the list and an entry of
 each digit's slice. Where a CTA's dense digits come from -- a segment of the stream a dense block, or the bundle's
 dense rows -- is OPEN. The stream is WORKSPACE, and A RING (RULED 2026-11-15): a few windows a CTA group, rewritten as
 the carry consumes them, so global memory holds windows of it and never a segment's. IT IS FED BY PERSISTENT GATHER
@@ -60,7 +62,7 @@ One CTA a multiprocessor, two boxes a CTA, 512 threads at the multiprocessor's w
 
 | the role | threads | registers a thread | what it holds |
 |---|---|---|---|
-| a FOLD warpgroup a box, two | 128 each | 160 | the box's state, 16 accumulator sets of 8; it issues its own slots' copies and steps them as they land |
+| a FOLD warpgroup a box, two | 128 each | 160 | the box's state, 16 accumulator sets of 8; it issues its own copies of the stream, makes its steps' operands where they land and steps them |
 | the READOUT warpgroup | 128 | 104 | a pass's two tile groups' sums, 64 a thread; its coefficients are in shared memory |
 | DRAIN warps, four | 32 each | 88 | batches of the panel's lines on their way to the output |
 

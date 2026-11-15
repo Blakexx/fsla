@@ -226,6 +226,24 @@ of its column's, where the form's 16 boxes share a column's. In the design a box
 and its values are its column's ([`hopper-gather.md`](../architecture/hopper-gather.md)): the form's rows and
 these bracket what a box's own bytes cost its window. Checked as the form's rows are.
 
+THE TOKEN ROWS (the block form; [`hopper-carry.md`](../architecture/hopper-carry.md#the-
+gather-stream)): THE FOLD LAYS ITS OWN SLOT from a view in token order. THE QUESTION: the design's stream holds a
+sparse block's live tokens once each as they come, so a token's value lines do not land where its digit's step reads
+them -- what does the fold moving them cost the window, beside the block form, whose value runs land in place? A
+slot's view is its 128 entries in token order -- each entry's places, its dense line and its 8 value lines, a brick a
+run -- one copy into the box's second pool slot, issued a slot ahead, behind the rendezvous of the slot before; a
+thread expands its entry's dense line into the box's first pool slot and moves its 8 value lines there, a pad's two
+lines are zeroed, and the steps are the block form's. The view is the block image's lists and bytes; what differs is
+the order its entries land in, who lays them, and the copy issued one slot ahead where the block form's is a window.
+THE THROUGH ROWS land the view without its value lines: a thread loads its entry's 8 from
+global memory, two in registers at a time, so no shared memory stages them; they have no clocked row, whose fold
+spills at its 168 registers. A slot of those rows is 8 of the block's 16 digits, as the block form's is. THE ONE-VIEW ROWS are the design's fill:
+ONE VIEW A WINDOW, the block's 16 lists' 256 entries in token order, a thread two of them; the window's table -- each
+entry's places and sparse byte, the 32 steps -- is one copy issued a window ahead; a thread loads an entry's dense
+line and its 8 value lines from global memory and lays them across the box's two pool slots; a list's last step's pads
+are zeroed from the steps' table; and the window's 32 steps are one block behind one fence and one rendezvous, where
+the block form's are two of each. All checked as the block form's rows are.
+
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
 through uniform registers in the den's. Rows of the winner's form and the den's, at both cells, and the den's chain run with no

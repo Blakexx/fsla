@@ -185,7 +185,7 @@ carried in, so a continuation's exit plane IS its entry plane.
 ([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve),
 [`internals/engine/carve.md`](internals/engine/carve.md)):
 a BOX — an extent a level and a channel extent — and each side's OPERATION PLAN. A side's sparse levels are its LISTS
-(a pass lists their live digits a window: the facts pass, and on hopper the gather pass inside itself -- section 6.2) and its dense levels are its OPERAND (their slices form the MMA
+(their live digits a window, listed: by the facts pass, and on hopper by the carry CTA itself, from the token list the gather pass writes -- section 6.2) and its dense levels are its OPERAND (their slices form the MMA
 operand, in level order); every side has a dense level, so every side has an operand. The dense level is SUPPORT
 SYMMETRY by construction: the read-write overlap factorizes over levels (`Σ_n R[t,n] Wt[s,n]` is the product over `l`
 of the levels' inner products), and a full-support factor at every level makes each factor strictly positive, so every
@@ -239,7 +239,7 @@ attribute is set. Residency is asserted at the seam from the launch size, as a r
 ## 6. The kernels
 
 Five kernel families, in one call's order: the producer writes the bundle; the facts pass reads it once for every
-consumer (on hopper the carry's lists are the gather pass's own, section 6.2); the carry and the intra compute the two halves of the recurrence into the same outputs; decode is the
+consumer (on hopper the gather pass writes the carry a token list and the carry CTA lays its own lists, section 6.2); the carry and the intra compute the two halves of the recurrence into the same outputs; decode is the
 `T = 1` step. They share the window grid, the descriptor and the atom, and no code path that could make a wrong
 convention agree with itself.
 
@@ -260,8 +260,8 @@ fp64 reference and the path a gradient takes (`rola/ops/produce.py`).
 
 ### 6.2 The facts pass
 
-ON HOPPER the carry is handed no list: RULED 2026-11-13, the gather pass reads the masks, makes its lists itself
-and writes the carry's stream -- RULED 2026-11-15, in its own CTAs beside the carry's, in one grid, the stream a ring ([`architecture/hopper-carry.md`](architecture/hopper-carry.md)); where the
+ON HOPPER the carry is handed no list: RULED 2026-11-13 and 2026-11-15, the gather pass reads the masks and writes
+the carry's stream, a sparse block's live tokens in token order, from which a carry CTA lays its own lists -- RULED 2026-11-15, in its own CTAs beside the carry's, in one grid, the stream a ring ([`architecture/hopper-carry.md`](architecture/hopper-carry.md)); where the
 factor products and the tile unions then come from is OPEN ([`open-work.md`](open-work.md), row A-e). What follows
 is the pass this tree builds.
 
