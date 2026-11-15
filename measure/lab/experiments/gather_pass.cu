@@ -30,10 +30,11 @@
 // unit ahead. A block's first unit is the lists (a barrier), the layout by nine threads (a barrier), the image and the
 // writers' fence (the CTA's barrier); its second the last two. Thread 0 issues a unit's copy out and its plan at
 // the next trip and keeps one copy in flight, three buffers in turn.
-// THE COEFFICIENT RUNS (`coefs`): the block stream's coefficients made in the carry step's format -- a CTA a window,
-// a dense block at a time: its rows asked where the trip opens it, a sparse block's mask and rows a unit ahead, the
-// lists made a (dense block, sparse block), a slot's runs written a thread a (list, place, brick) and copied out at
-// the next trip, three buffers in turn.
+// THE COEFFICIENT RUNS (`coefs`): the block stream's coefficients made in the carry step's format -- a CTA a window.
+// Its timeline: the window's lists first, a sparse block a trip, the block's mask and rows asked a trip ahead, an
+// entry kept as its token and its sparse byte; every slot's layout once; then a dense block at a time, its rows
+// asked a dense block ahead, a unit a slot's runs written a thread a (list, place, brick), fenced, and copied out
+// at the next trip, three buffers in turn and one copy in flight.
 // TIMELINE: no MMA. A trip is a unit. Thread 0 issues the copy out of the unit before (each writer fenced its own
 // lines before the barrier), then the copies in of the unit AFTER this one -- its step list and, when it opens a
 // block, the block's rows -- a unit ahead of their use; every thread waits on this unit's barriers, moves its
@@ -490,17 +491,17 @@ __global__ void __launch_bounds__(THREADS, 1)
 
 // --------------------------------------------- the block stream's coefficients, made in the carry step's format
 namespace coefs {
-//: A CTA writes a window's COEFFICIENT RUNS for one dense block at a time: a unit is a slot's 8 lists for that dense
-//: block -- each entry's 16 dense digits by its sparse digit, bf16, a line a brick, the first bricks' runs and then
-//: the second's, each list's padded with zero lines to its steps. The lists are made as `blocks` makes them, once a
-//: (dense block, sparse block). The lab's bounds: a list 32 entries
+//: A CTA writes a window's COEFFICIENT RUNS: first THE WINDOW'S LISTS, once -- every sparse block's 16, an entry its
+//: token and its byte on its sparse digit, and every slot's layout -- then a dense block at a time, a unit a slot's 8
+//: lists for that dense block: each entry's 16 dense digits by its byte, bf16, a line a brick, the first bricks'
+//: runs and then the second's, each list's padded with zero lines to its steps. The lab's bound: a list 32 entries
 constexpr int kThreads = 512, kCap = 32, kUnits = 2 * kBlocks, kRoomLines = 512, kRoomBytes = kRoomLines * 16;
 constexpr int kMaskBytes = 16 * 32 * 4;
-constexpr int kDenseAt = 0, kSparseAt = kDenseAt + kLevelBytes, kMaskAt = kSparseAt + 2 * kLevelBytes,
-              kRecAt = kMaskAt + 2 * kMaskBytes, kCountAt = kRecAt + 16 * 64 * 2, kLayoutAt = kCountAt + 64,
-              kSizeAt = kLayoutAt + 64, kOutAt = kSizeAt + 16, kBarsAt = kOutAt + 3 * kRoomBytes,
-              kSmemBytes = kBarsAt + 3 * 8;
-enum Bar : int { kDense = 0, kLevel = 8 };
+constexpr int kDenseAt = 0, kSparseAt = kDenseAt + 2 * kLevelBytes, kMaskAt = kSparseAt + 2 * kLevelBytes,
+              kRecAt = kMaskAt + 2 * kMaskBytes, kSpareAt = kRecAt + kDigits * kCap * 4, kCountAt = kSpareAt + kThreads * 4,
+              kLayoutAt = kCountAt + kDigits * 4, kSizeAt = kLayoutAt + kUnits * 9 * 4, kOutAt = kSizeAt + 16,
+              kBarsAt = kOutAt + 3 * kRoomBytes, kSmemBytes = kBarsAt + 4 * 8;
+enum Bar : int { kDense = 0, kLevel = 16 };
 
 template <int THREADS>
 __global__ void __launch_bounds__(THREADS, 1)
@@ -510,17 +511,18 @@ __global__ void __launch_bounds__(THREADS, 1)
   extern __shared__ __align__(128) uint8_t smem[];
   const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
   const uint32_t base = lab::smem(smem), bars = base + kBarsAt;
+  uint32_t* const recs = reinterpret_cast<uint32_t*>(smem + kRecAt);
   uint32_t* const count = reinterpret_cast<uint32_t*>(smem + kCountAt);
   uint32_t* const layout = reinterpret_cast<uint32_t*>(smem + kLayoutAt);
   uint32_t* const size = reinterpret_cast<uint32_t*>(smem + kSizeAt);
   if (tid == 0) {
 #pragma unroll
-    for (int i = 0; i < 3; ++i) lab::mbar_init(bars + 8 * i, 1);
+    for (int i = 0; i < 4; ++i) lab::mbar_init(bars + 8 * i, 1);
     lab::bulk_fence();
   }
   __syncthreads();
-  //: the units so far, a buffer each in turn; the sparse blocks' and the dense blocks' loads so far
-  uint32_t units = 0, levels = 0, denses = 0;
+  //: the units so far, a buffer out each in turn
+  uint32_t units = 0;
   lab::WarpSpan clock;
   clock.start();
 #pragma unroll 1
@@ -530,9 +532,9 @@ __global__ void __launch_bounds__(THREADS, 1)
     const uint4* const wrows = rows + at * (kWindow * kDigits / 16);
     const uint32_t* const wmasks = masks + at * (kDigits * 32);
     uint4* const wplane = out_plane + static_cast<long long>(blockIdx.x) * room;
-    //: a sparse block's mask and rows, to the level buffer in turn; a dense block's rows
-    const auto load_block = [&](int g, uint32_t n) {
-      const uint32_t level = n & 1u;
+    //: a sparse block's mask and rows, and a dense block's rows, each to its buffer in turn on that buffer's barrier
+    const auto load_block = [&](int g) {
+      const uint32_t level = static_cast<uint32_t>(g) & 1u;
       lab::mbar_expect(bars + kLevel + 8 * level, kMaskBytes + kTiles * kBlockBytes);
       lab::bulk_load(base + kMaskAt + level * kMaskBytes, wmasks + g * (16 * 32), kMaskBytes, bars + kLevel + 8 * level);
 #pragma unroll
@@ -541,85 +543,88 @@ __global__ void __launch_bounds__(THREADS, 1)
                        wrows + t * (kTileBytes / 16) + g * (kBlockBytes / 16), kBlockBytes, bars + kLevel + 8 * level);
     };
     const auto load_dense = [&](int db) {
-      lab::mbar_expect(bars + kDense, kTiles * kBlockBytes);
+      const uint32_t side = static_cast<uint32_t>(db) & 1u;
+      lab::mbar_expect(bars + kDense + 8 * side, kTiles * kBlockBytes);
 #pragma unroll
       for (int t = 0; t < kTiles; ++t)
-        lab::bulk_load(base + kDenseAt + t * kBlockBytes, wdense + t * (kTileBytes / 16) + db * (kBlockBytes / 16),
-                       kBlockBytes, bars + kDense);
+        lab::bulk_load(base + kDenseAt + side * kLevelBytes + t * kBlockBytes,
+                       wdense + t * (kTileBytes / 16) + db * (kBlockBytes / 16), kBlockBytes, bars + kDense + 8 * side);
     };
-    if (tid == 0) load_block(0, levels);
+    if (tid == 0) {
+      load_block(0);
+      load_dense(0);
+    }
+    //: THE WINDOW'S LISTS, a sparse block a trip: a warp a digit, a lane 32 tokens' bits; a live token's entry -- the
+    //: token and its byte on the digit -- goes to its rank in the digit's list, any other to the thread's spare
+#pragma unroll 1
+    for (int g = 0; g < kBlocks; ++g) {
+      if (tid == 0 && g + 1 < kBlocks) load_block(g + 1);
+      const uint32_t level = static_cast<uint32_t>(g) & 1u;
+      lab::mbar_wait_suspended(bars + kLevel + 8 * level, (g >> 1) & 1u);
+      const uint32_t bits = reinterpret_cast<const uint32_t*>(smem + kMaskAt + level * kMaskBytes)[tid];
+      const uint32_t live = static_cast<uint32_t>(__popc(bits)), through = blocks::scan(live, lane), before = through - live;
+      if (lane == 31) count[16 * g + warp] = through;
+      const uint8_t* const bytes = smem + kSparseAt + level * kLevelBytes + warp;
+#pragma unroll 1
+      for (int i = 0; i < 32; ++i) {
+        const uint32_t rank = before + static_cast<uint32_t>(__popc(bits & ((1u << i) - 1u))), token = static_cast<uint32_t>(lane * 32 + i);
+        const bool kept = (bits >> i & 1u) && rank < kCap;
+        (kept ? recs + (16 * g + warp) * kCap + rank : reinterpret_cast<uint32_t*>(smem + kSpareAt) + tid)[0] =
+            token | static_cast<uint32_t>(bytes[token * 16]) << 16;
+      }
+      __syncthreads();
+    }
+    //: EVERY SLOT'S LAYOUT: its 8 lists' first runs' lines before each, and their sum -- a thread a (slot, list)
+    if (tid < kUnits * 9) {
+      const int unit = tid / 9, m = tid % 9;
+      uint32_t lines = 0;
+#pragma unroll
+      for (int i = 0; i < 8; ++i) lines += i < m ? static_cast<uint32_t>(blocks::spread(static_cast<int>(count[8 * unit + i]))) : 0u;
+      layout[tid] = lines;
+    }
+    __syncthreads();
 #pragma unroll 1
     for (int trip = 0; trip <= kBlocks * kUnits; ++trip) {
       const int db = trip / kUnits, u = trip % kUnits;
-      //: THE ISSUE EDGE: the unit before's runs out; a dense block's rows where the trip opens it; the next sparse
-      //: block's mask and rows a unit ahead
+      //: THE ISSUE EDGE: the unit before's runs out; the next dense block's rows, a dense block ahead
       if (tid == 0) {
         if (trip > 0) {
           const uint32_t slot = (units - 1) % 3u;
           lab::bulk_store(wplane + static_cast<long long>(trip - 1) * kRoomLines, base + kOutAt + slot * kRoomBytes, size[slot]);
           lab::bulk_commit();
         }
-        if (trip < kBlocks * kUnits) {
-          if (u == 0) load_dense(db);
-          if ((u & 1) && trip + 1 < kBlocks * kUnits) load_block(((u + 1) >> 1) % kBlocks, levels + 1);
-        }
+        if (u == 0 && db + 1 < kBlocks) load_dense(db + 1);
       }
       if (trip == kBlocks * kUnits) break;
-      const int g = u >> 1, h = u & 1;
-      const uint32_t level = levels & 1u;
-      uint16_t* const recs = reinterpret_cast<uint16_t*>(smem + kRecAt);
-      if (h == 0) {
-        lab::mbar_wait_suspended(bars + kLevel + 8 * level, (levels >> 1) & 1u);
-        if (u == 0) lab::mbar_wait_suspended(bars + kDense, denses & 1u);
-        //: THE LISTS, a block's 16: a warp a digit, a lane 32 tokens' bits, a token to its rank
-        const uint32_t bits = reinterpret_cast<const uint32_t*>(smem + kMaskAt + level * kMaskBytes)[tid];
-        const uint32_t live = static_cast<uint32_t>(__popc(bits)), through = blocks::scan(live, lane), before = through - live;
-        if (lane == 31) count[warp] = through;
-#pragma unroll 1
-        for (int i = 0; i < 32; ++i) {
-          const uint32_t rank = before + static_cast<uint32_t>(__popc(bits & ((1u << i) - 1u)));
-          recs[warp * 64 + ((bits >> i & 1u) && rank < kCap ? rank : 32u + lane)] = static_cast<uint16_t>(lane * 32 + i);
-        }
-        __syncthreads();
-      }
-      //: THE SLOT'S LAYOUT: its 8 lists' first runs' lines before each, and their sum
-      if (tid <= 8) {
-        uint32_t lines = 0;
-#pragma unroll
-        for (int i = 0; i < 8; ++i) lines += i < tid ? static_cast<uint32_t>(blocks::spread(static_cast<int>(count[8 * h + i]))) : 0u;
-        layout[tid] = lines;
-      }
-      __syncthreads();
+      if (u == 0) lab::mbar_wait_suspended(bars + kDense + 8 * (db & 1), (db >> 1) & 1u);
       {
         //: THE RUNS: a thread a (list, place) and a brick -- an entry's 8 coefficients of the brick, its dense digits
-        //: by its sparse digit, rounded to bf16; a pad's line zero
+        //: by its byte, rounded to bf16; a pad's line zero
         uint4* const out = reinterpret_cast<uint4*>(smem + kOutAt + (units % 3u) * kRoomBytes);
-        const int cell = tid & 255, brick = tid >> 8, jj = cell >> 5, k = cell & 31, j = 8 * h + jj;
+        const int cell = tid & 255, brick = tid >> 8, jj = cell >> 5, k = cell & 31, j = 8 * u + jj;
         const int n = static_cast<int>(count[j]);
-        const uint32_t to = layout[jj] + static_cast<uint32_t>(brick) * layout[8] + static_cast<uint32_t>(k);
+        const uint32_t to = layout[9 * u + jj] + static_cast<uint32_t>(brick) * layout[9 * u + 8] + static_cast<uint32_t>(k);
         if (k < n) {
-          const uint32_t token = recs[j * 64 + k];
-          const float weight = static_cast<float>(smem[kSparseAt + level * kLevelBytes + token * 16 + j]);
-          const uint2 two = reinterpret_cast<const uint2*>(smem + kDenseAt + token * 16)[brick];
+          const uint32_t entry = recs[j * kCap + k];
+          const float weight = static_cast<float>(entry >> 16);
+          const uint2 two = reinterpret_cast<const uint2*>(smem + kDenseAt + (db & 1) * kLevelBytes + (entry & 0xffffu) * 16)[brick];
           const uint32_t word[2] = {two.x, two.y};
           uint32_t pair[4];
 #pragma unroll
           for (int c = 0; c < 4; ++c) {
-            const uint32_t bytes = word[c >> 1] >> (16 * (c & 1));
-            pair[c] = lab::bf16x2_round(weight * static_cast<float>(bytes & 255u), weight * static_cast<float>(bytes >> 8 & 255u));
+            const uint32_t pairs = word[c >> 1] >> (16 * (c & 1));
+            pair[c] = lab::bf16x2_round(weight * static_cast<float>(pairs & 255u), weight * static_cast<float>(pairs >> 8 & 255u));
           }
           out[to] = make_uint4(pair[0], pair[1], pair[2], pair[3]);
         } else if (k < blocks::spread(n)) {
           out[to] = make_uint4(0, 0, 0, 0);
         }
-        if (tid == 8) size[units % 3u] = 2 * layout[8] * 16;
+        if (tid == 0) size[units % 3u] = 2 * layout[9 * u + 8] * 16;
         lab::bulk_fence();
       }
       if (tid == 0) lab::bulk_wait<1>();
       __syncthreads();
       ++units;
-      if (h == 1) ++levels;
-      if (u == kUnits - 1) ++denses;
     }
   }
   if (tid == 0) lab::bulk_wait<0>();
@@ -918,11 +923,8 @@ int main(int argc, char** argv) {
       const bool quarter = few == 1;
       const int blocks = few == 0 ? windows : quarter ? windows / 4 : few < 0 ? -few : few;
       const int out_stride = few < 0 ? blocks : 0;
-      //: a new region a round stays inside the planes, a region a multiprocessor of the card
-      if (blocks * (out_stride ? kRounds : 1) > windows) {
-        std::fprintf(stderr, "gather_pass: %d CTAs' regions over %d rounds do not fit this card's planes\n", blocks, kRounds);
-        std::exit(2);
-      }
+      //: a new region a round stays inside the planes: as many rounds as the card's multiprocessors hold regions
+      const int row_rounds = out_stride ? std::min<int>(kRounds, windows / blocks) : kRounds;
       const std::string name = cell_name + ", "
                                + (stream ? (is_values ? "the stream's values and sparse lines" : "the stream's dense lines")
                                          : (is_values ? "the values plane" : "the dense plane")) + ", "
@@ -939,8 +941,8 @@ int main(int argc, char** argv) {
         b.check(name, detail[0] == '0' && detail[1] == ' ', detail);
       }
       for (int fresh = 0; fresh < 2; ++fresh) {
-        const lab::Samples cycles = b.variant([&] { launch(kRounds, fresh ? windows : 0); },
-                                              [&] { return b.span(threads >> 5, blocks) / kRounds / kWindow; });
+        const lab::Samples cycles = b.variant([&] { launch(row_rounds, fresh ? windows : 0); },
+                                              [&] { return b.span(threads >> 5, blocks) / row_rounds / kWindow; });
         const std::string timed = name + (fresh ? ", a fresh window a round" : ", its rounds the same windows");
         b.unchecked(timed, move ? "its kernel's first round is checked on every multiprocessor; this one is its time"
                                 : "a flat stream moves no line: its copies in and out are the floor");

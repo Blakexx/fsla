@@ -57,8 +57,8 @@ THE QUESTION: the carry lands its coefficients made; what does the pass that mak
 window a dense block at a time -- that block's rows of the window, 16 KB -- and for each slot writes its lists'
 entries' coefficients: an entry's 16 dense digits of the block by its sparse digit, rounded to bf16, a line a
 brick, the first bricks' runs and then the second's, each list's padded with zero lines to its steps; 32 bytes an
-entry a dense block where its bytes are 16. The lists are made from the mask as the block stream's are, once a
-(dense block, sparse block). Every line is checked on every multiprocessor against the host's own product and
+entry a dense block where its bytes are 16. The window's lists are made from the mask once, an entry kept as its
+token and its sparse byte, and every slot's layout once; a dense block's rows are asked a dense block ahead. Every line is checked on every multiprocessor against the host's own product and
 rounding. NOT IN THE ROW: the scales, the steps' operands' fields, the read side.
 
 MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance 60705827, driver 615.71.09; 2026-11-14, the experiment at
