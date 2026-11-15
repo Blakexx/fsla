@@ -590,13 +590,17 @@ __global__ void __launch_bounds__(THREADS, 1)
       const uint32_t bits = reinterpret_cast<const uint32_t*>(smem + kMaskAt + level * kMaskBytes)[tid];
       const uint32_t live = static_cast<uint32_t>(__popc(bits)), through = blocks::scan(live, lane), before = through - live;
       if (lane == 31) count[16 * g + warp] = through;
-      const uint8_t* const bytes = smem + kSparseAt + level * kLevelBytes + warp;
 #pragma unroll 1
       for (int i = 0; i < 32; ++i) {
         const uint32_t rank = before + static_cast<uint32_t>(__popc(bits & ((1u << i) - 1u))), token = static_cast<uint32_t>(lane * 32 + i);
         const bool kept = (bits >> i & 1u) && rank < kCap;
-        (kept ? recs + (16 * g + warp) * kCap + rank : reinterpret_cast<uint32_t*>(smem + kSpareAt) + tid)[0] =
-            token | static_cast<uint32_t>(bytes[token * 16]) << 16;
+        (kept ? recs + (16 * g + warp) * kCap + rank : reinterpret_cast<uint32_t*>(smem + kSpareAt) + tid)[0] = token;
+      }
+      //: AN ENTRY'S BYTE on its digit, a lane a place of the warp's list: one load an entry, at its own token's line
+      //: (a lane's 32 tokens' bytes read in the loop above are one bank's, 32 to a load)
+      if (static_cast<uint32_t>(lane) < count[16 * g + warp]) {
+        uint32_t* const entry = recs + (16 * g + warp) * kCap + lane;
+        *entry |= static_cast<uint32_t>(smem[kSparseAt + level * kLevelBytes + *entry * 16 + warp]) << 16;
       }
       __syncthreads();
     }

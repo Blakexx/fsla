@@ -452,8 +452,9 @@ def counters_of(binary: Path, extra: list[str]) -> dict[str, dict]:
         seen.setdefault(_plain(row["Kernel Name"]), {}).setdefault(row["Metric Name"], row["Metric Value"])
     found = {}
     for k, m in seen.items():
+        #: a metric this card or this profiler does not collect reads "n/a": left out, so `pipes.short` holds it 0
         values = {metric: float(v.replace(",", "") or 0) for metric, v in m.items()
-                  if metric != "sass__inst_executed_per_opcode"}
+                  if metric != "sass__inst_executed_per_opcode" and v != "n/a"}
         c = pipes.short(values)
         c["opcodes"] = {op: float(n) for op, n in
                         re.findall(r"([A-Z][A-Z0-9_]*)\s*[:=]\s*([0-9.]+)", m["sass__inst_executed_per_opcode"])}
@@ -737,8 +738,9 @@ def measure(name: str, arch: str, binary: Path, table: dict, opts, *, built: dic
 
 
 def carried(name: str, source: Path, into: Path, opts) -> int:
-    """A PACKED EXPERIMENT RUN ON THIS CARD, a box with no toolkit: the pack's binary by its digest, on the pack's
-    architecture, through `measure` with the host declared; its build facts are the pack's."""
+    """A PACKED EXPERIMENT RUN ON THIS CARD, a box with no toolkit to build it: the pack's binary by its digest, on the
+    pack's architecture, through `measure` -- its counters read where the box holds the pinned profiler, the host
+    declared where it grants none; its build facts are the pack's."""
     arch = sass.device_arch()
     binary = source / f"{name}.{arch}"
     if not binary.exists():
