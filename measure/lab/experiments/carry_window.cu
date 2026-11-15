@@ -90,7 +90,10 @@
 // digit's two into its own accumulator; the next chunk's bytes issued under them; then its 32 sums as halves of
 // the panel's rows. Live: 32 sums and the 4 words of its bytes. With A CHUNK OF 8 DIGITS a pass is two tile
 // groups: 64 sums and 8 words live, 16 steps a commit group, both panels written. Where the DRAIN WARPS ROUND, the
-// readout stores a sum a word and a drain lane loads a token's two sums and rounds them to its pair. THE BLOCK
+// readout stores a sum a word and a drain lane loads a token's two sums and rounds them to its pair. THE
+// READ-READY rows' readout loads no bytes and forms nothing: its first thread issues a pass's 16 tiles as one copy
+// behind the wait on the pass before's steps -- the warpgroup's one operation, taken as complete for its four warps
+// at once, which no lab has measured apart -- and every thread waits on those bytes at the next pass. THE BLOCK
 // rows' fold: a window's plan loaded a window ahead by one thread; a slot is the wait on its image's bytes -- one
 // copy, issued a window ahead as the fold left the slot -- a thread's entry's word, its landed line expanded where it
 // lies and to its second run, a pad line zeroed, a step's operands made from the image's halves, the warpgroup's
@@ -150,10 +153,10 @@ constexpr int kCoefTile = 2 * 17 * 16, kZeroAt = kCoefAt + 2 * 2 * 4 * kCoefTile
 //: the block rows' absent step's B, a box: two bricks of zeros, 16 lines apart
 //: and their slot's steps' operands, a box: 16 steps' A and B descriptors, a thread of 16 each step's
 constexpr int kStepsAt = kZeroAt + 2 * 2 * 16 * 16, kPlansAt = kStepsAt + 2 * 16 * 16;
-//: and a box's next PLAN, 16 bytes: a slot's image's first line in the window's stream and its bytes, twice --
-//: written and read by the box's first thread alone
 //: THE READ-READY rows' pass: its 16 coefficient tiles, and the passes a CTA's stream holds
 constexpr int kCoefPass = 2 * 2 * 4 * kCoefTile, kReadPasses = 128;
+//: and a box's next PLAN, 16 bytes: a slot's image's first line in the window's stream and its bytes, twice --
+//: written and read by the box's first thread alone
 constexpr int kSmemBytes = kPlansAt + 2 * 16;
 static_assert(kSmemBytes <= 232448);
 //: the barriers, 8 bytes each: a pool slot filled and freed (box, slot); an image's tile group published and read
