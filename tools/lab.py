@@ -873,7 +873,8 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
            arch: str | None = None, per: float | None = None, top: int = 16) -> int:
     """KERNEL_STANDARDS section 29.13: each kernel's executed instructions by phase (its source's `//:` headings), per
     declared unit or per launch -- ncu's SourceCounters of the kernel's first launch, each SASS offset mapped to its
-    innermost line in the experiment's source (the lab builds carry `-lineinfo`) -- with each phase's shared-memory
+    innermost line in the experiment's source (the lab builds carry `-lineinfo`); a carried ledger's, the launch its
+    manifest's `launch_skip` names (0 the first, the checked launch) -- with each phase's shared-memory
     wavefronts, those over the conflict-free count (bank conflicts) and its stall samples. CARRIED: `dumps` are the
     SourceCounters CSVs a box without the toolkit made of `packed` (`lab pack`'s binary, built here), one a kernel;
     `per` divides every count (a launch's CTA-windows)."""
@@ -890,6 +891,8 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
             print(f"lab: the dumps' manifest (ledger.json beside them, `lab ledger-dumps`) is not one file: {sorted(found)}")
             return 1
         manifest = json.loads(next(iter(found)).read_text())
+        print(f"  the dumps' launch: each kernel's after its first {manifest.get('launch_skip', 0)} "
+              f"({'the checked launch' if not manifest.get('launch_skip') else 'a timed launch'})")
         if hashlib.sha256(packed.read_bytes()).hexdigest() != manifest["sha256"]:
             print(f"lab: {packed} is not the binary the dumps profiled ({manifest['sha256'][:12]})")
             return 1
