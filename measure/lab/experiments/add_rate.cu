@@ -5,8 +5,9 @@
 // its own rows of global memory, from registers that never change. ONE LINE: an instruction's lanes add f16 pairs
 // into one 128-byte line, by 32, 16 or 8 lanes. SPREAD: its 32 lanes each add into a different line. STORE: the
 // one-line form as a plain 4-byte store a lane, no add. INTEGER AND fp32: the one-line form by a 32-bit integer
-// add and by an fp32 add, and 64-bit integer adds, 8 bytes a lane, two lines an instruction. Every row's sums
-// are checked exactly.
+// add and by an fp32 add, and 64-bit integer adds, 8 bytes a lane, two lines an instruction. VECTOR: one add of
+// four f16 pairs a lane, 16 bytes -- 32 lanes an instruction are FOUR lines, 8 lanes one -- which asks whether an
+// add's price is its instruction's or its lines'. Every row's sums are checked exactly.
 // TIMELINE: no load. A warp's trip is 16 instructions, each from a register set before the clock and to an
 // address that is a constant off the warp's base: nothing waits on anything. Live: one word a thread.
 // see docs/internals/tools/lab.md#add-rate
@@ -15,7 +16,7 @@
 namespace add_rate {
 
 constexpr int kTrip = 16, kLineWords = 32, kWarpLines = kTrip * 32;
-enum Form : int { kOneLine = 0, kSpread, kStore, kU32, kF32, kU64 };
+enum Form : int { kOneLine = 0, kSpread, kStore, kU32, kF32, kU64, kVector };
 
 __device__ __forceinline__ uint32_t f16_of(int v) { return __half_as_ushort(__float2half(static_cast<float>(v))); }
 
@@ -24,22 +25,24 @@ __global__ void __launch_bounds__(32 * WARPS, 1) add(long long* times, uint32_t*
   const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
   //: a pair of ones: a word's sum after `rounds` adds is exact in f16 to 2,048
   const uint32_t v = lab::held(f16_of(1) | f16_of(1) << 16);
-  //: instruction `i` of a trip: line `i` of the warp's (one line), or line `32 i + lane` (spread)
+  //: instruction `i` of a trip: line `i` of the warp's (one line), or line `32 i + lane` (spread), or -- a vector
+  //: add's lane its own 16 bytes -- lines `4 i` to `4 i + 3`, 8 lanes a line
   uint32_t* const own = out + (static_cast<long long>(blockIdx.x) * 8 + warp) * (kWarpLines * kLineWords)
-                        + (FORM == kSpread ? lane * kLineWords : 0) + lane;
+                        + (FORM == kSpread ? lane * kLineWords : 0) + (FORM == kVector ? 4 * lane : lane);
   lab::WarpSpan clock;
   clock.start();
 #pragma unroll 1
   for (int r = 0; r < rounds; ++r) {
 #pragma unroll
     for (int i = 0; i < kTrip; ++i) {
-      uint32_t* const to = own + i * (FORM == kSpread ? 32 : FORM == kU64 ? 2 : 1) * kLineWords;
+      uint32_t* const to = own + i * (FORM == kSpread ? 32 : FORM == kVector ? 4 : FORM == kU64 ? 2 : 1) * kLineWords;
       if (lane < LANES) {
         if constexpr (FORM == kStore) *to = v + r;
         else if constexpr (FORM == kU32) lab::red_add_u32(to, 1u);
         else if constexpr (FORM == kF32) lab::red_add_f32(reinterpret_cast<float*>(to), 1.0f);
         //: 8 bytes a lane: an instruction is two lines, its lanes' words `2 lane` and the next
         else if constexpr (FORM == kU64) lab::red_add_u64(reinterpret_cast<uint64_t*>(to + lane), 1ull);
+        else if constexpr (FORM == kVector) lab::red_add_f16x2_v4(to, v, v, v, v);
         else lab::red_add_f16x2(to, v);
       }
     }
@@ -58,6 +61,7 @@ void run(lab::Bench& b, uint32_t* out) {
                                        : FORM == kStore ? "plain stores into one line an instruction"
                                        : FORM == kU32 ? "32-bit integer adds into one line an instruction"
                                        : FORM == kF32 ? "fp32 adds into one line an instruction"
+                                       : FORM == kVector ? "vector f16 adds, 16 bytes a lane, 8 lanes a line"
                                        : "64-bit integer adds, two lines an instruction")
                            + ", " + std::to_string(LANES) + " lanes, " + std::to_string(WARPS)
                            + (WARPS == 1 ? " warp" : " warps");
@@ -74,8 +78,10 @@ void run(lab::Bench& b, uint32_t* out) {
   for (size_t w = 0; w < words; ++w) {
     const int lane = static_cast<int>(w % kLineWords), line = static_cast<int>(w / kLineWords) % kWarpLines,
               warp = static_cast<int>(w / (static_cast<size_t>(kWarpLines) * kLineWords)) % 8;
-    const bool written = warp < WARPS && lane < LANES
-                         && (FORM == kSpread ? line % 32 == lane : line < (FORM == kU64 ? 2 * kTrip : kTrip));
+    //: a vector add's word `lane` of line `l` is its lane `8 (l % 4) + lane / 4`'s
+    const bool written = FORM == kVector ? warp < WARPS && line < 4 * kTrip && 8 * (line % 4) + lane / 4 < LANES
+                                         : warp < WARPS && lane < LANES
+                                               && (FORM == kSpread ? line % 32 == lane : line < (FORM == kU64 ? 2 * kTrip : kTrip));
     uint32_t want = 0;
     if (written) {
       if (FORM == kStore) {
@@ -118,6 +124,11 @@ int main(int argc, char** argv) {
   }
   for (int form : {kU32, kF32, kU64})
     for (int warps : {1, 4}) b.expect(lab::kernel("add", {warps, 32, form}), "RED", ">=", kTrip);
+  for (int warps : {1, 4, 8}) b.expect(lab::kernel("add", {warps, 32, kVector}), "RED", ">=", kTrip);
+  for (int warps : {1, 4}) {
+    b.expect(lab::kernel("add", {warps, 8, kVector}), "RED", ">=", kTrip);
+    b.expect(lab::kernel("add", {warps, 8, kVector}), "LOOP_CONVERGENCE", "<=", 2 * kTrip + 2);
+  }
   if (b.expect_only) return 0;
   uint32_t* out = nullptr;
   LAB_CHECK(cudaMalloc(&out, static_cast<size_t>(b.sms) * 8 * kWarpLines * kLineWords * 4));
@@ -137,5 +148,10 @@ int main(int argc, char** argv) {
   run<4, 32, kF32>(b, out);
   run<1, 32, kU64>(b, out);
   run<4, 32, kU64>(b, out);
+  run<1, 32, kVector>(b, out);
+  run<4, 32, kVector>(b, out);
+  run<8, 32, kVector>(b, out);
+  run<1, 8, kVector>(b, out);
+  run<4, 8, kVector>(b, out);
   return 0;
 }

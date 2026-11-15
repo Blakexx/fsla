@@ -493,6 +493,10 @@ __device__ __forceinline__ void bulk_wait() {
 __device__ __forceinline__ void red_add_f16x2(uint32_t* dst, uint32_t v) {
   asm volatile("red.global.add.noftz.f16x2 [%0], %1;" : : "l"(dst), "r"(v) : "memory");
 }
+//: the same as ONE VECTOR ADD of four f16 pairs: 16 bytes a lane at `dst`, each element its own atomic add (sm_90 up)
+__device__ __forceinline__ void red_add_f16x2_v4(uint32_t* dst, uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
+  asm volatile("red.global.v4.f16x2.add.noftz [%0], {%1, %2, %3, %4};" : : "l"(dst), "r"(a), "r"(b), "r"(c), "r"(d) : "memory");
+}
 
 //: A LINE ASKED INTO THE CACHE: `prefetch.global.L2` of the line at `p` (the toolkit's `CCTL.E.PF2`), which its thread
 //: does not wait for (docs/internals/tools/lab.md)
