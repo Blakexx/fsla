@@ -152,6 +152,8 @@ constexpr int kCoefTile = 2 * 17 * 16, kZeroAt = kCoefAt + 2 * 2 * 4 * kCoefTile
 constexpr int kStepsAt = kZeroAt + 2 * 2 * 16 * 16, kPlansAt = kStepsAt + 2 * 16 * 16;
 //: and a box's next PLAN, 16 bytes: a slot's image's first line in the window's stream and its bytes, twice --
 //: written and read by the box's first thread alone
+//: THE READ-READY rows' pass: its 16 coefficient tiles, and the passes a CTA's stream holds
+constexpr int kCoefPass = 2 * 2 * 4 * kCoefTile, kReadPasses = 128;
 constexpr int kSmemBytes = kPlansAt + 2 * 16;
 static_assert(kSmemBytes <= 232448);
 //: the barriers, 8 bytes each: a pool slot filled and freed (box, slot); an image's tile group published and read
@@ -162,6 +164,8 @@ constexpr int kPoolReady = 0, kPoolFreed = 32, kTilesReady = 64, kTilesRead = 96
 constexpr int kPoolLanded = 176;
 //: THE MEETING rows': a warpgroup's rendezvous behind its coefficients' stores -- a box's folds', then the readout's
 constexpr int kMeet = 208;
+//: THE READ-READY rows': a pass's coefficient tiles landed
+constexpr int kCoefLanded = 232;
 //: the named barrier the parked row's fold warps sleep at until the readout's end: theirs and the readout's threads
 constexpr int kParkId = 15, kParkCount = 3 * kGroup;
 constexpr int kOutWindows = 4;
@@ -304,7 +308,11 @@ enum Roles : long long {
   //: THE READY rows: a block row's slot lands WITH ITS OPERANDS MADE -- its coefficients in the step's format, its
   //: pads' lines zero, its steps' operands' fields in its head -- and the fold lands it and steps it: it writes no
   //: shared memory, so it has no fence and no rendezvous (docs/architecture/hopper-carry.md, the gather stream)
-  kReady = 1ll << 43
+  kReady = 1ll << 43,
+  //: THE READ-READY rows: the mirrored readout's coefficient tiles LAND MADE, a pass's 16 one copy issued behind
+  //: the steps of the pass before, and the readout lands them and steps: it expands nothing and writes no operand -- no fence, no
+  //: rendezvous
+  kReadReady = 1ll << 44
 };
 template <long long ROLES>
 constexpr bool apart = (ROLES & kApart) == kApart;
@@ -433,6 +441,7 @@ constexpr uint32_t token_of(uint32_t source, uint32_t entry) {
 //: level's and the sparse level's rows, tile-major, 65,536 tokens each, then the lists -- a source's 64 windows of
 //: 256 entries, 2 bytes an entry
 constexpr int kLevelDigits = 256, kLevelTile = 64, kCallWindows = 64, kWindowTokens = 1024;
+static_assert(kReadPasses == 2 * kCallWindows);
 constexpr long long kLevelBytes = static_cast<long long>(kTableTokens) * kLevelDigits,
                     kLevelsAt = static_cast<long long>(kReplicas) * kTableTokens * 16, kListsAt = kLevelsAt + 2 * kLevelBytes;
 constexpr int kListEntries = kCallWindows * kWindow;
@@ -1317,7 +1326,18 @@ __device__ __forceinline__ void read_mirror(uint8_t* smem, uint32_t base, long l
       row[g] = reinterpret_cast<const uint4*>(dense)[row_of<ROLES>(reader_row(reader_at[g], box), static_cast<uint32_t>(c + g) * 64u + lane)];
     }
   };
-  load(0);
+  if constexpr (!(ROLES & kReadReady)) load(0);
+  //: the read-ready rows': pass `p`'s tiles, by the warpgroup's first thread, where the pass before's steps are done
+  const auto issue_pass = [&](int p) {
+    if (tid == 0) {
+      const uint32_t landed = bars + kCoefLanded;
+      lab::mbar_expect(landed, kCoefPass);
+      lab::bulk_load(base + kCoefAt, reinterpret_cast<const uint8_t*>(dense)
+                                            + (static_cast<long long>(blockIdx.x) * kReadPasses + p % kReadPasses) * kCoefPass,
+                     kCoefPass, landed);
+    }
+  };
+  if constexpr ((ROLES & kReadReady) != 0) issue_pass(0);
   uint32_t on_image = 0, on_drain = 0, in_steps = 0, in_form = 0, in_panel = 0, in_issue = 0;
   float d[kG * kChunkDigits][8];
   //: the lane's two lines of its digit's tile on its box (a group's tiles 8 on), and its sums' rows of a panel
@@ -1332,6 +1352,11 @@ __device__ __forceinline__ void read_mirror(uint8_t* smem, uint32_t base, long l
 #pragma unroll
       for (int g = 0; g < kG; ++g) waited<ROLES>(bars + kTilesReady + 8 * (c4 + g), w & 1, on_image);
       uint32_t since = ROLES & kNoClock ? 0u : static_cast<uint32_t>(clock64());
+      const int pass = c / kG;
+      if constexpr ((ROLES & kReadReady) != 0) {
+        //: THE PASS'S TILES, landed made
+        await<ROLES>(bars + kCoefLanded, pass & 1);
+      } else {
       //: THE COEFFICIENTS, to shared memory: the reader's 16 bytes on the box by its byte on its digit
 #pragma unroll
       for (int g = 0; g < kG; ++g) {
@@ -1350,6 +1375,7 @@ __device__ __forceinline__ void read_mirror(uint8_t* smem, uint32_t base, long l
       }
       lab::bulk_fence();
       together<ROLES>(bars + kMeet + 16, static_cast<uint32_t>(c / kG), kReadId);
+      }
       if constexpr (!(ROLES & kNoClock)) in_form += lap(since);
       const uint32_t tiles = lab::held(base + kCoefAt);
       lab::wg_fence();
@@ -1367,9 +1393,13 @@ __device__ __forceinline__ void read_mirror(uint8_t* smem, uint32_t base, long l
       }
       lab::wg_commit();
       //: the next pass's bytes, issued under the steps
-      load(c + kG);
+      if constexpr (!(ROLES & kReadReady)) load(c + kG);
       if constexpr (!(ROLES & kNoClock)) in_issue += lap(since);
       lab::wg_wait<0>();
+      //: the read-ready rows': the pass after's tiles, behind this pass's steps and under its panel's stores
+      if constexpr ((ROLES & kReadReady) != 0) {
+        if (pass + 1 < windows * (kChunks / kG)) issue_pass(pass + 1);
+      }
       if constexpr (!(ROLES & kNoClock)) in_steps += lap(since);
 #pragma unroll
       for (int g = 0; g < kG; ++g)
@@ -1758,6 +1788,7 @@ __global__ void __launch_bounds__(threads_of<ROLES>, 1)
     lab::mbar_init(base + kBarsAt + kDone, kGroup / 32);
 #pragma unroll
     for (int i = 0; i < 3; ++i) lab::mbar_init(base + kBarsAt + kMeet + 8 * i, kGroup / 32);
+    lab::mbar_init(base + kBarsAt + kCoefLanded, 1);
   }
   lab::bulk_fence();
   __syncthreads();
@@ -1853,6 +1884,8 @@ static const uint32_t* four_values = nullptr;
 static const uint32_t* block_values = nullptr;
 //: the ready rows': the same plans, their slots' images ready
 static const uint32_t* ready_values = nullptr;
+//: the read-ready rows': a CTA's passes' coefficient tiles, made
+static const uint32_t* ready_readers = nullptr;
 //: the listed row's tables: the two levels' tile-major rows and the lists
 static const uint32_t* listed_tables = nullptr;
 
@@ -1901,6 +1934,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kShare ? (blocks<ROLES> ? ", its warpgroup's lone jobs shared among its warps" : ", its copies issued two a warp") : "")
                            + (blocks<ROLES> ? ", the fold from a block a list, its lists uneven and its steps one block" : "")
                            + (ROLES & kReady ? ", its slots landed with their operands made" : "")
+                           + (ROLES & kReadReady ? ", the readout's coefficient tiles landed made" : "")
                            + (ROLES & kListed ? ((ROLES & kHot) && !apart<ROLES> ? ", the fold's entries from lists, every window the same tokens" : ", the fold's entries from lists, a window's own tokens") : "")
                            + (ROLES & kPitch ? (ROLES & kDenImage ? ", the image's tiles 161 lines apart" : ROLES & kNoClock ? ", the image's tiles 155 lines apart" : ", the image's tiles 154 lines apart") : "")
                            + ((ROLES & kDen) == kDen ? ", the den: two more steps a slot, the readout's steps 72 columns and an fp32 a token"
@@ -1913,12 +1947,12 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
   const auto kernel = window<ROLES>;
   //: the rows that read the values tile-major read the table laid so
   values = blocks<ROLES> && (ROLES & kReady) ? ready_values : blocks<ROLES> ? block_values : four<ROLES> ? four_values : packed<ROLES> ? packed_values : fresh<ROLES> ? fresh_values : apart<ROLES> ? apart_values : (ROLES & kExpanded) == kExpanded ? expanded_values : ROLES & kTiledValues ? tiled_values : values;
-  dense = ROLES & kListed ? listed_tables : dense;
+  dense = ROLES & kReadReady ? ready_readers : ROLES & kListed ? listed_tables : dense;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
   const size_t tokens = static_cast<size_t>(b.sms) * kOutWindows * kWindow;
   LAB_CHECK(cudaMemset(out, 0, (words + tokens) * 4));
-  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed | kHot | kAhead | (fresh<ROLES> ? kNoLoads : 0) | (packed<ROLES> ? kNoMath : 0) | (four<ROLES> || fold_expands<ROLES> ? kFour | kFoldIssues | kDrains4 : 0) | kTwoSums | kMirror | kChunk8 | kRawPanel | ((ROLES & kMirror) && (fold_issues<ROLES> || blocks<ROLES>) ? kMeet41 : 0) | (fold_issues<ROLES> ? kIssueLate | kShare : 0) | (blocks<ROLES> ? kShare | kReady : 0) | (blocks<ROLES> ? kBlocks | kDrains4 : 0))) == (kFold | kRead)) {
+  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed | kHot | kAhead | (fresh<ROLES> ? kNoLoads : 0) | (packed<ROLES> ? kNoMath : 0) | (four<ROLES> || fold_expands<ROLES> ? kFour | kFoldIssues | kDrains4 : 0) | kTwoSums | kMirror | kChunk8 | kRawPanel | ((ROLES & kMirror) && (ROLES & kChunk8) ? kReadReady : 0) | ((ROLES & kMirror) && (fold_issues<ROLES> || blocks<ROLES>) ? kMeet41 : 0) | (fold_issues<ROLES> ? kIssueLate | kShare : 0) | (blocks<ROLES> ? kShare | kReady : 0) | (blocks<ROLES> ? kBlocks | kDrains4 : 0))) == (kFold | kRead)) {
     kernel<<<b.sms, kLaunch, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * state_words<ROLES>;
@@ -2354,6 +2388,29 @@ inline Buffers buffers(const lab::Bench& b) {
       LAB_CHECK(cudaMalloc(&rdev, buffer.size()));
       LAB_CHECK(cudaMemcpy(rdev, buffer.data(), buffer.size(), cudaMemcpyHostToDevice));
       ready_values = reinterpret_cast<const uint32_t*>(rdev);
+      //: THE READ-READY rows': every CTA's passes, a pass 16 tiles -- group `g`'s digit `warp` on box `box` is tile
+      //: `8 g + 2 warp + box`, reader `n`'s two lines `17 (n / 8) + n % 8` and 8 on, its coefficients bf16
+      std::vector<uint8_t> tiles(static_cast<size_t>(b.sms) * kReadPasses * kCoefPass, 0);
+      for (int blk = 0; blk < b.sms; ++blk)
+        for (int pass = 0; pass < kReadPasses; ++pass)
+          for (int g = 0; g < 2; ++g) {
+            const int cg = 2 * pass + g, k = cg % kChunks;
+            for (int warp = 0; warp < 4; ++warp)
+              for (int box = 0; box < 2; ++box)
+                for (int n = 0; n < 16; ++n) {
+                  const uint32_t rd = reader_of(static_cast<uint32_t>(blk), static_cast<uint32_t>((cg / kChunks) * kWindow + 16 * (8 * (k >> 1) + (k & 1) + 2 * warp) + n));
+                  uint8_t* const tile = tiles.data() + (static_cast<size_t>(blk) * kReadPasses + pass) * kCoefPass + (8 * g + 2 * warp + box) * kCoefTile;
+                  for (int dd = 0; dd < 16; ++dd) {
+                    const uint16_t coefficient = bf16(static_cast<float>(sparse_of(static_cast<int>(rd)))
+                                                      * static_cast<float>(dense_of(static_cast<int>(reader_row(rd, box)), dd)));
+                    std::memcpy(tile + ((n >> 3) * 17 + (n & 7) + 8 * (dd >> 3)) * 16 + 2 * (dd & 7), &coefficient, 2);
+                  }
+                }
+          }
+      uint8_t* tdev = nullptr;
+      LAB_CHECK(cudaMalloc(&tdev, tiles.size()));
+      LAB_CHECK(cudaMemcpy(tdev, tiles.data(), tiles.size(), cudaMemcpyHostToDevice));
+      ready_readers = reinterpret_cast<const uint32_t*>(tdev);
     }
 
     }
@@ -2421,7 +2478,11 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kShare,
                     3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kShare,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady,
-                    3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady}) {
+                    3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady,
+                    3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady,
+                    3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady,
+                    3 | kSuspend | kLean | kNoClock | kWhole | kFour | kMirror | kChunk8 | kFoldIssues | kDrains4 | kReadReady,
+                    3 | kSuspend | kLean | kWhole | kFour | kMirror | kChunk8 | kFoldIssues | kDrains4 | kReadReady}) {
     const std::string k = lab::kernel("carry_window::window", {roles});
     //: with no fold, the state's one group of steps is a rolled loop: one instruction
     //: the ahead row's asks are in its binary: 6 a batch, at the producers' two sites
@@ -2440,6 +2501,8 @@ int main(int argc, char** argv) {
     if ((roles & kPacked) == kPacked && !(roles & kRead)) b.expect(k, "STORE_UNFENCED", "<=", 1);
     //: a ready row's fold stores its window's plan alone, which its own thread reads back: no step reads it
     if (roles & kReady) b.expect(k, "STORE_UNFENCED", "<=", 4);
+    //: a read-ready row's readout stores its sums to the panel alone, which the drain warps' own loads read
+    if (roles & kReadReady) b.expect(k, "STORE_UNFENCED", "<=", 8);
     //: the fold-expands rows' conversions are in the fold's own trip, beside its steps: what the rows measure
     if ((roles & kWhole) == kWhole && (roles & kPacked) != kPacked && (roles & (kFour | kBlocks))) b.expect(k, "STEP_XU", "<=", 40);
     //: the block rows' fold loads the next window's plan in its window's trip, a window ahead of its use
@@ -2489,6 +2552,10 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kLean | kWhole | kFour | kMirror | kChunk8 | kFoldIssues | kDrains4 | kMeet41>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kMeet41>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kMeet41>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kFour | kMirror | kChunk8 | kFoldIssues | kDrains4 | kReadReady>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kWhole | kFour | kMirror | kChunk8 | kFoldIssues | kDrains4 | kReadReady>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kShare>(b, waits, values, dense, state, out);

@@ -212,6 +212,12 @@ writes no shared memory but its window's plan, so it has no fence and no rendezv
 landed line, the slot's line added to each one's first word. THE QUESTION: what the
 fold's expansion, pads, operands, fence and rendezvous cost the uneven lists' window. The host lays the stream; a
 slot's copy is some 14% more bytes. Checked as the form's rows are.
+THE READ-READY ROWS (the ready pair's form and the even lists', with and without clocks): the mirrored readout's
+coefficient tiles LAND MADE too -- a pass's 16 tiles one copy from a CTA's stream of its passes, issued by the
+warpgroup's first thread behind the steps of the pass before and under its panel's stores, into the one buffer
+the steps read (shared memory holds no second) -- and the readout waits on its bytes and steps: no expansion, no
+fence, no rendezvous. THE QUESTION: what the readout's coefficient forming and its rendezvous cost the window
+it bounds. The host lays the stream, 8.7 KB a pass. Checked as the form's rows are.
 
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
