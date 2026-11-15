@@ -37,7 +37,8 @@ loads and stores, MMAs); a loop's cost a unit is its count times its trips, whic
 ledger of a card that grants no profiler counters.
 `ledger <name> --packed <binary> --dump <csv> [--dump ...] --arch sm_90a --per <n>` reads a CARRIED ledger: the
 SourceCounters dumps a rented box made of `lab pack`'s binary (`ncu --section SourceCounters --page source
---print-source sass --csv`, a kernel's first launch, one file a kernel named `ledger_<its template numbers>.csv`),
+--print-source sass --csv`, a kernel's launch after the first `--skip` of them, one file a kernel named
+`ledger_<its template numbers>.csv`, and `ledger.json` naming the binary's digest, the launch and each kernel's file),
 mapped here to the phases through that same binary; `--per` divides every count by the launch's CTA-windows. Each
 phase reports its executed instructions, its shared-memory wavefronts, those over the conflict-free count (bank
 conflicts), its share of the stall samples and, for the phases holding the most, their three largest stall reasons;

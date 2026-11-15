@@ -891,8 +891,11 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
             print(f"lab: the dumps' manifest (ledger.json beside them, `lab ledger-dumps`) is not one file: {sorted(found)}")
             return 1
         manifest = json.loads(next(iter(found)).read_text())
-        print(f"  the dumps' launch: each kernel's after its first {manifest.get('launch_skip', 0)} "
-              f"({'the checked launch' if not manifest.get('launch_skip') else 'a timed launch'})")
+        if "launch_skip" not in manifest:
+            print("lab: the dumps' manifest names no launch (`launch_skip`): `lab ledger-dumps` writes it")
+            return 1
+        print(f"  the dumps' launch: each kernel's after its first {manifest['launch_skip']} "
+              f"({'the checked launch' if not manifest['launch_skip'] else 'a timed launch'})")
         if hashlib.sha256(packed.read_bytes()).hexdigest() != manifest["sha256"]:
             print(f"lab: {packed} is not the binary the dumps profiled ({manifest['sha256'][:12]})")
             return 1
