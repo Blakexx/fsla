@@ -789,10 +789,11 @@ method is a procedure with a gate, not a memory.
    totals), the per-token factor products -- and nothing of a card's: no exponent, no coefficient in an operand's
    format, no layout offset. What a card's step needs beyond the entry it forms where it expands the byte, once at
    the outermost level its inputs allow (item 2). ON HOPPER (amended 2026-11-13, twice) NO PASS HANDS THE CARRY A LIST: the gather pass
-   reads a sparse level's mask, turns it around in its own kernel -- a window's tokens by digit, in token order, an
+   reads a sparse level's mask, turns it around in its own CTAs -- a window's tokens by digit, in token order, an
    entry the token with no byte -- and writes the carry's stream and its tables
    (`docs/architecture/hopper-carry.md`), the carry's coefficients in its step's operand format (Blake,
-   2026-11-15: that pass is the hopper op's own kernel, not the card-neutral indexer the heading rules); the fold's side's lists never cross global memory as lists, and the read
+   2026-11-15: that pass is the hopper op's own, its CTAs beside the carry's in one grid, not the card-neutral
+   indexer the heading rules); the fold's side's lists never cross global memory as lists, and the read
    side's stream holds each entry's token index, where the drain adds. Where the factor products
    and the tile unions then come from is OPEN. RULED AND NOT BUILT: the pass this tree builds emits the heading's
    form (`docs/open-work.md`, row A-e); blackwell's form is NOT STATED, no blackwell pass being designed.

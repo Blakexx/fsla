@@ -261,7 +261,7 @@ fp64 reference and the path a gradient takes (`rola/ops/produce.py`).
 ### 6.2 The facts pass
 
 ON HOPPER the carry is handed no list: RULED 2026-11-13, the gather pass reads the masks, makes its lists in its own
-kernel and writes the carry's stream ([`architecture/hopper-carry.md`](architecture/hopper-carry.md)); where the
+CTAs -- beside the carry's, in one grid -- and writes the carry's stream, a ring ([`architecture/hopper-carry.md`](architecture/hopper-carry.md)); where the
 factor products and the tile unions then come from is OPEN ([`open-work.md`](open-work.md), row A-e). What follows
 is the pass this tree builds.
 
@@ -295,7 +295,8 @@ and per (token, sparse digit) planes pass the asymptotic test but are priced aga
 
 One CTA a box and batch-head, one CTA an SM; the box's fp32 state lives in the CTA for the whole call. Per window: the
 READOUT of the state as of the window's start by the window's readers, each token's partial sums added in fp32 into
-`num` and, as the v+1 channel, `den` (CTAs join only there, R22); then the FOLD of the window's writes into the state.
+`num` and, as the v+1 channel, `den` (carry CTAs join only there, R22; on hopper a carry CTA also reads the ring its
+gather CTAs write, a hand-off not designed -- [`architecture/hopper-carry.md`](architecture/hopper-carry.md)); then the FOLD of the window's writes into the state.
 No carry kernel is built on this line: its hopper schedule is a design of its own, written before it is built
 ([`architecture/hopper-carry.md`](architecture/hopper-carry.md), PROPOSED and not locked; section 9's forms;
 [`open-work.md`](open-work.md)).
