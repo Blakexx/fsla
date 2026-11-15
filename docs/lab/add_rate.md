@@ -19,7 +19,7 @@ on anything.
   a lane, two lines an instruction.
 - VECTOR: one add of four f16 pairs a lane, 16 bytes -- 32 lanes an instruction are FOUR lines, 8 lanes one: is an add's
   price its instruction's or its lines'?
-- ON A FEW SMs: the one-line form, 4 and 8 warps, with CTAs on 8 and on 32 of the card's SMs: is the limit an SM's own,
+- ON A FEW SMs: the one-line form, 4 warps on 8 and on 32 of the card's SMs and 8 warps on 8: is the limit an SM's own,
   or the card's shared among its SMs? NOT YET MEASURED.
 Every row's words are checked exactly.
 

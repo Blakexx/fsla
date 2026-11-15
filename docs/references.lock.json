@@ -1551,6 +1551,7 @@
   {"doc": "docs/lab/carry_window.md", "pinned_at": "8b1174b3fdcf", "reviewed": true, "sha256": "", "target": "docs/lab/pool_fill.md"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "8b1174b3fdcf", "reviewed": true, "sha256": "", "target": "docs/lab/readout_role.md"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "bed4135581c7", "reviewed": true, "sha256": "", "target": "docs/lab/reg_five.md"},
+  {"doc": "docs/lab/carry_window.md", "pinned_at": "a099fba45b81", "reviewed": true, "sha256": "", "target": "docs/lab/smem_rates.md"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "8b1174b3fdcf", "reviewed": true, "sha256": "", "target": "docs/lab/state_image.md"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "18aee859836d", "reviewed": true, "sha256": "", "target": "docs/lab/wgmma_width.md"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "437a7eb3ded2", "reviewed": true, "sha256": "", "target": "docs/measurement.md"},

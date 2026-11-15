@@ -13,7 +13,12 @@
 // the ldmatrix warps' cycles a wavefront and the stream's bytes a cycle, the pipe cycles the stream took from them:
 // `1 - alone / beside` of the ldmatrix warps' cycles over the stream's 128-byte units a cycle, a sample per repetition,
 // and what a 128 bytes from L2 adds to a load over an L1 hit -- the rates `common/hardware.json`'s `shared` prices
-// cite. see docs/internals/tools/lab.md#smem-rates
+// cite. TIMELINE: a warp's trip is 8 independent operations at its own region's addresses -- a form's loads folded
+// into one register, its atomics and stores fire and forget; a scattered form's 8 lines are set in registers before
+// the clock, so its trip issues 8 loads and their folds alone. Nothing waits on another warp. Live: a load's 4 words,
+// the fold, and a scattered form's 8 lines. A STREAMING warp's trip is a batch of 8 loads of 512 bytes a warp, folded
+// at the batch's end (its loads into registers read in the trip that issued them: their 8 in flight are what it
+// measures), or 8 copies into shared memory committed together. see docs/internals/tools/lab.md#smem-rates
 #include "lab.cuh"
 
 namespace smem_rates {
@@ -129,6 +134,9 @@ void form(const lab::Bench& b, int warps) {
   //: the trips' lines are registers set before the clock: no line is recomputed in the loop or held in local memory
   if (FORM >= kScattered) b.expect(name, "LDL", "==", 0);
   if (b.expect_only) return;
+  //: a rate probe: its loads fold into a sink, its atomics and stores into words no row reads
+  b.unchecked(std::string(kFormName[FORM]) + " / " + std::to_string(warps) + " warps",
+              "a rate probe: its loads fold into a sink, its atomics and stores into words no row reads");
   const int bytes = kRowWords * 16 * 4;
   LAB_CHECK(cudaFuncSetAttribute(pipe<FORM>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));
   const lab::Samples s = b.variant(
@@ -227,6 +235,8 @@ double share_form(const lab::Bench& b, const uint8_t* table, int* done_n, double
   const std::string name = lab::kernel("share", {GF, ROLE});
   if (ROLE & 1) b.expect(name, "LDSM.16.M88.4", ">=", kUnroll);
   if (ROLE & 2) b.expect(name, GF >= 3 ? "LDGSTS" : "LDG.E", ">=", kBatch);
+  //: a stream into registers folds its batch's loads at the batch's end: its 8 in flight are the rate it measures
+  if ((ROLE & 2) && GF < 3) b.expect(name, "LOAD_IN_TRIP", "<=", kBatch);
   if (b.expect_only) return 0.0;
   LAB_CHECK(cudaFuncSetAttribute(share<GF, ROLE>, cudaFuncAttributeMaxDynamicSharedMemorySize, kShareBytes));
   lab::Samples bytes;

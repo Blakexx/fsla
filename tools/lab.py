@@ -157,14 +157,14 @@ def signatures(binary: Path) -> dict[str, dict]:
 
 #: KERNEL_STANDARDS section 29's debts: the experiments recorded before a lab had to budget its MMA kernels and check
 #: its outputs; each is held to both when it is next changed, and the list only shrinks
-_PRE_29 = {"collective_branch", "facts_block", "mma_k8", "row_span", "smem_rates", "tensor_tax", "vote_stash"}
+_PRE_29 = {"collective_branch", "facts_block", "mma_k8", "row_span", "tensor_tax", "vote_stash"}
 
 
 #: THE LEARNINGS' DEBTS (docs/internals/LEARNINGS.md): the experiments written before an experiment's header had to
 #: state its TIMELINE and every kernel's loops were held to the hazards below; each is held to them when it is next
 #: changed, and the list only shrinks
 _PRE_TIMELINE = {"bulk_drain", "byte_expand", "cluster_sum", "collective_branch", "facts_block", "facts_two",
-                 "issue_latency", "reg_trade", "row_ring", "row_span", "smem_rates", "state_move", "tensor_tax",
+                 "issue_latency", "reg_trade", "row_ring", "row_span", "state_move", "tensor_tax",
                  "vote_stash", "wgmma_rate", "wgmma_regs"}
 #: the hazards an experiment may declare a count of (`Bench::expect(kernel, NAME, "<=", n)`), beside its opcodes
 HAZARDS = ("LOOP_CONVERGENCE", "LOAD_IN_TRIP", "STORE_RELOAD", "STORE_UNFENCED", "STEPS_SERIALIZED", "CLOCK_UNIFORM")
