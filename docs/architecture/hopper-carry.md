@@ -13,9 +13,11 @@ then the fold of the window's writes into the state.
 RULED; its pass NOT BUILT. The gather pass writes, for each sparse block of 16 digits -- the group of CTAs that
 share it -- A STREAM, and the stream SAYS WHAT TO DO: the carry computes no boundary and makes no operand. A
 window's stream is its slots, a slot 8 sparse digits' lists. A list is A BLOCK AS LONG AS THE LIST: 8 runs of its
-entries' value lines, a brick a run, a line an entry, and its entries' COEFFICIENTS IN THE STEP'S FORMAT -- an
-entry's dense digits by its sparse digit, the rows' scales in them, bf16, a line a brick, each brick's run padded
-with zero lines to the list's steps. A step's operand is pointed at any 16 entries of a block, its bricks as far
+entries' value lines, a brick a run, a line an entry, and its entries' COEFFICIENTS IN THE STEP'S FORMAT, bf16, a
+line a brick, each brick's run padded with zero lines to the list's steps. An entry's sparse digits and the scales
+are a scalar on its values, and its coefficient line is its box's dense digits widened, a product only where the
+box spans several dense levels ([`hopper-gather.md`](hopper-gather.md), RULED 2026-11-15; the lab's streams hold
+sparse by dense in the coefficient). A step's operand is pointed at any 16 entries of a block, its bricks as far
 apart as the list is long; a slot's head holds each step's two operands' fields, or that the step is absent, when
 its second operand is a tile of zeros in the slot. Blocks stay in the order of their digits. A slot is ONE COPY,
 and a window's PLAN is each slot's place in the stream and its bytes. THE CARRY LANDS A SLOT AND STEPS IT: it
