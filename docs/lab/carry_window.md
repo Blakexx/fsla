@@ -360,8 +360,8 @@ DUMP STAYS OUT OF THE TIMED CALLS, and one row restores it to price it in this s
 | the same: both sides | 5,892 | 737 |
 
 THE WALL TIME, measured on this box and immune to its clock (1.55 to 1.62 GHz, its rows' medians): the long call
-scaled to 65,536 tokens is 0.287 ms for the baseline, 0.278 ms for the winner's form, and 0.671 ms at the
-once-read bound (0.741 without the winner's changes). THE FLASH REFERENCES, from the session of instance 60450651 ON ANOTHER BOX (a different offer and driver)
+scaled to 65,536 tokens is 0.323 ms for the baseline, 0.312 ms for the winner's form, and 0.754 ms at the
+once-read bound (0.832 without the winner's changes). THE FLASH REFERENCES, from the session of instance 60450651 ON ANOTHER BOX (a different offer and driver)
 (`rola_bench.measure.attention`, causal, 1 head, dv 64, bf16; the records in rola-results at `flash/reference`):
 FlashAttention-3, built on the box at Dao's pinned commit, 1.775 ms at 65,536 tokens (0.300 at 16,384; 0.121 at
 1,024); torch's FlashAttention-2 3.072 ms (0.323; 0.040). THESE ARE ADJACENT MEASUREMENTS, NOT A COMPARISON: the
