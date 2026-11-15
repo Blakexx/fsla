@@ -1197,7 +1197,7 @@
   {"doc": "docs/internals/tools/arith_model.md", "pinned_at": "85970c8d510f", "reviewed": true, "sha256": "", "target": "tools/arith_model.py"},
   {"doc": "docs/internals/tools/bank_model.md", "pinned_at": "66c79def10e1", "reviewed": true, "sha256": "", "target": "tools/bank_model.py"},
   {"doc": "docs/internals/tools/bank_model.md", "pinned_at": "66c79def10e1", "reviewed": true, "sha256": "21105cdd04440bcf", "target": "tools/bank_model.py::ldmatrix"},
-  {"doc": "docs/internals/tools/budgets.md", "pinned_at": "9cbc53548073", "reviewed": true, "sha256": "659dd27503f8e6da", "target": "docs/KERNEL_STANDARDS.md#s29"},
+  {"doc": "docs/internals/tools/budgets.md", "pinned_at": "5343620f1f32", "reviewed": true, "sha256": "71fd3a68401f798a", "target": "docs/KERNEL_STANDARDS.md#s29"},
   {"doc": "docs/internals/tools/budgets.md", "pinned_at": "28a71d16a5ab", "reviewed": true, "sha256": "c32347e0d116d543", "target": "docs/internals/common/hardware.md#shared"},
   {"doc": "docs/internals/tools/budgets.md", "pinned_at": "2fbe79f9c1c3", "reviewed": true, "sha256": "21651c7b6f6743cd", "target": "docs/internals/tools/life_ranges.md#budget"},
   {"doc": "docs/internals/tools/budgets.md", "pinned_at": "28a71d16a5ab", "reviewed": true, "sha256": "", "target": "docs/internals/tools/pipes.md"},

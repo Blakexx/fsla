@@ -3,7 +3,7 @@
 Mirrors `measure/lab/experiments/slot_sum.cu`, an experiment of the lab
 ([`docs/internals/tools/lab.md`](../internals/tools/lab.md)).
 
-An atomic add to global memory goes out at one line about every 10 to 12 cycles an SM whatever the warps and the
+An atomic add to global memory goes out at one line about every 8.5 to 12 cycles an SM whatever the warps and the
 add's type ([`add_rate`](add_rate.md)), and the carry adds a line a token a pair of boxes
 ([`carry_window`](carry_window.md)). Were every CTA to STORE a token's partial line where no other CTA writes, and
 a later pass to add a token's partials, what does a line cost stored and what does a token cost that pass -- into
@@ -53,7 +53,7 @@ WHAT IT SHOWS.
 - A SUM OF PARTIALS THE CACHE HOLDS IS A SIXTH OF ONE FROM MEMORY: 53 cycles a token by 8 warps against 311, the
   partials packed; gathered from 32 streams the same by 8 warps (56) and twice that by 4 (109).
 - GATHERED AND PACKED READ ALIKE from memory at 8 warps and more (302 and 286 against 311 and 305).
-- BESIDE AN ATOMIC ADD ([`add_rate`](add_rate.md): 10 to 12 cycles a line, of lines the cache holds): a token of
+- BESIDE AN ATOMIC ADD ([`add_rate`](add_rate.md): 8.5 to 12 cycles a line by the card, of lines the cache holds): a token of
   29 partials is some 290 to 350 by adds; by stores to memory and a sum from it, some 225 and 300; by stores into
   a ring and a sum from it, some 180 and 55. These are this page's rates times a count, not a composed
   measurement.
