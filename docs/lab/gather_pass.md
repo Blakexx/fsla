@@ -29,8 +29,8 @@ kernels with CTAs on A QUARTER of the multiprocessors, and the dense plane with 
 (four copies out in flight where three buffers allow one). Every line and pad of each moved form's first round is
 checked on every multiprocessor, each byte of the tables its own position's.
 
-THE STREAM, TOKEN-ORDERED (not the design's stream, which is laid as the carry's blocks --
-[`hopper-carry.md`](../architecture/hopper-carry.md#the-gather-stream) -- and is the block stream's rows below). The same
+THE STREAM, TOKEN-ORDERED (the design's stream --
+[`hopper-gather.md`](../architecture/hopper-gather.md#what-it-writes) -- its lists here the host's). The same
 two kernels fed lists BY SPARSE BLOCK, not by digit: a block's live tokens once each, in token order, padded to 16
 only at the block's end. The values kernel writes RECORDS -- a token's 8 value lines and then its line of the
 block's 16 sparse bytes, 9 lines a token -- that the block's CTAs share; the dense plane is the block-major one, so a
@@ -41,8 +41,8 @@ multiprocessors, each CTA rewriting its own region every round, beside the same 
 round: the same reads, eight times the planes' footprint (at the sparse cell 16 CTAs' rings are some 30 MB of a
 cache of 50 and their new regions 240; at 32 live digits neither fits).
 
-THE BLOCK STREAM, ITS LISTS THE PASS'S OWN (the design's stream's shared part, its coefficients' bytes --
-[`hopper-carry.md`](../architecture/hopper-carry.md#the-gather-stream); 4 to 5 live digits a token, 512 threads).
+THE BLOCK STREAM, ITS LISTS THE PASS'S OWN (a list a digit: measured, not the design's stream --
+[`hopper-gather.md`](../architecture/hopper-gather.md#what-it-writes); 4 to 5 live digits a token, 512 threads).
 THE QUESTION: every row above is fed lists the host made, and the one pass that made its own cost twice the
 carry. What does the block stream cost when the pass is handed THE MASK ALONE and writes what the carry lands --
 a slot's tables, its lists' value runs as long as the lists, its sparse bytes, its plan? The mask is digit-major,
@@ -51,8 +51,8 @@ live, and no list crosses global memory. Checked on every multiprocessor against
 same mask. The lab's bounds: a list is at most 32 entries and a slot 150 (this cell's are 16 to 19 and 128 to
 143). NOT IN THE ROW: the dense lines, a run a CTA's dense block.
 
-THE COEFFICIENT RUNS, IN THE STEP'S FORMAT (the design's stream's other part --
-[`hopper-carry.md`](../architecture/hopper-carry.md#the-gather-stream); 4 to 5 live digits a token, 512 threads).
+THE COEFFICIENT RUNS, IN THE STEP'S FORMAT (measured, not the design's stream: a carry CTA forms its own --
+[`hopper-gather.md`](../architecture/hopper-gather.md#what-it-writes); 4 to 5 live digits a token, 512 threads).
 THE QUESTION: the carry lands its coefficients made; what does the pass that makes them cost? A CTA takes a
 window a dense block at a time -- that block's rows of the window, 16 KB -- and for each slot writes its lists'
 entries' coefficients: an entry's 16 dense digits of the block by its sparse digit, rounded to bf16, a line a

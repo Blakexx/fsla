@@ -40,7 +40,8 @@ MEASURED, in the carry, from streams the host laid BY DIGIT at lists of 8 to 24 
 operands made and stepping it, 5,188 cycles a window with the readout's tiles made as well, which is the window with
 the carry's own operands free; and the fold expanding an entry's 16 dense bytes and its sparse byte where they land,
 its head tables for each entry's lines and each step's operands, 6,826. MEASURED, the pass
-([`lab/gather_pass.md`](../lab/gather_pass.md)): the token list, 243 SM-cycles a token a side with its dense segments.
+([`lab/gather_pass.md`](../lab/gather_pass.md)): the token list's lines moved from the host's lists, 122 SM-cycles a
+token for a side's values and sparse lines and 155 for its dense segments.
 NOT MEASURED: the carry placing a token list's tokens; slices; the read side's stream; the ring; lists past two steps.
 
 ## What it is handed
@@ -48,7 +49,7 @@ NOT MEASURED: the carry placing a token list's tokens; slices; the read side's s
 - A side's levels, u8 rows TILE-MAJOR, and each row's fp32 scale; the values, bf16 TOKEN-MAJOR, and each token's fp32
   scale. The order of each plane is its readers' measured access
   ([`ARCHITECTURE.md` section 1](../ARCHITECTURE.md#1-what-the-kernel-computes)).
-- A sparse level's MASK, a bit a digit a token, used blindly; the gather pass reads it, makes its lists in its own
+- A sparse level's MASK, a bit a digit a token, used blindly; the gather pass reads it in its own
   CTAs and writes the stream above. There is no separate facts pass on hopper.
 - A PLAN (CONSTITUTION R24): the box, the window, each side's walk of each level.
 
@@ -82,16 +83,17 @@ lines, an odd count), the readout's coefficient tiles, two panels; under pressur
    reader's 16 dense bytes on a box by its byte on its sparse digit to a coefficient tile, and a digit's step is
    an image tile by that tile. The pass's sums go to two panels as f16 pairs, and the drain warps add them to the
    output.
-3. THE FOLD. A fold warpgroup issues a slot's copy from the stream a window ahead, as it leaves the slot; when it
-   has landed the warpgroup runs the slot's steps, one a sparse digit's 16 entries, their operands the landed
-   lines (the gather stream, above).
+3. THE FOLD. A fold warpgroup issues its view's copies from the stream; when they have landed its warps place the
+   tokens' value lines and form their coefficients on their digits' steps, and the warpgroup runs the steps, one a
+   sparse digit's 16 entries (the gather stream, above). MEASURED from a stream laid by digit: a slot's copy issued a
+   window ahead, the fold expanding its entries' coefficients where they land.
 
 ## What the lab did not have, and the kernel must
 
 The lab's entries and readers were synthetic until its last rows: every sparse digit held exactly 16 entries a
 window, and each entry's token and byte were computed, not read.
 
-- LISTS OF ANY LENGTH. A sparse digit's entries in a window are its list in the stream. A digit is
+- LISTS OF ANY LENGTH. A sparse digit's entries in a window are its list, which the CTA lays from the token list. A digit is
   `ceil(count / 16)` steps into the same accumulator set, the last padded with entries whose coefficient lines are
   zero -- exact, since a zero coefficient adds nothing. A slot is 8 steps, whichever digits they are; a window is as
   many slots as its steps need. The readout likewise: a sparse digit's readers are `ceil(count / 16)` steps, the
@@ -103,8 +105,8 @@ window, and each entry's token and byte were computed, not read.
   prefetch loses. Whole entries landed from a stream do not: a window's stream is read by the 16 boxes that share
   it, and it costs the carry the same whether the cache held it before or not; only a stream no box shares costs
   more. The figures are [`lab/carry_window.md`](../lab/carry_window.md)'s.
-- THE SCALES. Every lab ran on small integers. The gather pass multiplies a row's bytes by the row's fp32 scale
-  into the coefficient it writes; the kernel multiplies a value by its token's, carries a token's factor product, and issues one f16 line a token scaled by a power of two
+- THE SCALES. Every lab ran on small integers. The carry CTA multiplies a row's bytes by the row's fp32 scale
+  into the coefficient it forms; the kernel multiplies a value by its token's, carries a token's factor product, and issues one f16 line a token scaled by a power of two
   from a coarse bound (CONSTITUTION R17). None of this is measured on hopper; it is designed with the kernel and
   checked against the oracle.
 - THE READOUT'S LISTS. Only the fold's side has run from lists.
