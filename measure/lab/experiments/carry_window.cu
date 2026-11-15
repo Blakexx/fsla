@@ -315,7 +315,10 @@ enum Roles : long long {
   //: THE READ-READY rows: the mirrored readout's coefficient tiles LAND MADE, a pass's 16 one copy issued behind
   //: the steps of the pass before, and the readout lands them and steps: it expands nothing and writes no operand -- no fence, no
   //: rendezvous
-  kReadReady = 1ll << 44
+  kReadReady = 1ll << 44,
+  //: a ready row whose every box lands ITS OWN stream, where the form's 16 boxes share a column's: the design's
+  //: coefficient part is a box's own, its values a column's -- these rows and the form's bracket it
+  kOwn = 1ll << 45
 };
 template <long long ROLES>
 constexpr bool apart = (ROLES & kApart) == kApart;
@@ -636,7 +639,8 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
   const auto plan_at = [&] { return reinterpret_cast<uint32_t*>(smem + kPlansAt + (threadIdx.x >> 7) * 16); };
   const auto block_head = [&](int w) {
     const uint32_t source = blockIdx.x * 2 + (threadIdx.x >> 7);
-    return reinterpret_cast<const uint8_t*>(values) + (static_cast<long long>(source % kColumns) * kCallWindows + w % kCallWindows) * 16;
+    const uint32_t columns = ROLES & kOwn ? gridDim.x * 2 : kColumns;
+    return reinterpret_cast<const uint8_t*>(values) + (static_cast<long long>(source % columns) * kCallWindows + w % kCallWindows) * 16;
   };
   const auto issue_slot = [&](int w, int slot) {
     if ((threadIdx.x & (kGroup - 1)) == block_issuer<ROLES>) {
@@ -644,8 +648,9 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
       const int at = 2 * (threadIdx.x >> 7) + slot;
       const uint32_t* const plan = plan_at();
       const uint32_t landed = base + kBarsAt + kPoolLanded + 8 * at;
-      const uint8_t* const stream = reinterpret_cast<const uint8_t*>(values) + static_cast<long long>(kColumns) * kCallWindows * 16
-                                    + (static_cast<long long>(source % kColumns) * kCallWindows + w % kCallWindows) * kPackedRoom;
+      const uint32_t columns = ROLES & kOwn ? gridDim.x * 2 : kColumns;
+      const uint8_t* const stream = reinterpret_cast<const uint8_t*>(values) + static_cast<long long>(columns) * kCallWindows * 16
+                                    + (static_cast<long long>(source % columns) * kCallWindows + w % kCallWindows) * kPackedRoom;
       lab::mbar_expect(landed, plan[2 * slot + 1]);
       lab::bulk_load(base + at * kPoolBytes, stream + static_cast<long long>(plan[2 * slot]) * 16, plan[2 * slot + 1], landed);
     }
@@ -1889,6 +1894,8 @@ static const uint32_t* block_values = nullptr;
 static const uint32_t* ready_values = nullptr;
 //: the read-ready rows': a CTA's passes' coefficient tiles, made
 static const uint32_t* ready_readers = nullptr;
+//: the own rows': a stream a box, each a copy of its column's
+static const uint32_t* ready_own_values = nullptr;
 //: the listed row's tables: the two levels' tile-major rows and the lists
 static const uint32_t* listed_tables = nullptr;
 
@@ -1938,6 +1945,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (blocks<ROLES> ? ", the fold from a block a list, its lists uneven and its steps one block" : "")
                            + (ROLES & kReady ? ", its slots landed with their operands made" : "")
                            + (ROLES & kReadReady ? ", the readout's coefficient tiles landed made" : "")
+                           + (ROLES & kOwn ? ", every box its own stream" : "")
                            + (ROLES & kListed ? ((ROLES & kHot) && !apart<ROLES> ? ", the fold's entries from lists, every window the same tokens" : ", the fold's entries from lists, a window's own tokens") : "")
                            + (ROLES & kPitch ? (ROLES & kDenImage ? ", the image's tiles 161 lines apart" : ROLES & kNoClock ? ", the image's tiles 155 lines apart" : ", the image's tiles 154 lines apart") : "")
                            + ((ROLES & kDen) == kDen ? ", the den: two more steps a slot, the readout's steps 72 columns and an fp32 a token"
@@ -1949,13 +1957,13 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
   constexpr int kLaunch = threads_of<ROLES>, kWarps = kLaunch >> 5;
   const auto kernel = window<ROLES>;
   //: the rows that read the values tile-major read the table laid so
-  values = blocks<ROLES> && (ROLES & kReady) ? ready_values : blocks<ROLES> ? block_values : four<ROLES> ? four_values : packed<ROLES> ? packed_values : fresh<ROLES> ? fresh_values : apart<ROLES> ? apart_values : (ROLES & kExpanded) == kExpanded ? expanded_values : ROLES & kTiledValues ? tiled_values : values;
+  values = blocks<ROLES> && (ROLES & kOwn) ? ready_own_values : blocks<ROLES> && (ROLES & kReady) ? ready_values : blocks<ROLES> ? block_values : four<ROLES> ? four_values : packed<ROLES> ? packed_values : fresh<ROLES> ? fresh_values : apart<ROLES> ? apart_values : (ROLES & kExpanded) == kExpanded ? expanded_values : ROLES & kTiledValues ? tiled_values : values;
   dense = ROLES & kReadReady ? ready_readers : ROLES & kListed ? listed_tables : dense;
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes));
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
   const size_t tokens = static_cast<size_t>(b.sms) * kOutWindows * kWindow;
   LAB_CHECK(cudaMemset(out, 0, (words + tokens) * 4));
-  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed | kHot | kAhead | (fresh<ROLES> ? kNoLoads : 0) | (packed<ROLES> ? kNoMath : 0) | (four<ROLES> || fold_expands<ROLES> ? kFour | kFoldIssues | kDrains4 : 0) | kTwoSums | kMirror | kChunk8 | kRawPanel | ((ROLES & kMirror) && (ROLES & kChunk8) ? kReadReady : 0) | ((ROLES & kMirror) && (fold_issues<ROLES> || blocks<ROLES>) ? kMeet41 : 0) | (fold_issues<ROLES> ? kIssueLate | kShare : 0) | (blocks<ROLES> ? kShare | kReady : 0) | (blocks<ROLES> ? kBlocks | kDrains4 : 0))) == (kFold | kRead)) {
+  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed | kHot | kAhead | (fresh<ROLES> ? kNoLoads : 0) | (packed<ROLES> ? kNoMath : 0) | (four<ROLES> || fold_expands<ROLES> ? kFour | kFoldIssues | kDrains4 : 0) | kTwoSums | kMirror | kChunk8 | kRawPanel | ((ROLES & kMirror) && (ROLES & kChunk8) ? kReadReady : 0) | ((ROLES & kMirror) && (fold_issues<ROLES> || blocks<ROLES>) ? kMeet41 : 0) | (fold_issues<ROLES> ? kIssueLate | kShare : 0) | (blocks<ROLES> ? kShare | kReady | ((ROLES & kReady) ? kOwn : 0) : 0) | (blocks<ROLES> ? kBlocks | kDrains4 : 0))) == (kFold | kRead)) {
     kernel<<<b.sms, kLaunch, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * state_words<ROLES>;
@@ -2391,6 +2399,19 @@ inline Buffers buffers(const lab::Bench& b) {
       LAB_CHECK(cudaMalloc(&rdev, buffer.size()));
       LAB_CHECK(cudaMemcpy(rdev, buffer.data(), buffer.size(), cudaMemcpyHostToDevice));
       ready_values = reinterpret_cast<const uint32_t*>(rdev);
+      {
+        //: THE OWN rows': a box's own copy of its column's plans and streams, laid by box
+        const size_t sources = static_cast<size_t>(b.sms) * 2, plans = static_cast<size_t>(kCallWindows) * 16,
+                     streams = static_cast<size_t>(kCallWindows) * kPackedRoom;
+        uint8_t* odev = nullptr;
+        LAB_CHECK(cudaMalloc(&odev, sources * (plans + streams)));
+        for (size_t src = 0; src < sources; ++src) {
+          const size_t c = src % kColumns;
+          LAB_CHECK(cudaMemcpy(odev + src * plans, buffer.data() + c * plans, plans, cudaMemcpyHostToDevice));
+          LAB_CHECK(cudaMemcpy(odev + sources * plans + src * streams, buffer.data() + table + c * streams, streams, cudaMemcpyHostToDevice));
+        }
+        ready_own_values = reinterpret_cast<const uint32_t*>(odev);
+      }
       //: THE READ-READY rows': every CTA's passes, a pass 16 tiles -- group `g`'s digit `warp` on box `box` is tile
       //: `8 g + 2 warp + box`, reader `n`'s two lines `17 (n / 8) + n % 8` and 8 on, its coefficients bf16
       std::vector<uint8_t> tiles(static_cast<size_t>(b.sms) * kReadPasses * kCoefPass, 0);
@@ -2484,6 +2505,8 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady,
                     3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady,
+                    3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kOwn,
+                    3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kOwn,
                     3 | kSuspend | kLean | kNoClock | kWhole | kFour | kMirror | kChunk8 | kFoldIssues | kDrains4 | kReadReady,
                     3 | kSuspend | kLean | kWhole | kFour | kMirror | kChunk8 | kFoldIssues | kDrains4 | kReadReady}) {
     const std::string k = lab::kernel("carry_window::window", {roles});
@@ -2555,6 +2578,8 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kLean | kWhole | kFour | kMirror | kChunk8 | kFoldIssues | kDrains4 | kMeet41>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kMeet41>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kMeet41>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kOwn>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kOwn>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kFour | kMirror | kChunk8 | kFoldIssues | kDrains4 | kReadReady>(b, waits, values, dense, state, out);

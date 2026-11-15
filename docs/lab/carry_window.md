@@ -221,6 +221,10 @@ it bounds. The host lays the stream, 8.7 KB a pass. Checked as the form's rows a
 old tiles' last read is its issuing thread's own wait on the steps, TAKEN as the warpgroup's one operation
 complete for its four warps at once: no lab measures that apart. In these rows the site recorded as the readout
 forming its coefficients is its wait on its tiles' bytes.
+THE OWN ROWS (the read-ready ready pair's form, with and without clocks): EVERY BOX LANDS ITS OWN STREAM, a copy
+of its column's, where the form's 16 boxes share a column's. In the design a box's coefficient part is its own
+and its values are its column's ([`hopper-gather.md`](../architecture/hopper-gather.md)): the form's rows and
+these bracket what a box's own bytes cost its window. Checked as the form's rows are.
 
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
