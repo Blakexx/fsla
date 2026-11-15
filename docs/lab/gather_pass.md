@@ -51,6 +51,16 @@ live, and no list crosses global memory. Checked on every multiprocessor against
 same mask. The lab's bounds: a list is at most 32 entries and a slot 150 (this cell's are 16 to 19 and 128 to
 143). NOT IN THE ROW: the dense lines, a run a CTA's dense block.
 
+THE COEFFICIENT RUNS, IN THE STEP'S FORMAT (the design's stream's other part --
+[`hopper-carry.md`](../architecture/hopper-carry.md#the-gather-stream); 4 to 5 live digits a token, 512 threads).
+THE QUESTION: the carry lands its coefficients made; what does the pass that makes them cost? A CTA takes a
+window a dense block at a time -- that block's rows of the window, 16 KB -- and for each slot writes its lists'
+entries' coefficients: an entry's 16 dense digits of the block by its sparse digit, rounded to bf16, a line a
+brick, the first bricks' runs and then the second's, each list's padded with zero lines to its steps; 32 bytes an
+entry a dense block where its bytes are 16. The lists are made from the mask as the block stream's are, once a
+(dense block, sparse block). Every line is checked on every multiprocessor against the host's own product and
+rounding. NOT IN THE ROW: the scales, the steps' operands' fields, the read side.
+
 MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance 60705827, driver 615.71.09; 2026-11-14, the experiment at
 f9293388; 7 repetitions; every arranged line and pad of every moved form, and every word, byte, line,
 pad, step and plan of the block stream, exact on every multiprocessor; the median, SM-cycles a token for one
