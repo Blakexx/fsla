@@ -596,8 +596,9 @@ __global__ void __launch_bounds__(THREADS, 1)
         const bool kept = (bits >> i & 1u) && rank < kCap;
         (kept ? recs + (16 * g + warp) * kCap + rank : reinterpret_cast<uint32_t*>(smem + kSpareAt) + tid)[0] = token;
       }
-      //: AN ENTRY'S BYTE on its digit, a lane a place of the warp's list: one load an entry, at its own token's line
-      //: (a lane's 32 tokens' bytes read in the loop above are one bank's, 32 to a load)
+      //: AN ENTRY'S BYTE on its digit, a lane a place of the warp's list, behind the warp's barrier over the list's
+      //: stores: one load an entry, at its own token's line
+      __syncwarp();
       if (static_cast<uint32_t>(lane) < count[16 * g + warp]) {
         uint32_t* const entry = recs + (16 * g + warp) * kCap + lane;
         *entry |= static_cast<uint32_t>(smem[kSparseAt + level * kLevelBytes + *entry * 16 + warp]) << 16;

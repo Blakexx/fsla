@@ -5,9 +5,8 @@ from. A form a lab measured on an H100 quotes the lab's page; a form RULED and n
 nothing is decided the page says OPEN.
 
 The gather is the hopper op's own kernel work (RULED 2026-11-15: a first-class kernel with an explicit design): it
-turns a side's masks and planes into the stream the carry lands and steps
-([`hopper-carry.md`](hopper-carry.md#the-gather-stream)). Whatever the carry would otherwise decide or compute
-between a slot's landing and its steps is done here, off the carry's synchronized path.
+turns a side's masks and planes into the stream a group of carry CTAs shares
+([`hopper-carry.md`](hopper-carry.md#the-gather-stream)). What one carry CTA alone uses, that CTA makes.
 
 ## What it is handed
 
@@ -20,17 +19,35 @@ order is the producer's readers' measured access, and this reader is the first m
 
 ## What it writes
 
-A ring of a few windows a CTA group (RULED 2026-11-15), a window its slots:
-- THE SHARED PART, a sparse block's, read by the 16 carry CTAs that share the block: a slot's head -- its steps'
-  operands' fields -- and its lists' value runs, a brick a run, as long as the list, the values as the bundle
-  holds them.
-- THE COEFFICIENT PART, a (sparse block, dense block)'s, read by one carry CTA: a slot's lists' entries'
-  coefficients in the step's format, a line a brick, each list's runs padded with zero lines to its steps. THE
-  COEFFICIENT IS EXPANDED HERE (RULED 2026-11-15, the write side as the read side): an entry's digits on its
-  sparse levels, the scales and its box's dense digits, their product rounded to bf16. An entry's scalar on its
-  values instead was measured the same price and is not the form.
-- A window's PLAN: each slot's place and bytes.
+ONLY WHAT A GROUP OF CTAS SHARES (RULED 2026-11-15, the day's later ruling: "the expansion is unique to each final
+cta, not something shared. each final cta should own it, to distribute load"). A coefficient is a (sparse block, dense
+block)'s -- one carry CTA's alone -- and that CTA forms it ([`hopper-carry.md`](hopper-carry.md#the-gather-stream)).
+The stream is THE TOKEN LIST (RULED 2026-11-13, in force again): a sparse block's live tokens once each, in token
+order, packed -- a token's values as the bundle holds them and its sparse bytes on the block's digits -- read by the
+carry CTAs that share the block. It is a ring of a few windows a CTA group (RULED 2026-11-15).
+- A TOKEN LIVE ON SEVERAL DIGITS OF A BLOCK IS WRITTEN ONCE, where a list a digit writes it once a digit. ESTIMATED,
+  live digits falling independently: 1.14 digits a live token a block at 4.5 live digits of 256, 2.3 at 32, 16 dense
+  -- the token list's bytes grow with the tokens, never with their digits.
+- A LIVE TOKEN'S DENSE DIGITS are a carry CTA's own as well. OPEN, by measurement: a segment of the stream a dense
+  block (2026-11-13: 16 bytes a live token a dense block, written here and read by one CTA), or the bundle's dense
+  rows landed by the carry itself (16 bytes a token a box, read by every box of the dense block, nothing written).
+- WHAT SAYS WHERE A TOKEN GOES is the input masks (2026-11-13). Whether the pass also writes each digit's list as
+  indices into the token list -- the stream saying what to do, which took the carry's block form from 9,488 to 6,826
+  cycles a window ([`lab/carry_window.md`](../lab/carry_window.md)) -- is OPEN.
+- WHAT A CTA NEEDS TO TAKE ITS VIEW is the pass's to write, the group's to read (Blake, 2026-11-15: "the gather has
+  metadata about boundaries for all the ctas to consume like window edges and such"). PROPOSED, its fields: a window's
+  place in the stream and its live tokens; each of the block's 16 digits' count in the window, which is the window's
+  steps; a live token's 16 bits -- the block's digits it is live on, the masks' slice for the token -- so a CTA reads
+  neither the masks nor a list; on the read side each entry's token index; the segment's edges.
+- ITS SIZE, from the measured pass's lines: some 0.6 KB a token a side at 4 to 5 live digits, 40 MB a side at 65,536
+  tokens, and 2 KB a token at most. Written whole before the carry it costs the carry what a ring the cache holds does
+  ([`lab/carry_window.md`](../lab/carry_window.md)); the ring is ruled for global memory, and what it asks of the
+  hand-off is under "Beside the carry".
 - THE READ SIDE'S: the same without values, with each entry's token index. NOT DESIGNED past that.
+- NOT THE FORM, each measured: a list a digit with its value runs, and the coefficient runs in the step's format laid
+  here. With its operands made the carry's window is 5,188 cycles against 6,826 expanding its own, and the pass that
+  made them cost as much as the carry ([`lab/gather_pass.md`](../lab/gather_pass.md)); their 110 KB a window a CTA
+  cost three times the window once past the card's cache.
 
 ## The CTA
 
@@ -49,17 +66,18 @@ every copy. The carry's learnings, to be applied where a measurement shows this 
 
 ## Its order of work
 
-A window's lists come first, because everything after is addressed by them; then the shared part, a sparse block
-at a time; then the coefficient part, a dense block at a time, since a dense block's rows of a window are what a
-CTA can hold beside its lists. The lab kernels' own timelines are their sources' headers
-([`lab/gather_pass.md`](../lab/gather_pass.md)).
+OPEN. The token list's pass the lab ran moved a window's live tokens' lines from lists the host made; its lists from
+the masks, as the digit lists' kernels make theirs, are not run for it. The lab kernels' timelines are their sources'
+headers ([`lab/gather_pass.md`](../lab/gather_pass.md)).
 
 ## Beside the carry
 
 RULED 2026-11-15: persistent gather CTAs beside the carry's, in one grid, a gather CTA a multiprocessor of its own.
 NOT DESIGNED: the hand-off between a gather CTA and its readers (no barrier crosses CTAs without a cluster), which
 gather CTA serves which carry CTAs, the split's rule, what the split leaves the intra; CONSTITUTION R22's
-independent units against the ring's waits.
+independent units against the ring's waits. MEASURED: the token list's values and sparse lines are 112
+SM-cycles a token a side against the carry's 853 expanding its own -- a multiprocessor in eight or nine the pass's,
+as that kernel stands.
 
 ## What is measured
 
@@ -67,21 +85,26 @@ All at 4 to 5 live digits a token, one side's sparse level of 256 digits, lists 
 are [`lab/gather_pass.md`](../lab/gather_pass.md)'s and follow the card a session ran on.
 - The shared part with tables for a carry that expands bytes, its lists made from the mask: exact, and at the
   price of the same lines moved from the host's lists.
-- The coefficient part with sparse by dense formed here, a window's lists made once: exact, and three times the
-  same entries' bytes moved; a slot a dense block a trip, 512 trips a window. With the shared part it is more than
-  the carry's window a token.
-- The coefficient runs widened alone, the entry's scalar on its values, cost what they cost with the product
-  formed; larger units take a sixth off. What binds that kernel is NOT ISOLATED.
+- THE TOKEN LIST'S PASS, its lists the host's: exact, 243 SM-cycles a token a side -- its values and sparse lines 112,
+  its dense segments 132 -- and 641 at 32 live digits; bound by the card's memory (its copies alone are nine tenths of
+  it). NOT MEASURED: the carry placing the token list's tokens.
+- NOT THE FORM: the coefficient runs with sparse by dense formed here, a window's lists made once: exact, and three
+  times the same entries' bytes moved; a slot a dense block a trip, 512 trips a window. With the shared part it is
+  more than the carry's window a token. Widened alone, the entry's scalar on its values, they cost the same; larger
+  units take a sixth off. What binds that kernel is NOT ISOLATED.
 - NOT MEASURED: the
   head's operands' fields; the scales; the read side; the ring and the hand-off; a list past 32 entries; more live
   digits.
 
 ## To be ruled before it is built
 
-1. The read side's stream: its coefficients are sparse by dense, made here (RULED 2026-11-15); its head and its
-   token indices are not designed.
-2. The mask's order on the public surface.
-3. The split of a card's multiprocessors between gather and carry CTAs, and the hand-off.
+1. Where a carry CTA's dense digits come from: the stream's segment or the bundle's rows.
+2. Whether the pass writes the digits' lists as indices, or the carry reads the masks.
+3. The read side's stream: its head and its token indices.
+4. The mask's order on the public surface.
+5. The split of a card's multiprocessors between gather and carry CTAs, and the hand-off.
+6. What the ring does on a card whose cache does not hold it: the token list cost the carry the same read before or
+   not while its boxes read it together; a ring's waits and a denser cell's bytes are not measured.
 
 ## Blackwell
 

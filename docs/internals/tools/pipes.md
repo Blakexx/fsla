@@ -23,9 +23,11 @@ Per card (the local product, sm_80's defaults), each pipe's cycles a unit an SM:
   128-byte line read from or written to L2 (`l2_line`, ~18 bytes a cycle an SM) and each global atomic request
   (`red_request`, ~5 cycles: the drain's floor).
 
-On the card the launch ran on: tensor and shared priced as busy shares of the elapsed cycles, issue and the integer
-and FMA pipes measured (ncu's busy counters), L2 sectors read and written, and each stall reason's share of the active
-warps' cycles.
+On the card the launch ran on: tensor and shared priced as busy shares of the elapsed cycles, issue and the integer and
+FMA pipes measured (ncu's busy counters), L2 sectors read and written, and each stall reason's share of the active
+warps' cycles. A CARD WHOSE ARCHITECTURE DECLARES NO RATES (`hardware.json`; sm_90a today) is priced in nothing: its row
+shows the measured busy counters, L2 sectors and stalls alone and says so. A METRIC THE CARD OR THE PROFILER DOES NOT
+COLLECT reads 0 and is named in the launch's `uncollected`, in the report and in the record.
 
 A form's floor is its binding pipe; a kernel well over it is held by what its stalls name, not by its instruction
 count. The hand-off's lean form (2026-10-18) takes 2,248 cycles a window against an integer pipe of 1,310.

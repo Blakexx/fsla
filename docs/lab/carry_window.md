@@ -554,7 +554,7 @@ WHAT IT SHOWS.
   TILES' BYTES against 288 -- its copy is issued one panel's stores ahead of its use -- and
   a fold warp, whose copies are issued a window ahead, 723 on its own against 210; the
   fold then waits 10,154 on the readout's read. WITH ITS OPERANDS FROM THE CARD'S MEMORY THE CARRY IS
-  THAT MEMORY'S: the ready stream is a window's 110 KB a CTA, and it must be the cache's -- a ring. NOT ASKED: the
+  THAT MEMORY'S: the ready stream is a window's 110 KB a CTA, and past the cache it is this price. NOT ASKED: the
   readout's copy issued further ahead; the design's mix, a box's own coefficients and its column's values.
   THE MEETING ROWS -- the rendezvous an mbarrier's -- DO NOT MOVE IT: the window is 5,323 against
   5,270 with even lists and 6,888 against 6,826 in the block form; clocked, a fold warp

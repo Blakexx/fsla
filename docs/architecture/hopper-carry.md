@@ -10,40 +10,38 @@ then the fold of the window's writes into the state.
 
 ## The gather stream
 
-RULED; its pass NOT BUILT. The gather pass writes, for each sparse block of 16 digits -- the group of CTAs that
-share it -- A STREAM, and the stream SAYS WHAT TO DO: the carry computes no boundary and makes no operand. A
-window's stream is its slots, a slot 8 sparse digits' lists. A list is A BLOCK AS LONG AS THE LIST: 8 runs of its
-entries' value lines, a brick a run, a line an entry, and its entries' COEFFICIENTS IN THE STEP'S FORMAT, bf16, a
-line a brick, each brick's run padded with zero lines to the list's steps: an entry's sparse digits, the scales
-and its box's dense digits, their product ([`hopper-gather.md`](hopper-gather.md)). A step's operand is pointed at any 16 entries of a block, its bricks as far
-apart as the list is long; a slot's head holds each step's two operands' fields, or that the step is absent, when
-its second operand is a tile of zeros in the slot. Blocks stay in the order of their digits. A slot is ONE COPY,
-and a window's PLAN is each slot's place in the stream and its bytes. THE CARRY LANDS A SLOT AND STEPS IT: it
-expands nothing and writes no operand, so it has no fence and no rendezvous before its steps. A token live on two
-digits of one block is two entries. The pass consumes the masks; a counts pass sizes the streams. The stream is
-WORKSPACE, and A RING (RULED 2026-11-15): a few windows a CTA group, rewritten as the carry consumes them, so
-global memory holds windows of it and never a segment's -- the coefficients it holds are live entries' staged for
-the carry, never the stored representation. IT IS FED BY PERSISTENT GATHER CTAS BESIDE THE CARRY'S, in one grid (RULED 2026-11-15): a
-carry CTA holds a multiprocessor's whole register file and nearly all its shared memory, so a gather CTA is a
-multiprocessor's own, and the card's multiprocessors are split between the two for the call. NOT DESIGNED: the
-hand-off between a gather CTA and its readers (no barrier crosses CTAs without a cluster), which gather CTA
-serves which carry CTAs, the split's rule, and what the split leaves the intra, which is launched beside the
-carry on the multiprocessors the carry leaves. A carry CTA then waits on a gather CTA and a gather CTA on its
-readers: CONSTITUTION R22's independent units hold between carry CTAs, and what the ring's waits cost that
-rule is to be shown before the form is built. NOT MEASURED on hopper. A stream written whole before the carry runs costs
-the carry the same ([`lab/carry_window.md`](../lab/carry_window.md)), and is what the labs ran
-([`factored-representation.md`](factored-representation.md)). The read side's stream is the same without values,
-with each entry's token index, where the drain adds; its head is not designed. A window's stream is read by the 16
-boxes that share it and costs the carry the same whether the cache held it before or not
-([`lab/carry_window.md`](../lab/carry_window.md)) -- WHILE those boxes read it close together: boxes that drift
-apart, as their read sides' counts differ, are not measured.
-MEASURED, in the carry, from streams the host laid at lists of 8 to 24 entries and no list past two steps
-([`lab/carry_window.md`](../lab/carry_window.md)): this form, the fold landing a slot and stepping it, and beside
-it a stream of BYTES -- an entry's 16 dense bytes and its sparse byte, the fold expanding them where they land,
-its head tables for each entry's lines and each step's operands -- which is the longer of the two. MEASURED, the
-pass, at lists of 16 to 19 ([`lab/gather_pass.md`](../lab/gather_pass.md)): its shared part written from the
-mask alone, and its coefficient runs in the step's format, which with the shared part cost more than the carry's
-window a token. NOT MEASURED: the head's operands' fields; the read side's stream; the ring; lists past two steps.
+RULED; NOT BUILT. The gather pass writes, for each sparse block of 16 digits -- the group of CTAs that share it -- A
+STREAM OF WHAT THE GROUP SHARES ([`hopper-gather.md`](hopper-gather.md)): the block's live tokens once each, in token
+order, packed, a token's values and its sparse bytes on the block's digits (RULED 2026-11-13; in force again
+2026-11-15). EACH CARRY CTA MAKES ITS OWN OPERANDS (RULED 2026-11-15: "the expansion is unique to each final cta, not
+something shared. each final cta should own it, to distribute load"): it lands its window's view by bulk copies, and
+its fold's and readout's warps place each token's value lines on its digits' steps and form its coefficients -- an
+entry's sparse digits, the scales and the box's dense digits, their product, bf16 -- in shared memory. PROPOSED, NOT
+RULED, NOT MEASURED: the fill is SLICES -- one pass over the view in token order, a token's lines stored to its
+digit's slice at its rank, the rank a count of the digit's mask before the token, a step issued when a slice holds 16
+entries, a digit's last step of the window padded with zero lines; the window's steps are counted once from the masks
+and run with no decision on data. A token live on two digits of one block is one token of the list and an entry of
+each digit's slice. Where a CTA's dense digits come from -- a segment of the stream a dense block, or the bundle's
+dense rows -- is OPEN. The stream is WORKSPACE, and A RING (RULED 2026-11-15): a few windows a CTA group, rewritten as
+the carry consumes them, so global memory holds windows of it and never a segment's. IT IS FED BY PERSISTENT GATHER
+CTAS BESIDE THE CARRY'S, in one grid (RULED 2026-11-15): a carry CTA holds a multiprocessor's whole register file and
+nearly all its shared memory, so a gather CTA is a multiprocessor's own, and the card's multiprocessors are split
+between the two for the call. NOT DESIGNED: the hand-off between a gather CTA and its readers (no barrier crosses CTAs
+without a cluster), which gather CTA serves which carry CTAs, the split's rule, and what the split leaves the intra,
+which is launched beside the carry on the multiprocessors the carry leaves. A carry CTA then waits on a gather CTA and
+a gather CTA on its readers: CONSTITUTION R22's independent units hold between carry CTAs, and what the ring's waits
+cost that rule is to be shown before the form is built. A stream written whole before the carry runs costs the carry
+the same ([`lab/carry_window.md`](../lab/carry_window.md)), and is what the labs ran. The read side's stream is the
+same without values, with each entry's token index, where the drain adds. A window's stream is read by the boxes that
+share it and costs the carry the same whether the cache held it before or not -- WHILE those boxes read it close
+together: boxes that drift apart, as their read sides' counts differ, are not measured.
+MEASURED, in the carry, from streams the host laid BY DIGIT at lists of 8 to 24 entries and no list past two steps
+([`lab/carry_window.md`](../lab/carry_window.md)) -- none of them the token list: the fold landing a slot with its
+operands made and stepping it, 5,188 cycles a window with the readout's tiles made as well, which is the window with
+the carry's own operands free; and the fold expanding an entry's 16 dense bytes and its sparse byte where they land,
+its head tables for each entry's lines and each step's operands, 6,826. MEASURED, the pass
+([`lab/gather_pass.md`](../lab/gather_pass.md)): the token list, 243 SM-cycles a token a side with its dense segments.
+NOT MEASURED: the carry placing a token list's tokens; slices; the read side's stream; the ring; lists past two steps.
 
 ## What it is handed
 
@@ -97,8 +95,8 @@ window, and each entry's token and byte were computed, not read.
   `ceil(count / 16)` steps into the same accumulator set, the last padded with entries whose coefficient lines are
   zero -- exact, since a zero coefficient adds nothing. A slot is 8 steps, whichever digits they are; a window is as
   many slots as its steps need. The readout likewise: a sparse digit's readers are `ceil(count / 16)` steps, the
-  last padded with readers whose coefficient lines are zero. On the fold's side the stream's pass lays the steps and each slot's tables (the
-  section above); the read side's tables are not designed.
+  last padded with readers whose coefficient lines are zero. The steps are the CTA's to lay, from the counts the stream holds (the
+  section above).
   MEASURED in the lab at lists of 8 to 24 entries: a slot more a window ([`lab/carry_window.md`](../lab/carry_window.md)).
 - ROWS THAT ARRIVE COLD. With real lists a window's tokens are its own, new to the cache each window, and a
   carry that gathers its entries from the tables itself pays for it; asking for a window's rows a window ahead by

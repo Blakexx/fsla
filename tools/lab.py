@@ -452,10 +452,12 @@ def counters_of(binary: Path, extra: list[str]) -> dict[str, dict]:
         seen.setdefault(_plain(row["Kernel Name"]), {}).setdefault(row["Metric Name"], row["Metric Value"])
     found = {}
     for k, m in seen.items():
-        #: a metric this card or this profiler does not collect reads "n/a": left out, so `pipes.short` holds it 0
+        #: a metric this card or this profiler does not collect reads "n/a": `pipes.short` holds it 0, and the
+        #: launch's `uncollected` names it, so a record and a report tell that zero from a measured one
         values = {metric: float(v.replace(",", "") or 0) for metric, v in m.items()
                   if metric != "sass__inst_executed_per_opcode" and v != "n/a"}
         c = pipes.short(values)
+        c["uncollected"] = sorted(metric for metric, v in m.items() if v == "n/a")
         c["opcodes"] = {op: float(n) for op, n in
                         re.findall(r"([A-Z][A-Z0-9_]*)\s*[:=]\s*([0-9.]+)", m["sass__inst_executed_per_opcode"])}
         found[k] = c
@@ -504,13 +506,23 @@ def pipes_report(raw: dict[str, dict], table: dict[str, dict], units: dict[str, 
         n = per_unit(c, k, units)
         unit = "MMA" if c["hmma"] + c["imma"] else "unit" if k in units else "launch"
         print(f"  pipes, cycles a {unit} an SM: {k[:110]}")
+        if c.get("uncollected"):
+            print(f"    NOT COLLECTED on this card, read as 0 below: {', '.join(c['uncollected'])}")
         for label, card, product in CARDS:
             p = pipes.pipe_cycles(c, n, hardware.resolve(arch=card, product=product), arch, mmas.get(k), kinds.get(k))
             bound = max(p, key=p.get)
             print(f"    {label:<20} " + "  ".join(f"{name} {_num(v)}" for name, v in p.items())
                   + f"  -> {bound} binds")
-        b = pipes.busy_here(c, here, arch, mmas.get(k), kinds.get(k))
         stalls = sorted(c["stalls"].items(), key=lambda kv: -kv[1])[:3]
+        if "schedulers" not in here:
+            #: a card whose architecture declares no rates (`hardware.json`): its measured counters alone, none priced
+            print(f"    busy here, % of elapsed ({arch} declares no rates: tensor, shared and global are not priced): "
+                  f"issue {c['busy_issue']:.0f}  alu {c['busy_alu']:.0f}  fma {c['busy_fma']:.0f} "
+                  f"(heavy {c['busy_fmaheavy']:.0f})"
+                  f"  | L2 sectors read {_num(c['l2_read'] / n)} write {_num(c['l2_write'] / n)}"
+                  f"  | stalled: " + ", ".join(f"{r} {v:.0f}%" for r, v in stalls))
+            continue
+        b = pipes.busy_here(c, here, arch, mmas.get(k), kinds.get(k))
         print(f"    busy here, % of elapsed: issue {b['issue']:.0f}  tensor {b['tensor']:.0f} (priced)  "
               f"alu {b['alu']:.0f}  fma {b['fma']:.0f} (heavy {b['fmaheavy']:.0f})  shared {b['shared']:.0f} (priced)"
               f"  global {b['global']:.0f} (priced)"
