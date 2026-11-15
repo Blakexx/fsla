@@ -20,12 +20,6 @@ does not. THE ENTRY COUNT GOES BY WHOLE WARPGROUPS: kernels of 528, 560, 592 and
 with 96, and of 656, 672, 704 and 768 with 80 -- the SM's file over the threads rounded up to 128s -- so a partial
 fifth warpgroup has no more registers a thread than a whole one.
 
-THE TRADE BY WARP (a second kernel). 16 warps enter at 128 registers a thread; ONE WARP of the last warpgroup
-raises itself to 176 and its neighbour lowers itself to 80, the other fourteen -- their own warpgroup's two among
-them -- untouched; the raised warp holds 144 words, the lowered 32, the rest 96. WHAT THE COMPILER SAYS: it is
-honoured -- one release to 80 and one raise to 176 (`USETMAXREG`), each role's body in its own branch on the
-warp, no local memory. ON THE DEVICE: not in the record below, which predates the kernel.
-
 MEASURED (H100 SXM, 132 SMs, vast.ai instance 60425304, driver 580.173.02; 2026-11-12, the experiment at
 bed41355; 7 repetitions, every one of the 84,480 threads' sums exact):
 

@@ -6,9 +6,6 @@
 // registers hold -- 128, 32 or 12 -- through a loop that rewrites every one each trip, and stores their sum: a role
 // short of its registers spills (the lab's pack refuses local memory) or never returns from its raise. Every sum is
 // checked exactly, and the kernel's span is clocked.
-// A SECOND KERNEL asks the trade BY WARP: 16 warps enter at 128 registers a thread; one warp of the last warpgroup
-// raises itself to 176 and its neighbour lowers itself to 80, the other fourteen untouched -- a warp's count its
-// own, not its warpgroup's.
 // TIMELINE: no load and no shared store. A thread's trip is one multiply-add a held word; nothing is staged.
 // see docs/internals/tools/lab.md#reg-five
 #include "lab.cuh"
@@ -61,25 +58,6 @@ __global__ void __launch_bounds__(kThreads, 1) five(long long* times, uint32_t* 
   }
 }
 
-//: THE TRADE BY WARP: 512 threads enter at 128; warp 12 raises to `kUp`, warp 13 lowers to `kDown`, what one
-//: releases the other acquires; every other warp, the two's own warpgroup's among them, stays at the entry count
-constexpr int kWarpThreads = 512, kUp = 176, kDown = 80, kUpWords = 144, kDownWords = 32, kStayWords = 96;
-static_assert(kUp + kDown == 2 * 128);
-constexpr int warp_words(int warp) { return warp == 12 ? kUpWords : warp == 13 ? kDownWords : kStayWords; }
-
-__global__ void __launch_bounds__(kWarpThreads, 1) by_warp(long long* times, uint32_t* out, int trips) {
-  const int warp = threadIdx.x >> 5;
-  if (warp == 12) {
-    lab::regs_up<kUp>();
-    hold_role<kUpWords>(times, out, trips);
-  } else if (warp == 13) {
-    lab::regs_down<kDown>();
-    hold_role<kDownWords>(times, out, trips);
-  } else {
-    hold_role<kStayWords>(times, out, trips);
-  }
-}
-
 }  // namespace reg_five
 
 int main(int argc, char** argv) {
@@ -112,28 +90,5 @@ int main(int argc, char** argv) {
   const lab::Samples cycles = b.variant([&] { five<<<b.sms, kThreads>>>(b.times, out, kTrips); },
                                         [&] { return b.span(kThreads >> 5) / kTrips; });
   b.record(name, "cycles a trip a CTA, its 20 warps", cycles);
-  {
-    //: the trade by warp: `hold_role` stores at `block * kThreads + thread`, so a block's 512 sums lie in its 640
-    const std::string by = "sixteen warps at 128: one warp of a warpgroup raised to 176, its neighbour lowered to 80";
-    LAB_CHECK(cudaMemset(out, 0, words * 4));
-    by_warp<<<b.sms, kWarpThreads>>>(b.times, out, kCheckTrips);
-    LAB_CHECK(cudaDeviceSynchronize());
-    LAB_CHECK(cudaMemcpy(got.data(), out, words * 4, cudaMemcpyDeviceToHost));
-    long long off = 0;
-    for (int blk = 0; blk < b.sms; ++blk)
-      for (int tid = 0; tid < kWarpThreads; ++tid) {
-        uint32_t want = 0;
-        for (int i = 0; i < warp_words(tid >> 5); ++i) {
-          uint32_t v = seed_of(static_cast<uint32_t>(blk), static_cast<uint32_t>(tid), static_cast<uint32_t>(i));
-          for (int it = 0; it < kCheckTrips; ++it) v = v * 3u + static_cast<uint32_t>(it);
-          want += v;
-        }
-        off += got[static_cast<size_t>(blk) * kThreads + tid] != want;
-      }
-    b.check(by, off == 0, std::to_string(off) + " of " + std::to_string(static_cast<size_t>(b.sms) * kWarpThreads) + " sums differ");
-    const lab::Samples trip = b.variant([&] { by_warp<<<b.sms, kWarpThreads>>>(b.times, out, kTrips); },
-                                        [&] { return b.span(kWarpThreads >> 5) / kTrips; });
-    b.record(by, "cycles a trip a CTA, its 16 warps", trip);
-  }
   return 0;
 }
