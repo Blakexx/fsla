@@ -182,7 +182,7 @@ recorded with its wait on the drain in it.
 The clocked rows of the block form and of the even lists' self-issuing form clock THE FOLD'S PHASES too: the
 image's publishing (its wait on the readout's read in it); its entries' expansion, from a slot's bytes landed;
 the block form's pads and steps' operands; the slot's fence; the warpgroup's barrier; and its steps with the
-next copy's issue, the two slots' fences apart. A clocked fold holds eight more registers, and every role's clock reading is each thread's own
+next copy's issue, the two slots' fences and rendezvous apart. A clocked fold holds nine more registers, and every role's clock reading is each thread's own
 ([`LEARNINGS.md`](../internals/LEARNINGS.md#lap-in-uniform)).
 A CONTROL, both forms, with and without clocks: the fold stores its landed bytes AS THEY ARE to its coefficient
 lines -- no conversion, no product, no sparse byte. Its sums are not the carry's: an isolation, unchecked.
@@ -195,6 +195,9 @@ THE MEETING ROWS, both forms, with and without clocks: a warpgroup's rendezvous 
 a fold's a slot, the readout's a pass -- is AN MBARRIER'S: a warp arrives and every thread waits as the row waits,
 where the other rows sync a named barrier. THE QUESTION: what the named barrier costs a warpgroup. Checked,
 exact. Their clocked even-list row's folds are at 168 registers and its drain warps at 72.
+A PAIR WITH EVERY WAIT POLLED (the even lists' form): a wait is a loop of tests, where the form's suspends its
+warp. THE QUESTION: whether a fold warp's time at its rendezvous is its warpgroup's warps returning from a
+suspended wait at different times. Checked, exact.
 
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, each
 thread's own, their counts held in its registers: a clocked row's window is longer than its work. Rows of the winner's form and the den's, at both cells, and the den's chain run with no
