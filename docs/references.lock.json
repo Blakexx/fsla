@@ -279,7 +279,7 @@
   {"doc": "docs/architecture/hopper-carry.md", "pinned_at": "fd4f26f0816e", "reviewed": true, "sha256": "", "target": "docs/lab/intra_window.md"},
   {"doc": "docs/architecture/hopper-carry.md", "pinned_at": "fd4f26f0816e", "reviewed": true, "sha256": "", "target": "docs/open-work.md"},
   {"doc": "docs/architecture/hopper-gather.md", "pinned_at": "ab7a58308c50", "reviewed": true, "sha256": "24c2b2acd4975586", "target": "docs/ARCHITECTURE.md#1-what-the-kernel-computes"},
-  {"doc": "docs/architecture/hopper-gather.md", "pinned_at": "6c415b8c856a", "reviewed": true, "sha256": "097d543754597ae3", "target": "docs/architecture/hopper-carry.md#the-gather-stream"},
+  {"doc": "docs/architecture/hopper-gather.md", "pinned_at": "2957929c9b63", "reviewed": true, "sha256": "0e6f6ea5fd237f14", "target": "docs/architecture/hopper-carry.md#the-gather-stream"},
   {"doc": "docs/architecture/hopper-gather.md", "pinned_at": "6c415b8c856a", "reviewed": true, "sha256": "", "target": "docs/lab/carry_window.md"},
   {"doc": "docs/architecture/hopper-gather.md", "pinned_at": "ab7a58308c50", "reviewed": true, "sha256": "", "target": "docs/lab/gather_pass.md"},
   {"doc": "docs/architecture/no-delta-rule.md", "pinned_at": "3e2f5440be0b", "reviewed": true, "sha256": "", "target": "docs/architecture/factored-representation.md"},

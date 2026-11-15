@@ -14,10 +14,8 @@ RULED; its pass NOT BUILT. The gather pass writes, for each sparse block of 16 d
 share it -- A STREAM, and the stream SAYS WHAT TO DO: the carry computes no boundary and makes no operand. A
 window's stream is its slots, a slot 8 sparse digits' lists. A list is A BLOCK AS LONG AS THE LIST: 8 runs of its
 entries' value lines, a brick a run, a line an entry, and its entries' COEFFICIENTS IN THE STEP'S FORMAT, bf16, a
-line a brick, each brick's run padded with zero lines to the list's steps. An entry's sparse digits and the scales
-are a scalar on its values, and its coefficient line is its box's dense digits widened, a product only where the
-box spans several dense levels ([`hopper-gather.md`](hopper-gather.md), RULED 2026-11-15; the lab's streams hold
-sparse by dense in the coefficient). A step's operand is pointed at any 16 entries of a block, its bricks as far
+line a brick, each brick's run padded with zero lines to the list's steps: an entry's sparse digits, the scales
+and its box's dense digits, their product ([`hopper-gather.md`](hopper-gather.md)). A step's operand is pointed at any 16 entries of a block, its bricks as far
 apart as the list is long; a slot's head holds each step's two operands' fields, or that the step is absent, when
 its second operand is a tile of zeros in the slot. Blocks stay in the order of their digits. A slot is ONE COPY,
 and a window's PLAN is each slot's place in the stream and its bytes. THE CARRY LANDS A SLOT AND STEPS IT: it
@@ -43,9 +41,9 @@ MEASURED, in the carry, from streams the host laid at lists of 8 to 24 entries a
 ([`lab/carry_window.md`](../lab/carry_window.md)): this form, the fold landing a slot and stepping it, and beside
 it a stream of BYTES -- an entry's 16 dense bytes and its sparse byte, the fold expanding them where they land,
 its head tables for each entry's lines and each step's operands -- which is the longer of the two. MEASURED, the
-pass: the byte stream's shared part written from the mask alone, at lists of 16 to 19
-([`lab/gather_pass.md`](../lab/gather_pass.md)). NOT MEASURED: the pass writing coefficients in the step's
-format; its dense part in either form; the read side's stream; the ring; lists past two steps.
+pass, at lists of 16 to 19 ([`lab/gather_pass.md`](../lab/gather_pass.md)): its shared part written from the
+mask alone, and its coefficient runs in the step's format, which with the shared part cost more than the carry's
+window a token. NOT MEASURED: the head's operands' fields; the read side's stream; the ring; lists past two steps.
 
 ## What it is handed
 

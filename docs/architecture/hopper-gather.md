@@ -22,13 +22,13 @@ order is the producer's readers' measured access, and this reader is the first m
 
 A ring of a few windows a CTA group (RULED 2026-11-15), a window its slots:
 - THE SHARED PART, a sparse block's, read by the 16 carry CTAs that share the block: a slot's head -- its steps'
-  operands' fields -- and its lists' value runs, a brick a run, as long as the list. AN ENTRY'S VALUES CARRY ITS
-  SCALAR (RULED 2026-11-15): whatever is the same for every leaf of the box -- its digits on its sparse levels,
-  the scales -- is multiplied into its 64 values, once.
+  operands' fields -- and its lists' value runs, a brick a run, as long as the list, the values as the bundle
+  holds them.
 - THE COEFFICIENT PART, a (sparse block, dense block)'s, read by one carry CTA: a slot's lists' entries'
-  coefficients in the step's format, a line a brick, each list's runs padded with zero lines to its steps. Where a
-  box spans ONE dense level a coefficient line is that level's 16 digits widened to bf16, exact, no product; where
-  it spans several, the product of their slices, 16 an entry a box.
+  coefficients in the step's format, a line a brick, each list's runs padded with zero lines to its steps. THE
+  COEFFICIENT IS EXPANDED HERE (RULED 2026-11-15, the write side as the read side): an entry's digits on its
+  sparse levels, the scales and its box's dense digits, their product rounded to bf16. An entry's scalar on its
+  values instead was measured the same price and is not the form.
 - A window's PLAN: each slot's place and bytes.
 - THE READ SIDE'S: the same without values, with each entry's token index. NOT DESIGNED past that.
 
@@ -70,18 +70,16 @@ are [`lab/gather_pass.md`](../lab/gather_pass.md)'s and follow the card a sessio
 - The coefficient part with sparse by dense formed here, a window's lists made once: exact, and three times the
   same entries' bytes moved; a slot a dense block a trip, 512 trips a window. With the shared part it is more than
   the carry's window a token.
-- The ruled form: an entry's scalar on its values adds next to nothing to the shared part; the coefficient runs
-  widened alone cost what they cost with the product formed, and larger units take a sixth off. What binds that
-  kernel is NOT ISOLATED.
+- The coefficient runs widened alone, the entry's scalar on its values, cost what they cost with the product
+  formed; larger units take a sixth off. What binds that kernel is NOT ISOLATED.
 - NOT MEASURED: the
   head's operands' fields; the scales; the read side; the ring and the hand-off; a list past 32 entries; more live
   digits.
 
 ## To be ruled before it is built
 
-1. The read side: its coefficients sparse by dense, made here, or its dense digits alone with the reader's scalar
-   applied to its sums after the step. RULED 2026-11-15: either is acceptable, and the measured cheaper is taken;
-   the labs' readout lands sparse by dense made, and that form is priced first.
+1. The read side's stream: its coefficients are sparse by dense, made here (RULED 2026-11-15); its head and its
+   token indices are not designed.
 2. The mask's order on the public surface.
 3. The split of a card's multiprocessors between gather and carry CTAs, and the hand-off.
 
