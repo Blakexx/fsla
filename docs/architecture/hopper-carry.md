@@ -16,9 +16,14 @@ slots, a slot 8 sparse digits' lists. A list is A BLOCK AS LONG AS THE LIST: 8 r
 brick a run, a line an entry, and its entries' dense lines; nothing is padded in global memory but a list's dense
 lines to its steps. A step's operand is pointed at any 16 entries of a block, its bricks as far apart as the list
 is long; a list's last, part-filled step is the one place lines are zero, its pads' coefficient lines zeroed in
-shared memory. Blocks stay in the order of their digits. A slot is ONE COPY, and its head is the stream's TABLES:
-a word an entry -- where its dense line is and where its second coefficient run goes -- the entries' bytes on
-their sparse digits, the pad lines, and a step's operands' lines and brick spacings, or that the step is absent. A
+shared memory. Blocks stay in the order of their digits. THE STREAM HOLDS THE CARRY'S OPERANDS READY (RULED 2026-11-15; NOT MEASURED): an entry's coefficients are
+written by the gather pass in the wgmma's format -- its dense digits' bytes by its byte on its sparse digit, bf16,
+both bricks' lines, a part-filled step's pad lines zero -- and a step's operands' fields are in the slot's head,
+or that the step is absent. The carry lands a slot and steps it: it expands nothing, writes no operand and so
+needs no fence and no rendezvous before its steps. The lab's measured form is the one before this ruling: a slot
+ONE COPY whose head is TABLES -- a word an entry, where its dense line is and where its second coefficient run
+goes; the entries' bytes on their sparse digits; the pad lines; a step's operands' lines and spacings -- which
+the fold expands. A
 window's PLAN is each slot's place in the stream and its bytes. A token live on two digits of one block is two
 entries. The pass consumes the masks; a counts pass sizes the streams. The workspace is the segment's
 ([`ARCHITECTURE.md` section 6](../ARCHITECTURE.md#6-the-kernels)): the stream is written before the carry runs,
@@ -73,8 +78,9 @@ lines, an odd count), the readout's coefficient tiles, two panels; under pressur
    an image tile by that tile. The pass's sums go to two panels as f16 pairs, and the drain warps add them to the
    output.
 3. THE FOLD. A fold warpgroup issues a slot's copy from the stream a window ahead, as it leaves the slot; when it
-   has landed, a thread expands an entry's 16 dense bytes by its byte on its sparse digit where they lie, and the
-   warpgroup runs the slot's steps, one a sparse digit's 16 entries.
+   has landed the warpgroup runs the slot's steps, one a sparse digit's 16 entries, their operands the landed
+   lines (the gather stream, above). MEASURED is the form before that ruling, a thread expanding an entry's 16
+   dense bytes by its byte on its sparse digit where they lie.
 
 ## What the lab did not have, and the kernel must
 
