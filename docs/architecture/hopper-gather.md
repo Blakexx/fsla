@@ -70,7 +70,10 @@ are [`lab/gather_pass.md`](../lab/gather_pass.md)'s and follow the card a sessio
 - The coefficient part with sparse by dense formed here, a window's lists made once: exact, and three times the
   same entries' bytes moved; a slot a dense block a trip, 512 trips a window. With the shared part it is more than
   the carry's window a token.
-- NOT MEASURED: the scalar on the values and the coefficient widened alone (the ruled form); larger units; the
+- The ruled form: an entry's scalar on its values adds next to nothing to the shared part; the coefficient runs
+  widened alone cost what they cost with the product formed, and larger units take a sixth off. What binds that
+  kernel is NOT ISOLATED.
+- NOT MEASURED: the
   head's operands' fields; the scales; the read side; the ring and the hand-off; a list past 32 entries; more live
   digits.
 
