@@ -112,7 +112,11 @@
 // dense line expanded to its two coefficient lines, then its other 7 value lines two at a time, each stored to its
 // list's run across the box's two pool slots; a list's last step's pad lines zeroed from the steps' table; a
 // step's operands made, a thread of 32; the fence, the warpgroup's barrier, the next table's copy; 32 steps as one
-// block. THE JOINED rows' fold is the block rows' with ONE RENDEZVOUS A WINDOW: a slot is the wait on its image, a
+// block. THE CUT ROWS' trips (the stmatrix, shuffle and skip rows): the stmatrix rows' readout stores a digit's sums
+// as one `stmatrix.x4.trans` a warp, its 16 pairs the four matrices' registers, where the form stores 16 halves; the
+// shuffle rows' fold loads a slot's 16 steps' lines once (lane s step s's, every lane loading one) and takes each step's
+// four words by shuffles at its issue, 4 more registers held through the slot; the skip rows' second-round step is a
+// one-trip loop on a vote of its B's line. THE JOINED rows' fold is the block rows' with ONE RENDEZVOUS A WINDOW: a slot is the wait on its image, a
 // thread's entry expanded, a pad zeroed and a step's operands made, both slots in turn; then the fence, the
 // warpgroup's barrier and the window's 32 steps as one block; then both of the next window's copies, which land
 // under the next window's image. NO LOAD OF A THROUGH OR A ONE-VIEW ROW'S LINES IS A STAGE AHEAD of its use: a fold thread has no register to
@@ -1061,8 +1065,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         //: `kReadyZero`, a made table's the box's zeros)
         const uint4* const lines = reinterpret_cast<const uint4*>(steps);
         uint4 held_step = make_uint4(0, 0, 0, 0);
-        if constexpr ((ROLES & kShfl) != 0)
-          if (lane < 8 * kBlockRounds) held_step = lines[lane];
+        if constexpr ((ROLES & kShfl) != 0) held_step = lines[lane & (8 * kBlockRounds - 1)];
         const uint32_t zero_at = ROLES & kReady ? static_cast<uint32_t>(kReadyZero)
                                                 : static_cast<uint32_t>(lab::wg_desc(base + kZeroAt + box * 512, 8, 16)) & 0x3fffu;
         lab::wg_fence();
@@ -1086,7 +1089,8 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
               const uint32_t add = ROLES & kReady ? at_pool : 0u;
               const uint64_t a = static_cast<uint64_t>(two.y) << 32 | (two.x + add), b = static_cast<uint64_t>(two.w) << 32 | (two.z + add);
               //: a first-round step is always present; a second-round one where its B is not the zeros
-              const int present = (ROLES & kSkip) == 0 || r == 0 || (two.z & 0x3fffu) != zero_at ? 1 : 0;
+              //: (a vote: the step's line is the warpgroup's, so every lane reads the same answer)
+              const int present = (ROLES & kSkip) == 0 || r == 0 || __any_sync(0xffffffffu, (two.z & 0x3fffu) != zero_at) ? 1 : 0;
 #pragma unroll 1
               for (int once = 0; once < present; ++once) lab::wg_bf16_n16_ss_mn(d[8 * slot + j], a, b, w != 0 || r != 0);
             } else if constexpr ((ROLES & kReady) != 0) {

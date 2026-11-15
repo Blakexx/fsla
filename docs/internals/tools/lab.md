@@ -99,7 +99,8 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
   only): `wg_desc` (wgmma's unswizzled K-major shared operand: lines in bricks of 8, 16 bytes a line, the K halves and
   the bricks at stated offsets), `wg_fence`, `wg_commit`, `wg_wait<N>`, `wg_hold` (a register an asynchronous MMA
   wrote, held behind its wait), `wg_bf16_n16_ss`, `wg_bf16_n64_ss`, `wg_u8_n64_ss` (the integer step, u8 by u8 into s32), `wg_bf16_n64_rs` (A from registers), `wg_bf16_n72_rs` (the same 72 columns wide; `wg_bf16_n72_rs_mn` with B M|N-major), `wg_bf16_n8_ss_mn` (8 columns, both operands M|N-major), `wg_bf16_n16_ss_mna` (A alone M|N-major; its `add` false makes a step the accumulator's first, with nothing
-  cleared), `wg_bf16_n16_ss_mn`, `wg_bf16_n64_ss_mn`,
+  cleared), `wg_bf16_n16_ss_mn`, `wg_bf16_n64_ss_mn`, `stsm_t` (`stmatrix.x4.trans`: four 8 x 8 matrices of 16-bit pairs
+  stored transposed, a lane naming a stored row),
   `wg_bf16_n256_ss_mn` (both operands M|N-major: a line is one K's 8 rows or columns; `wg_desc` describes either
   major's tile); the two
   narrowings of an fp32 pair to bf16, `bf16x2_trunc` (one `PRMT`) and `bf16x2_round` (one conversion) -- the common
