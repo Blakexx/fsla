@@ -208,7 +208,8 @@ THE READY PAIR (the block form; [`hopper-carry.md`](../architecture/hopper-carry
 LANDS WITH ITS OPERANDS MADE -- its head the 16 steps' two operands as a slot at address 0 has them, a tile of
 zeros for an absent step's, its lists' value runs, and its coefficients bf16, a brick a run, padded with zero lines
 to the lists' steps -- and the fold waits on its bytes, adds its slot's address to each operand and steps: it
-writes no shared memory but its window's plan, so it has no fence and no rendezvous. THE QUESTION: what the
+writes no shared memory but its window's plan, so it has no fence and no rendezvous; a step's two operands are one
+landed line, the slot's line added to each one's first word. THE QUESTION: what the
 fold's expansion, pads, operands, fence and rendezvous cost the uneven lists' window. The host lays the stream; a
 slot's copy is some 14% more bytes. Checked as the form's rows are.
 

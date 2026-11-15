@@ -260,8 +260,8 @@ fp64 reference and the path a gradient takes (`rola/ops/produce.py`).
 
 ### 6.2 The facts pass
 
-ON HOPPER the carry is handed no list: RULED 2026-11-13, the gather pass reads the masks, makes its lists in its own
-CTAs -- beside the carry's, in one grid -- and writes the carry's stream, a ring ([`architecture/hopper-carry.md`](architecture/hopper-carry.md)); where the
+ON HOPPER the carry is handed no list: RULED 2026-11-13, the gather pass reads the masks, makes its lists itself
+and writes the carry's stream -- RULED 2026-11-15, in its own CTAs beside the carry's, in one grid, the stream a ring ([`architecture/hopper-carry.md`](architecture/hopper-carry.md)); where the
 factor products and the tile unions then come from is OPEN ([`open-work.md`](open-work.md), row A-e). What follows
 is the pass this tree builds.
 

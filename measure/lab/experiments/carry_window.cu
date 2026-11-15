@@ -784,7 +784,8 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         //: table's -- the ready rows' the landed head's, the slot's own address added to each
         const uint64_t* const steps = ROLES & kReady ? reinterpret_cast<const uint64_t*>(image)
                                                      : reinterpret_cast<const uint64_t*>(smem + kStepsAt + box * 256);
-        const uint64_t at_pool = ROLES & kReady ? lab::wg_desc(base + pool, 0, 0) : 0ull;
+        //: a ready operand's first word holds its tile's line: the slot's own line is added to that word alone
+        const uint32_t at_pool = ROLES & kReady ? static_cast<uint32_t>(lab::wg_desc(base + pool, 0, 0)) : 0u;
         lab::wg_fence();
 #pragma unroll
         for (int r = 0; r < kBlockRounds; ++r)
@@ -792,7 +793,13 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
           for (int j = 0; j < 8; ++j) {
             //: a step's two operands are loaded at its own issue: the edge keeps the 32 loads from one register set
             asm volatile("" ::: "memory");
-            lab::wg_bf16_n16_ss_mn(d[8 * slot + j], steps[2 * (8 * r + j)] + at_pool, steps[2 * (8 * r + j) + 1] + at_pool, w != 0 || r != 0);
+            if constexpr ((ROLES & kReady) != 0) {
+              const uint4 two = reinterpret_cast<const uint4*>(steps)[8 * r + j];
+              lab::wg_bf16_n16_ss_mn(d[8 * slot + j], static_cast<uint64_t>(two.y) << 32 | (two.x + at_pool),
+                                     static_cast<uint64_t>(two.w) << 32 | (two.z + at_pool), w != 0 || r != 0);
+            } else {
+              lab::wg_bf16_n16_ss_mn(d[8 * slot + j], steps[2 * (8 * r + j)], steps[2 * (8 * r + j) + 1], w != 0 || r != 0);
+            }
           }
         lab::wg_commit();
         if constexpr (fold_clocked<ROLES>) in_issue += lap_own(since);

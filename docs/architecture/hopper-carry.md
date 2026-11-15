@@ -27,7 +27,8 @@ the carry, never the stored representation. IT IS FED BY PERSISTENT GATHER CTAS 
 carry CTA holds a multiprocessor's whole register file and nearly all its shared memory, so a gather CTA is a
 multiprocessor's own, and the card's multiprocessors are split between the two for the call. NOT DESIGNED: the
 hand-off between a gather CTA and its readers (no barrier crosses CTAs without a cluster), which gather CTA
-serves which carry CTAs, and the split's rule. A carry CTA then waits on a gather CTA and a gather CTA on its
+serves which carry CTAs, the split's rule, and what the split leaves the intra, which is launched beside the
+carry on the multiprocessors the carry leaves. A carry CTA then waits on a gather CTA and a gather CTA on its
 readers: CONSTITUTION R22's independent units hold between carry CTAs, and what the ring's waits cost that
 rule is to be shown before the form is built. NOT MEASURED on hopper. A stream written whole before the carry runs costs
 the carry the same ([`lab/carry_window.md`](../lab/carry_window.md)), and is what the labs ran
