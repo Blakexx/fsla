@@ -21,6 +21,11 @@ the wavefronts confirmed by ncu (`l1tex__data_pipe_lsu_wavefronts_mem_shared`). 
 | `st.shared.v2`, 256 | 2 | 1.00-1.06 | 2.0-2.1 |
 | `st.shared.v4`, 512 | 4 | 1.14 | 4.6 |
 
+ROWS SCATTERED BY LANE (`ldmatrix.x4.trans`, a lane's row its own 16-byte line: consecutive; a random line; a random
+line with a matrix's 8 rows on 8 bank groups; a matrix's 8 rows on one bank group, as a token-major line's same
+brick lies unswizzled): what a step's operand read from a token-ordered view costs, priced in cycles a wavefront of
+the 4 a conflict-free instruction is. NOT YET MEASURED; the H100 has no row of this page yet.
+
 Loads run at the documented bank rate, a wavefront a cycle. A shared atomic takes the larger of two cycles an
 instruction and a cycle a wavefront: a two-way conflict between the warp's halves is free. A plain store does the
 same: 4 bytes a lane costs 2 cycles for its one wavefront, 8 or 16 bytes a lane about a cycle a wavefront -- the

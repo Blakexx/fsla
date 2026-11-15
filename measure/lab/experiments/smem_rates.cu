@@ -1,7 +1,10 @@
 // measure/lab/experiments/smem_rates.cu -- QUESTION: what does an SM's shared-memory pipe sustain a wavefront (128
 // bytes a cycle is the documented bank rate) for loads -- `ld.shared.v4` and `ldmatrix.x4`, 4 wavefronts a warp each --
 // for atomic adds -- `red.shared.add.u32` with a lane a bank (1 wavefront a warp), two lanes a bank (2), four (4) --
-// and for stores of 4, 8 and 16 bytes a lane (1, 2, 4 wavefronts a warp); and which global traffic takes its cycles:
+// and for stores of 4, 8 and 16 bytes a lane (1, 2, 4 wavefronts a warp); what `ldmatrix.x4.trans` pays for ROWS
+// SCATTERED by lane -- a token's line wherever the view holds it -- rows consecutive, at random lines, at random lines
+// a matrix's 8 on 8 bank groups, and a matrix's 8 on one bank group (a token-major line's same brick, unswizzled), its
+// cycles a wavefront of the 4 a conflict-free warp's instruction is; and which global traffic takes its cycles:
 // data a load returns to registers from L1 or from L2, allocated in L1 or not, and a `cp.async` copy's write into
 // shared memory, allocated in L1 or not?
 // METHOD: one CTA an SM, 8 or 16 warps (2 or 4 a scheduler), each issuing independent operations at addresses that
@@ -31,7 +34,22 @@ __device__ __forceinline__ void red_add(uint32_t a, uint32_t v) {
 
 //: FORM 0 `ld.shared.v4` (a warp's 512 contiguous bytes); 1 `ldmatrix.x4` (four 8 x 16-byte matrices, rows 16 bytes
 //: apart); 2 `red.shared.add` a lane a bank; 3 `red.shared.add` two lanes a bank (lanes l and l + 16 on one bank, words
-//: 32 apart); 4 four lanes a bank; 5-7 `st.shared` of 4, 8 and 16 bytes a lane (a warp's contiguous 128, 256, 512)
+//: 32 apart); 4 four lanes a bank; 5-7 `st.shared` of 4, 8 and 16 bytes a lane (a warp's contiguous 128, 256, 512);
+//: 8-11 `ldmatrix.x4.trans` with a lane's row its own 16-byte line of the warp's: 8 consecutive; 9 a random line;
+//: 10 a random line on bank group `lane % 8`; 11 line `8 (lane % 8) + lane / 8`, a matrix's 8 rows on one bank group
+constexpr int kScattered = 8;
+//: a lane's row for trip `u` of a scattered form, a 16-byte line of the first 1 KB of its region: fixed before the
+//: clock, so the trips issue loads alone
+template <int FORM>
+__device__ __forceinline__ uint32_t scattered_line(int lane, int warp, int u) {
+  const uint32_t h = (static_cast<uint32_t>(lane * 131 + warp * 977 + u * 7919 + 1) * 2654435761u) >> 20;
+  //: (the forms whose line is the lane's alone move by trip, a matrix's bank groups kept, so no two trips' loads are one)
+  const uint32_t half = static_cast<uint32_t>(u >> 2) & 1u;
+  if constexpr (FORM == kScattered) return static_cast<uint32_t>(lane) + 32u * half;
+  else if constexpr (FORM == kScattered + 1) return h & 63u;
+  else if constexpr (FORM == kScattered + 2) return 8u * (h & 7u) + static_cast<uint32_t>(lane & 7);
+  else return (8u * static_cast<uint32_t>(lane & 7) + static_cast<uint32_t>(lane >> 3)) ^ (4u * half);
+}
 template <int FORM>
 __global__ void __launch_bounds__(512, 1) pipe(int iters, long long* t, int* out) {
   extern __shared__ __align__(128) uint32_t words[];
@@ -41,6 +59,9 @@ __global__ void __launch_bounds__(512, 1) pipe(int iters, long long* t, int* out
   __syncthreads();
   const uint32_t row = lab::smem(words + kRowWords * warp);
   uint32_t fold = 0;
+  uint32_t lines[kUnroll];
+#pragma unroll
+  for (int u = 0; u < kUnroll; ++u) lines[u] = lab::held(row + 16u * scattered_line<FORM>(lane, warp, u));
   lab::WarpSpan clock;
   clock.start();
 #pragma unroll 1
@@ -48,7 +69,12 @@ __global__ void __launch_bounds__(512, 1) pipe(int iters, long long* t, int* out
 #pragma unroll
     for (int u = 0; u < kUnroll; ++u) {
       const uint32_t at = row + 512u * static_cast<uint32_t>((it + u) & 7);
-      if constexpr (FORM == 0) {
+      if constexpr (FORM >= kScattered) {
+        //: a scattered form's trip: its lane's line in one of the region's four kilobytes, the bank groups the same
+        uint32_t r[4];
+        lab::ldsm_t(r, lines[u] + 1024u * static_cast<uint32_t>((it + u) & 3));
+        fold ^= r[0] ^ r[1] ^ r[2] ^ r[3];
+      } else if constexpr (FORM == 0) {
         const uint4 v = lds128(at + 16u * lane);
         fold ^= v.x ^ v.y ^ v.z ^ v.w;
       } else if constexpr (FORM == 1) {
@@ -78,13 +104,19 @@ __global__ void __launch_bounds__(512, 1) pipe(int iters, long long* t, int* out
   lab::sink(out, fold ^ words[threadIdx.x]);
 }
 
-const char* kFormName[8] = {"ld.shared.v4, 4 wavefronts a warp", "ldmatrix.x4, 4 wavefronts a warp",
+const char* kFormName[12] = {"ld.shared.v4, 4 wavefronts a warp", "ldmatrix.x4, 4 wavefronts a warp",
                             "red.shared.add, a lane a bank, 1 wavefront a warp",
                             "red.shared.add, two lanes a bank, 2 wavefronts a warp",
                             "red.shared.add, four lanes a bank, 4 wavefronts a warp",
                             "st.shared.u32, 1 wavefront a warp", "st.shared.v2, 2 wavefronts a warp",
-                            "st.shared.v4, 4 wavefronts a warp"};
-constexpr int kWavefronts[8] = {4, 4, 1, 2, 4, 1, 2, 4};
+                            "st.shared.v4, 4 wavefronts a warp",
+                            "ldmatrix.x4.trans, rows consecutive",
+                            "ldmatrix.x4.trans, rows scattered, each a random line",
+                            "ldmatrix.x4.trans, rows scattered, a matrix's 8 on 8 bank groups",
+                            "ldmatrix.x4.trans, rows scattered, a matrix's 8 on one bank group"};
+//: a form's wavefronts a warp's instruction, conflict-free: the scattered forms' cycles a wavefront are then its
+//: conflicts' factor times the pipe's own
+constexpr int kWavefronts[12] = {4, 4, 1, 2, 4, 1, 2, 4, 4, 4, 4, 4};
 
 template <int FORM>
 void form(const lab::Bench& b, int warps) {
@@ -92,7 +124,10 @@ void form(const lab::Bench& b, int warps) {
   if (FORM == 0) b.expect(name, "LDS.128", ">=", kUnroll);
   if (FORM == 1) b.expect(name, "LDSM.16.M88.4", ">=", kUnroll);
   if (FORM >= 2 && FORM <= 4) b.expect(name, "ATOMS.ADD", ">=", kUnroll);
-  if (FORM >= 5) b.expect(name, "STS", ">=", kUnroll);
+  if (FORM >= 5 && FORM < kScattered) b.expect(name, "STS", ">=", kUnroll);
+  if (FORM >= kScattered) b.expect(name, "LDSM.16.MT88.4", ">=", kUnroll);
+  //: the trips' lines are registers set before the clock: no line is recomputed in the loop or held in local memory
+  if (FORM >= kScattered) b.expect(name, "LDL", "==", 0);
   if (b.expect_only) return;
   const int bytes = kRowWords * 16 * 4;
   LAB_CHECK(cudaFuncSetAttribute(pipe<FORM>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));
@@ -268,6 +303,10 @@ int main(int argc, char** argv) {
     form<5>(b, warps);
     form<6>(b, warps);
     form<7>(b, warps);
+    form<8>(b, warps);
+    form<9>(b, warps);
+    form<10>(b, warps);
+    form<11>(b, warps);
     if (b.expect_only) break;
   }
   uint8_t* table = nullptr;

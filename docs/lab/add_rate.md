@@ -19,6 +19,8 @@ on anything.
   a lane, two lines an instruction.
 - VECTOR: one add of four f16 pairs a lane, 16 bytes -- 32 lanes an instruction are FOUR lines, 8 lanes one: is an add's
   price its instruction's or its lines'?
+- ON A FEW SMs: the one-line form, 4 and 8 warps, with CTAs on 8 and on 32 of the card's SMs: is the limit an SM's own,
+  or the card's shared among its SMs? NOT YET MEASURED.
 Every row's words are checked exactly.
 
 MEASURED (H100 PCIe, 114 SMs, a Hyperstack spot VM, driver 580.196.07; 2026-11-15, the experiment at d2b3017d; 7

@@ -7,7 +7,9 @@
 // one-line form as a plain 4-byte store a lane, no add. INTEGER AND fp32: the one-line form by a 32-bit integer
 // add and by an fp32 add, and 64-bit integer adds, 8 bytes a lane, two lines an instruction. VECTOR: one add of
 // four f16 pairs a lane, 16 bytes -- 32 lanes an instruction are FOUR lines, 8 lanes one -- which asks whether an
-// add's price is its instruction's or its lines'. Every row's sums are checked exactly.
+// add's price is its instruction's or its lines'. ON A FEW SMs: the one-line form with CTAs on 8 and on 32 of the
+// card's SMs, which asks whether the limit is an SM's own or the card's shared among them. Every row's sums are
+// checked exactly.
 // TIMELINE: no load. A warp's trip is 16 instructions, each from a register set before the clock and to an
 // address that is a constant off the warp's base: nothing waits on anything. Live: one word a thread, a vector
 // add's four operands that word.
@@ -54,7 +56,7 @@ __global__ void __launch_bounds__(32 * WARPS, 1) add(long long* times, uint32_t*
 }  // namespace add_rate
 
 template <int WARPS, int LANES, int FORM>
-void run(lab::Bench& b, uint32_t* out) {
+void run(lab::Bench& b, uint32_t* out, int ctas = 0) {
   using namespace add_rate;
   constexpr int kCheckRounds = 64, kRounds = 2048;
   const std::string name = std::string(FORM == kOneLine ? "f16 adds into one line an instruction"
@@ -65,11 +67,13 @@ void run(lab::Bench& b, uint32_t* out) {
                                        : FORM == kVector ? "vector f16 adds, 16 bytes a lane, 8 lanes a line"
                                        : "64-bit integer adds, two lines an instruction")
                            + ", " + std::to_string(LANES) + " lanes, " + std::to_string(WARPS)
-                           + (WARPS == 1 ? " warp" : " warps");
+                           + (WARPS == 1 ? " warp" : " warps")
+                           + (ctas > 0 ? ", on " + std::to_string(ctas) + " SMs" : "");
+  const int grid = ctas > 0 ? ctas : b.sms;
   const auto kernel = add<WARPS, LANES, FORM>;
   const size_t words = static_cast<size_t>(b.sms) * 8 * kWarpLines * kLineWords;
   LAB_CHECK(cudaMemset(out, 0, words * 4));
-  kernel<<<b.sms, 32 * WARPS>>>(b.times, out, kCheckRounds);
+  kernel<<<grid, 32 * WARPS>>>(b.times, out, kCheckRounds);
   LAB_CHECK(cudaDeviceSynchronize());
   std::vector<uint32_t> got(words);
   LAB_CHECK(cudaMemcpy(got.data(), out, words * 4, cudaMemcpyDeviceToHost));
@@ -78,11 +82,13 @@ void run(lab::Bench& b, uint32_t* out) {
   long long wrong = 0;
   for (size_t w = 0; w < words; ++w) {
     const int lane = static_cast<int>(w % kLineWords), line = static_cast<int>(w / kLineWords) % kWarpLines,
-              warp = static_cast<int>(w / (static_cast<size_t>(kWarpLines) * kLineWords)) % 8;
+              warp = static_cast<int>(w / (static_cast<size_t>(kWarpLines) * kLineWords)) % 8,
+              cta = static_cast<int>(w / (static_cast<size_t>(8) * kWarpLines * kLineWords));
     //: a vector add's word `lane` of line `l` is its lane `8 (l % 4) + lane / 4`'s
-    const bool written = FORM == kVector ? warp < WARPS && line < 4 * kTrip && 8 * (line % 4) + lane / 4 < LANES
-                                         : warp < WARPS && lane < LANES
-                                               && (FORM == kSpread ? line % 32 == lane : line < (FORM == kU64 ? 2 * kTrip : kTrip));
+    const bool written = cta < grid
+                         && (FORM == kVector ? warp < WARPS && line < 4 * kTrip && 8 * (line % 4) + lane / 4 < LANES
+                                             : warp < WARPS && lane < LANES
+                                                   && (FORM == kSpread ? line % 32 == lane : line < (FORM == kU64 ? 2 * kTrip : kTrip)));
     uint32_t want = 0;
     if (written) {
       if (FORM == kStore) {
@@ -103,8 +109,8 @@ void run(lab::Bench& b, uint32_t* out) {
     wrong += got[w] != want;
   }
   b.check(name, wrong == 0, std::to_string(wrong) + " of " + std::to_string(words) + " words differ");
-  const lab::Samples cycles = b.variant([&] { kernel<<<b.sms, 32 * WARPS>>>(b.times, out, kRounds); },
-                                        [&] { return b.span(WARPS) / (static_cast<double>(kRounds) * kTrip); });
+  const lab::Samples cycles = b.variant([&] { kernel<<<grid, 32 * WARPS>>>(b.times, out, kRounds); },
+                                        [&] { return b.span(WARPS, grid) / (static_cast<double>(kRounds) * kTrip); });
   b.record(name, "cycles an instruction of each warp, a CTA", cycles);
 }
 
@@ -154,5 +160,8 @@ int main(int argc, char** argv) {
   run<8, 32, kVector>(b, out);
   run<1, 8, kVector>(b, out);
   run<4, 8, kVector>(b, out);
+  run<4, 32, kOneLine>(b, out, 8);
+  run<4, 32, kOneLine>(b, out, 32);
+  run<8, 32, kOneLine>(b, out, 8);
   return 0;
 }
