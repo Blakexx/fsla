@@ -590,7 +590,7 @@ WHAT IT SHOWS.
   THE MOVE IS THE FOLD'S FILL -- a fold warp is 2,455 expanding and moving its entries where the block form's is
   729 expanding them, 16 value lines a thread a window through the shared-memory pipe twice; and THROUGH REGISTERS
   THE FILL IS 5,431, two entries a thread of 9 lines each from global memory, the stream in the cache: a warp's
-  loads of 16 bytes are a fifth of a bulk copy's bytes a cycle (KERNEL_STANDARDS 33). ONE VIEW'S STRUCTURE IS THE FOLD'S GAIN: its 32 steps
+  loads of 16 bytes are a fifth of a bulk copy's bytes a cycle (KERNEL_STANDARDS 33). THE ONE-VIEW ROW'S STEPS AND RENDEZVOUS ARE SHORT, AND NOT BY ITS STRUCTURE (the joined row, below): its 32 steps
   issue in 1,022 where the block form's two slots' are 1,678, its one rendezvous is
   327 where two are 691 and 551, and its pads and operands
   868 against 751. A readout warp waits 3,059 and 4,483

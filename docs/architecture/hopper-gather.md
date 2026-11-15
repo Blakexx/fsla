@@ -28,9 +28,10 @@ carry CTAs that share the block. It is a ring of a few windows a CTA group (RULE
 - A TOKEN LIVE ON SEVERAL DIGITS OF A BLOCK IS WRITTEN ONCE, where a list a digit writes it once a digit. ESTIMATED,
   live digits falling independently: 1.14 digits a live token a block at 4.5 live digits of 256, 2.3 at 32, 16 dense
   -- the token list's bytes grow with the tokens, never with their digits.
-- A LIVE TOKEN'S DENSE DIGITS are a carry CTA's own as well. OPEN, by measurement: a segment of the stream a dense
-  block (2026-11-13: 16 bytes a live token a dense block, written here and read by one CTA), or the bundle's dense
-  rows landed by the carry itself (16 bytes a token a box, read by every box of the dense block, nothing written).
+- A BOX'S DENSE BYTES for its entries are the pass's to write too (RULED 2026-11-15: "the cleanest form is gather
+  writes it, that matches everything else it does"): a segment of the stream a dense block, 16 bytes a live token,
+  read by one CTA, which forms its coefficients from them. MEASURED: the stream's dense lines beside its values and
+  sparse lines ([`lab/gather_pass.md`](../lab/gather_pass.md)).
 - WHAT SAYS WHERE A TOKEN GOES is the input masks (2026-11-13). The pass hands the carry no list (KERNEL_STANDARDS 29,
   item 5); the lab's token rows ran from a table of each entry's places the host laid
   ([`lab/carry_window.md`](../lab/carry_window.md)), and what a CTA is handed to count them itself is OPEN.
@@ -45,7 +46,7 @@ carry CTAs that share the block. It is a ring of a few windows a CTA group (RULE
   hand-off is under "Beside the carry".
 - THE READ SIDE'S: the same without values, with each entry's token index. NOT DESIGNED past that.
 - NOT THE FORM, each measured: a list a digit with its value runs, and the coefficient runs in the step's format laid
-  here. With its operands made the carry's window is 5,191 cycles against 6,827 expanding its own, and the pass that
+  here. With its operands made the carry's window is some 5,200 cycles against some 6,800 expanding its own, and the pass that
   made them cost as much as the carry ([`lab/gather_pass.md`](../lab/gather_pass.md)); their 110 KB a window a CTA
   cost three times the window once past the card's cache.
 
@@ -75,7 +76,7 @@ RULED 2026-11-15: persistent gather CTAs beside the carry's, in one grid, a gath
 NOT DESIGNED: the hand-off between a gather CTA and its readers (no barrier crosses CTAs without a cluster), which
 gather CTA serves which carry CTAs, the split's rule, what the split leaves the intra; CONSTITUTION R22's
 independent units against the ring's waits. MEASURED: the token list's values and sparse lines are 122
-SM-cycles a token a side against the carry's 853 expanding its own (6,827 cycles a window) -- a multiprocessor in
+SM-cycles a token a side against the carry's some 850 expanding its own (some 6,800 cycles a window) -- a multiprocessor in
 eight the pass's, as that kernel stands.
 
 ## What is measured
@@ -97,7 +98,8 @@ are [`lab/gather_pass.md`](../lab/gather_pass.md)'s and follow the card a sessio
 
 ## To be ruled before it is built
 
-1. Where a carry CTA's dense digits come from: the stream's segment or the bundle's rows.
+1. The ring where the card's memory binds the pass: the labs' ring rows ran on 8 and 16 CTAs, where a CTA's copies do.
+
 2. The boundaries' fields: what a CTA is handed to place a token, beside the masks.
 3. The read side's stream: its token indices.
 4. The mask's order on the public surface.

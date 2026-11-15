@@ -25,9 +25,9 @@ MEASURED, a fold's fill is then seven times the block form's -- what of it is it
 isolated -- and KERNEL_STANDARDS 33 stages contiguous rows by bulk copy. A view landed by bulk copy and moved in shared memory is MEASURED
 on half-window views at a quarter over values that land in place by digit -- the move doubles the fold's shared-memory
 traffic -- and one view a window staged so does not fit beside its slices. MEASURED too, where the values land in place: the window's two slots laid before one
-rendezvous and its 32 steps one block do not move the window ([`lab/carry_window.md`](../lab/carry_window.md)). A token live on two digits of one block is one token of the list and an entry of
-each digit's slice. Where a CTA's dense digits come from -- a segment of the stream a dense block, or the bundle's
-dense rows -- is OPEN. The stream is WORKSPACE, and A RING (RULED 2026-11-15): a few windows a CTA group, rewritten as
+rendezvous and its 32 steps one block, both copies then issued at the window's end -- the two not parted -- do not
+move the window ([`lab/carry_window.md`](../lab/carry_window.md)). A token live on two digits of one block is one token of the list and an entry of
+each digit's slice. A CTA's dense bytes are a segment of the stream a dense block (RULED 2026-11-15). The stream is WORKSPACE, and A RING (RULED 2026-11-15): a few windows a CTA group, rewritten as
 the carry consumes them, so global memory holds windows of it and never a segment's. IT IS FED BY PERSISTENT GATHER
 CTAS BESIDE THE CARRY'S, in one grid (RULED 2026-11-15): a carry CTA holds a multiprocessor's whole register file and
 nearly all its shared memory, so a gather CTA is a multiprocessor's own, and the card's multiprocessors are split
@@ -42,10 +42,10 @@ share it and costs the carry the same whether the cache held it before or not --
 together: boxes that drift apart, as their read sides' counts differ, are not measured.
 MEASURED, in the carry, from streams the host laid BY DIGIT at lists of 8 to 24 entries and no list past two steps
 ([`lab/carry_window.md`](../lab/carry_window.md)) -- none of them the token list: the fold landing a slot with its
-operands made and stepping it, 5,191 cycles a window with the readout's tiles made as well, which is the window with
+operands made and stepping it, some 5,200 cycles a window with the readout's tiles made as well, which is the window with
 the carry's own operands free; and the fold expanding an entry's 16 dense bytes and its sparse byte where they land,
-its head tables for each entry's lines and each step's operands, 6,827; and the fold laying its slots from
-token-ordered views, 8,486 staged and moved and 8,535 one view a window through registers. MEASURED, the pass
+its head tables for each entry's lines and each step's operands, some 6,800; and the fold laying its slots from
+token-ordered views, some 8,500 staged and moved or one view a window through registers. MEASURED, the pass
 ([`lab/gather_pass.md`](../lab/gather_pass.md)): the token list's lines moved from the host's lists, 122 SM-cycles a
 token for a side's values and sparse lines and 155 for its dense segments.
 NOT MEASURED: a CTA counting its tokens' places from the masks; one view a window staged by bulk copy; the read
@@ -139,7 +139,8 @@ NOT STATED. No blackwell carry is designed and no blackwell card measured.
 ## To be ruled before it is built
 
 1. How the token view reaches the slices, or whether the stream is laid by digit again: the measured price of the
-   move is above. 
+   move is above. A short reader list's last step: stated above as padded with zero coefficient lines, as the
+   fold's is ruled; not ruled for the readout, whose lists are unmeasured. 
 2. The read side's step tables: who makes them, from what.
 3. The carry's price taken at the cold figure, the kernel built to that and the open staging questions measured in
    it.
