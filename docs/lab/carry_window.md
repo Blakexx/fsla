@@ -320,7 +320,7 @@ bf16, a line its rounding to f16. The fold's state is stored out for that checke
 registers, since its 128 stores a thread -- each instruction's lanes on 32 lines -- would be issued while the
 readout and the drains are in their last windows and be clocked as theirs.
 
-MEASURED (H100 80GB HBM3, 132 SMs, vast.ai instance nbzw5c2248, driver 580.173.02; 2026-11-15, the experiment at
+MEASURED (H100 80GB HBM3, 132 SMs, Nebius preemptible VM zw5c2248, driver 580.173.02; 2026-11-15, the experiment at
 cbdb81f2, one session; 7 repetitions, every checked row's state and output values exact;
 the median; SM-cycles a token are the window's cycles over 8 -- a CTA of two boxes is 8 tokens a window. THE FOLD'S STATE
 DUMP STAYS OUT OF THE TIMED CALLS, and one row restores it to price it in this session):
@@ -628,9 +628,10 @@ WHAT IT SHOWS.
   window is held by the fold's and the readout's chain through the image, its waits and issue, not by a pipe's bytes.
   THE AHEAD ROWS -- the fold's steps' operand lines loaded two steps ahead -- DO NOT MOVE THE WINDOW: 6,491
   against 6,485 for the block form with the panel by stmatrix, and 4,947 against 4,944 for the
-  read-ready ready pair's. The timed launch's short scoreboard at the fold's steps is no wait the window holds: THE
-  FOLD IS NOT THE WINDOW'S PATH -- of the roles' waits, the readout's are the least (the clocked rows), so its own
-  phases are the window.
+  read-ready ready pair's. THE FOLD'S STEPS DO NOT WAIT ON THEIR OPERAND LINES' LOADS -- the timed launch's short
+  scoreboard at them is not that -- though the fold is the read-ready ready pair's path (`lab path`: of its clocked
+  row's roles a fold warp waits least, and its steps' issue is its largest phase). What holds that issue is NOT
+  ISOLATED; no clocked ahead row is run.
   THE MEETING ROWS -- the rendezvous an mbarrier's -- DO NOT MOVE IT: the window is 5,361 against
   5,294 with even lists and 6,881 against 6,816 in the block form; clocked, a fold warp
   is 431 and 527 at its rendezvous (that row's folds at 168 registers), and

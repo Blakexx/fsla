@@ -980,6 +980,54 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
     return 0
 
 
+def critical_path(name: str, pattern: str | None, record: Path | None) -> int:
+    """THE WINDOW'S PATH (KERNEL_STANDARDS 22): for each clocked row of a record -- a row in cycles a window a CTA whose
+    sites, `<row>: a <role> warp ...` in cycles a window a warp, its roles' warps clocked -- each role's waits (its
+    sites that `wait on` something, a warpgroup's first warp's left out), its busy cycles (the window less those
+    waits) and its phases; the role whose waits are least is the window's path, and only its phases can shorten the
+    window. A row whose roles wait alike names no path."""
+    arch = sass.device_arch() if record is None else None
+    path = record or (RESULTS / name / f"{arch}.json")
+    rows = {r["name"]: r for r in json.loads(path.read_text())["results"]}
+    windows = {n for n, r in rows.items() if r.get("unit") == "cycles a window a CTA"}
+    sites: dict[str, list[tuple[str, str, float]]] = {}
+    for n, r in rows.items():
+        if r.get("unit") != "cycles a window a warp" or ", its warpgroup's first warp" in n:
+            continue
+        parent = max((w for w in windows if n.startswith(w + ": ")), key=len, default=None)
+        site = n[len(parent) + 2:] if parent else ""
+        m = re.match(r"an? (\w+) warp", site)
+        if parent and m:
+            sites.setdefault(parent, []).append((m.group(1), site, r["median"]))
+
+    shown = 0
+    for row, found in sites.items():
+        if pattern and not re.search(pattern, row):
+            continue
+        window = rows[row]["median"]
+        roles: dict[str, list[float]] = {}
+        for role, site, v in found:
+            acc = roles.setdefault(role, [0.0, 0.0])
+            acc[0 if " waits on " in site else 1] += v
+        if len(roles) < 2:
+            continue
+        shown += 1
+        least = min(roles.items(), key=lambda kv: kv[1][0])
+
+        print(f"{row[:150]}: {window:,.0f} cycles a window")
+        for role, (waits, phases) in sorted(roles.items(), key=lambda kv: kv[1][0]):
+            mark = "  <- THE PATH" if role == least[0] else ""
+            print(f"    a {role} warp: waits {waits:7,.0f}, busy {window - waits:7,.0f} ({100 * (window - waits) / window:3.0f}%), "
+                  f"its clocked phases {phases:7,.0f}{mark}")
+        print(f"    the path's phases (a {least[0]} warp):")
+        for role, site, v in sorted((x for x in found if x[0] == least[0] and " waits on " not in x[1]), key=lambda x: -x[2]):
+            print(f"      {v:7,.0f}  {site[:110]}")
+    if not shown:
+        print(f"lab: no clocked row of {path} matches {pattern!r}")
+        return 1
+    return 0
+
+
 def static_kind(opcode: str) -> str:
     """An opcode's budget class (`sass.opcode_class`), a global access by what it does: the accesses that hold the
     warp that issues them are told apart."""
@@ -1119,6 +1167,10 @@ def main() -> int:
     g.add_argument("--packed", type=Path, help="the binary `lab pack` built that the dumps profiled")
     g.add_argument("--per", type=float, help="divide every count by this: the profiled launch's CTA-windows")
     g.add_argument("--top", type=int, default=16, help="the source lines shown, by their shared wavefronts")
+    c2 = sub.add_parser("path", help="each clocked row's roles' waits and busy cycles: the role the window waits on")
+    c2.add_argument("experiment")
+    c2.add_argument("--row", help="a regex over the rows' names")
+    c2.add_argument("--record", type=Path, help="the record to read (default: this card's in measure/lab/results)")
     m = sub.add_parser("ledger-dumps", help="on a box without the toolkit: profile a pack's kernels for a carried ledger")
     m.add_argument("experiment")
     m.add_argument("--from", dest="source", required=True, type=Path)
@@ -1146,6 +1198,8 @@ def main() -> int:
         return show_sass(args.experiment, args.kernel, args.full, args.arch)
     if args.cmd == "ncu":
         return counters(args.experiment, args.metric, args.record)
+    if args.cmd == "path":
+        return critical_path(args.experiment, args.row, args.record)
     if args.cmd == "ledger-dumps":
         return ledger_dumps(args.experiment, args.source, args.into, args.kernel, args.skip)
     if args.cmd == "ledger":

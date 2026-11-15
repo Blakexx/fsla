@@ -35,6 +35,11 @@ kernel's instructions AS COMPILED, by the role that holds them (the `NAME_role` 
 innermost loop (every backward branch closes one) and by phase and kind (global loads, stores and adds, shared
 loads and stores, MMAs); a loop's cost a unit is its count times its trips, which the source states. It is the
 ledger of a card that grants no profiler counters.
+`bazel run //tools:lab -- path <name> [--row REGEX] [--record FILE]` names THE WINDOW'S PATH from a record's
+clocked rows (KERNEL_STANDARDS §22): for each row whose sites name its roles' warps (`<row>: a <role> warp ...`, in
+cycles a window a warp), each role's waits (its sites that `wait on` something, a warpgroup's first warp's left out),
+its busy cycles (the window less them) and its phases; the role that waits least is the path, and only its phases
+can shorten the window. Read it before any role's stall samples: a role with slack stalls too.
 `ledger <name> --packed <binary> --dump <csv> [--dump ...] --arch sm_90a --per <n>` reads a CARRIED ledger: the
 SourceCounters dumps a rented box made of `lab pack`'s binary (`ncu --section SourceCounters --page source
 --print-source sass --csv`, a kernel's launch after the first `--skip` of them, one file a kernel named
