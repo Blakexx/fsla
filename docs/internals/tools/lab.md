@@ -35,6 +35,12 @@ kernel's instructions AS COMPILED, by the role that holds them (the `NAME_role` 
 innermost loop (every backward branch closes one) and by phase and kind (global loads, stores and adds, shared
 loads and stores, MMAs); a loop's cost a unit is its count times its trips, which the source states. It is the
 ledger of a card that grants no profiler counters.
+`ledger <name> --packed <binary> --dump <csv> [--dump ...] --arch sm_90a --per <n>` reads a CARRIED ledger: the
+SourceCounters dumps a rented box made of `lab pack`'s binary (`ncu --section SourceCounters --page source
+--print-source sass --csv`, a kernel's first launch, one file a kernel named `ledger_<its template numbers>.csv`),
+mapped here to the phases through that same binary; `--per` divides every count by the launch's CTA-windows. Each
+phase reports its executed instructions, its shared-memory wavefronts, those over the conflict-free count (bank
+conflicts) and its share of the stall samples.
 
 <a id="hazards"></a>THE LEARNINGS' CHECKS ([`LEARNINGS.md`](../LEARNINGS.md)). An experiment outside `tools/lab.py`'s `_PRE_TIMELINE` (the
 experiments written before these checks; the list only shrinks) is refused by `run` and by `pack` unless its header

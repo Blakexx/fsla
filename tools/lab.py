@@ -827,13 +827,17 @@ def phases(source: Path) -> list[tuple[int, str]]:
     return out
 
 
-def ledger(name: str, pattern: str | None) -> int:
+def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, packed: Path | None = None,
+           arch: str | None = None, per: float | None = None) -> int:
     """KERNEL_STANDARDS section 29.13: each kernel's executed instructions by phase (its source's `//:` headings), per
     declared unit or per launch -- ncu's SourceCounters of the kernel's first launch, each SASS offset mapped to its
-    innermost line in the experiment's source (the lab builds carry `-lineinfo`)."""
-    arch = sass.device_arch()
+    innermost line in the experiment's source (the lab builds carry `-lineinfo`) -- with each phase's shared-memory
+    wavefronts, those over the conflict-free count (bank conflicts) and its stall samples. CARRIED: `dumps` are the
+    SourceCounters CSVs a box without the toolkit made of `packed` (`lab pack`'s binary, built here), one a kernel;
+    `per` divides every count (a launch's CTA-windows)."""
+    arch = arch or sass.device_arch()
     path = experiments()[name]
-    binary = build(path, arch)
+    binary = packed if packed else build(path, arch)
     table = kernels(binary)
     extra, _ = inputs(name)
     units = {k: (float(u["n"]), u["unit"]) for k in table for u in budgets(binary, "units")
@@ -850,29 +854,48 @@ def ledger(name: str, pattern: str | None) -> int:
         if pattern and not re.search(pattern, k):
             continue
         core = k.split("(")[0].split("::")[-1] if "<" not in k else k[:k.index(">") + 1].split("::")[-1]
-        out = subprocess.run([dev_config.ncu(), "--kernel-name-base", "demangled", "--kernel-name",
-                              f"regex:{re.escape(core)}", "--launch-count", "1", "--section", "SourceCounters",
-                              "--page", "source", "--print-source", "sass", "--csv", str(binary), "--reps", "1",
-                              *extra], capture_output=True, text=True, check=True).stdout
-        csv_path = dev_config.scratch("lab") / f"{name}.ledger.csv"
-        csv_path.write_text(out)
+        if dumps is not None:
+            #: a carried dump is the kernel's whose file name holds its template arguments' numbers
+            #: (`ledger_<roles>.csv`, the box's script's name)
+            ids = re.findall(r"\d{4,}", core)
+            found = [d for d in dumps if ids and all(i in d.stem for i in ids)]
+            if len(found) != 1:
+                continue
+            csv_path = found[0]
+        else:
+            out = subprocess.run([dev_config.ncu(), "--kernel-name-base", "demangled", "--kernel-name",
+                                  f"regex:{re.escape(core)}", "--launch-count", "1", "--section", "SourceCounters",
+                                  "--page", "source", "--print-source", "sass", "--csv", str(binary), "--reps", "1",
+                                  *extra], capture_output=True, text=True, check=True).stdout
+            csv_path = dev_config.scratch("lab") / f"{name}.ledger.csv"
+            csv_path.write_text(out)
         rows = region_ledger.read_source_counters(csv_path)
+        detail = region_ledger.read_source_detail(csv_path)
 
         if not rows:
             print(f"  {k}: no launch profiled")
             continue
         base = min(at for at, *_ in rows)
         frames = sass.frames(own_section(disassembly, mangled[k]))
-        per, unit = units.get(k, (1.0, "launch"))
-        by: dict[str, float] = {}
-        for at, executed, *_ in rows:
+        div, unit = (per, "CTA-window") if per else units.get(k, (1.0, "launch"))
+        #: a phase's executed instructions, shared wavefronts, those a conflict-free access would not take, samples
+        by: dict[str, list[float]] = {}
+        for at, executed, samples, _ in rows:
             lines = [ln for f, ln in frames.get(at - base, []) if f == path.name]
             head = next((h for first, h in reversed(heads) if lines and first <= lines[0]), "(outside the source)")
-            by[head] = by.get(head, 0.0) + executed / per
-        total = sum(by.values())
-        print(f"  {k[:110]}: {total:,.0f} instructions a {unit}")
-        for head, n in sorted(by.items(), key=lambda x: -x[1]):
-            print(f"    {n:10,.1f}  {100 * n / total:5.1f}%  {head}")
+            _, waves, ideal = detail.get(at, ("?", 0, 0))
+            acc = by.setdefault(head, [0.0, 0.0, 0.0, 0.0])
+            acc[0] += executed / div
+            acc[1] += waves / div
+            acc[2] += max(waves - ideal, 0) / div
+            acc[3] += samples
+        total = sum(v[0] for v in by.values())
+        waves_all = sum(v[1] for v in by.values())
+        samples_all = max(sum(v[3] for v in by.values()), 1.0)
+        print(f"  {k[:110]}: {total:,.0f} instructions and {waves_all:,.0f} shared wavefronts a {unit}")
+        print(f"    {'instructions':>12}  {'wavefronts':>10}  {'conflicts':>9}  {'samples %':>9}  phase")
+        for head, (n, w, c, smp) in sorted(by.items(), key=lambda x: -x[1][1]):
+            print(f"    {n:12,.1f}  {w:10,.1f}  {c:9,.1f}  {100 * smp / samples_all:8.1f}%  {head}")
     return 0
 
 
@@ -1009,7 +1032,11 @@ def main() -> int:
     g.add_argument("--kernel", help="a regex over the demangled kernel names")
     g.add_argument("--static", action="store_true",
                    help="the instructions as compiled, by role, loop and phase: no counters, and with --arch no device")
-    g.add_argument("--arch", help="with --static: compile for this architecture in place of the device's")
+    g.add_argument("--arch", help="compile (--static) or read (--packed) for this architecture in place of the device's")
+    g.add_argument("--dump", type=Path, action="append",
+                   help="a SourceCounters CSV a box made of --packed, `ledger_<kernel core>.csv`; repeat for several")
+    g.add_argument("--packed", type=Path, help="the binary `lab pack` built that the dumps profiled")
+    g.add_argument("--per", type=float, help="divide every count by this: the profiled launch's CTA-windows")
     n = sub.add_parser("ncu")
     n.add_argument("experiment")
     n.add_argument("--metric", action="append", required=True, help="an ncu metric; repeat for several")
@@ -1034,7 +1061,7 @@ def main() -> int:
     if args.cmd == "ledger":
         if args.static:
             return static_ledger(args.experiment, args.kernel, args.arch)
-        return ledger(args.experiment, args.kernel)
+        return ledger(args.experiment, args.kernel, args.dump, args.packed, args.arch, args.per)
     return run(args.experiment, args)
 
 
