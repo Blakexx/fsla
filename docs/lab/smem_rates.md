@@ -24,7 +24,30 @@ the wavefronts confirmed by ncu (`l1tex__data_pipe_lsu_wavefronts_mem_shared`). 
 ROWS SCATTERED BY LANE (`ldmatrix.x4.trans`, a lane's row its own 16-byte line: consecutive; a random line; a random
 line with a matrix's 8 rows on 8 bank groups; a matrix's 8 rows on one bank group, as a token-major line's same
 brick lies unswizzled): what a step's operand read from a token-ordered view costs, priced in cycles a wavefront of
-the 4 a conflict-free instruction is. NOT YET MEASURED; the H100 has no row of this page yet.
+the 4 a conflict-free instruction is.
+
+MEASURED ON THE H100 SXM (Nebius preemptible VM, driver 580, 2026-11-15, the experiment at 8de3aa6b; 7 repetitions;
+every row a rate probe, its loads folded into a sink; cycles a wavefront, 8 warps and 16):
+
+| operation | 8 warps | 16 warps |
+|---|---|---|
+| `ld.shared.v4` | 1.00 | 1.00 |
+| `ldmatrix.x4` | 1.00 | 1.00 |
+| `red.shared.add`, a lane a bank | 1.45 | 1.17 |
+| the same, four lanes a bank | 1.00 | 1.00 |
+| `st.shared.u32` | 1.45 | 1.17 |
+| `st.shared.v4` | 1.00 | 1.00 |
+| `ldmatrix.x4.trans`, rows consecutive | 1.00 | 1.00 |
+| the same, rows scattered at random lines | 1.74 | 1.74 |
+| the same, scattered, a matrix's 8 on 8 bank groups | 1.00 | 1.00 |
+| the same, scattered, a matrix's 8 on one bank group | 8.00 | 8.00 |
+
+THE PIPE IS AMPERE'S: a wavefront a cycle for loads and 16-byte stores. A ROW'S PLACE IS ALL A SCATTERED READ PAYS:
+rows anywhere in shared memory cost what consecutive rows do when a matrix's 8 fall on 8 bank groups, 1.74 times at
+random lines (the collisions of 8 rows among 8 groups), and 8 times when all 8 share one -- a token-major line's
+same brick laid unswizzled. A copy into shared memory takes 0.26 of the pipe's cycles a 128 bytes uncached in L1
+and 1.25 cached; a load into registers 1.11 from L1 and 1.18 from L2; with every SM
+streaming a 128-byte line from L2 is 3.95 cycles an SM.
 
 Loads run at the documented bank rate, a wavefront a cycle. A shared atomic takes the larger of two cycles an
 instruction and a cycle a wavefront: a two-way conflict between the warp's halves is free. A plain store does the
