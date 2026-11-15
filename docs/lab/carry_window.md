@@ -252,6 +252,15 @@ block form's landed images. It also issues both copies at the window's end, wher
 it leaves the slot: the row does not part the two. Checked as the block form's rows are; its window is read beside
 the block form's clocked one.
 
+THE CUT ROWS (the block form and the read-ready ready pair's, no clock inside a role) ask what each of the phase
+ledger's three removable shared-memory costs is worth to the window, alone and together: THE PANEL BY STMATRIX -- the
+readout's sums stored as a token's 8 channels a 16-byte row, `stmatrix.trans`, where the form stores 16-bit halves
+(512 wavefronts a window against some 128); THE STEPS' OPERANDS SHUFFLED -- a slot's 16 steps' lines loaded once, lane
+s step s's, and taken at each step by four shuffles, where every lane of the form loads every step's line (512); ONLY
+THE STEPS A LIST REACHES -- a second-round step issued in a one-trip loop where its list reaches it, where the form
+issues it on a tile of zeros (some 640 of the operands' reads). Checked as the block form's rows are; the phase ledger
+reads each form with and without all three.
+
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
 through uniform registers in the den's. Rows of the winner's form and the den's, at both cells, and the den's chain run with no

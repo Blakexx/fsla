@@ -146,6 +146,14 @@ __device__ __forceinline__ void ldsm(uint32_t (&r)[4], uint32_t a) {
                : "memory");
 }
 
+//: four 8 x 8 matrices of 16-bit pairs STORED TRANSPOSED: register k is matrix k's fragment (a thread's row `lane / 4`,
+//: its columns `2 (lane % 4)` and the next), and lane `8 k + x` names the address of the stored row x, column x of the
+//: fragment as 16 bytes (sm_90 up)
+__device__ __forceinline__ void stsm_t(uint32_t a, const uint32_t (&r)[4]) {
+  asm volatile("stmatrix.sync.aligned.m8n8.x4.trans.shared.b16 [%0], {%1,%2,%3,%4};"
+               ::"r"(a), "r"(r[0]), "r"(r[1]), "r"(r[2]), "r"(r[3]) : "memory");
+}
+
 __device__ __forceinline__ void ldsm_t(uint32_t (&r)[4], uint32_t a) {
   asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];"
                : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
