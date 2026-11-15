@@ -112,7 +112,8 @@
 // dense line expanded to its two coefficient lines, then its other 7 value lines two at a time, each stored to its
 // list's run across the box's two pool slots; a list's last step's pad lines zeroed from the steps' table; a
 // step's operands made, a thread of 32; the fence, the warpgroup's barrier, the next table's copy; 32 steps as one
-// block.
+// block. NO LOAD OF A THROUGH OR A ONE-VIEW ROW'S LINES IS A STAGE AHEAD of its use: a fold thread has no register to
+// hold one across its steps, and what those loads cost in the trip that uses them is what the rows measure.
 // see docs/internals/tools/lab.md#carry-window
 #include <chrono>
 
@@ -169,12 +170,11 @@ constexpr int kCoefTile = 2 * 17 * 16, kZeroAt = kCoefAt + 2 * 2 * 4 * kCoefTile
 constexpr int kStepsAt = kZeroAt + 2 * 2 * 16 * 16, kPlansAt = kStepsAt + 2 * 16 * 16;
 //: THE READ-READY rows' pass: its 16 coefficient tiles, and the passes a CTA's stream holds
 constexpr int kCoefPass = 2 * 2 * 4 * kCoefTile, kReadPasses = 128;
-//: and a box's next PLAN, 16 bytes: a slot's image's first line in the window's stream and its bytes, twice --
-//: written and read by the box's first thread alone
-constexpr int kOneAt = kPlansAt + 2 * 16;
-//: THE ONE-VIEW rows': a box's window's TABLE, landed, and its 16 lists' second steps' operands (their first are
-//: at `kStepsAt`)
-constexpr int kOneBytes = 160 * 16, kOneStepsAt = kOneAt + 2 * kOneBytes, kSmemBytes = kOneStepsAt + 2 * 16 * 16;
+//: and a box's next PLAN, 16 bytes at `kPlansAt`: a slot's image's first line in the window's stream and its bytes,
+//: twice -- written and read by the box's first thread alone; behind the plans THE ONE-VIEW rows': a box's window's
+//: TABLE, landed, and its 16 lists' second steps' operands (their first are at `kStepsAt`)
+constexpr int kOneAt = kPlansAt + 2 * 16, kOneBytes = 160 * 16, kOneStepsAt = kOneAt + 2 * kOneBytes,
+              kSmemBytes = kOneStepsAt + 2 * 16 * 16;
 static_assert(kSmemBytes <= 232448);
 //: the barriers, 8 bytes each: a pool slot filled and freed (box, slot); an image's tile group published and read
 //: (a group is the 4 read digits `8 h + c + 2 j` of a chunk `2 h + c`: every fold thread holds a quarter of it); a
@@ -956,7 +956,6 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
           const uint4* const from = (ROLES & kThrough ? reinterpret_cast<const uint4*>(values) + in_table : reinterpret_cast<const uint4*>(view)) + kTokValues + g;
           uint4* const to = reinterpret_cast<uint4*>(image) + (place & 0xffffu);
           const uint32_t pitch = place >> 16;
-#pragma unroll
           constexpr int kHeld = ROLES & kThrough ? 2 : 4;
 #pragma unroll
           for (int part = 0; part < 8 / kHeld; ++part) {

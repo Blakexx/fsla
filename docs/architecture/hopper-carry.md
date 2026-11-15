@@ -19,10 +19,14 @@ its fold's and readout's warps place each token's value lines on its digits' ste
 entry's sparse digits, the scales and the box's dense digits, their product, bf16 -- in shared memory. THE FILL IS SLICES (RULED 2026-11-15; NOT MEASURED): ONE VIEW A WINDOW for all 16 digits of the block and ONE PASS
 over it in token order -- a token's lines stored to its digit's slice at its rank, the rank a count of the digit's
 mask before the token -- then all the window's steps, a digit's last padded with zero lines; the steps are counted
-once from the window's counts and run with no decision on data. The view is held THROUGH REGISTERS where they fit: a
-fold thread loads a token's lines from global memory and stores them to the slices, so no shared memory stages the
-view, and a window's slices are the room two half-window slots of landed operands took. A fold thread holds two value lines at a time
-([`lab/carry_window.md`](../lab/carry_window.md)). A token live on two digits of one block is one token of the list and an entry of
+once from the window's counts and run with no decision on data. A window's slices are the room two half-window slots of landed operands took. HOW THE VIEW REACHES THE SLICES IS OPEN.
+Through registers -- ruled "if they actually fit" -- they fit, two value lines at a time, and are NOT THE FORM:
+MEASURED, a fold's fill is then seven times the block form's, a warp's loads a fifth of a bulk copy's bytes a cycle,
+as KERNEL_STANDARDS 33 has it for contiguous rows. A view landed by bulk copy and moved in shared memory is MEASURED
+on half-window views at a quarter over values that land in place by digit -- the move doubles the fold's shared-memory
+traffic -- and one view a window staged so does not fit beside its slices. MEASURED too: one view's structure, 32
+steps one block behind one rendezvous, takes the fold's steps' issue to three fifths and
+its rendezvous to a quarter of the two-slot form's ([`lab/carry_window.md`](../lab/carry_window.md)). A token live on two digits of one block is one token of the list and an entry of
 each digit's slice. Where a CTA's dense digits come from -- a segment of the stream a dense block, or the bundle's
 dense rows -- is OPEN. The stream is WORKSPACE, and A RING (RULED 2026-11-15): a few windows a CTA group, rewritten as
 the carry consumes them, so global memory holds windows of it and never a segment's. IT IS FED BY PERSISTENT GATHER
@@ -97,8 +101,7 @@ window, and each entry's token and byte were computed, not read.
 
 - LISTS OF ANY LENGTH. A sparse digit's entries in a window are its list, which the CTA lays from the token list. A digit is
   `ceil(count / 16)` steps into the same accumulator set, the last padded with entries whose coefficient lines are
-  zero -- exact, since a zero coefficient adds nothing. A slot is 8 steps, whichever digits they are; a window is as
-  many slots as its steps need. The readout likewise: a sparse digit's readers are `ceil(count / 16)` steps, the
+  zero -- exact, since a zero coefficient adds nothing. A window's steps are one block (RULED 2026-11-15); the labs before it ran slots of 8 lists. The readout likewise: a sparse digit's readers are `ceil(count / 16)` steps, the
   last padded with readers whose coefficient lines are zero. The steps are the CTA's to lay, from the counts the stream holds (the
   section above).
   MEASURED in the lab at lists of 8 to 24 entries: a slot more a window ([`lab/carry_window.md`](../lab/carry_window.md)).
@@ -134,7 +137,8 @@ NOT STATED. No blackwell carry is designed and no blackwell card measured.
 
 ## To be ruled before it is built
 
-1. The padding form: zero coefficient lines for a short list's last step, and for a short reader list's.
+1. How the token view reaches the slices, or whether the stream is laid by digit again: the measured price of the
+   move is above.
 2. The read side's step tables: who makes them, from what.
 3. The carry's price taken at the cold figure, the kernel built to that and the open staging questions measured in
    it.

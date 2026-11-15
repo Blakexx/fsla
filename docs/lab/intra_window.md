@@ -65,7 +65,7 @@ WHAT IT SHOWS.
   rates (an integer step 36 cycles, a value step some 35) a window of 1,024 is 96 SM-cycles a token of tensor work,
   and the kernel is 1.8 times that -- the steps' groups, the weights' arithmetic and the staging. A window's rows are
   655 KB and the kernel lands 5.9 MB a window: a writer tile is landed once by every reader tile's CTA after it.
-- BESIDE THE CARRY (176 against its 817 SM-cycles a token with no clock inside a role,
+- BESIDE THE CARRY (176 against its 818 SM-cycles a token with no clock inside a role,
   [`carry_window`](carry_window.md)) the intra in that layout is about a fifth of the carry's window. Adjacent
   measurements of two labs at their own cells, not a call: the tables here are 2 MB a level, cached, and no pair is
   skipped.
