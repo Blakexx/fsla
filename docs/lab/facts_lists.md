@@ -17,8 +17,8 @@ counting sort of the window's live (token, digit) pairs by digit, in token order
   digits and their totals -- no thread works while the CTA waits;
 - a thread stores each of its live digits' ENTRY at its digit's offset, the count before its warp and the lanes
   before it in its warp's word. AN ENTRY IS THE TOKEN, with no byte: this
-  lab's pass turns the mask around and reads no row, and writes its lists to global memory. The ruled gather pass writes a sparse block's live tokens with their sparse bytes and the read side's token
-  indices; whether it also writes a digit's list, as indices into them, is open
+  lab's pass turns the mask around and reads no row, and writes its lists to global memory. The ruled gather pass hands the carry no list: it writes a sparse block's live tokens with their sparse bytes, and
+  the read side's token indices
   (KERNEL_STANDARDS 29, item 5; [`hopper-gather.md`](../architecture/hopper-gather.md#what-it-writes)).
 Two forms find a token's live digits: the mask's 32 bytes as handed, or a value test of the token's 256 bytes read
 from the tile-major rows the bundle holds. A call is the window's COUNTS alone -- what sizes its lists before they

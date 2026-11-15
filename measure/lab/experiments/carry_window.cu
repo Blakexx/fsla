@@ -112,7 +112,10 @@
 // dense line expanded to its two coefficient lines, then its other 7 value lines two at a time, each stored to its
 // list's run across the box's two pool slots; a list's last step's pad lines zeroed from the steps' table; a
 // step's operands made, a thread of 32; the fence, the warpgroup's barrier, the next table's copy; 32 steps as one
-// block. NO LOAD OF A THROUGH OR A ONE-VIEW ROW'S LINES IS A STAGE AHEAD of its use: a fold thread has no register to
+// block. THE JOINED rows' fold is the block rows' with ONE RENDEZVOUS A WINDOW: a slot is the wait on its image, a
+// thread's entry expanded, a pad zeroed and a step's operands made, both slots in turn; then the fence, the
+// warpgroup's barrier and the window's 32 steps as one block; then both of the next window's copies, which land
+// under the next window's image. NO LOAD OF A THROUGH OR A ONE-VIEW ROW'S LINES IS A STAGE AHEAD of its use: a fold thread has no register to
 // hold one across its steps, and what those loads cost in the trip that uses them is what the rows measure.
 // see docs/internals/tools/lab.md#carry-window
 #include <chrono>
@@ -347,7 +350,11 @@ enum Roles : long long {
   //: a through row of ONE VIEW A WINDOW: the block's 16 lists' entries in token order, 256, a thread two of them;
   //: one pass lays every list's runs across the box's two pool slots, and the window's 32 steps are one block
   //: behind one fence and one rendezvous (RULED 2026-11-15)
-  kOne = 1ll << 48
+  kOne = 1ll << 48,
+  //: a block row whose TWO SLOTS ARE LAID BEFORE ONE RENDEZVOUS: both landed images expanded, one fence and one
+  //: barrier, the window's 32 steps one block, then both of the next window's copies (a clocked row alone: the
+  //: unclocked fold of it spills an address at its 168 registers)
+  kJoin = 1ll << 49
 };
 template <long long ROLES>
 constexpr bool apart = (ROLES & kApart) == kApart;
@@ -379,6 +386,8 @@ template <long long ROLES>
 constexpr bool token = blocks<ROLES> && (ROLES & kToken) != 0;
 template <long long ROLES>
 constexpr bool one = token<ROLES> && (ROLES & kOne) != 0;
+template <long long ROLES>
+constexpr bool joined = blocks<ROLES> && (ROLES & kJoin) != 0;
 //: a slot's steps are this many rounds of its 8 lists; a list's run of lines padded to its steps
 constexpr int kBlockRounds = 2;
 constexpr int block_spread(int n) { return (n + 15) & ~15; }
@@ -622,6 +631,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
   static_assert(!(ROLES & kDrains4) || fold_issues<ROLES> || blocks<ROLES> || !(ROLES & kFold));
   static_assert(!(ROLES & (kToken | kThrough)) || (token<ROLES> && !(ROLES & (kReady | kShare | kOwn | kRawFold | kMeet41))));
   static_assert(!(ROLES & kOne) || (token<ROLES> && (ROLES & kThrough)));
+  static_assert(!(ROLES & kJoin) || (joined<ROLES> && !(ROLES & (kToken | kReady | kShare | kOwn | kMeet41))));
   const int tid = threadIdx.x, box = tid >> 7, warp = (tid >> 5) & 3, lane = tid & 31, q = lane >> 2, t = lane & 3;
   const uint32_t bars = base + kBarsAt;
   //: a list's first step writes its accumulator whole: nothing is cleared (a cleared one in a role's branch
@@ -1017,16 +1027,20 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         const int made = ROLES & kShare ? ((g & 31) < 4 ? 4 * (g >> 5) + (g & 31) : 8 * kBlockRounds) : g;
         if (made < 8 * kBlockRounds) {
           const uint16_t* const step = reinterpret_cast<const uint16_t*>(image + kImageSteps * 16) + 4 * made;
-          uint64_t* const to = reinterpret_cast<uint64_t*>(smem + kStepsAt + box * 256 + 16 * made);
+          //: (the joined rows' second slot's are behind its first's, at `kOneStepsAt`)
+          uint64_t* const to = reinterpret_cast<uint64_t*>(smem + (joined<ROLES> && slot == 1 ? kOneStepsAt : kStepsAt) + box * 256 + 16 * made);
           to[0] = lab::wg_desc(base + pool + step[0] * 16u, 8, step[1]);
           to[1] = step[2] == 0xffffu ? lab::wg_desc(base + kZeroAt + box * 512, 8, 16) : lab::wg_desc(base + pool + step[2] * 16u, 8, step[3]);
         }
         if constexpr (fold_clocked<ROLES>) in_pads += lap_own(since);
-        lab::bulk_fence();
-        if constexpr (fold_clocked<ROLES>) (slot == 0 ? in_fence0 : in_fence1) += lap_own(since);
-        together<ROLES>(bars + kMeet + 8 * box, static_cast<uint32_t>(slot), kPoolId + box);
-        if constexpr (fold_clocked<ROLES>) (slot == 0 ? in_sync0 : in_sync1) += lap_own(since);
+        if constexpr (!joined<ROLES>) {
+          lab::bulk_fence();
+          if constexpr (fold_clocked<ROLES>) (slot == 0 ? in_fence0 : in_fence1) += lap_own(since);
+          together<ROLES>(bars + kMeet + 8 * box, static_cast<uint32_t>(slot), kPoolId + box);
+          if constexpr (fold_clocked<ROLES>) (slot == 0 ? in_sync0 : in_sync1) += lap_own(since);
         }
+        }
+        if constexpr (!joined<ROLES>) {
         //: THE SLOT'S STEPS, one block: a round at a time, a list's step on its own accumulator, its operands the
         //: table's -- the ready rows' the landed head's, the slot's own address added to each
         const uint64_t* const steps = ROLES & kReady ? reinterpret_cast<const uint64_t*>(image)
@@ -1054,6 +1068,38 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         lab::wg_wait<0>();
         if constexpr (!token<ROLES>)
           if (w + 1 < windows) issue_slot(w + 1, slot);
+        if constexpr (fold_clocked<ROLES>) in_steps += lap_own(since);
+        }
+      }
+      if constexpr (joined<ROLES>) {
+        //: THE JOINED rows' window: both slots laid; the fence and the warpgroup's barrier once; 32 steps, a round at a
+        //: time, a list's step on its own accumulator; then both of the next window's copies
+        lab::bulk_fence();
+        if constexpr (fold_clocked<ROLES>) in_fence0 += lap_own(since);
+        together<ROLES>(bars + kMeet + 8 * box, 0u, kPoolId + box);
+        if constexpr (fold_clocked<ROLES>) in_sync0 += lap_own(since);
+        lab::wg_fence();
+        //: both slots' operands from one address: the second slot's are `kApart` words behind the first's
+        static_assert((kOneStepsAt - kStepsAt) % 8 == 0);
+        constexpr int kApart = (kOneStepsAt - kStepsAt) / 8;
+        const uint64_t* const steps = reinterpret_cast<const uint64_t*>(smem + kStepsAt + box * 256);
+#pragma unroll
+        for (int r = 0; r < kBlockRounds; ++r)
+#pragma unroll
+          for (int slot = 0; slot < 2; ++slot)
+#pragma unroll
+            for (int j = 0; j < 8; ++j) {
+              //: a step's operands are loaded at its own issue: the edge keeps the window's loads from one register set
+              asm volatile("" ::: "memory");
+              lab::wg_bf16_n16_ss_mn(d[8 * slot + j], steps[slot * kApart + 2 * (8 * r + j)], steps[slot * kApart + 2 * (8 * r + j) + 1], w != 0 || r != 0);
+            }
+        lab::wg_commit();
+        if constexpr (fold_clocked<ROLES>) in_issue += lap_own(since);
+        lab::wg_wait<0>();
+        if (w + 1 < windows) {
+          issue_slot(w + 1, 0);
+          issue_slot(w + 1, 1);
+        }
         if constexpr (fold_clocked<ROLES>) in_steps += lap_own(since);
       }
     } else if constexpr (packed<ROLES>) {
@@ -2176,6 +2222,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kMeet41 ? ", a warpgroup's rendezvous an mbarrier's" : "")
                            + (ROLES & kShare ? (blocks<ROLES> ? ", its warpgroup's lone jobs shared among its warps" : ", its copies issued two a warp") : "")
                            + (blocks<ROLES> ? ", the fold from a block a list, its lists uneven and its steps one block" : "")
+                           + (ROLES & kJoin ? ", its two slots laid before one rendezvous and its 32 steps one block" : "")
                            + (ROLES & kReady ? ", its slots landed with their operands made" : "")
                            + (ROLES & kOne ? ", its window laid by the fold in one pass from one view in token order through registers, its 32 steps one block"
                               : ROLES & kToken ? (ROLES & kThrough ? ", its slots laid by the fold from views in token order, their value lines through registers"
@@ -2199,7 +2246,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
   const size_t tokens = static_cast<size_t>(b.sms) * kOutWindows * kWindow;
   LAB_CHECK(cudaMemset(out, 0, (words + tokens) * 4));
-  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed | kHot | kAhead | (fresh<ROLES> ? kNoLoads : 0) | (packed<ROLES> ? kNoMath : 0) | (four<ROLES> || fold_expands<ROLES> ? kFour | kFoldIssues | kDrains4 : 0) | kTwoSums | kMirror | kChunk8 | kRawPanel | ((ROLES & kMirror) && (ROLES & kChunk8) ? kReadReady : 0) | ((ROLES & kMirror) && (fold_issues<ROLES> || blocks<ROLES>) ? kMeet41 : 0) | (fold_issues<ROLES> ? kIssueLate | kShare : 0) | (blocks<ROLES> ? kShare | kReady | ((ROLES & kReady) ? kOwn : 0) | kToken | ((ROLES & kToken) ? kThrough : 0) | ((ROLES & kThrough) ? kOne : 0) : 0) | (blocks<ROLES> ? kBlocks | kDrains4 : 0))) == (kFold | kRead)) {
+  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed | kHot | kAhead | (fresh<ROLES> ? kNoLoads : 0) | (packed<ROLES> ? kNoMath : 0) | (four<ROLES> || fold_expands<ROLES> ? kFour | kFoldIssues | kDrains4 : 0) | kTwoSums | kMirror | kChunk8 | kRawPanel | ((ROLES & kMirror) && (ROLES & kChunk8) ? kReadReady : 0) | ((ROLES & kMirror) && (fold_issues<ROLES> || blocks<ROLES>) ? kMeet41 : 0) | (fold_issues<ROLES> ? kIssueLate | kShare : 0) | (blocks<ROLES> ? kShare | kReady | ((ROLES & kReady) ? kOwn : 0) | kToken | ((ROLES & kToken) ? kThrough : 0) | ((ROLES & kThrough) ? kOne : 0) | kJoin : 0) | (blocks<ROLES> ? kBlocks | kDrains4 : 0))) == (kFold | kRead)) {
     kernel<<<b.sms, kLaunch, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * state_words<ROLES>;
@@ -2843,6 +2890,7 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kWhole | kFour | kMirror | kChunk8 | kFoldIssues | kDrains4 | kShare,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kShare,
                     3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kShare,
+                    3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kJoin,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken,
                     3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken | kThrough,
@@ -2935,6 +2983,7 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kShare>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kShare>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kJoin>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken | kThrough>(b, waits, values, dense, state, out);

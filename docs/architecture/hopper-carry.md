@@ -21,8 +21,8 @@ over it in token order -- a token's lines stored to its digit's slice at its ran
 mask before the token -- then all the window's steps, a digit's last padded with zero lines; the steps are counted
 once from the window's counts and run with no decision on data. A window's slices are the room two half-window slots of landed operands took. HOW THE VIEW REACHES THE SLICES IS OPEN.
 Through registers -- ruled "if they actually fit" -- they fit, two value lines at a time, and are NOT THE FORM:
-MEASURED, a fold's fill is then seven times the block form's, a warp's loads a fifth of a bulk copy's bytes a cycle,
-as KERNEL_STANDARDS 33 has it for contiguous rows. A view landed by bulk copy and moved in shared memory is MEASURED
+MEASURED, a fold's fill is then seven times the block form's -- what of it is its loads' round trips is not
+isolated -- and KERNEL_STANDARDS 33 stages contiguous rows by bulk copy. A view landed by bulk copy and moved in shared memory is MEASURED
 on half-window views at a quarter over values that land in place by digit -- the move doubles the fold's shared-memory
 traffic -- and one view a window staged so does not fit beside its slices. MEASURED too: one view's structure, 32
 steps one block behind one rendezvous, takes the fold's steps' issue to three fifths and
@@ -43,12 +43,14 @@ share it and costs the carry the same whether the cache held it before or not --
 together: boxes that drift apart, as their read sides' counts differ, are not measured.
 MEASURED, in the carry, from streams the host laid BY DIGIT at lists of 8 to 24 entries and no list past two steps
 ([`lab/carry_window.md`](../lab/carry_window.md)) -- none of them the token list: the fold landing a slot with its
-operands made and stepping it, 5,188 cycles a window with the readout's tiles made as well, which is the window with
+operands made and stepping it, 5,191 cycles a window with the readout's tiles made as well, which is the window with
 the carry's own operands free; and the fold expanding an entry's 16 dense bytes and its sparse byte where they land,
-its head tables for each entry's lines and each step's operands, 6,826. MEASURED, the pass
+its head tables for each entry's lines and each step's operands, 6,827; and the fold laying its slots from
+token-ordered views, 8,486 staged and moved and 8,535 one view a window through registers. MEASURED, the pass
 ([`lab/gather_pass.md`](../lab/gather_pass.md)): the token list's lines moved from the host's lists, 122 SM-cycles a
 token for a side's values and sparse lines and 155 for its dense segments.
-NOT MEASURED: the carry placing a token list's tokens; slices; the read side's stream; the ring; lists past two steps.
+NOT MEASURED: a CTA counting its tokens' places from the masks; one view a window staged by bulk copy; the read
+side's stream; the ring; lists past two steps; any cell above 5 live digits.
 
 ## What it is handed
 
@@ -138,7 +140,7 @@ NOT STATED. No blackwell carry is designed and no blackwell card measured.
 ## To be ruled before it is built
 
 1. How the token view reaches the slices, or whether the stream is laid by digit again: the measured price of the
-   move is above.
+   move is above. The padding form for a short reader list's last step (the fold's is ruled: zero lines).
 2. The read side's step tables: who makes them, from what.
 3. The carry's price taken at the cold figure, the kernel built to that and the open staging questions measured in
    it.

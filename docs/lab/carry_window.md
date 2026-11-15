@@ -243,7 +243,12 @@ two of them, each entry's dense line and 8 value lines loaded from global memory
 slots, and the window's 32 steps one block behind one fence and one rendezvous, where the block form's are two of
 each. Their PLACES ARE THE HOST'S: each entry's lines and the window's 32 steps are a table the window lands, where
 the design's CTA counts a rank from the mask and its steps from the window's counts -- these rows price the fill's
-moves and its steps, not that counting. All checked as the block form's rows are.
+moves and its steps, not that counting.
+
+THE JOINED ROW (the block form, clocked: its unclocked fold spills an address at its 168 registers) asks what ONE RENDEZVOUS A WINDOW is worth where the values
+land in place: the block form's two slots are both expanded before one fence and one barrier, the window's 32 steps
+are one block, and both of the next window's copies are issued behind them -- the one-view rows' structure on the
+block form's landed images. Checked as the block form's rows are. All checked as the block form's rows are.
 
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,

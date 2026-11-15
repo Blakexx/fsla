@@ -31,9 +31,9 @@ carry CTAs that share the block. It is a ring of a few windows a CTA group (RULE
 - A LIVE TOKEN'S DENSE DIGITS are a carry CTA's own as well. OPEN, by measurement: a segment of the stream a dense
   block (2026-11-13: 16 bytes a live token a dense block, written here and read by one CTA), or the bundle's dense
   rows landed by the carry itself (16 bytes a token a box, read by every box of the dense block, nothing written).
-- WHAT SAYS WHERE A TOKEN GOES is the input masks (2026-11-13). Whether the pass also writes each digit's list as
-  indices into the token list -- the stream saying what to do, as the carry's block form's tables do
-  ([`lab/carry_window.md`](../lab/carry_window.md)) -- is OPEN.
+- WHAT SAYS WHERE A TOKEN GOES is the input masks (2026-11-13). The pass hands the carry no list (KERNEL_STANDARDS 29,
+  item 5); the lab's token rows ran from a table of each entry's places the host laid
+  ([`lab/carry_window.md`](../lab/carry_window.md)), and what a CTA is handed to count them itself is OPEN.
 - WHAT A CTA NEEDS TO TAKE ITS VIEW is the pass's to write, the group's to read (Blake, 2026-11-15: "the gather has
   metadata about boundaries for all the ctas to consume like window edges and such"). PROPOSED, its fields: a window's
   place in the stream and its live tokens; each of the block's 16 digits' count in the window, which is the window's
@@ -45,7 +45,7 @@ carry CTAs that share the block. It is a ring of a few windows a CTA group (RULE
   hand-off is under "Beside the carry".
 - THE READ SIDE'S: the same without values, with each entry's token index. NOT DESIGNED past that.
 - NOT THE FORM, each measured: a list a digit with its value runs, and the coefficient runs in the step's format laid
-  here. With its operands made the carry's window is 5,188 cycles against 6,826 expanding its own, and the pass that
+  here. With its operands made the carry's window is 5,191 cycles against 6,827 expanding its own, and the pass that
   made them cost as much as the carry ([`lab/gather_pass.md`](../lab/gather_pass.md)); their 110 KB a window a CTA
   cost three times the window once past the card's cache.
 
@@ -75,7 +75,7 @@ RULED 2026-11-15: persistent gather CTAs beside the carry's, in one grid, a gath
 NOT DESIGNED: the hand-off between a gather CTA and its readers (no barrier crosses CTAs without a cluster), which
 gather CTA serves which carry CTAs, the split's rule, what the split leaves the intra; CONSTITUTION R22's
 independent units against the ring's waits. MEASURED: the token list's values and sparse lines are 122
-SM-cycles a token a side against the carry's 853 expanding its own (6,826 cycles a window) -- a multiprocessor in
+SM-cycles a token a side against the carry's 853 expanding its own (6,827 cycles a window) -- a multiprocessor in
 eight the pass's, as that kernel stands.
 
 ## What is measured
@@ -91,13 +91,14 @@ are [`lab/gather_pass.md`](../lab/gather_pass.md)'s and follow the card a sessio
   times the same entries' bytes moved; a slot a dense block a trip, 512 trips a window. With the shared part it is
   more than the carry's window a token. Widened alone, the entry's scalar on its values, they cost the same; larger
   units take a sixth off. What binds that kernel is NOT ISOLATED.
-- NOT MEASURED: the boundaries' fields; the scales; the read side; the hand-off; the pass making the token list from
-  the masks; the carry placing a token list's tokens.
+- MEASURED IN THE CARRY ([`lab/carry_window.md`](../lab/carry_window.md)): the fold placing a token view's value lines is a
+  quarter over the block form's window, whose value runs land in place. NOT MEASURED: the boundaries' fields; the
+  scales; the read side; the hand-off; the pass making the token list from the masks; a denser cell in the carry.
 
 ## To be ruled before it is built
 
 1. Where a carry CTA's dense digits come from: the stream's segment or the bundle's rows.
-2. Whether the pass writes the digits' lists as indices, or the carry reads the masks.
+2. The boundaries' fields: what a CTA is handed to place a token, beside the masks.
 3. The read side's stream: its token indices.
 4. The mask's order on the public surface.
 5. The split of a card's multiprocessors between gather and carry CTAs, and the hand-off.
