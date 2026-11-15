@@ -1598,7 +1598,7 @@
   {"doc": "docs/lab/fold_stream.md", "pinned_at": "84cfaa2d28bc", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
   {"doc": "docs/lab/fold_stream.md", "pinned_at": "84cfaa2d28bc", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/fold_stream.cu"},
   {"doc": "docs/lab/fold_stream.md", "pinned_at": "342fc1329154", "reviewed": true, "sha256": "", "target": "measure/lab/results/fold_stream/sm_90a.json"},
-  {"doc": "docs/lab/gather_pass.md", "pinned_at": "6c415b8c856a", "reviewed": true, "sha256": "097d543754597ae3", "target": "docs/architecture/hopper-carry.md#the-gather-stream"},
+  {"doc": "docs/lab/gather_pass.md", "pinned_at": "eca7b7e76aa2", "reviewed": true, "sha256": "0e6f6ea5fd237f14", "target": "docs/architecture/hopper-carry.md#the-gather-stream"},
   {"doc": "docs/lab/gather_pass.md", "pinned_at": "ce73532c797e", "reviewed": true, "sha256": "", "target": "docs/architecture/hopper-gather.md"},
   {"doc": "docs/lab/gather_pass.md", "pinned_at": "95672f936f50", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
   {"doc": "docs/lab/gather_pass.md", "pinned_at": "95672f936f50", "reviewed": true, "sha256": "", "target": "docs/lab/carry_window.md"},

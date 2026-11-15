@@ -351,12 +351,12 @@ __device__ __forceinline__ uint32_t scan(uint32_t v, int lane) {
   return v;
 }
 
-//: `SCALED`: an entry's value lines multiplied by its byte on its sparse digit as they are written -- the ruled
-//: stream's values, which carry the entry's scalar
+//: `SCALED`: an entry's value lines multiplied by its byte on its sparse digit as they are written -- measured, and
+//: not the design's form
 template <int THREADS, int SCALED>
 __global__ void __launch_bounds__(THREADS, 1)
     plane(long long* times, const uint4* vals, const uint4* rows, const uint32_t* masks, uint4* out_plane, uint32_t* plans,
-          int rounds, int stride, int room) {
+          int rounds, int stride, int room, int ring) {
   static_assert(THREADS == kThreads);
   extern __shared__ __align__(128) uint8_t smem[];
   const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
@@ -407,7 +407,9 @@ __global__ void __launch_bounds__(THREADS, 1)
       if (tid == 0) {
         if (u > 0) {
           const uint32_t slot = (units - 1) % 3u;
-          lab::bulk_store(wplane + (u - 1) * kRoomLines, base + kOutAt + slot * kRoomBytes, size[slot]);
+          //: a unit's room in the CTA's region, or in a ring of `ring` lines it rewrites as it goes
+          const int at = (u - 1) * kRoomLines;
+          lab::bulk_store(wplane + (ring ? at % ring : at), base + kOutAt + slot * kRoomBytes, size[slot]);
           lab::bulk_commit();
           wplan[2 * (u - 1)] = static_cast<uint32_t>((u - 1) * kRoomLines), wplan[2 * (u - 1) + 1] = size[slot];
         }
@@ -522,12 +524,12 @@ template <int U>
 constexpr int kSmemBytes = kBarsAt<U> + 4 * 8;
 enum Bar : int { kDense = 0, kLevel = 16 };
 
-//: `WIDEN`: a coefficient line is the entry's dense digits widened to bf16 alone -- the ruled form, the entry's
-//: scalar on its values -- where the other form multiplies them by its sparse byte. `U`: the slots a trip
+//: `WIDEN`: a coefficient line is the entry's dense digits widened to bf16 alone, the entry's scalar on its values --
+//: measured, and not the design's form, which multiplies them by its sparse byte. `U`: the slots a trip
 template <int THREADS, int WIDEN, int U>
 __global__ void __launch_bounds__(THREADS, 1)
     plane(long long* times, const uint4* dense_rows, const uint4* rows, const uint32_t* masks, uint4* out_plane, int rounds,
-          int stride, int room) {
+          int stride, int room, int ring) {
   static_assert(THREADS == kThreads);
   extern __shared__ __align__(128) uint8_t smem[];
   const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
@@ -614,7 +616,7 @@ __global__ void __launch_bounds__(THREADS, 1)
           const uint32_t slot = (units - 1) % 3u;
 #pragma unroll
           for (int q = 0; q < U; ++q)
-            lab::bulk_store(wplane + (static_cast<long long>(trip - 1) * U + q) * kRoomLines,
+            lab::bulk_store(wplane + (ring ? ((trip - 1) * U + q) * kRoomLines % ring : ((trip - 1) * U + q) * kRoomLines),
                             base + kOutAt + (slot * U + q) * kRoomBytes, size[slot * U + q]);
           lab::bulk_commit();
         }
@@ -768,8 +770,8 @@ int main(int argc, char** argv) {
       if (kUnits * kRoomLines > room) std::exit(2);
       const auto kernel = blocks::plane<blocks::kThreads, 0>;
       LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, blocks::kSmemBytes));
-      const auto launch = [&](int cta, int rounds, int stride) {
-        kernel<<<cta, blocks::kThreads, blocks::kSmemBytes>>>(b.times, dvalues, drows, dmasks, dvplane, dplans, rounds, stride, room);
+      const auto launch = [&](int cta, int rounds, int stride, int ring = 0) {
+        kernel<<<cta, blocks::kThreads, blocks::kSmemBytes>>>(b.times, dvalues, drows, dmasks, dvplane, dplans, rounds, stride, room, ring);
       };
       const std::string form = "4 to 5 live digits a token, the block stream's tables, values and sparse bytes, its lists made from the mask, 512 threads";
       //: the first round's images against the host's own lists, tables and runs, on every multiprocessor
@@ -828,6 +830,15 @@ int main(int argc, char** argv) {
         }
       }
       b.check(form, wrong == 0, std::to_string(wrong) + " of " + std::to_string(cells) + " words, bytes, lines, pads, steps and plans differ");
+      {
+        //: THE SAME KERNEL INTO A RING the cache holds: a CTA rewrites 8 slots' rooms, 164 KB, as it goes
+        constexpr int kRing = 8 * kRoomLines;
+        const lab::Samples cycles = b.variant([&] { launch(windows, kRounds, windows, kRing); },
+                                              [&] { return b.span(blocks::kThreads >> 5, windows) / kRounds / kWindow; });
+        const std::string timed = form + ", its plane a ring of 164 KB a CTA, a fresh window a round";
+        b.unchecked(timed, "its kernel's first round is checked on every multiprocessor; a ring keeps no round to check");
+        b.record(timed, "SM-cycles a token", cycles);
+      }
       for (int quarter = 0; quarter < 2; ++quarter) {
         const int cta = quarter ? windows / 4 : windows;
         const lab::Samples cycles = b.variant([&] { launch(cta, kRounds, windows); },
@@ -841,8 +852,8 @@ int main(int argc, char** argv) {
         //: whose bits are no finite normal number is not compared
         const auto sk = blocks::plane<blocks::kThreads, 1>;
         LAB_CHECK(cudaFuncSetAttribute(sk, cudaFuncAttributeMaxDynamicSharedMemorySize, blocks::kSmemBytes));
-        const auto slaunch = [&](int cta, int rounds, int stride) {
-          sk<<<cta, blocks::kThreads, blocks::kSmemBytes>>>(b.times, dvalues, drows, dmasks, dvplane, dplans, rounds, stride, room);
+        const auto slaunch = [&](int cta, int rounds, int stride, int ring = 0) {
+          sk<<<cta, blocks::kThreads, blocks::kSmemBytes>>>(b.times, dvalues, drows, dmasks, dvplane, dplans, rounds, stride, room, ring);
         };
         const std::string sform = form + ", an entry's values multiplied by its sparse byte";
         LAB_CHECK(cudaMemset(dvplane, 0xa5, vplane_bytes));
@@ -897,19 +908,19 @@ int main(int argc, char** argv) {
         if (static_cast<size_t>(windows) * croom * 16 > dplane_bytes) std::exit(2);
         for (auto pick : {std::pair<int, int>{0, 1}, {0, 4}, {1, 4}}) {
         const int widen = pick.first, slots = pick.second;
-        const auto claunch = [&](int cta, int rounds, int stride) {
+        const auto claunch = [&](int cta, int rounds, int stride, int ring = 0) {
           if (widen == 0 && slots == 1) {
             const auto ck = coefs::plane<coefs::kThreads, 0, 1>;
             LAB_CHECK(cudaFuncSetAttribute(ck, cudaFuncAttributeMaxDynamicSharedMemorySize, coefs::kSmemBytes<1>));
-            ck<<<cta, coefs::kThreads, (coefs::kSmemBytes<1>)>>>(b.times, ddense, drows, dmasks, ddplane, rounds, stride, croom);
+            ck<<<cta, coefs::kThreads, (coefs::kSmemBytes<1>)>>>(b.times, ddense, drows, dmasks, ddplane, rounds, stride, croom, ring);
           } else if (widen == 0) {
             const auto ck = coefs::plane<coefs::kThreads, 0, 4>;
             LAB_CHECK(cudaFuncSetAttribute(ck, cudaFuncAttributeMaxDynamicSharedMemorySize, coefs::kSmemBytes<4>));
-            ck<<<cta, coefs::kThreads, (coefs::kSmemBytes<4>)>>>(b.times, ddense, drows, dmasks, ddplane, rounds, stride, croom);
+            ck<<<cta, coefs::kThreads, (coefs::kSmemBytes<4>)>>>(b.times, ddense, drows, dmasks, ddplane, rounds, stride, croom, ring);
           } else {
             const auto ck = coefs::plane<coefs::kThreads, 1, 4>;
             LAB_CHECK(cudaFuncSetAttribute(ck, cudaFuncAttributeMaxDynamicSharedMemorySize, coefs::kSmemBytes<4>));
-            ck<<<cta, coefs::kThreads, (coefs::kSmemBytes<4>)>>>(b.times, ddense, drows, dmasks, ddplane, rounds, stride, croom);
+            ck<<<cta, coefs::kThreads, (coefs::kSmemBytes<4>)>>>(b.times, ddense, drows, dmasks, ddplane, rounds, stride, croom, ring);
           }
         };
         const std::string cform = std::string("4 to 5 live digits a token, the block stream's coefficients in the step's format, every dense block's, its lists made from the mask, 512 threads")
@@ -955,6 +966,16 @@ int main(int argc, char** argv) {
                                                 [&] { return b.span(coefs::kThreads >> 5, cta) / kRounds / kWindow; });
           const std::string timed = cform + (quarter ? ", a quarter of the multiprocessors" : "") + ", a fresh window a round";
           b.unchecked(timed, "its kernel's first round is checked on every multiprocessor; this one is its time");
+          b.record(timed, "SM-cycles a token", cycles);
+        }
+        if (widen == 0 && slots == 4) {
+          //: THE SAME KERNEL INTO A RING the cache holds: a CTA rewrites one dense block's rooms, 256 KB, as it goes --
+          //: every multiprocessor's ring together under the cache's size
+          constexpr int kRing = coefs::kUnits * coefs::kRoomLines;
+          const lab::Samples cycles = b.variant([&] { claunch(windows, kRounds, windows, kRing); },
+                                                [&] { return b.span(coefs::kThreads >> 5, windows) / kRounds / kWindow; });
+          const std::string timed = cform + ", its plane a ring of 256 KB a CTA, a fresh window a round";
+          b.unchecked(timed, "its kernel's first round is checked on every multiprocessor; a ring keeps no round to check");
           b.record(timed, "SM-cycles a token", cycles);
         }
         }
