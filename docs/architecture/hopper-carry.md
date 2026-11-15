@@ -21,9 +21,14 @@ its second operand is a tile of zeros in the slot. Blocks stay in the order of t
 and a window's PLAN is each slot's place in the stream and its bytes. THE CARRY LANDS A SLOT AND STEPS IT: it
 expands nothing and writes no operand, so it has no fence and no rendezvous before its steps. A token live on two
 digits of one block is two entries. The pass consumes the masks; a counts pass sizes the streams. The stream is
-WORKSPACE, the segment's ([`ARCHITECTURE.md` section 6](../ARCHITECTURE.md#6-the-kernels)), written before the
-carry runs, which costs the carry the same as a ring: the coefficients it holds are a segment's live entries',
-staged for the carry and gone with the segment, never the stored representation
+WORKSPACE, and A RING (RULED 2026-11-15): a few windows a CTA group, rewritten as the carry consumes them, so
+global memory holds windows of it and never a segment's -- the coefficients it holds are live entries' staged for
+the carry, never the stored representation. IT IS FED BY PERSISTENT GATHER CTAS BESIDE THE CARRY'S, in one grid (RULED 2026-11-15): a
+carry CTA holds a multiprocessor's whole register file and nearly all its shared memory, so a gather CTA is a
+multiprocessor's own, and the card's multiprocessors are split between the two for the call. NOT DESIGNED: the
+hand-off between a gather CTA and its readers (no barrier crosses CTAs without a cluster), which gather CTA
+serves which carry CTAs, and the split's rule. NOT MEASURED on hopper. A stream written whole before the carry runs costs
+the carry the same ([`lab/carry_window.md`](../lab/carry_window.md)), and is what the labs ran
 ([`factored-representation.md`](factored-representation.md)). The read side's stream is the same without values,
 with each entry's token index, where the drain adds; its head is not designed. A window's stream is read by the 16
 boxes that share it and costs the carry the same whether the cache held it before or not

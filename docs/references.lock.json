@@ -268,7 +268,6 @@
   {"doc": "docs/architecture/guarantees-choices-preferences.md", "pinned_at": "3360bacd82eb", "reviewed": true, "sha256": "d45f480d2c743c39", "target": "docs/internals/state.md#the-dense-continuation"},
   {"doc": "docs/architecture/guarantees-choices-preferences.md", "pinned_at": "509200e32ca1", "reviewed": true, "sha256": "", "target": "rola/ops/naive.py"},
   {"doc": "docs/architecture/hopper-carry.md", "pinned_at": "b11619f5f2f9", "reviewed": true, "sha256": "11de95e441da6457", "target": "docs/ARCHITECTURE.md#1-what-the-kernel-computes"},
-  {"doc": "docs/architecture/hopper-carry.md", "pinned_at": "01e312ef8744", "reviewed": true, "sha256": "0394a69ff02b3486", "target": "docs/ARCHITECTURE.md#6-the-kernels"},
   {"doc": "docs/architecture/hopper-carry.md", "pinned_at": "fd4f26f0816e", "reviewed": true, "sha256": "789e0442c9950625", "target": "docs/ARCHITECTURE.md#63-the-carry--the-inter-window-term"},
   {"doc": "docs/architecture/hopper-carry.md", "pinned_at": "9cddf043871f", "reviewed": true, "sha256": "6ed8a91eb8aedebc", "target": "docs/ARCHITECTURE.md#9-portability"},
   {"doc": "docs/architecture/hopper-carry.md", "pinned_at": "9cddf043871f", "reviewed": true, "sha256": "", "target": "docs/architecture/factored-representation.md"},
