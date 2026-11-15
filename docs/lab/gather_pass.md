@@ -61,6 +61,13 @@ entry a dense block where its bytes are 16. The window's lists are made from the
 token and its sparse byte, and every slot's layout once; a dense block's rows are asked a dense block ahead. Every line is checked on every multiprocessor against the host's own product and
 rounding. NOT IN THE ROW: the scales, the steps' operands' fields, the read side.
 
+THE RULED WRITE SIDE ([`hopper-gather.md`](../architecture/hopper-gather.md)): an entry's sparse byte on its
+VALUES and its coefficient line its dense digits WIDENED ALONE. Three rows more: the block stream's shared part
+with an entry's 64 values multiplied by its sparse byte as they are written (a value whose bits are no finite
+normal number is not compared); the coefficient runs FOUR SLOTS A TRIP, a buffer out their four rooms and its
+copy four stores of one group, the product formed as above -- what the trips cost; and those four-slot runs with
+no product, a line the entry's dense digits rounded to bf16 alone.
+
 MEASURED (H100 PCIe 80GB, 114 SMs, Hyperstack spot VM 1161221, driver 580.196.07; 2026-11-15, the experiment at
 ab7a5830; 7 repetitions; every arranged line and pad of every moved form, and every word, byte, line,
 pad, step and plan of the block stream, exact on every multiprocessor; the median, SM-cycles a token for one

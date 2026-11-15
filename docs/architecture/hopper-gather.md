@@ -77,7 +77,8 @@ are [`lab/gather_pass.md`](../lab/gather_pass.md)'s and follow the card a sessio
 ## To be ruled before it is built
 
 1. The read side: its coefficients sparse by dense, made here, or its dense digits alone with the reader's scalar
-   applied to its sums after the step.
+   applied to its sums after the step. RULED 2026-11-15: either is acceptable, and the measured cheaper is taken;
+   the labs' readout lands sparse by dense made, and that form is priced first.
 2. The mask's order on the public surface.
 3. The split of a card's multiprocessors between gather and carry CTAs, and the hand-off.
 

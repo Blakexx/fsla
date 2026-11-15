@@ -351,7 +351,9 @@ __device__ __forceinline__ uint32_t scan(uint32_t v, int lane) {
   return v;
 }
 
-template <int THREADS>
+//: `SCALED`: an entry's value lines multiplied by its byte on its sparse digit as they are written -- the ruled
+//: stream's values, which carry the entry's scalar
+template <int THREADS, int SCALED>
 __global__ void __launch_bounds__(THREADS, 1)
     plane(long long* times, const uint4* vals, const uint4* rows, const uint32_t* masks, uint4* out_plane, uint32_t* plans,
           int rounds, int stride, int room) {
@@ -455,7 +457,20 @@ __global__ void __launch_bounds__(THREADS, 1)
         if (k < n) {
           const uint32_t token = recs[j * 64 + k];
 #pragma unroll
-          for (int q = 0; q < 4; ++q) out[at.y + (4 * half + q) * n + k] = val[token * 8 + 4 * half + q];
+          for (int q = 0; q < 4; ++q) {
+            if constexpr (SCALED != 0) {
+              const float weight = static_cast<float>(smem[kSparseAt + level * kLevelBytes + token * 16 + j]);
+              const uint4 line = val[token * 8 + 4 * half + q];
+              const uint32_t word[4] = {line.x, line.y, line.z, line.w};
+              uint32_t scaled[4];
+#pragma unroll
+              for (int c = 0; c < 4; ++c)
+                scaled[c] = lab::bf16x2_round(weight * __uint_as_float(word[c] << 16), weight * __uint_as_float(word[c] & 0xffff0000u));
+              out[at.y + (4 * half + q) * n + k] = make_uint4(scaled[0], scaled[1], scaled[2], scaled[3]);
+            } else {
+              out[at.y + (4 * half + q) * n + k] = val[token * 8 + 4 * half + q];
+            }
+          }
           if (half == 0) {
             reinterpret_cast<uint32_t*>(out + kWordsAt)[at.x + k] = (at.z + k) | (total.y + at.z + k) << 16;
             reinterpret_cast<uint8_t*>(out + kBytesAt)[at.x + k] = smem[kSparseAt + level * kLevelBytes + token * 16 + j];
@@ -499,18 +514,25 @@ constexpr int kThreads = 512, kCap = 32, kUnits = 2 * kBlocks, kRoomLines = 512,
 constexpr int kMaskBytes = 16 * 32 * 4;
 constexpr int kDenseAt = 0, kSparseAt = kDenseAt + 2 * kLevelBytes, kMaskAt = kSparseAt + 2 * kLevelBytes,
               kRecAt = kMaskAt + 2 * kMaskBytes, kSpareAt = kRecAt + kDigits * kCap * 4, kCountAt = kSpareAt + kThreads * 4,
-              kLayoutAt = kCountAt + kDigits * 4, kSizeAt = kLayoutAt + kUnits * 9 * 4, kOutAt = kSizeAt + 16,
-              kBarsAt = kOutAt + 3 * kRoomBytes, kSmemBytes = kBarsAt + 4 * 8;
+              kLayoutAt = kCountAt + kDigits * 4, kSizeAt = kLayoutAt + kUnits * 9 * 4, kOutAt = kSizeAt + 64;
+//: `U` slots a trip: a buffer out is their rooms side by side
+template <int U>
+constexpr int kBarsAt = kOutAt + 3 * U * kRoomBytes;
+template <int U>
+constexpr int kSmemBytes = kBarsAt<U> + 4 * 8;
 enum Bar : int { kDense = 0, kLevel = 16 };
 
-template <int THREADS>
+//: `WIDEN`: a coefficient line is the entry's dense digits widened to bf16 alone -- the ruled form, the entry's
+//: scalar on its values -- where the other form multiplies them by its sparse byte. `U`: the slots a trip
+template <int THREADS, int WIDEN, int U>
 __global__ void __launch_bounds__(THREADS, 1)
     plane(long long* times, const uint4* dense_rows, const uint4* rows, const uint32_t* masks, uint4* out_plane, int rounds,
           int stride, int room) {
   static_assert(THREADS == kThreads);
   extern __shared__ __align__(128) uint8_t smem[];
   const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
-  const uint32_t base = lab::smem(smem), bars = base + kBarsAt;
+  const uint32_t base = lab::smem(smem), bars = base + kBarsAt<U>;
+  constexpr int kTrips = kUnits / U;
   uint32_t* const recs = reinterpret_cast<uint32_t*>(smem + kRecAt);
   uint32_t* const count = reinterpret_cast<uint32_t*>(smem + kCountAt);
   uint32_t* const layout = reinterpret_cast<uint32_t*>(smem + kLayoutAt);
@@ -584,44 +606,50 @@ __global__ void __launch_bounds__(THREADS, 1)
     }
     __syncthreads();
 #pragma unroll 1
-    for (int trip = 0; trip <= kBlocks * kUnits; ++trip) {
-      const int db = trip / kUnits, u = trip % kUnits;
+    for (int trip = 0; trip <= kBlocks * kTrips; ++trip) {
+      const int db = trip / kTrips, u0 = (trip % kTrips) * U;
       //: THE ISSUE EDGE: the unit before's runs out; the next dense block's rows, a dense block ahead
       if (tid == 0) {
         if (trip > 0) {
           const uint32_t slot = (units - 1) % 3u;
-          lab::bulk_store(wplane + static_cast<long long>(trip - 1) * kRoomLines, base + kOutAt + slot * kRoomBytes, size[slot]);
+#pragma unroll
+          for (int q = 0; q < U; ++q)
+            lab::bulk_store(wplane + (static_cast<long long>(trip - 1) * U + q) * kRoomLines,
+                            base + kOutAt + (slot * U + q) * kRoomBytes, size[slot * U + q]);
           lab::bulk_commit();
         }
-        if (u == 0 && db + 1 < kBlocks) load_dense(db + 1);
+        if (u0 == 0 && db + 1 < kBlocks) load_dense(db + 1);
       }
-      if (trip == kBlocks * kUnits) break;
-      if (u == 0) lab::mbar_wait_suspended(bars + kDense + 8 * (db & 1), (db >> 1) & 1u);
-      {
-        //: THE RUNS: a thread a (list, place) and a brick -- an entry's 8 coefficients of the brick, its dense digits
-        //: by its byte, rounded to bf16; a pad's line zero
-        uint4* const out = reinterpret_cast<uint4*>(smem + kOutAt + (units % 3u) * kRoomBytes);
+      if (trip == kBlocks * kTrips) break;
+      if (u0 == 0) lab::mbar_wait_suspended(bars + kDense + 8 * (db & 1), (db >> 1) & 1u);
+#pragma unroll
+      for (int q = 0; q < U; ++q) {
+        //: THE RUNS, a slot of the trip's: a thread a (list, place) and a brick -- an entry's 8 coefficients of the
+        //: brick, rounded to bf16; a pad's line zero
+        const int u = u0 + q;
+        uint4* const out = reinterpret_cast<uint4*>(smem + kOutAt + ((units % 3u) * U + q) * kRoomBytes);
         const int cell = tid & 255, brick = tid >> 8, jj = cell >> 5, k = cell & 31, j = 8 * u + jj;
         const int n = static_cast<int>(count[j]);
         const uint32_t to = layout[9 * u + jj] + static_cast<uint32_t>(brick) * layout[9 * u + 8] + static_cast<uint32_t>(k);
         if (k < n) {
           const uint32_t entry = recs[j * kCap + k];
-          const float weight = static_cast<float>(entry >> 16);
+          const float weight = WIDEN ? 1.0f : static_cast<float>(entry >> 16);
           const uint2 two = reinterpret_cast<const uint2*>(smem + kDenseAt + (db & 1) * kLevelBytes + (entry & 0xffffu) * 16)[brick];
           const uint32_t word[2] = {two.x, two.y};
           uint32_t pair[4];
 #pragma unroll
           for (int c = 0; c < 4; ++c) {
             const uint32_t pairs = word[c >> 1] >> (16 * (c & 1));
-            pair[c] = lab::bf16x2_round(weight * static_cast<float>(pairs & 255u), weight * static_cast<float>(pairs >> 8 & 255u));
+            if constexpr (WIDEN != 0) pair[c] = lab::bf16x2_round(static_cast<float>(pairs & 255u), static_cast<float>(pairs >> 8 & 255u));
+            else pair[c] = lab::bf16x2_round(weight * static_cast<float>(pairs & 255u), weight * static_cast<float>(pairs >> 8 & 255u));
           }
           out[to] = make_uint4(pair[0], pair[1], pair[2], pair[3]);
         } else if (k < blocks::spread(n)) {
           out[to] = make_uint4(0, 0, 0, 0);
         }
-        if (tid == 0) size[units % 3u] = 2 * layout[9 * u + 8] * 16;
-        lab::bulk_fence();
+        if (tid == 0) size[(units % 3u) * U + q] = 2 * layout[9 * u + 8] * 16;
       }
+      lab::bulk_fence();
       if (tid == 0) lab::bulk_wait<1>();
       __syncthreads();
       ++units;
@@ -653,8 +681,9 @@ int main(int argc, char** argv) {
       if (threads == 512) b.expect(lab::kernel("gather_pass::dense::plane", {threads, move, 6}), "LOOP_CONVERGENCE", "<=", 64);
     }
   //: the block stream's unit is a trip, and a block's lists' scan is every warp's, a digit each, in its trip
-  b.expect(lab::kernel("gather_pass::blocks::plane", {blocks::kThreads}), "LOOP_CONVERGENCE", "<=", 64);
-  b.expect(lab::kernel("gather_pass::coefs::plane", {coefs::kThreads}), "LOOP_CONVERGENCE", "<=", 64);
+  for (int scaled : {0, 1}) b.expect(lab::kernel("gather_pass::blocks::plane", {blocks::kThreads, scaled}), "LOOP_CONVERGENCE", "<=", 64);
+  for (auto form : {std::pair<int, int>{0, 1}, {0, 4}, {1, 4}})
+    b.expect(lab::kernel("gather_pass::coefs::plane", {coefs::kThreads, form.first, form.second}), "LOOP_CONVERGENCE", "<=", 64);
   if (b.expect_only) return 0;
   constexpr int kRounds = 8, kMax = kMaxSteps<32>;
   const int windows = b.sms;
@@ -737,7 +766,7 @@ int main(int argc, char** argv) {
       using namespace blocks;
       const int room = kMax * kLines<kRecords>;
       if (kUnits * kRoomLines > room) std::exit(2);
-      const auto kernel = blocks::plane<blocks::kThreads>;
+      const auto kernel = blocks::plane<blocks::kThreads, 0>;
       LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, blocks::kSmemBytes));
       const auto launch = [&](int cta, int rounds, int stride) {
         kernel<<<cta, blocks::kThreads, blocks::kSmemBytes>>>(b.times, dvalues, drows, dmasks, dvplane, dplans, rounds, stride, room);
@@ -808,16 +837,83 @@ int main(int argc, char** argv) {
         b.record(timed, "SM-cycles a token", cycles);
       }
       {
+        //: THE SCALED VALUES: the same kernel with an entry's value lines multiplied by its sparse byte; a value
+        //: whose bits are no finite normal number is not compared
+        const auto sk = blocks::plane<blocks::kThreads, 1>;
+        LAB_CHECK(cudaFuncSetAttribute(sk, cudaFuncAttributeMaxDynamicSharedMemorySize, blocks::kSmemBytes));
+        const auto slaunch = [&](int cta, int rounds, int stride) {
+          sk<<<cta, blocks::kThreads, blocks::kSmemBytes>>>(b.times, dvalues, drows, dmasks, dvplane, dplans, rounds, stride, room);
+        };
+        const std::string sform = form + ", an entry's values multiplied by its sparse byte";
+        LAB_CHECK(cudaMemset(dvplane, 0xa5, vplane_bytes));
+        slaunch(windows, 1, 0);
+        LAB_CHECK(cudaDeviceSynchronize());
+        LAB_CHECK(cudaMemcpy(got.data(), dvplane, got.size(), cudaMemcpyDeviceToHost));
+        const auto bf16 = [](float f) { uint32_t v; std::memcpy(&v, &f, 4); return static_cast<uint16_t>((v + 0x7fffu + (v >> 16 & 1u)) >> 16); };
+        long long swrong = 0, svalues = 0;
+        for (int w = 0; w < windows; ++w) {
+          std::vector<std::vector<uint16_t>> by(kDigits);
+          for (int d = 0; d < kDigits; ++d)
+            for (int t = 0; t < kWindow; ++t)
+              if (mask[(static_cast<size_t>(w) * kDigits + d) * 32 + t / 32] >> (t % 32) & 1u) by[d].push_back(static_cast<uint16_t>(t));
+          for (int u = 0; u < kUnits; ++u) {
+            const uint8_t* const image = got.data() + (static_cast<size_t>(w) * room + static_cast<size_t>(u) * kRoomLines) * 16;
+            int e = 0;
+            for (int j = 0; j < 8; ++j) {
+              const int n = static_cast<int>(by[8 * u + j].size()), values_at = kTables + 8 * e;
+              for (int k = 0; k < n; ++k) {
+                const size_t x = static_cast<size_t>(w) * kWindow + by[8 * u + j][k];
+                const float weight = static_cast<float>(tiled[(x / kTile) * kTileBytes + (u / 2) * kBlockBytes + (x % kTile) * 16 + (8 * u + j) % 16]);
+                for (int v = 0; v < 64; ++v) {
+                  uint16_t in, out;
+                  std::memcpy(&in, hvalues.data() + x * kValueBytes + 2 * v, 2);
+                  std::memcpy(&out, image + (values_at + (v / 8) * n + k) * 16 + 2 * (v % 8), 2);
+                  const int exponent = in >> 7 & 0xff;
+                  if (exponent == 0 || exponent == 0xff) continue;
+                  uint32_t bits = static_cast<uint32_t>(in) << 16;
+                  float value;
+                  std::memcpy(&value, &bits, 4);
+                  const float product = weight * value;
+                  uint32_t pbits;
+                  std::memcpy(&pbits, &product, 4);
+                  if ((pbits >> 23 & 0xff) == 0xff) continue;
+                  ++svalues, swrong += out != bf16(product);
+                }
+              }
+              e += n;
+            }
+          }
+        }
+        b.check(sform, swrong == 0, std::to_string(swrong) + " of " + std::to_string(svalues) + " scaled values differ");
+        const lab::Samples cycles = b.variant([&] { slaunch(windows, kRounds, windows); },
+                                              [&] { return b.span(blocks::kThreads >> 5, windows) / kRounds / kWindow; });
+        b.unchecked(sform + ", a fresh window a round", "its kernel's first round is checked on every multiprocessor; this one is its time");
+        b.record(sform + ", a fresh window a round", "SM-cycles a token", cycles);
+      }
+      {
         //: THE COEFFICIENT RUNS: a dense block at a time, a slot's lists' entries' coefficients made in the step's
         //: format, checked line by line against the host's own product and rounding
         const int croom = kBlocks * coefs::kUnits * coefs::kRoomLines;
         if (static_cast<size_t>(windows) * croom * 16 > dplane_bytes) std::exit(2);
-        const auto ck = coefs::plane<coefs::kThreads>;
-        LAB_CHECK(cudaFuncSetAttribute(ck, cudaFuncAttributeMaxDynamicSharedMemorySize, coefs::kSmemBytes));
+        for (auto pick : {std::pair<int, int>{0, 1}, {0, 4}, {1, 4}}) {
+        const int widen = pick.first, slots = pick.second;
         const auto claunch = [&](int cta, int rounds, int stride) {
-          ck<<<cta, coefs::kThreads, coefs::kSmemBytes>>>(b.times, ddense, drows, dmasks, ddplane, rounds, stride, croom);
+          if (widen == 0 && slots == 1) {
+            const auto ck = coefs::plane<coefs::kThreads, 0, 1>;
+            LAB_CHECK(cudaFuncSetAttribute(ck, cudaFuncAttributeMaxDynamicSharedMemorySize, coefs::kSmemBytes<1>));
+            ck<<<cta, coefs::kThreads, (coefs::kSmemBytes<1>)>>>(b.times, ddense, drows, dmasks, ddplane, rounds, stride, croom);
+          } else if (widen == 0) {
+            const auto ck = coefs::plane<coefs::kThreads, 0, 4>;
+            LAB_CHECK(cudaFuncSetAttribute(ck, cudaFuncAttributeMaxDynamicSharedMemorySize, coefs::kSmemBytes<4>));
+            ck<<<cta, coefs::kThreads, (coefs::kSmemBytes<4>)>>>(b.times, ddense, drows, dmasks, ddplane, rounds, stride, croom);
+          } else {
+            const auto ck = coefs::plane<coefs::kThreads, 1, 4>;
+            LAB_CHECK(cudaFuncSetAttribute(ck, cudaFuncAttributeMaxDynamicSharedMemorySize, coefs::kSmemBytes<4>));
+            ck<<<cta, coefs::kThreads, (coefs::kSmemBytes<4>)>>>(b.times, ddense, drows, dmasks, ddplane, rounds, stride, croom);
+          }
         };
-        const std::string cform = "4 to 5 live digits a token, the block stream's coefficients in the step's format, every dense block's, its lists made from the mask, 512 threads";
+        const std::string cform = std::string("4 to 5 live digits a token, the block stream's coefficients in the step's format, every dense block's, its lists made from the mask, 512 threads")
+                                  + (widen ? ", the dense digits widened alone" : "") + (slots == 4 ? ", four slots a trip" : "");
         LAB_CHECK(cudaMemset(ddplane, 0xa5, dplane_bytes));
         claunch(windows, 1, 0);
         LAB_CHECK(cudaDeviceSynchronize());
@@ -842,7 +938,7 @@ int main(int argc, char** argv) {
                     uint16_t want[8] = {};
                     if (k < n) {
                       const size_t x = static_cast<size_t>(w) * kWindow + by[8 * u + j][k];
-                      const float weight = static_cast<float>(tiled[(x / kTile) * kTileBytes + (u / 2) * kBlockBytes + (x % kTile) * 16 + (8 * u + j) % 16]);
+                      const float weight = widen ? 1.0f : static_cast<float>(tiled[(x / kTile) * kTileBytes + (u / 2) * kBlockBytes + (x % kTile) * 16 + (8 * u + j) % 16]);
                       for (int c = 0; c < 8; ++c)
                         want[c] = bf16(weight * static_cast<float>(hdense[(x / kTile) * kTileBytes + db * kBlockBytes + (x % kTile) * 16 + 8 * br + c]));
                     }
@@ -860,6 +956,7 @@ int main(int argc, char** argv) {
           const std::string timed = cform + (quarter ? ", a quarter of the multiprocessors" : "") + ", a fresh window a round";
           b.unchecked(timed, "its kernel's first round is checked on every multiprocessor; this one is its time");
           b.record(timed, "SM-cycles a token", cycles);
+        }
         }
       }
     }
