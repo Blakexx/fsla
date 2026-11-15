@@ -41,7 +41,8 @@ experiments written before these checks; the list only shrinks) is refused by `r
 comment states a `TIMELINE:` -- each phase's stream, which load is a stage ahead of which use, the live registers;
 it is refused too where its source has a warp collective after a conditional's `?` (`collective_selected`: only
 the lanes the condition takes reach a collective every lane must), and where a kernel sums a cycle-counter
-reading in uniform registers (`clocks_summed_uniform`: a phase clock is each thread's own arithmetic). And EVERY kernel of it, budgeted or exempt, is held to five counts, each zero unless the experiment
+reading in uniform registers past the count it declares (`clocks_summed_uniform`, `CLOCK_UNIFORM`: a lap's sum is
+each thread's own). And EVERY kernel of it, budgeted or exempt, is held to five counts, each zero unless the experiment
 declares it (`Bench::expect(kernel, NAME, "<=", n)`): `LOOP_CONVERGENCE`; `LOAD_IN_TRIP`, the global loads whose
 value an instruction of the same innermost trip reads; `STORE_RELOAD`, the shared loads of an address the same trip
 stored to; `STORE_UNFENCED`, in a kernel that holds a wgmma, the barrier arrivals that follow a shared store with no

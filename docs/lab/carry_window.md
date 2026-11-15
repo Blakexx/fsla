@@ -122,8 +122,6 @@ its producer.
 THE FOLD EXPANDS (a pair, even lists). A producer only issues a slot's 8 copies, when the fold frees the slot; the
 slot's fold warpgroup waits on their bytes and expands them itself -- its 128 threads the slot's 128 entries at
 once, a thread an entry, where one producer warp takes four trips of 32 -- then its barrier and its 8 steps.
-The pair's fold-alone row has its folds at 168 registers a thread and its serve warps 16 fewer: its wait's count
-is each thread's own.
 Further rows have THE FOLD ISSUE ITS OWN COPIES -- the window after's, as it leaves the slot: no producer warp
 runs and no slot is handed back; a fold thread is then at 168 registers and a serve thread 16 fewer (96 beside
 the lean readout), the copies' addresses held beside the state; alone and clocked the form does not fit a fold
@@ -182,7 +180,7 @@ recorded with its wait on the drain in it.
 The clocked rows of the block form and of the even lists' self-issuing form clock THE FOLD'S PHASES too: the
 image's publishing (its wait on the readout's read in it); its entries' expansion, from a slot's bytes landed;
 the block form's pads and steps' operands; the slot's fence; the warpgroup's barrier; and its steps with the
-next copy's issue, the two slots' fences and rendezvous apart. A clocked fold holds nine more registers, and every role's clock reading is each thread's own
+next copy's issue, the two slots' fences and rendezvous apart. A clocked fold holds nine more registers, and its phase laps' readings are each thread's own
 ([`LEARNINGS.md`](../internals/LEARNINGS.md#lap-in-uniform)).
 A CONTROL, both forms, with and without clocks: the fold stores its landed bytes AS THEY ARE to its coefficient
 lines -- no conversion, no product, no sparse byte. Its sums are not the carry's: an isolation, unchecked.
@@ -199,8 +197,9 @@ A PAIR WITH EVERY WAIT POLLED (the even lists' form): a wait is a loop of tests,
 warp. THE QUESTION: whether a fold warp's time at its rendezvous is its warpgroup's warps returning from a
 suspended wait at different times. Checked, exact.
 
-NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, each
-thread's own, their counts held in its registers: a clocked row's window is longer than its work. Rows of the winner's form and the den's, at both cells, and the den's chain run with no
+NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
+the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
+through uniform registers in the den's. Rows of the winner's form and the den's, at both cells, and the den's chain run with no
 clock read inside a role: their windows are the roles' own work, and their difference is the den's.
 
 ROWS: the fold's side alone (producers and steps), the read side alone (the image, the readout and the drain),

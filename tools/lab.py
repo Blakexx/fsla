@@ -167,7 +167,7 @@ _PRE_TIMELINE = {"bulk_drain", "byte_expand", "cluster_sum", "collective_branch"
                  "issue_latency", "reg_trade", "row_ring", "row_span", "smem_rates", "state_move", "tensor_tax",
                  "vote_stash", "wgmma_rate", "wgmma_regs"}
 #: the hazards an experiment may declare a count of (`Bench::expect(kernel, NAME, "<=", n)`), beside its opcodes
-HAZARDS = ("LOOP_CONVERGENCE", "LOAD_IN_TRIP", "STORE_RELOAD", "STORE_UNFENCED", "STEPS_SERIALIZED")
+HAZARDS = ("LOOP_CONVERGENCE", "LOAD_IN_TRIP", "STORE_RELOAD", "STORE_UNFENCED", "STEPS_SERIALIZED", "CLOCK_UNIFORM")
 
 
 #: a warp collective after the `?` of a statement's conditional: only the lanes the condition takes reach it
@@ -361,9 +361,12 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
             failures.append(f"{experiment}: its header states no TIMELINE -- each phase's stream and which load is a "
                             "stage ahead of which use, written before the kernel (docs/internals/LEARNINGS.md)")
         for k, n in clocks_summed_uniform(binary).items():
-            if n:
-                failures.append(f"{k}: {n} sums of a cycle-counter reading in uniform registers -- a phase clock is "
-                                "each thread's own arithmetic (docs/internals/LEARNINGS.md, lap-in-uniform)")
+            declared = max((e["count"] for e in expected if e["op"] == "CLOCK_UNIFORM" and re.search(e["kernel"], k)),
+                           default=0)
+            if n > declared:
+                failures.append(f"{k}: {n} sums of a cycle-counter reading in uniform registers, {declared} declared "
+                                "(CLOCK_UNIFORM): a lap's sum is each thread's own (docs/internals/LEARNINGS.md, "
+                                "lap-in-uniform)")
         for at in collective_selected(experiments()[experiment]):
             failures.append(f"{experiment}: line {at}: a warp collective is an operand of a conditional -- every "
                             "lane takes it, and the select follows (docs/internals/LEARNINGS.md)")
