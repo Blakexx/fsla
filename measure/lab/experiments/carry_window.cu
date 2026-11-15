@@ -1079,9 +1079,9 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         together<ROLES>(bars + kMeet + 8 * box, 0u, kPoolId + box);
         if constexpr (fold_clocked<ROLES>) in_sync0 += lap_own(since);
         lab::wg_fence();
-        //: both slots' operands from one address: the second slot's are `kApart` words behind the first's
+        //: both slots' operands from one address: the second slot's are `kBehind` words behind the first's
         static_assert((kOneStepsAt - kStepsAt) % 8 == 0);
-        constexpr int kApart = (kOneStepsAt - kStepsAt) / 8;
+        constexpr int kBehind = (kOneStepsAt - kStepsAt) / 8;
         const uint64_t* const steps = reinterpret_cast<const uint64_t*>(smem + kStepsAt + box * 256);
 #pragma unroll
         for (int r = 0; r < kBlockRounds; ++r)
@@ -1091,7 +1091,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
             for (int j = 0; j < 8; ++j) {
               //: a step's operands are loaded at its own issue: the edge keeps the window's loads from one register set
               asm volatile("" ::: "memory");
-              lab::wg_bf16_n16_ss_mn(d[8 * slot + j], steps[slot * kApart + 2 * (8 * r + j)], steps[slot * kApart + 2 * (8 * r + j) + 1], w != 0 || r != 0);
+              lab::wg_bf16_n16_ss_mn(d[8 * slot + j], steps[slot * kBehind + 2 * (8 * r + j)], steps[slot * kBehind + 2 * (8 * r + j) + 1], w != 0 || r != 0);
             }
         lab::wg_commit();
         if constexpr (fold_clocked<ROLES>) in_issue += lap_own(since);

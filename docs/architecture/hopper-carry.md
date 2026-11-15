@@ -24,9 +24,8 @@ Through registers -- ruled "if they actually fit" -- they fit, two value lines a
 MEASURED, a fold's fill is then seven times the block form's -- what of it is its loads' round trips is not
 isolated -- and KERNEL_STANDARDS 33 stages contiguous rows by bulk copy. A view landed by bulk copy and moved in shared memory is MEASURED
 on half-window views at a quarter over values that land in place by digit -- the move doubles the fold's shared-memory
-traffic -- and one view a window staged so does not fit beside its slices. MEASURED too: one view's structure, 32
-steps one block behind one rendezvous, takes the fold's steps' issue to three fifths and
-its rendezvous to a quarter of the two-slot form's ([`lab/carry_window.md`](../lab/carry_window.md)). A token live on two digits of one block is one token of the list and an entry of
+traffic -- and one view a window staged so does not fit beside its slices. MEASURED too, where the values land in place: the window's two slots laid before one
+rendezvous and its 32 steps one block do not move the window ([`lab/carry_window.md`](../lab/carry_window.md)). A token live on two digits of one block is one token of the list and an entry of
 each digit's slice. Where a CTA's dense digits come from -- a segment of the stream a dense block, or the bundle's
 dense rows -- is OPEN. The stream is WORKSPACE, and A RING (RULED 2026-11-15): a few windows a CTA group, rewritten as
 the carry consumes them, so global memory holds windows of it and never a segment's. IT IS FED BY PERSISTENT GATHER
@@ -140,7 +139,7 @@ NOT STATED. No blackwell carry is designed and no blackwell card measured.
 ## To be ruled before it is built
 
 1. How the token view reaches the slices, or whether the stream is laid by digit again: the measured price of the
-   move is above. The padding form for a short reader list's last step (the fold's is ruled: zero lines).
+   move is above. 
 2. The read side's step tables: who makes them, from what.
 3. The carry's price taken at the cold figure, the kernel built to that and the open staging questions measured in
    it.
