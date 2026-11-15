@@ -80,7 +80,9 @@
 // next copies -- the window after's -- as it leaves the slot, a window's steps ahead of their use (THE LATE-ISSUE
 // rows: both slots' behind the second slot's steps, the image's publishing ahead of their use. THE SHARED rows: a
 // warp's first two lanes issue two of the slot's 8, each behind its own wait on the slot's steps -- the
-// warpgroup's one operation, complete for every warp at once -- so no warp's copy precedes another's read); the serve
+// warpgroup's one operation, complete for every warp at once -- so no warp's copy precedes another's read; in the
+// block form the plans' load and the slot's one copy are its second warp's first thread's, a step's operands a
+// warp's first four lanes' and the pads a warp in turn, each behind the same edges as the form's); the serve
 // warpgroup's other two warps idle, or with FOUR DRAIN WARPS take 16 of a chunk's 64 tokens each. THE SUM-A-BOX
 // rows' readout holds two accumulators, 64 words beside its 16 of A: a chunk's steps are two chains of 4. THE
 // MIRRORED READOUT's chunk: the wait on its tile group; a thread's (token, box) -- 16 bytes loaded a chunk ahead --
@@ -749,11 +751,12 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
           }
         }
         if constexpr (fold_clocked<ROLES>) in_expand += lap_own(since);
-        //: its PAD LINE of the second runs, where the image's count reaches it
+        //: its PAD LINE of the second runs, where the image's count reaches it (the shared rows: the pads a warp in turn)
         const int pad = ROLES & kShare ? (g & 31) << 2 | g >> 5 : g;
         if (static_cast<uint32_t>(pad) < *reinterpret_cast<const uint32_t*>(image + kImageHead * 16))
           *reinterpret_cast<uint4*>(image + reinterpret_cast<const uint16_t*>(image + kImagePads * 16)[pad] * 16) = make_uint4(0, 0, 0, 0);
-        //: and, a thread of the first 16, ITS STEP's operands from the image's four halves
+        //: and, a thread of the first 16 (the shared rows: a warp's first four lanes), ITS STEP's operands from the
+        //: image's four halves
         const int made = ROLES & kShare ? ((g & 31) < 4 ? 4 * (g >> 5) + (g & 31) : 8 * kBlockRounds) : g;
         if (made < 8 * kBlockRounds) {
           const uint16_t* const step = reinterpret_cast<const uint16_t*>(image + kImageSteps * 16) + 4 * made;

@@ -198,11 +198,11 @@ warp. THE QUESTION: whether a fold warp's time at its rendezvous is its warpgrou
 suspended wait at different times. Checked, exact.
 A PAIR WITH THE COPIES ISSUED TWO A WARP (the even lists' form): a slot's 8 copies are its four warps' first two
 lanes', where the form's first warp issues all 8. THE QUESTION: whether the rendezvous is the warpgroup waiting
-for the warp that issues. Checked, exact. A clocked fold's sites are recorded for its warpgroups' first warps
+for the warp that issues. Checked as the form's rows are. A clocked fold's sites are recorded for its warpgroups' first warps
 alone beside every warp's mean.
 THE BLOCK FORM'S SHARED PAIR: its plans and its one copy a slot are its second warp's first thread's, its 16
 steps' operands four a warp, its pads a warp in turn -- no warp of the warpgroup holds more of the slot's lone
-jobs than another. Checked, exact.
+jobs than another. Checked as the form's rows are.
 
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
