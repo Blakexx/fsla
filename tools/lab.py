@@ -765,6 +765,46 @@ def carried(name: str, source: Path, into: Path, opts) -> int:
     return measure(name, arch, binary, built["kernels"], opts, built=built, into=into)
 
 
+def ledger_dumps(name: str, source: Path, into: Path, patterns: list[str]) -> int:
+    """A CARRIED LEDGER'S DUMPS, made on a box with no toolkit: the pack's binary by its digest, then each kernel whose
+    demangled name a pattern matches profiled once (its first launch, ncu's SourceCounters) into
+    `ledger_<its template numbers>.csv`, and `ledger.json` naming the binary's digest and each kernel's file -- read back
+    where the toolkit is by `ledger --packed --dump`."""
+    arch = sass.device_arch()
+    binary = source / f"{name}.{arch}"
+    built = json.loads((source / f"{binary.name}.pack.json").read_text())
+    if hashlib.sha256(binary.read_bytes()).hexdigest() != built["sha256"]:
+        print(f"lab: {binary} is not the binary its pack describes")
+        return 1
+    chosen = [k for k in built["kernels"] if any(re.search(p, k) for p in patterns)]
+    if not chosen:
+        print(f"lab: no kernel of {name}'s pack matches {patterns}")
+        return 1
+    into.mkdir(parents=True, exist_ok=True)
+    extra, _ = inputs(name)
+    files = {}
+    for k in chosen:
+        ids = re.findall(r"\d{4,}", k.split("(")[0] if "<" not in k else k[:k.index(">") + 1])
+        if not ids:
+            print(f"lab: {k[:80]} has no template number to name its dump by")
+            return 1
+        core = k[:k.index(">") + 1].split("::")[-1] if "<" in k else k.split("(")[0].split("::")[-1]
+        out = subprocess.run([dev_config.ncu(), "--kernel-name-base", "demangled", "--kernel-name",
+                              f"regex:{re.escape(core)}", "--launch-count", "1", "--section", "SourceCounters",
+                              "--page", "source", "--print-source", "sass", "--csv", str(binary), "--reps", "1",
+                              *extra], capture_output=True, text=True, timeout=900)
+        dump = into / f"ledger_{'_'.join(ids)}.csv"
+        dump.write_text(out.stdout)
+        if out.returncode != 0 or not region_ledger.read_source_counters(dump):
+            print(f"lab: {k[:80]}: no SourceCounters (exit {out.returncode}): {out.stderr[-400:]}")
+            return 1
+        files[k] = dump.name
+        print(f"lab: {dump.name}: {k[:90]}")
+    (into / "ledger.json").write_text(json.dumps({"experiment": name, "arch": arch, "sha256": built["sha256"],
+                                                   "git": built.get("git"), "dumps": files}, indent=1) + "\n")
+    return 0
+
+
 def run(name: str, opts) -> int:
     arch = sass.device_arch()
     binary = build(experiments()[name], arch)
@@ -828,7 +868,7 @@ def phases(source: Path) -> list[tuple[int, str]]:
 
 
 def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, packed: Path | None = None,
-           arch: str | None = None, per: float | None = None) -> int:
+           arch: str | None = None, per: float | None = None, top: int = 16) -> int:
     """KERNEL_STANDARDS section 29.13: each kernel's executed instructions by phase (its source's `//:` headings), per
     declared unit or per launch -- ncu's SourceCounters of the kernel's first launch, each SASS offset mapped to its
     innermost line in the experiment's source (the lab builds carry `-lineinfo`) -- with each phase's shared-memory
@@ -837,6 +877,20 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
     `per` divides every count (a launch's CTA-windows)."""
     arch = arch or sass.device_arch()
     path = experiments()[name]
+    manifest = None
+    if dumps is not None:
+        #: a carried ledger maps the dumps through the very binary they profiled: its digest the dumps' manifest's
+        if packed is None:
+            print("lab: --dump needs --packed, the binary the dumps profiled")
+            return 1
+        found = {d.parent / "ledger.json" for d in dumps}
+        if len(found) != 1 or not next(iter(found)).exists():
+            print(f"lab: the dumps' manifest (ledger.json beside them, `lab ledger-dumps`) is not one file: {sorted(found)}")
+            return 1
+        manifest = json.loads(next(iter(found)).read_text())
+        if hashlib.sha256(packed.read_bytes()).hexdigest() != manifest["sha256"]:
+            print(f"lab: {packed} is not the binary the dumps profiled ({manifest['sha256'][:12]})")
+            return 1
     binary = packed if packed else build(path, arch)
     table = kernels(binary)
     extra, _ = inputs(name)
@@ -854,14 +908,13 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
         if pattern and not re.search(pattern, k):
             continue
         core = k.split("(")[0].split("::")[-1] if "<" not in k else k[:k.index(">") + 1].split("::")[-1]
-        if dumps is not None:
-            #: a carried dump is the kernel's whose file name holds its template arguments' numbers
-            #: (`ledger_<roles>.csv`, the box's script's name)
-            ids = re.findall(r"\d{4,}", core)
-            found = [d for d in dumps if ids and all(i in d.stem for i in ids)]
-            if len(found) != 1:
-                continue
-            csv_path = found[0]
+        if manifest is not None:
+            #: a carried kernel's dump is the one its manifest names; a kernel the pattern chose without one is refused
+            named = manifest["dumps"].get(k)
+            if named is None or not any(d.name == named for d in dumps):
+                print(f"lab: {k[:90]}: no dump of it among {[d.name for d in dumps]}")
+                return 1
+            csv_path = next(d for d in dumps if d.name == named)
         else:
             out = subprocess.run([dev_config.ncu(), "--kernel-name-base", "demangled", "--kernel-name",
                                   f"regex:{re.escape(core)}", "--launch-count", "1", "--section", "SourceCounters",
@@ -880,15 +933,22 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
         div, unit = (per, "CTA-window") if per else units.get(k, (1.0, "launch"))
         #: a phase's executed instructions, shared wavefronts, those a conflict-free access would not take, samples
         by: dict[str, list[float]] = {}
+        #: and each source line's shared wavefronts by the kind of instruction that issued them
+        sites: dict[tuple[int, str], float] = {}
         for at, executed, samples, _ in rows:
             lines = [ln for f, ln in frames.get(at - base, []) if f == path.name]
             head = next((h for first, h in reversed(heads) if lines and first <= lines[0]), "(outside the source)")
-            _, waves, ideal = detail.get(at, ("?", 0, 0))
+            op, waves, ideal = detail.get(at, ("?", 0, 0))
             acc = by.setdefault(head, [0.0, 0.0, 0.0, 0.0])
             acc[0] += executed / div
             acc[1] += waves / div
             acc[2] += max(waves - ideal, 0) / div
             acc[3] += samples
+            if waves:
+                kind = ("wgmma operands" if op.startswith("HGMMA") else "stores" if op.startswith(("STS", "ATOMS", "REDS"))
+                        else "loads" if op.startswith(("LDS", "LDSM")) else op)
+                key = (lines[0] if lines else 0, kind)
+                sites[key] = sites.get(key, 0.0) + waves / div
         total = sum(v[0] for v in by.values())
         waves_all = sum(v[1] for v in by.values())
         samples_all = max(sum(v[3] for v in by.values()), 1.0)
@@ -896,6 +956,11 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
         print(f"    {'instructions':>12}  {'wavefronts':>10}  {'conflicts':>9}  {'samples %':>9}  phase")
         for head, (n, w, c, smp) in sorted(by.items(), key=lambda x: -x[1][1]):
             print(f"    {n:12,.1f}  {w:10,.1f}  {c:9,.1f}  {100 * smp / samples_all:8.1f}%  {head}")
+        source = path.read_text().splitlines()
+        print(f"    the source lines that issue its shared wavefronts, a {unit}:")
+        for (line, kind), w in sorted(sites.items(), key=lambda x: -x[1])[:top]:
+            text = source[line - 1].strip()[:80] if 0 < line <= len(source) else "(outside the source)"
+            print(f"    {w:10,.1f}  {kind:15}  line {line:5}  {text}")
     return 0
 
 
@@ -1037,6 +1102,12 @@ def main() -> int:
                    help="a SourceCounters CSV a box made of --packed, `ledger_<kernel core>.csv`; repeat for several")
     g.add_argument("--packed", type=Path, help="the binary `lab pack` built that the dumps profiled")
     g.add_argument("--per", type=float, help="divide every count by this: the profiled launch's CTA-windows")
+    g.add_argument("--top", type=int, default=16, help="the source lines shown, by their shared wavefronts")
+    m = sub.add_parser("ledger-dumps", help="on a box without the toolkit: profile a pack's kernels for a carried ledger")
+    m.add_argument("experiment")
+    m.add_argument("--from", dest="source", required=True, type=Path)
+    m.add_argument("--into", required=True, type=Path)
+    m.add_argument("--kernel", action="append", required=True, help="a regex over the demangled kernel names; repeat")
     n = sub.add_parser("ncu")
     n.add_argument("experiment")
     n.add_argument("--metric", action="append", required=True, help="an ncu metric; repeat for several")
@@ -1058,10 +1129,12 @@ def main() -> int:
         return show_sass(args.experiment, args.kernel, args.full, args.arch)
     if args.cmd == "ncu":
         return counters(args.experiment, args.metric, args.record)
+    if args.cmd == "ledger-dumps":
+        return ledger_dumps(args.experiment, args.source, args.into, args.kernel)
     if args.cmd == "ledger":
         if args.static:
             return static_ledger(args.experiment, args.kernel, args.arch)
-        return ledger(args.experiment, args.kernel, args.dump, args.packed, args.arch, args.per)
+        return ledger(args.experiment, args.kernel, args.dump, args.packed, args.arch, args.per, args.top)
     return run(args.experiment, args)
 
 

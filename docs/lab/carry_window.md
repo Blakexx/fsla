@@ -696,4 +696,18 @@ WHAT IT SHOWS.
   SO, BY COUNTS: issue some half of each window, the tensor pipe 96 steps of 20 cycles ([`wgmma_width`](wgmma_width.md)),
   the adds 256 lines of some 9 by four warps ([`add_rate`](add_rate.md)); THE SHARED-MEMORY PIPE, unpriced here, is the one the
   counts put nearest the whole window, and a wavefront's price on this card is what decides it.
-Record: `measure/lab/results/carry_window/sm_90a.json`.
+Record: `measure/lab/results/carry_window/sm_90a.json`; the phase ledger's dumps:
+`measure/lab/results/carry_window/ledger_sm_90a/ledger.json` and the dumps beside it.
+
+THE PHASE LEDGER (H100 SXM on Nebius, the pack at 2ff04902, `lab ledger --packed --dump --per 528`: each kernel's
+checked launch, 4 windows on 132 CTAs, profiled by ncu's SourceCounters; a CTA-window). SHARED-MEMORY WAVEFRONTS: the
+block form 4,238, the form with the fold's operands made 3,886, both sides' made 3,758 -- the bulk copies' writes not
+among them. WGMMA'S OPERAND READS ARE COUNTED AND ARE HALF OF IT: 1,920 in every form, 20 a step (its 2 KB of A and
+512 B of B at 128 bytes a wavefront), 1,280 of them the fold's 64 steps and 640 the readout's 32; the fold's two steps
+a list are issued whatever the list holds, so at lists of 8 to 24 entries some half of its operands' reads are of
+pads. THEN, both sides made: the steps' operand fields loaded at each step's issue, 512 (16 bytes a thread a step,
+every lane the same line); the readout's sums to the panel as 16-bit halves, 512; the image's stores, 384; the drains'
+loads of the panel, 256; the images cleared at the launch's start, 161 (once a launch). The block form adds its
+expansion (some 290) and the readout's coefficient tiles (128). Bank conflicts: none in the made forms, 56 in the
+block form's expansion and pads. The launch profiled stores the fold's state out too, so its stall samples are the
+dump's, not the window's.
