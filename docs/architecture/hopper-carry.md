@@ -37,13 +37,13 @@ with each entry's token index, where the drain adds; its head is not designed. A
 boxes that share it and costs the carry the same whether the cache held it before or not
 ([`lab/carry_window.md`](../lab/carry_window.md)) -- WHILE those boxes read it close together: boxes that drift
 apart, as their read sides' counts differ, are not measured.
-WHAT IS MEASURED IS A STREAM OF BYTES: a slot whose coefficients are an entry's 16 dense bytes and its sparse
-byte, expanded by the fold where they land, its head tables that say where each entry's lines and each step's
-operands are -- the carry filling from it at lists of 8 to 24 entries and no list past two steps
-([`lab/carry_window.md`](../lab/carry_window.md)), and the pass writing its shared part from the mask alone at
-lists of 16 to 19 ([`lab/gather_pass.md`](../lab/gather_pass.md)). NOT MEASURED: the carry fed coefficients in
-the step's format; the pass writing them; its dense part in either form; the read side's stream; lists past two
-steps.
+MEASURED, in the carry, from streams the host laid at lists of 8 to 24 entries and no list past two steps
+([`lab/carry_window.md`](../lab/carry_window.md)): this form, the fold landing a slot and stepping it, and beside
+it a stream of BYTES -- an entry's 16 dense bytes and its sparse byte, the fold expanding them where they land,
+its head tables for each entry's lines and each step's operands -- which is the longer of the two. MEASURED, the
+pass: the byte stream's shared part written from the mask alone, at lists of 16 to 19
+([`lab/gather_pass.md`](../lab/gather_pass.md)). NOT MEASURED: the pass writing coefficients in the step's
+format; its dense part in either form; the read side's stream; the ring; lists past two steps.
 
 ## What it is handed
 
@@ -117,8 +117,9 @@ Every figure is [`lab/carry_window.md`](../lab/carry_window.md)'s, at the hardes
 on a different level, 256 by 256 leaves, 4 live digits a token -- with the readout on synthetic readers; that page
 holds the numbers, which follow the card a session ran on. Their order: whole entries landed from a stream its 16
 boxes share, read before or not, cost the least; the carry gathering its entries from lists itself some two
-thirds more; a stream no box shares more again. THOSE ARE AT 16 ENTRIES A LIST. With the lab's stream -- its coefficients bytes the fold expands -- and its
-lists uneven, 8 to 24, the window is MEASURED at 1.29 times the even lists' under the same readout and drains. At even lists
+thirds more; a stream no box shares more again. THOSE ARE AT 16 ENTRIES A LIST. With lists uneven, 8 to 24, the window is MEASURED some 7% over the even lists'
+where a slot lands with its operands made, and some 30% over where the fold expands bytes, under the same readout
+and drains: the lab page holds the figures. At even lists
 the form above -- no producer, the readout mirrored, four drain warps -- is the least of the composed forms
 measured; the lab page holds what is and is not isolated on the uneven stream. To each the stream's pass adds ([`lab/gather_pass.md`](../lab/gather_pass.md)).
 The den was 5% of the window with the readout's coefficients in registers, and is not measured in the form above; the intra, a kernel of its own launched beside the carry, a fifth of it

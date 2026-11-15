@@ -785,13 +785,14 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         const uint64_t* const steps = ROLES & kReady ? reinterpret_cast<const uint64_t*>(image)
                                                      : reinterpret_cast<const uint64_t*>(smem + kStepsAt + box * 256);
         //: a ready operand's first word holds its tile's line: the slot's own line is added to that word alone
-        const uint32_t at_pool = ROLES & kReady ? static_cast<uint32_t>(lab::wg_desc(base + pool, 0, 0)) : 0u;
+        const uint32_t at_pool = static_cast<uint32_t>(lab::wg_desc(base + pool, 0, 0));
         lab::wg_fence();
 #pragma unroll
         for (int r = 0; r < kBlockRounds; ++r)
 #pragma unroll
           for (int j = 0; j < 8; ++j) {
-            //: a step's two operands are loaded at its own issue: the edge keeps the 32 loads from one register set
+            //: a step's operands are loaded at its own issue -- two words, or a ready step's one line: the edge keeps
+            //: the slot's loads from one register set
             asm volatile("" ::: "memory");
             if constexpr ((ROLES & kReady) != 0) {
               const uint4 two = reinterpret_cast<const uint4*>(steps)[8 * r + j];
@@ -2069,12 +2070,12 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
       LAB_CHECK(cudaDeviceSynchronize());
       const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
       clock_rate.v.push_back(b.span(kWarps) / seconds / 1e9);
-      wall.v.push_back(seconds * 1000.0 * (65536.0 / (static_cast<double>(kLong) * 4 * kWindow)));
+      wall.v.push_back(seconds * 1000.0 * (65536.0 / (static_cast<double>(kLong) * 8 * b.sms)));
     }
     b.unchecked(name + ": the card's clock", "a rate read off this row's long call, which the row checks");
     b.record(name + ": the card's clock, the long call's span over its wall time", "GHz", clock_rate);
     //: THE WALL TIME, the headline a drifting clock cannot touch: the long call's seconds scaled to 65,536 tokens
-    //: (a window is 4 x kWindow = 1,024 tokens across the call's CTAs)
+    //: (a window is 8 tokens a CTA, the card's CTAs one a multiprocessor)
     b.unchecked(name + ": by wall time, scaled to 65,536 tokens",
                 "the same launches as the card's clock: the row checks the kernel");
     b.record(name + ": the long call by wall time, scaled to 65,536 tokens", "milliseconds", wall);
