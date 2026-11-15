@@ -679,17 +679,20 @@ WHAT IT SHOWS.
 - EVERY ROLE ISSUES AN INSTRUCTION EVERY 3.5 TO 7 CYCLES of its busy time (the static ledger's counts a trip: a
   producer 168 a batch, a drain warp 339 a chunk, the readout 284 a chunk, a fold warp 379 a window): no role is
   bound by the instructions it issues, and what holds each is not isolated.
-- THE COUNTERS (the profiler's, each kernel's checked launch of 4 windows a CTA, which also stores the state out; a
-  CTA a window) OF THE BLOCK FORM, THE FORM WITH THE FOLD'S OPERANDS MADE, AND WITH BOTH SIDES': 13,123, 12,127 and
-  10,886 instructions a warp -- at four a cycle 3,281, 3,032 and 2,722 cycles of issue, about half of each window;
-  384 wgmma issues a warp (96 steps); 4,972, 4,504 and 4,439 shared-memory wavefronts (1,908 loads' and
-  2,243 stores' in the block form, 598 of them bank conflicts) -- NOT PRICED: this architecture declares no
-  rate and no lab has measured a wavefront on it; 256, 128 and 0 conversion-unit instructions, the expansions'
-  alone; 256 add requests, a token's line each; 88 KB read from the cache. STALLED, of a warp's
-  waiting cycles: the block form 42% on the global-memory queue, 14% on global data and 11% on the
-  shared-memory queue; with both sides' operands made 41%, 29% and 10% in that order. What a warp asleep
-  at a barrier's wait is counted as is NOT KNOWN, so the two queues' shares are not read as those pipes being full.
-  SO, BY COUNTS, NO PIPE IS PRICED ABOVE SOME HALF OF THE WINDOW: issue about half, the tensor pipe 96 steps of 20
-  cycles ([`wgmma_width`](wgmma_width.md)), the adds 256 lines of some 10 ([`add_rate`](add_rate.md)).
-
+- THE COUNTERS (the profiler's, each kernel's checked launch of 4 windows a CTA, which also stores the fold's state
+  out -- 128 stores a thread, each over 32 lines, which the timed windows leave out; a CTA a window, its 16 warps
+  together) OF THE BLOCK FORM, THE FORM WITH THE FOLD'S OPERANDS MADE, AND WITH BOTH SIDES': 13,123, 12,127 and
+  10,886 warp-instructions -- over four schedulers 3,281, 3,032 and 2,722 cycles of issue, about half of each window;
+  384 wgmma issues (96 steps, a warpgroup's four warps each); 4,972, 4,504 and 4,439 shared-memory wavefronts
+  (1,908 loads' and 2,243 stores' in the block form, 598 of them bank conflicts) -- NOT PRICED on this
+  architecture, which declares no rate: at the A100's one a cycle (`hardware.json`, sm_80) they would be 73% of the block
+  form's window (6,828) and 86% of the both-sides form's (5,189); 256, 128 and 0
+  conversion-unit instructions, the expansions' alone; 256 add requests, a token's line each; 88 KB read from the cache.
+  STALLED, of a warp's waiting cycles: the block form 42% on the global-memory queue -- the checked launch's state stores
+  among them -- 14% on global data and 11% on the shared-memory queue; with both sides' operands made 41% on the
+  shared-memory queue, 29% on the global-memory queue and 10% on global data. What a warp asleep at a barrier's wait is
+  counted as is NOT KNOWN.
+  SO, BY COUNTS: issue some half of each window, the tensor pipe 96 steps of 20 cycles ([`wgmma_width`](wgmma_width.md)),
+  the adds 256 lines of some 8.5 ([`add_rate`](add_rate.md)); THE SHARED-MEMORY PIPE, unpriced here, is the one the
+  counts put nearest the whole window, and a wavefront's price on this card is what decides it.
 Record: `measure/lab/results/carry_window/sm_90a.json`.
