@@ -101,7 +101,7 @@ boxes each read and every launch reads again. One pair gives EACH BOX ITS OWN, 6
 keeps the 16 columns and runs 128 windows of their own addresses, 80 MB: a window's bytes are read by its 16
 boxes at once and, by the sizes, are not in a cache of 50 MB when the first asks.
 
-THE STREAM AS RULED (a pair; [`hopper-carry.md`](../architecture/hopper-carry.md#the-gather-stream)). The same 256
+THE PACKED STREAM (a pair; [`hopper-carry.md`](../architecture/hopper-carry.md#the-gather-stream)). The same 256
 entries a box a window fall UNEVENLY on its 16 lists, 8 to 24 a list. A list's full steps are whole-entry tiles; its
 last, part-filled step is stored TRUNCATED -- each value brick only the lines of the entries it has, then their
 dense lines and a line of their sparse bytes -- so nothing of a pad crosses global memory. A window's steps are
@@ -204,6 +204,13 @@ alone beside every warp's mean.
 THE BLOCK FORM'S SHARED PAIR: its plans and its one copy a slot are its second warp's first thread's, its 16
 steps' operands four a warp, its pads a warp in turn -- no warp of the warpgroup holds more of the slot's lone
 jobs than another. Checked as the form's rows are.
+THE READY PAIR (the block form; [`hopper-carry.md`](../architecture/hopper-carry.md#the-gather-stream)): a slot
+LANDS WITH ITS OPERANDS MADE -- its head the 16 steps' two operands as a slot at address 0 has them, a tile of
+zeros for an absent step's, its lists' value runs, and its coefficients bf16, a brick a run, padded with zero lines
+to the lists' steps -- and the fold waits on its bytes, adds its slot's address to each operand and steps: it
+writes no shared memory but its window's plan, so it has no fence and no rendezvous. THE QUESTION: what the
+fold's expansion, pads, operands, fence and rendezvous cost the uneven lists' window. The host lays the stream; a
+slot's copy is some 14% more bytes. Checked as the form's rows are.
 
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,

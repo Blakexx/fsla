@@ -29,7 +29,7 @@ kernels with CTAs on A QUARTER of the multiprocessors, and the dense plane with 
 (four copies out in flight where three buffers allow one). Every line and pad of each moved form's first round is
 checked on every multiprocessor, each byte of the tables its own position's.
 
-THE STREAM, TOKEN-ORDERED (not the ruled stream, which is laid as the carry's blocks --
+THE STREAM, TOKEN-ORDERED (not the design's stream, which is laid as the carry's blocks --
 [`hopper-carry.md`](../architecture/hopper-carry.md#the-gather-stream) -- and is the block stream's rows below). The same
 two kernels fed lists BY SPARSE BLOCK, not by digit: a block's live tokens once each, in token order, padded to 16
 only at the block's end. The values kernel writes RECORDS -- a token's 8 value lines and then its line of the
@@ -41,10 +41,10 @@ multiprocessors, each CTA rewriting its own region every round, beside the same 
 round: the same reads, eight times the planes' footprint (at the sparse cell 16 CTAs' rings are some 30 MB of a
 cache of 50 and their new regions 240; at 32 live digits neither fits).
 
-THE BLOCK STREAM, ITS LISTS THE PASS'S OWN (the ruled stream's shared part --
+THE BLOCK STREAM, ITS LISTS THE PASS'S OWN (the design's stream's shared part, its coefficients' bytes --
 [`hopper-carry.md`](../architecture/hopper-carry.md#the-gather-stream); 4 to 5 live digits a token, 512 threads).
 THE QUESTION: every row above is fed lists the host made, and the one pass that made its own cost twice the
-carry. What does the ruled stream cost when the pass is handed THE MASK ALONE and writes what the carry lands --
+carry. What does the block stream cost when the pass is handed THE MASK ALONE and writes what the carry lands --
 a slot's tables, its lists' value runs as long as the lists, its sparse bytes, its plan? The mask is digit-major,
 a digit's 1,024 bits of a window; the pass turns it around in shared memory, a fixed count of trips whatever is
 live, and no list crosses global memory. Checked on every multiprocessor against lists the host makes from the

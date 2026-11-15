@@ -15,7 +15,7 @@
 // binds a flat stream that costs what the moved form does: the same kernels on A QUARTER of the multiprocessors
 // (the card's memory, if a CTA's cycles fall), and the dense plane with SIX buffers out of half the size, four
 // copies out in flight where three buffers allow one (a CTA's own queue, if they fall).
-// THE STREAM (the ruled form) is the same two kernels fed lists BY SPARSE BLOCK, not by digit: a block's live tokens
+// THE STREAM, TOKEN-ORDERED, is the same two kernels fed lists BY SPARSE BLOCK, not by digit: a block's live tokens
 // once each, in token order, padded to 16 only at the block's end. Its values kernel writes RECORDS -- a token's 8
 // value lines and then its line of the block's 16 sparse bytes, 9 lines a token -- which the block's CTAs share;
 // its dense plane is the block-major one, a CTA's dense block of its sparse block's tokens one run. No digit's

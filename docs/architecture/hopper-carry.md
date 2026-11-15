@@ -1,8 +1,8 @@
 # The hopper carry: its design before it is built
 
 STATUS: PROPOSED, NOT LOCKED. No carry kernel is built on this line ([`open-work.md`](../open-work.md)); this page is
-the design the first one is built from, and every form in it is one a lab measured on an H100. Where a number is
-quoted it is the lab's and the lab's page holds the record; where nothing was measured the page says OPEN.
+the design the first one is built from. A form a lab measured on an H100 quotes the lab's number, and the lab's
+page holds the record; a form RULED and not yet measured says so; where nothing is decided the page says OPEN.
 
 What the carry computes is [`ARCHITECTURE.md` section 6.3](../ARCHITECTURE.md#63-the-carry--the-inter-window-term): a
 window at a time, the readout of the state as of the window's start by the window's readers, into `num` and `den`,
@@ -11,32 +11,31 @@ then the fold of the window's writes into the state.
 ## The gather stream
 
 RULED; its pass NOT BUILT. The gather pass writes, for each sparse block of 16 digits -- the group of CTAs that
-share it -- A STREAM, and the stream SAYS WHAT TO DO: the carry computes no boundary. A window's stream is its
-slots, a slot 8 sparse digits' lists. A list is A BLOCK AS LONG AS THE LIST: 8 runs of its entries' value lines, a
-brick a run, a line an entry, and its entries' dense lines; nothing is padded in global memory but a list's dense
-lines to its steps. A step's operand is pointed at any 16 entries of a block, its bricks as far apart as the list
-is long; a list's last, part-filled step is the one place lines are zero, its pads' coefficient lines zeroed in
-shared memory. Blocks stay in the order of their digits. THE STREAM HOLDS THE CARRY'S OPERANDS READY (RULED 2026-11-15; NOT MEASURED): an entry's coefficients are
-written by the gather pass in the wgmma's format -- its dense digits' bytes by its byte on its sparse digit, bf16,
-both bricks' lines, a part-filled step's pad lines zero -- and a step's operands' fields are in the slot's head,
-or that the step is absent. The carry lands a slot and steps it: it expands nothing, writes no operand and so
-needs no fence and no rendezvous before its steps. The lab's measured form is the one before this ruling: a slot
-ONE COPY whose head is TABLES -- a word an entry, where its dense line is and where its second coefficient run
-goes; the entries' bytes on their sparse digits; the pad lines; a step's operands' lines and spacings -- which
-the fold expands. A
-window's PLAN is each slot's place in the stream and its bytes. A token live on two digits of one block is two
-entries. The pass consumes the masks; a counts pass sizes the streams. The workspace is the segment's
-([`ARCHITECTURE.md` section 6](../ARCHITECTURE.md#6-the-kernels)): the stream is written before the carry runs,
-which costs the carry the same as a ring. The read side's stream is the same without values, with each entry's
-token index, where the drain adds; its tables are not designed. A window's stream is read by the 16 boxes that
-share it and costs the carry the same whether the cache held it before or not
+share it -- A STREAM, and the stream SAYS WHAT TO DO: the carry computes no boundary and makes no operand. A
+window's stream is its slots, a slot 8 sparse digits' lists. A list is A BLOCK AS LONG AS THE LIST: 8 runs of its
+entries' value lines, a brick a run, a line an entry, and its entries' COEFFICIENTS IN THE STEP'S FORMAT -- an
+entry's dense digits by its sparse digit, the rows' scales in them, bf16, a line a brick, each brick's run padded
+with zero lines to the list's steps. A step's operand is pointed at any 16 entries of a block, its bricks as far
+apart as the list is long; a slot's head holds each step's two operands' fields, or that the step is absent, when
+its second operand is a tile of zeros in the slot. Blocks stay in the order of their digits. A slot is ONE COPY,
+and a window's PLAN is each slot's place in the stream and its bytes. THE CARRY LANDS A SLOT AND STEPS IT: it
+expands nothing and writes no operand, so it has no fence and no rendezvous before its steps. A token live on two
+digits of one block is two entries. The pass consumes the masks; a counts pass sizes the streams. The stream is
+WORKSPACE, the segment's ([`ARCHITECTURE.md` section 6](../ARCHITECTURE.md#6-the-kernels)), written before the
+carry runs, which costs the carry the same as a ring: the coefficients it holds are a segment's live entries',
+staged for the carry and gone with the segment, never the stored representation
+([`factored-representation.md`](factored-representation.md)). The read side's stream is the same without values,
+with each entry's token index, where the drain adds; its head is not designed. A window's stream is read by the 16
+boxes that share it and costs the carry the same whether the cache held it before or not
 ([`lab/carry_window.md`](../lab/carry_window.md)) -- WHILE those boxes read it close together: boxes that drift
-apart, as their read sides' counts differ, are not measured. MEASURED: the carry filling from a stream the host
-laid in this form, its lists 8 to 24 entries and no list past two steps
-([`lab/carry_window.md`](../lab/carry_window.md)); the pass writing this stream's shared part -- tables, value
-runs, sparse bytes, plan -- from the mask alone, its lists its own, at lists of 16 to 19 entries
-([`lab/gather_pass.md`](../lab/gather_pass.md)). NOT MEASURED: the pass's dense lines in this form, the read
-side's stream, and lists past two steps.
+apart, as their read sides' counts differ, are not measured.
+WHAT IS MEASURED IS A STREAM OF BYTES: a slot whose coefficients are an entry's 16 dense bytes and its sparse
+byte, expanded by the fold where they land, its head tables that say where each entry's lines and each step's
+operands are -- the carry filling from it at lists of 8 to 24 entries and no list past two steps
+([`lab/carry_window.md`](../lab/carry_window.md)), and the pass writing its shared part from the mask alone at
+lists of 16 to 19 ([`lab/gather_pass.md`](../lab/gather_pass.md)). NOT MEASURED: the carry fed coefficients in
+the step's format; the pass writing them; its dense part in either form; the read side's stream; lists past two
+steps.
 
 ## What it is handed
 
@@ -54,12 +53,12 @@ One CTA a multiprocessor, two boxes a CTA, 512 threads at the multiprocessor's w
 
 | the role | threads | registers a thread | what it holds |
 |---|---|---|---|
-| a FOLD warpgroup a box, two | 128 each | 160 | the box's state, 16 accumulator sets of 8; it issues its own slots' copies and expands their coefficients where they land |
+| a FOLD warpgroup a box, two | 128 each | 160 | the box's state, 16 accumulator sets of 8; it issues its own slots' copies and steps them as they land |
 | the READOUT warpgroup | 128 | 104 | a pass's two tile groups' sums, 64 a thread; its coefficients are in shared memory |
 | DRAIN warps, four | 32 each | 88 | batches of the panel's lines on their way to the output |
 
-NO PRODUCER WARP: a fold warpgroup waited on its one producer for most of a window, and expanding and issuing for
-itself it does not. The den in this form is NOT MEASURED: it was measured with the readout's A in registers (a
+NO PRODUCER WARP: a fold warpgroup waited on its one producer for most of a window, and issuing its own copies it
+does not. The den in this form is NOT MEASURED: it was measured with the readout's A in registers (a
 ninth brick of each image tile, a 65th column of the readout's step), and is owed here.
 
 Every barrier wait is a suspending poll. Shared memory: two slots of pools a box, the two boxes' images (a tile 155
@@ -79,8 +78,7 @@ lines, an odd count), the readout's coefficient tiles, two panels; under pressur
    output.
 3. THE FOLD. A fold warpgroup issues a slot's copy from the stream a window ahead, as it leaves the slot; when it
    has landed the warpgroup runs the slot's steps, one a sparse digit's 16 entries, their operands the landed
-   lines (the gather stream, above). MEASURED is the form before that ruling, a thread expanding an entry's 16
-   dense bytes by its byte on its sparse digit where they lie.
+   lines (the gather stream, above).
 
 ## What the lab did not have, and the kernel must
 
@@ -99,8 +97,8 @@ window, and each entry's token and byte were computed, not read.
   prefetch loses. Whole entries landed from a stream do not: a window's stream is read by the 16 boxes that share
   it, and it costs the carry the same whether the cache held it before or not; only a stream no box shares costs
   more. The figures are [`lab/carry_window.md`](../lab/carry_window.md)'s.
-- THE SCALES. Every lab ran on small integers. The kernel multiplies a row's bytes by the row's fp32 scale and a
-  value by its token's, carries a token's factor product, and issues one f16 line a token scaled by a power of two
+- THE SCALES. Every lab ran on small integers. The gather pass multiplies a row's bytes by the row's fp32 scale
+  into the coefficient it writes; the kernel multiplies a value by its token's, carries a token's factor product, and issues one f16 line a token scaled by a power of two
   from a coarse bound (CONSTITUTION R17). None of this is measured on hopper; it is designed with the kernel and
   checked against the oracle.
 - THE READOUT'S LISTS. Only the fold's side has run from lists.
@@ -111,7 +109,7 @@ Every figure is [`lab/carry_window.md`](../lab/carry_window.md)'s, at the hardes
 on a different level, 256 by 256 leaves, 4 live digits a token -- with the readout on synthetic readers; that page
 holds the numbers, which follow the card a session ran on. Their order: whole entries landed from a stream its 16
 boxes share, read before or not, cost the least; the carry gathering its entries from lists itself some two
-thirds more; a stream no box shares more again. THOSE ARE AT 16 ENTRIES A LIST. With the stream as ruled and its
+thirds more; a stream no box shares more again. THOSE ARE AT 16 ENTRIES A LIST. With the lab's stream -- its coefficients bytes the fold expands -- and its
 lists uneven, 8 to 24, the window is MEASURED at 1.29 times the even lists' under the same readout and drains. At even lists
 the form above -- no producer, the readout mirrored, four drain warps -- is the least of the composed forms
 measured; the lab page holds what is and is not isolated on the uneven stream. To each the stream's pass adds ([`lab/gather_pass.md`](../lab/gather_pass.md)).
