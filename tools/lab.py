@@ -978,7 +978,7 @@ def main() -> int:
     k.add_argument("experiment")
     k.add_argument("--arch", required=True)
     k.add_argument("--into", required=True, type=Path)
-    c = sub.add_parser("carried", help="run a packed experiment on this card, a box with no toolkit")
+    c = sub.add_parser("carried", help="run a packed experiment on this card, a box with no toolkit to build it")
     c.add_argument("experiment")
     c.add_argument("--from", dest="source", required=True, type=Path)
     c.add_argument("--into", required=True, type=Path)
@@ -987,9 +987,9 @@ def main() -> int:
         timed.add_argument("--reps", type=int, default=7)
         timed.add_argument("--force", action="store_true", help="measure on a busy GPU")
         timed.add_argument("--timeout", type=int, default=900, help="seconds before the experiment is killed")
-        timed.add_argument("--no-counters", metavar="HOST", required=timed is c,
+        timed.add_argument("--no-counters", metavar="HOST",
                            help="this host grants no profiler counters: name it, and the record carries the "
-                                "exception in their place")
+                                "exception in their place (a box that holds the pinned profiler reads them)")
     g = sub.add_parser("ledger", help="a kernel's executed instructions by phase (KERNEL_STANDARDS 29.13)")
     g.add_argument("experiment")
     g.add_argument("--kernel", help="a regex over the demangled kernel names")

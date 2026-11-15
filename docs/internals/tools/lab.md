@@ -53,7 +53,8 @@ asynchronous MMAs for want of registers (ptxas C7512, kept beside the build's bi
 no toolkit, so an experiment for it is built and checked here and run there: `bazel run //tools:lab -- pack <name> --arch sm_90a --into DIR` compiles it for that architecture,
 holds its SASS to the same checks as `run`, and writes the binary with a pack file beside it (the kernels' registers
 and opcodes, the toolkit, the commit, the binary's digest); on the card, `tools/lab.py carried <name> --from DIR --into
-OUT --no-counters HOST` runs the pack's binary by its digest through the sequence `run` runs (`measure`: the inputs, a
+OUT [--no-counters HOST]` (the counters read where the box holds the pinned profiler, the host named where it grants
+none) runs the pack's binary by its digest through the sequence `run` runs (`measure`: the inputs, a
 quiet GPU, the repetitions under a kill timeout, `--timeout`, the checks) and writes the record with the pack's build
 facts. `--no-counters HOST` is the caller's DECLARATION that the named host grants no profiler counters: the record
 then carries the written exception in their place (`counters_exception`: the host, what stands in --
