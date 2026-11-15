@@ -765,11 +765,12 @@ def carried(name: str, source: Path, into: Path, opts) -> int:
     return measure(name, arch, binary, built["kernels"], opts, built=built, into=into)
 
 
-def ledger_dumps(name: str, source: Path, into: Path, patterns: list[str]) -> int:
+def ledger_dumps(name: str, source: Path, into: Path, patterns: list[str], skip: int = 0) -> int:
     """A CARRIED LEDGER'S DUMPS, made on a box with no toolkit: the pack's binary by its digest, then each kernel whose
     demangled name a pattern matches profiled once (its first launch, ncu's SourceCounters) into
     `ledger_<its template numbers>.csv`, and `ledger.json` naming the binary's digest and each kernel's file -- read back
-    where the toolkit is by `ledger --packed --dump`."""
+    where the toolkit is by `ledger --packed --dump`. `skip` launches of each kernel pass first (an experiment's checked
+    launch is its first: its timed ones follow)."""
     arch = sass.device_arch()
     binary = source / f"{name}.{arch}"
     built = json.loads((source / f"{binary.name}.pack.json").read_text())
@@ -790,9 +791,9 @@ def ledger_dumps(name: str, source: Path, into: Path, patterns: list[str]) -> in
             return 1
         core = k[:k.index(">") + 1].split("::")[-1] if "<" in k else k.split("(")[0].split("::")[-1]
         out = subprocess.run([dev_config.ncu(), "--kernel-name-base", "demangled", "--kernel-name",
-                              f"regex:{re.escape(core)}", "--launch-count", "1", "--section", "SourceCounters",
-                              "--page", "source", "--print-source", "sass", "--csv", str(binary), "--reps", "1",
-                              *extra], capture_output=True, text=True, timeout=900)
+                              f"regex:{re.escape(core)}", "--launch-skip", str(skip), "--launch-count", "1",
+                              "--section", "SourceCounters", "--page", "source", "--print-source", "sass", "--csv",
+                              str(binary), "--reps", "1", *extra], capture_output=True, text=True, timeout=900)
         dump = into / f"ledger_{'_'.join(ids)}.csv"
         dump.write_text(out.stdout)
         if out.returncode != 0 or not region_ledger.read_source_counters(dump):
@@ -801,7 +802,8 @@ def ledger_dumps(name: str, source: Path, into: Path, patterns: list[str]) -> in
         files[k] = dump.name
         print(f"lab: {dump.name}: {k[:90]}")
     (into / "ledger.json").write_text(json.dumps({"experiment": name, "arch": arch, "sha256": built["sha256"],
-                                                   "git": built.get("git"), "dumps": files}, indent=1) + "\n")
+                                                   "git": built.get("git"), "launch_skip": skip, "dumps": files},
+                                                  indent=1) + "\n")
     return 0
 
 
@@ -935,7 +937,8 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
         by: dict[str, list[float]] = {}
         #: and each source line's shared wavefronts by the kind of instruction that issued them
         sites: dict[tuple[int, str], float] = {}
-        for at, executed, samples, _ in rows:
+        reasons: dict[str, dict[str, int]] = {}
+        for at, executed, samples, why in rows:
             lines = [ln for f, ln in frames.get(at - base, []) if f == path.name]
             head = next((h for first, h in reversed(heads) if lines and first <= lines[0]), "(outside the source)")
             op, waves, ideal = detail.get(at, ("?", 0, 0))
@@ -944,6 +947,8 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
             acc[1] += waves / div
             acc[2] += max(waves - ideal, 0) / div
             acc[3] += samples
+            for reason, n in why.items():
+                reasons.setdefault(head, {})[reason] = reasons.setdefault(head, {}).get(reason, 0) + n
             if waves:
                 kind = ("wgmma operands" if op.startswith("HGMMA") else "stores" if op.startswith(("STS", "ATOMS", "REDS"))
                         else "loads" if op.startswith(("LDS", "LDSM")) else op)
@@ -956,6 +961,11 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
         print(f"    {'instructions':>12}  {'wavefronts':>10}  {'conflicts':>9}  {'samples %':>9}  phase")
         for head, (n, w, c, smp) in sorted(by.items(), key=lambda x: -x[1][1]):
             print(f"    {n:12,.1f}  {w:10,.1f}  {c:9,.1f}  {100 * smp / samples_all:8.1f}%  {head}")
+        print("    the phases holding the most stall samples, each with its three largest reasons:")
+        for head, (_, _, _, smp) in sorted(by.items(), key=lambda x: -x[1][3])[:8]:
+            top3 = sorted(reasons.get(head, {}).items(), key=lambda x: -x[1])[:3]
+            print(f"    {100 * smp / samples_all:5.1f}%  {head[:60]:60}  "
+                  + ", ".join(f"{r} {100 * n / max(smp, 1):.0f}%" for r, n in top3))
         source = path.read_text().splitlines()
         print(f"    the source lines that issue its shared wavefronts, a {unit}:")
         for (line, kind), w in sorted(sites.items(), key=lambda x: -x[1])[:top]:
@@ -1108,6 +1118,7 @@ def main() -> int:
     m.add_argument("--from", dest="source", required=True, type=Path)
     m.add_argument("--into", required=True, type=Path)
     m.add_argument("--kernel", action="append", required=True, help="a regex over the demangled kernel names; repeat")
+    m.add_argument("--skip", type=int, default=0, help="each kernel's launches passed before the one profiled")
     n = sub.add_parser("ncu")
     n.add_argument("experiment")
     n.add_argument("--metric", action="append", required=True, help="an ncu metric; repeat for several")
@@ -1130,7 +1141,7 @@ def main() -> int:
     if args.cmd == "ncu":
         return counters(args.experiment, args.metric, args.record)
     if args.cmd == "ledger-dumps":
-        return ledger_dumps(args.experiment, args.source, args.into, args.kernel)
+        return ledger_dumps(args.experiment, args.source, args.into, args.kernel, args.skip)
     if args.cmd == "ledger":
         if args.static:
             return static_ledger(args.experiment, args.kernel, args.arch)

@@ -40,7 +40,9 @@ SourceCounters dumps a rented box made of `lab pack`'s binary (`ncu --section So
 --print-source sass --csv`, a kernel's first launch, one file a kernel named `ledger_<its template numbers>.csv`),
 mapped here to the phases through that same binary; `--per` divides every count by the launch's CTA-windows. Each
 phase reports its executed instructions, its shared-memory wavefronts, those over the conflict-free count (bank
-conflicts) and its share of the stall samples.
+conflicts), its share of the stall samples and, for the phases holding the most, their three largest stall reasons;
+then the source lines issuing the shared wavefronts. `ledger-dumps --skip N` profiles each kernel's launch after its
+first N: an experiment's first is its checked launch, the timed ones follow.
 
 <a id="hazards"></a>THE LEARNINGS' CHECKS ([`LEARNINGS.md`](../LEARNINGS.md)). An experiment outside `tools/lab.py`'s `_PRE_TIMELINE` (the
 experiments written before these checks; the list only shrinks) is refused by `run` and by `pack` unless its header

@@ -1089,8 +1089,12 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
               const uint32_t add = ROLES & kReady ? at_pool : 0u;
               const uint64_t a = static_cast<uint64_t>(two.y) << 32 | (two.x + add), b = static_cast<uint64_t>(two.w) << 32 | (two.z + add);
               //: a first-round step is always present; a second-round one where its B is not the zeros
-              //: (a vote: the step's line is the warpgroup's, so every lane reads the same answer)
-              const int present = (ROLES & kSkip) == 0 || r == 0 || __any_sync(0xffffffffu, (two.z & 0x3fffu) != zero_at) ? 1 : 0;
+              //: (a vote, taken on every lane before it is combined: the step's line is the warpgroup's)
+              int present = 1;
+              if constexpr ((ROLES & kSkip) != 0) {
+                const int reached = __any_sync(0xffffffffu, (two.z & 0x3fffu) != zero_at) ? 1 : 0;
+                present = r == 0 ? 1 : reached;
+              }
 #pragma unroll 1
               for (int once = 0; once < present; ++once) lab::wg_bf16_n16_ss_mn(d[8 * slot + j], a, b, w != 0 || r != 0);
             } else if constexpr ((ROLES & kReady) != 0) {
