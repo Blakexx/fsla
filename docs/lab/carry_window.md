@@ -267,9 +267,9 @@ bf16, a line its rounding to f16. The fold's state is stored out for that checke
 registers, since its 128 stores a thread -- each instruction's lanes on 32 lines -- would be issued while the
 readout and the drains are in their last windows and be clocked as theirs.
 
-MEASURED (H100 PCIe 80GB, 114 SMs, Hyperstack spot VM 1161178; a role's steps are its issue and its wait, which the record holds apart; this record's wall-time rows are scaled as 128 CTAs' and this card runs 114, driver 580.196.07; 2026-11-15, the experiment at
+MEASURED (H100 PCIe 80GB, 114 SMs, Hyperstack spot VM 1161178; a role's steps are its issue and its wait, which the record holds apart; the wall times are the record's restated for this card's 114 CTAs, which it scaled as 128, driver 580.196.07; 2026-11-15, the experiment at
 9988f996, one session; 7 repetitions, every checked row's state and output values exact;
-the median; SM-cycles a token are the window's cycles over 8 -- 128 CTAs of two boxes, 1,024 tokens. THE FOLD'S STATE
+the median; SM-cycles a token are the window's cycles over 8 -- a CTA of two boxes is 8 tokens a window. THE FOLD'S STATE
 DUMP STAYS OUT OF THE TIMED CALLS, and one row restores it to price it in this session):
 
 | the row | cycles a window a CTA | SM-cycles a token |
@@ -510,13 +510,13 @@ WHAT IT SHOWS.
   is the long one.
   A WARPGROUP WAITS AT ITS RENDEZVOUS FOR ITS FIRST WARP, whose lanes issue the slot's 8 copies: the first warp
   alone is 94 and 93 at its two rendezvous where the warps' mean is 353 and 496, and
-  1,630 in its steps and its issue where the mean is 1,676.
+  2,625 in its steps and its issue where the mean is 1,676.
   WITH THE COPIES ISSUED TWO A WARP every warp is 227 and 242 at its rendezvous and 1,677 in its
   steps and issue; the window is 5,215 against 5,273, and a fold warp then waits 808 on the
   readout's read against 265: THE FOLD'S TIME SAVED IS ITS WAIT ON THE READOUT, WHICH IS THE WINDOW.
   THE BLOCK FORM'S FIRST WARP IS LAST TOO: 103 and 97 at its rendezvous against 694 and
   551; its plans, its one copy a slot, 16 threads' operands and the first pads are its own -- 1,141 at
-  its pads and operands against 752, 850 expanding against 728, 825 in its steps and
+  its pads and operands against 752, 850 expanding against 728, 2,542 in its steps and
   issue against 2,142. WITH THOSE JOBS SHARED AMONG ITS WARPS THE WINDOW DOES NOT MOVE: 6,850 against
   6,825. Its rendezvous fall to 477 and 297 and every warp's pads and operands rise to
   1,223: the phase is some 53 instructions a thread, and a warp is as long in it with a pad and four operands
