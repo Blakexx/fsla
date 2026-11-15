@@ -9,7 +9,8 @@
 // four f16 pairs a lane, 16 bytes -- 32 lanes an instruction are FOUR lines, 8 lanes one -- which asks whether an
 // add's price is its instruction's or its lines'. Every row's sums are checked exactly.
 // TIMELINE: no load. A warp's trip is 16 instructions, each from a register set before the clock and to an
-// address that is a constant off the warp's base: nothing waits on anything. Live: one word a thread.
+// address that is a constant off the warp's base: nothing waits on anything. Live: one word a thread, a vector
+// add's four operands that word.
 // see docs/internals/tools/lab.md#add-rate
 #include "lab.cuh"
 

@@ -101,7 +101,7 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
   out of shared memory, `bulk_add_f32` (`cp.reduce.async.bulk`, fp32 added into global) with the writers' proxy fence
   before an asynchronous reader of their stores (`bulk_fence`: a bulk copy out, another warp's wgmma), `bulk_commit`,
   `bulk_wait<N>`, beside `red_add_f32` (one value by its thread), `red_add_u32` and `red_add_u64` (an integer) and
-  `red_add_f16x2` (a pair of f16, each half its own sum, from `pack_half2`); the plain bulk copy out, `bulk_store`; the tensor copies in,
+  `red_add_f16x2` (a pair of f16, each half its own sum, from `pack_half2`); `red_add_f16x2_v4` (four such pairs a lane in one vector add, 16 bytes); the plain bulk copy out, `bulk_store`; the tensor copies in,
   `tensor_load_2d` and its multicast `tensor_cast_2d` (one copy landed in every CTA of a cluster a mask names); the bulk copy
   in, `bulk_load`, under a barrier whose
   arrival states its bytes (`mbar_expect`); and a warpgroup's registers a thread,
