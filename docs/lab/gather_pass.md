@@ -75,6 +75,10 @@ card's rings together under its cache -- where their other rows write a region o
 is the pass bound by the bytes it sends to the card's memory? A ring keeps no round to check: its kernels' other
 rows are checked.
 
+TWO CONTROLS PART A TRIP of the four-slot runs: the runs made and NO COPY OUT, and the copies out and NO RUN
+MADE (the lists and layouts made in both). THE QUESTION: is the kernel bound by its threads' lines or by a trip's
+wait on the copy out before it?
+
 MEASURED (H100 PCIe 80GB, 114 SMs, Hyperstack spot VM 1161403, driver 580.196.07; 2026-11-15, the experiment at
 310ddfdf; 7 repetitions; every arranged line and pad of every moved form, and every word, byte, line,
 pad, step and plan of the block stream, exact on every multiprocessor; the median, SM-cycles a token for one

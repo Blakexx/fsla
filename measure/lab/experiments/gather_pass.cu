@@ -526,7 +526,9 @@ enum Bar : int { kDense = 0, kLevel = 16 };
 
 //: `WIDEN`: a coefficient line is the entry's dense digits widened to bf16 alone, the entry's scalar on its values --
 //: measured, and not the design's form, which multiplies them by its sparse byte. `U`: the slots a trip
-template <int THREADS, int WIDEN, int U>
+//: `PART`: the whole kernel (0); its runs made and no copy out (1); its copies out and no run made (2) -- two
+//: controls that part a trip's lines from its copy
+template <int THREADS, int WIDEN, int U, int PART = 0>
 __global__ void __launch_bounds__(THREADS, 1)
     plane(long long* times, const uint4* dense_rows, const uint4* rows, const uint32_t* masks, uint4* out_plane, int rounds,
           int stride, int room, int ring) {
@@ -612,7 +614,7 @@ __global__ void __launch_bounds__(THREADS, 1)
       const int db = trip / kTrips, u0 = (trip % kTrips) * U;
       //: THE ISSUE EDGE: the unit before's runs out; the next dense block's rows, a dense block ahead
       if (tid == 0) {
-        if (trip > 0) {
+        if (trip > 0 && PART != 1) {
           const uint32_t slot = (units - 1) % 3u;
 #pragma unroll
           for (int q = 0; q < U; ++q)
@@ -633,7 +635,8 @@ __global__ void __launch_bounds__(THREADS, 1)
         const int cell = tid & 255, brick = tid >> 8, jj = cell >> 5, k = cell & 31, j = 8 * u + jj;
         const int n = static_cast<int>(count[j]);
         const uint32_t to = layout[9 * u + jj] + static_cast<uint32_t>(brick) * layout[9 * u + 8] + static_cast<uint32_t>(k);
-        if (k < n) {
+        if (PART == 2) {
+        } else if (k < n) {
           const uint32_t entry = recs[j * kCap + k];
           const float weight = WIDEN ? 1.0f : static_cast<float>(entry >> 16);
           const uint2 two = reinterpret_cast<const uint2*>(smem + kDenseAt + (db & 1) * kLevelBytes + (entry & 0xffffu) * 16)[brick];
@@ -652,7 +655,7 @@ __global__ void __launch_bounds__(THREADS, 1)
         if (tid == 0) size[(units % 3u) * U + q] = 2 * layout[9 * u + 8] * 16;
       }
       lab::bulk_fence();
-      if (tid == 0) lab::bulk_wait<1>();
+      if (tid == 0 && PART != 1) lab::bulk_wait<1>();
       __syncthreads();
       ++units;
     }
@@ -685,7 +688,8 @@ int main(int argc, char** argv) {
   //: the block stream's unit is a trip, and a block's lists' scan is every warp's, a digit each, in its trip
   for (int scaled : {0, 1}) b.expect(lab::kernel("gather_pass::blocks::plane", {blocks::kThreads, scaled}), "LOOP_CONVERGENCE", "<=", 64);
   for (auto form : {std::pair<int, int>{0, 1}, {0, 4}, {1, 4}})
-    b.expect(lab::kernel("gather_pass::coefs::plane", {coefs::kThreads, form.first, form.second}), "LOOP_CONVERGENCE", "<=", 64);
+    b.expect(lab::kernel("gather_pass::coefs::plane", {coefs::kThreads, form.first, form.second, 0}), "LOOP_CONVERGENCE", "<=", 64);
+  for (int part : {1, 2}) b.expect(lab::kernel("gather_pass::coefs::plane", {coefs::kThreads, 0, 4, part}), "LOOP_CONVERGENCE", "<=", 64);
   if (b.expect_only) return 0;
   constexpr int kRounds = 8, kMax = kMaxSteps<32>;
   const int windows = b.sms;
@@ -969,6 +973,25 @@ int main(int argc, char** argv) {
           b.record(timed, "SM-cycles a token", cycles);
         }
         if (widen == 0 && slots == 4) {
+          //: TWO CONTROLS part a trip: the runs made and no copy out, and the copies out and no run made
+          for (int part : {1, 2}) {
+            const lab::Samples cycles = b.variant(
+                [&] {
+                  if (part == 1) {
+                    const auto ck = coefs::plane<coefs::kThreads, 0, 4, 1>;
+                    LAB_CHECK(cudaFuncSetAttribute(ck, cudaFuncAttributeMaxDynamicSharedMemorySize, coefs::kSmemBytes<4>));
+                    ck<<<windows, coefs::kThreads, (coefs::kSmemBytes<4>)>>>(b.times, ddense, drows, dmasks, ddplane, kRounds, windows, croom, 0);
+                  } else {
+                    const auto ck = coefs::plane<coefs::kThreads, 0, 4, 2>;
+                    LAB_CHECK(cudaFuncSetAttribute(ck, cudaFuncAttributeMaxDynamicSharedMemorySize, coefs::kSmemBytes<4>));
+                    ck<<<windows, coefs::kThreads, (coefs::kSmemBytes<4>)>>>(b.times, ddense, drows, dmasks, ddplane, kRounds, windows, croom, 0);
+                  }
+                },
+                [&] { return b.span(coefs::kThreads >> 5, windows) / kRounds / kWindow; });
+            const std::string timed = cform + (part == 1 ? ", its runs made and no copy out" : ", its copies out and no run made") + ", a fresh window a round";
+            b.unchecked(timed, "a control: a part of the kernel's trip absent");
+            b.record(timed, "SM-cycles a token", cycles);
+          }
           //: THE SAME KERNEL INTO A RING the cache holds: a CTA rewrites one dense block's rooms, 256 KB, as it goes --
           //: every multiprocessor's ring together under the cache's size
           constexpr int kRing = coefs::kUnits * coefs::kRoomLines;
