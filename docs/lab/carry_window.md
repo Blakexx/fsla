@@ -311,8 +311,8 @@ the step's own issue, near 48. Measured: THE LOAD -- the held row issues its 32 
 against some 1,550, and its window is some 3,680 against 4,250 clocked: the steps' wait grows (some 325 to 580) and
 the rendezvous with it, the tensor pipe taking what the issue gave. BUT THE COMPOSED FORM DOES NOT TAKE IT: its row
 with the operands loaded two steps ahead, whose binary holds several loads in flight and its steps back to back, is
-some 6,510 against 6,500 (the ahead rows above). READ AS, not isolated: beside the read side, the fold's other phases
-take what the faster issue frees -- no composed held row, and no clocked composed ahead row, splits it.
+some 6,510 against 6,500 (the ahead rows above). The clocked ahead row below shows why: in the composed form its
+steps' issue does not fall at all.
 
 THE ISSUE COUNT (the timed ledger, `measure/lab/results/carry_window/ledger_timed_sm_90a/`, the digit form with the
 panel by stmatrix: its executed warp instructions by role, the role's code the span between its register raise or
@@ -324,9 +324,15 @@ other three warps' some 2,330 issue cycles on its scheduler the read side's shar
 cycle a scheduler, the count alone is a floor of some 3,000 cycles a window.
 
 THE CLOCKED AHEAD ROW (the digit form with the panel by stmatrix and its operands loaded two steps ahead, clocked)
-asks where the fold's faster issue goes in the composed form. PREDICTED: its steps' issue falls toward the fold
-alone's (some 1,550 a window, or below), and the window does not: the phase that grows by what the issue gives is the
-composed window's holder.
+asked where the fold's faster issue goes in the composed form. PREDICTED: its steps' issue falls toward the fold
+alone's (some 1,550 a window, or below), and the window does not. MEASURED (H100 SXM, Nebius; rounded): THE ISSUE DOES
+NOT FALL -- some 1,840 cycles a window against some 1,880 (58 cycles a step), every other phase within a few percent,
+the window some 6,730 against 6,750 clocked. In the composed form a fold step's issue is not its operands' load: alone
+it is (48 a step, 15 held), beside the read side something each step shares holds it near 58 whatever its load. NOT
+ISOLATED; the candidates are what the read side's warps use beside each step -- the tensor pipe's queue (the readout's
+own steps: with them out the fold's issue fell only 2,258 to 1,982 in the operands-made form, the no-read-steps row),
+the uniform datapath each step's operands cross (the readout issues some 400 uniform instructions a scheduler a
+window), and the shared-memory pipe the steps' operands are read through.
 
 THE LIGHT-LOAD RECORD (`measure/lab/results/carry_window/sm_90a.blocks8.json`, the whole experiment at 8 CTAs, `lab
 run --blocks 8`) asked whether a copy's flight is a fixed latency or the card's bandwidth shared. PREDICTED, if
@@ -397,101 +403,101 @@ bf16, a line its rounding to f16. The fold's state is stored out for that checke
 registers, since its 128 stores a thread -- each instruction's lanes on 32 lines -- would be issued while the
 readout and the drains are in their last windows and be clocked as theirs.
 
-MEASURED (H100 80GB HBM3, 132 SMs, Nebius preemptible VM kc4fyyav, driver 580.173.02; 2026-11-16, the experiment at
-204dc833, one session; 7 repetitions, every checked row's state and output values exact;
+MEASURED (H100 80GB HBM3, 132 SMs, Nebius preemptible VM 40f1vdej, driver 580.173.02; 2026-11-16, the experiment at
+0f6dfa94, one session; 7 repetitions, every checked row's state and output values exact;
 the median; SM-cycles a token are the window's cycles over 8 -- a CTA of two boxes is 8 tokens a window. THE FOLD'S STATE
 DUMP STAYS OUT OF THE TIMED CALLS, and one row restores it to price it in this session):
 
 | the row | cycles a window a CTA | SM-cycles a token |
 |---|---|---|
-| the fold's side alone: producers and steps | 5,117 | 640 |
-| the read side alone: the image, the readout and the drain | 5,563 | 695 |
-| the carry: both sides | 7,040 | 880 |
-| both sides, the producers' global loads taken out | 6,429 | 804 |
-| both sides, the drains' global adds taken out | 6,699 | 837 |
-| both sides, the image's stores taken out | 6,679 | 835 |
-| the read side alone, no fold warp running | 4,365 | 546 |
-| the read side alone, every wait suspended | 5,266 | 658 |
+| the fold's side alone: producers and steps | 5,102 | 638 |
+| the read side alone: the image, the readout and the drain | 5,562 | 695 |
+| the carry: both sides | 7,038 | 880 |
+| both sides, the producers' global loads taken out | 6,430 | 804 |
+| both sides, the drains' global adds taken out | 6,705 | 838 |
+| both sides, the image's stores taken out | 6,693 | 837 |
+| the read side alone, no fold warp running | 4,376 | 547 |
+| the read side alone, every wait suspended | 5,267 | 658 |
 | both sides, every wait suspended | 6,914 | 864 |
-| THE READOUT DRAINING ITS OWN ROWS, FOUR PRODUCERS: the fold's side alone | 3,083 | 385 |
+| THE READOUT DRAINING ITS OWN ROWS, FOUR PRODUCERS: the fold's side alone | 3,085 | 386 |
 | the same: the read side alone | 5,369 | 671 |
-| the same: both sides | 7,440 | 930 |
+| the same: both sides | 7,436 | 930 |
 | THE READOUT LEAN, TWO BATCHES A PRODUCER: the fold's side alone | 4,567 | 571 |
 | the same: the read side alone | 5,770 | 721 |
-| the same: both sides | 6,788 | 849 |
-| FIVE WARPGROUPS, FOUR PRODUCERS AND FOUR DRAIN WARPS AT 40: the fold's side alone | 5,906 | 738 |
-| the same: the read side alone | 5,047 | 631 |
-| the same: both sides | 7,759 | 970 |
-| THE LONG WAITS ASLEEP AT NAMED BARRIERS: the fold's side alone | 5,137 | 642 |
+| the same: both sides | 6,786 | 848 |
+| FIVE WARPGROUPS, FOUR PRODUCERS AND FOUR DRAIN WARPS AT 40: the fold's side alone | 5,896 | 737 |
+| the same: the read side alone | 5,046 | 631 |
+| the same: both sides | 7,754 | 969 |
+| THE LONG WAITS ASLEEP AT NAMED BARRIERS: the fold's side alone | 5,123 | 640 |
 | the same: the read side alone | 5,065 | 633 |
-| the same: both sides | 6,984 | 873 |
+| the same: both sides | 6,979 | 872 |
 | the fold's side alone, the producers' global loads taken out | 2,412 | 301 |
-| the fold's side alone, their coefficient arithmetic taken out | 4,710 | 589 |
+| the fold's side alone, their coefficient arithmetic taken out | 4,705 | 588 |
 | the fold's side alone, both taken out | 2,281 | 285 |
 | the read side alone, the readout's byte loads taken out | 5,003 | 625 |
 | the read side alone, no fold warp running, the byte loads taken out | 4,017 | 502 |
-| both sides, the readout's byte loads taken out | 6,673 | 834 |
-| both sides, the drains' adds and the readout's byte loads taken out | 6,421 | 803 |
-| THE READOUT'S BYTES ONE WIDE LOAD A WARP: the read side alone | 5,051 | 631 |
-| the same: the read side alone, no fold warp running | 4,231 | 529 |
-| the same: both sides | 6,981 | 873 |
-| the same: both sides, the long waits asleep | 7,150 | 894 |
-| the read side alone, the image's stores taken out | 4,992 | 624 |
-| the read side alone, the fold's fence behind its image taken out | 5,506 | 688 |
-| the read side alone, both taken out | 4,978 | 622 |
-| both sides, that fence taken out | 6,937 | 867 |
-| the read side alone, no fold warp running, the fold warps parked asleep | 4,382 | 548 |
-| the same, spinning | 4,511 | 564 |
-| THE DUMP RESTORED: both sides, the fold's state stored out in every call | 8,211 | 1,026 |
-| THE WINNERS COMBINED: both sides, suspended waits and the lean readout | 6,666 | 833 |
+| both sides, the readout's byte loads taken out | 6,671 | 834 |
+| both sides, the drains' adds and the readout's byte loads taken out | 6,416 | 802 |
+| THE READOUT'S BYTES ONE WIDE LOAD A WARP: the read side alone | 5,049 | 631 |
+| the same: the read side alone, no fold warp running | 4,217 | 527 |
+| the same: both sides | 6,965 | 871 |
+| the same: both sides, the long waits asleep | 7,133 | 892 |
+| the read side alone, the image's stores taken out | 4,990 | 624 |
+| the read side alone, the fold's fence behind its image taken out | 5,504 | 688 |
+| the read side alone, both taken out | 4,977 | 622 |
+| both sides, that fence taken out | 6,925 | 866 |
+| the read side alone, no fold warp running, the fold warps parked asleep | 4,363 | 545 |
+| the same, spinning | 4,500 | 562 |
+| THE DUMP RESTORED: both sides, the fold's state stored out in every call | 8,125 | 1,016 |
+| THE WINNERS COMBINED: both sides, suspended waits and the lean readout | 6,661 | 833 |
 | the same, suspended waits and the wide byte load | 6,916 | 864 |
 | the same, suspended waits, the lean readout and the wide byte load (the fourth warpgroup at 104) | 6,756 | 844 |
-| the same, sleeping waits, the lean readout and the wide byte load | 7,029 | 879 |
-| THE TABLES ONCE-READ, 16 replicas the cache cannot hold: both sides | 17,604 | 2,201 |
-| the same, the winner's form | 16,147 | 2,018 |
-| the same: the fold's side alone | 11,936 | 1,492 |
-| THE DEN, folded, published, read and drained: the fold's side alone | 5,102 | 638 |
-| the same: both sides, the winner's form | 7,067 | 883 |
-| the same, the tables once-read | 16,496 | 2,062 |
-| THE IMAGE'S TILES MOVED APART, nothing else changed: the winner's form at 154 lines (137 as it is) | 7,074 | 884 |
-| the winner's form with the den at 161 lines (155 as it is) | 7,072 | 884 |
+| the same, sleeping waits, the lean readout and the wide byte load | 7,030 | 879 |
+| THE TABLES ONCE-READ, 16 replicas the cache cannot hold: both sides | 17,729 | 2,216 |
+| the same, the winner's form | 16,267 | 2,033 |
+| the same: the fold's side alone | 11,974 | 1,497 |
+| THE DEN, folded, published, read and drained: the fold's side alone | 5,092 | 637 |
+| the same: both sides, the winner's form | 7,077 | 885 |
+| the same, the tables once-read | 16,630 | 2,079 |
+| THE IMAGE'S TILES MOVED APART, nothing else changed: the winner's form at 154 lines (137 as it is) | 7,070 | 884 |
+| the winner's form with the den at 161 lines (155 as it is) | 7,075 | 884 |
 | THE ALIGNED CELL, an image tile a list: the winner's form | 6,667 | 833 |
-| the same with the den | 7,071 | 884 |
-| NO CLOCK INSIDE A ROLE: the winner's form | 6,588 | 824 |
-| the same with the den | 6,931 | 866 |
-| the same at the aligned cell | 6,673 | 834 |
-| the same at the aligned cell with the den | 7,069 | 884 |
-| THE DEN'S PARTS, a chain with no clock inside a role: the fold's steps | 6,652 | 832 |
+| the same with the den | 7,066 | 883 |
+| NO CLOCK INSIDE A ROLE: the winner's form | 6,589 | 824 |
+| the same with the den | 6,932 | 867 |
+| the same at the aligned cell | 6,678 | 835 |
+| the same at the aligned cell with the den | 7,072 | 884 |
+| THE DEN'S PARTS, a chain with no clock inside a role: the fold's steps | 6,653 | 832 |
 | then the image's ninth brick and its store | 6,747 | 843 |
-| then the register split | 6,833 | 854 |
-| then the 72-column steps | 6,888 | 861 |
-| the winner's form with its tiles at the den's pitch, 155 lines | 6,595 | 824 |
-| THE VALUES TILE-MAJOR in global memory, no clock inside a role: the winner's form | 12,179 | 1,522 |
-| the tables once-read, the values token-major | 16,276 | 2,035 |
-| the tables once-read, the values tile-major | 48,332 | 6,041 |
-| THE FOLD'S ENTRIES FROM LISTS, a window's own tokens: the fold's side alone | 8,731 | 1,091 |
-| the same: both sides, no clock inside a role | 10,017 | 1,252 |
-| the same with every window the same tokens: the fold's side alone | 6,285 | 786 |
-| the same: both sides | 8,123 | 1,015 |
-| a window's own tokens, their rows asked for a window ahead: both sides | 11,918 | 1,490 |
-| THE VALUES LANDED BY BULK COPY from expanded lists, a window's own tokens: the fold's side alone | 8,464 | 1,058 |
-| the same: both sides | 9,052 | 1,131 |
-| THE WHOLE ENTRY LANDED, values and coefficient bytes: the fold's side alone | 5,188 | 649 |
-| the same: both sides | 5,991 | 749 |
-| the whole entry, EACH BOX ITS OWN expanded windows, past the cache: the fold's side alone | 6,518 | 815 |
-| the same: both sides | 11,253 | 1,407 |
-| the whole entry, its 16 columns' windows NEVER READ BEFORE, 16 boxes a window's readers: the fold's side alone | 5,186 | 648 |
-| the same: both sides | 5,978 | 747 |
-| THE PACKED STREAM, packed by digit, its lists uneven (8 to 24 entries), last steps truncated: the fold's side alone | 10,070 | 1,259 |
-| the same: both sides | 10,569 | 1,321 |
-| the packed stream, FOUR SLOTS OF 4 TILES a box: the fold's side alone | 10,712 | 1,339 |
-| the same: both sides | 11,471 | 1,434 |
-| the whole entry, THE FOLD WARPS EXPANDING their own slot: the fold's side alone | 3,011 | 376 |
-| the same: both sides | 5,969 | 746 |
+| then the register split | 6,836 | 854 |
+| then the 72-column steps | 6,889 | 861 |
+| the winner's form with its tiles at the den's pitch, 155 lines | 6,597 | 825 |
+| THE VALUES TILE-MAJOR in global memory, no clock inside a role: the winner's form | 12,204 | 1,526 |
+| the tables once-read, the values token-major | 16,398 | 2,050 |
+| the tables once-read, the values tile-major | 48,945 | 6,118 |
+| THE FOLD'S ENTRIES FROM LISTS, a window's own tokens: the fold's side alone | 8,758 | 1,095 |
+| the same: both sides, no clock inside a role | 10,007 | 1,251 |
+| the same with every window the same tokens: the fold's side alone | 6,274 | 784 |
+| the same: both sides | 8,121 | 1,015 |
+| a window's own tokens, their rows asked for a window ahead: both sides | 11,934 | 1,492 |
+| THE VALUES LANDED BY BULK COPY from expanded lists, a window's own tokens: the fold's side alone | 8,501 | 1,063 |
+| the same: both sides | 9,091 | 1,136 |
+| THE WHOLE ENTRY LANDED, values and coefficient bytes: the fold's side alone | 5,183 | 648 |
+| the same: both sides | 5,989 | 749 |
+| the whole entry, EACH BOX ITS OWN expanded windows, past the cache: the fold's side alone | 6,502 | 813 |
+| the same: both sides | 11,221 | 1,403 |
+| the whole entry, its 16 columns' windows NEVER READ BEFORE, 16 boxes a window's readers: the fold's side alone | 5,200 | 650 |
+| the same: both sides | 5,976 | 747 |
+| THE PACKED STREAM, packed by digit, its lists uneven (8 to 24 entries), last steps truncated: the fold's side alone | 10,072 | 1,259 |
+| the same: both sides | 10,574 | 1,322 |
+| the packed stream, FOUR SLOTS OF 4 TILES a box: the fold's side alone | 10,705 | 1,338 |
+| the same: both sides | 11,482 | 1,435 |
+| the whole entry, THE FOLD WARPS EXPANDING their own slot: the fold's side alone | 3,016 | 377 |
+| the same: both sides | 5,980 | 747 |
 
-THE WALL TIME, measured on this box and immune to its clock (1.77 to 1.79 GHz, its rows' medians): the long call
-scaled to 65,536 tokens is 0.249 ms for the baseline, 0.236 ms for the winner's form, and 0.502 ms at the
-once-read bound (0.573 without the winner's changes). THE FLASH REFERENCES, from the session of instance 60450651 ON ANOTHER BOX (a different offer and driver)
+THE WALL TIME, measured on this box and immune to its clock (1.78 to 1.82 GHz, its rows' medians): the long call
+scaled to 65,536 tokens is 0.246 ms for the baseline, 0.238 ms for the winner's form, and 0.498 ms at the
+once-read bound (0.572 without the winner's changes). THE FLASH REFERENCES, from the session of instance 60450651 ON ANOTHER BOX (a different offer and driver)
 (`rola_bench.measure.attention`, causal, 1 head, dv 64, bf16; the records in rola-results at `flash/reference`):
 FlashAttention-3, built on the box at Dao's pinned commit, 1.775 ms at 65,536 tokens (0.300 at 16,384; 0.121 at
 1,024); torch's FlashAttention-2 3.072 ms (0.323; 0.040). THESE ARE ADJACENT MEASUREMENTS, NOT A COMPARISON: the
@@ -507,226 +513,225 @@ barrier, and its waits read as its neighbours' time):
 
 | the role's count | both sides | the read side alone | alone, byte loads out | alone, no fold warp | alone, no fold warp, byte loads out | both, readout draining | both, five warpgroups |
 |---|---|---|---|---|---|---|---|
-| a fold warp waits on the readout's read of a tile group | 370 | 4,181 | 3,802 |  |  | 3,772 | 408 |
-| a fold warp waits on its producer | 4,682 |  |  |  |  | 433 | 5,615 |
-| a readout warp waits on a tile group's publish | 1,853 | 291 | 323 |  |  | 300 | 2,211 |
-| a readout warp waits on the panel's drain | 327 | 287 | 273 | 247 | 282 |  | 328 |
-| a readout warp draining its own rows |  |  |  |  |  | 2,838 |  |
-| a readout warp forming its steps' A | 1,341 | 1,106 | 1,110 | 1,253 | 1,007 | 1,102 |  |
-| a readout warp in its steps (a lean readout's hold the forming) | 2,197 | 2,575 | 2,130 | 2,201 | 2,049 | 1,953 | 3,861 |
-| a drain warp waits on the panel | 3,202 | 2,027 | 1,520 | 817 | 701 |  |  |
+| a fold warp waits on the readout's read of a tile group | 373 | 4,182 | 3,802 |  |  | 3,770 | 415 |
+| a fold warp waits on its producer | 4,680 |  |  |  |  | 433 | 5,602 |
+| a readout warp waits on a tile group's publish | 1,851 | 291 | 323 |  |  | 300 | 2,205 |
+| a readout warp waits on the panel's drain | 327 | 287 | 273 | 246 | 282 |  | 328 |
+| a readout warp draining its own rows |  |  |  |  |  | 2,836 |  |
+| a readout warp forming its steps' A | 1,342 | 1,104 | 1,109 | 1,263 | 1,007 | 1,103 |  |
+| a readout warp in its steps (a lean readout's hold the forming) | 2,196 | 2,579 | 2,131 | 2,203 | 2,049 | 1,952 | 3,862 |
+| a drain warp waits on the panel | 3,197 | 2,031 | 1,522 | 827 | 701 |  |  |
 
 WHAT IT SHOWS.
 - THE CARRY COMPOSES, EXACTLY: two boxes' folds, the image a window, one readout warpgroup over both -- its
   coefficients expanded in its registers, its steps' A operand -- and one f16 line a token, in one CTA of 512
   threads at the SM's whole register file.
-- A TOKEN IS PRICED AT 2,018 SM-CYCLES COMPOSED, its tables read once (R22.2), in the winner's form; 833 when the
+- A TOKEN IS PRICED AT 2,033 SM-CYCLES COMPOSED, its tables read once (R22.2), in the winner's form; 833 when the
   cache holds them (880 in the first form) at this cell (its sides sparse on opposite levels, 256 x 256 leaves;
   [`carry_floor`](../internals/tools/carry_floor.md) prices a dense side higher).
 - THE FILL WANTS WARPS THAT EACH HOLD A BATCH: two producers a box, a batch of 32 entries in registers each, take
-  the fold's side alone to 3,083 cycles a window where one a box is 5,117; one a box holding TWO batches is
+  the fold's side alone to 3,085 cycles a window where one a box is 5,102; one a box holding TWO batches is
   4,567; and two a box at 40 registers a thread, each holding one value instruction's four entries, are
-  5,906 -- slower than one a box that holds a batch.
-- SUSPENDED WAITS WITH THE LEAN READOUT ARE THE FASTEST COMPOSED FORM: 6,666 cycles a window against the
-  baseline's 7,040, with the suspended waits beside the wide byte load a near tie at 6,916. The parts: every wait
-  suspended alone 6,914, the long waits asleep at named barriers 6,984, the lean readout alone 3.6%
-  under the baseline, the wide load alone 6,981. ALL THREE AT ONCE LOSE the pairing's gain (6,756: the lean
+  5,896 -- slower than one a box that holds a batch.
+- SUSPENDED WAITS WITH THE LEAN READOUT ARE THE FASTEST COMPOSED FORM: 6,661 cycles a window against the
+  baseline's 7,038, with the suspended waits beside the wide byte load a near tie at 6,916. The parts: every wait
+  suspended alone 6,914, the long waits asleep at named barriers 6,979, the lean readout alone 3.6%
+  under the baseline, the wide load alone 6,965. ALL THREE AT ONCE LOSE the pairing's gain (6,756: the lean
   readout beside the wide load's scratch needs 88 registers a thread and the fourth warpgroup drops to 104), and
-  the sleeping triple is 7,029.
+  the sleeping triple is 7,030.
 - THE DEN COSTS 5.2% OF THE COMPOSED WINDOW AT THIS CELL AND 5.9% AT THE ALIGNED ONE, the tables cached and no
-  clock inside a role: 6,931 cycles against 6,588, and 7,069 against 6,673. THE ROLES' CLOCKS ARE NOT FREE AND NOT EQUAL: they are
-  78 cycles of the winner's clocked window and 136 of the den's, and which is larger has changed between
-  records, so a clocked row does not price the den (clocked: 7,067 against 6,666; why the clocks differ is
-  not isolated); with the tables once-read 16,496 against 16,147; the fold's side alone 5,102 against 5,117. One
+  clock inside a role: 6,932 cycles against 6,589, and 7,072 against 6,678. THE ROLES' CLOCKS ARE NOT FREE AND NOT EQUAL: they are
+  72 cycles of the winner's clocked window and 145 of the den's, and which is larger has changed between
+  records, so a clocked row does not price the den (clocked: 7,077 against 6,661; why the clocks differ is
+  not isolated); with the tables once-read 16,630 against 16,267; the fold's side alone 5,092 against 5,102. One
   cell (its sides sparse on opposite levels); a dense write side, where the fold's side binds, is unmeasured. ITS
-  PARTS, each a row less the row before, no clock inside a role: the fold's four steps a window 64 cycles;
-  the image's ninth brick and its store 95 (the pitch itself nothing: the winner's form at 155 lines is 6,595
-  against 6,588); the register split, readout 88 and fourth warpgroup 104, 86; the steps 72 columns wide 55;
-  the panel's word and the drain's add 44. No part is a third of it. The split cannot be avoided in this
+  PARTS, each a row less the row before, no clock inside a role: the fold's four steps a window 65 cycles;
+  the image's ninth brick and its store 93 (the pitch itself nothing: the winner's form at 155 lines is 6,597
+  against 6,589); the register split, readout 88 and fourth warpgroup 104, 89; the steps 72 columns wide 54;
+  the panel's word and the drain's add 43. No part is a third of it. The split cannot be avoided in this
   form: the 72-column readout serializes its steps at 80 registers with no clock read too.
 - THE FOLD'S FORM WAS A CONTEST. A step a list with ones in one row of A is 16 steps a window for 1 row in 64 and
   a 17th accumulator set of 8, which the toolkit will not hold at 160 registers: at a 168-register fold with
   one-batch producers it cost an eighth of the composed window in its session (the experiment at ac342446, whose
   record this one replaced). The coefficients as A are four steps into 4 registers.
 - AN IMAGE TILE'S PITCH MUST BE AN ODD COUNT OF LINES: a warp's lanes store to four tiles two apart, and at an
-  even pitch two of the four land on the same banks. The winner's form at 154 lines is 7,074 against 6,666 at 137;
-  the den's at 161 is 7,072 against 7,067 at 155.
-- THE IMAGE FORM COSTS 1.3% MORE WHERE THE CARVES ARE EQUAL, no clock inside a role (6,673 cycles a window against
-  6,588); clocked, the aligned cell's winner's form is 6,667 cycles a
-  window against 6,666 at the cell whose sides list opposite levels -- 16 word stores a thread a tile group where
-  that cell's are 4 lines -- and with the den 7,071 against 7,067, the den's lines there 2-byte
+  even pitch two of the four land on the same banks. The winner's form at 154 lines is 7,070 against 6,661 at 137;
+  the den's at 161 is 7,075 against 7,077 at 155.
+- THE IMAGE FORM COSTS 1.4% MORE WHERE THE CARVES ARE EQUAL, no clock inside a role (6,678 cycles a window against
+  6,589); clocked, the aligned cell's winner's form is 6,667 cycles a
+  window against 6,661 at the cell whose sides list opposite levels -- 16 word stores a thread a tile group where
+  that cell's are 4 lines -- and with the den 7,066 against 7,077, the den's lines there 2-byte
   stores of 8 threads. A form that reads the fold's own registers has nothing of the window to win back but the
   image's stores; it is not built.
 - THE CARRY'S PRODUCERS WANT A TOKEN'S VALUES AS ONE RUN: with the values tile-major in global memory -- a token's 8
-  lines a kilobyte apart -- the winner's form is 12,179 cycles a window against 6,588, and with the tables once-read
-  48,332 against 16,276. The intra's window moves 5% with the values' order ([`intra_window`](intra_window.md)), so
+  lines a kilobyte apart -- the winner's form is 12,204 cycles a window against 6,589, and with the tables once-read
+  48,945 against 16,398. The intra's window moves 5% with the values' order ([`intra_window`](intra_window.md)), so
   the values stay token-major and the levels, which the carry reads 16 bytes at a time, go tile-major.
-- FROM LISTS, WITH A WINDOW'S OWN TOKENS, THE FOLD'S SIDE ALONE IS 8,731 CYCLES A WINDOW where the synthetic entries'
-  is 5,117 cached and 11,936 once-read; both sides 10,017 (the readout's side still on synthetic, cached readers) against
-  6,588. Two things are in it, and the rows with every window the same tokens part them: THE LISTS' CODE -- a
+- FROM LISTS, WITH A WINDOW'S OWN TOKENS, THE FOLD'S SIDE ALONE IS 8,758 CYCLES A WINDOW where the synthetic entries'
+  is 5,102 cached and 11,974 once-read; both sides 10,007 (the readout's side still on synthetic, cached readers) against
+  6,589. Two things are in it, and the rows with every window the same tokens part them: THE LISTS' CODE -- a
   batch's places loaded a batch ahead, a shuffle a value instruction, the sparse word, tile-major addresses, and one
-  batch held where the winner holds two -- is 6,285 against 5,117 alone and 8,123 against 6,588 composed; and ROWS THE
-  CACHE HAS NOT SEEN, a window's own being new each window as a call's are, are the rest, 2,446 alone and
-  1,894 composed. A window's rows are loaded one batch ahead of their use. ASKING FOR THEM A WINDOW AHEAD BY
-  PREFETCH LOSES: 11,918 composed against 10,017 -- six prefetches an entry-batch are more requests of the same
+  batch held where the winner holds two -- is 6,274 against 5,102 alone and 8,121 against 6,589 composed; and ROWS THE
+  CACHE HAS NOT SEEN, a window's own being new each window as a call's are, are the rest, 2,484 alone and
+  1,886 composed. A window's rows are loaded one batch ahead of their use. ASKING FOR THEM A WINDOW AHEAD BY
+  PREFETCH LOSES: 11,934 composed against 10,007 -- six prefetches an entry-batch are more requests of the same
   memory, not less waiting. Whether loads issued two batches ahead hide the rows' arrival is not measured (the
   producers' registers hold one batch from lists). The check of these rows is weak: every table's byte is its token's parity.
-- LANDING THE VALUES ALONE FROM EXPANDED LISTS is 9,052 cycles a window composed against 10,017 with every entry's
-  values gathered (8,123 for the gather with rows the cache holds), and the fold's side alone 8,464 against 8,731: a
+- LANDING THE VALUES ALONE FROM EXPANDED LISTS is 9,091 cycles a window composed against 10,007 with every entry's
+  values gathered (8,121 for the gather with rows the cache holds), and the fold's side alone 8,501 against 8,758: a
   list's values are one bulk copy of 2 KB from a buffer laid contiguous a window (the host's here; 16 sources
   share a buffer), new each window, and its producers still gather an entry's 16 dense bytes and its sparse byte,
   a line of each level's rows an entry. What that leaves is the next finding's.
 - WITH THE WHOLE ENTRY LANDED -- its coefficient bytes beside its values, raw, a list one bulk copy and no global load
-  in a producer's trip -- the window is 5,991 cycles composed and the fold's side alone 5,188, against 6,588 and
-  5,117 for the synthetic entries whose rows the cache holds.
+  in a producer's trip -- the window is 5,989 cycles composed and the fold's side alone 5,183, against 6,589 and
+  5,102 for the synthetic entries whose rows the cache holds.
 - WHAT THAT ROW NEEDS IS ITS BYTES SHARED, NOT HELD BEFOREHAND: with a window's bytes never read before and its
-  16 boxes its readers, the window is 5,978 cycles composed against 5,991 with the cache holding them, and
-  the fold's side alone 5,186 against 5,188: one box's miss serves its 15 mates. With EACH BOX ITS OWN it is
-  11,253 composed, 1.88 times, and 6,518 alone, 1.26 times -- 16 times the bytes from global memory, on
+  16 boxes its readers, the window is 5,976 cycles composed against 5,989 with the cache holding them, and
+  the fold's side alone 5,200 against 5,183: one box's miss serves its 15 mates. With EACH BOX ITS OWN it is
+  11,221 composed, 1.87 times, and 6,502 alone, 1.25 times -- 16 times the bytes from global memory, on
   every multiprocessor at once.
-- THE PACKED STREAM IS EXACT, AND ITS UNEVEN LISTS COST THE FOLD 1.94 TIMES: 10,070 cycles a window the
-  fold's side alone against 5,188, 10,569 composed against 5,991. The same 256 entries a box a window, as
+- THE PACKED STREAM IS EXACT, AND ITS UNEVEN LISTS COST THE FOLD 1.94 TIMES: 10,072 cycles a window the
+  fold's side alone against 5,183, 10,574 composed against 5,989. The same 256 entries a box a window, as
   lists of 8 to 24 where the row above has 16 each, are 24 steps where it has 16 -- three slots of 8 tiles where it
   has two -- and a truncated step, used where it landed with its bricks as far apart as it has entries, folds
-  exactly. In four slots of 4 tiles, a slot's copies issued two slots ahead, the same stream is 10,712 alone
-  and 11,471 composed: more slots cost more, so a slot's price is not its bytes' landing.
-- THE FOLD'S SIDE WAITS ON ITS PRODUCER. With even lists a fold warp waits 4,559 of the fold's side's 5,188 cycles a
+  exactly. In four slots of 4 tiles, a slot's copies issued two slots ahead, the same stream is 10,705 alone
+  and 11,482 composed: more slots cost more, so a slot's price is not its bytes' landing.
+- THE FOLD'S SIDE WAITS ON ITS PRODUCER. With even lists a fold warp waits 4,554 of the fold's side's 5,183 cycles a
   window on its producer: its own steps are what is left. One producer warp a box expands every entry. On the
-  packed stream in four slots the wait is 4,221 of 10,712, and with TWO PRODUCERS A BOX 1,486 of 8,472: the wait
+  packed stream in four slots the wait is 4,211 of 10,705, and with TWO PRODUCERS A BOX 1,485 of 8,471: the wait
   falls and the fold's own time is then the larger part. That fold runs a list's steps as a loop of its own, a
   vote a list a slot, where the even rows' steps are one block; the block rows below run the uneven lists' steps so.
 - WITH THE FOLD WARPS EXPANDING THEIR OWN SLOT (even lists; a producer only issues copies) the fold's side alone
-  is 3,011 cycles a window against 5,188, a fold warp's wait -- now on its slot's bytes -- 1,879 against 4,559.
-  THE COMPOSED WINDOW DOES NOT MOVE: 5,969 against 5,991; with the fold issuing its own copies too, no
-  producer running, 5,867.
-- THE WINDOW IS THE READOUT'S. That form with every role's waits clocked (6,312 cycles a window): a readout warp
-  waits 286 on the image and 278 on the drain and is 4,244 in its coefficients and steps; a fold
-  warp waits 1,788 on the readout's read and 178 on its bytes; a drain warp waits 2,045 on the
+  is 3,016 cycles a window against 5,183, a fold warp's wait -- now on its slot's bytes -- 1,885 against 4,554.
+  THE COMPOSED WINDOW DOES NOT MOVE: 5,980 against 5,989; with the fold issuing its own copies too, no
+  producer running, 5,905.
+- THE WINDOW IS THE READOUT'S. That form with every role's waits clocked (6,320 cycles a window): a readout warp
+  waits 286 on the image and 278 on the drain and is 4,256 in its coefficients and steps; a fold
+  warp waits 1,800 on the readout's read and 179 on its bytes; a drain warp waits 2,056 on the
   panel. The one role that does not wait is the readout's warpgroup.
-- FOUR DRAIN WARPS BUY NOTHING: 5,824 against 5,867, each drain warp then waiting 4,018 of a window on the
-  panel, and a readout warp is 3,818 in its coefficients and steps against 4,244. The drain is not the
+- FOUR DRAIN WARPS BUY NOTHING: 5,832 against 5,905, each drain warp then waiting 4,032 of a window on the
+  panel, and a readout warp is 3,826 in its coefficients and steps against 4,256. The drain is not the
   window's bound.
 - THE MIRRORED READOUT (coefficients in shared memory, tokens on the step's columns; the fold expanding, a producer
-  issuing): the window is 5,580 cycles against 5,969. Clocked (6,023 against 6,516): a readout warp is
-  1,083 forming its coefficients and 156 in its steps, against 3,836 for both in the register form; it
-  waits 358 on the image and 238 on the drain; a fold warp waits 2,697 on the readout's read against 2,804;
-  a drain warp 2,396 on the panel against 2,538.
-  What its clocks do not name is 4,188 cycles a window: its rows' rounding, their stores and its arrivals. Its 32
+  issuing): the window is 5,578 cycles against 5,980. Clocked (6,017 against 6,513): a readout warp is
+  1,083 forming its coefficients and 156 in its steps, against 3,832 for both in the register form; it
+  waits 356 on the image and 238 on the drain; a fold warp waits 2,692 on the readout's read against 2,803;
+  a drain warp 2,387 on the panel against 2,526.
+  What its clocks do not name is 4,184 cycles a window: its rows' rounding, their stores and its arrivals. Its 32
   steps are a quarter the register form's multiply-adds and take 156: a step's price here is not its size.
-- THE BLOCK ROWS -- uneven lists, a block a list, the stream saying what to do: the window is 6,844 cycles
-  composed (6,848 clocked), against 5,293 for even lists under the same readout and drains (whole-entry
-  tiles, the fold issuing) -- 1.29 times it -- and
-  10,569 for the uneven lists' truncated steps behind a producer and a loop a list.
-  The fold's side alone is 3,775,
-  a fold warp waiting 264 of it on its bytes, against 3,011 for the even lists' fold expanding its own slot. Clocked: a fold warp waits 251 on the
-  readout's read and 190 on its bytes; a readout warp 1,759 on the image (316 with even lists) and 251 on the drain; a drain warp
-  4,342 on the panel.
+- THE BLOCK ROWS -- uneven lists, a block a list, the stream saying what to do: the window is 6,859 cycles
+  composed (6,848 clocked), against 5,290 for even lists under the same readout and drains (whole-entry
+  tiles, the fold issuing) -- 1.30 times it -- and
+  10,574 for the uneven lists' truncated steps behind a producer and a loop a list.
+  The fold's side alone is 3,777,
+  a fold warp waiting 264 of it on its bytes, against 3,016 for the even lists' fold expanding its own slot. Clocked: a fold warp waits 251 on the
+  readout's read and 190 on its bytes; a readout warp 1,765 on the image (316 with even lists) and 251 on the drain; a drain warp
+  4,338 on the panel.
   THE FOLD'S PHASES, clocked, the block form against the even lists' (a clocked fold holds nine more
-  registers; the windows are 6,848 and 5,827 with them): publishing the image 1,310 against 1,962,
-  its wait on the readout's read in both (251 and 263); expanding its entries' lines 721 against 784; its pads and its
-  steps' operands 733, the block form's alone; its slots' fences 54 and 71 against 69
+  registers; the windows are 6,848 and 5,812 with them): publishing the image 1,310 against 1,950,
+  its wait on the readout's read in both (251 and 263); expanding its entries' lines 721 against 783; its pads and its
+  steps' operands 731, the block form's alone; its slots' fences 54 and 71 against 69
   and 54; AT ITS SLOTS' RENDEZVOUS -- between a reading before the warpgroup's sync and one behind it --
-  729 and 572 against 350 and 480; its steps and its next copy's issue 2,132 against 1,717.
+  723 and 571 against 346 and 481; its steps and its next copy's issue 2,138 against 1,717.
   A FENCE IS SOME 60 CYCLES, AND A FOLD WARP IS LONGER AT A SLOT'S RENDEZVOUS THAN EXPANDING THE SLOT. With no
-  arithmetic in the fold (the control: windows 6,643 against 6,844 and 5,230 against
-  5,293; its entries' lines 440 and 339) its rendezvous are 748
-  and 597, and 294 and 623: they do not follow the lines' work. THE
+  arithmetic in the fold (the control: windows 6,639 against 6,859 and 5,228 against
+  5,290; its entries' lines 440 and 337) its rendezvous are 740
+  and 594, and 293 and 623: they do not follow the lines' work. THE
   FOLD'S ARITHMETIC IS NOT WHAT THE WINDOW WAITS ON.
-  WITH BOTH COPIES ISSUED AT THE WINDOW'S END (even lists) the window is 5,484 against 5,293,
+  WITH BOTH COPIES ISSUED AT THE WINDOW'S END (even lists) the window is 5,482 against 5,290,
   its fences 65 and 58: a fence does not wait on a copy in flight, and the later
   copies cost the window.
   ITS RENDEZVOUS MOVE WITH THE ISSUE: 804 at its first slot and 155 at its second, where the form
-  that issues a slot's copies as it leaves the slot is 350 and 480 -- the rendezvous behind an issue
+  that issues a slot's copies as it leaves the slot is 346 and 481 -- the rendezvous behind an issue
   is the long one.
   A WARPGROUP WAITS AT ITS RENDEZVOUS FOR ITS FIRST WARP, whose lanes issue the slot's 8 copies: the first warp
-  alone is 91 and 92 at its two rendezvous where the warps' mean is 350 and 480, and
-  2,662 in its steps and its issue where the mean is 1,717.
-  WITH THE COPIES ISSUED TWO A WARP every warp is 217 and 209 at its rendezvous and 1,702 in its
-  steps and issue; the window is 5,247 against 5,293, and a fold warp then waits 875 on the
+  alone is 91 and 92 at its two rendezvous where the warps' mean is 346 and 481, and
+  2,661 in its steps and its issue where the mean is 1,717.
+  WITH THE COPIES ISSUED TWO A WARP every warp is 218 and 210 at its rendezvous and 1,699 in its
+  steps and issue; the window is 5,242 against 5,290, and a fold warp then waits 874 on the
   readout's read against 263: THE FOLD'S TIME SAVED IS ITS WAIT ON THE READOUT, WHICH IS THE WINDOW.
-  THE BLOCK FORM'S FIRST WARP IS LAST TOO: 103 and 97 at its rendezvous against 729 and
-  572; its plans, its one copy a slot, 16 threads' operands and the first pads are its own -- 1,170 at
-  its pads and operands against 733, 829 expanding against 721, 2,534 in its steps and
-  issue against 2,132. WITH THOSE JOBS SHARED AMONG ITS WARPS THE WINDOW DOES NOT MOVE: 6,862 against
-  6,844. Its rendezvous fall to 500 and 301 and every warp's pads and operands rise to
-  1,245: the phase is some 53 instructions a thread, and a warp is as long in it with a pad and four operands
+  THE BLOCK FORM'S FIRST WARP IS LAST TOO: 103 and 97 at its rendezvous against 723 and
+  571; its plans, its one copy a slot, 16 threads' operands and the first pads are its own -- 1,167 at
+  its pads and operands against 731, 826 expanding against 721, 2,542 in its steps and
+  issue against 2,138. WITH THOSE JOBS SHARED AMONG ITS WARPS THE WINDOW DOES NOT MOVE: 6,855 against
+  6,859. Its rendezvous fall to 494 and 302 and every warp's pads and operands rise to
+  1,249: the phase is some 53 instructions a thread, and a warp is as long in it with a pad and four operands
   as the first warp was with all of them. NOT ISOLATED: what a warp waits on in that phase.
   THE READY PAIR -- the block form's slots landed with their operands made, the fold only landing and stepping:
-  the window is 5,590 against 6,844 for the block form and 5,293 for even
+  the window is 5,590 against 6,859 for the block form and 5,290 for even
   lists; clocked (5,803), a fold warp waits 218 on its bytes and
-  916 on the readout's read, is 2,191 issuing its 32 steps and
-  833 in their wait and its copy's issue, and A READOUT WARP WAITS 286 ON THE
-  IMAGE against 1,759 with the fold expanding and 316 with even lists: with its operands made the
+  910 on the readout's read, is 2,194 issuing its 32 steps and
+  835 in their wait and its copy's issue, and A READOUT WARP WAITS 286 ON THE
+  IMAGE against 1,765 with the fold expanding and 316 with even lists: with its operands made the
   uneven lists' fold is no longer what the window waits on. What the window is over the even lists' by, no row
   parts: the fold issues twice the steps beside the same readout.
-  THE READ-READY ROWS -- the readout's coefficient tiles landed made as well: the window is 5,330 against
-  5,293 with even lists, and 5,196 against 5,590 for the ready pair's form. Clocked
-  (5,373 and 5,296), a readout warp is 996 and 413 from its
-  image's wait to its tiles landed, where forming them itself with its rendezvous is 1,472 and
-  1,535; it waits 860 and 1,095 on the image, and a fold warp
-  430 and 296 on the readout's read.
-  THE OWN ROWS -- every box its own stream, where 16 share a column's -- ARE THREE TIMES THE WINDOW: 13,081
+  THE READ-READY ROWS -- the readout's coefficient tiles landed made as well: the window is 5,285 against
+  5,290 with even lists, and 5,196 against 5,590 for the ready pair's form. Clocked
+  (5,337 and 5,298), a readout warp is 889 and 386 from its
+  image's wait to its tiles landed, where forming them itself with its rendezvous is 1,470 and
+  1,535; it waits 942 and 1,117 on the image, and a fold warp
+  412 and 294 on the readout's read.
+  THE OWN ROWS -- every box its own stream, where 16 share a column's -- ARE THREE TIMES THE WINDOW: 12,971
   against 5,196. Their streams are some 680 MB, past the card's cache, where the form's are under it; a
-  window's bytes a CTA are the same. Clocked (13,116): A READOUT WARP WAITS 9,549 ON ITS
-  TILES' BYTES against 413 -- its copy is issued one panel's stores ahead of its use -- and
-  a fold warp, whose copies are issued a window ahead, 678 on its own against 211; the
-  fold then waits 7,694 on the readout's read. WITH ITS OPERANDS FROM THE CARD'S MEMORY THE CARRY IS
+  window's bytes a CTA are the same. Clocked (12,965): A READOUT WARP WAITS 9,397 ON ITS
+  TILES' BYTES against 386 -- its copy is issued one panel's stores ahead of its use -- and
+  a fold warp, whose copies are issued a window ahead, 707 on its own against 211; the
+  fold then waits 7,566 on the readout's read. WITH ITS OPERANDS FROM THE CARD'S MEMORY THE CARRY IS
   THAT MEMORY'S: the ready stream is a window's ~123 KB a CTA, and past the cache it is this price. NOT ASKED: the
   readout's copy issued further ahead; the design's mix, a box's own coefficients and its column's values.
   THE TOKEN ROWS -- the fold laying its own operands from a view in token order -- ARE A QUARTER OVER THE BLOCK FORM, HOWEVER THE VIEW
-  ARRIVES: the window is 8,497 with a half-window view staged by one copy and its value lines moved in shared memory,
-  8,606 with ONE VIEW A WINDOW loaded through registers and its 32 steps one block, and 9,554 with the half-window
-  view through registers, against 6,844 for the block form, whose value runs land in place, and 5,590
-  with its operands made. Clocked (8,948 and 9,426; the block form 6,848):
-  THE MOVE IS THE FOLD'S FILL -- a fold warp is 2,392 expanding and moving its entries where the block form's is
+  ARRIVES: the window is 8,496 with a half-window view staged by one copy and its value lines moved in shared memory,
+  8,602 with ONE VIEW A WINDOW loaded through registers and its 32 steps one block, and 9,541 with the half-window
+  view through registers, against 6,859 for the block form, whose value runs land in place, and 5,590
+  with its operands made. Clocked (8,945 and 9,405; the block form 6,848):
+  THE MOVE IS THE FOLD'S FILL -- a fold warp is 2,382 expanding and moving its entries where the block form's is
   721 expanding them, 16 value lines a thread a window through the shared-memory pipe twice; and THROUGH REGISTERS
-  THE FILL IS 5,640, two entries a thread of 9 lines each from global memory, the stream in the cache: a warp's
+  THE FILL IS 5,611, two entries a thread of 9 lines each from global memory, the stream in the cache: a warp's
   loads of 16 bytes are a fifth of a bulk copy's bytes a cycle (KERNEL_STANDARDS 33). THE ONE-VIEW ROW'S STEPS AND RENDEZVOUS ARE SHORT, AND NOT BY ITS STRUCTURE (the joined row, below): its 32 steps
-  issue in 968 where the block form's two slots' are 1,673, its one rendezvous is
-  350 where two are 729 and 572, and its pads and operands
-  818 against 733. A readout warp waits 2,902 and 4,572
-  on the image against 1,759: the fold is the window in both. NOT ASKED: one view a window staged by
+  issue in 969 where the block form's two slots' are 1,679, its one rendezvous is
+  347 where two are 723 and 571, and its pads and operands
+  830 against 731. A readout warp waits 2,912 and 4,540
+  on the image against 1,765: the fold is the window in both. NOT ASKED: one view a window staged by
   small bulk copies; a rank counted from the mask, where these rows' places are the host's.
   THE JOINED ROW -- the block form's two slots laid before ONE RENDEZVOUS, its 32 steps one block -- DOES NOT MOVE THE WINDOW:
-  6,791 against 6,848, both clocked. Its one rendezvous is 1,035 where the two are 729 and
-  572, its steps' issue 1,473 against 1,673, with their wait 1,775 against
-  2,132; its expansion is 883 against 721 and its pads and operands 804 against
-  733. The row also issues both copies at the window's end, which the late-issue rows price apart; the two are
+  6,789 against 6,848, both clocked. Its one rendezvous is 1,036 where the two are 723 and
+  571, its steps' issue 1,471 against 1,679, with their wait 1,774 against
+  2,138; its expansion is 881 against 721 and its pads and operands 806 against
+  731. The row also issues both copies at the window's end, which the late-issue rows price apart; the two are
   not parted here. SO THE ONE-VIEW ROWS' SHORT ISSUE AND RENDEZVOUS ARE NOT THEIR STRUCTURE'S. READ AS, not isolated: their
   fold is alone at its steps while the readout waits on the image, where this row's steps run beside the readout's.
   THE CUT ROWS: OF THE PHASE LEDGER'S THREE SHARED-MEMORY COSTS ONLY THE PANEL'S CUT IS WORTH TIME. The block form's
-  window is 6,502 with the panel by stmatrix against 6,844, 7,382 with the steps' operands shuffled,
-  7,163 issuing only the steps a list reaches, and 7,682 with all three; the read-ready ready pair's
-  4,944, 5,819, 5,505 and 5,950 against 5,196. All three cut the
+  window is 6,500 with the panel by stmatrix against 6,859, 7,385 with the steps' operands shuffled,
+  7,175 issuing only the steps a list reaches, and 7,684 with all three; the read-ready ready pair's
+  4,941, 5,824, 5,493 and 5,961 against 5,196. All three cut the
   windows' shared-memory wavefronts by some 1,020 a CTA-window (the phase ledger: 4,238 to 3,216 and 3,758 to 2,735),
   and two of them lengthen the window: A WINDOW WITH A QUARTER LESS SHARED-MEMORY TRAFFIC IS NOT SHORTER, SO THAT PIPE
   IS NOT WHAT HOLDS IT. The shuffles put four instructions before each step's issue and the skip a branch around it,
   both on the fold's steps' issue; the panel's stores are the readout's, beside its steps. READ AS, not isolated: the
   window is held by the fold's and the readout's chain through the image, its waits and issue, not by a pipe's bytes.
-  THE AHEAD ROWS -- the fold's steps' operand lines loaded two steps ahead -- DO NOT MOVE THE WINDOW: 6,513
-  against 6,502 for the block form with the panel by stmatrix, and 4,948 against 4,944 for the
+  THE AHEAD ROWS -- the fold's steps' operand lines loaded two steps ahead -- DO NOT MOVE THE WINDOW: 6,512
+  against 6,500 for the block form with the panel by stmatrix, and 4,948 against 4,941 for the
   read-ready ready pair's. Alone, a fold step's issue IS its operands' load
   (the held-step row below: some 15 cycles a step held against 48); in the composed rows the loads ahead -- several in
-  flight in their binary, the steps back to back -- free nothing the window keeps. READ AS, not isolated: beside the
-  read side, the fold's other phases take what the faster issue frees; no clocked composed ahead row is run.
+  flight in their binary -- leave the issue where it was (the clocked ahead row: some 58 cycles a step either way).
   THE NO-READ-STEPS ROW -- the readout issuing no step -- SHOWS THE FOLD'S STEPS ARE HELD BY THEIR OWN: clocked, the window
-  is 4,592 against 5,296 with the readout's steps, and a fold warp's steps' issue 1,980 against
-  2,261: some 62 cycles a step with no readout's step beside it. The two fold warpgroups' 64 steps
+  is 4,600 against 5,298 with the readout's steps, and a fold warp's steps' issue 1,991 against
+  2,263: some 62 cycles a step with no readout's step beside it. The two fold warpgroups' 64 steps
   a window are 16 columns each, reading their 2.5 KB of operands at 20 cycles ([`wgmma_width`](wgmma_width.md)): 1,280
   cycles of the shared memory's reads between them. READ AS, not isolated: the fold's issue is its two warpgroups'
   narrow steps' operand reads, and a step's own issue beside them.
-  THE SERVE ROWS -- the drain warps expanding the fold's slots a slot ahead -- LOSE: the window is 6,689 against
-  6,502 for the same form with the fold expanding its own, where some 5,700 was predicted. Clocked (6,899), the
-  path moves to the drain warps: a drain warp waits 1,231 of it (`lab path`: busy 82%), a fold warp
-  3,402 on its slots' expansion -- the fold left the path and the serve warps took it. The expansion
+  THE SERVE ROWS -- the drain warps expanding the fold's slots a slot ahead -- LOSE: the window is 6,693 against
+  6,500 for the same form with the fold expanding its own, where some 5,700 was predicted. Clocked (6,897), the
+  path moves to the drain warps: a drain warp waits 1,238 of it (`lab path`: busy 82%), a fold warp
+  3,403 on its slots' expansion -- the fold left the path and the serve warps took it. The expansion
   cost them some 2,600 cycles a window where some 1,000 was predicted: a slot is expanded a box at a time, an entry a
   thread, its load, products, stores, fence and arrival in turn, with nothing in flight across boxes or slots.
-  THE MEETING ROWS -- the rendezvous an mbarrier's -- DO NOT MOVE IT: the window is 5,362 against
-  5,293 with even lists and 6,917 against 6,844 in the block form; clocked, a fold warp
+  THE MEETING ROWS -- the rendezvous an mbarrier's -- DO NOT MOVE IT: the window is 5,356 against
+  5,290 with even lists and 6,928 against 6,859 in the block form; clocked, a fold warp
   is 465 and 533 at its rendezvous (that row's folds at 168 registers), and
-  721 and 588 in the block form. The time is not the named barrier's own.
-  WITH EVERY WAIT POLLED, not suspended (even lists): the window is 5,524 against 5,293;
-  clocked (6,035), a fold warp's rendezvous are 383 and 485, its waits 292 on the readout's
+  715 and 585 in the block form. The time is not the named barrier's own.
+  WITH EVERY WAIT POLLED, not suspended (even lists): the window is 5,520 against 5,290;
+  clocked (6,026), a fold warp's rendezvous are 381 and 489, its waits 292 on the readout's
   read and 355 on its bytes.
   A slot's steps are a
   fixed two rounds: ISSUING ONLY THE STEPS ITS LISTS HAVE, a second-round step a trip of one or none, WAS MEASURED
@@ -734,64 +739,64 @@ WHAT IT SHOWS.
   alone 4,385 against 3,741), and its rows are not kept. NOT ASKED: the drain warps at 88 registers under this
   fold (they are at 72 here); lists past two rounds.
 - THE MIRRORED READOUT'S SUMS TO THE PANEL ARE ITS LARGEST PHASE (the even lists' form, clocked): a readout warp is
-  1,814 cycles a window rounding its sums, storing them a half each and arriving -- its
-  2,181 less its 367 waiting on the drain -- against 1,238 in its steps and
-  1,472 forming its coefficients. NOT ASKED: the panel laid so a thread's two sums are one word's store.
+  1,799 cycles a window rounding its sums, storing them a half each and arriving -- its
+  2,160 less its 361 waiting on the drain -- against 1,241 in its steps and
+  1,470 forming its coefficients. NOT ASKED: the panel laid so a thread's two sums are one word's store.
 - THE OUTPUT PATH ON FOUR WARPS (the chunk-of-8 form, the fold issuing its own copies, four drain warps): the window
-  is 5,293 cycles against 5,534 with two drain warps and a producer; clocked 5,827 against 5,664: a readout
-  warp waits 367 on the drain against 665, a drain warp 3,182 on the panel against 650 -- and A FOLD WARP WAITS
-  466 of the window, on the readout's read and on its bytes, against 2,121: the folds, which waited a third
+  is 5,290 cycles against 5,533 with two drain warps and a producer; clocked 5,812 against 5,663: a readout
+  warp waits 361 on the drain against 661, a drain warp 3,175 on the panel against 653 -- and A FOLD WARP WAITS
+  468 of the window, on the readout's read and on its bytes, against 2,121: the folds, which waited a third
   of a window, now wait a tenth; no clock says in what.
-- WITH THE DRAIN WARPS ROUNDING the window is 5,311 against 5,293: nothing. Clocked (5,535), a readout
-  warp's unclocked remainder is 1,796 against 2,435 and it waits 1,252 on the image against 316: what the
+- WITH THE DRAIN WARPS ROUNDING the window is 5,311 against 5,290: nothing. Clocked (5,533), a readout
+  warp's unclocked remainder is 1,787 against 2,423 and it waits 1,258 on the image against 316: what the
   readout sheds it waits out on the folds' image.
-- THE MIRRORED READOUT WITH A CHUNK OF 8 DIGITS: the window is 5,534 cycles against 5,580 at 4. Clocked (5,664
-  against 6,023): a readout warp is 1,025 forming and 126 in its steps against 1,083 and 156 -- half the
-  passes, three quarters of the time -- and what its clocks do not name is 3,592 against 4,188: its
-  rows' rounding and stores are a value's, not a pass's. It waits 665 on the drain against 238, and a drain
-  warp waits 650 on the panel against 2,396: the two drain warps are near the window's whole length at
+- THE MIRRORED READOUT WITH A CHUNK OF 8 DIGITS: the window is 5,533 cycles against 5,578 at 4. Clocked (5,663
+  against 6,017): a readout warp is 1,025 forming and 127 in its steps against 1,083 and 156 -- half the
+  passes, three quarters of the time -- and what its clocks do not name is 3,597 against 4,184: its
+  rows' rounding and stores are a value's, not a pass's. It waits 661 on the drain against 238, and a drain
+  warp waits 653 on the panel against 2,387: the two drain warps are near the window's whole length at
   work (their warpgroup at 88 registers here, 96 there; no row parts that from the two panels handed at once).
-- WITH THE READOUT A SUM A BOX (the fold expanding, a producer issuing) THE WINDOW IS LONGER: 6,250 cycles against
-  5,969. Clocked (6,564 against 6,516): a readout warp is 3,442 in its coefficients and steps against 3,836 --
+- WITH THE READOUT A SUM A BOX (the fold expanding, a producer issuing) THE WINDOW IS LONGER: 6,257 cycles against
+  5,980. Clocked (6,569 against 6,513): a readout warp is 3,462 in its coefficients and steps against 3,832 --
   two chains of 4 steps are a tenth under one of 8, so the chain was not what its steps cost -- and it waits
-  821 on the drain against 244, a drain warp waiting 332 on the panel against 2,538. The row's serve
+  801 on the drain against 244, a drain warp waiting 332 on the panel against 2,526. The row's serve
   warps are at 80 registers where the other's are at 112, and its drain is what the window then waits on; no row
   parts the drain's registers from the readout's second sum. NOT ASKED: the readout's steps by what they
   multiply -- a step is 64 rows of which one digit's 16 are not zero; its coefficients formed by warps that
   wait; the fold-expands form on the uneven stream; a truncated step's pads left out of the expanding.
 - THE TABLES ONCE-READ COST 2.3 TO 2.5 TIMES THE WINDOW ON THIS BOX (in cycles, which for a row bound by global
-  memory follow the card's clock): 17,604 cycles composed against 7,040, the winner's form
-  16,147 against 6,666, the fold's side alone 11,936 against 5,117 -- every access a fresh row of 128 MB of
+  memory follow the card's clock): 17,729 cycles composed against 7,038, the winner's form
+  16,267 against 6,661, the fold's side alone 11,974 against 5,102 -- every access a fresh row of 128 MB of
   values, the model of a large table whose rows are each read once.
 - THE DUMP IS PRICED IN THIS SESSION: the fold's state stored out in every call, as every record before 79ec1b08
-  ran, puts the composed row at 8,211 against 7,040 -- one binary, one box, one session.
-- FIVE WARPGROUPS LOSE COMPOSED, 7,759 against 7,040: 640 threads leave four producers and four drain warps 40
-  registers a thread, the fold waits on its producers 5,615 cycles a window, and the lean readout the count
-  forces is 3,861 in its steps and their forming where one commit group's are 3,539. Four drain warps do
-  help the read side alone, 5,047 against 5,563.
-- THE LEAN READOUT WITH TWO-BATCH PRODUCERS IS 6,788 COMPOSED against 7,040: a readout warp is 4,466 cycles
+  ran, puts the composed row at 8,125 against 7,038 -- one binary, one box, one session.
+- FIVE WARPGROUPS LOSE COMPOSED, 7,754 against 7,038: 640 threads leave four producers and four drain warps 40
+  registers a thread, the fold waits on its producers 5,602 cycles a window, and the lean readout the count
+  forces is 3,862 in its steps and their forming where one commit group's are 3,538. Four drain warps do
+  help the read side alone, 5,046 against 5,562.
+- THE LEAN READOUT WITH TWO-BATCH PRODUCERS IS 6,786 COMPOSED against 7,038: a readout warp is 4,475 cycles
   a window in its steps and their forming. The two changes are not separated.
-- THE READOUT DRAINING ITS OWN ROWS LOSES COMPOSED, 7,440 against 7,040: a readout warp is 2,838 cycles a
-  window in its 64 adds, and the window becomes the readout's -- the fold waits on its read 3,772. A warp that
+- THE READOUT DRAINING ITS OWN ROWS LOSES COMPOSED, 7,436 against 7,038: a readout warp is 2,836 cycles a
+  window in its 64 adds, and the window becomes the readout's -- the fold waits on its read 3,770. A warp that
   issues an add is held until the SM passes it: adds issued by the readout hold the readout.
-- COMPOSED, THE PRODUCERS' LOADS ARE NOW THE LARGEST SINGLE ACCESS: with them out the window is 6,429 against 7,040, and
-  those loads are three fifths of the fold's side alone -- 2,412 cycles a window without them against 5,117, some
-  169 cycles a batch of a producer's 9 load instructions; their coefficient arithmetic is 407 of it
-  (4,710 without). The drains' adds out, the window is 6,699; the image's stores out, 6,679.
-- A PARKED FOLD WARP COSTS THE READ SIDE 17 CYCLES, A PUBLISHING ONE 1,198: the read side alone is 5,563
-  with the fold warps publishing and 4,365 with no fold warp running, while one parked asleep beside it costs
-  17 cycles and one spinning 147. What of the publishing fold's hand-off holds it is NOT ISOLATED
-  (its stores are 571 of it; its fence nothing).
+- COMPOSED, THE PRODUCERS' LOADS ARE NOW THE LARGEST SINGLE ACCESS: with them out the window is 6,430 against 7,038, and
+  those loads are three fifths of the fold's side alone -- 2,412 cycles a window without them against 5,102, some
+  168 cycles a batch of a producer's 9 load instructions; their coefficient arithmetic is 397 of it
+  (4,705 without). The drains' adds out, the window is 6,705; the image's stores out, 6,693.
+- A PARKED FOLD WARP COSTS THE READ SIDE -13 CYCLES, A PUBLISHING ONE 1,186: the read side alone is 5,562
+  with the fold warps publishing and 4,376 with no fold warp running, while one parked asleep beside it costs
+  -13 cycles and one spinning 124. What of the publishing fold's hand-off holds it is NOT ISOLATED
+  (its stores are 572 of it; its fence nothing).
 - THE READOUT'S OWN BYTE LOADS ARE A SIXTH OF ITS STEPS' SPAN: 8 instructions a chunk, each lane's 4 bytes of a
-  different row; without them a readout warp's steps are 2,130 cycles a window against 2,575. The read side alone
-  is then the drain's -- 5,003 against 5,563, the readout waiting on the drain 273 -- at some
+  different row; without them a readout warp's steps are 2,131 cycles a window against 2,579. The read side alone
+  is then the drain's -- 5,003 against 5,562, the readout waiting on the drain 273 -- at some
   27 cycles an add a drain warp, where with no fold warp running an add is 26.
-- ONE WIDE LOAD A WARP FOR THE READOUT'S BYTES is the read side alone without those loads -- 5,051 cycles a window
-  against 5,003 with them out and 5,563 as they were -- and little composed: 6,981 against 7,040, where the
-  byte loads out are 6,673 and the drains' adds out with them 6,421.
-- THE READOUT FORMS ITS STEPS' A IN 1,106 TO 1,341 CYCLES A WINDOW, 276 to 335 a chunk: the coefficients' rounds
+- ONE WIDE LOAD A WARP FOR THE READOUT'S BYTES is the read side alone without those loads -- 5,049 cycles a window
+  against 5,003 with them out and 5,562 as they were -- and little composed: 6,965 against 7,038, where the
+  byte loads out are 6,671 and the drains' adds out with them 6,416.
+- THE READOUT FORMS ITS STEPS' A IN 1,104 TO 1,342 CYCLES A WINDOW, 276 to 336 a chunk: the coefficients' rounds
   and the 32 words held.
-- THE STEPS THEMSELVES ARE OVER THEIR OWN TIME with nothing beside them but the drains: 550 cycles a chunk (the
+- THE STEPS THEMSELVES ARE OVER THEIR OWN TIME with nothing beside them but the drains: 551 cycles a chunk (the
   fence, 8 steps, the commit, 8 loads issued, the wait) where 8 steps of 64 columns into one accumulator from
   shared memory are 319 ([`wgmma_width`](wgmma_width.md)). Not isolated here.
 - EVERY ROLE ISSUES AN INSTRUCTION EVERY 3.5 TO 7 CYCLES of its busy time (the static ledger's counts a trip: a
