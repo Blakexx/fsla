@@ -46,7 +46,16 @@ __global__ void __launch_bounds__(kFold + 128, 1) queue(long long* times, float*
     //: THE FOLD
     float d[kSteps][8] = {};
     const uint4* const table = reinterpret_cast<const uint4*>(smem + kTableAt);
-    const uint4 held = HELD ? table[0] : make_uint4(0, 0, 0, 0);
+    const uint4 held = HELD == 1 ? table[0] : make_uint4(0, 0, 0, 0);
+    //: (HELD 2: every step its own operands' low words, loaded once and held where the toolkit cannot know them one
+    //: warp's -- a step's move to the uniform registers its own, no load)
+    uint32_t low_a[kSteps], low_b[kSteps];
+    const uint32_t high_a = HELD == 2 ? lab::held(table[0].y) : 0u, high_b = HELD == 2 ? lab::held(table[0].w) : 0u;
+#pragma unroll
+    for (int s = 0; s < kSteps; ++s) {
+      low_a[s] = HELD == 2 ? lab::held(table[s].x + static_cast<uint32_t>(tid >> 7)) : 0u;
+      low_b[s] = HELD == 2 ? lab::held(table[s].z + static_cast<uint32_t>(tid >> 7)) : 0u;
+    }
     const long long t0 = clock64();
 #pragma unroll 1
     for (int t = 0; t < trips; ++t) {
@@ -54,9 +63,13 @@ __global__ void __launch_bounds__(kFold + 128, 1) queue(long long* times, float*
 #pragma unroll
       for (int s = 0; s < kSteps; ++s) {
         asm volatile("" ::: "memory");
-        const uint4 two = HELD ? held : table[s];
-        lab::wg_bf16_n16_ss_mn(d[s], static_cast<uint64_t>(two.y) << 32 | two.x,
-                               static_cast<uint64_t>(two.w) << 32 | two.z, true);
+        if constexpr (HELD == 2) {
+          lab::wg_bf16_n16_ss_mn(d[s], static_cast<uint64_t>(high_a) << 32 | low_a[s], static_cast<uint64_t>(high_b) << 32 | low_b[s], true);
+        } else {
+          const uint4 two = HELD == 1 ? held : table[s];
+          lab::wg_bf16_n16_ss_mn(d[s], static_cast<uint64_t>(two.y) << 32 | two.x,
+                                 static_cast<uint64_t>(two.w) << 32 | two.z, true);
+        }
       }
       lab::wg_commit();
       lab::wg_wait<0>();
@@ -130,7 +143,7 @@ void run(lab::Bench& b, float* out, uint32_t* lines) {
   using namespace step_queue;
   constexpr int kCheckTrips = 16, kTrips = 2048;
   static const char* const kinds[] = {"nothing", "shared loads", "shared stores", "global adds", "global loads"};
-  const std::string name = std::string(HELD ? "held operands" : "loaded operands") + ", beside "
+  const std::string name = std::string(HELD == 2 ? "operands held a step each" : HELD ? "held operands" : "loaded operands") + ", beside "
                            + (KIND == kNone ? std::string("nothing")
                                             : std::to_string(WARPS) + (WARPS == 1 ? " warp" : " warps") + " of " + kinds[KIND]);
   const auto kernel = queue<HELD, KIND, WARPS>;
@@ -189,10 +202,11 @@ void sweep(lab::Bench& b, float* out, uint32_t* lines) {
 int main(int argc, char** argv) {
   using namespace step_queue;
   lab::Bench b(argc, argv);
-  for (int held : {0, 1})
+  for (int held : {0, 1, 2})
     for (int kind : {kNone, kSharedLoads, kSharedStores, kGlobalAdds, kGlobalLoads})
       for (int warps : {1, 2, 4}) {
         if (kind == kNone && warps != 1) continue;
+        if (held == 2 && kind != kNone && (kind == kGlobalLoads || warps < (kind == kGlobalAdds ? 2 : 4))) continue;
         const std::string k = lab::kernel("queue", {held, kind, warps});
         b.expect(k, "HGMMA", ">=", kSteps);
         b.exempt(k, "a rate probe: a fold step's time beside other warps' traffic, no kernel's step");
@@ -208,5 +222,11 @@ int main(int argc, char** argv) {
   LAB_CHECK(cudaMemset(lines, 0, sizeof(uint32_t) * static_cast<size_t>(b.sms) * 4 * 64 * 32));
   sweep<0>(b, out, lines);
   sweep<1>(b, out, lines);
+  //: the held table: every step its own operands in registers
+  run<2, kNone, 1>(b, out, lines);
+  run<2, kSharedLoads, 4>(b, out, lines);
+  run<2, kSharedStores, 4>(b, out, lines);
+  run<2, kGlobalAdds, 2>(b, out, lines);
+  run<2, kGlobalAdds, 4>(b, out, lines);
   return 0;
 }

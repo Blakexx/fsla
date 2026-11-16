@@ -40,14 +40,23 @@ at 1, 2 and 4 warps):
 | global loads, 16 bytes a lane | 6.2 / 12.5 / 24.3 | 35.2 / 34.8 / 34.9 | 24.3 / 24.4 / 24.5 |
 
 WHAT IT SHOWS.
-- A STEP WHOSE OPERANDS ARE HELD IS IMMUNE: some 23-25 cycles a step whatever the co-runners put on the SM. What
-  other warps' traffic costs a step is its operands' shared load alone.
-- A LOADED STEP IS SLOWED BY THE OTHER WARPS' MEMORY TRAFFIC, AND MOST BY GLOBAL ADDS: four warps adding back to back
-  -- a drain warp's burst -- take a step from 34 to 77 cycles; shared stores cost a step more than shared loads at a
-  like rate; global loads of lines the cache holds cost it nothing. The prediction had shared loads and stores the
-  larger cost and the alone figures some 45-50 and 15-20: the probe's alone step is its chain alone (34, 23), the
-  carry fold's alone figures carry its other phases.
-- FOR THE CARRY: its fold's steps should hold their operands, not load them at their issue -- made once a slot,
-  outside the step chain, and held (the counted row made them beside each step and lost).
+- A STEP WHOSE ONE SET OF OPERANDS IS HELD IS IMMUNE: some 23-25 cycles a step whatever the co-runners put on the SM.
+  Its binary holds no instruction between its steps -- the toolkit moved the one set to the uniform registers before the
+  loop -- so this is a step with no load and no move of its own.
+- A LOADED STEP IS SLOWED BY THE OTHER WARPS' MEMORY TRAFFIC, AND MOST BY GLOBAL ADDS: four warps adding back to back --
+  a drain warp's burst -- take a step from 34 to 77 cycles; shared stores cost a step more than shared loads at a like
+  rate; global loads of lines the cache holds cost it nothing. A loaded step's binary holds its load and some seven
+  moves to the uniform registers a step. The prediction had shared loads and stores the larger cost and the alone
+  figures some 45-50 and 15-20; the alone figures measured are 34 and 23, the difference from the carry fold's own NOT
+  ISOLATED.
+- NOT SETTLED: whether a held TABLE -- every step its own operands in registers, so a move to the uniform registers a
+  step and no load, the form the carry can hold -- is immune too. The carry's counted and uniform rows, near that form,
+  lost with their operands' arithmetic beside each step.
+
+THE HELD-TABLE ROWS (every step its own operands' low words in registers, loaded once where the toolkit cannot know
+them one warp's: its binary's steps hold their moves to the uniform registers and no load), alone and beside four
+warps of shared loads, four of shared stores, and two and four of global adds. PREDICTED: if a step's move to the
+uniform registers is not what the traffic slows, some 24-27 cycles a step alone and beside each -- the held one set's
+immunity, and the form for the carry; if the move is, the loaded steps' growth.
 
 Record: `measure/lab/results/step_queue/sm_90a.json`.
