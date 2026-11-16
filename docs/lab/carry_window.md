@@ -288,19 +288,23 @@ window on its coefficient tiles' copy, the fold 8,275 on the readout. A CTA's wi
 copies of some 22 KB and four readout passes of 8.7 KB): some 16 MB a window card-wide, some 2.1 TB/s at that window.
 
 THE FOLD-ALONE ROWS (the digit form with the panel by stmatrix, the fold's side alone, clocked and unclocked, the fold
-holding the idle readout's registers, 184 a thread) and the same form's clocked full row ask what holds the fold's
-window when the read side runs beside it. A first prediction (the clocked fold-alone expansion a third of the full
-row's if the shared-memory pipe, the same if its own latency) was not answered by the first run, whose fold-alone row
-clocked only its wait on a producer; the second prediction, made before this run: the shared-memory pipe if the fold
-alone issues its steps near 40 cycles a step, the schedulers' issue if every phase falls alike. Measured (H100 SXM,
-Nebius): the fold alone is 3,615 cycles a window (clocked 4,239) against 6,505 with both sides (clocked 6,759). EVERY
-PHASE FALLS ALIKE, by a fifth to a third -- a fold warp's steps' issue 1,885 to 1,539 (59 to 48 cycles a step), its
-expansion 754 to 588, its pads and operands 700 to 501, its steps' wait and copies 465 to 323, its two rendezvous
-1,275 to 802 -- and its image (1,055) and its wait on the readout's read (227) leave with the read side: by the
-prediction, what the read side takes from the fold is the schedulers' issue, not the shared-memory pipe alone. A fold
-step issues at 48 cycles even alone, against some 19 of its own tensor time (14.6 + n / 4 at n = 16): its own issue,
-the second fact, is apart from the read side's. A slot's expansion is some 300-380 cycles a warp; the traced 1,350 was
-expansion, pads, operands, fence and the rendezvous wait together.
+holding the idle readout's registers, 184 a thread, where its phase clocks spill at 168) and the same form's clocked
+full row ask what holds the fold's window when the read side runs beside it. PREDICTED before the run: the shared-
+memory pipe if the fold alone issues its steps near 40 cycles a step, the schedulers' issue if every phase falls
+alike. Measured (H100 SXM, Nebius): the fold alone is 3,615 cycles a window (clocked 4,239) against 6,505 with both
+sides (clocked 6,759). EVERY PHASE FALLS ALIKE, by a fifth to a third -- a fold warp's steps' issue 1,885 to 1,539 (59
+to 48 cycles a step), its expansion 754 to 588, its pads and operands 700 to 501, its steps' wait and copies 465 to
+323, its two rendezvous 1,275 to 802 -- and its image (1,055) and its wait on the readout's read (227) leave with the
+read side: what the read side takes from the fold is the schedulers' issue, not the shared-memory pipe alone. The 16
+registers the fold alone holds do not move its window: unclocked at 168 a thread it was 3,610 (rola 1c811b5d,
+event:2026-11-15-p87-carry-window-the-fold-alone-3-610-cycles-a-windo), at 184 3,615. A slot's expansion is some
+300-380 cycles a warp; the traced phase of 1,350 is expansion, pads, operands, fence and the rendezvous wait together.
+
+THE HELD-STEP ROW (the fold alone, clocked, every step of a slot issued with the slot's first step's operands loaded
+once and held; its sums wrong, unchecked) asks why a fold step issues at 48 cycles alone against some 19 of its own
+tensor time: in its loop each step's operands are a shared load whose four moves to the uniform registers the next
+step waits on, one load in flight. PREDICTED: if that load's latency, the held row issues its steps near 20-25 cycles
+a step (some 700 a window against 1,539); if the step's own issue, it stays near 48.
 
 THE LIGHT-LOAD RECORD (`measure/lab/results/carry_window/sm_90a.blocks8.json`, the whole experiment at 8 CTAs, `lab
 run --blocks 8`) asked whether a copy's flight is a fixed latency or the card's bandwidth shared. PREDICTED, if
