@@ -323,6 +323,13 @@ issues some 660 instructions in its window and waits out the rest -- its loads, 
 other three warps' some 2,330 issue cycles on its scheduler the read side's share of its slots. At one instruction a
 cycle a scheduler, the count alone is a floor of some 3,000 cycles a window.
 
+THE SHARED-MEMORY COUNT (the same timed ledger, the same form, its shared wavefronts by role): a CTA window asks the
+shared-memory pipe some 3,950 wavefronts -- the fold some 2,660 (its steps' operands 1,280, its stores 716, its loads
+664, the steps' operand loads some 256 of those), the readout some 1,020 (its steps' operands 640, its sums by
+stmatrix 256, its stores 128), the drain some 260 (its panel loads) -- some 3,950 cycles at one a cycle
+([smem_rates.md](smem_rates.md)), the binding unit of the window; its output's adds are 256 lines, some 2,560 cycles
+card-wide at the H100's some 10 cycles a line (`add_rate`, [add_rate.md](add_rate.md)).
+
 THE CLOCKED AHEAD ROW (the digit form with the panel by stmatrix and its operands loaded two steps ahead, clocked)
 asked where the fold's faster issue goes in the composed form. PREDICTED: its steps' issue falls toward the fold
 alone's (some 1,550 a window, or below), and the window does not. MEASURED (H100 SXM, Nebius; rounded): THE ISSUE DOES

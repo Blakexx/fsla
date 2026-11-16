@@ -133,12 +133,14 @@ The den was 5% of the window with the readout's coefficients in registers, and i
 unmeasured on hopper.
 
 <a id="target"></a>THE TARGET is this design's own hardware floor with every unit perfectly overlapped, as close as
-possible -- not a different design to go under it. MEASURED from the digit form's timed profile, a CTA window asks of
-the shared-memory pipe some 3,950 wavefronts (the fold some 2,660 -- its steps' operands 1,280, its stores 716, its
-loads 664 -- the readout some 1,020, the drain some 260): some 3,950 cycles at one a cycle, the binding unit, some
-3,700 with the steps' operands computed rather than loaded; of each scheduler's issue some 3,000 instructions; of the
-output's adds 256 lines, some 2,560 cycles card-wide; of the tensor pipe some 2,050. The target is then some
-3,700-3,950 cycles a window, against some 6,500 composed ([`lab/carry_window.md`](../lab/carry_window.md)).
+possible -- not a different design to go under it. MEASURED from the digit form's timed profile
+([`lab/carry_window.md`](../lab/carry_window.md), its issue and shared-memory counts; the add rate
+[`lab/add_rate.md`](../lab/add_rate.md)), a CTA window asks of the shared-memory pipe some 3,950 wavefronts (the fold
+some 2,660 -- its steps' operands 1,280, its stores 716, its loads 664 -- the readout some 1,020, the drain some 260):
+some 3,950 cycles at one a cycle, the binding unit, some 3,700 with the steps' operands computed rather than loaded;
+of each scheduler's issue some 3,000 instructions; of the output's adds 256 lines, some 2,560 cycles card-wide; of the
+tensor pipe some 2,050. The target is then some 3,700-3,950 cycles a window, against some 6,500 composed
+([`lab/carry_window.md`](../lab/carry_window.md)).
 
 ## Blackwell
 
