@@ -47,7 +47,7 @@ carry CTAs that share the block. It is a ring of a few windows a CTA group (RULE
 - THE READ SIDE'S: the same without values, with each entry's token index. NOT DESIGNED past that.
 - NOT THE FORM, each measured: a list a digit with its value runs, and the coefficient runs in the step's format laid
   here. With its operands made the carry's window is some 5,200 cycles against some 6,800 expanding its own, and the pass that
-  made them cost as much as the carry ([`lab/gather_pass.md`](../lab/gather_pass.md)); their 110 KB a window a CTA
+  made them cost as much as the carry ([`lab/gather_pass.md`](../lab/gather_pass.md)); their ~123 KB a window a CTA
   cost three times the window once past the card's cache.
 
 ## The CTA

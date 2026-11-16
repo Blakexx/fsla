@@ -286,6 +286,13 @@ BINDS: the window is 13,410 at the full grid against 5,345 at 8 CTAs; the readou
 coefficient tiles' copy, the fold 8,260 on the readout. A CTA's window moves some 123 KB (four slot copies of some 22
 KB and four readout passes of 8.7 KB): some 16 MB a window card-wide, some 2.1 TB/s at that window.
 
+THE FOLD-ALONE ROWS (the digit form with the panel by stmatrix, the fold's side alone, clocked and unclocked) ask what
+holds a slot's expansion -- some 1,350 cycles of a fold warp's chain against some 200 of its work in the full traced
+row: its own chain's latency, or the shared-memory pipe the readout's panel and the image share. The clocked row's `a
+fold warp expanding its entries' lines` beside the full clocked row's reads it directly. PREDICTED: if the pipe, the
+fold-alone expansion falls toward a third of the full row's; if its latency, it stays, and two or more entries in
+flight a thread is the next row.
+
 THE LIGHT-LOAD RECORD (`measure/lab/results/carry_window/sm_90a.blocks8.json`, the whole experiment at 8 CTAs, `lab
 run --blocks 8`) asked whether a copy's flight is a fixed latency or the card's bandwidth shared. PREDICTED, if
 shared: at 8 CTAs the flight falls to some 1,000-1,500 and the window toward 3,000-3,500. Measured: neither on the
