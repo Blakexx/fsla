@@ -310,8 +310,17 @@ the step's own issue, near 48. Measured: THE LOAD -- the held row issues its 32 
 against some 1,550, and its window is some 3,680 against 4,250 clocked: the steps' wait grows (some 325 to 580) and
 the rendezvous with it, the tensor pipe taking what the issue gave. BUT THE COMPOSED FORM DOES NOT TAKE IT: its row
 with the operands loaded two steps ahead, whose binary holds several loads in flight and its steps back to back, is
-some 6,510 against 6,500 (the ahead rows above) -- beside the read side, what the faster issue frees is taken by the
-other phases the read side slows.
+some 6,510 against 6,500 (the ahead rows above). READ AS, not isolated: beside the read side, the fold's other phases
+take what the faster issue frees -- no composed held row, and no clocked composed ahead row, splits it.
+
+THE ISSUE COUNT (the timed ledger, `measure/lab/results/carry_window/ledger_timed_sm_90a/`, the digit form with the
+panel by stmatrix: its executed warp instructions by role, the role's code the span between its register raise or
+release and the next): a scheduler holds one warp of each warpgroup -- two fold warps, a readout warp, a drain warp --
+and issues some 3,000 instructions a window: the fold's two some 1,320 (some 660 a warp), the readout some 940, the
+drain some 725. Against a window of some 6,500 that is some 46% of its issue: THE SM IS NOT ISSUE-BOUND; a fold warp
+issues some 660 instructions in its window and waits out the rest -- its loads, its rendezvous, its copies -- the
+other three warps' some 2,330 issue cycles on its scheduler the read side's share of its slots. At one instruction a
+cycle a scheduler, the count alone is a floor of some 3,000 cycles a window.
 
 THE LIGHT-LOAD RECORD (`measure/lab/results/carry_window/sm_90a.blocks8.json`, the whole experiment at 8 CTAs, `lab
 run --blocks 8`) asked whether a copy's flight is a fixed latency or the card's bandwidth shared. PREDICTED, if
@@ -690,10 +699,10 @@ WHAT IT SHOWS.
   window is held by the fold's and the readout's chain through the image, its waits and issue, not by a pipe's bytes.
   THE AHEAD ROWS -- the fold's steps' operand lines loaded two steps ahead -- DO NOT MOVE THE WINDOW: 6,513
   against 6,502 for the block form with the panel by stmatrix, and 4,948 against 4,944 for the
-  read-ready ready pair's. THE FOLD'S STEPS DO NOT WAIT ON THEIR OPERAND LINES' LOADS -- the timed launch's short
-  scoreboard at them is not that -- though the fold is the read-ready ready pair's path (`lab path`: of its clocked
-  row's roles a fold warp waits least, and its steps' issue is its largest phase). What holds that issue is NOT
-  ISOLATED; no clocked ahead row is run.
+  read-ready ready pair's. Alone, a fold step's issue IS its operands' load
+  (the held-step row below: some 15 cycles a step held against 48); in the composed rows the loads ahead -- several in
+  flight in their binary, the steps back to back -- free nothing the window keeps. READ AS, not isolated: beside the
+  read side, the fold's other phases take what the faster issue frees; no clocked composed ahead row is run.
   THE NO-READ-STEPS ROW -- the readout issuing no step -- SHOWS THE FOLD'S STEPS ARE HELD BY THEIR OWN: clocked, the window
   is 4,592 against 5,296 with the readout's steps, and a fold warp's steps' issue 1,980 against
   2,261: some 62 cycles a step with no readout's step beside it. The two fold warpgroups' 64 steps
