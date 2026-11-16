@@ -351,7 +351,7 @@ traffic, the steps' own operand reads among it. Alone held, no load at all, the 
 needs is its operands without a shared load in front of it.
 
 THE COUNTED ROW (the digit form with the panel by stmatrix, a slot's 8 lists' counts a byte each in its image's head
-line, loaded once at the slot's start beside its expansion's loads, every step's operands made from their prefix sums
+line's second 8-byte word, loaded once at the slot's start beside its expansion's loads, every step's operands made from their prefix sums
 -- a list's values after the tables and the lists before it, its dense lines after the slot's 128 entries' values, its
 second run the lists' padded runs further on -- and no step table) asks whether a step without a shared load in front
 of it issues as the fold alone held did. Checked exactly. PREDICTED: the composed window some 5,300-5,900 against some

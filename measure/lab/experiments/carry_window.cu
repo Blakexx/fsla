@@ -1051,7 +1051,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         const int g = tid & (kGroup - 1);
         uint8_t* const image = smem + pool;
         //: (the counted rows' lists' counts, loaded beside the expansion's loads)
-        const uint2 counts = ROLES & kCounted ? *reinterpret_cast<const uint2*>(image + kImageHead * 16 + 4) : make_uint2(0u, 0u);
+        const uint2 counts = ROLES & kCounted ? *reinterpret_cast<const uint2*>(image + kImageHead * 16 + 8) : make_uint2(0u, 0u);
         if constexpr (token<ROLES>) {
           //: THE THREAD'S ENTRY of the view, the slot's `g`th in token order: its dense line by its sparse byte to
           //: its two coefficient lines, where its word says
@@ -2909,8 +2909,9 @@ inline Buffers buffers(const lab::Bench& b) {
               e += n[j];
             }
             std::memcpy(image + kImageHead * 16, &pad, 4);
-            //: the lists' counts, a byte each behind the pad count (the counted rows' steps are made from them)
-            for (int j = 0; j < 8; ++j) image[kImageHead * 16 + 4 + j] = static_cast<uint8_t>(n[j]);
+            //: the lists' counts, a byte each in the head line's second 8-byte word (the counted rows' steps are made
+            //: from them, one aligned load)
+            for (int j = 0; j < 8; ++j) image[kImageHead * 16 + 8 + j] = static_cast<uint8_t>(n[j]);
             plan[2 * slot] = line, plan[2 * slot + 1] = static_cast<uint32_t>(landed) * 16;
             line += static_cast<uint32_t>(landed);
           }
