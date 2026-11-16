@@ -1721,7 +1721,9 @@ __device__ __forceinline__ float* den_out(uint32_t* out) {
 //: group in one commit group, then a thread's 32 sums a group rounded and stored a half each to that group's panel
 template <long long ROLES>
 __device__ __forceinline__ void read_mirror(uint8_t* smem, uint32_t base, long long* times, uint32_t* waits,
-                                            const uint32_t* dense, int windows) {
+                                            const uint32_t* dense, unsigned long long* trace, int windows) {
+  Tracer<ROLES> tr;
+  tr.rows = trace;
   constexpr int kG = ROLES & kChunk8 ? 2 : 1;
   const int tid = threadIdx.x - kReadAt, warp = tid >> 5, lane = tid & 31, q = lane >> 2, t = lane & 3;
   const uint32_t bars = base + kBarsAt;
@@ -1761,12 +1763,12 @@ __device__ __forceinline__ void read_mirror(uint8_t* smem, uint32_t base, long l
     for (int c4 = 0; c4 < kChunks; c4 += kG) {
       const int c = kChunks * w + c4;
 #pragma unroll
-      for (int g = 0; g < kG; ++g) waited<ROLES>(bars + kTilesReady + 8 * (c4 + g), w & 1, on_image);
+      for (int g = 0; g < kG; ++g) waited<ROLES>(bars + kTilesReady + 8 * (c4 + g), w & 1, on_image, &tr);
       uint32_t since = ROLES & kNoClock ? 0u : static_cast<uint32_t>(clock64());
       const int pass = c / kG;
       if constexpr ((ROLES & kReadReady) != 0) {
         //: THE PASS'S TILES, landed made
-        await<ROLES>(bars + kCoefLanded, pass & 1);
+        await<ROLES>(bars + kCoefLanded, pass & 1, &tr);
       } else {
       //: THE COEFFICIENTS, to shared memory: the reader's 16 bytes on the box by its byte on its digit
 #pragma unroll
@@ -1789,6 +1791,7 @@ __device__ __forceinline__ void read_mirror(uint8_t* smem, uint32_t base, long l
       }
       if constexpr (!(ROLES & kNoClock)) in_form += lap(since);
       const uint32_t tiles = lab::held(base + kCoefAt);
+      tr.stamp(lab::kPhase, kMarkSteps);
       lab::wg_fence();
 #pragma unroll
       for (int g = 0; g < kG; ++g) {
@@ -1814,21 +1817,24 @@ __device__ __forceinline__ void read_mirror(uint8_t* smem, uint32_t base, long l
       //: the next pass's bytes, issued under the steps
       if constexpr (!(ROLES & kReadReady)) load(c + kG);
       if constexpr (!(ROLES & kNoClock)) in_issue += lap(since);
-      lab::wg_wait<0>();
+      steps_done<0, ROLES>(tr, kStepsRead);
       //: the read-ready rows': the pass after's tiles, behind this pass's steps and under its panel's stores
       if constexpr ((ROLES & kReadReady) != 0) {
-        if (pass + 1 < windows * (kChunks / kG)) issue_pass(pass + 1);
+        if (pass + 1 < windows * (kChunks / kG)) {
+          tr.at(lab::kIssues, bars + kCoefLanded);
+          issue_pass(pass + 1);
+        }
       }
       if constexpr (!(ROLES & kNoClock)) in_steps += lap(since);
 #pragma unroll
-      for (int g = 0; g < kG; ++g)
-        if (lane == 0) lab::mbar_arrive(bars + kTilesRead + 8 * (c4 + g));
+      for (int g = 0; g < kG; ++g) arrive<ROLES>(bars + kTilesRead + 8 * (c4 + g), tr);
       //: THE PANEL a group: digit `j`'s token `8 i + 2 t + p` on channel `16 warp + q + 8 r`, a half of that
       //: token's line
 #pragma unroll
       for (int g = 0; g < kG; ++g) {
         const int cg = c + g;
-        if (cg >= 2) waited<ROLES>(bars + kPanelFreed + 8 * (cg & 1), ((cg >> 1) - 1) & 1, on_drain);
+        if (cg >= 2) waited<ROLES>(bars + kPanelFreed + 8 * (cg & 1), ((cg >> 1) - 1) & 1, on_drain, &tr);
+        tr.stamp(lab::kPhase, kMarkPanel);
         uint8_t* const panel = smem + mine + (cg & 1) * kPanelBytes;
         if constexpr ((ROLES & kStsm) != 0) {
           //: THE STMATRIX ROWS' PANEL: digit `j`'s 16 tokens by the warp's 16 channels as four 8 x 8 matrices, matrix
@@ -1862,26 +1868,26 @@ __device__ __forceinline__ void read_mirror(uint8_t* smem, uint32_t base, long l
               }
             }
         __syncwarp();
-        if (lane == 0) lab::mbar_arrive(bars + kPanelReady + 8 * (cg & 1));
+        arrive<ROLES>(bars + kPanelReady + 8 * (cg & 1), tr);
       }
       //: its sums' rounding, stores and arrivals, with its wait on the drain in it
       if constexpr (!(ROLES & kNoClock)) in_panel += lap(since);
     }
   }
   lab::WarpMark::stop(times);
+  tr.close(base);
   tell(waits, on_image, on_drain, in_steps, in_form, in_panel, in_issue);
 }
 
 template <long long ROLES>
 __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long long* times, uint32_t* waits,
                                           const uint32_t* dense, uint32_t* out, unsigned long long* trace, int windows) {
-  Tracer<ROLES> tr;
-  tr.rows = trace;
   if constexpr ((ROLES & kMirror) != 0) {
     static_assert(!(ROLES & (kSelf | kSleep | kStill | kDenRead | kFive | kWide | kTwoSums | kPark | kSpin)));
-    read_mirror<ROLES>(smem, base, times, waits, dense, windows);
+    read_mirror<ROLES>(smem, base, times, waits, dense, trace, windows);
     return;
   }
+  //: (no traced row reaches the unmirrored readout: kTrace's rows are mirrored, the fold's assertion)
   const int tid = threadIdx.x - kReadAt, warp = tid >> 5, lane = tid & 31, q = lane >> 2, t = lane & 3;
   const uint32_t bars = base + kBarsAt;
   //: a thread's rows are the chunk's tokens `16 warp + q` and that + 8; its words of a token's line `4 j + t`
@@ -1932,7 +1938,7 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       const int c = kChunks * w + c4;
       //: chunk `2 h + c`'s digits are `8 h + c + 2 j`: its tile group, published for this window
       if constexpr (ROLES & kSleep) slept(kTilesId + c4, kTilesCount, on_image);
-      else if constexpr (!(ROLES & kStill)) waited<ROLES>(bars + kTilesReady + 8 * c4, w & 1, on_image, &tr);
+      else if constexpr (!(ROLES & kStill)) waited<ROLES>(bars + kTilesReady + 8 * c4, w & 1, on_image);
       uint32_t since = ROLES & kNoClock ? 0u : static_cast<uint32_t>(clock64());
       //: THE COEFFICIENTS, in registers: a row's two bytes times its reader's byte on the digit, a bf16 pair a word
       //: -- word `r | h << 1` of A, as an m64n16 accumulator lays its values
@@ -1964,7 +1970,6 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
         //: TWO sets of A, a digit's two steps a commit group: a set is written again once the group two back,
         //: which read it, is done -- or, with a sum a box, ONE set, written again once the group before is done
         uint32_t rows[2][2][4];
-        tr.stamp(lab::kPhase, kMarkSteps);
         lab::wg_fence();
 #pragma unroll
         for (int j = 0; j < kChunkDigits; ++j) {
@@ -2015,18 +2020,17 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       //: the next chunk's bytes, issued under the steps -- or, where the readout keeps a sum a box, behind them: its
       //: two accumulators, its A and those bytes are more than a thread's registers at once
       if constexpr (!(ROLES & kTwoSums)) load(c + 1);
-      steps_done<0, ROLES>(tr, kStepsRead);
+      lab::wg_wait<0>();
       if constexpr ((ROLES & kTwoSums) != 0) load(c + 1);
       if constexpr (!(ROLES & kNoClock)) in_steps += lap(since);
       //: the group is read: its box may publish the next window's over it
       if constexpr (!(ROLES & kStill))
         if constexpr (ROLES & kSleep) lab::bar_arrive(kReadId + c4, kTilesCount);
-        else arrive<ROLES>(bars + kTilesRead + 8 * c4, tr);
+        else if (lane == 0) lab::mbar_arrive(bars + kTilesRead + 8 * c4);
       //: THE PANEL: a row's channels `8 j + 2 t` and the next rounded to an f16 pair, the word of the line an add
       //: takes as it lies; a warp's lanes on 32 banks. Where drain warps add it, once they have left it
       if constexpr (!(ROLES & kSelf))
-        if (c >= 2) waited<ROLES>(bars + kPanelFreed + 8 * (c & 1), ((c >> 1) - 1) & 1, on_drain, &tr);
-      tr.stamp(lab::kPhase, kMarkPanel);
+        if (c >= 2) waited<ROLES>(bars + kPanelFreed + 8 * (c & 1), ((c >> 1) - 1) & 1, on_drain);
       uint8_t* const row = smem + mine + (c & 1) * kPanelBytes;
 #pragma unroll
       for (int j = 0; j < 8; ++j)
@@ -2068,12 +2072,11 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
         on_drain += lap(since);
       } else {
         if constexpr (ROLES & kSleep) lab::bar_arrive(kPanelId + (c & 1), kPanelCount);
-        else arrive<ROLES>(bars + kPanelReady + 8 * (c & 1), tr);
+        else if (lane == 0) lab::mbar_arrive(bars + kPanelReady + 8 * (c & 1));
       }
     }
   }
   clock.stop(times);
-  tr.close(base);
   tell(waits, on_image, on_drain, in_steps, in_form);
   if constexpr (ROLES & kPark) lab::bar_arrive(kParkId, kParkCount);
   if constexpr (ROLES & kSpin)
@@ -2447,6 +2450,9 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
   unsigned long long* rows = nullptr;
   if constexpr ((ROLES & kTrace) != 0)
     LAB_CHECK(cudaMalloc(&rows, static_cast<size_t>(b.sms) * kWarps * lab::Trace<true>::kRow * 8));
+  //: cleared: a warp that stamps nothing reads as no stamps, never as the memory's last contents
+  if constexpr ((ROLES & kTrace) != 0)
+    LAB_CHECK(cudaMemset(rows, 0, static_cast<size_t>(b.sms) * kWarps * lab::Trace<true>::kRow * 8));
   //: the rows that read the values tile-major read the table laid so
   values = one<ROLES> ? one_values : token<ROLES> ? token_values : blocks<ROLES> && (ROLES & kOwn) ? ready_own_values : blocks<ROLES> && (ROLES & kReady) ? ready_values : blocks<ROLES> ? block_values : four<ROLES> ? four_values : packed<ROLES> ? packed_values : fresh<ROLES> ? fresh_values : apart<ROLES> ? apart_values : (ROLES & kExpanded) == kExpanded ? expanded_values : ROLES & kTiledValues ? tiled_values : values;
   dense = ROLES & kReadReady ? ready_readers : ROLES & kListed ? listed_tables : dense;
@@ -2616,6 +2622,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
       at(kBarsAt + kMeet + 8 * box, "fold box " + std::to_string(box) + " met");
       legend.push_back({kNamed | static_cast<uint32_t>(kPoolId + box), "fold box " + std::to_string(box) + " rendezvous"});
     }
+    at(kBarsAt + kCoefLanded, "readout's tiles landed");
     legend.insert(legend.end(), {{kMarkWindow, "window"}, {kMarkExpand, "expanding"}, {kMarkSteps, "issuing steps"},
                                  {kMarkPanel, "storing the panel"}, {kMarkAdds, "adding"}, {kMarkServe, "serve expanding"},
                                  {kStepsFold, "fold steps"}, {kStepsRead, "readout steps"}});
