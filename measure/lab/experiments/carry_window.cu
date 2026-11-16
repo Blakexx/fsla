@@ -838,7 +838,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
     }
   };
   Tracer<ROLES> tr;
-  tr.rows = trace;
+  tr.bind(trace);
   uint32_t on_read = 0, on_fill = 0, in_image = 0, in_expand = 0, in_steps = 0, in_pads = 0, in_sync0 = 0, in_sync1 = 0, in_fence0 = 0, in_fence1 = 0, in_issue = 0;
   //: the packed row's: the slots its steps have used, a slot and a phase each
   uint32_t uses = 0;
@@ -1723,7 +1723,7 @@ template <long long ROLES>
 __device__ __forceinline__ void read_mirror(uint8_t* smem, uint32_t base, long long* times, uint32_t* waits,
                                             const uint32_t* dense, unsigned long long* trace, int windows) {
   Tracer<ROLES> tr;
-  tr.rows = trace;
+  tr.bind(trace);
   constexpr int kG = ROLES & kChunk8 ? 2 : 1;
   const int tid = threadIdx.x - kReadAt, warp = tid >> 5, lane = tid & 31, q = lane >> 2, t = lane & 3;
   const uint32_t bars = base + kBarsAt;
@@ -1887,7 +1887,6 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
     read_mirror<ROLES>(smem, base, times, waits, dense, trace, windows);
     return;
   }
-  //: (no traced row reaches the unmirrored readout: kTrace's rows are mirrored, the fold's assertion)
   const int tid = threadIdx.x - kReadAt, warp = tid >> 5, lane = tid & 31, q = lane >> 2, t = lane & 3;
   const uint32_t bars = base + kBarsAt;
   //: a thread's rows are the chunk's tokens `16 warp + q` and that + 8; its words of a token's line `4 j + t`
@@ -2114,7 +2113,7 @@ __device__ __forceinline__ void drain_role(uint8_t* smem, uint32_t base, long lo
                                            int* sinks,
                                            uint32_t* out, unsigned long long* trace, int windows) {
   Tracer<ROLES> tr;
-  tr.rows = trace;
+  tr.bind(trace);
   constexpr int kDrainers = drains_of<ROLES>;
   //: the drain rounds only what the mirrored readout stores unrounded
   static_assert(!(ROLES & kRawPanel) || (ROLES & kMirror) || !(ROLES & kRead));
