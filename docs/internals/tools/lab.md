@@ -53,7 +53,9 @@ a wait on its own steps); each BLOCKING wait (over 64 cycles) with its releaser 
 at or before its end (a named barrier's last warp to reach it; a copy's barrier, the copy's issue) -- and what the
 releaser was doing; and THE PATH, walked back from the span's end: a warp's own time to its latest blocking wait, then
 the releaser's from its release, to the span's start, so every cycle of the span is one warp's state, a copy's flight
-or a release's latency. `--html` draws three windows of each row's first CTA, a lane a warp, a blocking wait's release
+or a release's latency, each release printed with the mean MARGIN it binds by (its waits' length: a release binding
+by a few hundred cycles has the waiter's own chain nearly as long beside it, and shortening the release alone gains no
+more than that margin). `--html` draws three windows of each row's first CTA, a lane a warp, a blocking wait's release
 a line from its releaser. The traced row's window beside its untraced twin's is the trace's own cost.
 `ledger <name> --packed <binary> --dump <csv> [--dump ...] --arch sm_90a --per <n>` reads a CARRIED ledger: the
 SourceCounters dumps a rented box made of `lab pack`'s binary (`ncu --section SourceCounters --page source

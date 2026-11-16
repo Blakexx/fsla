@@ -134,8 +134,12 @@ class Cta:
             return None
         return marks[skip], marks[-2], len(marks) - 2 - skip
 
-    def path(self, t0: int, t1: int) -> dict[str, float]:
+    def path(self, t0: int, t1: int) -> tuple[dict[str, float], dict[str, list[int]]]:
+        """The path's pieces, and for each release it follows the MARGINS it binds by: each wait's length, the cycles
+        its warp's own work would have to grow by before that work, not the release, held it -- a small margin is a
+        release that only just binds, beside a chain of the warp's own nearly as long."""
         pieces: dict[str, float] = defaultdict(float)
+        margins: dict[str, list[int]] = defaultdict(list)
         warp, t = 0, t1
         while t > t0:
             blocking = [w for w in self.warps[warp].waits if w.t1 <= t and w.t1 - w.t0 > BLOCKING
@@ -148,14 +152,14 @@ class Cta:
             at, by, kind = self.releaser(last)
             at = max(at, t0)
             what = group(self.name(last.site))
-            if kind == ISSUES:
-                pieces[f"copy in flight: {what}"] += last.t1 - at
-            else:
-                pieces[f"release of {self.warps[last.warp].role} at {what}"] += last.t1 - at
+            label = (f"copy in flight: {what}" if kind == ISSUES
+                     else f"release of {self.warps[last.warp].role} at {what}")
+            pieces[label] += last.t1 - at
+            margins[label].append(last.t1 - last.t0)
             if at >= t:
                 break
             warp, t = by, at
-        return pieces
+        return pieces, margins
 
 
 def report(rows: list[dict], pattern: str | None, skip: int, record: dict[str, float], out: Path | None) -> int:
@@ -212,11 +216,12 @@ def report(rows: list[dict], pattern: str | None, skip: int, record: dict[str, f
             for (role, site, source), v in sorted(held.items(), key=lambda kv: -sum(kv[1])):
                 print(f"      {sum(v) / (members[role] * n):8,.0f}  {role} at {site} <- {source}")
 
-            pieces = cta.path(t0, t1)
-            print("    THE PATH, cycles a window:")
+            pieces, margins = cta.path(t0, t1)
+            print("    THE PATH, cycles a window (a release: the mean margin it binds by, its waits' length):")
             for label, v in sorted(pieces.items(), key=lambda kv: -kv[1]):
                 if v / n >= 20:
-                    print(f"      {v / n:8,.0f}  {label}")
+                    m = margins.get(label)
+                    print(f"      {v / n:8,.0f}  {label}" + (f"  (binding by {sum(m) / len(m):,.0f})" if m else ""))
             if out is not None and cta_row is row["ctas"][0]:
                 pages.append(svg(name, cta, t0, cta.windows[cta.windows.index(t0) + 3] if len(cta.windows) > cta.windows.index(t0) + 3 else t1))
 
