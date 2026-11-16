@@ -330,7 +330,7 @@ NOT FALL -- some 1,840 cycles a window against some 1,880 (58 cycles a step), ev
 the window some 6,730 against 6,750 clocked. In the composed form a fold step's issue is not its operands' load: alone
 it is (48 a step, 15 held), beside the read side something each step shares holds it near 58 whatever its load. NOT
 ISOLATED; the candidates are what the read side's warps use beside each step -- the tensor pipe's queue (the readout's
-own steps: with them out the fold's issue fell only 2,258 to 1,982 in the operands-made form, the no-read-steps row),
+own steps: with them out the fold's issue fell only 2,263 to 1,991 in the operands-made form, the no-read-steps row),
 the uniform datapath each step's operands cross (the readout issues some 400 uniform instructions a scheduler a
 window), and the shared-memory pipe the steps' operands are read through.
 
