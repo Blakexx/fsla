@@ -375,8 +375,14 @@ window most (some 300-600 cycles), the adds on the global path little. Measured 
 image's stores out some 5,960 against some 6,500 (some 540 less, the fold's own image phase among it), THE ADDS OUT
 some 6,190 (some 310 less) -- the drains' global adds slow the fold, which never waits on them. READ AS, not isolated:
 a shared load and a global add take the same load-store queue of their sub-partition, so the fold's steps' operand
-loads wait behind the drains' adds as behind the shared traffic. (The readout's byte loads are not taken out in the
-mirrored form; its row is not run.)
+loads wait behind the drains' adds as behind the shared traffic.
+
+THE VECTOR-DRAIN ROWS (the digit form and the token-order form landed whole, each with the panel by stmatrix, and each
+with the drains' loads and adds 16 bytes a lane -- a lane a quarter of a token's row, four tokens an instruction, the
+same lines) ask whether the drains' share of the load-store queue, not their lines, is what slows the fold: 4 adds and
+4 loads a drain warp a chunk against 16 and 16. Checked exactly. PREDICTED: the digit form some 100-300 cycles a
+window under its own, toward the some 6,190 with the adds out; the token form by a like amount under its own with the
+panel by stmatrix -- the read side's cut carries to the form the design is.
 
 THE LIGHT-LOAD RECORD (`measure/lab/results/carry_window/sm_90a.blocks8.json`, the whole experiment at 8 CTAs, `lab
 run --blocks 8`) asked whether a copy's flight is a fixed latency or the card's bandwidth shared. PREDICTED, if
