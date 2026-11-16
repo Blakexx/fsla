@@ -271,6 +271,13 @@ the path's largest phase (`lab path`): the readout issues no step -- its tiles' 
 kept, its sums zeros written each pass -- so the fold's steps meet none of the readout's on the tensor path.
 Unchecked: an isolation.
 
+THE TRACED ROWS -- the digit form with the panel by stmatrix, the same with the drain warps expanding (the serve row),
+and the operands landed made with their coefficient tiles -- each its unclocked row with every warp's timeline stamped
+(`lab trace`): what each role does when, who releases each wait it is held at, and the window's path walked back
+through those releases. They ask no new form; they measure where each form's window goes, where the clocked rows' sums
+could only be read by inference. Their windows beside their untraced twins' are the trace's cost, expected a few
+percent.
+
 THE SERVE ROWS (the block form with the panel by stmatrix, with and without clocks) ask whether the fold's own
 expansion -- the 1,500-odd cycles a window its expansion, pads, operands, fences and rendezvous cost its path --
 leaves that path when the four drain warps do it a slot ahead: before a window's drain opens they expand its second

@@ -42,6 +42,19 @@ warpgroup's first warp's left out),
 its busy cycles (the window less them) and its phases, a phase that holds a wait marked; the role that waits least
 is the path, and only its phases can shorten the window -- unless the two least-waiting roles are within 5% of the
 window of each other, when the row names no path. Read it before any role's stall samples: a role with slack stalls too.
+Its limit: it reads sums, and a cycle no site clocks counts as busy -- the serve rows' drain warps read 82% busy with
+their copies' waits unclocked (2026-11-15). A TRACED row's timeline is read by `trace` instead.
+<a id="trace"></a>`bazel run //tools:lab -- trace <name> [--row REGEX] [--record FILE] [--skip N] [--html FILE]` reads a record's TRACED
+rows (`tools/lab_trace.py`): every warp's stamps (`lab::Trace`) -- the start and end of each wait, each arrival, each
+copy's issue, each phase's start -- written beside the record as `<arch>.trace.json`, two CTAs a row (the first and
+the middle one), the timed launches' last. Over the steady span (past the first `--skip` windows, to the last window
+every warp's stamps cover) it prints each role's cycles a window a warp by state (a phase's work, a wait at a barrier,
+a wait on its own steps); each BLOCKING wait (over 64 cycles) with its releaser -- the latest arrival at its barrier
+at or before its end (a named barrier's last warp to reach it; a copy's barrier, the copy's issue) -- and what the
+releaser was doing; and THE PATH, walked back from the span's end: a warp's own time to its latest blocking wait, then
+the releaser's from its release, to the span's start, so every cycle of the span is one warp's state, a copy's flight
+or a release's latency. `--html` draws three windows of each row's first CTA, a lane a warp, a blocking wait's release
+a line from its releaser. The traced row's window beside its untraced twin's is the trace's own cost.
 `ledger <name> --packed <binary> --dump <csv> [--dump ...] --arch sm_90a --per <n>` reads a CARRIED ledger: the
 SourceCounters dumps a rented box made of `lab pack`'s binary (`ncu --section SourceCounters --page source
 --print-source sass --csv`, a kernel's launch after the first `--skip` of them, one file a kernel named
@@ -103,6 +116,11 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
 * The operand pieces the kernels use: `ldsm` and `ldsm_t` (`ldmatrix.x4`, `.trans`), `hmul2`, `pack_half2`, `smem`;
   the mbarrier as `ops.cuh` spells it: `mbar_init`, `mbar_arrive`, `mbar_wait` (polled), `mbar_wait_suspended` (sm_90: `try_wait`, the thread may be suspended), `mbar_test` (once).
 * `lab::sink(out, v)` — a fold of everything a thread computed, stored unconditionally.
+* `lab::Trace<ON>` — a warp's timeline (`lab trace`): `stamp(kind, site)` and `at(kind, bar)` (a barrier's site its
+  shared address over 8, read against the CTA's base `close(base)` stores), a stamp the SM's clock above 20 bits of kind
+  (`lab::TraceKind`) and site, held a lane each and stored 32 at a time by one predicated store (a branch on the count
+  would hold its loops' convergence); `Bench::trace` prints chosen CTAs' rows as one line with the warps' roles and the
+  sites' names.
 * The atoms as one PTX instruction each: `mma_f16_f32` (and `_fresh`), `mma_f16_f16`, `mma_bf16_f32`, `mma_u8u8`,
   `mma_u8s8`.
 * <a id="wgmma"></a>Hopper's atoms, each one PTX instruction of sm_90a (an experiment calling one compiles for sm_90a

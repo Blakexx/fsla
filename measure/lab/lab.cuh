@@ -72,6 +72,54 @@ struct WarpMark {
   }
 };
 
+//: A WARP'S TIMELINE: stamps -- the SM's clock above an event's 20 bits, its kind and its site -- held a lane each and
+//: stored 32 at a time as one line of the warp's row in global memory, the row's head its count and the CTA's shared
+//: base. A stamp costs its warp a clock read and a select; its store is one instruction in 32. `ON` false: nothing
+//: (docs/internals/tools/lab.md#trace)
+template <bool ON>
+struct Trace {
+  //: a warp's stamps, and its row's words: a line of head, then the stamps
+  static constexpr int kCap = 4608, kRow = 32 + kCap;
+  //: the launch's rows (the kernel's argument: the warp's own is found at a store, nothing held for it)
+  unsigned long long* rows = nullptr;
+  unsigned long long held = 0;
+  uint32_t n = 0;
+
+  __device__ __forceinline__ unsigned long long* mine() const {
+    return rows + static_cast<long long>(blockIdx.x * (blockDim.x >> 5) + warp_id()) * kRow;
+  }
+
+  //: an event: `kind` a TraceKind, `site` the experiment's -- a barrier's shared address over 8 (below 0x8000), or
+  //: its own
+  __device__ __forceinline__ void stamp(uint32_t kind, uint32_t site) {
+    if constexpr (ON) {
+      const unsigned long long now = clock64();
+      if (static_cast<uint32_t>(lane_id()) == (n & 31u)) held = now << 20 | kind << 16 | site;
+      ++n;
+      //: the line's store a predicated instruction, no branch: a branch on a count the toolkit cannot know is the
+      //: warp's alone would hold its loops' convergence
+      const uint32_t full = (n & 31u) == 0 && n <= static_cast<uint32_t>(kCap);
+      asm volatile("{\n .reg .pred p;\n setp.ne.b32 p, %2, 0;\n @p st.global.u64 [%0], %1;\n}"
+                   :: "l"(mine() + n + lane_id()), "l"(held), "r"(full) : "memory");
+    }
+  }
+  //: an event at the barrier at shared address `bar`
+  __device__ __forceinline__ void at(uint32_t kind, uint32_t bar) { stamp(kind, (bar >> 3) & 0x7fffu); }
+
+  //: the stamps not yet stored, the count, and the shared base the barriers' sites are read against
+  __device__ __forceinline__ void close(uint32_t base) {
+    if constexpr (ON) {
+      if (n <= static_cast<uint32_t>(kCap) && static_cast<uint32_t>(lane_id()) < (n & 31u)) mine()[32 + (n & ~31u) + lane_id()] = held;
+      if (lane_id() == 0) {
+        mine()[0] = n;
+        mine()[1] = base;
+      }
+    }
+  }
+};
+//: a stamp's kind: a work phase begins, a wait begins and ends, an arrival, a copy issued to a barrier
+enum TraceKind : uint32_t { kPhase = 1, kWaits = 2, kWaited = 3, kArrives = 4, kIssues = 5 };
+
 //: THE SINK: a fold of everything a thread computed, stored unconditionally. A result tested against a value the
 //: compiler can fold lets ptxas delete the work behind it -- the failure the expectations exist to catch.
 __device__ __forceinline__ void sink(int* out, uint32_t v) {
@@ -807,6 +855,43 @@ class Bench {
       out.v.push_back(measure());
     }
     return out;
+  }
+
+  //: THE TRACES of a launch's CTAs `ctas`, as one JSON line: each warp's role and its stamps, a cycle relative to the
+  //: CTA's first and an event; `legend` names the sites
+  void trace(const std::string& variant, const unsigned long long* rows, int warps, std::initializer_list<int> ctas,
+             const std::vector<std::string>& roles, const std::vector<std::pair<uint32_t, std::string>>& legend) const {
+    constexpr int kRow = Trace<true>::kRow;
+    std::string out = "{\"lab\": \"trace\", \"variant\": \"" + variant + "\", \"roles\": [";
+    for (size_t i = 0; i < roles.size(); ++i) out += (i ? ", \"" : "\"") + roles[i] + "\"";
+    out += "], \"legend\": {";
+    for (size_t i = 0; i < legend.size(); ++i)
+      out += (i ? ", \"" : "\"") + std::to_string(legend[i].first) + "\": \"" + legend[i].second + "\"";
+    out += "}, \"ctas\": [";
+    std::vector<unsigned long long> h(static_cast<size_t>(warps) * kRow);
+    int i = 0;
+    for (int cta : ctas) {
+      LAB_CHECK(cudaMemcpy(h.data(), rows + static_cast<size_t>(cta) * warps * kRow, h.size() * 8, cudaMemcpyDeviceToHost));
+      unsigned long long first = ~0ull;
+      for (int w = 0; w < warps; ++w)
+        if (h[static_cast<size_t>(w) * kRow] > 0) first = std::min(first, h[static_cast<size_t>(w) * kRow + 32] >> 20);
+      out += std::string(i++ ? ", " : "") + "{\"cta\": " + std::to_string(cta) + ", \"warps\": [";
+      for (int w = 0; w < warps; ++w) {
+        const unsigned long long* row = h.data() + static_cast<size_t>(w) * kRow;
+        const unsigned long long n = std::min<unsigned long long>(row[0], Trace<true>::kCap);
+        out += std::string(w ? ", " : "") + "{\"count\": " + std::to_string(row[0]) + ", \"stamps\": [";
+        //: a barrier's site read against the CTA's shared base: its offset over 8
+        const unsigned long long origin = row[1] >> 3;
+        for (unsigned long long k = 0; k < n; ++k) {
+          const unsigned long long ev = row[32 + k] & 0xfffffu, site = ev & 0xffffu;
+          out += std::string(k ? "," : "") + std::to_string(((row[32 + k] >> 20) - first) & ((1ull << 44) - 1)) + ","
+                 + std::to_string(site < 0x8000u ? (ev & ~0xffffull) | (site - origin) : ev);
+        }
+        out += "]}";
+      }
+      out += "]}";
+    }
+    std::printf("%s]}\n", out.c_str());
   }
 
   //: a result, as one JSON line

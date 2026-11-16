@@ -38,6 +38,7 @@ from pathlib import Path
 
 import build_flags
 import dev_config
+import lab_trace
 import region_ledger
 import sass
 import sass_gate
@@ -623,6 +624,8 @@ def execute(binary: Path, reps: int, extra: list[str], timeout: int) -> tuple[di
             results.append({**item, **summarize(item["samples"])})
         elif item["lab"] in ("check", "unchecked"):
             device.setdefault("_checks", []).append(item)
+        elif item["lab"] == "trace":
+            device.setdefault("_traces", []).append(item)
     return device, results
 
 
@@ -669,6 +672,12 @@ def keep(name: str, arch: str, device: dict, results: list[dict], table: dict, r
               else dev_config.scratch("lab") / "results" / name) / f"{arch}.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(body, indent=1) + "\n")
+    #: THE TRACES (a traced row's timelines, `lab trace`), beside the record: one line a row, the commit's
+    traces = target.with_name(f"{arch}.trace.json")
+    if device.get("_traces"):
+        traces.write_text(json.dumps({"experiment": name, "git": built["git"], "rows": device["_traces"]}) + "\n")
+    elif traces.exists():
+        traces.unlink()
     return target
 
 
@@ -988,6 +997,18 @@ def is_wait(site: str) -> bool:
     return " waits on " in site or "rendezvous" in site or "fence" in site
 
 
+def timelines(name: str, pattern: str | None, record: Path | None, skip: int, out: Path | None) -> int:
+    """A RECORD'S TRACED ROWS read by `lab_trace`: its traces beside it, its windows' cycles from it."""
+    path = record or (RESULTS / name / f"{sass.device_arch()}.json")
+    traces = path.with_name(path.name.replace(".json", ".trace.json"))
+    if not traces.exists():
+        print(f"lab: no traces beside {path} (a record's traced rows write {traces.name})")
+        return 1
+    windows = {r["name"]: r["median"] for r in json.loads(path.read_text())["results"]
+               if r.get("unit") == "cycles a window a CTA"}
+    return lab_trace.report(lab_trace.load(traces), pattern, skip, windows, out)
+
+
 def critical_path(name: str, pattern: str | None, record: Path | None) -> int:
     """THE WINDOW'S PATH (KERNEL_STANDARDS 22): for each clocked row of a record -- a row in cycles a window a CTA whose
     sites, `<row>: a <role> warp ...` in cycles a window a warp, its roles' warps clocked -- each role's waits (its
@@ -1184,6 +1205,13 @@ def main() -> int:
     c2.add_argument("experiment")
     c2.add_argument("--row", help="a regex over the rows' names")
     c2.add_argument("--record", type=Path, help="the record to read (default: this card's in measure/lab/results)")
+    t = sub.add_parser("trace", help="a traced row's timelines: each role's time by state, who released its waits, "
+                                     "and the window's path walked back through those releases")
+    t.add_argument("experiment")
+    t.add_argument("--row", help="a regex over the traced rows' names")
+    t.add_argument("--record", type=Path, help="the record whose traces to read (default: this card's)")
+    t.add_argument("--skip", type=int, default=3, help="the first windows left out of the steady span")
+    t.add_argument("--html", type=Path, help="write three windows of each row's first CTA here, a lane a warp")
     m = sub.add_parser("ledger-dumps", help="on a box without the toolkit: profile a pack's kernels for a carried ledger")
     m.add_argument("experiment")
     m.add_argument("--from", dest="source", required=True, type=Path)
@@ -1213,6 +1241,8 @@ def main() -> int:
         return counters(args.experiment, args.metric, args.record)
     if args.cmd == "path":
         return critical_path(args.experiment, args.row, args.record)
+    if args.cmd == "trace":
+        return timelines(args.experiment, args.row, args.record, args.skip, args.html)
     if args.cmd == "ledger-dumps":
         return ledger_dumps(args.experiment, args.source, args.into, args.kernel, args.skip)
     if args.cmd == "ledger":
