@@ -3,7 +3,8 @@
 // a step costs some 58 cycles where alone it costs 48 and held 15 (`carry_window`). How does a step's time grow with
 // each kind of memory traffic other warps put on the SM beside it, and with its rate? METHOD: a CTA an SM; one fold
 // warpgroup issues trips of 16 m64n16k16 steps into 16 accumulators, a step's operands one 16-byte line of a shared
-// table (LOADED) or one line held in registers (HELD); beside it 0, 1, 2 or 4 co-runner warps issue one kind of
+// table (LOADED), one line held in registers (HELD), or every step its own operands' low words held (THE HELD TABLE:
+// a step's move to the uniform registers its own, no load); beside it 0, 1, 2 or 4 co-runner warps issue one kind of
 // traffic back to back until the fold is done: SHARED LOADS (16 bytes a lane), SHARED STORES (16 bytes a lane), GLOBAL
 // ADDS (an f16 pair a lane, a line an instruction, as a drain warp adds) or GLOBAL LOADS (16 bytes a lane, of lines
 // the cache holds). Recorded: the fold's cycles a step, and the co-runners' instructions a hundred cycles. The fold's
@@ -11,8 +12,8 @@
 // TIMELINE: the fold: a trip is the fence, 16 steps -- each its line loaded at its own issue behind a compiler edge,
 // as the carry's fold does, or its held line -- the commit and the wait; its tiles of ones written before the clock.
 // A co-runner warp: 16 independent instructions a trip to its own addresses, its sink folded; every trip it reads the
-// fold's done flag. Live: the fold's 16 accumulators (128 registers a thread) and a line; a co-runner's sink and a
-// line.
+// fold's done flag. Live: the fold's 16 accumulators (128 registers a thread) and a line, the held table's 32 low
+// words and two high words besides; a co-runner's sink and a line.
 // see docs/lab/step_queue.md
 #include "lab.cuh"
 
