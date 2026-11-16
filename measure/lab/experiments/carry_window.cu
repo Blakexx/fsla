@@ -34,6 +34,7 @@
 // wait behind: the readout and the drains with NO fold warp running (the image as it lies); every barrier's wait
 // by the instruction that may suspend its thread, where the others poll. With both sides and no access out, the
 // state and every output row are checked exactly, and a long call's span over its wall time reads the card's clock.
+// (THE VECTOR-DRAIN rows' drain warp: a chunk's four 16-byte loads of the panel, then its four 16-byte adds.)
 // TIMELINE: a fold warpgroup's trip is a window: the image a tile group at a time, four -- the wait on the
 // readout's read of that group a window back, 4 stores a thread and their fence, the group's arrival -- then a
 // slot twice: the wait on its producer, the fence, 8 steps, the commit and its wait, the slot freed. A producer's
@@ -395,7 +396,7 @@ enum Roles : long long {
   //: THE UNIFORM rows: the counted rows' counts made the warp's own by a shuffle and a slot's operands made once
   //: before its steps (the toolkit keeps the arithmetic in the vector registers)
   kUniform = 1ll << 59,
-  //: THE VECTOR-DRAIN rows: a drain warp's lane a quarter of a token's row -- one 16-byte load from the panel and one
+  //: THE VECTOR-DRAIN rows: a drain warp's lane an eighth of a token's row -- one 16-byte load from the panel and one
   //: 16-byte add, four tokens an instruction -- a fourth of the drains' instructions on the load-store queue
   kVecDrain = 1ll << 60
 };
