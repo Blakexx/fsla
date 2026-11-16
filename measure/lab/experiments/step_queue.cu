@@ -119,7 +119,7 @@ __global__ void __launch_bounds__(kFold + 128, 1) queue(long long* times, float*
       clock[2 + 2 * warp] = issued;
       clock[3 + 2 * warp] = t1 - t0;
     }
-    lab::sink(reinterpret_cast<int*>(lines) + 132 * 4 * 64 * 32, sink);
+    lab::sink(reinterpret_cast<int*>(lines) + static_cast<long long>(gridDim.x) * 4 * 64 * 32, sink);
   }
 }
 
@@ -197,13 +197,15 @@ int main(int argc, char** argv) {
         b.expect(k, "HGMMA", ">=", kSteps);
         b.exempt(k, "a rate probe: a fold step's time beside other warps' traffic, no kernel's step");
         if (kind == kGlobalAdds) b.expect(k, "RED", ">=", 16);
+        //: the global-load co-runner folds each load's words in its own trip, by design: it is traffic, not a stream
+        if (kind == kGlobalLoads) b.expect(k, "LOAD_IN_TRIP", "<=", 16);
       }
   if (b.expect_only) return 0;
   float* out = nullptr;
   uint32_t* lines = nullptr;
   LAB_CHECK(cudaMalloc(&out, sizeof(float) * b.sms * kFold * 2));
-  LAB_CHECK(cudaMalloc(&lines, sizeof(uint32_t) * (static_cast<size_t>(132) * 4 * 64 * 32 + static_cast<size_t>(b.sms) * (kFold + 128))));
-  LAB_CHECK(cudaMemset(lines, 0, sizeof(uint32_t) * static_cast<size_t>(132) * 4 * 64 * 32));
+  LAB_CHECK(cudaMalloc(&lines, sizeof(uint32_t) * (static_cast<size_t>(b.sms) * 4 * 64 * 32 + static_cast<size_t>(b.sms) * (kFold + 128))));
+  LAB_CHECK(cudaMemset(lines, 0, sizeof(uint32_t) * static_cast<size_t>(b.sms) * 4 * 64 * 32));
   sweep<0>(b, out, lines);
   sweep<1>(b, out, lines);
   return 0;

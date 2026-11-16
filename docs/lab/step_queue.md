@@ -26,3 +26,28 @@ Beside shared loads and stores a LOADED step grows with their rate -- toward the
 side's rate (some 1,300 shared wavefronts a window beside the fold's) -- and a HELD step barely: what the co-runners
 take is the operands' load, not the step. Beside global adds a LOADED step grows as well (the carry's adds-out row
 took some 310 cycles a window off a fold that never waits on them), and a HELD step not.
+
+MEASURED (H100 SXM, 132 SMs, a Nebius preemptible VM, driver 580; 2026-11-16, the experiment at fb9058be; 7
+repetitions, every fold sum exact; cycles a step, the median, and the co-runners' instructions a hundred cycles a CTA
+at 1, 2 and 4 warps):
+
+| beside the fold | co-runners' rate | LOADED operands | HELD operands |
+|---|---|---|---|
+| nothing | | 34.0 | 23.2 |
+| shared loads, 16 bytes a lane | 2.7 / 5.1 / 8.6 | 37.7 / 39.1 / 44.2 | 24.7 / 25.0 / 25.1 |
+| shared stores, 16 bytes a lane | 3.1 / 6.5 / 8.9 | 40.3 / 44.9 / 46.5 | 24.5 / 24.8 / 25.0 |
+| global adds, a line an instruction | 8.0 / 9.7 / 10.8 | 38.0 / 55.6 / 77.0 | 24.8 / 25.0 / 25.0 |
+| global loads, 16 bytes a lane | 6.2 / 12.5 / 24.3 | 35.2 / 34.8 / 34.9 | 24.3 / 24.4 / 24.5 |
+
+WHAT IT SHOWS.
+- A STEP WHOSE OPERANDS ARE HELD IS IMMUNE: some 23-25 cycles a step whatever the co-runners put on the SM. What
+  other warps' traffic costs a step is its operands' shared load alone.
+- A LOADED STEP IS SLOWED BY THE OTHER WARPS' MEMORY TRAFFIC, AND MOST BY GLOBAL ADDS: four warps adding back to back
+  -- a drain warp's burst -- take a step from 34 to 77 cycles; shared stores cost a step more than shared loads at a
+  like rate; global loads of lines the cache holds cost it nothing. The prediction had shared loads and stores the
+  larger cost and the alone figures some 45-50 and 15-20: the probe's alone step is its chain alone (34, 23), the
+  carry fold's alone figures carry its other phases.
+- FOR THE CARRY: its fold's steps should hold their operands, not load them at their issue -- made once a slot,
+  outside the step chain, and held (the counted row made them beside each step and lost).
+
+Record: `measure/lab/results/step_queue/sm_90a.json`.
