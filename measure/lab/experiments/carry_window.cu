@@ -654,6 +654,36 @@ __device__ __forceinline__ uint32_t lap_own(uint32_t& since) {
   return took;
 }
 
+//: A BLOCK SLOT'S ENTRY `g` EXPANDED where its image says: its landed dense line by its sparse byte to the line itself
+//: (brick 0's) and to its second run's -- the fold's own in the block rows, the drain warps' in the serve rows; the
+//: raw-fold rows keep the bytes as they are
+template <long long ROLES>
+__device__ __forceinline__ void expand_entry(uint8_t* image, int g) {
+  const uint32_t word = reinterpret_cast<const uint32_t*>(image)[g];
+  const float weight = static_cast<float>(image[kImageSparse * 16 + g]);
+  uint8_t* const raw = image + (word & 0xffffu) * 16;
+  const uint4 landed = *reinterpret_cast<const uint4*>(raw);
+  const uint32_t line[4] = {landed.x, landed.y, landed.z, landed.w};
+#pragma unroll
+  for (int h = 0; h < 2; ++h) {
+    uint32_t pair[4];
+#pragma unroll
+    for (int c = 0; c < 4; ++c) {
+      const uint32_t two = line[2 * h + c / 2] >> (16 * (c & 1));
+      if constexpr ((ROLES & kRawFold) != 0) pair[c] = two;
+      else pair[c] = lab::bf16x2_round(weight * static_cast<float>(two & 255u), weight * static_cast<float>(two >> 8 & 255u));
+    }
+    *reinterpret_cast<uint4*>(h == 0 ? raw : image + (word >> 16) * 16) = make_uint4(pair[0], pair[1], pair[2], pair[3]);
+  }
+}
+
+//: and its step `made`'s two operands (a thread of 16), from the image's four halves into `table`
+__device__ __forceinline__ void make_step(const uint8_t* image, uint32_t pool_at, uint32_t zeros_at, uint64_t* table, int made) {
+  const uint16_t* const step = reinterpret_cast<const uint16_t*>(image + kImageSteps * 16) + 4 * made;
+  table[2 * made] = lab::wg_desc(pool_at + step[0] * 16u, 8, step[1]);
+  table[2 * made + 1] = step[2] == 0xffffu ? lab::wg_desc(zeros_at, 8, 16) : lab::wg_desc(pool_at + step[2] * 16u, 8, step[3]);
+}
+
 //: A FOLD WARPGROUP: its box's state; a window is the image, then two slots of 8 steps
 template <long long ROLES>
 __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long long* times, uint32_t* waits,
@@ -1031,26 +1061,8 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
           else if (w + 1 < windows) issue_view(w + 1, 0);
           if constexpr (fold_clocked<ROLES>) (slot == 0 ? in_sync0 : in_sync1) += lap_own(since);
         } else if constexpr (!(ROLES & kReady) && !serve<ROLES>) {
-        {
-          //: THE THREAD'S ENTRY, where its word says: its landed dense line by its sparse byte, to the line itself
-          //: (brick 0's) and to its second run's
-          const uint32_t word = reinterpret_cast<const uint32_t*>(image)[g];
-          const float weight = static_cast<float>(image[kImageSparse * 16 + g]);
-          uint8_t* const raw = image + (word & 0xffffu) * 16;
-          const uint4 landed = *reinterpret_cast<const uint4*>(raw);
-          const uint32_t line[4] = {landed.x, landed.y, landed.z, landed.w};
-#pragma unroll
-          for (int h = 0; h < 2; ++h) {
-            uint32_t pair[4];
-#pragma unroll
-            for (int c = 0; c < 4; ++c) {
-              const uint32_t two = line[2 * h + c / 2] >> (16 * (c & 1));
-              if constexpr ((ROLES & kRawFold) != 0) pair[c] = two;
-              else pair[c] = lab::bf16x2_round(weight * static_cast<float>(two & 255u), weight * static_cast<float>(two >> 8 & 255u));
-            }
-            *reinterpret_cast<uint4*>(h == 0 ? raw : image + (word >> 16) * 16) = make_uint4(pair[0], pair[1], pair[2], pair[3]);
-          }
-        }
+        //: THE THREAD'S ENTRY, where its word says
+        expand_entry<ROLES>(image, g);
         if constexpr (fold_clocked<ROLES>) in_expand += lap_own(since);
         //: its PAD LINE of the second runs, where the image's count reaches it (the shared rows: the pads a warp in turn)
         const int pad = ROLES & kShare ? (g & 31) << 2 | g >> 5 : g;
@@ -1059,13 +1071,10 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         //: and, a thread of the first 16 (the shared rows: a warp's first four lanes), ITS STEP's operands from the
         //: image's four halves
         const int made = ROLES & kShare ? ((g & 31) < 4 ? 4 * (g >> 5) + (g & 31) : 8 * kBlockRounds) : g;
-        if (made < 8 * kBlockRounds) {
-          const uint16_t* const step = reinterpret_cast<const uint16_t*>(image + kImageSteps * 16) + 4 * made;
-          //: (the joined rows' second slot's are behind its first's, at `kOneStepsAt`)
-          uint64_t* const to = reinterpret_cast<uint64_t*>(smem + (joined<ROLES> && slot == 1 ? kOneStepsAt : kStepsAt) + box * 256 + 16 * made);
-          to[0] = lab::wg_desc(base + pool + step[0] * 16u, 8, step[1]);
-          to[1] = step[2] == 0xffffu ? lab::wg_desc(base + kZeroAt + box * 512, 8, 16) : lab::wg_desc(base + pool + step[2] * 16u, 8, step[3]);
-        }
+        //: (the joined rows' second slot's are behind its first's, at `kOneStepsAt`)
+        if (made < 8 * kBlockRounds)
+          make_step(image, base + pool, base + kZeroAt + box * 512,
+                    reinterpret_cast<uint64_t*>(smem + (joined<ROLES> && slot == 1 ? kOneStepsAt : kStepsAt) + box * 256), made);
         if constexpr (fold_clocked<ROLES>) in_pads += lap_own(since);
         if constexpr (!joined<ROLES>) {
           lab::bulk_fence();
@@ -2026,8 +2035,6 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
     if (lane == 0) lab::mbar_arrive(bars + kDone);
 }
 
-//: A DRAIN WARP: a chunk's 32 tokens of its residue in four batches of 8; a lane holds a token's two channels and
-//: adds one f16 pair
 //: THE SERVE rows' EXPANSION of slot `slot` of window `w` for both boxes, by the drain warps: each box's landed image
 //: awaited, a thread's entry expanded to its two coefficient lines, its pad zeroed, a thread of 16 its step's operands
 //: into the slot's own table (slot 1's at `kOneStepsAt`), the fence, and a warp's arrival on the slot's expansion
@@ -2039,37 +2046,22 @@ __device__ __forceinline__ void serve_slot(uint8_t* smem, uint32_t base, int w, 
     const uint32_t pool = (2 * box + slot) * kPoolBytes;
     uint8_t* const image = smem + pool;
     await<ROLES>(base + kBarsAt + kPoolLanded + 8 * (2 * box + slot), static_cast<uint32_t>(w) & 1u);
-    const uint32_t word = reinterpret_cast<const uint32_t*>(image)[g];
-    const float weight = static_cast<float>(image[kImageSparse * 16 + g]);
-    uint8_t* const raw = image + (word & 0xffffu) * 16;
-    const uint4 landed = *reinterpret_cast<const uint4*>(raw);
-    const uint32_t line[4] = {landed.x, landed.y, landed.z, landed.w};
-#pragma unroll
-    for (int h = 0; h < 2; ++h) {
-      uint32_t pair[4];
-#pragma unroll
-      for (int c = 0; c < 4; ++c) {
-        const uint32_t two = line[2 * h + c / 2] >> (16 * (c & 1));
-        pair[c] = lab::bf16x2_round(weight * static_cast<float>(two & 255u), weight * static_cast<float>(two >> 8 & 255u));
-      }
-      *reinterpret_cast<uint4*>(h == 0 ? raw : image + (word >> 16) * 16) = make_uint4(pair[0], pair[1], pair[2], pair[3]);
-    }
+    expand_entry<ROLES>(image, g);
     if (static_cast<uint32_t>(g) < *reinterpret_cast<const uint32_t*>(image + kImageHead * 16))
       *reinterpret_cast<uint4*>(image + reinterpret_cast<const uint16_t*>(image + kImagePads * 16)[g] * 16) = make_uint4(0, 0, 0, 0);
-    if (g < 8 * kBlockRounds) {
-      const uint16_t* const step = reinterpret_cast<const uint16_t*>(image + kImageSteps * 16) + 4 * g;
-      uint64_t* const to = reinterpret_cast<uint64_t*>(smem + (slot == 1 ? kOneStepsAt : kStepsAt) + box * 256 + 16 * g);
-      to[0] = lab::wg_desc(base + pool + step[0] * 16u, 8, step[1]);
-      to[1] = step[2] == 0xffffu ? lab::wg_desc(base + kZeroAt + box * 512, 8, 16) : lab::wg_desc(base + pool + step[2] * 16u, 8, step[3]);
-    }
+    if (g < 8 * kBlockRounds)
+      make_step(image, base + pool, base + kZeroAt + box * 512,
+                reinterpret_cast<uint64_t*>(smem + (slot == 1 ? kOneStepsAt : kStepsAt) + box * 256), g);
     lab::bulk_fence();
     __syncwarp();
     if ((threadIdx.x & 31) == 0) lab::mbar_arrive(base + kFourBarsAt + 8 * (2 * box + slot));
   }
 }
 
+//: A DRAIN WARP: a chunk's 32 tokens of its residue in four batches of 8; a lane holds a token's two channels and
+//: adds one f16 pair
 template <long long ROLES>
-__device__ __forceinline__ void drain_role(const uint8_t* smem, uint32_t base, long long* times, uint32_t* waits,
+__device__ __forceinline__ void drain_role(uint8_t* smem, uint32_t base, long long* times, uint32_t* waits,
                                            int* sinks,
                                            uint32_t* out, int windows) {
   constexpr int kDrainers = drains_of<ROLES>;
@@ -2104,15 +2096,15 @@ __device__ __forceinline__ void drain_role(const uint8_t* smem, uint32_t base, l
   //: slot (its copy issued at the window before's end), and half through it the next window's first slot (its copy
   //: issued as the fold left this window's first) -- a slot always a slot ahead of the fold's need
   if constexpr (serve<ROLES>) {
-    serve_slot<ROLES>(const_cast<uint8_t*>(smem), base, 0, 0);
-    serve_slot<ROLES>(const_cast<uint8_t*>(smem), base, 0, 1);
+    serve_slot<ROLES>(smem, base, 0, 0);
+    serve_slot<ROLES>(smem, base, 0, 1);
   }
 #pragma unroll 1
   for (int c = 0; c < kChunks * windows; ++c) {
     if constexpr (serve<ROLES>) {
       const int w = c / kChunks, at = c % kChunks;
-      if (at == 0 && w >= 1) serve_slot<ROLES>(const_cast<uint8_t*>(smem), base, w, 1);
-      if (at == kChunks / 2 && w + 1 < windows) serve_slot<ROLES>(const_cast<uint8_t*>(smem), base, w + 1, 0);
+      if (at == 0 && w >= 1) serve_slot<ROLES>(smem, base, w, 1);
+      if (at == kChunks / 2 && w + 1 < windows) serve_slot<ROLES>(smem, base, w + 1, 0);
     }
     if constexpr (ROLES & kSleep) slept(kPanelId + (c & 1), kPanelCount, on_panel);
     else if constexpr (ROLES & kFive) await<ROLES>(bars + kPanelReady + 8 * (c & 1), (c >> 1) & 1);
