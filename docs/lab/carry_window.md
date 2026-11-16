@@ -358,8 +358,20 @@ without a shared load in front of it issues as the fold alone held did. Checked 
 window some 5,300-5,900 against some 6,500, the fold's chain shorter by most of its steps' wait on their operands.
 Measured on an H100 SXM (Nebius): IT LOSES -- some 6,775 cycles a window against some 6,500, exact. Its binary holds
 no shared load among a slot's steps, but its operands' arithmetic is made beside each step in the vector registers,
-each step's four moves to the uniform registers still its own: a slot's 16 steps are 190 instructions against 79. The
-load left the chain and more than its cost came into it. (Its clocked twin spills 32 bytes: the phases are not split.)
+each step's four moves to the uniform registers still its own: a slot's 16 steps are 190 instructions against 79. READ
+AS, not isolated (a static count, no clock or sample behind it): the load left the chain and more than its cost came
+into it. (Its clocked twin spills 32 bytes: the phases are not split.)
+
+THE UNIFORM ROW (the counted row with the counts shuffled from the warp's first lane, so that a slot's operands might
+be made once in the uniform registers) is in the binary as the toolkit makes it: its operands' arithmetic stays in the
+vector registers, a slot's 16 steps 114 instructions (37 moves to the uniform registers, no shared load) against the
+plain form's 79 and the counted row's 190. Run beside the next rows; not a candidate.
+
+THE READ SIDE'S ACCESSES TAKEN OUT of the digit form with the panel by stmatrix, one a row -- the drains' global adds,
+the image's stores, the readout's byte loads (each unchecked) -- ask which of the read side's accesses costs the fold
+the some 1,400 cycles a window it loses beside them. PREDICTED, if what it loses is the shared-memory pipe: the
+image's stores out moves the window most (some 300-600 cycles), the adds and the byte loads, on the global path,
+little; if the global path, the other way about.
 
 THE LIGHT-LOAD RECORD (`measure/lab/results/carry_window/sm_90a.blocks8.json`, the whole experiment at 8 CTAs, `lab
 run --blocks 8`) asked whether a copy's flight is a fixed latency or the card's bandwidth shared. PREDICTED, if
