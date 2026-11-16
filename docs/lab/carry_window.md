@@ -629,7 +629,7 @@ WHAT IT SHOWS.
   TILES' BYTES against 417 -- its copy is issued one panel's stores ahead of its use -- and
   a fold warp, whose copies are issued a window ahead, 740 on its own against 211; the
   fold then waits 7,958 on the readout's read. WITH ITS OPERANDS FROM THE CARD'S MEMORY THE CARRY IS
-  THAT MEMORY'S: the ready stream is a window's 110 KB a CTA, and past the cache it is this price. NOT ASKED: the
+  THAT MEMORY'S: the ready stream is a window's ~123 KB a CTA, and past the cache it is this price. NOT ASKED: the
   readout's copy issued further ahead; the design's mix, a box's own coefficients and its column's values.
   THE TOKEN ROWS -- the fold laying its own operands from a view in token order -- ARE A QUARTER OVER THE BLOCK FORM, HOWEVER THE VIEW
   ARRIVES: the window is 8,500 with a half-window view staged by one copy and its value lines moved in shared memory,
