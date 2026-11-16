@@ -271,6 +271,15 @@ the path's largest phase (`lab path`): the readout issues no step -- its tiles' 
 kept, its sums zeros written each pass -- so the fold's steps meet none of the readout's on the tensor path.
 Unchecked: an isolation.
 
+THE SERVE ROWS (the block form with the panel by stmatrix, with and without clocks) ask whether the fold's own
+expansion -- the 1,500-odd cycles a window its expansion, pads, operands, fences and rendezvous cost its path --
+leaves that path when the four drain warps do it a slot ahead: before a window's drain opens they expand its second
+slot (its copy issued at the window before's end), and half through it the next window's first (its copy issued as the
+fold left this window's first); a slot's expansion is each box's landed image awaited, a thread's entry expanded, its
+pad zeroed, a thread of 16 its step's operands into the slot's own table, the fence and a warp's arrival; the fold
+waits on that arrival and steps. Checked as the block form's rows are. PREDICTED: some 5,700 cycles a window (the form
+with the fold's operands made), and the drain warps then busy some 70% of it.
+
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
 through uniform registers in the den's. Rows of the winner's form and the den's, at both cells, and the den's chain run with no
