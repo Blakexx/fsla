@@ -409,7 +409,7 @@ constexpr int block_issuer = ROLES & (1ll << 42) ? 32 : 0;
 //: the composed rows whose fold clocks its phases: the image, its entries' expansion, its pads and operands, its
 //: slot's fence and its barrier, its steps
 template <long long ROLES>
-constexpr bool fold_clocked = (ROLES & kRead) && !(ROLES & kNoClock) && (ROLES & kChunk8) && (ROLES & kWhole) == kWhole && (ROLES & kNoMath) == 0
+constexpr bool fold_clocked = ((ROLES & kRead) || (ROLES & kBlocks)) && !(ROLES & kNoClock) && (ROLES & kChunk8) && (ROLES & kWhole) == kWhole && (ROLES & kNoMath) == 0
                               && ((ROLES & kBlocks) || ((ROLES & kFour) && (ROLES & kFoldIssues)));
 template <long long ROLES>
 constexpr bool blocks = (ROLES & kWhole) == kWhole && (ROLES & kNoMath) == 0 && (ROLES & kBlocks) != 0;
@@ -501,9 +501,13 @@ constexpr int value_parts = ROLES & kFive ? kFiveParts : 1;
 //: toolkit serializes the steps, C7512)
 //: the den's readout holds 4 more accumulators, column 64's set: at 80 the toolkit serializes its steps, and its 8
 //: more a thread are the fourth warpgroup's, as the wide and the big rows' are
+//: THE FOLD-ALONE digit-form rows: the readout's warpgroup idle, its 32 registers a thread the folds' 16 more each --
+//: their clocked fold's phases spill at the composed rows' count
+template <long long ROLES>
+constexpr bool alone_fold = (ROLES & kWhole) == kWhole && (ROLES & kBlocks) && !(ROLES & kRead) && (ROLES & kChunk8) && (ROLES & kMirror);
 template <long long ROLES>
 constexpr int read_regs = (ROLES & kFive ? kFiveReadRegs : (ROLES & kLean) && (ROLES & (kDenSplit | kWide)) ? 88 : ROLES & kLean ? 80 : kReadRegs)
-                          + (ROLES & kTwoSums ? 32 : 0) + (ROLES & kChunk8 ? 24 : 0);
+                          + (ROLES & kTwoSums ? 32 : 0) + (ROLES & kChunk8 ? 24 : 0) - (alone_fold<ROLES> ? 32 : 0);
 template <long long ROLES>
 constexpr int serve_regs = ((ROLES & kLean) && (ROLES & (kWide | kDenSplit)) ? 104 : ROLES & kLean ? 112 : kServeRegs)
                            - (ROLES & kTwoSums ? 32 : 0) - (ROLES & kChunk8 ? 24 : 0)
@@ -515,6 +519,7 @@ constexpr int serve_regs = ((ROLES & kLean) && (ROLES & (kWide | kDenSplit)) ? 1
 //: and the block rows' fold, which holds its steps' table beside its state
 template <long long ROLES>
 constexpr int fold_regs = (ROLES & kWhole) == kWhole && (ROLES & kNoMath) == 0 && (ROLES & kFour) && (ROLES & (kFoldIssues | kMirror)) && !(ROLES & kChunk8) ? kFoldRegs + 8
+                          : alone_fold<ROLES> ? kFoldRegs + 24
                           : ROLES & kBlocks ? kFoldRegs + 8
                           //: the meeting rows' clocked self-issuing fold holds its wait's words beside its clocks: the serve warps' 16
                           : fold_issues<ROLES> && (ROLES & kMeet41) && !(ROLES & kNoClock) ? kFoldRegs + 8
@@ -2668,6 +2673,10 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
     for (int i = 0; i < kSites; ++i)
       if ((i < kFoldSites || i > kDrainSite) && i != kReadIssueSite && (i != kPadsSite || (ROLES & kBlocks)))
         b.record(name + ": " + sites[i].name + ", its warpgroup's first warp", "cycles a window a warp", first_at[i]);
+  //: the block form's clocked fold alone: its fold's phases, as the composed rows' are read
+  if constexpr (fold_clocked<ROLES> && !(ROLES & kRead))
+    for (int i = kDrainSite + 1; i < kSites; ++i)
+      if (i != kReadIssueSite) b.record(name + ": " + sites[i].name, "cycles a window a warp", waited_at[i]);
   //: the whole-entry rows' fold alone: what its fold warps wait on their producer
   if ((ROLES & 3) == kFold && (ROLES & kWhole) == kWhole && !(ROLES & kNoClock))
     b.record(name + ": " + sites[1].name, "cycles a window a warp", waited_at[1]);

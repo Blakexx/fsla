@@ -274,36 +274,40 @@ Unchecked: an isolation.
 THE TRACED ROWS -- the digit form with the panel by stmatrix, the same with the drain warps expanding (the serve row),
 the operands landed made with their coefficient tiles, and that form with every box its own stream from HBM -- each
 its unclocked row with every warp's timeline stamped (`lab trace`; the traces at
-`measure/lab/results/carry_window/sm_90a.trace.json`, and at 8 CTAs `sm_90a.blocks8.trace.json` beside it). Measured
-on an H100 SXM (Nebius): the trace costs the first three 14%, 26% and 20% of their windows, the own-stream row 1.5%,
-so its cycles are read for structure. ON THE LAB'S SHARED STREAMS (16 columns, mostly the L2's) THE WINDOW IS THE
-FOLD'S OWN CHAIN: at 8 CTAs the windows are the full grid's (6,471 against 6,506; 6,619 against 6,688; 4,984 against
-4,946), and the path's copies bind by only 110-130 cycles over the fold's own work beside them -- in the digit form a
-fold warp's window is its expansion (2,698 cycles), its steps' issue (1,947) and its image (1,374) with some 1,400 of
-waits; the readout and the drains are off it (a drain warp idles 4,238 a window). In the serve row the drain warps'
-expansion (3,998 a warp) holds the fold's 3,500-4,250 waits on its slots. WITH EVERY BOX ITS OWN STREAM THE CARD'S HBM
-BINDS: the window is 13,410 at the full grid against 5,345 at 8 CTAs; the readout waits 9,058 cycles a window on its
-coefficient tiles' copy, the fold 8,260 on the readout. A CTA's window moves some 123 KB (four slot copies of some 22
-KB and four readout passes of 8.7 KB): some 16 MB a window card-wide, some 2.1 TB/s at that window.
+`measure/lab/results/carry_window/sm_90a.trace.json`, and at 8 CTAs `sm_90a.blocks8.trace.json` beside it, that record
+of the session before this one, rola 99807df0). Measured on an H100 SXM (Nebius): the trace costs the first three 14%,
+26% and 21% of their windows, the own-stream row 1.8%, so its cycles are read for structure. ON THE LAB'S SHARED
+STREAMS (16 columns, mostly the L2's) THE WINDOW IS THE FOLD'S OWN CHAIN: at 8 CTAs the windows are the full grid's
+(6,471 against 6,501; 6,619 against 6,690; 4,984 against 4,945), and the path's copies bind by only 113-154 cycles
+over the fold's own work beside them -- in the digit form a fold warp's traced window is its expansion with its pads,
+operands, fence and rendezvous wait (2,745 cycles), its steps' issue (1,956) and its image (1,342), with some 1,400
+more of waits; the readout and the drains are off it (a drain warp idles 4,290 a window). In the serve row the drain
+warps' expansion (4,044 a warp) holds the fold's 3,526-4,270 waits on its slots. WITH EVERY BOX ITS OWN HBM STREAM THE
+CARD'S HBM BINDS: the window is 13,136 at the full grid against 5,345 at 8 CTAs; the readout waits 9,264 cycles a
+window on its coefficient tiles' copy, the fold 8,191 on the readout. A CTA's window moves some 123 KB (four slot
+copies of some 22 KB and four readout passes of 8.7 KB): some 16 MB a window card-wide, some 2.1 TB/s at that window.
 
 THE FOLD-ALONE ROWS (the digit form with the panel by stmatrix, the fold's side alone, clocked and unclocked) and the
-same form's clocked full row asked what holds a slot's expansion: the fold's own chain, or what the read side shares
-with it. PREDICTED: if the read side's load, the fold alone well under the full window less its image. Measured (H100
-SXM, Nebius): the fold alone is 3,610 cycles a window (clocked 3,650) against 6,501 with both sides -- some 1,600
-under the 5,200 the full window less its image (1,052) and its waits on the readout's read (227) leaves: THE READ
-SIDE'S PRESENCE, NOT THE FOLD'S OWN CHAIN, holds some 1,600 cycles of the fold's window. The clocked full row splits a
-fold warp's window: its steps' issue 1,871 (some 58 a step), its image 1,052, its expansion 756, its pads and steps'
-operands 709, its two rendezvous 1,280 -- the wait for its warpgroup's first warp, whose expansion (899) and pads and
-operands (1,083) are longer by the copies it issues -- and 463 in its steps' wait and copies. A slot's expansion is
-then some 380 cycles a warp, not the 1,350 the trace's phase read (expansion, pads, operands, fence and the rendezvous
-wait together). The fold-alone row clocks only its wait on a producer, so which of its phases the read side slows --
-the shared-memory pipe or the schedulers' issue -- is not yet split.
+same form's clocked full row asked what holds a slot's expansion -- some 1,350 cycles of a fold warp's chain in the
+full traced row: its own chain's latency, or the shared-memory pipe the readout's panel and the image share. PREDICTED
+before the run: the clocked fold-alone expansion a third of the full row's if the pipe, the same if its latency. NOT
+ANSWERED as asked: that row clocked only its wait on a producer. Measured (H100 SXM, Nebius) instead: the fold alone
+is 3,610 cycles a window (clocked 3,650) against 6,501 with both sides -- some 1,600 under the 5,200 the full window
+less its image (1,052) and its waits on the readout's read (227) leaves: THE READ SIDE'S PRESENCE, NOT THE FOLD'S OWN
+CHAIN, holds some 1,600 cycles of the fold's window. The clocked full row splits a fold warp's window: its steps'
+issue 1,871 (some 58 a step), its image 1,052, its expansion 756, its pads and steps' operands 709, its two rendezvous
+1,280 -- the wait for its warpgroup's first warp, whose expansion (899) and pads and operands (1,083) are longer by
+the copies it issues -- and 463 in its steps' wait and copies. A slot's expansion is then some 380 cycles a warp; the
+trace's 1,350 was expansion, pads, operands, fence and the rendezvous wait together. The fold-alone clocked row now
+records its phases: PREDICTED, if the shared-memory pipe is what the read side takes, its steps' issue falls toward
+some 40 cycles a step (1,300 a window) and its pads and operands with it; if the schedulers' issue, every phase falls
+by a like fraction.
 
 THE LIGHT-LOAD RECORD (`measure/lab/results/carry_window/sm_90a.blocks8.json`, the whole experiment at 8 CTAs, `lab
 run --blocks 8`) asked whether a copy's flight is a fixed latency or the card's bandwidth shared. PREDICTED, if
 shared: at 8 CTAs the flight falls to some 1,000-1,500 and the window toward 3,000-3,500. Measured: neither on the
 shared streams -- their windows do not move, because the fold's own chain, not the copy, holds them; on the own stream
-the window falls 2.5 times (13,410 to 5,345), which is the card's HBM bandwidth.
+the window falls 2.5 times (13,136 to 5,345), which is the card's HBM bandwidth.
 
 THE SERVE ROWS (the block form with the panel by stmatrix, with and without clocks) ask whether the fold's own
 expansion -- the 1,500-odd cycles a window its expansion, pads, operands, fences and rendezvous cost its path --
