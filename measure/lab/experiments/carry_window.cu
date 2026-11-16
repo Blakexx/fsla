@@ -392,8 +392,8 @@ enum Roles : long long {
   //: THE COUNTED rows: a slot's 8 lists' counts in its image's head line, loaded once at the slot's start, and every
   //: step's operands computed from their prefix sums -- no step table, no shared load in front of a step
   kCounted = 1ll << 58,
-  //: THE UNIFORM rows: the counted rows' counts made the warp's own, so a slot's operands are made once in the
-  //: uniform registers, not beside each step
+  //: THE UNIFORM rows: the counted rows' counts made the warp's own by a shuffle and a slot's operands made once
+  //: before its steps (the toolkit keeps the arithmetic in the vector registers)
   kUniform = 1ll << 59
 };
 template <long long ROLES>
@@ -1056,8 +1056,8 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         uint8_t* const image = smem + pool;
         //: (the counted rows' lists' counts, loaded beside the expansion's loads)
         uint2 counts = ROLES & kCounted ? *reinterpret_cast<const uint2*>(image + kImageHead * 16 + 8) : make_uint2(0u, 0u);
-        //: (the uniform rows: the counts the warp's own by a shuffle from its first lane, so their arithmetic is the
-        //: uniform datapath's, once a slot)
+        //: (the uniform rows: the counts the warp's own by a shuffle from its first lane -- the toolkit still makes
+        //: their arithmetic in the vector registers, docs/lab/carry_window.md)
         if constexpr ((ROLES & kUniform) != 0) {
           counts.x = __shfl_sync(0xffffffffu, counts.x, 0);
           counts.y = __shfl_sync(0xffffffffu, counts.y, 0);
@@ -3221,7 +3221,6 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kCounted | kUniform,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kNoAdds,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kNoImage,
-                    3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kNoBytes,
                     kFold | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm,
                     kFold | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm,
                     kFold | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kHeldSteps,
@@ -3352,7 +3351,6 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kCounted | kUniform>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kNoAdds>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kNoImage>(b, waits, values, dense, state, out);
-  run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kNoBytes>(b, waits, values, dense, state, out);
   run<kFold | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm>(b, waits, values, dense, state, out);
   run<kFold | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm>(b, waits, values, dense, state, out);
   run<kFold | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kHeldSteps>(b, waits, values, dense, state, out);
