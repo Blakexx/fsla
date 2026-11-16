@@ -374,7 +374,7 @@ enum Roles : long long {
   //: form loads each at its step's issue and waits its latency there (the timed launch's ledger, 2026-11-15)
   kAheadSteps = 1ll << 53,
   //: an isolation: the mirrored readout ISSUES NO STEPS -- its tiles' waits, its panel and its arrivals as the form's,
-  //: its sums whatever its registers hold -- so the fold's steps meet no readout's on the tensor path
+  //: its sums zeros written each pass -- so the fold's steps meet no readout's on the tensor path
   kNoReadSteps = 1ll << 54  // (a clocked row alone: the unclocked kernel of it spills an address)
 };
 template <long long ROLES>
@@ -3024,7 +3024,8 @@ int main(int argc, char** argv) {
       b.expect(k, "HGMMA", "==",
              (roles & kFold ? (roles & kBlocks ? 2 * kBlockRounds : 2) * kSlotLists + (roles & kDenFold ? kDenSteps : 0) : roles & kStill ? 0 : 1)
                  + (roles & kRead && !(roles & kNoReadSteps) ? (roles & kChunk8 ? 4 : 2) * kChunkDigits : 0)
-                 //: (with no readout's steps the kernel still counts one more: 33 where the fold's are 32, not traced)
+                 //: (with no readout's steps its commit and wait remain, and the toolkit lays them a null step there:
+                 //: `HGMMA.64x8x16.F16 RZ, gdesc[URZ], RZ` -- 33 where the fold's are 32)
                  + (roles & kNoReadSteps ? 1 : 0));
     //: a packed producer's statement of a later slot's bytes follows its store of its own slot's header: the fold
     //: reads the header behind the slot's arrival, which the fence precedes
