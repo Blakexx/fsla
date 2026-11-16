@@ -3160,6 +3160,7 @@ int main(int argc, char** argv) {
                     kFold | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm,
                     kFold | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kHeldSteps,
                     3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm,
+                    3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kAheadSteps,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kServe | kTrace,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kStsm | kTrace,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kOwn | kTrace,
@@ -3285,6 +3286,7 @@ int main(int argc, char** argv) {
   run<kFold | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm>(b, waits, values, dense, state, out);
   run<kFold | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kHeldSteps>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kAheadSteps>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kServe | kTrace>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kStsm | kTrace>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kOwn | kTrace>(b, waits, values, dense, state, out);

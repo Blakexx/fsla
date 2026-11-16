@@ -296,11 +296,12 @@ alike. Measured (H100 SXM, Nebius; rounded): the fold alone is some 3,600 cycles
 some 6,500 with both sides (clocked some 6,750). EVERY PHASE FALLS ALIKE, by a fifth to a third -- a fold warp's
 steps' issue some 1,880 to 1,550 (59 to 48 cycles a step), its expansion some 750 to 590, its pads and operands some
 700 to 500, its steps' wait and copies some 465 to 325, its two rendezvous some 1,275 to 800 -- and its image (some
-1,050) and its wait on the readout's read (some 230) leave with the read side: what the read side takes from the fold
-is the schedulers' issue, not the shared-memory pipe alone. The 16 registers the fold alone holds do not move its
-window: unclocked at 168 a thread it was 3,610 (the record at rola 1c811b5d), at 184 some 3,615. A slot's expansion is
-some 300-380 cycles a warp; the traced phase of 2,700 a window is expansion, pads, operands, fence and the rendezvous
-wait together.
+1,050) and its wait on the readout's read (some 230) leave with the read side. By the prediction that is the
+schedulers' issue, not the shared-memory pipe alone -- but the SM issues at some 46% of its slots (the issue count
+below), so what the read side takes from the fold is NOT ISOLATED: issue, the shared-memory pipe and the barriers it
+shares are each still open. The 16 registers the fold alone holds do not move its window: unclocked at 168 a thread it
+was 3,610 (the record at rola 1c811b5d), at 184 some 3,615. A slot's expansion is some 300-380 cycles a warp; the
+traced phase of 2,700 a window is expansion, pads, operands, fence and the rendezvous wait together.
 
 THE HELD-STEP ROW (the fold alone, clocked, every step of a slot issued with the slot's first step's operands loaded
 once and held; its sums wrong, unchecked) asked why a fold step issues at 48 cycles alone against some 19 of its own
@@ -321,6 +322,11 @@ drain some 725. Against a window of some 6,500 that is some 46% of its issue: TH
 issues some 660 instructions in its window and waits out the rest -- its loads, its rendezvous, its copies -- the
 other three warps' some 2,330 issue cycles on its scheduler the read side's share of its slots. At one instruction a
 cycle a scheduler, the count alone is a floor of some 3,000 cycles a window.
+
+THE CLOCKED AHEAD ROW (the digit form with the panel by stmatrix and its operands loaded two steps ahead, clocked)
+asks where the fold's faster issue goes in the composed form. PREDICTED: its steps' issue falls toward the fold
+alone's (some 1,550 a window, or below), and the window does not: the phase that grows by what the issue gives is the
+composed window's holder.
 
 THE LIGHT-LOAD RECORD (`measure/lab/results/carry_window/sm_90a.blocks8.json`, the whole experiment at 8 CTAs, `lab
 run --blocks 8`) asked whether a copy's flight is a fixed latency or the card's bandwidth shared. PREDICTED, if
