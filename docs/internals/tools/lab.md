@@ -119,8 +119,8 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
 * `lab::Trace<ON>` — a warp's timeline (`lab trace`): `stamp(kind, site)` and `at(kind, bar)` (a barrier's site its
   shared address over 8, read against the CTA's base `close(base)` stores), a stamp the SM's clock's low word beside an
   event's (`lab::TraceKind` and site), held a lane each and stored 32 at a time by one predicated store with no compiler
-  barrier (a branch on the count would hold its loops' convergence; the first build's memory clobber and 64-bit shifts
-  cost the digit form 13% of its window); `Bench::trace` prints chosen CTAs' rows as one line with the warps' roles and the
+  barrier (a branch on the count would hold its loops' convergence). MEASURED: still 14-26% of the carry's traced
+  windows (`docs/lab/carry_window.md`, its traced rows): a traced row is read for its structure; `Bench::trace` prints chosen CTAs' rows as one line with the warps' roles and the
   sites' names.
 * The atoms as one PTX instruction each: `mma_f16_f32` (and `_fresh`), `mma_f16_f16`, `mma_bf16_f32`, `mma_u8u8`,
   `mma_u8s8`.

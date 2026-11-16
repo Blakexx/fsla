@@ -1540,7 +1540,7 @@
   {"doc": "docs/lab/call_pair.md", "pinned_at": "9cbc53548073", "reviewed": true, "sha256": "", "target": "docs/lab/intra_window.md"},
   {"doc": "docs/lab/call_pair.md", "pinned_at": "9cbc53548073", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/call_pair.cu"},
   {"doc": "docs/lab/call_pair.md", "pinned_at": "89ce5851da59", "reviewed": true, "sha256": "", "target": "measure/lab/results/call_pair/sm_90a.json"},
-  {"doc": "docs/lab/carry_window.md", "pinned_at": "436097994922", "reviewed": true, "sha256": "f84c257dccbcb937", "target": "docs/ARCHITECTURE.md#1-what-the-kernel-computes"},
+  {"doc": "docs/lab/carry_window.md", "pinned_at": "5a19268bf37c", "reviewed": true, "sha256": "25ae865c2e822268", "target": "docs/ARCHITECTURE.md#1-what-the-kernel-computes"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "d2b3017dc328", "reviewed": true, "sha256": "045fddd45255ff5c", "target": "docs/architecture/hopper-carry.md#the-gather-stream"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "310ddfdf2f7f", "reviewed": true, "sha256": "", "target": "docs/architecture/hopper-gather.md"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "ecdd6b1c4824", "reviewed": true, "sha256": "a7db19b45ab2dcf7", "target": "docs/internals/LEARNINGS.md#lap-in-uniform"},
