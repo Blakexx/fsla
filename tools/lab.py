@@ -980,12 +980,21 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
     return 0
 
 
+#: the share of the window by which the least-waiting role must wait less than the next for the row to name a path
+PATH_MARGIN = 0.05
+
+
+def is_wait(site: str) -> bool:
+    return " waits on " in site or "rendezvous" in site or "fence" in site
+
+
 def critical_path(name: str, pattern: str | None, record: Path | None) -> int:
     """THE WINDOW'S PATH (KERNEL_STANDARDS 22): for each clocked row of a record -- a row in cycles a window a CTA whose
     sites, `<row>: a <role> warp ...` in cycles a window a warp, its roles' warps clocked -- each role's waits (its
-    sites that `wait on` something, a warpgroup's first warp's left out), its busy cycles (the window less those
-    waits) and its phases; the role whose waits are least is the window's path, and only its phases can shorten the
-    window. A row whose roles wait alike names no path."""
+    sites that `wait on` something, and its rendezvous and fences; a warpgroup's first warp's left out), its busy
+    cycles (the window less those waits) and its phases -- a phase that holds a wait marked so; the role whose waits
+    are least is the window's path, and only its phases can shorten the window. A row whose two least-waiting roles
+    are within `PATH_MARGIN` of the window of each other names no path."""
     arch = sass.device_arch() if record is None else None
     path = record or (RESULTS / name / f"{arch}.json")
     rows = {r["name"]: r for r in json.loads(path.read_text())["results"]}
@@ -1008,20 +1017,24 @@ def critical_path(name: str, pattern: str | None, record: Path | None) -> int:
         roles: dict[str, list[float]] = {}
         for role, site, v in found:
             acc = roles.setdefault(role, [0.0, 0.0])
-            acc[0 if " waits on " in site else 1] += v
+            acc[0 if is_wait(site) else 1] += v
         if len(roles) < 2:
             continue
         shown += 1
-        least = min(roles.items(), key=lambda kv: kv[1][0])
+        ranked = sorted(roles.items(), key=lambda kv: kv[1][0])
+        least = ranked[0] if ranked[1][1][0] - ranked[0][1][0] > PATH_MARGIN * window else None
 
         print(f"{row[:150]}: {window:,.0f} cycles a window")
         for role, (waits, phases) in sorted(roles.items(), key=lambda kv: kv[1][0]):
-            mark = "  <- THE PATH" if role == least[0] else ""
+            mark = "  <- THE PATH" if least and role == least[0] else ""
             print(f"    a {role} warp: waits {waits:7,.0f}, busy {window - waits:7,.0f} ({100 * (window - waits) / window:3.0f}%), "
                   f"its clocked phases {phases:7,.0f}{mark}")
-        print(f"    the path's phases (a {least[0]} warp):")
-        for role, site, v in sorted((x for x in found if x[0] == least[0] and " waits on " not in x[1]), key=lambda x: -x[2]):
-            print(f"      {v:7,.0f}  {site[:110]}")
+        if least is None:
+            print(f"    no path: its two least-waiting roles wait within {PATH_MARGIN:.0%} of the window of each other")
+            continue
+        print(f"    the path's phases (a {least[0]} warp; '(a wait in it)' marks a phase that holds one):")
+        for role, site, v in sorted((x for x in found if x[0] == least[0] and not is_wait(x[1])), key=lambda x: -x[2]):
+            print(f"      {v:7,.0f}  {site[:100]}{'  (a wait in it)' if ' wait on ' in site else ''}")
     if not shown:
         print(f"lab: no clocked row of {path} matches {pattern!r}")
         return 1

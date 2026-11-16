@@ -117,7 +117,8 @@
 // shuffle rows' fold loads a slot's 16 steps' lines once (lane s step s's, every lane loading one) and takes each step's
 // four words by shuffles at its issue, 4 more registers held through the slot; the skip rows' second-round step is a
 // one-trip loop on a vote of its B's line. THE AHEAD ROWS' fold loads step k's line at step k - 2's issue, two lines
-// (8 registers) held in turn beside its accumulators. THE JOINED rows' fold is the block rows' with ONE RENDEZVOUS A WINDOW: a slot is the wait on its image, a
+// (8 registers) held in turn beside its accumulators. THE NO-READ-STEPS rows' readout keeps its waits, panel and
+// arrivals and issues no step. THE JOINED rows' fold is the block rows' with ONE RENDEZVOUS A WINDOW: a slot is the wait on its image, a
 // thread's entry expanded, a pad zeroed and a step's operands made, both slots in turn; then the fence, the
 // warpgroup's barrier and the window's 32 steps as one block; then both of the next window's copies, which land
 // under the next window's image. NO LOAD OF A THROUGH OR A ONE-VIEW ROW'S LINES IS A STAGE AHEAD of its use: a fold thread has no register to
@@ -371,7 +372,10 @@ enum Roles : long long {
   kSkip = 1ll << 52,
   //: a block fold's steps' operand lines loaded TWO STEPS AHEAD of their issue (two lines held, 8 registers), where the
   //: form loads each at its step's issue and waits its latency there (the timed launch's ledger, 2026-11-15)
-  kAheadSteps = 1ll << 53
+  kAheadSteps = 1ll << 53,
+  //: an isolation: the mirrored readout ISSUES NO STEPS -- its tiles' waits, its panel and its arrivals as the form's,
+  //: its sums whatever its registers hold -- so the fold's steps meet no readout's on the tensor path
+  kNoReadSteps = 1ll << 54  // (a clocked row alone: the unclocked kernel of it spills an address)
 };
 template <long long ROLES>
 constexpr bool apart = (ROLES & kApart) == kApart;
@@ -1727,6 +1731,14 @@ __device__ __forceinline__ void read_mirror(uint8_t* smem, uint32_t base, long l
       lab::wg_fence();
 #pragma unroll
       for (int g = 0; g < kG; ++g) {
+        if constexpr ((ROLES & kNoReadSteps) != 0) {
+          //: no step writes the sums: they are zeros, written here, so no register is read unset
+#pragma unroll
+          for (int i = 0; i < kChunkDigits; ++i)
+#pragma unroll
+            for (int e = 0; e < 8; ++e) d[g * kChunkDigits + i][e] = 0.0f;
+          continue;
+        }
         const uint32_t first = static_cast<uint32_t>(8 * ((c4 + g) >> 1) + ((c4 + g) & 1));
         const uint32_t images = base + kImageAt + first * tile_of<ROLES>;
 #pragma unroll
@@ -2301,6 +2313,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kShfl ? ", the steps' operands one load a slot and shuffled" : "")
                            + (ROLES & kSkip ? ", only the steps a list reaches" : "")
                            + (ROLES & kAheadSteps ? ", the steps' operands loaded two steps ahead" : "")
+                           + (ROLES & kNoReadSteps ? ", the readout's steps taken out" : "")
                            + (ROLES & kReady ? ", its slots landed with their operands made" : "")
                            + (ROLES & kOne ? ", its window laid by the fold in one pass from one view in token order through registers, its 32 steps one block"
                               : ROLES & kToken ? (ROLES & kThrough ? ", its slots laid by the fold from views in token order, their value lines through registers"
@@ -2969,6 +2982,7 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kShare,
                     3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kShare,
                     3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kJoin,
+                    3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kNoReadSteps,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kAheadSteps,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kStsm | kAheadSteps,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm,
@@ -3009,7 +3023,9 @@ int main(int argc, char** argv) {
     } else
       b.expect(k, "HGMMA", "==",
              (roles & kFold ? (roles & kBlocks ? 2 * kBlockRounds : 2) * kSlotLists + (roles & kDenFold ? kDenSteps : 0) : roles & kStill ? 0 : 1)
-                 + (roles & kRead ? (roles & kChunk8 ? 4 : 2) * kChunkDigits : 0));
+                 + (roles & kRead && !(roles & kNoReadSteps) ? (roles & kChunk8 ? 4 : 2) * kChunkDigits : 0)
+                 //: (with no readout's steps the kernel still counts one more: 33 where the fold's are 32, not traced)
+                 + (roles & kNoReadSteps ? 1 : 0));
     //: a packed producer's statement of a later slot's bytes follows its store of its own slot's header: the fold
     //: reads the header behind the slot's arrival, which the fence precedes
     if ((roles & kPacked) == kPacked && !(roles & kRead)) b.expect(k, "STORE_UNFENCED", "<=", 1);
@@ -3077,6 +3093,7 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kShare>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kShare>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kJoin>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kNoReadSteps>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kAheadSteps>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kStsm | kAheadSteps>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm>(b, waits, values, dense, state, out);

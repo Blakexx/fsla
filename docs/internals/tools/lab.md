@@ -37,9 +37,11 @@ loads and stores, MMAs); a loop's cost a unit is its count times its trips, whic
 ledger of a card that grants no profiler counters.
 `bazel run //tools:lab -- path <name> [--row REGEX] [--record FILE]` names THE WINDOW'S PATH from a record's
 clocked rows (KERNEL_STANDARDS §22): for each row whose sites name its roles' warps (`<row>: a <role> warp ...`, in
-cycles a window a warp), each role's waits (its sites that `wait on` something, a warpgroup's first warp's left out),
-its busy cycles (the window less them) and its phases; the role that waits least is the path, and only its phases
-can shorten the window. Read it before any role's stall samples: a role with slack stalls too.
+cycles a window a warp), each role's waits (its sites that `wait on` something, its rendezvous and fences; a
+warpgroup's first warp's left out),
+its busy cycles (the window less them) and its phases, a phase that holds a wait marked; the role that waits least
+is the path, and only its phases can shorten the window -- unless the two least-waiting roles are within 5% of the
+window of each other, when the row names no path. Read it before any role's stall samples: a role with slack stalls too.
 `ledger <name> --packed <binary> --dump <csv> [--dump ...] --arch sm_90a --per <n>` reads a CARRIED ledger: the
 SourceCounters dumps a rented box made of `lab pack`'s binary (`ncu --section SourceCounters --page source
 --print-source sass --csv`, a kernel's launch after the first `--skip` of them, one file a kernel named

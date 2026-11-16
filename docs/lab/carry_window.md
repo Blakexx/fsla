@@ -266,6 +266,11 @@ role) ask whether the fold's steps wait on their operand fields' loads, as the t
 line is loaded two steps ahead of its issue, two lines held in turn, where the form loads it at the step. Checked as
 the block form's rows are.
 
+THE NO-READ-STEPS ROW (the read-ready ready pair's, clocked: its unclocked kernel spills an address) asks what holds the fold's steps' issue,
+the path's largest phase (`lab path`): the readout issues no step -- its tiles' waits, its panel and its arrivals
+kept, its sums whatever its registers hold -- so the fold's steps meet none of the readout's on the tensor path.
+Unchecked: an isolation.
+
 NO CLOCK INSIDE A ROLE (its own rows). A role's waits and phases are clocked by reads of the cycle counter, and
 the toolkit compiles those reads differently from row to row -- into ordinary registers in the winner's kernel,
 through uniform registers in the den's. Rows of the winner's form and the den's, at both cells, and the den's chain run with no
