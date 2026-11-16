@@ -84,7 +84,8 @@ holds its SASS to the same checks as `run`, and writes the binary with a pack fi
 and opcodes, the toolkit, the commit, the binary's digest); on the card, `tools/lab.py carried <name> --from DIR --into
 OUT [--no-counters HOST]` (the counters read where the box holds the pinned profiler, the host named where it grants
 none) runs the pack's binary by its digest through the sequence `run` runs (`measure`: the inputs, a
-quiet GPU, the repetitions under a kill timeout, `--timeout`, the checks) and writes the record with the pack's build
+quiet GPU, the repetitions under a kill timeout, `--timeout`, the checks; `--blocks N`, for `run` too, the grid held to N CTAs,
+a lighter load on the card, its record `<arch>.blocks<N>.json`) and writes the record with the pack's build
 facts. `--no-counters HOST` is the caller's DECLARATION that the named host grants no profiler counters: the record
 then carries the written exception in their place (`counters_exception`: the host, what stands in --
 `docs/KERNEL_STANDARDS.md` §16 addendum 4). `run` takes the same flag; without it a profiler that fails fails the
@@ -119,7 +120,7 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
 * `lab::Trace<ON>` — a warp's timeline (`lab trace`): `stamp(kind, site)` and `at(kind, bar)` (a barrier's site its
   shared address over 8, read against the CTA's base `close(base)` stores), a stamp the SM's clock's low word beside an
   event's (`lab::TraceKind` and site), held a lane each and stored 32 at a time by one predicated store with no compiler
-  barrier (a branch on the count would hold its loops' convergence). MEASURED: still 14-26% of the carry's traced
+  barrier (a branch on the count would hold its loops' convergence). MEASURED: 14-26% of the carry's traced
   windows (`docs/lab/carry_window.md`, its traced rows): a traced row is read for its structure; `Bench::trace` prints chosen CTAs' rows as one line with the warps' roles and the
   sites' names.
 * The atoms as one PTX instruction each: `mma_f16_f32` (and `_fresh`), `mma_f16_f16`, `mma_bf16_f32`, `mma_u8u8`,

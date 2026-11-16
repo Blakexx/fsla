@@ -273,7 +273,7 @@ Unchecked: an isolation.
 
 THE TRACED ROWS -- the digit form with the panel by stmatrix, the same with the drain warps expanding (the serve row),
 and the operands landed made with their coefficient tiles -- each its unclocked row with every warp's timeline stamped
-(`lab trace`, the traces at `results/carry_window/sm_90a.trace.json`). MEASURED (H100 SXM, Nebius): the trace costs
+(`lab trace`, the traces at `measure/lab/results/carry_window/sm_90a.trace.json`). MEASURED (H100 SXM, Nebius): the trace costs
 these rows 14%, 26% and 21% of their windows (7,443 against 6,504; 8,408 against 6,690; 5,999 against 4,944), so its
 cycles are read for structure, not as the untraced rows' own. In all three the window's PATH is the fold's copy ring:
 a slot's copy issued after its steps, landing a window later (4,964, 6,280 and 4,433 cycles of the path a window),
@@ -284,6 +284,13 @@ holds the fold's 3,500-4,250 waits on its slots. A slot's copy is some 20 KB (it
 line an entry), four a CTA a window: some 10 MB a window card-wide, 2.8 TB/s at the digit form's window -- the flight
 is what that rate gives some 264 boxes' one or two copies in flight (ESTIMATED: Little's law, not yet measured at a
 lighter load). The lab's values are 16 columns shared by every box, so much of it is the L2's.
+
+THE LIGHT-LOAD RECORD (the whole experiment at 8 CTAs, `lab run --blocks 8`, its own record beside this one) and the
+traced own-stream row (every box its own stream from HBM, operands landed made) ask whether a copy's flight is a fixed
+latency or the card's bandwidth shared. PREDICTED, if shared: at 8 CTAs a slot's flight falls to some 1,000-1,500
+cycles and the window toward the fold's own work, some 3,000-3,500; the own stream's flight, at the full grid, some
+13,000 of its ~15,500-cycle window. If instead the flight stays near 4,500-5,000 at 8 CTAs, it is the copy's own
+latency, and a ring deeper than two slots is what shortens the window.
 
 THE SERVE ROWS (the block form with the panel by stmatrix, with and without clocks) ask whether the fold's own
 expansion -- the 1,500-odd cycles a window its expansion, pads, operands, fences and rendezvous cost its path --

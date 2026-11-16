@@ -652,7 +652,7 @@ def report(name: str, arch: str, device: dict, results: list[dict], reps: int) -
 
 def keep(name: str, arch: str, device: dict, results: list[dict], table: dict, reps: int, utilization: int,
          record: bool, digests: dict[str, str], counters: dict[str, dict], refused: dict | None = None,
-         built: dict | None = None, into: Path | None = None) -> Path:
+         built: dict | None = None, into: Path | None = None, blocks: int = 0) -> Path:
     """The run's record: into `measure/lab/results` under `--record`, else the scratch space (`into`: that directory
     instead). `refused`: the written exception of a host that grants no counters, in their place. `built`: a pack's
     toolkit and commit, where the binary was built on another machine (`pack`)."""
@@ -668,12 +668,14 @@ def keep(name: str, arch: str, device: dict, results: list[dict], table: dict, r
             "counters": {k: {m: v for m, v in c.items() if m != "opcodes"} for k, c in counters.items()}}
     if refused:
         body["counters_exception"] = refused
+    if blocks:
+        body["blocks"] = blocks
     target = (into / name if into else RESULTS / name if record
-              else dev_config.scratch("lab") / "results" / name) / f"{arch}.json"
+              else dev_config.scratch("lab") / "results" / name) / (f"{arch}.blocks{blocks}.json" if blocks else f"{arch}.json")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(body, indent=1) + "\n")
     #: THE TRACES (a traced row's timelines, `lab trace`), beside the record: one line a row, the commit's
-    traces = target.with_name(f"{arch}.trace.json")
+    traces = target.with_name(target.name.replace(".json", ".trace.json"))
     if device.get("_traces"):
         traces.write_text(json.dumps({"experiment": name, "git": built["git"], "rows": device["_traces"]}) + "\n")
     elif traces.exists():
@@ -718,6 +720,9 @@ def measure(name: str, arch: str, binary: Path, table: dict, opts, *, built: dic
     where the caller DECLARES a host that grants none (`--no-counters HOST`, KERNEL_STANDARDS section 16 addendum 4),
     the written exception naming that host. A profiler that fails undeclared fails the run."""
     extra, digests = inputs(name)
+    #: `--blocks N`: the experiment's grid held to N CTAs (a lighter load on the card), its record its own
+    if opts.blocks:
+        extra = [*extra, "--blocks", str(opts.blocks)]
     utilization = quiet()
     if utilization > QUIET_PERCENT and not opts.force:
         print(f"lab: the GPU is {utilization}% busy before the run; another consumer would inflate every cycle "
@@ -753,7 +758,7 @@ def measure(name: str, arch: str, binary: Path, table: dict, opts, *, built: dic
                   sep="\n  ")
             return 1
     target = keep(name, arch, device, results, table, opts.reps, utilization, opts.record, digests, raw, refused,
-                  built, into)
+                  built, into, opts.blocks)
     print(f"lab: recorded {target.relative_to(ROOT) if opts.record else target}")
     return 0
 
@@ -1187,6 +1192,8 @@ def main() -> int:
         timed.add_argument("--reps", type=int, default=7)
         timed.add_argument("--force", action="store_true", help="measure on a busy GPU")
         timed.add_argument("--timeout", type=int, default=900, help="seconds before the experiment is killed")
+        timed.add_argument("--blocks", type=int, default=0,
+                           help="the grid held to N CTAs, a lighter load: its record <arch>.blocks<N>.json")
         timed.add_argument("--no-counters", metavar="HOST",
                            help="this host grants no profiler counters: name it, and the record carries the "
                                 "exception in their place (a box that holds the pinned profiler reads them)")
