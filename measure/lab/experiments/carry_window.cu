@@ -388,7 +388,10 @@ enum Roles : long long {
   kTrace = 1ll << 56,
   //: THE HELD-STEP isolation: every step of a slot issued with the slot's first step's operands, loaded once and held
   //: -- no shared load between steps; the sums are wrong (unchecked): what a step's issue costs without its load
-  kHeldSteps = 1ll << 57
+  kHeldSteps = 1ll << 57,
+  //: THE COUNTED rows: a slot's 8 lists' counts in its image's head line, loaded once at the slot's start, and every
+  //: step's operands computed from their prefix sums -- no step table, no shared load in front of a step
+  kCounted = 1ll << 58
 };
 template <long long ROLES>
 constexpr bool apart = (ROLES & kApart) == kApart;
@@ -729,6 +732,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
   static_assert(!(ROLES & kJoin) || (joined<ROLES> && !(ROLES & (kToken | kReady | kShare | kOwn | kMeet41))));
   static_assert(!(ROLES & kAheadSteps) || (blocks<ROLES> && !(ROLES & (kShfl | kSkip | kJoin | kToken))));
   static_assert(!(ROLES & kHeldSteps) || (blocks<ROLES> && !(ROLES & (kShfl | kSkip | kJoin | kToken | kReady | kAheadSteps))));
+  static_assert(!(ROLES & kCounted) || (blocks<ROLES> && !(ROLES & (kShfl | kSkip | kJoin | kToken | kReady | kAheadSteps | kHeldSteps | kServe | kShare | kOne))));
   static_assert(!(ROLES & kServe) || (blocks<ROLES> && (ROLES & kDrains4) && !(ROLES & (kReady | kToken | kShare | kJoin | kShfl | kSkip | kAheadSteps | kOwn | kRawFold | kMeet41))));
   //: the traced rows: the block form's unclocked rows, whose every wait is one of the stamped helpers'
   static_assert(!(ROLES & kTrace) || (blocks<ROLES> && (ROLES & kDrains4) && (ROLES & kNoClock) && (ROLES & kMirror)
@@ -1046,6 +1050,8 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         const uint32_t pool = (2 * box + (token<ROLES> ? 0 : slot)) * kPoolBytes;
         const int g = tid & (kGroup - 1);
         uint8_t* const image = smem + pool;
+        //: (the counted rows' lists' counts, loaded beside the expansion's loads)
+        const uint2 counts = ROLES & kCounted ? *reinterpret_cast<const uint2*>(image + kImageHead * 16 + 4) : make_uint2(0u, 0u);
         if constexpr (token<ROLES>) {
           //: THE THREAD'S ENTRY of the view, the slot's `g`th in token order: its dense line by its sparse byte to
           //: its two coefficient lines, where its word says
@@ -1115,8 +1121,8 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         //: and, a thread of the first 16 (the shared rows: a warp's first four lanes), ITS STEP's operands from the
         //: image's four halves
         const int made = ROLES & kShare ? ((g & 31) < 4 ? 4 * (g >> 5) + (g & 31) : 8 * kBlockRounds) : g;
-        //: (the joined rows' second slot's are behind its first's, at `kOneStepsAt`)
-        if (made < 8 * kBlockRounds)
+        //: (the joined rows' second slot's are behind its first's, at `kOneStepsAt`; the counted rows make none)
+        if (!(ROLES & kCounted) && made < 8 * kBlockRounds)
           make_step(reinterpret_cast<const uint16_t*>(image + kImageSteps * 16) + 4 * made, base + pool, base + kZeroAt + box * 512,
                     reinterpret_cast<uint64_t*>(smem + (joined<ROLES> && slot == 1 ? kOneStepsAt : kStepsAt) + box * 256 + 16 * made));
         if constexpr (fold_clocked<ROLES>) in_pads += lap_own(since);
@@ -1192,6 +1198,23 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
               const uint4 two = reinterpret_cast<const uint4*>(steps)[8 * r + j];
               lab::wg_bf16_n16_ss_mn(d[8 * slot + j], static_cast<uint64_t>(two.y) << 32 | (two.x + at_pool),
                                      static_cast<uint64_t>(two.w) << 32 | (two.z + at_pool), w != 0 || r != 0);
+            } else if constexpr ((ROLES & kCounted) != 0) {
+              //: list j's step of round r from the counts: its values after the tables and the lists before it, its
+              //: dense lines after every list's values (the slot's 128 entries) and the lists before it, its second
+              //: run the lists' padded runs further on; a round past its count steps on the zeros
+              uint32_t values = kImageTables, dense = kImageTables + 8 * kGroup, runs = 0;
+#pragma unroll
+              for (int i = 0; i < 8; ++i) {
+                const uint32_t ni = (i < 4 ? counts.x : counts.y) >> (8 * (i & 3)) & 255u;
+                runs += static_cast<uint32_t>(block_spread(static_cast<int>(ni)));
+                if (i < j) values += 8 * ni, dense += static_cast<uint32_t>(block_spread(static_cast<int>(ni)));
+              }
+              const uint32_t n = (j < 4 ? counts.x : counts.y) >> (8 * (j & 3)) & 255u;
+              const bool live = r == 0 || 16u * r < n;
+              const uint64_t a = lab::wg_desc(base + pool + (values + (live ? 16u * r : 0u)) * 16u, 8, n);
+              const uint64_t b = live ? lab::wg_desc(base + pool + (dense + 16u * r) * 16u, 8, runs)
+                                      : lab::wg_desc(base + kZeroAt + box * 512, 8, 16);
+              lab::wg_bf16_n16_ss_mn(d[8 * slot + j], a, b, w != 0 || r != 0);
             } else if constexpr ((ROLES & kHeldSteps) != 0) {
               lab::wg_bf16_n16_ss_mn(d[8 * slot + j], held_a, held_b, w != 0 || r != 0);
             } else {
@@ -2443,6 +2466,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kServe ? ", the drain warps expanding the fold's slots a slot ahead" : "")
                            + (ROLES & kTrace ? ", every warp's timeline stamped" : "")
                            + (ROLES & kHeldSteps ? ", every step of a slot its first's operands, held" : "")
+                           + (ROLES & kCounted ? ", its steps' operands made from its lists' counts" : "")
                            + (ROLES & kReady ? ", its slots landed with their operands made" : "")
                            + (ROLES & kOne ? ", its window laid by the fold in one pass from one view in token order through registers, its 32 steps one block"
                               : ROLES & kToken ? (ROLES & kThrough ? ", its slots laid by the fold from views in token order, their value lines through registers"
@@ -2473,7 +2497,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
   const size_t tokens = static_cast<size_t>(b.sms) * kOutWindows * kWindow;
   LAB_CHECK(cudaMemset(out, 0, (words + tokens) * 4));
-  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed | kHot | kAhead | (fresh<ROLES> ? kNoLoads : 0) | (packed<ROLES> ? kNoMath : 0) | (four<ROLES> || fold_expands<ROLES> ? kFour | kFoldIssues | kDrains4 : 0) | kTwoSums | kMirror | kChunk8 | kRawPanel | ((ROLES & kMirror) && (ROLES & kChunk8) ? kReadReady : 0) | ((ROLES & kMirror) && (fold_issues<ROLES> || blocks<ROLES>) ? kMeet41 : 0) | (fold_issues<ROLES> ? kIssueLate | kShare : 0) | (blocks<ROLES> ? kShare | kReady | ((ROLES & kReady) ? kOwn : 0) | kToken | ((ROLES & kToken) ? kThrough : 0) | ((ROLES & kThrough) ? kOne : 0) | kJoin | kShfl | kSkip | kAheadSteps | kServe | kTrace : 0) | ((ROLES & kMirror) ? kStsm : 0) | (blocks<ROLES> ? kBlocks | kDrains4 : 0))) == (kFold | kRead)) {
+  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed | kHot | kAhead | (fresh<ROLES> ? kNoLoads : 0) | (packed<ROLES> ? kNoMath : 0) | (four<ROLES> || fold_expands<ROLES> ? kFour | kFoldIssues | kDrains4 : 0) | kTwoSums | kMirror | kChunk8 | kRawPanel | ((ROLES & kMirror) && (ROLES & kChunk8) ? kReadReady : 0) | ((ROLES & kMirror) && (fold_issues<ROLES> || blocks<ROLES>) ? kMeet41 : 0) | (fold_issues<ROLES> ? kIssueLate | kShare : 0) | (blocks<ROLES> ? kShare | kReady | ((ROLES & kReady) ? kOwn : 0) | kToken | ((ROLES & kToken) ? kThrough : 0) | ((ROLES & kThrough) ? kOne : 0) | kJoin | kShfl | kSkip | kAheadSteps | kServe | kTrace | kCounted : 0) | ((ROLES & kMirror) ? kStsm : 0) | (blocks<ROLES> ? kBlocks | kDrains4 : 0))) == (kFold | kRead)) {
     kernel<<<b.sms, kLaunch, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, rows, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * state_words<ROLES>;
@@ -2885,6 +2909,8 @@ inline Buffers buffers(const lab::Bench& b) {
               e += n[j];
             }
             std::memcpy(image + kImageHead * 16, &pad, 4);
+            //: the lists' counts, a byte each behind the pad count (the counted rows' steps are made from them)
+            for (int j = 0; j < 8; ++j) image[kImageHead * 16 + 4 + j] = static_cast<uint8_t>(n[j]);
             plan[2 * slot] = line, plan[2 * slot + 1] = static_cast<uint32_t>(landed) * 16;
             line += static_cast<uint32_t>(landed);
           }
@@ -3156,6 +3182,7 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kJoin,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kServe,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kTrace,
+                    3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kCounted,
                     kFold | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm,
                     kFold | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm,
                     kFold | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kHeldSteps,
@@ -3282,6 +3309,7 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kJoin>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kServe>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kTrace>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kCounted>(b, waits, values, dense, state, out);
   run<kFold | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm>(b, waits, values, dense, state, out);
   run<kFold | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm>(b, waits, values, dense, state, out);
   run<kFold | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kHeldSteps>(b, waits, values, dense, state, out);

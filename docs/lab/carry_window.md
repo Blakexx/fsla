@@ -346,9 +346,16 @@ the panel by stmatrix and of its ahead row, one binary, profiled on an H100 SXM)
 alike -- 57% of their stall samples the short scoreboard, 15-16% issuing, 9-10% a fixed wait, 7% unselected, 4-6% the
 tensor pipe -- and 87-88% of the samples are at the moves of a step's operands into the uniform registers, waiting on
 the shared load that brought them. With the load two steps ahead the move still waits: in the composed form an
-operands' load takes longer than two steps, queued behind the shared-memory pipe's other traffic (the steps' own
-operand reads among it). Alone held, no load at all, the issue was 15 a step: what each step needs is its operands
-without a shared load in front of it.
+operands' load takes longer than two steps. READ AS, not isolated: queued behind the shared-memory pipe's other
+traffic, the steps' own operand reads among it. Alone held, no load at all, the issue was 15 a step: what each step
+needs is its operands without a shared load in front of it.
+
+THE COUNTED ROW (the digit form with the panel by stmatrix, a slot's 8 lists' counts a byte each in its image's head
+line, loaded once at the slot's start beside its expansion's loads, every step's operands made from their prefix sums
+-- a list's values after the tables and the lists before it, its dense lines after the slot's 128 entries' values, its
+second run the lists' padded runs further on -- and no step table) asks whether a step without a shared load in front
+of it issues as the fold alone held did. Checked exactly. PREDICTED: the composed window some 5,300-5,900 against some
+6,500, the fold's chain shorter by most of its steps' wait on their operands.
 
 THE LIGHT-LOAD RECORD (`measure/lab/results/carry_window/sm_90a.blocks8.json`, the whole experiment at 8 CTAs, `lab
 run --blocks 8`) asked whether a copy's flight is a fixed latency or the card's bandwidth shared. PREDICTED, if
