@@ -1559,6 +1559,7 @@
   {"doc": "docs/lab/carry_window.md", "pinned_at": "437a7eb3ded2", "reviewed": true, "sha256": "", "target": "docs/measurement.md"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "8b1174b3fdcf", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/carry_window.cu"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "2ff049021908", "reviewed": true, "sha256": "", "target": "measure/lab/results/carry_window/ledger_sm_90a/ledger.json"},
+  {"doc": "docs/lab/carry_window.md", "pinned_at": "47ce13b1c406", "reviewed": true, "sha256": "", "target": "measure/lab/results/carry_window/ledger_steps_sm_90a"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "a5e10733407e", "reviewed": true, "sha256": "", "target": "measure/lab/results/carry_window/ledger_timed_sm_90a"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "c9e374fd8ee7", "reviewed": true, "sha256": "", "target": "measure/lab/results/carry_window/ledger_timed_sm_90a/ledger.json"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "99807df0f7fe", "reviewed": true, "sha256": "", "target": "measure/lab/results/carry_window/sm_90a.blocks8.json"},

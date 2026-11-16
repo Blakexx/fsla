@@ -341,6 +341,15 @@ own steps: with them out the fold's issue fell only 2,263 to 1,991 in the operan
 the uniform datapath each step's operands cross (the readout issues some 400 uniform instructions a scheduler a
 window), and the shared-memory pipe the steps' operands are read through.
 
+THE STEPS' STALLS (`measure/lab/results/carry_window/ledger_steps_sm_90a/`: the timed launches of the digit form with
+the panel by stmatrix and of its ahead row, one binary, profiled on an H100 SXM): over the fold's step loops both are
+alike -- 57% of their stall samples the short scoreboard, 15-16% issuing, 9-10% a fixed wait, 7% unselected, 4-6% the
+tensor pipe -- and 87-88% of the samples are at the moves of a step's operands into the uniform registers, waiting on
+the shared load that brought them. With the load two steps ahead the move still waits: in the composed form an
+operands' load takes longer than two steps, queued behind the shared-memory pipe's other traffic (the steps' own
+operand reads among it). Alone held, no load at all, the issue was 15 a step: what each step needs is its operands
+without a shared load in front of it.
+
 THE LIGHT-LOAD RECORD (`measure/lab/results/carry_window/sm_90a.blocks8.json`, the whole experiment at 8 CTAs, `lab
 run --blocks 8`) asked whether a copy's flight is a fixed latency or the card's bandwidth shared. PREDICTED, if
 shared: at 8 CTAs the flight falls to some 1,000-1,500 and the window toward 3,000-3,500. Measured: neither on the
