@@ -398,7 +398,10 @@ enum Roles : long long {
   kUniform = 1ll << 59,
   //: THE VECTOR-DRAIN rows: a drain warp's lane an eighth of a token's row -- one 16-byte load from the panel and one
   //: 16-byte add, four tokens an instruction -- a fourth of the drains' instructions on the load-store queue
-  kVecDrain = 1ll << 60
+  kVecDrain = 1ll << 60,
+  //: THE WIDE-FOLD rows: the drain warps at 40 registers a thread (as the five-warpgroup rows' are), their 32 the
+  //: folds' 16 more each -- 184
+  kWideFold = 1ll << 61
 };
 template <long long ROLES>
 constexpr bool apart = (ROLES & kApart) == kApart;
@@ -526,13 +529,15 @@ constexpr int serve_regs = ((ROLES & kLean) && (ROLES & (kWide | kDenSplit)) ? 1
                            - (ROLES & kTwoSums ? 32 : 0) - (ROLES & kChunk8 ? 24 : 0)
                            - ((ROLES & kWhole) == kWhole && (ROLES & kNoMath) == 0 && (ROLES & kFour) && (ROLES & (kFoldIssues | kMirror)) && !(ROLES & kChunk8) ? 16 : 0)
                            - (ROLES & kBlocks ? 16 : 0)
-                           - (fold_issues<ROLES> && (ROLES & kMeet41) && !(ROLES & kNoClock) ? 16 : 0);
+                           - (fold_issues<ROLES> && (ROLES & kMeet41) && !(ROLES & kNoClock) ? 16 : 0)
+                           - (ROLES & kWideFold ? 32 : 0);
 //: a fold that issues its own copies holds their addresses beside its state: 8 registers a thread more, the serve
 //: warpgroup's, whose warps hold no entry; and the mirrored rows' fold, whose expansion spills a product at 160
 //: and the block rows' fold, which holds its steps' table beside its state
 template <long long ROLES>
 constexpr int fold_regs = (ROLES & kWhole) == kWhole && (ROLES & kNoMath) == 0 && (ROLES & kFour) && (ROLES & (kFoldIssues | kMirror)) && !(ROLES & kChunk8) ? kFoldRegs + 8
                           : alone_fold<ROLES> ? kFoldRegs + 24
+                          : (ROLES & kWideFold) && (ROLES & kBlocks) ? kFoldRegs + 24
                           : ROLES & kBlocks ? kFoldRegs + 8
                           //: the meeting rows' clocked self-issuing fold holds its wait's words beside its clocks: the serve warps' 16
                           : fold_issues<ROLES> && (ROLES & kMeet41) && !(ROLES & kNoClock) ? kFoldRegs + 8
@@ -2192,6 +2197,7 @@ __device__ __forceinline__ void drain_role(uint8_t* smem, uint32_t base, long lo
   static_assert(!(ROLES & kRawPanel) || (ROLES & kMirror) || !(ROLES & kRead));
   static_assert(!(ROLES & kVecDrain) || !(ROLES & (kFive | kRawPanel | kDenDrain | kNoAdds | kSleep)));
   static_assert(!(ROLES & kVecDrain) || (kTokens / kDrainers) % 4 == 0);
+  static_assert(!(ROLES & kWideFold) || ((ROLES & kBlocks) && (ROLES & kDrains4) && !alone_fold<ROLES> && !(ROLES & kFive)));
   const int lane = threadIdx.x & 31, mine = (threadIdx.x - drain_at<ROLES>) >> 5;
   const uint32_t bars = base + kBarsAt;
   constexpr int kHold = ROLES & kFive ? kFiveHold : kBatch, kBatches = kTokens / kDrainers / kHold;
@@ -2524,6 +2530,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kCounted ? ", its steps' operands made from its lists' counts" : "")
                            + (ROLES & kUniform ? ", its counts the warp's own by a shuffle" : "")
                            + (ROLES & kVecDrain ? ", the drains' loads and adds 16 bytes a lane" : "")
+                           + (ROLES & kWideFold ? ", the folds at 184 registers and the drains at 40" : "")
                            + (ROLES & kReady ? ", its slots landed with their operands made" : "")
                            + (ROLES & kOne ? ", its window laid by the fold in one pass from one view in token order through registers, its 32 steps one block"
                               : ROLES & kToken ? (ROLES & kThrough ? ", its slots laid by the fold from views in token order, their value lines through registers"
@@ -2554,7 +2561,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
   const size_t tokens = static_cast<size_t>(b.sms) * kOutWindows * kWindow;
   LAB_CHECK(cudaMemset(out, 0, (words + tokens) * 4));
-  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed | kHot | kAhead | (fresh<ROLES> ? kNoLoads : 0) | (packed<ROLES> ? kNoMath : 0) | (four<ROLES> || fold_expands<ROLES> ? kFour | kFoldIssues | kDrains4 : 0) | kTwoSums | kMirror | kChunk8 | kRawPanel | ((ROLES & kMirror) && (ROLES & kChunk8) ? kReadReady : 0) | ((ROLES & kMirror) && (fold_issues<ROLES> || blocks<ROLES>) ? kMeet41 : 0) | (fold_issues<ROLES> ? kIssueLate | kShare : 0) | (blocks<ROLES> ? kShare | kReady | ((ROLES & kReady) ? kOwn : 0) | kToken | ((ROLES & kToken) ? kThrough : 0) | ((ROLES & kThrough) ? kOne : 0) | kJoin | kShfl | kSkip | kAheadSteps | kServe | kTrace | kCounted | kUniform | kVecDrain : 0) | ((ROLES & kMirror) ? kStsm : 0) | (blocks<ROLES> ? kBlocks | kDrains4 : 0))) == (kFold | kRead)) {
+  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed | kHot | kAhead | (fresh<ROLES> ? kNoLoads : 0) | (packed<ROLES> ? kNoMath : 0) | (four<ROLES> || fold_expands<ROLES> ? kFour | kFoldIssues | kDrains4 : 0) | kTwoSums | kMirror | kChunk8 | kRawPanel | ((ROLES & kMirror) && (ROLES & kChunk8) ? kReadReady : 0) | ((ROLES & kMirror) && (fold_issues<ROLES> || blocks<ROLES>) ? kMeet41 : 0) | (fold_issues<ROLES> ? kIssueLate | kShare : 0) | (blocks<ROLES> ? kShare | kReady | ((ROLES & kReady) ? kOwn : 0) | kToken | ((ROLES & kToken) ? kThrough : 0) | ((ROLES & kThrough) ? kOne : 0) | kJoin | kShfl | kSkip | kAheadSteps | kServe | kTrace | kCounted | kUniform | kVecDrain | kWideFold : 0) | ((ROLES & kMirror) ? kStsm : 0) | (blocks<ROLES> ? kBlocks | kDrains4 : 0))) == (kFold | kRead)) {
     kernel<<<b.sms, kLaunch, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, rows, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * state_words<ROLES>;
@@ -3247,6 +3254,10 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kVecDrain,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken | kStsm,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken | kStsm | kVecDrain,
+                    3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kWideFold,
+                    3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kWideFold,
+                    3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kCounted | kUniform | kWideFold,
+                    3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kCounted | kUniform | kWideFold,
                     kFold | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm,
                     kFold | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm,
                     kFold | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kHeldSteps,
@@ -3380,6 +3391,10 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kVecDrain>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken | kStsm>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken | kStsm | kVecDrain>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kWideFold>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kWideFold>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kCounted | kUniform | kWideFold>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kCounted | kUniform | kWideFold>(b, waits, values, dense, state, out);
   run<kFold | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm>(b, waits, values, dense, state, out);
   run<kFold | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm>(b, waits, values, dense, state, out);
   run<kFold | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kHeldSteps>(b, waits, values, dense, state, out);

@@ -387,6 +387,13 @@ NO GAIN -- the digit form some 6,510 against some 6,505, the token-order form so
 exact. The drains' instructions on the queue are not what slows the fold; only their adds' going (some 6,200) moves it
 -- READ AS, not isolated: their lines through the L1, not their count.
 
+THE WIDE-FOLD ROWS (the digit form with the panel by stmatrix, the drain warps at 40 registers a thread and the folds
+at 184; plain and with the uniform row's operands made once a slot, each clocked and unclocked) ask where the uniform
+row's loss was: [`step_queue`](step_queue.md) measured a fold step holding its operands at some 27 cycles beside every
+kind of traffic, against 58 composed, yet the uniform row lost; at 168 registers its clocked twin spills. PREDICTED:
+the plain form near its own (the drains' registers are not on the path); the uniform form some 5,500-6,100 cycles a
+window, its steps' issue some 900-1,100 a window against some 1,880, and the clocks naming what holds it if not.
+
 THE LIGHT-LOAD RECORD (`measure/lab/results/carry_window/sm_90a.blocks8.json`, the whole experiment at 8 CTAs, `lab
 run --blocks 8`) asked whether a copy's flight is a fixed latency or the card's bandwidth shared. PREDICTED, if
 shared: at 8 CTAs the flight falls to some 1,000-1,500 and the window toward 3,000-3,500. Measured: neither on the

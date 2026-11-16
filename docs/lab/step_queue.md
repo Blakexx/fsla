@@ -51,9 +51,11 @@ WHAT IT SHOWS.
   own NOT ISOLATED.
 - A HELD TABLE IS NEARLY IMMUNE TOO: every step its own operands in registers, its binary a move to the uniform
   registers a step and no load, is some 25 cycles a step alone and some 27 beside four warps of shared loads, of shared
-  stores and of global adds alike. What the other warps' traffic costs a carry fold's step is its operands' shared load:
-  a step that holds its operands escapes it. (The carry's counted and uniform rows, near that form, lost: what else in
-  them grew is not isolated.)
+  stores and of global adds. Beside it those co-runners run slower than beside a loaded fold (5.7, 5.4 and 9.5
+  instructions a hundred cycles against 8.6, 9.0 and 10.5); at matched rates a loaded step is 39 (shared loads at 5.1),
+  45 (shared stores at 6.0) and 57 (global adds at 9.2) against the held table's 27. What the other warps' traffic costs
+  a carry fold's step is then its operands' shared load: a step that holds its operands escapes it. (The carry's counted
+  and uniform rows, near that form, lost: what else in them grew is not isolated.)
 
 THE HELD-TABLE ROWS (every step its own operands' low words in registers, loaded once where the toolkit cannot know
 them one warp's: its binary's steps hold their moves to the uniform registers and no load), alone and beside four
