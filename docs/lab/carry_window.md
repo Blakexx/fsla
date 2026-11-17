@@ -409,8 +409,17 @@ step: the unpacking, the pitch chosen, the moves to the uniform registers) again
 table's some 5 a step. Checked exactly. PREDICTED: its steps some 27-32 cycles each, the window some 5,600-6,000
 cycles against some 6,500; its clocked twin spills, so the window alone is read. Measured on an H100 SXM (Nebius;
 rounded): IT LOSES TOO -- some 6,580 cycles a window against some 6,500, exact. No form that takes the shared load out
-of the fold's steps has shortened the composed window; where its time goes is NOT ISOLATED (every clocked twin of
-these rows spills).
+of the fold's steps has shortened the composed window; where its time goes is read from its profile, below.
+
+THE PACKED ROW'S PROFILE (`measure/lab/results/carry_window/ledger_packed_sm_90a/`: the timed launches of the plain
+digit form and of the packed-table row, one binary, profiled on an H100 SXM; a role's stall samples are its warps'
+time). The fold's warps: 5,299 instructions a CTA window plain, 8,662 packed -- a held word is made by every thread,
+so each of the 8 fold warps makes the slot's whole table; the short scoreboard 26% of the fold's samples plain and 11%
+packed, its wait on its steps' commit group 4% and 13%, the tensor pipe 3% and 10%, issuing or unselected 15% and 30%.
+READ AS: the packed fold's steps issue without their load and then wait on the tensor pipe, where the plain fold's
+wait on its operands' load hid the same wait -- the two fold warpgroups issue a slot's 16 steps each at once, beside
+the readout's; and the table's making is some 3,400 instructions a window the plain form does not issue. What a held
+table saved, its making and the steps' own completion took.
 
 THE LIGHT-LOAD RECORD (`measure/lab/results/carry_window/sm_90a.blocks8.json`, the whole experiment at 8 CTAs, `lab
 run --blocks 8`) asked whether a copy's flight is a fixed latency or the card's bandwidth shared. PREDICTED, if
