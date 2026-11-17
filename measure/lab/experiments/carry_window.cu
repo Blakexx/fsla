@@ -401,7 +401,11 @@ enum Roles : long long {
   kVecDrain = 1ll << 60,
   //: THE WIDE-FOLD rows: the drain warps at 40 registers a thread (as the five-warpgroup rows' are), their 32 the
   //: folds' 16 more each -- 184
-  kWideFold = 1ll << 61
+  kWideFold = 1ll << 61,
+  //: THE PACKED-TABLE rows (with the counted rows' counts): a slot's 16 steps' operand addresses made once in its
+  //: expansion's phase, a step's A and B address fields and its round's liveness one word, and the lists' pitches
+  //: two -- held, and a step's operands unpacked from its word: no load and no arithmetic of the slot's in a step
+  kPackedOps = 1ll << 62
 };
 template <long long ROLES>
 constexpr bool apart = (ROLES & kApart) == kApart;
@@ -745,6 +749,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
   static_assert(!(ROLES & kAheadSteps) || (blocks<ROLES> && !(ROLES & (kShfl | kSkip | kJoin | kToken))));
   static_assert(!(ROLES & kHeldSteps) || (blocks<ROLES> && !(ROLES & (kShfl | kSkip | kJoin | kToken | kReady | kAheadSteps))));
   static_assert(!(ROLES & kUniform) || (ROLES & kCounted));
+  static_assert(!(ROLES & kPackedOps) || ((ROLES & kCounted) && !(ROLES & kUniform)));
   static_assert(!(ROLES & kCounted) || (blocks<ROLES> && !(ROLES & (kShfl | kSkip | kJoin | kToken | kReady | kAheadSteps | kHeldSteps | kServe | kShare | kOne))));
   static_assert(!(ROLES & kServe) || (blocks<ROLES> && (ROLES & kDrains4) && !(ROLES & (kReady | kToken | kShare | kJoin | kShfl | kSkip | kAheadSteps | kOwn | kRawFold | kMeet41))));
   //: the traced rows: the block form's unclocked rows, whose every wait is one of the stamped helpers'
@@ -1071,6 +1076,29 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
           counts.x = __shfl_sync(0xffffffffu, counts.x, 0);
           counts.y = __shfl_sync(0xffffffffu, counts.y, 0);
         }
+        //: THE PACKED TABLE, made here beside the expansion: step `8 r + j`'s A field (bits 0-13), its B field (16-29)
+        //: and its round's liveness (31); the pitches are the counts themselves, the second runs' one
+        uint32_t packed[8 * kBlockRounds] = {};
+        uint32_t packed_runs = 0;
+        if constexpr ((ROLES & kPackedOps) != 0) {
+          const uint32_t at = (base + pool) >> 4, zeros = ((base + kZeroAt + box * 512) >> 4) & 0x3fffu;
+          uint32_t values = kImageTables, dense = kImageTables + 8 * kGroup;
+#pragma unroll
+          for (int i = 0; i < 8; ++i) packed_runs += static_cast<uint32_t>(block_spread(static_cast<int>((i < 4 ? counts.x : counts.y) >> (8 * (i & 3)) & 255u)));
+#pragma unroll
+          for (int j = 0; j < 8; ++j) {
+            const uint32_t nj = (j < 4 ? counts.x : counts.y) >> (8 * (j & 3)) & 255u;
+#pragma unroll
+            for (int r = 0; r < kBlockRounds; ++r) {
+              const bool live = r == 0 || 16u * r < nj;
+              const uint32_t a = (at + values + (live ? 16u * r : 0u)) & 0x3fffu;
+              const uint32_t bf = live ? (at + dense + 16u * r) & 0x3fffu : zeros;
+              packed[8 * r + j] = a | bf << 16 | (live ? 0x80000000u : 0u);
+            }
+            values += 8 * nj;
+            dense += static_cast<uint32_t>(block_spread(static_cast<int>(nj)));
+          }
+        }
         if constexpr (token<ROLES>) {
           //: THE THREAD'S ENTRY of the view, the slot's `g`th in token order: its dense line by its sparse byte to
           //: its two coefficient lines, where its word says
@@ -1237,6 +1265,14 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
               const uint4 two = reinterpret_cast<const uint4*>(steps)[8 * r + j];
               lab::wg_bf16_n16_ss_mn(d[8 * slot + j], static_cast<uint64_t>(two.y) << 32 | (two.x + at_pool),
                                      static_cast<uint64_t>(two.w) << 32 | (two.z + at_pool), w != 0 || r != 0);
+            } else if constexpr ((ROLES & kPackedOps) != 0) {
+              //: the step's word unpacked: its fields, its A's pitch the list's count, its B's the runs' (or the zeros')
+              const uint32_t word = packed[8 * r + j];
+              const uint32_t pitch_a = (j < 4 ? counts.x : counts.y) >> (8 * (j & 3)) & 255u;
+              const uint32_t pitch_b = static_cast<int32_t>(word) < 0 ? packed_runs : 16u;
+              const uint64_t a = static_cast<uint64_t>(pitch_a) << 32 | ((word & 0x3fffu) | 8u << 16);
+              const uint64_t b = static_cast<uint64_t>(pitch_b) << 32 | ((word >> 16 & 0x3fffu) | 8u << 16);
+              lab::wg_bf16_n16_ss_mn(d[8 * slot + j], a, b, w != 0 || r != 0);
             } else if constexpr ((ROLES & kCounted) != 0 && (ROLES & kUniform) != 0) {
               lab::wg_bf16_n16_ss_mn(d[8 * slot + j], made_a[j] + (16u * r < made_n[j] || r == 0 ? 16u * r : 0u),
                                      r == 0 || 16u * r < made_n[j] ? made_b[j] + 16u * r : zero_b, w != 0 || r != 0);
@@ -2531,6 +2567,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kUniform ? ", its counts the warp's own by a shuffle" : "")
                            + (ROLES & kVecDrain ? ", the drains' loads and adds 16 bytes a lane" : "")
                            + (ROLES & kWideFold ? ", the folds at 184 registers and the drains at 40" : "")
+                           + (ROLES & kPackedOps ? ", a slot's packed operand words held" : "")
                            + (ROLES & kReady ? ", its slots landed with their operands made" : "")
                            + (ROLES & kOne ? ", its window laid by the fold in one pass from one view in token order through registers, its 32 steps one block"
                               : ROLES & kToken ? (ROLES & kThrough ? ", its slots laid by the fold from views in token order, their value lines through registers"
@@ -2561,7 +2598,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
   const size_t words = static_cast<size_t>(b.sms) * kOutWindows * kWindow * (kChannels / 2);
   const size_t tokens = static_cast<size_t>(b.sms) * kOutWindows * kWindow;
   LAB_CHECK(cudaMemset(out, 0, (words + tokens) * 4));
-  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed | kHot | kAhead | (fresh<ROLES> ? kNoLoads : 0) | (packed<ROLES> ? kNoMath : 0) | (four<ROLES> || fold_expands<ROLES> ? kFour | kFoldIssues | kDrains4 : 0) | kTwoSums | kMirror | kChunk8 | kRawPanel | ((ROLES & kMirror) && (ROLES & kChunk8) ? kReadReady : 0) | ((ROLES & kMirror) && (fold_issues<ROLES> || blocks<ROLES>) ? kMeet41 : 0) | (fold_issues<ROLES> ? kIssueLate | kShare : 0) | (blocks<ROLES> ? kShare | kReady | ((ROLES & kReady) ? kOwn : 0) | kToken | ((ROLES & kToken) ? kThrough : 0) | ((ROLES & kThrough) ? kOne : 0) | kJoin | kShfl | kSkip | kAheadSteps | kServe | kTrace | kCounted | kUniform | kVecDrain | kWideFold : 0) | ((ROLES & kMirror) ? kStsm : 0) | (blocks<ROLES> ? kBlocks | kDrains4 : 0))) == (kFold | kRead)) {
+  if ((ROLES & ~(kSuspend | kSelf | kLean | kFive | kSleep | kWide | kDump | kBig | kDen | kPitch | kAligned | kNoClock | kTiledValues | kListed | kHot | kAhead | (fresh<ROLES> ? kNoLoads : 0) | (packed<ROLES> ? kNoMath : 0) | (four<ROLES> || fold_expands<ROLES> ? kFour | kFoldIssues | kDrains4 : 0) | kTwoSums | kMirror | kChunk8 | kRawPanel | ((ROLES & kMirror) && (ROLES & kChunk8) ? kReadReady : 0) | ((ROLES & kMirror) && (fold_issues<ROLES> || blocks<ROLES>) ? kMeet41 : 0) | (fold_issues<ROLES> ? kIssueLate | kShare : 0) | (blocks<ROLES> ? kShare | kReady | ((ROLES & kReady) ? kOwn : 0) | kToken | ((ROLES & kToken) ? kThrough : 0) | ((ROLES & kThrough) ? kOne : 0) | kJoin | kShfl | kSkip | kAheadSteps | kServe | kTrace | kCounted | kUniform | kVecDrain | kWideFold | kPackedOps : 0) | ((ROLES & kMirror) ? kStsm : 0) | (blocks<ROLES> ? kBlocks | kDrains4 : 0))) == (kFold | kRead)) {
     kernel<<<b.sms, kLaunch, kSmemBytes>>>(b.times, waits, b.sinks, values, dense, state, out, rows, kOutWindows);
     LAB_CHECK(cudaDeviceSynchronize());
     const size_t per = static_cast<size_t>(2 * kGroup) * state_words<ROLES>;
@@ -3258,6 +3295,7 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kWideFold,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kCounted | kUniform | kWideFold,
                     3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kCounted | kUniform | kWideFold,
+                    3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kCounted | kPackedOps,
                     kFold | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm,
                     kFold | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm,
                     kFold | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kHeldSteps,
@@ -3395,6 +3433,7 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kWideFold>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kCounted | kUniform | kWideFold>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kCounted | kUniform | kWideFold>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kCounted | kPackedOps>(b, waits, values, dense, state, out);
   run<kFold | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm>(b, waits, values, dense, state, out);
   run<kFold | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm>(b, waits, values, dense, state, out);
   run<kFold | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kHeldSteps>(b, waits, values, dense, state, out);

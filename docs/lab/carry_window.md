@@ -400,6 +400,15 @@ the drains need their 72. THE UNIFORM FORM'S STEPS ARE NOT THE HELD TABLE: its s
 (some 66 a step) against the plain form's some 1,520 at 184 -- its slot's operands made and a round's offset and zeros
 chosen inside the phase, where step_queue's held table moves one held word a step (some 25).
 
+THE PACKED-TABLE ROW (the digit form with the panel by stmatrix at its own registers, 168 and 72; the counted rows'
+counts; a slot's 16 steps' operand addresses made once in the expansion's phase -- a step's A and B address fields and
+its round's liveness one held word -- and a step's operands unpacked from its word) asks whether the carry's fold can
+hold its operands as [`step_queue`](step_queue.md)'s held table does, some 25-27 cycles a step beside every traffic.
+Its binary: no shared load among a slot's steps and no local memory, 131 instructions a slot's 16 steps (some 8 a
+step: the unpacking, the pitch chosen, the moves to the uniform registers) against the plain form's 79 and the held
+table's some 5 a step. Checked exactly. PREDICTED: its steps some 27-32 cycles each, the window some 5,600-6,000
+cycles against some 6,500; its clocked twin spills, so the window alone is read.
+
 THE LIGHT-LOAD RECORD (`measure/lab/results/carry_window/sm_90a.blocks8.json`, the whole experiment at 8 CTAs, `lab
 run --blocks 8`) asked whether a copy's flight is a fixed latency or the card's bandwidth shared. PREDICTED, if
 shared: at 8 CTAs the flight falls to some 1,000-1,500 and the window toward 3,000-3,500. Measured: neither on the
