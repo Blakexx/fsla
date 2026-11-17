@@ -1081,7 +1081,9 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         uint32_t packed[8 * kBlockRounds] = {};
         uint32_t packed_runs = 0;
         if constexpr ((ROLES & kPackedOps) != 0) {
-          const uint32_t at = (base + pool) >> 4, zeros = ((base + kZeroAt + box * 512) >> 4) & 0x3fffu;
+          //: (an address field is the descriptor's own, `lab::wg_desc`'s low 14 bits)
+          const auto field = [](uint32_t address) { return static_cast<uint32_t>(lab::wg_desc(address, 0, 0)); };
+          const uint32_t zeros = field(base + kZeroAt + box * 512);
           uint32_t values = kImageTables, dense = kImageTables + 8 * kGroup;
 #pragma unroll
           for (int i = 0; i < 8; ++i) packed_runs += static_cast<uint32_t>(block_spread(static_cast<int>((i < 4 ? counts.x : counts.y) >> (8 * (i & 3)) & 255u)));
@@ -1091,8 +1093,8 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
 #pragma unroll
             for (int r = 0; r < kBlockRounds; ++r) {
               const bool live = r == 0 || 16u * r < nj;
-              const uint32_t a = (at + values + (live ? 16u * r : 0u)) & 0x3fffu;
-              const uint32_t bf = live ? (at + dense + 16u * r) & 0x3fffu : zeros;
+              const uint32_t a = field(base + pool + (values + (live ? 16u * r : 0u)) * 16u);
+              const uint32_t bf = live ? field(base + pool + (dense + 16u * r) * 16u) : zeros;
               packed[8 * r + j] = a | bf << 16 | (live ? 0x80000000u : 0u);
             }
             values += 8 * nj;
@@ -1270,8 +1272,8 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
               const uint32_t word = packed[8 * r + j];
               const uint32_t pitch_a = (j < 4 ? counts.x : counts.y) >> (8 * (j & 3)) & 255u;
               const uint32_t pitch_b = static_cast<int32_t>(word) < 0 ? packed_runs : 16u;
-              const uint64_t a = static_cast<uint64_t>(pitch_a) << 32 | ((word & 0x3fffu) | 8u << 16);
-              const uint64_t b = static_cast<uint64_t>(pitch_b) << 32 | ((word >> 16 & 0x3fffu) | 8u << 16);
+              const uint64_t a = lab::wg_desc((word & 0x3fffu) << 4, 8, pitch_a);
+              const uint64_t b = lab::wg_desc((word >> 16 & 0x3fffu) << 4, 8, pitch_b);
               lab::wg_bf16_n16_ss_mn(d[8 * slot + j], a, b, w != 0 || r != 0);
             } else if constexpr ((ROLES & kCounted) != 0 && (ROLES & kUniform) != 0) {
               lab::wg_bf16_n16_ss_mn(d[8 * slot + j], made_a[j] + (16u * r < made_n[j] || r == 0 ? 16u * r : 0u),
