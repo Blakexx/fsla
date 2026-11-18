@@ -1727,6 +1727,7 @@
   {"doc": "docs/lab/wgmma_width.md", "pinned_at": "f0311efc9da1", "reviewed": true, "sha256": "", "target": "measure/lab/results/wgmma_width/sm_90a.json"},
   {"doc": "docs/measurement.md", "pinned_at": "6649fa06b870", "reviewed": true, "sha256": "0f22bfa57e50d0e8", "target": "docs/build.md#kernel-identity"},
   {"doc": "docs/measurement.md", "pinned_at": "31958c975d8a", "reviewed": true, "sha256": "", "target": "docs/internals/DELETIONS.md"},
+  {"doc": "docs/measurement.md", "pinned_at": "ad670ccf7893", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
   {"doc": "docs/measurement.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "", "target": "docs/internals/tools/pipe_counters.md"},
   {"doc": "docs/measurement.md", "pinned_at": "28a71d16a5ab", "reviewed": true, "sha256": "", "target": "docs/internals/tools/realized_support.md"},
   {"doc": "docs/measurement.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "", "target": "docs/internals/tools/stall_census.md"},

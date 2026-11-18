@@ -53,6 +53,46 @@ Not a checklist: the requirements a target holds and the runner's setup do each 
 | extension identity | `import rola` must resolve inside the entry's own checkout, or the arm is refused: a venv that names another checkout (an editable install in a shared venv, or another checkout's own venv) otherwise answers with that tree's kernel while the record carries this tree's commit. |
 | tree identity | every stored sample carries each checkout's commit and the sha256 of its tracked diff; a dirty tree is stamped, not refused. |
 
+## The host a measurement runs on
+
+The local card is small by design (Blake, 2026-08-01: "ITS OK TO MEASURE, JUST DONT TAKE DOWN MY GPU"): tests, gates,
+correctness benches and micro-probes, sized to fit it. Big runs and the results that are published are taken on a
+rented card; a cell that cannot honestly fit locally goes to the rental, with per-token latency extrapolated from the
+cells that do.
+
+* **A session's whole member set fits the card, with headroom.** A session sets up every entry before timing and holds
+  them all resident at once, each in its checkout's entry worker, so what must fit is every arm on every cell of the
+  group plus the reference's. The card is shared with the host's display, and a near-full one pages and corrupts every
+  time in the session without a message. Size a local cell at scale smaller (fewer heads, or a group with one RoLA
+  cell), estimate each cell's peak footprint on paper before launch, and keep
+  `torch.cuda.set_per_process_memory_fraction` as the backstop.
+* **A row near the card's cap is discarded, never caveated.** Under WSL2 the driver falls back to host memory over PCIe
+  when VRAM is exhausted (Blake: "if we measure above the vram size, it spills into system memory and then it is just
+  going to be slower"), so such a row times PCIe, not the kernel. Each entry's peak memory (`timing/memory`) is read
+  beside its times; to fill a grid, raise the CTA count without raising memory (more heads or batch at a shorter `L`).
+* **Scattered reads of a large tensor slow on this WSL host** (measured 2026-10-01). A pass reading rows KBs apart ran
+  normally up to ~256K token-heads (64K x 4, 16K x 16) and an order of magnitude slower per head at twice that, with
+  identical instruction counts, several-fold more warp cycles per issued instruction, memory throughput down, the L2
+  hit rate unchanged and no change under ballast; the threshold tracked the tensor crossing ~32-64 MB, most likely
+  address-translation reach under WDDM (untested on native Linux). Price kernels here at <= 256K token-heads and
+  report per head; a sudden per-head blow-up at a larger call is this, not the kernel. A native host checks it before
+  production, and if it persists there the per-window reads are made page-local.
+* **A foreign consumer of the GPU inflates every number.** Another context time-slices the card and stretches wall
+  time and `clock64` cycles alike (the counter runs while ours is preempted); the clock lock proves the SM clock, not
+  that our context owns the device, and under WSL the consumer is invisible to `nvidia-smi --query-compute-apps`.
+  Before reading an absolute number, and whenever a whole run shifts uniformly, read the idle utilization
+  (`nvidia-smi --query-gpu=utilization.gpu,utilization.memory --format=csv` with nothing launched); not ~0%, stop
+  measuring and tell the owner, who alone can find the host-side consumer. The lab driver's own refusal above 5% is
+  [`internals/tools/lab.md`](internals/tools/lab.md). The 0x4 clock-event flag under sustained dense load (the card's
+  boost power limit) and the constant aperture-size reading are not this: rule out the repository's own processes first.
+* **A heavy target runs planned, held and guarded.** A new target or tool of unknown cost, and every sanitizer, is
+  planned first and its count read; it declares what it holds (a CPU-bound side holds `host_cpu: "all"`, and its
+  worker sizes its threads to the slots held), never an empty hold; it runs detached under a memory guard that sums
+  the session's RSS and kills the run and its workers by pid over a cap, never in the foreground and never under a
+  bare `timeout` (a memory ramp freezes the host before the CPU does; a pattern kill can hit its own shell). A run
+  across checkouts executes the REFERENCE checkout's declarations: the reference carries every budget the surface
+  needs.
+
 ## The three levels, and what a comparison may cross
 
 Blake, 2026-09-15: the LAYER holds the projections and produces the routing (RoLA's analogue of QKV); the OP takes those

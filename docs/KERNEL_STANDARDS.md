@@ -554,6 +554,7 @@ manual steps, and the dev container had drifted for two weeks unnoticed.
    change to the name without a passing record for the new digest. The loop's own inputs (a pin, the lock, `dev.py`)
    are proven by every host that runs the same loop; the container shares only the host's locks, the image's digest
    (read-only, which ratify records) and, under WSL, the driver's libraries.
+4. STABLE BEFORE FASTER (Blake, 2026-09-13: "We should get the package, build, devloop, measure system stable before optimizing kernel. A standard process makes everything easier."): a broken or slow build, dev loop or measurement system is fixed before the next kernel optimization, and a toolchain move lands before more baselines accumulate.
 
 ## §24 — TWO TIERS: DECIDE COARSELY, BURST STATICALLY (law, 2026-09-17, from the fold's and readout's forms)
 
@@ -998,6 +999,12 @@ gated, and an instrument's missing target is a red.
 7. A/B IS THE DECLARED SUITE: two builds are compared only in one interleaved, clock-locked session -- rola-bench's
    suite with the baseline as a reference checkout, pruned to the sessions (`rola-bench`) -- or by ncu's cycles of one
    launch each; times from separate unlocked runs are never compared.
+8. A PHASE'S HEAD IS LOADED BY HAND IN THE PREVIOUS PHASE'S TAIL, AND LOCKSTEP WARPS CANNOT BE REORDERED SHORT: an
+   `ops::opaque` value and a volatile re-read stop ptxas's hoisting (it cannot hoist one phase early without hoisting
+   across the whole loop), and a full `__syncthreads` is a fence no load moves across; so the next phase's head is
+   loaded in the current phase's tail where register headroom is, the opaque fence below the prefetch, named barriers
+   for warp subsets. Reordering work around a barrier cannot shorten warps that all do the same work: the critical path
+   is unchanged (measured 2026-10-31), so it is priced before work moves across a rendezvous.
 ENFORCED: items 3, 4 and 5 by the tools named; the SASS gate runs inside every build (the library's gate action), so
 an under-line step fails the build. Item 2's predictions are a kernel's design's to state, and its ledger check is red
 until they exist.

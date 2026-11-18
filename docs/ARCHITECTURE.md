@@ -102,6 +102,16 @@ mechanism"); a variant checked against a reference that shares its assumption pr
 `N` is invariant across the shapes; what the shape tunes is the routing projection's cost, the sum of the widths a side
 -- factoring makes the routing cheap, not the state, which is still `N` leaves.
 
+**The routing logits are the head's q/k, and a cost lever is depth or width.** RoLA has no q/k apart from them: each
+column of a head's projection scores the hidden state against one digit's weight vector, so a head projects the sum of
+both sides' level widths (a tied level counted once) plus `d_v` columns for the product of the widths in leaves. A
+cheaper projection is a narrower level or more levels, priced in the model's own declared knobs (level count, widths,
+tied levels, the grouped write side), never a special projection form: a codebook or a low-rank factor is today's matrix
+under a rank cap (Blake, 2026-10-18). Every kernel takes depth 1-4: `D` may be a runtime value, and WHICH level is
+addressed is compile-time (`uniform_switch` or a guarded `static_for`), never a runtime index (Blake, 2026-10-18). At
+matched density the carry's work is the same at every depth, so depth's price is the producer's columns and the model's
+quality.
+
 ---
 
 ## 3. The state
