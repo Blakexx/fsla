@@ -516,6 +516,18 @@ session becomes a permanent step of it the same day; a node that cannot decide t
 read for (two mechanisms fit the same numbers) is the signal to add the node that splits them, and
 until that node exists the question is OPEN, not answered by the likelier story.
 
+## <a id="stepped"></a>§22 addendum 2 (Blake, 2026-11-17): THE KERNEL IS STEPPED THROUGH
+"the most important thing is an actually valid timeline or simulation of the kernel, so we can basically step through
+it like a debugger. the most important thing for agentic development, especially a hill climb, is having an actual
+actionable feedback loop the agent can read and use to decide what to do next."
+Consequence: a kernel's TIMELINE -- each warp's instructions on its multiprocessor's clock, what each waits on and
+what releases it, the roles beside one another -- is the instrument every change to a composed kernel is read by, and
+the first thing built for a kernel family that lacks one. It is MEASURED from the device, and PREDICTED by a model
+that reproduces the measured timelines of the forms already run (§23 addendum 2: before it reads a new form; one
+point is not validation). A floor or a prediction is quoted from that model, never from a unit's rate measured alone:
+a per-unit bound says what no form can beat, not what a form reaches. Until a family has its timeline, work on its
+composition stops at the instrument (§32.2: a miss stops).
+
 ## <a id="s23"></a>§23 — THE DEV ENVIRONMENT IS ONE SYSTEM (law, 2026-09-12, from Blake's "one unified dev config ... everything reads that one file", "consolidate everything into one dev env init script, and also ensure docker stays maintained")
 A tree that measures itself is only as reproducible as the machine it runs on. Before this law, 26 environment variables,
 three per-machine files and fourteen hardcoded paths decided that machine, set by five scattered scripts and a page of
