@@ -63,7 +63,8 @@ record: it imports `measure/lab/pages/<name>.py` and calls its `write(root, inst
 experiment with no page module is an error. A page's measured section is GENERATED, never typed: a figure changes by
 a new record and a `page` run, and `LABEL` (the rented box's id) only words the card's line. OWED: only the carry's
 and the gather's pages have their modules; every other page's typed section stands as recorded and is not edited by
-hand -- its module is written with its experiment's next record.
+hand -- its module is written with its experiment's next record. A row a page names and its record lacks is refused
+by name: the generators' one lookup, `measure/lab/pages/_record.py`.
 `ledger <name> --packed <binary> --dump <csv> [--dump ...] --arch sm_90a --per <n>` reads a CARRIED ledger: the
 SourceCounters dumps a rented box made of `lab pack`'s binary (`ncu --section SourceCounters --page source
 --print-source sass --csv`, a kernel's launch after the first `--skip` of them, one file a kernel named

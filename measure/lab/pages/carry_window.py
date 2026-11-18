@@ -17,10 +17,12 @@ import json
 import pathlib
 import re
 
+from _record import Record
+
 
 def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     j = json.loads((root / "measure/lab/results/carry_window/sm_90a.json").read_text())
-    R = {r["name"]: r["median"] for r in j["results"]}
+    R = Record({r["name"]: r["median"] for r in j["results"]})
     # a role's steps as the page reads them: their issue and their wait together (the record holds the two apart),
     # a warpgroup's first warp's the same; the wait alone is kept under the site's name with " (wait)"
     _FW = ", its warpgroup's first warp"

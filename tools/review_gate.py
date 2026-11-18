@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE REVIEW GATE: a commit, a branch's range or the staged diff reviewed by an LLM against the repository's standards
 -- docs/CONSTITUTION.md and docs/KERNEL_STANDARDS.md -- every finding citing the rule it breaks and the changed line it
-breaks it at. ADVISORY (Blake, 2026-11-06): it records and prints, it never refuses a commit.
+breaks it at. A review runs after its commit and never slows one; a landed review's `block` finding refuses the NEXT
+commit until its message answers it (`--unanswered`, run by tools/git-hooks/commit-msg; Blake, 2026-11-17).
 
     bazel run //tools:review_gate                                    # HEAD
     bazel run //tools:review_gate -- 4d9a3210                        # one commit
@@ -22,6 +23,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import time
@@ -146,6 +148,36 @@ def review(rid: str, text: str, model: str) -> dict:
     return report
 
 
+#: an answer to a block finding, in a commit's message: the finding by its commit and its number among that report's blocks
+TRAILER = re.compile(r"^Review-(?:Fix|Override): ([0-9a-f]{7,40}):(\d+) (?:\S+(?: \S+){2,})", re.M)
+HOOK = "tools/git-hooks/commit-msg"
+WINDOW = 30
+
+
+def open_blocks(commits: list[tuple[str, str]], reports: dict[str, dict], message: str) -> list[tuple[str, int, dict]]:
+    """The block findings nothing answers: `commits` newest first as (sha, message), `reports` the landed reviews by
+    sha, `message` the commit being made. A finding is answered by a trailer in any message after its commit."""
+    later, out = message, []
+    for sha, body in commits:
+        found = reports.get(sha) or {}
+        answered = {int(n) for s, n in TRAILER.findall(later) if sha.startswith(s)}
+        blocks = [f for f in found.get("findings", []) if f["severity"] == "block"] if found.get("ok") else []
+        out += [(sha, i, f) for i, f in enumerate(blocks, 1) if i not in answered]
+        later += "\n" + body
+    return out
+
+
+def unanswered(message: str) -> list[tuple[str, int, dict]]:
+    """`open_blocks` of the branch's last `WINDOW` commits made since the commit hook entered the tree."""
+    born = git("log", "--diff-filter=A", "--format=%H", "--", HOOK).split()
+    if not born:
+        return []
+    log = git("log", f"--max-count={WINDOW}", "--format=%H%x00%B%x01", f"{born[-1]}~1..HEAD")
+    commits = [tuple(c.strip("\n").split("\x00", 1)) for c in log.split("\x01") if c.strip()]
+    reports = {sha: json.loads(p.read_text()) for sha, _ in commits if (p := store() / f"{sha}.json").exists()}
+    return open_blocks(commits, reports, "\n".join(ln for ln in message.splitlines() if not ln.startswith("#")))
+
+
 def render(report: dict) -> str:
     head = (f"review {report['id'][:12]} ({report['model']}, {report['seconds']} s, ${report.get('cost_usd') or 0:.2f})"
             f": {'' if report['ok'] else 'FAILED -- '}{report.get('summary', '')}")
@@ -165,8 +197,18 @@ def main() -> int:
     ap.add_argument("--staged", action="store_true")
     ap.add_argument("--model", default="opus")
     ap.add_argument("--show", type=int, metavar="N")
+    ap.add_argument("--unanswered", metavar="MESSAGE_FILE", help="refuse while a landed review's block is unanswered")
     args = ap.parse_args()
 
+    if args.unanswered is not None:
+        found = unanswered(Path(args.unanswered).read_text())
+        for sha, n, f in found:
+            print(f"BLOCK {sha[:10]}:{n} {f['rule'][:80]} -- {f['file']}:{f['line']}: {f['claim'][:300]}")
+        if found:
+            print("review gate: refusing -- answer each block above in this commit's message, one trailer each: "
+                  "`Review-Fix: <sha>:<n> <what the fix is>` or `Review-Override: <sha>:<n> <the rule and why the "
+                  "finding is wrong>` (docs/internals/tools/review_gate.md#blocking)")
+        return 1 if found else 0
     if args.show is not None:
         reports = sorted(store().glob("*.json"), key=lambda p: p.stat().st_mtime)[-args.show:]
         for p in reports:

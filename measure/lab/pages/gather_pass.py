@@ -13,21 +13,13 @@ from __future__ import annotations
 import json
 import pathlib
 
-
-class _Record(dict):
-    """The record's rows by name; a row the record lacks is refused by name."""
-
-    def __missing__(self, name):
-        raise SystemExit(
-            f"lab page gather_pass: the record holds no row {name!r} -- the page names a row of the experiment "
-            "that has not been run and recorded"
-        )
+from _record import Record
 
 
 def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     inst = instance
     d = json.loads((root / "measure/lab/results/gather_pass/sm_90a.json").read_text())
-    R = _Record({r["name"]: r["median"] for r in d["results"]})
+    R = Record({r["name"]: r["median"] for r in d["results"]})
 
     def g(n, f="{:,.0f}"):
         return f.format(R[n])

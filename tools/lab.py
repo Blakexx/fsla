@@ -615,6 +615,7 @@ def page(name: str, instance: str) -> int:
     if not script.exists():
         print(f"lab: no page generator for {name!r}: `measure/lab/pages/{name}.py` does not exist")
         return 1
+    sys.path.insert(0, str(script.parent))  #: the generators' one lookup, `_record.py`, is beside them
     spec = importlib.util.spec_from_file_location(f"{name}_page", script)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

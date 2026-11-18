@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Copyright 2026 Blake Bottum
+# SPDX-License-Identifier: Apache-2.0
+#
+# A REVIEW'S BLOCK STOPS THE NEXT COMMIT (Blake, 2026-11-17): a `block` finding of a landed review of one of the
+# branch's recent commits refuses this commit until its message answers it -- `Review-Fix: <sha>:<n> <what the fix is>`
+# or `Review-Override: <sha>:<n> <the rule and why the finding is wrong>`. A review that has not landed refuses
+# nothing: the pipeline stands. docs/internals/tools/review_gate.md#blocking
+set -euo pipefail
+git_dir="$(git rev-parse --git-dir)"
+{ [ -d "$git_dir/rebase-merge" ] || [ -d "$git_dir/rebase-apply" ]; } && exit 0
+exec bazel run --noshow_progress --ui_event_filters=-info //tools:review_gate -- --unanswered "$(realpath "$1")"

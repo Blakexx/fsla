@@ -33,10 +33,16 @@ each report is read when it lands, and its findings go into the next commit afte
 words. A review may trail a commit or two; a push to the default branch, which publishes (CI mirrors it to the public
 repository, `.github/workflows/mirror.yml`), waits until every review of its commits has landed and been read.
 
-ADVISORY: `tools/git-hooks/post-commit` starts a review of `HEAD` detached after every commit, so a commit is neither
-slowed nor refused; it is skipped mid-rebase or without the `claude` CLI, and it runs from
+AFTER THE COMMIT: `tools/git-hooks/post-commit` starts a review of `HEAD` detached after every commit, so no commit is
+slowed by its own review; it is skipped mid-rebase or without the `claude` CLI, and it runs from
 the checkout's own venv (git's rola.venv), saying so and skipping when that names none (`bazel run //:dev_env`). The first review
-(Opus, the carve planner's commit 4fbcf920) took 236 s and $1.65 and named two fair warnings. Blocking, when the
-advisory period's false positives are known, keeps the pipeline: no commit waits on its review, and the push to the
-default branch is what is refused while one of its commits has a cited `block` finding no later commit answers, by a
-fix or by a `Review-Override:` trailer naming the rule and the reason -- so `--no-verify` is never the way out.
+(Opus, the carve planner's commit 4fbcf920) took 236 s and $1.65 and named two fair warnings.
+
+<a id="blocking"></a>A BLOCK STOPS THE NEXT COMMIT (Blake, 2026-11-17): the pipeline stands -- no commit waits on its own
+review -- and `tools/git-hooks/commit-msg` (`review_gate --unanswered <message file>`) refuses a commit while a landed
+review of one of the branch's last 30 commits holds a `block` finding that no later message answers. An answer is a
+trailer naming the finding by its commit and its number among that report's blocks, with words: `Review-Fix: <sha>:<n>
+<what the fix is>` for a finding fixed, in this commit or an earlier one; `Review-Override: <sha>:<n> <the rule and why
+the finding is wrong>` for one disputed. The refusal prints each open finding with its `<sha>:<n>`. A `warn` stays
+advisory. The reviews read are those of commits made since the hook entered the tree; `--no-verify` is never the way
+out.
