@@ -278,9 +278,15 @@ its unclocked row with every warp's timeline stamped (`lab trace`; the traces at
 rola 99807df0's; the full grid's are rola 44e2597c's; at ONE CTA, `sm_90a.blocks1.json` and `sm_90a.blocks1.trace/`, whose own section THE LAUNCH'S EDGES is below. `kFine` ALONE is an EDGES row, `, the launch's two edges stamped`: the plain kernel with its two edges and nothing else stamped). The figures here are rounded: a session moves each by a few
 cycles, the record holds them. Measured on an H100 SXM (Nebius): A FINE TRACE (every wait, arrival and issue beside
 the phases' starts) costs the first three some 15%, 25% and 22% of their windows and the own-stream row 2%, so its
-cycles are read for structure; A DETAIL ROW (`, the waits on the tile groups read stamped`: the kernel `window_detail`, the coarse row's body with one
-group of waits and arrivals kept -- the folds' waits on a tile group read and the readout's arrivals at it) spends a
-stamp budget on one question; NOT YET MEASURED. A COARSE TRACE (a phase's start and the launch's two edges, each warp's entry at the
+cycles are read for structure; A DETAIL ROW (the kernel `window_detail`: the coarse row's body with ONE group of waits and arrivals kept) spends a
+stamp budget on one question, and four of them are every wait between the own-stream row's roles. At one CTA
+(`sm_90a.blocks1.json`, the experiment at 4094bdcf; `bazel run //tools:lab -- trace carry_window` reads the rows'
+records) they cost 4.9% to 7.6% of the plain window where the coarse row costs 3.6%, and they give: a fold warp
+waits 555 to 592 cycles a window on its tile groups read (a tenth of the window); a readout warp 1,153 on the tile
+groups published (a fifth) and 500 on the panels drained; a drain warp 1,380 on the panels filled (a quarter). THE
+FINE ROW HAD EACH WRONG, in both directions (430 for the readout's wait on the folds, some 1,400 for the folds' on the
+readout, 3,664 for the drain's): its stamps slow the readout most. A role's waits on its own steps and on its copies
+landing are in none of the four groups. A COARSE TRACE (a phase's start and the launch's two edges, each warp's entry at the
 kernel's top and its exit at its role's end, on both clocks: the rows `, every warp's phases stamped`; a fine row holds no
 edges, its kernels being at their registers' limit) costs
 them 3.0%, 5.5% and 2.2% and the own-stream row nothing a session resolves, so its times are the kernel's to within
@@ -902,15 +908,15 @@ WHAT IT SHOWS.
 - THE COUNTERS: this record's run read none; the phase ledger below holds the windows' counts.
 
 THE LAUNCH'S EDGES (one CTA, `sm_90a.blocks1.json` and `sm_90a.blocks1.trace/`, the experiment at
-30ae6266, 7 repetitions; the row whose name with `, the launch's two edges stamped` exists, its plain
+4094bdcf, 7 repetitions; the row whose name with `, the launch's two edges stamped` exists, its plain
 and coarse twins by its name with that suffix removed and replaced): each warp marks its entry at the kernel's top and its exit at its role's end, on both clocks.
-- THE WINDOW, cycles a window a CTA: the plain row's 5,307; the edges row's 5,299, the same as the plain row's
-  (-9 cycles); the coarse row's (its phases' starts and the edges) 5,482, 3.3% over the plain row's
-  (+175 cycles).
+- THE WINDOW, cycles a window a CTA: the plain row's 5,288; the edges row's 5,300, the same as the plain row's
+  (+12 cycles); the coarse row's (its phases' starts and the edges) 5,479, 3.6% over the plain row's
+  (+192 cycles).
 - THE LAUNCH, CTA 0's, from the trace (the first warp's entry to the last warp's exit): the edges row's
-  341,577 cycles, 197,792 ns, 1,727.0 cycles a microsecond; the coarse row's 352,689 cycles,
-  203,904 ns, 1,729.7 cycles a microsecond. The warps enter within 40 (the coarse row's: 47) cycles
-  and exit within 994 (1,622).
+  340,901 cycles, 198,272 ns, 1,719.4 cycles a microsecond; the coarse row's 355,725 cycles,
+  206,336 ns, 1,724.0 cycles a microsecond. The warps enter within 40 (the coarse row's: 47) cycles
+  and exit within 1,040 (1,409).
 
 Record: `measure/lab/results/carry_window/sm_90a.json` (and, at one CTA with the edges row, `sm_90a.blocks1.json` and its trace `sm_90a.blocks1.trace/`); the phase ledger's dumps:
 `measure/lab/results/carry_window/ledger_sm_90a/ledger.json` and the dumps beside it.
