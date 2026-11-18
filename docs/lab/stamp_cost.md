@@ -19,8 +19,8 @@ clock reads (on the wgmma step also the 16 that zero its accumulator) and one a 
 unrolled or a read it dropped is refused: ptxas drops a clock read whose value nothing stores, which is why a clock
 read alone is not a row.
 
-MEASURED (NVIDIA H100 80GB HBM3, 132 SMs, Nebius preemptible VM h2a2bhdk, driver 580.173.02; 2026-11-18, the experiment at
-7531906a; 7 repetitions; every check passed: every kernel's work equal to the host's, every ring
+MEASURED (NVIDIA H100 80GB HBM3, 132 SMs, Nebius preemptible VM 7h1ggrm2, driver 580.173.02; 2026-11-18, the experiment at
+fc918f8a; 7 repetitions; every check passed: every kernel's work equal to the host's, every ring
 form's stamps read back in order; the median): THE CYCLES A STAMP ADDS TO ITS STEP, one stamp a step and two, each the
 form's cycles a step less the plain step's over its stamps a step (the plain step's cycles in the column head; a dash is
 a form the step does not run):
@@ -29,9 +29,9 @@ a form the step does not run):
 |---|---|---|---|---|---|---|
 | the lean stamp: every lane to one entry, no predicate, no wrap | 0.0 | 16.0 | 8.6 | 18.7 | 8.0 | 21.5 |
 | one lane, its predicate held | 1.0 | 5.5 | 9.3 | 8.3 | 17.0 | 9.5 |
-| one lane, its predicate in the offset | 13.0 | 17.0 | 20.1 | 21.7 | 15.0 | 20.1 |
-| the lab's trace | 17.0 | 25.2 | 28.3 | 29.7 | 42.2 | 29.0 |
-| the store alone, no clock read | -- | -- | 8.5 | 2.8 | 17.0 | 8.5 |
+| one lane, its predicate in the offset | 13.0 | 17.0 | 20.1 | 21.6 | 15.0 | 20.1 |
+| the lab's trace | -0.8 | 21.4 | 9.3 | 23.5 | 35.3 | 27.6 |
+| the store alone, no clock read | -- | -- | 8.4 | 2.9 | 17.0 | 8.5 |
 
 WHAT IT DECIDES.
 - ONE STAMP A STEP COSTS A WAITING STEP NOTHING MEASURABLE (0.0 to 1.0 cycles on 96.3, the lean stamp and the held
@@ -43,7 +43,7 @@ WHAT IT DECIDES.
   costs about twice its first -- its stamp at two a step is 2.2 times its stamp at one on the chained step and
   2.7 times on the independent step. NOT ISOLATED: read as two 32-lane stores a trip.
 - THE FOLDED PREDICATE AND THE LAB'S TRACE ARE NEVER THE CHEAPEST of the forms that read the clock: the folded
-  predicate is 13.0, 20.1 and 15.0 at one a step, the trace 17.0, 28.3 and 42.2.
+  predicate is 13.0, 20.1 and 15.0 at one a step, the trace -0.8, 9.3 and 35.3.
 - AS COMPILED, a stamp's cost on a step bound by issue is its added instructions at about two cycles each for a warp
   alone: on the independent step (29.3 cycles plain, eight operations) the lean stamp adds 8.0 cycles and the
   store alone 17.0.

@@ -74,8 +74,8 @@ struct WarpMark {
 
 //: A WARP'S TIMELINE: stamps -- the SM's clock's low word beside an event's, its kind and its site -- written by the
 //: warp's first lane, one predicated store a stamp to the warp's row in global memory, the row's head its count and
-//: the CTA's shared base. A stamp is a clock read, its predicate and one store: the form `stamp_cost` measured
-//: cheapest where stamps fall close together. `ON` false: nothing (docs/internals/tools/lab.md#trace)
+//: the CTA's shared base. A stamp is a clock read, its predicate and one store, priced a stamp by `stamp_cost` as the
+//: lab's trace. `ON` false: nothing (docs/internals/tools/lab.md#trace)
 template <bool ON>
 struct Trace {
   //: a warp's stamps, and its row's words: a line of head, then the stamps

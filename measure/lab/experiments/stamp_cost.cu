@@ -14,7 +14,7 @@
 // -- the fence, one wgmma from held A and a held descriptor, the commit and the wait; or four dependent operations,
 // each a shared load of the table at an address its predecessor computed -- then its second stamp. No load is a stage
 // ahead of its use: the chained step is its own latency, and the independent step's eight values wait on nothing. Live: the accumulator (32 registers a thread), A (4),
-// the descriptor, the chain's value, and the form's own -- a ring offset, a held predicate, or the trace's five.
+// the descriptor, the chain's value, and the form's own -- a ring offset, a held predicate, or the trace's row, count and predicate.
 // see docs/internals/tools/lab.md#stamp-cost
 #include "lab.cuh"
 
@@ -249,7 +249,7 @@ int main(int argc, char** argv) {
         if (form == kStoreAlone && work_kind == 0) continue;
         const std::string k = lab::kernel("cost", {form, per, work_kind});
         b.expect(k, "HGMMA", "==", work_kind == 0 ? 1 : 0);
-        //: the trace's line of 32 stamps is a global store inside the step: the form under test
+        //: the trace's stamp is a global store inside the step: the form under test
         if (form == kTrace && work_kind == 0) b.expect(k, "STEP_GLOBAL", ">=", 0);
         //: a clock read a stamp site and no more: a loop the compiler unrolled or a read it dropped is refused
         b.expect(k, "CS2R", form == kTrace ? ">=" : "==", kPlainCs2r[work_kind] + (form == kPlain || form == kStoreAlone ? 0 : per));

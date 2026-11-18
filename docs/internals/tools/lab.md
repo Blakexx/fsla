@@ -132,7 +132,7 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
 * `lab::Trace<ON>` — a warp's timeline (`lab trace`): `stamp(kind, site)` and `at(kind, bar)` (a barrier's site its
   shared address over 8, read against the CTA's base `close(base)` stores), a stamp the SM's clock's low word beside an
   event's (`lab::TraceKind` and site), written by the warp's first lane, one predicated store a stamp to the warp's row in global memory, with no compiler
-  barrier (a branch on the count would hold its loops' convergence); the form is `stamp_cost`'s
+  barrier (a branch on the count would hold its loops' convergence); priced a stamp by `stamp_cost`
   ([`docs/lab/stamp_cost.md`](../../lab/stamp_cost.md)). Its cost is each traced row's window beside its untraced twin's
   (`docs/lab/carry_window.md`, its traced rows); `Bench::trace` prints chosen CTAs' rows as one line with the warps' roles and the
   sites' names.
