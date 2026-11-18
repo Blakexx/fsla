@@ -5,10 +5,10 @@
 // (a step bound by its chain's latency), or eight independent integer operations (a step bound by issue); the step
 // runs plain, then with one or two stamps a step in four forms -- the lab's own
 // `Trace` (a stamp a lane, a global line every 32); a ring in shared memory written by one lane under a held
-// predicate; the same with the predicate folded into the ring offset's low bit (one register); and every lane
-// storing its own entry by a plain store the compiler may place; and the one-lane stamp parted into its clock read
-// alone and its store alone; and the leanest stamp -- every lane storing the same words to ONE entry, no predicate
-// and no wrap (a ring sized for its run). A stamp's cost is a form's cycles a step less the
+// predicate; the same with the predicate folded into the ring offset's low bit (one register); the one-lane stamp's
+// store alone, on the integer steps; and the leanest stamp -- every lane storing the same words to ONE entry, no
+// predicate and no wrap (a ring sized for its run). A clock read alone is not a row: ptxas drops a clock read whose
+// value nothing stores, and unrolls the loop it leaves. A stamp's cost is a form's cycles a step less the
 // plain step's, over its stamps a step. Every kernel's work is checked against the host's, and every ring form's
 // stamps are read back: their ids in order, their clocks not decreasing.
 // TIMELINE: one warpgroup, no other role. A step: its first stamp (the clock read, then its store), the step's work
@@ -26,12 +26,13 @@ constexpr int kTileA = 0, kTileB = 2048, kTable = 4096, kTableWords = 256;
 //: the rings: a warp's is `kWarpRing` bytes at a multiple of it, so an offset wraps inside its own ring by a mask
 constexpr int kRing = 8192, kWarpRing = 8192, kRingBytes = kWarps * kWarpRing, kSmem = kRing + kRingBytes;
 constexpr uint32_t kMask = kWarpRing - 1;
-//: an entry's bytes: one elected lane's (clock, id), or every lane's side by side (two wavefronts a stamp)
-constexpr int kEntry = 8, kWarpEntry = 32 * kEntry;
-//: the last two part a stamp: its clock read with no store, and its store (a constant for the clock) with no read
-enum Form { kPlain = 0, kTrace = 1, kHeldPredicate = 2, kFoldedPredicate = 3, kEveryLane = 4, kClockAlone = 5, kStoreAlone = 6, kLean = 7 };
-//: the clock reads of a plain kernel (its span's own), by step: a form's kernel holds these and one a stamp site
-constexpr int kSpanClocks[3] = {18, 2, 2};
+//: an entry's bytes: one lane's (clock, id)
+constexpr int kEntry = 8;
+//: kStoreAlone is the one-lane stamp's store (a constant for the clock) with no read
+enum Form { kPlain = 0, kTrace = 1, kHeldPredicate = 2, kFoldedPredicate = 3, kStoreAlone = 4, kLean = 5 };
+//: the CS2R a plain kernel holds, by step: its span's two clock reads, and on the wgmma step 16 more -- the zeroing
+//: of its 32 accumulator registers, a CS2R of SRZ a pair, before the loop. A form's kernel holds these and one a stamp site
+constexpr int kPlainCs2r[3] = {18, 2, 2};
 
 constexpr int read_a(int m, int k) { return (m + k) % 7 - 3; }
 constexpr int read_b(int k, int n) { return (k + 2 * n) % 3 - 1; }
@@ -59,38 +60,25 @@ struct Stamps {
       mine = lane == 0;
     }
     if constexpr (FORM == kFoldedPredicate) off = warp * kWarpRing | (lane == 0 ? 1u : 0u);
-    if constexpr (FORM == kEveryLane) off = warp * kWarpRing + lane * kEntry;
     if constexpr (FORM == kLean) off = warp * kWarpRing;
   }
 
-  __device__ __forceinline__ void stamp(uint8_t* ring, uint32_t ring_at, uint32_t id) {
+  __device__ __forceinline__ void stamp(uint32_t ring_at, uint32_t id) {
     if constexpr (FORM == kTrace) trace.stamp(lab::kPhase, id);
-    if constexpr (FORM == kClockAlone) {
-      uint32_t unused;
-      asm volatile("mov.u32 %0, %%clock;" : "=r"(unused));
-      //: the value is consumed, so the read stays in the loop
-      asm volatile("" :: "r"(unused));
-    }
     if constexpr (FORM == kLean) {
       uint32_t now;
       asm volatile("mov.u32 %0, %%clock;" : "=r"(now));
       asm volatile("st.shared.v2.u32 [%0], {%1, %2};" :: "r"(ring_at + off), "r"(now), "r"(id) : "memory");
       off += kEntry;
     }
-    if constexpr (FORM == kHeldPredicate || FORM == kFoldedPredicate || FORM == kEveryLane || FORM == kStoreAlone) {
+    if constexpr (FORM == kHeldPredicate || FORM == kFoldedPredicate || FORM == kStoreAlone) {
       uint32_t now = 0;
       if constexpr (FORM != kStoreAlone) asm volatile("mov.u32 %0, %%clock;" : "=r"(now));
-      if constexpr (FORM == kEveryLane) {
-        //: a plain store: nothing pins it, the compiler places it
-        *reinterpret_cast<uint64_t*>(ring + off) = static_cast<uint64_t>(id) << 32 | now;
-        off = (off & ~kMask) | ((off + kWarpEntry) & kMask);
-      } else {
-        const uint32_t on = FORM == kFoldedPredicate ? off & 1u : mine;
-        const uint32_t at = ring_at + (off & ~7u);
-        asm volatile("{\n .reg .pred p;\n setp.ne.b32 p, %3, 0;\n @p st.shared.v2.u32 [%0], {%1, %2};\n}"
-                     :: "r"(at), "r"(now), "r"(id), "r"(on) : "memory");
-        off = (off & ~kMask) | ((off + kEntry) & kMask);
-      }
+      const uint32_t on = FORM == kFoldedPredicate ? off & 1u : mine;
+      const uint32_t at = ring_at + (off & ~7u);
+      asm volatile("{\n .reg .pred p;\n setp.ne.b32 p, %3, 0;\n @p st.shared.v2.u32 [%0], {%1, %2};\n}"
+                   :: "r"(at), "r"(now), "r"(id), "r"(on) : "memory");
+      off = (off & ~kMask) | ((off + kEntry) & kMask);
     }
   }
 
@@ -137,7 +125,7 @@ __global__ void __launch_bounds__(kThreads, 1) cost(long long* times, uint32_t* 
   clock.start();
 #pragma unroll 1
   for (int it = 0; it < steps; ++it) {
-    if constexpr (PER >= 1) stamps.stamp(smem + kRing, base + kRing, 1);
+    if constexpr (PER >= 1) stamps.stamp(base + kRing, 1);
     if constexpr (WORK == 0) {
       lab::wg_fence();
       lab::wg_bf16_n64_rs(d, a, db);
@@ -150,7 +138,7 @@ __global__ void __launch_bounds__(kThreads, 1) cost(long long* times, uint32_t* 
 #pragma unroll
       for (int j = 0; j < kWide; ++j) y[j] = next(y[j], static_cast<uint32_t>(j));
     }
-    if constexpr (PER >= 2) stamps.stamp(smem + kRing, base + kRing, 2);
+    if constexpr (PER >= 2) stamps.stamp(base + kRing, 2);
   }
 #pragma unroll
   for (int i = 0; i < 32; ++i) lab::wg_hold(d[i]);
@@ -176,8 +164,7 @@ void run(lab::Bench& b, uint32_t* out, unsigned long long* rows, uint32_t* rings
   //: the timed run's stamps fit a warp's ring, which the lean form never wraps: 2 stamps x 512 steps x 8 bytes
   constexpr int kCheckSteps = 8, kSteps = kWarpRing / (2 * kEntry);
   static const char* const kForms[] = {"plain", "the lab's trace", "a ring, one lane, its predicate held",
-                                       "a ring, one lane, its predicate in the offset", "a ring, every lane, a plain store",
-                                       "the clock read alone", "the ring store alone",
+                                       "a ring, one lane, its predicate in the offset", "the ring store alone",
                                        "a ring, every lane to one entry, no wrap"};
   const std::string name = std::string(WORK == 0 ? "a wgmma step" : WORK == 1 ? "a chained step" : "an independent step") + ", " + kForms[FORM]
                            + (PER == 0 ? "" : PER == 1 ? ", one stamp a step" : ", two stamps a step");
@@ -214,12 +201,12 @@ void run(lab::Bench& b, uint32_t* out, unsigned long long* rows, uint32_t* rings
       }
     }
     //: a ring form's stamps of each warp (its lane 0's), in order: the ids as stamped, the clocks not decreasing
-    if (FORM == kHeldPredicate || FORM == kFoldedPredicate || FORM == kEveryLane || FORM == kStoreAlone || FORM == kLean)
+    if (FORM == kHeldPredicate || FORM == kFoldedPredicate || FORM == kStoreAlone || FORM == kLean)
       for (int warp = 0; warp < kWarps; ++warp) {
         uint32_t before = 0;
         for (int e = 0; e < PER * kCheckSteps; ++e, ++stamps) {
           const size_t at = static_cast<size_t>(blk) * (kRingBytes / 4)
-                            + (warp * kWarpRing + e * (FORM == kEveryLane ? kWarpEntry : kEntry)) / 4;
+                            + (warp * kWarpRing + e * kEntry) / 4;
           const uint32_t now = ring[at], id = ring[at + 1];
           bad_stamps += id != static_cast<uint32_t>(e % (PER > 0 ? PER : 1) + 1) || (e > 0 && static_cast<int32_t>(now - before) < 0);
           before = now;
@@ -247,9 +234,7 @@ void work(lab::Bench& b, uint32_t* out, unsigned long long* rows, uint32_t* ring
   run<kFoldedPredicate, 2, WORK>(b, out, rows, rings);
   run<kLean, 1, WORK>(b, out, rows, rings);
   run<kLean, 2, WORK>(b, out, rows, rings);
-  //: NOT RUN, their kernels kept for the reading: ptxas drops a clock read whose value nothing stores (the clock
-  //: read alone, and the every-lane plain store, whose loops then hold no CS2R) and unrolls the loop it leaves --
-  //: neither is a stamp. The store alone runs on the two integer steps.
+  //: the store alone runs on the two integer steps
   if constexpr (WORK != 0) {
     run<kStoreAlone, 1, WORK>(b, out, rows, rings);
     run<kStoreAlone, 2, WORK>(b, out, rows, rings);
@@ -262,13 +247,13 @@ int main(int argc, char** argv) {
   for (int work_kind = 0; work_kind < 3; ++work_kind)
     for (int form = kPlain; form <= kLean; ++form)
       for (int per = form == kPlain ? 0 : 1; per <= (form == kPlain ? 0 : 2); ++per) {
-        if (form == kClockAlone || form == kEveryLane || (form == kStoreAlone && work_kind == 0)) continue;
+        if (form == kStoreAlone && work_kind == 0) continue;
         const std::string k = lab::kernel("cost", {form, per, work_kind});
         b.expect(k, "HGMMA", "==", work_kind == 0 ? 1 : 0);
         //: the trace's line of 32 stamps is a global store inside the step: the form under test
         if (form == kTrace && work_kind == 0) b.expect(k, "STEP_GLOBAL", ">=", 0);
         //: a clock read a stamp site and no more: a loop the compiler unrolled or a read it dropped is refused
-        b.expect(k, "CS2R", form == kTrace ? ">=" : "==", kSpanClocks[work_kind] + (form == kPlain || form == kStoreAlone ? 0 : per));
+        b.expect(k, "CS2R", form == kTrace ? ">=" : "==", kPlainCs2r[work_kind] + (form == kPlain || form == kStoreAlone ? 0 : per));
         b.exempt(k, "a probe of the recorder's own cost: no kernel's step");
       }
   if (b.expect_only) return 0;
