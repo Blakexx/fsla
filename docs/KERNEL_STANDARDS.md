@@ -34,7 +34,9 @@ schedules. These land with the first of them, each red or an owed entry until th
 2. the family's part harness, phase ledger, composer and calibrations (§19, §22);
 3. hopper's rows of the hardware table and of the price list, from its labs (§26, §29.11, §29.14);
 4. every `[COMPILER]` rule's re-check and every `[MACHINE]` rule's run on sm_90a;
-5. the ratified sm_90a manifest (§16).
+5. the ratified sm_90a manifest (§16);
+6. THE FAMILY'S TIMELINE, FIRST OF THESE (§22 addendum 2): the measured timeline of its composed kernel and the model
+   that reproduces it -- until it exists, work on the composition stops at it.
 
 # ROLA KERNEL STANDARDS — how we write CUDA here (draft for Blake's read, 2026-08-26)
 
@@ -960,8 +962,9 @@ gated, and an instrument's missing target is a red.
    half and a wait half), so the composition overlaps by construction, never by a later rebuild. More warps is never
    the overlap mechanism (§5, CONSTITUTION R15): a warp's own steps cover its pipe at the warps a scheduler its
    registers admit.
-2. PREDICT, THEN MEASURE, AND A MISS STOPS: each phase's cycles a warp a window are predicted (its budget line, the
-   pipe model) and written to the budget (`phase_cycles` per cell) before a schedule or composition change is built;
+2. PREDICT, THEN MEASURE, AND A MISS STOPS: each phase's cycles a warp a window are predicted by the family's
+   timeline model (§22 addendum 2: the model that reproduces the measured timelines; a budget line's per-primitive
+   prices bound a phase from below and are not its prediction) and written to the budget (`phase_cycles` per cell) before a schedule or composition change is built;
    the family's phase ledger reds a phase over 1.3x its prediction or without one. A miss stops work on the
    kernel until the price or the model that was wrong is named and corrected (§29.13) -- §22's abandonment rule
    applied to a phase.

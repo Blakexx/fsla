@@ -6,6 +6,10 @@ description: Load when creating, changing or running a lab experiment (measure/l
 
 The method: `docs/internals/tools/lab.md#the-loop`. The law: `docs/KERNEL_STANDARDS.md#s26`.
 
+0. A row of a composed kernel states its prediction before it runs and is read by its timeline
+   (`docs/KERNEL_STANDARDS.md#stepped`; today `bazel run //tools:lab -- trace <name>`,
+   `docs/internals/tools/lab.md#trace`); a prediction that misses stops work on that kernel until what was wrong is
+   named (`docs/KERNEL_STANDARDS.md#s32` item 2).
 1. `bazel run //tools:lab -- list` first: the question may be asked already. One question per experiment, stated in its
    header, with its `TIMELINE:` written before the kernel (`docs/internals/tools/lab.md#hazards`).
 2. Data comes from `<name>.inputs.py`'s `write(directory)`, with a mirror of the kernel in Python that defines its
