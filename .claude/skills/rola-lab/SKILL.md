@@ -29,5 +29,6 @@ The method: `docs/internals/tools/lab.md#the-loop`. The law: `docs/KERNEL_STANDA
    (`docs/internals/tools/lab.md#pack`).
 7. Write its page `docs/lab/<name>.md` (the question, the form, the measured table, what it decides), its row in
    `docs/lab/README.md` and, where a design card tracks it, its MEASURED block (the site's own skill); a page's measured
-   section is generated from its record, `bazel run //tools:lab -- page <name> --instance LABEL`, never typed
+   section is generated from its record by its module `measure/lab/pages/<name>.py` (written with the page where it
+   has none), `bazel run //tools:lab -- page <name> --instance LABEL`, never typed
    (`docs/internals/tools/lab.md#the-loop`); commit with `rola-commit`.

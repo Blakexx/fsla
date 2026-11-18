@@ -999,12 +999,8 @@ gated, and an instrument's missing target is a red.
 7. A/B IS THE DECLARED SUITE: two builds are compared only in one interleaved, clock-locked session -- rola-bench's
    suite with the baseline as a reference checkout, pruned to the sessions (`rola-bench`) -- or by ncu's cycles of one
    launch each; times from separate unlocked runs are never compared.
-8. A PHASE'S HEAD IS LOADED BY HAND IN THE PREVIOUS PHASE'S TAIL, AND LOCKSTEP WARPS CANNOT BE REORDERED SHORT: an
-   `ops::opaque` value and a volatile re-read stop ptxas's hoisting (it cannot hoist one phase early without hoisting
-   across the whole loop), and a full `__syncthreads` is a fence no load moves across; so the next phase's head is
-   loaded in the current phase's tail where register headroom is, the opaque fence below the prefetch, named barriers
-   for warp subsets. Reordering work around a barrier cannot shorten warps that all do the same work: the critical path
-   is unchanged (measured 2026-10-31), so it is priced before work moves across a rendezvous.
+8. WORK MOVED ACROSS A RENDEZVOUS IS PRICED ON THE CRITICAL PATH FIRST: reordering work around a barrier cannot
+   shorten warps that all do the same work, since their critical path is unchanged.
 ENFORCED: items 3, 4 and 5 by the tools named; the SASS gate runs inside every build (the library's gate action), so
 an under-line step fails the build. Item 2's predictions are a kernel's design's to state, and its ledger check is red
 until they exist.

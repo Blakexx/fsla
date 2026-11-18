@@ -60,9 +60,10 @@ a line from its releaser. The traced row's window beside its untraced twin's is 
 `bazel run //tools:lab -- page <name> --instance LABEL` regenerates an experiment's page's measured section from its
 record: it imports `measure/lab/pages/<name>.py` and calls its `write(root, instance)`, which reads
 `measure/lab/results/<name>/<arch>.json` and rewrites the docs that quote it, and prints the files written; an
-experiment with no page module is an error. Where a page has its module (the carry's and the gather's today; the
-other pages' measured sections are typed from their records) its measured section is GENERATED, never typed: a
-figure changes by a new record and a `page` run, and `LABEL` (the rented box's id) only words the card's line.
+experiment with no page module is an error. A page's measured section is GENERATED, never typed: a figure changes by
+a new record and a `page` run, and `LABEL` (the rented box's id) only words the card's line. OWED: only the carry's
+and the gather's pages have their modules; every other page's typed section stands as recorded and is not edited by
+hand -- its module is written with its experiment's next record.
 `ledger <name> --packed <binary> --dump <csv> [--dump ...] --arch sm_90a --per <n>` reads a CARRIED ledger: the
 SourceCounters dumps a rented box made of `lab pack`'s binary (`ncu --section SourceCounters --page source
 --print-source sass --csv`, a kernel's launch after the first `--skip` of them, one file a kernel named

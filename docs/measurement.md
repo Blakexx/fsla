@@ -70,13 +70,6 @@ cells that do.
   when VRAM is exhausted (Blake: "if we measure above the vram size, it spills into system memory and then it is just
   going to be slower"), so such a row times PCIe, not the kernel. Each entry's peak memory (`timing/memory`) is read
   beside its times; to fill a grid, raise the CTA count without raising memory (more heads or batch at a shorter `L`).
-* **Scattered reads of a large tensor slow on this WSL host** (measured 2026-10-01). A pass reading rows KBs apart ran
-  normally up to ~256K token-heads (64K x 4, 16K x 16) and an order of magnitude slower per head at twice that, with
-  identical instruction counts, several-fold more warp cycles per issued instruction, memory throughput down, the L2
-  hit rate unchanged and no change under ballast; the threshold tracked the tensor crossing ~32-64 MB, most likely
-  address-translation reach under WDDM (untested on native Linux). Price kernels here at <= 256K token-heads and
-  report per head; a sudden per-head blow-up at a larger call is this, not the kernel. A native host checks it before
-  production, and if it persists there the per-window reads are made page-local.
 * **A foreign consumer of the GPU inflates every number.** Another context time-slices the card and stretches wall
   time and `clock64` cycles alike (the counter runs while ours is preempted); the clock lock proves the SM clock, not
   that our context owns the device, and under WSL the consumer is invisible to `nvidia-smi --query-compute-apps`.
@@ -85,13 +78,6 @@ cells that do.
   measuring and tell the owner, who alone can find the host-side consumer. The lab driver's own refusal above 5% is
   [`internals/tools/lab.md`](internals/tools/lab.md). The 0x4 clock-event flag under sustained dense load (the card's
   boost power limit) and the constant aperture-size reading are not this: rule out the repository's own processes first.
-* **A heavy target runs planned, held and guarded.** A new target or tool of unknown cost, and every sanitizer, is
-  planned first and its count read; it declares what it holds (a CPU-bound side holds `host_cpu: "all"`, and its
-  worker sizes its threads to the slots held), never an empty hold; it runs detached under a memory guard that sums
-  the session's RSS and kills the run and its workers by pid over a cap, never in the foreground and never under a
-  bare `timeout` (a memory ramp freezes the host before the CPU does; a pattern kill can hit its own shell). A run
-  across checkouts executes the REFERENCE checkout's declarations: the reference carries every budget the surface
-  needs.
 
 ## The three levels, and what a comparison may cross
 
