@@ -3,15 +3,15 @@
 // readout mirrored beside it: what does a window cost a CTA, which role waits on which, and what do the fold's fill
 // and its steps cost apart? And what is the order of a window's entries worth -- placed so the 8 tokens a lane group
 // reads for a step are on 8 bank groups, against token order? METHOD: a CTA an SM of four warpgroups, 512 threads,
-// registers traded by role: TWO FOLD warpgroups at 168 registers, a 16 x 16 box each, its state 16 accumulator sets
-// of 8 in registers; ONE READOUT warpgroup at 104; ONE DRAIN warpgroup of four warps at 72. A window is a box's 256
+// registers traded by role: TWO FOLD warpgroups at 176 registers, a 16 x 16 box each, its state 16 accumulator sets
+// of 8 in registers; ONE READOUT warpgroup at 96; ONE DRAIN warpgroup of four warps at 64. A window is a box's 256
 // entries (16 lists of 8 to 24) and 256 tokens read the pair. The fold's window LANDS by two bulk copies behind one
 // barrier, issued under the last steps of the window before: a TABLE -- an entry's word and sparse byte, a lane's row
 // of the 32 steps' token positions, the lists' counts -- and the window's VALUE LINES, an entry's 8 at its position. A
 // fold thread loads its two entries' dense lines from global memory and expands each by its sparse byte to the two
 // lines of its step's coefficient tile; no value line is moved. A step's A is read by `ldmatrix`, transposed, from the
 // landed lines into registers -- a lane names its token's line -- and its B is its tile, addressed by the step's
-// index; a step is a commit group, `SETS` sets of A held in turn (2, 4 or 8: rows of each). Each fold warpgroup PUBLISHES its state as a bf16
+// index; a step is a commit group, `SETS` sets of A held in turn (2 or 4, rows of each: the fold's registers hold no more). Each fold warpgroup PUBLISHES its state as a bf16
 // image, 16 tiles, a tile group of 4 behind the readout, a line a channel's 8 fold digits. The readout is MIRRORED: a
 // thread expands one (token, box)'s 16 bytes, loaded a pass ahead, to two lines of its digit's coefficient tile in
 // shared memory, the tokens on the step's columns; a pass is 8 digits, two tile groups, 16 steps of 64 channels by 16
@@ -47,7 +47,7 @@ constexpr int kReadAt = 2 * kGroup, kDrainAt = 3 * kGroup;
 //: THE REGISTERS A THREAD. A raise takes what another warpgroup released from the count the kernel is launched
 //: at -- 128 a thread at 512 threads, the SM's whole file: the folds' 40 more each are the 24 fewer of the readout
 //: and the 56 fewer of the drains
-constexpr int kEntryRegs = 128, kFoldRegs = 168, kReadRegs = 104, kDrainRegs = 72;
+constexpr int kEntryRegs = 128, kFoldRegs = 176, kReadRegs = 96, kDrainRegs = 64;
 static_assert(kThreads * kEntryRegs == 65536 && 2 * (kFoldRegs - kEntryRegs) == 2 * kEntryRegs - kReadRegs - kDrainRegs);
 
 //: A POOL SLOT, in lines: a box's pool is two
@@ -790,7 +790,7 @@ int main(int argc, char** argv) {
   //: rows and every stamp
   struct Row { int trace, detail, sets; };
   constexpr Row kRows[] = {{0, 0, 2}, {1, 0, 2}, {2, 0, 2}, {2, kWaitTilesRead, 2}, {2, kWaitTilesReady, 2}, {2, kWaitPanelReady, 2},
-                           {2, kWaitPanelFreed, 2}, {3, 0, 2}, {0, 0, 4}, {2, 0, 4}, {0, 0, 8}, {2, 0, 8}};
+                           {2, kWaitPanelFreed, 2}, {3, 0, 2}, {0, 0, 4}, {2, 0, 4}};
   for (const Row& row : kRows) {
     const std::string k = lab::kernel("carry_token::window", {row.trace, row.detail, row.sets});
     //: the fold's 32 steps, one block, and the readout's 16: two groups of 4 digits, each digit's two steps
@@ -829,7 +829,5 @@ int main(int argc, char** argv) {
   //: and with more sets of A in flight
   run<0, 0, 0, 4>(b, held);
   run<2, 0, 0, 4>(b, held);
-  run<0, 0, 0, 8>(b, held);
-  run<2, 0, 0, 8>(b, held);
   return 0;
 }
