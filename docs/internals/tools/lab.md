@@ -153,7 +153,7 @@ the entries are the lab's own but in three places -- the sites `entry` and `exit
 named `... steps` is a warp's own steps, count 0; a copy's site is released by the copy, its one arrival not stamped, the copy its
 issue, declared by `Record::operation`; a named barrier's arrival is not stamped, declared by `Record::rendezvous` with the skew
 `kRendezvousSkew`, 128 cycles: a named barrier's warps are released by one event and each reads its clock after its
-`bar.sync` returns, so one phase's wait ends differ by the read's lag -- at the carry's one CTA by at most 87 cycles,
+`bar.sync` returns, so one phase's wait ends differ by the read's lag -- in `carry_window`'s one-CTA record (`sm_90a.blocks1.trace/`) by at most 87 cycles,
 median 11, each at least 50 after the phase's last begin; 128 is the next power of two over that, not yet read from a
 full grid's record; any other's count is the warps that arrive at it), and the variant by `Record::variant`.
 
@@ -168,7 +168,9 @@ full grid's record; any other's count is the warps that arrive at it), and the v
 * The operand pieces the kernels use: `ldsm` and `ldsm_t` (`ldmatrix.x4`, `.trans`), `hmul2`, `pack_half2`, `smem`;
   the mbarrier as `ops.cuh` spells it: `mbar_init`, `mbar_arrive`, `mbar_wait` (polled), `mbar_wait_suspended` (sm_90: `try_wait`, the thread may be suspended), `mbar_test` (once).
 * `lab::sink(out, v)` — a fold of everything a thread computed, stored unconditionally.
-* `lab::Trace<ON>` — a warp's timeline (`lab trace`): the lab's switch and its row's head over warpline's cursor, whose
+* `lab::Trace<ON>` — a warp's timeline (`lab trace`; which stamps a row keeps is its experiment's: the carry lab's
+  coarse rows their phases, its fine rows every stamp, and a DETAIL row -- the kernel `window_detail` -- a coarse row's
+  with one named group of waits and arrivals beside them): the lab's switch and its row's head over warpline's cursor, whose
   `stamp` and `mark` are the instructions a stamp is. A `mark` is a stamp on BOTH clocks -- the stamp, then an entry of
   kind `kTime` whose clock word is the nanosecond timer's low word: one moment tied between the cycle counter and time
   (the carry lab's traced rows mark each phase's start, and its coarse rows and its edges row the launch's entry and

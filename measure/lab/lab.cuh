@@ -678,7 +678,7 @@ __device__ __forceinline__ void cluster_add_u64(uint32_t a, long long v) {
 //:    copy (`Record::operation`: one arrival, not stamped, the copy its issue, its `done` the barrier's wait's end), a named
 //:    barrier's (0x8000 to 0xBFFF) arrival is not stamped (the warp's reaching it is its wait's begin: `Record::rendezvous`,
 //:    `kRendezvousSkew`), and any other's count is the warps that arrive at it, one each a phase.
-//: the skew a rendezvous' wait ends are accepted with, in cycles (docs/internals/tools/lab.md#trace)
+//: the skew a rendezvous' wait ends are accepted with, in cycles (docs/internals/tools/lab.md#warpline)
 constexpr uint32_t kRendezvousSkew = 128;
 
 inline std::string trace_record(const std::string& variant, const std::vector<int>& ctas,

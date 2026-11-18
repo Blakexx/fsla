@@ -50,7 +50,9 @@ WINDOW = "phase.window"
 #: the suffixes a traced row's name carries over its untraced twin's: a fine timeline, coarse phases, the launch's edges
 FINE_SUFFIX, COARSE_SUFFIX, EDGES_SUFFIX = (", every warp's timeline stamped", ", every warp's phases stamped",
                                             ", the launch's two edges stamped")
-TRACE_SUFFIXES = (FINE_SUFFIX, COARSE_SUFFIX, EDGES_SUFFIX)
+#: a detail row's own suffix, beside its coarse one: a detail group's stamps kept
+DETAIL_SUFFIXES = (", the waits on the tile groups read stamped",)
+TRACE_SUFFIXES = (FINE_SUFFIX, COARSE_SUFFIX, EDGES_SUFFIX, *DETAIL_SUFFIXES)
 
 
 @dataclass

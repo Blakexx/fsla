@@ -278,7 +278,9 @@ its unclocked row with every warp's timeline stamped (`lab trace`; the traces at
 rola 99807df0's; the full grid's are rola 44e2597c's; at ONE CTA, `sm_90a.blocks1.json` and `sm_90a.blocks1.trace/`, whose own section THE LAUNCH'S EDGES is below. `kFine` ALONE is an EDGES row, `, the launch's two edges stamped`: the plain kernel with its two edges and nothing else stamped). The figures here are rounded: a session moves each by a few
 cycles, the record holds them. Measured on an H100 SXM (Nebius): A FINE TRACE (every wait, arrival and issue beside
 the phases' starts) costs the first three some 15%, 25% and 22% of their windows and the own-stream row 2%, so its
-cycles are read for structure; A COARSE TRACE (a phase's start and the launch's two edges, each warp's entry at the
+cycles are read for structure; A DETAIL ROW (`, the waits on the tile groups read stamped`: the kernel `window_detail`, the coarse row's body with one
+group of waits and arrivals kept -- the folds' waits on a tile group read and the readout's arrivals at it) spends a
+stamp budget on one question; NOT YET MEASURED. A COARSE TRACE (a phase's start and the launch's two edges, each warp's entry at the
 kernel's top and its exit at its role's end, on both clocks: the rows `, every warp's phases stamped`; a fine row holds no
 edges, its kernels being at their registers' limit) costs
 them 3.0%, 5.5% and 2.2% and the own-stream row nothing a session resolves, so its times are the kernel's to within
