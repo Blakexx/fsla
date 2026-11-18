@@ -692,10 +692,9 @@ def keep(name: str, arch: str, device: dict, results: list[dict], table: dict, r
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(body, indent=1) + "\n")
     #: THE TRACES (a traced row's timelines, `lab trace`), beside the record: a directory, a warpline record a traced
-    #: row (`row<i>.json`, in the order the rows ran, the variant's name in the record's `source`)
+    #: row (`row<i>.json`, in the order the rows ran, the record's `variant` its name)
     traces = target.with_name(target.name.replace(".json", ".trace"))
     shutil.rmtree(traces, ignore_errors=True)
-    target.with_name(target.name.replace(".json", ".trace.json")).unlink(missing_ok=True)
     if device.get("_traces"):
         traces.mkdir()
         for i, item in enumerate(device["_traces"]):

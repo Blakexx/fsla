@@ -389,11 +389,10 @@ def page(sections: list[str]) -> str:
 
 
 def findings(rec: wl_record.Record) -> list[str]:
-    """What warpline's `check` finds in a traced row's record, but the row's own: a row with no launch exit (a fine row's
-    kernels are at their registers' limit and hold no entry beside their timeline) leaves its last phase open, which the
-    reader names `region_unclosed`."""
-    exitless = {ln for ln in rec.lanes if wl_record.LAUNCH_END not in {n for _i, n, _t, _p in rec.lane_stamps(ln)}}
-    return [str(f) for f in check.all_findings(rec) if not (f.code == "region_unclosed" and f.lane in exitless)]
+    """What warpline's `check` finds in a traced row's record: every finding refuses it. A row with no launch exit (a fine
+    row's kernels are at their registers' limit and hold no entry beside their timeline) is read by warpline's one rule, its
+    open regions closed at its last stamp and counted as `open_at_end`, which is no finding."""
+    return [str(f) for f in check.all_findings(rec)]
 
 
 def unsound(rows: list[dict]) -> list[str]:
@@ -410,4 +409,11 @@ def load(folder: Path) -> list[tuple[str, wl_record.Record]]:
     """A record's traced rows, `(variant, record)` each, in the order they were run: the directory `<record>.trace`."""
     files = sorted(folder.glob("row*.json"), key=lambda p: int(p.stem.removeprefix("row")))
     recs = [wl_record.load(f) for f in files]
-    return [(rec.source["variant"], rec) for rec in recs]
+    return [(variant_of(rec), rec) for rec in recs]
+
+
+def variant_of(rec: wl_record.Record) -> str:
+    """A record's variant: its own field `variant`. A record the lab wrote before warpline named it (the committed ones of
+    `measure/lab/results/` up to the pin's bump) carries it as `source.variant`, free text with the same string; that is
+    read where `variant` is absent, so one reading path serves both and a record is never edited."""
+    return rec.variant or rec.source["variant"]

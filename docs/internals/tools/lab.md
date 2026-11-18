@@ -56,9 +56,11 @@ directory is the container because each of warpline's commands (`python -m warpl
 <record>`) takes one record by its path, so a row's file is what they are pointed at; a variant's name is far longer than a
 file name allows, so it is in the record. `Bench::trace` writes each record (`trace_record`, host code in `lab.cuh`, through
 warpline's `host.hpp`: [below](#warpline)) and prints one line, `{"lab": "trace", "variant", "record"}`, which `tools/lab.py` gathers into the
-directory after warpline's checks on each (a record with findings is not recorded: the one finding a row's kind makes
-its own is a row with no launch exit -- a fine row -- leaving its last phase open, `region_unclosed`, which is not
-counted). THE LAUNCH'S EDGES: a coarse row's warps and an EDGES row's
+directory after warpline's checks on each (a record with any finding is not recorded, with no exemption: a row with no launch
+exit -- a fine row -- is read by warpline's one rule, its open regions closed at its last stamp and counted as `open_at_end`, which
+is no finding). A record's variant is its field `variant` (`tools/lab_trace.py`'s `variant_of`); a record the lab wrote before the pin
+carried the same string as `source.variant`, which is read where `variant` is absent, so the committed records stay as they were
+written. THE LAUNCH'S EDGES: a coarse row's warps and an EDGES row's
 (the plain kernel with its edges and nothing else stamped) each mark an `entry`, at the kernel's top before its setup, and an `exit`, at its
 role's end, on both clocks -- the record's `launch.begin` and `launch.end`; a fine row holds none (its kernels are at their registers' limit). A role's tracer writes after the
 entry's mark (`bind(rows, after)`: `after` the entries already written to the warp's row), so no tracer's state crosses the
@@ -145,12 +147,12 @@ hands `tools/lab.py` the directory of warpline's Python package too (`ROLA_WARPL
 `tools/lab_trace.py` reads the records with and `lab.py` checks them with; a box that runs a pack outside Bazel has none, and
 `carried` there writes the records unchecked (`lab trace` checks them where warpline is).
 `trace_record` is the one place the lab's row meets warpline's: the lab's row head (the count of entries issued and the CTA's shared base, 32 words)
-is not warpline's (`kHead` entries, the count in the first), which `Record::add_row` reads, so each row is copied into warpline's layout, and
+is not warpline's (`kHead` entries, the count in the first), so a row is given to `Record::add_row` by its entries and its issued count, and
 the entries are the lab's own but in three places -- the sites `entry` and `exit` are the launch's edges (a phase-begin mark there is
 `kLaunchBegin` / `kLaunchEnd`), a barrier's site is read against the row's base, and the barriers' facts are inferred from the stamps (a site
 named `... steps` is a warp's own steps, count 0; a copy's site is released by the copy, its one arrival not stamped, the copy its
-issue; a named barrier's arrival is not stamped; any other's count is the warps that arrive at it). The host header writes no
-`operations`, so the copies' (`done` the barrier's wait end) are written into its output here.
+issue, declared by `Record::operation`; a named barrier's arrival is not stamped, declared by `Record::rendezvous` with the skew
+`kRendezvousSkew` and its reason in `lab.cuh`; any other's count is the warps that arrive at it), and the variant by `Record::variant`.
 
 ## The kit (`measure/lab/lab.cuh`)
 

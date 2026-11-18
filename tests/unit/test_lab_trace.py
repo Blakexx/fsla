@@ -48,7 +48,7 @@ def record(variant, warps):
         "names": {str(i): n for n, i in names.items()},
         "lanes": [{"id": f"cta0/warp{w}", "role": "fold", "group": "fold"} for w in range(len(warps))],
         "stamps": stamps, "dropped": {}, "facts": {"barriers": {}, "operations": {}}, "ties": ties,
-        "source": {"variant": variant}})
+        "variant": variant})
 
 
 def test_the_names_of_an_untraced_twin():
@@ -94,9 +94,18 @@ def test_a_row_without_edges_has_no_launch(capsys):
     assert "too few windows stamped" in capsys.readouterr().out
 
 
-def test_a_row_with_no_exit_leaves_its_last_phase_open_and_that_is_no_finding():
+def test_a_record_of_the_old_host_names_its_variant_in_its_source():
+    rec = record(PLAIN, [((0, 0), (100, 60), [])])
+    assert lab_trace.variant_of(rec) == PLAIN
+    doc = rec.to_dict()
+    doc.pop("variant")
+    doc["source"] = {"variant": PLAIN}
+    assert lab_trace.variant_of(lab_trace.wl_record.from_dict(doc)) == PLAIN
+
+
+def test_a_row_with_no_exit_is_closed_at_its_last_stamp_and_that_is_no_finding():
     windows = [(1000 * i, 600 * i) for i in range(1, 9)]
     assert lab_trace.findings(record(COARSE, [((0, 0), (9500, 5700), windows)])) == []
     open_row = record(COARSE, [(None, None, windows)])
-    assert [f.code for f in lab_trace.check.all_findings(open_row)] == ["region_unclosed"]
+    assert lab_trace.check.all_findings(open_row) == []
     assert lab_trace.findings(open_row) == []

@@ -669,15 +669,23 @@ __device__ __forceinline__ void cluster_add_u64(uint32_t a, long long v) {
 //: count of entries issued, the CTA's shared base) and the stamps -- one record of one scope a CTA (`cta<N>`) and one lane
 //: a warp (`warp<W>`, its role from `roles`), the sites named by `legend` (a barrier's site read against the row's base).
 //: The lab's head is not warpline's (a row's head there is `kHead` entries with the count in its first), so each row is
-//: copied into warpline's layout, and the entries are the lab's own but in three places:
+//: given by its entries and its issued count (`Record::add_row`'s head-less overload), and the entries are the lab's own
+//: but in three places:
 //:  - the sites `entry` and `exit` are the launch's edges: a phase-begin mark there is `kLaunchBegin` / `kLaunchEnd`;
 //:  - a barrier's site is its shared address over 8, read against the row's base (a name of the legend's, whichever CTA);
 //:  - the barriers' facts, which the record needs and the host header cannot infer, are the lab's from the stamps: a wait
 //:    on a site named `... steps` is its warp's own steps (a count of 0), a site a copy is issued at is released by the
-//:    copy (one arrival, not stamped, the copy its issue), a named barrier's (0x8000 to 0xBFFF) arrival is not stamped
-//:    (the warp's reaching it is its wait's begin), and any other's count is the warps that arrive at it, one each a phase.
-//: The host header writes no operation, and the copy's `done` is its barrier's wait's end: the record's `operations` is
-//: completed here.
+//:    copy (`Record::operation`: one arrival, not stamped, the copy its issue, its `done` the barrier's wait's end), a named
+//:    barrier's (0x8000 to 0xBFFF) arrival is not stamped (the warp's reaching it is its wait's begin: `Record::rendezvous`,
+//:    `kRendezvousSkew`), and any other's count is the warps that arrive at it, one each a phase.
+//: THE SKEW A RENDEZVOUS IS ACCEPTED WITH, in cycles: the warps of a named barrier are released by one event, and each
+//: reads its clock after its `bar.sync` returns, so the clock reads of one phase's wait ends differ by the read's lag. At
+//: the one CTA of the carry (`sm_90a.blocks1`: two rendezvous, 128 phases each, four warps) the ends of a phase differ by
+//: at most 87 cycles (median 11) and every end is at least 50 cycles after the phase's last begin (the barrier's own
+//: latency), so the record needs none; 128 is the next power of two over the largest spread, the room a read's lag has
+//: in a CTA with more on its SM, to be read again from a full grid's record.
+constexpr uint32_t kRendezvousSkew = 128;
+
 inline std::string trace_record(const std::string& variant, const std::vector<int>& ctas,
                                 const std::vector<std::vector<unsigned long long>>& rows, int warps,
                                 const std::vector<std::string>& roles,
@@ -704,9 +712,7 @@ inline std::string trace_record(const std::string& variant, const std::vector<in
       const unsigned long long* row = rows[i].data() + static_cast<size_t>(w) * kRow;
       const unsigned long long n = std::min<unsigned long long>(row[0], Trace<true>::kCap);
       const uint32_t origin = static_cast<uint32_t>(row[1] >> 3);
-      std::vector<warpline::Entry> entries(warpline::kHead + n);
-      entries[0].word = static_cast<uint32_t>(row[0]);
-      entries[0].event = Trace<true>::kCap;
+      std::vector<warpline::Entry> entries(n);
       for (unsigned long long k = 0; k < n; ++k) {
         const unsigned long long x = row[32 + k];
         uint32_t event = static_cast<uint32_t>(x >> 32);
@@ -717,9 +723,9 @@ inline std::string trace_record(const std::string& variant, const std::vector<in
         if (kind == warpline::kWaitBegin) waiting[site][ctas[i]].insert(w);
         if (kind == warpline::kArrive) arriving[site][ctas[i]].insert(w);
         if (kind == warpline::kIssue) issued.insert(site);
-        entries[warpline::kHead + k] = {static_cast<uint32_t>(x), warpline::id(kind, site)};
+        entries[k] = {static_cast<uint32_t>(x), warpline::id(kind, site)};
       }
-      record.add_row("cta" + std::to_string(ctas[i]), "warp" + std::to_string(w), roles[w], entries.data(),
+      record.add_row("cta" + std::to_string(ctas[i]), "warp" + std::to_string(w), roles[w], entries.data(), static_cast<uint32_t>(row[0]),
                      Trace<true>::kCap);
     }
   }
@@ -728,7 +734,6 @@ inline std::string trace_record(const std::string& variant, const std::vector<in
     for (const auto& [scope, lanes] : per_scope) least = std::min(least, lanes.size());
     return static_cast<uint32_t>(least == SIZE_MAX ? 0 : least);
   };
-  std::string operations;
   std::set<uint32_t> sites;
   for (const auto& [site, per_scope] : waiting) sites.insert(site);
   for (const auto& [site, per_scope] : arriving) sites.insert(site);
@@ -737,20 +742,15 @@ inline std::string trace_record(const std::string& variant, const std::vector<in
     if (name.size() > 6 && name.compare(name.size() - 6, 6, " steps") == 0) {
       record.barrier(name, 0);
     } else if (issued.count(site)) {
-      record.barrier(name, 1, 0, name);
-      operations += std::string(operations.empty() ? "" : ",") + "\"" + name + "\":{\"done\":\"barrier." + name + ".wait.end\"}";
+      record.operation(name, site, name);
     } else if (site >= kNamedLow && site < kMarksLow) {
-      record.barrier(name, std::max(fewest(waiting[site]), 1u), 0);
+      record.rendezvous(name, std::max(fewest(waiting[site]), 1u), kRendezvousSkew);
     } else {
       record.barrier(name, std::max(fewest(arriving[site]), 1u));
     }
   }
-  record.source("variant", variant);
-  std::string doc = record.json();
-  const std::string empty = "\"operations\":{}";
-  const size_t at = doc.find(empty);
-  if (!operations.empty() && at != std::string::npos) doc.replace(at, empty.size(), "\"operations\":{" + operations + "}");
-  return doc;
+  record.variant(variant);
+  return record.json();
 }
 
 //: A KERNEL'S DEMANGLED NAME AS AN EXPECTATION'S PATTERN: `kernel("tax", {3, 17})` matches
