@@ -794,7 +794,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
   static_assert(!(ROLES & kServe) || (blocks<ROLES> && (ROLES & kDrains4) && !(ROLES & (kReady | kToken | kShare | kJoin | kShfl | kSkip | kAheadSteps | kOwn | kRawFold | kMeet41))));
   //: the traced rows: the block form's unclocked rows, whose every wait is one of the stamped helpers'
   static_assert(!(ROLES & kTrace) || (blocks<ROLES> && (ROLES & kDrains4) && (ROLES & kNoClock) && (ROLES & kMirror)
-                                      && !(ROLES & (kToken | kShare | kJoin | kSleep | kFive | kTwoSums | kWide | kSelf | kStill))));
+                                      && !(ROLES & (kShare | kJoin | kSleep | kFive | kTwoSums | kWide | kSelf | kStill))));
   const int tid = threadIdx.x, box = tid >> 7, warp = (tid >> 5) & 3, lane = tid & 31, q = lane >> 2, t = lane & 3;
   const uint32_t bars = base + kBarsAt;
   //: a list's first step writes its accumulator whole: nothing is cleared (a cleared one in a role's branch
@@ -3401,6 +3401,8 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken | kThrough,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken | kThrough | kOne,
+                    3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken | kThrough | kOne | kFine,
+                    3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken | kThrough | kOne | kTrace,
                     3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken | kThrough | kOne,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady,
                     3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady,
@@ -3549,6 +3551,8 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken | kThrough>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken | kThrough | kOne>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken | kThrough | kOne | kFine>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken | kThrough | kOne | kTrace>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kToken | kThrough | kOne>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kFour | kMirror | kChunk8 | kFoldIssues | kDrains4 | kShare>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kWhole | kFour | kMirror | kChunk8 | kFoldIssues | kDrains4 | kShare>(b, waits, values, dense, state, out);
