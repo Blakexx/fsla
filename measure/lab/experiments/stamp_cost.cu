@@ -31,7 +31,10 @@ constexpr uint32_t kMask = kWarpRing - 1;
 constexpr int kEntry = 8;
 //: kStoreAlone is the one-lane stamp's store (a constant for the clock) with no read
 //: the last two put the held-predicate stamp behind a branch every lane takes alike: never, and one step in eight
-enum Form { kPlain = 0, kTrace = 1, kHeldPredicate = 2, kFoldedPredicate = 3, kStoreAlone = 4, kLean = 5, kGatedOff = 6, kGatedEighth = 7 };
+enum Form { kPlain = 0, kTrace = 1, kHeldPredicate = 2, kFoldedPredicate = 3, kStoreAlone = 4, kLean = 5, kGatedOff = 6, kGatedEighth = 7, kSlot = 8, kSlotGlobal = 9 };
+//: the last two are the CALLER'S stamp: a clock read and a store to an address the kernel builds from the step's index
+//: it already holds -- a fixed slot in shared memory, and the same in global memory -- with no state of the stamp's own
+constexpr bool slotted(int form) { return form == kSlot || form == kSlotGlobal; }
 constexpr bool gated(int form) { return form == kGatedOff || form == kGatedEighth; }
 //: the CS2R a plain kernel holds, by step: its span's two clock reads, and on the wgmma step 16 more -- the zeroing
 //: of its 32 accumulator registers, a CS2R of SRZ a pair, before the loop. A form's kernel holds these and one a stamp site
@@ -90,6 +93,18 @@ struct Stamps {
   }
 };
 
+//: THE CALLER'S STAMP: `shared_at` and `global_at` the warp's first slot, the slot the step's `it` and the stamp's `id`
+template <int FORM, int PER>
+__device__ __forceinline__ void slot_stamp(uint32_t shared_at, uint32_t* global_at, uint32_t id, int it) {
+  uint32_t now;
+  asm volatile("mov.u32 %0, %%clock;" : "=r"(now));
+  const int entry = it * PER + static_cast<int>(id) - 1;
+  if constexpr (FORM == kSlot)
+    asm volatile("st.shared.v2.u32 [%0], {%1, %2};" :: "r"(shared_at + static_cast<uint32_t>(entry) * kEntry), "r"(now), "r"(id) : "memory");
+  else
+    asm volatile("st.global.v2.u32 [%0], {%1, %2};" :: "l"(global_at + 2 * entry), "r"(now), "r"(id) : "memory");
+}
+
 template <int FORM, int PER, int WORK>
 __global__ void __launch_bounds__(kThreads, 1) cost(long long* times, uint32_t* out, unsigned long long* rows,
                                                     uint32_t* rings, int steps) {
@@ -121,6 +136,9 @@ __global__ void __launch_bounds__(kThreads, 1) cost(long long* times, uint32_t* 
   uint32_t y[kWide];
 #pragma unroll
   for (int j = 0; j < kWide; ++j) y[j] = lab::held(static_cast<uint32_t>(tid) + 1u + 257u * j);
+  //: the caller's stamp's two bases, a warp's first slot in the CTA's rings and in their copy in global memory
+  const uint32_t slot_at = lab::held(base + kRing + (static_cast<uint32_t>(tid) >> 5) * kWarpRing);
+  uint32_t* const slot_to = rings + static_cast<long long>(blockIdx.x) * (kRingBytes / 4) + (tid >> 5) * (kWarpRing / 4);
   Stamps<FORM> stamps;
   stamps.bind(rows);
 
@@ -131,7 +149,8 @@ __global__ void __launch_bounds__(kThreads, 1) cost(long long* times, uint32_t* 
     //: a gated form's switch, the same on every lane and unknown to the toolkit: the step's index against the launch's
     //: count -- never (a bit no count this size sets), or one step in eight
     const bool on = FORM == kGatedOff ? ((it ^ steps) & 0x40000000) != 0 : FORM == kGatedEighth ? ((it + steps) & 7) == 0 : true;
-    if constexpr (PER >= 1)
+    if constexpr (PER >= 1 && slotted(FORM)) slot_stamp<FORM, PER>(slot_at, slot_to, 1, it);
+    if constexpr (PER >= 1 && !slotted(FORM))
       if (on) stamps.stamp(base + kRing, 1);
     if constexpr (WORK == 0) {
       lab::wg_fence();
@@ -145,7 +164,8 @@ __global__ void __launch_bounds__(kThreads, 1) cost(long long* times, uint32_t* 
 #pragma unroll
       for (int j = 0; j < kWide; ++j) y[j] = next(y[j], static_cast<uint32_t>(j));
     }
-    if constexpr (PER >= 2)
+    if constexpr (PER >= 2 && slotted(FORM)) slot_stamp<FORM, PER>(slot_at, slot_to, 2, it);
+    if constexpr (PER >= 2 && !slotted(FORM))
       if (on) stamps.stamp(base + kRing, 2);
   }
 #pragma unroll
@@ -158,10 +178,13 @@ __global__ void __launch_bounds__(kThreads, 1) cost(long long* times, uint32_t* 
   mine[0] = x;
 #pragma unroll
   for (int i = 0; i < 32; ++i) mine[1 + i] = __float_as_uint(d[i]);
-  __syncthreads();
-#pragma unroll 1
-  for (int i = tid; i < kRingBytes / 4; i += blockDim.x)
-    rings[static_cast<long long>(blockIdx.x) * (kRingBytes / 4) + i] = ring_words[i];
+  //: the rings copied out, but for the form that wrote its stamps to global memory itself
+  if constexpr (FORM != kSlotGlobal) {
+    __syncthreads();
+  #pragma unroll 1
+    for (int i = tid; i < kRingBytes / 4; i += blockDim.x)
+      rings[static_cast<long long>(blockIdx.x) * (kRingBytes / 4) + i] = ring_words[i];
+  }
 }
 
 }  // namespace stamp_cost
@@ -174,7 +197,9 @@ void run(lab::Bench& b, uint32_t* out, unsigned long long* rows, uint32_t* rings
   static const char* const kForms[] = {"plain", "the lab's trace", "a ring, one lane, its predicate held",
                                        "a ring, one lane, its predicate in the offset", "the ring store alone",
                                        "a ring, every lane to one entry, no wrap",
-                                       "a ring stamp behind a branch never taken", "a ring stamp behind a branch taken one step in eight"};
+                                       "a ring stamp behind a branch never taken", "a ring stamp behind a branch taken one step in eight",
+                                       "a fixed slot in shared memory, its address from the step's index",
+                                       "a fixed slot in global memory, its address from the step's index"};
   const std::string name = std::string(WORK == 0 ? "a wgmma step" : WORK == 1 ? "a chained step" : "an independent step") + ", " + kForms[FORM]
                            + (PER == 0 ? "" : PER == 1 ? ", one stamp a step" : ", two stamps a step");
   cost<FORM, PER, WORK><<<b.sms, kThreads>>>(b.times, out, rows, rings, kCheckSteps);
@@ -210,7 +235,7 @@ void run(lab::Bench& b, uint32_t* out, unsigned long long* rows, uint32_t* rings
       }
     }
     //: a ring form's stamps of each warp (its lane 0's), in order: the ids as stamped, the clocks not decreasing
-    if (FORM == kHeldPredicate || FORM == kFoldedPredicate || FORM == kStoreAlone || FORM == kLean || gated(FORM))
+    if (FORM == kHeldPredicate || FORM == kFoldedPredicate || FORM == kStoreAlone || FORM == kLean || gated(FORM) || slotted(FORM))
       for (int warp = 0; warp < kWarps; ++warp) {
         uint32_t before = 0;
         //: a gated form keeps the stamps of the steps its switch is on for: none, or the check's one in eight
@@ -249,6 +274,10 @@ void work(lab::Bench& b, uint32_t* out, unsigned long long* rows, uint32_t* ring
   run<kGatedOff, 2, WORK>(b, out, rows, rings);
   run<kGatedEighth, 1, WORK>(b, out, rows, rings);
   run<kGatedEighth, 2, WORK>(b, out, rows, rings);
+  run<kSlot, 1, WORK>(b, out, rows, rings);
+  run<kSlot, 2, WORK>(b, out, rows, rings);
+  run<kSlotGlobal, 1, WORK>(b, out, rows, rings);
+  run<kSlotGlobal, 2, WORK>(b, out, rows, rings);
   //: the store alone runs on the two integer steps
   if constexpr (WORK != 0) {
     run<kStoreAlone, 1, WORK>(b, out, rows, rings);
@@ -260,13 +289,13 @@ int main(int argc, char** argv) {
   using namespace stamp_cost;
   lab::Bench b(argc, argv);
   for (int work_kind = 0; work_kind < 3; ++work_kind)
-    for (int form = kPlain; form <= kGatedEighth; ++form)
+    for (int form = kPlain; form <= kSlotGlobal; ++form)
       for (int per = form == kPlain ? 0 : 1; per <= (form == kPlain ? 0 : 2); ++per) {
         if (form == kStoreAlone && work_kind == 0) continue;
         const std::string k = lab::kernel("cost", {form, per, work_kind});
         b.expect(k, "HGMMA", "==", work_kind == 0 ? 1 : 0);
         //: the trace's stamp is a global store inside the step: the form under test
-        if (form == kTrace && work_kind == 0) b.expect(k, "STEP_GLOBAL", ">=", 0);
+        if ((form == kTrace || form == kSlotGlobal) && work_kind == 0) b.expect(k, "STEP_GLOBAL", ">=", 0);
         //: a gated form's switch is a branch inside the step: the form under test
         if (gated(form) && work_kind == 0) b.expect(k, "BSSY", ">=", 0);
         //: a clock read a stamp site and no more: a loop the compiler unrolled or a read it dropped is refused
