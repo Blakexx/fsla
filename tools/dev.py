@@ -5,7 +5,7 @@
 run as the graph's target of the same name (`bazel/defs.bzl`'s `dev_run`), its arguments after `--`:
 
     python3 tools/bootstrap.py                   # the one step outside the graph: the pinned bazelisk and `bazel`
-    bazel run //:init [-- --force]               # write this machine's dev config, install the pinned tools, wire hooks
+    bazel run //:init [-- --force]               # write this machine's dev config, install the pinned tools, wire hooks and the action-hook dispatcher
     bazel run //:check                           # every value, tool, pin and lock this tree depends on; exit 1 on a red
     bazel run //:show                            # every resolved setting and the file it came from
     bazel run //:get -- <section.key>            # one value, for a person or a shell
@@ -273,6 +273,63 @@ def checkout_venv(checkout: Path) -> Path | None:
     return own if list(own.glob(f"lib/python*/site-packages/{ENV_PTH}")) else None
 
 
+#: THE ACTION-HOOK DISPATCHER (KERNEL_STANDARDS `#every-rule-has-a-row`, the `hook` mechanism): the user-level script that
+#: fires the touched checkout's own `.claude/action-hooks.json` from a session started anywhere -- the repo's copy installed
+#: as the user's, its PreToolUse entry in their settings, and the roots it may run code under
+DISPATCHER = ROOT / ".claude" / "hooks" / "repo_hooks.py"
+DISPATCHER_ENTRY = {"matcher": "", "hooks": [
+    {"type": "command", "command": 'python3 "$HOME/.claude/hooks/repo_hooks.py"', "timeout": 10}]}
+DISPATCHER_ROOTS = "repo_hooks_roots.json"
+
+
+def dispatcher_state() -> tuple[bool, bool, bool]:
+    """(the user's dispatcher is this checkout's, the user's settings run it, a listed root holds this checkout)."""
+    home = Path.home() / ".claude"
+    installed = home / "hooks" / "repo_hooks.py"
+    try:
+        settings = json.loads((home / "settings.json").read_text())
+    except (OSError, ValueError):
+        settings = {}
+    wired = any("repo_hooks.py" in hook.get("command", "")
+                for group in settings.get("hooks", {}).get("PreToolUse", []) for hook in group.get("hooks", []))
+    try:
+        roots = [Path(r).resolve() for r in json.loads((home / DISPATCHER_ROOTS).read_text())]
+    except (OSError, ValueError, TypeError):
+        roots = []
+    rooted = any(r == ROOT or r in ROOT.parents for r in roots)
+    return installed.is_file() and installed.read_bytes() == DISPATCHER.read_bytes(), wired, rooted
+
+
+def install_dispatcher() -> None:
+    """The dispatcher installed where it differs, its hook entry added where it is absent and the roots file created only
+    where it is absent (a user's own list is never overwritten), on a machine where Claude Code keeps a user configuration
+    (`~/.claude`; the image has none); every other user setting is kept, and a settings file that does not parse is
+    refused, never rewritten."""
+    home = Path.home() / ".claude"
+    if not home.is_dir():
+        print("action-hook dispatcher: no Claude Code configuration here, nothing to install")
+        return
+    path = home / "settings.json"
+    try:
+        settings = json.loads(path.read_text()) if path.is_file() else {}
+    except ValueError as ex:
+        raise SystemExit(f"{path} does not parse ({ex}); fix it, then rerun init") from ex
+    current, wired, _ = dispatcher_state()
+    if not current:
+        (home / "hooks").mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(DISPATCHER, home / "hooks" / "repo_hooks.py")
+        print(f"action-hook dispatcher: installed {home / 'hooks' / 'repo_hooks.py'}")
+    if not wired:
+        settings.setdefault("hooks", {}).setdefault("PreToolUse", []).append(DISPATCHER_ENTRY)
+        path.write_text(json.dumps(settings, indent=2) + "\n")
+        print(f"action-hook dispatcher: wired into {path}")
+    roots = home / DISPATCHER_ROOTS
+    if not roots.exists():
+        listed = sorted({str(c) for c in (*_worktrees(), Path(dev_config.get("workspace.worktrees")))})
+        roots.write_text(json.dumps(listed, indent=1) + "\n")
+        print(f"action-hook dispatcher: created {roots} ({len(listed)} roots)")
+
+
 def _worktrees() -> list[Path]:
     """Every checkout of this repository: the main one and each linked worktree."""
     listing = subprocess.run(["git", "-C", str(ROOT), "worktree", "list", "--porcelain"], capture_output=True, text=True,
@@ -316,6 +373,7 @@ def cmd_init(a) -> int:
         else:
             wire_hooks(checkout)
     _refuse_unwired()
+    install_dispatcher()
     if dev_config.get("clock.ghz") is None:
         print("clock: unset -- this host measures UNLOCKED until `bazel run //:clock -- --mhz <MHz>` runs")
     return cmd_check(a)
@@ -378,6 +436,13 @@ def cmd_check(a) -> int:
          f"{ROOT.name} has no venv of its own for its commit gate") if readable else
         f"{ROOT}: no git repository visible here; commits are made where it is",
         "bazel run //:dev_env" if readable and own is None else "bazel run //:init")
+    if (Path.home() / ".claude").is_dir():
+        current, wired, rooted = dispatcher_state()
+        row(current and wired and rooted, "action-hook dispatcher: " + ("installed and current" if current else "missing or stale")
+            + ("" if wired else ", not in the user's settings") + ("" if rooted else f", no listed root holds {ROOT}"),
+            f"bazel run //:init (a roots file of yours is kept: add {ROOT.parent} to ~/.claude/{DISPATCHER_ROOTS})")
+    else:
+        row(True, "action-hook dispatcher: no Claude Code configuration here")
     for key in ("host.lock_dir", "host.scratch"):
         path = Path(dev_config.get(key))
         path.mkdir(parents=True, exist_ok=True)

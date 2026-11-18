@@ -27,6 +27,7 @@ kernel:
 - Prove it: correctness `docs/testing.md`; a lab row `docs/internals/tools/lab.md#the-loop`; a shipped kernel's cost
   `docs/internals/tools/README.md`; a declared measurement `docs/measurement.md`; a commit `docs/build-graph.md#checks`.
 - A build or tool that will not start: `bazel run //:check` (`docs/internals/tools/dev.md`).
+- A tool call is refused by `.claude/hooks/` (a polling wait, `--no-verify`) through the dispatcher `bazel run //:init` installs; the refusal names the rule and its override (`docs/internals/tools/lint.md#action-hooks`).
 - A push to the default branch waits until every review of its commits has landed and been read; nothing refuses it
   yet (`docs/internals/tools/review_gate.md#pipelined`).
 

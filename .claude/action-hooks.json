@@ -1,0 +1,6 @@
+{
+  "PreToolUse": [
+    {"matcher": "Bash", "command": ".claude/hooks/no_polling.py"},
+    {"matcher": "Bash", "command": ".claude/hooks/no_verify.py"}
+  ]
+}

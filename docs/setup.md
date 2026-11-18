@@ -38,6 +38,12 @@ bazel run //:dev_env                    # this checkout's venv, which its commit
 bazel run //:worktree -- <name> <sha>   # a worktree, its venv and gate, its extension
 ```
 
+On a machine with a Claude Code configuration (`~/.claude`), `init` also installs the repo's action-hook dispatcher as
+`~/.claude/hooks/repo_hooks.py` (where it differs), wires it into `~/.claude/settings.json` (where absent) and creates
+`~/.claude/repo_hooks_roots.json` (only where absent; your own list is kept, so add the folder that holds your checkouts to
+it), so the checkout's tracked hooks (`.claude/action-hooks.json`: no polling waits, no `--no-verify`) fire from any session;
+`check` has a row for it ([`dev.md`](internals/tools/dev.md#action-hooks)).
+
 ## 1. Host prerequisites
 
 * **An NVIDIA driver for the toolchain's CUDA major.** The declared toolchain is `cu13` (CUDA 13.0,

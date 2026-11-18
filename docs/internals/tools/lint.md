@@ -47,7 +47,8 @@ through `$CLAUDE_PROJECT_DIR`, and a site's own locations come from the dev conf
 EVERY RULE HAS A ROW (Blake, 2026-11-17; the standards' preamble). `docs/rules.json` is a JSON list with a row for each
 rule of [`CONSTITUTION.md`](../../CONSTITUTION.md) and [`KERNEL_STANDARDS.md`](../../KERNEL_STANDARDS.md), in the documents'
 order: its `site`, an `id`, a `statement` (25 words at most) and a `mechanism` -- `gate` (a check of `bazel test //:gate`),
-`tool` (a tool refuses when run), `hook` (a git hook tracked in `tools/git-hooks/`), `review` (the LLM review, whose `block`
+`tool` (a tool refuses when run), `hook` (a git hook tracked in `tools/git-hooks/`, or an action hook: a file under `.claude/hooks/` listed in
+[`.claude/action-hooks.json`](../../../.claude/action-hooks.json), [below](#action-hooks)), `review` (the LLM review, whose `block`
 refuses the next commit, [`review_gate.md`](review_gate.md#blocking)), `owed` (no mechanism yet) or `none` (a definition, a
 history note, a section that states no rule). Each carries what that mechanism needs: `enforcer` (a list of paths,
 `path::symbol` and Bazel labels) and `coverage` (`full`, or `partial: <what is not checked>`); `why_not_mechanical` for a
@@ -68,15 +69,34 @@ site states more than one rule.
 3. an enforcer that does not resolve: a path that does not exist, a `path::symbol` whose symbol the file does not contain, a
    Bazel label its package's `BUILD.bazel` does not define, and for a `gate` row a label that is not a member of `//:gate`.
    The build files are read as text, because the lint runs inside the gate and cannot run Bazel, so a target a macro names
-   by a computed string is not seen;
+   by a computed string is not seen. A `hook` row's enforcer holds a git hook of `tools/git-hooks/` or an action hook that is
+   a file AND is listed in the manifest (a hook file the manifest does not list fails, so a hook that never fires is not
+   a mechanism);
 4. a new `owed` row, through the ratchet: `rules_table.py --owed` prints each `owed` row's id as a finding and
    `//:ratchet_rules_owed` holds them against `tools/lint/baselines/rules_owed.json`. A row that stops being `owed` leaves
    the baseline in the same commit (`ratchet.py rules_owed --shrink`), so the list only shrinks.
 
 A resolving enforcer is not proof that it checks the rule: the table names the check a person opened and saw check the rule,
 and `coverage` says what it leaves unchecked. A NEW RULE lands with its mechanism and never as `owed`. The fixtures are
-`tools/lint/fixtures/rules_table/`: a small tree (two documents, a table, build files) that passes, and ten edits of its
-table, each failing one check with its own message.
+`tools/lint/fixtures/rules_table/`: a small tree (two documents, a table, build files) that passes, and twelve edits of its
+table, each failing one check with its own message; its tree holds a manifest with one listed and one unlisted action hook.
+
+<a id="action-hooks"></a>
+## The agent files: action hooks and their dispatcher
+
+`.claude/` holds three kinds of tracked file. `settings.json` (the session-start hook), `references.lock.json`, and the
+action hooks: `.claude/action-hooks.json` (`{"PreToolUse": [{"matcher": "<regex of tool names>", "command": "<path in the
+checkout>"}]}`) lists the hooks a tool call fires, and `.claude/hooks/` holds them. A hook reads the call's JSON on stdin and
+refuses by printing `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+"permissionDecisionReason": "..."}}`. They are fired from any session by one generic dispatcher, `.claude/hooks/repo_hooks.py`,
+installed as the user's `~/.claude/hooks/repo_hooks.py` by `bazel run //:init` ([`dev.md`](dev.md#action-hooks)): it finds the
+checkouts a call touches, runs only those under a root of `~/.claude/repo_hooks_roots.json` (a cloned stranger's manifest never
+runs) and returns the first refusal. An action hook counts as the rules table's `hook` forcing point; it holds only where the
+dispatcher is installed. Two exist: `no_polling.py` (KERNEL_STANDARDS §14 and its addendum: a shell loop that sleeps or lists
+processes, `watch` over one, a bare `sleep` of 30 s or more; the bounded `timeout <=600 tail --pid=$PID -f /dev/null` passes;
+override `POLL_OVERRIDE=<why>`) and `no_verify.py` (`#no-verify`: `--no-verify` on `git commit` or `git push`, `git commit -n`,
+`git -c core.hooksPath=...`; override `NO_VERIFY_AUTHORIZED=<the owner's words>`). `portable_claude.py` gates them like every
+file under `.claude/` ([above](#portable-agent-files)).
 
 <a id="ratchets"></a>
 ## The ratchets
@@ -101,7 +121,7 @@ tell a real finding from a false one, so a human decides each, and the decision 
 | `run_vulture.sh` | 60 | a ruling per finding: delete the dead code, or whitelist a demonstrated dynamic use (name-dispatched methods, fixtures, a library's reads) |
 | `drift_guards.py` | 20 over 11 rules | the table below |
 | `r9_enforcement.py` | 1 | `decode_lattice.cuh`'s `switch (kind)` folds its fourth case into a bare default; the fix is a `uniform_switch`, a decode kernel change |
-| `rules_table.py --owed` | 65 (2026-11-17) | the `owed` rows of `docs/rules.json`: each leaves when its rule gains a mechanism, a `gate`, `tool`, `hook` or `review` row, in the commit that lands it ([above](#rules-table)) |
+| `rules_table.py --owed` | 63 (2026-11-17) | the `owed` rows of `docs/rules.json`: each leaves when its rule gains a mechanism, a `gate`, `tool`, `hook` or `review` row, in the commit that lands it ([above](#rules-table)) |
 | `coverage.py` | 0 (2026-09-29) | nothing: it gates the undeclared gaps (a kernel not in `tools/coverage.json`, a pointer to nothing); the owed obligations -- budgets, phase ledgers, sanitizer rows and oracle tests for the entmax solves, three kernels awaiting the milestone ratify -- are the backlog it prints ([`coverage.md`](coverage.md)) |
 | `burst_tier.py` | 0 (2026-11-09) | KERNEL_STANDARDS §24: an MMA issued outside a `//: @burst` function or a vote, sync, barrier, `while`, data `if` or `unroll 1` inside one, over every device function (a `static` or `__host__` one among them); `//: @burst-exempt <reason>` names a debt (the dense fold's and the dense readout's loops over a chunk's slots, `steps_dense`, `read_dense`, `dense_den`). It reads only a function that issues an MMA itself: a loop above a burst function that hand-rolls what `Burst` units do is a debt it cannot see, named on that kernel's page (the readout's `read_pass`, `readout.md#chunk`) |
 

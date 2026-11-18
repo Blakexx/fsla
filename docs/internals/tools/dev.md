@@ -27,6 +27,7 @@ graph's environment interpreter, its arguments after `--`.
   does not report its pin's version; the measurement tools find the pinned Nsight Compute by its pin
   (`dev_config.ncu()`).
 - The Windows System32 mount under WSL.
+- The action-hook dispatcher, on a machine that has `~/.claude` ([below](#action-hooks)).
 
 A key already in a file is kept unless `--force`. A pinned tool that is missing, or does not report its pin's
 version, is downloaded from the pin's release URL (the devbox tools' pins by init, `tools/bazelisk_pin.json` by
@@ -48,10 +49,14 @@ clock is not set by `init`, because locking it asks for administrator consent on
 - The pinned toolkit's nvcc reports its pin's version.
 - Each devbox tool reports its pin's version (Nsight Compute among them).
 - The commit gate is wired.
+- The action-hook dispatcher is installed and current, wired into the user's settings and a listed root holds this checkout (green where there is no `~/.claude`).
 - The lock directory, scratch directory and GPU lock directory are writable.
 - The clock is set, or the host is marked unlocked.
 - The worktrees folder exists; `store.root` is a rola-results checkout, and `rola_results` and `rola_devtools` import
   from `store.root` and `workspace.devtools` in the checkout's own venv.
+
+<a id="action-hooks"></a>
+**The action-hook dispatcher** (`.claude/hooks/repo_hooks.py`; KERNEL_STANDARDS `#every-rule-has-a-row`, the `hook` mechanism; the hooks and the manifest: [`lint.md`](lint.md#action-hooks)). `init` copies it to `~/.claude/hooks/repo_hooks.py` where that differs, adds its PreToolUse entry (`python3 "$HOME/.claude/hooks/repo_hooks.py"`) to the user's `~/.claude/settings.json` where absent, and creates `~/.claude/repo_hooks_roots.json` (the repository's checkouts and `workspace.worktrees`) only where absent: a list of yours is never overwritten, and a root that holds none of this repository's checkouts is yours to add (`check` names it). Every other setting is kept; a settings file that does not parse is refused and left as it is. On a machine with no `~/.claude` (the devbox image) it does nothing. `check` has a row for it (installed and current, wired, rooted).
 
 **`clock --mhz N`** locks the SM clock, reads the driver's clock under the lock, and releases it: the round trip
 the harness makes (`rola_devtools.locks.clock`, [sm_clock.md](../common/sm_clock.md)). Only after the lock is proven

@@ -7,5 +7,5 @@
 {"site": "KERNEL_STANDARDS#s1.1", "id": "KERNEL_STANDARDS#s1.1", "statement": "A hook holds this item.", "mechanism": "hook", "enforcer": ["tools/git-hooks/pre-commit"], "coverage": "full"},
 {"site": "KERNEL_STANDARDS#s1.2", "id": "KERNEL_STANDARDS#s1.2", "statement": "Nothing holds this item yet.", "mechanism": "owed", "would_be": "hook: a check at commit"},
 {"site": "KERNEL_STANDARDS#s2", "id": "KERNEL_STANDARDS#s2", "statement": "A gate holds this rule in part.", "mechanism": "gate", "enforcer": ["//sub:check_b"], "coverage": "partial: the second case"},
-{"site": "KERNEL_STANDARDS#s2-addendum", "id": "KERNEL_STANDARDS#s2-addendum", "statement": "A paragraph that states no rule.", "mechanism": "none", "why": "a history note"}
+{"site": "KERNEL_STANDARDS#s2-addendum", "id": "KERNEL_STANDARDS#s2-addendum", "statement": "An action hook holds this addendum.", "mechanism": "hook", "enforcer": [".claude/hooks/listed.py"], "coverage": "full"}
 ]

@@ -31,7 +31,8 @@ as it is written for every card, so the development card runs it; nothing is wri
 <a id="every-rule-has-a-row"></a>**EVERY RULE HAS A ROW (Blake, 2026-11-17).** A rule exists only with a mechanism that enforces it.
 `docs/rules.json` holds a row for every rule of the constitution and of this document: the site that states it (a section,
 an item, a principle), its statement, and the mechanism -- `gate` (a check of `bazel test //:gate`), `tool` (a tool refuses
-when run), `hook` (a git hook tracked in the repo), `review` (the LLM review, whose `block` finding refuses the next
+when run), `hook` (a git hook tracked under `tools/git-hooks/`, or an action hook -- a tool-call hook under `.claude/` listed in
+`.claude/action-hooks.json`, fired by the dispatcher `docs/internals/tools/dev.md#action-hooks`), `review` (the LLM review, whose `block` finding refuses the next
 commit: `docs/internals/tools/review_gate.md#blocking`), `owed` (no mechanism yet: the forcing point it will take, and how)
 or `none` (a definition, or a section that states no rule) -- with its enforcer named and what that enforcer does not
 check. A NEW RULE LANDS WITH ITS MECHANISM, NEVER AS `owed`, and the `owed` list only shrinks. `tools/lint/rules_table.py`

@@ -78,7 +78,7 @@ constexpr long union_address(int bh, int side, int group, int tile, int groups, 
   return ((long)bh * kSides + side) * groups * tiles + (long)group * tiles + tile;
 }
 
-//: A SIDE'S STATIC OPERANDS, which carry no logical width (CONSTITUTION.md §R13; its lint is owed): a dense-level bitmask and
+//: A SIDE'S STATIC OPERANDS, which carry no logical width (CONSTITUTION.md §R13): a dense-level bitmask and
 //: the digit mask's words. -- see docs/internals/facts/liveness_contract.md#statics
 constexpr bool level_is_dense(uint32_t dense_levels, int level) {
   return (dense_levels >> level) & 1u;

@@ -81,12 +81,6 @@
   },
   {
    "path": "docs/rules.json",
-   "message": "owed rule KERNEL_STANDARDS#no-verify",
-   "line_sha256": "e3b0c44298fc1c14",
-   "count": 1
-  },
-  {
-   "path": "docs/rules.json",
    "message": "owed rule KERNEL_STANDARDS#owed-hopper.1",
    "line_sha256": "e3b0c44298fc1c14",
    "count": 1
@@ -118,12 +112,6 @@
   {
    "path": "docs/rules.json",
    "message": "owed rule KERNEL_STANDARDS#s1",
-   "line_sha256": "e3b0c44298fc1c14",
-   "count": 1
-  },
-  {
-   "path": "docs/rules.json",
-   "message": "owed rule KERNEL_STANDARDS#s14",
    "line_sha256": "e3b0c44298fc1c14",
    "count": 1
   },

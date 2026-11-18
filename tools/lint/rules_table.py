@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """EVERY RULE HAS A ROW (KERNEL_STANDARDS, the preamble; Blake, 2026-11-17; gating): `docs/rules.json` names, for each
 rule of `docs/CONSTITUTION.md` and `docs/KERNEL_STANDARDS.md`, the mechanism that enforces it -- `gate` (a check of
-`bazel test //:gate`), `tool` (a tool refuses when run), `hook` (a git hook tracked in the repo), `review` (the LLM
+`bazel test //:gate`), `tool` (a tool refuses when run), `hook` (a git hook tracked under `tools/git-hooks/`, or an action hook listed in
+`.claude/action-hooks.json`), `review` (the LLM
 review, whose block refuses the next commit), `owed` (a named forcing point and how), or `none` (a definition or a
 section that states no rule). This lint fails on
 
@@ -34,6 +35,9 @@ FIXTURE = ROOT / "tools" / "lint" / "fixtures" / "rules_table"
 DOCS = {"CONSTITUTION": "docs/CONSTITUTION.md", "KERNEL_STANDARDS": "docs/KERNEL_STANDARDS.md"}
 TABLE = "docs/rules.json"
 BUILD = "BUILD.bazel"
+#: the action hooks a checkout tracks, fired by the user-level dispatcher (`.claude/hooks/repo_hooks.py`)
+MANIFEST = ".claude/action-hooks.json"
+GIT_HOOKS = "tools/git-hooks/"
 #: a fixture tree's build files keep another name, so Bazel does not read the fixture's packages as the repository's own
 FIXTURE_BUILD = "BUILD.fixture"
 GATE = "//:gate"
@@ -200,8 +204,18 @@ def _expanded(node: ast.ListComp) -> dict[str, dict[str, ast.expr]]:
     return out
 
 
+def action_hooks(root: Path) -> set[str]:
+    """The action hooks a tree lists: each `command` of its `.claude/action-hooks.json`, whatever the event."""
+    try:
+        manifest = json.loads((root / MANIFEST).read_text())
+        return {str(e["command"]) for entries in manifest.values() for e in entries}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return set()
+
+
 def resolved(root: Path, graph: Graph, gate: set[str], row: dict) -> list[str]:
-    """Check 3: every enforcer a row names resolves, and a `gate` row holds a label of the gate."""
+    """Check 3: every enforcer a row names resolves, a `gate` row holds a label of the gate and a `hook` row a git hook
+    of `tools/git-hooks/` or an action hook that is a file AND is listed in `.claude/action-hooks.json`."""
     problems, labels = [], []
     for ref in row.get("enforcer", []):
         if ref.startswith("//"):
@@ -219,8 +233,14 @@ def resolved(root: Path, graph: Graph, gate: set[str], row: dict) -> list[str]:
             problems.append(f"row '{row['id']}': the symbol {symbol} does not occur in {path}")
     if row.get("mechanism") == "gate" and not labels:
         problems.append(f"row '{row['id']}': a gate row names the label of a check of {GATE}")
-    if row.get("mechanism") == "hook" and not any(r.startswith("tools/git-hooks/") for r in row.get("enforcer", [])):
-        problems.append(f"row '{row['id']}': a hook row names a hook under tools/git-hooks/")
+    if row.get("mechanism") == "hook":
+        listed = action_hooks(root)
+        paths = [r.partition("::")[0] for r in row.get("enforcer", [])]
+        for path in paths:
+            if path.startswith(".claude/hooks/") and (root / path).is_file() and path not in listed:
+                problems.append(f"row '{row['id']}': the action hook {path} is not listed in {MANIFEST}")
+        if not any(p.startswith(GIT_HOOKS) or p in listed for p in paths):
+            problems.append(f"row '{row['id']}': a hook row names a git hook under {GIT_HOOKS} or an action hook listed in {MANIFEST}")
     return problems
 
 
@@ -288,6 +308,10 @@ def mutations() -> dict[str, tuple[object, str]]:
         "an enforcer path that is missing": (edit("KERNEL_STANDARDS#s1.1", enforcer=["tools/git-hooks/gone"]), "does not exist"),
         "an enforcer symbol that is missing": (edit("CONSTITUTION#principles.second-principle",
                                                     enforcer=["tools/check.py::no_such_check"]), "does not occur"),
+        "an action hook the manifest does not list": (edit("KERNEL_STANDARDS#s2-addendum", enforcer=[".claude/hooks/unlisted.py"]),
+                                                      "is not listed in"),
+        "a hook row that names no hook": (edit("KERNEL_STANDARDS#s2-addendum", enforcer=["tools/check.py"]),
+                                          "names a git hook under"),
         "a label no package defines": (edit("KERNEL_STANDARDS#s2", enforcer=["//:ghost"]), "does not define"),
         "a gate row's label outside the gate": (edit("KERNEL_STANDARDS#s2", enforcer=["//:outside"]), "not a member of //:gate"),
     }
