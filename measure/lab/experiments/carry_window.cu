@@ -384,7 +384,7 @@ enum Roles : long long {
   //: the pads and the steps' operands, each slot's own table -- and the fold only waits on a slot's expansion and
   //: steps it: no expansion, fence or warpgroup rendezvous on its path
   kServe = 1ll << 55,
-  //: THE TRACED rows: every warp's phases' starts stamped (lab::Trace, coarse) -- an unclocked row's and nothing else
+  //: THE TRACED rows: every warp's phases' starts stamped (`Tracer`, which keeps them alone) -- an unclocked row's and nothing else
   //: changed; `kFine` stamps its waits' starts and ends, its arrivals and its copies' issues too
   kTrace = 1ll << 56,
   //: THE HELD-STEP isolation: every step of a slot issued with the slot's first step's operands, loaded once and held
@@ -633,7 +633,7 @@ struct Tracer : lab::Trace<(ROLES & kTrace) != 0> {
   __device__ __forceinline__ void stamp(uint32_t kind, uint32_t site) {
     if ((ROLES & kFine) != 0 || kind == lab::kPhase) lab::Trace<(ROLES & kTrace) != 0>::stamp(kind, site);
   }
-  __device__ __forceinline__ void at(uint32_t kind, uint32_t bar) { stamp(kind, (bar >> 3) & 0x7fffu); }
+  __device__ __forceinline__ void at(uint32_t kind, uint32_t bar) { stamp(kind, this->site(bar)); }
 };
 constexpr uint32_t kNamed = 0x8000u;
 enum Site : uint32_t { kMarkWindow = 0xc000u, kMarkExpand, kMarkSteps, kMarkPanel, kMarkAdds, kMarkServe, kStepsFold, kStepsRead };

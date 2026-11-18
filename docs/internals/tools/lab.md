@@ -130,8 +130,8 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
   the mbarrier as `ops.cuh` spells it: `mbar_init`, `mbar_arrive`, `mbar_wait` (polled), `mbar_wait_suspended` (sm_90: `try_wait`, the thread may be suspended), `mbar_test` (once).
 * `lab::sink(out, v)` — a fold of everything a thread computed, stored unconditionally.
 * `lab::Trace<ON>` — a warp's timeline (`lab trace`). A stamp always stamps: WHICH stamps a kernel takes is its
-  author's, by an ordinary condition around the call -- a compile-time one compiles the stamp to nothing, a run-time one
-  the same on every lane is a test and a branch -- and `ON` false makes the whole recorder nothing (the carry lab's
+  author's, by an ordinary condition around the call -- a compile-time one compiles the stamp to nothing, a run-time
+  branch costs more than the stamp it skips ([`stamp_cost`](../../lab/stamp_cost.md)) -- and `ON` false makes the whole recorder nothing (the carry lab's
   traced rows are coarse, their phases' starts, and its `kFine` adds the rest): `stamp(kind, site)` and `at(kind, bar)` (a barrier's site its
   shared address over 8, read against the CTA's base `close(base)` stores), a stamp the SM's clock's low word beside an
   event's (`lab::TraceKind` and site), written by the warp's first lane, one predicated store a stamp to the warp's row in global memory, with no compiler

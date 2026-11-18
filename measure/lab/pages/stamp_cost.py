@@ -27,12 +27,16 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     FOLD = "a ring, one lane, its predicate in the offset"
     TRACE = "the lab's trace"
     STORE = "the ring store alone"
+    OFF = "a ring stamp behind a branch never taken"
+    EIGHTH = "a ring stamp behind a branch taken one step in eight"
     FORMS = (
         ("the lean stamp: every lane to one entry, no predicate, no wrap", LEAN),
         ("one lane, its predicate held", HELD),
         ("one lane, its predicate in the offset", FOLD),
         ("the lab's trace", TRACE),
         ("the store alone, no clock read", STORE),
+        ("the held-predicate stamp behind a branch never taken", OFF),
+        ("the same, its branch taken one step in eight", EIGHTH),
     )
     ONE, TWO = ", one stamp a step", ", two stamps a step"
 
@@ -93,6 +97,11 @@ WHAT IT DECIDES.
   is bound by its chain ({added(W, TRACE, 1):.1f} and {added(C, TRACE, 1):.1f} at one a step) and about twice it where the step is bound by issue ({added(I, TRACE, 1):.1f}
   against {added(I, HELD, 1):.1f}), and it is the dearer of the two when two stamps fall close together ({added(W, TRACE, 2):.1f}, {added(C, TRACE, 2):.1f} and {added(I, TRACE, 2):.1f} at
   two a step).
+- A STAMP SWITCHED OFF BY A BRANCH COSTS MORE THAN THE STAMP: behind a branch every lane takes alike and never takes, a
+  stamp site costs {added(W, OFF, 1):.1f}, {added(C, OFF, 1):.1f} and {added(I, OFF, 1):.1f} cycles at one a step where the stamp itself costs {added(W, HELD, 1):.1f}, {added(C, HELD, 1):.1f} and {added(I, HELD, 1):.1f}; taken one step
+  in eight, {added(W, EIGHTH, 1):.1f}, {added(C, EIGHTH, 1):.1f} and {added(I, EIGHTH, 1):.1f}. AS COMPILED the skipping path is two instructions, a test and a branch, and the toolkit
+  gives them 13 and 5 cycles of stall: a block ends with what its pending instructions are owed (KERNEL_STANDARDS
+  section 27's fence, on this card). A STAMP IS SWITCHED AT COMPILE TIME, never by a branch at run time.
 - AS COMPILED, a stamp's cost on a step bound by issue is its added instructions at about two cycles each for a warp
   alone: on the independent step ({plain(I):.1f} cycles plain, eight operations) the lean stamp adds {lean_i1:.1f} cycles and the
   store alone {added(I, STORE, 1):.1f}.
