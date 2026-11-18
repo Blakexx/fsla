@@ -50,7 +50,7 @@ their copies' waits unclocked (2026-11-15). A TRACED row's timeline is read by `
 <a id="trace"></a>`bazel run //tools:lab -- trace <name> [--row REGEX] [--record FILE] [--skip N] [--html FILE]` reads a record's TRACED
 rows (`tools/lab_trace.py`): every warp's stamps (`lab::Trace`) -- each phase's start in a coarse row, and in a fine one the start and end of each
 wait, each arrival and each copy's issue too -- written beside the record as WARPLINE'S NATIVE RECORDS, a directory `<arch>.trace/` of
-`row<i>.json`, a traced row each, in the order the rows ran (the variant's name in the record's `source`), two CTAs a row (the first and
+`row<i>.json`, a traced row each, in the order the rows ran (the record's `variant` its name), two CTAs a row (the first and
 the middle one; a one-CTA grid's, its one: a scope `cta<N>` each, a warp a lane `warp<W>`), the timed launches' last. The
 directory is the container because each of warpline's commands (`python -m warpline check|path|window|rates|perfetto
 <record>`) takes one record by its path, so a row's file is what they are pointed at; a variant's name is far longer than a
@@ -152,7 +152,10 @@ the entries are the lab's own but in three places -- the sites `entry` and `exit
 `kLaunchBegin` / `kLaunchEnd`), a barrier's site is read against the row's base, and the barriers' facts are inferred from the stamps (a site
 named `... steps` is a warp's own steps, count 0; a copy's site is released by the copy, its one arrival not stamped, the copy its
 issue, declared by `Record::operation`; a named barrier's arrival is not stamped, declared by `Record::rendezvous` with the skew
-`kRendezvousSkew` and its reason in `lab.cuh`; any other's count is the warps that arrive at it), and the variant by `Record::variant`.
+`kRendezvousSkew`, 128 cycles: a named barrier's warps are released by one event and each reads its clock after its
+`bar.sync` returns, so one phase's wait ends differ by the read's lag -- at the carry's one CTA by at most 87 cycles,
+median 11, each at least 50 after the phase's last begin; 128 is the next power of two over that, not yet read from a
+full grid's record; any other's count is the warps that arrive at it), and the variant by `Record::variant`.
 
 ## The kit (`measure/lab/lab.cuh`)
 

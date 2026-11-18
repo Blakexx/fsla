@@ -94,7 +94,7 @@ def test_a_row_without_edges_has_no_launch(capsys):
     assert "too few windows stamped" in capsys.readouterr().out
 
 
-def test_a_record_of_the_old_host_names_its_variant_in_its_source():
+def test_a_record_with_no_variant_field_is_named_by_its_source():
     rec = record(PLAIN, [((0, 0), (100, 60), [])])
     assert lab_trace.variant_of(rec) == PLAIN
     doc = rec.to_dict()

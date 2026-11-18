@@ -413,7 +413,5 @@ def load(folder: Path) -> list[tuple[str, wl_record.Record]]:
 
 
 def variant_of(rec: wl_record.Record) -> str:
-    """A record's variant: its own field `variant`. A record the lab wrote before warpline named it (the committed ones of
-    `measure/lab/results/` up to the pin's bump) carries it as `source.variant`, free text with the same string; that is
-    read where `variant` is absent, so one reading path serves both and a record is never edited."""
+    """A record's variant: its field `variant`, or, in a record that holds none, its `source.variant`."""
     return rec.variant or rec.source["variant"]

@@ -678,12 +678,7 @@ __device__ __forceinline__ void cluster_add_u64(uint32_t a, long long v) {
 //:    copy (`Record::operation`: one arrival, not stamped, the copy its issue, its `done` the barrier's wait's end), a named
 //:    barrier's (0x8000 to 0xBFFF) arrival is not stamped (the warp's reaching it is its wait's begin: `Record::rendezvous`,
 //:    `kRendezvousSkew`), and any other's count is the warps that arrive at it, one each a phase.
-//: THE SKEW A RENDEZVOUS IS ACCEPTED WITH, in cycles: the warps of a named barrier are released by one event, and each
-//: reads its clock after its `bar.sync` returns, so the clock reads of one phase's wait ends differ by the read's lag. At
-//: the one CTA of the carry (`sm_90a.blocks1`: two rendezvous, 128 phases each, four warps) the ends of a phase differ by
-//: at most 87 cycles (median 11) and every end is at least 50 cycles after the phase's last begin (the barrier's own
-//: latency), so the record needs none; 128 is the next power of two over the largest spread, the room a read's lag has
-//: in a CTA with more on its SM, to be read again from a full grid's record.
+//: the skew a rendezvous' wait ends are accepted with, in cycles (docs/internals/tools/lab.md#trace)
 constexpr uint32_t kRendezvousSkew = 128;
 
 inline std::string trace_record(const std::string& variant, const std::vector<int>& ctas,
