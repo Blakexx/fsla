@@ -84,19 +84,15 @@ table, each failing one check with its own message; its tree holds a manifest wi
 <a id="action-hooks"></a>
 ## The agent files: action hooks and their dispatcher
 
-`.claude/` holds three kinds of tracked file. `settings.json` (the session-start hook), `references.lock.json`, and the
-action hooks: `.claude/action-hooks.json` (`{"PreToolUse": [{"matcher": "<regex of tool names>", "command": "<path in the
-checkout>"}]}`) lists the hooks a tool call fires, and `.claude/hooks/` holds them. A hook reads the call's JSON on stdin and
-refuses by printing `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-"permissionDecisionReason": "..."}}`. They are fired from any session by one generic dispatcher, `.claude/hooks/repo_hooks.py`,
-installed as the user's `~/.claude/hooks/repo_hooks.py` by `bazel run //:init` ([`dev.md`](dev.md#action-hooks)): it finds the
-checkouts a call touches, runs only those under a root of `~/.claude/repo_hooks_roots.json` (a cloned stranger's manifest never
-runs) and returns the first refusal. An action hook counts as the rules table's `hook` forcing point; it holds only where the
-dispatcher is installed. Two exist: `no_polling.py` (KERNEL_STANDARDS §14 and its addendum: a shell loop that sleeps or lists
-processes, `watch` over one, a bare `sleep` of 30 s or more; the bounded `timeout <=600 tail --pid=$PID -f /dev/null` passes;
-override `POLL_OVERRIDE=<why>`) and `no_verify.py` (`#no-verify`: `--no-verify` on `git commit` or `git push`, `git commit -n`,
-`git -c core.hooksPath=...`; override `NO_VERIFY_AUTHORIZED=<the owner's words>`). `portable_claude.py` gates them like every
-file under `.claude/` ([above](#portable-agent-files)).
+`.claude/` holds three kinds of tracked file: `settings.json` (the session-start hook), `references.lock.json`, and the
+action hooks, which let a rule the rules table marks `hook` refuse a tool call as it is made rather than be found in review.
+`.claude/action-hooks.json` lists the hooks a call fires (`{"PreToolUse": [{"matcher": "<regex of tool names>", "command":
+"<path in the checkout>"}]}`) and `.claude/hooks/` holds them; a hook reads the call's JSON on stdin and refuses by printing
+a `permissionDecision` of `deny` with its reason. One generic dispatcher, `.claude/hooks/repo_hooks.py`, fires them from any
+session, runs only checkouts under the dev config's `workspace.hook_roots` (a cloned stranger's manifest never runs) and
+returns the first refusal; the install is [`dev.md`](dev.md#action-hooks), and a hook holds only where it is installed.
+Two exist, each with its patterns and its override in its own docstring: `no_polling.py` (KERNEL_STANDARDS §14) and
+`no_verify.py` (`#no-verify`). `portable_claude.py` gates them like every file under `.claude/` ([above](#portable-agent-files)).
 
 <a id="ratchets"></a>
 ## The ratchets

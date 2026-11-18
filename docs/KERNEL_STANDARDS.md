@@ -230,6 +230,9 @@ the harness re-invokes it when the command exits, with the exit status. Never wa
 builds in the same venv, and a live waiter re-wakes a stopped agent into a worktree it no longer owns).
 Never edit a source file while a build of it is in flight. One gate build per stage; iteration builds
 single-arch and arm-subset.
+Why: each check of a waiting loop is a model request that re-reads the whole context; a background run with an exit
+marker costs none. A poll may still be made with a stated reason (Blake, 2026-11-17: "override is ok if there is a good
+reason"): the command carries `POLL_OVERRIDE=<why>`, and the stated reason is the whole authorization.
 <a id="s14-addendum"></a>§14 addendum (Blake: background tasks have died silently before): the launch records the build's PID and
 appends an exit marker (`echo BUILD_EXIT=$? >> log`) as the command's last step; on re-invocation for ANY
 reason the agent reads the marker first, never trusts the notification alone. The wait itself is a

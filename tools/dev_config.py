@@ -87,6 +87,11 @@ SCHEMA: dict[str, dict[str, Key]] = {
                         "every venv that runs here"),
         "worktrees": Key("path", str(ROOT.parent / "worktrees") if ROOT.parent.name != "worktrees" else str(ROOT.parent),
                          "the one folder every worktree and its venv live in"),
+        "hook_roots": Key("argv?", None,
+                          "the folders under which the action-hook dispatcher (`.claude/hooks/repo_hooks.py`) runs a "
+                          "checkout's tracked hooks; `init` writes them to the user's `~/.claude/repo_hooks_roots.json`, "
+                          "which is derived and rewritten on every `init`. Null: this repository's checkouts and "
+                          "workspace.worktrees"),
         "base_venv": Key("path?", None,
                          "a venv the machine's workspace file may name, for the checkouts on this machine whose hooks "
                          "run from it; this tree reads none. A loader refuses a key it does not declare, so it stays "

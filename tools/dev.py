@@ -301,10 +301,10 @@ def dispatcher_state() -> tuple[bool, bool, bool]:
 
 
 def install_dispatcher() -> None:
-    """The dispatcher installed where it differs, its hook entry added where it is absent and the roots file created only
-    where it is absent (a user's own list is never overwritten), on a machine where Claude Code keeps a user configuration
-    (`~/.claude`; the image has none); every other user setting is kept, and a settings file that does not parse is
-    refused, never rewritten."""
+    """The dispatcher installed where it differs, its hook entry added where it is absent and the roots file rewritten
+    from `workspace.hook_roots` where it differs (the file is derived; the dev config is the one place to edit), on a
+    machine where Claude Code keeps a user configuration (`~/.claude`; the image has none); every other user setting is
+    kept, and a settings file that does not parse is refused, never rewritten."""
     home = Path.home() / ".claude"
     if not home.is_dir():
         print("action-hook dispatcher: no Claude Code configuration here, nothing to install")
@@ -324,10 +324,20 @@ def install_dispatcher() -> None:
         path.write_text(json.dumps(settings, indent=2) + "\n")
         print(f"action-hook dispatcher: wired into {path}")
     roots = home / DISPATCHER_ROOTS
-    if not roots.exists():
-        listed = sorted({str(c) for c in (*_worktrees(), Path(dev_config.get("workspace.worktrees")))})
-        roots.write_text(json.dumps(listed, indent=1) + "\n")
-        print(f"action-hook dispatcher: created {roots} ({len(listed)} roots)")
+    listed = dispatcher_roots()
+    text = json.dumps(listed, indent=1) + "\n"
+    if not roots.is_file() or roots.read_text() != text:
+        roots.write_text(text)
+        print(f"action-hook dispatcher: wrote {roots} from workspace.hook_roots ({len(listed)} roots)")
+
+
+def dispatcher_roots() -> list[str]:
+    """The folders the dispatcher may run hooks under: `workspace.hook_roots`, else this repository's checkouts and
+    `workspace.worktrees`."""
+    configured = dev_config.get("workspace.hook_roots")
+    if configured is not None:
+        return sorted({str(Path(r).expanduser()) for r in configured})
+    return sorted({str(c) for c in (*_worktrees(), Path(dev_config.get("workspace.worktrees")))})
 
 
 def _worktrees() -> list[Path]:
@@ -440,7 +450,7 @@ def cmd_check(a) -> int:
         current, wired, rooted = dispatcher_state()
         row(current and wired and rooted, "action-hook dispatcher: " + ("installed and current" if current else "missing or stale")
             + ("" if wired else ", not in the user's settings") + ("" if rooted else f", no listed root holds {ROOT}"),
-            f"bazel run //:init (a roots file of yours is kept: add {ROOT.parent} to ~/.claude/{DISPATCHER_ROOTS})")
+            f"bazel run //:init (it rewrites ~/.claude/{DISPATCHER_ROOTS} from workspace.hook_roots; set that key to cover {ROOT})")
     else:
         row(True, "action-hook dispatcher: no Claude Code configuration here")
     for key in ("host.lock_dir", "host.scratch"):

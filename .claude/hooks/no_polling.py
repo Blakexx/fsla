@@ -3,7 +3,8 @@
 `#s14-addendum`): a shell loop (`until`, `while`, `for`) whose text sleeps, lists processes or probes a pid, a `watch`
 over such a command, and a bare `sleep` of 30 s or more. The wait the addendum allows is a bounded timer with early
 exit, `timeout <=600 tail --pid=$PID -f /dev/null`, after which the agent reads the exit marker. A sleep under 30 s
-outside a loop is allowed. Override: `POLL_OVERRIDE=<why>` in the command. Fired by the repo's dispatcher
+outside a loop is allowed. Override: `POLL_OVERRIDE=<why>` in the command, the stated reason
+KERNEL_STANDARDS section 14 allows (Blake, 2026-11-17). Fired by the repo's dispatcher
 (`.claude/hooks/repo_hooks.py`); docs: docs/internals/tools/dev.md#action-hooks."""
 import json
 import re
