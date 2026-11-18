@@ -33,12 +33,8 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
                 if _k.endswith(_site + _tail) and _k[: -len(_site + _tail)] + _issue + _tail in R:
                     R[_k + " (wait)"] = R[_k]
                     R[_k] = R[_k] + R[_k[: -len(_site + _tail)] + _issue + _tail]
-    # a record taken before the wall time was scaled by the card's own CTAs holds it as 128 CTAs': restated here
+    # the card's multiprocessors, by the record's device: a counter a CTA a window is over them
     _SMS = 114 if "PCIe" in str(j.get("device")) else 132
-    if j["git"]["sha"].startswith("9988f996"):
-        for _k in list(R):
-            if _k.endswith(": the long call by wall time, scaled to 65,536 tokens"):
-                R[_k] = R[_k] * 128.0 / _SMS
 
     def g(n):
         return f"{R[n]:,.0f}"

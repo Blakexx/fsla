@@ -20,6 +20,9 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     R = {r["name"]: r["median"] for r in d["results"]}
 
     def g(n, f="{:,.0f}"):
+        if n not in R:
+            raise SystemExit(f"lab page gather_pass: the record holds no row {n!r} -- the page names a row of the "
+                             "experiment that has not been run and recorded")
         return f.format(R[n])
 
     C = ["4 to 5 live digits a token", "32 live digits a token"]
