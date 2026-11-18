@@ -1,0 +1,2 @@
+test_suite(name = "checks", tests = [":check_b"])
+tree_test(name = "check_b")

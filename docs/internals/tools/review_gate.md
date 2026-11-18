@@ -22,6 +22,11 @@ only by a residency selection no kernel consumed, outlived the families that rep
 changed passage says why a piece exists and how it connects, not what the code does step by step, and points nothing
 outside the repo.
 
+THE CHECKLIST: after the two documents the prompt carries the `review` rows of [`docs/rules.json`](../../rules.json) --
+each rule's id and statement -- under a heading that says these are the rules only the review enforces: no gate, tool or
+hook checks them ([`lint.md`](lint.md#rules-table)), so a change that breaks one is a finding the reviewer alone can
+make. The prompt's version was bumped with the block, so no earlier report outlives it.
+
 THE REVIEWER: `claude -p` in the checkout, Opus by default (`--model`), its tools read-only (Read, Grep, Glob) so it
 checks the touched files, their mirror pages and anything else before asserting, its output a fixed JSON schema (a
 summary and findings: rule, file, line, severity `block` or `warn`, claim, evidence). Slash commands, MCP servers and

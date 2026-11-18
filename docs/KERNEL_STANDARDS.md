@@ -1,21 +1,21 @@
 # KERNEL_STANDARDS — the laws
 
-**THE CONSTITUTION** is `docs/CONSTITUTION.md`: Blake's standing rulings, changed only by Blake, above every
+<a id="constitution"></a>**THE CONSTITUTION** is `docs/CONSTITUTION.md`: Blake's standing rulings, changed only by Blake, above every
 law here.
 
-**THE LAWS** are this document: the coordinator's procedural and incident-derived rules. Dated, adaptive, revisable
+<a id="laws"></a>**THE LAWS** are this document: the coordinator's procedural and incident-derived rules. Dated, adaptive, revisable
 by the coordinator; each carries the incident that made it and is repealed when the situation changes. A law never
 contradicts the constitution; where a law is an inference from one moment of development it is marked as such and
 re-examined at the next milestone.
 
-**THE CARDS.** This line's kernels are written for two families, `hopper` (sm_90a) and `blackwell` (sm_100). The
+<a id="cards"></a>**THE CARDS.** This line's kernels are written for two families, `hopper` (sm_90a) and `blackwell` (sm_100). The
 `ampere` family (sm_80 to sm_89) is the branch `ampere`, frozen: its schedules, its atoms and the labs that measured
 them are that branch's, and its cards stay rows of the hardware table (`csrc/rola/src/common/hardware.json`),
 tabulated and not built. A kernel with no family schedule (the facts pass, decode, paging, entmax) compiles for sm_86
 as it is written for every card, so the development card runs it; nothing is written for sm_86 alone
 (`docs/CONSTITUTION.md#r8`).
 
-**THREE KINDS OF RULE.** Every rule here is one of three kinds, and its kind says what a new card does to it.
+<a id="three-kinds"></a>**THREE KINDS OF RULE.** Every rule here is one of three kinds, and its kind says what a new card does to it.
 - PROCESS: how a kernel is designed, budgeted, gated, measured and committed. It holds on every card, and it is the
   kind of every rule that carries no mark.
 - `[COMPILER]`: what ptxas does to a source pattern. Each was measured on sm_86 under CUDA 13.0, by a lab of the
@@ -28,7 +28,18 @@ as it is written for every card, so the development card runs it; nothing is wri
   does the same way (a stream of rows from DRAM, a reduction's L2 requests) and are owed their sm_90a run; hopper's
   are written here as its labs run.
 
-**OWED TO THE FIRST HOPPER SCHEDULE.** No op runs on this line until the carry, the intra and the producer have hopper
+<a id="every-rule-has-a-row"></a>**EVERY RULE HAS A ROW (Blake, 2026-11-17).** A rule exists only with a mechanism that enforces it.
+`docs/rules.json` holds a row for every rule of the constitution and of this document: the site that states it (a section,
+an item, a principle), its statement, and the mechanism -- `gate` (a check of `bazel test //:gate`), `tool` (a tool refuses
+when run), `hook` (a git hook tracked in the repo), `review` (the LLM review, whose `block` finding refuses the next
+commit: `docs/internals/tools/review_gate.md#blocking`), `owed` (no mechanism yet: the forcing point it will take, and how)
+or `none` (a definition, or a section that states no rule) -- with its enforcer named and what that enforcer does not
+check. A NEW RULE LANDS WITH ITS MECHANISM, NEVER AS `owed`, and the `owed` list only shrinks. `tools/lint/rules_table.py`
+holds the table in the commit gate: it fails on a rule with no row, a row that names no rule, an enforcer that does not
+resolve and, through the ratchet (`//:ratchet_rules_owed`), a new `owed` row
+(`docs/internals/tools/lint.md#rules-table`).
+
+<a id="owed-hopper"></a>**OWED TO THE FIRST HOPPER SCHEDULE.** No op runs on this line until the carry, the intra and the producer have hopper
 schedules. These land with the first of them, each red or an owed entry until then (§25.3, §32.5):
 1. the SASS gate's hopper machine model and its step cover (§32.4), and each kernel's budget file (§19, §29);
 2. the family's part harness, phase ledger, composer and calibrations (§19, §22);
@@ -38,7 +49,7 @@ schedules. These land with the first of them, each red or an owed entry until th
 6. THE FAMILY'S TIMELINE, FIRST OF THESE (§22 addendum 2): the measured timeline of its composed kernel and the model
    that reproduces it -- until it exists, work on the composition stops at it.
 
-# ROLA KERNEL STANDARDS — how we write CUDA here (draft for Blake's read, 2026-08-26)
+# <a id="craft"></a>ROLA KERNEL STANDARDS — how we write CUDA here (draft for Blake's read, 2026-08-26)
 
 SCOPE. This document is about CRAFT: how a designed piece is realized at the hardware's grain. It is not
 about design. Design authority is Blake's rulings and `docs/ARCHITECTURE.md`; nothing cited here is an
@@ -48,7 +59,7 @@ argument for or against a design choice. References are the local copies under a
 Every brief points here. Every review applies it line by line. A check in `ratify` (§9) is the backstop
 and should catch nothing.
 
-## 1. Register-resident data exists only as FRAGMENTS
+## <a id="s1"></a>1. Register-resident data exists only as FRAGMENTS
 The tensor core's unit in registers is the fragment: one MMA tile spread across the warp's 32 lanes in a
 fixed thread→value layout. Anything held in registers across a loop is a stack of fragments, and code
 addresses it by fragment modes — never by element, never by leaf.
@@ -65,7 +76,7 @@ COUNTER-EXAMPLE: `page_regs` unrolled per LEAF × atom × channel-group → 4,09
 D=4 8-warp arm; compile 5 → 50 min/arch; cicc at 6 GB segfaulting. Per-leaf iteration below the fragment
 grain is a defect, not a style choice.
 
-## 2. Reuse an accumulator as the next GEMM's operand by RELAYOUT, not by data movement
+## <a id="s2"></a>2. Reuse an accumulator as the next GEMM's operand by RELAYOUT, not by data movement
 The fp32 accumulator of one GEMM becomes the A operand of the next by reinterpreting its layout in place
 and narrowing the type — no store, no shuffle.
 - FA2: `flash_fwd_kernel.h:378-380` (`make_tensor(rP.data(), convert_layout_acc_Aregs<TiledMma>(rP.layout()))` → `gemm_rs`); the layout math `utils.h:199-211`.
@@ -76,7 +87,7 @@ RoLA: the fold's fp32 accumulators become the readout's bf16 operand narrowed in
 the narrowing is one instruction a bf16 pair with no relayout -- four a thread a step, truncated or rounded at the same
 110 cycles a fold-and-readout step; a phase change that moves state is the transfer the design names, never an ad-hoc copy.
 
-## 3. Shared memory: copy atoms, swizzles by composition, transposition as a layout operation
+## <a id="s3"></a>3. Shared memory: copy atoms, swizzles by composition, transposition as a layout operation
 - `ldmatrix` in both variants is a declared copy atom with an arch fallback chosen at the atom, not inline
   PTX at call sites: `flash-attention/csrc/flash_attn/src/kernel_traits.h:40-44` (`SM75_U32x4_LDSM_N`, `SM75_U16x8_LDSM_T`).
 - The transposed atom feeds V as the B operand with no transpose pass: `flash_fwd_kernel.h:210`; copy and
@@ -91,7 +102,7 @@ Changing an access pattern (e.g. 2-byte scattered stores) re-derives the swizzle
 Primitives (a matrix load, an asynchronous copy, an MMA, a reduction) are wrapped ONCE, in their concern's atom
 (`csrc/rola/src/common/atoms/`, all included by `common/ops.cuh`); call sites use the wrapper.
 
-## 4. Pipelines: explicit stage state, release immediately after consumption, two stages in flight
+## <a id="s4"></a>4. Pipelines: explicit stage state, release immediately after consumption, two stages in flight
 - FA3's producer acquires a stage before issuing, the consumer waits, issues the GEMM, waits for it, and
   releases the stage at once: `hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp:750, 1140-1143`; pipeline types per
   operand `:283-286`; the invariant is documented where it bites (`:787`).
@@ -100,7 +111,7 @@ stage), or registers where the operand is register-resident. Sync carries exactl
 by mbarrier: a stage's full and empty barriers (`docs/CONSTITUTION.md#r21`). No pipeline state is implicit in loop
 parity without a comment naming the invariant.
 
-## 5. Warp specialization only as register economy
+## <a id="s5"></a>5. Warp specialization only as register economy
 - FA3 gives the producer warpgroup ~24-56 registers and the consumers 160-256 via `setmaxnreg`
   (`hopper/flash_fwd_kernel_sm90.h:82-83, 308-309, 360-361`), with the budgets `constexpr` per configuration.
 RULE: a warp is specialized only where its registers move with its role -- `setmaxnreg` hands a producer's to the
@@ -119,7 +130,7 @@ not a constraint. A loss in the ideal regime at a correctly sized budget is a de
 serialization, a missed overlap), never a reason to leave the regime: a "fewer warps is worse" reading taken with the
 budget sized for more warps measured spill, not the regime.
 
-## 6. Unroll discipline
+## <a id="s6"></a>6. Unroll discipline
 - CuTe pairs `CUTE_UNROLL` with `CUTE_NO_UNROLL` (`cutlass/include/cute/config.hpp:51-55`): saying "do not
   unroll" is as deliberate as saying "unroll". Unrolls are over fragment modes with compile-time bounds
   (`include/cute/algorithm/gemm.hpp:293-320`); FA2 unrolls a loop only when its trip count is `constexpr` (`flash_fwd_kernel.h:308`).
@@ -127,7 +138,7 @@ RULE: unroll = compile-time-bounded loops over fragment modes, nothing else. Dyn
 batches, tokens) carry `#pragma unroll 1` explicitly. `static_for` is a fragment-mode tool; a `static_for`
 whose bound is a leaf count, a channel count, or a product of them is wrong.
 
-## 7. Instantiation hygiene: one instantiation per translation unit, generated, prunable, budgeted
+## <a id="s7"></a>7. Instantiation hygiene: one instantiation per translation unit, generated, prunable, budgeted
 - FA2: each `.cu` holds ONE explicit specialization and says why: `flash-attention/csrc/flash_attn/src/flash_fwd_hdim64_fp16_sm80.cu:2-3`
   ("Splitting the different head dimensions to different files to speed up compilation. This file is
   auto-generated. See generate_kernels.py"); the generator `generate_kernels.py:12-50`; shared sub-trees are
@@ -142,9 +153,9 @@ whose bound is a leaf count, a channel count, or a product of them is wrong.
   (`media/docs/cpp/profiler.md:14`; `quickstart.md:609`).
 RULE: one arm per TU, generated from the closed-world arm list; an ARM-SUBSET build knob (declared list,
 default all) for iteration; iteration builds are single-arch AND arm-subset; every-arch all-arm builds
-once per stage. Each arm has a COMPILE BUDGET (wall time, cicc peak RSS) recorded in the manifest.
+once per stage. Each arm has a COMPILE BUDGET (wall time, cicc peak RSS) recorded in the manifest (OWED: `ratify` records neither yet).
 
-## 8. Arch mapping at the atom, closed-world at the arm
+## <a id="s8"></a>8. Arch mapping at the atom, closed-world at the arm
 Feature selection lives where the primitive is defined (`kernel_traits.h:40-44`'s `DefaultCopy` fallback),
 never as `#if` at call sites. RoLA adds: every structural decision states its hopper and blackwell mapping on the
 card (§4 of the architecture); only measured binaries run (pinned ptxas, per-arch ratified manifests, device stamp).
@@ -161,18 +172,18 @@ CAPABILITY ROWS hold only what is read -- the numeric facts plans and the admiss
 read; a fact nothing reads is not tabulated, and a family is declared on its row, never derived from flags. The design
 in one page: [`architecture/families.md`](architecture/families.md).
 
-## 9. The backstop (checks that should catch nothing)
-`ratify` records per arm and arch: registers, stack, spills, residency (existing) + compile wall time,
-cicc peak RSS, and the body count of each named `static_for` nest as a function of the arm (new). A budget
-breach fails the gate exactly as a spill does. The device stamp is asserted before any gate.
+## <a id="s9"></a>9. The backstop (checks that should catch nothing)
+`ratify` records per arm and arch: registers, stack, spills, residency. The compile wall time, cicc peak RSS and the
+body count of each named `static_for` nest as a function of the arm are OWED: nothing records them yet, and once
+recorded a breach fails the gate exactly as a spill does. The device stamp is asserted before any gate.
 
-## 10. Correctness instruments (unchanged, restated so they sit beside the craft rules)
+## <a id="s10"></a>10. Correctness instruments (unchanged, restated so they sit beside the craft rules)
 The fp64 oracle is the truth. Bit-identity against a previous binary is a REFACTOR instrument, never a
 design constraint (amended 2026-08-26). No fallbacks, no dead code, no special-case paths; comments
 are file-header/decl blocks only, prose goes to `docs/internals/` mirroring `csrc/`. Build the whole design
 or stop and name the gap; efficiency is correctness.
 
-## 11. Debugging a device hang or race (recorded 2026-08-26 after a stage burned 2.5 h reasoning blind)
+## <a id="s11"></a>11. Debugging a device hang or race (recorded 2026-08-26 after a stage burned 2.5 h reasoning blind)
 `cuda-gdb` works on this machine when the process is LAUNCHED under it; ATTACHING (`-p`) is refused by
 Yama `ptrace_scope=1` (a Linux setting, liftable with `sudo sysctl kernel.yama.ptrace_scope=0`).
 Recipe: `<venv>/bin/python -m rola_devtools.locks.gpu -- cuda-gdb -q --args <venv>/bin/python repro.py` (the GPU
@@ -185,7 +196,7 @@ for a hang; a bounded loop + `__trap()` converts a hang into a fault but skips b
 debugger. RULE: a hang or a run-to-run-varying miscount is diagnosed with the debugger or the sanitizer
 within the first hour, never by inspection alone; the finding goes in FINDINGS with the debugger's output.
 
-## 12. Warp collectives and fences (recorded 2026-08-26)
+## <a id="s12"></a>12. Warp collectives and fences (recorded 2026-08-26)
 - NEVER place a warp-collective (`__shfl_sync`, `__ballot_sync`, `ldmatrix`, `__syncwarp`) inside a
   short-circuit or a lane-divergent predicate: `part && lane_broadcast(x)` splits the warp at an
   instruction that needs every lane, and the split never completes (a hang that survives removing every
@@ -200,13 +211,13 @@ within the first hour, never by inspection alone; the finding goes in FINDINGS w
   the hang, `kill -INT <gdb pid>`, then `echo 'info cuda kernels' > in`, `info cuda threads`, `bt` —
   it names the split warp and the PC in one shot.
 
-## 13. A mechanism's brief carries the WHOLE protocol (recorded 2026-08-26 after the ring's four patches)
+## <a id="s13"></a>13. A mechanism's brief carries the WHOLE protocol (recorded 2026-08-26 after the ring's four patches)
 When a synchronization protocol or data-path mechanism changes, the brief restates the ENTIRE mechanism
 as pseudocode and the implementer rebuilds that function from it — deleting the previous one — never
 editing around the previous protocol's skeleton. Scaffolding that only made sense for a superseded
 protocol (a deferral rule, a sentinel state, a counter) must not survive; the review checks the function
 against the pseudocode line by line. "Build the whole design" applies at mechanism grain.
-Addendum: a whole rebuild is diffed against the BUG LIST of the thing it replaces, not only against
+<a id="s13-addendum"></a>Addendum: a whole rebuild is diffed against the BUG LIST of the thing it replaces, not only against
 the pseudocode — a rebuild reintroduced the `part && lane_broadcast(...)` short-circuit hang while
 rewriting the acquire, three lines below its own warning. The previous pass's findings are a checklist
 the rebuild is walked against before its first build.
@@ -218,7 +229,7 @@ the harness re-invokes it when the command exits, with the exit status. Never wa
 builds in the same venv, and a live waiter re-wakes a stopped agent into a worktree it no longer owns).
 Never edit a source file while a build of it is in flight. One gate build per stage; iteration builds
 single-arch and arm-subset.
-§14 addendum (Blake: background tasks have died silently before): the launch records the build's PID and
+<a id="s14-addendum"></a>§14 addendum (Blake: background tasks have died silently before): the launch records the build's PID and
 appends an exit marker (`echo BUILD_EXIT=$? >> log`) as the command's last step; on re-invocation for ANY
 reason the agent reads the marker first, never trusts the notification alone. The wait itself is a
 BOUNDED TIMER with early exit — `timeout 600 tail --pid=$PID -f /dev/null` (≤10 min, returns at once when
@@ -226,7 +237,7 @@ the build ends) — after which the agent INSPECTS ITS OWN STATE (the marker, th
 repeat if still building. Never trust the pid or the notification alone; the marker is the fact. Name-matched polling (`pgrep -f`) stays forbidden: it self-matches, matches other tracks, and
 re-wakes stopped agents.
 
-## 15. Stage cycle budget (recorded 2026-08-27 from the ledger: one stage ran 63 builds and 22 ratifies in 346 min)
+## <a id="s15"></a>15. Stage cycle budget (recorded 2026-08-27 from the ledger: one stage ran 63 builds and 22 ratifies in 346 min)
 - RATIFY ONCE per stage, after the last source edit. It recompiles every TU on every architecture; it is a gate,
   never an iteration tool.
 - A stage has a budget of THREE full build+gate cycles. Iteration is single-arch, arm-subset, oracle-first.
@@ -238,7 +249,7 @@ re-wakes stopped agents.
   shape, housekeeping) go in the NEXT brief instead.
 - Every kernel family carries an arm-subset knob (the carry's `--//:carry_arms`); a family without one gets it
   before its next build.
-§15 addendum (build parallelism, 2026-08-27; re-measured since): a cicc peaks at ~2.9 GB in a unit that parses torch's
+<a id="s15-addendum"></a>§15 addendum (build parallelism, 2026-08-27; re-measured since): a cicc peaks at ~2.9 GB in a unit that parses torch's
 extension header and ~0.33 GB in a torch-free arm unit (docs/build.md#compile-ledger), on a 16-CPU / 24 GB machine.
 A build's jobs are the host-budget slots the front door holds, divided by `host.nvcc_threads` (2: one cicc an
 architecture), every build under the same machine-wide pool (§23); an iteration build is single-arch and arm-subset.
@@ -256,29 +267,29 @@ small piece was 1-2 hours of waiting per stage; the closed-world guarantee is a 
 SHIPS, and nothing ships between milestones. The stage-level guarantee is the oracle.
 Corollary: a stage that needs the SASS-body/instantiation gates for its OWN claim (a byte-identity
 refactor) runs `ratify --check` against the LAST milestone's manifest on its subset only.
-§16 addendum (Blake, 2026-08-28) — EVERY STAGE GATE INCLUDES A PERF PROBE. Since the stage compiles
+<a id="s16-addendum"></a>§16 addendum (Blake, 2026-08-28) — EVERY STAGE GATE INCLUDES A PERF PROBE. Since the stage compiles
 anyway, its gate runs the fixed two-cell probe (dense flagship k_tok=None + k16 scattered; L=768;
 the stage's touched arm; ncu carry `gpu__time_duration` 3 warm + the step wall) and records it in
 FINDINGS as a running per-stage ledger next to the previous stage's numbers and the mainline
 reference. A >1.10x regression on either cell vs the previous stage is a RED like a spill: the stage
 reports it, does not rationalize it, and Blake rules. This is the instrument that would have caught
 the 3-9x loss PROBE-K35 found after nine stages.
-§16 addendum 2 (2026-08-28): AN INSTRUCTION LEDGER IS NECESSARY, NOT SUFFICIENT. One measured span
+<a id="s16-addendum-2"></a>§16 addendum 2 (2026-08-28): AN INSTRUCTION LEDGER IS NECESSARY, NOT SUFFICIENT. One measured span
 cut instructions 5.6% and cost 22% of time (IPC -27%, long-scoreboard x3.6, bank
 conflicts x2.6). The stage probe is TIME; every ledger table carries IPC and the top stall reasons
 (ncu `smsp__warp_issue_stalled_*`) beside instruction counts, and a stage whose instructions fall while
 its time rises is RED, not a win.
-§16 addendum 3 (Blake, 2026-08-28) — THE COMPILE LEDGER. Build time is a gated number like the census.
+<a id="s16-addendum-3"></a>§16 addendum 3 (Blake, 2026-08-28) — THE COMPILE LEDGER. Build time is a gated number like the census.
 Every stage gate records, per built arm TU, the compile wall and cicc peak RSS beside the previous
-stage's; >1.2x on any arm is RED (report, do not rationalize; diagnose against §7 first). Arm TUs never
+stage's (OWED: no tool records either yet); >1.2x on any arm is RED (report, do not rationalize; diagnose against §7 first). Arm TUs never
 include torch headers (the ~34 s header floor lives in the dispatch TU only). Arms are added as reviewed
 rows in the one arm list (TEST-tagged unless shipped). Ratify stays incremental per arm.
-§16 addendum 4 (Blake, 2026-11-09) — A GATE THAT READS PROFILER COUNTERS RUNS ON A HOST THAT GRANTS THEM. The probe's
+<a id="s16-addendum-4"></a>§16 addendum 4 (Blake, 2026-11-09) — A GATE THAT READS PROFILER COUNTERS RUNS ON A HOST THAT GRANTS THEM. The probe's
 and the ledgers' counters (ncu) are the device's host's to grant, and a rented card's may not: such a gate runs on a
 host that does, or its row carries a written exception naming the host and the reading that stands in (the kernel's
 own clocks, the SASS's counts). Whether a rented H100's host grants them is unmeasured.
 
-## §R addenda — LAWS (coordinator, 2026-08-28; incident-derived, revisable)
+## <a id="sr"></a>§R addenda — LAWS (coordinator, 2026-08-28; incident-derived, revisable)
 R2, R3. `[MACHINE]` The ampere family's fan-in rules (a global reduction's segments an instruction; its native
     global RED from an aligned layout), the branch's. A reduction's requests on this line: §26.3 q.
 R4. NO PER-WARP WORK THAT ANOTHER WARP ALSO DOES: CTA-identical derivations (union lists, owner
@@ -301,13 +312,13 @@ Committed records carry repo-relative or host-keyed locations. Nothing under `.c
 resolve through `$CLAUDE_PROJECT_DIR`, and a site's own locations come from the dev config or the environment
 (`ROLA_SCRATCH`); `tools/lint/portable_claude.py` fails a commit that names one.
 
-## §14 addendum (law, 2026-08-28): CONTAINERS AND THE GPU LOCK
+## <a id="s14-addendum-containers"></a>§14 addendum (law, 2026-08-28): CONTAINERS AND THE GPU LOCK
 A lock file is per-filesystem: a lock taken inside a container serializes nothing on the host or in another
 container unless both see the same files. Every container that touches the GPU mounts the host's lock directory at
 the one lock path (`/tmp/rola-locks`, every machine's default), so one set of locks governs all. One gate container at a time: stop the previous run before
 launching the next (three concurrent in-container probes turned a minutes-long gate into an hour).
 
-## §18 — Tools refuse, they do not choose (law, 2026-08-28, from Blake's "why keep two linkers")
+## <a id="s18"></a>§18 — Tools refuse, they do not choose (law, 2026-08-28, from Blake's "why keep two linkers")
 A tool or build step that could run one of two ways — a linker present or not, a cache pinned or not,
 a lint with or without its compdb, a lock taken or a slot — REFUSES with the command that fixes it; it
 never silently takes the other path. Legitimate MODES (the §16 strict-manifest tiering; a comparison
@@ -323,7 +334,7 @@ finding. A stage never raises a file's ratio; existing prose moves to the mirror
 (byte-identical SASS gate). Measured 2026-08-28 before that move: carry.cu 48%, ops.cuh 43%, box.cuh 41%,
 carry_kernel.cuh 35%, decode.cu 32%, facts_kernel.cuh 32%.
 
-## §14 addendum 2 (law, 2026-08-28, after Blake had to shut WSL down): ONE MACHINE, ONE COMPILE BUDGET
+## <a id="s14-addendum-2"></a>§14 addendum 2 (law, 2026-08-28, after Blake had to shut WSL down): ONE MACHINE, ONE COMPILE BUDGET
 Three tooling agents each ran a full rebuild concurrently (MAX_JOBS=4 each -> 12+ cicc + 3 links) and
 pegged the host at 100% CPU for 10+ minutes. The compile budget is MACHINE-WIDE and TOOL-ENFORCED, not
 brief-enforced: the graph's front door takes machine-wide slots for every build (`rola_devtools.graph.front_door` over
@@ -365,7 +376,8 @@ ever compared. From here the floor is a GATE, per component, before composition:
   compared to the sum of its parts; the difference is the composition cost and is reported as such.
 - The per-component instruction count of the shipped binary is attributed by `tools/region_ledger.py`
   (SourceCounters + lineinfo, functions and struct methods) against `tools/budgets/<kernel>.json`; a
-  component over budget is red, the same as a spill. Every kernel has its budget file, or an owed or exempt
+  component over budget is red, the same as a spill; the tool runs by hand over a profiler CSV, and no budget file
+  exists yet (OWED: every kernel's budget is an owed entry). Every kernel has its budget file, or an owed or exempt
   entry in `tools/coverage.json` saying why not (§25).
 - SKELETON FIRST (Blake, 2026-09-09): the kernel is composed from STUB components before any is
   implemented -- each stub has the real signature, the real shared-memory tenants and edges, and does
@@ -385,8 +397,10 @@ ever compared. From here the floor is a GATE, per component, before composition:
 
 ## <a id="s20"></a>§20 — ptxas SIGNATURES (law, 2026-09-09): what the SASS gate reads, and the rule behind each
 `tools/sass_gate.py` runs after every build (the library's gate action, iteration builds included), on
-every function of every cubin, and fails on any of these -- and on a kernel the source defines that no cubin
-carries; each was re-learned by trial this week and costs a rebuild when missed.
+every function of every cubin, and fails on the first, second, fourth (its predicated-`HMMA` half) and fifth of these,
+and on a kernel the source defines that no cubin carries; the predicated-chain signature, the pair body's
+if-conversion count, copy-task coalescing and the instructions-per-MMA ceiling (a `--max-per-hmma` flag no build
+passes) are not read yet (OWED); each was re-learned by trial this week and costs a rebuild when missed.
 `[COMPILER]` Every signature below was read from sm_86 cubins, the MMA an `mma.sync`'s HMMA; each is re-read on this
 line's `wgmma` steps (owed).
 - LDL/STL > 0 or a stack frame: LOCAL MEMORY. Causes: a runtime index into a register array or
@@ -399,7 +413,7 @@ line's `wgmma` steps (owed).
   uniform, inside a lambda with an early `return`. Rule: collectives at the top level of loops whose
   bounds come from constants, REDUX results or uniform registers; predicate RESULTS, never the
   collective; a quad sum past a branchy loop goes through shared memory, not shuffles.
-  ADDENDUM (2026-09-29): the gate read NONE of these until this date -- it matched the call's operands
+  <a id="s20-addendum-1"></a>ADDENDUM (2026-09-29): the gate read NONE of these until this date -- it matched the call's operands
   against its opcode alone. Reading them found 10,258 calls into `WARPSYNC` + collective subroutines
   across the entmax family, the decode arms and five intra arms, and EVERY ONE GUARDED: this ptxas (CUDA
   13) emits the inline collective for a converged warp and reaches the subroutine only through a
@@ -409,7 +423,7 @@ line's `wgmma` steps (owed).
   and reds only an UNGUARDED call, a converged warp's. The rule's reason is now code size: control a
   branch around collectives reads belongs in the uniform datapath (kernel parameters indexed by block
   index, constants), which keeps the fallbacks out; a data-dependent loop exits on a vote.
-  ADDENDUM (2026-11-01/02): two causes found since. (1) An OUTLINED LAMBDA: a lambda's operator is not
+  <a id="s20-addendum-2"></a>ADDENDUM (2026-11-01/02): two causes found since. (1) An OUTLINED LAMBDA: a lambda's operator is not
   force-inlined; past the inliner's threshold NVVM outlines it, its by-reference captures go to memory and
   every collective inside becomes a call -- so where the gate shows fallbacks or a stack frame with no spills,
   first read the `CALL.REL.NOINC` targets' names (an outlined lambda shows by its mangled name); a large body
@@ -511,7 +525,7 @@ barrier (the 1,738-cycle "scans" were ~460 of scans and the readout's imbalance,
 report a stale artifact (a PTX assembled after a failed compile, a worker default standing in for a
 schedule) is a defect in the suite and is fixed before its numbers are used again.
 
-## §22 addendum (Blake, 2026-09-12): THE GATE IS A DECISION TREE THAT ONLY GROWS
+## <a id="s22-addendum"></a>§22 addendum (Blake, 2026-09-12): THE GATE IS A DECISION TREE THAT ONLY GROWS
 "we should never point towards or assume from data that isn't definitive. with our reusable gating
 system, we keep expanding it to add more metrics and data, and any time we find we need more info we
 add more profilers, metrics, etc. to the gate -- so that it becomes a decision tree: any time the
@@ -559,7 +573,7 @@ manual steps, and the dev container had drifted for two weeks unnoticed.
    (read-only, which ratify records) and, under WSL, the driver's libraries.
 4. STABLE BEFORE FASTER (Blake, 2026-09-13: "We should get the package, build, devloop, measure system stable before optimizing kernel. A standard process makes everything easier."): a broken or slow build, dev loop or measurement system is fixed before the next kernel optimization, and a toolchain move lands before more baselines accumulate.
 
-## §24 — TWO TIERS: DECIDE COARSELY, BURST STATICALLY (law, 2026-09-17, from the fold's and readout's forms)
+## <a id="s24"></a>§24 — TWO TIERS: DECIDE COARSELY, BURST STATICALLY (law, 2026-09-17, from the fold's and readout's forms)
 
 `[MACHINE]` The ampere family's rule, and the branch's: a synchronous `mma.sync` holds its warp at the pipe, so a
 phase that issues MMAs was split in the source into a DECIDE tier (everything data-dependent, run at a boundary into
@@ -578,7 +592,7 @@ keeps that shape, and reads hopper's MMA atoms when they exist (owed).
 Precedent: CUTLASS's tile scheduler against its collective mainloop; FlashAttention-2's unrolled, branch-free KV loop
 with masking by predication; ThunderKittens' producer and consumer warpgroups.
 
-## §23 addendum (law, 2026-09-18, from the research behind the burst: the coordinator's research journal, SASS guidelines)
+## <a id="s23-addendum"></a>§23 addendum (law, 2026-09-18, from the research behind the burst: the coordinator's research journal, SASS guidelines)
 
 1. `[COMPILER]` THE EMITTED DISTANCE IS THE LATENCY BUDGET. ptxas sets an instruction's stall count to the producer's
    latency minus the instructions it placed between producer and first consumer (Huerta et al. 2025, §4, validated on
@@ -600,7 +614,7 @@ with masking by predication; ThunderKittens' producer and consumer warpgroups.
    once and was retired when the compiler learned the interleave (DeepGEMM). Nothing below ptxas is patched
    unless the coverage reading shows the order right and only the bits wrong, and then as a ratified artifact
    with its patch script under the same gate.
-## §23 addendum 2 (law, 2026-09-18, from Blake's "either the simulator is wrong, or something is binding the kernel that shouldn't be. we need a way to find that out")
+## <a id="s23-addendum-2"></a>§23 addendum 2 (law, 2026-09-18, from Blake's "either the simulator is wrong, or something is binding the kernel that shouldn't be. we need a way to find that out")
 
 1. A MODEL READS AGAINST THE PROBE BEFORE IT READS THE KERNEL. A pipe model simulates every
    calibration row's loop as the probe runs it and prints it beside the row's latest clocked measurement; a floor
@@ -639,7 +653,7 @@ with masking by predication; ThunderKittens' producer and consumer warpgroups.
    every list to a whole fragment, so at a short chunk the padding equals what it removed; it is priced against its
    padding first and pays only on long lists.
 
-## §25 — EVERY GATE COVERS EVERY KERNEL (law, 2026-09-29, from Blake's "expand our gates and standard to cover all our kernels and source generically")
+## <a id="s25"></a>§25 — EVERY GATE COVERS EVERY KERNEL (law, 2026-09-29, from Blake's "expand our gates and standard to cover all our kernels and source generically")
 An inventory found the kernel gates had each narrowed to the kernels their author had in mind: the SASS gate read one
 cubin, the device clang-tidy one unit, ratify a hand-written list that had lost three shipped kernels, and the budgets,
 phase-ledger tool and declared arm set named the carry alone. Nothing had decided any of it. So:
@@ -757,8 +771,8 @@ issues MMAs (§20), on every function of every build; no kernel built before the
 it names no debt, and an instrument's probe keeps one only where it declares it (§20). `tools/lab.py` refuses a lab number whose step branches unless
 the experiment declares them (an expectation on BSSY: a comparison baseline kept on purpose). The burst tier's lint
 (§24) holds the source side: no data-dependent `if` inside a burst function, `@burst-exempt <reason>` the only way
-out. Register moves per MMA in a step (the copy-rotation signature) and the MMA gap (the longest MMA-free run in the
-step loop's body, and around it) are reported; the gate on what they cost is §32.4's step cover, which runs once a family's model exists. Measured: §26.3 s.
+out. The MMA gap (the longest MMA-free run in the
+step loop's body, and around it) is reported, and register moves per MMA in a step (the copy-rotation signature) are not yet (OWED); the gate on what they cost is §32.4's step cover, which runs once a family's model exists. Measured: §26.3 s.
 
 ## <a id="s28"></a>§28 — NO PHASE IDLES THE BINDING STREAM (law, 2026-10-07, from Blake's "any kernel we write should be going for maximal pipelining, ilp, etc. we shouldn't be compromising our standards, and if linters are letting us we should be making our linters more powerful and standards more clear")
 The facts pass's list build was priced by instruction count (about 10 an entry, "inside the ~40% issue headroom")
@@ -947,19 +961,19 @@ gated, and an instrument's missing target is a red.
 2. PREDICT, THEN MEASURE, AND A MISS STOPS: each phase's cycles a warp a window are predicted by the family's
    timeline model (§22 addendum 2: the model that reproduces the measured timelines; a budget line's per-primitive
    prices bound a phase from below and are not its prediction) and written to the budget (`phase_cycles` per cell) before a schedule or composition change is built;
-   the family's phase ledger reds a phase over 1.3x its prediction or without one. A miss stops work on the
+   the family's phase ledger (OWED: none exists yet) reds a phase over 1.3x its prediction or without one. A miss stops work on the
    kernel until the price or the model that was wrong is named and corrected (§29.13) -- §22's abandonment rule
    applied to a phase.
 3. REGISTERS ARE BUDGETED PER PHASE: the budget's `registers` line states each component's peak live registers, under
-   the allocation of the warps a scheduler the design wants; `tools/life_ranges.py --budget` reds a component past
+   the allocation of the warps a scheduler the design wants; `tools/life_ranges.py --budget` (run by hand; no budget file exists yet) reds a component past
    its line or without one. §29.2's hoisting stops at the line: a value whose hoisting would pass it is re-derived at
    its use (`ops::opaque`, docs/internals/common/atoms/warp.md#opaque), a few instructions there instead of a register held
    across the window. A spill is never the signal (§20 reds it); the line is. A RE-DERIVATION IS A PRICED LINE ITEM
    (amended 2026-10-18): its instructions at its trips (§29.11), in the budget beside the register it saves -- the
    ampere carry's ledger miss (3,884 instructions a warp-window against ~2,020) was mostly tokens, sources and
    swizzles re-derived at each use and priced nowhere.
-4. EVERY STEP LOOP COVERS ITS PIPE: `tools/sass_gate.py` simulates every innermost MMA loop of every function, on every
-   build, from ptxas's control words and the family's machine model (its MMA's pipe time, its latencies and its
+4. EVERY STEP LOOP COVERS ITS PIPE: `tools/sass_gate.py` is to simulate every innermost MMA loop of every function, on
+   every build, once a family's model exists (OWED: it runs no cover today), from ptxas's control words and the family's machine model (its MMA's pipe time, its latencies and its
    shared-memory rates the hardware table's rows, each a lab's), and reds a loop whose COVER -- its pipe share with
    the warps a scheduler its registers admit running it together, sharing the scheduler's issue port and the SM's
    memory pipe, at most its share alone times those warps and 100% -- is under 1/1.15 (§28's line): a loop under it
@@ -982,9 +996,10 @@ gated, and an instrument's missing target is a red.
    ncu's cycles of one launch each; times from separate unlocked runs are never compared.
 8. WORK MOVED ACROSS A RENDEZVOUS IS PRICED ON THE CRITICAL PATH FIRST: reordering work around a barrier cannot
    shorten warps that all do the same work, since their critical path is unchanged.
-ENFORCED: items 3, 4 and 5 by the tools named; the SASS gate runs inside every build (the library's gate action), so
-an under-line step fails the build. Item 2's predictions are a kernel's design's to state, and its ledger check is red
-until they exist.
+ENFORCED: item 5 by `tools/sass_gate.py` (no function matched is red, inside every build) and `tools/lint/coverage.py`
+(a pointer to nothing). Item 3's tool exists and runs by hand, and no budget file exists for it to read; item 4's step
+cover and item 2's phase ledger do not exist yet (OWED, `docs/rules.json`): an under-line step does not fail the
+build.
 
 ## <a id="s33"></a>§33 — DATA STAYS IN REGISTERS UNLESS SOMETHING STAGES IT (law, 2026-10-18, from Blake's "'Staging rule as a kernel standard' ok")
 Shared memory is a pipe a kernel can bind on (it bound the ampere family's sparse carry), so nothing passes through it

@@ -17,6 +17,7 @@ kernel:
   model that reproduces measured timelines, never from a unit's rate alone. `#s32` item 2: PREDICT, THEN MEASURE, AND A
   MISS STOPS -- a missed prediction stops work on the kernel until the wrong price or model is named and corrected.
   `#s23` addendum 2: a model reproduces the probe's rows before it reads the kernel; one point is not validation.
+- Every rule has a row in `docs/rules.json` naming what enforces it; a new rule lands with its mechanism, never as `owed`, and the owed list only shrinks (`docs/KERNEL_STANDARDS.md#every-rule-has-a-row`).
 - Efficiency is correctness; build the whole design or stop and name the gap; no fallbacks, no dead code;
   comments are decl blocks, prose goes to `docs/internals/`; the oracle is the truth (`tests/oracle/`).
 

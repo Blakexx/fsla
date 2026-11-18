@@ -62,6 +62,13 @@ tree_test(
 )
 
 tree_test(
+    name = "rules_table_fixtures",
+    size = "small",
+    cmd = ["python3", "tools/lint/rules_table.py", "--test-fixtures"],
+    data = [":tracked"],
+)
+
+tree_test(
     name = "readability_spacing_fixtures",
     size = "small",
     cmd = ["python3", "tools/lint/readability_spacing.py", "--test-fixtures"],
@@ -124,6 +131,7 @@ test_suite(
         ":host_warnings_fixtures",
         ":r9_enforcement_fixtures",
         ":readability_spacing_fixtures",
+        ":rules_table_fixtures",
         ":unused_instantiations_fixtures",
         ":vulture_fixtures",
     ],
@@ -146,6 +154,7 @@ test_suite(
     "r9_enforcement",
     "ratchet",
     "readability_spacing",
+    "rules_table",
     "unused_instantiations",
     "work_codes",
 ]]

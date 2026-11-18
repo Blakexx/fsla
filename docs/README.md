@@ -8,6 +8,7 @@ truth; what was removed, and why it was safe, is [`internals/DELETIONS.md`](inte
 | [`ESSENTIALS.md`](ESSENTIALS.md) | the post-compaction pointer card: the laws to read before acting, what exists by action, the instruments |
 | [`CONSTITUTION.md`](CONSTITUTION.md) | the owner's standing rulings, above every law |
 | [`KERNEL_STANDARDS.md`](KERNEL_STANDARDS.md) | the laws: rule, why, enforcement, evidence |
+| [`rules.json`](rules.json) | the rules table: every rule of the two documents above, with the mechanism that enforces it and what that mechanism leaves unchecked ([`internals/tools/lint.md`](internals/tools/lint.md#rules-table)) |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | what the family computes, the leaf lattice, the state format, the carve, each kernel, the launch policy, portability, and the index from mechanism to page |
 | [`architecture/`](architecture/README.md) | the permanent decisions and their arguments: the self-masking theorem, the affine recurrence, the factored representation, fp32 accumulation, closed-world codegen, the guarantee/choice/preference taxonomy |
 | [`api.md`](api.md) | the public surface and its envelope: `rola_op`, the bundle, the routing and producer, decay, the layer, the expert pins |

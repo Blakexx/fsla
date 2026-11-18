@@ -142,8 +142,8 @@ padded.
 TWO CONTRACTS, ONE TRANSLATOR. The API accepts any shape (any width from 2, any d_v, any L) and serves it by padding;
 the kernel accepts only the descriptor's strict shape and its operand formats and refuses the rest -- it never pads or
 masks. The seam is the only translator. Both boundaries are tested: API tests prove padded runs bit-identical, and
-kernel-boundary tests call the launch surface with unpadded shapes and assert the refusal; a lint keeps logical-width
-fields out of every kernel entry signature.
+kernel-boundary tests call the launch surface with unpadded shapes and assert the refusal; a lint to keep logical-width
+fields out of every kernel entry signature is OWED (none exists yet).
 
 <a id="r14"></a>
 ## R14. Ownership grains nest on the page, nothing more

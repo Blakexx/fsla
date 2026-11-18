@@ -1,0 +1,401 @@
+{
+ "lint": "rules_owed",
+ "findings": [
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule CONSTITUTION#principles.correctness-instruments",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule CONSTITUTION#principles.parity-is-a-failing-grade",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule CONSTITUTION#r13:both-boundaries-are-tested",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule CONSTITUTION#r13:the-state-owns-its-format",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule CONSTITUTION#r13:two-contracts-one-translator",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule CONSTITUTION#r15",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule CONSTITUTION#r16",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule CONSTITUTION#r23:operands-are-scaled-blocks",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule CONSTITUTION#r24",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule CONSTITUTION#r8:no-fallbacks-at-the-atom",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule CONSTITUTION#r8:one-entry-blind-to-implementation",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule CONSTITUTION#r8:this-line-is-hopper-and-blackwell",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#first-run.2",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#no-verify",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#owed-hopper.1",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#owed-hopper.2",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#owed-hopper.3",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#owed-hopper.4",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#owed-hopper.5",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s1",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s10",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s14",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s14-addendum",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s14-addendum-2",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s14-addendum-containers:one-gate-container-at-a-time",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s15-addendum",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s15:every-family-carries-an-arm-subset-knob",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s15:three-build-and-gate-cycles-a-stage",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s16-addendum",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s16-addendum-2",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s16-addendum-3:compile-ledger",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s16:ratify-at-the-milestone",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s16:stages-do-not-ratify",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s17:ad-hoc-material-never-enters-the-repo",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s17:records-carry-repo-relative-or-host-keyed",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s19:composed-kernel-phase-ledger",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s20-addendum-2:captured-parameters-are-grid-constant",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s20-addendum-2:per-thread-loop-bounds",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s20:copy-tasks-contiguous-across-lanes",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s20:instructions-per-mma-ceiling",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s20:no-predicated-chain-for-live-items",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s22:the-suite-on-every-build",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s23-addendum-2.1",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s23-addendum-2.3",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s23-addendum.3",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s23-addendum.4",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s23.2",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s25.1",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s26.1",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s26.3.dd",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s26.3.ee",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s27.4",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s28.4",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s29.9",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s30.5",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s32.2",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s32.4",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s33:contiguous-rows-are-staged-by-the-family",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s3:primitives-wrapped-once",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s5:setmaxnreg-needs-a-stated-register-count",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s6:static-for-is-a-fragment-mode-tool",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s7:compile-budget-per-arm",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s7:iteration-builds-are-single-arch-and-arm",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s8:feature-selection-at-the-atom",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s8:one-selection-layer",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  },
+  {
+   "path": "docs/rules.json",
+   "message": "owed rule KERNEL_STANDARDS#s9:device-stamp-before-any-gate",
+   "line_sha256": "e3b0c44298fc1c14",
+   "count": 1
+  }
+ ]
+}

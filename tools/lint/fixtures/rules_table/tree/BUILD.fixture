@@ -1,0 +1,4 @@
+test_suite(name = "gate", tests = [":lints", "//sub:checks"])
+test_suite(name = "lints", tests = [":lint_a"])
+tree_test(name = "lint_a")
+tree_test(name = "outside")

@@ -382,6 +382,22 @@ tree_test(
     git = True,
 )
 
+#: EVERY RULE HAS A ROW (KERNEL_STANDARDS, the preamble): docs/rules.json names the mechanism of every rule of both documents
+tree_test(
+    name = "rules_table",
+    size = "small",
+    cmd = ["python3", "tools/lint/rules_table.py"],
+    data = [":tree"],
+)
+
+tree_test(
+    name = "ratchet_rules_owed",
+    size = "small",
+    cmd = ["python3", "tools/lint/ratchet.py", "rules_owed"],
+    data = [":tree"],
+    git = True,
+)
+
 tree_test(
     name = "ratchet_vulture",
     size = "small",
@@ -434,11 +450,13 @@ test_suite(
         ":readability_spacing",
         ":portable_agent_files",
         ":mirror_declarations",
+        ":rules_table",
         ":ratchet_burst_tier",
         ":ratchet_constant_parameters",
         ":ratchet_coverage",
         ":ratchet_drift_guards",
         ":ratchet_r9_enforcement",
+        ":ratchet_rules_owed",
         ":ratchet_vulture",
         ":ratchet_work_codes",
         "//csrc/rola:lints",

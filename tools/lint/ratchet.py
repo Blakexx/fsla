@@ -42,6 +42,7 @@ LINTS = {
     "r9_enforcement": [sys.executable, "tools/lint/r9_enforcement.py"],
     "burst_tier": [sys.executable, "tools/lint/burst_tier.py"],
     "coverage": [sys.executable, "tools/lint/coverage.py"],
+    "rules_owed": [sys.executable, "tools/lint/rules_table.py", "--owed"],
 }
 FINDING = re.compile(r"^\s*([^\s:]+):(\d+): (.+)$")
 

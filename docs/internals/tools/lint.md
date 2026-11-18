@@ -18,6 +18,7 @@ tree carried when it began gating are a baseline that only shrinks.
 | `run_ruff_e3.sh` | pycodestyle's blank-line family. It keeps its own invocation because ruff preview-gates that family, and turning preview on in `pyproject.toml` would gate every other family's preview rules too |
 | `readability_spacing.py` | a function or kernel body of forty lines or more with ZERO blank lines in it, and a run of blank lines in `csrc` (Python's own two-line convention is ruff's `E303` territory). The rule asks for segmentation and does not say where |
 | `python -m rola_devtools.mirror --check` | every tracked path is declared ships or private for the public mirror in `.github/mirror/declarations.json`, so a new file never ships, and never silently stays behind, undecided (the tool is rola-devtools', linked into the venvs; its README describes the export) |
+| `rules_table.py` | every rule of the constitution and the standards has a row in [`docs/rules.json`](../../rules.json) naming its mechanism, and every enforcer a row names resolves ([below](#rules-table)) |
 | `learnings.py` | every row of [`LEARNINGS.md`](../LEARNINGS.md) names, as `path::text`, a mechanism the tree holds: a row that names none, a file that is gone or a string its file no longer contains fails the commit |
 | `clang-format` (root `.clang-format`) | the formatting floor, including `MaxEmptyLinesToKeep: 1` and `SeparateDefinitionBlocks: Always` — the formatter's half of the readability rule above |
 
@@ -39,6 +40,43 @@ is red too; a fixture's verdict must hold exactly its expected findings ([below]
 `CLAUDE.md` ship with the code to every clone and worktree, so they cite repo-relative paths, hooks resolve
 through `$CLAUDE_PROJECT_DIR`, and a site's own locations come from the dev config or the environment
 (`ROLA_SCRATCH`).
+
+<a id="rules-table"></a>
+## Every rule has a row
+
+EVERY RULE HAS A ROW (Blake, 2026-11-17; the standards' preamble). `docs/rules.json` is a JSON list with a row for each
+rule of [`CONSTITUTION.md`](../../CONSTITUTION.md) and [`KERNEL_STANDARDS.md`](../../KERNEL_STANDARDS.md), in the documents'
+order: its `site`, an `id`, a `statement` (25 words at most) and a `mechanism` -- `gate` (a check of `bazel test //:gate`),
+`tool` (a tool refuses when run), `hook` (a git hook tracked in `tools/git-hooks/`), `review` (the LLM review, whose `block`
+refuses the next commit, [`review_gate.md`](review_gate.md#blocking)), `owed` (no mechanism yet) or `none` (a definition, a
+history note, a section that states no rule). Each carries what that mechanism needs: `enforcer` (a list of paths,
+`path::symbol` and Bazel labels) and `coverage` (`full`, or `partial: <what is not checked>`); `why_not_mechanical` for a
+`review` row; `would_be` for an `owed` row (the forcing point it will take and how); `why` for a `none` row. A `review` row's
+statement reaches the reviewer's prompt, which lists them as the rules only the review enforces.
+
+A SITE is derived from the documents by the lint, never listed twice. `<DOC>#<anchor>` names every `<a id>` anchor (every
+`## ` heading of either document, each addendum paragraph and each paragraph of the standards' preamble carries one, and
+the lint fails on one that does not); `<DOC>#<anchor>.<n>` a numbered item under it, `.<n>.<letter>` a lettered item under
+that, and `CONSTITUTION#principles.<slug>` each named principle. A site with items is their container and needs no row of its
+own; a section's unnumbered bullets share its site, so a row's `id` is its site, or the site, a colon and a slug where one
+site states more than one rule.
+
+`rules_table.py` (gating, `//:rules_table`) fails on
+
+1. a row that breaks the schema, a duplicate `id`, a mechanism's required field missing;
+2. a site of either document with no row, and a row whose site is in neither;
+3. an enforcer that does not resolve: a path that does not exist, a `path::symbol` whose symbol the file does not contain, a
+   Bazel label its package's `BUILD.bazel` does not define, and for a `gate` row a label that is not a member of `//:gate`.
+   The build files are read as text, because the lint runs inside the gate and cannot run Bazel, so a target a macro names
+   by a computed string is not seen;
+4. a new `owed` row, through the ratchet: `rules_table.py --owed` prints each `owed` row's id as a finding and
+   `//:ratchet_rules_owed` holds them against `tools/lint/baselines/rules_owed.json`. A row that stops being `owed` leaves
+   the baseline in the same commit (`ratchet.py rules_owed --shrink`), so the list only shrinks.
+
+A resolving enforcer is not proof that it checks the rule: the table names the check a person opened and saw check the rule,
+and `coverage` says what it leaves unchecked. A NEW RULE lands with its mechanism and never as `owed`. The fixtures are
+`tools/lint/fixtures/rules_table/`: a small tree (two documents, a table, build files) that passes, and ten edits of its
+table, each failing one check with its own message.
 
 <a id="ratchets"></a>
 ## The ratchets
@@ -63,6 +101,7 @@ tell a real finding from a false one, so a human decides each, and the decision 
 | `run_vulture.sh` | 60 | a ruling per finding: delete the dead code, or whitelist a demonstrated dynamic use (name-dispatched methods, fixtures, a library's reads) |
 | `drift_guards.py` | 20 over 11 rules | the table below |
 | `r9_enforcement.py` | 1 | `decode_lattice.cuh`'s `switch (kind)` folds its fourth case into a bare default; the fix is a `uniform_switch`, a decode kernel change |
+| `rules_table.py --owed` | 66 (2026-11-17) | the `owed` rows of `docs/rules.json`: each leaves when its rule gains a mechanism, a `gate`, `tool`, `hook` or `review` row, in the commit that lands it ([above](#rules-table)) |
 | `coverage.py` | 0 (2026-09-29) | nothing: it gates the undeclared gaps (a kernel not in `tools/coverage.json`, a pointer to nothing); the owed obligations -- budgets, phase ledgers, sanitizer rows and oracle tests for the entmax solves, three kernels awaiting the milestone ratify -- are the backlog it prints ([`coverage.md`](coverage.md)) |
 | `burst_tier.py` | 0 (2026-11-09) | KERNEL_STANDARDS §24: an MMA issued outside a `//: @burst` function or a vote, sync, barrier, `while`, data `if` or `unroll 1` inside one, over every device function (a `static` or `__host__` one among them); `//: @burst-exempt <reason>` names a debt (the dense fold's and the dense readout's loops over a chunk's slots, `steps_dense`, `read_dense`, `dense_den`). It reads only a function that issues an MMA itself: a loop above a burst function that hand-rolls what `Burst` units do is a debt it cannot see, named on that kernel's page (the readout's `read_pass`, `readout.md#chunk`) |
 
