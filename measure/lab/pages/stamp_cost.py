@@ -29,6 +29,8 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     STORE = "the ring store alone"
     OFF = "a ring stamp behind a branch never taken"
     EIGHTH = "a ring stamp behind a branch taken one step in eight"
+    SLOT = "a fixed slot in shared memory, its address from the step's index"
+    SLOTG = "a fixed slot in global memory, its address from the step's index"
     FORMS = (
         ("the lean stamp: every lane to one entry, no predicate, no wrap", LEAN),
         ("one lane, its predicate held", HELD),
@@ -37,6 +39,8 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         ("the store alone, no clock read", STORE),
         ("the held-predicate stamp behind a branch never taken", OFF),
         ("the same, its branch taken one step in eight", EIGHTH),
+        ("the caller's stamp: a fixed slot in shared memory", SLOT),
+        ("the caller's stamp: a fixed slot in global memory", SLOTG),
     )
     ONE, TWO = ", one stamp a step", ", two stamps a step"
 
@@ -100,8 +104,13 @@ WHAT IT DECIDES.
 - A STAMP SWITCHED OFF BY A BRANCH COSTS MORE THAN THE STAMP: behind a branch every lane takes alike and never takes, a
   stamp site costs {added(W, OFF, 1):.1f}, {added(C, OFF, 1):.1f} and {added(I, OFF, 1):.1f} cycles at one a step where the stamp itself costs {added(W, HELD, 1):.1f}, {added(C, HELD, 1):.1f} and {added(I, HELD, 1):.1f}; taken one step
   in eight, {added(W, EIGHTH, 1):.1f}, {added(C, EIGHTH, 1):.1f} and {added(I, EIGHTH, 1):.1f}. AS COMPILED the skipping path is two instructions, a test and a branch, and the toolkit
-  gives them 13 and 5 cycles of stall: a block ends with what its pending instructions are owed (KERNEL_STANDARDS
-  section 27's fence, on this card). A STAMP IS SWITCHED AT COMPILE TIME, never by a branch at run time.
+  stalls both: a block ends with what its pending instructions are owed (KERNEL_STANDARDS section 27's fence, on this
+  card; the stall counts are read with `lab sass stamp_cost`). A STAMP IS SWITCHED AT COMPILE TIME, never by a branch at run time.
+- THE CALLER'S STAMP -- a clock read and a store to an address the kernel builds from an index it already holds, no
+  state of the stamp's own -- is the lean stamp in shared memory ({added(W, SLOT, 1):.1f}, {added(C, SLOT, 1):.1f} and {added(I, SLOT, 1):.1f} at one a step against the lean
+  stamp's {added(W, LEAN, 1):.1f}, {lean_c1:.1f} and {lean_i1:.1f}; {added(W, SLOT, 2):.1f}, {added(C, SLOT, 2):.1f} and {added(I, SLOT, 2):.1f} at two): the toolkit compiles both to the same four
+  instructions. THE SAME STAMP TO GLOBAL MEMORY is {added(W, SLOTG, 1):.1f}, {added(C, SLOTG, 1):.1f} and {added(I, SLOTG, 1):.1f} at one a step and {added(W, SLOTG, 2):.1f}, {added(C, SLOTG, 2):.1f} and {added(I, SLOTG, 2):.1f} at two:
+  the destination alone, every other instruction the same.
 - AS COMPILED, a stamp's cost on a step bound by issue is its added instructions at about two cycles each for a warp
   alone: on the independent step ({plain(I):.1f} cycles plain, eight operations) the lean stamp adds {lean_i1:.1f} cycles and the
   store alone {added(I, STORE, 1):.1f}.
