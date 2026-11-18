@@ -73,16 +73,6 @@ struct WarpMark {
   }
 };
 
-//: a stamp's kind: a work phase begins, a wait begins and ends, an arrival, a copy issued to a barrier; and a MARK's
-//: second entry, the nanosecond timer's low word at the stamp before it
-enum TraceKind : uint32_t {
-  kPhase = warpline::kPhaseBegin,
-  kWaits = warpline::kWaitBegin,
-  kWaited = warpline::kWaitEnd,
-  kArrives = warpline::kArrive,
-  kIssues = warpline::kIssue,
-  kTime = warpline::kTime
-};
 //: a mark's entries
 constexpr uint32_t kMarkEntries = 2;
 //: A WARP'S TIMELINE: stamps -- the SM's clock's low word beside an event's, its kind and its site -- written by the
@@ -107,12 +97,12 @@ struct Trace {
     }
   }
 
-  //: an event: `kind` a TraceKind, `site` the experiment's -- a barrier's shared address over 8 (below 0x8000), or
+  //: an event: `kind` one of warpline's kinds (`warpline/entry.hpp`), `site` the experiment's -- a barrier's shared address over 8 (below 0x8000), or
   //: its own
   __device__ __forceinline__ void stamp(uint32_t kind, uint32_t site) {
     if constexpr (ON) row.stamp(warpline::id(kind, site));
   }
-  //: A MARK: a stamp on BOTH clocks -- the stamp, then an entry of kind `kTime` at the same site whose clock word is
+  //: A MARK: a stamp on BOTH clocks -- the stamp, then an entry of kind `warpline::kTime` at the same site whose clock word is
   //: the nanosecond timer's low word: one moment tied between the cycle counter and time
   __device__ __forceinline__ void mark(uint32_t kind, uint32_t site) {
     if constexpr (ON) row.mark(warpline::id(kind, site));
@@ -899,7 +889,7 @@ class Bench {
         const unsigned long long* row = h.data() + static_cast<size_t>(w) * kRow;
         const unsigned long long n = std::min<unsigned long long>(row[0], Trace<true>::kCap);
         for (unsigned long long k = 0; k < n && !timed; ++k)
-          if ((row[32 + k] >> 48 & 0xfu) == kTime) {
+          if ((row[32 + k] >> 48 & 0xfu) == warpline::kTime) {
             ref_ns = static_cast<uint32_t>(row[32 + k]);
             timed = true;
           }
@@ -913,7 +903,7 @@ class Bench {
         const unsigned long long origin = row[1] >> 3;
         for (unsigned long long k = 0; k < n; ++k) {
           const unsigned long long ev = row[32 + k] >> 32 & 0xfffffu, site = ev & 0xffffu;
-          const long long t = (ev >> 16) == kTime ? static_cast<long long>(static_cast<int32_t>(static_cast<uint32_t>(row[32 + k]) - ref_ns))
+          const long long t = (ev >> 16) == warpline::kTime ? static_cast<long long>(static_cast<int32_t>(static_cast<uint32_t>(row[32 + k]) - ref_ns))
                                                   : static_cast<int32_t>(static_cast<uint32_t>(row[32 + k]) - ref) - first;
           out += std::string(k ? "," : "") + std::to_string(t) + ","
                  + std::to_string(site < 0x8000u ? (ev & ~0xffffull) | (site - origin) : ev);

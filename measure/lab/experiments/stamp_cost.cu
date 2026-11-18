@@ -70,7 +70,7 @@ struct Stamps {
   }
 
   __device__ __forceinline__ void stamp(uint32_t ring_at, uint32_t id) {
-    if constexpr (FORM == kTrace) trace.stamp(lab::kPhase, id);
+    if constexpr (FORM == kTrace) trace.stamp(warpline::kPhaseBegin, id);
     if constexpr (FORM == kLean) {
       uint32_t now;
       asm volatile("mov.u32 %0, %%clock;" : "=r"(now));

@@ -153,7 +153,7 @@ lab's and the kernels'); `tools/lab.py` run outside `bazel run` refuses to compi
   traced rows are coarse, their phases' starts and the launch's two edges, and its `kFine` adds the rest and drops the edges, its kernels being at their
   registers' limit; `kFine` alone is the edges row): `stamp(kind, site)` and `at(kind, bar)` (a barrier's site its
   shared address over 8, read against the CTA's base `close(base)` stores), a stamp the SM's clock's low word beside an
-  event's (`lab::TraceKind` and site), written by the warp's first lane, one predicated store a stamp to the warp's row in global memory, with no compiler
+  event's (a kind of warpline's, `warpline/entry.hpp`, and a site), written by the warp's first lane, one predicated store a stamp to the warp's row in global memory, with no compiler
   barrier (a branch on the count would hold its loops' convergence); priced a stamp by `stamp_cost`
   ([`docs/lab/stamp_cost.md`](../../lab/stamp_cost.md)). Its cost is each traced row's window beside its untraced twin's
   (`docs/lab/carry_window.md`, its traced rows); `Bench::trace` prints chosen CTAs' rows as one line with the warps' roles and the
