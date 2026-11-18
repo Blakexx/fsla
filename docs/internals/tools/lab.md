@@ -47,8 +47,8 @@ window of each other, when the row names no path. Read it before any role's stal
 Its limit: it reads sums, and a cycle no site clocks counts as busy -- the serve rows' drain warps read 82% busy with
 their copies' waits unclocked (2026-11-15). A TRACED row's timeline is read by `trace` instead.
 <a id="trace"></a>`bazel run //tools:lab -- trace <name> [--row REGEX] [--record FILE] [--skip N] [--html FILE]` reads a record's TRACED
-rows (`tools/lab_trace.py`): every warp's stamps (`lab::Trace`) -- the start and end of each wait, each arrival, each
-copy's issue, each phase's start -- written beside the record as `<arch>.trace.json`, two CTAs a row (the first and
+rows (`tools/lab_trace.py`): every warp's stamps (`lab::Trace`) -- each phase's start in a coarse row, and in a fine one the start and end of each
+wait, each arrival and each copy's issue too -- written beside the record as `<arch>.trace.json`, two CTAs a row (the first and
 the middle one), the timed launches' last. Over the steady span (past the first `--skip` windows, to the last window
 every warp's stamps cover) it prints each role's cycles a window a warp by state (a phase's work, a wait at a barrier,
 a wait on its own steps); each BLOCKING wait (over 64 cycles) with its releaser -- the latest arrival at its barrier
@@ -129,8 +129,10 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
 * The operand pieces the kernels use: `ldsm` and `ldsm_t` (`ldmatrix.x4`, `.trans`), `hmul2`, `pack_half2`, `smem`;
   the mbarrier as `ops.cuh` spells it: `mbar_init`, `mbar_arrive`, `mbar_wait` (polled), `mbar_wait_suspended` (sm_90: `try_wait`, the thread may be suspended), `mbar_test` (once).
 * `lab::sink(out, v)` — a fold of everything a thread computed, stored unconditionally.
-* `lab::Trace<ON, FINE>` — a warp's timeline (`lab trace`; `FINE` false is a COARSE trace, a phase's start and nothing
-  else, its other stamps compiled to nothing -- the detail is switched on where the coarse trace points): `stamp(kind, site)` and `at(kind, bar)` (a barrier's site its
+* `lab::Trace<ON>` — a warp's timeline (`lab trace`). A stamp always stamps: WHICH stamps a kernel takes is its
+  author's, by an ordinary condition around the call -- a compile-time one compiles the stamp to nothing, a run-time one
+  the same on every lane is a test and a branch -- and `ON` false makes the whole recorder nothing (the carry lab's
+  traced rows are coarse, their phases' starts, and its `kFine` adds the rest): `stamp(kind, site)` and `at(kind, bar)` (a barrier's site its
   shared address over 8, read against the CTA's base `close(base)` stores), a stamp the SM's clock's low word beside an
   event's (`lab::TraceKind` and site), written by the warp's first lane, one predicated store a stamp to the warp's row in global memory, with no compiler
   barrier (a branch on the count would hold its loops' convergence); priced a stamp by `stamp_cost`

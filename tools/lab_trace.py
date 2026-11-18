@@ -1,7 +1,8 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE TIMELINE OF A TRACED ROW (`lab trace`): each warp's stamps -- its waits' starts and ends, its arrivals, its
-copies' issues and its phases' starts (measure/lab/lab.cuh, `lab::Trace`) -- read as what each warp did when, who
+"""THE TIMELINE OF A TRACED ROW (`lab trace`): each warp's stamps (measure/lab/lab.cuh, `lab::Trace`) -- a fine row's: its
+waits' starts and ends, its arrivals, its copies' issues and its phases' starts; a coarse row holds its phases' starts
+alone, and has no waits to walk a path through -- read as what each warp did when, who
 released each wait it was held at, and the window's critical path walked back through those releases.
 
 A wait is BLOCKING when it lasted more than `BLOCKING` cycles; a shorter one found its barrier passed, and is its

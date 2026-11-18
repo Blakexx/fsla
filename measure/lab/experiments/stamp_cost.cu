@@ -7,7 +7,9 @@
 // `Trace` (its first lane's predicated store to the warp's row in global memory); a ring in shared memory written by one lane under a held
 // predicate; the same with the predicate folded into the ring offset's low bit (one register); the one-lane stamp's
 // store alone, on the integer steps; and the leanest stamp -- every lane storing the same words to ONE entry, no
-// predicate and no wrap (a ring sized for its run). A stamp's cost is a form's cycles a step less the
+// predicate and no wrap (a ring sized for its run). The held-predicate stamp also runs behind a branch every lane
+// takes alike -- never taken, and taken one step in eight: what a stamp switched off at run time costs. A stamp's cost
+// is a form's cycles a step less the
 // plain step's, over its stamps a step. Every kernel's work is checked against the host's, and every ring form's
 // stamps are read back: their ids in order, their clocks not decreasing.
 // TIMELINE: one warpgroup, no other role. A step: its first stamp (the clock read, then its store), the step's work
@@ -28,7 +30,9 @@ constexpr uint32_t kMask = kWarpRing - 1;
 //: an entry's bytes: one lane's (clock, id)
 constexpr int kEntry = 8;
 //: kStoreAlone is the one-lane stamp's store (a constant for the clock) with no read
-enum Form { kPlain = 0, kTrace = 1, kHeldPredicate = 2, kFoldedPredicate = 3, kStoreAlone = 4, kLean = 5 };
+//: the last two put the held-predicate stamp behind a branch every lane takes alike: never, and one step in eight
+enum Form { kPlain = 0, kTrace = 1, kHeldPredicate = 2, kFoldedPredicate = 3, kStoreAlone = 4, kLean = 5, kGatedOff = 6, kGatedEighth = 7 };
+constexpr bool gated(int form) { return form == kGatedOff || form == kGatedEighth; }
 //: the CS2R a plain kernel holds, by step: its span's two clock reads, and on the wgmma step 16 more -- the zeroing
 //: of its 32 accumulator registers, a CS2R of SRZ a pair, before the loop. A form's kernel holds these and one a stamp site
 constexpr int kPlainCs2r[3] = {18, 2, 2};
@@ -54,7 +58,7 @@ struct Stamps {
   __device__ __forceinline__ void bind(unsigned long long* rows) {
     const uint32_t warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     if constexpr (FORM == kTrace) trace.bind(rows);
-    if constexpr (FORM == kHeldPredicate || FORM == kStoreAlone) {
+    if constexpr (FORM == kHeldPredicate || FORM == kStoreAlone || gated(FORM)) {
       off = warp * kWarpRing;
       mine = lane == 0;
     }
@@ -70,7 +74,7 @@ struct Stamps {
       asm volatile("st.shared.v2.u32 [%0], {%1, %2};" :: "r"(ring_at + off), "r"(now), "r"(id) : "memory");
       off += kEntry;
     }
-    if constexpr (FORM == kHeldPredicate || FORM == kFoldedPredicate || FORM == kStoreAlone) {
+    if constexpr (FORM == kHeldPredicate || FORM == kFoldedPredicate || FORM == kStoreAlone || gated(FORM)) {
       uint32_t now = 0;
       if constexpr (FORM != kStoreAlone) asm volatile("mov.u32 %0, %%clock;" : "=r"(now));
       const uint32_t on = FORM == kFoldedPredicate ? off & 1u : mine;
@@ -124,7 +128,11 @@ __global__ void __launch_bounds__(kThreads, 1) cost(long long* times, uint32_t* 
   clock.start();
 #pragma unroll 1
   for (int it = 0; it < steps; ++it) {
-    if constexpr (PER >= 1) stamps.stamp(base + kRing, 1);
+    //: a gated form's switch, the same on every lane and unknown to the toolkit: the step's index against the launch's
+    //: count -- never (a bit no count this size sets), or one step in eight
+    const bool on = FORM == kGatedOff ? ((it ^ steps) & 0x40000000) != 0 : FORM == kGatedEighth ? ((it + steps) & 7) == 0 : true;
+    if constexpr (PER >= 1)
+      if (on) stamps.stamp(base + kRing, 1);
     if constexpr (WORK == 0) {
       lab::wg_fence();
       lab::wg_bf16_n64_rs(d, a, db);
@@ -137,7 +145,8 @@ __global__ void __launch_bounds__(kThreads, 1) cost(long long* times, uint32_t* 
 #pragma unroll
       for (int j = 0; j < kWide; ++j) y[j] = next(y[j], static_cast<uint32_t>(j));
     }
-    if constexpr (PER >= 2) stamps.stamp(base + kRing, 2);
+    if constexpr (PER >= 2)
+      if (on) stamps.stamp(base + kRing, 2);
   }
 #pragma unroll
   for (int i = 0; i < 32; ++i) lab::wg_hold(d[i]);
@@ -164,7 +173,8 @@ void run(lab::Bench& b, uint32_t* out, unsigned long long* rows, uint32_t* rings
   constexpr int kCheckSteps = 8, kSteps = kWarpRing / (2 * kEntry);
   static const char* const kForms[] = {"plain", "the lab's trace", "a ring, one lane, its predicate held",
                                        "a ring, one lane, its predicate in the offset", "the ring store alone",
-                                       "a ring, every lane to one entry, no wrap"};
+                                       "a ring, every lane to one entry, no wrap",
+                                       "a ring stamp behind a branch never taken", "a ring stamp behind a branch taken one step in eight"};
   const std::string name = std::string(WORK == 0 ? "a wgmma step" : WORK == 1 ? "a chained step" : "an independent step") + ", " + kForms[FORM]
                            + (PER == 0 ? "" : PER == 1 ? ", one stamp a step" : ", two stamps a step");
   cost<FORM, PER, WORK><<<b.sms, kThreads>>>(b.times, out, rows, rings, kCheckSteps);
@@ -200,10 +210,12 @@ void run(lab::Bench& b, uint32_t* out, unsigned long long* rows, uint32_t* rings
       }
     }
     //: a ring form's stamps of each warp (its lane 0's), in order: the ids as stamped, the clocks not decreasing
-    if (FORM == kHeldPredicate || FORM == kFoldedPredicate || FORM == kStoreAlone || FORM == kLean)
+    if (FORM == kHeldPredicate || FORM == kFoldedPredicate || FORM == kStoreAlone || FORM == kLean || gated(FORM))
       for (int warp = 0; warp < kWarps; ++warp) {
         uint32_t before = 0;
-        for (int e = 0; e < PER * kCheckSteps; ++e, ++stamps) {
+        //: a gated form keeps the stamps of the steps its switch is on for: none, or the check's one in eight
+        const int kept = FORM == kGatedOff ? 0 : FORM == kGatedEighth ? PER * (kCheckSteps / 8) : PER * kCheckSteps;
+        for (int e = 0; e < kept; ++e, ++stamps) {
           const size_t at = static_cast<size_t>(blk) * (kRingBytes / 4)
                             + (warp * kWarpRing + e * kEntry) / 4;
           const uint32_t now = ring[at], id = ring[at + 1];
@@ -233,6 +245,10 @@ void work(lab::Bench& b, uint32_t* out, unsigned long long* rows, uint32_t* ring
   run<kFoldedPredicate, 2, WORK>(b, out, rows, rings);
   run<kLean, 1, WORK>(b, out, rows, rings);
   run<kLean, 2, WORK>(b, out, rows, rings);
+  run<kGatedOff, 1, WORK>(b, out, rows, rings);
+  run<kGatedOff, 2, WORK>(b, out, rows, rings);
+  run<kGatedEighth, 1, WORK>(b, out, rows, rings);
+  run<kGatedEighth, 2, WORK>(b, out, rows, rings);
   //: the store alone runs on the two integer steps
   if constexpr (WORK != 0) {
     run<kStoreAlone, 1, WORK>(b, out, rows, rings);
@@ -244,13 +260,15 @@ int main(int argc, char** argv) {
   using namespace stamp_cost;
   lab::Bench b(argc, argv);
   for (int work_kind = 0; work_kind < 3; ++work_kind)
-    for (int form = kPlain; form <= kLean; ++form)
+    for (int form = kPlain; form <= kGatedEighth; ++form)
       for (int per = form == kPlain ? 0 : 1; per <= (form == kPlain ? 0 : 2); ++per) {
         if (form == kStoreAlone && work_kind == 0) continue;
         const std::string k = lab::kernel("cost", {form, per, work_kind});
         b.expect(k, "HGMMA", "==", work_kind == 0 ? 1 : 0);
         //: the trace's stamp is a global store inside the step: the form under test
         if (form == kTrace && work_kind == 0) b.expect(k, "STEP_GLOBAL", ">=", 0);
+        //: a gated form's switch is a branch inside the step: the form under test
+        if (gated(form) && work_kind == 0) b.expect(k, "BSSY", ">=", 0);
         //: a clock read a stamp site and no more: a loop the compiler unrolled or a read it dropped is refused
         b.expect(k, "CS2R", form == kTrace ? ">=" : "==", kPlainCs2r[work_kind] + (form == kPlain || form == kStoreAlone ? 0 : per));
         b.exempt(k, "a probe of the recorder's own cost: no kernel's step");

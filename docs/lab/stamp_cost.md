@@ -12,7 +12,8 @@ latency), or eight independent integer operations (a step bound by issue). Each 
 stamps a step: the lab's own trace (its first lane's predicated store to the warp's row in global memory); a ring in shared
 memory written by one lane under a held predicate; the same with the predicate folded into the ring offset's low bit;
 the leanest stamp, every lane storing the same two words to one entry with no predicate and no wrap (a ring sized for
-its run); and, on the integer steps, the one-lane stamp's store alone. A stamp's cost is a form's cycles a step less
+its run); and, on the integer steps, the one-lane stamp's store alone. The held-predicate stamp also runs behind a branch every lane takes alike, never taken and taken one step in
+eight: what a stamp switched off at run time costs. A stamp's cost is a form's cycles a step less
 the plain step's, over its stamps a step. Every kernel's work is checked against the host's, every ring form's stamps
 are read back (their ids in order, their clocks not decreasing), and every kernel declares its CS2R -- its span's two
 clock reads (on the wgmma step also the 16 that zero its accumulator) and one a stamp site -- so a loop the compiler

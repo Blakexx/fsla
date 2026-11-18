@@ -627,7 +627,14 @@ __device__ __forceinline__ uint32_t own_clock() { return static_cast<uint32_t>(c
 //: A ROLE'S TIMELINE (the traced rows'): its sites past the barriers' -- a named barrier `kNamed | id`, a phase or a
 //: step wait its own
 template <long long ROLES>
-using Tracer = lab::Trace<(ROLES & kTrace) != 0, (ROLES & kFine) != 0>;
+struct Tracer : lab::Trace<(ROLES & kTrace) != 0> {
+  //: which stamps a traced row keeps is the experiment's: a coarse row its phases' starts, `kFine` every one. A
+  //: stamp's kind is a literal where it is placed, so the others compile to nothing.
+  __device__ __forceinline__ void stamp(uint32_t kind, uint32_t site) {
+    if ((ROLES & kFine) != 0 || kind == lab::kPhase) lab::Trace<(ROLES & kTrace) != 0>::stamp(kind, site);
+  }
+  __device__ __forceinline__ void at(uint32_t kind, uint32_t bar) { stamp(kind, (bar >> 3) & 0x7fffu); }
+};
 constexpr uint32_t kNamed = 0x8000u;
 enum Site : uint32_t { kMarkWindow = 0xc000u, kMarkExpand, kMarkSteps, kMarkPanel, kMarkAdds, kMarkServe, kStepsFold, kStepsRead };
 //: a sleeping wait, its cycles added to the warp's count

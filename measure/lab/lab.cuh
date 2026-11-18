@@ -72,14 +72,11 @@ struct WarpMark {
   }
 };
 
-//: a stamp's kind: a work phase begins, a wait begins and ends, an arrival, a copy issued to a barrier
-enum TraceKind : uint32_t { kPhase = 1, kWaits = 2, kWaited = 3, kArrives = 4, kIssues = 5 };
 //: A WARP'S TIMELINE: stamps -- the SM's clock's low word beside an event's, its kind and its site -- written by the
 //: warp's first lane, one predicated store a stamp to the warp's row in global memory, the row's head its count and
-//: the CTA's shared base. A stamp is a clock read, its predicate and one store, priced a stamp by `stamp_cost` as the
-//: lab's trace. `ON` false: nothing; `FINE` false: a COARSE trace, a phase's start and nothing else
-//: (docs/internals/tools/lab.md#trace)
-template <bool ON, bool FINE = true>
+//: the CTA's shared base. A stamp is a clock read, its predicate and one store: the form `stamp_cost` measured
+//: cheapest where stamps fall close together. `ON` false: nothing (docs/internals/tools/lab.md#trace)
+template <bool ON>
 struct Trace {
   //: a warp's stamps, and its row's words: a line of head, then the stamps
   static constexpr int kCap = 8192, kRow = 32 + kCap;
@@ -98,8 +95,6 @@ struct Trace {
   //: its own
   __device__ __forceinline__ void stamp(uint32_t kind, uint32_t site) {
     if constexpr (ON) {
-      //: a stamp's kind is a literal where it is placed, so a coarse trace's other stamps compile to nothing
-      if (!FINE && kind != kPhase) return;
       uint32_t now;
       asm volatile("mov.u32 %0, %%clock;" : "=r"(now));
       //: one predicated store, no branch: a branch on a count the toolkit cannot know is the warp's alone would hold
@@ -123,6 +118,8 @@ struct Trace {
     }
   }
 };
+//: a stamp's kind: a work phase begins, a wait begins and ends, an arrival, a copy issued to a barrier
+enum TraceKind : uint32_t { kPhase = 1, kWaits = 2, kWaited = 3, kArrives = 4, kIssues = 5 };
 
 //: THE SINK: a fold of everything a thread computed, stored unconditionally. A result tested against a value the
 //: compiler can fold lets ptxas delete the work behind it -- the failure the expectations exist to catch.
