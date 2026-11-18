@@ -25,7 +25,7 @@ outside the repo.
 THE CHECKLIST: after the two documents the prompt carries the `review` rows of [`docs/rules.json`](../../rules.json) --
 each rule's id and statement -- under a heading that says these are the rules only the review enforces: no gate, tool or
 hook checks them ([`lint.md`](lint.md#rules-table)), so a change that breaks one is a finding the reviewer alone can
-make. The prompt's version was bumped with the block, so no earlier report outlives it.
+make.
 
 THE REVIEWER: `claude -p` in the checkout, Opus by default (`--model`), its tools read-only (Read, Grep, Glob) so it
 checks the touched files, their mirror pages and anything else before asserting, its output a fixed JSON schema (a

@@ -2,7 +2,7 @@
 
 The gate reads every function of every cubin a binary carries and is red on any of KERNEL_STANDARDS
 [§20](../../KERNEL_STANDARDS.md#s20)'s ptxas signatures (local memory, a stack frame, convergence calls a converged
-warp executes, predicated HMMAs, branches and gaps in an MMA step); guarded convergence
+warp executes, predicated HMMAs, branches in an MMA step) and reports the gaps in an MMA step (`mma_gap`) without failing; guarded convergence
 fallbacks are counted, cold code, not red. A step loop leaves out a fallback's return: the stub a `BRA.DIV` enters is
 read to its unconditional branch back, however long (ptxas copies a step's remaining work into it). Every build runs it after the link (the library's gate action, [below](#graph)); by hand,
 `bazel run //tools:sass_gate -- <.so | .cubin> [--kernel RE] [--member S] [--loops] [--json PATH]`. Each function's line

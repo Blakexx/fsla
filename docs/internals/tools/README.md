@@ -63,7 +63,7 @@ target ([`measurement.md`](../../measurement.md)).
 | [`stall_census.py`](stall_census.md) | every warp-stall sample of one launch, by source line | the `census` target | `--json` |
 | [`life_ranges.py`](life_ranges.md) | peak LIVE registers per source region, beside ptxas's allocation | the `registers` target | `--json` |
 | `region_ledger.py` | executed instructions and stall samples per COMPONENT, against the kernel's budget file | a person, attributing a phase | `--json` |
-| [`budgets/`](budgets.md) | each kernel's instruction budget by class, per MMA (KERNEL_STANDARDS §29) | `region_ledger.py`, the lab | — |
+| [`budgets.md`](budgets.md) | the budget's form and price table: an instruction budget by class, per MMA (KERNEL_STANDARDS §29); no `budgets/` directory exists yet, each kernel's budget file is owed | `region_ledger.py`, the lab | — |
 | [`bank_model.py`](bank_model.md) | the shared-memory wavefronts a warp instruction costs, from its lanes' byte addresses (§30) | a person, before a GPU run; the lab | — |
 | [`lab.py`](lab.md) | the lab: small SASS-gated CUDA experiments whose measurements become kernel rules ([`docs/lab/`](../../lab/README.md)) | a person | `measure/lab/results/` |
 

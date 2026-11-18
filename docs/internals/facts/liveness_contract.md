@@ -112,7 +112,7 @@ token.
 The mask reaches the kernel as BITS, never as a width. `SideStatics` carries
 `dense_levels` (a bitmask over levels — a MODE fact, `level_is_dense` in the header)
 and `digit_mask` (one bit per row, `mask_bit`). The two contracts put the translation
-at the seam and keep logical-width fields out of every kernel entry signature;
+at the seam and keep logical-width fields out of every kernel entry signature (the review checks it; the lint is owed, CONSTITUTION R13);
 `rola.engine.facts.liveness.side_statics` is that translation, and it is the only place
 `b_l` appears.
 

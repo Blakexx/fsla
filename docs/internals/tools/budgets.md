@@ -18,7 +18,7 @@ kernel in `tools/budgets/<kernel>.json`.
 4. The line item is trips x price, by class; the budget is the sum, stated before the code (`Bench::budget`).
 5. A production kernel's budget also states, before the code, each component's peak live registers (`registers`,
    gated by `tools/life_ranges.py --budget`, [`life_ranges.md#budget`](life_ranges.md#budget)) and, per cell, each
-   ledger phase's predicted cycles a warp a window (`phase_cycles`, gated by the family's phase ledger):
+   ledger phase's predicted cycles a warp a window (`phase_cycles`, to be gated by the family's phase ledger, which is owed: none exists yet):
    KERNEL_STANDARDS §32.
 
 A COMPONENT is a definition the region ledger's function map finds (`tools/region_ledger.py`): a function, a struct or a struct's method, nested structs included; a kernel whose device code is a class over its plan (the intra's `IntraAt<Walk<B>>`) keeps its components by their own names.

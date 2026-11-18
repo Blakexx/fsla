@@ -141,7 +141,8 @@ sees a width other than its own.
 same shape declared natively; kernel-boundary tests call the launch surface directly
 with unpadded shapes and assert the refusal
 (`tests/oracle/test_padding_seam.py`). A logical-width field in a kernel entry
-signature is a lint finding, because a kernel that could read one could pad.
+signature is a finding of the review only, because a kernel that could read one could pad; the lint that
+would refuse it is owed ([`CONSTITUTION.md` R13](CONSTITUTION.md#r13)).
 
 **What the descriptor fixes.** A state binds its format at its first call — `D`, the
 per-level `B_l`, the canonical leaf order, the page rectangle, `DV`, and the stored form
