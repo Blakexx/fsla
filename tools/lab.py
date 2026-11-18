@@ -12,6 +12,7 @@ spread, and writes a record keyed by the architecture.
     bazel run //tools:lab -- sass tensor_tax [KERNEL_REGEX] [--full]
     bazel run //tools:lab -- run tensor_tax [--reps 7] [--record] [--force]
     bazel run //tools:lab -- ncu smem_rates --metric lts__t_sectors_srcunit_tex_op_read.sum [--record]
+    bazel run //tools:lab -- page carry_window --instance LABEL
 
 `--record` writes `measure/lab/results/<name>/<sm_XX>.json` (or `<sm_XX>.counters.json` for `ncu`), the file a
 KERNEL_STANDARDS rule cites; without it the record goes to the scratch space. `ncu` reads hardware counters per kernel
@@ -606,6 +607,20 @@ def inputs(name: str) -> tuple[list[str], dict[str, str]]:
     files = module.write(directory)
     digests = {f: hashlib.sha256((directory / f).read_bytes()).hexdigest()[:16] for f in files}
     return ["--inputs", str(directory)], digests
+
+
+def page(name: str, instance: str) -> int:
+    """Regenerate an experiment's page's measured section from its record: `measure/lab/pages/<name>.py`'s `write`."""
+    script = LAB / "pages" / f"{name}.py"
+    if not script.exists():
+        print(f"lab: no page generator for {name!r}: `measure/lab/pages/{name}.py` does not exist")
+        return 1
+    spec = importlib.util.spec_from_file_location(f"{name}_page", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for written in module.write(ROOT, instance):
+        print(f"wrote {written.relative_to(ROOT)}")
+    return 0
 
 
 def execute(binary: Path, reps: int, extra: list[str], timeout: int) -> tuple[dict, list[dict]]:
@@ -1219,6 +1234,9 @@ def main() -> int:
     t.add_argument("--record", type=Path, help="the record whose traces to read (default: this card's)")
     t.add_argument("--skip", type=int, default=3, help="the first windows left out of the steady span")
     t.add_argument("--html", type=Path, help="write three windows of each row's first CTA here, a lane a warp")
+    pg = sub.add_parser("page", help="regenerate an experiment's page's measured section from its record")
+    pg.add_argument("experiment")
+    pg.add_argument("--instance", required=True, help="the rented box's label, which words the page's card line")
     m = sub.add_parser("ledger-dumps", help="on a box without the toolkit: profile a pack's kernels for a carried ledger")
     m.add_argument("experiment")
     m.add_argument("--from", dest="source", required=True, type=Path)
@@ -1250,6 +1268,8 @@ def main() -> int:
         return critical_path(args.experiment, args.row, args.record)
     if args.cmd == "trace":
         return timelines(args.experiment, args.row, args.record, args.skip, args.html)
+    if args.cmd == "page":
+        return page(args.experiment, args.instance)
     if args.cmd == "ledger-dumps":
         return ledger_dumps(args.experiment, args.source, args.into, args.kernel, args.skip)
     if args.cmd == "ledger":

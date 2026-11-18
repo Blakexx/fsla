@@ -57,6 +57,11 @@ or a release's latency, each release printed with the mean MARGIN it binds by (i
 by a few hundred cycles has the waiter's own chain nearly as long beside it, and shortening the release alone gains no
 more than that margin). `--html` draws three windows of each row's first CTA, a lane a warp, a blocking wait's release
 a line from its releaser. The traced row's window beside its untraced twin's is the trace's own cost.
+`bazel run //tools:lab -- page <name> --instance LABEL` regenerates an experiment's page's measured section from its
+record: it imports `measure/lab/pages/<name>.py` and calls its `write(root, instance)`, which reads
+`measure/lab/results/<name>/<arch>.json` and rewrites the docs that quote it, and prints the files written; an
+experiment with no page module is an error. A page's measured section is GENERATED from its record, never typed: a
+figure changes by a new record and a `page` run, and `LABEL` (the rented box's id) only words the card's line.
 `ledger <name> --packed <binary> --dump <csv> [--dump ...] --arch sm_90a --per <n>` reads a CARRIED ledger: the
 SourceCounters dumps a rented box made of `lab pack`'s binary (`ncu --section SourceCounters --page source
 --print-source sass --csv`, a kernel's launch after the first `--skip` of them, one file a kernel named
