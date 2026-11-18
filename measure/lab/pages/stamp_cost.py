@@ -88,8 +88,11 @@ WHAT IT DECIDES.
   step: {added(W, HELD, 2):.1f}, {added(C, HELD, 2):.1f} and {added(I, HELD, 2):.1f} against the lean stamp's {lean_w2:.1f}, {lean_c2:.1f} and {lean_i2:.1f}). The lean form's second stamp
   costs about twice its first -- its stamp at two a step is {lean_c2 / lean_c1:.1f} times its stamp at one on the chained step and
   {lean_i2 / lean_i1:.1f} times on the independent step. NOT ISOLATED: read as two 32-lane stores a trip.
-- THE FOLDED PREDICATE AND THE LAB'S TRACE ARE NEVER THE CHEAPEST of the forms that read the clock: the folded
-  predicate is {added(W, FOLD, 1):.1f}, {added(C, FOLD, 1):.1f} and {added(I, FOLD, 1):.1f} at one a step, the trace {added(W, TRACE, 1):.1f}, {added(C, TRACE, 1):.1f} and {added(I, TRACE, 1):.1f}.
+- THE FOLDED PREDICATE IS NEVER THE CHEAPEST ({added(W, FOLD, 1):.1f}, {added(C, FOLD, 1):.1f} and {added(I, FOLD, 1):.1f} at one a step): the register it saves costs more than
+  it buys. THE LAB'S TRACE -- one lane, its store to GLOBAL memory -- is the held predicate's ring where a step waits or
+  is bound by its chain ({added(W, TRACE, 1):.1f} and {added(C, TRACE, 1):.1f} at one a step) and about twice it where the step is bound by issue ({added(I, TRACE, 1):.1f}
+  against {added(I, HELD, 1):.1f}), and it is the dearer of the two when two stamps fall close together ({added(W, TRACE, 2):.1f}, {added(C, TRACE, 2):.1f} and {added(I, TRACE, 2):.1f} at
+  two a step).
 - AS COMPILED, a stamp's cost on a step bound by issue is its added instructions at about two cycles each for a warp
   alone: on the independent step ({plain(I):.1f} cycles plain, eight operations) the lean stamp adds {lean_i1:.1f} cycles and the
   store alone {added(I, STORE, 1):.1f}.

@@ -277,11 +277,10 @@ its unclocked row with every warp's timeline stamped (`lab trace`; the traces at
 `measure/lab/results/carry_window/sm_90a.trace.json`, and at 8 CTAs `sm_90a.blocks8.trace.json` beside it, that record
 rola 99807df0's; the full grid's are rola fc918f8a's). The figures here are rounded: a session moves each by a few
 cycles, the record holds them. Measured on an H100 SXM (Nebius): the trace costs the first three some 15%, 26% and 22%
-of their windows, the own-stream row 2-3%, so its cycles are read for structure. THE COST IS NOT THE STAMPS' OWN
-INSTRUCTIONS: the trace's stamp rewritten from a stamp a lane with a line stored every 32 to one predicated store by the
-warp's first lane took 250 to 560 instructions out of each traced kernel and left the traced windows where they were
-(7,441, 8,409 and 5,998 before; 7,479, 8,397 and 6,052 after). NOT ISOLATED: what a stamp site costs the kernel
-around it. ON THE LAB'S SHARED STREAMS (16 columns, mostly the L2's) THE WINDOW IS
+of their windows, the own-stream row 2-3%, so its cycles are read for structure. THE COST IS THE STAMPS' NUMBER: a fold warp takes
+some 31 stamps a window, a readout warp 34 and a drain warp 16 (the trace record's counts over its windows), and a
+stamp site is about 13 instructions as compiled here (the drain's chunk loop is 181 instructions plain and 237
+traced), where `stamp_cost` prices a lone warp's added instruction at about two cycles. NOT ISOLATED on the carry. ON THE LAB'S SHARED STREAMS (16 columns, mostly the L2's) THE WINDOW IS
 THE FOLD'S OWN CHAIN: at 8 CTAs the windows are the full grid's (some 6,500, 6,650 and 4,950 both ways), and the
 path's copies bind by only 110-155 cycles over the fold's own work beside them -- in the digit form a fold warp's
 traced window is its expansion with its pads, operands, fence and rendezvous wait (some 2,700 cycles), its steps'

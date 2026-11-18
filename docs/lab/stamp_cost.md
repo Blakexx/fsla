@@ -42,8 +42,11 @@ WHAT IT DECIDES.
   step: 5.5, 8.3 and 9.5 against the lean stamp's 16.0, 18.7 and 21.5). The lean form's second stamp
   costs about twice its first -- its stamp at two a step is 2.2 times its stamp at one on the chained step and
   2.7 times on the independent step. NOT ISOLATED: read as two 32-lane stores a trip.
-- THE FOLDED PREDICATE AND THE LAB'S TRACE ARE NEVER THE CHEAPEST of the forms that read the clock: the folded
-  predicate is 13.0, 20.1 and 15.0 at one a step, the trace -0.8, 9.3 and 35.3.
+- THE FOLDED PREDICATE IS NEVER THE CHEAPEST (13.0, 20.1 and 15.0 at one a step): the register it saves costs more than
+  it buys. THE LAB'S TRACE -- one lane, its store to GLOBAL memory -- is the held predicate's ring where a step waits or
+  is bound by its chain (-0.8 and 9.3 at one a step) and about twice it where the step is bound by issue (35.3
+  against 17.0), and it is the dearer of the two when two stamps fall close together (21.4, 23.5 and 27.6 at
+  two a step).
 - AS COMPILED, a stamp's cost on a step bound by issue is its added instructions at about two cycles each for a warp
   alone: on the independent step (29.3 cycles plain, eight operations) the lean stamp adds 8.0 cycles and the
   store alone 17.0.
