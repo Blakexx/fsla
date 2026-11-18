@@ -75,7 +75,14 @@ struct WarpMark {
 
 //: a stamp's kind: a work phase begins, a wait begins and ends, an arrival, a copy issued to a barrier; and a MARK's
 //: second entry, the nanosecond timer's low word at the stamp before it
-enum TraceKind : uint32_t { kPhase = 1, kWaits = 2, kWaited = 3, kArrives = 4, kIssues = 5, kTime = 6 };
+enum TraceKind : uint32_t {
+  kPhase = warpline::kPhaseBegin,
+  kWaits = warpline::kWaitBegin,
+  kWaited = warpline::kWaitEnd,
+  kArrives = warpline::kArrive,
+  kIssues = warpline::kIssue,
+  kTime = warpline::kTime
+};
 //: a mark's entries
 constexpr uint32_t kMarkEntries = 2;
 //: A WARP'S TIMELINE: stamps -- the SM's clock's low word beside an event's, its kind and its site -- written by the

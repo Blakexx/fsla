@@ -900,15 +900,15 @@ WHAT IT SHOWS.
 - THE COUNTERS: this record's run read none; the phase ledger below holds the windows' counts.
 
 THE LAUNCH'S EDGES (one CTA, `sm_90a.blocks1.json` and `sm_90a.blocks1.trace.json`, the experiment at
-756547b3 (a dirty tree), 7 repetitions; the row whose name with `, the launch's two edges stamped` exists, its plain
+d6059407, 7 repetitions; the row whose name with `, the launch's two edges stamped` exists, its plain
 and coarse twins by its name with that suffix removed and replaced): each warp marks its entry at the kernel's top and its exit at its role's end, on both clocks.
-- THE WINDOW, cycles a window a CTA: the plain row's 5,295; the edges row's 5,288, the same as the plain row's
-  (-7 cycles); the coarse row's (its phases' starts and the edges) 5,512, 4.1% over the plain row's
-  (+217 cycles).
+- THE WINDOW, cycles a window a CTA: the plain row's 5,318; the edges row's 5,288, 0.6% under the plain row's
+  (-30 cycles); the coarse row's (its phases' starts and the edges) 5,476, 3.0% over the plain row's
+  (+158 cycles).
 - THE LAUNCH, CTA 0's, from the trace (the first warp's entry to the last warp's exit): the edges row's
-  343,829 cycles, 199,360 ns, 1,724.7 cycles a microsecond; the coarse row's 353,049 cycles,
-  204,384 ns, 1,727.4 cycles a microsecond. The warps enter within 32 (the coarse row's: 57) cycles
-  and exit within 1,056 (2,154).
+  338,148 cycles, 196,800 ns, 1,718.2 cycles a microsecond; the coarse row's 354,284 cycles,
+  205,664 ns, 1,722.6 cycles a microsecond. The warps enter within 40 (the coarse row's: 47) cycles
+  and exit within 1,066 (1,796).
 
 Record: `measure/lab/results/carry_window/sm_90a.json` (and, at one CTA with the edges row, `sm_90a.blocks1.json` and its trace `sm_90a.blocks1.trace.json`); the phase ledger's dumps:
 `measure/lab/results/carry_window/ledger_sm_90a/ledger.json` and the dumps beside it.
