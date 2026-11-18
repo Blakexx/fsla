@@ -127,7 +127,7 @@ binding one named, and on this card each pipe's busy share, L2 sectors and the t
 keeps the counters under `counters` (KERNEL_STANDARDS §29.14). The tensor pipe is priced from a declared `Bench::mma`,
 else from the work the tensor-pipe counter counts and the one MMA kind the SASS issues.
 
-<a id="warpline"></a>THE STAMP HEADER. An experiment includes `warpline/stamp.cuh` (the in-kernel stamp of the warpline module, pinned in
+<a id="warpline"></a>THE STAMP HEADER. `measure/lab/lab.cuh` includes `warpline/stamp.cuh` (the in-kernel stamp of the warpline module, pinned in
 `MODULE.bazel`). `bazel run //tools:lab` hands the lab's compile its directory (`ROLA_WARPLINE_INCLUDE`, one more `-I` beside the
 lab's and the kernels'); `tools/lab.py` run outside `bazel run` refuses to compile. The include is compile-time only, so `pack` and
 `carried` need nothing of warpline at run time.
@@ -143,7 +143,8 @@ lab's and the kernels'); `tools/lab.py` run outside `bazel run` refuses to compi
 * The operand pieces the kernels use: `ldsm` and `ldsm_t` (`ldmatrix.x4`, `.trans`), `hmul2`, `pack_half2`, `smem`;
   the mbarrier as `ops.cuh` spells it: `mbar_init`, `mbar_arrive`, `mbar_wait` (polled), `mbar_wait_suspended` (sm_90: `try_wait`, the thread may be suspended), `mbar_test` (once).
 * `lab::sink(out, v)` — a fold of everything a thread computed, stored unconditionally.
-* `lab::Trace<ON>` — a warp's timeline (`lab trace`). A `mark` is a stamp on BOTH clocks -- the stamp, then an entry of
+* `lab::Trace<ON>` — a warp's timeline (`lab trace`): the lab's switch and its row's head over warpline's cursor, whose
+  `stamp` and `mark` are the instructions a stamp is. A `mark` is a stamp on BOTH clocks -- the stamp, then an entry of
   kind `kTime` whose clock word is the nanosecond timer's low word: one moment tied between the cycle counter and time
   (the carry lab's traced rows mark each phase's start, and its coarse rows and its edges row the launch's entry and
   exit; `lab trace` reads the cycle counter's). A stamp always stamps: WHICH stamps a kernel takes is its

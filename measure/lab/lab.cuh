@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "common/hardware.cuh"
+#include "warpline/stamp.cuh"
 
 namespace lab {
 
@@ -85,45 +86,29 @@ template <bool ON>
 struct Trace {
   //: a warp's stamps, and its row's words: a line of head, then the stamps
   static constexpr int kCap = 8192, kRow = 32 + kCap;
-  //: the warp's row past its head, the stamps issued, and whether this lane is the one that writes
-  unsigned long long* to = nullptr;
-  uint32_t n = 0, mine = 0;
+  //: warpline's cursor over the warp's row past the lab's head (the stamp is warpline's, `warpline/stamp.cuh`; the
+  //: switch `ON` and the row's head are the lab's)
+  warpline::Cursor<kCap> row = {nullptr, 0, 0};
 
   //: the warp's row; `after`: the entries a tracer of this warp bound earlier has already written
   __device__ __forceinline__ void bind(unsigned long long* rows, uint32_t after = 0) {
     if constexpr (ON) {
-      n = after;
-      to = rows + static_cast<long long>(blockIdx.x * (blockDim.x >> 5) + warp_id()) * kRow + 32;
-      mine = lane_id() == 0;
+      row.to = reinterpret_cast<warpline::Entry*>(
+          rows + static_cast<long long>(blockIdx.x * (blockDim.x >> 5) + warp_id()) * kRow + 32);
+      row.n = after;
+      row.mine = lane_id() == 0;
     }
   }
 
   //: an event: `kind` a TraceKind, `site` the experiment's -- a barrier's shared address over 8 (below 0x8000), or
   //: its own
   __device__ __forceinline__ void stamp(uint32_t kind, uint32_t site) {
-    if constexpr (ON) {
-      uint32_t now;
-      asm volatile("mov.u32 %0, %%clock;" : "=r"(now));
-      put(now, kind << 16 | site);
-    }
+    if constexpr (ON) row.stamp(warpline::id(kind, site));
   }
   //: A MARK: a stamp on BOTH clocks -- the stamp, then an entry of kind `kTime` at the same site whose clock word is
   //: the nanosecond timer's low word: one moment tied between the cycle counter and time
   __device__ __forceinline__ void mark(uint32_t kind, uint32_t site) {
-    if constexpr (ON) {
-      stamp(kind, site);
-      uint32_t ns;
-      asm volatile("mov.u32 %0, %%globaltimer_lo;" : "=r"(ns));
-      put(ns, kTime << 16 | site);
-    }
-  }
-  //: an entry: one predicated store, no branch -- a branch on a count the toolkit cannot know is the warp's alone
-  //: would hold its loops' convergence; an entry past the row's capacity is counted and not stored
-  __device__ __forceinline__ void put(uint32_t word, uint32_t event) {
-    const uint32_t on = mine & (n < static_cast<uint32_t>(kCap) ? 1u : 0u);
-    asm volatile("{\n .reg .pred p;\n setp.ne.b32 p, %3, 0;\n @p st.global.v2.u32 [%0], {%1, %2};\n}"
-                 :: "l"(to + n), "r"(word), "r"(event), "r"(on));
-    ++n;
+    if constexpr (ON) row.mark(warpline::id(kind, site));
   }
   //: an event at the barrier at shared address `bar`
   __device__ __forceinline__ void at(uint32_t kind, uint32_t bar) { stamp(kind, site(bar)); }
@@ -134,8 +119,9 @@ struct Trace {
   __device__ __forceinline__ void close(uint32_t base) {
     if constexpr (ON) {
       if (lane_id() == 0) {
-        to[-32] = n;
-        to[-31] = base;
+        auto* const head = reinterpret_cast<unsigned long long*>(row.to) - 32;
+        head[0] = row.n;
+        head[1] = base;
       }
     }
   }

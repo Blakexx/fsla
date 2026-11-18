@@ -581,7 +581,8 @@ def quiet() -> int:
 def git_state() -> dict:
     sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
     #: the sources a record depends on; the records themselves are outputs
-    sources = ["measure/lab/lab.cuh", "measure/lab/experiments", "tools/lab.py"]
+    #: MODULE.bazel holds the pin of the stamp header every experiment compiles against
+    sources = ["measure/lab/lab.cuh", "measure/lab/experiments", "tools/lab.py", "MODULE.bazel"]
     dirty = subprocess.run(["git", "status", "--porcelain", "--", *sources], cwd=ROOT, capture_output=True,
                            text=True).stdout.strip()
     return {"sha": sha, "dirty": bool(dirty)}
