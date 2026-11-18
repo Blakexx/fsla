@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 PHASE, WAITS, WAITED, ARRIVES, ISSUES = 1, 2, 3, 4, 5
+#: a mark's second entry (the nanosecond timer at the stamp before it): this reader's times are the cycle counter's
+TIME = 6
 #: a site's range: a barrier's offset over 8 below NAMED, a named barrier's below MARKS, the experiment's own above
 NAMED, MARKS = 0x8000, 0xC000
 BLOCKING = 64
@@ -63,7 +65,8 @@ class Cta:
         for i, w in enumerate(cta["warps"]):
             s = w["stamps"]
             ev = [(s[k], s[k + 1] >> 16 & 15, s[k + 1] & 0xFFFF) for k in range(0, len(s), 2)]
-            self.warps.append(Warp(i, row["roles"][i], w["count"], ev))
+            timed = sum(1 for _, k, _ in ev if k == TIME)
+            self.warps.append(Warp(i, row["roles"][i], w["count"] - timed, [e for e in ev if e[1] != TIME]))
         for w in self.warps:
             self._spans(w)
         for sites in self.arrivals.values():

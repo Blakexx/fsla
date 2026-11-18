@@ -631,7 +631,9 @@ struct Tracer : lab::Trace<(ROLES & kTrace) != 0> {
   //: which stamps a traced row keeps is the experiment's: a coarse row its phases' starts, `kFine` every one. A
   //: stamp's kind is a literal where it is placed, so the others compile to nothing.
   __device__ __forceinline__ void stamp(uint32_t kind, uint32_t site) {
-    if ((ROLES & kFine) != 0 || kind == lab::kPhase) lab::Trace<(ROLES & kTrace) != 0>::stamp(kind, site);
+    //: a phase's start is an ANCHOR, on both clocks (a mark); a fine row's other stamps are the cycle counter's
+    if (kind == lab::kPhase) lab::Trace<(ROLES & kTrace) != 0>::mark(kind, site);
+    else if ((ROLES & kFine) != 0) lab::Trace<(ROLES & kTrace) != 0>::stamp(kind, site);
   }
   __device__ __forceinline__ void at(uint32_t kind, uint32_t bar) { stamp(kind, this->site(bar)); }
 };

@@ -72,6 +72,9 @@ struct WarpMark {
   }
 };
 
+//: a stamp's kind: a work phase begins, a wait begins and ends, an arrival, a copy issued to a barrier; and a MARK's
+//: second entry, the nanosecond timer's low word at the stamp before it
+enum TraceKind : uint32_t { kPhase = 1, kWaits = 2, kWaited = 3, kArrives = 4, kIssues = 5, kTime = 6 };
 //: A WARP'S TIMELINE: stamps -- the SM's clock's low word beside an event's, its kind and its site -- written by the
 //: warp's first lane, one predicated store a stamp to the warp's row in global memory, the row's head its count and
 //: the CTA's shared base. A stamp is a clock read, its predicate and one store, priced a stamp by `stamp_cost` as the
@@ -97,13 +100,26 @@ struct Trace {
     if constexpr (ON) {
       uint32_t now;
       asm volatile("mov.u32 %0, %%clock;" : "=r"(now));
-      //: one predicated store, no branch: a branch on a count the toolkit cannot know is the warp's alone would hold
-      //: its loops' convergence; a stamp past the row's capacity is counted and not stored
-      const uint32_t on = mine & (n < static_cast<uint32_t>(kCap) ? 1u : 0u);
-      asm volatile("{\n .reg .pred p;\n setp.ne.b32 p, %3, 0;\n @p st.global.v2.u32 [%0], {%1, %2};\n}"
-                   :: "l"(to + n), "r"(now), "r"(kind << 16 | site), "r"(on));
-      ++n;
+      put(now, kind << 16 | site);
     }
+  }
+  //: A MARK: a stamp on BOTH clocks -- the stamp, then an entry of kind `kTime` at the same site whose clock word is
+  //: the nanosecond timer's low word: one moment tied between the cycle counter and time
+  __device__ __forceinline__ void mark(uint32_t kind, uint32_t site) {
+    if constexpr (ON) {
+      stamp(kind, site);
+      uint32_t ns;
+      asm volatile("mov.u32 %0, %%globaltimer_lo;" : "=r"(ns));
+      put(ns, kTime << 16 | site);
+    }
+  }
+  //: an entry: one predicated store, no branch -- a branch on a count the toolkit cannot know is the warp's alone
+  //: would hold its loops' convergence; an entry past the row's capacity is counted and not stored
+  __device__ __forceinline__ void put(uint32_t word, uint32_t event) {
+    const uint32_t on = mine & (n < static_cast<uint32_t>(kCap) ? 1u : 0u);
+    asm volatile("{\n .reg .pred p;\n setp.ne.b32 p, %3, 0;\n @p st.global.v2.u32 [%0], {%1, %2};\n}"
+                 :: "l"(to + n), "r"(word), "r"(event), "r"(on));
+    ++n;
   }
   //: an event at the barrier at shared address `bar`
   __device__ __forceinline__ void at(uint32_t kind, uint32_t bar) { stamp(kind, site(bar)); }
@@ -120,8 +136,6 @@ struct Trace {
     }
   }
 };
-//: a stamp's kind: a work phase begins, a wait begins and ends, an arrival, a copy issued to a barrier
-enum TraceKind : uint32_t { kPhase = 1, kWaits = 2, kWaited = 3, kArrives = 4, kIssues = 5 };
 
 //: THE SINK: a fold of everything a thread computed, stored unconditionally. A result tested against a value the
 //: compiler can fold lets ptxas delete the work behind it -- the failure the expectations exist to catch.
@@ -881,6 +895,18 @@ class Bench {
       for (int w = 0; w < warps; ++w)
         if (h[static_cast<size_t>(w) * kRow] > 0)
           first = std::min(first, static_cast<long long>(static_cast<int32_t>(static_cast<uint32_t>(h[static_cast<size_t>(w) * kRow + 32]) - ref)));
+      //: a mark's second entry holds the nanosecond timer's low word: read against the CTA's first such entry
+      uint32_t ref_ns = 0;
+      bool timed = false;
+      for (int w = 0; w < warps && !timed; ++w) {
+        const unsigned long long* row = h.data() + static_cast<size_t>(w) * kRow;
+        const unsigned long long n = std::min<unsigned long long>(row[0], Trace<true>::kCap);
+        for (unsigned long long k = 0; k < n && !timed; ++k)
+          if ((row[32 + k] >> 48 & 0xfu) == kTime) {
+            ref_ns = static_cast<uint32_t>(row[32 + k]);
+            timed = true;
+          }
+      }
       out += std::string(i++ ? ", " : "") + "{\"cta\": " + std::to_string(cta) + ", \"warps\": [";
       for (int w = 0; w < warps; ++w) {
         const unsigned long long* row = h.data() + static_cast<size_t>(w) * kRow;
@@ -890,7 +916,8 @@ class Bench {
         const unsigned long long origin = row[1] >> 3;
         for (unsigned long long k = 0; k < n; ++k) {
           const unsigned long long ev = row[32 + k] >> 32 & 0xfffffu, site = ev & 0xffffu;
-          const long long t = static_cast<int32_t>(static_cast<uint32_t>(row[32 + k]) - ref) - first;
+          const long long t = (ev >> 16) == kTime ? static_cast<long long>(static_cast<int32_t>(static_cast<uint32_t>(row[32 + k]) - ref_ns))
+                                                  : static_cast<int32_t>(static_cast<uint32_t>(row[32 + k]) - ref) - first;
           out += std::string(k ? "," : "") + std::to_string(t) + ","
                  + std::to_string(site < 0x8000u ? (ev & ~0xffffull) | (site - origin) : ev);
         }
