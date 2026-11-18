@@ -4,11 +4,10 @@
 // with its commit and wait (a step that mostly waits), four dependent integer operations each with a shared load
 // (a step bound by its chain's latency), or eight independent integer operations (a step bound by issue); the step
 // runs plain, then with one or two stamps a step in four forms -- the lab's own
-// `Trace` (a stamp a lane, a global line every 32); a ring in shared memory written by one lane under a held
+// `Trace` (its first lane's predicated store to the warp's row in global memory); a ring in shared memory written by one lane under a held
 // predicate; the same with the predicate folded into the ring offset's low bit (one register); the one-lane stamp's
 // store alone, on the integer steps; and the leanest stamp -- every lane storing the same words to ONE entry, no
-// predicate and no wrap (a ring sized for its run). A clock read alone is not a row: ptxas drops a clock read whose
-// value nothing stores, and unrolls the loop it leaves. A stamp's cost is a form's cycles a step less the
+// predicate and no wrap (a ring sized for its run). A stamp's cost is a form's cycles a step less the
 // plain step's, over its stamps a step. Every kernel's work is checked against the host's, and every ring form's
 // stamps are read back: their ids in order, their clocks not decreasing.
 // TIMELINE: one warpgroup, no other role. A step: its first stamp (the clock read, then its store), the step's work

@@ -63,8 +63,8 @@ a line from its releaser. The traced row's window beside its untraced twin's is 
 record: it imports `measure/lab/pages/<name>.py` and calls its `write(root, instance)`, which reads
 `measure/lab/results/<name>/<arch>.json` and rewrites the docs that quote it, and prints the files written; an
 experiment with no page module is an error. A page's measured section is GENERATED, never typed: a figure changes by
-a new record and a `page` run, and `LABEL` (the rented box's id) only words the card's line. OWED: only the carry's
-and the gather's pages have their modules; every other page's typed section stands as recorded and is not edited by
+a new record and a `page` run, and `LABEL` (the rented box's id) only words the card's line. OWED: only the carry's,
+the gather's and the stamp probe's pages have their modules; every other page's typed section stands as recorded and is not edited by
 hand -- its module is written with its experiment's next record. A row a page names and its record lacks is refused
 by name: the generators' one lookup, `measure/lab/pages/_record.py`.
 `ledger <name> --packed <binary> --dump <csv> [--dump ...] --arch sm_90a --per <n>` reads a CARRIED ledger: the
@@ -131,9 +131,10 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
 * `lab::sink(out, v)` — a fold of everything a thread computed, stored unconditionally.
 * `lab::Trace<ON>` — a warp's timeline (`lab trace`): `stamp(kind, site)` and `at(kind, bar)` (a barrier's site its
   shared address over 8, read against the CTA's base `close(base)` stores), a stamp the SM's clock's low word beside an
-  event's (`lab::TraceKind` and site), held a lane each and stored 32 at a time by one predicated store with no compiler
-  barrier (a branch on the count would hold its loops' convergence). MEASURED: 14-26% of the carry's traced
-  windows (`docs/lab/carry_window.md`, its traced rows): a traced row is read for its structure; `Bench::trace` prints chosen CTAs' rows as one line with the warps' roles and the
+  event's (`lab::TraceKind` and site), written by the warp's first lane, one predicated store a stamp to the warp's row in global memory, with no compiler
+  barrier (a branch on the count would hold its loops' convergence); the form is `stamp_cost`'s
+  ([`docs/lab/stamp_cost.md`](../../lab/stamp_cost.md)). Its cost is each traced row's window beside its untraced twin's
+  (`docs/lab/carry_window.md`, its traced rows); `Bench::trace` prints chosen CTAs' rows as one line with the warps' roles and the
   sites' names.
 * The atoms as one PTX instruction each: `mma_f16_f32` (and `_fresh`), `mma_f16_f16`, `mma_bf16_f32`, `mma_u8u8`,
   `mma_u8s8`.

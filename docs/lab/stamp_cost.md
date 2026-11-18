@@ -9,7 +9,7 @@ takes it, in cycles, in registers and in issued instructions, and which form of 
 THE FORM. One warpgroup a CTA, a CTA an SM. A step is one of three: one `m64n64k16` wgmma with its commit and wait (a
 step that mostly waits), four dependent integer operations each with a shared load (a step bound by its chain's
 latency), or eight independent integer operations (a step bound by issue). Each runs plain, then with one or two
-stamps a step: the lab's own trace (a stamp held a lane, a global line stored every 32 stamps); a ring in shared
+stamps a step: the lab's own trace (its first lane's predicated store to the warp's row in global memory); a ring in shared
 memory written by one lane under a held predicate; the same with the predicate folded into the ring offset's low bit;
 the leanest stamp, every lane storing the same two words to one entry with no predicate and no wrap (a ring sized for
 its run); and, on the integer steps, the one-lane stamp's store alone. A stamp's cost is a form's cycles a step less

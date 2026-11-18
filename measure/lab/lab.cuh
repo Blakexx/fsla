@@ -72,20 +72,23 @@ struct WarpMark {
   }
 };
 
-//: A WARP'S TIMELINE: stamps -- the SM's clock's low word beside an event's, its kind and its site -- held a lane each
-//: and stored 32 at a time as one line of the warp's row in global memory, the row's head its count and the CTA's
-//: shared base. A stamp is a clock read, two predicated moves, its count and a predicated store; no compiler barrier.
-//: `ON` false: nothing (docs/internals/tools/lab.md#trace)
+//: A WARP'S TIMELINE: stamps -- the SM's clock's low word beside an event's, its kind and its site -- written by the
+//: warp's first lane, one predicated store a stamp to the warp's row in global memory, the row's head its count and
+//: the CTA's shared base. A stamp is a clock read, its predicate and one store: the form `stamp_cost` measured
+//: cheapest where stamps fall close together. `ON` false: nothing (docs/internals/tools/lab.md#trace)
 template <bool ON>
 struct Trace {
   //: a warp's stamps, and its row's words: a line of head, then the stamps
   static constexpr int kCap = 8192, kRow = 32 + kCap;
-  //: the lane's next store in the warp's row, and its held stamp's two words
+  //: the warp's row past its head, the stamps issued, and whether this lane is the one that writes
   unsigned long long* to = nullptr;
-  uint32_t clock = 0, event = 0, n = 0;
+  uint32_t n = 0, mine = 0;
 
   __device__ __forceinline__ void bind(unsigned long long* rows) {
-    if constexpr (ON) to = rows + static_cast<long long>(blockIdx.x * (blockDim.x >> 5) + warp_id()) * kRow + 32 + lane_id();
+    if constexpr (ON) {
+      to = rows + static_cast<long long>(blockIdx.x * (blockDim.x >> 5) + warp_id()) * kRow + 32;
+      mine = lane_id() == 0;
+    }
   }
 
   //: an event: `kind` a TraceKind, `site` the experiment's -- a barrier's shared address over 8 (below 0x8000), or
@@ -94,32 +97,23 @@ struct Trace {
     if constexpr (ON) {
       uint32_t now;
       asm volatile("mov.u32 %0, %%clock;" : "=r"(now));
-      if (static_cast<uint32_t>(lane_id()) == (n & 31u)) {
-        clock = now;
-        event = kind << 16 | site;
-      }
-      ++n;
-      //: a full line stored by one predicated instruction, no branch: a branch on a count the toolkit cannot know is
-      //: the warp's alone would hold its loops' convergence
-      const uint32_t full = (n & 31u) == 0 && n <= static_cast<uint32_t>(kCap);
+      //: one predicated store, no branch: a branch on a count the toolkit cannot know is the warp's alone would hold
+      //: its loops' convergence; a stamp past the row's capacity is counted and not stored
+      const uint32_t on = mine & (n < static_cast<uint32_t>(kCap) ? 1u : 0u);
       asm volatile("{\n .reg .pred p;\n setp.ne.b32 p, %3, 0;\n @p st.global.v2.u32 [%0], {%1, %2};\n}"
-                   :: "l"(to), "r"(clock), "r"(event), "r"(full));
-      to += full ? 32 : 0;
+                   :: "l"(to + n), "r"(now), "r"(kind << 16 | site), "r"(on));
+      ++n;
     }
   }
   //: an event at the barrier at shared address `bar`
   __device__ __forceinline__ void at(uint32_t kind, uint32_t bar) { stamp(kind, (bar >> 3) & 0x7fffu); }
 
-  //: the stamps not yet stored, the count, and the shared base the barriers' sites are read against
+  //: the count, and the shared base the barriers' sites are read against
   __device__ __forceinline__ void close(uint32_t base) {
     if constexpr (ON) {
-      const uint32_t kept = n < static_cast<uint32_t>(kCap) ? n : static_cast<uint32_t>(kCap);
-      if (n < static_cast<uint32_t>(kCap) && static_cast<uint32_t>(lane_id()) < (n & 31u))
-        *to = static_cast<unsigned long long>(event) << 32 | clock;
-      unsigned long long* const head = to - lane_id() - 32 - (kept & ~31u);
       if (lane_id() == 0) {
-        head[0] = n;
-        head[1] = base;
+        to[-32] = n;
+        to[-31] = base;
       }
     }
   }
