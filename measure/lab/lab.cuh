@@ -12,10 +12,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "common/hardware.cuh"
+#include "warpline/host.hpp"
 #include "warpline/stamp.cuh"
 
 namespace lab {
@@ -660,6 +664,95 @@ __device__ __forceinline__ void cluster_add_u64(uint32_t a, long long v) {
 
 // --------------------------------------------------------------------------------------------------- host
 
+//: THE TRACED ROWS AS WARPLINE'S NATIVE RECORD (`warpline/host.hpp`; docs/internals/tools/lab.md#trace): the rows of CTAs
+//: `ctas` copied back -- `rows[i]` the `warps` rows of CTA `ctas[i]`, each `Trace<true>::kRow` words: the lab's head (the
+//: count of entries issued, the CTA's shared base) and the stamps -- one record of one scope a CTA (`cta<N>`) and one lane
+//: a warp (`warp<W>`, its role from `roles`), the sites named by `legend` (a barrier's site read against the row's base).
+//: The lab's head is not warpline's (a row's head there is `kHead` entries with the count in its first), so each row is
+//: copied into warpline's layout, and the entries are the lab's own but in three places:
+//:  - the sites `entry` and `exit` are the launch's edges: a phase-begin mark there is `kLaunchBegin` / `kLaunchEnd`;
+//:  - a barrier's site is its shared address over 8, read against the row's base (a name of the legend's, whichever CTA);
+//:  - the barriers' facts, which the record needs and the host header cannot infer, are the lab's from the stamps: a wait
+//:    on a site named `... steps` is its warp's own steps (a count of 0), a site a copy is issued at is released by the
+//:    copy (one arrival, not stamped, the copy its issue), a named barrier's (0x8000 to 0xBFFF) arrival is not stamped
+//:    (the warp's reaching it is its wait's begin), and any other's count is the warps that arrive at it, one each a phase.
+//: The host header writes no operation, and the copy's `done` is its barrier's wait's end: the record's `operations` is
+//: completed here.
+inline std::string trace_record(const std::string& variant, const std::vector<int>& ctas,
+                                const std::vector<std::vector<unsigned long long>>& rows, int warps,
+                                const std::vector<std::string>& roles,
+                                const std::vector<std::pair<uint32_t, std::string>>& legend) {
+  constexpr int kRow = Trace<true>::kRow;
+  constexpr uint32_t kNamedLow = 0x8000u, kMarksLow = 0xC000u;
+  std::map<uint32_t, std::string> names(legend.begin(), legend.end());
+  const auto name_of = [&](uint32_t site) {
+    const auto it = names.find(site);
+    if (it != names.end()) return it->second;
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "site_0x%x", site);
+    return std::string(buf);
+  };
+  const auto is_edge = [&](uint32_t site, const char* edge) { return name_of(site) == edge; };
+  warpline::host::Record record;
+  for (const auto& [site, name] : legend) record.name(site, name);
+  //: per site, per scope: the warps that wait, the warps that arrive, and whether a copy is issued there
+  std::map<uint32_t, std::map<int, std::set<int>>> waiting, arriving;
+  std::set<uint32_t> issued;
+  std::vector<std::vector<warpline::Entry>> kept;
+  for (size_t i = 0; i < ctas.size(); ++i) {
+    for (int w = 0; w < warps; ++w) {
+      const unsigned long long* row = rows[i].data() + static_cast<size_t>(w) * kRow;
+      const unsigned long long n = std::min<unsigned long long>(row[0], Trace<true>::kCap);
+      const uint32_t origin = static_cast<uint32_t>(row[1] >> 3);
+      std::vector<warpline::Entry> entries(warpline::kHead + n);
+      entries[0].word = static_cast<uint32_t>(row[0]);
+      entries[0].event = Trace<true>::kCap;
+      for (unsigned long long k = 0; k < n; ++k) {
+        const unsigned long long x = row[32 + k];
+        uint32_t event = static_cast<uint32_t>(x >> 32);
+        uint32_t kind = warpline::kind_of(event), site = warpline::site_of(event);
+        if (site < kNamedLow) site = (site - origin) & 0xffffu;
+        if (kind == warpline::kPhaseBegin && is_edge(site, "entry")) kind = warpline::kLaunchBegin;
+        if (kind == warpline::kPhaseBegin && is_edge(site, "exit")) kind = warpline::kLaunchEnd;
+        if (kind == warpline::kWaitBegin) waiting[site][ctas[i]].insert(w);
+        if (kind == warpline::kArrive) arriving[site][ctas[i]].insert(w);
+        if (kind == warpline::kIssue) issued.insert(site);
+        entries[warpline::kHead + k] = {static_cast<uint32_t>(x), warpline::id(kind, site)};
+      }
+      record.add_row("cta" + std::to_string(ctas[i]), "warp" + std::to_string(w), roles[w], entries.data(),
+                     Trace<true>::kCap);
+    }
+  }
+  const auto fewest = [](const std::map<int, std::set<int>>& per_scope) {
+    size_t least = SIZE_MAX;
+    for (const auto& [scope, lanes] : per_scope) least = std::min(least, lanes.size());
+    return static_cast<uint32_t>(least == SIZE_MAX ? 0 : least);
+  };
+  std::string operations;
+  std::set<uint32_t> sites;
+  for (const auto& [site, per_scope] : waiting) sites.insert(site);
+  for (const auto& [site, per_scope] : arriving) sites.insert(site);
+  for (const uint32_t site : sites) {
+    const std::string name = name_of(site);
+    if (name.size() > 6 && name.compare(name.size() - 6, 6, " steps") == 0) {
+      record.barrier(name, 0);
+    } else if (issued.count(site)) {
+      record.barrier(name, 1, 0, name);
+      operations += std::string(operations.empty() ? "" : ",") + "\"" + name + "\":{\"done\":\"barrier." + name + ".wait.end\"}";
+    } else if (site >= kNamedLow && site < kMarksLow) {
+      record.barrier(name, std::max(fewest(waiting[site]), 1u), 0);
+    } else {
+      record.barrier(name, std::max(fewest(arriving[site]), 1u));
+    }
+  }
+  record.source("variant", variant);
+  std::string doc = record.json();
+  const std::string empty = "\"operations\":{}";
+  const size_t at = doc.find(empty);
+  if (!operations.empty() && at != std::string::npos) doc.replace(at, empty.size(), "\"operations\":{" + operations + "}");
+  return doc;
+}
+
 //: A KERNEL'S DEMANGLED NAME AS AN EXPECTATION'S PATTERN: `kernel("tax", {3, 17})` matches
 //: `ns::tax<(int)3, (int)17>(...)`, the spelling `cu++filt` gives integer template arguments.
 inline std::string kernel(const std::string& name, std::initializer_list<long long> args) {
@@ -861,58 +954,22 @@ class Bench {
     return out;
   }
 
-  //: THE TRACES of a launch's CTAs `ctas`, as one JSON line: each warp's role and its stamps, a cycle relative to the
-  //: CTA's first and an event; `legend` names the sites
+  //: THE TRACES of a launch's CTAs `ctas`, as one JSON line: the variant's name and its warpline record
+  //: (`trace_record`); `legend` names the sites. A cycle of the record is relative to its CTA's first, a nanosecond to the
+  //: record's first tie, both unwrapped past their 32-bit words.
   void trace(const std::string& variant, const unsigned long long* rows, int warps, std::initializer_list<int> ctas,
              const std::vector<std::string>& roles, const std::vector<std::pair<uint32_t, std::string>>& legend) const {
     constexpr int kRow = Trace<true>::kRow;
-    std::string out = "{\"lab\": \"trace\", \"variant\": \"" + variant + "\", \"roles\": [";
-    for (size_t i = 0; i < roles.size(); ++i) out += (i ? ", \"" : "\"") + roles[i] + "\"";
-    out += "], \"legend\": {";
-    for (size_t i = 0; i < legend.size(); ++i)
-      out += (i ? ", \"" : "\"") + std::to_string(legend[i].first) + "\": \"" + legend[i].second + "\"";
-    out += "}, \"ctas\": [";
-    std::vector<unsigned long long> h(static_cast<size_t>(warps) * kRow);
-    int i = 0;
+    std::vector<std::vector<unsigned long long>> host;
     for (int cta : ctas) {
-      LAB_CHECK(cudaMemcpy(h.data(), rows + static_cast<size_t>(cta) * warps * kRow, h.size() * 8, cudaMemcpyDeviceToHost));
-      //: a stamp's cycle is its clock word less the CTA's earliest, read across the word's wrap against warp 0's first
-      long long first = 1ll << 62;
-      const uint32_t ref = static_cast<uint32_t>(h[32]);
-      for (int w = 0; w < warps; ++w)
-        if (h[static_cast<size_t>(w) * kRow] > 0)
-          first = std::min(first, static_cast<long long>(static_cast<int32_t>(static_cast<uint32_t>(h[static_cast<size_t>(w) * kRow + 32]) - ref)));
-      //: a mark's second entry holds the nanosecond timer's low word: read against the CTA's first such entry
-      uint32_t ref_ns = 0;
-      bool timed = false;
-      for (int w = 0; w < warps && !timed; ++w) {
-        const unsigned long long* row = h.data() + static_cast<size_t>(w) * kRow;
-        const unsigned long long n = std::min<unsigned long long>(row[0], Trace<true>::kCap);
-        for (unsigned long long k = 0; k < n && !timed; ++k)
-          if ((row[32 + k] >> 48 & 0xfu) == warpline::kTime) {
-            ref_ns = static_cast<uint32_t>(row[32 + k]);
-            timed = true;
-          }
-      }
-      out += std::string(i++ ? ", " : "") + "{\"cta\": " + std::to_string(cta) + ", \"warps\": [";
-      for (int w = 0; w < warps; ++w) {
-        const unsigned long long* row = h.data() + static_cast<size_t>(w) * kRow;
-        const unsigned long long n = std::min<unsigned long long>(row[0], Trace<true>::kCap);
-        out += std::string(w ? ", " : "") + "{\"count\": " + std::to_string(row[0]) + ", \"stamps\": [";
-        //: a barrier's site read against the CTA's shared base: its offset over 8
-        const unsigned long long origin = row[1] >> 3;
-        for (unsigned long long k = 0; k < n; ++k) {
-          const unsigned long long ev = row[32 + k] >> 32 & 0xfffffu, site = ev & 0xffffu;
-          const long long t = (ev >> 16) == warpline::kTime ? static_cast<long long>(static_cast<int32_t>(static_cast<uint32_t>(row[32 + k]) - ref_ns))
-                                                  : static_cast<int32_t>(static_cast<uint32_t>(row[32 + k]) - ref) - first;
-          out += std::string(k ? "," : "") + std::to_string(t) + ","
-                 + std::to_string(site < 0x8000u ? (ev & ~0xffffull) | (site - origin) : ev);
-        }
-        out += "]}";
-      }
-      out += "]}";
+      host.emplace_back(static_cast<size_t>(warps) * kRow);
+      LAB_CHECK(cudaMemcpy(host.back().data(), rows + static_cast<size_t>(cta) * warps * kRow, host.back().size() * 8,
+                           cudaMemcpyDeviceToHost));
     }
-    std::printf("%s]}\n", out.c_str());
+    std::string quoted;
+    for (char c : variant) quoted += c == '"' || c == '\\' ? std::string("\\") + c : std::string(1, c);
+    const std::string doc = trace_record(variant, std::vector<int>(ctas), host, warps, roles, legend);
+    std::printf("{\"lab\": \"trace\", \"variant\": \"%s\", \"record\": %s}\n", quoted.c_str(), doc.c_str());
   }
 
   //: a result, as one JSON line

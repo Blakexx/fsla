@@ -10,6 +10,7 @@ pytest_tier(
     data = [
         "//:library",
         "//:tree",
+        "@warpline//:warpline",
     ],
     marks = "not cuda",
     shard_count = 4,
@@ -22,6 +23,7 @@ pytest_tier(
     data = [
         "//:library",
         "//:tree",
+        "@warpline//:warpline",
     ],
     device = True,
     marks = "cuda",

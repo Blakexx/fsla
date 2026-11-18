@@ -117,6 +117,8 @@ HANDOFFS = {
     "ROLA_CUDA_HOME": "the graph's copy of the pinned CUDA toolkit, which a test tier hands its tests (bazel/defs.bzl)",
     "ROLA_WARPLINE_INCLUDE": "the directory that holds `warpline/stamp.cuh`, which the `lab` run target hands the lab's "
                              "compile (bazel/defs.bzl's lab_run)",
+    "ROLA_WARPLINE_PYTHON": "the directory that holds the `warpline` package (the reader of the lab's traced rows), "
+                            "which the `lab` run target hands the lab (bazel/defs.bzl's lab_run)",
     "PATH": "the search path bazelisk hands what it runs, the front door's directory first (`check` finds the user's "
             "`bazel` past it)",
     "ROLA_NVCC_THREADS": "host.nvcc_threads, which the front door hands the graph's compile flags (bazel/flags.py)",
@@ -158,6 +160,17 @@ def warpline_include() -> str:
     found = os.environ.get("ROLA_WARPLINE_INCLUDE")
     if not found:
         raise SystemExit("the lab's compile needs warpline's headers, which the graph hands it: bazel run //tools:lab -- ...")
+    return found
+
+
+def warpline_python() -> str | None:
+    """The directory that holds the `warpline` package, which reads the lab's traced rows: the pinned module's
+    (`@warpline//:warpline`), which `bazel run //tools:lab` hands in (`ROLA_WARPLINE_PYTHON`) and a test tier carries as
+    data, where it is the module's directory of the tier's runfiles. None where the process has none (a box that runs a
+    pack outside Bazel: its binary writes the records, and nothing there reads them)."""
+    found = os.environ.get("ROLA_WARPLINE_PYTHON")
+    if not found and os.environ.get("TEST_SRCDIR"):
+        found = str(Path(os.environ["TEST_SRCDIR"]) / "warpline+")
     return found
 
 

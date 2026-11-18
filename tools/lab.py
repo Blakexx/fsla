@@ -30,6 +30,7 @@ import importlib.util
 import json
 import pipes
 import re
+import shutil
 import statistics
 import subprocess
 import sys
@@ -39,7 +40,6 @@ from pathlib import Path
 
 import build_flags
 import dev_config
-import lab_trace
 import region_ledger
 import sass
 import sass_gate
@@ -691,12 +691,15 @@ def keep(name: str, arch: str, device: dict, results: list[dict], table: dict, r
               else dev_config.scratch("lab") / "results" / name) / (f"{arch}.blocks{blocks}.json" if blocks else f"{arch}.json")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(body, indent=1) + "\n")
-    #: THE TRACES (a traced row's timelines, `lab trace`), beside the record: one line a row, the commit's
-    traces = target.with_name(target.name.replace(".json", ".trace.json"))
+    #: THE TRACES (a traced row's timelines, `lab trace`), beside the record: a directory, a warpline record a traced
+    #: row (`row<i>.json`, in the order the rows ran, the variant's name in the record's `source`)
+    traces = target.with_name(target.name.replace(".json", ".trace"))
+    shutil.rmtree(traces, ignore_errors=True)
+    target.with_name(target.name.replace(".json", ".trace.json")).unlink(missing_ok=True)
     if device.get("_traces"):
-        traces.write_text(json.dumps({"experiment": name, "git": built["git"], "rows": device["_traces"]}) + "\n")
-    elif traces.exists():
-        traces.unlink()
+        traces.mkdir()
+        for i, item in enumerate(device["_traces"]):
+            (traces / f"row{i}.json").write_text(json.dumps(item["record"], separators=(",", ":")) + "\n")
     return target
 
 
@@ -756,6 +759,17 @@ def measure(name: str, arch: str, binary: Path, table: dict, opts, *, built: dic
     if wrong:
         print(f"lab: {name}'s outputs are not verified, not recorded:", *wrong, sep="\n  ")
         return 1
+    #: warpline's `check` on each traced row's record, where warpline's library is: a record with findings is not recorded
+    if device.get("_traces") and dev_config.warpline_python() is None:
+        print(f"lab: {name}'s traced rows are written unchecked: warpline's library is not here (the run is outside "
+              "`bazel run //tools:lab`); `lab trace` checks them where it is")
+    elif device.get("_traces"):
+        import lab_trace
+
+        unsound = lab_trace.unsound(device["_traces"])
+        if unsound:
+            print(f"lab: {name}'s traced rows are not sound records, not recorded:", *unsound, sep="\n  ")
+            return 1
 
     raw, refused = {}, None
     if opts.no_counters:
@@ -1022,12 +1036,14 @@ def is_wait(site: str) -> bool:
 def timelines(name: str, pattern: str | None, record: Path | None, skip: int, out: Path | None) -> int:
     """A RECORD'S TRACED ROWS read by `lab_trace`: its traces beside it, its windows' cycles from it."""
     path = record or (RESULTS / name / f"{sass.device_arch()}.json")
-    traces = path.with_name(path.name.replace(".json", ".trace.json"))
-    if not traces.exists():
+    traces = path.with_name(path.name.replace(".json", ".trace"))
+    if not traces.is_dir():
         print(f"lab: no traces beside {path} (a record's traced rows write {traces.name})")
         return 1
     windows = {r["name"]: r["median"] for r in json.loads(path.read_text())["results"]
                if r.get("unit") == "cycles a window a CTA"}
+    import lab_trace
+
     return lab_trace.report(lab_trace.load(traces), pattern, skip, windows, out)
 
 

@@ -274,8 +274,8 @@ Unchecked: an isolation.
 THE TRACED ROWS -- the digit form with the panel by stmatrix, the same with the drain warps expanding (the serve row),
 the operands landed made with their coefficient tiles, and that form with every box its own stream from HBM -- each
 its unclocked row with every warp's timeline stamped (`lab trace`; the traces at
-`measure/lab/results/carry_window/sm_90a.trace.json`, and at 8 CTAs `sm_90a.blocks8.trace.json` beside it, that record
-rola 99807df0's; the full grid's are rola 44e2597c's; at ONE CTA, `sm_90a.blocks1.json` and `sm_90a.blocks1.trace.json`, whose own section THE LAUNCH'S EDGES is below. `kFine` ALONE is an EDGES row, `, the launch's two edges stamped`: the plain kernel with its two edges and nothing else stamped). The figures here are rounded: a session moves each by a few
+`measure/lab/results/carry_window/sm_90a.trace/` (warpline's native records, a row each), and at 8 CTAs `sm_90a.blocks8.trace/` beside it, that record
+rola 99807df0's; the full grid's are rola 44e2597c's; at ONE CTA, `sm_90a.blocks1.json` and `sm_90a.blocks1.trace/`, whose own section THE LAUNCH'S EDGES is below. `kFine` ALONE is an EDGES row, `, the launch's two edges stamped`: the plain kernel with its two edges and nothing else stamped). The figures here are rounded: a session moves each by a few
 cycles, the record holds them. Measured on an H100 SXM (Nebius): A FINE TRACE (every wait, arrival and issue beside
 the phases' starts) costs the first three some 15%, 25% and 22% of their windows and the own-stream row 2%, so its
 cycles are read for structure; A COARSE TRACE (a phase's start and the launch's two edges, each warp's entry at the
@@ -899,7 +899,7 @@ WHAT IT SHOWS.
   bound by the instructions it issues, and what holds each is not isolated.
 - THE COUNTERS: this record's run read none; the phase ledger below holds the windows' counts.
 
-THE LAUNCH'S EDGES (one CTA, `sm_90a.blocks1.json` and `sm_90a.blocks1.trace.json`, the experiment at
+THE LAUNCH'S EDGES (one CTA, `sm_90a.blocks1.json` and `sm_90a.blocks1.trace/`, the experiment at
 d6059407, 7 repetitions; the row whose name with `, the launch's two edges stamped` exists, its plain
 and coarse twins by its name with that suffix removed and replaced): each warp marks its entry at the kernel's top and its exit at its role's end, on both clocks.
 - THE WINDOW, cycles a window a CTA: the plain row's 5,318; the edges row's 5,288, 0.6% under the plain row's
@@ -910,7 +910,7 @@ and coarse twins by its name with that suffix removed and replaced): each warp m
   205,664 ns, 1,722.6 cycles a microsecond. The warps enter within 40 (the coarse row's: 47) cycles
   and exit within 1,066 (1,796).
 
-Record: `measure/lab/results/carry_window/sm_90a.json` (and, at one CTA with the edges row, `sm_90a.blocks1.json` and its trace `sm_90a.blocks1.trace.json`); the phase ledger's dumps:
+Record: `measure/lab/results/carry_window/sm_90a.json` (and, at one CTA with the edges row, `sm_90a.blocks1.json` and its trace `sm_90a.blocks1.trace/`); the phase ledger's dumps:
 `measure/lab/results/carry_window/ledger_sm_90a/ledger.json` and the dumps beside it.
 
 THE PHASE LEDGER (H100 SXM on Nebius, the pack at a8a55a64, `lab ledger-dumps` there and `lab ledger --packed --dump

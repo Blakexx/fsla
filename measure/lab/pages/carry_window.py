@@ -11,10 +11,10 @@
 line. It returns the files it wrote (`lab page carry_window --instance LABEL`, docs/internals/tools/lab.md).
 
 THE LAUNCH'S EDGES, a section at the end of that span, is generated from the one-CTA record
-`sm_90a.blocks1.json` and its trace `sm_90a.blocks1.trace.json`: for each row of the record whose name carries
+`sm_90a.blocks1.json` and its trace `sm_90a.blocks1.trace/` (warpline's records, a row each): for each row of the record whose name carries
 `, the launch's two edges stamped`, the plain row's window, the edges row's and the coarse row's (the name with the
 suffix removed, and with it replaced by `, every warp's phases stamped`: rows are matched by name, never by position),
-and the edges row's and the coarse row's launch from the trace (`tools/lab_trace.py`'s `Cta.launch`).
+and the edges row's and the coarse row's launch from the trace (`tools/lab_trace.py`'s `Cta.launch`, warpline's).
 """
 
 from __future__ import annotations
@@ -38,14 +38,13 @@ def edges_section(root: pathlib.Path) -> str:
     folder = root / "measure/lab/results/carry_window"
     rec = json.loads((folder / "sm_90a.blocks1.json").read_text())
     windows = {r["name"]: r["median"] for r in rec["results"] if r.get("unit") == "cycles a window a CTA"}
-    traces = {r["variant"]: r for r in lab_trace.load(folder / "sm_90a.blocks1.trace.json")}
+    traces = dict(lab_trace.load(folder / "sm_90a.blocks1.trace"))
 
     def launch(name):
-        row = traces[name]
-        cta = lab_trace.Cta(row, row["ctas"][0])
-        out = cta.launch()
+        scope = traces[name].scopes()[0]
+        out = lab_trace.Cta(traces[name], scope).launch()
         assert out is not None, f"lab page: the trace's row {name!r} holds no launch"
-        return out, row["ctas"][0]["cta"]
+        return out, scope.removeprefix("cta")
 
     def against(a, b):
         share = (a - b) / b
@@ -64,7 +63,7 @@ def edges_section(root: pathlib.Path) -> str:
             return "the same as the plain row's" if word == "the same as" else f"{abs(share) * 100:.1f}% {word} the plain row's"
 
         parts.append(
-            f"""THE LAUNCH'S EDGES (one CTA, `sm_90a.blocks1.json` and `sm_90a.blocks1.trace.json`, the experiment at
+            f"""THE LAUNCH'S EDGES (one CTA, `sm_90a.blocks1.json` and `sm_90a.blocks1.trace/`, the experiment at
 {rec["git"]["sha"][:8]}{" (a dirty tree)" if rec["git"].get("dirty") else ""}, {rec["reps"]} repetitions; the row whose name with `{lab_trace.EDGES_SUFFIX}` exists, its plain
 and coarse twins by its name with that suffix removed and replaced): each warp marks its entry at the kernel's top and its exit at its role's end, on both clocks.
 - THE WINDOW, cycles a window a CTA: the plain row's {windows[plain]:,.0f}; the edges row's {windows[edged]:,.0f}, {cost(se, we)}
