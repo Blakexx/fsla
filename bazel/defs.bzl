@@ -528,6 +528,42 @@ def tool_run(**kwargs):
     (docs/build-graph.md#use): its arguments follow `--`."""
     _tool_run(venv = VENV, **kwargs)
 
+_LAB_RUN = """\
+#!/bin/bash
+# the lab as a run target (bazel/defs.bzl's lab_run): `tools/lab.py` in the checkout, on the checkout's own venv, handed
+# the directory that holds `warpline/stamp.cuh` (the module's header, compile time only) by its resolved path (the
+# runfiles' links do not outlive the run)
+set -euo pipefail
+checkout="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
+stamp="$(readlink -f {stamp})"
+venv="$(git -C "$checkout" config --get rola.venv || true)"
+if [ ! -x "$venv/bin/python" ]; then
+  echo "$checkout has no venv of its own (git config rola.venv)" >&2
+  exit 1
+fi
+cd "$checkout"
+export ROLA_WARPLINE_INCLUDE="$(dirname "$(dirname "$stamp")")"
+exec "$venv/bin/python" tools/lab.py "$@"
+"""
+
+def _lab_run_impl(ctx):
+    stamp = [f for f in ctx.files.headers if f.path.endswith("/warpline/stamp.cuh")]
+    if len(stamp) != 1:
+        fail("%s: %s names %d `warpline/stamp.cuh`, not one" % (ctx.label, ctx.attr.headers.label, len(stamp)))
+    script = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(script, _LAB_RUN.format(stamp = shell.quote(stamp[0].short_path)), is_executable = True)
+    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = stamp))]
+
+lab_run = rule(
+    implementation = _lab_run_impl,
+    executable = True,
+    attrs = {
+        "headers": attr.label(mandatory = True, doc = "warpline's headers (`@warpline//:headers`)"),
+    },
+    doc = "The lab (`tools/lab.py`) run by `bazel run` in the checkout, handed the include directory of warpline's " +
+          "`warpline/stamp.cuh` as `ROLA_WARPLINE_INCLUDE`: its arguments follow `--`.",
+)
+
 def tree_part(parts = {}):
     """This package's part of the tree (`git ls-files`, @rola_tree): `tracked`, `tracked_python` and each of `parts`."""
     _tree_part(TRACKED, parts)

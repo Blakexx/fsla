@@ -22,6 +22,16 @@ git_override(
     remote = "https://github.com/Blakexx/rola-devtools.git",
 )
 
+#: THE IN-KERNEL STAMP, warpline's module: the header `warpline/stamp.cuh` the lab's experiments include
+#: (`@warpline//:headers`, which the `lab` run target hands `tools/lab.py`; compile time only), at the public commit
+#: this tree is tested with -- the one pin of warpline
+bazel_dep(name = "warpline", version = "0.1.0")
+git_override(
+    module_name = "warpline",
+    commit = "4bba64ab410336b18ce1e490fbf1f4c341ee3e59",
+    remote = "https://github.com/Blakexx/warpline.git",
+)
+
 #: THE CUDA TOOLKIT, HERMETIC: NVIDIA's redistributable components at the toolchain pin's version
 #: (tools/toolchains/cu13.json: release 13.0, nvcc V13.0.48), fetched once into the repository cache.
 cuda = use_extension("@rules_cuda//cuda:extensions.bzl", "toolchain")

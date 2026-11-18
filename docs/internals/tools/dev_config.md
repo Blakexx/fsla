@@ -62,6 +62,8 @@ f-string prefixes resolved) and shell expansions.
   - `ROLA_DEV_CONFIG` itself.
   - The toolkit ratify's compile path and the header self-check set for torch's extension module (`CUDA_HOME`).
   - The graph's copy of the pinned toolkit a test tier hands its tests (`ROLA_CUDA_HOME`).
+  - The directory that holds warpline's `warpline/stamp.cuh`, which the `lab` run target hands the lab's compile
+    (`ROLA_WARPLINE_INCLUDE`).
   - pytest-xdist's worker id.
   - The agent harness's campaign directory.
   - The login name printed into the sudoers rule `bazel run //:clock` suggests (`USER`).

@@ -3,7 +3,7 @@ actions run."""
 
 load("@rules_cc//cc:defs.bzl", "cc_binary")
 load("//bazel:cuda.bzl", "cuda_unit")
-load("//bazel:defs.bzl", "tool_run", "tree_part")
+load("//bazel:defs.bzl", "lab_run", "tool_run", "tree_part")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -68,6 +68,14 @@ cc_binary(
     ],
 )
 
+#: THE LAB, a run target of its own: it hands the tool the directory of warpline's in-kernel stamp header, which the
+#: experiments' compile puts on nvcc's include path (`ROLA_WARPLINE_INCLUDE`; compile time only, a packed binary
+#: needs nothing of warpline on the box)
+lab_run(
+    name = "lab",
+    headers = "@warpline//:headers",
+)
+
 #: THE TREE'S TOOLS, each a run target (bazel/defs.bzl's `tool_run`): `bazel run //tools:<name> -- <its arguments>`, in
 #: the checkout on its own venv (docs/build-graph.md#use)
 [tool_run(
@@ -81,7 +89,6 @@ cc_binary(
     "header_selfcheck",
     "kernel_targets",
     "kernels",
-    "lab",
     "life_ranges",
     "op_timeline",
     "overlap_gate",

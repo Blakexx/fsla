@@ -127,6 +127,11 @@ binding one named, and on this card each pipe's busy share, L2 sectors and the t
 keeps the counters under `counters` (KERNEL_STANDARDS §29.14). The tensor pipe is priced from a declared `Bench::mma`,
 else from the work the tensor-pipe counter counts and the one MMA kind the SASS issues.
 
+<a id="warpline"></a>THE STAMP HEADER. An experiment includes `warpline/stamp.cuh` (the in-kernel stamp of the warpline module, pinned in
+`MODULE.bazel`). `bazel run //tools:lab` hands the lab's compile its directory (`ROLA_WARPLINE_INCLUDE`, one more `-I` beside the
+lab's and the kernels'); `tools/lab.py` run outside `bazel run` refuses to compile. The include is compile-time only, so `pack` and
+`carried` need nothing of warpline at run time.
+
 ## The kit (`measure/lab/lab.cuh`)
 
 * `lab::WarpClock` — a warp's cycles over a region, lane 0's `clock64`, stored at `(block, warp)`.

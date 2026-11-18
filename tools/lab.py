@@ -85,7 +85,7 @@ def build(path: Path, arch: str) -> Path:
     #: the extension's own target form: an architecture-specific row (`sm_90a`) names its own virtual architecture
     target, = build_flags.gencodes([arch.removeprefix("sm_")])
     done = subprocess.run([dev_config.cuda_bin("nvcc"), "-O3", "-std=c++20", target, f"-DROLA_LAB_CC={cc}",
-                           "-lineinfo", f"-I{LAB}", f"-I{KERNELS}", "--expt-relaxed-constexpr", "-o", str(out),
+                           "-lineinfo", f"-I{LAB}", f"-I{KERNELS}", f"-I{dev_config.warpline_include()}", "--expt-relaxed-constexpr", "-o", str(out),
                            str(path)], capture_output=True, text=True, check=False)
     sys.stdout.write(done.stdout)
     sys.stderr.write(done.stderr)
