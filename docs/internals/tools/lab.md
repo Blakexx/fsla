@@ -49,7 +49,16 @@ their copies' waits unclocked (2026-11-15). A TRACED row's timeline is read by `
 <a id="trace"></a>`bazel run //tools:lab -- trace <name> [--row REGEX] [--record FILE] [--skip N] [--html FILE]` reads a record's TRACED
 rows (`tools/lab_trace.py`): every warp's stamps (`lab::Trace`) -- each phase's start in a coarse row, and in a fine one the start and end of each
 wait, each arrival and each copy's issue too -- written beside the record as `<arch>.trace.json`, two CTAs a row (the first and
-the middle one), the timed launches' last. Over the steady span (past the first `--skip` windows, to the last window
+the middle one; a one-CTA grid's, its one), the timed launches' last. THE LAUNCH'S EDGES: a coarse row's warps and an EDGES row's
+(the plain kernel with its edges and nothing else stamped) each mark an `entry`, at the kernel's top before its setup, and an `exit`, at its
+role's end, on both clocks; a fine row holds none (its kernels are at their registers' limit). A role's tracer writes after the
+entry's mark (`bind(rows, after)`: `after` the entries already written to the warp's row), so no tracer's state crosses the
+roles' register calls. Where a row's warps carry the edges `trace` prints each CTA's LAUNCH line: the first warp's entry to the
+last warp's exit in cycles and in nanoseconds, the rate between them (cycles a microsecond), and the warps' spread at the
+entry and at the exit; an edges row, which holds no window, prints that and its untraced twin's window beside its own
+(the twin is the row's name with its trace's suffix removed: `, the launch's two edges stamped`, `, every warp's phases
+stamped` or `, every warp's timeline stamped`). The edges are outside the steady span below: it is bounded by the windows' starts, so
+the setup before the first window and the tail after the last are in no table. Over the steady span (past the first `--skip` windows, to the last window
 every warp's stamps cover) it prints each role's cycles a window a warp by state (a phase's work, a wait at a barrier,
 a wait on its own steps); each BLOCKING wait (over 64 cycles) with its releaser -- the latest arrival at its barrier
 at or before its end (a named barrier's last warp to reach it; a copy's barrier, the copy's issue) -- and what the
@@ -135,13 +144,23 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
   exit; `lab trace` reads the cycle counter's). A stamp always stamps: WHICH stamps a kernel takes is its
   author's, by an ordinary condition around the call -- a compile-time one compiles the stamp to nothing, a run-time
   branch costs more than the stamp it skips ([`stamp_cost`](../../lab/stamp_cost.md)) -- and `ON` false makes the whole recorder nothing (the carry lab's
-  traced rows are coarse, their phases' starts, and its `kFine` adds the rest): `stamp(kind, site)` and `at(kind, bar)` (a barrier's site its
+  traced rows are coarse, their phases' starts and the launch's two edges, and its `kFine` adds the rest and drops the edges, its kernels being at their
+  registers' limit; `kFine` alone is the edges row): `stamp(kind, site)` and `at(kind, bar)` (a barrier's site its
   shared address over 8, read against the CTA's base `close(base)` stores), a stamp the SM's clock's low word beside an
   event's (`lab::TraceKind` and site), written by the warp's first lane, one predicated store a stamp to the warp's row in global memory, with no compiler
   barrier (a branch on the count would hold its loops' convergence); priced a stamp by `stamp_cost`
   ([`docs/lab/stamp_cost.md`](../../lab/stamp_cost.md)). Its cost is each traced row's window beside its untraced twin's
   (`docs/lab/carry_window.md`, its traced rows); `Bench::trace` prints chosen CTAs' rows as one line with the warps' roles and the
   sites' names.
+  WHAT THE LAB'S TRACED ROWS CARRY, AND WHY (Blake, 2026-11-17; event `2026-11-17-p87-warpline-s-anchors-record-both-clocks-and-no-sm` for the two clocks):
+  every stamp of a traced row is on BOTH clocks where it is a mark (the cycle counter, tied to the nanosecond timer, so
+  a stamp's cycles and a profiler's samples in time are one moment), and every traced row carries THE LAUNCH'S TWO EDGES
+  -- a warp's entry and exit, forced, highly coarse stamps. His words: "would it help if we would stamp / instrument the
+  kernel with forced / known start / stop highly coarse stamps? or reject kernels that dont have those?" -- the
+  coordinator's answer, which he let stand: yes, and an overlay of sampled counters on a kernel's stamps is refused
+  without them. The reason: the launch's two edges are what BOTH a kernel's stamps and a profiler's samples see, so
+  they are what the two are laid together by. This describes the lab's form; it is enforced where the overlay is made, outside this repository.
+  Its row in the rules table is owed with the later standard (event `2026-11-18-p87-backfilling-the-coarse-marks-into-every-kernel-m`).
 * The atoms as one PTX instruction each: `mma_f16_f32` (and `_fresh`), `mma_f16_f16`, `mma_bf16_f32`, `mma_u8u8`,
   `mma_u8s8`.
 * <a id="wgmma"></a>Hopper's atoms, each one PTX instruction of sm_90a (an experiment calling one compiles for sm_90a

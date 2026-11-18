@@ -1,14 +1,16 @@
 // measure/lab/experiments/clock_time.cu -- QUESTION: is the SM's cycle counter a faithful clock -- does it advance at
 // one rate against the GPU's nanosecond timer whatever a warp is waiting on -- or does it run slow where an SM's warps
-// wait on memory? METHOD: one warpgroup a CTA, a CTA an SM; a body runs many steps between two readings of BOTH clocks
+// wait on memory? AND, a second question: what does a read of each clock cost a step whose value the step uses?
+// METHOD: one warpgroup a CTA, a CTA an SM; a body runs many steps between two readings of BOTH clocks
 // (`%clock64` and `%globaltimer`) by each warp's first lane: independent integer operations (issue), a chain of shared
 // loads (latency in the SM), a chain of scattered loads of a 64 MB table (waits on global memory), a store a step to
-// global memory, and one m64n64k16 wgmma a step with its commit and wait (the tensor pipe). A body's rate is its
-// cycles over its microseconds, a warp's mean; the rows are read against each other and, at one CTA and at the full
-// grid, against the grid.
+// global memory, one m64n64k16 wgmma a step with its commit and wait (the tensor pipe), and the integer body with one
+// 32-bit read a step -- of the cycle counter, of the nanosecond timer -- xor-ed into a value the step keeps: seven
+// bodies. A body's rate is its cycles over its microseconds, a warp's mean; the rows are read against each other and,
+// at one CTA and at the full grid, against the grid. The cost of a read is a read body's step over the integer body's.
 // TIMELINE: one warpgroup, no other role; the two clocks read once before the steps and once after. A step is the
 // body's instructions alone: no load is a stage ahead of its use (the chains are their own latency, by design -- the
-// warps are meant to wait). Live: a body's value or eight, the wgmma body's accumulator (32 registers a thread), A
+// warps are meant to wait); the read bodies' read is in the step, its value xor-ed into `x`, which the sink stores. Live: a body's value or eight, the wgmma body's accumulator (32 registers a thread), A
 // (4) and its descriptor.
 // see docs/internals/tools/lab.md#clock-time
 #include "lab.cuh"
@@ -180,6 +182,15 @@ int main(int argc, char** argv) {
   for (int body = 0; body < kBodies; ++body) {
     const std::string k = lab::kernel("rate", {body});
     b.expect(k, "HGMMA", "==", body == kTensor ? 1 : 0);
+    //: THE CLOCK READS: each body's two clocks before the steps and after them are four CS2R (the cycle counter's and the
+    //: timer's, twice); the wgmma body adds the 32 of its accumulator's zeroing, a CS2R of SRZ a pair, before the loop. The
+    //: two read bodies' read in the step is not a CS2R: the toolkit reads a 32-bit clock into a uniform register, an S2UR
+    //: (SR_CLOCKLO, SR_GLOBALTIMERLO), and no other body's kernel holds one but for its CTA's id (the shared chain's and the
+    //: wgmma body's addresses). The SASS count is static: it cannot tell the read IN the loop from one outside it, but a
+    //: kernel whose read is missing or was folded away holds no S2UR, and the dependence of `x` on the read (`asm volatile`,
+    //: its value xor-ed into the value the sink stores) keeps it in the step
+    b.expect(k, "CS2R", "==", body == kTensor ? 36 : 4);
+    if (body == kClockRead || body == kTimerRead) b.expect(k, "S2UR", "==", 1);
     //: the global chain's loads are read in the trip that issued them by design: the warps are meant to wait on them
     if (body == kGlobalChain) b.expect(k, "LOAD_IN_TRIP", "==", 4);
     //: the store body's global store is its question, in a step that holds no MMA; the tensor body holds none

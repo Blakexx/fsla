@@ -9,6 +9,12 @@
 - `docs/lab/intra_window.md`: the carry's figure it quotes.
 `instance` is the rented box's label (`nb...` Nebius, `hs...` Hyperstack, digits vast.ai), which only words the card's
 line. It returns the files it wrote (`lab page carry_window --instance LABEL`, docs/internals/tools/lab.md).
+
+THE LAUNCH'S EDGES, a section at the end of that span, is generated from the one-CTA record
+`sm_90a.blocks1.json` and its trace `sm_90a.blocks1.trace.json`: for each row of the record whose name carries
+`, the launch's two edges stamped`, the plain row's window, the edges row's and the coarse row's (the name with the
+suffix removed, and with it replaced by `, every warp's phases stamped`: rows are matched by name, never by position),
+and the edges row's and the coarse row's launch from the trace (`tools/lab_trace.py`'s `Cta.launch`).
 """
 
 from __future__ import annotations
@@ -16,8 +22,63 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+import sys
 
 from _record import Record
+
+EDGES_SUFFIX = ", the launch's two edges stamped"
+COARSE_SUFFIX = ", every warp's phases stamped"
+#: two windows within this share of each other (of the lesser) are said to agree
+SAME = 0.005
+
+
+def edges_section(root: pathlib.Path) -> str:
+    """THE LAUNCH'S EDGES, from the one-CTA record and its trace; empty where the record holds no edges row."""
+    sys.path.insert(0, str(root / "tools"))
+    import lab_trace
+
+    folder = root / "measure/lab/results/carry_window"
+    rec = json.loads((folder / "sm_90a.blocks1.json").read_text())
+    windows = {r["name"]: r["median"] for r in rec["results"] if r.get("unit") == "cycles a window a CTA"}
+    traces = {r["variant"]: r for r in lab_trace.load(folder / "sm_90a.blocks1.trace.json")}
+
+    def launch(name):
+        row = traces[name]
+        cta = lab_trace.Cta(row, row["ctas"][0])
+        out = cta.launch()
+        assert out is not None, f"lab page: the trace's row {name!r} holds no launch"
+        return out, row["ctas"][0]["cta"]
+
+    def against(a, b):
+        share = (a - b) / b
+        return share, "the same as" if abs(share) <= SAME else ("over" if share > 0 else "under")
+
+    parts = []
+    for edged in (n for n in windows if EDGES_SUFFIX in n):
+        plain, coarse = edged.replace(EDGES_SUFFIX, ""), edged.replace(EDGES_SUFFIX, COARSE_SUFFIX)
+        for n in (plain, coarse):
+            assert n in windows, f"lab page: the edges row {edged!r} has no twin {n!r} in the record"
+        (le, ce), (lc, _) = launch(edged), launch(coarse)
+        se, we = against(windows[edged], windows[plain])
+        sc, wc = against(windows[coarse], windows[plain])
+
+        def cost(share, word):
+            return "the same as the plain row's" if word == "the same as" else f"{abs(share) * 100:.1f}% {word} the plain row's"
+
+        parts.append(
+            f"""THE LAUNCH'S EDGES (one CTA, `sm_90a.blocks1.json` and `sm_90a.blocks1.trace.json`, the experiment at
+{rec["git"]["sha"][:8]}{" (a dirty tree)" if rec["git"].get("dirty") else ""}, {rec["reps"]} repetitions; the row whose name with `{EDGES_SUFFIX}` exists, its plain
+and coarse twins by its name with that suffix removed and replaced): each warp marks its entry at the kernel's top and its exit at its role's end, on both clocks.
+- THE WINDOW, cycles a window a CTA: the plain row's {windows[plain]:,.0f}; the edges row's {windows[edged]:,.0f}, {cost(se, we)}
+  ({windows[edged] - windows[plain]:+,.0f} cycles); the coarse row's (its phases' starts and the edges) {windows[coarse]:,.0f}, {cost(sc, wc)}
+  ({windows[coarse] - windows[plain]:+,.0f} cycles).
+- THE LAUNCH, CTA {ce}'s, from the trace (the first warp's entry to the last warp's exit): the edges row's
+  {le["cycles"]:,.0f} cycles, {le["ns"]:,.0f} ns, {le["rate"]:,.1f} cycles a microsecond; the coarse row's {lc["cycles"]:,.0f} cycles,
+  {lc["ns"]:,.0f} ns, {lc["rate"]:,.1f} cycles a microsecond. The warps enter within {le["entry_spread"]:,.0f} (the coarse row's: {lc["entry_spread"]:,.0f}) cycles
+  and exit within {le["exit_spread"]:,.0f} ({lc["exit_spread"]:,.0f}).
+"""
+        )
+    return "\n".join(parts)
 
 
 def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
@@ -627,6 +688,8 @@ WHAT IT SHOWS.
   producer 168 a batch, a drain warp 339 a chunk, the readout 284 a chunk, a fold warp 379 a window): no role is
   bound by the instructions it issues, and what holds each is not isolated.
 {COUNTERS}
+
+{edges_section(root)}
 """
     p = root / "docs/lab/carry_window.md"
     s = p.read_text()

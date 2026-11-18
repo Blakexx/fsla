@@ -2,8 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE TIMELINE OF A TRACED ROW (`lab trace`): each warp's stamps (measure/lab/lab.cuh, `lab::Trace`) -- a fine row's: its
 waits' starts and ends, its arrivals, its copies' issues and its phases' starts; a coarse row holds its phases' starts
-alone, and has no waits to walk a path through -- read as what each warp did when, who
-released each wait it was held at, and the window's critical path walked back through those releases.
+alone, and has no waits to walk a path through; a coarse row's and an EDGES row's warps also mark the launch's two
+edges (an `entry` at the kernel's top and an `exit` at its role's end), on both clocks, and an edges row holds nothing
+else -- read as what each warp did when, who released each wait it was held at, and the window's critical path walked
+back through those releases; and, where the edges are, each CTA's LAUNCH: entry to exit in cycles and in
+nanoseconds, the rate between them (cycles a microsecond) and the warps' spread at each edge.
 
 A wait is BLOCKING when it lasted more than `BLOCKING` cycles; a shorter one found its barrier passed, and is its
 warp's own time. A blocking wait's RELEASER is the event that completed its barrier's phase: the latest arrival at the
@@ -31,6 +34,12 @@ TIME = 6
 #: a site's range: a barrier's offset over 8 below NAMED, a named barrier's below MARKS, the experiment's own above
 NAMED, MARKS = 0x8000, 0xC000
 BLOCKING = 64
+#: the launch's two edges, by the names the experiment's legend gives their sites
+ENTRY, EXIT = "entry", "exit"
+#: the nanosecond timer's low word, a stamp's second entry of a mark: its modulus
+TIMER_WORD = 1 << 32
+#: the suffixes a traced row's name carries over its untraced twin's: a fine timeline, coarse phases, the launch's edges
+TRACE_SUFFIXES = (", every warp's timeline stamped", ", every warp's phases stamped", ", the launch's two edges stamped")
 
 
 @dataclass
@@ -50,6 +59,8 @@ class Warp:
     #: (start, end, state): a state "work:<phase>", "wait:<site>" or "steps:<site>"
     spans: list[tuple[int, int, str]] = field(default_factory=list)
     waits: list[Wait] = field(default_factory=list)
+    #: the launch's edges this warp marked: name -> (the cycle counter, the nanosecond timer's low word as stamped)
+    edges: dict[str, tuple[int, int]] = field(default_factory=dict)
 
 
 def group(name: str) -> str:
@@ -66,7 +77,12 @@ class Cta:
             s = w["stamps"]
             ev = [(s[k], s[k + 1] >> 16 & 15, s[k + 1] & 0xFFFF) for k in range(0, len(s), 2)]
             timed = sum(1 for _, k, _ in ev if k == TIME)
-            self.warps.append(Warp(i, row["roles"][i], w["count"] - timed, [e for e in ev if e[1] != TIME]))
+            warp = Warp(i, row["roles"][i], w["count"] - timed, [e for e in ev if e[1] != TIME])
+            # a mark's second entry is the timer at the stamp before it, at the same site
+            for (t, k, site), (ns, k2, site2) in zip(ev, ev[1:]):
+                if k == PHASE and k2 == TIME and site == site2 and self.name(site) in (ENTRY, EXIT):
+                    warp.edges[self.name(site)] = (t, ns)
+            self.warps.append(warp)
         for w in self.warps:
             self._spans(w)
         for sites in self.arrivals.values():
@@ -129,10 +145,36 @@ class Cta:
             if hi > lo:
                 into[self.label(warp, state)] += hi - lo
 
+    def body(self, w: Warp) -> list[tuple[int, int, int]]:
+        """A warp's stamps but the launch's edges: the time before its first window and after its last is outside the
+        steady span, and the edges bound it."""
+        return [e for e in w.events if self.name(e[2]) not in (ENTRY, EXIT)]
+
+    def launch(self) -> dict[str, float] | None:
+        """The CTA's launch, from the warps' edges: the first warp's entry to the last warp's exit, in cycles (the SM's
+        clock, one for the CTA) and in nanoseconds (the timer's low word, a difference modulo its range), the rate
+        between them, and the spread of the warps' entries and of their exits in cycles. None where any warp lacks an
+        edge (a row that marks none, or a stamp row's room spent)."""
+        if not self.warps or any(ENTRY not in w.edges or EXIT not in w.edges for w in self.warps):
+            return None
+        enters = [w.edges[ENTRY] for w in self.warps]
+        exits = [w.edges[EXIT] for w in self.warps]
+        first, last = min(enters), max(exits)
+        cycles = last[0] - first[0]
+        # the timer's word of the earliest entry and of the latest exit, each as the warp stamped it
+        first_ns = min(enters, key=lambda e: e[0])[1]
+        last_ns = max(exits, key=lambda e: e[0])[1]
+        ns = (last_ns - first_ns) % TIMER_WORD
+        return {"cycles": cycles, "ns": ns, "rate": 1000.0 * cycles / ns if ns else 0.0,
+                "entry_spread": max(e[0] for e in enters) - first[0], "exit_spread": last[0] - min(e[0] for e in exits)}
+
     def steady(self, skip: int) -> tuple[int, int, int] | None:
         """The span's start, end and windows: past the first `skip` windows, to the last window every warp's stamps
         cover."""
-        last = min(w.events[-1][0] for w in self.warps if w.events)
+        bodies = [b for b in map(self.body, self.warps) if b]
+        if not bodies:
+            return None
+        last = min(b[-1][0] for b in bodies)
         marks = [t for t in self.windows if t <= last]
         if len(marks) < skip + 3:
             return None
@@ -166,6 +208,18 @@ class Cta:
         return pieces, margins
 
 
+def untraced_name(name: str) -> str:
+    """A traced row's untraced twin's name: the row's name with its trace's suffix removed."""
+    for suffix in TRACE_SUFFIXES:
+        name = name.replace(suffix, "")
+    return name
+
+
+def launch_line(launch: dict[str, float]) -> str:
+    return (f"launch {launch['cycles']:,.0f} cycles, {launch['ns']:,.0f} ns, {launch['rate']:,.1f} cycles a microsecond; "
+            f"the warps enter within {launch['entry_spread']:,.0f} cycles and exit within {launch['exit_spread']:,.0f}")
+
+
 def report(rows: list[dict], pattern: str | None, skip: int, record: dict[str, float], out: Path | None) -> int:
     shown = 0
     pages = []
@@ -175,7 +229,7 @@ def report(rows: list[dict], pattern: str | None, skip: int, record: dict[str, f
         shown += 1
         name = row["variant"]
         timed = record.get(name)
-        untraced = record.get(name.replace(", every warp's timeline stamped", "").replace(", every warp's phases stamped", ""))
+        untraced = record.get(untraced_name(name))
         print(f"\n{name}")
         if timed and untraced:
             print(f"  window: {timed:,.0f} cycles traced, {untraced:,.0f} untraced ({timed / untraced - 1:+.1%} the trace's cost)")
@@ -184,12 +238,21 @@ def report(rows: list[dict], pattern: str | None, skip: int, record: dict[str, f
             cta = Cta(row, cta_row)
             span = cta.steady(skip)
             dropped = [w.index for w in cta.warps if w.count > len(w.events)]
+            launch = cta.launch()
+            if span is None and launch is not None and not cta.windows:
+                # an EDGES row holds the launch's two edges and nothing else: its launch is all it has to read
+                print(f"  CTA {cta_row['cta']}: {launch_line(launch)} (an edges row: no windows stamped)")
+                continue
             if span is None:
                 print(f"  CTA {cta_row['cta']}: too few windows stamped")
+                if launch is not None:
+                    print(f"    {launch_line(launch)}")
                 continue
             t0, t1, n = span
             print(f"  CTA {cta_row['cta']}: windows {skip} to {skip + n}, {(t1 - t0) / n:,.0f} cycles a window"
                   + (f"; warps {dropped} past their stamps' room" if dropped else ""))
+            if launch is not None:
+                print(f"    {launch_line(launch)}")
 
             # each role's time by state
             by_role: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))

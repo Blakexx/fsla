@@ -1,9 +1,11 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The measured section of `docs/lab/clock_time.md`, generated from the four records in `measure/lab/results/clock_time/`.
+"""The measured section of `docs/lab/clock_time.md`, generated from the five records in `measure/lab/results/clock_time/`.
 
 `write(root, instance)` reads `sm_90a.json` and `sm_90a.blocks1.json` (the clock locked: the lab's sessions lock it)
-and `sm_90a.unlocked.json` and `sm_90a.unlocked.blocks1.json` (the clock as the card left it) under `root` and rewrites
+and `sm_90a.unlocked.json` and `sm_90a.unlocked.blocks1.json` (the clock as the card left it) -- the four of five bodies,
+one commit -- and, read apart, `sm_90a.reads.blocks1.json` (the clock locked, one CTA, all seven bodies: the integer body
+and the two with a read of a clock a step, a later commit) under `root` and rewrites
 `docs/lab/clock_time.md` under `root` from its `MEASURED (` line (the first run: from its `NOT YET MEASURED` line)
 through its `Record:` line, every figure the records' own and every comparative word chosen by the figures it
 compares. `instance` is the rented box's label of the locked run (`nb...` Nebius, `hs...` Hyperstack, digits vast.ai),
@@ -21,6 +23,8 @@ from _record import Record
 #: two figures within this share of each other (of the lesser) are said to agree
 SAME = 0.005
 FILES = ("sm_90a.json", "sm_90a.blocks1.json", "sm_90a.unlocked.json", "sm_90a.unlocked.blocks1.json")
+#: the record of all seven bodies, the clock locked, one CTA: the third table's, read apart from the four
+READS = "sm_90a.reads.blocks1.json"
 
 
 def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
@@ -28,6 +32,9 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     folder = root / "measure/lab/results/clock_time"
     recs = {f: json.loads((folder / f).read_text()) for f in FILES}
     rows = {f: Record({r["name"]: r["median"] for r in d["results"]}) for f, d in recs.items()}
+    reads = json.loads((folder / READS).read_text())
+    read_rows = Record({r["name"]: r["median"] for r in reads["results"]})
+    assert all(c["ok"] for c in reads["checks"]), "lab page: the reads record holds a check that failed"
     d = recs["sm_90a.json"]
     assert all(c["ok"] for r in recs.values() for c in r["checks"]), "lab page: a record holds a check that failed"
     assert len({r["git"]["sha"] for r in recs.values()}) == 1, "lab page: the four records are of different commits"
@@ -149,6 +156,62 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
             )
         return f"{label} ({'; '.join(parts)})"
 
+    # THE READS (the third table): the integer body and the two with a read of a clock a step, from the reads record
+    READ_BODIES = (
+        (INT, "eight independent integer operations, no read"),
+        ("eight independent integer operations and a read of the cycle counter a step", "the same and a read of the cycle counter"),
+        ("eight independent integer operations and a read of the nanosecond timer a step", "the same and a read of the nanosecond timer"),
+    )
+    r_int, r_clock, r_timer = (b for b, _ in READ_BODIES)
+
+    def r_cycles(b):
+        return read_rows[f"{b}: a step by the cycle counter"]
+
+    def r_ns(b):
+        return read_rows[f"{b}: a step by the nanosecond timer"]
+
+    def r_rate(b):
+        return read_rows[f"{b}: the cycle counter's rate"]
+
+    reads_table = "\n".join(
+        ["| a body | cycles a step | nanoseconds a step | the cycle counter's rate (cycles a microsecond) |", "|---|---|---|---|"]
+        + [f"| {label} | {r_cycles(b):.1f} | {r_ns(b):.1f} | {r_rate(b):.1f} |" for b, label in READ_BODIES]
+    )
+
+    def read_cost(b, name):
+        dc, dn = r_cycles(b) - r_cycles(r_int), r_ns(b) - r_ns(r_int)
+        return (
+            f"a read of the {name} costs {dc:.1f} cycles a step ({r_cycles(b):.1f} against the integer body's {r_cycles(r_int):.1f},"
+            f" {r_cycles(b) / r_cycles(r_int):.1f} times) and {dn:.1f} ns ({r_ns(b):.1f} against {r_ns(r_int):.1f})"
+        )
+
+    share_c, word_c = against(r_cycles(r_timer), r_cycles(r_clock))
+    share_n, word_n = against(r_ns(r_timer), r_ns(r_clock))
+    if word_c == word_n == "the same as":
+        same_reads = (
+            f"THE TWO READS COST THE SAME: the timer's step is {r_cycles(r_timer):.1f} cycles and {r_ns(r_timer):.1f} ns, the counter's"
+            f" {r_cycles(r_clock):.1f} cycles and {r_ns(r_clock):.1f} ns (called the same within {pct(SAME)})"
+        )
+    else:
+        same_reads = (
+            f"THE TWO READS DO NOT COST THE SAME: the timer's step is {pct(abs(share_c))} {word_c} the counter's in cycles"
+            f" ({r_cycles(r_timer):.1f} against {r_cycles(r_clock):.1f}) and {pct(abs(share_n))} {word_n} it in nanoseconds"
+            f" ({r_ns(r_timer):.1f} against {r_ns(r_clock):.1f})"
+        )
+    rate_spread = (max(r_rate(b) for b, _ in READ_BODIES) - min(r_rate(b) for b, _ in READ_BODIES)) / min(
+        r_rate(b) for b, _ in READ_BODIES
+    )
+    reads_sha = reads["git"]["sha"][:8] + (" (a dirty tree)" if reads["git"].get("dirty") else "")
+    reads_text = f"""A READ'S COST, one CTA, the clock locked (`{READS}`: the experiment at {reads_sha}, {reads["reps"]} repetitions, driver {reads["driver"]},
+{reads["date"][:10]}; every check passed): the integer body beside the same body with one 32-bit read a step of the cycle counter
+and of the nanosecond timer's low word, the read's value xor-ed into a value the step keeps:
+
+{reads_table}
+
+WHAT IT DECIDES, the reads: {read_cost(r_clock, "cycle counter")}; {read_cost(r_timer, "nanosecond timer")}. {same_reads}.
+THE RATE IS {"ONE" if rate_spread <= SAME else "NOT ONE"} FOR ALL THREE BODIES: they run {min(r_rate(b) for b, _ in READ_BODIES):.1f} to {max(r_rate(b) for b, _ in READ_BODIES):.1f} cycles a microsecond, within {pct(rate_spread)} of one another.
+"""
+
     unlocked_date = recs[UF]["date"][:10]
     text = f"""MEASURED ({CARD}, driver {d["driver"]}; the locked records {d["date"][:10]}, the unlocked {unlocked_date}, the experiment at
 {d["git"]["sha"][:8]}; {d["reps"]} repetitions; every check passed in all four records: every body's clocks advanced in
@@ -169,13 +232,16 @@ WHAT IT DECIDES.
   {locked_rate:.1f} cycles a microsecond at the full grid across the five bodies.
 - A STEP IN REAL TIME, locked against unlocked: {step_line(WGMMA, "a wgmma step")}; {step_line(INT, "an integer step")}.
 
+{reads_text}
 Record: `measure/lab/results/clock_time/sm_90a.json` and `sm_90a.blocks1.json` (the clock locked) and `sm_90a.unlocked.json`
-and `sm_90a.unlocked.blocks1.json` (unlocked).
+and `sm_90a.unlocked.blocks1.json` (unlocked), these four of five bodies; `sm_90a.reads.blocks1.json` (locked, one CTA, all seven bodies).
 """
     p = root / "docs/lab/clock_time.md"
     s = p.read_text()
     i = s.index("MEASURED (") if "MEASURED (" in s else s.index("NOT YET MEASURED")
-    rec = "and `sm_90a.unlocked.blocks1.json` (unlocked).\n"
-    j = s.index(rec, i) + len(rec) if rec in s[i:] else len(s)
+    # through the end of the `Record:` paragraph (the next blank line, or the file's end)
+    r = s.index("\nRecord: `", i)
+    j = s.find("\n\n", r + 1)
+    j = len(s) if j < 0 else j + 1
     p.write_text(s[:i] + text + s[j:])
     return [p]
