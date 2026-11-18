@@ -22,7 +22,9 @@ constexpr int kGlobalWords = 1 << 24;
 //: a thread's row of global stores
 constexpr int kRowWords = 1024;
 constexpr int kWide = 8;
-enum Body { kIssue = 0, kSharedChain = 1, kGlobalChain = 2, kGlobalStore = 3, kTensor = 4, kBodies = 5 };
+//: the last two: the integer body with one read a step of the cycle counter, or of the nanosecond timer's low word --
+//: a read's own cost, the warpgroup's four warps reading together
+enum Body { kIssue = 0, kSharedChain = 1, kGlobalChain = 2, kGlobalStore = 3, kTensor = 4, kClockRead = 5, kTimerRead = 6, kBodies = 7 };
 
 constexpr int read_a(int m, int k) { return (m + k) % 7 - 3; }
 constexpr int read_b(int k, int n) { return (k + 2 * n) % 3 - 1; }
@@ -90,6 +92,14 @@ __global__ void __launch_bounds__(kThreads, 1) rate(unsigned long long* marks, u
       x = next(x, 1u);
       row[it & (kRowWords - 1)] = x;
     }
+    if constexpr (BODY == kClockRead || BODY == kTimerRead) {
+#pragma unroll
+      for (int j = 0; j < kWide; ++j) y[j] = next(y[j], static_cast<uint32_t>(j));
+      uint32_t read;
+      if constexpr (BODY == kClockRead) asm volatile("mov.u32 %0, %%clock;" : "=r"(read));
+      else asm volatile("mov.u32 %0, %%globaltimer_lo;" : "=r"(read));
+      x ^= read;
+    }
     if constexpr (BODY == kTensor) {
       lab::wg_fence();
       lab::wg_bf16_n64_rs(d, a, db);
@@ -121,9 +131,11 @@ void run(lab::Bench& b, unsigned long long* marks, uint32_t* out, const uint32_t
   using namespace clock_time;
   static const char* const kNames[] = {"eight independent integer operations a step", "a chain of four shared loads a step",
                                        "a chain of four scattered loads of a 64 MB table a step",
-                                       "a store to global memory a step", "one wgmma a step, its commit and wait"};
+                                       "a store to global memory a step", "one wgmma a step, its commit and wait",
+                                       "eight independent integer operations and a read of the cycle counter a step",
+                                       "eight independent integer operations and a read of the nanosecond timer a step"};
   //: steps for a launch of milliseconds: the nanosecond timer's own grain is then far under the reading
-  static const int kSteps[] = {200000, 40000, 6000, 200000, 60000};
+  static const int kSteps[] = {200000, 40000, 6000, 200000, 60000, 200000, 200000};
   const std::string name = kNames[BODY];
   std::vector<unsigned long long> got(static_cast<size_t>(b.sms) * kWarps * 4);
   //: a launch's two clocks, each warp's: its cycles, its nanoseconds
@@ -186,5 +198,7 @@ int main(int argc, char** argv) {
   run<kGlobalChain>(b, marks, out, table, rows);
   run<kGlobalStore>(b, marks, out, table, rows);
   run<kTensor>(b, marks, out, table, rows);
+  run<kClockRead>(b, marks, out, table, rows);
+  run<kTimerRead>(b, marks, out, table, rows);
   return 0;
 }

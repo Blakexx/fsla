@@ -131,7 +131,8 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
 * `lab::sink(out, v)` — a fold of everything a thread computed, stored unconditionally.
 * `lab::Trace<ON>` — a warp's timeline (`lab trace`). A `mark` is a stamp on BOTH clocks -- the stamp, then an entry of
   kind `kTime` whose clock word is the nanosecond timer's low word: one moment tied between the cycle counter and time
-  (the carry lab's traced rows mark each phase's start; `lab trace` reads the cycle counter's). A stamp always stamps: WHICH stamps a kernel takes is its
+  (the carry lab's traced rows mark each phase's start, and its coarse rows and its edges row the launch's entry and
+  exit; `lab trace` reads the cycle counter's). A stamp always stamps: WHICH stamps a kernel takes is its
   author's, by an ordinary condition around the call -- a compile-time one compiles the stamp to nothing, a run-time
   branch costs more than the stamp it skips ([`stamp_cost`](../../lab/stamp_cost.md)) -- and `ON` false makes the whole recorder nothing (the carry lab's
   traced rows are coarse, their phases' starts, and its `kFine` adds the rest): `stamp(kind, site)` and `at(kind, bar)` (a barrier's site its

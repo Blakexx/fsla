@@ -406,7 +406,8 @@ enum Roles : long long {
   //: expansion's phase, a step's A and B address fields and its round's liveness one word, and the lists' pitches
   //: two -- held, and a step's operands unpacked from its word: no load and no arithmetic of the slot's in a step
   kPackedOps = 1ll << 62,
-  //: a traced row's FINE timeline (see kTrace): the last bit
+  //: a traced row's FINE timeline (see kTrace): the last bit. ALONE it is an EDGES row: the launch's entry and exit
+  //: marked on both clocks and nothing else stamped -- the plain kernel's own two clocks at no cost a window
   kFine = static_cast<long long>(1ull << 63)
 };
 template <long long ROLES>
@@ -627,18 +628,29 @@ __device__ __forceinline__ uint32_t own_clock() { return static_cast<uint32_t>(c
 //: A ROLE'S TIMELINE (the traced rows'): its sites past the barriers' -- a named barrier `kNamed | id`, a phase or a
 //: step wait its own
 template <long long ROLES>
-struct Tracer : lab::Trace<(ROLES & kTrace) != 0> {
+struct Tracer : lab::Trace<(ROLES & (kTrace | kFine)) != 0> {
+  using Row = lab::Trace<(ROLES & (kTrace | kFine)) != 0>;
+  //: the launch's edges are a coarse row's and an edges row's: a fine row's kernels are at their registers' limit
+  //: and hold no entry beside their timeline (their windows' marks time them)
+  static constexpr bool kEdged = (ROLES & (kTrace | kFine)) != 0 && (ROLES & (kTrace | kFine)) != (kTrace | kFine);
+  static constexpr uint32_t kEntered = kEdged ? lab::kMarkEntries : 0u;
   //: which stamps a traced row keeps is the experiment's: a coarse row its phases' starts, `kFine` every one. A
   //: stamp's kind is a literal where it is placed, so the others compile to nothing.
   __device__ __forceinline__ void stamp(uint32_t kind, uint32_t site) {
     //: a phase's start is an ANCHOR, on both clocks (a mark); a fine row's other stamps are the cycle counter's
-    if (kind == lab::kPhase) lab::Trace<(ROLES & kTrace) != 0>::mark(kind, site);
-    else if ((ROLES & kFine) != 0) lab::Trace<(ROLES & kTrace) != 0>::stamp(kind, site);
+    if constexpr ((ROLES & kTrace) != 0) {
+      if (kind == lab::kPhase) Row::mark(kind, site);
+      else if ((ROLES & kFine) != 0) Row::stamp(kind, site);
+    }
+  }
+  //: THE LAUNCH'S EDGE, a coarse row's and an edges row's all: a mark
+  __device__ __forceinline__ void edge(uint32_t site) {
+    if constexpr (kEdged) Row::mark(lab::kPhase, site);
   }
   __device__ __forceinline__ void at(uint32_t kind, uint32_t bar) { stamp(kind, this->site(bar)); }
 };
 constexpr uint32_t kNamed = 0x8000u;
-enum Site : uint32_t { kMarkWindow = 0xc000u, kMarkExpand, kMarkSteps, kMarkPanel, kMarkAdds, kMarkServe, kStepsFold, kStepsRead };
+enum Site : uint32_t { kMarkWindow = 0xc000u, kMarkExpand, kMarkSteps, kMarkPanel, kMarkAdds, kMarkServe, kStepsFold, kStepsRead, kMarkEntry, kMarkExit };
 //: a sleeping wait, its cycles added to the warp's count
 __device__ __forceinline__ void slept(int id, int count, uint32_t& clocked) {
   const uint32_t t0 = static_cast<uint32_t>(clock64());
@@ -764,7 +776,6 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
   static_assert(!(ROLES & kCounted) || (blocks<ROLES> && !(ROLES & (kShfl | kSkip | kJoin | kToken | kReady | kAheadSteps | kHeldSteps | kServe | kShare | kOne))));
   static_assert(!(ROLES & kServe) || (blocks<ROLES> && (ROLES & kDrains4) && !(ROLES & (kReady | kToken | kShare | kJoin | kShfl | kSkip | kAheadSteps | kOwn | kRawFold | kMeet41))));
   //: the traced rows: the block form's unclocked rows, whose every wait is one of the stamped helpers'
-  static_assert(!(ROLES & kFine) || (ROLES & kTrace), "a fine timeline is a traced row's");
   static_assert(!(ROLES & kTrace) || (blocks<ROLES> && (ROLES & kDrains4) && (ROLES & kNoClock) && (ROLES & kMirror)
                                       && !(ROLES & (kToken | kShare | kJoin | kSleep | kFive | kTwoSums | kWide | kSelf | kStill))));
   const int tid = threadIdx.x, box = tid >> 7, warp = (tid >> 5) & 3, lane = tid & 31, q = lane >> 2, t = lane & 3;
@@ -881,7 +892,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
     }
   };
   Tracer<ROLES> tr;
-  tr.bind(trace);
+  tr.bind(trace, Tracer<ROLES>::kEntered);
   uint32_t on_read = 0, on_fill = 0, in_image = 0, in_expand = 0, in_steps = 0, in_pads = 0, in_sync0 = 0, in_sync1 = 0, in_fence0 = 0, in_fence1 = 0, in_issue = 0;
   //: the packed row's: the slots its steps have used, a slot and a phase each
   uint32_t uses = 0;
@@ -1475,6 +1486,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
   }
   if constexpr (ROLES & (kTwoSums | kMirror | kBlocks)) lab::WarpMark::stop(times);
   else clock.stop(times);
+  tr.edge(kMarkExit);
   tr.close(base);
   tell(waits, on_read, on_fill, in_image, in_expand, in_steps, in_pads, in_sync0, in_fence0, in_fence1, in_sync1, in_issue);
   //: THE STATE OUT, for the checked call alone: 128 stores a thread, each instruction's lanes on 32 lines, issued
@@ -1851,7 +1863,7 @@ template <long long ROLES>
 __device__ __forceinline__ void read_mirror(uint8_t* smem, uint32_t base, long long* times, uint32_t* waits,
                                             const uint32_t* dense, unsigned long long* trace, int windows) {
   Tracer<ROLES> tr;
-  tr.bind(trace);
+  tr.bind(trace, Tracer<ROLES>::kEntered);
   constexpr int kG = ROLES & kChunk8 ? 2 : 1;
   const int tid = threadIdx.x - kReadAt, warp = tid >> 5, lane = tid & 31, q = lane >> 2, t = lane & 3;
   const uint32_t bars = base + kBarsAt;
@@ -2003,6 +2015,7 @@ __device__ __forceinline__ void read_mirror(uint8_t* smem, uint32_t base, long l
     }
   }
   lab::WarpMark::stop(times);
+  tr.edge(kMarkExit);
   tr.close(base);
   tell(waits, on_image, on_drain, in_steps, in_form, in_panel, in_issue);
 }
@@ -2241,7 +2254,7 @@ __device__ __forceinline__ void drain_role(uint8_t* smem, uint32_t base, long lo
                                            int* sinks,
                                            uint32_t* out, unsigned long long* trace, int windows) {
   Tracer<ROLES> tr;
-  tr.bind(trace);
+  tr.bind(trace, Tracer<ROLES>::kEntered);
   constexpr int kDrainers = drains_of<ROLES>;
   //: the drain rounds only what the mirrored readout stores unrounded
   static_assert(!(ROLES & kRawPanel) || (ROLES & kMirror) || !(ROLES & kRead));
@@ -2352,6 +2365,7 @@ __device__ __forceinline__ void drain_role(uint8_t* smem, uint32_t base, long lo
     __syncwarp();
     arrive<ROLES>(bars + kPanelFreed + 8 * (c & 1), tr);
   }
+  tr.edge(kMarkExit);
   tr.close(base);
   if constexpr (ROLES & kFive) {
     lab::WarpMark::stop(times);
@@ -2380,6 +2394,13 @@ __global__ void __launch_bounds__(threads_of<ROLES>, 1)
   extern __shared__ __align__(128) uint8_t smem[];
   const int tid = threadIdx.x;
   const uint32_t base = lab::smem(smem);
+  //: THE LAUNCH'S TWO EDGES, on both clocks: a warp's entry here, before the kernel's setup, and its exit at its
+  //: role's end; the role's tracer writes after this one's mark
+  {
+    Tracer<ROLES> in;
+    in.bind(trace);
+    in.edge(kMarkEntry);
+  }
   //: the images cleared: the state is zero at the call's start
 #pragma unroll 1
   for (int i = tid; i < 2 * kBoxBytes / 4; i += threads_of<ROLES>) *reinterpret_cast<uint32_t*>(smem + kImageAt + 4 * i) = 0u;
@@ -2575,7 +2596,8 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
                            + (ROLES & kAheadSteps ? ", the steps' operands loaded two steps ahead" : "")
                            + (ROLES & kNoReadSteps ? ", the readout's steps taken out" : "")
                            + (ROLES & kServe ? ", the drain warps expanding the fold's slots a slot ahead" : "")
-                           + (ROLES & kTrace ? (ROLES & kFine ? ", every warp's timeline stamped" : ", every warp's phases stamped") : "")
+                           + (ROLES & kTrace ? (ROLES & kFine ? ", every warp's timeline stamped" : ", every warp's phases stamped")
+                                          : ROLES & kFine ? ", the launch's two edges stamped" : "")
                            + (ROLES & kHeldSteps ? ", every step of a slot its first's operands, held" : "")
                            + (ROLES & kCounted ? ", its steps' operands made from its lists' counts" : "")
                            + (ROLES & kUniform ? ", its counts the warp's own by a shuffle" : "")
@@ -2600,10 +2622,10 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
   const auto kernel = window<ROLES>;
   //: THE TRACED rows' timelines: a warp's row of stamps (lab::Trace), the timed launches' last left in them
   unsigned long long* rows = nullptr;
-  if constexpr ((ROLES & kTrace) != 0)
+  if constexpr ((ROLES & (kTrace | kFine)) != 0)
     LAB_CHECK(cudaMalloc(&rows, static_cast<size_t>(b.sms) * kWarps * lab::Trace<true>::kRow * 8));
   //: cleared: a warp that stamps nothing reads as no stamps, never as the memory's last contents
-  if constexpr ((ROLES & kTrace) != 0)
+  if constexpr ((ROLES & (kTrace | kFine)) != 0)
     LAB_CHECK(cudaMemset(rows, 0, static_cast<size_t>(b.sms) * kWarps * lab::Trace<true>::kRow * 8));
   //: the rows that read the values tile-major read the table laid so
   values = one<ROLES> ? one_values : token<ROLES> ? token_values : blocks<ROLES> && (ROLES & kOwn) ? ready_own_values : blocks<ROLES> && (ROLES & kReady) ? ready_values : blocks<ROLES> ? block_values : four<ROLES> ? four_values : packed<ROLES> ? packed_values : fresh<ROLES> ? fresh_values : apart<ROLES> ? apart_values : (ROLES & kExpanded) == kExpanded ? expanded_values : ROLES & kTiledValues ? tiled_values : values;
@@ -2749,7 +2771,7 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
         return b.span(kWarps) / kTimed;
       });
   b.record(name, "cycles a window a CTA", cycles);
-  if constexpr ((ROLES & kTrace) != 0) {
+  if constexpr ((ROLES & (kTrace | kFine)) != 0) {
     //: a warp's role, and the sites' names: a barrier's offset over 8, a named barrier's, a phase's and a step wait's
     std::vector<std::string> roles;
     for (int w = 0; w < kWarps; ++w)
@@ -2777,8 +2799,11 @@ void run(lab::Bench& b, uint32_t* waits, const uint32_t* values, const uint32_t*
     at(kBarsAt + kCoefLanded, "readout's tiles landed");
     legend.insert(legend.end(), {{kMarkWindow, "window"}, {kMarkExpand, "expanding"}, {kMarkSteps, "issuing steps"},
                                  {kMarkPanel, "storing the panel"}, {kMarkAdds, "adding"}, {kMarkServe, "serve expanding"},
-                                 {kStepsFold, "fold steps"}, {kStepsRead, "readout steps"}});
-    b.trace(name, rows, kWarps, {0, b.sms / 2}, roles, legend);
+                                 {kStepsFold, "fold steps"}, {kStepsRead, "readout steps"},
+                                 {kMarkEntry, "entry"}, {kMarkExit, "exit"}});
+    //: two CTAs of the grid, or its one
+    if (b.sms > 1) b.trace(name, rows, kWarps, {0, b.sms / 2}, roles, legend);
+    else b.trace(name, rows, kWarps, {0}, roles, legend);
     LAB_CHECK(cudaFree(rows));
   }
   //: the composed row's sites, and the read side's own but the fold's wait on a producer, which does not run there
@@ -3322,6 +3347,7 @@ int main(int argc, char** argv) {
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kStsm | kTrace | kFine,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kOwn | kTrace,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kOwn | kTrace | kFine,
+                    3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kOwn | kFine,
                     3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kServe,
                     3 | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kNoReadSteps,
                     3 | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kAheadSteps,
@@ -3464,6 +3490,7 @@ int main(int argc, char** argv) {
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kStsm | kTrace | kFine>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kOwn | kTrace>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kOwn | kTrace | kFine>(b, waits, values, dense, state, out);
+  run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kOwn | kFine>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kServe>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kReady | kReadReady | kNoReadSteps>(b, waits, values, dense, state, out);
   run<kFold | kRead | kSuspend | kLean | kNoClock | kWhole | kBlocks | kMirror | kChunk8 | kDrains4 | kStsm | kAheadSteps>(b, waits, values, dense, state, out);

@@ -75,6 +75,8 @@ struct WarpMark {
 //: a stamp's kind: a work phase begins, a wait begins and ends, an arrival, a copy issued to a barrier; and a MARK's
 //: second entry, the nanosecond timer's low word at the stamp before it
 enum TraceKind : uint32_t { kPhase = 1, kWaits = 2, kWaited = 3, kArrives = 4, kIssues = 5, kTime = 6 };
+//: a mark's entries
+constexpr uint32_t kMarkEntries = 2;
 //: A WARP'S TIMELINE: stamps -- the SM's clock's low word beside an event's, its kind and its site -- written by the
 //: warp's first lane, one predicated store a stamp to the warp's row in global memory, the row's head its count and
 //: the CTA's shared base. A stamp is a clock read, its predicate and one store, priced a stamp by `stamp_cost` as the
@@ -87,8 +89,10 @@ struct Trace {
   unsigned long long* to = nullptr;
   uint32_t n = 0, mine = 0;
 
-  __device__ __forceinline__ void bind(unsigned long long* rows) {
+  //: the warp's row; `after`: the entries a tracer of this warp bound earlier has already written
+  __device__ __forceinline__ void bind(unsigned long long* rows, uint32_t after = 0) {
     if constexpr (ON) {
+      n = after;
       to = rows + static_cast<long long>(blockIdx.x * (blockDim.x >> 5) + warp_id()) * kRow + 32;
       mine = lane_id() == 0;
     }
