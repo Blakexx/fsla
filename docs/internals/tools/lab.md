@@ -243,6 +243,7 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="row-ring"></a>[`row_ring`](../../lab/row_ring.md)
 - <a id="wgmma-rate"></a>[`wgmma_rate`](../../lab/wgmma_rate.md)
 - <a id="stamp-cost"></a>[`stamp_cost`](../../lab/stamp_cost.md)
+- <a id="clock-time"></a>[`clock_time`](../../lab/clock_time.md)
 - <a id="byte-expand"></a>[`byte_expand`](../../lab/byte_expand.md)
 - <a id="cluster-sum"></a>[`cluster_sum`](../../lab/cluster_sum.md)
 - <a id="state-move"></a>[`state_move`](../../lab/state_move.md)
