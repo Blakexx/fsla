@@ -498,7 +498,7 @@ bf16, a line its rounding to f16. The fold's state is stored out for that checke
 registers, since its 128 stores a thread -- each instruction's lanes on 32 lines -- would be issued while the
 readout and the drains are in their last windows and be clocked as theirs.
 
-MEASURED (H100 80GB HBM3, 132 SMs, Nebius preemptible VM 3dt0t7sr, driver 580.173.02; 2026-11-18, the experiment at
+MEASURED (H100 80GB HBM3, 132 SMs, Nebius preemptible VM 05k1renk, driver 580.173.02; 2026-11-18, the experiment at
 44e2597c, one session; 7 repetitions, every checked row's state and output values exact;
 the median; SM-cycles a token are the window's cycles over 8 -- a CTA of two boxes is 8 tokens a window. THE FOLD'S STATE
 DUMP STAYS OUT OF THE TIMED CALLS, and one row restores it to price it in this session):

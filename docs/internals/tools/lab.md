@@ -152,15 +152,12 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
   ([`docs/lab/stamp_cost.md`](../../lab/stamp_cost.md)). Its cost is each traced row's window beside its untraced twin's
   (`docs/lab/carry_window.md`, its traced rows); `Bench::trace` prints chosen CTAs' rows as one line with the warps' roles and the
   sites' names.
-  WHAT THE LAB'S TRACED ROWS CARRY, AND WHY (Blake, 2026-11-17; event `2026-11-17-p87-warpline-s-anchors-record-both-clocks-and-no-sm` for the two clocks):
-  every stamp of a traced row is on BOTH clocks where it is a mark (the cycle counter, tied to the nanosecond timer, so
-  a stamp's cycles and a profiler's samples in time are one moment), and every traced row carries THE LAUNCH'S TWO EDGES
-  -- a warp's entry and exit, forced, highly coarse stamps. His words: "would it help if we would stamp / instrument the
-  kernel with forced / known start / stop highly coarse stamps? or reject kernels that dont have those?" -- the
-  coordinator's answer, which he let stand: yes, and an overlay of sampled counters on a kernel's stamps is refused
-  without them. The reason: the launch's two edges are what BOTH a kernel's stamps and a profiler's samples see, so
-  they are what the two are laid together by. This describes the lab's form; it is enforced where the overlay is made, outside this repository.
-  Its row in the rules table is owed with the later standard (event `2026-11-18-p87-backfilling-the-coarse-marks-into-every-kernel-m`).
+  WHAT THE LAB'S TRACED ROWS CARRY, AND WHY: a phase's start is a MARK -- on both clocks, the cycle counter tied to
+  the nanosecond timer, so a stamp's cycles can be laid beside anything measured in time -- and a coarse row and an
+  edges row carry THE LAUNCH'S TWO EDGES, each warp's entry and exit (a fine row holds none: its kernels are at their
+  registers' limit). The edges are the two moments that both a kernel's stamps and a profiler's time-sampled counters
+  see -- the samples go live at the entry and quiet at the exit -- so they are what the two are laid together by: a
+  row without them cannot be laid under samples.
 * The atoms as one PTX instruction each: `mma_f16_f32` (and `_fresh`), `mma_f16_f16`, `mma_bf16_f32`, `mma_u8u8`,
   `mma_u8s8`.
 * <a id="wgmma"></a>Hopper's atoms, each one PTX instruction of sm_90a (an experiment calling one compiles for sm_90a

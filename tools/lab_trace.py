@@ -39,7 +39,9 @@ ENTRY, EXIT = "entry", "exit"
 #: the nanosecond timer's low word, a stamp's second entry of a mark: its modulus
 TIMER_WORD = 1 << 32
 #: the suffixes a traced row's name carries over its untraced twin's: a fine timeline, coarse phases, the launch's edges
-TRACE_SUFFIXES = (", every warp's timeline stamped", ", every warp's phases stamped", ", the launch's two edges stamped")
+FINE_SUFFIX, COARSE_SUFFIX, EDGES_SUFFIX = (", every warp's timeline stamped", ", every warp's phases stamped",
+                                            ", the launch's two edges stamped")
+TRACE_SUFFIXES = (FINE_SUFFIX, COARSE_SUFFIX, EDGES_SUFFIX)
 
 
 @dataclass

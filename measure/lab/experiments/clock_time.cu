@@ -182,13 +182,8 @@ int main(int argc, char** argv) {
   for (int body = 0; body < kBodies; ++body) {
     const std::string k = lab::kernel("rate", {body});
     b.expect(k, "HGMMA", "==", body == kTensor ? 1 : 0);
-    //: THE CLOCK READS: each body's two clocks before the steps and after them are four CS2R (the cycle counter's and the
-    //: timer's, twice); the wgmma body adds the 32 of its accumulator's zeroing, a CS2R of SRZ a pair, before the loop. The
-    //: two read bodies' read in the step is not a CS2R: the toolkit reads a 32-bit clock into a uniform register, an S2UR
-    //: (SR_CLOCKLO, SR_GLOBALTIMERLO), and no other body's kernel holds one but for its CTA's id (the shared chain's and the
-    //: wgmma body's addresses). The SASS count is static: it cannot tell the read IN the loop from one outside it, but a
-    //: kernel whose read is missing or was folded away holds no S2UR, and the dependence of `x` on the read (`asm volatile`,
-    //: its value xor-ed into the value the sink stores) keeps it in the step
+    //: the clock reads a body's kernel must hold: four CS2R around its steps (36 with the wgmma body's zeroing), and
+    //: the read in a step, an S2UR (docs/lab/clock_time.md)
     b.expect(k, "CS2R", "==", body == kTensor ? 36 : 4);
     if (body == kClockRead || body == kTimerRead) b.expect(k, "S2UR", "==", 1);
     //: the global chain's loads are read in the trip that issued them by design: the warps are meant to wait on them

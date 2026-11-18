@@ -26,8 +26,6 @@ import sys
 
 from _record import Record
 
-EDGES_SUFFIX = ", the launch's two edges stamped"
-COARSE_SUFFIX = ", every warp's phases stamped"
 #: two windows within this share of each other (of the lesser) are said to agree
 SAME = 0.005
 
@@ -54,8 +52,8 @@ def edges_section(root: pathlib.Path) -> str:
         return share, "the same as" if abs(share) <= SAME else ("over" if share > 0 else "under")
 
     parts = []
-    for edged in (n for n in windows if EDGES_SUFFIX in n):
-        plain, coarse = edged.replace(EDGES_SUFFIX, ""), edged.replace(EDGES_SUFFIX, COARSE_SUFFIX)
+    for edged in (n for n in windows if lab_trace.EDGES_SUFFIX in n):
+        plain, coarse = lab_trace.untraced_name(edged), edged.replace(lab_trace.EDGES_SUFFIX, lab_trace.COARSE_SUFFIX)
         for n in (plain, coarse):
             assert n in windows, f"lab page: the edges row {edged!r} has no twin {n!r} in the record"
         (le, ce), (lc, _) = launch(edged), launch(coarse)
@@ -67,7 +65,7 @@ def edges_section(root: pathlib.Path) -> str:
 
         parts.append(
             f"""THE LAUNCH'S EDGES (one CTA, `sm_90a.blocks1.json` and `sm_90a.blocks1.trace.json`, the experiment at
-{rec["git"]["sha"][:8]}{" (a dirty tree)" if rec["git"].get("dirty") else ""}, {rec["reps"]} repetitions; the row whose name with `{EDGES_SUFFIX}` exists, its plain
+{rec["git"]["sha"][:8]}{" (a dirty tree)" if rec["git"].get("dirty") else ""}, {rec["reps"]} repetitions; the row whose name with `{lab_trace.EDGES_SUFFIX}` exists, its plain
 and coarse twins by its name with that suffix removed and replaced): each warp marks its entry at the kernel's top and its exit at its role's end, on both clocks.
 - THE WINDOW, cycles a window a CTA: the plain row's {windows[plain]:,.0f}; the edges row's {windows[edged]:,.0f}, {cost(se, we)}
   ({windows[edged] - windows[plain]:+,.0f} cycles); the coarse row's (its phases' starts and the edges) {windows[coarse]:,.0f}, {cost(sc, wc)}
