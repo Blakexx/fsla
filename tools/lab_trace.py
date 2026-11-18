@@ -51,7 +51,8 @@ WINDOW = "phase.window"
 FINE_SUFFIX, COARSE_SUFFIX, EDGES_SUFFIX = (", every warp's timeline stamped", ", every warp's phases stamped",
                                             ", the launch's two edges stamped")
 #: a detail row's own suffix, beside its coarse one: a detail group's stamps kept
-DETAIL_SUFFIXES = (", the waits on the tile groups read stamped",)
+DETAIL_SUFFIXES = (", the waits on the tile groups read stamped", ", the waits on the tile groups published stamped",
+                   ", the waits on the panels filled stamped", ", the waits on the panels drained stamped")
 TRACE_SUFFIXES = (FINE_SUFFIX, COARSE_SUFFIX, EDGES_SUFFIX, *DETAIL_SUFFIXES)
 
 

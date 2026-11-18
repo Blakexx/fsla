@@ -757,6 +757,11 @@ inline std::string kernel(const std::string& name, std::initializer_list<long lo
   for (long long a : args) out += std::string(i++ ? ", " : "") + "\\((?:int|long long)\\)" + std::to_string(a);
   return out + ">\\(";
 }
+//: a kernel and those that share its leading template arguments (a detail row's beside its row's); `name` a regex
+inline std::string kernel_family(const std::string& name, std::initializer_list<long long> args) {
+  const std::string one = kernel(name, args);
+  return one.substr(0, one.size() - 3) + "(?:, [^>]*)?>\\(";
+}
 inline std::string kernel(const std::string& name, std::initializer_list<int> args) {
   std::vector<long long> wide(args.begin(), args.end());
   std::string out = name + "<";
