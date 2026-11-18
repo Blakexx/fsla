@@ -29,6 +29,8 @@ __global__ void __launch_bounds__(2 * kGroupThreads, 1) rate(long long* times, f
   for (int i = tid; i < kM * kK; i += blockDim.x) tile[(kTileA + tile_at(i / kK, i % kK)) / 2] = bf16_of(read_a(i / kK, i % kK));
 #pragma unroll 1
   for (int i = tid; i < kN * kK; i += blockDim.x) tile[(kTileB + tile_at(i / kK, i % kK)) / 2] = bf16_of(read_b(i % kK, i / kK));
+  //: the tiles were written by ordinary stores and are read by the wgmma through the async proxy: fence them first
+  lab::bulk_fence();
   __syncthreads();
   const uint32_t base = lab::smem(smem);
   //: THE DESCRIPTORS AND REGISTER A, held: nothing of them is derived inside the step

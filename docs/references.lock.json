@@ -1620,6 +1620,7 @@
   {"doc": "docs/lab/cast_cluster.md", "pinned_at": "46954a3b51cb", "reviewed": true, "sha256": "", "target": "measure/lab/results/cast_cluster/sm_90a.json"},
   {"doc": "docs/lab/clock_time.md", "pinned_at": "3dbe12d1ab1d", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
   {"doc": "docs/lab/clock_time.md", "pinned_at": "3dbe12d1ab1d", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/clock_time.cu"},
+  {"doc": "docs/lab/clock_time.md", "pinned_at": "fbba665cd716", "reviewed": true, "sha256": "", "target": "measure/lab/results/clock_time/sm_90a.json"},
   {"doc": "docs/lab/cluster_sum.md", "pinned_at": "00d6bcf6cebf", "reviewed": true, "sha256": "", "target": "docs/internals/tools/carry_floor.md"},
   {"doc": "docs/lab/cluster_sum.md", "pinned_at": "00d6bcf6cebf", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
   {"doc": "docs/lab/cluster_sum.md", "pinned_at": "00d6bcf6cebf", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/cluster_sum.cu"},

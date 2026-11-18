@@ -51,6 +51,8 @@ __global__ void __launch_bounds__(kThreads, 1) rate(unsigned long long* marks, u
   for (int i = tid; i < kN * kK; i += blockDim.x) tile[(kTileB + tile_at(i / kK, i % kK)) / 2] = bf16_of(read_b(i % kK, i / kK));
 #pragma unroll 1
   for (int i = tid; i < kTableWords; i += blockDim.x) shared[i] = static_cast<uint32_t>(i) * 2654435761u;
+  //: the tiles were written by ordinary stores and are read by the wgmma through the async proxy: fence them first
+  lab::bulk_fence();
   __syncthreads();
   const uint32_t base = lab::smem(smem);
   const uint64_t db = lab::held(lab::wg_desc(base + kTileB, 8, 16));

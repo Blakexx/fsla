@@ -76,6 +76,15 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     lean_c1, lean_c2 = added(C, LEAN, 1), added(C, LEAN, 2)
     lean_i1, lean_i2 = added(I, LEAN, 1), added(I, LEAN, 2)
     lean_w2 = added(W, LEAN, 2)
+    #: the plain independent step's own run-to-run spread, its repetitions' range: two stamps within it agree
+    plain_i = next(r for r in d["results"] if r["name"] == f"{I}, plain")
+    spread_i = plain_i["max"] - plain_i["min"]
+    slot_i2 = added(I, SLOT, 2)
+    two_alike = (
+        f"At two a step on the independent step the two agree ({slot_i2:.1f} against {lean_i2:.1f}, within the plain step's run-to-run spread of {spread_i:.1f})."
+        if abs(slot_i2 - lean_i2) <= spread_i
+        else f"At two a step on the independent step the two differ ({slot_i2:.1f} against {lean_i2:.1f}): NOT\n  ISOLATED."
+    )
     wait_lo = min(added(W, f, 1) for f in (LEAN, HELD))
     wait_hi = max(added(W, f, 1) for f in (LEAN, HELD))
 
@@ -109,8 +118,7 @@ WHAT IT DECIDES.
 - THE CALLER'S STAMP -- a clock read and a store to an address the kernel builds from an index it already holds, no
   state of the stamp's own -- is the lean stamp in shared memory ({added(W, SLOT, 1):.1f}, {added(C, SLOT, 1):.1f} and {added(I, SLOT, 1):.1f} at one a step against the lean
   stamp's {added(W, LEAN, 1):.1f}, {lean_c1:.1f} and {lean_i1:.1f}; {added(W, SLOT, 2):.1f}, {added(C, SLOT, 2):.1f} and {added(I, SLOT, 2):.1f} at two): the toolkit compiles both to the same four
-  instructions at one a step. At two a step on the independent step the two differ ({added(I, SLOT, 2):.1f} against {lean_i2:.1f}): NOT
-  ISOLATED. THE SAME STAMP TO GLOBAL MEMORY is {added(W, SLOTG, 1):.1f}, {added(C, SLOTG, 1):.1f} and {added(I, SLOTG, 1):.1f} at one a step and {added(W, SLOTG, 2):.1f}, {added(C, SLOTG, 2):.1f} and {added(I, SLOTG, 2):.1f} at two:
+  instructions at one a step. {two_alike} THE SAME STAMP TO GLOBAL MEMORY is {added(W, SLOTG, 1):.1f}, {added(C, SLOTG, 1):.1f} and {added(I, SLOTG, 1):.1f} at one a step and {added(W, SLOTG, 2):.1f}, {added(C, SLOTG, 2):.1f} and {added(I, SLOTG, 2):.1f} at two:
   the destination alone, every other instruction the same.
 - AS COMPILED, a stamp's cost on a step bound by issue is its added instructions at about two cycles each for a warp
   alone: on the independent step ({plain(I):.1f} cycles plain, eight operations) the lean stamp adds {lean_i1:.1f} cycles and the

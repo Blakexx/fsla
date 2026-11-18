@@ -121,6 +121,8 @@ __global__ void __launch_bounds__(kThreads, 1) cost(long long* times, uint32_t* 
   for (int i = tid; i < kTableWords; i += blockDim.x) table[i] = table_at(i);
 #pragma unroll 1
   for (int i = tid; i < kRingBytes / 4; i += blockDim.x) ring_words[i] = 0;
+  //: the tiles were written by ordinary stores and are read by the wgmma through the async proxy: fence them first
+  lab::bulk_fence();
   __syncthreads();
   const uint32_t base = lab::smem(smem);
   const uint64_t db = lab::held(lab::wg_desc(base + kTileB, 8, 16));
