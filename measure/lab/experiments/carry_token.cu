@@ -79,9 +79,8 @@ constexpr int kTilesReady = 0, kTilesRead = 32, kPanelReady = 64, kPanelFreed = 
 //: the named barriers: a box's fold warpgroup together behind its stores, and the readout's
 constexpr int kPoolId = 1, kReadId = 11;
 constexpr int kOutWindows = 4;
-//: a slot's steps are this many rounds of its lists; a list's run of lines padded to its steps
+//: a window's steps are this many rounds of its 16 lists
 constexpr int kBlockRounds = 2;
-constexpr int block_spread(int n) { return (n + 15) & ~15; }
 //: A WINDOW IN GLOBAL MEMORY, in lines, entry `e` the one at position `e`: its TABLE, which lands -- an entry's
 //: word, 256; the entries' sparse bytes; a lane's row of the 32 steps' positions, 16 rows of two lines; the lists'
 //: counts, a line; which lists have a second step, a word -- then the entries' dense lines, which threads load, and
@@ -179,7 +178,6 @@ __device__ __forceinline__ void steps_done(Tracer<TRACE, DETAIL>& tr, uint32_t s
   lab::wg_wait<0>();
   tr.stamp(warpline::kWaitEnd, site);
 }
-//: a warp's eleven count words at `kCounts (block, warp)`, written zero: no role reads a clock inside it, so no wait
 //: A FOLD WARPGROUP: its box's state; a window is the image, then the wait on its table and value lines, its entries'
 //: coefficients expanded, and 32 steps whose A is `ldmatrix`'s from the landed lines
 template <int TRACE, int DETAIL>
@@ -313,7 +311,9 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         lab::wg_commit();
         lab::wg_wait<1>();
       }
-    //: THE NEXT WINDOW'S COPIES, behind this window's last read of its lines and under its last steps
+    //: THE NEXT WINDOW'S COPIES, behind every warp's last read of this window's lines -- the warpgroup's barrier is
+    //: that edge -- and under its last steps
+    lab::bar_sync(kPoolId + box, kGroup);
     if (w + 1 < windows) issue_one(w + 1);
     lab::wg_wait<0>();
   }
@@ -601,18 +601,34 @@ inline Buffers buffers(const lab::Bench& b) {
           std::exit(2);
         }
         //: an entry's position: its rank, or one of a bank group no other entry of its step's octet has
-        int pos[2 * kGroup], room_of[8], next_of[8], used[kLists * kBlockRounds * 2] = {};
+        int pos[2 * kGroup], group_of[2 * kGroup], octet_of[2 * kGroup], room_of[8], next_of[8],
+            used[kLists * kBlockRounds * 2] = {};
         for (int m = 0; m < 8; ++m) room_of[m] = 2 * kGroup / 8, next_of[m] = m;
-        for (int r = 0; r < 2 * kGroup; ++r) {
+        for (int r = 0; r < 2 * kGroup && placed; ++r) {
           const Entry& at = entries[static_cast<size_t>(r)];
-          if (!placed) { pos[r] = r; continue; }
-          const int octet = (16 * (at.k >> 4) + at.j) * 2 + ((at.k >> 3) & 1);
+          const int octet = octet_of[r] = (16 * (at.k >> 4) + at.j) * 2 + ((at.k >> 3) & 1);
           int best = -1;
           for (int m = 0; m < 8; ++m)
             if (!(used[octet] >> m & 1) && room_of[m] > 0 && (best < 0 || room_of[m] > room_of[best])) best = m;
+          //: no group with room is free of this octet: an earlier entry of another octet gives up a full group this
+          //: octet lacks for one with room that its own octet lacks
+          for (int full = 0; full < 8 && best < 0; ++full) {
+            if (used[octet] >> full & 1) continue;
+            for (int open = 0; open < 8 && best < 0; ++open) {
+              if (room_of[open] == 0) continue;
+              for (int e2 = 0; e2 < r && best < 0; ++e2)
+                if (group_of[e2] == full && !(used[octet_of[e2]] >> open & 1)) {
+                  used[octet_of[e2]] ^= 1 << full | 1 << open, group_of[e2] = open, --room_of[open], ++room_of[full];
+                  best = full;
+                }
+            }
+          }
           if (best < 0) { std::fprintf(stderr, "carry_token: no bank group left for an entry\n"); std::exit(2); }
-          used[octet] |= 1 << best, --room_of[best], pos[r] = next_of[best], next_of[best] += 8;
+          used[octet] |= 1 << best, --room_of[best], group_of[r] = best;
         }
+        for (int r = 0; r < 2 * kGroup; ++r)
+          if (placed) pos[r] = next_of[group_of[r]], next_of[group_of[r]] += 8;
+          else pos[r] = r;
         //: a step's 16 places: an entry's position, or where the list has none there any position (its bank group
         //: one the octet's entries leave, where placed); the table's row `k` holds place `k` of the 32 steps
         uint8_t place[kLists * kBlockRounds][16];
