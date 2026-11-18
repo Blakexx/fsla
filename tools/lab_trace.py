@@ -171,7 +171,7 @@ def report(rows: list[dict], pattern: str | None, skip: int, record: dict[str, f
         shown += 1
         name = row["variant"]
         timed = record.get(name)
-        untraced = record.get(name.replace(", every warp's timeline stamped", ""))
+        untraced = record.get(name.replace(", every warp's timeline stamped", "").replace(", every warp's phases stamped", ""))
         print(f"\n{name}")
         if timed and untraced:
             print(f"  window: {timed:,.0f} cycles traced, {untraced:,.0f} untraced ({timed / untraced - 1:+.1%} the trace's cost)")

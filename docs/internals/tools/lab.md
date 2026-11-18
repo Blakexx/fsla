@@ -129,7 +129,8 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
 * The operand pieces the kernels use: `ldsm` and `ldsm_t` (`ldmatrix.x4`, `.trans`), `hmul2`, `pack_half2`, `smem`;
   the mbarrier as `ops.cuh` spells it: `mbar_init`, `mbar_arrive`, `mbar_wait` (polled), `mbar_wait_suspended` (sm_90: `try_wait`, the thread may be suspended), `mbar_test` (once).
 * `lab::sink(out, v)` — a fold of everything a thread computed, stored unconditionally.
-* `lab::Trace<ON>` — a warp's timeline (`lab trace`): `stamp(kind, site)` and `at(kind, bar)` (a barrier's site its
+* `lab::Trace<ON, FINE>` — a warp's timeline (`lab trace`; `FINE` false is a COARSE trace, a phase's start and nothing
+  else, its other stamps compiled to nothing -- the detail is switched on where the coarse trace points): `stamp(kind, site)` and `at(kind, bar)` (a barrier's site its
   shared address over 8, read against the CTA's base `close(base)` stores), a stamp the SM's clock's low word beside an
   event's (`lab::TraceKind` and site), written by the warp's first lane, one predicated store a stamp to the warp's row in global memory, with no compiler
   barrier (a branch on the count would hold its loops' convergence); priced a stamp by `stamp_cost`
