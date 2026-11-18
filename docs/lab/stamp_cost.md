@@ -61,7 +61,8 @@ WHAT IT DECIDES.
 - THE CALLER'S STAMP -- a clock read and a store to an address the kernel builds from an index it already holds, no
   state of the stamp's own -- is the lean stamp in shared memory (1.0, 8.0 and 8.0 at one a step against the lean
   stamp's 1.0, 8.0 and 8.0; 16.5, 19.1 and 17.5 at two): the toolkit compiles both to the same four
-  instructions. THE SAME STAMP TO GLOBAL MEMORY is -4.8, 6.9 and 9.2 at one a step and 10.1, 17.2 and 24.1 at two:
+  instructions at one a step. At two a step on the independent step the two differ (17.5 against 21.5): NOT
+  ISOLATED. THE SAME STAMP TO GLOBAL MEMORY is -4.8, 6.9 and 9.2 at one a step and 10.1, 17.2 and 24.1 at two:
   the destination alone, every other instruction the same.
 - AS COMPILED, a stamp's cost on a step bound by issue is its added instructions at about two cycles each for a warp
   alone: on the independent step (29.3 cycles plain, eight operations) the lean stamp adds 8.0 cycles and the
