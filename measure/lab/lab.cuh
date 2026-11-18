@@ -431,6 +431,15 @@ __device__ __forceinline__ void wg_bf16_n64_rs(float (&d)[32], const uint32_t (&
                : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "l"(b), "r"(static_cast<int>(add)));
 }
 
+//: m64n16k16 with A from the warpgroup's registers (a thread's 8 bf16 as 4 words, the layout `ldmatrix.x4` gives a
+//: 16 x 16 fragment) and B M|N-major in shared memory: `d` += A [64 x 16] B [16 x 16], or written whole
+__device__ __forceinline__ void wg_bf16_n16_rs(float (&d)[8], const uint32_t (&a)[4], uint64_t b, bool add = true) {
+  asm volatile("{ .reg .pred p; setp.ne.b32 p, %13, 0;\n"
+               "wgmma.mma_async.sync.aligned.m64n16k16.f32.bf16.bf16 {%0, %1, %2, %3, %4, %5, %6, %7}, {%8, %9, %10, %11}, %12, p, 1, 1, 1; }"
+               : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]), "+f"(d[4]), "+f"(d[5]), "+f"(d[6]), "+f"(d[7])
+               : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "l"(b), "r"(static_cast<int>(add)));
+}
+
 //: the same 72 columns wide: `d` += A [64 x 16] B [16 x 72], B a K-major tile of 9 bricks
 __device__ __forceinline__ void wg_bf16_n72_rs(float (&d)[36], const uint32_t (&a)[4], uint64_t b, bool add = true) {
   asm volatile("{ .reg .pred p; setp.ne.b32 p, %41, 0;\n"
