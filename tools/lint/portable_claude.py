@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE AGENT FILES ARE PORTABLE (KERNEL_STANDARDS section 31, gating): nothing under `.claude/` and no `CLAUDE.md`
-names a machine's own path -- a home directory, a mount, a drive. Hooks resolve through `$CLAUDE_PROJECT_DIR`, skills
-cite repo-relative paths, and a site's own locations come from the dev config or the environment (`ROLA_SCRATCH`), so a
+"""THE AGENT FILES ARE PORTABLE (KERNEL_STANDARDS section 17, gating): nothing under `.claude/` and no `CLAUDE.md`
+names a machine's own path -- a home directory, a mount, a drive. Hooks resolve through `$CLAUDE_PROJECT_DIR`,
+`CLAUDE.md` cites repo-relative paths, and a site's own locations come from the dev config or the environment (`ROLA_SCRATCH`), so a
 clone or a worktree anywhere runs the same agent setup. Docs: docs/internals/tools/lint.md#portable-agent-files.
 """
 from __future__ import annotations
@@ -37,7 +37,7 @@ def main() -> int:
     for line in found:
         print(line)
     if found:
-        print(f"portable_claude: {len(found)} machine path(s) in the agent files (KERNEL_STANDARDS 31: "
+        print(f"portable_claude: {len(found)} machine path(s) in the agent files (KERNEL_STANDARDS 17: "
               "`$CLAUDE_PROJECT_DIR`, repo-relative paths, or the dev config)")
     return 1 if found else 0
 

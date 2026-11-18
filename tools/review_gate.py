@@ -74,7 +74,7 @@ WHAT THE CHANGE MAKES OBSOLETE (the CONSTITUTION's ONE FORM PER MECHANISM and IN
 change adds or replaces, search the checkout for what else does that job or fed the old one, and report what it left
 behind -- a second path doing the new mechanism's job (a parallel lookup, a duplicate table or switch); a field, flag,
 option or table whose consumers the change removed or replaced, or whose only reader is now a check of itself; a
-decision still computed that nothing acts on; a guard or refusal made unreachable; docs, comments, skills or tests
+decision still computed that nothing acts on; a guard or refusal made unreachable; docs, comments or tests
 still stating the replaced form. A name with no reader at all is the lints' to catch; this is the semantic case: code
 still read, or still compiling, that the change made unneeded. Cite the rule and the changed line that obsoletes it.
 

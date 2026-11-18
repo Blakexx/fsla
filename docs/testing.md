@@ -230,8 +230,8 @@ here rather than at a later caller. It needs `nvcc` but no device.
 A document nothing checks is a document that drifts. These run in the commit gate, read files and never touch a device
 ([`internals/tools/lint.md`](internals/tools/lint.md)):
 
-- **`tools/docrefs.py`**: every citation a doc or a skill makes of the tree is pinned to its target's content; a new
-  citation is read and accepted, and a changed target waits in `pending` for the docs pass; a skill is held strictly
+- **`tools/docrefs.py`**: every citation a doc makes of the tree is pinned to its target's content; a new
+  citation is read and accepted, and a changed target waits in `pending` for the docs pass
   ([`internals/tools/docrefs.md`](internals/tools/docrefs.md)).
 - **`tools/lint/lint_standards.py`'s mirror rules**: every source file under `csrc/rola/` has a mirror doc at the same
   relative path (minus `src/`); every internals anchor a source cites resolves; a hazard stub's slug is its

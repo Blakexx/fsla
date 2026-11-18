@@ -7,7 +7,8 @@ column that matters.
 
 **No tool writes a measurement record except through a declared target.** A measurement is a target of
 `declare.py` (`rola_devtools.build`), its result is stored by a store target beside it, and the tool itself prints or
-writes `--json`.
+writes `--json`. A tool run by hand prints or writes `--json` and stores nothing; a stored reading is its `declare.py`
+target ([`measurement.md`](../../measurement.md)).
 
 ## The build
 
@@ -26,10 +27,11 @@ writes `--json`.
 | `no_source_build.py` | `pyproject.toml`'s build backend, which refuses a source install by name | pip | — |
 | `supported.py` | the README's supported-configuration table — a REPORT, not a claim | a person, after an arm change | the table |
 | [`kernels.py`](kernels.md) | THE KERNEL LIST: every device unit the build compiles and every kernel the source defines, derived from the tree | the graph's unit list (`gen_shards.py`), `ratify.py`, every kernel gate | — |
-| `build/dag_to_dot.py` | a DAG tuple (`rola.engine.dags.*`) as Graphviz DOT and SVG | a person, after a DAG change | the `.svg` beside its page |
+| `build/dag_to_dot.py` | a DAG tuple (`rola.engine.dags.*`) as Graphviz DOT and SVG | a person, after a DAG change: `rola/engine/runner.py` pushes one NVTX range per DAG node, so one `nsys` run settles what a host-side span is, and `--dot` checks a page's diagram against the DAG | the `.svg` beside its page |
 | `git-hooks/pre-commit` | THE COMMIT GATE: `bazel test //:gate` on the commit as git will write it ([`build-graph.md`](../../build-graph.md#checks)) | git, every commit | — |
-| `git-hooks/post-commit` | THE ADVISORY REVIEW: `review_gate.py` on HEAD in the background (`review_gate.md`) | git, every commit | — |
-| [`review_gate.py`](review_gate.md) | a commit, range or staged diff reviewed by an LLM against CONSTITUTION and KERNEL_STANDARDS, each finding citing a rule and a line; advisory | the post-commit hook, a person | `rola-review/` in the git common dir |
+| `git-hooks/post-commit` | THE REVIEW: `review_gate.py` on HEAD in the background (`review_gate.md`) | git, every commit | — |
+| `git-hooks/commit-msg` | A REVIEW'S BLOCK STOPS THE NEXT COMMIT: `review_gate.py --unanswered` on the commit's message ([`review_gate.md`](review_gate.md#blocking)) | git, every commit | — |
+| [`review_gate.py`](review_gate.md) | a commit, range or staged diff reviewed by an LLM against CONSTITUTION and KERNEL_STANDARDS, each finding citing a rule and a line; a landed `block` refuses the next commit until a message answers it, a `warn` is advisory | the post-commit and commit-msg hooks, a person | `rola-review/` in the git common dir |
 
 ## Ratification and the assembled code
 

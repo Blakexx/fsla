@@ -45,8 +45,6 @@ ROOT = Path(__file__).resolve().parents[1]
 #: The pins live with the docs they pin: a doc the public mirror does not ship (`.github/mirror/declarations.json`'s
 #: `private`) keeps its pins in the private lock, so the public lock never names it.
 LOCKS = {"public": "docs/references.lock.json", "private": ".claude/references.lock.json"}
-#: the repo's skills, whose references the gate holds strictly (KERNEL_STANDARDS section 31)
-SKILLS = ".claude/skills/"
 MIRROR_DECLARATIONS = ".github/mirror/declarations.json"
 #: A dotted name in code font is a reference when its first component is one of these; the value is the directory
 #: the package imports from.
@@ -528,18 +526,6 @@ def main() -> int:
     unread = sum(1 for v in lock.values() if not v["reviewed"])
     broken = sum(1 for v in lock.values() if v["sha256"] is None)
     failed = bool(new or stale or grown)
-    #: KERNEL_STANDARDS section 31: a skill is held strictly -- each of its references current, read and resolving --
-    #: so a skill changes in the commit that changes what it cites
-    for (doc, target), ((_, line, digest), _) in sorted(pending.items()):
-        if doc.startswith(SKILLS):
-            print(f"{doc}:{line}: `{target}` {'vanished' if digest is None else 'changed'} since its pin; a skill "
-                  "follows what it cites in the same commit (KERNEL_STANDARDS 31)")
-            failed = True
-    for (doc, target), pin in sorted(lock.items()):
-        if doc.startswith(SKILLS) and (pin["sha256"] is None or not pin["reviewed"]):
-            print(f"{doc}: `{target}` {'resolves to nothing' if pin['sha256'] is None else 'is pinned unread'}; a skill "
-                  "is held strictly (KERNEL_STANDARDS 31)")
-            failed = True
     if a.closing:
         for (doc, target), ((_, line, digest), _) in sorted(pending.items()):
             print(f"{doc}:{line}: `{target}` {'vanished' if digest is None else 'changed'} since its pin")

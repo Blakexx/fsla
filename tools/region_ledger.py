@@ -10,8 +10,8 @@ device function (or struct method) each SASS instruction inlines from -- against
         --budget tools/budgets/<kernel>.json --per <cta-windows in the launch>
 
 The csv is `ncu --section SourceCounters --page source --print-source sass --csv` of ONE launch
-(rola-ledger skill). Attribution (`Attribution`): the innermost frame in the kernel's sources (the kernel's file
-first, then the files of its components) whose function is a budget component, walked outward no further than the
+(`docs/internals/tools/budgets.md`). Attribution (`Attribution`): the innermost frame in the kernel's sources (the
+kernel's file first, then the files of its components) whose function is a budget component, walked outward no further than the
 kernel's own body (`nvdisasm --print-line-info-inline`); a frame's function is the nearest preceding definition --
 every `__device__` / `__host__` / `constexpr` function whatever its return type, `__global__` kernels, `struct`
 blocks and their methods (`DEF`).

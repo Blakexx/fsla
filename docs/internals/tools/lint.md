@@ -34,9 +34,9 @@ is red too; a fixture's verdict must hold exactly its expected findings ([below]
 <a id="portable-agent-files"></a>
 ## The agent files are portable
 
-`tools/lint/portable_claude.py` (gating, KERNEL_STANDARDS §31) fails a commit whose agent files -- everything under
-`.claude/` and every `CLAUDE.md` -- name a machine's own path: a home directory, a mount, a drive. The repo's skills,
-hooks and routes ship with the code to every clone and worktree, so they cite repo-relative paths, hooks resolve
+`tools/lint/portable_claude.py` (gating, KERNEL_STANDARDS §17) fails a commit whose agent files -- everything under
+`.claude/` and every `CLAUDE.md` -- name a machine's own path: a home directory, a mount, a drive. The hooks and
+`CLAUDE.md` ship with the code to every clone and worktree, so they cite repo-relative paths, hooks resolve
 through `$CLAUDE_PROJECT_DIR`, and a site's own locations come from the dev config or the environment
 (`ROLA_SCRATCH`).
 
@@ -114,8 +114,8 @@ fixture.
 **`lint_standards.py`** carries what ast-grep cannot express: the unroll discipline (§6: a dynamic-bound loop in device
 code carries `#pragma unroll 1`, scoped to `__global__`/`__device__` bodies by brace counting), the torch include as a
 text belt to the ast-grep rule, a CTA or grid barrier inside a declared barrier-free region (`__syncwarp` is intra-warp
-and excluded), a committed doc, skill or script wrapping a command in an external `flock` on the GPU lock path (scoped
-to `docs/`, `.claude/skills/`, `measure/`, `tools/`, `CLAUDE.md` and `README.md`, the standards among them), the
+and excluded), a committed doc or script wrapping a command in an external `flock` on the GPU lock path (scoped
+to `docs/`, `measure/`, `tools/`, `CLAUDE.md` and `README.md`, the standards among them), the
 file-reading checks
 (`check_supported_table`, `check_shard_partition`, `check_arch_coverage`, `check_vendored_pin`, each a function of the
 tree's files, never of an imported `rola`), and

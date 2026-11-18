@@ -14,7 +14,7 @@ consumes it), so nothing in the extension can prove it works. This file compiles
   context it runs in, so it cannot be provoked inside the pytest process.
 
 The compile runs under the host budget (`rola_devtools.locks.host`) -- a census compile is a compile
-(`rola-build`), and this one is two.
+(`docs/build-graph.md`), and this one is two.
 """
 
 from __future__ import annotations

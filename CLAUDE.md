@@ -2,10 +2,11 @@
 
 THE REPO IS ONE ATOMIC DESIGN. Its docs are the canonical current state, whole and self-contained:
 `docs/CONSTITUTION.md` (Blake's standing rulings), `docs/KERNEL_STANDARDS.md` (the laws), `docs/ARCHITECTURE.md` and
-`docs/architecture/` (the design), `docs/internals/` (each source file's why and how it connects) and `.claude/skills/`
-(the procedures). A rule or a design is real only once it is written here, and nothing here points outside the repo for
-one -- another project's design may be cited only as the reason ours differs. Read the repo's doc before acting on
-anything remembered.
+`docs/architecture/` (the design) and `docs/internals/` (each source file's why and how it connects). A rule or a
+design is real only once it is written here, and nothing here points outside the repo for one -- another project's
+design may be cited only as the reason ours differs. Read the repo's doc before acting on anything remembered. Before
+asserting a kernel fact, grep the source or contract doc in the current worktree; if unchecked say `unverified`; cite
+a searchable string, never a line number. `docs/ESSENTIALS.md` maps what exists and where, by action.
 
 The rules most often violated by newcomers, restated:
 
@@ -27,27 +28,5 @@ The rules most often violated by newcomers, restated:
   `gpu_lock()` itself (`rola_devtools.locks.gpu`) — invoke GPU commands BARE,
   never wrapped in an external `flock` on the lock path (the lock is the files beside it, so that serializes
   against nothing); a binary with no `gpu_lock()` runs under `python -m rola_devtools.locks.gpu -- <command>`.
-
-## Skills: procedures that ship with the repo (KERNEL_STANDARDS §31)
-
-The repo's skills are in `.claude/skills/`; each is a procedure whose rules and facts are references into `docs/`,
-held current by `tools/docrefs.py`. A PreToolUse router puts the skill that covers an action -- from the checkout the
-action touches, so every worktree uses its own branch's skills -- into the acting agent's context the first time it
-takes the action (`.claude/skill-routes.json`). A session started here is routed by this repo's hook; sessions started
-anywhere else by the user-level bootstrap that `bazel run //:init` installs (`bazel run //:check` verifies it is current).
-
-| action | skill |
-|---|---|
-| writing or changing CUDA (`csrc/`, `measure/lab/*.cu`) | `rola-kernel-code` |
-| a lab experiment (`measure/lab/`, `tools/lab.py`) | `rola-lab` |
-| an instruction budget | `rola-budget` |
-| attributing a shipped kernel's cost (ncu, the ledgers) | `rola-instruments` |
-| a shared-memory layout, the bank model | `rola-shared-layout` |
-| tests (`tests/`, `pytest`) | `rola-test` |
-| measuring the shipped kernels | `rola-bench` |
-| a build | `rola-build` |
-| ratification | `rola-ratify` |
-| the dev environment, a worktree | `rola-dev` |
-| docs, skills, routes, this file | `rola-docs` |
-| a commit or a push | `rola-commit` |
+- A commit subject states in words what the commit makes true, never a work code.
 

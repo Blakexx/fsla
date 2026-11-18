@@ -258,7 +258,7 @@ The manifest is regenerated only by `--write`, which re-runs the same compile an
 records what it reports. Hand-editing an entry to make the gate pass would be
 asserting a spill nobody measured — exactly the failure the manifest replaces. When
 a kernel change legitimately moves the numbers: re-run `--write`, and record why
-they moved.
+they moved. A second `--write` on the same tree changes nothing.
 
 ## One file per architecture
 

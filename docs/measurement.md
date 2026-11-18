@@ -328,6 +328,8 @@ Reading across runs is a join, never a parser: `instrument_metrics` is every num
 long form (run, cell, dotted metric, value), `diff_cells` every stored diff's verdict per cell and quantity, and
 `bazel run //:results -- instruments --baseline RUN` is one run's numbers beside another's as deltas; the dashboard
 (`--baseline RUN`) renders the same. Which run is the baseline, like which label is the reference, is the reader's.
+A result is read from the store (`bazel run //:results -- show`, `history`, `latest`, `instruments`), never from a
+terminal print.
 
 A tool run by another tool stores nothing (`--no-record`): the caller keeps the output in its own record.
 `bazel run //:results -- sql "..."` queries every location through a derived SQLite index beside the records

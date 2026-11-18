@@ -5,7 +5,7 @@ truth; what was removed, and why it was safe, is [`internals/DELETIONS.md`](inte
 
 | page | owns |
 |---|---|
-| [`ESSENTIALS.md`](ESSENTIALS.md) | the post-compaction pointer card: the laws to read before acting, the skills, the instruments |
+| [`ESSENTIALS.md`](ESSENTIALS.md) | the post-compaction pointer card: the laws to read before acting, what exists by action, the instruments |
 | [`CONSTITUTION.md`](CONSTITUTION.md) | the owner's standing rulings, above every law |
 | [`KERNEL_STANDARDS.md`](KERNEL_STANDARDS.md) | the laws: rule, why, enforcement, evidence |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | what the family computes, the leaf lattice, the state format, the carve, each kernel, the launch policy, portability, and the index from mechanism to page |

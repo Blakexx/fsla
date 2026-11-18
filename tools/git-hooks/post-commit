@@ -2,9 +2,9 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 #
-# THE ADVISORY REVIEW, after every commit (Blake, 2026-11-06): tools/review_gate.py reviews HEAD against the
+# THE REVIEW, after every commit (Blake, 2026-11-06): tools/review_gate.py reviews HEAD against the
 # CONSTITUTION and KERNEL_STANDARDS in the background, its report in the git common dir's rola-review/
-# (`bazel run //tools:review_gate -- --show 1`). It never slows or refuses a commit: skipped mid-rebase, without the
+# (`bazel run //tools:review_gate -- --show 1`). It never slows a commit: skipped mid-rebase, without the
 # `claude` CLI, or with no venv of the checkout's own. docs/internals/tools/review_gate.md
 command -v claude >/dev/null 2>&1 || exit 0
 git_dir="$(git rev-parse --git-dir)"

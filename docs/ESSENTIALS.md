@@ -20,9 +20,14 @@ kernel:
 - Efficiency is correctness; build the whole design or stop and name the gap; no fallbacks, no dead code;
   comments are decl blocks, prose goes to `docs/internals/`; the oracle is the truth (`tests/oracle/`).
 
-## The skills
-`.claude/skills/` -- one procedure per common action, routed by `.claude/skill-routes.json` (`CLAUDE.md` has the table);
-load the skill an action names before taking it (§31).
+## What exists, by action
+- Before asserting a kernel fact, grep the source or contract doc in the current worktree; if unchecked say
+  `unverified`; cite a searchable string, never a line number.
+- Prove it: correctness `docs/testing.md`; a lab row `docs/internals/tools/lab.md#the-loop`; a shipped kernel's cost
+  `docs/internals/tools/README.md`; a declared measurement `docs/measurement.md`; a commit `docs/build-graph.md#checks`.
+- A build or tool that will not start: `bazel run //:check` (`docs/internals/tools/dev.md`).
+- A push to the default branch waits until every review of its commits has landed and been read; nothing refuses it
+  yet (`docs/internals/tools/review_gate.md#pipelined`).
 
 ## The instruments
 - Perf: `bazel run //:measure -- run declare.py:all` (this checkout's declared measurement: its instruments and one

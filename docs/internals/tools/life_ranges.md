@@ -14,7 +14,8 @@ registers against its `registers` line, an instruction attributed as the region 
 (`region_ledger.owner_of`) -- the innermost inline frame in the `--source` files (repeat the flag: the kernel's file
 first, then its components') whose function is one of the budget's `components`, walking outward no further than the
 kernel's own body, else that body (its glue). Red where a component passes its line or has
-none.
+none. The command is `bazel run //:life_ranges -- --so <.so> --member <m> --kernel <regex> --source <kernel>
+--source <components>... --budget tools/budgets/<k>.json`.
 
 <a id="liveness"></a>
 ## The liveness

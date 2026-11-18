@@ -273,57 +273,6 @@ def checkout_venv(checkout: Path) -> Path | None:
     return own if list(own.glob(f"lib/python*/site-packages/{ENV_PTH}")) else None
 
 
-#: THE AGENT SKILL ROUTER (KERNEL_STANDARDS section 31): the user-level bootstrap that runs the touched checkout's
-#: router from a session started anywhere -- the repo's copy installed as the user's, its PreToolUse entry in their
-#: settings
-ROUTER = ROOT / ".claude" / "hooks" / "skill_router_bootstrap.py"
-ROUTER_HOOKS = {"PreToolUse": {"matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash", "hooks": [
-                    {"type": "command", "command": 'python3 "$HOME/.claude/hooks/skill_router.py"', "timeout": 5}]},
-                "SessionStart": {"matcher": "compact|resume", "hooks": [
-                    {"type": "command", "command": 'python3 "$HOME/.claude/hooks/skill_router.py" --forget', "timeout": 5}]}}
-
-
-def router_state() -> tuple[bool, bool]:
-    """(the user's bootstrap is this checkout's, the user's settings run it)."""
-    home = Path.home() / ".claude"
-    installed = home / "hooks" / "skill_router.py"
-    try:
-        settings = json.loads((home / "settings.json").read_text())
-    except (OSError, ValueError):
-        settings = {}
-    wired = all(any("skill_router.py" in hook.get("command", "")
-                    for group in settings.get("hooks", {}).get(event, []) for hook in group.get("hooks", []))
-                for event in ROUTER_HOOKS)
-    return installed.is_file() and installed.read_bytes() == ROUTER.read_bytes(), wired
-
-
-def install_router() -> None:
-    """The bootstrap installed where it differs and its hook entry added where it is absent, on a machine where Claude
-    Code keeps a user configuration (`~/.claude`; the image has none); every other user setting is kept, and a settings
-    file that does not parse is refused, never rewritten."""
-    home = Path.home() / ".claude"
-    if not home.is_dir():
-        print("agent skill router: no Claude Code configuration here, nothing to install")
-        return
-    current, wired = router_state()
-    if not current:
-        (home / "hooks").mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(ROUTER, home / "hooks" / "skill_router.py")
-        print(f"agent skill router: installed {home / 'hooks' / 'skill_router.py'}")
-    if not wired:
-        path = home / "settings.json"
-        try:
-            settings = json.loads(path.read_text()) if path.is_file() else {}
-        except ValueError as ex:
-            raise SystemExit(f"{path} does not parse ({ex}); fix it, then rerun init") from ex
-        for event, entry in ROUTER_HOOKS.items():
-            groups = settings.setdefault("hooks", {}).setdefault(event, [])
-            if not any("skill_router.py" in hook.get("command", "") for group in groups for hook in group.get("hooks", [])):
-                groups.append(entry)
-        path.write_text(json.dumps(settings, indent=2) + "\n")
-        print(f"agent skill router: wired into {path}")
-
-
 def _worktrees() -> list[Path]:
     """Every checkout of this repository: the main one and each linked worktree."""
     listing = subprocess.run(["git", "-C", str(ROOT), "worktree", "list", "--porcelain"], capture_output=True, text=True,
@@ -367,7 +316,6 @@ def cmd_init(a) -> int:
         else:
             wire_hooks(checkout)
     _refuse_unwired()
-    install_router()
     if dev_config.get("clock.ghz") is None:
         print("clock: unset -- this host measures UNLOCKED until `bazel run //:clock -- --mhz <MHz>` runs")
     return cmd_check(a)
@@ -430,12 +378,6 @@ def cmd_check(a) -> int:
          f"{ROOT.name} has no venv of its own for its commit gate") if readable else
         f"{ROOT}: no git repository visible here; commits are made where it is",
         "bazel run //:dev_env" if readable and own is None else "bazel run //:init")
-    current, wired = router_state()
-    if (Path.home() / ".claude").is_dir():
-        row(current and wired, "agent skill router: " + ("installed and current" if current else "missing or stale")
-            + ("" if wired else ", not in the user's settings"), "bazel run //:init")
-    else:
-        row(True, "agent skill router: no Claude Code configuration here")
     for key in ("host.lock_dir", "host.scratch"):
         path = Path(dev_config.get(key))
         path.mkdir(parents=True, exist_ok=True)

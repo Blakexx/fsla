@@ -199,7 +199,7 @@ Dense and sparse are plans of the one body, never a second body.
 ## R19. Laws land with their stage
 
 A ruling that changes a law is written into the standards in the same stage that implements it, never only on a
-card; the milestone carries the drift guards (lints, docs, skills).
+card; the milestone carries the drift guards (lints, docs).
 
 <a id="r20"></a>
 ## R20. The ownership unit is the CTA's boxes

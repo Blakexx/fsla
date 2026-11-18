@@ -1,7 +1,8 @@
 # `review_gate.py`
 
-Mirrors [`tools/review_gate.py`](../../../tools/review_gate.py) and the hook that runs it,
-[`tools/git-hooks/post-commit`](../../../tools/git-hooks/post-commit).
+Mirrors [`tools/review_gate.py`](../../../tools/review_gate.py) and the hooks that run it,
+[`tools/git-hooks/post-commit`](../../../tools/git-hooks/post-commit) and
+[`tools/git-hooks/commit-msg`](../../../tools/git-hooks/commit-msg).
 
 THE REVIEW GATE (Blake, 2026-11-06: "advisory, opus"): a change reviewed by an LLM against the repository's standards,
 [`CONSTITUTION.md`](../../CONSTITUTION.md) and [`KERNEL_STANDARDS.md`](../../KERNEL_STANDARDS.md), every finding citing

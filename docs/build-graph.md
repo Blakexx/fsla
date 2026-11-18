@@ -270,7 +270,7 @@ names one).
 ## <a id="use"></a>Using it
 
     python3 tools/bootstrap.py                                      # the pinned bazelisk, `bazel` linked to it
-    bazel run //:init                                               # the machine's dev config, hooks and router
+    bazel run //:init                                               # the machine's dev config and hooks
     bazel run //:dev_env                                            # this checkout's venv, which its hooks run from
     bazel test //:gate                                              # every check the graph holds
     bazel run //:compile_commands                                   # the editor's compile_commands.json

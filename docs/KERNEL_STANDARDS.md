@@ -297,8 +297,9 @@ layout (the bench/results repo), never in an ad-hoc place (a scratch directory, 
 scratchpad, a campaign journal, a worktree path). Ad-hoc material never enters the repo either — no
 script blowup: briefs, transcripts, per-session scripts and campaign journals stay outside and are
 cited FROM the queue, not from repo files. Absolute paths under a home directory are a lint finding.
-Committed records carry repo-relative or host-keyed locations. Skills that ship with the repo point at
-repo docs and the measurements record, never at a journal.
+Committed records carry repo-relative or host-keyed locations. Nothing under `.claude/` names a machine path: hooks
+resolve through `$CLAUDE_PROJECT_DIR`, and a site's own locations come from the dev config or the environment
+(`ROLA_SCRATCH`); `tools/lint/portable_claude.py` fails a commit that names one.
 
 ## §14 addendum (law, 2026-08-28): CONTAINERS AND THE GPU LOCK
 A lock file is per-filesystem: a lock taken inside a container serializes nothing on the host or in another
@@ -445,7 +446,9 @@ with ITS OWN schedule for the cell, `smsp__inst_executed`, `sm__cycles_active` a
 beside the time (idle SMs and tail waves are reported, not inferred), the GPU quiet (no sanitizer or
 profiler child alive: a timed-out `compute-sanitizer` leaves its python child on the device), and the
 probe's clock rows accepted. "Issue active at X%" is a ratio over active cycles and says nothing about
-the instruction count; the count is read, never inferred from the ratio.
+the instruction count; the count is read, never inferred from the ratio. A change whose instruction count falls while
+its time rises is red. A kernel's phase clock costs time: read a time with the ledger unbound; the ledger only
+attributes it.
 A change to a shared body is TIMED AT BOTH ENDS AT SCALE before it is called a win: the sparse and the dense cell,
 in the measurement suite's at-scale sessions (2026-11-02: four commits each faster at sparse cost the dense carry
 +3% at 64K x 4 heads, one of them +3.7% on an identical address; the local dense ledger swings ~2% between runs of
@@ -891,7 +894,8 @@ three cut conflicts from 1.6-2.1 an MMA to 0.02-0.03 and wavefronts 25%, with no
 1. EVERY SHARED BUFFER HAS AN ACCESS TABLE BEFORE CODE: each instruction that touches it (loads, matrix loads, atomics,
    a copy's stores) by lanes, addresses and banks; its layout (pitch, swizzle) is chosen to satisfy all its readers and
    writers, and states the instruction shapes it is conflict-free for. A new access shape on an existing layout gets
-   its own placement rule or layout, never an assumption (§3 extends from fixed tensors to every buffer).
+   its own placement rule or layout, never an assumption (§3 extends from fixed tensors to every buffer). The table is
+   written in the component's mirror page, or in the lab experiment's header.
 2. WHEN THE DATA PICKS ADDRESSES, A PRODUCER'S FORMAT CARRIES CONFLICT-FREEDOM ONLY WHERE THE COMPOSED CONSUMER EARNS
    IT (amended 2026-10-13): gathered rows and atomic targets indexed by slot can get slots the producer places so each
    instruction's set is conflict-free (a union's slots colored by residue, a slot's residue mod 8 its row's bank group,
@@ -921,29 +925,6 @@ display driver stopped answering, and the host had to be restarted.
    lane, then combine.
 2. The first run of new or changed device code is under `timeout -s KILL <seconds>`, its waits bounded; a hang is
    killed, never waited on.
-
-## <a id="s31"></a>§31 — SKILLS SHIP WITH THE REPO, PROCEDURE ONLY, ROUTED BY HOOKS (law, 2026-10-12, from Blake's "have our agent skills point to docs so they stay consistent with code" and "repo portability, work tree support, and the ability to ship and change skills with our repo as it changes")
-Of the fourteen skills on the coordinator's machine, seven were links into a deleted worktree, the repo's own copies
-loaded only in sessions started inside it, and their text had rotted: dead paths, a copy of these standards stopping at
-§21. A skill that already existed for per-section attribution went unused while its method was rebuilt by hand.
-1. A REPO ACTION'S SKILL LIVES IN THE REPO (`.claude/skills/<name>/SKILL.md`), versioned with the code it drives, so
-   every worktree carries its own branch's skills; a skill reaches an agent through the action it takes (4). Only
-   cross-repo coordination (cards, the queue, a site's records) is a user-level skill.
-2. A SKILL HOLDS PROCEDURE, THE DOCS HOLD THE TRUTH: a skill is steps and commands; each rule, fact, number and format
-   it relies on is a reference to its doc section, never a copy. `tools/docrefs.py` holds a skill's references strictly:
-   a skill with a pending or broken reference fails the commit, so a skill changes in the commit that changes what it
-   cites.
-3. PORTABLE: nothing under `.claude/` names a machine path. Hooks resolve through `$CLAUDE_PROJECT_DIR`; a site's own
-   locations come from the dev config or the environment (`ROLA_SCRATCH`), as §17 has it for the code.
-   `tools/lint/portable_claude.py` fails a commit that names one.
-4. ROUTED BY THE ACTION, FROM THE CHECKOUT IT TOUCHES: `.claude/skill-routes.json` maps actions -- a path edited, a
-   command run -- to skills. The PreToolUse router (`.claude/hooks/route_skills.py`) finds the checkout a call touches
-   (the edited file's; a command's leading `cd` or `git -C`; else the session's) and puts THAT checkout's skill text
-   in the acting agent's context the first time the agent takes the action there. Any number of worktrees on any
-   branches route from any session, subagents included, and nothing is registered globally. A session started inside
-   the repo is routed by the repo's own hook entry; one started elsewhere by the user-level bootstrap the repo ships
-   (`.claude/hooks/skill_router_bootstrap.py`), which `bazel run //:init` installs and `bazel run //:check` verifies. `CLAUDE.md`
-   shows the table. Skills make the right path the easy one; lints and gates make the wrong one fail.
 
 ## <a id="s32"></a>§32 — THE STEADY STATE IS DESIGNED FIRST, AND EVERY GATE SEES IT (law, 2026-10-16, from Blake's "why we keep failing to properly overlap and write good kernels. What about our standards are causing failure and can be codified into our docs, skills, lints" and "we should be software pipelining rather than relying on more warps")
 The carry's rebuild passed every component gate and composed into a kernel whose step loops keep the tensor pipe
@@ -996,9 +977,9 @@ gated, and an instrument's missing target is a red.
    has fails; it never reads as nothing.
 6. ONE PRIMITIVE A JOB: before writing a helper, the common headers (`common/atoms/*.cuh`, `common/*.cuh`) are read for
    it; a kernel-local copy of a common primitive is a defect, and an unused common primitive is dead code.
-7. A/B IS THE DECLARED SUITE: two builds are compared only in one interleaved, clock-locked session -- rola-bench's
-   suite with the baseline as a reference checkout, pruned to the sessions (`rola-bench`) -- or by ncu's cycles of one
-   launch each; times from separate unlocked runs are never compared.
+7. A/B IS THE DECLARED SUITE: two builds are compared only in one interleaved, clock-locked session -- the
+   declared suite (`docs/measurement.md`) with the baseline as a reference checkout, pruned to the sessions -- or by
+   ncu's cycles of one launch each; times from separate unlocked runs are never compared.
 8. WORK MOVED ACROSS A RENDEZVOUS IS PRICED ON THE CRITICAL PATH FIRST: reordering work around a barrier cannot
    shorten warps that all do the same work, since their critical path is unchanged.
 ENFORCED: items 3, 4 and 5 by the tools named; the SASS gate runs inside every build (the library's gate action), so

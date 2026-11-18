@@ -40,7 +40,7 @@ the graph and a test tier run the same toolkit. The whole release -- a tarball, 
 toolkit -- lands under `host.tools_dir`, because the layout
 is part of the tool: the toolkit's nvcc finds cicc and ptxas by its own place. A pinned tool is found by its pin
 (`dev_config.pinned`: under `host.tools_dir`, in its pin's folder, by its release's name), never recorded in the
-machine's files -- every checkout loads them, and an older loader refuses a key it does not declare. `install_bazelisk` links `toolchain.bazel` (`~/.local/bin/bazel`) to the pinned bazelisk -- a link it made to another pinned release is replaced, anything else at the path refused. `init` wires this checkout's commit gate (the git-config keys `core.hooksPath` per worktree, whose pre-commit hook runs `bazel test //:gate`, and rola.venv naming the checkout's own `bazel run //:dev_env` venv, which the post-commit review runs from; a checkout with no venv of its own is named and left as it is) in every worktree of the repository that carries the tracked hook, turns the repository's shared hook into a refusal (a checkout reaches it only unwired), installs the agent skill router where Claude Code keeps a user configuration (KERNEL_STANDARDS §31: the repo's `.claude/hooks/skill_router_bootstrap.py` copied to the user's `~/.claude/hooks/skill_router.py` where it differs, and its PreToolUse entry added to the user's `~/.claude/settings.json` where absent, every other setting kept; the image has no `~/.claude` and gets neither), and runs `check`, whose row says whether the router is installed and current. The
+machine's files -- every checkout loads them, and an older loader refuses a key it does not declare. `install_bazelisk` links `toolchain.bazel` (`~/.local/bin/bazel`) to the pinned bazelisk -- a link it made to another pinned release is replaced, anything else at the path refused. `init` wires this checkout's commit gate (the git-config keys `core.hooksPath` per worktree, whose pre-commit hook runs `bazel test //:gate`, and rola.venv naming the checkout's own `bazel run //:dev_env` venv, which the post-commit review runs from; a checkout with no venv of its own is named and left as it is) in every worktree of the repository that carries the tracked hook, turns the repository's shared hook into a refusal (a checkout reaches it only unwired), and runs `check`. The
 clock is not set by `init`, because locking it asks for administrator consent once.
 
 **`check`** prints one row per dependency and exits 1 on any red:
@@ -77,6 +77,7 @@ where those files say.
 **`worktree <name> <sha>`** creates the worktree in `workspace.worktrees`, then runs `bazel run //:dev_env` and
 `bazel run //:library` in it: its venv and commit gate, then its extension, which the graph serves from its shared
 cache when any checkout built that commit's library. It imports `rola` and the extension from inside the worktree.
+Never a bare `git worktree add`: its commits are refused until `bazel run //:dev_env`.
 
 **`container`** keeps the devbox image a supported environment (§23 (3), `docs/setup.md` §2-3). Each action takes the
 image's OCI layout (`//:image`), whose manifest digest is the image's identity, and `check` and `compose` the image as
@@ -101,7 +102,7 @@ writes. The store's own command line is `bazel run //:results`
 
 `init`, `check`, `show`, `get`, `clock`, `dev-env` and `worktree` run from whichever python starts them (`dev-env`'s is the environment's, through its run target); `container` re-executes itself under the checkout's own venv (`bazel run //:dev_env`), because the container reads `rola_results`, which it links; the host's own python carries nothing of this project. The sibling repositories gate through their own graphs (`bazel test //:gate`, rola-devtools' commit gate), from no venv of this tree's.
 
-**`get`** prints one value, for a person or a shell (the `rola-dev` skill's way to read one setting).
+**`get`** prints one value, for a person or a shell.
 
 **Running a CPU-heavy command under the host budget** is `python -m rola_devtools.locks.host [--slots N]
 [--exclusive] -- <cmd>`, niced per `host.nice`. The graph's front door takes it for every build.

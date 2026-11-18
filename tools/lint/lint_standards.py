@@ -713,7 +713,7 @@ def check_docs_mirror() -> list[str]:
 
 
 #: "The word `flock` leaves the process": -- every GPU entry point now takes
-#: `rola_devtools.locks.gpu`'s `gpu_lock()` ITSELF, so no committed doc/skill/script should
+#: `rola_devtools.locks.gpu`'s `gpu_lock()` ITSELF, so no committed doc/script should
 #: ever again tell a reader to wrap a command in an external `flock` on the GPU lock
 #: path (the lock is the files beside it, so the wrapper serializes against nothing;
 #: a binary with no `gpu_lock()` runs under `python -m rola_devtools.locks.gpu --`).
@@ -722,11 +722,10 @@ def check_docs_mirror() -> list[str]:
 #: path; a PROSE mention is not on a line whose own first token is the command.
 FLOCK_GPU_LOCK_RE = re.compile(r"^\s*`{0,3}\s*flock\s+\S*rola_gpu")
 
-#: "docs, skills, scripts" (the ruling's own words): committed prose and recipes an
+#: "docs, scripts": committed prose and recipes an
 #: agent or contributor reads and might copy-paste, not generated/vendored trees.
 FLOCK_CHECK_ROOTS = (
     ROOT / "docs",
-    ROOT / ".claude" / "skills",
     ROOT / "measure",
     ROOT / "tools",
     ROOT / "CLAUDE.md",
@@ -1204,7 +1203,7 @@ def check_vendored_pin() -> list[str]:
 #: pointing at an ad-hoc place -- another user's home directory, the coordinator's
 #: out-of-repo campaign journal, a specific worktree checkout, a session's scratch
 #: directory -- cannot be resolved by anyone who clones this repo. NO ALLOWLIST: found
-#: 3,927 such paths in the perf ledger alone plus a dozen doc/skill/tool citations,
+#: 3,927 such paths in the perf ledger alone plus a dozen doc/tool citations,
 #: none of them exempt. The four patterns below necessarily SPELL what they catch, so
 #: this module's OWN source is excluded from the scan (`_PORTABILITY_LINT_SELF`) --
 #: every other tracked file, this one included in spirit, is held to the same text a
