@@ -52,7 +52,9 @@ FINE_SUFFIX, COARSE_SUFFIX, EDGES_SUFFIX = (", every warp's timeline stamped", "
                                             ", the launch's two edges stamped")
 #: a detail row's own suffix, beside its coarse one: a detail group's stamps kept
 DETAIL_SUFFIXES = (", the waits on the tile groups read stamped", ", the waits on the tile groups published stamped",
-                   ", the waits on the panels filled stamped", ", the waits on the panels drained stamped")
+                   ", the waits on the panels filled stamped", ", the waits on the panels drained stamped",
+                   ", the fold's steps by eighths stamped", ", the fold's fill by phases stamped",
+                   ", the waits on the packets landed stamped")
 TRACE_SUFFIXES = (FINE_SUFFIX, COARSE_SUFFIX, EDGES_SUFFIX, *DETAIL_SUFFIXES)
 
 
