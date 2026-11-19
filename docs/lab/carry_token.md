@@ -28,7 +28,11 @@ The kernel is `window<TRACE, DETAIL>`. `TRACE` 0 is the plain kernel, 1 its laun
 phases stamped (the coarse row: the fold's window, its expanding and its steps), 3 every stamp; `DETAIL` names a
 coarse row's one more group of waits and arrivals -- the tile groups read or published, the panels filled or drained.
 Twelve rows: plain, edges, coarse, the four detail rows, every stamp; the plain and coarse kernels on a window whose
-entries are in token order; and the plain and coarse kernels with 4 sets of A in flight. The state and every output row are checked exactly in every row. THE PLACES ARE THE
+entries are in token order; and the plain and coarse kernels with 4 sets of A in flight. The state and every output row are checked exactly in every row but the isolation rows. A DETAIL ROW MORE splits the
+fold's steps phase by eighths. FOUR ISOLATION ROWS (coarse, not checked: their kernel is not the carry's) change one
+thing each to find what a step costs beside what: the read side idle; a step's A read by the step itself from 16
+consecutive landed positions, with a commit a step, and with the 32 steps one commit group; and that last with the
+read side idle. THE PLACES ARE THE
 HOST'S: an entry's position, its tile's lines and the steps' positions are a table the window lands, where the design's
 CTA counts them from its mask; the rows price the fill and the steps, not that counting.
 

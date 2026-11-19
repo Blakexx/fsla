@@ -45,9 +45,12 @@ constexpr int kGroup = 128, kDrains = 4, kThreads = 4 * kGroup;
 //: the roles' first threads: fold 0, fold 1, the readout, then the four drain warps
 constexpr int kReadAt = 2 * kGroup, kDrainAt = 3 * kGroup;
 //: THE REGISTERS A THREAD. A raise takes what another warpgroup released from the count the kernel is launched
-//: at -- 128 a thread at 512 threads, the SM's whole file: the folds' 40 more each are the 24 fewer of the readout
-//: and the 56 fewer of the drains
+//: at -- 128 a thread at 512 threads, the SM's whole file: the folds' 48 more each are the 32 fewer of the readout
+//: and the 64 fewer of the drains
 constexpr int kEntryRegs = 128, kFoldRegs = 176, kReadRegs = 96, kDrainRegs = 64;
+//: an isolation row whose read side is idle: the folds take what the idle warpgroups do not need
+constexpr int kAloneFoldRegs = 192, kAloneRestRegs = 64;
+static_assert(2 * (kAloneFoldRegs - kEntryRegs) == 2 * kEntryRegs - 2 * kAloneRestRegs);
 static_assert(kThreads * kEntryRegs == 65536 && 2 * (kFoldRegs - kEntryRegs) == 2 * kEntryRegs - kReadRegs - kDrainRegs);
 
 //: A POOL SLOT, in lines: a box's pool is two
@@ -127,8 +130,14 @@ enum Detail : int {
   //: the drain warps' waits on a panel filled, and the readout's arrivals at it
   kWaitPanelReady = 4,
   //: the readout's waits on a panel drained, and the drain warps' arrivals at it
-  kWaitPanelFreed = 8
+  kWaitPanelFreed = 8,
+  //: the fold's steps by eighths, and what follows its last step: four marks more in its steps phase
+  kSplitSteps = 16
 };
+//: AN ISOLATION ROW's change to the kernel, to find what a step costs beside what: the read side idle (the folds
+//: publish their image and wait on nobody); a step's A read by the step itself from 16 consecutive landed positions
+//: (not its tokens: the row's sums are not the kernel's and it is not checked); the 32 steps one commit group
+enum Probe : int { kAlone = 1, kFixedA = 2, kOneGroup = 4 };
 //: A ROLE'S TIMELINE (the traced rows'): `TRACE` 0 stamps nothing; 1 the launch's two edges alone; 2 a phase's start
 //: in every role, and the edges; 3 every stamp: each wait's start and end, each arrival and each copy's issue too. A
 //: coarse row keeps, beside its phases' starts, the stamps of the groups in `DETAIL`
@@ -139,7 +148,6 @@ struct Tracer : lab::Trace<TRACE != 0> {
   //: the launch's edges are a coarse row's and an edges row's: a fine row's kernels are at their registers' limit
   //: and hold no entry beside their timeline (their windows' marks time them)
   static constexpr bool kEdged = TRACE == 1 || TRACE == 2;
-  static constexpr uint32_t kEntered = kEdged ? lab::kMarkEntries : 0u;
   //: a stamp's kind and group are literals where it is placed, so the others compile to nothing. A phase's start is
   //: an ANCHOR, on both clocks (a mark); any other stamp a row keeps is the cycle counter's
   __device__ __forceinline__ void stamp(uint32_t kind, uint32_t site, int group = 0) {
@@ -156,7 +164,8 @@ struct Tracer : lab::Trace<TRACE != 0> {
 };
 //: a phase's or an edge's site
 enum Site : uint32_t { kMarkWindow = 0xc000u, kMarkExpand = 0xc001u, kMarkSteps = 0xc002u, kMarkPanel = 0xc003u, kMarkAdds = 0xc004u,
-                       kStepsRead = 0xc007u, kMarkEntry = 0xc008u, kMarkExit = 0xc009u };
+                       kStepsRead = 0xc007u, kMarkEntry = 0xc008u, kMarkExit = 0xc009u,
+                       kMarkSteps8 = 0xc00au, kMarkSteps16 = 0xc00bu, kMarkSteps24 = 0xc00cu, kMarkTail = 0xc00du };
 
 //: A WAIT at a barrier, suspended (`try_wait`), stamped
 template <int TRACE, int DETAIL>
@@ -180,7 +189,7 @@ __device__ __forceinline__ void steps_done(Tracer<TRACE, DETAIL>& tr, uint32_t s
 }
 //: A FOLD WARPGROUP: its box's state; a window is the image, then the wait on its table and value lines, its entries'
 //: coefficients expanded, and 32 steps whose A is `ldmatrix`'s from the landed lines, `SETS` of A in flight
-template <int TRACE, int DETAIL, int SETS>
+template <int TRACE, int DETAIL, int SETS, int PROBE>
 __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long long* times,
                                           float* state, const uint32_t* values, unsigned long long* trace, int windows) {
   const int tid = threadIdx.x, box = tid >> 7, warp = (tid >> 5) & 3, lane = tid & 31, q = lane >> 2, t = lane & 3;
@@ -207,7 +216,9 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
     }
   };
   Tracer<TRACE, DETAIL> tr;
-  tr.bind(trace, Tracer<TRACE, DETAIL>::kEntered);
+  //: the launch's edges, on both clocks: the warp's entry at its role's start, its exit at its end
+  tr.bind(trace);
+  tr.edge(kMarkEntry);
   //: a fold marks its clock in global memory: there its held start spills
   lab::WarpMark::start(times);
   //: the box's zeros, and the warpgroup behind them; the first window's table
@@ -224,7 +235,8 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
     //: The first window's image is the cleared shared memory: the state is zero
 #pragma unroll
     for (int k = 0; k < kChunks; ++k) {
-      if (w > 0) await(bars + kTilesRead + 8 * k, (w - 1) & 1, tr, kWaitTilesRead);
+      if constexpr ((PROBE & kAlone) == 0)
+        if (w > 0) await(bars + kTilesRead + 8 * k, (w - 1) & 1, tr, kWaitTilesRead);
       if (w > 0) {
 #pragma unroll
         for (int r = 0; r < 2; ++r)
@@ -240,7 +252,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
       }
       lab::bulk_fence();
       __syncwarp();
-      arrive(bars + kTilesReady + 8 * k, tr, kWaitTilesReady);
+      if constexpr ((PROBE & kAlone) == 0) arrive(bars + kTilesReady + 8 * k, tr, kWaitTilesReady);
     }
     //: THE WINDOW: its table and value lines landed; a thread's two entries' coefficients, each a dense line loaded
     //: and expanded by its sparse byte to the two lines of its step's tile its word names; the pads; then 32 steps
@@ -297,20 +309,34 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
     const uint32_t rows_at = base + pool + static_cast<uint32_t>(2 * warp + ((lane >> 3) & 1)) * (kValueBytes / 8);
     const uint64_t tiles = lab::wg_desc(base + pool + kTileAt * 16, 8, kTilePitch), zeros = lab::wg_desc(base + kZeroAt + box * 512, 8, 16);
     uint32_t a[SETS][4];
+    lab::wg_fence();
 #pragma unroll
     for (int r = 0; r < kBlockRounds; ++r)
 #pragma unroll
       for (int j = 0; j < kLists; ++j) {
         const int step = 16 * r + j;
+        if constexpr ((DETAIL & kSplitSteps) != 0) {
+          if (step == 8) tr.stamp(warpline::kPhaseBegin, kMarkSteps8);
+          if (step == 16) tr.stamp(warpline::kPhaseBegin, kMarkSteps16);
+          if (step == 24) tr.stamp(warpline::kPhaseBegin, kMarkSteps24);
+        }
         //: a step's lines are read at its own issue: the edge keeps the window's reads from one register set
-        asm volatile("" ::: "memory");
-        lab::ldsm_t(a[step % SETS], rows_at + ((pos[step >> 2] >> (8 * (step & 3))) & 255u) * 16u);
+        if constexpr ((PROBE & kFixedA) == 0) asm volatile("" ::: "memory");
         const uint64_t b = r == 0 || ((live >> j) & 1u) != 0 ? tiles + static_cast<uint64_t>(16 * step) : zeros;
-        lab::wg_fence();
-        lab::wg_bf16_n16_rs(d[j], a[step % SETS], b, w != 0 || r != 0);
-        lab::wg_commit();
-        lab::wg_wait<SETS - 1>();
+        if constexpr ((PROBE & kFixedA) != 0) {
+          lab::wg_bf16_n16_ss_mn(d[j], lab::wg_desc(base + pool + 16u * 16u * static_cast<uint32_t>(step & 15), 8, 256), b, w != 0 || r != 0);
+        } else {
+          lab::ldsm_t(a[step % SETS], rows_at + ((pos[step >> 2] >> (8 * (step & 3))) & 255u) * 16u);
+          lab::wg_fence();
+          lab::wg_bf16_n16_rs(d[j], a[step % SETS], b, w != 0 || r != 0);
+        }
+        if constexpr ((PROBE & kOneGroup) == 0) {
+          lab::wg_commit();
+          lab::wg_wait<SETS - 1>();
+        }
       }
+    if constexpr ((PROBE & kOneGroup) != 0) lab::wg_commit();
+    if constexpr ((DETAIL & kSplitSteps) != 0) tr.stamp(warpline::kPhaseBegin, kMarkTail);
     //: THE NEXT WINDOW'S COPIES, behind every warp's last read of this window's lines -- the warpgroup's barrier is
     //: that edge -- and under its last steps
     lab::bar_sync(kPoolId + box, kGroup);
@@ -343,7 +369,9 @@ template <int TRACE, int DETAIL>
 __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long long* times,
                                           const uint32_t* dense, unsigned long long* trace, int windows) {
   Tracer<TRACE, DETAIL> tr;
-  tr.bind(trace, Tracer<TRACE, DETAIL>::kEntered);
+  //: the launch's edges, on both clocks: the warp's entry at its role's start, its exit at its end
+  tr.bind(trace);
+  tr.edge(kMarkEntry);
   constexpr int kG = 2;
   const int tid = threadIdx.x - kReadAt, warp = tid >> 5, lane = tid & 31, q = lane >> 2, t = lane & 3;
   const uint32_t bars = base + kBarsAt;
@@ -446,7 +474,9 @@ template <int TRACE, int DETAIL>
 __device__ __forceinline__ void drain_role(uint8_t* smem, uint32_t base, long long* times,
                                            uint32_t* out, unsigned long long* trace, int windows) {
   Tracer<TRACE, DETAIL> tr;
-  tr.bind(trace, Tracer<TRACE, DETAIL>::kEntered);
+  //: the launch's edges, on both clocks: the warp's entry at its role's start, its exit at its end
+  tr.bind(trace);
+  tr.edge(kMarkEntry);
   const int lane = threadIdx.x & 31, mine = (threadIdx.x - kDrainAt) >> 5;
   const uint32_t bars = base + kBarsAt;
   constexpr int kBatches = kTokens / kDrains / kBatch;
@@ -488,20 +518,13 @@ __device__ __forceinline__ void drain_role(uint8_t* smem, uint32_t base, long lo
 
 //: THE KERNEL of a row: `TRACE` and `DETAIL` select its stamps and nothing else -- a detail row is its coarse row but
 //: for those stamps; `SETS` the sets of A the fold's steps hold in flight
-template <int TRACE, int DETAIL, int SETS>
+template <int TRACE, int DETAIL, int SETS, int PROBE>
 __global__ void __launch_bounds__(kThreads, 1)
     window(long long* times, const uint32_t* values, const uint32_t* dense, float* state,
            uint32_t* out, unsigned long long* trace, int windows) {
   extern __shared__ __align__(128) uint8_t smem[];
   const int tid = threadIdx.x;
   const uint32_t base = lab::smem(smem);
-  //: THE LAUNCH'S TWO EDGES, on both clocks: a warp's entry here, before the kernel's setup, and its exit at its
-  //: role's end; the role's tracer writes after this one's mark
-  {
-    Tracer<TRACE, DETAIL> in;
-    in.bind(trace);
-    in.edge(kMarkEntry);
-  }
   //: the images cleared: the state is zero at the call's start
 #pragma unroll 1
   for (int i = tid; i < 2 * kBoxBytes / 4; i += kThreads) *reinterpret_cast<uint32_t*>(smem + kImageAt + 4 * i) = 0u;
@@ -525,14 +548,16 @@ __global__ void __launch_bounds__(kThreads, 1)
   //: EACH ROLE'S WHOLE BODY IN ITS OWN BRANCH, a warpgroup's registers set at the branch's head: the folds' raise is
   //: the release of the readout and of the drains' warpgroup
   if (tid < kReadAt) {
-    lab::regs_up<kFoldRegs>();
-    fold_role<TRACE, DETAIL, SETS>(smem, base, times, state, values, trace, windows);
+    lab::regs_up<(PROBE & kAlone) != 0 ? kAloneFoldRegs : kFoldRegs>();
+    fold_role<TRACE, DETAIL, SETS, PROBE>(smem, base, times, state, values, trace, windows);
   } else if (tid < kDrainAt) {
-    lab::regs_down<kReadRegs>();
-    read_role<TRACE, DETAIL>(smem, base, times, dense, trace, windows);
+    lab::regs_down<(PROBE & kAlone) != 0 ? kAloneRestRegs : kReadRegs>();
+    if constexpr ((PROBE & kAlone) != 0) lab::WarpMark::start(times), lab::WarpMark::stop(times);
+    else read_role<TRACE, DETAIL>(smem, base, times, dense, trace, windows);
   } else {
-    lab::regs_down<kDrainRegs>();
-    drain_role<TRACE, DETAIL>(smem, base, times, out, trace, windows);
+    lab::regs_down<(PROBE & kAlone) != 0 ? kAloneRestRegs : kDrainRegs>();
+    if constexpr ((PROBE & kAlone) != 0) lab::WarpMark::start(times), lab::WarpMark::stop(times);
+    else drain_role<TRACE, DETAIL>(smem, base, times, out, trace, windows);
   }
 }
 
@@ -675,20 +700,24 @@ inline Buffers buffers(const lab::Bench& b) {
 }
 
 //: A ROW: the kernel `window<TRACE, DETAIL>`, its checked call and its timed launches
-template <int TRACE, int DETAIL = 0, int ORDER = 0, int SETS = 2>
+template <int TRACE, int DETAIL = 0, int ORDER = 0, int SETS = 2, int PROBE = 0>
 void run(lab::Bench& b, const Buffers& held) {
   using namespace carry_token;
   constexpr int kTimed = 64;
   const std::string name = std::string("the token-stream carry: both sides") + (ORDER ? ", its entries in token order" : "")
                            + (SETS != 2 ? ", " + std::to_string(SETS) + " sets of A in flight" : std::string())
+                           + (PROBE & kAlone ? ", the read side idle" : "")
+                           + (PROBE & kFixedA ? ", a step's A read from 16 landed positions" : "")
+                           + (PROBE & kOneGroup ? ", the 32 steps one commit group" : "")
                            + (TRACE & 2 ? (TRACE & 1 ? ", every warp's timeline stamped" : ", every warp's phases stamped")
                                         : TRACE & 1 ? ", the launch's two edges stamped" : "")
                            + (DETAIL & kWaitTilesRead ? ", the waits on the tile groups read stamped" : "")
                            + (DETAIL & kWaitTilesReady ? ", the waits on the tile groups published stamped" : "")
                            + (DETAIL & kWaitPanelReady ? ", the waits on the panels filled stamped" : "")
-                           + (DETAIL & kWaitPanelFreed ? ", the waits on the panels drained stamped" : "");
+                           + (DETAIL & kWaitPanelFreed ? ", the waits on the panels drained stamped" : "")
+                           + (DETAIL & kSplitSteps ? ", the fold's steps by eighths stamped" : "");
   constexpr int kWarps = kThreads >> 5;
-  auto kernel = window<TRACE, DETAIL, SETS>;
+  auto kernel = window<TRACE, DETAIL, SETS, PROBE>;
   uint32_t* const values = held.values[ORDER];
   uint32_t* const dense = held.dense;
   uint32_t* const out = held.out;
@@ -751,7 +780,8 @@ void run(lab::Bench& b, const Buffers& held) {
         }
     }
   }
-  b.check(name, wrong_state == 0 && wrong_out == 0,
+  if constexpr (PROBE != 0) b.unchecked(name, "an isolation row: its kernel is not the carry's");
+  else b.check(name, wrong_state == 0 && wrong_out == 0,
           std::to_string(wrong_state) + " of " + std::to_string(got_state.size()) + " state values and "
               + std::to_string(wrong_out) + " of " + std::to_string(2 * words) + " output values differ");
   const lab::Samples cycles = b.variant(
@@ -774,7 +804,8 @@ void run(lab::Bench& b, const Buffers& held) {
       site(kBarsAt + kPanelFreed + 8 * p, "panel " + std::to_string(p) + " drained");
     }
     legend.insert(legend.end(), {{kMarkWindow, "window"}, {kMarkExpand, "expanding"}, {kMarkSteps, "issuing steps"}, {kMarkPanel, "storing the panel"},
-                                 {kMarkAdds, "adding"}, {kStepsRead, "readout steps"}, {kMarkEntry, "entry"},
+                                 {kMarkAdds, "adding"}, {kStepsRead, "readout steps"}, {kMarkSteps8, "issuing steps 8 on"}, {kMarkSteps16, "issuing steps 16 on"},
+                                 {kMarkSteps24, "issuing steps 24 on"}, {kMarkTail, "after the steps"}, {kMarkEntry, "entry"},
                                  {kMarkExit, "exit"}});
     //: two CTAs of the grid, or its one
     if (b.sms > 1) b.trace(name, rows, kWarps, {0, b.sms / 2}, roles, legend);
@@ -788,13 +819,15 @@ int main(int argc, char** argv) {
   lab::Bench b(argc, argv);
   //: the rows: their kernels' selectors -- the plain kernel, its launch's edges, the coarse row, its four detail
   //: rows and every stamp
-  struct Row { int trace, detail, sets; };
-  constexpr Row kRows[] = {{0, 0, 2}, {1, 0, 2}, {2, 0, 2}, {2, kWaitTilesRead, 2}, {2, kWaitTilesReady, 2}, {2, kWaitPanelReady, 2},
-                           {2, kWaitPanelFreed, 2}, {3, 0, 2}, {0, 0, 4}, {2, 0, 4}};
+  struct Row { int trace, detail, sets, probe; };
+  constexpr Row kRows[] = {{0, 0, 2, 0}, {1, 0, 2, 0}, {2, 0, 2, 0}, {2, kWaitTilesRead, 2, 0}, {2, kWaitTilesReady, 2, 0},
+                           {2, kWaitPanelReady, 2, 0}, {2, kWaitPanelFreed, 2, 0}, {3, 0, 2, 0}, {0, 0, 4, 0}, {2, 0, 4, 0},
+                           {2, kSplitSteps, 2, 0}, {2, 0, 2, kAlone}, {2, 0, 2, kFixedA}, {2, 0, 2, kFixedA | kOneGroup},
+                           {2, 0, 2, kAlone | kFixedA | kOneGroup}};
   for (const Row& row : kRows) {
-    const std::string k = lab::kernel("carry_token::window", {row.trace, row.detail, row.sets});
+    const std::string k = lab::kernel("carry_token::window", {row.trace, row.detail, row.sets, row.probe});
     //: the fold's 32 steps, one block, and the readout's 16: two groups of 4 digits, each digit's two steps
-    b.expect(k, "HGMMA", "==", kLists * kBlockRounds + 2 * 2 * kChunkDigits);
+    b.expect(k, "HGMMA", "==", kLists * kBlockRounds + (row.probe & kAlone ? 0 : 2 * 2 * kChunkDigits));
     //: the fold's conversions are in its own trip, beside its steps: what the row measures
     b.expect(k, "STEP_XU", "<=", 40);
     //: the readout's panel is read by the drain warps' own loads, not by a step: its arrival needs no fence, and a
@@ -829,5 +862,11 @@ int main(int argc, char** argv) {
   //: and with more sets of A in flight
   run<0, 0, 0, 4>(b, held);
   run<2, 0, 0, 4>(b, held);
+  //: the steps by eighths; and the isolation rows
+  run<2, kSplitSteps>(b, held);
+  run<2, 0, 0, 2, kAlone>(b, held);
+  run<2, 0, 0, 2, kFixedA>(b, held);
+  run<2, 0, 0, 2, kFixedA | kOneGroup>(b, held);
+  run<2, 0, 0, 2, kAlone | kFixedA | kOneGroup>(b, held);
   return 0;
 }
