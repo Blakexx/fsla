@@ -30,7 +30,7 @@
 // group's arrival -- then the wait on its packet; a thread's two entries in turn, each its dense line loaded and
 // expanded to its two coefficient lines; four (step, place) pairs a thread, a dead place's two lines zeroed; the
 // header's two lines of tile starts loaded and held; the fence, the warpgroup's barrier; 32 steps issued, the commit,
-// the wait; the next window's packet's copies. The readout's trip is a pass: the waits on its two tile groups, a
+// the wait, the warpgroup's barrier; the next window's packet's copies. The readout's trip is a pass: the waits on its two tile groups, a
 // thread's 16 bytes expanded to two lines of each group's tile (the bytes loaded a pass before), the fence, the
 // warpgroup's barrier, 16 steps in one commit group, the next pass's bytes issued under them, the wait, the groups
 // released; then a group at a time the wait on the panel two groups back, its 32 sums rounded to f16 pairs and
@@ -337,7 +337,9 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
     lab::wg_commit();
     if constexpr ((DETAIL & kSplitSteps) != 0) tr.stamp(warpline::kPhaseBegin, kMarkTail);
     lab::wg_wait<0>();
-    //: THE NEXT WINDOW'S PACKET, behind the steps' wait: every step has read this one's lines
+    //: THE NEXT WINDOW'S PACKET, behind every warp's wait on the steps -- the warpgroup's barrier is that edge: every
+    //: step has read this packet's lines and tiles
+    lab::bar_sync(kPoolId + box, kGroup);
     if (w + 1 < windows) issue_one(w + 1);
   }
 #pragma unroll
