@@ -892,6 +892,17 @@ method is a procedure with a gate, not a memory.
    docs/internals/tools/budgets.md#forms (integer keys for scaled compares, an atomic a lane for a cross-warp
    reduction, held bases, the widest store, `.cg` copies, scalars in the record) or says why it departs; a form found
    cheaper replaces its row in the commit that measures it.
+16. A WAIT ON A COMMIT GROUP IS PRECEDED BY THE WORK THAT DOES NOT DEPEND ON IT (2026-11-18, from the owner's reading of
+   `carry_token`'s fold): a warpgroup that issues its steps, commits and at once waits (`wgmma.wait_group 0`) idles its
+   warps for the steps' whole run and the tensor pipe for the rest of the window (`docs/lab/carry_token.md`: the
+   fold's 32 steps are a third of its window, its fill another). Work that reads none of the group's accumulators --
+   the next window's fill, a copy's issue, an arrival -- goes between the issue and the wait; a wait straight after
+   its issue is declared (`WAIT_AFTER_ISSUE`), with the reason. The check reads the SASS: a `WARPGROUP.DEPBAR` leaving
+   no group in flight (the commit is no instruction, the `gsb0` flag on a group's last `HGMMA`) whose nearest `HGMMA`
+   in straight-line code is followed by no WORK OF SUBSTANCE -- a load or store, an asynchronous issue (`LDGSTS`,
+   `UBLKCP`, `UTMA*`) or a barrier arrival (`SYNCS.ARRIVE`, `BAR.ARV`); register moves, address and predicate
+   arithmetic, `LDC` and `WARPGROUP.ARRIVE` are not -- counts one. The pack prints, beside it and never as a
+   refusal, each wait's candidates to precede it (`tools/lab.py waits`).
 ENFORCED: `tools/lab.py run` reads each budgeted kernel's executed instructions by class (ncu's per-opcode counts),
 prints them against the budget, and refuses to record a variant over it (`--force` to record a known-over variant on
 purpose). `tools/sass_gate.py` reds, on every function of every build, conversion-unit instructions and global

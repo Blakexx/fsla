@@ -839,6 +839,10 @@ int main(int argc, char** argv) {
     b.expect(k, "LOOP_CONVERGENCE", "<=", 64);
     //: a wait's and a readout phase's counts are sums the toolkit may keep in uniform registers
     b.expect(k, "CLOCK_UNIFORM", "<=", 24);
+    //: a DECLARED DEBT (KERNEL_STANDARDS 29.16): the fold's and the readout's waits (`wg_commit(); wg_wait<0>()`) follow
+    //: their steps directly -- the form the climb found costly, the warps idle through the steps and the tensor pipe
+    //: through the rest of the window; the next window's fill belongs between the issue and the wait
+    b.expect(k, "WAIT_AFTER_ISSUE", "<=", 3);
     //: the roles' loops hold their steps beside their barriers' waits: the waits' branches are the steps'
     b.expect(k, "BSSY", ">=", 0);
   }

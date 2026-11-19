@@ -84,7 +84,7 @@ a line from its releaser. The traced row's window beside its untraced twin's is 
 record: it imports `measure/lab/pages/<name>.py` and calls its `write(root, instance)`, which reads
 `measure/lab/results/<name>/<arch>.json` and rewrites the docs that quote it, and prints the files written; an
 experiment with no page module is an error. A page's measured section is GENERATED, never typed: a figure changes by
-a new record and a `page` run, and `LABEL` (the rented box's id; two comma-joined where a page's two records ran on two boxes, as `carry_token`'s) only words the card's line. OWED: only the carry's,
+a new record and a `page` run, and `LABEL` (the rented box's id; two comma-joined where a page's two records ran on two boxes) only words the card's line. OWED: only the carry's,
 the token carry's, the gather's, the stamp probe's and the clock probe's pages have their modules; every other page's typed section stands as recorded and is not edited by
 hand -- its module is written with its experiment's next record. A row a page names and its record lacks is refused
 by name: the generators' one lookup, `measure/lab/pages/_record.py`.
@@ -104,12 +104,32 @@ comment states a `TIMELINE:` -- each phase's stream, which load is a stage ahead
 it is refused too where its source has a warp collective after a conditional's `?` (`collective_selected`: only
 the lanes the condition takes reach a collective every lane must), and where a kernel sums a cycle-counter
 reading in uniform registers past the count it declares (`clocks_summed_uniform`, `CLOCK_UNIFORM`: a lap's sum is
-each thread's own). And EVERY kernel of it, budgeted or exempt, is held to five counts, each zero unless the experiment
+each thread's own). And EVERY kernel of it, budgeted or exempt, is held to six counts, each zero unless the experiment
 declares it (`Bench::expect(kernel, NAME, "<=", n)`): `LOOP_CONVERGENCE`; `LOAD_IN_TRIP`, the global loads whose
 value an instruction of the same innermost trip reads; `STORE_RELOAD`, the shared loads of an address the same trip
 stored to; `STORE_UNFENCED`, in a kernel that holds a wgmma, the barrier arrivals that follow a shared store with no
 `fence.proxy.async` between them; `STEPS_SERIALIZED`, the toolkit's notices that it serialized the kernel's
-asynchronous MMAs for want of registers (ptxas C7512, kept beside the build's binary).
+asynchronous MMAs for want of registers (ptxas C7512, kept beside the build's binary);
+`WAIT_AFTER_ISSUE` (KERNEL_STANDARDS 29.16), the tensor waits that leave no group in flight (`WARPGROUP.DEPBAR`, count
+0) whose group's last step (`HGMMA`; the commit is no instruction, the `gsb0` flag on that step) is followed by no
+WORK OF SUBSTANCE before them: a load or store (generic, global, shared, local, the matrix forms, atomics,
+reductions), another asynchronous issue (`LDGSTS`, the bulk copies `UBLKCP`/`UBLKRED`, `UTMA*`) or a barrier arrival
+(`SYNCS.ARRIVE`, `BAR.ARV`); register moves, address and predicate arithmetic, `LDC` and `WARPGROUP.ARRIVE` are not.
+Seen in straight-line code only: a branch, a barrier, another wait or the kernel's start between the step and the
+wait leaves it uncounted, as does a wait that leaves a group in flight (the older group's steps are not the nearest).
+The experiments past `_PRE_TIMELINE` that had it when the check landed are `_PRE_WAIT` (held to it when next changed;
+the list only shrinks); `carry_token` and `carry_window` declare it in `main`, with the reason.
+
+<a id="waits"></a>THE WAIT REPORT. `pack` prints, and `bazel run //tools:lab -- waits <name> --arch sm_90a` prints alone,
+one line a distinct tensor wait of each kernel (kernels with the same lines collapse, a count each; at most six lines a
+kernel and sixteen groups of kernels): `wait(N): K candidates (loads a, stores b, async c, other d) before STOP` -- the instructions after the wait,
+in straight-line code up to the next branch, barrier, tensor issue or wait (STOP), that touch none of the registers the
+waited steps write nor read one a toucher wrote, by class. They are candidates to precede the wait; never a refusal.
+NOT SEEN: past a branch (a loop's back-edge, a conditional), so a loop's next trip is not a candidate; the steps are the
+`HGMMA`s since the previous wait in address order, not the control flow's group; a register is widened to the run its
+operand width reaches (`.64`, `.WIDE`: two; `.128`: four), so no candidate touches an accumulator; memory is not traced
+(a load after a store that read an accumulator is dropped, but a candidate store may still alias a load that stays after
+the wait: the author checks the address dependence); a candidate is moved only if the arrival or barrier ordering it sits under allows.
 
 <a id="pack"></a>A CARD ELSEWHERE. A box that is not started from the devbox image ([`setup.md`](../../setup.md)) carries a driver and
 no toolkit, so an experiment for it is built and checked here and run there: `bazel run //tools:lab -- pack <name> --arch sm_90a --into DIR` compiles it for that architecture,

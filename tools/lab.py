@@ -168,8 +168,13 @@ _PRE_29 = {"collective_branch", "facts_block", "mma_k8", "row_span", "tensor_tax
 _PRE_TIMELINE = {"bulk_drain", "byte_expand", "cluster_sum", "collective_branch", "facts_block", "facts_two",
                  "issue_latency", "reg_trade", "row_ring", "row_span", "state_move", "tensor_tax",
                  "vote_stash", "wgmma_rate", "wgmma_regs"}
+#: KERNEL_STANDARDS 29.16's DEBTS: the experiments, past the learnings' debts, whose kernels wait on a commit group
+#: straight after its steps; each is held to `WAIT_AFTER_ISSUE` when it is next changed, and the list only shrinks
+_PRE_WAIT = {"clock_time", "fold_stream", "intra_chain", "intra_window", "pool_fill", "readout_role", "stamp_cost",
+             "state_image", "step_queue", "wgmma_width"}
 #: the hazards an experiment may declare a count of (`Bench::expect(kernel, NAME, "<=", n)`), beside its opcodes
-HAZARDS = ("LOOP_CONVERGENCE", "LOAD_IN_TRIP", "STORE_RELOAD", "STORE_UNFENCED", "STEPS_SERIALIZED", "CLOCK_UNIFORM")
+HAZARDS = ("LOOP_CONVERGENCE", "LOAD_IN_TRIP", "STORE_RELOAD", "STORE_UNFENCED", "STEPS_SERIALIZED", "CLOCK_UNIFORM",
+          "WAIT_AFTER_ISSUE")
 
 
 #: a warp collective after the `?` of a statement's conditional: only the lanes the condition takes reach it
@@ -330,6 +335,140 @@ def clocks_summed_uniform(binary: Path) -> dict[str, int]:
     return {names[k]: v for k, v in found.items()}
 
 
+#: WORK OF SUBSTANCE (WAIT_AFTER_ISSUE, KERNEL_STANDARDS 29.16): what a warp can usefully do while its tensor steps
+#: run -- memory loads and stores (generic, global, shared, local; the matrix forms; atomics and reductions), other
+#: asynchronous issues (`LDGSTS`, the bulk copies `UBLKCP`/`UBLKRED`, the tensor-memory-access `UTMA*`) and barrier
+#: arrivals (`SYNCS.ARRIVE`, `BAR.ARV`). NOT work: the commit (it is no instruction -- the `gsb0` flag on a group's
+#: last `HGMMA`), `WARPGROUP.ARRIVE`, `LDC`, register moves, address and predicate arithmetic, or the wait's setup.
+SUBSTANCE = re.compile(r"^(?:LDG(?!DEPBAR)|LDS|LDL|LD\b|STG|STS|STL|ST\b|ATOM|RED|UBLK|UTMA|SYNCS\.ARRIVE|BAR\.ARV)")
+#: the loads and the stores among them, for the report's classes (the rest are asynchronous issues and arrivals)
+LOADS = re.compile(r"^(?:LDG(?!DEPBAR|STS)|LDS|LDL|LD\b)")
+STORES = re.compile(r"^(?:STG|STS|STL|ST\b|ATOM|RED)")
+#: where a straight-line scan stops: a branch, a call or exit, a barrier, a tensor issue or another wait
+STOPS = ("BRA", "BSYNC", "BREAK", "JMP", "EXIT", "RET", "CALL", "BAR", "SYNCS", "WARPGROUP", "HGMMA", "IGMMA")
+#: a tensor wait, and the count of groups it leaves in flight (`wgmma.wait_group N`)
+TENSOR_WAIT = re.compile(r"^WARPGROUP\.DEPBAR\.LE\b.*?,\s*(0x[0-9a-f]+)")
+
+
+def _operands(line: str) -> str:
+    return m.group(1) if (m := OPERANDS.match(line)) else ""
+
+
+def tensor_waits(body: list[tuple[int, str, str]]) -> list[tuple[int, int]]:
+    """A kernel's tensor waits as (index in `body`, groups left in flight)."""
+    return [(i, int(m.group(1), 16)) for i, (_, op, line) in enumerate(body)
+            if op.startswith("WARPGROUP.DEPBAR") and (m := TENSOR_WAIT.match(f"{op} {_operands(line)}"))]
+
+
+def wait_after_issue(body: list[tuple[int, str, str]]) -> int:
+    """WAIT_AFTER_ISSUE: the tensor waits for ALL in-flight groups (`wgmma.wait_group 0`) that follow their group's
+    last step with no work of substance between (KERNEL_STANDARDS 29.16). Scanned backward from the wait through
+    straight-line code: the nearest `HGMMA` found before any work of substance counts it; a branch, a barrier, another
+    wait or the kernel's start first leaves it uncounted (a wait whose steps sit across a branch is not seen)."""
+    found = 0
+    for i, left in tensor_waits(body):
+        if left:
+            continue
+        for _, op, _ in reversed(body[:i]):
+            if op.startswith(WGMMA):
+                found += 1
+                break
+            if SUBSTANCE.match(op) or op.startswith(STOPS):
+                break
+    return found
+
+
+def waits_after_issue(binary: Path) -> dict[str, int]:
+    """Per kernel (demangled): `wait_after_issue`."""
+    found = {name: wait_after_issue(body) for name, body in disassembled(binary).items()}
+    names = demangle(list(found))
+    return {names[k]: v for k, v in found.items()}
+
+
+#: a step's shape, accumulator type and first register (`HGMMA.64x16x16.F32.BF16 R24, ...`: the opcode's `x`s are
+#: past the opcode grammar `sass.INSTRUCTION` reads, so the step's operands are read from its line here)
+STEP_SHAPE = re.compile(r"\b[HI]GMMA\.64x(\d+)x\d+\.(F16|F32|S32)\S*\s+R(\d+)")
+
+
+def accumulators(line: str) -> set[int]:
+    """The registers a step writes: its first operand and the run its shape fills (m64 nN: N/2 words a thread, N/4
+    for a half-precision accumulator); none for a step whose line this does not read (`wait_candidates` then
+    reports no candidates)."""
+    m = STEP_SHAPE.search(line)
+    if not m:
+        return set()
+    first = int(m.group(3))
+    return set(range(first, first + int(m.group(1)) // (4 if m.group(2) == "F16" else 2)))
+
+
+def touched(op: str, operands: str) -> set[int]:
+    """The registers an instruction names, each widened to the run its operand width reaches (`.64`, `.WIDE`: two;
+    `.128`: four) -- more than it touches, never less, so a candidate is never one that touches an accumulator."""
+    width = 4 if ".128" in op else 2 if (".64" in op or "WIDE" in op) else 1
+    return {int(r) + j for r, pair in re.findall(r"\bR(\d+)(\.64)?", operands) for j in range(max(width, 2 if pair else 1))}
+
+
+def wait_candidates(body: list[tuple[int, str, str]], i: int) -> tuple[Counter, str]:
+    """The instructions after the tensor wait at `body[i]`, in straight-line code up to the next stop (`STOPS`), that
+    touch none of the registers the waited steps write -- nor read one a toucher wrote -- counted by class (`loads`,
+    `stores`, `async` issues, `other` arithmetic); and what ended the scan. The steps are the `HGMMA`s since the
+    previous wait in address order. Loads after a toucher's store are not counted: memory is not traced."""
+    start = max((j for j in range(i) if body[j][1].startswith("WARPGROUP.DEPBAR")), default=-1)
+    tainted: set[int] = set()
+    for _, op, line in body[start + 1:i]:
+        if op.startswith(WGMMA):
+            if not (found := accumulators(line)):
+                return Counter(), "an unread step"
+            tainted |= found
+    classes, stored = Counter(), False
+    for _, op, line in body[i + 1:]:
+        if op.startswith(STOPS):
+            return classes, op.split(".")[0]
+        operands = _operands(line)
+        regs = touched(op, operands)
+        written = set() if op.startswith(READS_FIRST) else touched(op, operands.split(",")[0])
+        if regs & tainted:
+            tainted |= written
+            stored |= bool(STORES.match(op))
+            continue
+        if LOADS.match(op) and stored:
+            continue
+        classes["loads" if LOADS.match(op) else "stores" if STORES.match(op) else
+                "async" if SUBSTANCE.match(op) else "other"] += 1
+    return classes, "end"
+
+
+#: the wait report's caps: the lines a kernel's distinct waits take, and the groups of kernels with the same lines
+REPORT_LINES, REPORT_GROUPS = 6, 16
+
+
+def waits_report(binary: Path) -> list[str]:
+    """THE ADVISORY: per kernel (grouped by identical lines, a count each; at most `REPORT_LINES` lines a kernel and `REPORT_GROUPS` groups of kernels), each tensor
+    wait's candidates to precede it -- what follows the wait in straight-line code, reads none of the registers the
+    waited steps write, and could be issued before the wait (`wait_candidates`). Never a refusal."""
+    code = disassembled(binary)
+    names = demangle(list(code))
+    groups: dict[tuple, list[str]] = {}
+    for mangled, body in code.items():
+        rows = Counter()
+        for i, left in tensor_waits(body):
+            classes, stop = wait_candidates(body, i)
+            what = ", ".join(f"{n} {c}" for c, n in classes.items()) or "none"
+            rows[f"wait({left}): {sum(classes.values())} candidates ({what}) before {stop}"] += 1
+        if rows:
+            groups.setdefault(tuple(sorted(rows.items())), []).append(names[mangled])
+    out = []
+    for rows, kernels_ in list(groups.items())[:REPORT_GROUPS]:
+        out.append(f"  {kernels_[0]}" + (f"  (and {len(kernels_) - 1} kernels with the same lines)" if kernels_[1:] else ""))
+        shown = sorted(rows, key=lambda r: -r[1])
+        out += [f"    {line}" + (f"  x{n}" if n > 1 else "") for line, n in shown[:REPORT_LINES]]
+        if len(shown) > REPORT_LINES:
+            out.append(f"    ... {len(shown) - REPORT_LINES} more distinct waits")
+    if len(groups) > REPORT_GROUPS:
+        out.append(f"  ... {len(groups) - REPORT_GROUPS} more groups of kernels")
+    return out
+
+
 def check(binary: Path, table: dict[str, dict]) -> list[str]:
     """Every expectation the experiment declares, no local memory and no undeclared convergence call anywhere: the
     failures, empty when it may run."""
@@ -383,6 +522,13 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
                 declared = max((e["count"] for e in expected if e["op"] == kind and re.search(e["kernel"], k)), default=0)
                 if n > declared:
                     failures.append(f"{k}: {n} {why[kind]}, {declared} declared ({kind})")
+        for k, n in (waits_after_issue(binary).items() if experiment not in _PRE_WAIT else ()):
+            declared = max((e["count"] for e in expected if e["op"] == "WAIT_AFTER_ISSUE" and re.search(e["kernel"], k)),
+                           default=0)
+            if n > declared:
+                failures.append(f"{k}: {n} tensor waits directly after their group's steps, {declared} declared "
+                                "(WAIT_AFTER_ISSUE): work that does not read the group's accumulators belongs between "
+                                "the issue and the wait: KERNEL_STANDARDS 29.16 (`lab waits` lists the candidates)")
         for k, n in serialized(binary).items():
             declared = max((e["count"] for e in expected if e["op"] == "STEPS_SERIALIZED" and re.search(e["kernel"], k)),
                            default=0)
@@ -720,6 +866,9 @@ def pack(name: str, arch: str, into: Path) -> int:
     if budgets(binary):
         print(f"lab: {name} has budgeted kernels, whose gate reads executed counts: it runs where the toolkit is")
         return 1
+    report = waits_report(binary)
+    if report:
+        print("lab: tensor waits -- candidates to precede each (advisory; `lab waits` prints it alone):", *report, sep="\n")
     into.mkdir(parents=True, exist_ok=True)
     carried_binary = into / binary.name
     carried_binary.write_bytes(binary.read_bytes())
@@ -1215,6 +1364,9 @@ def main() -> int:
     k.add_argument("experiment")
     k.add_argument("--arch", required=True)
     k.add_argument("--into", required=True, type=Path)
+    w = sub.add_parser("waits", help="each tensor wait's candidates to precede it (KERNEL_STANDARDS 29.16), advisory")
+    w.add_argument("experiment")
+    w.add_argument("--arch", required=True)
     c = sub.add_parser("carried", help="run a packed experiment on this card, a box with no toolkit to build it")
     c.add_argument("experiment")
     c.add_argument("--from", dest="source", required=True, type=Path)
@@ -1275,6 +1427,9 @@ def main() -> int:
         return 1
     if args.cmd == "pack":
         return pack(args.experiment, args.arch, args.into)
+    if args.cmd == "waits":
+        print(*waits_report(build(experiments()[args.experiment], args.arch)), sep="\n")
+        return 0
     if args.cmd == "carried":
         return carried(args.experiment, args.source, args.into, args)
     if args.cmd == "sass":

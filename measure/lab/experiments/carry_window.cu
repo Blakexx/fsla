@@ -3473,6 +3473,11 @@ int main(int argc, char** argv) {
     //: a wait's and a readout phase's counts are sums the toolkit may keep in uniform registers; the fold's phase
     //: laps are each thread's own (`lap_own`), which this count cannot tell from them
     b.expect(k, "CLOCK_UNIFORM", "<=", 24);
+    //: a DECLARED DEBT (KERNEL_STANDARDS 29.16): the roles' waits (`wg_commit(); wg_wait<0>()`) follow their steps
+    //: directly -- the form the climb found costly, the warps idle through the steps and the tensor pipe through the
+    //: rest of the window; the next window's fill belongs between the issue and the wait. Most kernels hold 2 to 5 such
+    //: waits; the two largest compositions unroll a wait a step group, 50
+    b.expect(k, "WAIT_AFTER_ISSUE", "<=", 50);
     //: the roles' loops hold their steps beside their barriers' polled waits: the waits' branches are the steps'
     b.expect(k, "BSSY", ">=", 0);
   }
