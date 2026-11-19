@@ -5,7 +5,7 @@
 // traded by role: TWO FOLD warpgroups at 168 registers, a 16 x 16 box each, its state 16 accumulator sets of 8 in
 // registers; ONE READOUT warpgroup at 104; ONE DRAIN warpgroup of four warps at 72. A window is a box's 256 entries
 // (16 lists of 8 to 24) and 256 tokens read the pair. A PACKET lands by two bulk copies behind one barrier, issued
-// behind the wait of the window before's steps: its HEADER -- an entry's word and sparse byte, where each of the 32
+// behind the warpgroup's barrier that follows the wait on the window before's steps: its HEADER -- an entry's word and sparse byte, where each of the 32
 // steps' A tile starts among the value lines, which places of a step's tile hold an entry, which steps are there --
 // and its VALUE LINES, a brick a run of 256. A fold thread loads its two entries' dense lines from global memory and
 // expands each by its sparse byte to the two lines of its step's coefficient tile; the places of a tile no entry

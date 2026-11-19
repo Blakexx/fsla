@@ -11,7 +11,7 @@ THE FORM. A CTA an SM of four warpgroups, 512 threads, registers traded by role:
 readout at 104, four drain warps at 72.
 - A PACKET is a box's window: its HEADER (an entry's word and sparse byte; where each of the 32 steps' A tile starts
   among the value lines, a byte a step; which of a step's 16 places hold an entry; which steps are there) and its
-  VALUE LINES, a brick a run of 256. It lands by two bulk copies behind one barrier, issued behind the wait of the
+  VALUE LINES, a brick a run of 256. It lands by two bulk copies behind one barrier, issued behind the warpgroup's barrier that follows the wait on the
   window before's steps. THE ONE RULE on it: a step's 16 tokens are consecutive positions -- then they are an
   M|N-major tile the step reads as it landed. Order, a token written twice, two lists' tiles overlapping on a token
   they share, and padding are the layout's.
@@ -32,4 +32,34 @@ the carry's); and the plain and coarse kernels on packets whose lists `2 p` and 
 once. The state and every output row are checked exactly in the other eleven. THE PACKETS ARE THE HOST'S, playing the
 gather.
 
-MEASURED: NOT YET MEASURED.
+MEASURED (H100 80GB HBM3, 132 SMs, Nebius preemptible VMs 26cmmpjn and 8sredw87, the clock locked; 2026-11-18, the
+experiment at f4189c7e, 7 repetitions; the eleven checked rows pass at one CTA and at 132; `sm_90a.blocks1.json` and
+`sm_90a.blocks132.json`, each with its traced rows' records beside it). Cycles a window a CTA:
+
+| row | one CTA | 132 CTAs |
+|---|---:|---:|
+| plain | 6,174 | 6,108 |
+| the launch's two edges stamped | 6,105 | 6,132 |
+| every warp's phases stamped (coarse) | 6,545 | 6,497 |
+| coarse, the waits on the tile groups read | 6,566 | 6,550 |
+| coarse, the waits on the tile groups published | 6,789 | 6,756 |
+| coarse, the waits on the panels filled | 6,757 | 6,719 |
+| coarse, the waits on the panels drained | 6,679 | 6,649 |
+| coarse, the fold's steps by eighths | 6,897 | 6,795 |
+| every warp's timeline stamped | 7,420 | 7,345 |
+| coarse, the read side idle (not checked) | 4,685 | 4,490 |
+| lists overlapping on shared tokens, plain | 6,131 | 6,109 |
+| lists overlapping on shared tokens, coarse | 6,561 | 6,506 |
+
+WHAT IT DECIDES. THE WINDOW AT ONE CTA IS THE WINDOW AT THE FULL GRID (6,174 and 6,108): 132 CTAs each landing two
+packets a window do not bind on global memory at this cell. THE LAYOUT IS THE GATHER'S: lists overlapping on tokens
+written once cost the carry nothing (6,131 against 6,174; 6,109 against 6,108) and are exact. THE FOLD'S WINDOW, from the
+coarse row's record at 132 CTAs (`bazel run //tools:lab -- trace carry_token`): its image 1,837 cycles, its fill
+1,927, its 32 steps 2,765; the readout's last phase 2,228 and the drain's 2,542, idle behind the folds. THE READ SIDE
+COSTS THE FOLDS A THIRD: with it idle the window is 4,490 and the steps 1,459. A step's cost beside what, measured in
+this kernel before this form (rows since removed): 132 cycles with A read by `ldmatrix` into registers, 80 with A
+read from shared memory, the commit cadence nothing -- and 51 to 56 with the read side idle, which is 27 a step for
+the SM's two fold warpgroups together. BY THE LAUNCH'S OWN CLOCKS the full grid's cycle counter runs 1,822 cycles a
+microsecond: a window is 3.35 microseconds, and 65,536 tokens (62 windows a CTA) some 0.21 ms. NOT MEASURED: the
+gather that writes the packets; a cell where the packets' bytes grow with duplication; the long call by wall time.
+The numbers of this section are typed from the records: a generator is owed.
