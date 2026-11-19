@@ -3,7 +3,7 @@
 // is best -- what does a window cost a CTA, which role waits on which, what do the fold's fill and its steps cost
 // apart, and what does the read side cost the fold? METHOD: a CTA an SM of four warpgroups, 512 threads, registers
 // traded by role: TWO FOLD warpgroups at 168 registers, a 16 x 16 box each, its state 16 accumulator sets of 8 in
-// registers; ONE READOUT warpgroup at 104; ONE DRAIN warpgroup of four warps at 72. A window is a box's 256 entries
+// registers; ONE READOUT warpgroup at 120; ONE DRAIN warpgroup of four warps at 56. A window is a box's 256 entries
 // (16 lists of 8 to 24) and 256 tokens read the pair. A PACKET lands by two bulk copies behind one barrier, issued
 // behind the warpgroup's barrier that follows the wait on the window before's steps: its HEADER -- an entry's word and sparse byte, where each of the 32
 // steps' A tile starts among the value lines, which places of a step's tile hold an entry, which steps are there --
@@ -15,10 +15,10 @@
 // 16 tokens are consecutive positions. The host plays the gather with two layouts: every entry its own value lines;
 // and lists `2 p`, `2 p + 1` sharing four tokens, written once, the two lists' positions overlapping on them. Each
 // fold warpgroup PUBLISHES its state as a bf16 image, 16 tiles, a tile group of 4 behind the readout, a line a
-// channel's 8 fold digits. The readout is MIRRORED: a thread expands one (token, box)'s 16 bytes, loaded a pass
+// channel's 8 fold digits. The readout is MIRRORED: a thread expands one (token, box)'s 16 bytes, loaded two passes
 // ahead, to two lines of its digit's coefficient tile in shared memory, the tokens on the step's columns; a pass is 8
 // digits, two tile groups, 16 steps of 64 channels by 16 tokens one commit group, and 32 sums a thread per group
-// stored as halves of the panel's rows. The four drain warps add each token's row as one f16 line to global memory.
+// stored by 4 transposed matrix stores to the panel's rows. The four drain warps add each token's row as one f16 line to global memory.
 // The roles' waits are suspended (`try_wait`) and no role reads a clock inside it: the rows are the plain kernel, its
 // launch's edges stamped (`TRACE` 1), every warp's phases stamped (2: the coarse row, which is also each of the seven
 // detail rows -- one barrier's waits and arrivals more, the packet's waits and its copies' issues, the fold's fill by
@@ -29,12 +29,12 @@
 // exactly in every row but the isolation row, whose kernel is not the carry's.
 // TIMELINE: a fold warpgroup's trip is a window: the image a tile group at a time, four -- the wait on the readout's
 // read of that group a window back, its 4 stores a thread of 16 bytes (two lines of two halves), their fence, the
-// group's arrival -- then the wait on its packet; a thread's two entries in turn, each its dense line loaded and
-// expanded to its two coefficient lines; four (step, place) pairs a thread, a dead place's two lines zeroed; the
+// group's arrival -- then the wait on its packet; a thread's two entries in turn, each its dense line (loaded at the
+// window's start, before the image) expanded to its two coefficient lines; four (step, place) pairs a thread, a dead place's two lines zeroed; the
 // header's two lines of tile starts loaded and held; the fence, the warpgroup's barrier; 32 steps issued, the commit,
 // the wait, the warpgroup's barrier; the next window's packet's copies. The readout's trip is a pass: the waits on its two tile groups, a
-// thread's 16 bytes expanded to two lines of each group's tile (the bytes loaded a pass before), the fence, the
-// warpgroup's barrier, 16 steps in one commit group, the next pass's bytes issued under them, the wait, the groups
+// thread's 16 bytes expanded to two lines of each group's tile (the bytes loaded two passes before), the fence, the
+// warpgroup's barrier, 16 steps in one commit group, the bytes of the pass after next issued under them, the wait, the groups
 // released; then a group at a time the wait on the panel two groups back, its 32 sums rounded to f16 pairs and
 // stored, the arrival. A drain warp's trip is a group of 64 tokens, two batches of 8 a warp: the wait on the panel,
 // the chunk's 16 loads, its 16 adds, the arrival. Live: a fold thread's 128 accumulators beside the tile starts' 8
@@ -53,9 +53,9 @@ constexpr int kGroup = 128, kDrains = 4, kThreads = 4 * kGroup;
 //: the roles' first threads: fold 0, fold 1, the readout, then the four drain warps
 constexpr int kReadAt = 2 * kGroup, kDrainAt = 3 * kGroup;
 //: THE REGISTERS A THREAD. A raise takes what another warpgroup released from the count the kernel is launched
-//: at -- 128 a thread at 512 threads, the SM's whole file: the folds' 40 more each are the 24 fewer of the readout
-//: and the 56 fewer of the drains
-constexpr int kEntryRegs = 128, kFoldRegs = 168, kReadRegs = 104, kDrainRegs = 72;
+//: at -- 128 a thread at 512 threads, the SM's whole file: the folds' 40 more each are the 8 fewer of the readout
+//: and the 72 fewer of the drains
+constexpr int kEntryRegs = 128, kFoldRegs = 168, kReadRegs = 120, kDrainRegs = 56;
 //: an isolation row whose read side is idle: the folds take what the idle warpgroups do not need
 constexpr int kAloneFoldRegs = 192, kAloneRestRegs = 64;
 static_assert(2 * (kAloneFoldRegs - kEntryRegs) == 2 * kEntryRegs - 2 * kAloneRestRegs);
@@ -251,6 +251,13 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
 #pragma unroll 1
   for (int w = 0; w < windows; ++w) {
     tr.stamp(warpline::kPhaseBegin, kMarkWindow);
+    const int g = tid & (kGroup - 1);
+    //: A THREAD'S TWO ENTRIES' DENSE LINES, loaded at the window's start: the image phase covers their latency (the
+    //: window's line in the views' table is held as 32 bits: no address of it outlives the loads)
+    uint4 dense_line[2];
+#pragma unroll
+    for (int half = 0; half < 2; ++half)
+      dense_line[half] = (reinterpret_cast<const uint4*>(values) + lab::held(one_line(w)) + g + half * kGroup)[kOneDense];
     //: THE IMAGE, a tile group at a time behind the readout: channel m's fold digits `8 h` to `8 h + 7` of read
     //: digit b truncated to one line of tile b, `(m / 8) 17 + m % 8 + 8 h`, once the readout has read that group
     //: of the window before: 4 stores a thread a group.
@@ -281,7 +288,6 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
     await(bars + kPoolLanded + 8 * box, w & 1, tr, kWaitPacket);
     tr.stamp(warpline::kPhaseBegin, kMarkExpand);
     const uint32_t pool = 2 * box * kPoolBytes;
-    const int g = tid & (kGroup - 1);
     uint8_t* const image = smem + pool;
     const uint8_t* const table = smem + kOneAt + box * kOneBytes;
 #pragma unroll
@@ -289,9 +295,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
       const int e = g + half * kGroup;
       const uint32_t word = reinterpret_cast<const uint32_t*>(table)[e];
       const float weight = static_cast<float>(table[kOneSparse * 16 + e]);
-      //: (the window's line in the views' table is held as 32 bits: no address of it outlives the entry)
-      const uint4 landed = (reinterpret_cast<const uint4*>(values) + lab::held(one_line(w)) + e)[kOneDense];
-      const uint32_t line[4] = {landed.x, landed.y, landed.z, landed.w};
+      const uint32_t line[4] = {dense_line[half].x, dense_line[half].y, dense_line[half].z, dense_line[half].w};
 #pragma unroll
       for (int h = 0; h < 2; ++h) {
         uint32_t pair[4];
@@ -387,38 +391,43 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
   tr.bind(trace);
   tr.edge(kMarkEntry);
   constexpr int kG = 2;
-  const int tid = threadIdx.x - kReadAt, warp = tid >> 5, lane = tid & 31, q = lane >> 2, t = lane & 3;
+  const int tid = threadIdx.x - kReadAt, warp = tid >> 5, lane = tid & 31;
   const uint32_t bars = base + kBarsAt;
   //: the lane's (token, box) of a group: token `lane % 16` of the warp's digit on box `lane / 16`
   const int n = lane & 15, box = lane >> 4;
-  uint4 row[kG];
-  uint32_t reader_at[kG];
-  const auto load = [&](int c) {
+  //: a pass's bytes in set `s`, the pass's parity in its window: a set is loaded two passes ahead
+  uint4 row[2][kG];
+  uint32_t reader_at[2][kG];
+  const auto load = [&](int c, int s) {
 #pragma unroll
     for (int g = 0; g < kG; ++g) {
       const int k = (c + g) % kChunks;
-      reader_at[g] = reader_of(blockIdx.x, ((c + g) / kChunks) * kWindow + 16 * (8 * (k >> 1) + (k & 1) + 2 * warp) + n);
-      row[g] = reinterpret_cast<const uint4*>(dense)[reader_row(reader_at[g], box)];
+      reader_at[s][g] = reader_of(blockIdx.x, ((c + g) / kChunks) * kWindow + 16 * (8 * (k >> 1) + (k & 1) + 2 * warp) + n);
+      row[s][g] = reinterpret_cast<const uint4*>(dense)[reader_row(reader_at[s][g], box)];
     }
   };
-  load(0);
+  load(0, 0);
+  load(kG, 1);
   float d[kG * kChunkDigits][8];
   //: the lane's two lines of its digit's tile on its box (a group's tiles 8 on), and its sums' rows of a panel
   uint8_t* const lines = smem + kCoefAt + (2 * warp + box) * kCoefTile + ((n >> 3) * 17 + (n & 7)) * 16;
-  const uint32_t mine = lab::held(static_cast<uint32_t>(kPanelAt + 2 * t * kRowBytes + 2 * (16 * warp + q)));
+  //: the lane's row of a panel's stored matrices: matrix `m = lane / 8` is channels `16 warp + 8 (m % 2)` on, tokens
+  //: `8 (m / 2)` on, and the lane names its token `lane % 8`'s 16 bytes of them
+  const uint32_t mine = lab::held(base + static_cast<uint32_t>(kPanelAt + (8 * (lane >> 4) + (lane & 7)) * kRowBytes
+                                                               + 2 * (16 * warp + 8 * ((lane >> 3) & 1))));
   lab::WarpMark::start(times);
 #pragma unroll 1
   for (int w = 0; w < windows; ++w) {
-#pragma unroll 1
+#pragma unroll
     for (int c4 = 0; c4 < kChunks; c4 += kG) {
-      const int c = kChunks * w + c4;
+      const int c = kChunks * w + c4, s = c4 / kG;
 #pragma unroll
       for (int g = 0; g < kG; ++g) await(bars + kTilesReady + 8 * (c4 + g), w & 1, tr, kWaitTilesReady);
       //: THE COEFFICIENTS, to shared memory: the reader's 16 bytes on the box by its byte on its digit
 #pragma unroll
       for (int g = 0; g < kG; ++g) {
-        const float weight = static_cast<float>(sparse_of(reader_at[g]));
-        const uint32_t word[4] = {row[g].x, row[g].y, row[g].z, row[g].w};
+        const float weight = static_cast<float>(sparse_of(reader_at[s][g]));
+        const uint32_t word[4] = {row[s][g].x, row[s][g].y, row[s][g].z, row[s][g].w};
 #pragma unroll
         for (int h = 0; h < 2; ++h) {
           uint32_t pair[4];
@@ -448,30 +457,26 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
                                 lab::wg_desc(tiles + (g * 8 + 2 * j + bx) * kCoefTile, 8, 17), bx != 0);
       }
       lab::wg_commit();
-      //: the next pass's bytes, issued under the steps
-      load(c + kG);
+      //: the bytes of the pass after next, issued under the steps into the set this pass's coefficients freed
+      load(c + 2 * kG, s);
       steps_done(tr, kStepsRead);
 #pragma unroll
       for (int g = 0; g < kG; ++g) arrive(bars + kTilesRead + 8 * (c4 + g), tr, kWaitTilesRead);
-      //: THE PANEL a group: digit `j`'s token `8 i + 2 t + p` on channel `16 warp + q + 8 r`, a half of that
-      //: token's line
+      //: THE PANEL a group: digit `j`'s sums as four 8 x 8 matrices (channels `16 warp + 8 r` on, tokens `8 i` on),
+      //: matrix `r + 2 i`, stored transposed: a token's 8 channels a 16-byte piece of its line
 #pragma unroll
       for (int g = 0; g < kG; ++g) {
         const int cg = c + g;
         if (cg >= 2) await(bars + kPanelFreed + 8 * (cg & 1), ((cg >> 1) - 1) & 1, tr, kWaitPanelFreed);
         tr.stamp(warpline::kPhaseBegin, kMarkPanel);
-        uint8_t* const panel = smem + mine + (cg & 1) * kPanelBytes;
+        const uint32_t panel = mine + (cg & 1) * kPanelBytes;
 #pragma unroll
-        for (int j = 0; j < kChunkDigits; ++j)
-#pragma unroll
-          for (int i = 0; i < 2; ++i)
-#pragma unroll
-            for (int r = 0; r < 2; ++r) {
-              const uint32_t halves = lab::pack_half2(d[g * kChunkDigits + j][4 * i + 2 * r], d[g * kChunkDigits + j][4 * i + 2 * r + 1]);
-              uint8_t* const at = panel + (16 * j + 8 * i) * kRowBytes + 16 * r;
-              *reinterpret_cast<uint16_t*>(at) = static_cast<uint16_t>(halves);
-              *reinterpret_cast<uint16_t*>(at + kRowBytes) = static_cast<uint16_t>(halves >> 16);
-            }
+        for (int j = 0; j < kChunkDigits; ++j) {
+          const float* const sums = d[g * kChunkDigits + j];
+          const uint32_t four[4] = {lab::pack_half2(sums[0], sums[1]), lab::pack_half2(sums[2], sums[3]),
+                                    lab::pack_half2(sums[4], sums[5]), lab::pack_half2(sums[6], sums[7])};
+          lab::stsm_t(panel + 16 * j * kRowBytes, four);
+        }
         __syncwarp();
         arrive(bars + kPanelReady + 8 * (cg & 1), tr, kWaitPanelReady);
       }
@@ -816,13 +821,14 @@ int main(int argc, char** argv) {
                            {2, 0, kAlone}};
   for (const Row& row : kRows) {
     const std::string k = lab::kernel("carry_token::window", {row.trace, row.detail, row.probe});
-    //: the fold's 32 steps, one block, and the readout's 16: two groups of 4 digits, each digit's two steps
-    b.expect(k, "HGMMA", "==", kLists * kBlockRounds + (row.probe & kAlone ? 0 : 2 * 2 * kChunkDigits));
+    //: the fold's 32 steps, one block, and the readout's 32: a window's two passes unrolled, each two groups of 4
+    //: digits, each digit's two steps
+    b.expect(k, "HGMMA", "==", kLists * kBlockRounds + (row.probe & kAlone ? 0 : kChunks * 2 * kChunkDigits));
     //: the fold's conversions are in its own trip, beside its steps: what the row measures
     b.expect(k, "STEP_XU", "<=", 40);
     //: the readout's panel is read by the drain warps' own loads, not by a step: its arrival needs no fence, and a
-    //: chunk of 8 digits arrives at both panels, each behind its stores
-    b.expect(k, "STORE_UNFENCED", "<=", 2);
+    //: chunk of 8 digits arrives at both panels, each behind its stores, and a window's two passes are unrolled
+    b.expect(k, "STORE_UNFENCED", "<=", kChunks);
     //: the readout's trip holds its coefficients' rounds and their load beside its steps, by design: the tensor
     //: pipe is idle most of a window
     b.expect(k, "STEP_XU", ">=", 0);
