@@ -38,8 +38,8 @@
 // released; then a group at a time the wait on the panel two groups back, its 32 sums rounded to f16 pairs and
 // stored, the arrival. A drain warp's trip is a group of 64 tokens, two batches of 8 a warp: the wait on the panel,
 // the chunk's 16 loads, its 16 adds, the arrival. Live: a fold thread's 128 accumulators beside the tile starts' 8
-// words, and in its fill an entry's word, line and products; the readout's 64 sums (a chunk of 8 digits) and the 8
-// words of its bytes; a drain's 16.
+// words and, through the image, its two entries' dense lines' 8, and in its fill an entry's word and products; the
+// readout's 64 sums (a chunk of 8 digits) and two passes' bytes and reader indices, 20 words; a drain's 16.
 // see docs/internals/tools/lab.md#carry-token
 #include <chrono>
 
