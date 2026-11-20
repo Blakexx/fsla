@@ -824,12 +824,10 @@ int main(int argc, char** argv) {
     //: the fold's 32 steps, one block, and the readout's 32: a window's two passes unrolled, each two groups of 4
     //: digits, each digit's two steps
     b.expect(k, "HGMMA", "==", kLists * kBlockRounds + (row.probe & kAlone ? 0 : kChunks * 2 * kChunkDigits));
-    //: what a step of the fold is made of (`lab steps`, 2026-11-19): one HGMMA.64x16x16 bf16 whose operands, A 64x16 and
-    //: B 16x16, are 2,560 B through the shared-memory port, beside up to 502 B of the region's shared loads and stores
-    //: (3,062 B, 24 wavefronts, the most of a kernel's regions); and 28-47 instructions a step, of which 2 conversions
-    //: and 18-23 integer ops are the most, the rest global loads, moves and branches: the bounds are the most of any row
-    b.expect(k, "STEP_PORT", "<=", 3062);
-    b.expect(k, "STEP_WORK", "<=", 47);
+    //: a fold step's cost to its warpgroup (`lab steps`): the port bytes and instructions a step, bounded by the
+    //: most of any row
+    b.expect(k, "STEP_PORT", "<=", 4568);
+    b.expect(k, "STEP_WORK", "<=", 46);
     //: the fold's conversions are in its own trip, beside its steps: what the row measures
     b.expect(k, "STEP_XU", "<=", 40);
     //: the readout's panel is read by the drain warps' own loads, not by a step: its arrival needs no fence, and a

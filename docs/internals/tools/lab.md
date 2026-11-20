@@ -131,38 +131,30 @@ operand width reaches (`.64`, `.WIDE`: two; `.128`: four), so no candidate touch
 (a load after a store that read an accumulator is dropped, but a candidate store may still alias a load that stays after
 the wait: the author checks the address dependence); a candidate is moved only if the arrival or barrier ordering it sits under allows.
 
-<a id="steps"></a>THE STEP REPORTS. `pack` prints, and `bazel run //tools:lab -- steps <name> --arch sm_90a` prints alone, two lines a kernel
-that holds tensor steps (`HGMMA`/`IGMMA`; kernels with the same lines collapse): what ONE step costs, read from the SASS.
-A prediction of a step's cost is made from these lines, not counted by hand. A step's region is each innermost loop that holds a
-step (all its instructions, divided over its steps) and each step outside such a loop (the instructions since the
-previous step, a loop's back-edge or the kernel's start); a kernel with several regions prints their range and the
-figures of the one with the most.
-- `STEP_PORT`, `port: B a step (W wavefronts): operands o + shared s`: the bytes through the shared-memory port. The
-  step's own operands come from its shape as the listing names it, `HGMMA.64xNxK.<acc>.<input>` (a second input type
-  repeats the first): A is 64 x K elements and B is K x N elements at the input type's size (2 bytes `F16`/`BF16`, 4
-  `TF32`, 1 `E4M3`/`E5M2`/`S8`/`U8`), and the operands the listing prints say which are shared memory: ONE descriptor,
-  `HGMMA.64x16x16.F32.BF16 R24, gdesc[UR24], R24`, is A and B both in shared memory (2,048 + 32 N bytes at K 16);
-  a register and a descriptor, `HGMMA.64x64x16.F32.BF16 R24, R8, gdesc[UR24], R24`, is A in registers (zero) and B alone
-  shared. `s` is every shared load (`LDS*`, `LDSM`) and store (`STS*`, `STSM`) of the region at the width its opcode names,
-  all 32 lanes of the warp (`LDS.U16` is 64 bytes, `LDS.128` 512, `LDSM.16.M88.4` 512). Wavefronts are the bytes / 128,
-  rounded up.
-- `STEP_WORK`, `work: n instructions a step (class k, ...)`: the instructions of the region a thread executes for one
-  step, by class: `tensor`, `conv` (the conversion unit, what `STEP_XU` counts), `int` (with select and compare) and
-  `float` arithmetic, `global` and `shared` accesses (the asynchronous copies' issue with the global ones), `move` (moves,
-  permutes, shuffles, packs), `branch`, `other` (barriers, waits, arrivals).
-- `REGS` is the registers the kernel holds, which `pack` already records, held to a bound.
+<a id="steps"></a>THE STEP REPORTS. `pack` prints, and `bazel run //tools:lab -- steps <name> --arch sm_90a` prints alone, two lines a
+kernel that holds tensor steps (kernels with the same lines collapse): what ONE step costs, read from the SASS, so a
+prediction of a step's cost is made from these lines and not counted by hand. A kernel with several regions of steps
+(each innermost loop that holds one, each step outside such a loop) prints their range and the figures of the one with
+the most.
+- `port: B a step (W wavefronts): operands o + shared s` is the bytes the step puts through the shared-memory port: the
+  step's own operands, which its shape and its operand list give (a register operand is none), and the shared loads and
+  stores of its region. A shared access between two steps is executed by each of the warpgroup's four warps, so `s` is
+  four warps' (`x 4 warps`) while `o` is the warpgroup's, once. Wavefronts are the bytes over 128.
+- `work: n instructions a step (class k, ...)` is the instructions of the region a thread executes for one step, in
+  the classes a budget is stated in (`tools/sass.py`'s `OPCODE_CLASSES`, KERNEL_STANDARDS 29.1).
+- A line that says a step is not read is a listing this does not parse: a defect of the report, never a pass.
+  The empty group ptxas issues to hold a wait (`HGMMA ... RZ, gdesc[URZ], RZ`) is no step.
 
-`Bench::expect(kernel, "STEP_PORT", "<=", bytes)`, `"STEP_WORK"` (the total instructions) and `"REGS"` (against the role's
-budget, which the bound is) are declared bounds, `<=` only: undeclared, nothing is refused; declared, a region of the
-kernel over it (the report prints the mean, the bound holds for every region) refuses the run, and a bound that matches
-no kernel with a step (no kernel, for `REGS`) is refused too. `carry_token` bounds both by the most of its rows and
-`wgmma_width` bounds `STEP_PORT` at 2,048 + 32 N.
-NOT COUNTED: bulk copies landing in shared memory (`UBLKCP`, `LDGSTS`, the tensor memory access: the copy engine's
-writes, not a thread's), bank conflicts (a conflicted access costs more wavefronts than its bytes), lanes masked off
-(a predicated or divergent access counts all 32 lanes), generic loads and stores that reach shared memory (`LD`, `ST`),
-atomics, and a shared load outside the region (a loop's prologue, another loop); the instructions are the static count of the region read once, both sides
-of a branch inside it, not a trip count; and a loop's figures are its mean over its steps, so steps unlike one another in
-one loop are averaged.
+`Bench::expect(kernel, "STEP_PORT", "<=", bytes)` and `"STEP_WORK"` (the total instructions) are declared bounds, `<=`
+only: undeclared, nothing is refused; declared, a region of the kernel over it refuses the run, and a bound that matches
+no kernel with a step is refused too. The registers a kernel holds are not a bound here: ptxas's allocation is in the
+pack file, a kernel that does not fit its launch bounds spills and is refused for local memory, and a role's register
+budget is the `registers` line of its budget file, which `tools/life_ranges.py --budget` holds to the peak LIVE registers
+of each component (KERNEL_STANDARDS section 32) -- a different figure from the allocation. `carry_token` bounds both by
+the most of its rows and `wgmma_width` bounds `STEP_PORT` at 2,048 + 32 N.
+NOT COUNTED: the copy engine's writes (bulk copies, the tensor memory access), bank conflicts, lanes masked off, generic
+loads and stores that reach shared memory, atomics, a shared access outside the region, and trip counts: a loop's
+figures are its mean over its steps, and both sides of a branch count once.
 
 <a id="pack"></a>A CARD ELSEWHERE. A box that is not started from the devbox image ([`setup.md`](../../setup.md)) carries a driver and
 no toolkit, so an experiment for it is built and checked here and run there: `bazel run //tools:lab -- pack <name> --arch sm_90a --into DIR` compiles it for that architecture,
@@ -248,7 +240,7 @@ full grid's record; any other's count is the warps that arrive at it), and the v
 * <a id="wgmma"></a>Hopper's atoms, each one PTX instruction of sm_90a (an experiment calling one compiles for sm_90a
   only): `wg_desc` (wgmma's unswizzled K-major shared operand: lines in bricks of 8, 16 bytes a line, the K halves and
   the bricks at stated offsets), `wg_fence`, `wg_commit`, `wg_wait<N>`, `wg_hold` (a register an asynchronous MMA
-  wrote, held behind its wait), `wg_bf16_n16_ss`, `wg_bf16_n64_ss`, `wg_u8_n64_ss` (the integer step, u8 by u8 into s32), `wg_bf16_n64_rs` (A from registers), `wg_bf16_n72_rs` (the same 72 columns wide; `wg_bf16_n72_rs_mn` with B M|N-major), `wg_bf16_n8_ss_mn` (8 columns, both operands M|N-major), `wg_bf16_n16_ss_mna` (A alone M|N-major; its `add` false makes a step the accumulator's first, with nothing
+  wrote, held behind its wait), `wg_bf16_n16_ss`, `wg_bf16_n64_ss`, `wg_u8_n64_ss` (the integer step, u8 by u8 into s32), `wg_bf16_n64_rs` (A from registers; `wg_bf16_n64_rs_mn` with B M|N-major), `wg_bf16_n72_rs` (the same 72 columns wide; `wg_bf16_n72_rs_mn` with B M|N-major), `wg_bf16_n8_ss_mn` (8 columns, both operands M|N-major), `wg_bf16_n16_ss_mna` (A alone M|N-major; its `add` false makes a step the accumulator's first, with nothing
   cleared), `wg_bf16_n16_ss_mn`, `wg_bf16_n64_ss_mn`, `stsm_t` (`stmatrix.x4.trans`: four 8 x 8 matrices of 16-bit pairs
   stored transposed, a lane naming a stored row),
   `wg_bf16_n256_ss_mn` (both operands M|N-major: a line is one K's 8 rows or columns; `wg_desc` describes either
@@ -372,3 +364,4 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="carry-token"></a>[`carry_token`](../../lab/carry_token.md)
 - <a id="add-rate"></a>[`add_rate`](../../lab/add_rate.md)
 - <a id="slot-sum"></a>[`slot_sum`](../../lab/slot_sum.md)
+- <a id="fold-forms"></a>[`fold_forms`](../../lab/fold_forms.md)

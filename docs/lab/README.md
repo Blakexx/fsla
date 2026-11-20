@@ -49,3 +49,4 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`slot_sum`](slot_sum.md) | experiment |
 | [`drain`](drain.md) | experiment |
 | [`step_queue`](step_queue.md) | experiment |
+| [`fold_forms`](fold_forms.md) | experiment |

@@ -440,6 +440,16 @@ __device__ __forceinline__ void wg_bf16_n16_rs(float (&d)[8], const uint32_t (&a
                : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "l"(b), "r"(static_cast<int>(add)));
 }
 
+//: m64n64k16 with A from the warpgroup's registers and B M|N-major in shared memory (a line one K's 8 columns):
+//: `d` += A [64 x 16] B [16 x 64], or written whole
+__device__ __forceinline__ void wg_bf16_n64_rs_mn(float (&d)[32], const uint32_t (&a)[4], uint64_t b, bool add = true) {
+  asm volatile("{ .reg .pred p; setp.ne.b32 p, %37, 0;\n"
+               "wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16 " LAB_WG_D32_LIST
+               ", {%32, %33, %34, %35}, %36, p, 1, 1, 1; }"
+               : LAB_WG_D32(d)
+               : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "l"(b), "r"(static_cast<int>(add)));
+}
+
 //: the same 72 columns wide: `d` += A [64 x 16] B [16 x 72], B a K-major tile of 9 bricks
 __device__ __forceinline__ void wg_bf16_n72_rs(float (&d)[36], const uint32_t (&a)[4], uint64_t b, bool add = true) {
   asm volatile("{ .reg .pred p; setp.ne.b32 p, %41, 0;\n"

@@ -174,7 +174,7 @@ _PRE_WAIT = {"clock_time", "fold_stream", "intra_chain", "intra_window", "pool_f
              "state_image", "step_queue", "wgmma_width"}
 #: the hazards an experiment may declare a count of (`Bench::expect(kernel, NAME, "<=", n)`), beside its opcodes
 HAZARDS = ("LOOP_CONVERGENCE", "LOAD_IN_TRIP", "STORE_RELOAD", "STORE_UNFENCED", "STEPS_SERIALIZED", "CLOCK_UNIFORM",
-          "WAIT_AFTER_ISSUE", "STEP_PORT", "STEP_WORK", "REGS")
+          "WAIT_AFTER_ISSUE", "STEP_PORT", "STEP_WORK")
 
 
 #: a warp collective after the `?` of a statement's conditional: only the lanes the condition takes reach it
@@ -480,7 +480,7 @@ LANE_BYTES = {"U8": 1, "S8": 1, "U16": 2, "S16": 2, "64": 8, "128": 16}
 #: a matrix access, `LDSM.16.M88.4`: N matrices of 8 x 8 sixteen-bit elements a warp, 128 bytes each
 MATRIX = re.compile(r"^(?:LDSM|STSM)\.\d+\.MT?88\.(\d)")
 #: the bounds an experiment declares of a step or a kernel (`Bench::expect(kernel, NAME, "<=", n)`)
-STEP_BOUNDS = ("STEP_PORT", "STEP_WORK", "REGS")
+STEP_BOUNDS = ("STEP_PORT", "STEP_WORK")
 
 
 def step_operand_bytes(line: str) -> int | None:
@@ -512,27 +512,22 @@ def shared_bytes(op: str) -> int:
     return 0
 
 
-#: the step's work by class: the tensor instruction, a conversion (what `STEP_XU` counts), integer (select and compare
-#: with it) and float arithmetic, global and shared accesses, a move or permute, a branch; the rest (barriers, waits, `LDC`)
-_MOVES = ("MOV", "IMAD.MOV", "UMOV", "PRMT", "SHFL", "F2FP")
-_BRANCHES = ("BRA", "BSSY", "BSYNC", "BREAK", "EXIT", "CALL", "RET", "JMP")
-WORK_CLASSES = ("tensor", "conv", "int", "float", "global", "shared", "move", "branch", "other")
+#: a null step: the empty group ptxas issues to hold a wait where no step is in flight (`HGMMA.64x8x16.F16 RZ,
+#: gdesc[URZ], RZ, !UPT`) -- it moves no operand and computes nothing, so it is no step of the report
+NULL_STEP = re.compile(r"\bRZ,\s*gdesc\[URZ\]")
+#: a warpgroup's warps: a shared load or store between two steps is executed by each of them
+WARPS = 4
 
 
-def work_class(op: str) -> str:
-    kind = sass.opcode_class(op)
-    return ("tensor" if op.startswith(WGMMA) else "move" if op.startswith(_MOVES) else
-            "branch" if op.startswith(_BRANCHES) else "conv" if kind == "conversion unit" else
-            "float" if kind == "float" else "int" if kind in ("integer/address", "select/compare") else
-            "global" if kind == "global" else
-            "shared" if kind in ("shared load", "shared store", "shared atomic") else "other")
+def is_step(op: str, line: str) -> bool:
+    return op.startswith(WGMMA) and not NULL_STEP.search(line)
 
 
 def step_regions(body: list[tuple[int, str, str]]) -> list[tuple[str, int, list[int]]]:
     """A kernel's step regions as (what, steps, indices into `body`): each innermost loop that holds a step -- all its
     instructions, its steps counted -- and each step outside such a loop, alone: the instructions after the previous
     step (or a loop's back-edge, or the kernel's start) up to and including it."""
-    steps = [i for i, (_, op, _) in enumerate(body) if op.startswith(WGMMA)]
+    steps = [i for i, (_, op, line) in enumerate(body) if is_step(op, line)]
     holding = [(lo, hi) for lo, hi in loops_of(body) if any(lo <= body[i][0] <= hi for i in steps)]
     inner = {(lo, hi) for lo, hi in holding if not any((a, b) != (lo, hi) and lo <= a and b <= hi for a, b in holding)}
     regions, in_loop = [], set()
@@ -556,11 +551,11 @@ def step_regions(body: list[tuple[int, str, str]]) -> list[tuple[str, int, list[
 def region_figures(body: list[tuple[int, str, str]], steps: int, members: list[int]) -> tuple[int, int, int, Counter]:
     """A region's figures a step, each the region's total over its steps, rounded up: the bytes through the shared-memory
     port as (the steps' own operands, the shared loads and stores, their sum), and the instructions by class
-    (`work_class`). A step this does not read makes the operand and total bytes -1."""
-    own = [step_operand_bytes(body[i][2]) for i in members if body[i][1].startswith(WGMMA)]
-    shared = sum(shared_bytes(body[i][1]) for i in members)
+    (`sass.opcode_class`). A step this does not read makes the operand and total bytes -1."""
+    own = [step_operand_bytes(body[i][2]) for i in members if is_step(body[i][1], body[i][2])]
+    shared = WARPS * sum(shared_bytes(body[i][1]) for i in members)
     per = lambda n: -(-n // steps)  # noqa: E731
-    classes = Counter({c: per(n) for c, n in Counter(work_class(body[i][1]) for i in members).items()})
+    classes = Counter({c: per(n) for c, n in Counter(sass.opcode_class(body[i][1]) for i in members).items()})
     if None in own:
         return -1, per(shared), -1, classes
     return per(sum(own)), per(shared), per(sum(own) + shared), classes
@@ -595,11 +590,11 @@ def steps_report(binary: Path) -> list[str]:
             top = max(rows, key=lambda row: row[4])
             span = f"{lo:,}-{hi:,}" if lo != hi else f"{hi:,}"
             waves = f"{-(-lo // 128)}-{-(-hi // 128)}" if lo != hi else f"{-(-hi // 128)}"
-            port = f"port: {span} B a step ({waves} wavefronts){many} operands {top[2]:,} + shared {top[3]:,}"
+            port = f"port: {span} B a step ({waves} wavefronts){many} operands {top[2]:,} + shared {top[3]:,}{f' (x {WARPS} warps)' if top[3] else ''}"
         work_of = lambda row: sum(row[5].values())  # noqa: E731
         lo, hi = min(map(work_of, rows)), max(map(work_of, rows))
         top = max(rows, key=work_of)
-        by = ", ".join(f"{c} {top[5][c]}" for c in WORK_CLASSES if top[5][c])
+        by = ", ".join(f"{c} {top[5][c]}" for c in (*sass.OPCODE_CLASSES, "other") if top[5][c])
         work = f"work: {f'{lo}-{hi}' if lo != hi else hi} instructions a step{many} {by}"
         groups.setdefault((port, work), []).append(name)
     out = []
@@ -611,25 +606,18 @@ def steps_report(binary: Path) -> list[str]:
     return out
 
 
-def step_bounds(binary: Path, table: dict[str, dict], expected: list[dict]) -> list[str]:
-    """The declared `STEP_PORT` and `STEP_WORK` (bytes and instructions a step, of every region of the kernel) and `REGS`
-    (the registers the kernel holds) that are exceeded, and the declarations that bound nothing."""
+def step_bounds(binary: Path, expected: list[dict]) -> list[str]:
+    """The declared `STEP_PORT` and `STEP_WORK` (bytes and instructions a step, of every region of the kernel) that are
+    exceeded, and the declarations that bound nothing."""
     failures = []
     report = step_report(binary)
     for e in (e for e in expected if e["op"] in STEP_BOUNDS):
         if e["cmp"] != "<=":
             failures.append(f"{e['kernel']!r}: {e['op']} is a bound, declared \"<=\" (not {e['cmp']!r})")
-        hits = [k for k in (table if e["op"] == "REGS" else report) if re.search(e["kernel"], k)]
+        hits = [k for k in report if re.search(e["kernel"], k)]
         if not hits:
-            failures.append(f"no kernel {'' if e['op'] == 'REGS' else 'with tensor steps '}matches {e['kernel']!r} "
-                            f"({e['op']} declared)")
+            failures.append(f"no kernel with tensor steps matches {e['kernel']!r} ({e['op']} declared)")
         for k in hits:
-            if e["op"] == "REGS":
-                regs = table[k].get("regs")
-                if regs is not None and regs > e["count"]:
-                    failures.append(f"{k}: {regs} registers, over the role's budget of {e['count']} (REGS): the role "
-                                    "fits its budget, or the budget is a ruling to change")
-                continue
             for what, _, _, _, total, classes in report[k]:
                 figure, unit = ((total, "bytes through the shared-memory port") if e["op"] == "STEP_PORT" else
                                 (sum(classes.values()), "instructions"))
@@ -656,7 +644,7 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
             ok = {">=": n >= e["count"], "==": n == e["count"], "<=": n <= e["count"]}[e["cmp"]]
             if not ok:
                 failures.append(f"{k}: {e['op']} {n}, expected {e['cmp']} {e['count']}")
-    failures += step_bounds(binary, table, expected)
+    failures += step_bounds(binary, expected)
     declared_calls = {k for e in expected for k in table if re.search(e["kernel"], k) and "CALL" in e["op"]}
     declared_branches = {k for e in expected for k in table if re.search(e["kernel"], k) and e["op"] == "BSSY"}
 
