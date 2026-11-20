@@ -24,5 +24,28 @@ WHAT IT WILL DECIDE: the gather's floor a token is these rows' cycles times the 
 the cache and where it does not; which of the load, the store into shared memory and the copy out is the largest term
 of the gather, to be split next; and whether a ring the cache holds is cheaper than fresh memory.
 
-MEASURED: no record is taken at this commit (the experiment's results file for sm_90a, which this commit does not have does not exist). This
-section is generated from one by `bazel run //tools:lab -- page gather_rate --instance LABEL`.
+MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM rgfp2qac, driver 580.196.07; 2026-11-20, the experiment at
+7d0d6925; 7 repetitions; the 10 checked rows pass, every word exact; the median, the widest
+spread of a row 3.5%). Cycles a 128-byte row a CTA:
+
+| form | 8 MB table | 2 GB table |
+|---|---:|---:|
+| LOAD: loaded and folded | 2.58 | 9.71 |
+| STORE: and stored into shared memory | 3.71 | 9.80 |
+| OUT, a ring: and copied out to a ring of 256 KB a CTA | 10.05 | 19.10 |
+| OUT, fresh memory: and copied out to fresh memory | 12.30 | 21.06 |
+| OUT, a ring, 256 rows in flight | 10.91 | 20.86 |
+
+WHAT IT SHOWS.
+- THE 8 MB TABLE, THE LOAD: 2.58 cycles a 128-byte row a CTA.
+- THE 8 MB TABLE, THE STORE INTO SHARED MEMORY ADDED: 3.71 cycles a 128-byte row a CTA, 1.13 cycles above the 2.58 of LOAD.
+- THE 8 MB TABLE, THE COPY OUT TO A RING ADDED: 10.05 cycles a 128-byte row a CTA, 6.34 cycles above the 3.71 of STORE.
+- THE 8 MB TABLE, FRESH MEMORY AGAINST THE RING: 12.30 cycles a 128-byte row a CTA, 2.25 cycles above the 10.05 of OUT, a ring.
+- THE 8 MB TABLE, 256 ROWS IN FLIGHT AGAINST 512 (THE RING): 10.91 cycles a 128-byte row a CTA, 0.87 cycles above the 10.05 of OUT, a ring.
+- THE 2 GB TABLE, THE LOAD: 9.71 cycles a 128-byte row a CTA.
+- THE 2 GB TABLE, THE STORE INTO SHARED MEMORY ADDED: 9.80 cycles a 128-byte row a CTA, the same as the 9.71 of LOAD.
+- THE 2 GB TABLE, THE COPY OUT TO A RING ADDED: 19.10 cycles a 128-byte row a CTA, 9.30 cycles above the 9.80 of STORE.
+- THE 2 GB TABLE, FRESH MEMORY AGAINST THE RING: 21.06 cycles a 128-byte row a CTA, 1.96 cycles above the 19.10 of OUT, a ring.
+- THE 2 GB TABLE, 256 ROWS IN FLIGHT AGAINST 512 (THE RING): 20.86 cycles a 128-byte row a CTA, 1.76 cycles above the 19.10 of OUT, a ring.
+
+Record: `measure/lab/results/gather_rate/sm_90a.json`.

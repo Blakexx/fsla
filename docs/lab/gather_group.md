@@ -32,5 +32,26 @@ WHAT IT WILL DECIDE: the plain form's cost a token a side against the carry's, s
 share of the carry that its plain form is good enough to compose; and, where it is not, which phase of the trip holds
 the cycles before anything else is changed.
 
-MEASURED: no record is taken at this commit (the experiment's results file for sm_90a, which this commit does not have does not exist). This
-section is generated from one by `bazel run //tools:lab -- page gather_group --instance LABEL`.
+MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM rgfp2qac, driver 580.196.07; 2026-11-20, the experiment at
+7d0d6925; 7 repetitions; the 3 checked rows pass, every packet exact byte for byte; the median, the widest
+spread of a row 0.4%). Cycles a block's window a CTA:
+
+| form | cycles a block's window a CTA | SM-cycles a token a side | cycles an entry a CTA |
+|---|---:|---:|---:|
+| a thread an entry's eight loads | 5,532 | 86.4 | 21.6 |
+| loads and stores, 8 lanes a row | 3,045 | 47.6 | 11.9 |
+| the same, its phases clocked | 3,355 | 52.4 | 13.1 |
+
+WHAT IT SHOWS.
+- THE 8-LANES FORM AGAINST A THREAD AN ENTRY'S EIGHT LOADS: 3,045 cycles a block's window a CTA, 2,488 cycles below the 5,532 of the thread-an-entry form.
+- PROBE, NO PACKET STORED: 2,305 cycles a block's window a CTA, 739 cycles below the 8-lanes form's 3,045.
+- PROBE, NO ENTRY'S TOKEN WRITTEN: 2,923 cycles a block's window a CTA, 122 cycles below the 8-lanes form's 3,045.
+
+THREAD 0'S TRIP BY PHASE (the clocked form; thread 0 alone stores the packet):
+- THREAD 0, THE LISTS AND THEIR BARRIER: 1,706 cycles a trip, 51% of thread 0's 3,340.
+- THREAD 0, THE ENTRIES' TOKENS AND THEIR BARRIER: 651 cycles a trip, 19% of thread 0's 3,340.
+- THREAD 0, THE VALUES LANDING: 104 cycles a trip, 3% of thread 0's 3,340.
+- THREAD 0, THE VALUES' STORES AND THEIR BARRIER: 551 cycles a trip, 16% of thread 0's 3,340.
+- THREAD 0, THE PACKET'S STORE: 329 cycles a trip, 10% of thread 0's 3,340.
+
+Record: `measure/lab/results/gather_group/sm_90a.json`.

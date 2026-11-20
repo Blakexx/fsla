@@ -22,8 +22,8 @@ namespace gather_group {
 
 constexpr int kWarps = 16, kThreads = 32 * kWarps, kDigits = 16, kWindow = 1024, kPackets = 3, kRing = 8;
 constexpr int kTableTokens = 65536, kZeroToken = kTableTokens;
-//: a form's bits: its phases clocked; its values moved by asynchronous copies, a row's 8 pieces 8 lanes of one instruction
-//: or by loads and stores so laid: instruction `i` of a warp four rows, lane `8 r + c` piece `c` of row `r`
+//: a form's bits: its phases clocked; its values moved by loads and stores laid 8 lanes a row -- instruction `i` of
+//: a warp four rows, lane `8 r + c` piece `c` of row `r`
 enum Form { kPlain = 0, kPhased = 1, kLaned = 4 };
 enum Probe { kNoStore = 2, kNoTokens = 16 };
 enum Phase { kLists, kEntries, kLoads, kStores, kOut, kPhases };
