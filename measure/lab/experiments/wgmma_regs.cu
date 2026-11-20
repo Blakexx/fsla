@@ -216,6 +216,9 @@ int main(int argc, char** argv) {
     b.expect(k, "HGMMA", "==", mmas);
     b.expect(k, "PRMT", f == kStepTruncated ? ">=" : "==", f == kStepTruncated ? 4 : 0);
     b.expect(k, "F2FP", "==", f == kStepRounded ? 4 : 0);
+    //: the narrowed forms' steps read the fold's accumulators, registers a tensor step defines, after the source's own
+    //: wait: the toolkit writes a wait of its own before that read (ptxas C7517), one a step -- the compiler's, not the source's
+    if (f >= kStepTruncated) b.expect(k, "WAIT_INJECTED", "<=", 1);
     b.exempt(k, "a rate probe: the step's parts and their sum, no kernel's step");
   }
   if (b.expect_only) return 0;

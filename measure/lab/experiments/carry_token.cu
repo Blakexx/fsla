@@ -6,7 +6,7 @@
 // registers; ONE READOUT warpgroup at 120; ONE DRAIN warpgroup of four warps at 56. A window is a box's 256 entries
 // (16 lists of 8 to 24) and 256 tokens read the pair. A PACKET lands by two bulk copies behind one barrier, issued
 // behind the warpgroup's barrier that follows the wait on the window before's steps: its HEADER -- an entry's word and sparse byte, where each of the 32
-// steps' A tile starts among the value lines, which places of a step's tile hold an entry, which steps are there --
+// steps' A tile starts among the value lines, a pad's word for each place of a step no entry holds, which steps are there --
 // and its VALUE LINES, a brick a run of 256. A fold thread loads its two entries' dense lines from global memory and
 // expands each by its sparse byte to the two lines of its step's coefficient tile; a place of a tile no entry fills
 // is a PAD's, its two lines written zero by a thread's third word; no value line is moved. A step reads its A from the landed lines -- 16 consecutive positions are
@@ -324,8 +324,8 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
       }
     }
     const uint32_t live = *reinterpret_cast<const uint32_t*>(table + kOneLive * 16);
-    //: THE STEPS' TILES, a byte a list in the landed header: the first of the 16 consecutive positions whose value
-    //: lines are its first step's A, read at the step (a register each held through the steps does not fit)
+    //: THE STEPS' TILES, a byte a step in the landed header: the first of the 16 consecutive positions whose value
+    //: lines are the step's A; the header's two lines of them loaded here and held through the steps
     if constexpr ((DETAIL & kSplitFill) != 0) tr.stamp(warpline::kPhaseBegin, kMarkStarts);
     const uint4* const starts = reinterpret_cast<const uint4*>(table) + kOneTiles;
     const uint4 lo = starts[0], hi = starts[1];
@@ -336,7 +336,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
     tr.stamp(warpline::kPhaseBegin, kMarkSteps);
     //: THE STEPS, one commit group: A is 16 positions' value lines as they landed -- a brick a run of 256, so 16
     //: consecutive positions are an M|N-major tile of bricks 256 lines apart -- its address the packet's first line
-    //: and the step's start; B is the step's tile. A step that is not there is not issued; nothing is loaded a step
+    //: and the step's start; B is the step's tile. A step that is not there is issued on the box's zeros; nothing is loaded a step
     const uint64_t lines = lab::wg_desc(base + pool, 8, 256), tiles = lab::wg_desc(base + pool + kTileAt * 16, 8, kTilePitch);
     const uint64_t zeros = lab::wg_desc(base + kZeroAt + box * 512, 8, 16);
     lab::wg_fence();
@@ -638,12 +638,13 @@ inline Buffers buffers(const lab::Bench& b) {
           start[j] = at, at += n[j];
         }
         uint32_t live = 0;
-        int pads = kWindow, absent = -1;
+        int pads = kWindow;
+        std::vector<int> absent;
         for (int j = 0; j < kLists; ++j)
           for (int r = 0; r < kBlockRounds; ++r) {
             const int step = 16 * r + j;
             if (16 * r >= n[j]) {
-              absent = step;
+              absent.push_back(step);
               continue;
             }
             const int tile = std::min(start[j] + 16 * r, 2 * kGroup - 16);
@@ -668,10 +669,14 @@ inline Buffers buffers(const lab::Bench& b) {
                     static_cast<uint32_t>(kTileAt + 16 * step + place) | static_cast<uint32_t>(kTileAt + kTilePitch + 16 * step + place) << 16;
               }
           }
-        //: a thread's third word past the pads names a place of a step that is not there: its tile is no step's
-        for (; pads < kPadded; ++pads)
+        //: a thread's third word past the pads names a place of a step that is not there, each its own (no two
+        //: threads store one line): its tile is no step's. The absent steps' places are never fewer than these words
+        for (size_t spare = 0; pads < kPadded; ++pads, ++spare) {
+          if (spare >= 16 * absent.size()) { std::fprintf(stderr, "lab: more spare third words than absent places\n"); std::exit(3); }
+          const int line = 16 * absent[spare / 16] + static_cast<int>(spare % 16);
           reinterpret_cast<uint32_t*>(packet)[pads] =
-              static_cast<uint32_t>(kTileAt + 16 * absent) | static_cast<uint32_t>(kTileAt + kTilePitch + 16 * absent) << 16;
+              static_cast<uint32_t>(kTileAt + line) | static_cast<uint32_t>(kTileAt + kTilePitch + line) << 16;
+        }
         std::memcpy(packet + kOneLive * 16, &live, 4);
       }
     uint8_t* vdev = nullptr;
@@ -837,9 +842,8 @@ int main(int argc, char** argv) {
                            {2, 0, kAlone}};
   for (const Row& row : kRows) {
     const std::string k = lab::kernel("carry_token::window", {row.trace, row.detail, row.probe});
-    //: the fold's 32 steps, a list's second under its own branch, and the readout's 32: a window's two passes
+    //: the fold's 32 steps, one straight block, and the readout's 32: a window's two passes
     //: unrolled, each two groups of 4 digits, each digit's two steps
-    //: and the empty group the toolkit writes where a step is under a branch
     b.expect(k, "HGMMA", "==", kLists * kBlockRounds + (row.probe & kAlone ? 0 : kChunks * 2 * kChunkDigits));
     //: a fold step's cost to its warpgroup (`lab steps`): the port bytes and instructions a step, bounded by the
     //: most of any row

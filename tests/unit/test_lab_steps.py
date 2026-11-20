@@ -57,7 +57,7 @@ def test_a_loop_with_one_step_and_known_shared_loads():
     code = body(SS, "LDS.128 R4, [R2]", "LDS.U16 R8, [R2+0x10]", "STS [R9], R7", "IADD3 R9, R9, 0x1, RZ", BACK)
     (what, steps, own, shared, total, work), = figures(code)
     assert (what.split()[0], steps, own, shared, total) == ("loop", 1, 2560, 4 * (512 + 64 + 128), 2560 + 4 * 704)
-    assert -(-total // 128) == 43
+    assert -(-total // 128) == 42
 
 
 def test_a_loop_of_steps_is_a_mean_a_step():

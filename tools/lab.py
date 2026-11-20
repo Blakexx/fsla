@@ -99,24 +99,67 @@ def notices(binary: Path) -> Path:
     return binary.with_name(binary.name + ".ptxas")
 
 
-#: the toolkit's notices that it serialized a kernel's asynchronous MMAs: C7512, for want of registers; C7520, for a
-#: tensor step on a path it cannot prove every thread of the warpgroup takes (compiler-inserted WG.AR in a divergent path)
-SERIALIZING = {"C7512": "for want of registers", "C7520": "under a branch it cannot prove uniform"}
-_NOTICE = re.compile(r"\((C\d+)\).*?function '([^']+)'")
+#: THE TOOLKIT'S NOTICES of a build (ptxas's `(Cnnnn) text in function 'name'`), read by what they say: ptxas's code
+#: numbers are not documented and a template's code is unknown until a build emits it. A template carries the words
+#: after SERIALIZED when it serialized a kernel's asynchronous MMAs (nine templates share them), INJECTED_WAIT when it
+#: wrote a wait of its own into the step stream, and the quoted function name unless it is a `setmaxnreg` notice.
+SERIALIZED = "wgmma.mma_async instructions are serialized due to "
+INJECTED_WAIT = "warpgroup.wait is injected"
+SETMAXNREG = "'setmaxnreg' ignored"
+_NOTICE = re.compile(r"\((C\d+)\) (.*?) in (?:the )?function '([^']+)'")
+_SETMAXNREG = re.compile(r"(?:\((C\d+)\) )?Potential Performance Loss: " + re.escape(SETMAXNREG) + r"\s*(.*?)\.?$", re.M)
+#: what the two serializing notices seen so far ask of the source (any other code is refused with its own reason)
+SERIALIZED_FIX = {"C7512": "C7512: a step's operand registers are written before its commit group and the role holds "
+                           "the count they need",
+                  "C7520": "C7520: a tensor step under a branch -- make the choice a loop's trip count, each step "
+                           "behind its own `wg_fence`"}
+#: nvcc's warning that a variable is read before it is set: a read of an unset value, in no experiment
+_UNSET = re.compile(r'^(\S.*?)\((\d+)\): warning #549-D: variable "([^"]+)" is used before its value is set', re.M)
 
 
-def serialized(binary: Path) -> dict[str, Counter]:
-    """Per kernel (demangled): the toolkit's notices that it SERIALIZED the kernel's asynchronous MMAs (`SERIALIZING`,
-    a count each by notice code) -- each step then waits out the one before, and the kernel does not measure the steps
-    its source states. Nothing where the build left no notices (a packed binary run elsewhere)."""
+def _by_kernel(binary: Path, pick) -> dict[str, Counter]:
+    """The notices of `binary`'s build that `pick(code, text)` keys, a count each, per kernel (demangled)."""
     if not notices(binary).exists():
         return {}
     found: dict[str, Counter] = {}
-    for code, name in _NOTICE.findall(notices(binary).read_text()):
-        if code in SERIALIZING:
-            found.setdefault(name, Counter())[code] += 1
+    for code, text, name in _NOTICE.findall(notices(binary).read_text()):
+        if (key := pick(code, text)) is not None:
+            found.setdefault(name, Counter())[key] += 1
     names = demangle(list(found))
     return {names[k]: v for k, v in found.items()}
+
+
+def serialized(binary: Path) -> dict[str, Counter]:
+    """Per kernel (demangled): the toolkit's notices that it SERIALIZED the kernel's asynchronous MMAs, by whatever
+    code and cause they carry -- a count each by `(code, its reason)` -- each step then waits out the one before, and
+    the kernel does not measure the steps its source states. Nothing where the build left no notices (a packed binary
+    run elsewhere)."""
+    return _by_kernel(binary, lambda code, text: (code, text.split(SERIALIZED, 1)[1]) if SERIALIZED in text else None)
+
+
+def injected_waits(binary: Path) -> dict[str, Counter]:
+    """Per kernel (demangled): the toolkit's notices that it INJECTED a `warpgroup.wait` of its own, to let code read
+    registers a tensor step defines (a count each by code)."""
+    return _by_kernel(binary, lambda code, text: code if INJECTED_WAIT in text else None)
+
+
+def setmaxnreg_ignored(binary: Path) -> list[str]:
+    """The toolkit's notices that it ignored a `setmaxnreg` (`code: reason`), whichever kernel's. The templates name no
+    function: the notice is the whole experiment's."""
+    if not notices(binary).exists():
+        return []
+    return [f"{code or 'no code'}: {why or 'no reason'}" for code, why in _SETMAXNREG.findall(notices(binary).read_text())]
+
+
+def unset_reads(binary: Path) -> dict[tuple[str, int, str], int]:
+    """nvcc's warnings that a variable is used before its value is set, by (file, line, variable), a count each
+    (one per instantiation)."""
+    if not notices(binary).exists():
+        return {}
+    found: Counter = Counter()
+    for path, line, var in _UNSET.findall(notices(binary).read_text()):
+        found[Path(path).name, int(line), var] += 1
+    return dict(found)
 
 
 def demangle(names: list[str]) -> dict[str, str]:
@@ -182,7 +225,7 @@ _PRE_TIMELINE = {"bulk_drain", "byte_expand", "cluster_sum", "collective_branch"
 _PRE_WAIT = {"clock_time", "fold_stream", "intra_chain", "intra_window", "pool_fill", "readout_role", "stamp_cost",
              "state_image", "step_queue", "wgmma_width"}
 #: the hazards an experiment may declare a count of (`Bench::expect(kernel, NAME, "<=", n)`), beside its opcodes
-HAZARDS = ("LOOP_CONVERGENCE", "LOAD_IN_TRIP", "STORE_RELOAD", "STORE_UNFENCED", "STEPS_SERIALIZED", "CLOCK_UNIFORM",
+HAZARDS = ("LOOP_CONVERGENCE", "LOAD_IN_TRIP", "STORE_RELOAD", "STORE_UNFENCED", "STEPS_SERIALIZED", "WAIT_INJECTED", "CLOCK_UNIFORM",
           "WAIT_AFTER_ISSUE", "STEP_PORT", "STEP_WORK")
 
 
@@ -623,6 +666,7 @@ def step_bounds(binary: Path, expected: list[dict]) -> list[str]:
     for e in (e for e in expected if e["op"] in STEP_BOUNDS):
         if e["cmp"] != "<=":
             failures.append(f"{e['kernel']!r}: {e['op']} is a bound, declared \"<=\" (not {e['cmp']!r})")
+            continue
         hits = [k for k in report if re.search(e["kernel"], k)]
         if not hits:
             failures.append(f"no kernel with tensor steps matches {e['kernel']!r} ({e['op']} declared)")
@@ -654,6 +698,12 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
             if not ok:
                 failures.append(f"{k}: {e['op']} {n}, expected {e['cmp']} {e['count']}")
     failures += step_bounds(binary, expected)
+    #: no declaration makes these acceptable: the experiment is not what it measures
+    failures += [f"{binary.name.split('.')[0]}: the toolkit ignored a `setmaxnreg` ({why}) -- the notice names no "
+                 "kernel, so the experiment is refused; the register split the roles depend on does not happen"
+                 for why in setmaxnreg_ignored(binary)]
+    failures += [f"{file}({line}): variable \"{var}\" is used before its value is set ({n} instantiations, nvcc #549-D): "
+                 "a read of an unset value" for (file, line, var), n in sorted(unset_reads(binary).items())]
     declared_calls = {k for e in expected for k in table if re.search(e["kernel"], k) and "CALL" in e["op"]}
     declared_branches = {k for e in expected for k in table if re.search(e["kernel"], k) and e["op"] == "BSSY"}
 
@@ -699,17 +749,24 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
                 failures.append(f"{k}: {n} tensor waits directly after their group's steps, {declared} declared "
                                 "(WAIT_AFTER_ISSUE): work that does not read the group's accumulators belongs between "
                                 "the issue and the wait: KERNEL_STANDARDS 29.16 (`lab waits` lists the candidates)")
-        for k, by_code in serialized(binary).items():
+        for k, by_cause in serialized(binary).items():
             declared = max((e["count"] for e in expected if e["op"] == "STEPS_SERIALIZED" and re.search(e["kernel"], k)),
                            default=0)
-            if sum(by_code.values()) > declared:
-                what = ", ".join(f"{n} x {c} ({SERIALIZING[c]})" for c, n in sorted(by_code.items()))
-                failures.append(f"{k}: the toolkit serialized its asynchronous MMAs: {what}; {declared} declared "
-                                "(STEPS_SERIALIZED). C7512: a step's operand registers are written before its commit "
-                                "group and the role holds the count they need; C7520: a tensor step under a branch -- "
-                                "make the choice a loop's trip count, each step behind its own `wg_fence` "
+            if sum(by_cause.values()) > declared:
+                what = "; ".join(f"{n} x ({c}) {why}" for (c, why), n in sorted(by_cause.items()))
+                fixes = "; ".join(SERIALIZED_FIX[c] for c in sorted({c for c, _ in by_cause}) if c in SERIALIZED_FIX)
+                failures.append(f"{k}: the toolkit serialized its asynchronous MMAs, each step waiting out the one before: "
+                                f"{what}; {declared} declared (STEPS_SERIALIZED). {fixes or 'A code seen here first: read its reason'} "
                                 "(docs/internals/LEARNINGS.md)")
-
+        for k, by_code in injected_waits(binary).items():
+            declared = max((e["count"] for e in expected if e["op"] == "WAIT_INJECTED" and re.search(e["kernel"], k)),
+                           default=0)
+            if sum(by_code.values()) > declared:
+                what = ", ".join(f"{n} x {c}" for c, n in sorted(by_code.items()))
+                failures.append(f"{k}: the toolkit injected a `warpgroup.wait` into the step stream, to let code read "
+                                f"registers a tensor step defines: {what}; {declared} declared (WAIT_INJECTED). Wait "
+                                "for the group where the source reads its registers, with the wait the toolkit can "
+                                "see covering them (docs/internals/LEARNINGS.md)")
     if binary.name.split(".")[0] not in _PRE_29:
         stated = budgets(binary) + budgets(binary, "exempt")
         for k, info in table.items():

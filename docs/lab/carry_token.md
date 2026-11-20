@@ -37,37 +37,37 @@ checked exactly in the other thirteen. The plain row also runs one long call, ti
 the card's cycles over its wall time, and the call by wall time scaled to 65,536 tokens (a window counted as 8 tokens
 a CTA, as `carry_window` counts it). THE PACKETS ARE THE HOST'S, playing the gather.
 
-MEASURED (NVIDIA H100 80GB HBM3, 132 SMs, Nebius preemptible VM hjq8b4c0, driver 580.173.02, the clock locked; 2026-11-19 02:55 and 02:55 UTC (the one-CTA and the full-grid records), the
-experiment at 3ef04b63, 7 repetitions; the labels name the boxes of the two records, which hold no box's id; the 13 checked rows pass at one CTA
+MEASURED (NVIDIA H100 80GB HBM3, 132 SMs, Nebius preemptible VM 0mwj6j1x, driver 580.196.07, the clock locked; 2026-11-20 07:17 and 07:17 UTC (the one-CTA and the full-grid records), the
+experiment at c436a3f7, 7 repetitions; the labels name the boxes of the two records, which hold no box's id; the 13 checked rows pass at one CTA
 and at 132; `sm_90a.blocks1.json` and `sm_90a.blocks132.json`, each with its traced rows' records beside it). Cycles a window a CTA:
 
 | row | one CTA | 132 CTAs |
 |---|---:|---:|
-| plain | 5,765 | 5,769 |
-| the launch's two edges stamped | 5,984 | 5,979 |
-| coarse | 5,970 | 5,933 |
-| coarse, the waits on the tile groups read | 6,251 | 6,262 |
-| coarse, the waits on the tile groups published | 6,043 | 6,039 |
-| coarse, the waits on the panels filled | 5,940 | 5,929 |
-| coarse, the waits on the panels drained | 5,882 | 5,913 |
-| coarse, the fold's steps by eighths | 6,504 | 6,509 |
-| coarse, the fold's fill by phases | 6,243 | 6,275 |
-| coarse, the waits on the packets landed | 6,213 | 6,216 |
-| every warp's timeline stamped | 6,652 | 6,622 |
-| coarse, the read side idle (not checked) | 4,394 | 4,340 |
-| lists overlapping on shared tokens, plain | 5,784 | 5,775 |
-| lists overlapping on shared tokens, coarse | 5,953 | 5,934 |
+| plain | 5,930 | 5,821 |
+| the launch's two edges stamped | 5,453 | 5,455 |
+| coarse | 5,758 | 5,694 |
+| coarse, the waits on the tile groups read | 5,908 | 5,893 |
+| coarse, the waits on the tile groups published | 6,040 | 5,969 |
+| coarse, the waits on the panels filled | 6,037 | 6,006 |
+| coarse, the waits on the panels drained | 6,014 | 5,923 |
+| coarse, the fold's steps by eighths | 6,080 | 6,065 |
+| coarse, the fold's fill by phases | 5,741 | 5,759 |
+| coarse, the waits on the packets landed | 5,890 | 5,830 |
+| every warp's timeline stamped | 6,771 | 6,693 |
+| coarse, the read side idle (not checked) | 4,099 | 4,113 |
+| lists overlapping on shared tokens, plain | 5,904 | 5,823 |
+| lists overlapping on shared tokens, coarse | 5,713 | 5,703 |
 
-WHAT IT DECIDES. THE WINDOW AT ONE CTA IS THE WINDOW AT THE FULL GRID (5,765 and 5,769, 0.1% apart; called the same within 2.0%): 132 CTAs each landing two packets a window do not bind on global memory at this cell. THE LAYOUT IS THE GATHER'S: lists overlapping on tokens written once cost the carry nothing (at one CTA 5,784 against 5,765: the same; at 132 CTAs 5,775 against 5,769: the same; called the same within 2.0%) and are exact (the checks of both overlapping rows, at both grids). THE FOLD'S WINDOW, from the coarse row's record at 132 CTAs (`bazel run //tools:lab -- trace carry_token`; CTA 0, the mean of its 2 fold warpgroups, a window of 5,981 cycles in their own windows): its image 2,290 cycles (38.3%), its fill 1,691 (28.3%), its 32 steps 1,999 (33.4%); the three are near thirds of it (the longest phase is 1.35 times the shortest). THE READ SIDE COSTS THE FOLDS 26.8% OF THE WINDOW at 132 CTAs (26.4% at one CTA): the coarse row's window is 5,933 cycles and the same kernel with the read side idle 4,340 (the isolation row, not checked: its kernel is not the carry's); the fold's 32 steps are 1,999 cycles and, with it idle, 1,856 (7.2% under the coarse row's). THE MARKS' COST: the coarse row's window is 5,933 against the plain row's 5,769 at 132 CTAs (2.8% over, its phases' starts and the launch's edges on both clocks); the figures above are the coarse row's.
-BY THE LAUNCH'S OWN CLOCKS the coarse row's launch at 132 CTAs (CTA 0) is 384,484 cycles in 210,496 ns: the cycle counter runs 1,827 cycles a microsecond (1,741 at one CTA, CTA 0); the plain row's window of 5,769 cycles is 3.16 microseconds, and 65,536 tokens (62 windows a CTA, a window counted as 8 tokens a CTA as `carry_window`'s wall-clock rows count it) some 0.20 ms. NOT MEASURED: the gather that writes the packets; a cell where the packets' bytes grow with duplication.
+WHAT IT DECIDES. THE WINDOW AT ONE CTA IS THE WINDOW AT THE FULL GRID (5,930 and 5,821, 1.9% apart; called the same within 2.0%): 132 CTAs each landing two packets a window do not bind on global memory at this cell. THE LAYOUT IS THE GATHER'S: lists overlapping on tokens written once cost the carry nothing (at one CTA 5,904 against 5,930: the same; at 132 CTAs 5,823 against 5,821: the same; called the same within 2.0%) and are exact (the checks of both overlapping rows, at both grids). THE FOLD'S WINDOW, from the coarse row's record at 132 CTAs (`bazel run //tools:lab -- trace carry_token`; CTA 0, the mean of its 2 fold warpgroups, a window of 5,598 cycles in their own windows): its image 2,062 cycles (36.8%), its fill 1,093 (19.5%), its 32 steps 2,443 (43.6%); the steps phase is the longest and the fill phase the shortest (the longest phase is 2.24 times the shortest). THE READ SIDE COSTS THE FOLDS 27.8% OF THE WINDOW at 132 CTAs (28.8% at one CTA): the coarse row's window is 5,694 cycles and the same kernel with the read side idle 4,113 (the isolation row, not checked: its kernel is not the carry's); the fold's 32 steps are 2,443 cycles and, with it idle, 2,073 (15.1% under the coarse row's). THE MARKS' COST: the coarse row's window is 5,694 against the plain row's 5,821 at 132 CTAs (-2.2% over, its phases' starts and the launch's edges on both clocks); the figures above are the coarse row's.
+BY THE LAUNCH'S OWN CLOCKS the coarse row's launch at 132 CTAs (CTA 0) is 359,736 cycles in 196,736 ns: the cycle counter runs 1,829 cycles a microsecond (1,702 at one CTA, CTA 0); the plain row's window of 5,821 cycles is 3.18 microseconds, and 65,536 tokens (62 windows a CTA, a window counted as 8 tokens a CTA as `carry_window`'s wall-clock rows count it) some 0.20 ms. NOT MEASURED: the gather that writes the packets; a cell where the packets' bytes grow with duplication.
 
 THE PHASES, in each role's own window of the coarse row's record at 132 CTAs (CTA 0), cycles:
-- the fold: image 2,290, fill 1,691, steps 1,999.
-- the readout, its phases in its own window of 5,995 cycles (duration from start): issuing steps 640 from 1,253; storing the panel 332 from 1,860; storing the panel 653 from 2,204; issuing steps 636 from 2,869; storing the panel 845 from 3,479; storing the panel 2,914 from 4,326; storing the panel 1,381 from 5,607.
-- the drain, its phases in its own window of 5,995 cycles (duration from start): adding 1,155 from 1,953; adding 1,166 from 3,108; adding 1,088 from 4,275; adding 2,617 from 5,361; adding 1,644 from 5,839.
+- the fold: image 2,062, fill 1,093, steps 2,443.
+- the readout, its phases in its own window of 5,597 cycles (duration from start): issuing steps 762 from 1,246; storing the panel 429 from 1,604; storing the panel 767 from 2,230; issuing steps 907 from 3,179; storing the panel 1,144 from 3,712; storing the panel 1,594 from 5,045; storing the panel 1,470 from 5,562.
+- the drain, its phases in its own window of 5,597 cycles (duration from start): adding 1,482 from 660; adding 1,335 from 2,142; adding 1,586 from 3,398; adding 1,116 from 4,930; adding 1,798 from 5,760.
 
-- THE FILL'S PHASES, from the fill row's record at 132 CTAs (the mean of the fold warpgroups of CTA 0): expanding 762; zeroing dead places 906; loading tile starts 77; at the fill's barrier 134 cycles; the fill's own work is the phases before the barrier and its wait is `at the fill's barrier`.
-- THE FOLD'S WAIT ON ITS PACKET, from the packets row's record at 132 CTAs (CTA 0, the mean of its 8 fold warps): 149 cycles a window (2.4% of the window).
-- THE LONG CALL BY WALL TIME at 132 CTAs: 0.196 ms for 65,536 tokens (8 tokens a window a CTA), the call's span over its wall time 1.822 GHz (the card's clock), against the launch-derived 0.196 ms above.
+- THE FILL'S PHASES, from the fill row's record at 132 CTAs (the mean of the fold warpgroups of CTA 0): expanding 717; writing its pad 210; loading tile starts 89; at the fill's barrier 221 cycles; the fill's own work is the phases before the barrier and its wait is `at the fill's barrier`.
+- THE FOLD'S WAIT ON ITS PACKET, from the packets row's record at 132 CTAs (CTA 0, the mean of its 8 fold warps): 154 cycles a window (2.6% of the window).
+- THE LONG CALL BY WALL TIME at 132 CTAs: 0.206 ms for 65,536 tokens (8 tokens a window a CTA), the call's span over its wall time 1.803 GHz (the card's clock), against the launch-derived 0.198 ms above.
 
 Record: `measure/lab/results/carry_token/sm_90a.blocks1.json` and `sm_90a.blocks132.json`, each with its traced rows' records in `sm_90a.blocks1.trace/` and `sm_90a.blocks132.trace/`.

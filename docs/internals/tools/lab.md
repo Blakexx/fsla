@@ -104,17 +104,33 @@ comment states a `TIMELINE:` -- each phase's stream, which load is a stage ahead
 it is refused too where its source has a warp collective after a conditional's `?` (`collective_selected`: only
 the lanes the condition takes reach a collective every lane must), and where a kernel sums a cycle-counter
 reading in uniform registers past the count it declares (`clocks_summed_uniform`, `CLOCK_UNIFORM`: a lap's sum is
-each thread's own). And EVERY kernel of it, budgeted or exempt, is held to six counts, each zero unless the experiment
+each thread's own). And EVERY kernel of it, budgeted or exempt, is held to the counts below, each zero unless the experiment
 declares it (`Bench::expect(kernel, NAME, "<=", n)`): `LOOP_CONVERGENCE`; `LOAD_IN_TRIP`, the global loads whose
 value an instruction of the same innermost trip reads; `STORE_RELOAD`, the shared loads of an address the same trip
 stored to; `STORE_UNFENCED`, in a kernel that holds a wgmma, the barrier arrivals that follow a shared store with no
 `fence.proxy.async` between them; `STEPS_SERIALIZED`, the toolkit's notices that it serialized the kernel's
-asynchronous MMAs (kept beside the build's binary), one hazard for both causes and the refusal names which: ptxas C7512, for
-want of registers (the role holds the count the steps' operand sets need), and C7520, for a tensor step under a
-branch the compiler cannot prove every thread of the warpgroup takes (make the choice a loop's trip count, each step
-behind its own `wg_fence`) -- either way each step waits out the one before it, and the kernel does not measure the
-steps its source states. An experiment that keeps a serialized form on purpose (a row that measures it) declares the
-count in `main` with its reason (`carry_window`'s ready skipping rows declare their C7520);
+asynchronous MMAs (kept beside the build's binary), counted by what they say, not by a code: ptxas's code numbers are
+not documented, its nine templates share the words "wgmma.mma_async instructions are serialized due to", and a code
+no build has emitted yet (C7512, for want of registers; C7520, for a tensor step under a branch the compiler cannot
+prove every thread of the warpgroup takes, are the two seen or assumed) is caught the first time it appears. The
+refusal quotes the notice's own reason -- an ill formed pipeline stage, registers, non-MMA code defining or reading
+a step's accumulators or inputs, a divergent compiler-inserted barrier, an extern call, a pipeline across a call --
+and, for the two known, what to do (the role holds the count the steps' operand sets need; make a branch's choice a
+loop's trip count, each step behind its own `wg_fence`). Either way each step waits out the one before it, and the
+kernel does not measure the steps its source states. An experiment that keeps a serialized form on purpose
+declares the count in `main` with its reason (`carry_window`'s ready skipping rows declare their C7520, a known defect
+of those rows: their numbers are of a serialized form);
+`WAIT_INJECTED`, the toolkit's notices that it wrote a `warpgroup.wait` into the step stream (ptxas C7517, "warpgroup.wait is
+injected ... to allow use of registers defined by GMMA"): a wait the source did not state, ahead of code that reads
+a tensor step's registers, so the kernel's stream is not the one its source writes. An experiment whose point is that
+read declares the count with its reason (`wgmma_regs`'s narrowed forms read the fold's accumulators and declare one a
+kernel); the toolkit's injected arrive (C7519) is not counted, being one cheap arrive. Two more refusals take no
+declaration and no debt. A `setmaxnreg` the toolkit ignored (its five templates, "'setmaxnreg' ignored" to allow
+debugging, for compilation units, into an extern call, for minimum register requirements or for want of the entry
+count) refuses the whole experiment, the notices naming no function; no experiment has one, and the register split
+the roles depend on does not happen where one does. And nvcc's #549-D, a variable used before its value is set,
+refuses the experiment naming the variable and its line: an unset read is a defect, and a pattern the compiler
+cannot see through is rewritten (a lambda that read a captured array a branch sets took it as an argument);
 `WAIT_AFTER_ISSUE` (KERNEL_STANDARDS 29.16), the tensor waits that leave no group in flight (`WARPGROUP.DEPBAR`, count
 0) whose group's last step (`HGMMA`; the commit is no instruction, the `gsb0` flag on that step) is followed by no
 WORK OF SUBSTANCE before them: a load or store (generic, global, shared, local, the matrix forms, atomics,

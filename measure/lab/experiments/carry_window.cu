@@ -1702,8 +1702,8 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
     ahead[h] = lists[(n * kFill + lane) % kListEntries];
   };
   //: THE AHEAD row's asks: batch `n`'s entries' rows, a lane an entry, from the places `far` holds
-  const auto ask = [&](int n, int h) {
-    const uint32_t tb = (ROLES & kHot ? 0u : static_cast<uint32_t>(n / (kWindow / kFill) % kCallWindows) * kWindowTokens) + far[h];
+  const auto ask = [&](int n, uint32_t place) {
+    const uint32_t tb = (ROLES & kHot ? 0u : static_cast<uint32_t>(n / (kWindow / kFill) % kCallWindows) * kWindowTokens) + place;
     const uint8_t* const row = reinterpret_cast<const uint8_t*>(values) + static_cast<long long>(tb) * (kRowWords * 4);
 #pragma unroll
     for (int i = 0; i < 4; ++i) lab::touch(row + 32 * i);
@@ -1839,7 +1839,7 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
         if constexpr ((ROLES & kListed) && !kRaw) load_places(batch_of(g + 2 * kHeld), h);
         if constexpr (kAsks) {
           //: the batch a window on: its rows asked for with the places loaded a trip ago, then the next's places
-          ask(batch_of(g + 2 * kOwn), h);
+          ask(batch_of(g + 2 * kOwn), far[h]);
           far[h] = lists[(batch_of(g + 2 * kOwn + kHeld) * kFill + lane) % kListEntries];
         }
         //: a rolled loop: a part's addresses are formed in its trip
@@ -3435,7 +3435,8 @@ int main(int argc, char** argv) {
                  //: `HGMMA.64x8x16.F16 RZ, gdesc[URZ], RZ` -- 33 where the fold's are 32)
                  + (roles & kNoReadSteps ? 1 : 0));
     //: the ready skipping rows' one-trip step loops sit under the list's own branch, which the toolkit cannot prove every
-    //: thread of the warpgroup takes: it serializes one group of steps (ptxas C7520), the form these rows measure
+    //: thread of the warpgroup takes: it serializes one group of steps (ptxas C7520). That is a known defect of these
+    //: rows, built to measure issuing only the steps a list reaches: their numbers are of a serialized form
     if ((roles & kSkip) && (roles & kReady)) b.expect(k, "STEPS_SERIALIZED", "<=", 1);
     //: a packed producer's statement of a later slot's bytes follows its store of its own slot's header: the fold
     //: reads the header behind the slot's arrival, which the fence precedes

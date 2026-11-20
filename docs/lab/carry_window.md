@@ -806,7 +806,7 @@ WHAT IT SHOWS.
   THE CUT ROWS: OF THE PHASE LEDGER'S THREE SHARED-MEMORY COSTS ONLY THE PANEL'S CUT IS WORTH TIME. The block form's
   window is 6,499 with the panel by stmatrix against 6,859, 7,385 with the steps' operands shuffled,
   7,182 issuing only the steps a list reaches, and 7,671 with all three; the read-ready ready pair's
-  4,942, 5,825, 5,472 and 5,956 against 5,198. All three cut the
+  4,942, 5,825, 5,472 and 5,956 against 5,198. The two read-ready rows that issue only the steps a list reaches were taken with the steps serialized (ptxas C7520): their numbers are of a serialized form. All three cut the
   windows' shared-memory wavefronts by some 1,020 a CTA-window (the phase ledger: 4,238 to 3,216 and 3,758 to 2,735),
   and two of them lengthen the window: A WINDOW WITH A QUARTER LESS SHARED-MEMORY TRAFFIC IS NOT SHORTER, SO THAT PIPE
   IS NOT WHAT HOLDS IT. The shuffles put four instructions before each step's issue and the skip a branch around it,
