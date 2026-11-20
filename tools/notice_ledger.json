@@ -1,0 +1,317 @@
+{
+ "about": "THE LEDGER OF THE TOOLKIT'S NOTICES (tools/lab.py `LEDGER`, docs/internals/tools/lab.md#ledger): one row for each notice or warning nvcc or ptxas can print that the lab has seen or knows the template of. A notice is matched by its tool, its code where the row names one, and its text: the template's fixed words, `{}` standing for a number or a name, a function's own name written `'{}'`. Every row states a disposition -- refuse (the pack fails), declare (allowed up to the count an experiment declares of the row's hazard), report (printed with the pack) or ignore -- and the reason for it in one sentence; a refusal prints the row's fix, and evidence names the docs/lab page where the reason is a measured cost.",
+ "hazards": {
+  "STEPS_SERIALIZED": "the toolkit serialized its asynchronous MMAs, each step waiting out the one before",
+  "WAIT_INJECTED": "the toolkit injected a `warpgroup.wait` into the step stream, to let code read registers a tensor step defines"
+ },
+ "rows": [
+  {
+   "tool": "ptxas",
+   "code": "C7511",
+   "text": "Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function '{}'",
+   "disposition": "declare",
+   "hazard": "STEPS_SERIALIZED",
+   "reason": "The toolkit serialized the kernel's asynchronous MMAs because the function's register count cannot hold the steps' operand sets, so each step waits out the one before and the kernel does not measure the steps its source states.",
+   "fix": "C7511: a role's work after a join is compiled at the lower register count -- state the count at entry and put each role's whole body inside its own branch (docs/lab/reg_trade.md)",
+   "evidence": "docs/lab/reg_trade.md",
+   "cause": "insufficient register resources for the function"
+  },
+  {
+   "tool": "ptxas",
+   "code": "C7512",
+   "text": "Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the wgmma pipeline in the function '{}'",
+   "disposition": "declare",
+   "hazard": "STEPS_SERIALIZED",
+   "reason": "The toolkit serialized the kernel's asynchronous MMAs because the role is over the registers the pipeline needs, so each step waits out the one before and the kernel does not measure the steps its source states.",
+   "fix": "C7512: a step's operand registers are written before its commit group and the role holds the count they need",
+   "evidence": "docs/lab/carry_window.md",
+   "cause": "insufficient register resources for the wgmma pipeline"
+  },
+  {
+   "tool": "ptxas",
+   "code": "C7514",
+   "text": "Potential Performance Loss: wgmma.mma_async instructions are serialized due to non wgmma instructions reading accumulator registers of a wgmma between start and end of the pipeline stage in the function '{}'",
+   "disposition": "declare",
+   "hazard": "STEPS_SERIALIZED",
+   "reason": "The toolkit serialized the kernel's asynchronous MMAs because other code reads a step's accumulators inside its stage (NVIDIA calls the notice conservative in 13.0, NVBUG 5431330), so each step waits out the one before.",
+   "fix": "C7514: no other code reads a step's accumulators between its issue and its wait; move the read behind the group's wait",
+   "evidence": null,
+   "cause": "non wgmma instructions reading accumulator registers between start and end of the pipeline stage"
+  },
+  {
+   "tool": "ptxas",
+   "code": "C7520",
+   "text": "Potential Performance Loss: wgmma.mma_async instructions are serialized due to program dependence on compiler-inserted WG.AR in divergent path in the function '{}'",
+   "disposition": "declare",
+   "hazard": "STEPS_SERIALIZED",
+   "reason": "The toolkit serialized the kernel's asynchronous MMAs because a step sits under a branch it cannot prove every thread takes, so each step waits out the one before and the kernel does not measure the steps its source states.",
+   "fix": "C7520: a tensor step under a branch -- write the steps a straight block, a step that may be absent under a forward branch behind its own `wg_fence` (not a rolled loop: STEP_ROLLED)",
+   "evidence": "docs/lab/carry_window.md",
+   "cause": "program dependence on compiler-inserted WG.AR in divergent path"
+  },
+  {
+   "tool": "ptxas",
+   "code": null,
+   "text": "Potential Performance Loss: wgmma.mma_async instructions are serialized due to program dependence on compiler-inserted WG.DP in divergent path in the function '{}'",
+   "disposition": "declare",
+   "hazard": "STEPS_SERIALIZED",
+   "reason": "The toolkit serialized the kernel's asynchronous MMAs because a step sits under a branch it cannot prove every thread takes (the dependence-proof barrier form of C7520), so each step waits out the one before.",
+   "fix": "a tensor step under a branch -- write the steps a straight block, a step that may be absent under a forward branch behind its own `wg_fence`",
+   "evidence": null,
+   "cause": "program dependence on compiler-inserted WG.DP in divergent path"
+  },
+  {
+   "tool": "ptxas",
+   "code": null,
+   "text": "Potential Performance Loss: wgmma.mma_async instructions are serialized due to non wgmma instructions defining accumulator registers of a wgmma between start and end of the pipeline stage in the function '{}'",
+   "disposition": "declare",
+   "hazard": "STEPS_SERIALIZED",
+   "reason": "The toolkit serialized the kernel's asynchronous MMAs because other code writes a step's accumulators inside its stage, so each step waits out the one before.",
+   "fix": "no other code writes a step's accumulators between its issue and its wait",
+   "evidence": null,
+   "cause": "non wgmma instructions defining accumulator registers between start and end of the pipeline stage"
+  },
+  {
+   "tool": "ptxas",
+   "code": null,
+   "text": "Potential Performance Loss: wgmma.mma_async instructions are serialized due to non wgmma instructions defining input registers of a wgmma between start and end of the pipeline stage in the function '{}'",
+   "disposition": "declare",
+   "hazard": "STEPS_SERIALIZED",
+   "reason": "The toolkit serialized the kernel's asynchronous MMAs because other code writes a step's input registers inside its stage, so each step waits out the one before.",
+   "fix": "a step's operand registers are written before its commit group, not between its issue and its wait",
+   "evidence": null,
+   "cause": "non wgmma instructions defining input registers between start and end of the pipeline stage"
+  },
+  {
+   "tool": "ptxas",
+   "code": null,
+   "text": "Potential Performance Loss: wgmma.mma_async instructions are serialized due to ill formed pipeline stage in the function '{}'",
+   "disposition": "declare",
+   "hazard": "STEPS_SERIALIZED",
+   "reason": "The toolkit serialized the kernel's asynchronous MMAs because it found a stage ill formed (the steps, their commit and their wait not in an order it can pipeline), so each step waits out the one before.",
+   "fix": null,
+   "evidence": null,
+   "cause": "ill formed pipeline stage"
+  },
+  {
+   "tool": "ptxas",
+   "code": null,
+   "text": "Potential Performance Loss: wgmma.mma_async instructions are serialized due to the presence of Extern calls in the function '{}'",
+   "disposition": "declare",
+   "hazard": "STEPS_SERIALIZED",
+   "reason": "The toolkit serialized the kernel's asynchronous MMAs because the function calls out, so each step waits out the one before.",
+   "fix": "no call inside a function that issues tensor steps",
+   "evidence": null,
+   "cause": "the presence of Extern calls"
+  },
+  {
+   "tool": "ptxas",
+   "code": null,
+   "text": "Potential Performance Loss: wgmma.mma_async instructions are serialized due to wgmma pipeline crossing function boundary at a function call in the function '{}'",
+   "disposition": "declare",
+   "hazard": "STEPS_SERIALIZED",
+   "reason": "The toolkit serialized the kernel's asynchronous MMAs because a stage spans a function call, so each step waits out the one before.",
+   "fix": "a stage's steps, commit and wait sit in one function, with no call between them",
+   "evidence": null,
+   "cause": "wgmma pipeline crossing function boundary at a function call"
+  },
+  {
+   "tool": "ptxas",
+   "code": "C7517",
+   "text": "warpgroup.wait is injected in around line {} by compiler to allow use of registers defined by GMMA in function '{}'",
+   "disposition": "declare",
+   "hazard": "WAIT_INJECTED",
+   "reason": "The toolkit wrote a full wait on a tensor group into the step stream because code reads registers a step defines, a stall the source does not state.",
+   "fix": "Wait for the group where the source reads its registers, with the wait the toolkit can see covering them",
+   "evidence": null,
+   "cause": "a wait injected to let code read registers a step defines"
+  },
+  {
+   "tool": "ptxas",
+   "code": "C7519",
+   "text": "warpgroup.arrive is injected in around line {} by compiler to allow use of registers in GMMA in function '{}'",
+   "disposition": "report",
+   "hazard": null,
+   "reason": "The toolkit wrote one arrive the source did not, because a register a step reads was written near it; its cost is unmeasured, so it is shown with the pack and does not block it.",
+   "fix": null,
+   "evidence": null,
+   "cause": null
+  },
+  {
+   "tool": "ptxas",
+   "code": "C7505",
+   "text": "Potential Performance Loss: 'setmaxnreg' ignored to allow debugging.",
+   "disposition": "refuse",
+   "hazard": null,
+   "reason": "The register redistribution the role split depends on does not happen, and the notice names no kernel, so the whole experiment is not what it measures.",
+   "fix": "build without device debug (-G)",
+   "evidence": null,
+   "cause": null
+  },
+  {
+   "tool": "ptxas",
+   "code": null,
+   "text": "Potential Performance Loss: 'setmaxnreg' ignored to maintain compatibility across compilation units.",
+   "disposition": "refuse",
+   "hazard": null,
+   "reason": "The register redistribution the role split depends on does not happen, and the notice names no kernel, so the whole experiment is not what it measures.",
+   "fix": "compile the experiment as one unit",
+   "evidence": null,
+   "cause": null
+  },
+  {
+   "tool": "ptxas",
+   "code": null,
+   "text": "Potential Performance Loss: 'setmaxnreg' ignored; unable to determine register count at entry.",
+   "disposition": "refuse",
+   "hazard": null,
+   "reason": "The register redistribution the role split depends on does not happen, and the notice names no kernel, so the whole experiment is not what it measures.",
+   "fix": "state the register count at entry (`__launch_bounds__(threads, blocks)`) (docs/lab/reg_trade.md)",
+   "evidence": "docs/lab/reg_trade.md",
+   "cause": null
+  },
+  {
+   "tool": "ptxas",
+   "code": null,
+   "text": "Potential Performance Loss: 'setmaxnreg' ignored to maintain compatibility into 'extern' call.",
+   "disposition": "refuse",
+   "hazard": null,
+   "reason": "The register redistribution the role split depends on does not happen, and the notice names no kernel, so the whole experiment is not what it measures.",
+   "fix": "no extern call in a kernel that trades registers",
+   "evidence": null,
+   "cause": null
+  },
+  {
+   "tool": "ptxas",
+   "code": "C7507",
+   "text": "Potential Performance Loss: 'setmaxnreg' ignored to maintain minimum register requirements.",
+   "disposition": "refuse",
+   "hazard": null,
+   "reason": "The register redistribution the role split depends on does not happen, and the notice names no kernel, so the whole experiment is not what it measures.",
+   "fix": "a lowered count at or above what its path holds live; each role's whole body inside its own branch (docs/lab/reg_trade.md)",
+   "evidence": "docs/lab/reg_trade.md",
+   "cause": null
+  },
+  {
+   "tool": "nvcc",
+   "code": "#549-D",
+   "text": "variable \"{}\" is used before its value is set",
+   "disposition": "refuse",
+   "hazard": null,
+   "reason": "A read of an unset value is a defect in the experiment, not a performance note.",
+   "fix": "set the variable on every path that reads it, or pass it to the code that reads it",
+   "evidence": null,
+   "cause": null
+  },
+  {
+   "tool": "nvcc",
+   "code": "#128-D",
+   "text": "loop is not reachable",
+   "disposition": "report",
+   "hazard": null,
+   "reason": "A loop the compiler proves is never entered is source that measures nothing (the repo keeps no dead code), but it costs no speed, so it is shown and does not block.",
+   "fix": null,
+   "evidence": null,
+   "cause": null
+  },
+  {
+   "tool": "nvcc",
+   "code": "#177-D",
+   "text": "variable \"{}\" was declared but never referenced",
+   "disposition": "ignore",
+   "hazard": null,
+   "reason": "A name nothing reads emits no instruction, so the kernel's SASS is the same with or without it.",
+   "fix": null,
+   "evidence": null,
+   "cause": null
+  },
+  {
+   "tool": "nvcc",
+   "code": null,
+   "text": "The warnings can be suppressed with \"-diag-suppress <warning-number>\"",
+   "disposition": "ignore",
+   "hazard": null,
+   "reason": "The line nvcc prints after its first warning to name the option that silences them, which the lab never uses: the warning above it is the notice.",
+   "fix": null,
+   "evidence": null,
+   "cause": null
+  },
+  {
+   "tool": "ptxas",
+   "code": null,
+   "text": "Registers are spilled to local memory in function '{}', {} bytes spill stores, {} bytes spill loads",
+   "disposition": "refuse",
+   "hazard": null,
+   "reason": "A kernel that spills registers measures local-memory traffic beside the work the experiment states, and the toolkit says how many bytes.",
+   "fix": "lower the live state or state the register count at entry (docs/lab/reg_trade.md)",
+   "evidence": "docs/lab/reg_trade.md",
+   "cause": null
+  },
+  {
+   "tool": "ptxas",
+   "code": null,
+   "text": "Local memory used for function '{}', size of stack frame: {} bytes",
+   "disposition": "refuse",
+   "hazard": null,
+   "reason": "A kernel with a stack frame loads and stores local memory in the loop the experiment times, which is not the work it states.",
+   "fix": "keep the array in registers (constant indices, unrolled) or in shared memory",
+   "evidence": null,
+   "cause": null
+  },
+  {
+   "tool": "ptxas",
+   "code": null,
+   "text": "Compiling entry function '{}' for '{}'",
+   "disposition": "ignore",
+   "hazard": null,
+   "reason": "The verbose summary's heading of a kernel; the registers and the stack frame it lists are read from the binary and from the warnings above.",
+   "fix": null,
+   "evidence": null,
+   "cause": null
+  },
+  {
+   "tool": "ptxas",
+   "code": null,
+   "text": "Function properties for {}",
+   "disposition": "ignore",
+   "hazard": null,
+   "reason": "The verbose summary's line before a function's stack frame and spill bytes, which the spill and local-memory warnings carry too.",
+   "fix": null,
+   "evidence": null,
+   "cause": null
+  },
+  {
+   "tool": "ptxas",
+   "code": null,
+   "text": "Used {} registers{}",
+   "disposition": "ignore",
+   "hazard": null,
+   "reason": "The verbose summary's register count, which the pack file records from the binary.",
+   "fix": null,
+   "evidence": null,
+   "cause": null
+  },
+  {
+   "tool": "ptxas",
+   "code": null,
+   "text": "Compile time = {} ms",
+   "disposition": "ignore",
+   "hazard": null,
+   "reason": "The toolkit's own timing of a kernel's assembly, which says nothing of the kernel.",
+   "fix": null,
+   "evidence": null,
+   "cause": null
+  },
+  {
+   "tool": "ptxas",
+   "code": null,
+   "text": "{} bytes gmem",
+   "disposition": "ignore",
+   "hazard": null,
+   "reason": "The verbose summary's count of the module's global variables, which an experiment states in its source.",
+   "fix": null,
+   "evidence": null,
+   "cause": null
+  }
+ ]
+}

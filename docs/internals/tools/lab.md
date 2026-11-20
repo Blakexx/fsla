@@ -12,7 +12,7 @@ re-runs the experiments its rules cite (`docs/KERNEL_STANDARDS.md` §26).
    QUESTION and the METHOD, its kernels are template instantiations (one per variant), and its `main` declares the SASS
    each kernel must contain and times the variants.
 2. `bazel run //tools:lab -- run <name>` compiles it with the pinned toolkit for the running card, reads the SASS and
-   REFUSES to measure unless every declared expectation holds, no kernel touches local memory and no kernel holds a
+   REFUSES to measure unless every declared expectation holds, every notice the toolkit printed is allowed by [the ledger](#ledger) (a kernel that spills or keeps a stack frame is the toolkit's own warning) and no kernel holds a
    convergence call nobody declared (the SASS gate's classification, `tools/sass_gate.py`: ptxas's loop-exit
    `CALL.REL.NOINC` and guarded fallbacks are not ones); checks the GPU is quiet; runs the repetitions; prints median, min and max and flags a result
    whose samples spread past 5%.
@@ -108,11 +108,8 @@ each thread's own). And EVERY kernel of it, budgeted or exempt, is held to the c
 declares it (`Bench::expect(kernel, NAME, "<=", n)`): `LOOP_CONVERGENCE`; `LOAD_IN_TRIP`, the global loads whose
 value an instruction of the same innermost trip reads; `STORE_RELOAD`, the shared loads of an address the same trip
 stored to; `STORE_UNFENCED`, in a kernel that holds a wgmma, the barrier arrivals that follow a shared store with no
-`fence.proxy.async` between them; `STEPS_SERIALIZED`, the toolkit's notices that it serialized the kernel's asynchronous MMAs (kept beside the build's
-binary): each step then waits out the one before it, and the kernel does not measure the steps its source states. The
-codes are not documented and three serializing ones are known here (C7511, registers after a join, recorded in
-[`reg_trade`](../../lab/reg_trade.md); C7512; C7520), so a notice is read by what it says and a code not yet seen is
-refused the first time it appears. An experiment that keeps a serialized form on purpose declares the count in
+`fence.proxy.async` between them; `STEPS_SERIALIZED`, the kernel's asynchronous MMAs the toolkit serialized, each step then waiting out the one before it, so the kernel does not
+measure the steps its source states (a notice, [below](#ledger)); an experiment that keeps a serialized form on purpose declares the count in
 `main` with its reason (`carry_window`'s ready skipping rows declare their C7520: their numbers are of a serialized
 form);
 `STEP_ROLLED`, the loops that are the innermost around a tensor step and hold no wait on its group: steps issued from a
@@ -121,17 +118,10 @@ record holds the figure yet) and the toolkit says nothing, so only the SASS show
 straight block; a window's trip that holds the steps and the wait on them is not the hazard. An experiment that keeps
 the form on purpose declares the count with its reason (`fold_forms`'s tile forms and `carry_window`'s packed rows, whose recorded figures are of steps
 that do not pipeline);
-`WAIT_INJECTED`, the toolkit's notices that it wrote a `warpgroup.wait` into the step stream (ptxas C7517, "warpgroup.wait is
-injected ... to allow use of registers defined by GMMA"): a wait the source did not state, ahead of code that reads
+`WAIT_INJECTED`, a `warpgroup.wait` the toolkit wrote into the step stream (a notice, [below](#ledger)): a wait the source did not state, ahead of code that reads
 a tensor step's registers, so the kernel's stream is not the one its source writes. An experiment whose point is that
 read declares the count with its reason (`wgmma_regs`'s narrowed forms read the fold's accumulators and declare one a
-kernel); the toolkit's injected arrive (C7519) is not counted: no lab record measures its cost. Two more refusals take no
-declaration and no debt. A `setmaxnreg` the toolkit ignored (its five templates, "'setmaxnreg' ignored" to allow
-debugging, for compilation units, into an extern call, for minimum register requirements or for want of the entry
-count) refuses the whole experiment, the notices naming no function; no experiment has one, and the register split
-the roles depend on does not happen where one does. And nvcc's #549-D, a variable used before its value is set,
-refuses the experiment naming the variable and its line: an unset read is a defect, and a pattern the compiler
-cannot see through is rewritten (a lambda that read a captured array a branch sets took it as an argument);
+kernel);
 `WAIT_AFTER_ISSUE` (KERNEL_STANDARDS 29.16), the tensor waits that leave no group in flight (`WARPGROUP.DEPBAR`, count
 0) whose group's last step (`HGMMA`; the commit is no instruction, the `gsb0` flag on that step) is followed by no
 WORK OF SUBSTANCE before them: a load or store (generic, global, shared, local, the matrix forms, atomics,
@@ -141,6 +131,40 @@ Seen in straight-line code only: a branch, a barrier, another wait or the kernel
 wait leaves it uncounted, as does a wait that leaves a group in flight (the older group's steps are not the nearest).
 The experiments past `_PRE_TIMELINE` that had it when the check landed are `_PRE_WAIT` (held to it when next changed;
 the list only shrinks); `carry_token` and `carry_window` declare it in `main`, with the reason.
+
+<a id="ledger"></a>THE LEDGER OF THE TOOLKIT'S NOTICES (`tools/notice_ledger.json`). nvcc and ptxas say, beside the code, what they did to
+it: a loop they proved unreachable, a kernel's asynchronous MMAs serialized, a register they spilled. The lab reads EVERY
+notice and warning of a build (`read_notices`: ptxas's `info` and `warning` lines with a code and without, nvcc's
+`file(line): warning #N-D: ...`, a bare `Potential Performance Loss: ...`) and looks each up in the ledger, one row
+for each notice either tool can print that the lab has seen or knows the template of -- the toolkit's codes are not
+documented and a template's code is unknown until a build emits it, so a row is matched by its tool, its code where it
+names one, and its text (the template's fixed words, `{}` for a number or a name), and a row with no code matches the
+template whatever code the toolkit gave it. A notice the ledger has no row for REFUSES the pack and is quoted whole, with
+the instruction to add a row; so nothing the toolkit says is dropped unread. A row's DISPOSITION is what the lab does
+with its notice, and its REASON says why in one sentence:
+`refuse`, the pack fails -- the experiment is not what it measures, or the code is defective (a `setmaxnreg` the toolkit ignored, a variable read before it is set, a kernel that spills registers or keeps a
+stack frame); the refusal prints the row's fix. `declare`, allowed only up to the count an experiment declares of the
+row's named hazard (`STEPS_SERIALIZED`, `WAIT_INJECTED`), a kernel's notices of a hazard summed over its codes: the
+form is sometimes the point, and the declaration carries its reason. `report`, printed with the pack and blocking
+nothing -- the notice may matter but its cost is not measured (C7519, the arrive the toolkit injected) or the
+source it names is dead (nvcc #128-D, a loop proved unreachable: a measured loop that is not run measures nothing).
+`ignore`, known and harmless (#177-D, a name nothing reads emits no instruction; ptxas's verbose per-function
+summary). A row's `evidence` names the `docs/lab/` page where its reason is a measured cost.
+
+HOW A NEW NOTICE IS DECIDED. The refusal is the prompt: read what the notice says the toolkit did, and ask what it
+does to the SASS the experiment times. If the kernel it names no longer runs the stream its source states (a step
+serialized, a wait or an arrive the source did not write, a register trade that did not happen, local memory traffic),
+the row is `refuse`, or `declare` when an experiment can mean the form (name the hazard; it joins `HAZARDS`). If it
+may matter and nothing measures it, `report`; the `docs/lab/` page that measures it becomes the row's evidence. If it
+cannot reach the SASS, `ignore`, with the reason said. A new row lands in the same commit as the experiment that
+printed it; a notice is never ignored for want of a decision, and `ignore` of a notice whose cost is merely
+unmeasured is `report`.
+
+THE ASSEMBLER'S OWN WARNINGS. `build` passes ptxas `--warn-on-spills` (`-warn-spills`: "Warning if registers are
+spilled to local memory"), `--warn-on-local-memory-usage` (`-warn-lmem-usage`: "Warning if local memory is used") and
+`--verbose` (`-v`: "prints code generation statistics", the per-function summary) through nvcc's `-Xptxas`, so the
+two warnings (`Registers are spilled to local memory in function 'k', N bytes spill stores, N bytes spill loads` and
+`Local memory used for function 'k', size of stack frame: N bytes`) are ledger rows and refuse like any other. The warnings REPLACED the lab's own scan of the SASS for local memory (`LDL`/`STL` and a stack frame from `cuobjdump -res-usage`, its refusal `local memory (N LDL/STL, a N-byte stack frame)`): the kernels each names were compared over all 41 experiments that build for sm_90a (2026-11-20, none has a stack frame or a spill, so both sets are empty there) and over a probe of four kernels built beside them -- a spill under a `__maxnreg__` cap, a 4 KiB indexed array, a called function's frame and a clean kernel -- where both named the same three. The frame's size is in the warning; a spill's bytes are too. The scan's counts remain in `sass_gate.py`'s statistics, the SASS gate's own.
 
 <a id="waits"></a>THE WAIT REPORT. `pack` prints, and `bazel run //tools:lab -- waits <name> --arch sm_90a` prints alone,
 one line a distinct tensor wait of each kernel (kernels with the same lines collapse, a count each; at most six lines a

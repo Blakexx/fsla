@@ -89,10 +89,9 @@ def test_a_forward_branch_around_a_step_is_not_counted():
 def test_a_declared_count_of_rolled_steps_is_kept(tmp_path, monkeypatch):
     monkeypatch.setattr(lab, "demangle", lambda names: {n: n for n in names})
     monkeypatch.setattr(lab, "step_bounds", lambda binary, expected: [])
-    for name in ("loop_convergence", "clocks_summed_uniform", "loop_hazards", "waits_after_issue", "serialized",
-                 "injected_waits", "signatures", "setmaxnreg_ignored", "unset_reads"):
+    for name in ("loop_convergence", "clocks_summed_uniform", "loop_hazards", "waits_after_issue", "signatures"):
         monkeypatch.setattr(lab, name, lambda binary: {})
-    monkeypatch.setattr(lab, "setmaxnreg_ignored", lambda binary: [])
+    monkeypatch.setattr(lab, "notice_failures", lambda binary, expected: [])
     monkeypatch.setattr(lab, "timeline", lambda path: True)
     monkeypatch.setattr(lab, "collective_selected", lambda path: [])
     monkeypatch.setattr(lab, "experiments", lambda: {"x": tmp_path / "x.cu"})

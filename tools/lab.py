@@ -5,7 +5,8 @@
 An experiment is one `measure/lab/experiments/<name>.cu` built on `measure/lab/lab.cuh`. This driver compiles it with
 the pinned toolkit for the running card, reads its SASS and refuses to measure unless every expectation the experiment
 declares holds (an instruction the experiment means to time is really there -- ptxas deletes work whose result is dead)
-and no kernel touches local memory; then it checks the GPU is quiet, runs the repetitions, flags a result whose samples
+and every notice the toolkit printed is allowed by the ledger (a kernel that touches local memory is the toolkit's
+own warning); then it checks the GPU is quiet, runs the repetitions, flags a result whose samples
 spread, and writes a record keyed by the architecture.
 
     bazel run //tools:lab -- list
@@ -25,6 +26,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime
+import functools
 import hashlib
 import importlib.util
 import json
@@ -37,6 +39,7 @@ import sys
 import time
 from collections import Counter
 from pathlib import Path
+from typing import NamedTuple
 
 import build_flags
 import dev_config
@@ -85,7 +88,7 @@ def build(path: Path, arch: str) -> Path:
     #: the extension's own target form: an architecture-specific row (`sm_90a`) names its own virtual architecture
     target, = build_flags.gencodes([arch.removeprefix("sm_")])
     done = subprocess.run([dev_config.cuda_bin("nvcc"), "-O3", "-std=c++20", target, f"-DROLA_LAB_CC={cc}",
-                           "-lineinfo", f"-I{LAB}", f"-I{KERNELS}", f"-I{dev_config.warpline_include()}", "--expt-relaxed-constexpr", "-o", str(out),
+                           "-lineinfo", "-Xptxas", ",".join(PTXAS_OPTIONS), f"-I{LAB}", f"-I{KERNELS}", f"-I{dev_config.warpline_include()}", "--expt-relaxed-constexpr", "-o", str(out),
                            str(path)], capture_output=True, text=True, check=False)
     sys.stdout.write(done.stdout)
     sys.stderr.write(done.stderr)
@@ -99,70 +102,176 @@ def notices(binary: Path) -> Path:
     return binary.with_name(binary.name + ".ptxas")
 
 
-#: THE TOOLKIT'S NOTICES of a build (ptxas's `(Cnnnn) text in function 'name'`), read by what they say: ptxas's code
-#: numbers are not documented and a template's code is unknown until a build emits it. A template carries the words
-#: after SERIALIZED when it serialized a kernel's asynchronous MMAs (nine templates share them), INJECTED_WAIT when it
-#: wrote a wait of its own into the step stream, and the quoted function name unless it is a `setmaxnreg` notice.
-SERIALIZED = "wgmma.mma_async instructions are serialized due to "
-INJECTED_WAIT = "warpgroup.wait is injected"
-SETMAXNREG = "'setmaxnreg' ignored"
-_NOTICE = re.compile(r"\((C\d+)\) (.*?) in (?:the )?function '([^']+)'")
-_SETMAXNREG = re.compile(r"(?:\((C\d+)\) )?Potential Performance Loss: " + re.escape(SETMAXNREG) + r"\s*(.*?)\.?$", re.M)
-#: what the serializing notices seen so far ask of the source (any other code is refused with its own reason)
-SERIALIZED_FIX = {"C7511": "C7511: a role's work after a join is compiled at the lower register count -- state the count at "
-                           "entry and put each role's whole body inside its own branch (docs/lab/reg_trade.md)",
-                  "C7512": "C7512: a step's operand registers are written before its commit group and the role holds "
-                           "the count they need",
-                  "C7520": "C7520: a tensor step under a branch -- write the steps a straight block, a step that "
-                           "may be absent under a forward branch behind its own `wg_fence` (not a rolled loop: "
-                           "STEP_ROLLED)"}
-#: nvcc's warning that a variable is read before it is set: a read of an unset value, in no experiment
-_UNSET = re.compile(r'^(\S.*?)\((\d+)\): warning #549-D: variable "([^"]+)" is used before its value is set', re.M)
+#: THE TOOLKIT'S NOTICES of a build, read against THE LEDGER (`notice_ledger.json`, docs/internals/tools/lab.md#ledger):
+#: nvcc's own output, kept beside the binary, every notice and warning of it -- ptxas's `info` and `warning` lines with a
+#: code (`(C7512) text in function 'k'`) and without, nvcc's `file(line): warning #N-D: text`, a bare `Potential
+#: Performance Loss: ...` line -- looked up by tool, code and text. A notice the ledger has no row for refuses the pack.
+LEDGER_FILE = Path(__file__).resolve().with_name("notice_ledger.json")
+#: what a row's disposition does: `refuse` fails the pack, `declare` allows the count an experiment declares of the row's
+#: hazard, `report` prints with the pack, `ignore` is known and harmless
+DISPOSITIONS = ("refuse", "declare", "report", "ignore")
+#: ptxas's own options the build switches on (`ptxas --help`, passed through nvcc's `-Xptxas`): the warning where a
+#: function spills registers to local memory, the warning where a function uses local memory (its stack frame's size in
+#: the text) and the verbose per-function summary
+PTXAS_OPTIONS = ("--warn-on-spills", "--warn-on-local-memory-usage", "--verbose")
+_TOOL_LINE = re.compile(r"^(ptxas|nvcc|nvlink|cicc|fatbinary) (?:info|warning)\s*: (?:\((C\d+)\) )?(.*)$")
+_NVCC_LINE = re.compile(r"^(\S.*?)\((\d+)\): (?:warning|remark)(?: (#\d+-D))?: (.*)$")
+_BARE_LINE = re.compile(r"^(Potential Performance Loss: .*)$")
+_REMARK_LINE = re.compile(r"^Remark: (.*)$")
+_FUNCTION = re.compile(r"function '([^']+)'")
 
 
-def _by_kernel(binary: Path, pick) -> dict[str, Counter]:
-    """The notices of `binary`'s build that `pick(code, text)` keys, a count each, per kernel (demangled)."""
-    if not notices(binary).exists():
-        return {}
-    found: dict[str, Counter] = {}
-    for code, text, name in _NOTICE.findall(notices(binary).read_text()):
-        if (key := pick(code, text)) is not None:
-            found.setdefault(name, Counter())[key] += 1
-    names = demangle(list(found))
-    return {names[k]: v for k, v in found.items()}
+class Notice(NamedTuple):
+    """One notice of a build: its tool (`ptxas`, `nvcc`, or `unreadable` for a line nothing reads), its code, its text
+    with each function's name as `'{}'` (what the ledger matches), the function it names (mangled), the `file(line)`
+    nvcc gives, the lines it printed whole and its message as printed."""
+    tool: str
+    code: str | None
+    text: str
+    function: str | None
+    where: str | None
+    raw: str
+    message: str
 
 
-def serialized(binary: Path) -> dict[str, Counter]:
-    """Per kernel (demangled): the toolkit's notices that it SERIALIZED the kernel's asynchronous MMAs, by whatever
-    code and cause they carry -- a count each by `(code, its reason)` -- each step then waits out the one before, and
-    the kernel does not measure the steps its source states. Nothing where the build left no notices (a packed binary
-    run elsewhere)."""
-    return _by_kernel(binary, lambda code, text: (code, text.split(SERIALIZED, 1)[1]) if SERIALIZED in text else None)
+def _notice(tool: str, code: str | None, message: str, where: str | None, raw: str) -> Notice:
+    text = " ".join(message.split())
+    found = _FUNCTION.search(text)
+    return Notice(tool, code, _FUNCTION.sub("function '{}'", text), found.group(1) if found else None, where, raw, text)
 
 
-def injected_waits(binary: Path) -> dict[str, Counter]:
-    """Per kernel (demangled): the toolkit's notices that it INJECTED a `warpgroup.wait` of its own, to let code read
-    registers a tensor step defines (a count each by code)."""
-    return _by_kernel(binary, lambda code, text: code if INJECTED_WAIT in text else None)
-
-
-def setmaxnreg_ignored(binary: Path) -> list[str]:
-    """The toolkit's notices that it ignored a `setmaxnreg` (`code: reason`), whichever kernel's. The templates name no
-    function: the notice is the whole experiment's."""
+def read_notices(binary: Path) -> list[Notice]:
+    """EVERY notice of `binary`'s build, in order: the lines nvcc printed beside it. What follows a notice -- the
+    indented lines of ptxas's per-function summary, an nvcc warning's source line and instantiations up to the blank
+    line -- belongs to it. Nothing where the build left no notices (a packed binary run elsewhere)."""
     if not notices(binary).exists():
         return []
-    return [f"{code or 'no code'}: {why or 'no reason'}" for code, why in _SETMAXNREG.findall(notices(binary).read_text())]
+    found: list[Notice] = []
+    in_block = False
+    for line in notices(binary).read_text().splitlines():
+        if (in_block and line.strip()) or (line[:1].isspace() and found):
+            found[-1] = found[-1]._replace(raw=found[-1].raw + "\n" + line)
+            continue
+        in_block = False
+        if not line.strip():
+            continue
+        if m := _TOOL_LINE.match(line):
+            found.append(_notice(m.group(1), m.group(2), m.group(3), None, line))
+        elif m := _NVCC_LINE.match(line):
+            found.append(_notice("nvcc", m.group(3), m.group(4), f"{Path(m.group(1)).name}({m.group(2)})", line))
+            in_block = True
+        elif m := _BARE_LINE.match(line):
+            found.append(_notice("ptxas", None, m.group(1), None, line))
+        elif m := _REMARK_LINE.match(line):
+            found.append(_notice("nvcc", None, m.group(1), None, line))
+        else:
+            found.append(Notice("unreadable", None, line, None, None, line, line))
+    return found
 
 
-def unset_reads(binary: Path) -> dict[tuple[str, int, str], int]:
-    """nvcc's warnings that a variable is used before its value is set, by (file, line, variable), a count each
-    (one per instantiation)."""
-    if not notices(binary).exists():
-        return {}
-    found: Counter = Counter()
-    for path, line, var in _UNSET.findall(notices(binary).read_text()):
-        found[Path(path).name, int(line), var] += 1
-    return dict(found)
+@functools.cache
+def _ledger_file() -> dict:
+    return json.loads(LEDGER_FILE.read_text())
+
+
+def notice_ledger() -> tuple[dict, ...]:
+    """The ledger's rows (`notice_ledger.json`)."""
+    return tuple(_ledger_file()["rows"])
+
+
+#: what each hazard a `declare` row names says of a kernel that exceeds its declared count
+HAZARD_STATES = _ledger_file()["hazards"]
+
+
+def hazard_names() -> tuple[str, ...]:
+    """The hazards the ledger's `declare` rows name: counts an experiment may declare (`Bench::expect(kernel, NAME,
+    "<=", n)`)."""
+    return tuple(sorted({r["hazard"] for r in notice_ledger() if r["disposition"] == "declare"}))
+
+
+@functools.cache
+def _template(text: str) -> re.Pattern:
+    return re.compile(".*?".join(re.escape(part) for part in " ".join(text.split()).split("{}")))
+
+
+def row_of(notice: Notice) -> dict | None:
+    """The ledger's row for `notice`: the tool, the code where the row names one, and the template's words. The ledger
+    keeps one row to a notice (`tests/unit/test_lab_notices.py` proves it)."""
+    found = [r for r in notice_ledger() if r["tool"] == notice.tool and r["code"] in (None, notice.code)
+             and _template(r["text"]).fullmatch(notice.text)]
+    return found[0] if found else None
+
+
+def _shown(notice: Notice, names: dict[str, str]) -> str:
+    """The notice's text as the toolkit printed it, its function's name demangled."""
+    return _FUNCTION.sub(lambda m: f"function '{names[m.group(1)]}'", notice.message)
+
+
+def _names(read: list[Notice]) -> dict[str, str]:
+    functions = sorted({n.function for n in read if n.function})
+    return demangle(functions) if functions else {}
+
+
+def notice_failures(binary: Path, expected: list[dict]) -> list[str]:
+    """THE LEDGER'S REFUSALS: every notice of the build read against its row. A notice with no row; a `refuse` row's
+    notice; and a `declare` row's notices past the count the experiment declares of the row's hazard, a kernel's
+    notices of one hazard summed -- the failures, empty where every notice is allowed."""
+    read = read_notices(binary)
+    names = _names(read)
+    experiment = binary.name.split(".")[0]
+    unknown: dict[tuple, list] = {}
+    refused: Counter = Counter()
+    declared: dict[tuple, Counter] = {}
+    rows = {id(r): r for r in notice_ledger()}
+    for n in read:
+        row = row_of(n)
+        place = names[n.function] if n.function else (n.where or experiment)
+        if row is None:
+            unknown.setdefault((n.tool, n.code, n.text, place), []).append(n)
+        elif row["disposition"] == "refuse":
+            refused[id(row), place, _shown(n, names)] += 1
+        elif row["disposition"] == "declare":
+            declared.setdefault((row["hazard"], place), Counter())[row["code"] or n.code, id(row)] += 1
+    failures = []
+    for (tool, code, _, place), found in unknown.items():
+        whole = "\n      ".join(found[0].raw.splitlines())
+        failures.append(f"{place}: {len(found)} x a notice the ledger has no row for ({tool} {code or 'with no code'}):\n"
+                        f"      {whole}\n    add a row to tools/notice_ledger.json with a disposition (refuse, declare, "
+                        "report or ignore) and the reason for it (docs/internals/tools/lab.md#ledger)")
+    for (key, place, shown), n in refused.items():
+        row = rows[key]
+        failures.append(f"{place}: {shown} ({n} x, {row['tool']} {row['code'] or 'no code'}): {row['reason']}"
+                        + (f" {row['fix']}" if row["fix"] else ""))
+    for (hazard, place), by_row in declared.items():
+        allowed = max((e["count"] for e in expected if e["op"] == hazard and re.search(e["kernel"], place)), default=0)
+        if sum(by_row.values()) > allowed:
+            what = "; ".join(f"{n} x ({code or 'no code'}) {rows[key]['cause']}" for (code, key), n in sorted(
+                by_row.items(), key=lambda item: (item[0][0] or "", rows[item[0][1]]["cause"])))
+            fixes = "; ".join(sorted({rows[key]["fix"] for _, key in by_row if rows[key]["fix"]}))
+            failures.append(f"{place}: {HAZARD_STATES[hazard]}: {what}; {allowed} declared ({hazard}). "
+                            f"{fixes or 'A notice seen here first: read its cause'} (docs/internals/LEARNINGS.md)")
+    return failures
+
+
+def notice_report(binary: Path) -> list[str]:
+    """THE REPORT: the notices of `report` rows, one line a row with its count and where (an nvcc notice's lines),
+    printed with the pack and blocking nothing."""
+    read = read_notices(binary)
+    found: dict[int, list[Notice]] = {}
+    for n in read:
+        row = row_of(n)
+        if row and row["disposition"] == "report":
+            found.setdefault(id(row), []).append(n)
+    rows = {id(r): r for r in notice_ledger()}
+    lines = []
+    for key, those in found.items():
+        row = rows[key]
+        places = {n.function or n.where or "the build" for n in those}
+        lines_at = sorted({n.where for n in those if n.where})
+        where = f", at {', '.join(lines_at[:3])}" + (f" and {len(lines_at) - 3} more" if len(lines_at) > 3 else "") if lines_at else ""
+        text = row["text"].replace(" in function '{}'", "")
+        lines.append(f"  {row['tool']} {row['code'] or ''}: {len(those)} x in {len(places)} places{where}: {text} -- {row['reason']}")
+    return lines
 
 
 def demangle(names: list[str]) -> dict[str, str]:
@@ -227,9 +336,10 @@ _PRE_TIMELINE = {"bulk_drain", "byte_expand", "cluster_sum", "collective_branch"
 #: straight after its steps; each is held to `WAIT_AFTER_ISSUE` when it is next changed, and the list only shrinks
 _PRE_WAIT = {"clock_time", "fold_stream", "intra_chain", "intra_window", "pool_fill", "readout_role", "stamp_cost",
              "state_image", "step_queue", "wgmma_width"}
-#: the hazards an experiment may declare a count of (`Bench::expect(kernel, NAME, "<=", n)`), beside its opcodes
-HAZARDS = ("LOOP_CONVERGENCE", "LOAD_IN_TRIP", "STORE_RELOAD", "STORE_UNFENCED", "STEPS_SERIALIZED", "WAIT_INJECTED", "CLOCK_UNIFORM",
-          "WAIT_AFTER_ISSUE", "STEP_ROLLED", "STEP_PORT", "STEP_WORK")
+#: the hazards an experiment may declare a count of (`Bench::expect(kernel, NAME, "<=", n)`), beside its opcodes: the
+#: ledger's own (`STEPS_SERIALIZED`, `WAIT_INJECTED`, the toolkit's notices) and these
+HAZARDS = ("LOOP_CONVERGENCE", "LOAD_IN_TRIP", "STORE_RELOAD", "STORE_UNFENCED", "CLOCK_UNIFORM", "WAIT_AFTER_ISSUE",
+           "STEP_ROLLED", "STEP_PORT", "STEP_WORK", *hazard_names())
 
 
 #: a warp collective after the `?` of a statement's conditional: only the lanes the condition takes reach it
@@ -708,8 +818,9 @@ def step_bounds(binary: Path, expected: list[dict]) -> list[str]:
 
 
 def check(binary: Path, table: dict[str, dict]) -> list[str]:
-    """Every expectation the experiment declares, no local memory and no undeclared convergence call anywhere: the
-    failures, empty when it may run."""
+    """Every expectation the experiment declares, every notice of its build allowed by the ledger (local memory is
+    the toolkit's own warning there) and no undeclared convergence call anywhere: the failures, empty when it may
+    run."""
     lines = subprocess.run([str(binary), "--expect"], capture_output=True, text=True, check=True).stdout
     expected = [e for e in map(json.loads, lines.splitlines()) if e["lab"] == "expect"]
     failures = []
@@ -723,12 +834,8 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
             if not ok:
                 failures.append(f"{k}: {e['op']} {n}, expected {e['cmp']} {e['count']}")
     failures += step_bounds(binary, expected)
-    #: no declaration makes these acceptable: the experiment is not what it measures
-    failures += [f"{binary.name.split('.')[0]}: the toolkit ignored a `setmaxnreg` ({why}) -- the notice names no "
-                 "kernel, so the experiment is refused; the register split the roles depend on does not happen"
-                 for why in setmaxnreg_ignored(binary)]
-    failures += [f"{file}({line}): variable \"{var}\" is used before its value is set ({n} instantiations, nvcc #549-D): "
-                 "a read of an unset value" for (file, line, var), n in sorted(unset_reads(binary).items())]
+    #: every notice the toolkit printed, read against the ledger: one with no row, a refusal, a declared count exceeded
+    failures += notice_failures(binary, expected)
     declared_calls = {k for e in expected for k in table if re.search(e["kernel"], k) and "CALL" in e["op"]}
     declared_branches = {k for e in expected for k in table if re.search(e["kernel"], k) and e["op"] == "BSSY"}
 
@@ -774,15 +881,6 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
                 failures.append(f"{k}: {n} tensor waits directly after their group's steps, {declared} declared "
                                 "(WAIT_AFTER_ISSUE): work that does not read the group's accumulators belongs between "
                                 "the issue and the wait: KERNEL_STANDARDS 29.16 (`lab waits` lists the candidates)")
-        for k, by_cause in serialized(binary).items():
-            declared = max((e["count"] for e in expected if e["op"] == "STEPS_SERIALIZED" and re.search(e["kernel"], k)),
-                           default=0)
-            if sum(by_cause.values()) > declared:
-                what = "; ".join(f"{n} x ({c}) {why}" for (c, why), n in sorted(by_cause.items()))
-                fixes = "; ".join(SERIALIZED_FIX[c] for c in sorted({c for c, _ in by_cause}) if c in SERIALIZED_FIX)
-                failures.append(f"{k}: the toolkit serialized its asynchronous MMAs, each step waiting out the one before: "
-                                f"{what}; {declared} declared (STEPS_SERIALIZED). {fixes or 'A code seen here first: read its reason'} "
-                                "(docs/internals/LEARNINGS.md)")
         for k, spans in rolled_steps(binary).items():
             declared = max((e["count"] for e in expected if e["op"] == "STEP_ROLLED" and re.search(e["kernel"], k)),
                            default=0)
@@ -794,15 +892,6 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
                                 "toolkit says nothing: "
                                 "write them a straight block, or a step that may be absent under a forward branch behind "
                                 "its own fence (docs/internals/LEARNINGS.md)")
-        for k, by_code in injected_waits(binary).items():
-            declared = max((e["count"] for e in expected if e["op"] == "WAIT_INJECTED" and re.search(e["kernel"], k)),
-                           default=0)
-            if sum(by_code.values()) > declared:
-                what = ", ".join(f"{n} x {c}" for c, n in sorted(by_code.items()))
-                failures.append(f"{k}: the toolkit injected a `warpgroup.wait` into the step stream, to let code read "
-                                f"registers a tensor step defines: {what}; {declared} declared (WAIT_INJECTED). Wait "
-                                "for the group where the source reads its registers, with the wait the toolkit can "
-                                "see covering them (docs/internals/LEARNINGS.md)")
     if binary.name.split(".")[0] not in _PRE_29:
         stated = budgets(binary) + budgets(binary, "exempt")
         for k, info in table.items():
@@ -816,8 +905,6 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
                 for op in ("STEP_XU", "STEP_GLOBAL")}
 
     for k, sig in signatures(binary).items():
-        if sig["ldl"] or sig["stack"]:
-            failures.append(f"{k}: local memory ({sig['ldl']} LDL/STL, a {sig['stack']}-byte stack frame)")
         if sig["mma_loop_branches"] and k not in declared_branches:
             failures.append(f"{k}: {sig['mma_loop_branches']} branches inside an MMA step nobody declared "
                             "(KERNEL_STANDARDS 27: a step body is one basic block; a form that keeps them declares BSSY)")
@@ -1131,6 +1218,9 @@ def pack(name: str, arch: str, into: Path) -> int:
     if budgets(binary):
         print(f"lab: {name} has budgeted kernels, whose gate reads executed counts: it runs where the toolkit is")
         return 1
+    report = notice_report(binary)
+    if report:
+        print("lab: toolkit notices the ledger reports (not blocking; tools/notice_ledger.json):", *report, sep="\n")
     report = waits_report(binary)
     if report:
         print("lab: tensor waits -- candidates to precede each (advisory; `lab waits` prints it alone):", *report, sep="\n")
@@ -1280,6 +1370,9 @@ def run(name: str, opts) -> int:
     if failures:
         print(f"lab: {name} REFUSED -- its SASS is not what it measures:", *failures, sep="\n  ")
         return 1
+    report = notice_report(binary)
+    if report:
+        print("lab: toolkit notices the ledger reports (not blocking; tools/notice_ledger.json):", *report, sep="\n")
     return measure(name, arch, binary, table, opts)
 
 
