@@ -84,7 +84,7 @@ a line from its releaser. The traced row's window beside its untraced twin's is 
 record: it imports `measure/lab/pages/<name>.py` and calls its `write(root, instance)`, which reads
 `measure/lab/results/<name>/<arch>.json` and rewrites the docs that quote it, and prints the files written; an
 experiment with no page module is an error. A page's measured section is GENERATED, never typed: a figure changes by
-a new record and a `page` run, and `LABEL` (the rented box's id; two comma-joined where a page's two records ran on two boxes) only words the card's line. OWED: only the carry's,
+a new record and a `page` run, and `LABEL` (the rented box's id; two comma-joined where a page's two records ran on two boxes) only words the card's line. OWED: only the carry's, the gather rate's, the gather group's,
 the token carry's, the gather's, the stamp probe's and the clock probe's pages have their modules; every other page's typed section stands as recorded and is not edited by
 hand -- its module is written with its experiment's next record. A row a page names and its record lacks is refused
 by name: the generators' one lookup, `measure/lab/pages/_record.py`.
@@ -410,3 +410,5 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="add-rate"></a>[`add_rate`](../../lab/add_rate.md)
 - <a id="slot-sum"></a>[`slot_sum`](../../lab/slot_sum.md)
 - <a id="fold-forms"></a>[`fold_forms`](../../lab/fold_forms.md)
+- <a id="gather-rate"></a>[`gather_rate`](../../lab/gather_rate.md)
+- <a id="gather-group"></a>[`gather_group`](../../lab/gather_group.md)

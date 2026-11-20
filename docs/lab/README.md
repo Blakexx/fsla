@@ -50,3 +50,5 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`drain`](drain.md) | experiment |
 | [`step_queue`](step_queue.md) | experiment |
 | [`fold_forms`](fold_forms.md) | experiment |
+| [`gather_rate`](gather_rate.md) | experiment |
+| [`gather_group`](gather_group.md) | experiment |
