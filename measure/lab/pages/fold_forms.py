@@ -87,6 +87,8 @@ spread of a row {100 * max(spread(n) for n, _ in ROWS):.1f}%). {UNIT[0].upper()}
 
 {table}
 
+The tile form's list steps issue from a rolled loop that holds no wait on them and do not pipeline (`STEP_ROLLED`), so the tile forms' recorded figures are of steps that do not pipeline: a known defect of those rows.
+
 WHAT IT SHOWS.
 {line(EVERY, "THE REGISTER FORM, EVERY CLASS COMPUTED")}
 {line(OWN, "THE REGISTER FORM, A WARP'S OWN CLASSES COMPUTED")}

@@ -409,6 +409,9 @@ int main(int argc, char** argv) {
     //: the tile form's window is one commit group and its wait follows its steps; the register form waits a group
     //: of four, or a step, for the words it holds: what the forms cost SO is the question
     b.expect(k, "WAIT_AFTER_ISSUE", "<=", tiled ? kLists + 1 : 4 * (kHeld + 1));
+    //: the tile forms issue a list's steps in a rolled loop, a fence a step: steps that do not pipeline (H100, 2026-11-20),
+    //: a known defect of these rows: their recorded figures are of steps that do not pipeline
+    if (tiled) b.expect(k, "STEP_ROLLED", "<=", 16);
     //: the register form's coefficients are converted between its steps, and the skipped form's classes branch there
     if (!tiled) {
       b.expect(k, "STEP_XU", "<=", 64);

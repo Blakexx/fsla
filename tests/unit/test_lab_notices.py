@@ -92,7 +92,7 @@ def checked(tmp_path, monkeypatch, *lines, declared=()):
     """`lab.check`'s refusals of an experiment `x` whose build left `lines`, no other check firing."""
     monkeypatch.setattr(lab, "demangle", lambda names: {n: n for n in names})
     monkeypatch.setattr(lab, "step_bounds", lambda binary, expected: [])
-    for name in ("loop_convergence", "clocks_summed_uniform", "loop_hazards", "waits_after_issue", "signatures"):
+    for name in ("loop_convergence", "clocks_summed_uniform", "loop_hazards", "waits_after_issue", "rolled_steps", "signatures"):
         monkeypatch.setattr(lab, name, lambda binary: {})
     monkeypatch.setattr(lab, "timeline", lambda path: True)
     monkeypatch.setattr(lab, "collective_selected", lambda path: [])
@@ -131,3 +131,11 @@ def test_check_refuses_a_variable_used_before_its_value_is_set_naming_it_and_its
     failures = checked(tmp_path, monkeypatch, UNSET)
     assert failures == ['x.cu(1706): variable "far" is used before its value is set (1 instantiations, nvcc #549-D): '
                         "a read of an unset value"]
+
+
+def test_check_names_a_register_notice_of_c7511_as_the_known_code_it_is(tmp_path, monkeypatch):
+    c7511 = ("ptxas info    : (C7511) Potential Performance Loss: wgmma.mma_async instructions are serialized due to "
+             "insufficient register resources for the function in the function '{}'")
+    failures = checked(tmp_path, monkeypatch, c7511.format("k"))
+    assert len(failures) == 1 and "each role's whole body inside its own branch" in failures[0]
+    assert "seen here first" not in failures[0]

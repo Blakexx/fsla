@@ -3438,6 +3438,9 @@ int main(int argc, char** argv) {
     //: thread of the warpgroup takes: it serializes one group of steps (ptxas C7520). That is a known defect of these
     //: rows, built to measure issuing only the steps a list reaches: their numbers are of a serialized form
     if ((roles & kSkip) && (roles & kReady)) b.expect(k, "STEPS_SERIALIZED", "<=", 1);
+    //: the packed rows' fold steps are a list's rolled loop (above): steps that do not pipeline (H100, 2026-11-20),
+    //: a known defect of these rows: their recorded figures are of steps that do not pipeline
+    if ((roles & kPacked) == kPacked) b.expect(k, "STEP_ROLLED", "<=", 16);
     //: a packed producer's statement of a later slot's bytes follows its store of its own slot's header: the fold
     //: reads the header behind the slot's arrival, which the fence precedes
     if ((roles & kPacked) == kPacked && !(roles & kRead)) b.expect(k, "STORE_UNFENCED", "<=", 1);

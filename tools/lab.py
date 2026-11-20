@@ -108,8 +108,10 @@ INJECTED_WAIT = "warpgroup.wait is injected"
 SETMAXNREG = "'setmaxnreg' ignored"
 _NOTICE = re.compile(r"\((C\d+)\) (.*?) in (?:the )?function '([^']+)'")
 _SETMAXNREG = re.compile(r"(?:\((C\d+)\) )?Potential Performance Loss: " + re.escape(SETMAXNREG) + r"\s*(.*?)\.?$", re.M)
-#: what the two serializing notices seen so far ask of the source (any other code is refused with its own reason)
-SERIALIZED_FIX = {"C7512": "C7512: a step's operand registers are written before its commit group and the role holds "
+#: what the serializing notices seen so far ask of the source (any other code is refused with its own reason)
+SERIALIZED_FIX = {"C7511": "C7511: a role's work after a join is compiled at the lower register count -- state the count at "
+                           "entry and put each role's whole body inside its own branch (docs/lab/reg_trade.md)",
+                  "C7512": "C7512: a step's operand registers are written before its commit group and the role holds "
                            "the count they need",
                   "C7520": "C7520: a tensor step under a branch -- make the choice a loop's trip count, each step "
                            "behind its own `wg_fence`"}
@@ -226,7 +228,7 @@ _PRE_WAIT = {"clock_time", "fold_stream", "intra_chain", "intra_window", "pool_f
              "state_image", "step_queue", "wgmma_width"}
 #: the hazards an experiment may declare a count of (`Bench::expect(kernel, NAME, "<=", n)`), beside its opcodes
 HAZARDS = ("LOOP_CONVERGENCE", "LOAD_IN_TRIP", "STORE_RELOAD", "STORE_UNFENCED", "STEPS_SERIALIZED", "WAIT_INJECTED", "CLOCK_UNIFORM",
-          "WAIT_AFTER_ISSUE", "STEP_PORT", "STEP_WORK")
+          "WAIT_AFTER_ISSUE", "STEP_ROLLED", "STEP_PORT", "STEP_WORK")
 
 
 #: a warp collective after the `?` of a statement's conditional: only the lanes the condition takes reach it
@@ -428,6 +430,27 @@ def wait_after_issue(body: list[tuple[int, str, str]]) -> int:
             if SUBSTANCE.match(op) or op.startswith(STOPS):
                 break
     return found
+
+
+def steps_rolled(body: list[tuple[int, str, str]]) -> list[tuple[int, int]]:
+    """STEP_ROLLED: the loops (address spans a backward branch closes) that are the innermost around a tensor step and
+    hold no tensor wait (`WARPGROUP.DEPBAR`): steps issued from a rolled loop do not pipeline (137 cycles a step against
+    64 in a straight block, H100, 2026-11-20, with no notice from the toolkit). A kernel's outer loop, which holds its
+    steps and the wait on them, is not one; nor is a step under a forward branch."""
+    loops = loops_of(body)
+    innermost = set()
+    for at, op, _ in body:
+        if op.startswith(WGMMA) and (around := [span for span in loops if span[0] <= at <= span[1]]):
+            innermost.add(min(around, key=lambda span: span[1] - span[0]))
+    return sorted(span for span in innermost
+                  if not any(span[0] <= at <= span[1] and op.startswith("WARPGROUP.DEPBAR") for at, op, _ in body))
+
+
+def rolled_steps(binary: Path) -> dict[str, list[tuple[int, int]]]:
+    """Per kernel (demangled) that has any: `steps_rolled`."""
+    found = {name: spans for name, body in disassembled(binary).items() if (spans := steps_rolled(body))}
+    names = demangle(list(found))
+    return {names[k]: v for k, v in found.items()}
 
 
 def waits_after_issue(binary: Path) -> dict[str, int]:
@@ -758,6 +781,16 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
                 failures.append(f"{k}: the toolkit serialized its asynchronous MMAs, each step waiting out the one before: "
                                 f"{what}; {declared} declared (STEPS_SERIALIZED). {fixes or 'A code seen here first: read its reason'} "
                                 "(docs/internals/LEARNINGS.md)")
+        for k, spans in rolled_steps(binary).items():
+            declared = max((e["count"] for e in expected if e["op"] == "STEP_ROLLED" and re.search(e["kernel"], k)),
+                           default=0)
+            if len(spans) > declared:
+                where = ", ".join(f"{lo:#x}-{hi:#x}" for lo, hi in spans)
+                failures.append(f"{k}: {len(spans)} loops issue tensor steps and hold no wait on them (at {where}), "
+                                f"{declared} declared (STEP_ROLLED): steps in a rolled loop do not pipeline (137 cycles "
+                                "a step against 64 in a straight block, H100, 2026-11-20, and the toolkit says nothing): "
+                                "write them a straight block, or a step that may be absent under a forward branch behind "
+                                "its own fence (docs/internals/LEARNINGS.md)")
         for k, by_code in injected_waits(binary).items():
             declared = max((e["count"] for e in expected if e["op"] == "WAIT_INJECTED" and re.search(e["kernel"], k)),
                            default=0)

@@ -108,23 +108,24 @@ each thread's own). And EVERY kernel of it, budgeted or exempt, is held to the c
 declares it (`Bench::expect(kernel, NAME, "<=", n)`): `LOOP_CONVERGENCE`; `LOAD_IN_TRIP`, the global loads whose
 value an instruction of the same innermost trip reads; `STORE_RELOAD`, the shared loads of an address the same trip
 stored to; `STORE_UNFENCED`, in a kernel that holds a wgmma, the barrier arrivals that follow a shared store with no
-`fence.proxy.async` between them; `STEPS_SERIALIZED`, the toolkit's notices that it serialized the kernel's
-asynchronous MMAs (kept beside the build's binary), counted by what they say, not by a code: ptxas's code numbers are
-not documented, its nine templates share the words "wgmma.mma_async instructions are serialized due to", and a code
-no build has emitted yet (C7512, for want of registers; C7520, for a tensor step under a branch the compiler cannot
-prove every thread of the warpgroup takes, are the two seen or assumed) is caught the first time it appears. The
-refusal quotes the notice's own reason -- an ill formed pipeline stage, registers, non-MMA code defining or reading
-a step's accumulators or inputs, a divergent compiler-inserted barrier, an extern call, a pipeline across a call --
-and, for the two known, what to do (the role holds the count the steps' operand sets need; make a branch's choice a
-loop's trip count, each step behind its own `wg_fence`). Either way each step waits out the one before it, and the
-kernel does not measure the steps its source states. An experiment that keeps a serialized form on purpose
-declares the count in `main` with its reason (`carry_window`'s ready skipping rows declare their C7520, a known defect
-of those rows: their numbers are of a serialized form);
+`fence.proxy.async` between them; `STEPS_SERIALIZED`, the toolkit's notices that it serialized the kernel's asynchronous MMAs (kept beside the build's
+binary): each step then waits out the one before it, and the kernel does not measure the steps its source states. The
+codes are not documented and three serializing ones are known here (C7511, registers after a join, recorded in
+[`reg_trade`](../../lab/reg_trade.md); C7512; C7520), so a notice is read by what it says and a code not yet seen is
+refused the first time it appears. An experiment that keeps a serialized form on purpose declares the count in
+`main` with its reason (`carry_window`'s ready skipping rows declare their C7520: their numbers are of a serialized
+form);
+`STEP_ROLLED`, the loops that are the innermost around a tensor step and hold no wait on its group: steps issued from a
+rolled loop do not pipeline (137 cycles a step against 64 in a straight block, H100, 2026-11-20) and the toolkit says
+nothing, so only the SASS shows it. A step that may be absent goes under a forward branch behind its own fence, or in a
+straight block; a window's trip that holds the steps and the wait on them is not the hazard. An experiment that keeps
+the form on purpose declares the count with its reason (`fold_forms`'s tile forms and `carry_window`'s packed rows, whose recorded figures are of steps
+that do not pipeline);
 `WAIT_INJECTED`, the toolkit's notices that it wrote a `warpgroup.wait` into the step stream (ptxas C7517, "warpgroup.wait is
 injected ... to allow use of registers defined by GMMA"): a wait the source did not state, ahead of code that reads
 a tensor step's registers, so the kernel's stream is not the one its source writes. An experiment whose point is that
 read declares the count with its reason (`wgmma_regs`'s narrowed forms read the fold's accumulators and declare one a
-kernel); the toolkit's injected arrive (C7519) is not counted, being one cheap arrive. Two more refusals take no
+kernel); the toolkit's injected arrive (C7519) is not counted: no lab record measures its cost. Two more refusals take no
 declaration and no debt. A `setmaxnreg` the toolkit ignored (its five templates, "'setmaxnreg' ignored" to allow
 debugging, for compilation units, into an extern call, for minimum register requirements or for want of the entry
 count) refuses the whole experiment, the notices naming no function; no experiment has one, and the register split

@@ -36,6 +36,8 @@ spread of a row 1.1%). Cycles a window a CTA:
 | the register form, a warp's own classes computed | 5,253 | 1.80 |
 | the tile form, its dense lines fetched from the level by token | 3,019 | 1.03 |
 
+The tile form's list steps issue from a rolled loop that holds no wait on them and do not pipeline (`STEP_ROLLED`), so the tile forms' recorded figures are of steps that do not pipeline: a known defect of those rows.
+
 WHAT IT SHOWS.
 - THE REGISTER FORM, EVERY CLASS COMPUTED: 4,100 cycles a window a CTA, 1.40 of the tile form's 2,921, 1,179 cycles above it.
 - THE REGISTER FORM, A WARP'S OWN CLASSES COMPUTED: 5,253 cycles a window a CTA, 1.80 of the tile form's 2,921, 2,332 cycles above it.
