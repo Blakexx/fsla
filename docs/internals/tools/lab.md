@@ -116,8 +116,8 @@ refused the first time it appears. An experiment that keeps a serialized form on
 `main` with its reason (`carry_window`'s ready skipping rows declare their C7520: their numbers are of a serialized
 form);
 `STEP_ROLLED`, the loops that are the innermost around a tensor step and hold no wait on its group: steps issued from a
-rolled loop do not pipeline (137 cycles a step against 64 in a straight block, H100, 2026-11-20) and the toolkit says
-nothing, so only the SASS shows it. A step that may be absent goes under a forward branch behind its own fence, or in a
+rolled loop were measured at about half a straight block's rate on a build that was not kept (H100, 2026-11-20: no lab
+record holds the figure yet) and the toolkit says nothing, so only the SASS shows it. A step that may be absent goes under a forward branch behind its own fence, or in a
 straight block; a window's trip that holds the steps and the wait on them is not the hazard. An experiment that keeps
 the form on purpose declares the count with its reason (`fold_forms`'s tile forms and `carry_window`'s packed rows, whose recorded figures are of steps
 that do not pipeline);

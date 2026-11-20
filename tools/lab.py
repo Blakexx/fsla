@@ -113,8 +113,9 @@ SERIALIZED_FIX = {"C7511": "C7511: a role's work after a join is compiled at the
                            "entry and put each role's whole body inside its own branch (docs/lab/reg_trade.md)",
                   "C7512": "C7512: a step's operand registers are written before its commit group and the role holds "
                            "the count they need",
-                  "C7520": "C7520: a tensor step under a branch -- make the choice a loop's trip count, each step "
-                           "behind its own `wg_fence`"}
+                  "C7520": "C7520: a tensor step under a branch -- write the steps a straight block, a step that "
+                           "may be absent under a forward branch behind its own `wg_fence` (not a rolled loop: "
+                           "STEP_ROLLED)"}
 #: nvcc's warning that a variable is read before it is set: a read of an unset value, in no experiment
 _UNSET = re.compile(r'^(\S.*?)\((\d+)\): warning #549-D: variable "([^"]+)" is used before its value is set', re.M)
 
@@ -434,8 +435,9 @@ def wait_after_issue(body: list[tuple[int, str, str]]) -> int:
 
 def steps_rolled(body: list[tuple[int, str, str]]) -> list[tuple[int, int]]:
     """STEP_ROLLED: the loops (address spans a backward branch closes) that are the innermost around a tensor step and
-    hold no tensor wait (`WARPGROUP.DEPBAR`): steps issued from a rolled loop do not pipeline (137 cycles a step against
-    64 in a straight block, H100, 2026-11-20, with no notice from the toolkit). A kernel's outer loop, which holds its
+    hold no tensor wait (`WARPGROUP.DEPBAR`): steps issued from a rolled loop were measured at about half a
+    straight block's rate on a build that was not kept (H100, 2026-11-20: no lab record holds the figure yet), with no
+    notice from the toolkit. A kernel's outer loop, which holds its
     steps and the wait on them, is not one; nor is a step under a forward branch."""
     loops = loops_of(body)
     innermost = set()
@@ -787,8 +789,9 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
             if len(spans) > declared:
                 where = ", ".join(f"{lo:#x}-{hi:#x}" for lo, hi in spans)
                 failures.append(f"{k}: {len(spans)} loops issue tensor steps and hold no wait on them (at {where}), "
-                                f"{declared} declared (STEP_ROLLED): steps in a rolled loop do not pipeline (137 cycles "
-                                "a step against 64 in a straight block, H100, 2026-11-20, and the toolkit says nothing): "
+                                f"{declared} declared (STEP_ROLLED): steps in a rolled loop were measured at about half "
+                                "a straight block's rate (a build not kept: no lab record holds the figure yet) and the "
+                                "toolkit says nothing: "
                                 "write them a straight block, or a step that may be absent under a forward branch behind "
                                 "its own fence (docs/internals/LEARNINGS.md)")
         for k, by_code in injected_waits(binary).items():
@@ -1240,11 +1243,14 @@ def ledger_dumps(name: str, source: Path, into: Path, patterns: list[str], skip:
     if not chosen:
         print(f"lab: no kernel of {name}'s pack matches {patterns}")
         return 1
+
     into.mkdir(parents=True, exist_ok=True)
     extra, _ = inputs(name)
     files = {}
     for k in chosen:
-        ids = re.findall(r"\d{4,}", k.split("(")[0] if "<" not in k else k[:k.index(">") + 1])
+        #: a kernel's template numbers: the long ones a single-parameter experiment has, else every `(int)` argument
+        head = k.split("(")[0] if "<" not in k else k[:k.index(">") + 1]
+        ids = re.findall(r"\d{4,}", head) or re.findall(r"\(int\)(\d+)", head)
         if not ids:
             print(f"lab: {k[:80]} has no template number to name its dump by")
             return 1

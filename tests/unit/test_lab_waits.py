@@ -107,5 +107,5 @@ def test_a_declared_count_of_rolled_steps_is_kept(tmp_path, monkeypatch):
 
     failures = refused(0)
     assert len(failures) == 1 and "k: 2 loops issue tensor steps" in failures[0] and "0x0-0x20, 0x40-0x60" in failures[0]
-    assert "137 cycles a step against 64" in failures[0] and "straight block" in failures[0]
+    assert "half a straight block's rate" in failures[0] and "forward branch" in failures[0]
     assert refused(1) != [] and refused(2) == []

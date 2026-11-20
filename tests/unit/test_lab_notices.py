@@ -104,7 +104,7 @@ def test_check_refuses_a_serialization_notice_of_any_code_quoting_its_reason(tmp
     failures = checked(tmp_path, monkeypatch, C7599.format("k"), C7520.format("k"))
     assert len(failures) == 1 and "k: the toolkit serialized" in failures[0]
     assert "(C7599) the presence of Extern calls" in failures[0] and f"(C7520) {AR}" in failures[0]
-    assert "a loop's trip count" in failures[0]
+    assert "forward branch" in failures[0] and "STEP_ROLLED" in failures[0]
 
 
 def test_check_lets_a_declared_count_of_serialization_through(tmp_path, monkeypatch):
