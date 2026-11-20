@@ -23,8 +23,8 @@ live on 4 of the 256 digits, the block's 16 kept, the mask digit-major.
 Every packet is checked byte for byte against the host's.
 Rows: a thread an entry's eight loads; the loads and stores with 8 lanes a row; that form with each thread 0's phases
 clocked (the lists and their barrier, the entries' tokens and their barrier, the values landing, the values' stores
-and their barrier, the packet's store); and four PROBES of the 8-lanes form, unchecked: every entry the zero line (no
-table line read), no packet stored, the zero line and no packet stored, no entry's token written. A form's window is
+and their barrier, the packet's store); and two PROBES of the 8-lanes form, unchecked: no packet stored, and no entry's
+token written. A form's window is
 also stated a token a side (SM-cycles a token) and an entry (cycles an entry a CTA).
 - LIVE: 8 lines a thread through the plan.
 

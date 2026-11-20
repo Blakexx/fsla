@@ -24,8 +24,8 @@ constexpr int kWarps = 16, kThreads = 32 * kWarps, kDigits = 16, kWindow = 1024,
 constexpr int kTableTokens = 65536, kZeroToken = kTableTokens;
 //: a form's bits: its phases clocked; its values moved by asynchronous copies, a row's 8 pieces 8 lanes of one instruction
 //: or by loads and stores so laid: instruction `i` of a warp four rows, lane `8 r + c` piece `c` of row `r`
-enum Form { kPlain = 0, kPhased = 1, kCopied = 2, kLaned = 4 };
-enum Probe { kNoReads = 1, kNoStore = 2, kOneWindow = 4, kNoBytes = 8, kNoTokens = 16 };
+enum Form { kPlain = 0, kPhased = 1, kLaned = 4 };
+enum Probe { kNoStore = 2, kNoTokens = 16 };
 enum Phase { kLists, kEntries, kLoads, kStores, kOut, kPhases };
 //: A PACKET: a head (R, the entries, a list's count: 48 bytes), R tokens (16 bits, in the window), R sparse bytes, 8
 //: planes of R lines; R the entries and a step's slack, a multiple of 32
@@ -118,9 +118,7 @@ __global__ void __launch_bounds__(kThreads, 1)
     lap(kEntries);
     const bool there = static_cast<uint32_t>(tid) < entries;
     digit = there ? digits[tid] : 0u;
-    //: PROBES (unchecked rows): every entry the zero token's, so no table line is read; or no packet stored
-    token = there && (probe & kNoReads) == 0 ? window_of(blockIdx.x, (probe & kOneWindow) != 0 ? 0 : trip) * kWindow + (tokens[tid] & (kWindow - 1))
-                                             : static_cast<uint32_t>(kZeroToken);
+    token = there ? window_of(blockIdx.x, trip) * kWindow + (tokens[tid] & (kWindow - 1)) : static_cast<uint32_t>(kZeroToken);
     if (!there && tid < run) tokens[tid] = 0;
   };
   lab::WarpSpan clock;
@@ -136,23 +134,9 @@ __global__ void __launch_bounds__(kThreads, 1)
     const bool moves = tid < mine, there = static_cast<uint32_t>(tid) < entries;
     uint4 line[8];
     uint8_t byte = 0;
-    if constexpr ((FORM & kCopied) != 0) {
-      //: THE COPIED FORM: instruction `i` of a warp moves entries `64 i + 4 warp` to that and 3, lane `8 r + c` piece
-      //: `c` of entry `r`'s token's line to plane `c` -- 8 lanes a row an instruction, no register, no wait
-      const uint32_t planes_at = base + (trip % kPackets) * kPacketRoom + kHead + 3 * mine;
-      const uint16_t* const tokens = reinterpret_cast<const uint16_t*>(packet + kHead);
-#pragma unroll
-      for (int i = 0; i < kMaxRun / 64; ++i) {
-        if (64 * i < mine) {
-          const uint32_t e = static_cast<uint32_t>(64 * i + 4 * warp + (lane >> 3));
-          const uint32_t from = e < entries ? window_of(blockIdx.x, trip) * kWindow + (tokens[e] & (kWindow - 1)) : static_cast<uint32_t>(kZeroToken);
-          lab::cp_async16(planes_at + ((lane & 7) * pitch_of(mine) + e) * 16, values + static_cast<size_t>(from) * 8 + (lane & 7));
-        }
-      }
-      lab::cp_commit();
-      if (there) byte = sparse[static_cast<size_t>(token) * kDigits + digit];
-    } else if constexpr ((FORM & kLaned) != 0) {
-      //: THE LANED FORM: the same lanes and rows as the copied form's, by a load into a register each
+    if constexpr ((FORM & kLaned) != 0) {
+      //: THE LANED FORM: instruction `i` of a warp loads entries `64 i + 4 warp` to that and 3, lane `8 r + c` piece
+      //: `c` of entry `r`'s token's line -- 8 lanes a row an instruction, a register each
       const uint16_t* const tokens = reinterpret_cast<const uint16_t*>(packet + kHead);
 #pragma unroll
       for (int i = 0; i < kMaxRun / 64; ++i) {
@@ -166,14 +150,10 @@ __global__ void __launch_bounds__(kThreads, 1)
     } else if (moves) {
 #pragma unroll
       for (int c = 0; c < 8; ++c) line[c] = values[static_cast<size_t>(token) * 8 + c];
-      if (there && (probe & kNoBytes) == 0) byte = sparse[static_cast<size_t>(token) * kDigits + digit];
+      if (there) byte = sparse[static_cast<size_t>(token) * kDigits + digit];
     }
     plan(trip + 1);
-    if constexpr ((FORM & kCopied) != 0) {
-      lab::cp_wait_all();
-      lap(kLoads);
-      if (moves) packet[kHead + 2 * mine + tid] = byte;
-    } else if constexpr ((FORM & kLaned) != 0) {
+    if constexpr ((FORM & kLaned) != 0) {
       if constexpr ((FORM & kPhased) != 0) {
         int landed = static_cast<int>(line[0].w) + byte;
         lab::wg_hold(landed);
@@ -335,13 +315,12 @@ int main(int argc, char** argv) {
     }
   };
   row(gather<kPlain>, cell + ", a thread an entry's eight loads", false);
-  //: THE PROBES of the plain form, unchecked: what a trip is with no table line read, with no packet stored, with neither
-  for (int probe : {1, 2, 3, 16}) {
+  //: THE PROBES of the 8-lanes form, unchecked: what a trip is with no packet stored, and with no entry's token written
+  for (int probe : {kNoStore, kNoTokens}) {
     const auto plain = gather<kLaned>;
     LAB_CHECK(cudaFuncSetAttribute(plain, cudaFuncAttributeMaxDynamicSharedMemorySize, kShared));
     const std::string name = cell + ", loads and stores, 8 lanes a row, PROBE "
-                             + (probe == 1 ? "every entry the zero line" : probe == 2 ? "no packet stored" : probe == 3 ? "the zero line and no packet stored"
-                                : "no entry's token written");
+                             + (probe == kNoStore ? "no packet stored" : "no entry's token written");
     const lab::Samples cycles = b.variant(
         [&] { plain<<<b.sms, kThreads, kShared>>>(b.times, dmasks, reinterpret_cast<const uint4*>(dtable), dbytes, out, dphases, kMeasured, kStored, probe); },
         [&] { return b.span(kWarps) / kMeasured; });

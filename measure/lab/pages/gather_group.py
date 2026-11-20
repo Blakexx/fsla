@@ -26,9 +26,7 @@ LOADS = CELL + ", a thread an entry's eight loads"
 LANED = CELL + ", loads and stores, 8 lanes a row"
 PHASED = LANED + ", its phases clocked"
 PROBES = (
-    ("every entry the zero line", "no table line read"),
     ("no packet stored", "no packet stored"),
-    ("the zero line and no packet stored", "no table line read and no packet stored"),
     ("no entry's token written", "no entry's token written"),
 )
 PHASES = (
