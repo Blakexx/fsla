@@ -148,9 +148,8 @@ the most.
 `Bench::expect(kernel, "STEP_PORT", "<=", bytes)` and `"STEP_WORK"` (the total instructions) are declared bounds, `<=`
 only: undeclared, nothing is refused; declared, a region of the kernel over it refuses the run, and a bound that matches
 no kernel with a step is refused too. The registers a kernel holds are not a bound here: ptxas's allocation is in the
-pack file, a kernel that does not fit its launch bounds spills and is refused for local memory, and a role's register
-budget is the `registers` line of its budget file, which `tools/life_ranges.py --budget` holds to the peak LIVE registers
-of each component (KERNEL_STANDARDS section 32) -- a different figure from the allocation. `carry_token` bounds both by
+pack file and a kernel that does not fit its launch bounds spills and is refused for local memory; nothing holds a
+lab kernel to a role's register budget. `carry_token` bounds both by
 the most of its rows and `wgmma_width` bounds `STEP_PORT` at 2,048 + 32 N.
 NOT COUNTED: the copy engine's writes (bulk copies, the tensor memory access), bank conflicts, lanes masked off, generic
 loads and stores that reach shared memory, atomics, a shared access outside the region, and trip counts: a loop's

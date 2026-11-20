@@ -9,9 +9,8 @@ be is the warpgroup's registers, a step 16 tokens by a group of four sparse digi
 step's one shared-memory operand. What does a window cost a CTA of two boxes in each?
 
 THE FORM. A CTA an SM of two fold warpgroups, a box each of 16 lists of 12 to 24 entries (256 a window), 16
-accumulator sets of 8 or 4 of 32 in registers. A window's value lines land by one bulk copy a box into one of two
-buffers, the copy for the window after next issued behind the wait on this one's steps; the packets land before the
-clock, and every accumulator is checked exactly. A warpgroup's trip is a window.
+accumulator sets of 8 or 4 of 32 in registers. A box's two packets land once, before the clock, a bulk copy each
+into its own buffer, and its windows take them in turn: no copy is in a window. Every accumulator is checked exactly. A warpgroup's trip is a window.
 - THE TILE FORM: a thread expands its entries (a dense line and a sparse byte each, loaded from the packet's header)
   to two lines of the entry's step's tile; the fence, the warpgroup's barrier; a list's one or two steps in a rolled
   loop; the commit and the wait.
@@ -25,3 +24,24 @@ clock, and every accumulator is checked exactly. A warpgroup's trip is a window.
   next. EVERY CLASS COMPUTED, or ONLY THE CLASSES A WARP HAS.
 - LIVE: 128 accumulators a thread; the tile form three entries' lines and bytes; the register form a stage's cell and
   four dense pairs.
+
+MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM r1xrwyyv, driver 580.196.07; 2026-11-20, the experiment at
+5979607b; 7 repetitions; the 4 checked rows pass, every accumulator exact; the median, the widest
+spread of a row 1.1%). Cycles a window a CTA:
+
+| form | cycles a window a CTA | against the tile form |
+|---|---:|---:|
+| the tile form: the coefficients a tile in shared memory, a step a list | 2,921 | 1.00 |
+| the register form, every class computed: a step four digits | 4,100 | 1.40 |
+| the register form, a warp's own classes computed | 5,253 | 1.80 |
+| the tile form, its dense lines fetched from the level by token | 3,019 | 1.03 |
+
+WHAT IT SHOWS.
+- THE REGISTER FORM, EVERY CLASS COMPUTED: 4,100 cycles a window a CTA, 1.40 of the tile form's 2,921, 1,179 cycles above it.
+- THE REGISTER FORM, A WARP'S OWN CLASSES COMPUTED: 5,253 cycles a window a CTA, 1.80 of the tile form's 2,921, 2,332 cycles above it.
+- A WARP'S OWN CLASSES AGAINST EVERY CLASS: 1,153 cycles more a window a CTA,
+  1.28 of the every-class form's 4,100.
+- THE TILE FORM, ITS DENSE LINES FETCHED FROM THE LEVEL: 3,019 cycles a window a CTA, 1.03 of the tile form's 2,921, 98 cycles above it.
+- THE CHEAPEST FORM is the tile form: 2,921 cycles a window a CTA, 1.00 of the tile form's.
+
+Record: `measure/lab/results/fold_forms/sm_90a.json`.

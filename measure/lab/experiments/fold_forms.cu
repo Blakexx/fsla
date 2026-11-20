@@ -3,8 +3,8 @@
 // padded by the layout), or the warpgroup's REGISTERS, a step 16 tokens by a GROUP of four sparse digits, a warp a
 // digit, the values the step's one shared-memory operand -- what does a window cost a CTA of two boxes in each?
 // METHOD: a CTA an SM of two fold warpgroups, a box each of 16 lists of 12 to 24 entries (256 a window), 16
-// accumulator sets of 8 or 4 of 32 in registers. A window's value lines land by one bulk copy a box into one of two
-// buffers, the copy for the window after next issued behind the wait on this one's steps. TILE: a thread expands its
+// accumulator sets of 8 or 4 of 32 in registers. A box's two packets land once, before the clock, a bulk
+// copy each into its own buffer, and its windows take them in turn (no copy is in a window). TILE: a thread expands its
 // entries (a dense line and a sparse byte each, loaded from the packet's header) to two lines of the entry's step's
 // tile; the fence, the warpgroup's barrier; a list's one or two steps in a rolled loop. REGISTER: a step's 16
 // positions are four CLASSES of four (a thread holds two dense rows of positions 2t, 2t + 1, 8 + 2t, 9 + 2t), the
@@ -15,7 +15,7 @@
 // the wait on it opens the next. The packets land before the clock. Every accumulator is checked exactly.
 // TIMELINE: a warpgroup's trip is a window: (TILE: its entries' loads, 16 products and two stores an entry, the
 // fence, the barrier;) the wait on its values; its steps, each (REGISTER) its four words formed from the stage loaded
-// before, the next stage's reads, the fence; the commit, the wait, the copy for the window after next. Live: 128
+// before, the next stage's reads, the fence; the commit, the wait. Live: 128
 // accumulators a thread; TILE three entries' lines and bytes; REGISTER a stage's cell and four dense pairs.
 // see docs/internals/tools/lab.md#fold-forms
 #include "lab.cuh"
