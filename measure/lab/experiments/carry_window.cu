@@ -3434,6 +3434,9 @@ int main(int argc, char** argv) {
                  //: (with no readout's steps its commit and wait remain, and the toolkit lays them a null step there:
                  //: `HGMMA.64x8x16.F16 RZ, gdesc[URZ], RZ` -- 33 where the fold's are 32)
                  + (roles & kNoReadSteps ? 1 : 0));
+    //: the ready skipping rows' one-trip step loops sit under the list's own branch, which the toolkit cannot prove every
+    //: thread of the warpgroup takes: it serializes one group of steps (ptxas C7520), the form these rows measure
+    if ((roles & kSkip) && (roles & kReady)) b.expect(k, "STEPS_SERIALIZED", "<=", 1);
     //: a packed producer's statement of a later slot's bytes follows its store of its own slot's header: the fold
     //: reads the header behind the slot's arrival, which the fence precedes
     if ((roles & kPacked) == kPacked && !(roles & kRead)) b.expect(k, "STORE_UNFENCED", "<=", 1);

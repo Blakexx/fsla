@@ -109,7 +109,12 @@ declares it (`Bench::expect(kernel, NAME, "<=", n)`): `LOOP_CONVERGENCE`; `LOAD_
 value an instruction of the same innermost trip reads; `STORE_RELOAD`, the shared loads of an address the same trip
 stored to; `STORE_UNFENCED`, in a kernel that holds a wgmma, the barrier arrivals that follow a shared store with no
 `fence.proxy.async` between them; `STEPS_SERIALIZED`, the toolkit's notices that it serialized the kernel's
-asynchronous MMAs for want of registers (ptxas C7512, kept beside the build's binary);
+asynchronous MMAs (kept beside the build's binary), one hazard for both causes and the refusal names which: ptxas C7512, for
+want of registers (the role holds the count the steps' operand sets need), and C7520, for a tensor step under a
+branch the compiler cannot prove every thread of the warpgroup takes (make the choice a loop's trip count, each step
+behind its own `wg_fence`) -- either way each step waits out the one before it, and the kernel does not measure the
+steps its source states. An experiment that keeps a serialized form on purpose (a row that measures it) declares the
+count in `main` with its reason (`carry_window`'s ready skipping rows declare their C7520);
 `WAIT_AFTER_ISSUE` (KERNEL_STANDARDS 29.16), the tensor waits that leave no group in flight (`WARPGROUP.DEPBAR`, count
 0) whose group's last step (`HGMMA`; the commit is no instruction, the `gsb0` flag on that step) is followed by no
 WORK OF SUBSTANCE before them: a load or store (generic, global, shared, local, the matrix forms, atomics,

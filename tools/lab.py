@@ -99,15 +99,24 @@ def notices(binary: Path) -> Path:
     return binary.with_name(binary.name + ".ptxas")
 
 
-def serialized(binary: Path) -> dict[str, int]:
-    """Per kernel (demangled): the toolkit's notices that it SERIALIZED the kernel's asynchronous MMAs for want of
-    registers (ptxas C7512) -- each then waits out the one before, and the kernel does not measure the steps its
-    source states. Nothing where the build left no notices (a packed binary run elsewhere)."""
+#: the toolkit's notices that it serialized a kernel's asynchronous MMAs: C7512, for want of registers; C7520, for a
+#: tensor step on a path it cannot prove every thread of the warpgroup takes (compiler-inserted WG.AR in a divergent path)
+SERIALIZING = {"C7512": "for want of registers", "C7520": "under a branch it cannot prove uniform"}
+_NOTICE = re.compile(r"\((C\d+)\).*?function '([^']+)'")
+
+
+def serialized(binary: Path) -> dict[str, Counter]:
+    """Per kernel (demangled): the toolkit's notices that it SERIALIZED the kernel's asynchronous MMAs (`SERIALIZING`,
+    a count each by notice code) -- each step then waits out the one before, and the kernel does not measure the steps
+    its source states. Nothing where the build left no notices (a packed binary run elsewhere)."""
     if not notices(binary).exists():
         return {}
-    found = Counter(re.findall(r"\(C7512\).*?function '([^']+)'", notices(binary).read_text()))
+    found: dict[str, Counter] = {}
+    for code, name in _NOTICE.findall(notices(binary).read_text()):
+        if code in SERIALIZING:
+            found.setdefault(name, Counter())[code] += 1
     names = demangle(list(found))
-    return {names[k]: n for k, n in found.items()}
+    return {names[k]: v for k, v in found.items()}
 
 
 def demangle(names: list[str]) -> dict[str, str]:
@@ -690,13 +699,15 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
                 failures.append(f"{k}: {n} tensor waits directly after their group's steps, {declared} declared "
                                 "(WAIT_AFTER_ISSUE): work that does not read the group's accumulators belongs between "
                                 "the issue and the wait: KERNEL_STANDARDS 29.16 (`lab waits` lists the candidates)")
-        for k, n in serialized(binary).items():
+        for k, by_code in serialized(binary).items():
             declared = max((e["count"] for e in expected if e["op"] == "STEPS_SERIALIZED" and re.search(e["kernel"], k)),
                            default=0)
-            if n > declared:
-                failures.append(f"{k}: the toolkit serialized its asynchronous MMAs for want of registers (ptxas "
-                                f"C7512), {declared} declared (STEPS_SERIALIZED): a step's operand registers are "
-                                "written before its commit group and the role holds the count they need "
+            if sum(by_code.values()) > declared:
+                what = ", ".join(f"{n} x {c} ({SERIALIZING[c]})" for c, n in sorted(by_code.items()))
+                failures.append(f"{k}: the toolkit serialized its asynchronous MMAs: {what}; {declared} declared "
+                                "(STEPS_SERIALIZED). C7512: a step's operand registers are written before its commit "
+                                "group and the role holds the count they need; C7520: a tensor step under a branch -- "
+                                "make the choice a loop's trip count, each step behind its own `wg_fence` "
                                 "(docs/internals/LEARNINGS.md)")
 
     if binary.name.split(".")[0] not in _PRE_29:
