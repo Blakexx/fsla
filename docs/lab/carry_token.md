@@ -10,14 +10,14 @@ waits on which, what do the fold's fill and its steps cost apart, and what does 
 THE FORM. A CTA an SM of four warpgroups, 512 threads, registers traded by role: two fold warpgroups at 168, the
 readout at 120, four drain warps at 56.
 - A PACKET is a box's window: its HEADER (an entry's word and sparse byte; where each of the 32 steps' A tile starts
-  among the value lines, a byte a step; which of a step's 16 places hold an entry; which steps are there) and its
+  among the value lines, a byte a step; for a place of a step that holds none a PAD, a word naming its two tile lines; which steps are there) and its
   VALUE LINES, a brick a run of 256. It lands by two bulk copies behind one barrier, issued behind the warpgroup's barrier that follows the wait on the
   window before's steps. THE ONE RULE on it: a step's 16 tokens are consecutive positions -- then they are an
   M|N-major tile the step reads as it landed. Order, a token written twice, two lists' tiles overlapping on a token
   they share, and padding are the layout's.
 - THE FOLD: a thread loads its two entries' dense lines from global memory at the window's start, before the image,
   and expands each by its sparse byte to the
-  two lines of its step's coefficient tile; the places of a tile no entry fills are zeroed; no value line is moved. A
+  two lines of its step's coefficient tile; a place of a tile no entry fills is a pad's, its two lines written zero by a thread's third word; no value line is moved. A
   step's A is the landed lines at the header's start, its B its tile at the step's index: nothing is loaded a step
   and the 32 steps are one commit group. The image is published a tile group at a time behind the readout.
 - THE READOUT is mirrored: a (token, box) a thread, its 16 bytes -- loaded two passes ahead -- expanded to two lines of its digit's coefficient tile
@@ -27,7 +27,7 @@ readout at 120, four drain warps at 56.
 The kernel is `window<TRACE, DETAIL, PROBE>`. `TRACE` 0 is the plain kernel, 1 its launch's two edges stamped, 2 every
 warp's phases stamped (the coarse row: the fold's window, its expanding and its steps), 3 every stamp; `DETAIL` names
 a coarse row's one more group -- the waits on the tile groups read or published or on the panels filled or drained,
-the fold's steps by eighths, the fold's fill by phases (its entries' coefficient stores, the dead places zeroed, the
+the fold's steps by eighths, the fold's fill by phases (its entries' coefficient stores, its pad written, the
 tile starts loaded, then the wait at the fill's barrier: what a thread does and what it waits) or the waits on the
 packets landed (a wait's begin and end at the barrier, and the copy's issue where it is issued); `PROBE` is an
 isolation row's change, the read side idle. Fourteen rows: plain, edges, coarse, the seven detail rows, every stamp;

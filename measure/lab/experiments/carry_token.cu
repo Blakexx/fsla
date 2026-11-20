@@ -8,8 +8,8 @@
 // behind the warpgroup's barrier that follows the wait on the window before's steps: its HEADER -- an entry's word and sparse byte, where each of the 32
 // steps' A tile starts among the value lines, which places of a step's tile hold an entry, which steps are there --
 // and its VALUE LINES, a brick a run of 256. A fold thread loads its two entries' dense lines from global memory and
-// expands each by its sparse byte to the two lines of its step's coefficient tile; the places of a tile no entry
-// fills are zeroed; no value line is moved. A step reads its A from the landed lines -- 16 consecutive positions are
+// expands each by its sparse byte to the two lines of its step's coefficient tile; a place of a tile no entry fills
+// is a PAD's, its two lines written zero by a thread's third word; no value line is moved. A step reads its A from the landed lines -- 16 consecutive positions are
 // an M|N-major tile, its address the block's and the header's start -- and its B from its tile, addressed by the
 // step's index: nothing is loaded a step, and the 32 steps are one commit group. THE ONE RULE on a packet: a step's
 // 16 tokens are consecutive positions. The host plays the gather with two layouts: every entry its own value lines;
@@ -30,7 +30,7 @@
 // TIMELINE: a fold warpgroup's trip is a window: the image a tile group at a time, four -- the wait on the readout's
 // read of that group a window back, its 4 stores a thread of 16 bytes (two lines of two halves), their fence, the
 // group's arrival -- then the wait on its packet; a thread's two entries in turn, each its dense line (loaded at the
-// window's start, before the image) expanded to its two coefficient lines; four (step, place) pairs a thread, a dead place's two lines zeroed; the
+// window's start, before the image) expanded to its two coefficient lines; a thread's pad's two lines written zero; the
 // header's two lines of tile starts loaded and held; the fence, the warpgroup's barrier; 32 steps issued, the commit,
 // the wait, the warpgroup's barrier; the next window's packet's copies. The readout's trip is a pass: the waits on its two tile groups, a
 // thread's 16 bytes expanded to two lines of each group's tile (the bytes loaded two passes before), the fence, the
@@ -93,10 +93,13 @@ constexpr int kOutWindows = 4;
 //: a window's steps are this many rounds of its 16 lists
 constexpr int kBlockRounds = 2;
 //: A PACKET IN GLOBAL MEMORY, in lines: its HEADER, which lands -- an entry's word (the two lines of a step's tile
-//: its coefficients go to), 256; the entries' sparse bytes; where each of the 32 steps' A tile starts among the
-//: value lines, a byte a step; which of a step's 16 places hold an entry, 16 bits a step; which steps are there, a
-//: word -- then the entries' dense lines, which threads load, and the value lines, a brick a run of 256, which land
-constexpr int kOneSparse = 64, kOneTiles = 80, kOneMasks = 82, kOneLive = 86, kOneDense = 160, kOneValues = kOneDense + 2 * kGroup,
+//: its coefficients go to), 384: the window's 256 and, for every place of a step that is there and holds none, a PAD
+//: -- a thread's third word, whose two lines it writes zero (a word past the pads names a place of a step that is not
+//: there); the
+//: entries' sparse bytes; where each of the 32 steps' A tile starts among the value lines, a byte a step; which steps are
+//: there, a word -- then the entries' dense lines, which threads load, and the value lines, a brick a run of 256,
+//: which land
+constexpr int kPadded = 3 * kGroup, kOneSparse = 96, kOneTiles = 120, kOneLive = 122, kOneDense = 160, kOneValues = kOneDense + 2 * kGroup,
               kOneLines = kOneValues + 16 * kGroup;
 static_assert(kOneDense * 16 == kOneBytes);
 
@@ -149,7 +152,7 @@ enum Detail : int {
   kWaitPanelFreed = 8,
   //: the fold's steps by eighths, and what follows its last step: four marks more in its steps phase
   kSplitSteps = 16,
-  //: the fold's fill by phases: what a thread does -- its entries' coefficients stored, the dead places zeroed, the
+  //: the fold's fill by phases: what a thread does -- its entries' coefficients stored, its pad written, the
   //: tile starts loaded -- and what it waits, at the fill's barrier: three marks more in its fill
   kSplitFill = 32,
   //: the folds' waits on their packets' landing, and the copies' issues (a copy's barrier: its issue is its release)
@@ -218,9 +221,6 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
   //: a list's first step writes its accumulator whole: nothing is cleared (a cleared one in a role's branch
   //: serializes the steps, ptxas C7520)
   float d[kLists][8];
-  //: a thread's base into its box's image: every store is this plus a constant of (tile, row, half)
-  uint8_t* const mine = smem + lab::held(static_cast<uint32_t>(
-      kImageAt + box * kBoxBytes + 2 * t * kImageTile + 16 * (2 * warp * kBrickLines + q)));
   Tracer<TRACE, DETAIL> tr;
   //: window `w`'s first line in the views' table, and its table's one copy by the warpgroup's first thread
   const auto one_line = [&](int w) {
@@ -262,6 +262,10 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
     //: digit b truncated to one line of tile b, `(m / 8) 17 + m % 8 + 8 h`, once the readout has read that group
     //: of the window before: 4 stores a thread a group.
     //: The first window's image is the cleared shared memory: the state is zero
+    //: a thread's base into its box's image, formed a window (held through the image alone: the fill's registers are
+    //: the fold's most): every store is this plus a constant of (tile, row, half)
+    uint8_t* const mine = smem + lab::held(static_cast<uint32_t>(
+        kImageAt + box * kBoxBytes + 2 * t * kImageTile + 16 * (2 * warp * kBrickLines + q)));
 #pragma unroll
     for (int k = 0; k < kChunks; ++k) {
       if constexpr ((PROBE & kAlone) == 0)
@@ -284,7 +288,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
       if constexpr ((PROBE & kAlone) == 0) arrive(bars + kTilesReady + 8 * k, tr, kWaitTilesReady);
     }
     //: THE WINDOW: its packet landed; a thread's two entries' coefficients, each a dense line loaded and expanded by
-    //: its sparse byte to the two lines of its step's tile its word names; the dead places; then 32 steps
+    //: its sparse byte to the two lines of its step's tile its word names; its pad; then 32 steps
     await(bars + kPoolLanded + 8 * box, w & 1, tr, kWaitPacket);
     tr.stamp(warpline::kPhaseBegin, kMarkExpand);
     const uint32_t pool = 2 * box * kPoolBytes;
@@ -307,23 +311,21 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         *reinterpret_cast<uint4*>(image + (h == 0 ? word & 0xffffu : word >> 16) * 16) = make_uint4(pair[0], pair[1], pair[2], pair[3]);
       }
     }
-    //: THE DEAD PLACES: a step's tile has 16 places and its list's entries of that round fill some -- a thread takes
-    //: four (step, place) pairs and zeroes the two coefficient lines of a place the header's mask leaves out, in a
-    //: step that is there
     if constexpr ((DETAIL & kSplitFill) != 0) tr.stamp(warpline::kPhaseBegin, kMarkZero);
-    const uint16_t* const masks = reinterpret_cast<const uint16_t*>(table + kOneMasks * 16);
-    const uint32_t live = *reinterpret_cast<const uint32_t*>(table + kOneLive * 16);
+    //: A PAD's two lines are zero: a thread's third word, no line loaded and nothing multiplied
+    {
+      const uint32_t word = reinterpret_cast<const uint32_t*>(table)[g + 2 * kGroup];
+      //: by 8-byte stores of zero: a 16-byte store's four zero registers do not fit beside the traced rows' state
 #pragma unroll
-    for (int part = 0; part < 4; ++part) {
-      const uint32_t step = static_cast<uint32_t>(8 * part + (g >> 4)), k = static_cast<uint32_t>(g) & 15u;
-      if (((live >> step) & 1u) != 0 && ((masks[step] >> k) & 1u) == 0) {
-        const uint32_t at = kTileAt + 16 * step + k;
-        *reinterpret_cast<uint4*>(image + at * 16) = make_uint4(0, 0, 0, 0);
-        *reinterpret_cast<uint4*>(image + (at + kTilePitch) * 16) = make_uint4(0, 0, 0, 0);
+      for (int half = 0; half < 2; ++half) {
+        unsigned long long* const line = reinterpret_cast<unsigned long long*>(image + ((word >> (16 * half)) & 0xffffu) * 16);
+        line[0] = 0ull;
+        line[1] = 0ull;
       }
     }
-    //: THE STEPS' TILES, a byte a step: the first of the 16 consecutive positions whose value lines are the step's A
-    //: -- two lines of the header, held
+    const uint32_t live = *reinterpret_cast<const uint32_t*>(table + kOneLive * 16);
+    //: THE STEPS' TILES, a byte a list in the landed header: the first of the 16 consecutive positions whose value
+    //: lines are its first step's A, read at the step (a register each held through the steps does not fit)
     if constexpr ((DETAIL & kSplitFill) != 0) tr.stamp(warpline::kPhaseBegin, kMarkStarts);
     const uint4* const starts = reinterpret_cast<const uint4*>(table) + kOneTiles;
     const uint4 lo = starts[0], hi = starts[1];
@@ -334,10 +336,9 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
     tr.stamp(warpline::kPhaseBegin, kMarkSteps);
     //: THE STEPS, one commit group: A is 16 positions' value lines as they landed -- a brick a run of 256, so 16
     //: consecutive positions are an M|N-major tile of bricks 256 lines apart -- its address the packet's first line
-    //: and the step's start; B is the step's tile, the first tile and the step's index (the zeros where the step is
-    //: not there). Nothing is loaded a step
-    const uint64_t lines = lab::wg_desc(base + pool, 8, 256), tiles = lab::wg_desc(base + pool + kTileAt * 16, 8, kTilePitch),
-                   zeros = lab::wg_desc(base + kZeroAt + box * 512, 8, 16);
+    //: and the step's start; B is the step's tile. A step that is not there is not issued; nothing is loaded a step
+    const uint64_t lines = lab::wg_desc(base + pool, 8, 256), tiles = lab::wg_desc(base + pool + kTileAt * 16, 8, kTilePitch);
+    const uint64_t zeros = lab::wg_desc(base + kZeroAt + box * 512, 8, 16);
     lab::wg_fence();
 #pragma unroll
     for (int r = 0; r < kBlockRounds; ++r)
@@ -636,18 +637,22 @@ inline Buffers buffers(const lab::Bench& b) {
           if (layout == 1 && (j & 1)) at -= kShared;
           start[j] = at, at += n[j];
         }
-        uint16_t* const masks = reinterpret_cast<uint16_t*>(packet + kOneMasks * 16);
         uint32_t live = 0;
+        int pads = kWindow, absent = -1;
         for (int j = 0; j < kLists; ++j)
           for (int r = 0; r < kBlockRounds; ++r) {
             const int step = 16 * r + j;
-            if (16 * r >= n[j]) continue;
+            if (16 * r >= n[j]) {
+              absent = step;
+              continue;
+            }
             const int tile = std::min(start[j] + 16 * r, 2 * kGroup - 16);
             packet[kOneTiles * 16 + step] = static_cast<uint8_t>(tile), live |= 1u << step;
+            bool held_place[16] = {};
             for (int k = 16 * r; k < std::min(n[j], 16 * r + 16); ++k) {
               const int slot = first[j] + k, pos = start[j] + k, place = pos - tile;
               const uint32_t t = listed_token(static_cast<uint32_t>(c), static_cast<uint32_t>(w * kWindow + source_entry(layout, c, w, slot)));
-              masks[step] |= static_cast<uint16_t>(1u << place);
+              held_place[place] = true;
               reinterpret_cast<uint32_t*>(packet)[slot] =
                   static_cast<uint32_t>(kTileAt + 16 * step + place) | static_cast<uint32_t>(kTileAt + kTilePitch + 16 * step + place) << 16;
               packet[kOneSparse * 16 + slot] = static_cast<uint8_t>(sparse_of(static_cast<int>(t)));
@@ -655,7 +660,18 @@ inline Buffers buffers(const lab::Bench& b) {
               for (int br = 0; br < 8; ++br)
                 std::memcpy(packet + (kOneValues + br * 2 * kGroup + pos) * 16, &host_values[static_cast<size_t>(t) * kRowWords + 4 * br], 16);
             }
+            //: A PAD a place of this step no entry holds: its tile's two lines, a sparse byte of zero
+            for (int place = 0; place < 16; ++place)
+              if (!held_place[place]) {
+                if (pads >= kPadded) { std::fprintf(stderr, "lab: a window of over %d entries and pads\n", kPadded); std::exit(3); }
+                reinterpret_cast<uint32_t*>(packet)[pads++] =
+                    static_cast<uint32_t>(kTileAt + 16 * step + place) | static_cast<uint32_t>(kTileAt + kTilePitch + 16 * step + place) << 16;
+              }
           }
+        //: a thread's third word past the pads names a place of a step that is not there: its tile is no step's
+        for (; pads < kPadded; ++pads)
+          reinterpret_cast<uint32_t*>(packet)[pads] =
+              static_cast<uint32_t>(kTileAt + 16 * absent) | static_cast<uint32_t>(kTileAt + kTilePitch + 16 * absent) << 16;
         std::memcpy(packet + kOneLive * 16, &live, 4);
       }
     uint8_t* vdev = nullptr;
@@ -800,7 +816,7 @@ void run(lab::Bench& b, const Buffers& held) {
     for (int box = 0; box < 2; ++box) site(kBarsAt + kPoolLanded + 8 * box, "box " + std::to_string(box) + " packet landed");
     legend.insert(legend.end(), {{kMarkWindow, "window"}, {kMarkExpand, "expanding"}, {kMarkSteps, "issuing steps"}, {kMarkPanel, "storing the panel"},
                                  {kMarkAdds, "adding"}, {kStepsRead, "readout steps"}, {kMarkSteps8, "issuing steps 8 on"}, {kMarkSteps16, "issuing steps 16 on"},
-                                 {kMarkSteps24, "issuing steps 24 on"}, {kMarkTail, "after the steps"}, {kMarkZero, "zeroing dead places"},
+                                 {kMarkSteps24, "issuing steps 24 on"}, {kMarkTail, "after the steps"}, {kMarkZero, "writing its pad"},
                                  {kMarkStarts, "loading tile starts"}, {kMarkFillBar, "at the fill's barrier"}, {kMarkEntry, "entry"},
                                  {kMarkExit, "exit"}});
     //: two CTAs of the grid, or its one
@@ -821,13 +837,14 @@ int main(int argc, char** argv) {
                            {2, 0, kAlone}};
   for (const Row& row : kRows) {
     const std::string k = lab::kernel("carry_token::window", {row.trace, row.detail, row.probe});
-    //: the fold's 32 steps, one block, and the readout's 32: a window's two passes unrolled, each two groups of 4
-    //: digits, each digit's two steps
+    //: the fold's 32 steps, a list's second under its own branch, and the readout's 32: a window's two passes
+    //: unrolled, each two groups of 4 digits, each digit's two steps
+    //: and the empty group the toolkit writes where a step is under a branch
     b.expect(k, "HGMMA", "==", kLists * kBlockRounds + (row.probe & kAlone ? 0 : kChunks * 2 * kChunkDigits));
     //: a fold step's cost to its warpgroup (`lab steps`): the port bytes and instructions a step, bounded by the
     //: most of any row
     b.expect(k, "STEP_PORT", "<=", 4568);
-    b.expect(k, "STEP_WORK", "<=", 46);
+    b.expect(k, "STEP_WORK", "<=", 50);
     //: the fold's conversions are in its own trip, beside its steps: what the row measures
     b.expect(k, "STEP_XU", "<=", 40);
     //: the readout's panel is read by the drain warps' own loads, not by a step: its arrival needs no fence, and a
