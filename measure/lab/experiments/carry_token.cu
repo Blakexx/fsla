@@ -516,16 +516,20 @@ __device__ __forceinline__ void drain_role(uint8_t* smem, uint32_t base, long lo
     tr.stamp(warpline::kPhaseBegin, kMarkAdds);
     load(c, 0, 0);
     load(c, 1, 1);
-    //: the chunk's digit `j` is read digit `8 h + c + 2 j`: its 16 tokens' rows start at 16 of that
+    //: the chunk's digit `j` is read digit `8 h + c + 2 j`: its 16 tokens' rows start at 16 of that. THE LANE'S WORD
+    //: OF THE WARP'S FIRST ROW is formed once a chunk; an add's address is that and a constant -- the warp's token
+    //: `m` of the chunk is row `32 (m / 4) + 4 (m % 4)` on -- so an add is its one instruction
     const long long first = static_cast<long long>(blockIdx.x) * (kOutWindows * kWindow)
                             + ((c / kChunks) % kOutWindows) * kWindow
                             + 16 * (8 * ((c % kChunks) >> 1) + ((c % kChunks) & 1));
+    uint32_t* const at = out + (first + mine) * (kChannels / 2) + lane;
+    static_assert(kDrains == 4);
 #pragma unroll
     for (int n = 0; n < kBatches; ++n) {
 #pragma unroll
       for (int i = 0; i < kBatch; ++i) {
-        const int token = mine + kDrains * (n * kBatch + i);
-        lab::red_add_f16x2(out + (first + 32 * (token / 16) + token % 16) * (kChannels / 2) + lane, held[n & 1][i]);
+        const int m = n * kBatch + i;
+        lab::red_add_f16x2(at + (32 * (m / 4) + 4 * (m % 4)) * (kChannels / 2), held[n & 1][i]);
       }
     }
     __syncwarp();
