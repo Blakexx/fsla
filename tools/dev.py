@@ -457,6 +457,7 @@ def cmd_check(a) -> int:
         path = Path(dev_config.get(key))
         path.mkdir(parents=True, exist_ok=True)
         row(os.access(path, os.W_OK), f"{key} writable: {path}")
+    row(True, f"this checkout's scratch: {dev_config.scratch('lab').parent}")
     row(os.access(Path(dev_config.get("host.gpu_lock")).parent, os.W_OK), f"host.gpu_lock: {dev_config.get('host.gpu_lock')}")
     ghz = dev_config.get("clock.ghz")
     row(True, f"clock: {'locks at ' + str(ghz) + ' GHz' if ghz else 'unlocked (rows carry their measured clock)'}")

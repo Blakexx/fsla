@@ -164,7 +164,7 @@ THE ASSEMBLER'S OWN WARNINGS. `build` passes ptxas `--warn-on-spills` (`-warn-sp
 spilled to local memory"), `--warn-on-local-memory-usage` (`-warn-lmem-usage`: "Warning if local memory is used") and
 `--verbose` (`-v`: "prints code generation statistics", the per-function summary) through nvcc's `-Xptxas`, so the
 two warnings (`Registers are spilled to local memory in function 'k', N bytes spill stores, N bytes spill loads` and
-`Local memory used for function 'k', size of stack frame: N bytes`) are ledger rows and refuse like any other. The warnings REPLACED the lab's own scan of the SASS for local memory (`LDL`/`STL` and a stack frame from `cuobjdump -res-usage`, its refusal `local memory (N LDL/STL, a N-byte stack frame)`): the kernels each names were compared over all 41 experiments that build for sm_90a (2026-11-20, none has a stack frame or a spill, so both sets are empty there) and over a probe of four kernels built beside them -- a spill under a `__maxnreg__` cap, a 4 KiB indexed array, a called function's frame and a clean kernel -- where both named the same three. The frame's size is in the warning; a spill's bytes are too. The scan's counts remain in `sass_gate.py`'s statistics, the SASS gate's own.
+`Local memory used for function 'k', size of stack frame: N bytes`) are ledger rows and refuse like any other. They are the lab's check of local memory: the frame's size is the warning's own.
 
 <a id="waits"></a>THE WAIT REPORT. `pack` prints, and `bazel run //tools:lab -- waits <name> --arch sm_90a` prints alone,
 one line a distinct tensor wait of each kernel (kernels with the same lines collapse, a count each; at most six lines a

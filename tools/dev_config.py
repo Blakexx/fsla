@@ -21,6 +21,7 @@ docs/internals/tools/dev_config.md.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from functools import cache
@@ -179,7 +180,9 @@ def cuda_bin(tool: str) -> str:
 
 
 def scratch(name: str) -> Path:
-    path = Path(get("host.scratch")) / name
+    """A tool's scratch directory, this checkout's own: `host.scratch` / a short digest of the checkout's root path /
+    `name`, so two checkouts on one machine never write the same intermediate (docs/internals/tools/dev_config.md)."""
+    path = Path(get("host.scratch")) / hashlib.sha256(str(ROOT).encode()).hexdigest()[:12] / name
     path.mkdir(parents=True, exist_ok=True)
     return path
 

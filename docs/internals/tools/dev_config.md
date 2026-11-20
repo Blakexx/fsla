@@ -43,7 +43,12 @@ resolved value and the file it came from ([dev.md](dev.md)).
   test tier the graph's copy, which the tier hands in (`ROLA_CUDA_HOME`), else init's under `host.tools_dir`, refused
   until init installed it. Every compile, disassembly and assembler check outside the graph's own rules uses them, so
   the ptxas a gate reads is the one the build ran.
-- `scratch(name)` returns a tool's scratch directory.
+- `scratch(name)` returns a tool's scratch directory, this checkout's own: `<host.scratch>/<digest>/<name>`, where
+  `<digest>` is the first 12 hex digits of the SHA-256 of the checkout's absolute root path (`/tmp/rola/<digest>/lab`
+  for the lab's builds by default). Two checkouts of one machine, building the same experiment at once, write
+  different directories; no environment variable names it. The digest, not a directory inside the checkout, because
+  the intermediates (a binary, cubins, the `.ptxas` log) are bulky, are read back by no one, and `host.scratch` is
+  the one place the machine's config already puts them (`bazel run //:check` prints this checkout's directory).
 - `devbox_image()` returns the devbox image's digest inside such a container, which its launcher mounts read-only at
   `CONTAINER_IMAGE`, else the empty string. A file the launcher mounts, not an environment variable: an editor's
   container would carry a variable as a setting of its own.
