@@ -141,6 +141,9 @@ int main(int argc, char** argv) {
       if (steps == 32 && n != 8) continue;
       const std::string k = lab::kernel("width", {n, steps});
       b.expect(k, "HGMMA", "==", steps);
+      //: a step's shared-memory operands, both descriptors: A 64x16 and B 16xN bf16 elements, 2,048 + 32 N bytes (`lab steps`
+      //: reads the same for every N here: 2,304 at 8 to 10,240 at 256)
+      b.expect(k, "STEP_PORT", "<=", 2048 + 32 * n);
       b.exempt(k, "a rate probe: a wgmma's own time by its width, no kernel's step");
     }
   if (b.expect_only) return 0;

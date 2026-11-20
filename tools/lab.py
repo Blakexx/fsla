@@ -174,7 +174,7 @@ _PRE_WAIT = {"clock_time", "fold_stream", "intra_chain", "intra_window", "pool_f
              "state_image", "step_queue", "wgmma_width"}
 #: the hazards an experiment may declare a count of (`Bench::expect(kernel, NAME, "<=", n)`), beside its opcodes
 HAZARDS = ("LOOP_CONVERGENCE", "LOAD_IN_TRIP", "STORE_RELOAD", "STORE_UNFENCED", "STEPS_SERIALIZED", "CLOCK_UNIFORM",
-          "WAIT_AFTER_ISSUE")
+          "WAIT_AFTER_ISSUE", "STEP_PORT", "STEP_WORK", "REGS")
 
 
 #: a warp collective after the `?` of a statement's conditional: only the lanes the condition takes reach it
@@ -469,6 +469,178 @@ def waits_report(binary: Path) -> list[str]:
     return out
 
 
+#: a step as the listing names it: `HGMMA.64x16x16.F32.BF16 R24, gdesc[UR24], R24` -- the shape `64xNxK`, the
+#: accumulator type, the input type (a second, the same, follows for the 8-bit forms); then the operands: the
+#: accumulator, A, B, the accumulator again
+STEP_LINE = re.compile(r"\b[HI]GMMA\.64x(\d+)x(\d+)\.[A-Z0-9]+\.([A-Z0-9]+)\S*\s+(.*?)\s*;")
+#: the bytes an input type takes
+ELEMENT_BYTES = {"F16": 2, "BF16": 2, "TF32": 4, "E4M3": 1, "E5M2": 1, "S8": 1, "U8": 1}
+#: a shared access's bytes a lane by the opcode's own suffix (`LDS.U16`, `STS.128`); a word without one
+LANE_BYTES = {"U8": 1, "S8": 1, "U16": 2, "S16": 2, "64": 8, "128": 16}
+#: a matrix access, `LDSM.16.M88.4`: N matrices of 8 x 8 sixteen-bit elements a warp, 128 bytes each
+MATRIX = re.compile(r"^(?:LDSM|STSM)\.\d+\.MT?88\.(\d)")
+#: the bounds an experiment declares of a step or a kernel (`Bench::expect(kernel, NAME, "<=", n)`)
+STEP_BOUNDS = ("STEP_PORT", "STEP_WORK", "REGS")
+
+
+def step_operand_bytes(line: str) -> int | None:
+    """The shared-memory bytes one step reads: A is 64 x K elements and B is K x N elements, at the element size its
+    type names, each only when the listing gives it as a descriptor (`gdesc[URn]`). The operands after the
+    accumulator are EITHER one descriptor (`R24, gdesc[UR4], R24`: A and B both in shared memory) OR a register and a
+    descriptor (`R24, R8, gdesc[UR4], R24`: A in registers, B alone shared). None for a line this does not read."""
+    m = STEP_LINE.search(line)
+    if not m or m.group(3) not in ELEMENT_BYTES:
+        return None
+    n, k, size = int(m.group(1)), int(m.group(2)), ELEMENT_BYTES[m.group(3)]
+    operands = [o.strip() for o in m.group(4).split(",")]
+    if len(operands) < 3:
+        return None
+    if operands[1].startswith("gdesc["):
+        return (64 * k + k * n) * size
+    if operands[2].startswith("gdesc[") and re.fullmatch(r"R(?:\d+|Z)", operands[1]):
+        return k * n * size
+    return None
+
+
+def shared_bytes(op: str) -> int:
+    """The bytes a warp's shared load or store moves, by the width its opcode names, all 32 lanes (an `LDS.U16` is 64);
+    0 for any other instruction."""
+    if m := MATRIX.match(op):
+        return 128 * int(m.group(1))
+    if op.startswith(("LDS", "STS")) and not op.startswith(("LDSM", "STSM")):
+        return 32 * next((LANE_BYTES[p] for p in op.split(".")[1:] if p in LANE_BYTES), 4)
+    return 0
+
+
+#: the step's work by class: the tensor instruction, a conversion (what `STEP_XU` counts), integer (select and compare
+#: with it) and float arithmetic, global and shared accesses, a move or permute, a branch; the rest (barriers, waits, `LDC`)
+_MOVES = ("MOV", "IMAD.MOV", "UMOV", "PRMT", "SHFL", "F2FP")
+_BRANCHES = ("BRA", "BSSY", "BSYNC", "BREAK", "EXIT", "CALL", "RET", "JMP")
+WORK_CLASSES = ("tensor", "conv", "int", "float", "global", "shared", "move", "branch", "other")
+
+
+def work_class(op: str) -> str:
+    kind = sass.opcode_class(op)
+    return ("tensor" if op.startswith(WGMMA) else "move" if op.startswith(_MOVES) else
+            "branch" if op.startswith(_BRANCHES) else "conv" if kind == "conversion unit" else
+            "float" if kind == "float" else "int" if kind in ("integer/address", "select/compare") else
+            "global" if kind == "global" else
+            "shared" if kind in ("shared load", "shared store", "shared atomic") else "other")
+
+
+def step_regions(body: list[tuple[int, str, str]]) -> list[tuple[str, int, list[int]]]:
+    """A kernel's step regions as (what, steps, indices into `body`): each innermost loop that holds a step -- all its
+    instructions, its steps counted -- and each step outside such a loop, alone: the instructions after the previous
+    step (or a loop's back-edge, or the kernel's start) up to and including it."""
+    steps = [i for i, (_, op, _) in enumerate(body) if op.startswith(WGMMA)]
+    holding = [(lo, hi) for lo, hi in loops_of(body) if any(lo <= body[i][0] <= hi for i in steps)]
+    inner = {(lo, hi) for lo, hi in holding if not any((a, b) != (lo, hi) and lo <= a and b <= hi for a, b in holding)}
+    regions, in_loop = [], set()
+    for lo, hi in sorted(inner):
+        members = [i for i, (at, _, _) in enumerate(body) if lo <= at <= hi]
+        found = [i for i in members if i in steps]
+        in_loop |= set(found)
+        regions.append((f"loop {lo:#x}-{hi:#x}", len(found), members))
+    edges = {hi for _, hi in loops_of(body)}
+    previous = -1
+    for i in steps:
+        if i not in in_loop:
+            start = i
+            while start - 1 > previous and body[start - 1][0] not in edges:
+                start -= 1
+            regions.append(("an unrolled step", 1, list(range(start, i + 1))))
+        previous = i
+    return regions
+
+
+def region_figures(body: list[tuple[int, str, str]], steps: int, members: list[int]) -> tuple[int, int, int, Counter]:
+    """A region's figures a step, each the region's total over its steps, rounded up: the bytes through the shared-memory
+    port as (the steps' own operands, the shared loads and stores, their sum), and the instructions by class
+    (`work_class`). A step this does not read makes the operand and total bytes -1."""
+    own = [step_operand_bytes(body[i][2]) for i in members if body[i][1].startswith(WGMMA)]
+    shared = sum(shared_bytes(body[i][1]) for i in members)
+    per = lambda n: -(-n // steps)  # noqa: E731
+    classes = Counter({c: per(n) for c, n in Counter(work_class(body[i][1]) for i in members).items()})
+    if None in own:
+        return -1, per(shared), -1, classes
+    return per(sum(own)), per(shared), per(sum(own) + shared), classes
+
+
+def step_report(binary: Path) -> dict[str, list[tuple[str, int, int, int, int, Counter]]]:
+    """Per kernel (demangled) with tensor steps: its regions as (what, steps, operand bytes, shared bytes, total bytes,
+    work by class), the figures a step (`step_regions`, `region_figures`)."""
+    found = {}
+    for mangled, body in disassembled(binary).items():
+        rows = [(what, steps, *region_figures(body, steps, members)) for what, steps, members in step_regions(body)]
+        if rows:
+            found[mangled] = rows
+    names = demangle(list(found))
+    return {names[k]: v for k, v in found.items()}
+
+
+def steps_report(binary: Path) -> list[str]:
+    """THE ADVISORY: per kernel with tensor steps (kernels with the same lines grouped, a count each; at most
+    `REPORT_GROUPS` groups), two lines: the bytes a step puts through the shared-memory port (its own operands and the
+    shared loads and stores of its region; wavefronts are those bytes / 128, rounded up) and the instructions a thread
+    executes a step, by class. A kernel with several regions (`step_regions`) prints their range and the figures of the
+    region with the most. Bounded by `STEP_PORT` and `STEP_WORK` where declared (`step_bounds`, every region); never a
+    refusal where not."""
+    groups: dict[tuple, list[str]] = {}
+    for name, rows in step_report(binary).items():
+        many = f" over {len(rows)} regions; the most is" if len(rows) > 1 else ""
+        if any(row[4] < 0 for row in rows):
+            port = "port: a step this does not read"
+        else:
+            lo, hi = min(row[4] for row in rows), max(row[4] for row in rows)
+            top = max(rows, key=lambda row: row[4])
+            span = f"{lo:,}-{hi:,}" if lo != hi else f"{hi:,}"
+            waves = f"{-(-lo // 128)}-{-(-hi // 128)}" if lo != hi else f"{-(-hi // 128)}"
+            port = f"port: {span} B a step ({waves} wavefronts){many} operands {top[2]:,} + shared {top[3]:,}"
+        work_of = lambda row: sum(row[5].values())  # noqa: E731
+        lo, hi = min(map(work_of, rows)), max(map(work_of, rows))
+        top = max(rows, key=work_of)
+        by = ", ".join(f"{c} {top[5][c]}" for c in WORK_CLASSES if top[5][c])
+        work = f"work: {f'{lo}-{hi}' if lo != hi else hi} instructions a step{many} {by}"
+        groups.setdefault((port, work), []).append(name)
+    out = []
+    for lines, kernels_ in list(groups.items())[:REPORT_GROUPS]:
+        out.append(f"  {kernels_[0]}" + (f"  (and {len(kernels_) - 1} kernels with the same lines)" if kernels_[1:] else ""))
+        out += [f"    {line}" for line in lines]
+    if len(groups) > REPORT_GROUPS:
+        out.append(f"  ... {len(groups) - REPORT_GROUPS} more groups of kernels")
+    return out
+
+
+def step_bounds(binary: Path, table: dict[str, dict], expected: list[dict]) -> list[str]:
+    """The declared `STEP_PORT` and `STEP_WORK` (bytes and instructions a step, of every region of the kernel) and `REGS`
+    (the registers the kernel holds) that are exceeded, and the declarations that bound nothing."""
+    failures = []
+    report = step_report(binary)
+    for e in (e for e in expected if e["op"] in STEP_BOUNDS):
+        if e["cmp"] != "<=":
+            failures.append(f"{e['kernel']!r}: {e['op']} is a bound, declared \"<=\" (not {e['cmp']!r})")
+        hits = [k for k in (table if e["op"] == "REGS" else report) if re.search(e["kernel"], k)]
+        if not hits:
+            failures.append(f"no kernel {'' if e['op'] == 'REGS' else 'with tensor steps '}matches {e['kernel']!r} "
+                            f"({e['op']} declared)")
+        for k in hits:
+            if e["op"] == "REGS":
+                regs = table[k].get("regs")
+                if regs is not None and regs > e["count"]:
+                    failures.append(f"{k}: {regs} registers, over the role's budget of {e['count']} (REGS): the role "
+                                    "fits its budget, or the budget is a ruling to change")
+                continue
+            for what, _, _, _, total, classes in report[k]:
+                figure, unit = ((total, "bytes through the shared-memory port") if e["op"] == "STEP_PORT" else
+                                (sum(classes.values()), "instructions"))
+                if e["op"] == "STEP_PORT" and total < 0:
+                    failures.append(f"{k}: {what}: a step whose operands this does not read (STEP_PORT)")
+                elif figure > e["count"]:
+                    failures.append(f"{k}: {what}: {figure:,} {unit} a step, over the {e['count']:,} declared "
+                                    f"({e['op']}; `lab steps` lists the region)")
+    return failures
+
+
 def check(binary: Path, table: dict[str, dict]) -> list[str]:
     """Every expectation the experiment declares, no local memory and no undeclared convergence call anywhere: the
     failures, empty when it may run."""
@@ -484,6 +656,7 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
             ok = {">=": n >= e["count"], "==": n == e["count"], "<=": n <= e["count"]}[e["cmp"]]
             if not ok:
                 failures.append(f"{k}: {e['op']} {n}, expected {e['cmp']} {e['count']}")
+    failures += step_bounds(binary, table, expected)
     declared_calls = {k for e in expected for k in table if re.search(e["kernel"], k) and "CALL" in e["op"]}
     declared_branches = {k for e in expected for k in table if re.search(e["kernel"], k) and e["op"] == "BSSY"}
 
@@ -869,6 +1042,10 @@ def pack(name: str, arch: str, into: Path) -> int:
     report = waits_report(binary)
     if report:
         print("lab: tensor waits -- candidates to precede each (advisory; `lab waits` prints it alone):", *report, sep="\n")
+    report = steps_report(binary)
+    if report:
+        print("lab: tensor steps -- the port bytes and instructions of a step (advisory unless a bound is declared; "
+              "`lab steps` prints it alone):", *report, sep="\n")
     into.mkdir(parents=True, exist_ok=True)
     carried_binary = into / binary.name
     carried_binary.write_bytes(binary.read_bytes())
@@ -1367,6 +1544,10 @@ def main() -> int:
     w = sub.add_parser("waits", help="each tensor wait's candidates to precede it (KERNEL_STANDARDS 29.16), advisory")
     w.add_argument("experiment")
     w.add_argument("--arch", required=True)
+    ts = sub.add_parser("steps", help="each tensor step's shared-memory port bytes and instructions, advisory beside "
+                                      "the STEP_PORT and STEP_WORK bounds")
+    ts.add_argument("experiment")
+    ts.add_argument("--arch", required=True)
     c = sub.add_parser("carried", help="run a packed experiment on this card, a box with no toolkit to build it")
     c.add_argument("experiment")
     c.add_argument("--from", dest="source", required=True, type=Path)
@@ -1429,6 +1610,9 @@ def main() -> int:
         return pack(args.experiment, args.arch, args.into)
     if args.cmd == "waits":
         print(*waits_report(build(experiments()[args.experiment], args.arch)), sep="\n")
+        return 0
+    if args.cmd == "steps":
+        print(*steps_report(build(experiments()[args.experiment], args.arch)), sep="\n")
         return 0
     if args.cmd == "carried":
         return carried(args.experiment, args.source, args.into, args)
