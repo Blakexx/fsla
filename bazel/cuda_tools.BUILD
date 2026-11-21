@@ -1,6 +1,6 @@
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["bin/cuobjdump", "bin/nvdisasm", "bin/nvcc"])
+exports_files(["bin/cuobjdump", "bin/nvdisasm", "bin/nvcc", "bin/cu++filt"])
 
 #: the pinned toolkit whole, the tree a test tier hands its tests (nvcc reads nvcc.profile, include/, lib64/ and nvvm/
 #: beside it); its lib64 is a link to lib, which the glob would list twice

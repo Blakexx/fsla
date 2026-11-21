@@ -1,0 +1,29 @@
+"""THE LAB'S EXPERIMENTS: one target each (bazel/lab.bzl, docs/internals/tools/lab.md#graph), built by the graph's CUDA rule for sm_90a,
+read by the graph's disassemblers, checked by the lab's checks as the target's validation. `bazel build //measure/lab:<name>`, or
+`bazel run //tools:lab -- pack <name> --arch sm_90a --into DIR`, which builds it with its checks and copies its outputs."""
+
+load("//bazel:defs.bzl", "include_root", "tree_part")
+load("//bazel:lab.bzl", "lab_experiment")
+
+package(default_visibility = ["//visibility:public"])
+
+#: this package's part of the tree the checks read
+tree_part()
+
+#: `lab.cuh`, which every experiment includes (the kernels' headers are `//csrc/rola:headers`, warpline's `@warpline//:stamp`)
+include_root(
+    name = "lab_headers",
+    hdrs = ["lab.cuh"],
+    roots = ["."],
+)
+
+#: the experiments that include another experiment's source (`#include "carry_window.cu"`): the sources they name
+_INCLUDES = {
+    "call_pair": ["experiments/carry_window.cu", "experiments/intra_window.cu"],
+}
+
+[lab_experiment(
+    name = src[len("experiments/"):-len(".cu")],
+    src = src,
+    includes = _INCLUDES.get(src[len("experiments/"):-len(".cu")], []),
+) for src in glob(["experiments/*.cu"])]

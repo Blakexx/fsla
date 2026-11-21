@@ -537,12 +537,10 @@ def tool_run(**kwargs):
 _LAB_RUN = """\
 #!/bin/bash
 # a tool that reads compiled code through warpline, as a run target (bazel/defs.bzl's lab_run): `{tool}` in the checkout, on the checkout's own venv, handed
-# the directory that holds `warpline/stamp.cuh` (the module's header, compile time only) and the one that holds the
-# `warpline` package (the library that reads the traced rows) by their resolved paths (the runfiles' links do not
+# the directory that holds the `warpline` package (the checker, and the library that reads the traced rows) by its resolved path (the runfiles' links do not
 # outlive the run)
 set -euo pipefail
 checkout="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
-stamp="$(readlink -f {stamp})"
 package="$(readlink -f {package})"
 venv="$(git -C "$checkout" config --get rola.venv || true)"
 if [ ! -x "$venv/bin/python" ]; then
@@ -550,33 +548,27 @@ if [ ! -x "$venv/bin/python" ]; then
   exit 1
 fi
 cd "$checkout"
-export ROLA_WARPLINE_INCLUDE="$(dirname "$(dirname "$stamp")")"
 export ROLA_WARPLINE_PYTHON="$(dirname "$(dirname "$package")")"
 exec "$venv/bin/python" {tool} "$@"
 """
 
 def _lab_run_impl(ctx):
-    stamp = [f for f in ctx.files.headers if f.path.endswith("/warpline/stamp.cuh")]
-    if len(stamp) != 1:
-        fail("%s: %s names %d `warpline/stamp.cuh`, not one" % (ctx.label, ctx.attr.headers.label, len(stamp)))
     package = [f for f in ctx.files.library if f.path.endswith("/warpline/__init__.py")]
     if len(package) != 1:
         fail("%s: %s names %d `warpline/__init__.py`, not one" % (ctx.label, ctx.attr.library.label, len(package)))
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
-    ctx.actions.write(script, _LAB_RUN.format(tool = shell.quote(ctx.attr.tool), stamp = shell.quote(stamp[0].short_path), package = shell.quote(package[0].short_path)), is_executable = True)
-    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = stamp + ctx.files.library))]
+    ctx.actions.write(script, _LAB_RUN.format(tool = shell.quote(ctx.attr.tool), package = shell.quote(package[0].short_path)), is_executable = True)
+    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = ctx.files.library))]
 
 lab_run = rule(
     implementation = _lab_run_impl,
     executable = True,
     attrs = {
-        "headers": attr.label(mandatory = True, doc = "warpline's headers (`@warpline//:headers`)"),
-        "library": attr.label(mandatory = True, doc = "warpline's reader (`@warpline//:warpline`)"),
+        "library": attr.label(mandatory = True, doc = "warpline's reader and checker (`@warpline//:warpline`)"),
         "tool": attr.string(default = "tools/lab.py", doc = "the tree's tool that reads compiled code through the checker"),
     },
-    doc = "The lab (`tools/lab.py`, or `tool`: the SASS gate) run by `bazel run` in the checkout, handed the include directory of warpline's " +
-          "`warpline/stamp.cuh` as `ROLA_WARPLINE_INCLUDE` and the directory of its `warpline` package as " +
-          "`ROLA_WARPLINE_PYTHON`: its arguments follow `--`.",
+    doc = "The lab (`tools/lab.py`, or `tool`: the SASS gate) run by `bazel run` in the checkout, handed the directory of " +
+          "warpline's `warpline` package as `ROLA_WARPLINE_PYTHON`: its arguments follow `--`.",
 )
 
 def tree_part(parts = {}):

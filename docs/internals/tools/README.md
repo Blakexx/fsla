@@ -47,7 +47,7 @@ target ([`measurement.md`](../../measurement.md)).
 | [`arith_model.py`](arith_model.md) | the bf16 family's arithmetic (u8 rows, bf16 values and operands, fp32 sums) modelled against the fp64 recurrence on a cell's draw, each rounding alone and all together | a person (a precision form's design) | prints, `--json` |
 | [`carry_floor.py`](carry_floor.md) | the hopper carry's floor a token for a routing shape, a box and a cluster, term by term, from the H100 labs' records and stated estimates | a shape, a box, a cluster | the terms, their total, the call's time beside FlashAttention's floor |
 | `realized_support.py` | a layer construction's realized routing support: each level's and side's nonzero digits a token in the bundle the producer emits (`realized_support.md`) | `declare.py` (`support`) | `rola/support` |
-| `checked.py` | THE CHECKER'S SEAM: warpline's checker imported from the directory the graph hands in, and what both callers ask of it: the model of a binary's kernels, the rules, the profile rule, `cu++filt` (`sass_gate.md#checker`) | `sass_gate.py`, `lab.py` | -- (a module) |
+| `checked.py` | THE CHECKER'S SEAM: warpline's checker imported from the directory the graph hands in, and what both callers ask of it: the model of a binary's kernels (or of the texts its disassembly wrote), the rules, the profile rule (`sass_gate.md#checker`) | `sass_gate.py`, `lab.py` | -- (a module) |
 | `sass_gate.py` | the ptxas signatures of KERNEL_STANDARDS §20, red on any of them (a stack frame and the convergence calls the checker's, the step signatures its own); guarded convergence fallbacks counted; an unchanged cubin's verdict replayed (`sass_gate.md`) | every iteration build; the graph's SASS gate action (`--cuobjdump`/`--nvdisasm`, its toolkit); the `sass` instrument | `--json`, `--loops` (each step loop's reading and the lines its lints count), `--no-cache` |
 | `sass_bodies.py` | per-instantiation SASS body hashes, the codegen-equivalence instrument | a person, comparing two builds | `--json` |
 | `sass_control.py` | the SASS control words (stall count, yield, scoreboards, reuse) and the loop a function compiles to; its `MACHINES` table is the static simulator's per-architecture model | `pipe_sim.py`, `burst_gate.py` | — |
@@ -67,6 +67,8 @@ target ([`measurement.md`](../../measurement.md)).
 | [`budgets.md`](budgets.md) | the budget's form and price table: an instruction budget by class, per MMA (KERNEL_STANDARDS §29); no `budgets/` directory exists yet, each kernel's budget file is owed | `region_ledger.py`, the lab | — |
 | [`bank_model.py`](bank_model.md) | the shared-memory wavefronts a warp instruction costs, from its lanes' byte addresses (§30) | a person, before a GPU run; the lab | — |
 | [`lab.py`](lab.md) | the lab: small SASS-gated CUDA experiments whose measurements become kernel rules ([`docs/lab/`](../../lab/README.md)) | a person | `measure/lab/results/` |
+| [`lab_facts.py`](lab.md#graph) | what the graph's disassemblers read of one lab experiment's binary, written once: the cubin, the listings, the demangled names, the toolkit's version | the graph (`bazel/lab.bzl`'s `lab_experiment`) | `//measure/lab:<name>`'s outputs |
+| [`lab_check.py`](lab.md#graph) | the lab's checks (the SASS checker, the notices' ledger, the declarations) over a built experiment's files: a refusal fails the build | the graph (the target's validation) | `<name>.sm_90a.check` |
 
 ## The oracle's own gates
 

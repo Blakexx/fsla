@@ -239,6 +239,13 @@ the build ends) — after which the agent INSPECTS ITS OWN STATE (the marker, th
 repeat if still building. Never trust the pid or the notification alone; the marker is the fact. Name-matched polling (`pgrep -f`) stays forbidden: it self-matches, matches other tracks, and
 re-wakes stopped agents.
 
+<a id="s14-graph"></a>§14 THE GRAPH RUNS THE TOOLCHAIN (Blake, 2026-11-08 and 2026-11-21: "every operation starts as a bazel
+command, no old path survives"; "the lab's experiments compile in the graph"). A compile, an assembly or disassembly, a
+profile, a sanitizer run, a build of a library or wheel and a package install run as the graph's actions, never as a
+command typed in a checkout nor a tool's own subprocess outside a graph rule: `.claude/hooks/graph_only.py` refuses
+`nvcc`, `ptxas`, `cuobjdump`, `nvdisasm`, `ncu`, `nsys`, `compute-sanitizer`, `cmake`, `make`, `ninja` and the pip installs
+as typed command words, naming the target that does it; `GRAPH_OVERRIDE=<why>` on the command is the stated exception.
+
 ## <a id="s15"></a>15. Stage cycle budget (recorded 2026-08-27 from the ledger: one stage ran 63 builds and 22 ratifies in 346 min)
 - RATIFY ONCE per stage, after the last source edit. It recompiles every TU on every architecture; it is a gate,
   never an iteration tool.

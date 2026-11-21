@@ -116,8 +116,6 @@ HANDOFFS = {
     "USER": "the login name printed into the sudoers rule `bazel run //:clock` suggests",
     "ROLA_SCRATCH": "the agent harness's campaign directory (.claude/settings.json), outside the repository",
     "ROLA_CUDA_HOME": "the graph's copy of the pinned CUDA toolkit, which a test tier hands its tests (bazel/defs.bzl)",
-    "ROLA_WARPLINE_INCLUDE": "the directory that holds `warpline/stamp.cuh`, which the `lab` run target hands the lab's "
-                             "compile (bazel/defs.bzl's lab_run)",
     "ROLA_WARPLINE_PYTHON": "the directory that holds the `warpline` package (the reader of the lab's traced rows), "
                             "which the `lab` run target hands the lab (bazel/defs.bzl's lab_run)",
     "PATH": "the search path bazelisk hands what it runs, the front door's directory first (`check` finds the user's "
@@ -153,15 +151,6 @@ def cuda_home() -> str:
     if not nvcc.is_file():
         raise SystemExit(f"the pinned CUDA toolkit is not installed at {nvcc.parents[1]}: bazel run //:init")
     return str(nvcc.parents[1])
-
-
-def warpline_include() -> str:
-    """The directory that holds `warpline/stamp.cuh`, which the lab's compile puts on nvcc's include path: the pinned
-    module's (`@warpline//:headers`), which `bazel run //tools:lab` hands in (`ROLA_WARPLINE_INCLUDE`)."""
-    found = os.environ.get("ROLA_WARPLINE_INCLUDE")
-    if not found:
-        raise SystemExit("the lab's compile needs warpline's headers, which the graph hands it: bazel run //tools:lab -- ...")
-    return found
 
 
 def warpline_python() -> str | None:

@@ -39,13 +39,16 @@ exists: a stub that runs rola-devtools' front door (`rola_devtools.graph.front_d
 rola-devtools checkout `tools/bootstrap.py` finds.
 
 - THE LAB'S IN-KERNEL STAMP AND ITS CHECKER ARE WARPLINE'S MODULE: `MODULE.bazel` pins it at a public commit (`git_override`, the one pin
-  of warpline), and `bazel run //tools:lab` (bazel/defs.bzl's `lab_run`) hands `tools/lab.py` the directory that holds
-  `warpline/stamp.cuh` (`@warpline//:headers`, with `warpline/host.hpp`, the writer of the record of a traced row) as
-  `ROLA_WARPLINE_INCLUDE`, which its nvcc takes as one more `-I`, and the directory of the `warpline` Python package
+  of warpline), and `bazel run //tools:lab` (bazel/defs.bzl's `lab_run`) hands `tools/lab.py` the directory of the `warpline` Python package
   (`@warpline//:warpline`) as `ROLA_WARPLINE_PYTHON`, which `tools/lab_trace.py` reads the records with and `tools/lab.py`'s `check` calls the checker
   (`warpline.checker`) through, for every hazard one of its rules computes (the CPU test
-  tier and `unit_cuda` carry the same target as data). The headers are compile-time only: a `lab pack` binary carries
-  nothing of warpline, and the box needs none. The front door
+  tier and `unit_cuda` carry the same target as data). The stamp's headers (`@warpline//:stamp`, `@warpline//:host`, the writer of the record of
+  a traced row) are the lab experiments' compile dependencies, compile-time only: a `lab pack` binary carries
+  nothing of warpline, and the box needs none. THE LAB'S EXPERIMENTS ARE THE GRAPH'S TARGETS (`//measure/lab:<name>`,
+  `bazel/lab.bzl`, [`internals/tools/lab.md`](internals/tools/lab.md#graph)): each is compiled by the same CUDA rule as the library's
+  units (`cuda_unit`) for sm_90a and linked into its binary, read once by the graph's disassemblers (`tools/lab_facts.py`), and checked by
+  a validation action (`tools/lab_check.py`) whose refusal fails the build; no tool runs nvcc, cuobjdump or nvdisasm for the lab outside the
+  graph's actions. The front door
   overrides only rola-devtools' pin with a local checkout; warpline is always the pinned commit.
 - THE SHARED MACHINERY IS ROLA-DEVTOOLS' MODULE: its environment extension and generic rules (`tree_test`,
   `checkout_test`, `tool_test`, `tool_run`, `tree_part`, `pytest_tier`, `device_lane`; `bazel/defs.bzl` hands each

@@ -211,7 +211,7 @@ def test_the_steps_advisory_prints_the_checkers_figures_and_groups_kernels_with_
                              instructions=(instruction("tensor"), instruction("tensor"), instruction("integer/address"),
                                            instruction("control")))
     kernels = [SimpleNamespace(demangled=f"k<{i}>", regions=(region,)) for i in range(3)]
-    monkeypatch.setattr(checked, "kernels_of", lambda binary, demangled=False: [*kernels, SimpleNamespace(demangled="plain", regions=())])
+    monkeypatch.setattr(lab, "model_of", lambda built: [*kernels, SimpleNamespace(demangled="plain", regions=())])
     out = lab.steps_report(None)
     assert out[0] == "  k<0>  (and 2 kernels with the same lines)" and len(out) == 3
     assert out[1] == "    port: 2,304 B a step (18 wavefronts) operands 2,048 + shared 256 (x 4 warps)"

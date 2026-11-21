@@ -57,12 +57,12 @@ AR = "program dependence on compiler-inserted WG.AR in divergent path"
 
 
 def binary_with(tmp_path, *lines, declared=()):
-    """A binary whose `--expect` prints the declarations, with the notices of its build beside it."""
-    binary = tmp_path / "x.sm_90a"
-    binary.write_text("#!/bin/sh\n" + "".join(f"echo '{d}'\n" for d in declared))
-    binary.chmod(0o755)
-    lab.notices(binary).write_text("\n".join(lines) + "\n")
-    return binary
+    """A built experiment whose binary's `--expect` prints the declarations, with the notices of its build beside it."""
+    built = lab.Built(tmp_path, "x", "sm_90a")
+    built.binary.write_text("#!/bin/sh\n" + "".join(f"echo '{d}'\n" for d in declared))
+    built.binary.chmod(0o755)
+    lab.notices(built).write_text("\n".join(lines) + "\n")
+    return built
 
 
 def declare(kernel, hazard, count):
@@ -71,8 +71,8 @@ def declare(kernel, hazard, count):
 
 def failures_of(tmp_path, monkeypatch, *lines, declared=()):
     """The lab's failures for a build of `x` with no kernels whose notices are `lines` (names as given: no demangling)."""
-    monkeypatch.setattr(checked, "demangle", lambda names: {n: n for n in names})
-    monkeypatch.setattr(checked, "kernels_of", lambda binary, demangled=False: [])
+    monkeypatch.setattr(lab.Built, "demangle", lambda self, names: {n: n for n in names})
+    monkeypatch.setattr(lab, "model_of", lambda built: [])
     monkeypatch.setattr(lab, "experiments", lambda: {})
     return lab.checker_failures(binary_with(tmp_path, *lines, declared=declared), [json.loads(d) for d in declared], set())
 
@@ -152,9 +152,9 @@ def test_an_injected_wait_is_counted_a_kernel_unless_declared_and_an_injected_ar
 
 @needs_checker
 def test_a_report_row_prints_with_its_count_and_blocks_nothing(tmp_path, monkeypatch):
-    monkeypatch.setattr(checked, "demangle", lambda names: {n: n for n in names})
+    monkeypatch.setattr(lab.Built, "demangle", lambda self, names: {n: n for n in names})
     binary = binary_with(tmp_path, C7519.format("a"), C7519.format("a"), C7519.format("b"), LOOP)
-    monkeypatch.setattr(checked, "kernels_of", lambda binary, demangled=False: [])
+    monkeypatch.setattr(lab, "model_of", lambda built: [])
     monkeypatch.setattr(lab, "experiments", lambda: {})
     assert lab.checker_failures(binary, [], set()) == []
     report = lab.notice_report(binary)
@@ -194,12 +194,14 @@ def test_check_refuses_what_the_ledger_refuses(tmp_path, monkeypatch):
 
 @needs_checker
 def test_a_build_with_no_notices_file_has_none(tmp_path):
-    binary = tmp_path / "carried.sm_90a"
-    assert lab.read_notices(binary) == [] and lab.notice_report(binary) == []
+    built = lab.Built(tmp_path, "carried", "sm_90a")
+    assert lab.read_notices(built) == [] and lab.notice_report(built) == []
 
 
-def test_the_toolkits_options_are_the_ones_ptxas_names():
-    assert lab.PTXAS_OPTIONS == ("--warn-on-spills", "--warn-on-local-memory-usage", "--verbose")
+def test_the_graphs_compile_switches_on_the_options_ptxas_names():
+    """The lab's experiments are compiled by the graph's rule (bazel/lab.bzl), which passes ptxas the options the notices read."""
+    rule = (Path(__file__).resolve().parents[2] / "bazel" / "lab.bzl").read_text()
+    assert '"--warn-on-spills,--warn-on-local-memory-usage,--verbose"' in rule
 
 
 @needs_checker

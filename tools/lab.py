@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE LAB: small CUDA experiments whose measurements become kernel rules (docs/internals/tools/lab.md).
 
-An experiment is one `measure/lab/experiments/<name>.cu` built on `measure/lab/lab.cuh`. This driver compiles it with
-the pinned toolkit for the running card, reads its SASS and refuses to measure unless every expectation the experiment
+An experiment is one `measure/lab/experiments/<name>.cu` built on `measure/lab/lab.cuh`, and one target of the graph
+(`//measure/lab:<name>`, bazel/lab.bzl): the graph's CUDA rule compiles it for sm_90a, its disassemblers read its code, and
+this driver reads what the target built -- it runs no compiler and no disassembler. It reads the SASS and refuses to measure unless every expectation the experiment
 declares holds (an instruction the experiment means to time is really there -- ptxas deletes work whose result is dead)
 and every notice the toolkit printed is allowed by the ledger (a kernel that touches local memory is the toolkit's
 own warning); then it checks the GPU is quiet, runs the repetitions, flags a result whose samples
@@ -16,7 +17,8 @@ spread, and writes a record keyed by the architecture.
     bazel run //tools:lab -- page carry_window --instance LABEL
 
 `--record` writes `measure/lab/results/<name>/<sm_XX>.json` (or `<sm_XX>.counters.json` for `ncu`), the file a
-KERNEL_STANDARDS rule cites; without it the record goes to the scratch space. `ncu` reads hardware counters per kernel
+KERNEL_STANDARDS rule cites; without it the record goes to the scratch space. `pack` builds the target with its checks (a
+refusal fails the build) and copies its outputs; every other command builds the target without them and prints the checks' findings itself. `ncu` reads hardware counters per kernel
 (the median over its launches) where a question is about traffic rather than time. An experiment that reads data (a
 cell's routing, say) has a `<name>.inputs.py` beside it whose `write(directory)` writes the files; the driver runs it
 first, passes `--inputs <directory>`, and records each file's digest.
@@ -30,6 +32,7 @@ import functools
 import hashlib
 import importlib.util
 import json
+import os
 import pipes
 import re
 import shutil
@@ -40,23 +43,28 @@ import time
 from collections import Counter
 from pathlib import Path
 
-import build_flags
 import checked
-import dev_config
 import region_ledger
 import sass
 
-ROOT = Path(__file__).resolve().parents[1]
+#: the checkout (or, in a graph action, the sandbox: a link is not followed, so what the action reads is what it declared)
+ROOT = Path(__file__).absolute().parents[1]
 LAB = ROOT / "measure" / "lab"
 EXPERIMENTS = LAB / "experiments"
-#: the kernels' include root: a part harness runs a component's own code (docs/internals/tools/lab.md#parts)
-KERNELS = ROOT / "csrc" / "rola" / "src"
 RESULTS = LAB / "results"
 
 #: a result whose largest sample exceeds its smallest by more than this is flagged unstable
 SPREAD = 1.05
 #: GPU utilization above this percent before a run means another consumer shares the card
 QUIET_PERCENT = 5
+
+
+def _dev_config():
+    """The dev config, loaded where a command needs the machine's settings (the profiler, the scratch space, bazel): the graph's actions
+    run the lab's checks with no dev config (the environment's interpreter holds no devtools there), and read none."""
+    import dev_config
+
+    return dev_config
 
 
 def experiments() -> dict[str, Path]:
@@ -76,29 +84,83 @@ def smi(*query: str) -> list[str]:
     return [field.strip() for field in out.splitlines()[0].split(",")]
 
 
-def build(path: Path, arch: str) -> Path:
-    """The experiment's binary for `arch`, compiled with the pinned toolkit."""
-    out = dev_config.scratch("lab") / f"{path.stem}.{arch}"
-    #: the lab's build, its one architecture's own in both passes (`lab.cuh`'s `kLabBuild`)
-    sys.path.insert(0, str(ROOT))
-    from measure.hardware import cc_of
-
-    cc = cc_of(arch)
-    #: the extension's own target form: an architecture-specific row (`sm_90a`) names its own virtual architecture
-    target, = build_flags.gencodes([arch.removeprefix("sm_")])
-    done = subprocess.run([dev_config.cuda_bin("nvcc"), "-O3", "-std=c++20", target, f"-DROLA_LAB_CC={cc}",
-                           "-lineinfo", "-Xptxas", ",".join(PTXAS_OPTIONS), f"-I{LAB}", f"-I{KERNELS}", f"-I{dev_config.warpline_include()}", "--expt-relaxed-constexpr", "-o", str(out),
-                           str(path)], capture_output=True, text=True, check=False)
-    sys.stdout.write(done.stdout)
-    sys.stderr.write(done.stderr)
-    done.check_returncode()
-    #: the toolkit's notices of this build, beside its binary: `serialized` reads them
-    notices(out).write_text(done.stderr)
-    return out
+#: THE LAB'S ARCHITECTURE: the graph's targets are built for it alone (bazel/lab.bzl; Hopper is the one architecture of this tree)
+ARCH = "sm_90a"
+#: what a built experiment holds beside its binary `<name>.<arch>`, each `<binary>.<part>`: the cubin, `cuobjdump`'s listing (`sass`)
+#: and resource report (`usage`), `nvdisasm`'s block graph (`graph`) and listing with the frame chain (`lines`), the functions' demangled
+#: names (`names`), the compile's diagnostics, ptxas's report among them (`ptxas`), and the toolkit's version (`toolkit`)
+PARTS = ("cubin", "sass", "usage", "graph", "lines", "names", "ptxas", "toolkit")
 
 
-def notices(binary: Path) -> Path:
-    return binary.with_name(binary.name + ".ptxas")
+class Built:
+    """AN EXPERIMENT BUILT BY THE GRAPH (`//measure/lab:<name>`) or packed from it: its binary `<directory>/<name>.<arch>` and the
+    files beside it (`PARTS`), which every reader of the experiment's code reads -- no tool runs here. A pack holds the same names,
+    so a packed experiment is read as the target is."""
+
+    def __init__(self, directory: Path, name: str, arch: str):
+        self.name, self.arch = name, arch
+        self.binary = Path(directory) / f"{name}.{arch}"
+
+    def part(self, suffix: str) -> Path:
+        return self.binary.with_name(f"{self.binary.name}.{suffix}")
+
+    def text(self, suffix: str) -> str:
+        found = self.part(suffix)
+        if not found.exists():
+            raise SystemExit(f"lab: {found} does not exist: a built experiment carries {', '.join(PARTS)} beside its binary "
+                             "(a pack made before they were packed is made again: `lab pack`)")
+        return found.read_text()
+
+    @functools.cached_property
+    def names(self) -> dict[str, str]:
+        """Each function the build names (mangled) with its demangled name, as the toolkit's `cu++filt` wrote them in the graph."""
+        return dict(line.split("\t", 1) for line in self.text("names").splitlines())
+
+    def demangle(self, mangled: list[str]) -> dict[str, str]:
+        """Each of `mangled` with its demangled name; a name the build did not write is refused."""
+        lacking = [m for m in mangled if m not in self.names]
+        if lacking:
+            raise SystemExit(f"lab: {self.part('names')} names no {lacking[0]}: the build did not mention it")
+        return {m: self.names[m] for m in mangled}
+
+    def functions(self) -> list[str]:
+        """The binary's functions by their mangled names, as the listing spells them."""
+        return [m.group(1) for line in self.text("sass").splitlines() if (m := sass.FUNCTION.match(line))]
+
+    def toolkit(self) -> str:
+        """The toolkit's version line (`nvcc --version`'s last)."""
+        return self.text("toolkit").strip().splitlines()[-1]
+
+
+def build(name: str, arch: str, checks: bool = False) -> Built:
+    """THE EXPERIMENT'S TARGET, BUILT: `bazel build //measure/lab:<name>` (bazel/lab.bzl: the graph's CUDA rule, its disassemblers), cached
+    and shared as any target is -- an unchanged experiment compiles nothing. `checks` builds it with its validations (the SASS checker, the
+    notices' ledger and the declarations' check), where a refusal fails the build with its text; without them the target is built and the
+    command prints the findings itself (`check`)."""
+    if name not in experiments():
+        raise SystemExit(f"lab: no experiment {name!r}; `list` names them")
+    if arch != ARCH:
+        raise SystemExit(f"lab: the graph builds the lab's experiments for {ARCH} alone, not {arch}")
+    label = f"//measure/lab:{name}"
+    bazel = _dev_config().get("toolchain.bazel")
+    #: a command of this run's own: bazelisk, as the machine's `bazel` is, not the one Bazel's `run` reached through the front door (which
+    #: bazelisk's own variables would skip, and with it the environment's store)
+    env = {k: v for k, v in os.environ.items() if k not in ("BAZELISK_SKIP_WRAPPER", "BAZEL_REAL")}
+    flags = [] if checks else ["--norun_validations"]
+    if subprocess.run([bazel, "build", label, *flags], cwd=ROOT, env=env, check=False).returncode:
+        raise SystemExit(f"lab: building {label} failed: bazel's output is above")
+    root = Path(subprocess.run([bazel, "info", "execution_root"], cwd=ROOT, env=env, capture_output=True, text=True, check=True).stdout.strip())
+    out = subprocess.run([bazel, "cquery", label, "--output=files", *flags], cwd=ROOT, env=env, capture_output=True, text=True, check=True)
+    #: the target's outputs, each by its path under the execution root
+    files = {Path(line).name: root / line for line in out.stdout.splitlines()}
+    binary = files.get(f"{name}.{arch}")
+    if binary is None:
+        raise SystemExit(f"lab: {label} built no {name}.{arch}: {sorted(files)}")
+    return Built(binary.parent, name, arch)
+
+
+def notices(binary: Built) -> Path:
+    return binary.part("ptxas")
 
 
 #: THE CHECKER, warpline's (`warpline.checker`, docs/internals/tools/lab.md#hazards): it computes every hazard below from the code the
@@ -135,11 +197,7 @@ UNSTATED = "stated in the experiment's source, where it declares the count"
 _DECLARED = re.compile(r'"([A-Z][A-Z_]*)"\s*,\s*"(?:<=|>=|==)"')
 #: the project's ledger of the toolkit's notices: its rows override or add to the checker's base ledger (the rows that only repeat the
 #: base are not here); the hazards a `declare` row counts are the checker's rules `mma_serialized` and `wait_injected`
-PROJECT_LEDGER = Path(__file__).resolve().with_name("notice_ledger.json")
-#: ptxas's own options the build switches on (`ptxas --help`, passed through nvcc's `-Xptxas`): the warning where a
-#: function spills registers to local memory, the warning where a function uses local memory (its stack frame's size in
-#: the text) and the verbose per-function summary
-PTXAS_OPTIONS = ("--warn-on-spills", "--warn-on-local-memory-usage", "--verbose")
+PROJECT_LEDGER = Path(__file__).absolute().with_name("notice_ledger.json")
 
 
 @functools.cache
@@ -314,22 +372,22 @@ def render_refusal(r, experiment: str = "the build") -> list[str]:
     return [f"{place}: {text} [checker rule {r.rule}: at {where}]{fix}{tail}"]
 
 
-def notice_names(read: list) -> dict[str, str]:
+def notice_names(built: Built, read: list) -> dict[str, str]:
     """The functions the notices name (as the toolkit printed them, mangled), demangled."""
     functions = sorted({n.function for n in read if n.function})
-    return checked.demangle(functions) if functions else {}
+    return built.demangle(functions) if functions else {}
 
 
-def read_notices(binary: Path) -> list:
-    """EVERY notice of `binary`'s build, in order (the checker's reader of the lines nvcc printed beside it); none where the build
-    left no notices (a packed binary run elsewhere)."""
-    return checked.checker().ledgers.read_notices(notices(binary).read_text()) if notices(binary).exists() else []
+def read_notices(built: Built) -> list:
+    """EVERY notice of the experiment's build, in order (the checker's reader of the lines nvcc printed beside it); none where the build
+    left no notices (a pack made without them)."""
+    return checked.checker().ledgers.read_notices(notices(built).read_text()) if notices(built).exists() else []
 
 
-def notice_report(binary: Path) -> list[str]:
+def notice_report(built: Built) -> list[str]:
     """THE REPORT: the notices of `report` rows, one line a row with its count, printed with the pack and blocking nothing."""
-    read = read_notices(binary)
-    return checked.checker().declare.check_notices(read, notice_ledger(), [], notice_names(read))[1] if read else []
+    read = read_notices(built)
+    return checked.checker().declare.check_notices(read, notice_ledger(), [], notice_names(built, read))[1] if read else []
 
 
 def held_rules(experiment: str) -> set[str]:
@@ -343,45 +401,48 @@ def held_rules(experiment: str) -> set[str]:
     return names
 
 
-def checker_failures(binary: Path, expected: list[dict], budgeted: set[str]) -> list[str]:
+def model_of(built: Built) -> list:
+    """The checker's model of every kernel of the experiment (named by the toolkit's demangled names, the form the lab's patterns are
+    of), read off the texts the graph's disassemblers wrote."""
+    return checked.kernels_in(built.text("sass"), built.text("usage"), built.text("graph"), built.names)
+
+
+def checker_failures(built: Built, expected: list[dict], budgeted: set[str]) -> list[str]:
     """What the checker refuses of the build: the rules the experiment is held to (`held_rules`) over every kernel and every notice
     of the build against the ledger -- under the declarations its expectations translate to."""
     c = checked.checker()
-    experiment = binary.name.split(".")[0]
+    experiment = built.name
     names = held_rules(experiment)
     held = experiment not in _PRE_TIMELINE
-    kernels = checked.kernels_of(binary, demangled=True)
+    kernels = model_of(built)
     path = experiments().get(experiment)
     reasons = declared_reasons(path.read_text()) if path else {}
     declarations = load_declarations(expected, reasons)
     refusals = checked.check(kernels, names, declarations, guidance())
     refusals = [r for r in refusals if held or r.rule != "loop_convergence" or r.kernel in budgeted]
-    read = read_notices(binary)
-    refusals += c.declare.check_notices(read, notice_ledger(), declarations, notice_names(read), guidance())[0]
+    read = read_notices(built)
+    refusals += c.declare.check_notices(read, notice_ledger(), declarations, notice_names(built, read), guidance())[0]
     return bound_failures(expected, kernels) + [line for r in refusals for line in render_refusal(r, experiment)]
 
 
-def kernels(binary: Path) -> dict[str, dict]:
+def kernels(built: Built) -> dict[str, dict]:
     """Per kernel (demangled): its opcode counts, registers and local bytes."""
     ops: dict[str, Counter] = {}
     current = None
-    with sass.sass_lines(binary) as lines:
-        for line in lines:
-            if m := sass.FUNCTION.match(line):
-                current = m.group(1)
-                ops[current] = Counter()
-            elif current and (m := sass.INSTRUCTION.match(line)):
-                ops[current][m.group(3)] += 1
-    usage = subprocess.run([dev_config.cuda_bin("cuobjdump"), "-res-usage", str(binary)], capture_output=True,
-                           text=True, check=True).stdout
+    for line in built.text("sass").splitlines():
+        if m := sass.FUNCTION.match(line):
+            current = m.group(1)
+            ops[current] = Counter()
+        elif current and (m := sass.INSTRUCTION.match(line)):
+            ops[current][m.group(3)] += 1
     regs: dict[str, dict] = {}
     name = None
-    for line in usage.splitlines():
+    for line in built.text("usage").splitlines():
         if m := re.search(r"Function (\S+):", line):
             name = m.group(1)
         elif name and (m := re.search(r"REG:(\d+).*LOCAL:(\d+)", line)):
             regs[name] = {"regs": int(m.group(1)), "local": int(m.group(2))}
-    names = checked.demangle(list(ops))
+    names = built.demangle(list(ops))
     return {names[k]: {"ops": dict(v), **regs.get(k, {})} for k, v in ops.items()}
 
 
@@ -427,17 +488,16 @@ def timeline(path: Path) -> bool:
     return any("TIMELINE:" in line for line in head)
 
 
-def disassembled(binary: Path) -> dict[str, list[tuple[int, str, str]]]:
+def disassembled(built: Built) -> dict[str, list[tuple[int, str, str]]]:
     """Per kernel (mangled): its instructions as (address, opcode, line)."""
     code: dict[str, list[tuple[int, str, str]]] = {}
     current = None
-    with sass.sass_lines(binary) as lines:
-        for line in lines:
-            if m := sass.FUNCTION.match(line):
-                current = m.group(1)
-                code[current] = []
-            elif current and (m := sass.INSTRUCTION.match(line)):
-                code[current].append((int(m.group(1), 16), m.group(3), line))
+    for line in built.text("sass").splitlines():
+        if m := sass.FUNCTION.match(line):
+            current = m.group(1)
+            code[current] = []
+        elif current and (m := sass.INSTRUCTION.match(line)):
+            code[current].append((int(m.group(1), 16), m.group(3), line))
     return code
 
 
@@ -532,12 +592,12 @@ def wait_candidates(body: list[tuple[int, str, str]], i: int) -> tuple[Counter, 
 REPORT_LINES, REPORT_GROUPS = 6, 16
 
 
-def waits_report(binary: Path) -> list[str]:
+def waits_report(built: Built) -> list[str]:
     """THE ADVISORY: per kernel (grouped by identical lines, a count each; at most `REPORT_LINES` lines a kernel and `REPORT_GROUPS` groups of kernels), each tensor
     wait's candidates to precede it -- what follows the wait in straight-line code, reads none of the registers the
     waited steps write, and could be issued before the wait (`wait_candidates`). Never a refusal."""
-    code = disassembled(binary)
-    names = checked.demangle(list(code))
+    code = disassembled(built)
+    names = built.demangle(list(code))
     groups: dict[tuple, list[str]] = {}
     for mangled, body in code.items():
         rows = Counter()
@@ -559,7 +619,7 @@ def waits_report(binary: Path) -> list[str]:
     return out
 
 
-def steps_report(binary: Path) -> list[str]:
+def steps_report(built: Built) -> list[str]:
     """THE ADVISORY: per kernel with tensor steps (kernels with the same lines grouped, a count each; at most
     `REPORT_GROUPS` groups), two lines: the bytes a step puts through the shared-memory port (its own operands and the
     shared loads and stores of its region; wavefronts are those bytes / 128, rounded up) and the instructions a thread
@@ -568,7 +628,7 @@ def steps_report(binary: Path) -> list[str]:
     `STEP_PORT` and `STEP_WORK` where declared; never a refusal where not."""
     steps = checked.checker().steps
     groups: dict[tuple, list[str]] = {}
-    for kernel in checked.kernels_of(binary, demangled=True):
+    for kernel in model_of(built):
         rows = [steps.figures(r) for r in kernel.regions]
         if not rows:
             continue
@@ -596,11 +656,11 @@ def steps_report(binary: Path) -> list[str]:
     return out
 
 
-def check(binary: Path, table: dict[str, dict]) -> list[str]:
+def check(built: Built, table: dict[str, dict]) -> list[str]:
     """Every expectation the experiment declares, every hazard the checker's rules find in its kernels past what it declares, every
     notice of its build allowed by the ledger (local memory is the toolkit's own warning there), and the project's own checks of its
     source: the failures, empty when it may run."""
-    expected = expectations(binary)
+    expected = expectations(built.binary)
     failures = []
     for e in (e for e in expected if e["op"] not in HAZARDS):
         hits = [k for k in table if re.search(e["kernel"], k)]
@@ -611,9 +671,9 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
             ok = {">=": n >= e["count"], "==": n == e["count"], "<=": n <= e["count"]}[e["cmp"]]
             if not ok:
                 failures.append(f"{k}: {e['op']} {n}, expected {e['cmp']} {e['count']}")
-    experiment = binary.name.split(".")[0]
-    budgeted = {k for b in budgets(binary) for k in table if re.search(b["kernel"], k)}
-    failures += checker_failures(binary, expected, budgeted)
+    experiment = built.name
+    budgeted = {k for b in budgets(built.binary) for k in table if re.search(b["kernel"], k)}
+    failures += checker_failures(built, expected, budgeted)
     if experiment not in _PRE_TIMELINE:
         if not timeline(experiments()[experiment]):
             failures.append(f"{experiment}: its header states no TIMELINE -- each phase's stream and which load is a "
@@ -622,9 +682,9 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
             failures.append(f"{experiment}: line {at}: a warp collective is an operand of a conditional -- every "
                             "lane takes it, and the select follows (docs/internals/LEARNINGS.md)")
     if experiment not in _PRE_29:
-        stated = budgets(binary) + budgets(binary, "exempt")
+        stated = budgets(built.binary) + budgets(built.binary, "exempt")
         for k, info in table.items():
-            if count(info["ops"], "|".join(WGMMA)) and any(re.search(b["kernel"], k) for b in budgets(binary)):
+            if count(info["ops"], "|".join(WGMMA)) and any(re.search(b["kernel"], k) for b in budgets(built.binary)):
                 failures.append(f"{k}: a budgeted wgmma kernel -- its per-MMA divisor is read from counters the "
                                 "hopper model does not name yet (owed with that model): state `Bench::exempt`")
             if count(info["ops"], "|".join(sass.OPCODE_CLASSES["mma"])) and not any(re.search(b["kernel"], k) for b in stated):
@@ -654,7 +714,7 @@ def _plain(name: str) -> str:
 def counters_of(binary: Path, extra: list[str]) -> dict[str, dict]:
     """Per kernel (`_plain` name), its first launch's standard counters (docs/internals/tools/pipes.md): `pipes.short`'s
     names and `opcodes` (executed instructions by opcode)."""
-    out = subprocess.run([dev_config.ncu(), "--metrics",
+    out = subprocess.run([_dev_config().ncu(), "--metrics",
                           ",".join(["sass__inst_executed_per_opcode", *pipes.metric_names()]),
                           "--print-metric-instances", "details", "--csv", str(binary), "--reps", "1", *extra],
                          capture_output=True, text=True, check=True).stdout
@@ -818,7 +878,7 @@ def inputs(name: str) -> tuple[list[str], dict[str, str]]:
     script = EXPERIMENTS / f"{name}.inputs.py"
     if not script.exists():
         return [], {}
-    directory = dev_config.scratch("lab") / "inputs" / name
+    directory = _dev_config().scratch("lab") / "inputs" / name
     directory.mkdir(parents=True, exist_ok=True)
     spec = importlib.util.spec_from_file_location(f"{name}_inputs", script)
     module = importlib.util.module_from_spec(spec)
@@ -887,12 +947,13 @@ def report(name: str, arch: str, device: dict, results: list[dict], reps: int) -
 
 def keep(name: str, arch: str, device: dict, results: list[dict], table: dict, reps: int, utilization: int,
          record: bool, digests: dict[str, str], counters: dict[str, dict], refused: dict | None = None,
-         built: dict | None = None, into: Path | None = None, blocks: int = 0) -> Path:
+         built: dict | None = None, into: Path | None = None, blocks: int = 0, toolkit: str | None = None) -> Path:
     """The run's record: into `measure/lab/results` under `--record`, else the scratch space (`into`: that directory
     instead). `refused`: the written exception of a host that grants no counters, in their place. `built`: a pack's
-    toolkit and commit, where the binary was built on another machine (`pack`)."""
+    toolkit and commit, where the binary was built on another machine (`pack`); else `toolkit` is the version of the
+    graph's that built it."""
     driver, = smi("driver_version")
-    built = built or {"toolkit": toolkit_line(), "git": git_state()}
+    built = built or {"toolkit": toolkit, "git": git_state()}
     body = {"experiment": name, "question": question(experiments()[name]), "arch": arch, "device": device.get("name"),
             "checks": device.get("_checks", []),
             "driver": driver, "toolkit": built["toolkit"], "git": built["git"], "reps": reps,
@@ -906,7 +967,7 @@ def keep(name: str, arch: str, device: dict, results: list[dict], table: dict, r
     if blocks:
         body["blocks"] = blocks
     target = (into / name if into else RESULTS / name if record
-              else dev_config.scratch("lab") / "results" / name) / (f"{arch}.blocks{blocks}.json" if blocks else f"{arch}.json")
+              else _dev_config().scratch("lab") / "results" / name) / (f"{arch}.blocks{blocks}.json" if blocks else f"{arch}.json")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(body, indent=1) + "\n")
     #: THE TRACES (a traced row's timelines, `lab trace`), beside the record: a directory, a warpline record a traced
@@ -920,48 +981,42 @@ def keep(name: str, arch: str, device: dict, results: list[dict], table: dict, r
     return target
 
 
-def toolkit_line() -> str:
-    return subprocess.run([dev_config.cuda_bin("nvcc"), "--version"], capture_output=True,
-                          text=True).stdout.strip().splitlines()[-1]
-
-
 def pack(name: str, arch: str, into: Path) -> int:
-    """AN EXPERIMENT BUILT HERE FOR A CARD ELSEWHERE: its binary for `arch`, its SASS checked as `run` checks it, and
-    beside it what a record needs of the build -- the kernels' registers and opcodes, the toolkit, the commit and the
-    binary's digest -- so a box with a driver and no toolkit runs it (`carried`)."""
-    binary = build(experiments()[name], arch)
-    table = kernels(binary)
-    failures = check(binary, table)
-    if failures:
-        print(f"lab: {name} REFUSED -- its SASS is not what it measures:", *failures, sep="\n  ")
-        return 1
-    if budgets(binary):
+    """AN EXPERIMENT BUILT FOR A CARD ELSEWHERE: the graph's target with its checks (`build`: its SASS held to what `run` holds it to, a
+    refusal failing the build) and its outputs copied -- the binary, and beside it what a record needs of the build: the kernels'
+    registers and opcodes, the toolkit, the commit and the binary's digest -- so a box with a driver and no toolkit runs it
+    (`carried`). The copy compiles nothing: an unchanged experiment is Bazel's cache."""
+    exp = build(name, arch, checks=True)
+    table = kernels(exp)
+    if budgets(exp.binary):
         print(f"lab: {name} has budgeted kernels, whose gate reads executed counts: it runs where the toolkit is")
         return 1
-    report = notice_report(binary)
+    report = notice_report(exp)
     if report:
         print("lab: toolkit notices the ledger reports (not blocking; tools/notice_ledger.json):", *report, sep="\n")
-    report = waits_report(binary)
+    report = waits_report(exp)
     if report:
         print("lab: tensor waits -- candidates to precede each (advisory; `lab waits` prints it alone):", *report, sep="\n")
-    report = steps_report(binary)
+    report = steps_report(exp)
     if report:
         print("lab: tensor steps -- the port bytes and instructions of a step (advisory unless a bound is declared; "
               "`lab steps` prints it alone):", *report, sep="\n")
     into.mkdir(parents=True, exist_ok=True)
-    carried_binary = into / binary.name
-    carried_binary.write_bytes(binary.read_bytes())
+    carried_binary = into / exp.binary.name
+    carried_binary.write_bytes(exp.binary.read_bytes())
     carried_binary.chmod(0o755)
-    body = {"experiment": name, "arch": arch, "toolkit": toolkit_line(), "git": git_state(),
-            "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+    for part in PARTS:
+        shutil.copyfile(exp.part(part), into / exp.part(part).name)
+    body = {"experiment": name, "arch": arch, "toolkit": exp.toolkit(), "git": git_state(),
+            "sha256": hashlib.sha256(exp.binary.read_bytes()).hexdigest(),
             "kernels": {k: {"regs": v.get("regs"), "ops": dict(v["ops"])} for k, v in table.items()}}
-    (into / f"{binary.name}.pack.json").write_text(json.dumps(body, indent=1) + "\n")
+    (into / f"{exp.binary.name}.pack.json").write_text(json.dumps(body, indent=1) + "\n")
     print(f"lab: packed {name} for {arch} into {into}")
     return 0
 
 
 def measure(name: str, arch: str, binary: Path, table: dict, opts, *, built: dict | None = None,
-            into: Path | None = None) -> int:
+            into: Path | None = None, toolkit: str | None = None) -> int:
     """THE DEVICE'S HALF OF A RUN, the one sequence `run` and `carried` share: the inputs, a quiet GPU, the timed
     repetitions under the kill timeout, the checks, then the counters -- the profiler's, gated against the budgets, or,
     where the caller DECLARES a host that grants none (`--no-counters HOST`, KERNEL_STANDARDS section 16 addendum 4),
@@ -987,7 +1042,7 @@ def measure(name: str, arch: str, binary: Path, table: dict, opts, *, built: dic
         print(f"lab: {name}'s outputs are not verified, not recorded:", *wrong, sep="\n  ")
         return 1
     #: warpline's `check` on each traced row's record, where warpline's library is: a record with findings is not recorded
-    if device.get("_traces") and dev_config.warpline_python() is None:
+    if device.get("_traces") and _dev_config().warpline_python() is None:
         print(f"lab: {name}'s traced rows are written unchecked: warpline's library is not here (the run is outside "
               "`bazel run //tools:lab`); `lab trace` checks them where it is")
     elif device.get("_traces"):
@@ -1016,7 +1071,7 @@ def measure(name: str, arch: str, binary: Path, table: dict, opts, *, built: dic
                   sep="\n  ")
             return 1
     target = keep(name, arch, device, results, table, opts.reps, utilization, opts.record, digests, raw, refused,
-                  built, into, opts.blocks)
+                  built, into, opts.blocks, toolkit)
     print(f"lab: recorded {target.relative_to(ROOT) if opts.record else target}")
     return 0
 
@@ -1065,7 +1120,7 @@ def ledger_dumps(name: str, source: Path, into: Path, patterns: list[str], skip:
             print(f"lab: {k[:80]} has no template number to name its dump by")
             return 1
         core = k[:k.index(">") + 1].split("::")[-1] if "<" in k else k.split("(")[0].split("::")[-1]
-        out = subprocess.run([dev_config.ncu(), "--kernel-name-base", "demangled", "--kernel-name",
+        out = subprocess.run([_dev_config().ncu(), "--kernel-name-base", "demangled", "--kernel-name",
                               f"regex:{re.escape(core)}", "--launch-skip", str(skip), "--launch-count", "1",
                               "--section", "SourceCounters", "--page", "source", "--print-source", "sass", "--csv",
                               str(binary), "--reps", "1", *extra], capture_output=True, text=True, timeout=900)
@@ -1084,21 +1139,21 @@ def ledger_dumps(name: str, source: Path, into: Path, patterns: list[str], skip:
 
 def run(name: str, opts) -> int:
     arch = sass.device_arch()
-    binary = build(experiments()[name], arch)
-    table = kernels(binary)
-    failures = check(binary, table)
+    exp = build(name, arch)
+    table = kernels(exp)
+    failures = check(exp, table)
     if failures:
         print(f"lab: {name} REFUSED -- its SASS is not what it measures:", *failures, sep="\n  ")
         return 1
-    report = notice_report(binary)
+    report = notice_report(exp)
     if report:
         print("lab: toolkit notices the ledger reports (not blocking; tools/notice_ledger.json):", *report, sep="\n")
-    return measure(name, arch, binary, table, opts)
+    return measure(name, arch, exp.binary, table, opts, toolkit=exp.toolkit())
 
 
 def ncu_counters(binary: Path, metrics: list[str], extra: list[str]) -> dict[str, dict[str, float]]:
     """Per kernel (ncu's name), each metric's median over the kernel's launches in one repetition of the experiment."""
-    out = subprocess.run([dev_config.ncu(), "--metrics", ",".join(metrics), "--csv", str(binary),
+    out = subprocess.run([_dev_config().ncu(), "--metrics", ",".join(metrics), "--csv", str(binary),
                           "--reps", "1", *extra], capture_output=True, text=True, check=True).stdout
     lines = out.splitlines()
     start = next(i for i, line in enumerate(lines) if line.startswith('"ID"'))
@@ -1113,20 +1168,20 @@ def ncu_counters(binary: Path, metrics: list[str], extra: list[str]) -> dict[str
 
 def counters(name: str, metrics: list[str], record: bool) -> int:
     arch = sass.device_arch()
-    binary = build(experiments()[name], arch)
-    failures = check(binary, kernels(binary))
+    exp = build(name, arch)
+    failures = check(exp, kernels(exp))
     if failures:
         print(f"lab: {name} REFUSED -- its SASS is not what it measures:", *failures, sep="\n  ")
         return 1
     extra, digests = inputs(name)
-    found = ncu_counters(binary, metrics, extra)
+    found = ncu_counters(exp.binary, metrics, extra)
     width = max(len(k) for k in found)
     for k, ms in found.items():
         print(f"  {k:<{width}}  " + "  ".join(f"{m} {v:,.0f}" for m, v in ms.items()))
     body = {"experiment": name, "question": question(experiments()[name]), "arch": arch, "git": git_state(),
             "date": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"), "metrics": metrics,
             "inputs": digests, "kernels": found}
-    target = (RESULTS / name if record else dev_config.scratch("lab") / "results" / name) / f"{arch}.counters.json"
+    target = (RESULTS / name if record else _dev_config().scratch("lab") / "results" / name) / f"{arch}.counters.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(body, indent=1) + "\n")
     print(f"lab: recorded {target.relative_to(ROOT) if record else target}")
@@ -1177,21 +1232,21 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
         if hashlib.sha256(packed.read_bytes()).hexdigest() != manifest["sha256"]:
             print(f"lab: {packed} is not the binary the dumps profiled ({manifest['sha256'][:12]})")
             return 1
-    binary = packed if packed else build(path, arch)
-    table = kernels(binary)
+    #: a packed binary is read as its pack holds it (`pack` copies the target's outputs beside it), the built target's otherwise
+    exp = Built(packed.parent, name, arch) if packed else build(name, arch)
+    if packed and exp.binary != packed:
+        print(f"lab: {packed} is not `{name}.{arch}`, which a pack of this experiment and architecture holds")
+        return 1
+    binary = exp.binary
+    table = kernels(exp)
     extra, _ = inputs(name)
     units = {k: (float(u["n"]), u["unit"]) for k in table for u in budgets(binary, "units")
              if re.search(u["kernel"], k)}
     heads = phases(path)
     declarations = load_declarations(expectations(binary), declared_reasons(path.read_text()))
     refused: list[str] = []
-
-    images = [c for c in sass.cubins(binary) if arch in c.name]
-    if len(images) != 1:
-        print(f"lab: {len(images)} images for {arch} in {binary.name}")
-        return 1
-    mangled = dict(zip(checked.demangle(list(kernels_mangled(binary))).values(), kernels_mangled(binary), strict=True))
-    disassembly = sass.disassemble(images[0], "--print-line-info-inline", "-gi")
+    mangled = {pretty: m for m, pretty in exp.demangle(exp.functions()).items()}
+    disassembly = exp.text("lines")
     for k in table:
         if pattern and not re.search(pattern, k):
             continue
@@ -1204,11 +1259,11 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
                 return 1
             csv_path = next(d for d in dumps if d.name == named)
         else:
-            out = subprocess.run([dev_config.ncu(), "--kernel-name-base", "demangled", "--kernel-name",
+            out = subprocess.run([_dev_config().ncu(), "--kernel-name-base", "demangled", "--kernel-name",
                                   f"regex:{re.escape(core)}", "--launch-count", "1", "--section", "SourceCounters",
                                   "--page", "source", "--print-source", "sass", "--csv", str(binary), "--reps", "1",
                                   *extra], capture_output=True, text=True, check=True).stdout
-            csv_path = dev_config.scratch("lab") / f"{name}.ledger.csv"
+            csv_path = _dev_config().scratch("lab") / f"{name}.ledger.csv"
             csv_path.write_text(out)
         rows = region_ledger.read_source_counters(csv_path)
         detail = region_ledger.read_source_detail(csv_path)
@@ -1358,18 +1413,14 @@ def static_ledger(name: str, pattern: str | None, arch: str | None) -> int:
     profiler counters has no executed ledger, and this one stands in its place."""
     arch = arch or sass.device_arch()
     path = experiments()[name]
-    binary = build(path, arch)
+    exp = build(name, arch)
     heads = phases(path)
     source = path.read_text().splitlines()
-    images = [c for c in sass.cubins(binary) if arch in c.name]
-    if len(images) != 1:
-        print(f"lab: {len(images)} images for {arch} in {binary.name}")
-        return 1
-    mangled = dict(zip(checked.demangle(list(kernels_mangled(binary))).values(), kernels_mangled(binary), strict=True))
-    disassembly = sass.disassemble(images[0], "--print-line-info-inline", "-gi")
-    model = {k.name: k for k in checked.kernels_of(binary, demangled=True)}
+    mangled = {pretty: m for m, pretty in exp.demangle(exp.functions()).items()}
+    disassembly = exp.text("lines")
+    model = {k.name: k for k in model_of(exp)}
     #: a kernel the lab would refuse is counted all the same, its refusals stated first
-    for failure in check(binary, kernels(binary)):
+    for failure in check(exp, kernels(exp)):
         print(f"  REFUSED AS IT STANDS: {failure}")
 
     for k, symbol in mangled.items():
@@ -1425,19 +1476,12 @@ def own_section(disassembly: str, mangled: str) -> str:
     return "\n".join(lines[start:end])
 
 
-def kernels_mangled(binary: Path) -> list[str]:
-    """The binary's kernels by their mangled names, as the disassemblers spell them."""
-    with sass.sass_lines(binary) as lines:
-        return [m.group(1) for line in lines if (m := sass.FUNCTION.match(line))]
-
-
 def show_sass(name: str, pattern: str | None, full: bool, arch: str | None) -> int:
-    path = experiments()[name]
-    binary = build(path, arch or sass.device_arch())
-    table = kernels(binary)
+    exp = build(name, arch or sass.device_arch())
+    table = kernels(exp)
     #: a loop of steps' longest run without one: the checker's `step_gap` rule
     step_gap = checked.checker().rules.registry()["step_gap"]
-    gaps = {k.demangled: step_gap.check(k) for k in checked.kernels_of(binary, demangled=True)}
+    gaps = {k.demangled: step_gap.check(k) for k in model_of(exp)}
     for k, info in table.items():
         if pattern and not re.search(pattern, k):
             continue
@@ -1445,8 +1489,7 @@ def show_sass(name: str, pattern: str | None, full: bool, arch: str | None) -> i
         gap = "".join(f", {f.what}" for f in gaps.get(k, []))
         print(f"{k}\n  {info.get('regs')} registers{gap}; {top}")
     if full:
-        print(subprocess.run([dev_config.cuda_bin("cuobjdump"), "-sass", str(binary)], capture_output=True,
-                             text=True, check=True).stdout)
+        print(exp.text("sass"))
     return 0
 
 
@@ -1534,10 +1577,10 @@ def main() -> int:
     if args.cmd == "pack":
         return pack(args.experiment, args.arch, args.into)
     if args.cmd == "waits":
-        print(*waits_report(build(experiments()[args.experiment], args.arch)), sep="\n")
+        print(*waits_report(build(args.experiment, args.arch)), sep="\n")
         return 0
     if args.cmd == "steps":
-        print(*steps_report(build(experiments()[args.experiment], args.arch)), sep="\n")
+        print(*steps_report(build(args.experiment, args.arch)), sep="\n")
         return 0
     if args.cmd == "carried":
         return carried(args.experiment, args.source, args.into, args)

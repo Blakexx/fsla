@@ -68,22 +68,31 @@ cc_binary(
     ],
 )
 
-#: THE LAB, a run target of its own: it hands the tool the directory of warpline's headers (the stamp and the host
-#: writer), which the experiments' compile puts on nvcc's include path (`ROLA_WARPLINE_INCLUDE`; compile time only, a
-#: packed binary needs nothing of warpline on the box), and the directory of warpline's Python package, which
-#: `tools/lab_trace.py` reads the traced rows with (`ROLA_WARPLINE_PYTHON`)
+#: THE LAB, a run target of its own: it hands the tool the directory of warpline's Python package, which
+#: `tools/lab_trace.py` reads the traced rows with and the lab's checks read the code with (`ROLA_WARPLINE_PYTHON`). The experiments are
+#: targets of the graph (`//measure/lab`, bazel/lab.bzl): the lab builds the one it reads, and compiles nothing itself
 lab_run(
     name = "lab",
-    headers = "@warpline//:headers",
     library = "@warpline//:warpline",
 )
 
 #: THE SASS GATE by hand, handed the checker as the lab is (the graph's gate action reads the same way)
 lab_run(
     name = "sass_gate",
-    headers = "@warpline//:headers",
     library = "@warpline//:warpline",
     tool = "tools/sass_gate.py",
+)
+
+#: what the lab's graph actions read (bazel/lab.bzl): the lab's checks and the modules they import, never the rest of the tools
+filegroup(
+    name = "lab_sources",
+    srcs = [
+        "checked.py",
+        "lab.py",
+        "pipes.py",
+        "region_ledger.py",
+        "sass.py",
+    ],
 )
 
 #: THE TREE'S TOOLS, each a run target (bazel/defs.bzl's `tool_run`): `bazel run //tools:<name> -- <its arguments>`, in

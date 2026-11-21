@@ -11,7 +11,8 @@ re-runs the experiments its rules cite (`docs/KERNEL_STANDARDS.md` §26).
 1. A QUESTION about the machine, asked as one experiment, `measure/lab/experiments/<name>.cu`: its header states the
    QUESTION and the METHOD, its kernels are template instantiations (one per variant), and its `main` declares the SASS
    each kernel must contain and times the variants.
-2. `bazel run //tools:lab -- run <name>` compiles it with the pinned toolkit for the running card, reads the SASS and
+2. `bazel run //tools:lab -- run <name>` builds the experiment's target ([below](#graph): the graph compiles it for sm_90a and its
+   disassemblers read it), reads the SASS and
    REFUSES to measure unless every declared expectation holds, every notice the toolkit printed is allowed by [the ledger](#ledger) (a kernel that spills or keeps a stack frame is the toolkit's own warning) and no kernel holds a
    convergence call nobody declared (the SASS gate's classification, `tools/sass_gate.py`: ptxas's loop-exit
    `CALL.REL.NOINC` and guarded fallbacks are not ones); checks the GPU is quiet; runs the repetitions; prints median, min and max and flags a result
@@ -171,7 +172,7 @@ cannot reach the SASS, `ignore`, with the reason said. A new row lands in the sa
 printed it; a notice is never ignored for want of a decision, and `ignore` of a notice whose cost is merely
 unmeasured is `report`.
 
-THE ASSEMBLER'S OWN WARNINGS. `build` passes ptxas `--warn-on-spills` (`-warn-spills`: "Warning if registers are
+THE ASSEMBLER'S OWN WARNINGS. The experiment's compile (`bazel/lab.bzl`'s `_COPTS`) passes ptxas `--warn-on-spills` (`-warn-spills`: "Warning if registers are
 spilled to local memory"), `--warn-on-local-memory-usage` (`-warn-lmem-usage`: "Warning if local memory is used") and
 `--verbose` (`-v`: "prints code generation statistics", the per-function summary) through nvcc's `-Xptxas`, so the
 two warnings (`Registers are spilled to local memory in function 'k', N bytes spill stores, N bytes spill loads` and
@@ -212,9 +213,23 @@ NOT COUNTED: the copy engine's writes (bulk copies, the tensor memory access), b
 loads and stores that reach shared memory, atomics, a shared access outside the region, and trip counts: a loop's
 figures are its mean over its steps, and both sides of a branch count once.
 
+<a id="graph"></a>THE EXPERIMENTS ARE THE GRAPH'S TARGETS (`measure/lab/BUILD.bazel`, `bazel/lab.bzl`; Blake's ruling, 2026-11-21: no tool runs nvcc, cuobjdump or
+nvdisasm for the lab outside the graph's actions). Each `measure/lab/experiments/<name>.cu` is the target `//measure/lab:<name>`: the graph's CUDA rule
+(`cuda_unit`, the rule that builds the library) compiles it for sm_90a with the lab's flags, `cc_binary` links it as `<name>.sm_90a`, and the target's outputs
+are what a pack holds -- the binary, and beside it `.cubin`, `.sass` (`cuobjdump -sass`), `.usage` (`-res-usage`), `.graph` (`nvdisasm -bbcfg`), `.lines`
+(`nvdisasm` with the frame chain), `.names` (the functions' `cu++filt` names), `.ptxas` (the compile's diagnostics, ptxas's report among them) and `.toolkit`
+(`nvcc --version`), the facts action's (`tools/lab_facts.py`, the graph's disassemblers). THE CHECKS are the target's validation (`tools/lab_check.py`: the
+SASS checker, the notices' ledger and the experiment's declarations, over those files, in the lab's own words): `bazel build //measure/lab:<name>`
+refuses an experiment `run` would refuse, and `pack` builds with them. Every other command builds the target with `--norun_validations` and reads the
+files (`lab.Built`): `sass`, `run`, `ncu`, `ledger --static`, `waits` and `steps` print the findings themselves where they report them, and run no compiler and no
+disassembler. A pack holds the same files, so `ledger --packed` reads a packed experiment as the target is read. The lab builds sm_90a alone (the tree's one
+architecture; a card of another is refused by name), and `lab.py` finds the built files through `bazel cquery`, never a path of its own.
+
 <a id="pack"></a>A CARD ELSEWHERE. A box that is not started from the devbox image ([`setup.md`](../../setup.md)) carries a driver and
-no toolkit, so an experiment for it is built and checked here and run there: `bazel run //tools:lab -- pack <name> --arch sm_90a --into DIR` compiles it for that architecture,
-holds its SASS to the same checks as `run`, and writes the binary with a pack file beside it (the kernels' registers
+no toolkit, so an experiment for it is built and checked here and run there: `bazel run //tools:lab -- pack <name> --arch sm_90a --into DIR` builds the experiment's
+target with its checks (a refusal fails the build, with the text `run` prints) and copies its outputs -- no compile of its own: an unchanged experiment is
+Bazel's cache hit -- the binary, the files beside it that every reader of the experiment's code reads (the cubin, the listings,
+the demangled names, the assembler's log, the toolkit's version: [below](#graph)) and a pack file (the kernels' registers
 and opcodes, the toolkit, the commit, the binary's digest); on the card, `tools/lab.py carried <name> --from DIR --into
 OUT [--no-counters HOST]` (the counters read where the box holds the pinned profiler, the host named where it grants
 none) runs the pack's binary by its digest through the sequence `run` runs (`measure`: the inputs, a
@@ -241,8 +256,7 @@ keeps the counters under `counters` (KERNEL_STANDARDS §29.14). The tensor pipe 
 else from the work the tensor-pipe counter counts and the one MMA kind the SASS issues.
 
 <a id="warpline"></a>THE STAMP HEADER AND THE RECORD. `measure/lab/lab.cuh` includes `warpline/stamp.cuh` (the in-kernel stamp of the warpline module, pinned in
-`MODULE.bazel`) and `warpline/host.hpp` (its host writer of the native record, plain C++17). `bazel run //tools:lab` hands the lab's compile their directory
-(`ROLA_WARPLINE_INCLUDE`, one more `-I` beside the lab's and the kernels'); `tools/lab.py` run outside `bazel run` refuses to compile. The includes are compile-time
+`MODULE.bazel`) and `warpline/host.hpp` (its host writer of the native record, plain C++17). the experiments' compile takes them as the dependencies `@warpline//:stamp` and `@warpline//:host` (`bazel/lab.bzl`). The includes are compile-time
 only, so `pack` and `carried` need nothing of warpline at run time: the packed binary writes the records itself. `bazel run //tools:lab`
 hands `tools/lab.py` the directory of warpline's Python package too (`ROLA_WARPLINE_PYTHON`, `@warpline//:warpline`), which
 `tools/lab_trace.py` reads the records with and `lab.py` checks them with (`tools/checked.py` is the one seam to the checker); a box that runs a pack outside Bazel has none, and
@@ -341,7 +355,7 @@ Every item below cost a wrong number before the lab existed; each is now a guard
 
 * <a id="build"></a>**A launch sized at the host pass's card.** The host pass compiles at the pinned card, so a
   harness that sized its launch from a plan at the compiling architecture launched the A100 with sm_86's shared bytes
-  (2026-11-07, `read_alone`, `read_dense`). An experiment compiles for one architecture (`tools/lab.py`'s `build`:
+  (2026-11-07, `read_alone`, `read_dense`). An experiment compiles for one architecture (`bazel/lab.bzl`:
   the extension's own `-gencode` form for that one row, C++20 as the extension) and `-DROLA_LAB_CC` names it to both passes, so `lab::kLabBuild` -- that
   architecture's own build ([`common/hardware.md#builds`](../common/hardware.md#builds)) -- is the one plan a harness
   reads on the device and on the host.
@@ -375,8 +389,8 @@ Every item below cost a wrong number before the lab existed; each is now a guard
 
 ## <a id="parts"></a>Part harnesses
 
-An experiment may include the kernels' own headers (`tools/lab.py` puts `csrc/rola/src` on the include path and builds
-with the production flags), so a component is measured as the kernel runs it, alone and on real inputs, before its
+An experiment may include the kernels' own headers (its compile has `csrc/rola/src` on the include path, `//csrc/rola:headers`, and the graph's
+CUDA rule's flags), so a component is measured as the kernel runs it, alone and on real inputs, before its
 cost is read in the composed ledger (KERNEL_STANDARDS section 19).
 
 ## <a id="experiments"></a>The experiments

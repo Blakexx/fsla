@@ -45,10 +45,11 @@ resolved value and the file it came from ([dev.md](dev.md)).
   the ptxas a gate reads is the one the build ran.
 - `scratch(name)` returns a tool's scratch directory, this checkout's own: `<host.scratch>/<digest>/<name>`, where
   `<digest>` is the first 12 hex digits of the SHA-256 of the checkout's absolute root path (`/tmp/rola/<digest>/lab`
-  for the lab's builds by default). Two checkouts of one machine, building the same experiment at once, write
+  for the lab's run records, input files and profiler dumps by default). Two checkouts of one machine write
   different directories; no environment variable names it. The digest, not a directory inside the checkout, because
-  the intermediates (a binary, cubins, the `.ptxas` log) are bulky, are read back by no one, and `host.scratch` is
-  the one place the machine's config already puts them (`bazel run //:check` prints this checkout's directory).
+  what a run leaves (a record, a dump, the cubins ratify extracts) is bulky, is read back by no one, and `host.scratch` is
+  the one place the machine's config already puts it (`bazel run //:check` prints this checkout's directory). It holds
+  no compile: the lab's experiments are the graph's targets (`docs/internals/tools/lab.md#graph`), whose outputs Bazel keeps.
 - `devbox_image()` returns the devbox image's digest inside such a container, which its launcher mounts read-only at
   `CONTAINER_IMAGE`, else the empty string. A file the launcher mounts, not an environment variable: an editor's
   container would carry a variable as a setting of its own.
@@ -67,8 +68,8 @@ f-string prefixes resolved) and shell expansions.
   - `ROLA_DEV_CONFIG` itself.
   - The toolkit ratify's compile path and the header self-check set for torch's extension module (`CUDA_HOME`).
   - The graph's copy of the pinned toolkit a test tier hands its tests (`ROLA_CUDA_HOME`).
-  - The directory that holds warpline's `warpline/stamp.cuh`, which the `lab` run target hands the lab's compile
-    (`ROLA_WARPLINE_INCLUDE`).
+  - The directory that holds warpline's Python package, which the `lab` run target hands the lab and the lab's graph
+    actions carry (`ROLA_WARPLINE_PYTHON`).
   - pytest-xdist's worker id.
   - The agent harness's campaign directory.
   - The login name printed into the sudoers rule `bazel run //:clock` suggests (`USER`).
