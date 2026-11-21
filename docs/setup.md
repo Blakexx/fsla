@@ -175,7 +175,7 @@ milestones by design; it reads the build's own compiles, so it needs the toolcha
 ## 5. Run the battery
 
 ```bash
-bazel test //:lane     # every test tier: cpu, unit_cuda, oracle, integration
+bazel test //:lane     # every test tier: cpu, lab, unit_cuda, oracle, integration
 ```
 
 This is the battery `docs/testing.md` "Running it" names; the session-scoped

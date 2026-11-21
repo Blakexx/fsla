@@ -281,7 +281,7 @@ bazel test //tests:oracle --test_filter=carry_fold --test_output=streamed   # so
 ```
 
 Every tier takes the built library -- collecting a tier reaches the plugin (a module that calls a kernel's entry at
-import) -- so a source change rebuilds it first. The CPU tier is `tests/unit` alone: an oracle or integration row needs the device whatever its marker (with none
+import) -- so a source change rebuilds it first. The CPU tier is `tests/unit/test_*.py` less `LAB_TESTS` (the lab's and the dev config's tests, which `:lab` runs): an oracle or integration row needs the device whatever its marker (with none
 visible, such rows fail rather than skip), so the oracle tier runs `tests/oracle` whole.
 
 **The commit lane is the whole battery above, inside five minutes.** The build-shape gates and `tools/ratify.py` run
