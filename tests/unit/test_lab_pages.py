@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The lab's page generators for `gather_rate` and `gather_group` (measure/lab/pages/): each rewrites its page's
+"""The lab's page generators for `gather_rate`, `gather_group` and `step_rolled` (measure/lab/pages/): each rewrites its page's
 measured section from a record of the experiment's rows, and refuses, by name, an absent record, a row the record
 lacks and a failed check. The records here are SYNTHETIC -- the shape the lab writes, figures chosen only to be
 distinct -- so what is tested is the generator, never a measurement."""
@@ -109,5 +109,51 @@ def test_a_failed_check_is_refused(tmp_path, name):
     tree(tmp_path, name)
     results = CASES[name](gen)
     record(tmp_path, name, results, [(results[0]["name"], False)])
+    with pytest.raises(SystemExit, match="failed checks"):
+        gen.write(tmp_path, "nbabc")
+
+
+def rolled_record(root, results, checked):
+    """`step_rolled`'s page reads two records, one CTA and the full grid, as the lab writes them."""
+    d = root / "measure/lab/results/step_rolled"
+    d.mkdir(parents=True, exist_ok=True)
+    for blocks in (1, 132):
+        (d / f"sm_90a.blocks{blocks}.json").write_text(json.dumps({
+            "device": "NVIDIA H100 80GB HBM3", "driver": "580.0", "date": "2026-01-01T00:00:00", "reps": 7,
+            "git": {"sha": "0123456789abcdef"}, "results": results,
+            "checks": [{"lab": "check", "variant": v, "ok": ok} for v, ok in checked],
+        }))
+
+
+def rolled_results(gen):
+    return [result(name, median) for (name, _), median in zip(gen.FORMS, (20.0, 20.0, 30.0))]
+
+
+def test_step_rolled_page_is_written_from_its_two_records_and_rewritten_alike(tmp_path):
+    gen = generator("step_rolled")
+    p = tree(tmp_path, "step_rolled")
+    before = p.read_text()
+    results = rolled_results(gen)
+    rolled_record(tmp_path, results, [(r["name"], True) for r in results])
+    assert gen.write(tmp_path, "nbabc") == [p]
+    once = p.read_text()
+    assert once.startswith(before[: before.index("MEASURED")].rstrip("\n"))
+    assert "MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM abc, driver 580.0; 2026-01-01" in once
+    assert "1.50 times the 20.00 of STRAIGHT" in once and "a fence a step is free" in once
+    gen.write(tmp_path, "nbabc")
+    assert p.read_text() == once
+
+
+def test_step_rolled_refuses_an_absent_record_a_missing_row_and_a_failed_check(tmp_path):
+    gen = generator("step_rolled")
+    tree(tmp_path, "step_rolled")
+    with pytest.raises(SystemExit, match="no record"):
+        gen.write(tmp_path, "nbabc")
+    results = rolled_results(gen)
+    lost = results.pop(0)
+    rolled_record(tmp_path, results, [])
+    with pytest.raises(SystemExit, match="holds no row"):
+        gen.write(tmp_path, "nbabc")
+    rolled_record(tmp_path, results + [lost], [(lost["name"], False)])
     with pytest.raises(SystemExit, match="failed checks"):
         gen.write(tmp_path, "nbabc")

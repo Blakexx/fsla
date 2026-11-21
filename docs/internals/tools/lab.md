@@ -423,3 +423,4 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="fold-forms"></a>[`fold_forms`](../../lab/fold_forms.md)
 - <a id="gather-rate"></a>[`gather_rate`](../../lab/gather_rate.md)
 - <a id="gather-group"></a>[`gather_group`](../../lab/gather_group.md)
+- <a id="step-rolled"></a>[`step_rolled`](../../lab/step_rolled.md)

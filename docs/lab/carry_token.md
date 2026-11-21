@@ -37,6 +37,12 @@ checked exactly in the other thirteen. The plain row also runs one long call, ti
 the card's cycles over its wall time, and the call by wall time scaled to 65,536 tokens (a window counted as 8 tokens
 a CTA, as `carry_window` counts it). THE PACKETS ARE THE HOST'S, playing the gather.
 
+ACCESS TABLE (KERNEL_STANDARDS [§30.1](../KERNEL_STANDARDS.md#s30): each instruction that touches a shared buffer, by lanes, addresses and banks; the pad stores' row; the fold's other accesses are not yet in it).
+
+| buffer | instruction | lanes and addresses | banks | measured | owed |
+|---|---|---|---|---|---|
+| the fold's coefficient tiles | the pad stores: 6 `STS.128` of the fold, a pad's two zero lines written by a thread's third word | a warp's 32 stores, a thread's lines named by its packet's words, so the data picks the addresses | where the data puts them: the stores meet on banks by chance, conflict-free for no shape | 43.5 excess shared wavefronts a CTA-window (367,276 over the timed launch's 8,448 CTA-windows, 132 CTAs of 64 windows, the launch's dump), accepted as declared `BANK_CONFLICT <= 44` | the gather places each pad's lines by bank, a placement rule in the packet's format (KERNEL_STANDARDS §30.2: priced against the fold's cost before it enters the format), then the declaration drops to the conflict-free count |
+
 MEASURED (NVIDIA H100 80GB HBM3, 132 SMs, Nebius preemptible VM zsfq8jye, driver 580.196.07, the clock locked; 2026-11-20 21:11 and 21:05 UTC (the one-CTA and the full-grid records), the
 experiment at a32d0424, 7 repetitions; the labels name the boxes of the two records, which hold no box's id; the 13 checked rows pass at one CTA
 and at 132; `sm_90a.blocks1.json` and `sm_90a.blocks132.json`, each with its traced rows' records beside it). Cycles a window a CTA:

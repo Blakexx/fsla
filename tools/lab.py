@@ -258,8 +258,8 @@ REFUSAL_TEXT = {
                         "does not read the group's accumulators belongs between the issue and the wait: KERNEL_STANDARDS 29.16 "
                         "(`lab waits` lists the candidates)",
     "step_rolled": "{n} tensor steps in loops that hold no wait on them (loops at {where}), {declared} declared (STEP_ROLLED): "
-                   "steps in a rolled loop were measured at about half a straight block's rate (a build not kept: no lab record "
-                   "holds the figure yet) and the toolkit says nothing: write them a straight block, or a step that may be "
+                   "a step in a rolled loop of a run-time count was measured at 37.6 cycles against 23.2 straight, 1.62 times, a fence "
+                   "a step free (docs/lab/step_rolled.md), and the toolkit says nothing: write them a straight block, or a step that may be "
                    "absent under a forward branch behind its own fence (docs/internals/LEARNINGS.md)",
     "step_port": "{n:,} bytes a step through the shared-memory port, over the {declared:,} declared (STEP_PORT; `lab steps` lists "
                  "the regions)",
