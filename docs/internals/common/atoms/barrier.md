@@ -16,9 +16,7 @@ Mirrors `csrc/rola/src/common/atoms/barrier.cuh`, a concern of the baseline oper
   completes a phase at `count` arrivals and flips its parity. A thread's own arrive releases its
   prior shared stores; a wait acquires. `mbar_wait` is a `test_wait` spin, cheap when the phase is already complete,
   which is the case a design arranges. `mbar_test` asks once, for a loop that does other work while copies have not
-  landed (its answer voted over the warp before it steers a branch). `mbar_wait_sleep` polls with a 64 ns
-  `__nanosleep`: a wait is a polled shared word (measured on sm_86, `facts_block`; its sm_90a re-run is owed), and a tight poll takes the issue slots of the warps doing
-  the work it waits on.
+  landed (its answer voted over the warp before it steers a branch).
 
 - <a id="warp-sync"></a>`warp_sync()`: `bar.warp.sync 0xffffffff`. `__syncwarp()` at a site the compiler cannot prove
   convergent lowers to a CALL into `__cuda_sm70_warpsync`; the instruction keeps the edge a single WARPSYNC (no

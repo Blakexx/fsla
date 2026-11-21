@@ -46,11 +46,6 @@ __device__ __forceinline__ bool mbar_test(SmemAddr a, uint32_t parity) {
   return ok != 0u;
 }
 
-//: THE WAIT, SLEEPING BETWEEN POLLS -- see docs/internals/common/atoms/barrier.md#mbarrier
-__device__ __forceinline__ void mbar_wait_sleep(SmemAddr a, uint32_t parity) {
-  while (!mbar_test(a, parity)) __nanosleep(64);
-}
-
 __device__ __forceinline__ void rendezvous() { __syncthreads(); }
 
 //: A RENDEZVOUS WHERE `cond`, CTA-uniform -- see docs/internals/common/atoms/barrier.md#rendezvous-if

@@ -120,7 +120,6 @@ def test_a_refused_notice_is_shown_with_its_row_and_an_unknown_one_quoted_whole(
 def test_every_hazard_names_a_rule_the_checker_has():
     c = checked.checker()
     known = set(c.rules.registry()) | set(c.ledgers.declared_rules(lab.notice_ledger())) | set(c.rules.profile_registry())
-    assert set(lab.PROFILE_HAZARDS) <= set(lab.HAZARD_RULES)
     assert set(lab.HAZARD_RULES.values()) | set(lab.PRESENCE_RULES.values()) | {"convergence_call"} <= known
 
 

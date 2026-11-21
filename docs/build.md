@@ -93,13 +93,11 @@ states), and three properties make it safe to have:
 * **It is NOT SHIPPABLE, and its record says so.** A subset carries fewer instantiations than the declared set by
   construction, so its record says `iteration: True` and `bazel run //:wheels` refuses it.
 
-**AND NOTHING THAT CERTIFIES NUMBERS MAY READ A SCOPE THE BUILD DID NOT HAVE.** The incident: the old ratification compiled
-its own units, and a decode subset that was a `-D` on the build's command line reached that compile, so the manifest it
-wrote held 393 entries carrying ONE decode arm while the library carried all sixteen -- and the ratification PASSED: nothing in it asked the
-library which arms it carried.
-A gate that certifies numbers no shipped binary has is worse than no gate. The lesson, now held by construction:
-there is no ratification compile and no manifest. `bazel run //:ratify -- --census` reads the units the graph compiled
-for the build's own parameters (its census record names them), so an iteration build's census is the measurement of its
+**AND NOTHING THAT CERTIFIES NUMBERS MAY READ A SCOPE THE BUILD DID NOT HAVE.** The incident: a decode subset that was a
+`-D` on a compile's command line reached a record that was not the build's, so the record held 393 entries carrying ONE
+decode arm while the library carried all sixteen, and nothing asked the library which arms it carried. A record of
+numbers no shipped binary has is worse than none. The census (`bazel run //:ratify -- --census`) reads the units the
+graph compiled for the build's own parameters (its record names them), so an iteration build's census is the measurement of its
 subset; the arm gate asks the BUILT binary which arms it carries and compares the answer with the declaration
 ([`build-graph.md#gates`](build-graph.md#gates)); and no arm subset is a compile flag: each family's selection is a
 generated header (`carry_selection.inc`, `decode_selection.inc`; [`build-graph.md#arms`](build-graph.md#arms)) written for

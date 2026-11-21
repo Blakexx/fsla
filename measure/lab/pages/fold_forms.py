@@ -15,10 +15,8 @@ from __future__ import annotations
 import json
 import pathlib
 
-from _record import Record
+from _record import Record, against, card
 
-#: two windows within this share of each other (of the lesser) are said to be the same
-SAME = 0.02
 UNIT = "cycles a window a CTA"
 #: the experiment's rows by their names, in the table's order
 TILE = "the fold's coefficients a tile in shared memory, a step a list"
@@ -31,13 +29,6 @@ ROWS = (
     (OWN, "the register form, a warp's own classes computed"),
     (TABLE, "the tile form, its dense lines fetched from the level by token"),
 )
-
-
-def against(a: float, b: float) -> str:
-    """How `a` stands to `b`: `the same as` within `SAME` of the lesser, else `below` or `above`."""
-    if abs(a - b) <= SAME * min(a, b):
-        return "the same as"
-    return "below" if a < b else "above"
 
 
 def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
@@ -62,11 +53,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         return (r["max"] - r["min"]) / r["median"]
 
     inst = instance
-    card = (
-        f"{d['device']}, Hyperstack spot VM {inst[2:]}" if inst.startswith("hs")
-        else f"{d['device']}, Nebius preemptible VM {inst[2:]}" if inst.startswith("nb")
-        else f"{d['device']}, vast.ai instance {inst}"
-    )
+    card_line = card(d['device'], inst)
     tile = R[TILE]
     table = "\n".join(
         ["| form | cycles a window a CTA | against the tile form |", "|---|---:|---:|"]
@@ -81,7 +68,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         by = f"{abs(R[name] - tile):,.0f} cycles {word}" if word != "the same as" else f"{word}"
         return f"- {what}: {R[name]:,.0f} {UNIT}, {R[name] / tile:.2f} of the tile form's {tile:,.0f}, {by} it."
 
-    text = f"""MEASURED ({card}, driver {d['driver']}; {d['date'][:10]}, the experiment at
+    text = f"""MEASURED ({card_line}, driver {d['driver']}; {d['date'][:10]}, the experiment at
 {d['git']['sha'][:8]}; {d['reps']} repetitions; the {checked} checked rows pass, every accumulator exact; the median, the widest
 spread of a row {100 * max(spread(n) for n, _ in ROWS):.1f}%). {UNIT[0].upper()}{UNIT[1:]}:
 

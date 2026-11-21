@@ -220,12 +220,12 @@ device whose arch was never measured, as a pair of clauses — `static_assert(ta
 statement of every launching entry. The test states the clause over every declared entry surface, so the next entry
 inherits it.
 
-**`bazel test //csrc/rola:header_selfcheck`** is the graph's compile of every header under `csrc/rola/src` ALONE, twice in
+<a id="headers"></a>**`bazel test //csrc/rola:header_selfcheck`** is the graph's compile of every header under `csrc/rola/src` ALONE, twice in
 one translation unit, with the extension's own flags and include roots (the CUDA rule's units, cached by the headers each
 read), so a header that leans on another's include, or whose include guard is broken, fails the build here rather than at
 a later caller; the test checks that every header has its unit. It needs no device.
 
-**The probes the unit tests read are the graph's** (`tests/BUILD.bazel`): the SASS gate's and the life-range report's
+<a id="probes"></a>**The probes the unit tests read are the graph's** (`tests/BUILD.bazel`): the SASS gate's and the life-range report's
 probes (`sass_gate_probe`, `life_ranges_probe`), the structure switch's toy (`structure_switch_probe`, run on the device
 the build names) and the host arm switch's probe over a synthetic selection header (`arm_switch_probe_built`,
 `arm_switch_probe_empty`) are compiled by the graph and handed to the tiers as data; a unit test runs no compiler.
@@ -242,10 +242,12 @@ A document nothing checks is a document that drifts. These run in the commit gat
   relative path (minus `src/`); every internals anchor a source cites resolves; a hazard stub's slug is its
   anchor; no doc defines an anchor twice; a page names only identifiers the tree carries (or declares them `ABSENT`).
   A floor on the number of sources found keeps a broken glob from checking nothing.
-- **`check_supported_table`** (the standards lint): the README's support table is `tools/supported.py`'s output, read
-  from files alone. The README's other generated block, the activation registry's capability table, is produced by
-  running the registry, so its check executes the code under test and is a test, not a lint: it runs in the CPU tier
-  (`tests/unit/test_capability_table_docs.py`), not in the commit gate.
+- **`//:readme`**: the README's generated blocks, the support table and the activation registry's capability table, are
+  what the graph writes (`tools/supported.py --readme`, which runs the registry, so the target is a test of the tree's
+  package and sits in the commit gate beside the lints); the committed README must equal it
+  ([`build-graph.md#committed-files`](build-graph.md#committed-files)). `check_supported_table` (the standards lint,
+  the support table, files only) and `tests/unit/test_capability_table_docs.py` (the CPU tier, the capability table) read
+  the same blocks.
 - **`tools/lint/portable_claude.py`**: the agent files name no machine path.
 
 ## The host-structure gates

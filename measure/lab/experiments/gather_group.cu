@@ -209,8 +209,7 @@ int main(int argc, char** argv) {
     b.expect(k, "LOOP_CONVERGENCE", "<=", 12);
   }
   if (b.expect_only) return 0;
-  //: THE MEASURED RING IS TWO PACKETS A CTA, 10 MB the card's: 8 a CTA were 40 MB written and the loads waited on the
-  //: memory (the values' loads landing 5,574 cycles of a 7,918-cycle trip)
+  //: THE MEASURED RING IS TWO PACKETS A CTA (`kStored`) of the eight (`kRing`) the host's table holds a CTA
   constexpr int kMeasured = 256, kLive = 4, kStored = 2;
   //: THE MASKS: a token live on `kLive` digits of 256, the block's 16 kept, digit-major
   std::vector<uint32_t> masks(static_cast<size_t>(b.sms) * kRing * kDigits * 32, 0);
@@ -325,6 +324,7 @@ int main(int argc, char** argv) {
         [&] { plain<<<b.sms, kThreads, kShared>>>(b.times, dmasks, reinterpret_cast<const uint4*>(dtable), dbytes, out, dphases, kMeasured, kStored, probe); },
         [&] { return b.span(kWarps) / kMeasured; });
     b.record(name, "cycles a block's window a CTA", cycles);
+    b.unchecked(name, "an isolation row: its kernel leaves a store or a token out, so its output is not the form's");
   }
   row(gather<kLaned>, cell + ", loads and stores, 8 lanes a row", false);
   row(gather<kLaned | kPhased>, cell + ", loads and stores, 8 lanes a row, its phases clocked", true);

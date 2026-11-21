@@ -15,10 +15,8 @@ import json
 import pathlib
 import re
 
-from _record import Record
+from _record import Record, against, card
 
-#: two rows within this share of each other (of the lesser) are said to be the same
-SAME = 0.02
 UNIT = "cycles a 128-byte row a CTA"
 RING = "loaded, stored and copied out to a ring of 256 KB a CTA"
 #: the experiment's forms: (what the row's name ends in, rows in flight, the table's label)
@@ -35,13 +33,6 @@ TABLES = (("an 8 MB table", "8 MB table"), ("a 2 GB table", "2 GB table"))
 def row_name(table: str, what: str, rows: int) -> str:
     """The experiment's name for a row, as `run` in the source builds it."""
     return f"{table}, {rows} rows in flight: {what}"
-
-
-def against(a: float, b: float) -> str:
-    """How `a` stands to `b`: `the same as` within `SAME` of the lesser, else `below` or `above`."""
-    if abs(a - b) <= SAME * min(a, b):
-        return "the same as"
-    return "below" if a < b else "above"
 
 
 def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
@@ -67,11 +58,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         return (r["max"] - r["min"]) / r["median"]
 
     inst = instance
-    card = (
-        f"{d['device']}, Hyperstack spot VM {inst[2:]}" if inst.startswith("hs")
-        else f"{d['device']}, Nebius preemptible VM {inst[2:]}" if inst.startswith("nb")
-        else f"{d['device']}, vast.ai instance {inst}"
-    )
+    card_line = card(d['device'], inst)
     small, large = (t for t, _ in TABLES)
     table = "\n".join(
         ["| form | 8 MB table | 2 GB table |", "|---|---:|---:|"]
@@ -96,7 +83,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         lines.append(line(f"THE {label.upper()}, 256 ROWS IN FLIGHT AGAINST 512 (THE RING)", t, 4, 2))
     shown = "\n".join(lines)
 
-    text = f"""MEASURED ({card}, driver {d['driver']}; {d['date'][:10]}, the experiment at
+    text = f"""MEASURED ({card_line}, driver {d['driver']}; {d['date'][:10]}, the experiment at
 {d['git']['sha'][:8]}; {d['reps']} repetitions; the {checked} checked rows pass, every word exact; the median, the widest
 spread of a row {100 * max(spread(n) for n in names.values()):.1f}%). {UNIT[0].upper()}{UNIT[1:]}:
 

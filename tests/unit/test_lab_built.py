@@ -59,3 +59,17 @@ def test_the_lab_runs_no_compiler_and_no_disassembler():
     for call in ("cuda_bin(", "sass.tool(", "sass.cubins(", "sass.disassemble(", "sass.sass_lines(", "checked.demangle(",
                  "checked.kernels_of(", "build_flags", '"nvcc"', '"cuobjdump"', '"nvdisasm"'):
         assert call not in text, call
+
+
+def test_the_graphs_lab_architecture_is_the_labs_and_the_built_one():
+    """`bazel/lab.bzl` hand-writes the lab's architecture and its compute capability: they are `lab.ARCH`, `measure.hardware`'s
+    built row and that row's `cc_of`, one fact in three places."""
+    import re
+
+    sys.path.insert(0, str(TOOLS.parent))
+    from measure import hardware
+
+    rule = (TOOLS.parent / "bazel" / "lab.bzl").read_text()
+    arch = re.search(r'^_ARCH = "(\w+)"$', rule, re.M).group(1)
+    cc = re.search(r'^_CC = "(\d+)"$', rule, re.M).group(1)
+    assert arch == lab.ARCH and hardware.built() == [arch] and int(cc) == hardware.cc_of(arch)

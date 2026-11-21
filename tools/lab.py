@@ -175,10 +175,6 @@ HAZARD_RULES = {
     "STEPS_SERIALIZED": "mma_serialized", "WAIT_INJECTED": "wait_injected",
     "BANK_CONFLICT": "shared_wavefronts_excess",
 }
-#: the hazards a PROFILE computes (`ledger` runs them on a kernel's dump, `profile_failures`): the checker's profile rules, which `check`
-#: has no profile to run and only translates the declarations of. The count is the excess shared wavefronts of a CTA-window of the
-#: profiled launch (`--per`), never of the launch: a launch's total moves with the grid and the windows a row times.
-PROFILE_HAZARDS = ("BANK_CONFLICT",)
 #: the hazards an experiment may declare a count of, beside its opcodes
 HAZARDS = tuple(HAZARD_RULES)
 #: the two a `declare` row of the notice ledger counts (`mma_serialized`, `wait_injected`), and what each says of a kernel past its count
@@ -1316,7 +1312,7 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
             text = source[line - 1].strip()[:80] if 0 < line <= len(source) else "(outside the source)"
             print(f"    {w:10,.1f}  {kind:15}  line {line:5}  {text}")
     if refused:
-        print("lab: REFUSED, the profile holds bank conflicts nobody declared (docs/internals/tools/lab.md#ledger):", *refused, sep="\n  ")
+        print("lab: REFUSED, the profile holds bank conflicts nobody declared (docs/internals/tools/lab.md#profile-checked):", *refused, sep="\n  ")
         return 1
     return 0
 

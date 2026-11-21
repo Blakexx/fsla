@@ -98,7 +98,7 @@ phase reports its executed instructions, its shared-memory wavefronts, those ove
 conflicts), its share of the stall samples and, for the phases holding the most, their three largest stall reasons;
 then the source lines issuing the shared wavefronts. `ledger-dumps --skip N` profiles each kernel's launch after its
 first N: an experiment's first is its checked launch, the timed ones follow.
-A record's PROFILE IS CHECKED (KERNEL_STANDARDS 30): `ledger` runs the checker's profile rule `shared_wavefronts_excess` on each kernel's dump (a carried one or a live one)
+<a id="profile-checked"></a>A record's PROFILE IS CHECKED (KERNEL_STANDARDS 30): `ledger` runs the checker's profile rule `shared_wavefronts_excess` on each kernel's dump (a carried one or a live one)
 and REFUSES, exit 1, where a kernel's shared wavefronts in excess of the conflict-free count are over what the experiment declares -- zero undeclared. The refusal names the
 kernel, then each source line that issues the excess with its count a CTA-window (`--per`) and in the launch, the checker's fix and rola's note. Declare it as
 `b.expect(k, "BANK_CONFLICT", "<=", n)` with its `//:` reason above it (the [hazards](#hazards)): `n` is the excess wavefronts of a CTA-WINDOW
@@ -124,7 +124,7 @@ runs the rules and shows each refusal under the hazard's name the experiment dec
 | `STEP_ROLLED` | `step_rolled` | tensor steps in the innermost natural loop that holds no wait on them (the rule counts the steps; the declaration is a count of them) |
 | `STEP_PORT`, `STEP_WORK` | `step_port`, `step_work` | a BOUND, declared `<=`: the bytes a step puts through the shared-memory port, the instructions a thread issues a step |
 | `STEPS_SERIALIZED`, `WAIT_INJECTED` | `mma_serialized`, `wait_injected` | the toolkit's notices ([below](#ledger)) |
-| `BANK_CONFLICT` | `shared_wavefronts_excess` | a PROFILE rule, run by `ledger` on the dumps (`PROFILE_HAZARDS`), not by `check`: the shared-memory wavefronts over the conflict-free count, by instruction, declared a CTA-window of the profiled launch (`--per`), never a launch's total |
+| `BANK_CONFLICT` | `shared_wavefronts_excess` | a PROFILE rule, run by `ledger` on the dumps, not by `check`: the shared-memory wavefronts over the conflict-free count, by instruction, declared a CTA-window of the profiled launch (`--per`), never a launch's total |
 | `BSSY`, `STEP_XU`, `STEP_GLOBAL`, a `CALL` opcode | `step_branches`, `step_conversion`, `step_global`, `convergence_call` | always checked in every kernel; an expectation of one of these names is a PERMIT (any number in the kernels it matches), not a count |
 
 A declaration of `BSSY`, `STEP_XU`, `STEP_GLOBAL` or a `CALL` opcode is a presence permit and its number is never compared: `<= 40` permits them in the kernels it names and does not bound them (`STEP_XU` is no opcode).
@@ -215,14 +215,13 @@ figures are its mean over its steps, and both sides of a branch count once.
 
 <a id="graph"></a>THE EXPERIMENTS ARE THE GRAPH'S TARGETS (`measure/lab/BUILD.bazel`, `bazel/lab.bzl`; Blake's ruling, 2026-11-21: no tool runs nvcc, cuobjdump or
 nvdisasm for the lab outside the graph's actions). Each `measure/lab/experiments/<name>.cu` is the target `//measure/lab:<name>`: the graph's CUDA rule
-(`cuda_unit`, the rule that builds the library) compiles it for sm_90a with the lab's flags, `cc_binary` links it as `<name>.sm_90a`, and the target's outputs
-are what a pack holds -- the binary, and beside it `.cubin`, `.sass` (`cuobjdump -sass`), `.usage` (`-res-usage`), `.graph` (`nvdisasm -bbcfg`), `.lines`
-(`nvdisasm` with the frame chain), `.names` (the functions' `cu++filt` names), `.ptxas` (the compile's diagnostics, ptxas's report among them) and `.toolkit`
-(`nvcc --version`), the facts action's (`tools/lab_facts.py`, the graph's disassemblers). THE CHECKS are the target's validation (`tools/lab_check.py`: the
-SASS checker, the notices' ledger and the experiment's declarations, over those files, in the lab's own words): `bazel build //measure/lab:<name>`
-refuses an experiment `run` would refuse, and `pack` builds with them. Every other command builds the target with `--norun_validations` and reads the
-files (`lab.Built`): `sass`, `run`, `ncu`, `ledger --static`, `waits` and `steps` print the findings themselves where they report them, and run no compiler and no
-disassembler. A pack holds the same files, so `ledger --packed` reads a packed experiment as the target is read. The lab builds sm_90a alone (the tree's one
+(`cuda_unit`, the rule that builds the library) compiles it for sm_90a with the lab's flags and `cc_binary` links it as `<name>.sm_90a`. The target's outputs are
+the binary and, beside it, the facts about its code that every reader of the experiment reads once: the toolkit's own listings and graphs of the binary, the
+functions' names, the compile's diagnostics and the toolkit's version (`_FACTS` in `bazel/lab.bzl`, `PARTS` in `tools/lab.py`, written by
+`tools/lab_facts.py`). THE CHECKS are the target's validation (`tools/lab_check.py`: the SASS checker, the notices' ledger and the experiment's declarations,
+over those files, in the lab's own words), so `bazel build //measure/lab:<name>` refuses an experiment `run` would refuse and `pack` builds with them.
+Every other command builds the target without the validation and reads the files (`lab.Built`): the commands that report findings print them themselves, and
+none runs a compiler or a disassembler. A pack holds the same files, so `ledger --packed` reads a packed experiment as the target is read. The lab builds sm_90a alone (the tree's one
 architecture; a card of another is refused by name), and `lab.py` finds the built files through `bazel cquery`, never a path of its own.
 
 <a id="pack"></a>A CARD ELSEWHERE. A box that is not started from the devbox image ([`setup.md`](../../setup.md)) carries a driver and

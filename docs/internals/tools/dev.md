@@ -48,6 +48,7 @@ clock is not set by `init`, because locking it asks for administrator consent on
 - The commit gate is wired.
 - The action-hook dispatcher is installed and current, wired into the user's settings and a listed root holds this checkout (green where there is no `~/.claude`).
 - The lock directory, scratch directory and GPU lock directory are writable.
+- This checkout's own scratch directory (`host.scratch`, one folder a checkout) is printed, green by itself.
 - The clock is set, or the host is marked unlocked.
 - The worktrees folder exists; `store.root` is a rola-results checkout, and `rola_results` and `rola_devtools` import
   from `store.root` and `workspace.devtools` in the checkout's own venv.

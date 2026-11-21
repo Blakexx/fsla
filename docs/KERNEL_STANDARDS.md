@@ -190,7 +190,7 @@ Recipe: `<venv>/bin/python -m rola_devtools.locks.gpu -- cuda-gdb -q --args <ven
 lock's command form: the lock is the files beside `host.gpu_lock`, so a raw `flock` on its path serializes against
 nothing) → `run` → Ctrl-C on a
 hang → `info cuda kernels` / `info cuda warps` / `cuda kernel 0 block (..) thread (..)` / `bt` / `print`.
-`compute-sanitizer --tool synccheck|racecheck|memcheck` for barrier misuse, shared-memory hazards and
+`compute-sanitizer --tool synccheck|racecheck|memcheck` (the lane's cells: `bazel test //tests:sanitizer`; a repro of your own, typed under `GRAPH_OVERRIDE`, §14-graph) for barrier misuse, shared-memory hazards and
 addressing (it found the decode pool race). Device `printf` flushes only on kernel completion — useless
 for a hang; a bounded loop + `__trap()` converts a hang into a fault but skips barriers, so prefer the
 debugger. RULE: a hang or a run-to-run-varying miscount is diagnosed with the debugger or the sanitizer

@@ -17,10 +17,8 @@ import json
 import pathlib
 import re
 
-from _record import Record
+from _record import Record, against, card
 
-#: two rows within this share of each other (of the lesser) are said to be the same
-SAME = 0.02
 UNIT = "cycles a step"
 #: the experiment's rows, as `run` in the source names them: (the row's name, its label in the table)
 STRAIGHT = "16 steps a straight block behind one fence"
@@ -32,13 +30,6 @@ FORMS = (
     (ROLLED, "ROLLED: each step in a loop of a run-time count of one, a fence a step"),
 )
 GRIDS = (1, 132)
-
-
-def against(a: float, b: float) -> str:
-    """How `a` stands to `b`: `the same as` within `SAME` of the lesser, else `below` or `above`."""
-    if abs(a - b) <= SAME * min(a, b):
-        return "the same as"
-    return "below" if a < b else "above"
 
 
 def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
@@ -65,11 +56,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     spread = max(
         (r["max"] - r["min"]) / r["median"] for d in records.values() for r in d["results"] if r["name"] in dict(FORMS)
     )
-    card = (
-        f"{full['device']}, Hyperstack spot VM {instance[2:]}" if instance.startswith("hs")
-        else f"{full['device']}, Nebius preemptible VM {instance[2:]}" if instance.startswith("nb")
-        else f"{full['device']}, vast.ai instance {instance}"
-    )
+    card_line = card(full['device'], instance)
     table = "\n".join(
         ["| form | 1 CTA | 132 CTAs |", "|---|---:|---:|"]
         + [f"| {label} | {R[1][name]:.2f} | {R[132][name]:.2f} |" for name, label in FORMS]
@@ -90,7 +77,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
             f"{r / s:.2f} times the {s:.2f} of STRAIGHT ({abs(r - s):.2f} {UNIT} {against(r, s)})."
         )
     d1 = records[1]
-    text = f"""MEASURED ({card}, driver {full['driver']}; {d1['date'][:10]} (the one-CTA and the full-grid records), the experiment
+    text = f"""MEASURED ({card_line}, driver {full['driver']}; {d1['date'][:10]} (the one-CTA and the full-grid records), the experiment
 at {full['git']['sha'][:8]}; {full['reps']} repetitions; the {checked[1]} checked rows at one CTA and the {checked[132]} at 132 pass, every sum exact; the median, the widest
 spread of a row {100 * spread:.1f}%). {UNIT[0].upper()}{UNIT[1:]}:
 

@@ -18,8 +18,8 @@ What it reads, per function of every cubin (every kernel and every outlined devi
   predicated HMMA -- the checker's `step_predicated`: if-converted tensor work
   instructions per HMMA -- `step_density`, a ceiling the arm states (`--max-per-hmma`; issue-bound above it)
   branches in a step -- `step_branches` (KERNEL_STANDARDS section 27)
-  the conversion unit in a step -- `step_conversion`: F2I/I2F/F2F/MUFU inside a loop of steps: 16 lanes a cycle an SM on sm_86 (its sm_90a re-check is owed) where
-                  the FMA pipe's forms (a magic-constant FFMA, a PRMT) run at 64 (KERNEL_STANDARDS section 29)
+  the conversion unit in a step -- `step_conversion`: F2I/I2F/F2F/MUFU inside a loop of steps: the unit runs below the rate of
+                  the FMA pipe's forms (a magic-constant FFMA, a PRMT) (KERNEL_STANDARDS section 29)
   global memory in a step -- `step_global`: LDG/STG/RED/ATOMG or a bulk copy or reduction out inside a loop of steps: a
                   step's operands are staged ahead (`cp.async`'s LDGSTS, hopper's bulk copy in: allowed), and a
                   reduction to global memory belongs to a drain outside the steps

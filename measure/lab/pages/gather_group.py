@@ -15,10 +15,8 @@ import json
 import pathlib
 import re
 
-from _record import Record
+from _record import Record, against, card
 
-#: two windows within this share of each other (of the lesser) are said to be the same
-SAME = 0.02
 UNIT = "cycles a block's window a CTA"
 CELL = "a block's window gathered: every list a run, values only, 4 live digits a token"
 LOADS = CELL + ", a thread an entry's eight loads"
@@ -41,13 +39,6 @@ FORMS = (
     (LANED, "loads and stores, 8 lanes a row"),
     (PHASED, "the same, its phases clocked"),
 )
-
-
-def against(a: float, b: float) -> str:
-    """How `a` stands to `b`: `the same as` within `SAME` of the lesser, else `below` or `above`."""
-    if abs(a - b) <= SAME * min(a, b):
-        return "the same as"
-    return "below" if a < b else "above"
 
 
 def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
@@ -78,11 +69,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         return (r["max"] - r["min"]) / r["median"]
 
     inst = instance
-    card = (
-        f"{d['device']}, Hyperstack spot VM {inst[2:]}" if inst.startswith("hs")
-        else f"{d['device']}, Nebius preemptible VM {inst[2:]}" if inst.startswith("nb")
-        else f"{d['device']}, vast.ai instance {inst}"
-    )
+    card_line = card(d['device'], inst)
     table = "\n".join(
         ["| form | cycles a block's window a CTA | SM-cycles a token a side | cycles an entry a CTA |", "|---|---:|---:|---:|"]
         + [
@@ -108,7 +95,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     own = R[LOADS]
     word = against(laned, own)
     by = f"{abs(laned - own):,.0f} cycles {word}" if word != "the same as" else word
-    text = f"""MEASURED ({card}, driver {d['driver']}; {d['date'][:10]}, the experiment at
+    text = f"""MEASURED ({card_line}, driver {d['driver']}; {d['date'][:10]}, the experiment at
 {d['git']['sha'][:8]}; {d['reps']} repetitions; the {checked} checked rows pass, every packet exact byte for byte; the median, the widest
 spread of a row {100 * max(spread(n) for n, _ in FORMS):.1f}%). {UNIT[0].upper()}{UNIT[1:]}:
 

@@ -257,6 +257,5 @@ LINE, RED, and what holds it there is not attributed (owed: the row's stall cens
 3.6 µs floor, RED -- a call with no sparse level runs the columns unit alone, and what holds that unit over its floor
 is not measured either (owed: the row at a second length).
 
-Per architecture: on sm_90 the window fills by TMA (a
-`[512 tokens × 32 bytes]` box of the head's plane in one instruction) under an mbarrier, the rest unchanged. Scaling:
+The window fills by `cp.async` quanta, as above. Scaling:
 O(L × rows) bytes read, O(L k) entries, O(L B / 32) unions; nothing O(L N).

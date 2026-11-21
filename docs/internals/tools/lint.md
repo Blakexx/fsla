@@ -22,6 +22,12 @@ tree carried when it began gating are a baseline that only shrinks.
 | `learnings.py` | every row of [`LEARNINGS.md`](../LEARNINGS.md) names, as `path::text`, a mechanism the tree holds: a row that names none, a file that is gone or a string its file no longer contains fails the commit |
 | `clang-format` (root `.clang-format`) | the formatting floor, including `MaxEmptyLinesToKeep: 1` and `SeparateDefinitionBlocks: Always` — the formatter's half of the readability rule above |
 
+<a id="primitives-census"></a>**`primitives_census.py`** is a graph test over one probe translation unit
+(`tools/lint/primitives_census_probe.cu`) that calls each `common/ops.cuh` primitive from its own `__global__` kernel. The graph's
+CUDA rule compiles it for the build's architectures (`BUILT_ARCHS`), and the test reads the object's SASS with the graph's
+`cuobjdump -sass` and asserts an exact count of each opcode family a primitive must lower to, so a primitive that falls back to an
+emulation fails the day it is written. No GPU is needed.
+
 <a id="unit-lints"></a>
 ## The unit lints in the build graph
 
@@ -107,7 +113,7 @@ a `permissionDecision` of `deny` with its reason. One generic dispatcher, `.clau
 session, runs only checkouts under the dev config's `workspace.hook_roots` (a cloned stranger's manifest never runs) and
 returns the first refusal; the install is [`dev.md`](dev.md#action-hooks), and a hook holds only where it is installed.
 Four exist, each with its patterns and its override in its own docstring: `no_polling.py` (KERNEL_STANDARDS §14),
-`no_verify.py` (`#no-verify`), `graph_only.py` (`KERNEL_STANDARDS#s14-graph`: it refuses `nvcc`, `ptxas`, `cuobjdump`, `nvdisasm`, `ncu`, `nsys`, `compute-sanitizer`, `cmake`, `make`, `ninja` and `pip install` typed as a command word, by name or path, and names the target that runs it -- `//:library`, `//tools:lab`, `//tools:sass_gate`, `//:measure`, `//tests:sanitizer`, `//:dev_env`; a `bazel` command passes, and `GRAPH_OVERRIDE="<why>"` lifts it; `tests/unit/test_graph_only.py`) and `guidance.py`, which is advisory and never refuses: on an Edit, MultiEdit or Write of a kernel
+`no_verify.py` (`#no-verify`), `graph_only.py` (`KERNEL_STANDARDS#s14-graph`: the toolchain is the graph's, so a toolchain or install command typed by hand is refused, and the refusal names the graph target that does the step; `tests/unit/test_graph_only.py`) and `guidance.py`, which is advisory and never refuses: on an Edit, MultiEdit or Write of a kernel
 source (`csrc/**/*.cu*`, `measure/lab/**/*.cu*`) it injects the `guidance` of each entry of the `checker` section of `docs/rules.json` whose
 `triggers` match the edit's new text (a branch around a tensor step, a new shared store, a collective), and says nothing of an edit
 that matches none. `portable_claude.py` gates them like every file under `.claude/` ([above](#portable-agent-files)).
@@ -140,8 +146,7 @@ cannot run fails; it never reads as zero. `--init` records a new lint's baseline
 A RE-KEY is the stated rename of a finding's key, for a finding whose message was reworded (the message is part of the key): `--rekey OLD NEW`
 rewrites the baseline's entries whose message is OLD to NEW, their counts unchanged, and records `{"from", "to", "count"}` in the baseline's `rekeys`.
 `--grown` reads HEAD's entries through the baseline's own re-keys, so a re-keyed entry is the same entry and a re-key that adds to a count is growth
-(`tests/unit/test_lint_ratchet.py`); `--shrink` drops a re-key whose `to` the baseline no longer holds. `drift_guards`' three arm-table entries are the
-first: their message named the generator the arms' declaration replaced, and now names the form that holds.
+(`tests/unit/test_lint_ratchet.py`); `--shrink` drops a re-key whose `to` the baseline no longer holds.
 
 A finding that is not a defect is exempted the lint's own way, with its reason: vulture's whitelist
 (`vulture_whitelist.py`), a `reserved:` marker for a constant parameter. "A ruling per hit" is that work: the lint cannot

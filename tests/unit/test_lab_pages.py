@@ -79,7 +79,7 @@ def test_the_measured_section_is_written_from_a_record_and_rewritten_alike(tmp_p
     once = p.read_text()
     assert once.startswith(before[: before.index("MEASURED")])
     assert "MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM abc, driver 580.0; 2026-01-01" in once
-    assert "no record is taken" not in once and "the experiment at\n01234567" in once
+    assert "the experiment at\n01234567" in once
     gen.write(tmp_path, "nbabc")
     assert p.read_text() == once
 

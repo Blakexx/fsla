@@ -442,9 +442,7 @@ __device__ __forceinline__ void wg_bf16_n72_rs_mn(float (&d)[36], const uint32_t
 //: nearest in one conversion: the instructions of `common/atoms/math.cuh`'s `hi_bf16x2` and `pack_bf16x2`, kept beside
 //: them because they differ in meaning -- the atoms are plain code (`asm` and `__floats2bfloat162_rn`) that nvcc may
 //: merge, hoist or schedule among their neighbours, and these are `asm volatile`, so a probe's narrowing stays where its
-//: row wrote it. MEASURED 2026-11-20 on sm_90a (`lab pack`, every experiment's kernel table, regs and ops, before and
-//: after calling the atoms): `byte_expand`, `carry_window` and `fold_forms` differ (`fold_forms` 228 -> 226 registers,
-//: `byte_expand` an extra `S2R` and fewer `NOP`), the other 36 packed experiments are equal
+//: row wrote it -- see docs/internals/tools/lab.md
 __device__ __forceinline__ uint32_t bf16x2_trunc(float lo, float hi) {
   uint32_t r;
   asm volatile("prmt.b32 %0, %1, %2, 0x7632;" : "=r"(r) : "r"(__float_as_uint(lo)), "r"(__float_as_uint(hi)));

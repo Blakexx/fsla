@@ -113,7 +113,8 @@ HANDOFFS = {
     "ROLA_SCRATCH": "the agent harness's campaign directory (.claude/settings.json), outside the repository",
     "ROLA_CUDA_HOME": "the graph's copy of the pinned CUDA toolkit, which a test tier hands its tests (rola-devtools' pytest_tier)",
     "ROLA_WARPLINE_PYTHON": "the directory that holds the `warpline` package (the reader of the lab's traced rows), "
-                            "which the `lab` run target hands the lab (bazel/defs.bzl's lab_run)",
+                            "which the graph's actions that read compiled code hand it (bazel/defs.bzl's `lab_run` and gate action, "
+                            "bazel/lab.bzl's validation action)",
     "PATH": "the search path bazelisk hands what it runs, the front door's directory first (`check` finds the user's "
             "`bazel` past it)",
     "ROLA_NVCC_THREADS": "host.nvcc_threads, which the front door hands the graph's compile flags (bazel/flags.py)",

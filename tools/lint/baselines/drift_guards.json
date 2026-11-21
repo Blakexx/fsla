@@ -55,17 +55,5 @@
    "line_sha256": "2ba2d0f50111ab87",
    "count": 1
   }
- ],
- "rekeys": [
-  {
-   "from": "'_ARMS' is a literal arm table outside tools/gen_shards.py",
-   "to": "'_ARMS' is a literal arm table outside an `arms.bzl`",
-   "count": 2
-  },
-  {
-   "from": "'ARM_PARAMS' is a literal arm table outside tools/gen_shards.py",
-   "to": "'ARM_PARAMS' is a literal arm table outside an `arms.bzl`",
-   "count": 1
-  }
  ]
 }
