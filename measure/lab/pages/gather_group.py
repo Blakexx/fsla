@@ -3,8 +3,7 @@
 """The measured section of `docs/lab/gather_group.md`, generated from `measure/lab/results/gather_group/sm_90a.json`.
 
 `write(root, instance)` reads that record under `root` and rewrites `docs/lab/gather_group.md` under `root` from its
-`MEASURED` line (the page ends there, at a line saying no record is taken, until a record is written) to its end,
-every figure the record's own and every comparative word chosen by the figures it compares. It REFUSES, naming what is
+`MEASURED` line to its end (where the page has none, it appends the section after the page's text), every figure the record's own and every comparative word chosen by the figures it compares. It REFUSES, naming what is
 missing, where the record is absent, holds none of the experiment's rows, or holds a row whose check failed.
 `instance` is the rented box's label (`nb...` Nebius, `hs...` Hyperstack, digits vast.ai), which only words the card's
 line. It returns the files it wrote (`lab page gather_group --instance LABEL`, docs/internals/tools/lab.md).

@@ -17,6 +17,24 @@ pytest_tier(
     tests = ["tests/unit"],
 )
 
+#: THE LAB'S UNIT TESTS, which the gate runs (`//:gate`): the lab's and the dev config's rows of the CPU tier, on their
+#: own, with the checker from `@warpline` (the module this tree pins) on their path, never a machine's. The lane's
+#: `:cpu` runs them again among the rest
+pytest_tier(
+    name = "lab",
+    size = "large",
+    data = [
+        "//:library",
+        "//:tree",
+        "@warpline//:warpline",
+    ],
+    marks = "not cuda",
+    tests = ["tests/" + f for f in glob([
+        "unit/test_dev_config*.py",
+        "unit/test_lab_*.py",
+    ])],
+)
+
 pytest_tier(
     name = "unit_cuda",
     size = "large",

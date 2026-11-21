@@ -1343,6 +1343,11 @@ def static_ledger(name: str, pattern: str | None, arch: str | None) -> int:
             if not (m := sass.INSTRUCTION.match(line)):
                 continue
             at = int(m.group(1), 16)
+            #: an instruction inside the model's span that the model lacks is two disassemblies that disagree, never
+            #: "outside every loop"; past the model's last instruction is the padding it drops (a self-branch, NOPs)
+            if at not in at_address and at < max(at_address):
+                print(f"lab: {k[:110]}: the instruction at {at:#06x} is in the listing and not in the checker's model of the kernel")
+                return 1
             #: the innermost natural loop around the instruction, as its header's address and its last tail's
             around = kernel.loop_of(at_address[at]) if at in at_address else None
             loop = (around.address, max(kernel.block(t).end for t in around.tails)) if around else None

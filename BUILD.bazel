@@ -479,6 +479,7 @@ test_suite(
     tests = [
         ":commit_checks",
         ":lints",
+        "//tests:lab",
         "//tools/lint:lint_fixtures",
     ],
 )
