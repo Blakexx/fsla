@@ -256,25 +256,39 @@ REFUSAL_TEXT = {
 _RULE_HAZARDS = {rule: hazard for hazard, rule in HAZARD_RULES.items()}
 
 
+@functools.cache
+def guidance() -> dict[str, str]:
+    """ROLA'S GUIDANCE, a line a rule of the checker (Blake, 2026-11-20): each `docs/rules.json` row that names a checker rule
+    (`checker`) carries `guidance`, the atom or practice, the standards anchor and the lab page with the evidence; a refusal
+    prints it after the checker's own fix (`note`). The checker refuses a note for a name that is no rule of its pin."""
+    rows = json.loads((ROOT / "docs" / "rules.json").read_text())
+    notes = {row["checker"]: row["guidance"] for row in rows if "checker" in row}
+    checker().declare.load_notes(json.dumps({"notes": notes}), checker().declare.rule_names(notice_ledger()))
+    return notes
+
+
 def render_refusal(r, experiment: str = "the build") -> list[str]:
     """A checker refusal as the lab's failure lines: the hazard's name the experiment declares, the kernel (the experiment's name for a
-    notice that names none), the count found and declared, and the lab's own words for it."""
+    notice that names none), the count found and declared, and the lab's own words for it, then the checker's fix and rola's note."""
     place = experiment if r.kernel == "the build" else r.kernel
+    note = getattr(r, "note", None)
+    tail = f"\n    note: {note}" if note else ""
     ledger_rule = r.rule in _RULE_HAZARDS and _RULE_HAZARDS[r.rule] in HAZARD_STATES
     if r.rule == "notice_without_row":
         return [f"{place}: {r.count} x {r.message}:\n      {r.findings[0].what}\n    add a row to tools/notice_ledger.json with "
-                "a disposition (refuse, declare, report or ignore) and the reason for it (docs/internals/tools/lab.md#ledger)"]
+                "a disposition (refuse, declare, report or ignore) and the reason for it (docs/internals/tools/lab.md#ledger)" + tail]
     if r.rule.startswith("notice "):
         return [f"{place}: {f.what} ({f.count} x, {r.rule.removeprefix('notice ').replace('no_code', 'no code')}): "
-                f"{r.message}" + (f" {r.fix}" if r.fix else "") for f in r.findings]
+                f"{r.message}" + (f" {r.fix}" if r.fix else "") + tail for f in r.findings]
     if ledger_rule:
         hazard = _RULE_HAZARDS[r.rule]
         what = "; ".join(f"{f.count} x {f.what}" for f in sorted(r.findings, key=lambda f: f.what))
         return [f"{place}: {HAZARD_STATES[hazard]}: {what}; {r.allowed} declared ({hazard}). "
-                f"{r.fix} (docs/internals/LEARNINGS.md)"]
+                f"{r.fix} (docs/internals/LEARNINGS.md)" + tail]
     where = ", ".join(f.where for f in r.findings[:4]) + (", ..." if len(r.findings) > 4 else "")
     text = REFUSAL_TEXT[r.rule].format(n=r.count, declared=r.allowed, where=where)
-    return [f"{place}: {text} [checker rule {r.rule}: at {where}]"]
+    fix = f"\n    fix: {r.fix}" if r.fix else ""
+    return [f"{place}: {text} [checker rule {r.rule}: at {where}]{fix}{tail}"]
 
 
 def notice_names(read: list) -> dict[str, str]:
@@ -320,10 +334,10 @@ def checker_failures(binary: Path, expected: list[dict], budgeted: set[str]) -> 
     notice_rules = c.ledgers.declared_rules(notice_ledger())
     declarations = c.declare.load_declarations(json.dumps({"declarations": declaration_entries(expected, reasons)}),
                                                registry, notice_rules)
-    refusals = c.declare.check(kernels, {n: registry[n] for n in sorted(names)}, declarations)
+    refusals = c.declare.check(kernels, {n: registry[n] for n in sorted(names)}, declarations, guidance())
     refusals = [r for r in refusals if held or r.rule != "loop_convergence" or r.kernel in budgeted]
     read = read_notices(binary)
-    refusals += c.declare.check_notices(read, notice_ledger(), declarations, notice_names(read))[0]
+    refusals += c.declare.check_notices(read, notice_ledger(), declarations, notice_names(read), guidance())[0]
     return bound_failures(expected, kernels) + [line for r in refusals for line in render_refusal(r, experiment)]
 
 

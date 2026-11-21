@@ -74,12 +74,23 @@ site states more than one rule.
    a mechanism);
 4. a new `owed` row, through the ratchet: `rules_table.py --owed` prints each `owed` row's id as a finding and
    `//:ratchet_rules_owed` holds them against `tools/lint/baselines/rules_owed.json`. A row that stops being `owed` leaves
-   the baseline in the same commit (`ratchet.py rules_owed --shrink`), so the list only shrinks.
+   the baseline in the same commit (`ratchet.py rules_owed --shrink`), so the list only shrinks;
+5. a rule of the pinned checker (`warpline.checker.declare.rule_names`, over the checker's base ledger with the project's
+   `tools/notice_ledger.json`) that no row names, a row whose `checker` names a rule the pin does not have, and a rule two rows
+   name. A row with a `checker` (a gate, tool or hook row) is rola's guidance on that rule: `guidance`, one line -- the atom or
+   practice, the standards anchor, the lab page with the evidence, or "nothing beyond the generic fix" where rola has nothing to
+   add -- and `triggers`, regexes over kernel source (a list, empty where no source text shows the rule). The lint needs the
+   checker on its path (`//:rules_table` carries `@warpline` as data) and fails without it. `tools/lab.py` hands the guidance to the checker
+   as its notes, so a refusal prints the finding, the checker's fix, then `note: <guidance>`
+   ([`lab.md`](lab.md#hazards)); the edit hook [below](#action-hooks) injects it.
 
 A resolving enforcer is not proof that it checks the rule: the table names the check a person opened and saw check the rule,
 and `coverage` says what it leaves unchecked. A NEW RULE lands with its mechanism and never as `owed`. The fixtures are
-`tools/lint/fixtures/rules_table/`: a small tree (two documents, a table, build files) that passes, and twelve edits of its
-table, each failing one check with its own message; its tree holds a manifest with one listed and one unlisted action hook.
+`tools/lint/fixtures/rules_table/`: a small tree (two documents, a table, build files) that passes, and eighteen edits of its
+table, each failing one check with its own message, the last six for the checker's rules (a rule with no row, a row naming a rule
+the pin lacks, two rows for one rule, a row with no guidance, a trigger that is no regex, a `checker` row that is no gate, tool or
+hook); its tree holds a manifest with one listed and one unlisted action hook. `tests/unit/test_lab_guidance.py` covers the lab's
+note and the hook.
 
 <a id="action-hooks"></a>
 ## The agent files: action hooks and their dispatcher
@@ -91,8 +102,11 @@ action hooks, which let a rule the rules table marks `hook` refuse a tool call a
 a `permissionDecision` of `deny` with its reason. One generic dispatcher, `.claude/hooks/repo_hooks.py`, fires them from any
 session, runs only checkouts under the dev config's `workspace.hook_roots` (a cloned stranger's manifest never runs) and
 returns the first refusal; the install is [`dev.md`](dev.md#action-hooks), and a hook holds only where it is installed.
-Two exist, each with its patterns and its override in its own docstring: `no_polling.py` (KERNEL_STANDARDS §14) and
-`no_verify.py` (`#no-verify`). `portable_claude.py` gates them like every file under `.claude/` ([above](#portable-agent-files)).
+Three exist, each with its patterns and its override in its own docstring: `no_polling.py` (KERNEL_STANDARDS §14),
+`no_verify.py` (`#no-verify`) and `guidance.py`, which is advisory and never refuses: on an Edit, MultiEdit or Write of a kernel
+source (`csrc/**/*.cu*`, `measure/lab/**/*.cu*`) it injects the `guidance` of each `docs/rules.json` row with a `checker` whose
+`triggers` match the edit's new text (a branch around a tensor step, a new shared store, a collective), and says nothing of an edit
+that matches none. `portable_claude.py` gates them like every file under `.claude/` ([above](#portable-agent-files)).
 
 <a id="ratchets"></a>
 ## The ratchets

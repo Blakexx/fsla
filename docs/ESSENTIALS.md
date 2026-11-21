@@ -37,6 +37,7 @@ kernel:
   `bazel run //tools:region_ledger -- --csv <ncu SourceCounters> --so <.so> --member <cubin member>
   --source <kernel.cuh> --budget tools/budgets/<k>.json`.
 - Correctness: `tests/oracle/` (scoped runs only; never a bare `tests/`).
+- Guidance on a checker rule: its row in `docs/rules.json` (`checker`, `guidance`, `triggers`) is printed after the checker's fix in a lab refusal and injected by the edit hook `.claude/hooks/guidance.py` when new kernel source matches its triggers (`docs/internals/tools/lint.md#rules-table`).
 - Build: `bazel run //:library` with `--//:archs`; the machine is `bazel run //:check`
   (`docs/build.md`); the device stamp proves the binary is the source.
 - The map of the documents: `docs/README.md`; of the mechanisms: `docs/ARCHITECTURE.md` §10.

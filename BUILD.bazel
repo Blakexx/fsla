@@ -382,12 +382,13 @@ tree_test(
     git = True,
 )
 
-#: EVERY RULE HAS A ROW (KERNEL_STANDARDS, the preamble): docs/rules.json names the mechanism of every rule of both documents
+#: EVERY RULE HAS A ROW (KERNEL_STANDARDS, the preamble): docs/rules.json names the mechanism of every rule of both documents,
+#: and a row for every rule of the pinned checker (`@warpline`, the module the lab's check calls) carrying rola's guidance on it
 tree_test(
     name = "rules_table",
     size = "small",
     cmd = ["python3", "tools/lint/rules_table.py"],
-    data = [":tree"],
+    data = [":tree", "@warpline//:warpline"],
 )
 
 tree_test(

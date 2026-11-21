@@ -14,6 +14,13 @@ section that states no rule). This lint fails on
    label its package does not define, a `gate` row's label that is not a member of `//:gate` (read from the build files
    as text; the lint runs inside the gate and cannot run Bazel).
 
+Check 5, THE CHECKER'S GUIDANCE (Blake, 2026-11-20), runs both ways against the rules of the pinned checker (`warpline.checker.declare.rule_names`
+over the checker's base ledger with the project's `tools/notice_ledger.json`): every rule has exactly one row whose `checker` names it, and a
+row's `checker` names a rule the pin has. Such a row also carries `guidance` (rola's one line: the atom or practice, the standards anchor, the
+lab page with the evidence; where rola has nothing to add it says "nothing beyond the generic fix") and `triggers` (the regexes over new
+kernel source at which the edit hook injects it, `.claude/hooks/guidance.py`). The refusals of `tools/lab.py` print `guidance` after the
+checker's fix; a checker that is not on the path fails the lint, never reads as zero.
+
 Check 4, OWED ONLY SHRINKS, is the ratchet's: `--owed` prints each `owed` row's id as a finding and
 `tools/lint/ratchet.py rules_owed` holds the list against its baseline.
 
@@ -53,6 +60,12 @@ FIELDS = {
     "none": ("why",),
 }
 STATEMENT_WORDS = 25
+#: the keys of a row that carries the checker's guidance: the checker's rule, rola's one line on it, the regexes that fire the edit hook
+GUIDANCE = ("checker", "guidance", "triggers")
+GUIDED = ("gate", "tool", "hook")
+#: the rules of the pinned checker a fixture tree stands in for (the lint's own tests)
+FIXTURE_RULES = ("alpha_rule", "beta_rule")
+LEDGER = "tools/notice_ledger.json"
 ANCHOR = re.compile(r'<a id="([^"]+)"></a>')
 ANCHOR_LINE = re.compile(r'^\s*(?:<a id="[^"]+"></a>\s*)+$')
 NUMBERED = re.compile(r"^(\d+)\. ")
@@ -118,7 +131,12 @@ def schema(rows: object) -> list[str]:
         for key in BASE + FIELDS[mechanism]:
             if not row.get(key):
                 problems.append(f"row '{name}': missing field '{key}' (a {mechanism} row carries it)")
-        for key in sorted(set(row) - set(BASE + FIELDS[mechanism])):
+        guided = "checker" in row
+        if guided and mechanism not in GUIDED:
+            problems.append(f"row '{name}': a `checker` row is a gate, tool or hook row, not {mechanism}")
+        if guided:
+            problems += guidance_problems(name, row)
+        for key in sorted(set(row) - set(BASE + FIELDS[mechanism] + (GUIDANCE if guided else ()))):
             problems.append(f"row '{name}': has key '{key}', which a {mechanism} row does not carry")
         if name in ids:
             problems.append(f"row '{name}': duplicate id")
@@ -134,6 +152,55 @@ def schema(rows: object) -> list[str]:
         if "enforcer" in row and not (isinstance(row["enforcer"], list) and all(isinstance(e, str) for e in row["enforcer"])):
             problems.append(f"row '{name}': the enforcer is a list of paths, `path::symbol` and Bazel labels")
     return problems
+
+
+def guidance_problems(name: str, row: dict) -> list[str]:
+    """A row that names a checker rule carries its one-line guidance and its triggers, each trigger a regex."""
+    problems = []
+    if not isinstance(row["checker"], str) or not row["checker"]:
+        problems.append(f"row '{name}': `checker` is the name of one rule of the pinned checker")
+    line = row.get("guidance")
+    if not isinstance(line, str) or not line.strip() or "\n" in line:
+        problems.append(f"row '{name}': a `checker` row carries `guidance`, one line")
+    triggers = row.get("triggers")
+    if not isinstance(triggers, list) or not all(isinstance(t, str) and t for t in triggers):
+        problems.append(f"row '{name}': a `checker` row carries `triggers`, a list of regexes (empty where no source text shows the rule)")
+        return problems
+    for trigger in triggers:
+        try:
+            re.compile(trigger)
+        except re.error as error:
+            problems.append(f"row '{name}': the trigger {trigger!r} is not a regex ({error})")
+    return problems
+
+
+def guidance_of(rows: list[dict], rules: list[str]) -> list[str]:
+    """Check 5: each rule of the pinned checker has one row naming it, and each row's `checker` is a rule of the pin."""
+    named: dict[str, list[str]] = {}
+    for row in rows:
+        if "checker" in row:
+            named.setdefault(row["checker"], []).append(row["id"])
+    problems = [f"checker rule {rule} has no row naming it as its `checker` in {TABLE}" for rule in rules if rule not in named]
+    for rule, ids in sorted(named.items()):
+        if rule not in rules:
+            problems.append(f"row '{ids[0]}': `checker` names {rule}, which the pinned checker does not have")
+        elif len(ids) > 1:
+            problems.append(f"checker rule {rule} is named by {len(ids)} rows ({', '.join(ids)}); one row carries its guidance")
+    return problems
+
+
+def checker_rules(root: Path) -> list[str] | None:
+    """The rule names of the pinned checker over its base ledger with the project's rows (`rule_names`), where its package
+    is on the path (`dev_config.warpline_python()`: the graph's hand-in, or the runfiles' `warpline+` of a test); None where it is not."""
+    sys.path.insert(0, str(ROOT / "tools"))
+    import dev_config
+    found = dev_config.warpline_python()
+    if not found or not (Path(found) / "warpline" / "checker").is_dir():
+        return None
+    sys.path.insert(0, found)
+    from warpline.checker import declare, notices
+    ledger = notices.merge(notices.base_ledger(), notices.load_ledger((root / LEDGER).read_text()))
+    return declare.rule_names(ledger)
 
 
 def coverage_of(rows: list[dict], leaves: set[str], every: set[str]) -> list[str]:
@@ -255,27 +322,29 @@ def derive_both(root: Path) -> tuple[set[str], set[str], list[str]]:
     return leaves, every, problems
 
 
-def judge(root: Path, build: str, rows: object, leaves: set[str], every: set[str]) -> list[str]:
-    """Checks 1 to 3 over a table: the schema first, then the sites and the enforcers of rows that hold the schema."""
+def judge(root: Path, build: str, rows: object, leaves: set[str], every: set[str], rules: list[str]) -> list[str]:
+    """Checks 1 to 3 and 5 over a table: the schema first, then the sites, the enforcers and the checker's rules of rows that hold it."""
     problems = schema(rows)
     if problems:
         return problems
     graph = Graph(root, build)
     gate = graph.members(GATE, set())
-    problems = coverage_of(rows, leaves, every)
+    problems = coverage_of(rows, leaves, every) + guidance_of(rows, rules)
     for row in rows:
         problems += resolved(root, graph, gate, row)
     return problems
 
 
-def check(root: Path, build: str) -> list[str]:
-    """Checks 1 to 3 over one tree: its two documents, its `docs/rules.json` and its build files."""
+def check(root: Path, build: str, rules: list[str] | None) -> list[str]:
+    """Checks 1 to 3 and 5 over one tree: its two documents, its `docs/rules.json`, its build files and the pinned checker's rules."""
+    if rules is None:
+        return ["the pinned checker is not on the path (ROLA_WARPLINE_PYTHON, or a test's runfiles): check 5 cannot run, and a lint that cannot run fails"]
     leaves, every, problems = derive_both(root)
     try:
         rows = json.loads((root / TABLE).read_text())
     except (OSError, ValueError) as error:
         return problems + [f"{TABLE}: cannot be read: {error}"]
-    return problems + judge(root, build, rows, leaves, every)
+    return problems + judge(root, build, rows, leaves, every, rules)
 
 
 def owed(root: Path) -> list[str]:
@@ -314,19 +383,30 @@ def mutations() -> dict[str, tuple[object, str]]:
                                           "names a git hook under"),
         "a label no package defines": (edit("KERNEL_STANDARDS#s2", enforcer=["//:ghost"]), "does not define"),
         "a gate row's label outside the gate": (edit("KERNEL_STANDARDS#s2", enforcer=["//:outside"]), "not a member of //:gate"),
+        "a checker rule with no row": (drop("KERNEL_STANDARDS#s1.1"), "checker rule alpha_rule has no row"),
+        "a row naming a rule the pinned checker lacks": (edit("KERNEL_STANDARDS#s1.1", checker="ghost_rule"),
+                                                         "which the pinned checker does not have"),
+        "two rows for one checker rule": (edit("KERNEL_STANDARDS#s2", checker="alpha_rule", guidance="g", triggers=[]),
+                                          "is named by 2 rows"),
+        "a checker row with no guidance": (edit("KERNEL_STANDARDS#s1.1", guidance=""), "carries `guidance`"),
+        "a trigger that is no regex": (edit("KERNEL_STANDARDS#s1.1", triggers=["wg_("]), "is not a regex"),
+        "a checker row that is no gate, tool or hook": (edit("KERNEL_STANDARDS#s1.2", checker="beta_rule"),
+                                                        "is a gate, tool or hook row"),
     }
 
 
 def self_test() -> int:
     """Each fixture failure draws its message; the ok table passes and its owed rows are listed."""
     root = FIXTURE / "tree"
-    failures = [f"the ok fixture fails: {p}" for p in check(root, FIXTURE_BUILD)]
+    failures = [f"the ok fixture fails: {p}" for p in check(root, FIXTURE_BUILD, list(FIXTURE_RULES))]
+    if not any("not on the path" in p for p in check(root, FIXTURE_BUILD, None)):
+        failures.append("a lint with no checker on the path did not fail")
     owed_rows = owed(root)
     if owed_rows != [f"{TABLE}:0: owed rule CONSTITUTION#r8", f"{TABLE}:0: owed rule KERNEL_STANDARDS#s1.2"]:
         failures.append(f"the ok fixture's owed rows are {owed_rows}")
     leaves, every, _ = derive_both(root)
     for case, (apply, message) in mutations().items():
-        found = judge(root, FIXTURE_BUILD, apply(json.loads((root / TABLE).read_text())), leaves, every)
+        found = judge(root, FIXTURE_BUILD, apply(json.loads((root / TABLE).read_text())), leaves, every, list(FIXTURE_RULES))
         if not any(message in p for p in found):
             failures.append(f"{case}: no message holds {message!r}: {found}")
     for text, why in (("# T\n\n## Heading\n", "a heading with no anchor"),
@@ -347,7 +427,7 @@ def main() -> int:
     if "--owed" in sys.argv:
         print("\n".join(owed(ROOT)))
         return 0
-    problems = check(ROOT, BUILD)
+    problems = check(ROOT, BUILD, checker_rules(ROOT))
     for problem in problems:
         print(f"  {problem}")
     print(f"rules_table: {len(problems)} problem(s) in {TABLE}" + (" (KERNEL_STANDARDS, the preamble: every rule has a row)" if problems else ""))

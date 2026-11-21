@@ -4,8 +4,8 @@
 {"site": "CONSTITUTION#r8", "id": "CONSTITUTION#r8", "statement": "Nothing holds this rule yet.", "mechanism": "owed", "would_be": "gate: a lint of the section's shape"},
 {"site": "KERNEL_STANDARDS#cards", "id": "KERNEL_STANDARDS#cards", "statement": "A paragraph that states no rule.", "mechanism": "none", "why": "a definition"},
 {"site": "KERNEL_STANDARDS#craft", "id": "KERNEL_STANDARDS#craft", "statement": "A reader judges this rule.", "mechanism": "review", "why_not_mechanical": "only a reader can tell"},
-{"site": "KERNEL_STANDARDS#s1.1", "id": "KERNEL_STANDARDS#s1.1", "statement": "A hook holds this item.", "mechanism": "hook", "enforcer": ["tools/git-hooks/pre-commit"], "coverage": "full"},
+{"site": "KERNEL_STANDARDS#s1.1", "id": "KERNEL_STANDARDS#s1.1", "statement": "A hook holds this item.", "mechanism": "hook", "enforcer": ["tools/git-hooks/pre-commit"], "coverage": "full", "checker": "alpha_rule", "guidance": "Use the atom and read the page.", "triggers": ["for \\(.*alpha"]},
 {"site": "KERNEL_STANDARDS#s1.2", "id": "KERNEL_STANDARDS#s1.2", "statement": "Nothing holds this item yet.", "mechanism": "owed", "would_be": "hook: a check at commit"},
-{"site": "KERNEL_STANDARDS#s2", "id": "KERNEL_STANDARDS#s2", "statement": "A gate holds this rule in part.", "mechanism": "gate", "enforcer": ["//sub:check_b"], "coverage": "partial: the second case"},
+{"site": "KERNEL_STANDARDS#s2", "id": "KERNEL_STANDARDS#s2", "statement": "A gate holds this rule in part.", "mechanism": "gate", "enforcer": ["//sub:check_b"], "coverage": "partial: the second case", "checker": "beta_rule", "guidance": "Nothing beyond the generic fix.", "triggers": []},
 {"site": "KERNEL_STANDARDS#s2-addendum", "id": "KERNEL_STANDARDS#s2-addendum", "statement": "An action hook holds this addendum.", "mechanism": "hook", "enforcer": [".claude/hooks/listed.py"], "coverage": "full"}
 ]

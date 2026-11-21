@@ -99,7 +99,7 @@ then the source lines issuing the shared wavefronts. `ledger-dumps --skip N` pro
 first N: an experiment's first is its checked launch, the timed ones follow.
 
 <a id="hazards"></a>THE LEARNINGS' CHECKS ([`LEARNINGS.md`](../LEARNINGS.md)). The hazards are WARPLINE'S CHECKER'S RULES (`warpline.checker`, the module
-`MODULE.bazel` pins and `bazel run //tools:lab` hands in): the lab computes none of them. `check` translates the experiment's
+`MODULE.bazel` pins and `bazel run //tools:lab` hands in): the lab computes none of them. A refusal prints the finding, the checker's own fix and then rola's `note:` for the rule, the `guidance` of the rule's row in `docs/rules.json` (`guidance()` in `tools/lab.py`; [`lint.md`](lint.md#rules-table)). `check` translates the experiment's
 `Bench::expect(kernel, NAME, "<=", n)` declarations to the checker's (kernel regex, rule, allowed count, reason -- the reason is the `//:` comment
 block above the `expect` where exactly one stands above the experiment's declarations of that NAME, else a fixed text saying it is in the source),
 reads the kernels into the checker's model (named as the toolkit's `cu++filt` names them: the patterns `lab::kernel` writes are of that form),
