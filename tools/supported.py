@@ -57,7 +57,7 @@ def markers(marker: str) -> tuple[str, str]:
 
 def block(text: str, marker: str) -> str | None:
     """The README's generated block for `marker`, its text between the markers; None when it has none. The one reader
-    of the format: `render` and the checks read it here."""
+    of the format: `render` reads it here."""
     begin, end = markers(marker)
     if begin not in text or end not in text:
         return None
