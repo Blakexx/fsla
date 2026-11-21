@@ -171,18 +171,6 @@
   },
   {
    "path": "docs/rules.json",
-   "message": "owed rule KERNEL_STANDARDS#s16:ratify-at-the-milestone",
-   "line_sha256": "e3b0c44298fc1c14",
-   "count": 1
-  },
-  {
-   "path": "docs/rules.json",
-   "message": "owed rule KERNEL_STANDARDS#s16:stages-do-not-ratify",
-   "line_sha256": "e3b0c44298fc1c14",
-   "count": 1
-  },
-  {
-   "path": "docs/rules.json",
    "message": "owed rule KERNEL_STANDARDS#s17:ad-hoc-material-never-enters-the-repo",
    "line_sha256": "e3b0c44298fc1c14",
    "count": 1

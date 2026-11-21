@@ -1022,12 +1022,6 @@
    "count": 1
   },
   {
-   "path": "docs/ratification.md",
-   "message": "names the work code 'R1b'",
-   "line_sha256": "ae992c40b252c074",
-   "count": 1
-  },
-  {
    "path": "rola/ops/decode.py",
    "message": "names the work code 'K50'",
    "line_sha256": "f6afe79f98508718",
@@ -1508,18 +1502,6 @@
    "count": 1
   },
   {
-   "path": "tests/unit/test_ratify_argv.py",
-   "message": "names the work code 'P65'",
-   "line_sha256": "1e6f99fb8a5c189a",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_ratify_argv.py",
-   "message": "names the work code 'S2'",
-   "line_sha256": "1e6f99fb8a5c189a",
-   "count": 1
-  },
-  {
    "path": "tests/unit/test_state_contract.py",
    "message": "names the work code 'K50'",
    "line_sha256": "13d60052e4c35cca",
@@ -1559,18 +1541,6 @@
    "path": "tools/lint/lint_standards.py",
    "message": "names the work code 'A15'",
    "line_sha256": "e0f57f0ee2e27acb",
-   "count": 1
-  },
-  {
-   "path": "tools/lint/lint_standards.py",
-   "message": "names the work code 'C0'",
-   "line_sha256": "20e5f902dfbce49b",
-   "count": 1
-  },
-  {
-   "path": "tools/lint/lint_standards.py",
-   "message": "names the work code 'C0'",
-   "line_sha256": "a5877c58501bbd25",
    "count": 1
   },
   {
@@ -1709,36 +1679,6 @@
    "path": "tools/lint/run_vulture.sh",
    "message": "names the work code 'K46'",
    "line_sha256": "e66b21ab56e3a671",
-   "count": 1
-  },
-  {
-   "path": "tools/lint/unused_instantiations.py",
-   "message": "names the work code 'G5'",
-   "line_sha256": "44d3fce706aaa733",
-   "count": 1
-  },
-  {
-   "path": "tools/lint/unused_instantiations.py",
-   "message": "names the work code 'G5'",
-   "line_sha256": "e3e0c73222613904",
-   "count": 1
-  },
-  {
-   "path": "tools/lint/unused_instantiations.py",
-   "message": "names the work code 'K36b'",
-   "line_sha256": "5a6bf915fcdc0baa",
-   "count": 1
-  },
-  {
-   "path": "tools/lint/unused_instantiations.py",
-   "message": "names the work code 'K46'",
-   "line_sha256": "5916abf619a7412d",
-   "count": 1
-  },
-  {
-   "path": "tools/ratify.py",
-   "message": "names the work code 'K5'",
-   "line_sha256": "6a1cbb8eb038fbde",
    "count": 1
   },
   {

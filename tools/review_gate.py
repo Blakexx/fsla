@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STANDARDS = ("docs/CONSTITUTION.md", "docs/KERNEL_STANDARDS.md")
 #: the rules table: each rule's mechanism, the `review` rows being the rules only this review enforces
 RULES = "docs/rules.json"
-#: generated or recorded bytes a review reads nothing in: measurement records, pinned locks, ratified manifests
+#: generated or recorded bytes a review reads nothing in: measurement records, pinned locks, the derivation's records
 EXCLUDED = ("measure/lab/results", "docs/references.lock.json", "tools/manifests")
 #: the most diff a prompt carries inline; past it the reviewer reads the files the stat names
 DIFF_LIMIT = 200_000

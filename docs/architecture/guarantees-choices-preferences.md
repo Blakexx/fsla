@@ -53,7 +53,7 @@ same week.
 **Build and execution**
 
 - **Only measured binaries run**: pinned assembler, AOT-only with no PTX a driver
-  could JIT, a ratified manifest per architecture, runtime refusal of anything
+  could JIT, the declared targets and the gates every build runs, runtime refusal of anything
   else. → [closed-world-codegen.md](closed-world-codegen.md).
 - **No fallbacks.** One comprehensive kernel path. A hard case is solved in the
   kernel, not routed around. A genuine hardware limit is documented as such; an
@@ -138,8 +138,8 @@ number cleared.
 - **Process-alternated, clock-controlled, two rounds, distributions reported.**
   Light-tier probing is allowed and labelled; a light-tier decision is re-confirmed
   at full rigor before landing.
-- **Through the gates, in the tree the manifest was ratified in.** Register/spill
-  ratchet, bit-identity suites, the scoped test lines, census. A compile probe
+- **Through the gates, in the tree the census was read in.** The census's
+  register/spill table, bit-identity suites, the scoped test lines, census. A compile probe
   of a few shapes is a *screen*, not a ratchet — it cannot see a regression in
   the instantiations it did not compile.
 - **With a gate that can fail.** Every new gate ships its must-fail
@@ -160,6 +160,6 @@ This repository is written as **ancestral code**: something others will read,
 maintain and contribute to for years, possibly as the reference implementation of
 its architecture. Every structural decision is judged by the reader a decade out
 rather than the author this week. That is why the reasons live in this tree
-rather than in a chat log, why the ratification discipline is framed as
+rather than in a chat log, why the closed-world discipline is framed as
 reproducibility for future readers rather than as process, and why the oracle is
 treated as the crown jewel rather than as a test.

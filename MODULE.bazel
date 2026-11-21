@@ -75,12 +75,13 @@ environment.python(
     post_env = ["ROLA_NVCC_THREADS"],
     uv = "@uv//:uv",
     uv_pin = "@rola_devtools//pins:uv_pin.json",
-    #: the flags' sources, and the manifests whose architectures are the build's defaults
+    #: the flags' sources, and the hardware table whose built architectures are the build's defaults
     watch = [
+        "//:measure/__init__.py",
+        "//:measure/hardware.py",
+        "//csrc/rola:src/common/hardware.json",
         "//tools:build_flags.py",
-        "//tools:toolchains.py",
     ],
-    watch_trees = ["//tools:manifests/cu13/sm_90a.json"],
 )
 environment.pinned(
     name = "mold",

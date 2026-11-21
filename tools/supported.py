@@ -9,25 +9,24 @@ test is the CPU tier's, `tests/unit/test_capability_table_docs.py`):
   ``common/hardware.cuh``'s ``tabulated``) -- the architectures the KERNEL knows how to size itself for: a
   ``static_assert`` at compile time and the card's admission a refusal at run time, so an arch missing from it
   cannot execute whatever the table says.
-* ``tools/manifests/<toolchain>/sm_XX.json`` -- the architectures MEASURED, per toolchain (``tools/toolchains.py``).
-  One file per arch, so "is it ratified?" is a file-existence question.
+* the same file's BUILT architectures (``measure.hardware.built``: the rows whose build chooses a window) and the
+  toolchain that builds them (``tools/toolchains.py``).
 
 The two are not the same set, and **the difference is the product statement**. An
-arch that is tabulated but not ratified is listed with an empty toolchain column
-and the status *not ratified -- will refuse to load*. A support claim is worth
-nothing if the table quietly implies coverage nobody measured.
+arch that is tabulated but not built is listed with an empty toolchain column
+and the status *not built -- will refuse to load*. A support claim is worth
+nothing if the table quietly implies coverage nobody brought up.
 
     bazel run //tools:supported              # print the tables
     bazel run //tools:supported -- --write   # rewrite README.md's generated blocks
 
 GPU names are the only hand-written column, in ``GPUS`` below, because a compute
-capability does not know its own marketing name. They are labels; the ratification
+capability does not know its own marketing name. They are labels; the hardware table
 is what the table is actually reporting.
 """
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sys
 from pathlib import Path
@@ -84,18 +83,10 @@ def tabulated_archs() -> list[str]:
     return hardware.tabulated()
 
 
-def ratified() -> dict[str, list[dict]]:
-    """`sm_XX -> [{toolchain, ptxas, instantiations}]`, one entry per toolchain with a committed manifest for it."""
-    out: dict[str, list[dict]] = {}
-    for toolchain in toolchains.records().values():
-        for arch in toolchain.archs():
-            blob = json.loads(toolchain.manifest_path(arch).read_text())
-            out.setdefault(f"sm_{arch}", []).append({
-                "toolchain": toolchain.name,
-                "ptxas": blob["toolchain"]["ptxas"],
-                "instantiations": len(blob["entries"]),
-            })
-    return out
+def built() -> dict[str, list[dict]]:
+    """`sm_XX -> [{toolchain, ptxas}]`: each built architecture, with the toolchain that builds it."""
+    return {arch: [{"toolchain": t.name, "ptxas": t.ptxas} for t in toolchains.records().values()]
+            for arch in hardware.built()}
 
 
 def _ptxas_short(version: str) -> str:
@@ -104,25 +95,15 @@ def _ptxas_short(version: str) -> str:
 
 
 def table() -> str:
-    rat = ratified()
-    rows = ["| Compute capability | GPUs | Toolchain | Ratified under | Instantiations | Status |",
-            "|---|---|---|---|---|---|"]
+    built_rows = built()
+    rows = ["| Compute capability | GPUs | Toolchain | Assembler | Status |",
+            "|---|---|---|---|---|"]
     for arch in tabulated_archs():
         gpus = GPUS.get(arch, "—")
-        for r in rat.get(arch, []):
-            rows.append(f"| `{arch}` | {gpus} | `{r['toolchain']}` | {_ptxas_short(r['ptxas'])} | "
-                        f"{r['instantiations']} | ratified |")
-        if arch not in rat:
-            rows.append(f"| `{arch}` | {gpus} | — | — | — | "
-                        f"**not ratified — will refuse to load** |")
-    #: Anything ratified but NOT tabulated would be a manifest for an arch the
-    #: kernel cannot size itself for. It cannot happen through the normal path, and
-    #: if it ever does the table must say so rather than quietly drop the row.
-    for arch in sorted(set(rat) - set(tabulated_archs())):
-        for r in rat[arch]:
-            rows.append(f"| `{arch}` | {GPUS.get(arch, '—')} | `{r['toolchain']}` | "
-                        f"{_ptxas_short(r['ptxas'])} | {r['instantiations']} | "
-                        f"**ratified but NOT in the kernel's arch table — a defect** |")
+        for r in built_rows.get(arch, []):
+            rows.append(f"| `{arch}` | {gpus} | `{r['toolchain']}` | {_ptxas_short(r['ptxas'])} | built |")
+        if arch not in built_rows:
+            rows.append(f"| `{arch}` | {gpus} | — | — | **not built — will refuse to load** |")
     return "\n".join(rows)
 
 

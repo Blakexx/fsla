@@ -12,9 +12,9 @@ tree carried when it began gating are a baseline that only shrinks.
 | lint | rule |
 |---|---|
 | `ast_grep_gate.py` + `rules/*.yml` | the standards' shapes an AST can see (§12 fences and collectives, a torch header in a per-arm translation unit, an anonymous-namespace kernel, a width-shaped `if`) |
-| `lint_standards.py` | unroll discipline (§6), the arm-TU torch include, the barrier-free regions (no CTA barrier between a file's `//: @barrier-free` and `//: @barrier-free-end`), the whole `docs/internals/` mirror contract (including that a mirror page names no identifier the tree does not carry), the flock spelling, the supported matrix, the shard partition, the vendored pin, the comment-density mandate, repository portability |
-| `unit_lints.py` + `.clang-tidy`, `clang-tidy-device.yaml` | the pinned clang-tidy (`tools/clang_tidy_pin.json`) on every unit the library links, for each ratified architecture: `.clang-tidy` on the host units (every finding fails), `clang-tidy-device.yaml` on the device units through clang's CUDA front end (dead stores, unused parameters, redundant expressions); and the host units' `-Wall -Wextra -Wunused` front-end compile. A finding in the unit's own package fails, and so does any compiler error -- a unit the compiler cannot parse is a unit no lint read ([below](#unit-lints)) |
-| `unused_instantiations.py` | every `__global__` function template must demangle-match a symbol in a committed manifest. `__device__` templates are found, counted and explicitly NOT checked: manifests record entry functions only, and a wrapped-once helper has no standalone symbol |
+| `lint_standards.py` | unroll discipline (§6), the arm-TU torch include, the barrier-free regions (no CTA barrier between a file's `//: @barrier-free` and `//: @barrier-free-end`), the whole `docs/internals/` mirror contract (including that a mirror page names no identifier the tree does not carry), the flock spelling, the supported matrix, the vendored pin, the comment-density mandate, repository portability |
+| `unit_lints.py` + `.clang-tidy`, `clang-tidy-device.yaml` | the pinned clang-tidy (`tools/clang_tidy_pin.json`) on every unit the library links, for each built architecture: `.clang-tidy` on the host units (every finding fails), `clang-tidy-device.yaml` on the device units through clang's CUDA front end (dead stores, unused parameters, redundant expressions); and the host units' `-Wall -Wextra -Wunused` front-end compile. A finding in the unit's own package fails, and so does any compiler error -- a unit the compiler cannot parse is a unit no lint read ([below](#unit-lints)) |
+| `unused_instantiations.py` | every `__global__` function template must demangle-match an entry function the graph's units compiled (the census's, `bazel test //csrc/rola:unused_instantiations`). `__device__` templates are found, counted and explicitly NOT checked: `ptxas -v` reports entry functions only, and a wrapped-once helper has no standalone symbol |
 | `run_ruff_e3.sh` | pycodestyle's blank-line family. It keeps its own invocation because ruff preview-gates that family, and turning preview on in `pyproject.toml` would gate every other family's preview rules too |
 | `readability_spacing.py` | a function or kernel body of forty lines or more with ZERO blank lines in it, and a run of blank lines in `csrc` (Python's own two-line convention is ruff's `E303` territory). The rule asks for segmentation and does not say where |
 | `python -m rola_devtools.mirror --check` | every tracked path is declared ships or private for the public mirror in `.github/mirror/declarations.json`, so a new file never ships, and never silently stays behind, undecided (the tool is rola-devtools', linked into the venvs; its README describes the export) |
@@ -28,7 +28,7 @@ tree carried when it began gating are a baseline that only shrinks.
 The clang-tidy profiles and the host warnings read each unit's own compile: `bazel/defs.bzl`'s `unit_lints` aspect hands
 `tools/lint/unit_lints.py` the compile action's command line, and the lint's inputs are the compile's, so it reads
 what the build compiled and reruns only when that compile's inputs change. The units are the library's own, and each
-ratified architecture is its own configuration, whose generated headers are that architecture's build set. A verdict
+built architecture is its own configuration, whose generated headers are that architecture's build set. A verdict
 counts a warning in the unit's own package and any compiler error, and a run that fails with no located diagnostic
 is red too; a fixture's verdict must hold exactly its expected findings ([below](#fixtures)).
 
@@ -112,6 +112,19 @@ source (`csrc/**/*.cu*`, `measure/lab/**/*.cu*`) it injects the `guidance` of ea
 `triggers` match the edit's new text (a branch around a tensor step, a new shared store, a collective), and says nothing of an edit
 that matches none. `portable_claude.py` gates them like every file under `.claude/` ([above](#portable-agent-files)).
 
+<a id="graph-only"></a>
+## The graph runs the toolchain: `graph_only.py`
+
+`tools/lint/graph_only.py` (`bazel test //:graph_only`, in `//:lints`; self-test `//tools/lint:graph_only_fixtures`) is the commit
+gate of KERNEL_STANDARDS#s14-graph. It reads every tracked `*.py`, `*.sh`, `*.bzl`, `BUILD*` and shebang script (the hooks) as syntax and fails
+on a step that runs `nvcc`, `ptxas`, `cuobjdump`, `nvdisasm`, `cu++filt`, `ncu`, `nsys`, `compute-sanitizer`, `cmake`, `make`, `ninja`, a pip or uv
+install or `pytest`, or makes a temporary directory a build would stage in (`tempfile.mkdtemp`/`TemporaryDirectory` named for a build, or in a file
+that runs a tool; `mktemp -d`): a Python call of `subprocess`/`os`/`asyncio` or a tool's own runner (`run`, `_run`, `sh`) whose command is
+a list or shell string headed by the tool, a shell command word, a `genrule`'s `cmd`. A tool named in a comment, a docstring or a string no call runs
+is text and passes. There is no baseline: `ALLOWLIST` holds one entry a call site (file, function, tool), each naming the graph rule whose action runs
+it or the ruling that keeps it outside, with its words quoted; an entry that matches no site fails, so the list is the sites. A new step belongs in a
+graph rule; `GRAPH_OVERRIDE` is the hook's exception for a typed command, never the lint's.
+
 <a id="ratchets"></a>
 ## The ratchets
 
@@ -136,7 +149,7 @@ tell a real finding from a false one, so a human decides each, and the decision 
 | `drift_guards.py` | 20 over 11 rules | the table below |
 | `r9_enforcement.py` | 1 | `decode_lattice.cuh`'s `switch (kind)` folds its fourth case into a bare default; the fix is a `uniform_switch`, a decode kernel change |
 | `rules_table.py --owed` | 63 (2026-11-17) | the `owed` rows of `docs/rules.json`: each leaves when its rule gains a mechanism, a `gate`, `tool`, `hook` or `review` row, in the commit that lands it ([above](#rules-table)) |
-| `coverage.py` | 0 (2026-09-29) | nothing: it gates the undeclared gaps (a kernel not in `tools/coverage.json`, a pointer to nothing); the owed obligations -- budgets, phase ledgers, sanitizer rows and oracle tests for the entmax solves, three kernels awaiting the milestone ratify -- are the backlog it prints ([`coverage.md`](coverage.md)) |
+| `coverage.py` | 0 (2026-09-29) | nothing: it gates the undeclared gaps (a kernel not in `tools/coverage.json`, a pointer to nothing); the owed obligations -- budgets, phase ledgers, sanitizer rows and oracle tests for the entmax solves, three kernels -- are the backlog it prints ([`coverage.md`](coverage.md)) |
 | `burst_tier.py` | 0 (2026-11-09) | KERNEL_STANDARDS §24: an MMA issued outside a `//: @burst` function or a vote, sync, barrier, `while`, data `if` or `unroll 1` inside one, over every device function (a `static` or `__host__` one among them); `//: @burst-exempt <reason>` names a debt (the dense fold's and the dense readout's loops over a chunk's slots, `steps_dense`, `read_dense`, `dense_den`). It reads only a function that issues an MMA itself: a loop above a burst function that hand-rolls what `Burst` units do is a debt it cannot see, named on that kernel's page (the readout's `read_pass`, `readout.md#chunk`) |
 
 <a id="drift-guards"></a>
@@ -190,7 +203,7 @@ text belt to the ast-grep rule, a CTA or grid barrier inside a declared barrier-
 and excluded), a committed doc or script wrapping a command in an external `flock` on the GPU lock path (scoped
 to `docs/`, `measure/`, `tools/`, `CLAUDE.md` and `README.md`, the standards among them), the
 file-reading checks
-(`check_supported_table`, `check_shard_partition`, `check_arch_coverage`, `check_vendored_pin`, each a function of the
+(`check_supported_table`, `check_arch_coverage`, `check_vendored_pin`, each a function of the
 tree's files, never of an imported `rola`), and
 `check_repo_portability` (§17): every tracked file scanned for an absolute home-directory path, a citation of an
 out-of-repo journal by path, a real worktree path or a session's scratch path, with no allowlist (its own source is
@@ -198,7 +211,7 @@ excluded by name, because its patterns spell what they catch). Every finding pri
 incident.
 
 <a id="compile-commands"></a>**The compile database.** `bazel run //:compile_commands` writes `compile_commands.json`
-into the checkout for an editor: each unit's clang command, as the unit lints run it, for the first ratified
+into the checkout for an editor: each unit's clang command, as the unit lints run it, for the first built
 architecture, every path absolute.
 
 <a id="device-profile"></a>The device profile runs clang's CUDA frontend `--cuda-host-only` on the compile's own include roots (the

@@ -1,7 +1,6 @@
-"""Ratify on the graph's build (tools/ratify.py's `--graph`): the census record's paths resolve against the runfiles
-and its tools become this process's; an iteration build is told from the shipped one by the record's own rule; the
-census reads each unit's report, and an instantiation two units emit is refused, as the compile path refuses it. No
-CUDA, no GPU: the reports are text, the object scan stands in."""
+"""The census on the graph's build (tools/ratify.py's `--graph`): the census record's paths resolve against the runfiles
+and its tools become this process's; the census reads each unit's report, names every entry function the units compiled,
+and refuses an instantiation two units emit. No CUDA, no GPU: the reports are text, the object scan stands in."""
 from __future__ import annotations
 
 import json
@@ -23,7 +22,7 @@ ptxas info    : Function properties for _Z1kPi
 ptxas info    : Used 8 registers, used 0 barriers, 360 bytes cmem[0]
 """
 
-SHIPPED = {"archs": "80,86", "carry_arms": "", "decode_arms": ""}
+PARAMETERS = {"archs": "90a", "carry_arms": "", "decode_arms": ""}
 
 
 @pytest.fixture()
@@ -32,14 +31,13 @@ def graph(tmp_path, monkeypatch):
     monkeypatch.setattr(ratify, "_GRAPH", {})
     monkeypatch.setattr(ratify, "cuda_bin", ratify.cuda_bin)
     monkeypatch.setattr(sass, "_GRAPH", {})
-    monkeypatch.setattr(ratify, "toolchain", lambda name=None: type("T", (), {"archs": lambda self: ["80", "86"]})())
     runfiles = tmp_path / "runfiles" / "_main"
     (runfiles / "objs").mkdir(parents=True)
     for unit in ("a", "b"):
         (runfiles / "objs" / f"{unit}.ptxas.txt").write_text(REPORT if unit == "a" else "")
         (runfiles / "objs" / f"{unit}.pic.o").write_bytes(b"")
 
-    def write(parameters=SHIPPED, both_report=False):
+    def write(both_report=False):
         if both_report:
             (runfiles / "objs" / "b.ptxas.txt").write_text(REPORT)
         census = runfiles / "census.json"
@@ -47,9 +45,9 @@ def graph(tmp_path, monkeypatch):
             "units": [{"source": f"csrc/rola/src/{u}.cu", "report": f"objs/{u}.ptxas.txt", "object": f"objs/{u}.pic.o"}
                       for u in ("a", "b")],
             "tools": {"ptxas": "../cuda+/bin/ptxas", "cuobjdump": "../cuda_tools+/bin/cuobjdump",
-                      "nvdisasm": "../cuda_tools+/bin/nvdisasm", "mold": "../mold+/bin/mold"},
+                      "nvdisasm": "../cuda_tools+/bin/nvdisasm"},
             "derivation": {"harness": "tools/derivation/derivation_harness.cu", "binary": "tools/derivation_harness"},
-            "parameters": parameters}))
+            "parameters": PARAMETERS}))
         ratify.use_graph(census, runfiles)
         return runfiles
 
@@ -64,15 +62,9 @@ def test_the_census_paths_resolve_against_the_runfiles_and_its_tools_are_this_pr
     assert ratify._GRAPH["harness_binary"] == runfiles / "tools" / "derivation_harness"
 
 
-def test_the_shipped_parameters_are_not_an_iteration_build(graph):
+def test_the_compiled_entries_are_every_unit_s_mangled_names(graph):
     graph()
-    assert ratify.graph_parameters() == (("80", "86"), False)
-
-
-@pytest.mark.parametrize("change", [{"archs": "86"}, {"decode_arms": "0"}])
-def test_any_other_parameter_is_an_iteration_build(graph, change):
-    graph({**SHIPPED, **change})
-    assert ratify.graph_parameters()[1] is True
+    assert ratify.compiled_entries() == ["_Z1kPi"]
 
 
 def test_the_census_reads_each_unit_s_report(graph, monkeypatch):

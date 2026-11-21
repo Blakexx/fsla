@@ -1,71 +1,44 @@
 #!/usr/bin/env python3
 """UNUSED-INSTANTIATION CHECK (gating).
 
-Every `__global__` FUNCTION TEMPLATE declared anywhere under `csrc/rola/` must
-be present, mangled, in at least one ratified binary's symbol table. The CHECKED-IN manifests
-(`tools/manifests/<toolchain>/sm_90a.json` -- closed-world codegen policy:
-these ARE what a real build produced, ratified) are the source of truth here
-rather than a fresh `cuobjdump` on whatever happens to be built in this
-worktree right now, which would silently narrow the check to this worktree's
-own arm subset (K36b: an arm-set change is a FILE subset, so an iteration
-build's `.so` never carries every declared kernel).
+Every `__global__` FUNCTION TEMPLATE declared anywhere under `csrc/rola/` must be instantiated in at least one unit the
+graph compiled: its mangled name is among the entry functions `ptxas -v` reported for the build's units. The census
+(`bazel/defs.bzl`'s `ratify_census`, read through `tools/ratify.py`) is the source of truth, the build's own compiles --
+a template no unit instantiates is the closed world leaking, and that is the gating finding.
 
-SCOPE IS `__global__` ONLY, NOT `__device__` -- MEASURED, not assumed. The
-manifest's `entries` are keyed from `ptxas -v`'s "Compiling entry function
-'...' for 'sm_XX'" line (`tools/ratify.py`'s `ENTRY` regex) -- `ptxas -v`
-reports ENTRY FUNCTIONS ONLY. A `__device__` helper (`ops.cuh`'s `stage_run`,
-`geom.cuh`'s `geom_read_index`, ...) is normally `__forceinline__` and inlined
-into every kernel that calls it; it has NO standalone symbol in this project's
-manifest format regardless of whether it is used. Checking `__device__`
-templates the same way as `__global__` ones was tried first and produced 65
-findings out of 81 candidates, essentially all of them live, frequently-called
-helpers this codebase already declares as "wrapped once, call sites use the
-wrapper" (KERNEL_STANDARDS §3) -- a false-positive rate that would have made
-G5 delete load-bearing code. `__device__` templates are reported SEPARATELY
-below, explicitly marked NOT CHECKED, rather than silently flagged as unused.
-A real `__device__` liveness check needs a symbol dump off the actual `.cubin`
-(`cuobjdump --dump-elf`, filtered to STT_FUNC entries, which DOES preserve
-non-inlined `__device__` symbols) cross-referenced against which are actually
-called -- out of scope for this check; named here as the gap.
+SCOPE IS `__global__` ONLY, NOT `__device__` -- MEASURED, not assumed. `ptxas -v` reports ENTRY FUNCTIONS ONLY. A
+`__device__` helper (`ops.cuh`'s `stage_run`, `geom.cuh`'s `geom_read_index`, ...) is normally `__forceinline__` and
+inlined into every kernel that calls it; it has NO standalone symbol in a report regardless of whether it is used.
+Checking `__device__` templates the same way as `__global__` ones was tried first and produced 65 findings out of 81
+candidates, essentially all of them live, frequently-called helpers this codebase already declares as "wrapped once, call
+sites use the wrapper" (KERNEL_STANDARDS §3) -- a false-positive rate that would have made a deletion pass remove
+load-bearing code. `__device__` templates are reported SEPARATELY below, explicitly marked NOT CHECKED, rather than
+silently flagged as unused. A real `__device__` liveness check needs a symbol dump off the actual `.cubin`
+(`cuobjdump --dump-elf`, filtered to STT_FUNC entries, which DOES preserve non-inlined `__device__` symbols)
+cross-referenced against which are actually called -- out of scope for this check; named here as the gap.
 
 METHOD for `__global__` (heuristic, not a real C++ parser -- see LIMITS below):
-  1. Find every `__global__` qualifier in a `.cu`/`.cuh` under csrc/rola/
-     (excluding csrc/third_party), scan forward for the next `void <name>(`
-     or `<type> <name>(` token to get the function's UNQUALIFIED name, and
-     check the ~15 lines above it for a `template <` line -- only templates
-     are in scope (a non-template kernel, e.g. the build's
-     `stamp_kernel`/`bwd_stamp_kernel` census probes, is either always
-     present or is a one-off entry point this check does not classify).
-  2. Read every manifest's `entries` mapping (`"sm_XX:<mangled>": {...}`), run
-     `c++filt` once over the whole batch, and check whether the demangled
-     signature contains the qualified name `rola::<...>::<name>` -- actually
-     just `<name>` as a whole identifier (namespace nesting is not
-     reconstructed; a name collision across two `rola::` sub-namespaces would
-     under-report, which is why this is a LINT the coordinator rules on, not a
-     silent deletion).
-  3. A template name with ZERO hits across every manifest is a finding.
+  1. Find every `__global__` qualifier in a `.cu`/`.cuh` under csrc/rola/ (excluding csrc/third_party), scan forward for
+     the next `void <name>(` or `<type> <name>(` token to get the function's UNQUALIFIED name, and check the ~15 lines
+     above it for a `template <` line -- only templates are in scope (a non-template kernel is either always present or
+     is a one-off entry point this check does not classify).
+  2. Read the census's entry functions, run `c++filt` once over the whole batch, and check whether the demangled
+     signature contains `<name>` as a whole identifier (namespace nesting is not reconstructed; a name collision across
+     two `rola::` sub-namespaces would under-report, which is why this is a LINT a reviewer rules on, not a silent
+     deletion).
+  3. A template name with ZERO hits across the census is a finding.
 
-LIMITS: (a) no macro expansion -- a kernel name built by token-pasting would
-not match its own textual declaration; none exist in this codebase today.
-(b) demangled-substring matching can false-negative on a name that is also a
-common English/C substring of an unrelated symbol (none observed: kernel names
-here are long and specific, e.g. `carry_kernel`, `chunk_facts_tables`).
-(c) manifests are committed at the LAST ratify, not this instant -- a kernel
-added since the last milestone and not yet ratified reads as unused. That state
-is REAL and is reported, but it is not the state this check gates on, because
-ratification is a per-milestone act and not a per-stage one (KERNEL_STANDARDS
-section 7): a stage that adds a kernel would otherwise have to write a
-milestone manifest to commit at all. The two states are told apart by the
-DECLARATION, which is data and is current: a kernel whose family declares at
-least one arm is one the shipped set says gets instantiated, so its absence
-from the manifests is a ratification the milestone owes and is printed as
-`pending ratification`; a kernel no declaration would instantiate is the
-closed world leaking, and that is the gating finding. The manifest-versus-
-binary half of the same question is the library's arm gate (`bazel/gates.py`) and
-ratify's verdict (`bazel test //:ratified`), both of which run against a real build.
+LIMITS: (a) no macro expansion -- a kernel name built by token-pasting would not match its own textual declaration; none
+exist in this codebase today. (b) demangled-substring matching can false-negative on a name that is also a common
+English/C substring of an unrelated symbol (none observed: kernel names here are long and specific). (c) the census is
+the build's: an iteration build (`--//:carry_arms`, `--//:archs`) compiles a subset, and a template only the other arms
+instantiate reads as unused -- run the check on the default build.
+
+Usage: `bazel test //csrc/rola:unused_instantiations`, which runs it on the graph's census.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import subprocess
@@ -74,7 +47,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CSRC = ROOT / "csrc" / "rola"
-MANIFEST_DIR = ROOT / "tools" / "manifests"
 
 GLOBAL_RE = re.compile(r"__global__")
 DEVICE_RE = re.compile(r"__device__")
@@ -115,21 +87,11 @@ def declared_device_templates(src_root: Path) -> list[tuple[Path, int, str]]:
     return _scan(src_root, DEVICE_RE)
 
 
-def manifest_demangled(manifest_dir: Path) -> list[str]:
-    mangled = []
-    #: THE PER-ARCH RATIFICATION FILES, by name, under every toolchain's directory. `tools/manifests/` also holds the
-    #: DECLARATIONS the build reads (the shipped set, the derivation's cases and its
-    #: ratified goldens), which carry no `entries` block; a bare `*.json` glob reads
-    #: those as manifests and fails on the missing key.
-    for f in sorted(manifest_dir.glob("*/sm_*.json")):
-        entries = json.loads(f.read_text()).get("entries", {})
-        for key in entries:
-            # key is "sm_XX:<mangled>"
-            mangled.append(key.split(":", 1)[1])
+def demangled(mangled: list[str]) -> list[str]:
+    """The demangled signature of each mangled entry-function name."""
     if not mangled:
         return []
-    proc = subprocess.run(["c++filt"], input="\n".join(mangled),
-                           capture_output=True, text=True)
+    proc = subprocess.run(["c++filt"], input="\n".join(mangled), capture_output=True, text=True)
     return proc.stdout.splitlines()
 
 
@@ -147,108 +109,61 @@ def name_present(name: str, demangled: list[str]) -> bool:
 
 
 def self_test() -> int:
-    """Excluded from the commit gate (K46 convention)."""
+    """The scan finds both fixture kernels, and the name match finds the instantiated one and not the other."""
     fixdir = ROOT / "tools" / "lint" / "fixtures"
-    manifest = json.loads((fixdir / "unused_instantiation_manifest.json").read_text())
-    demangled = manifest_demangled_from_entries(manifest["entries"])
+    entries = json.loads((fixdir / "unused_instantiation_entries.json").read_text())["entries"]
+    symbols = demangled([key.split(":", 1)[1] for key in entries])
     templates = _scan(fixdir, GLOBAL_RE)
     names = {name for _, _, name in templates if name in ("present_kernel", "absent_kernel")}
     if "present_kernel" not in names or "absent_kernel" not in names:
         print(f"SELF-TEST FAILED: fixture scan did not find both kernel names: {names}",
               file=sys.stderr)
         return 1
-    if not name_present("present_kernel", demangled):
-        print("SELF-TEST FAILED: 'present_kernel' should be found in the fixture manifest",
+    if not name_present("present_kernel", symbols):
+        print("SELF-TEST FAILED: 'present_kernel' should be found in the fixture's entries",
               file=sys.stderr)
         return 1
-    if name_present("absent_kernel", demangled):
-        print("SELF-TEST FAILED: 'absent_kernel' should NOT be found in the fixture manifest",
+    if name_present("absent_kernel", symbols):
+        print("SELF-TEST FAILED: 'absent_kernel' should NOT be found in the fixture's entries",
               file=sys.stderr)
         return 1
     print("unused_instantiations.py --test-fixtures: PASS")
     return 0
 
 
-#: THE FAMILIES WHOSE MEMBERSHIP IS DECLARED AS DATA, and the file that declares each.
-#: A `csrc/rola/src/<family>/` directory whose declaration names at least one arm HAS a
-#: shipped instantiation by construction, whatever the manifests currently record.
-DECLARATIONS = {"carry": MANIFEST_DIR / "shipped_set.json", "scale": MANIFEST_DIR / "scale_set.json"}
-
-
-def declared_families() -> dict:
-    """`{family: arm count}` for every family whose declaration names at least one arm."""
-    out = {}
-    for family, path in DECLARATIONS.items():
-        if not path.is_file():
-            continue
-        blob = json.loads(path.read_text())
-        rows = len(blob.get("shipped", [])) + len(blob.get("test", []))
-        if rows:
-            out[family] = rows
-    return out
-
-
-def family_of(path: Path) -> str:
-    """The `csrc/rola/src/<family>/` directory a source sits in, or the empty string."""
-    parts = path.relative_to(CSRC).parts
-    return parts[1] if len(parts) > 2 and parts[0] == "src" else ""
-
-
-def manifest_demangled_from_entries(entries: dict) -> list[str]:
-    mangled = [key.split(":", 1)[1] for key in entries]
-    proc = subprocess.run(["c++filt"], input="\n".join(mangled), capture_output=True, text=True)
-    return proc.stdout.splitlines()
-
-
 def main() -> int:
-    if "--test-fixtures" in sys.argv:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--test-fixtures", action="store_true", help="prove the scan and the name match on the fixtures")
+    ap.add_argument("--graph", type=Path, help="the graph's census record (bazel/defs.bzl's `ratify_census`)")
+    ap.add_argument("--runfiles", type=Path, help="the directory the census record's paths are relative to")
+    a = ap.parse_args()
+    if a.test_fixtures:
         return self_test()
+    if not (a.graph and a.runfiles):
+        raise SystemExit("this check reads the graph's census: `bazel test //csrc/rola:unused_instantiations`")
 
-    if not MANIFEST_DIR.is_dir() or not list(MANIFEST_DIR.glob("*/sm_*.json")):
-        print("unused_instantiations: SKIPPED -- no tools/manifests/<toolchain>/sm_*.json "
-              "(ratify at least once: bazel run //:ratify -- --write)")
-        return 0
+    sys.path.insert(0, str(ROOT / "tools"))
+    import ratify
 
+    ratify.use_graph(a.graph, a.runfiles)
+    symbols = demangled(ratify.compiled_entries())
     templates = declared_global_templates(CSRC)
-    demangled = manifest_demangled(MANIFEST_DIR)
-
-    declared = declared_families()
-    findings, pending = [], []
+    findings = []
     for path, lineno, name in templates:
-        if name_present(name, demangled):
-            continue
-        where = f"{path.relative_to(ROOT)}:{lineno}: template kernel '{name}'"
-        family = family_of(path)
-        if family in declared:
-            pending.append(f"{where} is not in any manifest yet, and the `{family}` "
-                            f"declaration names {declared[family]} arm(s) for it: the "
-                            f"manifests predate this kernel and the next MILESTONE "
-                            f"ratification is what closes the world over it "
-                            f"(tools/ratify.py --write). Reported, not gating.")
-            continue
-        findings.append(f"{where} not found (mangled) in any manifest under "
-                        f"tools/manifests/, and no declaration names an arm that would "
-                        f"instantiate it -- G5 deletes it if this holds at the next "
-                        f"ratify")
+        if not name_present(name, symbols):
+            findings.append(f"{path.relative_to(ROOT)}:{lineno}: template kernel '{name}' is instantiated by no unit "
+                            f"the graph compiled -- delete it, or declare the arm that instantiates it")
 
     print(f"unused_instantiations: {len(templates)} template __global__ function(s) "
-          f"checked against {len(demangled)} manifest symbol(s)")
+          f"checked against {len(symbols)} compiled entry function(s)")
     for f in findings:
         print(f"  {f}")
-    for f in pending:
-        print(f"  [pending ratification] {f}")
-    print(f"unused_instantiations: {len(findings)} finding(s), "
-          f"{len(pending)} pending ratification")
+    print(f"unused_instantiations: {len(findings)} finding(s)")
 
     device_templates = declared_device_templates(CSRC)
     print(f"unused_instantiations: {len(device_templates)} template __device__ "
-          f"function(s) found -- NOT CHECKED (see module docstring: ptxas -v / the "
-          f"manifest format only records __global__ entry points; a __device__ "
-          f"helper is normally inlined and has no standalone symbol to look up)")
-
-    #: GATING. A `__global__` template the manifests do not carry is either an
-    #: instantiation nobody ships or a manifest that does not describe the binary, and
-    #: both of those are the closed world leaking.
+          f"function(s) found -- NOT CHECKED (see module docstring: `ptxas -v` only records __global__ entry "
+          f"points; a __device__ helper is normally inlined and has no standalone symbol to look up)")
     return 1 if findings else 0
 
 

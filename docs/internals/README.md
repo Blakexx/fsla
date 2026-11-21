@@ -8,9 +8,8 @@ component. And one page a Python module group the kernels' host side is built fr
 mirrors `rola/ops/paging.py` and `padding.md` mirrors `rola/ops/padding.py`. `tools/` mirrors `tools/`, one page a
 script with something to say ([the tools map](tools/README.md)).
 
-**Exemptions, stated.** A directory of GENERATED sources — `csrc/rola/src/instantiations/`, the per-arm carry units —
-is documented by its own README instead of one page a file, and the lint checks that exemption rather than granting it
-([`docs/testing.md`](../testing.md#the-documentation-gates)).
+**No exemptions.** The per-arm units are the graph's, generated into its output tree from each family's `arms.bzl`
+([`docs/build-graph.md`](../build-graph.md#arms)); no source in `csrc/rola/` is generated, so every source file has its page.
 
 The mirror rule runs SOURCE → DOC, so a deleted source leaves an orphan doc unless the doc is deleted with it: deleting
 the doc is part of deleting the source, and the removal is recorded in `DELETIONS.md` like any other.

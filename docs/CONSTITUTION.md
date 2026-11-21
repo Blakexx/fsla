@@ -21,7 +21,7 @@ once, with every amendment folded in; the numbers are permanent, so a citation n
 - LEAN ON EVERY AXIS, ON EVERY CARD: one kernel runs on every card, so nothing is wasted because this card does not bind
   on it -- instructions, each pipe, shared-memory wavefronts and bytes are each kept at what the design needs; a trade
   between them is made only when forced, and priced on every card.
-- CLOSED WORLD: only measured binaries run (`docs/ratification.md`).
+- CLOSED WORLD: only measured binaries run: the declared targets (a kernel's arms in its `arms.bzl`, the built architectures, the pinned toolchain) and the gates every build runs (`docs/ratification.md`, `docs/build-graph.md#arms`).
 - ONE FORM PER MECHANISM: no fallbacks, no dead code.
 - ONE STRATEGY, APPLIED UNIFORMLY (Blake, 2026-06-26: "we shouldnt be making any 'branching' to avoid edge cases. if we
   have a strategy, we should do it uniformly"): nothing branches the algorithm to dodge one configuration's cost; that
@@ -161,7 +161,7 @@ is from the target.
 <a id="r16"></a>
 ## R16. Ship without arm registration
 
-A Python-package user never registers an arm. The shipped set is the carve plans `tools/manifests/shipped_set.json`
+A Python-package user never registers an arm. The shipped set is the carve plans `csrc/rola/src/carry/arms.bzl`
 declares per architecture; an unknown declaration is admitted by a refusal-checked derivation, never by enumeration.
 
 <a id="r17"></a>

@@ -12,14 +12,14 @@ census, transcribed, so the assertion survives the parent's deletion (the SKILLS
 FEEDBACK 3: the A-side of any parity claim is a pinned tip that will not always exist) --
 and C0 IS that deletion: `carry_build_stamp`/`carry_arms` are gone from the extension
 entirely (not merely some arms unbuilt). The refill has since landed under the FINAL
-`(D, DV, warps_per_cta)` key (`gen_shards.CARRY_ARMS == ((2, 64, 8),)`, one shipped row),
+`(D, DV, warps_per_cta)` key (`CARRY_ARMS` of `csrc/rola/src/carry/arms.bzl` was `[[2, 64, 8]]`, one shipped row),
 a different schema than the 13-field row this table's provenance names. There is
 therefore no live binary left to re-read against, on this line, ever again (the parent
 tip is never edited or retrofitted). `## C0`
 found this file 36F/9P for exactly this reason (parameterized over the now-empty
 `CARRY_ARMS`). The fix is what SKILLS FEEDBACK 3 anticipated: `ARM_PARAMS` below transcribes
 the same 335c2b9 arm rows the parent built `PARENT_CENSUS` from, so `_arm()` no longer reads
-`gen_shards.CARRY_ARMS` at all, and the one-time live cross-check
+the declared carry arms at all, and the one-time live cross-check
 (`test_the_golden_table_is_the_binarys_own`) stays retired by design -- the table is
 pinned-tip evidence, not a stand-in for an empty live set -- rather than left calling a
 binding that cannot exist on this branch.
@@ -45,7 +45,7 @@ import pytest
 
 from rola.ops import geometry as carry_ops
 
-#: THE ARM ROWS THE PARENT BUILT, transcribed from `gen_shards.CARRY_ARMS` at
+#: THE ARM ROWS THE PARENT BUILT, transcribed from the parent's `CARRY_ARMS` at
 #: `k31/k35-final` 335c2b9 (the tip `PARENT_CENSUS` below was read off), in that commit's
 #: 13-field schema `(D, B, K, M, DV, W, C, CV, MO, WPS, NSW, NSR, PK)`. C0 deleted
 #: `CARRY_ARMS` to `()` on this line and G4 refills it under a DIFFERENT (three-field) key,

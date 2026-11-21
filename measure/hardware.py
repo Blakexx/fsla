@@ -23,7 +23,6 @@ COMMON = ROOT / "csrc" / "rola" / "src" / "common"
 CONFIG = COMMON / "hardware.json"
 HEADER = COMMON / "hardware.cuh"
 RESULTS = ROOT / "measure" / "lab" / "results"
-MANIFESTS = ROOT / "tools" / "manifests"
 #: the rates a built architecture must resolve: its pipes' (the schedulers, the issue, a shared wavefront and the
 #: shared atomics), which the phase floors (`tools/overlap_gate.py`), the pipe model and the budgets' forms read
 PIPE_RATES = ("schedulers", "issue", "wavefront", "atomic", "atomic_wavefront")
@@ -80,6 +79,14 @@ def device_arch(major: int, minor: int) -> str:
 def tabulated(cfg: dict | None = None) -> list[str]:
     """The architectures with a capability row, by compute capability."""
     return sorted((cfg or load())["arch"], key=cc_of)
+
+
+def built(cfg: dict | None = None) -> list[str]:
+    """The BUILT architectures, by compute capability: the rows whose build chooses a window (a tabulated architecture
+    that is not built leaves it unchosen, docs/internals/common/hardware.md#builds). The one statement of which
+    architectures the graph builds by default (`bazel/flags.py`'s `BUILT_ARCHS`, `--//:archs`)."""
+    cfg = cfg or load()
+    return [arch for arch in tabulated(cfg) if cfg["arch"][arch].get("build", {}).get("window", 0) > 0]
 
 
 def _camel(name: str) -> str:
@@ -297,17 +304,11 @@ def check(cfg: dict | None = None, header_text: str | None = None) -> list[str]:
             findings.append(f"{arch}: its build names no family of {', '.join(FAMILIES)}")
         if not set(row.get("build", {})) <= {"family", *BUILD_TRAITS}:
             findings.append(f"{arch}: its build holds a trait outside family, {', '.join(BUILD_TRAITS)}")
-    built = sorted({f"sm_{p.stem.removeprefix('sm_')}" for p in MANIFESTS.glob("*/sm_*.json")}, key=cc_of)
-    for arch in built:
-        if arch not in cfg["arch"]:
-            findings.append(f"{arch} is built (tools/manifests) but has no row in {CONFIG.name}")
-            continue
+    for arch in built(cfg):
         rates = resolve(arch, cfg=cfg)
         missing = [f for f in (*PIPE_RATES, *(f"mma.{k}" for k in kinds)) if f not in rates]
         if missing:
             findings.append(f"{arch} is built but its defaults lack {', '.join(missing)}")
-        if cfg["arch"][arch].get("build", {}).get("window", 0) <= 0:
-            findings.append(f"{arch} is built but its build chooses no window")
     for product, row in cfg["product"].items():
         if row["arch"] not in cfg["arch"]:
             findings.append(f"product {product} names {row['arch']}, which has no row")

@@ -44,7 +44,7 @@ schedules. These land with the first of them, each red or an owed entry until th
 2. the family's part harness, phase ledger, composer and calibrations (§19, §22);
 3. hopper's rows of the hardware table and of the price list, from its labs (§26, §29.11, §29.14);
 4. every `[COMPILER]` rule's re-check and every `[MACHINE]` rule's run on sm_90a;
-5. the ratified sm_90a manifest (§16);
+5. the sm_90a arms declared in the carry's `arms.bzl` and built (§7);
 6. THE FAMILY'S TIMELINE, FIRST OF THESE (§22 addendum 2): the measured timeline of its composed kernel and the model
    that reproduces it -- until it exists, work on the composition stops at it.
 
@@ -55,7 +55,7 @@ about design. Design authority is Blake's rulings and `docs/ARCHITECTURE.md`; no
 argument for or against a design choice. References are the local copies under a named sibling checkout,
 `rola_references/` (`flash-attention`, `cutlass`, `ThunderKittens`); citations are `path:line`.
 
-Every brief points here. Every review applies it line by line. A check in `ratify` (§9) is the backstop
+Every brief points here. Every review applies it line by line. A gate every build runs (§9) is the backstop
 and should catch nothing.
 
 ## <a id="s1"></a>1. Register-resident data exists only as FRAGMENTS
@@ -152,12 +152,12 @@ whose bound is a leaf count, a channel count, or a product of them is wrong.
   (`media/docs/cpp/profiler.md:14`; `quickstart.md:609`).
 RULE: one arm per TU, generated from the closed-world arm list; an ARM-SUBSET build knob (declared list,
 default all) for iteration; iteration builds are single-arch AND arm-subset; every-arch all-arm builds
-once per stage. Each arm has a COMPILE BUDGET (wall time, cicc peak RSS) recorded in the manifest (OWED: `ratify` records neither yet).
+once per stage, after the last source edit. Each arm has a COMPILE BUDGET (wall time, cicc peak RSS) read from the build's compiles (OWED: nothing reads either yet).
 
 ## <a id="s8"></a>8. Arch mapping at the atom, closed-world at the arm
 Feature selection lives where the primitive is defined (`kernel_traits.h:40-44`'s `DefaultCopy` fallback),
 never as `#if` at call sites. RoLA adds: every structural decision states its hopper and blackwell mapping on the
-card (§4 of the architecture); only measured binaries run (pinned ptxas, per-arch ratified manifests, device stamp).
+card (§4 of the architecture); only measured binaries run (the declared targets, the built architectures, the pinned toolchain, the device stamp).
 
 TWO LEVELS, ONE HOME EACH (2026-11-07, the family foundation; constitution R8). An INSTRUCTION difference is an atom:
 one name, its body selected per family where it is defined, in `common/atoms/`. A STRUCTURE difference is a schedule in
@@ -172,9 +172,10 @@ read; a fact nothing reads is not tabulated, and a family is declared on its row
 in one page: [`architecture/families.md`](architecture/families.md).
 
 ## <a id="s9"></a>9. The backstop (checks that should catch nothing)
-`ratify` records per arm and arch: registers, stack, spills, residency. The compile wall time, cicc peak RSS and the
-body count of each named `static_for` nest as a function of the arm are OWED: nothing records them yet, and once
-recorded a breach fails the gate exactly as a spill does. The device stamp is asserted before any gate.
+`ratify --census` reports, on demand, per arm and arch what the build's compiles gave: registers, stack, spills,
+residency. The compile wall time, cicc peak RSS and the body count of each named `static_for` nest as a function of the
+arm are OWED: nothing reads them yet, and once read a breach fails the gate exactly as a spill does. The device stamp is
+asserted before any gate.
 
 ## <a id="s10"></a>10. Correctness instruments (unchanged, restated so they sit beside the craft rules)
 The fp64 oracle is the truth. Bit-identity against a previous binary is a REFACTOR instrument, never a
@@ -247,8 +248,6 @@ command typed in a checkout nor a tool's own subprocess outside a graph rule: `.
 as typed command words, naming the target that does it; `GRAPH_OVERRIDE=<why>` on the command is the stated exception.
 
 ## <a id="s15"></a>15. Stage cycle budget (recorded 2026-08-27 from the ledger: one stage ran 63 builds and 22 ratifies in 346 min)
-- RATIFY ONCE per stage, after the last source edit. It recompiles every TU on every architecture; it is a gate,
-  never an iteration tool.
 - A stage has a budget of THREE full build+gate cycles. Iteration is single-arch, arm-subset, oracle-first.
   When the budget is spent and a gate is still red, the stage STOPS and reports the residual — it does not
   keep chasing green.
@@ -264,18 +263,14 @@ A build's jobs are the host-budget slots the front door holds, divided by `host.
 architecture), every build under the same machine-wide pool (§23); an iteration build is single-arch and arm-subset.
 Re-derive the budget if cicc's peak changes (a per-leaf nest can push it back to 6 GB — §1).
 
-## <a id="s16"></a>§16 — Ratify at milestones, not stages (Blake, 2026-08-28)
+## <a id="s16"></a>§16 — The closed world is the declared targets (Blake, 2026-08-28; amended 2026-11-21)
 
 A stage's gate is SMALL: an iteration build (single arch, arm subset), the fp64 oracle on the arms
-it touched, the census on those arms, and the model tests. A stage does NOT run the every-arch
-all-arm gate build and does NOT ratify. Manifests go stale between milestones by design; a stage
-commit says "unratified" in its title. RATIFICATION — the full closed-world measurement — runs
-ONCE per cohesive product: at the milestone that merges (the receipt stage), and after the last
-edit of any kind. Rationale: a 40-minute ratify (plus a 20-35 minute gate build) after every
-small piece was 1-2 hours of waiting per stage; the closed-world guarantee is a property of what
-SHIPS, and nothing ships between milestones. The stage-level guarantee is the oracle.
-Corollary: a stage that needs the SASS-body/instantiation gates for its OWN claim (a byte-identity
-refactor) runs `ratify --check` against the LAST milestone's manifest on its subset only.
+it touched, the census on those arms, and the model tests. Nothing is "ratified at a milestone": the closed world is
+the declared targets (a kernel's arms in its `arms.bzl`, the built architectures, the pinned toolchain) and the gates
+every build runs, so a built binary is measured by construction. `ratify --census` is an on-demand report of what the
+build compiled, read before and after a change that moves a register or a spill. A stage that needs the SASS-body or
+instantiation gates for its OWN claim (a byte-identity refactor) runs them on its subset.
 <a id="s16-addendum"></a>§16 addendum (Blake, 2026-08-28) — EVERY STAGE GATE INCLUDES A PERF PROBE. Since the stage compiles
 anyway, its gate runs the fixed two-cell probe (dense flagship k_tok=None + k16 scattered; L=768;
 the stage's touched arm; ncu carry `gpu__time_duration` 3 warm + the step wall) and records it in
@@ -292,8 +287,7 @@ its time rises is RED, not a win.
 Every stage gate records, per built arm TU, the compile wall and cicc peak RSS beside the previous
 stage's (OWED: no tool records either yet); >1.2x on any arm is RED (report, do not rationalize; diagnose against §7 first). Arm TUs never
 include torch headers (the ~34 s header floor lives in the dispatch TU only). Arms are added as reviewed
-rows in the one arm list (TEST-tagged unless shipped). Ratify stays incremental per arm.
-<a id="s16-addendum-4"></a>§16 addendum 4 (Blake, 2026-11-09) — A GATE THAT READS PROFILER COUNTERS RUNS ON A HOST THAT GRANTS THEM. The probe's
+rows in the one arm list (TEST-tagged unless shipped). <a id="s16-addendum-4"></a>§16 addendum 4 (Blake, 2026-11-09) — A GATE THAT READS PROFILER COUNTERS RUNS ON A HOST THAT GRANTS THEM. The probe's
 and the ledgers' counters (ncu) are the device's host's to grant, and a rented card's may not: such a gate runs on a
 host that does, or its row carries a written exception naming the host and the reading that stands in (the kernel's
 own clocks, the SASS's counts). Whether a rented H100's host grants them is unmeasured.
@@ -327,8 +321,7 @@ launching the next (three concurrent in-container probes turned a minutes-long g
 ## <a id="s18"></a>§18 — Tools refuse, they do not choose (law, 2026-08-28, from Blake's "why keep two linkers")
 A tool or build step that could run one of two ways — a linker present or not, a cache pinned or not,
 a lint with or without its compdb, a lock taken or a slot — REFUSES with the command that fixes it; it
-never silently takes the other path. Legitimate MODES (the §16 strict-manifest tiering; a comparison
-arm kept as a yardstick) are keyed on an explicit declared variable and carry their exit condition on
+never silently takes the other path. Legitimate MODES (a comparison arm kept as a yardstick) are keyed on an explicit declared variable and carry their exit condition on
 a card. Applied: mold as the only linker; a unit lint with no verdict fails; one build-lock discipline (slots as the
 parameter).
 
@@ -356,8 +349,7 @@ hooks are fixed (the hook, or the tree), never routed around.
 ## <a id="sanitizer"></a>THE SANITIZER LANE (law; its cadence ruled by Blake, 2026-10-12)
 The lane (`bazel test //tests:sanitizer`, which runs `tools/sanitize_oracle.py` with the toolkit's own compute-sanitizer,
 `docs/testing.md#the-sanitizer-lane`) runs memcheck, synccheck and initcheck on
-each kernel's one-CTA cells -- `tools/coverage.json` names every kernel's row -- when a component lands, before a
-ratify, and on a schedule; never per commit (Blake: "every commit too noisy ... it nearly crashed the computer
+each kernel's one-CTA cells -- `tools/coverage.json` names every kernel's row -- when a component lands and on a schedule; never per commit (Blake: "every commit too noisy ... it nearly crashed the computer
 sometimes though, racecheck especially"). Each run is guarded by a kill timeout and the host budget. It reports zero
 hazards, and a target killed under the sanitizer is a failing gate, never a resource problem to work around: racecheck
 exhausting the host on `cp.async` was a hazard's own signature. Benign races (every warp storing the same word) are not
@@ -576,7 +568,7 @@ manual steps, and the dev container had drifted for two weeks unnoticed.
    records the result under the digest. The commit gate refuses a tree whose image is not the one it names, and a
    change to the name without a passing record for the new digest. The loop's own inputs (a pin, the lock, `dev.py`)
    are proven by every host that runs the same loop; the container shares only the host's locks, the image's digest
-   (read-only, which ratify records) and, under WSL, the driver's libraries.
+   (read-only) and, under WSL, the driver's libraries.
 4. STABLE BEFORE FASTER (Blake, 2026-09-13: "We should get the package, build, devloop, measure system stable before optimizing kernel. A standard process makes everything easier."): a broken or slow build, dev loop or measurement system is fixed before the next kernel optimization, and a toolchain move lands before more baselines accumulate.
 
 ## <a id="s24"></a>§24 — TWO TIERS: DECIDE COARSELY, BURST STATICALLY (law, 2026-09-17, from the fold's and readout's forms)
@@ -616,7 +608,7 @@ with masking by predication; ThunderKittens' producer and consumer warpgroups.
    A component states its live-register cost; the gate prints the arm's distance to the next threshold.
 5. CONTROL BITS ARE THE COMPILER'S UNTIL THE GATE SAYS OTHERWISE. Patching yield and reuse bits gave Hopper 10%
    once and was retired when the compiler learned the interleave (DeepGEMM). Nothing below ptxas is patched
-   unless the coverage reading shows the order right and only the bits wrong, and then as a ratified artifact
+   unless the coverage reading shows the order right and only the bits wrong, and then as a measured artifact
    with its patch script under the same gate.
 ## <a id="s23-addendum-2"></a>§23 addendum 2 (law, 2026-09-18, from Blake's "either the simulator is wrong, or something is binding the kernel that shouldn't be. we need a way to find that out")
 
@@ -668,10 +660,9 @@ phase-ledger tool and declared arm set named the carry alone. Nothing had decide
 3. EVERY KERNEL MEETS EVERY OBLIGATION OR SAYS WHY. `tools/coverage.json` declares, per kernel, the oracle test, the
    sanitizer row, the budget and the phase ledger -- a pointer, an exemption with its reason, or an owed entry --
    and `ratchet.py coverage` gates it: a kernel not declared, or a pointer to nothing, fails the commit; owed entries
-   are the reviewed backlog, printed with their reasons (a new kernel lands owing its budget and its ratification).
-   Ratified is declared "manifest" and checked against the committed manifests, or owed until the milestone.
+   are the reviewed backlog, printed with their reasons (a new kernel lands owing its budget).
 4. A GATE RUNS WHERE ITS INPUTS EXIST: the source gates in the commit gate (`bazel test //:gate`); the binary gates
-   (the SASS gate, ratify) after every build.
+   (the SASS gate) after every build; the census is on demand.
 5. A TOOL THAT CANNOT PARSE A UNIT HAS NOT GATED IT. The analyzer is pinned to a release that parses every unit
    (`tools/clang_tidy_pin.json`), and a parse error is a gate failure: the distro's clang 14 reported used
    parameters as unused on a unit it could not parse.

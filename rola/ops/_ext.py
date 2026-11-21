@@ -30,7 +30,7 @@ from functools import lru_cache
 from rola import __version__
 
 #: THE BINARY PLUGIN (wheel naming D, docs/build.md#wheels): `rola` is pure Python and the build of each toolchain is
-#: its own distribution, `rola-cu13`, whose package holds the extension, its build record and its manifests. A
+#: its own distribution, `rola-cu13`, whose package holds the extension and its build record. A
 #: checkout's in-place build lays out the same package, so an installed wheel and a checkout take this one import.
 PLUGIN, EXTRA = "rola_cu13", "cu13"
 
@@ -133,9 +133,9 @@ Install the binary for your CUDA toolchain at this version:
 
     pip install "rola[{extra}]=={version}"
 
-It carries the kernels for every ratified architecture and the manifests they were measured against. A checkout builds
+It carries the kernels for every built architecture. A checkout builds
 the same package in place (`bazel run //:library`, docs/build.md), and refuses an architecture that
-has no measured manifest (docs/bringup.md).
+is not built (docs/bringup.md).
 
 There is no CPU or pure-torch fallback by design: `rola.ops.naive.naive_rola` is a float64 reference for checking the
 kernel, not a substitute for it.\

@@ -10,11 +10,10 @@ the gaps nobody declared:
 
 - a kernel the declaration does not name: a kernel lands declared, never silently uncovered;
 - a pointer to nothing (a deleted test, a renamed sanitizer row, a `file::test` whose test is gone);
-- an obligation left blank, a declared kernel the source no longer defines;
-- RATIFIED declared as `"manifest"` for a kernel no `tools/manifests/*/sm_*.json` records, per arch.
+- an obligation left blank, a declared kernel the source no longer defines.
 
 OWED entries are the backlog, printed with their reasons and counted, never findings: a new kernel necessarily lands
-owing (no budget yet; not ratified until the milestone, KERNEL_STANDARDS §16), and each owed line is a reviewed line
+owing (no budget yet, no sanitizer row), and each owed line is a reviewed line
 of the declaration.
 
 Usage:
@@ -96,27 +95,18 @@ def findings() -> list[str]:
             out.append(f"{at}: `{name}` is declared but no source defines it -- stale")
             continue
         for obligation in sorted(obligations):
-            out += _check(name, obligation, entry.get(obligation), at, source[name], rows)
+            out += _check(name, obligation, entry.get(obligation), at, rows)
         out += [f"{at}: `{name}` declares `{extra}`, which is not an obligation"
                 for extra in sorted(set(entry) - set(obligations))]
-
-    for arch in manifest_arches():
-        out += [f"tools/manifests/*/sm_{arch}.json: `{n}` is recorded but no source defines it -- stale"
-                for n in sorted(recorded(arch) - set(source))]
     return out
 
 
-def _check(name: str, obligation: str, value, at: str, kernel, rows) -> list[str]:
+def _check(name: str, obligation: str, value, at: str, rows) -> list[str]:
     """The findings of one kernel's one obligation: none when it is owed, exempt, or a pointer that resolves."""
     if value is None:
         return [f"{at}: `{name}` declares nothing for `{obligation}`"]
     if isinstance(value, dict) and ("owed" in value or value.get("exempt")):
         return []
-    if obligation == "ratified":
-        if value != "manifest":
-            return [f"{at}: `{name}`'s `ratified` is {value!r}; it is \"manifest\" or owed"]
-        return [f"{kernel.where()}: `{name}` ({kernel.family}) is declared ratified but no sm_{arch} manifest "
-                f"records it" for arch in manifest_arches() if name not in recorded(arch)]
     if obligation == "overlap":
         if rows["overlap"].get(value) != name:
             return [f"{at}: `{name}`'s overlap row `{value}` is not a row of tools/overlap_gate.py gating `{name}`"]
@@ -138,19 +128,6 @@ def owed() -> list[str]:
     blob = json.loads(DECLARATION.read_text())
     return [f"{name}: {obligation} -- {value['owed']}" for name, entry in sorted(blob["kernels"].items())
             for obligation, value in sorted(entry.items()) if isinstance(value, dict) and "owed" in value]
-
-
-def manifest_arches() -> list[str]:
-    return sorted({p.stem.split("_", 1)[1] for p in (ROOT / "tools" / "manifests").glob("*/sm_*.json")})
-
-
-_RECORDED: dict[str, set[str]] = {}
-
-
-def recorded(arch: str) -> set[str]:
-    if arch not in _RECORDED:
-        _RECORDED[arch] = kernels.manifest_kernels(arch)
-    return _RECORDED[arch]
 
 
 def main() -> int:

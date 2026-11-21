@@ -17,7 +17,7 @@ writes).
 ## <a id="why-cpp"></a>1. Why it is a `.cpp` and not part of a kernel `.cu`
 
 Registration is host-only. Left inside a `.cu` it is recompiled once per `-gencode` target for no benefit, and every
-architecture added to the ratified set multiplies that cost. Every declaration it names is a host header
+architecture added to the built set multiplies that cost. Every declaration it names is a host header
 (`src/decode/decode_api.cuh`, `src/entmax/entmax.cuh`, `src/entmax/factor.cuh`, `src/common/geom_api.cuh`,
 `src/facts/facts_api.cuh`, `src/paging/vmm_owner.cuh`, `common/arm_switch.cuh`), so no device body is in scope.
 

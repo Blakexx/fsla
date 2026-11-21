@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE DISASSEMBLER SEAM: how this tree reads SASS, in one place.
 
-Four instruments read the assembled code -- the ratification's body hashes (`tools/ratify.py`), the ptxas signature gate
+Four instruments read the assembled code -- the census's body hashes (`tools/ratify.py`), the ptxas signature gate
 (`tools/sass_gate.py`), the per-component region ledger (`tools/region_ledger.py`) and the register life ranges
 (`tools/life_ranges.py`) -- and each ran its own `cuobjdump` and `nvdisasm` with its own spelling of an instruction
-line. Four spellings of one format is the drift shape this repository has been bitten by before (`tools/gen_shards.py`
-says it for the arm list, `tools/build_flags.py` for the nvcc flags), so the INVOCATION and the LINE GRAMMAR are here
+line. Four spellings of one format is the drift shape this repository has been bitten by before (`tools/build_flags.py`
+says it for the nvcc flags), so the INVOCATION and the LINE GRAMMAR are here
 and the analysis stays with the instrument that owns it.
 
     cubins(path)                  every ELF cubin of a built extension, extracted once a build into the scratch cache

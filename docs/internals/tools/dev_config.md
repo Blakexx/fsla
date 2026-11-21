@@ -50,9 +50,6 @@ resolved value and the file it came from ([dev.md](dev.md)).
   what a run leaves (a record, a dump, the cubins ratify extracts) is bulky, is read back by no one, and `host.scratch` is
   the one place the machine's config already puts it (`bazel run //:check` prints this checkout's directory). It holds
   no compile: the lab's experiments are the graph's targets (`docs/internals/tools/lab.md#graph`), whose outputs Bazel keeps.
-- `devbox_image()` returns the devbox image's digest inside such a container, which its launcher mounts read-only at
-  `CONTAINER_IMAGE`, else the empty string. A file the launcher mounts, not an environment variable: an editor's
-  container would carry a variable as a setting of its own.
 - `windows_tool(rel)` returns a Windows tool under WSL.
 - `pinned(name)` returns where a pin's binary is installed (`tools/<name>_pin.json`: its folder under `host.tools_dir`,
   the binary in it), the one lookup dev.py and the measurement tools use; `ncu()` returns the pinned Nsight Compute,
@@ -66,7 +63,6 @@ resolved value and the file it came from ([dev.md](dev.md)).
 f-string prefixes resolved) and shell expansions.
 - `HANDOFFS`: values one of the tree's own processes passes to a child it starts.
   - `ROLA_DEV_CONFIG` itself.
-  - The toolkit ratify's compile path and the header self-check set for torch's extension module (`CUDA_HOME`).
   - The graph's copy of the pinned toolkit a test tier hands its tests (`ROLA_CUDA_HOME`).
   - The directory that holds warpline's Python package, which the `lab` run target hands the lab and the lab's graph
     actions carry (`ROLA_WARPLINE_PYTHON`).

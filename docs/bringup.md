@@ -1,6 +1,6 @@
 # Bringing up a new architecture
 
-An architecture this package has not been ratified on **will refuse to build and
+An architecture this package does not build **will refuse to build and
 refuse to load**. That is the product statement, not a defect. Bringing one up is a
 measurement, and this is the procedure.
 
@@ -27,45 +27,44 @@ nobody checked. `check_arch_table()` (`csrc/rola/src/common/arch_runtime.cu`, ca
 every family's launching entry, carry included) checks every row against the driver at run
 time, so a wrong number is caught — but it is caught by a user unless you check it first.
 
-## 2. Probe and ratify
+## 2. Choose the window, and read the census
+
+An architecture is BUILT when its row's build chooses a window (`measure.hardware.built`,
+[`hardware.md`](internals/common/hardware.md#traits)); choosing it is what makes `--//:archs`'s default name the
+architecture, the build gate's rule 3 admit it and the graph compile for it. Then:
 
 ```bash
-bazel run //:ratify -- --write
+bazel build //:library
+bazel run //:ratify -- --census
 ```
 
-This reads the graph's compile of the whole dispatch closure (`ptxas -v` of every unit) and writes
-`tools/manifests/<toolchain>/sm_XX.json` — **and touches no other architecture's file.** No GPU
-is required: ratification is a compile-time measurement. The graph ratifies the architectures the
-manifests already name; an architecture's FIRST manifest has no graph form yet, because the compile
-path that wrote it is deleted ([`build-graph.md`](build-graph.md#ratify), THE GAP).
-
-Read the output before committing it. Two things are not automatic:
+The census reads the graph's compile of the whole dispatch closure (`ptxas -v` of every unit and the SASS of every
+object). No GPU is required: it is a compile-time measurement. Read the output before committing the row. Two things are
+not automatic:
 
 - **Unhonored bounds.** Any *"Value of threads per SM … is out of range"* means
-  that instantiation compiled with no launch bound at all. Fix step 1 rather than
+  that instantiation compiled with no launch bound at all (the census exits 1). Fix step 1 rather than
   recording the numbers.
 - **New spills.** If instantiations spill on this architecture and not on the
-  ratified ones, that is a real finding about the register file, and it belongs in
-  the pull-request description with the numbers. A manifest records what was
-  measured; it does not excuse it.
+  built ones, that is a real finding about the register file, and it belongs in
+  the pull-request description with the numbers (`--json PATH` keeps them).
 
 ## 3. Gate
 
 ```bash
-bazel test //:ratified
+bazel test //:gate
 bazel run //:ratify -- --self-test
 bazel run //tools:supported -- --write     # the README table is generated
 ```
 
 `--self-test` must still fail on every mutant it is required to reject. The
-supported-configurations table will move `sm_89` from *not ratified* to *ratified*
-on its own — it is derived from the arch table and the manifest directory, and CI
-fails if it is edited by hand.
+supported-configurations table will move `sm_89` from *not built* to *built*
+on its own — it is derived from the arch table, and CI fails if it is edited by hand.
 
 ## 4. Build and test on the device
 
 ```bash
-bazel test //:lane --//:archs=80,86,89     # every tier, on a library built for the new architecture too
+bazel test //:lane --//:archs=90a,100a     # every tier, on a library built for the new architecture too
 ```
 
 The ORACLE tier says the kernel computes the right function on this hardware. The
@@ -77,16 +76,15 @@ that depends on how the compiler laid the kernel out.
 
 ## 5. Open a pull request
 
-**A manifest change is always a reviewed PR, never a CI auto-commit.** The diff
-should be: the arch-table row, one new `tools/manifests/<toolchain>/sm_XX.json`, the
-regenerated README block, and a description carrying the measured spill and
-register profile with any anomaly explained.
+**An architecture is always a reviewed PR, never a CI auto-commit.** The diff
+should be: the arch-table row with its window, the regenerated README block, and a description carrying the measured
+spill and register profile with any anomaly explained.
 
 ## Changing the toolchain
 
-Adding a CUDA version is not a CI matrix cell; it is a **re-ratification of every
-architecture**, because every number in every manifest is a property of one
-assembler. The wheel matrix axis and the ratification axis are the same axis — that
+Adding a CUDA version is not a CI matrix cell; it is a **re-measurement of every
+architecture**, because every register and spill number is a property of one
+assembler. The wheel matrix axis and the toolchain axis are the same axis — that
 is the whole closed-world point. Budget it as a measurement run, not as a config
 change.
 
@@ -102,7 +100,7 @@ change.
 3. **Census before writing.** `bazel run //:ratify -- --census --json <file>` under the new toolkit
    against the current toolchain's census: every entry's spill, registers and in-loop locals. A
    worse entry is a kernel finding, not a verdict on the toolkit.
-4. **Ratify** (`--write`, every shipped arch) into `tools/manifests/<name>/`, build, and run the
+4. **Build** under the new toolchain, and run the
    suite's timing A/B against the current toolchain's build of the same source in one interleaved
    session, repeated; isolate any regression (compiler against library) before choosing.
-5. **Retire the old toolchain** in a deletion-only commit: its record and its manifests.
+5. **Retire the old toolchain** in a deletion-only commit: its record.

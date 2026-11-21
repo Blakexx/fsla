@@ -3,12 +3,12 @@
 > **Only measured binaries run.**
 
 The engine ships a fixed, enumerated set of kernel instantiations, compiled ahead
-of time by a pinned assembler, each with a committed record of what that
-assembler did to it. A device whose architecture has no such record is refused at
-launch. There is no path by which unmeasured code executes.
+of time by a pinned assembler: the arms each kernel declares, the architectures
+the hardware table builds. A device whose architecture the binary does not carry
+is refused at launch. There is no path by which unmeasured code executes.
 
-The mechanics — the manifest format, the four gate outcomes, re-ratification,
-one-file-per-architecture, the self-test — are documented once, in
+The mechanics — the declared targets, the gates every build runs, the census, the
+self-test — are documented once, in
 [`docs/ratification.md`](../ratification.md). This document is the *why*, which
 that file deliberately does not repeat.
 
@@ -32,7 +32,7 @@ deterministic code and rules" (user ruling, 2026-08-01). A read-back gate proves
 a property of the binary you happened to build, on the architecture you happened
 to have. It says nothing about the binary a different assembler would produce for
 an architecture nobody measured. Read-back has a narrower job in this design:
-**drift detection between ratifications**.
+**drift detection on a build you chose to measure**.
 
 ## 2. The rules
 
@@ -43,9 +43,9 @@ keeps only their argument.
 R2 is the no-fallbacks rule applied to the compiler: an unknown architecture must
 **fail to load**, not silently JIT unmeasured code. R3 and R4 are what make
 "supported regime" a fact by construction rather than a claim in a README — the
-supported set *is* the ratified set. Bringing up new hardware or a new compiler
-therefore requires a ratification run (probe → manifest → gates) before anything
-executes.
+supported set *is* the built set. Bringing up new hardware or a new compiler
+therefore requires a bring-up (a row's window, a toolchain record, the census and
+the gates) before anything executes.
 
 There is no environment variable that disables any of them.
 
@@ -75,9 +75,9 @@ The failure mode is concrete rather than imagined, and this engine contains the
 instance. One instantiation carries a **4-byte spill accepted as the measured
 optimum**, because every alternative spills worse. A judgement of that kind
 recorded only in a document is enforced by nothing: a codegen change can grow the
-spill with no gate failing ([`ratification.md`](../ratification.md#why-it-exists)).
-Under AOT it is instead an asserted invariant over 345 entries per architecture.
-Under JIT it could not be asserted at all, because the entries would not exist
+spill with no gate failing. Under AOT it is a number every instantiation's census reads
+([`ratification.md`](../ratification.md)), from a binary that is the same bytes for
+the same inputs. Under JIT it could not be read at all, because the entries would not exist
 until run time, on a machine the project does not control.
 
 The cost of the decision is honest and it is paid: the instantiation matrix is a
@@ -89,20 +89,19 @@ central claims are numeric buys the second with the first.
 
 ## 4. Consequences a contributor should expect
 
-- **A new architecture is a ratification event**, not a `-gencode` line. Adding
-  `sm_XX` without its manifest fails the build.
-- **A toolchain bump invalidates every manifest**, in both directions. The
-  numbers are a property of the assembler as much as of the source, so they say
-  nothing about a different assembler even if they got *better*. Re-ratify.
-- **Re-ratification is a measurement, not an edit.** Regenerating a manifest by
-  re-running the compile is the sanctioned move; hand-editing an entry to make a
-  gate pass would be asserting a spill nobody measured, which is precisely the
-  failure the manifest replaces.
-- **Re-ratifying to clear a refusal launders the refusal into a baseline.** When
-  the ratchet refuses a change, the change is what must move. The in-tree
-  precedent is a measured optimization held back because 12 instantiations gained
-  spill; the resolution is a re-scope of the change to the structural axes where
-  it is clean, not a re-stamped manifest.
+- **A new architecture is a bring-up**, not a `-gencode` line. Naming `sm_XX` that
+  the hardware table does not build fails the build (rule 3).
+- **A toolchain bump is a re-measurement of every architecture**, in both
+  directions. The numbers are a property of the assembler as much as of the
+  source, so they say nothing about a different assembler even if they got
+  *better*; the toolchain record names exactly one.
+- **The census is a measurement, not an edit.** Its numbers are read from the
+  build's own compiles, never typed; a change that moves one is read in the census
+  before and after.
+- **A refusal is cleared by changing the change.** When a gate refuses, the change
+  is what must move: the in-tree precedent is a measured optimization held back
+  because 12 instantiations gained spill, re-scoped to the structural axes where it
+  is clean.
 - **Anything that quietly reopens the input space is refused even when it is
   convenient.** The known instance: `TORCH_EXTENSION_SKIP_NVCC_GEN_DEPENDENCIES`
   escapes a compiler-cache/depfile collision, but it deletes header dependency edges,
@@ -122,20 +121,18 @@ Two measured instances, both in this tree:
 
 - **A symbol name is a key, and an anonymous namespace makes it depend on the checkout
   PATH.** A kernel in an anonymous namespace carries a mangled discriminator derived
-  from the source directory — an input the ratification manifest never named, because
+  from the source directory — an input the key never named, because
   "the source" was assumed to mean the file's *content* — so a build at another path
   is certifiable-looking and wrong. The fix is at the cause, not a path convention:
   every kernel lives in a named namespace (the ast-grep rule
   `tools/lint/rules/global_fn_in_anon_namespace.yml`), so the key is a function of
-  content and toolchain only, the two things the manifest claims to certify.
-- **A manifest is a value, and it depended on the codegen flag list.** The manifest
-  pinned the assembler version and the calibration macros but not the `nvcc` flag
-  list itself, so a codegen-affecting flag change left no fingerprint in anything a
-  gate read — caught only because both the build and the ratification import one flag
-  list in code, a property of the *source*, not of the *gate* (`tools/ratify.py`'s
-  `check_flags`, "THE GAP THIS CLOSES"). Fixed by adding `toolchain.nvcc_flags` to the
-  manifest and checking it on every ratification, refused exactly like a missing
-  `defines` block.
+  content and toolchain only, the two things a build's identity claims.
+- **A record of numbers depended on the codegen flag list.** A register and spill
+  record pinned the assembler version and the calibration macros but not the `nvcc`
+  flag list itself, so a codegen-affecting flag change left no fingerprint in
+  anything a gate read. The flag list is now one value in one file
+  (`tools/build_flags.py`) that the graph writes into its compile, so no second
+  compile can disagree with it.
 
 Both instances have the same shape: a fingerprint whose *stated* input space (source
 content, or source content plus assembler) was narrower than its *actual* input space

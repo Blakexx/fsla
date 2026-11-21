@@ -71,7 +71,7 @@ decode step pad below the op, and the intra reads the rows at their own widths.
 The prefill is the facts pass, the carry and the intra over a BUILT MATRIX
 (`rola.engine.dags.prefill_dag`). **Everything outside it raises.** There is no second arm behind this surface: the
 fp64 oracle
-(`rola.ops.naive.naive_rola`) is the executable spec — what tests and ratification
+(`rola.ops.naive.naive_rola`) is the executable spec — what tests and measurements
 call directly — and it is not reachable by dispatch, because a dispatch to it at
 inference is a silent ~1000x-slower route shipping unnoticed, which is the exact thing
 the no-fallback rule forbids.

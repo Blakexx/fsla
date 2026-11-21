@@ -143,8 +143,8 @@ It RE-READS `values` and the cotangents in the second pass rather than staging t
 in `IPT`-sized registers. That is the union backward's MEASURED trade
 ([backward](entmax.md#backward)) and not a stylistic preference: at `IPT = 8` the
 staged form is what puts that kernel over its 64-register bound. Re-reading keeps
-this family at zero spill across all 96 instantiations, which `tools/ratify.py`
-enforces.
+this family at zero spill across all 96 instantiations, which `tools/ratify.py --census`
+reports.
 
 <a id="factorbackward"></a>`accumulate` selects `atomicAdd` over a store. It is a parameter and not a fact
 about the tensor because a TIED level runs two solves into ONE gradient buffer, and

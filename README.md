@@ -70,41 +70,39 @@ cannot drift apart.
 
 | Mode | Command | Notes |
 |---|---|---|
-| Wheel | `pip install "rola[cu13]"` | `rola` (pure Python) and `rola-cu13` (the fatbin for the ratified matrix, and its manifests), at one version ([docs/build.md#wheels](docs/build.md#wheels)) |
+| Wheel | `pip install "rola[cu13]"` | `rola` (pure Python) and `rola-cu13` (the fatbin for the built matrix), at one version ([docs/build.md#wheels](docs/build.md#wheels)) |
 | Development | `bazel run //:library` | The graph's build, into the checkout: rules 1, 3 and 5, the SASS gate and the arm gate on every build |
-| Release | `bazel run //:wheels` | The two wheels of a clean commit whose build ratify passes ([docs/build.md#wheels](docs/build.md#wheels)) |
+| Release | `bazel run //:wheels` | The two wheels of a clean commit ([docs/build.md#wheels](docs/build.md#wheels)) |
 
 `pip install .` refuses: rola builds through its graph alone, so a source install, which would build a package
 without its kernels, is not supported.
 
 The build is **ahead-of-time and closed-world**. It emits `code=sm_XX` only, never
 `code=compute_XX`, so the fatbin carries no PTX for a driver to JIT; the shipped
-`.so` is asserted to contain zero PTX images. Naming an architecture with no ratified
-manifest (`--//:archs`) fails the build.
+`.so` is asserted to contain zero PTX images. Naming an architecture that is not built
+(`--//:archs`) fails the build.
 
-The carry family's arms are compiled as **generated translation units, one an arm**
-(`csrc/rola/src/instantiations/`, from the declared arm list), so the matrix parallelizes
-across the build's jobs instead of serializing inside one compiler process. They are
-checked in — what is reviewed is what compiles — and `bazel run //tools:gen_shards -- --check` is the gate that keeps
-them the files their generator produces. Every build runs under the machine's host budget, its jobs the slots it
+The carry family's arms are compiled as **translation units, one an arm and a built architecture**
+(declared in `csrc/rola/src/carry/arms.bzl`, instantiated by the graph), so the matrix parallelizes
+across the build's jobs instead of serializing inside one compiler process. Every build runs under the machine's host budget, its jobs the slots it
 holds ([`docs/build-graph.md`](docs/build-graph.md#front-door)).
 
 ## Supported configurations
 
 This table is **generated** by `tools/supported.py` from the kernel's arch table and
-the committed manifests, and CI fails if it drifts. A hand-maintained support table
+the architectures it builds, and CI fails if it drifts. A hand-maintained support table
 is a claim; a generated one is a report.
 
 <!-- BEGIN GENERATED: tools/supported.py -->
-| Compute capability | GPUs | Toolchain | Ratified under | Instantiations | Status |
-|---|---|---|---|---|---|
-| `sm_90a` | H100 | `cu13` | ptxas 13.0.48 | 341 | ratified |
-| `sm_100a` | B200 | — | — | — | **not ratified — will refuse to load** |
+| Compute capability | GPUs | Toolchain | Assembler | Status |
+|---|---|---|---|---|
+| `sm_90a` | H100 | `cu13` | ptxas 13.0.48 | built |
+| `sm_100a` | B200 | — | — | **not built — will refuse to load** |
 <!-- END GENERATED: tools/supported.py -->
 
-The unratified rows are not an apology; they are the product statement. The first
+The unbuilt rows are not an apology; they are the product statement. The first
 claim above is worth nothing if this table quietly implied coverage that was never
-measured. Bringing up a new architecture is a measurement, and
+brought up. Bringing up a new architecture is a measurement, and
 [`docs/bringup.md`](docs/bringup.md) is the procedure.
 
 ### Routing activations
@@ -229,8 +227,8 @@ bazel test //tests:cpu                          # each unit's public contract, w
 bazel test //tests:unit_cuda                    # the unit tier's CUDA-marked rows
 bazel test //tests:oracle                       # kernels vs the fp64/torch baselines
 bazel test //tests:integration                  # composition, dispatch, two-branches-agree
-bazel test //:ratified                                  # ratification, no GPU needed
-bazel run //:ratify -- --self-test                      # prove the gate can fail
+bazel run //:ratify -- --census                         # every instantiation's registers and spills, no GPU needed
+bazel run //:ratify -- --self-test                      # prove the census's readers can fail
 ```
 
 Never `pytest tests/` unscoped. The `cuda` marker exists so that `-m "not cuda"`

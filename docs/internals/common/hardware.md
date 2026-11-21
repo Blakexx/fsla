@@ -56,12 +56,12 @@ while a class template carrying it compiles -- so host templates and plans take 
 
 <a id="traits"></a>
 `traits_of(Build)` is what a kernel's plan reads: the family, the window W ([`window.md`](window.md): a card's,
-chosen per architecture) and the architecture's `Caps`. A tabulated architecture that is not built may leave its
-window unchosen; a built one must choose it. sm_90a's is 1,024, provisional until the sm_90 carry's design
+chosen per architecture) and the architecture's `Caps`. An architecture is BUILT when its build chooses a window
+(`measure.hardware.built`: the graph's default `--//:archs`, `BUILT_ARCHS` in `@rola_env//:flags.bzl`); a tabulated
+architecture that is not built leaves it unchosen. sm_90a's is 1,024, provisional until the sm_90 carry's design
 picks it (Blake, 2026-11-09). The check
 (`measure/hardware.py --check`) refuses an architecture whose build names no family of `FAMILIES` or a trait outside
-the family and `BUILD_TRAITS`, a built architecture whose build chooses no window, and a product overriding a trait
-outside `BUILD_TRAITS`.
+the family and `BUILD_TRAITS`, and a product overriding a trait outside `BUILD_TRAITS`.
 
 <a id="products"></a>
 `kProducts` names each product row's slug, architecture and variant: the host finds a device's product by the slug
@@ -136,7 +136,7 @@ a clock an SM, over four schedulers and 32 lanes): `alu`, `fma`, `fmaheavy` (int
 ## The check
 
 `python -m measure.hardware --check`: the header is what the file generates; every architecture's capabilities
-are the schema's; every built architecture (one with a manifest under `tools/manifests/`) has a row whose
+are the schema's; every built architecture (one whose build chooses a window) has a row whose
 defaults carry its pipes' and MMAs' rates (`schedulers`, `issue`, `wavefront`, `atomic`, `atomic_wavefront`, every MMA kind);
 every product names a tabulated architecture and its device is that product; every rate is a field the schema
 names, with exactly one source that holds.

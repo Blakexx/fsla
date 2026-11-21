@@ -6,7 +6,7 @@ warp executes, predicated HMMAs, branches, the conversion unit and global memory
 reports the gaps in a step (the report's gap figures) without failing; guarded convergence
 fallbacks are counted, cold code, not red. Every build runs it after the link (the library's gate action, [below](#graph)); by hand,
 `bazel run //tools:sass_gate -- <.so | .cubin> [--kernel RE] [--member S] [--loops] [--json PATH]`. Each function's line
-carries its registers (`regs`, off `cuobjdump -res-usage`), so an iteration build that skips the ratify still shows a
+carries its registers (`regs`, off `cuobjdump -res-usage`), so an iteration build still shows a
 register change. The step cover (KERNEL_STANDARDS §32.4) is a family's machine model's reading, and the gate runs
 none until a family's model exists.
 

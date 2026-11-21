@@ -1,7 +1,7 @@
 # `tools/toolchains.py` — the toolchain records
 
-Mirrors `tools/toolchains.py`. A **toolchain** is one exact assembler a fatbin is built and ratified under. Everything
-that asks "which compiler, which manifests" reads it through this module: `tools/ratify.py`,
+Mirrors `tools/toolchains.py`. A **toolchain** is one exact assembler a fatbin is built under. Everything
+that asks "which compiler" reads it through this module: `tools/ratify.py`,
 `tools/supported.py`, the lints, and the graph's flags and record actions (`bazel/flags.py`, `bazel/record.py`). Rule 1
 is one function here, `rule1`, the graph's record action's (docs/build-graph.md#gates).
 
@@ -17,22 +17,20 @@ is one function here, `rule1`, the graph's record action's (docs/build-graph.md#
 | `torch_index` | the PyTorch wheel index serving torch for that major |
 | `sanitizer` | compute-sanitizer's whole `--version` text: the sanitizer lane (`tools/sanitize_oracle.py`) refuses another release's, so a binary is read with the toolkit that built it |
 
-Two records naming one assembler are refused: one assembler is one toolchain. The record's name is the manifest
-directory: `tools/manifests/<name>/sm_XX.json`, one file per architecture
-([`../../ratification.md`](../../ratification.md)). The declarations beside those directories
-(`shipped_set.json`, `derivation_cases.json`, `derivation.json`) describe the source, not a compiler, and stay in
-`tools/manifests/`.
+Two records naming one assembler are refused: one assembler is one toolchain
+([`../../ratification.md`](../../ratification.md)). The built architectures are not the record's: they are the hardware
+table's (`measure.hardware.built`).
 
 ## Selection
 
 The build takes no toolchain parameter. The graph's toolkit (`@cuda_tools`, pinned by `tools/cuda_toolkit_pin.json`, read by `dev_config.cuda_home()`) is the choice, and the
 record whose `ptxas` equals that toolkit's is the toolchain (`for_ptxas`); a toolkit no record names refuses, naming the
 declared ones. A second spelling of the choice would be one that can disagree with the compiler that actually runs.
-`tools/ratify.py` resolves it per run; a lint that checks a built binary takes the toolchain from that binary's own
+`tools/ratify.py`'s census resolves it per run; a lint that checks a built binary takes the toolchain from that binary's own
 `BUILD_CONFIG["ptxas"]`, never from whatever toolkit the checking host has.
 
 `rola_cu13/_build_config.py` records the toolchain's name beside its `ptxas`, and `tools/supported.py` writes one README row
-per ratified (toolchain, architecture).
+per (toolchain, built architecture).
 
 `built_extension(root)` is the binary a checkout's in-place build produced, `rola_<toolchain>/_C.*so`, inside the binary
 plugin the toolchain's build ships as ([`../../build.md#wheels`](../../build.md#wheels)). It refuses a checkout with none

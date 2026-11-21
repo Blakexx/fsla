@@ -8,11 +8,9 @@ def bytes_equal(a, b):
     return a.view("uint8").tobytes() == b.view("uint8").tobytes()
 
 
-def declared_arms():
-    """The arm table, read from the declaration rather than restated here."""
-    import gen_shards
-
-    return gen_shards.CARRY_ARMS
+def declared_arms(table):
+    """The arm table, handed in by the graph's generated module rather than restated here."""
+    return table.ARMS
 
 
 def check(state_before, state_after):

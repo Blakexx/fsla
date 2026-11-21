@@ -4,7 +4,7 @@
 
 `arms(cell)` takes a central carry cell (a shape, a draw and the state it binds) or a central layer cell (an input)
 and returns a builder for every arm this checkout runs on it, or refuses the cell by raising:
-- any cell, when the binary lacks an arm its tree ships (`tools/manifests/shipped_set.json`): an iteration build
+- any cell, when the binary lacks an arm its tree declares (`arms.bzl`, as the graph generated its table): an iteration build
   (`--//:carry_arms`, `--//:decode_arms`) measures a subset of the tree;
 - data that is neither kind.
 `measure/executors.py`'s timing entry calls it on the cell a registration hands it; a profiler launches one arm
@@ -21,7 +21,7 @@ binary), and that `import rola` resolved inside this checkout.
 A built arm is a `rola_devtools.timing.Timed`: its call times one launch between two CUDA events (the canonical
 instrument, `cuda_events`) and returns milliseconds; its reset is the launch's (a carried state restored, a decode state
 re-seeded), run untimed before every call. What an arm reports is the cell's facts beside the arm's call count and the
-binary's: the manifest digest, the family stamp, the device, torch, the assembler, and the SM clock read when the arm
+binary's: the family stamp, the device, torch, the assembler, and the SM clock read when the arm
 was built (docs/measurement.md).
 """
 from __future__ import annotations
@@ -67,22 +67,33 @@ def arms(data) -> dict:
     return out
 
 
+def _declared(family: str) -> tuple:
+    """The arms this tree declares for `family`: the table the graph generated from the declaration
+    (`bazel/arms.bzl`'s `arm_table`), which `bazel run //:library` installs into `build/generated`."""
+    import importlib.util
+
+    path = CHECKOUT / "build" / "generated" / f"{family}_arms.py"
+    if not path.is_file():
+        raise RuntimeError(f"{path.relative_to(CHECKOUT)} is missing: the {family} family's declared arms are the graph's "
+                           "table; build the library (`bazel run //:library`)")
+    spec = importlib.util.spec_from_file_location(f"_{family}_arms", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.ARMS
+
+
 def _refuse_a_partial_binary() -> None:
     from rola.ops import carry, decode
 
-    if str(CHECKOUT / "tools") not in sys.path:
-        sys.path.insert(0, str(CHECKOUT / "tools"))
-    import gen_shards
-
-    families = (("carry", gen_shards.CARRY_ARMS, carry.arms(), "--//:carry_arms"),
-                ("decode", gen_shards.DECODE_ARMS, decode.arms(), "--//:decode_arms"))
+    families = (("carry", _declared("carry"), carry.arms(), "--//:carry_arms"),
+                ("decode", _declared("decode"), decode.arms(), "--//:decode_arms"))
     for family, rows, carried, knob in families:
         declared = {tuple(int(x) for x in row) for row in rows}
         built = {tuple(int(x) for x in arm) for arm in carried}
         if declared - built:
-            raise RuntimeError(f"this binary carries the {family} arms {sorted(built)} and lacks the shipped arms "
+            raise RuntimeError(f"this binary carries the {family} arms {sorted(built)} and lacks the declared arms "
                                f"{sorted(declared - built)}: an iteration build ({knob}) measures a subset of the "
-                               "tree; build the shipped set")
+                               "tree; build the declared set")
 
 
 def _kernel_carried(subject: str, spec, construction) -> bool:
@@ -143,7 +154,7 @@ def _build(name: str, kind: str, spec, calls: int, construction):
             "state": getattr(spec, "state", None), "backing": getattr(spec, "backing", None),
             "construction": construction and construction.name, "tokens": spec.tokens, "d_v": spec.dv,
             "widths": list(widths),
-            "manifest_sha256": BUILD_CONFIG.get("manifest_sha256"), "ptxas": BUILD_CONFIG.get("ptxas"),
+            "ptxas": BUILD_CONFIG.get("ptxas"),
             "family_stamp": int(stamp()), "device": torch.cuda.get_device_name(0),
             "sm": hardware.device_arch(props.major, props.minor),
             "torch": torch.__version__, "rola_file": rola_file.relative_to(CHECKOUT).as_posix(),

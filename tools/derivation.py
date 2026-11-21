@@ -1,7 +1,7 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """THE DERIVATION'S GOLDEN HARNESS, rendered from the declared cases (`tools/manifests/derivation_cases.json`):
-`tools/ratify.py` compiles and runs it, and the graph builds it (tools/BUILD.bazel's `derivation_harness`). The
+`tools/ratify.py`'s derivation check runs it, and the graph builds it (tools/BUILD.bazel's `derivation_harness`). The
 standard library only, so a build action renders it with the environment's base interpreter.
 Docs: docs/internals/tools/ratify.md#graph.
 

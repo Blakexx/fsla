@@ -1,0 +1,5 @@
+genrule(
+    name = "compiled",
+    outs = ["x.o"],
+    cmd = "nvcc -c x.cu -o $@",
+)

@@ -210,12 +210,6 @@
    "message": "has_marker_above(..., lookback=) is only ever 3 -- across every call in this tree, nothing moves it",
    "line_sha256": "9b0b2e5a64c6ce50",
    "count": 1
-  },
-  {
-   "path": "tools/ratify.py",
-   "message": "manifest_path(..., name=) is only ever None -- across every call in this tree, nothing moves it",
-   "line_sha256": "5103285bb6317ddc",
-   "count": 1
   }
  ]
 }

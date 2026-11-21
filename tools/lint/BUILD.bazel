@@ -2,7 +2,7 @@
 targets run over their sources, the modes a person runs by hand, and each linter's self-test on its fixtures. The lints
 themselves live beside what they check: csrc/rola's own, and the repo-wide checks in the root package."""
 
-load("@rola_env//:flags.bzl", "RATIFIED_ARCHS")
+load("@rola_env//:flags.bzl", "BUILT_ARCHS")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("//bazel:cuda.bzl", "cuda_unit")
 load("//bazel:defs.bzl", "tool_run", "tool_test", "tree_part", "tree_test", "unit_lint_test")
@@ -52,6 +52,17 @@ tree_test(
     name = "drift_guards_fixtures",
     size = "small",
     cmd = ["python3", "tools/lint/drift_guards.py", "--test-fixtures"],
+    data = [
+        ":tracked",
+        #: the carry's declaration, which the rules read beside the fixtures' own
+        "//csrc/rola:tracked",
+    ],
+)
+
+tree_test(
+    name = "graph_only_fixtures",
+    size = "small",
+    cmd = ["python3", "tools/lint/graph_only.py", "--test-fixtures"],
     data = [":tracked"],
 )
 
@@ -129,6 +140,7 @@ test_suite(
         ":clang_tidy_device_fixtures",
         ":constant_parameters_fixtures",
         ":drift_guards_fixtures",
+        ":graph_only_fixtures",
         ":host_warnings_fixtures",
         ":r9_enforcement_fixtures",
         ":readability_spacing_fixtures",
@@ -143,7 +155,7 @@ test_suite(
 cuda_unit(
     name = "primitives_census_probe",
     srcs = ["primitives_census_probe.cu"],
-    archs = ["compute_%s:sm_%s" % (arch, arch) for arch in RATIFIED_ARCHS],
+    archs = ["compute_%s:sm_%s" % (arch, arch) for arch in BUILT_ARCHS],
     copts = ["-std=c++20"],
     host_cc = "@host_cc//:identity.txt",
     deps = ["//csrc/rola:headers"],
@@ -177,6 +189,7 @@ tool_test(
     "constant_parameters",
     "coverage",
     "drift_guards",
+    "graph_only",
     "lint_standards",
     "portable_claude",
     "r9_enforcement",

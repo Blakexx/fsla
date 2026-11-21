@@ -2,10 +2,10 @@
 
 `csrc/rola/src/common/arm_switch.cuh` dispatches over the arm set the generated
 selection header carries; this file never depends on which arms are actually shipped
-(the shipped set lives in `tools/manifests/shipped_set.json`).
+(the carry's arms are declared in `csrc/rola/src/carry/arms.bzl`).
 This file runs a probe the graph compiled against the SHIPPED HEADER with
 a synthetic three-arm selection header in front of it -- rendered by the one renderer
-the graph's header action uses, so what is tested is what a build would emit --
+the graph's selection rule uses (`bazel/arms.bzl`'s `arm_selection`), so what is tested is what a build would emit --
 and checks every layer of the contract:
 
 * the two counts are the generated ones, and the set names its members;

@@ -10,21 +10,21 @@ refuses, naming the targets below (`pyproject.toml`'s backend, `tools/no_source_
 The kernels are compiled **ahead of time** into a fatbin containing
 `code=sm_XX` images only. There is no JIT, no PTX for the driver to compile, and no
 runtime autotuning. Everything the binary can execute has been assembled by a
-`ptxas` whose output was measured and committed
+`ptxas` the pinned toolchain names, for an architecture the hardware table builds
 ([`ratification.md`](ratification.md)).
 
 That is a deliberate trade. A JIT-and-autotune build (Triton's model) adapts to
 hardware nobody tested, at the cost of shipping codegen nobody looked at; the
 supported matrix then means "we expect it to work". Here the supported matrix
-**is** the ratified set, by construction, and the build refuses to widen it
+**is** the built set, by construction, and the build refuses to widen it
 silently.
 
 ## <a id="building"></a>Building
 
 ```bash
-bazel run //:library                                   # every ratified architecture and arm, into rola_cu13/
+bazel run //:library                                   # every built architecture and arm, into rola_cu13/
 bazel run //:library --//:archs=90a --//:decode_arms=3  # an iteration build (below)
-bazel run //:wheels                                    # the two wheels of a clean, ratified commit (below)
+bazel run //:wheels                                    # the two wheels of a clean commit (below)
 ```
 
 A build's PARAMETERS are the graph's settings -- `--//:archs`, `--//:carry_arms`,
@@ -43,33 +43,29 @@ closed-world rule ([`ratification.md`](ratification.md#the-four-closed-world-rul
    spec `compute_XX:sm_XX`), and the SASS gate refuses a library carrying a PTX image. A `code=compute_XX` entry would
    embed PTX and let the driver just-in-time compile for an architecture whose register and spill behaviour was never
    measured.
-2. **R3 — ratified archs.** `tools/manifests/<toolchain>/sm_XX.json` must exist and be non-empty for every arch being
-   built. A file-existence question: the cheapest check, which must never be tempting to skip.
+2. **R3 — built archs.** Every arch being built must be a built one: its row in `common/hardware.json` chooses a window
+   (`tools/build_record.py`'s `rule3`). A lookup in a table the kernel reads, the cheapest check, which must never be
+   tempting to skip.
 3. **R1 — toolchain.** The graph's `ptxas --version` selects the toolchain: the record in `tools/toolchains/` that
    names it, whitespace-normalized ([`internals/tools/toolchains.md`](internals/tools/toolchains.md)). A toolkit no
-   record names refuses; that toolchain's manifests must pin the same string; the disassemblers the gates read with
+   record names refuses; the disassemblers the gates read with
    (`cuobjdump`, `nvdisasm`) must report the record's `readers` byte for byte; torch must be built for the toolchain's
    CUDA major (`tools/toolchains.py`'s `rule1`). The whole output, not a parsed release number: the build string
    distinguishes two shipments of one nominal release, and it is exactly those that can move an allocation while the
    version says nothing changed. In the same pass, R5: the vendored subtree under `csrc/third_party/` must hash to its
    `PIN.json` digest.
-4. **Shards.** The checked-in instantiation shards must be the ones `tools/gen_shards.py` produces. Generated sources
-   are committed so that what is reviewed is what compiles; a stale one fails here rather than shipping a matrix
-   nobody wrote.
-5. **The arm table.** The generator's table still matches the declaration, the selection header names exactly the arms
-   this build selected, and the built `_C` carries exactly those
+4. **The arm table.** The selection header names exactly the arms this build selected, of the table the graph generated
+   from the declaration, and the built `_C` carries exactly those
    ([`ratification.md#arm-switch`](ratification.md#arm-switch)).
-6. **The SASS gate.** `tools/sass_gate.py` on the linked library (KERNEL_STANDARDS §20): local memory, convergence
+5. **The SASS gate.** `tools/sass_gate.py` on the linked library (KERNEL_STANDARDS §20): local memory, convergence
    subroutines, predicated HMMA, the step lints, a PTX image (R2 on the binary itself), and a kernel the source
-   defines that no cubin carries. It compares
-   against no manifest, so it runs on every build, iteration builds included.
-7. **`rola_cu13/_build_config.py`**, the record: the archs, the assembler, the torch version and ABI flag, the
-   manifest digest and per-arch entry counts, the vendored pin, whether it is an iteration build, and
+   defines that no cubin carries. It runs on every build, iteration builds included.
+6. **`rola_cu13/_build_config.py`**, the record: the archs, the assembler, the torch version and ABI flag, the
+   vendored pin, whether it is an iteration build, and
    `ptx_jit_fallback: False`.
 
-Ratify is not among them: the committed manifests go stale between milestones by design (KERNEL_STANDARDS §16), so
-its verdict on a build is a target of its own, `bazel test //:ratified`, which a milestone and every wheel require
-([`build-graph.md`](build-graph.md#ratify)).
+The census (every instantiation's registers and spills) is not among them: it is a report on demand,
+`bazel run //:ratify -- --census` ([`build-graph.md`](build-graph.md#census)).
 
 <a id="generated-headers"></a>The build's GENERATED HEADERS (the arm selections, the carry parts, the builds, the
 csrc stamp) are actions over their generators, and `bazel run //:library` copies them into `build/generated/`, where
@@ -85,31 +81,28 @@ architecture:
 bazel run //:library --//:archs=90a --//:decode_arms=5
 ```
 
-Any parameter but a default makes an ITERATION build (`tools/gen_shards.py`'s `is_iteration`, which the record
+Any parameter but a default makes an ITERATION build (`bazel/arms.py`'s `is_iteration`, which the record
 states), and three properties make it safe to have:
 
-* **The default is every declared arm and every ratified architecture.** An empty arm setting expands to the whole
+* **The default is every declared arm and every built architecture.** An empty arm setting expands to the whole
   list, so a plain build and every wheel are the closed-world one. There is no configuration in which a subset is the
   default.
 * **A subset binary is SELF-IDENTIFYING and refuses what it lacks.** `rola.ops.carry.arms()` and
   `rola.ops.decode.arms()` return the rows the fatbin actually carries, read off the same list the build compiled
   from; asking a launch for any other shape is a `STD_TORCH_CHECK` refusal naming the arm, never a mis-launch.
-* **It is NOT SHIPPABLE, and its record says so.** Ratify proves the fatbin carries EVERY ratified instantiation in its
-  assigned shard; a subset carries fewer by construction, so it is never ratified and never a wheel. Ratification is
-  a milestone's, from a full build (KERNEL_STANDARDS section 16).
+* **It is NOT SHIPPABLE, and its record says so.** A subset carries fewer instantiations than the declared set by
+  construction, so its record says `iteration: True` and `bazel run //:wheels` refuses it.
 
-**AND THE RATIFICATION MUST NOT INHERIT IT, WHICH IS THE SUBTLE HALF.** The graph's ratify reads the build's
-parameters with its census and refuses an iteration build (`tools/ratify.py`'s `graph_parameters`), so no manifest
-records a subset. And no arm subset is a compile flag: each family's selection is a generated header
-(`carry_selection.inc`, `decode_selection.inc`;
-[`internals/tools/gen_shards.md#families`](internals/tools/gen_shards.md#families)) written for the build's own
-scope, so a flag naming WHAT WAS COMPILED, rather than HOW, never reaches a unit's command line, where a ratification
-reading the compile could inherit it. The one such flag is `-gencode`, the architectures, and ratify's compile path
-takes them from its own run, never from a build. Measured when a decode subset was a `-D`: the next ratification
-inherited it and wrote a manifest of 393 entries carrying ONE decode arm, while the library carried all sixteen --
-and it PASSED. A gate that certifies numbers no shipped binary has is worse than no gate.
+**AND THE CENSUS READS THE BUILD'S SCOPE, NOT A FLAG OF ITS OWN.** `bazel run //:ratify -- --census` reads the build's
+parameters from the census record, so an iteration build's census is the measurement of its subset. And no arm subset is a
+compile flag: each family's selection is a generated header (`carry_selection.inc`, `decode_selection.inc`;
+[`build-graph.md#arms`](build-graph.md#arms)) written for the build's own scope, so a flag naming WHAT WAS COMPILED,
+rather than HOW, never reaches a unit's command line, where a measurement reading the compile could inherit it. The one
+such flag is `-gencode`, the architectures, which the graph takes from the build. Measured when a decode subset was a
+`-D`: the next measurement inherited it and recorded 393 entries carrying ONE decode arm, while the library carried all
+sixteen -- and it PASSED. A gate that certifies numbers no shipped binary has is worse than no gate.
 
-The same rule governs `--//:archs`: iterate on one architecture, gate and measure on the build of every ratified one.
+The same rule governs `--//:archs`: iterate on one architecture, gate and measure on the build of every built one.
 
 ## <a id="compile-ledger"></a>Why the arm units are torch-free
 
@@ -132,18 +125,17 @@ Over a full both-arch build every unit that parses the extension header lands in
 family's single unit, before the per-arm split, peaked at 6.14 GB. A build's peak is the header's footprint times the
 `cicc` the host budget runs at once, and it stops being a function of the arm count.
 
-Per-arm units are what let the arms compile in parallel across the jobs the host budget grants, and what make `ratify`
-per-unit incremental, keyed on the argv and the content of every input the compiler reported reading.
+Per-arm units are what let the arms compile in parallel across the jobs the host budget grants, each a Bazel action keyed
+on the argv and the content of every input the compiler reported reading.
 
 ## <a id="carry-arm-lists"></a>The carry arm list
 
-`tools/manifests/shipped_set.json` declares the carry family's arms and `tools/gen_shards.py` reads it. An arm is the
+`csrc/rola/src/carry/arms.bzl` declares the carry family's arms and `bazel/arms.bzl` instantiates them
+([`build-graph.md#arms`](build-graph.md#arms)). An arm is the
 carve's operation-plan pair, keyed `fold_rows, fold_factors, read_rows, read_factors, channels, same_split`
 ([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve)); the box's per-level extents, the depth and the
-widths are runtime addressing. The declaration has one `shipped` list: every declared row is built by a default build,
-ratified in the manifests and shipped. Each row is one generated `carry_arm_<i>.cu`, `i` its index in the
-canonical-sorted
-list.
+widths are runtime addressing. The declaration has one list, `CARRY_ARMS`: every declared row is built by a default build and shipped. Each row is
+one generated unit per built architecture, `carry_arm_<i>_sm_<arch>`, `i` its index in the canonical-sorted list.
 
 A binary answers which arms it carries itself (`rola.ops.carry.arms()`), never the source tree. A launch whose carve
 selects an arm the binary does not carry is refused by name, with the key field that has no built member.
@@ -160,18 +152,18 @@ property of `tools/sass_bodies.py`, not of the binary, so maps are stamped with 
 a mismatched or unstamped pair rather than reporting the whole matrix as differing.
 
 **Worktree builds and cross-path SASS comparison are ordinary operations.** Every kernel lives in a named namespace,
-so a ratified name is a function of source content and toolchain only: an anonymous-namespace kernel's mangled name
+so a kernel's name is a function of source content and toolchain only: an anonymous-namespace kernel's mangled name
 embeds a discriminator derived from the source directory, and the ast-grep rule refuses one
 ([`internals/tools/lint.md`](internals/tools/lint.md)).
 
 **`--split-compile` is REJECTED, measured.** It changes the assembled code of most entries (1,073 of 1,228 when
-measured), which under the closed-world policy is a kernel change requiring re-ratification, and it is slower besides:
+measured), which under the closed-world policy is a kernel change, and it is slower besides:
 the two parallelism axes multiply, collapsing the job count.
 
 ## <a id="fatbin-compression"></a>The fatbin is compressed explicitly
 
-`-Xfatbin -compress-all` is in the flag list (`tools/build_flags.py`, which both the
-graph's compile and ratify's compile path take). `fatbinary` compresses by default, but that
+`-Xfatbin -compress-all` is in the flag list (`tools/build_flags.py`, which the
+graph's compile takes). `fatbinary` compresses by default, but that
 default covers PTX and debug images only, and for the cubins it applies a SIZE
 HEURISTIC (every cubin it stored raw was <= 9,076,960 B, every one it compressed >= 10,075,232 B when measured),
 which would make the shipped artifact a function of how the instantiations are partitioned into translation units
@@ -181,9 +173,8 @@ one 256-instantiation matrix, `-compress-all` beat both partitions the heuristic
 
 Compression is applied to the image AFTER `ptxas` has assembled it, so it cannot move
 codegen — proven rather than asserted, by comparing every entry point's SASS across
-the flag change: **0 differing, 0 absent either way**. Taking the
-ratification again under the new flag list reproduces every register and spill number,
-so the manifests come back byte-identical.
+the flag change: **0 differing, 0 absent either way**. The census
+under the new flag list reproduces every register and spill number.
 
 THE COST IS PAID AT MODULE LOAD, AND IT IS MEASURED. Three runs each, fresh process,
 CUDA context already up so the number is the module and not the context:
@@ -197,17 +188,15 @@ CUDA context already up so the number is the module and not the context:
 **+3.7 ms once per process, at the first launch** — that is the decompression, and it
 is where it should be. Import is noise-dominated and shows no separable effect.
 
-The manifest's `toolchain` block records the codegen flag list (`nvcc_flags`), so a
-codegen-affecting flag change is a fingerprint the ratification gate refuses
-(`tools/ratify.py`'s `check_flags`, one of
-[`ratification.md`'s closed-world rules](ratification.md#the-four-closed-world-rules)).
+The codegen flag list is `tools/build_flags.py`'s alone, written into the graph's flags (`bazel/flags.py`), so a
+codegen-affecting flag change is one edit in one file ([`ratification.md`'s closed-world rules](ratification.md#the-four-closed-world-rules)).
 
 ## Verifying a built binary
 
 ```bash
 python -c "from rola_cu13 import _build_config; print(_build_config.show())"
 bazel run //tools:sass_gate -- rola_cu13/_C.abi3.so    # its signatures, and no PTX image (R2)
-bazel test //:ratified                                  # must PASS
+bazel run //:ratify -- --census                        # its registers and spills
 ```
 
 The shipped `.so` carries one ELF image per (translation unit, architecture) and **0 PTX images**. That is not a
@@ -235,8 +224,7 @@ pip install "rola[cu13]"
 
 installs two distributions at one version. **`rola`** is pure Python (`py3-none-any`): the layer, the routing, the
 decay, the refusals. **`rola-cu13`** (`cp310-abi3-linux_x86_64`) is the binary plugin of the cu13 toolchain: the package
-`rola_cu13` holding the fatbin `_C.abi3.so` for every ratified architecture, the build record `_build_config.py`, and
-its `manifests/` record, the ratification that record's `manifest_sha256` hashes. A future toolchain is a second plugin
+`rola_cu13` holding the fatbin `_C.abi3.so` for every built architecture and the build record `_build_config.py`. A future toolchain is a second plugin
 beside it, never a rebuild of `rola`.
 
 `rola` loads the plugin when a kernel is first called (`rola/ops/_ext.py`). It reads the plugin's build record BEFORE
@@ -249,9 +237,8 @@ parts (the oracle, the configuration objects) still import. The `cu13` extra is 
 A checkout's binary sits where a wheel puts it: `bazel run //:library` copies it to `rola_cu13/_C.abi3.so`, so a
 checkout and an installed wheel load the binary by one path. `tools/toolchains.py`'s `built_extension` is how the tools find it.
 
-**The wheels package the graph's library.** `bazel run //:wheels` refuses a tree with changes, then requires ratify's
-verdict on the build to pass (which refuses an iteration build), then refuses the build unless its record names this
-version, the toolchain and the manifest digest of the files it then packages. It writes
+**The wheels package the graph's library.** `bazel run //:wheels` refuses a tree with changes, then refuses the build unless its record names this
+version and the toolchain and is no iteration build. It writes
 `dist/rola-<v>-py3-none-any.whl` and `dist/rola_cu13-<v>-cp310-abi3-linux_x86_64.whl`, byte-reproducible for a commit
 (fixed member order and timestamps). `bazel run //tools:wheels -- --check dist` installs them into a scratch venv over
 the environment's torch and requires `rola` alone to refuse naming the extra, and both together to load and name

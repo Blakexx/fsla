@@ -100,8 +100,6 @@ SCHEMA: dict[str, dict[str, Key]] = {
     },
 }
 
-#: where a container's launcher (tools/dev.py's `_mounts`) mounts the image's digest (`devbox_image`)
-CONTAINER_IMAGE = "/run/rola/devbox_image"
 #: where WSL puts the driver's Linux libraries, which a container this tree starts sees at the same path (the devbox
 #: image's loader searches it first)
 WSL_LIB = "/usr/lib/wsl/lib"
@@ -110,8 +108,6 @@ WSL_LIB = "/usr/lib/wsl/lib"
 #: the value (from this config or from its own state) and the child must use exactly that value.
 HANDOFFS = {
     POINTER: "which config directory a child reads (set for the graph's tests by the front door, or by a test; never by a setting)",
-    "CUDA_HOME": "torch.utils.cpp_extension's toolkit, set to `cuda_home()` before torch's extension module is imported "
-                 "(the header self-check)",
     "PYTEST_XDIST_WORKER": "pytest-xdist's worker id",
     "USER": "the login name printed into the sudoers rule `bazel run //:clock` suggests",
     "ROLA_SCRATCH": "the agent harness's campaign directory (.claude/settings.json), outside the repository",
@@ -204,13 +200,6 @@ def ncu() -> str:
     if not path.is_file():
         raise SystemExit(f"the pinned Nsight Compute is not installed at {path}: bazel run //:init")
     return str(path)
-
-
-def devbox_image() -> str:
-    """The devbox image's digest inside a container this tree started (its launcher mounts it), else the empty string:
-    where a measurement ran, which ratify records."""
-    named = Path(CONTAINER_IMAGE)
-    return named.read_text().strip() if named.is_file() else ""
 
 
 def windows_tool(rel: str) -> Path | None:

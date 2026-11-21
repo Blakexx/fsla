@@ -1,13 +1,12 @@
-"""THE WHEELS: the graph's library of a clean, ratified commit, packaged as `rola` (pure Python) and `rola-cu13` (the
-binary plugin).
+"""THE WHEELS: the graph's library of a clean commit, packaged as `rola` (pure Python) and `rola-cu13` (the binary
+plugin).
 
     bazel run //:wheels                          # dist/rola-<v>-py3-none-any.whl, dist/rola_cu13-<v>-cp310-abi3-linux_x86_64.whl
     bazel run //tools:wheels -- --check dist     # install both into a scratch venv and prove what each one does alone
 
 Wheel naming D (docs/build.md#wheels): `pip install "rola[cu13]"` installs both at one version. The binary in
-`rola-cu13` is `//:library`'s, which its gates passed; ratify's verdict on that build must pass first (it refuses an
-iteration build), and the build's record must name this version, the toolchain and the digest of the manifests the
-plugin carries. The metadata is `pyproject.toml`'s `[project]`, with the `cu13` extra
+`rola-cu13` is `//:library`'s, which its gates passed, and the build's record must name this version and the toolchain
+and be no iteration build. The metadata is `pyproject.toml`'s `[project]`, with the `cu13` extra
 pinned to this version. Docs: docs/internals/tools/wheels.md.
 """
 from __future__ import annotations
@@ -28,8 +27,6 @@ import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_record  # noqa: E402
-import ratify  # noqa: E402
-import toolchains  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLCHAIN = "cu13"
@@ -51,34 +48,21 @@ def _clean_commit() -> str:
     return _git("rev-parse", "HEAD").strip()
 
 
-def _ratified(census: Path, runfiles: Path) -> None:
-    """Ratify's verdict on the build the wheels package (`bazel test //:ratified`'s, in the checkout)."""
-    run = subprocess.run([sys.executable, str(ROOT / "tools" / "ratify.py"), "--graph", str(census), "--runfiles",
-                          str(runfiles)], cwd=ROOT)
-    if run.returncode:
-        raise SystemExit("refusing: ratify's verdict on this build is not a pass; a wheel ships a ratified build")
-
-
 def _record(path: Path) -> dict:
     scope: dict = {}
     exec(path.read_text(), scope)  # noqa: S102 -- the build's own generated record
     return scope["BUILD_CONFIG"]
 
 
-def _verify(record: dict, version: str) -> list[Path]:
-    """The record is this version's build under this toolchain, and the manifests the plugin will carry are the ones it
-    was gated against. That it is no iteration build is ratify's verdict's, which refuses one (`_ratified`)."""
-    toolchain = toolchains.named(TOOLCHAIN)
-    archs = toolchain.archs()
-    manifests = [toolchain.manifest_path(a) for a in archs]
-    digest = ratify.manifest_digest(ratify.load_manifest(archs, TOOLCHAIN))
+def _verify(record: dict, version: str) -> None:
+    """The record is this version's build under this toolchain, and no iteration build (an arm or architecture set other
+    than the declared one is never a wheel)."""
     wrong = {"version": (record["version"], version), "toolchain": (record["toolchain"], TOOLCHAIN),
-             "manifest_sha256": (record["manifest_sha256"], digest)}
+             "iteration": (record["iteration"], False)}
     wrong = {k: v for k, v in wrong.items() if v[0] != v[1]}
     if wrong:
         raise SystemExit(f"refusing: the build's record is not a shippable {TOOLCHAIN} build of rola {version} "
                          f"(field: recorded, required): {wrong}")
-    return manifests
 
 
 def _package(name: str) -> dict[str, bytes]:
@@ -140,9 +124,9 @@ def metadata(project: dict, version: str) -> tuple[str, list[str]]:
 
 def build(library: Path, record_path: Path, out: Path, version: str) -> list[Path]:
     """`rola` takes the `rola` package and the project's metadata; `rola-cu13` takes the plugin package, the graph's
-    library and record, the manifests, and metadata of its own."""
+    library and record, and metadata of its own."""
     record = _record(record_path)
-    manifests = _verify(record, version)
+    _verify(record, version)
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     text, licence_files = metadata(project, version)
 
@@ -157,7 +141,6 @@ def build(library: Path, record_path: Path, out: Path, version: str) -> list[Pat
     plugin = _package(PLUGIN)
     plugin[f"{PLUGIN}/_C.abi3.so"] = library.read_bytes()
     plugin[f"{PLUGIN}/_build_config.py"] = record_path.read_bytes()
-    plugin.update({f"{PLUGIN}/manifests/{m.name}": m.read_bytes() for m in manifests})
     plugin.update({f"{plugin_info}/licenses/{name}": (ROOT / name).read_bytes() for name in licence_files})
     #: the core's single-line fields that describe the plugin as well, in the core's order; `License` is not one (it
     #: holds the licence's whole text), the License-File entries name the same files
@@ -167,7 +150,7 @@ def build(library: Path, record_path: Path, out: Path, version: str) -> list[Pat
     torch = next(line for line in lines if re.match(r"Requires-Dist: torch\b", line))
     plugin[f"{plugin_info}/METADATA"] = "\n".join([
         "Metadata-Version: 2.4", f"Name: rola-{TOOLCHAIN}", f"Version: {version}",
-        f"Summary: RoLA's kernels built by the {TOOLCHAIN} toolchain, with the manifests they were ratified against; "
+        f"Summary: RoLA's kernels built by the {TOOLCHAIN} toolchain; "
         f"install as rola[{TOOLCHAIN}]", *header, f"Requires-Dist: rola=={version}", torch, ""]).encode()
     plugin[f"{plugin_info}/WHEEL"] = _wheel_meta(PLUGIN_TAG, purelib=False)
     plugin[f"{plugin_info}/top_level.txt"] = f"{PLUGIN}\n".encode()
@@ -220,15 +203,12 @@ def main() -> int:
     ap.add_argument("--check", type=Path, metavar="DIR", help="check the wheels in DIR instead of building")
     ap.add_argument("--library", type=Path, help="the graph's library (`bazel run //:wheels` passes it)")
     ap.add_argument("--record", type=Path, help="the graph's build record")
-    ap.add_argument("--census", type=Path, help="the build's census, for ratify's verdict")
-    ap.add_argument("--runfiles", type=Path, help="the directory the census record's paths are relative to")
     a = ap.parse_args()
     if a.check:
         return check(a.check)
-    if not (a.library and a.record and a.census and a.runfiles):
+    if not (a.library and a.record):
         raise SystemExit("the wheels package the graph's build: `bazel run //:wheels`")
     sha = _clean_commit()
-    _ratified(a.census, a.runfiles)
     version = build_record.version(ROOT / "rola" / "__init__.py")
     for wheel in build(a.library, a.record, a.out, version):
         print(f"{wheel}  ({wheel.stat().st_size / 1e6:.1f} MB)  commit {sha[:12]}")

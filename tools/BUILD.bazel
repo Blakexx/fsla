@@ -12,13 +12,7 @@ exports_files(glob([
     "*.json",
     "toolchains/*.json",
     "manifests/*.json",
-    "manifests/*/*.json",
 ]))
-
-filegroup(
-    name = "manifests_cu13",
-    srcs = glob(["manifests/cu13/*.json"]),
-)
 
 filegroup(
     name = "toolchain_records",
@@ -34,9 +28,9 @@ filegroup(
 #: this package's part of the tree the checks read
 tree_part(parts = {"manifests": "manifests/"})
 
-#: THE DERIVATION'S GOLDEN HARNESS, rendered from the declared cases and built as the extension's units are: ratify runs
-#: it in place of its own compile (docs/internals/tools/ratify.md#graph). It names the smallest tabulated architecture,
-#: as ratify's compile does: the derivation is the same on every tabulated card
+#: THE DERIVATION'S GOLDEN HARNESS, rendered from the declared cases and built as the extension's units are: the
+#: derivation check runs it (docs/internals/tools/ratify.md#graph). It names the smallest tabulated architecture: the
+#: derivation is the same on every tabulated card
 genrule(
     name = "derivation_harness_source",
     srcs = ["manifests/derivation_cases.json"],
@@ -104,7 +98,6 @@ filegroup(
     "arith_model",
     "bank_model",
     "carry_floor",
-    "gen_shards",
     "kernel_targets",
     "kernels",
     "life_ranges",

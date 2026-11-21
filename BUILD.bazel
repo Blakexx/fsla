@@ -3,13 +3,13 @@
     bazel build //:library                      # rola_cu13/_C.abi3.so and its build record, the shipped build
     bazel run //:library                        # the same, copied into this checkout's rola_cu13/
     bazel run //:library --//:archs=90a --//:decode_arms=3    # an iteration build
-    bazel test //:ratified                      # ratify's verdict on the build (docs/build-graph.md#ratify)
-    bazel run //:ratify -- --write              # re-ratify: the manifests, recorded from the build
+    bazel test //:derivation                    # the derivation's goldens against the harness the graph built
+    bazel run //:ratify -- --census             # every shipped instantiation's registers and spills (docs/ratification.md)
 """
 
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "string_list_flag")
-load("@rola_env//:flags.bzl", "CXX11_ABI", "RATIFIED_ARCHS", "TOOLCHAIN", "TORCH", "TORCH_CUDA")
-load("//bazel:defs.bzl", "checkout_test", "compile_database", "dev_run", "ratify_census", "ratify_run", "ratify_test", "rola_extension", "rola_instrument", "rola_wheels", "tool_run", "tool_test", "tree_part", "tree_test")
+load("@rola_env//:flags.bzl", "BUILT_ARCHS", "CXX11_ABI", "TOOLCHAIN", "TORCH", "TORCH_CUDA")
+load("//bazel:defs.bzl", "census_test", "checkout_test", "compile_database", "dev_run", "ratify_census", "ratify_run", "rola_extension", "rola_instrument", "rola_wheels", "tool_run", "tool_test", "tree_part", "tree_test")
 load("@rola_tree//:tree.bzl", "TRACKED")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
 load("@tar.bzl", "tar")
@@ -27,11 +27,11 @@ exports_files([
     "docs/rules.json",
 ])
 
-#: THE BUILD'S PARAMETERS. The defaults are the shipped build: every ratified architecture, every arm, every part; any
+#: THE BUILD'S PARAMETERS. The defaults are the shipped build: every built architecture, every arm, every part; any
 #: other value is an iteration build, which its record says.
 string_list_flag(
     name = "archs",
-    build_setting_default = RATIFIED_ARCHS,
+    build_setting_default = BUILT_ARCHS,
     visibility = ["//visibility:public"],
 )
 
@@ -60,7 +60,7 @@ rola_extension(
         "//tests:__pkg__",
     ],
     deps = [
-        "//csrc/rola:carry_arms",
+        "//csrc/rola:carry_arm_set",
         "//csrc/rola:registration",
         "//csrc/rola:runtime",
         "//csrc/rola:stamp_unit",
@@ -93,29 +93,32 @@ dev_run(
     },
 )
 
-#: RATIFY ON THE BUILD: its census is the units' own compiles (docs/build-graph.md#ratify). The verdict is its own test,
-#: run at a milestone and before a wheel, never by the gate or the lane: between milestones the manifests are stale by
-#: design (KERNEL_STANDARDS section 16)
+#: THE CENSUS: the units' own compiles (docs/ratification.md), reported by `bazel run //:ratify -- --census`; and the
+#: derivation's goldens, checked against the harness the graph built (run when the derivation's sources move, never by
+#: the gate or the lane: the record's source hashes expire with each edit to them)
 ratify_census(
     name = "census",
     harness = "//tools:derivation_harness_source",
     harness_binary = "//tools:derivation_harness",
     library = ":library",
+    #: the template lint reads the units the library compiled
+    visibility = ["//csrc/rola:__pkg__"],
 )
 
-ratify_test(
-    name = "ratified",
+census_test(
+    name = "derivation",
     size = "medium",
+    args_ = ["--derivation"],
     census = ":census",
     data = [":tree"],
+    script = "ratify.py",
     tags = ["manual"],
 )
 
-#: THE WHEELS (docs/build.md#wheels): `rola` and its plugin `rola-cu13` from this library, on a clean commit whose
-#: build ratify passes; `bazel run //:wheels` writes dist/
+#: THE WHEELS (docs/build.md#wheels): `rola` and its plugin `rola-cu13` from this library, on a clean commit;
+#: `bazel run //:wheels` writes dist/
 rola_wheels(
     name = "wheels",
-    census = ":census",
     library = ":library",
 )
 
@@ -316,6 +319,16 @@ tree_test(
     git = True,
 )
 
+#: THE GRAPH RUNS THE TOOLCHAIN (KERNEL_STANDARDS#s14-graph): no tracked code runs a toolkit tool, a build tool, an install or a
+#: pytest child, nor makes a build directory, that is not in the lint's allowlist with its rule or ruling
+tree_test(
+    name = "graph_only",
+    size = "small",
+    cmd = ["python3", "tools/lint/graph_only.py"],
+    data = [":tree"],
+    git = True,
+)
+
 tree_test(
     name = "readability_spacing",
     size = "small",
@@ -449,6 +462,7 @@ test_suite(
         ":ruff",
         ":ruff_e3",
         ":lint_standards",
+        ":graph_only",
         ":readability_spacing",
         ":portable_agent_files",
         ":mirror_declarations",

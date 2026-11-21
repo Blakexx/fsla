@@ -205,7 +205,7 @@ def missing_kernels(seen: set[str]) -> list[str]:
 #: THE VERDICT CACHE: a cubin's verdict, report and statistics under the key of everything that decides them -- the
 #: cubin's bytes, the gate's own source closure (every module of `tools/` it has loaded, and the checker's), the
 #: disassemblers' identity and the arguments -- so an unchanged cubin's verdict is the reading of identical bytes under
-#: an identical gate, replayed (ratify's per-unit cache makes the same argument). `--no-cache` reads every cubin.
+#: an identical gate, replayed. `--no-cache` reads every cubin.
 #: -- see docs/internals/tools/sass_gate.md#cache
 _CLOSURE: str | None = None
 

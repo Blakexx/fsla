@@ -40,6 +40,7 @@ cuda_root(
 
 exports_files([
     "cuda_compile.py",
+    "arms.py",
     "flags.py",
     "gates.py",
     "headers.py",
@@ -56,31 +57,25 @@ filegroup(
     ],
 )
 
-#: what `tools/gen_shards.py` and `measure/hardware.py` read: the arm declarations and the hardware table
+#: what the header action, the arm gate and the record read: the arm helpers and the hardware table
 filegroup(
     name = "generator_sources",
     srcs = [
         "//:measure/__init__.py",
         "//:measure/hardware.py",
+        "//bazel:arms.py",
         "//csrc/rola:src/common/hardware.json",
-        "//tools:gen_shards.py",
-        "//tools:manifests/decode_set.json",
-        "//tools:manifests/shipped_set.json",
     ],
 )
 
-#: what the build gates and the record read: the ratified manifests and toolchain records, the vendored tree, the
-#: checked-in generated units, the version
+#: what the build gates and the record read: the toolchain records, the vendored tree, the version
 filegroup(
     name = "record_sources",
     srcs = [
         "//:rola/__init__.py",
-        "//csrc/rola:units.bzl",
         "//csrc/rola:sources",
         "//csrc/third_party:cutlass_tree",
         "//tools:build_record.py",
-        "//tools:kernels.py",
-        "//tools:manifests_cu13",
         "//tools:toolchain_records",
         "//tools:toolchains.py",
     ],

@@ -38,8 +38,8 @@ separate claim from the capacity is [`decode.md`
 
 <a id="arm-subset"></a><a id="roladecodearms"></a>**THE ARM LIST IS DATA, AND A BUILD MAY NAME A SUBSET OF IT.**
 the decode family's instantiation matrix is the product `d_v(2) x D(4) x decay(2)`, declared
-one row per arm in `tools/manifests/decode_set.json` (an arm family of `tools/gen_shards.py`:
-[`../tools/gen_shards.md#families`](../tools/gen_shards.md#families)) so a BUILD can name a subset
+one row per arm in `csrc/rola/src/decode/arms.bzl` (an arm family of `bazel/arms.bzl`:
+[`../../build-graph.md#arms`](../../build-graph.md#arms)) so a BUILD can name a subset
 by index: `--//:decode_arms=5` compiles arm 5 and nothing else, through the generated
 `decode_selection.inc` that `decode.cu` alone includes
 ([`build.md#arm-subset`](../../build.md#arm-subset)). Instantiation is the dominant build
@@ -60,9 +60,8 @@ written into the call — and `matched` is `int_switch`'s own refusal mechanism,
 both readings expand it. An arm the binary does not carry is a `STD_TORCH_CHECK` refusal
 naming the shape, never a silent miss.
 
-**A SUBSET BINARY IS NOT SHIPPABLE** and its record says so: ratify proves EVERY ratified
-instantiation is present, which a subset contradicts by construction, so an iteration
-build is never ratified and never a wheel ([`build.md#iteration`](../../build.md#iteration)).
+**A SUBSET BINARY IS NOT SHIPPABLE** and its record says so: it carries fewer instantiations than the
+declaration by construction, so an iteration build is never a wheel ([`build.md#iteration`](../../build.md#iteration)).
 
 <a id="build-stamp"></a>
 <a id="roladecodebuildstamp"></a>`rola_decode_build_stamp()` is a DEVICE-SIDE FACT a stale `.so` at the right

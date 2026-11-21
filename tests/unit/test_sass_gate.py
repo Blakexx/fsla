@@ -1,6 +1,5 @@
 """The SASS gate (`tools/sass_gate.py`) on compiled probes: a clean kernel, one whose runtime-indexed local array must
-go to local memory, one whose shuffle sits in a loop ptxas cannot prove warp-uniform (a convergence subroutine), and
-one whose division calls its slow path (a call that is not one), and two whose MMA loops convert on the conversion unit
+go to local memory, one whose division calls its slow path (a call that is not one), and two whose MMA loops convert on the conversion unit
 or read global memory (§29's step lints) beside one that converts on the FMA pipe and stages by `cp.async` -- the
 gate's reds are what it reads, proven on a cubin that has them. The step lints are the checker's rules (`mma.sync` read as
 steps of kind `sync`), and their cases on the lines -- the loops that hold steps, the branches in a step, the exit laid out as
@@ -63,11 +62,13 @@ def test_a_narrowing_that_matches_nothing_is_red(cubin, capsys, monkeypatch):
     assert "no function matched" in capsys.readouterr().out
 
 
-def test_a_guarded_convergence_fallback_and_a_slow_path_call_are_not_red(cubin):
+def test_a_slow_path_call_is_not_red(cubin):
+    """The division's slow path is a `CALL` the listing holds and the gate does not count: it is no convergence subroutine. (The
+    guarded convergence fallback, `BRA.DIV` into one, is an Ampere shape: a Hopper shuffle is inline after a `WARPSYNC`; its
+    hot and guarded forms are the checker's tests, on lines.)"""
     ok, report = sass_gate.gate(cubin, None, None)
-    converge = next(v for k, v in sass_gate.STATS.items() if "converge_probe" in k)
     divide = next(v for k, v in sass_gate.STATS.items() if "divide_probe" in k)
-    assert converge["calls"] == 0 and converge["guarded"] == 1 and not converge["reds"], report
+    assert "slowpath" in sass.disassemble(cubin), "the probe's division has no slow-path call: it no longer has the shape it tests"
     assert divide["calls"] == 0 and divide["guarded"] == 0 and not divide["reds"], report
 
 

@@ -31,11 +31,18 @@ def test_a_product_resolves_its_architectures_rates_and_a_device_name_its_produc
     assert json.loads(hardware.CONFIG.read_text()) == hardware.load()
 
 
-def test_every_architecture_names_its_family_and_each_built_one_its_window():
+def test_every_architecture_names_its_family_and_the_built_ones_are_those_choosing_a_window():
     cfg = hardware.load()
     assert {a: r["build"]["family"] for a, r in cfg["arch"].items()} == {"sm_90a": "hopper", "sm_100a": "blackwell"}
+    assert hardware.built(cfg) == ["sm_90a"]
     cfg["arch"]["sm_90a"]["build"].pop("window")
-    assert any("sm_90a is built but its build chooses no window" in f for f in hardware.check(cfg))
+    assert hardware.built(cfg) == []
+
+
+def test_a_built_architecture_must_resolve_its_pipes_rates():
+    cfg = hardware.load()
+    del cfg["arch"]["sm_90a"]["rates"]["schedulers"]
+    assert any("sm_90a is built but its defaults lack schedulers" in f for f in hardware.check(cfg))
 
 
 def test_products_equal_in_build_traits_share_a_variant_and_an_override_is_the_next():

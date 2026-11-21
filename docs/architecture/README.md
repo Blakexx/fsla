@@ -22,7 +22,7 @@ document says so and names the measurement that would settle it.
 | [hopper-carry.md](hopper-carry.md) | The hopper carry's design before it is built -- PROPOSED, not locked: what it is handed, its CTA and window as the labs measured them, what the labs did not have (lists of any length, rows that arrive cold, the scales), its price, and what is to be ruled. |
 | [hopper-gather.md](hopper-gather.md) | The hopper gather's design before it is built -- PROPOSED, not locked: what it is handed, the ring it writes for the carry, its CTA's rules from the carry's labs, what is measured and what is to be ruled. |
 | [precision.md](precision.md) | Every accumulator is fp32 or exact integer but the output's sum across CTAs (fp32 or f16, the plan's); storage and operands are one family on every card: u8 rows, bf16 values and operands. |
-| [closed-world-codegen.md](closed-world-codegen.md) | Only measured binaries run: pinned assembler, AOT-only, ratified per-arch manifest, runtime refusal. Why JIT compilation is rejected. |
+| [closed-world-codegen.md](closed-world-codegen.md) | Only measured binaries run: pinned assembler, AOT-only, the declared targets and the per-build gates, runtime refusal. Why JIT compilation is rejected. |
 | [families.md](families.md) | One design, a schedule per family: what differs by structure (a family's schedule), by instruction (an atom) and by number (a plan); the capability rows hold only what is read; one entry a kernel, its hardware facts in the C++ path. |
 | [guarantees-choices-preferences.md](guarantees-choices-preferences.md) | The taxonomy every proposed change is sorted into, populated with real entries, and what each category demands of a contributor. |
 

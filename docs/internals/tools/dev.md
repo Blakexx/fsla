@@ -91,7 +91,7 @@ Docker loads it (`//:image_tarball`), tagged `rola-devbox:<digest[:12]>`.
   a green check writes the digest to `tools/devbox_image.json` and removes its volumes.
 - `compose` (`bazel run //:container_compose`) writes `.devcontainer/compose.local.yaml`: the image's tag, the
   devbox's own volumes and the host's mounts (`_mounts`: the lock directory at the one lock path, the WSL
-  driver's libraries, and the image's digest, read inside by `dev_config.devbox_image()`).
+  driver's libraries).
 - `gate` is the commit gate's check: the image the graph builds is the one `tools/devbox_image.json` names, and a
   commit changing the name has a passing record for the new digest. A commit that leaves the image alone needs no
   Docker.

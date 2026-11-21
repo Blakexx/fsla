@@ -278,7 +278,7 @@
     "@@rola_devtools+//bazel:environment.bzl%environment": {
       "general": {
         "bzlTransitiveDigest": "rdpfjwH/zvN6fSlu1+tgbqVU4uaTrU51Z9FuoX5z6WQ=",
-        "usagesDigest": "x/s4U3plTMrIIN6uWCRlYWCHYzttDLobVP76oIlzTqY=",
+        "usagesDigest": "l0qVvkXeicVYiJXxXhEsz/3z/isyZHN/PSM5uOsX4HI=",
         "recordedInputs": [
           "REPO_MAPPING:,rola_devtools rola_devtools+",
           "REPO_MAPPING:,uv rola_devtools++environment+uv"
@@ -304,12 +304,12 @@
                 "ROLA_NVCC_THREADS"
               ],
               "watch": [
-                "@@//tools:build_flags.py",
-                "@@//tools:toolchains.py"
+                "@@//:measure/__init__.py",
+                "@@//:measure/hardware.py",
+                "@@//csrc/rola:src/common/hardware.json",
+                "@@//tools:build_flags.py"
               ],
-              "watch_trees": [
-                "@@//tools:manifests/cu13/sm_90a.json"
-              ],
+              "watch_trees": [],
               "build": "",
               "build_file": "@@//bazel:env.BUILD"
             }

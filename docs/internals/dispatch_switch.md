@@ -6,14 +6,14 @@ launcher: `entmax.cu`'s forward and backward launchers (`factor.cu`'s four launc
 it the same way).
 
 The carry and decode families select from a GENERATED ARM LIST instead. The carry's is
-the declared shipped set (`tools/manifests/shipped_set.json`, keyed on the carve's plan
-pair): `tools/gen_shards.py` emits `carry_selection.inc`, one X-macro over every built
+the declared arm list (`csrc/rola/src/carry/arms.bzl`, keyed on the carve's plan
+pair): `bazel/arms.bzl` emits `carry_selection.inc`, one X-macro over every built
 arm, and `carry/carry.cu` expands `ROLA_CARRY_ARM_SET_X` four times — the arm
 declarations, the launch dispatch through `arm_switch` ([`common/arm_switch.md`](common/arm_switch.md)),
 the census and the per-arm row listing — so the enumeration exists once and is
 single-sourced with the per-arm translation units it partitions into
-(`instantiations/README.md`). Decode's is `ROLA_DECODE_ARM_SET_X`, generated the same way
-(`decode_selection.inc` from `tools/manifests/decode_set.json`), an X-macro over the declared
+(the graph's, `docs/build-graph.md#arms`). Decode's is `ROLA_DECODE_ARM_SET_X`, generated the same way
+(`decode_selection.inc` from `csrc/rola/src/decode/arms.bzl`), an X-macro over the declared
 `(DV, D, decay)` rows, tried in order and refused by name if none matches.
 
 THE RULE BETWEEN THE TWO IS WHERE THE ENUMERATION LIVES. A launcher with a handful of
@@ -103,7 +103,7 @@ do not have.
 
 | half | what it is | what covers it |
 |---|---|---|
-| the instantiation SET | which `(template arguments)` tuples exist in the binary | `tools/ratify.py`, reading the built `.so`. A tuple that stops being instantiated fails it. |
+| the instantiation SET | which `(template arguments)` tuples exist in the binary | the census (`tools/ratify.py --census`), reading the build's compiles, and the arm gate's coverage sweep, which asks the built `.so` what it carries. |
 | the SELECTION | which tuple a given set of runtime values reaches | the CUDA suites, which exercise every arm |
 
 `tools/sass_bodies.py` hashes DEVICE entry points. Host `.text` is not in that hash, so

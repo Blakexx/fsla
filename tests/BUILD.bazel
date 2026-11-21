@@ -2,10 +2,14 @@
 `pytest_tier`). Each test is in one tier: the CPU tier is tests/unit's rows that launch nothing, run with no device
 visible; a device tier runs alone. Every tier takes the library: collecting a tier reaches the plugin."""
 
-load("@rola_env//:flags.bzl", "RATIFIED_ARCHS")
+load("@bazel_skylib//rules:common_settings.bzl", "string_list_flag")
+load("@rola_env//:flags.bzl", "BUILT_ARCHS", "NVCC_FLAGS")
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+load("//bazel:arms.bzl", "arm_family", "arm_selection")
 load("//bazel:cuda.bzl", "cuda_unit")
 load("//bazel:defs.bzl", "device_lane", "pytest_tier", "tree_part")
+load("//csrc/rola:src/carry/arms.bzl", "CARRY_DOMAINS", "CARRY_KEY")
+load(":unit/fixtures/fixture_arms.bzl", "FIXTURE_ROWS")
 
 #: THE LAB'S UNIT TESTS: the lab's and the dev config's, which `:lab` runs and `:cpu` leaves out
 LAB_TESTS = [
@@ -14,18 +18,17 @@ LAB_TESTS = [
 ]
 
 #: THE PROBES THE UNIT TESTS READ, compiled by the graph (docs/testing.md#probes): each test takes what it needs as data and
-#: runs no compiler. The device probes are built for the build's architectures (`RATIFIED_ARCHS`), the CUDA rule's flags
+#: runs no compiler. The device probes are built for the build's architectures (`BUILT_ARCHS`), the CUDA rule's flags
 #: being the probes' own (`-O3`, relaxed constexpr)
-_PROBE_ARCHS = ["compute_%s:sm_%s" % (arch, arch) for arch in RATIFIED_ARCHS]
+_PROBE_ARCHS = ["compute_%s:sm_%s" % (arch, arch) for arch in BUILT_ARCHS]
 _PROBE_COPTS = ["-O3", "--expt-relaxed-constexpr"]
 _HOST_CC = "@host_cc//:identity.txt"
 
-#: the two SASS probes are read, never run: the shapes they hold (the shuffle's slow-path call, ptxas's convergence
-#: subroutine) are the shapes the gates read on an Ampere cubin, which the Hopper build never emits -- so they compile for sm_86
+#: the two SASS probes are read, never run, and built for the build's architectures as the others are
 [cuda_unit(
     name = name + "_probe",
     srcs = ["unit/fixtures/%s_probe.cu" % name],
-    archs = ["compute_86:sm_86"],
+    archs = _PROBE_ARCHS,
     copts = _PROBE_COPTS,
     host_cc = _HOST_CC,
     deps = ["//csrc/rola:headers"],
@@ -48,18 +51,54 @@ cc_binary(
     ],
 )
 
-#: the host arm switch's probe over a synthetic selection header: one binary each for a build carrying two of three arms
-#: and one carrying none (c10's `TORCH_CHECK` is the refusal; the test hands its library path)
-[genrule(
-    name = "arm_switch_%s_selection" % variant,
-    srcs = [
-        "unit/fixtures/arm_switch_selection.py",
-        "//bazel:generator_sources",
+#: THE FIXTURE ARM FAMILY (tests/unit/fixtures/fixture_arms.bzl): the macro of bazel/arms.bzl on a family that is not the carry, which
+#: declares none. Its three rows make a unit each for each built architecture, its selection header names the arms
+#: `--//tests:fixture_arms` does, and its table is the rows (tests/unit/test_arm_family.py reads all three)
+string_list_flag(
+    name = "fixture_arms",
+    build_setting_default = [],
+)
+
+cc_library(
+    name = "fixture_headers",
+    hdrs = [
+        ":fixture_selection",
+        "unit/fixtures/fixture_arm.cuh",
     ],
-    outs = ["arm_switch_%s/carry_selection.inc" % variant],
-    cmd = "$(execpath @rola_env//:python) $(execpath unit/fixtures/arm_switch_selection.py) --arms '%s' --out $@" % arms,
-    tools = ["@rola_env//:python"],
-) for variant, arms in {"built": "0,2", "empty": ""}.items()]
+    includes = [
+        "generated",
+        "unit/fixtures",
+    ],
+)
+
+arm_family(
+    name = "fixture",
+    arms = FIXTURE_ROWS,
+    built_archs = BUILT_ARCHS,
+    domains = CARRY_DOMAINS,
+    flag = ":fixture_arms",
+    includer = "the fixture's arm units",
+    key = CARRY_KEY,
+    unit = {
+        "arm_header": "fixture_arm.cuh",
+        "copts": NVCC_FLAGS,
+        "define": "ROLA_FIXTURE_ARM_DEFINE",
+        "deps": [":fixture_headers"],
+        "host_cc": _HOST_CC,
+    },
+)
+
+#: the host arm switch's probe over a synthetic selection header: one binary each for a build carrying two of the fixture's
+#: three arms and one carrying none (c10's `TORCH_CHECK` is the refusal; the test hands its library path)
+[arm_selection(
+    name = "arm_switch_%s_selection" % variant,
+    dir = "arm_switch_%s" % variant,
+    family = "carry",
+    includer = "the arm switch's probe",
+    key = list(CARRY_KEY),
+    rows = json.encode(FIXTURE_ROWS),
+    selected = selected,
+) for variant, selected in {"built": ["0", "2"], "empty": []}.items()]
 
 [cc_library(
     name = "arm_switch_%s_header" % variant,
@@ -91,6 +130,9 @@ pytest_tier(
         "@warpline//:warpline",
         ":arm_switch_probe_built",
         ":arm_switch_probe_empty",
+        ":fixture_arm_set",
+        ":fixture_selection",
+        ":fixture_table",
         ":life_ranges_probe",
         ":sass_gate_probe",
     ],
@@ -165,7 +207,7 @@ test_suite(
 )
 
 #: THE SANITIZER LANE (docs/testing.md#the-sanitizer-lane): compute-sanitizer, the toolkit's own, over one oracle cell a
-#: family; run when a component lands, before a ratify and on a schedule, never by a commit's suite
+#: family; run when a component lands, before a census and on a schedule, never by a commit's suite
 device_lane(
     name = "sanitizer",
     timeout = "eternal",

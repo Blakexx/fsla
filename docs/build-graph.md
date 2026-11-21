@@ -7,8 +7,8 @@ actions run) and `bazel/bazel` (the front door); each `BUILD.bazel` sits beside 
 extension (`//:library`, [below](#compile)), gates it ([below](#gates)) and runs the checks ([below](#checks)).
 The commit gate is `bazel test //:gate` (`tools/git-hooks/pre-commit`, on the commit as git will write it), and the
 test tiers are the graph's targets too (`//:lane`, [below](#checks)), and so are the two wheels (`bazel run //:wheels`,
-[`build.md`](build.md#wheels)); ratify reads the graph's compiles and compiles nothing
-([below](#ratify)). Nothing builds outside the graph: `pip install .` refuses (`tools/no_source_build.py`). CI runs the commit gate's checks through the graph
+[`build.md`](build.md#wheels)); the census reads the graph's compiles and compiles nothing
+([below](#census)). Nothing builds outside the graph: `pip install .` refuses (`tools/no_source_build.py`). CI runs the commit gate's checks through the graph
 (`.github/workflows/lint.yml`, on a fresh runner as `.github/actions/graph` sets one up). Measurement is
 `rola_devtools.build`'s
 ([`measurement.md`](measurement.md)), whose timing sessions hold the GPU and the clock as machine-wide counting
@@ -77,7 +77,8 @@ both into the checkout's `rola_cu13/` (a copy: the library is imported from the 
 headers into `build/generated`.
 
 - THE BUILD'S PARAMETERS are the root package's settings: `--//:archs` (default `@rola_env//:flags.bzl`'s
-  `RATIFIED_ARCHS`, the toolchain's ratified manifests), `--//:carry_arms` and `--//:decode_arms` (arm indices; empty is
+  `BUILT_ARCHS`, the hardware table's built architectures: the rows of `common/hardware.json` whose build chooses a window,
+  [`architecture/families.md`](architecture/families.md)), `--//:carry_arms` and `--//:decode_arms` (arm indices; empty is
   every arm). Any value but a default makes an iteration build, which its record says.
 - THE FLAGS ARE `tools/build_flags.py`'S: the environment repository writes `@rola_env//:flags.bzl` from it
   (`bazel/flags.py`) -- the nvcc codegen flags and torch's extension defines, the host C++ flags -- and the graph states
@@ -100,16 +101,27 @@ headers into `build/generated`.
 - THE INCLUDE ORDER IS SETUP.PY'S: the repository's headers, then CUTLASS's, then the generated headers (and the stamp,
   for the one unit that reads it), then torch's, Python's and the toolkit's, so a repository header wins any name
   collision (`bazel/defs.bzl`'s `include_root`).
-- THE GENERATED HEADERS are actions over their generators: the arm selections, the carry parts and the carried builds
-  (`rola_headers`, `bazel/headers.py`, from the settings) and the device stamp (`tools/csrc_stamp.py` over every file
-  under `csrc/rola/src` but its markdown -- the digest ratify computes). Only `build_stamp.cu`'s unit reads the stamp
+- THE GENERATED HEADERS are actions over their generators: the arm families' selection headers and Python tables
+  (`bazel/arms.bzl`, [below](#arms)), the carried builds (`rola_headers`, `bazel/headers.py`, from the settings) and the
+  device stamp (`tools/csrc_stamp.py` over every file under `csrc/rola/src` but its markdown). Only `build_stamp.cu`'s unit reads the stamp
   and depends on it (`stamp_unit`): a digest of every source, as any unit's input it would recompile every unit on
   any edit.
-- ONE UNIT LIST: `csrc/rola/units.bzl`, written and checked by `tools/gen_shards.py`, names `tools/kernels.py`'s hand
-  units, the runtime's among them (`runtime_units`, `//csrc/rola:runtime`), and each generated carry arm unit with the
-  arms it carries. Each arm unit is its own target, and
-  `carry_arm_set` hands the link only the units `--//:carry_arms` names (`gen_shards`' grammar: indices or `all`), so an
-  unwanted arm is never compiled.
+- THE UNIT LIST: every `.cu` under `csrc/rola/src` is a hand unit (`//csrc/rola:units`), the runtime's among them
+  (`csrc/rola/units.bzl`'s `RUNTIME_UNITS`, `//csrc/rola:runtime`, held to `tools/kernels.py`'s `runtime_units` by
+  `tests/unit/test_units_list.py`); a family's arm units are the next section's.
+- <a id="arms"></a>A KERNEL'S ARMS are Bazel targets declared in Starlark: `csrc/rola/src/<kernel>/arms.bzl` holds the arm
+  key (`<FAMILY>_KEY`), each field's domain and the arms, one row of the key each in canonical order (the carry's list is
+  empty: no carry kernel is written on this line; the decode's holds its sixteen). `bazel/arms.bzl`'s `arm_family` reads
+  that one list and makes the family's pieces: one unit per arm and built architecture (`<family>_arm_<i>_sm_<arch>`, from
+  a generated source that defines the arm under its own selection guard) when the family has per-arm units; the selection
+  header of the build (`<family>_selection.inc`, from `--//:<family>_arms`: indices or `all`, empty for every arm, an index
+  out of range refused); and the Python table (`<family>_arms.py`: the key and the rows) that the record, the arm gate and
+  `bazel run //:library`'s copy into `build/generated` give the measurement. `<family>_arm_set` hands the link only the
+  units the build's arms and architectures name, so an unwanted arm or architecture is never compiled. A malformed
+  declaration is refused at analysis, naming the field: a row of the wrong width, a value outside its domain, a duplicate,
+  or rows out of canonical order (an arm's index is what the flag, the header and the unit names say, so it is the
+  declaration's, not where a row was typed). `tests/BUILD.bazel`'s `fixture` family exercises the macro on three rows,
+  `tests/unit/test_arm_family.py` reading what it made. The Hopper carry fills its list.
 - `--threads` IS THE MACHINE'S `host.nvcc_threads`, which the front door hands the graph (`ROLA_NVCC_THREADS`): the
   cicc a job runs is the count its job budget divides by.
 - THE LINK is the pinned mold's, of every unit's objects (each target `alwayslink`, so every object is linked)
@@ -119,50 +131,44 @@ headers into `build/generated`.
 - AN INSTRUMENT'S LIBRARY (`bazel/defs.bzl`'s `rola_instrument`): a measurement's own kernels as
   `rola_cu13/<module>.abi3.so` beside the extension, linked as it is and SASS-gated as it is (`--instrument`: it owes
   none of the source's kernels, and its probes keep only the step signatures their declarations name, the rule's
-  `kept`, [`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#instrument)), for the architectures `--//:archs` names; never shipped, so no record, arm gate or
-  ratify. No instrument's library is declared on this line: a family's part harness (KERNEL_STANDARDS section 19) is
+  `kept`, [`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#instrument)), for the architectures `--//:archs` names; never shipped, so no record or arm gate. No instrument's library is declared on this line: a family's part harness (KERNEL_STANDARDS section 19) is
   the rule's user, with the family's first schedule.
 ## <a id="gates"></a>The library's gates
 
 Building `//:library` runs the gates below; their verdicts are its outputs and its runfiles, so neither a build nor
-`bazel run` hands over a library one of them has not passed. Each reruns only when its inputs change. Ratify is not
-among them: the manifests are stale between milestones by design (KERNEL_STANDARDS section 16), so its verdict is a
-target of its own ([below](#ratify)).
+`bazel run` hands over a library one of them has not passed. Each reruns only when its inputs change. The census is not
+among them: it is a report, on demand ([below](#census)).
 
 - THE BUILD GATES AND THE RECORD (`bazel/record.py`): rule 1 (`tools/toolchains.py`'s `rule1`) -- the
-  graph's ptxas is the toolchain record's and the manifests' byte for byte (the tie between that record and
+  graph's ptxas is the toolchain record's byte for byte (the tie between that record and
   `MODULE.bazel`'s toolkit pin), its cuobjdump and nvdisasm are the record's byte for byte too (the tie between the
-  pinned toolkit's manifest and the compiler's, which `tests/unit/test_cuda_toolkit_pin.py` holds equal), and the environment's torch is the toolchain's CUDA major --; rule 3, every architecture ratified; rule 5, the vendored
-  tree its `PIN.json`'s (`tools/build_record.py`'s `vendored_pin`); the shards, the checked-in generated units the arm
-  list's (`tools/gen_shards.py`'s `check_generated`); then the record, `tools/build_record.py`'s writer.
+  pinned toolkit's manifest and the compiler's, which `tests/unit/test_cuda_toolkit_pin.py` holds equal), and the environment's torch is the toolchain's CUDA major --; rule 3, every architecture a built one
+  (`tools/build_record.py`'s `rule3`); rule 5, the vendored tree its `PIN.json`'s (`tools/build_record.py`'s
+  `vendored_pin`); then the record, `tools/build_record.py`'s writer.
 - THE SASS GATE (KERNEL_STANDARDS section 20, `tools/sass_gate.py`) on the linked library, with the graph's
   `cuobjdump` and `nvdisasm` (`@cuda_tools`, the pinned toolkit, one `bin/` for both as an installed toolkit has
   them) and no verdict cache: Bazel's is the cache. It reds a PTX image too: closed-world rule 2 on the binary itself.
-- THE ARM GATE (`bazel/gates.py`): the built table against the declaration, and the coverage sweep -- the binary asked
+- THE ARM GATE (`bazel/gates.py`, `bazel/arms.py`): the built arm table against the declared arms, and the coverage sweep -- the binary asked
   what it carries, loaded by the environment's interpreter against the toolkit's driver stub, so the answer is the
   binary's on any machine. It runs outside the sandbox, where the environment's packages are, the environment's
   store path on its command line (the path carries the environment's key).
 
-## <a id="ratify"></a>Ratify on the build
+## <a id="census"></a>The census
 
-`bazel test //:ratified` is ratify's verdict on the library the graph built, every refusal of
-[`ratification.md`](ratification.md#what-the-gate-refuses): `tools/ratify.py --graph` in a copy of the tree, cached on
-the census, the tree and the manifests. It is tagged `manual`, so neither the gate nor the lane runs it: it runs at a
-milestone and before a wheel. `bazel run //:ratify -- --write` re-ratifies in the checkout, and `-- --census --json
-PATH` measures. Ratify has no compile of its own (no nvcc, no per-unit cache, no `--arch`, `--shard` or `--arm`); the census (`//:census`, `bazel/defs.bzl`'s `ratify_census`) is the units' own
-compiles, each unit's ptxas report and object (the `cuda_unit` rule's), with the derivation harness the graph builds
-(tools/BUILD.bazel's `derivation_harness`, [`internals/tools/ratify.md`](internals/tools/ratify.md#graph)). On
-2026-11-08 the census equalled the former compile path's (750 entries, every register, spill, local-access count and
-body hash) and the verdict was the same line for line; on 2026-11-21 the compile path was deleted, the census of
-341 entries (register sum 16086) and the verdict unchanged. The census's disassemblers run
-a unit a host-budget slot: the machine's budget under `bazel run //:ratify`, a pool of the sandbox's own (the default
-slot count) under the sandboxed `//:ratified`.
+`bazel run //:ratify -- --census` reports every shipped instantiation's registers and spills, read from the graph's own
+compiles ([`ratification.md`](ratification.md)): `tools/ratify.py --graph` in the checkout, `--json PATH` for the raw
+record. The census (`//:census`, `bazel/defs.bzl`'s `ratify_census`) is each unit's ptxas report and object (the
+`cuda_unit` rule's) with the graph's assembler and disassemblers and the derivation harness the graph builds
+(tools/BUILD.bazel's `derivation_harness`, [`internals/tools/ratify.md`](internals/tools/ratify.md#graph)); the scope is
+the build's parameters, and the census's disassemblers run a unit a host-budget slot (the machine's budget under
+`bazel run`, a pool of the sandbox's own under a sandboxed test). `bazel test //:derivation` checks the derivation's
+goldens against the harness (tagged `manual`) and `bazel test //csrc/rola:unused_instantiations` reads the census for
+the template kernels no unit instantiates.
 
-THE GAP: the graph ratifies the shipped set, the architectures the toolchain's manifests already name
-(`RATIFIED_ARCHS`), so an architecture's FIRST manifest has no graph form -- `--//:archs` naming a new one makes an
-iteration build, which is never ratified. The compile path that wrote a first manifest is deleted
-([`internals/DELETIONS.md`](internals/DELETIONS.md)); until the graph has a form for it, a first manifest is owed
-([`bringup.md`](bringup.md)), and rule 3's refusal names it.
+THE CLOSED WORLD IS THE DECLARED TARGETS AND THE GATES EVERY BUILD RUNS: a kernel's arms (`arms.bzl`), the built
+architectures (`BUILT_ARCHS`) and the pinned toolchain are the set; rules 1, 3 and 5, the SASS gate and the arm gate
+are what refuses a build outside it. No committed record stands beside them, and a wheel is a clean commit's build
+whose record is no iteration build.
 
 ## <a id="checks"></a>The checks
 
@@ -184,7 +190,7 @@ index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
   those files. Cached on what it reads, it reruns only when one of those files changes.
 - THE LINTS live beside what they check, and the linters in `tools/lint` (its package: the scripts, their
   configuration, the modes a person runs by hand and each linter's self-test on its fixtures). `//csrc/rola:lints` are
-  the kernel tree's own: clang-format, ast-grep (`tools/lint/ast_grep_gate.py`), the unused instantiations and the
+  the kernel tree's own: clang-format, ast-grep (`tools/lint/ast_grep_gate.py`), the template kernels no unit instantiates and the
   unit lints below. `//:lints` adds the repo's policies over the whole tree: ruff and its blank-line spacing, the
   standards lint (`tools/lint/lint_standards.py`), the readability spacing, the agent files' portability
   (`tools/lint/portable_claude.py`), the mirror's declarations (`rola_devtools.mirror --check`), and each ratchet
@@ -193,9 +199,9 @@ index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
   aspect and `unit_lint_test`): clang-tidy's two profiles and the host warnings, each run on one unit's own compile
   action -- its command line and its inputs -- so a lint reads what the build compiled
   ([`internals/tools/lint.md`](internals/tools/lint.md#unit-lints)). The units are the library's own (the aspect follows
-  its deps), read in one configuration a ratified architecture (a split transition), whose generated headers are that architecture's build set; each verdict is
+  its deps), read in one configuration a built architecture (a split transition), whose generated headers are that architecture's build set; each verdict is
   cached on its unit's compile, and states the seconds it took. `bazel run //:compile_commands` writes the editor's
-  compile database from the same commands, for the first ratified architecture.
+  compile database from the same commands, for the first built architecture.
 - THE TEST TIERS (`//tests:cpu`, `unit_cuda`, `oracle`, `integration`; `//:lane` all five, with `//tests:lab`; `bazel/defs.bzl`'s
   `pytest_tier`; `//tests:lab`, the lab's and the dev config's unit tests on their own, is in the gate, its checker the
   `@warpline` module's): each tier one target, as pytest runs it ([`testing.md`](testing.md#running-it)), over the tree and the

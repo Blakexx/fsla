@@ -17,7 +17,7 @@ exists, and two enumerations of one set drift.
    the generated selection header expands to one `F(index, <the six key fields>)` per
    BUILT arm, the key being `CarryKey` (`arm.md`), and `CarryArmSet` is built from it — no hand-written list exists to
    disagree with the per-arm translation units, because both come out of
-   `tools/gen_shards.py` reading `tools/manifests/shipped_set.json`. The header also
+   `bazel/arms.bzl` reading `csrc/rola/src/carry/arms.bzl`. The header also
    carries `ROLA_CARRY_ARM_COUNT` and `ROLA_CARRY_ARM_DECLARED`.
 2. **A compile-time exhaustiveness assert.** `arm_switch` static-asserts that the set
    is a subset of the declaration (`count <= declared`). A build carries FEWER arms
@@ -31,9 +31,8 @@ exists, and two enumerations of one set drift.
    no row pairs them, and prints both counts and the built set. A key matched by more
    than one member is refused separately — an arm set is a set.
 4. **A trapping default and a post-build coverage sweep.** The host's trapping default
-   is the refusal (there is no fallthrough), and the coverage sweep is
-   `tools/gen_shards.py`'s `sweep_binary` (the library's arm gate): the freshly built `_C`,
-   loaded by path,
+   is the refusal (there is no fallthrough), and the coverage sweep is the library's arm gate
+   (`bazel/gates.py`): the freshly built `_C`, loaded by path,
    must report exactly the rows the build selected
    ([`docs/ratification.md#arm-switch`](../../ratification.md#arm-switch)).
 
@@ -60,9 +59,9 @@ second `ArmSet`, not a second switch.
 
 - `carry.cu`'s dispatch: `arm_switch<CarryArmSet>` resolves every launch's `CarryKey`
   (the carve's plan pair, `rola.ops.carry.arm_key`) to the body of the declared row it
-  names (`tools/manifests/shipped_set.json`).
+  names (`csrc/rola/src/carry/arms.bzl`).
 - `tests/unit/test_arm_switch.py` compiles a probe against the shipped header with a
-  synthetic three-arm selection header — rendered by the same renderer a build uses —
+  synthetic three-arm selection header — rendered by the same rule a build uses (`bazel/arms.bzl`'s `arm_selection`) —
   and exercises every layer: both counts, a built arm dispatching with its own
   constants, a declared-but-unbuilt arm refused with both counts, one refusal per
   field, and the empty set refusing everything.

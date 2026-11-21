@@ -9,12 +9,6 @@ __global__ void local_probe(float* y, const int* i) {
   y[threadIdx.x] = a[i[threadIdx.x]];
 }
 
-__global__ void converge_probe(float* y, const int* n) {
-  float v = y[threadIdx.x];
-  for (int i = 0; i < n[threadIdx.x]; ++i) v += __shfl_xor_sync(0xffffffffu, v, 1);
-  y[threadIdx.x] = v;
-}
-
 __global__ void divide_probe(float* y, const float* x) { y[threadIdx.x] = x[threadIdx.x] / y[threadIdx.x + 32]; }
 
 __device__ __forceinline__ void mma(float (&d)[4], unsigned a, unsigned b) {

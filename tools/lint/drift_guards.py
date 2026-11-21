@@ -24,7 +24,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
+import ast
 import re
 import sys
 from pathlib import Path
@@ -37,7 +37,7 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 #: THE DECLARED ARM KEY, read from the declaration rather than restated. A lint that
 #: hard-codes the key it enforces is a second declaration of it.
-SHIPPED_SET_JSON = ROOT / "tools" / "manifests" / "shipped_set.json"
+CARRY_ARMS_BZL = CSRC / "src" / "carry" / "arms.bzl"
 
 #: THE GEOMETRY BLOCK -- the ONE place the addressing derivation may be instantiated.
 GEOMETRY_BLOCK = ("common/geom.cuh", "common/geom.cu", "common/geom_api.cuh")
@@ -52,9 +52,12 @@ DERIVATION_NAMES = ("derive_carry_geom", "sub_boxes", "ModeOrder", "StreamSpans"
 
 
 def arm_key() -> tuple[str, ...]:
-    if not SHIPPED_SET_JSON.exists():
-        return ("D", "DV", "warps_per_cta")
-    return tuple(json.loads(SHIPPED_SET_JSON.read_text())["key"])
+    """The carry's declared key: `CARRY_KEY` in the Starlark declaration, a literal read by AST (a lint imports nothing
+    to learn a fact about the repo's files)."""
+    for node in ast.parse(CARRY_ARMS_BZL.read_text()).body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "CARRY_KEY" for t in node.targets):
+            return tuple(ast.literal_eval(node.value))
+    raise SystemExit(f"drift_guards: {CARRY_ARMS_BZL.relative_to(ROOT)} declares no `CARRY_KEY`")
 
 
 def _walk(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
@@ -104,12 +107,13 @@ def rule_arm_axes(files=None) -> list[str]:
     Non-integer parameters (types) and parameters spelled as file constants (a leading
     `k`) are not axes and are not reported.
 
-    THE KEY GOVERNS THE FAMILY THAT DECLARES IT. `shipped_set.json` is the carry
+    THE KEY GOVERNS THE FAMILY THAT DECLARES IT. `CARRY_KEY` is the carry
     family's declaration, so this rule reads carry kernels: the producer's solves and
     the decode step key on their own axes, and whether those fold into this key is an
     open question in `docs/open-work.md`, not a finding here.
     """
-    key = {k.lower() for k in arm_key()}
+    declared = arm_key()
+    key = {k.lower() for k in declared}
     family = re.compile(r"\bcarry\w*_kernel\b")
     findings = []
     for path in (cuda_files() if files is None else files):
@@ -130,7 +134,7 @@ def rule_arm_axes(files=None) -> list[str]:
                     continue
                 findings.append(
                     f"{_rel(path)}:{i + 1}: kernel template axis '{name}' is not one "
-                    f"of the declared arm key {list(arm_key())}")
+                    f"of the declared arm key {list(declared)}")
     return findings
 
 
@@ -273,23 +277,22 @@ def rule_second_arm_table(files=None) -> list[str]:
     """One enumeration of the arm set: the declaration.
 
     Heuristic: a module-level name matching `*_ARMS`/`ARM_*` bound to a literal
-    container, outside the generator and the declaration's own readers. Two lists of
-    one set is the drift shape this repository has already shipped once.
+    container. The arm list is declared once, in Starlark beside its kernel (`arms.bzl`), and the graph generates
+    every table a Python reader sees. Two lists of one set is the drift shape this repository has already shipped once.
     """
-    allowed = {"tools/gen_shards.py"}
     decl = re.compile(r"^(\w*ARMS?\w*)\s*(?::[^=]+)?=\s*[\(\[\{]")
     findings = []
     files = python_files((PYPKG, TESTS, ROOT / "tools", ROOT / "measure")) \
         if files is None else files
     for path in files:
         rel = _rel(path)
-        if rel in allowed:
-            continue
         for i, line in enumerate(path.read_text().splitlines()):
             m = decl.match(line)
             if m and not line.rstrip().endswith(("()", "[]", "{}")):
-                findings.append(f"{rel}:{i + 1}: '{m.group(1)}' is a literal arm table "
-                                f"outside {sorted(allowed)[0]}")
+                #: the first sentence is the ratchet's key for the baseline's entries and stays as they were recorded
+                findings.append(f"{rel}:{i + 1}: '{m.group(1)}' is a literal arm table outside tools/gen_shards.py. "
+                                f"That generator is gone: the arm list is declared once, in an `arms.bzl`, and the "
+                                f"graph generates every table a Python reader sees")
     return findings
 
 
@@ -461,7 +464,10 @@ FIXTURE_PAIRS = {
 
 
 def self_test() -> int:
+    global CARRY_ARMS_BZL
     bad = []
+    #: the fixtures are written against a key of their own (`fixtures/drift_arms.bzl`), not the carry's
+    real_declaration, CARRY_ARMS_BZL = CARRY_ARMS_BZL, FIXTURES / "drift_arms.bzl"
     for name, (fires, quiet) in sorted(FIXTURE_PAIRS.items()):
         rule = RULES[name]
         hot = rule([FIXTURES / fires])
@@ -470,6 +476,7 @@ def self_test() -> int:
             bad.append(f"    {name}: did not fire on {fires}")
         if cold:
             bad.append(f"    {name}: fired on {quiet}: {cold}")
+    CARRY_ARMS_BZL = real_declaration
     #: AND THE FIXTURES MUST NOT REACH THE REAL SCAN. A lint that walks a tree holding
     #: its own deliberate violations reports them as findings; this has happened to
     #: two lints in this directory already, so it is checked rather than remembered.

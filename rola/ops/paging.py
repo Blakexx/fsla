@@ -878,7 +878,7 @@ class _NullContext:
     def __enter__(self):
         return None
 
-    def __exit__(self, *exc):
+    def __exit__(self, *_exc):
         return False
 
 

@@ -782,8 +782,8 @@ shared memory unconditionally, at
 every shipped topology, so there is no second arm for a template parameter to select
 between. `d_v` is restricted to `{32, 64}` by a `STD_TORCH_CHECK`, and `D` outside `[1, 4]` is
 refused by name. The kernels live in a NAMED namespace (`rola::decode::detail`): nvcc mangles an
-anonymous-namespace kernel with a hash of the build path, so a manifest ratified in one worktree
-would certify a name no other checkout's build produces.
+anonymous-namespace kernel with a hash of the build path, so a record made in one worktree
+would name a kernel no other checkout's build produces.
 
 <a id="rola-decode-producer-width-mirror"></a>
 ## <a id="producer-width-mirror"></a>33. Why the producer-width mirror is bound separately

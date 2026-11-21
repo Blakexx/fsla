@@ -50,7 +50,7 @@ with the same version.
 Two uses, both binary verdicts:
 
 * a TU restructure (the shard) -- pre-shard vs post-shard `.so` must be identical
-  over all 1,216 ratified entries;
+  over all 1,216 entries;
 * the `--split-compile` trial -- the flag is adopted only on an empty diff.
 
 Usage:
@@ -79,7 +79,7 @@ from measure import hardware  # noqa: E402 -- the architecture rows' own names
 #: THE HASHER'S OWN VERSION, and it lives with the hasher: `ratify.sass_scan` is what
 #: decides which lines reach the digest, so the version that describes that decision
 #: cannot be defined here without the two being able to drift. Written into every map
-#: this tool produces AND into every manifest ratify writes, so both records say what
+#: this tool produces AND into the census's `--json` record, so both records say what
 #: hashed them.
 HASH_VERSION = ratify.SASS_HASH_VERSION
 

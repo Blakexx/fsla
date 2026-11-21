@@ -1,4 +1,4 @@
-"""THE GRAPH'S RULES: the generated headers for a build's parameters, the carry arm units it selects, and the library
+"""THE GRAPH'S RULES: the generated headers for a build's parameters, and the library
 -- `rola_cu13/_C.abi3.so` linked by the pinned mold beside its build record, which `bazel run` copies into the checkout
 (docs/build-graph.md#compile); and the checks -- over the tree's files, of the commit, and over each unit's own compile
 (docs/build-graph.md#checks)."""
@@ -15,7 +15,7 @@ load(
     _tree_part = "tree_part",
     _tree_test = "tree_test",
 )
-load("@rola_env//:flags.bzl", "RATIFIED_ARCHS", "VENV")
+load("@rola_env//:flags.bzl", "BUILT_ARCHS", "VENV")
 load("@rola_tree//:tree.bzl", "TRACKED")
 load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cc_toolchain", "use_cc_toolchain")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
@@ -40,34 +40,38 @@ def _parameters(ctx, args):
     args.add("--carry-arms", ",".join(_value(ctx, "_carry_arms")))
     args.add("--decode-arms", ",".join(_value(ctx, "_decode_arms")))
 
-#: the headers `bazel/headers.py` writes, by `tools/gen_shards.py`'s names
-_HEADERS = ["carry_selection.inc", "decode_selection.inc", "builds.inc"]
+#: the header `bazel/headers.py` writes: the builds the binary carries (`measure/hardware.py`'s)
+_BUILDS = "builds.inc"
 
 def _headers_impl(ctx):
-    outs = [ctx.actions.declare_file("generated/" + name) for name in _HEADERS]
+    builds = ctx.actions.declare_file("generated/" + _BUILDS)
     args = ctx.actions.args()
     args.add(ctx.file._script)
-    args.add("--out-dir", outs[0].dirname)
-    _parameters(ctx, args)
+    args.add("--out-dir", builds.dirname)
+    args.add("--archs", ",".join(_value(ctx, "_archs")))
     ctx.actions.run(
         executable = ctx.file._python,
         arguments = [args],
         inputs = ctx.files._sources + [ctx.file._script],
-        outputs = outs,
+        outputs = [builds],
         mnemonic = "RolaHeaders",
-        progress_message = "Writing the build's generated headers",
+        progress_message = "Writing the build's carried builds",
     )
-    compilation = cc_common.create_compilation_context(headers = depset(outs), includes = depset([outs[0].dirname]))
-    return [DefaultInfo(files = depset(outs)), CcInfo(compilation_context = compilation)]
+    #: each family's selection header and Python table (bazel/arms.bzl's `arm_family`), beside it
+    arm_files = [f for target in ctx.attr.arm_families for f in target[DefaultInfo].files.to_list()]
+    headers = [builds] + [f for f in arm_files if f.extension == "inc"]
+    compilation = cc_common.create_compilation_context(headers = depset(headers), includes = depset([builds.dirname]))
+    return [DefaultInfo(files = depset([builds] + arm_files)), CcInfo(compilation_context = compilation)]
 
 rola_headers = rule(
     implementation = _headers_impl,
     attrs = _setting_attrs() | {
+        "arm_families": attr.label_list(allow_files = True, doc = "each arm family's selection header and Python table (`arm_selection`, `arm_table`)"),
         "_script": attr.label(default = "//bazel:headers.py", allow_single_file = True),
         "_sources": attr.label(default = "//bazel:generator_sources"),
         "_python": attr.label(default = "@rola_env//:python", allow_single_file = True, cfg = "exec"),
     },
-    doc = "The carry and decode arm selections and the carried builds, for the build's parameters.",
+    doc = "The carried builds for the build's architectures, and the arm families' selection headers and tables beside them.",
 )
 
 def _include_root_impl(ctx):
@@ -81,33 +85,6 @@ include_root = rule(
         "roots": attr.string_list(doc = "the include roots, relative to the package"),
     },
     doc = "Source headers under `-I` roots, searched before any dependency's (docs/build-graph.md#compile).",
-)
-
-def _arm_set_impl(ctx):
-    #: tools/gen_shards.py's family_arms grammar: indices or `all`, empty for every arm, an index out of range refused
-    spec = _value(ctx, "_carry_arms")
-    want = []
-    for token in spec:
-        if token == "all":
-            want += range(ctx.attr.rows)
-        elif not token.isdigit() or int(token) >= ctx.attr.rows:
-            fail("--//:carry_arms: %r is not an arm index or 'all'; the list has %d rows (0..%d)" % (token, ctx.attr.rows, ctx.attr.rows - 1))
-        else:
-            want.append(int(token))
-    chosen = [unit for unit, arms in ctx.attr.units.items() if not want or [i for i in json.decode(arms) if i in want]]
-    return [
-        cc_common.merge_cc_infos(cc_infos = [unit[CcInfo] for unit in chosen]),
-        CudaUnitInfo(units = depset(transitive = [unit[CudaUnitInfo].units for unit in chosen])),
-    ]
-
-carry_arm_set = rule(
-    implementation = _arm_set_impl,
-    attrs = {
-        "units": attr.label_keyed_string_dict(providers = [CcInfo, CudaUnitInfo], doc = "each arm unit, and the arm indices it carries (JSON)"),
-        "rows": attr.int(mandatory = True, doc = "the declared carry arms"),
-        "_carry_arms": attr.label(default = "//:carry_arms"),
-    },
-    doc = "The carry arm units the build's arms name: an arm the build does not want is a unit it never compiles.",
 )
 
 #: the build's architectures as rules_cuda's, and its runtime as headers alone: the library links the runtime itself, so
@@ -218,8 +195,9 @@ def _extension_impl(ctx):
     so = ctx.actions.declare_file("rola_cu13/_C.abi3.so")
     _link(ctx, so)
 
-    #: THE BUILD GATES AND THE RECORD: rules 1, 3 and 5 and the shards, then the record (bazel/record.py)
+    #: THE BUILD GATES AND THE RECORD: rules 1, 3 and 5, then the record (bazel/record.py)
     record = ctx.actions.declare_file("rola_cu13/_build_config.py")
+    tables = {f.basename.removesuffix("_arms.py"): f for f in ctx.files._headers if f.basename.endswith("_arms.py")}
     ptxas = [f for f in ctx.files._nvcc if f.basename == "ptxas"][0]
     args = ctx.actions.args()
     args.add(ctx.file._record)
@@ -231,14 +209,16 @@ def _extension_impl(ctx):
     args.add("--torch", ctx.attr.torch)
     args.add("--torch-cuda", ctx.attr.torch_cuda)
     args.add("--cxx11-abi", str(ctx.attr.cxx11_abi))
+    args.add("--carry-table", tables["carry"])
+    args.add("--decode-table", tables["decode"])
     _parameters(ctx, args)
     ctx.actions.run(
         executable = ctx.file._python,
         arguments = [args],
-        inputs = ctx.files._record_sources + ctx.files._sources + [ctx.file._record, ptxas, ctx.file._cuobjdump, ctx.file._nvdisasm],
+        inputs = ctx.files._record_sources + ctx.files._sources + tables.values() + [ctx.file._record, ptxas, ctx.file._cuobjdump, ctx.file._nvdisasm],
         outputs = [record],
         mnemonic = "RolaRecord",
-        progress_message = "Gating the build (rules 1, 3, 5, the shards) and writing its record",
+        progress_message = "Gating the build (rules 1, 3, 5) and writing its record",
     )
 
     #: THE BINARY GATES, on the linked library: the SASS gate, and the arm table with its coverage sweep (the binary
@@ -251,6 +231,7 @@ def _extension_impl(ctx):
     arm_args.add(ctx.file._arm_gate)
     arm_args.add("--so", so)
     arm_args.add("--header", header)
+    arm_args.add("--table", tables["carry"])
     #: the environment's interpreter by its store path, which carries the environment's key
     arm_args.add("--python", VENV + "/bin/python3")
     arm_args.add("--driver-stub", stub)
@@ -259,7 +240,7 @@ def _extension_impl(ctx):
     ctx.actions.run(
         executable = ctx.file._python,
         arguments = [arm_args],
-        inputs = ctx.files._sources + [so, header, stub, ctx.file._arm_gate],
+        inputs = ctx.files._sources + [so, header, tables["carry"], stub, ctx.file._arm_gate],
         outputs = [arm_verdict],
         mnemonic = "RolaArmGate",
         progress_message = "The arm table and its coverage sweep on %{label}'s library",
@@ -270,14 +251,14 @@ def _extension_impl(ctx):
 
     verdicts = [sass_verdict, arm_verdict]
     install = ctx.actions.declare_file(ctx.label.name + "_install.sh")
-    headers = [f for f in ctx.files._headers if f.extension == "inc"]
+    headers = [f for f in ctx.files._headers if f.extension in ("inc", "py")]
     ctx.actions.write(install, _INSTALL.format(files = " ".join([f.short_path for f in (so, record)]),
                                                headers = " ".join([f.short_path for f in headers])), is_executable = True)
     #: the verdicts are runfiles too: `bazel run` installs nothing a gate has not passed
     return [
         DefaultInfo(files = depset([so, record] + verdicts), executable = install,
                     runfiles = ctx.runfiles(files = [so, record] + verdicts + headers)),
-        #: the units it links, for ratify's census (`ratify_census`)
+        #: the units it links, for the census (`ratify_census`)
         CudaUnitInfo(units = depset(transitive = [dep[CudaUnitInfo].units for dep in ctx.attr.deps if CudaUnitInfo in dep])),
     ]
 
@@ -292,7 +273,7 @@ rola_extension = rule(
         "shared_libraries": attr.label_list(allow_files = [".so"], doc = "torch's libraries the extension links"),
         "torch": attr.string(mandatory = True, doc = "the environment's torch version (@rola_env//:flags.bzl)"),
         "torch_cuda": attr.string(mandatory = True, doc = "the CUDA release the environment's torch was built for"),
-        "toolchain": attr.string(mandatory = True, doc = "the toolchain's name (its record and manifests)"),
+        "toolchain": attr.string(mandatory = True, doc = "the toolchain's name (its record)"),
         "cxx11_abi": attr.bool(mandatory = True, doc = "the environment's torch ABI flag"),
         "_linker": attr.label(default = "@mold//:linker"),
         "_nvcc": attr.label(default = "@cuda//:nvcc_all_files"),
@@ -347,7 +328,7 @@ rola_instrument = rule(
     },
     doc = "An instrument's library, `rola_cu13/<module>.abi3.so`, linked as the extension is, for the architectures " +
           "`--//:archs` names, and SASS-gated as it is, its probes keeping the step signatures `kept` declares; never " +
-          "shipped, so no record, ratify or arm gate; `bazel run` copies it into the checkout.",
+          "shipped, so no record or arm gate; `bazel run` copies it into the checkout.",
 )
 
 def _census_impl(ctx):
@@ -356,7 +337,6 @@ def _census_impl(ctx):
         "ptxas": [f for f in ctx.files._nvcc if f.basename == "ptxas"][0],
         "cuobjdump": ctx.file._cuobjdump,
         "nvdisasm": ctx.file._nvdisasm,
-        "mold": [f for f in ctx.files._linker if f.basename == "mold"][0],
     }
     harness = ctx.executable.harness_binary
     record = ctx.actions.declare_file(ctx.label.name + ".json")
@@ -380,20 +360,18 @@ ratify_census = rule(
         "harness": attr.label(mandatory = True, allow_single_file = [".cu"], doc = "the derivation harness's source"),
         "harness_binary": attr.label(mandatory = True, executable = True, cfg = "target", doc = "the harness, built"),
         "_nvcc": attr.label(default = "@cuda//:nvcc_all_files"),
-        "_linker": attr.label(default = "@mold//:linker"),
         "_cuobjdump": attr.label(default = "@cuda_tools//:bin/cuobjdump", allow_single_file = True),
         "_nvdisasm": attr.label(default = "@cuda_tools//:bin/nvdisasm", allow_single_file = True),
     },
-    doc = "The census record ratify reads in place of its recompile (tools/ratify.py's `--graph`): each unit the " +
-          "library links (its source, nvcc's diagnostics, its object), the graph's assembler, disassemblers and " +
-          "linker, the derivation harness the graph built, and the build's parameters; every path relative to the " +
-          "runfiles' root, which hold them all.",
+    doc = "The census record (tools/ratify.py's `--graph`): each unit the library links (its source, ptxas's report, " +
+          "its object), the graph's assembler and disassemblers, the derivation harness the graph built, and the " +
+          "build's parameters; every path relative to the runfiles' root, which holds them all.",
 )
 
-_RATIFIED = """\
+_CENSUS_TEST = """\
 #!/bin/bash
-# ratify's verdict on the graph's build (bazel/defs.bzl's ratify_test): `tools/ratify.py --graph` in a copy of the tree,
-# so a tool that resolves a path reads the copy (rule 14); the census record's paths are relative to the runfiles
+# a tool on the graph's census (bazel/defs.bzl's census_test): `tools/{script}` in a copy of the tree, so a tool that
+# resolves a path reads the copy (rule 14); the census record's paths are relative to the runfiles
 set -euo pipefail
 tree="$TEST_TMPDIR/tree"
 cp -rL "$TEST_SRCDIR/_main" "$tree"
@@ -401,30 +379,37 @@ rm -f "$tree/$TEST_BINARY"
 cd "$tree"
 unset ROLA_DEV_CONFIG
 export PATH={venv}/bin:/usr/bin:/bin
-exec python3 tools/ratify.py --graph {census} --runfiles "$TEST_SRCDIR/_main"
+exec python3 tools/{script} --graph {census} --runfiles "$TEST_SRCDIR/_main" {args}
 """
 
-def _ratify_test_impl(ctx):
+def _census_test_impl(ctx):
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
-    ctx.actions.write(script, _RATIFIED.format(venv = shell.quote(VENV), census = shell.quote(ctx.file.census.short_path)), is_executable = True)
+    ctx.actions.write(script, _CENSUS_TEST.format(
+        venv = shell.quote(VENV),
+        script = ctx.attr.script,
+        census = shell.quote(ctx.file.census.short_path),
+        args = " ".join([shell.quote(arg) for arg in ctx.attr.args_]),
+    ), is_executable = True)
     runfiles = ctx.runfiles(files = ctx.files.data).merge(ctx.attr.census[DefaultInfo].default_runfiles)
     return [DefaultInfo(executable = script, runfiles = runfiles)]
 
-ratify_test = rule(
-    implementation = _ratify_test_impl,
+census_test = rule(
+    implementation = _census_test_impl,
     test = True,
     attrs = {
+        "script": attr.string(mandatory = True, doc = "the tool under tools/ that reads the census (`--graph`, `--runfiles`)"),
+        "args_": attr.string_list(doc = "its other arguments"),
         "census": attr.label(mandatory = True, allow_single_file = True, doc = "the census record (`ratify_census`)"),
-        "data": attr.label_list(allow_files = True, doc = "the tree ratify reads: its sources, manifests and tools"),
+        "data": attr.label_list(allow_files = True, doc = "the tree the tool reads: its sources and tools"),
     },
-    doc = "Ratify's verdict on the graph's build -- every refusal of docs/ratification.md -- cached on the census, " +
-          "the tree and the manifests.",
+    doc = "A check over the graph's build: a tool under tools/ run on the census in a copy of the tree, cached on the " +
+          "census and the tree.",
 )
 
 _RATIFY = """\
 #!/bin/bash
-# `tools/ratify.py --graph` on the graph's build, in the checkout (bazel/defs.bzl's ratify_run): `--write` records the
-# manifests there, `--census` measures; the census record's paths are relative to the runfiles, where `bazel run` starts
+# `tools/ratify.py --graph` on the graph's build, in the checkout (bazel/defs.bzl's ratify_run): `--census` reports; the
+# census record's paths are relative to the runfiles, where `bazel run` starts
 set -euo pipefail
 runfiles="$PWD"
 cd "${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
@@ -440,18 +425,17 @@ ratify_run = rule(
     implementation = _ratify_run_impl,
     executable = True,
     attrs = {"census": attr.label(mandatory = True, allow_single_file = True, doc = "the census record (`ratify_census`)")},
-    doc = "`bazel run` ratify on the graph's build in the checkout: its arguments are ratify's (`--write`, `--census`).",
+    doc = "`bazel run` the census on the graph's build in the checkout: its arguments are ratify's (`--census`, `--json PATH`).",
 )
 
 _WHEELS = """\
 #!/bin/bash
 # the wheels of the graph's library (bazel/defs.bzl's rola_wheels): `tools/wheels.py` in the checkout, on a clean
-# commit, ratify's verdict first; the census record's and the library's paths are relative to the runfiles
+# commit; the library's and the record's paths are relative to the runfiles
 set -euo pipefail
 runfiles="$PWD"
 cd "${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
-exec {venv}/bin/python3 tools/wheels.py --census "$runfiles/{census}" --runfiles "$runfiles" \\
-    --library "$runfiles/{so}" --record "$runfiles/{record}" "$@"
+exec {venv}/bin/python3 tools/wheels.py --library "$runfiles/{so}" --record "$runfiles/{record}" "$@"
 """
 
 def _wheels_impl(ctx):
@@ -459,20 +443,17 @@ def _wheels_impl(ctx):
     so = [f for f in files if f.basename == "_C.abi3.so"][0]
     record = [f for f in files if f.basename == "_build_config.py"][0]
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
-    ctx.actions.write(script, _WHEELS.format(venv = shell.quote(VENV), census = ctx.file.census.short_path,
-                                             so = so.short_path, record = record.short_path), is_executable = True)
-    runfiles = ctx.runfiles(files = [so, record]).merge(ctx.attr.census[DefaultInfo].default_runfiles)
-    return [DefaultInfo(executable = script, runfiles = runfiles)]
+    ctx.actions.write(script, _WHEELS.format(venv = shell.quote(VENV), so = so.short_path, record = record.short_path), is_executable = True)
+    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = [so, record]))]
 
 rola_wheels = rule(
     implementation = _wheels_impl,
     executable = True,
     attrs = {
         "library": attr.label(mandatory = True, doc = "the extension (`rola_extension`), its library and record"),
-        "census": attr.label(mandatory = True, allow_single_file = True, doc = "its census (`ratify_census`)"),
     },
     doc = "`bazel run` the two wheels of the graph's library into the checkout's dist/ (docs/build.md#wheels): a " +
-          "clean commit, ratify's verdict on the build, the record a shippable build's.",
+          "clean commit, the record a shippable build's.",
 )
 
 #: THE GENERIC RULES are rola-devtools' (`@rola_devtools//bazel:rules.bzl`), each handed this workspace's environment:
@@ -586,17 +567,17 @@ def _one_arch(arch):
 
 _ARCH_OUTPUTS = [str(Label("//:archs")), "@rules_cuda//cuda:archs", "@rules_cuda//cuda:runtime"]
 
-def _each_ratified_arch_impl(_settings, _attr):
-    return {arch: _one_arch(arch) for arch in RATIFIED_ARCHS}
+def _each_built_arch_impl(_settings, _attr):
+    return {arch: _one_arch(arch) for arch in BUILT_ARCHS}
 
-#: the lints read each ratified architecture's compile: an architecture's build set is its own
-_each_ratified_arch = transition(implementation = _each_ratified_arch_impl, inputs = [], outputs = _ARCH_OUTPUTS)
+#: the lints read each built architecture's compile: an architecture's build set is its own
+_each_built_arch = transition(implementation = _each_built_arch_impl, inputs = [], outputs = _ARCH_OUTPUTS)
 
-def _first_ratified_arch_impl(_settings, _attr):
-    return _one_arch(RATIFIED_ARCHS[0])
+def _first_built_arch_impl(_settings, _attr):
+    return _one_arch(BUILT_ARCHS[0])
 
-#: an editor reads one compile a unit: the first ratified architecture's
-_first_ratified_arch = transition(implementation = _first_ratified_arch_impl, inputs = [], outputs = _ARCH_OUTPUTS)
+#: an editor reads one compile a unit: the first built architecture's
+_first_built_arch = transition(implementation = _first_built_arch_impl, inputs = [], outputs = _ARCH_OUTPUTS)
 
 #: clang accepts a CUDA root with a `bin/` (a tree artifact keeps no empty directory, so it holds this note)
 _CUDA_ROOT_BIN = "A CUDA root for clang's front end (bazel/defs.bzl's cuda_root): the toolkit's tools are the graph's own.\n"
@@ -647,7 +628,7 @@ _CARRIERS = ("deps", "units")
 
 def _unit_lints_impl(target, ctx):
     found = {"device": [], "host": [], "warnings": [], "commands": [], "inputs": []}
-    #: the configuration's one architecture (`_each_ratified_arch`, `_first_ratified_arch`)
+    #: the configuration's one architecture (`_each_built_arch`, `_first_built_arch`)
     arch = ctx.attr._archs[BuildSettingInfo].value
     if len(arch) != 1:
         fail("the unit lints read one architecture's compiles; %s's configuration has %s" % (target.label, arch))
@@ -728,7 +709,7 @@ unit_lints = aspect(
 
 _UNIT_LINT_TEST = """\
 #!/bin/bash
-# the unit lints' verdicts, each unit's for each ratified architecture (bazel/defs.bzl's unit_lint_test)
+# the unit lints' verdicts, each unit's for each built architecture (bazel/defs.bzl's unit_lint_test)
 exec {python} {tool} verdicts {expect} {verdicts}
 """
 
@@ -744,13 +725,13 @@ unit_lint_test = rule(
     implementation = _unit_lint_test_impl,
     test = True,
     attrs = {
-        "units": attr.label_list(mandatory = True, cfg = _each_ratified_arch, aspects = [unit_lints], doc = "the library, or a fixture's unit"),
+        "units": attr.label_list(mandatory = True, cfg = _each_built_arch, aspects = [unit_lints], doc = "the library, or a fixture's unit"),
         "lint": attr.string(mandatory = True, values = ["device", "host", "warnings"], doc = "which verdicts it reads"),
         "expect": attr.string_list(doc = "a fixture's: the findings (patterns) each of its verdicts holds exactly"),
         "_python": attr.label(default = "@rola_env//:python", allow_single_file = True),
         "_tool": attr.label(default = "//tools/lint:unit_lints.py", allow_single_file = True),
     },
-    doc = "A unit lint over every unit the library links, for each ratified architecture: red on any unit's finding " +
+    doc = "A unit lint over every unit the library links, for each built architecture: red on any unit's finding " +
           "(a fixture's: on any verdict that does not hold exactly the expected findings).",
 )
 
@@ -776,10 +757,10 @@ compile_database = rule(
     implementation = _compile_database_impl,
     executable = True,
     attrs = {
-        "units": attr.label_list(mandatory = True, cfg = _first_ratified_arch, aspects = [unit_lints]),
+        "units": attr.label_list(mandatory = True, cfg = _first_built_arch, aspects = [unit_lints]),
         "_python": attr.label(default = "@rola_env//:python", allow_single_file = True),
         "_tool": attr.label(default = "//tools/lint:unit_lints.py", allow_single_file = True),
-        "_cuda_root": attr.label(default = "//bazel:cuda_root", cfg = _first_ratified_arch, allow_single_file = True),
+        "_cuda_root": attr.label(default = "//bazel:cuda_root", cfg = _first_built_arch, allow_single_file = True),
     },
     doc = "`bazel run` writes compile_commands.json into the checkout: each unit's clang command, the lints' own.",
 )

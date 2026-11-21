@@ -4,7 +4,7 @@
 
 namespace rola {
 
-//: A CARRY ARM'S KEY: the carve's operation-plan pair (tools/gen_shards.py's `ARM_KEY`, in its order).
+//: A CARRY ARM'S KEY: the carve's operation-plan pair (`CARRY_KEY` in `csrc/rola/src/carry/arms.bzl`, in its order).
 struct CarryKey {
   int fold_rows, fold_factors, read_rows, read_factors, channels, same_split;
 };

@@ -30,9 +30,9 @@ def cubin():
 def test_values_held_across_a_slow_path_call_count_before_the_call(cubin):
     """nvdisasm's marks have the call write registers the probe holds (its own count drops 16 of them at the row
     before the call)."""
-    rows = life_ranges.live_counts(cubin, "shuffle_probe")
+    rows = life_ranges.live_counts(cubin, "division_probe")
     before = [rows[k - 1][2] for k, (_, text, _) in enumerate(rows) if text.startswith("CALL") and "__internal" in text]
-    assert before, "the probe's shuffle has no slow-path call: the probe no longer has the shape it tests"
+    assert before, "the probe's division has no slow-path call: the probe no longer has the shape it tests"
     assert min(before) >= 32, rows
 
 

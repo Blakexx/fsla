@@ -1,20 +1,23 @@
-"""THE EXTENSION'S UNITS: every hand-written unit under src/, each generated carry arm unit, the registration unit, the
-generated headers and the device stamp (docs/build-graph.md#compile)."""
+"""THE EXTENSION'S UNITS: every hand-written unit under src/, each carry arm's unit for each built architecture
+(`bazel/arms.bzl`), the registration unit, the generated headers and the device stamp (docs/build-graph.md#compile)."""
 
-load("@rola_env//:flags.bzl", "HOST_CXX_FLAGS", "NVCC_FLAGS", "RATIFIED_ARCHS")
+load("@rola_env//:flags.bzl", "BUILT_ARCHS", "HOST_CXX_FLAGS", "NVCC_FLAGS")
 load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//bazel:arms.bzl", "arm_family")
 load("//bazel:cuda.bzl", "cuda_unit")
-load("//bazel:defs.bzl", "carry_arm_set", "include_root", "rola_headers", "tool_test", "tree_part", "tree_test", "unit_lint_test")
-load(":units.bzl", "CARRY_ARM_COUNT", "CARRY_ARM_UNITS", "HAND_UNITS", "RUNTIME_UNITS")
+load("//bazel:defs.bzl", "census_test", "include_root", "rola_headers", "tool_test", "tree_part", "tree_test", "unit_lint_test")
+load(":src/carry/arms.bzl", "CARRY_ARMS", "CARRY_DOMAINS", "CARRY_KEY")
+load(":src/decode/arms.bzl", "DECODE_ARMS", "DECODE_DOMAINS", "DECODE_KEY")
+load(":units.bzl", "RUNTIME_UNITS")
 
 package(default_visibility = ["//visibility:public"])
 
 exports_files([
-    "units.bzl",
+    "src/carry/arms.bzl",
     "src/common/hardware.json",
 ])
 
-#: every source the kernel list reads, and the checked-in generated units
+#: every source the kernel list reads
 filegroup(
     name = "sources",
     srcs = glob(["src/**"]),
@@ -27,9 +30,19 @@ include_root(
     roots = ["src"],
 )
 
-rola_headers(name = "generated")
+#: each arm family's selection header and Python table, and the carry's units: its arms from the declaration beside the
+#: kernel (docs/build-graph.md#arms), the Hopper carry filling the empty list
+rola_headers(
+    name = "generated",
+    arm_families = [
+        ":carry_selection",
+        ":carry_table",
+        ":decode_selection",
+        ":decode_table",
+    ],
+)
 
-#: the device stamp: the digest of every file under src/ but its markdown, as ratify computes it
+#: the device stamp: the digest of every file under src/ but its markdown, as `tools/csrc_stamp.py` computes it
 genrule(
     name = "stamp_header",
     srcs = glob(
@@ -77,7 +90,7 @@ cuda_unit(
 
 cuda_unit(
     name = "units",
-    srcs = [unit for unit in HAND_UNITS if unit != _STAMP_UNIT and unit not in RUNTIME_UNITS],
+    srcs = [unit for unit in glob(["src/**/*.cu"]) if unit != _STAMP_UNIT and unit not in RUNTIME_UNITS],
     copts = NVCC_FLAGS,
     host_cc = _HOST_CC,
     deps = _DEPS,
@@ -91,18 +104,31 @@ cuda_unit(
     deps = _DEPS + [":stamp"],
 )
 
-[cuda_unit(
-    name = unit.removesuffix(".cu"),
-    srcs = ["src/instantiations/" + unit],
-    copts = NVCC_FLAGS,
-    host_cc = _HOST_CC,
-    deps = _DEPS,
-) for unit in CARRY_ARM_UNITS]
+arm_family(
+    name = "carry",
+    arms = CARRY_ARMS,
+    built_archs = BUILT_ARCHS,
+    domains = CARRY_DOMAINS,
+    flag = "//:carry_arms",
+    includer = "the per-arm units and the carry dispatch unit",
+    key = CARRY_KEY,
+    unit = {
+        "arm_header": "carry/carry_arm.cuh",
+        "copts": NVCC_FLAGS,
+        "define": "ROLA_CARRY_ARM_DEFINE",
+        "deps": _DEPS,
+        "host_cc": _HOST_CC,
+    },
+)
 
-carry_arm_set(
-    name = "carry_arms",
-    rows = CARRY_ARM_COUNT,
-    units = {":" + unit.removesuffix(".cu"): str(arms) for unit, arms in CARRY_ARM_UNITS.items()},
+arm_family(
+    name = "decode",
+    arms = DECODE_ARMS,
+    built_archs = BUILT_ARCHS,
+    domains = DECODE_DOMAINS,
+    flag = "//:decode_arms",
+    includer = "csrc/rola/src/decode/decode.cu",
+    key = DECODE_KEY,
 )
 
 cc_library(
@@ -136,7 +162,7 @@ genrule(
 cuda_unit(
     name = "header_selfcheck_units",
     srcs = [":header_selfcheck_sources"],
-    archs = ["compute_%s:sm_%s" % (arch, arch) for arch in RATIFIED_ARCHS],
+    archs = ["compute_%s:sm_%s" % (arch, arch) for arch in BUILT_ARCHS],
     copts = NVCC_FLAGS,
     host_cc = _HOST_CC,
     #: the headers that reach torch (`common/torch_seam.cuh`) need the toolkit's libraries' headers the registration unit gets
@@ -168,8 +194,8 @@ filegroup(
 #: this package's part of the tree the checks read
 tree_part()
 
-#: THIS PACKAGE'S LINTS (docs/build-graph.md#checks): its sources' format and standards rules, its instantiations
-#: against the manifests, and each unit's own compile linted for each ratified architecture
+#: THIS PACKAGE'S LINTS (docs/build-graph.md#checks): its sources' format and standards rules, its template kernels
+#: against the build's instantiations, and each unit's own compile linted for each built architecture
 
 tree_test(
     name = "clang_format",
@@ -198,15 +224,12 @@ tree_test(
     ],
 )
 
-tree_test(
+census_test(
     name = "unused_instantiations",
     size = "small",
-    cmd = ["python3", "tools/lint/unused_instantiations.py"],
-    data = [
-        "//tools/lint:tracked",
-        "//tools:manifests",
-        ":tracked",
-    ],
+    census = "//:census",
+    data = ["//:tree"],
+    script = "lint/unused_instantiations.py",
 )
 
 unit_lint_test(

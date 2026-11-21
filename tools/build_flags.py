@@ -1,14 +1,9 @@
 """THE ONE SOURCE OF THE nvcc FLAG LIST.
 
-**WHY THIS FILE EXISTS.** Two programs compile the same translation units. The graph
-compiles them into the shipped library (`bazel/flags.py` writes its flags from this file);
-`tools/ratify.py`'s compile path compiles them to read `ptxas`'s register and spill report
-for an architecture's first manifest. A register/spill profile
-is a property of the FLAGS as much as of the source, so if those two flag lists were
-maintained independently -- as they were, one restating the other in a comment that
-said it must not -- a divergence would produce ratified numbers that describe a binary
-nobody ships. That is not a style problem; it is the closed-world codegen policy's own
-failure mode. The lists live here, once, and both importers take them.
+**WHY THIS FILE EXISTS.** The graph compiles the extension's units into the shipped library, and `bazel/flags.py` writes
+its flags from this file. A register/spill profile is a property of the FLAGS as much as of the source, so the list lives
+here, once, and the graph takes it: the census (`tools/ratify.py`) reads `ptxas`'s report from those same compiles, never
+from a compile with a flag list of its own.
 
 **WHAT IS AND IS NOT HERE.** The CODEGEN-AFFECTING flags: optimization level,
 language standard, the `-gencode` targets, the preprocessor defines torch's
@@ -16,7 +11,7 @@ language standard, the `-gencode` targets, the preprocessor defines torch's
 own flags, and include directories that only one of the two callers can know (torch's
 own header locations are resolved by `include_paths` at the call site).
 
-`--ptxas-options=-v` is included and is MANDATORY: `tools/ratify.py` parses exactly
+`--ptxas-options=-v` is included and is MANDATORY: `tools/ratify.py`'s census parses exactly
 that report. It changes what the assembler PRINTS, not what it emits.
 
 REFUSED, each a codegen change that would arrive as a packaging change: the
@@ -28,9 +23,8 @@ fp64 oracle, and fast-math silently changes the numeric contract they were deriv
 """
 from __future__ import annotations
 
-#: Torch's `COMMON_NVCC_FLAGS`, restated ONCE. `CUDAExtension` adds exactly this set
-#: to the build, so a standalone compile of the same file must pass it too or it is
-#: compiling a different program.
+#: Torch's `COMMON_NVCC_FLAGS`, restated ONCE. `CUDAExtension` adds exactly this set to a build, so the graph's compile
+#: of the same file must pass it too or it is compiling a different program.
 COMMON_NVCC_FLAGS = (
     "-D__CUDA_NO_HALF_OPERATORS__",
     "-D__CUDA_NO_HALF_CONVERSIONS__",
@@ -38,21 +32,6 @@ COMMON_NVCC_FLAGS = (
     "-D__CUDA_NO_HALF2_OPERATORS__",
     "--expt-relaxed-constexpr",
 )
-
-
-def torch_defines() -> list[str]:
-    """The preprocessor defines torch's `CUDAExtension` adds, ABI included.
-
-    The ABI define is READ FROM TORCH rather than written down. It is the one define
-    in the set whose value is a property of the INSTALLED torch and not of this
-    project: a hardcoded `=0` compiled against a `=1` build would produce a
-    ratification measured on a program the extension does not link, and it would do
-    it silently, because the two agree about every other flag.
-    """
-    import torch
-
-    abi = int(bool(torch._C._GLIBCXX_USE_CXX11_ABI))
-    return [f"-D_GLIBCXX_USE_CXX11_ABI={abi}", *COMMON_NVCC_FLAGS]
 
 
 def extension_defines() -> list[str]:
@@ -66,7 +45,7 @@ def extension_defines() -> list[str]:
 #: THE STABLE ABI TARGET (docs/build.md#stable-abi): the extension is built against torch's stable C shim and
 #: header-only types only, pinned to the oldest torch whose stable surface carries everything the host code uses (the
 #: native handle of the current CUDA stream arrived in 2.13), so one binary loads under every torch from there on. The
-#: graph passes these to every compile, and so does ratify's compile path.
+#: graph passes these to every compile.
 TORCH_MIN = (2, 13)
 STABLE_DEFINES = (f"-DTORCH_TARGET_VERSION=0x{(TORCH_MIN[0] << 56) | (TORCH_MIN[1] << 48):016x}",)
 
@@ -80,20 +59,20 @@ def gencodes(archs) -> list[str]:
 
     A PTX entry would let the driver just-in-time compile this kernel for an
     architecture whose register and spill behaviour nobody measured, which is exactly
-    what the ratification manifest exists to exclude (closed-world rule 2).
+    what the closed world exists to exclude (closed-world rule 2).
     """
     return [f"-gencode=arch=compute_{a},code=sm_{a}" for a in archs]
 
 
 def nvcc_flags(archs, nvcc_threads: int) -> list[str]:
-    """The codegen flag list both compilers of these sources must pass.
+    """The codegen flag list the compile of these sources passes.
 
     `--threads` is the machine's `host.nvcc_threads`, the architecture count and not a core count: it parallelizes
     nvcc across `-gencode` targets, so beyond the number of targets it buys nothing while multiplying the peak
     resident set (jobs x `--threads` cicc processes).
     """
     return ["-O3", "-std=c++20", "-lineinfo", f"--threads={nvcc_threads}",
-            #: MANDATORY, not optional: `tools/ratify.py` parses exactly this report.
+            #: MANDATORY, not optional: `tools/ratify.py`'s census parses exactly this report.
             "--ptxas-options=-v",
             #: COMPRESS EVERY IMAGE IN THE FATBIN, not just the PTX and debug ones
             #: `fatbinary --compress` covers by default. Without it the packer applies

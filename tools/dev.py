@@ -642,19 +642,17 @@ LOCK_PATH = Path(dev_config.SCHEMA["host"]["lock_dir"].default)
 LOCK_GPU = Path(dev_config.SCHEMA["host"]["gpu_lock"].default)
 
 
-def _mounts(named: Path, digest: str) -> list[str]:
+def _mounts() -> list[str]:
     """What a container started here shares with the host, as `source:target[:ro]`: the host's lock directory at the
     one lock path (`host.lock_dir`'s default, which a container's own config keeps), so one lock governs the GPU both
-    use; the image's digest, written to `named`, where `dev_config.devbox_image()` reads it; and under WSL the driver's
-    libraries at their own path. Nothing else: its checkouts and installs are its own."""
+    use; and under WSL the driver's libraries at their own path. Nothing else: its checkouts and installs are its own."""
     locks, gpu = Path(dev_config.get("host.lock_dir")), Path(dev_config.get("host.gpu_lock"))
     if gpu != locks / LOCK_GPU.name:
         raise SystemExit(f"host.gpu_lock {gpu} must be {locks / LOCK_GPU.name} for a container to share it: the "
                          "container's locks are one directory")
     #: a missing source would be made by the daemon, as root
     locks.mkdir(parents=True, exist_ok=True)
-    named.write_text(digest + "\n")
-    mounts = [f"{locks}:{LOCK_PATH}", f"{named}:{dev_config.CONTAINER_IMAGE}:ro"]
+    mounts = [f"{locks}:{LOCK_PATH}"]
     wsl_lib = dev_config.get("host.wsl_lib")
     #: the whole WSL directory, not only lib/: its libcuda is a loader that opens the host's driver store beside it
     return mounts + ([f"{Path(wsl_lib).parent}:{Path(wsl_lib).parent}:ro"] if wsl_lib else [])
@@ -749,8 +747,7 @@ def _container_check(digest: str, tag: str) -> int:
     holder.stdout.readline()
     rows = []
     with tempfile.TemporaryDirectory(prefix="rola_check_") as staging:
-        named = Path(staging) / "image"
-        args = [x for mount in [*_git_mounts(Path(staging)), *_mounts(named, digest)] for x in ("-v", mount)]
+        args = [x for mount in [*_git_mounts(Path(staging)), *_mounts()] for x in ("-v", mount)]
         args += [x for volume, at in volumes.items() for x in ("-v", f"{volume}:{at}")]
         subprocess.run(["docker", "rm", "-f", CHECK_VOLUMES], capture_output=True)
         subprocess.run(["docker", "run", "-d", "--name", CHECK_VOLUMES, "--gpus", "all", "--ipc", "host", *args,
@@ -799,7 +796,7 @@ def cmd_container(a) -> int:
         return _container_check(digest, tag)
     local = ROOT / ".devcontainer" / "compose.local.yaml"
     volumes = [f"{DEVBOX_REPO}-home:/root", f"{DEVBOX_REPO}-work:{CONTAINER_CHECKOUT.parent}"]
-    doc = {"services": {"rola": {"image": tag, "volumes": [*volumes, *_mounts(local.with_name("devbox_image.local"), digest)]}}}
+    doc = {"services": {"rola": {"image": tag, "volumes": [*volumes, *_mounts()]}}}
     local.write_text(json.dumps(doc, indent=1) + "\n")
     print(f"wrote {local} ({tag})")
     return 0

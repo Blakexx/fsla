@@ -69,8 +69,8 @@ the `1 << (token % 32)` packing needs **no global atomics and no zero-init pass*
 <a id="residency"></a>The launch bound's residency is the solves' plan at the build (`EntmaxPlan<B>`): the blocks an
 SM their register target fits in the card's registers -- `__launch_bounds__(128, 8)` on every tabulated card's 64K, a
 64-register target (`kForwardRegs`) -- which states the target to ptxas, so a regression becomes a compile-time
-allocation decision instead of a silent spill; the ratification manifest (`tools/ratify.py`) then fails the
-BUILD on spill growth. The backward's widest class (8 items a thread) holds both terms of
+allocation decision instead of a silent spill; the census (`tools/ratify.py --census`) then reads
+any spill growth. The backward's widest class (8 items a thread) holds both terms of
 its 8 items (`d_mid`, `d_delta`) across the pair reduction, which sm_90a's allocation does
 not fit in 72 (an 8-byte frame, four 64-bit address spills in the token loop, at the toolkit 13.0 build of 2026-11-20):
 its target is 80 registers (`backward_regs`), 6 blocks an SM on 64K (`EntmaxPlan<B>::backward_min_blocks`), every other
@@ -179,8 +179,8 @@ were unchanged. Timed, the port costs 3-5% on a few entmax cells (deep-D4-w8, de
 exists once CCCL 3 deleted the originals. Accepted for the CUDA 13 move.
 
 The namespace is NAMED (`rola::entmax::detail`), so moving these out of `entmax.cu`
-moved no mangled symbol and changed no generated code — `tools/ratify.py` reported
-"the source digest moved but NO ratified body did" across all 380 bodies at the
+moved no mangled symbol and changed no generated code — the SASS-body hashes
+(`bazel run //tools:sass_bodies`) of all 380 bodies were equal across the
 move, which is the check that says so rather than the claim that it should.
 
 ## <a id="launch-shape"></a>5. Launch shape and the width class

@@ -229,8 +229,8 @@ The compiled key is the family's own:
 
 | family | compiled key | runtime addressing |
 |---|---|---|
-| carry | the carve's operation-plan pair: `fold_rows, fold_factors, read_rows, read_factors, channels, same_split` (`tools/manifests/shipped_set.json`, [`build.md#carry-arm-lists`](build.md#carry-arm-lists)) | the box's per-level extents, the depth, the widths |
-| decode | `DV × D × decay` (`tools/manifests/decode_set.json`) | the `(k, m)` lattice, the widths, the operand storage types |
+| carry | the carve's operation-plan pair: `fold_rows, fold_factors, read_rows, read_factors, channels, same_split` (`csrc/rola/src/carry/arms.bzl`, [`build.md#carry-arm-lists`](build.md#carry-arm-lists)) | the box's per-level extents, the depth, the widths |
+| decode | `DV × D × decay` (`csrc/rola/src/decode/arms.bzl`) | the `(k, m)` lattice, the widths, the operand storage types |
 | intra | the depth, one or two levels | each level's width in 16-digit granules |
 | producer, facts pass | none: one instantiation each | every width, kind and offset, from the plan or the layout |
 | entmax solves | the padded width class, alpha, the operand dtypes | the level table |
@@ -361,8 +361,7 @@ rather than at a threshold (R22).
 compiled key above, per architecture, and every other shape a family serves is served by runtime addressing, checked
 at the seam: a call is either lawful and runs, or the refusal names the field (`rola.expert.envelope_refusal`).
 
-**Closed-world codegen** is the rule for the binaries — pinned assembler, ahead-of-time only, a per-architecture
-ratified manifest recording registers, spills and SASS bodies, and a device-side stamp asserted before any gate
+**Closed-world codegen** is the rule for the binaries — pinned assembler, ahead-of-time only, the declared targets and the gates every build runs, and a device-side stamp asserted before any gate
 ([`ratification.md`](ratification.md), [`architecture/closed-world-codegen.md`](architecture/closed-world-codegen.md)).
 
 **One body per operation family** (CONSTITUTION §R18). A single-valued axis is not plumbed as a parameter — it is
@@ -395,7 +394,7 @@ card; a kernel's schedule is designed, and written into its own page, before it 
 | shared memory under pressure | a continuum, never a refusal short of the degenerate floor: the buffers' depths give way first (the panel's two to one, the pool's two slots to one), and only when no depth is left is the box shrunk, whose image and pools scale with its leaves; the card's shared-memory size is read where the kernel is entered (R8), never by a planner on the host. A shrunk box leaves fold registers unused: accepted, it is the failure case and no part of the `wgmma` family is short of shared memory (a CTA may take 227 KB of a multiprocessor's 228). The image is never ringed: it is a snapshot of the state at the window's top, which the fold's steps then mutate | the same order; the image is tensor memory's |
 | the box grain | one CTA per multiprocessor, two boxes a CTA: a fold warpgroup a box and one readout warpgroup over both boxes' images, whether the two sides' carves differ or are equal (R20); no cluster -- its sum, its state transfer and its multicast each measured as a loss ([`cluster_sum`](lab/cluster_sum.md), [`state_move`](lab/state_move.md), [`value_cast`](lab/value_cast.md)) | one CTA per multiprocessor; its boxes a CTA and its roles are NOT STATED: no blackwell carry is designed and no blackwell card measured (owed with that family's first lab) |
 | decode's walk and combine | per-lane-group gathers, a work queue of visits, global atomics into a head's sums | the same |
-| the closed world | ratified manifest per architecture, device stamp | the same |
+| the closed world | the declared targets and the per-build gates, device stamp | the same |
 
 ---
 
@@ -420,7 +419,7 @@ card; a kernel's schedule is designed, and written into its own page, before it 
 | the entmax solves | [`internals/entmax/entmax.md`](internals/entmax/entmax.md), [`internals/entmax/factor.md`](internals/entmax/factor.md) |
 | the architecture capability table and the per-product rates | [`internals/common/arch_caps.md`](internals/common/arch_caps.md), [`internals/common/hardware.md`](internals/common/hardware.md) |
 | the laws and the constitution | [`KERNEL_STANDARDS.md`](KERNEL_STANDARDS.md) |
-| what a manifest is and what it refuses | [`ratification.md`](ratification.md), [`architecture/closed-world-codegen.md`](architecture/closed-world-codegen.md) |
+| the closed world and the census | [`ratification.md`](ratification.md), [`architecture/closed-world-codegen.md`](architecture/closed-world-codegen.md) |
 | the tiers, the tolerances, the gates | [`testing.md`](testing.md) |
 | the measurement method and record | [`measurement.md`](measurement.md) |
 | the machine's measured facts | [`lab/README.md`](lab/README.md), the method [`internals/tools/lab.md`](internals/tools/lab.md) |

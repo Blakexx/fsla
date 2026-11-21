@@ -1,8 +1,8 @@
-"""THE RATIFICATION HAS NO COMPILE OF ITS OWN.
+"""THE CENSUS TAKES THE BUILD'S PARAMETERS AND NOTHING ELSE.
 
-`tools/ratify.py` reads the units the graph's CUDA rule compiled (docs/internals/tools/ratify.md#graph); its nvcc
-command, its per-unit cache and its `--arch`/`--shard`/`--arm` scopes are gone (docs/internals/DELETIONS.md), and a
-tool that can force a launch bound is a tool that can ratify one.
+`tools/ratify.py` reads the units the graph's CUDA rule compiled (docs/internals/tools/ratify.md#graph) and runs one of
+four modes; its scope is the census record's, so it has no flag that names an architecture, a shard or an arm, and it
+holds no launch bound of its own to report.
 """
 
 from __future__ import annotations
@@ -10,28 +10,30 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import ratify  # noqa: E402
 
 
-def test_ratify_runs_no_compiler_and_keeps_no_unit_cache():
-    src = (ROOT / "tools" / "ratify.py").read_text()
-    for gone in ("_nvcc_command", "measure_units", "_cache_read", "_compile_dir", '"-gencode"', "\"-arch=sm_90a\"",
-                 "tempfile", '"--arch"', '"--shard"', '"--arm"'):
-        assert gone not in src, gone
-    assert not hasattr(ratify, "measure_units") and not hasattr(ratify, "_nvcc_command")
+def test_the_modes_are_the_census_the_derivation_and_the_self_test(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["ratify.py", "--graph", "census.json", "--runfiles", "."])
+    with pytest.raises(SystemExit):
+        ratify.main()
+    assert "one of the arguments --census --derivation --write-derivation --self-test is required" in capsys.readouterr().err
 
 
-def test_the_forcing_census_is_gone():
-    """`--force-ctas` and its `ROLA_FORCE_CTAS` define were deleted (P65 S2,
-    `docs/internals/DELETIONS.md`) once nothing in `csrc/` read the macro. A
-    tool that can force a launch bound is a tool that can ratify one; the
-    measurement lives in `docs/measurement.md` as a scratch-tree edit."""
-    assert "force_ctas" not in ratify.__dict__
-    src = (ROOT / "tools" / "ratify.py").read_text()
-    assert "ROLA_FORCE_CTAS" not in src and "--force-ctas" not in src
-    for path in (ROOT / "csrc").rglob("*"):
-        if path.is_file() and path.suffix in (".cu", ".cuh", ".cpp", ".h"):
-            assert "ROLA_FORCE_CTAS" not in path.read_text(errors="ignore"), path
+def test_the_scope_is_the_census_records(monkeypatch, capsys):
+    for flag in ("--arch", "--shard", "--arm"):
+        monkeypatch.setattr(sys, "argv", ["ratify.py", "--census", flag, "x", "--graph", "c.json", "--runfiles", "."])
+        with pytest.raises(SystemExit):
+            ratify.main()
+        assert "unrecognized arguments" in capsys.readouterr().err
+
+
+def test_the_json_record_is_the_censuss(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["ratify.py", "--derivation", "--json", "x", "--graph", "c.json", "--runfiles", "."])
+    with pytest.raises(SystemExit, match="--json is the census's"):
+        ratify.main()

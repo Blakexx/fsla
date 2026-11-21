@@ -18,7 +18,7 @@ Checks:
      only be conservative in one direction --  see HEURISTIC LIMITS below.
   2. NO TORCH INCLUDE IN ARM TUs (belt to the ast-grep rule
      torch_include_in_arm_tu.yml). A `#include` line naming `torch/`
-     under csrc/rola/src/instantiations/, found by TEXT rather than AST so a
+     under csrc/rola/src/carry/, found by TEXT rather than AST so a
      macro-guarded or unusually-formatted include cannot hide from either
      check.
   3. NO CTA BARRIER IN A DECLARED BARRIER-FREE REGION (Blake, 2026-09-29, generalizing
@@ -72,7 +72,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CSRC_ROLA = ROOT / "csrc" / "rola"
-INSTANTIATIONS = CSRC_ROLA / "src" / "instantiations"
+CARRY_SOURCES = CSRC_ROLA / "src" / "carry"
 TESTS_ROOT = ROOT / "tests"
 
 #: docs/testing.md: "there is no fourth tier". A test answers one of exactly three
@@ -247,9 +247,9 @@ def check_unroll_discipline() -> list[str]:
 
 def check_no_torch_in_arm_tus() -> list[str]:
     findings = []
-    if not INSTANTIATIONS.is_dir():
+    if not CARRY_SOURCES.is_dir():
         return findings
-    for path in INSTANTIATIONS.rglob("*"):
+    for path in CARRY_SOURCES.rglob("*"):
         if not path.is_file() or path.suffix not in DEVICE_SUFFIXES:
             continue
         rel = path.relative_to(ROOT)
@@ -257,7 +257,7 @@ def check_no_torch_in_arm_tus() -> list[str]:
             if TORCH_INCLUDE_RE.search(line):
                 findings.append(
                     f"belt to torch_include_in_arm_tu.yml: {rel}:{idx}: "
-                    f"torch include in a per-arm TU -- {line.strip()!r}"
+                    f"torch include in the carry's arm sources -- {line.strip()!r}"
                 )
     return findings
 
@@ -433,10 +433,6 @@ _DOCS_STUB = re.compile(r"//:\s*HAZARD\s+([A-Za-z0-9_-]+)\b")
 #: An anchor definition in a mirror doc.
 _DOCS_ANCHOR = re.compile(r'<a id="([A-Za-z0-9_-]+)"')
 
-#: GENERATED SOURCES ARE DOCUMENTED BY THEIR GENERATOR, not one doc each -- see
-#: `csrc/rola/src/instantiations/README.md`.
-_DOCS_GENERATED_DIRS = ("instantiations",)
-
 
 def _docs_sources() -> list[Path]:
     return sorted(
@@ -444,7 +440,6 @@ def _docs_sources() -> list[Path]:
         for p in _DOCS_SRC.rglob("*")
         if p.suffix in _DOCS_SOURCE_SUFFIXES
         and "third_party" not in p.parts
-        and not set(p.parts) & set(_DOCS_GENERATED_DIRS)
     )
 
 
@@ -462,36 +457,6 @@ def _docs_mirror_for(source: Path) -> Path:
 
 def _docs_anchors(doc: Path) -> list[str]:
     return _DOCS_ANCHOR.findall(doc.read_text())
-
-
-def check_generated_directories_are_documented_by_their_readme() -> list[str]:
-    """Rule 5. The exemption from rule 1 costs a stricter check, not a weaker one.
-
-    A generated directory that DOES NOT EXIST is not a violation: the generator's own
-    `--check` (run below, and by `check_shard_partition`) is what says whether that is
-    correct, and at an empty arm list it is. The rule is about a directory
-    that exists without the README its exemption is paid for with.
-    """
-    import subprocess
-
-    findings = []
-    for name in _DOCS_GENERATED_DIRS:
-        directory = _DOCS_SRC / "src" / name
-        if not directory.is_dir():
-            continue
-        if not (directory / "README.md").is_file():
-            findings.append(
-                f"{directory.relative_to(ROOT)} is exempt from the per-file mirror rule "
-                f"because it is generated; that exemption requires its README.md")
-            continue
-        proc = subprocess.run(
-            [sys.executable, str(ROOT / "tools" / "gen_shards.py"), "--check"],
-            cwd=str(ROOT), capture_output=True, text=True)
-        if proc.returncode != 0:
-            findings.append(
-                f"{directory.relative_to(ROOT)} contains something its generator does "
-                f"not produce:\n{proc.stdout}{proc.stderr}")
-    return findings
 
 
 def check_every_source_file_has_a_mirror_doc() -> list[str]:
@@ -703,7 +668,6 @@ def check_docs_mirror() -> list[str]:
     """The whole `docs/internals/` mirror contract, ported from
     `tests/unit/test_docs_mirror.py` (deleted; RULED 2026-08-29)."""
     findings = []
-    findings += check_generated_directories_are_documented_by_their_readme()
     findings += check_every_source_file_has_a_mirror_doc()
     findings += check_every_doc_reference_resolves()
     findings += check_hazard_stubs_cite_their_own_slug()
@@ -937,11 +901,11 @@ _TOOLS_DIR = ROOT / "tools"
 
 def check_supported_table() -> list[str]:
     """The README's support table is `tools/supported.py`'s output: its generated block (`tools/supported.py`) equal to
-    `supported.table()`, which derives it from the kernel's arch table and `tools/manifests/` -- FILES ONLY, no import of
+    `supported.table()`, which derives it from the kernel's arch table and its built architectures -- FILES ONLY, no import of
     `rola` -- and (non-vacuity) the comparison fires on a hand-tampered copy. The README's other generated block, the
     activation registry's capability table, runs the registry to produce, so its check is a test, in the CPU tier
     (`tests/unit/test_capability_table_docs.py`): a check that executes the code under test is a test, not a lint
-    (docs/testing.md). The unratified row's wording is `check_arch_coverage`'s."""
+    (docs/testing.md). The unbuilt row's wording is `check_arch_coverage`'s."""
     if str(_TOOLS_DIR) not in sys.path:
         sys.path.insert(0, str(_TOOLS_DIR))
     import supported
@@ -964,14 +928,14 @@ def check_supported_table() -> list[str]:
         findings.append(drift)
 
     tampered = readme_text.replace(
-        "**not ratified — will refuse to load**", "ratified", 1)
+        "**not built — will refuse to load**", "built", 1)
     if tampered == readme_text:
         findings.append("check_supported_table non-vacuity probe found nothing "
-                        "to tamper -- the README carries no 'not ratified' row to "
+                        "to tamper -- the README carries no 'not built' row to "
                         "flip, so the drift check above was not exercised")
     elif _drift(tampered) is None:
         findings.append("check_supported_table non-vacuity FAILED: a hand-tampered "
-                        "README (a 'not ratified' row flipped to 'ratified') did not "
+                        "README (a 'not built' row flipped to 'built') did not "
                         "register as drift -- the comparison is vacuous")
     return findings
 
@@ -1009,107 +973,40 @@ def check_hardware() -> list[str]:
     return hardware.check()
 
 
-def check_shard_partition() -> list[str]:
-    """Ported from tests/unit/test_shard_partition.py (deleted). The generated
-    instantiation tree is a function of `tools/gen_shards.py`'s arm list alone, and
-    the manifest on disk is the ratification the CURRENTLY BUILT binary was gated
-    against.
-
-    C0 DELETED THE TWO FAMILIES THAT HAD GENERATED UNITS (card C): the carry arm list
-    is empty and the stats passes' shard is gone, so the per-shard membership-hash
-    half of this check has nothing to read and went with them. `gen_shards --check`
-    still runs and still refuses a directory that disagrees with the arm list -- which
-    at zero rows means a directory that is not empty.
-
-    THE FALSE-FAIL THIS FIXES: the retired test recomputed the manifest
-    digest over EVERY `tools/manifests/sm_*.json` file found on disk, but
-    `BUILD_CONFIG["manifest_sha256"]` is the digest of whatever arch SUBSET this
-    build actually compiled (`--//:archs`) -- a single-arch iteration build
-    would then compare a one-arch digest against an all-arches recomputation and
-    fail on a build that did nothing wrong. Scoped here to
-    `BUILD_CONFIG["archs"]` -- what the build declares -- instead of a directory
-    glob.
-    """
-    import subprocess
-
-    findings = []
-    proc = subprocess.run([sys.executable, str(_TOOLS_DIR / "gen_shards.py"), "--check"],
-                          cwd=str(ROOT), capture_output=True, text=True)
-    if proc.returncode != 0:
-        findings.append(f"tools/gen_shards.py --check failed:\n{proc.stdout}{proc.stderr}")
-
-    if str(_TOOLS_DIR) not in sys.path:
-        sys.path.insert(0, str(_TOOLS_DIR))
-    BUILD_CONFIG = _repo_build_config()
-    if BUILD_CONFIG is None:
-        pass  # not built yet -- nothing to check the manifest against
-    else:
-        built_archs = BUILD_CONFIG.get("archs")
-        if not built_archs:
-            findings.append("BUILD_CONFIG carries no 'archs' list; cannot scope the "
-                            "manifest digest check to what this build declares")
-        else:
-            arches = sorted(a.removeprefix("sm_") for a in built_archs)
-            try:
-                import ratify
-                import toolchains
-                name = toolchains.for_ptxas(BUILD_CONFIG["ptxas"]).name
-                got = ratify.manifest_digest(ratify.load_manifest(arches, name))
-            except Exception as ex:  # noqa: BLE001
-                findings.append(f"could not recompute the manifest digest for the "
-                                f"built arch subset {arches}: {ex}")
-            else:
-                if got != BUILD_CONFIG["manifest_sha256"]:
-                    findings.append(
-                        f"tools/manifests/{name}/ for {arches} (this build's own declared "
-                        f"arch subset) digests to {got}, which is NOT the "
-                        f"ratification the shipped binary was gated against "
-                        f"({BUILD_CONFIG['manifest_sha256']}) -- every reader of "
-                        f"tools/manifests/ then describes a product that was never "
-                        f"built.")
-    return findings
-
-
 def check_arch_coverage() -> list[str]:
-    """Ported from tests/unit/test_arch_coverage.py (deleted). A tabulated arch with
-    no ratified manifest is the "will refuse to load" row, and the generated support
-    table must say so -- a hole on one arch is invisible to every other gate, which
-    all run on whichever arch the developer's own card happens to be. Device-free:
-    reads `tools/manifests/` only.
+    """Ported from tests/unit/test_arch_coverage.py (deleted). A tabulated arch that is not built is the "will refuse to
+    load" row, and the generated support table must say so -- a hole on one arch is invisible to every other gate, which
+    all run on whichever arch the developer's own card happens to be. Device-free: reads `hardware.json` only.
 
-    THE PER-TOPOLOGY HALF WENT WITH THE STATS PASSES (C0, card C). It asserted that
-    every ratified arch's manifest carried a facts arm for every `(D, B)` class any
-    other arch carried one for; there are no facts arms. It returns with the kernel,
-    keyed on the rebuilt family's own arm list, not restored against an empty one.
+    THE PER-TOPOLOGY HALF WENT WITH THE STATS PASSES. It asserted that every built arch carried a facts arm
+    for every `(D, B)` class any other arch carried one for; there are no facts arms. It returns with the kernel, keyed
+    on the rebuilt family's own arm list, not restored against an empty one.
     """
     if str(_TOOLS_DIR) not in sys.path:
         sys.path.insert(0, str(_TOOLS_DIR))
     try:
-        import ratify  # noqa: F401 -- the manifest reader the successor half uses
         import supported
     except ImportError as ex:
-        return [f"check_arch_coverage: could not import tools/ratify.py or "
-                f"tools/supported.py: {ex}"]
+        return [f"check_arch_coverage: could not import tools/supported.py: {ex}"]
 
-    import toolchains
+    from measure import hardware
 
-    ratified = {f"sm_{arch}" for t in toolchains.records().values() for arch in t.archs()}
-    per_arch = {arch for arch in supported.tabulated_archs() if arch in ratified}
+    built = set(hardware.built())
     findings = []
-    if not per_arch:
-        return ["no tabulated arch has a ratified manifest; nothing was measured"]
+    if not built:
+        return ["no tabulated arch is built; nothing was brought up"]
 
-    unratified = sorted(set(supported.tabulated_archs()) - per_arch)
+    unbuilt = sorted(set(supported.tabulated_archs()) - built)
     table = supported.table()
-    for arch in unratified:
+    for arch in unbuilt:
         marker = f"| `{arch}` |"
         if marker not in table:
-            findings.append(f"{arch} is tabulated with no manifest but has no row "
+            findings.append(f"{arch} is tabulated and not built but has no row "
                             f"in the README support table at all")
             continue
         tail = table.split(marker, 1)[1].split("\n", 1)[0]
         if "will refuse to load" not in tail:
-            findings.append(f"{arch} is tabulated with no manifest, which is the "
+            findings.append(f"{arch} is tabulated and not built, which is the "
                             f"'will refuse to load' row; the generated support table "
                             f"does not say so")
     return findings
@@ -1119,7 +1016,7 @@ def check_vendored_pin() -> list[str]:
     """Ported from tests/unit/test_vendored_pin.py (deleted). Closed-world rule 5:
     the vendored CUTLASS subtree matches `PIN.json`'s digest, the BSD-3-Clause
     redistribution obligations are discharged in-tree, and the extension and the
-    ratification probe compile against the vendored headers with the SAME include
+    probes compile against the vendored headers with the SAME include
     path (a probe compiled against a different include set measures a different
     kernel than the one shipped)."""
     import json
@@ -1361,7 +1258,6 @@ def main() -> int:
     gating_findings += check_no_bare_flock_on_gpu_lock()
     gating_findings += check_supported_table()
     gating_findings += check_hardware()
-    gating_findings += check_shard_partition()
     gating_findings += check_arch_coverage()
     gating_findings += check_vendored_pin()
     gating_findings += check_comment_density()

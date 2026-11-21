@@ -239,7 +239,7 @@ again whenever it is asked for. `bazel run //:results -- dashboard --out FILE --
 
 ## SASS
 
-`bazel run //:ratify` and `bazel run //tools:sass_bodies` are the instruments. Two binaries in a
+`bazel run //:ratify -- --census` and `bazel run //tools:sass_bodies` are the instruments. Two binaries in a
 comparison may be built at different paths ([`build.md#kernel-identity`](build.md#kernel-identity)); they must agree
 on `ratify.SASS_HASH_VERSION`, which `--compare` checks and refuses on mismatch.
 
@@ -247,7 +247,7 @@ on `ratify.SASS_HASH_VERSION`, which `--compare` checks and refuses on mismatch.
 scratch-tree edit — copy the tree, change the `__launch_bounds__` CTA argument at
 the instantiation, run `bazel run //:ratify -- --census` there, read the spill
 column — and never a flag on the shipped tool, because a tool that can force a
-bound is a tool that can ratify one.
+bound is a tool that can report a number nobody ships.
 
 ## What is deliberately not here
 

@@ -13,7 +13,7 @@ hash in this tree that predates the extraction (the "Pre-extraction removals" ta
 retired history: it records what happened and resolves in no published repository. Every later hash resolves here.
 
 The extraction did not filter the fork's history in. It renamed essentially every file and the C++ symbols the
-ratification manifest is keyed on, so `git blame` continuity, the one benefit of filtering, would not have survived
+kernels' mangled names carry, so `git blame` continuity, the one benefit of filtering, would not have survived
 without an unverifiable rename script, and the filtered history would have carried the superseded V2, CuTe and Triton
 lineages and hundreds of flash-linear-attention commits. Starting fresh means every commit here passed this
 repository's own gate.
@@ -26,7 +26,7 @@ commit series, importing this package.
 
 This package is licensed **Apache-2.0** (see `LICENSE`, `NOTICE`).
 
-The upstream project, flash-linear-attention, is MIT-licensed. The RoLA CUDA kernels, routing producers, ratification
+The upstream project, flash-linear-attention, is MIT-licensed. The RoLA CUDA kernels, routing producers, census
 tooling, and evidence machinery are original work and are not derived from it. The portions whose lineage does trace
 to the fork, chiefly the layer scaffolding conventions and small cache helpers, are covered by flash-linear-attention's
 copyright and permission notice, which `NOTICE` reproduces as it stood at the extraction; MIT permits distributing
@@ -40,7 +40,7 @@ the `include/` subtree there is byte-identical to upstream tag `v3.5.1`, commit
 against something other than itself (`git clone --branch v3.5.1 && diff -r`).
 
 It is vendored rather than fetched because the build is closed-world: a codegen input
-that a network fetch supplies at build time is an input the ratification manifest
+that a network fetch supplies at build time is an input the closed world
 cannot describe. `csrc/third_party/cutlass/PIN.json` records the tag, the commit, the
 licence and a digest of the whole subtree; the graph's record action (`tools/build_record.py`'s
 `vendored_pin`, closed-world rule 5) re-computes that digest on every build and refuses a build whose

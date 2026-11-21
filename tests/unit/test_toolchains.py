@@ -25,7 +25,6 @@ def declared(tmp_path, monkeypatch):
             (tmp_path / "toolchains").mkdir(exist_ok=True)
             (tmp_path / "toolchains" / f"{name}.json").write_text(json.dumps(record))
         monkeypatch.setattr(toolchains, "RECORDS", tmp_path / "toolchains")
-        monkeypatch.setattr(toolchains, "MANIFESTS", tmp_path / "manifests")
         toolchains.records.cache_clear()
         return tmp_path
 
@@ -40,13 +39,17 @@ def _record(ptxas, major=13):
 
 
 def test_the_assembler_selects_its_record_whitespace_normalized(declared):
-    root = declared(cu13=_record(A), cu124=_record(B, 12))
-    (root / "manifests" / "cu13").mkdir(parents=True)
-    (root / "manifests" / "cu13" / "sm_86.json").write_text("{}")
+    declared(cu13=_record(A), cu124=_record(B, 12))
     toolchain = toolchains.for_ptxas(A.replace(" ", "\n  "))
     assert toolchain.name == "cu13"
-    assert toolchain.manifest_path("80") == root / "manifests" / "cu13" / "sm_80.json"
-    assert toolchain.archs() == ["86"]
+    assert toolchains.rule1(toolchain, A, "13.0", dict(toolchain.readers)) == A
+
+
+def test_rule_one_refuses_another_assembler_naming_the_install(declared):
+    declared(cu13=_record(A))
+    toolchain = toolchains.named("cu13")
+    with pytest.raises(toolchains.ToolchainError, match="bazel run //:init"):
+        toolchains.rule1(toolchain, B, "13.0", dict(toolchain.readers))
 
 
 def test_an_undeclared_assembler_is_refused_naming_the_declared_ones(declared):

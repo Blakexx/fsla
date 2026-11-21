@@ -4,7 +4,7 @@
 [project]
 name            = "rola"
 dynamic         = ["version"]
-description     = "Routed Linear Attention — fused CUDA kernels with a ratified supported matrix"
+description     = "Routed Linear Attention — fused CUDA kernels with a built supported matrix"
 readme          = "README.md"
 license         = { file = "LICENSE" }
 requires-python = ">=3.10"
@@ -100,7 +100,6 @@ ruff_preview_select = ["E3"]
 [tool.pytest.ini_options]
 markers = [
   "cuda: launches a CUDA kernel (deselect with -m 'not cuda')",
-  "ratify: compile-time ratification gate; no GPU required",
   # A LATENCY gate, not a correctness gate: it belongs to the nightly `bench` job
   # and is deselected everywhere else, so a noisy machine can never fail a merge.
   "bench: per-(cell, arm) latency against the committed baseline",

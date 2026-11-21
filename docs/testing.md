@@ -171,7 +171,7 @@ The same question — do two geometries of one computation agree — asked one f
 | `test_stream_discipline_fixture.py` | the crossing paths (below) |
 
 The census of instantiation axes lives on the binary's side: each family's `arms()` answers out of the running
-extension, and `tools/lint/lint_standards.py`'s `check_shard_partition` holds the shard partition.
+extension, and `tests/unit/test_arm_family.py` holds the macro that generates the arm units.
 
 ### Class (a) — ENGINEERED IDENTITY
 
@@ -204,19 +204,15 @@ partials added in arrival order ([`internals/decode/decode.md#determinism`](inte
 
 Each of these guards a property of the BUILD whose failure leaves every other gate green.
 
-**`bazel run //tools:gen_shards -- --check`** regenerates the per-arm carry units into memory and diffs them against the
-checked-in ones, and holds the selection header — generated, never checked in — to its generator's schema for the
-scopes a build or ratify run uses and for the empty selection
-([`internals/tools/gen_shards.md`](internals/tools/gen_shards.md)).
-The library's record action runs it on every build, and the commit gate's standards lint runs it (`check_shard_partition`, below).
-
-**`check_shard_partition`** in `tools/lint/lint_standards.py`: the ratification on disk is the one `_build_config.py`
-recorded at build time, its digest recomputed over the arch subset the build declares. CPU only; a tree that has not
-been built has nothing to compare and is not failed.
+**`tests/unit/test_arm_family.py`** holds the arm macro (`bazel/arms.bzl`'s `arm_family`) on the fixture family
+(`tests/BUILD.bazel`): the generated table is the declared rows, the selection header names every arm when the build
+names none, a scope names indices or `all` and refuses the rest, and every arm has a unit for every built architecture
+defining its own kernel and no other. The library's record action and arm gate run the same helpers on every build
+(`bazel/arms.py`), and `tests/unit/test_arm_switch.py` runs the host dispatch against a synthetic selection header.
 
 **`check_arch_coverage`** is the same claim across ARCHITECTURES, the failure no single-card battery can see:
-tabulated architectures with no ratified manifest are REPORTED, not failed — the *not ratified — will refuse to load*
-row `tools/supported.py` prints — and the check asserts the generated table says so. Manifests only, no device.
+tabulated architectures that are not built are REPORTED, not failed — the *not built — will refuse to load*
+row `tools/supported.py` prints — and the check asserts the generated table says so. The hardware table only, no device.
 
 **`tests/unit/test_closed_world_arch_gate.py`** holds the RUNTIME refusal: closed-world rule R4 forbids a launch on a
 device whose arch was never measured, as a pair of clauses — `static_assert(tabulated(kArch))` in
@@ -244,10 +240,8 @@ A document nothing checks is a document that drifts. These run in the commit gat
   ([`internals/tools/docrefs.md`](internals/tools/docrefs.md)).
 - **`tools/lint/lint_standards.py`'s mirror rules**: every source file under `csrc/rola/` has a mirror doc at the same
   relative path (minus `src/`); every internals anchor a source cites resolves; a hazard stub's slug is its
-  anchor; no doc defines an anchor twice; a page names only identifiers the tree carries (or declares them `ABSENT`);
-  and a directory of GENERATED sources — `csrc/rola/src/instantiations/` — is exempt from the one-page rule and
-  documented by one README, the exemption itself checked (the README exists, and the directory holds nothing its
-  generator does not produce). A floor on the number of sources found keeps a broken glob from checking nothing.
+  anchor; no doc defines an anchor twice; a page names only identifiers the tree carries (or declares them `ABSENT`).
+  A floor on the number of sources found keeps a broken glob from checking nothing.
 - **`check_supported_table`** (the standards lint): the README's support table is `tools/supported.py`'s output, read
   from files alone. The README's other generated block, the activation registry's capability table, is produced by
   running the registry, so its check executes the code under test and is a test, not a lint: it runs in the CPU tier
@@ -294,7 +288,7 @@ import) -- so a source change rebuilds it first. The CPU tier is `tests/unit/tes
 visible, such rows fail rather than skip), so the oracle tier runs `tests/oracle` whole.
 
 **The commit lane is the whole battery above, inside five minutes.** The build-shape gates and `tools/ratify.py` run
-additionally at a batch tip (and always when csrc, manifests or codegen flags moved); the latency gate and the sanitizer
+additionally at a batch tip (and always when csrc or codegen flags moved); the latency gate and the sanitizer
 lane run on their own cadence, never per-commit. **Never `pytest tests/` unscoped.**
 
 **Every GPU entry point takes the GPU lock itself** — a test tier through a session fixture in `tests/conftest.py`,

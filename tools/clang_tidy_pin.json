@@ -8,7 +8,7 @@
     "release_url": "https://files.pythonhosted.org/packages/82/19/0f2668f8f5e2452b096a2b898f2b6bcecbceb6dd0c7f75d1755ce1f18d8b/clang_tidy-22.1.8-py2.py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
     "asset_sha256": "1a3de07ba82d4403d8b692ae63a5520d4db5c606014c92c24bbcef9259057bf1",
     "binary_sha256": "d77c4ac9c08b71a1e2b9a2950f91d2b398754237a23b3f60acb4601033461483",
-    "why_not_gated_like_ptxas": "clang-tidy reads the source; it never touches codegen, so it is not recorded in the ratified manifest. Its version is still pinned, not ranged: a lint whose findings depend on which clang a host happened to have is two lints.",
+    "why_not_gated_like_ptxas": "clang-tidy reads the source; it never touches codegen, so it is not part of any codegen record. Its version is still pinned, not ranged: a lint whose findings depend on which clang a host happened to have is two lints.",
     "archive_root": "",
     "binary_path": "clang_tidy/data/bin/clang-tidy"
 }

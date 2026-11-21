@@ -19,10 +19,10 @@ ledger that kernel again.
 its own `__global__` kernel; the graph's CUDA rule compiles it for the build's architectures (tools/lint/BUILD.bazel's
 `primitives_census_probe`), and this test reads the object's SASS with the graph's `cuobjdump -sass` and counts opcodes by
 FAMILY (the mnemonic up to its first `.` modifier -- `HFMA2.BF16_V2` and `HFMA2.MMA` are both family `HFMA2`). Each cell
-asserts an exact count for one or more families; the audit table in `prototypes/k35_final_build/FINDINGS.md` is this
-file's derivation record -- read it for WHY each cell's expected shape is what it is, this file only asserts the shape.
+asserts an exact count for one or more families; each table row's comment states the instruction the primitive must lower to
+and what its emulation would show instead, and this file asserts the shape that comment gives.
 
-**BUILT ARCHES ONLY.** The probe is compiled for the build's architectures (`RATIFIED_ARCHS`), so this gate and the real
+**BUILT ARCHES ONLY.** The probe is compiled for the build's architectures (`BUILT_ARCHS`), so this gate and the real
 build can never disagree about which arches "built" means; each is read from the SASS's own `arch = sm_XX` line.
 
 **WIRING.** A graph test, a compile-only gate: no GPU, no `flock`. `bazel test //tools/lint:primitives_census`.

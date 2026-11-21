@@ -37,7 +37,7 @@ def same_split(carve: Carve) -> int:
 def arm_key(carve: Carve) -> tuple[int, ...]:
     """The compiled body a carve selects: ``(fold_rows, fold_factors, read_rows, read_factors, channels,
     same_split)`` -- each side's dense rows (the fold's warp tile, the readout's K) and its operand's level count, the
-    channel extent and the hand-off's form (:func:`same_split`; ``tools/gen_shards.py``'s ``ARM_KEY``)."""
+    channel extent and the hand-off's form (:func:`same_split`; ``CARRY_KEY`` in ``csrc/rola/src/carry/arms.bzl``)."""
     return (carve.fold.tile_rows, len(carve.fold.operand), carve.readout.tile_rows, len(carve.readout.operand),
             carve.channels, same_split(carve))
 
