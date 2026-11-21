@@ -899,47 +899,6 @@ def check_no_bare_flock_on_gpu_lock() -> list[str]:
 _TOOLS_DIR = ROOT / "tools"
 
 
-def check_supported_table() -> list[str]:
-    """The README's support table is `tools/supported.py`'s output: its generated block (`tools/supported.py`) equal to
-    `supported.table()`, which derives it from the kernel's arch table and its built architectures -- FILES ONLY, no import of
-    `rola` -- and (non-vacuity) the comparison fires on a hand-tampered copy. The README's other generated block, the
-    activation registry's capability table, runs the registry to produce, so its check is a test, in the CPU tier
-    (`tests/unit/test_capability_table_docs.py`): a check that executes the code under test is a test, not a lint
-    (docs/testing.md). The unbuilt row's wording is `check_arch_coverage`'s."""
-    if str(_TOOLS_DIR) not in sys.path:
-        sys.path.insert(0, str(_TOOLS_DIR))
-    import supported
-
-    marker = "tools/supported.py"
-    findings = []
-
-    def _drift(readme_text: str) -> str | None:
-        committed = supported.block(readme_text, marker)
-        if committed is None:
-            return f"README.md has no generated block for {marker}"
-        if committed != supported.table():
-            return (f"README.md's {marker} block drifted from tools/supported.py's "
-                    f"generator (regenerate with `bazel run //:readme_update`)")
-        return None
-
-    readme_text = supported.README.read_text()
-    drift = _drift(readme_text)
-    if drift is not None:
-        findings.append(drift)
-
-    tampered = readme_text.replace(
-        "**not built — will refuse to load**", "built", 1)
-    if tampered == readme_text:
-        findings.append("check_supported_table non-vacuity probe found nothing "
-                        "to tamper -- the README carries no 'not built' row to "
-                        "flip, so the drift check above was not exercised")
-    elif _drift(tampered) is None:
-        findings.append("check_supported_table non-vacuity FAILED: a hand-tampered "
-                        "README (a 'not built' row flipped to 'built') did not "
-                        "register as drift -- the comparison is vacuous")
-    return findings
-
-
 def _repo_build_config() -> dict | None:
     """THIS TREE's `rola_<toolchain>/_build_config.py`, loaded BY PATH, or None if unbuilt.
 
@@ -1256,7 +1215,6 @@ def main() -> int:
     gating_findings += check_tests_tier_directories()
     gating_findings += check_docs_mirror()
     gating_findings += check_no_bare_flock_on_gpu_lock()
-    gating_findings += check_supported_table()
     gating_findings += check_hardware()
     gating_findings += check_arch_coverage()
     gating_findings += check_vendored_pin()

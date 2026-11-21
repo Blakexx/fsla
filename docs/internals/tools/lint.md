@@ -214,7 +214,7 @@ text belt to the ast-grep rule, a CTA or grid barrier inside a declared barrier-
 and excluded), a committed doc or script wrapping a command in an external `flock` on the GPU lock path (scoped
 to `docs/`, `measure/`, `tools/`, `CLAUDE.md` and `README.md`, the standards among them), the
 file-reading checks
-(`check_supported_table`, `check_arch_coverage`, `check_vendored_pin`, each a function of the
+(`check_arch_coverage`, `check_vendored_pin`, each a function of the
 tree's files, never of an imported `rola`), and
 `check_repo_portability` (§17): every tracked file scanned for an absolute home-directory path, a citation of an
 out-of-repo journal by path, a real worktree path or a session's scratch path, with no allowlist (its own source is

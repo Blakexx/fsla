@@ -3,8 +3,7 @@
 A hand-maintained support table says what someone hoped was true when
 they last edited it; this one is derived from the two artifacts that decide the
 answer, and the commit gate fails on drift (`//:readme`, which holds the committed README to what the graph writes,
-docs/build-graph.md#committed-files; the standards lint's `check_supported_table` and the capability table's CPU test,
-`tests/unit/test_capability_table_docs.py`, read the blocks too):
+docs/build-graph.md#committed-files):
 
 * ``csrc/rola/src/common/hardware.json``'s rows (``measure.hardware.tabulated``, which also gives
   ``common/hardware.cuh``'s ``tabulated``) -- the architectures the KERNEL knows how to size itself for: a
@@ -40,8 +39,6 @@ sys.path.insert(1, str(ROOT))
 import toolchains  # noqa: E402
 
 from measure import hardware  # noqa: E402 -- the architecture rows' own names
-
-README = ROOT / "README.md"
 
 #: The README's generated regions: `marker -> producer`. TWO of them, because two
 #: different artifacts decide two different tables and neither may be hand-edited.

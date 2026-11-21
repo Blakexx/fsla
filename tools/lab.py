@@ -295,40 +295,26 @@ def bound_failures(expected: list[dict], kernels: list) -> list[str]:
     return failures
 
 
-#: what a refusal of each rule says, with the hazard's name the experiment declares (`{n}` the findings counted, `{declared}` the count
-#: declared, `{where}` the addresses of the first findings)
+#: what a refusal of each rule counts, with the hazard's name the experiment declares (`{n}` the findings counted, `{declared}` the count
+#: declared, `{where}` the addresses of the first findings). The advice and its citations are the `checker` section of
+#: `docs/rules.json`'s `guidance`, which a refusal prints as its note: one form, not repeated here.
 REFUSAL_TEXT = {
-    "loop_convergence": "{n} convergence instructions inside its loops, {declared} declared (KERNEL_STANDARDS 29.13: the source "
-                        "patterns of 29.9, or LOOP_CONVERGENCE)",
-    "load_in_trip": "{n} global loads read in the trip that issued them (KERNEL_STANDARDS 32: a load a stage ahead of its use), "
-                    "{declared} declared (LOAD_IN_TRIP)",
-    "store_reload": "{n} shared loads of an address the same trip stored to (KERNEL_STANDARDS 33: a value no other warp reads "
-                    "stays in a register), {declared} declared (STORE_RELOAD)",
+    "loop_convergence": "{n} convergence instructions inside its loops, {declared} declared (LOOP_CONVERGENCE)",
+    "load_in_trip": "{n} global loads read in the trip that issued them, {declared} declared (LOAD_IN_TRIP)",
+    "store_reload": "{n} shared loads of an address the same trip stored to, {declared} declared (STORE_RELOAD)",
     "store_unfenced": "{n} barrier arrivals after a shared store with no fence between, in a kernel whose steps read shared "
-                      "memory (KERNEL_STANDARDS 12: the writer's fence), {declared} declared (STORE_UNFENCED)",
-    "clock_uniform": "{n} sums of a cycle-counter reading in uniform registers, {declared} declared (CLOCK_UNIFORM): a lap's sum "
-                     "is each thread's own (docs/internals/LEARNINGS.md, lap-in-uniform)",
-    "wait_after_issue": "{n} tensor waits directly after their group's steps, {declared} declared (WAIT_AFTER_ISSUE): work that "
-                        "does not read the group's accumulators belongs between the issue and the wait: KERNEL_STANDARDS 29.16 "
-                        "(`lab waits` lists the candidates)",
-    "step_rolled": "{n} tensor steps in loops that hold no wait on them (loops at {where}), {declared} declared (STEP_ROLLED): "
-                   "a step in a rolled loop of a run-time count was measured at 37.6 cycles against 23.2 straight, 1.62 times, a fence "
-                   "a step free (docs/lab/step_rolled.md), and the toolkit says nothing: write them a straight block, or a step that may be "
-                   "absent under a forward branch behind its own fence (docs/internals/LEARNINGS.md)",
-    "step_port": "{n:,} bytes a step through the shared-memory port, over the {declared:,} declared (STEP_PORT; `lab steps` lists "
-                 "the regions)",
-    "step_work": "{n:,} instructions a step, over the {declared:,} declared (STEP_WORK; `lab steps` lists the regions)",
-    "step_branches": "{n} branches inside an MMA step nobody declared (KERNEL_STANDARDS 27: a step body is one basic block; a form "
-                     "that keeps them declares BSSY)",
-    "step_conversion": "{n} conversion-unit instructions inside an MMA step nobody declared (KERNEL_STANDARDS 29: convert on the "
-                       "FMA pipe; a form that keeps them declares STEP_XU)",
-    "step_global": "{n} global accesses inside an MMA step nobody declared (KERNEL_STANDARDS 29: stage by cp.async; a form that "
-                   "keeps them declares STEP_GLOBAL)",
+                      "memory, {declared} declared (STORE_UNFENCED)",
+    "clock_uniform": "{n} sums of a cycle-counter reading in uniform registers, {declared} declared (CLOCK_UNIFORM)",
+    "wait_after_issue": "{n} tensor waits directly after their group's steps, {declared} declared (WAIT_AFTER_ISSUE)",
+    "step_rolled": "{n} tensor steps in loops that hold no wait on them (loops at {where}), {declared} declared (STEP_ROLLED)",
+    "step_port": "{n:,} bytes a step through the shared-memory port, over the {declared:,} declared (STEP_PORT)",
+    "step_work": "{n:,} instructions a step, over the {declared:,} declared (STEP_WORK)",
+    "step_branches": "{n} branches inside an MMA step nobody declared (BSSY)",
+    "step_conversion": "{n} conversion-unit instructions inside an MMA step nobody declared (STEP_XU)",
+    "step_global": "{n} global accesses inside an MMA step nobody declared (STEP_GLOBAL)",
     "shared_wavefronts_excess": "{per} shared-memory wavefronts in excess of the conflict-free count a CTA-window ({n:,} in the "
-                                "launch), {declared_per} declared a CTA-window ({declared:,} in the launch) (BANK_CONFLICT, which counts "
-                                "a CTA-window; KERNEL_STANDARDS 30: conflict-free by construction)",
-    "convergence_call": "{n} convergence calls nobody declared (a collective under role-dependent control flow becomes a call "
-                        "into a convergence subroutine)",
+                                "launch), {declared_per} declared a CTA-window ({declared:,} in the launch) (BANK_CONFLICT)",
+    "convergence_call": "{n} convergence calls nobody declared",
 }
 _RULE_HAZARDS = {rule: hazard for hazard, rule in HAZARD_RULES.items()}
 

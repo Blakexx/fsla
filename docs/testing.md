@@ -245,9 +245,7 @@ A document nothing checks is a document that drifts. These run in the commit gat
 - **`//:readme`**: the README's generated blocks, the support table and the activation registry's capability table, are
   what the graph writes (`tools/supported.py --readme`, which runs the registry, so the target is a test of the tree's
   package and sits in the commit gate beside the lints); the committed README must equal it
-  ([`build-graph.md#committed-files`](build-graph.md#committed-files)). `check_supported_table` (the standards lint,
-  the support table, files only) and `tests/unit/test_capability_table_docs.py` (the CPU tier, the capability table) read
-  the same blocks.
+  ([`build-graph.md#committed-files`](build-graph.md#committed-files)). It is the one check of both blocks.
 - **`tools/lint/portable_claude.py`**: the agent files name no machine path.
 
 ## The host-structure gates

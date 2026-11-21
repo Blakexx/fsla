@@ -86,8 +86,8 @@ constexpr bool tenants_aligned() {
 template <::denseref::arch::Build B>
 struct FactsPlan {
   static constexpr int kWindowTokens = ::denseref::arch::traits_of(B).window;
-  //: four CTAs an SM, two at a window of 1,024 (a list lane's twice the words and boundaries in registers)
-  static constexpr int kFactsCtasMin = kWindowTokens >= 1024 ? 2 : 4;
+  //: two CTAs an SM (a list lane holds twice the words and boundaries of a 512-token window, in registers)
+  static constexpr int kFactsCtasMin = 2;
   static constexpr int kWindowWords = kWindowTokens / kTokBits;
   static constexpr int kWindowTiles = kWindowTokens / kTileTokens;
   static constexpr int kWarpBlocks = kWindowWords / kFactsWarps;

@@ -99,9 +99,7 @@ def declare(g, env: Env, *, timing=None, instruments=tuple(INSTRUMENTS)) -> dict
     facts = {"binary": binary, "environment": environment}
     out = {"binary": binary, "environment": environment, "instruments": {}, "entries": {}, "clock": None,
            "sides": _sides(g, env, facts), "diffs": {}}
-    verdict = _kernel_vs_oracle(g, env, out["sides"])
-    if verdict is not None:
-        out["diffs"]["carry-vs-oracle"] = verdict
+    out["diffs"]["carry-vs-oracle"] = _kernel_vs_oracle(g, env, out["sides"])
     #: THE ORACLE TIER AS ONE TARGET: pytest over `tests/oracle`, keyed on the tier's code and the binary, cached while
     #: both stand; its output is the outcome and the margins, stored beside the instruments (`rola/oracle-tier`)
     out["instruments"]["oracle-tier"] = g.node(
@@ -196,21 +194,18 @@ def _sides(g, env: Env, facts: dict) -> dict:
 
 
 def _kernel_vs_oracle(g, env: Env, sides: dict):
-    """The carry against the fp64 inter term, in this checkout: the clause rule per output kind; ``None`` while the
-    kind's clauses are owed."""
+    """The carry against the fp64 inter term, in this checkout: the clause rule per output kind. A kind whose kernel is
+    not built (`tolerances.Owed`) refuses by name (`rola.ops._ext.KernelNotBuilt`), as the oracle's tests do."""
     from rola_devtools.diff import diff, side
 
     kernel_surface, reference_executor, kinds = KERNEL_VS_ORACLE
     outputs = load(Path(env.cwd) / "tests" / "oracle" / "tolerances.py")
-    #: NO VERDICT WITHOUT A BUILT KERNEL: a kind whose clauses its kernel's measurement still owes (`tolerances.Owed`)
-    #: declares no diff, so none is stored until the kernel lands with its measured clauses
-    if any(hasattr(outputs[k], "kernel") for k in kinds.values()):
-        return None
+    #: NO VERDICT WITHOUT A BUILT KERNEL: reading an owed kind's clauses raises `KernelNotBuilt`, before a node is declared
+    per_quantity = {q: {"clauses": [list(c) for c in outputs[k].clauses], "rtol": outputs[k].rtol,
+                        "envelope_from": f"{q}_envelope"} for q, k in kinds.items()}
     nodes = cell_nodes(g, surface_cells(kernel_surface))
     reference = side(g, "side/carry-reference", env=env, executor=reference_executor, cells=nodes,
                      code=_code(*SIDE_CODE), binds="rola", holds={"gpu": "all"})
-    per_quantity = {q: {"clauses": [list(c) for c in outputs[k].clauses], "rtol": outputs[k].rtol,
-                        "envelope_from": f"{q}_envelope"} for q, k in kinds.items()}
     #: RECORDED, not a build failure: the verdict is stored per cell, red cells included (a carve the binary has no arm
     #: for is red by decision until kernel work ships it), and the rest of the build measures on
     return diff(g, "diff/carry-vs-oracle", left=sides[kernel_surface], right=reference, strategy="per-slot",
