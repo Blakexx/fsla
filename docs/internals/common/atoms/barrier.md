@@ -12,9 +12,8 @@ Mirrors `csrc/rola/src/common/atoms/barrier.cuh`, a concern of the baseline oper
   evaluates the condition alike): one instruction, so where a barrier is needed only sometimes no branch splits the
   block (the carry's rendezvous on its step words' `reuse`, `carry_kernel.md#kernel`).
 
-- <a id="mbarrier"></a>`mbar_init`, `mbar_arrive_when_landed`, `mbar_arrive`, `mbar_wait`: an `mbarrier` (sm_80+)
-  completes a phase at `count` arrivals and flips its parity. A thread's `cp.async` copies arrive when they LAND
-  (`cp.async.mbarrier.arrive.noinc`: the arrival is one of the counted ones); a thread's own arrive releases its
+- <a id="mbarrier"></a>`mbar_init`, `mbar_arrive`, `mbar_wait`: an `mbarrier`
+  completes a phase at `count` arrivals and flips its parity. A thread's own arrive releases its
   prior shared stores; a wait acquires. `mbar_wait` is a `test_wait` spin, cheap when the phase is already complete,
   which is the case a design arranges. `mbar_test` asks once, for a loop that does other work while copies have not
   landed (its answer voted over the warp before it steers a branch). `mbar_wait_sleep` polls with a 64 ns

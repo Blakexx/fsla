@@ -1,6 +1,6 @@
 # `common/atoms/warp.cuh` — the warp's votes and controls
 
-Mirrors `csrc/rola/src/common/atoms/warp.cuh`, a concern of the baseline operations ([`../ops.md`](../ops.md)): lane votes and their readings, the warp-uniform index, the lane prefix and broadcast, and the controls ptxas cannot see through. Written for the ampere and hopper families: its instructions are the same on both ([`../arch_caps.md#written-for`](../arch_caps.md#written-for)).
+Mirrors `csrc/rola/src/common/atoms/warp.cuh`, a concern of the baseline operations ([`../ops.md`](../ops.md)): lane votes and their readings, the warp-uniform index, the lane prefix and broadcast, and the controls ptxas cannot see through.
 
 - <a id="kballotlanes"></a>`kBallotLanes`: the lockstep unit's width, deliberately not the MMA's unit: a warpgroup
   issues one MMA across 128 threads and still votes in lanes of 32, and conflating them reads a quarter of a vote.

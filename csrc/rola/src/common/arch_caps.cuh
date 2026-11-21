@@ -10,25 +10,22 @@
 namespace denseref {
 namespace arch {
 
-// THE COMPILING TARGET; inert in the host pass, pinned to the smallest tabulated config.
+// THE COMPILING TARGET; inert in the host pass, which is the hopper's.
 #ifdef __CUDA_ARCH__
 constexpr int kArch = __CUDA_ARCH__;
 #else
-constexpr int kArch = 860;
+constexpr int kArch = 900;
 #endif
 
 static_assert(tabulated(kArch),
               "untabulated compute capability: add its row to caps_of() rather "
               "than letting an operation guess which implementation it has");
 
-constexpr Caps kCaps = caps_of(kArch);
+//: THE ONE FAMILY BUILT: every other family is refused by name, here and nowhere else
+static_assert(traits_of(Build{kArch, 0}).family == Family::kHopper,
+              "only the hopper family is built: build for sm_90a (--//:archs)");
 
-//: THE FAMILIES A HEADER IS WRITTEN FOR: each includer names them in a static_assert; a build of another family is
-//: refused by name, header by header (docs/architecture/families.md, an atom's body per family where it is defined)
-template <Family... Written>
-constexpr bool written_for() {
-  return ((traits_of(Build{kArch, 0}).family == Written) || ...);
-}
+constexpr Caps kCaps = caps_of(kArch);
 
 constexpr int caps_digest(const Caps& c) {  // see docs/internals/common/arch_caps.md#capsdigest
   return c.cc * 1000 + (int)c.bf16_cvt_packed * 16 + (int)c.bf16_simd_arith * 32

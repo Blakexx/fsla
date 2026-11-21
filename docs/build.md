@@ -23,7 +23,7 @@ silently.
 
 ```bash
 bazel run //:library                                   # every ratified architecture and arm, into rola_cu13/
-bazel run //:library --//:archs=86 --//:decode_arms=3  # an iteration build (below)
+bazel run //:library --//:archs=90a --//:decode_arms=3  # an iteration build (below)
 bazel run //:wheels                                    # the two wheels of a clean, ratified commit (below)
 ```
 
@@ -82,7 +82,7 @@ Instantiation is the dominant build resource, so a developer testing ONE arm may
 architecture:
 
 ```bash
-bazel run //:library --//:archs=86 --//:decode_arms=5
+bazel run //:library --//:archs=90a --//:decode_arms=5
 ```
 
 Any parameter but a default makes an ITERATION build (`tools/gen_shards.py`'s `is_iteration`, which the record

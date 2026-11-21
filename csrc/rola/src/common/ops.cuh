@@ -4,7 +4,6 @@
 // See docs/internals/common/ops.md
 
 #include <cuda_bf16.h>
-#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <cstdint>

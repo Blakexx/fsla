@@ -80,7 +80,7 @@ environment.python(
         "//tools:build_flags.py",
         "//tools:toolchains.py",
     ],
-    watch_trees = ["//tools:manifests/cu13/sm_86.json"],
+    watch_trees = ["//tools:manifests/cu13/sm_90a.json"],
 )
 environment.pinned(
     name = "mold",

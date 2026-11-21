@@ -19,7 +19,6 @@ METRICS = {
     "inst": "smsp__inst_executed.sum",
     "alu": "sm__inst_executed_pipe_alu.sum",
     "fma": "sm__inst_executed_pipe_fma.sum",
-    "fma_fp16": "sm__inst_executed_pipe_fma_type_fp16.sum",
     "fmaheavy": "sm__inst_executed_pipe_fmaheavy.sum",
     "xu": "sm__inst_executed_pipe_xu.sum",
     "wavefronts": "l1tex__data_pipe_lsu_wavefronts_mem_shared.sum",
@@ -53,7 +52,7 @@ STALLS = ("long_scoreboard", "short_scoreboard", "mio_throttle", "math_pipe_thro
 TENSOR_COUNTED = {"sm_86": 16.0}
 
 #: an MMA mnemonic's prefix and suffix and the `hardware.json` kind it runs at, the first match winning
-MMA_KINDS = (("HMMA", ".F32.BF16", "hmma_bf16_f32"), ("HMMA", ".F32", "hmma_f16_f32"), ("HMMA", ".F16", "hmma_f16_f16"),
+MMA_KINDS = (("HMMA", ".F32.BF16", "hmma_bf16_f32"), ("HMMA", ".F32", "hmma_f16_f32"),
              ("IMMA", "", "imma_u8_s8_k32"))
 
 
@@ -116,8 +115,7 @@ def pipe_cycles(c: dict, n: float, rates: dict, arch_ran: str, mma: tuple[str, i
     out["shared"] = shared_cycles(c, rates) / n
     out["issue"] = c["inst"] / n * r["issue"] / s
     out["alu"] = c["alu"] / n * r["pipe.alu"] / s
-    out["fma"] = max((c["fma"] - c["fma_fp16"]) * r["pipe.fma"] + c["fma_fp16"] * r["pipe.fma_fp16"],
-                     c["fmaheavy"] * r["pipe.fmaheavy"]) / n / s
+    out["fma"] = max(c["fma"] * r["pipe.fma"], c["fmaheavy"] * r["pipe.fmaheavy"]) / n / s
     out["xu"] = c["xu"] / n * r["pipe.xu"] / s
     out["global"] = global_cycles(c, rates) / n
     return out

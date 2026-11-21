@@ -34,8 +34,8 @@ def binary(monkeypatch):
                              decode=[(dv, d, decay) for dv in (32, 64) for d in (1, 2, 3, 4) for decay in (False, True)])
     monkeypatch.setattr(carry, "arms", lambda: tables.carry)
     monkeypatch.setattr(decode, "arms", lambda: tuple(tables.decode))
-    #: the window an sm_86 card's build runs (hardware.json), planted as the tables are: no device answers it here
-    monkeypatch.setattr(subjects, "_shared_window", lambda: hardware.load()["arch"]["sm_86"]["build"]["window"])
+    #: the window an sm_90a card's build runs (hardware.json), planted as the tables are: no device answers it here
+    monkeypatch.setattr(subjects, "_shared_window", lambda: hardware.load()["arch"]["sm_90a"]["build"]["window"])
     return tables
 
 

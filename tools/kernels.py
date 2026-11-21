@@ -192,7 +192,7 @@ def main() -> int:
     ap.add_argument("--touching", nargs="*", default=None, metavar="FILE",
                     help="with --units: only the units whose compiled files include one of these")
     ap.add_argument("--check-manifest", action="store_true", help="compare the source's kernels to the manifests")
-    ap.add_argument("--arch", default="86")
+    ap.add_argument("--arch", default="90a")
     a = ap.parse_args()
     if a.units:
         for path in (units() if a.touching is None else units_touching(a.touching)):

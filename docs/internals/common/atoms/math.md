@@ -1,6 +1,6 @@
 # `common/atoms/math.cuh` — the elementwise math
 
-Mirrors `csrc/rola/src/common/atoms/math.cuh`, a concern of the baseline operations ([`../ops.md`](../ops.md)): the special-function unit's roots and powers, byte and halfword selects and packs, the f16 and bf16 pair arithmetic.
+Mirrors `csrc/rola/src/common/atoms/math.cuh`, a concern of the baseline operations ([`../ops.md`](../ops.md)): the special-function unit's roots and powers, byte and halfword selects and packs, the bf16 pair arithmetic.
 
 - <a id="sqrt-approx"></a>`sqrt_approx`: `sqrt.approx.f32`, one special-function instruction. The IEEE root (`sqrtf`)
   compiles to a range check and a call to a slow-path subroutine, whose calling convention spills a body that holds
@@ -13,13 +13,6 @@ Mirrors `csrc/rola/src/common/atoms/math.cuh`, a concern of the baseline operati
 - <a id="prmt"></a>`prmt`, `pack_byte4`: `prmt.b32` picks four of two words' eight bytes by a selector nibble each;
   `pack_byte4` takes the same byte of four words with three of them (pair selectors `0x0040`, `0x0051`, `0x0062`, then
   `0x5410`), which is how an int8 operand row is formed from four gathered words without shifts or masks.
-
-- <a id="hmul2"></a>`hmul2`, `hfma2`, `pack_half2`: two f16 products or fused products each rounded once to nearest,
-  two fp32 to an f16 pair rounded to nearest (`cvt.rn.f16x2.f32`, `lo` in the low half). Every rounding is explicit so
-  a reference can mirror it.
-- <a id="hmul2-by"></a>`hmul2_by`: an f16 pair times one half, each product rounded once (`__hmul2_rn` on the half
-  broadcast): ptxas folds the broadcast into HMUL2's operand selector, its price in
-  [budgets.md#prices](../../tools/budgets.md#prices).
 
 The bf16 pair helpers, `hi_bf16` through `or_run`, have no shipped caller.
 

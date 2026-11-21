@@ -7,7 +7,7 @@ namespace denseref {
 namespace arch {
 
 struct Caps {
-  int cc;  // compute capability x10, e.g. 860
+  int cc;  // compute capability x10, e.g. 900
   bool bf16_cvt_packed;  // two fp32 -> one b32 of two bf16, one instruction
   bool reg_transpose_b16;  // an 8x8 b16 tile spread across the MMA unit's own registers is transposed IN PLACE. see docs/internals/common/arch_caps.md#reg-transpose-b16
   bool bf16_simd_arith;  // elementwise bf16 arithmetic on a packed pair (`mul.rn.bf16x2`). see docs/internals/common/arch_caps.md#bf16-simd-arith
@@ -20,40 +20,27 @@ struct Caps {
 
 //: THE TABULATED SET -- see docs/internals/common/arch_caps.md#tabulated
 constexpr bool tabulated(int cc) {
-  return cc == 800 || cc == 860 || cc == 870 || cc == 890 || cc == 900;
+  return cc == 900 || cc == 1000;
 }
 
 constexpr Caps caps_of(int cc) {
-  if (cc == 800)
-    return Caps{.cc = 800, .bf16_cvt_packed = true, .reg_transpose_b16 = true, .bf16_simd_arith = false,
-                .bf16_simd_fma = true, .smem_per_sm = 167936, .smem_per_cta_max = 166912, .regs_per_sm = 65536,
-                .max_threads_per_sm = 2048};
-  // sm_86: local dev (GA102)
-  if (cc == 860)
-    return Caps{.cc = 860, .bf16_cvt_packed = true, .reg_transpose_b16 = true, .bf16_simd_arith = false,
-                .bf16_simd_fma = true, .smem_per_sm = 102400, .smem_per_cta_max = 101376, .regs_per_sm = 65536,
-                .max_threads_per_sm = 1536};
-  if (cc == 870)
-    return Caps{.cc = 870, .bf16_cvt_packed = true, .reg_transpose_b16 = true, .bf16_simd_arith = false,
-                .bf16_simd_fma = true, .smem_per_sm = 167936, .smem_per_cta_max = 166912, .regs_per_sm = 65536,
-                .max_threads_per_sm = 1536};
-  if (cc == 890)
-    return Caps{.cc = 890, .bf16_cvt_packed = true, .reg_transpose_b16 = true, .bf16_simd_arith = false,
-                .bf16_simd_fma = true, .smem_per_sm = 102400, .smem_per_cta_max = 101376, .regs_per_sm = 65536,
-                .max_threads_per_sm = 1536};
-  // sm_90a: TABULATED, NOT BUILT; its window the A100's, provisional until the sm_90 carry's design picks it; see docs/internals/common/arch_caps.md#caps-of-note-l147
+  // sm_90a: the hopper build; its window the A100's, provisional until the sm_90 carry's design picks it; see docs/internals/common/arch_caps.md#caps-of-note-l147
   if (cc == 900)
     return Caps{.cc = 900, .bf16_cvt_packed = true, .reg_transpose_b16 = true, .bf16_simd_arith = true,
+                .bf16_simd_fma = true, .smem_per_sm = 233472, .smem_per_cta_max = 232448, .regs_per_sm = 65536,
+                .max_threads_per_sm = 2048};
+  // sm_100a: TABULATED, NOT BUILT; the programming guide's compute capability 10.0 facts, unverified against a device; no window chosen
+  if (cc == 1000)
+    return Caps{.cc = 1000, .bf16_cvt_packed = true, .reg_transpose_b16 = true, .bf16_simd_arith = true,
                 .bf16_simd_fma = true, .smem_per_sm = 233472, .smem_per_cta_max = 232448, .regs_per_sm = 65536,
                 .max_threads_per_sm = 2048};
   return Caps{};
 }
 
 //: THE ARCHITECTURE FAMILIES -- see docs/internals/common/hardware.md#families
-enum class Family : int { kAmpere, kHopper, kBlackwell };
+enum class Family : int { kHopper, kBlackwell };
 
-//: A BUILD: the key a kernel compiles at -- its image's compute capability and its variant (products equal
-//: in build traits share one). see docs/internals/common/hardware.md#builds
+//: A BUILD: the key a kernel compiles at, its compute capability and variant. see docs/internals/common/hardware.md#builds
 struct Build {
   int cc;
   int variant;
@@ -67,29 +54,21 @@ struct Traits {
 };
 
 constexpr Traits traits_of(Build b) {
-  if (b.cc == 800 && b.variant == 0)
-    return Traits{Family::kAmpere, 1024, caps_of(800)};
-  if (b.cc == 860 && b.variant == 0)
-    return Traits{Family::kAmpere, 512, caps_of(860)};
-  if (b.cc == 870 && b.variant == 0)
-    return Traits{Family::kAmpere, 512, caps_of(870)};
-  if (b.cc == 890 && b.variant == 0)
-    return Traits{Family::kAmpere, 512, caps_of(890)};
   if (b.cc == 900 && b.variant == 0)
     return Traits{Family::kHopper, 1024, caps_of(900)};
+  if (b.cc == 1000 && b.variant == 0)
+    return Traits{Family::kBlackwell, 0, caps_of(1000)};
   return Traits{};
 }
 
-//: A BUILD AS A TYPE, the form a kernel takes it in (a kernel's class-type template argument must be a
-//: type's: docs/internals/common/hardware.md#build-tag)
+//: A BUILD AS A TYPE, the form a kernel takes it in: docs/internals/common/hardware.md#build-tag
 template <Build B>
 struct BuildTag {
   static constexpr Build build = B;
   static constexpr Traits traits = traits_of(B);
 };
 
-//: THE PRODUCTS: a device's product by its name's slug, and the build variant it runs -- see
-//: docs/internals/common/hardware.md#products
+//: THE PRODUCTS: a device's product by its name's slug, and the build variant it runs. see docs/internals/common/hardware.md#products
 struct ProductRow {
   int cc;
   const char* slug;
@@ -97,12 +76,11 @@ struct ProductRow {
 };
 
 inline constexpr ProductRow kProducts[] = {
-  {800, "a100", 0},
-  {860, "rtx3080ti", 0},
+  {900, "h10080gbhbm3", 0},
 };
 
 //: the MMA kinds, in the order a product's quanta carry their rates (`kMmaRows`' columns)
-enum Mma : int { kHmmaF16F32, kHmmaF16F16, kHmmaBf16F32, kImmaU8S8K32, kMmaKinds };
+enum Mma : int { kHmmaF16F32, kHmmaBf16F32, kImmaU8S8K32, kMmaKinds };
 
 //: THE MMA RATES a scheduler in quanta, read at run time -- see docs/internals/common/hardware.md#consumers
 struct MmaRow {
@@ -112,10 +90,8 @@ struct MmaRow {
 };
 
 inline constexpr MmaRow kMmaRows[] = {
-  {800, nullptr, {2048, 2048, 2048, 2048}},
-  {860, nullptr, {4096, 4096, 4096, 4096}},
-  {800, "a100", {2048, 2048, 2048, 2048}},
-  {860, "rtx3080ti", {8226, 4130, 8226, 4130}},
+  {900, nullptr, {1024, 1024, 1024}},
+  {900, "h10080gbhbm3", {1024, 1024, 1024}},
 };
 
 }  // namespace arch

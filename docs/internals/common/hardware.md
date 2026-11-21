@@ -10,16 +10,15 @@ and must never be edited by hand; `measure/hardware.py` reads it, resolves it an
 ## Architecture defaults, product overrides
 
 A compute capability fixes the SM's design -- its capabilities, its shared memory and registers, its schedulers,
-its MMA instructions, its shared atomic unit -- but not every rate: products of one architecture differ. GeForce
-cards run fp16 x fp16 -> fp32 tensor math at half the fp16-accumulate rate, the professional and datacenter
-parts of the same chip at full rate (the GA102 whitepaper: Table 3, the RTX A6000 and A40 at 154.8 and 149.7
-dense TFLOPS either way; Table 9, the RTX 3090 at 71 against 142). So the file holds:
+its MMA instructions, its shared atomic unit -- but not every rate: products of one architecture may differ. So
+the file holds:
 
 - `arch.<sm_XX>`: the architecture's defaults -- its `caps` row and its `rates`, each rate at what the SM design
-  does (sm_86's fp32-accumulate HMMA at 16 cycles, the full rate).
-- `product.<slug>`: a product's overrides over its architecture's defaults (the RTX 3080 Ti's fp32-accumulate
-  HMMA at 32 cycles, and every rate measured on it). The slug is `measure/hardware.py`'s `slugify_gpu`: the device
-  name with the vendor words and the memory suffix dropped (`NVIDIA GeForce RTX 3080 Ti` -> `rtx3080ti`).
+  does (sm_90a's schedulers, issue and shared wavefront from the programming guide, its shared atomics measured, its
+  MMA rates the whitepaper's peak).
+- `product.<slug>`: a product's overrides over its architecture's defaults (the H100's has none yet). The slug is
+  `measure/hardware.py`'s `slugify_gpu`: the device name with the vendor words dropped and cut at the first `-`
+  (`NVIDIA H100 80GB HBM3` -> `h10080gbhbm3`).
 
 A product's rates are its architecture's under its overrides (`hardware.resolve(product=...)`); an
 architecture's alone are `hardware.resolve(arch)`. A device with no product row runs on its architecture's
@@ -29,7 +28,7 @@ defaults, which are what the SM design does.
 
 ## Families, builds and products
 
-Every architecture row names its FAMILY in its `build` block -- `ampere` (sm_80 to sm_89), `hopper` (sm_90a: the row is
+Every architecture row names its FAMILY in its `build` block -- `hopper` (sm_90a: the row is
 named as it is compiled, with the architecture's own features; its compute capability 900),
 `blackwell` (reserved) -- the name a kernel's schedule is selected by (`Family`; the constitution's R8). Instruction
 differences stay at the atom, read at the compiling architecture.
@@ -58,7 +57,7 @@ while a class template carrying it compiles -- so host templates and plans take 
 <a id="traits"></a>
 `traits_of(Build)` is what a kernel's plan reads: the family, the window W ([`window.md`](window.md): a card's,
 chosen per architecture) and the architecture's `Caps`. A tabulated architecture that is not built may leave its
-window unchosen; a built one must choose it. sm_90's is 1,024, the A100's, provisional until the sm_90 carry's design
+window unchosen; a built one must choose it. sm_90a's is 1,024, provisional until the sm_90 carry's design
 picks it (Blake, 2026-11-09). The check
 (`measure/hardware.py --check`) refuses an architecture whose build names no family of `FAMILIES` or a trait outside
 the family and `BUILD_TRAITS`, a built architecture whose build chooses no window, and a product overriding a trait
@@ -92,8 +91,7 @@ A rate is `{"cycles": ..., <source>}` with exactly one source:
   `on` (a product's own overrides are measured on it). The check refuses a value off its record's median by more
   than its rounding, or a record taken on another device.
 - `documented` -- the public document and the figure in it.
-- `announced` -- a value no source supports there yet, with why (sm_80's atomics are the RTX 3080 Ti's until a
-  rented A100 measures them): a known gap in plain sight, never a silent default.
+- `announced` -- a value no source supports there yet, with why: a known gap in plain sight, never a silent default.
 
 The rates: `schedulers` (an SM), `issue` (an instruction a scheduler), `wavefront` (a shared-memory load
 wavefront an SM), `atomic` and `atomic_wavefront` (a shared atomic instruction's least and each of its
@@ -111,8 +109,8 @@ the shared pipe's and the global path's other prices, the taxes and the latencie
 ### The shared-memory pipe's prices (`shared.*`)
 
 What the pipe takes, an SM, beyond a load's wavefront (`wavefront`) and a shared atomic's (`atomic`,
-`atomic_wavefront`), all measured in [`smem_rates`](../../lab/smem_rates.md) on the RTX 3080 Ti (sm_80's announced
-the same until a rented A100 measures them): `store` and `store_wavefront` (a plain shared store takes the larger of 2
+`atomic_wavefront`, measured in [`smem_rates`](../../lab/smem_rates.md) on the H100). The kinds below are not tabulated
+for the hopper yet (the ampere branch measured them): `store` and `store_wavefront` (a plain shared store takes the larger of 2
 cycles an instruction and ~1.14 a wavefront: 4 bytes a lane costs twice what 8 or 16 do a byte); `copy_bypass` and
 `copy_access` (a `cp.async.cg` copy's write into shared memory, 0.5 cycles a 128 bytes; a `.ca` copy's, 5.4);
 `global_read` and `global_fill` (a global load's data read out of the banks, 1.19 a 128 bytes, and what a line from L2
@@ -122,7 +120,7 @@ adds by being written into them first, 0.38). [`tools/pipes.py`](../tools/pipes.
 
 ### The SM's global path (`global.*`)
 
-Measured with every SM busy, on the RTX 3080 Ti (sm_80's announced the same until a rented A100 measures them):
+Measured with every SM busy (not tabulated for the hopper yet):
 `l2_line`, the cycles an SM's share of L2 takes to deliver a 128-byte line (`smem_rates`' `cp.async.cg` stream alone:
 ~18 bytes a cycle an SM), and `red_request`, a global atomic's line request (the [`drain`](../../lab/drain.md) lab's
 skipping form: ~5 cycles). [`tools/pipes.py`](../tools/pipes.md) prices a launch's L2 lines and atomic requests by
@@ -133,10 +131,8 @@ them.
 ### The arithmetic pipes (`pipe.*`)
 
 Cycles a warp instruction holds its pipe a scheduler, from the CUDA C++ Programming Guide's throughput table (results
-a clock an SM, over four schedulers and 32 lanes): `alu` 2 (integer add, compare, logic, shift: 64 a clock on 8.0 and
-8.6), `fma` 2 on sm_80 and 1 on sm_86 (fp32: 64 and 128), `fma_fp16` 1 (a half2 instruction), `fmaheavy` 2 (integer
-multiply and multiply-add), `xu` 8 (special functions, conversions: 16). Checked on sm_86 against ncu's busy counters
-to the percent ([pipes.md#checked](../tools/pipes.md#checked)).
+a clock an SM, over four schedulers and 32 lanes): `alu`, `fma`, `fmaheavy` (integer multiply and multiply-add) and
+`xu` (special functions, conversions). Not tabulated for the hopper yet.
 
 <a id="check"></a>
 

@@ -62,19 +62,10 @@ from ratify import cuda_bin  # noqa: E402
 
 OPS_INCLUDE_DIR = REPO_ROOT / "csrc" / "rola" / "src"
 
-#: BUILT ARCHES -- the non-900 rows `hardware.cuh`'s `caps_of()` tabulates (generated from `hardware.json`)
-#: (800, 860, 870, 890; see that file's `tabulated()`). This is a COMPILE-only
-#: gate (no GPU, no ratified manifest needed): `nvcc`/`ptxas` accept any of
-#: these as a `-arch=sm_XX` target on this toolchain regardless of which ones
-#: `tools/ratify.py`'s `DEFAULT_ARCHES` / `tools/manifests/<toolchain>/*.json` currently
-#: ratify for THIS host's default build (80, 86 today) -- the census's job is
-#: auditing the CAPABILITY TABLE's claims, not mirroring one host's build
-#: config, so it compiles every tabulated-and-built row.
-BUILT_ARCHES: list[str] = ["80", "86", "87", "89"]
-
-#: sm_90 is TABULATED (hardware.cuh's `caps_of`) but NOT BUILT (the hopper family's
-#: atoms and schedules are not written). Documented skip, never silently dropped.
-TABULATED_NOT_BUILT = ["90"]
+#: BUILT ARCHES -- the one row `hardware.cuh`'s `caps_of()` tabulates (generated from `hardware.json`): the hopper's.
+#: This is a COMPILE-only gate (no GPU, no ratified manifest needed): `nvcc`/`ptxas` accept it as a `-arch=sm_XX`
+#: target on this toolchain -- the census's job is auditing the CAPABILITY TABLE's claims.
+BUILT_ARCHES: list[str] = ["90a"]
 
 #: One probe kernel per audited primitive. Each calls the REAL `ops.cuh`
 #: entry point -- never a hand-rolled restatement of what it should compile
@@ -226,8 +217,6 @@ def main() -> int:
                 elif args.verbose:
                     wanted = {k: measured.get(k, 0) for k in row["families"]}
                     print(f"  pass  {prim} (sm_{arch}): {wanted}")
-        for arch in TABULATED_NOT_BUILT:
-            print(f"=== sm_{arch}: tabulated, NOT built -- documented skip, no compile issued ===")
 
     print(f"\n{'PASS' if ok else 'FAIL'}  primitives census "
           f"({len(CENSUS)} primitive(s) x {len(BUILT_ARCHES)} built arch(es))")

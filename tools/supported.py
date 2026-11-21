@@ -72,10 +72,8 @@ def _capability_table() -> str:
 
 #: Marketing names per compute capability. The ONLY hand-written column.
 GPUS = {
-    "sm_80": "A100, A30",
-    "sm_86": "A10, A40, RTX 30xx",
-    "sm_87": "Jetson Orin",
-    "sm_89": "L40S, RTX 40xx",
+    "sm_90a": "H100",
+    "sm_100a": "B200",
 }
 
 

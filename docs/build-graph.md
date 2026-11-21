@@ -87,12 +87,12 @@ headers into `build/generated`.
   header the unit did not read becomes the action's `unused_inputs_list`, so the unit's cache key holds what it read:
   a header edit recompiles the units that include it and no other. The file
   lists what every pass read, the host's and each architecture's device pass (nvcc 13.0.48: a header included only
-  under `__CUDA_ARCH__ == 860` is listed when sm_86 compiles and not when sm_80 alone does). Only declared headers are
+  under `__CUDA_ARCH__ == 900` is listed when sm_90a compiles). Only declared headers are
   prunable: the toolkit, the host compiler and its identity (rule 4) key every compile. The action keeps nvcc's
   diagnostics, ptxas's `-v` report among them, as `<unit>.ptxas.txt` (the `ptxas_reports` output group); the console
   shows them without the report's lines.
 - ONE ARCHITECTURE SPEC A CARD: the library's transition writes `--@rules_cuda//cuda:archs` as
-  `compute_80:sm_80;compute_86:sm_86`; a comma list (`sm_80,sm_86`) is one spec, which compiles every card from the
+  `compute_90a:sm_90a`, one spec an architecture; a comma list is one spec, which compiles every card from the
   lowest virtual architecture.
 - THE INCLUDE ORDER IS SETUP.PY'S: the repository's headers, then CUTLASS's, then the generated headers (and the stamp,
   for the one unit that reads it), then torch's, Python's and the toolkit's, so a repository header wins any name
@@ -286,7 +286,7 @@ names one).
     bazel run //:compile_commands                                   # the editor's compile_commands.json
     bazel test //:lane                                              # every test tier
     bazel run //:library                                            # the shipped build, into rola_cu13/
-    bazel run //:library --//:archs=86 --//:decode_arms=3           # an iteration build
+    bazel run //:library --//:archs=90a --//:decode_arms=3           # an iteration build
     bazel run //:image_load                                         # the devbox image, into Docker (docs/setup.md)
     bazel run //:image_push                                         # the devbox image, published to Docker Hub
     bazel run //tools:<tool> -- <its arguments>                     # a tree tool, in the checkout on its own venv

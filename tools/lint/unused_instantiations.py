@@ -3,7 +3,7 @@
 
 Every `__global__` FUNCTION TEMPLATE declared anywhere under `csrc/rola/` must
 be present, mangled, in at least one ratified binary's symbol table. The CHECKED-IN manifests
-(`tools/manifests/<toolchain>/sm_80.json`, `sm_86.json` -- closed-world codegen policy:
+(`tools/manifests/<toolchain>/sm_90a.json` -- closed-world codegen policy:
 these ARE what a real build produced, ratified) are the source of truth here
 rather than a fresh `cuobjdump` on whatever happens to be built in this
 worktree right now, which would silently narrow the check to this worktree's
@@ -206,7 +206,7 @@ def main() -> int:
 
     if not MANIFEST_DIR.is_dir() or not list(MANIFEST_DIR.glob("*/sm_*.json")):
         print("unused_instantiations: SKIPPED -- no tools/manifests/<toolchain>/sm_*.json "
-              "(ratify at least once: tools/ratify.py --arch 80 --arch 86)")
+              "(ratify at least once: bazel run //:ratify -- --write)")
         return 0
 
     templates = declared_global_templates(CSRC)

@@ -278,7 +278,7 @@
     "@@rola_devtools+//bazel:environment.bzl%environment": {
       "general": {
         "bzlTransitiveDigest": "nYRcMSeAmQnM3u2iQk3pDAZ0dQ/8XSSaZkIxdBKMhXg=",
-        "usagesDigest": "vw2Rm4UtrTwAObJv3KRpkuNub3JN/8D5JWQ8SBWOeKo=",
+        "usagesDigest": "x/s4U3plTMrIIN6uWCRlYWCHYzttDLobVP76oIlzTqY=",
         "recordedInputs": [
           "REPO_MAPPING:,rola_devtools rola_devtools+",
           "REPO_MAPPING:,uv rola_devtools++environment+uv"
@@ -308,7 +308,7 @@
                 "@@//tools:toolchains.py"
               ],
               "watch_trees": [
-                "@@//tools:manifests/cu13/sm_86.json"
+                "@@//tools:manifests/cu13/sm_90a.json"
               ],
               "build": "",
               "build_file": "@@//bazel:env.BUILD"

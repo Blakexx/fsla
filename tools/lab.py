@@ -641,8 +641,8 @@ def budgets(binary: Path, kind: str = "budget") -> list[dict]:
     return [e for e in map(json.loads, lines.splitlines()) if e["lab"] == kind]
 
 
-#: THE CARDS a lab's counts are priced on (`common/hardware.json`): the local card's product rates, sm_80's defaults
-CARDS = (("sm_86 (RTX 3080 Ti)", "sm_86", "rtx3080ti"), ("sm_80 (A100)", "sm_80", None))
+#: THE CARDS a lab's counts are priced on (`common/hardware.json`): the H100's product rates
+CARDS = (("sm_90a (H100)", "sm_90a", "h10080gbhbm3"),)
 
 
 def _plain(name: str) -> str:

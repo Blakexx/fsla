@@ -114,7 +114,7 @@ carry_arm_set = rule(
 #: no unit carries a dynamic library whose search path the link would write into the binary
 def _cuda_settings(archs):
     return {
-        #: one spec an architecture, each its own virtual one: `sm_80,sm_86` would compile both from compute_80
+        #: one spec an architecture, each its own virtual one: a comma list would compile every card from the first's
         "@rules_cuda//cuda:archs": ";".join(["compute_%s:sm_%s" % (a, a) for a in archs]),
         "@rules_cuda//cuda:runtime": str(Label("//bazel:cuda_headers")),
     }

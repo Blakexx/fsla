@@ -6,7 +6,7 @@ defaults (capabilities and rates) and every product's overrides, each rate with 
 over its architecture's defaults, for run time), checks that the header is current and that every source holds -- a
 measured rate matches the lab record it names, on the product it names. Stdlib only (no `rola`, no GPU), so the lint runs it. docs/internals/common/hardware.md.
 
-    python -m measure.hardware [--product rtx3080ti | --arch sm_80]   # the resolved rates
+    python -m measure.hardware [--product h10080gbhbm3 | --arch sm_90a]   # the resolved rates
     python -m measure.hardware --write                                # regenerate the header
     python -m measure.hardware --check                                # the gate
 """
@@ -31,7 +31,7 @@ SOURCES = ("measured", "documented", "announced")
 #: a measured rate may differ from its record's median by its own rounding and no more
 TOLERANCE = 0.002
 #: the architecture families, in the order `Family` numbers them (docs/internals/common/hardware.md#families)
-FAMILIES = ("ampere", "hopper", "blackwell")
+FAMILIES = ("hopper", "blackwell")
 #: the build traits a product may override (each distinct set is a build variant)
 BUILD_TRAITS = ("window",)
 
@@ -41,11 +41,10 @@ _VENDOR_WORDS = ("NVIDIA", "GeForce", "Tesla", "Quadro")
 
 
 def slugify_gpu(name: str) -> str:
-    """`NVIDIA GeForce RTX 3080 Ti` -> `rtx3080ti`; `NVIDIA A100-SXM4-80GB` -> `a100`.
+    """`NVIDIA H100 80GB HBM3` -> `h10080gbhbm3`.
 
-    The cut at the first `-` drops a memory/interconnect suffix (`SXM4-80GB`,
-    `PCIE-40GB`) that does not change which kernel binary applies -- an A100-40GB and
-    an A100-80GB run the identical SASS.
+    The cut at the first `-` drops a dashed suffix that does not change
+    which kernel binary applies.
     """
     stripped = name
     for word in _VENDOR_WORDS:
@@ -59,7 +58,7 @@ def load() -> dict:
 
 
 def cc_of(arch: str) -> int:
-    """An architecture's compute capability x 10: `sm_86` 860; `sm_90a` (the hopper row, built with its
+    """An architecture's compute capability x 10: `sm_90a` (the hopper row, built with its
     architecture-specific features) 900, as `__CUDA_ARCH__` reads there."""
     return int(arch.removeprefix("sm_").rstrip("a")) * 10
 
@@ -163,7 +162,7 @@ def builds(cfg: dict | None = None) -> list[tuple[str, int, dict]]:
 
 
 def builds_header(archs: list[str]) -> str:
-    """`build/generated/builds.inc`: the builds a binary of these architectures (`["80", "86"]`) carries, every variant
+    """`build/generated/builds.inc`: the builds a binary of these architectures (`["90a"]`) carries, every variant
     of each -- the set `common/select.cuh`'s `build_switch` branches over (docs/internals/common/select.md#carried)."""
     cfg = load()
     want = {f"sm_{a}" for a in archs}
@@ -189,8 +188,7 @@ def _build_lines(cfg: dict) -> list[str]:
     """The families, the build key, each build's traits and the product table, as `hardware.cuh` carries them."""
     out = ["//: THE ARCHITECTURE FAMILIES -- see docs/internals/common/hardware.md#families",
            "enum class Family : int { " + ", ".join(_camel(f) for f in FAMILIES) + " };", "",
-           "//: A BUILD: the key a kernel compiles at -- its image's compute capability and its variant (products equal",
-           "//: in build traits share one). see docs/internals/common/hardware.md#builds",
+           "//: A BUILD: the key a kernel compiles at, its compute capability and variant. see docs/internals/common/hardware.md#builds",
            "struct Build {", "  int cc;", "  int variant;", "};", "",
            "//: A BUILD'S TRAITS: what a kernel's plan reads. see docs/internals/common/hardware.md#traits",
            "struct Traits {", "  Family family;", "  int window;  // W, a card's: docs/internals/common/window.md",
@@ -201,12 +199,10 @@ def _build_lines(cfg: dict) -> list[str]:
         out.append(f"    return Traits{{Family::{_camel(traits['family'])}, {traits['window']}, "
                    f"caps_of({cc_of(arch)})}};")
     out += ["  return Traits{};", "}", "",
-            "//: A BUILD AS A TYPE, the form a kernel takes it in (a kernel's class-type template argument must be a",
-            "//: type's: docs/internals/common/hardware.md#build-tag)",
+            "//: A BUILD AS A TYPE, the form a kernel takes it in: docs/internals/common/hardware.md#build-tag",
             "template <Build B>", "struct BuildTag {", "  static constexpr Build build = B;",
             "  static constexpr Traits traits = traits_of(B);", "};", "",
-            "//: THE PRODUCTS: a device's product by its name's slug, and the build variant it runs -- see",
-            "//: docs/internals/common/hardware.md#products",
+            "//: THE PRODUCTS: a device's product by its name's slug, and the build variant it runs. see docs/internals/common/hardware.md#products",
             "struct ProductRow {", "  int cc;", "  const char* slug;", "  int variant;", "};", "",
             "inline constexpr ProductRow kProducts[] = {"]
     for slug in sorted(cfg["product"]):

@@ -2,17 +2,12 @@
 #pragma once
 
 #include <cuda_bf16.h>
-#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <cstdint>
 
 #include "common/arch_caps.cuh"
 
-static_assert(
-    denseref::arch::written_for<denseref::arch::Family::kAmpere>(),
-    "common/atoms/reduce.cuh: no body of this architecture's family is written (the hopper family's are next): build for an "
-    "ampere architecture (--//:archs)");
 #include "common/atoms/address.cuh"
 
 namespace denseref {

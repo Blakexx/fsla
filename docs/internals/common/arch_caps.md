@@ -28,8 +28,8 @@ at 80 and 82 SMs, GA100 at 108), so it is a run-time `cudaDeviceProp` query.
 
 ## The queries over a row
 
-<a id="caps-of-note-l147"></a>**sm_90 is TABULATED AND NOT BUILT** (`caps_of`): its row carries its facts for the hopper
-family's schedules, which are not written yet; a binary built without sm_90 refuses an sm_90 card by name
+<a id="caps-of-note-l147"></a>**sm_90a is THE BUILT ROW** (`caps_of`): its row carries the facts of the hopper
+family's schedules; a binary built without sm_90a refuses an sm_90 card by name
 ([`select.md#card-of`](select.md#card-of)).
 
 <a id="tabulated"></a>**`tabulated` is the RATIFIED SET.** A compute capability that is not a row fails the build; it
@@ -39,10 +39,7 @@ is never approximated by a neighbouring row.
 compiling target), written by the carry's stamp kernel and read on the host. A binary compiled against a different
 table cannot masquerade as this one -- no path or file hash can establish that, only a device-side fact.
 
-<a id="written-for"></a>**THE FAMILIES A HEADER IS WRITTEN FOR** (`written_for<Family...>()`): every header that includes this one
-names, in a `static_assert` beside the include, the families its bodies are written for, and a build of any other family
-is refused by name with that header's path. A header whose instructions are the same on two families names both: the
-warp atoms (`common/atoms/warp.cuh`: votes, shuffles, the lane mask, moves) are written for ampere and hopper. The
-others name ampere until their hopper bodies are written (docs/architecture/families.md: an atom's body per family
-where it is defined).
+<a id="hopper-only"></a>**THE ONE FAMILY BUILT** is the hopper's: this header refuses every other family by name, in one `static_assert`
+after the `tabulated` check, and no header that includes it states a family of its own. A host pass compiles for the
+hopper (`kArch` 900). The `ampere` branch is the only Ampere (docs/architecture/families.md).
 

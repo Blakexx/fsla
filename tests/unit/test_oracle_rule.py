@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from tests.oracle.fixtures import allowances, assert_slots_close
-from tests.oracle.tolerances import CARRY_NUM, OUTPUTS, Output
+from tests.oracle.tolerances import DECODE_Y, OUTPUTS, Output
 
 ONE_CLAUSE = Output("one clause", clauses=((1e-2, 1e-3),))
 TWO_CLAUSES = Output("two clauses", clauses=((0.0, 1e-1), (1.0, 1e-3)))
@@ -59,7 +59,7 @@ def test_a_slot_whose_allowance_is_zero_must_be_exact_and_a_non_finite_slot_fail
     with pytest.raises(AssertionError):
         assert_slots_close(reference * 1.5, reference, output=zero, what="past the tenth")
     with pytest.raises(AssertionError):
-        assert_slots_close(torch.tensor([float("nan")]), reference, output=CARRY_NUM,
+        assert_slots_close(torch.tensor([float("nan")]), reference, output=DECODE_Y,
                            envelope=torch.tensor([1.0]), what="not finite")
 
 

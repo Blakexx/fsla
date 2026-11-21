@@ -16,46 +16,45 @@ def test_the_configuration_checks_clean():
 
 def test_a_measured_rate_off_its_record_is_a_finding():
     cfg = hardware.load()
-    cfg["product"]["rtx3080ti"]["rates"]["mma"]["hmma_f16_f32"]["cycles"] = 30.0
-    assert any("hmma_f16_f32" in f for f in hardware.check(cfg))
+    cfg["arch"]["sm_90a"]["rates"]["atomic"]["cycles"] = 1.2
+    assert any("atomic" in f for f in hardware.check(cfg))
 
 
 def test_a_stale_header_is_a_finding():
     assert any("hardware.cuh" in f for f in hardware.check(header_text=hardware.HEADER.read_text() + "\n"))
 
 
-def test_a_product_override_wins_over_its_architecture():
-    assert hardware.resolve("sm_86")["mma.hmma_f16_f32"].cycles == 16
-    assert abs(hardware.resolve(product="rtx3080ti")["mma.hmma_f16_f32"].cycles - 32.13) < 0.01
-    assert hardware.product_of("NVIDIA GeForce RTX 3080 Ti") == "rtx3080ti"
+def test_a_product_resolves_its_architectures_rates_and_a_device_name_its_product():
+    assert hardware.resolve("sm_90a")["mma.hmma_bf16_f32"].cycles == 4
+    assert hardware.resolve(product="h10080gbhbm3")["atomic"].cycles == hardware.resolve("sm_90a")["atomic"].cycles
+    assert hardware.product_of("NVIDIA H100 80GB HBM3") == "h10080gbhbm3"
     assert json.loads(hardware.CONFIG.read_text()) == hardware.load()
 
 
 def test_every_architecture_names_its_family_and_each_built_one_its_window():
     cfg = hardware.load()
-    assert {a: r["build"]["family"] for a, r in cfg["arch"].items()} == {
-        "sm_80": "ampere", "sm_86": "ampere", "sm_87": "ampere", "sm_89": "ampere", "sm_90a": "hopper"}
-    cfg["arch"]["sm_86"]["build"].pop("window")
-    assert any("sm_86 is built but its build chooses no window" in f for f in hardware.check(cfg))
+    assert {a: r["build"]["family"] for a, r in cfg["arch"].items()} == {"sm_90a": "hopper", "sm_100a": "blackwell"}
+    cfg["arch"]["sm_90a"]["build"].pop("window")
+    assert any("sm_90a is built but its build chooses no window" in f for f in hardware.check(cfg))
 
 
 def test_products_equal_in_build_traits_share_a_variant_and_an_override_is_the_next():
     cfg = hardware.load()
-    assert {p: hardware.variant_of(p, cfg) for p in cfg["product"]} == {"a100": 0, "rtx3080ti": 0}
-    cfg["product"]["rtx3080ti"]["build"] = {"window": 1024}
-    cfg["product"]["other86"] = {"arch": "sm_86", "device": "NVIDIA other86", "build": {"window": 1024}}
-    assert hardware.variant_of("rtx3080ti", cfg) == hardware.variant_of("other86", cfg) == 1
-    assert [(a, v) for a, v, _ in hardware.builds(cfg) if a == "sm_86"] == [("sm_86", 0), ("sm_86", 1)]
-    assert "if (b.cc == 860 && b.variant == 1)" in hardware.header(cfg)
+    assert {p: hardware.variant_of(p, cfg) for p in cfg["product"]} == {"h10080gbhbm3": 0}
+    cfg["product"]["h10080gbhbm3"]["build"] = {"window": 512}
+    cfg["product"]["other90"] = {"arch": "sm_90a", "device": "NVIDIA other90", "build": {"window": 512}}
+    assert hardware.variant_of("h10080gbhbm3", cfg) == hardware.variant_of("other90", cfg) == 1
+    assert [(a, v) for a, v, _ in hardware.builds(cfg) if a == "sm_90a"] == [("sm_90a", 0), ("sm_90a", 1)]
+    assert "if (b.cc == 900 && b.variant == 1)" in hardware.header(cfg)
 
 
 def test_a_product_build_override_outside_the_traits_is_a_finding():
     cfg = hardware.load()
-    cfg["product"]["rtx3080ti"]["build"] = {"family": "hopper"}
+    cfg["product"]["h10080gbhbm3"]["build"] = {"family": "blackwell"}
     assert any("overrides a trait outside window" in f for f in hardware.check(cfg))
 
 
 def test_a_product_build_override_is_refused_until_a_variant_is_gated():
     cfg = hardware.load()
-    cfg["product"]["rtx3080ti"]["build"] = {"window": 1024}
+    cfg["product"]["h10080gbhbm3"]["build"] = {"window": 512}
     assert any("a build variant is not gated yet" in f for f in hardware.check(cfg))

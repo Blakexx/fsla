@@ -12,10 +12,6 @@
 
 #include "common/arch_caps.cuh"
 
-static_assert(
-    denseref::arch::written_for<denseref::arch::Family::kAmpere>(),
-    "common/geom.cuh: no body of this architecture's family is written (the hopper family's are next): build for an "
-    "ampere architecture (--//:archs)");
 #include "common/static_for.cuh"
 
 namespace rola::carry {

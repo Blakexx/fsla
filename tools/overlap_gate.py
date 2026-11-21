@@ -97,7 +97,7 @@ def _mma_cycles(opcode: str, rates: dict) -> float:
     parts = opcode.split(".")
     if parts[0] == "IMMA":
         return rates["mma.imma_u8_s8_k32"].cycles / (1 if parts[1] == "16832" else 2)
-    kind = "hmma_f16_f16" if parts[2] == "F16" else "hmma_bf16_f32" if "BF16" in parts else "hmma_f16_f32"
+    kind = "hmma_bf16_f32" if "BF16" in parts else "hmma_f16_f32"
     return rates[f"mma.{kind}"].cycles / (1 if parts[1] == "16816" else 2)
 
 

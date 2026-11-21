@@ -3,17 +3,12 @@
 #pragma once
 
 #include <cuda_bf16.h>
-#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <cstdint>
 
 #include "common/arch_caps.cuh"
 
-static_assert(
-    denseref::arch::written_for<denseref::arch::Family::kAmpere>(),
-    "common/atoms/barrier.cuh: no body of this architecture's family is written (the hopper family's are next): build for an "
-    "ampere architecture (--//:archs)");
 #include "common/atoms/address.cuh"
 
 namespace denseref {
@@ -22,10 +17,6 @@ namespace ops {
 //: A SHARED-MEMORY BARRIER OBJECT (`mbarrier`, sm_80+) -- see docs/internals/common/atoms/barrier.md#mbarrier
 __device__ __forceinline__ void mbar_init(SmemAddr a, uint32_t count) {
   asm volatile("mbarrier.init.shared.b64 [%0], %1;\n" ::"r"(a), "r"(count) : "memory");
-}
-
-__device__ __forceinline__ void mbar_arrive_when_landed(SmemAddr a) {
-  asm volatile("cp.async.mbarrier.arrive.noinc.shared.b64 [%0];\n" ::"r"(a) : "memory");
 }
 
 __device__ __forceinline__ void mbar_arrive(SmemAddr a) {

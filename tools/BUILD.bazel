@@ -51,7 +51,7 @@ genrule(
 cuda_unit(
     name = "derivation_unit",
     srcs = [":derivation_harness_source"],
-    archs = ["compute_80:sm_80"],
+    archs = ["compute_90a:sm_90a"],
     copts = [
         "-std=c++20",
         "-O0",

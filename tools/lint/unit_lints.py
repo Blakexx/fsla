@@ -4,9 +4,9 @@
 """THE UNIT LINTS: clang-tidy's two profiles and the host warnings, each read from one unit's own compile action in
 the build graph (`bazel/defs.bzl`'s `unit_lints` aspect), and the editor's compile database from the same commands.
 
-    unit_lints.py command --argv A.json --arch 80 --cuda-root DIR --out C.json   # the unit's clang command
+    unit_lints.py command --argv A.json --arch 90a --cuda-root DIR --out C.json   # the unit's clang command
     unit_lints.py tidy --command C.json --clang-tidy BIN --config F --package csrc/rola --out V.json
-    unit_lints.py warnings --argv A.json --arch 80 --package csrc/rola --out V.json   # the host compile, warnings on
+    unit_lints.py warnings --argv A.json --arch 90a --package csrc/rola --out V.json   # the host compile, warnings on
     unit_lints.py verdicts [--expect PATTERN...] V.json...             # red on any finding, or a fixture's mismatch
     unit_lints.py database --checkout DIR --out F C.json...            # compile_commands.json, from the run's execroot
 
@@ -31,7 +31,7 @@ _WITH_VALUE = ("-I", "-isystem", "-iquote", "-include", "-D", "-U")
 _JOINED = ("-I", "-D", "-U", "-std=", "-O")
 #: the path-valued ones, which the editor's database makes absolute
 _PATH_VALUED = ("-I", "-isystem", "-iquote", "-include")
-#: the architecture an nvcc `-gencode` builds (`arch=compute_80,code=sm_80`)
+#: the architecture an nvcc `-gencode` builds (`arch=compute_90a,code=sm_90a`)
 _GENCODE = re.compile(r"code=sm_(\d+a?)")
 #: a diagnostic: `path:line:col: severity: message`
 _DIAGNOSTIC = re.compile(r"^(?P<path>[^:\s][^:]*):\d+:\d+: (?P<severity>warning|error|fatal error): ")

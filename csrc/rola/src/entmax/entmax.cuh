@@ -48,7 +48,7 @@ constexpr int BLOCK_THREADS = BLOCK_WARPS * WARP_SIZE;
 //: terms across its reduction. -- see docs/internals/entmax/entmax.md#residency
 constexpr int kForwardRegs = 64;
 
-constexpr int backward_regs(int ipt) { return ipt == 8 ? 72 : kForwardRegs; }
+constexpr int backward_regs(int ipt) { return ipt == 8 ? 80 : kForwardRegs; }
 
 //: THE SOLVES' PLAN at build `B`: the blocks an SM their register targets fit in the card's registers, each launch
 //: bound's residency. -- see docs/internals/entmax/entmax.md#residency

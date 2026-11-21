@@ -1,20 +1,14 @@
 // csrc/rola/src/common/atoms/math.cuh -- THE ELEMENTWISE MATH: the special-function unit's roots and powers, byte and
-// halfword selects and packs, the f16 and bf16 pair arithmetic; a concern of the baseline operations
+// halfword selects and packs, the bf16 pair arithmetic; a concern of the baseline operations
 // (`common/ops.cuh`). see docs/internals/common/atoms/math.md
 #pragma once
 
 #include <cuda_bf16.h>
-#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <cstdint>
 
 #include "common/arch_caps.cuh"
-
-static_assert(
-    denseref::arch::written_for<denseref::arch::Family::kAmpere>(),
-    "common/atoms/math.cuh: no body of this architecture's family is written (the hopper family's are next): build for an "
-    "ampere architecture (--//:archs)");
 
 namespace denseref {
 namespace ops {
@@ -42,14 +36,6 @@ __device__ __forceinline__ uint32_t prmt(uint32_t lo, uint32_t hi, uint32_t sel)
   return d;
 }
 
-//: THE LARGER OF EACH HALFWORD PAIR on the fp16 order (`HMNMX2`): for halfwords in `[0x0400, 0x7bff]` -- positive
-//: normal fp16 -- the integer order, two lanes an instruction where a byte or halfword integer max is emulated.
-__device__ __forceinline__ uint32_t hmax2(uint32_t a, uint32_t b) {
-  uint32_t d;
-  asm("max.f16x2 %0, %1, %2;" : "=r"(d) : "r"(a), "r"(b));
-  return d;
-}
-
 //: TWO s32 SATURATED TO u16 AND PACKED, `hi` in the upper half (`I2IP.U16.S32.SAT`).
 __device__ __forceinline__ uint32_t pack_sat_u16(int32_t hi, int32_t lo) {
   uint32_t d;
@@ -61,34 +47,6 @@ __device__ __forceinline__ uint32_t pack_sat_u16(int32_t hi, int32_t lo) {
 __device__ __forceinline__ uint32_t pack_byte4(uint32_t v0, uint32_t v1, uint32_t v2, uint32_t v3,
                                                uint32_t pair_sel) {
   return prmt(prmt(v0, v1, pair_sel), prmt(v2, v3, pair_sel), 0x5410u);
-}
-
-//: TWO f16 PRODUCTS, each rounded once to nearest (`HMUL2`).
-__device__ __forceinline__ uint32_t hmul2(uint32_t a, uint32_t b) {
-  uint32_t d;
-  asm("mul.rn.f16x2 %0, %1, %2;" : "=r"(d) : "r"(a), "r"(b));
-  return d;
-}
-
-//: TWO f16 PRODUCTS BY ONE HALF, each rounded once, the broadcast in the multiply's operand selector. -- see
-//: docs/internals/common/atoms/math.md#hmul2-by
-__device__ __forceinline__ uint32_t hmul2_by(uint32_t a, __half m) {
-  const __half2 p = __hmul2_rn(*reinterpret_cast<const __half2*>(&a), __half2half2(m));
-  return *reinterpret_cast<const uint32_t*>(&p);
-}
-
-//: TWO f16 `a b + c`, each rounded once to nearest (`HFMA2`).
-__device__ __forceinline__ uint32_t hfma2(uint32_t a, uint32_t b, uint32_t c) {
-  uint32_t d;
-  asm("fma.rn.f16x2 %0, %1, %2, %3;" : "=r"(d) : "r"(a), "r"(b), "r"(c));
-  return d;
-}
-
-//: TWO fp32 TO AN f16 PAIR, each rounded to nearest, `lo` in the low half (`F2FP`).
-__device__ __forceinline__ uint32_t pack_half2(float lo, float hi) {
-  uint32_t d;
-  asm("cvt.rn.f16x2.f32 %0, %1, %2;" : "=r"(d) : "f"(hi), "f"(lo));
-  return d;
 }
 
 __device__ __forceinline__ uint32_t pack_bf16x2(float lo, float hi) {

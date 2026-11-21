@@ -61,16 +61,15 @@ Every mechanism states its hopper (sm_90) and blackwell (sm_100) form at design 
 tensor-memory operands, TMA box loads, clusters and distributed shared memory, vector RED); a mechanism that exists on
 one architecture only is a workaround, not a design.
 
-THIS LINE IS HOPPER'S AND BLACKWELL'S (Blake, 2026-11-09). The ampere family is the branch `ampere`, the frozen
-reference: its design is no input to a hopper design ("the ampere design is just bad on hopper and not even in
-consideration") and is never run on a hopper card as one. Its cards stay rows of the hardware table, tabulated and not
-built. A kernel with no family schedule (the facts pass, decode, paging, entmax) may compile for sm_86 as it is
-written for every card, so the development card runs it; no sm_86 schedule, atom, branch or plan is ever written to
-make something run there ("never introduce a nonstandard sm86 form just to test something we wont even maintain or
-use").
+THIS LINE IS HOPPER'S AND BLACKWELL'S; MASTER IS HOPPER ONLY (Blake, 2026-11-09 and 2026-11-20). The ampere family is
+the branch `ampere`, the frozen reference, and nothing of it is on master: no ampere card row, no sm_80 or sm_86 build,
+no ampere atom, schedule, tool, tolerance or standard ("it may be more simple to just completely delete all ampere and
+move to fully hopper, since it seems very cheap adn easy to use an h100 at this point"). Its design is no input to a
+hopper design. The development box builds for sm_90a and runs host tests, lints and the SASS and checker gates; every
+GPU test runs on a rented H100. Ampere may be finished later, from its branch.
 
-THE FORM IS NAMED PER FAMILY. The architectures fall into families -- `ampere` (sm_80 to sm_89), `hopper` (sm_90),
-`blackwell` (sm_100) -- and a mechanism's form is named per family: an ATOM where only the instruction differs, the
+THE FORM IS NAMED PER FAMILY. The architectures fall into families -- `hopper` (sm_90), built, and `blackwell` (sm_100),
+tabulated and not built -- and a mechanism's form is named per family: an ATOM where only the instruction differs, the
 family's SCHEDULE where the structure does (which warps do what, the pipeline's stages and barriers, the tiling). The
 semantics, what the oracle defines, are one: every family's schedule shares them and is gated against the same
 reference.

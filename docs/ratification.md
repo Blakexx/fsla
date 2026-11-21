@@ -5,13 +5,13 @@ did to every instantiation the extension ships, on one architecture, under one
 exact `ptxas`, filed under that assembler's toolchain ([`internals/tools/toolchains.md`](internals/tools/toolchains.md)):
 
 ```
-tools/manifests/cu13/sm_86.json
+tools/manifests/cu13/sm_90a.json
   { "toolchain": { "ptxas": "<the whole --version string>", "defines": {},
                    "nvcc_flags": [...], "sass_hash_version": 2,
                    "mold": {"version": "mold 2.42.0", "sha256": "..."} },
     "source":   { "csrc_sha256": "...", "date": "..." },
     "shards":   { "carry_arm_0": { "members_sha256": "...", "count": 1 }, ... },
-    "entries":  { "sm_86:<mangled name>": { "regs": 64, "spill_stores": 8,
+    "entries":  { "sm_90a:<mangled name>": { "regs": 64, "spill_stores": 8,
                                             "spill_loads": 24,
                                             "hot_locals": 0, "local_ops": 12,
                                             "sass_sha256": "..." }, ... } }
@@ -306,8 +306,8 @@ is why the self-test is part of the gate rather than a note about it.
 
 ```python
 >>> from rola_cu13 import _build_config; _build_config.show()
-{'version': ..., 'archs': ['sm_80', 'sm_86'], 'ptxas': ...,
- 'manifest_sha256': '...', 'manifest_entries': {'sm_80': ..., 'sm_86': ...},
+{'version': ..., 'archs': ['sm_90a'], 'ptxas': ...,
+ 'manifest_sha256': '...', 'manifest_entries': {'sm_90a': ...},
  'ptx_jit_fallback': False, 'vendored': {'cutlass': {...}}}
 ```
 

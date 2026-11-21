@@ -16,11 +16,11 @@ count (the driver's: a product's SKUs differ in it, so no table holds it), the b
 ([`arch_runtime.md#check-arch-table`](arch_runtime.md#check-arch-table)): its architecture tabulated, the
 driver's numbers its row's, and its build one this binary carries -- and keeps the card; every later call is a lookup.
 A device whose build the binary does not carry is refused by name with the builds it does carry, so an architecture is
-never run on another's image (an sm_89 card is not run on the sm_86 image: it was not measured there).
+never run on another's image (an sm_100 card is not run on the sm_90a image).
 
 <a id="slug"></a>
 The product is found by the slug of the device's name, `measure/hardware.py`'s `slugify_gpu` (the vendor words
-dropped, cut at the first `-`, alphanumerics lowercased): every A100 memory and interconnect variant is `a100`. The
+dropped, cut at the first `-`, alphanumerics lowercased): an H100 80GB HBM3 is `h10080gbhbm3`. The
 product's row names its build variant; a device without a row runs its architecture's variant 0.
 
 <a id="carried"></a>
@@ -35,7 +35,7 @@ variant of every architecture the binary compiles.
 
 A build's kernels compile in its own image only. `in_image(b)` is true for every build in the host pass and for the
 image's own build in a device pass (`b.cc == __CUDA_ARCH__`), and a launch site instantiates a build's kernels under
-`if constexpr (in_image(B))` -- so the sm_80 image holds no sm_86 kernel and the binary's entry points are one a
+`if constexpr (in_image(B))` -- so one architecture's image holds no other's kernel and the binary's entry points are one a
 kernel a build, with no trapping copies in the other images. A launch of another image's kernel is refused by the
 runtime (an invalid device function) and, before that, by `card_of`.
 

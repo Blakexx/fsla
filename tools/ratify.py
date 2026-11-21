@@ -213,11 +213,9 @@ def tu_paths(shards: tuple[str, ...] | None = None, arms=None) -> list[Path]:
 #: extension has and this gate does not is that premise failing silently.
 CUTLASS_INC = Path(__file__).resolve().parents[1] / "csrc" / "third_party" / "cutlass" / "include"
 
-#: The compile path's `-gencode` targets by default, overridable per run with `--arch`. BOTH are measured by default, because
-#: both are in the shipped fat binary and the two allocators reach different
-#: answers: sm_80 admits more CTAs by shared memory, so its bound is a different
-#: number and its spill profile is a different measurement.
-DEFAULT_ARCHES = ("80", "86")
+#: The compile path's `-gencode` targets by default, overridable per run with `--arch`: the one architecture the
+#: library is built for (the hopper's).
+DEFAULT_ARCHES = ("90a",)
 
 
 def toolchain(name: str | None = None) -> toolchains.Toolchain:
@@ -573,9 +571,9 @@ def measure_derivation(cases: dict) -> dict[str, str]:
         #: capability-row quantity, so `common/geom.cuh` reaches `common/arch_caps.cuh`,
         #: whose tabulation refuses `nvcc`'s DEFAULT device architecture by name. The
         #: derivation is invariant across the tabulated set -- every row carries the same
-        #: register file -- so naming the smallest tabulated one measures the shipped
-        #: derivation rather than pinning it to a part.
-        cmd = [cuda_bin("nvcc"), "-std=c++20", "-O0", "-arch=sm_80", f"-I{SRC}",
+        #: register file -- so naming the one built architecture measures the shipped
+        #: derivation.
+        cmd = [cuda_bin("nvcc"), "-std=c++20", "-O0", "-arch=sm_90a", f"-I{SRC}",
                str(src), "-o", str(exe)]
         with host.acquire(1, label="ratify's derivation harness"):
             proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -1364,7 +1362,7 @@ def check_sass_bodies(bodies: dict[str, str], want: dict, fresh: bool,
 #: measurement is how a stale budget constant survived three kernel rungs.
 
 def _regs_ctas(regs: int) -> int:
-    """Register-file-side CTAs/SM at 256 threads after sm_86's 8-register
+    """Register-file-side CTAs/SM at 256 threads after the 8-register
     allocation granularity. The REGISTER term only -- the driver's own occupancy
     query stays the sole residency authority."""
     alloc = 256 * ((regs + 7) // 8) * 8
@@ -1512,7 +1510,7 @@ def main() -> int:
         #: interleave their `path.write_text` calls otherwise.
         with host.file_lock("ratify_manifest"):
             #: WRITTEN PER ARCH, from the one compile. Splitting here rather than at
-            #: read time is what keeps `sm_86.json` untouched by an `--arch 80` run:
+            #: read time is what keeps one arch's manifest untouched by another's `--arch` run:
             #: a bring-up must not restate measurements it did not take.
             for arch in arches:
                 prefix = f"sm_{arch}:"
