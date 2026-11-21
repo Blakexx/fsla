@@ -4,6 +4,12 @@ visible; a device tier runs alone. Every tier takes the library: collecting a ti
 
 load("//bazel:defs.bzl", "device_lane", "pytest_tier", "tree_part")
 
+#: THE LAB'S UNIT TESTS: the lab's and the dev config's, which `:lab` runs and `:cpu` leaves out
+LAB_TESTS = [
+    "unit/test_dev_config*.py",
+    "unit/test_lab_*.py",
+]
+
 pytest_tier(
     name = "cpu",
     size = "large",
@@ -14,12 +20,15 @@ pytest_tier(
     ],
     marks = "not cuda",
     shard_count = 4,
-    tests = ["tests/unit"],
+    tests = ["tests/" + f for f in glob(
+        ["unit/test_*.py"],
+        exclude = LAB_TESTS,
+    )],
 )
 
 #: THE LAB'S UNIT TESTS, which the gate runs (`//:gate`): the lab's and the dev config's rows of the CPU tier, on their
 #: own, with the checker from `@warpline` (the module this tree pins) on their path, never a machine's. The lane's
-#: `:cpu` runs them again among the rest
+#: `:cpu` leaves them out, so each test is in one tier
 pytest_tier(
     name = "lab",
     size = "large",
@@ -29,10 +38,7 @@ pytest_tier(
         "@warpline//:warpline",
     ],
     marks = "not cuda",
-    tests = ["tests/" + f for f in glob([
-        "unit/test_dev_config*.py",
-        "unit/test_lab_*.py",
-    ])],
+    tests = ["tests/" + f for f in glob(LAB_TESTS)],
 )
 
 pytest_tier(
@@ -75,6 +81,7 @@ test_suite(
     tests = [
         ":cpu",
         ":integration",
+        ":lab",
         ":oracle",
         ":unit_cuda",
     ],

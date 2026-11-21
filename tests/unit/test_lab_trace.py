@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 import dev_config  # noqa: E402
 
 if dev_config.warpline_python() is None:
-    pytest.skip("warpline's library is handed in by the graph (bazel test //tests:cpu)", allow_module_level=True)
+    pytest.skip("warpline's library is handed in by the graph (bazel test //tests:lab)", allow_module_level=True)
 import lab_trace  # noqa: E402
 
 PLAIN = "the carry"

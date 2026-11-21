@@ -162,8 +162,8 @@ tools/ratify.py --arch XX --write`, [`bringup.md`](bringup.md)), and rule 3's re
 ## <a id="checks"></a>The checks
 
 `bazel test //:gate` runs every check the graph holds -- `//:lints`, the checks over files (the repo's own and
-`//csrc/rola:lints`); `//tools/lint:lint_fixtures`, each lint firing on its own fixture; and `//:commit_checks`, the
-checks of the commit -- and is the commit gate:
+`//csrc/rola:lints`); `//tools/lint:lint_fixtures`, each lint firing on its own fixture; `//tests:lab`, the lab's unit
+tests; and `//:commit_checks`, the checks of the commit -- and is the commit gate:
 `tools/git-hooks/pre-commit` runs it with the changes not staged for the commit set aside, and the tree the commit's
 index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
 
@@ -191,7 +191,7 @@ index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
   its deps), read in one configuration a ratified architecture (a split transition), whose generated headers are that architecture's build set; each verdict is
   cached on its unit's compile, and states the seconds it took. `bazel run //:compile_commands` writes the editor's
   compile database from the same commands, for the first ratified architecture.
-- THE TEST TIERS (`//tests:cpu`, `unit_cuda`, `oracle`, `integration`; `//:lane` all four; `bazel/defs.bzl`'s
+- THE TEST TIERS (`//tests:cpu`, `unit_cuda`, `oracle`, `integration`; `//:lane` all five, with `//tests:lab`; `bazel/defs.bzl`'s
   `pytest_tier`; `//tests:lab`, the lab's and the dev config's unit tests on their own, is in the gate, its checker the
   `@warpline` module's): each tier one target, as pytest runs it ([`testing.md`](testing.md#running-it)), over the tree and the
   built library copied into a real tree, outside the sandbox (the machine's locks live in `/tmp`). The CPU tier is

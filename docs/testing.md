@@ -271,11 +271,12 @@ Each tier is one target of the build graph (`tests/BUILD.bazel`, [`build-graph.m
 test is in exactly one:
 
 ```bash
-bazel test //tests:cpu              # tests/unit -m "not cuda", with no device visible
+bazel test //tests:cpu              # tests/unit -m "not cuda", with no device visible, but the lab's (next line)
+bazel test //tests:lab              # the lab's and the dev config's unit tests, in the gate, the checker on their path
 bazel test //tests:unit_cuda        # tests/unit's CUDA-marked rows
 bazel test //tests:oracle           # kernels vs the fp64 baselines
 bazel test //tests:integration      # composition, dispatch, two-branches-agree
-bazel test //:lane                  # all four
+bazel test //:lane                  # all five
 bazel test //tests:oracle --test_filter=carry_fold --test_output=streamed   # some of a tier, by pytest's -k
 ```
 

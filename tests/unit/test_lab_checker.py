@@ -15,7 +15,7 @@ import dev_config  # noqa: E402
 import lab  # noqa: E402
 
 needs_checker = pytest.mark.skipif(dev_config.warpline_python() is None,
-                                   reason="warpline's checker is handed in by the graph (bazel test //tests:cpu)")
+                                   reason="warpline's checker is handed in by the graph (bazel test //tests:lab)")
 
 
 def expect(kernel, op, cmp, count):

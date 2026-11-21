@@ -1344,7 +1344,8 @@ def static_ledger(name: str, pattern: str | None, arch: str | None) -> int:
                 continue
             at = int(m.group(1), 16)
             #: an instruction inside the model's span that the model lacks is two disassemblies that disagree, never
-            #: "outside every loop"; past the model's last instruction is the padding it drops (a self-branch, NOPs)
+            #: "outside every loop"; an instruction past the model's last address (the listing's trailing padding: a
+            #: self-branch, NOPs) is counted, in no loop, so under "outside every loop"
             if at not in at_address and at < max(at_address):
                 print(f"lab: {k[:110]}: the instruction at {at:#06x} is in the listing and not in the checker's model of the kernel")
                 return 1

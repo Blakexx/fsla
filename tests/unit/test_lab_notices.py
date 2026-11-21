@@ -17,7 +17,7 @@ import dev_config  # noqa: E402
 import lab  # noqa: E402
 
 needs_checker = pytest.mark.skipif(dev_config.warpline_python() is None,
-                                   reason="warpline's checker is handed in by the graph (bazel test //tests:cpu)")
+                                   reason="warpline's checker is handed in by the graph (bazel test //tests:lab)")
 
 C7512 = ("ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to "
          "insufficient register resources for the wgmma pipeline in the function '{}'")
